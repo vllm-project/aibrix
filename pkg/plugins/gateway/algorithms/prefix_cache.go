@@ -511,7 +511,7 @@ func (k *kvSyncPrefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, rea
 	pods := readyPodList.All()
 	modelName := ctx.Model
 	if modelName == "" && len(pods) > 0 {
-		modelName = pods[0].Labels[constants.ModelLabelName]
+		modelName, _ = constants.ModelNameFromMetadata(pods[0].Labels, pods[0].Annotations)
 	}
 
 	tokenizerToUse := k.getTokenizerForRequest(ctx, readyPodList)
@@ -584,7 +584,7 @@ func (k *kvSyncPrefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodLi
 
 	modelName := ctx.Model
 	if modelName == "" && len(pods) > 0 {
-		modelName = pods[0].Labels[constants.ModelLabelName]
+		modelName, _ = constants.ModelNameFromMetadata(pods[0].Labels, pods[0].Annotations)
 	}
 
 	loraID := int64(-1)
@@ -756,7 +756,7 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	modelName := ctx.Model
 	allPods := readyPodList.All()
 	if modelName == "" && len(allPods) > 0 {
-		modelName = allPods[0].Labels[constants.ModelLabelName]
+		modelName, _ = constants.ModelNameFromMetadata(allPods[0].Labels, allPods[0].Annotations)
 	}
 
 	startTime := time.Now()

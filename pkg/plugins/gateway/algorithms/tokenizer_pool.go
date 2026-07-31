@@ -384,18 +384,12 @@ func (p *TokenizerPool) findVLLMEndpointForModel(model string, pods []*v1.Pod) s
 
 // getModelFromPod extracts model information from pod
 func getModelFromPod(pod *v1.Pod) string {
-	// 1. Check labels (highest priority)
-	// Only KV Event Sync constants are defined in pkg/constants
-	if model := pod.Labels[constants.ModelLabelName]; model != "" {
+	// 1. Check Kubernetes metadata (label first, then annotation)
+	if model, ok := constants.ModelNameFromMetadata(pod.Labels, pod.Annotations); ok {
 		return model
 	}
 
-	// 2. Check annotations
-	if model := pod.Annotations[constants.ModelLabelName]; model != "" {
-		return model
-	}
-
-	// 3. Check environment variables
+	// 2. Check environment variables
 	for _, container := range pod.Spec.Containers {
 		for _, env := range container.Env {
 			if env.Name == "MODEL_NAME" || env.Name == "MODEL" {

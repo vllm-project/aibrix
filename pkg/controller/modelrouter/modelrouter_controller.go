@@ -26,10 +26,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/selection"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
@@ -49,7 +47,6 @@ import (
 const (
 	// TODO (varun): cleanup model related identifiers and establish common consensus
 	modelHeaderIdentifier = "model"
-	modelIdentifier       = constants.ModelLabelName
 	modelPortIdentifier   = constants.ModelLabelPort
 	// TODO (varun): parameterize it or dynamically resolve it
 	aibrixEnvoyGateway          = "aibrix-eg"
@@ -172,7 +169,7 @@ func (m *ModelRouter) deleteRouteFromDeployment(obj interface{}) {
 			return
 		}
 	}
-	m.deleteHTTPRoute(deployment.Namespace, deployment.Labels)
+	m.deleteHTTPRoute(deployment.Namespace, deployment.Labels, deployment.Annotations)
 }
 
 func (m *ModelRouter) addRouteFromModelAdapter(obj interface{}) {
@@ -192,7 +189,7 @@ func (m *ModelRouter) deleteRouteFromModelAdapter(obj interface{}) {
 			return
 		}
 	}
-	m.deleteHTTPRoute(modelAdapter.Namespace, modelAdapter.Labels)
+	m.deleteHTTPRoute(modelAdapter.Namespace, modelAdapter.Labels, modelAdapter.Annotations)
 }
 
 func (m *ModelRouter) addRouteFromRayClusterFleet(obj interface{}) {
@@ -212,7 +209,7 @@ func (m *ModelRouter) deleteRouteFromRayClusterFleet(obj interface{}) {
 			return
 		}
 	}
-	m.deleteHTTPRoute(fleet.Namespace, fleet.Labels)
+	m.deleteHTTPRoute(fleet.Namespace, fleet.Labels, fleet.Annotations)
 }
 
 func (m *ModelRouter) addRouteFromUnstructuredObj(obj interface{}) {
@@ -236,13 +233,17 @@ func (m *ModelRouter) deleteRouteFromUnstructuredObj(obj interface{}) {
 			return
 		}
 	}
-	m.deleteHTTPRoute(u.GetNamespace(), u.GetLabels())
+	m.deleteHTTPRoute(u.GetNamespace(), u.GetLabels(), u.GetAnnotations())
 }
 
 func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string, annotations map[string]string) {
-	modelName, ok := labels[modelIdentifier]
+	modelName, ok := constants.ModelNameFromMetadata(labels, annotations)
 	if !ok {
 		return
+	}
+	serviceName := modelName
+	if annotatedServiceName := annotations[constants.ModelAnnoServiceName]; annotatedServiceName != "" {
+		serviceName = annotatedServiceName
 	}
 
 	modelPort, err := strconv.ParseInt(labels[modelPortIdentifier], 10, 32)
@@ -273,8 +274,10 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 
 	httpRoute := gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-router", modelName),
-			Namespace: aibrixEnvoyGatewayNamespace,
+			Name:        utils.ModelRouterName(modelName),
+			Namespace:   aibrixEnvoyGatewayNamespace,
+			Labels:      consoleRouteLabels(labels),
+			Annotations: consoleRouteAnnotations(annotations),
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
@@ -292,8 +295,7 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 						{
 							BackendRef: gatewayv1.BackendRef{
 								BackendObjectReference: gatewayv1.BackendObjectReference{
-									// TODO (varun): resolve service name from deployment
-									Name:      gatewayv1.ObjectName(modelName),
+									Name:      gatewayv1.ObjectName(serviceName),
 									Namespace: (*gatewayv1.Namespace)(&namespace),
 									Port:      ptr.To(gatewayv1.PortNumber(modelPort)),
 								},
@@ -369,15 +371,15 @@ func (m *ModelRouter) createReferenceGrant(namespace string) {
 	klog.InfoS("referencegrant created", "referencegrant", referenceGrant.Name)
 }
 
-func (m *ModelRouter) deleteHTTPRoute(namespace string, labels map[string]string) {
-	modelName, ok := labels[modelIdentifier]
+func (m *ModelRouter) deleteHTTPRoute(namespace string, labels, annotations map[string]string) {
+	modelName, ok := constants.ModelNameFromMetadata(labels, annotations)
 	if !ok {
 		return
 	}
 
 	httpRoute := gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-router", modelName),
+			Name:      utils.ModelRouterName(modelName),
 			Namespace: aibrixEnvoyGatewayNamespace,
 		},
 	}
@@ -396,26 +398,18 @@ func (m *ModelRouter) deleteHTTPRoute(namespace string, labels map[string]string
 }
 
 func (m *ModelRouter) deleteReferenceGrant(namespace string) {
-	selector, err := labels.NewRequirement(modelIdentifier, selection.Exists, nil)
-	if err != nil {
-		klog.ErrorS(err, "Failed to create label requirement", "namespace", namespace)
-		return
-	}
-
-	listOpts := &client.ListOptions{
-		Namespace:     namespace,
-		LabelSelector: labels.SelectorFromSet(labels.Set{}).Add(*selector),
-	}
-
 	var deploymentList appsv1.DeploymentList
-	if err := m.Client.List(context.Background(), &deploymentList, listOpts); err != nil {
+	if err := m.Client.List(context.Background(), &deploymentList, client.InNamespace(namespace)); err != nil {
 		klog.ErrorS(err, "Failed to list model deployments", "namespace", namespace)
 		return
 	}
-	if len(deploymentList.Items) > 0 {
-		klog.InfoS("Skip deleting ReferenceGrant: model deployment still exists",
-			"namespace", namespace, "existingDeployments", len(deploymentList.Items))
-		return
+	for i := range deploymentList.Items {
+		deployment := &deploymentList.Items[i]
+		if _, ok := constants.ModelNameFromMetadata(deployment.Labels, deployment.Annotations); ok {
+			klog.InfoS("Skip deleting ReferenceGrant: model deployment still exists",
+				"namespace", namespace, "deployment", deployment.Name)
+			return
+		}
 	}
 
 	referenceGrantName := fmt.Sprintf("%s-reserved-referencegrant-in-%s", aibrixEnvoyGatewayNamespace, namespace)
@@ -432,6 +426,31 @@ func (m *ModelRouter) deleteReferenceGrant(namespace string) {
 		}
 	}
 	klog.InfoS("delete reference grant", "referencegrant", referenceGrantName)
+}
+
+func consoleRouteLabels(labels map[string]string) map[string]string {
+	if labels[constants.AppLabelManagedBy] != constants.ConsoleManagedByValue {
+		return nil
+	}
+	return map[string]string{
+		constants.AppLabelManagedBy: constants.ConsoleManagedByValue,
+	}
+}
+
+func consoleRouteAnnotations(annotations map[string]string) map[string]string {
+	result := map[string]string{}
+	for _, key := range []string{
+		constants.ConsoleDeploymentIDAnnotation,
+		constants.ConsoleDeploymentNameAnnotation,
+	} {
+		if value := annotations[key]; value != "" {
+			result[key] = value
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 // append matches if model-router-custom-paths is set

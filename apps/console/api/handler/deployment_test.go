@@ -19,6 +19,7 @@ package handler
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/vllm-project/aibrix/apps/console/api/deployment/provider"
 	deploymentstatus "github.com/vllm-project/aibrix/apps/console/api/deployment/status"
@@ -28,11 +29,13 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 type fakeDeploymentProvider struct {
-	observeCalls int
-	deleteCalls  int
+	observeCalls      int
+	deleteCalls       int
+	createServingName string
 }
 
 func (p *fakeDeploymentProvider) Kind() string { return "fake" }
@@ -41,7 +44,8 @@ func (p *fakeDeploymentProvider) Validate(context.Context, *pb.ModelDeploymentTe
 	return nil
 }
 
-func (p *fakeDeploymentProvider) Create(_ context.Context, template *pb.ModelDeploymentTemplate, req *pb.CreateDeploymentRequest) (*pb.Deployment, error) {
+func (p *fakeDeploymentProvider) Create(_ context.Context, template *pb.ModelDeploymentTemplate, servingName string, req *pb.CreateDeploymentRequest) (*pb.Deployment, error) {
+	p.createServingName = servingName
 	return &pb.Deployment{
 		Id:                 "deployment-provider-backed",
 		Name:               req.GetName(),
@@ -78,12 +82,21 @@ func deploymentContext(email string) context.Context {
 	)
 }
 
+func TestDeploymentProtoExposesDetailMetadata(t *testing.T) {
+	fields := (&pb.Deployment{}).ProtoReflect().Descriptor().Fields()
+	for _, name := range []string{"serving_name", "created_at"} {
+		if fields.ByName(protoreflect.Name(name)) == nil {
+			t.Errorf("Deployment proto is missing %s", name)
+		}
+	}
+}
+
 func TestDeploymentHandlerTemplateLifecycle(t *testing.T) {
 	ctx := deploymentContext("owner@example.com")
 	s := store.NewMemoryStore(nil)
 	t.Cleanup(func() { _ = s.Close() })
 
-	model, err := s.CreateModel(ctx, &pb.Model{Id: "model-1", Name: "Test Model"})
+	model, err := s.CreateModel(ctx, &pb.Model{Id: "model-1", Name: "Test Model", ServingName: "/models/test"})
 	if err != nil {
 		t.Fatalf("CreateModel() error = %v", err)
 	}
@@ -117,6 +130,15 @@ func TestDeploymentHandlerTemplateLifecycle(t *testing.T) {
 	}
 	if created.GetBaseModel() != model.GetName() || created.GetBaseModelId() != model.GetId() {
 		t.Fatalf("model traceability = %q/%q", created.GetBaseModel(), created.GetBaseModelId())
+	}
+	if implementation.createServingName != model.GetServingName() {
+		t.Fatalf("provider serving name = %q, want %q", implementation.createServingName, model.GetServingName())
+	}
+	if created.GetServingName() != model.GetServingName() {
+		t.Fatalf("serving_name = %q, want %q", created.GetServingName(), model.GetServingName())
+	}
+	if _, err := time.Parse(time.RFC3339, created.GetCreatedAt()); err != nil {
+		t.Fatalf("created_at = %q, want RFC3339 timestamp: %v", created.GetCreatedAt(), err)
 	}
 	if created.GetCreatedBy() != "owner@example.com" {
 		t.Fatalf("created_by = %q", created.GetCreatedBy())

@@ -29,6 +29,7 @@ import (
 	"github.com/vllm-project/aibrix/apps/console/api/config"
 	deploymentstatus "github.com/vllm-project/aibrix/apps/console/api/deployment/status"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -39,6 +40,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -65,8 +67,12 @@ const (
 	maxResourceNameLength = 63
 	// resourceNamePrefix is prepended to every generated resource name.
 	resourceNamePrefix = "aibrix-"
-	// resourceNameUniqueSuffixLength is the length of the random suffix appended to
-	// generated names to keep them collision-free across deployments.
+	// defaultResourceNameBase is used when the user-facing name has no
+	// characters that can be represented in a Kubernetes resource name.
+	defaultResourceNameBase = "deployment"
+	// resourceNameUniqueSuffixLength is the length of the Console deployment ID
+	// prefix appended to generated names so runtime resources remain unique and
+	// visibly traceable to their Console object.
 	resourceNameUniqueSuffixLength = 8
 	// serviceNameSuffix is appended to the generated base name to derive the Service
 	// name. generateResourceName reserves room for it so the derived Service name also
@@ -188,7 +194,7 @@ func (d *kubernetesDeploymentProvider) validateConfig() error {
 	return nil
 }
 
-func (d *kubernetesDeploymentProvider) Create(ctx context.Context, template *pb.ModelDeploymentTemplate, req *pb.CreateDeploymentRequest) (*pb.Deployment, error) {
+func (d *kubernetesDeploymentProvider) Create(ctx context.Context, template *pb.ModelDeploymentTemplate, servingName string, req *pb.CreateDeploymentRequest) (*pb.Deployment, error) {
 	spec := proto.Clone(template.GetSpec()).(*pb.ModelDeploymentTemplateSpec)
 	accelerator := spec.GetAccelerator()
 	overrides := req.GetOverrides()
@@ -238,17 +244,44 @@ func (d *kubernetesDeploymentProvider) Create(ctx context.Context, template *pb.
 		return nil, err
 	}
 
-	resourceName := generateResourceName(req.GetName())
+	consoleDeploymentID := uuid.NewString()
+	resourceName := generateResourceName(req.GetName(), consoleDeploymentID)
+	serviceName := resourceName + serviceNameSuffix
+	servingName = strings.TrimSpace(servingName)
+	if servingName == "" {
+		servingName = spec.GetModelSource().GetUri()
+	}
+	containerPort := defaultContainerPort
+	if d.workload.ContainerPort > 0 {
+		containerPort = d.workload.ContainerPort
+	}
+	consoleLabels, consoleAnnotations := consoleResourceMetadata(consoleDeploymentID, req.GetName())
 	labels := map[string]string{
 		"app.kubernetes.io/name":     "aibrix-console-deployment",
 		"app.kubernetes.io/instance": resourceName,
 		"aibrix.io/template-id":      template.GetId(),
 		"aibrix.io/provider":         d.Kind(),
 		"aibrix.io/model-id":         template.GetModelId(),
+		constants.ModelLabelPort:     strconv.Itoa(int(containerPort)),
+		constants.ModelLabelEngine:   strings.ToLower(spec.GetEngine().GetType()),
+	}
+	for key, value := range consoleLabels {
+		labels[key] = value
+	}
+	annotations := map[string]string{
+		constants.ModelAnnoServiceName: serviceName,
+	}
+	for key, value := range consoleAnnotations {
+		annotations[key] = value
+	}
+	if len(k8svalidation.IsValidLabelValue(servingName)) == 0 {
+		labels[constants.ModelLabelName] = servingName
+	} else {
+		annotations[constants.ModelLabelName] = servingName
 	}
 
 	replicasValue := minReplicas
-	deployment := buildDeployment(resourceName, namespace, labels, d.workload, spec, replicasValue)
+	deployment := buildDeployment(resourceName, namespace, labels, annotations, d.workload, spec, replicasValue)
 	if _, err := clientset.AppsV1().Deployments(namespace).Create(ctx, deployment, metav1.CreateOptions{}); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, status.Errorf(codes.FailedPrecondition, "kubernetes namespace %q does not exist", namespace)
@@ -257,8 +290,7 @@ func (d *kubernetesDeploymentProvider) Create(ctx context.Context, template *pb.
 	}
 	deploymentCreated := true
 
-	serviceName := resourceName + serviceNameSuffix
-	service := buildService(serviceName, namespace, labels, d.workload)
+	service := buildService(serviceName, namespace, labels, consoleAnnotations, d.workload)
 	if _, err := clientset.CoreV1().Services(namespace).Create(ctx, service, metav1.CreateOptions{}); err != nil {
 		createErr := status.Errorf(codes.Internal, "create service %q: %v", serviceName, err)
 		cleanupErr := cleanupCreatedKubernetesResourcesWithTimeout(clientset, namespace, resourceName, deploymentCreated, false, false)
@@ -267,7 +299,7 @@ func (d *kubernetesDeploymentProvider) Create(ctx context.Context, template *pb.
 	serviceCreated := true
 
 	if enableAutoScaling && maxReplicas > minReplicas {
-		hpa := buildHPA(resourceName, namespace, d.workload, minReplicas, maxReplicas)
+		hpa := buildHPA(resourceName, namespace, consoleLabels, consoleAnnotations, d.workload, minReplicas, maxReplicas)
 		if _, err := clientset.AutoscalingV2().HorizontalPodAutoscalers(namespace).Create(ctx, hpa, metav1.CreateOptions{}); err != nil {
 			createErr := status.Errorf(codes.Internal, "create hpa %q: %v", resourceName, err)
 			cleanupErr := cleanupCreatedKubernetesResourcesWithTimeout(clientset, namespace, resourceName, deploymentCreated, serviceCreated, false)
@@ -276,7 +308,7 @@ func (d *kubernetesDeploymentProvider) Create(ctx context.Context, template *pb.
 	}
 
 	return &pb.Deployment{
-		Id:                 uuid.NewString(),
+		Id:                 consoleDeploymentID,
 		Name:               req.GetName(),
 		DeploymentId:       resourceName,
 		Replicas:           replicas,
@@ -381,7 +413,16 @@ func (d *kubernetesDeploymentProvider) Update(ctx context.Context, deployment *p
 	}
 
 	if autoScaling && maxReplicas > minReplicas {
-		desired := buildHPA(resourceName, namespace, d.workload, minReplicas, maxReplicas)
+		consoleLabels, consoleAnnotations := consoleResourceMetadata(deployment.GetId(), deployment.GetName())
+		desired := buildHPA(
+			resourceName,
+			namespace,
+			consoleLabels,
+			consoleAnnotations,
+			d.workload,
+			minReplicas,
+			maxReplicas,
+		)
 		if apierrors.IsNotFound(err) {
 			if _, createErr := hpaClient.Create(ctx, desired, metav1.CreateOptions{}); createErr != nil {
 				return nil, status.Errorf(codes.Internal, "create hpa %q: %v", resourceName, createErr)
@@ -556,13 +597,21 @@ func validateDeploymentSizing(spec *pb.ModelDeploymentTemplateSpec, req *pb.Crea
 	return nil
 }
 
-func buildDeployment(name, namespace string, labels map[string]string, cfg config.KubernetesWorkloadConfig, spec *pb.ModelDeploymentTemplateSpec, replicas int32) *appsv1.Deployment {
+func buildDeployment(name, namespace string, labels, annotations map[string]string, cfg config.KubernetesWorkloadConfig, spec *pb.ModelDeploymentTemplateSpec, replicas int32) *appsv1.Deployment {
 	containerPort := defaultContainerPort
 	if cfg.ContainerPort > 0 {
 		containerPort = cfg.ContainerPort
 	}
 	engine := spec.GetEngine()
 	modelSource := spec.GetModelSource()
+	args := buildContainerArgs(spec)
+	servedModelName := labels[constants.ModelLabelName]
+	if servedModelName == "" {
+		servedModelName = annotations[constants.ModelLabelName]
+	}
+	if servedModelName != "" && !strings.EqualFold(engine.GetType(), "mock") && !containsFlag(args, "--served-model-name") {
+		args = append(args, "--served-model-name", servedModelName)
+	}
 	container := corev1.Container{
 		Name:  "engine",
 		Image: engine.GetImage(),
@@ -570,7 +619,7 @@ func buildDeployment(name, namespace string, labels map[string]string, cfg confi
 			Name:          "http",
 			ContainerPort: containerPort,
 		}},
-		Args: buildContainerArgs(spec),
+		Args: args,
 		Env:  buildContainerEnv(spec),
 	}
 	cpuRequest := resource.MustParse(defaultCPURequest)
@@ -578,10 +627,6 @@ func buildDeployment(name, namespace string, labels map[string]string, cfg confi
 		cpuRequest = resource.MustParse(cfg.CPURequest)
 	}
 	container.Resources.Requests = corev1.ResourceList{corev1.ResourceCPU: cpuRequest}
-	if strings.EqualFold(engine.GetType(), "mock") {
-		container.Command = []string{"/bin/sh", "-c"}
-		container.Args = []string{strings.Join(container.Args, " ")}
-	}
 	if healthPath := engine.GetHealthEndpoint(); healthPath != "" {
 		livenessDelay := engine.GetReadyTimeoutSeconds()
 		if livenessDelay <= 0 {
@@ -630,11 +675,38 @@ func buildDeployment(name, namespace string, labels map[string]string, cfg confi
 		})
 	}
 
+	podLabels := map[string]string{
+		"app.kubernetes.io/instance": name,
+		"app.kubernetes.io/name":     "aibrix-console-deployment",
+	}
+	for _, key := range []string{
+		constants.AppLabelManagedBy,
+		constants.ModelLabelName,
+		constants.ModelLabelPort,
+		constants.ModelLabelEngine,
+	} {
+		if value := labels[key]; value != "" {
+			podLabels[key] = value
+		}
+	}
+	podAnnotations := map[string]string{}
+	for _, key := range []string{
+		constants.ConsoleDeploymentIDAnnotation,
+		constants.ConsoleDeploymentNameAnnotation,
+		constants.ModelLabelName,
+		constants.ModelAnnoServiceName,
+	} {
+		if value := annotations[key]; value != "" {
+			podAnnotations[key] = value
+		}
+	}
+
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			Labels:    labels,
+			Name:        name,
+			Namespace:   namespace,
+			Labels:      labels,
+			Annotations: annotations,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
@@ -645,10 +717,8 @@ func buildDeployment(name, namespace string, labels map[string]string, cfg confi
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app.kubernetes.io/instance": name,
-						"app.kubernetes.io/name":     "aibrix-console-deployment",
-					},
+					Labels:      podLabels,
+					Annotations: podAnnotations,
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{container},
@@ -658,7 +728,11 @@ func buildDeployment(name, namespace string, labels map[string]string, cfg confi
 	}
 }
 
-func buildService(name, namespace string, labels map[string]string, cfg config.KubernetesWorkloadConfig) *corev1.Service {
+func buildService(
+	name, namespace string,
+	labels, annotations map[string]string,
+	cfg config.KubernetesWorkloadConfig,
+) *corev1.Service {
 	servicePort := defaultServicePort
 	containerPort := defaultContainerPort
 	serviceType := corev1.ServiceTypeClusterIP
@@ -676,9 +750,10 @@ func buildService(name, namespace string, labels map[string]string, cfg config.K
 	}
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			Labels:    labels,
+			Name:        name,
+			Namespace:   namespace,
+			Labels:      labels,
+			Annotations: annotations,
 		},
 		Spec: corev1.ServiceSpec{
 			Type: serviceType,
@@ -694,15 +769,22 @@ func buildService(name, namespace string, labels map[string]string, cfg config.K
 	}
 }
 
-func buildHPA(name, namespace string, cfg config.KubernetesWorkloadConfig, minReplicas, maxReplicas int32) *autoscalingv2.HorizontalPodAutoscaler {
+func buildHPA(
+	name, namespace string,
+	labels, annotations map[string]string,
+	cfg config.KubernetesWorkloadConfig,
+	minReplicas, maxReplicas int32,
+) *autoscalingv2.HorizontalPodAutoscaler {
 	targetCPU := defaultHPATargetCPUUtilization
 	if cfg.HPATargetCPUUtilization > 0 {
 		targetCPU = cfg.HPATargetCPUUtilization
 	}
 	return &autoscalingv2.HorizontalPodAutoscaler{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
+			Name:        name,
+			Namespace:   namespace,
+			Labels:      labels,
+			Annotations: annotations,
 		},
 		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
 			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
@@ -808,10 +890,7 @@ func buildContainerArgs(spec *pb.ModelDeploymentTemplateSpec) []string {
 	engine := spec.GetEngine()
 	modelSource := spec.GetModelSource()
 	if strings.EqualFold(engine.GetType(), "mock") {
-		if len(engine.GetServeArgs()) > 0 {
-			return append([]string(nil), engine.GetServeArgs()...)
-		}
-		return []string{"WORKER_VICTIM=1 python app.py || true"}
+		return nil
 	}
 
 	args := make([]string, 0)
@@ -926,15 +1005,15 @@ func containsFlag(args []string, flag string) bool {
 	return false
 }
 
-func generateResourceName(name string) string {
+func generateResourceName(name, deploymentID string) string {
 	base := sanitizeName(name)
 	if base == "" {
-		base = "deployment"
+		base = defaultResourceNameBase
 	}
-	suffix := strings.ToLower(uuid.NewString()[:resourceNameUniqueSuffixLength])
+	suffix := strings.ToLower(deploymentID[:resourceNameUniqueSuffixLength])
 	// The base name is reused to derive related resources by appending a fixed suffix
 	// (e.g. the Service is named resourceName+serviceNameSuffix). Reserve room for the
-	// prefix, the joining dash, the unique suffix, and the longest derived suffix so
+	// prefix, the joining dash, the Console ID suffix, and the longest derived suffix so
 	// those derived names also satisfy maxResourceNameLength. Without reserving the
 	// derived suffix, a base name that fills the limit yields an invalid Service name.
 	maxBaseLength := maxResourceNameLength - len(resourceNamePrefix) - len("-") - resourceNameUniqueSuffixLength - len(serviceNameSuffix)
@@ -942,6 +1021,17 @@ func generateResourceName(name string) string {
 		base = strings.Trim(base[:maxBaseLength], "-")
 	}
 	return fmt.Sprintf("%s%s-%s", resourceNamePrefix, base, suffix)
+}
+
+func consoleResourceMetadata(deploymentID, deploymentName string) (map[string]string, map[string]string) {
+	labels := map[string]string{
+		constants.AppLabelManagedBy: constants.ConsoleManagedByValue,
+	}
+	annotations := map[string]string{
+		constants.ConsoleDeploymentIDAnnotation:   deploymentID,
+		constants.ConsoleDeploymentNameAnnotation: deploymentName,
+	}
+	return labels, annotations
 }
 
 func sanitizeName(value string) string {

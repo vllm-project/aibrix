@@ -67,6 +67,8 @@ message Deployment {
   string template_id = 12;
   string template_version = 13;
   string implementation_kind = 14; // "kubernetes", "stormservice"
+  string serving_name = 15; // model value used for inference requests
+  string created_at = 16; // RFC3339 creation timestamp
 }
 
 message ListDeploymentsRequest {

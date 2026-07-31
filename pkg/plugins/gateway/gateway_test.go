@@ -654,8 +654,8 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 		errContains string
 	}{
 		{
-			name:  "successful validation",
-			model: "test-model",
+			name:  "successful validation for path model name",
+			model: "/models/mock",
 			setupMock: func(gw *MockGatewayClient, gwv1 *MockGatewayV1Client, http *MockHTTPRouteClient) {
 				gw.On("GatewayV1").Return(gwv1)
 				gwv1.On("HTTPRoutes", "aibrix-system").Return(http)
@@ -677,7 +677,7 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 						},
 					},
 				}
-				http.On("Get", mock.Anything, "test-model-router", mock.Anything).Return(route, nil)
+				http.On("Get", mock.Anything, utils.ModelRouterName("/models/mock"), mock.Anything).Return(route, nil)
 			},
 			wantErr: false,
 		},

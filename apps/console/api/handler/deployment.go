@@ -92,12 +92,13 @@ func (h *DeploymentHandler) CreateDeployment(ctx context.Context, req *pb.Create
 		if validateErr := providerImpl.Validate(ctx, template, req); validateErr != nil {
 			return nil, validateErr
 		}
-		deployment, err := providerImpl.Create(ctx, template, req)
+		deployment, err := providerImpl.Create(ctx, template, model.GetServingName(), req)
 		if err != nil {
 			return nil, err
 		}
 		deployment.BaseModel = model.GetName()
 		deployment.BaseModelId = model.GetId()
+		deployment.ServingName = model.GetServingName()
 		deployment.CreatedBy = currentUserEmail(ctx)
 		saved, err := h.store.SaveDeployment(ctx, deployment)
 		if err != nil {

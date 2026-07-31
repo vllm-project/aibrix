@@ -44,6 +44,7 @@ type Deployment struct {
 	TemplateID         string         `gorm:"column:template_id;size:36;not null;default:''"`
 	TemplateVersion    string         `gorm:"column:template_version;size:255;not null;default:''"`
 	ImplementationKind string         `gorm:"column:implementation_kind;size:255;not null;default:''"`
+	ServingName        string         `gorm:"column:serving_name;size:1000;not null;default:''"`
 	ModelSource        string         `gorm:"column:model_source;size:255;not null;default:''"`
 	ModelArtifactURL   string         `gorm:"column:model_artifact_url;size:1000;not null;default:''"`
 	Engine             string         `gorm:"column:engine;size:255;not null;default:''"`
@@ -91,6 +92,7 @@ func (d *Deployment) FromPB(src *pb.Deployment) error {
 	d.TemplateID = src.TemplateId
 	d.TemplateVersion = src.TemplateVersion
 	d.ImplementationKind = src.ImplementationKind
+	d.ServingName = src.ServingName
 	return nil
 }
 
@@ -128,6 +130,10 @@ func parseReplicas(replicasStr string) (int32, int32, error) {
 
 // ToPB converts Deployment to pb.Deployment.
 func (d *Deployment) ToPB() (*pb.Deployment, error) {
+	createdAt := ""
+	if !d.CreatedAt.IsZero() {
+		createdAt = d.CreatedAt.UTC().Format(time.RFC3339)
+	}
 	return &pb.Deployment{
 		Id:                 d.ID,
 		Name:               d.Name,
@@ -143,5 +149,7 @@ func (d *Deployment) ToPB() (*pb.Deployment, error) {
 		TemplateId:         d.TemplateID,
 		TemplateVersion:    d.TemplateVersion,
 		ImplementationKind: d.ImplementationKind,
+		ServingName:        d.ServingName,
+		CreatedAt:          createdAt,
 	}, nil
 }

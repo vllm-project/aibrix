@@ -105,6 +105,16 @@ func (h *PlaygroundHandler) HandleChatCompletion(w http.ResponseWriter, r *http.
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		if contentType := resp.Header.Get("Content-Type"); contentType != "" {
+			w.Header().Set("Content-Type", contentType)
+		}
+		w.WriteHeader(resp.StatusCode)
+		if _, copyErr := io.Copy(w, resp.Body); copyErr != nil {
+			klog.Errorf("Failed to forward gateway error response: %v", copyErr)
+		}
+		return
+	}
 
 	// Set SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")

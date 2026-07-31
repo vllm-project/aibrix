@@ -6,6 +6,7 @@ import {
   useLocation,
   useNavigate,
   useParams,
+  useSearchParams,
 } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
@@ -109,7 +110,13 @@ function TemplateFormRoute({ mode }: { mode: TemplateRouteMode }) {
 
 function PlaygroundRoute() {
   const navigate = useNavigate();
-  return <Playground onNavigateToModel={(id) => navigate(`/models/${id}`)} />;
+  const [searchParams] = useSearchParams();
+  return (
+    <Playground
+      initialDeploymentId={searchParams.get('deployment') ?? undefined}
+      onNavigateToDeployment={(id) => navigate(`/deployments/${id}`)}
+    />
+  );
 }
 
 function DeploymentsRoute() {
@@ -139,6 +146,7 @@ function DeploymentDetailRoute() {
     <DeploymentDetail
       deploymentId={deploymentId ?? null}
       onBack={() => navigate('/deployments')}
+      onOpenPlayground={(deployment) => navigate(`/playground?deployment=${encodeURIComponent(deployment.id)}`)}
     />
   );
 }

@@ -567,7 +567,7 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 			}
 		}
 
-		name := fmt.Sprintf("%s-router", model)
+		name := utils.ModelRouterName(model)
 		httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(defaultAIBrixNamespace).Get(context.Background(), name, metav1.GetOptions{})
 		if err != nil {
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {

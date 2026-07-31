@@ -28,7 +28,7 @@ import (
 type DeploymentProvider interface {
 	Kind() string
 	Validate(ctx context.Context, template *pb.ModelDeploymentTemplate, req *pb.CreateDeploymentRequest) error
-	Create(ctx context.Context, template *pb.ModelDeploymentTemplate, req *pb.CreateDeploymentRequest) (*pb.Deployment, error)
+	Create(ctx context.Context, template *pb.ModelDeploymentTemplate, servingName string, req *pb.CreateDeploymentRequest) (*pb.Deployment, error)
 	Observe(ctx context.Context, deployment *pb.Deployment) (*ObservedStatus, error)
 	Update(ctx context.Context, deployment *pb.Deployment) (*pb.Deployment, error)
 	Delete(ctx context.Context, deployment *pb.Deployment) error

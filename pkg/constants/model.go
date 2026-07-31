@@ -82,6 +82,10 @@ const (
 )
 
 const (
+	// ModelAnnoServiceName identifies the Kubernetes Service backing a model when
+	// its externally served name cannot also be used as a Kubernetes object name.
+	ModelAnnoServiceName = "model.aibrix.ai/service-name"
+
 	// ModelAnnoRouterCustomPath is the anno for add PathPrefixes in httpRoute, split by comma
 	// Example: "model.aibrix.ai/model-router-custom-paths": "/score,/version"
 	ModelAnnoRouterCustomPath = "model.aibrix.ai/model-router-custom-paths"
@@ -91,3 +95,16 @@ const (
 	// See docs/source/designs/model-config-profiles.rst for schema.
 	ModelAnnoConfig = "model.aibrix.ai/config"
 )
+
+// ModelNameFromMetadata returns the served model name from Kubernetes metadata.
+// Labels remain the preferred source, while annotations support names containing
+// characters that Kubernetes label values reject, such as '/'.
+func ModelNameFromMetadata(labels, annotations map[string]string) (string, bool) {
+	if modelName := labels[ModelLabelName]; modelName != "" {
+		return modelName, true
+	}
+	if modelName := annotations[ModelLabelName]; modelName != "" {
+		return modelName, true
+	}
+	return "", false
+}

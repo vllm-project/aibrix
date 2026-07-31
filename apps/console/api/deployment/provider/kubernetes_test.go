@@ -25,6 +25,7 @@ import (
 	"github.com/vllm-project/aibrix/apps/console/api/config"
 	deploymentstatus "github.com/vllm-project/aibrix/apps/console/api/deployment/status"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -126,6 +127,30 @@ func TestBuildContainerArgsUsesSGLangMappings(t *testing.T) {
 	}
 }
 
+func TestBuildDeploymentUsesMockImageCommand(t *testing.T) {
+	spec := &pb.ModelDeploymentTemplateSpec{
+		Engine:      &pb.EngineSpec{Type: "mock", Image: "aibrix/mock-app:latest"},
+		ModelSource: &pb.ModelSourceSpec{Uri: "/models/mock"},
+	}
+
+	deployment := buildDeployment(
+		"mock-deployment",
+		"default",
+		map[string]string{},
+		map[string]string{},
+		config.KubernetesWorkloadConfig{},
+		spec,
+		1,
+	)
+	container := deployment.Spec.Template.Spec.Containers[0]
+	if len(container.Command) != 0 {
+		t.Fatalf("mock container command = %v, want image command", container.Command)
+	}
+	if len(container.Args) != 0 {
+		t.Fatalf("mock container args = %v, want image defaults", container.Args)
+	}
+}
+
 func TestBuildDeploymentIncludesResourcesRequiredByHPA(t *testing.T) {
 	cfg := config.KubernetesWorkloadConfig{
 		CPURequest:    "500m",
@@ -142,7 +167,7 @@ func TestBuildDeploymentIncludesResourcesRequiredByHPA(t *testing.T) {
 		Accelerator: &pb.AcceleratorSpec{Type: "NVIDIA-H100", Count: 2},
 	}
 
-	deployment := buildDeployment("test", "default", map[string]string{}, cfg, spec, 1)
+	deployment := buildDeployment("test", "default", map[string]string{}, nil, cfg, spec, 1)
 	resources := deployment.Spec.Template.Spec.Containers[0].Resources
 	if got := resources.Requests.Cpu().String(); got != "500m" {
 		t.Fatalf("expected CPU request 500m, got %s", got)
@@ -157,6 +182,39 @@ func TestBuildDeploymentIncludesResourcesRequiredByHPA(t *testing.T) {
 	}
 	if got := deployment.Spec.Template.Spec.Containers[0].LivenessProbe.InitialDelaySeconds; got != 900 {
 		t.Fatalf("expected liveness delay 900, got %d", got)
+	}
+}
+
+func TestBuildDeploymentPreservesExplicitServedModelName(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		engineArgs map[string]string
+		serveArgs  []string
+	}{
+		{name: "engine args", engineArgs: map[string]string{"served_model_name": "custom-model"}},
+		{name: "serve args", serveArgs: []string{"--served-model-name", "custom-model"}},
+		{name: "equals serve arg", serveArgs: []string{"--served-model-name=custom-model"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := &pb.ModelDeploymentTemplateSpec{
+				Engine:      &pb.EngineSpec{Type: "vllm", Image: "example/vllm:latest", ServeArgs: tc.serveArgs},
+				ModelSource: &pb.ModelSourceSpec{Uri: "org/model"},
+				EngineArgs:  tc.engineArgs,
+			}
+			labels := map[string]string{constants.ModelLabelName: "generated-service-name"}
+			deployment := buildDeployment("test", "default", labels, nil, config.KubernetesWorkloadConfig{}, spec, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+
+			servedModelFlags := 0
+			for _, arg := range args {
+				if arg == "--served-model-name" || strings.HasPrefix(arg, "--served-model-name=") {
+					servedModelFlags++
+				}
+			}
+			if servedModelFlags != 1 || slices.Contains(args, "generated-service-name") {
+				t.Fatalf("explicit served model name should win, got args %v", args)
+			}
+		})
 	}
 }
 
@@ -183,7 +241,7 @@ func TestCreateBuildsKubernetesResources(t *testing.T) {
 		ModelId: "model-1",
 		Spec: &pb.ModelDeploymentTemplateSpec{
 			Engine:      &pb.EngineSpec{Type: "vllm", Image: "example/vllm:latest"},
-			ModelSource: &pb.ModelSourceSpec{Uri: "org/model"},
+			ModelSource: &pb.ModelSourceSpec{Uri: "/models/mock"},
 			Accelerator: &pb.AcceleratorSpec{Type: "CPU", Count: 1},
 		},
 	}
@@ -199,7 +257,7 @@ func TestCreateBuildsKubernetesResources(t *testing.T) {
 	if err := implementation.Validate(context.Background(), template, req); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
-	created, err := implementation.Create(context.Background(), template, req)
+	created, err := implementation.Create(context.Background(), template, "/models/mock", req)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -209,12 +267,79 @@ func TestCreateBuildsKubernetesResources(t *testing.T) {
 	if created.GetReplicas() != "1[3]" {
 		t.Fatalf("replicas = %q", created.GetReplicas())
 	}
+	if len(created.GetId()) < resourceNameUniqueSuffixLength {
+		t.Fatalf("Console deployment ID %q is too short", created.GetId())
+	}
+	wantResourceSuffix := created.GetId()[:resourceNameUniqueSuffixLength]
+	if !strings.HasSuffix(created.GetDeploymentId(), "-"+wantResourceSuffix) {
+		t.Errorf("runtime resource %q does not use Console deployment ID suffix %q", created.GetDeploymentId(), wantResourceSuffix)
+	}
 
 	deployments, _ := client.AppsV1().Deployments(namespace).List(context.Background(), metav1.ListOptions{})
 	services, _ := client.CoreV1().Services(namespace).List(context.Background(), metav1.ListOptions{})
 	hpas, _ := client.AutoscalingV2().HorizontalPodAutoscalers(namespace).List(context.Background(), metav1.ListOptions{})
 	if len(deployments.Items) != 1 || len(services.Items) != 1 || len(hpas.Items) != 1 {
 		t.Fatalf("created resources: deployments=%d services=%d hpas=%d", len(deployments.Items), len(services.Items), len(hpas.Items))
+	}
+
+	serviceName := created.GetDeploymentId() + serviceNameSuffix
+	if got := services.Items[0].Name; got != serviceName {
+		t.Fatalf("service name = %q, want %q", got, serviceName)
+	}
+	resourceLabels := map[string]map[string]string{
+		defaultResourceNameBase: deployments.Items[0].Labels,
+		"pod template":          deployments.Items[0].Spec.Template.Labels,
+		"service":               services.Items[0].Labels,
+		"hpa":                   hpas.Items[0].Labels,
+	}
+	for location, labels := range resourceLabels {
+		if got := labels["app.kubernetes.io/managed-by"]; got != "aibrix-console" {
+			t.Errorf("%s managed-by label = %q, want aibrix-console", location, got)
+		}
+	}
+	for location, labels := range map[string]map[string]string{
+		defaultResourceNameBase: resourceLabels[defaultResourceNameBase],
+		"pod template":          resourceLabels["pod template"],
+		"service":               resourceLabels["service"],
+	} {
+		if got := labels[constants.ModelLabelName]; got != "" {
+			t.Errorf("%s has invalid Kubernetes model label %q", location, got)
+		}
+		if got := labels[constants.ModelLabelPort]; got != "8000" {
+			t.Errorf("%s model port label = %q, want 8000", location, got)
+		}
+		if got := labels[constants.ModelLabelEngine]; got != "vllm" {
+			t.Errorf("%s model engine label = %q, want vllm", location, got)
+		}
+	}
+	for location, annotations := range map[string]map[string]string{
+		defaultResourceNameBase: deployments.Items[0].Annotations,
+		"pod template":          deployments.Items[0].Spec.Template.Annotations,
+		"service":               services.Items[0].Annotations,
+		"hpa":                   hpas.Items[0].Annotations,
+	} {
+		if got := annotations["console.aibrix.ai/deployment-id"]; got != created.GetId() {
+			t.Errorf("%s Console deployment ID annotation = %q, want %q", location, got, created.GetId())
+		}
+		if got := annotations["console.aibrix.ai/deployment-name"]; got != req.GetName() {
+			t.Errorf("%s Console deployment name annotation = %q, want %q", location, got, req.GetName())
+		}
+		if got := annotations[constants.ModelLabelName]; got != "/models/mock" {
+			if location == defaultResourceNameBase || location == "pod template" {
+				t.Errorf("%s model annotation = %q, want /models/mock", location, got)
+			}
+		}
+		if got := annotations[constants.ModelAnnoServiceName]; got != serviceName {
+			if location == defaultResourceNameBase || location == "pod template" {
+				t.Errorf("%s service annotation = %q, want %q", location, got, serviceName)
+			}
+		}
+	}
+
+	args := deployments.Items[0].Spec.Template.Spec.Containers[0].Args
+	servedModelFlag := slices.Index(args, "--served-model-name")
+	if servedModelFlag < 0 || servedModelFlag+1 >= len(args) || args[servedModelFlag+1] != "/models/mock" {
+		t.Errorf("container args do not serve the Console model /models/mock: %v", args)
 	}
 }
 
@@ -245,13 +370,21 @@ func TestValidateRejectsAutoscalingWithoutReplicaRange(t *testing.T) {
 
 func TestGenerateResourceNameRetainsUniqueSuffixAfterTruncation(t *testing.T) {
 	longName := strings.Repeat("long-name-", 10)
-	first := generateResourceName(longName)
-	second := generateResourceName(longName)
+	firstID := "a9d93c63-681a-4124-9c07-dd4e607bd700"
+	secondID := "b8e82d52-a52d-4f23-8913-4536533748ba"
+	first := generateResourceName(longName, firstID)
+	second := generateResourceName(longName, secondID)
 	if len(first) > 63 || len(second) > 63 {
 		t.Fatalf("resource names exceed DNS label limit: %q, %q", first, second)
 	}
 	if first == second {
 		t.Fatalf("resource names should retain unique suffixes: %q", first)
+	}
+	if got := generateResourceName(longName, firstID); got != first {
+		t.Fatalf("resource name is not stable for Console deployment ID: got %q, want %q", got, first)
+	}
+	if !strings.HasSuffix(first, "-a9d93c63") {
+		t.Fatalf("resource name %q does not use Console deployment ID prefix", first)
 	}
 }
 
@@ -274,7 +407,7 @@ func TestGenerateResourceNameDerivedNamesStayWithinKubernetesLimit(t *testing.T)
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			resourceName := generateResourceName(tc.input)
+			resourceName := generateResourceName(tc.input, "a9d93c63-681a-4124-9c07-dd4e607bd700")
 
 			// The base name is used directly for the Deployment and HPA; it must be valid.
 			if errs := validation.IsDNS1035Label(resourceName); len(errs) > 0 {
@@ -292,7 +425,7 @@ func TestGenerateResourceNameDerivedNamesStayWithinKubernetesLimit(t *testing.T)
 				t.Fatalf("service name %q is not a valid DNS label: %v", serviceName, errs)
 			}
 
-			// Truncation must preserve the random suffix so names stay collision-free.
+			// Truncation must preserve the Console ID suffix so names stay traceable.
 			if !strings.HasPrefix(resourceName, resourceNamePrefix) {
 				t.Fatalf("resource name %q missing prefix %q", resourceName, resourceNamePrefix)
 			}
@@ -346,7 +479,7 @@ func TestCreateWithLongNameProducesValidKubernetesResourceNames(t *testing.T) {
 	if err := implementation.Validate(context.Background(), template, req); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
-	if _, err := implementation.Create(context.Background(), template, req); err != nil {
+	if _, err := implementation.Create(context.Background(), template, "org/model", req); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
 
