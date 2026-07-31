@@ -19,6 +19,7 @@ package benchmark
 import (
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -198,55 +199,163 @@ func singleScenarioBenchmarkKind(summary scenarioSummary) (string, bool) {
 	return kinds[0], true
 }
 
-func generateVLLMBenchFigures(logRoot string) (bool, error) {
+func resolveFigurePython(repoRoot string) (string, bool, error) {
+	for _, name := range []string{"python3", "python"} {
+		pythonPath, err := exec.LookPath(name)
+		if err == nil {
+			return pythonPath, true, nil
+		}
+		if !errors.Is(err, exec.ErrNotFound) {
+			return "", false, fmt.Errorf("failed to find %s on PATH: %w", name, err)
+		}
+	}
+
+	venvPythonPath := filepath.Join(repoRoot, ".venv", "bin", "python")
+	_, err := os.Stat(venvPythonPath)
+	if err == nil {
+		return venvPythonPath, true, nil
+	}
+	if !os.IsNotExist(err) {
+		return "", false, fmt.Errorf("failed to stat python interpreter: %w", err)
+	}
+	return "", false, nil
+}
+
+func isMissingPythonDependency(output string) bool {
+	output = strings.ToLower(output)
+	return strings.Contains(output, "modulenotfounderror") ||
+		strings.Contains(output, "no module named") ||
+		strings.Contains(output, "is required to generate figures")
+}
+
+func TestResolveFigurePythonUsesPathBeforeVenv(t *testing.T) {
+	repoRoot := t.TempDir()
+	binDir := t.TempDir()
+
+	pathPython := filepath.Join(binDir, "python3")
+	if err := os.WriteFile(pathPython, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatalf("failed to write fake PATH python: %v", err)
+	}
+
+	venvBinDir := filepath.Join(repoRoot, ".venv", "bin")
+	if err := os.MkdirAll(venvBinDir, 0755); err != nil {
+		t.Fatalf("failed to create fake venv bin: %v", err)
+	}
+	venvPython := filepath.Join(venvBinDir, "python")
+	if err := os.WriteFile(venvPython, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatalf("failed to write fake venv python: %v", err)
+	}
+
+	t.Setenv("PATH", binDir)
+
+	pythonPath, ok, err := resolveFigurePython(repoRoot)
+	if err != nil {
+		t.Fatalf("resolveFigurePython returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected to resolve python")
+	}
+	if pythonPath != pathPython {
+		t.Fatalf("expected PATH python %s, got %s", pathPython, pythonPath)
+	}
+}
+
+func TestResolveFigurePythonFallsBackToVenv(t *testing.T) {
+	repoRoot := t.TempDir()
+	emptyPathDir := t.TempDir()
+
+	venvBinDir := filepath.Join(repoRoot, ".venv", "bin")
+	if err := os.MkdirAll(venvBinDir, 0755); err != nil {
+		t.Fatalf("failed to create fake venv bin: %v", err)
+	}
+	venvPython := filepath.Join(venvBinDir, "python")
+	if err := os.WriteFile(venvPython, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatalf("failed to write fake venv python: %v", err)
+	}
+
+	t.Setenv("PATH", emptyPathDir)
+
+	pythonPath, ok, err := resolveFigurePython(repoRoot)
+	if err != nil {
+		t.Fatalf("resolveFigurePython returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected to resolve python")
+	}
+	if pythonPath != venvPython {
+		t.Fatalf("expected venv python %s, got %s", venvPython, pythonPath)
+	}
+}
+
+func TestIsMissingPythonDependency(t *testing.T) {
+	outputs := []string{
+		"ModuleNotFoundError: No module named 'matplotlib'",
+		"matplotlib is required to generate figures. Install it with `pip install matplotlib`.",
+	}
+	for _, output := range outputs {
+		if !isMissingPythonDependency(output) {
+			t.Fatalf("expected missing dependency output to be detected: %s", output)
+		}
+	}
+
+	if isMissingPythonDependency("summary.json does not exist") {
+		t.Fatal("unexpected missing dependency detection for non-dependency error")
+	}
+}
+
+func generateVLLMBenchFigures(logRoot string) (bool, string, error) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
-		return false, fmt.Errorf("failed to resolve benchmark package path")
+		return false, "", fmt.Errorf("failed to resolve benchmark package path")
 	}
 
 	packageDir := filepath.Dir(thisFile)
 	repoRoot := filepath.Dir(packageDir)
-	pythonPath := filepath.Join(repoRoot, ".venv", "bin", "python")
 	scriptPath := filepath.Join(packageDir, "plot_summary_vllm_bench.py")
 
-	if _, err := os.Stat(pythonPath); err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("failed to stat python interpreter: %w", err)
+	pythonPath, ok, err := resolveFigurePython(repoRoot)
+	if err != nil {
+		return false, "", err
 	}
-	if _, err := os.Stat(scriptPath); err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
+	if !ok {
+		return false, "python was not found on PATH or in brixbench/.venv/bin/python", nil
+	}
+	if _, statErr := os.Stat(scriptPath); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return false, "plot_summary_vllm_bench.py was not found", nil
 		}
-		return false, fmt.Errorf("failed to stat plot script: %w", err)
+		return false, "", fmt.Errorf("failed to stat plot script: %w", statErr)
 	}
 
 	absLogRoot, err := filepath.Abs(logRoot)
 	if err != nil {
-		return false, fmt.Errorf("failed to resolve log root: %w", err)
+		return false, "", fmt.Errorf("failed to resolve log root: %w", err)
 	}
 
 	cmd := exec.Command(pythonPath, scriptPath, absLogRoot)
 	cmd.Dir = repoRoot
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return false, fmt.Errorf("plot summary failed: %w\n%s", err, strings.TrimSpace(string(output)))
+		outputText := strings.TrimSpace(string(output))
+		if isMissingPythonDependency(outputText) {
+			return false, fmt.Sprintf("plot dependencies are missing: %s", outputText), nil
+		}
+		return false, "", fmt.Errorf("plot summary failed: %w\n%s", err, outputText)
 	}
-	return true, nil
+	return true, "", nil
 }
 
-func generateScenarioFigures(logRoot string, summary scenarioSummary) (bool, error) {
+func generateScenarioFigures(logRoot string, summary scenarioSummary) (bool, string, error) {
 	benchmarkKind, ok := singleScenarioBenchmarkKind(summary)
 	if !ok {
-		return false, nil
+		return false, "benchmark kind was mixed or unavailable", nil
 	}
 
 	switch benchmarkKind {
 	case "vllm-bench":
 		return generateVLLMBenchFigures(logRoot)
 	default:
-		return false, nil
+		return false, fmt.Sprintf("benchmark kind %q is not supported for figure generation", benchmarkKind), nil
 	}
 }
 

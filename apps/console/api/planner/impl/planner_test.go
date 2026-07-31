@@ -417,6 +417,53 @@ func TestHappyPathReachesSubmitted(t *testing.T) {
 	}
 }
 
+func TestGetJobRefreshesInProgressRequestCountsFromMDS(t *testing.T) {
+	const (
+		jobID   = "j-progress"
+		batchID = "batch-j-progress"
+	)
+	var getCalls atomic.Int32
+	freshBatch := &openai.Batch{
+		ID:            batchID,
+		Status:        openai.BatchStatusInProgress,
+		RequestCounts: openai.BatchRequestCounts{Total: 10, Completed: 4},
+	}
+	constructBatchJson(freshBatch)
+	bc := &fakeBatchClient{
+		GetFn: func(context.Context, string) (*openai.Batch, error) {
+			getCalls.Add(1)
+			return freshBatch, nil
+		},
+	}
+	q := &Planner{
+		bc: bc,
+		jobs: map[string]*queuedJob{
+			jobID: {
+				req:      validReq(jobID),
+				status:   plannerapi.JobStatusInProgress,
+				batchID:  batchID,
+				queuedAt: time.Now().UTC(),
+				batch: &openai.Batch{
+					ID:            batchID,
+					Status:        openai.BatchStatusInProgress,
+					RequestCounts: openai.BatchRequestCounts{Total: 10},
+				},
+			},
+		},
+	}
+
+	got, err := q.GetJob(context.Background(), jobID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Batch.RequestCounts.Completed != 4 {
+		t.Fatalf("completed request count = %d, want latest MDS count 4", got.Batch.RequestCounts.Completed)
+	}
+	if getCalls.Load() != 1 {
+		t.Fatalf("GetBatch calls = %d, want 1", getCalls.Load())
+	}
+}
+
 func TestExpiredBatchKeepsExpiredAtAfterSync(t *testing.T) {
 	const expiredAt int64 = 1_800_000_000
 	var getCalls atomic.Int32

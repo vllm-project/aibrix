@@ -27,7 +27,6 @@ import (
 	"github.com/openai/openai-go/v3"
 	"k8s.io/klog/v2"
 
-	"github.com/vllm-project/aibrix/apps/console/api/common"
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
 	pu "github.com/vllm-project/aibrix/apps/console/api/planner/utils"
@@ -417,16 +416,21 @@ func (q *Planner) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, er
 	req := job.req
 	queuedAt := job.queuedAt
 	terminalAt := terminalTime(job)
-	// The running worker will poll MDS and update the batch if it changes.
 	batch := job.batch
 	batchID := job.batchID
 	state := jobStateSnapshot(job)
 	job.mu.RUnlock()
 
-	// This is a case where we need to get deployment details from MDS.
-	if batchID != "" && common.IncludeDeploymentFromCtx(ctx) {
+	// Job detail polls this method more frequently than the planning loop. Read
+	// MDS on every request so request counts and usage reflect current progress;
+	// include_deployment remains an optional query flag carried by ctx.
+	if batchID != "" {
 		if newBatch, err := q.bc.GetBatch(ctx, batchID); err == nil {
-			batch = newBatch
+			// Do not regress a planner-owned terminal state when MDS is briefly
+			// behind (for example, immediately after cancellation or expiry).
+			if !status.IsTerminal() || plannerapi.JobStatus(newBatch.Status).IsTerminal() {
+				batch = newBatch
+			}
 		}
 	}
 

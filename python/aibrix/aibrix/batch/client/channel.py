@@ -96,9 +96,12 @@ class HttpChannel:
                 retryable=True,
             ) from ex
         except httpx.TransportError as ex:
+            detail = f"{ex!r}" + (
+                f" (caused by {ex.__cause__!r})" if ex.__cause__ else ""
+            )
             raise InferenceError(
                 InferenceErrorCode.TRANSPORT_ERROR,
-                f"{self._base_url}: {ex}",
+                f"{self._base_url}: {detail}",
                 retryable=True,
             ) from ex
 

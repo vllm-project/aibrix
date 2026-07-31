@@ -128,14 +128,22 @@ class DiscoveryEndpointSource:
         await self._refresh_if_needed(force=True)
 
     async def report_channel_error(self, channel_id: str, error: Exception) -> None:
+        chained = error.__cause__ or error.__context__
+        logger.warning(
+            "Removing channel due to error",
+            channel_id=channel_id,
+            error=f"{error!r}" + (f" (caused by {chained!r})" if chained else ""),
+            remaining_before=len(self._channels),
+        )  # type: ignore[call-arg]
         await self._remove_channel(channel_id)
         try:
             await self.refresh()
         except Exception as exc:  # noqa: BLE001 - discovery is best-effort here.
+            chained = exc.__cause__ or exc.__context__
             logger.warning(
                 "Failed to refresh discovered endpoints after channel error",
                 channel_id=channel_id,
-                error=str(exc),
+                error=f"{exc!r}" + (f" (caused by {chained!r})" if chained else ""),
             )  # type: ignore[call-arg]
         # A stale discovery snapshot may re-add the failed endpoint during refresh.
         await self._remove_channel(channel_id)
@@ -148,6 +156,11 @@ class DiscoveryEndpointSource:
                 self._channels = [
                     channel for channel in self._channels if channel.id != channel_id
                 ]
+                logger.warning(
+                    "Channel removed from active set",
+                    channel_id=channel_id,
+                    remaining=len(self._channels),
+                )  # type: ignore[call-arg]
 
     async def _refresh_if_needed(self, *, force: bool = False) -> None:
         if not force and not self._should_refresh():
@@ -180,12 +193,32 @@ class DiscoveryEndpointSource:
                 keep[url] = self._by_url.get(url) or HttpChannel(
                     url, timeout=self._timeout
                 )
+            retired_urls: list[str] = []
             for url, channel in self._by_url.items():
                 if url not in keep:
                     self._retired_channels.append(channel)
+                    retired_urls.append(url)
             self._by_url = keep
             self._channels = [keep[url] for url in new_urls]
             self._version = snapshot.version
+            if retired_urls:
+                logger.warning(
+                    "Discovery snapshot changed: endpoints retired",
+                    retired=retired_urls,
+                    active=new_urls,
+                    version=self._version,
+                )  # type: ignore[call-arg]
+            elif new_urls:
+                logger.info(
+                    "Discovery snapshot applied",
+                    endpoint_count=len(new_urls),
+                    version=self._version,
+                )  # type: ignore[call-arg]
+            else:
+                logger.warning(
+                    "Discovery snapshot has no endpoints",
+                    version=self._version,
+                )  # type: ignore[call-arg]
 
     async def aclose(self) -> None:
         for channel in [*self._channels, *self._retired_channels]:

@@ -42,6 +42,19 @@ class ViPEParameters(BaseModel):
     """Parameters controlling pipeline behaviour."""
 
     pipeline: str = Field(default="default", description="Pipeline type to run")
+    input_fps: float | None = Field(
+        default=None,
+        gt=0.0,
+        description="Override the input video FPS. When set, frames are resampled "
+        "to this rate via ffmpeg before processing. "
+        "Leave null to use the native FPS from the video file.",
+    )
+    depth_align_model: str | None = Field(
+        default="adaptive_unidepth-l_svda",
+        description="Depth alignment model name. "
+        'Default is "adaptive_unidepth-l_svda". '
+        "Set to null to disable depth alignment.",
+    )
     visualize: bool = Field(
         default=False, description="Enable visualization output (alias for save_viz)"
     )

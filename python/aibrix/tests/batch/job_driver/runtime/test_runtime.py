@@ -198,6 +198,40 @@ async def test_runtime_base_session_runs_four_phases_in_order():
 
 
 @pytest.mark.asyncio
+async def test_runtime_base_session_supports_legacy_wait_ready_without_wait_mode():
+    calls: list[tuple[str, str]] = []
+
+    class _LegacyRuntime(RuntimeBase):
+        provisions = True
+
+        async def _provision(self, job, job_id):
+            del job, job_id
+            return "handle"
+
+        async def _wait_ready(self, handle):
+            calls.append(("wait_ready", handle))
+
+        async def _connect(self, handle):
+            del handle
+            return Endpoint(source=None, model_name="m")
+
+        def _build_runtime_ref(self, job):
+            del job
+            return None
+
+    runtime = _LegacyRuntime(InfrastructureContext())
+    async with runtime.session(
+        job=_make_test_job(),
+        job_id="j",
+        progress_manager=_FakeProgressManager(),
+        worker_id_generator=_fake_worker_id_generator,
+    ) as endpoint:
+        assert endpoint.model_name == "m"
+
+    assert calls == [("wait_ready", "handle")]
+
+
+@pytest.mark.asyncio
 async def test_runtime_base_session_forwards_provision_wait_mode_on_initial_provision():
     wait_modes: list[str] = []
 

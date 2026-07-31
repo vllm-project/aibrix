@@ -24,6 +24,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+import logging
 from enum import IntEnum
 
 # Default value for the --http-max-input-size CLI flag (64 MiB).
@@ -70,3 +71,21 @@ def validate_positive_double(value: object) -> float:
     if fvalue <= 0:
         raise ValueError(f"value must be greater than 0, got {value!r}")
     return fvalue
+
+
+def make_prefix_formatter(prefix: str) -> logging.Formatter:
+    """Return a Formatter that places *prefix* before the timestamp."""
+    _BASE_FMT = "%(asctime)s %(levelname)s %(filename)s:%(lineno)d %(message)s"
+    return logging.Formatter(f"{prefix} {_BASE_FMT}")
+
+
+def prefix_line(text: str, prefix: str) -> str:
+    """Prepend *prefix* to each line in *text*, preserving tqdm's \\r in-place updates."""
+    if not text or text.isspace():
+        return text
+    if text.startswith("\r") and "\n" not in text:
+        return f"\r{prefix} {text[1:]}"
+    if text.endswith("\r"):
+        return f"\r{prefix} {text[:-1]}"
+    lines = text.splitlines(keepends=True)
+    return "".join(f"{prefix} {line}" if line.strip() else line for line in lines)

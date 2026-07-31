@@ -216,7 +216,8 @@ def main():
     args = parse_args()
     log_level = getattr(logging, args.uvicorn_log_level.upper(), logging.INFO)
     logging.basicConfig(
-        level=log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+        level=log_level,
+        format="%(asctime)s %(levelname)s %(filename)s:%(lineno)d %(message)s",
     )
 
     try:

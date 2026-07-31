@@ -18,6 +18,8 @@ Quick cluster preflight:
 kubectl config current-context
 kubectl auth can-i create pods -n brixbench-adhoc
 kubectl auth can-i delete namespace brixbench-adhoc
+kubectl auth can-i create pods -n brixbench-dynamo
+kubectl auth can-i delete namespace brixbench-dynamo
 kubectl get ns
 ```
 
@@ -32,7 +34,8 @@ Each scenario test case wires together three kinds of inputs:
 
 The runner deploys the selected serving path, waits for readiness, runs the
 benchmark client in the cluster, persists artifacts, and then tears down the
-run-scoped benchmark namespace.
+run-scoped benchmark namespace. AIBrix and direct vLLM runs use
+`brixbench-adhoc`; Dynamo runs use `brixbench-dynamo`.
 
 By default, the runner resets the benchmark namespace before each test case and
 cleans it up after the case finishes. Set `BENCHMARK_RESET_BEFORE_TEST=false`
@@ -177,6 +180,121 @@ The benchmark suite should not check in large generated AIBrix core/dependency
 manifests. Version-based runs should use downloaded release artifacts, and
 source-based runs should use the checked-out workspace and Helm chart path.
 
+For `provider: dynamo`, the runner currently supports:
+
+- `version`: stable Dynamo release tag input only, normalized as `vMAJOR.MINOR.PATCH`
+- `engine.manifest`: user-provided `DynamoGraphDeployment` manifest
+
+`provider: dynamo` rejects `commit`, `localPath`, and `controlplane`.
+
+## Dynamo Deployment
+
+`provider: dynamo` is a release-based path:
+
+1. validate the requested release tag against `https://github.com/ai-dynamo/dynamo.git`
+2. check out `.tmp/dynamo/<version>`
+3. prepare Helm dependency repositories and run `helm dependency build --skip-refresh` for `deploy/helm/charts/platform`
+4. install the Dynamo platform chart into `brixbench-dynamo` with operator namespace restriction enabled and default platform values
+5. apply the user-provided engine manifest, which may include prerequisite resources such as PVCs or PodMonitors
+6. wait for Frontend service, component pods, and OpenAI-compatible model/inference readiness when the model name can be inferred
+
+Dynamo platform is installed with Helm. The serving/runtime image is selected by
+the `DynamoGraphDeployment` manifest, not by the platform chart alone.
+The provider writes minimal default platform values and leaves image
+repositories, workload placement, storage layout, and RDMA settings to the
+scenario's `platform.valuesFile` or `engine.manifest`.
+Dynamo's platform chart configures the operator; for example,
+`dynamo-operator.dynamo.mpiRun.secretName` controls the operator-managed MPI
+SSH key secret name.
+
+Example scenario:
+
+```yaml
+Scenario: dynamo-example
+Tests:
+  - name: dynamo-v1.2.1-custom-graph
+    provider: dynamo
+    version: 1.2.1
+    engine:
+      type: vllm
+      manifest: path/to/your-dynamo-graph-deployment.yaml
+    benchmark: path/to/your-vllm-benchmark.yaml
+```
+
+The checked-in `dynamo-hello-world-vke.yaml` scenario is a VKE validation
+sample. It uses AIBrix CN mirror images, VKE node selectors, RDMA resources,
+local model paths, and PodMonitor resources. Run it only on a matching cluster:
+
+```bash
+go test -v ./benchmark -run TestAIBrixBenchmarkSuite \
+  -scenario testdata/scenarios/dynamo-hello-world-vke.yaml \
+  -count=1 -timeout 90m
+```
+
+### Dynamo Prerequisites On The Current Server
+
+These requirements apply to the machine where `go test`, `git`, `helm`, and
+`kubectl` run. They are separate from cluster-side scheduling or storage
+requirements.
+
+- `git` on `PATH`
+- `helm` 3.x on `PATH`
+- `kubectl` on `PATH`
+- writable workspace cache under `.tmp/dynamo/`
+- writable isolated Helm state under `.tmp/dynamo-helm/`
+- active kubeconfig context that can reach the target cluster
+- outbound HTTPS access to:
+  - `github.com` for Dynamo tag lookup and release checkout
+  - `nats-io.github.io` for the NATS Helm repo
+  - `charts.bitnami.com` for the Bitnami Etcd chart
+  - `ghcr.io` for OCI-hosted dependencies such as `kai-scheduler` and `grove`
+
+Why this matters:
+
+- `helm dependency build` runs on the current server, not inside the cluster
+- if the current server cannot fetch remote Helm repo `index.yaml` files or OCI
+  artifacts, deployment fails before any Dynamo workload is created in the
+  cluster
+
+Quick local preflight:
+
+```bash
+git ls-remote --tags --refs https://github.com/ai-dynamo/dynamo.git refs/tags/v1.2.1
+helm version
+kubectl config current-context
+```
+
+### Dynamo Prerequisites In The Cluster
+
+These requirements apply after the platform chart has been downloaded and Helm
+starts creating resources in Kubernetes.
+
+- permission to create, list, watch, patch, and delete resources in
+  `brixbench-dynamo`
+- permission to create any prerequisite resources included by the user-provided
+  engine manifest, such as model PV/PVCs or PodMonitors
+- permission for the Dynamo operator to create or replicate its MPI SSH Secret
+  when multinode components require it
+- if the engine manifest includes PodMonitors: the
+  `podmonitors.monitoring.coreos.com` CRD must already be installed
+- cluster capacity for Dynamo platform dependencies such as NATS
+- image pull access for platform and engine images referenced by the chart and
+  `engine.manifest`
+- for private registries: configure image pull secrets in `platform.valuesFile`
+  or the user-provided `DynamoGraphDeployment`; brixbench does not create
+  registry credentials.
+- if the engine manifest expects a `models-pvc` backed by local model files:
+  define the PV/PVC in the engine manifest or create the PVC outside brixbench.
+- any cluster-specific networking, RDMA, nodeSelector, and runtime image settings
+  required by the user-provided `DynamoGraphDeployment`
+
+Typical failure split:
+
+- `helm dependency build` fails:
+  - current server to remote Helm repo or OCI registry problem
+- `helm upgrade --install ... --wait` fails:
+  - cluster-side scheduling, storage, image pull, or readiness problem
+
 ## Metrics Export
 
 Metrics export is disabled by default.
@@ -264,10 +382,19 @@ source .venv/bin/activate
 uv pip install matplotlib
 ```
 
+If a run logs that figure generation was skipped because
+`.venv/bin/python` is not available, recreate the local plotting environment:
+
+```bash
+rm -rf .venv
+uv venv .venv
+uv pip install matplotlib
+```
+
 Manual regeneration:
 
 ```bash
-python benchmark/plot_summary_vllm_bench.py \
+.venv/bin/python benchmark/plot_summary_vllm_bench.py \
   benchmark/testdata/logs/<timestamp>-UTC-<scenario>/summary.csv
 ```
 
@@ -278,6 +405,8 @@ If a run stalls before benchmark execution, check pending model pods:
 ```bash
 kubectl get pods -n brixbench-adhoc
 kubectl describe pod -n brixbench-adhoc <pending-pod-name>
+kubectl get pods -n brixbench-dynamo
+kubectl describe pod -n brixbench-dynamo <pending-pod-name>
 ```
 
 Common causes include insufficient GPU capacity or a missing shared AIBrix
