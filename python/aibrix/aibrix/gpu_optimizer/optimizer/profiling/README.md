@@ -1,7 +1,7 @@
 # GPU Profiling
 
 ## About
-GPU performance toolkits. First, use `benchmark.sh` to get throughput, latency, and other SLOs for different length of inputs and outputs. Then `gpu-profile.py` can be used to create GPU profile that matches specified SLOs.
+GPU performance toolkits. First, use `benchmark.sh` to get throughput, latency, and other SLOs for different length of inputs and outputs. Then `gen_profile.py` can be used to create GPU profile that matches specified SLOs.
 
 ## Help on `benchmark.sh`
 First, deploy your model of choice on the GPU you wish to profile. We support [vLLM](https://github.com/vllm-project/vllm/tree/main) like inference engine.
@@ -18,6 +18,6 @@ Run `pip install -r requirements.txt` to install dependency.
 
 Finally, run `benchmark.sh [your deployment name]`, the results will be in the result directory.
 
-## Help on `gpu-profile.py`
+## Help on `gen_profile.py`
 
-Run `python gen-profile.py -h` to see the help message.
+Run `python gen_profile.py -h` to see the help message.
