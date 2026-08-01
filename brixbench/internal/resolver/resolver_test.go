@@ -340,15 +340,22 @@ func TestResolveAcceptsExplicitNullProvider(t *testing.T) {
 	}
 }
 
-func TestResolveRejectsLLMdProvider(t *testing.T) {
+func TestResolveSupportsLLMdProvider(t *testing.T) {
 	tempDir, enginePath, benchmarkPath := createScenarioFixture(t)
 	scenarioPath := filepath.Join(tempDir, "scenario.yaml")
+	valuesPath := filepath.Join(tempDir, "router-values.yaml")
+	if err := os.WriteFile(valuesPath, []byte("router: {}\n"), 0644); err != nil {
+		t.Fatalf("failed to write router values file: %v", err)
+	}
 
 	scenarioYAML := []byte(
 		"Scenario: sample\n" +
 			"Tests:\n" +
 			"  - name: llmd\n" +
 			"    provider: llmd\n" +
+			"    version: 0.8.1\n" +
+			"    controlplane:\n" +
+			"      - " + valuesPath + "\n" +
 			"    engine:\n" +
 			"      type: vllm\n" +
 			"      manifest: " + enginePath + "\n" +
@@ -358,12 +365,15 @@ func TestResolveRejectsLLMdProvider(t *testing.T) {
 		t.Fatalf("failed to write scenario file: %v", err)
 	}
 
-	_, err := Resolve(scenarioPath)
-	if err == nil {
-		t.Fatalf("expected Resolve to reject llmd provider")
+	scenario, err := Resolve(scenarioPath)
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "provider llmd is not implemented") {
-		t.Fatalf("expected llmd not implemented error, got %v", err)
+	if scenario.Tests[0].ProviderName() != "llmd" {
+		t.Fatalf("expected provider llmd, got %s", scenario.Tests[0].ProviderName())
+	}
+	if scenario.Tests[0].Version != "v0.8.1" {
+		t.Fatalf("expected normalized version v0.8.1, got %s", scenario.Tests[0].Version)
 	}
 }
 

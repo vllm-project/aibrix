@@ -17,11 +17,10 @@ limitations under the License.
 package benchmark
 
 import (
-	"context"
 	"errors"
-	"strings"
 	"testing"
 
+	"github.com/vllm-project/aibrix/brixbench/internal/deployers"
 	"github.com/vllm-project/aibrix/brixbench/internal/resolver"
 )
 
@@ -80,6 +79,7 @@ func TestResolveGatewayEndpointFailsWithoutDetectedEndpointOrOverride(t *testing
 func TestShouldRunStormServicePreflightOnlyForAIBrix(t *testing.T) {
 	aibrixProvider := "aibrix"
 	dynamoProvider := "dynamo"
+	llmdProvider := "llmd"
 	for _, tc := range []struct {
 		name string
 		test resolver.Test
@@ -93,6 +93,11 @@ func TestShouldRunStormServicePreflightOnlyForAIBrix(t *testing.T) {
 		{
 			name: "dynamo",
 			test: resolver.Test{Provider: &dynamoProvider},
+			want: false,
+		},
+		{
+			name: "llmd",
+			test: resolver.Test{Provider: &llmdProvider},
 			want: false,
 		},
 		{
@@ -140,29 +145,46 @@ func TestShouldRunDynamoStaleCleanupRequiresResetEnabled(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := shouldRunDynamoStaleCleanup(tc.test, tc.resetBefore); got != tc.want {
 				t.Fatalf("shouldRunDynamoStaleCleanup() = %t, want %t", got, tc.want)
-			}
-		})
-	}
+                        }
+                })
+        }
 }
 
-func TestSetupAndRunDeploymentRejectsLLMdProvider(t *testing.T) {
-	provider := "llmd"
-	testCase := &resolver.Test{
-		Name:     "manual-llmd",
-		Provider: &provider,
-	}
+func TestBenchmarkNamespaceForProvider(t *testing.T) {
+	dynamoProvider := "dynamo"
+	llmdProvider := "llmd"
+	aibrixProvider := "aibrix"
 
-	deployer, gatewayURL, err := setupAndRunDeployment(context.Background(), t, t.TempDir(), testCase, "benchmark", t.TempDir())
-	if err == nil {
-		t.Fatalf("expected llmd not implemented error")
-	}
-	if deployer != nil {
-		t.Fatalf("expected nil deployer, got %T", deployer)
-	}
-	if gatewayURL != "" {
-		t.Fatalf("expected empty gateway URL, got %q", gatewayURL)
-	}
-	if !strings.Contains(err.Error(), "provider llmd is not implemented") {
-		t.Fatalf("expected llmd not implemented error, got %v", err)
+	for _, tc := range []struct {
+		name string
+		test resolver.Test
+		want string
+	}{
+		{
+			name: "dynamo",
+			test: resolver.Test{Provider: &dynamoProvider},
+			want: deployers.DynamoBenchmarkNamespace,
+		},
+		{
+			name: "llmd",
+			test: resolver.Test{Provider: &llmdProvider},
+			want: deployers.LLMdBenchmarkNamespace,
+		},
+		{
+			name: "aibrix",
+			test: resolver.Test{Provider: &aibrixProvider},
+			want: defaultBenchmarkNamespace,
+		},
+		{
+			name: "null provider",
+			test: resolver.Test{},
+			want: defaultBenchmarkNamespace,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := benchmarkNamespaceForTestCase(tc.test); got != tc.want {
+				t.Fatalf("benchmarkNamespaceForTestCase() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
