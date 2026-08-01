@@ -21,7 +21,7 @@ kubectl port-forward [pod_name] 8010:8000 1>/dev/null 2>&1 &
 
 If using CPU based vLLM simulator, sample profiles is included in optimizer/profiling/result.
 
-4. Generate profile based on SLO target using optimizer/profiling/gen_profile.py. If using CPU based vLLM simulator, execute
+4. Generate a profile based on the SLO target using optimizer/profiling/gen_profile.py. If using a CPU-based vLLM simulator, execute
 ```shell
 # Make sure Redis is accessable locally:
 kubectl -n aibrix-system port-forward svc/aibrix-redis-master 6379:6379 1>/dev/null 2>&1 &
