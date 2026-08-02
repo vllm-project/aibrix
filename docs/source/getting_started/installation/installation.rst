@@ -43,7 +43,9 @@ Prerequisites
 .. code:: bash
 
     # Install envoy-gateway, this is not aibrix component. you can also use helm package to install it.
-    helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.2.8 -n envoy-gateway-system --create-namespace --set config.envoyGateway.extensionApis.enableEnvoyPatchPolicy=true
+    helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.2.8 -n envoy-gateway-system \
+    --create-namespace \
+    --set config.envoyGateway.extensionApis.enableEnvoyPatchPolicy=true
 
 .. note::
     If you are experiencing network issues with `docker.io`, you can install the helm chart from the code repo https://github.com/envoyproxy/gateway/tree/main/charts/gateway-helm instead.
