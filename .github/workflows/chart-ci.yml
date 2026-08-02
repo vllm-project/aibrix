@@ -100,7 +100,7 @@ jobs:
 
       - name: Install Envoy Gateway
         run: |
-          helm install eg oci://docker.io/envoyproxy/gateway-helm --version v0.0.0-latest -n envoy-gateway-system --create-namespace --wait
+          helm install eg oci://docker.io/envoyproxy/gateway-helm --version v0.0.0-latest -n envoy-gateway-system --create-namespace --wait --set config.envoyGateway.extensionApis.enableEnvoyPatchPolicy=true
       
       - name: Install Kuberay operator
         run: |
