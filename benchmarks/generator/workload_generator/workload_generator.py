@@ -9,9 +9,13 @@ from pandas import Timedelta
 from typing import List, Dict, Any
 from transformers import PreTrainedTokenizerBase
 from datetime import timedelta
-from generator.workload_generator.sample_request import (load_requests,  
-                            RequestFinder,
-                        )
+from generator.workload_generator.agent_session_generator import (
+    generate_agent_session_workload,
+)
+from generator.workload_generator.sample_request import (
+    load_requests,
+    RequestFinder,
+)
 from generator.workload_generator.distribution import (generate_poisson_dist,
                           generate_token_len_from_percentiles,
                           to_fluctuate_pattern_config,
@@ -418,6 +422,50 @@ def generate_from_mooncake_jsonl(file_path: str,
 
     return grouped_requests
 
+
+def generate_agent_sessions(
+    config_path: str,
+    tokenizer: PreTrainedTokenizerBase,
+    output_file: str = 'output/output',
+    to_jsonl: bool = False,
+) -> List[Dict[str, Any]]:
+    """Generate a synthetic Agent DAG while preserving client compatibility."""
+    if not config_path:
+        raise ValueError("config_path is required for agent traces")
+
+    config = load_json(config_path)
+
+    def prompt_factory(target_tokens: int, session_id: str, node_id: str):
+        prefix = (
+            f"Anonymous synthetic Agent session {session_id}, node {node_id}. "
+            "No production content is included. "
+        )
+        prefix_ids = tokenizer.encode(prefix, add_special_tokens=False)
+        filler_ids = tokenizer.encode(
+            " synthetic agent context", add_special_tokens=False
+        )
+        if not filler_ids:
+            raise ValueError("tokenizer produced no tokens for synthetic filler")
+        token_ids = list(prefix_ids)
+        if len(token_ids) < target_tokens:
+            needed = target_tokens - len(token_ids)
+            repeats = (needed + len(filler_ids) - 1) // len(filler_ids)
+            token_ids.extend(filler_ids * repeats)
+        prompt = tokenizer.decode(
+            token_ids[:target_tokens], skip_special_tokens=True
+        )
+        actual_tokens = len(
+            tokenizer.encode(prompt, add_special_tokens=False)
+        )
+        return prompt, actual_tokens
+
+    workload = generate_agent_session_workload(
+        config, prompt_factory=prompt_factory
+    )
+    workload = make_serializable(workload)
+    save_workload(workload, output_file, use_jsonl=to_jsonl)
+    return workload
+
 def main(args):
     # Generate workloads and pair with prompts
     workload_dict = {}
@@ -506,6 +554,14 @@ def main(args):
                                                               output_file=f"{args.output_dir}/workload",
                                                               to_jsonl=(args.output_format == "jsonl"),
                                                               )
+
+        elif args.trace_type == "agent":
+            generated_workload = generate_agent_sessions(
+                config_path=args.agent_config,
+                tokenizer=tokenizer,
+                output_file=f"{args.output_dir}/workload",
+                to_jsonl=(args.output_format == "jsonl"),
+            )
         
         workload_dict[args.trace_type] = generated_workload
 
@@ -520,8 +576,8 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Workload Generator')
-    parser.add_argument('--trace-type', type=str, required=True, choices=['constant','synthetic', 'stat', 'azure', 'mooncake'],
-                        help='Type of trace consumed. Choose among: synthetic, stat, azure.')
+    parser.add_argument('--trace-type', type=str, required=True, choices=['constant','synthetic', 'stat', 'azure', 'mooncake', 'agent'],
+                        help='Type of trace consumed. Choose among: constant, synthetic, stat, azure, mooncake, agent.')
     parser.add_argument('--tokenizer', type=str, required=False, default="Qwen/Qwen2.5-Coder-7B-Instruct",
                         help='Target model for the workload.')
     parser.add_argument('--prompt-file', type=str, required=False, default = None, help='File containing sampling prompts.')
@@ -566,6 +622,8 @@ if __name__ == '__main__':
     parser.add_argument('--input-scale', type=float, required=False, default=1.0, help='Input length scaling factor.')
     parser.add_argument('--output-scale', type=float, required=False, default=1.0, help='Output length scaling factor.')
     parser.add_argument('--max-concurrent-sessions', type=int, required=False, default=1, help='Maximum number of overlapping sessions.')
+    parser.add_argument('--agent-config', type=str, required=False, default=None,
+                        help='Agent session graph configuration file. Required for agent trace type.')
     
     args = parser.parse_args()
     main(args)

@@ -1,0 +1,52 @@
+## Derived from llm-d v0.8.1 guides/recipes/router/base.values.yaml.
+router:
+  epp:
+    replicas: 1
+    image:
+      registry: aibrix-public-release-cn-beijing.cr.volces.com/aibrix
+      repository: llm-d-router-endpoint-picker
+      tag: v0.9.0
+      pullPolicy: IfNotPresent
+    flags:
+      v: 2
+    pluginsConfigFile: "default-plugins.yaml"
+    resources:
+      requests:
+        cpu: "4"
+        memory: 8Gi
+      limits:
+        memory: 16Gi
+
+  inferencePool:
+    failureMode: "FailOpen"
+
+  modelServers:
+    protocol: http
+
+  proxy:
+    image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/envoyproxy-envoy:distroless-v1.33.2
+    args:
+      - "--service-node"
+      - "envoy-sidecar"
+      - "--log-level"
+      - "warn"
+      - "--concurrency"
+      - "8"
+      - "--drain-strategy"
+      - "immediate"
+      - "--drain-time-s"
+      - "60"
+      - "-c"
+      - "/etc/envoy/envoy.yaml"
+    resources:
+      requests:
+        cpu: "4"
+        memory: 8Gi
+      limits:
+        memory: 16Gi
+
+  tracing:
+    otelExporterEndpoint: "http://localhost:4317"
+    sampling:
+      sampler: "parentbased_traceidratio"
+      samplerArg: "0.1"

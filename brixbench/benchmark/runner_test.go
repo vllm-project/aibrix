@@ -178,8 +178,11 @@ func executeScenarioTestCase(t *testing.T, scenarioName string, scenarioLogRoot 
 }
 
 func benchmarkNamespaceForTestCase(testCase resolver.Test) string {
-	if testCase.ProviderName() == "dynamo" {
+	switch testCase.ProviderName() {
+	case "dynamo":
 		return deployers.DynamoBenchmarkNamespace
+	case "llmd":
+		return deployers.LLMdBenchmarkNamespace
 	}
 	return defaultBenchmarkNamespace
 }
@@ -200,7 +203,8 @@ func setupAndRunDeployment(ctx context.Context, t *testing.T, projectRoot string
 		deployer = deployers.NewAIBrixDeployer()
 		t.Log("Using AIBrix deployer")
 	case "llmd":
-		return nil, "", fmt.Errorf("provider llmd is not implemented")
+		deployer = deployers.NewLLMdDeployer()
+		t.Log("Using LLM-d deployer")
 	case "dynamo":
 		deployer = deployers.NewDynamoDeployer()
 		t.Log("Using Dynamo deployer")

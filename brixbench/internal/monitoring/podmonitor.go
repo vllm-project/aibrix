@@ -167,6 +167,11 @@ func podMonitorManifests(config Config) []string {
 			dynamoFrontendPodMonitor(namespace),
 			dynamoKVBMPodMonitor(namespace),
 		}
+	case provider == "llmd" && engine == "vllm":
+		return []string{
+			llmdVLLMPodMonitor(namespace),
+			llmdEPPPodMonitor(namespace),
+		}
 	default:
 		return nil
 	}
@@ -274,5 +279,37 @@ func dynamoKVBMPodMonitor(namespace string) string {
   selector:
     matchLabels:
       nvidia.com/dynamo-component: VllmDecodeWorker
+`
+}
+
+func llmdVLLMPodMonitor(namespace string) string {
+	return podMonitorHeader("brixbench-llmd-vllm-metrics", namespace) + `  podMetricsEndpoints:
+  - interval: 15s
+    path: /metrics
+    port: modelserver
+    honorLabels: true
+    relabelings:
+    - action: replace
+      replacement: llmd-vllm
+      targetLabel: job
+  selector:
+    matchLabels:
+      llm-d.ai/guide: pd-disaggregation
+`
+}
+
+func llmdEPPPodMonitor(namespace string) string {
+	return podMonitorHeader("brixbench-llmd-epp-metrics", namespace) + `  podMetricsEndpoints:
+  - interval: 15s
+    path: /metrics
+    port: metrics
+    honorLabels: true
+    relabelings:
+    - action: replace
+      replacement: llmd-epp
+      targetLabel: job
+  selector:
+    matchLabels:
+      llm-d-router-gateway: llmd-brixbench-epp
 `
 }

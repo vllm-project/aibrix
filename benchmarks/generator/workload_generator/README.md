@@ -51,6 +51,70 @@ The workload generator currently supports the following workload types: static w
 
 > **Note** All generator invocations should be done under the benchmark home (i.e., `/aibrix/benchmarks/`)
 
+### Generate a session-aware Agent workload
+
+Agent workloads contain related model calls, parallel tool calls, retries,
+waits, and join points. The Agent generator emits model calls in the existing
+`requests` field and structural nodes in an additional `events` field. Existing
+benchmark clients therefore remain compatible and ignore the structural events.
+
+Session, task, node, and state identifiers are deterministic SHA-256-derived
+aliases. The generated trace contains no production prompt or tool content.
+
+```shell
+python -m generator.workload_generator.workload_generator \
+    --trace-type agent \
+    --agent-config generator/workload_generator/config/examples/agent-session-config.json \
+    --tokenizer "Qwen/Qwen2.5-Coder-7B-Instruct" \
+    --output-dir output/agent \
+    --output-format jsonl
+```
+
+The configuration controls the number and arrival rate of sessions, turns per
+session, parallel tool fan-out, tool/model latency, retry probability, context
+growth, and random seed:
+
+```json
+{
+  "num_sessions": 10,
+  "session_arrival_rate_rps": 0.5,
+  "turns_per_session": [2, 5],
+  "parallel_tools": [1, 4],
+  "tool_latency_ms": [100, 1500],
+  "model_latency_ms": [100, 400],
+  "think_time_ms": [250, 3000],
+  "retry_probability": 0.1,
+  "max_tool_retries": 1,
+  "initial_prompt_tokens": 512,
+  "context_growth_tokens": 256,
+  "tool_result_tokens": 128,
+  "output_tokens": 128,
+  "seed": 17
+}
+```
+
+Each timestamp retains the normal replay surface and may also contain graph
+events:
+
+```json
+{
+  "schema_version": "aibrix.agent-session.v1",
+  "timestamp": 350,
+  "requests": [],
+  "events": [
+    {
+      "session_id": "session_...",
+      "task_id": "task_...",
+      "node_id": "node_...",
+      "parent_ids": ["node_..."],
+      "node_type": "tool",
+      "duration_ms": 245,
+      "status": "succeeded"
+    }
+  ]
+}
+```
+
 ### Generate a workload file based with constant target QPS (synthetic patterns)
 
 ```shell
