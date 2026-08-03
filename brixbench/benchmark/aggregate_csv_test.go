@@ -49,6 +49,7 @@ var aggregateCSVHeader = []string{
 	"row_updated_at",
 	"platform",
 	"platform_version",
+	"platform_commit",
 	"engine",
 	"engine_version",
 	"topology",
@@ -134,13 +135,20 @@ func buildAggregateRows(scenario *resolver.Scenario, summary scenarioSummary, ru
 		if platformVersion == "" {
 			platformVersion = strings.TrimSpace(tc.Version)
 		}
+		if platformVersion == "" {
+			// Avoid blank platform_version in dashboards; tip/unknown builds use main.
+			platformVersion = "main"
+		}
+		platformCommit := shortCommit(firstNonEmpty(result.ResolvedCommit, result.Commit, tc.ResolvedCommit, tc.Commit))
 		platformTitle := platform
 		if platform != "" {
 			platformTitle = strings.ToUpper(platform[:1]) + platform[1:]
 		}
-		seriesLabel := fmt.Sprintf("%s + %s + %s", platformTitle, engineVersion, router)
+		// Dashboard series_label must spell out "vllm" so engine version is unambiguous.
+		enginePart := fmt.Sprintf("vllm %s", engineVersion)
+		seriesLabel := fmt.Sprintf("%s + %s + %s", platformTitle, enginePart, router)
 		if platformVersion != "" {
-			seriesLabel = fmt.Sprintf("%s %s + %s + %s", platformTitle, platformVersion, engineVersion, router)
+			seriesLabel = fmt.Sprintf("%s %s + %s + %s", platformTitle, platformVersion, enginePart, router)
 		}
 		rowID := fmt.Sprintf("%s:%s", runID, result.TestCase)
 		row := map[string]string{
@@ -155,6 +163,7 @@ func buildAggregateRows(scenario *resolver.Scenario, summary scenarioSummary, ru
 			"row_updated_at":    now,
 			"platform":          platform,
 			"platform_version":  platformVersion,
+			"platform_commit":   platformCommit,
 			"engine":            fmt.Sprintf("vllm-%s", engineVersion),
 			"engine_version":    engineVersion,
 			"topology":          topology,
@@ -362,6 +371,9 @@ func inferTopology(testcase string) string {
 		if strings.Contains(name, "multinode") {
 			return "4p4d-multinode"
 		}
+		if strings.Contains(name, "singlenode") {
+			return "4p4d-singlenode"
+		}
 		return "4p4d"
 	case strings.Contains(name, "4p8d"):
 		return "4p8d"
@@ -372,6 +384,27 @@ func inferTopology(testcase string) string {
 	default:
 		return ""
 	}
+}
+
+func shortCommit(commit string) string {
+	commit = strings.TrimSpace(commit)
+	if commit == "" {
+		return ""
+	}
+	// Keep already-short refs; truncate full SHAs to 7 hex chars.
+	if len(commit) >= 7 && isHexString(commit) {
+		return commit[:7]
+	}
+	return commit
+}
+
+func isHexString(s string) bool {
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 func inferRouter(testcase, platform string) string {
@@ -487,10 +520,76 @@ func TestInferTopologyAndRouter(t *testing.T) {
 	if got := inferTopology("aibrix-pd-4p4d-multinode-r8"); got != "4p4d-multinode" {
 		t.Fatalf("topology=%q", got)
 	}
+	if got := inferTopology("aibrix-pd-4p4d-singlenode-r8"); got != "4p4d-singlenode" {
+		t.Fatalf("topology=%q", got)
+	}
 	if got := inferRouter("dynamo-v1.2.1-qwen3-8b-round-robin-4p4d-multinode-r8", "dynamo"); got != "round-robin" {
 		t.Fatalf("router=%q", got)
 	}
 	if got := inferRouter("llmd-pd-4p4d-multinode-r8", "llmd"); got != "pd" {
 		t.Fatalf("router=%q", got)
+	}
+}
+
+func TestBuildAggregateRowsSeriesLabelAndCommit(t *testing.T) {
+	aibrix, dynamo, llmd := "aibrix", "dynamo", "llmd"
+	scenario := &resolver.Scenario{
+		Name: "routing-compare-qwen3-8b-4p4d-singlenode",
+		Tests: []resolver.Test{
+			{Name: "aibrix-pd-4p4d-singlenode-r8", Provider: &aibrix, Version: "v0.6.0", ResolvedCommit: "abcdef1234567890"},
+			{Name: "dynamo-v1.2.1-qwen3-8b-round-robin-4p4d-singlenode-r16", Provider: &dynamo, Version: "v1.2.1"},
+			{Name: "llmd-pd-4p4d-singlenode-r8", Provider: &llmd},
+		},
+	}
+	summary := scenarioSummary{Results: []scenarioCaseResult{
+		{TestCase: "aibrix-pd-4p4d-singlenode-r8", Status: "passed", Version: "v0.6.0", ResolvedCommit: "abcdef1234567890", Metrics: map[string]any{"request_rate": 8, "num_prompts": 1000, "mean_ttft_ms": 1.5}},
+		{TestCase: "dynamo-v1.2.1-qwen3-8b-round-robin-4p4d-singlenode-r16", Status: "passed", Version: "v1.2.1", Metrics: map[string]any{"request_rate": 16}},
+		{TestCase: "llmd-pd-4p4d-singlenode-r8", Status: "failed"},
+	}}
+	rows := buildAggregateRows(scenario, summary, "run-1", publishConfig{bucket: "b", prefix: "p"}, time.Now(), time.Now())
+	if len(rows) != 3 {
+		t.Fatalf("rows=%d", len(rows))
+	}
+	if rows[0]["series_label"] != "Aibrix v0.6.0 + vllm 0.22.0 + pd" {
+		t.Fatalf("aibrix series_label=%q", rows[0]["series_label"])
+	}
+	if rows[0]["platform_commit"] != "abcdef1" {
+		t.Fatalf("aibrix platform_commit=%q", rows[0]["platform_commit"])
+	}
+	if rows[0]["topology"] != "4p4d-singlenode" {
+		t.Fatalf("topology=%q", rows[0]["topology"])
+	}
+	if rows[1]["series_label"] != "Dynamo v1.2.1 + vllm 0.21.0 + round-robin" {
+		t.Fatalf("dynamo series_label=%q", rows[1]["series_label"])
+	}
+	if rows[2]["platform_version"] != "main" {
+		t.Fatalf("llmd platform_version=%q want main", rows[2]["platform_version"])
+	}
+	if rows[2]["series_label"] != "Llmd main + vllm 0.23.0 + pd" {
+		t.Fatalf("llmd series_label=%q", rows[2]["series_label"])
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "benchmark_metrics.csv")
+	if err := writeAggregateCSV(path, rows); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readAggregateCSV(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got[0]["platform_commit"]; !ok {
+		t.Fatalf("missing platform_commit column in round-trip")
+	}
+	header := aggregateCSVHeader
+	found := false
+	for _, h := range header {
+		if h == "platform_commit" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("platform_commit missing from aggregateCSVHeader")
 	}
 }
