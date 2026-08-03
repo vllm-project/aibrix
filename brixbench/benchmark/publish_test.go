@@ -46,6 +46,7 @@ type publishMapping struct {
 type tosUploader interface {
 	Upload(localPath, remoteURI string) error
 	Download(remoteURI, localPath string) error
+	Delete(remoteURI string) error
 }
 
 type tosutilUploader struct{}
@@ -66,20 +67,55 @@ func (tosutilUploader) Download(remoteURI, localPath string) error {
 	return nil
 }
 
+func (tosutilUploader) Delete(remoteURI string) error {
+	output, err := exec.Command("tosutil", "rm", remoteURI, "-f").CombinedOutput()
+	if err != nil {
+		// Missing object is fine for first create / race.
+		msg := strings.ToLower(strings.TrimSpace(string(output)))
+		if strings.Contains(msg, "404") || strings.Contains(msg, "not found") || strings.Contains(msg, "nosuchkey") {
+			return nil
+		}
+		return fmt.Errorf("tosutil delete %s: %w: %s", remoteURI, err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
 var newTOSUploader = func() tosUploader { return tosutilUploader{} }
 
 type fakeTOSUploader struct {
 	uploadErr error
 	uploads   []string
+	deletes   []string
+	objects   map[string]string
 }
 
 func (u *fakeTOSUploader) Upload(localPath, remoteURI string) error {
 	u.uploads = append(u.uploads, remoteURI)
+	if u.objects == nil {
+		u.objects = map[string]string{}
+	}
+	body, _ := os.ReadFile(localPath)
+	u.objects[remoteURI] = string(body)
 	return u.uploadErr
 }
 
-func (u *fakeTOSUploader) Download(string, string) error {
-	return os.ErrNotExist
+func (u *fakeTOSUploader) Download(remoteURI, localPath string) error {
+	if u.objects == nil {
+		return os.ErrNotExist
+	}
+	body, ok := u.objects[remoteURI]
+	if !ok {
+		return os.ErrNotExist
+	}
+	return os.WriteFile(localPath, []byte(body), 0o644)
+}
+
+func (u *fakeTOSUploader) Delete(remoteURI string) error {
+	u.deletes = append(u.deletes, remoteURI)
+	if u.objects != nil {
+		delete(u.objects, remoteURI)
+	}
+	return nil
 }
 
 type publishReceipt struct {
@@ -328,7 +364,7 @@ func maybePublishScenarioArtifacts(t *testing.T, scenario *resolver.Scenario, sc
 	if err != nil {
 		return err
 	}
-	return publishFiles(t, config, logRoot, runID, manifest, files)
+	return publishFilesWithAggregate(t, config, logRoot, runID, manifest, files, scenario, summary, startedAt, finishedAt)
 }
 
 func patchScenarioMetadata(logRoot string, startedAt, finishedAt time.Time) error {
@@ -457,6 +493,16 @@ func publishFiles(t *testing.T, config publishConfig, logRoot, runID string, man
 		t.Logf("Warning: artifact publishing finished with status %s: %s", receipt.Status, strings.Join(receipt.Errors, "; "))
 	}
 	return nil
+}
+
+// publishFilesWithAggregate uploads per-run artifacts then upserts the top-level aggregate CSV.
+func publishFilesWithAggregate(t *testing.T, config publishConfig, logRoot, runID string, manifest map[string]any, files []publishMapping, scenario *resolver.Scenario, summary scenarioSummary, startedAt, finishedAt time.Time) error {
+	t.Helper()
+	if err := publishFiles(t, config, logRoot, runID, manifest, files); err != nil {
+		return err
+	}
+	uploader := newTOSUploader()
+	return maybeUpdateAggregateCSV(t, uploader, config, scenario, summary, runID, startedAt, finishedAt)
 }
 
 func uploadWithRetry(uploader tosUploader, localPath, remoteURI string, strict bool, receipt *publishReceipt) error {
