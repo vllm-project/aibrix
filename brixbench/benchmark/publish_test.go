@@ -37,10 +37,11 @@ const (
 )
 
 type publishConfig struct {
-	bucket string
-	prefix string
-	tier   string
-	strict bool
+	bucket          string
+	prefix          string
+	tier            string
+	strict          bool
+	aggregateObject string // optional override; empty uses aggregateCSVObjectName
 }
 
 type publishMapping struct {

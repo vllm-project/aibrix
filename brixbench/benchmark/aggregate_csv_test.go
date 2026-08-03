@@ -88,7 +88,11 @@ var aggregateCSVHeader = []string{
 }
 
 func (c publishConfig) aggregateURI() string {
-	return fmt.Sprintf("tos://%s/%s/aggregates/%s", c.bucket, c.prefix, aggregateCSVObjectName)
+	object := strings.TrimSpace(c.aggregateObject)
+	if object == "" {
+		object = aggregateCSVObjectName
+	}
+	return fmt.Sprintf("tos://%s/%s/aggregates/%s", c.bucket, c.prefix, object)
 }
 
 func maybeUpdateAggregateCSV(t *testing.T, uploader tosUploader, config publishConfig, scenario *resolver.Scenario, summary scenarioSummary, runID string, startedAt, finishedAt time.Time) error {

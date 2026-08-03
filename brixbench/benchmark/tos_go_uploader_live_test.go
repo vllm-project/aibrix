@@ -40,8 +40,10 @@ func TestLiveTOSGoUploaderSmoke(t *testing.T) {
 	config := configuredPublisher()
 	stamp := time.Now().UTC().Format("20060102T150405Z")
 	runID := "smoke-go-api-" + stamp
+	// Isolate smoke CSV from the production aggregate object.
+	config.aggregateObject = "benchmark_metrics_smoke-" + stamp + ".csv"
 	artifactURI := config.runURI(runID) + "smoke.txt"
-	csvURI := fmt.Sprintf("tos://%s/%s/aggregates/benchmark_metrics.csv", config.bucket, config.prefix)
+	csvURI := config.aggregateURI()
 
 	dir := t.TempDir()
 	localArtifact := filepath.Join(dir, "smoke.txt")
@@ -105,12 +107,12 @@ func TestLiveTOSGoUploaderSmoke(t *testing.T) {
 		t.Fatalf("csv missing appended rows:\n%s", text)
 	}
 
-	// Cleanup smoke artifacts and CSV so Step 3 starts clean.
+	// Cleanup only smoke-scoped objects; never delete aggregates/benchmark_metrics.csv.
 	if err := uploader.Delete(artifactURI); err != nil {
 		t.Fatalf("delete artifact: %v", err)
 	}
 	if err := uploader.Delete(csvURI); err != nil {
-		t.Fatalf("delete csv: %v", err)
+		t.Fatalf("delete smoke csv: %v", err)
 	}
 	t.Logf("live TOS smoke OK; cleaned %s and %s", artifactURI, csvURI)
 }
