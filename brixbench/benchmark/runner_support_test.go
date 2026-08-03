@@ -113,7 +113,13 @@ func formatScenarioRunID(now time.Time, scenarioName string) string {
 	if len(slug) > 80 {
 		slug = slug[:72] + "-" + shortStringHash(slug)
 	}
-	return fmt.Sprintf("%s-CST-%s", now.In(benchmarkLocation()).Format("20060102-150405"), slug)
+	localized := now.In(benchmarkLocation())
+	zone, _ := localized.Zone()
+	zone = sanitizePathComponent(zone)
+	if zone == "" {
+		zone = "LOCAL"
+	}
+	return fmt.Sprintf("%s-%s-%s", localized.Format("20060102-150405"), zone, slug)
 }
 
 func shortStringHash(value string) string {
