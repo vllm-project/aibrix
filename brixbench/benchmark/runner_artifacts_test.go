@@ -60,6 +60,8 @@ type scenarioRunMetadata struct {
 	RunID       string `json:"runId"`
 	Scenario    string `json:"scenario"`
 	GeneratedAt string `json:"generatedAt"`
+	StartedAt   string `json:"startedAt,omitempty"`
+	FinishedAt  string `json:"finishedAt,omitempty"`
 }
 
 func collectScenarioMetricKeys(results []scenarioCaseResult) []string {
@@ -406,7 +408,7 @@ func buildScenarioSummary(scenarioName string, resultsByCase []scenarioCaseResul
 	return summary
 }
 
-func writeScenarioArtifacts(logRoot string, runID string, summary scenarioSummary) error {
+func writeScenarioArtifacts(logRoot string, runID string, summary scenarioSummary, startedAt time.Time) error {
 	if err := writeScenarioSummary(logRoot, summary); err != nil {
 		return err
 	}
@@ -414,5 +416,6 @@ func writeScenarioArtifacts(logRoot string, runID string, summary scenarioSummar
 		RunID:       runID,
 		Scenario:    summary.Scenario,
 		GeneratedAt: summary.Generated,
+		StartedAt:   startedAt.In(benchmarkLocation()).Format(time.RFC3339),
 	})
 }

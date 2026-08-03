@@ -33,6 +33,8 @@ var scenarioFlag = flag.String("scenario", "", "Path to the benchmark scenario Y
 var cleanupAfterTestFlag = flag.Bool("benchmark.cleanup", true, "Clean up benchmark resources after each test case")
 var resetBeforeTestFlag = flag.Bool("benchmark.reset", true, "Reset the benchmark namespace before each test case")
 var podMonitoringFlag = flag.Bool("benchmark.pod-monitoring", true, "Create PodMonitor resources for benchmark workloads")
+var publishFlag = flag.Bool("benchmark.publish", false, "Publish benchmark artifacts to TOS")
+var publishStrictFlag = flag.Bool("benchmark.publish-strict", false, "Fail the benchmark test when artifact publishing fails")
 
 func sanitizePathComponent(value string) string {
 	value = strings.TrimSpace(strings.ToLower(value))
@@ -94,8 +96,54 @@ func resolveScenarioPath(t *testing.T) string {
 	return scenarioPath
 }
 
+func benchmarkLocation() *time.Location {
+	timezone := strings.TrimSpace(os.Getenv("BENCHMARK_TIMEZONE"))
+	if timezone == "" {
+		return time.Local
+	}
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		return time.Local
+	}
+	return location
+}
+
 func formatScenarioRunID(now time.Time, scenarioName string) string {
-	return fmt.Sprintf("%s-UTC-%s", now.UTC().Format("20060102-150405"), sanitizePathComponent(scenarioName))
+	slug := sanitizePathComponent(scenarioName)
+	if len(slug) > 80 {
+		slug = slug[:72] + "-" + shortStringHash(slug)
+	}
+	return fmt.Sprintf("%s-CST-%s", now.In(benchmarkLocation()).Format("20060102-150405"), slug)
+}
+
+func shortStringHash(value string) string {
+	var hash uint32 = 2166136261
+	for i := range value {
+		hash ^= uint32(value[i])
+		hash *= 16777619
+	}
+	return fmt.Sprintf("%07x", hash)[:7]
+}
+
+func uniqueScenarioRunID(logsRoot string, now time.Time, scenarioName string) string {
+	base := formatScenarioRunID(now, scenarioName)
+	for suffix := 1; ; suffix++ {
+		runID := base
+		if suffix > 1 {
+			runID = fmt.Sprintf("%s-%d", base, suffix)
+		}
+		if _, err := os.Stat(filepath.Join(logsRoot, runID)); os.IsNotExist(err) {
+			return runID
+		}
+	}
+}
+
+func publishEnabled() bool {
+	return boolEnvOrDefault("BENCHMARK_PUBLISH_RESULTS", *publishFlag)
+}
+
+func publishStrictEnabled() bool {
+	return boolEnvOrDefault("BENCHMARK_PUBLISH_STRICT", *publishStrictFlag)
 }
 
 func caseLogRoot(suiteLogRoot string, testCaseName string) string {

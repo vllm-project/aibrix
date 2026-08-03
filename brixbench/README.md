@@ -356,7 +356,7 @@ kubectl get podmonitor brixbench-aibrix-vllm-metrics -n brixbench-adhoc -o yaml
 Run artifacts are written under:
 
 ```text
-benchmark/testdata/logs/<timestamp>-UTC-<scenario>/
+benchmark/testdata/logs/<timestamp>-CST-<scenario>/
 ```
 
 Typical artifacts include:
@@ -368,6 +368,31 @@ Typical artifacts include:
 - per-case `vllm-bench-client.log`
 - per-case `vllm-bench-pod.yaml`
 - optional comparison figures under `figures/`
+
+## Publishing Official Results
+
+Artifacts remain local by default. Publish a completed scenario to TOS only for
+an official or explicitly shared result:
+
+```bash
+BENCHMARK_PUBLISH_RESULTS=true \
+go test -v ./benchmark -run TestAIBrixBenchmarkSuite \
+  -scenario testdata/scenarios/dynamo-hello-world.yaml -count=1
+```
+
+The default destination is
+`tos://aibrix-artifact-testing/benchmarks/brixbench-results/runs/<run_id>/`.
+Use `BENCHMARK_TOS_BUCKET` and `BENCHMARK_TOS_PREFIX` to override it, and set
+`BENCHMARK_PUBLISH_TIER` to `minimal`, `standard` (default), or `full`.
+
+Publishing uses the locally configured `tosutil` credentials. Do not put TOS
+credentials, kubeconfigs, or secret values in scenario files or the repository.
+Scenario inputs are copied with common secret fields redacted before upload.
+
+An upload failure is a warning by default and leaves the local artifacts
+intact. CI should use `BENCHMARK_PUBLISH_STRICT=true`; it retries failed object
+uploads three times and fails the benchmark test if publishing is incomplete.
+The scenario YAML does not control publishing.
 
 ## Optional Figure Generation
 
