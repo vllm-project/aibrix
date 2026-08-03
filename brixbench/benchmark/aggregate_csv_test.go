@@ -145,60 +145,66 @@ func buildAggregateRows(scenario *resolver.Scenario, summary scenarioSummary, ru
 		if platform != "" {
 			platformTitle = strings.ToUpper(platform[:1]) + platform[1:]
 		}
+		platformLabelVersion := platformVersion
+		if platform == "aibrix" &&
+			strings.TrimSpace(os.Getenv("BENCHMARK_GATEWAY_COMMIT")) != "" &&
+			platformCommit != "" {
+			platformLabelVersion += "@" + platformCommit
+		}
 		// Dashboard series_label must spell out "vllm" so engine version is unambiguous.
 		enginePart := fmt.Sprintf("vllm %s", engineVersion)
 		seriesLabel := fmt.Sprintf("%s + %s + %s", platformTitle, enginePart, router)
-		if platformVersion != "" {
-			seriesLabel = fmt.Sprintf("%s %s + %s + %s", platformTitle, platformVersion, enginePart, router)
+		if platformLabelVersion != "" {
+			seriesLabel = fmt.Sprintf("%s %s + %s + %s", platformTitle, platformLabelVersion, enginePart, router)
 		}
 		rowID := fmt.Sprintf("%s:%s", runID, result.TestCase)
 		row := map[string]string{
-			"schema_version":    aggregateCSVSchemaVersion,
-			"row_id":            rowID,
-			"run_id":            runID,
-			"testcase":          result.TestCase,
-			"category":          scenarioCategory(scenario.Name),
-			"status":            result.Status,
-			"started_at":        start,
-			"finished_at":       finish,
-			"row_updated_at":    now,
-			"platform":          platform,
-			"platform_version":  platformVersion,
-			"platform_commit":   platformCommit,
-			"engine":            fmt.Sprintf("vllm-%s", engineVersion),
-			"engine_version":    engineVersion,
-			"topology":          topology,
-			"router":            router,
-			"model":             model,
-			"workload":          "prefix_repetition",
-			"scenario":          scenario.Name,
-			"benchmark_kind":    firstNonEmpty(result.BenchmarkKind, tc.BenchmarkKind, "vllm-bench"),
-			"rate":              metricString(metrics, "request_rate"),
-			"concurrency":       metricString(metrics, "max_concurrency"),
-			"num_prefixes":      "",
-			"prefix_len":        "",
-			"suffix_len":        "",
-			"output_len":        "",
-			"num_prompts":       metricString(metrics, "num_prompts"),
-			"series_label":      seriesLabel,
-			"sort_key":          platformSortKey(platform, platformVersion),
-			"completed":         metricString(metrics, "completed"),
-			"failed":            metricString(metrics, "failed"),
-			"duration_s":        metricString(metrics, "duration"),
-			"ttft_mean_ms":      metricString(metrics, "mean_ttft_ms"),
-			"ttft_p50_ms":       metricString(metrics, "p50_ttft_ms"),
-			"ttft_p90_ms":       metricString(metrics, "p90_ttft_ms"),
-			"ttft_p99_ms":       metricString(metrics, "p99_ttft_ms"),
-			"tpot_mean_ms":      metricString(metrics, "mean_tpot_ms"),
-			"tpot_p99_ms":       metricString(metrics, "p99_tpot_ms"),
-			"itl_mean_ms":       metricString(metrics, "mean_itl_ms"),
-			"e2el_mean_ms":      metricString(metrics, "mean_e2el_ms"),
-			"e2el_p99_ms":       metricString(metrics, "p99_e2el_ms"),
+			"schema_version":     aggregateCSVSchemaVersion,
+			"row_id":             rowID,
+			"run_id":             runID,
+			"testcase":           result.TestCase,
+			"category":           scenarioCategory(scenario.Name),
+			"status":             result.Status,
+			"started_at":         start,
+			"finished_at":        finish,
+			"row_updated_at":     now,
+			"platform":           platform,
+			"platform_version":   platformVersion,
+			"platform_commit":    platformCommit,
+			"engine":             fmt.Sprintf("vllm-%s", engineVersion),
+			"engine_version":     engineVersion,
+			"topology":           topology,
+			"router":             router,
+			"model":              model,
+			"workload":           "prefix_repetition",
+			"scenario":           scenario.Name,
+			"benchmark_kind":     firstNonEmpty(result.BenchmarkKind, tc.BenchmarkKind, "vllm-bench"),
+			"rate":               metricString(metrics, "request_rate"),
+			"concurrency":        metricString(metrics, "max_concurrency"),
+			"num_prefixes":       "",
+			"prefix_len":         "",
+			"suffix_len":         "",
+			"output_len":         "",
+			"num_prompts":        metricString(metrics, "num_prompts"),
+			"series_label":       seriesLabel,
+			"sort_key":           platformSortKey(platform, platformVersion),
+			"completed":          metricString(metrics, "completed"),
+			"failed":             metricString(metrics, "failed"),
+			"duration_s":         metricString(metrics, "duration"),
+			"ttft_mean_ms":       metricString(metrics, "mean_ttft_ms"),
+			"ttft_p50_ms":        metricString(metrics, "p50_ttft_ms"),
+			"ttft_p90_ms":        metricString(metrics, "p90_ttft_ms"),
+			"ttft_p99_ms":        metricString(metrics, "p99_ttft_ms"),
+			"tpot_mean_ms":       metricString(metrics, "mean_tpot_ms"),
+			"tpot_p99_ms":        metricString(metrics, "p99_tpot_ms"),
+			"itl_mean_ms":        metricString(metrics, "mean_itl_ms"),
+			"e2el_mean_ms":       metricString(metrics, "mean_e2el_ms"),
+			"e2el_p99_ms":        metricString(metrics, "p99_e2el_ms"),
 			"request_throughput": metricString(metrics, "request_throughput"),
-			"goodput":           firstNonEmpty(metricString(metrics, "request_goodput"), metricString(metrics, "goodput")),
-			"output_throughput": metricString(metrics, "output_throughput"),
-			"source_tos_uri":    config.runURI(runID) + "cases/" + sanitizePathComponent(result.TestCase) + "/results/bench_results.json",
-			"note":              strings.TrimSpace(result.Error),
+			"goodput":            firstNonEmpty(metricString(metrics, "request_goodput"), metricString(metrics, "goodput")),
+			"output_throughput":  metricString(metrics, "output_throughput"),
+			"source_tos_uri":     config.runURI(runID) + "cases/" + sanitizePathComponent(result.TestCase) + "/results/bench_results.json",
+			"note":               strings.TrimSpace(result.Error),
 		}
 		rows = append(rows, row)
 	}
@@ -628,5 +634,49 @@ func TestBuildAggregateRowsSeriesLabelAndCommit(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("platform_commit missing from aggregateCSVHeader")
+	}
+}
+
+func TestBuildAggregateRowsLabelsPrebuiltGatewayCommit(t *testing.T) {
+	const gatewayCommit = "9aa8b21ef6053dc19dde76f71552247b82f93630"
+	t.Setenv("BENCHMARK_GATEWAY_COMMIT", gatewayCommit)
+
+	aibrix := "aibrix"
+	scenario := &resolver.Scenario{
+		Name: "aibrix-routing-qwen3-8b-4p4d-multinode",
+		Tests: []resolver.Test{{
+			Name:     "aibrix-pd-4p4d-multinode-r8",
+			Provider: &aibrix,
+			Version:  "v0.6.0",
+		}},
+	}
+	summary := scenarioSummary{Results: []scenarioCaseResult{{
+		TestCase:       "aibrix-pd-4p4d-multinode-r8",
+		Status:         "passed",
+		Version:        "v0.6.0",
+		ResolvedCommit: gatewayCommit,
+		Metrics:        map[string]any{"request_rate": 8},
+	}}}
+
+	rows := buildAggregateRows(
+		scenario,
+		summary,
+		"run-prebuilt",
+		publishConfig{bucket: "b", prefix: "p"},
+		time.Now(),
+		time.Now(),
+	)
+	if len(rows) != 1 {
+		t.Fatalf("rows=%d", len(rows))
+	}
+	if rows[0]["platform_version"] != "v0.6.0" {
+		t.Fatalf("platform_version=%q", rows[0]["platform_version"])
+	}
+	if rows[0]["platform_commit"] != "9aa8b21" {
+		t.Fatalf("platform_commit=%q", rows[0]["platform_commit"])
+	}
+	const wantLabel = "Aibrix v0.6.0@9aa8b21 + vllm 0.22.0 + pd"
+	if rows[0]["series_label"] != wantLabel {
+		t.Fatalf("series_label=%q, want %q", rows[0]["series_label"], wantLabel)
 	}
 }
