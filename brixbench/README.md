@@ -356,8 +356,14 @@ kubectl get podmonitor brixbench-aibrix-vllm-metrics -n brixbench-adhoc -o yaml
 Run artifacts are written under:
 
 ```text
-benchmark/testdata/logs/<timestamp>-CST-<scenario>/
+benchmark/testdata/logs/<timestamp>-<zone>-<scenario>/
 ```
+
+The `<zone>` token comes from `BENCHMARK_TIMEZONE` (IANA name such as
+`Asia/Shanghai` or `UTC`). When unset, the runner uses the host local
+timezone. The abbreviation is sanitized for path safety (for example
+`Asia/Shanghai` → `cst`). The same location also shapes the scenario
+`run_id` used for local logs and TOS publish paths.
 
 Typical artifacts include:
 
@@ -368,6 +374,26 @@ Typical artifacts include:
 - per-case `vllm-bench-client.log`
 - per-case `vllm-bench-pod.yaml`
 - optional comparison figures under `figures/`
+
+## Prebuilt Gateway Image
+
+By default, AIBrix scenarios that resolve a workspace commit build the
+gateway image locally. To skip that build in CI (or when an image is
+already published), set:
+
+```bash
+export BENCHMARK_GATEWAY_IMAGE=registry.example/aibrix/gateway:my-tag
+# optional: full 40-char commit SHA recorded as the run's resolved commit
+# and written to aggregate CSV platform_commit / series_label
+export BENCHMARK_GATEWAY_COMMIT=01ce8b3a1b2c3d4e5f678901234567890abcdef0
+
+go test -v ./benchmark -run TestAIBrixBenchmarkSuite \
+  -scenario testdata/scenarios/<scenario>.yaml -count=1
+```
+
+`BENCHMARK_GATEWAY_COMMIT` requires `BENCHMARK_GATEWAY_IMAGE`. When only
+the image is set, the runner still uses the prebuilt image but keeps the
+commit resolved from the scenario (`version` / `commit` / workspace).
 
 ## Publishing Official Results
 
