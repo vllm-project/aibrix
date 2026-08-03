@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
@@ -747,6 +748,256 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 		validation.MarkPodsReady(ctx, k8sClient, ns.Name, constants.PodSetNameLabelKey, replacementPodSet.Name)
 		waitForPodSetReady(ctx, k8sClient, replacementPodSet)
 	})
+
+	ginkgo.It("injects default preferred topology affinity for pod and podset roles", func() {
+		int32Ptr := func(i int32) *int32 { return &i }
+		podGroupSize := int32(2)
+
+		directRole := orchestrationapi.RoleSpec{
+			Name:     "direct",
+			Replicas: int32Ptr(1),
+			Template: validation.MakePodTemplate("direct:v1"),
+		}
+		podSetRole := orchestrationapi.RoleSpec{
+			Name:         "group",
+			Replicas:     int32Ptr(1),
+			PodGroupSize: &podGroupSize,
+			Template:     validation.MakePodTemplate("group:v1"),
+		}
+
+		rs := wrapper.MakeRoleSet("topology-policy-test").
+			Namespace(ns.Name).
+			Label(constants.StormServiceNameLabelKey, "test-stormservice").
+			Annotation(constants.RoleSetIndexAnnotationKey, "0").
+			UpdateStrategy(orchestrationapi.ParallelRoleSetUpdateStrategyType).
+			WithRoleAdvanced(directRole).
+			WithRoleAdvanced(podSetRole).
+			Obj()
+		rs.Spec.TopologyPolicy = &orchestrationapi.TopologyPolicy{
+			Scope: orchestrationapi.TopologyRoleSetScope,
+			Key:   "kubernetes.io/hostname",
+		}
+
+		gomega.Expect(k8sClient.Create(ctx, rs)).To(gomega.Succeed())
+
+		var directPod corev1.Pod
+		gomega.Eventually(func(g gomega.Gomega) {
+			podList := &corev1.PodList{}
+			g.Expect(k8sClient.List(ctx, podList,
+				client.InNamespace(ns.Name),
+				client.MatchingLabels{
+					constants.RoleSetNameLabelKey: rs.Name,
+					constants.RoleNameLabelKey:    directRole.Name,
+				},
+			)).To(gomega.Succeed())
+			g.Expect(podList.Items).To(gomega.HaveLen(1))
+			directPod = podList.Items[0]
+		}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
+
+		var podSet orchestrationapi.PodSet
+		gomega.Eventually(func(g gomega.Gomega) {
+			podSetList := &orchestrationapi.PodSetList{}
+			g.Expect(k8sClient.List(ctx, podSetList,
+				client.InNamespace(ns.Name),
+				client.MatchingLabels{
+					constants.RoleSetNameLabelKey: rs.Name,
+					constants.RoleNameLabelKey:    podSetRole.Name,
+				},
+			)).To(gomega.Succeed())
+			g.Expect(podSetList.Items).To(gomega.HaveLen(1))
+			podSet = podSetList.Items[0]
+		}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
+
+		expectedLabels := map[string]string{
+			constants.StormServiceNameLabelKey: "test-stormservice",
+			constants.RoleSetNameLabelKey:      rs.Name,
+		}
+		assertPreferredTopologyAffinity(&directPod.Spec, "kubernetes.io/hostname", expectedLabels)
+		assertPreferredTopologyAffinity(&podSet.Spec.Template.Spec, "kubernetes.io/hostname", expectedLabels)
+	})
+
+	ginkgo.It("injects required topology affinity when Required mode is selected", func() {
+		int32Ptr := func(i int32) *int32 { return &i }
+
+		role := orchestrationapi.RoleSpec{
+			Name:     "direct",
+			Replicas: int32Ptr(1),
+			Template: validation.MakePodTemplate("direct:v1"),
+		}
+
+		rs := wrapper.MakeRoleSet("topology-required-test").
+			Namespace(ns.Name).
+			Label(constants.StormServiceNameLabelKey, "test-stormservice").
+			Annotation(constants.RoleSetIndexAnnotationKey, "0").
+			UpdateStrategy(orchestrationapi.ParallelRoleSetUpdateStrategyType).
+			WithRoleAdvanced(role).
+			Obj()
+		rs.Spec.TopologyPolicy = &orchestrationapi.TopologyPolicy{
+			Scope: orchestrationapi.TopologyRoleSetScope,
+			Mode:  orchestrationapi.TopologyPolicyRequired,
+			Key:   "topology.kubernetes.io/zone",
+		}
+
+		gomega.Expect(k8sClient.Create(ctx, rs)).To(gomega.Succeed())
+
+		var pod corev1.Pod
+		gomega.Eventually(func(g gomega.Gomega) {
+			podList := &corev1.PodList{}
+			g.Expect(k8sClient.List(ctx, podList,
+				client.InNamespace(ns.Name),
+				client.MatchingLabels{
+					constants.RoleSetNameLabelKey: rs.Name,
+					constants.RoleNameLabelKey:    role.Name,
+				},
+			)).To(gomega.Succeed())
+			g.Expect(podList.Items).To(gomega.HaveLen(1))
+			pod = podList.Items[0]
+		}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
+
+		assertRequiredTopologyAffinity(&pod.Spec, "topology.kubernetes.io/zone", map[string]string{
+			constants.StormServiceNameLabelKey: "test-stormservice",
+			constants.RoleSetNameLabelKey:      rs.Name,
+		})
+	})
+
+	ginkgo.It("injects topology affinity for StormService and Role scopes", func() {
+		int32Ptr := func(i int32) *int32 { return &i }
+
+		for _, tc := range []struct {
+			name           string
+			scope          orchestrationapi.TopologyScope
+			expectedLabels map[string]string
+		}{
+			{
+				name:  "stormservice",
+				scope: orchestrationapi.TopologyStormServiceScope,
+				expectedLabels: map[string]string{
+					constants.StormServiceNameLabelKey: "test-stormservice",
+				},
+			},
+			{
+				name:  "role",
+				scope: orchestrationapi.TopologyRoleScope,
+				expectedLabels: map[string]string{
+					constants.StormServiceNameLabelKey: "test-stormservice",
+					constants.RoleNameLabelKey:         "direct",
+				},
+			},
+		} {
+			role := orchestrationapi.RoleSpec{
+				Name:     "direct",
+				Replicas: int32Ptr(1),
+				Template: validation.MakePodTemplate(tc.name + ":v1"),
+			}
+
+			rs := wrapper.MakeRoleSet("topology-scope-"+tc.name).
+				Namespace(ns.Name).
+				Label(constants.StormServiceNameLabelKey, "test-stormservice").
+				Annotation(constants.RoleSetIndexAnnotationKey, "0").
+				UpdateStrategy(orchestrationapi.ParallelRoleSetUpdateStrategyType).
+				WithRoleAdvanced(role).
+				Obj()
+			rs.Spec.TopologyPolicy = &orchestrationapi.TopologyPolicy{
+				Scope: tc.scope,
+				Key:   "kubernetes.io/hostname",
+			}
+
+			gomega.Expect(k8sClient.Create(ctx, rs)).To(gomega.Succeed())
+
+			var pod corev1.Pod
+			gomega.Eventually(func(g gomega.Gomega) {
+				podList := &corev1.PodList{}
+				g.Expect(k8sClient.List(ctx, podList,
+					client.InNamespace(ns.Name),
+					client.MatchingLabels{
+						constants.RoleSetNameLabelKey: rs.Name,
+						constants.RoleNameLabelKey:    role.Name,
+					},
+				)).To(gomega.Succeed())
+				g.Expect(podList.Items).To(gomega.HaveLen(1))
+				pod = podList.Items[0]
+			}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
+
+			assertPreferredTopologyAffinity(&pod.Spec, "kubernetes.io/hostname", tc.expectedLabels)
+		}
+	})
+
+	ginkgo.It("applies topology policy updates only to newly created pods", func() {
+		int32Ptr := func(i int32) *int32 { return &i }
+
+		role := orchestrationapi.RoleSpec{
+			Name:     "direct",
+			Replicas: int32Ptr(1),
+			Template: validation.MakePodTemplate("direct:v1"),
+		}
+
+		rs := wrapper.MakeRoleSet("topology-update-test").
+			Namespace(ns.Name).
+			Label(constants.StormServiceNameLabelKey, "test-stormservice").
+			Annotation(constants.RoleSetIndexAnnotationKey, "0").
+			UpdateStrategy(orchestrationapi.ParallelRoleSetUpdateStrategyType).
+			WithRoleAdvanced(role).
+			Obj()
+
+		gomega.Expect(k8sClient.Create(ctx, rs)).To(gomega.Succeed())
+
+		pods := waitForTopologyRolePods(ns.Name, rs.Name, role.Name, 1)
+		none, preferred, required := countPodsByTopologyAffinity(pods, "kubernetes.io/hostname", map[string]string{
+			constants.StormServiceNameLabelKey: "test-stormservice",
+			constants.RoleSetNameLabelKey:      rs.Name,
+		})
+		gomega.Expect(none).To(gomega.Equal(1))
+		gomega.Expect(preferred).To(gomega.Equal(0))
+		gomega.Expect(required).To(gomega.Equal(0))
+
+		latest := &orchestrationapi.RoleSet{}
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest)).To(gomega.Succeed())
+		latest.Spec.TopologyPolicy = &orchestrationapi.TopologyPolicy{
+			Scope: orchestrationapi.TopologyRoleSetScope,
+			Key:   "kubernetes.io/hostname",
+		}
+		gomega.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+
+		pods = waitForTopologyRolePods(ns.Name, rs.Name, role.Name, 1)
+		none, preferred, required = countPodsByTopologyAffinity(pods, "kubernetes.io/hostname", map[string]string{
+			constants.StormServiceNameLabelKey: "test-stormservice",
+			constants.RoleSetNameLabelKey:      rs.Name,
+		})
+		gomega.Expect(none).To(gomega.Equal(1))
+		gomega.Expect(preferred).To(gomega.Equal(0))
+		gomega.Expect(required).To(gomega.Equal(0))
+
+		pods = deletePodAndWaitForReplacement(ns.Name, rs.Name, role.Name, pods[0])
+		none, preferred, required = countPodsByTopologyAffinity(pods, "kubernetes.io/hostname", map[string]string{
+			constants.StormServiceNameLabelKey: "test-stormservice",
+			constants.RoleSetNameLabelKey:      rs.Name,
+		})
+		gomega.Expect(none).To(gomega.Equal(0))
+		gomega.Expect(preferred).To(gomega.Equal(1))
+		gomega.Expect(required).To(gomega.Equal(0))
+
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest)).To(gomega.Succeed())
+		latest.Spec.TopologyPolicy.Mode = orchestrationapi.TopologyPolicyRequired
+		gomega.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+
+		pods = waitForTopologyRolePods(ns.Name, rs.Name, role.Name, 1)
+		none, preferred, required = countPodsByTopologyAffinity(pods, "kubernetes.io/hostname", map[string]string{
+			constants.StormServiceNameLabelKey: "test-stormservice",
+			constants.RoleSetNameLabelKey:      rs.Name,
+		})
+		gomega.Expect(none).To(gomega.Equal(0))
+		gomega.Expect(preferred).To(gomega.Equal(1))
+		gomega.Expect(required).To(gomega.Equal(0))
+
+		pods = deletePodAndWaitForReplacement(ns.Name, rs.Name, role.Name, pods[0])
+		none, preferred, required = countPodsByTopologyAffinity(pods, "kubernetes.io/hostname", map[string]string{
+			constants.StormServiceNameLabelKey: "test-stormservice",
+			constants.RoleSetNameLabelKey:      rs.Name,
+		})
+		gomega.Expect(none).To(gomega.Equal(0))
+		gomega.Expect(preferred).To(gomega.Equal(0))
+		gomega.Expect(required).To(gomega.Equal(1))
+	})
 })
 
 func waitForSingleRolePod(
@@ -923,4 +1174,112 @@ func findPodCondition(pod *corev1.Pod, conditionType corev1.PodConditionType) *c
 		}
 	}
 	return nil
+}
+
+func waitForTopologyRolePods(namespace, roleSetName, roleName string, expected int) []corev1.Pod {
+	var pods []corev1.Pod
+	gomega.Eventually(func(g gomega.Gomega) {
+		podList := &corev1.PodList{}
+		g.Expect(k8sClient.List(ctx, podList,
+			client.InNamespace(namespace),
+			client.MatchingLabels{
+				constants.RoleSetNameLabelKey: roleSetName,
+				constants.RoleNameLabelKey:    roleName,
+			},
+		)).To(gomega.Succeed())
+		g.Expect(podList.Items).To(gomega.HaveLen(expected))
+		pods = podList.Items
+	}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
+	return pods
+}
+
+func deletePodAndWaitForReplacement(namespace, roleSetName, roleName string, oldPod corev1.Pod) []corev1.Pod {
+	gomega.Expect(k8sClient.Delete(ctx, &oldPod, client.GracePeriodSeconds(0))).To(gomega.Succeed())
+
+	var pods []corev1.Pod
+	gomega.Eventually(func(g gomega.Gomega) {
+		podList := &corev1.PodList{}
+		g.Expect(k8sClient.List(ctx, podList,
+			client.InNamespace(namespace),
+			client.MatchingLabels{
+				constants.RoleSetNameLabelKey: roleSetName,
+				constants.RoleNameLabelKey:    roleName,
+			},
+		)).To(gomega.Succeed())
+		g.Expect(podList.Items).To(gomega.HaveLen(1))
+		g.Expect(podList.Items[0].UID).ToNot(gomega.Equal(oldPod.UID))
+		pods = podList.Items
+	}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
+	return pods
+}
+
+func assertPreferredTopologyAffinity(spec *corev1.PodSpec, topologyKey string, matchLabels map[string]string) {
+	gomega.Expect(spec.Affinity).ToNot(gomega.BeNil())
+	gomega.Expect(spec.Affinity.PodAffinity).ToNot(gomega.BeNil())
+	gomega.Expect(spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution).To(gomega.BeEmpty())
+
+	preferredTerms := spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+	gomega.Expect(preferredTerms).To(gomega.HaveLen(1))
+	gomega.Expect(preferredTerms[0].Weight).To(gomega.Equal(int32(100)))
+	gomega.Expect(preferredTerms[0].PodAffinityTerm.TopologyKey).To(gomega.Equal(topologyKey))
+	gomega.Expect(preferredTerms[0].PodAffinityTerm.LabelSelector.MatchLabels).To(gomega.Equal(matchLabels))
+}
+
+func assertRequiredTopologyAffinity(spec *corev1.PodSpec, topologyKey string, matchLabels map[string]string) {
+	gomega.Expect(spec.Affinity).ToNot(gomega.BeNil())
+	gomega.Expect(spec.Affinity.PodAffinity).ToNot(gomega.BeNil())
+	gomega.Expect(spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution).To(gomega.BeEmpty())
+
+	requiredTerms := spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	gomega.Expect(requiredTerms).To(gomega.HaveLen(1))
+	gomega.Expect(requiredTerms[0].TopologyKey).To(gomega.Equal(topologyKey))
+	gomega.Expect(requiredTerms[0].LabelSelector.MatchLabels).To(gomega.Equal(matchLabels))
+}
+
+func countPodsByTopologyAffinity(
+	pods []corev1.Pod,
+	topologyKey string,
+	matchLabels map[string]string,
+) (none, preferred, required int) {
+	for i := range pods {
+		spec := &pods[i].Spec
+		switch {
+		case hasRequiredTopologyAffinity(spec, topologyKey, matchLabels):
+			required++
+		case hasPreferredTopologyAffinity(spec, topologyKey, matchLabels):
+			preferred++
+		default:
+			none++
+		}
+	}
+	return none, preferred, required
+}
+
+func hasRequiredTopologyAffinity(spec *corev1.PodSpec, topologyKey string, matchLabels map[string]string) bool {
+	if spec.Affinity == nil || spec.Affinity.PodAffinity == nil {
+		return false
+	}
+	for _, term := range spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
+		if term.TopologyKey == topologyKey &&
+			term.LabelSelector != nil &&
+			reflect.DeepEqual(term.LabelSelector.MatchLabels, matchLabels) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPreferredTopologyAffinity(spec *corev1.PodSpec, topologyKey string, matchLabels map[string]string) bool {
+	if spec.Affinity == nil || spec.Affinity.PodAffinity == nil {
+		return false
+	}
+	for _, term := range spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution {
+		if term.Weight == int32(100) &&
+			term.PodAffinityTerm.TopologyKey == topologyKey &&
+			term.PodAffinityTerm.LabelSelector != nil &&
+			reflect.DeepEqual(term.PodAffinityTerm.LabelSelector.MatchLabels, matchLabels) {
+			return true
+		}
+	}
+	return false
 }

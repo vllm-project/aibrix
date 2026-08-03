@@ -152,6 +152,32 @@ func TestDynamoPodMonitorManifests(t *testing.T) {
 	}
 }
 
+func TestLLMdPodMonitorManifests(t *testing.T) {
+	manifests := podMonitorManifests(Config{
+		Namespace: "brixbench-llmd",
+		Provider:  "llmd",
+		Engine:    "vllm",
+	})
+	if len(manifests) != 2 {
+		t.Fatalf("expected 2 manifests, got %d", len(manifests))
+	}
+	joined := strings.Join(manifests, "\n---\n")
+	for _, want := range []string{
+		"name: brixbench-llmd-vllm-metrics",
+		"port: modelserver",
+		"replacement: llmd-vllm",
+		"llm-d.ai/guide: pd-disaggregation",
+		"name: brixbench-llmd-epp-metrics",
+		"port: metrics",
+		"replacement: llmd-epp",
+		"llm-d-router-gateway: llmd-brixbench-epp",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected manifests to contain %q:\n%s", want, joined)
+		}
+	}
+}
+
 func TestEnsureAppliesPlainVLLMManifest(t *testing.T) {
 	var commands []recordedCommand
 	err := Ensure(context.Background(), Config{
@@ -178,6 +204,34 @@ func TestEnsureAppliesPlainVLLMManifest(t *testing.T) {
 	}
 	if !strings.Contains(commands[1].stdin, "brixbench-vllm-metrics") {
 		t.Fatalf("expected apply stdin to contain PodMonitor manifest, got:\n%s", commands[1].stdin)
+	}
+}
+
+func TestEnsureAppliesLLMdManifests(t *testing.T) {
+	var manifests []string
+	err := Ensure(context.Background(), Config{
+		Namespace: "brixbench-llmd",
+		Provider:  "llmd",
+		Engine:    "vllm",
+		Enabled:   true,
+		Runner: func(ctx context.Context, stdin string, args ...string) (string, error) {
+			if strings.Join(args, " ") == "apply -f -" {
+				manifests = append(manifests, stdin)
+			}
+			return "", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected Ensure to succeed, got %v", err)
+	}
+	if len(manifests) != 2 {
+		t.Fatalf("expected 2 apply commands, got %d", len(manifests))
+	}
+	if !strings.Contains(manifests[0], "brixbench-llmd-vllm-metrics") {
+		t.Fatalf("expected first manifest to configure llm-d vLLM metrics:\n%s", manifests[0])
+	}
+	if !strings.Contains(manifests[1], "brixbench-llmd-epp-metrics") {
+		t.Fatalf("expected second manifest to configure llm-d EPP metrics:\n%s", manifests[1])
 	}
 }
 

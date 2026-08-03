@@ -1,0 +1,16 @@
+{
+  "num_sessions": 10,
+  "session_arrival_rate_rps": 0.5,
+  "turns_per_session": [2, 5],
+  "parallel_tools": [1, 4],
+  "tool_latency_ms": [100, 1500],
+  "model_latency_ms": [100, 400],
+  "think_time_ms": [250, 3000],
+  "retry_probability": 0.1,
+  "max_tool_retries": 1,
+  "initial_prompt_tokens": 512,
+  "context_growth_tokens": 256,
+  "tool_result_tokens": 128,
+  "output_tokens": 128,
+  "seed": 17
+}

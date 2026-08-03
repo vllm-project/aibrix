@@ -67,12 +67,101 @@ type OpenAIResponse struct {
 	Code int `json:"code"`
 }
 
+type tokenUsage struct {
+	promptTokens     int64
+	completionTokens int64
+	totalTokens      int64
+}
+
+func processStreamingResponse(requestID string, bodyBytes []byte) (tokenUsage, *extProcPb.ProcessingResponse) {
+	var usage tokenUsage
+
+	// The previous implementation unmarshalled every single SSE chunk into a struct (openai.ChatCompletionChunk).
+	// This caused significant CPU overhead and high GC pressure under heavy concurrency.
+	// The new implementation uses zero-allocation  byte scanning and pre-filtering,
+	// selectively extracting only the "usage" metadata via gjson for the final chunks.
+	if bytes.Contains(bodyBytes, []byte(`"usage"`)) {
+		remaining := bodyBytes
+
+		for len(remaining) > 0 {
+			var line []byte
+			// Manually find the newline to avoid the allocations of bytes.Split
+			if idx := bytes.IndexByte(remaining, '\n'); idx >= 0 {
+				line = remaining[:idx]
+				remaining = remaining[idx+1:]
+			} else {
+				line = remaining
+				remaining = nil
+			}
+
+			// Handle SSE \r\n line endings. bytes.TrimSpace safely strips trailing \r
+			// as well as any leading/trailing whitespace.
+			line = bytes.TrimSpace(line)
+
+			// Look for the SSE data prefix
+			if bytes.HasPrefix(line, []byte("data:")) {
+				// Slice the "data:" prefix (zero allocation)
+				jsonBytes := bytes.TrimSpace(line[5:])
+
+				// Check for the end of the stream
+				if bytes.Equal(jsonBytes, []byte("[DONE]")) {
+					continue
+				}
+
+				// While gjson.ValidBytes is O(N), it does not degrade gateway throughput.
+				// Guarded by the bytes.Contains pre-filter, it bypasses the hot path of streaming standard text
+				// and only executes on final chunks, ensuring strict correctness.
+				if !gjson.ValidBytes(jsonBytes) {
+					return usage, generateErrorResponse(
+						envoyTypePb.StatusCode_InternalServerError,
+						[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+							Key: HeaderErrorStreaming, RawValue: []byte("true"),
+						}}},
+						"malformed JSON in SSE stream", "", "")
+				}
+
+				// gjson avoids full deserialization by only extracting the usage field.
+				usageResult := gjson.GetBytes(jsonBytes, "usage")
+				if !usageResult.Exists() {
+					// The Responses API (/v1/responses) emits usage nested inside the
+					// terminal "response.completed" SSE event, where the full response
+					// object (including its "usage" field) lives under "response".
+					// Hence the usage path there is "response.usage".
+					usageResult = gjson.GetBytes(jsonBytes, "response.usage")
+				}
+				if usageResult.Exists() && usageResult.IsObject() {
+					// Assumption: The upstream sends the usage object only in the final chunk
+					// (standard vLLM/OpenAI behavior). We overwrite/set the values here.
+					// The Responses API uses input_tokens/output_tokens instead of
+					// prompt_tokens/completion_tokens, so fall back to those names only when
+					// the primary field is genuinely absent (Exists() == false), since a
+					// zero count is a semantically valid value.
+					if pt := usageResult.Get("prompt_tokens"); pt.Exists() {
+						usage.promptTokens = pt.Int()
+					} else {
+						usage.promptTokens = usageResult.Get("input_tokens").Int()
+					}
+					if ct := usageResult.Get("completion_tokens"); ct.Exists() {
+						usage.completionTokens = ct.Int()
+					} else {
+						usage.completionTokens = usageResult.Get("output_tokens").Int()
+					}
+					usage.totalTokens = usageResult.Get("total_tokens").Int()
+				}
+			}
+		}
+		// warnings when "usage" is triggered by a false positive in generated content.
+		if usage.promptTokens == 0 && usage.totalTokens == 0 {
+			klog.V(4).Infof("usage string detected but no valid tokens parsed (likely generated text), requestID: %s", requestID)
+		}
+	}
+
+	return usage, nil
+}
+
 func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.RoutingContext, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
 	arrival := time.Now()
-	if stream && routerCtx != nil && routerCtx.FirstTokenTime.IsZero() {
-		routerCtx.FirstTokenTime = arrival
-	}
 
 	// Record the arrival time of the first response body chunk. For streaming
 	// responses HandleResponseBody runs once per SSE chunk, but request_end
@@ -102,87 +191,13 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 	}()
 
 	if stream {
-		bodyBytes := b.ResponseBody.GetBody()
-
-		// The previous implementation unmarshalled every single SSE chunk into a struct (openai.ChatCompletionChunk).
-		// This caused significant CPU overhead and high GC pressure under heavy concurrency.
-		// The new implementation uses zero-allocation  byte scanning and pre-filtering,
-		// selectively extracting only the "usage" metadata via gjson for the final chunks.
-		if bytes.Contains(bodyBytes, []byte(`"usage"`)) {
-			remaining := bodyBytes
-
-			for len(remaining) > 0 {
-				var line []byte
-				// Manually find the newline to avoid the allocations of bytes.Split
-				if idx := bytes.IndexByte(remaining, '\n'); idx >= 0 {
-					line = remaining[:idx]
-					remaining = remaining[idx+1:]
-				} else {
-					line = remaining
-					remaining = nil
-				}
-
-				// Handle SSE \r\n line endings. bytes.TrimSpace safely strips trailing \r
-				// as well as any leading/trailing whitespace.
-				line = bytes.TrimSpace(line)
-
-				// Look for the SSE data prefix
-				if bytes.HasPrefix(line, []byte("data:")) {
-					// Slice the "data:" prefix (zero allocation)
-					jsonBytes := bytes.TrimSpace(line[5:])
-
-					// Check for the end of the stream
-					if bytes.Equal(jsonBytes, []byte("[DONE]")) {
-						continue
-					}
-
-					// While gjson.ValidBytes is O(N), it does not degrade gateway throughput.
-					// Guarded by the bytes.Contains pre-filter, it bypasses the hot path of streaming standard text
-					// and only executes on final chunks, ensuring strict correctness.
-					if !gjson.ValidBytes(jsonBytes) {
-						complete = true
-						return generateErrorResponse(
-							envoyTypePb.StatusCode_InternalServerError,
-							[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-								Key: HeaderErrorStreaming, RawValue: []byte("true"),
-							}}},
-							"malformed JSON in SSE stream", "", ""), complete
-					}
-
-					// gjson avoids full deserialization by only extracting the usage field.
-					usageResult := gjson.GetBytes(jsonBytes, "usage")
-					if !usageResult.Exists() {
-						// The Responses API (/v1/responses) emits usage nested inside the
-						// terminal "response.completed" SSE event, where the full response
-						// object (including its "usage" field) lives under "response".
-						// Hence the usage path there is "response.usage".
-						usageResult = gjson.GetBytes(jsonBytes, "response.usage")
-					}
-					if usageResult.Exists() && usageResult.IsObject() {
-						// Assumption: The upstream sends the usage object only in the final chunk
-						// (standard vLLM/OpenAI behavior). We overwrite/set the values here.
-						// The Responses API uses input_tokens/output_tokens instead of
-						// prompt_tokens/completion_tokens, so fall back to those names only when
-						// the primary field is genuinely absent (Exists() == false), since a
-						// zero count is a semantically valid value.
-						if pt := usageResult.Get("prompt_tokens"); pt.Exists() {
-							promptTokens = pt.Int()
-						} else {
-							promptTokens = usageResult.Get("input_tokens").Int()
-						}
-						if ct := usageResult.Get("completion_tokens"); ct.Exists() {
-							completionTokens = ct.Int()
-						} else {
-							completionTokens = usageResult.Get("output_tokens").Int()
-						}
-						totalTokens = usageResult.Get("total_tokens").Int()
-					}
-				}
-			}
-			// warnings when "usage" is triggered by a false positive in generated content.
-			if promptTokens == 0 && totalTokens == 0 {
-				klog.V(4).Infof("usage string detected but no valid tokens parsed (likely generated text), requestID: %s", requestID)
-			}
+		usage, streamRes := processStreamingResponse(requestID, b.ResponseBody.GetBody())
+		promptTokens = usage.promptTokens
+		completionTokens = usage.completionTokens
+		totalTokens = usage.totalTokens
+		if streamRes != nil {
+			complete = true
+			return streamRes, complete
 		}
 	} else {
 		if isLanguageRequest(routerCtx.ReqPath) {

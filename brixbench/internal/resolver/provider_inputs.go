@@ -30,7 +30,7 @@ func validateProviderInputs(test *Test) error {
 	case "dynamo":
 		return validateDynamoSourceSelection(test)
 	case "llmd":
-		return fmt.Errorf("provider llmd is not implemented for %s", test.Name)
+		return validateLLMdSourceSelection(test)
 	default:
 		return fmt.Errorf("unknown provider %q for %s", test.ProviderName(), test.Name)
 	}
