@@ -113,6 +113,9 @@ func TestPrepareGatewayImageRejectsInvalidPrebuiltConfiguration(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected invalid prebuilt gateway configuration to fail")
 			}
+			if tt.name == "non-hex commit" && !strings.Contains(err.Error(), tt.commit) {
+				t.Fatalf("error should include original commit %q, got %v", tt.commit, err)
+			}
 		})
 	}
 }

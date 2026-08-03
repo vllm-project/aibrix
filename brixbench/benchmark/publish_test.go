@@ -52,12 +52,13 @@ type publishMapping struct {
 var newTOSUploader = func() (tosUploader, error) { return newGoTOSUploader() }
 
 type fakeTOSUploader struct {
-	uploadErr error
-	appendErr error
-	uploads   []string
-	appends   []string
-	deletes   []string
-	objects   map[string]string
+	uploadErr   error
+	downloadErr error
+	appendErr   error
+	uploads     []string
+	appends     []string
+	deletes     []string
+	objects     map[string]string
 }
 
 func (u *fakeTOSUploader) Upload(localPath, remoteURI string) error {
@@ -71,6 +72,9 @@ func (u *fakeTOSUploader) Upload(localPath, remoteURI string) error {
 }
 
 func (u *fakeTOSUploader) Download(remoteURI, localPath string) error {
+	if u.downloadErr != nil {
+		return u.downloadErr
+	}
 	if u.objects == nil {
 		return os.ErrNotExist
 	}
@@ -99,6 +103,14 @@ func (u *fakeTOSUploader) AppendBytes(remoteURI string, data []byte) error {
 	}
 	u.objects[remoteURI] += string(data)
 	return nil
+}
+
+func (u *fakeTOSUploader) Exists(remoteURI string) (bool, error) {
+	if u.objects == nil {
+		return false, nil
+	}
+	_, ok := u.objects[remoteURI]
+	return ok, nil
 }
 
 type publishReceipt struct {
@@ -518,10 +530,19 @@ func updateTOSIndex(uploader tosUploader, config publishConfig, runID string, ma
 	defer os.RemoveAll(tempDir)
 	indexPath := filepath.Join(tempDir, "runs.jsonl")
 	indexURI := fmt.Sprintf("tos://%s/%s/index/runs.jsonl", config.bucket, config.prefix)
-	_ = uploader.Download(indexURI, indexPath)
-	existing, _ := os.ReadFile(indexPath)
+	err = uploader.Download(indexURI, indexPath)
+	if err != nil && !isMissingRemoteObject(err) {
+		return fmt.Errorf("download index %s: %w", indexURI, err)
+	}
+	existing, readErr := os.ReadFile(indexPath)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return fmt.Errorf("read index %s: %w", indexPath, readErr)
+	}
 	lines := make([]string, 0)
 	for _, line := range strings.Split(strings.TrimSpace(string(existing)), "\n") {
+		if line == "" {
+			continue
+		}
 		if !strings.Contains(line, fmt.Sprintf("\"run_id\":\"%s\"", runID)) {
 			lines = append(lines, line)
 		}
@@ -596,6 +617,43 @@ func TestPublishStrictFailsAfterRetries(t *testing.T) {
 	}
 	if len(uploader.uploads) < 3 {
 		t.Fatalf("uploads = %d, want at least 3 retries", len(uploader.uploads))
+	}
+}
+
+func TestUpdateTOSIndexFailsOnTransientDownloadError(t *testing.T) {
+	indexURI := "tos://bucket/prefix/index/runs.jsonl"
+	uploader := &fakeTOSUploader{
+		downloadErr: fmt.Errorf("temporary network glitch"),
+		objects: map[string]string{
+			indexURI: "{\"run_id\":\"old-run\",\"status\":\"passed\"}\n",
+		},
+	}
+	err := updateTOSIndex(uploader, publishConfig{bucket: "bucket", prefix: "prefix"}, "new-run", map[string]any{
+		"started_at": "t0", "finished_at": "t1", "category": "c", "scenario": "s",
+		"platform": "aibrix", "version": "main", "status": "passed", "tos_uri": "tos://x",
+	}, publishReceipt{Status: "uploaded"})
+	if err == nil {
+		t.Fatal("expected updateTOSIndex to fail on transient download error")
+	}
+	if !strings.Contains(err.Error(), "download index") {
+		t.Fatalf("error = %v, want download index failure", err)
+	}
+	if got := uploader.objects[indexURI]; !strings.Contains(got, "old-run") || strings.Contains(got, "new-run") {
+		t.Fatalf("index must remain unchanged on download failure, got %q", got)
+	}
+}
+
+func TestUpdateTOSIndexCreatesWhenMissing(t *testing.T) {
+	uploader := &fakeTOSUploader{}
+	if err := updateTOSIndex(uploader, publishConfig{bucket: "bucket", prefix: "prefix"}, "run-1", map[string]any{
+		"started_at": "t0", "finished_at": "t1", "category": "c", "scenario": "s",
+		"platform": "aibrix", "version": "main", "status": "passed", "tos_uri": "tos://x",
+	}, publishReceipt{Status: "uploaded"}); err != nil {
+		t.Fatal(err)
+	}
+	indexURI := "tos://bucket/prefix/index/runs.jsonl"
+	if !strings.Contains(uploader.objects[indexURI], "run-1") {
+		t.Fatalf("expected new index entry, got %q", uploader.objects[indexURI])
 	}
 }
 

@@ -221,17 +221,9 @@ func appendAggregateCSV(uploader tosUploader, config publishConfig, newRows []ma
 	}
 	remoteURI := config.aggregateURI()
 
-	// Probe whether the appendable aggregate object already exists.
-	tempDir, err := os.MkdirTemp("", "brixbench-aggregate-csv-*")
+	// Probe whether the appendable aggregate object already exists (Head, not full download).
+	exists, err := uploader.Exists(remoteURI)
 	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(tempDir)
-	probePath := filepath.Join(tempDir, "probe.csv")
-	exists := false
-	if err := uploader.Download(remoteURI, probePath); err == nil {
-		exists = true
-	} else if !isMissingRemoteObject(err) {
 		return err
 	}
 

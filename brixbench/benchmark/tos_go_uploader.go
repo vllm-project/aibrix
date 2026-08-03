@@ -36,11 +36,13 @@ const (
 
 // tosUploader uploads official benchmark artifacts to TOS.
 // AppendBytes is used for appendable aggregate CSV objects only.
+// Exists is a lightweight metadata check (Head) without downloading content.
 type tosUploader interface {
 	Upload(localPath, remoteURI string) error
 	Download(remoteURI, localPath string) error
 	Delete(remoteURI string) error
 	AppendBytes(remoteURI string, data []byte) error
+	Exists(remoteURI string) (bool, error)
 }
 
 type goTOSUploader struct {
@@ -147,6 +149,23 @@ func (u *goTOSUploader) Delete(remoteURI string) error {
 	return nil
 }
 
+func (u *goTOSUploader) Exists(remoteURI string) (bool, error) {
+	bucket, key, err := parseTOSURI(remoteURI)
+	if err != nil {
+		return false, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	_, err = u.client.HeadObjectV2(ctx, &tos.HeadObjectV2Input{Bucket: bucket, Key: key})
+	if err == nil {
+		return true, nil
+	}
+	if isTOSNotFound(err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("tos head %s: %w", remoteURI, err)
+}
+
 func (u *goTOSUploader) AppendBytes(remoteURI string, data []byte) error {
 	if len(data) == 0 {
 		return nil
@@ -159,9 +178,10 @@ func (u *goTOSUploader) AppendBytes(remoteURI string, data []byte) error {
 	defer cancel()
 
 	input := &tos.AppendObjectV2Input{
-		Bucket:  bucket,
-		Key:     key,
-		Content: bytes.NewReader(data),
+		Bucket:        bucket,
+		Key:           key,
+		Content:       bytes.NewReader(data),
+		ContentLength: int64(len(data)),
 	}
 	head, headErr := u.client.HeadObjectV2(ctx, &tos.HeadObjectV2Input{Bucket: bucket, Key: key})
 	if headErr == nil {
@@ -170,7 +190,6 @@ func (u *goTOSUploader) AppendBytes(remoteURI string, data []byte) error {
 		}
 		input.Offset = head.ContentLength
 		input.PreHashCrc64ecma = head.HashCrc64ecma
-		input.ContentLength = int64(len(data))
 	} else if !isTOSNotFound(headErr) {
 		return fmt.Errorf("tos head %s: %w", remoteURI, headErr)
 	}

@@ -48,11 +48,11 @@ func PrepareGatewayImage(ctx context.Context, projectRoot string, test *Test) (*
 			return nil, fmt.Errorf("invalid BENCHMARK_GATEWAY_IMAGE %q: %w", prebuiltImage, err)
 		}
 		if prebuiltCommit != "" {
-			prebuiltCommit, err = normalizeFullCommitSHA(prebuiltCommit)
+			normalizedCommit, err := normalizeFullCommitSHA(prebuiltCommit)
 			if err != nil {
 				return nil, fmt.Errorf("invalid BENCHMARK_GATEWAY_COMMIT %q: %w", prebuiltCommit, err)
 			}
-			test.ResolvedCommit = prebuiltCommit
+			test.ResolvedCommit = normalizedCommit
 		}
 		image := &GatewayImage{
 			Image:      prebuiltImage,
