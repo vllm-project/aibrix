@@ -25,8 +25,9 @@ import (
 )
 
 const (
-	stableWindowDuration = 180 * time.Second
-	panicWindowDuration  = 60 * time.Second
+	DefaultStableWindowDuration = 180 * time.Second
+	DefaultPanicWindowDuration  = 60 * time.Second
+	maxDuration                 = time.Duration(1<<63 - 1)
 )
 
 // AggregatorMetricsClient interface defines what aggregators need from metrics storage
@@ -83,8 +84,12 @@ func NewMetricsClient(granularity time.Duration) *MetricsClient {
 	}
 }
 
-// ensureWindowsForKey ensures windows exist for a specific metricKey
+// ensureWindowsForKey ensures windows exist for a specific metricKey.
 func (c *MetricsClient) ensureWindowsForKey(metricKeyStr string) {
+	c.ensureWindowsForKeyLocked(metricKeyStr, DefaultStableWindowDuration, DefaultPanicWindowDuration)
+}
+
+func (c *MetricsClient) ensureWindowsForKeyLocked(metricKeyStr string, stableDuration, panicDuration time.Duration) {
 	// Check if stable window already exists
 	if _, exists := c.stableWindows[metricKeyStr]; exists {
 		// Windows already configured, don't recreate
@@ -96,11 +101,51 @@ func (c *MetricsClient) ensureWindowsForKey(metricKeyStr string) {
 		return
 	}
 
-	// Always create stable window and panic window (KPA and APA will decide whether to use it or not)
-	c.stableWindows[metricKeyStr] = types.NewTimeWindow(stableWindowDuration, c.granularity)
-	c.stableHistory[metricKeyStr] = types.NewMetricHistory(stableWindowDuration * 10)
-	c.panicWindows[metricKeyStr] = types.NewTimeWindow(panicWindowDuration, c.granularity)
-	c.panicHistory[metricKeyStr] = types.NewMetricHistory(panicWindowDuration * 10)
+	c.setWindowsForKeyLocked(metricKeyStr, stableDuration, panicDuration)
+}
+
+func (c *MetricsClient) setWindowsForKeyLocked(metricKeyStr string, stableDuration, panicDuration time.Duration) {
+	stableHistoryDuration := historyDuration(stableDuration)
+	panicHistoryDuration := historyDuration(panicDuration)
+
+	c.stableWindows[metricKeyStr] = types.NewTimeWindow(stableDuration, c.granularity)
+	c.stableHistory[metricKeyStr] = types.NewMetricHistory(stableHistoryDuration)
+	c.panicWindows[metricKeyStr] = types.NewTimeWindow(panicDuration, c.granularity)
+	c.panicHistory[metricKeyStr] = types.NewMetricHistory(panicHistoryDuration)
+}
+
+func historyDuration(windowDuration time.Duration) time.Duration {
+	if windowDuration > maxDuration/10 {
+		return maxDuration
+	}
+	return windowDuration * 10
+}
+
+// ConfigureMetricWindows configures stable and panic windows for a metric key.
+func (c *MetricsClient) ConfigureMetricWindows(metricKey types.MetricKey, stableDuration, panicDuration time.Duration) error {
+	if stableDuration <= 0 {
+		return fmt.Errorf("stable window duration must be greater than 0, got %s", stableDuration)
+	}
+	if panicDuration <= 0 {
+		return fmt.Errorf("panic window duration must be greater than 0, got %s", panicDuration)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	metricKeyStr := metricKey.String()
+	stableWindow := c.stableWindows[metricKeyStr]
+	panicWindow := c.panicWindows[metricKeyStr]
+	if stableWindow != nil && panicWindow != nil &&
+		stableWindow.Duration() == stableDuration &&
+		panicWindow.Duration() == panicDuration {
+		return nil
+	}
+
+	c.setWindowsForKeyLocked(metricKeyStr, stableDuration, panicDuration)
+
+	klog.V(4).InfoS("Configured metric windows", "metricKey", metricKeyStr, "stableDuration", stableDuration, "panicDuration", panicDuration)
+	return nil
 }
 
 // UpdateMetrics records metrics to all configured windows for the given metricKey

@@ -19,6 +19,7 @@ package webhook
 import (
 	"context"
 	"fmt"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -36,6 +37,12 @@ import (
 // nolint:unused
 // log is for logging in this package.
 var podautoscalerlog = logf.Log.WithName("podautoscaler-resource")
+
+const (
+	maxMetricWindowSeconds      = int64(time.Duration(1<<63-1) / time.Second)
+	defaultObserveWindowSeconds = int64(180)
+	defaultPanicWindowSeconds   = int64(60)
+)
 
 // SetupPodAutoscalerWebhookWithManager registers the webhook for PodAutoscaler in the manager.
 func SetupPodAutoscalerWebhookWithManager(mgr ctrl.Manager) error {
@@ -140,6 +147,8 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 			field.Invalid(maxPath, pa.Spec.MaxReplicas, "cannot be less than minReplicas"),
 		)
 	}
+
+	allErrs = append(allErrs, validateMetricWindows(pa, specPath)...)
 
 	// 3. Validate ScalingStrategy
 	validStrategies := map[autoscalingv1alpha1.ScalingStrategyType]bool{
@@ -266,4 +275,35 @@ func validateHPARoleSubtarget(pa *autoscalingv1alpha1.PodAutoscaler, specPath *f
 		specPath.Child("subTargetSelector").Child("roleName"),
 		"not supported with scalingStrategy=HPA; use APA or KPA for StormService role-level autoscaling",
 	)
+}
+
+func validateMetricWindows(pa *autoscalingv1alpha1.PodAutoscaler, specPath *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+
+	observeWindow := defaultObserveWindowSeconds
+	if pa.Spec.ObserveWindowSeconds != nil {
+		observeWindow = *pa.Spec.ObserveWindowSeconds
+		if observeWindow <= 0 {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("observeWindowSeconds"), pa.Spec.ObserveWindowSeconds, "must be greater than 0"))
+		}
+		if observeWindow > maxMetricWindowSeconds {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("observeWindowSeconds"), pa.Spec.ObserveWindowSeconds, fmt.Sprintf("must be less than or equal to %d", maxMetricWindowSeconds)))
+		}
+	}
+
+	panicWindow := defaultPanicWindowSeconds
+	if pa.Spec.PanicWindowSeconds != nil {
+		panicWindow = *pa.Spec.PanicWindowSeconds
+		if panicWindow <= 0 {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("panicWindowSeconds"), pa.Spec.PanicWindowSeconds, "must be greater than 0"))
+		}
+		if panicWindow > maxMetricWindowSeconds {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("panicWindowSeconds"), pa.Spec.PanicWindowSeconds, fmt.Sprintf("must be less than or equal to %d", maxMetricWindowSeconds)))
+		}
+	}
+	if panicWindow > observeWindow {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("panicWindowSeconds"), pa.Spec.PanicWindowSeconds, "must be less than or equal to observeWindowSeconds"))
+	}
+
+	return allErrs
 }

@@ -264,6 +264,11 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 	scalingContext := request.ScalingContext
 
 	// Step 2: Process and aggregate metrics
+	stableWindow, panicWindow := metricWindowDurations(request.PodAutoscaler)
+	if err := a.metricsClient.ConfigureMetricWindows(metricKey, stableWindow, panicWindow); err != nil {
+		return nil, fmt.Errorf("failed to configure metric windows for %s: %w", workloadKey, err)
+	}
+
 	klog.InfoS("Processing metrics snapshot", "source", workloadKey, "healthy metrics pods", len(snapshot.Values), "values", snapshot.Values)
 	if err := a.aggregator.ProcessSnapshot(metricKey, snapshot); err != nil {
 		return nil, fmt.Errorf("failed to process metrics snapshot for %s: %w", workloadKey, err)
@@ -317,6 +322,20 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 		"recommendation", recommendation)
 
 	return recommendation, nil
+}
+
+func metricWindowDurations(pa autoscalingv1alpha1.PodAutoscaler) (time.Duration, time.Duration) {
+	stableWindow := metrics.DefaultStableWindowDuration
+	if pa.Spec.ObserveWindowSeconds != nil {
+		stableWindow = time.Duration(*pa.Spec.ObserveWindowSeconds) * time.Second
+	}
+
+	panicWindow := metrics.DefaultPanicWindowDuration
+	if pa.Spec.PanicWindowSeconds != nil {
+		panicWindow = time.Duration(*pa.Spec.PanicWindowSeconds) * time.Second
+	}
+
+	return stableWindow, panicWindow
 }
 
 // Helper methods

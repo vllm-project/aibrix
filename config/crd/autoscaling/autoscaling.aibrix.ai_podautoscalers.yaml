@@ -81,6 +81,16 @@ spec:
               minReplicas:
                 format: int32
                 type: integer
+              observeWindowSeconds:
+                format: int64
+                maximum: 9223372036
+                minimum: 1
+                type: integer
+              panicWindowSeconds:
+                format: int64
+                maximum: 9223372036
+                minimum: 1
+                type: integer
               scaleTargetRef:
                 properties:
                   apiVersion:
