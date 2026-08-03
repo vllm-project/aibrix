@@ -17,6 +17,7 @@ limitations under the License.
 package benchmark
 
 import (
+	"bytes"
 	"encoding/csv"
 	"fmt"
 	"io"
@@ -97,14 +98,14 @@ func maybeUpdateAggregateCSV(t *testing.T, uploader tosUploader, config publishC
 		t.Logf("Skipping aggregate CSV update: no case rows for run %s", runID)
 		return nil
 	}
-	if err := upsertAggregateCSV(uploader, config, rows); err != nil {
+	if err := appendAggregateCSV(uploader, config, rows); err != nil {
 		if config.strict {
 			return err
 		}
 		t.Logf("Warning: aggregate CSV update failed: %v", err)
 		return nil
 	}
-	t.Logf("Updated aggregate CSV %s with %d row(s)", config.aggregateURI(), len(rows))
+	t.Logf("Appended %d row(s) to aggregate CSV %s", len(rows), config.aggregateURI())
 	return nil
 }
 
@@ -204,45 +205,51 @@ func buildAggregateRows(scenario *resolver.Scenario, summary scenarioSummary, ru
 	return rows
 }
 
-func upsertAggregateCSV(uploader tosUploader, config publishConfig, newRows []map[string]string) error {
+func appendAggregateCSV(uploader tosUploader, config publishConfig, newRows []map[string]string) error {
+	if len(newRows) == 0 {
+		return nil
+	}
+	remoteURI := config.aggregateURI()
+
+	// Probe whether the appendable aggregate object already exists.
 	tempDir, err := os.MkdirTemp("", "brixbench-aggregate-csv-*")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(tempDir)
-
-	remoteURI := config.aggregateURI()
-	localPath := filepath.Join(tempDir, aggregateCSVObjectName)
-	existingRows := make([]map[string]string, 0)
-	if err := uploader.Download(remoteURI, localPath); err == nil {
-		existingRows, err = readAggregateCSV(localPath)
-		if err != nil {
-			return fmt.Errorf("parse existing aggregate CSV: %w", err)
-		}
+	probePath := filepath.Join(tempDir, "probe.csv")
+	exists := false
+	if err := uploader.Download(remoteURI, probePath); err == nil {
+		exists = true
 	} else if !isMissingRemoteObject(err) {
-		// Non-missing errors still allow create-from-scratch when download fails with not-found variants.
-		if !strings.Contains(strings.ToLower(err.Error()), "404") &&
-			!strings.Contains(strings.ToLower(err.Error()), "no such file") &&
-			!strings.Contains(strings.ToLower(err.Error()), "not found") &&
-			!strings.Contains(strings.ToLower(err.Error()), "nosuchkey") {
-			return err
-		}
-	}
-
-	merged := upsertAggregateRows(existingRows, newRows)
-	outPath := filepath.Join(tempDir, "benchmark_metrics.updated.csv")
-	if err := writeAggregateCSV(outPath, merged); err != nil {
 		return err
 	}
 
-	// tosutil cannot append/update in place: delete then re-upload.
-	_ = uploader.Delete(remoteURI)
-	if err := uploader.Upload(outPath, remoteURI); err != nil {
-		return fmt.Errorf("upload aggregate CSV: %w", err)
+	var buf bytes.Buffer
+	writer := csv.NewWriter(&buf)
+	if !exists {
+		if err := writer.Write(aggregateCSVHeader); err != nil {
+			return err
+		}
 	}
-	return nil
+	for _, row := range newRows {
+		record := make([]string, len(aggregateCSVHeader))
+		for i, key := range aggregateCSVHeader {
+			record[i] = row[key]
+		}
+		if err := writer.Write(record); err != nil {
+			return err
+		}
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		return err
+	}
+	return uploader.AppendBytes(remoteURI, buf.Bytes())
 }
 
+// upsertAggregateRows is retained for unit tests of row_id merge helpers used by
+// historical download-merge flows; production publish uses appendAggregateCSV.
 func upsertAggregateRows(existing, incoming []map[string]string) []map[string]string {
 	byID := make(map[string]int, len(existing))
 	out := make([]map[string]string, 0, len(existing)+len(incoming))
@@ -475,6 +482,36 @@ func firstNonEmpty(values ...string) string {
 
 func isMissingRemoteObject(err error) bool {
 	return err != nil && (os.IsNotExist(err) || strings.Contains(strings.ToLower(err.Error()), "404") || strings.Contains(strings.ToLower(err.Error()), "not exist") || strings.Contains(strings.ToLower(err.Error()), "not found") || strings.Contains(strings.ToLower(err.Error()), "nosuchkey"))
+}
+
+func TestAppendAggregateCSVCreatesThenAppends(t *testing.T) {
+	uploader := &fakeTOSUploader{}
+	config := publishConfig{bucket: "bucket", prefix: "prefix"}
+	row1 := []map[string]string{{"row_id": "run1:case", "status": "passed", "schema_version": "1.0"}}
+	if err := appendAggregateCSV(uploader, config, row1); err != nil {
+		t.Fatal(err)
+	}
+	uri := config.aggregateURI()
+	if len(uploader.appends) != 1 || uploader.objects[uri] == "" {
+		t.Fatalf("expected first append create, got %#v", uploader)
+	}
+	if !strings.Contains(uploader.objects[uri], "platform_commit") {
+		t.Fatalf("header missing platform_commit: %s", uploader.objects[uri])
+	}
+	row2 := []map[string]string{{"row_id": "run2:case", "status": "failed", "schema_version": "1.0"}}
+	if err := appendAggregateCSV(uploader, config, row2); err != nil {
+		t.Fatal(err)
+	}
+	if len(uploader.appends) != 2 {
+		t.Fatalf("appends=%d", len(uploader.appends))
+	}
+	body := uploader.objects[uri]
+	if strings.Count(body, "schema_version") != 1 {
+		t.Fatalf("header should appear once, body=%s", body)
+	}
+	if !strings.Contains(body, "run1:case") || !strings.Contains(body, "run2:case") {
+		t.Fatalf("missing rows: %s", body)
+	}
 }
 
 func TestUpsertAggregateRowsReplacesByRowID(t *testing.T) {

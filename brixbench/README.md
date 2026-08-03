@@ -385,9 +385,25 @@ The default destination is
 Use `BENCHMARK_TOS_BUCKET` and `BENCHMARK_TOS_PREFIX` to override it, and set
 `BENCHMARK_PUBLISH_TIER` to `minimal`, `standard` (default), or `full`.
 
-Publishing uses the locally configured `tosutil` credentials. Do not put TOS
-credentials, kubeconfigs, or secret values in scenario files or the repository.
-Scenario inputs are copied with common secret fields redacted before upload.
+Publishing uses the Volcengine TOS Go SDK. Set credentials via environment
+variables (never commit them):
+
+```bash
+export TOS_ACCESS_KEY=...
+export TOS_SECRET_KEY=...
+# optional overrides:
+# export TOS_ENDPOINT=https://tos-cn-beijing.volces.com
+# export TOS_REGION=cn-beijing
+```
+
+Do not put TOS credentials, kubeconfigs, or secret values in scenario files or
+the repository. Scenario inputs are copied with common secret fields redacted
+before upload.
+
+Per-run artifacts use `PutObject`. The top-level aggregate CSV
+(`aggregates/benchmark_metrics.csv`) is maintained as an **Appendable** object
+via `AppendObjectV2` (append-only; do not overwrite it with `PutObject` /
+`tosutil cp` or it will lose appendability).
 
 An upload failure is a warning by default and leaves the local artifacts
 intact. CI should use `BENCHMARK_PUBLISH_STRICT=true`; it retries failed object

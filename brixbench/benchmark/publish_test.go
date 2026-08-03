@@ -15,7 +15,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -43,48 +42,13 @@ type publishMapping struct {
 	target string
 }
 
-type tosUploader interface {
-	Upload(localPath, remoteURI string) error
-	Download(remoteURI, localPath string) error
-	Delete(remoteURI string) error
-}
-
-type tosutilUploader struct{}
-
-func (tosutilUploader) Upload(localPath, remoteURI string) error {
-	output, err := exec.Command("tosutil", "cp", localPath, remoteURI).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("tosutil upload %s: %w: %s", localPath, err, strings.TrimSpace(string(output)))
-	}
-	return nil
-}
-
-func (tosutilUploader) Download(remoteURI, localPath string) error {
-	output, err := exec.Command("tosutil", "cp", remoteURI, localPath).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("tosutil download %s: %w: %s", remoteURI, err, strings.TrimSpace(string(output)))
-	}
-	return nil
-}
-
-func (tosutilUploader) Delete(remoteURI string) error {
-	output, err := exec.Command("tosutil", "rm", remoteURI, "-f").CombinedOutput()
-	if err != nil {
-		// Missing object is fine for first create / race.
-		msg := strings.ToLower(strings.TrimSpace(string(output)))
-		if strings.Contains(msg, "404") || strings.Contains(msg, "not found") || strings.Contains(msg, "nosuchkey") {
-			return nil
-		}
-		return fmt.Errorf("tosutil delete %s: %w: %s", remoteURI, err, strings.TrimSpace(string(output)))
-	}
-	return nil
-}
-
-var newTOSUploader = func() tosUploader { return tosutilUploader{} }
+var newTOSUploader = func() (tosUploader, error) { return newGoTOSUploader() }
 
 type fakeTOSUploader struct {
 	uploadErr error
+	appendErr error
 	uploads   []string
+	appends   []string
 	deletes   []string
 	objects   map[string]string
 }
@@ -115,6 +79,18 @@ func (u *fakeTOSUploader) Delete(remoteURI string) error {
 	if u.objects != nil {
 		delete(u.objects, remoteURI)
 	}
+	return nil
+}
+
+func (u *fakeTOSUploader) AppendBytes(remoteURI string, data []byte) error {
+	u.appends = append(u.appends, remoteURI)
+	if u.appendErr != nil {
+		return u.appendErr
+	}
+	if u.objects == nil {
+		u.objects = map[string]string{}
+	}
+	u.objects[remoteURI] += string(data)
 	return nil
 }
 
@@ -448,7 +424,10 @@ func statusForSummary(summary scenarioSummary) string {
 func publishFiles(t *testing.T, config publishConfig, logRoot, runID string, manifest map[string]any, files []publishMapping) error {
 	startedAt := time.Now().In(benchmarkLocation())
 	receipt := publishReceipt{SchemaVersion: "1.0", RunID: runID, StartedAt: startedAt.Format(time.RFC3339), Strict: config.strict, TOSURI: config.runURI(runID)}
-	uploader := newTOSUploader()
+	uploader, err := newTOSUploader()
+	if err != nil {
+		return err
+	}
 	for _, file := range files {
 		if info, err := os.Stat(file.source); err == nil && info.Size() > oversizedFile {
 			receipt.Warnings = append(receipt.Warnings, fmt.Sprintf("%s exceeds 50MB", file.target))
@@ -495,13 +474,16 @@ func publishFiles(t *testing.T, config publishConfig, logRoot, runID string, man
 	return nil
 }
 
-// publishFilesWithAggregate uploads per-run artifacts then upserts the top-level aggregate CSV.
+// publishFilesWithAggregate uploads per-run artifacts then appends rows to the aggregate CSV.
 func publishFilesWithAggregate(t *testing.T, config publishConfig, logRoot, runID string, manifest map[string]any, files []publishMapping, scenario *resolver.Scenario, summary scenarioSummary, startedAt, finishedAt time.Time) error {
 	t.Helper()
 	if err := publishFiles(t, config, logRoot, runID, manifest, files); err != nil {
 		return err
 	}
-	uploader := newTOSUploader()
+	uploader, err := newTOSUploader()
+	if err != nil {
+		return err
+	}
 	return maybeUpdateAggregateCSV(t, uploader, config, scenario, summary, runID, startedAt, finishedAt)
 }
 
@@ -575,9 +557,9 @@ func TestPublishDisabledIsNoop(t *testing.T) {
 	t.Setenv("BENCHMARK_PUBLISH_RESULTS", "false")
 	publisherCreated := false
 	original := newTOSUploader
-	newTOSUploader = func() tosUploader {
+	newTOSUploader = func() (tosUploader, error) {
 		publisherCreated = true
-		return &fakeTOSUploader{}
+		return &fakeTOSUploader{}, nil
 	}
 	defer func() { newTOSUploader = original }()
 
@@ -593,7 +575,7 @@ func TestPublishDisabledIsNoop(t *testing.T) {
 func TestPublishStrictFailsAfterRetries(t *testing.T) {
 	uploader := &fakeTOSUploader{uploadErr: fmt.Errorf("unavailable")}
 	original := newTOSUploader
-	newTOSUploader = func() tosUploader { return uploader }
+	newTOSUploader = func() (tosUploader, error) { return uploader, nil }
 	defer func() { newTOSUploader = original }()
 
 	logRoot := t.TempDir()
