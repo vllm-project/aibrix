@@ -162,9 +162,6 @@ func processStreamingResponse(requestID string, bodyBytes []byte) (tokenUsage, *
 func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.RoutingContext, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
 	arrival := time.Now()
-	if stream && routerCtx != nil && routerCtx.FirstTokenTime.IsZero() {
-		routerCtx.FirstTokenTime = arrival
-	}
 
 	// Record the arrival time of the first response body chunk. For streaming
 	// responses HandleResponseBody runs once per SSE chunk, but request_end
