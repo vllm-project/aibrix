@@ -27,7 +27,8 @@ func TestFormatScenarioRunIDUsesConfiguredTimezone(t *testing.T) {
 
 	runID := formatScenarioRunID(localTime, "AIBrix Hello World")
 
-	const want = "20260512-060405-CST-aibrix-hello-world"
+	// Zone abbreviations are sanitized like other path components (lowercased).
+	const want = "20260512-060405-cst-aibrix-hello-world"
 	if runID != want {
 		t.Fatalf("formatScenarioRunID() = %q, want %q", runID, want)
 	}
@@ -39,7 +40,8 @@ func TestFormatScenarioRunIDUsesUTCZoneAbbreviation(t *testing.T) {
 
 	runID := formatScenarioRunID(localTime, "AIBrix Hello World")
 
-	const want = "20260511-150405-UTC-aibrix-hello-world"
+	// 15:04 PDT == 22:04 UTC; zone label is sanitized to lowercase.
+	const want = "20260511-220405-utc-aibrix-hello-world"
 	if runID != want {
 		t.Fatalf("formatScenarioRunID() = %q, want %q", runID, want)
 	}
