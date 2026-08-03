@@ -378,7 +378,7 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 
 	switch req.Request.(type) {
 	case *extProcPb.ProcessingRequest_RequestHeaders:
-		resp, st.user, st.rpm, st.routerCtx = s.HandleRequestHeaders(st.ctx, st.requestID, req)
+		resp, st.user, st.rpm, st.routerCtx = s.HandleRequestHeaders(st.ctx, st.requestID, st.rootSpan, req)
 		if st.routerCtx != nil {
 			st.model = st.routerCtx.Model
 			st.routerCtx.Span = st.rootSpan

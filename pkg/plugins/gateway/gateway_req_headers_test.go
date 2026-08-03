@@ -25,6 +25,7 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
+	"go.opentelemetry.io/otel/trace"
 
 	routingalgorithms "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -66,6 +67,11 @@ func Test_handleRequestHeaders(t *testing.T) {
 		assert.Equal(t, tt.expected.routingCtx.ReqHeaders, routingCtx.ReqHeaders)
 		assert.Equal(t, tt.expected.rpm, rpm)
 	}
+
+	const (
+		traceID           = "4bf92f3577b34da6a3ce929d0e0e4736"
+		fallbackRequestID = "550e8400-e29b-41d4-a716-446655440000"
+	)
 
 	// Define test cases for different routing and error scenarios
 	tests := []testCase{
@@ -215,6 +221,34 @@ func Test_handleRequestHeaders(t *testing.T) {
 			},
 			validate: defaultSuccessValidator,
 		},
+		{
+			name: "inherit trace ID from traceparent when root span has no trace ID",
+			requestHeaders: []*configPb.HeaderValue{
+				{
+					Key:      HeaderTraceParent,
+					Value:    "00-" + traceID + "-00f067aa0ba902b7-01",
+					RawValue: []byte("00-" + traceID + "-00f067aa0ba902b7-01"),
+				},
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_OK,
+				headers: []*configPb.HeaderValueOption{
+					{Header: &configPb.HeaderValue{Key: HeaderWentIntoReqHeaders, RawValue: []byte("true")}},
+				},
+				routingCtx: &types.RoutingContext{
+					ReqHeaders: map[string]string{
+						HeaderTraceParent: "00-" + traceID + "-00f067aa0ba902b7-01",
+					},
+				},
+				user: utils.User{},
+				rpm:  0,
+			},
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, user utils.User, routingCtx *types.RoutingContext, rpm int64) {
+				defaultSuccessValidator(t, tt, resp, user, routingCtx, rpm)
+				assert.Equal(t, traceID, routingCtx.RequestID)
+				assert.NotEqual(t, fallbackRequestID, routingCtx.RequestID)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -243,15 +277,66 @@ func Test_handleRequestHeaders(t *testing.T) {
 				},
 			}
 
+			rootSpan := trace.SpanFromContext(context.Background())
 			resp, user, rpm, routingCtx := server.HandleRequestHeaders(
 				context.Background(),
-				"test-request-id",
+				fallbackRequestID,
+				rootSpan,
 				req,
 			)
 
 			// Validate response using test-specific validation function
 			tt.validate(subtest, &tt, resp, user, routingCtx, rpm)
 		})
+	}
+}
+
+func TestHandleRequestHeaders_PrefersRootSpanTraceIDOverTraceparent(t *testing.T) {
+	const (
+		rootTraceID   = "4bf92f3577b34da6a3ce929d0e0e4736"
+		headerTraceID = "70f5c2d315194bb7a3ec6ad92e15b131"
+		spanID        = "00f067aa0ba902b7"
+	)
+
+	parsedRootTraceID, err := trace.TraceIDFromHex(rootTraceID)
+	if !assert.NoError(t, err) {
+		return
+	}
+	parsedSpanID, err := trace.SpanIDFromHex(spanID)
+	if !assert.NoError(t, err) {
+		return
+	}
+
+	spanContext := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: parsedRootTraceID,
+		SpanID:  parsedSpanID,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), spanContext)
+	rootSpan := trace.SpanFromContext(ctx)
+
+	traceparent := "00-" + headerTraceID + "-" + spanID + "-01"
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestHeaders{
+			RequestHeaders: &extProcPb.HttpHeaders{
+				Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
+					{
+						Key:      HeaderTraceParent,
+						Value:    traceparent,
+						RawValue: []byte(traceparent),
+					},
+				}},
+			},
+		},
+	}
+
+	server := &Server{}
+	requestID := rootSpan.SpanContext().TraceID().String()
+	_, _, _, routingCtx := server.HandleRequestHeaders(ctx, requestID, rootSpan, req)
+
+	if assert.NotNil(t, routingCtx) {
+		assert.Equal(t, rootTraceID, routingCtx.RequestID)
+		assert.NotEqual(t, headerTraceID, routingCtx.RequestID)
+		assert.Equal(t, traceparent, routingCtx.ReqHeaders[HeaderTraceParent])
 	}
 }
 
@@ -275,7 +360,8 @@ func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 			},
 		}
 
-		resp, user, rpm, routingCtx := server.HandleRequestHeaders(context.Background(), "test-request-id", req)
+		rootSpan := trace.SpanFromContext(context.TODO())
+		resp, user, rpm, routingCtx := server.HandleRequestHeaders(context.Background(), "test-request-id", rootSpan, req)
 
 		assert.Nil(t, resp.GetImmediateResponse())
 		assert.Equal(t, utils.User{}, user)
@@ -302,7 +388,8 @@ func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 			},
 		}
 
-		resp, user, rpm, routingCtx := server.HandleRequestHeaders(context.Background(), "test-request-id", req)
+		rootSpan := trace.SpanFromContext(context.TODO())
+		resp, user, rpm, routingCtx := server.HandleRequestHeaders(context.Background(), "test-request-id", rootSpan, req)
 
 		assert.Equal(t, envoyTypePb.StatusCode_Unauthorized, resp.GetImmediateResponse().GetStatus().GetCode())
 		assert.Equal(t, utils.User{}, user)
@@ -330,7 +417,8 @@ func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 			},
 		}
 
-		resp, user, rpm, routingCtx := server.HandleRequestHeaders(context.Background(), "test-request-id", req)
+		rootSpan := trace.SpanFromContext(context.TODO())
+		resp, user, rpm, routingCtx := server.HandleRequestHeaders(context.Background(), "test-request-id", rootSpan, req)
 
 		assert.Equal(t, envoyTypePb.StatusCode_Unauthorized, resp.GetImmediateResponse().GetStatus().GetCode())
 		assert.Equal(t, utils.User{}, user)
@@ -357,7 +445,8 @@ func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 			},
 		}
 
-		resp, user, rpm, routingCtx := server.HandleRequestHeaders(context.Background(), "test-request-id", req)
+		rootSpan := trace.SpanFromContext(context.TODO())
+		resp, user, rpm, routingCtx := server.HandleRequestHeaders(context.Background(), "test-request-id", rootSpan, req)
 
 		assert.Equal(t, envoyTypePb.StatusCode_Unauthorized, resp.GetImmediateResponse().GetStatus().GetCode())
 		assert.Equal(t, utils.User{}, user)
