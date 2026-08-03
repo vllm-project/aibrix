@@ -74,6 +74,8 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			reqHeaders[n.Key] = string(n.RawValue)
 		case HeaderSessionKey:
 			reqHeaders[n.Key] = string(n.RawValue)
+		case HeaderTraceParent: // Preserve the trace context for requests initiated by the gateway plugin. like PD
+			reqHeaders[n.Key] = string(n.RawValue)
 		}
 	}
 

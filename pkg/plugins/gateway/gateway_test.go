@@ -28,6 +28,7 @@ import (
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -37,6 +38,7 @@ import (
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -1804,4 +1806,75 @@ func TestModelInFlightTracking_ModelChange(t *testing.T) {
 	require.Len(t, gauges, 4)
 	require.Equal(t, "actual-model", gauges[3]["model"])
 	require.Equal(t, "dec", gauges[3]["_dir"])
+}
+
+func TestProcess_RequestIDFromSpanContext(t *testing.T) {
+	traceID, err := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	require.NoError(t, err)
+
+	spanID, err := trace.SpanIDFromHex("00f067aa0ba902b7")
+	require.NoError(t, err)
+
+	spanContext := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+		Remote:     true,
+	})
+	ctx := trace.ContextWithRemoteSpanContext(context.Background(), spanContext)
+
+	mc := &MockCache{}
+	mc.On(
+		"DoneRequestCount",
+		mock.Anything,
+		traceID.String(),
+		"",
+		int64(0),
+	).Return().Once()
+
+	srv := &mockProcessServer{ctx: ctx}
+	srv.On("Recv").
+		Return((*extProcPb.ProcessingRequest)(nil), io.EOF).
+		Once()
+
+	s := newProcessTestServer(openShutdownCh(), mc)
+
+	err = s.Process(srv)
+
+	assert.ErrorIs(t, err, io.EOF)
+	mc.AssertExpectations(t)
+	srv.AssertExpectations(t)
+}
+
+func TestProcess_RequestIDFallsBackToUUID(t *testing.T) {
+	var gotRequestID string
+
+	mc := &MockCache{}
+	mc.On(
+		"DoneRequestCount",
+		mock.Anything,
+		mock.AnythingOfType("string"),
+		"",
+		int64(0),
+	).Run(func(args mock.Arguments) {
+		gotRequestID = args.String(1)
+	}).Return().Once()
+
+	srv := &mockProcessServer{ctx: context.Background()}
+	srv.On("Recv").
+		Return((*extProcPb.ProcessingRequest)(nil), io.EOF).
+		Once()
+
+	s := newProcessTestServer(openShutdownCh(), mc)
+
+	err := s.Process(srv)
+
+	assert.ErrorIs(t, err, io.EOF)
+	assert.NotEmpty(t, gotRequestID)
+
+	_, parseErr := uuid.Parse(gotRequestID)
+	assert.NoError(t, parseErr, "request ID should fall back to a UUID")
+
+	mc.AssertExpectations(t)
+	srv.AssertExpectations(t)
 }
