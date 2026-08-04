@@ -197,8 +197,6 @@ var _ = Describe("SimpleQueue", func() {
 			numWorkers := 10
 			const perWorker = 100
 
-			// queue = NewSimpleQueue[int](numWorkers * perWorker)
-
 			// Concurrent enqueues
 			wg.Add(numWorkers)
 			for i := 0; i < numWorkers; i++ {
@@ -212,8 +210,9 @@ var _ = Describe("SimpleQueue", func() {
 				}(i)
 			}
 
-			// Concurrent dequeues
-			seen := int32(0)
+			// Concurrent peeks. Nothing dequeues in this spec, so the queue
+			// only grows and Peek after a Len() > 0 check can never fail,
+			// regardless of goroutine scheduling.
 			numErrs := int32(0)
 			wg.Add(numWorkers)
 			for i := 0; i < numWorkers; i++ {
@@ -223,12 +222,9 @@ var _ = Describe("SimpleQueue", func() {
 						if queue.Len() > 0 {
 							_, err := queue.Peek(time.Now(), nil)
 							if err != nil {
-								// This is possible because there may be more dequeue calls than enqueue calls at some time.
 								atomic.AddInt32(&numErrs, 1)
-								continue
 							}
 							runtime.Gosched()
-							atomic.AddInt32(&seen, 1)
 						}
 					}
 				}(i)
@@ -238,36 +234,51 @@ var _ = Describe("SimpleQueue", func() {
 
 			// Verify all enqueued
 			Expect(queue.Len()).To(Equal(numWorkers * perWorker))
-			// Verify non duplicated dequeue object.
-			Expect(seen > 0).To(BeTrue())
 			Expect(numErrs).To(Equal(int32(0)))
+
+			// Deterministically verify peek() works on a non-empty queue:
+			// after wg.Wait() all enqueued items are present.
+			_, err := queue.Peek(time.Now(), nil)
+			Expect(err).NotTo(HaveOccurred())
 		})
 
 		It("should maintain consistency under load", func() {
 			const total = 1000
-			capacity := queue.Cap()
 			var wg sync.WaitGroup
 
+			enqOK := int32(0)
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				for i := 0; i < total; i++ {
-					// nolint: errcheck
-					queue.Enqueue(i, time.Now())
+					// Enqueue values starting at 1: the zero value is rejected
+					// with ErrZeroValueNotSupported.
+					if queue.Enqueue(i+1, time.Now()) == nil {
+						atomic.AddInt32(&enqOK, 1)
+					}
 				}
 			}()
 
+			deqOK := int32(0)
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				for i := 0; i < total; i++ {
-					// nolint: errcheck
-					queue.Dequeue(time.Now())
+					if _, err := queue.Dequeue(time.Now()); err == nil {
+						atomic.AddInt32(&deqOK, 1)
+					}
 				}
 			}()
 
-			Consistently(queue.Cap(), 1*time.Second).Should(Equal(capacity))
 			wg.Wait()
+
+			// Deterministic invariant: Len is derived from the cursors, and a
+			// successful Enqueue/Dequeue advances the enqueue/dequeue cursor
+			// exactly once while a failed one advances neither. This holds
+			// regardless of goroutine scheduling.
+			Expect(queue.Len()).To(Equal(int(atomic.LoadInt32(&enqOK) - atomic.LoadInt32(&deqOK))))
+			// SimpleQueue expands instead of rejecting, so every enqueue succeeds.
+			Expect(atomic.LoadInt32(&enqOK)).To(Equal(int32(total)))
 		})
 	})
 
