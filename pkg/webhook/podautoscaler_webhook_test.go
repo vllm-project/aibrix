@@ -276,7 +276,7 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 				},
 			},
 			expectError: true,
-			errorMsg:    "observeWindowSeconds",
+			errorMsg:    "panicWindowSeconds",
 		},
 	}
 	for name, tt := range tests {

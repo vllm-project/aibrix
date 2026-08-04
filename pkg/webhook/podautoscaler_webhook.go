@@ -284,10 +284,10 @@ func validateMetricWindows(pa *autoscalingv1alpha1.PodAutoscaler, specPath *fiel
 	if pa.Spec.ObserveWindowSeconds != nil {
 		observeWindow = *pa.Spec.ObserveWindowSeconds
 		if observeWindow <= 0 {
-			allErrs = append(allErrs, field.Invalid(specPath.Child("observeWindowSeconds"), pa.Spec.ObserveWindowSeconds, "must be greater than 0"))
+			allErrs = append(allErrs, field.Invalid(specPath.Child("observeWindowSeconds"), observeWindow, "must be greater than 0"))
 		}
 		if observeWindow > maxMetricWindowSeconds {
-			allErrs = append(allErrs, field.Invalid(specPath.Child("observeWindowSeconds"), pa.Spec.ObserveWindowSeconds, fmt.Sprintf("must be less than or equal to %d", maxMetricWindowSeconds)))
+			allErrs = append(allErrs, field.Invalid(specPath.Child("observeWindowSeconds"), observeWindow, fmt.Sprintf("must be less than or equal to %d", maxMetricWindowSeconds)))
 		}
 	}
 
@@ -295,14 +295,14 @@ func validateMetricWindows(pa *autoscalingv1alpha1.PodAutoscaler, specPath *fiel
 	if pa.Spec.PanicWindowSeconds != nil {
 		panicWindow = *pa.Spec.PanicWindowSeconds
 		if panicWindow <= 0 {
-			allErrs = append(allErrs, field.Invalid(specPath.Child("panicWindowSeconds"), pa.Spec.PanicWindowSeconds, "must be greater than 0"))
+			allErrs = append(allErrs, field.Invalid(specPath.Child("panicWindowSeconds"), panicWindow, "must be greater than 0"))
 		}
 		if panicWindow > maxMetricWindowSeconds {
-			allErrs = append(allErrs, field.Invalid(specPath.Child("panicWindowSeconds"), pa.Spec.PanicWindowSeconds, fmt.Sprintf("must be less than or equal to %d", maxMetricWindowSeconds)))
+			allErrs = append(allErrs, field.Invalid(specPath.Child("panicWindowSeconds"), panicWindow, fmt.Sprintf("must be less than or equal to %d", maxMetricWindowSeconds)))
 		}
 	}
 	if panicWindow > observeWindow {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("panicWindowSeconds"), pa.Spec.PanicWindowSeconds, "must be less than or equal to observeWindowSeconds"))
+		allErrs = append(allErrs, field.Invalid(specPath.Child("panicWindowSeconds"), panicWindow, "must be less than or equal to observeWindowSeconds"))
 	}
 
 	return allErrs
