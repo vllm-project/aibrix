@@ -19,7 +19,6 @@ package webhook
 import (
 	"context"
 	"fmt"
-	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -39,7 +38,7 @@ import (
 var podautoscalerlog = logf.Log.WithName("podautoscaler-resource")
 
 const (
-	maxMetricWindowSeconds      = int64(time.Duration(1<<63-1) / time.Second)
+	maxMetricWindowSeconds      = int64(3600)
 	defaultObserveWindowSeconds = int64(180)
 	defaultPanicWindowSeconds   = int64(60)
 )

@@ -82,14 +82,14 @@ type PodAutoscalerSpec struct {
 	// If unset, the autoscaler uses its internal default.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=9223372036
+	// +kubebuilder:validation:Maximum=3600
 	ObserveWindowSeconds *int64 `json:"observeWindowSeconds,omitempty"`
 
 	// PanicWindowSeconds controls the short metric window used by KPA panic-mode decisions.
 	// If unset, the autoscaler uses its internal default.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=9223372036
+	// +kubebuilder:validation:Maximum=3600
 	PanicWindowSeconds *int64 `json:"panicWindowSeconds,omitempty"`
 
 	// ScalingStrategy defines the strategy to use for scaling.

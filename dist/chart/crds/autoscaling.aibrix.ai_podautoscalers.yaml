@@ -83,12 +83,12 @@ spec:
                 type: integer
               observeWindowSeconds:
                 format: int64
-                maximum: 9223372036
+                maximum: 3600
                 minimum: 1
                 type: integer
               panicWindowSeconds:
                 format: int64
-                maximum: 9223372036
+                maximum: 3600
                 minimum: 1
                 type: integer
               scaleTargetRef:

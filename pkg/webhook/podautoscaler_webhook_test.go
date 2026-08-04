@@ -243,7 +243,7 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 						Kind: "Deployment",
 					},
 					ScalingStrategy:      autoscalingv1alpha1.KPA,
-					ObserveWindowSeconds: ptr.To[int64](9223372037),
+					ObserveWindowSeconds: ptr.To[int64](3601),
 					MetricsSources: []autoscalingv1alpha1.MetricSource{
 						{
 							MetricSourceType: autoscalingv1alpha1.RESOURCE,
@@ -254,7 +254,7 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 				},
 			},
 			expectError: true,
-			errorMsg:    "less than or equal to 9223372036",
+			errorMsg:    "less than or equal to 3600",
 		},
 		"Panic Window Must Not Exceed Observe Window": {
 			pa: &autoscalingv1alpha1.PodAutoscaler{

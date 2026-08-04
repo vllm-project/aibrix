@@ -93,7 +93,7 @@ const (
 	ReasonConfigured                = "Configured"
 	maxScalingHistorySize           = 5
 	minScalingHistoryRecordInterval = 5 * time.Second
-	maxMetricWindowSeconds          = int64(time.Duration(1<<63-1) / time.Second)
+	maxMetricWindowSeconds          = int64(3600)
 )
 
 var (

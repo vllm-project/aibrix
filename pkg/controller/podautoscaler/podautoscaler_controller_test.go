@@ -237,7 +237,7 @@ func TestValidateSpecRejectsMetricWindowOverflow(t *testing.T) {
 	if result.Reason != ReasonInvalidSpec {
 		t.Fatalf("expected reason=%s, got %s", ReasonInvalidSpec, result.Reason)
 	}
-	if result.Message != "observeWindowSeconds must be less than or equal to 9223372036." {
+	if result.Message != "observeWindowSeconds must be less than or equal to 3600." {
 		t.Fatalf("unexpected message: %s", result.Message)
 	}
 }
