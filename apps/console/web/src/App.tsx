@@ -24,6 +24,9 @@ import { Playground } from './components/Playground';
 import { Deployments } from './components/Deployments';
 import { CreateDeployment } from './components/CreateDeployment';
 import { DeploymentDetail } from './components/DeploymentDetail';
+import { LoraAdapters } from './components/LoraAdapters';
+import { CreateLoraAdapter } from './components/CreateLoraAdapter';
+import { LoraAdapterDetail } from './components/LoraAdapterDetail';
 import { ApiKeysPage } from './components/settings/ApiKeysPage';
 import { SecretsPage } from './components/settings/SecretsPage';
 import { Toast } from './components/settings/Toast';
@@ -151,6 +154,38 @@ function DeploymentDetailRoute() {
   );
 }
 
+function LoraAdaptersRoute() {
+  const navigate = useNavigate();
+  return (
+    <LoraAdapters
+      onSelectAdapter={(name) => navigate(`/lora/${name}`)}
+      onCreateAdapter={() => navigate('/lora/new')}
+    />
+  );
+}
+
+function CreateLoraAdapterRoute() {
+  const navigate = useNavigate();
+  return (
+    <CreateLoraAdapter
+      onBack={() => navigate('/lora')}
+      onCreated={(name) => navigate(`/lora/${name}`)}
+    />
+  );
+}
+
+function LoraAdapterDetailRoute() {
+  const { adapterName } = useParams<{ adapterName: string }>();
+  const navigate = useNavigate();
+  if (!adapterName) return <Navigate to="/lora" replace />;
+  return (
+    <LoraAdapterDetail
+      adapterName={adapterName}
+      onBack={() => navigate('/lora')}
+    />
+  );
+}
+
 function ComingSoon({ title, description, features }: {
   title: string;
   description: string;
@@ -209,21 +244,6 @@ function PlaygroundComingSoon() {
         'Chat with any registered model in real time',
         'Tune sampling parameters and system prompts on the fly',
         'Compare responses side by side across models',
-      ]}
-    />
-  );
-}
-
-function LoraComingSoon() {
-  return (
-    <ComingSoon
-      title="LoRA Adapters"
-      description="Deploy lightweight LoRA adapters on top of existing base model deployments. Fine-tune model behavior without the cost of full model training or separate deployments."
-      features={[
-        'Select an existing deployment as the base model',
-        'Upload and manage LoRA adapter weights',
-        'Hot-swap adapters without restarting the deployment',
-        'Monitor adapter-specific performance metrics',
       ]}
     />
   );
@@ -318,7 +338,9 @@ export default function App() {
               path="/deployments/:deploymentId"
               element={features.deployments ? <DeploymentDetailRoute /> : <Navigate to="/deployments" replace />}
             />
-            <Route path="/lora" element={<LoraComingSoon />} />
+            <Route path="/lora" element={<LoraAdaptersRoute />} />
+            <Route path="/lora/new" element={<CreateLoraAdapterRoute />} />
+            <Route path="/lora/:adapterName" element={<LoraAdapterDetailRoute />} />
 
             <Route path="/settings" element={<Navigate to="/settings/api-keys" replace />} />
             <Route path="/settings/api-keys" element={<SettingsRoute tab="api-keys" showToast={showToast} />} />

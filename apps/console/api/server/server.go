@@ -59,6 +59,7 @@ type Server struct {
 	planner        plannerapi.Planner
 	injector       error_injection.Injector
 	metricsHandler http.Handler
+	clusterClients provider.ClusterClientProvider
 }
 
 // New creates a new console Server from configuration.
@@ -130,6 +131,7 @@ func New(cfg *config.Config) *Server {
 		auth:           auth,
 		injector:       injector,
 		metricsHandler: metricsHandler,
+		clusterClients: provider.NewKubernetesClientProvider(cfg.KubernetesProvider),
 	}
 }
 
@@ -160,7 +162,7 @@ func (s *Server) StartGRPC(addr string) error {
 	}
 	deploymentProviders := provider.NewRegistry(
 		provider.NewKubernetesDeploymentProvider(
-			provider.NewKubernetesClientProvider(s.cfg.KubernetesProvider),
+			s.clusterClients,
 			s.cfg.KubernetesWorkload,
 		),
 	)
@@ -235,6 +237,12 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 	// Register file proxy routes
 	fileHandler := handler.NewFileHandler(s.cfg.MetadataServiceURL, s.injector, s.store)
 	fileHandler.RegisterRoutes(mux)
+
+	// Register the Kubernetes-backed ModelAdapter BFF.
+	modelAdapterHandler := handler.NewModelAdapterHandler(s.clusterClients)
+	if err := modelAdapterHandler.RegisterRoutes(mux); err != nil {
+		return err
+	}
 
 	// Register auth routes
 	s.auth.RegisterAuthRoutes(mux)
