@@ -1,7 +1,7 @@
 ## 1. API and Generated Artifacts
 
 - [x] 1.1 Add `ScheduledReplicaBounds` and `scheduledBounds` fields to `api/autoscaling/v1alpha1/podautoscaler_types.go` with kubebuilder validation markers.
-- [ ] 1.2 Regenerate deepcopy, clientset, informer, lister, applyconfiguration, and CRD manifests for the updated PodAutoscaler API.
+- [x] 1.2 Regenerate deepcopy, clientset, informer, lister, applyconfiguration, and CRD manifests for the updated PodAutoscaler API.
 - [x] 1.3 Add or update PodAutoscaler API tests covering deepcopy/default serialization behavior for `scheduledBounds`.
 
 ## 2. Effective Bounds Resolver
