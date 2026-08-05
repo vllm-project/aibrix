@@ -382,6 +382,7 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		if st.routerCtx != nil {
 			st.model = st.routerCtx.Model
 			st.routerCtx.Span = st.rootSpan
+			st.requestID = st.routerCtx.RequestID // sync requestID if it was overridden by traceparent header
 		}
 		st.metricLabel = "gateway_req_headers"
 
