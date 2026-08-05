@@ -277,6 +277,8 @@ class TestBatchJobEntityCreation:
                     "request_timeout_seconds": 45,
                     "adaptive_concurrency": True,
                     "adaptive_max_factor": 16,
+                    "adaptive_healthy_window": 2,
+                    "adaptive_additive_increase": 4,
                     "retry_policy": {
                         "max_retries": 5,
                         "base_delay_seconds": 2,
@@ -295,6 +297,8 @@ class TestBatchJobEntityCreation:
         assert restored is not None
         assert restored.client is not None
         assert restored.client.request_timeout_seconds == 45
+        assert restored.client.adaptive_healthy_window == 2
+        assert restored.client.adaptive_additive_increase == 4
         assert restored.client.retry_policy is not None
         assert restored.client.retry_policy.base_delay_seconds == 2
 

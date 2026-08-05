@@ -49,6 +49,10 @@ from aibrix.batch.client import (
     InferenceRequest,
     RetryConfig,
 )
+from aibrix.batch.client.concurrency import (
+    DEFAULT_ADAPTIVE_ADDITIVE_INCREASE,
+    DEFAULT_ADAPTIVE_HEALTHY_WINDOW,
+)
 from aibrix.batch.job_driver.driver import TerminateResult
 from aibrix.batch.job_driver.error_injection import (
     ACTION_INTERRUPT_RUNTIME,
@@ -83,6 +87,8 @@ from aibrix.metadata.core.metrics import Emitter, T, metrics_names
 logger = init_logger(__name__)
 
 _ADAPTIVE_MAX_FACTOR_ENV = "AIBRIX_BATCH_ADAPTIVE_MAX_FACTOR"
+_ADAPTIVE_HEALTHY_WINDOW_ENV = "AIBRIX_BATCH_ADAPTIVE_HEALTHY_WINDOW"
+_ADAPTIVE_ADDITIVE_INCREASE_ENV = "AIBRIX_BATCH_ADAPTIVE_ADDITIVE_INCREASE"
 _TELEMETRY_INTERVAL_ENV = "AIBRIX_BATCH_TELEMETRY_INTERVAL_SECONDS"
 _INFERENCE_MAX_RETRIES_ENV = "AIBRIX_BATCH_INFERENCE_MAX_RETRIES"
 _NO_ENDPOINT_MAX_RETRIES_ENV = "AIBRIX_BATCH_NO_ENDPOINT_MAX_RETRIES"
@@ -104,6 +110,26 @@ def _adaptive_max_factor() -> float:
     return max(
         _float_env(_ADAPTIVE_MAX_FACTOR_ENV, _DEFAULT_ADAPTIVE_MAX_FACTOR),
         1.0,
+    )
+
+
+def _adaptive_healthy_window() -> int:
+    return max(
+        _int_env(
+            _ADAPTIVE_HEALTHY_WINDOW_ENV,
+            DEFAULT_ADAPTIVE_HEALTHY_WINDOW,
+        ),
+        1,
+    )
+
+
+def _adaptive_additive_increase() -> int:
+    return max(
+        _int_env(
+            _ADAPTIVE_ADDITIVE_INCREASE_ENV,
+            DEFAULT_ADAPTIVE_ADDITIVE_INCREASE,
+        ),
+        1,
     )
 
 
@@ -893,10 +919,22 @@ class BaseJobDriver:
             if client is not None and client.adaptive_max_factor is not None
             else _adaptive_max_factor()
         )
+        adaptive_healthy_window = (
+            client.adaptive_healthy_window
+            if client is not None and client.adaptive_healthy_window is not None
+            else _adaptive_healthy_window()
+        )
+        adaptive_additive_increase = (
+            client.adaptive_additive_increase
+            if client is not None and client.adaptive_additive_increase is not None
+            else _adaptive_additive_increase()
+        )
         max_concurrency = client.max_concurrency if client is not None else None
         kwargs: Dict[str, Any] = {
             "adaptive_concurrency": adaptive,
             "adaptive_max_factor": adaptive_max_factor,
+            "adaptive_healthy_window": adaptive_healthy_window,
+            "adaptive_additive_increase": adaptive_additive_increase,
         }
         if max_concurrency is not None:
             if adaptive:

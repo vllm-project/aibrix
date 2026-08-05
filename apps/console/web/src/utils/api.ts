@@ -104,6 +104,8 @@ export interface JobClientConfig {
   maxConcurrency?: number;       // absolute in-flight cap, 1..1024
   adaptiveConcurrency?: boolean; // grow concurrency adaptively
   adaptiveMaxFactor?: number;    // adaptive growth factor, >= 1
+  adaptiveHealthyWindow?: number; // healthy completions per growth step, >= 1
+  adaptiveAdditiveIncrease?: number; // minimum probe and post-probe growth step, >= 1
   retryPolicy?: JobClientRetryPolicy;
 }
 

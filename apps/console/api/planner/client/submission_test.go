@@ -30,14 +30,18 @@ func TestAIBrixExtraBodyClientSerialization(t *testing.T) {
 	maxConc := int32(256)
 	adaptive := true
 	factor := 8.0
+	healthyWindow := int32(4)
+	additiveIncrease := int32(2)
 	retries := int32(5)
 	baseDelay := 2.0
 
 	eb := AIBrixExtraBody{
 		Client: &plannerapi.ClientConfig{
-			MaxConcurrency:      &maxConc,
-			AdaptiveConcurrency: &adaptive,
-			AdaptiveMaxFactor:   &factor,
+			MaxConcurrency:           &maxConc,
+			AdaptiveConcurrency:      &adaptive,
+			AdaptiveMaxFactor:        &factor,
+			AdaptiveHealthyWindow:    &healthyWindow,
+			AdaptiveAdditiveIncrease: &additiveIncrease,
 			RetryPolicy: &plannerapi.ClientRetryPolicy{
 				MaxRetries:       &retries,
 				BaseDelaySeconds: &baseDelay,
@@ -57,7 +61,14 @@ func TestAIBrixExtraBodyClientSerialization(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	for _, key := range []string{"max_concurrency", "adaptive_concurrency", "adaptive_max_factor", "retry_policy"} {
+	for _, key := range []string{
+		"max_concurrency",
+		"adaptive_concurrency",
+		"adaptive_max_factor",
+		"adaptive_healthy_window",
+		"adaptive_additive_increase",
+		"retry_policy",
+	} {
 		if _, ok := decoded.Client[key]; !ok {
 			t.Errorf("expected aibrix.client.%s in %s", key, raw)
 		}

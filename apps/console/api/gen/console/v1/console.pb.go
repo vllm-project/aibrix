@@ -2209,13 +2209,15 @@ func (x *JobResourceRequest) GetProviderConfig() *structpb.Struct {
 // fields use proto3 presence so "unset" (fall back to env defaults) is
 // distinguishable from an explicit zero.
 type JobClientConfig struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	MaxConcurrency      *int32                 `protobuf:"varint,1,opt,name=max_concurrency,json=maxConcurrency,proto3,oneof" json:"max_concurrency,omitempty"`                // absolute in-flight cap, 1..1024
-	AdaptiveConcurrency *bool                  `protobuf:"varint,2,opt,name=adaptive_concurrency,json=adaptiveConcurrency,proto3,oneof" json:"adaptive_concurrency,omitempty"` // grow concurrency adaptively
-	AdaptiveMaxFactor   *float64               `protobuf:"fixed64,3,opt,name=adaptive_max_factor,json=adaptiveMaxFactor,proto3,oneof" json:"adaptive_max_factor,omitempty"`    // adaptive growth factor, >= 1
-	RetryPolicy         *JobClientRetryPolicy  `protobuf:"bytes,4,opt,name=retry_policy,json=retryPolicy,proto3" json:"retry_policy,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	state                    protoimpl.MessageState `protogen:"open.v1"`
+	MaxConcurrency           *int32                 `protobuf:"varint,1,opt,name=max_concurrency,json=maxConcurrency,proto3,oneof" json:"max_concurrency,omitempty"`                // absolute in-flight cap, 1..1024
+	AdaptiveConcurrency      *bool                  `protobuf:"varint,2,opt,name=adaptive_concurrency,json=adaptiveConcurrency,proto3,oneof" json:"adaptive_concurrency,omitempty"` // grow concurrency adaptively
+	AdaptiveMaxFactor        *float64               `protobuf:"fixed64,3,opt,name=adaptive_max_factor,json=adaptiveMaxFactor,proto3,oneof" json:"adaptive_max_factor,omitempty"`    // adaptive growth factor, >= 1
+	RetryPolicy              *JobClientRetryPolicy  `protobuf:"bytes,4,opt,name=retry_policy,json=retryPolicy,proto3" json:"retry_policy,omitempty"`
+	AdaptiveHealthyWindow    *int32                 `protobuf:"varint,5,opt,name=adaptive_healthy_window,json=adaptiveHealthyWindow,proto3,oneof" json:"adaptive_healthy_window,omitempty"`          // healthy completions per growth step, >= 1
+	AdaptiveAdditiveIncrease *int32                 `protobuf:"varint,6,opt,name=adaptive_additive_increase,json=adaptiveAdditiveIncrease,proto3,oneof" json:"adaptive_additive_increase,omitempty"` // minimum probe and post-probe growth step, >= 1
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *JobClientConfig) Reset() {
@@ -2274,6 +2276,20 @@ func (x *JobClientConfig) GetRetryPolicy() *JobClientRetryPolicy {
 		return x.RetryPolicy
 	}
 	return nil
+}
+
+func (x *JobClientConfig) GetAdaptiveHealthyWindow() int32 {
+	if x != nil && x.AdaptiveHealthyWindow != nil {
+		return *x.AdaptiveHealthyWindow
+	}
+	return 0
+}
+
+func (x *JobClientConfig) GetAdaptiveAdditiveIncrease() int32 {
+	if x != nil && x.AdaptiveAdditiveIncrease != nil {
+		return *x.AdaptiveAdditiveIncrease
+	}
+	return 0
 }
 
 type JobClientRetryPolicy struct {
@@ -5962,15 +5978,19 @@ const file_console_v1_console_proto_rawDesc = "" +
 	"max_tokensR\vtemperatureR\x05top_pR\x01n\"r\n" +
 	"\x12JobResourceRequest\x12\x1a\n" +
 	"\breplicas\x18\x01 \x01(\x05R\breplicas\x12@\n" +
-	"\x0fprovider_config\x18\x02 \x01(\v2\x17.google.protobuf.StructR\x0eproviderConfig\"\xb6\x02\n" +
+	"\x0fprovider_config\x18\x02 \x01(\v2\x17.google.protobuf.StructR\x0eproviderConfig\"\xf1\x03\n" +
 	"\x0fJobClientConfig\x12,\n" +
 	"\x0fmax_concurrency\x18\x01 \x01(\x05H\x00R\x0emaxConcurrency\x88\x01\x01\x126\n" +
 	"\x14adaptive_concurrency\x18\x02 \x01(\bH\x01R\x13adaptiveConcurrency\x88\x01\x01\x123\n" +
 	"\x13adaptive_max_factor\x18\x03 \x01(\x01H\x02R\x11adaptiveMaxFactor\x88\x01\x01\x12C\n" +
-	"\fretry_policy\x18\x04 \x01(\v2 .console.v1.JobClientRetryPolicyR\vretryPolicyB\x12\n" +
+	"\fretry_policy\x18\x04 \x01(\v2 .console.v1.JobClientRetryPolicyR\vretryPolicy\x12;\n" +
+	"\x17adaptive_healthy_window\x18\x05 \x01(\x05H\x03R\x15adaptiveHealthyWindow\x88\x01\x01\x12A\n" +
+	"\x1aadaptive_additive_increase\x18\x06 \x01(\x05H\x04R\x18adaptiveAdditiveIncrease\x88\x01\x01B\x12\n" +
 	"\x10_max_concurrencyB\x17\n" +
 	"\x15_adaptive_concurrencyB\x16\n" +
-	"\x14_adaptive_max_factor\"\xb5\x02\n" +
+	"\x14_adaptive_max_factorB\x1a\n" +
+	"\x18_adaptive_healthy_windowB\x1d\n" +
+	"\x1b_adaptive_additive_increase\"\xb5\x02\n" +
 	"\x14JobClientRetryPolicy\x12$\n" +
 	"\vmax_retries\x18\x01 \x01(\x05H\x00R\n" +
 	"maxRetries\x88\x01\x01\x121\n" +

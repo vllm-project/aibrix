@@ -149,6 +149,8 @@ class AibrixExtension(BaseModel):
                         "max_concurrency": 1024,
                         "adaptive_concurrency": True,
                         "adaptive_max_factor": 16,
+                        "adaptive_healthy_window": 8,
+                        "adaptive_additive_increase": 1,
                         "retry_policy": {
                             "max_retries": 5,
                             "base_delay_seconds": 2,

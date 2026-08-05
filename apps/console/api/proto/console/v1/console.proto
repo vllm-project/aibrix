@@ -363,10 +363,12 @@ message JobResourceRequest {
 // fields use proto3 presence so "unset" (fall back to env defaults) is
 // distinguishable from an explicit zero.
 message JobClientConfig {
-  optional int32 max_concurrency = 1;       // absolute in-flight cap, 1..1024
-  optional bool adaptive_concurrency = 2;   // grow concurrency adaptively
-  optional double adaptive_max_factor = 3;  // adaptive growth factor, >= 1
+  optional int32 max_concurrency = 1;             // absolute in-flight cap, 1..1024
+  optional bool adaptive_concurrency = 2;         // grow concurrency adaptively
+  optional double adaptive_max_factor = 3;        // adaptive growth factor, >= 1
   JobClientRetryPolicy retry_policy = 4;
+  optional int32 adaptive_healthy_window = 5;     // healthy completions per growth step, >= 1
+  optional int32 adaptive_additive_increase = 6;  // minimum probe and post-probe growth step, >= 1
 }
 
 message JobClientRetryPolicy {
@@ -546,6 +548,8 @@ message CreateModelRequest {
 //                   "max_concurrency": 1024,         # optional job-global cap, 1..1024
 //                   "adaptive_concurrency": true,    # optional
 //                   "adaptive_max_factor": 16,       # optional, >= 1
+//                   "adaptive_healthy_window": 8,     # optional, >= 1
+//                   "adaptive_additive_increase": 1,  # optional, >= 1
 //                   "retry_policy": {                # optional
 //                       "max_retries": 5,            # optional, >= 0
 //                       "base_delay_seconds": 2,     # optional, >= 0
@@ -584,7 +588,7 @@ message CreateModelRequest {
 //     telemetry/logging interval, QPS, request timeout, or fine-grained adaptive
 //     controller internals.
 //   - client.max_concurrency is an absolute job-global in-flight cap, hard
-//     limited to 256 (requests above are rejected). When adaptive_concurrency
+//     limited to 1024 (requests above are rejected). When adaptive_concurrency
 //     is true, it caps adaptive growth. When adaptive_concurrency is false, it
 //     is the fixed concurrency. If omitted, adaptive jobs keep the
 //     source.capacity * adaptive_max_factor upper bound, and fixed jobs use

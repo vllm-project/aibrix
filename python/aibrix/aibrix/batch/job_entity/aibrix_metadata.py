@@ -97,6 +97,8 @@ class ClientConfig(_Strict):
     )
     adaptive_concurrency: Optional[bool] = None
     adaptive_max_factor: Optional[float] = Field(default=None, ge=1)
+    adaptive_healthy_window: Optional[int] = Field(default=None, ge=1)
+    adaptive_additive_increase: Optional[int] = Field(default=None, ge=1)
     retry_policy: Optional[ClientRetryPolicy] = None
 
 

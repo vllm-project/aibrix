@@ -354,6 +354,8 @@ def test_batch_spec_accepts_client_config():
                     "max_concurrency": MAX_CLIENT_CONCURRENCY,
                     "adaptive_concurrency": True,
                     "adaptive_max_factor": 16,
+                    "adaptive_healthy_window": 2,
+                    "adaptive_additive_increase": 4,
                     "retry_policy": {
                         "max_retries": 5,
                         "base_delay_seconds": 2,
@@ -372,6 +374,8 @@ def test_batch_spec_accepts_client_config():
     assert batch_job_spec.aibrix.client.max_concurrency == MAX_CLIENT_CONCURRENCY
     assert batch_job_spec.aibrix.client.adaptive_concurrency is True
     assert batch_job_spec.aibrix.client.adaptive_max_factor == 16
+    assert batch_job_spec.aibrix.client.adaptive_healthy_window == 2
+    assert batch_job_spec.aibrix.client.adaptive_additive_increase == 4
     retry = batch_job_spec.aibrix.client.retry_policy
     assert retry is not None
     assert retry.max_retries == 5
@@ -386,6 +390,8 @@ def test_batch_spec_accepts_client_config():
         {"max_concurrency": 0},
         {"max_concurrency": MAX_CLIENT_CONCURRENCY + 1},
         {"adaptive_max_factor": 0.5},
+        {"adaptive_healthy_window": 0},
+        {"adaptive_additive_increase": 0},
         {"retry_policy": {"max_retries": -1}},
         {"retry_policy": {"base_delay_seconds": -0.1}},
     ],

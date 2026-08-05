@@ -204,6 +204,26 @@ func TestCreateJobDefaultsCompletionWindowTo24h(t *testing.T) {
 	}
 }
 
+func TestToPlannerClientConfigForwardsAdaptiveRampControls(t *testing.T) {
+	healthyWindow := int32(8)
+	additiveIncrease := int32(2)
+
+	got := toPlannerClientConfig(&pb.JobClientConfig{
+		AdaptiveHealthyWindow:    &healthyWindow,
+		AdaptiveAdditiveIncrease: &additiveIncrease,
+	})
+
+	if got == nil {
+		t.Fatal("toPlannerClientConfig returned nil")
+	}
+	if got.AdaptiveHealthyWindow == nil || *got.AdaptiveHealthyWindow != healthyWindow {
+		t.Fatalf("adaptive healthy window = %v, want %d", got.AdaptiveHealthyWindow, healthyWindow)
+	}
+	if got.AdaptiveAdditiveIncrease == nil || *got.AdaptiveAdditiveIncrease != additiveIncrease {
+		t.Fatalf("adaptive additive increase = %v, want %d", got.AdaptiveAdditiveIncrease, additiveIncrease)
+	}
+}
+
 func TestCreateJobAcceptsMaxReplicas(t *testing.T) {
 	planner := &fakeJobPlanner{
 		job: plannerJobWithOwner("job-console-1", "owner@example.com"),

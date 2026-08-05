@@ -372,9 +372,11 @@ func toPlannerClientConfig(c *pb.JobClientConfig) *plannerapi.ClientConfig {
 		return nil
 	}
 	out := &plannerapi.ClientConfig{
-		MaxConcurrency:      c.MaxConcurrency,
-		AdaptiveConcurrency: c.AdaptiveConcurrency,
-		AdaptiveMaxFactor:   c.AdaptiveMaxFactor,
+		MaxConcurrency:           c.MaxConcurrency,
+		AdaptiveConcurrency:      c.AdaptiveConcurrency,
+		AdaptiveMaxFactor:        c.AdaptiveMaxFactor,
+		AdaptiveHealthyWindow:    c.AdaptiveHealthyWindow,
+		AdaptiveAdditiveIncrease: c.AdaptiveAdditiveIncrease,
 	}
 	if rp := c.RetryPolicy; rp != nil {
 		out.RetryPolicy = &plannerapi.ClientRetryPolicy{
