@@ -40,7 +40,9 @@ type ScheduledReplicaBounds struct {
 }
 ```
 
-`PodAutoscalerSpec` gains `ScheduledBounds []ScheduledReplicaBounds`. `cron` defines recurring start instants, `duration` defines how long each occurrence remains active, and optional `startTime` and `endTime` constrain the schedule lifetime. This avoids treating a standard cron expression as a custom window language. The issue example `0 9-18 * * MON-FRI` can represent hourly one-hour windows by setting `duration: 1h`. The implementation should use a maintained cron parser rather than hand parsing cron expressions.
+`PodAutoscalerSpec` gains `ScheduledBounds []ScheduledReplicaBounds`. `cron` defines recurring start instants, `duration` defines how long each occurrence remains active, and optional `startTime` and `endTime` constrain the schedule lifetime. This avoids treating a standard cron expression as a custom window language. The issue example `0 9-18 * * MON-FRI` can represent hourly one-hour windows by setting `duration: 1h`.
+
+The first implementation deliberately supports a simple cron subset only: fixed minute, hour as a single value/list/range, day-of-month as `*`, month as `*`, and day-of-week as `*` or a single value/list/range using names or numbers. Step expressions, restricted day-of-month/month fields, and other complex cron forms are rejected. This keeps overlap validation deterministic and bounded while covering the business-hour use case.
 
 Alternatives considered:
 
@@ -65,7 +67,7 @@ Alternatives considered:
 
 ### Reject overlapping schedules
 
-Admission validation should reject overlapping schedule windows within their active lifetime. This avoids implicit priority surprises when two schedules could both override bounds. Runtime resolution should still be deterministic and pick the first matching entry if validation was bypassed, but controller fallback validation should mark the spec invalid before scaling proceeds.
+Admission validation should reject overlapping schedule windows within their active lifetime. Because the initial cron subset is weekly and bounded, overlap detection can enumerate a representative week of occurrence windows instead of scanning arbitrary cron streams. Runtime resolution should still be deterministic and pick the first matching entry if validation was bypassed, but controller fallback validation should mark the spec invalid before scaling proceeds.
 
 Alternatives considered:
 
@@ -83,7 +85,8 @@ The existing periodic enqueue loop already reconciles all `PodAutoscaler` object
 The validating webhook and controller fallback validation should check:
 
 - schedule names are non-empty and unique within one `PodAutoscaler`;
-- cron, duration, and timezone values parse successfully;
+- cron values parse successfully and fit the supported simple cron subset;
+- duration and timezone values parse successfully;
 - `startTime < endTime` when both are set;
 - `duration > 0`;
 - at least one of scheduled `minReplicas` or `maxReplicas` is set;
@@ -96,7 +99,7 @@ Cron/timezone/duration validation errors should be surfaced with field paths tha
 
 ## Risks / Trade-offs
 
-- [Risk] Cron window overlap detection can be complex for arbitrary cron expressions plus durations. -> Mitigation: keep validation conservative, cover common cron forms in tests, and document unsupported ambiguous overlaps as invalid if the parser cannot prove safety.
+- [Risk] Cron window overlap detection can be complex for arbitrary cron expressions plus durations. -> Mitigation: initially support only a simple weekly cron subset and reject unsupported complex forms.
 - [Risk] Time-sensitive tests can become flaky. -> Mitigation: make the resolver accept `now time.Time` and test it with fixed timestamps and explicit time zones.
 - [Risk] Generated client and CRD artifacts are easy to forget. -> Mitigation: include explicit tasks for deepcopy, client/applyconfiguration, CRD generation, and CRD sync verification.
 - [Risk] HPA minReplicas cannot be zero in the same way custom PA can express scale-to-zero. -> Mitigation: preserve the existing `makeHPA` behavior that omits HPA `minReplicas` when the effective minimum is zero.
@@ -109,5 +112,5 @@ Implementation should regenerate manifests and clients in the same change so API
 
 ## Open Questions
 
-- Which cron library is preferred by project maintainers? The implementation should pick a small maintained library already acceptable for Kubernetes controllers if the repository has no existing cron dependency.
+- Whether maintainers want broader cron support later. The initial implementation intentionally keeps cron simple for predictable validation.
 - Should status expose the current matched schedule and effective bounds? This design keeps it out of the initial scope unless implementation review asks for operator visibility.

@@ -24,6 +24,8 @@ Add typed `spec.scheduledBounds` entries. Each entry defines a named active wind
 - `startTime` and `endTime`: optional schedule lifetime bounds
 - `minReplicas` and `maxReplicas`: optional field-level overrides
 
+The first implementation supports a deliberately simple cron subset: fixed minute, hour as a single value/list/range, day-of-month as `*`, month as `*`, and day-of-week as `*` or a single value/list/range using names or numbers. Step expressions, restricted day-of-month/month fields, and other complex forms are rejected.
+
 Use a single resolver, for example `resolveEffectiveReplicaBounds(pa, now)`, as the source of truth for effective bounds. The resolver returns effective min, effective max, the matched schedule name if any, and an error for invalid runtime configuration.
 
 ## Key Decisions
@@ -31,6 +33,8 @@ Use a single resolver, for example `resolveEffectiveReplicaBounds(pa, now)`, as 
 Use `cron + duration` rather than treating cron as a custom continuous-window language. Standard cron expressions describe trigger instants, not intervals. With this model, `0 9-18 * * MON-FRI` plus `duration: 1h` expresses hourly business-hour windows without inventing ambiguous cron semantics.
 
 Reject overlapping active windows. This keeps the first API version predictable and avoids adding priority semantics before there is evidence that operators need them.
+
+Keep cron support simple in the first version. This covers business-hour schedules such as `0 9-18 * * MON-FRI` and makes overlap checks bounded by a representative week rather than requiring a full cron satisfiability solver.
 
 Default omitted `timezone` to UTC. This avoids controller-local timezone drift and gives deterministic behavior across clusters.
 
@@ -43,7 +47,7 @@ API changes belong in `api/autoscaling/v1alpha1/podautoscaler_types.go`, followe
 Validation should be shared conceptually between admission validation and controller fallback validation:
 
 - schedule name is non-empty and unique
-- cron parses
+- cron parses and fits the supported simple subset
 - duration is present and positive
 - timezone parses or is omitted
 - `startTime < endTime` when both are set
@@ -63,7 +67,7 @@ The existing periodic PodAutoscaler enqueue loop is sufficient for correctness. 
 
 ## Risks
 
-Cron-window overlap detection can become complex with arbitrary expressions and durations. Start with conservative validation and focused tests for common business-hour schedules.
+Cron-window overlap detection becomes complex with arbitrary expressions and durations. The first implementation avoids this by supporting a simple weekly subset and rejecting unsupported complex forms.
 
 Time-sensitive tests can be flaky if they depend on wall clock time. The resolver must accept `now time.Time` and tests should use fixed timestamps and explicit time zones.
 
