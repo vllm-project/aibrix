@@ -190,29 +190,29 @@ git commit -m "feat: validate PodAutoscaler scheduled bounds"
 - Modify: `pkg/controller/podautoscaler/hpa_resources_test.go`
 - Modify: `pkg/controller/podautoscaler/context/context_test.go`
 
-- [ ] **Step 1: Add failing custom strategy tests**
+- [x] **Step 1: Add failing custom strategy tests**
 
 Add tests proving current replicas above scheduled max scale down and below scheduled min scale up.
 
 Run: `go test ./pkg/controller/podautoscaler -run 'TestComputeScaleDecision.*Scheduled' -count=1`
 Expected: FAIL because static bounds are still used.
 
-- [ ] **Step 2: Add failing HPA tests**
+- [x] **Step 2: Add failing HPA tests**
 
 Add tests proving `makeHPA` uses scheduled effective min/max during a matching window and returns to base bounds outside the window.
 
 Run: `go test ./pkg/controller/podautoscaler -run 'TestMakeHPA.*Scheduled' -count=1`
 Expected: FAIL.
 
-- [ ] **Step 3: Wire effective bounds into custom PA**
+- [x] **Step 3: Wire effective bounds into custom PA**
 
 Use `resolveEffectiveReplicaBounds(&pa, time.Now())` once per reconciliation path and pass the result into boundary checks and scaling context setup. Keep original `pa.Spec` intact.
 
-- [ ] **Step 4: Wire effective bounds into HPA**
+- [x] **Step 4: Wire effective bounds into HPA**
 
 Update `makeHPA` or its caller so generated HPA min/max fields come from effective bounds. Preserve existing behavior that omits HPA `MinReplicas` when effective minimum is zero.
 
-- [ ] **Step 5: Run controller tests**
+- [x] **Step 5: Run controller tests**
 
 Run:
 
@@ -223,7 +223,7 @@ go test ./pkg/controller/podautoscaler/context -count=1
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit controller integration**
+- [x] **Step 6: Commit controller integration**
 
 ```bash
 git add pkg/controller/podautoscaler/podautoscaler_controller.go pkg/controller/podautoscaler/podautoscaler_controller_test.go pkg/controller/podautoscaler/hpa_resources.go pkg/controller/podautoscaler/hpa_resources_test.go pkg/controller/podautoscaler/context/context_test.go
