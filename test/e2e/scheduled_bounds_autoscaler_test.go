@@ -117,21 +117,32 @@ func createScheduledBoundsScaleTarget(ctx context.Context, t *testing.T, k8sClie
 		},
 	}
 
-	_, err := k8sClient.AppsV1().Deployments(scheduledBoundsNamespace).Create(ctx, deployment, metav1.CreateOptions{})
+	_, err := k8sClient.AppsV1().
+		Deployments(scheduledBoundsNamespace).
+		Create(ctx, deployment, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
-		current, getErr := k8sClient.AppsV1().Deployments(scheduledBoundsNamespace).Get(ctx, scheduledBoundsTargetName, metav1.GetOptions{})
+		current, getErr := k8sClient.AppsV1().
+			Deployments(scheduledBoundsNamespace).
+			Get(ctx, scheduledBoundsTargetName, metav1.GetOptions{})
 		if getErr != nil {
 			t.Fatalf("failed to get existing scale target deployment: %v", getErr)
 		}
 		deployment.ResourceVersion = current.ResourceVersion
-		_, err = k8sClient.AppsV1().Deployments(scheduledBoundsNamespace).Update(ctx, deployment, metav1.UpdateOptions{})
+		_, err = k8sClient.AppsV1().
+			Deployments(scheduledBoundsNamespace).
+			Update(ctx, deployment, metav1.UpdateOptions{})
 	}
 	if err != nil {
 		t.Fatalf("failed to create scale target deployment: %v", err)
 	}
 }
 
-func createScheduledBoundsPodAutoscaler(ctx context.Context, t *testing.T, aibrixClient aibrixclientset.Interface, now time.Time) {
+func createScheduledBoundsPodAutoscaler(
+	ctx context.Context,
+	t *testing.T,
+	aibrixClient aibrixclientset.Interface,
+	now time.Time,
+) {
 	t.Helper()
 
 	pa := &autoscalingv1alpha1.PodAutoscaler{
@@ -164,7 +175,9 @@ func createScheduledBoundsPodAutoscaler(ctx context.Context, t *testing.T, aibri
 		},
 	}
 
-	_, err := aibrixClient.AutoscalingV1alpha1().PodAutoscalers(scheduledBoundsNamespace).Create(ctx, pa, metav1.CreateOptions{})
+	_, err := aibrixClient.AutoscalingV1alpha1().
+		PodAutoscalers(scheduledBoundsNamespace).
+		Create(ctx, pa, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
 		current, getErr := aibrixClient.AutoscalingV1alpha1().
 			PodAutoscalers(scheduledBoundsNamespace).
@@ -173,19 +186,28 @@ func createScheduledBoundsPodAutoscaler(ctx context.Context, t *testing.T, aibri
 			t.Fatalf("failed to get existing PodAutoscaler: %v", getErr)
 		}
 		pa.ResourceVersion = current.ResourceVersion
-		_, err = aibrixClient.AutoscalingV1alpha1().PodAutoscalers(scheduledBoundsNamespace).Update(ctx, pa, metav1.UpdateOptions{})
+		_, err = aibrixClient.AutoscalingV1alpha1().
+			PodAutoscalers(scheduledBoundsNamespace).
+			Update(ctx, pa, metav1.UpdateOptions{})
 	}
 	if err != nil {
 		t.Fatalf("failed to create PodAutoscaler: %v", err)
 	}
 }
 
-func waitForScheduledBoundsHPA(ctx context.Context, t *testing.T, k8sClient kubernetes.Interface, wantMin, wantMax int32) {
+func waitForScheduledBoundsHPA(
+	ctx context.Context,
+	t *testing.T,
+	k8sClient kubernetes.Interface,
+	wantMin, wantMax int32,
+) {
 	t.Helper()
 
 	hpaName := fmt.Sprintf("%s-hpa", scheduledBoundsPAName)
 	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
-		hpa, err := k8sClient.AutoscalingV2().HorizontalPodAutoscalers(scheduledBoundsNamespace).Get(ctx, hpaName, metav1.GetOptions{})
+		hpa, err := k8sClient.AutoscalingV2().
+			HorizontalPodAutoscalers(scheduledBoundsNamespace).
+			Get(ctx, hpaName, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
 			t.Logf("waiting for generated HPA %s/%s", scheduledBoundsNamespace, hpaName)
 			return false, nil
@@ -233,7 +255,9 @@ func cleanupScheduledBoundsE2E(
 		t.Logf("failed to delete HPA: %v", err)
 	}
 
-	err = k8sClient.AppsV1().Deployments(scheduledBoundsNamespace).Delete(ctx, scheduledBoundsTargetName, metav1.DeleteOptions{})
+	err = k8sClient.AppsV1().
+		Deployments(scheduledBoundsNamespace).
+		Delete(ctx, scheduledBoundsTargetName, metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
 		t.Logf("failed to delete scale target deployment: %v", err)
 	}
