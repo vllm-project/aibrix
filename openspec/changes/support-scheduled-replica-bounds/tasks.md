@@ -18,10 +18,10 @@
 
 ## 4. Controller Integration
 
-- [ ] 4.1 Update custom strategy boundary checks in `computeScaleDecision` to use effective min/max bounds instead of static spec bounds.
-- [ ] 4.2 Update `createScalingContext` to set effective bounds so KPA/APA algorithm clamping and stabilization use scheduled bounds.
-- [ ] 4.3 Update HPA reconciliation so `makeHPA` receives or resolves effective bounds and writes them to the generated HPA spec.
-- [ ] 4.4 Add controller tests proving scheduled bounds clamp custom strategy scaling and update generated HPA min/max during and after a matching window.
+- [x] 4.1 Update custom strategy boundary checks in `computeScaleDecision` to use effective min/max bounds instead of static spec bounds.
+- [x] 4.2 Update `createScalingContext` to set effective bounds so KPA/APA algorithm clamping and stabilization use scheduled bounds.
+- [x] 4.3 Update HPA reconciliation so `makeHPA` receives or resolves effective bounds and writes them to the generated HPA spec.
+- [x] 4.4 Add controller tests proving scheduled bounds clamp custom strategy scaling and update generated HPA min/max during and after a matching window.
 
 ## 5. Documentation and Verification
 
