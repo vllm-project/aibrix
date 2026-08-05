@@ -20,7 +20,9 @@ import (
 	"context"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -295,6 +297,91 @@ func TestValidateSpecRejectsPanicWindowGreaterThanObserveWindow(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateSpecRejectsInvalidScheduledBounds(t *testing.T) {
+	tests := map[string]struct {
+		scheduledBounds []autoscalingv1alpha1.ScheduledReplicaBounds
+		wantMessage     string
+	}{
+		"invalid cron": {
+			scheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{{
+				Name: "invalid-cron", Cron: "*/5 * * * *", Duration: metav1.Duration{Duration: time.Hour}, MinReplicas: ptr.To(int32(1)),
+			}},
+			wantMessage: "spec.scheduledBounds[0].cron",
+		},
+		"invalid duration": {
+			scheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{{
+				Name: "invalid-duration", Cron: "0 9 * * *", MinReplicas: ptr.To(int32(1)),
+			}},
+			wantMessage: "spec.scheduledBounds[0].duration",
+		},
+		"invalid timezone": {
+			scheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{{
+				Name: "invalid-timezone", Timezone: "Mars/Olympus_Mons", Cron: "0 9 * * *", Duration: metav1.Duration{Duration: time.Hour}, MinReplicas: ptr.To(int32(1)),
+			}},
+			wantMessage: "spec.scheduledBounds[0].timezone",
+		},
+		"duplicate name": {
+			scheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{
+				{Name: "peak", Cron: "0 9 * * *", Duration: metav1.Duration{Duration: time.Hour}, MinReplicas: ptr.To(int32(2))},
+				{Name: "peak", Cron: "0 12 * * *", Duration: metav1.Duration{Duration: time.Hour}, MinReplicas: ptr.To(int32(3))},
+			},
+			wantMessage: "spec.scheduledBounds[1].name",
+		},
+		"missing override": {
+			scheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{{
+				Name: "missing-overrides", Cron: "0 9 * * *", Duration: metav1.Duration{Duration: time.Hour},
+			}},
+			wantMessage: "spec.scheduledBounds[0]",
+		},
+		"invalid effective bounds": {
+			scheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{{
+				Name: "invalid-effective-bounds", Cron: "0 9 * * *", Duration: metav1.Duration{Duration: time.Hour}, MinReplicas: ptr.To(int32(11)),
+			}},
+			wantMessage: "spec.scheduledBounds[0]",
+		},
+		"overlap": {
+			scheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{
+				{Name: "morning", Cron: "0 9 * * *", Duration: metav1.Duration{Duration: 2 * time.Hour}, MinReplicas: ptr.To(int32(2))},
+				{Name: "late-morning", Cron: "0 10 * * *", Duration: metav1.Duration{Duration: time.Hour}, MinReplicas: ptr.To(int32(3))},
+			},
+			wantMessage: "spec.scheduledBounds[1]",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			pa := validPodAutoscalerForSpec()
+			pa.Spec.ScheduledBounds = tt.scheduledBounds
+
+			result := (&PodAutoscalerReconciler{}).validateSpec(pa)
+
+			if result.Valid {
+				t.Fatal("expected invalid scheduled bounds to be rejected")
+			}
+			if result.Reason != ReasonInvalidSpec {
+				t.Fatalf("expected reason=%s, got %s", ReasonInvalidSpec, result.Reason)
+			}
+			if !strings.Contains(result.Message, tt.wantMessage) {
+				t.Fatalf("expected message %q to contain %q", result.Message, tt.wantMessage)
+			}
+		})
+	}
+}
+
+func validPodAutoscalerForSpec() *autoscalingv1alpha1.PodAutoscaler {
+	return &autoscalingv1alpha1.PodAutoscaler{Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+		ScaleTargetRef:  corev1.ObjectReference{Name: "test-deployment", Kind: "Deployment"},
+		MinReplicas:     ptr.To(int32(1)),
+		MaxReplicas:     10,
+		ScalingStrategy: autoscalingv1alpha1.KPA,
+		MetricsSources: []autoscalingv1alpha1.MetricSource{{
+			MetricSourceType: autoscalingv1alpha1.RESOURCE,
+			TargetMetric:     "cpu",
+			TargetValue:      "50",
+		}},
+	}}
 }
 
 // ---- helpers ----
