@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/vllm-project/aibrix/brixbench/internal/resolver"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -116,8 +117,10 @@ func maybeUpdateAggregateCSV(t *testing.T, uploader tosUploader, config publishC
 
 func buildAggregateRows(scenario *resolver.Scenario, summary scenarioSummary, runID string, config publishConfig, startedAt, finishedAt time.Time) []map[string]string {
 	byName := make(map[string]resolver.Test, len(scenario.Tests))
+	workloadByName := make(map[string]aggregateWorkloadFields, len(scenario.Tests))
 	for _, tc := range scenario.Tests {
 		byName[tc.Name] = tc
+		workloadByName[tc.Name] = loadAggregateWorkloadFields(tc.Benchmark)
 	}
 	now := time.Now().In(benchmarkLocation()).Format(time.RFC3339)
 	start := startedAt.In(benchmarkLocation()).Format(time.RFC3339)
@@ -126,6 +129,7 @@ func buildAggregateRows(scenario *resolver.Scenario, summary scenarioSummary, ru
 	rows := make([]map[string]string, 0, len(summary.Results))
 	for _, result := range summary.Results {
 		tc := byName[result.TestCase]
+		workload := workloadByName[result.TestCase]
 		platform := tc.ProviderName()
 		if platform == "" {
 			platform = "vllm"
@@ -188,10 +192,10 @@ func buildAggregateRows(scenario *resolver.Scenario, summary scenarioSummary, ru
 			"benchmark_kind":     firstNonEmpty(result.BenchmarkKind, tc.BenchmarkKind, "vllm-bench"),
 			"rate":               metricString(metrics, "request_rate"),
 			"concurrency":        metricString(metrics, "max_concurrency"),
-			"num_prefixes":       "",
-			"prefix_len":         "",
-			"suffix_len":         "",
-			"output_len":         "",
+			"num_prefixes":       workload.numPrefixes,
+			"prefix_len":         workload.prefixLen,
+			"suffix_len":         workload.suffixLen,
+			"output_len":         workload.outputLen,
 			"num_prompts":        metricString(metrics, "num_prompts"),
 			"series_label":       seriesLabel,
 			"sort_key":           platformSortKey(platform, platformVersion),
@@ -216,6 +220,48 @@ func buildAggregateRows(scenario *resolver.Scenario, summary scenarioSummary, ru
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+type aggregateWorkloadFields struct {
+	numPrefixes string
+	prefixLen   string
+	suffixLen   string
+	outputLen   string
+}
+
+type aggregateBenchmarkConfig struct {
+	VLLMArgs map[string]any `yaml:"vllmArgs"`
+}
+
+func loadAggregateWorkloadFields(benchmarkPath string) aggregateWorkloadFields {
+	benchmarkPath = strings.TrimSpace(benchmarkPath)
+	if benchmarkPath == "" {
+		return aggregateWorkloadFields{}
+	}
+	data, err := os.ReadFile(benchmarkPath)
+	if err != nil && !filepath.IsAbs(benchmarkPath) {
+		data, err = os.ReadFile(filepath.Join("..", benchmarkPath))
+	}
+	if err != nil {
+		return aggregateWorkloadFields{}
+	}
+	var config aggregateBenchmarkConfig
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return aggregateWorkloadFields{}
+	}
+	return aggregateWorkloadFields{
+		numPrefixes: yamlValueString(config.VLLMArgs["prefix-repetition-num-prefixes"]),
+		prefixLen:   yamlValueString(config.VLLMArgs["prefix-repetition-prefix-len"]),
+		suffixLen:   yamlValueString(config.VLLMArgs["prefix-repetition-suffix-len"]),
+		outputLen:   yamlValueString(config.VLLMArgs["prefix-repetition-output-len"]),
+	}
+}
+
+func yamlValueString(value any) string {
+	if value == nil {
+		return ""
+	}
+	return metricString(map[string]any{"value": value}, "value")
 }
 
 func appendAggregateCSV(uploader tosUploader, config publishConfig, newRows []map[string]string) error {
@@ -688,5 +734,67 @@ func TestBuildAggregateRowsLabelsMainCommit(t *testing.T) {
 	const wantLabel = "Aibrix main@9aa8b21 + vllm 0.22.0 + pd"
 	if rows[0]["series_label"] != wantLabel {
 		t.Fatalf("series_label=%q, want %q", rows[0]["series_label"], wantLabel)
+	}
+}
+
+func TestBuildAggregateRowsPrefixRepetitionWorkloadFields(t *testing.T) {
+	dir := t.TempDir()
+	withPrefixArgs := filepath.Join(dir, "prefix.yaml")
+	if err := os.WriteFile(withPrefixArgs, []byte(`
+kind: vllm-bench
+vllmArgs:
+  prefix-repetition-num-prefixes: 20
+  prefix-repetition-prefix-len: 6000
+  prefix-repetition-suffix-len: 2000
+  prefix-repetition-output-len: 1024
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	withoutPrefixArgs := filepath.Join(dir, "plain.yaml")
+	if err := os.WriteFile(withoutPrefixArgs, []byte(`
+kind: vllm-bench
+vllmArgs:
+  num-prompts: 1000
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	aibrix := "aibrix"
+	scenario := &resolver.Scenario{
+		Name: "aibrix-routing-qwen3-8b-4p4d-multinode",
+		Tests: []resolver.Test{
+			{Name: "aibrix-pd-4p4d-multinode-r8", Provider: &aibrix, Benchmark: withPrefixArgs},
+			{Name: "aibrix-pd-4p4d-multinode-r16", Provider: &aibrix, Benchmark: withoutPrefixArgs},
+		},
+	}
+	summary := scenarioSummary{Results: []scenarioCaseResult{
+		{TestCase: "aibrix-pd-4p4d-multinode-r8", Status: "passed", Metrics: map[string]any{"request_rate": 8}},
+		{TestCase: "aibrix-pd-4p4d-multinode-r16", Status: "passed", Metrics: map[string]any{"request_rate": 16}},
+	}}
+
+	rows := buildAggregateRows(
+		scenario,
+		summary,
+		"run-workload",
+		publishConfig{bucket: "b", prefix: "p"},
+		time.Now(),
+		time.Now(),
+	)
+	if len(rows) != 2 {
+		t.Fatalf("rows=%d", len(rows))
+	}
+	want := map[string]string{
+		"num_prefixes": "20",
+		"prefix_len":   "6000",
+		"suffix_len":   "2000",
+		"output_len":   "1024",
+	}
+	for key, value := range want {
+		if rows[0][key] != value {
+			t.Fatalf("rows[0][%s]=%q, want %q", key, rows[0][key], value)
+		}
+		if rows[1][key] != "" {
+			t.Fatalf("rows[1][%s]=%q, want empty", key, rows[1][key])
+		}
 	}
 }
