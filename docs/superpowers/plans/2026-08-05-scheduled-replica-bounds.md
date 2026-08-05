@@ -140,29 +140,29 @@ git commit -m "feat: resolve PodAutoscaler scheduled bounds"
 - Modify: `pkg/controller/podautoscaler/podautoscaler_controller.go`
 - Modify: `pkg/controller/podautoscaler/podautoscaler_controller_test.go`
 
-- [ ] **Step 1: Add failing webhook tests**
+- [x] **Step 1: Add failing webhook tests**
 
 Add cases for valid scheduled bounds, invalid cron, invalid duration, invalid timezone, duplicate name, missing min/max override, invalid effective min/max, and overlap.
 
 Run: `go test ./pkg/webhook -run TestPodAutoscaler -count=1`
 Expected: FAIL on missing validation.
 
-- [ ] **Step 2: Add failing controller fallback tests**
+- [x] **Step 2: Add failing controller fallback tests**
 
 Add `validateSpec` tests for invalid scheduled bound configurations when admission is bypassed.
 
 Run: `go test ./pkg/controller/podautoscaler -run TestValidateSpec -count=1`
 Expected: FAIL on missing fallback validation.
 
-- [ ] **Step 3: Implement webhook validation**
+- [x] **Step 3: Implement webhook validation**
 
 Map semantic validation errors to `field.NewPath("spec").Child("scheduledBounds").Index(i)` and the concrete child field where possible.
 
-- [ ] **Step 4: Implement controller fallback validation**
+- [x] **Step 4: Implement controller fallback validation**
 
 Call the same validation semantics from `validateSpec` after static replica bound validation and before metrics validation.
 
-- [ ] **Step 5: Run validation tests**
+- [x] **Step 5: Run validation tests**
 
 Run:
 
@@ -174,7 +174,7 @@ go test ./test/integration/webhook -run PodAutoscaler -count=1
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit validation**
+- [x] **Step 6: Commit validation**
 
 ```bash
 git add pkg/webhook/podautoscaler_webhook.go pkg/webhook/podautoscaler_webhook_test.go test/integration/webhook/podautoscaler_webhook_test.go pkg/controller/podautoscaler/podautoscaler_controller.go pkg/controller/podautoscaler/podautoscaler_controller_test.go
