@@ -12,9 +12,9 @@
 
 ## 3. Validation
 
-- [ ] 3.1 Extend validating admission webhook checks for schedule name uniqueness, cron parsing, timezone parsing, duration parsing, lifetime ordering, required override fields, effective min/max validity, and overlapping schedule windows.
-- [ ] 3.2 Extend controller-side `validateSpec` fallback validation to reject the same invalid scheduled-bound configurations when the webhook is bypassed.
-- [ ] 3.3 Add webhook unit and integration cases for valid schedules, invalid cron/timezone/duration, invalid effective bounds, missing overrides, duplicate names, and overlaps.
+- [x] 3.1 Extend validating admission webhook checks for schedule name uniqueness, cron parsing, timezone parsing, duration parsing, lifetime ordering, required override fields, effective min/max validity, and overlapping schedule windows.
+- [x] 3.2 Extend controller-side `validateSpec` fallback validation to reject the same invalid scheduled-bound configurations when the webhook is bypassed.
+- [x] 3.3 Add webhook unit and integration cases for valid schedules, invalid cron/timezone/duration, invalid effective bounds, missing overrides, duplicate names, and overlaps.
 
 ## 4. Controller Integration
 
