@@ -36,7 +36,7 @@ const (
 	aggregateCSVObjectName    = "benchmark_metrics.csv"
 )
 
-// Aggregate CSV columns (frozen for Goal 3.1).
+// Aggregate CSV columns
 // TOS path: tos://{bucket}/{prefix}/aggregates/benchmark_metrics.csv
 var aggregateCSVHeader = []string{
 	"schema_version",
@@ -46,6 +46,7 @@ var aggregateCSVHeader = []string{
 	"category",
 	"status",
 	"started_at",
+	"run_date",
 	"finished_at",
 	"row_updated_at",
 	"platform",
@@ -120,6 +121,7 @@ func buildAggregateRows(scenario *resolver.Scenario, summary scenarioSummary, ru
 	}
 	now := time.Now().In(benchmarkLocation()).Format(time.RFC3339)
 	start := startedAt.In(benchmarkLocation()).Format(time.RFC3339)
+	runDate := startedAt.In(benchmarkLocation()).Format("2006-01-02")
 	finish := finishedAt.In(benchmarkLocation()).Format(time.RFC3339)
 	rows := make([]map[string]string, 0, len(summary.Results))
 	for _, result := range summary.Results {
@@ -151,7 +153,7 @@ func buildAggregateRows(scenario *resolver.Scenario, summary scenarioSummary, ru
 		}
 		platformLabelVersion := platformVersion
 		if platform == "aibrix" &&
-			strings.TrimSpace(os.Getenv("BENCHMARK_GATEWAY_COMMIT")) != "" &&
+			platformVersion == "main" &&
 			platformCommit != "" {
 			platformLabelVersion += "@" + platformCommit
 		}
@@ -170,6 +172,7 @@ func buildAggregateRows(scenario *resolver.Scenario, summary scenarioSummary, ru
 			"category":           scenarioCategory(scenario.Name),
 			"status":             result.Status,
 			"started_at":         start,
+			"run_date":           runDate,
 			"finished_at":        finish,
 			"row_updated_at":     now,
 			"platform":           platform,
@@ -575,6 +578,8 @@ func TestInferTopologyAndRouter(t *testing.T) {
 }
 
 func TestBuildAggregateRowsSeriesLabelAndCommit(t *testing.T) {
+	t.Setenv("BENCHMARK_GATEWAY_COMMIT", "0123456789abcdef0123456789abcdef01234567")
+
 	aibrix, dynamo, llmd := "aibrix", "dynamo", "llmd"
 	scenario := &resolver.Scenario{
 		Name: "routing-compare-qwen3-8b-4p4d-singlenode",
@@ -589,9 +594,13 @@ func TestBuildAggregateRowsSeriesLabelAndCommit(t *testing.T) {
 		{TestCase: "dynamo-v1.2.1-qwen3-8b-round-robin-4p4d-singlenode-r16", Status: "passed", Version: "v1.2.1", Metrics: map[string]any{"request_rate": 16}},
 		{TestCase: "llmd-pd-4p4d-singlenode-r8", Status: "failed"},
 	}}
-	rows := buildAggregateRows(scenario, summary, "run-1", publishConfig{bucket: "b", prefix: "p"}, time.Now(), time.Now())
+	startedAt := time.Date(2026, time.August, 5, 3, 6, 37, 0, time.FixedZone("CST", 8*60*60))
+	rows := buildAggregateRows(scenario, summary, "run-1", publishConfig{bucket: "b", prefix: "p"}, startedAt, startedAt.Add(time.Hour))
 	if len(rows) != 3 {
 		t.Fatalf("rows=%d", len(rows))
+	}
+	if rows[0]["run_date"] != "2026-08-05" {
+		t.Fatalf("run_date=%q", rows[0]["run_date"])
 	}
 	if rows[0]["series_label"] != "Aibrix v0.6.0 + vllm 0.22.0 + pd" {
 		t.Fatalf("aibrix series_label=%q", rows[0]["series_label"])
@@ -624,6 +633,9 @@ func TestBuildAggregateRowsSeriesLabelAndCommit(t *testing.T) {
 	if _, ok := got[0]["platform_commit"]; !ok {
 		t.Fatalf("missing platform_commit column in round-trip")
 	}
+	if got[0]["run_date"] != "2026-08-05" {
+		t.Fatalf("round-trip run_date=%q", got[0]["run_date"])
+	}
 	header := aggregateCSVHeader
 	found := false
 	for _, h := range header {
@@ -637,7 +649,7 @@ func TestBuildAggregateRowsSeriesLabelAndCommit(t *testing.T) {
 	}
 }
 
-func TestBuildAggregateRowsLabelsPrebuiltGatewayCommit(t *testing.T) {
+func TestBuildAggregateRowsLabelsMainCommit(t *testing.T) {
 	const gatewayCommit = "9aa8b21ef6053dc19dde76f71552247b82f93630"
 	t.Setenv("BENCHMARK_GATEWAY_COMMIT", gatewayCommit)
 
@@ -647,13 +659,11 @@ func TestBuildAggregateRowsLabelsPrebuiltGatewayCommit(t *testing.T) {
 		Tests: []resolver.Test{{
 			Name:     "aibrix-pd-4p4d-multinode-r8",
 			Provider: &aibrix,
-			Version:  "v0.6.0",
 		}},
 	}
 	summary := scenarioSummary{Results: []scenarioCaseResult{{
 		TestCase:       "aibrix-pd-4p4d-multinode-r8",
 		Status:         "passed",
-		Version:        "v0.6.0",
 		ResolvedCommit: gatewayCommit,
 		Metrics:        map[string]any{"request_rate": 8},
 	}}}
@@ -669,13 +679,13 @@ func TestBuildAggregateRowsLabelsPrebuiltGatewayCommit(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("rows=%d", len(rows))
 	}
-	if rows[0]["platform_version"] != "v0.6.0" {
+	if rows[0]["platform_version"] != "main" {
 		t.Fatalf("platform_version=%q", rows[0]["platform_version"])
 	}
 	if rows[0]["platform_commit"] != "9aa8b21" {
 		t.Fatalf("platform_commit=%q", rows[0]["platform_commit"])
 	}
-	const wantLabel = "Aibrix v0.6.0@9aa8b21 + vllm 0.22.0 + pd"
+	const wantLabel = "Aibrix main@9aa8b21 + vllm 0.22.0 + pd"
 	if rows[0]["series_label"] != wantLabel {
 		t.Fatalf("series_label=%q, want %q", rows[0]["series_label"], wantLabel)
 	}

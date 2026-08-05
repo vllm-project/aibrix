@@ -14,7 +14,7 @@ Tests:
 - name: aibrix-pd-4p4d-multinode-r8
   provider: aibrix
   fullstack: false
-  version: v0.6.0
+  commit: origin/main
   gateway:
     image:
       baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
@@ -33,7 +33,7 @@ Tests:
 - name: aibrix-pd-4p4d-multinode-r16
   provider: aibrix
   fullstack: false
-  version: v0.6.0
+  commit: origin/main
   gateway:
     image:
       baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0

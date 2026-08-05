@@ -87,6 +87,21 @@ func TestPrepareGatewayImagePreservesResolvedCommitWithoutCommitOverride(t *test
 	}
 }
 
+func TestPrepareGatewayImageRejectsResolvedSourceMismatch(t *testing.T) {
+	t.Setenv("BENCHMARK_GATEWAY_IMAGE", testGatewayImage)
+	t.Setenv("BENCHMARK_GATEWAY_COMMIT", testGatewayCommit)
+
+	provider := "aibrix"
+	_, err := PrepareGatewayImage(context.Background(), t.TempDir(), &Test{
+		Name:     "aibrix-pd-mismatched-source",
+		Provider: &provider,
+		Commit:   strings.Repeat("a", 40),
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match resolved AIBrix source commit") {
+		t.Fatalf("expected source/image commit mismatch, got %v", err)
+	}
+}
+
 func TestPrepareGatewayImageRejectsInvalidPrebuiltConfiguration(t *testing.T) {
 	provider := "aibrix"
 

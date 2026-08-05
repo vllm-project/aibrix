@@ -52,6 +52,14 @@ func PrepareGatewayImage(ctx context.Context, projectRoot string, test *Test) (*
 			if err != nil {
 				return nil, fmt.Errorf("invalid BENCHMARK_GATEWAY_COMMIT %q: %w", prebuiltCommit, err)
 			}
+			if resolvedSourceCommit := strings.TrimSpace(test.Commit); len(resolvedSourceCommit) == 40 &&
+				!strings.EqualFold(resolvedSourceCommit, normalizedCommit) {
+				return nil, fmt.Errorf(
+					"BENCHMARK_GATEWAY_COMMIT %s does not match resolved AIBrix source commit %s",
+					normalizedCommit,
+					resolvedSourceCommit,
+				)
+			}
 			test.ResolvedCommit = normalizedCommit
 		}
 		image := &GatewayImage{

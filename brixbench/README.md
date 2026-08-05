@@ -394,6 +394,14 @@ go test -v ./benchmark -run TestAIBrixBenchmarkSuite \
 `BENCHMARK_GATEWAY_COMMIT` requires `BENCHMARK_GATEWAY_IMAGE`. When only
 the image is set, the runner still uses the prebuilt image but keeps the
 commit resolved from the scenario (`version` / `commit` / workspace).
+For commit-based AIBrix scenarios, `BENCHMARK_GATEWAY_COMMIT` pins the
+workspace checkout to the exact commit used by the prebuilt image. For
+version-based scenarios, the release tag remains authoritative and a
+prebuilt commit that does not match the resolved tag commit is rejected.
+
+Aggregate CSV labels distinguish these modes: commit-based AIBrix runs are
+shown as `main@<short-commit>`, while version-based runs are shown only by
+their release tag (for example, `v0.6.0`).
 
 ## Publishing Official Results
 
