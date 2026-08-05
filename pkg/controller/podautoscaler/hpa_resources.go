@@ -21,6 +21,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	pav1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
@@ -34,7 +35,15 @@ import (
 
 // MakeHPA creates an HPA resource from a PodAutoscaler resource.
 func makeHPA(pa *pav1.PodAutoscaler, scalingContext scalingctx.ScalingContext) (*autoscalingv2.HorizontalPodAutoscaler, error) {
-	minReplicas, maxReplicas := pa.Spec.MinReplicas, pa.Spec.MaxReplicas
+	effectiveBounds, err := resolveEffectiveReplicaBounds(pa, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	return makeHPAWithBounds(pa, scalingContext, effectiveBounds)
+}
+
+func makeHPAWithBounds(pa *pav1.PodAutoscaler, scalingContext scalingctx.ScalingContext, effectiveBounds effectiveReplicaBounds) (*autoscalingv2.HorizontalPodAutoscaler, error) {
+	minReplicas, maxReplicas := effectiveBounds.MinReplicas, effectiveBounds.MaxReplicas
 	if maxReplicas == 0 {
 		maxReplicas = math.MaxInt32 // Set default to no upper limit if not specified
 	}
@@ -59,11 +68,11 @@ func makeHPA(pa *pav1.PodAutoscaler, scalingContext scalingctx.ScalingContext) (
 			Behavior:    buildHPABehavior(scalingContext),
 		},
 	}
-	if minReplicas != nil && *minReplicas > 0 {
-		hpa.Spec.MinReplicas = minReplicas
+	if minReplicas > 0 {
+		hpa.Spec.MinReplicas = &minReplicas
 		// if minReplicas exist, check validation of minReplicas and maxReplicas
-		if maxReplicas < *minReplicas {
-			return nil, fmt.Errorf("HPA Strategy: maxReplicas %d must be equal or larger than minReplicas %d", maxReplicas, *minReplicas)
+		if maxReplicas < minReplicas {
+			return nil, fmt.Errorf("HPA Strategy: maxReplicas %d must be equal or larger than minReplicas %d", maxReplicas, minReplicas)
 		}
 	}
 
