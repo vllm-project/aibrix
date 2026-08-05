@@ -328,6 +328,27 @@ func TestValidateScheduledBounds(t *testing.T) {
 			}},
 			wantError: true,
 		},
+		{
+			name: "rejects overlapping sparse leap-day windows",
+			pa: &autoscalingv1alpha1.PodAutoscaler{Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+				MaxReplicas: 10,
+				ScheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{
+					{
+						Name:        "leap-day-morning",
+						Cron:        "0 9 29 FEB *",
+						Duration:    metav1.Duration{Duration: 2 * time.Hour},
+						MinReplicas: ptr.To(int32(4)),
+					},
+					{
+						Name:        "leap-day-late-morning",
+						Cron:        "0 10 29 FEB *",
+						Duration:    metav1.Duration{Duration: time.Hour},
+						MinReplicas: ptr.To(int32(5)),
+					},
+				},
+			}},
+			wantError: true,
+		},
 	}
 
 	for _, tt := range tests {
