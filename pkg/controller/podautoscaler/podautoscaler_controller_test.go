@@ -18,12 +18,14 @@ package podautoscaler
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -32,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
@@ -384,6 +387,11 @@ func validPodAutoscalerForSpec() *autoscalingv1alpha1.PodAutoscaler {
 	}}
 }
 
+func activeScheduledBoundsCron() string {
+	now := time.Now().UTC()
+	return fmt.Sprintf("%d %d * * *", now.Minute(), now.Hour())
+}
+
 // ---- helpers ----
 
 func buildPod(ns, name string, lbls map[string]string) *corev1.Pod {
@@ -505,6 +513,144 @@ func TestComputeMetricBasedReplicas_Deployment_NoIndexFilter(t *testing.T) {
 	want := []string{"p-0", "p-1"} // both foo pods should be included; wrong app excluded
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("filtered pods mismatch, got=%v want=%v", got, want)
+	}
+}
+
+func TestComputeScaleDecisionScheduledMaxClampsCurrentReplicasAboveScheduledMax(t *testing.T) {
+	pa := autoscalingv1alpha1.PodAutoscaler{
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			MinReplicas:     ptr.To(int32(3)),
+			MaxReplicas:     5,
+			ScalingStrategy: autoscalingv1alpha1.KPA,
+			ScheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{{
+				Name:        "peak-limit",
+				Cron:        activeScheduledBoundsCron(),
+				Duration:    metav1.Duration{Duration: time.Hour},
+				MaxReplicas: ptr.To(int32(3)),
+			}},
+		},
+	}
+
+	decision, err := (&PodAutoscalerReconciler{}).computeScaleDecision(context.Background(), pa, nil, 7)
+
+	if err != nil {
+		t.Fatalf("computeScaleDecision returned error: %v", err)
+	}
+	if decision.DesiredReplicas != 3 {
+		t.Fatalf("expected scheduled max to clamp desired replicas to 3, got %d", decision.DesiredReplicas)
+	}
+	if !decision.ShouldScale {
+		t.Fatal("expected scheduled max clamp to request scaling")
+	}
+}
+
+func TestComputeScaleDecisionScheduledMinClampsCurrentReplicasBelowScheduledMin(t *testing.T) {
+	pa := autoscalingv1alpha1.PodAutoscaler{
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			MinReplicas:     ptr.To(int32(3)),
+			MaxReplicas:     10,
+			ScalingStrategy: autoscalingv1alpha1.KPA,
+			ScheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{{
+				Name:        "peak-floor",
+				Cron:        activeScheduledBoundsCron(),
+				Duration:    metav1.Duration{Duration: time.Hour},
+				MinReplicas: ptr.To(int32(5)),
+			}},
+		},
+	}
+
+	decision, err := (&PodAutoscalerReconciler{}).computeScaleDecision(context.Background(), pa, nil, 2)
+
+	if err != nil {
+		t.Fatalf("computeScaleDecision returned error: %v", err)
+	}
+	if decision.DesiredReplicas != 5 {
+		t.Fatalf("expected scheduled min to clamp desired replicas to 5, got %d", decision.DesiredReplicas)
+	}
+	if !decision.ShouldScale {
+		t.Fatal("expected scheduled min clamp to request scaling")
+	}
+}
+
+func TestCreateScalingContextScheduledBounds(t *testing.T) {
+	pa := autoscalingv1alpha1.PodAutoscaler{
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			MinReplicas: ptr.To(int32(3)),
+			MaxReplicas: 10,
+			ScheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{{
+				Name:        "peak",
+				Cron:        activeScheduledBoundsCron(),
+				Duration:    metav1.Duration{Duration: time.Hour},
+				MinReplicas: ptr.To(int32(5)),
+				MaxReplicas: ptr.To(int32(8)),
+			}},
+		},
+	}
+
+	scalingContext := (&PodAutoscalerReconciler{}).createScalingContext(pa)
+
+	if got := scalingContext.GetMinReplicas(); got != 5 {
+		t.Fatalf("expected scheduled min replicas 5 in scaling context, got %d", got)
+	}
+	if got := scalingContext.GetMaxReplicas(); got != 8 {
+		t.Fatalf("expected scheduled max replicas 8 in scaling context, got %d", got)
+	}
+}
+
+func TestMakeHPAScheduledBoundsReconcileHPAUsesEffectiveBounds(t *testing.T) {
+	now := time.Date(2026, time.August, 5, 9, 30, 0, 0, time.UTC)
+	sch := runtime.NewScheme()
+	_ = scheme.AddToScheme(sch)
+	_ = autoscalingv1alpha1.AddToScheme(sch)
+	_ = autoscalingv2.AddToScheme(sch)
+
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "scheduled-pa",
+			Namespace: ns,
+		},
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{
+				APIVersion: "apps/v1",
+				Kind:       "Deployment",
+				Name:       "scheduled-target",
+			},
+			MinReplicas:     ptr.To(int32(3)),
+			MaxReplicas:     10,
+			ScalingStrategy: autoscalingv1alpha1.HPA,
+			MetricsSources: []autoscalingv1alpha1.MetricSource{{
+				MetricSourceType: autoscalingv1alpha1.RESOURCE,
+				TargetMetric:     "cpu",
+				TargetValue:      "30",
+			}},
+			ScheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{{
+				Name:        "peak",
+				Cron:        "0 9 * * *",
+				Duration:    metav1.Duration{Duration: time.Hour},
+				MinReplicas: ptr.To(int32(5)),
+				MaxReplicas: ptr.To(int32(8)),
+			}},
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(sch).WithObjects(pa).Build()
+	r := &PodAutoscalerReconciler{
+		Client:  cl,
+		nowFunc: func() time.Time { return now },
+	}
+
+	if _, err := r.reconcileHPA(context.Background(), *pa); err != nil {
+		t.Fatalf("reconcileHPA returned error: %v", err)
+	}
+
+	hpa := &autoscalingv2.HorizontalPodAutoscaler{}
+	if err := cl.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: "scheduled-pa-hpa"}, hpa); err != nil {
+		t.Fatalf("expected reconciled HPA to be created: %v", err)
+	}
+	if hpa.Spec.MinReplicas == nil || *hpa.Spec.MinReplicas != 5 {
+		t.Fatalf("expected reconciled HPA minReplicas 5, got %v", hpa.Spec.MinReplicas)
+	}
+	if hpa.Spec.MaxReplicas != 8 {
+		t.Fatalf("expected reconciled HPA maxReplicas 8, got %d", hpa.Spec.MaxReplicas)
 	}
 }
 
