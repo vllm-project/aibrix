@@ -1,8 +1,0 @@
-{
-  "openspec_proposal": "openspec/changes/support-scheduled-replica-bounds/proposal.md",
-  "openspec_design": "openspec/changes/support-scheduled-replica-bounds/design.md",
-  "openspec_tasks": "openspec/changes/support-scheduled-replica-bounds/tasks.md",
-  "openspec_delta_spec": "openspec/changes/support-scheduled-replica-bounds/specs/scheduled-replica-bounds/spec.md",
-  "handoff_context": "openspec/changes/support-scheduled-replica-bounds/.comet/handoff/design-context.json",
-  "handoff_markdown": "openspec/changes/support-scheduled-replica-bounds/.comet/handoff/design-context.md"
-}
