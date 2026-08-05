@@ -389,7 +389,7 @@ func validPodAutoscalerForSpec() *autoscalingv1alpha1.PodAutoscaler {
 
 func activeScheduledBoundsCron() string {
 	now := time.Now().UTC()
-	return fmt.Sprintf("%d %d * * *", now.Minute(), now.Hour())
+	return fmt.Sprintf("%d 0-23 * * *", now.Minute())
 }
 
 // ---- helpers ----

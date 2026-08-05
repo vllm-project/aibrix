@@ -129,6 +129,19 @@ var _ = ginkgo.Describe("podautoscaler default and validation", func() {
 			},
 			failed: true,
 		}),
+		ginkgo.Entry("scheduled bounds duration too long", &testValidatingCase{
+			podautoscaler: func() *autoscalingapi.PodAutoscaler {
+				return newScheduledBoundsPA("scheduled-bounds-duration-too-long",
+					autoscalingapi.ScheduledReplicaBounds{
+						Name:        "too-long",
+						Cron:        "0 9 * * *",
+						Duration:    metav1.Duration{Duration: 7*24*time.Hour + time.Second},
+						MinReplicas: ptr.To(int32(1)),
+					},
+				)
+			},
+			failed: true,
+		}),
 		ginkgo.Entry("scheduled bounds invalid timezone", &testValidatingCase{
 			podautoscaler: func() *autoscalingapi.PodAutoscaler {
 				return newScheduledBoundsPA("scheduled-bounds-invalid-timezone",

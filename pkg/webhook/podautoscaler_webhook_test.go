@@ -304,6 +304,16 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 			expectError: true,
 			errorMsg:    "spec.scheduledBounds[0].duration",
 		},
+		"Scheduled Bounds Duration Too Long": {
+			pa: podAutoscalerWithScheduledBounds(autoscalingv1alpha1.ScheduledReplicaBounds{
+				Name:        "too-long",
+				Cron:        "0 9 * * *",
+				Duration:    metav1.Duration{Duration: 7*24*time.Hour + time.Second},
+				MinReplicas: ptr.To(int32(1)),
+			}),
+			expectError: true,
+			errorMsg:    "spec.scheduledBounds[0].duration",
+		},
 		"Scheduled Bounds Invalid Timezone": {
 			pa: podAutoscalerWithScheduledBounds(autoscalingv1alpha1.ScheduledReplicaBounds{
 				Name: "invalid-timezone", Timezone: "Mars/Olympus_Mons", Cron: "0 9 * * *", Duration: metav1.Duration{Duration: time.Hour}, MinReplicas: ptr.To(int32(1)),
