@@ -55,6 +55,67 @@ Example KPA yaml config
    :language: yaml
 
 
+Configurable metric windows
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``PodAutoscaler`` supports optional metric window fields under ``spec``. These
+fields control how much recent metric history the autoscaler keeps for scaling
+decisions.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 16 16 48
+
+   * - Field
+     - Default
+     - Valid range
+     - Description
+   * - ``observeWindowSeconds``
+     - ``180``
+     - ``1`` to ``3600``
+     - Stable metric window used for regular scaling recommendations. Increase
+       it to smooth noisy metrics; decrease it to make the autoscaler react
+       faster to recent load changes.
+   * - ``panicWindowSeconds``
+     - ``60``
+     - ``1`` to ``3600``
+     - Short metric window used by KPA panic-mode decisions. It must be less
+       than or equal to ``observeWindowSeconds``.
+
+If either field is omitted, AIBrix uses the default value above. Validation
+rejects non-positive values, values greater than ``3600``, and configurations
+where ``panicWindowSeconds`` is greater than ``observeWindowSeconds``. This
+comparison uses defaults for omitted fields, so setting
+``observeWindowSeconds`` below ``60`` also requires setting
+``panicWindowSeconds`` to the same or a smaller value.
+
+Example KPA policy with a 10-minute stable window and a 1-minute panic window:
+
+.. code-block:: yaml
+
+   apiVersion: autoscaling.aibrix.ai/v1alpha1
+   kind: PodAutoscaler
+   metadata:
+     name: example-kpa-windows
+   spec:
+     scalingStrategy: KPA
+     minReplicas: 1
+     maxReplicas: 8
+     observeWindowSeconds: 600
+     panicWindowSeconds: 60
+     metricsSources:
+       - metricSourceType: pod
+         protocolType: http
+         port: "8000"
+         path: metrics
+         targetMetric: gpu_cache_usage_perc
+         targetValue: "0.5"
+     scaleTargetRef:
+       apiVersion: apps/v1
+       kind: Deployment
+       name: deepseek-r1-distill-llama-8b
+
+
 Example APA yaml config
 ^^^^^^^^^^^^^^^^^^^^^^^
 
