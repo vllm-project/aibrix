@@ -572,6 +572,34 @@ func TestComputeScaleDecisionScheduledMinClampsCurrentReplicasBelowScheduledMin(
 	}
 }
 
+func TestComputeScaleDecisionScheduledMinScalesFromZeroReplicas(t *testing.T) {
+	pa := autoscalingv1alpha1.PodAutoscaler{
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			MinReplicas:     ptr.To(int32(3)),
+			MaxReplicas:     10,
+			ScalingStrategy: autoscalingv1alpha1.KPA,
+			ScheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{{
+				Name:        "peak-floor",
+				Cron:        activeScheduledBoundsCron(),
+				Duration:    metav1.Duration{Duration: time.Hour},
+				MinReplicas: ptr.To(int32(5)),
+			}},
+		},
+	}
+
+	decision, err := (&PodAutoscalerReconciler{}).computeScaleDecision(context.Background(), pa, nil, 0)
+
+	if err != nil {
+		t.Fatalf("computeScaleDecision returned error: %v", err)
+	}
+	if decision.DesiredReplicas != 5 {
+		t.Fatalf("expected scheduled min to scale from zero replicas to 5, got %d", decision.DesiredReplicas)
+	}
+	if !decision.ShouldScale {
+		t.Fatal("expected scheduled min to request scaling from zero replicas")
+	}
+}
+
 func TestCreateScalingContextScheduledBounds(t *testing.T) {
 	pa := autoscalingv1alpha1.PodAutoscaler{
 		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
