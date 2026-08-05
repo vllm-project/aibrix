@@ -17,6 +17,7 @@ limitations under the License.
 package podautoscaler
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -203,17 +204,42 @@ func TestValidateScheduledBounds(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		pa        *autoscalingv1alpha1.PodAutoscaler
-		wantError bool
+		name           string
+		pa             *autoscalingv1alpha1.PodAutoscaler
+		wantError      bool
+		wantErrorText  string
+		wantFastReject bool
 	}{
 		{
-			name: "accepts valid schedule",
+			name: "accepts simple weekday business hours cron",
 			pa: &autoscalingv1alpha1.PodAutoscaler{Spec: autoscalingv1alpha1.PodAutoscalerSpec{
 				MinReplicas:     ptr.To(int32(2)),
 				MaxReplicas:     10,
 				ScheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{validSchedule()},
 			}},
+		},
+		{
+			name: "rejects step cron as unsupported",
+			pa: &autoscalingv1alpha1.PodAutoscaler{Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+				MaxReplicas: 10,
+				ScheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{{
+					Name: "frequent", Cron: "*/5 * * * *", Duration: metav1.Duration{Duration: time.Hour}, MinReplicas: ptr.To(int32(1)),
+				}},
+			}},
+			wantError:      true,
+			wantErrorText:  "unsupported cron syntax",
+			wantFastReject: true,
+		},
+		{
+			name: "rejects restricted day and month cron as unsupported",
+			pa: &autoscalingv1alpha1.PodAutoscaler{Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+				MaxReplicas: 10,
+				ScheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{{
+					Name: "leap-day", Cron: "0 9 29 FEB *", Duration: metav1.Duration{Duration: time.Hour}, MinReplicas: ptr.To(int32(1)),
+				}},
+			}},
+			wantError:     true,
+			wantErrorText: "unsupported cron syntax",
 		},
 		{
 			name: "rejects invalid cron",
@@ -329,7 +355,7 @@ func TestValidateScheduledBounds(t *testing.T) {
 			wantError: true,
 		},
 		{
-			name: "rejects overlapping sparse leap-day windows",
+			name: "rejects leap-day cron as unsupported instead of scanning for overlap",
 			pa: &autoscalingv1alpha1.PodAutoscaler{Spec: autoscalingv1alpha1.PodAutoscalerSpec{
 				MaxReplicas: 10,
 				ScheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{
@@ -347,15 +373,23 @@ func TestValidateScheduledBounds(t *testing.T) {
 					},
 				},
 			}},
-			wantError: true,
+			wantError:     true,
+			wantErrorText: "unsupported cron syntax",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			started := time.Now()
 			errs := validateScheduledBounds(tt.pa)
 			if tt.wantError {
-				assert.NotEmpty(t, errs)
+				require.NotEmpty(t, errs)
+				if tt.wantErrorText != "" {
+					assert.True(t, strings.Contains(errs.ToAggregate().Error(), tt.wantErrorText), "expected error %q to contain %q", errs.ToAggregate(), tt.wantErrorText)
+				}
+				if tt.wantFastReject {
+					assert.Less(t, time.Since(started), time.Second, "unsupported high-frequency cron must be rejected without occurrence scanning")
+				}
 				return
 			}
 			assert.Empty(t, errs)
