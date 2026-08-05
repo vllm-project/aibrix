@@ -28,6 +28,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
+const (
+	scheduledBoundsOverlapHorizon     = 366 * 24 * time.Hour
+	scheduledBoundsOverlapOccurrences = 2048
+)
+
 type effectiveReplicaBounds struct {
 	MinReplicas  int32
 	MaxReplicas  int32
@@ -168,10 +173,78 @@ func scheduledBoundsLocation(timezone string) (*time.Location, error) {
 }
 
 func obviousScheduleOverlap(left, right autoscalingv1alpha1.ScheduledReplicaBounds) bool {
-	if left.Cron != right.Cron || left.Timezone != right.Timezone {
+	if !lifetimesOverlap(left.StartTime, left.EndTime, right.StartTime, right.EndTime) {
 		return false
 	}
-	return lifetimesOverlap(left.StartTime, left.EndTime, right.StartTime, right.EndTime)
+
+	leftSchedule, err := cron.ParseStandard(left.Cron)
+	if err != nil {
+		return false
+	}
+	rightSchedule, err := cron.ParseStandard(right.Cron)
+	if err != nil {
+		return false
+	}
+	leftLocation, err := scheduledBoundsLocation(left.Timezone)
+	if err != nil {
+		return false
+	}
+	rightLocation, err := scheduledBoundsLocation(right.Timezone)
+	if err != nil {
+		return false
+	}
+
+	start, end := scheduledBoundsOverlapInterval(left, right)
+	leftOccurrence := leftSchedule.Next(start.In(leftLocation).Add(-left.Duration.Duration - time.Nanosecond))
+	rightOccurrence := rightSchedule.Next(start.In(rightLocation).Add(-right.Duration.Duration - time.Nanosecond))
+	for occurrences := 0; occurrences < scheduledBoundsOverlapOccurrences; occurrences++ {
+		leftStart := leftOccurrence.UTC()
+		rightStart := rightOccurrence.UTC()
+		if !leftStart.Before(end) && !rightStart.Before(end) {
+			return false
+		}
+		if leftStart.Before(rightStart) {
+			if scheduledWindowsOverlap(leftStart, left.Duration.Duration, rightStart, right.Duration.Duration, start, end) {
+				return true
+			}
+			leftOccurrence = leftSchedule.Next(leftOccurrence)
+			continue
+		}
+		if scheduledWindowsOverlap(rightStart, right.Duration.Duration, leftStart, left.Duration.Duration, start, end) {
+			return true
+		}
+		rightOccurrence = rightSchedule.Next(rightOccurrence)
+	}
+
+	return false
+}
+
+func scheduledBoundsOverlapInterval(left, right autoscalingv1alpha1.ScheduledReplicaBounds) (time.Time, time.Time) {
+	start := time.Unix(0, 0).UTC()
+	if left.StartTime != nil && left.StartTime.After(start) {
+		start = left.StartTime.Time
+	}
+	if right.StartTime != nil && right.StartTime.After(start) {
+		start = right.StartTime.Time
+	}
+
+	end := start.Add(scheduledBoundsOverlapHorizon)
+	if left.EndTime != nil && left.EndTime.Time.Before(end) {
+		end = left.EndTime.Time
+	}
+	if right.EndTime != nil && right.EndTime.Time.Before(end) {
+		end = right.EndTime.Time
+	}
+	return start, end
+}
+
+func scheduledWindowsOverlap(leftStart time.Time, leftDuration time.Duration, rightStart time.Time, rightDuration time.Duration, start, end time.Time) bool {
+	leftEnd := leftStart.Add(leftDuration)
+	rightEnd := rightStart.Add(rightDuration)
+	if !leftStart.Before(rightEnd) || !rightStart.Before(leftEnd) {
+		return false
+	}
+	return leftEnd.After(start) && rightEnd.After(start) && leftStart.Before(end) && rightStart.Before(end)
 }
 
 func lifetimesOverlap(leftStart, leftEnd, rightStart, rightEnd *metav1.Time) bool {

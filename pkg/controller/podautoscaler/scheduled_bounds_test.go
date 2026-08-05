@@ -307,6 +307,27 @@ func TestValidateScheduledBounds(t *testing.T) {
 			}},
 			wantError: true,
 		},
+		{
+			name: "rejects overlapping windows with different crons",
+			pa: &autoscalingv1alpha1.PodAutoscaler{Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+				MaxReplicas: 10,
+				ScheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{
+					{
+						Name:        "morning-peak",
+						Cron:        "0 9 * * *",
+						Duration:    metav1.Duration{Duration: 2 * time.Hour},
+						MinReplicas: ptr.To(int32(4)),
+					},
+					{
+						Name:        "late-morning-peak",
+						Cron:        "0 10 * * *",
+						Duration:    metav1.Duration{Duration: time.Hour},
+						MinReplicas: ptr.To(int32(5)),
+					},
+				},
+			}},
+			wantError: true,
+		},
 	}
 
 	for _, tt := range tests {
