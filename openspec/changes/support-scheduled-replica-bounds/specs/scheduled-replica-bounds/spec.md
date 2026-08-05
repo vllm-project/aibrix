@@ -42,6 +42,10 @@ The system SHALL evaluate scheduled bounds using each schedule's timezone, cron 
 - **WHEN** the current time is greater than or equal to a cron occurrence instant and earlier than that occurrence plus `duration`
 - **THEN** that schedule matches for that active window
 
+#### Scenario: Unsupported complex cron is rejected
+- **WHEN** a scheduled bound uses cron syntax outside the supported simple subset
+- **THEN** admission validation rejects the `PodAutoscaler` with an error for that schedule's `cron` field
+
 ### Requirement: Scheduled bounds are validated
 The system SHALL reject invalid scheduled bound configuration through admission validation and SHALL mark the spec invalid during controller reconciliation if admission validation was bypassed.
 

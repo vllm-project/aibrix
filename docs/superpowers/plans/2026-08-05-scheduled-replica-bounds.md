@@ -77,7 +77,7 @@ git commit -m "feat: add PodAutoscaler scheduled bounds API"
 - Create: `pkg/controller/podautoscaler/scheduled_bounds_test.go`
 - Modify: `openspec/changes/support-scheduled-replica-bounds/tasks.md`
 
-- [ ] **Step 1: Write resolver tests first**
+- [x] **Step 1: Write resolver tests first**
 
 Cover:
 - no schedules uses base bounds
@@ -93,7 +93,7 @@ Cover:
 Run: `go test ./pkg/controller/podautoscaler -run 'TestResolveEffectiveReplicaBounds|TestValidateScheduledBounds' -count=1`
 Expected: FAIL because resolver does not exist.
 
-- [ ] **Step 2: Implement resolver**
+- [x] **Step 2: Implement resolver**
 
 Create a small API:
 
@@ -109,7 +109,7 @@ func resolveEffectiveReplicaBounds(pa *autoscalingv1alpha1.PodAutoscaler, now ti
 
 Use UTC when `Timezone` is empty. Treat an active window as `[occurrence, occurrence+duration)`.
 
-- [ ] **Step 3: Implement semantic validation helper**
+- [x] **Step 3: Implement semantic validation helper**
 
 Add helper logic that validation callers can reuse conceptually:
 
@@ -119,12 +119,12 @@ func validateScheduledBounds(pa *autoscalingv1alpha1.PodAutoscaler) field.ErrorL
 
 If import layering makes `field.ErrorList` unsuitable outside webhook code, return plain errors from core helpers and map them to fields in webhook/controller callers.
 
-- [ ] **Step 4: Run resolver tests**
+- [x] **Step 4: Run resolver tests**
 
 Run: `go test ./pkg/controller/podautoscaler -run 'TestResolveEffectiveReplicaBounds|TestValidateScheduledBounds' -count=1`
 Expected: PASS.
 
-- [ ] **Step 5: Commit resolver**
+- [x] **Step 5: Commit resolver**
 
 ```bash
 git add pkg/controller/podautoscaler/scheduled_bounds.go pkg/controller/podautoscaler/scheduled_bounds_test.go openspec/changes/support-scheduled-replica-bounds/tasks.md
