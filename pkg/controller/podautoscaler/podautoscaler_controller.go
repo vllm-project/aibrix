@@ -396,6 +396,9 @@ func (r *PodAutoscalerReconciler) validateSpec(pa *autoscalingv1alpha1.PodAutosc
 	if vr := r.validateReplicaBounds(pa); !vr.Valid {
 		return vr
 	}
+	if errs := validateScheduledBounds(pa); len(errs) > 0 {
+		return invalid(ReasonInvalidSpec, errs.ToAggregate().Error())
+	}
 	if vr := r.validateScalingStrategy(pa); !vr.Valid {
 		return vr
 	}

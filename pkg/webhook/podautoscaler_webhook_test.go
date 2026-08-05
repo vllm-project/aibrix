@@ -18,11 +18,13 @@ package webhook
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 )
 
@@ -278,6 +280,67 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 			expectError: true,
 			errorMsg:    "panicWindowSeconds",
 		},
+		"Valid Scheduled Bounds": {
+			pa: podAutoscalerWithScheduledBounds(autoscalingv1alpha1.ScheduledReplicaBounds{
+				Name:        "weekday-peak",
+				Timezone:    "America/Los_Angeles",
+				Cron:        "0 9 * * MON-FRI",
+				Duration:    metav1.Duration{Duration: time.Hour},
+				MinReplicas: ptr.To(int32(4)),
+			}),
+			expectError: false,
+		},
+		"Scheduled Bounds Invalid Cron": {
+			pa: podAutoscalerWithScheduledBounds(autoscalingv1alpha1.ScheduledReplicaBounds{
+				Name: "invalid-cron", Cron: "*/5 * * * *", Duration: metav1.Duration{Duration: time.Hour}, MinReplicas: ptr.To(int32(1)),
+			}),
+			expectError: true,
+			errorMsg:    "spec.scheduledBounds[0].cron",
+		},
+		"Scheduled Bounds Invalid Duration": {
+			pa: podAutoscalerWithScheduledBounds(autoscalingv1alpha1.ScheduledReplicaBounds{
+				Name: "invalid-duration", Cron: "0 9 * * *", MinReplicas: ptr.To(int32(1)),
+			}),
+			expectError: true,
+			errorMsg:    "spec.scheduledBounds[0].duration",
+		},
+		"Scheduled Bounds Invalid Timezone": {
+			pa: podAutoscalerWithScheduledBounds(autoscalingv1alpha1.ScheduledReplicaBounds{
+				Name: "invalid-timezone", Timezone: "Mars/Olympus_Mons", Cron: "0 9 * * *", Duration: metav1.Duration{Duration: time.Hour}, MinReplicas: ptr.To(int32(1)),
+			}),
+			expectError: true,
+			errorMsg:    "spec.scheduledBounds[0].timezone",
+		},
+		"Scheduled Bounds Duplicate Name": {
+			pa: podAutoscalerWithScheduledBounds(
+				autoscalingv1alpha1.ScheduledReplicaBounds{Name: "peak", Cron: "0 9 * * *", Duration: metav1.Duration{Duration: time.Hour}, MinReplicas: ptr.To(int32(2))},
+				autoscalingv1alpha1.ScheduledReplicaBounds{Name: "peak", Cron: "0 12 * * *", Duration: metav1.Duration{Duration: time.Hour}, MinReplicas: ptr.To(int32(3))},
+			),
+			expectError: true,
+			errorMsg:    "spec.scheduledBounds[1].name",
+		},
+		"Scheduled Bounds Requires Override": {
+			pa: podAutoscalerWithScheduledBounds(autoscalingv1alpha1.ScheduledReplicaBounds{
+				Name: "missing-overrides", Cron: "0 9 * * *", Duration: metav1.Duration{Duration: time.Hour},
+			}),
+			expectError: true,
+			errorMsg:    "spec.scheduledBounds[0]",
+		},
+		"Scheduled Bounds Invalid Effective Bounds": {
+			pa: podAutoscalerWithScheduledBounds(autoscalingv1alpha1.ScheduledReplicaBounds{
+				Name: "invalid-effective-bounds", Cron: "0 9 * * *", Duration: metav1.Duration{Duration: time.Hour}, MinReplicas: ptr.To(int32(11)),
+			}),
+			expectError: true,
+			errorMsg:    "spec.scheduledBounds[0]",
+		},
+		"Scheduled Bounds Overlap": {
+			pa: podAutoscalerWithScheduledBounds(
+				autoscalingv1alpha1.ScheduledReplicaBounds{Name: "morning", Cron: "0 9 * * *", Duration: metav1.Duration{Duration: 2 * time.Hour}, MinReplicas: ptr.To(int32(2))},
+				autoscalingv1alpha1.ScheduledReplicaBounds{Name: "late-morning", Cron: "0 10 * * *", Duration: metav1.Duration{time.Hour}, MinReplicas: ptr.To(int32(3))},
+			),
+			expectError: true,
+			errorMsg:    "spec.scheduledBounds[1]",
+		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -292,5 +355,22 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 				require.NoError(t, err)
 			}
 		})
+	}
+}
+
+func podAutoscalerWithScheduledBounds(scheduledBounds ...autoscalingv1alpha1.ScheduledReplicaBounds) *autoscalingv1alpha1.PodAutoscaler {
+	return &autoscalingv1alpha1.PodAutoscaler{
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef:  corev1.ObjectReference{Name: "test-deployment", Kind: "Deployment"},
+			MinReplicas:     ptr.To(int32(1)),
+			MaxReplicas:     10,
+			ScheduledBounds: scheduledBounds,
+			ScalingStrategy: autoscalingv1alpha1.HPA,
+			MetricsSources: []autoscalingv1alpha1.MetricSource{{
+				MetricSourceType: autoscalingv1alpha1.RESOURCE,
+				TargetMetric:     "cpu",
+				TargetValue:      "50",
+			}},
+		},
 	}
 }

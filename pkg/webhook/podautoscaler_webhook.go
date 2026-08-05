@@ -19,9 +19,13 @@ package webhook
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -38,10 +42,22 @@ import (
 var podautoscalerlog = logf.Log.WithName("podautoscaler-resource")
 
 const (
-	maxMetricWindowSeconds      = int64(3600)
-	defaultObserveWindowSeconds = int64(180)
-	defaultPanicWindowSeconds   = int64(60)
+	maxMetricWindowSeconds            = int64(3600)
+	defaultObserveWindowSeconds       = int64(180)
+	defaultPanicWindowSeconds         = int64(60)
+	scheduledBoundsValidationWeekDays = 7
 )
+
+type scheduledBoundsCron struct {
+	minute   int
+	hours    [24]bool
+	weekdays [7]bool
+}
+
+type scheduledBoundsWindow struct {
+	start time.Time
+	end   time.Time
+}
 
 // SetupPodAutoscalerWebhookWithManager registers the webhook for PodAutoscaler in the manager.
 func SetupPodAutoscalerWebhookWithManager(mgr ctrl.Manager) error {
@@ -147,6 +163,7 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 		)
 	}
 
+	allErrs = append(allErrs, validateScheduledBounds(pa, specPath)...)
 	allErrs = append(allErrs, validateMetricWindows(pa, specPath)...)
 
 	// 3. Validate ScalingStrategy
@@ -261,6 +278,299 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 		pa.Name,
 		allErrs,
 	)
+}
+
+func validateScheduledBounds(pa *autoscalingv1alpha1.PodAutoscaler, specPath *field.Path) field.ErrorList {
+	var errs field.ErrorList
+	path := specPath.Child("scheduledBounds")
+	names := make(map[string]int)
+	for i, scheduled := range pa.Spec.ScheduledBounds {
+		schedulePath := path.Index(i)
+		if scheduled.Name == "" {
+			errs = append(errs, field.Required(schedulePath.Child("name"), "must be specified"))
+		} else if previous, exists := names[scheduled.Name]; exists {
+			errs = append(errs, field.Duplicate(schedulePath.Child("name"), fmt.Sprintf("duplicates scheduledBounds[%d].name", previous)))
+		} else {
+			names[scheduled.Name] = i
+		}
+
+		if _, err := parseScheduledBoundsCron(scheduled.Cron); err != nil {
+			errs = append(errs, field.Invalid(schedulePath.Child("cron"), scheduled.Cron, err.Error()))
+		}
+		if scheduled.Duration.Duration <= 0 {
+			errs = append(errs, field.Invalid(schedulePath.Child("duration"), scheduled.Duration.Duration.String(), "must be positive"))
+		}
+		if _, err := scheduledBoundsLocation(scheduled.Timezone); err != nil {
+			errs = append(errs, field.Invalid(schedulePath.Child("timezone"), scheduled.Timezone, err.Error()))
+		}
+		if scheduled.StartTime != nil && scheduled.EndTime != nil && !scheduled.StartTime.Before(scheduled.EndTime) {
+			errs = append(errs, field.Invalid(schedulePath, scheduled, "startTime must be earlier than endTime"))
+		}
+		if scheduled.MinReplicas == nil && scheduled.MaxReplicas == nil {
+			errs = append(errs, field.Required(schedulePath, "at least one of minReplicas or maxReplicas must be specified"))
+			continue
+		}
+
+		minReplicas := int32(1)
+		if pa.Spec.MinReplicas != nil {
+			minReplicas = *pa.Spec.MinReplicas
+		}
+		if scheduled.MinReplicas != nil {
+			minReplicas = *scheduled.MinReplicas
+		}
+		maxReplicas := pa.Spec.MaxReplicas
+		if scheduled.MaxReplicas != nil {
+			maxReplicas = *scheduled.MaxReplicas
+		}
+		if minReplicas < 0 {
+			errs = append(errs, field.Invalid(schedulePath.Child("minReplicas"), minReplicas, "effective minReplicas must not be negative"))
+		}
+		if maxReplicas <= 0 {
+			errs = append(errs, field.Invalid(schedulePath.Child("maxReplicas"), maxReplicas, "effective maxReplicas must be positive"))
+		}
+		if minReplicas > maxReplicas {
+			errs = append(errs, field.Invalid(schedulePath, scheduled, "effective minReplicas must not be greater than effective maxReplicas"))
+		}
+	}
+
+	for i := range pa.Spec.ScheduledBounds {
+		for j := 0; j < i; j++ {
+			if scheduledBoundsOverlap(pa.Spec.ScheduledBounds[j], pa.Spec.ScheduledBounds[i]) {
+				errs = append(errs, field.Invalid(path.Index(i), pa.Spec.ScheduledBounds[i].Name, "overlaps another scheduled bounds window"))
+			}
+		}
+	}
+
+	return errs
+}
+
+func scheduledBoundsLocation(timezone string) (*time.Location, error) {
+	if timezone == "" {
+		return time.UTC, nil
+	}
+	return time.LoadLocation(timezone)
+}
+
+func scheduledBoundsOverlap(left, right autoscalingv1alpha1.ScheduledReplicaBounds) bool {
+	if !scheduledBoundsLifetimesOverlap(left.StartTime, left.EndTime, right.StartTime, right.EndTime) {
+		return false
+	}
+
+	leftCron, err := parseScheduledBoundsCron(left.Cron)
+	if err != nil {
+		return false
+	}
+	rightCron, err := parseScheduledBoundsCron(right.Cron)
+	if err != nil {
+		return false
+	}
+	leftLocation, err := scheduledBoundsLocation(left.Timezone)
+	if err != nil {
+		return false
+	}
+	rightLocation, err := scheduledBoundsLocation(right.Timezone)
+	if err != nil {
+		return false
+	}
+
+	weekStart, weekEnd := scheduledBoundsOverlapWeek(left, right)
+	leftWindows := leftCron.windowsOverlappingWeek(left, leftLocation, weekStart, weekEnd)
+	rightWindows := rightCron.windowsOverlappingWeek(right, rightLocation, weekStart, weekEnd)
+	for _, leftWindow := range leftWindows {
+		for _, rightWindow := range rightWindows {
+			if leftWindow.start.Before(rightWindow.end) && rightWindow.start.Before(leftWindow.end) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func scheduledBoundsOverlapWeek(left, right autoscalingv1alpha1.ScheduledReplicaBounds) (time.Time, time.Time) {
+	anchor := time.Date(2000, time.January, 3, 0, 0, 0, 0, time.UTC)
+	hasStart := false
+	if left.StartTime != nil && left.StartTime.After(anchor) {
+		anchor = left.StartTime.Time
+		hasStart = true
+	}
+	if right.StartTime != nil && right.StartTime.After(anchor) {
+		anchor = right.StartTime.Time
+		hasStart = true
+	}
+	if !hasStart {
+		hasEnd := false
+		if left.EndTime != nil {
+			anchor = left.EndTime.Time.AddDate(0, 0, -scheduledBoundsValidationWeekDays)
+			hasEnd = true
+		}
+		if right.EndTime != nil {
+			candidate := right.EndTime.Time.AddDate(0, 0, -scheduledBoundsValidationWeekDays)
+			if !hasEnd || candidate.Before(anchor) {
+				anchor = candidate
+			}
+		}
+	}
+
+	dayStart := time.Date(anchor.Year(), anchor.Month(), anchor.Day(), 0, 0, 0, 0, time.UTC)
+	return dayStart, dayStart.AddDate(0, 0, scheduledBoundsValidationWeekDays)
+}
+
+func parseScheduledBoundsCron(expression string) (scheduledBoundsCron, error) {
+	fields := strings.Fields(expression)
+	if len(fields) != 5 {
+		return scheduledBoundsCron{}, fmt.Errorf("unsupported cron syntax: expected five fields")
+	}
+
+	minute, err := parseScheduledBoundsNumber(fields[0], 0, 59)
+	if err != nil {
+		return scheduledBoundsCron{}, fmt.Errorf("unsupported cron syntax: minute must be a single number from 0 to 59")
+	}
+	hours, err := parseScheduledBoundsNumberSet(fields[1], 0, 23, nil)
+	if err != nil {
+		return scheduledBoundsCron{}, fmt.Errorf("unsupported cron syntax: hour must be numeric values or ranges from 0 to 23")
+	}
+	if fields[2] != "*" {
+		return scheduledBoundsCron{}, fmt.Errorf("unsupported cron syntax: day-of-month must be *")
+	}
+	if fields[3] != "*" {
+		return scheduledBoundsCron{}, fmt.Errorf("unsupported cron syntax: month must be *")
+	}
+	weekdays, err := parseScheduledBoundsNumberSet(fields[4], 0, 7, scheduledBoundsWeekdayNames)
+	if err != nil {
+		return scheduledBoundsCron{}, fmt.Errorf("unsupported cron syntax: day-of-week must be *, values, or ranges")
+	}
+
+	var schedule scheduledBoundsCron
+	schedule.minute = minute
+	for _, hour := range hours {
+		schedule.hours[hour] = true
+	}
+	for _, weekday := range weekdays {
+		schedule.weekdays[weekday%7] = true
+	}
+	return schedule, nil
+}
+
+var scheduledBoundsWeekdayNames = map[string]int{
+	"SUN": 0, "MON": 1, "TUE": 2, "WED": 3, "THU": 4, "FRI": 5, "SAT": 6,
+}
+
+func parseScheduledBoundsNumberSet(value string, min, max int, names map[string]int) ([]int, error) {
+	if value == "*" {
+		if names == nil {
+			return nil, fmt.Errorf("wildcards are not supported")
+		}
+		values := make([]int, 0, max-min+1)
+		for value := min; value <= max; value++ {
+			values = append(values, value)
+		}
+		return values, nil
+	}
+
+	values := make([]int, 0)
+	for _, part := range strings.Split(value, ",") {
+		if part == "" {
+			return nil, fmt.Errorf("empty list value")
+		}
+		if strings.Count(part, "-") > 1 {
+			return nil, fmt.Errorf("invalid range")
+		}
+		if strings.Contains(part, "-") {
+			bounds := strings.SplitN(part, "-", 2)
+			start, err := parseScheduledBoundsValue(bounds[0], min, max, names)
+			if err != nil {
+				return nil, err
+			}
+			end, err := parseScheduledBoundsValue(bounds[1], min, max, names)
+			if err != nil || start > end {
+				return nil, fmt.Errorf("invalid range")
+			}
+			for value := start; value <= end; value++ {
+				values = append(values, value)
+			}
+			continue
+		}
+
+		parsed, err := parseScheduledBoundsValue(part, min, max, names)
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, parsed)
+	}
+	return values, nil
+}
+
+func parseScheduledBoundsValue(value string, min, max int, names map[string]int) (int, error) {
+	if names != nil {
+		if named, ok := names[strings.ToUpper(value)]; ok {
+			return named, nil
+		}
+	}
+	return parseScheduledBoundsNumber(value, min, max)
+}
+
+func parseScheduledBoundsNumber(value string, min, max int) (int, error) {
+	if value == "" {
+		return 0, fmt.Errorf("empty number")
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return 0, fmt.Errorf("not a number")
+		}
+	}
+	number, err := strconv.Atoi(value)
+	if err != nil || number < min || number > max {
+		return 0, fmt.Errorf("number out of range")
+	}
+	return number, nil
+}
+
+func (schedule scheduledBoundsCron) windowsOverlappingWeek(scheduled autoscalingv1alpha1.ScheduledReplicaBounds, location *time.Location, weekStart, weekEnd time.Time) []scheduledBoundsWindow {
+	localStart := weekStart.In(location)
+	dayStart := time.Date(localStart.Year(), localStart.Month(), localStart.Day(), 0, 0, 0, 0, location)
+	windows := make([]scheduledBoundsWindow, 0)
+	for dayOffset := -scheduledBoundsValidationWeekDays - 1; dayOffset <= scheduledBoundsValidationWeekDays+1; dayOffset++ {
+		day := dayStart.AddDate(0, 0, dayOffset)
+		if !schedule.weekdays[day.Weekday()] {
+			continue
+		}
+		for hour, enabled := range schedule.hours {
+			if !enabled {
+				continue
+			}
+			start := time.Date(day.Year(), day.Month(), day.Day(), hour, schedule.minute, 0, 0, location).UTC()
+			if start.In(location).Year() != day.Year() || start.In(location).Month() != day.Month() || start.In(location).Day() != day.Day() || start.In(location).Hour() != hour || start.In(location).Minute() != schedule.minute {
+				continue
+			}
+			end := start.Add(scheduled.Duration.Duration)
+			if scheduled.StartTime != nil && start.Before(scheduled.StartTime.Time) {
+				start = scheduled.StartTime.Time
+			}
+			if scheduled.EndTime != nil && scheduled.EndTime.Time.Before(end) {
+				end = scheduled.EndTime.Time
+			}
+			if start.Before(end) && start.Before(weekEnd) && weekStart.Before(end) {
+				if start.Before(weekStart) {
+					start = weekStart
+				}
+				if weekEnd.Before(end) {
+					end = weekEnd
+				}
+				windows = append(windows, scheduledBoundsWindow{start: start, end: end})
+			}
+		}
+	}
+	return windows
+}
+
+func scheduledBoundsLifetimesOverlap(leftStart, leftEnd, rightStart, rightEnd *metav1.Time) bool {
+	if leftEnd != nil && rightStart != nil && !rightStart.Time.Before(leftEnd.Time) {
+		return false
+	}
+	if rightEnd != nil && leftStart != nil && !leftStart.Time.Before(rightEnd.Time) {
+		return false
+	}
+	return true
 }
 
 func validateHPARoleSubtarget(pa *autoscalingv1alpha1.PodAutoscaler, specPath *field.Path) *field.Error {
