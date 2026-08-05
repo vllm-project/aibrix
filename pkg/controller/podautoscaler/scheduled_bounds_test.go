@@ -355,6 +355,29 @@ func TestValidateScheduledBounds(t *testing.T) {
 			wantError: true,
 		},
 		{
+			name: "rejects overlapping weekly windows after a late week lifetime start",
+			pa: &autoscalingv1alpha1.PodAutoscaler{Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+				MaxReplicas: 10,
+				ScheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{
+					{
+						Name:        "monday-peak-a",
+						Cron:        "0 9 * * MON",
+						Duration:    metav1.Duration{Duration: time.Hour},
+						StartTime:   &metav1.Time{Time: time.Date(2026, time.August, 9, 23, 0, 0, 0, time.UTC)},
+						MinReplicas: ptr.To(int32(4)),
+					},
+					{
+						Name:        "monday-peak-b",
+						Cron:        "0 9 * * MON",
+						Duration:    metav1.Duration{Duration: time.Hour},
+						StartTime:   &metav1.Time{Time: time.Date(2026, time.August, 9, 23, 0, 0, 0, time.UTC)},
+						MinReplicas: ptr.To(int32(5)),
+					},
+				},
+			}},
+			wantError: true,
+		},
+		{
 			name: "rejects leap-day cron as unsupported instead of scanning for overlap",
 			pa: &autoscalingv1alpha1.PodAutoscaler{Spec: autoscalingv1alpha1.PodAutoscalerSpec{
 				MaxReplicas: 10,
