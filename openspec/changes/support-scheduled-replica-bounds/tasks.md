@@ -6,9 +6,9 @@
 
 ## 2. Effective Bounds Resolver
 
-- [ ] 2.1 Add a focused resolver that computes effective min/max bounds from a `PodAutoscaler`, a fixed `time.Time`, and the schedule list.
-- [ ] 2.2 Add unit tests for no schedules, matching windows, non-matching windows, partial overrides, timezone handling, duration handling, start/end lifetime handling, and zero minimum behavior.
-- [ ] 2.3 Add deterministic error handling for invalid runtime schedule configuration used by controller fallback validation.
+- [x] 2.1 Add a focused resolver that computes effective min/max bounds from a `PodAutoscaler`, a fixed `time.Time`, and the schedule list.
+- [x] 2.2 Add unit tests for no schedules, matching windows, non-matching windows, partial overrides, timezone handling, duration handling, start/end lifetime handling, and zero minimum behavior.
+- [x] 2.3 Add deterministic error handling for invalid runtime schedule configuration used by controller fallback validation.
 
 ## 3. Validation
 
