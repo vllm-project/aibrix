@@ -336,7 +336,7 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 		"Scheduled Bounds Overlap": {
 			pa: podAutoscalerWithScheduledBounds(
 				autoscalingv1alpha1.ScheduledReplicaBounds{Name: "morning", Cron: "0 9 * * *", Duration: metav1.Duration{Duration: 2 * time.Hour}, MinReplicas: ptr.To(int32(2))},
-				autoscalingv1alpha1.ScheduledReplicaBounds{Name: "late-morning", Cron: "0 10 * * *", Duration: metav1.Duration{time.Hour}, MinReplicas: ptr.To(int32(3))},
+				autoscalingv1alpha1.ScheduledReplicaBounds{Name: "late-morning", Cron: "0 10 * * *", Duration: metav1.Duration{Duration: time.Hour}, MinReplicas: ptr.To(int32(3))},
 			),
 			expectError: true,
 			errorMsg:    "spec.scheduledBounds[1]",
