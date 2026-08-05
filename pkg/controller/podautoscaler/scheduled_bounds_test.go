@@ -139,6 +139,19 @@ func TestResolveEffectiveReplicaBounds(t *testing.T) {
 			now:  time.Date(2026, time.August, 5, 9, 30, 0, 0, utc),
 			want: effectiveReplicaBounds{MinReplicas: 0, MaxReplicas: 10, ScheduleName: "scale-to-zero"},
 		},
+		{
+			name: "invalid timezone is inactive instead of panicking",
+			pa: newPA(autoscalingv1alpha1.ScheduledReplicaBounds{
+				Name:        "invalid-timezone",
+				Timezone:    "Mars/Olympus_Mons",
+				Cron:        "0 9 * * *",
+				Duration:    metav1.Duration{Duration: time.Hour},
+				MinReplicas: ptr.To(int32(6)),
+				MaxReplicas: ptr.To(int32(20)),
+			}),
+			now:  time.Date(2026, time.August, 5, 9, 30, 0, 0, utc),
+			want: effectiveReplicaBounds{MinReplicas: 2, MaxReplicas: 10},
+		},
 	}
 
 	for _, tt := range tests {
@@ -260,6 +273,20 @@ func TestValidateScheduledBounds(t *testing.T) {
 				}},
 			}},
 			wantError: true,
+		},
+		{
+			name: "rejects duration longer than validation horizon",
+			pa: &autoscalingv1alpha1.PodAutoscaler{Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+				MaxReplicas: 10,
+				ScheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{{
+					Name:        "too-long",
+					Cron:        "0 9 * * *",
+					Duration:    metav1.Duration{Duration: 7*24*time.Hour + time.Second},
+					MinReplicas: ptr.To(int32(1)),
+				}},
+			}},
+			wantError:     true,
+			wantErrorText: "must not be greater than 168h",
 		},
 		{
 			name: "rejects invalid timezone",

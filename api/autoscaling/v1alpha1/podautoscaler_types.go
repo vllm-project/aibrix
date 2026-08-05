@@ -149,8 +149,8 @@ type ScheduledReplicaBounds struct {
 	// +kubebuilder:validation:MinLength=1
 	Cron string `json:"cron"`
 
-	// Duration is the positive length of each active window. The active interval
-	// is [cron occurrence, cron occurrence + duration).
+	// Duration is the positive length of each active window, up to 168h. The
+	// active interval is [cron occurrence, cron occurrence + duration).
 	// +required
 	Duration metav1.Duration `json:"duration"`
 
