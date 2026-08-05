@@ -115,6 +115,38 @@ spec:
                 - KPA
                 - APA
                 type: string
+              scheduledBounds:
+                items:
+                  properties:
+                    cron:
+                      minLength: 1
+                      type: string
+                    duration:
+                      type: string
+                    endTime:
+                      format: date-time
+                      type: string
+                    maxReplicas:
+                      format: int32
+                      type: integer
+                    minReplicas:
+                      format: int32
+                      type: integer
+                    name:
+                      minLength: 1
+                      type: string
+                    startTime:
+                      format: date-time
+                      type: string
+                    timezone:
+                      type: string
+                  required:
+                  - cron
+                  - duration
+                  - name
+                  type: object
+                minItems: 1
+                type: array
               subTargetSelector:
                 properties:
                   roleName:

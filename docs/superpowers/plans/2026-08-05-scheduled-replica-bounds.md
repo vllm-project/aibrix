@@ -240,7 +240,7 @@ git commit -m "feat: apply scheduled bounds during autoscaling"
 - Modify: `docs/source/features/autoscaling/metric-based-autoscaling.rst`
 - Modify: `openspec/changes/support-scheduled-replica-bounds/tasks.md`
 
-- [ ] **Step 1: Regenerate code and manifests**
+- [x] **Step 1: Regenerate code and manifests**
 
 Run the repository generation command used for API changes, usually:
 
@@ -251,11 +251,11 @@ make manifests
 
 Expected: generated clients, deepcopy, and CRD schema include `scheduledBounds`.
 
-- [ ] **Step 2: Add scheduled bounds docs and sample**
+- [x] **Step 2: Add scheduled bounds docs and sample**
 
 Extend autoscaling docs with scheduled bounds semantics and preserve the already-included metric-window section. Add a sample showing `cron + duration`.
 
-- [ ] **Step 3: Run verification**
+- [x] **Step 3: Run verification**
 
 Run:
 
@@ -267,11 +267,11 @@ git diff --check
 
 Expected: PASS.
 
-- [ ] **Step 4: Mark OpenSpec tasks complete**
+- [x] **Step 4: Mark OpenSpec tasks complete**
 
 Update `openspec/changes/support-scheduled-replica-bounds/tasks.md` checkboxes only after implementation and verification pass.
 
-- [ ] **Step 5: Commit final artifacts**
+- [x] **Step 5: Commit final artifacts**
 
 ```bash
 git add api pkg config samples docs openspec/changes/support-scheduled-replica-bounds/tasks.md
