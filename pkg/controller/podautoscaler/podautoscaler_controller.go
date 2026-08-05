@@ -1055,8 +1055,8 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 	minReplicas := effectiveBounds.MinReplicas
 	maxReplicas := effectiveBounds.MaxReplicas
 
-	// Check if scaling should be disabled (replica is 0 and minReplicas != 0)
-	if currentReplicas == 0 && minReplicas != 0 {
+	// Check if scaling should be disabled (replica is 0 and minReplicas != 0).
+	if currentReplicas == 0 && minReplicas != 0 && effectiveBounds.ScheduleName == "" {
 		return &ScaleDecision{
 			DesiredReplicas: 0,
 			ShouldScale:     false,
