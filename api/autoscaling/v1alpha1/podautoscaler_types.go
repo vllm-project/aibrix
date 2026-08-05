@@ -75,6 +75,10 @@ type PodAutoscalerSpec struct {
 	MaxReplicas int32 `json:"maxReplicas"`
 
 	// ScheduledBounds defines time-based overrides for replica bounds.
+	// Each entry opens recurring active windows from its cron occurrence until
+	// occurrence+duration. While a window is active, its minReplicas and/or
+	// maxReplicas override the base PodAutoscaler bounds; omitted override fields
+	// inherit the corresponding base bound. Scheduled windows must not overlap.
 	// +optional
 	// +kubebuilder:validation:MinItems=1
 	ScheduledBounds []ScheduledReplicaBounds `json:"scheduledBounds,omitempty"`
@@ -104,35 +108,57 @@ type PodAutoscalerSpec struct {
 
 // ScheduledReplicaBounds defines a recurring time window that overrides replica bounds.
 type ScheduledReplicaBounds struct {
-	// Name identifies this scheduled bounds entry.
+	// Name identifies this scheduled bounds entry. Names must be unique within
+	// spec.scheduledBounds.
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 
-	// Timezone is an optional IANA timezone used to evaluate Cron.
+	// Timezone is an optional IANA timezone used to evaluate Cron. If omitted,
+	// UTC is used.
 	// +optional
 	Timezone string `json:"timezone,omitempty"`
 
 	// StartTime is the optional inclusive start of the schedule lifetime.
+	// Windows before this time are ignored.
 	// +optional
 	StartTime *metav1.Time `json:"startTime,omitempty"`
 
-	// EndTime is the optional exclusive end of the schedule lifetime.
+	// EndTime is the optional exclusive end of the schedule lifetime. Windows
+	// at or after this time are ignored. When both startTime and endTime are set,
+	// startTime must be earlier than endTime.
 	// +optional
 	EndTime *metav1.Time `json:"endTime,omitempty"`
 
 	// Cron defines recurring start instants for the active window.
+	// The first implementation supports a simple five-field subset:
+	// minute hour day-of-month month day-of-week.
+	// The minute field must be one fixed number from 0 to 59.
+	// The hour field must be one number, a comma-separated list, or a numeric
+	// range from 0 to 23.
+	// The day-of-month and month fields must both be "*".
+	// The day-of-week field must be "*", one value, a comma-separated list, or
+	// a range. Day-of-week accepts 0-7 or SUN-SAT names, with 0 and 7 both
+	// meaning Sunday. To avoid restricting weekdays, use "*" in the fifth field.
+	// Step expressions such as "*/5", macros such as "@daily", restricted
+	// day-of-month/month values, and other complex cron forms are rejected.
 	// +kubebuilder:validation:MinLength=1
 	Cron string `json:"cron"`
 
-	// Duration is the length of each active window.
+	// Duration is the positive length of each active window. The active interval
+	// is [cron occurrence, cron occurrence + duration).
 	// +required
 	Duration metav1.Duration `json:"duration"`
 
-	// MinReplicas optionally overrides the base minimum replicas.
+	// MinReplicas optionally overrides the base minimum replicas while this
+	// schedule is active. At least one of minReplicas or maxReplicas must be set.
+	// The effective minReplicas must not be greater than effective maxReplicas.
 	// +optional
 	MinReplicas *int32 `json:"minReplicas,omitempty"`
 
-	// MaxReplicas optionally overrides the base maximum replicas.
+	// MaxReplicas optionally overrides the base maximum replicas while this
+	// schedule is active. At least one of minReplicas or maxReplicas must be set.
+	// The effective maxReplicas must be positive and must not be less than the
+	// effective minReplicas.
 	// +optional
 	MaxReplicas *int32 `json:"maxReplicas,omitempty"`
 }
