@@ -234,8 +234,7 @@ func scheduledBoundsOverlapWeek(left, right autoscalingv1alpha1.ScheduledReplica
 	}
 
 	dayStart := time.Date(anchor.Year(), anchor.Month(), anchor.Day(), 0, 0, 0, 0, time.UTC)
-	weekStart := dayStart.AddDate(0, 0, -((int(dayStart.Weekday()) + 6) % scheduledBoundsValidationWeekDays))
-	return weekStart, weekStart.AddDate(0, 0, scheduledBoundsValidationWeekDays)
+	return dayStart, dayStart.AddDate(0, 0, scheduledBoundsValidationWeekDays)
 }
 
 func parseSimpleCron(expression string) (simpleCron, error) {
