@@ -74,6 +74,11 @@ type PodAutoscalerSpec struct {
 	// It cannot be less than minReplicas
 	MaxReplicas int32 `json:"maxReplicas"`
 
+	// ScheduledBounds defines time-based overrides for replica bounds.
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	ScheduledBounds []ScheduledReplicaBounds `json:"scheduledBounds,omitempty"`
+
 	// MetricsSources defines a list of sources from which metrics are collected to make scaling decisions.
 	// +kubebuilder:validation:MinItems=1
 	MetricsSources []MetricSource `json:"metricsSources,omitempty"`
@@ -95,6 +100,41 @@ type PodAutoscalerSpec struct {
 	// ScalingStrategy defines the strategy to use for scaling.
 	// +kubebuilder:validation:Enum={HPA,KPA,APA}
 	ScalingStrategy ScalingStrategyType `json:"scalingStrategy"`
+}
+
+// ScheduledReplicaBounds defines a recurring time window that overrides replica bounds.
+type ScheduledReplicaBounds struct {
+	// Name identifies this scheduled bounds entry.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Timezone is an optional IANA timezone used to evaluate Cron.
+	// +optional
+	Timezone string `json:"timezone,omitempty"`
+
+	// StartTime is the optional inclusive start of the schedule lifetime.
+	// +optional
+	StartTime *metav1.Time `json:"startTime,omitempty"`
+
+	// EndTime is the optional exclusive end of the schedule lifetime.
+	// +optional
+	EndTime *metav1.Time `json:"endTime,omitempty"`
+
+	// Cron defines recurring start instants for the active window.
+	// +kubebuilder:validation:MinLength=1
+	Cron string `json:"cron"`
+
+	// Duration is the length of each active window.
+	// +required
+	Duration metav1.Duration `json:"duration"`
+
+	// MinReplicas optionally overrides the base minimum replicas.
+	// +optional
+	MinReplicas *int32 `json:"minReplicas,omitempty"`
+
+	// MaxReplicas optionally overrides the base maximum replicas.
+	// +optional
+	MaxReplicas *int32 `json:"maxReplicas,omitempty"`
 }
 
 // SubTargetSelector identifies a sub-component within the scale target
