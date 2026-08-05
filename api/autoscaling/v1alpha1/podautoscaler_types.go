@@ -115,6 +115,7 @@ type ScheduledReplicaBounds struct {
 
 	// Timezone is an optional IANA timezone used to evaluate Cron. If omitted,
 	// UTC is used.
+	// Examples: "UTC", "Asia/Shanghai", "America/Los_Angeles".
 	// +optional
 	Timezone string `json:"timezone,omitempty"`
 
@@ -141,6 +142,10 @@ type ScheduledReplicaBounds struct {
 	// meaning Sunday. To avoid restricting weekdays, use "*" in the fifth field.
 	// Step expressions such as "*/5", macros such as "@daily", restricted
 	// day-of-month/month values, and other complex cron forms are rejected.
+	// Examples:
+	// "0 9 * * *" starts a daily window at 09:00.
+	// "0 9-18 * * MON-FRI" starts hourly windows during weekday business hours.
+	// "30 8,12,18 * * 1-5" starts windows at 08:30, 12:30, and 18:30 on weekdays.
 	// +kubebuilder:validation:MinLength=1
 	Cron string `json:"cron"`
 
