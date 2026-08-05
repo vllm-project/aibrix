@@ -25,7 +25,7 @@
 
 ## 5. Documentation and Verification
 
-- [ ] 5.1 Add sample YAML showing weekday business-hour scheduled bounds.
-- [ ] 5.2 Update autoscaling documentation with API semantics, validation rules, overlap behavior, timezone behavior, and HPA compatibility notes.
-- [ ] 5.3 Run targeted Go tests for API, webhook, and PodAutoscaler controller packages.
-- [ ] 5.4 Run CRD/generated-code verification commands used by this repository.
+- [x] 5.1 Add sample YAML showing weekday business-hour scheduled bounds.
+- [x] 5.2 Update autoscaling documentation with API semantics, validation rules, overlap behavior, timezone behavior, and HPA compatibility notes.
+- [x] 5.3 Run targeted Go tests for API, webhook, and PodAutoscaler controller packages.
+- [x] 5.4 Run CRD/generated-code verification commands used by this repository.

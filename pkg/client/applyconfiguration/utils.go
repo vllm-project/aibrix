@@ -45,6 +45,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &autoscalingv1alpha1.PodAutoscalerStatusApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ScalingDecision"):
 		return &autoscalingv1alpha1.ScalingDecisionApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("ScheduledReplicaBounds"):
+		return &autoscalingv1alpha1.ScheduledReplicaBoundsApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("SubTargetSelector"):
 		return &autoscalingv1alpha1.SubTargetSelectorApplyConfiguration{}
 

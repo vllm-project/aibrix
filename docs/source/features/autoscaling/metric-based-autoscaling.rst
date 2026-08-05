@@ -116,6 +116,54 @@ Example KPA policy with a 10-minute stable window and a 1-minute panic window:
        name: deepseek-r1-distill-llama-8b
 
 
+Scheduled replica bounds
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+``PodAutoscaler`` supports optional scheduled replica bounds under
+``spec.scheduledBounds``. Each entry defines recurring cron start instants plus
+a positive ``duration``. A schedule is active from a cron occurrence until that
+occurrence plus the configured duration. While active, it overrides the base
+``spec.minReplicas`` and/or ``spec.maxReplicas``.
+
+If ``timezone`` is omitted, schedules are evaluated in UTC. When set,
+``timezone`` must be a valid IANA timezone such as
+``America/Los_Angeles``. Optional ``startTime`` and ``endTime`` fields constrain
+the lifetime of a schedule: entries are inactive before ``startTime`` and
+inactive at or after ``endTime``.
+
+Scheduled entries may set either ``minReplicas``, ``maxReplicas``, or both. A
+partial override inherits the missing bound from the base PodAutoscaler spec.
+Validation rejects entries that do not set either bound, produce an effective
+minimum greater than the effective maximum, use invalid timezones or durations,
+or can overlap with another scheduled bounds entry. Overlapping windows are
+rejected instead of relying on implicit priority.
+
+The initial cron support intentionally accepts a simple five-field subset:
+
+- minute: one fixed numeric value
+- hour: one numeric value, a comma-separated list, or a numeric range
+- day of month: ``*``
+- month: ``*``
+- day of week: ``*``, one value, a comma-separated list, or a range using names
+  such as ``MON-FRI`` or numeric values
+
+Step expressions such as ``*/5``, restricted day-of-month or month fields, and
+other complex cron forms are rejected. For example,
+``0 9-18 * * MON-FRI`` with ``duration: 1h`` creates hourly one-hour windows on
+weekdays during business hours.
+
+HPA, KPA, and APA all use the effective scheduled bounds. For HPA strategy,
+AIBrix writes the effective bounds to the generated Kubernetes
+``HorizontalPodAutoscaler``. If the effective minimum is ``0``, the generated
+HPA omits ``spec.minReplicas`` to preserve the existing Kubernetes HPA
+compatibility behavior.
+
+Example APA policy with weekday business-hour bounds:
+
+.. literalinclude:: ../../../../samples/autoscaling/scheduled-bounds-apa.yaml
+   :language: yaml
+
+
 Example APA yaml config
 ^^^^^^^^^^^^^^^^^^^^^^^
 

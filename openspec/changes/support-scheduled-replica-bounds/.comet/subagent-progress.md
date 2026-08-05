@@ -7,25 +7,27 @@
 
 ## Last Completed Task
 
-- Plan task: `Task 3: Validation`
-- Implementation commit: 7e954c0d0904dd6424890a60ec0b289914a31a85
-- Task review: APPROVED by reviewer agent Poincare; MINOR noted that integration invalid cases need CRD regeneration in Task 5 before they become reliable end-to-end webhook evidence.
+- Plan task: `Task 5: Generated Artifacts, Docs, and Final Verification`
+- Implementation commit: pending final commit
+- Generated artifacts: deepcopy, applyconfiguration, autoscaling CRD sync, Helm chart CRD sync
+- Docs/sample: `docs/source/features/autoscaling/metric-based-autoscaling.rst`; `samples/autoscaling/scheduled-bounds-apa.yaml`
+- Verification evidence:
+  - `env -u GOROOT GOTOOLCHAIN=go1.24.0 GOCACHE=/tmp/aibrix-go-build-go124 sh ./hack/verify-codegen.sh` passed
+  - `GOTOOLCHAIN=go1.26.0 GOCACHE=/tmp/aibrix-go-build go test ./api/autoscaling/v1alpha1 ./pkg/webhook ./pkg/controller/podautoscaler ./pkg/controller/podautoscaler/context -count=1` passed
+  - `./hack/verify-crd-sync.sh` passed
+  - `git diff --check` passed
+  - `rg -n "scheduledBounds|cron:|duration:|minReplicas:|maxReplicas:" config/crd/bases/autoscaling.aibrix.ai_podautoscalers.yaml config/crd/autoscaling/autoscaling.aibrix.ai_podautoscalers.yaml dist/chart/crds/autoscaling.aibrix.ai_podautoscalers.yaml` confirmed all three CRD copies contain `scheduledBounds`
+- Concerns: `verify-codegen.sh` requires Go 1.24 in this environment because its code-generator/x-tools dependency does not compile under Go 1.26; target package tests were run with Go 1.26.
 
 ## Current Task
 
-- Plan task: `Task 4: Controller and HPA Integration`
-- OpenSpec mapping: `4.1 Update custom strategy boundary checks in computeScaleDecision to use effective min/max bounds instead of static spec bounds`; `4.2 Update createScalingContext to set effective bounds so KPA/APA algorithm clamping and stabilization use scheduled bounds`; `4.3 Update HPA reconciliation so makeHPA receives or resolves effective bounds and writes them to the generated HPA spec`; `4.4 Add controller tests proving scheduled bounds clamp custom strategy scaling and update generated HPA min/max during and after a matching window`
-- Stage: task-review
-- Implementer agent: Wegener
-- Implementation commit: 325d890e79761f024aad0d351e37f05796317358
-- Changed files: `pkg/controller/podautoscaler/podautoscaler_controller.go`; `pkg/controller/podautoscaler/podautoscaler_controller_test.go`; `pkg/controller/podautoscaler/hpa_resources.go`; `pkg/controller/podautoscaler/hpa_resources_test.go`
-- RED evidence: focused scheduled-bound tests failed before wiring because custom scale decisions and HPA generation still used base bounds.
-- GREEN evidence: `GOTOOLCHAIN=go1.26.0 GOCACHE=/tmp/aibrix-go-build go test ./pkg/controller/podautoscaler -run 'TestComputeScaleDecision.*Scheduled|TestMakeHPA.*Scheduled|TestCreateScalingContext|TestValidateSpec' -count=1`; `GOTOOLCHAIN=go1.26.0 GOCACHE=/tmp/aibrix-go-build go test ./pkg/controller/podautoscaler -count=1`.
-- Risk signals: controller reconcile behavior; HPA generated spec behavior; time-dependent active schedule resolution; cross-path consistency with resolver.
-- Task review: CHANGES_REQUESTED by reviewer agent Cicero. IMPORTANT: `computeScaleDecision` disabled scaling from zero before enforcing an active scheduled minimum, so a scheduled warm-up window could not scale from 0 to its effective minimum.
-- Review/fix rounds: 1
-- Fix agent: Bohr
-- Fix commit: 7a31e345f28869935772b5272495ac7be08eb6f2
-- Fix RED evidence: `TestComputeScaleDecisionScheduledMinScalesFromZeroReplicas` failed before the fix because the desired replicas stayed at 0 instead of the scheduled minimum 5.
-- Fix GREEN evidence: `GOTOOLCHAIN=go1.26.0 GOCACHE=/tmp/aibrix-go-build go test ./pkg/controller/podautoscaler -run 'TestComputeScaleDecision.*Scheduled|TestCreateScalingContext|TestValidateSpec' -count=1`; `GOTOOLCHAIN=go1.26.0 GOCACHE=/tmp/aibrix-go-build go test ./pkg/controller/podautoscaler -count=1`.
-- Re-review: APPROVED by reviewer agent Heisenberg. Original IMPORTANT finding is fixed; scheduled min can now scale from 0 when an active schedule is applied, while unscheduled scale-from-zero disabled behavior is preserved.
+- Plan task: none
+- OpenSpec mapping: none
+- Stage: Task 5 verification passed; pending final commit
+- Implementer agent: pending
+- Implementation commit: pending
+- Changed files: pending
+- Verification evidence: recorded above
+- Risk signals: generated artifacts; CRD/client sync; documentation accuracy for simple cron subset
+- Task review: not dispatched for Task 5; generated artifacts and docs were verified by repository commands
+- Review/fix rounds: 0
