@@ -29,8 +29,10 @@ import (
 )
 
 const (
-	scheduledBoundsOverlapHorizon     = 366 * 24 * time.Hour
-	scheduledBoundsOverlapOccurrences = 2048
+	// Cron fields are evaluated against the Gregorian calendar, whose day-of-week
+	// pattern repeats every 400 years. Scanning a complete cycle catches sparse
+	// schedules such as February 29 without making validation unbounded.
+	scheduledBoundsOverlapCalendarYears = 400
 )
 
 type effectiveReplicaBounds struct {
@@ -197,12 +199,15 @@ func obviousScheduleOverlap(left, right autoscalingv1alpha1.ScheduledReplicaBoun
 	start, end := scheduledBoundsOverlapInterval(left, right)
 	leftOccurrence := leftSchedule.Next(start.In(leftLocation).Add(-left.Duration.Duration - time.Nanosecond))
 	rightOccurrence := rightSchedule.Next(start.In(rightLocation).Add(-right.Duration.Duration - time.Nanosecond))
-	for occurrences := 0; occurrences < scheduledBoundsOverlapOccurrences; occurrences++ {
-		leftStart := leftOccurrence.UTC()
-		rightStart := rightOccurrence.UTC()
-		if !leftStart.Before(end) && !rightStart.Before(end) {
+	for {
+		leftDone := leftOccurrence.IsZero() || !leftOccurrence.Before(end)
+		rightDone := rightOccurrence.IsZero() || !rightOccurrence.Before(end)
+		if leftDone || rightDone {
 			return false
 		}
+
+		leftStart := leftOccurrence.UTC()
+		rightStart := rightOccurrence.UTC()
 		if leftStart.Before(rightStart) {
 			if scheduledWindowsOverlap(leftStart, left.Duration.Duration, rightStart, right.Duration.Duration, start, end) {
 				return true
@@ -210,17 +215,17 @@ func obviousScheduleOverlap(left, right autoscalingv1alpha1.ScheduledReplicaBoun
 			leftOccurrence = leftSchedule.Next(leftOccurrence)
 			continue
 		}
-		if scheduledWindowsOverlap(rightStart, right.Duration.Duration, leftStart, left.Duration.Duration, start, end) {
-			return true
+		if !rightStart.After(leftStart) {
+			if scheduledWindowsOverlap(rightStart, right.Duration.Duration, leftStart, left.Duration.Duration, start, end) {
+				return true
+			}
+			rightOccurrence = rightSchedule.Next(rightOccurrence)
 		}
-		rightOccurrence = rightSchedule.Next(rightOccurrence)
 	}
-
-	return false
 }
 
 func scheduledBoundsOverlapInterval(left, right autoscalingv1alpha1.ScheduledReplicaBounds) (time.Time, time.Time) {
-	start := time.Unix(0, 0).UTC()
+	start := time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
 	if left.StartTime != nil && left.StartTime.After(start) {
 		start = left.StartTime.Time
 	}
@@ -228,7 +233,7 @@ func scheduledBoundsOverlapInterval(left, right autoscalingv1alpha1.ScheduledRep
 		start = right.StartTime.Time
 	}
 
-	end := start.Add(scheduledBoundsOverlapHorizon)
+	end := start.AddDate(scheduledBoundsOverlapCalendarYears, 0, 0)
 	if left.EndTime != nil && left.EndTime.Time.Before(end) {
 		end = left.EndTime.Time
 	}
