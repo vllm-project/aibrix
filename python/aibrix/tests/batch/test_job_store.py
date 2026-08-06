@@ -248,6 +248,116 @@ async def test_job_store_update_persists_and_fires_updated(fake_metastore):
 
 
 @pytest.mark.asyncio
+async def test_job_store_refresh_observes_updates_from_another_instance(
+    fake_metastore,
+):
+    _, _ = fake_metastore
+    writer = JobStore(storage_type=StorageType.LOCAL)
+    observer = JobStore(storage_type=StorageType.LOCAL)
+    observed_commits = []
+    observed_updates = []
+
+    async def committed_handler(job):
+        observed_commits.append(job)
+        return True
+
+    async def updated_handler(old_job, new_job):
+        observed_updates.append((old_job, new_job))
+        return True
+
+    observer.on_job_committed(committed_handler)
+    observer.on_job_updated(updated_handler)
+
+    await writer.submit_job("session-1", _spec())
+    await observer.refresh()
+    job_id = observed_commits[0].job_id
+    assert job_id is not None
+
+    updated_job = (await writer.get_job(job_id)).model_copy(deep=True)
+    updated_job.status.temp_output_file_id = "peer-output"
+    await writer.update_job_status(updated_job)
+    await observer.refresh()
+
+    assert len(observed_commits) == 1
+    assert len(observed_updates) == 1
+    assert observed_updates[0][0].status.temp_output_file_id is None
+    assert observed_updates[0][1].status.temp_output_file_id == "peer-output"
+
+
+@pytest.mark.asyncio
+async def test_job_store_refresh_observes_peer_finalization(fake_metastore):
+    _, _ = fake_metastore
+    writer = JobStore(storage_type=StorageType.LOCAL)
+    observer = JobStore(storage_type=StorageType.LOCAL)
+    observed_commits = []
+    observed_updates = []
+
+    async def committed_handler(job):
+        observed_commits.append(job)
+        return True
+
+    async def updated_handler(old_job, new_job):
+        observed_updates.append((old_job, new_job))
+        return True
+
+    observer.on_job_committed(committed_handler)
+    observer.on_job_updated(updated_handler)
+
+    await writer.submit_job("session-1", _spec())
+    await observer.refresh()
+    job_id = observed_commits[0].job_id
+    assert job_id is not None
+
+    finalized_job = (await writer.get_job(job_id)).model_copy(deep=True)
+    finalized_job.status.state = BatchJobState.FINALIZED
+    await writer.update_job_status(finalized_job)
+    await observer.refresh()
+
+    assert len(observed_updates) == 1
+    assert observed_updates[0][1].status.state == BatchJobState.FINALIZED
+    assert job_id not in observer.active_jobs
+
+
+@pytest.mark.asyncio
+async def test_job_store_refresh_ignores_older_resource_version(fake_metastore):
+    metastore, _ = fake_metastore
+    writer = JobStore(storage_type=StorageType.LOCAL)
+    observer = JobStore(storage_type=StorageType.LOCAL)
+    observed_updates = []
+
+    async def updated_handler(old_job, new_job):
+        observed_updates.append((old_job, new_job))
+        return True
+
+    observer.on_job_updated(updated_handler)
+
+    await writer.submit_job("session-1", _spec())
+    await observer.refresh()
+    job = (await writer.list_jobs())[0]
+    assert job.job_id is not None
+
+    version_two = job.model_copy(deep=True)
+    version_two.status.temp_output_file_id = "version-two"
+    await writer.update_job_status(version_two)
+    stale_payload = metastore.objects[f"batchjob/{job.job_id}"]
+
+    version_three = (await writer.get_job(job.job_id)).model_copy(deep=True)
+    version_three.status.temp_output_file_id = "version-three"
+    await writer.update_job_status(version_three)
+    await observer.refresh()
+    update_count = len(observed_updates)
+
+    metastore.objects[f"batchjob/{job.job_id}"] = stale_payload
+    await observer.refresh()
+
+    assert len(observed_updates) == update_count
+    assert observer.active_jobs[job.job_id].metadata.resource_version == "3"
+    assert (
+        observer.active_jobs[job.job_id].status.temp_output_file_id == "version-three"
+    )
+
+
+@pytest.mark.asyncio
 async def test_job_store_delete_removes_from_metastore_and_fires_deleted(
     fake_metastore,
 ):
@@ -558,7 +668,7 @@ async def test_job_store_recovery_stops_after_oldest_unfinished_marker(
             return second_page
         return []
 
-    monkeypatch.setattr(store, "list_jobs", fake_list_jobs)
+    monkeypatch.setattr(store, "_list_recovery_page", fake_list_jobs)
 
     recovered_jobs = await store._list_recovery_jobs()
 
@@ -596,7 +706,7 @@ async def test_job_store_recovery_does_not_stop_early_without_time_ordering(
             return second_page
         return []
 
-    monkeypatch.setattr(store, "list_jobs", fake_list_jobs)
+    monkeypatch.setattr(store, "_list_recovery_page", fake_list_jobs)
     monkeypatch.setattr(
         store,
         "_supports_created_at_desc_recovery_ordering",

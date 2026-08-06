@@ -39,6 +39,10 @@ class SchedulableJobs(Protocol):
         """Get the current status of a job, or None if not found."""
         ...
 
+    async def refresh_job(self, job_id: str) -> Optional[BatchJob]:
+        """Reload a job from shared persistence before distributed admission."""
+        ...
+
     async def admit(self, job_id: str) -> Optional["JobDriver"]:
         """Admit a job: validate it, promote pending -> in-progress, and build
         its driver. Returns the driver to run, or None if not admitted. Called

@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Optional, Tuple
 
 import aibrix.batch.constant as constant
 from aibrix.batch.job_entity import BatchJobState
+from aibrix.batch.job_lease import JobLease
 from aibrix.batch.scheduling_policy import FIFOScheduling, SchedulingPolicy
 from aibrix.batch.state import SchedulableJobs
 from aibrix.context import InfrastructureContext
@@ -49,6 +50,7 @@ class BatchScheduler:
         job_progress_manager: SchedulableJobs,
         pool_size: int = constant.DEFAULT_JOB_POOL_SIZE,
         policy: Optional[SchedulingPolicy] = None,
+        job_lease: Optional[JobLease] = None,
     ) -> None:
         """
         self._policy owns the ordering of queued jobs (FIFO by default).
@@ -63,6 +65,7 @@ class BatchScheduler:
         self._job_progress_manager = job_progress_manager
         self._pool_size = max(1, pool_size)
         self._policy: SchedulingPolicy = policy or FIFOScheduling()
+        self._job_lease = job_lease
         self._idle_interval = constant.SCHEDULE_IDLE_INTERVAL
         self._expire_interval = constant.EXPIRE_INTERVAL
 
@@ -72,33 +75,138 @@ class BatchScheduler:
         self._jobs_running_task: Optional[asyncio.Task] = None
         self._jobs_cleanup_task: Optional[asyncio.Task] = None
         self._job_execution_tasks: dict[str, asyncio.Task[None]] = {}
+        self._queued_job_ids: set[str] = set()
+        self._lease_retry_at: dict[str, float] = {}
 
     def append_job(self, job_id: str):
         # Enqueue a job for scheduling; the policy owns the ordering. Expiry is
         # derived from the registry's pending pool, so no due-time is tracked.
+        if (
+            job_id in self._queued_job_ids
+            or job_id in self._lease_retry_at
+            or job_id in self._job_execution_tasks
+        ):
+            return
         self._policy.add(job_id)
+        self._queued_job_ids.add(job_id)
+
+    def _next_job(self) -> Optional[str]:
+        job_id = self._policy.next()
+        if job_id is not None:
+            self._queued_job_ids.discard(job_id)
+        return job_id
+
+    def _defer_job_for_lease(self, job_id: str, retry_after_seconds: float) -> None:
+        retry_delay = max(
+            retry_after_seconds,
+            constant.JOB_LEASE_MIN_RETRY_INTERVAL_SECONDS,
+        )
+        self._lease_retry_at[job_id] = asyncio.get_running_loop().time() + retry_delay
+
+    def _enqueue_due_lease_retries(self) -> None:
+        now = asyncio.get_running_loop().time()
+        for job_id, retry_at in list(self._lease_retry_at.items()):
+            if retry_at > now or job_id in self._job_execution_tasks:
+                continue
+            del self._lease_retry_at[job_id]
+            self.append_job(job_id)
+
+    def _idle_wait_seconds(self) -> float:
+        if not self._lease_retry_at:
+            return self._idle_interval
+        next_retry_at = min(self._lease_retry_at.values())
+        retry_wait = max(0.0, next_retry_at - asyncio.get_running_loop().time())
+        if self._idle_interval <= 0:
+            return retry_wait
+        return min(self._idle_interval, retry_wait)
+
+    async def _release_job_lease(self, job_id: str) -> None:
+        if self._job_lease is None:
+            return
+        try:
+            await self._job_lease.release(job_id)
+        except Exception as e:
+            logger.warning(
+                "Failed to release job lease",
+                job_id=job_id,
+                error=str(e),
+            )  # type: ignore[call-arg]
+
+    async def _admit_with_lease(
+        self,
+        job_id: str,
+    ) -> tuple[Optional["JobDriver"], bool]:
+        if self._job_lease is None:
+            return await self._job_progress_manager.admit(job_id), False
+
+        lease_lost = asyncio.Event()
+        admission_task = asyncio.create_task(self._refresh_and_admit(job_id))
+        lease_renewal_task = asyncio.create_task(
+            self._renew_job_lease(job_id, admission_task, lease_lost)
+        )
+        try:
+            try:
+                driver = await admission_task
+                return driver, lease_lost.is_set()
+            except asyncio.CancelledError:
+                if lease_lost.is_set():
+                    return None, True
+                raise
+        finally:
+            lease_renewal_task.cancel()
+            await asyncio.gather(lease_renewal_task, return_exceptions=True)
+
+    async def _refresh_and_admit(self, job_id: str) -> Optional["JobDriver"]:
+        await self._job_progress_manager.refresh_job(job_id)
+        return await self._job_progress_manager.admit(job_id)
 
     async def schedule_next_job(self) -> Optional[Tuple[str, "JobDriver"]]:
         # Pick the next job in policy order and admit it (skipping expired /
         # un-admittable jobs). Returns the admitted (job_id, driver) for the
         # loop to dispatch, or None if the queue drains.
+        self._enqueue_due_lease_retries()
         if self._policy.empty():
             logger.debug("Job scheduler is waiting jobs coming")
-            await asyncio.sleep(self._idle_interval)
+            await asyncio.sleep(self._idle_wait_seconds())
+            self._enqueue_due_lease_retries()
 
-        job_id = self._policy.next()
+        job_id = self._next_job()
         while job_id is not None:
+            if self._job_lease is not None:
+                acquisition = await self._job_lease.acquire(job_id)
+                if not acquisition.acquired:
+                    self._defer_job_for_lease(
+                        job_id,
+                        acquisition.retry_after_seconds,
+                    )
+                    logger.debug(
+                        "Job lease is owned by another scheduler",
+                        job_id=job_id,
+                        retry_after_seconds=acquisition.retry_after_seconds,
+                    )  # type: ignore[call-arg]
+                    job_id = self._next_job()
+                    continue
+
             logger.info("Job scheduler is scheduling job", job_id=job_id)  # type: ignore[call-arg]
-            driver = await self._job_progress_manager.admit(job_id)
+            try:
+                driver, lease_lost = await self._admit_with_lease(job_id)
+            except BaseException:
+                await self._release_job_lease(job_id)
+                raise
+            if lease_lost:
+                self._defer_job_for_lease(job_id, self._idle_interval)
+                job_id = self._next_job()
+                continue
             if driver is not None:
                 return (job_id, driver)
+            await self._release_job_lease(job_id)
             # admit() returns None for an expired / no-longer-pending job, so an
             # expired job is skipped here without a separate "inactive" set.
             logger.warning(
                 "Scheduler skipped job: admit() declined (expired or no longer pending)",
                 job_id=job_id,
             )  # type: ignore[call-arg]
-            job_id = self._policy.next()
+            job_id = self._next_job()
 
         return None
 
@@ -123,6 +231,21 @@ class BatchScheduler:
                 continue
             due_time = created_at.timestamp() + job.spec.completion_window
             if due_time <= now:
+                if self._job_lease is not None:
+                    try:
+                        acquisition = await self._job_lease.acquire(job.job_id)
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to acquire job lease for expiry",
+                            job_id=job.job_id,
+                            error=str(e),
+                        )  # type: ignore[call-arg]
+                        continue
+                    if not acquisition.acquired:
+                        continue
+                # A non-running expiry lease is intentionally left to its TTL.
+                # Peer registries need one refresh cycle to observe the
+                # terminal state before the job becomes claimable again.
                 await self._job_progress_manager.expire_job(job.job_id)
 
     async def start(self):
@@ -136,6 +259,14 @@ class BatchScheduler:
     async def _execute_scheduled_job(
         self, job_id: str, job_driver: "JobDriver"
     ) -> None:
+        lease_lost = asyncio.Event()
+        lease_renewal_task: Optional[asyncio.Task[None]] = None
+        if self._job_lease is not None:
+            execution_task = asyncio.current_task()
+            assert execution_task is not None
+            lease_renewal_task = asyncio.create_task(
+                self._renew_job_lease(job_id, execution_task, lease_lost)
+            )
         try:
             await job_driver.execute(job_id)
         except asyncio.CancelledError:
@@ -149,6 +280,60 @@ class BatchScheduler:
                 job_id=job_id,
                 error=str(e),
             )  # type: ignore[call-arg]
+        finally:
+            if lease_renewal_task is not None:
+                lease_renewal_task.cancel()
+                await asyncio.gather(lease_renewal_task, return_exceptions=True)
+            await self._release_job_lease(job_id)
+            if lease_lost.is_set():
+                self._defer_job_for_lease(job_id, self._idle_interval)
+
+    async def _renew_job_lease(
+        self,
+        job_id: str,
+        execution_task: asyncio.Task,
+        lease_lost: asyncio.Event,
+    ) -> None:
+        assert self._job_lease is not None
+        loop = asyncio.get_running_loop()
+        safety_buffer = (
+            self._job_lease.ttl_seconds * constant.JOB_LEASE_DEADLINE_SAFETY_RATIO
+        )
+        local_lease_duration = self._job_lease.ttl_seconds - safety_buffer
+        lease_deadline = loop.time() + local_lease_duration
+        next_renewal = loop.time() + self._job_lease.renew_interval_seconds
+
+        while True:
+            wake_at = min(lease_deadline, next_renewal)
+            await asyncio.sleep(max(0.0, wake_at - loop.time()))
+            if loop.time() >= lease_deadline:
+                logger.error("Job lease expired", job_id=job_id)  # type: ignore[call-arg]
+                lease_lost.set()
+                execution_task.cancel()
+                return
+
+            try:
+                renewed = await self._job_lease.renew(job_id)
+            except Exception as e:
+                logger.warning(
+                    "Failed to renew job lease; retrying before expiry",
+                    job_id=job_id,
+                    error=str(e),
+                )  # type: ignore[call-arg]
+                next_renewal = min(
+                    lease_deadline,
+                    loop.time() + constant.JOB_LEASE_RENEW_RETRY_INTERVAL_SECONDS,
+                )
+                continue
+
+            if not renewed:
+                logger.error("Job lease ownership lost", job_id=job_id)  # type: ignore[call-arg]
+                lease_lost.set()
+                execution_task.cancel()
+                return
+
+            lease_deadline = loop.time() + local_lease_duration
+            next_renewal = loop.time() + self._job_lease.renew_interval_seconds
 
     def _prune_execution_tasks(self) -> None:
         finished_job_ids = [
@@ -236,3 +421,5 @@ class BatchScheduler:
     def reset_runtime_state(self) -> None:
         self._policy.reset_runtime_state()
         self._job_execution_tasks.clear()
+        self._queued_job_ids.clear()
+        self._lease_retry_at.clear()

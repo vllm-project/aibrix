@@ -28,6 +28,33 @@ from aibrix.storage.reader import Reader
 from aibrix.storage.types import StorageListOrdering
 from aibrix.storage.utils import ObjectMetadata
 
+_ACQUIRE_LEASE_SCRIPT = """
+local current_owner = redis.call("get", KEYS[1])
+if not current_owner then
+    redis.call("psetex", KEYS[1], ARGV[2], ARGV[1])
+    return {1, 0}
+end
+if current_owner == ARGV[1] then
+    redis.call("pexpire", KEYS[1], ARGV[2])
+    return {1, 0}
+end
+return {0, redis.call("pttl", KEYS[1])}
+"""
+
+_RENEW_LEASE_SCRIPT = """
+if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("pexpire", KEYS[1], ARGV[2])
+end
+return 0
+"""
+
+_RELEASE_LEASE_SCRIPT = """
+if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("del", KEYS[1])
+end
+return 0
+"""
+
 
 class RedisStorage(BaseStorage2):
     """Redis storage implementation.
@@ -131,6 +158,66 @@ class RedisStorage(BaseStorage2):
         for redis_client in self._redis_clients.values():
             await redis_client.aclose()
         self._redis_clients.clear()
+
+    async def acquire_lease(
+        self,
+        key: str,
+        owner_token: str,
+        ttl_seconds: float,
+    ) -> tuple[bool, float]:
+        """Atomically acquire an ephemeral owner lease.
+
+        Lease keys intentionally bypass object-list indexes. They expire
+        automatically and are not user-visible storage objects.
+        """
+        ttl_milliseconds = max(1, int(ttl_seconds * 1000))
+        redis_client = await self._get_redis()
+        storage_key = self._prefixed_key(key)
+        result = await redis_client.eval(
+            _ACQUIRE_LEASE_SCRIPT,
+            1,
+            storage_key,
+            owner_token,
+            ttl_milliseconds,
+        )
+        acquired, remaining_milliseconds = result
+        if acquired:
+            return True, 0.0
+
+        if remaining_milliseconds == -1:
+            return False, ttl_seconds
+        if remaining_milliseconds <= 0:
+            return False, 0.0
+        return False, remaining_milliseconds / 1000
+
+    async def renew_lease(
+        self,
+        key: str,
+        owner_token: str,
+        ttl_seconds: float,
+    ) -> bool:
+        """Extend a lease only while ``owner_token`` still owns it."""
+        ttl_milliseconds = max(1, int(ttl_seconds * 1000))
+        redis_client = await self._get_redis()
+        result = await redis_client.eval(
+            _RENEW_LEASE_SCRIPT,
+            1,
+            self._prefixed_key(key),
+            owner_token,
+            ttl_milliseconds,
+        )
+        return bool(result)
+
+    async def release_lease(self, key: str, owner_token: str) -> bool:
+        """Delete a lease only while ``owner_token`` still owns it."""
+        redis_client = await self._get_redis()
+        result = await redis_client.eval(
+            _RELEASE_LEASE_SCRIPT,
+            1,
+            self._prefixed_key(key),
+            owner_token,
+        )
+        return bool(result)
 
     def _parse_hierarchical_key(self, key: str) -> tuple[Optional[str], str]:
         """Parse hierarchical key into parent and item.

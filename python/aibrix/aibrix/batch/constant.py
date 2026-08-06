@@ -35,6 +35,22 @@ if not (1 <= DEFAULT_JOB_POOL_SIZE <= 100):
         f"AIBRIX_BATCH_JOB_POOL_SIZE must be between 1 and 100, got {DEFAULT_JOB_POOL_SIZE}"
     )
 
+# Redis-backed metadata services coordinate job ownership with a renewable
+# lease. Three renewal opportunities per TTL balance failover speed and Redis
+# traffic; failed renewals retry once per second. The local deadline reserves
+# ten percent for Redis/network latency so execution stops before server expiry.
+JOB_LEASE_TTL_SECONDS = envs.BATCH_JOB_LEASE_TTL_SECONDS
+JOB_LEASE_RENEW_INTERVAL_SECONDS = JOB_LEASE_TTL_SECONDS / 3
+JOB_LEASE_RENEW_RETRY_INTERVAL_SECONDS: float = 1
+JOB_LEASE_MIN_RETRY_INTERVAL_SECONDS: float = 0.1
+JOB_LEASE_DEADLINE_SAFETY_RATIO: float = 0.1
+
+if JOB_LEASE_TTL_SECONDS < 3:
+    raise ValueError(
+        "AIBRIX_BATCH_JOB_LEASE_TTL_SECONDS must be at least 3, "
+        f"got {JOB_LEASE_TTL_SECONDS}"
+    )
+
 # Job opts are for testing purpose.
 BATCH_OPTS_FAIL_INIT_RUNTIME = "fail_init_runtime"
 BATCH_OPTS_FAIL_PREPARATION = "fail_preparation"

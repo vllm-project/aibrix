@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 
@@ -1208,5 +1209,31 @@ async def test_redis_put_object_combined_options():
         with pytest.raises(FileNotFoundError):
             await storage.get_object(key)
 
+    finally:
+        await storage.close()
+
+
+@requires_redis
+@pytest.mark.asyncio
+async def test_redis_lease_operations_are_owner_safe():
+    storage = RedisStorage()
+    key = f"test-job-lease:{uuid.uuid4().hex}"
+    try:
+        acquired, retry_after = await storage.acquire_lease(key, "owner-1", 5)
+        assert acquired is True
+        assert retry_after == 0
+        acquired, retry_after = await storage.acquire_lease(key, "owner-1", 5)
+        assert acquired is True
+        assert retry_after == 0
+
+        acquired, retry_after = await storage.acquire_lease(key, "owner-2", 5)
+        assert acquired is False
+        assert retry_after > 0
+        assert await storage.renew_lease(key, "owner-2", 5) is False
+        assert await storage.release_lease(key, "owner-2") is False
+
+        assert await storage.renew_lease(key, "owner-1", 5) is True
+        assert await storage.release_lease(key, "owner-1") is True
+        assert await storage.release_lease(key, "owner-1") is False
     finally:
         await storage.close()

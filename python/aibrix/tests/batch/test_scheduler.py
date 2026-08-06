@@ -21,6 +21,7 @@ import pytest
 
 from aibrix.batch.batch_scheduler import BatchScheduler
 from aibrix.batch.job_entity import BatchJobState, BatchJobStatus
+from aibrix.batch.job_lease import LeaseAcquisition
 from aibrix.context import InfrastructureContext
 
 # Stand-in for the JobDriver admit() returns; the scheduler only forwards it.
@@ -56,6 +57,9 @@ class FakeProgressManager:
             jobID=job_id, state=self.job_id_status[job_id], createdAt=datetime.now()
         )
 
+    async def refresh_job(self, job_id):
+        return None
+
     async def admit(self, job_id):
         self.validated_job_ids.append(job_id)
         if job_id not in self.job_id_status:
@@ -82,11 +86,71 @@ class FakeProgressManager:
         return list(self._in_progress)
 
 
-def _make_scheduler(progress_manager, pool_size=1):
+class SharedLeaseState:
+    def __init__(self):
+        self.owners = {}
+        self.expires_at = {}
+        self.renewals = {}
+
+
+class FakeJobLease:
+    def __init__(
+        self,
+        state,
+        owner,
+        *,
+        ttl_seconds=0.1,
+        renew_interval_seconds=0.02,
+    ):
+        self._state = state
+        self._owner = owner
+        self.ttl_seconds = ttl_seconds
+        self.renew_interval_seconds = renew_interval_seconds
+
+    def _expire(self, job_id):
+        expires_at = self._state.expires_at.get(job_id, 0)
+        if expires_at <= asyncio.get_running_loop().time():
+            self._state.owners.pop(job_id, None)
+            self._state.expires_at.pop(job_id, None)
+
+    async def acquire(self, job_id):
+        self._expire(job_id)
+        now = asyncio.get_running_loop().time()
+        owner = self._state.owners.get(job_id)
+        if owner is None or owner == self._owner:
+            self._state.owners[job_id] = self._owner
+            self._state.expires_at[job_id] = now + self.ttl_seconds
+            return LeaseAcquisition(True)
+        return LeaseAcquisition(
+            False,
+            max(0, self._state.expires_at[job_id] - now),
+        )
+
+    async def renew(self, job_id):
+        self._expire(job_id)
+        if self._state.owners.get(job_id) != self._owner:
+            return False
+        self._state.expires_at[job_id] = (
+            asyncio.get_running_loop().time() + self.ttl_seconds
+        )
+        self._state.renewals[job_id] = self._state.renewals.get(job_id, 0) + 1
+        return True
+
+    async def release(self, job_id):
+        self._expire(job_id)
+        if self._state.owners.get(job_id) != self._owner:
+            return False
+        del self._state.owners[job_id]
+        del self._state.expires_at[job_id]
+        return True
+
+
+def _make_scheduler(progress_manager, pool_size=1, job_lease=None):
     scheduler = BatchScheduler(
         InfrastructureContext(),
         progress_manager,
         pool_size=pool_size,
+        job_lease=job_lease,
     )
     scheduler._idle_interval = 0
     return scheduler
@@ -127,6 +191,208 @@ async def test_schedule_next_job_skips_unadmittable_jobs():
 
 
 @pytest.mark.asyncio
+async def test_multiple_schedulers_lease_different_jobs():
+    lease_state = SharedLeaseState()
+    first_manager = FakeProgressManager(
+        {
+            "job-1": BatchJobState.CREATED,
+            "job-2": BatchJobState.CREATED,
+        }
+    )
+    second_manager = FakeProgressManager(
+        {
+            "job-1": BatchJobState.CREATED,
+            "job-2": BatchJobState.CREATED,
+        }
+    )
+    first_scheduler = _make_scheduler(
+        first_manager,
+        job_lease=FakeJobLease(lease_state, "mds-1"),
+    )
+    second_scheduler = _make_scheduler(
+        second_manager,
+        job_lease=FakeJobLease(lease_state, "mds-2"),
+    )
+    for scheduler in (first_scheduler, second_scheduler):
+        scheduler.append_job("job-1")
+        scheduler.append_job("job-2")
+
+    first = await first_scheduler.schedule_next_job()
+    second = await second_scheduler.schedule_next_job()
+
+    assert first is not None and first[0] == "job-1"
+    assert second is not None and second[0] == "job-2"
+    assert first_manager.validated_job_ids == ["job-1"]
+    assert second_manager.validated_job_ids == ["job-2"]
+
+
+@pytest.mark.asyncio
+async def test_job_lease_expiry_allows_another_scheduler_to_take_over():
+    lease_state = SharedLeaseState()
+    first_manager = FakeProgressManager({"job-1": BatchJobState.CREATED})
+    second_manager = FakeProgressManager({"job-1": BatchJobState.CREATED})
+    first_scheduler = _make_scheduler(
+        first_manager,
+        job_lease=FakeJobLease(
+            lease_state,
+            "mds-1",
+            ttl_seconds=0.03,
+            renew_interval_seconds=0.01,
+        ),
+    )
+    second_scheduler = _make_scheduler(
+        second_manager,
+        job_lease=FakeJobLease(
+            lease_state,
+            "mds-2",
+            ttl_seconds=0.03,
+            renew_interval_seconds=0.01,
+        ),
+    )
+    first_scheduler.append_job("job-1")
+    second_scheduler.append_job("job-1")
+
+    assert await first_scheduler.schedule_next_job() is not None
+    assert await second_scheduler.schedule_next_job() is None
+
+    await asyncio.sleep(0.04)
+    taken_over = await second_scheduler.schedule_next_job()
+
+    assert taken_over is not None and taken_over[0] == "job-1"
+    assert second_manager.validated_job_ids == ["job-1"]
+
+
+@pytest.mark.asyncio
+async def test_running_job_renews_lease_until_execution_finishes():
+    lease_state = SharedLeaseState()
+    owner_lease = FakeJobLease(
+        lease_state,
+        "mds-1",
+        ttl_seconds=0.06,
+        renew_interval_seconds=0.01,
+    )
+    observer_lease = FakeJobLease(
+        lease_state,
+        "mds-2",
+        ttl_seconds=0.06,
+        renew_interval_seconds=0.01,
+    )
+    owner_scheduler = _make_scheduler(
+        FakeProgressManager({"job-1": BatchJobState.CREATED}),
+        job_lease=owner_lease,
+    )
+    observer_manager = FakeProgressManager({"job-1": BatchJobState.CREATED})
+    observer_scheduler = _make_scheduler(
+        observer_manager,
+        job_lease=observer_lease,
+    )
+    release_execution = asyncio.Event()
+
+    class _Driver:
+        async def execute(self, job_id):
+            assert job_id == "job-1"
+            await release_execution.wait()
+
+    owner_scheduler.append_job("job-1")
+    observer_scheduler.append_job("job-1")
+    assert await owner_scheduler.schedule_next_job() is not None
+    assert await observer_scheduler.schedule_next_job() is None
+
+    execution_task = asyncio.create_task(
+        owner_scheduler._execute_scheduled_job("job-1", _Driver())
+    )
+    await asyncio.sleep(0.08)
+
+    assert lease_state.renewals["job-1"] > 0
+    assert await observer_scheduler.schedule_next_job() is None
+    assert observer_manager.validated_job_ids == []
+
+    release_execution.set()
+    await execution_task
+
+
+@pytest.mark.asyncio
+async def test_job_lease_is_renewed_during_slow_admission():
+    lease_state = SharedLeaseState()
+    job_lease = FakeJobLease(
+        lease_state,
+        "mds-1",
+        ttl_seconds=0.03,
+        renew_interval_seconds=0.005,
+    )
+
+    class _SlowProgressManager(FakeProgressManager):
+        async def admit(self, job_id):
+            await asyncio.sleep(0.05)
+            return await super().admit(job_id)
+
+    scheduler = _make_scheduler(
+        _SlowProgressManager({"job-1": BatchJobState.CREATED}),
+        job_lease=job_lease,
+    )
+    scheduler.append_job("job-1")
+
+    scheduled = await scheduler.schedule_next_job()
+
+    assert scheduled is not None and scheduled[0] == "job-1"
+    assert lease_state.renewals["job-1"] > 0
+    assert lease_state.owners["job-1"] == "mds-1"
+    await job_lease.release("job-1")
+
+
+@pytest.mark.asyncio
+async def test_renewal_failures_cancel_execution_before_renewed_lease_expires(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "aibrix.batch.batch_scheduler.constant.JOB_LEASE_DEADLINE_SAFETY_RATIO",
+        0.5,
+    )
+    lease_state = SharedLeaseState()
+
+    class _RenewOnceThenFailLease(FakeJobLease):
+        renewal_attempts = 0
+        renewed_deadline = None
+
+        async def renew(self, job_id):
+            self.renewal_attempts += 1
+            if self.renewal_attempts == 1:
+                renewed = await super().renew(job_id)
+                self.renewed_deadline = self._state.expires_at[job_id]
+                return renewed
+            raise ConnectionError("redis unavailable")
+
+    job_lease = _RenewOnceThenFailLease(
+        lease_state,
+        "mds-1",
+        ttl_seconds=0.2,
+        renew_interval_seconds=0.02,
+    )
+    scheduler = _make_scheduler(
+        FakeProgressManager({"job-1": BatchJobState.CREATED}),
+        job_lease=job_lease,
+    )
+
+    class _Driver:
+        async def execute(self, job_id):
+            assert job_id == "job-1"
+            await asyncio.Event().wait()
+
+    scheduler.append_job("job-1")
+    assert await scheduler.schedule_next_job() is not None
+
+    execution_task = asyncio.create_task(
+        scheduler._execute_scheduled_job("job-1", _Driver())
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(execution_task, timeout=0.3)
+
+    assert job_lease.renewal_attempts > 1
+    assert job_lease.renewed_deadline is not None
+    assert asyncio.get_running_loop().time() < job_lease.renewed_deadline
+
+
+@pytest.mark.asyncio
 async def test_expire_jobs_expires_due_jobs_via_manager():
     # expire_jobs derives deadlines from the registry's pending pool, not a
     # scheduler-side due list.
@@ -142,6 +408,28 @@ async def test_expire_jobs_expires_due_jobs_via_manager():
     # source of truth); future jobs are untouched.
     assert progress_manager.expired_job_ids == ["past"]
     assert "future" not in progress_manager.expired_job_ids
+
+
+@pytest.mark.asyncio
+async def test_multiple_schedulers_only_expire_job_from_lease_owner():
+    now = time.time()
+    lease_state = SharedLeaseState()
+    first_manager = FakeProgressManager(pending=[_pending_job("past", now - 1)])
+    second_manager = FakeProgressManager(pending=[_pending_job("past", now - 1)])
+    first_scheduler = _make_scheduler(
+        first_manager,
+        job_lease=FakeJobLease(lease_state, "mds-1"),
+    )
+    second_scheduler = _make_scheduler(
+        second_manager,
+        job_lease=FakeJobLease(lease_state, "mds-2"),
+    )
+
+    await first_scheduler.expire_jobs()
+    await second_scheduler.expire_jobs()
+
+    assert first_manager.expired_job_ids == ["past"]
+    assert second_manager.expired_job_ids == []
 
 
 @pytest.mark.asyncio

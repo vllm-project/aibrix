@@ -222,6 +222,8 @@ class JobEntityManager(ABC):
                 else:
                     self._sync_active_job(snapshot)
                 continue
+            if self._is_older_resource_version(snapshot, old_job):
+                continue
             if self._jobs_equal(old_job, snapshot):
                 self._monitored_job_snapshots[job_id] = snapshot
                 self._sync_active_job(snapshot)
@@ -234,15 +236,44 @@ class JobEntityManager(ABC):
             previous_job = self._monitored_job_snapshots.get(job_id)
             if previous_job is None:
                 continue
-            latest_job = await self.get_job(job_id)
+            latest_job = await self.get_job(job_id, force_reload=True)
             if latest_job is None:
                 await self.job_deleted(previous_job)
+                continue
+            if self._is_older_resource_version(latest_job, previous_job):
                 continue
             if self._jobs_equal(previous_job, latest_job):
                 self._forget_job(job_id)
                 self._sync_active_job(latest_job)
                 continue
             await self.job_updated(previous_job, latest_job)
+
+    async def refresh_job(self, job_id: str) -> Optional[BatchJob]:
+        """Reload and publish one job before a scheduler takes ownership."""
+        latest_job = await self.get_job(job_id, force_reload=True)
+        previous_job = self._monitored_job_snapshots.get(
+            job_id
+        ) or self.active_jobs.get(job_id)
+        if latest_job is None:
+            if previous_job is not None:
+                await self.job_deleted(previous_job)
+            return None
+
+        snapshot = latest_job.model_copy(deep=True)
+        if previous_job is None:
+            if self._should_publish_committed(snapshot):
+                await self.job_committed(snapshot)
+            else:
+                self._sync_active_job(snapshot)
+            return snapshot
+        if self._is_older_resource_version(snapshot, previous_job):
+            return previous_job
+        if self._jobs_equal(previous_job, snapshot):
+            self._remember_job(snapshot)
+            self._sync_active_job(snapshot)
+            return snapshot
+        await self.job_updated(previous_job, snapshot)
+        return snapshot
 
     async def _bootstrap_jobs(self) -> None:
         for job in await self._list_recovery_jobs():
@@ -275,7 +306,10 @@ class JobEntityManager(ABC):
         recovered_jobs: list[BatchJob] = []
         after: Optional[str] = None
         while True:
-            jobs = await self.list_jobs(after=after, limit=self.DEFAULT_JOB_PAGE_LIMIT)
+            jobs = await self._list_recovery_page(
+                after=after,
+                limit=self.DEFAULT_JOB_PAGE_LIMIT,
+            )
             if not jobs:
                 return recovered_jobs
             for job in jobs:
@@ -294,6 +328,13 @@ class JobEntityManager(ABC):
             ):
                 return recovered_jobs
             after = last_job_id
+
+    async def _list_recovery_page(
+        self,
+        after: Optional[str],
+        limit: int,
+    ) -> list[BatchJob]:
+        return await self.list_jobs(after=after, limit=limit)
 
     def _supports_created_at_desc_recovery_ordering(self) -> bool:
         """Whether ``list_jobs`` is guaranteed newest->oldest by created_at.
@@ -350,6 +391,17 @@ class JobEntityManager(ABC):
         return old_job.model_dump(
             mode="json", by_alias=True, exclude_none=True
         ) == new_job.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    @staticmethod
+    def _is_older_resource_version(candidate: BatchJob, current: BatchJob) -> bool:
+        candidate_version = candidate.metadata.resource_version
+        current_version = current.metadata.resource_version
+        if candidate_version is None or current_version is None:
+            return False
+        try:
+            return int(candidate_version) < int(current_version)
+        except ValueError:
+            return False
 
     def _should_publish_committed(self, job: BatchJob) -> bool:
         return not job.status.finished

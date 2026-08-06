@@ -22,6 +22,7 @@ from aibrix.batch.client import EndpointSource
 from aibrix.batch.constant import DEFAULT_JOB_POOL_SIZE
 from aibrix.batch.job_driver.driver import TerminateResult
 from aibrix.batch.job_entity import BatchJob, BatchJobSpec
+from aibrix.batch.job_lease import create_job_lease
 from aibrix.batch.state import JobEntityManager
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
@@ -74,6 +75,7 @@ class BatchDriver:
             self._context,
             self._batch_manager,
             DEFAULT_JOB_POOL_SIZE,
+            job_lease=create_job_lease(),
         )
         self._batch_manager.set_scheduler(self._scheduler)
 

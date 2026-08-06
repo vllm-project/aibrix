@@ -1230,8 +1230,12 @@ async def test_admit_persists_in_progress_transition(monkeypatch):
         (BatchJobState.FINALIZING, True),
     ],
 )
+@pytest.mark.parametrize("staged_in_progress", [False, True])
 async def test_admit_recovered_job_skips_validation_persist_roundtrip(
-    monkeypatch, recovered_state: BatchJobState, has_in_progress_at: bool
+    monkeypatch,
+    recovered_state: BatchJobState,
+    has_in_progress_at: bool,
+    staged_in_progress: bool,
 ):
     recorded: List[BatchJob] = []
     validate_calls: list[str] = []
@@ -1279,7 +1283,11 @@ async def test_admit_recovered_job_skips_validation_persist_roundtrip(
             inProgressAt=datetime.now() if has_in_progress_at else None,
         ),
     )
-    job_manager._pending_jobs["recovered-job-id"] = recovered_job
+    if staged_in_progress:
+        job_manager.set_scheduler(_CapturingScheduler())  # type: ignore[arg-type]
+        job_manager._in_progress_jobs["recovered-job-id"] = JobMetaInfo(recovered_job)
+    else:
+        job_manager._pending_jobs["recovered-job-id"] = recovered_job
     assert isinstance(job_manager._job_entity_manager, MockJobEntityManager)
     job_manager._job_entity_manager.jobs["recovered-job-id"] = recovered_job.model_copy(
         deep=True

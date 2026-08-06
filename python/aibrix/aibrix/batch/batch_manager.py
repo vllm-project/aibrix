@@ -701,6 +701,12 @@ class BatchManager(RunningJobs, SchedulableJobs):
         job = await self.get_job(job_id)
         return job.status if job else None
 
+    async def refresh_job(self, job_id: str) -> Optional[BatchJob]:
+        """Reload one job before a distributed scheduler admits it."""
+        if self._job_entity_manager is not None:
+            return await self._job_entity_manager.refresh_job(job_id)
+        return await self.get_job(job_id)
+
     async def list_jobs(
         self,
         after: Optional[str] = None,
@@ -743,14 +749,23 @@ class BatchManager(RunningJobs, SchedulableJobs):
         * in state CREATED and in _pending_job, OR
         * not in state CREATED and in _in_progress_jobs.
         """
-        if job_id not in self._pending_jobs:
+        pending_job = self._pending_jobs.get(job_id)
+        in_progress_job = self._in_progress_jobs.get(job_id)
+        if pending_job is None and in_progress_job is None:
             logger.warning("Job does not exist - maybe create it first", job_id=job_id)  # type: ignore[call-arg]
             return None
-        if job_id in self._in_progress_jobs:
+        if pending_job is None and self._job_scheduler is None:
+            logger.info(
+                "In-progress recovery requires a scheduler",
+                job_id=job_id,
+            )  # type: ignore[call-arg]
+            return None
+        if in_progress_job is not None and in_progress_job.job_driver is not None:
             logger.info("Job has already been launched", job_id=job_id)  # type: ignore[call-arg]
             return None
 
-        job = self._pending_jobs[job_id]
+        job = pending_job or in_progress_job
+        assert job is not None
         needs_validation = job.status.state in {
             BatchJobState.CREATED,
             BatchJobState.VALIDATING,
@@ -761,7 +776,11 @@ class BatchManager(RunningJobs, SchedulableJobs):
         # Build the active JobMetaInfo from a deep copy so the validating
         # transition does not mutate the still-pending store snapshot before the
         # entity manager persists the CREATED -> VALIDATING update.
-        meta_data = JobMetaInfo(job.model_copy(deep=True))
+        meta_data = (
+            cast(JobMetaInfo, in_progress_job)
+            if pending_job is None
+            else JobMetaInfo(job.model_copy(deep=True))
+        )
         # In-place status update, will be reflected in the entity_manager if available.
         if needs_validation:
             # Only update state for first validation.
@@ -772,7 +791,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
             # BatchManager expects: pending -> in_progress.
             await self._job_entity_manager.update_job_status(meta_data)
             meta_data = await self._meta_from_in_progress_job(job_id)
-        else:
+        elif pending_job is not None:
             del self._pending_jobs[job_id]
             self._in_progress_jobs[job_id] = meta_data
             logger.debug(

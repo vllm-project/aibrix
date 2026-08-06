@@ -84,6 +84,13 @@ class RedisPipeline(Protocol):
 class AsyncRedis(Protocol):
     async def get(self, name: bytes | str | memoryview) -> Optional[bytes | str]: ...
 
+    async def eval(
+        self,
+        script: str,
+        numkeys: int,
+        *keys_and_args: bytes | bytearray | memoryview | str | int | float,
+    ) -> Any: ...
+
     async def set(
         self,
         name: bytes | str | memoryview,

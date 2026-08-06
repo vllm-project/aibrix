@@ -60,6 +60,8 @@ class JobStore(JobEntityManager):
         if job_id in self.active_jobs and not force_reload:
             return self.active_jobs[job_id]
         job = await get_batch_job(job_id)
+        if force_reload:
+            return job
         await self._publish_active_job_on_cache_miss(job)
         if job is not None and not job.status.finished:
             return self.active_jobs.get(job_id, job)
@@ -80,6 +82,15 @@ class JobStore(JobEntityManager):
         return await self._list_jobs_for_recovery(
             await batch_metastore.get_oldest_unfinished_job_created_at()
         )
+
+    async def _list_recovery_page(
+        self,
+        after: Optional[str],
+        limit: int,
+    ) -> List[BatchJob]:
+        # Recovery and refresh must observe the shared metastore rather than a
+        # process-local cache so peer MDS updates become visible.
+        return await list_batch_jobs(after=after, limit=limit)
 
     def _supports_created_at_desc_recovery_ordering(self) -> bool:
         return (

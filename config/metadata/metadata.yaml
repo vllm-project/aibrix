@@ -54,7 +54,7 @@ metadata:
   name: metadata-service
   namespace: aibrix-system
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: metadata-service
@@ -100,6 +100,8 @@ spec:
               value: aibrix-redis-master
             - name: REDIS_PORT
               value: "6379"
+            - name: AIBRIX_BATCH_JOB_LEASE_TTL_SECONDS
+              value: "30"
             - name: POD_NAME
               valueFrom:
                 fieldRef:
