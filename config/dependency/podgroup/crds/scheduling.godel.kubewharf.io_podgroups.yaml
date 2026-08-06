@@ -1,0 +1,340 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.6.0
+  creationTimestamp: null
+  name: podgroups.scheduling.godel.kubewharf.io
+spec:
+  group: scheduling.godel.kubewharf.io
+  names:
+    kind: PodGroup
+    listKind: PodGroupList
+    plural: podgroups
+    singular: podgroup
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - description: The current status of the PodGroup
+      jsonPath: .status.phase
+      name: Status
+      priority: 1
+      type: string
+    - description: The minimal number of members/tasks to run the PodGroup
+      jsonPath: .spec.minMember
+      name: MinMember
+      priority: 1
+      type: integer
+    - description: The maximal time of tasks to wait before running the PodGroup
+      jsonPath: .spec.scheduleTimeoutSeconds
+      name: TimeoutSeconds
+      priority: 1
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: PodGroup indicates a collection of Pods which will be used for
+          batch workloads.
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object. Servers should convert recognized schemas to the latest
+              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents. Servers may infer this from the endpoint the client
+              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: 'Specification of the desired behavior of the pod group.
+              More info: https://git.k8s.io/community/contributors/devel/api-conventions.md#spec-and-status'
+            properties:
+              affinity:
+                description: Affinity shows the affinity/anti-affinity rules that
+                  scheduler needs to follow when scheduling instances of this pod
+                  group.
+                properties:
+                  podGroupAffinity:
+                    description: PodGroupAffinity defines the specific affinity rules
+                    properties:
+                      nodeSelector:
+                        description: NodeSelector specifies the requirements that
+                          must be met for the podGroup's pods to fit on the nodes.
+                        properties:
+                          nodeSelectorTerms:
+                            description: Required. A list of node selector terms.
+                              The terms are ORed.
+                            items:
+                              description: A null or empty node selector term matches
+                                no objects. The requirements of them are ANDed. The
+                                TopologySelectorTerm type implements a subset of the
+                                NodeSelectorTerm.
+                              properties:
+                                matchExpressions:
+                                  description: A list of node selector requirements
+                                    by node's labels.
+                                  items:
+                                    description: A node selector requirement is a
+                                      selector that contains values, a key, and an
+                                      operator that relates the key and values.
+                                    properties:
+                                      key:
+                                        description: The label key that the selector
+                                          applies to.
+                                        type: string
+                                      operator:
+                                        description: Represents a key's relationship
+                                          to a set of values. Valid operators are
+                                          In, NotIn, Exists, DoesNotExist. Gt, and
+                                          Lt.
+                                        type: string
+                                      values:
+                                        description: An array of string values. If
+                                          the operator is In or NotIn, the values
+                                          array must be non-empty. If the operator
+                                          is Exists or DoesNotExist, the values array
+                                          must be empty. If the operator is Gt or
+                                          Lt, the values array must have a single
+                                          element, which will be interpreted as an
+                                          integer. This array is replaced during a
+                                          strategic merge patch.
+                                        items:
+                                          type: string
+                                        type: array
+                                    required:
+                                    - key
+                                    - operator
+                                    type: object
+                                  type: array
+                                matchFields:
+                                  description: A list of node selector requirements
+                                    by node's fields.
+                                  items:
+                                    description: A node selector requirement is a
+                                      selector that contains values, a key, and an
+                                      operator that relates the key and values.
+                                    properties:
+                                      key:
+                                        description: The label key that the selector
+                                          applies to.
+                                        type: string
+                                      operator:
+                                        description: Represents a key's relationship
+                                          to a set of values. Valid operators are
+                                          In, NotIn, Exists, DoesNotExist. Gt, and
+                                          Lt.
+                                        type: string
+                                      values:
+                                        description: An array of string values. If
+                                          the operator is In or NotIn, the values
+                                          array must be non-empty. If the operator
+                                          is Exists or DoesNotExist, the values array
+                                          must be empty. If the operator is Gt or
+                                          Lt, the values array must have a single
+                                          element, which will be interpreted as an
+                                          integer. This array is replaced during a
+                                          strategic merge patch.
+                                        items:
+                                          type: string
+                                        type: array
+                                    required:
+                                    - key
+                                    - operator
+                                    type: object
+                                  type: array
+                              type: object
+                            type: array
+                        required:
+                        - nodeSelectorTerms
+                        type: object
+                      preferred:
+                        description: Preferred represents a set of affinity terms
+                          that don't necessarily have to be satisfied. But we need
+                          to try to satisfy
+                        items:
+                          description: PodGroupAffinityTerm defines terms of pod group
+                            affinity
+                          properties:
+                            topologyKey:
+                              description: TopologyKey is the specific topology name
+                                that all related tasks should be scheduled to Empty
+                                topologyKey is not allowed.
+                              type: string
+                          type: object
+                        type: array
+                      required:
+                        description: Required represents a set of affinity terms,
+                          all of them MUST be satisfied
+                        items:
+                          description: PodGroupAffinityTerm defines terms of pod group
+                            affinity
+                          properties:
+                            topologyKey:
+                              description: TopologyKey is the specific topology name
+                                that all related tasks should be scheduled to Empty
+                                topologyKey is not allowed.
+                              type: string
+                          type: object
+                        type: array
+                      sortRules:
+                        description: SortRules indicates how the nodeGroups, aggregated
+                          by required or preferred affinity, are sorted. The rule's
+                          index in slice is the sort sequence. If this is not defined,
+                          we will sort nodeGroups in default sort rule.
+                        items:
+                          description: SortRule defines the rule for sorting items.
+                          properties:
+                            dimension:
+                              description: Dimension may be Capacity or Available
+                                for the moment. We allow this field to be empty for
+                                backward compatibility.
+                              type: string
+                            order:
+                              description: Order may be either Ascending or Descending
+                              type: string
+                            resource:
+                              description: Resource defines the resource name for
+                                sorting.
+                              type: string
+                          required:
+                          - order
+                          - resource
+                          type: object
+                        type: array
+                    type: object
+                  podGroupAntiAffinity:
+                    description: PodGroupAntiAffinity defines the specific anti affinity
+                      rules
+                    properties:
+                      preferred:
+                        description: Preferred represents a set of affinity terms
+                          that we need to try not to satisfy them
+                        items:
+                          description: PodGroupAffinityTerm defines terms of pod group
+                            affinity
+                          properties:
+                            topologyKey:
+                              description: TopologyKey is the specific topology name
+                                that all related tasks should be scheduled to Empty
+                                topologyKey is not allowed.
+                              type: string
+                          type: object
+                        type: array
+                      required:
+                        description: Required represents a set of affinity terms,
+                          all of them MUST NOT be satisfied
+                        items:
+                          description: PodGroupAffinityTerm defines terms of pod group
+                            affinity
+                          properties:
+                            topologyKey:
+                              description: TopologyKey is the specific topology name
+                                that all related tasks should be scheduled to Empty
+                                topologyKey is not allowed.
+                              type: string
+                          type: object
+                        type: array
+                    type: object
+                type: object
+              application:
+                description: Application indicates the podGroup belongs to a logical
+                  Application This will be used for coordinate with features like
+                  drf and faire share.
+                type: string
+              minMember:
+                description: MinMember defines the minimal number of members/tasks
+                  to run the pod group; if there's not enough resources to start all
+                  tasks, the scheduler will not start anyone.
+                format: int32
+                type: integer
+              priorityClassName:
+                description: If specified, indicates the PodGroup's priority. "system-node-critical"
+                  and "system-cluster-critical" are two special reserved keywords
+                  which indicate the highest priorities. Any other name must be defined
+                  by creating a PriorityClass object with that name. If not specified,
+                  the PodGroup priority will be default. If default priority class
+                  doesn't exist, the PodGroup priority will be zero.
+                type: string
+              scheduleTimeoutSeconds:
+                description: ScheduleTimeoutSeconds defines the maximal time of tasks
+                  to wait before run the pod group;
+                format: int32
+                type: integer
+            type: object
+          status:
+            description: Status represents the current information about a pod group.
+              This data may not be up to date.
+            properties:
+              conditions:
+                description: The conditions of PodGroup.
+                items:
+                  description: PodGroupCondition contains details for the current
+                    state of this pod group.
+                  properties:
+                    lastTransitionTime:
+                      description: Last time the phase transitioned from another to
+                        current phase.
+                      format: date-time
+                      type: string
+                    message:
+                      description: Human-readable message indicating details about
+                        last transition.
+                      type: string
+                    phase:
+                      description: Phase is the current phase of PodGroup
+                      type: string
+                    reason:
+                      description: Unique, one-word, CamelCase reason for the phase's
+                        last transition.
+                      type: string
+                    status:
+                      description: Status is the status of the condition.
+                      type: string
+                  type: object
+                type: array
+              failed:
+                description: The number of pods which reached phase Failed.
+                format: int32
+                type: integer
+              occupiedBy:
+                description: OccupiedBy marks the workload (e.g., deployment, job)
+                  name that occupy the PodGroup. It is empty if not initialized.
+                type: string
+              pending:
+                description: The number of actively pending pods.
+                format: int32
+                type: integer
+              phase:
+                description: Current phase of PodGroup.
+                type: string
+              running:
+                description: The number of actively running pods.
+                format: int32
+                type: integer
+              scheduleStartTime:
+                description: ScheduleStartTime of the pod group
+                format: date-time
+                type: string
+              succeeded:
+                description: The number of pods which reached phase Succeeded.
+                format: int32
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+status:
+  acceptedNames:
+    kind: ""
+    plural: ""
+  conditions: []
+  storedVersions: []
