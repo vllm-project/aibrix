@@ -43,6 +43,7 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 						Name: "test-deployment",
 						Kind: "Deployment",
 					},
+					MaxReplicas:     10,
 					ScalingStrategy: autoscalingv1alpha1.HPA,
 					MetricsSources: []autoscalingv1alpha1.MetricSource{
 						{
@@ -62,6 +63,7 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 						Name: "test-deployment",
 						Kind: "Deployment",
 					},
+					MaxReplicas:     10,
 					ScalingStrategy: autoscalingv1alpha1.APA,
 					MetricsSources: []autoscalingv1alpha1.MetricSource{
 						{
@@ -81,6 +83,7 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 						Name: "test-deployment",
 						Kind: "Deployment",
 					},
+					MaxReplicas:     10,
 					ScalingStrategy: autoscalingv1alpha1.APA,
 					MetricsSources: []autoscalingv1alpha1.MetricSource{
 						{
@@ -279,6 +282,39 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 			},
 			expectError: true,
 			errorMsg:    "panicWindowSeconds",
+		},
+		"Negative MinReplicas": {
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef:  corev1.ObjectReference{Name: "test-deployment", Kind: "Deployment"},
+					MinReplicas:     ptr.To(int32(-1)),
+					MaxReplicas:     10,
+					ScalingStrategy: autoscalingv1alpha1.HPA,
+					MetricsSources: []autoscalingv1alpha1.MetricSource{{
+						MetricSourceType: autoscalingv1alpha1.RESOURCE,
+						TargetMetric:     "cpu",
+						TargetValue:      "50",
+					}},
+				},
+			},
+			expectError: true,
+			errorMsg:    "spec.minReplicas",
+		},
+		"Non-positive MaxReplicas": {
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef:  corev1.ObjectReference{Name: "test-deployment", Kind: "Deployment"},
+					MaxReplicas:     0,
+					ScalingStrategy: autoscalingv1alpha1.HPA,
+					MetricsSources: []autoscalingv1alpha1.MetricSource{{
+						MetricSourceType: autoscalingv1alpha1.RESOURCE,
+						TargetMetric:     "cpu",
+						TargetValue:      "50",
+					}},
+				},
+			},
+			expectError: true,
+			errorMsg:    "spec.maxReplicas",
 		},
 		"Valid Scheduled Bounds": {
 			pa: podAutoscalerWithScheduledBounds(autoscalingv1alpha1.ScheduledReplicaBounds{
