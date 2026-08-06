@@ -421,6 +421,12 @@ func (r *PodAutoscalerReconciler) validateScaleTargetRef(pa *autoscalingv1alpha1
 }
 
 func (r *PodAutoscalerReconciler) validateReplicaBounds(pa *autoscalingv1alpha1.PodAutoscaler) ValidationResult {
+	if pa.Spec.MinReplicas != nil && *pa.Spec.MinReplicas < 0 {
+		return invalid(ReasonInvalidBounds, "minReplicas must not be negative.")
+	}
+	if pa.Spec.MaxReplicas <= 0 {
+		return invalid(ReasonInvalidBounds, "maxReplicas must be positive.")
+	}
 	if pa.Spec.MinReplicas != nil && pa.Spec.MaxReplicas < *pa.Spec.MinReplicas {
 		return invalid(ReasonInvalidBounds, "minReplicas cannot be greater than maxReplicas.")
 	}

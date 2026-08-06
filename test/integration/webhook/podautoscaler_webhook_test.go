@@ -309,6 +309,30 @@ var _ = ginkgo.Describe("podautoscaler default and validation", func() {
 			},
 			failed: true,
 		}),
+		ginkgo.Entry("negative minReplicas", &testValidatingCase{
+			podautoscaler: func() *autoscalingapi.PodAutoscaler {
+				return wrapper.MakePodAutoscaler("negative-min-replicas").
+					Namespace(ns.Name).
+					MinReplicas(-1).
+					MaxReplicas(5).
+					ScaleTargetRefWithKind("Deployment", "apps/v1", "test").
+					MetricSource(wrapper.MakeMetricSourceResource("cpu", "100m")).
+					Obj()
+			},
+			failed: true,
+		}),
+		ginkgo.Entry("non-positive maxReplicas", &testValidatingCase{
+			podautoscaler: func() *autoscalingapi.PodAutoscaler {
+				return wrapper.MakePodAutoscaler("non-positive-max-replicas").
+					Namespace(ns.Name).
+					MinReplicas(0).
+					MaxReplicas(0).
+					ScaleTargetRefWithKind("Deployment", "apps/v1", "test").
+					MetricSource(wrapper.MakeMetricSourceResource("cpu", "100m")).
+					Obj()
+			},
+			failed: true,
+		}),
 		ginkgo.Entry("invalid scalingStrategy", &testValidatingCase{
 			podautoscaler: func() *autoscalingapi.PodAutoscaler {
 				pa := wrapper.MakePodAutoscaler("bad-strategy").

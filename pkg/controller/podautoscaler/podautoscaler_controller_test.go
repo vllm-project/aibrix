@@ -302,6 +302,49 @@ func TestValidateSpecRejectsPanicWindowGreaterThanObserveWindow(t *testing.T) {
 	}
 }
 
+func TestValidateSpecRejectsInvalidBaseReplicaBounds(t *testing.T) {
+	tests := map[string]struct {
+		mutate      func(*autoscalingv1alpha1.PodAutoscaler)
+		wantReason  string
+		wantMessage string
+	}{
+		"negative minReplicas": {
+			mutate: func(pa *autoscalingv1alpha1.PodAutoscaler) {
+				pa.Spec.MinReplicas = ptr.To(int32(-1))
+			},
+			wantReason:  ReasonInvalidBounds,
+			wantMessage: "minReplicas must not be negative.",
+		},
+		"non-positive maxReplicas": {
+			mutate: func(pa *autoscalingv1alpha1.PodAutoscaler) {
+				pa.Spec.MaxReplicas = 0
+			},
+			wantReason:  ReasonInvalidBounds,
+			wantMessage: "maxReplicas must be positive.",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			pa := validPodAutoscalerForSpec()
+			pa.Spec.ScheduledBounds = nil
+			tt.mutate(pa)
+
+			result := (&PodAutoscalerReconciler{}).validateSpec(pa)
+
+			if result.Valid {
+				t.Fatal("expected invalid base replica bounds to be rejected")
+			}
+			if result.Reason != tt.wantReason {
+				t.Fatalf("expected reason=%s, got %s", tt.wantReason, result.Reason)
+			}
+			if result.Message != tt.wantMessage {
+				t.Fatalf("expected message %q, got %q", tt.wantMessage, result.Message)
+			}
+		})
+	}
+}
+
 func TestValidateSpecRejectsInvalidScheduledBounds(t *testing.T) {
 	tests := map[string]struct {
 		scheduledBounds []autoscalingv1alpha1.ScheduledReplicaBounds

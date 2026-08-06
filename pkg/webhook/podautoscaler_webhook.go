@@ -138,16 +138,7 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 		allErrs = append(allErrs, field.Required(targetRefPath.Child("kind"), "must be set"))
 	}
 
-	// 2. Validate Replica Bounds
-	if pa.Spec.MinReplicas != nil && pa.Spec.MaxReplicas < *pa.Spec.MinReplicas {
-		minPath := specPath.Child("minReplicas")
-		maxPath := specPath.Child("maxReplicas")
-		allErrs = append(allErrs,
-			field.Invalid(minPath, pa.Spec.MinReplicas, "cannot be greater than maxReplicas"),
-			field.Invalid(maxPath, pa.Spec.MaxReplicas, "cannot be less than minReplicas"),
-		)
-	}
-
+	allErrs = append(allErrs, validateReplicaBounds(pa, specPath)...)
 	allErrs = append(allErrs, validateScheduledBounds(pa, specPath)...)
 	allErrs = append(allErrs, validateMetricWindows(pa, specPath)...)
 
@@ -263,6 +254,25 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 		pa.Name,
 		allErrs,
 	)
+}
+
+func validateReplicaBounds(pa *autoscalingv1alpha1.PodAutoscaler, specPath *field.Path) field.ErrorList {
+	var errs field.ErrorList
+	if pa.Spec.MinReplicas != nil && *pa.Spec.MinReplicas < 0 {
+		errs = append(errs, field.Invalid(specPath.Child("minReplicas"), pa.Spec.MinReplicas, "must not be negative"))
+	}
+	if pa.Spec.MaxReplicas <= 0 {
+		errs = append(errs, field.Invalid(specPath.Child("maxReplicas"), pa.Spec.MaxReplicas, "must be positive"))
+	}
+	if pa.Spec.MinReplicas != nil && pa.Spec.MaxReplicas < *pa.Spec.MinReplicas {
+		minPath := specPath.Child("minReplicas")
+		maxPath := specPath.Child("maxReplicas")
+		errs = append(errs,
+			field.Invalid(minPath, pa.Spec.MinReplicas, "cannot be greater than maxReplicas"),
+			field.Invalid(maxPath, pa.Spec.MaxReplicas, "cannot be less than minReplicas"),
+		)
+	}
+	return errs
 }
 
 func validateScheduledBounds(pa *autoscalingv1alpha1.PodAutoscaler, specPath *field.Path) field.ErrorList {
