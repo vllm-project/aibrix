@@ -188,6 +188,8 @@ def test_dispatch_kwargs_preserve_adaptive_capacity_factor_when_cap_absent(
     monkeypatch,
 ):
     monkeypatch.setenv("AIBRIX_BATCH_ADAPTIVE_MAX_FACTOR", "12")
+    monkeypatch.setenv("AIBRIX_BATCH_ADAPTIVE_HEALTHY_WINDOW", "2")
+    monkeypatch.setenv("AIBRIX_BATCH_ADAPTIVE_ADDITIVE_INCREASE", "4")
     job = _make_job(total=1)
     driver = BaseJobDriver(
         InfrastructureContext(),
@@ -200,6 +202,8 @@ def test_dispatch_kwargs_preserve_adaptive_capacity_factor_when_cap_absent(
     assert kwargs == {
         "adaptive_concurrency": True,
         "adaptive_max_factor": 12.0,
+        "adaptive_healthy_window": 2,
+        "adaptive_additive_increase": 4,
     }
 
 
@@ -210,6 +214,8 @@ def test_dispatch_kwargs_use_fixed_max_concurrency_when_adaptive_disabled():
             "max_concurrency": 64,
             "adaptive_concurrency": False,
             "adaptive_max_factor": 16,
+            "adaptive_healthy_window": 3,
+            "adaptive_additive_increase": 8,
         }
     )
     driver = BaseJobDriver(
@@ -223,6 +229,8 @@ def test_dispatch_kwargs_use_fixed_max_concurrency_when_adaptive_disabled():
     assert kwargs == {
         "adaptive_concurrency": False,
         "adaptive_max_factor": 16,
+        "adaptive_healthy_window": 3,
+        "adaptive_additive_increase": 8,
         "max_concurrency": 64,
     }
 
@@ -332,6 +340,8 @@ async def test_execute_worker_passes_client_concurrency_as_absolute_adaptive_cap
             "max_concurrency": 64,
             "adaptive_concurrency": True,
             "adaptive_max_factor": 16,
+            "adaptive_healthy_window": 2,
+            "adaptive_additive_increase": 4,
         }
     )
     driver = BaseJobDriver(
@@ -353,6 +363,8 @@ async def test_execute_worker_passes_client_concurrency_as_absolute_adaptive_cap
     assert engine.run_kwargs["adaptive_concurrency"] is True
     assert engine.run_kwargs["adaptive_max_concurrency"] == 64
     assert engine.run_kwargs["adaptive_max_factor"] == 16
+    assert engine.run_kwargs["adaptive_healthy_window"] == 2
+    assert engine.run_kwargs["adaptive_additive_increase"] == 4
     assert "max_concurrency" not in engine.run_kwargs
 
 

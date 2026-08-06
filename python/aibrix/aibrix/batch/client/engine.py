@@ -37,9 +37,12 @@ from typing import (
 
 from aibrix.batch.client.channel import InferenceRequest, Response
 from aibrix.batch.client.concurrency import (
+    DEFAULT_ADAPTIVE_ADDITIVE_INCREASE,
+    DEFAULT_ADAPTIVE_HEALTHY_WINDOW,
     ConcurrencyController,
     FixedConcurrencyController,
     LLMAdaptiveConcurrencyController,
+    LLMAdaptiveConcurrencySettings,
     concurrency_outcome_from_result,
 )
 from aibrix.batch.client.errors import InferenceError, InferenceErrorCode
@@ -208,6 +211,8 @@ class DispatchEngine:
         adaptive_concurrency: bool = False,
         adaptive_max_factor: float = 1.0,
         adaptive_max_concurrency: Optional[int] = None,
+        adaptive_healthy_window: int = DEFAULT_ADAPTIVE_HEALTHY_WINDOW,
+        adaptive_additive_increase: int = DEFAULT_ADAPTIVE_ADDITIVE_INCREASE,
         concurrency_controller: Optional[ConcurrencyController] = None,
         stats: Optional[DispatchStats] = None,
     ) -> None:
@@ -224,6 +229,8 @@ class DispatchEngine:
                 adaptive_concurrency=adaptive_concurrency,
                 adaptive_max_factor=adaptive_max_factor,
                 adaptive_max_concurrency=adaptive_max_concurrency,
+                adaptive_healthy_window=adaptive_healthy_window,
+                adaptive_additive_increase=adaptive_additive_increase,
                 concurrency_controller=concurrency_controller,
             )
         )
@@ -326,6 +333,8 @@ class DispatchEngine:
         adaptive_concurrency: bool,
         adaptive_max_factor: float,
         adaptive_max_concurrency: Optional[int],
+        adaptive_healthy_window: int,
+        adaptive_additive_increase: int,
         concurrency_controller: Optional[ConcurrencyController],
     ) -> ConcurrencyController:
         if concurrency_controller is not None:
@@ -340,6 +349,10 @@ class DispatchEngine:
             return LLMAdaptiveConcurrencyController(
                 initial_limit=min(limit, max_limit),
                 max_limit=max_limit,
+                settings=LLMAdaptiveConcurrencySettings(
+                    healthy_window=adaptive_healthy_window,
+                    additive_increase=adaptive_additive_increase,
+                ),
             )
         return FixedConcurrencyController(limit)
 

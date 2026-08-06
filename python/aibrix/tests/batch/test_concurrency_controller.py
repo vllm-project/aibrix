@@ -57,7 +57,7 @@ def test_llm_controller_reduces_once_per_overloaded_sample_window():
     assert controller.limit() == 103
 
 
-def test_llm_controller_recovers_quickly_after_small_decrease():
+def test_llm_controller_uses_additive_increase_after_overload():
     controller = LLMAdaptiveConcurrencyController(
         initial_limit=128,
         max_limit=128,
@@ -69,9 +69,56 @@ def test_llm_controller_recovers_quickly_after_small_decrease():
         controller.on_complete(outcome)
     assert controller.limit() == 115
 
-    for _ in range(104):
+    for _ in range(114):
         controller.on_complete(healthy)
-    assert controller.limit() == 128
+    assert controller.limit() == 115
+
+    controller.on_complete(healthy)
+    assert controller.limit() == 116
+
+
+def test_llm_controller_adapts_probe_increase_to_current_limit():
+    settings = LLMAdaptiveConcurrencySettings(healthy_window=2)
+    controller = LLMAdaptiveConcurrencyController(
+        initial_limit=4,
+        max_limit=64,
+        settings=settings,
+    )
+    healthy = ConcurrencyOutcome(success=True)
+
+    for _ in range(3):
+        controller.on_complete(healthy)
+    assert controller.limit() == 4
+
+    controller.on_complete(healthy)
+    assert controller.limit() == 5
+
+    for _ in range(5):
+        controller.on_complete(healthy)
+    assert controller.limit() == 7
+
+
+def test_llm_controller_uses_configured_increase_after_decrease():
+    settings = LLMAdaptiveConcurrencySettings(
+        healthy_window=2,
+        additive_increase=4,
+        overload_decrease_factor=0.5,
+    )
+    controller = LLMAdaptiveConcurrencyController(
+        initial_limit=8,
+        max_limit=16,
+        settings=settings,
+    )
+    overload = ConcurrencyOutcome(success=False, status_code=503, retryable=True)
+    healthy = ConcurrencyOutcome(success=True)
+
+    for _ in range(8):
+        controller.on_complete(overload)
+    assert controller.limit() == 4
+
+    for _ in range(4):
+        controller.on_complete(healthy)
+    assert controller.limit() == 8
 
 
 def test_llm_controller_honors_configured_min_limit():
@@ -146,6 +193,8 @@ def test_llm_controller_recovers_after_healthy_window():
     assert controller.limit() == 3
 
     healthy = ConcurrencyOutcome(success=True, e2e_tpot_seconds=0.05)
+    controller.on_complete(healthy)
+    assert controller.limit() == 3
     controller.on_complete(healthy)
     assert controller.limit() == 3
     controller.on_complete(healthy)

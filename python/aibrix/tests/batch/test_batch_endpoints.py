@@ -363,6 +363,8 @@ def test_batch_spec_accepts_client_config():
         {"max_concurrency": 0},
         {"max_concurrency": MAX_CLIENT_CONCURRENCY + 1},
         {"adaptive_max_factor": 0.5},
+        {"adaptive_healthy_window": 0},
+        {"adaptive_additive_increase": 0},
         {"retry_policy": {"max_retries": -1}},
         {"retry_policy": {"base_delay_seconds": -0.1}},
     ],
