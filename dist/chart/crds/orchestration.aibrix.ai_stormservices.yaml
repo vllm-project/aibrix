@@ -51,6 +51,11 @@ spec:
                     - type: string
                     x-kubernetes-int-or-string: true
                 type: object
+              mode:
+                enum:
+                - Replica
+                - Pooled
+                type: string
               paused:
                 type: boolean
               replicas:
