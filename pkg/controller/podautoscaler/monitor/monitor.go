@@ -20,6 +20,9 @@ import "github.com/prometheus/client_golang/prometheus"
 
 type Monitor interface {
 	RecordScaleAction(namespace, name, algorithm, reason string, desiredReplicas int32)
+	RecordCircuitBreakerState(namespace, name string, open bool)
+	RecordCircuitBreakerTransition(namespace, name, action, transition string)
+	RecordCircuitBreakerActionFailure(namespace, name, action string)
 }
 
 type monitor struct{}
@@ -35,4 +38,32 @@ func (m *monitor) RecordScaleAction(namespace, name, algorithm, reason string, d
 		"algorithm": algorithm,
 		"reason":    reason,
 	}).Set(float64(desiredReplicas))
+}
+
+func (m *monitor) RecordCircuitBreakerState(namespace, name string, open bool) {
+	value := 0.0
+	if open {
+		value = 1.0
+	}
+	circuitBreakerState.With(prometheus.Labels{
+		"namespace": namespace,
+		"name":      name,
+	}).Set(value)
+}
+
+func (m *monitor) RecordCircuitBreakerTransition(namespace, name, action, transition string) {
+	circuitBreakerTransitions.With(prometheus.Labels{
+		"namespace":  namespace,
+		"name":       name,
+		"action":     action,
+		"transition": transition,
+	}).Inc()
+}
+
+func (m *monitor) RecordCircuitBreakerActionFailure(namespace, name, action string) {
+	circuitBreakerActionFailures.With(prometheus.Labels{
+		"namespace": namespace,
+		"name":      name,
+		"action":    action,
+	}).Inc()
 }

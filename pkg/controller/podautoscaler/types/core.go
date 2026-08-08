@@ -82,13 +82,51 @@ type CollectionSpec struct {
 	Timestamp    time.Time
 }
 
+// MetricCollectionStats contains metric fetch facts for a collection attempt.
+type MetricCollectionStats struct {
+	ExpectedCount     int
+	FetchSuccessCount int
+	FetchFailureCount int
+	Reason            string
+}
+
+// MetricHealthState is the computed health state of a metric source.
+type MetricHealthState string
+
+const (
+	MetricHealthStateHealthy  MetricHealthState = "Healthy"
+	MetricHealthStateDegraded MetricHealthState = "Degraded"
+	MetricHealthStateFailed   MetricHealthState = "Failed"
+)
+
+const (
+	MetricReasonMetricsHealthy                 = "MetricsHealthy"
+	MetricReasonPartialMetricCollectionFailure = "PartialMetricCollectionFailure"
+	MetricReasonInvalidMetricValue             = "InvalidMetricValue"
+	MetricReasonAllMetricSamplesUnavailable    = "AllMetricSamplesUnavailable"
+	MetricReasonAggregatedMetricInvalid        = "AggregatedMetricInvalid"
+	MetricReasonAllMetricSourcesFailed         = "AllMetricSourcesFailed"
+)
+
+// MetricSourceHealth summarizes source health after fetch and value validation.
+type MetricSourceHealth struct {
+	TotalCount   int
+	ValidCount   int
+	FailureCount int
+	InvalidCount int
+	State        MetricHealthState
+	Reason       string
+}
+
 // MetricSnapshot contains collected raw metrics
 type MetricSnapshot struct {
-	Namespace  string
-	TargetName string
-	MetricName string
-	Values     []float64 // TODO(Jeffwan): Prefill/Decode case needs extension
-	Timestamp  time.Time
-	Source     string
-	Error      error
+	Namespace       string
+	TargetName      string
+	MetricName      string
+	Values          []float64 // TODO(Jeffwan): Prefill/Decode case needs extension
+	Timestamp       time.Time
+	Source          string
+	CollectionStats MetricCollectionStats
+	Health          MetricSourceHealth
+	Error           error
 }

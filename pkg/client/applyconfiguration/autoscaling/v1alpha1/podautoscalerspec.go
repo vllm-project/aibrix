@@ -33,6 +33,7 @@ type PodAutoscalerSpecApplyConfiguration struct {
 	ObserveWindowSeconds *int64                                   `json:"observeWindowSeconds,omitempty"`
 	PanicWindowSeconds   *int64                                   `json:"panicWindowSeconds,omitempty"`
 	ScalingStrategy      *autoscalingv1alpha1.ScalingStrategyType `json:"scalingStrategy,omitempty"`
+	CircuitBreaker       *CircuitBreakerConfigApplyConfiguration  `json:"circuitBreaker,omitempty"`
 }
 
 // PodAutoscalerSpecApplyConfiguration constructs a declarative configuration of the PodAutoscalerSpec type for use with
@@ -107,5 +108,13 @@ func (b *PodAutoscalerSpecApplyConfiguration) WithPanicWindowSeconds(value int64
 // If called multiple times, the ScalingStrategy field is set to the value of the last call.
 func (b *PodAutoscalerSpecApplyConfiguration) WithScalingStrategy(value autoscalingv1alpha1.ScalingStrategyType) *PodAutoscalerSpecApplyConfiguration {
 	b.ScalingStrategy = &value
+	return b
+}
+
+// WithCircuitBreaker sets the CircuitBreaker field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the CircuitBreaker field is set to the value of the last call.
+func (b *PodAutoscalerSpecApplyConfiguration) WithCircuitBreaker(value *CircuitBreakerConfigApplyConfiguration) *PodAutoscalerSpecApplyConfiguration {
+	b.CircuitBreaker = value
 	return b
 }

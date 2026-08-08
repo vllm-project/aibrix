@@ -20,3 +20,8 @@ spec:
       targetMetric: "cpu"
       targetValue: "10"
   scalingStrategy: "KPA"
+  circuitBreaker:
+    enabled: true
+    action: freeze
+    failureThreshold: 3
+    recoveryThreshold: 3

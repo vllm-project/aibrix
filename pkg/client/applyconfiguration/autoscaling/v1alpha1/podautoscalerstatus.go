@@ -25,11 +25,12 @@ import (
 // PodAutoscalerStatusApplyConfiguration represents a declarative configuration of the PodAutoscalerStatus type for use
 // with apply.
 type PodAutoscalerStatusApplyConfiguration struct {
-	LastScaleTime  *v1.Time                             `json:"lastScaleTime,omitempty"`
-	DesiredScale   *int32                               `json:"desiredScale,omitempty"`
-	ActualScale    *int32                               `json:"actualScale,omitempty"`
-	Conditions     []metav1.ConditionApplyConfiguration `json:"conditions,omitempty"`
-	ScalingHistory []ScalingDecisionApplyConfiguration  `json:"scalingHistory,omitempty"`
+	LastScaleTime  *v1.Time                                `json:"lastScaleTime,omitempty"`
+	DesiredScale   *int32                                  `json:"desiredScale,omitempty"`
+	ActualScale    *int32                                  `json:"actualScale,omitempty"`
+	Conditions     []metav1.ConditionApplyConfiguration    `json:"conditions,omitempty"`
+	ScalingHistory []ScalingDecisionApplyConfiguration     `json:"scalingHistory,omitempty"`
+	CircuitBreaker *CircuitBreakerStatusApplyConfiguration `json:"circuitBreaker,omitempty"`
 }
 
 // PodAutoscalerStatusApplyConfiguration constructs a declarative configuration of the PodAutoscalerStatus type for use with
@@ -85,5 +86,13 @@ func (b *PodAutoscalerStatusApplyConfiguration) WithScalingHistory(values ...*Sc
 		}
 		b.ScalingHistory = append(b.ScalingHistory, *values[i])
 	}
+	return b
+}
+
+// WithCircuitBreaker sets the CircuitBreaker field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the CircuitBreaker field is set to the value of the last call.
+func (b *PodAutoscalerStatusApplyConfiguration) WithCircuitBreaker(value *CircuitBreakerStatusApplyConfiguration) *PodAutoscalerStatusApplyConfiguration {
+	b.CircuitBreaker = value
 	return b
 }
