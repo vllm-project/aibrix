@@ -17,33 +17,28 @@ limitations under the License.
 
 package v1alpha1
 
-import (
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-)
-
-// ScheduledReplicaBoundsApplyConfiguration represents a declarative configuration of the ScheduledReplicaBounds type for use
+// PodAutoscalerScheduleApplyConfiguration represents a declarative configuration of the PodAutoscalerSchedule type for use
 // with apply.
-type ScheduledReplicaBoundsApplyConfiguration struct {
-	Name        *string      `json:"name,omitempty"`
-	Timezone    *string      `json:"timezone,omitempty"`
-	StartTime   *v1.Time     `json:"startTime,omitempty"`
-	EndTime     *v1.Time     `json:"endTime,omitempty"`
-	Cron        *string      `json:"cron,omitempty"`
-	Duration    *v1.Duration `json:"duration,omitempty"`
-	MinReplicas *int32       `json:"minReplicas,omitempty"`
-	MaxReplicas *int32       `json:"maxReplicas,omitempty"`
+type PodAutoscalerScheduleApplyConfiguration struct {
+	Name        *string  `json:"name,omitempty"`
+	Timezone    *string  `json:"timezone,omitempty"`
+	DaysOfWeek  []string `json:"daysOfWeek,omitempty"`
+	StartTime   *string  `json:"startTime,omitempty"`
+	EndTime     *string  `json:"endTime,omitempty"`
+	MinReplicas *int32   `json:"minReplicas,omitempty"`
+	MaxReplicas *int32   `json:"maxReplicas,omitempty"`
 }
 
-// ScheduledReplicaBoundsApplyConfiguration constructs a declarative configuration of the ScheduledReplicaBounds type for use with
+// PodAutoscalerScheduleApplyConfiguration constructs a declarative configuration of the PodAutoscalerSchedule type for use with
 // apply.
-func ScheduledReplicaBounds() *ScheduledReplicaBoundsApplyConfiguration {
-	return &ScheduledReplicaBoundsApplyConfiguration{}
+func PodAutoscalerSchedule() *PodAutoscalerScheduleApplyConfiguration {
+	return &PodAutoscalerScheduleApplyConfiguration{}
 }
 
 // WithName sets the Name field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Name field is set to the value of the last call.
-func (b *ScheduledReplicaBoundsApplyConfiguration) WithName(value string) *ScheduledReplicaBoundsApplyConfiguration {
+func (b *PodAutoscalerScheduleApplyConfiguration) WithName(value string) *PodAutoscalerScheduleApplyConfiguration {
 	b.Name = &value
 	return b
 }
@@ -51,15 +46,25 @@ func (b *ScheduledReplicaBoundsApplyConfiguration) WithName(value string) *Sched
 // WithTimezone sets the Timezone field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Timezone field is set to the value of the last call.
-func (b *ScheduledReplicaBoundsApplyConfiguration) WithTimezone(value string) *ScheduledReplicaBoundsApplyConfiguration {
+func (b *PodAutoscalerScheduleApplyConfiguration) WithTimezone(value string) *PodAutoscalerScheduleApplyConfiguration {
 	b.Timezone = &value
+	return b
+}
+
+// WithDaysOfWeek adds the given value to the DaysOfWeek field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the DaysOfWeek field.
+func (b *PodAutoscalerScheduleApplyConfiguration) WithDaysOfWeek(values ...string) *PodAutoscalerScheduleApplyConfiguration {
+	for i := range values {
+		b.DaysOfWeek = append(b.DaysOfWeek, values[i])
+	}
 	return b
 }
 
 // WithStartTime sets the StartTime field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the StartTime field is set to the value of the last call.
-func (b *ScheduledReplicaBoundsApplyConfiguration) WithStartTime(value v1.Time) *ScheduledReplicaBoundsApplyConfiguration {
+func (b *PodAutoscalerScheduleApplyConfiguration) WithStartTime(value string) *PodAutoscalerScheduleApplyConfiguration {
 	b.StartTime = &value
 	return b
 }
@@ -67,31 +72,15 @@ func (b *ScheduledReplicaBoundsApplyConfiguration) WithStartTime(value v1.Time) 
 // WithEndTime sets the EndTime field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the EndTime field is set to the value of the last call.
-func (b *ScheduledReplicaBoundsApplyConfiguration) WithEndTime(value v1.Time) *ScheduledReplicaBoundsApplyConfiguration {
+func (b *PodAutoscalerScheduleApplyConfiguration) WithEndTime(value string) *PodAutoscalerScheduleApplyConfiguration {
 	b.EndTime = &value
-	return b
-}
-
-// WithCron sets the Cron field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Cron field is set to the value of the last call.
-func (b *ScheduledReplicaBoundsApplyConfiguration) WithCron(value string) *ScheduledReplicaBoundsApplyConfiguration {
-	b.Cron = &value
-	return b
-}
-
-// WithDuration sets the Duration field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Duration field is set to the value of the last call.
-func (b *ScheduledReplicaBoundsApplyConfiguration) WithDuration(value v1.Duration) *ScheduledReplicaBoundsApplyConfiguration {
-	b.Duration = &value
 	return b
 }
 
 // WithMinReplicas sets the MinReplicas field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the MinReplicas field is set to the value of the last call.
-func (b *ScheduledReplicaBoundsApplyConfiguration) WithMinReplicas(value int32) *ScheduledReplicaBoundsApplyConfiguration {
+func (b *PodAutoscalerScheduleApplyConfiguration) WithMinReplicas(value int32) *PodAutoscalerScheduleApplyConfiguration {
 	b.MinReplicas = &value
 	return b
 }
@@ -99,7 +88,7 @@ func (b *ScheduledReplicaBoundsApplyConfiguration) WithMinReplicas(value int32) 
 // WithMaxReplicas sets the MaxReplicas field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the MaxReplicas field is set to the value of the last call.
-func (b *ScheduledReplicaBoundsApplyConfiguration) WithMaxReplicas(value int32) *ScheduledReplicaBoundsApplyConfiguration {
+func (b *PodAutoscalerScheduleApplyConfiguration) WithMaxReplicas(value int32) *PodAutoscalerScheduleApplyConfiguration {
 	b.MaxReplicas = &value
 	return b
 }

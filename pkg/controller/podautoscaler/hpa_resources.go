@@ -21,10 +21,10 @@ import (
 	"math"
 	"strconv"
 	"strings"
-	"time"
 
 	pav1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
+	"github.com/vllm-project/aibrix/pkg/utils/paschedules"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,15 +35,11 @@ import (
 
 // MakeHPA creates an HPA resource from a PodAutoscaler resource.
 func makeHPA(pa *pav1.PodAutoscaler, scalingContext scalingctx.ScalingContext) (*autoscalingv2.HorizontalPodAutoscaler, error) {
-	effectiveBounds, err := resolveEffectiveReplicaBounds(pa, time.Now())
-	if err != nil {
-		return nil, err
-	}
-	return makeHPAWithBounds(pa, scalingContext, effectiveBounds)
+	return makeHPAWithBounds(pa, scalingContext, paschedules.BaseBounds(pa))
 }
 
-func makeHPAWithBounds(pa *pav1.PodAutoscaler, scalingContext scalingctx.ScalingContext, effectiveBounds effectiveReplicaBounds) (*autoscalingv2.HorizontalPodAutoscaler, error) {
-	minReplicas, maxReplicas := effectiveBounds.MinReplicas, effectiveBounds.MaxReplicas
+func makeHPAWithBounds(pa *pav1.PodAutoscaler, scalingContext scalingctx.ScalingContext, bounds paschedules.Bounds) (*autoscalingv2.HorizontalPodAutoscaler, error) {
+	minReplicas, maxReplicas := bounds.MinReplicas, bounds.MaxReplicas
 	if maxReplicas == 0 {
 		maxReplicas = math.MaxInt32 // Set default to no upper limit if not specified
 	}

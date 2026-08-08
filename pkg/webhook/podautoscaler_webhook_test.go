@@ -18,15 +18,94 @@ package webhook
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 )
+
+func TestPodAutoscalerCustomValidator_MetricsSources(t *testing.T) {
+	validator := &PodAutoscalerCustomValidator{}
+	validPA := func(sources ...autoscalingv1alpha1.MetricSource) *autoscalingv1alpha1.PodAutoscaler {
+		return &autoscalingv1alpha1.PodAutoscaler{Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef:  corev1.ObjectReference{Name: "test-deployment", Kind: "Deployment"},
+			ScalingStrategy: autoscalingv1alpha1.KPA,
+			MetricsSources:  sources,
+		}}
+	}
+	validSource := autoscalingv1alpha1.MetricSource{
+		MetricSourceType: autoscalingv1alpha1.RESOURCE,
+		TargetMetric:     "cpu",
+		TargetValue:      "50",
+	}
+
+	t.Run("two valid sources", func(t *testing.T) {
+		require.NoError(t, validator.validatePodAutoscaler(validPA(validSource, autoscalingv1alpha1.MetricSource{
+			MetricSourceType: autoscalingv1alpha1.RESOURCE,
+			TargetMetric:     "memory",
+			TargetValue:      "1Gi",
+		})))
+	})
+
+	t.Run("empty sources", func(t *testing.T) {
+		err := validator.validatePodAutoscaler(validPA())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "at least one metricsSource")
+	})
+
+	t.Run("invalid second source", func(t *testing.T) {
+		invalidSource := validSource
+		invalidSource.TargetMetric = "disk"
+		err := validator.validatePodAutoscaler(validPA(validSource, invalidSource))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "spec.metricsSources[1].targetMetric")
+	})
+}
+
+func TestPodAutoscalerCustomValidator_Schedules(t *testing.T) {
+	validator := &PodAutoscalerCustomValidator{}
+	validPA := func(schedules []autoscalingv1alpha1.PodAutoscalerSchedule) *autoscalingv1alpha1.PodAutoscaler {
+		return &autoscalingv1alpha1.PodAutoscaler{Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef:  corev1.ObjectReference{Name: "test-deployment", Kind: "Deployment"},
+			MinReplicas:     ptr.To[int32](1),
+			MaxReplicas:     10,
+			ScalingStrategy: autoscalingv1alpha1.KPA,
+			MetricsSources: []autoscalingv1alpha1.MetricSource{{
+				MetricSourceType: autoscalingv1alpha1.RESOURCE,
+				TargetMetric:     "cpu",
+				TargetValue:      "50",
+			}},
+			Schedules: schedules,
+		}}
+	}
+
+	t.Run("valid schedule", func(t *testing.T) {
+		err := validator.validatePodAutoscaler(validPA([]autoscalingv1alpha1.PodAutoscalerSchedule{{
+			Name:        "business-hours",
+			Timezone:    "UTC",
+			DaysOfWeek:  []string{"Mon", "Tue"},
+			StartTime:   "09:00",
+			EndTime:     "18:00",
+			MinReplicas: ptr.To[int32](3),
+			MaxReplicas: ptr.To[int32](12),
+		}}))
+		require.NoError(t, err)
+	})
+
+	t.Run("invalid schedule", func(t *testing.T) {
+		err := validator.validatePodAutoscaler(validPA([]autoscalingv1alpha1.PodAutoscalerSchedule{{
+			Name:        "bad-time",
+			StartTime:   "9:00",
+			EndTime:     "18:00",
+			MinReplicas: ptr.To[int32](3),
+		}}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "spec.schedules")
+		assert.Contains(t, err.Error(), "startTime")
+	})
+}
 
 func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 	validator := &PodAutoscalerCustomValidator{}
@@ -43,7 +122,6 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 						Name: "test-deployment",
 						Kind: "Deployment",
 					},
-					MaxReplicas:     10,
 					ScalingStrategy: autoscalingv1alpha1.HPA,
 					MetricsSources: []autoscalingv1alpha1.MetricSource{
 						{
@@ -63,7 +141,6 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 						Name: "test-deployment",
 						Kind: "Deployment",
 					},
-					MaxReplicas:     10,
 					ScalingStrategy: autoscalingv1alpha1.APA,
 					MetricsSources: []autoscalingv1alpha1.MetricSource{
 						{
@@ -83,7 +160,6 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 						Name: "test-deployment",
 						Kind: "Deployment",
 					},
-					MaxReplicas:     10,
 					ScalingStrategy: autoscalingv1alpha1.APA,
 					MetricsSources: []autoscalingv1alpha1.MetricSource{
 						{
@@ -283,110 +359,6 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 			expectError: true,
 			errorMsg:    "panicWindowSeconds",
 		},
-		"Negative MinReplicas": {
-			pa: &autoscalingv1alpha1.PodAutoscaler{
-				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
-					ScaleTargetRef:  corev1.ObjectReference{Name: "test-deployment", Kind: "Deployment"},
-					MinReplicas:     ptr.To(int32(-1)),
-					MaxReplicas:     10,
-					ScalingStrategy: autoscalingv1alpha1.HPA,
-					MetricsSources: []autoscalingv1alpha1.MetricSource{{
-						MetricSourceType: autoscalingv1alpha1.RESOURCE,
-						TargetMetric:     "cpu",
-						TargetValue:      "50",
-					}},
-				},
-			},
-			expectError: true,
-			errorMsg:    "spec.minReplicas",
-		},
-		"Non-positive MaxReplicas": {
-			pa: &autoscalingv1alpha1.PodAutoscaler{
-				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
-					ScaleTargetRef:  corev1.ObjectReference{Name: "test-deployment", Kind: "Deployment"},
-					MaxReplicas:     0,
-					ScalingStrategy: autoscalingv1alpha1.HPA,
-					MetricsSources: []autoscalingv1alpha1.MetricSource{{
-						MetricSourceType: autoscalingv1alpha1.RESOURCE,
-						TargetMetric:     "cpu",
-						TargetValue:      "50",
-					}},
-				},
-			},
-			expectError: true,
-			errorMsg:    "spec.maxReplicas",
-		},
-		"Valid Scheduled Bounds": {
-			pa: podAutoscalerWithScheduledBounds(autoscalingv1alpha1.ScheduledReplicaBounds{
-				Name:        "weekday-peak",
-				Timezone:    "America/Los_Angeles",
-				Cron:        "0 9 * * MON-FRI",
-				Duration:    metav1.Duration{Duration: time.Hour},
-				MinReplicas: ptr.To(int32(4)),
-			}),
-			expectError: false,
-		},
-		"Scheduled Bounds Invalid Cron": {
-			pa: podAutoscalerWithScheduledBounds(autoscalingv1alpha1.ScheduledReplicaBounds{
-				Name: "invalid-cron", Cron: "*/5 * * * *", Duration: metav1.Duration{Duration: time.Hour}, MinReplicas: ptr.To(int32(1)),
-			}),
-			expectError: true,
-			errorMsg:    "spec.scheduledBounds[0].cron",
-		},
-		"Scheduled Bounds Invalid Duration": {
-			pa: podAutoscalerWithScheduledBounds(autoscalingv1alpha1.ScheduledReplicaBounds{
-				Name: "invalid-duration", Cron: "0 9 * * *", MinReplicas: ptr.To(int32(1)),
-			}),
-			expectError: true,
-			errorMsg:    "spec.scheduledBounds[0].duration",
-		},
-		"Scheduled Bounds Duration Too Long": {
-			pa: podAutoscalerWithScheduledBounds(autoscalingv1alpha1.ScheduledReplicaBounds{
-				Name:        "too-long",
-				Cron:        "0 9 * * *",
-				Duration:    metav1.Duration{Duration: 7*24*time.Hour + time.Second},
-				MinReplicas: ptr.To(int32(1)),
-			}),
-			expectError: true,
-			errorMsg:    "spec.scheduledBounds[0].duration",
-		},
-		"Scheduled Bounds Invalid Timezone": {
-			pa: podAutoscalerWithScheduledBounds(autoscalingv1alpha1.ScheduledReplicaBounds{
-				Name: "invalid-timezone", Timezone: "Mars/Olympus_Mons", Cron: "0 9 * * *", Duration: metav1.Duration{Duration: time.Hour}, MinReplicas: ptr.To(int32(1)),
-			}),
-			expectError: true,
-			errorMsg:    "spec.scheduledBounds[0].timezone",
-		},
-		"Scheduled Bounds Duplicate Name": {
-			pa: podAutoscalerWithScheduledBounds(
-				autoscalingv1alpha1.ScheduledReplicaBounds{Name: "peak", Cron: "0 9 * * *", Duration: metav1.Duration{Duration: time.Hour}, MinReplicas: ptr.To(int32(2))},
-				autoscalingv1alpha1.ScheduledReplicaBounds{Name: "peak", Cron: "0 12 * * *", Duration: metav1.Duration{Duration: time.Hour}, MinReplicas: ptr.To(int32(3))},
-			),
-			expectError: true,
-			errorMsg:    "spec.scheduledBounds[1].name",
-		},
-		"Scheduled Bounds Requires Override": {
-			pa: podAutoscalerWithScheduledBounds(autoscalingv1alpha1.ScheduledReplicaBounds{
-				Name: "missing-overrides", Cron: "0 9 * * *", Duration: metav1.Duration{Duration: time.Hour},
-			}),
-			expectError: true,
-			errorMsg:    "spec.scheduledBounds[0]",
-		},
-		"Scheduled Bounds Invalid Effective Bounds": {
-			pa: podAutoscalerWithScheduledBounds(autoscalingv1alpha1.ScheduledReplicaBounds{
-				Name: "invalid-effective-bounds", Cron: "0 9 * * *", Duration: metav1.Duration{Duration: time.Hour}, MinReplicas: ptr.To(int32(11)),
-			}),
-			expectError: true,
-			errorMsg:    "spec.scheduledBounds[0]",
-		},
-		"Scheduled Bounds Overlap": {
-			pa: podAutoscalerWithScheduledBounds(
-				autoscalingv1alpha1.ScheduledReplicaBounds{Name: "morning", Cron: "0 9 * * *", Duration: metav1.Duration{Duration: 2 * time.Hour}, MinReplicas: ptr.To(int32(2))},
-				autoscalingv1alpha1.ScheduledReplicaBounds{Name: "late-morning", Cron: "0 10 * * *", Duration: metav1.Duration{Duration: time.Hour}, MinReplicas: ptr.To(int32(3))},
-			),
-			expectError: true,
-			errorMsg:    "spec.scheduledBounds[1]",
-		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -401,22 +373,5 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 				require.NoError(t, err)
 			}
 		})
-	}
-}
-
-func podAutoscalerWithScheduledBounds(scheduledBounds ...autoscalingv1alpha1.ScheduledReplicaBounds) *autoscalingv1alpha1.PodAutoscaler {
-	return &autoscalingv1alpha1.PodAutoscaler{
-		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
-			ScaleTargetRef:  corev1.ObjectReference{Name: "test-deployment", Kind: "Deployment"},
-			MinReplicas:     ptr.To(int32(1)),
-			MaxReplicas:     10,
-			ScheduledBounds: scheduledBounds,
-			ScalingStrategy: autoscalingv1alpha1.HPA,
-			MetricsSources: []autoscalingv1alpha1.MetricSource{{
-				MetricSourceType: autoscalingv1alpha1.RESOURCE,
-				TargetMetric:     "cpu",
-				TargetValue:      "50",
-			}},
-		},
 	}
 }

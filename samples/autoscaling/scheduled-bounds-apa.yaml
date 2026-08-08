@@ -10,11 +10,12 @@ spec:
   scalingStrategy: APA
   minReplicas: 1
   maxReplicas: 10
-  scheduledBounds:
+  schedules:
     - name: weekday-business-hours
       timezone: America/Los_Angeles
-      cron: "0 9-18 * * MON-FRI"
-      duration: 1h
+      daysOfWeek: [Mon, Tue, Wed, Thu, Fri]
+      startTime: "09:00"
+      endTime: "18:00"
       minReplicas: 4
       maxReplicas: 12
   metricsSources:

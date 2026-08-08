@@ -120,37 +120,23 @@ Scheduled replica bounds
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
 ``PodAutoscaler`` supports optional scheduled replica bounds under
-``spec.scheduledBounds``. Each entry defines recurring cron start instants plus
-a positive ``duration``. A schedule is active from a cron occurrence until that
-occurrence plus the configured duration. While active, it overrides the base
-``spec.minReplicas`` and/or ``spec.maxReplicas``.
+``spec.schedules``. Each entry defines a recurring daily wall-clock window with
+``startTime`` and ``endTime`` in strict zero-padded ``HH:MM`` format. The start
+time is inclusive and the end time is exclusive. While active, a schedule
+overrides the base ``spec.minReplicas`` and/or ``spec.maxReplicas``.
 
 If ``timezone`` is omitted, schedules are evaluated in UTC. When set,
 ``timezone`` must be a valid IANA timezone such as
-``America/Los_Angeles``. Optional ``startTime`` and ``endTime`` fields constrain
-the lifetime of a schedule: entries are inactive before ``startTime`` and
-inactive at or after ``endTime``.
+``America/Los_Angeles``. If ``daysOfWeek`` is omitted, the schedule applies
+every day. When set, ``daysOfWeek`` accepts English three-letter weekday names
+such as ``Mon`` through ``Sun``.
 
 Scheduled entries may set either ``minReplicas``, ``maxReplicas``, or both. A
 partial override inherits the missing bound from the base PodAutoscaler spec.
 Validation rejects entries that do not set either bound, produce an effective
-minimum greater than the effective maximum, use invalid timezones or durations,
-or can overlap with another scheduled bounds entry. Overlapping windows are
-rejected instead of relying on implicit priority.
-
-The initial cron support intentionally accepts a simple five-field subset:
-
-- minute: one fixed numeric value
-- hour: one numeric value, a comma-separated list, or a numeric range
-- day of month: ``*``
-- month: ``*``
-- day of week: ``*``, one value, a comma-separated list, or a range using names
-  such as ``MON-FRI`` or numeric values
-
-Step expressions such as ``*/5``, restricted day-of-month or month fields, and
-other complex cron forms are rejected. For example,
-``0 9-18 * * MON-FRI`` with ``duration: 1h`` creates hourly one-hour windows on
-weekdays during business hours.
+minimum greater than the effective maximum, use invalid timezones or invalid
+time formats, span midnight, or overlap with another scheduled bounds entry.
+Overlapping windows are rejected instead of relying on implicit priority.
 
 HPA, KPA, and APA all use the effective scheduled bounds. For HPA strategy,
 AIBrix writes the effective bounds to the generated Kubernetes

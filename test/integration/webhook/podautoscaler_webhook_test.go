@@ -17,8 +17,6 @@ limitations under the License.
 package webhook
 
 import (
-	"time"
-
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 
@@ -58,9 +56,9 @@ var _ = ginkgo.Describe("podautoscaler default and validation", func() {
 		podautoscaler func() *autoscalingapi.PodAutoscaler
 		failed        bool
 	}
-	newScheduledBoundsPA := func(
+	newSchedulesPA := func(
 		name string,
-		scheduledBounds ...autoscalingapi.ScheduledReplicaBounds,
+		schedules ...autoscalingapi.PodAutoscalerSchedule,
 	) *autoscalingapi.PodAutoscaler {
 		pa := wrapper.MakePodAutoscaler(name).
 			Namespace(ns.Name).
@@ -70,7 +68,7 @@ var _ = ginkgo.Describe("podautoscaler default and validation", func() {
 			MetricSource(wrapper.MakeMetricSourceResource("cpu", "100m")).
 			ScaleTargetRefWithKind("Deployment", "apps/v1", "test-deploy").
 			Obj()
-		pa.Spec.ScheduledBounds = scheduledBounds
+		pa.Spec.Schedules = schedules
 		return pa
 	}
 	ginkgo.DescribeTable("test validating",
@@ -94,121 +92,123 @@ var _ = ginkgo.Describe("podautoscaler default and validation", func() {
 			},
 			failed: false,
 		}),
-		ginkgo.Entry("valid scheduled bounds", &testValidatingCase{
+		ginkgo.Entry("valid schedules", &testValidatingCase{
 			podautoscaler: func() *autoscalingapi.PodAutoscaler {
-				return newScheduledBoundsPA("scheduled-bounds-valid",
-					autoscalingapi.ScheduledReplicaBounds{
+				return newSchedulesPA("schedules-valid",
+					autoscalingapi.PodAutoscalerSchedule{
 						Name:        "weekday-peak",
 						Timezone:    "America/Los_Angeles",
-						Cron:        "0 9 * * MON-FRI",
-						Duration:    metav1.Duration{Duration: time.Hour},
+						DaysOfWeek:  []string{"Mon", "Tue", "Wed", "Thu", "Fri"},
+						StartTime:   "09:00",
+						EndTime:     "18:00",
 						MinReplicas: ptr.To(int32(4)),
 					},
 				)
 			},
 			failed: false,
 		}),
-		ginkgo.Entry("scheduled bounds invalid cron", &testValidatingCase{
+		ginkgo.Entry("schedules invalid time", &testValidatingCase{
 			podautoscaler: func() *autoscalingapi.PodAutoscaler {
-				return newScheduledBoundsPA("scheduled-bounds-invalid-cron",
-					autoscalingapi.ScheduledReplicaBounds{
-						Name:        "invalid-cron",
-						Cron:        "*/5 * * * *",
-						Duration:    metav1.Duration{Duration: time.Hour},
+				return newSchedulesPA("schedules-invalid-time",
+					autoscalingapi.PodAutoscalerSchedule{
+						Name:        "invalid-time",
+						StartTime:   "9:00",
+						EndTime:     "18:00",
 						MinReplicas: ptr.To(int32(1)),
 					},
 				)
 			},
 			failed: true,
 		}),
-		ginkgo.Entry("scheduled bounds invalid duration", &testValidatingCase{
+		ginkgo.Entry("schedules cross midnight", &testValidatingCase{
 			podautoscaler: func() *autoscalingapi.PodAutoscaler {
-				return newScheduledBoundsPA("scheduled-bounds-invalid-duration", autoscalingapi.ScheduledReplicaBounds{
-					Name: "invalid-duration", Cron: "0 9 * * *", MinReplicas: ptr.To(int32(1)),
+				return newSchedulesPA("schedules-cross-midnight", autoscalingapi.PodAutoscalerSchedule{
+					Name: "cross-midnight", StartTime: "18:00", EndTime: "09:00", MinReplicas: ptr.To(int32(1)),
 				})
 			},
 			failed: true,
 		}),
-		ginkgo.Entry("scheduled bounds duration too long", &testValidatingCase{
+		ginkgo.Entry("schedules invalid days", &testValidatingCase{
 			podautoscaler: func() *autoscalingapi.PodAutoscaler {
-				return newScheduledBoundsPA("scheduled-bounds-duration-too-long",
-					autoscalingapi.ScheduledReplicaBounds{
-						Name:        "too-long",
-						Cron:        "0 9 * * *",
-						Duration:    metav1.Duration{Duration: 7*24*time.Hour + time.Second},
+				return newSchedulesPA("schedules-invalid-days",
+					autoscalingapi.PodAutoscalerSchedule{
+						Name:        "invalid-days",
+						DaysOfWeek:  []string{"Monday"},
+						StartTime:   "09:00",
+						EndTime:     "18:00",
 						MinReplicas: ptr.To(int32(1)),
 					},
 				)
 			},
 			failed: true,
 		}),
-		ginkgo.Entry("scheduled bounds invalid timezone", &testValidatingCase{
+		ginkgo.Entry("schedules invalid timezone", &testValidatingCase{
 			podautoscaler: func() *autoscalingapi.PodAutoscaler {
-				return newScheduledBoundsPA("scheduled-bounds-invalid-timezone",
-					autoscalingapi.ScheduledReplicaBounds{
+				return newSchedulesPA("schedules-invalid-timezone",
+					autoscalingapi.PodAutoscalerSchedule{
 						Name:        "invalid-timezone",
 						Timezone:    "Mars/Olympus_Mons",
-						Cron:        "0 9 * * *",
-						Duration:    metav1.Duration{Duration: time.Hour},
+						StartTime:   "09:00",
+						EndTime:     "18:00",
 						MinReplicas: ptr.To(int32(1)),
 					},
 				)
 			},
 			failed: true,
 		}),
-		ginkgo.Entry("scheduled bounds duplicate name", &testValidatingCase{
+		ginkgo.Entry("schedules duplicate name", &testValidatingCase{
 			podautoscaler: func() *autoscalingapi.PodAutoscaler {
-				return newScheduledBoundsPA("scheduled-bounds-duplicate-name",
-					autoscalingapi.ScheduledReplicaBounds{
+				return newSchedulesPA("schedules-duplicate-name",
+					autoscalingapi.PodAutoscalerSchedule{
 						Name:        "peak",
-						Cron:        "0 9 * * *",
-						Duration:    metav1.Duration{Duration: time.Hour},
+						StartTime:   "09:00",
+						EndTime:     "10:00",
 						MinReplicas: ptr.To(int32(2)),
 					},
-					autoscalingapi.ScheduledReplicaBounds{
+					autoscalingapi.PodAutoscalerSchedule{
 						Name:        "peak",
-						Cron:        "0 12 * * *",
-						Duration:    metav1.Duration{Duration: time.Hour},
+						StartTime:   "10:00",
+						EndTime:     "11:00",
 						MinReplicas: ptr.To(int32(3)),
 					},
 				)
 			},
 			failed: true,
 		}),
-		ginkgo.Entry("scheduled bounds missing override", &testValidatingCase{
+		ginkgo.Entry("schedules missing override", &testValidatingCase{
 			podautoscaler: func() *autoscalingapi.PodAutoscaler {
-				return newScheduledBoundsPA("scheduled-bounds-missing-override", autoscalingapi.ScheduledReplicaBounds{
-					Name: "missing-overrides", Cron: "0 9 * * *", Duration: metav1.Duration{Duration: time.Hour},
+				return newSchedulesPA("schedules-missing-override", autoscalingapi.PodAutoscalerSchedule{
+					Name: "missing-overrides", StartTime: "09:00", EndTime: "18:00",
 				})
 			},
 			failed: true,
 		}),
-		ginkgo.Entry("scheduled bounds invalid effective bounds", &testValidatingCase{
+		ginkgo.Entry("schedules invalid effective bounds", &testValidatingCase{
 			podautoscaler: func() *autoscalingapi.PodAutoscaler {
-				return newScheduledBoundsPA("scheduled-bounds-invalid-effective",
-					autoscalingapi.ScheduledReplicaBounds{
+				return newSchedulesPA("schedules-invalid-effective",
+					autoscalingapi.PodAutoscalerSchedule{
 						Name:        "invalid-effective-bounds",
-						Cron:        "0 9 * * *",
-						Duration:    metav1.Duration{Duration: time.Hour},
+						StartTime:   "09:00",
+						EndTime:     "18:00",
 						MinReplicas: ptr.To(int32(11)),
 					},
 				)
 			},
 			failed: true,
 		}),
-		ginkgo.Entry("scheduled bounds overlap", &testValidatingCase{
+		ginkgo.Entry("schedules overlap", &testValidatingCase{
 			podautoscaler: func() *autoscalingapi.PodAutoscaler {
-				return newScheduledBoundsPA("scheduled-bounds-overlap",
-					autoscalingapi.ScheduledReplicaBounds{
+				return newSchedulesPA("schedules-overlap",
+					autoscalingapi.PodAutoscalerSchedule{
 						Name:        "morning",
-						Cron:        "0 9 * * *",
-						Duration:    metav1.Duration{Duration: 2 * time.Hour},
+						StartTime:   "09:00",
+						EndTime:     "11:00",
 						MinReplicas: ptr.To(int32(2)),
 					},
-					autoscalingapi.ScheduledReplicaBounds{
+					autoscalingapi.PodAutoscalerSchedule{
 						Name:        "late-morning",
-						Cron:        "0 10 * * *",
-						Duration:    metav1.Duration{Duration: time.Hour},
+						StartTime:   "10:00",
+						EndTime:     "12:00",
 						MinReplicas: ptr.To(int32(3)),
 					},
 				)
