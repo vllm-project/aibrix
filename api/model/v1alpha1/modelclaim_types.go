@@ -57,7 +57,8 @@ type ModelClaimSpec struct {
 	// serving slot count rather than a Kubernetes Deployment replica count.
 	// +optional
 	// +kubebuilder:default=1
-	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=1
 	Replicas *int32 `json:"replicas,omitempty"`
 
 	// EngineConfig carries engine-specific startup options. Args maps engine
@@ -94,8 +95,8 @@ const (
 	ModelClaimActivating ModelClaimPhase = "Activating"
 	// ModelClaimActive means the model is serving on at least one warm pod.
 	ModelClaimActive ModelClaimPhase = "Active"
-	// ModelClaimSleeping means one or more resident engines are intentionally
-	// asleep and non-routable. The assigned instances remain present so the
+	// ModelClaimSleeping means the resident engine is intentionally asleep and
+	// non-routable. The assigned instance remains present so the
 	// controller does not activate duplicate engines while waiting for a wake.
 	ModelClaimSleeping ModelClaimPhase = "Sleeping"
 	// ModelClaimFailed means activation terminated in a failure.

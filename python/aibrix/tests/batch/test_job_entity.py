@@ -28,6 +28,7 @@ from aibrix.batch.job_entity import (
     ResourceDetail,
     RuntimeSpec,
 )
+from aibrix.batch.job_entity.aibrix_metadata import MAX_CLIENT_CONCURRENCY
 from aibrix.batch.manifest.renderer import JobManifestRenderer, RenderError
 from aibrix.batch.template import local_profile_registry, local_template_registry
 
@@ -234,7 +235,8 @@ class TestBatchJobEntityCreation:
         metadata = AibrixMetadata(
             client=ClientConfig.model_validate(
                 {
-                    "max_concurrency": 256,
+                    "max_concurrency": MAX_CLIENT_CONCURRENCY,
+                    "request_timeout_seconds": 45,
                     "adaptive_concurrency": True,
                     "adaptive_max_factor": 16,
                     "retry_policy": {
@@ -250,11 +252,17 @@ class TestBatchJobEntityCreation:
         fields = metadata.to_extension_fields()
         restored = AibrixMetadata.from_extension_fields(**fields)
 
-        assert fields["client"]["max_concurrency"] == 256
+        assert fields["client"]["max_concurrency"] == MAX_CLIENT_CONCURRENCY
+        assert fields["client"]["request_timeout_seconds"] == 45
         assert restored is not None
         assert restored.client is not None
+        assert restored.client.request_timeout_seconds == 45
         assert restored.client.retry_policy is not None
         assert restored.client.retry_policy.base_delay_seconds == 2
+
+    def test_client_config_rejects_request_timeout_below_one_second(self):
+        with pytest.raises(ValueError):
+            ClientConfig(request_timeout_seconds=0.5)
 
     def test_resource_allocation_is_expiring_uses_deadline_timestamp(self):
         now = int(datetime.now(timezone.utc).timestamp())

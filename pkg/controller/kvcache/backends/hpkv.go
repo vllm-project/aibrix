@@ -105,20 +105,14 @@ func (HpKVBackend) BuildService(kvCache *orchestrationv1alpha1.KVCache) *corev1.
 
 func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {
 	params := getKVCacheParams(kvCache.GetAnnotations())
-	envs := []corev1.EnvVar{
-		{
-			Name:  "REDIS_ADDR",
-			Value: fmt.Sprintf("%s-redis:%d", kvCache.Name, 6379),
-		},
-		{
-			Name:  "REDIS_PASSWORD",
-			Value: "",
-		},
-		{
+
+	envs := buildRedisWatcherEnvVars(kvCache)
+	envs = append(envs,
+		corev1.EnvVar{
 			Name:  "REDIS_DATABASE",
 			Value: "0",
 		},
-		{
+		corev1.EnvVar{
 			Name: "AIBRIX_KVCACHE_WATCH_NAMESPACE",
 			ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{
@@ -126,11 +120,11 @@ func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod 
 				},
 			},
 		},
-		{
+		corev1.EnvVar{
 			Name:  "AIBRIX_KVCACHE_WATCH_CLUSTER",
 			Value: kvCache.Name,
 		},
-	}
+	)
 
 	if len(kvCache.Spec.Watcher.Env) != 0 {
 		envs = append(envs, kvCache.Spec.Watcher.Env...)

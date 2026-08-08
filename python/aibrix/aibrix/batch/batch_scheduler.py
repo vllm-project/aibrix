@@ -28,6 +28,7 @@ import time
 from typing import TYPE_CHECKING, Optional, Tuple
 
 import aibrix.batch.constant as constant
+from aibrix.batch.job_entity import BatchJobState
 from aibrix.batch.scheduling_policy import FIFOScheduling, SchedulingPolicy
 from aibrix.batch.state import SchedulableJobs
 from aibrix.context import InfrastructureContext
@@ -113,6 +114,10 @@ class BatchScheduler:
             if job.job_id in seen_job_ids:
                 continue
             seen_job_ids.add(job.job_id)
+            # FINALIZING jobs are already on the terminalization path, so the
+            # cleanup loop should stop retrying expiry checks for them.
+            if job.status.state == BatchJobState.FINALIZING:
+                continue
             created_at = job.status.created_at
             if created_at is None:
                 continue

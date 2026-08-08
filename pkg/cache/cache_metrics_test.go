@@ -25,6 +25,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
@@ -55,7 +56,7 @@ func TestUpdatePodRecord(t *testing.T) {
 				Name:      "p1",
 				Namespace: "default",
 				Labels: map[string]string{
-					modelLabel: "m2",
+					constants.ModelLabelName: "m2",
 				},
 			},
 		},
@@ -89,6 +90,11 @@ func TestUpdatePodMetricsFromTypedResultModelFallback(t *testing.T) {
 			wantModel: "raw-model",
 		},
 		{
+			name:      "keeps path-style model name",
+			rawModel:  "/models/mock",
+			wantModel: "/models/mock",
+		},
+		{
 			name:      "falls back for empty model name",
 			rawModel:  "",
 			wantModel: "pod-model",
@@ -109,7 +115,7 @@ func TestUpdatePodMetricsFromTypedResultModelFallback(t *testing.T) {
 						Name:      "p1",
 						Namespace: "default",
 						Labels: map[string]string{
-							modelLabel: "pod-model",
+							constants.ModelLabelName: "pod-model",
 						},
 					},
 				},
@@ -128,6 +134,31 @@ func TestUpdatePodMetricsFromTypedResultModelFallback(t *testing.T) {
 	}
 }
 
+func TestUpdatePodMetricsFromTypedResultAnnotationFallback(t *testing.T) {
+	store := &Store{}
+	pod := &Pod{
+		Pod: &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "p1",
+				Namespace: "default",
+				Annotations: map[string]string{
+					constants.ModelLabelName: "/models/mock",
+				},
+			},
+		},
+	}
+	result := &metrics.EngineMetricsResult{
+		ModelMetrics: map[string]metrics.MetricValue{
+			store.getPodModelMetricName("", metrics.NumRequestsWaiting): &metrics.SimpleMetricValue{Value: 1},
+		},
+	}
+
+	store.updatePodMetricsFromTypedResult(pod, result)
+
+	_, ok := pod.ModelMetrics.Load(store.getPodModelMetricName("/models/mock", metrics.NumRequestsWaiting))
+	require.True(t, ok)
+}
+
 func TestSanitizeMetricLabelsFallback(t *testing.T) {
 	pod := &Pod{
 		Pod: &v1.Pod{
@@ -135,8 +166,8 @@ func TestSanitizeMetricLabelsFallback(t *testing.T) {
 				Name:      "p1",
 				Namespace: "default",
 				Labels: map[string]string{
-					modelLabel:  "pod-model",
-					engineLabel: "trtllm",
+					constants.ModelLabelName: "pod-model",
+					engineLabel:              "trtllm",
 				},
 			},
 		},
@@ -420,6 +451,87 @@ func TestInitPrometheusAPI_EndpointSet(t *testing.T) {
 // TestUpdatePodMetricsNonBlocking verifies that updatePodMetrics does not block
 // when the worker pool is saturated (channel buffer full). This prevents the
 // metrics refresh goroutine from stalling when workers are stuck on slow pods.
+func TestUpdateModelReplicaMetrics(t *testing.T) {
+	t.Setenv("POD_NAME", "gateway-0")
+
+	var emitted []map[string]string
+	originalFn := metrics.SetGaugeMetricFnForTest
+	defer func() { metrics.SetGaugeMetricFnForTest = originalFn }()
+	metrics.SetGaugeMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		if name != metrics.ModelReplicas {
+			return
+		}
+		labels := make(map[string]string, len(labelNames))
+		for i, ln := range labelNames {
+			labels[ln] = labelValues[i]
+		}
+		emitted = append(emitted, labels)
+	}
+
+	readyPod := func(name, model, role string, groupIndex string) *Pod {
+		labels := map[string]string{
+			constants.ModelLabelName: model,
+			pdRoleIdentifier:         role,
+		}
+		if groupIndex != "" {
+			labels[podGroupIndex] = groupIndex
+		}
+		return &Pod{
+			Pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+					Labels:    labels,
+				},
+				Status: v1.PodStatus{
+					Phase: v1.PodRunning,
+					PodIP: "10.0.0.1",
+					Conditions: []v1.PodCondition{
+						{Type: v1.PodReady, Status: v1.ConditionTrue},
+					},
+				},
+			},
+		}
+	}
+
+	store := &Store{}
+	store.metaPods.Store("default/prefill-0", readyPod("prefill-0", "qwen3-8B", "prefill", "0"))
+	store.metaPods.Store("default/decode-0", readyPod("decode-0", "qwen3-8B", "decode", "0"))
+	store.metaPods.Store("default/prefill-worker", readyPod("prefill-worker", "qwen3-8B", "prefill", "1"))
+	store.metaPods.Store("default/unready", &Pod{
+		Pod: &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "unready",
+				Namespace: "default",
+				Labels: map[string]string{
+					constants.ModelLabelName: "qwen3-8B",
+					pdRoleIdentifier:         "prefill",
+				},
+			},
+			Status: v1.PodStatus{Phase: v1.PodPending},
+		},
+	})
+
+	store.updateModelReplicaMetrics()
+	require.Len(t, emitted, 2)
+	byPod := make(map[string]map[string]string, len(emitted))
+	for _, labels := range emitted {
+		byPod[labels["pod"]] = labels
+	}
+	require.Equal(t, "prefill", byPod["prefill-0"]["role"])
+	require.Equal(t, "qwen3-8B", byPod["prefill-0"]["model_name"])
+	require.Equal(t, "decode", byPod["decode-0"]["role"])
+	require.Equal(t, "qwen3-8B", byPod["decode-0"]["model_name"])
+	require.Equal(t, 2, store.modelReplicaEmitted.Len())
+
+	store.metaPods.Delete("default/prefill-0")
+	emitted = nil
+	store.updateModelReplicaMetrics()
+	require.Len(t, emitted, 1)
+	require.Equal(t, "decode-0", emitted[0]["pod"])
+	require.Equal(t, 1, store.modelReplicaEmitted.Len())
+}
+
 func TestUpdatePodMetricsNonBlocking(t *testing.T) {
 	// Create a store with a tiny channel buffer and NO workers draining it
 	store := &Store{

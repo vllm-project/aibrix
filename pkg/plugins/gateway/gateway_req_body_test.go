@@ -24,6 +24,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -727,6 +728,72 @@ func Test_handleRequestBody(t *testing.T) {
 			mockRouter.AssertExpectations(subtest)
 		})
 	}
+}
+
+func TestValidateModelAvailabilityReturnsRetryableResponseForSleepingModelClaim(t *testing.T) {
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "warm-1", Namespace: "default"},
+		Status:     v1.PodStatus{PodIP: "10.0.0.1"},
+	}
+	mockCache := &MockCache{modelClaimBindings: map[string]mockModelClaimBinding{
+		"qwen": {pod: pod, state: constants.ModelClaimRoutingStateSleeping},
+	}}
+	mockCache.On("HasModel", "qwen").Return(false)
+	wakeRequester := &recordingModelWakeRequester{}
+	server := &Server{cache: mockCache, wakeRequester: wakeRequester}
+
+	pods, response := server.validateModelAvailability("request-1", "qwen")
+
+	assert.Nil(t, pods)
+	require.NotNil(t, response)
+	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
+	assert.Equal(t, "10", responseHeader(response, "Retry-After"))
+	require.Len(t, wakeRequester.calls, 1)
+	assert.Equal(t, "qwen", wakeRequester.calls[0].model)
+	assert.Equal(t, pod.Name, wakeRequester.calls[0].pod.Name)
+}
+
+func TestValidateModelAvailabilityDoesNotWakeNonSleepingModelClaim(t *testing.T) {
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "warm-1", Namespace: "default"},
+		Status:     v1.PodStatus{PodIP: "10.0.0.1"},
+	}
+	for _, state := range []string{
+		constants.ModelClaimRoutingStateActivating,
+		constants.ModelClaimRoutingStateFailed,
+	} {
+		t.Run(state, func(t *testing.T) {
+			mockCache := &MockCache{modelClaimBindings: map[string]mockModelClaimBinding{
+				"qwen": {pod: pod, state: state},
+			}}
+			mockCache.On("HasModel", "qwen").Return(false)
+			wakeRequester := &recordingModelWakeRequester{}
+			server := &Server{cache: mockCache, wakeRequester: wakeRequester}
+
+			_, response := server.validateModelAvailability("request-1", "qwen")
+
+			require.NotNil(t, response)
+			assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
+			assert.Empty(t, wakeRequester.calls)
+			if state == constants.ModelClaimRoutingStateFailed {
+				assert.Empty(t, responseHeader(response, "Retry-After"))
+			} else {
+				assert.Equal(t, "10", responseHeader(response, "Retry-After"))
+			}
+		})
+	}
+}
+
+func responseHeader(response *extProcPb.ProcessingResponse, key string) string {
+	for _, option := range response.GetImmediateResponse().GetHeaders().GetSetHeaders() {
+		if option.GetHeader().GetKey() == key {
+			if len(option.GetHeader().GetRawValue()) > 0 {
+				return string(option.GetHeader().GetRawValue())
+			}
+			return option.GetHeader().GetValue()
+		}
+	}
+	return ""
 }
 
 func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {

@@ -23,12 +23,12 @@ import (
 
 var AllowedSchemas = []string{"s3://", "gcs://", "tos://", "huggingface://", "hf://", "/"}
 
-// ValidateArtifactURL checks if the ArtifactURL has a valid schema (s3://, gcs://, tos://, huggingface://, https://, /)
+// ValidateArtifactURL checks if the ArtifactURL has a valid schema (s3://, gcs://, tos://, huggingface://, hf://, /)
 func ValidateArtifactURL(artifactURL string) error {
 	for _, schema := range AllowedSchemas {
 		if strings.HasPrefix(artifactURL, schema) {
 			return nil
 		}
 	}
-	return fmt.Errorf("unsupported schema")
+	return fmt.Errorf("unsupported schema %q, supported schemas are %v", artifactURL, AllowedSchemas)
 }

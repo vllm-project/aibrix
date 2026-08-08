@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeFilesResponse } from './api';
+import { camelToSnake, normalizeFilesResponse } from './api';
 
 describe('api helpers', () => {
   it('normalizes OpenAI file list responses for the batch file picker', () => {
@@ -48,5 +48,57 @@ describe('api helpers', () => {
         createdAt: 1737230221,
       },
     ]);
+  });
+
+  it('serializes template-driven deployment requests to the API contract', () => {
+    expect(camelToSnake({
+      name: 'test-deployment',
+      template: {
+        modelId: 'model-1',
+        templateId: 'template-1',
+      },
+      implementation: {
+        kind: 'kubernetes',
+      },
+      overrides: {
+        minReplicas: 1,
+        maxReplicas: 3,
+        enableAutoScaling: true,
+        engineArgs: {
+          max_num_seqs: '64',
+        },
+      },
+    })).toEqual({
+      name: 'test-deployment',
+      template: {
+        model_id: 'model-1',
+        template_id: 'template-1',
+      },
+      implementation: {
+        kind: 'kubernetes',
+      },
+      overrides: {
+        min_replicas: 1,
+        max_replicas: 3,
+        enable_auto_scaling: true,
+        engine_args: {
+          max_num_seqs: '64',
+        },
+      },
+    });
+  });
+
+  it('serializes ModelAdapter creation without exposing the Kubernetes CRD', () => {
+    expect(camelToSnake({
+      name: 'sql-assistant',
+      artifactUrl: 'huggingface://example/sql-assistant',
+      deploymentName: 'qwen-serving',
+      placement: 'all',
+    })).toEqual({
+      name: 'sql-assistant',
+      artifact_url: 'huggingface://example/sql-assistant',
+      deployment_name: 'qwen-serving',
+      placement: 'all',
+    });
   });
 });

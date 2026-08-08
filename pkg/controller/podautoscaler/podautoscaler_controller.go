@@ -96,6 +96,7 @@ const (
 	ReasonConfigured                = "Configured"
 	maxScalingHistorySize           = 5
 	minScalingHistoryRecordInterval = 5 * time.Second
+	maxMetricWindowSeconds          = int64(3600)
 )
 
 var (
@@ -402,6 +403,9 @@ func (r *PodAutoscalerReconciler) validateSpec(pa *autoscalingv1alpha1.PodAutosc
 	if vr := r.validateScalingStrategy(pa); !vr.Valid {
 		return vr
 	}
+	if vr := r.validateMetricWindows(pa); !vr.Valid {
+		return vr
+	}
 	if err := circuitbreakerconfig.ValidateCircuitBreaker(pa.Spec.ScalingStrategy, pa.Spec.CircuitBreaker); err != nil {
 		return invalid(ConditionValidSpec, err.Error())
 	}
@@ -422,6 +426,35 @@ func (r *PodAutoscalerReconciler) validateReplicaBounds(pa *autoscalingv1alpha1.
 	if pa.Spec.MinReplicas != nil && pa.Spec.MaxReplicas < *pa.Spec.MinReplicas {
 		return invalid(ReasonInvalidBounds, "minReplicas cannot be greater than maxReplicas.")
 	}
+	return validOK()
+}
+
+func (r *PodAutoscalerReconciler) validateMetricWindows(pa *autoscalingv1alpha1.PodAutoscaler) ValidationResult {
+	observeWindow := int64(metrics.DefaultStableWindowDuration / time.Second)
+	if pa.Spec.ObserveWindowSeconds != nil {
+		observeWindow = *pa.Spec.ObserveWindowSeconds
+		if observeWindow <= 0 {
+			return invalid(ReasonInvalidSpec, "observeWindowSeconds must be greater than 0.")
+		}
+		if observeWindow > maxMetricWindowSeconds {
+			return invalid(ReasonInvalidSpec, fmt.Sprintf("observeWindowSeconds must be less than or equal to %d.", maxMetricWindowSeconds))
+		}
+	}
+
+	panicWindow := int64(metrics.DefaultPanicWindowDuration / time.Second)
+	if pa.Spec.PanicWindowSeconds != nil {
+		panicWindow = *pa.Spec.PanicWindowSeconds
+		if panicWindow <= 0 {
+			return invalid(ReasonInvalidSpec, "panicWindowSeconds must be greater than 0.")
+		}
+		if panicWindow > maxMetricWindowSeconds {
+			return invalid(ReasonInvalidSpec, fmt.Sprintf("panicWindowSeconds must be less than or equal to %d.", maxMetricWindowSeconds))
+		}
+	}
+	if panicWindow > observeWindow {
+		return invalid(ReasonInvalidSpec, "panicWindowSeconds must be less than or equal to observeWindowSeconds.")
+	}
+
 	return validOK()
 }
 

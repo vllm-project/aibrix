@@ -6,6 +6,7 @@ import {
   useLocation,
   useNavigate,
   useParams,
+  useSearchParams,
 } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
@@ -18,10 +19,14 @@ import type { SettingsTab } from './components/Settings';
 import { ModelLibrary } from './components/ModelLibrary';
 import { ModelDetail } from './components/ModelDetail';
 import { CreateModelDeploymentTemplate } from './components/CreateModelDeploymentTemplate';
+import { CreateModel } from './components/CreateModel';
 import { Playground } from './components/Playground';
 import { Deployments } from './components/Deployments';
 import { CreateDeployment } from './components/CreateDeployment';
 import { DeploymentDetail } from './components/DeploymentDetail';
+import { LoraAdapters } from './components/LoraAdapters';
+import { CreateLoraAdapter } from './components/CreateLoraAdapter';
+import { LoraAdapterDetail } from './components/LoraAdapterDetail';
 import { ApiKeysPage } from './components/settings/ApiKeysPage';
 import { SecretsPage } from './components/settings/SecretsPage';
 import { Toast } from './components/settings/Toast';
@@ -53,7 +58,22 @@ function CreateJobRoute() {
 
 function ModelLibraryRoute() {
   const navigate = useNavigate();
-  return <ModelLibrary onSelectModel={(id) => navigate(`/models/${id}`)} />;
+  return (
+    <ModelLibrary
+      onSelectModel={(id) => navigate(`/models/${id}`)}
+      onCreateModel={() => navigate('/models/new')}
+    />
+  );
+}
+
+function CreateModelRoute() {
+  const navigate = useNavigate();
+  return (
+    <CreateModel
+      onBack={() => navigate('/models')}
+      onSaved={(modelId) => navigate(`/models/${modelId}`)}
+    />
+  );
 }
 
 function ModelDetailRoute() {
@@ -93,7 +113,13 @@ function TemplateFormRoute({ mode }: { mode: TemplateRouteMode }) {
 
 function PlaygroundRoute() {
   const navigate = useNavigate();
-  return <Playground onNavigateToModel={(id) => navigate(`/models/${id}`)} />;
+  const [searchParams] = useSearchParams();
+  return (
+    <Playground
+      initialDeploymentId={searchParams.get('deployment') ?? undefined}
+      onNavigateToDeployment={(id) => navigate(`/deployments/${id}`)}
+    />
+  );
 }
 
 function DeploymentsRoute() {
@@ -108,7 +134,12 @@ function DeploymentsRoute() {
 
 function CreateDeploymentRoute() {
   const navigate = useNavigate();
-  return <CreateDeployment onBack={() => navigate('/deployments')} />;
+  return (
+    <CreateDeployment
+      onBack={() => navigate('/deployments')}
+      onCreated={(id) => navigate(`/deployments/${id}`)}
+    />
+  );
 }
 
 function DeploymentDetailRoute() {
@@ -118,6 +149,39 @@ function DeploymentDetailRoute() {
     <DeploymentDetail
       deploymentId={deploymentId ?? null}
       onBack={() => navigate('/deployments')}
+      onOpenPlayground={(deployment) => navigate(`/playground?deployment=${encodeURIComponent(deployment.id)}`)}
+    />
+  );
+}
+
+function LoraAdaptersRoute() {
+  const navigate = useNavigate();
+  return (
+    <LoraAdapters
+      onSelectAdapter={(name) => navigate(`/lora/${name}`)}
+      onCreateAdapter={() => navigate('/lora/new')}
+    />
+  );
+}
+
+function CreateLoraAdapterRoute() {
+  const navigate = useNavigate();
+  return (
+    <CreateLoraAdapter
+      onBack={() => navigate('/lora')}
+      onCreated={(name) => navigate(`/lora/${name}`)}
+    />
+  );
+}
+
+function LoraAdapterDetailRoute() {
+  const { adapterName } = useParams<{ adapterName: string }>();
+  const navigate = useNavigate();
+  if (!adapterName) return <Navigate to="/lora" replace />;
+  return (
+    <LoraAdapterDetail
+      adapterName={adapterName}
+      onBack={() => navigate('/lora')}
     />
   );
 }
@@ -185,21 +249,6 @@ function PlaygroundComingSoon() {
   );
 }
 
-function LoraComingSoon() {
-  return (
-    <ComingSoon
-      title="LoRA Adapters"
-      description="Deploy lightweight LoRA adapters on top of existing base model deployments. Fine-tune model behavior without the cost of full model training or separate deployments."
-      features={[
-        'Select an existing deployment as the base model',
-        'Upload and manage LoRA adapter weights',
-        'Hot-swap adapters without restarting the deployment',
-        'Monitor adapter-specific performance metrics',
-      ]}
-    />
-  );
-}
-
 function SettingsRoute({
   tab,
   showToast,
@@ -258,6 +307,7 @@ export default function App() {
             />
 
             <Route path="/models" element={<ModelLibraryRoute />} />
+            <Route path="/models/new" element={<CreateModelRoute />} />
             <Route path="/models/:modelId" element={<ModelDetailRoute />} />
             <Route
               path="/models/:modelId/templates/new"
@@ -288,7 +338,9 @@ export default function App() {
               path="/deployments/:deploymentId"
               element={features.deployments ? <DeploymentDetailRoute /> : <Navigate to="/deployments" replace />}
             />
-            <Route path="/lora" element={<LoraComingSoon />} />
+            <Route path="/lora" element={<LoraAdaptersRoute />} />
+            <Route path="/lora/new" element={<CreateLoraAdapterRoute />} />
+            <Route path="/lora/:adapterName" element={<LoraAdapterDetailRoute />} />
 
             <Route path="/settings" element={<Navigate to="/settings/api-keys" replace />} />
             <Route path="/settings/api-keys" element={<SettingsRoute tab="api-keys" showToast={showToast} />} />

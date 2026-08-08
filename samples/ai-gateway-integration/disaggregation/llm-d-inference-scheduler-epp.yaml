@@ -24,7 +24,7 @@ spec:
   type: ClusterIP
 
 ---
-# EPP Deployment (using your custom image & config)
+# EPP Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -46,7 +46,7 @@ spec:
       terminationGracePeriodSeconds: 130
       containers:
         - name: epp
-          image: ghcr.io/llm-d/llm-d-inference-scheduler:latest
+          image: ghcr.io/llm-d/llm-d-router-endpoint-picker-dev:main
           imagePullPolicy: IfNotPresent
           args:
             - --pool-name
@@ -105,7 +105,7 @@ metadata:
   namespace: default
 rules:
   - apiGroups: ["inference.networking.x-k8s.io"]
-    resources: ["inferenceobjectives", "inferencepools"]
+    resources: ["inferenceobjectives", "inferencepools", "inferencemodelrewrites"]
     verbs: ["get", "watch", "list"]
   - apiGroups: ["inference.networking.k8s.io"]
     resources: ["inferencepools"]
@@ -142,38 +142,50 @@ data:
     apiVersion: inference.networking.x-k8s.io/v1alpha1
     kind: EndpointPickerConfig
     plugins:
-      - type: by-label
-        name: "prefill"
+      - type: label-selector-filter
+        name: prefill-filter
         parameters:
-          label: "role"
-          validValues: ["prefill"]
-      - type: by-label
-        name: "decode"
+          matchLabels:
+            role: prefill
+      - type: label-selector-filter
+        name: decode-filter
         parameters:
-          label: "role"
-          validValues: ["decode", "both"]
-      - type: prefix-cache-scorer
+          matchExpressions:
+            - key: role
+              operator: In
+              values:
+                - decode
+                - both
+      - type: approx-prefix-cache-producer
         parameters:
-          hashBlockSize: 5
+          blockSizeTokens: 64
+          autoTune: false
           maxPrefixBlocksToMatch: 256
           lruCapacityPerServer: 31250
+      - type: prefix-cache-scorer
+      - type: queue-scorer
       - type: max-score-picker
-      - type: prefill-header-handler
-      - type: pd-profile-handler
+      - type: prefix-based-pd-decider
         parameters:
-          threshold: 0
-          hashBlockSize: 5
-          primaryPort: 8000
+          nonCachedTokens: 16
+      - type: disagg-profile-handler
+        parameters:
+          deciders:
+            prefill: prefix-based-pd-decider
     schedulingProfiles:
       - name: prefill
         plugins:
-          - pluginRef: prefill
+          - pluginRef: prefill-filter
           - pluginRef: max-score-picker
           - pluginRef: prefix-cache-scorer
             weight: 2
+          - pluginRef: queue-scorer
+            weight: 1
       - name: decode
         plugins:
-          - pluginRef: decode
+          - pluginRef: decode-filter
           - pluginRef: max-score-picker
           - pluginRef: prefix-cache-scorer
             weight: 2
+          - pluginRef: queue-scorer
+            weight: 1

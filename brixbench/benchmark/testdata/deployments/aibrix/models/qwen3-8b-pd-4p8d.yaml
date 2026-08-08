@@ -87,6 +87,9 @@ spec:
                       value: info
                     - name: VLLM_LOGGING_LEVEL
                       value: info
+                  ports:
+                    - name: http
+                      containerPort: 8000
                   volumeMounts:
                     - name: model-vol
                       mountPath: /models
@@ -191,6 +194,9 @@ spec:
                       value: info
                     - name: VLLM_LOGGING_LEVEL
                       value: info
+                  ports:
+                    - name: http
+                      containerPort: 8000
                   volumeMounts:
                     - name: model-vol
                       mountPath: /models

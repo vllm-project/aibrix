@@ -1,0 +1,3 @@
+# Placeholder kept for compatibility with earlier llm-d scaffolding.
+# Active 4p4d vLLM P/D modelserver manifest:
+# testdata/deployments/llmd/models/qwen3-8b-pd-4p4d.yaml

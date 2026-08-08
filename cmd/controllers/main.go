@@ -80,7 +80,8 @@ func init() {
 
 func RegisterSchemas(scheme *runtime.Scheme) error {
 	podAutoscalerEnabled := features.IsControllerEnabled(features.PodAutoscalerController)
-	modelAdapterEnabled := features.IsControllerEnabled(features.ModelAdapterController)
+	modelAPIEnabled := features.IsControllerEnabled(features.ModelAdapterController) ||
+		features.IsControllerEnabled(features.ModelClaimController)
 	distributedInferenceEnabled := features.IsControllerEnabled(features.DistributedInferenceController)
 	kvCacheEnabled := features.IsControllerEnabled(features.KVCacheController)
 	stormServiceEnabled := features.IsControllerEnabled(features.StormServiceController)
@@ -89,7 +90,7 @@ func RegisterSchemas(scheme *runtime.Scheme) error {
 		utilruntime.Must(autoscalingv1alpha1.AddToScheme(scheme))
 	}
 
-	if modelAdapterEnabled {
+	if modelAPIEnabled {
 		utilruntime.Must(modelv1alpha1.AddToScheme(scheme))
 	}
 

@@ -17,7 +17,7 @@ CHAT_COMPLETIONS_PAYLOAD = {
 }
 
 
-def load_mock_app(monkeypatch, argv):
+def load_mock_module(monkeypatch, argv):
     module_name = "aibrix_mock_app_under_test"
     monkeypatch.chdir(APP_DIR)
     monkeypatch.setattr(sys, "argv", argv)
@@ -30,7 +30,11 @@ def load_mock_app(monkeypatch, argv):
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
-    return module.app
+    return module
+
+
+def load_mock_app(monkeypatch, argv):
+    return load_mock_module(monkeypatch, argv).app
 
 
 class LiveServer:
@@ -107,3 +111,28 @@ def test_chat_completions_requires_matching_authorization_with_api_key_alias(mon
     assert missing_body["error"]["code"] == "invalid_api_key"
     assert correct_status == 200
     assert correct_body["choices"][0]["message"]["content"]
+
+
+def test_mock_server_accepts_environment_configuration(monkeypatch):
+    monkeypatch.setenv("SERVER_PORT", "20001")
+    monkeypatch.setenv(
+        "METRICS_OVERRIDES",
+        json.dumps(
+            {
+                "success_total": 7,
+                "running": 1,
+                "waiting": 0,
+                "swapped": 0,
+            }
+        ),
+    )
+
+    module = load_mock_module(monkeypatch, ["app.py"])
+
+    assert module.SERVER_PORT == 20001
+    assert module.overrides == {
+        "success_total": 7,
+        "running": 1,
+        "waiting": 0,
+        "swapped": 0,
+    }

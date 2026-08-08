@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import inspect
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -321,9 +322,33 @@ class RuntimeBase:
         del handle, wait_mode
         return None
 
-    async def _check_liveness(self, handle: Any) -> None:
+    def _wait_ready_accepts_wait_mode(self) -> bool:
+        try:
+            parameters = inspect.signature(self._wait_ready).parameters.values()
+        except Exception:
+            return False
+        return any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            or (
+                parameter.name == "wait_mode"
+                and parameter.kind
+                in (
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                )
+            )
+            for parameter in parameters
+        )
+
+    async def _invoke_wait_ready(self, handle: Any, wait_mode: str) -> None:
+        if self._wait_ready_accepts_wait_mode():
+            await self._wait_ready(handle, wait_mode=wait_mode)
+            return
+        await self._wait_ready(handle)
+
+    async def _check_liveness(self, handle: Any, reason: str = "unspecified") -> None:
         """Best-effort liveness probe for reconnect/recovery and live sessions."""
-        del handle
+        del handle, reason
         return None
 
     async def _wait_teared_down(
@@ -341,7 +366,10 @@ class RuntimeBase:
             if self._stop_requested.is_set():
                 raise asyncio.CancelledError
             try:
-                await asyncio.wait_for(self._check_liveness(handle), timeout=1.0)
+                await asyncio.wait_for(
+                    self._check_liveness(handle, reason="wait_teared_down"),
+                    timeout=1.0,
+                )
             except TimeoutError:
                 pass
             except Exception as exc:
@@ -794,7 +822,10 @@ class RuntimeBase:
                 # "what to check", not "how long it may block"; cleanup must
                 # remain a fast recovery path even if a runtime-specific probe
                 # stalls on remote control-plane calls.
-                await asyncio.wait_for(self._check_liveness(handle), timeout=1.0)
+                await asyncio.wait_for(
+                    self._check_liveness(handle, reason="recover_finalizing_cleanup"),
+                    timeout=1.0,
+                )
             except TimeoutError:
                 return
             except Exception as exc:
@@ -994,7 +1025,7 @@ class RuntimeBase:
                     return
 
                 try:
-                    await self._check_liveness(handle)
+                    await self._check_liveness(handle, reason="session_liveness_loop")
                     consecutive_failures = 0
                 except BaseException as exc:
                     if isinstance(exc, asyncio.CancelledError):
@@ -1149,10 +1180,7 @@ class RuntimeBase:
                         else RUNTIME_WAIT_MODE_RECONNECT
                     )
                     phase = "wait_ready"
-                    await self._wait_ready(
-                        handle,
-                        wait_mode=wait_mode,
-                    )
+                    await self._invoke_wait_ready(handle, wait_mode)
                     # Only yield a connected endpoint after both startup phases
                     # succeed within the same attempt.
                     break

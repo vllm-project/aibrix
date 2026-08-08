@@ -32,7 +32,10 @@ def _pending_job(job_id, due_epoch):
     ``due_epoch`` — created_at is epoch 0, so completion_window carries it."""
     return SimpleNamespace(
         job_id=job_id,
-        status=SimpleNamespace(created_at=datetime.fromtimestamp(0, tz=timezone.utc)),
+        status=SimpleNamespace(
+            state=BatchJobState.CREATED,
+            created_at=datetime.fromtimestamp(0, tz=timezone.utc),
+        ),
         spec=SimpleNamespace(completion_window=due_epoch),
     )
 
@@ -139,6 +142,28 @@ async def test_expire_jobs_expires_due_jobs_via_manager():
     # source of truth); future jobs are untouched.
     assert progress_manager.expired_job_ids == ["past"]
     assert "future" not in progress_manager.expired_job_ids
+
+
+@pytest.mark.asyncio
+async def test_expire_jobs_skips_due_finalizing_jobs():
+    now = time.time()
+    progress_manager = FakeProgressManager(
+        in_progress=[
+            SimpleNamespace(
+                job_id="finalizing",
+                status=SimpleNamespace(
+                    state=BatchJobState.FINALIZING,
+                    created_at=datetime.fromtimestamp(0, tz=timezone.utc),
+                ),
+                spec=SimpleNamespace(completion_window=now - 1),
+            )
+        ]
+    )
+    scheduler = _make_scheduler(progress_manager)
+
+    await scheduler.expire_jobs()
+
+    assert "finalizing" not in progress_manager.expired_job_ids
 
 
 def test_fifo_scheduling_policy_order_and_empty():

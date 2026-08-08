@@ -89,10 +89,17 @@ export interface JobResourceRequest {
   replicas?: number;
 }
 
+export interface JobLimits {
+  resourceRequest: {
+    minReplicas: number;
+    maxReplicas: number;
+  };
+}
+
 // JobClientConfig mirrors the metadata-service aibrix.client block. All fields
 // optional; omitted ones fall back to metadata-service env defaults.
 export interface JobClientConfig {
-  maxConcurrency?: number;       // absolute in-flight cap, 1..256
+  maxConcurrency?: number;       // absolute in-flight cap, 1..1024
   adaptiveConcurrency?: boolean; // grow concurrency adaptively
   adaptiveMaxFactor?: number;    // adaptive growth factor, >= 1
   retryPolicy?: JobClientRetryPolicy;
@@ -114,15 +121,80 @@ export interface ListJobsResponse {
 
 export interface CreateDeploymentRequest {
   name: string;
-  baseModel: string;
-  region: string;
-  acceleratorType: string;
-  acceleratorCount: number;
-  quantization?: string;
-  minReplicas: number;
+  template: DeploymentTemplateRef;
+  implementation: DeploymentImplementationRef;
+  overrides?: DeploymentOverrides;
+}
+
+export interface DeploymentTemplateRef {
+  modelId: string;
+  templateId: string;
+}
+
+export interface DeploymentImplementationRef {
+  kind: string;
+  profile?: string;
+}
+
+export interface DeploymentOverrides {
+  region?: string;
+  minReplicas?: number;
   maxReplicas?: number;
   enableAutoScaling?: boolean;
   enableMultiLora?: boolean;
+  engineArgs?: Record<string, string>;
+}
+
+export type ModelAdapterPlacement = 'all' | 'single';
+
+export interface ModelAdapterTarget {
+  name: string;
+  namespace: string;
+  kind: 'Deployment';
+  apiVersion: string;
+  baseModel: string;
+  engine: string;
+  port: number;
+  readyReplicas: number;
+  desiredReplicas: number;
+  selector: string;
+  updateStrategy: string;
+  createdAt: string;
+}
+
+export interface ModelAdapterPod {
+  name: string;
+  ready: string;
+  status: string;
+  restarts: number;
+  createdAt: string;
+  podIp: string;
+  node: string;
+}
+
+export interface ModelAdapter {
+  name: string;
+  namespace: string;
+  apiVersion: string;
+  artifactUrl: string;
+  baseModel: string;
+  schedulerName: string;
+  placement: ModelAdapterPlacement;
+  phase: string;
+  readyReplicas: number;
+  desiredReplicas: number;
+  candidates: number;
+  createdAt: string;
+  podSelector: string;
+  target?: ModelAdapterTarget;
+  instances: ModelAdapterPod[];
+}
+
+export interface CreateModelAdapterRequest {
+  name: string;
+  artifactUrl: string;
+  deploymentName: string;
+  placement: ModelAdapterPlacement;
 }
 
 // --- Model Deployment Templates ---
@@ -351,7 +423,7 @@ export function camelToSnake<T>(data: unknown): T {
 
 // --- Fetch helper ---
 
-class APIError extends Error {
+export class APIError extends Error {
   status: number;
 
   constructor(message: string, status: number) {
@@ -451,6 +523,10 @@ export async function listAllJobs(): Promise<Job[]> {
   return all;
 }
 
+export async function getJobLimits(): Promise<JobLimits> {
+  return apiFetch<JobLimits>('/api/v1/config/job-limits');
+}
+
 export async function getJob(id: string, options?: { includeDeployment?: boolean }): Promise<Job> {
   const query = buildQuery({
     include_deployment: options?.includeDeployment ? 'true' : undefined,
@@ -497,6 +573,37 @@ export async function deleteDeployment(id: string): Promise<void> {
   });
 }
 
+// --- ModelAdapters ---
+
+export async function listModelAdapters(): Promise<ModelAdapter[]> {
+  const data = await apiFetch<{ modelAdapters: ModelAdapter[] }>('/api/v1/model-adapters');
+  return data.modelAdapters || [];
+}
+
+export async function getModelAdapter(name: string): Promise<ModelAdapter> {
+  return apiFetch<ModelAdapter>(`/api/v1/model-adapters/${encodeURIComponent(name)}`);
+}
+
+export async function createModelAdapter(
+  request: CreateModelAdapterRequest,
+): Promise<ModelAdapter> {
+  return apiFetch<ModelAdapter>('/api/v1/model-adapters', {
+    method: 'POST',
+    body: JSON.stringify(camelToSnake(request)),
+  });
+}
+
+export async function deleteModelAdapter(name: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/model-adapters/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function listModelAdapterTargets(): Promise<ModelAdapterTarget[]> {
+  const data = await apiFetch<{ targets: ModelAdapterTarget[] }>('/api/v1/model-adapter-targets');
+  return data.targets || [];
+}
+
 // --- Models ---
 
 export async function listModels(search?: string, category?: string): Promise<Model[]> {
@@ -507,6 +614,51 @@ export async function listModels(search?: string, category?: string): Promise<Mo
 
 export async function getModel(id: string): Promise<Model> {
   return apiFetch<Model>(`/api/v1/models/${encodeURIComponent(id)}`);
+}
+
+export interface CreateModelRequest {
+  id?: string;
+  name: string;
+  iconBg?: string;
+  iconText?: string;
+  iconTextColor?: string;
+  categories?: string[];
+  isNew?: boolean;
+  pricing?: {
+    uncachedInput?: string;
+    cachedInput?: string;
+    output?: string;
+    perMinute?: string;
+    perImage?: string;
+  };
+  contextLength?: string;
+  description?: string;
+  metadata?: {
+    state?: string;
+    createdOn?: string;
+    providerName?: string;
+    huggingFace?: string;
+  };
+  specification?: {
+    calibrated?: boolean;
+    mixtureOfExperts?: boolean;
+    parameters?: string;
+  };
+  tags?: string[];
+  servingName?: string;
+}
+
+export async function createModel(req: CreateModelRequest): Promise<Model> {
+  const body = camelToSnake<Record<string, unknown>>(req);
+  // metadata is in PRESERVE_VALUE_KEYS so inner keys are not converted.
+  // Override with properly converted keys for structured ModelMetadata.
+  if (req.metadata) {
+    body.metadata = camelToSnake(req.metadata);
+  }
+  return apiFetch<Model>('/api/v1/models', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
 }
 
 // --- Model Deployment Templates ---

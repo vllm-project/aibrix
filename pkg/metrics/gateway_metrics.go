@@ -17,16 +17,12 @@ limitations under the License.
 package metrics
 
 const (
-	GatewayRequestTotal = "gateway_request_total"
-	GatewayE2EDuration  = "gateway_e2e_duration_seconds"
-	GatewayInFlight     = "gateway_in_flight_requests"
+	GatewayRequestTotal  = "gateway_request_total"
+	GatewayInFlight      = "gateway_in_flight_requests"
+	GatewayModelInFlight = "gateway_model_in_flight_requests"
 
 	// Count of streamed responses where first token delay > 1s
 	GatewayFirstTokenDelayOver1sTotal = "gateway_first_token_delay_over_1s_total"
-
-	// counter to track #success & #fail requests
-	GatewayRequestSuccessTotal = "gateway_request_success_total"
-	GatewayRequestFailTotal    = "gateway_request_fail_total"
 
 	// counter to track #success & #fail requests for each model
 	GatewayRequestModelSuccessTotal = "gateway_request_model_success_total"
@@ -36,13 +32,17 @@ const (
 	GatewayPromptTokenBucketTotal     = "gateway_prompt_token_bucket_total"
 	GatewayCompletionTokenBucketTotal = "gateway_completion_token_bucket_total"
 
+	// Summable token counters for cost-per-million-token calculations.
+	GatewayInputTokensTotal       = "gateway_input_tokens_total"
+	GatewayOutputTokensTotal      = "gateway_output_tokens_total"
+	GatewayRequestsWithUsageTotal = "gateway_requests_with_usage_total"
+
 	// counter to track #success & #fail prefill requests
 	GatewayPrefillRequestSuccessTotal = "gateway_prefill_request_success_total"
 	GatewayPrefillRequestFailTotal    = "gateway_prefill_request_fail_total"
 
-	// gauge to track #outstanding prefill & decode requests
+	// gauge to track #outstanding prefill requests
 	GatewayPrefillOutstandingRequests = "gateway_prefill_outstanding_requests"
-	GatewayDecodeOutstandingRequests  = "gateway_decode_outstanding_requests"
 
 	// counter to track #prefill & #decode pods selected by pd
 	PDSelectedPrefillPodTotal = "pd_selected_prefill_pod_total"
@@ -111,24 +111,6 @@ var (
 			},
 			Description: "Total number of outstanding prefill requests received by the gateway",
 		},
-		GatewayDecodeOutstandingRequests: {
-			MetricScope:  PodMetricScope,
-			MetricSource: PodRawMetrics,
-			MetricType: MetricType{
-				Raw: Gauge,
-			},
-			Description: "Total number of outstanding decode requests received by the gateway",
-		},
-
-		GatewayE2EDuration: {
-			MetricScope:  PodMetricScope,
-			MetricSource: PodRawMetrics,
-			MetricType: MetricType{
-				Raw: Histogram,
-			},
-			Description: "End-to-end latency distribution of requests received by the gateway",
-		},
-
 		GatewayInFlight: {
 			MetricScope:  PodMetricScope,
 			MetricSource: PodRawMetrics,
@@ -136,6 +118,14 @@ var (
 				Raw: Gauge,
 			},
 			Description: "Current number of requests in flight (i.e., being processed) by the gateway",
+		},
+		GatewayModelInFlight: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			Description: "Current number of in-flight gateway requests per model",
 		},
 
 		GatewayFirstTokenDelayOver1sTotal: {
@@ -163,6 +153,30 @@ var (
 				Raw: Counter,
 			},
 			Description: "Requests counted by completion token bucket",
+		},
+		GatewayInputTokensTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total input (prompt) tokens from completed requests with usage",
+		},
+		GatewayOutputTokensTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total output (completion) tokens from completed requests with usage",
+		},
+		GatewayRequestsWithUsageTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Requests with usage information, labeled by has_usage",
 		},
 		PDSelectedPrefillPodTotal: {
 			MetricScope:  PodMetricScope,

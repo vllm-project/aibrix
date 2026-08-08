@@ -50,6 +50,18 @@ func (m *mockRouter) Name() string { return "mock-router" }
 type MockCache struct {
 	mock.Mock
 	cache.Cache
+	modelClaimBindings map[string]mockModelClaimBinding
+}
+
+type mockModelClaimBinding struct {
+	pod   *v1.Pod
+	port  int
+	state string
+}
+
+func (m *MockCache) ModelClaimBinding(model string) (*v1.Pod, int, string, bool) {
+	binding, found := m.modelClaimBindings[model]
+	return binding.pod, binding.port, binding.state, found
 }
 
 func (m *MockCache) HasModel(model string) bool {

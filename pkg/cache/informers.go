@@ -104,15 +104,7 @@ func initCacheInformers(instance *Store, config *rest.Config, stopCh <-chan stru
 // getModelNameFromPod retrieves model name from pod labels first, then annotations.
 // This supports cases where model names contain characters invalid for K8s labels (e.g., '/').
 func getModelNameFromPod(pod *v1.Pod) (string, bool) {
-	// Try label first (standard case)
-	if modelName, ok := pod.Labels[modelIdentifier]; ok && modelName != "" {
-		return modelName, true
-	}
-	// Fallback to annotation (allows special characters like '/' in model paths)
-	if modelName, ok := pod.Annotations[modelIdentifier]; ok && modelName != "" {
-		return modelName, true
-	}
-	return "", false
+	return constants.ModelNameFromMetadata(pod.Labels, pod.Annotations)
 }
 
 func (c *Store) addPod(obj interface{}) {
@@ -120,7 +112,7 @@ func (c *Store) addPod(obj interface{}) {
 	// Track pods that serve a model either through the standard deployment label
 	// or through ModelClaim runtime annotations.
 	modelName, ok := getModelNameFromPod(pod)
-	modelClaims := utils.ModelClaimsFromPod(pod)
+	modelClaims := utils.ModelClaimBindingsFromPod(pod)
 	if !ok && len(modelClaims) == 0 {
 		klog.V(4).InfoS("ignored pod without model label or annotation", "name", pod.Name)
 		return
@@ -138,8 +130,10 @@ func (c *Store) addPod(obj interface{}) {
 	if ok {
 		c.addPodAndModelMappingLocked(metaPod, modelName)
 	}
-	for servedModel, port := range modelClaims {
-		if port > 0 {
+	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+	for servedModel, binding := range modelClaims {
+		c.modelClaims.set(podKey, servedModel, binding.Port, binding.State)
+		if binding.Port > 0 {
 			c.addPodAndModelMappingLocked(metaPod, servedModel)
 		}
 	}
@@ -168,7 +162,7 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	_, oldOk := getModelNameFromPod(oldPod)
 	_, existed := c.metaPods.Load(utils.GeneratePodKey(oldPod.Namespace, oldPod.Name)) // Make sure nothing left.
 	newModelName, newOk := getModelNameFromPod(newPod)
-	newModelClaims := utils.ModelClaimsFromPod(newPod)
+	newModelClaims := utils.ModelClaimBindingsFromPod(newPod)
 
 	if !oldOk && !existed && !newOk && len(newModelClaims) == 0 {
 		return // No model information to track in either old or new pod
@@ -187,6 +181,7 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 				c.deletePodAndModelMappingLocked(odlMetaPod.Name, odlMetaPod.Namespace, modelName, 1)
 			}
 		}
+		c.modelClaims.clearPod(utils.GeneratePodKey(oldPod.Namespace, oldPod.Name))
 	}
 
 	// ignore worker pods
@@ -203,8 +198,10 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 		if newOk {
 			c.addPodAndModelMappingLocked(metaPod, newModelName)
 		}
-		for servedModel, port := range newModelClaims {
-			if port > 0 {
+		newPodKey := utils.GeneratePodKey(newPod.Namespace, newPod.Name)
+		for servedModel, binding := range newModelClaims {
+			c.modelClaims.set(newPodKey, servedModel, binding.Port, binding.State)
+			if binding.Port > 0 {
 				c.addPodAndModelMappingLocked(metaPod, servedModel)
 			}
 		}
@@ -268,6 +265,7 @@ func (c *Store) deletePod(obj interface{}) {
 			c.deletePodAndModelMappingLocked(name, namespace, modelName, 1)
 		}
 	}
+	c.modelClaims.clearPod(utils.GeneratePodKey(namespace, name))
 
 	rateCalculator.PurgeEntriesForPod(name)
 

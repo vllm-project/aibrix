@@ -9,7 +9,7 @@ Simplified single-node AIBrix deployment without Kubernetes complexity. Perfect 
 - **vLLM Backend** - High-performance LLM inference engine
 - **P/D Disaggregation** - Optional separate prefill/decode engines for multi-GPU setups
 - **Metadata Service** - Model registry and file management
-- **Redis** - Shared state storage
+- **Redis** - Shared state storage (or Valkey as OSS-licensed BSD-3 alternative via `REDIS_IMAGE` env var)
 
 ## Quick Start
 
@@ -134,7 +134,7 @@ See `.env.example` for all available options.
 | `prefill-engine` | 8001 | Prefill engine (P/D mode) |
 | `decode-engine` | 8002 | Decode engine (P/D mode) |
 | `metadata-service` | 8090 | Model registry and file management |
-| `redis` | 6379 | State storage |
+| `redis` | 6379 | State storage (configurable: set `REDIS_IMAGE=valkey/valkey:8-alpine` for Valkey) |
 
 ## Endpoints
 
@@ -165,6 +165,9 @@ See `.env.example` for all available options.
 ```bash
 # Start (simple mode)
 docker compose up -d
+
+# Start with Valkey instead of Redis (OSS-licensed, BSD-3)
+REDIS_IMAGE=valkey/valkey:8-alpine REDIS_SERVER_CMD=valkey-server REDIS_CLI_CMD=valkey-cli docker compose up -d
 
 # Start (P/D mode)
 docker compose --profile pd up -d
@@ -293,6 +296,7 @@ For developing and testing the gateway plugin locally without Docker:
 - Python 3.9+ (for mock vLLM server)
 - Envoy proxy installed (`brew install envoy` on macOS)
 - Redis running locally (`brew install redis && redis-server`)
+  - Or Valkey: `brew install valkey && valkey-server` (OSS alternative, BSD-3)
 
 ### Network Setup (Important!)
 

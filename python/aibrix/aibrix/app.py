@@ -105,8 +105,7 @@ def mount_metrics(app: FastAPI):
         f"AIBrix to scrape metrics from {scrape_endpoint}, use {engine} standard rules"
     )
 
-    # Runtime model KV-density: resident model count + per-model kvcached usage,
-    # read live from /dev/shm at scrape time.
+    # Runtime model lifecycle, operation, and KV metrics.
     from aibrix.runtime.model_runtime_metrics import ModelRuntimeKVCollector
 
     REGISTRY.register(ModelRuntimeKVCollector())

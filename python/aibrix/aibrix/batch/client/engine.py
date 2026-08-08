@@ -448,7 +448,10 @@ class _ConcurrencyAdmission:
                 if delay <= 0:
                     self._inflight += 1
                     return
-            await asyncio.sleep(delay)
+                try:
+                    await asyncio.wait_for(self._condition.wait(), timeout=delay)
+                except asyncio.TimeoutError:
+                    pass
 
     async def release(self, outcome: Any = None) -> tuple[int, int]:
         async with self._condition:

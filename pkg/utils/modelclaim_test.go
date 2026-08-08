@@ -70,3 +70,23 @@ func TestModelClaimsFromPodKeepsPortZero(t *testing.T) {
 	got := ModelClaimsFromPod(pod)
 	assert.Equal(t, map[string]int{"served-m1": 0}, got)
 }
+
+func TestModelClaimBindingsFromPodIncludesObservedState(t *testing.T) {
+	pod := podWithModelClaimAnnotations(map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + "m1": `{"model":"served-m1","port":0,"state":"sleeping"}`,
+	})
+
+	got := ModelClaimBindingsFromPod(pod)
+	assert.Equal(t, ModelClaimBinding{
+		Model: "served-m1", Port: 0, State: constants.ModelClaimRoutingStateSleeping,
+	}, got["served-m1"])
+}
+
+func TestModelClaimBindingsFromPodRejectsInconsistentStateAndPort(t *testing.T) {
+	pod := podWithModelClaimAnnotations(map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + "sleeping-port": `{"model":"sleeping-port","port":9001,"state":"sleeping"}`,
+		constants.ModelClaimPodAnnotationPrefix + "active-zero":   `{"model":"active-zero","port":0,"state":"active"}`,
+	})
+
+	assert.Nil(t, ModelClaimBindingsFromPod(pod))
+}

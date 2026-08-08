@@ -63,6 +63,191 @@ Pooled Mode
 - **Independent Role Scaling**: Each role can be scaled independently based on its specific load and requirements.
 
 
+Topology Policy
+---------------
+
+StormService supports ``spec.template.spec.topologyPolicy`` to request Pod
+co-location through Kubernetes pod affinity. The same field is available on
+``RoleSet.spec.topologyPolicy`` when managing RoleSets directly.
+
+This is useful when roles have topology-sensitive data paths, such as keeping
+Prefill and Decode Pods in the same host or zone to reduce cross-domain traffic.
+The controller injects the generated affinity into directly managed Pods and
+into PodSet templates for roles that use ``podGroupSize > 1``.
+
+Assume a StormService has two RoleSets, and each RoleSet has two roles:
+``prefill`` and ``decode``.
+
+.. code-block:: text
+
+   scope: StormService
+   All Pods in the StormService share one topology domain.
+
+   Topology Key: kubernetes.io/hostname -> all Pods on node-a
+
+   +-----------------------------------------+
+   | StormService                            |
+   | topology domain: node-a                 |
+   +-----------------------------------------+
+   | RoleSet-1                               |
+   |   prefill: pod-1, pod-2                 |
+   |   decode:  pod-3, pod-4                 |
+   | RoleSet-2                               |
+   |   prefill: pod-5, pod-6                 |
+   |   decode:  pod-7, pod-8                 |
+   +-----------------------------------------+
+
+.. code-block:: text
+
+   scope: RoleSet
+   Pods within each RoleSet share one topology domain.
+   Different RoleSets may use different topology domains.
+
+   Topology Key: topology.kubernetes.io/zone
+
+   +-------------------------+    +-------------------------+
+   | RoleSet-1               |    | RoleSet-2               |
+   | topology domain: zone-a |    | topology domain: zone-b |
+   +-------------------------+    +-------------------------+
+   | prefill: pod-1, pod-2   |    | prefill: pod-5, pod-6   |
+   | decode:  pod-3, pod-4   |    | decode:  pod-7, pod-8   |
+   +-------------------------+    +-------------------------+
+
+.. code-block:: text
+
+   scope: Role
+   Pods with the same role share one topology domain across RoleSets.
+
+   Topology Key: kubernetes.io/hostname
+
+   +-------------------------+    +-------------------------+
+   | prefill role            |    | decode role             |
+   | topology domain: node-a |    | topology domain: node-b |
+   +-------------------------+    +-------------------------+
+   | RoleSet-1: pod-1, pod-2 |    | RoleSet-1: pod-3, pod-4 |
+   | RoleSet-2: pod-5, pod-6 |    | RoleSet-2: pod-7, pod-8 |
+   +-------------------------+    +-------------------------+
+
+``scope`` controls which Pods the injected affinity matches:
+
+.. list-table:: Topology policy scope
+   :header-rows: 1
+   :widths: 20 50 30
+
+   * - Scope
+     - Co-location behavior
+     - Common use case
+   * - ``StormService``
+     - All Pods in the StormService share the same topology value.
+     - Keep a small service replica inside one host or zone.
+   * - ``RoleSet``
+     - All Pods in each RoleSet share a topology value. Different RoleSets may
+       land in different topology domains.
+     - Keep each Prefill/Decode replica pair together.
+   * - ``Role``
+     - Pods with the same role share a topology value across RoleSets.
+     - Keep role-specific pools, such as all Prefill Pods, together.
+
+``key`` selects the Kubernetes node label used as the topology domain. Common
+values are ``kubernetes.io/hostname`` for node-level co-location and
+``topology.kubernetes.io/zone`` for zone-level co-location.
+
+You can also use an internal resource-pool label as the topology key. For
+example, label nodes by business pool:
+
+.. code-block:: shell
+
+   kubectl label node <node-a> resource-pool.aibrix.ai/name=latency-pool --overwrite
+   kubectl label node <node-b> resource-pool.aibrix.ai/name=latency-pool --overwrite
+   kubectl label node <node-c> resource-pool.aibrix.ai/name=throughput-pool --overwrite
+
+Then use that label key in the topology policy:
+
+.. code-block:: yaml
+
+   spec:
+     template:
+       spec:
+         topologyPolicy:
+           scope: RoleSet
+           mode: Preferred
+           key: resource-pool.aibrix.ai/name
+
+With this policy, Pods inside each RoleSet prefer to schedule into the same
+business resource pool, such as ``latency-pool`` or ``throughput-pool``.
+
+``mode`` selects scheduling strength:
+
+- ``Preferred`` adds a strong pod affinity preference and is the default. Pods
+  can still schedule in another topology domain when the preferred domain does
+  not have enough resources.
+- ``Required`` adds hard pod affinity. Pods can remain ``Pending`` when no node
+  in the selected topology domain can satisfy the request.
+
+Example
+^^^^^^^
+
+The following policy prefers to place all Pods inside each RoleSet replica on
+the same node:
+
+.. code-block:: yaml
+
+   apiVersion: orchestration.aibrix.ai/v1alpha1
+   kind: StormService
+   metadata:
+     name: pd-colocated
+   spec:
+     selector:
+       matchLabels:
+         app: pd-colocated
+     template:
+       metadata:
+         labels:
+           app: pd-colocated
+       spec:
+         topologyPolicy:
+           scope: RoleSet
+           mode: Preferred
+           key: kubernetes.io/hostname
+         roles:
+           - name: prefill
+             replicas: 1
+             template:
+               spec:
+                 containers:
+                   - name: vllm
+                     image: vllm/vllm-openai:latest
+           - name: decode
+             replicas: 1
+             template:
+               spec:
+                 containers:
+                   - name: vllm
+                     image: vllm/vllm-openai:latest
+
+Before using a custom topology key, label the nodes with that key. For example:
+
+.. code-block:: shell
+
+   kubectl label node <node-a> topology.kubernetes.io/zone=zone-a --overwrite
+   kubectl label node <node-b> topology.kubernetes.io/zone=zone-b --overwrite
+
+Apply one of the topology policy samples and inspect Pod placement:
+
+.. code-block:: shell
+
+   kubectl apply -f samples/orchestration/topology-policy/roleset-zone-preferred.yaml
+   kubectl get pods -l storm-service-name=tp-rs-zone-pref -o wide
+
+Topology policy updates affect only newly created or replaced Pods because
+Kubernetes Pod affinity is immutable after Pod creation. Existing Pods and
+PodSet templates pick up the new affinity after replacement or recreation.
+
+See the complete `topology policy samples`_ in the AIBrix repository.
+
+.. _topology policy samples: https://github.com/vllm-project/aibrix/tree/main/samples/orchestration/topology-policy
+
+
 Update Strategy
 ---------------
 

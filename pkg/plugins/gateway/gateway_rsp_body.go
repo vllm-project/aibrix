@@ -67,9 +67,110 @@ type OpenAIResponse struct {
 	Code int `json:"code"`
 }
 
+type tokenUsage struct {
+	promptTokens     int64
+	completionTokens int64
+	totalTokens      int64
+}
+
+func processStreamingResponse(requestID string, bodyBytes []byte) (tokenUsage, *extProcPb.ProcessingResponse) {
+	var usage tokenUsage
+
+	// The previous implementation unmarshalled every single SSE chunk into a struct (openai.ChatCompletionChunk).
+	// This caused significant CPU overhead and high GC pressure under heavy concurrency.
+	// The new implementation uses zero-allocation  byte scanning and pre-filtering,
+	// selectively extracting only the "usage" metadata via gjson for the final chunks.
+	if bytes.Contains(bodyBytes, []byte(`"usage"`)) {
+		remaining := bodyBytes
+
+		for len(remaining) > 0 {
+			var line []byte
+			// Manually find the newline to avoid the allocations of bytes.Split
+			if idx := bytes.IndexByte(remaining, '\n'); idx >= 0 {
+				line = remaining[:idx]
+				remaining = remaining[idx+1:]
+			} else {
+				line = remaining
+				remaining = nil
+			}
+
+			// Handle SSE \r\n line endings. bytes.TrimSpace safely strips trailing \r
+			// as well as any leading/trailing whitespace.
+			line = bytes.TrimSpace(line)
+
+			// Look for the SSE data prefix
+			if bytes.HasPrefix(line, []byte("data:")) {
+				// Slice the "data:" prefix (zero allocation)
+				jsonBytes := bytes.TrimSpace(line[5:])
+
+				// Check for the end of the stream
+				if bytes.Equal(jsonBytes, []byte("[DONE]")) {
+					continue
+				}
+
+				// While gjson.ValidBytes is O(N), it does not degrade gateway throughput.
+				// Guarded by the bytes.Contains pre-filter, it bypasses the hot path of streaming standard text
+				// and only executes on final chunks, ensuring strict correctness.
+				if !gjson.ValidBytes(jsonBytes) {
+					return usage, generateErrorResponse(
+						envoyTypePb.StatusCode_InternalServerError,
+						[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+							Key: HeaderErrorStreaming, RawValue: []byte("true"),
+						}}},
+						"malformed JSON in SSE stream", "", "")
+				}
+
+				// gjson avoids full deserialization by only extracting the usage field.
+				usageResult := gjson.GetBytes(jsonBytes, "usage")
+				if !usageResult.Exists() {
+					// The Responses API (/v1/responses) emits usage nested inside the
+					// terminal "response.completed" SSE event, where the full response
+					// object (including its "usage" field) lives under "response".
+					// Hence the usage path there is "response.usage".
+					usageResult = gjson.GetBytes(jsonBytes, "response.usage")
+				}
+				if usageResult.Exists() && usageResult.IsObject() {
+					// Assumption: The upstream sends the usage object only in the final chunk
+					// (standard vLLM/OpenAI behavior). We overwrite/set the values here.
+					// The Responses API uses input_tokens/output_tokens instead of
+					// prompt_tokens/completion_tokens, so fall back to those names only when
+					// the primary field is genuinely absent (Exists() == false), since a
+					// zero count is a semantically valid value.
+					if pt := usageResult.Get("prompt_tokens"); pt.Exists() {
+						usage.promptTokens = pt.Int()
+					} else {
+						usage.promptTokens = usageResult.Get("input_tokens").Int()
+					}
+					if ct := usageResult.Get("completion_tokens"); ct.Exists() {
+						usage.completionTokens = ct.Int()
+					} else {
+						usage.completionTokens = usageResult.Get("output_tokens").Int()
+					}
+					usage.totalTokens = usageResult.Get("total_tokens").Int()
+				}
+			}
+		}
+		// warnings when "usage" is triggered by a false positive in generated content.
+		if usage.promptTokens == 0 && usage.totalTokens == 0 {
+			klog.V(4).Infof("usage string detected but no valid tokens parsed (likely generated text), requestID: %s", requestID)
+		}
+	}
+
+	return usage, nil
+}
+
 func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.RoutingContext, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
 	arrival := time.Now()
+
+	// Record the arrival time of the first response body chunk. For streaming
+	// responses HandleResponseBody runs once per SSE chunk, but request_end
+	// metrics are only emitted on the final chunk. Without capturing the first
+	// arrival here, TTFT and KV-transfer time would be measured from the last
+	// chunk (≈ total request time) instead of the first token.
+	if stream && routerCtx != nil && routerCtx.FirstTokenTime.IsZero() {
+		routerCtx.FirstTokenTime = arrival
+	}
 
 	var processingRes *extProcPb.ProcessingResponse
 	var promptTokens, completionTokens, totalTokens int64
@@ -90,87 +191,13 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 	}()
 
 	if stream {
-		bodyBytes := b.ResponseBody.GetBody()
-
-		// The previous implementation unmarshalled every single SSE chunk into a struct (openai.ChatCompletionChunk).
-		// This caused significant CPU overhead and high GC pressure under heavy concurrency.
-		// The new implementation uses zero-allocation  byte scanning and pre-filtering,
-		// selectively extracting only the "usage" metadata via gjson for the final chunks.
-		if bytes.Contains(bodyBytes, []byte(`"usage"`)) {
-			remaining := bodyBytes
-
-			for len(remaining) > 0 {
-				var line []byte
-				// Manually find the newline to avoid the allocations of bytes.Split
-				if idx := bytes.IndexByte(remaining, '\n'); idx >= 0 {
-					line = remaining[:idx]
-					remaining = remaining[idx+1:]
-				} else {
-					line = remaining
-					remaining = nil
-				}
-
-				// Handle SSE \r\n line endings. bytes.TrimSpace safely strips trailing \r
-				// as well as any leading/trailing whitespace.
-				line = bytes.TrimSpace(line)
-
-				// Look for the SSE data prefix
-				if bytes.HasPrefix(line, []byte("data:")) {
-					// Slice the "data:" prefix (zero allocation)
-					jsonBytes := bytes.TrimSpace(line[5:])
-
-					// Check for the end of the stream
-					if bytes.Equal(jsonBytes, []byte("[DONE]")) {
-						continue
-					}
-
-					// While gjson.ValidBytes is O(N), it does not degrade gateway throughput.
-					// Guarded by the bytes.Contains pre-filter, it bypasses the hot path of streaming standard text
-					// and only executes on final chunks, ensuring strict correctness.
-					if !gjson.ValidBytes(jsonBytes) {
-						complete = true
-						return generateErrorResponse(
-							envoyTypePb.StatusCode_InternalServerError,
-							[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-								Key: HeaderErrorStreaming, RawValue: []byte("true"),
-							}}},
-							"malformed JSON in SSE stream", "", ""), complete
-					}
-
-					// gjson avoids full deserialization by only extracting the usage field.
-					usageResult := gjson.GetBytes(jsonBytes, "usage")
-					if !usageResult.Exists() {
-						// The Responses API (/v1/responses) emits usage nested inside the
-						// terminal "response.completed" SSE event, where the full response
-						// object (including its "usage" field) lives under "response".
-						// Hence the usage path there is "response.usage".
-						usageResult = gjson.GetBytes(jsonBytes, "response.usage")
-					}
-					if usageResult.Exists() && usageResult.IsObject() {
-						// Assumption: The upstream sends the usage object only in the final chunk
-						// (standard vLLM/OpenAI behavior). We overwrite/set the values here.
-						// The Responses API uses input_tokens/output_tokens instead of
-						// prompt_tokens/completion_tokens, so fall back to those names only when
-						// the primary field is genuinely absent (Exists() == false), since a
-						// zero count is a semantically valid value.
-						if pt := usageResult.Get("prompt_tokens"); pt.Exists() {
-							promptTokens = pt.Int()
-						} else {
-							promptTokens = usageResult.Get("input_tokens").Int()
-						}
-						if ct := usageResult.Get("completion_tokens"); ct.Exists() {
-							completionTokens = ct.Int()
-						} else {
-							completionTokens = usageResult.Get("output_tokens").Int()
-						}
-						totalTokens = usageResult.Get("total_tokens").Int()
-					}
-				}
-			}
-			// warnings when "usage" is triggered by a false positive in generated content.
-			if promptTokens == 0 && totalTokens == 0 {
-				klog.V(4).Infof("usage string detected but no valid tokens parsed (likely generated text), requestID: %s", requestID)
-			}
+		usage, streamRes := processStreamingResponse(requestID, b.ResponseBody.GetBody())
+		promptTokens = usage.promptTokens
+		completionTokens = usage.completionTokens
+		totalTokens = usage.totalTokens
+		if streamRes != nil {
+			complete = true
+			return streamRes, complete
 		}
 	} else {
 		if isLanguageRequest(routerCtx.ReqPath) {
@@ -202,7 +229,14 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 		}
 
 		headers = buildEnvoyProxyHeaders(headers, HeaderRequestID, routerCtx.RequestID)
+		// arrival is this (final) chunk's arrival time, i.e. the true request-end time.
+		// requestEndHelper derives TTFT from routerCtx.FirstTokenTime for streaming
+		// requests, so passing the final arrival here (rather than the first chunk's)
+		// keeps decode-time/KV-transfer math, which spans first-token-to-end, correct.
 		fields := s.requestEndHelper(routerCtx, arrival, promptTokens, completionTokens, totalTokens)
+		if routerCtx.Span != nil {
+			routerCtx.Span.SetAttributes(fieldsToAttributes(fields)...)
+		}
 		klog.InfoS("request_end", fields...)
 	} else if b.ResponseBody.EndOfStream {
 		complete = true
@@ -330,6 +364,9 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 	cBucket := tokenBucketLabel(completionTokens)
 	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayPromptTokenBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": pBucket})
 	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayCompletionTokenBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": cBucket})
+	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayInputTokensTotal, &metrics.SimpleMetricValue{Value: float64(promptTokens)}, nil)
+	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayOutputTokensTotal, &metrics.SimpleMetricValue{Value: float64(completionTokens)}, nil)
+	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayRequestsWithUsageTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"has_usage": "true"})
 
 	if targetPod != nil {
 		outstandingRequestCount := math.Max(0, getRunningRequestsByPod(s, targetPod.Name, targetPod.Namespace)-1)
@@ -339,6 +376,9 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 	}
 
 	ttft := arrival.Sub(routingCtx.RequestTime)
+	if routingCtx.Stream && !routingCtx.FirstTokenTime.IsZero() {
+		ttft = routingCtx.FirstTokenTime.Sub(routingCtx.RequestTime)
+	}
 	if routingCtx.Stream {
 		ttftBucket := durationBucketLabel(ttft)
 		metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTTFTBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": ttftBucket})
@@ -353,8 +393,15 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 		metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayRoutingTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(routingTime)})
 		if !routingCtx.PrefillEndTime.IsZero() {
 			prefillTime := routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime)
+			// KV transfer: time from prefill HTTP completion to first decode token.
 			kvTransferTime := ttft - routingCtx.PrefillEndTime.Sub(routingCtx.RequestTime)
-			decodeTime := time.Since(routingCtx.PrefillEndTime)
+			// Decode generation: time from first token to request end. Do not use
+			// PrefillEndTime here — that interval includes KV transfer and would
+			// double-count kv_transfer_time_taken when summing phase latencies.
+			decodeTime := arrival.Sub(routingCtx.PrefillEndTime)
+			if routingCtx.Stream && !routingCtx.FirstTokenTime.IsZero() {
+				decodeTime = arrival.Sub(routingCtx.FirstTokenTime)
+			}
 			fields = append(fields,
 				"prefill_time_taken", prefillTime,
 				"kv_transfer_time_taken", kvTransferTime,
@@ -363,6 +410,10 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 			metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayPrefillTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(prefillTime)})
 			metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayKVTransferTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(kvTransferTime)})
 			metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayDecodeTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(decodeTime)})
+			if routingCtx.Stream && completionTokens > 0 && decodeTime > 0 {
+				tpot := time.Duration(decodeTime.Nanoseconds() / completionTokens)
+				metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTPOTBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(tpot)})
+			}
 			if ttft > ttftThreshold {
 				metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayFirstTokenDelayOver1sTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{
 					"request_id": requestID,
@@ -377,9 +428,16 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 		}
 	} else if routingCtx.Algorithm != "" {
 		fields = append(fields, "routing_time_taken", routingCtx.GetRoutingDelay())
+		if routingCtx.Stream && completionTokens > 0 {
+			decodeTimeApprox := routingCtx.Elapsed(time.Now()) - ttft
+			if decodeTimeApprox > 0 {
+				tpot := time.Duration(decodeTimeApprox.Nanoseconds() / completionTokens)
+				metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTPOTBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(tpot)})
+			}
+		}
 	}
 	fields = append(fields, "total_time_taken", routingCtx.Elapsed(time.Now()))
-	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTotalTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(routingCtx.Elapsed(time.Now()))})
+	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTotalTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": totalTimeBucketLabel(routingCtx.Elapsed(time.Now()))})
 	return fields
 }
 
@@ -399,11 +457,19 @@ func tokenBucketLabel(n int64) string {
 
 // Add duration bucketizer: ms buckets [0-1), [1-2), [2-5), [5-10), [20-50), [50-100), [100-200), [200-500), [500-1000), [1000-2000), [2000-5000), [5000+}
 func durationBucketLabel(d time.Duration) string {
-	ms := d.Milliseconds()
+	return msBucketLabel(d.Milliseconds(), []int64{1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000})
+}
+
+// totalTimeBucketLabel buckets end-to-end request latency with coarser windows suited to full request duration.
+// Buckets: [0-100), [100-250), [250-500), [500-1000), [1000-5000), [5000-20000), [20000-60000), [60000+)
+func totalTimeBucketLabel(d time.Duration) string {
+	return msBucketLabel(d.Milliseconds(), []int64{100, 250, 500, 1000, 5000, 20000, 60000})
+}
+
+func msBucketLabel(ms int64, bounds []int64) string {
 	if ms < 0 {
 		ms = 0
 	}
-	bounds := []int64{1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000}
 	low := int64(0)
 	for _, b := range bounds {
 		if ms < b {

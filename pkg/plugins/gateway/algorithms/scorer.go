@@ -33,7 +33,7 @@ import (
 // backlog. Missing metrics are treated as 0; a zero drainRate1m yields +Inf,
 // which naturally sorts last.
 func calculatePodScoreBasedOffRequestRate(routingCtx *types.RoutingContext, cache cache.Cache, pod *v1.Pod) float64 {
-	modelName := pod.Labels[constants.ModelLabelName]
+	modelName, _ := constants.ModelNameFromMetadata(pod.Labels, pod.Annotations)
 	waitingReqs := GetPodModelMetricsSimpleValue(cache, pod.Name, pod.Namespace, modelName, metrics.NumRequestsWaiting)
 	prefillPreallocQueue := GetPodModelMetricsSimpleValue(cache, pod.Name, pod.Namespace, modelName, metrics.NumPrefillPreallocQueueReqs)
 	decodePreallocQueue := GetPodModelMetricsSimpleValue(cache, pod.Name, pod.Namespace, modelName, metrics.NumDecodePreallocQueueReqs)

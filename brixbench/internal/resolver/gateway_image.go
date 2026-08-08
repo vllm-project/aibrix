@@ -18,6 +18,7 @@ package resolver
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -34,6 +35,35 @@ type GatewayImage struct {
 func PrepareGatewayImage(ctx context.Context, projectRoot string, test *Test) (*GatewayImage, error) {
 	if test.ProviderName() != "aibrix" {
 		return nil, nil
+	}
+	prebuiltImage := strings.TrimSpace(os.Getenv("BENCHMARK_GATEWAY_IMAGE"))
+	prebuiltCommit := strings.TrimSpace(os.Getenv("BENCHMARK_GATEWAY_COMMIT"))
+	if prebuiltImage == "" {
+		if prebuiltCommit != "" {
+			return nil, fmt.Errorf("BENCHMARK_GATEWAY_COMMIT requires BENCHMARK_GATEWAY_IMAGE")
+		}
+	} else {
+		repository, tag, err := splitImageRef(prebuiltImage)
+		if err != nil {
+			return nil, fmt.Errorf("invalid BENCHMARK_GATEWAY_IMAGE %q: %w", prebuiltImage, err)
+		}
+		if prebuiltCommit != "" {
+			normalizedCommit, err := normalizeFullCommitSHA(prebuiltCommit)
+			if err != nil {
+				return nil, fmt.Errorf("invalid BENCHMARK_GATEWAY_COMMIT %q: %w", prebuiltCommit, err)
+			}
+			test.ResolvedCommit = normalizedCommit
+		}
+		image := &GatewayImage{
+			Image:      prebuiltImage,
+			Repository: repository,
+			Tag:        tag,
+		}
+		test.GatewayImage = image.Image
+		test.GatewayImageRepository = image.Repository
+		test.GatewayImageTag = image.Tag
+		fmt.Printf("Using prebuilt gateway image from BENCHMARK_GATEWAY_IMAGE: %s\n", prebuiltImage)
+		return image, nil
 	}
 	if test.WorkspacePath == "" || test.ResolvedCommit == "" {
 		return nil, nil
@@ -118,6 +148,16 @@ func splitImageRef(image string) (string, string, error) {
 		return "", "", fmt.Errorf("invalid image reference: %s", image)
 	}
 	return image[:idx], image[idx+1:], nil
+}
+
+func normalizeFullCommitSHA(commit string) (string, error) {
+	if len(commit) != 40 {
+		return "", fmt.Errorf("expected a 40-character full Git SHA")
+	}
+	if _, err := hex.DecodeString(commit); err != nil {
+		return "", fmt.Errorf("expected a hexadecimal full Git SHA")
+	}
+	return strings.ToLower(commit), nil
 }
 
 func runDocker(ctx context.Context, cwd string, args ...string) error {

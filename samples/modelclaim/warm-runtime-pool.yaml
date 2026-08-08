@@ -22,10 +22,8 @@ spec:
         - name: aibrix-runtime
           # This image must be built on a kvcached-enabled vLLM base image.
           # The runtime sidecar starts the per-ModelClaim engine processes.
-          image: aibrix/runtime:dev
+          image: aibrix/kvcached-runtime:dev
           imagePullPolicy: IfNotPresent
-          command:
-            - aibrix_runtime
           ports:
             - name: runtime
               containerPort: 8080
@@ -39,8 +37,9 @@ spec:
             - name: AIBRIX_MODEL_RUNTIME_MOCK
               value: "0"
             - name: ENABLE_KVCACHED
-              # Keep the sidecar itself unpatched. The launcher sets these
-              # values to true only for each child engine process.
+              # The image includes kvcached and kvctl, but the runtime agent
+              # must not be autopatched. The launcher enables kvcached with a
+              # unique IPC name for each child engine process.
               value: "false"
             - name: KVCACHED_AUTOPATCH
               value: "0"
@@ -54,6 +53,8 @@ spec:
               mountPath: /dev/shm
             - name: hf-cache
               mountPath: /root/.cache/huggingface
+            - name: engine-registry
+              mountPath: /var/run/aibrix
       volumes:
         - name: dshm
           emptyDir:
@@ -63,3 +64,26 @@ spec:
           hostPath:
             path: /var/cache/aibrix/huggingface
             type: DirectoryOrCreate
+        - name: engine-registry
+          emptyDir: {}
+---
+# Exposes the runtime sidecar /metrics endpoint for the ModelClaim Grafana
+# dashboard. Label aibrix.ai/metrics=modelclaim-runtime matches
+# observability/monitor/service_monitor_modelclaim_runtime.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: warm-runtime-pool-b300-metrics
+  namespace: default
+  labels:
+    app: warm-runtime-pool-b300
+    pool.aibrix.ai/name: b300-pool-a
+    pool.aibrix.ai/enabled: "true"
+    aibrix.ai/metrics: modelclaim-runtime
+spec:
+  selector:
+    app: warm-runtime-pool-b300
+  ports:
+    - name: runtime
+      port: 8080
+      targetPort: runtime

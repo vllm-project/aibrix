@@ -22,6 +22,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"k8s.io/klog/v2"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -40,7 +41,7 @@ const (
 	contentTypeKey   = "content-type"
 )
 
-func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, *types.RoutingContext) {
+func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, rootSpan trace.Span, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, *types.RoutingContext) {
 	var username, requestPath string
 	var user utils.User
 	var rpm int64
@@ -49,7 +50,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	var routingCtx *types.RoutingContext
 	var reqConfigProfile string
 
-	_, span := tracer.Start(ctx, "HandleRequestHeaders")
+	_, span := tracer.Start(ctx, "process.handle_request_headers")
 	defer span.End()
 
 	h := req.Request.(*extProcPb.ProcessingRequest_RequestHeaders)
@@ -72,9 +73,13 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			reqConfigProfile = strings.TrimSpace(string(n.RawValue))
 		case HeaderSessionID:
 			reqHeaders[n.Key] = string(n.RawValue)
-		case HeaderTraceParent:
+		case HeaderSessionKey:
 			reqHeaders[n.Key] = string(n.RawValue)
-			requestID = GetTraceID(string(n.RawValue), requestID)
+		case HeaderTraceParent: // Preserve the trace context for requests initiated by the gateway plugin. like PD
+			reqHeaders[n.Key] = string(n.RawValue)
+			if !rootSpan.SpanContext().HasTraceID() { // prefers rootSpan traceID over traceparent
+				requestID = GetTraceID(string(n.RawValue), requestID)
+			}
 		}
 	}
 

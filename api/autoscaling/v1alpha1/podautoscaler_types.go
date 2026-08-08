@@ -78,6 +78,20 @@ type PodAutoscalerSpec struct {
 	// +kubebuilder:validation:MinItems=1
 	MetricsSources []MetricSource `json:"metricsSources,omitempty"`
 
+	// ObserveWindowSeconds controls how much recent metric history is used for stable scaling decisions.
+	// If unset, the autoscaler uses its internal default.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=3600
+	ObserveWindowSeconds *int64 `json:"observeWindowSeconds,omitempty"`
+
+	// PanicWindowSeconds controls the short metric window used by KPA panic-mode decisions.
+	// If unset, the autoscaler uses its internal default.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=3600
+	PanicWindowSeconds *int64 `json:"panicWindowSeconds,omitempty"`
+
 	// ScalingStrategy defines the strategy to use for scaling.
 	// +kubebuilder:validation:Enum={HPA,KPA,APA}
 	ScalingStrategy ScalingStrategyType `json:"scalingStrategy"`

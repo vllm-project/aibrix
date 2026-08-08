@@ -72,6 +72,14 @@ def activate_runtime_model(request: ActivateRuntimeModelRequest):
                 else None
             ),
         )
+    except ValueError as exc:
+        logger.warning(f"invalid activation request for {request.model_name}: {exc}")
+        return JSONResponse(
+            status_code=400,
+            content=ActivateRuntimeModelResponse(
+                status="error", model_name=request.model_name, message=str(exc)
+            ).model_dump(),
+        )
     except Exception as exc:  # surface activation failure to the controller
         logger.error(f"failed to activate model {request.model_name}: {exc}")
         return JSONResponse(

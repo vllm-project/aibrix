@@ -1,28 +1,19 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Search, Zap, Monitor, AudioLines, ImageIcon, Eye, Grid3X3, Link2, X, Video } from 'lucide-react';
+import { Search, Zap, Monitor, AudioLines, ImageIcon, Eye, Grid3X3, Link2, X, Video, Plus } from 'lucide-react';
 import { listModels } from '../utils/api';
 import type { ModelCategory, Model } from '../data/mockData';
+import { CATEGORY_OPTIONS, CATEGORY_COLORS } from '../data/mockData';
 
 type FilterTab = 'Featured' | 'All' | ModelCategory;
 
 interface ModelLibraryProps {
   onSelectModel: (id: string) => void;
+  onCreateModel?: () => void;
 }
 
 function TabIcon({ tab, isActive }: { tab: FilterTab; isActive: boolean }) {
   const activeColor = 'text-white';
-  const inactiveColors: Record<FilterTab, string> = {
-    Featured: 'text-amber-500',
-    All: '',
-    LLM: 'text-blue-600',
-    Audio: 'text-green-600',
-    Image: 'text-orange-500',
-    Video: 'text-red-500',
-    Vision: 'text-violet-600',
-    Embedding: 'text-cyan-600',
-    Reranks: 'text-pink-600',
-  };
-  const color = isActive ? activeColor : (inactiveColors[tab] || 'text-gray-500');
+  const color = isActive ? activeColor : (tab === 'Featured' ? 'text-amber-500' : CATEGORY_COLORS[tab as ModelCategory] || 'text-gray-500');
   const cls = `w-4 h-4 ${color}`;
 
   switch (tab) {
@@ -38,7 +29,7 @@ function TabIcon({ tab, isActive }: { tab: FilterTab; isActive: boolean }) {
   }
 }
 
-const tabs: FilterTab[] = ['Featured', 'All', 'LLM', 'Audio', 'Image', 'Video', 'Vision', 'Embedding', 'Reranks'];
+const tabs: FilterTab[] = ['Featured', 'All', ...CATEGORY_OPTIONS];
 
 function getPricingSummary(model: Model): string {
   const parts: string[] = [];
@@ -88,7 +79,7 @@ function CategoryBadge({ category }: { category: string }) {
   );
 }
 
-export function ModelLibrary({ onSelectModel }: ModelLibraryProps) {
+export function ModelLibrary({ onSelectModel, onCreateModel }: ModelLibraryProps) {
   const [activeTab, setActiveTab] = useState<FilterTab>('Featured');
   const [searchQuery, setSearchQuery] = useState('');
   const [models, setModels] = useState<Model[]>([]);
@@ -137,9 +128,9 @@ export function ModelLibrary({ onSelectModel }: ModelLibraryProps) {
               className="w-full pl-11 pr-4 py-3 bg-white rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 border border-gray-200 shadow-sm"
             />
           </div>
-          <a href="#" className="text-sm text-gray-500 hover:text-gray-700 inline-flex items-center gap-1">
-            Recommend a model ↗
-          </a>
+            <a href="#" className="text-sm text-gray-500 hover:text-gray-700 inline-flex items-center gap-1">
+              Recommend a model ↗
+            </a>
         </div>
       )}
 
@@ -176,6 +167,16 @@ export function ModelLibrary({ onSelectModel }: ModelLibraryProps) {
             </button>
           );
         })}
+        <div className="flex-1" />
+        {onCreateModel && (
+          <button
+            onClick={onCreateModel}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Create Model
+          </button>
+        )}
       </div>
 
       {/* Category header for specific category */}

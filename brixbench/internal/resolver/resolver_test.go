@@ -19,6 +19,7 @@ package resolver
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -225,6 +226,64 @@ func TestResolveRejectsLocalPathWithCommit(t *testing.T) {
 	}
 }
 
+func TestResolveRejectsControlPlaneSource(t *testing.T) {
+	tempDir, enginePath, benchmarkPath := createScenarioFixture(t)
+	scenarioPath := filepath.Join(tempDir, "scenario.yaml")
+
+	scenarioYAML := []byte(
+		"Scenario: sample\n" +
+			"Tests:\n" +
+			"  - name: controlplane\n" +
+			"    provider: aibrix\n" +
+			"    fullstack: false\n" +
+			"    controlplane:\n" +
+			"      - dependency.yaml\n" +
+			"      - core.yaml\n" +
+			"    engine:\n" +
+			"      type: vllm\n" +
+			"      manifest: " + enginePath + "\n" +
+			"    benchmark: " + benchmarkPath + "\n",
+	)
+	if err := os.WriteFile(scenarioPath, scenarioYAML, 0644); err != nil {
+		t.Fatalf("failed to write scenario file: %v", err)
+	}
+
+	if _, err := Resolve(scenarioPath); err == nil {
+		t.Fatalf("expected Resolve to reject controlplane source input")
+	}
+}
+
+func TestResolveNormalizesDynamoVersion(t *testing.T) {
+	tempDir, enginePath, benchmarkPath := createScenarioFixture(t)
+	scenarioPath := filepath.Join(tempDir, "scenario.yaml")
+
+	scenarioYAML := []byte(
+		"Scenario: sample\n" +
+			"Tests:\n" +
+			"  - name: dynamo\n" +
+			"    provider: dynamo\n" +
+			"    version: 1.2.1\n" +
+			"    engine:\n" +
+			"      type: vllm\n" +
+			"      manifest: " + enginePath + "\n" +
+			"    benchmark: " + benchmarkPath + "\n",
+	)
+	if err := os.WriteFile(scenarioPath, scenarioYAML, 0644); err != nil {
+		t.Fatalf("failed to write scenario file: %v", err)
+	}
+
+	scenario, err := Resolve(scenarioPath)
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if scenario.Tests[0].Version != "v1.2.1" {
+		t.Fatalf("expected normalized version v1.2.1, got %s", scenario.Tests[0].Version)
+	}
+	if scenario.Tests[0].ProviderName() != "dynamo" {
+		t.Fatalf("expected provider dynamo, got %s", scenario.Tests[0].ProviderName())
+	}
+}
+
 func TestResolveRejectsVKEDevWithoutFullStack(t *testing.T) {
 	tempDir, enginePath, benchmarkPath := createScenarioFixture(t)
 	scenarioPath := filepath.Join(tempDir, "scenario.yaml")
@@ -278,6 +337,70 @@ func TestResolveAcceptsExplicitNullProvider(t *testing.T) {
 	}
 	if scenario.Tests[0].ProviderName() != "" {
 		t.Fatalf("expected empty provider name for explicit null provider, got %q", scenario.Tests[0].ProviderName())
+	}
+}
+
+func TestResolveSupportsLLMdProvider(t *testing.T) {
+	tempDir, enginePath, benchmarkPath := createScenarioFixture(t)
+	scenarioPath := filepath.Join(tempDir, "scenario.yaml")
+	valuesPath := filepath.Join(tempDir, "router-values.yaml")
+	if err := os.WriteFile(valuesPath, []byte("router: {}\n"), 0644); err != nil {
+		t.Fatalf("failed to write router values file: %v", err)
+	}
+
+	scenarioYAML := []byte(
+		"Scenario: sample\n" +
+			"Tests:\n" +
+			"  - name: llmd\n" +
+			"    provider: llmd\n" +
+			"    version: 0.8.1\n" +
+			"    controlplane:\n" +
+			"      - " + valuesPath + "\n" +
+			"    engine:\n" +
+			"      type: vllm\n" +
+			"      manifest: " + enginePath + "\n" +
+			"    benchmark: " + benchmarkPath + "\n",
+	)
+	if err := os.WriteFile(scenarioPath, scenarioYAML, 0644); err != nil {
+		t.Fatalf("failed to write scenario file: %v", err)
+	}
+
+	scenario, err := Resolve(scenarioPath)
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if scenario.Tests[0].ProviderName() != "llmd" {
+		t.Fatalf("expected provider llmd, got %s", scenario.Tests[0].ProviderName())
+	}
+	if scenario.Tests[0].Version != "v0.8.1" {
+		t.Fatalf("expected normalized version v0.8.1, got %s", scenario.Tests[0].Version)
+	}
+}
+
+func TestResolveRejectsUnknownProvider(t *testing.T) {
+	tempDir, enginePath, benchmarkPath := createScenarioFixture(t)
+	scenarioPath := filepath.Join(tempDir, "scenario.yaml")
+
+	scenarioYAML := []byte(
+		"Scenario: sample\n" +
+			"Tests:\n" +
+			"  - name: typo\n" +
+			"    provider: unknown\n" +
+			"    engine:\n" +
+			"      type: vllm\n" +
+			"      manifest: " + enginePath + "\n" +
+			"    benchmark: " + benchmarkPath + "\n",
+	)
+	if err := os.WriteFile(scenarioPath, scenarioYAML, 0644); err != nil {
+		t.Fatalf("failed to write scenario file: %v", err)
+	}
+
+	_, err := Resolve(scenarioPath)
+	if err == nil {
+		t.Fatalf("expected Resolve to reject unknown provider")
+	}
+	if !strings.Contains(err.Error(), `unknown provider "unknown"`) {
+		t.Fatalf("expected unknown provider error, got %v", err)
 	}
 }
 

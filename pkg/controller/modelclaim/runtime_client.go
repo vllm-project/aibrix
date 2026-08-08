@@ -155,15 +155,29 @@ type RuntimeAcceleratorSnapshot struct {
 
 // RuntimeSnapshotModel is one engine reported by a runtime snapshot.
 type RuntimeSnapshotModel struct {
-	ModelName       string         `json:"model_name"`
-	ArtifactURL     string         `json:"artifact_url"`
-	ClaimRef        *ModelClaimRef `json:"claim_ref,omitempty"`
-	Port            int32          `json:"port"`
-	IPCName         string         `json:"ipc_name"`
-	Phase           string         `json:"phase"`
-	Ready           bool           `json:"ready"`
-	KVUsedBytes     int64          `json:"kv_used_bytes"`
-	KVCapacityBytes int64          `json:"kv_capacity_bytes"`
+	ModelName   string         `json:"model_name"`
+	ArtifactURL string         `json:"artifact_url"`
+	ClaimRef    *ModelClaimRef `json:"claim_ref,omitempty"`
+	Port        int32          `json:"port"`
+	IPCName     string         `json:"ipc_name"`
+	Phase       string         `json:"phase"`
+	// Alive is process liveness, separate from readiness: a booting engine is
+	// alive but not routable, while a restarting or terminal engine is not.
+	Alive           bool       `json:"alive"`
+	Ready           bool       `json:"ready"`
+	RestartCount    int        `json:"restart_count"`
+	LastError       string     `json:"last_error,omitempty"`
+	LastTransition  *time.Time `json:"last_transition,omitempty"`
+	KVUsedBytes     int64      `json:"kv_used_bytes"`
+	KVCapacityBytes int64      `json:"kv_capacity_bytes"`
+	HBMPeakBytes    int64      `json:"hbm_peak_bytes"`
+	// RequestMetricsObserved distinguishes a zero metric from an unavailable
+	// scrape. Pool policy must not infer idleness unless the completion counter
+	// is also present.
+	RequestMetricsObserved bool   `json:"request_metrics_observed"`
+	RequestsRunning        int64  `json:"requests_running"`
+	RequestsWaiting        int64  `json:"requests_waiting"`
+	RequestSuccessTotal    *int64 `json:"request_success_total,omitempty"`
 }
 
 // RuntimeSnapshot is the point-in-time source for controller placement. It is

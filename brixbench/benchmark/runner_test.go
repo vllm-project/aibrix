@@ -23,9 +23,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/vllm-project/aibrix/brixbench/internal/deployers"
 	"github.com/vllm-project/aibrix/brixbench/internal/drivers"
+	"github.com/vllm-project/aibrix/brixbench/internal/monitoring"
 	"github.com/vllm-project/aibrix/brixbench/internal/observability"
 	"github.com/vllm-project/aibrix/brixbench/internal/resolver"
 )
@@ -93,46 +95,68 @@ func executeScenarioTestCase(t *testing.T, scenarioName string, scenarioLogRoot 
 	}
 
 	result.BenchmarkKind = testCase.BenchmarkKind
+	benchmarkNamespace := benchmarkNamespaceForTestCase(testCase)
+	caseLogDir := caseLogRoot(scenarioLogRoot, testCase.Name)
+	resetBefore := resetBeforeTestEnabled()
+	cleanupAfter := cleanupAfterTestEnabled()
+	if err := stagePublishInputs(caseLogDir, testCase); err != nil {
+		t.Logf("Warning: failed to stage publish inputs for %s: %v", testCase.Name, err)
+	}
 
-	if resetBeforeTestEnabled() {
-		namespaceResetDone := progressStep(t, "reset benchmark namespace %s for %s", defaultBenchmarkNamespace, testCase.Name)
-		if resetErr := resetBenchmarkNamespace(ctx, defaultBenchmarkNamespace); resetErr != nil {
+	if shouldRunDynamoStaleCleanup(testCase, resetBefore) {
+		staleCleanupDone := progressStep(t, "clear stale Dynamo resources in namespace %s for %s", benchmarkNamespace, testCase.Name)
+		if cleanupErr := deployers.CleanupStaleDynamoNamespace(ctx, benchmarkNamespace, testCase.Engine.Manifest, projectRoot, caseLogDir); cleanupErr != nil {
+			result.Error = fmt.Sprintf("Dynamo stale namespace cleanup failed: %v", cleanupErr)
+			return result, fmt.Errorf("Dynamo stale namespace cleanup failed: %w", cleanupErr)
+		}
+		staleCleanupDone()
+	}
+
+	if resetBefore {
+		namespaceResetDone := progressStep(t, "reset benchmark namespace %s for %s", benchmarkNamespace, testCase.Name)
+		if resetErr := resetBenchmarkNamespace(ctx, benchmarkNamespace); resetErr != nil {
 			result.Error = fmt.Sprintf("Benchmark namespace reset failed: %v", resetErr)
 			return result, fmt.Errorf("Benchmark namespace reset failed: %w", resetErr)
 		}
 		namespaceResetDone()
 
-		preflightDone := progressStep(t, "check existing StormService resources for %s", testCase.Name)
-		if preflightErr := ensureStormServicesCleared(ctx); preflightErr != nil {
-			result.Error = fmt.Sprintf("StormService preflight failed: %v", preflightErr)
-			return result, fmt.Errorf("StormService preflight failed: %w", preflightErr)
+		if shouldRunStormServicePreflight(testCase) {
+			preflightDone := progressStep(t, "check existing StormService resources for %s", testCase.Name)
+			if preflightErr := ensureStormServicesCleared(ctx); preflightErr != nil {
+				result.Error = fmt.Sprintf("StormService preflight failed: %v", preflightErr)
+				return result, fmt.Errorf("StormService preflight failed: %w", preflightErr)
+			}
+			preflightDone()
 		}
-		preflightDone()
 	} else {
-		progressLog(t, "Skipping benchmark namespace reset before %s; namespace %s will be reused", testCase.Name, defaultBenchmarkNamespace)
+		progressLog(t, "Skipping benchmark namespace reset before %s; namespace %s will be reused", testCase.Name, benchmarkNamespace)
 	}
 
-	caseLogDir := caseLogRoot(scenarioLogRoot, testCase.Name)
 	deployDone := progressStep(t, "deploy control plane and engine for %s", testCase.Name)
-	deployer, gatewayURL, err := setupAndRunDeployment(ctx, t, projectRoot, &testCase, defaultBenchmarkNamespace, caseLogDir)
+	deployer, gatewayURL, err := setupAndRunDeployment(ctx, t, projectRoot, &testCase, benchmarkNamespace, caseLogDir)
 	result.Version = testCase.Version
 	result.Commit = testCase.Commit
 	result.ResolvedCommit = testCase.ResolvedCommit
 	if err != nil {
 		captureDeploymentArtifacts(t, ctx, deployer)
+		if deployer != nil && cleanupAfter {
+			teardownTestResources(t, ctx, deployer, benchmarkNamespace, testCase.Name)
+		} else if deployer != nil {
+			progressLog(t, "Skipping cleanup after failed deployment for %s; benchmark namespace %s will be left in place", testCase.Name, benchmarkNamespace)
+		}
 		result.Error = fmt.Sprintf("Deployment failed: %v", err)
 		return result, fmt.Errorf("Deployment failed: %w", err)
 	}
 	result.GatewayURL = gatewayURL
 	deployDone()
-	if cleanupAfterTestEnabled() {
-		defer teardownTestResources(t, ctx, deployer, defaultBenchmarkNamespace, testCase.Name)
+	if cleanupAfter {
+		defer teardownTestResources(t, ctx, deployer, benchmarkNamespace, testCase.Name)
 	} else {
-		progressLog(t, "Skipping cleanup after %s; benchmark namespace %s will be left in place", testCase.Name, defaultBenchmarkNamespace)
+		progressLog(t, "Skipping cleanup after %s; benchmark namespace %s will be left in place", testCase.Name, benchmarkNamespace)
 	}
-	defer captureCasePodLogs(t, ctx, &testCase, defaultBenchmarkNamespace, caseLogDir)
+	defer captureCasePodLogs(t, ctx, &testCase, benchmarkNamespace, caseLogDir)
 
-	configureBenchmarkEnvironment(t, testCase.Name, testCase.ProviderName(), defaultBenchmarkNamespace, gatewayURL)
+	configureBenchmarkEnvironment(t, testCase.Name, testCase.ProviderName(), benchmarkNamespace, gatewayURL)
 	progressLog(t, "Gateway endpoint for %s: %s", testCase.Name, gatewayURL)
 
 	benchmarkDone := progressStep(t, "run benchmark and export metrics for %s", testCase.Name)
@@ -157,6 +181,24 @@ func executeScenarioTestCase(t *testing.T, scenarioName string, scenarioLogRoot 
 	return result, nil
 }
 
+func benchmarkNamespaceForTestCase(testCase resolver.Test) string {
+	switch testCase.ProviderName() {
+	case "dynamo":
+		return deployers.DynamoBenchmarkNamespace
+	case "llmd":
+		return deployers.LLMdBenchmarkNamespace
+	}
+	return defaultBenchmarkNamespace
+}
+
+func shouldRunStormServicePreflight(testCase resolver.Test) bool {
+	return testCase.ProviderName() == "aibrix"
+}
+
+func shouldRunDynamoStaleCleanup(testCase resolver.Test, resetBefore bool) bool {
+	return resetBefore && testCase.ProviderName() == "dynamo"
+}
+
 func setupAndRunDeployment(ctx context.Context, t *testing.T, projectRoot string, testCase *resolver.Test, benchmarkNamespace string, caseLogDir string) (deployers.Deployer, string, error) {
 	// Select Deployer
 	var deployer deployers.Deployer
@@ -165,11 +207,11 @@ func setupAndRunDeployment(ctx context.Context, t *testing.T, projectRoot string
 		deployer = deployers.NewAIBrixDeployer()
 		t.Log("Using AIBrix deployer")
 	case "llmd":
+		deployer = deployers.NewLLMdDeployer()
 		t.Log("Using LLM-d deployer")
-		// return nil, "", fmt.Errorf("LLM-d deployer not implemented")
 	case "dynamo":
+		deployer = deployers.NewDynamoDeployer()
 		t.Log("Using Dynamo deployer")
-		// return nil, "", fmt.Errorf("Dynamo deployer not implemented")
 	case "":
 		if testCase.Engine.Type != "vllm" {
 			return nil, "", fmt.Errorf("provider: null only supports engine.type=vllm, got %q", testCase.Engine.Type)
@@ -195,6 +237,7 @@ func setupAndRunDeployment(ctx context.Context, t *testing.T, projectRoot string
 		GatewayImageTag:        testCase.GatewayImageTag,
 		GatewayEnv:             testCase.Gateway.Env,
 		GatewayResourceFiles:   testCase.Gateway.Resources,
+		PlatformValuesFile:     testCase.Platform.ValuesFile,
 		TestCase:               testCase,
 	}); err != nil {
 		return nil, "", fmt.Errorf("failed to initialize deployer: %w", err)
@@ -204,11 +247,23 @@ func setupAndRunDeployment(ctx context.Context, t *testing.T, projectRoot string
 	if err := deployer.DeployControlPlane(ctx); err != nil {
 		return deployer, "", fmt.Errorf("failed to deploy control plane: %w", err)
 	}
+	if err := deployer.DeployGateway(ctx); err != nil {
+		return deployer, "", fmt.Errorf("failed to deploy gateway: %w", err)
+	}
 	if err := deployer.DeployEngine(ctx); err != nil {
 		return deployer, "", fmt.Errorf("failed to deploy engine: %w", err)
 	}
 	if err := deployer.WaitForReady(ctx); err != nil {
 		return deployer, "", fmt.Errorf("engine not ready: %w", err)
+	}
+	if err := monitoring.Ensure(ctx, monitoring.Config{
+		Namespace: benchmarkNamespace,
+		Provider:  testCase.ProviderName(),
+		Engine:    testCase.Engine.Type,
+		Enabled:   podMonitoringEnabled(),
+		Strict:    podMonitoringStrictEnabled(),
+	}); err != nil {
+		return deployer, "", fmt.Errorf("pod monitoring setup failed: %w", err)
 	}
 
 	// Get dynamically assigned Gateway IP/URL
@@ -290,26 +345,33 @@ func TestAIBrixBenchmarkSuite(t *testing.T) {
 	}
 
 	progressLog(t, "Running Scenario: %s", scenario.Name)
-	runStartedAt := nowInUTC()
-	runID := formatScenarioRunID(runStartedAt, scenario.Name)
+	runStartedAt := time.Now().In(benchmarkLocation())
+	runID := uniqueScenarioRunID("testdata/logs", runStartedAt, scenario.Name)
 	scenarioLogRoot := filepath.Join("testdata/logs", runID)
+	clearSuiteProgressLog := setSuiteProgressLog(filepath.Join(scenarioLogRoot, "brixbench.log"))
+	defer clearSuiteProgressLog()
 	progressLog(t, "Suite log root for %s: %s", scenario.Name, scenarioLogRoot)
 	resultsByCase := runScenarioTests(t, scenario, scenarioLogRoot, exporter)
 	summary := buildScenarioSummary(scenario.Name, resultsByCase)
-	if writeErr := writeScenarioArtifacts(scenarioLogRoot, runID, summary); writeErr != nil {
+	if writeErr := writeScenarioArtifacts(scenarioLogRoot, runID, summary, runStartedAt); writeErr != nil {
 		t.Fatalf("failed to write scenario artifacts: %v", writeErr)
 	}
 	progressLog(t, "Wrote scenario summary: %s", scenarioLogRoot)
 
 	figuresDone := progressStep(t, "generate scenario figures for %s", scenario.Name)
-	generatedFigures, figureErr := generateScenarioFigures(scenarioLogRoot, summary)
+	generatedFigures, skipReason, figureErr := generateScenarioFigures(scenarioLogRoot, summary)
 	figuresDone()
 	if figureErr != nil {
-		t.Fatalf("failed to generate scenario figures: %v", figureErr)
-	}
-	if generatedFigures {
+		progressLog(t, "Warning: failed to generate scenario figures: %v", figureErr)
+	} else if generatedFigures {
 		progressLog(t, "Generated scenario figures under %s/figures", scenarioLogRoot)
 	} else {
-		progressLog(t, "Skipped scenario figure generation because the benchmark kind was mixed/unsupported or .venv/bin/python or plot_summary_vllm_bench.py was not available")
+		progressLog(t, "Warning: skipped scenario figure generation: %s", skipReason)
+	}
+	if publishErr := maybePublishScenarioArtifacts(t, scenario, scenarioPath, scenarioLogRoot, runID, runStartedAt, summary); publishErr != nil {
+		t.Fatal(publishErr)
+	}
+	if figureErr != nil {
+		t.Errorf("failed to generate scenario figures: %v", figureErr)
 	}
 }

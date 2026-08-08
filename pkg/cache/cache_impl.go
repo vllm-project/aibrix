@@ -237,7 +237,7 @@ func (c *Store) DoneRequestCount(ctx *types.RoutingContext, requestID string, mo
 	}
 
 	meta, ok := c.metaModels.Load(modelName)
-	if ok {
+	if ok && (ctx == nil || ctx.CanDoneTrace()) {
 		atomic.AddInt32(&meta.pendingRequests, -1)
 	}
 
@@ -267,7 +267,7 @@ func (c *Store) DoneRequestTrace(ctx *types.RoutingContext, requestID string, mo
 	}
 
 	meta, ok := c.metaModels.Load(modelName)
-	if ok {
+	if ok && (ctx == nil || ctx.CanDoneTrace()) {
 		atomic.AddInt32(&meta.pendingRequests, -1)
 	}
 

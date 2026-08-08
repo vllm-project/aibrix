@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/utils/ptr"
 )
 
 func TestPodAutoscalerCustomDefaulter_DefaultCircuitBreaker(t *testing.T) {
@@ -299,6 +300,91 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 			},
 			expectError: true,
 			errorMsg:    "subTargetSelector",
+		},
+		"Observe Window Must Be Positive": {
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{
+						Name: "test-deployment",
+						Kind: "Deployment",
+					},
+					ScalingStrategy:      autoscalingv1alpha1.KPA,
+					ObserveWindowSeconds: ptr.To[int64](0),
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{
+							MetricSourceType: autoscalingv1alpha1.RESOURCE,
+							TargetMetric:     "cpu",
+							TargetValue:      "50",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "observeWindowSeconds",
+		},
+		"Panic Window Must Be Positive": {
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{
+						Name: "test-deployment",
+						Kind: "Deployment",
+					},
+					ScalingStrategy:    autoscalingv1alpha1.KPA,
+					PanicWindowSeconds: ptr.To[int64](-1),
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{
+							MetricSourceType: autoscalingv1alpha1.RESOURCE,
+							TargetMetric:     "cpu",
+							TargetValue:      "50",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "panicWindowSeconds",
+		},
+		"Observe Window Must Fit Time Duration": {
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{
+						Name: "test-deployment",
+						Kind: "Deployment",
+					},
+					ScalingStrategy:      autoscalingv1alpha1.KPA,
+					ObserveWindowSeconds: ptr.To[int64](3601),
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{
+							MetricSourceType: autoscalingv1alpha1.RESOURCE,
+							TargetMetric:     "cpu",
+							TargetValue:      "50",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "less than or equal to 3600",
+		},
+		"Panic Window Must Not Exceed Observe Window": {
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{
+						Name: "test-deployment",
+						Kind: "Deployment",
+					},
+					ScalingStrategy:      autoscalingv1alpha1.KPA,
+					ObserveWindowSeconds: ptr.To[int64](60),
+					PanicWindowSeconds:   ptr.To[int64](120),
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{
+							MetricSourceType: autoscalingv1alpha1.RESOURCE,
+							TargetMetric:     "cpu",
+							TargetValue:      "50",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "panicWindowSeconds",
 		},
 	}
 	for name, tt := range tests {

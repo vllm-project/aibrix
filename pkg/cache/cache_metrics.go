@@ -33,6 +33,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/api/core/v1"
 )
 
 const (
@@ -40,7 +41,6 @@ const (
 	// the request port and metrics port may differ, so a dedicated metrics port is required.
 	MetricPortLabel                     = constants.ModelLabelMetricPort
 	engineLabel                         = constants.ModelLabelEngine
-	modelLabel                          = constants.ModelLabelName
 	defaultMetricPort                   = 8000
 	defaultEngineLabelValue             = "vllm"
 	defaultPodMetricRefreshIntervalInMS = 50
@@ -405,10 +405,10 @@ func (c *Store) updatePodRecord(pod *Pod, modelName string, metricName string, s
 	if scope == metrics.PodMetricScope {
 		pod.Metrics.Store(metricName, metricValue)
 	} else if scope == metrics.PodModelMetricScope {
-		var err error
 		if modelName == "" {
-			modelName, err = getPodLabel(pod, modelLabel)
-			if err != nil {
+			var ok bool
+			modelName, ok = constants.ModelNameFromMetadata(pod.Labels, pod.Annotations)
+			if !ok {
 				return fmt.Errorf("modelName should not be empty for scope %v", scope)
 			}
 		}
@@ -419,14 +419,68 @@ func (c *Store) updatePodRecord(pod *Pod, modelName string, metricName string, s
 	return nil
 }
 
-func (c *Store) updateModelMetrics() {
-	// c.mu.Lock()
-	// defer c.mu.Unlock()
+type modelReplicaState struct {
+	pod       *v1.Pod
+	modelName string
+}
 
-	// if c.prometheusApi == nil {
-	// 	klog.V(4).InfoS("Prometheus api is not initialized, PROMETHEUS_ENDPOINT is not configured, skip fetching prometheus metrics")
-	// 	return
-	// }
+const pdRoleIdentifier = "role-name"
+
+func isPodWithHTTPServer(pod *v1.Pod) bool {
+	podGroupIndex, exists := pod.Labels[podGroupIndex]
+	if !exists {
+		return true
+	}
+	return podGroupIndex == "0"
+}
+
+func (c *Store) updateModelMetrics() {
+	c.updateModelReplicaMetrics()
+}
+
+// updateModelReplicaMetrics emits model_replicas=1 for each ready, routable engine pod and
+// removes stale series when pods leave the cache.
+func (c *Store) updateModelReplicaMetrics() {
+	active := make(map[string]struct{})
+
+	c.metaPods.Range(func(key string, metaPod *Pod) bool {
+		pod := metaPod.Pod
+		if pod == nil || !utils.FilterReadyPod(pod) || !isPodWithHTTPServer(pod) {
+			return true
+		}
+
+		modelName, ok := getModelNameFromPod(pod)
+		if !ok || modelName == "" {
+			return true
+		}
+
+		extras := map[string]string{"model_name": modelName}
+		metrics.EmitMetricToPrometheus(
+			&types.RoutingContext{Model: modelName},
+			pod,
+			metrics.ModelReplicas,
+			&metrics.SimpleMetricValue{Value: 1.0},
+			extras,
+		)
+		c.modelReplicaEmitted.Store(key, modelReplicaState{pod: pod, modelName: modelName})
+		active[key] = struct{}{}
+		return true
+	})
+
+	c.modelReplicaEmitted.Range(func(key string, state modelReplicaState) bool {
+		if _, ok := active[key]; ok {
+			return true
+		}
+		extras := map[string]string{"model_name": state.modelName}
+		metrics.DeleteGaugeMetricForPod(
+			metrics.ModelReplicas,
+			&types.RoutingContext{Model: state.modelName},
+			state.pod,
+			extras,
+		)
+		c.modelReplicaEmitted.Delete(key)
+		return true
+	})
 }
 
 func (c *Store) aggregateMetrics() {
@@ -567,11 +621,11 @@ func (c *Store) updatePodMetricsFromTypedResult(pod *Pod, result *metrics.Engine
 
 // parseModelMetricKey parses a key like "model/metric" into model name and metric name
 func parseModelMetricKey(key string) (modelName, metricName string) {
-	modelName, metricName, found := strings.Cut(key, "/")
-	if !found {
+	separator := strings.LastIndexByte(key, '/')
+	if separator < 0 {
 		return "", key // Fallback if parsing fails
 	}
-	return modelName, metricName
+	return key[:separator], key[separator+1:]
 }
 
 func resolveMetricModelName(pod *Pod, modelName string) string {
@@ -579,8 +633,8 @@ func resolveMetricModelName(pod *Pod, modelName string) string {
 		return modelName
 	}
 
-	if podModel, err := getPodLabel(pod, modelLabel); err == nil && podModel != "" {
-		klog.V(4).InfoS("Using pod label as model name fallback",
+	if podModel, ok := constants.ModelNameFromMetadata(pod.Labels, pod.Annotations); ok {
+		klog.V(4).InfoS("Using pod metadata as model name fallback",
 			"pod", pod.Name, "originalModel", modelName, "resolvedModel", podModel)
 		return podModel
 	}

@@ -1,41 +1,74 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { ChevronLeft, Copy, ExternalLink } from 'lucide-react';
-import { getDeployment } from '../utils/api';
 import type { Deployment } from '../data/mockData';
+import { getDeployment } from '../utils/api';
+import { copyToClipboard } from '../utils/clipboard';
+import {
+  canOpenInPlayground,
+  deploymentCodeExample,
+  formatDeploymentCreatedAt,
+  type DeploymentExampleLanguage,
+} from '../utils/deploymentDetail';
+import { deploymentStatusClass, normalizeDeploymentStatus } from '../utils/deploymentStatus';
 
 interface DeploymentDetailProps {
   deploymentId: string | null;
   onBack: () => void;
+  onOpenPlayground: (deployment: Deployment) => void;
 }
 
-export function DeploymentDetail({ deploymentId, onBack }: DeploymentDetailProps) {
+export function DeploymentDetail({
+  deploymentId,
+  onBack,
+  onOpenPlayground,
+}: DeploymentDetailProps) {
   const [deployment, setDeployment] = useState<Deployment | null>(null);
   const [loading, setLoading] = useState(true);
-  const [selectedLanguage, setSelectedLanguage] = useState<'python' | 'typescript' | 'java' | 'go' | 'shell' | 'chat' | 'completion'>('python');
+  const [error, setError] = useState<string | null>(null);
+  const [selectedLanguage, setSelectedLanguage] = useState<DeploymentExampleLanguage>('python');
+  const [copied, setCopied] = useState<string | null>(null);
 
   useEffect(() => {
     if (!deploymentId) {
       setLoading(false);
       return;
     }
+
+    let active = true;
+
     setLoading(true);
+    setError(null);
     getDeployment(deploymentId)
-      .then(d => setDeployment(d))
-      .catch(err => {
-        console.error('Failed to fetch deployment:', err);
-        setDeployment(null);
+      .then((item) => {
+        if (active) setDeployment(item);
       })
-      .finally(() => setLoading(false));
+      .catch((err: unknown) => {
+        if (!active) return;
+
+        setDeployment(null);
+        setError(err instanceof Error ? err.message : 'Failed to load deployment');
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
   }, [deploymentId]);
+
+  const copy = (value: string, label: string) => {
+    copyToClipboard(value).then(() => {
+      setCopied(label);
+      window.setTimeout(() => setCopied(null), 1500);
+    }).catch(() => setCopied(null));
+  };
 
   if (loading) {
     return (
       <div className="p-8">
-        <button onClick={onBack} className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-900 mb-4">
-          <ChevronLeft className="w-4 h-4" />
-          Back
-        </button>
-        <p className="text-sm text-gray-400">Loading deployment...</p>
+        <BackButton onBack={onBack} />
+        <p className="text-sm text-gray-500">Loading deployment...</p>
       </div>
     );
   }
@@ -43,174 +76,161 @@ export function DeploymentDetail({ deploymentId, onBack }: DeploymentDetailProps
   if (!deployment) {
     return (
       <div className="p-8">
-        <button onClick={onBack} className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-900 mb-4">
-          <ChevronLeft className="w-4 h-4" />
-          Back
-        </button>
-        <p>Deployment not found</p>
+        <BackButton onBack={onBack} />
+        <p className="text-gray-900">Deployment not found</p>
+        {error && <p className="text-sm text-red-600 mt-2">{error}</p>}
       </div>
     );
   }
 
-  const pythonCode = `import requests
-import json
-
-url = "https://api.aibrix.ai/inference/v1/chat/completions"
-
-payload = {
-    "model": "accounts/seedjeffwan-2hvzrk1/deployments/euxdnr5z",
-}`;
+  const deploymentStatus = normalizeDeploymentStatus(deployment.status);
+  const playgroundReady = canOpenInPlayground(deployment);
+  const code = deploymentCodeExample(deployment, selectedLanguage);
 
   return (
     <div className="p-8">
       <div className="mb-6">
-        <button onClick={onBack} className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-900 mb-4">
-          <ChevronLeft className="w-4 h-4" />
-          Accounts / <span className="text-gray-400">seedjeffwan-2hvzrk1</span> / <span className="text-gray-400">DeployedModels</span> / <span className="text-gray-400">{deployment.baseModel.toLowerCase().replace(/\s+/g, '-')}-or1ddd6b</span>
-        </button>
+        <BackButton onBack={onBack} />
+        <div className="text-xs text-gray-400 mb-4">Deployments / {deployment.name}</div>
 
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h1 className="text-2xl mb-2">{deployment.baseModel.toLowerCase().replace(/\s+/g, '-')}-or1...</h1>
-            <div className="flex items-center gap-3">
-              <code className="text-sm text-gray-600 bg-gray-100 px-2 py-1 rounded-md">
-                accounts/seedjeffwan-2hvzrk1/deployedModels/{deployment.baseModel.toLowerCase().replace(/\s+/g, '-')}-8b-or1ddd6b
+        <div className="flex items-start justify-between gap-6 mb-4">
+          <div className="min-w-0">
+            <h1 className="text-2xl text-gray-900 mb-2">{deployment.name}</h1>
+            <div className="flex flex-wrap items-center gap-3">
+              <code className="text-sm text-gray-700 bg-gray-100 px-2 py-1 rounded-md">
+                {deployment.servingName || 'Serving name unavailable'}
               </code>
-              <button className="text-gray-400 hover:text-gray-600">
-                <Copy className="w-4 h-4" />
-              </button>
-              <span className="inline-flex px-2.5 py-1 text-xs rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                Deployed
+              {deployment.servingName && (
+                <button
+                  onClick={() => copy(deployment.servingName, 'serving-name')}
+                  className="text-gray-400 hover:text-gray-700"
+                  title="Copy serving name"
+                  aria-label="Copy serving name"
+                >
+                  <Copy className="w-4 h-4" />
+                </button>
+              )}
+              {copied === 'serving-name' && <span className="text-xs text-teal-600">Copied</span>}
+              <span className={`inline-flex px-2.5 py-1 text-xs rounded-full ${deploymentStatusClass(deployment.status)}`}>
+                {deploymentStatus}
               </span>
             </div>
           </div>
 
-          <button className="px-4 py-2 border border-gray-200 rounded-lg text-sm hover:bg-gray-50 flex items-center gap-2">
+          <button
+            onClick={() => onOpenPlayground(deployment)}
+            disabled={!playgroundReady}
+            title={playgroundReady ? 'Open this deployment in Playground' : 'The deployment must be Ready and have a serving name'}
+            className="px-4 py-2 border border-gray-200 rounded-lg text-sm hover:bg-gray-50 flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-50"
+          >
             Open in Playground
             <ExternalLink className="w-4 h-4" />
           </button>
         </div>
 
         <p className="text-sm text-gray-500">
-          Llama 8B distilled with reasoning from Deepseek R1
+          {deployment.baseModel} served through the AIBrix data plane.
         </p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-6">
-          {/* About Deployed Models */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-            <h2 className="text-lg mb-4">About Deployed Models</h2>
-            <p className="text-sm text-gray-500 mb-4">
-              Deployed models are models that are deployed to a deployment and are ready to be used for inference. Creating a dedicated deployment will automatically create a deployed model for the base model used. Low-rank adaptation (LoRA) models may also be deployed to dedicated deployments.{' '}
-              <a href="#" className="text-teal-600 hover:underline">Docs ↗</a>
+            <h2 className="text-lg text-gray-900 mb-2">Call this deployment</h2>
+            <p className="text-sm text-gray-500 mb-5">
+              Send an OpenAI-compatible chat completion request to the shared AIBrix Gateway.
             </p>
 
-            <h3 className="mb-3">API Examples</h3>
-
-            <div className="mb-4">
-              <div className="flex items-center gap-2 overflow-x-auto pb-2">
-                {['Python', 'Typescript', 'Java', 'Go', 'Shell', 'Chat', 'Completion'].map((lang) => (
-                  <button
-                    key={lang}
-                    onClick={() => setSelectedLanguage(lang.toLowerCase() as any)}
-                    className={`px-3 py-1.5 text-sm rounded-lg whitespace-nowrap transition-colors ${
-                      selectedLanguage === lang.toLowerCase()
-                        ? 'bg-slate-800 text-white'
-                        : 'text-gray-500 hover:bg-gray-100'
-                    }`}
-                  >
-                    {lang}
-                  </button>
-                ))}
-              </div>
+            <div className="flex items-center gap-2 mb-4">
+              {(['python', 'shell'] as const).map((language) => (
+                <button
+                  key={language}
+                  onClick={() => setSelectedLanguage(language)}
+                  className={`px-3 py-1.5 text-sm rounded-lg capitalize transition-colors ${
+                    selectedLanguage === language
+                      ? 'bg-slate-800 text-white'
+                      : 'text-gray-500 hover:bg-gray-100'
+                  }`}
+                >
+                  {language}
+                </button>
+              ))}
             </div>
 
             <div className="relative bg-slate-900 rounded-xl p-4">
-              <button className="absolute top-4 right-4 text-gray-400 hover:text-white">
+              <button
+                onClick={() => copy(code, 'example')}
+                className="absolute top-4 right-4 text-gray-400 hover:text-white"
+                title="Copy example"
+                aria-label="Copy API example"
+              >
                 <Copy className="w-4 h-4" />
               </button>
-              <pre className="text-sm text-gray-300 overflow-x-auto">
-                <code>{pythonCode}</code>
+              {copied === 'example' && (
+                <span className="absolute top-4 right-10 text-xs text-teal-300">Copied</span>
+              )}
+              <pre className="text-sm text-gray-300 overflow-x-auto pr-10">
+                <code>{code}</code>
               </pre>
-            </div>
-
-            <div className="mt-4 text-center">
-              <button className="text-sm text-teal-600 hover:underline">
-                View More
-              </button>
             </div>
           </div>
 
-          {/* Active Deployments */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-            <h2 className="text-lg mb-4">Active Deployments</h2>
-            <p className="text-sm text-gray-500 mb-4">
-              Your deployment of <strong>{deployment.baseModel.toLowerCase()}</strong> are listed below.
-            </p>
-
+            <h2 className="text-lg text-gray-900 mb-4">Runtime deployment</h2>
             <div className="bg-gray-50 rounded-xl p-4">
-              <h3 className="mb-1">Active Deployments</h3>
+              <div className="font-medium text-gray-900 mb-1">{deployment.name}</div>
               <div className="text-sm text-gray-500 mb-1">{deployment.deploymentId}</div>
               <div className="text-xs text-gray-400">
-                {deployment.baseModel.toLowerCase().replace(/\s+/g, '-')}-8b-or1ddd6b • Private
+                {deployment.replicas || 'Unknown replicas'} · {deployment.gpuType || 'Accelerator not specified'}
               </div>
             </div>
           </div>
         </div>
 
-        {/* Right Sidebar */}
         <div className="space-y-6">
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-            <h2 className="text-lg mb-4">Deployed Model Details</h2>
-
-            <div className="space-y-3 text-sm">
-              <div>
-                <div className="text-gray-500 mb-1">Status</div>
-                <span className="inline-flex px-2.5 py-1 text-xs rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                  Deployed
+            <h2 className="text-lg text-gray-900 mb-4">Deployment details</h2>
+            <dl className="space-y-4 text-sm">
+              <Detail label="Status">
+                <span className={`inline-flex px-2.5 py-1 text-xs rounded-full ${deploymentStatusClass(deployment.status)}`}>
+                  {deploymentStatus}
                 </span>
-              </div>
-
-              <div>
-                <div className="text-gray-500 mb-1">Deployed by</div>
-                <div className="text-gray-900">{deployment.createdBy}</div>
-              </div>
-
-              <div>
-                <div className="text-gray-500 mb-1">Deployment time</div>
-                <div className="text-gray-900">Sunday, January 18, 2026 at 11:53:06 PM UTC</div>
-              </div>
-
-              <div>
-                <div className="text-gray-500 mb-1">Model name</div>
-                <div className="flex items-center gap-2">
-                  <code className="text-sm bg-gray-100 px-2 py-1 rounded-md">
-                    accounts/seedjeffwan-2hvzrk1/deployedModels/deepseek-r1-distil-llama-8b-or1ddd6b
-                  </code>
-                </div>
-              </div>
-
-              <div>
-                <div className="text-gray-500 mb-1">Deployment</div>
-                <div className="flex items-center gap-2">
-                  <code className="text-sm bg-gray-100 px-2 py-1 rounded-md">
-                    accounts/seedjeffwan-2hvzrk1/deployments/euxdnr5z
-                  </code>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-teal-50 rounded-xl p-4 border border-teal-100">
-            <div className="text-sm mb-2 text-teal-800">Documentation</div>
-            <p className="text-sm text-gray-600">
-              Learn more about deployments and how to use them in our{' '}
-              <a href="#" className="text-teal-600 hover:underline">documentation</a>.
-            </p>
+              </Detail>
+              <Detail label="Base model">{deployment.baseModel || 'Not available'}</Detail>
+              <Detail label="Serving name">
+                <code className="break-all">{deployment.servingName || 'Not available'}</code>
+              </Detail>
+              <Detail label="Created by">{deployment.createdBy || 'Not available'}</Detail>
+              <Detail label="Created at">{formatDeploymentCreatedAt(deployment.createdAt)}</Detail>
+              <Detail label="Template">
+                {[deployment.templateId, deployment.templateVersion].filter(Boolean).join(' · ') || 'Not available'}
+              </Detail>
+              <Detail label="Implementation">{deployment.implementationKind || 'Not available'}</Detail>
+              <Detail label="Runtime resource">
+                <code className="break-all">{deployment.deploymentId || 'Not available'}</code>
+              </Detail>
+            </dl>
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function BackButton({ onBack }: { onBack: () => void }) {
+  return (
+    <button onClick={onBack} className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-900 mb-4">
+      <ChevronLeft className="w-4 h-4" />
+      Back to deployments
+    </button>
+  );
+}
+
+function Detail({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <dt className="text-gray-500 mb-1">{label}</dt>
+      <dd className="text-gray-900">{children}</dd>
     </div>
   );
 }

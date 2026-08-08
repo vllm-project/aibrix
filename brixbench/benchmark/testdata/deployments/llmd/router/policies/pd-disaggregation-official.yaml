@@ -1,0 +1,47 @@
+## Derived from llm-d v0.8.1 guides/pd-disaggregation/router/pd-disaggregation.values.yaml.
+router:
+  extraServicePorts:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 8081
+
+  epp:
+    pluginsConfigFile: "pd-config.yaml"
+    pluginsCustomConfig:
+      pd-config.yaml: |
+        apiVersion: llm-d.ai/v1alpha1
+        kind: EndpointPickerConfig
+        plugins:
+        - type: disagg-headers-handler
+        - type: always-disagg-pd-decider
+        - type: disagg-profile-handler
+          parameters:
+            deciderPluginName: always-disagg-pd-decider
+        - type: prefill-filter
+        - type: decode-filter
+        - type: prefix-cache-scorer
+        - type: queue-scorer
+        - type: kv-cache-utilization-scorer
+        - type: active-request-scorer
+        schedulingProfiles:
+        - name: prefill
+          plugins:
+          - pluginRef: prefill-filter
+          - pluginRef: prefix-cache-scorer
+            weight: 3
+          - pluginRef: queue-scorer
+            weight: 2
+          - pluginRef: kv-cache-utilization-scorer
+            weight: 2
+        - name: decode
+          plugins:
+          - pluginRef: decode-filter
+          - pluginRef: active-request-scorer
+            weight: 2
+          - pluginRef: prefix-cache-scorer
+            weight: 3
+
+  modelServers:
+    matchLabels:
+      llm-d.ai/guide: "pd-disaggregation"

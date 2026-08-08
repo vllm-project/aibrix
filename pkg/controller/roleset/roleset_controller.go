@@ -144,6 +144,9 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err != nil {
 		managedErrors = append(managedErrors, fmt.Errorf("sync pod error %v", err))
 	}
+	if err := r.emitTopologyPolicyPendingReplacementEvent(ctx, roleSet); err != nil {
+		managedErrors = append(managedErrors, fmt.Errorf("emit topology policy event error %v", err))
+	}
 
 	// 3. update roleset status
 	status, err := r.calculateStatus(ctx, roleSet, managedErrors)

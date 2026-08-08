@@ -29,7 +29,7 @@ import (
 func (s *Server) HandleResponseHeaders(ctx context.Context, routerCtx *types.RoutingContext, requestID string, model string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, bool, int) {
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseHeaders)
 
-	_, span := tracer.Start(ctx, "HandleResponseHeaders")
+	_, span := tracer.Start(ctx, "process.handle_response_headers")
 	defer span.End()
 
 	var isProcessingError bool

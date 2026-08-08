@@ -18,6 +18,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -25,12 +26,15 @@ import (
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"go.opentelemetry.io/otel/attribute"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
+	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -42,7 +46,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 
 	body := req.Request.(*extProcPb.ProcessingRequest_RequestBody)
 
-	ctx, span := tracer.Start(ctx, "HandleRequestBody")
+	ctx, span := tracer.Start(ctx, "process.handle_request_body")
 	defer span.End()
 
 	var model, message string
@@ -69,6 +73,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 
 	routingCtx.Model = model
 	routingCtx.Message = message
+	routingCtx.Stream = stream
 	routingCtx.ReqBody = body.RequestBody.GetBody()
 
 	// early reject if model doesn't exist or no pods are ready
@@ -129,6 +134,11 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		externalFilter := routingCtx.ReqHeaders[HeaderExternalFilter]
 		targetPodIP, err := s.selectTargetPod(ctx, routingCtx, podsArr, externalFilter)
 		if targetPodIP == "" || err != nil {
+			var invalidReqErr *engine.InvalidRequestError
+			if errors.As(err, &invalidReqErr) {
+				return buildErrorResponse(envoyTypePb.StatusCode_BadRequest,
+					invalidReqErr.Error(), "", "", HeaderErrorRouting, "true"), model, stream, term
+			}
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingStrategy", routingAlgorithm, "model", model, "routingDuration", routingCtx.GetRoutingDelay())
 			return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, "error on selecting target pod", ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, stream, term
 		}
@@ -149,6 +159,18 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		routingDelay := routingCtx.GetRoutingDelay()
 		if routingAlgorithm == routing.RouterPD && !routingCtx.PrefillStartTime.IsZero() {
 			routingDelay = routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime)
+		}
+		if routingCtx.Span != nil {
+			routingCtx.Span.SetAttributes(
+				attribute.String("request_id", requestID),
+				attribute.String("request_path", requestPath),
+				attribute.String("model", model),
+				attribute.Bool("stream", stream),
+				attribute.String("target_pod", targetPodName),
+				attribute.String("target_pod_ip", targetPodIP),
+				attribute.Float64("outstanding_requests_at_start", request_count),
+				attribute.Int64("routing_time_taken_ms", routingDelay.Milliseconds()),
+			)
 		}
 		klog.InfoS("request_start", "request_id", requestID, "request_path", requestPath, "model", model, "stream", stream, "routing_strategy", routingAlgorithm,
 			"target_pod", targetPodName, "target_pod_ip", targetPodIP, "outstanding_requests", request_count, "routing_time_taken", routingDelay)
@@ -209,6 +231,15 @@ func getEngineBasedPathRewrite(requestPath string, pods []*v1.Pod) string {
 // Returns the pod list and nil on success, or nil and an error response on failure.
 func (s *Server) validateModelAvailability(requestID, model string) (types.PodList, *extProcPb.ProcessingResponse) {
 	if !s.cache.HasModel(model) {
+		if provider, ok := s.cache.(cache.ModelClaimBindingProvider); ok {
+			if pod, _, state, found := provider.ModelClaimBinding(model); found {
+				klog.InfoS("ModelClaim is known but not routable", "requestID", requestID, "model", model, "state", state)
+				if state == constants.ModelClaimRoutingStateSleeping && s.wakeRequester != nil {
+					s.wakeRequester.RequestWake(pod, model)
+				}
+				return nil, modelClaimRetryResponse(model, state)
+			}
+		}
 		klog.ErrorS(nil, "model doesn't exist in cache, probably wrong model name", "requestID", requestID, "model", model)
 		return nil, generateErrorResponse(envoyTypePb.StatusCode_BadRequest,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
@@ -226,6 +257,24 @@ func (s *Server) validateModelAvailability(requestID, model string) (types.PodLi
 	}
 
 	return podsArr, nil
+}
+
+func modelClaimRetryResponse(model, state string) *extProcPb.ProcessingResponse {
+	headers := []*configPb.HeaderValueOption{
+		{Header: &configPb.HeaderValue{Key: HeaderErrorNoModelBackends, RawValue: []byte(model)}},
+	}
+	message := fmt.Sprintf("model %s is %s", model, state)
+	if state != constants.ModelClaimRoutingStateFailed {
+		headers = append(headers, &configPb.HeaderValueOption{
+			Header: &configPb.HeaderValue{
+				Key: "Retry-After", RawValue: []byte(strconv.Itoa(modelClaimRetryAfterSeconds)),
+			},
+		})
+		message += "; retry shortly"
+	}
+	return generateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, headers,
+		message,
+		ErrorCodeServiceUnavailable, "model")
 }
 
 // Helper to fetch running requests on a pod with safe zero fallback.

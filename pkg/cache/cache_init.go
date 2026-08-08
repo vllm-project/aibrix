@@ -93,6 +93,9 @@ type Store struct {
 
 	// Model related storage
 	metaModels utils.SyncMap[string, *Model] // model_name -> *Model
+	// ModelClaim advertisements include non-routable port-0 states and are kept
+	// separate from metaModels by construction.
+	modelClaims modelClaimState
 
 	// Deploymnent related storage
 	enableProfileCaching bool                                    // Default to load from enableModelGPUProfileCaching, can be configured.
@@ -125,6 +128,9 @@ type Store struct {
 	// from Redis, grouped by pod key (namespace/name) → []fields. Swapped atomically by
 	// initGatewaySnapshotSync. Readers call Load() to get map[string][]map[string]string.
 	gatewaySnapshotCache atomic.Value
+
+	// modelReplicaEmitted tracks pods currently exported via model_replicas for stale-series cleanup.
+	modelReplicaEmitted utils.SyncMap[string, modelReplicaState]
 }
 
 // Get retrieves the cache instance
@@ -288,8 +294,9 @@ func InitWithPodsModelMetrics(st *Store, podMetrics map[string]map[string]metric
 			return true
 		}
 		if podmetrics, ok := podMetrics[podName]; ok {
+			modelName, _ := constants.ModelNameFromMetadata(metaPod.Pod.Labels, metaPod.Pod.Annotations)
 			for metricName, metric := range podmetrics {
-				if err := st.updatePodRecord(metaPod, metaPod.Pod.Labels[modelIdentifier], metricName, metrics.PodModelMetricScope, metric); err != nil {
+				if err := st.updatePodRecord(metaPod, modelName, metricName, metrics.PodModelMetricScope, metric); err != nil {
 					return false
 				}
 			}

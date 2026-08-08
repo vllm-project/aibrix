@@ -183,3 +183,66 @@ func TestSessionAffinityPostRouteUpdateFollowsFinalTargetPod(t *testing.T) {
 	assert.NoError(t, decodeErr)
 	assert.Equal(t, "2.2.2.2:8000", string(sessionBytes))
 }
+
+func TestSessionAffinityOpaqueKeyIsDeterministic(t *testing.T) {
+	podA := newPod("pod-a", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	podB := newPod("pod-b", "10.0.0.2", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	podC := newPod("pod-c", "10.0.0.3", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	router := &sessionAffinityRouter{}
+
+	route := func(pods []*v1.Pod) string {
+		ctx := types.NewRoutingContext(context.Background(), "test", "model1", "", "", "")
+		ctx.ReqHeaders = map[string]string{sessionKeyHeader: "agent-session-42"}
+		addr, err := router.Route(ctx, newMockPodList(pods, nil))
+		assert.NoError(t, err)
+		assert.NotEmpty(t, ctx.RespHeaders[sessionIDHeader])
+		assert.NotContains(t, ctx.RespHeaders, sessionKeyHeader)
+		return addr
+	}
+
+	first := route([]*v1.Pod{podA, podB, podC})
+	assert.Equal(t, first, route([]*v1.Pod{podC, podA, podB}))
+	assert.Equal(t, first, route([]*v1.Pod{podB, podC, podA}))
+}
+
+func TestSessionAffinityCookieTakesPrecedenceOverOpaqueKey(t *testing.T) {
+	podA := newPod("pod-a", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	podB := newPod("pod-b", "10.0.0.2", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	router := &sessionAffinityRouter{}
+	ctx := types.NewRoutingContext(context.Background(), "test", "model1", "", "", "")
+	ctx.ReqHeaders = map[string]string{
+		sessionIDHeader:  base64.StdEncoding.EncodeToString([]byte("10.0.0.2:8000")),
+		sessionKeyHeader: "agent-session-42",
+	}
+
+	addr, err := router.Route(ctx, newMockPodList([]*v1.Pod{podA, podB}, nil))
+	assert.NoError(t, err)
+	assert.Equal(t, "10.0.0.2:8000", addr)
+}
+
+func TestSessionAffinityOpaqueKeyScoreAll(t *testing.T) {
+	podA := newPod("pod-a", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	podB := newPod("pod-b", "10.0.0.2", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	pods := []*v1.Pod{podA, podB}
+	router := &sessionAffinityRouter{}
+	ctx := types.NewRoutingContext(context.Background(), "test", "model1", "", "", "")
+	ctx.ReqHeaders = map[string]string{sessionKeyHeader: "agent-session-42"}
+
+	scores, scored, err := router.ScoreAll(ctx, newMockPodList(pods, nil))
+	assert.NoError(t, err)
+	assert.Equal(t, []bool{true, true}, scored)
+	assert.Equal(t, 1, int(scores[0]+scores[1]))
+
+	selected := rendezvousPod(ctx, pods, "agent-session-42")
+	if selected == podA {
+		assert.Equal(t, []float64{1, 0}, scores)
+	} else {
+		assert.Equal(t, []float64{0, 1}, scores)
+	}
+}
+
+func TestSessionAffinityRejectsOversizedOpaqueKey(t *testing.T) {
+	pod := newPod("pod-a", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	ctx := types.NewRoutingContext(context.Background(), "test", "model1", "", "", "")
+	assert.Nil(t, rendezvousPod(ctx, []*v1.Pod{pod}, string(make([]byte, maxSessionKeyLen+1))))
+}

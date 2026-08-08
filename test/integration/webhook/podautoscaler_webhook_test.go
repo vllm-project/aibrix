@@ -92,6 +92,61 @@ var _ = ginkgo.Describe("podautoscaler default and validation", func() {
 			},
 			failed: false,
 		}),
+		ginkgo.Entry("KPA with valid metric windows", &testValidatingCase{
+			podautoscaler: func() *autoscalingapi.PodAutoscaler {
+				observeWindow := int64(600)
+				panicWindow := int64(60)
+				pa := wrapper.MakePodAutoscaler("kpa-windows").
+					Namespace(ns.Name).
+					ScalingStrategy(autoscalingapi.KPA).
+					MinReplicas(0).
+					MaxReplicas(10).
+					ScaleTargetRefWithKind("Deployment", "apps/v1", "test").
+					MetricSource(wrapper.MakeMetricSourcePod(autoscalingapi.HTTP,
+						"8080", "/metrics", "gpu_cache_usage_perc", "0.5")).
+					Obj()
+				pa.Spec.ObserveWindowSeconds = &observeWindow
+				pa.Spec.PanicWindowSeconds = &panicWindow
+				return pa
+			},
+			failed: false,
+		}),
+		ginkgo.Entry("metric window must be positive", &testValidatingCase{
+			podautoscaler: func() *autoscalingapi.PodAutoscaler {
+				observeWindow := int64(0)
+				pa := wrapper.MakePodAutoscaler("bad-window").
+					Namespace(ns.Name).
+					ScalingStrategy(autoscalingapi.KPA).
+					MinReplicas(0).
+					MaxReplicas(10).
+					ScaleTargetRefWithKind("Deployment", "apps/v1", "test").
+					MetricSource(wrapper.MakeMetricSourcePod(autoscalingapi.HTTP,
+						"8080", "/metrics", "gpu_cache_usage_perc", "0.5")).
+					Obj()
+				pa.Spec.ObserveWindowSeconds = &observeWindow
+				return pa
+			},
+			failed: true,
+		}),
+		ginkgo.Entry("panic window must not exceed observe window", &testValidatingCase{
+			podautoscaler: func() *autoscalingapi.PodAutoscaler {
+				observeWindow := int64(60)
+				panicWindow := int64(120)
+				pa := wrapper.MakePodAutoscaler("bad-window-order").
+					Namespace(ns.Name).
+					ScalingStrategy(autoscalingapi.KPA).
+					MinReplicas(0).
+					MaxReplicas(10).
+					ScaleTargetRefWithKind("Deployment", "apps/v1", "test").
+					MetricSource(wrapper.MakeMetricSourcePod(autoscalingapi.HTTP,
+						"8080", "/metrics", "gpu_cache_usage_perc", "0.5")).
+					Obj()
+				pa.Spec.ObserveWindowSeconds = &observeWindow
+				pa.Spec.PanicWindowSeconds = &panicWindow
+				return pa
+			},
+			failed: true,
+		}),
 		ginkgo.Entry("APA with valid EXTERNAL metric", &testValidatingCase{
 			podautoscaler: func() *autoscalingapi.PodAutoscaler {
 				return wrapper.MakePodAutoscaler("apa-external").

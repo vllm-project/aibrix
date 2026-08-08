@@ -37,3 +37,27 @@ type EngineHandler interface {
 	// response into routingCtx.ReqBody before the decode pod receives it.
 	MergePrefillResponse(routingCtx *types.RoutingContext, responseData map[string]any, pod *v1.Pod) error
 }
+
+// RawPrefillPayloadPreparer is an optional interface implemented by engines
+// that need to preserve the exact byte ordering of the original request body
+// (e.g. SGLang, where non-deterministic map key ordering would change
+// prompt_token_ids and degrade KV cache hit rates). When the handler
+// implements this interface, prefill.PreparePayload uses it instead of the
+// unmarshal → mutate → marshal path, which avoids re-serializing nested
+// fields such as tool schemas.
+type RawPrefillPayloadPreparer interface {
+	// PreparePrefillPayload returns the prefill request body and side-effects
+	// routingCtx.ReqBody with the decode request body. Both bodies must
+	// preserve all untouched fields from the original request at the byte
+	// level. On error, routingCtx.ReqBody must not be modified.
+	PreparePrefillPayload(routingCtx *types.RoutingContext, pod *v1.Pod) (prefillBody []byte, err error)
+}
+
+// InvalidRequestError represents a client-side error (malformed request body)
+// that should result in an HTTP 400 response rather than a 5xx. Gateway layers
+// should use errors.As to detect this type and map it to BadRequest.
+type InvalidRequestError struct {
+	Message string
+}
+
+func (e *InvalidRequestError) Error() string { return e.Message }

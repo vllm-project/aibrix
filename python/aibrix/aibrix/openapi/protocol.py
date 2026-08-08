@@ -239,8 +239,24 @@ class RuntimeSnapshotModel(NoProtectedBaseModel):
     ipc_name: str
     phase: str
     ready: bool
+    # Process liveness is independent from readiness: a booting engine is
+    # alive but non-routable, while a restart/terminal failure is not alive.
+    alive: bool = True
+    restart_count: int = 0
+    last_error: Optional[str] = None
+    last_transition: Optional[datetime] = None
     kv_used_bytes: int
     kv_capacity_bytes: int
+    # Largest amount of GPU memory attributable to this engine on any visible
+    # accelerator. This is an observation for placement ranking, not an
+    # allocation guarantee.
+    hbm_peak_bytes: int = 0
+    # Per-engine request activity is read by the sidecar from localhost. False
+    # means policy must not infer that an engine is idle from unavailable metrics.
+    request_metrics_observed: bool = False
+    requests_running: int = 0
+    requests_waiting: int = 0
+    request_success_total: Optional[int] = None
 
 
 class RuntimeSnapshotResponse(NoProtectedBaseModel):

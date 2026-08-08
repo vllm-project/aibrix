@@ -28,13 +28,17 @@ import (
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -652,8 +656,8 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 		errContains string
 	}{
 		{
-			name:  "successful validation",
-			model: "test-model",
+			name:  "successful validation for path model name",
+			model: "/models/mock",
 			setupMock: func(gw *MockGatewayClient, gwv1 *MockGatewayV1Client, http *MockHTTPRouteClient) {
 				gw.On("GatewayV1").Return(gwv1)
 				gwv1.On("HTTPRoutes", "aibrix-system").Return(http)
@@ -675,7 +679,7 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 						},
 					},
 				}
-				http.On("Get", mock.Anything, "test-model-router", mock.Anything).Return(route, nil)
+				http.On("Get", mock.Anything, utils.ModelRouterName("/models/mock"), mock.Anything).Return(route, nil)
 			},
 			wantErr: false,
 		},
@@ -1446,6 +1450,72 @@ func TestProcess_RecvEOF_NotCompleted(t *testing.T) {
 	mc.AssertExpectations(t)
 }
 
+func TestProcess_CleansRequestBufferOnExitBeforeResponseEnd(t *testing.T) {
+	mc := &MockCache{}
+	mc.On("AddRequestCount", mock.Anything, mock.Anything, mock.Anything).Return(int64(0))
+	mc.On("DoneRequestCount", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	mc.On("HasModel", mock.Anything).Return(true)
+	pods := &utils.PodArray{Pods: []*v1.Pod{
+		{
+			Status: v1.PodStatus{
+				PodIP:      "1.2.3.4",
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		},
+	}}
+	mc.On("ListPodsByModel", mock.Anything).Return(pods, nil)
+
+	const requestID = "4bf92f3577b34da6a3ce929d0e0e4736"
+	requestBuffers.Delete(requestID)
+
+	srv := &mockProcessServer{ctx: context.Background()}
+	req := &extProcPb.ProcessingRequest{}
+	recvCount := 0
+	srv.On("Recv").Return(req, nil).Run(func(args mock.Arguments) {
+		switch recvCount {
+		case 0:
+			req.Request = &extProcPb.ProcessingRequest_RequestHeaders{
+				RequestHeaders: &extProcPb.HttpHeaders{
+					Headers: &configPb.HeaderMap{
+						Headers: []*configPb.HeaderValue{
+							{Key: ":routing-strategy", Value: "random", RawValue: []byte("random")},
+							{Key: ":path", Value: "/v1/chat/completions", RawValue: []byte("/v1/chat/completions")},
+							{Key: HeaderTraceParent, Value: "00-" + requestID + "-00f067aa0ba902b7-01", RawValue: []byte("00-" + requestID + "-00f067aa0ba902b7-01")},
+						},
+					},
+				},
+			}
+		case 1:
+			req.Request = &extProcPb.ProcessingRequest_RequestBody{
+				RequestBody: &extProcPb.HttpBody{
+					Body: []byte(`{"model": "test", "messages": [{"role": "user", "content": "hello"}]}`),
+				},
+			}
+		case 2:
+			req.Request = &extProcPb.ProcessingRequest_ResponseBody{
+				ResponseBody: &extProcPb.HttpBody{
+					Body:        []byte(`{"model": "test", "usage": {"prompt_tokens": `),
+					EndOfStream: false,
+				},
+			}
+		}
+		recvCount++
+	}).Times(3)
+	srv.On("Recv").Return((*extProcPb.ProcessingRequest)(nil), io.EOF).Once()
+	srv.On("Send", mock.Anything).Return(nil)
+
+	s := newProcessTestServer(openShutdownCh(), mc)
+
+	err := s.Process(srv)
+
+	assert.Equal(t, io.EOF, err)
+	_, ok := requestBuffers.Load(requestID)
+	assert.False(t, ok, "expected request buffer to be removed when Process exits before response end")
+
+	srv.AssertExpectations(t)
+	mc.AssertExpectations(t)
+}
+
 // TestProcess_RecvGRPCCanceled verifies that a gRPC Canceled error from Recv
 // is treated as a normal stream closure and returned as codes.Canceled.
 func TestProcess_RecvGRPCCanceled(t *testing.T) {
@@ -1655,4 +1725,156 @@ func TestProcess_ShutdownWhileRecvBlocked(t *testing.T) {
 	}
 
 	mc.AssertExpectations(t)
+}
+
+func TestModelInFlightTracking(t *testing.T) {
+	var gauges []map[string]string
+	originalIncFn := metrics.IncGaugeMetricFnForTest
+	originalDecFn := metrics.DecGaugeMetricFnForTest
+	defer func() {
+		metrics.IncGaugeMetricFnForTest = originalIncFn
+		metrics.DecGaugeMetricFnForTest = originalDecFn
+	}()
+	recordFn := func(dir string) func(name string, help string, labelNames []string, labelValues ...string) {
+		return func(name string, help string, labelNames []string, labelValues ...string) {
+			if name != metrics.GatewayModelInFlight {
+				return
+			}
+			labels := make(map[string]string, len(labelNames))
+			for i, ln := range labelNames {
+				labels[ln] = labelValues[i]
+			}
+			labels["_dir"] = dir
+			gauges = append(gauges, labels)
+		}
+	}
+	metrics.IncGaugeMetricFnForTest = recordFn("inc")
+	metrics.DecGaugeMetricFnForTest = recordFn("dec")
+
+	st := &processState{model: "qwen3-8B"}
+	st.trackModelInFlight()
+	st.trackModelInFlight() // idempotent
+	require.Len(t, gauges, 1)
+	require.Equal(t, "qwen3-8B", gauges[0]["model"])
+	require.Equal(t, "inc", gauges[0]["_dir"])
+
+	st.releaseModelInFlight()
+	st.releaseModelInFlight() // idempotent
+	require.Len(t, gauges, 2)
+	require.Equal(t, "dec", gauges[1]["_dir"])
+}
+
+func TestModelInFlightTracking_ModelChange(t *testing.T) {
+	var gauges []map[string]string
+	originalIncFn := metrics.IncGaugeMetricFnForTest
+	originalDecFn := metrics.DecGaugeMetricFnForTest
+	defer func() {
+		metrics.IncGaugeMetricFnForTest = originalIncFn
+		metrics.DecGaugeMetricFnForTest = originalDecFn
+	}()
+	recordFn := func(dir string) func(name string, help string, labelNames []string, labelValues ...string) {
+		return func(name string, help string, labelNames []string, labelValues ...string) {
+			if name != metrics.GatewayModelInFlight {
+				return
+			}
+			labels := make(map[string]string, len(labelNames))
+			for i, ln := range labelNames {
+				labels[ln] = labelValues[i]
+			}
+			labels["_dir"] = dir
+			gauges = append(gauges, labels)
+		}
+	}
+	metrics.IncGaugeMetricFnForTest = recordFn("inc")
+	metrics.DecGaugeMetricFnForTest = recordFn("dec")
+
+	st := &processState{model: "inferred-model"}
+	st.trackModelInFlight()
+	require.Len(t, gauges, 1)
+	require.Equal(t, "inferred-model", gauges[0]["model"])
+	require.Equal(t, "inc", gauges[0]["_dir"])
+
+	st.model = "actual-model"
+	st.trackModelInFlight()
+	require.Len(t, gauges, 3)
+	require.Equal(t, "inferred-model", gauges[1]["model"])
+	require.Equal(t, "dec", gauges[1]["_dir"])
+	require.Equal(t, "actual-model", gauges[2]["model"])
+	require.Equal(t, "inc", gauges[2]["_dir"])
+
+	st.releaseModelInFlight()
+	require.Len(t, gauges, 4)
+	require.Equal(t, "actual-model", gauges[3]["model"])
+	require.Equal(t, "dec", gauges[3]["_dir"])
+}
+
+func TestProcess_RequestIDFromSpanContext(t *testing.T) {
+	traceID, err := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	require.NoError(t, err)
+
+	spanID, err := trace.SpanIDFromHex("00f067aa0ba902b7")
+	require.NoError(t, err)
+
+	spanContext := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+		Remote:     true,
+	})
+	ctx := trace.ContextWithRemoteSpanContext(context.Background(), spanContext)
+
+	mc := &MockCache{}
+	mc.On(
+		"DoneRequestCount",
+		mock.Anything,
+		traceID.String(),
+		"",
+		int64(0),
+	).Return().Once()
+
+	srv := &mockProcessServer{ctx: ctx}
+	srv.On("Recv").
+		Return((*extProcPb.ProcessingRequest)(nil), io.EOF).
+		Once()
+
+	s := newProcessTestServer(openShutdownCh(), mc)
+
+	err = s.Process(srv)
+
+	assert.ErrorIs(t, err, io.EOF)
+	mc.AssertExpectations(t)
+	srv.AssertExpectations(t)
+}
+
+func TestProcess_RequestIDFallsBackToUUID(t *testing.T) {
+	var gotRequestID string
+
+	mc := &MockCache{}
+	mc.On(
+		"DoneRequestCount",
+		mock.Anything,
+		mock.AnythingOfType("string"),
+		"",
+		int64(0),
+	).Run(func(args mock.Arguments) {
+		gotRequestID = args.String(1)
+	}).Return().Once()
+
+	srv := &mockProcessServer{ctx: context.Background()}
+	srv.On("Recv").
+		Return((*extProcPb.ProcessingRequest)(nil), io.EOF).
+		Once()
+
+	s := newProcessTestServer(openShutdownCh(), mc)
+
+	err := s.Process(srv)
+
+	assert.ErrorIs(t, err, io.EOF)
+	assert.NotEmpty(t, gotRequestID)
+
+	_, parseErr := uuid.Parse(gotRequestID)
+	assert.NoError(t, parseErr, "request ID should fall back to a UUID")
+
+	mc.AssertExpectations(t)
+	srv.AssertExpectations(t)
 }

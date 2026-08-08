@@ -18,6 +18,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -32,6 +33,7 @@ import (
 	"google.golang.org/grpc/reflection"
 	"k8s.io/klog/v2"
 
+	"github.com/vllm-project/aibrix/apps/console/api/deployment/provider"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/handler"
 	"github.com/vllm-project/aibrix/apps/console/api/metrics"
@@ -57,6 +59,7 @@ type Server struct {
 	planner        plannerapi.Planner
 	injector       error_injection.Injector
 	metricsHandler http.Handler
+	clusterClients provider.ClusterClientProvider
 }
 
 // New creates a new console Server from configuration.
@@ -128,6 +131,7 @@ func New(cfg *config.Config) *Server {
 		auth:           auth,
 		injector:       injector,
 		metricsHandler: metricsHandler,
+		clusterClients: provider.NewKubernetesClientProvider(cfg.KubernetesProvider),
 	}
 }
 
@@ -156,9 +160,15 @@ func (s *Server) StartGRPC(addr string) error {
 	if err := s.planner.Recover(context.Background()); err != nil {
 		klog.Warningf("planner recovery failed (continuing without recovered jobs): %v", err)
 	}
+	deploymentProviders := provider.NewRegistry(
+		provider.NewKubernetesDeploymentProvider(
+			s.clusterClients,
+			s.cfg.KubernetesWorkload,
+		),
+	)
 
 	// Register all service handlers
-	pb.RegisterDeploymentServiceServer(s.grpcServer, handler.NewDeploymentHandler(s.store))
+	pb.RegisterDeploymentServiceServer(s.grpcServer, handler.NewDeploymentHandler(s.store, deploymentProviders))
 	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, s.planner, s.cfg.DefaultBatchModelDeploymentTemplate, s.cfg.DevMode, s.injector))
 	pb.RegisterModelServiceServer(s.grpcServer, handler.NewModelHandler(s.store))
 	pb.RegisterModelDeploymentTemplateServiceServer(s.grpcServer, handler.NewModelDeploymentTemplateHandler(s.store))
@@ -228,8 +238,24 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 	fileHandler := handler.NewFileHandler(s.cfg.MetadataServiceURL, s.injector, s.store)
 	fileHandler.RegisterRoutes(mux)
 
+	// Register the Kubernetes-backed ModelAdapter BFF.
+	modelAdapterHandler := handler.NewModelAdapterHandler(s.clusterClients)
+	if err := modelAdapterHandler.RegisterRoutes(mux); err != nil {
+		return err
+	}
+
 	// Register auth routes
 	s.auth.RegisterAuthRoutes(mux)
+
+	// Register frontend-consumed configuration.
+	if err := mux.HandlePath("GET", "/api/v1/config/job-limits", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(handler.JobLimitsConfig()); err != nil {
+			klog.Errorf("write job limits response: %v", err)
+		}
+	}); err != nil {
+		return err
+	}
 
 	// Register health endpoint
 	if err := mux.HandlePath("GET", "/api/v1/health", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {

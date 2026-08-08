@@ -32,6 +32,7 @@ from aibrix.batch.client import (
     NoopEndpointSource,
     RetryConfig,
 )
+from aibrix.batch.client.engine import _ConcurrencyAdmission
 
 
 class _FakeChannel:
@@ -645,6 +646,39 @@ async def test_run_pulls_requests_only_after_admission():
 
 
 @pytest.mark.asyncio
+async def test_admission_backoff_is_interrupted_by_completion():
+    delay_checked = asyncio.Event()
+
+    class _BackoffController:
+        def __init__(self):
+            self.delay = 0.0
+
+        def limit(self):
+            return 2
+
+        def admission_delay_seconds(self):
+            if self.delay > 0:
+                delay_checked.set()
+            return self.delay
+
+        def on_complete(self, outcome):
+            self.delay = 0.0
+
+    controller = _BackoffController()
+    admission = _ConcurrencyAdmission(controller)
+    await admission.acquire()
+
+    controller.delay = 10.0
+    waiting = asyncio.create_task(admission.acquire())
+    await delay_checked.wait()
+
+    await admission.release(ConcurrencyOutcome(success=True))
+    await asyncio.wait_for(waiting, timeout=0.2)
+    assert admission.inflight() == 1
+    await admission.release()
+
+
+@pytest.mark.asyncio
 async def test_run_stops_admitting_when_adaptive_limit_drops_below_inflight():
     pulled = []
     results = []
@@ -762,6 +796,25 @@ async def test_adaptive_concurrency_respects_absolute_max_cap():
 
     assert len(results) == 24
     assert peak <= 2
+
+
+@pytest.mark.asyncio
+async def test_adaptive_concurrency_can_decrease_below_source_capacity():
+    source = _FakeSource([_FakeChannel("a"), _FakeChannel("b")])
+    engine = DispatchEngine(source, max_retries=0)
+    controller = await engine._resolve_concurrency_controller(
+        max_concurrency=32,
+        adaptive_concurrency=True,
+        adaptive_max_factor=1,
+        adaptive_max_concurrency=32,
+        concurrency_controller=None,
+    )
+    overload = ConcurrencyOutcome(success=False, status_code=503, retryable=True)
+
+    for _ in range(512):
+        controller.on_complete(overload)
+
+    assert controller.limit() == 1
 
 
 @pytest.mark.asyncio

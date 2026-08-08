@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net"
@@ -108,8 +109,19 @@ func TestPDRouter_Route(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ts := setupTestServer(t, tt.serverCode, tt.serverResp, tt.llmEngine)
+			ts, prefillPort := setupTestServer(t, tt.serverCode, tt.serverResp, tt.llmEngine)
 			defer ts.Close()
+
+			// Stamp the dynamic port onto each prefill pod so GetModelPortForPod
+			// resolves it instead of falling back to the default 8000.
+			for _, pod := range tt.readyPods {
+				if pod.Labels[PDRoleIdentifier] == "prefill" {
+					if pod.Labels == nil {
+						pod.Labels = map[string]string{}
+					}
+					pod.Labels[constants.ModelLabelPort] = prefillPort
+				}
+			}
 
 			ctx := types.NewRoutingContext(context.Background(), "test", "model", "message", "test-request", "user")
 			ctx.Engine = tt.llmEngine
@@ -1111,7 +1123,7 @@ func TestDoPrefillRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ts := setupTestServer(t, tt.serverCode, tt.serverResp, tt.llmEngine)
+			ts, prefillPort := setupTestServer(t, tt.serverCode, tt.serverResp, tt.llmEngine)
 			defer ts.Close()
 
 			prefillPods := []*v1.Pod{
@@ -1119,6 +1131,9 @@ func TestDoPrefillRequest(t *testing.T) {
 				createPrefillPod("p2", tt.llmEngine),
 				createPrefillPod("p3", tt.llmEngine),
 				createPrefillPod("p4", tt.llmEngine),
+			}
+			for _, pod := range prefillPods {
+				pod.Labels[constants.ModelLabelPort] = prefillPort
 			}
 
 			routingCtx := createRoutingCtx()
@@ -1539,15 +1554,16 @@ func TestUpdateRoutingContextNIXLMode(t *testing.T) {
 
 func TestVLLMIntegrationWithTestServer(t *testing.T) {
 	// Integration test: verify vLLM prefill request extracts KV params from test server
-	ts := setupTestServer(t, http.StatusOK, "", VLLMEngine) // Empty resp means use default vLLM response
+	ts, prefillPort := setupTestServer(t, http.StatusOK, "", VLLMEngine) // Empty resp means use default vLLM response
 	defer ts.Close()
 
 	prefillPods := []*v1.Pod{{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "prefill-test",
 			Labels: map[string]string{
-				LLMEngineIdentifier: VLLMEngine,
-				PDRoleIdentifier:    "prefill",
+				LLMEngineIdentifier:      VLLMEngine,
+				PDRoleIdentifier:         "prefill",
+				constants.ModelLabelPort: prefillPort,
 			},
 		},
 		Status: v1.PodStatus{
@@ -1670,15 +1686,16 @@ func TestVLLMKVTransferProcessing(t *testing.T) {
 
 func TestTensorRTIntegrationWithTestServer(t *testing.T) {
 	// Integration test: verify TRT prefill request extracts disaggregated_params from test server
-	ts := setupTestServer(t, http.StatusOK, "", TensorRTLLM)
+	ts, prefillPort := setupTestServer(t, http.StatusOK, "", TensorRTLLM)
 	defer ts.Close()
 
 	prefillPods := []*v1.Pod{{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "prefill-trt",
 			Labels: map[string]string{
-				LLMEngineIdentifier: TensorRTLLM,
-				PDRoleIdentifier:    "prefill",
+				LLMEngineIdentifier:      TensorRTLLM,
+				PDRoleIdentifier:         "prefill",
+				constants.ModelLabelPort: prefillPort,
 			},
 		},
 		Status: v1.PodStatus{
@@ -1816,11 +1833,19 @@ func TestUpdateRoutingContextWithTRTDisaggParams(t *testing.T) {
 }
 
 // Common test utilities
-func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *httptest.Server {
-	l, err := net.Listen("tcp", "127.0.0.1:8000")
+// setupTestServer starts an httptest server on an OS-assigned free port
+// (127.0.0.1:0) and returns the server along with that port (as a string).
+// Using a dynamic port instead of a hardcoded 127.0.0.1:8000 avoids
+// "address already in use" collisions with other packages' tests
+// (e.g. pkg/controller/modeladapter) when `go test ./...` runs package
+// binaries in parallel. Callers must set the returned port on the prefill
+// pod's constants.ModelLabelPort label so GetModelPortForPod resolves it.
+func setupTestServer(t *testing.T, code int, resp string, llmEngine string) (*httptest.Server, string) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
+	port := listenerPort(t, l)
 
 	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -1920,7 +1945,7 @@ func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *htt
 	_ = ts.Listener.Close()
 	ts.Listener = l
 	ts.Start()
-	return ts
+	return ts, port
 }
 
 func TestLoadImbalanceSelectPrefillPod(t *testing.T) {
@@ -3046,4 +3071,34 @@ func TestSelectKvConnectorType(t *testing.T) {
 			assert.Equal(t, tt.expected, actual)
 		})
 	}
+}
+
+// TestRoute_SGLangDuplicateFieldsRejectsBeforeSelector verifies that an
+// SGLang request with duplicate controlled fields is rejected before
+// podSelector.Select is called, so no prefix-index or counter state is mutated.
+func TestRoute_SGLangDuplicateFieldsRejectsBeforeSelector(t *testing.T) {
+	selectorCalled := false
+	router := &pdRouter{
+		podSelector: selector.NewDefaultSelector(func(_ *types.RoutingContext, _ []*v1.Pod) (*v1.Pod, *v1.Pod, error) {
+			selectorCalled = true
+			return nil, nil, fmt.Errorf("selector should not have been called")
+		}),
+		prefillRequestTracker: pd.NewPrefillRequestTracker(),
+		pendingDecodeTracker:  pd.NewPendingDecodeTracker(),
+	}
+
+	dupBody := []byte(`{"model":"m","messages":[],"bootstrap_host":"a","bootstrap_host":"b"}`)
+	ctx := &types.RoutingContext{
+		Engine:  SGLangEngine,
+		ReqBody: dupBody,
+		Context: context.Background(),
+		ReqPath: testChatCompletionsPath,
+	}
+
+	_, err := router.Route(ctx, &utils.PodArray{Pods: []*v1.Pod{}})
+	assert.Error(t, err)
+	assert.False(t, selectorCalled, "podSelector.Select must not be called for invalid SGLang requests")
+
+	var invalidReqErr *engine.InvalidRequestError
+	assert.True(t, errors.As(err, &invalidReqErr), "must return *InvalidRequestError")
 }

@@ -13,8 +13,12 @@ spec:
     name: nginx-deployment
   minReplicas: 1
   maxReplicas: 10
-  targetMetric: "CPU"
-  targetValue: "10"
+  observeWindowSeconds: 600
+  panicWindowSeconds: 60
+  metricsSources:
+    - metricSourceType: "resource"
+      targetMetric: "cpu"
+      targetValue: "10"
   scalingStrategy: "KPA"
   circuitBreaker:
     enabled: true

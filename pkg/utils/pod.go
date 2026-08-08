@@ -372,15 +372,22 @@ func GetModelPortForPod(requestID string, pod *v1.Pod) int64 {
 	return modelPort
 }
 
-// ModelClaimsFromPod parses modelclaim.aibrix.ai/* annotations on a warm
-// runtime pod into served-model-name -> serving port. Port 0 is kept as a
-// non-routable marker so cache can distinguish a known-but-not-ready ModelClaim
-// from an unknown model.
-func ModelClaimsFromPod(pod *v1.Pod) map[string]int {
+// ModelClaimBinding is the runtime-observed route state carried by one warm
+// pod annotation. Port 0 is known but non-routable.
+type ModelClaimBinding struct {
+	Model string
+	Port  int
+	State string
+}
+
+// ModelClaimBindingsFromPod parses modelclaim.aibrix.ai/* annotations on a
+// warm runtime pod. State is additive: legacy annotations infer active from a
+// positive port and activating from port 0.
+func ModelClaimBindingsFromPod(pod *v1.Pod) map[string]ModelClaimBinding {
 	if pod == nil || len(pod.Annotations) == 0 {
 		return nil
 	}
-	var out map[string]int
+	var out map[string]ModelClaimBinding
 	for key, value := range pod.Annotations {
 		if !strings.HasPrefix(key, constants.ModelClaimPodAnnotationPrefix) {
 			continue
@@ -388,15 +395,60 @@ func ModelClaimsFromPod(pod *v1.Pod) map[string]int {
 		var entry struct {
 			Model string `json:"model"`
 			Port  int    `json:"port"`
+			State string `json:"state,omitempty"`
 		}
-		if err := json.Unmarshal([]byte(value), &entry); err != nil || entry.Model == "" {
+		if err := json.Unmarshal([]byte(value), &entry); err != nil || entry.Model == "" ||
+			entry.Port < 0 || entry.Port > 65535 {
 			klog.Warningf("pod %s has malformed ModelClaim annotation %q=%q", pod.Name, key, value)
 			continue
 		}
-		if out == nil {
-			out = make(map[string]int)
+		if entry.State == "" {
+			entry.State = constants.ModelClaimRoutingStateActive
+			if entry.Port == 0 {
+				entry.State = constants.ModelClaimRoutingStateActivating
+			}
 		}
-		out[entry.Model] = entry.Port
+		if !validModelClaimRoutingState(entry.State) {
+			klog.Warningf("pod %s has invalid ModelClaim routing state in annotation %q=%q", pod.Name, key, value)
+			continue
+		}
+		if (entry.State == constants.ModelClaimRoutingStateActive) != (entry.Port > 0) {
+			klog.Warningf("pod %s has inconsistent ModelClaim routing state in annotation %q=%q", pod.Name, key, value)
+			continue
+		}
+		if out == nil {
+			out = make(map[string]ModelClaimBinding)
+		}
+		out[entry.Model] = ModelClaimBinding{
+			Model: entry.Model,
+			Port:  entry.Port,
+			State: entry.State,
+		}
+	}
+	return out
+}
+
+func validModelClaimRoutingState(state string) bool {
+	switch state {
+	case constants.ModelClaimRoutingStateActive,
+		constants.ModelClaimRoutingStateActivating,
+		constants.ModelClaimRoutingStateSleeping,
+		constants.ModelClaimRoutingStateFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// ModelClaimsFromPod is the routing compatibility view of ModelClaim bindings.
+func ModelClaimsFromPod(pod *v1.Pod) map[string]int {
+	bindings := ModelClaimBindingsFromPod(pod)
+	if len(bindings) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(bindings))
+	for model, binding := range bindings {
+		out[model] = binding.Port
 	}
 	return out
 }

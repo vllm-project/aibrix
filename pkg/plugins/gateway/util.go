@@ -26,6 +26,7 @@ import (
 	"mime/multipart"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/bytedance/sonic"
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -36,6 +37,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"go.opentelemetry.io/otel/attribute"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -971,6 +973,29 @@ func GetTraceID(traceparent, requestID string) string {
 			return parts[1]
 		}
 	}
-
 	return requestID
+}
+
+// fieldsToAttributes trans Key-Value to OTel attr
+func fieldsToAttributes(fields []interface{}) []attribute.KeyValue {
+	attrs := make([]attribute.KeyValue, 0, len(fields)/2)
+	for i := 0; i < len(fields)-1; i += 2 {
+		key := fmt.Sprint(fields[i])
+
+		switch v := fields[i+1].(type) {
+		case string:
+			attrs = append(attrs, attribute.String(key, v))
+		case int:
+			attrs = append(attrs, attribute.Int(key, v))
+		case int64:
+			attrs = append(attrs, attribute.Int64(key, v))
+		case float64:
+			attrs = append(attrs, attribute.Float64(key, v))
+		case time.Duration:
+			attrs = append(attrs, attribute.String(key, v.String()))
+		default:
+			attrs = append(attrs, attribute.String(key, fmt.Sprint(v)))
+		}
+	}
+	return attrs
 }

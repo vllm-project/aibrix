@@ -85,3 +85,44 @@ func TestGetMetricValue(t *testing.T) {
 	assert.Equal(t, metricValue, stableValue)
 	assert.Equal(t, metricValue, panicValue)
 }
+
+func TestConfigureMetricWindowsUsesCustomDurations(t *testing.T) {
+	client := NewMetricsClient(time.Second)
+
+	metricKey := types.MetricKey{
+		Namespace:   "default",
+		Name:        "test-llm",
+		MetricName:  "gpu_cache_usage_perc",
+		PaNamespace: "default",
+		PaName:      "test-llm-kpa",
+	}
+	require.NoError(t, client.ConfigureMetricWindows(metricKey, 90*time.Second, 30*time.Second))
+
+	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, client.UpdateMetrics(start, metricKey, 10))
+	require.NoError(t, client.UpdateMetrics(start.Add(60*time.Second), metricKey, 70))
+
+	stableValue, panicValue, err := client.GetMetricValue(metricKey, start.Add(60*time.Second))
+
+	require.NoError(t, err)
+	assert.Equal(t, 40.0, stableValue)
+	assert.Equal(t, 70.0, panicValue)
+}
+
+func TestConfigureMetricWindowsClampsHistoryDuration(t *testing.T) {
+	client := NewMetricsClient(time.Second)
+
+	metricKey := types.MetricKey{
+		Namespace:   "default",
+		Name:        "test-llm",
+		MetricName:  "gpu_cache_usage_perc",
+		PaNamespace: "default",
+		PaName:      "test-llm-kpa",
+	}
+	largeWindow := time.Duration(1<<63 - 1)
+
+	require.NoError(t, client.ConfigureMetricWindows(metricKey, largeWindow, largeWindow))
+
+	assert.Equal(t, maxDuration, historyDuration(largeWindow))
+	assert.Equal(t, 10*time.Second, historyDuration(time.Second))
+}

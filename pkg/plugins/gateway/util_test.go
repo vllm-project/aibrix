@@ -19,6 +19,7 @@ package gateway
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -26,6 +27,7 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 func Test_ValidateRequestBody(t *testing.T) {
@@ -1375,6 +1377,54 @@ func TestGetTraceID(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("GetTraceID() = %v, want %v", got, tt.want)
 			}
+		})
+	}
+}
+
+func TestFieldsToAttributes(t *testing.T) {
+	tests := []struct {
+		name   string
+		fields []interface{}
+		want   []attribute.KeyValue
+	}{
+		{
+			name: "supported and fallback value types",
+			fields: []interface{}{
+				"string", "value",
+				"int", 7,
+				"int64", int64(8),
+				"float64", 1.5,
+				"duration", 1500 * time.Millisecond,
+				"fallback", true,
+				99, "numeric key",
+			},
+			want: []attribute.KeyValue{
+				attribute.String("string", "value"),
+				attribute.Int("int", 7),
+				attribute.Int64("int64", 8),
+				attribute.Float64("float64", 1.5),
+				attribute.String("duration", "1.5s"),
+				attribute.String("fallback", "true"),
+				attribute.String("99", "numeric key"),
+			},
+		},
+		{
+			name:   "empty fields",
+			fields: nil,
+			want:   []attribute.KeyValue{},
+		},
+		{
+			name:   "incomplete key value pair is ignored",
+			fields: []interface{}{"complete", "value", "orphan"},
+			want: []attribute.KeyValue{
+				attribute.String("complete", "value"),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, fieldsToAttributes(tt.fields))
 		})
 	}
 }

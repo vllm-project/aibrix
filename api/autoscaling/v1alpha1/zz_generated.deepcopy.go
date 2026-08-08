@@ -157,6 +157,16 @@ func (in *PodAutoscalerSpec) DeepCopyInto(out *PodAutoscalerSpec) {
 		*out = make([]MetricSource, len(*in))
 		copy(*out, *in)
 	}
+	if in.ObserveWindowSeconds != nil {
+		in, out := &in.ObserveWindowSeconds, &out.ObserveWindowSeconds
+		*out = new(int64)
+		**out = **in
+	}
+	if in.PanicWindowSeconds != nil {
+		in, out := &in.PanicWindowSeconds, &out.PanicWindowSeconds
+		*out = new(int64)
+		**out = **in
+	}
 	if in.CircuitBreaker != nil {
 		in, out := &in.CircuitBreaker, &out.CircuitBreaker
 		*out = new(CircuitBreakerConfig)

@@ -36,6 +36,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -135,6 +136,82 @@ func TestComputeDesiredReplicas(t *testing.T) {
 			assert.Equal(t, tt.expectedReplicas, result.DesiredReplicas)
 		})
 	}
+}
+
+func TestComputeDesiredReplicasConfiguresMetricWindowsFromPodAutoscalerSpec(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = autoscalingv1alpha1.AddToScheme(scheme)
+
+	pa := autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "default",
+			Name:      "test-llm-kpa",
+		},
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{
+				Kind: "Deployment",
+				Name: "test-llm",
+			},
+			MaxReplicas:          10,
+			ScalingStrategy:      autoscalingv1alpha1.KPA,
+			ObserveWindowSeconds: ptr.To[int64](120),
+			PanicWindowSeconds:   ptr.To[int64](30),
+			MetricsSources: []autoscalingv1alpha1.MetricSource{
+				{
+					MetricSourceType: autoscalingv1alpha1.POD,
+					TargetMetric:     "gpu_cache_usage_perc",
+					TargetValue:      "50",
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(&pa).
+		Build()
+	mockFactory := &mockMetricFetcherFactory{
+		mockMetricFetcher: mockMetricFetcher{
+			metricsValue: 10.0,
+		},
+	}
+	autoScaler := NewDefaultAutoScaler(mockFactory, fakeClient)
+
+	scalingContext := scalingctx.NewBaseScalingContext()
+	scalingContext.MaxReplicas = 10
+	require.NoError(t, scalingContext.UpdateByPaTypes(&pa))
+
+	request := ReplicaComputeRequest{
+		PodAutoscaler:   pa,
+		ScalingContext:  scalingContext,
+		CurrentReplicas: 1,
+		Pods: []corev1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-1"},
+			},
+		},
+		Timestamp: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+
+	_, err := autoScaler.ComputeDesiredReplicas(context.TODO(), request)
+	require.NoError(t, err)
+
+	mockFactory.mockMetricFetcher.metricsValue = 70.0
+	request.Timestamp = request.Timestamp.Add(60 * time.Second)
+	_, err = autoScaler.ComputeDesiredReplicas(context.TODO(), request)
+	require.NoError(t, err)
+
+	metricKey := types.MetricKey{
+		Namespace:   "default",
+		Name:        "test-llm",
+		MetricName:  "gpu_cache_usage_perc",
+		PaNamespace: "default",
+		PaName:      "test-llm-kpa",
+	}
+	stableValue, panicValue, err := autoScaler.metricsClient.GetMetricValue(metricKey, request.Timestamp)
+	require.NoError(t, err)
+	assert.Equal(t, 40.0, stableValue)
+	assert.Equal(t, 70.0, panicValue)
 }
 
 type mockMetricFetcherFactory struct {

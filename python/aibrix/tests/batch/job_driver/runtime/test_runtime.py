@@ -133,9 +133,12 @@ class _R(RuntimeBase):
             )
         return await _maybe_await(self._wait_ready_hook(handle))
 
-    async def _check_liveness(self, handle):
+    async def _check_liveness(self, handle, reason="unspecified"):
         if self._check_liveness_hook is None:
-            return await super()._check_liveness(handle)
+            return await super()._check_liveness(handle, reason=reason)
+        parameters = inspect.signature(self._check_liveness_hook).parameters
+        if "reason" in parameters:
+            return await _maybe_await(self._check_liveness_hook(handle, reason=reason))
         return await _maybe_await(self._check_liveness_hook(handle))
 
     async def _connect(self, handle):
@@ -192,6 +195,40 @@ async def test_runtime_base_session_runs_four_phases_in_order():
         assert endpoint.source is None
 
     assert calls == ["provision", "wait_ready", "connect", "body", "teardown"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_base_session_supports_legacy_wait_ready_without_wait_mode():
+    calls: list[tuple[str, str]] = []
+
+    class _LegacyRuntime(RuntimeBase):
+        provisions = True
+
+        async def _provision(self, job, job_id):
+            del job, job_id
+            return "handle"
+
+        async def _wait_ready(self, handle):
+            calls.append(("wait_ready", handle))
+
+        async def _connect(self, handle):
+            del handle
+            return Endpoint(source=None, model_name="m")
+
+        def _build_runtime_ref(self, job):
+            del job
+            return None
+
+    runtime = _LegacyRuntime(InfrastructureContext())
+    async with runtime.session(
+        job=_make_test_job(),
+        job_id="j",
+        progress_manager=_FakeProgressManager(),
+        worker_id_generator=_fake_worker_id_generator,
+    ) as endpoint:
+        assert endpoint.model_name == "m"
+
+    assert calls == [("wait_ready", "handle")]
 
 
 @pytest.mark.asyncio
@@ -674,10 +711,10 @@ async def test_runtime_base_session_ignores_teardown_failure_during_retry(
 @pytest.mark.asyncio
 async def test_runtime_base_session_periodically_checks_liveness_and_surfaces_failure():
     third_check_started = asyncio.Event()
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, str, str]] = []
 
-    async def _check_liveness(handle):
-        calls.append(("check_liveness", handle))
+    async def _check_liveness(handle, reason="unspecified"):
+        calls.append(("check_liveness", handle, reason))
         if len(calls) == 3:
             third_check_started.set()
         raise RuntimeError("runtime lost")
@@ -704,9 +741,9 @@ async def test_runtime_base_session_periodically_checks_liveness_and_surfaces_fa
             await asyncio.sleep(1)
 
     assert calls == [
-        ("check_liveness", "handle"),
-        ("check_liveness", "handle"),
-        ("check_liveness", "handle"),
+        ("check_liveness", "handle", "session_liveness_loop"),
+        ("check_liveness", "handle", "session_liveness_loop"),
+        ("check_liveness", "handle", "session_liveness_loop"),
         ("teardown", "handle"),
     ]
 
@@ -714,10 +751,10 @@ async def test_runtime_base_session_periodically_checks_liveness_and_surfaces_fa
 @pytest.mark.asyncio
 async def test_runtime_base_session_liveness_uses_runtime_failure_threshold_override():
     second_check_started = asyncio.Event()
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, str, str]] = []
 
-    async def _check_liveness(handle):
-        calls.append(("check_liveness", handle))
+    async def _check_liveness(handle, reason="unspecified"):
+        calls.append(("check_liveness", handle, reason))
         if len(calls) == 2:
             second_check_started.set()
         raise RuntimeError("runtime lost")
@@ -745,8 +782,8 @@ async def test_runtime_base_session_liveness_uses_runtime_failure_threshold_over
             await asyncio.sleep(1)
 
     assert calls == [
-        ("check_liveness", "handle"),
-        ("check_liveness", "handle"),
+        ("check_liveness", "handle", "session_liveness_loop"),
+        ("check_liveness", "handle", "session_liveness_loop"),
         ("teardown", "handle"),
     ]
 
@@ -756,10 +793,10 @@ async def test_runtime_base_session_liveness_uses_global_failure_threshold(
     monkeypatch,
 ):
     second_check_started = asyncio.Event()
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, str, str]] = []
 
-    async def _check_liveness(handle):
-        calls.append(("check_liveness", handle))
+    async def _check_liveness(handle, reason="unspecified"):
+        calls.append(("check_liveness", handle, reason))
         if len(calls) == 2:
             second_check_started.set()
         raise RuntimeError("runtime lost")
@@ -789,8 +826,8 @@ async def test_runtime_base_session_liveness_uses_global_failure_threshold(
             await asyncio.sleep(1)
 
     assert calls == [
-        ("check_liveness", "handle"),
-        ("check_liveness", "handle"),
+        ("check_liveness", "handle", "session_liveness_loop"),
+        ("check_liveness", "handle", "session_liveness_loop"),
         ("teardown", "handle"),
     ]
 
@@ -799,8 +836,8 @@ async def test_runtime_base_session_liveness_uses_global_failure_threshold(
 async def test_runtime_base_session_preserves_liveness_error_when_teardown_fails():
     liveness_failure_seen = asyncio.Event()
 
-    async def _check_liveness(handle):
-        del handle
+    async def _check_liveness(handle, reason="unspecified"):
+        del handle, reason
         liveness_failure_seen.set()
         raise RuntimeError("runtime lost")
 
@@ -1219,7 +1256,8 @@ async def test_session_waits_for_delete_started_runtime_to_disappear_before_prov
             assert runtime_ref is delete_started_ref
             return "old-runtime"
 
-        async def _check_liveness(self, handle):
+        async def _check_liveness(self, handle, reason="unspecified"):
+            del reason
             assert handle == "old-runtime"
             liveness_checks.append(handle)
             if len(liveness_checks) == 1:
