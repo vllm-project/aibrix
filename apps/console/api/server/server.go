@@ -289,6 +289,8 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 		httpHandler = staticFileMiddleware(s.cfg.StaticFilesDir, httpHandler)
 	}
 
+	// A server-level ReadTimeout would independently cap inbound file uploads.
+	// Keep it aligned with MetadataFileUploadTimeout if one is introduced.
 	s.httpServer = &http.Server{
 		Addr:    httpAddr,
 		Handler: httpHandler,

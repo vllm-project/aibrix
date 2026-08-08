@@ -172,7 +172,7 @@ func TestProxyRequestHandlesNilClient(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/files", nil)
 	rec := httptest.NewRecorder()
 
-	handler.proxyRequest(rec, req, http.MethodGet, upstream.URL, "list", time.Now(), nil)
+	handler.proxyRequest(rec, req, http.MethodGet, upstream.URL, fileOperationList, time.Now())
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
