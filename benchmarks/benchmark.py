@@ -314,6 +314,7 @@ class BenchmarkRunner:
             "max_retries": self.config.get("max_retries", 0),
             "duration_limit": duration_limit,
             "max_concurrent_sessions": max_concurrent_sessions,
+            "session_key_header": self.config.get("client_session_key_header", False),
         }
         args = Namespace(**args_dict)
         logging.info(f"Running client with args: {args}")

@@ -9,8 +9,8 @@ import traceback
 import threading
 
 
-from typing import List, Dict, Callable, Optional, Set, Tuple
-from client.utils import (load_workload, prepare_prompt, update_response, create_client)
+from typing import Any, List, Dict, Callable, Optional, Set, Tuple
+from client.utils import (load_workload, prepare_prompt, update_response, create_client, session_key_headers)
 
 logging.basicConfig(level=logging.INFO)
 session_history: Dict[str, List[Dict]] = {}
@@ -42,15 +42,16 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
                              request: Dict,
                              output_file: str,
                              request_id: int,
-                             session_id: int,
+                             session_id: Optional[Any],
                              target_time: int,
+                             session_key_header: bool = False,
                              ):
     session_id = request.get("session_id", None)
     prompt = prepare_prompt(
-        prompt = request["prompt"], 
-        session_id = request.get("session_id", None), 
+        prompt = request["prompt"],
+        session_id = request.get("session_id", None),
         history = None if session_id is None else session_history,
-        history_lock = None if session_id is None else session_history_lock) 
+        history_lock = None if session_id is None else session_history_lock)
     start_time = time.time()
     first_response_time = None
     target_pod = ""
@@ -69,6 +70,7 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
             extra_body=extra_body,
             stream=True,
             stream_options={"include_usage": True},
+            extra_headers=session_key_headers(session_id, session_key_header),
         )
         if hasattr(response_stream, 'response') and hasattr(response_stream.response, 'headers'):
             target_pod = response_stream.response.headers.get('target-pod')
@@ -186,8 +188,9 @@ async def send_request_batch(client: openai.AsyncOpenAI,
                              request: Dict,
                              output_file: str,
                              request_id: int,
-                             session_id: int, 
+                             session_id: Optional[Any],
                              target_time: int,
+                             session_key_header: bool = False,
                              ):
     session_id = request.get("session_id", None)
     prompt = prepare_prompt(
@@ -209,6 +212,7 @@ async def send_request_batch(client: openai.AsyncOpenAI,
             temperature=0,
             max_tokens=max_tokens,
             extra_body=extra_body,
+            extra_headers=session_key_headers(session_id, session_key_header),
         )
         if hasattr(response, 'response') and hasattr(response.response, 'headers'):
             target_pod = response.response.headers.get('target-pod')
@@ -297,6 +301,7 @@ async def benchmark_launch(
     send_request_func: Callable,
     duration_limit: Optional[float] = None,
     max_concurrent_sessions: Optional[int] = None,
+    session_key_header: bool = False,
 ) -> None:
     request_id = 0
     base_time = time.time()
@@ -332,6 +337,7 @@ async def benchmark_launch(
                     request_id=request_id,
                     session_id=request.get("session_id", None) if "session_id" in request else None,
                     target_time=target_time,
+                    session_key_header=session_key_header,
                 )
             )
             request_id += 1
@@ -470,7 +476,11 @@ def main(args):
         
         # Get max_concurrent_sessions from args if provided
         max_concurrent_sessions = args.max_concurrent_sessions if hasattr(args, 'max_concurrent_sessions') else None
-        
+
+        # Get session_key_header from args if provided (default to False for
+        # callers whose Namespace does not carry this attribute)
+        session_key_header = getattr(args, 'session_key_header', False)
+
         start_time = time.time()
         asyncio.run(benchmark_launch(
             api_key = args.api_key,
@@ -486,6 +496,7 @@ def main(args):
             send_request_func=send_request_func,
             duration_limit=duration_limit,
             max_concurrent_sessions=max_concurrent_sessions,
+            session_key_header=session_key_header,
         ))
         end_time = time.time()
         logging.info(f"Benchmark completed in {end_time - start_time:.2f} seconds")
@@ -506,6 +517,7 @@ if __name__ == "__main__":
     parser.add_argument('--max-retries', type=int, default=0, help="Number of maximum retries for each request.")
     parser.add_argument('--duration-limit', type=float, default=None, help="Duration limit in seconds. Benchmark stops after this time, cancelling pending requests. If not set, uses workload's last timestamp.")
     parser.add_argument('--max-concurrent-sessions', type=int, default=None, help="Maximum number of sessions that can run concurrently. Only applies to sessioned workloads.")
+    parser.add_argument('--session-key-header', action="store_true", help="Send each request's session_id as the x-aibrix-session-key header so the gateway's session-affinity routing is exercised during replay. Off by default; no effect on requests without session_id.")
 
     args = parser.parse_args()
     main(args)
