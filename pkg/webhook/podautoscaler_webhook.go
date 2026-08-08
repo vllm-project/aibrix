@@ -31,7 +31,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
-	"github.com/vllm-project/aibrix/pkg/utils/scheduledbounds"
+	circuitbreakerconfig "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/config"
+	"github.com/vllm-project/aibrix/pkg/utils/paschedules"
 )
 
 // nolint:unused
@@ -74,6 +75,12 @@ func (d *PodAutoscalerCustomDefaulter) Default(_ context.Context, obj runtime.Ob
 		return fmt.Errorf("expected an PodAutoscaler object but got %T", obj)
 	}
 	podautoscalerlog.Info("Defaulting for PodAutoscaler", "name", podautoscaler.GetName())
+	if podautoscaler.Spec.CircuitBreaker != nil && podautoscaler.Spec.CircuitBreaker.Enabled {
+		normalized := circuitbreakerconfig.NormalizeCircuitBreaker(podautoscaler.Spec.CircuitBreaker)
+		podautoscaler.Spec.CircuitBreaker.Action = normalized.Action
+		podautoscaler.Spec.CircuitBreaker.FailureThreshold = normalized.FailureThreshold
+		podautoscaler.Spec.CircuitBreaker.RecoveryThreshold = normalized.RecoveryThreshold
+	}
 	return nil
 }
 
@@ -138,9 +145,18 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 		allErrs = append(allErrs, field.Required(targetRefPath.Child("kind"), "must be set"))
 	}
 
-	allErrs = append(allErrs, validateReplicaBounds(pa, specPath)...)
-	allErrs = append(allErrs, validateScheduledBounds(pa, specPath)...)
+	// 2. Validate Replica Bounds
+	if pa.Spec.MinReplicas != nil && pa.Spec.MaxReplicas < *pa.Spec.MinReplicas {
+		minPath := specPath.Child("minReplicas")
+		maxPath := specPath.Child("maxReplicas")
+		allErrs = append(allErrs,
+			field.Invalid(minPath, pa.Spec.MinReplicas, "cannot be greater than maxReplicas"),
+			field.Invalid(maxPath, pa.Spec.MaxReplicas, "cannot be less than minReplicas"),
+		)
+	}
+
 	allErrs = append(allErrs, validateMetricWindows(pa, specPath)...)
+	allErrs = append(allErrs, validateSchedules(pa, specPath)...)
 
 	// 3. Validate ScalingStrategy
 	validStrategies := map[autoscalingv1alpha1.ScalingStrategyType]bool{
@@ -159,14 +175,21 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 	if err := validateHPARoleSubtarget(pa, specPath); err != nil {
 		allErrs = append(allErrs, err)
 	}
+	if err := circuitbreakerconfig.ValidateCircuitBreaker(pa.Spec.ScalingStrategy, pa.Spec.CircuitBreaker); err != nil {
+		allErrs = append(allErrs, err)
+	}
 
 	// 4. Validate MetricsSources
 	metricsPath := specPath.Child("metricsSources")
-	if len(pa.Spec.MetricsSources) != 1 {
-		allErrs = append(allErrs, field.Invalid(metricsPath, pa.Spec.MetricsSources, "exactly one metricsSource is required"))
-	} else {
-		ms := &pa.Spec.MetricsSources[0]
-		msPath := metricsPath.Index(0)
+	if len(pa.Spec.MetricsSources) < 1 {
+		allErrs = append(
+			allErrs,
+			field.Invalid(metricsPath, pa.Spec.MetricsSources, "at least one metricsSource is required"),
+		)
+	}
+	for i := range pa.Spec.MetricsSources {
+		ms := &pa.Spec.MetricsSources[i]
+		msPath := metricsPath.Index(i)
 
 		if ms.TargetMetric == "" {
 			allErrs = append(allErrs, field.Required(msPath.Child("targetMetric"), "must be set"))
@@ -198,23 +221,25 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 
 		case autoscalingv1alpha1.EXTERNAL, autoscalingv1alpha1.DOMAIN:
 			// Empty endpoint selects the Kubernetes external.metrics API instead of an HTTP metrics endpoint.
-			if ms.Endpoint == "" {
-				break
-			}
-			if ms.ProtocolType == "" {
-				allErrs = append(allErrs, field.Required(msPath.Child("protocolType"), "required for metricSourceType=external/domain"))
-			}
-			if ms.Endpoint == "" {
-				allErrs = append(allErrs, field.Required(msPath.Child("endpoint"), "required for metricSourceType=external/domain"))
-			}
-			if ms.Path == "" {
-				allErrs = append(allErrs, field.Required(msPath.Child("path"), "required for metricSourceType=external/domain"))
+			if ms.Endpoint != "" {
+				if ms.ProtocolType == "" {
+					allErrs = append(
+						allErrs,
+						field.Required(msPath.Child("protocolType"), "required for metricSourceType=external/domain"),
+					)
+				}
+				if ms.Path == "" {
+					allErrs = append(allErrs, field.Required(msPath.Child("path"), "required for metricSourceType=external/domain"))
+				}
 			}
 
 		case autoscalingv1alpha1.RESOURCE:
 			validMetrics := map[string]bool{"cpu": true, "memory": true}
 			if !validMetrics[ms.TargetMetric] {
-				allErrs = append(allErrs, field.NotSupported(msPath.Child("targetMetric"), ms.TargetMetric, []string{"cpu", "memory"}))
+				allErrs = append(
+					allErrs,
+					field.NotSupported(msPath.Child("targetMetric"), ms.TargetMetric, []string{"cpu", "memory"}),
+				)
 			}
 			// Ensure no extra fields are set
 			if ms.Port != "" {
@@ -227,12 +252,14 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 				allErrs = append(allErrs, field.Forbidden(msPath.Child("path"), "not allowed for metricSourceType=resource"))
 			}
 			if ms.ProtocolType != "" {
-				allErrs = append(allErrs, field.Forbidden(msPath.Child("protocolType"), "not allowed for metricSourceType=resource"))
+				allErrs = append(
+					allErrs,
+					field.Forbidden(msPath.Child("protocolType"), "not allowed for metricSourceType=resource"),
+				)
 			}
 
 		case autoscalingv1alpha1.CUSTOM:
 			// No required fields for custom metrics
-			break
 
 		default:
 			allErrs = append(allErrs, field.NotSupported(msPath.Child("metricSourceType"), ms.MetricSourceType, []string{
@@ -256,89 +283,11 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 	)
 }
 
-func validateReplicaBounds(pa *autoscalingv1alpha1.PodAutoscaler, specPath *field.Path) field.ErrorList {
+func validateSchedules(pa *autoscalingv1alpha1.PodAutoscaler, specPath *field.Path) field.ErrorList {
 	var errs field.ErrorList
-	if pa.Spec.MinReplicas != nil && *pa.Spec.MinReplicas < 0 {
-		errs = append(errs, field.Invalid(specPath.Child("minReplicas"), pa.Spec.MinReplicas, "must not be negative"))
+	for _, err := range paschedules.Validate(pa) {
+		errs = append(errs, field.Invalid(specPath.Child("schedules"), pa.Spec.Schedules, err.Error()))
 	}
-	if pa.Spec.MaxReplicas <= 0 {
-		errs = append(errs, field.Invalid(specPath.Child("maxReplicas"), pa.Spec.MaxReplicas, "must be positive"))
-	}
-	if pa.Spec.MinReplicas != nil && pa.Spec.MaxReplicas < *pa.Spec.MinReplicas {
-		minPath := specPath.Child("minReplicas")
-		maxPath := specPath.Child("maxReplicas")
-		errs = append(errs,
-			field.Invalid(minPath, pa.Spec.MinReplicas, "cannot be greater than maxReplicas"),
-			field.Invalid(maxPath, pa.Spec.MaxReplicas, "cannot be less than minReplicas"),
-		)
-	}
-	return errs
-}
-
-func validateScheduledBounds(pa *autoscalingv1alpha1.PodAutoscaler, specPath *field.Path) field.ErrorList {
-	var errs field.ErrorList
-	path := specPath.Child("scheduledBounds")
-	names := make(map[string]int)
-	for i, scheduled := range pa.Spec.ScheduledBounds {
-		schedulePath := path.Index(i)
-		if scheduled.Name == "" {
-			errs = append(errs, field.Required(schedulePath.Child("name"), "must be specified"))
-		} else if previous, exists := names[scheduled.Name]; exists {
-			errs = append(errs, field.Duplicate(schedulePath.Child("name"), fmt.Sprintf("duplicates scheduledBounds[%d].name", previous)))
-		} else {
-			names[scheduled.Name] = i
-		}
-
-		if _, err := scheduledbounds.ParseCron(scheduled.Cron); err != nil {
-			errs = append(errs, field.Invalid(schedulePath.Child("cron"), scheduled.Cron, err.Error()))
-		}
-		if scheduled.Duration.Duration <= 0 {
-			errs = append(errs, field.Invalid(schedulePath.Child("duration"), scheduled.Duration.Duration.String(), "must be positive"))
-		}
-		if scheduled.Duration.Duration > scheduledbounds.MaxDuration {
-			errs = append(errs, field.Invalid(schedulePath.Child("duration"), scheduled.Duration.Duration.String(), "must not be greater than 168h"))
-		}
-		if _, err := scheduledbounds.Location(scheduled.Timezone); err != nil {
-			errs = append(errs, field.Invalid(schedulePath.Child("timezone"), scheduled.Timezone, err.Error()))
-		}
-		if scheduled.StartTime != nil && scheduled.EndTime != nil && !scheduled.StartTime.Before(scheduled.EndTime) {
-			errs = append(errs, field.Invalid(schedulePath, scheduled, "startTime must be earlier than endTime"))
-		}
-		if scheduled.MinReplicas == nil && scheduled.MaxReplicas == nil {
-			errs = append(errs, field.Required(schedulePath, "at least one of minReplicas or maxReplicas must be specified"))
-			continue
-		}
-
-		minReplicas := int32(1)
-		if pa.Spec.MinReplicas != nil {
-			minReplicas = *pa.Spec.MinReplicas
-		}
-		if scheduled.MinReplicas != nil {
-			minReplicas = *scheduled.MinReplicas
-		}
-		maxReplicas := pa.Spec.MaxReplicas
-		if scheduled.MaxReplicas != nil {
-			maxReplicas = *scheduled.MaxReplicas
-		}
-		if minReplicas < 0 {
-			errs = append(errs, field.Invalid(schedulePath.Child("minReplicas"), minReplicas, "effective minReplicas must not be negative"))
-		}
-		if maxReplicas <= 0 {
-			errs = append(errs, field.Invalid(schedulePath.Child("maxReplicas"), maxReplicas, "effective maxReplicas must be positive"))
-		}
-		if minReplicas > maxReplicas {
-			errs = append(errs, field.Invalid(schedulePath, scheduled, "effective minReplicas must not be greater than effective maxReplicas"))
-		}
-	}
-
-	for i := range pa.Spec.ScheduledBounds {
-		for j := 0; j < i; j++ {
-			if scheduledbounds.Overlap(pa.Spec.ScheduledBounds[j], pa.Spec.ScheduledBounds[i]) {
-				errs = append(errs, field.Invalid(path.Index(i), pa.Spec.ScheduledBounds[i].Name, "overlaps another scheduled bounds window"))
-			}
-		}
-	}
-
 	return errs
 }
 

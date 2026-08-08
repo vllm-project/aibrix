@@ -19,12 +19,12 @@ package podautoscaler
 import (
 	"math"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
+	"github.com/vllm-project/aibrix/pkg/utils/paschedules"
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
@@ -171,78 +171,34 @@ func TestMakeHPA(t *testing.T) {
 	assert.Equal(t, expectedHPA, actualHPA)
 }
 
-func TestMakeHPAScheduledBounds(t *testing.T) {
-	tests := map[string]struct {
-		scheduledBounds []autoscalingv1alpha1.ScheduledReplicaBounds
-		wantMin         *int32
-		wantMax         int32
-	}{
-		"matching window uses scheduled effective bounds": {
-			scheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{{
-				Name:        "peak",
-				Cron:        activeScheduledBoundsCron(),
-				Duration:    v1.Duration{Duration: time.Hour},
-				MinReplicas: ptr.To(int32(5)),
-				MaxReplicas: ptr.To(int32(8)),
-			}},
-			wantMin: ptr.To(int32(5)),
-			wantMax: 8,
+func TestMakeHPAWithScheduledBounds(t *testing.T) {
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: v1.ObjectMeta{
+			Name:      "test-llm-pa",
+			Namespace: "default",
 		},
-		"outside matching window uses base bounds": {
-			scheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{{
-				Name:        "future-peak",
-				Cron:        activeScheduledBoundsCron(),
-				Duration:    v1.Duration{Duration: time.Hour},
-				StartTime:   &v1.Time{Time: time.Now().Add(time.Hour)},
-				MinReplicas: ptr.To(int32(5)),
-				MaxReplicas: ptr.To(int32(8)),
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{
+				APIVersion: "apps/v1",
+				Kind:       "Deployment",
+				Name:       "test-llm",
+			},
+			MinReplicas: ptr.To(int32(1)),
+			MaxReplicas: int32(10),
+			MetricsSources: []autoscalingv1alpha1.MetricSource{{
+				MetricSourceType: autoscalingv1alpha1.RESOURCE,
+				TargetMetric:     "cpu",
+				TargetValue:      "30",
 			}},
-			wantMin: ptr.To(int32(3)),
-			wantMax: 10,
-		},
-		"matching window omits hpa min replicas when scheduled effective min is zero": {
-			scheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{{
-				Name:        "scale-to-zero",
-				Cron:        activeScheduledBoundsCron(),
-				Duration:    v1.Duration{Duration: time.Hour},
-				MinReplicas: ptr.To(int32(0)),
-				MaxReplicas: ptr.To(int32(8)),
-			}},
-			wantMin: nil,
-			wantMax: 8,
 		},
 	}
+	ctx := context.NewBaseScalingContext()
 
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			pa := &autoscalingv1alpha1.PodAutoscaler{
-				ObjectMeta: v1.ObjectMeta{
-					Name:      "scheduled-pa",
-					Namespace: "default",
-				},
-				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
-					ScaleTargetRef: corev1.ObjectReference{
-						APIVersion: "apps/v1",
-						Kind:       "Deployment",
-						Name:       "scheduled-target",
-					},
-					MinReplicas:     ptr.To(int32(3)),
-					MaxReplicas:     10,
-					ScheduledBounds: tt.scheduledBounds,
-					MetricsSources: []autoscalingv1alpha1.MetricSource{{
-						MetricSourceType: autoscalingv1alpha1.RESOURCE,
-						TargetMetric:     "cpu",
-						TargetValue:      "30",
-					}},
-				},
-			}
-			scalingContext := context.NewBaseScalingContext()
+	hpa, err := makeHPAWithBounds(pa, ctx, paschedules.Bounds{MinReplicas: 3, MaxReplicas: 12, ActiveSchedule: "business-hours"})
 
-			hpa, err := makeHPA(pa, scalingContext)
-
-			assert.NoError(t, err)
-			assert.Equal(t, tt.wantMin, hpa.Spec.MinReplicas)
-			assert.Equal(t, tt.wantMax, hpa.Spec.MaxReplicas)
-		})
-	}
+	assert.NoError(t, err)
+	assert.NotNil(t, hpa)
+	assert.NotNil(t, hpa.Spec.MinReplicas)
+	assert.Equal(t, int32(3), *hpa.Spec.MinReplicas)
+	assert.Equal(t, int32(12), hpa.Spec.MaxReplicas)
 }

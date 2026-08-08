@@ -57,7 +57,7 @@ func TestScheduledBoundsAutoscalerAppliesEffectiveBoundsToHPA(t *testing.T) {
 	defer cleanupScheduledBoundsE2E(context.Background(), t, k8sClient, aibrixClient)
 
 	createScheduledBoundsScaleTarget(ctx, t, k8sClient)
-	createScheduledBoundsPodAutoscaler(ctx, t, aibrixClient, time.Now().UTC())
+	createScheduledBoundsPodAutoscaler(ctx, t, aibrixClient)
 	waitForScheduledBoundsHPA(ctx, t, k8sClient, 4, 7)
 }
 
@@ -141,7 +141,6 @@ func createScheduledBoundsPodAutoscaler(
 	ctx context.Context,
 	t *testing.T,
 	aibrixClient aibrixclientset.Interface,
-	now time.Time,
 ) {
 	t.Helper()
 
@@ -158,11 +157,11 @@ func createScheduledBoundsPodAutoscaler(
 			},
 			MinReplicas: ptr.To[int32](1),
 			MaxReplicas: 3,
-			ScheduledBounds: []autoscalingv1alpha1.ScheduledReplicaBounds{{
+			Schedules: []autoscalingv1alpha1.PodAutoscalerSchedule{{
 				Name:        "active-e2e-window",
 				Timezone:    "UTC",
-				Cron:        fmt.Sprintf("%d %d * * *", now.Minute(), now.Hour()),
-				Duration:    metav1.Duration{Duration: 2 * time.Hour},
+				StartTime:   "00:00",
+				EndTime:     "23:59",
 				MinReplicas: ptr.To[int32](4),
 				MaxReplicas: ptr.To[int32](7),
 			}},

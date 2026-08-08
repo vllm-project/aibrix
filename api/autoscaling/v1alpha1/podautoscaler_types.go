@@ -74,14 +74,11 @@ type PodAutoscalerSpec struct {
 	// It cannot be less than minReplicas
 	MaxReplicas int32 `json:"maxReplicas"`
 
-	// ScheduledBounds defines time-based overrides for replica bounds.
-	// Each entry opens recurring active windows from its cron occurrence until
-	// occurrence+duration. While a window is active, its minReplicas and/or
-	// maxReplicas override the base PodAutoscaler bounds; omitted override fields
-	// inherit the corresponding base bound. Scheduled windows must not overlap.
+	// Schedules defines time-based autoscaling configuration. The initial
+	// version supports scheduled replica bounds only.
 	// +optional
 	// +kubebuilder:validation:MinItems=1
-	ScheduledBounds []ScheduledReplicaBounds `json:"scheduledBounds,omitempty"`
+	Schedules []PodAutoscalerSchedule `json:"schedules,omitempty"`
 
 	// MetricsSources defines a list of sources from which metrics are collected to make scaling decisions.
 	// +kubebuilder:validation:MinItems=1
@@ -104,66 +101,51 @@ type PodAutoscalerSpec struct {
 	// ScalingStrategy defines the strategy to use for scaling.
 	// +kubebuilder:validation:Enum={HPA,KPA,APA}
 	ScalingStrategy ScalingStrategyType `json:"scalingStrategy"`
+
+	// CircuitBreaker configures protective behavior when all metric sources fail.
+	// Circuit breaking is supported only for KPA and APA scaling strategies.
+	// +optional
+	CircuitBreaker *CircuitBreakerConfig `json:"circuitBreaker,omitempty"`
 }
 
-// ScheduledReplicaBounds defines a recurring time window that overrides replica bounds.
-type ScheduledReplicaBounds struct {
-	// Name identifies this scheduled bounds entry. Names must be unique within
-	// spec.scheduledBounds.
+// PodAutoscalerSchedule defines a recurring daily time window for scheduled
+// autoscaling configuration. The initial version supports min/max replica
+// bounds only.
+type PodAutoscalerSchedule struct {
+	// Name identifies this schedule. Names must be unique within spec.schedules
+	// and use Kubernetes DNS label style.
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	Name string `json:"name"`
 
-	// Timezone is an optional IANA timezone used to evaluate Cron. If omitted,
-	// UTC is used.
-	// Examples: "UTC", "Asia/Shanghai", "America/Los_Angeles".
+	// Timezone is an optional IANA timezone used to evaluate this schedule. If
+	// omitted, UTC is used.
 	// +optional
 	Timezone string `json:"timezone,omitempty"`
 
-	// StartTime is the optional inclusive start of the schedule lifetime.
-	// Windows before this time are ignored.
+	// DaysOfWeek optionally restricts this schedule to specific weekdays. If
+	// omitted, the schedule applies every day. Values are case-insensitive
+	// three-letter English weekday names: Mon, Tue, Wed, Thu, Fri, Sat, Sun.
 	// +optional
-	StartTime *metav1.Time `json:"startTime,omitempty"`
+	// +kubebuilder:validation:MinItems=1
+	DaysOfWeek []string `json:"daysOfWeek,omitempty"`
 
-	// EndTime is the optional exclusive end of the schedule lifetime. Windows
-	// at or after this time are ignored. When both startTime and endTime are set,
-	// startTime must be earlier than endTime.
-	// +optional
-	EndTime *metav1.Time `json:"endTime,omitempty"`
+	// StartTime is the inclusive daily window start in strict HH:MM format.
+	// +kubebuilder:validation:Pattern=`^([01][0-9]|2[0-3]):[0-5][0-9]$`
+	StartTime string `json:"startTime"`
 
-	// Cron defines recurring start instants for the active window.
-	// The first implementation supports a simple five-field subset:
-	// minute hour day-of-month month day-of-week.
-	// The minute field must be one fixed number from 0 to 59.
-	// The hour field must be one number, a comma-separated list, or a numeric
-	// range from 0 to 23.
-	// The day-of-month and month fields must both be "*".
-	// The day-of-week field must be "*", one value, a comma-separated list, or
-	// a range. Day-of-week accepts 0-7 or SUN-SAT names, with 0 and 7 both
-	// meaning Sunday. To avoid restricting weekdays, use "*" in the fifth field.
-	// Step expressions such as "*/5", macros such as "@daily", restricted
-	// day-of-month/month values, and other complex cron forms are rejected.
-	// Examples:
-	// "0 9 * * *" starts a daily window at 09:00.
-	// "0 9-18 * * MON-FRI" starts hourly windows during weekday business hours.
-	// "30 8,12,18 * * 1-5" starts windows at 08:30, 12:30, and 18:30 on weekdays.
-	// +kubebuilder:validation:MinLength=1
-	Cron string `json:"cron"`
+	// EndTime is the exclusive daily window end in strict HH:MM format. It must
+	// be later than startTime; cross-midnight windows are not supported.
+	// +kubebuilder:validation:Pattern=`^([01][0-9]|2[0-3]):[0-5][0-9]$`
+	EndTime string `json:"endTime"`
 
-	// Duration is the positive length of each active window, up to 168h. The
-	// active interval is [cron occurrence, cron occurrence + duration).
-	// +required
-	Duration metav1.Duration `json:"duration"`
-
-	// MinReplicas optionally overrides the base minimum replicas while this
-	// schedule is active. At least one of minReplicas or maxReplicas must be set.
-	// The effective minReplicas must not be greater than effective maxReplicas.
+	// MinReplicas optionally overrides spec.minReplicas while this schedule is active.
+	// At least one of minReplicas or maxReplicas must be set.
 	// +optional
 	MinReplicas *int32 `json:"minReplicas,omitempty"`
 
-	// MaxReplicas optionally overrides the base maximum replicas while this
-	// schedule is active. At least one of minReplicas or maxReplicas must be set.
-	// The effective maxReplicas must be positive and must not be less than the
-	// effective minReplicas.
+	// MaxReplicas optionally overrides spec.maxReplicas while this schedule is active.
+	// At least one of minReplicas or maxReplicas must be set.
 	// +optional
 	MaxReplicas *int32 `json:"maxReplicas,omitempty"`
 }
@@ -188,6 +170,54 @@ const (
 	// APA represents the AiBrix Pod Autoscaling Algorithm
 	APA ScalingStrategyType = "APA"
 )
+
+// CircuitBreakerAction defines the protective scaling action used while the circuit breaker is open.
+type CircuitBreakerAction string
+
+// CircuitBreakerState defines the runtime state of the circuit breaker.
+type CircuitBreakerState string
+
+const (
+	DefaultCircuitBreakerFailureThreshold  int32 = 3
+	DefaultCircuitBreakerRecoveryThreshold int32 = 3
+
+	CircuitBreakerActionFreeze CircuitBreakerAction = "freeze"
+	CircuitBreakerActionMax    CircuitBreakerAction = "max"
+
+	CircuitBreakerStateClosed CircuitBreakerState = "Closed"
+	CircuitBreakerStateOpen   CircuitBreakerState = "Open"
+)
+
+// CircuitBreakerConfig defines when circuit breaker protection is enabled and how it behaves.
+type CircuitBreakerConfig struct {
+	Enabled bool `json:"enabled"`
+
+	// +kubebuilder:default=freeze
+	// +kubebuilder:validation:Enum=freeze;max
+	// +optional
+	Action CircuitBreakerAction `json:"action,omitempty"`
+
+	// +kubebuilder:default=3
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	FailureThreshold int32 `json:"failureThreshold,omitempty"`
+
+	// +kubebuilder:default=3
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	RecoveryThreshold int32 `json:"recoveryThreshold,omitempty"`
+}
+
+// CircuitBreakerStatus captures the persisted runtime state of circuit breaker protection.
+type CircuitBreakerStatus struct {
+	State              CircuitBreakerState  `json:"state"`
+	Action             CircuitBreakerAction `json:"action,omitempty"`
+	FailureCount       int32                `json:"failureCount,omitempty"`
+	RecoveryCount      int32                `json:"recoveryCount,omitempty"`
+	ProtectedReplicas  *int32               `json:"protectedReplicas,omitempty"`
+	Reason             string               `json:"reason,omitempty"`
+	LastTransitionTime *metav1.Time         `json:"lastTransitionTime,omitempty"`
+}
 
 type MetricSourceType string
 
@@ -280,6 +310,28 @@ type PodAutoscalerStatus struct {
 	// +optional
 	// +kubebuilder:validation:MaxItems=5
 	ScalingHistory []ScalingDecision `json:"scalingHistory,omitempty"`
+
+	// CircuitBreaker is the persisted state of circuit breaker protection.
+	// +optional
+	CircuitBreaker *CircuitBreakerStatus `json:"circuitBreaker,omitempty"`
+
+	// ScheduledBounds is the observed scheduled replica bounds state.
+	// +optional
+	ScheduledBounds *ScheduledBoundsStatus `json:"scheduledBounds,omitempty"`
+}
+
+// ScheduledBoundsStatus captures the currently effective scheduled replica bounds.
+type ScheduledBoundsStatus struct {
+	// ActiveSchedule is the name of the currently active schedule. It is omitted
+	// when no schedule is active and base bounds are in effect.
+	// +optional
+	ActiveSchedule string `json:"activeSchedule,omitempty"`
+
+	// EffectiveMinReplicas is the current effective minimum replica bound.
+	EffectiveMinReplicas int32 `json:"effectiveMinReplicas"`
+
+	// EffectiveMaxReplicas is the current effective maximum replica bound.
+	EffectiveMaxReplicas int32 `json:"effectiveMaxReplicas"`
 }
 
 // +kubebuilder:object:root=true
