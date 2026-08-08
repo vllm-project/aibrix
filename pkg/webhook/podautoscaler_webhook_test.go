@@ -17,6 +17,7 @@ limitations under the License.
 package webhook
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,6 +26,156 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
 )
+
+func TestPodAutoscalerCustomDefaulter_DefaultCircuitBreaker(t *testing.T) {
+	defaulter := &PodAutoscalerCustomDefaulter{}
+
+	t.Run("enabled configuration gets defaults", func(t *testing.T) {
+		pa := &autoscalingv1alpha1.PodAutoscaler{
+			Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+				CircuitBreaker: &autoscalingv1alpha1.CircuitBreakerConfig{Enabled: true},
+			},
+		}
+
+		require.NoError(t, defaulter.Default(context.Background(), pa))
+		require.NotNil(t, pa.Spec.CircuitBreaker)
+		assert.Equal(t, autoscalingv1alpha1.CircuitBreakerActionFreeze, pa.Spec.CircuitBreaker.Action)
+		assert.Equal(t, int32(3), pa.Spec.CircuitBreaker.FailureThreshold)
+		assert.Equal(t, int32(3), pa.Spec.CircuitBreaker.RecoveryThreshold)
+	})
+
+	t.Run("absent configuration remains absent", func(t *testing.T) {
+		pa := &autoscalingv1alpha1.PodAutoscaler{}
+
+		require.NoError(t, defaulter.Default(context.Background(), pa))
+		assert.Nil(t, pa.Spec.CircuitBreaker)
+	})
+}
+
+func TestPodAutoscalerCustomValidator_CircuitBreaker(t *testing.T) {
+	validator := &PodAutoscalerCustomValidator{}
+	validPA := func(strategy autoscalingv1alpha1.ScalingStrategyType, cfg *autoscalingv1alpha1.CircuitBreakerConfig) *autoscalingv1alpha1.PodAutoscaler {
+		return &autoscalingv1alpha1.PodAutoscaler{
+			Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+				ScaleTargetRef:  corev1.ObjectReference{Name: "test-deployment", Kind: "Deployment"},
+				ScalingStrategy: strategy,
+				MetricsSources: []autoscalingv1alpha1.MetricSource{{
+					MetricSourceType: autoscalingv1alpha1.RESOURCE,
+					TargetMetric:     "cpu",
+					TargetValue:      "50",
+				}},
+				CircuitBreaker: cfg,
+			},
+		}
+	}
+
+	tests := []struct {
+		name    string
+		pa      *autoscalingv1alpha1.PodAutoscaler
+		wantErr string
+	}{
+		{name: "KPA enabled", pa: validPA(autoscalingv1alpha1.KPA, &autoscalingv1alpha1.CircuitBreakerConfig{Enabled: true})},
+		{name: "APA enabled", pa: validPA(autoscalingv1alpha1.APA, &autoscalingv1alpha1.CircuitBreakerConfig{Enabled: true})},
+		{name: "HPA enabled", pa: validPA(autoscalingv1alpha1.HPA, &autoscalingv1alpha1.CircuitBreakerConfig{Enabled: true}), wantErr: "spec.circuitBreaker"},
+		{name: "HPA disabled", pa: validPA(autoscalingv1alpha1.HPA, &autoscalingv1alpha1.CircuitBreakerConfig{Enabled: false})},
+		{name: "invalid action", pa: validPA(autoscalingv1alpha1.KPA, &autoscalingv1alpha1.CircuitBreakerConfig{Enabled: true, Action: "panic"}), wantErr: "spec.circuitBreaker.action"},
+		{name: "invalid failure threshold", pa: validPA(autoscalingv1alpha1.APA, &autoscalingv1alpha1.CircuitBreakerConfig{Enabled: true, FailureThreshold: -1}), wantErr: "spec.circuitBreaker.failureThreshold"},
+		{name: "invalid recovery threshold", pa: validPA(autoscalingv1alpha1.KPA, &autoscalingv1alpha1.CircuitBreakerConfig{Enabled: true, RecoveryThreshold: -1}), wantErr: "spec.circuitBreaker.recoveryThreshold"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validator.validatePodAutoscaler(tt.pa)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestPodAutoscalerCustomValidator_MetricsSources(t *testing.T) {
+	validator := &PodAutoscalerCustomValidator{}
+	validPA := func(sources ...autoscalingv1alpha1.MetricSource) *autoscalingv1alpha1.PodAutoscaler {
+		return &autoscalingv1alpha1.PodAutoscaler{Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef:  corev1.ObjectReference{Name: "test-deployment", Kind: "Deployment"},
+			ScalingStrategy: autoscalingv1alpha1.KPA,
+			MetricsSources:  sources,
+		}}
+	}
+	validSource := autoscalingv1alpha1.MetricSource{
+		MetricSourceType: autoscalingv1alpha1.RESOURCE,
+		TargetMetric:     "cpu",
+		TargetValue:      "50",
+	}
+
+	t.Run("two valid sources", func(t *testing.T) {
+		require.NoError(t, validator.validatePodAutoscaler(validPA(validSource, autoscalingv1alpha1.MetricSource{
+			MetricSourceType: autoscalingv1alpha1.RESOURCE,
+			TargetMetric:     "memory",
+			TargetValue:      "1Gi",
+		})))
+	})
+
+	t.Run("empty sources", func(t *testing.T) {
+		err := validator.validatePodAutoscaler(validPA())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "at least one metricsSource")
+	})
+
+	t.Run("invalid second source", func(t *testing.T) {
+		invalidSource := validSource
+		invalidSource.TargetMetric = "disk"
+		err := validator.validatePodAutoscaler(validPA(validSource, invalidSource))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "spec.metricsSources[1].targetMetric")
+	})
+}
+
+func TestPodAutoscalerCustomValidator_Schedules(t *testing.T) {
+	validator := &PodAutoscalerCustomValidator{}
+	validPA := func(schedules []autoscalingv1alpha1.PodAutoscalerSchedule) *autoscalingv1alpha1.PodAutoscaler {
+		return &autoscalingv1alpha1.PodAutoscaler{Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef:  corev1.ObjectReference{Name: "test-deployment", Kind: "Deployment"},
+			MinReplicas:     ptr.To[int32](1),
+			MaxReplicas:     10,
+			ScalingStrategy: autoscalingv1alpha1.KPA,
+			MetricsSources: []autoscalingv1alpha1.MetricSource{{
+				MetricSourceType: autoscalingv1alpha1.RESOURCE,
+				TargetMetric:     "cpu",
+				TargetValue:      "50",
+			}},
+			Schedules: schedules,
+		}}
+	}
+
+	t.Run("valid schedule", func(t *testing.T) {
+		err := validator.validatePodAutoscaler(validPA([]autoscalingv1alpha1.PodAutoscalerSchedule{{
+			Name:        "business-hours",
+			Timezone:    "UTC",
+			DaysOfWeek:  []string{"Mon", "Tue"},
+			StartTime:   "09:00",
+			EndTime:     "18:00",
+			MinReplicas: ptr.To[int32](3),
+			MaxReplicas: ptr.To[int32](12),
+		}}))
+		require.NoError(t, err)
+	})
+
+	t.Run("invalid schedule", func(t *testing.T) {
+		err := validator.validatePodAutoscaler(validPA([]autoscalingv1alpha1.PodAutoscalerSchedule{{
+			Name:        "bad-time",
+			StartTime:   "9:00",
+			EndTime:     "18:00",
+			MinReplicas: ptr.To[int32](3),
+		}}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "spec.schedules")
+		assert.Contains(t, err.Error(), "startTime")
+	})
+}
 
 func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 	validator := &PodAutoscalerCustomValidator{}

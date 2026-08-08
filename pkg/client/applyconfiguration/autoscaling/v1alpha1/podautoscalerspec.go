@@ -25,14 +25,16 @@ import (
 // PodAutoscalerSpecApplyConfiguration represents a declarative configuration of the PodAutoscalerSpec type for use
 // with apply.
 type PodAutoscalerSpecApplyConfiguration struct {
-	ScaleTargetRef       *v1.ObjectReference                      `json:"scaleTargetRef,omitempty"`
-	SubTargetSelector    *SubTargetSelectorApplyConfiguration     `json:"subTargetSelector,omitempty"`
-	MinReplicas          *int32                                   `json:"minReplicas,omitempty"`
-	MaxReplicas          *int32                                   `json:"maxReplicas,omitempty"`
-	MetricsSources       []MetricSourceApplyConfiguration         `json:"metricsSources,omitempty"`
-	ObserveWindowSeconds *int64                                   `json:"observeWindowSeconds,omitempty"`
-	PanicWindowSeconds   *int64                                   `json:"panicWindowSeconds,omitempty"`
-	ScalingStrategy      *autoscalingv1alpha1.ScalingStrategyType `json:"scalingStrategy,omitempty"`
+	ScaleTargetRef       *v1.ObjectReference                       `json:"scaleTargetRef,omitempty"`
+	SubTargetSelector    *SubTargetSelectorApplyConfiguration      `json:"subTargetSelector,omitempty"`
+	MinReplicas          *int32                                    `json:"minReplicas,omitempty"`
+	MaxReplicas          *int32                                    `json:"maxReplicas,omitempty"`
+	Schedules            []PodAutoscalerScheduleApplyConfiguration `json:"schedules,omitempty"`
+	MetricsSources       []MetricSourceApplyConfiguration          `json:"metricsSources,omitempty"`
+	ObserveWindowSeconds *int64                                    `json:"observeWindowSeconds,omitempty"`
+	PanicWindowSeconds   *int64                                    `json:"panicWindowSeconds,omitempty"`
+	ScalingStrategy      *autoscalingv1alpha1.ScalingStrategyType  `json:"scalingStrategy,omitempty"`
+	CircuitBreaker       *CircuitBreakerConfigApplyConfiguration   `json:"circuitBreaker,omitempty"`
 }
 
 // PodAutoscalerSpecApplyConfiguration constructs a declarative configuration of the PodAutoscalerSpec type for use with
@@ -73,6 +75,19 @@ func (b *PodAutoscalerSpecApplyConfiguration) WithMaxReplicas(value int32) *PodA
 	return b
 }
 
+// WithSchedules adds the given value to the Schedules field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Schedules field.
+func (b *PodAutoscalerSpecApplyConfiguration) WithSchedules(values ...*PodAutoscalerScheduleApplyConfiguration) *PodAutoscalerSpecApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithSchedules")
+		}
+		b.Schedules = append(b.Schedules, *values[i])
+	}
+	return b
+}
+
 // WithMetricsSources adds the given value to the MetricsSources field in the declarative configuration
 // and returns the receiver, so that objects can be build by chaining "With" function invocations.
 // If called multiple times, values provided by each call will be appended to the MetricsSources field.
@@ -107,5 +122,13 @@ func (b *PodAutoscalerSpecApplyConfiguration) WithPanicWindowSeconds(value int64
 // If called multiple times, the ScalingStrategy field is set to the value of the last call.
 func (b *PodAutoscalerSpecApplyConfiguration) WithScalingStrategy(value autoscalingv1alpha1.ScalingStrategyType) *PodAutoscalerSpecApplyConfiguration {
 	b.ScalingStrategy = &value
+	return b
+}
+
+// WithCircuitBreaker sets the CircuitBreaker field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the CircuitBreaker field is set to the value of the last call.
+func (b *PodAutoscalerSpecApplyConfiguration) WithCircuitBreaker(value *CircuitBreakerConfigApplyConfiguration) *PodAutoscalerSpecApplyConfiguration {
+	b.CircuitBreaker = value
 	return b
 }

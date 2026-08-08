@@ -78,7 +78,12 @@ func collectFromPods(ctx context.Context, spec types.CollectionSpec, fetcher Met
 		Values:     values,
 		Timestamp:  spec.Timestamp,
 		Source:     string(spec.MetricSource.MetricSourceType),
-		Error:      finalErr,
+		CollectionStats: types.MetricCollectionStats{
+			ExpectedCount:     len(spec.Pods),
+			FetchSuccessCount: successCount,
+			FetchFailureCount: len(collectErrors),
+		},
+		Error: finalErr,
 	}, nil
 }
 
@@ -94,8 +99,13 @@ func collectFromExternal(ctx context.Context, spec types.CollectionSpec, fetcher
 	value, err := fetcher.FetchPodMetrics(ctx, dummyPod, spec.MetricSource)
 
 	var values []float64
+	successCount := 0
+	failureCount := 0
 	if err == nil {
 		values = []float64{value}
+		successCount = 1
+	} else {
+		failureCount = 1
 	}
 
 	return &types.MetricSnapshot{
@@ -105,7 +115,12 @@ func collectFromExternal(ctx context.Context, spec types.CollectionSpec, fetcher
 		Values:     values,
 		Timestamp:  spec.Timestamp,
 		Source:     "external",
-		Error:      err,
+		CollectionStats: types.MetricCollectionStats{
+			ExpectedCount:     1,
+			FetchSuccessCount: successCount,
+			FetchFailureCount: failureCount,
+		},
+		Error: err,
 	}, nil
 }
 

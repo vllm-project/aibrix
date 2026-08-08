@@ -70,14 +70,17 @@ func (f *fakeWorkloadScaleClient) GetPodSelectorFromScale(ctx context.Context, p
 // fakeAutoScaler captures the last request and returns a canned result.
 type fakeAutoScaler struct {
 	lastRequest *ReplicaComputeRequest
-	result      *ReplicaComputeResult
+	result      *MetricRoundResult
 	err         error
 }
 
-func (f *fakeAutoScaler) ComputeDesiredReplicas(ctx context.Context, req ReplicaComputeRequest) (*ReplicaComputeResult, error) {
+func (f *fakeAutoScaler) ComputeDesiredReplicas(ctx context.Context, req ReplicaComputeRequest) (*MetricRoundResult, error) {
 	f.lastRequest = &req
+	if f.err != nil {
+		return f.result, f.err
+	}
 	if f.result == nil {
-		return &ReplicaComputeResult{DesiredReplicas: req.CurrentReplicas}, nil
+		return &MetricRoundResult{DesiredReplicas: req.CurrentReplicas, Valid: true, HasRecommendation: true}, nil
 	}
 	return f.result, f.err
 }
@@ -295,6 +298,62 @@ func TestValidateSpecRejectsPanicWindowGreaterThanObserveWindow(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateSpecRejectsInvalidBaseReplicaBounds(t *testing.T) {
+	tests := map[string]struct {
+		mutate      func(*autoscalingv1alpha1.PodAutoscaler)
+		wantReason  string
+		wantMessage string
+	}{
+		"negative minReplicas": {
+			mutate: func(pa *autoscalingv1alpha1.PodAutoscaler) {
+				pa.Spec.MinReplicas = ptr.To(int32(-1))
+			},
+			wantReason:  ReasonInvalidBounds,
+			wantMessage: "minReplicas must not be negative.",
+		},
+		"non-positive maxReplicas": {
+			mutate: func(pa *autoscalingv1alpha1.PodAutoscaler) {
+				pa.Spec.MaxReplicas = 0
+			},
+			wantReason:  ReasonInvalidBounds,
+			wantMessage: "maxReplicas must be positive.",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			pa := validPodAutoscalerForSpec()
+			tt.mutate(pa)
+
+			result := (&PodAutoscalerReconciler{}).validateSpec(pa)
+
+			if result.Valid {
+				t.Fatal("expected invalid base replica bounds to be rejected")
+			}
+			if result.Reason != tt.wantReason {
+				t.Fatalf("expected reason=%s, got %s", tt.wantReason, result.Reason)
+			}
+			if result.Message != tt.wantMessage {
+				t.Fatalf("expected message %q, got %q", tt.wantMessage, result.Message)
+			}
+		})
+	}
+}
+
+func validPodAutoscalerForSpec() *autoscalingv1alpha1.PodAutoscaler {
+	return &autoscalingv1alpha1.PodAutoscaler{Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+		ScaleTargetRef:  corev1.ObjectReference{Name: "test-deployment", Kind: "Deployment"},
+		MinReplicas:     ptr.To(int32(1)),
+		MaxReplicas:     10,
+		ScalingStrategy: autoscalingv1alpha1.KPA,
+		MetricsSources: []autoscalingv1alpha1.MetricSource{{
+			MetricSourceType: autoscalingv1alpha1.RESOURCE,
+			TargetMetric:     "cpu",
+			TargetValue:      "50",
+		}},
+	}}
 }
 
 // ---- helpers ----
@@ -638,6 +697,6 @@ var (
 	} = (*fakeWorkloadScaleClient)(nil)
 
 	_ interface {
-		ComputeDesiredReplicas(context.Context, ReplicaComputeRequest) (*ReplicaComputeResult, error)
+		ComputeDesiredReplicas(context.Context, ReplicaComputeRequest) (*MetricRoundResult, error)
 	} = (*fakeAutoScaler)(nil)
 )

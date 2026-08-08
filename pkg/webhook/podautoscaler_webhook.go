@@ -31,6 +31,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	circuitbreakerconfig "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/config"
+	"github.com/vllm-project/aibrix/pkg/utils/paschedules"
 )
 
 // nolint:unused
@@ -73,6 +75,12 @@ func (d *PodAutoscalerCustomDefaulter) Default(_ context.Context, obj runtime.Ob
 		return fmt.Errorf("expected an PodAutoscaler object but got %T", obj)
 	}
 	podautoscalerlog.Info("Defaulting for PodAutoscaler", "name", podautoscaler.GetName())
+	if podautoscaler.Spec.CircuitBreaker != nil && podautoscaler.Spec.CircuitBreaker.Enabled {
+		normalized := circuitbreakerconfig.NormalizeCircuitBreaker(podautoscaler.Spec.CircuitBreaker)
+		podautoscaler.Spec.CircuitBreaker.Action = normalized.Action
+		podautoscaler.Spec.CircuitBreaker.FailureThreshold = normalized.FailureThreshold
+		podautoscaler.Spec.CircuitBreaker.RecoveryThreshold = normalized.RecoveryThreshold
+	}
 	return nil
 }
 
@@ -148,6 +156,7 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 	}
 
 	allErrs = append(allErrs, validateMetricWindows(pa, specPath)...)
+	allErrs = append(allErrs, validateSchedules(pa, specPath)...)
 
 	// 3. Validate ScalingStrategy
 	validStrategies := map[autoscalingv1alpha1.ScalingStrategyType]bool{
@@ -166,14 +175,21 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 	if err := validateHPARoleSubtarget(pa, specPath); err != nil {
 		allErrs = append(allErrs, err)
 	}
+	if err := circuitbreakerconfig.ValidateCircuitBreaker(pa.Spec.ScalingStrategy, pa.Spec.CircuitBreaker); err != nil {
+		allErrs = append(allErrs, err)
+	}
 
 	// 4. Validate MetricsSources
 	metricsPath := specPath.Child("metricsSources")
-	if len(pa.Spec.MetricsSources) != 1 {
-		allErrs = append(allErrs, field.Invalid(metricsPath, pa.Spec.MetricsSources, "exactly one metricsSource is required"))
-	} else {
-		ms := &pa.Spec.MetricsSources[0]
-		msPath := metricsPath.Index(0)
+	if len(pa.Spec.MetricsSources) < 1 {
+		allErrs = append(
+			allErrs,
+			field.Invalid(metricsPath, pa.Spec.MetricsSources, "at least one metricsSource is required"),
+		)
+	}
+	for i := range pa.Spec.MetricsSources {
+		ms := &pa.Spec.MetricsSources[i]
+		msPath := metricsPath.Index(i)
 
 		if ms.TargetMetric == "" {
 			allErrs = append(allErrs, field.Required(msPath.Child("targetMetric"), "must be set"))
@@ -205,23 +221,25 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 
 		case autoscalingv1alpha1.EXTERNAL, autoscalingv1alpha1.DOMAIN:
 			// Empty endpoint selects the Kubernetes external.metrics API instead of an HTTP metrics endpoint.
-			if ms.Endpoint == "" {
-				break
-			}
-			if ms.ProtocolType == "" {
-				allErrs = append(allErrs, field.Required(msPath.Child("protocolType"), "required for metricSourceType=external/domain"))
-			}
-			if ms.Endpoint == "" {
-				allErrs = append(allErrs, field.Required(msPath.Child("endpoint"), "required for metricSourceType=external/domain"))
-			}
-			if ms.Path == "" {
-				allErrs = append(allErrs, field.Required(msPath.Child("path"), "required for metricSourceType=external/domain"))
+			if ms.Endpoint != "" {
+				if ms.ProtocolType == "" {
+					allErrs = append(
+						allErrs,
+						field.Required(msPath.Child("protocolType"), "required for metricSourceType=external/domain"),
+					)
+				}
+				if ms.Path == "" {
+					allErrs = append(allErrs, field.Required(msPath.Child("path"), "required for metricSourceType=external/domain"))
+				}
 			}
 
 		case autoscalingv1alpha1.RESOURCE:
 			validMetrics := map[string]bool{"cpu": true, "memory": true}
 			if !validMetrics[ms.TargetMetric] {
-				allErrs = append(allErrs, field.NotSupported(msPath.Child("targetMetric"), ms.TargetMetric, []string{"cpu", "memory"}))
+				allErrs = append(
+					allErrs,
+					field.NotSupported(msPath.Child("targetMetric"), ms.TargetMetric, []string{"cpu", "memory"}),
+				)
 			}
 			// Ensure no extra fields are set
 			if ms.Port != "" {
@@ -234,12 +252,14 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 				allErrs = append(allErrs, field.Forbidden(msPath.Child("path"), "not allowed for metricSourceType=resource"))
 			}
 			if ms.ProtocolType != "" {
-				allErrs = append(allErrs, field.Forbidden(msPath.Child("protocolType"), "not allowed for metricSourceType=resource"))
+				allErrs = append(
+					allErrs,
+					field.Forbidden(msPath.Child("protocolType"), "not allowed for metricSourceType=resource"),
+				)
 			}
 
 		case autoscalingv1alpha1.CUSTOM:
 			// No required fields for custom metrics
-			break
 
 		default:
 			allErrs = append(allErrs, field.NotSupported(msPath.Child("metricSourceType"), ms.MetricSourceType, []string{
@@ -261,6 +281,14 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 		pa.Name,
 		allErrs,
 	)
+}
+
+func validateSchedules(pa *autoscalingv1alpha1.PodAutoscaler, specPath *field.Path) field.ErrorList {
+	var errs field.ErrorList
+	for _, err := range paschedules.Validate(pa) {
+		errs = append(errs, field.Invalid(specPath.Child("schedules"), pa.Spec.Schedules, err.Error()))
+	}
+	return errs
 }
 
 func validateHPARoleSubtarget(pa *autoscalingv1alpha1.PodAutoscaler, specPath *field.Path) *field.Error {
