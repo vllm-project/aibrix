@@ -38,6 +38,11 @@ import (
 const fileHTTPClientTimeout = 60 * time.Second
 
 const (
+	fileOperationUpload      = "upload"
+	fileOperationList        = "list"
+	fileOperationGetMetadata = "get_metadata"
+	fileOperationDownload    = "download"
+
 	metricConsoleFileError    = "console.file.error"
 	metricConsoleFileDuration = "console.file.duration"
 )
@@ -46,12 +51,18 @@ const (
 type FileHandler struct {
 	metadataServiceURL string
 	httpClient         *http.Client
+	uploadHTTPClient   *http.Client
 	store              store.Store
 	injector           error_injection.Injector
 }
 
 // NewFileHandler creates a new file proxy handler.
-func NewFileHandler(metadataServiceURL string, injector error_injection.Injector, stores ...store.Store) *FileHandler {
+func NewFileHandler(
+	metadataServiceURL string,
+	uploadTimeout time.Duration,
+	injector error_injection.Injector,
+	stores ...store.Store,
+) *FileHandler {
 	var st store.Store
 	if len(stores) > 0 {
 		st = stores[0]
@@ -59,6 +70,7 @@ func NewFileHandler(metadataServiceURL string, injector error_injection.Injector
 	return &FileHandler{
 		metadataServiceURL: strings.TrimRight(metadataServiceURL, "/"),
 		httpClient:         &http.Client{Timeout: fileHTTPClientTimeout},
+		uploadHTTPClient:   &http.Client{Timeout: uploadTimeout},
 		store:              st,
 		injector:           injector,
 	}
@@ -85,13 +97,13 @@ func (h *FileHandler) handleUpload(w http.ResponseWriter, r *http.Request, _ map
 	start := time.Now().UTC()
 	if h.injector != nil {
 		if err := h.injector.CheckPoint(r.Context(), error_injection.POINT_CONSOLE_UPLOAD_FILE); err != nil {
-			metrics.Emitter.Counter(metricConsoleFileError, 1, metrics.T("method", "upload"), metrics.T("reason", "injected"))
+			metrics.Emitter.Counter(metricConsoleFileError, 1, metrics.T("method", fileOperationUpload), metrics.T("reason", "injected"))
 			http.Error(w, err.Error(), convertInjectedErrorToHttpCode(err))
 			return
 		}
 	}
 	targetURL := h.metadataServiceURL + "/v1/files"
-	h.proxyRequest(w, r, "POST", targetURL, "upload", start)
+	h.proxyRequest(w, r, http.MethodPost, targetURL, fileOperationUpload, start)
 }
 
 // handleList proxies file listing to GET {metadataServiceURL}/v1/files.
@@ -101,7 +113,7 @@ func (h *FileHandler) handleList(w http.ResponseWriter, r *http.Request, _ map[s
 	if r.URL.RawQuery != "" {
 		targetURL += "?" + r.URL.RawQuery
 	}
-	h.proxyRequest(w, r, "GET", targetURL, "list", start)
+	h.proxyRequest(w, r, http.MethodGet, targetURL, fileOperationList, start)
 }
 
 // handleGetMetadata proxies file metadata retrieval to GET {metadataServiceURL}/v1/files/{file_id}.
@@ -112,7 +124,7 @@ func (h *FileHandler) handleGetMetadata(w http.ResponseWriter, r *http.Request, 
 	if r.URL.RawQuery != "" {
 		targetURL += "?" + r.URL.RawQuery
 	}
-	h.proxyRequest(w, r, "GET", targetURL, "get_metadata", start)
+	h.proxyRequest(w, r, http.MethodGet, targetURL, fileOperationGetMetadata, start)
 }
 
 // handleDownloadContent proxies file content download to GET {metadataServiceURL}/v1/files/{file_id}/content.
@@ -120,14 +132,14 @@ func (h *FileHandler) handleDownloadContent(w http.ResponseWriter, r *http.Reque
 	start := time.Now().UTC()
 	if h.injector != nil {
 		if err := h.injector.CheckPoint(r.Context(), error_injection.POINT_CONSOLE_DOWNLOAD_FILE); err != nil {
-			metrics.Emitter.Counter(metricConsoleFileError, 1, metrics.T("method", "download"), metrics.T("reason", "injected"))
+			metrics.Emitter.Counter(metricConsoleFileError, 1, metrics.T("method", fileOperationDownload), metrics.T("reason", "injected"))
 			http.Error(w, err.Error(), convertInjectedErrorToHttpCode(err))
 			return
 		}
 	}
 	fileID := pathParams["file_id"]
 	if err := h.authorizeFileDownload(r.Context(), fileID); err != nil {
-		metrics.Emitter.Counter(metricConsoleFileError, 1, metrics.T("method", "download"), metrics.T("reason", "auth_failed"))
+		metrics.Emitter.Counter(metricConsoleFileError, 1, metrics.T("method", fileOperationDownload), metrics.T("reason", "auth_failed"))
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.message), err.status)
 		return
 	}
@@ -135,7 +147,7 @@ func (h *FileHandler) handleDownloadContent(w http.ResponseWriter, r *http.Reque
 	if r.URL.RawQuery != "" {
 		targetURL += "?" + r.URL.RawQuery
 	}
-	h.proxyRequest(w, r, "GET", targetURL, "download", start)
+	h.proxyRequest(w, r, http.MethodGet, targetURL, fileOperationDownload, start)
 }
 
 type fileAuthorizationError struct {
@@ -193,8 +205,26 @@ func (h *FileHandler) authorizeFileDownload(ctx context.Context, fileID string) 
 	}
 }
 
+func (h *FileHandler) clientForOperation(op string) *http.Client {
+	client := h.httpClient
+	if op == fileOperationUpload && h.uploadHTTPClient != nil {
+		client = h.uploadHTTPClient
+	}
+	if client == nil {
+		return http.DefaultClient
+	}
+	return client
+}
+
 // proxyRequest forwards an HTTP request to the target URL and copies the response back.
-func (h *FileHandler) proxyRequest(w http.ResponseWriter, r *http.Request, method, targetURL, op string, start time.Time) {
+func (h *FileHandler) proxyRequest(
+	w http.ResponseWriter,
+	r *http.Request,
+	method, targetURL, op string,
+	start time.Time,
+) {
+	client := h.clientForOperation(op)
+
 	defer func() {
 		metrics.Duration(metrics.Emitter, metricConsoleFileDuration, start, metrics.T("method", op))
 	}()
@@ -220,9 +250,16 @@ func (h *FileHandler) proxyRequest(w http.ResponseWriter, r *http.Request, metho
 		proxyReq.Header.Set("Authorization", auth)
 	}
 
-	resp, err := h.httpClient.Do(proxyReq)
+	resp, err := client.Do(proxyReq)
 	if err != nil {
-		klog.Errorf("Failed to proxy to metadata service: %v", err)
+		klog.Errorf(
+			"Failed to proxy to metadata service: op=%s elapsed=%s request_context_err=%v client_timeout=%s: %v",
+			op,
+			time.Since(start),
+			r.Context().Err(),
+			client.Timeout,
+			err,
+		)
 		metrics.Emitter.Counter(metricConsoleFileError, 1, metrics.T("method", op), metrics.T("reason", "upstream_unreachable"))
 		http.Error(w, `{"error":"metadata service unreachable"}`, http.StatusBadGateway)
 		return
