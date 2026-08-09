@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,6 +30,7 @@ import (
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
+	"github.com/vllm-project/aibrix/pkg/controller/stormservice/metrics"
 	ctrlutil "github.com/vllm-project/aibrix/pkg/controller/util"
 	utils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
 	podutil "github.com/vllm-project/aibrix/pkg/utils"
@@ -632,7 +634,31 @@ func canRolloutPodsInPlace(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 	return true, "", nil
 }
 
+// classifyInPlaceFallbackReason maps a free-text in-place-update fallback
+// reason (as produced by canInPlaceUpdatePod/canRolloutPodsInPlace, which may
+// embed pod names via fmt.Sprintf) to a small, fixed set of label-safe reason
+// classes. This keeps the reason_class label on
+// metrics.RoleSetRoleInPlaceFallbackTotal bounded regardless of what
+// free-text is passed in.
+func classifyInPlaceFallbackReason(reason string) string {
+	switch {
+	case strings.Contains(reason, "non-image pod fields changed"):
+		return "non_image_field_changed"
+	case strings.Contains(reason, "no container image changes found"):
+		return "no_image_diff"
+	case strings.Contains(reason, "pod is already updated"):
+		return "already_updated"
+	case strings.Contains(reason, "init container image changes require pod recreation"):
+		return "init_container_changed"
+	case strings.Contains(reason, "uses PodSet and cannot be updated in place"):
+		return "podset_role"
+	default:
+		return "other"
+	}
+}
+
 func recordInPlaceFallback(recorder record.EventRecorder, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, reason string) {
+	metrics.RoleSetRoleInPlaceFallbackTotal.WithLabelValues(roleSet.Namespace, roleSet.Name, role.Name, classifyInPlaceFallbackReason(reason)).Inc()
 	if recorder == nil {
 		return
 	}
