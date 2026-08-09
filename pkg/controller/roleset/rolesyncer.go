@@ -466,8 +466,12 @@ func (s *StatelessRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv
 			if diff == 0 {
 				break
 			}
-			if readyCount <= int(minAvailable) {
-				break
+			// Not-ready Pods (e.g. Pending) never contribute to availability, so they
+			// can always be trimmed even when the ready-pod count has reached the
+			// minAvailable floor. Only ready Pods are bound by the maxUnavailable
+			// constraint; skip those and keep looking for not-ready Pods to remove.
+			if podutil.IsPodReady(activePods[i]) && readyCount <= int(minAvailable) {
+				continue
 			}
 			toDelete = append(toDelete, activePods[i])
 			if podutil.IsPodReady(activePods[i]) {

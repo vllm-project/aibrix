@@ -124,24 +124,75 @@ func TestStatelessRoleSyncer_Scale(t *testing.T) {
 			description:    "Should cleanup terminated pods",
 		},
 		{
-			// readyPods: 2
+			// readyPods: 2, not-ready: 2
 			// expectedReplicas: 3
 			// maxUnavailable: 1
 			// minAvailable: 2 (expectedReplicas - maxUnavailable)
-			// expectedDelete: 0 (readyPods - minAvailable)
+			// The 2 ready pods sit at the minAvailable floor and must be preserved,
+			// but the excess not-ready pod is trimmed (diff = 4 - 3 = 1).
+			// expectedDelete: 1 (one not-ready pod; ready availability preserved)
 			name:    "respect maxUnavailable during scale down",
 			roleSet: newTestRoleSet("test-roleset", "test-ns"),
 			role:    newTestRoleSpec("worker", 3, intStrPtr(intstr.FromInt(0)), intStrPtr(intstr.FromInt(1))),
 			existingPods: []*v1.Pod{
 				newTestPod(testPodOne, "test-ns", "worker", "test-roleset", true, false),
 				newTestPod(testPodTwo, "test-ns", "worker", "test-roleset", true, false),
-				newTestPod("pod-3", "test-ns", "worker", "test-roleset", false, false), // not ready
+				newTestPod("pod-3", "test-ns", "worker", "test-roleset", false, false), // not ready (pending)
 				newTestPod("pod-4", "test-ns", "worker", "test-roleset", false, false),
 			},
-			expectedChange: false,
+			expectedChange: true,
 			expectedCreate: 0,
-			expectedDelete: 0,
-			description:    "Should respect maxUnavailable constraint during scale down",
+			expectedDelete: 1,
+			description:    "Should trim excess not-ready pods while preserving the ready-pod availability floor",
+		},
+		{
+			// Regression: scale-down must not get stuck when a not-ready (Pending) pod
+			// exists but the ready pods already sit at the minAvailable floor.
+			// readyPods: 2, pending: 1
+			// expectedReplicas: 2
+			// maxSurge: 1, maxUnavailable: 0 (maxSurge>0 keeps maxUnavailable honored at 0)
+			// minAvailable: 2 (expectedReplicas - maxUnavailable)
+			// diff = 3 - 2 = 1. The pending pod does not contribute to availability,
+			// so it must be removed even though readyCount(2) == minAvailable(2).
+			name:    "scale down trims pending pod even when ready pods at minAvailable floor",
+			roleSet: newTestRoleSet("test-roleset", "test-ns"),
+			role:    newTestRoleSpec("worker", 2, intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromInt(0))),
+			existingPods: []*v1.Pod{
+				newTestPod(testPodOne, "test-ns", "worker", "test-roleset", true, false),
+				newTestPod(testPodTwo, "test-ns", "worker", "test-roleset", true, false),
+				newTestPod("pod-pending", "test-ns", "worker", "test-roleset", false, false), // pending
+			},
+			expectedChange: true,
+			expectedCreate: 0,
+			expectedDelete: 1,
+			description:    "Should delete the pending pod instead of getting stuck at the availability floor",
+		},
+		{
+			// Regression: scale-down must not get stuck when *every* active pod is
+			// not-ready (Pending). Pending pods never contribute to availability, so
+			// they must be trimmed down to expectedReplicas even though readyCount(0)
+			// already sits below the minAvailable floor. Without the fix the loop
+			// broke immediately (readyCount <= minAvailable) and the role stayed
+			// over-replicated forever.
+			// pendingPods: 4
+			// expectedReplicas: 2
+			// maxSurge: 0, maxUnavailable: 1
+			// minAvailable: 1 (expectedReplicas - maxUnavailable)
+			// readyCount: 0, so the availability floor never shields a not-ready pod.
+			// diff = 4 - 2 = 2 -> delete 2 pending pods.
+			name:    "scale down trims all pending pods when none are ready",
+			roleSet: newTestRoleSet("test-roleset", "test-ns"),
+			role:    newTestRoleSpec("worker", 2, intStrPtr(intstr.FromInt(0)), intStrPtr(intstr.FromInt(1))),
+			existingPods: []*v1.Pod{
+				newTestPod(testPodOne, "test-ns", "worker", "test-roleset", false, false), // pending
+				newTestPod(testPodTwo, "test-ns", "worker", "test-roleset", false, false),
+				newTestPod("pod-3", "test-ns", "worker", "test-roleset", false, false),
+				newTestPod("pod-4", "test-ns", "worker", "test-roleset", false, false),
+			},
+			expectedChange: true,
+			expectedCreate: 0,
+			expectedDelete: 2,
+			description:    "Should trim pending pods down to expectedReplicas when no ready pods exist",
 		},
 		{
 			// expectedReplicas: 5
