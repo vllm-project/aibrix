@@ -35,6 +35,8 @@ import (
 	"github.com/vllm-project/aibrix/pkg/controller/stormservice/metrics"
 )
 
+const testNamespace = "default"
+
 func rolloutTimingTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()
@@ -70,7 +72,7 @@ func observedCount(t *testing.T, namespace, name, strategy string) uint64 {
 // is cleared afterwards.
 func TestTrackRolloutDuration_NotReadyToReady_ObservesDurationAndClearsAnnotation(t *testing.T) {
 	scheme := rolloutTimingTestScheme(t)
-	namespace, name := "default", "not-ready-to-ready"
+	namespace, name := testNamespace, "not-ready-to-ready"
 	startedAt := time.Now().Add(-5 * time.Second)
 
 	stormService := &orchestrationv1alpha1.StormService{
@@ -125,7 +127,7 @@ func TestTrackRolloutDuration_NotReadyToReady_ObservesDurationAndClearsAnnotatio
 // annotation gets written and persisted, with no observation emitted.
 func TestTrackRolloutDuration_ReadyToNotReady_WritesAnnotation(t *testing.T) {
 	scheme := rolloutTimingTestScheme(t)
-	namespace, name := "default", "ready-to-not-ready"
+	namespace, name := testNamespace, "ready-to-not-ready"
 
 	stormService := &orchestrationv1alpha1.StormService{
 		ObjectMeta: metav1.ObjectMeta{
@@ -166,7 +168,7 @@ func TestTrackRolloutDuration_ReadyToNotReady_WritesAnnotation(t *testing.T) {
 func TestTrackRolloutDuration_NoTransition_IsNoop(t *testing.T) {
 	scheme := rolloutTimingTestScheme(t)
 	stormService := &orchestrationv1alpha1.StormService{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "no-transition"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: "no-transition"},
 	}
 	// Intentionally do not register stormService with the fake client: if
 	// trackRolloutDuration issued an Update call, it would fail with NotFound.
@@ -192,7 +194,7 @@ func TestTrackRolloutDuration_NoTransition_IsNoop(t *testing.T) {
 // asserts no observation is emitted.
 func TestTrackRolloutDuration_FirstReconcileToReady_SkipsObservation(t *testing.T) {
 	scheme := rolloutTimingTestScheme(t)
-	namespace, name := "default", "first-reconcile"
+	namespace, name := testNamespace, "first-reconcile"
 
 	stormService := &orchestrationv1alpha1.StormService{
 		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
@@ -218,7 +220,7 @@ func TestTrackRolloutDuration_FirstReconcileToReady_SkipsObservation(t *testing.
 // the persisted annotation.
 func TestTrackRolloutDuration_SurvivesControllerRestart(t *testing.T) {
 	scheme := rolloutTimingTestScheme(t)
-	namespace, name := "default", "restart-mid-rollout"
+	namespace, name := testNamespace, "restart-mid-rollout"
 	startedAt := time.Now().Add(-30 * time.Second)
 
 	// State as persisted by the "previous" controller process before it
