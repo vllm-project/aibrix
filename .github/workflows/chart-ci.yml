@@ -72,6 +72,12 @@ jobs:
       - name: Run chart-testing (lint)
         run: helm lint ./dist/chart
       
+      - name: Install helm-unittest
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest --version v0.7.2
+
+      - name: Run helm unit tests
+        run: helm unittest ./dist/chart
+
       - name: Create kind cluster
         uses: helm/kind-action@v1.12.0
 
