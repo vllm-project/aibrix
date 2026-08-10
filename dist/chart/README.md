@@ -10,13 +10,10 @@ and is now manually maintained under `dist/chart`.
 
 ## Limitations
 
-1. Missing Standard Labels
-Common Kubernetes labels such as `app.kubernetes.io/managed-by` and `app.kubernetes.io/name` are currently not included. These should be added to improve consistency and observability.
-
-2. Third-Party Dependencies Not Included
+1. Third-Party Dependencies Not Included
 Dependencies like `Envoy Gateway` and `KubeRay` have their own Helm charts. This AIBrix chart focuses only on core AIBrix components and does not package or manage external dependencies.
 
-3. Not Compatible with Previous Kustomize-Based Installs
+2. Not Compatible with Previous Kustomize-Based Installs
 This chart is not intended for upgrades from earlier deployments that used Kustomize. Transitioning requires a clean install.
 
 

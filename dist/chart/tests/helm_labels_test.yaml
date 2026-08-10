@@ -1,0 +1,16 @@
+suite: Common Kubernetes Labels (default install)
+templates:
+  - "templates/*.yaml"
+tests:
+  - it: should set common labels on all rendered resources
+    documentSelector:
+      path: kind                # only docs that have `kind:` (real manifests)
+      matchMany: true           # assert on every matching doc
+      skipEmptyTemplates: true  # skip empty templates
+    asserts:
+      - exists:
+          path: metadata.labels["app.kubernetes.io/name"]
+      - exists:
+          path: metadata.labels["app.kubernetes.io/instance"]
+      - exists:
+          path: metadata.labels["app.kubernetes.io/managed-by"]

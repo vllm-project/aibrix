@@ -15,6 +15,9 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: {{ include "aibrix.fullname" . }}-gateway-plugins
+  labels:
+    {{- include "aibrix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-gateway-plugin
 rules:
 - apiGroups:
   - ""
