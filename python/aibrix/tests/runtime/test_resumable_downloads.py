@@ -261,8 +261,10 @@ def _install_fake_boto3(monkeypatch: pytest.MonkeyPatch, downloaded_files: List)
     fake_boto3 = types.ModuleType("boto3")
     fake_botocore = types.ModuleType("botocore")
     fake_exceptions = types.ModuleType("botocore.exceptions")
-    fake_exceptions.ClientError = Exception
-    fake_exceptions.NoCredentialsError = Exception
+    # setattr() rather than plain assignment: mypy rejects attribute
+    # assignment on a value typed as ModuleType.
+    setattr(fake_exceptions, "ClientError", Exception)
+    setattr(fake_exceptions, "NoCredentialsError", Exception)
 
     class FakeS3Client:
         def get_paginator(self, _op):
@@ -283,7 +285,7 @@ def _install_fake_boto3(monkeypatch: pytest.MonkeyPatch, downloaded_files: List)
             with open(path, "wb") as f:
                 f.write(b"\x00" * 4)
 
-    fake_boto3.client = lambda svc, **kw: FakeS3Client()
+    setattr(fake_boto3, "client", lambda svc, **kw: FakeS3Client())
 
     monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
     monkeypatch.setitem(sys.modules, "botocore", fake_botocore)
@@ -354,7 +356,7 @@ def _install_fake_gcs(monkeypatch: pytest.MonkeyPatch, downloaded_files: List):
     fake_storage_mod = types.ModuleType("google.cloud.storage")
     fake_oauth2 = types.ModuleType("google.oauth2")
     fake_sa = types.ModuleType("google.oauth2.service_account")
-    fake_sa.Credentials = MagicMock()
+    setattr(fake_sa, "Credentials", MagicMock())
 
     class FakeBlob:
         def __init__(self, name):
@@ -382,7 +384,7 @@ def _install_fake_gcs(monkeypatch: pytest.MonkeyPatch, downloaded_files: List):
         def bucket(self, name):
             return FakeBucket(name)
 
-    fake_storage_mod.Client = FakeClient
+    setattr(fake_storage_mod, "Client", FakeClient)
 
     monkeypatch.setitem(sys.modules, "google", fake_google)
     monkeypatch.setitem(sys.modules, "google.cloud", fake_google_cloud)
@@ -429,7 +431,7 @@ class TestGCSAtomicWrites:
         fake_storage_mod = types.ModuleType("google.cloud.storage")
         fake_oauth2 = types.ModuleType("google.oauth2")
         fake_sa = types.ModuleType("google.oauth2.service_account")
-        fake_sa.Credentials = MagicMock()
+        setattr(fake_sa, "Credentials", MagicMock())
 
         class EmptyBucket:
             def list_blobs(self, prefix=""):
@@ -445,7 +447,7 @@ class TestGCSAtomicWrites:
             def bucket(self, _name):
                 return EmptyBucket()
 
-        fake_storage_mod.Client = EmptyClient
+        setattr(fake_storage_mod, "Client", EmptyClient)
         monkeypatch.setitem(sys.modules, "google", fake_google)
         monkeypatch.setitem(sys.modules, "google.cloud", fake_google_cloud)
         monkeypatch.setitem(sys.modules, "google.cloud.storage", fake_storage_mod)
