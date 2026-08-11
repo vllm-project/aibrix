@@ -43,6 +43,14 @@ _MAX_ERROR_BODY_CHARS = 4096
 # decision on the client side, where a closed connection costs nothing.
 _KEEPALIVE_EXPIRY_SECONDS = 3.0
 
+# The configured request timeout means "how long the model may take to answer",
+# so it belongs on read alone. Passed as a scalar it also covers connecting,
+# sending and waiting for a free pool slot -- turning a refused connection or a
+# saturated pool into an hour of silence indistinguishable from a slow request.
+_CONNECT_TIMEOUT_SECONDS = 10.0
+_WRITE_TIMEOUT_SECONDS = 60.0
+_POOL_TIMEOUT_SECONDS = 30.0
+
 
 @dataclass(slots=True)
 class InferenceRequest:
@@ -82,6 +90,12 @@ class HttpChannel:
     ) -> None:
         self._base_url = base_url
         self._timeout = timeout
+        self._timeout_config = httpx.Timeout(
+            connect=_CONNECT_TIMEOUT_SECONDS,
+            read=timeout,
+            write=_WRITE_TIMEOUT_SECONDS,
+            pool=_POOL_TIMEOUT_SECONDS,
+        )
         self._client = client
         self._owns_client = client is None
 
@@ -97,7 +111,7 @@ class HttpChannel:
         )  # type: ignore[call-arg]
         try:
             response = await client.post(
-                url, json=request.payload, timeout=self._timeout
+                url, json=request.payload, timeout=self._timeout_config
             )
         except httpx.TimeoutException as ex:
             # repr, not str: httpx timeout exceptions often stringify to an
