@@ -378,6 +378,19 @@ class DispatchEngine:
                     raise ex
                 await self._report_channel_error(channel.id, ex)
                 if send_attempt < self._retry.max_retries:
+                    # Retries happen entirely inside this call, so the dispatch
+                    # counters stay flat while a request spins here. Without
+                    # this line a retry storm is indistinguishable from a slow
+                    # backend.
+                    logger.warning(
+                        "Retrying inference request",
+                        ref=request.ref,
+                        attempt=send_attempt + 1,
+                        max_retries=self._retry.max_retries,
+                        channel_id=channel.id,
+                        error_code=ex.code.value,
+                        status_code=ex.status_code,
+                    )  # type: ignore[call-arg]
                     await self._sleep_before_retry(send_attempt)
                     send_attempt += 1
                     continue
