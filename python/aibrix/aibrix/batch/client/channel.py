@@ -92,9 +92,11 @@ class HttpChannel:
                 url, json=request.payload, timeout=self._timeout
             )
         except httpx.TimeoutException as ex:
+            # repr, not str: httpx timeout exceptions often stringify to an
+            # empty message, which would leave the log with a bare URL.
             raise InferenceError(
                 InferenceErrorCode.TRANSPORT_ERROR,
-                f"{self._base_url}: {ex}",
+                f"{self._base_url}: {ex!r}",
                 retryable=True,
             ) from ex
         except httpx.TransportError as ex:

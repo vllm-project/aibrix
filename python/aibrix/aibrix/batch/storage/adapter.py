@@ -273,6 +273,17 @@ class BatchStorageAdapter:
             or job.status.temp_output_file_id is None
             or job.status.temp_error_file_id is None
         ):
+            # Skipping aggregation leaves the job with no output file, yet the
+            # caller still marks it done -- so this path is indistinguishable
+            # from a clean finish unless it says so here.
+            logger.error(
+                "Skipping output aggregation: job is missing output file ids",
+                job_id=job.job_id,
+                output_file_id=job.status.output_file_id,
+                error_file_id=job.status.error_file_id,
+                temp_output_file_id=job.status.temp_output_file_id,
+                temp_error_file_id=job.status.temp_error_file_id,
+            )  # type: ignore[call-arg]
             return job
 
         prefix = self._get_request_meta_output_key(job, None)
@@ -284,6 +295,11 @@ class BatchStorageAdapter:
         launched = 0
         max_index = -1
         continuation_token = None
+        # Requests dropped from both the assembled output and the recomputed
+        # counts below: ``missing`` lost its metastore key entirely, ``pending``
+        # still holds the lock value instead of a result etag.
+        missing_keys = 0
+        pending_keys = 0
 
         while True:
             # 1. Get keys
@@ -326,10 +342,12 @@ class BatchStorageAdapter:
                 # 3. Calculate actual counts based on metastore keys
                 for (idx, key), (meta_val, exist) in zip(indexed_keys, etag_results):
                     if not exist:
+                        missing_keys += 1
                         continue
 
                     etag, is_error = self._parse_request_meta_output_val(meta_val)
                     if etag == "":
+                        pending_keys += 1
                         continue
 
                     valid_keys.append(key)
@@ -355,7 +373,22 @@ class BatchStorageAdapter:
             total=total,
             metastore_total=metastore_total,
             authoritative_total=authoritative_total,
+            missing_keys=missing_keys,
+            pending_keys=pending_keys,
         )  # type: ignore[call-arg]
+
+        if missing_keys or pending_keys:
+            # These requests are absent from the assembled output file and from
+            # the counts written below, so total will exceed completed + failed.
+            logger.warning(
+                "Dropped requests while assembling job output",
+                job_id=job.job_id,
+                missing_keys=missing_keys,
+                pending_keys=pending_keys,
+                total=total,
+                completed=completed,
+                failed=failed,
+            )  # type: ignore[call-arg]
 
         # 4. Update job object with calculated request counts if they differ.
         # Preserve the validated input total when it is larger, but allow

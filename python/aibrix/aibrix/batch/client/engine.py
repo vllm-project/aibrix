@@ -390,6 +390,9 @@ class DispatchEngine:
                         channel_id=channel.id,
                         error_code=ex.code.value,
                         status_code=ex.status_code,
+                        # TRANSPORT_ERROR covers both timeouts and connection
+                        # failures; only the message tells them apart.
+                        error=ex.message,
                     )  # type: ignore[call-arg]
                     await self._sleep_before_retry(send_attempt)
                     send_attempt += 1
