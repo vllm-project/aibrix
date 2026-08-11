@@ -84,7 +84,9 @@ class HttpChannel:
     async def send(self, request: InferenceRequest) -> Response:
         client = self._ensure_client()
         url = urljoin(self._base_url, request.path)
-        logger.debug("requesting inference", url=url, body=request.payload)  # type: ignore[call-arg]
+        logger.debug(
+            "requesting inference", url=url, model=request.payload.get("model")
+        )  # type: ignore[call-arg]
         try:
             response = await client.post(
                 url, json=request.payload, timeout=self._timeout
