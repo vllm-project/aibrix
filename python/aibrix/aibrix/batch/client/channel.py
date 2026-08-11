@@ -141,7 +141,13 @@ class HttpChannel:
     def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
-                limits=httpx.Limits(keepalive_expiry=_KEEPALIVE_EXPIRY_SECONDS)
+                limits=httpx.Limits(
+                    # Restate httpx's own defaults: constructing Limits() to set
+                    # keepalive_expiry alone would reset these two to unbounded.
+                    max_connections=100,
+                    max_keepalive_connections=20,
+                    keepalive_expiry=_KEEPALIVE_EXPIRY_SECONDS,
+                )
             )
         return self._client
 
