@@ -185,9 +185,10 @@ class DiscoveryEndpointSource:
 
     async def _apply(self, snapshot: _Snapshot) -> None:
         async with self._lock:
-            if snapshot.version == self._version:
-                return
             new_urls = [endpoint.base_url for endpoint in snapshot.endpoints]
+            if set(new_urls) == set(self._by_url):
+                self._version = snapshot.version
+                return
             keep: Dict[str, Channel] = {}
             for url in new_urls:
                 keep[url] = self._by_url.get(url) or HttpChannel(
