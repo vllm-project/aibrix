@@ -35,6 +35,14 @@ logger = init_logger(__name__)
 Response = Dict[str, Any]
 _MAX_ERROR_BODY_CHARS = 4096
 
+# Idle connections must be discarded before the server's own keep-alive timeout,
+# not at the same moment. httpx defaults to 5s and so does uvicorn: under
+# sustained load the client periodically reuses a connection the server is
+# closing in the same instant, which surfaces as RemoteProtocolError("Server
+# disconnected without sending a response."). Expiring earlier keeps the
+# decision on the client side, where a closed connection costs nothing.
+_KEEPALIVE_EXPIRY_SECONDS = 3.0
+
 
 @dataclass(slots=True)
 class InferenceRequest:
@@ -132,7 +140,9 @@ class HttpChannel:
 
     def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:
-            self._client = httpx.AsyncClient()
+            self._client = httpx.AsyncClient(
+                limits=httpx.Limits(keepalive_expiry=_KEEPALIVE_EXPIRY_SECONDS)
+            )
         return self._client
 
     async def aclose(self) -> None:

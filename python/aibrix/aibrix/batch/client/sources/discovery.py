@@ -128,14 +128,22 @@ class DiscoveryEndpointSource:
         await self._refresh_if_needed(force=True)
 
     async def report_channel_error(self, channel_id: str, error: Exception) -> None:
+        """Record a request failure without changing the active endpoint set.
+
+        Membership belongs to discovery, not to the data path. A single request
+        failure is a poor health signal -- an idle keep-alive race surfaces as
+        RemoteProtocolError from a perfectly healthy pod -- and evicting on it
+        shrank the active set with no way back, eventually to zero. The engine
+        already re-picks a channel on every retry, so a genuinely dead endpoint
+        costs at most one wasted attempt per request until discovery drops it.
+        """
         chained = error.__cause__ or error.__context__
         logger.warning(
-            "Removing channel due to error",
+            "Channel reported an error",
             channel_id=channel_id,
             error=f"{error!r}" + (f" (caused by {chained!r})" if chained else ""),
-            remaining_before=len(self._channels),
+            active_channels=len(self._channels),
         )  # type: ignore[call-arg]
-        await self._remove_channel(channel_id)
         try:
             await self.refresh()
         except Exception as exc:  # noqa: BLE001 - discovery is best-effort here.
@@ -145,10 +153,14 @@ class DiscoveryEndpointSource:
                 channel_id=channel_id,
                 error=f"{exc!r}" + (f" (caused by {chained!r})" if chained else ""),
             )  # type: ignore[call-arg]
-        # A stale discovery snapshot may re-add the failed endpoint during refresh.
-        await self._remove_channel(channel_id)
 
     async def _remove_channel(self, channel_id: str) -> None:
+        """Deprecated: no longer called on request failures.
+
+        Kept so the eviction path can be restored behind a real health signal
+        (repeated failures on the same endpoint, say). Driving it from a single
+        request error is what drained the active set.
+        """
         async with self._lock:
             failed = self._by_url.pop(channel_id, None)
             if failed is not None:
