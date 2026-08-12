@@ -19,6 +19,8 @@ package store
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -1193,4 +1195,66 @@ func TestMemoryStore(t *testing.T) {
 			t.Fatalf("Close failed: %v", err)
 		}
 	})
+}
+
+// TestMySQLURIToDSNPinsUTC: bytedgorm defaults loc to "Local", making the
+// driver's TIMESTAMP conversion follow the container's zone. Replicas on
+// different zones then disagree about what they read, which can put a
+// recovered job's deadline hours in the past. loc must come from the code.
+func TestMySQLURIToDSNPinsUTC(t *testing.T) {
+	cases := []struct {
+		name string
+		uri  string
+	}{
+		{"no query at all", "mysql://user:pass@host:3306/aibrix"},
+		{"unrelated params kept", "mysql://user:pass@host:3306/aibrix?charset=utf8mb4"},
+		{"deployment opted into the server zone", "mysql://user:pass@host:3306/aibrix?loc=Local&parseTime=false"},
+		{"byterds form with cluster", "byterds://@psm/aibrix?cluster=uswest2"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			u, err := url.Parse(tc.uri)
+			if err != nil {
+				t.Fatalf("parse uri: %v", err)
+			}
+			dsn := mysqlURIToDSN(u)
+			_, query, ok := strings.Cut(dsn, "?")
+			if !ok {
+				t.Fatalf("dsn %q carries no query", dsn)
+			}
+			params, err := url.ParseQuery(query)
+			if err != nil {
+				t.Fatalf("parse dsn query %q: %v", query, err)
+			}
+			for key, want := range map[string]string{
+				"parseTime": "true",
+				"loc":       "UTC",
+			} {
+				if got := params.Get(key); got != want {
+					t.Errorf("%s = %q, want %q (dsn %q)", key, got, want, dsn)
+				}
+			}
+			// The server's session zone decides what instant a stored
+			// wall-clock denotes. Overriding it would read existing rows
+			// against a zone they were not written under.
+			if got := params.Get("time_zone"); got != "" {
+				t.Errorf("time_zone = %q, want unset (dsn %q)", got, dsn)
+			}
+		})
+	}
+}
+
+// TestMySQLURIToDSNKeepsUnrelatedParams: pinning the zone must not cost the
+// deployment its other connection options.
+func TestMySQLURIToDSNKeepsUnrelatedParams(t *testing.T) {
+	u, err := url.Parse("byterds://@psm/aibrix?cluster=uswest2&charset=utf8mb4")
+	if err != nil {
+		t.Fatalf("parse uri: %v", err)
+	}
+	dsn := mysqlURIToDSN(u)
+	for _, want := range []string{"cluster=uswest2", "charset=utf8mb4"} {
+		if !strings.Contains(dsn, want) {
+			t.Errorf("dsn %q dropped %q", dsn, want)
+		}
+	}
 }
