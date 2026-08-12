@@ -44,14 +44,6 @@ const (
 	defaultPlanningInterval = 60 * time.Second
 	defaultListJobsLimit    = 20
 
-	// expiryFinalizeGracePeriod bounds how long past the completion window the
-	// planner keeps polling MDS before forcing a planner-side expiry. The batch
-	// runtime finalizes expiry on its own deadline and aggregates any
-	// already-completed requests into the output/error files, so we prefer that
-	// terminal batch over a premature planner-side conclusion. The grace period
-	// only kicks in as a fallback when the runtime is unresponsive.
-	expiryFinalizeGracePeriod = 5 * time.Minute
-
 	metricConsolePlannerDuration  = "console.planner.duration"
 	metricConsolePlannerError     = "console.planner.error"
 	metricConsolePlannerJobFailed = "console.planner.job.failed"
@@ -361,12 +353,10 @@ func (q *Planner) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (
 		q.mu.Unlock()
 		return nil, fmt.Errorf("%w: duplicate job_id %q", plannerapi.ErrInvalidJob, req.JobID)
 	}
-	completionWindow, _ := time.ParseDuration(string(req.BatchParams.CompletionWindow))
 	job := &queuedJob{
 		req:        req,
 		status:     plannerapi.JobStatusQueued,
 		queuedAt:   now,
-		expiresAt:  now.Add(completionWindow),
 		pqPriority: 0,
 		queue:      q.pendingQueue,
 	}

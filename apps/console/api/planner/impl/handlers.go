@@ -31,6 +31,7 @@ import (
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
 	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
+	"github.com/vllm-project/aibrix/apps/console/api/utils"
 )
 
 func isBatchRunning(s plannerapi.JobStatus) bool {
@@ -39,6 +40,18 @@ func isBatchRunning(s plannerapi.JobStatus) bool {
 		return true
 	}
 	return false
+}
+
+// adoptBatchDeadlineUnsafe records the completion deadline owned by MDS.
+// Before CreateBatch succeeds the planner deliberately leaves it unset.
+// Caller holds job.mu.
+func adoptBatchDeadlineUnsafe(job *queuedJob, batch *openai.Batch) {
+	if batch == nil {
+		return
+	}
+	if t := utils.UnixToTimePtr(batch.ExpiresAt); t != nil {
+		job.expiresAt = *t
+	}
 }
 
 func updateStatusUnsafe(job *queuedJob, newStatus plannerapi.JobStatus) {
@@ -70,63 +83,100 @@ func updateStatusUnsafe(job *queuedJob, newStatus plannerapi.JobStatus) {
 	}
 }
 
-func handleCleanup(ctx context.Context, p *Planner, job *queuedJob, sourceStatus, targetStatus plannerapi.JobStatus) {
-	job.mu.RLock()
+// finishRuntimeBatch adopts a terminal result already confirmed by MDS, then
+// releases the provision. Runtime reads and cancellation responses both use
+// this path so MDS remains authoritative after submission.
+func finishRuntimeBatch(
+	ctx context.Context,
+	p *Planner,
+	job *queuedJob,
+	sourceStatus plannerapi.JobStatus,
+	batch *openai.Batch,
+) {
+	if batch == nil {
+		return
+	}
+	runtimeStatus := plannerapi.JobStatus(batch.Status)
+	if !runtimeStatus.IsTerminal() {
+		return
+	}
+
+	job.mu.Lock()
 	if job.status.IsTerminal() || job.status != sourceStatus {
-		job.mu.RUnlock()
+		job.mu.Unlock()
 		return
 	}
 
 	jobID := job.req.JobID
 	batchID := job.batchID
 	provisionID := job.provisionID
-	job.mu.RUnlock()
+	job.batch = batch
+	adoptBatchDeadlineUnsafe(job, batch)
+	job.provisionID = ""
+	updateStatusUnsafe(job, runtimeStatus)
+	deadline := job.expiresAt
+	job.mu.Unlock()
 
+	klog.Infof(
+		"[planner] runtime terminal job_id=%q batch_id=%q status=%s counts=%d/%d/%d deadline=%s",
+		jobID, batchID, runtimeStatus,
+		batch.RequestCounts.Completed, batch.RequestCounts.Failed, batch.RequestCounts.Total,
+		deadline.Format(time.RFC3339),
+	)
 	if provisionID != "" {
-		p.releaseAfter(ctx, jobID, provisionID, "provision cancel")
+		p.releaseAfter(ctx, jobID, provisionID, "runtime terminal")
 	}
+	p.persist(ctx, job)
+}
 
-	var batch *openai.Batch
-	switch {
-	case batchID == "":
-		// No MDS batch association yet (e.g. expiry/cancel before submission).
-	case targetStatus == plannerapi.JobStatusExpired || targetStatus == plannerapi.JobStatusCompleted:
-		// Natural terminal states are finalized by the runtime, which aggregates
-		// any already-completed requests into the output/error files. Read the
-		// finalized batch so a planner-side conclusion still records MDS output,
-		// counts, and timestamps instead of a stale in-progress snapshot.
-		var err error
-		if batch, err = p.bc.GetBatch(ctx, batchID); err != nil {
-			klog.Warningf("[planner] GetBatch on cleanup failed job_id=%q batch_id=%q: %v", jobID, batchID, err)
+// handleCancellation owns user-requested cancellation. A cancellation without
+// a batch is planner-owned; once a batch exists, MDS must confirm a terminal
+// outcome before the provision is released.
+func handleCancellation(ctx context.Context, p *Planner, job *queuedJob) {
+	job.mu.Lock()
+	if job.status != plannerapi.JobStatusCancelling {
+		job.mu.Unlock()
+		return
+	}
+	jobID := job.req.JobID
+	batchID := job.batchID
+	provisionID := job.provisionID
+	if batchID == "" {
+		job.provisionID = ""
+		updateStatusUnsafe(job, plannerapi.JobStatusCancelled)
+		job.mu.Unlock()
+		if provisionID != "" {
+			p.releaseAfter(ctx, jobID, provisionID, "pre-submit cancellation")
 		}
-	default:
-		// Cancellation is planner-initiated: tell MDS to cancel and adopt the
-		// returned batch.
-		klog.Infof("[planner] cancel submitted job_id=%q batch_id=%q", jobID, batchID)
-		var err error
-		if batch, err = p.bc.CancelBatch(ctx, batchID); err != nil {
-			klog.Warningf("[planner] CancelBatch failed for job_id=%q: %v", jobID, err)
-		}
+		p.persist(ctx, job)
+		return
+	}
+	job.mu.Unlock()
+
+	klog.Infof("[planner] cancel submitted job_id=%q batch_id=%q", jobID, batchID)
+	batch, err := p.bc.CancelBatch(ctx, batchID)
+	if err != nil {
+		klog.Warningf("[planner] CancelBatch failed job_id=%q batch_id=%q: %v", jobID, batchID, err)
+		return
+	}
+	if batch == nil {
+		klog.Warningf("[planner] CancelBatch returned no batch job_id=%q batch_id=%q", jobID, batchID)
+		return
+	}
+	if plannerapi.JobStatus(batch.Status).IsTerminal() {
+		finishRuntimeBatch(ctx, p, job, plannerapi.JobStatusCancelling, batch)
+		return
 	}
 
 	job.mu.Lock()
-	if !job.status.IsTerminal() {
-		job.provisionID = ""
-		if batchID != "" {
-			// The MDS batch remains the source of truth for terminal output,
-			// counts, and timestamps. Keep the association so GetJob/ListJobs
-			// can still hydrate from MDS after the in-memory job is evicted.
-			if batch != nil {
-				job.batch = batch
-			}
-		} else {
-			job.batchID = ""
-			job.batch = batch
-		}
-		updateStatusUnsafe(job, targetStatus)
+	if job.status == plannerapi.JobStatusCancelling {
+		job.batch = batch
+		adoptBatchDeadlineUnsafe(job, batch)
 	}
 	job.mu.Unlock()
 	p.persist(ctx, job)
+	klog.Infof("[planner] cancellation pending job_id=%q batch_id=%q runtime_status=%s",
+		jobID, batchID, batch.Status)
 }
 
 func handleProvisioning(p *Planner, job *queuedJob) {
@@ -191,7 +241,7 @@ func handleProvisioning(p *Planner, job *queuedJob) {
 	job.resourcePreparingAt = time.Now().UTC()
 	if job.status == plannerapi.JobStatusCancelling {
 		job.mu.Unlock()
-		handleCleanup(ctx, p, job, plannerapi.JobStatusCancelling, plannerapi.JobStatusCancelled)
+		handleCancellation(ctx, p, job)
 		return
 	}
 
@@ -362,9 +412,10 @@ func submitToMDS(p *Planner, job *queuedJob) {
 	job.submittingAt = time.Now().UTC()
 	job.readyToSubmit = false // Clear flag after submission
 	job.extraBody = aibrixBodyJson
+	adoptBatchDeadlineUnsafe(job, batch)
 	if job.status == plannerapi.JobStatusCancelling {
 		job.mu.Unlock()
-		handleCleanup(ctx, p, job, plannerapi.JobStatusCancelling, plannerapi.JobStatusCancelled)
+		handleCancellation(ctx, p, job)
 		return
 	}
 
@@ -411,11 +462,11 @@ func handleRunning(p *Planner, job *queuedJob) {
 		return
 	}
 	if newStatus.IsTerminal() {
-		job.batch = batch
 		job.mu.Unlock()
-		handleCleanup(ctx, p, job, currentStatus, newStatus)
+		finishRuntimeBatch(ctx, p, job, currentStatus, batch)
 		return
 	}
+	adoptBatchDeadlineUnsafe(job, batch)
 	updateStatusUnsafe(job, newStatus)
 	job.batch = batch // Update in-memory batch with latest from MDS
 	rec := jobToModel(job)

@@ -282,19 +282,29 @@ func jobToModel(j *queuedJob) *models.Job {
 	return rec
 }
 
-// mergeBatchIntoModel overlays MDS-owned batch fields onto rec.
+// setTimestampIfSet overlays an MDS timestamp only once the runtime has stamped
+// it. A partial batch response can omit timestamps observed on an earlier
+// response, so zero values must not erase the durable snapshot.
+func setTimestampIfSet(dst **time.Time, unix int64) {
+	if unix > 0 {
+		*dst = utils.UnixToTimePtr(unix)
+	}
+}
+
+// mergeBatchIntoModel overlays MDS-owned batch fields onto rec. Timestamps are
+// merged rather than assigned so omitted fields do not erase known values.
 func mergeBatchIntoModel(rec *models.Job, b *openai.Batch) {
-	rec.BatchCreatedAt = utils.UnixToTimePtr(b.CreatedAt)
 	rec.OutputDataset = b.OutputFileID
 	rec.ErrorDataset = b.ErrorFileID
-	rec.InProgressAt = utils.UnixToTimePtr(b.InProgressAt)
-	rec.ExpiresAt = utils.UnixToTimePtr(b.ExpiresAt)
-	rec.FinalizingAt = utils.UnixToTimePtr(b.FinalizingAt)
-	rec.CompletedAt = utils.UnixToTimePtr(b.CompletedAt)
-	rec.FailedAt = utils.UnixToTimePtr(b.FailedAt)
-	rec.ExpiredAt = utils.UnixToTimePtr(b.ExpiredAt)
-	rec.CancellingAt = utils.UnixToTimePtr(b.CancellingAt)
-	rec.CancelledAt = utils.UnixToTimePtr(b.CancelledAt)
+	setTimestampIfSet(&rec.BatchCreatedAt, b.CreatedAt)
+	setTimestampIfSet(&rec.InProgressAt, b.InProgressAt)
+	setTimestampIfSet(&rec.ExpiresAt, b.ExpiresAt)
+	setTimestampIfSet(&rec.FinalizingAt, b.FinalizingAt)
+	setTimestampIfSet(&rec.CompletedAt, b.CompletedAt)
+	setTimestampIfSet(&rec.FailedAt, b.FailedAt)
+	setTimestampIfSet(&rec.ExpiredAt, b.ExpiredAt)
+	setTimestampIfSet(&rec.CancellingAt, b.CancellingAt)
+	setTimestampIfSet(&rec.CancelledAt, b.CancelledAt)
 	if b.JSON.RequestCounts.Valid() {
 		if data, err := json.Marshal(b.RequestCounts); err == nil {
 			rec.RequestCounts = datatypes.JSON(data)

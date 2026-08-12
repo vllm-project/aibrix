@@ -31,6 +31,7 @@ import (
 	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
 	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
+	"github.com/vllm-project/aibrix/apps/console/api/store/models"
 )
 
 const (
@@ -509,6 +510,46 @@ func TestExpiredBatchKeepsExpiredAtAfterSync(t *testing.T) {
 	}
 }
 
+// MDS responses can omit timestamps that were present in an earlier
+// snapshot. Merging a partial response must not erase the durable value.
+func TestMergeBatchKeepsExistingTimestampWhenRuntimeOmitsIt(t *testing.T) {
+	existing := time.Unix(1_799_000_000, 0).UTC()
+	rec := &models.Job{BatchCreatedAt: &existing}
+
+	mergeBatchIntoModel(rec, &openai.Batch{
+		ID:           "batch-1",
+		Status:       openai.BatchStatusInProgress,
+		InProgressAt: 1_799_000_100,
+		ExpiresAt:    1_800_600_000,
+	})
+
+	if rec.BatchCreatedAt == nil || !rec.BatchCreatedAt.Equal(existing) {
+		t.Fatalf("batch_created_at = %v, want existing value %v", rec.BatchCreatedAt, existing)
+	}
+	if rec.InProgressAt == nil || rec.InProgressAt.Unix() != 1_799_000_100 {
+		t.Fatalf("in_progress_at = %v, want the runtime's value", rec.InProgressAt)
+	}
+	if rec.CompletedAt != nil {
+		t.Fatalf("completed_at = %v, want nil while the batch is running", rec.CompletedAt)
+	}
+}
+
+// The runtime stays the source of truth once it does stamp a timestamp.
+func TestMergeBatchOverwritesWithRuntimeTimestamp(t *testing.T) {
+	stale := time.Unix(1_700_000_000, 0).UTC()
+	rec := &models.Job{CompletedAt: &stale}
+
+	mergeBatchIntoModel(rec, &openai.Batch{
+		ID:          "batch-1",
+		Status:      openai.BatchStatusCompleted,
+		CompletedAt: 1_800_000_000,
+	})
+
+	if rec.CompletedAt == nil || rec.CompletedAt.Unix() != 1_800_000_000 {
+		t.Fatalf("completed_at = %v, want the runtime's value", rec.CompletedAt)
+	}
+}
+
 func TestGetJobWithTerminalMDSBatchStillFetchesMDS(t *testing.T) {
 	var getCalls atomic.Int32
 	prov := &fakeProvisioner{}
@@ -713,10 +754,10 @@ func TestExpiredInProgressPreservesPartialOutput(t *testing.T) {
 	}
 }
 
-// TestExpiredInProgressForcesExpiryAfterGracePeriod covers the fallback: when
-// the runtime is unresponsive past the completion window, the planner must
-// still force a planner-side expiry rather than leave the job running forever.
-func TestExpiredInProgressForcesExpiryAfterGracePeriod(t *testing.T) {
+// A past MDS deadline is useful metadata, but it is not permission for the
+// planner to invent a terminal state. The planner keeps polling until MDS
+// reports the actual outcome.
+func TestPastRuntimeDeadlineWaitsForRuntimeTerminal(t *testing.T) {
 	prov := &fakeProvisioner{}
 	bc := &fakeBatchClient{
 		// Runtime never finalizes: it keeps reporting in_progress.
@@ -748,8 +789,7 @@ func TestExpiredInProgressForcesExpiryAfterGracePeriod(t *testing.T) {
 		return job.status == plannerapi.JobStatusInProgress
 	}, "expected job to reach in_progress")
 
-	// Completion window elapsed beyond the finalize grace period with an
-	// unresponsive runtime.
+	// The completion window is far in the past while MDS still reports running.
 	q.mu.RLock()
 	job, ok := q.jobs["j-expire-stuck"]
 	q.mu.RUnlock()
@@ -757,13 +797,25 @@ func TestExpiredInProgressForcesExpiryAfterGracePeriod(t *testing.T) {
 		t.Fatal("job evicted before completion window elapsed")
 	}
 	job.mu.Lock()
-	job.expiresAt = time.Now().UTC().Add(-(expiryFinalizeGracePeriod + time.Minute))
+	job.expiresAt = time.Now().UTC().Add(-time.Hour)
 	job.mu.Unlock()
 
-	waitFor(t, defaultTimeout, func() bool {
-		g, err := q.GetJob(context.Background(), "j-expire-stuck")
-		return err == nil && g.Batch.Status == openai.BatchStatusExpired
-	}, "expected fallback planner-side expiry")
+	time.Sleep(300 * time.Millisecond)
+	got, err := q.GetJob(context.Background(), "j-expire-stuck")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Batch.Status != openai.BatchStatusInProgress {
+		t.Fatalf("status = %s, want runtime status in_progress", got.Batch.Status)
+	}
+	_, releases, _ := prov.snapshot()
+	if len(releases) != 0 {
+		t.Fatalf("Release calls = %v, want none before runtime terminal", releases)
+	}
+	_, cancels := bc.snapshot()
+	if len(cancels) != 0 {
+		t.Fatalf("CancelBatch calls = %v, want none for deadline polling", cancels)
+	}
 }
 
 // =============================================================================
@@ -1649,4 +1701,49 @@ func TestConcurrentEnqueuesNoRace(t *testing.T) {
 		creates, _ := bc.snapshot()
 		return len(creates) == N
 	}, fmt.Sprintf("not all %d jobs reached CreateBatch", N))
+}
+
+// =============================================================================
+// Deadline ownership: the runtime's completion window, not the planner's guess
+// =============================================================================
+
+// The completion window starts when MDS creates the batch, so the planner must
+// adopt batch.ExpiresAt rather than deriving a deadline while the job queues.
+func TestSubmitAdoptsRuntimeDeadline(t *testing.T) {
+	mdsExpiresAt := time.Now().UTC().Add(90 * time.Minute).Truncate(time.Second)
+	bc := &fakeBatchClient{
+		CreateFn: func(ctx context.Context, params openai.BatchNewParams, aibrix plannerclient.AIBrixExtraBody) (*openai.Batch, error) {
+			batch := &openai.Batch{
+				ID:        "batch-" + aibrix.JobID,
+				Status:    openai.BatchStatusInProgress,
+				ExpiresAt: mdsExpiresAt.Unix(),
+			}
+			constructBatchJson(batch)
+			return batch, nil
+		},
+	}
+	q := newTestPlanner(t, bc, &fakeProvisioner{}, 1)
+
+	if _, err := q.Enqueue(context.Background(), validReq("j-adopt-deadline")); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	var got time.Time
+	waitFor(t, defaultTimeout, func() bool {
+		q.mu.RLock()
+		job, ok := q.jobs["j-adopt-deadline"]
+		q.mu.RUnlock()
+		if !ok {
+			return false
+		}
+		job.mu.RLock()
+		defer job.mu.RUnlock()
+		got = job.expiresAt
+		return job.batchID != ""
+	}, "expected job to be submitted to MDS")
+
+	if !got.Equal(mdsExpiresAt) {
+		t.Fatalf("job.expiresAt = %v, want the runtime's %v",
+			got, mdsExpiresAt)
+	}
 }

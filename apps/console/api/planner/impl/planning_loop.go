@@ -166,7 +166,7 @@ func (w *planningLoop) processPendingQueue() {
 		if w.planner.injector != nil && job.req.InjectionConfig != nil {
 			ctx = error_injection.WithInjectionContext(ctx, job.req.InjectionConfig)
 		}
-		handleCleanup(ctx, w.planner, job, plannerapi.JobStatusCancelling, plannerapi.JobStatusCancelled)
+		handleCancellation(ctx, w.planner, job)
 	}
 
 	// Execute provisioning
@@ -205,33 +205,15 @@ func (w *planningLoop) processRunningQueue() {
 			job.mu.RUnlock()
 			return true
 		}
-		deadline := job.expiresAt
 		ctx := w.ctx
 		if w.planner.injector != nil && job.req.InjectionConfig != nil {
 			ctx = error_injection.WithInjectionContext(ctx, job.req.InjectionConfig)
 		}
 		job.mu.RUnlock()
 
-		now := time.Now().UTC()
-		if !deadline.IsZero() && deadline.Before(now) {
-			// Past the completion window. The batch runtime finalizes expiry on
-			// its own deadline and aggregates any already-completed requests into
-			// the output/error files, so prefer that terminal batch over a
-			// planner-side conclusion. While the batch is still running and
-			// within the grace period, fall through to the normal MDS poll so
-			// handleRunning adopts the finalized terminal batch (with partial
-			// output/counts). Force a planner-side expiry only as a fallback once
-			// the runtime is unresponsive past the grace period.
-			if !isBatchRunning(status) || now.After(deadline.Add(expiryFinalizeGracePeriod)) {
-				wp.Submit(func() { handleCleanup(ctx, w.planner, job, status, plannerapi.JobStatusExpired) })
-				return true
-			}
-			// else: fall through to poll MDS for the runtime's finalized state.
-		}
-
 		switch status {
 		case plannerapi.JobStatusCancelling:
-			wp.Submit(func() { handleCleanup(ctx, w.planner, job, status, plannerapi.JobStatusCancelled) })
+			wp.Submit(func() { handleCancellation(ctx, w.planner, job) })
 		case plannerapi.JobStatusResourcePreparing:
 			// Query provision status only, mark readyToSubmit if ready
 			wp.Submit(func() { handleResourcePreparing(w.planner, job) })
