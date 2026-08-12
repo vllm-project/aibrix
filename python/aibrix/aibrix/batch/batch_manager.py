@@ -592,6 +592,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
             if old_job_in_category is None:
                 logger.warning(
                     "Job is not in old category, ignore updating",
+                    job_id=job_id,
                     old_category=old_name,
                     new_category=new_name,
                 )  # type: ignore[call-arg]
