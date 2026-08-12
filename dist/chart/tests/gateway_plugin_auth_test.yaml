@@ -10,7 +10,7 @@ tests:
       - equal:
           path: data.bearer-token
           value: "dGVzdC1iZWFyZXItdG9rZW4="
-        documentIndex: 0
+        template: gateway-plugin/secret.yaml
       - contains:
           path: spec.template.spec.containers[0].env
           content:
@@ -19,7 +19,7 @@ tests:
               secretKeyRef:
                 name: RELEASE-NAME-aibrix-gateway-plugin-auth
                 key: bearer-token
-        documentIndex: 1
+        template: gateway-plugin/deployment.yaml
 ---
 suite: Test Gateway Plugin Auth Validation
 templates:

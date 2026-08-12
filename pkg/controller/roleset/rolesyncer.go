@@ -466,7 +466,12 @@ func (s *StatelessRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv
 			if diff == 0 {
 				break
 			}
-			if readyCount <= int(minAvailable) {
+			// Stop at the availability floor: removing a ready Pod here would violate
+			// maxUnavailable. break (not continue) is safe because sortPodsByTemplateHash
+			// orders not-ready Pods before ready ones, so the only not-ready Pod that can
+			// sit behind us now is a rollout surge Pod, which must be kept — continue would
+			// delete it and thrash with Rollout (it creates the surge, Scale deletes it).
+			if podutil.IsPodReady(activePods[i]) && readyCount <= int(minAvailable) {
 				break
 			}
 			toDelete = append(toDelete, activePods[i])

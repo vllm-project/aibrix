@@ -141,7 +141,6 @@ class BatchStorageAdapter:
                     "Locked and will processing request in the job",
                     job_id=job.job_id,
                     line_no=idx,
-                    requset=request_data,
                 )  # type:ignore[call-arg]
                 yield request_data
             elif await is_request_done(lock_key):
