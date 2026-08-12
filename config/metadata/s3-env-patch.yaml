@@ -10,13 +10,13 @@ spec:
     spec:
       containers:
       - name: metadata-service
-        command: 
+        command:
           - aibrix_metadata
           - --host
           - "0.0.0.0"
-          - --enable-k8s-job
-          - --k8s-job-patch
-          - /app/config/job_template_patch.yaml
+          - --port
+          - "8090"
+          - --enable-k8s-support
         env:
           - name: STORAGE_AWS_ACCESS_KEY_ID
             valueFrom:

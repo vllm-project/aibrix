@@ -23,9 +23,11 @@ import (
 	"time"
 
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -59,6 +61,11 @@ func TestIsLanguageRequest(t *testing.T) {
 		{
 			name:        "chat completions is language",
 			requestPath: "/v1/chat/completions",
+			want:        true,
+		},
+		{
+			name:        "messages alias is language",
+			requestPath: "/v1/messages",
 			want:        true,
 		},
 		{
@@ -153,6 +160,32 @@ func TestDurationBucketLabel(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := durationBucketLabel(tt.d)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestTotalTimeBucketLabel(t *testing.T) {
+	tests := []struct {
+		name string
+		d    time.Duration
+		want string
+	}{
+		{"zero", 0, "0-100ms"},
+		{"50ms", 50 * time.Millisecond, "0-100ms"},
+		{"100ms", 100 * time.Millisecond, "100-250ms"},
+		{"250ms", 250 * time.Millisecond, "250-500ms"},
+		{"500ms", 500 * time.Millisecond, "500-1000ms"},
+		{"1s", time.Second, "1000-5000ms"},
+		{"5s", 5 * time.Second, "5000-20000ms"},
+		{"20s", 20 * time.Second, "20000-60000ms"},
+		{"30s", 30 * time.Second, "20000-60000ms"},
+		{"60s", 60 * time.Second, "60000ms+"},
+		{"90s", 90 * time.Second, "60000ms+"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := totalTimeBucketLabel(tt.d)
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -308,11 +341,130 @@ func TestHandleResponseBody_NonStreamNoTokens(t *testing.T) {
 		},
 	}
 
-	resp, complete := server.HandleResponseBody(routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, 0, false)
+	resp, complete := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, 0, false)
 
 	assert.True(t, complete)
 	assert.NotNil(t, resp)
 	assert.NotNil(t, resp.GetResponseBody())
+}
+
+func TestHandleResponseBody_PDPrefillTimingMetricsRequirePrefillEndTime(t *testing.T) {
+	tests := []struct {
+		name             string
+		prefillEndOffset time.Duration
+		wantBucket       string
+		wantCount        float64
+	}{
+		{
+			name:       "skips prefill timing metric when prefill end is unset",
+			wantBucket: "0-1ms",
+			wantCount:  0.0,
+		},
+		{
+			name:             "emits prefill timing metric when prefill end is set",
+			prefillEndOffset: 50 * time.Millisecond,
+			wantBucket:       "50-100ms",
+			wantCount:        1.0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prefillCounter, cleanup := metrics.SetupCounterMetricsForTest(
+				metrics.GatewayPrefillTimeBucketTotal,
+				[]string{"gateway_pod", "model", "bucket"},
+			)
+			defer cleanup()
+
+			mockCache := &MockCache{Cache: cache.NewForTest()}
+			mockCache.On("DoneRequestTrace", mock.Anything, "test-req-id", "test-model", int64(10), int64(5), int64(0)).Maybe()
+
+			server := &Server{cache: mockCache}
+			requestTime := time.Now().Add(-200 * time.Millisecond)
+			prefillStartTime := requestTime.Add(20 * time.Millisecond)
+			routerCtx := types.NewRoutingContext(context.Background(), "pd", "test-model", "", "test-req-id", "")
+			routerCtx.ReqPath = PathChatCompletions
+			routerCtx.RequestTime = requestTime
+			routerCtx.PrefillStartTime = prefillStartTime
+			if tt.prefillEndOffset > 0 {
+				routerCtx.PrefillEndTime = prefillStartTime.Add(tt.prefillEndOffset)
+			}
+
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{
+						Body:        []byte(`{"model": "test-model", "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}`),
+						EndOfStream: true,
+					},
+				},
+			}
+
+			resp, complete := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, 0, false)
+
+			assert.True(t, complete)
+			assert.NotNil(t, resp)
+			assert.Equal(t, tt.wantCount, testutil.ToFloat64(prefillCounter.WithLabelValues("", "test-model", tt.wantBucket)))
+			mockCache.AssertExpectations(t)
+		})
+	}
+}
+
+// TestHandleResponseBody_PDStreamingDecodeTimeAndTPOT guards against a regression where
+// decode_time (and therefore TPOT) collapsed to ~0 for streaming PD requests because the
+// caller passed FirstTokenTime itself as the "arrival" used for the FirstTokenTime-to-end
+// decode window, instead of the final chunk's real arrival time. It also verifies the PD
+// branch emits gateway_tpot_bucket_total, which previously only the non-PD branch did.
+func TestHandleResponseBody_PDStreamingDecodeTimeAndTPOT(t *testing.T) {
+	decodeCounter, cleanupDecode := metrics.SetupCounterMetricsForTest(
+		metrics.GatewayDecodeTimeBucketTotal,
+		[]string{"gateway_pod", "model", "bucket"},
+	)
+	defer cleanupDecode()
+	tpotCounter, cleanupTPOT := metrics.SetupCounterMetricsForTest(
+		metrics.GatewayTPOTBucketTotal,
+		[]string{"gateway_pod", "model", "bucket"},
+	)
+	defer cleanupTPOT()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	mockCache.On("DoneRequestTrace", mock.Anything, "test-req-id", "test-model", int64(10), int64(5), int64(0)).Maybe()
+
+	server := &Server{cache: mockCache}
+	requestTime := time.Now().Add(-250 * time.Millisecond)
+	prefillStartTime := requestTime.Add(20 * time.Millisecond)
+	prefillEndTime := prefillStartTime.Add(30 * time.Millisecond)
+	// FirstTokenTime is set well before "now" to simulate it having been recorded on an
+	// earlier SSE chunk, as it would be in real streaming traffic.
+	firstTokenTime := prefillEndTime.Add(20 * time.Millisecond)
+
+	routerCtx := types.NewRoutingContext(context.Background(), "pd", "test-model", "", "test-req-id", "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.Stream = true
+	routerCtx.RequestTime = requestTime
+	routerCtx.PrefillStartTime = prefillStartTime
+	routerCtx.PrefillEndTime = prefillEndTime
+	routerCtx.FirstTokenTime = firstTokenTime
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte("data: {\"id\": \"1\", \"usage\": {\"prompt_tokens\": 10, \"completion_tokens\": 5, \"total_tokens\": 15}}\n\n"),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, complete := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", true, 0, false)
+
+	assert.True(t, complete)
+	assert.NotNil(t, resp)
+
+	// The final chunk arrives ~70ms after FirstTokenTime here, so decode_time must not
+	// land in the near-zero "0-1ms" bucket.
+	assert.Zero(t, testutil.ToFloat64(decodeCounter.WithLabelValues("", "test-model", "0-1ms")))
+	assert.Equal(t, 1, testutil.CollectAndCount(decodeCounter), "expected exactly one decode_time bucket to be recorded")
+	assert.Equal(t, 1, testutil.CollectAndCount(tpotCounter), "PD streaming path must emit gateway_tpot_bucket_total")
+	mockCache.AssertExpectations(t)
 }
 
 func TestHandleResponseBody_WithUserAndTPM(t *testing.T) {
@@ -342,7 +494,7 @@ func TestHandleResponseBody_WithUserAndTPM(t *testing.T) {
 		},
 	}
 
-	resp, complete := server.HandleResponseBody(routerCtx, requestID, req, utils.User{Name: "test-user"}, 42, "test-model", false, 0, false)
+	resp, complete := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 42, "test-model", false, 0, false)
 
 	assert.True(t, complete)
 	assert.NotNil(t, resp)
@@ -391,7 +543,7 @@ func TestHandleResponseBody_NonLanguageRequest(t *testing.T) {
 		},
 	}
 
-	resp, complete := server.HandleResponseBody(routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, 0, false)
+	resp, complete := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, 0, false)
 
 	// Non-language request with EndOfStream sets complete=true
 	assert.True(t, complete)
@@ -420,7 +572,7 @@ func TestHandleResponseBody_EndOfStreamNoTokens(t *testing.T) {
 		},
 	}
 
-	resp, complete := server.HandleResponseBody(routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, 0, false)
+	resp, complete := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, 0, false)
 
 	assert.True(t, complete)
 	assert.NotNil(t, resp)
@@ -451,7 +603,7 @@ func TestHandleResponseBody_TPMIncrError(t *testing.T) {
 		},
 	}
 
-	resp, complete := server.HandleResponseBody(routerCtx, requestID, req, utils.User{Name: "test-user"}, 0, "test-model", false, 0, false)
+	resp, complete := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 0, "test-model", false, 0, false)
 
 	assert.True(t, complete)
 	assert.NotNil(t, resp)
@@ -487,7 +639,7 @@ func TestHandleResponseBody_LanguagePartialResponse(t *testing.T) {
 		},
 	}
 
-	resp, complete := server.HandleResponseBody(routerCtx, "rid-partial", req, utils.User{}, 0, "m", false, 0, false)
+	resp, complete := server.HandleResponseBody(context.Background(), routerCtx, "rid-partial", req, utils.User{}, 0, "m", false, 0, false)
 	assert.False(t, complete)
 	assert.NotNil(t, resp)
 	assert.NotNil(t, resp.GetResponseBody().GetResponse())
@@ -510,7 +662,214 @@ func TestHandleResponseBody_DoesNotDuplicateTrace(t *testing.T) {
 		},
 	}
 
-	_, complete := server.HandleResponseBody(routerCtx, "rid", req, utils.User{}, 0, "m", false, 0, true)
+	_, complete := server.HandleResponseBody(context.Background(), routerCtx, "rid", req, utils.User{}, 0, "m", false, 0, true)
 	assert.True(t, complete)
 	mockCache.AssertNotCalled(t, "DoneRequestTrace", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestHandleResponseBody_SSEParsing(t *testing.T) {
+	tests := []struct {
+		name             string
+		body             []byte
+		promptTokens     int64
+		completionTokens int64
+		totalTokens      int64
+		expectError      bool
+	}{
+		{
+			name:             "Normal usage chunk with \\n",
+			body:             []byte("data: {\"id\": \"1\", \"usage\": {\"prompt_tokens\": 10, \"completion_tokens\": 20, \"total_tokens\": 30}}\n\n"),
+			promptTokens:     10,
+			completionTokens: 20,
+			totalTokens:      30,
+			expectError:      false,
+		},
+		{
+			name:             "Normal usage chunk with \\r\\n",
+			body:             []byte("data: {\"id\": \"2\", \"usage\": {\"prompt_tokens\": 5, \"completion_tokens\": 5, \"total_tokens\": 10}}\r\n\r\n"),
+			promptTokens:     5,
+			completionTokens: 5,
+			totalTokens:      10,
+			expectError:      false,
+		},
+		{
+			name:             "DONE terminator",
+			body:             []byte("data: [DONE]\n\n"),
+			promptTokens:     0,
+			completionTokens: 0,
+			totalTokens:      0,
+			expectError:      false,
+		},
+		{
+			name:             "Malformed JSON payload is passed through transparently",
+			body:             []byte("data: {\"id\": \"1\", \"usage\": { broken json \n\n"),
+			promptTokens:     0,
+			completionTokens: 0,
+			totalTokens:      0,
+			expectError:      true,
+		},
+		{
+			name:             "False positive 'usage' text in response",
+			body:             []byte("data: {\"id\": \"1\", \"choices\": [{\"delta\": {\"content\": \"Here is the usage example\"}}]}\n\n"),
+			promptTokens:     0,
+			completionTokens: 0,
+			totalTokens:      0,
+			expectError:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockCache := &MockCache{Cache: cache.NewForTest()}
+			mockCache.On("DoneRequestTrace", mock.Anything, "test-req-id", "test-model", tt.promptTokens, tt.completionTokens, int64(0)).Maybe()
+
+			server := &Server{
+				cache: mockCache,
+			}
+
+			routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", "test-req-id", "")
+			routerCtx.ReqPath = PathChatCompletions
+			routerCtx.RequestTime = time.Now()
+
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{
+						Body:        tt.body,
+						EndOfStream: true, // assume this is last chunk
+					},
+				},
+			}
+
+			// stream=true
+			resp, complete := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", true, 0, false)
+
+			if tt.expectError {
+				assert.True(t, complete)
+				assert.NotNil(t, resp)
+
+				immediateRes := resp.GetImmediateResponse()
+				assert.NotNil(t, immediateRes, "Expected ImmediateResponse on error, but got nil. Response: %v", resp)
+
+				hasErrorHeader := false
+				if immediateRes.GetHeaders() != nil {
+					for _, header := range immediateRes.GetHeaders().GetSetHeaders() {
+						if header.Header.Key == HeaderErrorStreaming {
+							hasErrorHeader = true
+							break
+						}
+					}
+				}
+				assert.True(t, hasErrorHeader, "Expected HeaderErrorStreaming to be set on error")
+			} else {
+				assert.True(t, complete)
+				assert.NotNil(t, resp)
+				assert.NotNil(t, resp.GetResponseBody(), "Expected ResponseBody on success")
+			}
+
+			mockCache.AssertExpectations(t)
+		})
+	}
+}
+
+func TestRequestEndHelper_EmitsTokenUsageMetrics(t *testing.T) {
+	var counterCalls []struct {
+		name  string
+		value float64
+		extra map[string]string
+	}
+
+	originalFn := metrics.IncrementCounterMetricFnForTest
+	defer func() { metrics.IncrementCounterMetricFnForTest = originalFn }()
+	metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		extra := make(map[string]string, len(labelNames))
+		for i, ln := range labelNames {
+			extra[ln] = labelValues[i]
+		}
+		counterCalls = append(counterCalls, struct {
+			name  string
+			value float64
+			extra map[string]string
+		}{name: name, value: value, extra: extra})
+	}
+
+	server := &Server{}
+	routerCtx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(""), "test-model", "", "req-1", "")
+	arrival := time.Now()
+
+	server.requestEndHelper(routerCtx, arrival, 100, 50, 150)
+
+	var inputTokens, outputTokens, requestsWithUsage float64
+	for _, call := range counterCalls {
+		switch call.name {
+		case metrics.GatewayInputTokensTotal:
+			inputTokens += call.value
+		case metrics.GatewayOutputTokensTotal:
+			outputTokens += call.value
+		case metrics.GatewayRequestsWithUsageTotal:
+			assert.Equal(t, "true", call.extra["has_usage"])
+			requestsWithUsage += call.value
+		}
+	}
+
+	assert.Equal(t, 100.0, inputTokens)
+	assert.Equal(t, 50.0, outputTokens)
+	assert.Equal(t, 1.0, requestsWithUsage)
+}
+
+func TestRequestEndHelper_EmitsTTFTForStreaming(t *testing.T) {
+	var counterCalls []struct {
+		name  string
+		extra map[string]string
+	}
+
+	originalFn := metrics.IncrementCounterMetricFnForTest
+	defer func() { metrics.IncrementCounterMetricFnForTest = originalFn }()
+	metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		extra := make(map[string]string, len(labelNames))
+		for i, ln := range labelNames {
+			extra[ln] = labelValues[i]
+		}
+		counterCalls = append(counterCalls, struct {
+			name  string
+			extra map[string]string
+		}{name: name, extra: extra})
+	}
+
+	server := &Server{}
+	routerCtx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(""), "test-model", "", "req-1", "")
+	routerCtx.Stream = true
+	routerCtx.RequestTime = time.Now().Add(-500 * time.Millisecond)
+	routerCtx.FirstTokenTime = time.Now().Add(-200 * time.Millisecond)
+	arrival := time.Now()
+
+	server.requestEndHelper(routerCtx, arrival, 100, 50, 150)
+
+	var ttftCalls int
+	for _, call := range counterCalls {
+		if call.name == metrics.GatewayTTFTBucketTotal {
+			ttftCalls++
+			assert.Equal(t, "200-500ms", call.extra["bucket"])
+		}
+	}
+	assert.Equal(t, 1, ttftCalls)
+}
+
+func TestRequestEndHelper_SkipsTTFTForNonStreaming(t *testing.T) {
+	var counterCalls []string
+
+	originalFn := metrics.IncrementCounterMetricFnForTest
+	defer func() { metrics.IncrementCounterMetricFnForTest = originalFn }()
+	metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		counterCalls = append(counterCalls, name)
+	}
+
+	server := &Server{}
+	routerCtx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(""), "test-model", "", "req-1", "")
+	arrival := time.Now()
+
+	server.requestEndHelper(routerCtx, arrival, 100, 50, 150)
+
+	for _, name := range counterCalls {
+		assert.NotEqual(t, metrics.GatewayTTFTBucketTotal, name)
+	}
 }

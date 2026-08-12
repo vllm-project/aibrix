@@ -114,6 +114,7 @@ function Carousel({
         canScrollNext,
       }}
     >
+      {/* biome-ignore lint/a11y/useSemanticElements: carousel containers intentionally use the WAI carousel region pattern. */}
       <div
         onKeyDownCapture={handleKeyDown}
         className={cn('relative', className)}
@@ -142,6 +143,7 @@ function CarouselItem({ className, ...props }: React.ComponentProps<'div'>) {
   const { orientation } = useCarousel()
 
   return (
+    // biome-ignore lint/a11y/useSemanticElements: carousel slides intentionally use the WAI carousel group pattern.
     <div
       role="group"
       aria-roledescription="slide"

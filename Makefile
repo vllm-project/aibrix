@@ -5,6 +5,7 @@ IMAGE_TAG ?= ${GIT_COMMIT_HASH}  # Use git commit hash as default image tag
 # Image URL to use all building/pushing image targets
 AIBRIX_CONTAINER_REGISTRY_NAMESPACE ?= aibrix
 DOCKERFILE_PATH ?= build/container
+KVCACHED_RUNTIME_BASE_IMAGE ?= ghcr.io/ovg-project/kvcached-vllm:latest
 IMAGES := controller-manager gateway-plugins runtime metadata-service
 AIBRIX_IMAGES := $(foreach img,$(IMAGES),$(AIBRIX_CONTAINER_REGISTRY_NAMESPACE)/$(img):nightly)
 
@@ -169,6 +170,10 @@ test-integration-controller: manifests fmt vet envtest ginkgo
 test-e2e:
 	./test/run-e2e-tests.sh
 
+.PHONY: test-e2e-external-metrics
+test-e2e-external-metrics: ## Run external metrics autoscaler e2e against local minikube.
+	./test/run-external-metrics-e2e.sh
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter & yamllint
 	$(GOLANGCI_LINT) run
@@ -227,6 +232,14 @@ build-gateway-plugins: manifests generate fmt vet ## Build gateway-plugins binar
 build-gateway-plugins-nozmq: manifests generate fmt vet ## Build gateway-plugins binary without ZMQ (for standalone mode).
 	CGO_ENABLED=0 go build -tags="nozmq" -o bin/gateway-plugins cmd/plugins/main.go
 
+.PHONY: build-console
+build-console: ## Build console API server binary.
+	CGO_ENABLED=0 go build -tags="nozmq" -o bin/console ./cmd/console
+
+.PHONY: generate-console-proto
+generate-console-proto: ## Generate Go code from console proto files.
+	cd apps/console/api && buf generate
+
 .PHONY: build-metadata-service
 build-metadata-service: ## Metadata service is now Python-based, use docker-build-metadata-service instead.
 	@echo "Metadata service is now Python-based. Use 'make docker-build-metadata-service' to build the Docker image."
@@ -268,6 +281,11 @@ docker-build-gateway-plugins: ## Build docker image with the gateway plugins.
 docker-build-runtime: ## Build docker image with the AI Runtime.
 	$(call build_and_tag,runtime,Dockerfile.python)
 
+.PHONY: docker-build-kvcached-runtime
+docker-build-kvcached-runtime: ## Build the kvcached-enabled ModelClaim runtime image.
+	$(CONTAINER_TOOL) build --build-arg BASE_IMAGE=$(KVCACHED_RUNTIME_BASE_IMAGE) -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/kvcached-runtime:${IMAGE_TAG} -f ${DOCKERFILE_PATH}/Dockerfile.kvcached-runtime .
+	if [ "${IS_MAIN_BRANCH}" = "true" ]; then $(CONTAINER_TOOL) tag ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/kvcached-runtime:${IMAGE_TAG} ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/kvcached-runtime:nightly; fi
+
 .PHONY: docker-build-metadata-service
 docker-build-metadata-service: ## Build docker image with the metadata-service (same as runtime but different tag).
 	$(call build_and_tag,metadata-service,Dockerfile.python)
@@ -291,6 +309,10 @@ docker-push-gateway-plugins: ## Push docker image with the gateway plugins.
 .PHONY: docker-push-runtime
 docker-push-runtime: ## Push docker image with the AI Runtime.
 	$(call push_image,runtime)
+
+.PHONY: docker-push-kvcached-runtime
+docker-push-kvcached-runtime: ## Push the kvcached-enabled ModelClaim runtime image.
+	$(call push_image,kvcached-runtime)
 
 .PHONY: docker-push-metadata-service
 docker-push-metadata-service: ## Push docker image with the metadata-service (Python).
@@ -318,9 +340,10 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	rm Dockerfile.cross
 
 .PHONY: build-installer
-build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
+build-installer: manifests generate kustomize ## Generate consolidated YAMLs: dist/install-crds.yaml (CRDs) and dist/install.yaml (operator + deployment).
 	mkdir -p dist
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	$(KUSTOMIZE) build config/crd     > dist/install-crds.yaml
 	$(KUSTOMIZE) build config/default > dist/install.yaml
 
 .PHONY: docker-buildx-runtime
@@ -414,6 +437,7 @@ dev-stop-port-forward:
 install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
     ## helm creates objects without aibrix prefix, hence deploying gateway components outside of kustomization
 	$(KUBECTL) apply -k config/dependency --server-side
+	$(KUBECTL) apply -k config/crd --server-side
 
 .PHONY: uninstall
 uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
@@ -421,6 +445,7 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+	$(KUSTOMIZE) build config/crd | $(KUBECTL) apply --server-side -f -
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
@@ -429,12 +454,14 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.
 
 .PHONY: deploy-release
 deploy-release: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+	$(KUSTOMIZE) build config/crd | $(KUBECTL) apply --server-side -f -
 	$(KUSTOMIZE) build config/overlays/release | $(KUBECTL) apply -f -
 
 .PHONY: install-vke
 install-vke: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
     ## helm creates objects without aibrix prefix, hence deploying gateway components outside of kustomization
 	$(KUBECTL) apply -k config/overlays/vke/dependency --server-side
+	$(KUBECTL) apply -k config/crd --server-side
 
 .PHONY: uninstall-vke
 uninstall-vke: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
@@ -442,6 +469,7 @@ uninstall-vke: manifests kustomize ## Uninstall CRDs from the K8s cluster specif
 
 .PHONY: deploy-vke
 deploy-vke: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+	$(KUSTOMIZE) build config/crd | $(KUBECTL) apply --server-side -f -
 	$(KUSTOMIZE) build config/overlays/vke/default | $(KUBECTL) apply -f -
 
 .PHONY: undeploy-vke
@@ -450,6 +478,7 @@ undeploy-vke: kustomize ## Undeploy controller from the K8s cluster specified in
 
 .PHONY: deploy-vke-ipv4
 deploy-vke-ipv4: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+	$(KUSTOMIZE) build config/crd | $(KUBECTL) apply --server-side -f -
 	$(KUSTOMIZE) build config/overlays/vke-ipv4 | $(KUBECTL) apply -f -
 
 .PHONY: undeploy-vke-ipv4

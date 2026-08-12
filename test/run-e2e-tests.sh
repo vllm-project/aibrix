@@ -28,6 +28,7 @@ SKIP_KIND_INSTALL=${SKIP_KIND_INSTALL:-true}
 SKIP_INSTALL=${SKIP_INSTALL:-}
 SET_KUBECONFIG=${SET_KUBECONFIG:-}
 INSTALL_AIBRIX=${INSTALL_AIBRIX:-}
+AIBRIX_ROLESET_INPLACE_E2E=${AIBRIX_ROLESET_INPLACE_E2E:-}
 
 # setup kind cluster
 if [ -n "$KIND_E2E" ]; then
@@ -57,6 +58,20 @@ fi
 if [ -n "$INSTALL_AIBRIX" ]; then
   make docker-build-all
   kind load docker-image aibrix/controller-manager:nightly aibrix/gateway-plugins:nightly aibrix/metadata-service:nightly aibrix/runtime:nightly
+
+  if [ "$AIBRIX_ROLESET_INPLACE_E2E" = "true" ]; then
+    docker build \
+      --build-arg INPLACE_E2E_VERSION=v1 \
+      -t aibrix/inplace-e2e:v1 \
+      -f test/e2e/roleset-inplace-image/Dockerfile \
+      test/e2e/roleset-inplace-image
+    docker build \
+      --build-arg INPLACE_E2E_VERSION=v2 \
+      -t aibrix/inplace-e2e:v2 \
+      -f test/e2e/roleset-inplace-image/Dockerfile \
+      test/e2e/roleset-inplace-image
+    kind load docker-image aibrix/inplace-e2e:v1 aibrix/inplace-e2e:v2
+  fi
 
   kubectl apply -k config/dependency --server-side
   kubectl apply -k config/test

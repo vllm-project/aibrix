@@ -24,7 +24,7 @@ Key Features
 - **OpenAI-compatible**: Drop-in replacement for OpenAI's Batch API with identical request/response format
 - **Distributed execution**: Leverages Kubernetes Jobs for scalable, fault-tolerant batch processing
 - **Metadata server workflow**: Centralized coordination for multi-node batch execution
-- **Storage flexibility**: Supports S3, Redis, and local storage backends
+- **Storage flexibility**: Supports S3, TOS, MinIO, Redis, and local storage backends
 - **Request tracking**: Each request has a ``custom_id`` for precise result matching
 - **Status monitoring**: Real-time progress tracking with detailed metrics
 - **24-hour completion window**: Automatic expiration for long-running batches
@@ -39,7 +39,7 @@ AIBrix Batch API maintains full compatibility with OpenAI's Batch API while addi
 
 - **Self-hosted**: Full control over infrastructure and data
 - **Kubernetes-native**: Leverages K8s for scheduling and resource management
-- **Flexible storage**: S3, Redis, or local storage backends
+- **Flexible storage**: S3, TOS, MinIO, Redis, or local storage backends
 - **Distributed execution**: Metadata server coordinates multi-node processing
 - **Cost control**: Use existing infrastructure without per-request pricing
 
@@ -65,7 +65,7 @@ Simply update the ``base_url`` in your OpenAI SDK configuration:
 **Known Differences:**
 
 - **Pricing**: No usage-based pricing; controlled by your infrastructure costs
-- **Endpoints**: Currently supports ``/v1/chat/completions`` (more coming soon)
+- **Endpoints**: Supports a subset of OpenAI endpoints (see below)
 - **Rate Limits**: Determined by your cluster capacity, not API limits
 
 **Supported Endpoints:**
@@ -73,12 +73,14 @@ Simply update the ``base_url`` in your OpenAI SDK configuration:
 - ``/v1/chat/completions`` - Chat completion requests
 - ``/v1/completions`` - Text completion requests
 - ``/v1/embeddings`` - Embedding generation requests
+- ``/v1/rerank`` - Rerank requests
 
 All endpoints are fully supported if the underlying LLM engine supports them.
 
 **Current Limitations:**
 
-- 24-hour completion window (not configurable)
+- Completion window is fixed at ``24h`` today. ``1h``, ``4h``, and
+  ``best_effort`` are accepted by the schema but not yet honored at runtime.
 - Moderation endpoint (``/v1/moderations``) not supported
 
 
@@ -150,7 +152,7 @@ Components
 1. **Metadata Server**: Coordinates batch job lifecycle, manages files, and tracks progress
 2. **Job Scheduler**: Creates and manages Kubernetes Jobs for batch execution
 3. **Worker Jobs**: Kubernetes Jobs that process batch requests in parallel
-4. **Storage Backend**: S3, Redis, or local filesystem for file storage and job state
+4. **Storage Backend**: S3, TOS, MinIO, Redis, or local filesystem for file storage and job state
 5. **Files API**: OpenAI-compatible file upload/download endpoints
 
 
@@ -160,7 +162,7 @@ Deployment
 Storage Backend Configuration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The Batch API requires a storage backend for file operations. AIBrix supports multiple storage backends including S3, TOS, and local storage. To enable cloud object storage, you need to configure credentials and enable the appropriate storage patches.
+The Batch API requires a storage backend for file operations. AIBrix supports multiple storage backends including S3, TOS, Redis, and local storage. MinIO is supported through the S3-compatible API: set ``STORAGE_TYPE=minio`` and point ``STORAGE_AWS_ENDPOINT_URL`` at your MinIO endpoint, otherwise configure it exactly like S3. To enable cloud object storage, you need to configure credentials and enable the appropriate storage patches.
 
 **Enabling S3 Storage**
 
@@ -207,7 +209,7 @@ The patch will inject the S3 environment variables into the metadata service dep
 
 3. **Apply the Configuration:**
 
-Deploy the job rbac andupdated configuration:
+Deploy the job rbac and updated configuration:
 
 .. code-block:: bash
 
@@ -471,233 +473,6 @@ Using the OpenAI Python SDK (works with AIBrix as a drop-in replacement):
     else:
         print(f"Batch failed with status: {batch.status}")
 
-Customization
--------------
-
-Customizing Job Executor
-^^^^^^^^^^^^^^^^^^^^^^^^^
-
-You can customize the batch job execution environment by modifying the job template patch configuration. This allows you to specify custom container images, resource requirements, and other Kubernetes Job specifications.
-
-**Job Template Patch Configuration**
-
-The job executor behavior is controlled by the ``config/metadata/job_template_patch.yaml`` file. This file defines the Kubernetes Job template that will be used for batch processing:
-
-.. code-block:: yaml
-
-    apiVersion: batch/v1
-    kind: Job
-    metadata:
-      name: batch-job-template
-      namespace: default
-    spec:
-      parallelism: 1 # Customizable. The number of parallel workers.
-      completions: 1 # Customizable. Must equal to the parallelism.
-      backoffLimit: 2 # Customizable, but usually no need to change.
-      template:
-        spec:
-          containers:
-          - name: batch-worker
-            image: aibrix/runtime:nightly # Customizable, runtime image
-          - name: llm-engine
-            image: aibrix/vllm-mock:nightly # Customizable, LLM engine image
-
-**Customization Options:**
-
-- **parallelism**: Number of parallel worker pods (affects throughput)
-- **completions**: Must match parallelism for proper job completion
-- **backoffLimit**: Number of retries for failed worker pods
-- **batch-worker image**: Runtime container that coordinates batch processing
-- **llm-engine image**: LLM inference engine container (e.g., vLLM, TensorRT-LLM)
-
-**Common Customizations:**
-
-1. **Use Custom LLM Engine:**
-
-   .. code-block:: yaml
-
-       containers:
-       - name: llm-engine
-         image: your-registry/custom-vllm:latest
-
-2. **Increase Parallelism:**
-
-   .. code-block:: yaml
-
-       spec:
-         parallelism: 4
-         completions: 4
-
-3. **Add Resource Requirements:**
-
-   .. code-block:: yaml
-
-       containers:
-       - name: llm-engine
-         image: aibrix/vllm-mock:nightly
-         resources:
-           requests:
-             nvidia.com/gpu: 1
-             memory: "8Gi"
-           limits:
-             nvidia.com/gpu: 1
-             memory: "16Gi"
-
-4. **Add Environment Variables:**
-
-   .. code-block:: yaml
-
-       containers:
-       - name: llm-engine
-         image: aibrix/vllm-mock:nightly
-         env:
-         - name: CUDA_VISIBLE_DEVICES
-           value: "0"
-         - name: MODEL_PATH
-           value: "/models/your-model"
-
-**Applying Changes:**
-
-After modifying ``job_template_patch.yaml``, apply the changes using:
-
-.. code-block:: bash
-
-    kubectl apply -k config/default
-
-Configuring Job Pool Size
-^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-The batch job scheduler uses a job pool to control concurrent batch processing. The pool size can be configured via environment variable:
-
-.. code-block:: bash
-
-    # Set job pool size (default: 1, min: 1, max: 100)
-    export AIBRIX_BATCH_JOB_POOL_SIZE=10
-
-**Configuration Options:**
-
-- **Default**: 1 (conservative, prevents resource contention)
-- **Recommended**: 5-20 (depending on cluster resources)
-- **Maximum**: 100 (validated at runtime)
-
-**Setting in Deployment:**
-
-Add to metadata service deployment environment variables:
-
-.. code-block:: yaml
-
-    env:
-    - name: AIBRIX_BATCH_JOB_POOL_SIZE
-      value: "10"
-
-Verification and Testing
-------------------------
-
-Verifying Batch API Functionality
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Follow these steps to verify that the Batch API is working correctly in your AIBrix deployment:
-
-**Step 1: Set Up Port Forwarding**
-
-First, create a port-forward to access the AIBrix services:
-
-.. code-block:: bash
-
-    # Port-forward the gateway service to access AIBrix APIs
-    kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 1>/dev/null 2>&1 &
-
-    # Verify the port-forward is working
-    curl -s http://localhost:8888/v1/batches
-
-**Step 2: Set Up Object Store Credentials**
-
-Configure S3 credentials for batch file storage:
-
-.. code-block:: bash
-
-    # Navigate to the Python package directory
-    cd python/aibrix
-
-    # Install the AIBrix package in development mode
-    pip install -e .
-
-    # Generate S3 credentials secret (replace with your S3 bucket)
-    aibrix_gen_secrets s3 --bucket your-s3-bucket-name
-
-    # Example with specific bucket:
-    # aibrix_gen_secrets s3 --bucket my-aibrix-batch-storage
-
-This command will:
-
-- Create the necessary Kubernetes secrets for S3 access
-- Configure the metadata service to use your S3 bucket for file storage
-- Set up proper IAM credentials for batch job file operations
-
-**Step 3: Run End-to-End Tests**
-
-Execute the comprehensive batch API test suite:
-
-.. code-block:: bash
-
-    # Navigate to the Python package directory (if not already there)
-    cd python/aibrix
-
-    # Run the batch API end-to-end tests
-    pytest tests/e2e/test_batch_api.py -v
-
-**Expected Test Output:**
-
-.. code-block:: text
-
-    tests/e2e/test_batch_api.py::test_batch_api_e2e_real_service PASSED
-
-    ========================= 1 passed in 10.78s =========================
-
-**Test Coverage:**
-
-The test suite verifies:
-
-- **File Upload/Download**: Files API functionality with S3 backend
-- **Batch Job Creation**: Proper batch job submission and validation
-- **Kubernetes Job Execution**: Worker pod creation and execution
-- **Status Monitoring**: Real-time batch status tracking
-- **Result Collection**: Output file generation and retrieval
-
-**Troubleshooting Common Issues:**
-
-1. **Port-forward Connection Issues:**
-
-   .. code-block:: bash
-
-       # Check if port-forward is running
-       ps aux | grep port-forward
-
-       # Kill existing port-forwards and restart
-       pkill -f "port-forward.*8888"
-       kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 &
-
-2. **S3 Credentials Issues:**
-
-   .. code-block:: bash
-
-       # Verify S3 secret was created
-       kubectl get secret aibrix-s3-credentials -n aibrix-system
-
-       # Check secret contents
-       kubectl get secret aibrix-s3-credentials -n aibrix-system -o yaml
-
-3. **Test Failures:**
-
-   .. code-block:: bash
-
-       # Run tests with more verbose output
-       pytest tests/e2e/test_batch_api.py -v -s --tb=long
-
-**Manual Verification:**
-
-You can also manually verify the batch API using curl commands as shown in the Examples section above, using ``localhost:8888`` as your endpoint after setting up the port-forward.
-
 
 API Reference
 -------------
@@ -830,7 +605,7 @@ The Batch API manages batch job lifecycle.
       "errors": null,
       "input_file_id": "102983c4-92ef-4de9-a03b-8e05066b16fd",
       "completion_window": "24h",
-      "status": "created",
+      "status": "validating",
       "output_file_id": null,
       "error_file_id": null,
       "created_at": 1760132899,

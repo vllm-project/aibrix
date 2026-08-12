@@ -19,13 +19,15 @@ package gateway
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
-	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 func Test_ValidateRequestBody(t *testing.T) {
@@ -40,9 +42,12 @@ func Test_ValidateRequestBody(t *testing.T) {
 		statusCode  envoyTypePb.StatusCode
 	}{
 		{
+			// Unknown paths return 501 Not Implemented. Previously the outer JSON unmarshal
+			// ran before the switch and accidentally returned 400 for empty bodies; now the
+			// switch default correctly returns 501.
 			message:     "unknown path",
 			requestPath: "/v1/unknown",
-			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			statusCode:  envoyTypePb.StatusCode_NotImplemented,
 		},
 		{
 			message:     "/v1/chat/completions json unmarhsal error",
@@ -81,8 +86,9 @@ func Test_ValidateRequestBody(t *testing.T) {
 			requestPath: "/v1/chat/completions",
 			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": [{"type": "text", "text": "say this is test"}, {"type": "text", "text": "say this is test"}]}]}`),
 			model:       "llama2-7b",
-			messages:    "this is system [{\"text\":\"say this is test\",\"type\":\"text\"},{\"text\":\"say this is test\",\"type\":\"text\"}]",
-			statusCode:  envoyTypePb.StatusCode_OK,
+			// parseChatMessages writes raw JSON bytes directly, preserving the original field order from the request.
+			messages:   "this is system [{\"type\": \"text\", \"text\": \"say this is test\"}, {\"type\": \"text\", \"text\": \"say this is test\"}]",
+			statusCode: envoyTypePb.StatusCode_OK,
 		},
 		{
 			message:     "/v1/chat/completions json unmarhsal valid messages with stop string param",
@@ -130,6 +136,16 @@ func Test_ValidateRequestBody(t *testing.T) {
 			message:     "/v1/chat/completions valid request body",
 			user:        utils.User{Tpm: 1},
 			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": true}, "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}]}`),
+			stream:      true,
+			model:       "llama2-7b",
+			messages:    "this is system say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/messages valid request body (same as chat completions)",
+			user:        utils.User{Tpm: 1},
+			requestPath: "/v1/messages",
 			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": true}, "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}]}`),
 			stream:      true,
 			model:       "llama2-7b",
@@ -309,6 +325,83 @@ func Test_ValidateRequestBody_Embeddings(t *testing.T) {
 			messages:    "",
 			stream:      false,
 			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+
+		// Multimodal content-parts input (e.g. image_url for vision-language embedding models)
+		{
+			message:     "/v1/embeddings multimodal image_url input",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}}]}`),
+			model:       "qwen3-vl-embedding-8b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings multimodal text and image_url input",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"type": "text", "text": "a photo of pets"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}}]}`),
+			model:       "qwen3-vl-embedding-8b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings multimodal input with stream true - should fail",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}}], "stream": true}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/embeddings multimodal input missing image_url",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"type": "image_url"}]}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/embeddings multimodal video_url input",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"type": "video_url", "video_url": {"url": "data:video/mp4;base64,aGVsbG8="}}]}`),
+			model:       "qwen3-vl-embedding-8b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings multimodal input missing video_url",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"type": "video_url"}]}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/embeddings multimodal input unsupported content type",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"type": "audio_url"}]}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+
+		// sglang's flat MultimodalEmbeddingInput shape (no "type" discriminator):
+		// {"text": "..."} / {"image": "<data-uri>"} / {"video": "<data-uri>"}
+		{
+			message:     "/v1/embeddings flat image input",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"image": "data:image/png;base64,aGVsbG8="}]}`),
+			model:       "qwen3-vl-embedding-8b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings flat video input",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"video": "data:video/mp4;base64,aGVsbG8="}]}`),
+			model:       "qwen3-vl-embedding-8b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings flat text and image input",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"text": "a photo of pets"}, {"image": "data:image/png;base64,aGVsbG8="}]}`),
+			model:       "qwen3-vl-embedding-8b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings flat input part with nothing set",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{}]}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
 		},
 	}
 
@@ -1125,5 +1218,213 @@ func Test_ValidateRequestBody_Classify(t *testing.T) {
 		if tt.stream {
 			assert.Equal(t, tt.stream, stream, tt.message)
 		}
+	}
+}
+
+func Test_ValidateRequestBody_Responses(t *testing.T) {
+	testCases := []struct {
+		message     string
+		requestPath string
+		requestBody []byte
+		model       string
+		messages    string
+		stream      bool
+		user        utils.User
+		statusCode  envoyTypePb.StatusCode
+	}{
+		{
+			message:     "/v1/responses valid string input",
+			requestPath: "/v1/responses",
+			requestBody: []byte(`{"model": "llama2-7b", "input": "say this is test"}`),
+			model:       "llama2-7b",
+			messages:    "say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/responses valid array input with string content",
+			requestPath: "/v1/responses",
+			requestBody: []byte(`{"model": "llama2-7b", "input": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}]}`),
+			model:       "llama2-7b",
+			messages:    "this is system say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/responses valid array input with content parts",
+			requestPath: "/v1/responses",
+			requestBody: []byte(`{"model": "llama2-7b", "input": [{"role": "user", "content": [{"type": "input_text", "text": "say this is test"}]}]}`),
+			model:       "llama2-7b",
+			messages:    `[{"type": "input_text", "text": "say this is test"}]`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/responses valid streaming request",
+			requestPath: "/v1/responses",
+			user:        utils.User{Tpm: 1},
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "input": "say this is test"}`),
+			model:       "llama2-7b",
+			messages:    "say this is test",
+			stream:      true,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/responses json unmarshal error",
+			requestPath: "/v1/responses",
+			requestBody: []byte("bad_request"),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/responses missing input",
+			requestPath: "/v1/responses",
+			requestBody: []byte(`{"model": "llama2-7b"}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/responses null input",
+			requestPath: "/v1/responses",
+			requestBody: []byte(`{"model": "llama2-7b", "input": null}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/responses empty array input",
+			requestPath: "/v1/responses",
+			requestBody: []byte(`{"model": "llama2-7b", "input": []}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/responses invalid input type (number)",
+			requestPath: "/v1/responses",
+			requestBody: []byte(`{"model": "llama2-7b", "input": 123}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+	}
+
+	for _, tt := range testCases {
+		model, messages, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
+		t.Log(tt.message)
+		if tt.statusCode == 200 {
+			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
+		}
+		if tt.statusCode != 200 {
+			assert.Equal(t, tt.statusCode, errRes.GetImmediateResponse().Status.Code, tt.message)
+		}
+
+		if tt.model != "" {
+			assert.Equal(t, tt.model, model, tt.message)
+		}
+		if tt.messages != "" {
+			assert.Equal(t, tt.messages, messages, tt.message)
+		}
+		if tt.stream {
+			assert.Equal(t, tt.stream, stream, tt.message)
+		}
+	}
+}
+
+func TestGetTraceID(t *testing.T) {
+	tests := []struct {
+		name        string
+		traceparent string
+		requestID   string
+		want        string
+	}{
+		{
+			name:        "Valid W3C traceparent",
+			traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+			requestID:   "req-id-12345",
+			want:        "4bf92f3577b34da6a3ce929d0e0e4736",
+		},
+		{
+			name:        "Valid traceparent with leading/trailing spaces",
+			traceparent: "   00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01   ",
+			requestID:   "req-id-12345",
+			want:        "4bf92f3577b34da6a3ce929d0e0e4736",
+		},
+		{
+			name:        "Empty traceparent",
+			traceparent: "",
+			requestID:   "fallback-req-id",
+			want:        "fallback-req-id",
+		},
+		{
+			name:        "Whitespace only traceparent",
+			traceparent: "     ",
+			requestID:   "fallback-req-id",
+			want:        "fallback-req-id",
+		},
+		{
+			name:        "Invalid format: missing parts",
+			traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736", // 只有两部分，少于4部分
+			requestID:   "fallback-req-id",
+			want:        "fallback-req-id",
+		},
+		{
+			name:        "Invalid format: trace ID length not 32",
+			traceparent: "00-shortid-00f067aa0ba902b7-01", // ID长度不对
+			requestID:   "fallback-req-id",
+			want:        "fallback-req-id",
+		},
+		{
+			name:        "Invalid format: completely random string",
+			traceparent: "just-a-random-string-without-proper-format",
+			requestID:   "fallback-req-id",
+			want:        "fallback-req-id",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := GetTraceID(tt.traceparent, tt.requestID)
+			if got != tt.want {
+				t.Errorf("GetTraceID() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFieldsToAttributes(t *testing.T) {
+	tests := []struct {
+		name   string
+		fields []interface{}
+		want   []attribute.KeyValue
+	}{
+		{
+			name: "supported and fallback value types",
+			fields: []interface{}{
+				"string", "value",
+				"int", 7,
+				"int64", int64(8),
+				"float64", 1.5,
+				"duration", 1500 * time.Millisecond,
+				"fallback", true,
+				99, "numeric key",
+			},
+			want: []attribute.KeyValue{
+				attribute.String("string", "value"),
+				attribute.Int("int", 7),
+				attribute.Int64("int64", 8),
+				attribute.Float64("float64", 1.5),
+				attribute.String("duration", "1.5s"),
+				attribute.String("fallback", "true"),
+				attribute.String("99", "numeric key"),
+			},
+		},
+		{
+			name:   "empty fields",
+			fields: nil,
+			want:   []attribute.KeyValue{},
+		},
+		{
+			name:   "incomplete key value pair is ignored",
+			fields: []interface{}{"complete", "value", "orphan"},
+			want: []attribute.KeyValue{
+				attribute.String("complete", "value"),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, fieldsToAttributes(tt.fields))
+		})
 	}
 }

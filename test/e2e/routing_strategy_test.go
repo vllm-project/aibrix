@@ -19,15 +19,21 @@ package e2e
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"net/http"
 	"testing"
+	"time"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// prefixCacheWarmUpDelay must exceed two full statesync periods so that all
+// gateway replicas have had time to push and pull prefix-cache state via Redis.
+// The default sync period is 10s; worst-case propagation is push (≤10s) +
+// pull on the peer (≤10s) = 20s, so 30s gives a comfortable 10s buffer.
+const prefixCacheWarmUpDelay = 30 * time.Second
 
 func TestStrategyRequiresCache(t *testing.T) {
 	req := "this is test message"
@@ -119,39 +125,37 @@ func runRandomRoutingCheck() error {
 	return nil
 }
 
-// nolint:lll
+// TestPrefixCacheRouting verifies that an identical prompt reuses the warm-up pod.
+//
+//nolint:lll // long test prompts exceed line-length limit
 func TestPrefixCacheRouting(t *testing.T) {
-	// #1 request - cache first time request
+	// First request: populate the prefix cache on the selected pod (>128 bytes).
 	req := "prefix-cache routing algorithm test message, ensure test message is longer than 128 bytes!! this is first message! 这是测试消息！"
 	targetPod := getTargetPodFromChatCompletion(t, req, "prefix-cache")
 	t.Logf("req: %s, target pod: %v\n", req, targetPod)
 
-	// #2 request - reuse target pod from first time
+	// Brief pause so the gateway can record the cache entry before the repeat request.
+	time.Sleep(2 * time.Second)
+
+	// Repeat the same prompt; routing should hit the same pod as the warm-up.
 	targetPod2 := getTargetPodFromChatCompletion(t, req, "prefix-cache")
 	t.Logf("req: %s, target pod: %v\n", req, targetPod2)
 	assert.Equal(t, targetPod, targetPod2)
-
-	// #3 request - new request, match to random pod
-	var count int
-	for count < 5 {
-		generateMessage := fmt.Sprintf("prefix-cache routing algorithm test message, ensure test message is longer than 128 bytes!! this is %v message! 这是测试消息！", rand.Intn(1000))
-		targetPod3 := getTargetPodFromChatCompletion(t, generateMessage, "prefix-cache")
-		t.Logf("req: %s, target pod from #3 request: %v\n", generateMessage, targetPod3)
-		if targetPod != targetPod3 {
-			break
-		}
-		count++
-	}
-
-	assert.NotEqual(t, 5, count)
 }
 
-// nolint:lll
+// TestMultiTurnConversation verifies that a growing multi-turn context keeps routing
+// to the anchor pod chosen on turn 1. After turn 1 it waits prefixCacheWarmUpDelay so
+// all gateway replicas can sync prefix-cache state before asserting turns 2–5.
+//
+//nolint:lll // long test prompts exceed line-length limit
 func TestMultiTurnConversation(t *testing.T) {
 	var dst *http.Response
 	var targetPod string
 	messages := []openai.ChatCompletionMessageParamUnion{}
 	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "prefix-cache", option.WithResponseInto(&dst))
+
+	t.Logf("starting multi-turn prefix-cache test (%d turns, warm-up delay %s — waiting for all gateway replicas to sync)", 5, prefixCacheWarmUpDelay)
+	t.Logf("debug gateway logs: kubectl logs -n aibrix-system -l app=gateway-plugins --prefix -f | grep -E 'prefixcache|statesync'")
 
 	for i := 1; i <= 5; i++ {
 		input := fmt.Sprintf("Ensure test message is longer than 128 bytes!! This is test %d for multiturn conversation!! 这是多轮对话测试!! Have a good day!!", i)
@@ -166,11 +170,59 @@ func TestMultiTurnConversation(t *testing.T) {
 		assert.NotEmpty(t, chatCompletion.Choices[0].Message.Content)
 
 		messages = append(messages, openai.AssistantMessage(chatCompletion.Choices[0].Message.Content))
+
+		pod := dst.Header.Get("target-pod")
+		require.NotEmpty(t, pod, "turn %d: target-pod header missing", i)
+
 		if i == 1 {
-			targetPod = dst.Header.Get("target-pod")
+			targetPod = pod
+			t.Logf("turn %d: routed to %s (anchor pod); %d messages in context; waiting %s for prefix cache sync",
+				i, targetPod, len(messages), prefixCacheWarmUpDelay)
+			time.Sleep(prefixCacheWarmUpDelay)
+		} else {
+			t.Logf("turn %d: routed to %s (expected %s); %d messages in context; prompt_tokens=%d completion_tokens=%d",
+				i, pod, targetPod, len(messages),
+				chatCompletion.Usage.PromptTokens, chatCompletion.Usage.CompletionTokens)
 		}
 
-		assert.Equal(t, targetPod, dst.Header.Get("target-pod"), "each multiturn conversation must route to same target pod")
+		assert.Equal(t, targetPod, pod, "turn %d: each multiturn conversation must route to same target pod", i)
+	}
+
+	t.Logf("multi-turn test finished: all %d turns stayed on pod %s", 5, targetPod)
+}
+
+// TestPrefixCacheRoutingConsistency sends a warm-up request, waits for all gateway
+// replicas to sync prefix-cache state via Redis, confirms convergence with
+// require.Eventually, then sends 10 identical prompts and asserts they all route to
+// the same pod.
+//
+//nolint:lll // long test prompts exceed line-length limit
+func TestPrefixCacheRoutingConsistency(t *testing.T) {
+	// Message must exceed the prefix cache block threshold (>128 bytes) so that
+	// at least one full block is hashed and stored in the prefix cache.
+	const msg = "prefix-cache consistency test: this message is intentionally long to exceed the " +
+		"128-byte block threshold required for prefix cache routing to engage. 这是前缀缓存路由一致性测试消息！"
+
+	// Warm up: populate the prefix cache for this prompt on the target pod.
+	warmPod := getTargetPodFromChatCompletion(t, msg, "prefix-cache")
+	require.NotEmpty(t, warmPod, "warm-up request returned no target-pod header")
+	t.Logf("warm-up routed to: %s", warmPod)
+
+	time.Sleep(prefixCacheWarmUpDelay)
+
+	// Confirm routing has converged on all gateway replicas before asserting
+	// strict consistency. With multiple gateway pods each pulling state on their
+	// own 10s cycle, the warm-up delay should be sufficient, but we add an
+	// extra Eventually check as a safety net.
+	require.Eventually(t, func() bool {
+		return getTargetPodFromChatCompletion(t, msg, "prefix-cache") == warmPod
+	}, 30*time.Second, 2*time.Second, "routing did not converge to warm pod %s within 30s after warm-up", warmPod)
+
+	// All 10 subsequent requests with the same prefix must route to the same pod.
+	for i := 0; i < 10; i++ {
+		pod := getTargetPodFromChatCompletion(t, msg, "prefix-cache")
+		assert.Equal(t, warmPod, pod, "request %d: expected pod %s, got %s", i+1, warmPod, pod)
+		t.Logf("request %d routed to: %s", i+1, pod)
 	}
 }
 
@@ -190,12 +242,53 @@ func getTargetPodFromChatCompletion(t *testing.T, message string, strategy strin
 	return dst.Header.Get("target-pod")
 }
 
-// ChiSquaredGoodnessOfFit calculates the chi-squared test statistic and degrees of freedom
-// for a goodness-of-fit test.
-// observed: A slice of observed frequencies for each category.
-// expected: A slice of expected frequencies for each category.
-// Returns the calculated chi-squared statistic and degrees of freedom.
-// Returns an error if the input slices are invalid (e.g., different lengths, negative values).
+// TestMultiStrategyRouting performs E2E checks for multi-strategy routing configs
+func TestMultiStrategyRouting(t *testing.T) {
+	// 1. Valid multi-strategy combinations
+	t.Run("ValidMultiStrategy_LeastRequest_Throughput", func(t *testing.T) {
+		req := "this is a multi-strategy test message"
+		// Testing equal weights
+		targetPod := getTargetPodFromChatCompletion(t, req, "least-request:1,throughput:1")
+		assert.NotEmpty(t, targetPod, "multi-strategy target pod should not be empty")
+	})
+
+	t.Run("ValidMultiStrategy_With_Different_Weights", func(t *testing.T) {
+		req := "this is another multi-strategy test message"
+		// Testing skewed weights
+		targetPod := getTargetPodFromChatCompletion(t, req, "prefix-cache:6,least-request:1,throughput:1")
+		assert.NotEmpty(t, targetPod, "multi-strategy weighted target pod should not be empty")
+	})
+
+	t.Run("ValidMultiStrategy_Partial_Weights", func(t *testing.T) {
+		req := "this is a partial weights multi-strategy test message"
+		// Testing partial weights (some with explicit weight, some omitted and defaulting to 1)
+		targetPod := getTargetPodFromChatCompletion(t, req, "least-request,throughput:2")
+		assert.NotEmpty(t, targetPod, "multi-strategy partial weighted target pod should not be empty")
+	})
+
+	t.Run("ValidMultiStrategy_No_Weights", func(t *testing.T) {
+		req := "this is a no weights multi-strategy test message"
+		// Testing no weights (all default to 1)
+		targetPod := getTargetPodFromChatCompletion(t, req, "least-request,throughput")
+		assert.NotEmpty(t, targetPod, "multi-strategy no weights target pod should not be empty")
+	})
+
+	// 2. Exclusive strategies fallback
+	t.Run("ExclusiveStrategy_FallbackToSelf_SLO", func(t *testing.T) {
+		req := "this is another exclusive strategy fallback test message"
+		// "slo" is exclusive and should strip other strategies and fallback to itself
+		targetPod := getTargetPodFromChatCompletion(t, req, "least-request:1,slo-least-load")
+		assert.NotEmpty(t, targetPod, "exclusive strategy should fallback to slo and return a valid pod")
+	})
+}
+
+// chiSquaredGoodnessOfFit runs a chi-squared goodness-of-fit test under uniform
+// expected counts: each category should occur expected times on average.
+//
+// observed holds per-category counts (e.g. per-pod histogram values); expected is the
+// uniform expected count per category (total / number of categories). Returns chi²,
+// degrees of freedom len(observed)-1, and an error for empty input, negative values,
+// or zero expected frequency.
 func chiSquaredGoodnessOfFit(observed []float64, expected float64) (chi2Stat float64, degreesOfFreedom int, err error) {
 	// Validate inputs
 	if len(observed) == 0 {

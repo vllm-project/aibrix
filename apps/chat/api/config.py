@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     audio_models_allowlist: str = ""
     video_models_allowlist: str = ""
 
+    # Hide models older than this many days (by the provider's `created` timestamp).
+    # Only applies to models that report `created`; self-hosted models without it
+    # are always kept. 0 disables the filter.
+    models_max_age_days: int = 180
+
     # CORS
     cors_origins: str = "http://localhost:5173"
 

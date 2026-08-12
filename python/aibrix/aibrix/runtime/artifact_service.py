@@ -16,6 +16,7 @@
 
 import asyncio
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Dict, Optional
@@ -33,6 +34,9 @@ from aibrix.openapi.protocol import (
 from aibrix.runtime.downloaders import get_downloader
 
 logger = init_logger(__name__)
+
+
+_SAFE_LORA_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 class ArtifactDelegationService:
@@ -118,9 +122,25 @@ class ArtifactDelegationService:
         logger.info(f"Loaded {len(credentials)} credential keys from {secret_path}")
         return credentials
 
+    def _validate_lora_name(self, lora_name: str) -> None:
+        """Reject lora_name values that could escape self.local_dir."""
+        if not isinstance(lora_name, str) or not _SAFE_LORA_NAME.match(lora_name):
+            raise ValueError(
+                "Invalid lora_name: must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            )
+
     def _get_local_path_for_adapter(self, lora_name: str) -> str:
-        """Get local path for storing adapter artifacts."""
-        return os.path.join(self.local_dir, lora_name)
+        """Get local path for storing adapter artifacts.
+
+        Validates lora_name and enforces that the resolved path stays inside
+        self.local_dir. Raises ValueError on attempted traversal.
+        """
+        self._validate_lora_name(lora_name)
+        base = Path(self.local_dir).resolve()
+        candidate = (base / lora_name).resolve()
+        if base not in candidate.parents:
+            raise ValueError("lora_name resolves outside local_dir")
+        return str(candidate)
 
     async def download_artifact(
         self,

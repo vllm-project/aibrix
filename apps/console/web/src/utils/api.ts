@@ -1,0 +1,839 @@
+import type { Job, Deployment, Model } from '../data/mockData';
+
+// --- Additional interfaces for API entities ---
+
+export interface APIKey {
+  id: string;
+  name: string;
+  secretKey: string;
+  createdAt: string;
+}
+
+export interface Secret {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
+export interface Quota {
+  id: string;
+  quotaId: string;
+  name: string;
+  currentUsage: number;
+  usagePercentage: number;
+  quota: number;
+}
+
+export interface FileInfo {
+  id: string;
+  name: string;
+  purpose: string;
+  size: number;
+  createdAt: string | number;
+}
+
+interface RawFileInfo {
+  id?: string;
+  name?: string;
+  filename?: string;
+  purpose?: string;
+  size?: number;
+  bytes?: number;
+  createdAt?: string | number;
+  created_at?: string | number;
+}
+
+interface RawFilesEnvelope {
+  files?: RawFileInfo[];
+  data?: RawFileInfo[];
+  [key: string]: unknown;
+}
+
+type RawFilesResponse = RawFileInfo[] | RawFilesEnvelope;
+
+export interface UserInfo {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  username: string;
+  picture: string;
+}
+
+export type JobEndpoint =
+  | '/v1/chat/completions'
+  | '/v1/completions'
+  | '/v1/embeddings'
+  | '/v1/rerank';
+
+export type JobCompletionWindow = '1h' | '2h' | '6h' | '12h' | '24h';
+
+export interface CreateJobRequest {
+  inputDataset: string;
+  endpoint: JobEndpoint;
+  completionWindow?: JobCompletionWindow;
+  name: string;
+  // ModelDeploymentTemplate binding picked by the create-job wizard. The SDK
+  // path may omit these and rely on metadata-service-side resolution via
+  // extra_body.aibrix.model_template.
+  modelTemplateName?: string;
+  modelTemplateVersion?: string;
+  // Model the template was picked under (wizard step 1). 
+  modelId?: string;
+  resourceRequest?: JobResourceRequest;
+  // Per-job smart-client controls, forwarded to extra_body.aibrix.client.
+  client?: JobClientConfig;
+}
+
+export interface JobResourceRequest {
+  replicas?: number;
+}
+
+export interface JobLimits {
+  resourceRequest: {
+    minReplicas: number;
+    maxReplicas: number;
+  };
+}
+
+// JobClientConfig mirrors the metadata-service aibrix.client block. All fields
+// optional; omitted ones fall back to metadata-service env defaults.
+export interface JobClientConfig {
+  maxConcurrency?: number;       // absolute in-flight cap, 1..1024
+  adaptiveConcurrency?: boolean; // grow concurrency adaptively
+  adaptiveMaxFactor?: number;    // adaptive growth factor, >= 1
+  retryPolicy?: JobClientRetryPolicy;
+}
+
+export interface JobClientRetryPolicy {
+  maxRetries?: number;             // per-request retries, >= 0
+  baseDelaySeconds?: number;       // backoff base, >= 0
+  maxDelaySeconds?: number;        // backoff ceiling, >= 0
+  noEndpointMaxRetries?: number;   // retries while no endpoint, >= 0
+}
+
+export interface ListJobsResponse {
+  jobs: Job[];
+  firstId?: string;
+  lastId?: string;
+  hasMore: boolean;
+}
+
+export interface CreateDeploymentRequest {
+  name: string;
+  template: DeploymentTemplateRef;
+  implementation: DeploymentImplementationRef;
+  overrides?: DeploymentOverrides;
+}
+
+export interface DeploymentTemplateRef {
+  modelId: string;
+  templateId: string;
+}
+
+export interface DeploymentImplementationRef {
+  kind: string;
+  profile?: string;
+}
+
+export interface DeploymentOverrides {
+  region?: string;
+  minReplicas?: number;
+  maxReplicas?: number;
+  enableAutoScaling?: boolean;
+  enableMultiLora?: boolean;
+  engineArgs?: Record<string, string>;
+}
+
+export type ModelAdapterPlacement = 'all' | 'single';
+
+export interface ModelAdapterTarget {
+  name: string;
+  namespace: string;
+  kind: 'Deployment';
+  apiVersion: string;
+  baseModel: string;
+  engine: string;
+  port: number;
+  readyReplicas: number;
+  desiredReplicas: number;
+  selector: string;
+  updateStrategy: string;
+  createdAt: string;
+}
+
+export interface ModelAdapterPod {
+  name: string;
+  ready: string;
+  status: string;
+  restarts: number;
+  createdAt: string;
+  podIp: string;
+  node: string;
+}
+
+export interface ModelAdapter {
+  name: string;
+  namespace: string;
+  apiVersion: string;
+  artifactUrl: string;
+  baseModel: string;
+  schedulerName: string;
+  placement: ModelAdapterPlacement;
+  phase: string;
+  readyReplicas: number;
+  desiredReplicas: number;
+  candidates: number;
+  createdAt: string;
+  podSelector: string;
+  target?: ModelAdapterTarget;
+  instances: ModelAdapterPod[];
+}
+
+export interface CreateModelAdapterRequest {
+  name: string;
+  artifactUrl: string;
+  deploymentName: string;
+  placement: ModelAdapterPlacement;
+}
+
+// --- Model Deployment Templates ---
+//
+// Mirrors apps/console/api/proto/console/v1/console.proto. The proto comment
+// notes that this duplicates python/aibrix/aibrix/batch/template/schema.py;
+// once both sides converge we collapse to one source.
+
+export interface EngineSpec {
+  type?: string;
+  version?: string;
+  image?: string;
+  invocation?: string;
+  serveArgs?: string[];
+  healthEndpoint?: string;
+  readyTimeoutSeconds?: number;
+  metricsEndpoint?: string;
+}
+
+export interface ModelSourceSpec {
+  type?: string;
+  uri?: string;
+  revision?: string;
+  tokenizerPath?: string;
+  chatTemplatePath?: string;
+  authSecretRef?: string;
+}
+
+export interface AcceleratorSpec {
+  type?: string;
+  count?: number;
+  interconnect?: string;
+  vramGb?: number;
+  skuHint?: string;
+}
+
+export interface ParallelismSpec {
+  tp?: number;
+  pp?: number;
+  dp?: number;
+  ep?: number;
+  sp?: number;
+  cp?: number;
+}
+
+export interface QuantizationSpec {
+  weight?: string;
+  kvCache?: string;
+  weightsArtifactUri?: string;
+}
+
+export interface ModelDeploymentTemplateSpec {
+  engine?: EngineSpec;
+  modelSource?: ModelSourceSpec;
+  accelerator?: AcceleratorSpec;
+  parallelism?: ParallelismSpec;
+  // engineArgs is a free-form key/value map. Common knobs are surfaced by
+  // the form as curated inputs; everything else flows through directly.
+  engineArgs?: Record<string, string>;
+  quantization?: QuantizationSpec;
+  supportedEndpoints?: string[];
+  deploymentMode?: string;
+}
+
+export interface ModelDeploymentTemplate {
+  id: string;
+  name: string;
+  version: string;
+  status: string;
+  modelId: string;
+  spec?: ModelDeploymentTemplateSpec;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface CreateModelDeploymentTemplateRequest {
+  name: string;
+  version?: string;
+  status?: string;
+  modelId: string;
+  spec: ModelDeploymentTemplateSpec;
+}
+
+export interface UpdateModelDeploymentTemplateRequest {
+  id: string;
+  modelId: string;
+  name?: string;
+  version?: string;
+  status?: string;
+  spec?: ModelDeploymentTemplateSpec;
+}
+
+const JOB_NUMERIC_FIELDS = [
+  'createdAt',
+  'inProgressAt',
+  'expiresAt',
+  'finalizingAt',
+  'completedAt',
+  'failedAt',
+  'expiredAt',
+  'cancellingAt',
+  'cancelledAt',
+  'queuedAt',
+  'resourcePreparingAt',
+  'submittingAt',
+  'resourceFailedAt',
+  'submitFailedAt',
+  'cancelRequestedAt',
+] as const;
+
+function coerceNumber(value: unknown): number | undefined {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+function normalizeNumericFields(target: Record<string, unknown>, keys: readonly string[]) {
+  for (const key of keys) {
+    if (!(key in target)) continue;
+    const n = coerceNumber(target[key]);
+    target[key] = n ?? 0;
+  }
+}
+
+function normalizeJob(job: Job): Job {
+  const out = job as unknown as Record<string, unknown>;
+  normalizeNumericFields(out, JOB_NUMERIC_FIELDS);
+  if (out.requestCounts && typeof out.requestCounts === 'object') {
+    normalizeNumericFields(out.requestCounts as Record<string, unknown>, ['total', 'completed', 'failed']);
+  }
+  if (out.usage && typeof out.usage === 'object') {
+    normalizeNumericFields(out.usage as Record<string, unknown>, ['inputTokens', 'outputTokens', 'totalTokens']);
+  }
+  if (out.provision && typeof out.provision === 'object') {
+    normalizeNumericFields(out.provision as Record<string, unknown>, ['createdAt', 'updatedAt']);
+  }
+  if (out.resourceAllocation && typeof out.resourceAllocation === 'object') {
+    const allocation = out.resourceAllocation as Record<string, unknown>;
+    normalizeNumericFields(allocation, ['provisionResourceDeadline']);
+    if (Array.isArray(allocation.resourceDetails)) {
+      for (const detail of allocation.resourceDetails) {
+        if (detail && typeof detail === 'object') {
+          normalizeNumericFields(detail as Record<string, unknown>, ['replica']);
+        }
+      }
+    }
+  }
+  if (Array.isArray(out.errors)) {
+    for (const err of out.errors) {
+      if (err && typeof err === 'object') {
+        normalizeNumericFields(err as Record<string, unknown>, ['line']);
+      }
+    }
+  }
+  if (Array.isArray(out.events)) {
+    for (const event of out.events) {
+      if (event && typeof event === 'object') {
+        normalizeNumericFields(event as Record<string, unknown>, ['at']);
+      }
+    }
+  }
+  return job;
+}
+
+function normalizeJobsResponse(resp: ListJobsResponse): ListJobsResponse {
+  return {
+    ...resp,
+    jobs: (resp.jobs || []).map(normalizeJob),
+  };
+}
+
+export function normalizeFilesResponse(resp: RawFilesResponse): FileInfo[] {
+  const rows = Array.isArray(resp) ? resp : resp.files ?? resp.data ?? [];
+  return rows.map((file) => ({
+    id: file.id || '',
+    name: file.name || file.filename || file.id || '',
+    purpose: file.purpose || '',
+    size: coerceNumber(file.size) ?? coerceNumber(file.bytes) ?? 0,
+    createdAt: file.createdAt ?? file.created_at ?? '',
+  }));
+}
+
+// --- Case conversion utilities ---
+
+function snakeToCamelKey(key: string): string {
+  return key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+}
+
+function camelToSnakeKey(key: string): string {
+  return key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+}
+
+const PRESERVE_VALUE_KEYS = new Set(['engineArgs', 'tags', 'metadata', 'options', 'extra', 'extraBody']);
+
+export function snakeToCamel<T>(data: unknown): T {
+  if (Array.isArray(data)) {
+    return data.map((item) => snakeToCamel(item)) as unknown as T;
+  }
+  if (data !== null && typeof data === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+      const ck = snakeToCamelKey(key);
+      result[ck] = PRESERVE_VALUE_KEYS.has(ck) ? value : snakeToCamel(value);
+    }
+    return result as T;
+  }
+  return data as T;
+}
+
+export function camelToSnake<T>(data: unknown): T {
+  if (Array.isArray(data)) {
+    return data.map((item) => camelToSnake(item)) as unknown as T;
+  }
+  if (data !== null && typeof data === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+      result[camelToSnakeKey(key)] = PRESERVE_VALUE_KEYS.has(key) ? value : camelToSnake(value);
+    }
+    return result as T;
+  }
+  return data as T;
+}
+
+// --- Fetch helper ---
+
+export class APIError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'APIError';
+    this.status = status;
+  }
+}
+
+// cachedAuthMode is populated by getAuthConfig(); apiFetch consults it to
+// decide whether a 401 should kick the user to the OIDC login flow.
+let cachedAuthMode: string | null = null;
+
+// Endpoints whose own 401 responses must NOT trigger the OIDC redirect,
+// because they are part of the unauthenticated bootstrap path.
+const NO_AUTO_REDIRECT_PREFIXES = [
+  '/api/v1/auth/',
+  '/api/v1/health',
+];
+
+function shouldAutoRedirectOnUnauthorized(url: string): boolean {
+  if (cachedAuthMode !== 'oidc') return false;
+  return !NO_AUTO_REDIRECT_PREFIXES.some(p => url.startsWith(p));
+}
+
+async function apiFetch<T>(
+  url: string,
+  options?: RequestInit,
+): Promise<T> {
+  const response = await fetch(url, {
+    ...options,
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      ...options?.headers,
+    },
+  });
+
+  if (!response.ok) {
+    if (response.status === 401 && shouldAutoRedirectOnUnauthorized(url)) {
+      const returnTo = window.location.pathname + window.location.search;
+      window.location.assign(
+        `/api/v1/auth/login?return=${encodeURIComponent(returnTo)}`,
+      );
+      // Returns a never-resolving promise so callers don't try to parse
+      // the 401 body during the navigation.
+      return new Promise<T>(() => {});
+    }
+    const text = await response.text().catch(() => 'Unknown error');
+    throw new APIError(text, response.status);
+  }
+
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
+  const json = await response.json();
+  return snakeToCamel<T>(json);
+}
+
+function buildQuery(params: Record<string, string | undefined>): string {
+  const entries = Object.entries(params).filter(
+    (entry): entry is [string, string] => entry[1] !== undefined && entry[1] !== '',
+  );
+  if (entries.length === 0) return '';
+  return '?' + new URLSearchParams(entries).toString();
+}
+
+// --- Jobs ---
+//
+// The Console BFF (`/api/v1/jobs`) proxies to the metadata service
+// `/v1/batches` API and merges with Console-side fields persisted in the
+// store. The Job shape is a superset of OpenAI Batch.
+
+export async function listJobs(params?: { after?: string; limit?: number }): Promise<ListJobsResponse> {
+  const query = buildQuery({
+    after: params?.after,
+    limit: params?.limit !== undefined ? String(params.limit) : undefined,
+  });
+  return normalizeJobsResponse(await apiFetch<ListJobsResponse>(`/api/v1/jobs${query}`));
+}
+
+// Fetch every job by following the cursor until the server reports no more pages.
+export async function listAllJobs(): Promise<Job[]> {
+  const PAGE_LIMIT = 200;
+  const MAX_PAGES = 50;
+  const all: Job[] = [];
+  let after: string | undefined;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const res = await listJobs({ after, limit: PAGE_LIMIT });
+    const batch = res.jobs ?? [];
+    all.push(...batch);
+    const last = batch[batch.length - 1];
+    if (!res.hasMore || !last?.id) break;
+    after = last.id;
+  }
+  return all;
+}
+
+export async function getJobLimits(): Promise<JobLimits> {
+  return apiFetch<JobLimits>('/api/v1/config/job-limits');
+}
+
+export async function getJob(id: string, options?: { includeDeployment?: boolean }): Promise<Job> {
+  const query = buildQuery({
+    include_deployment: options?.includeDeployment ? 'true' : undefined,
+  });
+  return normalizeJob(await apiFetch<Job>(`/api/v1/jobs/${encodeURIComponent(id)}${query}`));
+}
+
+export async function createJob(req: CreateJobRequest): Promise<Job> {
+  return normalizeJob(await apiFetch<Job>('/api/v1/jobs', {
+    method: 'POST',
+    body: JSON.stringify(camelToSnake(req)),
+  }));
+}
+
+export async function cancelJob(id: string): Promise<Job> {
+  return normalizeJob(await apiFetch<Job>(`/api/v1/jobs/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST',
+    body: '{}',
+  }));
+}
+
+// --- Deployments ---
+
+export async function listDeployments(search?: string): Promise<Deployment[]> {
+  const query = buildQuery({ search });
+  const data = await apiFetch<{ deployments: Deployment[] }>(`/api/v1/deployments${query}`);
+  return data.deployments || [];
+}
+
+export async function getDeployment(id: string): Promise<Deployment> {
+  return apiFetch<Deployment>(`/api/v1/deployments/${encodeURIComponent(id)}`);
+}
+
+export async function createDeployment(req: CreateDeploymentRequest): Promise<Deployment> {
+  return apiFetch<Deployment>('/api/v1/deployments', {
+    method: 'POST',
+    body: JSON.stringify(camelToSnake(req)),
+  });
+}
+
+export async function deleteDeployment(id: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/deployments/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+// --- ModelAdapters ---
+
+export async function listModelAdapters(): Promise<ModelAdapter[]> {
+  const data = await apiFetch<{ modelAdapters: ModelAdapter[] }>('/api/v1/model-adapters');
+  return data.modelAdapters || [];
+}
+
+export async function getModelAdapter(name: string): Promise<ModelAdapter> {
+  return apiFetch<ModelAdapter>(`/api/v1/model-adapters/${encodeURIComponent(name)}`);
+}
+
+export async function createModelAdapter(
+  request: CreateModelAdapterRequest,
+): Promise<ModelAdapter> {
+  return apiFetch<ModelAdapter>('/api/v1/model-adapters', {
+    method: 'POST',
+    body: JSON.stringify(camelToSnake(request)),
+  });
+}
+
+export async function deleteModelAdapter(name: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/model-adapters/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function listModelAdapterTargets(): Promise<ModelAdapterTarget[]> {
+  const data = await apiFetch<{ targets: ModelAdapterTarget[] }>('/api/v1/model-adapter-targets');
+  return data.targets || [];
+}
+
+// --- Models ---
+
+export async function listModels(search?: string, category?: string): Promise<Model[]> {
+  const query = buildQuery({ search, category });
+  const data = await apiFetch<{ models: Model[] }>(`/api/v1/models${query}`);
+  return data.models || [];
+}
+
+export async function getModel(id: string): Promise<Model> {
+  return apiFetch<Model>(`/api/v1/models/${encodeURIComponent(id)}`);
+}
+
+export interface CreateModelRequest {
+  id?: string;
+  name: string;
+  iconBg?: string;
+  iconText?: string;
+  iconTextColor?: string;
+  categories?: string[];
+  isNew?: boolean;
+  pricing?: {
+    uncachedInput?: string;
+    cachedInput?: string;
+    output?: string;
+    perMinute?: string;
+    perImage?: string;
+  };
+  contextLength?: string;
+  description?: string;
+  metadata?: {
+    state?: string;
+    createdOn?: string;
+    providerName?: string;
+    huggingFace?: string;
+  };
+  specification?: {
+    calibrated?: boolean;
+    mixtureOfExperts?: boolean;
+    parameters?: string;
+  };
+  tags?: string[];
+  servingName?: string;
+}
+
+export async function createModel(req: CreateModelRequest): Promise<Model> {
+  const body = camelToSnake<Record<string, unknown>>(req);
+  // metadata is in PRESERVE_VALUE_KEYS so inner keys are not converted.
+  // Override with properly converted keys for structured ModelMetadata.
+  if (req.metadata) {
+    body.metadata = camelToSnake(req.metadata);
+  }
+  return apiFetch<Model>('/api/v1/models', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+// --- Model Deployment Templates ---
+
+export async function listModelDeploymentTemplates(
+  modelId: string,
+  status?: string,
+): Promise<ModelDeploymentTemplate[]> {
+  const query = buildQuery({ status });
+  const data = await apiFetch<{ templates: ModelDeploymentTemplate[] }>(
+    `/api/v1/models/${encodeURIComponent(modelId)}/deployment-templates${query}`,
+  );
+  return data.templates || [];
+}
+
+export async function getModelDeploymentTemplate(
+  modelId: string,
+  id: string,
+): Promise<ModelDeploymentTemplate> {
+  return apiFetch<ModelDeploymentTemplate>(
+    `/api/v1/models/${encodeURIComponent(modelId)}/deployment-templates/${encodeURIComponent(id)}`,
+  );
+}
+
+export async function createModelDeploymentTemplate(
+  req: CreateModelDeploymentTemplateRequest,
+): Promise<ModelDeploymentTemplate> {
+  return apiFetch<ModelDeploymentTemplate>(
+    `/api/v1/models/${encodeURIComponent(req.modelId)}/deployment-templates`,
+    {
+      method: 'POST',
+      body: JSON.stringify(camelToSnake(req)),
+    },
+  );
+}
+
+export async function updateModelDeploymentTemplate(
+  req: UpdateModelDeploymentTemplateRequest,
+): Promise<ModelDeploymentTemplate> {
+  return apiFetch<ModelDeploymentTemplate>(
+    `/api/v1/models/${encodeURIComponent(req.modelId)}/deployment-templates/${encodeURIComponent(req.id)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(camelToSnake(req)),
+    },
+  );
+}
+
+export async function deleteModelDeploymentTemplate(
+  modelId: string,
+  id: string,
+): Promise<void> {
+  return apiFetch<void>(
+    `/api/v1/models/${encodeURIComponent(modelId)}/deployment-templates/${encodeURIComponent(id)}`,
+    { method: 'DELETE' },
+  );
+}
+
+// resolveModelDeploymentTemplate looks up a template by (modelId, name, version).
+// version="" means "latest active". This is the same lookup that batch SDK
+// callers will use when they pass model_template + model_template_version
+// in extra_body.aibrix.
+export async function resolveModelDeploymentTemplate(
+  modelId: string,
+  name: string,
+  version?: string,
+): Promise<ModelDeploymentTemplate> {
+  const query = buildQuery({ version });
+  return apiFetch<ModelDeploymentTemplate>(
+    `/api/v1/models/${encodeURIComponent(modelId)}/deployment-templates/by-name/${encodeURIComponent(name)}${query}`,
+  );
+}
+
+// --- API Keys ---
+
+export async function listAPIKeys(): Promise<APIKey[]> {
+  const data = await apiFetch<{ apiKeys: APIKey[] }>('/api/v1/apikeys');
+  return data.apiKeys || [];
+}
+
+export async function createAPIKey(
+  name: string,
+): Promise<{ apiKey: APIKey; fullKey: string }> {
+  return apiFetch<{ apiKey: APIKey; fullKey: string }>('/api/v1/apikeys', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function deleteAPIKey(id: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/apikeys/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+// --- Secrets ---
+
+export async function listSecrets(search?: string): Promise<Secret[]> {
+  const query = buildQuery({ search });
+  const data = await apiFetch<{ secrets: Secret[] }>(`/api/v1/secrets${query}`);
+  return data.secrets || [];
+}
+
+export async function createSecret(name: string, value: string): Promise<Secret> {
+  return apiFetch<Secret>('/api/v1/secrets', {
+    method: 'POST',
+    body: JSON.stringify({ name, value }),
+  });
+}
+
+export async function deleteSecret(id: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/secrets/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+// --- Quotas ---
+
+export async function listQuotas(search?: string): Promise<Quota[]> {
+  const query = buildQuery({ search });
+  const data = await apiFetch<{ quotas: Quota[] }>(`/api/v1/quotas${query}`);
+  return data.quotas || [];
+}
+
+// --- Files ---
+
+export async function uploadFile(file: File, purpose?: string): Promise<FileInfo> {
+  const formData = new FormData();
+  formData.append('file', file);
+  if (purpose) {
+    formData.append('purpose', purpose);
+  }
+
+  const response = await fetch('/api/v1/files/upload', {
+    method: 'POST',
+    credentials: 'include',
+    body: formData,
+    // Do not set Content-Type; the browser sets it with the boundary
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => 'Unknown error');
+    throw new APIError(text, response.status);
+  }
+
+  const json = await response.json();
+  return snakeToCamel<FileInfo>(json);
+}
+
+export async function listFiles(): Promise<FileInfo[]> {
+  const data = await apiFetch<RawFilesResponse>('/api/v1/files');
+  return normalizeFilesResponse(data);
+}
+
+// --- Auth ---
+
+export async function getAuthConfig(): Promise<{ mode: string; providerName?: string }> {
+  const cfg = await apiFetch<{ mode: string; providerName?: string }>(
+    '/api/v1/auth/config',
+  );
+  cachedAuthMode = cfg.mode;
+  return cfg;
+}
+
+export async function getUserInfo(): Promise<UserInfo | null> {
+  return apiFetch<UserInfo | null>('/api/v1/auth/userinfo');
+}
+
+export interface LogoutResponse {
+  message: string;
+  redirectUrl?: string;
+}
+
+export async function logout(): Promise<LogoutResponse> {
+  return apiFetch<LogoutResponse>('/api/v1/auth/logout', {
+    method: 'POST',
+  });
+}

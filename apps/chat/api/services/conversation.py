@@ -18,13 +18,11 @@ class ConversationStore:
         model: str | None = None,
         title: str = "New Chat",
         user_id: str = "",
-        project_id: str | None = None,
     ) -> Conversation:
         conv = Conversation(
             model=model,
             title=title,
             user_id=user_id,
-            project_id=project_id,
         )
         self._conversations[conv.id] = conv
         return conv
@@ -61,6 +59,20 @@ class ConversationStore:
         conv.updated_at = datetime.now(timezone.utc).isoformat()
         return conv
 
+    def update(
+        self,
+        conversation_id: str,
+        *,
+        title: str | None = None,
+    ) -> Conversation | None:
+        conv = self._conversations.get(conversation_id)
+        if conv is None:
+            return None
+        if title is not None:
+            conv.title = title
+        conv.updated_at = datetime.now(timezone.utc).isoformat()
+        return conv
+
     def add_message(self, conversation_id: str, message: Message) -> Message | None:
         conv = self._conversations.get(conversation_id)
         if conv is None:
@@ -71,6 +83,36 @@ class ConversationStore:
         conv.messages.append(message)
         conv.updated_at = datetime.now(timezone.utc).isoformat()
         return message
+
+    def replace_user_message_and_truncate(
+        self,
+        conversation_id: str,
+        message_id: str,
+        content: str,
+        attachments: list[ChatAttachment] | None = None,
+    ) -> Message | None:
+        conv = self._conversations.get(conversation_id)
+        if conv is None:
+            return None
+        for idx, message in enumerate(conv.messages):
+            if message.id == message_id and message.role == "user":
+                message.content = content
+                message.attachments = attachments or []
+                conv.messages = conv.messages[: idx + 1]
+                conv.updated_at = datetime.now(timezone.utc).isoformat()
+                return message
+        return None
+
+    def truncate_after_user_message(self, conversation_id: str, message_id: str) -> Message | None:
+        conv = self._conversations.get(conversation_id)
+        if conv is None:
+            return None
+        for idx, message in enumerate(conv.messages):
+            if message.id == message_id and message.role == "user":
+                conv.messages = conv.messages[: idx + 1]
+                conv.updated_at = datetime.now(timezone.utc).isoformat()
+                return message
+        return None
 
     def _attachment_to_content_block(self, attachment: ChatAttachment) -> dict | None:
         if attachment.kind != "image" or not attachment.preview_url:

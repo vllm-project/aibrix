@@ -36,9 +36,9 @@ async def test_rbac_resources_exist(k8s_config, ensure_job_rbac, test_namespace)
     expected_sa_name = "unittest-job-reader-sa"
 
     # Verify the fixture returns the correct service account name
-    assert (
-        service_account_name == expected_sa_name
-    ), f"Expected {expected_sa_name}, got {service_account_name}"
+    assert service_account_name == expected_sa_name, (
+        f"Expected {expected_sa_name}, got {service_account_name}"
+    )
     print(f"✓ Fixture returned correct service account name: {service_account_name}")
 
     # Check that unittest-job-reader-sa service account exists
@@ -81,7 +81,7 @@ async def test_rbac_resources_exist(k8s_config, ensure_job_rbac, test_namespace)
 @pytest.mark.asyncio
 async def test_create_test_app_with_rbac(ensure_job_rbac):
     """
-    Test that create_test_app can be called with enable_k8s_job=True
+    Test that create_test_app can be called with Kubernetes support enabled
     when RBAC resources are available.
     """
     from aibrix.storage import StorageType
@@ -89,10 +89,10 @@ async def test_create_test_app_with_rbac(ensure_job_rbac):
 
     # This should not raise any errors if RBAC is properly set up
     app = create_test_app(
-        enable_k8s_job=True,
+        enable_k8s_support=True,
         storage_type=StorageType.LOCAL,
         metastore_type=StorageType.LOCAL,
     )
 
     assert app is not None
-    print("✅ create_test_app with enable_k8s_job=True works correctly!")
+    print("✅ create_test_app with enable_k8s_support=True works correctly!")

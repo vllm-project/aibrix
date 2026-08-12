@@ -17,7 +17,7 @@ limitations under the License.
 package types
 
 import (
-	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/v3"
 )
 
 // ChatCompletionRequest extends OpenAI's ChatCompletionNewParams with vLLM-specific parameters

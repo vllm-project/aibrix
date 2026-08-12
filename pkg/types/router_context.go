@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"go.opentelemetry.io/otel/trace"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -46,12 +47,33 @@ type RequestFeatures []float64
 // Populated from model.aibrix.ai/config annotation based on config-profile header or defaultProfile.
 // Nil when no config is present;
 type ResolvedConfigProfile struct {
-	RoutingStrategy string
-	RoutingConfig   json.RawMessage
+	RoutingStrategy   string
+	RoutingConfig     json.RawMessage
+	RequestsPerSecond int64
 }
 
 // RoutingAlgorithm defines the routing algorithms
 type RoutingAlgorithm string
+
+// Polarity indicates whether a higher or lower score is better for a routing strategy
+type Polarity int
+
+const (
+	PolarityLeast Polarity = iota // Lower score is better
+	PolarityMost                  // Higher score is better
+)
+
+// PodScorer defines the interface for strategies that support batch soft-scoring
+type PodScorer interface {
+	ScoreAll(ctx *RoutingContext, readyPodList PodList) (scores []float64, scored []bool, err error)
+	Polarity() Polarity
+}
+
+// PostRouteUpdater defines the interface for strategies that need to update
+// internal state after a target pod has been selected.
+type PostRouteUpdater interface {
+	PostRouteUpdate(ctx *RoutingContext, readyPodList PodList, targetPod *v1.Pod) error
+}
 
 // RoutingContext encapsulates the context information required for routing.
 // It can be extended with more fields as needed in the future.
@@ -64,11 +86,12 @@ type RoutingContext struct {
 	Message        string
 	RequestID      string
 	User           *string
-	RequestTime    time.Time // Time when the routing context is created.
-	RequestEndTime time.Time // Time when the routing is done and sent to inference engine.
-	PendingLoad    float64   // Normalized pending load of request, available after AddRequestCount call. See cache.PendingLoadProvider
-	TraceTerm      int64     // Trace term identifier, available after AddRequestCount call.
-	RoutedTime     time.Time // Time consumed during routing.
+	Span           trace.Span // record attrs for main span
+	RequestTime    time.Time  // Time when the routing context is created.
+	RequestEndTime time.Time  // Time when the routing is done and sent to inference engine.
+	PendingLoad    float64    // Normalized pending load of request, available after AddRequestCount call. See cache.PendingLoadProvider
+	TraceTerm      int64      // Trace term identifier, available after AddRequestCount call.
+	RoutedTime     time.Time  // Time consumed during routing.
 
 	ReqHeaders       map[string]string
 	ReqBody          []byte
@@ -77,6 +100,11 @@ type RoutingContext struct {
 
 	PrefillStartTime time.Time // Time when prefill request is started.
 	PrefillEndTime   time.Time // Time consumed during prefill.
+
+	// FirstTokenTime records the arrival time of the first response body chunk.
+	// Used to compute TTFT/KV-transfer time for streaming responses, where
+	// request_end metrics are only emitted on the final chunk.
+	FirstTokenTime time.Time
 
 	// RespHeaders holds response headers that the router intends to set.
 	// These are typically used to propagate control information back to the client,
@@ -282,6 +310,15 @@ func (r *RoutingContext) CanAddTrace() bool {
 	return atomic.CompareAndSwapInt32(&r.traceAdded, statusInitial, statusAdded)
 }
 
+// CanDoneTrace returns true only the first time a request finishes its trace
+// bookkeeping. It pairs with CanAddTrace: the model-level pendingRequests
+// counter is incremented once under CanAddTrace, so it must be decremented
+// exactly once here, even though several completion paths (response headers,
+// response body and the receive-error exits) may all call into DoneRequest*.
+func (r *RoutingContext) CanDoneTrace() bool {
+	return atomic.CompareAndSwapInt32(&r.traceAdded, statusAdded, statusDone)
+}
+
 // GetRoutingDelay returns the time duration used for routing the request.
 // Returns 0 if routing did not complete (e.g., prefill failure before SetTargetPod was called).
 func (r *RoutingContext) GetRoutingDelay() time.Duration {
@@ -292,6 +329,14 @@ func (r *RoutingContext) GetRoutingDelay() time.Duration {
 }
 
 func (r *RoutingContext) targetAddress(pod *v1.Pod) string {
+	if port, ok := utils.ModelClaimPortForPod(pod, r.Model); ok {
+		if port > 0 {
+			return r.targetAddressWithPort(pod.Status.PodIP, port)
+		}
+		// Known ModelClaim model that is not yet routable (port 0). Do not fall
+		// back to the default deployment port on this warm pool pod.
+		return ""
+	}
 	return fmt.Sprintf("%v:%v", pod.Status.PodIP, utils.GetModelPortForPod(r.RequestID, pod))
 }
 
@@ -331,17 +376,21 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.ReqBody = []byte{}
 	r.PrefillStartTime = time.Time{}
 	r.PrefillEndTime = time.Time{}
+	r.FirstTokenTime = time.Time{}
 	// RoutedTime will not be reset, it must before ReqeustTime at this time.
 
+	r.Span = nil
 	r.RespHeaders = map[string]string{}
 	r.ConfigProfile = nil
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)
+	r.targetPort.Store(0)
 	r.lastError.Store(nil)
 	// debugDelay will be reset by tests.
 	r.tokens = nil
 	r.predictor = nil
 	r.statsUpdated = statusInitial
+	r.traceAdded = statusInitial
 }
 
 func (r *RoutingContext) debugWait() {

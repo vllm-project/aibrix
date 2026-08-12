@@ -46,6 +46,7 @@ aibrix_runtime = 'aibrix.app:main'
 aibrix_download = 'aibrix.downloader.__main__:main'
 aibrix_batch_worker = 'aibrix.batch.worker:main'
 aibrix_metadata = 'aibrix.metadata.app:main'
+aibrix_openai_frontend = 'aibrix.openai_frontend.main:main'
 # tools
 aibrix_benchmark = "aibrix.gpu_optimizer.optimizer.profiling.benchmark:main"
 aibrix_gen_profile = 'aibrix.gpu_optimizer.optimizer.profiling.gen_profile:main'
@@ -63,18 +64,15 @@ uvicorn = "^0.30.6"
 prometheus-client = "^0.20.0"
 types-requests = "^2.31.0"
 httpx = "^0.27.2"
+asyncssh = "^2.18.0"
 hf-transfer = "^0.1.8"
 types-redis = "^4.6.0.20241004"
 redis = "^5.2.0"
 kubernetes = "^31.0.0"
-# Required by kopf at import time (type stubs); without it kopf crashes with
-# TypeError: unsupported operand type(s) for |: 'NoneType' and 'NoneType'
-kubernetes-asyncio = "^31.0.0"
 aiohttp = "^3.11.7"
 filelock = "^3.16.1"
 structlog = "^24.4.0"
 pydantic-settings = "^2.6.1"
-kopf = {extras = ["uvloop"], version = "^1.37.2"}
 PyYAML = "^6.0.1"
 types-PyYAML = "^6.0.12.20240917"
 python-multipart = "^0.0.20"
@@ -95,7 +93,7 @@ transformers = ">=4.38.0"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "1.11.1"
-ruff = "0.6.1"
+ruff = "0.15.16"
 pytest = "^8.3.2"
 anyio = "4.8.0"
 pytest-asyncio = "^1.1.0"
@@ -103,6 +101,7 @@ pytest-tornasync = "0.6.0.post2"
 pytest-trio = "0.8.0"
 pytest-twisted = "1.14.3"
 twisted = "25.5.0"
+openai = "^2.32.0"
 
 [build-system]
 requires = ["poetry-core", "poetry-dynamic-versioning"]
@@ -131,3 +130,9 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "batch_driver_stand_alone: run the batch driver on a dedicated async loop thread",
+]
+filterwarnings = [
+    "ignore:Please use `import python_multipart` instead.:PendingDeprecationWarning",
+]

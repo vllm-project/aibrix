@@ -1,17 +1,23 @@
 {{- if .Values.webhook.enable }}
+# NOTE: The webhook configuration, service, and secret names are hardcoded
+# (not derived from the release name) because the controller's cert-rotator
+# looks them up by fixed names from pkg/cert/cert.go. Templating them with
+# {{`{{ .Release.Name }}`}} breaks cert injection under non-default release
+# names (e.g. chart-testing's random names), leaving the webhook server
+# without a CA bundle. Keep these in sync with pkg/cert/cert.go.
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
   labels:
     {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-controller-manager
-  name: {{ include "aibrix.fullname" . }}-mutating-webhook-configuration
+  name: aibrix-mutating-webhook-configuration
 webhooks:
 - admissionReviewVersions:
   - v1
   clientConfig:
     service:
-      name: {{ include "aibrix.fullname" . }}-webhook-service
+      name: aibrix-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /mutate-orchestration-aibrix-ai-v1alpha1-kvcache
   failurePolicy: Ignore
@@ -31,7 +37,7 @@ webhooks:
   - v1
   clientConfig:
     service:
-      name: {{ include "aibrix.fullname" . }}-webhook-service
+      name: aibrix-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /mutate-model-aibrix-ai-v1alpha1-modeladapter
   failurePolicy: Ignore
@@ -51,7 +57,7 @@ webhooks:
     - v1
   clientConfig:
     service:
-      name: {{ include "aibrix.fullname" . }}-webhook-service
+      name: aibrix-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /mutate-autoscaling-aibrix-ai-v1alpha1-podautoscaler
   failurePolicy: Ignore
@@ -71,7 +77,7 @@ webhooks:
     - v1
   clientConfig:
     service:
-      name: {{ include "aibrix.fullname" . }}-webhook-service
+      name: aibrix-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /mutate-orchestration-aibrix-ai-v1alpha1-stormservice
   failurePolicy: Ignore
@@ -91,7 +97,7 @@ webhooks:
     - v1
   clientConfig:
     service:
-      name: {{ include "aibrix.fullname" . }}-webhook-service
+      name: aibrix-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /mutate-apps-v1-deployment
   failurePolicy: Ignore
@@ -114,13 +120,13 @@ metadata:
   labels:
     {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-controller-manager
-  name: {{ include "aibrix.fullname" . }}-validating-webhook-configuration
+  name: aibrix-validating-webhook-configuration
 webhooks:
 - admissionReviewVersions:
   - v1
   clientConfig:
     service:
-      name: {{ include "aibrix.fullname" . }}-webhook-service
+      name: aibrix-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /validate-model-aibrix-ai-v1alpha1-modeladapter
   failurePolicy: Ignore
@@ -140,7 +146,7 @@ webhooks:
   - v1
   clientConfig:
     service:
-      name: {{ include "aibrix.fullname" . }}-webhook-service
+      name: aibrix-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /validate-orchestration-aibrix-ai-v1alpha1-kvcache
   failurePolicy: Ignore
@@ -160,7 +166,7 @@ webhooks:
     - v1
   clientConfig:
     service:
-      name: {{ include "aibrix.fullname" . }}-webhook-service
+      name: aibrix-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /validate-autoscaling-aibrix-ai-v1alpha1-podautoscaler
   failurePolicy: Ignore
@@ -180,7 +186,7 @@ webhooks:
     - v1
   clientConfig:
     service:
-      name: {{ include "aibrix.fullname" . }}-webhook-service
+      name: aibrix-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /validate-orchestration-aibrix-ai-v1alpha1-stormservice
   failurePolicy: Ignore

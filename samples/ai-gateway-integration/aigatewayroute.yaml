@@ -1,4 +1,4 @@
-apiVersion: aigateway.envoyproxy.io/v1alpha1
+apiVersion: aigateway.envoyproxy.io/v1beta1
 kind: AIGatewayRoute
 metadata:
   name: multi-model-route
@@ -35,4 +35,3 @@ spec:
         - group: inference.networking.k8s.io
           kind: InferencePool
           name: mistral-7b
-

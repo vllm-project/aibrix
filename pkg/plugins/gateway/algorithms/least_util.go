@@ -48,19 +48,48 @@ func NewLeastUtilRouter() (types.Router, error) {
 	}, nil
 }
 
+// ScoreAll fetches the engine utilization metric for all ready pods in a single batch operation.
+// This float value is used by the multi-strategy aggregator to evaluate the current utilization load of each pod.
+func (r leastUtilRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	pods := readyPodList.All()
+	scores := make([]float64, len(pods))
+	scored := make([]bool, len(pods))
+
+	for i, pod := range pods {
+		metricVal, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.EngineUtilization)
+		if err != nil {
+			klog.V(4).ErrorS(err, "failed to get metrics for pod")
+			continue
+		}
+		scores[i] = metricVal.GetSimpleValue()
+		scored[i] = true
+		klog.V(4).Infof("pod: %v, podIP: %v, engine utilization: %v", pod.Name, pod.Status.PodIP, scores[i])
+	}
+
+	return scores, scored, nil
+}
+
+// Polarity returns whether higher or lower score is better.
+func (r leastUtilRouter) Polarity() types.Polarity {
+	return types.PolarityLeast
+}
+
 func (r leastUtilRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
+	pods := readyPodList.All()
+	scores, scored, err := r.ScoreAll(ctx, readyPodList)
+	if err != nil {
+		return "", err
+	}
+
 	var targetPod *v1.Pod
 	minUtilization := math.MaxFloat64 // <= 1 in general
 	var candidatePods []*v1.Pod
 
-	for _, pod := range readyPodList.All() {
-		utilization, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.EngineUtilization)
-		if err != nil {
-			klog.Error(err)
+	for i, pod := range pods {
+		if !scored[i] {
 			continue
 		}
-		utilizationValue := utilization.GetSimpleValue()
-		klog.V(4).Infof("pod: %v, podIP: %v, engine utilization: %v", pod.Name, pod.Status.PodIP, utilizationValue)
+		utilizationValue := scores[i]
 
 		if utilizationValue < minUtilization {
 			minUtilization = utilizationValue
@@ -77,7 +106,7 @@ func (r leastUtilRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 	// Use fallback if no valid metrics
 	if targetPod == nil {
 		var err error
-		targetPod, err = SelectRandomPodAsFallback(ctx, readyPodList.All(), rand.Intn)
+		targetPod, err = SelectRandomPodAsFallback(ctx, pods, rand.Intn)
 		if err != nil {
 			return "", err
 		}

@@ -23,10 +23,11 @@ import (
 	"strconv"
 	"strings"
 
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+
+	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 )
 
 type RollingManager interface {
@@ -34,39 +35,33 @@ type RollingManager interface {
 }
 
 type RollingManagerSequential struct {
-	cli client.Client
+	cli      client.Client
+	recorder record.EventRecorder
 }
 
 func (m *RollingManagerSequential) Next(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet) (err error) {
-	// 1. Find the furthest role whose dependencies are ready
-	progressIndex := -1
-	for i, role := range roleSet.Spec.Roles {
-		if !isRoleDependenciesReady(roleSet, &role) {
-			break
-		}
-		progressIndex = i
-	}
-
-	if progressIndex == -1 {
-		return nil // even A is blocked (shouldn't happen)
-	}
-
-	// 2. Scale all roles from 0 to progressIndex
+	// 1. ensure pod replica meet expectations, gated by role dependencies
 	var scaling bool
-	for i := 0; i <= progressIndex; i++ {
+	for i := range roleSet.Spec.Roles {
 		role := &roleSet.Spec.Roles[i]
-		s, err := GetRoleSyncer(m.cli, role).Scale(ctx, roleSet, role)
+		if !isRoleDependenciesReady(roleSet, role) {
+			klog.Infof("[RollingManagerSequential.Next] role %s/%s/%s scale skipped: dependencies not ready",
+				roleSet.Namespace, roleSet.Name, role.Name)
+			continue
+		}
+		klog.Infof("[RollingManagerSequential.Next] start to scale roleset %s/%s role %s", roleSet.Namespace, roleSet.Name, role.Name)
+		s, err := GetRoleSyncerWithRecorder(m.cli, role, m.recorder).Scale(ctx, roleSet, role)
 		if err != nil {
 			return err
 		}
 		scaling = scaling || s
 	}
 	if scaling {
-		// Wait for Pods to be created and status updated
+		klog.Infof("[RollingManagerSequential.Next] waiting for roleset %s/%s to be scaled", roleSet.Namespace, roleSet.Name)
 		return nil
 	}
 
-	// 3. Sort roles by upgrade order
+	// 2. Sort roles by upgrade order
 	klog.Infof("[RollingManagerSequential.Next] sorting roleset roles by UpgradeOrder")
 	sortedRoles := sortRolesByUpgradeOrder(roleSet.Spec.Roles)
 	var sequenceLines []string
@@ -85,18 +80,19 @@ func (m *RollingManagerSequential) Next(ctx context.Context, roleSet *orchestrat
 		roleSet.Name,
 		strings.Join(sequenceLines, "\n"))
 
-	// 4. do the rollout process for each role by order
-	for _, role := range sortedRoles {
-		if !isRoleDependenciesReady(roleSet, &role) {
-			klog.Infof("Rollout of role %s blocked: dependencies not ready. Stopping sequential update.", role.Name)
-			break // enforce strict sequential order
+	// 3. do the rollout process for each role by order
+	for i := range sortedRoles {
+		role := &sortedRoles[i]
+		if !isRoleDependenciesReady(roleSet, role) {
+			klog.Infof("[RollingManagerSequential.Next] rollout of role %s blocked: dependencies not ready. Stopping sequential update.", role.Name)
+			break
 		}
 		klog.Infof("[RollingManagerSequential.Next] start to rollout roleset %s/%s role %s", roleSet.Namespace, roleSet.Name, role.Name)
-		err := GetRoleSyncer(m.cli, &role).Rollout(ctx, roleSet, &role)
+		err := GetRoleSyncerWithRecorder(m.cli, role, m.recorder).Rollout(ctx, roleSet, role)
 		if err != nil {
 			return err
 		}
-		if ready, err := GetRoleSyncer(m.cli, &role).AllReady(ctx, roleSet, &role); err != nil {
+		if ready, err := GetRoleSyncerWithRecorder(m.cli, role, m.recorder).AllReady(ctx, roleSet, role); err != nil {
 			return err
 		} else if !ready {
 			// each time we only update one role in sequential mode
@@ -108,47 +104,41 @@ func (m *RollingManagerSequential) Next(ctx context.Context, roleSet *orchestrat
 }
 
 type RollingManagerParallel struct {
-	cli client.Client
+	cli      client.Client
+	recorder record.EventRecorder
 }
 
 func (m *RollingManagerParallel) Next(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet) (err error) {
-	// 1. Find the furthest role whose dependencies are ready
-	progressIndex := -1
-	for i, role := range roleSet.Spec.Roles {
-		if !isRoleDependenciesReady(roleSet, &role) {
-			break
-		}
-		progressIndex = i
-	}
-
-	if progressIndex == -1 {
-		return nil // even A is blocked (shouldn't happen)
-	}
-
-	// 2: Scale all roles from 0 to progressIndex
+	// 1. ensure pod replica meet expectations, gated by role dependencies
 	var scaling bool
-	for i := 0; i <= progressIndex; i++ {
+	for i := range roleSet.Spec.Roles {
 		role := &roleSet.Spec.Roles[i]
-		s, err := GetRoleSyncer(m.cli, role).Scale(ctx, roleSet, role)
+		if !isRoleDependenciesReady(roleSet, role) {
+			klog.Infof("[RollingManagerParallel.Next] role %s/%s/%s scale skipped: dependencies not ready",
+				roleSet.Namespace, roleSet.Name, role.Name)
+			continue
+		}
+		klog.Infof("[RollingManagerParallel.Next] start to scale roleset %s/%s role %s", roleSet.Namespace, roleSet.Name, role.Name)
+		s, err := GetRoleSyncerWithRecorder(m.cli, role, m.recorder).Scale(ctx, roleSet, role)
 		if err != nil {
 			return err
 		}
 		scaling = scaling || s
 	}
 	if scaling {
-		// Wait for Pods to be created and status updated
+		klog.Infof("[RollingManagerParallel.Next] waiting for roleset %s/%s to be scaled", roleSet.Namespace, roleSet.Name)
 		return nil
 	}
 
-	// 3. do the rollout process for each role
-	for _, role := range roleSet.Spec.Roles {
-		if !isRoleDependenciesReady(roleSet, &role) {
-			klog.Infof("Skipping rollout for role %s: "+
-				"dependencies not ready (parallel update continues for other roles)", role.Name)
-			continue // parallel mode, skip only this role
+	// 2. do the rollout process for each role
+	for i := range roleSet.Spec.Roles {
+		role := &roleSet.Spec.Roles[i]
+		if !isRoleDependenciesReady(roleSet, role) {
+			klog.Infof("[RollingManagerParallel.Next] rollout of role %s skipped: dependencies not ready", role.Name)
+			continue
 		}
 		klog.Infof("[RollingManagerParallel.Next] start to rollout roleset %s/%s role %s", roleSet.Namespace, roleSet.Name, role.Name)
-		err := GetRoleSyncer(m.cli, &role).Rollout(ctx, roleSet, &role)
+		err := GetRoleSyncerWithRecorder(m.cli, role, m.recorder).Rollout(ctx, roleSet, role)
 		if err != nil {
 			return err
 		}
@@ -157,53 +147,49 @@ func (m *RollingManagerParallel) Next(ctx context.Context, roleSet *orchestratio
 }
 
 type RollingManagerInterleave struct {
-	cli client.Client
+	cli      client.Client
+	recorder record.EventRecorder
 }
 
 // Interleaved rollout: update roles in alternating steps,
 // using (maxSurge + maxUnavailable) as the step size for all roles
 func (m *RollingManagerInterleave) Next(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet) (err error) {
-	// 1. Find the furthest role whose dependencies are ready
-	progressIndex := -1
-	for i, role := range roleSet.Spec.Roles {
-		if !isRoleDependenciesReady(roleSet, &role) {
-			break
-		}
-		progressIndex = i
-	}
-
-	if progressIndex == -1 {
-		return nil // even A is blocked (shouldn't happen)
-	}
-
-	// 2. Scale all roles from 0 to progressIndex
+	// 1. ensure pod replica meet expectations, gated by role dependencies
 	var scaling bool
-	for i := 0; i <= progressIndex; i++ {
+	for i := range roleSet.Spec.Roles {
 		role := &roleSet.Spec.Roles[i]
-		s, err := GetRoleSyncer(m.cli, role).Scale(ctx, roleSet, role)
+		if !isRoleDependenciesReady(roleSet, role) {
+			klog.Infof("[RollingManagerInterleave.Next] role %s/%s/%s scale skipped: dependencies not ready",
+				roleSet.Namespace, roleSet.Name, role.Name)
+			continue
+		}
+		klog.Infof("[RollingManagerInterleave.Next] start to scale roleset %s/%s role %s", roleSet.Namespace, roleSet.Name, role.Name)
+		s, err := GetRoleSyncerWithRecorder(m.cli, role, m.recorder).Scale(ctx, roleSet, role)
 		if err != nil {
 			return err
 		}
 		scaling = scaling || s
 	}
 	if scaling {
-		// Wait for Pods to be created and status updated
+		klog.Infof("[RollingManagerInterleave.Next] waiting for roleset %s/%s to be scaled", roleSet.Namespace, roleSet.Name)
 		return nil
 	}
-	// 3. do the rollout process for each role
+
+	// 2. do the rollout process for each role
 	roleSteps := make(map[string]int32)
 	roleReadyStatus := make(map[string]bool)
 	currentStep := int32(math.MaxInt32)
 	allRolesReady := true
 
 	// Check the current step for each role and determine the minimum step across all roles as the global current step
-	for _, role := range roleSet.Spec.Roles {
-		if !isRoleDependenciesReady(roleSet, &role) {
-			klog.Infof("Skipping role %s/%s: dependencies not ready (will retry in next reconcile)",
-				roleSet.Namespace, role.Name)
-			continue // interleaved mode: skip only this role, others may proceed
+	for i := range roleSet.Spec.Roles {
+		role := &roleSet.Spec.Roles[i]
+		if !isRoleDependenciesReady(roleSet, role) {
+			klog.Infof("[RollingManagerInterleave.Next] role %s/%s/%s rollout skipped: dependencies not ready",
+				roleSet.Namespace, roleSet.Name, role.Name)
+			continue
 		}
-		allReady, currentRoleStep, err := GetRoleSyncer(m.cli, &role).CheckCurrentStep(ctx, roleSet, &role)
+		allReady, currentRoleStep, err := GetRoleSyncerWithRecorder(m.cli, role, m.recorder).CheckCurrentStep(ctx, roleSet, role)
 		if err != nil {
 			klog.Errorf("[RollingManagerInterleave.Next] Failed to get current step for role %s in roleset %s/%s: %v", role.Name, roleSet.Namespace, roleSet.Name, err)
 			continue
@@ -235,7 +221,8 @@ func (m *RollingManagerInterleave) Next(ctx context.Context, roleSet *orchestrat
 	klog.Infof("[RollingManagerInterleave.Next] Final current step for roleset %s/%s: %d",
 		roleSet.Namespace, roleSet.Name, currentStep)
 
-	for _, role := range roleSet.Spec.Roles {
+	for i := range roleSet.Spec.Roles {
+		role := &roleSet.Spec.Roles[i]
 		// Skip roles that are already fully ready
 		if roleReadyStatus[role.Name] {
 			continue
@@ -244,13 +231,16 @@ func (m *RollingManagerInterleave) Next(ctx context.Context, roleSet *orchestrat
 		if roleSteps[role.Name] > currentStep {
 			continue
 		}
+		if !isRoleDependenciesReady(roleSet, role) {
+			continue
+		}
 
 		klog.Infof("[RollingManagerInterleave.Next] start to rollout roleset %s/%s role %s at step %d",
 			roleSet.Namespace, roleSet.Name, role.Name, currentStep)
 
 		// Only update roles that match the current global step.
 		// This ensures that faster roles wait until all roles complete the current step before proceeding.
-		err = GetRoleSyncer(m.cli, &role).RolloutByStep(ctx, roleSet, &role, currentStep)
+		err = GetRoleSyncerWithRecorder(m.cli, role, m.recorder).RolloutByStep(ctx, roleSet, role, currentStep)
 		if err != nil {
 			return err
 		}

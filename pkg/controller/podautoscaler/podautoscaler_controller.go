@@ -60,6 +60,7 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/metrics/pkg/client/clientset/versioned"
 	custommetrics "k8s.io/metrics/pkg/client/custom_metrics"
+	externalmetrics "k8s.io/metrics/pkg/client/external_metrics"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -92,6 +93,7 @@ const (
 	ReasonConfigured                = "Configured"
 	maxScalingHistorySize           = 5
 	minScalingHistoryRecordInterval = 5 * time.Second
+	maxMetricWindowSeconds          = int64(3600)
 )
 
 var (
@@ -132,11 +134,16 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 	mapper := restmapper.NewDeferredDiscoveryRESTMapper(cached)
 	apis := custommetrics.NewAvailableAPIsGetter(disc)
 	customClient := custommetrics.NewForConfig(restConfig, mapper, apis)
+	externalClient, err := externalmetrics.NewForConfig(restConfig)
+	if err != nil {
+		klog.Warningf("Failed to create external metrics client: %v. Kubernetes external metrics will be unavailable.", err)
+		externalClient = nil
+	}
 
 	workloadScaleClient := NewWorkloadScale(mgr.GetClient(), mgr.GetRESTMapper())
 
 	// Create factory with all metric fetcher types
-	factory := metrics.NewDefaultMetricFetcherFactory(resourceClient, customClient)
+	factory := metrics.NewDefaultMetricFetcherFactory(resourceClient, customClient, externalClient)
 
 	// Create a unified autoscaler that can handle all strategies
 	// It will be configured per-request based on PodAutoscaler spec
@@ -209,15 +216,19 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 
 	klog.InfoS("Added AIBrix pod-autoscaler-controller successfully")
 
-	errChan := make(chan error)
-	go reconciler.Run(context.Background(), errChan)
-	klog.InfoS("Run pod-autoscaler-controller periodical syncs successfully")
-
-	go func() {
-		for err := range errChan {
-			klog.ErrorS(err, "Run function returned an error")
-		}
-	}()
+	// Register the periodical sync loop as a manager Runnable so that it shares
+	// the manager's lifecycle: controller-runtime supplies a context that is
+	// cancelled on shutdown, and the manager waits for this goroutine to exit
+	// before returning from Start. This avoids leaking the previously used
+	// errChan + background goroutine pair that could block forever if the
+	// channel was never closed.
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		klog.InfoS("Run pod-autoscaler-controller periodical syncs successfully")
+		reconciler.Run(ctx)
+		return nil
+	})); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -260,6 +271,7 @@ type PodAutoscalerReconciler struct {
 //+kubebuilder:rbac:groups=autoscaling.aibrix.ai,resources=podautoscalers/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=autoscaling.aibrix.ai,resources=podautoscalers/finalizers,verbs=update
 //+kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=external.metrics.k8s.io,resources=*,verbs=get;list
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;patch;update
 //+kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=stormservices,verbs=get;list;watch;patch
 
@@ -387,6 +399,9 @@ func (r *PodAutoscalerReconciler) validateSpec(pa *autoscalingv1alpha1.PodAutosc
 	if vr := r.validateScalingStrategy(pa); !vr.Valid {
 		return vr
 	}
+	if vr := r.validateMetricWindows(pa); !vr.Valid {
+		return vr
+	}
 	if vr := r.validateMetricsSources(pa); !vr.Valid {
 		return vr
 	}
@@ -407,9 +422,44 @@ func (r *PodAutoscalerReconciler) validateReplicaBounds(pa *autoscalingv1alpha1.
 	return validOK()
 }
 
+func (r *PodAutoscalerReconciler) validateMetricWindows(pa *autoscalingv1alpha1.PodAutoscaler) ValidationResult {
+	observeWindow := int64(metrics.DefaultStableWindowDuration / time.Second)
+	if pa.Spec.ObserveWindowSeconds != nil {
+		observeWindow = *pa.Spec.ObserveWindowSeconds
+		if observeWindow <= 0 {
+			return invalid(ReasonInvalidSpec, "observeWindowSeconds must be greater than 0.")
+		}
+		if observeWindow > maxMetricWindowSeconds {
+			return invalid(ReasonInvalidSpec, fmt.Sprintf("observeWindowSeconds must be less than or equal to %d.", maxMetricWindowSeconds))
+		}
+	}
+
+	panicWindow := int64(metrics.DefaultPanicWindowDuration / time.Second)
+	if pa.Spec.PanicWindowSeconds != nil {
+		panicWindow = *pa.Spec.PanicWindowSeconds
+		if panicWindow <= 0 {
+			return invalid(ReasonInvalidSpec, "panicWindowSeconds must be greater than 0.")
+		}
+		if panicWindow > maxMetricWindowSeconds {
+			return invalid(ReasonInvalidSpec, fmt.Sprintf("panicWindowSeconds must be less than or equal to %d.", maxMetricWindowSeconds))
+		}
+	}
+	if panicWindow > observeWindow {
+		return invalid(ReasonInvalidSpec, "panicWindowSeconds must be less than or equal to observeWindowSeconds.")
+	}
+
+	return validOK()
+}
+
 func (r *PodAutoscalerReconciler) validateScalingStrategy(pa *autoscalingv1alpha1.PodAutoscaler) ValidationResult {
 	if !checkValidAutoscalingStrategy(pa.Spec.ScalingStrategy) {
 		return invalid(ReasonInvalidScalingStrategy, "Unsupported scalingStrategy; must be one of HPA/KPA/APA.")
+	}
+	if pa.Spec.ScalingStrategy == autoscalingv1alpha1.HPA &&
+		pa.Spec.SubTargetSelector != nil &&
+		pa.Spec.SubTargetSelector.RoleName != "" {
+		return invalid(ReasonInvalidScalingStrategy,
+			"subTargetSelector.roleName is not supported with scalingStrategy=HPA; use APA or KPA for StormService role-level autoscaling.")
 	}
 	return validOK()
 }
@@ -469,6 +519,11 @@ func (r *PodAutoscalerReconciler) validatePodMetricSource(ms *autoscalingv1alpha
 }
 
 func (r *PodAutoscalerReconciler) validateExternalMetricSource(ms *autoscalingv1alpha1.MetricSource) ValidationResult {
+	// Empty endpoint selects the Kubernetes external.metrics API instead of an HTTP metrics endpoint.
+	if ms.Endpoint == "" &&
+		(ms.MetricSourceType == autoscalingv1alpha1.EXTERNAL || ms.MetricSourceType == autoscalingv1alpha1.DOMAIN) {
+		return validOK()
+	}
 	if ms.ProtocolType == "" {
 		return invalid(ReasonMetricsConfigError, "protocolType is required for metricSourceType=external.")
 	}
@@ -541,7 +596,11 @@ func (r *PodAutoscalerReconciler) setInvalidSpecStatus(
 	return r.updateStatusIfNeeded(ctx, st, pa)
 }
 
-func (r *PodAutoscalerReconciler) Run(ctx context.Context, errChan chan<- error) {
+// Run periodically enqueues all PodAutoscaler objects until ctx is cancelled.
+// It is expected to be invoked by the controller-runtime manager via
+// manager.RunnableFunc, so that ctx is tied to the manager lifecycle and the
+// manager will wait for this function to return during shutdown.
+func (r *PodAutoscalerReconciler) Run(ctx context.Context) {
 	ticker := time.NewTicker(r.resyncInterval)
 	defer ticker.Stop()
 	defer close(r.eventCh)
@@ -553,11 +612,9 @@ func (r *PodAutoscalerReconciler) Run(ctx context.Context, errChan chan<- error)
 			// periodically sync all autoscaling objects
 			if err := r.enqueuePodAutoscalers(ctx); err != nil {
 				klog.ErrorS(err, "Failed to enqueue pod autoscaler objects")
-				errChan <- err
 			}
 		case <-ctx.Done():
 			klog.Info("context done, stopping running the loop")
-			errChan <- ctx.Err()
 			return
 		}
 	}
@@ -568,12 +625,19 @@ func (r *PodAutoscalerReconciler) enqueuePodAutoscalers(ctx context.Context) err
 	if err := r.List(ctx, podAutoscalerLists); err != nil {
 		return err
 	}
-	for _, pa := range podAutoscalerLists.Items {
-		// Let's operate the queue and just enqueue the object, that should be ok.
+	for i := range podAutoscalerLists.Items {
+		// Take the address of the slice element rather than the loop variable
+		// so each enqueued event references a distinct object. Guard the send
+		// with ctx.Done() so we cannot block forever during shutdown if the
+		// source.Channel consumer has already stopped.
 		e := event.GenericEvent{
-			Object: &pa,
+			Object: &podAutoscalerLists.Items[i],
 		}
-		r.eventCh <- e
+		select {
+		case r.eventCh <- e:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 
 	return nil

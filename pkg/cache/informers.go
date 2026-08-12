@@ -17,6 +17,8 @@ package cache
 
 import (
 	"errors"
+	"strconv"
+	"time"
 
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -38,6 +40,12 @@ const (
 	modelIdentifier = constants.ModelLabelName
 	nodeType        = "ray.io/node-type"
 	nodeWorker      = "worker"
+	podGroupIndex   = "stormservice.orchestration.aibrix.ai/pod-group-index"
+)
+
+var (
+	modelAdapterResyncMaxRetries    = 30
+	modelAdapterResyncRetryInterval = 1 * time.Second
 )
 
 func initCacheInformers(instance *Store, config *rest.Config, stopCh <-chan struct{}) error {
@@ -85,7 +93,7 @@ func initCacheInformers(instance *Store, config *rest.Config, stopCh <-chan stru
 
 	// After cache sync, resync all ModelAdapters to ensure pod mappings are correct
 	// This handles the case where ModelAdapters were processed before their pods were cached
-	instance.resyncModelAdapters(modelInformer.GetStore())
+	instance.resyncModelAdapters(modelInformer.GetStore(), stopCh)
 
 	// Log cache state after initialization
 	klog.Infof("Cache initialization completed. Models: %v", instance.ListModels())
@@ -96,29 +104,22 @@ func initCacheInformers(instance *Store, config *rest.Config, stopCh <-chan stru
 // getModelNameFromPod retrieves model name from pod labels first, then annotations.
 // This supports cases where model names contain characters invalid for K8s labels (e.g., '/').
 func getModelNameFromPod(pod *v1.Pod) (string, bool) {
-	// Try label first (standard case)
-	if modelName, ok := pod.Labels[modelIdentifier]; ok && modelName != "" {
-		return modelName, true
-	}
-	// Fallback to annotation (allows special characters like '/' in model paths)
-	if modelName, ok := pod.Annotations[modelIdentifier]; ok && modelName != "" {
-		return modelName, true
-	}
-	return "", false
+	return constants.ModelNameFromMetadata(pod.Labels, pod.Annotations)
 }
 
 func (c *Store) addPod(obj interface{}) {
 	pod := obj.(*v1.Pod)
-	// only track pods with model deployments (check label first, then annotation)
+	// Track pods that serve a model either through the standard deployment label
+	// or through ModelClaim runtime annotations.
 	modelName, ok := getModelNameFromPod(pod)
-	if !ok {
+	modelClaims := utils.ModelClaimBindingsFromPod(pod)
+	if !ok && len(modelClaims) == 0 {
 		klog.V(4).InfoS("ignored pod without model label or annotation", "name", pod.Name)
 		return
 	}
-	// ignore worker pods
-	nodeType, ok := pod.Labels[nodeType]
-	if ok && nodeType == nodeWorker {
-		klog.V(4).InfoS("ignored ray worker pod", "name", pod.Name)
+
+	// ignore worker pod
+	if isWorkerPod(pod) {
 		return
 	}
 
@@ -126,7 +127,16 @@ func (c *Store) addPod(obj interface{}) {
 	defer c.mu.Unlock()
 
 	metaPod := c.addPodLocked(pod)
-	c.addPodAndModelMappingLocked(metaPod, modelName)
+	if ok {
+		c.addPodAndModelMappingLocked(metaPod, modelName)
+	}
+	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+	for servedModel, binding := range modelClaims {
+		c.modelClaims.set(podKey, servedModel, binding.Port, binding.State)
+		if binding.Port > 0 {
+			c.addPodAndModelMappingLocked(metaPod, servedModel)
+		}
+	}
 
 	klog.V(4).Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
 	c.debugInfo()
@@ -141,11 +151,20 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	oldPod := oldObj.(*v1.Pod)
 	newPod := newObj.(*v1.Pod)
 
+	// calculate early to avoid unnecessary lock
+	oldIsWorker := isWorkerPod(oldPod)
+	newIsWorker := isWorkerPod(newPod)
+	if oldIsWorker && newIsWorker {
+		klog.InfoS("ignore worker pod update:", "old pod", oldPod.Name, "new pod", newPod.Name)
+		return
+	}
+
 	_, oldOk := getModelNameFromPod(oldPod)
 	_, existed := c.metaPods.Load(utils.GeneratePodKey(oldPod.Namespace, oldPod.Name)) // Make sure nothing left.
 	newModelName, newOk := getModelNameFromPod(newPod)
+	newModelClaims := utils.ModelClaimBindingsFromPod(newPod)
 
-	if !oldOk && !existed && !newOk {
+	if !oldOk && !existed && !newOk && len(newModelClaims) == 0 {
 		return // No model information to track in either old or new pod
 	}
 
@@ -162,6 +181,7 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 				c.deletePodAndModelMappingLocked(odlMetaPod.Name, odlMetaPod.Namespace, modelName, 1)
 			}
 		}
+		c.modelClaims.clearPod(utils.GeneratePodKey(oldPod.Namespace, oldPod.Name))
 	}
 
 	// ignore worker pods
@@ -173,9 +193,18 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	}
 
 	// Add new mappings if present
-	if newOk {
+	if (newOk || len(newModelClaims) > 0) && !newIsWorker {
 		metaPod := c.addPodLocked(newPod)
-		c.addPodAndModelMappingLocked(metaPod, newModelName)
+		if newOk {
+			c.addPodAndModelMappingLocked(metaPod, newModelName)
+		}
+		newPodKey := utils.GeneratePodKey(newPod.Namespace, newPod.Name)
+		for servedModel, binding := range newModelClaims {
+			c.modelClaims.set(newPodKey, servedModel, binding.Port, binding.State)
+			if binding.Port > 0 {
+				c.addPodAndModelMappingLocked(metaPod, servedModel)
+			}
+		}
 	}
 
 	klog.V(4).Infof("POD UPDATED: %s/%s %s", newPod.Namespace, newPod.Name, newPod.Status.Phase)
@@ -196,11 +225,13 @@ func (c *Store) deletePod(obj interface{}) {
 		pod = obj
 		namespace, name = obj.Namespace, obj.Name
 		_, hasModelInfo = getModelNameFromPod(obj)
+		hasModelInfo = hasModelInfo || len(utils.ModelClaimsFromPod(obj)) > 0
 	case cache.DeletedFinalStateUnknown:
 		if p, ok := obj.Obj.(*v1.Pod); ok {
 			pod = p
 			namespace, name = p.Namespace, p.Name
 			_, hasModelInfo = getModelNameFromPod(p)
+			hasModelInfo = hasModelInfo || len(utils.ModelClaimsFromPod(p)) > 0
 			break
 		}
 
@@ -234,6 +265,9 @@ func (c *Store) deletePod(obj interface{}) {
 			c.deletePodAndModelMappingLocked(name, namespace, modelName, 1)
 		}
 	}
+	c.modelClaims.clearPod(utils.GeneratePodKey(namespace, name))
+
+	rateCalculator.PurgeEntriesForPod(name)
 
 	klog.V(4).Infof("POD DELETED: %s/%s", namespace, name)
 	c.debugInfo()
@@ -379,29 +413,112 @@ func (c *Store) deletePodAndModelMappingLocked(podName, namespace, modelName str
 }
 
 // resyncModelAdapters processes all ModelAdapters from the informer store to ensure
-// all pod mappings are correctly established after cache initialization
-func (c *Store) resyncModelAdapters(store cache.Store) {
+// all pod mappings are correctly established after cache initialization.
+// It retries missing pod mappings in batches so startup delay is bounded by
+// maxRetries * retryInterval regardless of the number of adapters.
+func (c *Store) resyncModelAdapters(store cache.Store, stopCh <-chan struct{}) {
 	klog.Info("Resyncing ModelAdapters to ensure pod mappings are correct")
 
-	objects := store.List()
-	for _, obj := range objects {
+	adapters := make([]*modelv1alpha1.ModelAdapter, 0)
+	for _, obj := range store.List() {
 		if modelAdapter, ok := obj.(*modelv1alpha1.ModelAdapter); ok {
-			c.mu.Lock()
-			// Process each pod instance in the ModelAdapter
-			for _, podName := range modelAdapter.Status.Instances {
-				// Check if pod exists in cache before creating mapping
-				if _, exists := c.metaPods.Load(utils.GeneratePodKey(modelAdapter.Namespace, podName)); exists {
-					c.addPodAndModelMappingLockedByName(podName, modelAdapter.Namespace, modelAdapter.Name)
-					klog.V(4).Infof("Resynced pod mapping for adapter %s, pod %s/%s",
-						modelAdapter.Name, modelAdapter.Namespace, podName)
-				} else {
-					klog.Warningf("Pod %s/%s not found in cache for ModelAdapter %s during resync",
-						modelAdapter.Namespace, podName, modelAdapter.Name)
-				}
-			}
-			c.mu.Unlock()
+			adapters = append(adapters, modelAdapter)
 		}
 	}
 
+	lastMissing := make(map[string][]string)
+	for i := 0; i < modelAdapterResyncMaxRetries; i++ {
+		klog.V(4).Infof("resyncModelAdapters retry attempt %d/%d", i+1, modelAdapterResyncMaxRetries)
+
+		incompleteModels := 0
+		lastMissing = make(map[string][]string)
+		for _, modelAdapter := range adapters {
+			missingPods := []string{}
+
+			c.mu.Lock()
+			for _, podName := range modelAdapter.Status.Instances {
+				podKey := utils.GeneratePodKey(modelAdapter.Namespace, podName)
+				if metaPod, exists := c.metaPods.Load(podKey); exists {
+					c.addPodAndModelMappingLocked(metaPod, modelAdapter.Name)
+					klog.V(4).Infof("Resynced pod mapping for adapter %s, pod %s/%s",
+						modelAdapter.Name, modelAdapter.Namespace, podName)
+				} else {
+					missingPods = append(missingPods, podName)
+					klog.V(4).Infof("Pod %s/%s not found in cache for ModelAdapter %s during resync (attempt %d/%d)",
+						modelAdapter.Namespace, podName, modelAdapter.Name, i+1, modelAdapterResyncMaxRetries)
+				}
+			}
+			c.mu.Unlock()
+
+			if len(missingPods) > 0 {
+				incompleteModels++
+				lastMissing[modelAdapter.Name] = missingPods
+			}
+		}
+
+		if incompleteModels == 0 {
+			break
+		}
+
+		if i == modelAdapterResyncMaxRetries-1 {
+			break
+		}
+
+		if !waitForModelAdapterResyncRetry(stopCh, modelAdapterResyncRetryInterval) {
+			klog.Warning("ModelAdapter resync interrupted by stop signal")
+			return
+		}
+	}
+
+	totalModels := len(adapters)
+	completeModels := totalModels - len(lastMissing)
+	for _, modelAdapter := range adapters {
+		if missingPods, exists := lastMissing[modelAdapter.Name]; exists {
+			klog.Errorf("Failed to find all pods for ModelAdapter %s after %d retries", modelAdapter.Name, modelAdapterResyncMaxRetries)
+			klog.Errorf("Missing pods for ModelAdapter %s: %v", modelAdapter.Name, missingPods)
+		} else {
+			klog.V(4).Infof("ModelAdapter %s has all pod mappings established", modelAdapter.Name)
+		}
+	}
+	klog.Infof("ModelAdapter mapping resync completed: %d total, %d complete, %d incomplete",
+		totalModels, completeModels, len(lastMissing))
 	klog.Info("ModelAdapter resync completed")
+}
+
+func waitForModelAdapterResyncRetry(stopCh <-chan struct{}, interval time.Duration) bool {
+	if stopCh == nil {
+		time.Sleep(interval)
+		return true
+	}
+
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+
+	select {
+	case <-stopCh:
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func isWorkerPod(pod *v1.Pod) bool {
+	nodeTyp, ok := pod.Labels[nodeType]
+	if ok && nodeTyp == nodeWorker {
+		klog.V(4).InfoS("ignored ray worker pod", "name", pod.Name)
+		return true
+	}
+
+	pgIndex, ok := pod.Labels[podGroupIndex]
+	if ok {
+		pgIndexNumber, err := strconv.Atoi(pgIndex)
+		if err != nil {
+			klog.V(4).InfoS("ignored pod:", "name", pod.Name, "err", err)
+		}
+		if pgIndexNumber > 0 {
+			klog.V(4).InfoS("ignored pod: podGroupIndex > 0", "name", pod.Name, "index", pgIndex)
+			return true
+		}
+	}
+	return false
 }

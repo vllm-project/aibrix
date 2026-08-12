@@ -8,13 +8,13 @@ on:
 jobs:
   build:
     # This prevents the job from running as other steps cover its functionality.
-    # We use 'if: false' to keep the file for future reference without deleting it.
-    if: false
+    # Keep the file for future reference without deleting it.
+    if: github.repository == 'vllm-project/aibrix-disabled'
     runs-on: ubuntu-latest
     steps:
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@v4
     - name: Docker Build Container Images
       run: make docker-build-all

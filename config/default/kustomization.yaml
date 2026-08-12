@@ -17,9 +17,13 @@ namePrefix: aibrix-
 #  pairs:
 #    someName: someValue
 
+# NOTE: CRDs are intentionally NOT included here. They are shipped as a
+# separate manifest (aibrix-core-crds-${tag}.yaml) so that uninstalling the
+# AIBrix operator does not cascade-delete user CRs (StormService, RoleSet,
+# PodAutoscaler, ModelAdapter, etc.). See vllm-project/aibrix#2062.
+# To install CRDs: `kubectl apply -k config/crd --server-side`
 resources:
 - ../namespace
-- ../crd
 - ../rbac
 - ../manager
 - ../gateway

@@ -5,10 +5,9 @@ import { QuickActions } from './quick-actions'
 interface HomePageProps {
   userName?: string
   onSend?: (message: string, model: string, attachments?: Attachment[]) => void
-  onStartNewProject?: () => void
 }
 
-export function HomePage({ userName = 'there', onSend, onStartNewProject }: HomePageProps) {
+export function HomePage({ userName = 'there', onSend }: HomePageProps) {
   const getGreeting = () => {
     const hour = new Date().getHours()
     if (hour < 12) return 'Good morning'
@@ -33,7 +32,7 @@ export function HomePage({ userName = 'there', onSend, onStartNewProject }: Home
         </h1>
       </div>
 
-      <ChatInput onSend={onSend} onStartNewProject={onStartNewProject} />
+      <ChatInput onSend={onSend} />
 
       <div className="mt-5">
         <QuickActions />

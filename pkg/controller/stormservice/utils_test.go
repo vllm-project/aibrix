@@ -150,6 +150,55 @@ func TestSortRoleSetByRevision(t *testing.T) {
 			updatedRevision: "rev2",
 			expectedOrder:   []string{"rs1", "rs2"},
 		},
+		{
+			name: "updated revision should delete not-ready before ready when input is ready first",
+			roleSets: []*orchestrationv1alpha1.RoleSet{
+				createRoleSet("updated-ready", "rev2", true),
+				createRoleSet("updated-not-ready", "rev2", false),
+			},
+			updatedRevision: "rev2",
+			expectedOrder:   []string{"updated-not-ready", "updated-ready"},
+		},
+		{
+			name: "old revision should delete not-ready before ready when input is ready first",
+			roleSets: []*orchestrationv1alpha1.RoleSet{
+				createRoleSet("old-ready", "rev1", true),
+				createRoleSet("old-not-ready", "rev1", false),
+				createRoleSet("updated-ready", "rev2", true),
+			},
+			updatedRevision: "rev2",
+			expectedOrder:   []string{"old-not-ready", "old-ready", "updated-ready"},
+		},
+		{
+			name: "old revision priority beats updated not-ready",
+			roleSets: []*orchestrationv1alpha1.RoleSet{
+				createRoleSet("updated-not-ready", "rev2", false),
+				createRoleSet("old-ready", "rev1", true),
+			},
+			updatedRevision: "rev2",
+			expectedOrder:   []string{"old-ready", "updated-not-ready"},
+		},
+		{
+			name: "equivalent rolesets keep original relative order",
+			roleSets: []*orchestrationv1alpha1.RoleSet{
+				createRoleSet("old-ready-1", "rev1", true),
+				createRoleSet("old-ready-2", "rev1", true),
+				createRoleSet("updated-ready-1", "rev2", true),
+				createRoleSet("updated-ready-2", "rev2", true),
+			},
+			updatedRevision: "rev2",
+			expectedOrder:   []string{"old-ready-1", "old-ready-2", "updated-ready-1", "updated-ready-2"},
+		},
+		{
+			name: "nil rolesets sort before non-nil rolesets",
+			roleSets: []*orchestrationv1alpha1.RoleSet{
+				createRoleSet("updated-ready", "rev2", true),
+				nil,
+				createRoleSet("old-ready", "rev1", true),
+			},
+			updatedRevision: "rev2",
+			expectedOrder:   []string{"<nil>", "old-ready", "updated-ready"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -163,6 +212,10 @@ func TestSortRoleSetByRevision(t *testing.T) {
 			// Extract names in the sorted order
 			actualOrder := make([]string, len(roleSetsCopy))
 			for i, rs := range roleSetsCopy {
+				if rs == nil {
+					actualOrder[i] = "<nil>"
+					continue
+				}
 				actualOrder[i] = rs.Name
 			}
 

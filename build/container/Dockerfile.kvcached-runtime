@@ -1,0 +1,30 @@
+# Dedicated ModelClaim runtime image for kvcached-enabled vLLM engines.
+#
+# The generic Dockerfile.python is intentionally not used here: it is also the
+# metadata-service image and must not acquire an engine-specific supervisor or
+# a CUDA/vLLM dependency. The base image owns the kvcached-vLLM compatibility
+# matrix; this layer only adds the AIBrix runtime agent and its restart loop.
+ARG BASE_IMAGE=ghcr.io/ovg-project/kvcached-vllm:latest
+FROM ${BASE_IMAGE}
+
+WORKDIR /app
+
+COPY python/aibrix/aibrix /app/aibrix
+COPY build/container/entrypoints/aibrix-kvcached-runtime-supervisor.sh /usr/local/bin/aibrix-kvcached-runtime-supervisor
+
+# Preserve the base image's vLLM dependency graph. The two packages below are
+# the only runtime-agent dependencies not supplied by the kvcached-vLLM base.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tini \
+    && python3 -m pip install --no-cache-dir structlog==24.4.0 tenacity==9.0.0 \
+    && printf '#!/bin/sh\nexec python3 -m aibrix.app "$@"\n' > /usr/local/bin/aibrix_runtime \
+    && chmod 0755 /usr/local/bin/aibrix_runtime /usr/local/bin/aibrix-kvcached-runtime-supervisor \
+    && PYTHONPATH=/app python3 -c 'import aibrix.app; import aibrix.runtime.model_runtime' \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PYTHONPATH=/app
+
+# Tini reaps the runtime agent. The supervisor restarts only that agent, while
+# engines remain in their own sessions for registry-based re-adoption.
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/aibrix-kvcached-runtime-supervisor"]

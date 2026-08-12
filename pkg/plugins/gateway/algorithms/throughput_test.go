@@ -70,7 +70,7 @@ func TestThroughput(t *testing.T) {
 				},
 			},
 			expectErr:  false,
-			expectMsgs: []string{"1.1.1.1:8000"},
+			expectMsgs: []string{"1.1.1.1:8000"}, // p1 has lowest throughput: 2*1+2=4
 		},
 		{
 			name:       "no ready pods",
@@ -106,7 +106,7 @@ func TestThroughput(t *testing.T) {
 				},
 			},
 			expectErr:  false,
-			expectMsgs: []string{"1.1.1.1:8000", "3.3.3.3:8000"},
+			expectMsgs: []string{"1.1.1.1:8000", "3.3.3.3:8000"}, // both p1 and p3 have lowest throughput: 6
 		},
 		{
 			name: "one pod has no metrics",
@@ -125,7 +125,7 @@ func TestThroughput(t *testing.T) {
 				},
 			},
 			expectErr:  false,
-			expectMsgs: []string{"1.1.1.1:8000"},
+			expectMsgs: []string{"1.1.1.1:8000"}, // p1 is the only one with metrics
 		},
 		{
 			name: "all pods have no metrics",
@@ -139,7 +139,7 @@ func TestThroughput(t *testing.T) {
 			},
 			podMetrics: map[string]map[string]metrics.MetricValue{},
 			expectErr:  false,
-			expectMsgs: []string{"1.1.1.1:8000", "2.2.2.2:8000"},
+			expectMsgs: []string{"1.1.1.1:8000", "2.2.2.2:8000"}, // falls back to random
 		},
 	}
 

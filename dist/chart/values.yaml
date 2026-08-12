@@ -33,6 +33,12 @@ controllerManager:
           port: 8081
         initialDelaySeconds: 5
         periodSeconds: 10
+    envs: {}
+      # AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: "50"  # Uncomment to tune for high-latency or low-traffic environments
+  # Sets the AIBRIX_GATEWAY_TIMEOUT_SECONDS environment variable.
+  # NOTE: This is managed exclusively via this field. Do NOT add
+  # AIBRIX_GATEWAY_TIMEOUT_SECONDS to the 'envs' map below,
+  # as it will result in duplicate environment variables in the manifest.
   gatewayTimeoutSeconds: 120
   serviceAccount:
     create: true
@@ -82,10 +88,19 @@ gatewayPlugin:
       AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT: "16"
       AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR: "2"
       AIBRIX_PREFILL_REQUEST_TIMEOUT: "60"
+      AIBRIX_STATESYNC_ENABLED: "false"
+      AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES: "4194304" # 4MB
   dependencies:
     redis:
       host: "" # aibrix-redis-master
       port: 6379
+      password: ""
+  auth:
+    # Creates a Secret-backed AIBRIX_AUTH_BEARER_TOKEN environment variable for the gateway plugin.
+    # NOTE: This is managed exclusively via this field. Do NOT add
+    # AIBRIX_AUTH_BEARER_TOKEN to the 'gatewayPlugin.container.envs' map below,
+    # as it will result in duplicate environment variables in the manifest.
+    bearerToken: ""
   service:
     type: ClusterIP
   messageTimeout: "60s"
@@ -127,6 +142,7 @@ gpuOptimizer:
     redis:
       host: ""  # aibrix-redis-master
       port: 6379
+      password: ""
   tolerations: []
   serviceAccount:
     create: true
@@ -190,7 +206,7 @@ gateway:
             memory: 32Mi
   clientTrafficPolicy:
     connection:
-      bufferLimit: 4194304  # 4MiB
+      bufferLimit: 4194304  # 4MiB — keep in sync with AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES
       connectionLimit:
         value: 1024
     http2:
@@ -214,6 +230,7 @@ gateway:
     route:
       timeout: 120s          # e.g., "120s" or "2m"
       connectTimeout: 6s     # e.g., "6s"
+      idleTimeout: 300s      # e.g., "300s" or "5m"
     circuitBreakers:
       # The maximum number of connections for the original destination cluster.
       maxConnections: 1024
@@ -221,6 +238,7 @@ gateway:
       maxRequests: 1024
       # The maximum number of pending requests to the original destination cluster.
       maxPendingRequests: 1024
+    preserveExternalRequestID: false
 
 metadata:
   serviceAccount:
@@ -251,7 +269,9 @@ metadata:
     redis:
       host: "" # aibrix-redis-master
       port: 6379
+      password: ""
   redis:
+    enabled: true
     replicas: 1
     imagePullSecrets: []
     container:
@@ -294,6 +314,22 @@ prometheus:
 certmanager:
   enable: false
 
+openTelemetry:
+  enable: false
+  # serviceName/namespace takes precedence over host.
+  # If serviceName is provided, it will be used directly in backendRefs.
+  # The 'host' field below will be ignored.
+  serviceName: ""
+  namespace: ""
+  # Only takes effect if serviceName is empty.
+  host: ""
+  port: 4317
+  # -- (Envoy-side only) The sampling rate for distributed tracing.
+  # Note: This configuration currently only applies to Envoy's internal tracing.
+  # The external authorization/processing plugin (Go service) currently uses a
+  # default always-on sampler (100%). If you set this to a low value (e.g., 10),
+  # be aware that the Go plugin will still export spans for all requests it processes.
+  samplingRate: 100
 
 # TODO: manage common labels
 # app.kubernetes.io/component: aibrix-controller-manager

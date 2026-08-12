@@ -28,8 +28,11 @@ import (
 //   None,               # parent_block_hash
 //   [55, 11, 22],       # token_ids
 //   32,                 # block_size
-//   None,               # lora_id
-//   "cuda:0"            # medium
+//   None,               # lora_id (deprecated)
+//   "GPU",              # medium
+//   "adapter-a",        # lora_name
+//   None,               # extra_keys (may be omitted)
+//   0                   # group_idx (may be omitted)
 // ]
 //
 // [
@@ -74,14 +77,17 @@ type KVEvent interface {
 
 // BlockStoredEvent represents blocks being stored in KV cache
 // ------------------------------------------------------------
-// BlockStored (msgspec encoding order)
-// Python fields:
+// BlockStored (msgspec encoding order, vllm/distributed/kv_events.py)
+// Python fields, positions after the tag:
 //
-//	[tag, block_hashes, parent_block_hash, token_ids, block_size, lora_id, medium]
+//	[tag, block_hashes, parent_block_hash, token_ids, block_size,
+//	 lora_id, medium, lora_name, extra_keys, group_idx, ...]
 //
+// The struct is msgspec array_like with omit_defaults, so trailing fields that
+// equal their default (extra_keys, group_idx and newer spec fields) may be
+// omitted from the wire array. The decoder therefore reads positions 5+ by
+// index with bounds checks and tolerates shorter arrays from older vLLM builds.
 // ------------------------------------------------------------
-//
-// lora_id and medium are unused for now.
 //
 // Note: BlockHashes are converted at decode time:
 // - vLLM legacy format (int64) → stored as-is
@@ -93,6 +99,18 @@ type BlockStoredEvent struct {
 	BlockHashes     []int64   // Decoded from vLLM, supports both old and new formats
 	ParentBlockHash *int64    // Decoded from vLLM, supports both old and new formats
 	TokenIDs        [][]byte
+
+	// Optional fields carried by newer vLLM builds (positions 5-9). Decoded
+	// best-effort; nil when the connected vLLM does not emit them. These are
+	// exposed here so prefix-cache routing can key and score on them; see
+	// issue #2285. Consumption is handled separately.
+	LoraID   *int64  // position 5; deprecated upstream in favor of LoraName
+	Medium   *string // position 6; storage tier, e.g. "GPU"/"cpu" (nil = unspecified)
+	LoraName *string // position 7; canonical adapter id
+	// position 8 (extra_keys) is intentionally not decoded here; it is consumed
+	// in the follow-up PR for block-hash reconstruction. GroupIdx is read at its
+	// fixed position 9 regardless.
+	GroupIdx *int64 // position 9; KV-cache group for hybrid-attention models
 
 	// NOTE: These are NOT part of msgpack
 	Timestamp time.Time `msgpack:"-"`

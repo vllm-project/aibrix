@@ -1,0 +1,63 @@
+# Usage:
+#   kubectl label node <node-a> topology.kubernetes.io/zone=zone-a --overwrite
+#   kubectl label node <node-b> topology.kubernetes.io/zone=zone-b --overwrite
+#   kubectl apply -f samples/orchestration/topology-policy/role-zone-required.yaml
+#   kubectl get pods -l storm-service-name=tp-role-zone-req -o wide
+#
+# Case: prefill and decode resource pools are required to stay in their role's zone.
+#
+# Use this when cross-zone traffic between Pods of the same role is not allowed.
+# Pods may stay Pending if the selected zone has insufficient capacity.
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: tp-role-zone-req
+spec:
+  replicas: 3
+  stateful: true
+  selector:
+    matchLabels:
+      app: tp-role-zone-req
+  template:
+    metadata:
+      labels:
+        app: tp-role-zone-req
+    spec:
+      # updateStrategy=Parallel creates all roles immediately for easier demos.
+      updateStrategy: Parallel
+      # topologyPolicy injects Kubernetes pod affinity into generated Pods.
+      topologyPolicy:
+        # scope=Role matches Pods with the same role name across all RoleSets.
+        scope: Role
+        # mode=Required is a hard rule. If Kubernetes cannot place a matching
+        # Pod in the same topology domain, the Pod remains Pending.
+        mode: Required
+        # key selects the node label used as the topology domain.
+        key: topology.kubernetes.io/zone
+      roles:
+        - name: prefill
+          # Two prefill replicas per RoleSet. With podGroupSize=2, each replica
+          # is represented by a PodSet containing two Pods.
+          replicas: 2
+          podGroupSize: 2
+          stateful: true
+          template:
+            metadata:
+              labels:
+                role: prefill
+            spec:
+              containers:
+                - name: prefill
+                  image: nginx:alpine
+        - name: decode
+          # Four decode Pods per RoleSet. They match scope=Role as decode Pods.
+          replicas: 4
+          stateful: true
+          template:
+            metadata:
+              labels:
+                role: decode
+            spec:
+              containers:
+                - name: decode
+                  image: nginx:alpine

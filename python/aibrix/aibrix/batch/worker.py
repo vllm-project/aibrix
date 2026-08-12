@@ -11,28 +11,42 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import argparse
 import asyncio
+import copy
+import json
 import os
 import signal
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Collection, Optional
 from urllib.parse import urlparse
 
 import httpx
 
 import aibrix.batch.constant as constant
-from aibrix.batch.driver import BatchDriver
+from aibrix.batch.client import GatewayEndpointSource
+from aibrix.batch.job_driver.base import BaseJobDriver
+from aibrix.batch.job_driver.running_jobs import (
+    LOCAL_STATUS_UPDATE_KEYS,
+    LocalStatusKey,
+    RunningJobs,
+)
+from aibrix.batch.job_driver.runtime import ExternalRuntime
 from aibrix.batch.job_entity import (
+    AibrixMetadata,
     BatchJob,
+    BatchJobError,
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
-    BatchJobTransformer,
+    Condition,
+    ConditionStatus,
+    ConditionType,
 )
+from aibrix.batch.state import JobMetaInfo
+from aibrix.context.infra import InfrastructureContext
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
@@ -77,12 +91,117 @@ class LLMHealthChecker:
         return False
 
 
+class SingleJobRunner(RunningJobs):
+    """A minimal ``RunningJobs`` for executing ONE batch job in-process (the
+    batch worker pod).
+
+    Wraps a single ``JobMetaInfo`` (BatchJob + JobProgressTracker) and answers
+    the driver's per-request progress calls directly — no scheduler, no job
+    pools, no entity-manager persistence. It mirrors ``BatchManager``'s per-job
+    semantics for one job, reusing ``JobMetaInfo`` / ``JobProgressTracker`` so
+    the launch/complete bitmap is shared, not reimplemented. This lets the
+    worker execute a job through ``BaseJobDriver`` without standing up the
+    list-level orchestrator (``BatchDriver`` / scheduler / ``BatchManager``).
+    """
+
+    def __init__(self, job: BatchJob) -> None:
+        self._meta = JobMetaInfo(job)
+
+    async def get_job(self, job_id: str) -> Optional[BatchJob]:
+        return self._meta if job_id == self._meta.job_id else None
+
+    async def mark_job_done(self, job: BatchJob) -> BatchJob:
+        meta = self._meta
+        if meta.status.state != BatchJobState.FINALIZING:
+            raise RuntimeError(f"Job is not in finalizing state: {job.status.state}")
+        job.status.completed_at = datetime.now(timezone.utc)
+        job.status.finalized_at = job.status.completed_at
+        if job.status.condition is None:
+            job.status.add_condition(
+                Condition(
+                    type=ConditionType.COMPLETED,
+                    status=ConditionStatus.TRUE,
+                    lastTransitionTime=job.status.completed_at,
+                )
+            )
+        job.status.state = BatchJobState.FINALIZED
+        meta.status = job.status
+        return meta
+
+    async def mark_job_validated(self, job_id: str, status: BatchJobStatus) -> BatchJob:
+        del job_id
+        self._meta.status = status
+        return self._meta
+
+    async def update_job_status(self, job_id: str, status: BatchJobStatus) -> BatchJob:
+        del job_id
+        self._meta.status = status
+        return self._meta
+
+    async def update_job_local_status(
+        self,
+        job_id: str,
+        worker_id: str,
+        status: BatchJobStatus,
+        update_keys: Collection[LocalStatusKey] | None = None,
+    ) -> BatchJob:
+        del job_id, worker_id
+        keys = (
+            set(LOCAL_STATUS_UPDATE_KEYS) if update_keys is None else set(update_keys)
+        )
+        unknown_keys = keys.difference(LOCAL_STATUS_UPDATE_KEYS)
+        if unknown_keys:
+            raise ValueError(
+                f"Unsupported local status update keys: {sorted(unknown_keys)}"
+            )
+        if "state" in keys:
+            self._meta.status.state = status.state
+        if "errors" in keys:
+            self._meta.status.errors = copy.deepcopy(status.errors)
+        if "request_counts" in keys:
+            self._meta.status.request_counts = status.request_counts.model_copy(
+                deep=True
+            )
+        if "usage" in keys:
+            self._meta.status.usage = (
+                status.usage.model_copy(deep=True) if status.usage is not None else None
+            )
+        if "execution" in keys:
+            self._meta.status.execution = copy.deepcopy(status.execution)
+        return self._meta
+
+    async def mark_job_finalizing(self, job_id: str) -> BatchJob:
+        del job_id
+        self._meta.status.state = BatchJobState.FINALIZING
+        return self._meta
+
+    async def mark_job_failed(self, job_id: str, ex: BatchJobError) -> BatchJob:
+        job = self._meta
+        job.status.failed_at = datetime.now(timezone.utc)
+        job.status.add_condition(
+            Condition(
+                type=ConditionType.FAILED,
+                status=ConditionStatus.TRUE,
+                lastTransitionTime=job.status.failed_at,
+                reason=ex.code,
+                message=ex.message,
+            )
+        )
+        job.status.errors = [ex]
+        if job.status.state == BatchJobState.IN_PROGRESS:
+            job.status.finalizing_at = datetime.now(timezone.utc)
+            job.status.state = BatchJobState.FINALIZING
+        else:
+            job.status.finalized_at = job.status.failed_at
+            job.status.state = BatchJobState.FINALIZED
+        return job
+
+
 class BatchWorker:
     """Batch worker that processes jobs using the sidecar pattern."""
 
     def __init__(self) -> None:
         self.health_checker: Optional[LLMHealthChecker] = None
-        self.driver: Optional[BatchDriver] = None
         self.llm_engine_base_url: Optional[str] = None
 
     def load_job_from_env(self) -> BatchJob:
@@ -104,6 +223,7 @@ class BatchWorker:
         # Get batch job metadata from environment variables
         input_file_id = os.getenv("BATCH_INPUT_FILE_ID")
         endpoint = os.getenv("BATCH_ENDPOINT")
+        aibrix = self._load_aibrix_from_env()
         opts: dict[str, str] = {}
         if (
             failed_after_after_n_requests := os.getenv(
@@ -155,6 +275,7 @@ class BatchWorker:
                 endpoint=endpoint,
                 metadata=None,
                 opts=opts,
+                aibrix=aibrix.model_dump(exclude_none=True) if aibrix else None,
             )
 
             # Determine state based on file IDs (as in current transformer logic)
@@ -196,164 +317,18 @@ class BatchWorker:
                 f"Error creating BatchJob from environment variables: {e}"
             ) from e
 
-    def load_job_from_k8s(self, llm_engine_container_name: str) -> BatchJob:
-        """Load and transform the parent Kubernetes Job to BatchJob."""
-        logger.info("Loading job specification from Kubernetes API...")
-
-        # Load k8s batch api client
-        from kubernetes import client, config
-
+    def _load_aibrix_from_env(self) -> Optional[AibrixMetadata]:
+        raw = os.getenv("BATCH_AIBRIX")
+        if not raw:
+            return None
         try:
-            config.load_incluster_config()
-        except config.ConfigException:
-            logger.warning("Failed to load in-cluster config, trying local config...")
-            config.load_kube_config()
-        batch_api_client = client.BatchV1Api()
-
-        # Get the Job name and namespace from environment variables
-        # Get basic job information
-        job_name = os.getenv("JOB_NAME")
-        namespace = os.getenv("JOB_NAMESPACE")
-        if not job_name:
-            raise ValueError("JOB_NAME environment variable is required")
-        if not namespace:
-            raise ValueError("JOB_NAMESPACE environment variable is required")
-
-        logger.info("Confirmed Job", name=job_name, namespace=namespace)  # type: ignore[call-arg]
-
-        try:
-            # Fetch the Job object
-            logger.info("Fetching Job spec from the Kubernetes API...")
-            k8s_job = batch_api_client.read_namespaced_job(
-                name=job_name, namespace=namespace
-            )
-
-            # Extract LLM engine information and initialize health checker
-            health_url = os.getenv("LLM_READY_ENDPOINT", "http://localhost:8000/health")
-            self.health_checker = LLMHealthChecker(health_url)
-
-            # Transform k8s Job to BatchJob using BatchJobTransformer
-            batch_job = BatchJobTransformer.from_k8s_job(k8s_job)
-            logger.info(
-                "Successfully transformed k8s Job to BatchJob", job_id=batch_job.job_id
-            )  # type: ignore[call-arg]
-
-            return batch_job
-
-        except client.ApiException as e:
-            raise RuntimeError(f"Error fetching Job from Kubernetes API: {e}") from e
-        except Exception as e:
-            raise RuntimeError(f"Error transforming Job to BatchJob: {e}") from e
-
-    def extract_llm_engine_info(self, k8s_job, llm_engine_container_name: str):
-        """Extract LLM engine health check information from k8s job object."""
-        logger.info(
-            "Extracting LLM engine info for container",
-            container_name=llm_engine_container_name,
-        )  # type: ignore[call-arg]
-
-        # Extract health check endpoint from livenessProbe or readinessProbe
-        ready_url = "http://localhost:8000/health"  # default
-        check_interval = 5  # default
-        try:
-            # Navigate to pod template containers
-            pod_template = k8s_job.spec.template
-            containers = pod_template.spec.containers
-
-            # Find the LLM engine container
-            llm_container = None
-            for container in containers:
-                if container.name == llm_engine_container_name:
-                    llm_container = container
-                    break
-
-            if not llm_container:
-                logger.warning(
-                    "LLM engine container not found, using defaults",
-                    container_name=llm_engine_container_name,
-                )  # type: ignore[call-arg]
-                return ready_url, check_interval
-
-            probe = None
-            probe_type = None
-
-            # Prefer livenessProbe, fallback to readinessProbe
-            if llm_container.readiness_probe:
-                probe = llm_container.readiness_probe
-                probe_type = "readiness"
-            elif llm_container.readiness_probe:
-                probe = llm_container.readiness_probe
-                probe_type = "readiness"
-
-            if probe and probe.http_get:
-                # Extract interval from periodSeconds
-                if probe.period_seconds:
-                    check_interval = probe.period_seconds
-
-                # Extract health endpoint from HTTP get action
-                http_get = probe.http_get
-                scheme = http_get.scheme or "http"
-                host = http_get.host or "localhost"
-                port = http_get.port or 8000
-                path = http_get.path or "/health"
-
-                ready_url = f"{scheme.lower()}://{host}:{port}{path}"
-                logger.info(
-                    "Found health probe, extracting health check info",
-                    probe_type=probe_type,
-                    endpoint=ready_url,
-                    interval=check_interval,
-                )  # type: ignore[call-arg]
-            else:
-                logger.info(
-                    "No liveness or readiness probe found, using default health check"
-                )
-
-            # Try to construct base URL from health URL
-            from urllib.parse import urlparse
-
-            parsed = urlparse(ready_url)
-            base_url = f"{parsed.scheme}://{parsed.netloc}"
-
-            self.llm_engine_base_url = base_url
-            logger.info("Set LLM engine base URL", base_url=base_url)  # type: ignore[call-arg]
-
-            return ready_url, check_interval
-
-        except Exception as e:
+            return AibrixMetadata.model_validate(json.loads(raw))
+        except Exception as exc:
             logger.warning(
-                "Error extracting LLM engine info, using defaults",
-                error=str(e),
-                endpoint=ready_url,
-                interval=check_interval,
+                "Failed to parse BATCH_AIBRIX; ignoring AIBrix metadata",
+                error=str(exc),
             )  # type: ignore[call-arg]
-            return ready_url, check_interval
-
-    async def execute_batch_job(self, batch_job: BatchJob) -> str:
-        """Execute the provided batch job."""
-        assert (
-            self.driver is not None
-        ), "Driver must be initialized before executing jobs"
-
-        job_id = batch_job.job_id
-        if job_id is None:
-            raise RuntimeError("BatchJob job_id is None")
-
-        logger.info(
-            "Executing batch job",
-            job_id=job_id,
-            input_file_id=batch_job.spec.input_file_id,
-            endpoint=batch_job.spec.endpoint,
-        )  # type: ignore[call-arg]
-
-        # Commit job to job manager
-        await self.driver.job_manager.job_committed_handler(batch_job)
-        logger.info("Job committed to manager", job_id=job_id)  # type: ignore[call-arg]
-
-        # Wait until job reaches FINALIZING state
-        await self.wait_for_finalizing(job_id)
-
-        return job_id
+            return None
 
     async def wait_for_in_progress(
         self, job: BatchJob, max_wait: int = 300
@@ -388,44 +363,15 @@ class BatchWorker:
         # Unlikely, should raise ReadTimeoutError
         return job
 
-    async def wait_for_finalizing(self, job_id: str, max_wait: int = 600):
-        """Wait for job to reach FINALIZING state."""
-        assert (
-            self.driver is not None
-        ), "Driver must be initialized before waiting for jobs"
-
-        start_time = time.time()
-
-        while time.time() - start_time < max_wait:
-            job = await self.driver.job_manager.get_job(job_id)
-            if job and job.status.finished:
-                logger.info(
-                    "Job reached final state",
-                    job_id=job_id,
-                    state=job.status.state.value,
-                )  # type: ignore[call-arg]
-                return
-
-            await asyncio.sleep(1)
-
-        raise TimeoutError(
-            f"Job {job_id} did not reach final state within {max_wait} seconds"
-        )
-
-    async def run(self, args: argparse.Namespace) -> int:
+    async def run(self) -> int:
         """Main worker execution flow."""
         try:
-            # Step 1: Load job specification
-            batchJob: Optional[BatchJob] = None
-            try:
-                if args.load_job_from_api:
-                    batch_job = self.load_job_from_k8s(args.llm_engine_container_name)
-            except Exception:
-                pass
-
-            # Use env as a fallback
-            if batchJob is None:
-                batch_job = self.load_job_from_env()
+            # Step 1: Load job specification from env (downward API).
+            # The K8s API path was removed: it was off by default and
+            # required job-reader-sa RBAC for a path that nothing in
+            # the rendered manifest ever exercises. Annotations →
+            # downward API → env vars is sufficient and zero-privilege.
+            batch_job = self.load_job_from_env()
 
             logger.info(
                 "Loaded job specification",
@@ -440,23 +386,42 @@ class BatchWorker:
                 return 1
 
             # Step 2: Wait for vLLM service to become ready
-            assert (
-                self.health_checker is not None
-            ), "Health checker should be initialized"
+            if self.health_checker is None:
+                raise RuntimeError("Health checker should be initialized")
             if not await self.health_checker.wait_for_ready():
                 logger.error("vLLM service failed to become ready")
                 return 1
 
-            # Step 3: Initialize BatchDriver
-            self.driver = BatchDriver(llm_engine_endpoint=self.llm_engine_base_url)
-            await self.driver.start()
-            logger.info("BatchDriver initialized successfully")
+            # Step 3: Execute the single job in-process through a JobDriver.
+            # No BatchDriver / scheduler / BatchManager: a SingleJobRunner gives
+            # the driver the per-job RunningJobs surface it needs, and the worker
+            # dispatches against its own pod-local engine. execute runs
+            # prepare(skipped — the metadata service already prepared the output
+            # files) -> run_job; finalize is skipped in worker_mode and left to
+            # the metadata service. It re-raises on failure
+            # (BaseJobDriver._reraise_on_failure=True).
+            job_id = batch_job.job_id
+            if job_id is None:
+                raise RuntimeError("BatchJob job_id is None")
 
-            # Step 4: Execute batch job
-            job_id = await self.execute_batch_job(batch_job)
+            runner = SingleJobRunner(batch_job)
+            if self.llm_engine_base_url is None:
+                raise RuntimeError("engine base url not resolved")
+            # worker_mode keeps this pod out of finalization: it dispatches
+            # requests and writes its output parts and per-request done markers,
+            # but leaves aggregation to the metadata service. Finalizing here
+            # would consume the markers and complete the multipart upload inside
+            # the Job, so the coordinator would then aggregate against emptied
+            # markers and overwrite the output with zero counts (#2263).
+            driver = BaseJobDriver(
+                InfrastructureContext(),
+                runner,
+                ExternalRuntime(GatewayEndpointSource(self.llm_engine_base_url)),
+                worker_mode=True,
+            )
+            logger.info("Executing batch job", job_id=job_id)  # type: ignore[call-arg]
+            await driver.execute(job_id)
             logger.info("Batch worker completed successfully", job_id=job_id)  # type: ignore[call-arg]
-
-            await self.driver.stop()
             return 0
 
         except Exception as e:
@@ -469,12 +434,6 @@ class BatchWorker:
                 function=func_name,
             )  # type: ignore[call-arg]
             return 1
-
-        finally:
-            # Cleanup driver if initialized
-            if self.driver:
-                logger.info("Cleaning up BatchDriver...")
-                await self.driver.stop()
 
 
 def get_error_details(ex: Exception) -> tuple[str, int | None, str]:
@@ -556,24 +515,10 @@ async def worker_main() -> int:
     loop.add_signal_handler(signal.SIGTERM, stop.set_result, None)
     loop.add_signal_handler(signal.SIGINT, stop.set_result, None)
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--load-job-from-api",
-        action="store_true",
-        help="load job spec from api server",
-    )
-    parser.add_argument(
-        "--llm-engine-container-name",
-        type=str,
-        default="llm-engine",
-        help="container name of the llm engine",
-    )
-    args = parser.parse_args()
-
     # --- Run your main logic ---
     logger.info("Worker starting...")
     worker = BatchWorker()
-    worker_task = asyncio.create_task(worker.run(args))
+    worker_task = asyncio.create_task(worker.run())
 
     # --- Wait for either the task to complete or a stop signal ---
     done, pending = await asyncio.wait(

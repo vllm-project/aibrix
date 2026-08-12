@@ -18,20 +18,30 @@ limitations under the License.
 package v1alpha1
 
 import (
+	v1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	intstr "k8s.io/apimachinery/pkg/util/intstr"
 )
 
 // RoleUpdateStrategyApplyConfiguration represents a declarative configuration of the RoleUpdateStrategy type for use
 // with apply.
 type RoleUpdateStrategyApplyConfiguration struct {
-	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
-	MaxSurge       *intstr.IntOrString `json:"maxSurge,omitempty"`
+	Type           *v1alpha1.RoleUpdateStrategyType `json:"type,omitempty"`
+	MaxUnavailable *intstr.IntOrString              `json:"maxUnavailable,omitempty"`
+	MaxSurge       *intstr.IntOrString              `json:"maxSurge,omitempty"`
 }
 
 // RoleUpdateStrategyApplyConfiguration constructs a declarative configuration of the RoleUpdateStrategy type for use with
 // apply.
 func RoleUpdateStrategy() *RoleUpdateStrategyApplyConfiguration {
 	return &RoleUpdateStrategyApplyConfiguration{}
+}
+
+// WithType sets the Type field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Type field is set to the value of the last call.
+func (b *RoleUpdateStrategyApplyConfiguration) WithType(value v1alpha1.RoleUpdateStrategyType) *RoleUpdateStrategyApplyConfiguration {
+	b.Type = &value
+	return b
 }
 
 // WithMaxUnavailable sets the MaxUnavailable field in the declarative configuration to the given value

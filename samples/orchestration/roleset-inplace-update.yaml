@@ -1,0 +1,34 @@
+# Apply this RoleSet and wait for its Pod to become Ready:
+#   kubectl apply -f samples/orchestration/roleset-inplace-update.yaml
+#   kubectl get pods -l roleset-name=roleset-inplace-update -w
+#
+# Record the Pod UID, update only the container image, and compare the UID:
+#   kubectl get pods -l roleset-name=roleset-inplace-update \
+#     -o jsonpath='{.items[0].metadata.uid}{"\n"}'
+#   kubectl patch roleset roleset-inplace-update --type=json -p='[
+#     {"op":"replace","path":"/spec/roles/0/template/spec/containers/0/image",
+#      "value":"registry.k8s.io/e2e-test-images/agnhost:2.54"}
+#   ]'
+#   kubectl get pods -l roleset-name=roleset-inplace-update \
+#     -o jsonpath='{.items[0].metadata.uid}{"\n"}'
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: RoleSet
+metadata:
+  name: roleset-inplace-update
+spec:
+  updateStrategy: Parallel
+  roles:
+    - name: server
+      replicas: 1
+      updateStrategy:
+        # This role-level strategy attempts to update a Pod image without
+        # replacing the Pod. Unsupported changes fall back to recreation.
+        type: InPlaceIfPossible
+        maxUnavailable: 1
+        maxSurge: 0
+      template:
+        spec:
+          containers:
+            - name: server
+              image: registry.k8s.io/e2e-test-images/agnhost:2.53
+              args: ["pause"]

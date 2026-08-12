@@ -18,12 +18,15 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -31,11 +34,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
 	"github.com/vllm-project/aibrix/test/utils/validation"
 	"github.com/vllm-project/aibrix/test/utils/wrapper"
-)
-
-const (
-	headRoleName   = "head"
-	workerRoleName = "worker"
 )
 
 var _ = ginkgo.Describe("StormService controller test", func() {
@@ -197,6 +195,10 @@ var _ = ginkgo.Describe("StormService controller test", func() {
 		ginkgo.Entry("respect role dependencies in StormService with multiple replicas",
 			&testValidatingCase{
 				makeStormService: func() *orchestrationapi.StormService {
+					const (
+						headRoleName   = "head"
+						workerRoleName = "worker"
+					)
 					matchLabel := map[string]string{"app": "storm-deps-test"}
 					podTemplate := corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
@@ -208,19 +210,17 @@ var _ = ginkgo.Describe("StormService controller test", func() {
 							},
 						},
 					}
-					int32Ptr := func(i int32) *int32 { return &i }
 
 					roleSetSpec := &orchestrationapi.RoleSetSpec{
 						Roles: []orchestrationapi.RoleSpec{
 							{
 								Name:     headRoleName,
-								Replicas: int32Ptr(1),
+								Replicas: ptr.To(int32(1)),
 								Template: podTemplate,
-								// No dependencies
 							},
 							{
 								Name:         workerRoleName,
-								Replicas:     int32Ptr(2),
+								Replicas:     ptr.To(int32(2)),
 								Dependencies: []string{headRoleName},
 								Template:     podTemplate,
 							},
@@ -230,7 +230,7 @@ var _ = ginkgo.Describe("StormService controller test", func() {
 
 					return wrapper.MakeStormService("stormservice-with-deps").
 						Namespace(ns.Name).
-						Replicas(ptr.To(int32(2))). // ← 2 RoleSets
+						Replicas(ptr.To(int32(2))).
 						Selector(metav1.SetAsLabelSelector(matchLabel)).
 						UpdateStrategyType(orchestrationapi.InPlaceUpdateStormServiceStrategyType).
 						RoleSetTemplateMeta(metav1.ObjectMeta{Labels: matchLabel}, roleSetSpec).
@@ -240,63 +240,39 @@ var _ = ginkgo.Describe("StormService controller test", func() {
 					{
 						updateFunc: func(ss *orchestrationapi.StormService) {
 							gomega.Expect(k8sClient.Create(ctx, ss)).To(gomega.Succeed())
-
-							// Wait for 2 RoleSets to be created
 							validation.WaitForRoleSetsCreated(ctx, k8sClient, ns.Name, ss.Name, 2)
-
-							// Initially, only head pods exist: 2 RoleSets × 1 head = 2 pods
-							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name,
-								constants.StormServiceNameLabelKey, ss.Name, 2)
-
-							// Mark ALL head pods as ready → unblock worker creation in both RoleSets
-							validation.MarkPodsReady(ctx, k8sClient, ns.Name,
-								constants.RoleNameLabelKey, headRoleName)
+							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.StormServiceNameLabelKey, ss.Name, 2)
+							validation.MarkPodsReady(ctx, k8sClient, ns.Name, constants.RoleNameLabelKey, "head")
 						},
 						checkFunc: func(ctx context.Context, k8sClient client.Client, ss *orchestrationapi.StormService) {
-							// Validate: only 'head' roles exist across all RoleSets
 							gomega.Eventually(func(g gomega.Gomega) {
-								roleSets := &orchestrationapi.RoleSetList{}
-								g.Expect(k8sClient.List(ctx, roleSets,
-									client.InNamespace(ns.Name),
-									client.MatchingLabels{constants.StormServiceNameLabelKey: ss.Name})).
-									To(gomega.Succeed())
-
-								g.Expect(roleSets.Items).To(gomega.HaveLen(2))
-								for _, rs := range roleSets.Items {
-									// Each RoleSet should have head=1, worker=0 (not created yet)
-									g.Expect(validation.ValidateRoleStatus(&rs, headRoleName, 1)).To(gomega.Succeed())
+								roleSets := listStormServiceRoleSets(ctx, k8sClient, ns.Name, ss.Name)
+								g.Expect(roleSets).To(gomega.HaveLen(2))
+								for i := range roleSets {
+									g.Expect(validation.ValidateRoleStatus(&roleSets[i], "head", 1)).To(gomega.Succeed())
 								}
-							}, time.Second*10).Should(gomega.Succeed())
-
+							}, time.Second*10, time.Millisecond*250).Should(gomega.Succeed())
 						},
 					},
 					{
 						updateFunc: func(ss *orchestrationapi.StormService) {
-							// After marking head ready, workers should be created
-							// Total pods = 2 RoleSets × (1 head + 2 worker) = 6
-							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name,
-								constants.StormServiceNameLabelKey, ss.Name, 6)
-
-							// Mark worker pods ready (optional, but completes lifecycle)
-							validation.MarkPodsReady(ctx, k8sClient, ns.Name,
-								constants.RoleNameLabelKey, workerRoleName)
+							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.StormServiceNameLabelKey, ss.Name, 6)
+							validation.MarkPodsReady(ctx, k8sClient, ns.Name, constants.RoleNameLabelKey, "worker")
 						},
 						checkFunc: func(ctx context.Context, k8sClient client.Client, ss *orchestrationapi.StormService) {
-							// Validate final RoleStatuses in StormService
 							gomega.Eventually(func(g gomega.Gomega) {
 								latest := &orchestrationapi.StormService{}
 								g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ss), latest)).To(gomega.Succeed())
 
-								// Aggregate role statuses: head=2, worker=4
 								foundHead := false
 								foundWorker := false
 								for _, rs := range latest.Status.RoleStatuses {
-									if rs.Name == headRoleName {
+									if rs.Name == "head" {
 										g.Expect(rs.Replicas).To(gomega.Equal(int32(2)))
 										g.Expect(rs.ReadyReplicas).To(gomega.Equal(int32(2)))
 										foundHead = true
 									}
-									if rs.Name == workerRoleName {
+									if rs.Name == "worker" {
 										g.Expect(rs.Replicas).To(gomega.Equal(int32(4)))
 										g.Expect(rs.ReadyReplicas).To(gomega.Equal(int32(4)))
 										foundWorker = true
@@ -304,17 +280,327 @@ var _ = ginkgo.Describe("StormService controller test", func() {
 								}
 								g.Expect(foundHead).To(gomega.BeTrue())
 								g.Expect(foundWorker).To(gomega.BeTrue())
-
-								// Validate top-level status
-								g.Expect(latest.Status.Replicas).To(gomega.Equal(int32(2)))      // 2 RoleSets
-								g.Expect(latest.Status.ReadyReplicas).To(gomega.Equal(int32(2))) // both ready
-							}, time.Second*15).Should(gomega.Succeed())
-
+								g.Expect(latest.Status.Replicas).To(gomega.Equal(int32(2)))
+								g.Expect(latest.Status.ReadyReplicas).To(gomega.Equal(int32(2)))
+							}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
 						},
 					},
 				},
 			},
 		),
+		ginkgo.Entry("scale-in deletes not-ready RoleSet before ready RoleSet in same revision",
+			func() *testValidatingCase {
+				var readyRoleSetName string
+				return &testValidatingCase{
+					makeStormService: func() *orchestrationapi.StormService {
+						matchLabel := map[string]string{"app": "scale-in-order"}
+						podTemplate := validation.MakePodTemplate("scale-in-order:test")
+						roleSetSpec := &orchestrationapi.RoleSetSpec{
+							Roles: []orchestrationapi.RoleSpec{
+								{
+									Name:     "worker",
+									Replicas: ptr.To(int32(1)),
+									Template: podTemplate,
+								},
+							},
+						}
+						return wrapper.MakeStormService("stormservice-scalein-order").
+							Namespace(ns.Name).
+							Replicas(ptr.To(int32(2))).
+							Selector(metav1.SetAsLabelSelector(matchLabel)).
+							UpdateStrategyType(orchestrationapi.RollingUpdateStormServiceStrategyType).
+							RoleSetTemplateMeta(metav1.ObjectMeta{Labels: matchLabel}, roleSetSpec).
+							Obj()
+					},
+					updates: []*update{
+						{
+							updateFunc: func(ss *orchestrationapi.StormService) {
+								gomega.Expect(k8sClient.Create(ctx, ss)).To(gomega.Succeed())
+								validation.WaitForRoleSetsCreated(ctx, k8sClient, ns.Name, ss.Name, 2)
+								validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.StormServiceNameLabelKey, ss.Name, 2)
+
+								roleSets := listStormServiceRoleSets(ctx, k8sClient, ns.Name, ss.Name)
+								gomega.Expect(roleSets).To(gomega.HaveLen(2))
+								readyRoleSetName = roleSets[0].Name
+								markRoleSetPodsReady(ctx, k8sClient, ns.Name, readyRoleSetName)
+								waitForRoleSetReady(ctx, k8sClient, ns.Name, readyRoleSetName)
+							},
+							checkFunc: func(ctx context.Context, k8sClient client.Client, ss *orchestrationapi.StormService) {
+								waitForStormServiceReplicaStatus(ctx, k8sClient, ss, 2, 1, 1, 2, 2, 1)
+							},
+						},
+						{
+							updateFunc: func(ss *orchestrationapi.StormService) {
+								validation.UpdateStormServiceReplicas(ctx, k8sClient, ss, 1)
+							},
+							checkFunc: func(ctx context.Context, k8sClient client.Client, ss *orchestrationapi.StormService) {
+								gomega.Eventually(func() ([]string, error) {
+									roleSets := listStormServiceRoleSets(ctx, k8sClient, ns.Name, ss.Name)
+									if len(roleSets) != 1 {
+										return nil, fmt.Errorf("expected 1 RoleSet, got %d", len(roleSets))
+									}
+									return []string{roleSets[0].Name}, nil
+								}, time.Second*10, time.Millisecond*250).Should(gomega.Equal([]string{readyRoleSetName}))
+							},
+						},
+					},
+				}
+			}(),
+		),
 		// TODO: add more test cases for different update strategies, stateful services, etc.
 	)
+
+	ginkgo.DescribeTable("updates role pod image in place without replacing the pod",
+		func(nameSuffix string, roleUpdateStrategy orchestrationapi.RoleUpdateStrategyType) {
+			int32Ptr := func(i int32) *int32 { return &i }
+			maxSurge := intstr.FromInt32(0)
+			maxUnavailable := intstr.FromInt32(1)
+			matchLabel := map[string]string{"app": fmt.Sprintf("stormservice-%s", nameSuffix)}
+			role := orchestrationapi.RoleSpec{
+				Name:     prefill,
+				Replicas: int32Ptr(1),
+				Template: validation.MakePodTemplate(prefillImageVersionV1),
+				UpdateStrategy: orchestrationapi.RoleUpdateStrategy{
+					Type:           roleUpdateStrategy,
+					MaxSurge:       &maxSurge,
+					MaxUnavailable: &maxUnavailable,
+				},
+			}
+			roleSetSpec := &orchestrationapi.RoleSetSpec{
+				UpdateStrategy: orchestrationapi.ParallelRoleSetUpdateStrategyType,
+				Roles:          []orchestrationapi.RoleSpec{role},
+			}
+			ss := wrapper.MakeStormService(fmt.Sprintf("stormservice-%s", nameSuffix)).
+				Namespace(ns.Name).
+				Replicas(ptr.To(int32(1))).
+				Selector(metav1.SetAsLabelSelector(matchLabel)).
+				UpdateStrategyType(orchestrationapi.InPlaceUpdateStormServiceStrategyType).
+				RoleSetTemplateMeta(metav1.ObjectMeta{Labels: matchLabel}, roleSetSpec).
+				Obj()
+
+			gomega.Expect(k8sClient.Create(ctx, ss)).To(gomega.Succeed())
+			validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.StormServiceNameLabelKey, ss.Name, 1)
+
+			initialPod := waitForSingleStormServiceRolePod(ctx, k8sClient, ns.Name, ss.Name, prefill)
+			initialName := initialPod.Name
+			initialUID := initialPod.UID
+			initialHash := initialPod.Labels[constants.RoleTemplateHashLabelKey]
+			initialRoleRevision := initialPod.Labels[constants.RoleRevisionLabelKey]
+			markPodReadyWithRuntimeImage(ctx, k8sClient, initialPod, prefillImageVersionV1)
+
+			validation.ValidateStormServiceStatus(ctx, k8sClient, ss, 1, 1, 0, 1, 1, 1, true)
+
+			gomega.Eventually(func(g gomega.Gomega) {
+				latest := &orchestrationapi.StormService{}
+				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ss), latest)).To(gomega.Succeed())
+				latest.Spec.Template.Spec.Roles[0].Template.Spec.Containers[0].Image = prefillImageVersionV2
+				g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+			}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
+
+			var targetHash string
+			gomega.Eventually(func(g gomega.Gomega) {
+				pod, err := getSingleStormServiceRolePod(ctx, k8sClient, ns.Name, ss.Name, prefill)
+				g.Expect(err).ToNot(gomega.HaveOccurred())
+				g.Expect(pod.Name).To(gomega.Equal(initialName))
+				g.Expect(pod.UID).To(gomega.Equal(initialUID))
+				g.Expect(pod.Spec.Containers[0].Image).To(gomega.Equal(prefillImageVersionV2))
+				g.Expect(pod.Labels[constants.RoleTemplateHashLabelKey]).To(gomega.Equal(initialHash))
+				g.Expect(pod.Labels[constants.RoleRevisionLabelKey]).To(gomega.Equal(initialRoleRevision))
+				g.Expect(pod.Annotations).To(gomega.HaveKey(constants.RoleInPlaceUpdateTargetHashAnnotationKey))
+				targetHash = pod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey]
+			}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
+
+			patchedPod := waitForSingleStormServiceRolePod(ctx, k8sClient, ns.Name, ss.Name, prefill)
+			markPodReadyWithRuntimeImage(ctx, k8sClient, patchedPod, prefillImageVersionV2)
+
+			gomega.Eventually(func(g gomega.Gomega) {
+				pod, err := getSingleStormServiceRolePod(ctx, k8sClient, ns.Name, ss.Name, prefill)
+				g.Expect(err).ToNot(gomega.HaveOccurred())
+				g.Expect(pod.Name).To(gomega.Equal(initialName))
+				g.Expect(pod.UID).To(gomega.Equal(initialUID))
+				g.Expect(pod.Labels[constants.RoleTemplateHashLabelKey]).To(gomega.Equal(targetHash))
+				g.Expect(pod.Labels[constants.RoleRevisionLabelKey]).To(gomega.Equal("2"))
+				g.Expect(pod.Annotations).NotTo(gomega.HaveKey(constants.RoleInPlaceUpdateTargetHashAnnotationKey))
+			}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
+
+			validation.ValidateStormServiceStatus(ctx, k8sClient, ss, 1, 1, 0, 1, 1, 1, true)
+		},
+		ginkgo.Entry("InPlaceIfPossible", "in-place-if-possible", orchestrationapi.InPlaceIfPossibleRoleUpdateStrategyType),
+	)
+
+	ginkgo.It("falls back to replacing the pod when InPlaceIfPossible cannot update in place", func() {
+		int32Ptr := func(i int32) *int32 { return &i }
+		maxSurge := intstr.FromInt32(0)
+		maxUnavailable := intstr.FromInt32(1)
+		matchLabel := map[string]string{"app": "stormservice-in-place-fallback"}
+		role := orchestrationapi.RoleSpec{
+			Name:     prefill,
+			Replicas: int32Ptr(1),
+			Template: validation.MakePodTemplate(prefillImageVersionV1),
+			UpdateStrategy: orchestrationapi.RoleUpdateStrategy{
+				Type:           orchestrationapi.InPlaceIfPossibleRoleUpdateStrategyType,
+				MaxSurge:       &maxSurge,
+				MaxUnavailable: &maxUnavailable,
+			},
+		}
+		role.Template.Spec.Containers[0].Command = []string{"serve", "--version=v1"}
+		roleSetSpec := &orchestrationapi.RoleSetSpec{
+			UpdateStrategy: orchestrationapi.ParallelRoleSetUpdateStrategyType,
+			Roles:          []orchestrationapi.RoleSpec{role},
+		}
+		ss := wrapper.MakeStormService("stormservice-in-place-fallback").
+			Namespace(ns.Name).
+			Replicas(ptr.To(int32(1))).
+			Selector(metav1.SetAsLabelSelector(matchLabel)).
+			UpdateStrategyType(orchestrationapi.InPlaceUpdateStormServiceStrategyType).
+			RoleSetTemplateMeta(metav1.ObjectMeta{Labels: matchLabel}, roleSetSpec).
+			Obj()
+
+		gomega.Expect(k8sClient.Create(ctx, ss)).To(gomega.Succeed())
+		validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.StormServiceNameLabelKey, ss.Name, 1)
+
+		initialPod := waitForSingleStormServiceRolePod(ctx, k8sClient, ns.Name, ss.Name, prefill)
+		initialUID := initialPod.UID
+		markPodReadyWithRuntimeImage(ctx, k8sClient, initialPod, prefillImageVersionV1)
+
+		validation.ValidateStormServiceStatus(ctx, k8sClient, ss, 1, 1, 0, 1, 1, 1, true)
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := &orchestrationapi.StormService{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ss), latest)).To(gomega.Succeed())
+			latest.Spec.Template.Spec.Roles[0].Template.Spec.Containers[0].Command = []string{"serve", "--version=v2"}
+			g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+		}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
+
+		var replacementPod *corev1.Pod
+		gomega.Eventually(func(g gomega.Gomega) {
+			pod, err := getSingleStormServiceRolePod(ctx, k8sClient, ns.Name, ss.Name, prefill)
+			g.Expect(err).ToNot(gomega.HaveOccurred())
+			g.Expect(pod.UID).NotTo(gomega.Equal(initialUID))
+			g.Expect(pod.Spec.Containers[0].Command).To(gomega.Equal([]string{"serve", "--version=v2"}))
+			g.Expect(pod.Labels[constants.RoleRevisionLabelKey]).To(gomega.Equal("2"))
+			g.Expect(pod.Annotations).NotTo(gomega.HaveKey(constants.RoleInPlaceUpdateTargetHashAnnotationKey))
+			replacementPod = pod
+		}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
+
+		markPodReadyWithRuntimeImage(ctx, k8sClient, replacementPod, prefillImageVersionV1)
+		validation.ValidateStormServiceStatus(ctx, k8sClient, ss, 1, 1, 0, 1, 1, 1, true)
+	})
 })
+
+func waitForSingleStormServiceRolePod(
+	ctx context.Context,
+	k8sClient client.Client,
+	namespace, stormServiceName, roleName string,
+) *corev1.Pod {
+	var pod *corev1.Pod
+	gomega.Eventually(func(g gomega.Gomega) {
+		var err error
+		pod, err = getSingleStormServiceRolePod(ctx, k8sClient, namespace, stormServiceName, roleName)
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+	}, time.Second*10, time.Millisecond*250).Should(gomega.Succeed())
+	return pod
+}
+
+func getSingleStormServiceRolePod(
+	ctx context.Context,
+	k8sClient client.Client,
+	namespace, stormServiceName, roleName string,
+) (*corev1.Pod, error) {
+	pods := &corev1.PodList{}
+	if err := k8sClient.List(ctx, pods,
+		client.InNamespace(namespace),
+		client.MatchingLabels{
+			constants.StormServiceNameLabelKey: stormServiceName,
+			constants.RoleNameLabelKey:         roleName,
+		}); err != nil {
+		return nil, err
+	}
+	if len(pods.Items) != 1 {
+		return nil, fmt.Errorf("expected 1 pod for StormService %q role %q, got %d",
+			stormServiceName, roleName, len(pods.Items))
+	}
+	return pods.Items[0].DeepCopy(), nil
+}
+
+func listStormServiceRoleSets(ctx context.Context, k8sClient client.Client,
+	ns, ssName string,
+) []orchestrationapi.RoleSet {
+	roleSetList := &orchestrationapi.RoleSetList{}
+	gomega.Expect(k8sClient.List(ctx, roleSetList,
+		client.InNamespace(ns),
+		client.MatchingLabels{constants.StormServiceNameLabelKey: ssName},
+	)).To(gomega.Succeed())
+	sort.Slice(roleSetList.Items, func(i, j int) bool {
+		return roleSetList.Items[i].Name < roleSetList.Items[j].Name
+	})
+	return roleSetList.Items
+}
+
+func markRoleSetPodsReady(ctx context.Context, k8sClient client.Client, ns, roleSetName string) {
+	gomega.Eventually(func(g gomega.Gomega) {
+		podList := &corev1.PodList{}
+		g.Expect(k8sClient.List(ctx, podList,
+			client.InNamespace(ns),
+			client.MatchingLabels{constants.RoleSetNameLabelKey: roleSetName},
+		)).To(gomega.Succeed())
+		g.Expect(podList.Items).NotTo(gomega.BeEmpty())
+
+		for i := range podList.Items {
+			pod := &podList.Items[i]
+			if pod.DeletionTimestamp != nil {
+				continue
+			}
+			validation.MakePodReady(pod)
+			g.Expect(k8sClient.Status().Update(ctx, pod)).To(gomega.Succeed())
+		}
+	}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
+}
+
+func waitForRoleSetReady(ctx context.Context, k8sClient client.Client, ns, roleSetName string) {
+	gomega.Eventually(func() error {
+		roleSet := &orchestrationapi.RoleSet{}
+		if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: roleSetName}, roleSet); err != nil {
+			return err
+		}
+		condition := validation.FindCondition(string(orchestrationapi.RoleSetReady), roleSet.Status.Conditions)
+		if condition == nil {
+			return fmt.Errorf("RoleSetReady condition not found")
+		}
+		if condition.Status != corev1.ConditionTrue {
+			return fmt.Errorf("expected RoleSetReady=True, got %s", condition.Status)
+		}
+		return nil
+	}, time.Second*10, time.Millisecond*250).Should(gomega.Succeed())
+}
+
+func waitForStormServiceReplicaStatus(ctx context.Context, k8sClient client.Client,
+	stormService *orchestrationapi.StormService,
+	replicas, ready, notReady, current, updated, updatedReady int32) {
+	gomega.Eventually(func() error {
+		latest := &orchestrationapi.StormService{}
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(stormService), latest); err != nil {
+			return err
+		}
+		if latest.Status.Replicas != replicas {
+			return fmt.Errorf("expected status.replicas=%d, got %d", replicas, latest.Status.Replicas)
+		}
+		if latest.Status.ReadyReplicas != ready {
+			return fmt.Errorf("expected status.readyReplicas=%d, got %d", ready, latest.Status.ReadyReplicas)
+		}
+		if latest.Status.NotReadyReplicas != notReady {
+			return fmt.Errorf("expected status.notReadyReplicas=%d, got %d", notReady, latest.Status.NotReadyReplicas)
+		}
+		if latest.Status.CurrentReplicas != current {
+			return fmt.Errorf("expected status.currentReplicas=%d, got %d", current, latest.Status.CurrentReplicas)
+		}
+		if latest.Status.UpdatedReplicas != updated {
+			return fmt.Errorf("expected status.updatedReplicas=%d, got %d", updated, latest.Status.UpdatedReplicas)
+		}
+		if latest.Status.UpdatedReadyReplicas != updatedReady {
+			return fmt.Errorf("expected status.updatedReadyReplicas=%d, got %d",
+				updatedReady, latest.Status.UpdatedReadyReplicas)
+		}
+		return nil
+	}, time.Second*30, time.Millisecond*250).Should(gomega.Succeed())
+}

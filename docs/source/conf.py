@@ -42,7 +42,7 @@ copybutton_prompt_is_regexp = True
 
 html_title = project
 html_theme = 'sphinx_book_theme'
-html_logo = 'assets/logos/aibrix-logo.png'
+html_logo = 'assets/logos/aibrix-logo.jpeg'
 html_static_path = ['_static']
 html_theme_options = {
     # repository level setting

@@ -32,8 +32,8 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 # Try importing, skip tests if dependencies missing
 try:
     from aibrix.metadata.api.v1.users import User
-    from aibrix.metadata.app import build_app
     from aibrix.metadata.store import MetadataStore
+    from tests.metadata.conftest import create_test_app
 
     DEPENDENCIES_AVAILABLE = True
 except ModuleNotFoundError as e:
@@ -114,16 +114,7 @@ class TestUsersAPI:
     @pytest.fixture
     def app_with_store(self, mock_store):
         """Build app with mocked MetadataStore."""
-        from argparse import Namespace
-
-        args = Namespace(
-            enable_fastapi_docs=False,
-            disable_batch_api=True,
-            disable_file_api=True,
-            enable_k8s_job=False,
-            e2e_test=False,
-        )
-        app = build_app(args)
+        app = create_test_app(disable_batch_api=True, disable_file_api=True)
         app.state.metadata_store = mock_store
         # Also set redis_client for backward compatibility (via .client if needed)
         app.state.redis_client = None
@@ -187,7 +178,7 @@ class TestUsersAPI:
 
         response = client.post("/ReadUser", json={"name": "nonexistent"})
         assert response.status_code == 404
-        assert "does not exist" in response.json()["detail"]
+        assert "does not exist" in response.json()["error"]["message"]
 
     def test_update_user(self, app_with_store, mock_store):
         """Test updating a user."""
@@ -217,7 +208,7 @@ class TestUsersAPI:
 
         response = client.post("/UpdateUser", json=user_data)
         assert response.status_code == 404
-        assert "does not exist" in response.json()["detail"]
+        assert "does not exist" in response.json()["error"]["message"]
 
     def test_delete_user(self, app_with_store, mock_store):
         """Test deleting a user."""
@@ -241,4 +232,4 @@ class TestUsersAPI:
 
         response = client.post("/DeleteUser", json={"name": "nonexistent"})
         assert response.status_code == 404
-        assert "does not exist" in response.json()["detail"]
+        assert "does not exist" in response.json()["error"]["message"]

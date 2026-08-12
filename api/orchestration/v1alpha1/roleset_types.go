@@ -36,6 +36,9 @@ type RoleSetSpec struct {
 
 	// +optional
 	SchedulingStrategy *SchedulingStrategy `json:"schedulingStrategy,omitempty"`
+
+	// +optional
+	TopologyPolicy *TopologyPolicy `json:"topologyPolicy,omitempty"`
 }
 
 // +kubebuilder:validation:MaxProperties=1
@@ -127,6 +130,54 @@ type VolcanoSchedulingStrategySpec struct {
 	MinResources v1.ResourceList `json:"minResources,omitempty" protobuf:"bytes,4,opt,name=minResources"`
 }
 
+type TopologyScope string
+
+const (
+	TopologyStormServiceScope TopologyScope = "StormService"
+	TopologyRoleSetScope      TopologyScope = "RoleSet"
+	TopologyRoleScope         TopologyScope = "Role"
+)
+
+type TopologyPolicyMode string
+
+const (
+	TopologyPolicyPreferred TopologyPolicyMode = "Preferred"
+	TopologyPolicyRequired  TopologyPolicyMode = "Required"
+)
+
+// TopologyPolicy specifies how Pods are co-located based on Kubernetes topology keys.
+// Updating this policy on a live RoleSet only affects newly created or replaced Pods because
+// Pod affinity is immutable after Pod creation.
+type TopologyPolicy struct {
+	// Scope defines the granularity of co-location.
+	// Valid values are:
+	// - "StormService": All Pods in the entire StormService share the same topology value.
+	// - "RoleSet": All Pods within each RoleSet share the same topology value (different RoleSets may be on different domains).
+	// - "Role": All Pods of the same role (across all RoleSets) share the same topology value.
+	// +kubebuilder:validation:Enum=StormService;RoleSet;Role
+	// +kubebuilder:validation:Required
+	Scope TopologyScope `json:"scope"`
+
+	// Mode defines whether topology co-location is a soft preference or a hard requirement.
+	// Defaults to Preferred to avoid blocking scheduling when the topology domain lacks resources.
+	// Preferred mode uses the strongest Kubernetes pod affinity preference weight (100).
+	// +kubebuilder:validation:Enum=Preferred;Required
+	// +kubebuilder:default=Preferred
+	// +optional
+	Mode TopologyPolicyMode `json:"mode,omitempty"`
+
+	// Key is the Kubernetes topology label key to enforce co-location on. It must follow
+	// Kubernetes label key syntax, with an optional DNS subdomain prefix and "/" separator.
+	// Common values include:
+	//   - "kubernetes.io/hostname" (node-level)
+	//   - "topology.kubernetes.io/zone" (zone-level)
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=317
+	// +kubebuilder:validation:Pattern=`^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$`
+	Key string `json:"key"`
+}
+
 // +enum
 type RoleSetUpdateStrategyType string
 
@@ -207,7 +258,21 @@ type RoleSpec struct {
 }
 
 // +enum
+type RoleUpdateStrategyType string
+
+const (
+	// RecreateRoleUpdateStrategyType recreates pods during role updates.
+	RecreateRoleUpdateStrategyType RoleUpdateStrategyType = "Recreate"
+	// InPlaceIfPossibleRoleUpdateStrategyType updates pods in place when possible and recreates otherwise.
+	InPlaceIfPossibleRoleUpdateStrategyType RoleUpdateStrategyType = "InPlaceIfPossible"
+)
+
 type RoleUpdateStrategy struct {
+	// +optional
+	// +kubebuilder:validation:Enum={Recreate,InPlaceIfPossible}
+	// +kubebuilder:default=Recreate
+	Type RoleUpdateStrategyType `json:"type,omitempty" protobuf:"bytes,3,opt,name=type"`
+
 	// +optional
 	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty" protobuf:"bytes,1,opt,name=maxUnavailable"`
 

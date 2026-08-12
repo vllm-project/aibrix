@@ -98,7 +98,12 @@ Prerequisites
 1. You have a base model deployed in the same namespace. 
 2. vLLM engine needs to enable `VLLM_ALLOW_RUNTIME_LORA_UPDATING <https://docs.vllm.ai/en/stable/features/lora.html#dynamically-serving-lora-adapters>`_ feature flag.
 3. You have a lora model hosted on Huggingface or S3 compatible storage.
+4. (Optional) You have a Huggingface token to enable faster model downloads from Hugging Face.
 
+   .. code-block:: bash
+
+      # Create a secret with the Hugging Face token
+      kubectl create secret generic hf-token --from-literal=token=hf_xxxxxxxxxxx
 
 Create base model
 ^^^^^^^^^^^^^^^^^

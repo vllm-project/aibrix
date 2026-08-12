@@ -19,6 +19,7 @@ package prefixcacheindexer
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
@@ -314,4 +315,57 @@ func Test_ConcurrentDeepTreeAccess(t *testing.T) {
 	matchedTokens, _, matchedPods := cache.MatchPrefix(baseTokens, model, pods)
 	assert.Equal(t, depth, len(matchedTokens))
 	assert.True(t, len(matchedPods) > 0, "Expected matched pods after concurrent operations")
+}
+
+// Test_ConcurrentGetAllNodesAndEvict reproduces the "concurrent map iteration
+// and map write" crash from issue #2049: GetAllNodes returns the internal map
+// while Evict deletes entries from it concurrently.
+func Test_ConcurrentGetAllNodesAndEvict(t *testing.T) {
+	cache := NewLPRadixCache(2)
+
+	// Populate the tree with many nodes
+	for i := 0; i < 100; i++ {
+		cache.AddPrefix([]int{i, i + 1, i + 2}, "m1", "p1")
+	}
+
+	var wg sync.WaitGroup
+
+	// Goroutine 1: repeatedly call GetAllNodes and iterate the result
+	// (simulates updatePodSet in prefix_cache_preble.go)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			nodes := cache.GetAllNodes()
+			// Iterate the map — this crashed before the fix
+			for _, node := range nodes {
+				_ = node.GetID()
+			}
+		}
+	}()
+
+	// Goroutine 2: repeatedly evict nodes
+	// (simulates evictionLoop in prefix_cache_preble.go)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			cache.Evict(time.Now().Add(10 * time.Minute))
+			// Re-populate so there's always something to evict
+			cache.AddPrefix([]int{1000 + i, 1001 + i}, "m1", "p1")
+		}
+	}()
+
+	// Goroutine 3: concurrent inserts (simulates Route -> AddPrefix)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			cache.AddPrefix([]int{2000 + i, 2001 + i, 2002 + i}, "m1", "p1")
+		}
+	}()
+
+	// If GetAllNodes returns a raw map reference, this will crash with
+	// "concurrent map iteration and map write" under the race detector.
+	wg.Wait()
 }

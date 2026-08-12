@@ -78,6 +78,13 @@ type ModelCache interface {
 	ListModelsByPod(podName, podNamespace string) ([]string, error)
 }
 
+// ModelClaimBindingProvider is an optional cache extension used by the
+// gateway when a ModelClaim is known but intentionally non-routable. Dormant
+// bindings stay separate from ModelCache so normal routing never sees port 0.
+type ModelClaimBindingProvider interface {
+	ModelClaimBinding(modelName string) (pod *v1.Pod, port int, state string, found bool)
+}
+
 // MetricCache defines operations for metric data caching
 type MetricCache interface {
 	// GetMetricValueByPod gets metric value for a pod
@@ -109,6 +116,10 @@ type MetricCache interface {
 }
 
 // RequestTracker defines operations for track workload statistics
+//
+// Contract: ctx may be nil (e.g. a request cancelled before routing completes).
+// The registry passes ctx through to every tracker unfiltered, so all
+// implementations MUST guard against a nil ctx (and a cancelled ctx.Context).
 type RequestTracker interface {
 	// AddRequestCount tracks the start of a request after routing.
 	// To support realtime statistics update and access, AddRequestCount can be called multiple times for a request.

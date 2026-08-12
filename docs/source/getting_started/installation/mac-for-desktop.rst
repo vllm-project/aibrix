@@ -33,6 +33,7 @@ Install AIBrix
 .. code-block:: bash
 
     kubectl apply -k config/dependency --server-side
+    kubectl apply -k config/crd --server-side
     kubectl apply -k config/default
 
 Expose Gateway

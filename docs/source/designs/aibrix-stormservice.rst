@@ -63,6 +63,191 @@ Pooled Mode
 - **Independent Role Scaling**: Each role can be scaled independently based on its specific load and requirements.
 
 
+Topology Policy
+---------------
+
+StormService supports ``spec.template.spec.topologyPolicy`` to request Pod
+co-location through Kubernetes pod affinity. The same field is available on
+``RoleSet.spec.topologyPolicy`` when managing RoleSets directly.
+
+This is useful when roles have topology-sensitive data paths, such as keeping
+Prefill and Decode Pods in the same host or zone to reduce cross-domain traffic.
+The controller injects the generated affinity into directly managed Pods and
+into PodSet templates for roles that use ``podGroupSize > 1``.
+
+Assume a StormService has two RoleSets, and each RoleSet has two roles:
+``prefill`` and ``decode``.
+
+.. code-block:: text
+
+   scope: StormService
+   All Pods in the StormService share one topology domain.
+
+   Topology Key: kubernetes.io/hostname -> all Pods on node-a
+
+   +-----------------------------------------+
+   | StormService                            |
+   | topology domain: node-a                 |
+   +-----------------------------------------+
+   | RoleSet-1                               |
+   |   prefill: pod-1, pod-2                 |
+   |   decode:  pod-3, pod-4                 |
+   | RoleSet-2                               |
+   |   prefill: pod-5, pod-6                 |
+   |   decode:  pod-7, pod-8                 |
+   +-----------------------------------------+
+
+.. code-block:: text
+
+   scope: RoleSet
+   Pods within each RoleSet share one topology domain.
+   Different RoleSets may use different topology domains.
+
+   Topology Key: topology.kubernetes.io/zone
+
+   +-------------------------+    +-------------------------+
+   | RoleSet-1               |    | RoleSet-2               |
+   | topology domain: zone-a |    | topology domain: zone-b |
+   +-------------------------+    +-------------------------+
+   | prefill: pod-1, pod-2   |    | prefill: pod-5, pod-6   |
+   | decode:  pod-3, pod-4   |    | decode:  pod-7, pod-8   |
+   +-------------------------+    +-------------------------+
+
+.. code-block:: text
+
+   scope: Role
+   Pods with the same role share one topology domain across RoleSets.
+
+   Topology Key: kubernetes.io/hostname
+
+   +-------------------------+    +-------------------------+
+   | prefill role            |    | decode role             |
+   | topology domain: node-a |    | topology domain: node-b |
+   +-------------------------+    +-------------------------+
+   | RoleSet-1: pod-1, pod-2 |    | RoleSet-1: pod-3, pod-4 |
+   | RoleSet-2: pod-5, pod-6 |    | RoleSet-2: pod-7, pod-8 |
+   +-------------------------+    +-------------------------+
+
+``scope`` controls which Pods the injected affinity matches:
+
+.. list-table:: Topology policy scope
+   :header-rows: 1
+   :widths: 20 50 30
+
+   * - Scope
+     - Co-location behavior
+     - Common use case
+   * - ``StormService``
+     - All Pods in the StormService share the same topology value.
+     - Keep a small service replica inside one host or zone.
+   * - ``RoleSet``
+     - All Pods in each RoleSet share a topology value. Different RoleSets may
+       land in different topology domains.
+     - Keep each Prefill/Decode replica pair together.
+   * - ``Role``
+     - Pods with the same role share a topology value across RoleSets.
+     - Keep role-specific pools, such as all Prefill Pods, together.
+
+``key`` selects the Kubernetes node label used as the topology domain. Common
+values are ``kubernetes.io/hostname`` for node-level co-location and
+``topology.kubernetes.io/zone`` for zone-level co-location.
+
+You can also use an internal resource-pool label as the topology key. For
+example, label nodes by business pool:
+
+.. code-block:: shell
+
+   kubectl label node <node-a> resource-pool.aibrix.ai/name=latency-pool --overwrite
+   kubectl label node <node-b> resource-pool.aibrix.ai/name=latency-pool --overwrite
+   kubectl label node <node-c> resource-pool.aibrix.ai/name=throughput-pool --overwrite
+
+Then use that label key in the topology policy:
+
+.. code-block:: yaml
+
+   spec:
+     template:
+       spec:
+         topologyPolicy:
+           scope: RoleSet
+           mode: Preferred
+           key: resource-pool.aibrix.ai/name
+
+With this policy, Pods inside each RoleSet prefer to schedule into the same
+business resource pool, such as ``latency-pool`` or ``throughput-pool``.
+
+``mode`` selects scheduling strength:
+
+- ``Preferred`` adds a strong pod affinity preference and is the default. Pods
+  can still schedule in another topology domain when the preferred domain does
+  not have enough resources.
+- ``Required`` adds hard pod affinity. Pods can remain ``Pending`` when no node
+  in the selected topology domain can satisfy the request.
+
+Example
+^^^^^^^
+
+The following policy prefers to place all Pods inside each RoleSet replica on
+the same node:
+
+.. code-block:: yaml
+
+   apiVersion: orchestration.aibrix.ai/v1alpha1
+   kind: StormService
+   metadata:
+     name: pd-colocated
+   spec:
+     selector:
+       matchLabels:
+         app: pd-colocated
+     template:
+       metadata:
+         labels:
+           app: pd-colocated
+       spec:
+         topologyPolicy:
+           scope: RoleSet
+           mode: Preferred
+           key: kubernetes.io/hostname
+         roles:
+           - name: prefill
+             replicas: 1
+             template:
+               spec:
+                 containers:
+                   - name: vllm
+                     image: vllm/vllm-openai:latest
+           - name: decode
+             replicas: 1
+             template:
+               spec:
+                 containers:
+                   - name: vllm
+                     image: vllm/vllm-openai:latest
+
+Before using a custom topology key, label the nodes with that key. For example:
+
+.. code-block:: shell
+
+   kubectl label node <node-a> topology.kubernetes.io/zone=zone-a --overwrite
+   kubectl label node <node-b> topology.kubernetes.io/zone=zone-b --overwrite
+
+Apply one of the topology policy samples and inspect Pod placement:
+
+.. code-block:: shell
+
+   kubectl apply -f samples/orchestration/topology-policy/roleset-zone-preferred.yaml
+   kubectl get pods -l storm-service-name=tp-rs-zone-pref -o wide
+
+Topology policy updates affect only newly created or replaced Pods because
+Kubernetes Pod affinity is immutable after Pod creation. Existing Pods and
+PodSet templates pick up the new affinity after replacement or recreation.
+
+See the complete `topology policy samples`_ in the AIBrix repository.
+
+.. _topology policy samples: https://github.com/vllm-project/aibrix/tree/main/samples/orchestration/topology-policy
+
+
 Update Strategy
 ---------------
 
@@ -107,20 +292,27 @@ Suppose we have a `StormService` with 3 replicas, `MaxUnavailable` set to 1, and
 InPlace Update
 ^^^^^^^^^^^^^^
 
-**Designed for pooled mode**, the InPlace update strategy propagates changes from the `StormService` directly to all associated RoleSets without deleting and creating new RoleSets. This strategy is useful when you want to update the configuration of RoleSets without disrupting the existing pods.
-How it Works
+**Designed for pooled mode**, the StormService ``InPlaceUpdate`` strategy updates
+the existing RoleSets instead of deleting and recreating them. This is an outer
+update layer: preserving a RoleSet does not, by itself, preserve the Pods owned
+by that RoleSet.
 
 **How it Works**
 
-1. Identify Outdated RoleSets: The controller identifies all RoleSets that are not using the latest revision.
-2. Update RoleSets: The controller directly updates the configuration of the outdated RoleSets to the latest revision.
-3. Sync Status: The reconciler at the RoleSet level then syncs its status according to the updated spec.
+1. The StormService controller identifies RoleSets that do not use the latest
+   StormService revision.
+2. With ``StormService.spec.updateStrategy.type: InPlaceUpdate``, the controller
+   updates those RoleSet objects in place.
+3. Each RoleSet then updates its roles. The role-level strategy determines
+   whether Pods are patched or replaced.
 
 **Advantages**
 
-- Minimal Disruption: Since no RoleSets are deleted or created, the service remains available during the update process.
-- Fast Updates: The update process is faster as it does not involve the creation and deletion of resources.
-- No additional GPU needed: It doesn't need to create new `RoleSets`, which avoids using more GPUs for upgrades.
+- **Stable RoleSets**: No replacement RoleSets are created during the update.
+- **Fast propagation**: The latest template is applied directly to the existing
+  RoleSets.
+- **No extra RoleSet capacity**: The outer update does not require surge
+  RoleSets.
 
 .. mermaid::
 
@@ -130,6 +322,124 @@ How it Works
 
         A(Initial: 3 old RoleSets):::old --> B(Update 3 RoleSets in-place)
         B --> C(Result: 3 new RoleSets):::new
+
+StormService and role update strategies
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+StormService and role in-place strategies operate at different layers. To
+update a Pod image through a StormService while preserving the Pod name and
+UID, configure both layers.
+
+.. list-table:: Update strategy comparison
+   :header-rows: 1
+   :widths: 24 18 24 34
+
+   * - Strategy
+     - Target
+     - Identity behavior
+     - Configuration path
+   * - StormService ``InPlaceUpdate``
+     - RoleSet
+     - Preserves RoleSet identity; does not guarantee Pod identity
+     - ``StormService.spec.updateStrategy.type``
+   * - Role ``InPlaceIfPossible``
+     - Pod
+     - Preserves Pod name and UID for eligible image-only updates
+     - ``RoleSet.spec.roles[].updateStrategy.type`` or
+       ``StormService.spec.template.spec.roles[].updateStrategy.type``
+   * - Role ``Recreate``
+     - Pod
+     - Replaces Pods during a role update; this is the default
+     - ``RoleSet.spec.roles[].updateStrategy.type`` or
+       ``StormService.spec.template.spec.roles[].updateStrategy.type``
+
+For a StormService-managed rollout, configure the outer strategy on the
+StormService and the Pod strategy on each role:
+
+.. code-block:: yaml
+
+   spec:
+     updateStrategy:
+       type: InPlaceUpdate       # Update existing RoleSets.
+     template:
+       spec:
+         roles:
+           - name: server
+             updateStrategy:
+               type: InPlaceIfPossible  # Try to preserve this role's Pods.
+
+When managing a RoleSet directly, only the role-level strategy is required:
+
+.. code-block:: yaml
+
+   spec:
+     roles:
+       - name: server
+         updateStrategy:
+           type: InPlaceIfPossible
+
+See the complete `StormService sample`_ and `RoleSet sample`_ in the AIBrix
+repository.
+
+.. _StormService sample: https://github.com/vllm-project/aibrix/blob/main/samples/orchestration/stormservice-inplace-update.yaml
+.. _RoleSet sample: https://github.com/vllm-project/aibrix/blob/main/samples/orchestration/roleset-inplace-update.yaml
+
+Pod in-place update eligibility
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``InPlaceIfPossible`` updates existing Pods only when container images are the
+only fields changed in the Pod template. The controller patches the requested
+images, waits for the runtime container image IDs and readiness to reflect the
+new images, and then completes the role revision. ``maxUnavailable`` limits how
+many role Pods can be unavailable while the images restart; ``maxSurge`` still
+controls any replacement Pods required by a fallback.
+
+Changes to commands, arguments, environment variables, resources, volumes, or
+other Pod template fields are not eligible. The controller emits a normal
+``InPlaceFallback`` event and recreates the affected Pods instead of blocking
+the rollout. Roles with ``podGroupSize > 1`` are managed through PodSet and also
+fall back to recreation. Omitting the role strategy selects the default
+``Recreate`` behavior.
+
+Trigger and observe an image update
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Apply the StormService sample and record the original Pod UID:
+
+.. code-block:: shell
+
+   kubectl apply -f samples/orchestration/stormservice-inplace-update.yaml
+   kubectl get pods -l storm-service-name=stormservice-inplace-update -w
+   kubectl get pods -l storm-service-name=stormservice-inplace-update \
+     -o jsonpath='{.items[0].metadata.uid}{"\n"}'
+
+Patch only the image field to trigger an eligible in-place update:
+
+.. code-block:: shell
+
+   kubectl patch stormservice stormservice-inplace-update --type=json -p='[
+     {"op":"replace","path":"/spec/template/spec/roles/0/template/spec/containers/0/image",
+      "value":"registry.k8s.io/e2e-test-images/agnhost:2.54"}
+   ]'
+
+Watch the image and compare the UID with the value recorded before the update:
+
+.. code-block:: shell
+
+   kubectl get pods -l storm-service-name=stormservice-inplace-update \
+     -o custom-columns='NAME:.metadata.name,UID:.metadata.uid,IMAGE:.spec.containers[*].image'
+
+While an update is in progress, the controller can set the Pod readiness
+condition ``stormservice.orchestration.aibrix.ai/in-place-update-ready`` and the
+annotation
+``stormservice.orchestration.aibrix.ai/in-place-update-pending-reason``. Inspect
+them with ``kubectl describe pod <pod-name>``. If the controller falls back to
+recreation, inspect the reason on the RoleSet event:
+
+.. code-block:: shell
+
+   kubectl get events --field-selector reason=InPlaceFallback \
+     --sort-by=.lastTimestamp
 
 Rolling Strategy
 ----------------

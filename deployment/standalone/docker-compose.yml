@@ -9,6 +9,7 @@
 #
 # Usage:
 #   Default mode:    docker compose up -d
+#   Valkey mode:     REDIS_IMAGE=valkey/valkey:8-alpine REDIS_SERVER_CMD=valkey-server REDIS_CLI_CMD=valkey-cli docker compose up -d
 #   P/D mode:        docker compose --profile pd up -d
 
 x-common-gpu: &common-gpu
@@ -30,19 +31,19 @@ services:
   # ============================================================================
 
   redis:
-    image: redis:7.4-alpine
+    image: ${REDIS_IMAGE:-redis:7.4-alpine}
     container_name: aibrix-redis
     ports:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
     command: >
-      redis-server
+      ${REDIS_SERVER_CMD:-redis-server}
       --appendonly yes
       --maxmemory 256mb
       --maxmemory-policy allkeys-lru
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "${REDIS_CLI_CMD:-redis-cli}", "ping"]
       <<: *healthcheck-defaults
       start_period: 5s
     networks:

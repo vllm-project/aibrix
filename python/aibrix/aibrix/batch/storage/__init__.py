@@ -12,27 +12,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from aibrix.batch.storage.batch_metastore import (
+    get_metastore_type,
+    initialize_batch_metastore,
+)
 from aibrix.batch.storage.batch_storage import (
     StorageType,
     download_output_data,
     finalize_job_output_data,
     get_storage_type,
-    initialize_storage,
+    initialize_batch_storage,
     is_request_done,
     prepare_job_ouput_files,
     read_job_input_info,
     read_job_next_request,
     remove_job_data,
     upload_input_data,
+    validate_job_input_file,
     write_job_output_data,
 )
 
 __all__ = [
     "StorageType",
-    "initialize_storage",
+    "initialize_batch_storage",
     "get_storage_type",
+    "initialize_batch_metastore",
+    "get_metastore_type",
     "upload_input_data",
     "read_job_input_info",
+    "validate_job_input_file",
     "read_job_next_request",
     "is_request_done",
     "prepare_job_ouput_files",

@@ -19,13 +19,14 @@ package roleset
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/selection"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -47,9 +48,14 @@ const (
 	ProgressingConditionType = "Progressing"
 	FailureConditionType     = "Failure"
 
-	PodGroupSyncedEventType = "PodGroupSynced"
-	PodSyncedEventType      = "PodSynced"
-	FailureEventType        = "Failure"
+	PodGroupSyncedEventType         = "PodGroupSynced"
+	PodSyncedEventType              = "PodSynced"
+	InPlaceFallbackEventType        = "InPlaceFallback"
+	InPlaceUpdateStartedEventType   = "InPlaceUpdateStarted"
+	InPlaceUpdateCompletedEventType = "InPlaceUpdateCompleted"
+	FailureEventType                = "Failure"
+
+	topologyPreferredAffinityWeight int32 = 100
 )
 
 // GetReadyReplicaCountForRole returns the number of ready roleSets corresponding to the given replica sets.
@@ -172,9 +178,19 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 			templateHash,
 		)
 	}
+
+	// inject topology co-location affinity if TopologyPolicy is specified
+	if roleSet.Spec.TopologyPolicy != nil {
+		injectTopologyAffinity(&pod.Spec, roleSet, role.Name, roleSet.Spec.TopologyPolicy)
+	}
 }
 
 // injectContainerEnvVars injects env variables into container.
+// Note: Built-in env variables are added first to ensure they're available for expansion
+// in user-defined env variables. User-defined env variables maintain their original order
+// from the container spec, which should be stable across reconcile loops if the upstream
+// RoleSpec preserves order (e.g., through YAML unmarshalling). Otherwise, unnecessary pod
+// updates may occur.
 func injectContainerEnvVars(
 	container *v1.Container,
 	roleSet *orchestrationv1alpha1.RoleSet,
@@ -182,57 +198,102 @@ func injectContainerEnvVars(
 	roleIndex *int,
 	templateHash string,
 ) {
-	envMap := make(map[string]v1.EnvVar, len(container.Env)+6)
-
-	// copy existing env
-	for _, e := range container.Env {
-		if !ContainerInjectEnv.Has(e.Name) {
-			envMap[e.Name] = e
-		}
-	}
-
-	envMap[constants.StormServiceNameEnvKey] = v1.EnvVar{
-		Name:  constants.StormServiceNameEnvKey,
-		Value: roleSet.Labels[constants.StormServiceNameLabelKey],
-	}
-
-	envMap[constants.RoleSetNameEnvKey] = v1.EnvVar{
-		Name:  constants.RoleSetNameEnvKey,
-		Value: roleSet.Name,
-	}
-
-	envMap[constants.RoleSetIndexEnvKey] = v1.EnvVar{
-		Name:  constants.RoleSetIndexEnvKey,
-		Value: roleSet.Annotations[constants.RoleSetIndexAnnotationKey],
-	}
-
-	envMap[constants.RoleNameEnvKey] = v1.EnvVar{
-		Name:  constants.RoleNameEnvKey,
-		Value: role.Name,
-	}
-
-	envMap[constants.RoleTemplateHashEnvKey] = v1.EnvVar{
-		Name:  constants.RoleTemplateHashEnvKey,
-		Value: templateHash,
+	// Use slice to maintain env variable order
+	envs := make([]v1.EnvVar, 0, len(container.Env)+6)
+	builtInEnvs := []v1.EnvVar{
+		{
+			Name:  constants.StormServiceNameEnvKey,
+			Value: roleSet.Labels[constants.StormServiceNameLabelKey],
+		},
+		{
+			Name:  constants.RoleSetNameEnvKey,
+			Value: roleSet.Name,
+		},
+		{
+			Name:  constants.RoleSetIndexEnvKey,
+			Value: roleSet.Annotations[constants.RoleSetIndexAnnotationKey],
+		},
+		{
+			Name:  constants.RoleNameEnvKey,
+			Value: role.Name,
+		},
+		{
+			Name:  constants.RoleTemplateHashEnvKey,
+			Value: templateHash,
+		},
 	}
 
 	if roleIndex != nil {
-		envMap[constants.RoleReplicaIndexEnvKey] = v1.EnvVar{
+		builtInEnvs = append(builtInEnvs, v1.EnvVar{
 			Name:  constants.RoleReplicaIndexEnvKey,
 			Value: strconv.Itoa(*roleIndex),
+		})
+	}
+	envs = append(envs, builtInEnvs...)
+
+	// Add original container env variables, skipping built-in envs
+	for _, env := range container.Env {
+		if !ContainerInjectEnv.Has(env.Name) {
+			envs = append(envs, env)
 		}
 	}
-	keys := make([]string, 0, len(envMap))
-	for k := range envMap {
-		keys = append(keys, k)
-	}
-	// sort the env by name before adding them to the container spec
-	// to ensure deterministic output and prevent unnecessary pod updates
-	sort.Strings(keys)
 
-	container.Env = make([]v1.EnvVar, 0, len(envMap))
-	for _, k := range keys {
-		container.Env = append(container.Env, envMap[k])
+	container.Env = envs
+}
+
+// injectTopologyAffinityToPodSpec injects pod affinity into the given PodSpec
+// based on the TopologyPolicy and provided matching labels.
+func injectTopologyAffinityToPodSpec(
+	spec *v1.PodSpec,
+	matchLabels map[string]string,
+	topologyKey string,
+	mode orchestrationv1alpha1.TopologyPolicyMode,
+) {
+	affinityTerm := v1.PodAffinityTerm{
+		TopologyKey: topologyKey,
+		LabelSelector: &metav1.LabelSelector{
+			MatchLabels: matchLabels,
+		},
+	}
+
+	if spec.Affinity == nil {
+		spec.Affinity = &v1.Affinity{}
+	}
+	if spec.Affinity.PodAffinity == nil {
+		spec.Affinity.PodAffinity = &v1.PodAffinity{}
+	}
+
+	// The API defaults Mode to Preferred; this fallback keeps direct callers and older objects safe.
+	if mode == "" {
+		mode = orchestrationv1alpha1.TopologyPolicyPreferred
+	}
+	switch mode {
+	case orchestrationv1alpha1.TopologyPolicyRequired:
+		// avoid duplicate terms
+		for _, term := range spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
+			if term.TopologyKey == topologyKey &&
+				term.LabelSelector != nil &&
+				reflect.DeepEqual(term.LabelSelector.MatchLabels, matchLabels) {
+				return
+			}
+		}
+		spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution =
+			append(spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution, affinityTerm)
+	default:
+		weightedTerm := v1.WeightedPodAffinityTerm{
+			Weight:          topologyPreferredAffinityWeight,
+			PodAffinityTerm: affinityTerm,
+		}
+		for _, term := range spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution {
+			if term.Weight == weightedTerm.Weight &&
+				term.PodAffinityTerm.TopologyKey == topologyKey &&
+				term.PodAffinityTerm.LabelSelector != nil &&
+				reflect.DeepEqual(term.PodAffinityTerm.LabelSelector.MatchLabels, matchLabels) {
+				return
+			}
+		}
+		spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution =
+			append(spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution, weightedTerm)
 	}
 }
 
@@ -244,6 +305,75 @@ func filterRolePods(role *orchestrationv1alpha1.RoleSpec, pods []*v1.Pod) []*v1.
 		}
 	}
 	return filtered
+}
+
+// getTopologyMatchLabels returns the match labels for topology affinity based on the TopologyPolicy scope.
+// If the scope is invalid, it returns false.
+// - TopologyStormServiceScope: match on StormService name only.
+// - TopologyRoleSetScope: match on StormService name and RoleSet name.
+// - TopologyRoleScope: match on StormService name and Role name.
+func getTopologyMatchLabels(
+	roleSet *orchestrationv1alpha1.RoleSet,
+	roleName string,
+	tp *orchestrationv1alpha1.TopologyPolicy,
+) (map[string]string, bool) {
+	stormServiceName := roleSet.Labels[constants.StormServiceNameLabelKey]
+	if stormServiceName == "" {
+		klog.Warningf("RoleSet %s/%s missing label %q; skipping topology policy enforcement",
+			roleSet.Namespace, roleSet.Name, constants.StormServiceNameLabelKey)
+		return nil, false
+	}
+
+	var matchLabels map[string]string
+	switch tp.Scope {
+	case orchestrationv1alpha1.TopologyStormServiceScope:
+		matchLabels = map[string]string{
+			constants.StormServiceNameLabelKey: stormServiceName,
+		}
+	case orchestrationv1alpha1.TopologyRoleSetScope:
+		matchLabels = map[string]string{
+			constants.StormServiceNameLabelKey: stormServiceName,
+			constants.RoleSetNameLabelKey:      roleSet.Name,
+		}
+	case orchestrationv1alpha1.TopologyRoleScope:
+		matchLabels = map[string]string{
+			constants.StormServiceNameLabelKey: stormServiceName,
+			constants.RoleNameLabelKey:         roleName,
+		}
+	default:
+		klog.Warningf("RoleSet %s/%s: unsupported TopologyPolicy.Scope=%q",
+			roleSet.Namespace, roleSet.Name, tp.Scope)
+		return nil, false
+	}
+	return matchLabels, true
+}
+
+func injectTopologyAffinity(
+	spec *v1.PodSpec,
+	roleSet *orchestrationv1alpha1.RoleSet,
+	roleName string,
+	tp *orchestrationv1alpha1.TopologyPolicy,
+) {
+	if !validateTopologyKey(roleSet, tp) {
+		return
+	}
+
+	matchLabels, ok := getTopologyMatchLabels(roleSet, roleName, tp)
+	if !ok {
+		return
+	}
+
+	injectTopologyAffinityToPodSpec(spec, matchLabels, tp.Key, tp.Mode)
+}
+
+func validateTopologyKey(roleSet *orchestrationv1alpha1.RoleSet, tp *orchestrationv1alpha1.TopologyPolicy) bool {
+	if tp.Key != "" {
+		return true
+	}
+
+	klog.Warningf("RoleSet %s/%s has empty TopologyPolicy.Key; skipping topology policy enforcement",
+		roleSet.Namespace, roleSet.Name)
+	return false
 }
 
 func filterActivePods(pods []*v1.Pod) (active []*v1.Pod, inactive []*v1.Pod) {
@@ -365,11 +495,11 @@ func getRoleReplicas(role *orchestrationv1alpha1.RoleSpec) int32 {
 }
 
 func getRolePods(ctx context.Context, cli client.Client, namespace, roleSetName, roleName string) (pods []*v1.Pod, err error) {
-	roleSetRequirement, _ := labels.NewRequirement(constants.RoleSetNameLabelKey, selection.Equals, []string{roleSetName})
-	roleRequirement, _ := labels.NewRequirement(constants.RoleNameLabelKey, selection.Equals, []string{roleName})
-	labelSelector := labels.NewSelector().Add(*roleSetRequirement, *roleRequirement)
 	podList := &v1.PodList{}
-	if err = cli.List(ctx, podList, client.InNamespace(namespace), client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
+	if err = cli.List(ctx, podList, client.InNamespace(namespace), client.MatchingLabels{
+		constants.RoleNameLabelKey:    roleName,
+		constants.RoleSetNameLabelKey: roleSetName,
+	}); err != nil {
 		return nil, err
 	}
 	for i := range podList.Items {
@@ -386,11 +516,11 @@ func createPodsInBatch(ctx context.Context, cli client.Client, podsToCreate []*v
 		pod := podsToCreate[index]
 		err := cli.Create(ctx, pod)
 		if err != nil {
-			if errors.IsAlreadyExists(err) {
+			if apierrors.IsAlreadyExists(err) {
 				klog.V(4).InfoS("Pod already exists, skipping", "pod", pod.Name)
 				return nil
 			}
-			if errors.HasStatusCause(err, v1.NamespaceTerminatingCause) {
+			if apierrors.HasStatusCause(err, v1.NamespaceTerminatingCause) {
 				// if the namespace is being terminated, we don't have to do
 				// anything because any creation will fail
 				return nil
@@ -408,13 +538,99 @@ func deletePodsInBatch(ctx context.Context, cli client.Client, podsToDelete []*v
 		pod := podsToDelete[index]
 		err := cli.Delete(ctx, pod)
 		if err != nil {
-			if errors.IsNotFound(err) {
+			if apierrors.IsNotFound(err) {
 				klog.V(4).InfoS("Pod already deleted, skipping", "pod", pod.Name)
 				return nil
 			}
 		}
 		return err
 	})
+}
+
+// isOwnedByRoleSet checks whether an object's controller OwnerReference points to the given RoleSet.
+func isOwnedByRoleSet(obj client.Object, roleSet *orchestrationv1alpha1.RoleSet) bool {
+	for _, ref := range obj.GetOwnerReferences() {
+		if ref.Controller != nil && *ref.Controller &&
+			ref.APIVersion == orchestrationv1alpha1.SchemeGroupVersion.String() &&
+			ref.Kind == orchestrationv1alpha1.RoleSetKind &&
+			ref.UID == roleSet.UID {
+			return true
+		}
+	}
+	return false
+}
+
+// cleanupOrphanPods detects and deletes Pods that were directly created by the old
+// StatefulRoleSyncer/StatelessRoleSyncer (OwnerRef → RoleSet) when podGroupSize switches
+// from <=1 to >1. Returns true if at least one orphan Pod was successfully deleted.
+func cleanupOrphanPods(ctx context.Context, cli client.Client, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
+	allPods, err := getRolePods(ctx, cli, roleSet.Namespace, roleSet.Name, role.Name)
+	if err != nil {
+		return false, err
+	}
+
+	var orphanPods []*v1.Pod
+	for _, pod := range allPods {
+		if isOwnedByRoleSet(pod, roleSet) {
+			orphanPods = append(orphanPods, pod)
+		}
+	}
+
+	if len(orphanPods) == 0 {
+		return false, nil
+	}
+
+	klog.V(4).Infof("[cleanupOrphanPods] found %d orphan pods for roleset %s/%s role %s, cleaning up",
+		len(orphanPods), roleSet.Namespace, roleSet.Name, role.Name)
+	cleaned := false
+	var errs []error
+	for _, pod := range orphanPods {
+		if err := cli.Delete(ctx, pod); err != nil {
+			if !apierrors.IsNotFound(err) {
+				errs = append(errs, err)
+			}
+		} else {
+			cleaned = true
+		}
+	}
+	return cleaned, utilerrors.NewAggregate(errs)
+}
+
+// cleanupOrphanPodSets detects and deletes PodSets that were created by the old
+// PodSetRoleSyncer when podGroupSize switches from >1 to <=1.
+// Returns true if at least one orphan PodSet was successfully deleted.
+func cleanupOrphanPodSets(ctx context.Context, cli client.Client, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
+	allPodSets, err := getRolePodSets(ctx, cli, roleSet.Namespace, roleSet.Name, role.Name)
+	if err != nil {
+		return false, err
+	}
+
+	var orphanPodSets []*orchestrationv1alpha1.PodSet
+	for _, podSet := range allPodSets {
+		if isOwnedByRoleSet(podSet, roleSet) {
+			orphanPodSets = append(orphanPodSets, podSet)
+		}
+	}
+
+	if len(orphanPodSets) == 0 {
+		return false, nil
+	}
+
+	klog.V(4).Infof("[cleanupOrphanPodSets] found %d orphan podsets for roleset %s/%s role %s, cleaning up",
+		len(orphanPodSets), roleSet.Namespace, roleSet.Name, role.Name)
+	cleaned := false
+	var errs []error
+	for _, podSet := range orphanPodSets {
+		// Child Pods will be garbage collected via OwnerReferences by the Kubernetes GC.
+		if err := cli.Delete(ctx, podSet); err != nil {
+			if !apierrors.IsNotFound(err) {
+				errs = append(errs, err)
+			}
+		} else {
+			cleaned = true
+		}
+	}
+	return cleaned, utilerrors.NewAggregate(errs)
 }
 
 func sortRolesByUpgradeOrder(roles []orchestrationv1alpha1.RoleSpec) []orchestrationv1alpha1.RoleSpec {
@@ -443,9 +659,11 @@ func isRoleDependenciesReady(roleSet *orchestrationv1alpha1.RoleSet, role *orche
 		return true
 	}
 
-	// Initialize all roles to 0
-	roleStatusMap := make(map[string]int32)
-	for _, r := range roleSet.Spec.Roles {
+	roleSpecMap := make(map[string]*orchestrationv1alpha1.RoleSpec, len(roleSet.Spec.Roles))
+	roleStatusMap := make(map[string]int32, len(roleSet.Spec.Roles))
+	for i := range roleSet.Spec.Roles {
+		r := &roleSet.Spec.Roles[i]
+		roleSpecMap[r.Name] = r
 		roleStatusMap[r.Name] = 0
 	}
 	for _, rs := range roleSet.Status.Roles {
@@ -453,13 +671,15 @@ func isRoleDependenciesReady(roleSet *orchestrationv1alpha1.RoleSet, role *orche
 	}
 
 	for _, depName := range role.Dependencies {
+		depSpec, ok := roleSpecMap[depName]
+		if !ok {
+			klog.V(4).Infof("Role %s depends on missing role %s", role.Name, depName)
+			return false
+		}
 		depReady := roleStatusMap[depName]
 		expected := int32(1)
-		for _, r := range roleSet.Spec.Roles {
-			if r.Name == depName && r.Replicas != nil {
-				expected = *r.Replicas
-				break
-			}
+		if depSpec.Replicas != nil {
+			expected = *depSpec.Replicas
 		}
 		if depReady < expected {
 			klog.V(4).Infof("Role %s depends on %s, "+

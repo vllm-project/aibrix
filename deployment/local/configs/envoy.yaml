@@ -83,7 +83,7 @@ static_resources:
                           direct_response:
                             status: 404
                             body:
-                              inline_string: '{"error":"Not Found","message":"Use /v1/chat/completions or /v1/models"}'
+                              inline_string: '{"error":"Not Found","message":"Use /v1/chat/completions, /v1/messages, or /v1/models"}'
 
                 http_filters:
                   # External Processor - Gateway Plugin

@@ -19,7 +19,7 @@ export function ModelSelector({ selectedModel, onModelChange }: ModelSelectorPro
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    fetchModels()
+    fetchModels('text')
       .then((m) => {
         if (!cancelled) {
           setModels(m)
@@ -89,6 +89,7 @@ export function ModelSelector({ selectedModel, onModelChange }: ModelSelectorPro
   return (
     <div className="relative" ref={dropdownRef}>
       <button
+        type="button"
         onClick={() => setIsOpen(!isOpen)}
         className="flex items-center gap-1.5 text-sm text-foreground/60 hover:text-foreground transition-colors"
       >
@@ -118,6 +119,7 @@ export function ModelSelector({ selectedModel, onModelChange }: ModelSelectorPro
             ) : (
               models.map((model) => (
                 <button
+                  type="button"
                   key={model.id}
                   onClick={() => {
                     onModelChange(model.id)

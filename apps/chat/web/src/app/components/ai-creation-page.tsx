@@ -206,6 +206,7 @@ export function AICreationPage() {
                         )}
                       </div>
                       <button
+                        type="button"
                         onClick={() => removeFile(file.id)}
                         className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-foreground/80 text-background flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                       >
@@ -214,6 +215,7 @@ export function AICreationPage() {
                     </div>
                   ))}
                   <button
+                    type="button"
                     onClick={() => fileInputRef.current?.click()}
                     className="w-20 h-20 rounded-lg border border-dashed border-foreground/20 hover:border-foreground/40 flex items-center justify-center transition-colors"
                   >
@@ -234,6 +236,7 @@ export function AICreationPage() {
                         <img src={file.url} alt={file.name} className="w-full h-full object-cover" />
                       </div>
                       <button
+                        type="button"
                         onClick={() => removeFile(file.id, true)}
                         className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-foreground/80 text-background flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                       >
@@ -278,6 +281,7 @@ export function AICreationPage() {
                 {/* Image / Video toggle */}
                 <div className="flex items-center bg-accent/60 rounded-lg p-0.5">
                   <button
+                    type="button"
                     onClick={() => handleModeChange('image')}
                     className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-sm transition-colors ${
                       mode === 'image'
@@ -289,6 +293,7 @@ export function AICreationPage() {
                     Image
                   </button>
                   <button
+                    type="button"
                     onClick={() => handleModeChange('video')}
                     className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-sm transition-colors ${
                       mode === 'video'
@@ -305,6 +310,7 @@ export function AICreationPage() {
 
                 {/* Reference Image */}
                 <button
+                  type="button"
                   onClick={() => refImageInputRef.current?.click()}
                   className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-sm transition-colors ${
                     referenceImages.length > 0
@@ -324,6 +330,7 @@ export function AICreationPage() {
                 {/* Model selector */}
                 <div className="relative" ref={modelDropdownRef}>
                   <button
+                    type="button"
                     onClick={() => {
                       setShowModelDropdown(!showModelDropdown)
                       setShowRatioDropdown(false)
@@ -340,6 +347,7 @@ export function AICreationPage() {
                       <div className="p-1.5 max-h-[320px] overflow-y-auto">
                         {models.map((model) => (
                           <button
+                            type="button"
                             key={model.id}
                             onClick={() => {
                               setSelectedModel(model.id)
@@ -364,6 +372,7 @@ export function AICreationPage() {
                 {/* Aspect Ratio */}
                 <div className="relative" ref={ratioDropdownRef}>
                   <button
+                    type="button"
                     onClick={() => {
                       setShowRatioDropdown(!showRatioDropdown)
                       setShowModelDropdown(false)
@@ -380,6 +389,7 @@ export function AICreationPage() {
                       <div className="p-1.5">
                         {aspectRatios.map((ratio) => (
                           <button
+                            type="button"
                             key={ratio.value}
                             onClick={() => {
                               setSelectedRatio(ratio.value)
@@ -399,6 +409,7 @@ export function AICreationPage() {
 
               {/* Generate button */}
               <button
+                type="button"
                 onClick={handleGenerate}
                 disabled={!canGenerate}
                 className={`p-2 rounded-full transition-colors ${

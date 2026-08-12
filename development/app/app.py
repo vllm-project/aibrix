@@ -8,20 +8,37 @@ import re
 import logging
 import struct
 import sys
+import threading
 import time
 from datetime import datetime
+from dataclasses import dataclass
 from random import randint
 import os
+import uuid
 import json
 from typing import Optional
 
+
+def _load_metrics_overrides():
+    raw = os.getenv("METRICS_OVERRIDES", "")
+    if not raw:
+        return {}
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("METRICS_OVERRIDES must be a JSON object")
+    return parsed
+
+
 # Global storage for overridden values
-overrides = {}
+overrides = _load_metrics_overrides()
 
 MODEL_NAME = os.getenv("MODEL_NAME", "llama2-7b")
 DEPLOYMENT_NAME = os.getenv("DEPLOYMENT_NAME", "llama2-7b")
 NAMESPACE = os.getenv("POD_NAMESPACE", "default")
+# Kubernetes sets HOSTNAME to the pod name; fall back to the deployment name.
+POD_NAME = os.getenv("POD_NAME") or os.getenv("HOSTNAME") or DEPLOYMENT_NAME
 DEFAULT_REPLICAS = int(os.getenv("DEFAULT_REPLICAS", "1"))
+SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))
 SIMULATION = os.getenv("SIMULATION", "disabled")
 STANDALONE_MODE = os.getenv("STANDALONE_MODE", "false").lower() in ("true", "1", "yes")
 
@@ -61,16 +78,44 @@ if SIMULATION != "disabled":
         sys.argv.append(modelMaps.get(MODEL_NAME, MODEL_NAME))
 
 tokenizer = None
+tiktoken_encoding = None
 simulator = None  # Optional[Simulator] when simulation is enabled
+MAX_LOGGED_BODY_CHARS = int(os.getenv("MAX_LOGGED_BODY_CHARS", "4096"))
+MOCK_REQUEST_DURATION_SECONDS = float(
+    os.getenv("MOCK_REQUEST_DURATION_SECONDS", "0.2")
+)
+MOCK_CAPACITY_AWARE_LATENCY = os.getenv(
+    "MOCK_CAPACITY_AWARE_LATENCY", "true"
+).lower() in ("true", "1", "yes")
+MOCK_SERVER_CAPACITY = int(os.getenv("MOCK_SERVER_CAPACITY", "1"))
+MOCK_BASE_LATENCY_SECONDS = float(os.getenv("MOCK_BASE_LATENCY_SECONDS", "0.05"))
+MOCK_TTFT_BASE_SECONDS = float(os.getenv("MOCK_TTFT_BASE_SECONDS", "0.03"))
+MOCK_PREFILL_SECONDS_PER_1K_TOKENS = float(
+    os.getenv("MOCK_PREFILL_SECONDS_PER_1K_TOKENS", "0.02")
+)
+MOCK_DECODE_SECONDS_PER_TOKEN = float(
+    os.getenv("MOCK_DECODE_SECONDS_PER_TOKEN", "0.002")
+)
+MOCK_OVERLOAD_PENALTY_SECONDS = float(
+    os.getenv("MOCK_OVERLOAD_PENALTY_SECONDS", "0.08")
+)
+MOCK_LATENCY_JITTER_SECONDS = float(os.getenv("MOCK_LATENCY_JITTER_SECONDS", "0.01"))
+
+_mock_capacity_lock = threading.Lock()
+_mock_capacity_inflight = 0
+_mock_capacity_max_inflight = 0
+_mock_capacity_requests = 0
 
 # Extract the api_key argument and prepare for authentication
 api_key = None
-try:
-    index = sys.argv.index("--api_key")
-    if index + 1 < len(sys.argv):
-        api_key = sys.argv[index + 1]
-except ValueError:
-    pass
+for api_key_arg in ("--api_key", "--api-key"):
+    try:
+        index = sys.argv.index(api_key_arg)
+        if index + 1 < len(sys.argv):
+            api_key = sys.argv[index + 1]
+            break
+    except ValueError:
+        pass
 
 auth = HTTPTokenAuth(scheme="Bearer")
 
@@ -99,7 +144,20 @@ def auth_error(status):
     )
 
 
+def auth_required(func):
+    if api_key is None:
+        return func
+    return auth.login_required(func)
+
+
 logger = logging.getLogger(__name__)
+
+try:
+    import tiktoken
+
+    tiktoken_encoding = tiktoken.get_encoding("cl100k_base")
+except Exception as e:
+    logger.warning(f"Failed to initialize tiktoken fallback tokenizer: {e}")
 
 
 # =============================================================================
@@ -158,6 +216,132 @@ def create_vllm_error(message, error_type, status_code):
     )
 
 
+def _json_for_log(value, max_chars=MAX_LOGGED_BODY_CHARS):
+    text = json.dumps(value, ensure_ascii=False, default=str)
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "...(truncated)"
+
+
+def _log_mock_exchange(endpoint, payload, response):
+    logger.info(
+        "%s mock exchange\nrequest=%s\nresponse=%s",
+        endpoint,
+        _json_for_log(payload),
+        _json_for_log(response),
+    )
+
+
+def _sleep_for_request_latency(started_at, simulated_latency):
+    overhead = datetime.now().timestamp() - started_at
+    if simulated_latency > overhead:
+        time.sleep(simulated_latency - overhead)
+    elif simulated_latency > 0.0:
+        logger.warning(
+            f"Latency is less than overhead: L{simulated_latency} - O{overhead}"
+        )
+    elif MOCK_REQUEST_DURATION_SECONDS > overhead:
+        time.sleep(MOCK_REQUEST_DURATION_SECONDS - overhead)
+
+
+@dataclass(frozen=True)
+class MockLatencySample:
+    latency_seconds: float
+    ttft_seconds: float
+    tpot_seconds: float
+    inflight: int
+    max_inflight: int
+    capacity: int
+    overload: int
+    request_index: int
+
+
+def _begin_capacity_aware_request(input_tokens, output_tokens):
+    """Return a latency sample and reserve one mock worker slot.
+
+    The model is intentionally simple but captures the core behavior needed by
+    smart-client tests: requests are cheap until per-pod capacity is exceeded,
+    then queueing pressure increases TTFT and end-to-end latency.
+    """
+    global _mock_capacity_inflight, _mock_capacity_max_inflight
+    global _mock_capacity_requests
+
+    input_token_count = max(int(input_tokens or 0), 0)
+    output_token_count = max(int(output_tokens or 0), 0)
+    capacity = max(MOCK_SERVER_CAPACITY, 1)
+    prompt_latency = (
+        input_token_count / 1000.0
+    ) * MOCK_PREFILL_SECONDS_PER_1K_TOKENS
+    decode_latency = output_token_count * MOCK_DECODE_SECONDS_PER_TOKEN
+    jitter = (
+        random.uniform(0.0, MOCK_LATENCY_JITTER_SECONDS)
+        if MOCK_LATENCY_JITTER_SECONDS > 0
+        else 0.0
+    )
+
+    with _mock_capacity_lock:
+        _mock_capacity_inflight += 1
+        _mock_capacity_requests += 1
+        _mock_capacity_max_inflight = max(
+            _mock_capacity_max_inflight, _mock_capacity_inflight
+        )
+        inflight = _mock_capacity_inflight
+        max_inflight = _mock_capacity_max_inflight
+        request_index = _mock_capacity_requests
+
+    overload = max(inflight - capacity, 0)
+    overload_latency = overload * MOCK_OVERLOAD_PENALTY_SECONDS
+    ttft = MOCK_TTFT_BASE_SECONDS + prompt_latency + overload_latency
+    latency = max(MOCK_BASE_LATENCY_SECONDS, ttft + decode_latency + jitter)
+    tpot = max((latency - ttft) / max(output_token_count, 1), 0.0)
+    return MockLatencySample(
+        latency_seconds=latency,
+        ttft_seconds=ttft,
+        tpot_seconds=tpot,
+        inflight=inflight,
+        max_inflight=max_inflight,
+        capacity=capacity,
+        overload=overload,
+        request_index=request_index,
+    )
+
+
+def _end_capacity_aware_request():
+    global _mock_capacity_inflight
+    with _mock_capacity_lock:
+        _mock_capacity_inflight = max(_mock_capacity_inflight - 1, 0)
+
+
+def _capacity_metrics(sample):
+    if sample is None:
+        return None
+    return {
+        "time_to_first_token_seconds": round(sample.ttft_seconds, 6),
+        "time_per_output_token_seconds": round(sample.tpot_seconds, 6),
+        "mock_latency_seconds": round(sample.latency_seconds, 6),
+        "mock_inflight_at_start": sample.inflight,
+        "mock_max_inflight": sample.max_inflight,
+        "mock_capacity": sample.capacity,
+        "mock_overload": sample.overload,
+        "mock_request_index": sample.request_index,
+        "mock_pod": POD_NAME,
+    }
+
+
+def _sleep_for_mock_latency(started_at, simulated_latency, input_tokens, output_tokens):
+    sample = None
+    try:
+        if MOCK_CAPACITY_AWARE_LATENCY:
+            sample = _begin_capacity_aware_request(input_tokens, output_tokens)
+            _sleep_for_request_latency(started_at, sample.latency_seconds)
+        else:
+            _sleep_for_request_latency(started_at, simulated_latency)
+        return sample
+    finally:
+        if sample is not None:
+            _end_capacity_aware_request()
+
+
 def read_configs(file_path):
     """
     Reads a JSON file that store sensitive information.
@@ -186,6 +370,93 @@ MOCK_PNG_B64 = (
 _IMAGE_MODEL_KEYWORDS = {"image", "edit", "diffusion", "qwen-image", "z-image"}
 
 
+# Pool of templates for the mock assistant reply. Picking one at random gives
+# the mock server some response variety instead of always emitting the same
+# sentence. `{model}` is the served model, `{pod}` is the answering pod name.
+_SIMULATED_RESPONSE_TEMPLATES = [
+    "This is a simulated message from {model} (pod {pod})!",
+    "Hello from {model} on pod {pod} — this is a mock response.",
+    "{model} here, served by {pod}. I'm a simulated reply for testing.",
+    "Greetings! Pod {pod} running {model} generated this placeholder answer.",
+    "Mock output from {model} (pod {pod}): everything looks good on my end.",
+    "You've reached the simulated {model} endpoint on {pod}. How can I pretend to help?",
+    "Beep boop — {model} on pod {pod} reporting in with a fake but friendly message.",
+    "Pretend-thinking complete. {model} (pod {pod}) returns this canned response.",
+]
+
+
+def simulated_message(model, prefix=""):
+    """Return a randomized mock assistant message for the given model.
+
+    Each call picks a random template so streamed and non-streamed mock replies
+    vary across requests, and embeds the answering pod name so it's clear which
+    replica handled the request.
+    """
+    template = random.choice(_SIMULATED_RESPONSE_TEMPLATES)
+    return prefix + template.format(model=model, pod=POD_NAME)
+
+
+# =============================================================================
+# PD DISAGGREGATION HELPERS (vLLM SHFS mode)
+# =============================================================================
+
+def _is_prefill_request(data: dict) -> bool:
+    """Detect a vLLM PD prefill request (gateway sets do_remote_decode=true)."""
+    kv = data.get("kv_transfer_params")
+    return isinstance(kv, dict) and kv.get("do_remote_decode") is True
+
+
+def _mock_prefill_kv_transfer_params() -> dict:
+    """Return mock kv_transfer_params as a real vLLM prefill pod would include in its response."""
+    return {
+        "do_remote_decode": False,
+        "do_remote_prefill": True,
+        "remote_engine_id": "mock-engine-" + uuid.uuid4().hex[:8],
+        "remote_block_ids": list(range(random.randint(1, 8))),
+        "remote_host": None,   # gateway will fill this in with prefill pod IP
+        "remote_port": 8200,
+    }
+
+
+# =============================================================================
+# PD DISAGGREGATION HELPERS (TensorRT-LLM)
+# =============================================================================
+
+def _is_trtllm_prefill_request(data: dict) -> bool:
+    """Detect a TRT-LLM PD prefill request (disaggregated_params.request_type == context_only)."""
+    disagg = data.get("disaggregated_params")
+    return isinstance(disagg, dict) and disagg.get("request_type") == "context_only"
+
+
+def _mock_trtllm_prefill_disaggregated_params(data: dict) -> dict:
+    """Return mock disaggregated_params as a real TRT-LLM prefill pod would include in its response.
+
+    The gateway reads this, changes request_type to generation_only, and forwards
+    it (along with prompt_token_ids) to the decode pod.
+    """
+    disagg_request_id = data.get("disaggregated_params", {}).get("disagg_request_id", 0)
+    return {
+        "request_type": "context_only",  # gateway overrides this to generation_only for decode
+        "disagg_request_id": disagg_request_id,
+        "first_gen_tokens": [random.randint(100, 32000)],
+        "opaque_state": base64.b64encode(bytes(random.randint(8, 32))).decode(),
+    }
+
+
+def _apply_pd_prefill_fields(response: dict, payload: dict, input_tokens: int) -> None:
+    """Add engine-specific fields to a non-streaming completion response for PD prefill probes.
+
+    vLLM (SHFS): prefill returns kv_transfer_params.
+    TRT-LLM: prefill returns disaggregated_params and prompt_token_ids for the decode request.
+    SGLang: the gateway issues prefill asynchronously and does not rely on this body, so we add nothing.
+    """
+    if _is_prefill_request(payload):
+        response["kv_transfer_params"] = _mock_prefill_kv_transfer_params()
+    elif _is_trtllm_prefill_request(payload):
+        response["disaggregated_params"] = _mock_trtllm_prefill_disaggregated_params(payload)
+        response["prompt_token_ids"] = list(range(input_tokens))
+
+
 def _is_image_request(data: dict) -> bool:
     """Detect if a /v1/chat/completions request is for image gen/edit (vLLM-Omni)."""
     model = (data.get("model") or "").lower()
@@ -209,16 +480,27 @@ def _has_input_images(messages: list) -> bool:
 
 
 def get_token_count(text):
-    try:
-        # Encode the text
-        encoded_input = tokenizer(text)
+    if text is None:
+        return 0
 
-        # Get the number of tokens
-        return len(encoded_input["input_ids"])
-    except Exception as e:
-        logger.error(f"Failed to get number of tokens: {e}")
+    text = str(text)
+    if not text:
+        return 0
 
-    return 1
+    if tokenizer is not None:
+        try:
+            encoded_input = tokenizer(text)
+            return len(encoded_input["input_ids"])
+        except Exception as e:
+            logger.warning(f"Failed to use model tokenizer, fallback to tiktoken: {e}")
+
+    if tiktoken_encoding is not None:
+        try:
+            return len(tiktoken_encoding.encode(text))
+        except Exception as e:
+            logger.warning(f"Failed to use tiktoken, fallback to heuristic: {e}")
+
+    return max(1, len(text.split()))
 
 
 models = [
@@ -306,7 +588,7 @@ def ready():
 
 
 @app.route("/v1/models", methods=["GET"])
-@auth.login_required
+@auth_required
 def get_models():
     return jsonify({"object": "list", "data": models})
 
@@ -316,7 +598,7 @@ def get_models():
 # =============================================================================
 
 @app.route("/v1/load_lora_adapter", methods=["POST"])
-@auth.login_required
+@auth_required
 def load_lora_adapter():
     """
     Load a LoRA adapter. Matches vLLM error handling behavior.
@@ -363,7 +645,7 @@ def load_lora_adapter():
 
 
 @app.route("/v1/unload_lora_adapter", methods=["POST"])
-@auth.login_required
+@auth_required
 def unload_lora_adapter():
     """
     Unload a LoRA adapter. Matches vLLM error handling behavior.
@@ -397,7 +679,7 @@ def unload_lora_adapter():
 # =============================================================================
 
 @app.route("/v1/completions", methods=["POST"])
-@auth.login_required
+@auth_required
 def completion():
     try:
         prompt = request.json.get("prompt")
@@ -437,11 +719,11 @@ def completion():
                 )
             )
 
-        overhead = datetime.now().timestamp() - start
-        if latency > overhead:
-            time.sleep(latency - overhead)
-        elif latency > 0.0:
-            logger.warning(f"Latency is less than overhead: L{latency} - O{overhead}")
+        latency_sample = _sleep_for_mock_latency(
+            start, latency, input_tokens, output_tokens
+        )
+
+        simulated_text = simulated_message(model)
 
         if stream:
 
@@ -452,7 +734,7 @@ def completion():
                         k=20,
                     )
                 )
-                full_text = f"This is simulated message from {model}!"
+                full_text = simulated_text
                 words = full_text.split()
                 for i, word in enumerate(words):
                     chunk = {
@@ -500,6 +782,22 @@ def completion():
             response = Response(generate(), mimetype="text/event-stream")
             response.headers['Cache-Control'] = 'no-cache'
             response.headers['X-Accel-Buffering'] = 'no'
+            _log_mock_exchange(
+                "/v1/completions",
+                request.json,
+                {
+                    "object": "text_completion",
+                    "model": model,
+                    "stream": True,
+                    "content_preview": simulated_text,
+                    "metrics": _capacity_metrics(latency_sample),
+                    "usage": {
+                        "prompt_tokens": input_tokens,
+                        "completion_tokens": output_tokens,
+                        "total_tokens": input_tokens + output_tokens,
+                    },
+                },
+            )
             return response
         else:
             response = {
@@ -510,7 +808,7 @@ def completion():
                 "system_fingerprint": "fp_44709d6fcb",
                 "choices": [
                     {
-                        "text": f"This is simulated message from {model}!",
+                        "text": simulated_text,
                         "index": 0,
                         "logprobs": None,
                         "finish_reason": "length",
@@ -522,6 +820,13 @@ def completion():
                     "total_tokens": input_tokens + output_tokens,
                 },
             }
+            metrics = _capacity_metrics(latency_sample)
+            if metrics is not None:
+                response["metrics"] = metrics
+
+            _apply_pd_prefill_fields(response, request.json, input_tokens)
+
+            _log_mock_exchange("/v1/completions", request.json, response)
             return jsonify(response), 200
     except Exception as e:
         err = {
@@ -536,7 +841,7 @@ def completion():
 
 
 @app.route("/v1/chat/completions", methods=["POST"])
-@auth.login_required
+@auth_required
 def chat_completions():
     try:
         messages = request.json.get("messages")
@@ -592,11 +897,11 @@ def chat_completions():
                 )
             )
 
-        overhead = datetime.now().timestamp() - start
-        if latency > overhead:
-            time.sleep(latency - overhead)
-        else:
-            logger.warning(f"Latency is less than overhead: L{latency} - O{overhead}")
+        latency_sample = _sleep_for_mock_latency(
+            start, latency, input_tokens, output_tokens
+        )
+
+        simulated_text = simulated_message(model, prefix="\n\n")
 
         if stream:
 
@@ -627,7 +932,7 @@ def chat_completions():
                 yield f"data: {json.dumps(role_chunk)}\n\n"
 
                 # Content chunks
-                full_text = f"\n\nThis is simulated message from {model}!"
+                full_text = simulated_text
                 words = full_text.split()
                 for i, word in enumerate(words):
                     chunk = {
@@ -693,6 +998,22 @@ def chat_completions():
             response = Response(generate(), mimetype="text/event-stream")
             response.headers['Cache-Control'] = 'no-cache'
             response.headers['X-Accel-Buffering'] = 'no'
+            _log_mock_exchange(
+                "/v1/chat/completions",
+                request.json,
+                {
+                    "object": "chat.completion.chunk",
+                    "model": model,
+                    "stream": True,
+                    "content_preview": simulated_text,
+                    "metrics": _capacity_metrics(latency_sample),
+                    "usage": {
+                        "prompt_tokens": input_tokens,
+                        "completion_tokens": output_tokens,
+                        "total_tokens": input_tokens + output_tokens,
+                    },
+                },
+            )
             return response
         else:
             # --- vLLM-Omni: image gen/edit via /v1/chat/completions ---
@@ -725,10 +1046,11 @@ def chat_completions():
                         "total_tokens": input_tokens,
                     },
                 }
+                _log_mock_exchange("/v1/chat/completions", request.json, response)
                 return jsonify(response), 200
 
             # --- Standard text response (with optional audio) ---
-            text_content = f"\n\nThis is simulated message from {model}!"
+            text_content = simulated_text
             message_body = {
                 "role": "assistant",
                 "content": text_content,
@@ -761,6 +1083,13 @@ def chat_completions():
                     }
                 ],
             }
+            metrics = _capacity_metrics(latency_sample)
+            if metrics is not None:
+                response["metrics"] = metrics
+
+            _apply_pd_prefill_fields(response, request.json, input_tokens)
+
+            _log_mock_exchange("/v1/chat/completions", request.json, response)
             return jsonify(response), 200
     except Exception as e:
         err = {
@@ -775,7 +1104,7 @@ def chat_completions():
 
 
 @app.route("/v1/audio/speech", methods=["POST"])
-@auth.login_required
+@auth_required
 def audio_speech():
     """
     Simulates the OpenAI text-to-speech endpoint.
@@ -866,7 +1195,7 @@ def audio_speech():
 
 
 @app.route("/v1/audio/voices", methods=["GET"])
-@auth.login_required
+@auth_required
 def audio_voices():
     """
     Returns available TTS voices (vLLM-Omni compatible).
@@ -880,7 +1209,7 @@ def audio_voices():
 
 
 @app.route("/v1/audio/transcriptions", methods=["POST"])
-@auth.login_required
+@auth_required
 def audio_transcriptions():
     """
     Simulates the OpenAI audio transcription endpoint.
@@ -995,7 +1324,7 @@ def audio_transcriptions():
 
 
 @app.route("/v1/audio/translations", methods=["POST"])
-@auth.login_required
+@auth_required
 def audio_translations():
     """
     Simulates the OpenAI audio translation endpoint.
@@ -1105,7 +1434,7 @@ def audio_translations():
 
 
 @app.route("/v1/embeddings", methods=["POST"])
-@auth.login_required
+@auth_required
 def embeddings():
     try:
         input_data = request.json.get("input")
@@ -1252,7 +1581,7 @@ def embeddings():
 
 
 @app.route("/v1/images/generations", methods=["POST"])
-@auth.login_required
+@auth_required
 def images_generations():
     """
     Simulates the OpenAI image generation endpoint.
@@ -1310,7 +1639,7 @@ def images_generations():
 
 
 @app.route("/v1/video/generations", methods=["POST"])
-@auth.login_required
+@auth_required
 def video_generations():
     """
     Simulates a video generation endpoint.
@@ -1359,7 +1688,7 @@ def video_generations():
 
 
 @app.route("/v1/videos", methods=["POST"])
-@auth.login_required
+@auth_required
 def vllm_omni_videos():
     """
     Simulates the vLLM-Omni /v1/videos endpoint (Wan2.2).
@@ -1410,7 +1739,7 @@ def vllm_omni_videos():
 
 
 @app.route("/v1/rerank", methods=["POST"])
-@auth.login_required
+@auth_required
 def rerank():
     """
     Simulates the rerank endpoint (vLLM/JinaAI format).
@@ -1487,7 +1816,7 @@ def version():
 
 
 @app.route("/tokenize", methods=["POST"])
-@auth.login_required
+@auth_required
 def tokenize():
     """
     Simulates the tokenize endpoint.
@@ -1529,7 +1858,7 @@ def tokenize():
 
 
 @app.route("/detokenize", methods=["POST"])
-@auth.login_required
+@auth_required
 def detokenize():
     """
     Simulates the detokenize endpoint.
@@ -2095,7 +2424,7 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"Failed to load k8s config: {e}")
 
-        app.run(host="0.0.0.0", port=8000)
+        app.run(host="0.0.0.0", port=SERVER_PORT)
 
     if simulator is not None:
         simulator.stop()

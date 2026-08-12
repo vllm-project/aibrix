@@ -686,13 +686,20 @@ class AIBrixPDReuseConnectorScheduler:
             if context_len >= prompt_len:
                 return
 
-            block_ids = blocks.get_unhashed_block_ids()
+            num_computed_blks = sum(
+                block.block_hash is not None for block in blocks.blocks[0]
+            )
+            # we use the actual number of computed tokens rather than using
+            # request.num_computed_tokens, which does not include cached tokens
+            num_computed_tokens = num_computed_blks * self.engine_block_ntokens
+
+            block_ids = blocks.get_block_ids()[0]
             slot_mapping = self._block_ids_to_slot_mapping(block_ids)
 
             self._scheduler_meta.upsert_request(
                 req_id,
                 prompt_len=prompt_len,
-                context_len=context_len,
+                context_len=num_computed_tokens,
                 query_len=query_len,
                 seq_token_ids=(0, request.prompt_token_ids),
                 seq_slot_mapping=(0, slot_mapping),

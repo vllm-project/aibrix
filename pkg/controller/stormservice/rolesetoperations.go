@@ -67,11 +67,10 @@ func (r *StormServiceReconciler) renderRoleSet(stormService *orchestrationv1alph
 	// Sort roles by dependency topological order
 	sortedRoles, err := r.topologicalSortRolesFromSpec(spec.Roles)
 	if err != nil {
-		klog.Warningf("Failed to topologically sort roles in StormService %s/%s: %v. Using original order.", stormService.Namespace, stormService.Name, err)
-		// Optionally, you can return error to block creation, but for safety we fall back to original order
-	} else {
-		spec.Roles = sortedRoles
+		return nil, fmt.Errorf("failed to topologically sort roles in StormService %s/%s: %w", stormService.Namespace, stormService.Name, err)
 	}
+	spec.Roles = sortedRoles
+
 	roleSet := &orchestrationv1alpha1.RoleSet{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: utils.Shorten(fmt.Sprintf("%s-roleset-", stormService.Name), true, true),

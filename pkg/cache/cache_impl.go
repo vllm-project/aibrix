@@ -191,7 +191,7 @@ func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 				// TODO: use non-empty key if we have output prediction to decide buckets early.
 				if traceTerm, success = trace.AddRequest(requestID, ""); success {
 					if ctx != nil {
-						ctx.TraceTerm = traceTerm
+						atomic.StoreInt64(&ctx.TraceTerm, traceTerm)
 					}
 					break
 				}
@@ -210,10 +210,10 @@ func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 	if ctx == nil {
 		return traceTerm
 	} else if !ctx.HasRouted() || !ctx.CanAddStats() {
-		return ctx.TraceTerm
+		return atomic.LoadInt64(&ctx.TraceTerm)
 	} else {
-		traceTerm = ctx.TraceTerm
-		c.addPodStats(ctx, requestID)
+		traceTerm = atomic.LoadInt64(&ctx.TraceTerm)
+		c.addPodStats(ctx, requestID, modelName)
 	}
 	return traceTerm
 }
@@ -221,21 +221,23 @@ func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 // DoneRequestCount completes request tracking
 // Parameters:
 //
-//	 ctx: Routing context
+//	 ctx: Routing context (can be nil for early-cancelled requests)
 //		requestID: Unique request identifier
 //		modelName: Model handling the request
 //		traceTerm: Trace term identifier
 func (c *Store) DoneRequestCount(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64) {
+	// Defensive check: ctx can be nil when request is cancelled before routing completes
+	// In this case, we still need to clean up model-level state but skip pod-level tracking
 	for _, tracker := range c.requestTrackers {
 		// ignore traceTerm
 		tracker.DoneRequestCount(ctx, requestID, modelName, traceTerm)
 	}
-	if ctx != nil && ctx.CanDoneStats() {
-		c.donePodStats(ctx, requestID)
+	if ctx == nil || ctx.CanDoneStats() {
+		c.donePodStats(ctx, requestID, modelName)
 	}
 
 	meta, ok := c.metaModels.Load(modelName)
-	if ok {
+	if ok && (ctx == nil || ctx.CanDoneTrace()) {
 		atomic.AddInt32(&meta.pendingRequests, -1)
 	}
 
@@ -260,12 +262,12 @@ func (c *Store) DoneRequestTrace(ctx *types.RoutingContext, requestID string, mo
 		tracker.DoneRequestTrace(ctx, requestID, modelName, inputTokens, outputTokens, traceTerm)
 	}
 
-	if ctx != nil && ctx.CanDoneStats() {
-		c.donePodStats(ctx, requestID)
+	if ctx == nil || ctx.CanDoneStats() {
+		c.donePodStats(ctx, requestID, modelName)
 	}
 
 	meta, ok := c.metaModels.Load(modelName)
-	if ok {
+	if ok && (ctx == nil || ctx.CanDoneTrace()) {
 		atomic.AddInt32(&meta.pendingRequests, -1)
 	}
 
@@ -281,8 +283,10 @@ func (c *Store) DoneRequestTrace(ctx *types.RoutingContext, requestID string, mo
 		klog.V(5).Infof("inputTokens: %v, outputTokens: %v, trace key: %s", inputTokens, outputTokens, traceKey)
 	}
 
-	//
-	meta.OutputPredictor.AddTrace(int(inputTokens), int(outputTokens), 1)
+	// Only update OutputPredictor if model metadata and predictor exist
+	if meta != nil && meta.OutputPredictor != nil {
+		meta.OutputPredictor.AddTrace(int(inputTokens), int(outputTokens), 1)
+	}
 }
 
 // AddSubscriber registers new metric subscriber

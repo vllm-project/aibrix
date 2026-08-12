@@ -16,23 +16,26 @@ import asyncio
 import hashlib
 import os
 import shutil
-from datetime import datetime
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
+from urllib.parse import unquote
 
 from aibrix.storage.base import (
-    BaseStorage,
     PutObjectOptions,
     StorageConfig,
     StorageType,
 )
+from aibrix.storage.base2 import BaseStorage2
 from aibrix.storage.reader import Reader
+from aibrix.storage.types import StorageListOrdering
 from aibrix.storage.utils import ObjectMetadata, _sanitize_key, generate_filename
 
-LOCAL_STORAGE_PATH_VAR = "LOCAL_STORAGE_PATH"
+LOCAL_STORAGE_PATH_VAR = "STORAGE_LOCAL_PATH"
 
 
-class LocalStorage(BaseStorage):
+class LocalStorage(BaseStorage2):
     """Local filesystem storage implementation."""
 
     def __init__(
@@ -95,6 +98,10 @@ class LocalStorage(BaseStorage):
         """
         return StorageType.LOCAL
 
+    @classmethod
+    def get_supported_list_orderings(cls) -> tuple[StorageListOrdering, ...]:
+        return (StorageListOrdering.CREATED_AT_DESC,)
+
     async def put_object(
         self,
         key: str,
@@ -152,14 +159,31 @@ class LocalStorage(BaseStorage):
 
     def _write_file(self, path: Path, reader: Reader) -> None:
         """Write data to file (synchronous helper)."""
-        if reader.is_binary():
-            # Write as bytes
-            with open(path, "wb") as f:
-                f.write(bytes(reader))
-        else:
-            # Write as text string
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(str(reader))
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+        )
+        try:
+            if reader.is_binary():
+                with os.fdopen(fd, "wb") as f:
+                    f.write(bytes(reader))
+                    f.flush()
+                    os.fsync(f.fileno())
+            else:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(str(reader))
+                    f.flush()
+                    os.fsync(f.fileno())
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+            raise
 
     async def _store_metadata(
         self,
@@ -173,8 +197,12 @@ class LocalStorage(BaseStorage):
         """Store metadata for an object."""
         metadata_path = self._get_metadata_path(key)
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        created_at = await asyncio.get_event_loop().run_in_executor(
+            None, self._get_or_create_metadata_created_at, metadata_path
+        )
 
         metadata_data = {
+            "created_at": created_at,
             "content_type": content_type,
             "metadata": metadata or {},
             "content_length": content_length,
@@ -268,9 +296,19 @@ class LocalStorage(BaseStorage):
         delimiter: Optional[str] = None,
         limit: Optional[int] = None,
         continuation_token: Optional[str] = None,
+        after_key: Optional[str] = None,
     ) -> tuple[list[str], Optional[str]]:
-        """List objects with given prefix."""
-        prefix_path = self.base_path / prefix if prefix else self.base_path
+        """List objects with given prefix.
+
+        We enumerate sidecar ``.metadata`` files rather than the data
+        files themselves, then strip the suffix to recover the original
+        key. This is necessary because ``put_object`` may append a
+        content-type-derived extension to the on-disk filename (see
+        ``generate_filename``); listing the data files would return the
+        mangled name, breaking the put → list → head_object round-trip
+        for keys that were stored without an extension.
+        """
+        _METADATA_SUFFIX = ".metadata"
 
         def _list_files():
             # Parse continuation token as offset (default to 0)
@@ -281,50 +319,90 @@ class LocalStorage(BaseStorage):
                 except (ValueError, TypeError):
                     offset = 0
 
-            files = []
-            if prefix_path.is_dir():
+            # Recover every stored key by enumerating the sidecar ``.metadata``
+            # files anywhere under base_path. ``prefix`` is matched as an
+            # S3-style string prefix (``key.startswith(prefix)``), NOT as a
+            # directory path, so both hierarchical keys like ``batchjob/<id>``
+            # and flat keys like ``flatkey:<id>`` are discovered correctly.
+            entry_created_at: dict[str, Optional[datetime]] = {}
+            for item in self.base_path.rglob("*" + _METADATA_SUFFIX):
+                if not item.is_file():
+                    continue
+                encoded_key = item.relative_to(self.base_path).as_posix()[
+                    : -len(_METADATA_SUFFIX)
+                ]
+                key = "/".join(unquote(part) for part in encoded_key.split("/"))
+                if not key.startswith(prefix):
+                    continue
                 if delimiter:
-                    # List immediate children only
-                    for item in prefix_path.iterdir():
-                        if item.is_file():
-                            relative_path = str(item.relative_to(self.base_path))
-                            # Filter out metadata files
-                            if not relative_path.endswith(".metadata"):
-                                files.append(relative_path)
-                        elif item.is_dir():
-                            files.append(
-                                str(item.relative_to(self.base_path)) + delimiter
-                            )
+                    # Roll keys with a delimiter after the prefix up into a
+                    # single common-prefix entry (S3 CommonPrefixes).
+                    remainder = key[len(prefix) :]
+                    idx = remainder.find(delimiter)
+                    entry = (
+                        prefix + remainder[: idx + len(delimiter)] if idx != -1 else key
+                    )
                 else:
-                    # Recursive listing
-                    for item in prefix_path.rglob("*"):
-                        if item.is_file():
-                            relative_path = str(item.relative_to(self.base_path))
-                            # Filter out metadata files
-                            if not relative_path.endswith(".metadata"):
-                                files.append(relative_path)
-            elif prefix_path.is_file():
-                relative_path = str(prefix_path.relative_to(self.base_path))
-                # Filter out metadata files
-                if not relative_path.endswith(".metadata"):
-                    files.append(relative_path)
+                    entry = key
+                created_at = self._read_metadata_created_at(item)
+                previous_created_at = entry_created_at.get(entry)
+                if previous_created_at is None or (
+                    created_at is not None and created_at > previous_created_at
+                ):
+                    entry_created_at[entry] = created_at
 
-            # Sort files for consistent pagination (by filename)
-            files.sort()
+            sorted_entries = sorted(
+                entry_created_at.items(),
+                key=lambda entry: entry[0],
+            )
+            sorted_entries.sort(
+                key=lambda entry: (
+                    entry[1].timestamp() if entry[1] is not None else float("-inf")
+                ),
+                reverse=True,
+            )
+            entries = [entry for entry, _ in sorted_entries]
+
+            if continuation_token is None and after_key:
+                try:
+                    offset = entries.index(after_key) + 1
+                except ValueError:
+                    return [], None
 
             # Apply pagination
-            remaining_files = files[offset:] if offset > 0 else files
-            paginated_files = (
-                remaining_files[:limit] if limit is not None else remaining_files
-            )
+            remaining = entries[offset:] if offset > 0 else entries
+            paginated = remaining[:limit] if limit is not None else remaining
 
-            # Check if there are more files for next page
-            has_more = limit is not None and len(remaining_files) > limit
-            next_token = str(offset + len(paginated_files)) if has_more else None
+            has_more = limit is not None and len(remaining) > limit
+            next_token = str(offset + len(paginated)) if has_more else None
 
-            return paginated_files, next_token
+            return paginated, next_token
 
         return await asyncio.get_event_loop().run_in_executor(None, _list_files)
+
+    def _get_or_create_metadata_created_at(self, metadata_path: Path) -> str:
+        if metadata_path.exists():
+            try:
+                metadata_data = self._read_json_file(metadata_path)
+                created_at = metadata_data.get("created_at")
+                if isinstance(created_at, str) and created_at:
+                    return created_at
+            except Exception:
+                pass
+        return datetime.now(timezone.utc).isoformat()
+
+    def _read_metadata_created_at(self, metadata_path: Path) -> Optional[datetime]:
+        try:
+            metadata_data = self._read_json_file(metadata_path)
+        except Exception:
+            return None
+        created_at = metadata_data.get("created_at")
+        if not isinstance(created_at, str) or not created_at:
+            return None
+        try:
+            return datetime.fromisoformat(created_at)
+        except ValueError:
+            return None
 
     async def object_exists(self, key: str) -> bool:
         """Check if object exists."""
@@ -456,8 +534,25 @@ class LocalStorage(BaseStorage):
         """Write JSON data to file (synchronous helper)."""
         import json
 
-        with open(path, "w") as f:
-            json.dump(data, f)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+            raise
 
     def _read_json_file(self, path: Path) -> dict:
         """Read JSON data from file (synchronous helper)."""

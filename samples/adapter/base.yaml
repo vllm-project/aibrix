@@ -36,7 +36,7 @@ spec:
             # Note: The `--served-model-name` argument value must also match the Service name and the Deployment label `model.aibrix.ai/name`
             - qwen-coder-1-5b-instruct
             - --enable-lora
-          image: vllm/vllm-openai:v0.7.1
+          image: vllm/vllm-openai:v0.24.0
           imagePullPolicy: Always
           name: vllm-openai
           env:
@@ -46,9 +46,19 @@ spec:
             # Optional: Increase timeout for better reliability during adapter loading
             - name: VLLM_LORA_MODULES_LOADING_TIMEOUT
               value: "300"
+            # Optional: Add HF_TOKEN to enable faster model downloads from Hugging Face
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+                  optional: true
           ports:
             - containerPort: 8000
               protocol: TCP
+          volumeMounts:
+            - name: adapter-storage
+              mountPath: /tmp/aibrix/adapters
           resources:
             limits:
               nvidia.com/gpu: "1"
@@ -72,8 +82,19 @@ spec:
             timeoutSeconds: 5
             successThreshold: 1
             failureThreshold: 3
+          # Startup checks for model downloading and spinning up engine
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            initialDelaySeconds: 120  # Waits 120 seconds before doing the first check
+            failureThreshold: 120 # Model downloads from Hugging Face is time consuming.
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
         - name: aibrix-runtime
-          image: aibrix/runtime:v0.3.0
+          image: aibrix/runtime:v0.7.0
           command:
             - aibrix_runtime
             - --port
@@ -86,6 +107,9 @@ spec:
           ports:
             - containerPort: 8080
               protocol: TCP
+          volumeMounts:
+            - name: adapter-storage
+              mountPath: /tmp/aibrix/adapters
           livenessProbe:
             httpGet:
               path: /healthz
@@ -98,6 +122,9 @@ spec:
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
+      volumes:
+        - name: adapter-storage
+          emptyDir: {}
 
 ---
 

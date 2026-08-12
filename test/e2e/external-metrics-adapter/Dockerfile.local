@@ -1,0 +1,6 @@
+FROM gcr.io/distroless/static:nonroot
+WORKDIR /
+COPY bin/external-metrics-adapter-e2e external-metrics-adapter
+USER 65532:65532
+
+ENTRYPOINT ["/external-metrics-adapter"]

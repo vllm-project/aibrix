@@ -4,6 +4,9 @@
 AIBrix Router
 =============
 
+Overview
+--------
+
 The AIBrix Router is a pluggable, intelligent traffic management component embedded in the AIBrix LLM serving stack. It is designed as an Envoy Gateway extension via external processing hooks, serving as the single entry point for all LLM inference requests.
 
 This gateway abstracts away the underlying complexity of managing multiple models, LoRA adapters, heterogeneous GPU backends, and diverse scaling strategies.
@@ -13,59 +16,90 @@ This gateway abstracts away the underlying complexity of managing multiple model
   :width: 70%
   :align: center
 
+Core Principle
+--------------
+
+The router maintains a high-frequency local cache of pod metrics via periodic pulls and subscriptions. This allows it to apply sophisticated multi-objective routing logic without blocking on live queries to pods, keeping latency low on the hot path and enabling scaling to thousands of QPS.
+
+The active routing strategy can be set per-request via the ``routing-strategy`` HTTP header, or globally via the ``ROUTING_ALGORITHM`` environment variable, or through a model config profile annotation.
+
 Detailed Sequence Flow
 ----------------------
 
-.. mermaid::
+.. code-block:: text
 
-    sequenceDiagram
-        participant Client
-        participant Envoy
-        participant GatewayPlugin
-        participant Router
-        participant Cache
-        participant InferencePod
-
-        Client->>Envoy: POST /v1/chat/completions
-        Envoy->>GatewayPlugin: External Processing Hook
-        GatewayPlugin->>Router: Make routing decision
-        Router->>Cache: Query pod metrics & KV state
-        Cache-->>Router: Return latest metrics
-        Router->>Router: Apply routing algorithm
-        Router->>InferencePod: Forward request to selected pod
-        InferencePod-->>Router: Return streamed tokens
-        Router-->>GatewayPlugin: Return response
-        GatewayPlugin-->>Envoy: Pipe back response
-        Envoy-->>Client: Complete streaming
+    Client
+      │
+      │  POST /v1/chat/completions
+      ▼
+    Envoy
+      │
+      │  External Processing Hook
+      ▼
+    GatewayPlugin
+      │
+      │  Make routing decision
+      ▼
+    Router ──────────────────▶ Cache
+      │      Query pod metrics    │
+      │      & KV state           │
+      │ ◀─────────────────────────┘
+      │      Return latest metrics
+      │
+      │  Apply routing algorithm
+      │
+      │  Forward request to selected pod
+      ▼
+    InferencePod
+      │
+      │  Return streamed tokens
+      ▼
+    GatewayPlugin ──▶ Envoy ──▶ Client
 
 
 Supported Routing Strategies
 ----------------------------
 
-AIBrix ships with a set of built-in algorithms, each optimized for different workload patterns:
+AIBrix ships with a set of built-in algorithms, each optimized for different workload patterns.
 
-* ``random``: routes request to a random pod.
-* ``least-request``: routes request to a pod with the fewest ongoing requests.
-* ``throughput``: routes request to a pod which has processed the lowest total weighted tokens.
-* ``prefix-cache``: routes request to a pod which already has a KV cache matching the request's prompt prefix, includes load balancing and multiturn conversation.
-* ``least-busy-time``: routes request to the pod with the least cumulative busy processing time.
-* ``least-kv-cache``: routes request to the pod with the smallest current KV cache size (least VRAM used).
-* ``least-latency``: routes request to the pod with the lowest average processing latency.
-* ``prefix-cache-preble``: routes request considering both prefix cache hits and pod load, implementation is based of Preble: Efficient Distributed Prompt Scheduling for LLM Serving: https://arxiv.org/abs/2407.00023.
-* ``vtc-basic``: routes request using a hybrid score balancing fairness (user token count) and pod utilization. It is a simple variant of Virtual Token Counter (VTC) algorithm.  See more details at https://github.com/Ying1123/VTC-artifact
-* ``pd``: routes request for prefill-decode disaggregation, splitting processing between prefill and decode pods for optimized performance.
-* ``session-affinity``: enables sticky session routing by encoding the target pod’s address (IP:Port) into a base64-encoded value in the ``x-session-id`` header. On subsequent requests, if the header is present and valid, the gateway attempts to route to the same pod. If the pod is no longer ready (e.g., scaled down or evicted), it falls back to selecting a random ready pod and issues a new session ID.
+**General load balancing**
 
-Core Principle
---------------
+* ``random``: routes to a randomly selected pod. Useful as a baseline or when pods are homogeneous and load is uniform.
+* ``least-request``: routes to the pod with the fewest in-flight requests.
+* ``least-busy-time``: routes to the pod with the least cumulative busy processing time.
+* ``least-latency``: routes to the pod with the lowest average processing latency.
+* ``least-kv-cache``: routes to the pod with the smallest current KV cache occupancy (least VRAM used).
+* ``least-gpu-cache``: routes to the pod with the lowest GPU cache utilization.
+* ``least-utilization``: routes to the pod with the lowest overall utilization score.
+* ``throughput``: routes to the pod that has processed the fewest total weighted tokens, favoring underloaded pods.
+* ``power-of-two``: applies the power-of-two choices algorithm — samples two pods and selects the better one.
 
-By maintaining a high-frequency local cache of metrics (via periodic pulls and subscriptions), the router can apply sophisticated multi-objective routing logic without blocking on live queries to pods. This ensures low overhead on the hot path, allowing scaling to thousands of QPS.
+**KV-cache aware**
+
+* ``prefix-cache``: routes to a pod that already has a KV cache matching the request's prompt prefix, with integrated load balancing and multi-turn conversation support.
+* ``prefix-cache-preble``: routes considering both prefix cache hits and pod load. Based on `Preble: Efficient Distributed Prompt Scheduling for LLM Serving <https://arxiv.org/abs/2407.00023>`_.
+
+**Fairness**
+
+* ``vtc-basic``: routes using a hybrid score that balances per-user token fairness and pod utilization. A simplified variant of the Virtual Token Counter (VTC) algorithm. See `VTC-artifact <https://github.com/Ying1123/VTC-artifact>`_ for background.
+
+**SLO-aware**
+
+* ``slo``: routes with awareness of per-request service-level objectives.
+* ``slo-pack-load``: SLO-aware routing that packs load onto fewer pods to improve efficiency.
+* ``slo-least-load``: SLO-aware routing that spreads load to the least loaded pod.
+* ``slo-least-load-pulling``: variant of ``slo-least-load`` that pulls metrics directly rather than relying on the cached snapshot.
+
+**Specialized**
+
+* ``pd``: prefill-decode disaggregation routing. Splits processing between dedicated prefill pods and decode pods for optimized end-to-end latency.
+* ``session-affinity``: sticky session routing. Encodes the target pod's address (``IP:Port``) as a base64 value in the ``x-session-id`` response header. Subsequent requests carrying that header are routed to the same pod. Falls back to a random ready pod and issues a new session ID if the original pod is unavailable.
 
 
-How to extend routing algorithms
---------------------------------
+How to Extend Routing Algorithms
+---------------------------------
 
-The routing framework is designed to be highly pluggable, typically following this structure:
+The routing framework is designed to be highly pluggable. All routing logic is expressed through the ``Router`` interface:
 
 .. code-block:: golang
 
@@ -76,19 +110,43 @@ The routing framework is designed to be highly pluggable, typically following th
         Route(ctx *RoutingContext, readyPodList PodList) (string, error)
     }
 
-**Parameter and Return Value Details:**
+**Parameters**
 
-**Parameters**:
+- ``ctx *RoutingContext``: Per-request context carrying routing inputs. Key fields include:
 
-- ``ctx *RoutingContext``: Contains request-level info such as headers, model name ....
-- ``readyPodList PodList``: A list of candidate pods that are ready and eligible for routing. This list is pre-filtered and guaranteed to be non-empty.
+  - ``Algorithm`` — the active routing strategy name.
+  - ``Model`` — the model name extracted from the request body.
+  - ``Message`` — the raw prompt text (available for token-level decisions).
+  - ``User`` — the optional user identifier (used by fairness-based algorithms).
+  - ``ReqHeaders`` — a copy of the incoming HTTP request headers.
+  - ``ConfigProfile`` — resolved model config profile (strategy override, RPS limit, etc.), or ``nil`` if not set.
 
-**Returns**:
+- ``readyPodList PodList``: Pre-filtered list of pods that are healthy and eligible for routing. Guaranteed non-empty.
 
-- The ip address of the selected pod, or an error if selection fails.
+**Return value**
 
-To add a new algorithm:
+The IP address of the selected pod (e.g. ``"10.0.0.5:8080"``), or a non-nil error if selection fails.
 
-- Implement the `Router` interface (in Go, Python or WASM depending on plugin mode).
-- Register the strategy name via the router’s registry.
-- Specify it via HTTP header `routing-strategy: your-strategy` or through policy config.
+**Steps to add a new algorithm**
+
+1. Implement the ``Router`` interface in a new ``*.go`` file under ``pkg/plugins/gateway/algorithms/``.
+2. Declare a typed constant for the strategy name:
+
+   .. code-block:: golang
+
+       const RouterMyStrategy types.RoutingAlgorithm = "my-strategy"
+
+3. Register the constructor in an ``init()`` function so it is picked up at startup:
+
+   .. code-block:: golang
+
+       func init() {
+           Register(RouterMyStrategy, NewMyStrategyRouter)
+       }
+
+4. Specify it per-request via the ``routing-strategy`` HTTP header, or set ``ROUTING_ALGORITHM=my-strategy`` to use it as the default.
+
+Additional router interfaces in ``pkg/types/router.go`` support optional capabilities:
+
+- ``QueueRouter`` — for routers that maintain an internal queue and expose queue length.
+- ``FallbackRouter`` — enables chaining by delegating to a secondary router when the primary cannot make a decision.

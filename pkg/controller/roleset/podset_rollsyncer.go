@@ -24,8 +24,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -40,9 +39,21 @@ type PodSetRoleSyncer struct {
 	cli client.Client
 	// To allow injection for testing.
 	computeHashFunc func(template *v1.PodTemplateSpec, collisionCount *int32) string
+	recorder        record.EventRecorder
 }
 
 func (p *PodSetRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
+	// Clean up orphan Pods left by the old StatefulRoleSyncer/StatelessRoleSyncer
+	// when podGroupSize was switched from <=1 to >1.
+	cleaned, err := cleanupOrphanPods(ctx, p.cli, roleSet, role)
+	if err != nil {
+		return cleaned, err
+	}
+	if cleaned {
+		klog.V(4).Infof("[PodSetRoleSyncer.Scale] cleaned orphan pods for roleset %s/%s role %s, waiting for next reconcile", roleSet.Namespace, roleSet.Name, role.Name)
+		return true, nil
+	}
+
 	var podSetsToCreate, podSetsToDelete []*orchestrationv1alpha1.PodSet
 	allPodSets, err := getRolePodSets(ctx, p.cli, roleSet.Namespace, roleSet.Name, role.Name)
 	if err != nil {
@@ -155,6 +166,9 @@ func (p *PodSetRoleSyncer) Rollout(ctx context.Context, roleSet *orchestrationv1
 	createBudget := expectedReplicas + MaxSurge(role) - int32(len(allPodSets))
 	roleTemplateHash := p.computeHashFunc(&role.Template, nil)
 	klog.Infof("[PodSetRoleSyncer.Rollout] roleset %s/%s role %s expectedReplicas %d, deleteBudget %d, createBudget %d, template hash %s", roleSet.Namespace, roleSet.Name, role.Name, expectedReplicas, deleteBudget, createBudget, roleTemplateHash)
+	if roleUpdateStrategyTypeOrDefault(role) == orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType {
+		recordInPlaceFallback(p.recorder, roleSet, role, fmt.Sprintf("role %s uses PodSet and cannot be updated in place", role.Name))
+	}
 
 	slots, _ := p.podSetSlotForRole(role, activePodSets)
 	for i := range slots {
@@ -203,6 +217,9 @@ func (p *PodSetRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orchestra
 	createBudget := expectedReplicas + MaxSurge(role) - int32(len(allPodSets))
 	roleTemplateHash := p.computeHashFunc(&role.Template, nil)
 	klog.Infof("[PodSetRoleSyncer.RolloutByStep] Step %d: roleset %s/%s role %s expectedReplicas %d, deleteBudget %d, createBudget %d, template hash %s", currentStep, roleSet.Namespace, roleSet.Name, role.Name, expectedReplicas, deleteBudget, createBudget, roleTemplateHash)
+	if roleUpdateStrategyTypeOrDefault(role) == orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType {
+		recordInPlaceFallback(p.recorder, roleSet, role, fmt.Sprintf("role %s uses PodSet and cannot be updated in place", role.Name))
+	}
 
 	updatedTotal, _, outdatedTotal := p.updatedSlotNum(role, allPodSets)
 
@@ -438,19 +455,21 @@ func (p *PodSetRoleSyncer) createPodSetForRole(roleSet *orchestrationv1alpha1.Ro
 		)
 	}
 
+	// inject topology co-location affinity if TopologyPolicy is specified
+	if roleSet.Spec.TopologyPolicy != nil {
+		injectTopologyAffinity(&podSet.Spec.Template.Spec, roleSet, role.Name, roleSet.Spec.TopologyPolicy)
+	}
+
 	return podSet
 }
 
 // getRolePodSets returns all PodSets for a specific role
 func getRolePodSets(ctx context.Context, cli client.Client, namespace, roleSetName, roleName string) ([]*orchestrationv1alpha1.PodSet, error) {
-	roleSetReq, _ := labels.NewRequirement(constants.RoleSetNameLabelKey, selection.Equals, []string{roleSetName})
-	roleReq, _ := labels.NewRequirement(constants.RoleNameLabelKey, selection.Equals, []string{roleName})
-	labelSelector := labels.NewSelector().Add(*roleSetReq).Add(*roleReq)
-
 	podSetList := &orchestrationv1alpha1.PodSetList{}
-	err := cli.List(ctx, podSetList,
-		client.InNamespace(namespace),
-		client.MatchingLabelsSelector{Selector: labelSelector})
+	err := cli.List(ctx, podSetList, client.InNamespace(namespace), client.MatchingLabels{
+		constants.RoleSetNameLabelKey: roleSetName,
+		constants.RoleNameLabelKey:    roleName,
+	})
 	if err != nil {
 		return nil, err
 	}

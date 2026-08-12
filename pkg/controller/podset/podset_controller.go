@@ -28,9 +28,7 @@ import (
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
@@ -386,13 +384,35 @@ func (r *PodSetReconciler) createPodFromTemplate(podSet *orchestrationv1alpha1.P
 	pod.Spec.Subdomain = podSet.Labels[constants.StormServiceNameLabelKey]
 
 	// Add environment variables for pod coordination
+	isBuiltIn := func(name string) bool {
+		return name == constants.PodSetNameEnvKey ||
+			name == constants.PodSetIndexEnvKey ||
+			name == constants.PodSetSizeEnvKey
+	}
+	addBuiltInEnvVars := func(envs []v1.EnvVar) []v1.EnvVar {
+		builtInEnvs := []v1.EnvVar{
+			{Name: constants.PodSetNameEnvKey, Value: podSet.Name},
+			{Name: constants.PodSetIndexEnvKey, Value: strconv.Itoa(podIndex)},
+			{Name: constants.PodSetSizeEnvKey, Value: strconv.Itoa(int(podSet.Spec.PodGroupSize))},
+		}
+		for _, env := range envs {
+			if isBuiltIn(env.Name) {
+				klog.Warningf("PodSet %s: dropping user-defined env var %q as it conflicts with a built-in env var",
+					podSet.Name, env.Name)
+				continue
+			}
+			builtInEnvs = append(builtInEnvs, env)
+		}
+		return builtInEnvs
+	}
+	if pod.Spec.InitContainers != nil {
+		for i := range pod.Spec.InitContainers {
+			pod.Spec.InitContainers[i].Env = addBuiltInEnvVars(pod.Spec.InitContainers[i].Env)
+		}
+	}
 	if pod.Spec.Containers != nil {
 		for i := range pod.Spec.Containers {
-			pod.Spec.Containers[i].Env = append(pod.Spec.Containers[i].Env,
-				v1.EnvVar{Name: constants.PodSetNameEnvKey, Value: podSet.Name},
-				v1.EnvVar{Name: constants.PodSetIndexEnvKey, Value: strconv.Itoa(podIndex)},
-				v1.EnvVar{Name: constants.PodSetSizeEnvKey, Value: strconv.Itoa(int(podSet.Spec.PodGroupSize))},
-			)
+			pod.Spec.Containers[i].Env = addBuiltInEnvVars(pod.Spec.Containers[i].Env)
 		}
 	}
 
@@ -400,16 +420,10 @@ func (r *PodSetReconciler) createPodFromTemplate(podSet *orchestrationv1alpha1.P
 }
 
 func (r *PodSetReconciler) getPodsForPodSet(ctx context.Context, podSet *orchestrationv1alpha1.PodSet) (*v1.PodList, error) {
-	requirement, err := labels.NewRequirement(constants.PodSetNameLabelKey, selection.Equals, []string{podSet.Name})
-	if err != nil {
-		return nil, err
-	}
-	labelSelector := labels.NewSelector().Add(*requirement)
-
 	podList := &v1.PodList{}
-	err = r.List(ctx, podList,
-		client.InNamespace(podSet.Namespace),
-		client.MatchingLabelsSelector{Selector: labelSelector})
+	err := r.List(ctx, podList, client.InNamespace(podSet.Namespace), client.MatchingLabels{
+		constants.PodSetNameLabelKey: podSet.Name,
+	})
 	return podList, err
 }
 

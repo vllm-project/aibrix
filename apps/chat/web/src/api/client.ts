@@ -40,6 +40,7 @@ export interface ModelInfo {
   name: string | null
   capabilities: string[]
   owned_by: string | null
+  created?: number | null
 }
 
 export interface ConversationSummary {
@@ -65,7 +66,6 @@ export interface Conversation {
   title: string
   messages: Message[]
   model: string | null
-  project_id: string | null
   created_at: string
   updated_at: string
 }
@@ -105,22 +105,6 @@ export interface VideoJobResponse {
   generations?: Array<Record<string, unknown>>
 }
 
-export interface ProjectSummary {
-  id: string
-  name: string
-  description: string
-  updated_at: string
-}
-
-export interface Project {
-  id: string
-  name: string
-  description: string
-  instructions: string
-  created_at: string
-  updated_at: string
-}
-
 // ── Notification ─────────────────────────────────────────
 
 /** Dispatch a custom event so sidebar/chats-page can re-fetch. */
@@ -140,14 +124,13 @@ export async function fetchModels(capability?: string): Promise<ModelInfo[]> {
 
 // ── Conversations ────────────────────────────────────────
 
-export async function createConversation(model?: string, title?: string, projectId?: string): Promise<Conversation> {
+export async function createConversation(model?: string, title?: string): Promise<Conversation> {
   const res = await fetch('/api/conversations', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({
       model: model ?? null,
       title: title ?? 'New Chat',
-      project_id: projectId ?? null,
     }),
   })
   handle401(res)
@@ -199,7 +182,13 @@ export function streamCompletion(
   model: string,
   attachments: ChatAttachmentPayload[] | undefined,
   callbacks: StreamCallbacks,
-  opts?: { temperature?: number; maxTokens?: number; systemPrompt?: string },
+  opts?: {
+    temperature?: number
+    maxTokens?: number
+    systemPrompt?: string
+    replaceMessageId?: string
+    retryFromMessageId?: string
+  },
 ): AbortController {
   const controller = new AbortController()
 
@@ -210,6 +199,12 @@ export function streamCompletion(
   form.append('temperature', String(opts?.temperature ?? 0.7))
   form.append('max_tokens', String(opts?.maxTokens ?? 2048))
   form.append('system_prompt', opts?.systemPrompt ?? '')
+  if (opts?.replaceMessageId) {
+    form.append('replace_message_id', opts.replaceMessageId)
+  }
+  if (opts?.retryFromMessageId) {
+    form.append('retry_from_message_id', opts.retryFromMessageId)
+  }
 
   attachments?.forEach((attachment) => {
     form.append('files', attachment.file)
@@ -393,54 +388,4 @@ export async function getVideoStatus(jobId: string): Promise<VideoJobResponse> {
 /** Returns the URL to stream/download the finished video MP4. */
 export function getVideoContentUrl(jobId: string): string {
   return `/api/video/content/${jobId}`
-}
-
-// ── Projects ─────────────────────────────────────────────
-
-export async function createProject(name: string, description: string = ''): Promise<Project> {
-  const res = await fetch('/api/projects', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ name, description }),
-  })
-  handle401(res)
-  if (!res.ok) throw new Error('Failed to create project')
-  return res.json()
-}
-
-export async function listProjects(): Promise<ProjectSummary[]> {
-  const res = await fetch('/api/projects', { headers: authHeaders() })
-  handle401(res)
-  if (!res.ok) return []
-  return res.json()
-}
-
-export async function getProject(id: string): Promise<Project> {
-  const res = await fetch(`/api/projects/${id}`, { headers: authHeaders() })
-  handle401(res)
-  if (!res.ok) throw new Error('Project not found')
-  return res.json()
-}
-
-export async function updateProject(
-  id: string,
-  data: { name?: string; description?: string; instructions?: string },
-): Promise<Project> {
-  const res = await fetch(`/api/projects/${id}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify(data),
-  })
-  handle401(res)
-  if (!res.ok) throw new Error('Failed to update project')
-  return res.json()
-}
-
-export async function deleteProject(id: string): Promise<void> {
-  const res = await fetch(`/api/projects/${id}`, {
-    method: 'DELETE',
-    headers: authHeaders(),
-  })
-  handle401(res)
-  if (!res.ok) throw new Error('Failed to delete project')
 }

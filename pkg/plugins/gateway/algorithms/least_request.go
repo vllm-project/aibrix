@@ -53,6 +53,32 @@ func NewLeastRequestRouter() (types.Router, error) {
 	}, nil
 }
 
+// Polarity returns the polarity for least-request strategy
+func (r *leastRequestRouter) Polarity() types.Polarity {
+	return types.PolarityLeast // The fewer requests, the better
+}
+
+// ScoreAll computes the raw score (current active requests) for all ready pods in a single batch operation.
+// This allows the multi-strategy aggregator to normalize and weight the active load metric alongside other strategies.
+func (r *leastRequestRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	pods := readyPodList.All()
+	scores := make([]float64, len(pods))
+	scored := make([]bool, len(pods))
+
+	for i, pod := range pods {
+		runningReq, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning)
+		if err != nil {
+			// If a pod has no metrics yet, we assume it has 0 requests to absorb cold-start traffic.
+			scores[i] = 0.0
+			scored[i] = true
+		} else {
+			scores[i] = runningReq.GetSimpleValue()
+			scored[i] = true
+		}
+	}
+	return scores, scored, nil
+}
+
 // Route request based of least active request among input ready pods
 func (r *leastRequestRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	readyPods := readyPodList.All()
@@ -60,12 +86,35 @@ func (r *leastRequestRouter) Route(ctx *types.RoutingContext, readyPodList types
 	if isMultiPortPods(readyPods) {
 		return r.apiServerRoute(ctx, readyPods, readyPodList.ListPortsForPod())
 	}
-	// Use default Pod-level routing
-	targetPod := selectTargetPodWithLeastRequestCount(r.cache, readyPods)
+
+	scores, scored, err := r.ScoreAll(ctx, readyPodList)
+	if err != nil {
+		return "", err
+	}
+
+	var targetPod *v1.Pod
+	var targetPods []string
+	minCount := math.MaxFloat64
+
+	for i, pod := range readyPods {
+		if !scored[i] {
+			continue
+		}
+
+		if scores[i] < minCount {
+			minCount = scores[i]
+			targetPods = []string{pod.Name}
+		} else if scores[i] == minCount {
+			targetPods = append(targetPods, pod.Name)
+		}
+	}
+
+	if len(targetPods) > 0 {
+		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
+	}
 
 	// Use fallback if no valid metrics
 	if targetPod == nil {
-		var err error
 		targetPod, err = SelectRandomPodAsFallback(ctx, readyPods, rand.Intn)
 		if err != nil {
 			return "", err
@@ -169,6 +218,40 @@ func selectTargetPodAndPortWithLeastRequestCount(cache cache.Cache, readyPods []
 	}
 
 	return targetPod, targetPort
+}
+
+func selectTargetPortForPodWithLeastRequestCount(cache cache.Cache, pod *v1.Pod, portsMap map[string][]int) int {
+	if pod == nil {
+		return 0
+	}
+	podPorts := portsMap[pod.Name]
+	if len(podPorts) == 0 {
+		return 0
+	}
+	if len(podPorts) == 1 {
+		return podPorts[0]
+	}
+
+	minCount := math.MaxInt32
+	targetPorts := make([]int, 0, len(podPorts))
+	for _, port := range podPorts {
+		metricName := metrics.RealtimeNumRequestsRunning + "/" + strconv.Itoa(port)
+		count := 0
+		if val, err := cache.GetMetricValueByPod(pod.Name, pod.Namespace, metricName); err == nil && val != nil {
+			count = int(val.GetSimpleValue())
+		}
+		if count < minCount {
+			minCount = count
+			targetPorts = []int{port}
+		} else if count == minCount {
+			targetPorts = append(targetPorts, port)
+		}
+	}
+
+	if len(targetPorts) == 0 {
+		return 0
+	}
+	return targetPorts[rand.Intn(len(targetPorts))]
 }
 
 // getRequestCounts returns running request count for each pod tracked by gateway.

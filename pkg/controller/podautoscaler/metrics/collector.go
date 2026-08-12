@@ -88,7 +88,7 @@ func collectFromExternal(ctx context.Context, spec types.CollectionSpec, fetcher
 	dummyPod := corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "external-source",
-			Namespace: "default",
+			Namespace: spec.Namespace,
 		},
 	}
 	value, err := fetcher.FetchPodMetrics(ctx, dummyPod, spec.MetricSource)

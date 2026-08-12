@@ -420,7 +420,7 @@ HPKV Connector Configuration
      - Local port.
 
 PrisKV Connector Configuration
-""""""""""""""""""""""""""""
+""""""""""""""""""""""""""""""
 
 .. list-table::
    :header-rows: 1

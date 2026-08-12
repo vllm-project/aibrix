@@ -1,0 +1,26 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: aibrix-modelclaim-runtime-metrics-monitor
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/component: modelclaim-runtime
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      aibrix.ai/metrics: modelclaim-runtime
+  namespaceSelector:
+    any: true
+  endpoints:
+  - port: runtime
+    path: /metrics
+    scheme: http
+    interval: 15s
+    relabelings:
+    # Kubernetes label pool.aibrix.ai/name is not a valid Prometheus label name.
+    # Attach it as the bounded `pool` label for dashboard variables.
+    - action: replace
+      sourceLabels:
+      - __meta_kubernetes_pod_label_pool_aibrix_ai_name
+      targetLabel: pool

@@ -33,12 +33,12 @@ spec:
               value: {{ default (printf "%s-redis-master" (include "aibrix.fullname" .)) .Values.gpuOptimizer.dependencies.redis.host }}
             - name: REDIS_PORT
               value: "{{ .Values.gpuOptimizer.dependencies.redis.port }}"
-           {{- if .Values.metadata.redis.enablePassword }}
+           {{- if include "aibrix.redis.connectionHasPassword" (dict "Values" .Values "component" "gpuOptimizer") }}
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "aibrix.fullname" . }}-redis
-                  key: redis-password
+                  key: {{ include "aibrix.redis.connectionPasswordKey" (dict "component" "gpuOptimizer") }}
             {{- end }}
       {{- with .Values.gpuOptimizer.tolerations }}
       tolerations:

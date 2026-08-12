@@ -71,8 +71,7 @@ func (r *StormServiceReconciler) sync(ctx context.Context, stormService *orchest
 }
 
 // topologicalSortRolesFromSpec sorts roles by their dependencies using Kahn's algorithm.
-// Returns sorted []RoleSpec, or error if circular dependency exists.
-// TODO(CYJiang): validate role dependencies during StormService creation in webhook to prevent circular dependencies.
+// Returns sorted []RoleSpec, or error if the dependency graph is invalid.
 func (r *StormServiceReconciler) topologicalSortRolesFromSpec(roles []orchestrationv1alpha1.RoleSpec) ([]orchestrationv1alpha1.RoleSpec, error) {
 	if len(roles) == 0 {
 		return roles, nil
@@ -82,6 +81,9 @@ func (r *StormServiceReconciler) topologicalSortRolesFromSpec(roles []orchestrat
 	nameToRole := make(map[string]orchestrationv1alpha1.RoleSpec)
 	roleNames := make(map[string]bool)
 	for _, role := range roles {
+		if roleNames[role.Name] {
+			return nil, fmt.Errorf("duplicate role name %q", role.Name)
+		}
 		nameToRole[role.Name] = role
 		roleNames[role.Name] = true
 	}
@@ -99,9 +101,9 @@ func (r *StormServiceReconciler) topologicalSortRolesFromSpec(roles []orchestrat
 	graph := make(map[string][]string) // dep -> [dependents]
 	inDegree := make(map[string]int)
 
-	for _, name := range getRoleNames(roles) {
-		graph[name] = []string{}
-		inDegree[name] = 0
+	for _, role := range roles {
+		graph[role.Name] = []string{}
+		inDegree[role.Name] = 0
 	}
 
 	for _, role := range roles {
@@ -113,9 +115,9 @@ func (r *StormServiceReconciler) topologicalSortRolesFromSpec(roles []orchestrat
 
 	// Kahn's algorithm
 	queue := []string{}
-	for name, deg := range inDegree {
-		if deg == 0 {
-			queue = append(queue, name)
+	for _, role := range roles {
+		if inDegree[role.Name] == 0 {
+			queue = append(queue, role.Name)
 		}
 	}
 
@@ -142,14 +144,6 @@ func (r *StormServiceReconciler) topologicalSortRolesFromSpec(roles []orchestrat
 		sorted[i] = nameToRole[name]
 	}
 	return sorted, nil
-}
-
-func getRoleNames(roles []orchestrationv1alpha1.RoleSpec) []string {
-	names := make([]string, len(roles))
-	for i, r := range roles {
-		names[i] = r.Name
-	}
-	return names
 }
 
 func (r *StormServiceReconciler) syncHeadlessService(ctx context.Context, service *orchestrationv1alpha1.StormService) error {

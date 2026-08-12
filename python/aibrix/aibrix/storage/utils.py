@@ -16,6 +16,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
+from urllib.parse import quote
 
 from aibrix.metadata.core import AsyncLoopThread
 
@@ -135,8 +136,9 @@ def _sanitize_key(key: str) -> str:
         ):
             parts.append(part)
 
-    # Join with forward slashes (will be handled properly by pathlib)
-    sanitized = "/".join(parts)
+    # Percent-encode each path segment so hierarchical keys still map to
+    # subfolders while filesystem-hostile characters like ":" remain portable.
+    sanitized = "/".join(quote(part, safe="._-@+()[]{}~") for part in parts)
 
     # If the original key was empty or only contained dangerous patterns, use a safe default
     if not sanitized:

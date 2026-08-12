@@ -23,6 +23,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/config"
 	"github.com/vllm-project/aibrix/pkg/controller/kvcache"
 	"github.com/vllm-project/aibrix/pkg/controller/modeladapter"
+	"github.com/vllm-project/aibrix/pkg/controller/modelclaim"
 	"github.com/vllm-project/aibrix/pkg/controller/modelrouter"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler"
 	"github.com/vllm-project/aibrix/pkg/controller/podset"
@@ -58,6 +59,10 @@ func Initialize(mgr manager.Manager) error {
 
 	if features.IsControllerEnabled(features.ModelRouteController) {
 		controllerAddFuncs = append(controllerAddFuncs, modelrouter.Add)
+	}
+
+	if features.IsControllerEnabled(features.ModelClaimController) {
+		controllerAddFuncs = append(controllerAddFuncs, modelclaim.Add)
 	}
 
 	if features.IsControllerEnabled(features.DistributedInferenceController) {

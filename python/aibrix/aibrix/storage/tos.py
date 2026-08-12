@@ -13,18 +13,15 @@
 # limitations under the License.
 
 import asyncio
+from dataclasses import replace
 from io import BytesIO
 from typing import BinaryIO, Optional, TextIO, Union
 
 import tos
 from tos.exceptions import TosClientError, TosServerError
 
-from aibrix.storage.base import (
-    BaseStorage,
-    PutObjectOptions,
-    StorageConfig,
-    StorageType,
-)
+from aibrix.storage.base import PutObjectOptions, StorageConfig, StorageType
+from aibrix.storage.base2 import BaseStorage2
 from aibrix.storage.reader import Reader
 from aibrix.storage.utils import ObjectMetadata
 
@@ -37,7 +34,7 @@ class TOSPart:
         self.etag = etag
 
 
-class TOSStorage(BaseStorage):
+class TOSStorage(BaseStorage2):
     """TOS (Volcano Object Storage) implementation with multipart upload and range get support."""
 
     def __init__(
@@ -49,7 +46,12 @@ class TOSStorage(BaseStorage):
         region: str,
         config: Optional[StorageConfig] = None,
     ):
-        super().__init__(config)
+        resolved_config = config or StorageConfig()
+        if resolved_config.strict_multipart_min_part_size is None:
+            resolved_config = replace(
+                resolved_config, strict_multipart_min_part_size=True
+            )
+        super().__init__(resolved_config)
         self.bucket_name = bucket_name
 
         try:
@@ -161,12 +163,45 @@ class TOSStorage(BaseStorage):
 
         await asyncio.get_event_loop().run_in_executor(None, _delete_object)
 
+    async def delete_objects(self, keys: list[str]) -> None:
+        """Delete multiple objects from TOS using native batch delete."""
+        if not keys:
+            return
+        delete_limit = max(1, min(self.config.multi_object_delete_limit, len(keys)))
+
+        def _delete_chunk(chunk: list[str]) -> None:
+            try:
+                result = self.client.delete_multi_objects(
+                    bucket=self.bucket_name,
+                    objects=[tos.models2.ObjectTobeDeleted(key=key) for key in chunk],
+                    quiet=False,
+                )
+            except (TosClientError, TosServerError) as e:
+                raise ValueError(f"Failed to delete TOS objects: {e}")
+
+            errors = [
+                {
+                    "key": error.key,
+                    "code": error.code,
+                    "message": error.message,
+                }
+                for error in (result.error or [])
+                if error.code not in {"NoSuchKey", "404", "NotFound"}
+            ]
+            if errors:
+                raise ValueError(f"Failed to delete TOS objects: {errors}")
+
+        for chunk_start in range(0, len(keys), delete_limit):
+            chunk = keys[chunk_start : chunk_start + delete_limit]
+            await asyncio.get_event_loop().run_in_executor(None, _delete_chunk, chunk)
+
     async def list_objects(
         self,
         prefix: str = "",
         delimiter: Optional[str] = None,
         limit: Optional[int] = None,
         continuation_token: Optional[str] = None,
+        after_key: Optional[str] = None,
     ) -> tuple[list[str], Optional[str]]:
         """List objects with given prefix."""
 
@@ -183,41 +218,30 @@ class TOSStorage(BaseStorage):
 
             # Use native TOS continuation token (marker) for pagination
             if continuation_token:
-                kwargs["marker"] = continuation_token
+                kwargs["continuation_token"] = continuation_token
+            if after_key:
+                kwargs["start_after"] = after_key
 
             # Set max_keys for limit (TOS native pagination)
             if limit is not None:
                 kwargs["max_keys"] = min(limit, 1000)  # TOS max is typically 1000
 
             try:
-                if delimiter:
-                    # Use list_objects_type2 for hierarchical listing
-                    response = self.client.list_objects_type2(**kwargs)
+                # Use list_objects_type2 for hierarchical listing
+                response = self.client.list_objects_type2(**kwargs)
 
-                    # Add files
-                    for obj in response.contents:
-                        objects.append(obj.key)
+                # Add files
+                for obj in response.contents:
+                    objects.append(obj.key)
 
-                    # Add "directories" (common prefixes)
-                    for prefix_info in getattr(response, "common_prefixes", []):
-                        objects.append(prefix_info.prefix)
+                # Add "directories" (common prefixes)
+                for prefix_info in getattr(response, "common_prefixes", []):
+                    objects.append(prefix_info.prefix)
 
-                    # Get next continuation token
-                    next_token = (
-                        response.next_continuation_token
-                        if response.is_truncated
-                        else None
-                    )
-                else:
-                    # Use list_objects for flat listing
-                    response = self.client.list_objects(**kwargs)
-
-                    for obj in response.contents:
-                        objects.append(obj.key)
-
-                    # Get next continuation token (marker)
-                    next_token = response.next_marker if response.is_truncated else None
-
+                # Get next continuation token
+                next_token = (
+                    response.next_continuation_token if response.is_truncated else None
+                )
             except (TosClientError, TosServerError) as e:
                 raise ValueError(f"Failed to list objects with prefix {prefix}: {e}")
 

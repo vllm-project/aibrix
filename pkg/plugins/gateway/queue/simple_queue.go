@@ -60,15 +60,19 @@ func (q *SimpleQueue[V]) Enqueue(value V, _ time.Time) error {
 		return ErrZeroValueNotSupported
 	}
 
-	q.mu.RLock()
-	defer q.mu.RUnlock()
+	// Hold the write lock for the full duration so the element store at
+	// q.queue[pos] cannot race with a concurrent Peek or Dequeue reading the
+	// same slot (which both hold RLock).  Concurrent Enqueues now serialize at
+	// this lock, but that is correct: the previous RLock design allowed two
+	// goroutines to concurrently write/read the same slot when the queue was
+	// empty, which the race detector reports as a data race.
+	q.mu.Lock()
+	defer q.mu.Unlock()
 
 	cursor := atomic.AddInt64(&q.enqueueCursor, 1) - 1
 	pos := q.physicalPosRLocked(cursor)
 	if pos >= int64(len(q.queue)) {
-		q.mu.RUnlock()
-		pos = q.expand(cursor, pos)
-		q.mu.RLock()
+		pos = q.expandLocked(cursor, pos)
 	}
 	q.queue[pos] = value
 	return nil
@@ -168,11 +172,16 @@ func (q *SimpleQueue[V]) physicalPosRLocked(pos int64) int64 {
 	return pos - q.baseCursor
 }
 
-// Return new position in the queue.
+// expand acquires the write lock and delegates to expandLocked.
+// Called by Dequeue after dropping its RLock.
 func (q *SimpleQueue[V]) expand(triggerCursor int64, triggerPos int64) int64 {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	return q.expandLocked(triggerCursor, triggerPos)
+}
 
+// expandLocked performs the pack/grow operation. Callers must hold q.mu (Lock).
+func (q *SimpleQueue[V]) expandLocked(triggerCursor int64, triggerPos int64) int64 {
 	if triggerPos < int64(len(q.queue)) {
 		return q.physicalPosRLocked(triggerCursor)
 	}

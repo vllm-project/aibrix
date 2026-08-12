@@ -1,0 +1,34 @@
+Scenario: aibrix-latest-vs-vllm-basic
+Tests:
+  - name: aibrix-latest-pd
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/pd-model.yaml
+    benchmark: testdata/benchmarks/vllm-chat-smoke-pd.yaml
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd
+  - name: aibrix-latest-monolithic
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/model.yaml
+    benchmark: testdata/benchmarks/vllm-chat-smoke.yaml
+  - name: vllm-basic
+    provider: null
+    engine:
+      type: vllm
+      manifest: testdata/deployments/vllm/qwen3-32b-tp4-replicas2.yaml
+    benchmark: testdata/benchmarks/vllm-chat-smoke.yaml

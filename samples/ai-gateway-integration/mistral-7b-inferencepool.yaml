@@ -71,7 +71,7 @@ spec:
       terminationGracePeriodSeconds: 130
       containers:
         - name: epp
-          image: registry.k8s.io/gateway-api-inference-extension/epp:v1.0.1
+          image: registry.k8s.io/gateway-api-inference-extension/epp:v1.5.0
           args:
             - --pool-name
             - "mistral-7b"
@@ -100,7 +100,7 @@ metadata:
   namespace: default
 rules:
   - apiGroups: ["inference.networking.x-k8s.io"]
-    resources: ["inferenceobjectives", "inferencepools"]
+    resources: ["inferenceobjectives", "inferencepools", "inferencemodelrewrites"]
     verbs: ["get", "watch", "list"]
   - apiGroups: ["inference.networking.k8s.io"]
     resources: ["inferencepools"]

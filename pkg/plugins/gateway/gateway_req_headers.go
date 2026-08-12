@@ -20,6 +20,9 @@ import (
 	"context"
 	"strings"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"k8s.io/klog/v2"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -38,7 +41,7 @@ const (
 	contentTypeKey   = "content-type"
 )
 
-func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, *types.RoutingContext) {
+func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, rootSpan trace.Span, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, *types.RoutingContext) {
 	var username, requestPath string
 	var user utils.User
 	var rpm int64
@@ -46,6 +49,9 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	var errRes *extProcPb.ProcessingResponse
 	var routingCtx *types.RoutingContext
 	var reqConfigProfile string
+
+	_, span := tracer.Start(ctx, "process.handle_request_headers")
+	defer span.End()
 
 	h := req.Request.(*extProcPb.ProcessingRequest_RequestHeaders)
 	reqHeaders := map[string]string{}
@@ -65,6 +71,36 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			reqHeaders[n.Key] = string(n.RawValue)
 		case HeaderConfigProfile:
 			reqConfigProfile = strings.TrimSpace(string(n.RawValue))
+		case HeaderSessionID:
+			reqHeaders[n.Key] = string(n.RawValue)
+		case HeaderSessionKey:
+			reqHeaders[n.Key] = string(n.RawValue)
+		case HeaderTraceParent: // Preserve the trace context for requests initiated by the gateway plugin. like PD
+			reqHeaders[n.Key] = string(n.RawValue)
+			if !rootSpan.SpanContext().HasTraceID() { // prefers rootSpan traceID over traceparent
+				requestID = GetTraceID(string(n.RawValue), requestID)
+			}
+		}
+	}
+
+	// check API key
+	if s.apiKeyAuth != nil && s.apiKeyAuth.token != "" {
+		authHeaderValue := ""
+		for key, value := range reqHeaders {
+			if strings.EqualFold(key, authorizationKey) {
+				authHeaderValue = value
+				break
+			}
+		}
+		if !s.apiKeyAuth.isAuthorized(authHeaderValue) {
+			klog.V(2).InfoS("rejecting request with invalid gateway API key", "requestID", requestID, "header", "Authorization")
+			return generateErrorResponse(
+				envoyTypePb.StatusCode_Unauthorized,
+				nil,
+				"Incorrect API key provided",
+				ErrorCodeInvalidAPIKey,
+				"api_key",
+			), utils.User{}, rpm, nil
 		}
 	}
 
@@ -102,6 +138,18 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			RawValue: []byte("true"),
 		},
 	})
+
+	outCarrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, outCarrier)
+	for k, val := range outCarrier {
+		headers = append(headers, &configPb.HeaderValueOption{
+			Header: &configPb.HeaderValue{
+				Key:   k,
+				Value: val, // OTel generates a string, which is assigned directly to Envoy's Value field
+			},
+			AppendAction: configPb.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
+		})
+	}
 
 	// Note: Path rewriting for /v1/images/generations and /v1/video/generations
 	// is handled in HandleRequestBody based on the engine type (model.aibrix.ai/engine label).

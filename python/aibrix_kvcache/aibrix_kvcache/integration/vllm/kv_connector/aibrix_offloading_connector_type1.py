@@ -18,7 +18,15 @@ import enum
 import logging
 from dataclasses import dataclass, field
 from functools import wraps
-from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    ClassVar,
+    Optional,
+    Type,
+    TypeVar,
+)
 
 import numpy as np
 import torch
@@ -35,6 +43,25 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorMetadata,
     KVConnectorRole,
 )
+
+try:
+    from vllm.distributed.kv_transfer.kv_connector.v1.base import (
+        KVConnectorWorkerMetadata,
+    )
+except ImportError:
+    # vLLM versions that predate the worker-meta feedback API
+    # (e.g. the 0.10.x line pinned in aibrix_kvcache's test.txt) don't
+    # expose KVConnectorWorkerMetadata. Keep the module importable with
+    # a lightweight stand-in; at runtime the save/load path that
+    # depends on worker metadata only runs on a vLLM that does expose
+    # the real class, so the stand-in is never actually used for
+    # dispatch — it exists purely so `AIBrixWorkerMeta` below has a
+    # valid base class and the type annotations resolve.
+    class KVConnectorWorkerMetadata:  # type: ignore[no-redef]
+        """Fallback base class for vLLM versions without native
+        KVConnectorWorkerMetadata. See comment above the try/except."""
+
+
 from vllm.utils.math_utils import round_down, round_up
 from vllm.utils.torch_utils import get_kv_cache_torch_dtype
 from vllm.v1.attention.backends.flash_attn import FlashAttentionBackend
@@ -1110,6 +1137,51 @@ class AIBrixOffloadingConnectorWorker:
                 10,
             )
 
+    def wait_for_layer_load(
+        self,
+        metadata: AIBrixOffloadingConnectorMetadata,
+        layer_name: str,
+    ) -> None:
+        """Layer-wise load is not supported by the Type1 (sync) worker.
+
+        Subclasses that implement async layer-wise loading (e.g. Type2)
+        must override this method. The Connector interface declares it
+        here so that the shared `AIBrixOffloadingConnector` Connector
+        class can call `self.connector_worker.wait_for_layer_load(...)`
+        without mypy complaining — at runtime, Type1 never reaches this
+        path because Type1.Connector's wait_for_layer_load is a no-op
+        stub.
+        """
+        # NOTE: unreachable in Type1 execution paths. self.connector_worker
+        # is typed as Type1.Worker in the shared Connector __init__, so
+        # this stub exists purely as type-checker scaffolding for the
+        # Type2 override's self.connector_worker.wait_for_layer_load(...)
+        # call — at runtime, Type1.Connector's wait_for_layer_load is a
+        # no-op and never dispatches here.
+        raise NotImplementedError(
+            "Layer-wise load is not supported by the sync Type1 worker"
+        )
+
+    def save_kv_layer(
+        self,
+        metadata: AIBrixOffloadingConnectorMetadata,
+        layer_name: str,
+        kv_layer: torch.Tensor,
+        attn_metadata: "AttentionMetadata",
+    ) -> None:
+        """Layer-wise save is not supported by the Type1 (sync) worker.
+
+        Subclasses that implement async layer-wise saving (e.g. Type2)
+        must override this method. See wait_for_layer_load above for the
+        rationale for defining the stub at this level.
+        """
+        # NOTE: unreachable in Type1 execution paths — same reason as
+        # wait_for_layer_load above. Exists only so the shared Connector's
+        # Type2 override type-checks against self.connector_worker.
+        raise NotImplementedError(
+            "Layer-wise save is not supported by the sync Type1 worker"
+        )
+
     def _send_kv_sync_impl(
         self,
         seq_request_meta: AIBrixOffloadingConnectorRequestMetadata,
@@ -1269,6 +1341,16 @@ class AIBrixOffloadingConnector(KVConnectorBase_V1):
     to the kv cache offloading service.
     """
 
+    # Subclasses override these class attributes to plug in their own
+    # Scheduler/Worker implementations while inheriting the full
+    # connector contract. Used by __init__ below.
+    SCHEDULER_CLASS: ClassVar[Type["AIBrixOffloadingConnectorScheduler"]] = (
+        AIBrixOffloadingConnectorScheduler
+    )
+    WORKER_CLASS: ClassVar[Type["AIBrixOffloadingConnectorWorker"]] = (
+        AIBrixOffloadingConnectorWorker
+    )
+
     def __init__(
         self,
         config: "VllmConfig",
@@ -1285,11 +1367,9 @@ class AIBrixOffloadingConnector(KVConnectorBase_V1):
 
         self.connector_worker: Optional[AIBrixOffloadingConnectorWorker] = None
         if role == KVConnectorRole.SCHEDULER:
-            self.connector_scheduler = AIBrixOffloadingConnectorScheduler(
-                config
-            )
+            self.connector_scheduler = self.SCHEDULER_CLASS(config)
         elif role == KVConnectorRole.WORKER:
-            self.connector_worker = AIBrixOffloadingConnectorWorker(config)
+            self.connector_worker = self.WORKER_CLASS(config)
 
     # ==============================
     # Worker-side methods

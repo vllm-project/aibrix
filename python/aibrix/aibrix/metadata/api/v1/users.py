@@ -12,13 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
 from aibrix.logger import init_logger
-from aibrix.metadata.store import MetadataStore
+
+if TYPE_CHECKING:
+    from aibrix.metadata.store import MetadataStore
 
 logger = init_logger(__name__)
 router = APIRouter()

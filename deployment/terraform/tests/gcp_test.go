@@ -19,15 +19,15 @@ package tests
 import (
 	"context"
 	"fmt"
-	"testing"
 	"net"
 	"net/http"
+	"testing"
 	"time"
 
 	"github.com/gruntwork-io/terratest/modules/terraform"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 	"github.com/stretchr/testify/assert"
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
 )
 
 func TestAIBrixGCPDeployment(t *testing.T) {
@@ -81,10 +81,10 @@ func TestAIBrixGCPDeployment(t *testing.T) {
 
 	// Run a chat completion against the model endpoint
 	chatCompletion, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
+		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage("What can you tell me about San Francisco?"),
-		}),
-		Model: openai.F(modelName),
+		},
+		Model: modelName,
 	})
 	if err != nil {
 		t.Fatalf("chat completions failed: %v", err)

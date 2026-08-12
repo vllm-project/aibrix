@@ -82,6 +82,221 @@ func (f *fakeAutoScaler) ComputeDesiredReplicas(ctx context.Context, req Replica
 	return f.result, f.err
 }
 
+func TestValidateMetricsSourcesAllowsK8sExternalMetrics(t *testing.T) {
+	for _, metricSourceType := range []autoscalingv1alpha1.MetricSourceType{
+		autoscalingv1alpha1.EXTERNAL,
+		autoscalingv1alpha1.DOMAIN,
+	} {
+		t.Run(string(metricSourceType), func(t *testing.T) {
+			r := &PodAutoscalerReconciler{}
+			pa := &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{
+							MetricSourceType: metricSourceType,
+							TargetMetric:     "aibrix_test_queue_depth",
+							TargetValue:      "40",
+						},
+					},
+				},
+			}
+
+			result := r.validateMetricsSources(pa)
+
+			if !result.Valid {
+				t.Fatalf("expected Kubernetes external metrics source to be valid, got reason=%s message=%s", result.Reason, result.Message)
+			}
+		})
+	}
+}
+
+func TestValidateMetricsSourcesRequiresTargetMetricForK8sExternalMetrics(t *testing.T) {
+	r := &PodAutoscalerReconciler{}
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			MetricsSources: []autoscalingv1alpha1.MetricSource{
+				{
+					MetricSourceType: autoscalingv1alpha1.EXTERNAL,
+					TargetValue:      "40",
+				},
+			},
+		},
+	}
+
+	result := r.validateMetricsSources(pa)
+
+	if result.Valid {
+		t.Fatal("expected Kubernetes external metrics source without targetMetric to be invalid")
+	}
+	if result.Reason != ReasonMetricsConfigError {
+		t.Fatalf("expected reason=%s, got %s", ReasonMetricsConfigError, result.Reason)
+	}
+	if result.Message != "metricsSource[0]: targetMetric must be specified" {
+		t.Fatalf("unexpected message: %s", result.Message)
+	}
+}
+
+func TestValidateSpecRejectsHPARoleSubtarget(t *testing.T) {
+	r := &PodAutoscalerReconciler{}
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{
+				Name: "test-stormservice",
+				Kind: "StormService",
+			},
+			SubTargetSelector: &autoscalingv1alpha1.SubTargetSelector{
+				RoleName: "decode",
+			},
+			MinReplicas:     ptr.To(int32(1)),
+			MaxReplicas:     5,
+			ScalingStrategy: autoscalingv1alpha1.HPA,
+			MetricsSources: []autoscalingv1alpha1.MetricSource{
+				{
+					MetricSourceType: autoscalingv1alpha1.RESOURCE,
+					TargetMetric:     "cpu",
+					TargetValue:      "50",
+				},
+			},
+		},
+	}
+
+	result := r.validateSpec(pa)
+
+	if result.Valid {
+		t.Fatal("expected HPA with subTargetSelector.roleName to be invalid")
+	}
+	if result.Reason != ReasonInvalidScalingStrategy {
+		t.Fatalf("expected reason=%s, got %s", ReasonInvalidScalingStrategy, result.Reason)
+	}
+	if result.Message != "subTargetSelector.roleName is not supported with scalingStrategy=HPA; use APA or KPA for StormService role-level autoscaling." {
+		t.Fatalf("unexpected message: %s", result.Message)
+	}
+}
+
+func TestValidateSpecRejectsNonPositiveMetricWindows(t *testing.T) {
+	r := &PodAutoscalerReconciler{}
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{
+				Name: "test-deployment",
+				Kind: "Deployment",
+			},
+			MaxReplicas:          5,
+			ScalingStrategy:      autoscalingv1alpha1.KPA,
+			ObserveWindowSeconds: ptr.To[int64](0),
+			PanicWindowSeconds:   ptr.To[int64](-1),
+			MetricsSources: []autoscalingv1alpha1.MetricSource{
+				{
+					MetricSourceType: autoscalingv1alpha1.RESOURCE,
+					TargetMetric:     "cpu",
+					TargetValue:      "50",
+				},
+			},
+		},
+	}
+
+	result := r.validateSpec(pa)
+
+	if result.Valid {
+		t.Fatal("expected non-positive metric windows to be invalid")
+	}
+	if result.Reason != ReasonInvalidSpec {
+		t.Fatalf("expected reason=%s, got %s", ReasonInvalidSpec, result.Reason)
+	}
+	if result.Message != "observeWindowSeconds must be greater than 0." {
+		t.Fatalf("unexpected message: %s", result.Message)
+	}
+}
+
+func TestValidateSpecRejectsMetricWindowOverflow(t *testing.T) {
+	r := &PodAutoscalerReconciler{}
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{
+				Name: "test-deployment",
+				Kind: "Deployment",
+			},
+			MaxReplicas:          5,
+			ScalingStrategy:      autoscalingv1alpha1.KPA,
+			ObserveWindowSeconds: ptr.To(maxMetricWindowSeconds + 1),
+			MetricsSources: []autoscalingv1alpha1.MetricSource{
+				{
+					MetricSourceType: autoscalingv1alpha1.RESOURCE,
+					TargetMetric:     "cpu",
+					TargetValue:      "50",
+				},
+			},
+		},
+	}
+
+	result := r.validateSpec(pa)
+
+	if result.Valid {
+		t.Fatal("expected oversized metric window to be invalid")
+	}
+	if result.Reason != ReasonInvalidSpec {
+		t.Fatalf("expected reason=%s, got %s", ReasonInvalidSpec, result.Reason)
+	}
+	if result.Message != "observeWindowSeconds must be less than or equal to 3600." {
+		t.Fatalf("unexpected message: %s", result.Message)
+	}
+}
+
+func TestValidateSpecRejectsPanicWindowGreaterThanObserveWindow(t *testing.T) {
+	tests := []struct {
+		name                 string
+		observeWindowSeconds *int64
+		panicWindowSeconds   *int64
+	}{
+		{
+			name:                 "custom panic exceeds custom observe",
+			observeWindowSeconds: ptr.To[int64](60),
+			panicWindowSeconds:   ptr.To[int64](120),
+		},
+		{
+			name:                 "default panic exceeds custom observe",
+			observeWindowSeconds: ptr.To[int64](30),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &PodAutoscalerReconciler{}
+			pa := &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{
+						Name: "test-deployment",
+						Kind: "Deployment",
+					},
+					MaxReplicas:          5,
+					ScalingStrategy:      autoscalingv1alpha1.KPA,
+					ObserveWindowSeconds: tt.observeWindowSeconds,
+					PanicWindowSeconds:   tt.panicWindowSeconds,
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{
+							MetricSourceType: autoscalingv1alpha1.RESOURCE,
+							TargetMetric:     "cpu",
+							TargetValue:      "50",
+						},
+					},
+				},
+			}
+
+			result := r.validateSpec(pa)
+
+			if result.Valid {
+				t.Fatal("expected panic window greater than observe window to be invalid")
+			}
+			if result.Reason != ReasonInvalidSpec {
+				t.Fatalf("expected reason=%s, got %s", ReasonInvalidSpec, result.Reason)
+			}
+			if result.Message != "panicWindowSeconds must be less than or equal to observeWindowSeconds." {
+				t.Fatalf("unexpected message: %s", result.Message)
+			}
+		})
+	}
+}
+
 // ---- helpers ----
 
 func buildPod(ns, name string, lbls map[string]string) *corev1.Pod {

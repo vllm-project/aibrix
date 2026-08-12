@@ -55,6 +55,56 @@ def _headers(api_key: str) -> dict[str, str]:
 _EVENT_HOOKS = {"request": [_log_request], "response": [_log_response]}
 
 
+# Newer OpenAI model families (gpt-5.x, o-series) reject `max_tokens` in favor
+# of `max_completion_tokens`, and only accept the default temperature.
+_NEW_OPENAI_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+
+
+def _is_new_openai_model(model: str) -> bool:
+    m = model.lower()
+    return any(m == p or m.startswith(f"{p}-") or m.startswith(f"{p}.") for p in _NEW_OPENAI_PREFIXES)
+
+
+def _build_chat_payload(
+    model: str,
+    messages: list[dict],
+    temperature: float,
+    max_tokens: int,
+    stream: bool,
+) -> dict:
+    """Build a chat-completions payload, adapting params to the model family.
+
+    Older/OpenAI-compatible models (vLLM, AIBrix) use `max_tokens` + `temperature`.
+    Newer OpenAI models (gpt-5.x, o-series) require `max_completion_tokens` and
+    reject a non-default temperature.
+    """
+    payload: dict = {"model": model, "messages": messages, "stream": stream}
+    if _is_new_openai_model(model):
+        payload["max_completion_tokens"] = max_tokens
+    else:
+        payload["max_tokens"] = max_tokens
+        payload["temperature"] = temperature
+    return payload
+
+
+def _needs_completion_tokens_retry(status_code: int, body_text: str, payload: dict) -> bool:
+    """True if the request failed because the model wants max_completion_tokens.
+
+    Name-based detection (_is_new_openai_model) can't cover every alias
+    (e.g. ``chat-latest``), so we self-heal on the API's own error.
+    """
+    return status_code == 400 and "max_completion_tokens" in body_text and "max_tokens" in payload
+
+
+def _swap_to_completion_tokens(payload: dict) -> dict:
+    """Return a copy of payload using max_completion_tokens, dropping temperature."""
+    new_payload = dict(payload)
+    if "max_tokens" in new_payload:
+        new_payload["max_completion_tokens"] = new_payload.pop("max_tokens")
+    new_payload.pop("temperature", None)
+    return new_payload
+
+
 # ── Chat ─────────────────────────────────────────────────
 
 
@@ -93,18 +143,12 @@ class OpenAIChatProvider(ChatProvider):
         max_tokens: int = 2048,
         **kwargs: Any,
     ) -> dict:
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": False,
-        }
-        resp = await self.client.post(
-            f"{self.base_url}/v1/chat/completions",
-            json=payload,
-            headers=_headers(self.api_key),
-        )
+        payload = _build_chat_payload(model, messages, temperature, max_tokens, stream=False)
+        url = f"{self.base_url}/v1/chat/completions"
+        resp = await self.client.post(url, json=payload, headers=_headers(self.api_key))
+        if _needs_completion_tokens_retry(resp.status_code, resp.text, payload):
+            payload = _swap_to_completion_tokens(payload)
+            resp = await self.client.post(url, json=payload, headers=_headers(self.api_key))
         if resp.status_code != 200:
             logger.error(
                 "Chat completion failed: %s %s — %s",
@@ -125,30 +169,28 @@ class OpenAIChatProvider(ChatProvider):
     ) -> AsyncIterator[str]:
         from services.providers.sse_utils import parse_openai_sse
 
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": True,
-        }
-        async with self.client.stream(
-            "POST",
-            f"{self.base_url}/v1/chat/completions",
-            json=payload,
-            headers=_headers(self.api_key),
-        ) as resp:
-            if resp.status_code != 200:
-                body = await resp.aread()
-                logger.error(
-                    "Chat stream failed: %s %s — %s",
-                    resp.status_code,
-                    resp.reason_phrase,
-                    body.decode(),
-                )
-            resp.raise_for_status()
-            async for event in parse_openai_sse(resp.aiter_lines()):
-                yield event
+        payload = _build_chat_payload(model, messages, temperature, max_tokens, stream=True)
+        url = f"{self.base_url}/v1/chat/completions"
+
+        retried = False
+        while True:
+            async with self.client.stream("POST", url, json=payload, headers=_headers(self.api_key)) as resp:
+                if resp.status_code != 200:
+                    body_text = (await resp.aread()).decode()
+                    if not retried and _needs_completion_tokens_retry(resp.status_code, body_text, payload):
+                        payload = _swap_to_completion_tokens(payload)
+                        retried = True
+                        continue
+                    logger.error(
+                        "Chat stream failed: %s %s — %s",
+                        resp.status_code,
+                        resp.reason_phrase,
+                        body_text,
+                    )
+                resp.raise_for_status()
+                async for event in parse_openai_sse(resp.aiter_lines()):
+                    yield event
+                return
 
 
 # ── Image ────────────────────────────────────────────────

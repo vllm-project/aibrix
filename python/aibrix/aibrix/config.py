@@ -31,7 +31,7 @@ class AIBrixSettings(BaseSettings):
     )
 
     # --- Logging Settings ---
-    LOG_LEVEL: str = "DEBUG"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+    LOG_LEVEL: str = "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
     LOG_PATH: Optional[str] = "/tmp/aibrix/python.log"  # If None, logs to stdout only
     LOG_FORMAT: str = "%(asctime)s - %(filename)s:%(lineno)d - %(funcName)s - %(levelname)s - %(message)s"
 

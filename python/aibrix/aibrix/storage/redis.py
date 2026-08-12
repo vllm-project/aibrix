@@ -12,22 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import time
 from typing import BinaryIO, Optional, TextIO, Union
 
-import redis.asyncio as redis
-
+import aibrix.client.redis as redis
+from aibrix import envs
 from aibrix.storage.base import (
-    BaseStorage,
     PutObjectOptions,
     StorageConfig,
     StorageType,
 )
+from aibrix.storage.base2 import BaseStorage2
 from aibrix.storage.reader import Reader
+from aibrix.storage.types import StorageListOrdering
 from aibrix.storage.utils import ObjectMetadata
 
 
-class RedisStorage(BaseStorage):
+class RedisStorage(BaseStorage2):
     """Redis storage implementation.
 
     This implementation uses Redis as a key-value store with the following features:
@@ -36,29 +38,43 @@ class RedisStorage(BaseStorage):
     - Hierarchical key support using Redis sets (e.g., "xxx/yyy" creates set "xxx:index")
     - Simple get/put/delete operations
     - List operations that work with Redis structures
-    - Timestamp-ordered listing: list_objects returns keys ordered by creation timestamp
+    - Timestamp-ordered listing for both created_at ascending and descending
 
     Timestamp Tracking:
     - All keys are tracked in "timestamps:all" sorted set with creation time as score
     - Hierarchical keys are also tracked in "timestamps:{parent}" sorted sets
-    - list_objects returns keys in chronological order (oldest first)
+    - Version 1 stored positive timestamps (oldest-first ordering)
+    - Version 2 stored negative timestamps so the existing ascending zset
+      pagination returned newest-first results
+    - Version 3 stores positive timestamps and supports both created_at
+      ascending and descending order
+    - Listing chooses ZRANGE/ZRANK for ascending order and
+      ZREVRANGE/ZREVRANK for descending order
     - Timestamps are cleaned up automatically when objects are deleted
     """
 
     def __init__(
         self,
-        host: str = "localhost",
-        port: int = 6379,
-        db: int = 0,
-        password: Optional[str] = None,
         config: Optional[StorageConfig] = None,
+        **kwargs,
     ):
         super().__init__(config)
-        self.host = host
-        self.port = port
-        self.db = db
-        self.password = password
-        self._redis: Optional[redis.Redis] = None
+        self._redis_clients: dict[int, redis.AsyncRedis] = {}
+        self._kwargs = kwargs
+        self._global_prefix = (envs.DB_REDIS_PREFIX or "").strip()
+
+    def _prefixed_key(self, key: str) -> str:
+        if not self._global_prefix:
+            return key
+        return f"{self._global_prefix}:{key}"
+
+    def _strip_prefixed_key(self, key: str) -> str:
+        if not self._global_prefix:
+            return key
+        prefix = f"{self._global_prefix}:"
+        if key.startswith(prefix):
+            return key[len(prefix) :]
+        return key
 
     def get_type(self) -> StorageType:
         """Get the type of storage.
@@ -68,23 +84,53 @@ class RedisStorage(BaseStorage):
         """
         return StorageType.REDIS
 
-    async def _get_redis(self) -> redis.Redis:
+    @classmethod
+    def get_supported_list_orderings(cls) -> tuple[StorageListOrdering, ...]:
+        return (
+            StorageListOrdering.CREATED_AT_DESC,
+            StorageListOrdering.CREATED_AT_ASC,
+        )
+
+    def _is_created_at_desc_order(self) -> bool:
+        return self.get_list_ordering() == StorageListOrdering.CREATED_AT_DESC
+
+    async def _zrange_by_list_order(
+        self,
+        redis_client: redis.AsyncRedis,
+        key: str,
+        start: int,
+        end: int,
+        withscores: bool = False,
+    ):
+        if self._is_created_at_desc_order():
+            return await redis_client.zrevrange(key, start, end, withscores=withscores)
+        return await redis_client.zrange(key, start, end, withscores=withscores)
+
+    async def _zrank_by_list_order(
+        self,
+        redis_client: redis.AsyncRedis,
+        key: str,
+        member: str,
+    ) -> Optional[int]:
+        if self._is_created_at_desc_order():
+            return await redis_client.zrevrank(key, member)
+        return await redis_client.zrank(key, member)
+
+    async def _get_redis(self) -> redis.AsyncRedis:
         """Get Redis connection, creating it if necessary."""
-        if self._redis is None:
-            self._redis = redis.Redis(
-                host=self.host,
-                port=self.port,
-                db=self.db,
-                password=self.password,
-                decode_responses=False,  # Keep as bytes
-            )
-        return self._redis
+        loop_id = id(asyncio.get_running_loop())
+        redis_client = self._redis_clients.get(loop_id)
+        if redis_client is None:
+            client_kwargs = {**self._kwargs, "decode_responses": False}  # Keep as bytes
+            redis_client = redis.get_redis_client(**client_kwargs)
+            self._redis_clients[loop_id] = redis_client
+        return redis_client
 
     async def close(self):
         """Close Redis connection."""
-        if self._redis:
-            await self._redis.aclose()
-            self._redis = None
+        for redis_client in self._redis_clients.values():
+            await redis_client.aclose()
+        self._redis_clients.clear()
 
     def _parse_hierarchical_key(self, key: str) -> tuple[Optional[str], str]:
         """Parse hierarchical key into parent and item.
@@ -142,6 +188,10 @@ class RedisStorage(BaseStorage):
 
         # Parse hierarchical key
         parent_key, item_key = self._parse_hierarchical_key(key)
+        storage_key = self._prefixed_key(key)
+        storage_parent_key = (
+            self._prefixed_key(parent_key) if parent_key is not None else None
+        )
 
         # Prepare Redis SET options from PutObjectOptions
         redis_ex = None
@@ -160,7 +210,12 @@ class RedisStorage(BaseStorage):
 
         # Store the actual data with options
         result = await redis_client.set(
-            key, data_bytes, ex=redis_ex, px=redis_px, nx=redis_nx, xx=redis_xx
+            storage_key,
+            data_bytes,
+            ex=redis_ex,
+            px=redis_px,
+            nx=redis_nx,
+            xx=redis_xx,
         )
 
         # Check if the SET operation succeeded
@@ -168,16 +223,42 @@ class RedisStorage(BaseStorage):
             # Conditional SET failed (NX or XX condition not met)
             return False
 
-        # Store creation timestamp for ordering (only if SET succeeded)
+        # Store canonical positive created_at timestamps. Listing direction is
+        # selected at read time via ZRANGE/ZREVRANGE based on StorageConfig.
+        # Use ZADD NX so first insert wins without a preceding ZSCORE, then
+        # fall back to reading the canonical global score only when a parent
+        # index needs to mirror it on overwrite.
         timestamp = time.time()
-        await redis_client.zadd("timestamps:all", {key: timestamp})
+        global_timestamp_added = await redis_client.zadd(
+            self._prefixed_key("timestamps:all"), {storage_key: timestamp}, nx=True
+        )
 
         # If hierarchical, add to parent list and track timestamp
         if parent_key is not None:
+            if global_timestamp_added == 0:
+                # Always rewrite the parent timestamp entry on put. ``SADD`` only
+                # proves the membership set already contains ``item_key``; it
+                # does not guarantee ``timestamps:{parent}`` still has the member
+                # or that it still carries the canonical created-at score from
+                # ``timestamps:all``. Re-applying the parent ZADD keeps the
+                # hierarchical ordering index aligned and repairs partial drift
+                # from interrupted writes or manual Redis changes.
+                existing_timestamp = await redis_client.zscore(
+                    self._prefixed_key("timestamps:all"), storage_key
+                )
+                if existing_timestamp is None:
+                    raise RuntimeError(
+                        f"Redis timestamps:all lost score for existing key {storage_key!r}"
+                    )
+                timestamp = float(existing_timestamp)
             # Add item to parent list (only if not already present)
-            await redis_client.sadd(f"{parent_key}:index", item_key)
+            assert storage_parent_key is not None
+            await redis_client.sadd(f"{storage_parent_key}:index", item_key)
             # Also track timestamp for hierarchical objects
-            await redis_client.zadd(f"timestamps:{parent_key}", {item_key: timestamp})
+            await redis_client.zadd(
+                self._prefixed_key(f"timestamps:{parent_key}"),
+                {item_key: timestamp},
+            )
 
         return True
 
@@ -202,9 +283,11 @@ class RedisStorage(BaseStorage):
         """
         redis_client = await self._get_redis()
 
-        data = await redis_client.get(key)
+        data = await redis_client.get(self._prefixed_key(key))
         if data is None:
             raise FileNotFoundError(f"Object not found: {key}")
+        if isinstance(data, str):
+            data = data.encode("utf-8")
 
         # Handle range requests
         if range_start is not None:
@@ -227,17 +310,24 @@ class RedisStorage(BaseStorage):
 
         # Parse hierarchical key
         parent_key, item_key = self._parse_hierarchical_key(key)
+        storage_key = self._prefixed_key(key)
+        storage_parent_key = (
+            self._prefixed_key(parent_key) if parent_key is not None else None
+        )
 
         # Delete the actual data
-        await redis_client.delete(key)
+        await redis_client.delete(storage_key)
 
         # Clean up timestamp tracking
-        await redis_client.zrem("timestamps:all", key)
+        await redis_client.zrem(self._prefixed_key("timestamps:all"), storage_key)
 
         # If hierarchical, remove from parent list and timestamps
         if parent_key is not None:
-            await redis_client.srem(f"{parent_key}:index", item_key)
-            await redis_client.zrem(f"timestamps:{parent_key}", item_key)
+            assert storage_parent_key is not None
+            await redis_client.srem(f"{storage_parent_key}:index", item_key)
+            await redis_client.zrem(
+                self._prefixed_key(f"timestamps:{parent_key}"), item_key
+            )
 
     async def list_objects(
         self,
@@ -245,6 +335,7 @@ class RedisStorage(BaseStorage):
         delimiter: Optional[str] = None,
         limit: Optional[int] = None,
         continuation_token: Optional[str] = None,
+        after_key: Optional[str] = None,
     ) -> tuple[list[str], Optional[str]]:
         """List objects with given prefix ordered by creation timestamp.
 
@@ -261,7 +352,7 @@ class RedisStorage(BaseStorage):
 
         Returns:
             Tuple of (object_keys, next_continuation_token)
-            - object_keys: List of object keys ordered by creation timestamp (oldest first)
+            - object_keys: List of object keys ordered by created_at descending.
             - next_continuation_token: String offset for next page (None if no more pages)
         """
         redis_client = await self._get_redis()
@@ -274,34 +365,65 @@ class RedisStorage(BaseStorage):
             except (ValueError, TypeError):
                 offset = 0
 
+        # Allow callers to pass either the parent prefix ("batchjob") or the
+        # slash-qualified listing prefix ("batchjob/") for hierarchical keys.
+        hierarchical_prefix = prefix
+        parent_prefix = prefix
+        if delimiter and prefix.endswith(delimiter):
+            parent_prefix = prefix[: -len(delimiter)]
+        elif delimiter and prefix:
+            hierarchical_prefix = f"{prefix}{delimiter}"
+
         # Check if this prefix corresponds to a list index
-        list_key = f"{prefix}:index"
+        list_key = self._prefixed_key(f"{parent_prefix}:index")
         if await redis_client.exists(list_key):
             # Get members ordered by timestamp from the sorted set
-            timestamp_key = f"timestamps:{prefix}"
+            timestamp_key = self._prefixed_key(f"timestamps:{parent_prefix}")
+            members: list[str]
             if await redis_client.exists(timestamp_key):
-                # Calculate pagination bounds
+                if continuation_token is None and after_key:
+                    if delimiter and after_key.startswith(hierarchical_prefix):
+                        after_member = after_key[len(hierarchical_prefix) :]
+                    else:
+                        after_member = after_key
+                    rank = await self._zrank_by_list_order(
+                        redis_client, timestamp_key, after_member
+                    )
+                    if rank is None:
+                        return [], None
+                    offset = rank + 1
+                # Calculate pagination bounds. When paginating, read one extra
+                # member so ``has_more`` can be derived without a second Redis
+                # round trip, then trim the page back to ``limit`` below.
                 start = offset
-                end = offset + limit - 1 if limit is not None else -1
+                end = offset + limit if limit is not None else -1
 
-                # Get members ordered by timestamp (oldest first) with pagination
-                members_with_scores = await redis_client.zrange(
-                    timestamp_key, start, end, withscores=False
+                # Read the zset in the configured created_at direction while
+                # keeping pagination based on logical rank offsets.
+                members_with_scores = await self._zrange_by_list_order(
+                    redis_client, timestamp_key, start, end, withscores=False
                 )
                 members = [member.decode("utf-8") for member in members_with_scores]
 
-                # Check if there are more items for next page
-                has_more = False
-                if limit is not None and len(members) == limit:
-                    # Check if there's at least one more item after this page
-                    next_item = await redis_client.zrange(
-                        timestamp_key, start + limit, start + limit, withscores=False
-                    )
-                    has_more = len(next_item) > 0
+                # Trim the extra member after probing for ``has_more``.
+                has_more = limit is not None and len(members) > limit
+                if has_more:
+                    members = members[:limit]
             else:
                 # Fallback to unordered members if no timestamps
                 members_raw = await redis_client.smembers(list_key)
-                all_members = [member.decode("utf-8") for member in members_raw]
+                all_members: list[str] = [
+                    member.decode("utf-8") for member in members_raw
+                ]
+                if continuation_token is None and after_key:
+                    if delimiter and after_key.startswith(hierarchical_prefix):
+                        after_member = after_key[len(hierarchical_prefix) :]
+                    else:
+                        after_member = after_key
+                    try:
+                        offset = all_members.index(after_member) + 1
+                    except ValueError:
+                        return [], None
 
                 # Apply pagination to unordered list
                 if offset > 0:
@@ -312,7 +434,7 @@ class RedisStorage(BaseStorage):
 
             if delimiter:
                 # Return hierarchical format with delimiter
-                result_keys = [f"{prefix}{delimiter}{member}" for member in members]
+                result_keys = [f"{hierarchical_prefix}{member}" for member in members]
             else:
                 # Return just the member names
                 result_keys = members
@@ -324,13 +446,17 @@ class RedisStorage(BaseStorage):
         # Fallback to key scanning with timestamp ordering
         if prefix:
             # For prefix searches, get all keys from timestamp sorted set and filter
-            all_keys_with_timestamps = await redis_client.zrange(
-                "timestamps:all", 0, -1, withscores=False
+            all_keys_with_timestamps = await self._zrange_by_list_order(
+                redis_client,
+                self._prefixed_key("timestamps:all"),
+                0,
+                -1,
+                withscores=False,
             )
 
             filtered_keys = []
             for key_bytes in all_keys_with_timestamps:
-                key_str = key_bytes.decode("utf-8")
+                key_str = self._strip_prefixed_key(key_bytes.decode("utf-8"))
                 # Filter by prefix and exclude internal keys
                 if (
                     key_str.startswith(prefix)
@@ -338,6 +464,12 @@ class RedisStorage(BaseStorage):
                     and not key_str.startswith("timestamps:")
                 ):
                     filtered_keys.append(key_str)
+
+            if continuation_token is None and after_key:
+                try:
+                    offset = filtered_keys.index(after_key) + 1
+                except ValueError:
+                    return [], None
 
             # Apply pagination after filtering
             if offset > 0:
@@ -348,17 +480,27 @@ class RedisStorage(BaseStorage):
         else:
             # For no prefix, get all keys first, then filter and paginate
             # This ensures consistent pagination even when internal keys are present
-            all_keys_with_timestamps = await redis_client.zrange(
-                "timestamps:all", 0, -1, withscores=False
+            all_keys_with_timestamps = await self._zrange_by_list_order(
+                redis_client,
+                self._prefixed_key("timestamps:all"),
+                0,
+                -1,
+                withscores=False,
             )
             all_user_keys = []
             for key_bytes in all_keys_with_timestamps:
-                key_str = key_bytes.decode("utf-8")
+                key_str = self._strip_prefixed_key(key_bytes.decode("utf-8"))
                 # Exclude internal keys
                 if not key_str.endswith(":index") and not key_str.startswith(
                     "timestamps:"
                 ):
                     all_user_keys.append(key_str)
+
+            if continuation_token is None and after_key:
+                try:
+                    offset = all_user_keys.index(after_key) + 1
+                except ValueError:
+                    return [], None
 
             # Apply pagination to filtered keys
             paginated_keys = all_user_keys[offset:]
@@ -400,7 +542,7 @@ class RedisStorage(BaseStorage):
             True if object exists, False otherwise
         """
         redis_client = await self._get_redis()
-        return bool(await redis_client.exists(key))
+        return bool(await redis_client.exists(self._prefixed_key(key)))
 
     async def get_object_size(self, key: str) -> int:
         """Get object size in bytes.
@@ -416,10 +558,11 @@ class RedisStorage(BaseStorage):
         """
         redis_client = await self._get_redis()
 
-        size = await redis_client.strlen(key)
+        storage_key = self._prefixed_key(key)
+        size = await redis_client.strlen(storage_key)
         if size == 0:
             # Check if key actually exists
-            if not await redis_client.exists(key):
+            if not await redis_client.exists(storage_key):
                 raise FileNotFoundError(f"Object not found: {key}")
 
         return size

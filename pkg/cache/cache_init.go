@@ -28,7 +28,6 @@ import (
 	"github.com/redis/go-redis/v9"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
@@ -85,14 +84,18 @@ type Store struct {
 	engineMetricsFetcher *metrics.EngineMetricsFetcher // Centralized typed metrics fetcher
 
 	// Request trace fields
-	enableTracing bool                                  // Default to load from enableGPUOptimizerTracing, can be configured.
-	requestTrace  *utils.SyncMap[string, *RequestTrace] // Request trace data (model_name -> *RequestTrace)
+	enableTracing bool                                   // Default to load from enableGPUOptimizerTracing, can be configured.
+	requestTrace  *utils.SyncMap[string, *RequestTrace]  // Request trace data (model_name -> *RequestTrace)
+	podStats      utils.SyncMap[string, *podStatsRecord] // Request stats data bound to request completion, not pod lifetime.
 
 	// Pod related storage
 	metaPods utils.SyncMap[string, *Pod] // pod_namespace/pod_name -> *Pod
 
 	// Model related storage
 	metaModels utils.SyncMap[string, *Model] // model_name -> *Model
+	// ModelClaim advertisements include non-routable port-0 states and are kept
+	// separate from metaModels by construction.
+	modelClaims modelClaimState
 
 	// Deploymnent related storage
 	enableProfileCaching bool                                    // Default to load from enableModelGPUProfileCaching, can be configured.
@@ -120,6 +123,14 @@ type Store struct {
 
 	// List of registered request trackers
 	requestTrackers []RequestTracker
+
+	// gatewaySnapshotCache holds a periodically refreshed snapshot of all gateway pod entries
+	// from Redis, grouped by pod key (namespace/name) → []fields. Swapped atomically by
+	// initGatewaySnapshotSync. Readers call Load() to get map[string][]map[string]string.
+	gatewaySnapshotCache atomic.Value
+
+	// modelReplicaEmitted tracks pods currently exported via model_replicas for stale-series cleanup.
+	modelReplicaEmitted utils.SyncMap[string, modelReplicaState]
 }
 
 // Get retrieves the cache instance
@@ -283,8 +294,9 @@ func InitWithPodsModelMetrics(st *Store, podMetrics map[string]map[string]metric
 			return true
 		}
 		if podmetrics, ok := podMetrics[podName]; ok {
+			modelName, _ := constants.ModelNameFromMetadata(metaPod.Pod.Labels, metaPod.Pod.Annotations)
 			for metricName, metric := range podmetrics {
-				if err := st.updatePodRecord(metaPod, metaPod.Pod.Labels[modelIdentifier], metricName, metrics.PodModelMetricScope, metric); err != nil {
+				if err := st.updatePodRecord(metaPod, modelName, metricName, metrics.PodModelMetricScope, metric); err != nil {
 					return false
 				}
 			}
@@ -339,19 +351,16 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 		// Create store with provided dependencies
 		store = New(opts.RedisClient, initPrometheusAPI(config), opts.ModelRouterProvider)
 
-		// Initialize service discovery
-		if opts.DiscoveryProvider != nil {
-			// Use custom discovery provider (e.g., file-based for standalone mode)
-			if err := initDiscoveryProvider(store, opts.DiscoveryProvider, stopCh); err != nil {
-				klog.Fatalf("Failed to initialize discovery provider: %v", err)
-			}
-			klog.InfoS("Using custom discovery provider", "type", opts.DiscoveryProvider.Type())
-		} else {
-			// Use Kubernetes informers (default)
-			if err := initCacheInformers(store, config, stopCh); err != nil {
-				klog.Fatalf("Failed to initialize cache informers: %v", err)
-			}
+		// Initialize service discovery — all modes go through the Provider interface
+		provider := opts.DiscoveryProvider
+		if provider == nil {
+			// Default: Kubernetes informer-based discovery
+			provider = discovery.NewKubernetesProvider(config)
 		}
+		if err := initDiscoveryProvider(store, provider, stopCh); err != nil {
+			klog.Fatalf("Failed to initialize discovery provider: %v", err)
+		}
+		klog.InfoS("Using discovery provider", "type", provider.Type())
 		initMetricsCache(store, stopCh)
 
 		// Initialize profile cache if enabled
@@ -362,6 +371,12 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 		// Initialize trace cache if enabled and Redis is available
 		if store.enableTracing && opts.RedisClient != nil {
 			initTraceCache(opts.RedisClient, stopCh)
+		}
+
+		// Initialize gateway snapshot sync if Redis is available
+		if opts.RedisClient != nil {
+			klog.Info("Initializing gateway snapshot sync")
+			initGatewaySnapshotSync(store, stopCh)
 		}
 
 		// Initialize KV event sync if enabled
@@ -405,44 +420,50 @@ func initMetricsCache(store *Store, stopCh <-chan struct{}) {
 	}()
 }
 
-// initDiscoveryProvider initializes the cache using a custom discovery provider.
+// initDiscoveryProvider initializes the cache using a discovery provider.
+// All initial state and ongoing changes are delivered through Watch().
 func initDiscoveryProvider(store *Store, provider discovery.Provider, stopCh <-chan struct{}) error {
-	objs, err := provider.Load()
-	if err != nil {
-		return err
+	if err := provider.Watch(func(ev discovery.WatchEvent) {
+		handleDiscoveryObject(store, ev.Type, ev.Object, ev.OldObject)
+	}, stopCh); err != nil {
+		return fmt.Errorf("failed to initialize discovery provider: %w", err)
 	}
-
-	// add all resources during initialization
-	for _, o := range objs {
-		switch obj := o.(type) {
-		case *v1.Pod:
-			store.addPod(obj)
-		case *modelv1alpha1.ModelAdapter:
-			store.addModelAdapter(obj)
-		default:
-			klog.Warningf("Discovery provider returned unknown object type: %T", o)
-		}
-	}
-
-	// Watch for updates
-	if err := provider.AddEventHandler("Pod",
-		cache.ResourceEventHandlerFuncs{
-			AddFunc:    store.addPod,
-			UpdateFunc: store.updatePod,
-			DeleteFunc: store.deletePod,
-		}, stopCh); err != nil {
-		return err
-	}
-	if err := provider.AddEventHandler("ModelAdapter",
-		cache.ResourceEventHandlerFuncs{
-			AddFunc:    store.addModelAdapter,
-			UpdateFunc: store.updateModelAdapter,
-			DeleteFunc: store.deleteModelAdapter,
-		}, stopCh); err != nil {
-		return err
-	}
-
 	return nil
+}
+
+func handleDiscoveryObject(store *Store, evType discovery.EventType, obj, oldObj any) {
+	switch o := obj.(type) {
+	case *v1.Pod:
+		switch evType {
+		case discovery.EventAdd:
+			store.addPod(o)
+		case discovery.EventUpdate:
+			oldPod, ok := oldObj.(*v1.Pod)
+			if !ok {
+				klog.Errorf("Pod update event for %s/%s with incorrect old object type: %T", o.Namespace, o.Name, oldObj)
+				return
+			}
+			store.updatePod(oldPod, o)
+		case discovery.EventDelete:
+			store.deletePod(o)
+		}
+	case *modelv1alpha1.ModelAdapter:
+		switch evType {
+		case discovery.EventAdd:
+			store.addModelAdapter(o)
+		case discovery.EventUpdate:
+			oldAdapter, ok := oldObj.(*modelv1alpha1.ModelAdapter)
+			if !ok {
+				klog.Errorf("ModelAdapter update event for %s/%s with incorrect old object type: %T", o.Namespace, o.Name, oldObj)
+				return
+			}
+			store.updateModelAdapter(oldAdapter, o)
+		case discovery.EventDelete:
+			store.deleteModelAdapter(o)
+		}
+	default:
+		klog.Warningf("Discovery event with unknown object type: %T", obj)
+	}
 }
 
 // initMetricsCache initializes metrics cache update loop
@@ -494,8 +515,14 @@ func initTraceCache(redisClient *redis.Client, stopCh <-chan struct{}) {
 			return
 		}
 		if traceAlignmentTimer != nil {
-			// Wait for time window alignment
-			<-traceAlignmentTimer.C
+			// Wait for time window alignment, but bail out early if shutdown is
+			// requested during the alignment phase to avoid leaking the Timer.
+			select {
+			case <-traceAlignmentTimer.C:
+			case <-stopCh:
+				traceAlignmentTimer.Stop()
+				return
+			}
 			traceAlignmentTimer = nil
 			traceTicker = time.NewTicker(RequestTraceWriteInterval)
 		}
@@ -556,8 +583,8 @@ func (s *Store) initKVEventSync() error {
 		return fmt.Errorf("invalid KV event sync configuration: %w", err)
 	}
 
-	// Create sync indexer after validation passes
-	s.syncPrefixIndexer = syncindexer.NewSyncPrefixHashTable()
+	// Create sync indexer after validation passes - use shared singleton
+	s.syncPrefixIndexer = syncindexer.GetSharedSyncPrefixHashTable()
 	if s.syncPrefixIndexer == nil {
 		return fmt.Errorf("failed to create sync prefix indexer")
 	}
@@ -584,9 +611,12 @@ func (s *Store) cleanupKVEventSync() {
 		s.kvEventManager = nil
 	}
 
-	// Clear sync indexer
+	// Clear sync indexer reference
+	// NOTE: Do NOT call Close() on the shared singleton instance
+	// as it may still be used by other components (e.g., gateway router).
+	// The singleton's lifecycle is managed globally and should only be
+	// closed during process shutdown, not during Store cleanup.
 	if s.syncPrefixIndexer != nil {
-		s.syncPrefixIndexer.Close()
 		s.syncPrefixIndexer = nil
 	}
 }

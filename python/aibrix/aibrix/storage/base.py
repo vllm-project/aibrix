@@ -20,7 +20,7 @@ from io import BytesIO, StringIO
 from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
 
 from aibrix.storage.reader import Reader
-from aibrix.storage.types import StorageType
+from aibrix.storage.types import StorageListOrdering, StorageType
 from aibrix.storage.utils import ObjectMetadata
 
 
@@ -32,13 +32,23 @@ class StorageConfig:
     max_retries: int = 3
     timeout: int = 30
 
-    # Upload configuration
+    # Upload/session configuration
     multipart_threshold: int = 5 * 1024 * 1024  # 5MB
-    max_concurrency: int = 10
+    # Backend-specific total connection-pool sizing. Only S3 uses this today.
+    max_concurrency: int = 100
+    # Per-operation/session concurrency examples: staged-part prefetch fanout,
+    # and multipart part fanout. This does not
+    # impose a storage-wide total GET/PUT concurrency cap.
+    max_session_concurrency: int = 10
+    # Per-request multi-object delete batch size for backends such as S3/TOS.
+    # Do not increase this value for S3/TOS, and do so if you know what you are doing.
+    multi_object_delete_limit: int = 1000
+    strict_multipart_min_part_size: Optional[bool] = None
 
     # Read configuration
     range_chunksize: int = 1024 * 1024  # 1MB for range reads
     readline_buffer_size: int = 8192  # 8KB buffer for readline
+    list_ordering: Optional[StorageListOrdering] = None
 
 
 @dataclass
@@ -106,6 +116,15 @@ class BaseStorage(ABC):
 
     def __init__(self, config: Optional[StorageConfig] = None):
         self.config = config or StorageConfig()
+        selected_ordering = self.config.list_ordering
+        if selected_ordering is not None and (
+            selected_ordering not in self.get_supported_list_orderings()
+        ):
+            raise ValueError(
+                f"List ordering {selected_ordering.value} is not supported by "
+                f"{self.get_type().value} storage"
+            )
+        self._selected_list_ordering = selected_ordering
 
     @abstractmethod
     def get_type(self) -> StorageType:
@@ -139,6 +158,15 @@ class BaseStorage(ABC):
             True if SET IF EXISTS is supported, False otherwise
         """
         return False
+
+    @classmethod
+    def get_supported_list_orderings(cls) -> tuple[StorageListOrdering, ...]:
+        """Return the supported ordering contracts for ``list_objects`` results."""
+        return (StorageListOrdering.LEXICOGRAPHIC_ASC,)
+
+    def get_list_ordering(self) -> StorageListOrdering:
+        """Return the currently active ordering contract for ``list_objects``."""
+        return self._selected_list_ordering or self.get_supported_list_orderings()[0]
 
     @abstractmethod
     async def put_object(
@@ -195,6 +223,18 @@ class BaseStorage(ABC):
         """
         pass
 
+    async def delete_objects(self, keys: list[str]) -> None:
+        """Delete multiple objects from storage.
+
+        Backends may override this to use a native batch-delete API. The default
+        implementation preserves compatibility by deleting sequentially.
+
+        Args:
+            keys: Object keys/paths to delete
+        """
+        for key in keys:
+            await self.delete_object(key)
+
     @abstractmethod
     async def list_objects(
         self,
@@ -202,6 +242,7 @@ class BaseStorage(ABC):
         delimiter: Optional[str] = None,
         limit: Optional[int] = None,
         continuation_token: Optional[str] = None,
+        after_key: Optional[str] = None,
     ) -> tuple[list[str], Optional[str]]:
         """List objects with given prefix using token-based pagination.
 
@@ -210,6 +251,8 @@ class BaseStorage(ABC):
             delimiter: Delimiter for hierarchical listing
             limit: Maximum number of objects to return (None for no limit)
             continuation_token: Token to continue from previous pagination call
+            after_key: Key from the previous page to translate into a backend
+                continuation position when continuation_token is not provided
 
         Returns:
             Tuple of (object_keys, next_continuation_token)
@@ -524,7 +567,7 @@ class BaseStorage(ABC):
 
         # Store part as individual object
         await self.put_object(
-            self._multipart_upload_key(upload_id, f"part_{part_number:05d}"),
+            self._multipart_upload_part_key(upload_id, part_number),
             part_data,
             content_type="application/octet-stream",
         )
@@ -577,7 +620,7 @@ class BaseStorage(ABC):
             part_number = part["part_number"]
             try:
                 part_data = await self.get_object(
-                    self._multipart_upload_key(upload_id, f"part_{part_number:05d}")
+                    self._multipart_upload_part_key(upload_id, int(part_number))
                 )
                 aggregated_data.write(part_data)
             except Exception:
@@ -811,6 +854,10 @@ class BaseStorage(ABC):
     def _multipart_upload_key(self, upload_id: str, subkey: str = "metadata") -> str:
         """Return the key for multipart upload metadata. For small parts multipart upload only."""
         return f".multipart/{upload_id}/{subkey}"
+
+    def _multipart_upload_part_key(self, upload_id: str, part_number: int) -> str:
+        """Return the key for a staged multipart part object."""
+        return self._multipart_upload_key(upload_id, f"part_{part_number:05d}")
 
     def _wrap_data(self, data: Union[bytes, str, BinaryIO, TextIO, Reader]) -> Reader:
         """Wrap data in Reader if necessary."""
