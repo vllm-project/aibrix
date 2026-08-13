@@ -128,15 +128,6 @@ class DiscoveryEndpointSource:
         await self._refresh_if_needed(force=True)
 
     async def report_channel_error(self, channel_id: str, error: Exception) -> None:
-        """Record a request failure without changing the active endpoint set.
-
-        Membership belongs to discovery, not to the data path. A single request
-        failure is a poor health signal -- an idle keep-alive race surfaces as
-        RemoteProtocolError from a perfectly healthy pod -- and evicting on it
-        shrank the active set with no way back, eventually to zero. The engine
-        already re-picks a channel on every retry, so a genuinely dead endpoint
-        costs at most one wasted attempt per request until discovery drops it.
-        """
         chained = error.__cause__ or error.__context__
         logger.warning(
             "Channel reported an error",

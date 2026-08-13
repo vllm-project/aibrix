@@ -966,6 +966,7 @@ class BaseJobDriver:
                 DispatchEngine(
                     endpoint.source,
                     retry=self._retry_config_for_job(job),
+                    job_id=job.job_id,
                 )
                 if endpoint.source is not None
                 else None
