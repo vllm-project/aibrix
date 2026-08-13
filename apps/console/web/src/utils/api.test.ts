@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { camelToSnake, normalizeFilesResponse } from './api';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { camelToSnake, listAllJobs, normalizeFilesResponse } from './api';
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe('api helpers', () => {
   it('normalizes OpenAI file list responses for the batch file picker', () => {
@@ -100,5 +104,52 @@ describe('api helpers', () => {
       deployment_name: 'qwen-serving',
       placement: 'all',
     });
+  });
+
+  it('publishes the first jobs page while older pages are still loading', async () => {
+    let resolveSecondPage!: (response: Response) => void;
+    const secondPage = new Promise<Response>((resolve) => {
+      resolveSecondPage = resolve;
+    });
+    const jsonResponse = (body: unknown) => ({
+      ok: true,
+      status: 200,
+      json: async () => body,
+    }) as Response;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        jobs: [{ id: 'job-new' }],
+        has_more: true,
+      }))
+      .mockReturnValueOnce(secondPage);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const published: string[][] = [];
+    const result = listAllJobs({
+      pageLimit: 1,
+      onPage: jobs => published.push(jobs.map(job => job.id)),
+    });
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(published).toEqual([['job-new']]);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/v1/jobs?after=job-new&limit=1',
+      expect.any(Object),
+    );
+
+    resolveSecondPage(jsonResponse({
+      jobs: [{ id: 'job-old' }],
+      has_more: false,
+    }));
+
+    await expect(result).resolves.toEqual([
+      expect.objectContaining({ id: 'job-new' }),
+      expect.objectContaining({ id: 'job-old' }),
+    ]);
+    expect(published).toEqual([
+      ['job-new'],
+      ['job-new', 'job-old'],
+    ]);
   });
 });
