@@ -648,42 +648,58 @@ func validateStreamOptions(requestID string, user utils.User, stream *bool, stre
 	return nil
 }
 
-// applyConfigProfile resolves the model config from pod annotation (model.aibrix.ai/config)
-// and applies the selected profile: sets ConfigProfile on routingCtx.
-// - If the client provides config-profile, use that profile name.
-// - If not provided or not found, fall back to defaultProfile (or "default") in the JSON.
+// applyConfigProfile resolves the model config from the pod annotation
+// (model.aibrix.ai/config) and applies the selected profile plus the model-wide
+// locked routing strategy onto routingCtx.ConfigProfile.
+//   - The profile is selected by the config-profile header, falling back to
+//     defaultProfile (or "default") in the JSON.
+//   - lockedRoutingStrategy (top-level) is applied even when no profile resolves, so a
+//     model-wide lock cannot be bypassed by selecting a profile or sending a header.
 func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
-	headerProfile := routingCtx.ReqConfigProfile
-	profile := configprofiles.ResolveProfile(pods, headerProfile)
-	if profile == nil {
+	profile, locked := configprofiles.ResolveConfig(pods, routingCtx.ReqConfigProfile)
+	if profile == nil && locked == "" {
 		return
 	}
-	routingCtx.ConfigProfile = &types.ResolvedConfigProfile{
-		RoutingStrategy:   profile.RoutingStrategy,
-		RoutingConfig:     profile.RoutingConfig,
-		RequestsPerSecond: profile.RequestsPerSecond,
+	cp := &types.ResolvedConfigProfile{LockedRoutingStrategy: locked}
+	if profile != nil {
+		cp.RoutingStrategy = profile.RoutingStrategy
+		cp.RoutingConfig = profile.RoutingConfig
+		cp.RequestsPerSecond = profile.RequestsPerSecond
 	}
+	routingCtx.ConfigProfile = cp
 }
 
 var defaultRoutingStrategy, defaultRoutingStrategyEnabled = utils.LookupEnv(EnvRoutingAlgorithm)
 
-// deriveRoutingStrategyFromContext retrieves routing strategy from headers or resolved profile, falling back to env defaults.
+// deriveRoutingStrategyFromContext retrieves routing strategy with the following
+// precedence (highest first):
+//  1. lockedRoutingStrategy pinned model-wide in the model config
+//  2. routing-strategy request header
+//  3. routingStrategy from the resolved config profile
+//  4. ROUTING_ALGORITHM environment variable
 func deriveRoutingStrategyFromContext(routingCtx *types.RoutingContext) (string, bool) {
+	if routingCtx == nil {
+		return defaultRoutingStrategy, defaultRoutingStrategyEnabled
+	}
+
+	// Check locked routing strategy from model config (top-level, model-wide).
+	if cp := routingCtx.ConfigProfile; cp != nil {
+		if s := strings.TrimSpace(cp.LockedRoutingStrategy); s != "" {
+			return s, true
+		}
+	}
 	// Check request headers (case-insensitive key match)
-	if routingCtx != nil && routingCtx.ReqHeaders != nil {
-		for k, v := range routingCtx.ReqHeaders {
-			if strings.EqualFold(k, HeaderRoutingStrategy) {
-				if strings.TrimSpace(v) != "" {
-					return v, true
-				}
-				break
+	for k, v := range routingCtx.ReqHeaders {
+		if strings.EqualFold(k, HeaderRoutingStrategy) {
+			if s := strings.TrimSpace(v); s != "" {
+				return s, true
 			}
+			break
 		}
 	}
 	// Fallback to resolved profile on routing context
-	if routingCtx != nil && routingCtx.ConfigProfile != nil {
-		s := strings.TrimSpace(routingCtx.ConfigProfile.RoutingStrategy)
-		if s != "" {
+	if cp := routingCtx.ConfigProfile; cp != nil {
+		if s := strings.TrimSpace(cp.RoutingStrategy); s != "" {
 			return s, true
 		}
 	}

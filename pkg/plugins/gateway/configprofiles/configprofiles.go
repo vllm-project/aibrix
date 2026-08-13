@@ -44,8 +44,12 @@ type ModelConfigProfile struct {
 
 // ModelConfigProfiles is the root JSON structure from model.aibrix.ai/config.
 type ModelConfigProfiles struct {
-	DefaultProfile string                        `json:"defaultProfile"`
-	Profiles       map[string]ModelConfigProfile `json:"profiles"`
+	// LockedRoutingStrategy, when set, pins the routing strategy model-wide.
+	// It takes precedence over the routing-strategy request header, the per-profile
+	// routingStrategy and the ROUTING_ALGORITHM environment variable.
+	LockedRoutingStrategy string                        `json:"lockedRoutingStrategy,omitempty"`
+	DefaultProfile        string                        `json:"defaultProfile"`
+	Profiles              map[string]ModelConfigProfile `json:"profiles"`
 }
 
 // GetProfile returns the profile for the given name, or the default profile.
@@ -67,20 +71,37 @@ func (c *ModelConfigProfiles) GetProfile(name string) *ModelConfigProfile {
 	return nil
 }
 
-// ResolveProfile resolves the model config from pods (annotation),
-// then returns the profile selected by headerProfile (from config-profile).
-// configMapGetter can be nil; it is checked first when provided.
-func ResolveProfile(pods []*v1.Pod, headerProfile string) *ModelConfigProfile {
-	for _, pod := range pods {
-		if p := ResolveProfileFromPod(pod, headerProfile); p != nil {
-			return p
-		}
+// ResolveProfileFromPod resolves the model config from a single pod annotation and
+// returns the selected profile. The profile is selected by headerProfile; an empty
+// headerProfile falls back to the default profile. Returns nil when the pod has no
+// config annotation, the config is invalid, or no selectable profile exists.
+func ResolveProfileFromPod(pod *v1.Pod, headerProfile string) *ModelConfigProfile {
+	cfg := parseConfigFromPod(pod)
+	if cfg == nil {
+		return nil
 	}
-	return nil
+	return cfg.GetProfile(headerProfile)
 }
 
-// ResolveProfileFromPod resolves the model config from a single pod annotation and returns the selected profile.
-func ResolveProfileFromPod(pod *v1.Pod, headerProfile string) *ModelConfigProfile {
+// ResolveConfig resolves the model config from the first pod carrying a
+// model.aibrix.ai/config annotation. It returns the profile selected by
+// headerProfile (nil when no selectable profile exists) together with the
+// model-wide locked routing strategy ("" when unset). The locked strategy applies
+// even when no profile resolves.
+func ResolveConfig(pods []*v1.Pod, headerProfile string) (*ModelConfigProfile, string) {
+	for _, pod := range pods {
+		cfg := parseConfigFromPod(pod)
+		if cfg == nil {
+			continue
+		}
+		return cfg.GetProfile(headerProfile), cfg.LockedRoutingStrategy
+	}
+	return nil, ""
+}
+
+// parseConfigFromPod parses the model config from a single pod annotation.
+// Returns nil when the pod is nil, has no config annotation, or the config is invalid.
+func parseConfigFromPod(pod *v1.Pod) *ModelConfigProfiles {
 	if pod == nil {
 		return nil
 	}
@@ -93,10 +114,7 @@ func ResolveProfileFromPod(pod *v1.Pod, headerProfile string) *ModelConfigProfil
 		klog.V(4).InfoS("failed to parse model config from pod annotation", "pod", pod.Name, "err", err)
 		return nil
 	}
-	if headerProfile == "" {
-		return cfg.GetProfile("")
-	}
-	return cfg.GetProfile(headerProfile)
+	return cfg
 }
 
 // ParseModelConfig parses the JSON from annotation data.

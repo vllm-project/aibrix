@@ -26,6 +26,7 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/assert"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -1425,6 +1426,60 @@ func TestFieldsToAttributes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, fieldsToAttributes(tt.fields))
+		})
+	}
+}
+
+func TestDeriveRoutingStrategyFromContext(t *testing.T) {
+	// lockedRoutingStrategy (model-wide) always wins over header and profile.
+	lockedCtx := &types.RoutingContext{
+		ConfigProfile: &types.ResolvedConfigProfile{
+			LockedRoutingStrategy: "pd",
+			RoutingStrategy:       "random",
+		},
+		ReqHeaders: map[string]string{HeaderRoutingStrategy: "throughput"},
+	}
+
+	// Header wins over profile strategy.
+	headerCtx := &types.RoutingContext{
+		ConfigProfile: &types.ResolvedConfigProfile{RoutingStrategy: "random"},
+		ReqHeaders:    map[string]string{HeaderRoutingStrategy: "throughput"},
+	}
+
+	// Profile strategy is used when no header is present.
+	profileCtx := &types.RoutingContext{
+		ConfigProfile: &types.ResolvedConfigProfile{RoutingStrategy: "least-request"},
+		ReqHeaders:    map[string]string{},
+	}
+
+	// Case-insensitive header key match.
+	headerCaseCtx := &types.RoutingContext{
+		ConfigProfile: &types.ResolvedConfigProfile{RoutingStrategy: "random"},
+		ReqHeaders:    map[string]string{"Routing-Strategy": "pd"},
+	}
+
+	// Nothing set: falls back to environment default.
+	emptyCtx := &types.RoutingContext{ReqHeaders: map[string]string{}}
+
+	tests := []struct {
+		name   string
+		ctx    *types.RoutingContext
+		want   string
+		wantOK bool
+	}{
+		{"locked strategy wins over header and profile", lockedCtx, "pd", true},
+		{"header wins over profile strategy", headerCtx, "throughput", true},
+		{"profile strategy used when header absent", profileCtx, "least-request", true},
+		{"case-insensitive header key", headerCaseCtx, "pd", true},
+		{"falls back to env when nothing set", emptyCtx, defaultRoutingStrategy, defaultRoutingStrategyEnabled},
+		{"nil context falls back to env", nil, defaultRoutingStrategy, defaultRoutingStrategyEnabled},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := deriveRoutingStrategyFromContext(tt.ctx)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.wantOK, ok)
 		})
 	}
 }

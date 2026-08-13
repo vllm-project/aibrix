@@ -184,6 +184,21 @@ To make ``pd`` the default for a model, add the config annotation to the pod tem
           }
         }
 
+To prevent clients from overriding ``pd`` with a ``routing-strategy`` header (e.g.
+``random``), pin it model-wide with ``lockedRoutingStrategy``:
+
+.. code-block:: yaml
+
+    annotations:
+      model.aibrix.ai/config: |
+        {
+          "lockedRoutingStrategy": "pd",
+          "defaultProfile": "default",
+          "profiles": {
+            "default": { "routingStrategy": "pd" }
+          }
+        }
+
 
 Step 3 — Add Standard Inference Pods (Optional)
 -------------------------------------------------
