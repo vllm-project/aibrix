@@ -468,7 +468,7 @@ def kill_llm_engine():
             [
                 "bash",
                 "-c",
-                "grep -zla 'WORKER_VICTIM=1' /proc/*/environ 2>/dev/null | awk -F/ '/\/proc\/[0-9]+\/environ/ {print $3}' | sort -n",
+                r"grep -zla 'WORKER_VICTIM=1' /proc/*/environ 2>/dev/null | awk -F/ '/\/proc\/[0-9]+\/environ/ {print $3}' | sort -n",
             ],
             capture_output=True,
             text=True,
