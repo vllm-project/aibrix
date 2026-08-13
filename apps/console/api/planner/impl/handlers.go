@@ -359,6 +359,9 @@ func submitToMDS(p *Planner, job *queuedJob) {
 
 	job.batchID = batch.ID
 	job.batch = batch
+	if batch.ExpiresAt > 0 {
+		job.expiresAt = time.Unix(batch.ExpiresAt, 0).UTC()
+	}
 	job.submittingAt = time.Now().UTC()
 	job.readyToSubmit = false // Clear flag after submission
 	job.extraBody = aibrixBodyJson
