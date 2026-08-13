@@ -104,9 +104,9 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 	templateHash := ctrlutil.ComputeHash(&role.Template, nil)
 	if roleIndex != nil {
 		// add role template hash to pod name, to avoid pod name duplication during rollout
-		pod.Name = fmt.Sprintf("%s-%s-%s-%d", roleSet.Name, role.Name, templateHash, *roleIndex)
+		pod.Name = utils.Shorten(fmt.Sprintf("%s-%s-%s-%d", roleSet.Name, role.Name, templateHash, *roleIndex), false, false)
 	} else {
-		pod.GenerateName = fmt.Sprintf("%s-%s-", roleSet.Name, role.Name)
+		pod.GenerateName = utils.Shorten(fmt.Sprintf("%s-%s-", roleSet.Name, role.Name), false, true)
 	}
 	pod.Namespace = roleSet.Namespace
 	if pod.Labels == nil {
