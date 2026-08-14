@@ -21,6 +21,28 @@ from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
 
+_OUTPUT_FILE_ID_FIELDS = (
+    "output_file_id",
+    "error_file_id",
+    "temp_output_file_id",
+    "temp_error_file_id",
+)
+
+
+def _output_file_ids(job: BatchJob) -> dict[str, Optional[str]]:
+    return {field: getattr(job.status, field) for field in _OUTPUT_FILE_ID_FIELDS}
+
+
+def _has_older_resource_version(old: BatchJob, new: BatchJob) -> bool:
+    old_version = old.metadata.resource_version
+    new_version = new.metadata.resource_version
+    if old_version is None or new_version is None:
+        return False
+    try:
+        return int(new_version) < int(old_version)
+    except ValueError:
+        return False
+
 
 class JobEntityManager(ABC):
     DEFAULT_JOB_PAGE_LIMIT = 20
@@ -130,7 +152,20 @@ class JobEntityManager(ABC):
         self._job_updated_handler = handler
         return old_handler
 
-    async def job_updated(self, old: BatchJob, new: BatchJob) -> bool:
+    async def job_updated(
+        self, old: BatchJob, new: BatchJob, source: str = "publisher"
+    ) -> bool:
+        if source == "refresh" and _has_older_resource_version(old, new):
+            logger.warning(
+                "Ignoring stale batch job refresh snapshot",
+                job_id=new.job_id or old.job_id,
+                old_resource_version=old.metadata.resource_version,
+                new_resource_version=new.metadata.resource_version,
+                old_file_ids=_output_file_ids(old),
+                new_file_ids=_output_file_ids(new),
+            )  # type: ignore[call-arg]
+            return False
+
         success = True
         if self._job_updated_handler is not None:
             if self._job_updated_loop is None:
@@ -226,8 +261,7 @@ class JobEntityManager(ABC):
                 self._monitored_job_snapshots[job_id] = snapshot
                 self._sync_active_job(snapshot)
                 continue
-            self._monitored_job_snapshots[job_id] = snapshot
-            await self.job_updated(old_job, snapshot)
+            await self.job_updated(old_job, snapshot, source="refresh")
 
         deleted_job_ids = set(self._monitored_job_snapshots) - set(current_jobs)
         for job_id in deleted_job_ids:
@@ -242,7 +276,7 @@ class JobEntityManager(ABC):
                 self._forget_job(job_id)
                 self._sync_active_job(latest_job)
                 continue
-            await self.job_updated(previous_job, latest_job)
+            await self.job_updated(previous_job, latest_job, source="refresh")
 
     async def _bootstrap_jobs(self) -> None:
         for job in await self._list_recovery_jobs():

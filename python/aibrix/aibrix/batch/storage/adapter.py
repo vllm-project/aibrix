@@ -258,9 +258,7 @@ class BatchStorageAdapter:
         is_error = "error" in output_data and output_data["error"] is not None
         custom_id = output_data.get("custom_id")
         result_type = "error" if is_error else "output"
-        file_id = (
-            job.status.error_file_id if is_error else job.status.output_file_id
-        )
+        file_id = job.status.error_file_id if is_error else job.status.output_file_id
         upload_id = (
             job.status.temp_error_file_id
             if is_error

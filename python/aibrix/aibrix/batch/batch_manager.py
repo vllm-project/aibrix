@@ -831,6 +831,8 @@ class BatchManager(RunningJobs, SchedulableJobs):
 
         if self._job_entity_manager is not None:
             await self._job_entity_manager.update_job_status(validated)
+            current_job = await self.get_job(job_id)
+            return current_job if current_job is not None else validated
         await self.job_updated_handler(meta_data, validated)
         return validated
 
@@ -839,6 +841,8 @@ class BatchManager(RunningJobs, SchedulableJobs):
         updated = meta_data.copy(status)
         if self._job_entity_manager is not None:
             await self._job_entity_manager.update_job_status(updated)
+            current_job = await self.get_job(job_id)
+            return current_job if current_job is not None else updated
         await self.job_updated_handler(meta_data, updated)
         return updated
 
@@ -893,6 +897,8 @@ class BatchManager(RunningJobs, SchedulableJobs):
 
         if self._job_entity_manager is not None:
             await self._job_entity_manager.update_job_status(persisted)
+            current_job = await self.get_job(job_id)
+            return current_job if current_job is not None else persisted
         await self.job_updated_handler(meta_data, persisted)
         return persisted
 
@@ -941,8 +947,10 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 )
             )
 
-        if self._job_entity_manager:
+        if self._job_entity_manager is not None:
             await self._job_entity_manager.update_job_status(persisted)
+            current_job = await self.get_job(job_id)
+            return current_job if current_job is not None else persisted
         await self.job_updated_handler(meta_data, persisted)
         return persisted
 

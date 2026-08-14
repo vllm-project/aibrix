@@ -248,6 +248,52 @@ async def test_job_store_update_persists_and_fires_updated(fake_metastore):
 
 
 @pytest.mark.asyncio
+async def test_refresh_does_not_apply_older_resource_version(
+    fake_metastore, monkeypatch
+):
+    _, _ = fake_metastore
+    store = JobStore(storage_type=StorageType.LOCAL)
+    current_job = BatchJob.new_local(spec=_spec())
+    current_job.status.state = BatchJobState.IN_PROGRESS
+    current_job.metadata.resource_version = "5"
+    current_job.status.output_file_id = "output"
+    current_job.status.error_file_id = "error"
+    current_job.status.temp_output_file_id = "temp-output"
+    current_job.status.temp_error_file_id = "temp-error"
+    stale_job = current_job.model_copy(deep=True)
+    stale_job.metadata.resource_version = "4"
+    stale_job.status.output_file_id = None
+    stale_job.status.error_file_id = None
+    stale_job.status.temp_output_file_id = None
+    stale_job.status.temp_error_file_id = None
+    published_updates = []
+
+    async def list_stale_recovery_jobs():
+        return [stale_job]
+
+    async def updated_handler(old_job, new_job):
+        published_updates.append((old_job, new_job))
+        return True
+
+    monkeypatch.setattr(store, "_list_recovery_jobs", list_stale_recovery_jobs)
+    store.active_jobs[current_job.job_id] = current_job
+    store._monitored_job_snapshots[current_job.job_id] = current_job.model_copy(
+        deep=True
+    )
+    store.on_job_updated(updated_handler)
+
+    await store.refresh()
+
+    assert published_updates == []
+    assert store.active_jobs[current_job.job_id].metadata.resource_version == "5"
+    assert store.active_jobs[current_job.job_id].status.output_file_id == "output"
+    assert (
+        store._monitored_job_snapshots[current_job.job_id].metadata.resource_version
+        == "5"
+    )
+
+
+@pytest.mark.asyncio
 async def test_job_store_delete_removes_from_metastore_and_fires_deleted(
     fake_metastore,
 ):

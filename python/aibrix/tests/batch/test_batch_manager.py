@@ -1031,6 +1031,50 @@ class MockJobEntityManager(JobEntityManager):
         return jobs
 
 
+class VersionedMockJobEntityManager(MockJobEntityManager):
+    async def update_job_status(self, job: BatchJob) -> None:
+        job_id = job.job_id
+        assert job_id is not None
+        old_job = self.jobs[job_id]
+        stored_job = job.model_copy(deep=True)
+        stored_job.metadata.resource_version = str(
+            int(old_job.metadata.resource_version or "0") + 1
+        )
+        self.jobs[job_id] = stored_job
+        await self.job_updated(old_job, stored_job)
+
+
+@pytest.mark.asyncio
+async def test_update_job_status_keeps_version_from_entity_manager_callback():
+    _set_current_loop_name("test_update_job_status_keeps_persisted_version")
+    entity_manager = VersionedMockJobEntityManager(delay=0.0)
+    job_manager = _job_manager()
+    await job_manager.set_job_entity_manager(entity_manager)
+    current_job = _in_progress_meta_job("persisted-version", total_requests=1)
+    current_job.metadata.resource_version = "5"
+    persisted_snapshot = current_job.batch_job.model_copy(deep=True)
+    entity_manager.jobs[current_job.job_id] = persisted_snapshot
+    entity_manager.active_jobs[current_job.job_id] = persisted_snapshot
+    entity_manager._monitored_job_snapshots[current_job.job_id] = (
+        persisted_snapshot.model_copy(deep=True)
+    )
+    job_manager._in_progress_jobs[current_job.job_id] = current_job
+    updated_status = current_job.status.model_copy(deep=True)
+    updated_status.output_file_id = "output"
+    updated_status.error_file_id = "error"
+    updated_status.temp_output_file_id = "temp-output"
+    updated_status.temp_error_file_id = "temp-error"
+
+    result = await job_manager.update_job_status(current_job.job_id, updated_status)
+
+    assert result.metadata.resource_version == "6"
+    assert (
+        job_manager._in_progress_jobs[current_job.job_id].metadata.resource_version
+        == "6"
+    )
+    assert result.status.output_file_id == "output"
+
+
 @pytest.mark.asyncio
 async def test_async_create_job():
     """Test that JobEntityManager assigns job_id and calls handlers correctly."""
