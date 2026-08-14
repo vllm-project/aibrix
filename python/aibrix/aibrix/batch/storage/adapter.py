@@ -24,6 +24,7 @@ from aibrix.batch.storage.batch_metastore import (
     METASTORE_LIST_PAGE_SIZE,
     delete_metadata,
     get_metadata,
+    get_metastore_type,
     is_request_done,
     is_request_locking_supported,
     list_metastore_keys,
@@ -247,19 +248,65 @@ class BatchStorageAdapter:
         # surface as the batch-level error message.
         json_str = json.dumps(output_data, default=BatchJobError.json_serializer) + "\n"
         is_error = "error" in output_data and output_data["error"] is not None
-        etag = await self.storage.upload_part(
-            job.status.error_file_id if is_error else job.status.output_file_id,
+        custom_id = output_data.get("custom_id")
+        result_type = "error" if is_error else "output"
+        file_id = (
+            job.status.error_file_id if is_error else job.status.output_file_id
+        )
+        upload_id = (
             job.status.temp_error_file_id
             if is_error
-            else job.status.temp_output_file_id,
-            request_index,
-            json_str,
+            else job.status.temp_output_file_id
         )
+        storage_type = self.storage.get_type().value
+        try:
+            etag = await self.storage.upload_part(
+                file_id,
+                upload_id,
+                request_index,
+                json_str,
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to persist batch request result",
+                job_id=job.job_id,
+                request_index=request_index,
+                custom_id=custom_id,
+                stage="output_storage_upload",
+                result_type=result_type,
+                storage_type=storage_type,
+                file_id=file_id,
+                upload_id=upload_id,
+                exception_type=type(e).__name__,
+                exception_repr=repr(e),
+                exc_info=True,
+            )  # type: ignore[call-arg]
+            raise
 
         # Unlock the request by setting completion status.
         unlock_key = self._get_request_meta_output_key(job, request_index)
         completion_status = self._get_request_meta_output_val(is_error, etag)
-        await unlock_request(unlock_key, completion_status)
+        try:
+            metastore_type = get_metastore_type().value
+        except Exception:
+            metastore_type = "unknown"
+        try:
+            await unlock_request(unlock_key, completion_status)
+        except Exception as e:
+            logger.error(
+                "Failed to persist batch request result",
+                job_id=job.job_id,
+                request_index=request_index,
+                custom_id=custom_id,
+                stage="completion_metastore_write",
+                result_type=result_type,
+                metastore_type=metastore_type,
+                metastore_key=unlock_key,
+                exception_type=type(e).__name__,
+                exception_repr=repr(e),
+                exc_info=True,
+            )  # type: ignore[call-arg]
+            raise
 
         logger.debug(
             f"Stored result for job {job.job_id} request {request_index}, status: {completion_status}"

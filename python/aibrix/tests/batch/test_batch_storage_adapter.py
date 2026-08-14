@@ -1,5 +1,7 @@
 """Unit tests for BatchStorageAdapter.finalize_job_output_data metastore-based behavior"""
 
+import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
@@ -18,7 +20,7 @@ from aibrix.batch.job_entity import (
     TypeMeta,
 )
 from aibrix.batch.storage.adapter import BatchStorageAdapter
-from aibrix.storage.base import BaseStorage
+from aibrix.storage.base import BaseStorage, StorageType
 
 
 def create_test_batch_job(
@@ -89,6 +91,59 @@ def mock_storage():
     # an async generator directly, so wire a side_effect callable.
     storage.readline_iter.side_effect = _readline_iter_from_lines([])
     return storage
+
+
+def _structured_log_events(caplog) -> list[dict]:
+    return [json.loads(record.getMessage()) for record in caplog.records]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_stage",
+    ["output_storage_upload", "completion_metastore_write"],
+)
+async def test_write_job_output_data_logs_persistence_failure(
+    mock_storage, caplog, failure_stage
+):
+    adapter = BatchStorageAdapter(mock_storage)
+    job = create_test_batch_job(job_id="job-persistence-timeout")
+    mock_storage.get_type.return_value = StorageType.TOS
+    mock_storage.upload_part.return_value = "etag-0"
+    if failure_stage == "output_storage_upload":
+        mock_storage.upload_part.side_effect = TimeoutError()
+    caplog.set_level(logging.ERROR, logger="aibrix.batch.storage.adapter")
+
+    with (
+        patch(
+            "aibrix.batch.storage.adapter.get_metastore_type",
+            return_value=StorageType.REDIS,
+        ),
+        patch(
+            "aibrix.batch.storage.adapter.unlock_request",
+            AsyncMock(
+                side_effect=(
+                    TimeoutError()
+                    if failure_stage == "completion_metastore_write"
+                    else None
+                )
+            ),
+        ),
+        pytest.raises(TimeoutError),
+    ):
+        await adapter.write_job_output_data(
+            job,
+            0,
+            {"custom_id": "request-0", "response": {"status_code": 200}},
+        )
+
+    failure_event = next(
+        event
+        for event in _structured_log_events(caplog)
+        if event.get("event") == "Failed to persist batch request result"
+    )
+    assert failure_event["job_id"] == "job-persistence-timeout"
+    assert failure_event["stage"] == failure_stage
+    assert failure_event["exception_repr"] == "TimeoutError()"
 
 
 @pytest.mark.asyncio
