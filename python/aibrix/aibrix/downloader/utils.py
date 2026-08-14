@@ -75,9 +75,14 @@ def need_to_download(
     meta_data_file: Union[Path, str],
     expected_file_size: int,
     expected_etag: str,
+    force_download: bool = False,
 ) -> bool:
     _file_name = Path(local_file).name
-    if not envs.DOWNLOADER_FORCE_DOWNLOAD and envs.DOWNLOADER_CHECK_FILE_EXIST:
+    if (
+        not force_download
+        and not envs.DOWNLOADER_FORCE_DOWNLOAD
+        and envs.DOWNLOADER_CHECK_FILE_EXIST
+    ):
         if check_file_exist(
             local_file, meta_data_file, expected_file_size, expected_etag
         ):
@@ -88,7 +93,8 @@ def need_to_download(
     else:
         logger.info(
             f"File {_file_name} start downloading directly "
-            f"for DOWNLOADER_FORCE_DOWNLOAD={envs.DOWNLOADER_FORCE_DOWNLOAD}, "
+            f"for force_download={force_download}, "
+            f"DOWNLOADER_FORCE_DOWNLOAD={envs.DOWNLOADER_FORCE_DOWNLOAD}, "
             f"DOWNLOADER_CHECK_FILE_EXIST={envs.DOWNLOADER_CHECK_FILE_EXIST}"
         )
     return True
