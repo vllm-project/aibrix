@@ -507,7 +507,7 @@ def ensure_batch_job_error(
     if isinstance(e, BatchJobError):
         return e
     else:
-        return BatchJobError(code=default_code, message=str(e), **kwargs)
+        return BatchJobError(code=default_code, message=str(e) or repr(e), **kwargs)
 
 
 class BatchJobStatus(_Strict):

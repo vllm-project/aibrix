@@ -70,6 +70,13 @@ def test_assign_worker_id_normalizes_runtime_owner_ref_slashes():
     assert worker_id == "cluster-a-default-workload-1-token1234"
 
 
+def test_driver_error_normalization_uses_repr_for_empty_message():
+    error = BaseJobDriver._ensure_batch_job_error(TimeoutError())
+
+    assert error.code == BatchJobErrorCode.INTERNAL_ERROR.value
+    assert error.message == "TimeoutError()"
+
+
 class _DeadlineStopRuntime:
     provisions = True
 

@@ -234,12 +234,20 @@ class BatchStorageAdapter:
             request_index: Index of the request being processed
             output_data: Single result dictionary
         """
-        assert (
-            job.status.output_file_id
-            and job.status.error_file_id
-            and job.status.temp_output_file_id
-            and job.status.temp_error_file_id
-        )
+        required_file_ids = {
+            "output_file_id": job.status.output_file_id,
+            "error_file_id": job.status.error_file_id,
+            "temp_output_file_id": job.status.temp_output_file_id,
+            "temp_error_file_id": job.status.temp_error_file_id,
+        }
+        missing_file_ids = [
+            name for name, value in required_file_ids.items() if not value
+        ]
+        if missing_file_ids:
+            raise RuntimeError(
+                f"Batch output files are not prepared for job {job.job_id}: "
+                f"missing {', '.join(missing_file_ids)}"
+            )
 
         # output_data["error"] may be a BatchJobError when inference
         # fails (see job_driver.create_response_record). The class

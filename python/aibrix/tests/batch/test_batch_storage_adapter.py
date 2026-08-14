@@ -98,6 +98,24 @@ def _structured_log_events(caplog) -> list[dict]:
 
 
 @pytest.mark.asyncio
+async def test_write_job_output_data_exposes_missing_output_file_ids(mock_storage):
+    adapter = BatchStorageAdapter(mock_storage)
+    job = create_test_batch_job(
+        job_id="job-missing-output-storage",
+        temp_output_file_id="",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "Batch output files are not prepared for job "
+            "job-missing-output-storage: missing temp_output_file_id"
+        ),
+    ):
+        await adapter.write_job_output_data(job, 0, {})
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "failure_stage",
     ["output_storage_upload", "completion_metastore_write"],

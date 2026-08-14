@@ -509,7 +509,10 @@ class BaseJobDriver:
     ) -> BatchJobError:
         if isinstance(error, BatchJobError):
             return error
-        return BatchJobError(code=default_code, message=str(error))
+        return BatchJobError(
+            code=default_code,
+            message=str(error) or repr(error),
+        )
 
     @staticmethod
     def _error_code_from_reason(reason: Optional[str]) -> BatchJobErrorCode:
