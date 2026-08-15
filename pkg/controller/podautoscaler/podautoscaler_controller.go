@@ -670,7 +670,7 @@ func computeStatus(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler,
 		DesiredScale:    pa.Status.DesiredScale,
 		ActualScale:     pa.Status.ActualScale,
 		Conditions:      pa.Status.Conditions, // upsert onto existing
-		ScheduledBounds: scheduledBoundsStatus(&pa, time.Now()),
+		ScheduledBounds: scheduledBoundsStatus(&pa, now.Time),
 	}
 
 	// ValidSpec

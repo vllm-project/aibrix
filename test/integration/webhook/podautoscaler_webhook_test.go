@@ -65,7 +65,7 @@ var _ = ginkgo.Describe("podautoscaler default and validation", func() {
 			ScalingStrategy(autoscalingapi.HPA).
 			MinReplicas(1).
 			MaxReplicas(10).
-			MetricSource(wrapper.MakeMetricSourceResource("cpu", "100m")).
+			MetricSource(wrapper.MakeMetricSourceResource("cpu", "50")).
 			ScaleTargetRefWithKind("Deployment", "apps/v1", "test-deploy").
 			Obj()
 		pa.Spec.Schedules = schedules
@@ -86,7 +86,7 @@ var _ = ginkgo.Describe("podautoscaler default and validation", func() {
 					ScalingStrategy(autoscalingapi.HPA).
 					MinReplicas(1).
 					MaxReplicas(5).
-					MetricSource(wrapper.MakeMetricSourceResource("cpu", "100m")).
+					MetricSource(wrapper.MakeMetricSourceResource("cpu", "50")).
 					ScaleTargetRefWithKind("Deployment", "apps/v1", "test-deploy").
 					Obj()
 			},
@@ -316,7 +316,7 @@ var _ = ginkgo.Describe("podautoscaler default and validation", func() {
 					MinReplicas(-1).
 					MaxReplicas(5).
 					ScaleTargetRefWithKind("Deployment", "apps/v1", "test").
-					MetricSource(wrapper.MakeMetricSourceResource("cpu", "100m")).
+					MetricSource(wrapper.MakeMetricSourceResource("cpu", "50")).
 					Obj()
 			},
 			failed: true,
@@ -328,7 +328,7 @@ var _ = ginkgo.Describe("podautoscaler default and validation", func() {
 					MinReplicas(0).
 					MaxReplicas(0).
 					ScaleTargetRefWithKind("Deployment", "apps/v1", "test").
-					MetricSource(wrapper.MakeMetricSourceResource("cpu", "100m")).
+					MetricSource(wrapper.MakeMetricSourceResource("cpu", "50")).
 					Obj()
 			},
 			failed: true,
@@ -340,7 +340,7 @@ var _ = ginkgo.Describe("podautoscaler default and validation", func() {
 					MinReplicas(1).
 					MaxReplicas(5).
 					ScaleTargetRefWithKind("Deployment", "apps/v1", "test").
-					MetricSource(wrapper.MakeMetricSourceResource("cpu", "100m")).
+					MetricSource(wrapper.MakeMetricSourceResource("cpu", "50")).
 					Obj()
 				pa.Spec.ScalingStrategy = "INVALID_STRATEGY"
 				return pa
@@ -363,7 +363,7 @@ var _ = ginkgo.Describe("podautoscaler default and validation", func() {
 		}),
 		ginkgo.Entry("RESOURCE metric with forbidden port", &testValidatingCase{
 			podautoscaler: func() *autoscalingapi.PodAutoscaler {
-				ms := wrapper.MakeMetricSourceResource("cpu", "100m")
+				ms := wrapper.MakeMetricSourceResource("cpu", "50")
 				ms.Port = "8080" // not allowed
 				return wrapper.MakePodAutoscaler("bad-resource").
 					Namespace(ns.Name).

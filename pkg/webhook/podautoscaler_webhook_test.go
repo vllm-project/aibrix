@@ -31,6 +31,7 @@ func TestPodAutoscalerCustomValidator_MetricsSources(t *testing.T) {
 	validPA := func(sources ...autoscalingv1alpha1.MetricSource) *autoscalingv1alpha1.PodAutoscaler {
 		return &autoscalingv1alpha1.PodAutoscaler{Spec: autoscalingv1alpha1.PodAutoscalerSpec{
 			ScaleTargetRef:  corev1.ObjectReference{Name: "test-deployment", Kind: "Deployment"},
+			MaxReplicas:     10,
 			ScalingStrategy: autoscalingv1alpha1.KPA,
 			MetricsSources:  sources,
 		}}
@@ -45,7 +46,7 @@ func TestPodAutoscalerCustomValidator_MetricsSources(t *testing.T) {
 		require.NoError(t, validator.validatePodAutoscaler(validPA(validSource, autoscalingv1alpha1.MetricSource{
 			MetricSourceType: autoscalingv1alpha1.RESOURCE,
 			TargetMetric:     "memory",
-			TargetValue:      "1Gi",
+			TargetValue:      "128",
 		})))
 	})
 
@@ -122,6 +123,7 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 						Name: "test-deployment",
 						Kind: "Deployment",
 					},
+					MaxReplicas:     10,
 					ScalingStrategy: autoscalingv1alpha1.HPA,
 					MetricsSources: []autoscalingv1alpha1.MetricSource{
 						{
@@ -141,6 +143,7 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 						Name: "test-deployment",
 						Kind: "Deployment",
 					},
+					MaxReplicas:     10,
 					ScalingStrategy: autoscalingv1alpha1.APA,
 					MetricsSources: []autoscalingv1alpha1.MetricSource{
 						{
@@ -160,6 +163,7 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 						Name: "test-deployment",
 						Kind: "Deployment",
 					},
+					MaxReplicas:     10,
 					ScalingStrategy: autoscalingv1alpha1.APA,
 					MetricsSources: []autoscalingv1alpha1.MetricSource{
 						{
@@ -250,6 +254,71 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 			},
 			expectError: true,
 			errorMsg:    "must be a valid number",
+		},
+		"HPA Quantity Target Value": {
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{
+						Name: "test-deployment",
+						Kind: "Deployment",
+					},
+					MaxReplicas:     10,
+					ScalingStrategy: autoscalingv1alpha1.HPA,
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{
+							MetricSourceType: autoscalingv1alpha1.RESOURCE,
+							TargetMetric:     "cpu",
+							TargetValue:      "100m",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "must be a valid number",
+		},
+		"Negative MinReplicas": {
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{
+						Name: "test-deployment",
+						Kind: "Deployment",
+					},
+					MinReplicas:     ptr.To[int32](-1),
+					MaxReplicas:     10,
+					ScalingStrategy: autoscalingv1alpha1.HPA,
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{
+							MetricSourceType: autoscalingv1alpha1.RESOURCE,
+							TargetMetric:     "cpu",
+							TargetValue:      "50",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "must not be negative",
+		},
+		"NonPositive MaxReplicas": {
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{
+						Name: "test-deployment",
+						Kind: "Deployment",
+					},
+					MinReplicas:     ptr.To[int32](0),
+					MaxReplicas:     0,
+					ScalingStrategy: autoscalingv1alpha1.HPA,
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{
+							MetricSourceType: autoscalingv1alpha1.RESOURCE,
+							TargetMetric:     "cpu",
+							TargetValue:      "50",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "must be positive",
 		},
 		"HPA Does Not Support Role Subtarget": {
 			pa: &autoscalingv1alpha1.PodAutoscaler{
