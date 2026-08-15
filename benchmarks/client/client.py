@@ -103,6 +103,7 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
         except Exception as stream_error:
             # Handle errors during streaming
             logging.error(f"Request {request_id}: Stream interrupted: {type(stream_error).__name__}: {str(stream_error)}")
+            raise
 
         response_text = "".join(text_chunks)
         response_time = asyncio.get_event_loop().time()
