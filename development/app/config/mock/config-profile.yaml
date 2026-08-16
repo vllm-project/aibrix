@@ -30,6 +30,15 @@ spec:
               "throughput": {
                 "routingStrategy": "throughput"
               },
+              "cache-friendly": {
+                "routingStrategy": "least-kv-cache"
+              },
+              "long-generation": {
+                "routingStrategy": "throughput",
+                "routingConfig": {
+                  "maxTokensGte": 2048
+                }
+              },
               "rps-limited": {
                 "routingStrategy": "least-request",
                 "requestsPerSecond": 1

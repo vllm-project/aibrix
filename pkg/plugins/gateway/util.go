@@ -653,12 +653,29 @@ func validateStreamOptions(requestID string, user utils.User, stream *bool, stre
 // locked routing strategy onto routingCtx.ConfigProfile.
 //   - The profile is selected by the config-profile header, falling back to
 //     defaultProfile (or "default") in the JSON.
+//   - config-profile: auto evaluates request-local hints in profile routingConfig
+//     and resolves to a concrete profile before routing strategy derivation.
 //   - lockedRoutingStrategy (top-level) is applied even when no profile resolves, so a
 //     model-wide lock cannot be bypassed by selecting a profile or sending a header.
 func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
-	profile, locked := configprofiles.ResolveConfig(pods, routingCtx.ReqConfigProfile)
+	if routingCtx == nil {
+		return
+	}
+	reqConfigProfile := routingCtx.ReqConfigProfile
+	var features configprofiles.RequestFeatures
+	if strings.EqualFold(strings.TrimSpace(reqConfigProfile), "auto") {
+		features = buildConfigProfileRequestFeatures(routingCtx)
+	}
+	profile, profileName, locked := configprofiles.ResolveConfigForRequest(pods, reqConfigProfile, features)
 	if profile == nil && locked == "" {
 		return
+	}
+	if strings.EqualFold(strings.TrimSpace(reqConfigProfile), "auto") && profileName != "" {
+		routingCtx.ReqConfigProfile = profileName
+		if routingCtx.RespHeaders == nil {
+			routingCtx.RespHeaders = make(map[string]string)
+		}
+		routingCtx.RespHeaders[HeaderAIBrixConfigProfile] = profileName
 	}
 	cp := &types.ResolvedConfigProfile{LockedRoutingStrategy: locked}
 	if profile != nil {
@@ -667,6 +684,56 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 		cp.RequestsPerSecond = profile.RequestsPerSecond
 	}
 	routingCtx.ConfigProfile = cp
+}
+
+func buildConfigProfileRequestFeatures(routingCtx *types.RoutingContext) configprofiles.RequestFeatures {
+	if routingCtx == nil {
+		return configprofiles.RequestFeatures{}
+	}
+	features := configprofiles.RequestFeatures{
+		PromptTokens: estimatePromptTokens(routingCtx.Message),
+		MaxTokens:    maxTokensFromRequestBody(routingCtx.ReqBody),
+	}
+	return features
+}
+
+func estimatePromptTokens(message string) *int {
+	tokens, err := utils.TokenizeInputText(message)
+	if err != nil {
+		klog.V(4).InfoS("failed to estimate prompt tokens for config profile selection", "err", err)
+		return nil
+	}
+	tokenCount := len(tokens)
+	return &tokenCount
+}
+
+func maxTokensFromRequestBody(body []byte) *int64 {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil
+	}
+	var req map[string]json.RawMessage
+	if err := sonic.Unmarshal(body, &req); err != nil {
+		return nil
+	}
+	if v, ok := int64Field(req, "max_tokens"); ok {
+		return &v
+	}
+	if v, ok := int64Field(req, "max_completion_tokens"); ok {
+		return &v
+	}
+	return nil
+}
+
+func int64Field(req map[string]json.RawMessage, key string) (int64, bool) {
+	raw, ok := req[key]
+	if !ok {
+		return 0, false
+	}
+	var v int64
+	if err := sonic.Unmarshal(raw, &v); err != nil {
+		return 0, false
+	}
+	return v, true
 }
 
 var defaultRoutingStrategy, defaultRoutingStrategyEnabled = utils.LookupEnv(EnvRoutingAlgorithm)

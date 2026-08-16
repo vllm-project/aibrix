@@ -31,10 +31,11 @@ import (
 // causes the gateway plugin to select the correct routing-strategy from the model's
 // config (model.aibrix.ai/config annotation).
 //
-// The config is defined in development/app/config/mock/config-profile-llama2-patch.yaml
-// (mirrors config-profile.yaml structure):
+// The config is defined in development/app/config/mock/config-profile.yaml:
 //   - defaultProfile: "least-request"
 //   - profiles: "least-request" (routingStrategy: least-request), "throughput" (routingStrategy: throughput)
+//   - profile: "cache-friendly" (routingStrategy: least-kv-cache)
+//   - routingConfig auto-selection hints for long-generation request classes
 //
 // The gateway resolves config-profile header -> ResolveConfig -> deriveRoutingStrategyFromContext
 // and sets routing-strategy in the response headers.
@@ -85,5 +86,43 @@ func TestConfigProfileRoutingStrategy(t *testing.T) {
 		got := dst.Header.Get("routing-strategy")
 		assert.Equal(t, "throughput", got,
 			"config-profile: throughput should select routing-strategy throughput")
+	})
+
+	t.Run("config_profile_cache_friendly", func(t *testing.T) {
+		var dst *http.Response
+		client := createOpenAIClientWithConfigProfile(gatewayURL, apiKey, "cache-friendly", option.WithResponseInto(&dst))
+
+		_, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+			Messages: []openai.ChatCompletionMessageParamUnion{openai.UserMessage(msg)},
+			Model:    modelNameQwen3,
+		})
+		require.NoError(t, err)
+
+		got := dst.Header.Get("routing-strategy")
+		assert.Equal(t, "least-kv-cache", got,
+			"config-profile: cache-friendly should select routing-strategy least-kv-cache")
+	})
+}
+
+// TestAutoConfigProfileRoutingStrategy verifies config-profile: auto resolves to a
+// concrete profile from request features before routing strategy derivation.
+func TestAutoConfigProfileRoutingStrategy(t *testing.T) {
+	msg := "auto config-profile routing test message"
+
+	t.Run("auto_profile_max_tokens_rule", func(t *testing.T) {
+		var dst *http.Response
+		client := createOpenAIClientWithConfigProfile(gatewayURL, apiKey, "auto", option.WithResponseInto(&dst))
+
+		_, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+			Messages:  []openai.ChatCompletionMessageParamUnion{openai.UserMessage(msg)},
+			Model:     modelNameQwen3,
+			MaxTokens: openai.Int(2048),
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, "long-generation", dst.Header.Get("x-aibrix-config-profile"),
+			"config-profile: auto should resolve to long-generation profile from max_tokens")
+		assert.Equal(t, "throughput", dst.Header.Get("routing-strategy"),
+			"long-generation profile should use throughput routing strategy")
 	})
 }

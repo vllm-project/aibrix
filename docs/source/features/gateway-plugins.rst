@@ -533,11 +533,28 @@ Add the ``model.aibrix.ai/config`` annotation to the pod template of your ``Depl
           "defaultProfile": "default",
           "profiles": {
             "default": {
-              "routingStrategy": "least-latency",
-              "requestsPerSecond": 100
+              "routingStrategy": "least-request",
+              "requestsPerSecond": 200
             },
-            "batch": {
-              "routingStrategy": "throughput"
+            "large-input": {
+              "routingStrategy": "pd",
+              "routingConfig": {
+                "promptLenBucketMinLength": 8192,
+                "promptTokensGte": 8192,
+                "prefillScorePolicy": "prefix_cache",
+                "decodeScorePolicy": "load_balancing"
+              },
+              "requestsPerSecond": 50
+            },
+            "cache-friendly": {
+              "routingStrategy": "least-kv-cache",
+              "requestsPerSecond": 150
+            },
+            "offline-generation": {
+              "routingStrategy": "throughput",
+              "routingConfig": {
+                "maxTokensGte": 2048
+              }
             }
           }
         }
@@ -569,7 +586,7 @@ locks the strategy: the remaining per-profile knobs (``requestsPerSecond``,
 
 Two request headers drive the config at request time:
 
-* ``config-profile`` selects a named profile; when absent, ``defaultProfile`` (or ``"default"``) is used.
+* ``config-profile`` selects a named profile; when absent, ``defaultProfile`` (or ``"default"``) is used. ``config-profile: auto`` asks the gateway to select a concrete profile from request-local hints in each profile's ``routingConfig``.
 * ``routing-strategy`` overrides the selected profile's ``routingStrategy``, unless ``lockedRoutingStrategy`` is set (see Routing strategy priority below).
 
 .. code-block:: bash
@@ -579,6 +596,14 @@ Two request headers drive the config at request time:
       -H "config-profile: batch" \
       -H "Content-Type: application/json" \
       -d '{"model": "my-model", "messages": [{"role": "user", "content": "Summarize..."}]}'
+
+.. code-block:: bash
+
+    # Let the gateway resolve a concrete profile from routingConfig hints
+    curl http://${ENDPOINT}/v1/chat/completions \
+      -H "config-profile: auto" \
+      -H "Content-Type: application/json" \
+      -d '{"model": "my-model", "messages": [{"role": "user", "content": "Summarize..."}], "max_tokens": 4096}'
 
 **Top-level fields**
 
@@ -594,7 +619,6 @@ Two request headers drive the config at request time:
      - Profile name used when no ``config-profile`` header is sent. Falls back to ``"default"`` when omitted.
    * - ``profiles``
      - Map of named profiles, each carrying the per-profile fields below.
-
 **Profile fields**
 
 .. list-table::
@@ -608,13 +632,21 @@ Two request headers drive the config at request time:
    * - ``requestsPerSecond``
      - Model-level RPS cap for this profile. Requests that exceed the limit are rejected with HTTP 429. Omit or set to ``0`` for no limit. See `Production Model Deployments <../production/model-deployment.html>`_ for details.
    * - ``routingConfig``
-     - Algorithm-specific settings as a nested JSON object. Currently used by the ``pd`` strategy for prompt-length bucketing and standard inference pod configuration. See `Prefill-Decode Disaggregation <pd-disaggregation.html>`_ for details.
+     - Algorithm-specific settings as a nested JSON object. ``config-profile: auto`` also reads request-local selection hints from this object. Currently supported auto-selection hints are ``promptTokensGte``, ``promptTokensLt``, ``maxTokensGte`` and ``maxTokensLt``. Existing strategy-specific fields, such as ``promptLenBucketMinLength`` for ``pd``, remain available. See `Prefill-Decode Disaggregation <pd-disaggregation.html>`_ for details.
+
+When ``config-profile: auto`` is used, the gateway evaluates the supported
+request-local hints inside each profile's ``routingConfig``. A profile matches
+only when all of its supported hints match the request. If no profile matches,
+the gateway uses ``defaultProfile`` (or ``"default"``). ``promptTokens*`` uses
+the gateway's existing prompt text extraction and local token estimation.
+``maxTokens*`` reads ``max_tokens`` first, then ``max_completion_tokens`` when
+``max_tokens`` is absent.
 
 **Routing strategy priority** (highest to lowest):
 
 1. ``lockedRoutingStrategy`` pinned model-wide in the config — always wins when set, even over the ``routing-strategy`` header.
 2. ``routing-strategy`` request header.
-3. ``routingStrategy`` from the resolved config profile.
+3. ``routingStrategy`` from the resolved profile. The resolved profile comes from the concrete ``config-profile`` header, ``config-profile: auto`` routingConfig hints, or ``defaultProfile``.
 4. ``ROUTING_ALGORITHM`` environment variable on the gateway plugin.
 
 **Backward compatibility**: if a pod has no ``model.aibrix.ai/config`` annotation, the gateway falls back to the ``routing-strategy`` request header and then the ``ROUTING_ALGORITHM`` env (steps 2 and 4 above). No migration is required for existing deployments.
