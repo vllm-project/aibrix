@@ -128,143 +128,12 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
 
-	// 1. Validate ScaleTargetRef
-	targetRef := pa.Spec.ScaleTargetRef
-	targetRefPath := specPath.Child("scaleTargetRef")
-	if targetRef.Name == "" {
-		allErrs = append(allErrs, field.Required(targetRefPath.Child("name"), "must be set"))
-	}
-	if targetRef.Kind == "" {
-		allErrs = append(allErrs, field.Required(targetRefPath.Child("kind"), "must be set"))
-	}
-
-	// 2. Validate Replica Bounds
-	if pa.Spec.MinReplicas != nil && *pa.Spec.MinReplicas < 0 {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("minReplicas"), pa.Spec.MinReplicas, "must not be negative"))
-	}
-	if pa.Spec.MaxReplicas <= 0 {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("maxReplicas"), pa.Spec.MaxReplicas, "must be positive"))
-	}
-	if pa.Spec.MinReplicas != nil && pa.Spec.MaxReplicas < *pa.Spec.MinReplicas {
-		minPath := specPath.Child("minReplicas")
-		maxPath := specPath.Child("maxReplicas")
-		allErrs = append(allErrs,
-			field.Invalid(minPath, pa.Spec.MinReplicas, "cannot be greater than maxReplicas"),
-			field.Invalid(maxPath, pa.Spec.MaxReplicas, "cannot be less than minReplicas"),
-		)
-	}
-
+	allErrs = append(allErrs, validateScaleTargetRef(pa, specPath)...)
+	allErrs = append(allErrs, validateReplicaBounds(pa, specPath)...)
 	allErrs = append(allErrs, validateMetricWindows(pa, specPath)...)
 	allErrs = append(allErrs, validateSchedules(pa, specPath)...)
-
-	// 3. Validate ScalingStrategy
-	validStrategies := map[autoscalingv1alpha1.ScalingStrategyType]bool{
-		autoscalingv1alpha1.HPA: true,
-		autoscalingv1alpha1.KPA: true,
-		autoscalingv1alpha1.APA: true,
-	}
-	if !validStrategies[pa.Spec.ScalingStrategy] {
-		strategyPath := specPath.Child("scalingStrategy")
-		allErrs = append(allErrs, field.NotSupported(strategyPath, pa.Spec.ScalingStrategy, []string{
-			string(autoscalingv1alpha1.HPA),
-			string(autoscalingv1alpha1.KPA),
-			string(autoscalingv1alpha1.APA),
-		}))
-	}
-	if err := validateHPARoleSubtarget(pa, specPath); err != nil {
-		allErrs = append(allErrs, err)
-	}
-
-	// 4. Validate MetricsSources
-	metricsPath := specPath.Child("metricsSources")
-	if len(pa.Spec.MetricsSources) < 1 {
-		allErrs = append(
-			allErrs,
-			field.Invalid(metricsPath, pa.Spec.MetricsSources, "at least one metricsSource is required"),
-		)
-	}
-	for i := range pa.Spec.MetricsSources {
-		ms := &pa.Spec.MetricsSources[i]
-		msPath := metricsPath.Index(i)
-
-		if ms.TargetMetric == "" {
-			allErrs = append(allErrs, field.Required(msPath.Child("targetMetric"), "must be set"))
-		}
-		if ms.TargetValue == "" {
-			allErrs = append(allErrs, field.Required(msPath.Child("targetValue"), "must be set"))
-		} else {
-			targetValue, err := strconv.ParseFloat(ms.TargetValue, 64)
-			if err != nil {
-				allErrs = append(allErrs, field.Invalid(msPath.Child("targetValue"), ms.TargetValue, "must be a valid number"))
-			} else if targetValue <= 0 {
-				allErrs = append(allErrs, field.Invalid(msPath.Child("targetValue"), ms.TargetValue, "must be greater than 0"))
-			}
-		}
-
-		switch ms.MetricSourceType {
-		case autoscalingv1alpha1.POD:
-			if ms.ProtocolType == "" {
-				allErrs = append(allErrs, field.Required(msPath.Child("protocolType"), "required for metricSourceType=pod"))
-			}
-			if ms.Port == "" {
-				allErrs = append(allErrs, field.Required(msPath.Child("port"), "required for metricSourceType=pod"))
-			}
-			if ms.Path == "" {
-				allErrs = append(allErrs, field.Required(msPath.Child("path"), "required for metricSourceType=pod"))
-			}
-
-		case autoscalingv1alpha1.EXTERNAL, autoscalingv1alpha1.DOMAIN:
-			// Empty endpoint selects the Kubernetes external.metrics API instead of an HTTP metrics endpoint.
-			if ms.Endpoint != "" {
-				if ms.ProtocolType == "" {
-					allErrs = append(
-						allErrs,
-						field.Required(msPath.Child("protocolType"), "required for metricSourceType=external/domain"),
-					)
-				}
-				if ms.Path == "" {
-					allErrs = append(allErrs, field.Required(msPath.Child("path"), "required for metricSourceType=external/domain"))
-				}
-			}
-
-		case autoscalingv1alpha1.RESOURCE:
-			validMetrics := map[string]bool{"cpu": true, "memory": true}
-			if !validMetrics[ms.TargetMetric] {
-				allErrs = append(
-					allErrs,
-					field.NotSupported(msPath.Child("targetMetric"), ms.TargetMetric, []string{"cpu", "memory"}),
-				)
-			}
-			// Ensure no extra fields are set
-			if ms.Port != "" {
-				allErrs = append(allErrs, field.Forbidden(msPath.Child("port"), "not allowed for metricSourceType=resource"))
-			}
-			if ms.Endpoint != "" {
-				allErrs = append(allErrs, field.Forbidden(msPath.Child("endpoint"), "not allowed for metricSourceType=resource"))
-			}
-			if ms.Path != "" {
-				allErrs = append(allErrs, field.Forbidden(msPath.Child("path"), "not allowed for metricSourceType=resource"))
-			}
-			if ms.ProtocolType != "" {
-				allErrs = append(
-					allErrs,
-					field.Forbidden(msPath.Child("protocolType"), "not allowed for metricSourceType=resource"),
-				)
-			}
-
-		case autoscalingv1alpha1.CUSTOM:
-			// No required fields for custom metrics
-
-		default:
-			allErrs = append(allErrs, field.NotSupported(msPath.Child("metricSourceType"), ms.MetricSourceType, []string{
-				string(autoscalingv1alpha1.POD),
-				string(autoscalingv1alpha1.EXTERNAL),
-				string(autoscalingv1alpha1.DOMAIN),
-				string(autoscalingv1alpha1.RESOURCE),
-				string(autoscalingv1alpha1.CUSTOM),
-			}))
-		}
-	}
+	allErrs = append(allErrs, validateScalingStrategy(pa, specPath)...)
+	allErrs = append(allErrs, validateMetricsSources(pa, specPath)...)
 
 	if len(allErrs) == 0 {
 		return nil
@@ -275,6 +144,177 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 		pa.Name,
 		allErrs,
 	)
+}
+
+func validateScaleTargetRef(pa *autoscalingv1alpha1.PodAutoscaler, specPath *field.Path) field.ErrorList {
+	var errs field.ErrorList
+	targetRef := pa.Spec.ScaleTargetRef
+	targetRefPath := specPath.Child("scaleTargetRef")
+	if targetRef.Name == "" {
+		errs = append(errs, field.Required(targetRefPath.Child("name"), "must be set"))
+	}
+	if targetRef.Kind == "" {
+		errs = append(errs, field.Required(targetRefPath.Child("kind"), "must be set"))
+	}
+	return errs
+}
+
+func validateReplicaBounds(pa *autoscalingv1alpha1.PodAutoscaler, specPath *field.Path) field.ErrorList {
+	var errs field.ErrorList
+	if pa.Spec.MinReplicas != nil && *pa.Spec.MinReplicas < 0 {
+		errs = append(errs, field.Invalid(specPath.Child("minReplicas"), pa.Spec.MinReplicas, "must not be negative"))
+	}
+	if pa.Spec.MaxReplicas <= 0 {
+		errs = append(errs, field.Invalid(specPath.Child("maxReplicas"), pa.Spec.MaxReplicas, "must be positive"))
+	}
+	if pa.Spec.MinReplicas != nil && pa.Spec.MaxReplicas < *pa.Spec.MinReplicas {
+		minPath := specPath.Child("minReplicas")
+		maxPath := specPath.Child("maxReplicas")
+		errs = append(errs,
+			field.Invalid(minPath, pa.Spec.MinReplicas, "cannot be greater than maxReplicas"),
+			field.Invalid(maxPath, pa.Spec.MaxReplicas, "cannot be less than minReplicas"),
+		)
+	}
+	return errs
+}
+
+func validateScalingStrategy(pa *autoscalingv1alpha1.PodAutoscaler, specPath *field.Path) field.ErrorList {
+	var errs field.ErrorList
+	validStrategies := map[autoscalingv1alpha1.ScalingStrategyType]bool{
+		autoscalingv1alpha1.HPA: true,
+		autoscalingv1alpha1.KPA: true,
+		autoscalingv1alpha1.APA: true,
+	}
+	if !validStrategies[pa.Spec.ScalingStrategy] {
+		strategyPath := specPath.Child("scalingStrategy")
+		errs = append(errs, field.NotSupported(strategyPath, pa.Spec.ScalingStrategy, []string{
+			string(autoscalingv1alpha1.HPA),
+			string(autoscalingv1alpha1.KPA),
+			string(autoscalingv1alpha1.APA),
+		}))
+	}
+	if err := validateHPARoleSubtarget(pa, specPath); err != nil {
+		errs = append(errs, err)
+	}
+	return errs
+}
+
+func validateMetricsSources(pa *autoscalingv1alpha1.PodAutoscaler, specPath *field.Path) field.ErrorList {
+	var errs field.ErrorList
+	metricsPath := specPath.Child("metricsSources")
+	if len(pa.Spec.MetricsSources) < 1 {
+		errs = append(
+			errs,
+			field.Invalid(metricsPath, pa.Spec.MetricsSources, "at least one metricsSource is required"),
+		)
+	}
+	for i := range pa.Spec.MetricsSources {
+		ms := &pa.Spec.MetricsSources[i]
+		errs = append(errs, validateMetricSource(ms, metricsPath.Index(i))...)
+	}
+	return errs
+}
+
+func validateMetricSource(ms *autoscalingv1alpha1.MetricSource, msPath *field.Path) field.ErrorList {
+	var errs field.ErrorList
+	if ms.TargetMetric == "" {
+		errs = append(errs, field.Required(msPath.Child("targetMetric"), "must be set"))
+	}
+	errs = append(errs, validateMetricTargetValue(ms, msPath)...)
+
+	switch ms.MetricSourceType {
+	case autoscalingv1alpha1.POD:
+		errs = append(errs, validatePodMetricSource(ms, msPath)...)
+	case autoscalingv1alpha1.EXTERNAL, autoscalingv1alpha1.DOMAIN:
+		errs = append(errs, validateEndpointMetricSource(ms, msPath)...)
+	case autoscalingv1alpha1.RESOURCE:
+		errs = append(errs, validateResourceMetricSource(ms, msPath)...)
+	case autoscalingv1alpha1.CUSTOM:
+		// No required fields for custom metrics.
+	default:
+		errs = append(errs, field.NotSupported(msPath.Child("metricSourceType"), ms.MetricSourceType, []string{
+			string(autoscalingv1alpha1.POD),
+			string(autoscalingv1alpha1.EXTERNAL),
+			string(autoscalingv1alpha1.DOMAIN),
+			string(autoscalingv1alpha1.RESOURCE),
+			string(autoscalingv1alpha1.CUSTOM),
+		}))
+	}
+	return errs
+}
+
+func validateMetricTargetValue(ms *autoscalingv1alpha1.MetricSource, msPath *field.Path) field.ErrorList {
+	if ms.TargetValue == "" {
+		return field.ErrorList{field.Required(msPath.Child("targetValue"), "must be set")}
+	}
+
+	targetValue, err := strconv.ParseFloat(ms.TargetValue, 64)
+	if err != nil {
+		return field.ErrorList{field.Invalid(msPath.Child("targetValue"), ms.TargetValue, "must be a valid number")}
+	}
+	if targetValue <= 0 {
+		return field.ErrorList{field.Invalid(msPath.Child("targetValue"), ms.TargetValue, "must be greater than 0")}
+	}
+	return nil
+}
+
+func validatePodMetricSource(ms *autoscalingv1alpha1.MetricSource, msPath *field.Path) field.ErrorList {
+	var errs field.ErrorList
+	if ms.ProtocolType == "" {
+		errs = append(errs, field.Required(msPath.Child("protocolType"), "required for metricSourceType=pod"))
+	}
+	if ms.Port == "" {
+		errs = append(errs, field.Required(msPath.Child("port"), "required for metricSourceType=pod"))
+	}
+	if ms.Path == "" {
+		errs = append(errs, field.Required(msPath.Child("path"), "required for metricSourceType=pod"))
+	}
+	return errs
+}
+
+func validateEndpointMetricSource(ms *autoscalingv1alpha1.MetricSource, msPath *field.Path) field.ErrorList {
+	if ms.Endpoint == "" {
+		return nil
+	}
+
+	var errs field.ErrorList
+	if ms.ProtocolType == "" {
+		errs = append(
+			errs,
+			field.Required(msPath.Child("protocolType"), "required for metricSourceType=external/domain"),
+		)
+	}
+	if ms.Path == "" {
+		errs = append(errs, field.Required(msPath.Child("path"), "required for metricSourceType=external/domain"))
+	}
+	return errs
+}
+
+func validateResourceMetricSource(ms *autoscalingv1alpha1.MetricSource, msPath *field.Path) field.ErrorList {
+	var errs field.ErrorList
+	validMetrics := map[string]bool{"cpu": true, "memory": true}
+	if !validMetrics[ms.TargetMetric] {
+		errs = append(
+			errs,
+			field.NotSupported(msPath.Child("targetMetric"), ms.TargetMetric, []string{"cpu", "memory"}),
+		)
+	}
+	if ms.Port != "" {
+		errs = append(errs, field.Forbidden(msPath.Child("port"), "not allowed for metricSourceType=resource"))
+	}
+	if ms.Endpoint != "" {
+		errs = append(errs, field.Forbidden(msPath.Child("endpoint"), "not allowed for metricSourceType=resource"))
+	}
+	if ms.Path != "" {
+		errs = append(errs, field.Forbidden(msPath.Child("path"), "not allowed for metricSourceType=resource"))
+	}
+	if ms.ProtocolType != "" {
+		errs = append(
+			errs,
+			field.Forbidden(msPath.Child("protocolType"), "not allowed for metricSourceType=resource"),
+		)
+	}
+	return errs
 }
 
 func validateSchedules(pa *autoscalingv1alpha1.PodAutoscaler, specPath *field.Path) field.ErrorList {
