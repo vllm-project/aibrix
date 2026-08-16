@@ -12,6 +12,11 @@ metadata:
     apa.autoscaling.aibrix.ai/window: 30s
 spec:
   scalingStrategy: APA
+  circuitBreaker:
+    enabled: true
+    action: max
+    failureThreshold: 3
+    recoveryThreshold: 3
   minReplicas: 1
   maxReplicas: 8
   metricsSources:

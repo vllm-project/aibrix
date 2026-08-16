@@ -10,6 +10,11 @@ metadata:
     kpa.autoscaling.aibrix.ai/scale-down-delay: 3m
 spec:
   scalingStrategy: KPA
+  circuitBreaker:
+    enabled: true
+    action: freeze
+    failureThreshold: 3
+    recoveryThreshold: 3
   minReplicas: 1
   maxReplicas: 8
   metricsSources:

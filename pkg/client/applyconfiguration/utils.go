@@ -35,6 +35,10 @@ import (
 func ForKind(kind schema.GroupVersionKind) interface{} {
 	switch kind {
 	// Group=autoscaling, Version=v1alpha1
+	case v1alpha1.SchemeGroupVersion.WithKind("CircuitBreakerConfig"):
+		return &autoscalingv1alpha1.CircuitBreakerConfigApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("CircuitBreakerStatus"):
+		return &autoscalingv1alpha1.CircuitBreakerStatusApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("MetricSource"):
 		return &autoscalingv1alpha1.MetricSourceApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("PodAutoscaler"):

@@ -32,9 +32,33 @@ var (
 		},
 		[]string{"namespace", "name", "algorithm", "reason"},
 	)
+	circuitBreakerState = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Subsystem: constants.AibrixSubsystemName,
+			Name:      "podautoscaler_circuit_breaker_state",
+			Help:      "Records whether the PodAutoscaler circuit breaker is open (1) or closed (0)",
+		},
+		[]string{"namespace", "name"},
+	)
+	circuitBreakerTransitions = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: constants.AibrixSubsystemName,
+			Name:      "podautoscaler_circuit_breaker_transitions_total",
+			Help:      "Counts PodAutoscaler circuit breaker state transitions",
+		},
+		[]string{"namespace", "name", "action", "transition"},
+	)
+	circuitBreakerActionFailures = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: constants.AibrixSubsystemName,
+			Name:      "podautoscaler_circuit_breaker_action_failures_total",
+			Help:      "Counts PodAutoscaler circuit breaker protective action failures",
+		},
+		[]string{"namespace", "name", "action"},
+	)
 )
 
 func init() {
 	// Register with controller-runtime metrics registry
-	metrics.Registry.MustRegister(autoscalerScaleAction)
+	metrics.Registry.MustRegister(autoscalerScaleAction, circuitBreakerState, circuitBreakerTransitions, circuitBreakerActionFailures)
 }
