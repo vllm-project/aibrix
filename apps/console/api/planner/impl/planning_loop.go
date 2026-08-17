@@ -185,9 +185,15 @@ func (w *planningLoop) processRunningQueue() {
 		job.mu.RLock()
 		status := job.status
 		readyToSubmit := job.readyToSubmit
+		allocatedResource := job.allocatedResource
 		job.mu.RUnlock()
 
-		if status == plannerapi.JobStatusResourcePreparing && readyToSubmit {
+		if status == plannerapi.JobStatusResourcePreparing &&
+			readyToSubmit &&
+			provisionStartReached(
+				p.backend.AllocationTimeWindow(allocatedResource),
+				time.Now().UTC(),
+			) {
 			toSubmit = append(toSubmit, job)
 		}
 		return true
@@ -233,8 +239,14 @@ func (w *planningLoop) processRunningQueue() {
 		case plannerapi.JobStatusCancelling:
 			wp.Submit(func() { handleCleanup(ctx, w.planner, job, status, plannerapi.JobStatusCancelled) })
 		case plannerapi.JobStatusResourcePreparing:
-			// Query provision status only, mark readyToSubmit if ready
-			wp.Submit(func() { handleResourcePreparing(w.planner, job) })
+			job.mu.RLock()
+			hasAllocation := job.allocatedResource != nil
+			job.mu.RUnlock()
+			if !hasAllocation {
+				// Query until RM reports the allocation ready. Once ready, wait
+				// locally for the provision start time without polling RM again.
+				wp.Submit(func() { handleResourcePreparing(w.planner, job) })
+			}
 		default:
 			if isBatchRunning(status) {
 				// Query batch status only, update job state

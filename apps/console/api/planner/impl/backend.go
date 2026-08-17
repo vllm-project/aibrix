@@ -36,6 +36,8 @@ import (
 //     submission and folds in ready-state logging.
 //   - BuildRuntime projects the ready ProvisionResult plus model-template
 //     serving config onto the MDS RuntimeRef.
+//   - AllocationTimeWindow extracts the provider's actual allocated window,
+//     when the provider returns one.
 //
 // Accepted-provision logging is opt-in via provisionResponseLogger.
 type plannerBackend interface {
@@ -43,6 +45,7 @@ type plannerBackend interface {
 	Schedule(ctx context.Context, req *plannerapi.EnqueueRequest) (spec rmtypes.ResourceProvisionSpec, err error)
 	BuildRuntime(req *plannerapi.EnqueueRequest, prov *rmtypes.ProvisionResult) (*plannerapi.RuntimeRef, error)
 	BuildResourceAllocation(spec rmtypes.ResourceProvisionSpec, prov *rmtypes.ProvisionResult) plannerclient.ResourceAllocation
+	AllocationTimeWindow(prov *rmtypes.ProvisionResult) *rmtypes.TimeWindow
 }
 
 // provisionResponseLogger is an optional capability to log provider-specific
@@ -200,4 +203,8 @@ func (b *defaultPlannerBackend) BuildResourceAllocation(spec rmtypes.ResourcePro
 		ProvisionID:     prov.ProvisionID,
 		ResourceDetails: defaultResourceDetailsFromProvisionSpec(spec),
 	}
+}
+
+func (b *defaultPlannerBackend) AllocationTimeWindow(*rmtypes.ProvisionResult) *rmtypes.TimeWindow {
+	return nil
 }

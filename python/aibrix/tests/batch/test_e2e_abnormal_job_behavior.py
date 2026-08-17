@@ -47,6 +47,7 @@ from aibrix.batch.job_entity import (
     ClientConfig,
     ResourceAllocation,
 )
+from aibrix.batch.job_entity.batch_job import parse_completion_window
 from aibrix.context import InfrastructureContext
 from tests.batch.conftest import (
     backend_has_feature,
@@ -64,6 +65,10 @@ T = TypeVar("T")
 TEST_OPTS_PENDING_AFTER_N_REQUESTS = "pending_after_n_requests"
 _ORIGINAL_RUNTIME_DELAY_SEND: Any = None
 _PATCHED_RUNTIME_DELAY_SECONDS = 0.0
+
+
+def _completion_window_seconds(value: str) -> int:
+    return 0 if value == "0h" else parse_completion_window(value)
 
 
 def _backend(test_backend):
@@ -663,7 +668,9 @@ def validate_batch_response(
             "Required field 'input_file_id' should not be None"
         )
 
-    assert response["completion_window"] == expected_completion_window, (
+    assert _completion_window_seconds(
+        response["completion_window"]
+    ) == _completion_window_seconds(expected_completion_window), (
         f"Expected completion_window '{expected_completion_window}', got '{response['completion_window']}'"
     )
 
@@ -691,7 +698,7 @@ def validate_batch_response(
     assert isinstance(response["expires_at"], int), (
         "Expected 'expires_at' to be unix timestamp (int)"
     )
-    if expected_completion_window == "24h":
+    if _completion_window_seconds(expected_completion_window) == 86400:
         assert response["expires_at"] == response["created_at"] + 86400, (
             "Expected 'expires_at' to be 'created_at' + 86400"
         )

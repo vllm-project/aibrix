@@ -239,8 +239,8 @@ def parse_args() -> argparse.Namespace:
         "--completion-window",
         default="24h",
         help=(
-            "Pass-through completion window. AIBrix only accepts '24h'; "
-            "use other values to verify enum rejection. Default: %(default)s"
+            "Pass-through positive duration using d, h, and min (or m), "
+            "for example 6min, 1h38min, or 1d2h. Default: %(default)s"
         ),
     )
     p.add_argument(

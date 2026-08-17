@@ -104,8 +104,8 @@ class BatchScheduler:
 
     async def expire_jobs(self):
         # Derive past-due jobs from schedulable pools rather than a duplicated
-        # due-time list. The deadline is recomputed per job:
-        # created_at + completion_window.
+        # due-time list. Each job resolves its resource deadline first and
+        # falls back to created_at + completion_window when none was provided.
         now = time.time()
         seen_job_ids = set()
         schedulable_jobs = list(await self._job_progress_manager.list_pending())
@@ -118,10 +118,7 @@ class BatchScheduler:
             # cleanup loop should stop retrying expiry checks for them.
             if job.status.state == BatchJobState.FINALIZING:
                 continue
-            created_at = job.status.created_at
-            if created_at is None:
-                continue
-            due_time = created_at.timestamp() + job.spec.completion_window
+            due_time = job.expiration_timestamp()
             if due_time <= now:
                 await self._job_progress_manager.expire_job(job.job_id)
 
