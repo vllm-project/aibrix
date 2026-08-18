@@ -212,8 +212,9 @@ func (u *goTOSUploader) AppendBytes(remoteURI string, data []byte) error {
 		Key:    aws.String(key),
 	})
 	if getErr == nil {
-		defer out.Body.Close()
+		// Close immediately after ReadAll; do not defer across PutObject.
 		existing, readErr := io.ReadAll(out.Body)
+		_ = out.Body.Close()
 		if readErr != nil {
 			return fmt.Errorf("tos get body %s: %w", remoteURI, readErr)
 		}
