@@ -683,6 +683,7 @@ message ModelDeploymentTemplateSpec {
   reserved "provider_config";
   repeated string supported_endpoints = 8;   // OpenAI endpoints, e.g. "/v1/chat/completions"
   string deployment_mode = 9;                 // "dedicated" | "shared" | "external"
+  repeated string regions = 10;               // Console placement choices; stripped before runtime submission
 }
 
 message EngineSpec {

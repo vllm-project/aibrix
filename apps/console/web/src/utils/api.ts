@@ -231,6 +231,15 @@ export interface AcceleratorSpec {
   skuHint?: string;
 }
 
+const CATALOG_REGIONS_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
+
+interface CatalogRegionsCacheEntry {
+  expiresAt: number;
+  regions: Promise<string[]>;
+}
+
+const catalogRegionsByAccelerator = new Map<string, CatalogRegionsCacheEntry>();
+
 export interface ParallelismSpec {
   tp?: number;
   pp?: number;
@@ -257,6 +266,7 @@ export interface ModelDeploymentTemplateSpec {
   quantization?: QuantizationSpec;
   supportedEndpoints?: string[];
   deploymentMode?: string;
+  regions?: string[];
 }
 
 export interface ModelDeploymentTemplate {
@@ -667,6 +677,58 @@ export async function createModel(req: CreateModelRequest): Promise<Model> {
     method: 'POST',
     body: JSON.stringify(body),
   });
+}
+
+export async function listCatalogRegionsForAccelerators(
+  accelerators: string[],
+): Promise<Record<string, string[]>> {
+  const uniqueAccelerators = Array.from(new Set(
+    accelerators
+      .map((accelerator) => accelerator.trim().toUpperCase())
+      .filter((accelerator) => accelerator && accelerator !== 'CPU'),
+  ));
+  const now = Date.now();
+  const hasFreshSnapshot = uniqueAccelerators.every((accelerator) => {
+    const cached = catalogRegionsByAccelerator.get(accelerator.toUpperCase());
+    return cached && now < cached.expiresAt;
+  });
+
+  if (!hasFreshSnapshot && uniqueAccelerators.length > 0) {
+    const request = apiFetch<{ regions: Record<string, string[]> }>(
+      '/api/v1/catalog/regions',
+      {
+        method: 'POST',
+        body: JSON.stringify({ accelerators: uniqueAccelerators }),
+      },
+    );
+    for (const accelerator of uniqueAccelerators) {
+      const cacheKey = accelerator.toUpperCase();
+      const regions = request
+        .then((data) => data?.regions?.[accelerator] ?? [])
+        .catch(() => []);
+      catalogRegionsByAccelerator.set(cacheKey, {
+        expiresAt: now + CATALOG_REGIONS_CACHE_TTL_MS,
+        regions,
+      });
+    }
+    try {
+      await request;
+    } catch (error) {
+      for (const accelerator of uniqueAccelerators) {
+        catalogRegionsByAccelerator.delete(accelerator.toUpperCase());
+      }
+      throw error;
+    }
+  }
+
+  const regionsByAccelerator: Record<string, string[]> = {};
+  await Promise.all(uniqueAccelerators.map(async (accelerator) => {
+    const cached = catalogRegionsByAccelerator.get(accelerator.toUpperCase());
+    regionsByAccelerator[accelerator] = cached
+      ? [...await cached.regions]
+      : [];
+  }));
+  return regionsByAccelerator;
 }
 
 // --- Model Deployment Templates ---

@@ -3211,6 +3211,7 @@ type ModelDeploymentTemplateSpec struct {
 	Quantization       *QuantizationSpec `protobuf:"bytes,6,opt,name=quantization,proto3" json:"quantization,omitempty"`
 	SupportedEndpoints []string          `protobuf:"bytes,8,rep,name=supported_endpoints,json=supportedEndpoints,proto3" json:"supported_endpoints,omitempty"` // OpenAI endpoints, e.g. "/v1/chat/completions"
 	DeploymentMode     string            `protobuf:"bytes,9,opt,name=deployment_mode,json=deploymentMode,proto3" json:"deployment_mode,omitempty"`             // "dedicated" | "shared" | "external"
+	Regions            []string          `protobuf:"bytes,10,rep,name=regions,proto3" json:"regions,omitempty"`                                                // Console placement choices; stripped before runtime submission
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -3299,6 +3300,13 @@ func (x *ModelDeploymentTemplateSpec) GetDeploymentMode() string {
 		return x.DeploymentMode
 	}
 	return ""
+}
+
+func (x *ModelDeploymentTemplateSpec) GetRegions() []string {
+	if x != nil {
+		return x.Regions
+	}
+	return nil
 }
 
 type EngineSpec struct {
@@ -6051,7 +6059,7 @@ const file_console_v1_console_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\a \x01(\tR\tcreatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\b \x01(\tR\tupdatedAt\"\xd7\x04\n" +
+	"updated_at\x18\b \x01(\tR\tupdatedAt\"\xf1\x04\n" +
 	"\x1bModelDeploymentTemplateSpec\x12.\n" +
 	"\x06engine\x18\x01 \x01(\v2\x16.console.v1.EngineSpecR\x06engine\x12>\n" +
 	"\fmodel_source\x18\x02 \x01(\v2\x1b.console.v1.ModelSourceSpecR\vmodelSource\x12=\n" +
@@ -6061,7 +6069,9 @@ const file_console_v1_console_proto_rawDesc = "" +
 	"engineArgs\x12@\n" +
 	"\fquantization\x18\x06 \x01(\v2\x1c.console.v1.QuantizationSpecR\fquantization\x12/\n" +
 	"\x13supported_endpoints\x18\b \x03(\tR\x12supportedEndpoints\x12'\n" +
-	"\x0fdeployment_mode\x18\t \x01(\tR\x0edeploymentMode\x1a=\n" +
+	"\x0fdeployment_mode\x18\t \x01(\tR\x0edeploymentMode\x12\x18\n" +
+	"\aregions\x18\n" +
+	" \x03(\tR\aregions\x1a=\n" +
 	"\x0fEngineArgsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\a\x10\bR\x0fprovider_config\"\x97\x02\n" +

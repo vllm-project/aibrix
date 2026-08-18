@@ -31,6 +31,7 @@ import (
 	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
 	pu "github.com/vllm-project/aibrix/apps/console/api/planner/utils"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/provisioner"
+	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 	"github.com/vllm-project/aibrix/apps/console/api/store/models"
 	"github.com/vllm-project/aibrix/apps/console/api/utils"
@@ -162,6 +163,19 @@ func NewPlanner(cfg PlannerConfig) *Planner {
 }
 
 var _ plannerapi.Planner = (*Planner)(nil)
+
+func (q *Planner) FormatRegion(region *rmtypes.RegionSpec) string {
+	if q == nil || q.backend == nil {
+		return ""
+	}
+	if formatter, ok := q.backend.(regionFormatterBackend); ok {
+		return formatter.FormatRegion(region)
+	}
+	if q.prov != nil {
+		return (&defaultPlannerBackend{provider: q.prov.Type()}).FormatRegion(region)
+	}
+	return ""
+}
 
 func (q *Planner) Start(ctx context.Context) error {
 	if ctx.Err() != nil {

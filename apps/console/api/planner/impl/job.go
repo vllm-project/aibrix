@@ -194,6 +194,14 @@ func modelToJob(rec *models.Job) *queuedJob {
 				}
 				delete(m, common.BatchExtraBodyField)
 			}
+			if rawRegions, ok := m[common.MetadataConsoleTemplateRegions]; ok {
+				if req.ModelTemplate != nil {
+					if err := json.Unmarshal([]byte(rawRegions), &req.ModelTemplate.Regions); err != nil {
+						klog.Errorf("modelToJob: failed to unmarshal template regions: %v", err)
+					}
+				}
+				delete(m, common.MetadataConsoleTemplateRegions)
+			}
 			req.BatchParams.Metadata = m
 		} else {
 			klog.Errorf("modelToJob: failed to marshal metadata: %v", err)
@@ -263,21 +271,30 @@ func jobToModel(j *queuedJob) *models.Job {
 		rec.ModelTemplateName = j.req.ModelTemplate.Name
 		rec.ModelTemplateVersion = j.req.ModelTemplate.Version
 	}
-	if md := j.req.BatchParams.Metadata; len(md) > 0 {
-		// extraBody is embedded in metadata
-		if j.extraBody != nil {
-			md[common.BatchExtraBodyField] = string(j.extraBody)
+	metadata := make(map[string]string, len(j.req.BatchParams.Metadata)+2)
+	for key, value := range j.req.BatchParams.Metadata {
+		metadata[key] = value
+	}
+	if j.req.ModelTemplate != nil && len(j.req.ModelTemplate.Regions) > 0 {
+		if b, err := json.Marshal(j.req.ModelTemplate.Regions); err == nil {
+			metadata[common.MetadataConsoleTemplateRegions] = string(b)
 		}
-		if b, err := json.Marshal(md); err == nil {
+	}
+	// extraBody is embedded in persisted metadata.
+	if j.extraBody != nil {
+		metadata[common.BatchExtraBodyField] = string(j.extraBody)
+	}
+	if len(metadata) > 0 {
+		if b, err := json.Marshal(metadata); err == nil {
 			rec.Metadata = datatypes.JSON(b)
 		}
 		// Handler-packed keys under aibrix.console.* (legacy: bare "display_name").
-		if v := md[common.MetadataConsoleDisplayName]; v != "" {
+		if v := metadata[common.MetadataConsoleDisplayName]; v != "" {
 			rec.Name = v
-		} else if v := md[common.MetadataDisplayName]; v != "" {
+		} else if v := metadata[common.MetadataDisplayName]; v != "" {
 			rec.Name = v
 		}
-		rec.CreatedBy = md[common.MetadataConsoleCreatedBy]
+		rec.CreatedBy = metadata[common.MetadataConsoleCreatedBy]
 	}
 	return rec
 }

@@ -588,6 +588,11 @@ func (s *GORMStore) loadDemoModelDeploymentTemplates() error {
 				Parallelism:        &pb.ParallelismSpec{Tp: 1},
 				SupportedEndpoints: []string{"/v1/chat/completions", "/v1/embeddings"},
 				DeploymentMode:     "dedicated",
+				Regions: []string{
+					"USCENTRAL1",
+					"USEAST1",
+					"USWEST2",
+				},
 			},
 		},
 	}

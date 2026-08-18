@@ -155,6 +155,9 @@ type ModelTemplateRef struct {
 	Name    string          `json:"name"`
 	Version string          `json:"version,omitempty"`
 	Spec    json.RawMessage `json:"spec,omitempty"`
+	// Regions is Console planner-only placement intent. It is excluded from
+	// the MDS payload; backend Schedule implementations consume it before submit.
+	Regions []string `json:"-"`
 }
 
 // RuntimeRef selects the metadata-service Runtime used to materialize the job.

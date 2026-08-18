@@ -1,7 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { camelToSnake, listAllJobs, normalizeFilesResponse } from './api';
+import {
+  camelToSnake,
+  listAllJobs,
+  listCatalogRegionsForAccelerators,
+  normalizeFilesResponse,
+} from './api';
+import {
+  defaultTemplateRegions,
+  mergeRegionOptions,
+  toggleTemplateRegion,
+} from '../components/CreateModelDeploymentTemplate';
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -151,5 +162,181 @@ describe('api helpers', () => {
       ['job-new'],
       ['job-new', 'job-old'],
     ]);
+  });
+
+  it('serializes regions selected in the deployment template form', () => {
+    const spec = toggleTemplateRegion({
+      accelerator: {
+        type: 'NVIDIA-L20',
+        count: 1,
+      },
+      regions: ['USEAST1'],
+    }, 'USWEST2');
+
+    expect(camelToSnake({
+      name: 'l20-template',
+      modelId: 'model-1',
+      spec,
+    })).toEqual({
+      name: 'l20-template',
+      model_id: 'model-1',
+      spec: {
+        accelerator: {
+          type: 'NVIDIA-L20',
+          count: 1,
+        },
+        regions: [
+          'USEAST1',
+          'USWEST2',
+        ],
+      },
+    });
+  });
+
+  it('keeps stored regions visible when the catalog is empty or changes', () => {
+    expect(mergeRegionOptions(
+      ['USWEST2'],
+      [],
+    )).toEqual(['USWEST2']);
+
+    expect(mergeRegionOptions(
+      ['USWEST2'],
+      [
+        'USEAST1',
+        'USWEST2',
+      ],
+    )).toEqual([
+      'USEAST1',
+      'USWEST2',
+    ]);
+  });
+
+  it('selects all catalog regions only when the template has no region state', () => {
+    expect(defaultTemplateRegions(
+      undefined,
+      ['USEAST1', 'USWEST2'],
+    )).toEqual([
+      'USEAST1',
+      'USWEST2',
+    ]);
+    expect(defaultTemplateRegions(
+      ['USWEST2'],
+      ['USEAST1', 'USWEST2'],
+    )).toEqual(['USWEST2']);
+    expect(defaultTemplateRegions(
+      [],
+      ['USEAST1', 'USWEST2'],
+    )).toEqual([]);
+  });
+
+  it('refreshes the complete accelerator region snapshot after cache expiry', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    const accelerators = ['NVIDIA-L20', 'NVIDIA-A30'];
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        regions: {
+          'NVIDIA-L20': ['USWEST2'],
+          'NVIDIA-A30': ['USEAST1'],
+        },
+      }),
+    });
+    vi.stubGlobal('fetch', fetcher);
+
+    await expect(
+      listCatalogRegionsForAccelerators(accelerators),
+    ).resolves.toEqual({
+      'NVIDIA-L20': ['USWEST2'],
+      'NVIDIA-A30': ['USEAST1'],
+    });
+    expect(fetcher).toHaveBeenCalledWith(
+      '/api/v1/catalog/regions',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ accelerators }),
+        credentials: 'include',
+      }),
+    );
+
+    await listCatalogRegionsForAccelerators(accelerators);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    now.mockReturnValue(1_000 + 2 * 60 * 60 * 1000 + 1);
+    await listCatalogRegionsForAccelerators(accelerators);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher).toHaveBeenLastCalledWith(
+      '/api/v1/catalog/regions',
+      expect.objectContaining({
+        body: JSON.stringify({ accelerators }),
+      }),
+    );
+  });
+
+  it('preloads all accelerator regions with one request', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(2_000);
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        regions: {
+          'NVIDIA-A30': ['USEAST1'],
+          'NVIDIA-L40S': ['USWEST2'],
+        },
+      }),
+    });
+    vi.stubGlobal('fetch', fetcher);
+
+    const regions = await listCatalogRegionsForAccelerators([
+      'NVIDIA-A30',
+      'NVIDIA-L40S',
+      'CPU',
+    ]);
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledWith(
+      '/api/v1/catalog/regions',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          accelerators: ['NVIDIA-A30', 'NVIDIA-L40S'],
+        }),
+      }),
+    );
+    expect(regions).toEqual({
+      'NVIDIA-A30': ['USEAST1'],
+      'NVIDIA-L40S': ['USWEST2'],
+    });
+  });
+
+  it('does not cache failed catalog region requests', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 502,
+        text: async () => 'catalog unavailable',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          regions: {
+            'NVIDIA A100': [],
+          },
+        }),
+      });
+    vi.stubGlobal('fetch', fetcher);
+
+    await expect(
+      listCatalogRegionsForAccelerators(['NVIDIA A100', 'NVIDIA L20']),
+    ).rejects.toThrow();
+    await expect(
+      listCatalogRegionsForAccelerators(['NVIDIA A100', 'NVIDIA L20']),
+    ).resolves.toEqual({
+      'NVIDIA A100': [],
+      'NVIDIA L20': [],
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 });

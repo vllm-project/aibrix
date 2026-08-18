@@ -49,6 +49,7 @@ const (
 	MetadataConsoleCreatedBy       = "aibrix.console.created_by"
 	MetadataConsoleTemplateName    = "aibrix.console.template_name"
 	MetadataConsoleTemplateVersion = "aibrix.console.template_version"
+	MetadataConsoleTemplateRegions = "aibrix.console.template_regions"
 	BatchExtraBodyField            = "extra_body"
 	AIBrixExtraBodyField           = "aibrix"
 	JsonNullLiteral                = "null"

@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -34,6 +35,7 @@ import (
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/middleware"
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
+	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 )
 
@@ -63,6 +65,10 @@ func (p *fakeJobPlanner) ListJobs(context.Context, *plannerapi.ListJobsRequest) 
 func (p *fakeJobPlanner) Cancel(_ context.Context, jobID string) (*plannerapi.Job, error) {
 	p.cancelledID = jobID
 	return p.job, p.cancelErr
+}
+
+func (p *fakeJobPlanner) FormatRegion(region *rmtypes.RegionSpec) string {
+	return ""
 }
 
 func (p *fakeJobPlanner) Recover(context.Context) error { return nil }
@@ -543,5 +549,80 @@ func TestResolveTemplateAndServingNameScopedByModel(t *testing.T) {
 	})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("create template under unknown model: err = %v, want FailedPrecondition", err)
+	}
+}
+
+func TestMarshalRuntimeTemplateSpecStripsRegions(t *testing.T) {
+	raw, err := marshalRuntimeTemplateSpec(&pb.ModelDeploymentTemplateSpec{
+		Accelerator: &pb.AcceleratorSpec{Type: "NVIDIA-L20", Count: 1},
+		Regions: []string{
+			"US-East/USEAST1/Federation/default",
+			"US-West/USWEST2/Cloudnative/ai",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshalRuntimeTemplateSpec: %v", err)
+	}
+
+	var stored map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		t.Fatalf("unmarshal runtime spec: %v", err)
+	}
+	if _, ok := stored["regions"]; ok {
+		t.Fatalf("runtime spec unexpectedly contains regions: %s", raw)
+	}
+	if _, ok := stored["accelerator"]; !ok {
+		t.Fatalf("runtime spec is missing accelerator: %s", raw)
+	}
+}
+
+func TestCreateJobPassesTemplateRegionsToPlannerOnly(t *testing.T) {
+	ctx := context.Background()
+	s := store.NewMemoryStore(nil)
+	t.Cleanup(func() { _ = s.Close() })
+
+	if _, err := s.CreateModel(ctx, &pb.Model{
+		Id:          "model-region",
+		Name:        "model-region",
+		ServingName: "org/model-region",
+	}); err != nil {
+		t.Fatalf("CreateModel: %v", err)
+	}
+	_, err := s.CreateModelDeploymentTemplate(ctx, &pb.CreateModelDeploymentTemplateRequest{
+		ModelId: "model-region",
+		Name:    "region-template",
+		Spec: &pb.ModelDeploymentTemplateSpec{
+			Accelerator: &pb.AcceleratorSpec{Type: "NVIDIA-L20", Count: 1},
+			Regions:     []string{"USWEST2", "USEAST1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateModelDeploymentTemplate: %v", err)
+	}
+
+	planner := &fakeJobPlanner{
+		job: plannerJobWithOwner("job-region", "owner@example.com"),
+	}
+	h := NewJobHandler(s, planner, "", false, nil)
+	_, err = h.CreateJob(ctx, &pb.CreateJobRequest{
+		ModelId:           "model-region",
+		ModelTemplateName: "region-template",
+		InputDataset:      "file-input",
+		Endpoint:          "/v1/chat/completions",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if planner.enqueued == nil || planner.enqueued.ModelTemplate == nil {
+		t.Fatal("planner did not receive model template")
+	}
+	if !reflect.DeepEqual(
+		planner.enqueued.ModelTemplate.Regions,
+		[]string{"USWEST2", "USEAST1"},
+	) {
+		t.Fatalf(
+			"planner regions = %v, want [USWEST2 USEAST1]",
+			planner.enqueued.ModelTemplate.Regions,
+		)
 	}
 }

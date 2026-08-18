@@ -4,6 +4,7 @@ import {
   createModelDeploymentTemplate,
   getModel,
   getModelDeploymentTemplate,
+  listCatalogRegionsForAccelerators,
   updateModelDeploymentTemplate,
 } from '../utils/api';
 import type {
@@ -110,6 +111,34 @@ const GPU_CATALOG: GpuSku[] = [
   { type: 'NVIDIA-H30', label: 'NVIDIA H30 (96 GB, NVLink)', vramGb: 96, interconnect: 'nvlink' },
   { type: 'CPU', label: 'CPU (no GPU)', vramGb: 0, interconnect: '' },
 ];
+
+export function mergeRegionOptions(
+  selected: string[],
+  available: string[],
+): string[] {
+  return Array.from(new Set([...selected, ...available])).sort();
+}
+
+export function defaultTemplateRegions(
+  selected: string[] | undefined,
+  available: string[],
+): string[] {
+  return selected ?? [...available];
+}
+
+export function toggleTemplateRegion(
+  spec: ModelDeploymentTemplateSpec,
+  region: string,
+): ModelDeploymentTemplateSpec {
+  const selected = spec.regions ?? [];
+  return {
+    ...spec,
+    regions: selected.includes(region)
+      ? selected.filter((value) => value !== region)
+      : [...selected, region],
+  };
+}
+
 const WEIGHT_QUANT_OPTIONS = ['', 'fp8', 'awq', 'gptq', 'int8', 'bf16', 'fp16'];
 const KV_QUANT_OPTIONS = ['', 'auto', 'fp8', 'fp8_e4m3', 'fp8_e5m2', 'int8'];
 const STATUS_OPTIONS = ['active', 'draft', 'deprecated'];
@@ -184,6 +213,7 @@ export function CreateModelDeploymentTemplate({
   const [spec, setSpec] = useState<ModelDeploymentTemplateSpec>(emptySpec());
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [catalogRegions, setCatalogRegions] = useState<string[]>([]);
   // EngineArgsSection reports duplicate-key / empty-key issues here so save
   // can be gated. null means no error.
   const [engineArgsError, setEngineArgsError] = useState<string | null>(null);
@@ -191,6 +221,13 @@ export function CreateModelDeploymentTemplate({
   useEffect(() => {
     getModel(modelId).then(setModel).catch(() => setModel(null));
   }, [modelId]);
+
+  useEffect(() => {
+    if (isView) return;
+    void listCatalogRegionsForAccelerators(
+      GPU_CATALOG.map((gpu) => gpu.type),
+    ).catch(() => undefined);
+  }, [isView]);
 
   useEffect(() => {
     if (!sourceTemplateId) return;
@@ -208,6 +245,34 @@ export function CreateModelDeploymentTemplate({
       })
       .catch(err => setError(`Failed to load template: ${err}`));
   }, [sourceTemplateId, modelId, isClone]);
+
+  useEffect(() => {
+    const accelerator = spec.accelerator?.type;
+    if (!accelerator || accelerator.toUpperCase() === 'CPU') {
+      setCatalogRegions([]);
+      return;
+    }
+
+    setCatalogRegions([]);
+    const controller = new AbortController();
+    listCatalogRegionsForAccelerators(
+      GPU_CATALOG.map((gpu) => gpu.type),
+    )
+      .then((regionsByAccelerator) => {
+        if (!controller.signal.aborted) {
+          const regions = regionsByAccelerator[accelerator.toUpperCase()] ?? [];
+          setCatalogRegions(regions);
+          setSpec((prev) => ({
+            ...prev,
+            regions: defaultTemplateRegions(prev.regions, regions),
+          }));
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setCatalogRegions([]);
+      });
+    return () => controller.abort();
+  }, [spec.accelerator?.type]);
 
   const updateSpec = <K extends keyof ModelDeploymentTemplateSpec>(
     key: K,
@@ -228,6 +293,9 @@ export function CreateModelDeploymentTemplate({
         : [...current, ep],
     }));
   };
+
+  const selectedRegions = spec.regions ?? [];
+  const regionOptions = mergeRegionOptions(selectedRegions, catalogRegions);
 
   const handleSave = async () => {
     setError(null);
@@ -489,15 +557,23 @@ export function CreateModelDeploymentTemplate({
               value={spec.accelerator?.type ?? ''}
               onChange={(e) => {
                 const sku = GPU_CATALOG.find((g) => g.type === e.target.value);
-                if (sku) {
-                  updateSpec('accelerator', {
-                    type: sku.type,
-                    vramGb: sku.vramGb,
-                    interconnect: sku.interconnect,
-                  });
-                } else {
-                  updateSpec('accelerator', { type: '', vramGb: undefined, interconnect: '' });
-                }
+                setSpec((prev) => ({
+                  ...prev,
+                  regions: undefined,
+                  accelerator: sku
+                    ? {
+                        ...(prev.accelerator ?? {}),
+                        type: sku.type,
+                        vramGb: sku.vramGb,
+                        interconnect: sku.interconnect,
+                      }
+                    : {
+                        ...(prev.accelerator ?? {}),
+                        type: '',
+                        vramGb: undefined,
+                        interconnect: '',
+                      },
+                }));
               }}
               className={inputCls}
             >
@@ -525,6 +601,45 @@ export function CreateModelDeploymentTemplate({
               className={inputCls}
             />
           </Field>
+          {regionOptions.length > 0 && (
+            <Field label="Region" wide>
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={selectedRegions.length === regionOptions.length}
+                    onChange={(e) => {
+                      setSpec((prev) => ({
+                        ...prev,
+                        regions: e.target.checked ? [...regionOptions] : [],
+                      }));
+                    }}
+                    className="h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
+                  />
+                  All
+                </label>
+                {regionOptions.map((region) => {
+                  const active = selectedRegions.includes(region);
+                  return (
+                    <button
+                      key={region}
+                      type="button"
+                      onClick={() => {
+                        setSpec((prev) => toggleTemplateRegion(prev, region));
+                      }}
+                      className={`px-3 py-1.5 text-xs rounded-full border transition-colors ${
+                        active
+                          ? 'bg-teal-600 text-white border-teal-600'
+                          : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                      }`}
+                    >
+                      {region}
+                    </button>
+                  );
+                })}
+              </div>
+            </Field>
+          )}
         </Section>
 
         {/* Engine (mega-group: engine selection + tuning) */}

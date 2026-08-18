@@ -165,6 +165,7 @@ func (j *Job) ToPB() (*pb.Job, error) {
 			extraBody[common.AIBrixExtraBodyField] = aibrixExtraBody
 			delete(metadata, common.BatchExtraBodyField)
 		}
+		delete(metadata, common.MetadataConsoleTemplateRegions)
 	}
 
 	return &pb.Job{

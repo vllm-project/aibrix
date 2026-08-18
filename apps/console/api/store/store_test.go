@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -557,6 +558,14 @@ func TestMemoryStore(t *testing.T) {
 			if tpl.Name != "mock-vllm" {
 				t.Errorf("expected 'mock-vllm', got %q", tpl.Name)
 			}
+			wantRegions := []string{
+				"USCENTRAL1",
+				"USEAST1",
+				"USWEST2",
+			}
+			if !reflect.DeepEqual(tpl.GetSpec().GetRegions(), wantRegions) {
+				t.Errorf("expected demo regions %v, got %v", wantRegions, tpl.GetSpec().GetRegions())
+			}
 		})
 
 		t.Run("GetModelDeploymentTemplate_NotFound", func(t *testing.T) {
@@ -584,6 +593,10 @@ func TestMemoryStore(t *testing.T) {
 						Invocation: "http_server",
 					},
 					DeploymentMode: "dedicated",
+					Regions: []string{
+						"US-East/USEAST1/Federation/default",
+						"US-West/USWEST2/Cloudnative/ai",
+					},
 				},
 			}
 			tpl, err := s.CreateModelDeploymentTemplate(ctx, req)
@@ -598,6 +611,9 @@ func TestMemoryStore(t *testing.T) {
 			}
 			if tpl.Spec == nil {
 				t.Error("expected spec to be set")
+			}
+			if !reflect.DeepEqual(tpl.GetSpec().GetRegions(), req.GetSpec().GetRegions()) {
+				t.Errorf("expected regions %v, got %v", req.GetSpec().GetRegions(), tpl.GetSpec().GetRegions())
 			}
 		})
 
@@ -671,6 +687,10 @@ func TestMemoryStore(t *testing.T) {
 				ModelId: "model-llama-3.3-70b",
 				Name:    "updated-template-name",
 				Status:  "inactive",
+				Spec: &pb.ModelDeploymentTemplateSpec{
+					Engine:  &pb.EngineSpec{Type: "vllm"},
+					Regions: []string{"US-Central/USCENTRAL1/Cloudnative/inference"},
+				},
 			}
 			updated, err := s.UpdateModelDeploymentTemplate(ctx, updateReq)
 			if err != nil {
@@ -681,6 +701,24 @@ func TestMemoryStore(t *testing.T) {
 			}
 			if updated.Status != "inactive" {
 				t.Errorf("expected updated status, got %q", updated.Status)
+			}
+			if !reflect.DeepEqual(updated.GetSpec().GetRegions(), updateReq.GetSpec().GetRegions()) {
+				t.Errorf("expected updated regions %v, got %v", updateReq.GetSpec().GetRegions(), updated.GetSpec().GetRegions())
+			}
+
+			updated, err = s.UpdateModelDeploymentTemplate(ctx, &pb.UpdateModelDeploymentTemplateRequest{
+				Id:      tpl.Id,
+				ModelId: "model-llama-3.3-70b",
+				Spec: &pb.ModelDeploymentTemplateSpec{
+					Engine:  &pb.EngineSpec{Type: "vllm"},
+					Regions: []string{},
+				},
+			})
+			if err != nil {
+				t.Fatalf("clear deployment template regions failed: %v", err)
+			}
+			if len(updated.GetSpec().GetRegions()) != 0 {
+				t.Errorf("expected cleared regions, got %v", updated.GetSpec().GetRegions())
 			}
 		})
 

@@ -1590,6 +1590,7 @@ function TemplateCard({
   const p = template.spec?.parallelism;
   const q = template.spec?.quantization;
   const endpoints = template.spec?.supportedEndpoints ?? [];
+  const regions = Array.from(new Set(template.spec?.regions ?? [])).sort();
 
   return (
     <button
@@ -1642,6 +1643,18 @@ function TemplateCard({
           ))}
         </div>
       )}
+      {regions.length > 0 && (
+        <div className="flex flex-wrap gap-1 mt-2">
+          {regions.map((region) => (
+            <span
+              key={region}
+              className="px-1.5 py-0.5 border border-teal-100 bg-teal-50 text-[10px] text-teal-700 rounded"
+            >
+              {region}
+            </span>
+          ))}
+        </div>
+      )}
     </button>
   );
 }
@@ -1655,15 +1668,30 @@ function SelectedTemplateSummary({
 }) {
   const a = template.spec?.accelerator;
   const e = template.spec?.engine;
+  const regions = Array.from(new Set(template.spec?.regions ?? [])).sort();
   return (
-    <div className="text-sm text-gray-700 bg-gray-50 p-3 rounded-lg flex items-center justify-between">
-      <div className="flex items-center gap-2 min-w-0">
-        <CheckCircle2 className="w-4 h-4 text-teal-600 shrink-0" />
-        <span className="font-medium">{template.name}</span>
-        <span className="text-xs text-gray-400">{template.version}</span>
-        <span className="text-xs text-gray-500 truncate">
-          · {e?.type ?? '—'} on {a?.type ?? '?'} × {a?.count ?? '?'}
-        </span>
+    <div className="text-sm text-gray-700 bg-gray-50 p-3 rounded-lg flex items-start justify-between">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <CheckCircle2 className="w-4 h-4 text-teal-600 shrink-0" />
+          <span className="font-medium">{template.name}</span>
+          <span className="text-xs text-gray-400">{template.version}</span>
+          <span className="text-xs text-gray-500 truncate">
+            · {e?.type ?? '—'} on {a?.type ?? '?'} × {a?.count ?? '?'}
+          </span>
+        </div>
+        {regions.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-2 ml-6">
+            {regions.map((region) => (
+              <span
+                key={region}
+                className="px-1.5 py-0.5 border border-teal-100 bg-teal-50 text-[10px] text-teal-700 rounded"
+              >
+                {region}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
       <button
         type="button"

@@ -18,7 +18,13 @@ package plannerapi
 
 import (
 	"context"
+
+	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 )
+
+type RegionFormatter interface {
+	FormatRegion(region *rmtypes.RegionSpec) string
+}
 
 // Planner is the Console BFF -> planner boundary.
 //
@@ -34,6 +40,7 @@ import (
 // (e.g. Server.Shutdown) invoke it on shutdown without a runtime
 // type assertion.
 type Planner interface {
+	RegionFormatter
 	Start(ctx context.Context) error
 	Enqueue(ctx context.Context, req *EnqueueRequest) (*Job, error)
 	GetJob(ctx context.Context, jobID string) (*Job, error)

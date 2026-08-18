@@ -350,6 +350,7 @@ export function ModelDetail({
                   const e = t.spec?.engine;
                   const p = t.spec?.parallelism;
                   const q = t.spec?.quantization;
+                  const regions = Array.from(new Set(t.spec?.regions ?? [])).sort();
                   return (
                     <div
                       key={t.id}
@@ -428,6 +429,18 @@ export function ModelDetail({
                           {t.spec.supportedEndpoints.map((ep) => (
                             <span key={ep} className="px-1.5 py-0.5 bg-gray-50 text-[10px] text-gray-600 rounded font-mono">
                               {ep}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {regions.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {regions.map((region) => (
+                            <span
+                              key={region}
+                              className="px-1.5 py-0.5 border border-teal-100 bg-teal-50 text-[10px] text-teal-700 rounded"
+                            >
+                              {region}
                             </span>
                           ))}
                         </div>

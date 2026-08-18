@@ -47,6 +47,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/apps/console/api/common"
@@ -320,10 +321,11 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 		if tpl := h.resolveTemplate(ctx, req.ModelId, templateName, req.ModelTemplateVersion); tpl != nil {
 			servingName = h.resolveServingName(ctx, tpl)
 			if tpl.Spec != nil {
+				modelTemplate.Regions = append([]string(nil), tpl.Spec.Regions...)
 				// UseProtoNames keeps snake_case proto field names (engine_args,
 				// model_source, ...) that the Python pydantic consumer expects;
 				// default protojson uses lowerCamelCase. Enums still serialize as strings.
-				if specBytes, err := (protojson.MarshalOptions{UseProtoNames: true}).Marshal(tpl.Spec); err == nil {
+				if specBytes, err := marshalRuntimeTemplateSpec(tpl.Spec); err == nil {
 					modelTemplate.Spec = specBytes
 				} else {
 					klog.Warningf("marshal template spec %q/%q: %v", templateName, req.ModelTemplateVersion, err)
@@ -683,6 +685,15 @@ func applyKnownBatchExtensions(job *pb.Job, extraBody map[string]json.RawMessage
 	if raw, ok := extraBody[common.AIBrixExtraBodyField]; ok {
 		applyAibrixBatchExtension(job, raw)
 	}
+}
+
+func marshalRuntimeTemplateSpec(spec *pb.ModelDeploymentTemplateSpec) ([]byte, error) {
+	if spec == nil {
+		return nil, nil
+	}
+	runtimeSpec := proto.Clone(spec).(*pb.ModelDeploymentTemplateSpec)
+	runtimeSpec.Regions = nil
+	return (protojson.MarshalOptions{UseProtoNames: true}).Marshal(runtimeSpec)
 }
 
 func applyAibrixBatchExtension(job *pb.Job, raw json.RawMessage) {
