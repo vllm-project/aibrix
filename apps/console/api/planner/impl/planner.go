@@ -361,7 +361,7 @@ func (q *Planner) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (
 		q.mu.Unlock()
 		return nil, fmt.Errorf("%w: duplicate job_id %q", plannerapi.ErrInvalidJob, req.JobID)
 	}
-	completionWindow, _ := time.ParseDuration(string(req.BatchParams.CompletionWindow))
+	completionWindow, _ := utils.ParseCompletionWindow(string(req.BatchParams.CompletionWindow))
 	job := &queuedJob{
 		req:        req,
 		status:     plannerapi.JobStatusQueued,

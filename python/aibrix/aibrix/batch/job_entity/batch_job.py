@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import copy
+import re
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
@@ -35,7 +36,7 @@ class BatchJobEndpoint(str, Enum):
 
 
 class CompletionWindow(str, Enum):
-    """Valid completion windows for batch jobs."""
+    """Common completion-window presets."""
 
     ONE_HOUR = "1h"
     TWO_HOURS = "2h"
@@ -43,16 +44,70 @@ class CompletionWindow(str, Enum):
     TWELVE_HOURS = "12h"
     TWENTY_FOUR_HOURS = "24h"
 
+    @classmethod
+    def _missing_(cls, value: object) -> Optional["CompletionWindow"]:
+        if not isinstance(value, str):
+            return None
+        try:
+            parse_completion_window(value)
+        except ValueError:
+            return None
+
+        member = str.__new__(cls, value.strip())
+        member._name_ = None  # type: ignore[assignment]
+        member._value_ = value.strip()
+        return member
+
     def expires_at(self) -> int:
-        """Returns the expiration time of the completion window."""
-        hours = {
-            CompletionWindow.ONE_HOUR: 1,
-            CompletionWindow.TWO_HOURS: 2,
-            CompletionWindow.SIX_HOURS: 6,
-            CompletionWindow.TWELVE_HOURS: 12,
-            CompletionWindow.TWENTY_FOUR_HOURS: 24,
-        }[self]
-        return hours * 60 * 60
+        """Returns the completion window in seconds."""
+        return parse_completion_window(self.value)
+
+
+_COMPLETION_WINDOW_PATTERN = re.compile(
+    r"^(?:(?P<days>[0-9]+)d)?"
+    r"(?:(?P<hours>[0-9]+)h)?"
+    r"(?:(?P<minutes>[0-9]+)(?:min|m))?$"
+)
+
+
+def parse_completion_window(value: str) -> int:
+    """Parse a positive d/h/min/m completion window into whole minutes."""
+    normalized = value.strip()
+    match = _COMPLETION_WINDOW_PATTERN.fullmatch(normalized)
+    if match is None:
+        raise ValueError(
+            "Completion window must use a positive combination of d, h, and min (or m)"
+        )
+
+    total_seconds = (
+        int(match.group("days") or 0) * 24 * 60 * 60
+        + int(match.group("hours") or 0) * 60 * 60
+        + int(match.group("minutes") or 0) * 60
+    )
+    if total_seconds <= 0:
+        raise ValueError("Completion window must be greater than zero")
+    return total_seconds
+
+
+def format_completion_window(total_seconds: int) -> str:
+    """Round down to a minute and format as a stable d/h/min window."""
+    if total_seconds <= 0:
+        raise ValueError("Completion window must be greater than zero")
+
+    total_minutes = total_seconds // 60
+    if total_minutes == 0:
+        return "0h"
+
+    days, remaining_minutes = divmod(total_minutes, 24 * 60)
+    hours, minutes = divmod(remaining_minutes, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}min")
+    return "".join(parts)
 
 
 class BatchJobState(str, Enum):
@@ -241,7 +296,7 @@ class BatchJobSpec(_Strict):
         return cls(
             input_file_id=input_file_id,
             endpoint=validated_endpoint.value,
-            completion_window=validated_completion_window.expires_at(),
+            completion_window=validated_completion_window,
             metadata=metadata,
             opts=opts,
             aibrix=AibrixMetadata(**aibrix)
@@ -274,28 +329,21 @@ class BatchJobSpec(_Strict):
             )
 
     @staticmethod
-    def _validate_completion_window(completion_window_str: str) -> CompletionWindow:
-        """Validate and convert completion window string to CompletionWindow.
+    def _validate_completion_window(completion_window_str: str) -> int:
+        """Validate and convert a completion window string to seconds.
 
         Args:
             completion_window_str: String value of the completion window
 
         Returns:
-            CompletionWindow enum value
+            Positive completion window in seconds
 
         Raises:
             ValueError: If completion window is invalid
         """
         if not completion_window_str:
             raise ValueError("Completion window cannot be empty")
-
-        try:
-            return CompletionWindow(completion_window_str)
-        except ValueError:
-            valid_windows = [w.value for w in CompletionWindow]
-            raise ValueError(
-                f"Invalid completion window '{completion_window_str}'. Valid values: {valid_windows}"
-            )
+        return parse_completion_window(completion_window_str)
 
 
 class RequestCountStats(_Strict):
@@ -837,22 +885,31 @@ class BatchJob(_Strict):
         """Get the job ID."""
         return self.status.job_id
 
+    def expiration_timestamp(self) -> float:
+        """Return the authoritative Unix timestamp when the job expires."""
+        if self.spec.aibrix and self.spec.aibrix.resource_allocation:
+            deadline = self.spec.aibrix.resource_allocation.provision_resource_deadline
+            if deadline is not None and deadline > 0:
+                return float(deadline)
+
+        created_at = self.status.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        return created_at.timestamp() + self.spec.completion_window
+
     def is_expiring(self) -> bool:
         """Whether the job should be treated as expiring now.
 
         This is broader than ``BatchJobStatus.expired``: it covers jobs that
         already carry an expired condition before finalization and jobs whose
-        completion window has elapsed. Runtime allocation deadlines are handled
-        by the runtime / driver path rather than by scheduler-driven job expiry.
+        authoritative resource deadline or fallback completion window has
+        elapsed.
         ``BatchJobStatus.expired`` remains the terminal-state check for a
         finalized expired job.
         """
         if self.status.condition == ConditionType.EXPIRED:
             return True
-        return (
-            self.status.created_at.timestamp() + self.spec.completion_window
-            <= datetime.now(timezone.utc).timestamp()
-        )
+        return self.expiration_timestamp() <= datetime.now(timezone.utc).timestamp()
 
 
 def aggregate_batch_usage(

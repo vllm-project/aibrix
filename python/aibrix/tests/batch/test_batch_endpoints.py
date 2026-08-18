@@ -65,6 +65,29 @@ def test_completions_endpoint_supported():
     assert BatchJobEndpoint(endpoint) == BatchJobEndpoint.COMPLETIONS
 
 
+def test_batch_spec_accepts_arbitrary_completion_window():
+    spec = BatchSpec.model_validate(
+        {
+            "input_file_id": "file-1",
+            "endpoint": "/v1/chat/completions",
+            "completion_window": "1d1h1min",
+        }
+    )
+
+    assert BatchSpec.newBatchJobSpec(spec).completion_window == 90060
+
+
+def test_batch_spec_rejects_invalid_completion_window():
+    with pytest.raises(ValidationError):
+        BatchSpec.model_validate(
+            {
+                "input_file_id": "file-1",
+                "endpoint": "/v1/chat/completions",
+                "completion_window": "best_effort",
+            }
+        )
+
+
 def test_embeddings_endpoint_supported():
     """Test that /v1/embeddings endpoint is supported."""
     endpoint = "/v1/embeddings"
@@ -523,6 +546,36 @@ def _minimal_batch_job(status: BatchJobStatus) -> BatchJob:
         ),
         status=status,
     )
+
+
+def test_batch_response_uses_exact_provision_resource_deadline():
+    provision_deadline = 2_000_000_000
+    created_at = datetime.now(timezone.utc)
+    batch_job = BatchJob(
+        typeMeta=TypeMeta(apiVersion="batch/v1", kind="BatchJob"),
+        metadata=ObjectMeta(name="test-batch", namespace="default"),
+        spec=BatchJobSpec(
+            input_file_id="file-123",
+            endpoint="/v1/chat/completions",
+            completion_window=360,
+            aibrix=AibrixMetadata(
+                resource_allocation=ResourceAllocation(
+                    provision_id="reservation-1",
+                    provision_resource_deadline=provision_deadline,
+                )
+            ),
+        ),
+        status=BatchJobStatus(
+            jobID="job-123",
+            state=BatchJobState.CREATED,
+            createdAt=created_at,
+        ),
+    )
+
+    response = _batch_job_to_openai_response(batch_job)
+
+    assert response.completion_window == "6min"
+    assert response.expires_at == provision_deadline
 
 
 def test_output_file_ids_hidden_until_finished():

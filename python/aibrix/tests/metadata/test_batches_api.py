@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 from fastapi.testclient import TestClient
 
+from aibrix.batch.job_entity.batch_job import parse_completion_window
 from tests.metadata.conftest import create_test_app
 
 
@@ -93,7 +94,7 @@ class TestCreateBatch:
             body = response.json()
             assert body["object"] == "batch"
             assert body["endpoint"] == "/v1/chat/completions"
-            assert body["completion_window"] == "24h"
+            assert parse_completion_window(body["completion_window"]) == 24 * 60 * 60
             # CREATED is surfaced as "scheduling" (awaiting admission); may have
             # already advanced to validating/in_progress by the time we read it.
             assert body["status"] in {"scheduling", "validating", "in_progress"}
@@ -149,9 +150,9 @@ class TestCreateBatch:
             )
             assert response.status_code == 200
             body = response.json()
-            assert body["completion_window"] == "12h"
+            assert parse_completion_window(body["completion_window"]) == 12 * 60 * 60
 
-    def test_create_rejects_unknown_completion_window(self):
+    def test_create_accepts_custom_completion_window(self):
         with TestClient(create_test_app()) as client:
             file_id = _upload_jsonl(client, _make_jsonl([_chat_request()]))
             response = client.post(
@@ -162,7 +163,11 @@ class TestCreateBatch:
                     "completion_window": "48h",
                 },
             )
-            assert response.status_code == 422
+            assert response.status_code == 200
+            assert (
+                parse_completion_window(response.json()["completion_window"])
+                == 48 * 60 * 60
+            )
 
     def test_create_rejects_unknown_input_file(self):
         # Route-level create now only stages the batch and returns 200.

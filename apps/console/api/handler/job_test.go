@@ -254,48 +254,45 @@ func TestCreateJobRejectsReplicasOutsideAllowedRange(t *testing.T) {
 	}
 }
 
-func TestCreateJobAcceptsSupportedCompletionWindows(t *testing.T) {
-	for _, window := range []string{"1h", "2h", "6h", "12h", "24h"} {
-		t.Run(window, func(t *testing.T) {
-			planner := &fakeJobPlanner{
-				job: plannerJobWithOwner("job-console-1", "owner@example.com"),
-			}
-			handler := NewJobHandler(nil, planner, "", false, nil)
+func TestCreateJobAcceptsValidCompletionWindows(t *testing.T) {
+	const window = "1d1h1min"
+	planner := &fakeJobPlanner{
+		job: plannerJobWithOwner("job-console-1", "owner@example.com"),
+	}
+	handler := NewJobHandler(nil, planner, "", false, nil)
 
-			_, err := handler.CreateJob(context.Background(), &pb.CreateJobRequest{
-				InputDataset:     "file-input",
-				Endpoint:         "/v1/chat/completions",
-				CompletionWindow: window,
-			})
+	_, err := handler.CreateJob(context.Background(), &pb.CreateJobRequest{
+		InputDataset:     "file-input",
+		Endpoint:         "/v1/chat/completions",
+		CompletionWindow: window,
+	})
 
-			if err != nil {
-				t.Fatalf("CreateJob returned error: %v", err)
-			}
-			if planner.enqueued == nil {
-				t.Fatal("planner.Enqueue was not called")
-			}
-			if got := string(planner.enqueued.BatchParams.CompletionWindow); got != window {
-				t.Fatalf("completion window = %q, want %q", got, window)
-			}
-		})
+	if err != nil {
+		t.Fatalf("CreateJob returned error: %v", err)
+	}
+	if planner.enqueued == nil {
+		t.Fatal("planner.Enqueue was not called")
+	}
+	if got := string(planner.enqueued.BatchParams.CompletionWindow); got != window {
+		t.Fatalf("completion window = %q, want %q", got, window)
 	}
 }
 
-func TestCreateJobRejectsUnsupportedCompletionWindow(t *testing.T) {
+func TestCreateJobRejectsInvalidCompletionWindow(t *testing.T) {
 	planner := &fakeJobPlanner{}
 	handler := NewJobHandler(nil, planner, "", false, nil)
 
 	_, err := handler.CreateJob(context.Background(), &pb.CreateJobRequest{
 		InputDataset:     "file-input",
 		Endpoint:         "/v1/chat/completions",
-		CompletionWindow: "3h",
+		CompletionWindow: "best_effort",
 	})
 
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("CreateJob code = %v, want InvalidArgument; err=%v", status.Code(err), err)
 	}
 	if planner.enqueued != nil {
-		t.Fatalf("planner.Enqueue called for unsupported completion window: %#v", planner.enqueued)
+		t.Fatalf("planner.Enqueue called for invalid completion window: %#v", planner.enqueued)
 	}
 }
 

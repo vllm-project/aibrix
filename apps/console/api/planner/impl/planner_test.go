@@ -190,6 +190,15 @@ func (b *fakeBatchClient) snapshot() (creates, cancels []string) {
 	return append([]string(nil), b.createCalls...), append([]string(nil), b.cancelCalls...)
 }
 
+type fixedAllocationWindowBackend struct {
+	defaultPlannerBackend
+	timeWindow *rmtypes.TimeWindow
+}
+
+func (b *fixedAllocationWindowBackend) AllocationTimeWindow(*rmtypes.ProvisionResult) *rmtypes.TimeWindow {
+	return b.timeWindow
+}
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -414,6 +423,50 @@ func TestHappyPathReachesSubmitted(t *testing.T) {
 	}
 	if job.Batch.ID != "batch-j1" || job.Batch.Status != openai.BatchStatusInProgress {
 		t.Errorf("post-submit GetJob: got %+v, want batch-j1/in_progress", job.Batch)
+	}
+}
+
+func TestHandleResourcePreparingUsesBackendAllocationTimeWindow(t *testing.T) {
+	now := time.Now().UTC()
+	allocationEnd := now.Add(3*time.Hour + 123*time.Millisecond)
+	provisionResult := &rmtypes.ProvisionResult{
+		ProvisionID: "prov-actual-window",
+		Status:      rmtypes.ProvisionStatusRunning,
+	}
+	prov := &fakeProvisioner{
+		ListFn: func(context.Context, *rmtypes.ListOptions) ([]*rmtypes.ProvisionResult, error) {
+			return []*rmtypes.ProvisionResult{provisionResult}, nil
+		},
+	}
+	backend := &fixedAllocationWindowBackend{
+		defaultPlannerBackend: defaultPlannerBackend{
+			provider: rmtypes.ResourceProvisionTypeKubernetes,
+		},
+		timeWindow: &rmtypes.TimeWindow{
+			EndTime: &allocationEnd,
+		},
+	}
+	p := &Planner{
+		prov:    prov,
+		backend: backend,
+		baseCtx: context.Background(),
+	}
+	job := &queuedJob{
+		req:         validReq("j-actual-window"),
+		status:      plannerapi.JobStatusResourcePreparing,
+		provisionID: provisionResult.ProvisionID,
+	}
+
+	handleResourcePreparing(p, job)
+
+	job.mu.RLock()
+	defer job.mu.RUnlock()
+	if !job.expiresAt.Equal(allocationEnd) {
+		t.Fatalf(
+			"planner deadline = %v, want backend allocation deadline %v",
+			job.expiresAt,
+			allocationEnd,
+		)
 	}
 }
 

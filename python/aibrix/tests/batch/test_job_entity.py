@@ -30,6 +30,7 @@ from aibrix.batch.job_entity import (
     ensure_batch_job_error,
 )
 from aibrix.batch.job_entity.aibrix_metadata import MAX_CLIENT_CONCURRENCY
+from aibrix.batch.job_entity.batch_job import format_completion_window
 from aibrix.batch.manifest.renderer import JobManifestRenderer, RenderError
 from aibrix.batch.template import local_profile_registry, local_template_registry
 
@@ -168,13 +169,11 @@ class TestBatchJobEntityCreation:
         assert spec.completion_window == 86400
         assert spec.metadata == {"priority": "high"}
 
-    def test_batch_job_spec_supported_completion_windows(self):
+    def test_batch_job_spec_accepts_arbitrary_valid_completion_windows(self):
         windows = {
             "1h": 3600,
-            "2h": 7200,
-            "6h": 21600,
-            "12h": 43200,
-            "24h": 86400,
+            "6min": 360,
+            "1d1h1min": 90060,
         }
         for window, seconds in windows.items():
             spec = BatchJobSpec.from_strings(
@@ -183,6 +182,30 @@ class TestBatchJobEntityCreation:
                 completion_window=window,
             )
             assert spec.completion_window == seconds
+
+    @pytest.mark.parametrize(
+        ("seconds", "expected"),
+        [
+            (90060, "1d1h1min"),
+            (176404, "2d1h"),
+            (5880, "1h38min"),
+            (2, "0h"),
+        ],
+    )
+    def test_format_completion_window(self, seconds, expected):
+        assert format_completion_window(seconds) == expected
+
+    @pytest.mark.parametrize(
+        "window",
+        ["0min", "59s", "1.5h", "38min1h"],
+    )
+    def test_batch_job_spec_rejects_invalid_completion_windows(self, window):
+        with pytest.raises(ValueError):
+            BatchJobSpec.from_strings(
+                input_file_id="test-input-123",
+                endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+                completion_window=window,
+            )
 
     def test_batch_job_spec_creation_with_aibrix_metadata(self):
         spec = BatchJobSpec(
@@ -322,7 +345,7 @@ class TestBatchJobEntityCreation:
         job.status.state = BatchJobState.FINALIZED
         assert job.status.expired is True
 
-    def test_batch_job_is_expiring_checks_completion_window_only(self):
+    def test_batch_job_is_expiring_prefers_resource_deadline(self):
         now = int(datetime.now(timezone.utc).timestamp())
         due_job = BatchJob(
             typeMeta={"apiVersion": "batch/v1", "kind": "Job"},
@@ -345,7 +368,7 @@ class TestBatchJobEntityCreation:
             ),
         )
 
-        assert due_job.is_expiring() is True
+        assert due_job.is_expiring() is False
 
         fresh_job = BatchJob(
             typeMeta={"apiVersion": "batch/v1", "kind": "Job"},
@@ -368,7 +391,7 @@ class TestBatchJobEntityCreation:
             ),
         )
 
-        assert fresh_job.is_expiring() is False
+        assert fresh_job.is_expiring() is True
 
     def test_batch_job_status_execution_accepts_legacy_single_ref(self):
         status = BatchJobStatus.model_validate(
