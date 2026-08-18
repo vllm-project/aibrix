@@ -115,6 +115,14 @@ class BatchDriver:
     async def cancel_job(self, job_id: str) -> TerminateResult:
         return await self.run_coroutine(self._batch_manager.cancel_job(job_id))
 
+    async def prepare_retry_finalize_job(self, job_id: str) -> BatchJob:
+        return await self.run_coroutine(
+            self._batch_manager.prepare_retry_finalize_job(job_id)
+        )
+
+    async def retry_finalize_job(self, job_id: str) -> BatchJob:
+        return await self.run_coroutine(self._batch_manager.retry_finalize_job(job_id))
+
     async def list_jobs(
         self,
         after: Optional[str] = None,

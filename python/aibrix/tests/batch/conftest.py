@@ -207,7 +207,7 @@ def redis_available():
 
         def verify_connection():
             async def ping():
-                client = redis_client.get_redis_client(test=True)
+                client = redis_client.get_redis_client()
                 try:
                     return await client.ping()
                 finally:
@@ -237,7 +237,7 @@ def redis_available():
 
 
 async def _delete_prefixed_redis_keys(redis_prefix: str) -> int:
-    client = redis_client.get_redis_client(test=True)
+    client = redis_client.get_redis_client()
     try:
         timestamps_all_key = f"{redis_prefix}:timestamps:all"
         timestamp_members = await client.zrange(timestamps_all_key, 0, -1)
@@ -849,20 +849,22 @@ def apply_e2e_backend_keyword_overrides(
     return test_backend
 
 
-def select_e2e_backends(
-    metafunc,
-    keyword_backends: list[str],
-    default_backend: str = "local_metastore_job",
-):
+def _select_backend_from_keyword(keyword: str) -> Optional[E2ETestBackend]:
+    for backend_name in sorted(E2E_BACKENDS, key=len, reverse=True):
+        if backend_name in keyword:
+            return get_e2e_backend(backend_name)
+    return None
+
+
+def select_e2e_backends(metafunc, default_backend: str = "local_metastore_job"):
     if "test_backend" not in metafunc.fixturenames:
         return
 
     keyword = metafunc.config.option.keyword or ""
     selected_backend = get_e2e_backend(default_backend)
-    for backend in keyword_backends:
-        if backend in keyword:
-            selected_backend = get_e2e_backend(backend)
-            break
+    keyword_backend = _select_backend_from_keyword(keyword)
+    if keyword_backend is not None:
+        selected_backend = keyword_backend
 
     selected_backend = apply_e2e_backend_keyword_overrides(selected_backend, keyword)
 

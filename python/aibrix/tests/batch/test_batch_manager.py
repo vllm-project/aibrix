@@ -820,6 +820,74 @@ async def test_mark_job_failed_is_idempotent_for_done_job():
     assert batch_job.status.failed_at is not None
 
 
+def test_build_retry_prepared_job_removes_finalizing_failed_condition_with_other_errors():
+    job_manager = _job_manager()
+    failed_at = datetime.now()
+    batch_job = BatchJob(
+        typeMeta=TypeMeta(apiVersion="batch/v1", kind="Job"),
+        metadata=ObjectMeta(
+            name="retry-job",
+            namespace="default",
+            uid="retry-uid",
+            creationTimestamp=failed_at,
+            resourceVersion=None,
+            deletionTimestamp=None,
+        ),
+        spec=BatchJobSpec(
+            input_file_id="retry-input",
+            endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+            completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+        ),
+        status=BatchJobStatus(
+            jobID="retry-job-id",
+            state=BatchJobState.FINALIZED,
+            createdAt=failed_at,
+            finalizingAt=failed_at,
+            finalizedAt=failed_at,
+            failedAt=failed_at,
+            errors=[
+                BatchJobError(
+                    code=BatchJobErrorCode.FINALIZING_ERROR,
+                    message="finalize failed",
+                ),
+                BatchJobError(
+                    code=BatchJobErrorCode.INFERENCE_FAILED,
+                    message="inference failed",
+                ),
+            ],
+            conditions=[
+                Condition(
+                    type=ConditionType.FAILED,
+                    status=ConditionStatus.TRUE,
+                    lastTransitionTime=failed_at,
+                    reason=BatchJobErrorCode.FINALIZING_ERROR.value,
+                    message="finalize failed",
+                ),
+                Condition(
+                    type=ConditionType.FAILED,
+                    status=ConditionStatus.TRUE,
+                    lastTransitionTime=failed_at,
+                    reason=BatchJobErrorCode.INFERENCE_FAILED.value,
+                    message="inference failed",
+                ),
+            ],
+        ),
+    )
+
+    prepared = job_manager._build_retry_prepared_job(batch_job)
+
+    assert prepared.status.state == BatchJobState.FINALIZING
+    assert prepared.status.failed_at == failed_at
+    assert prepared.status.errors is not None
+    assert [error.code for error in prepared.status.errors] == [
+        BatchJobErrorCode.INFERENCE_FAILED.value
+    ]
+    assert prepared.status.conditions is not None
+    assert [
+        (condition.type, condition.reason) for condition in prepared.status.conditions
+    ] == [(ConditionType.FAILED, BatchJobErrorCode.INFERENCE_FAILED.value)]
+
+
 @pytest.mark.asyncio
 async def test_job_deleted_handler():
     """Test that job_deleted_handler correctly moves jobs to done state."""

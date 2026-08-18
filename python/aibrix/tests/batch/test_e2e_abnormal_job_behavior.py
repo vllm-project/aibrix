@@ -216,14 +216,7 @@ pytestmark = pytest.mark.filterwarnings(
 
 
 def pytest_generate_tests(metafunc):
-    select_e2e_backends(
-        metafunc,
-        [
-            "local_job_using_deployment",
-            "local_job_using_k8s_job",
-        ],
-        default_backend="local_metastore_job",
-    )
+    select_e2e_backends(metafunc, default_backend="local_metastore_job")
 
 
 async def swap_job_manager(app, new_manager: BatchManager) -> BatchManager:

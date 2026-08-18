@@ -84,13 +84,7 @@ def verify_batch_output_content(output_content: str, expected_requests: int) -> 
 
 
 def pytest_generate_tests(metafunc):
-    select_e2e_backends(
-        metafunc,
-        [
-            "local_job_using_deployment",
-            "local_job_using_k8s_job",
-        ],
-    )
+    select_e2e_backends(metafunc)
 
 
 def backend_batch_request(

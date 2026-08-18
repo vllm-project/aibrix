@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Collection, Dict, List, Optional, Tuple, cast
 
+from aibrix.batch import storage as batch_storage
 from aibrix.batch.batch_scheduler import BatchScheduler
 from aibrix.batch.client import EndpointSource
 from aibrix.batch.job_driver import (
@@ -131,7 +132,9 @@ class BatchManager(RunningJobs, SchedulableJobs):
             BatchJobState.FINALIZED,
             BatchJobState.FINALIZING,  # For in_progress -> cancelling -> finalizing
         ],
-        BatchJobState.FINALIZED: [],  # Terminal state
+        BatchJobState.FINALIZED: [
+            BatchJobState.FINALIZING,  # Manual retry of finalization failure
+        ],
     }
 
     def __init__(
@@ -702,6 +705,91 @@ class BatchManager(RunningJobs, SchedulableJobs):
         job = await self.get_job(job_id)
         return job.status if job else None
 
+    async def prepare_retry_finalize_job(self, job_id: str) -> BatchJob:
+        """Persist a retryable job back into FINALIZING before storage finalization."""
+        job = await self.get_job(job_id)
+        if job is None:
+            raise ValueError(f"Job {job_id} does not exist")
+        if job.status.finalizing_at is None:
+            raise JobUnexpectedStateError(
+                "Job has never entered finalizing", job.status.state
+            )
+        if (
+            job.status.output_file_id is None
+            or job.status.error_file_id is None
+            or job.status.temp_output_file_id is None
+            or job.status.temp_error_file_id is None
+        ):
+            raise JobUnexpectedStateError(
+                "Job has no prepared output files to finalize",
+                job.status.state,
+            )
+
+        finalizing_errors = [
+            error
+            for error in (job.status.errors or [])
+            if getattr(error, "code", None) == BatchJobErrorCode.FINALIZING_ERROR.value
+        ]
+        failed_condition = job.status.get_condition(ConditionType.FAILED)
+        if (
+            not job.status.finished
+            or failed_condition is None
+            or failed_condition.reason != BatchJobErrorCode.FINALIZING_ERROR.value
+            or not finalizing_errors
+        ):
+            # TODO: Specify specific reject reason.
+            raise JobUnexpectedStateError(
+                "Job is not a retryable finalization failure",
+                job.status.state,
+            )
+
+        prepared = self._build_retry_prepared_job(job)
+        if not await self.conclude_job(prepared, job):
+            raise RuntimeError(
+                f"Failed to persist retry-finalize preparation for job {job_id}"
+            )
+
+        latest_job = await self.get_job(job_id)
+        return latest_job or prepared
+
+    async def retry_finalize_job(self, job_id: str) -> BatchJob:
+        """Retry the storage-only finalization phase for a prepared finalizing job."""
+        prepared = await self.get_job(job_id)
+        if prepared is None:
+            raise ValueError(f"Job {job_id} does not exist")
+        if prepared.status.state != BatchJobState.FINALIZING:
+            raise JobUnexpectedStateError(
+                "Job is not prepared for retry finalization",
+                prepared.status.state,
+            )
+        if (
+            prepared.status.output_file_id is None
+            or prepared.status.error_file_id is None
+            or prepared.status.temp_output_file_id is None
+            or prepared.status.temp_error_file_id is None
+        ):
+            raise JobUnexpectedStateError(
+                "Job has no prepared output files to finalize",
+                prepared.status.state,
+            )
+
+        retrying = prepared.copy(prepared.status.model_copy(deep=True))
+
+        try:
+            retrying = await batch_storage.finalize_job_output_data(retrying)
+        except Exception as exc:
+            retry_failed = self._build_retry_failed_job(prepared, exc)
+            await self.conclude_job(retry_failed, prepared)
+            raise
+
+        finalized = self._build_retry_finalized_job(prepared, retrying)
+
+        if not await self.conclude_job(finalized, prepared):
+            raise RuntimeError(f"Failed to persist retry finalization for job {job_id}")
+
+        latest_job = await self.get_job(job_id)
+        return latest_job or finalized
+
     async def list_jobs(
         self,
         after: Optional[str] = None,
@@ -1271,3 +1359,110 @@ class BatchManager(RunningJobs, SchedulableJobs):
         if job.status.state != BatchJobState.IN_PROGRESS:
             job_expired.status.expired_at = expired_at
         return job_expired
+
+    def _build_retry_finalized_job(
+        self, previous_job: BatchJob, retried_job: BatchJob
+    ) -> BatchJob:
+        """Build the repaired terminal snapshot after a manual finalize retry."""
+        finalized_at = datetime.now(timezone.utc)
+        job = previous_job.copy(retried_job.status.model_copy(deep=True))
+        job.status.state = BatchJobState.FINALIZED
+        job.status.finalized_at = finalized_at
+        resolved_condition = job.status.condition
+        if resolved_condition is None:
+            job.status.add_condition(
+                Condition(
+                    type=ConditionType.COMPLETED,
+                    status=ConditionStatus.TRUE,
+                    lastTransitionTime=finalized_at,
+                )
+            )
+            resolved_condition = ConditionType.COMPLETED
+
+        if resolved_condition == ConditionType.COMPLETED:
+            if job.status.completed_at is None:
+                job.status.completed_at = (
+                    previous_job.status.completed_at or finalized_at
+                )
+            job.status.failed_at = None
+        elif resolved_condition == ConditionType.CANCELLED:
+            if job.status.cancelled_at is None:
+                job.status.cancelled_at = (
+                    previous_job.status.cancelled_at or finalized_at
+                )
+            job.status.failed_at = None
+        elif resolved_condition == ConditionType.EXPIRED:
+            if job.status.expired_at is None:
+                job.status.expired_at = previous_job.status.expired_at or finalized_at
+            job.status.failed_at = None
+        elif resolved_condition == ConditionType.FAILED:
+            if job.status.failed_at is None:
+                job.status.failed_at = previous_job.status.failed_at or finalized_at
+
+        return job
+
+    def _build_retry_prepared_job(self, previous_job: BatchJob) -> BatchJob:
+        """Persist a cleaned terminal snapshot before retrying storage finalization."""
+        job = previous_job.copy(previous_job.status.model_copy(deep=True))
+        job.status.state = BatchJobState.FINALIZING
+        job.status.finalized_at = None
+        # TODO: Ignore cancel_rejected error. Specifically, add a flag to BatchJobError to specify an error is fixable
+        # and should be ignored after retry.
+        remaining_errors = [
+            error
+            for error in (job.status.errors or [])
+            if getattr(error, "code", None) != BatchJobErrorCode.FINALIZING_ERROR.value
+        ]
+        job.status.errors = remaining_errors or None
+
+        remove_failed_condition = len(remaining_errors) == 0
+        if job.status.conditions is not None:
+            filtered_conditions = [
+                condition
+                for condition in job.status.conditions
+                if not (
+                    condition.type == ConditionType.FAILED
+                    and condition.reason == BatchJobErrorCode.FINALIZING_ERROR.value
+                )
+            ]
+            job.status.conditions = filtered_conditions or None
+
+        if remove_failed_condition:
+            job.status.failed_at = None
+
+        return job
+
+    def _build_retry_failed_job(
+        self, previous_job: BatchJob, exc: Exception
+    ) -> BatchJob:
+        """Restore a failed terminal snapshot if retry finalization fails again."""
+        failed_at = datetime.now(timezone.utc)
+        error = ensure_batch_job_error(exc, BatchJobErrorCode.FINALIZING_ERROR)
+        job = previous_job.copy(previous_job.status.model_copy(deep=True))
+        job.status.state = BatchJobState.FINALIZED
+        job.status.finalized_at = failed_at
+        job.status.failed_at = failed_at
+
+        errors = list(job.status.errors or [])
+        errors.append(error)
+        job.status.errors = errors
+
+        conditions = [
+            condition
+            for condition in (job.status.conditions or [])
+            if not (
+                condition.type == ConditionType.FAILED
+                and condition.reason == BatchJobErrorCode.FINALIZING_ERROR.value
+            )
+        ]
+        conditions.append(
+            Condition(
+                type=ConditionType.FAILED,
+                status=ConditionStatus.TRUE,
+                lastTransitionTime=failed_at,
+                reason=error.code,
+                message=error.message,
+            )
+        )
+        job.status.conditions = conditions
+        return job
