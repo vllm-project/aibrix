@@ -95,7 +95,7 @@ spec:
             timeoutSeconds: 1
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: 8000
               scheme: HTTP
             failureThreshold: 5
