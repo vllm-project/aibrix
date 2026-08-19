@@ -36,6 +36,12 @@ spec:
             # Note: The `--served-model-name` argument value must also match the Service name and the Deployment label `model.aibrix.ai/name`
             - qwen-coder-1-5b-instruct
             - --enable-lora
+            # Allow at most four distinct LoRA adapters in one vLLM batch.
+            - --max-loras
+            - "4"
+            # Keep up to four adapters in the CPU LoRA cache as well.
+            - --max-cpu-loras
+            - "4"
           image: vllm/vllm-openai:v0.24.0
           imagePullPolicy: Always
           name: vllm-openai
