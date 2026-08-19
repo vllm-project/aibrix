@@ -67,14 +67,15 @@ type OpenAIResponse struct {
 	Code int `json:"code"`
 }
 
-type tokenUsage struct {
-	promptTokens     int64
-	completionTokens int64
-	totalTokens      int64
+// TokenUsage contains the token counts reported by an inference response.
+type TokenUsage struct {
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
 }
 
-func processStreamingResponse(requestID string, bodyBytes []byte) (tokenUsage, *extProcPb.ProcessingResponse) {
-	var usage tokenUsage
+func processStreamingResponse(requestID string, bodyBytes []byte) (TokenUsage, *extProcPb.ProcessingResponse) {
+	var usage TokenUsage
 
 	// The previous implementation unmarshalled every single SSE chunk into a struct (openai.ChatCompletionChunk).
 	// This caused significant CPU overhead and high GC pressure under heavy concurrency.
@@ -137,21 +138,21 @@ func processStreamingResponse(requestID string, bodyBytes []byte) (tokenUsage, *
 					// the primary field is genuinely absent (Exists() == false), since a
 					// zero count is a semantically valid value.
 					if pt := usageResult.Get("prompt_tokens"); pt.Exists() {
-						usage.promptTokens = pt.Int()
+						usage.PromptTokens = pt.Int()
 					} else {
-						usage.promptTokens = usageResult.Get("input_tokens").Int()
+						usage.PromptTokens = usageResult.Get("input_tokens").Int()
 					}
 					if ct := usageResult.Get("completion_tokens"); ct.Exists() {
-						usage.completionTokens = ct.Int()
+						usage.CompletionTokens = ct.Int()
 					} else {
-						usage.completionTokens = usageResult.Get("output_tokens").Int()
+						usage.CompletionTokens = usageResult.Get("output_tokens").Int()
 					}
-					usage.totalTokens = usageResult.Get("total_tokens").Int()
+					usage.TotalTokens = usageResult.Get("total_tokens").Int()
 				}
 			}
 		}
 		// warnings when "usage" is triggered by a false positive in generated content.
-		if usage.promptTokens == 0 && usage.totalTokens == 0 {
+		if usage.PromptTokens == 0 && usage.TotalTokens == 0 {
 			klog.V(4).Infof("usage string detected but no valid tokens parsed (likely generated text), requestID: %s", requestID)
 		}
 	}
@@ -159,7 +160,16 @@ func processStreamingResponse(requestID string, bodyBytes []byte) (tokenUsage, *
 	return usage, nil
 }
 
-func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.RoutingContext, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
+// HandleResponseBody parses and accounts for a response body but deliberately
+// does not finalize cache bookkeeping or release routerCtx. Process owns that
+// lifecycle and keeps the context valid until its final deferred cleanup.
+func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.RoutingContext, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, stream bool, hasCompleted bool) (*extProcPb.ProcessingResponse, bool, TokenUsage) {
+	if routerCtx == nil {
+		return generateErrorResponse(
+			envoyTypePb.StatusCode_InternalServerError,
+			nil,
+			"routing context is nil", "", ""), true, TokenUsage{}
+	}
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
 	arrival := time.Now()
 
@@ -168,59 +178,47 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 	// metrics are only emitted on the final chunk. Without capturing the first
 	// arrival here, TTFT and KV-transfer time would be measured from the last
 	// chunk (≈ total request time) instead of the first token.
-	if stream && routerCtx != nil && routerCtx.FirstTokenTime.IsZero() {
+	if stream && routerCtx.FirstTokenTime.IsZero() {
 		routerCtx.FirstTokenTime = arrival
 	}
 
 	var processingRes *extProcPb.ProcessingResponse
-	var promptTokens, completionTokens, totalTokens int64
+	var usage TokenUsage
 	var headers []*configPb.HeaderValueOption
 	complete := hasCompleted
 
 	// Omitted tracer.Start(ctx, "HandleResponseBody") here to avoid excessive CPU and gRPC overhead.
 	// Creating a span for each individual token in the stream is too resource-intensive.
 
-	defer func() {
-		// Wrapped in a function to delay the evaluation of parameters. Using complete to make sure DoneRequestTrace only call once for a request.
-		if !hasCompleted && complete {
-			s.cache.DoneRequestTrace(routerCtx, requestID, model, promptTokens, completionTokens, traceTerm)
-			if routerCtx != nil {
-				routerCtx.Delete()
-			}
-		}
-	}()
-
 	if stream {
-		usage, streamRes := processStreamingResponse(requestID, b.ResponseBody.GetBody())
-		promptTokens = usage.promptTokens
-		completionTokens = usage.completionTokens
-		totalTokens = usage.totalTokens
+		var streamRes *extProcPb.ProcessingResponse
+		usage, streamRes = processStreamingResponse(requestID, b.ResponseBody.GetBody())
 		if streamRes != nil {
 			complete = true
-			return streamRes, complete
+			return streamRes, complete, usage
 		}
 	} else {
 		if isLanguageRequest(routerCtx.ReqPath) {
-			processingRes, complete, promptTokens, completionTokens, totalTokens = processLanguageResponse(requestID, b)
+			processingRes, complete, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens = processLanguageResponse(requestID, b)
 			if processingRes != nil {
-				return processingRes, complete
+				return processingRes, complete, usage
 			}
 		}
 	}
 
-	if totalTokens != 0 {
+	if usage.TotalTokens != 0 {
 		complete = true
 
 		// Count token per user.
 		if user.Name != "" {
-			tpm, err := s.ratelimiter.Incr(routerCtx, fmt.Sprintf("%v_TPM_CURRENT", user.Name), totalTokens)
+			tpm, err := s.ratelimiter.Incr(routerCtx, fmt.Sprintf("%v_TPM_CURRENT", user.Name), usage.TotalTokens)
 			if err != nil {
 				return generateErrorResponse(
 					envoyTypePb.StatusCode_InternalServerError,
 					[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 						Key: HeaderErrorIncrTPM, RawValue: []byte("true"),
 					}}},
-					err.Error(), "", ""), complete
+					err.Error(), "", ""), complete, usage
 			}
 
 			headers = buildEnvoyProxyHeaders(headers,
@@ -233,7 +231,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 		// requestEndHelper derives TTFT from routerCtx.FirstTokenTime for streaming
 		// requests, so passing the final arrival here (rather than the first chunk's)
 		// keeps decode-time/KV-transfer math, which spans first-token-to-end, correct.
-		fields := s.requestEndHelper(routerCtx, arrival, promptTokens, completionTokens, totalTokens)
+		fields := s.requestEndHelper(routerCtx, arrival, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
 		if routerCtx.Span != nil {
 			routerCtx.Span.SetAttributes(fieldsToAttributes(fields)...)
 		}
@@ -252,7 +250,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 				},
 			},
 		},
-	}, complete
+	}, complete, usage
 }
 
 func isLanguageRequest(requestPath string) bool {

@@ -1616,8 +1616,8 @@ func TestProcess_RecvEOF_DuringShutdown(t *testing.T) {
 // even if the client context is cancelled concurrently.
 func TestProcess_CompletedExitsLoop(t *testing.T) {
 	mc := &MockCache{}
-	// mock all funcs we need
-	mc.On("DoneRequestCount", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	// A successful response with usage data is finalized through
+	// DoneRequestTrace only; Process must not follow it with DoneRequestCount.
 	mc.On("AddRequestCount", mock.Anything, mock.Anything, mock.Anything).Return(int64(0))
 	mc.On("DoneRequestTrace", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 	mc.On("HasModel", mock.Anything).Return(true)

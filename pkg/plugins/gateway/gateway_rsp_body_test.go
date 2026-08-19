@@ -26,7 +26,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
-	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -319,14 +318,8 @@ func TestProcessLanguageResponse_ChunkedAccumulation(t *testing.T) {
 	assert.Equal(t, int64(15), totalTokens)
 }
 
-func TestHandleResponseBody_NonStreamNoTokens(t *testing.T) {
-	mockCache := &MockCache{Cache: cache.NewForTest()}
-	// DoneRequestTrace(ctx, requestID, model, inputTokens, outputTokens, traceTerm)
-	mockCache.On("DoneRequestTrace", mock.Anything, "test-req-id", "test-model", int64(10), int64(5), int64(0)).Maybe()
-
-	server := &Server{
-		cache: mockCache,
-	}
+func TestHandleResponseBody_NonStreamWithUsage(t *testing.T) {
+	server := &Server{}
 
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", "test-req-id", "")
 	routerCtx.ReqPath = PathChatCompletions
@@ -341,11 +334,27 @@ func TestHandleResponseBody_NonStreamNoTokens(t *testing.T) {
 		},
 	}
 
-	resp, complete := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, 0, false)
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, false)
 
 	assert.True(t, complete)
 	assert.NotNil(t, resp)
 	assert.NotNil(t, resp.GetResponseBody())
+	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}, usage)
+}
+
+func TestHandleResponseBody_NilRoutingContext(t *testing.T) {
+	server := &Server{}
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{EndOfStream: true},
+		},
+	}
+
+	resp, complete, usage := server.HandleResponseBody(context.Background(), nil, "test-req-id", req, utils.User{}, 0, "test-model", false, false)
+
+	assert.True(t, complete)
+	assert.NotNil(t, resp.GetImmediateResponse())
+	assert.Equal(t, TokenUsage{}, usage)
 }
 
 func TestHandleResponseBody_PDPrefillTimingMetricsRequirePrefillEndTime(t *testing.T) {
@@ -376,10 +385,7 @@ func TestHandleResponseBody_PDPrefillTimingMetricsRequirePrefillEndTime(t *testi
 			)
 			defer cleanup()
 
-			mockCache := &MockCache{Cache: cache.NewForTest()}
-			mockCache.On("DoneRequestTrace", mock.Anything, "test-req-id", "test-model", int64(10), int64(5), int64(0)).Maybe()
-
-			server := &Server{cache: mockCache}
+			server := &Server{}
 			requestTime := time.Now().Add(-200 * time.Millisecond)
 			prefillStartTime := requestTime.Add(20 * time.Millisecond)
 			routerCtx := types.NewRoutingContext(context.Background(), "pd", "test-model", "", "test-req-id", "")
@@ -399,12 +405,12 @@ func TestHandleResponseBody_PDPrefillTimingMetricsRequirePrefillEndTime(t *testi
 				},
 			}
 
-			resp, complete := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, 0, false)
+			resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, false)
 
 			assert.True(t, complete)
 			assert.NotNil(t, resp)
+			assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}, usage)
 			assert.Equal(t, tt.wantCount, testutil.ToFloat64(prefillCounter.WithLabelValues("", "test-model", tt.wantBucket)))
-			mockCache.AssertExpectations(t)
 		})
 	}
 }
@@ -426,10 +432,7 @@ func TestHandleResponseBody_PDStreamingDecodeTimeAndTPOT(t *testing.T) {
 	)
 	defer cleanupTPOT()
 
-	mockCache := &MockCache{Cache: cache.NewForTest()}
-	mockCache.On("DoneRequestTrace", mock.Anything, "test-req-id", "test-model", int64(10), int64(5), int64(0)).Maybe()
-
-	server := &Server{cache: mockCache}
+	server := &Server{}
 	requestTime := time.Now().Add(-250 * time.Millisecond)
 	prefillStartTime := requestTime.Add(20 * time.Millisecond)
 	prefillEndTime := prefillStartTime.Add(30 * time.Millisecond)
@@ -454,29 +457,24 @@ func TestHandleResponseBody_PDStreamingDecodeTimeAndTPOT(t *testing.T) {
 		},
 	}
 
-	resp, complete := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", true, 0, false)
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", true, false)
 
 	assert.True(t, complete)
 	assert.NotNil(t, resp)
+	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}, usage)
 
 	// The final chunk arrives ~70ms after FirstTokenTime here, so decode_time must not
 	// land in the near-zero "0-1ms" bucket.
 	assert.Zero(t, testutil.ToFloat64(decodeCounter.WithLabelValues("", "test-model", "0-1ms")))
 	assert.Equal(t, 1, testutil.CollectAndCount(decodeCounter), "expected exactly one decode_time bucket to be recorded")
 	assert.Equal(t, 1, testutil.CollectAndCount(tpotCounter), "PD streaming path must emit gateway_tpot_bucket_total")
-	mockCache.AssertExpectations(t)
 }
 
 func TestHandleResponseBody_WithUserAndTPM(t *testing.T) {
-	mockCache := &MockCache{Cache: cache.NewForTest()}
-	// DoneRequestTrace(ctx, requestID, model, term, inputTokens, outputTokens) - use mock.Anything for dynamic requestID
-	mockCache.On("DoneRequestTrace", mock.Anything, mock.Anything, "test-model", int64(10), int64(5), int64(0)).Maybe()
-
 	mockRL := &mockRateLimiter{}
 	mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(15)).Return(int64(100), nil)
 
 	server := &Server{
-		cache:       mockCache,
 		ratelimiter: mockRL,
 	}
 
@@ -494,10 +492,11 @@ func TestHandleResponseBody_WithUserAndTPM(t *testing.T) {
 		},
 	}
 
-	resp, complete := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 42, "test-model", false, 0, false)
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 42, "test-model", false, false)
 
 	assert.True(t, complete)
 	assert.NotNil(t, resp)
+	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}, usage)
 	headers := resp.GetResponseBody().GetResponse().GetHeaderMutation().GetSetHeaders()
 	foundTPM := false
 	foundRPM := false
@@ -522,13 +521,7 @@ func TestHandleResponseBody_WithUserAndTPM(t *testing.T) {
 }
 
 func TestHandleResponseBody_NonLanguageRequest(t *testing.T) {
-	mockCache := &MockCache{Cache: cache.NewForTest()}
-	// Non-language request: no tokens from processLanguageResponse, EndOfStream triggers complete
-	mockCache.On("DoneRequestTrace", mock.Anything, "test-req-id", "test-model", int64(0), int64(0), int64(0)).Maybe()
-
-	server := &Server{
-		cache: mockCache,
-	}
+	server := &Server{}
 
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", "test-req-id", "")
 	routerCtx.ReqPath = "/v1/images/generations"
@@ -543,21 +536,16 @@ func TestHandleResponseBody_NonLanguageRequest(t *testing.T) {
 		},
 	}
 
-	resp, complete := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, 0, false)
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, false)
 
 	// Non-language request with EndOfStream sets complete=true
 	assert.True(t, complete)
 	assert.NotNil(t, resp)
+	assert.Equal(t, TokenUsage{}, usage)
 }
 
 func TestHandleResponseBody_EndOfStreamNoTokens(t *testing.T) {
-	mockCache := &MockCache{Cache: cache.NewForTest()}
-	// Body {} parses but has empty model - returns error, DoneRequestTrace called with 0,0,0
-	mockCache.On("DoneRequestTrace", mock.Anything, "test-req-id", "test-model", int64(0), int64(0), int64(0)).Maybe()
-
-	server := &Server{
-		cache: mockCache,
-	}
+	server := &Server{}
 
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", "test-req-id", "")
 	routerCtx.ReqPath = PathChatCompletions
@@ -572,20 +560,17 @@ func TestHandleResponseBody_EndOfStreamNoTokens(t *testing.T) {
 		},
 	}
 
-	resp, complete := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, 0, false)
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, false)
 
 	assert.True(t, complete)
 	assert.NotNil(t, resp)
+	assert.Equal(t, TokenUsage{}, usage)
 }
 
 func TestHandleResponseBody_TPMIncrError(t *testing.T) {
-	mockCache := &MockCache{Cache: cache.NewForTest()}
-	mockCache.On("DoneRequestTrace", mock.Anything, mock.Anything, "test-model", int64(10), int64(5), int64(0)).Maybe()
-
 	mockRL := &mockRateLimiter{}
 	mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(15)).Return(int64(0), errors.New("mock error"))
 	server := &Server{
-		cache:       mockCache,
 		ratelimiter: mockRL,
 	}
 
@@ -603,10 +588,11 @@ func TestHandleResponseBody_TPMIncrError(t *testing.T) {
 		},
 	}
 
-	resp, complete := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 0, "test-model", false, 0, false)
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 0, "test-model", false, false)
 
 	assert.True(t, complete)
 	assert.NotNil(t, resp)
+	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}, usage)
 	// Error response uses ImmediateResponse
 	immResp := resp.GetImmediateResponse()
 	assert.NotNil(t, immResp)
@@ -623,8 +609,7 @@ func TestHandleResponseBody_TPMIncrError(t *testing.T) {
 }
 
 func TestHandleResponseBody_LanguagePartialResponse(t *testing.T) {
-	mockCache := &MockCache{Cache: cache.NewForTest()}
-	server := &Server{cache: mockCache}
+	server := &Server{}
 
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "m", "", "rid-partial", "")
 	routerCtx.ReqPath = PathChatCompletions
@@ -639,14 +624,15 @@ func TestHandleResponseBody_LanguagePartialResponse(t *testing.T) {
 		},
 	}
 
-	resp, complete := server.HandleResponseBody(context.Background(), routerCtx, "rid-partial", req, utils.User{}, 0, "m", false, 0, false)
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, "rid-partial", req, utils.User{}, 0, "m", false, false)
 	assert.False(t, complete)
 	assert.NotNil(t, resp)
 	assert.NotNil(t, resp.GetResponseBody().GetResponse())
+	assert.Equal(t, TokenUsage{}, usage)
 }
 
-func TestHandleResponseBody_DoesNotDuplicateTrace(t *testing.T) {
-	mockCache := &MockCache{Cache: cache.NewForTest()}
+func TestHandleResponseBody_DoesNotFinalizeTrace(t *testing.T) {
+	mockCache := &MockCache{}
 	server := &Server{cache: mockCache}
 
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "m", "", "rid", "")
@@ -662,8 +648,9 @@ func TestHandleResponseBody_DoesNotDuplicateTrace(t *testing.T) {
 		},
 	}
 
-	_, complete := server.HandleResponseBody(context.Background(), routerCtx, "rid", req, utils.User{}, 0, "m", false, 0, true)
+	_, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, "rid", req, utils.User{}, 0, "m", false, false)
 	assert.True(t, complete)
+	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}, usage)
 	mockCache.AssertNotCalled(t, "DoneRequestTrace", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
 
@@ -720,12 +707,7 @@ func TestHandleResponseBody_SSEParsing(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mockCache := &MockCache{Cache: cache.NewForTest()}
-			mockCache.On("DoneRequestTrace", mock.Anything, "test-req-id", "test-model", tt.promptTokens, tt.completionTokens, int64(0)).Maybe()
-
-			server := &Server{
-				cache: mockCache,
-			}
+			server := &Server{}
 
 			routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", "test-req-id", "")
 			routerCtx.ReqPath = PathChatCompletions
@@ -741,7 +723,12 @@ func TestHandleResponseBody_SSEParsing(t *testing.T) {
 			}
 
 			// stream=true
-			resp, complete := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", true, 0, false)
+			resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", true, false)
+			assert.Equal(t, TokenUsage{
+				PromptTokens:     tt.promptTokens,
+				CompletionTokens: tt.completionTokens,
+				TotalTokens:      tt.totalTokens,
+			}, usage)
 
 			if tt.expectError {
 				assert.True(t, complete)
@@ -765,8 +752,6 @@ func TestHandleResponseBody_SSEParsing(t *testing.T) {
 				assert.NotNil(t, resp)
 				assert.NotNil(t, resp.GetResponseBody(), "Expected ResponseBody on success")
 			}
-
-			mockCache.AssertExpectations(t)
 		})
 	}
 }

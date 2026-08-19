@@ -37,7 +37,8 @@ func Test_HandleResponseHeaders(t *testing.T) {
 	// Initialize routing algorithms if needed
 	routingalgorithms.Init()
 
-	// Mock cache to verify DoneRequestCount is called on error
+	// Header parsing is deliberately lifecycle-free. Process owns request
+	// completion and RoutingContext cleanup.
 	mockCache := &MockCache{Cache: cache.NewForTest()}
 	server := &Server{
 		cache: mockCache,
@@ -145,15 +146,6 @@ func Test_HandleResponseHeaders(t *testing.T) {
 
 			ctx := context.Background()
 
-			if tt.expected.isProcessingError {
-				mockCache.On("DoneRequestCount",
-					tt.routingCtx,
-					"test-req-id",
-					"test-model",
-					int64(0),
-				).Return()
-			}
-
 			// Build response headers input
 			headers := []*configPb.HeaderValue{
 				{Key: ":status", RawValue: []byte(tt.responseStatus)},
@@ -179,6 +171,7 @@ func Test_HandleResponseHeaders(t *testing.T) {
 			if !cmp.Equal(tt.expected.headers, actualHeaders, protocmp.Transform()) {
 				t.Fatalf("Headers do not match:\n%s", cmp.Diff(tt.expected.headers, actualHeaders, protocmp.Transform()))
 			}
+			mockCache.AssertNotCalled(t, "DoneRequestCount")
 		})
 	}
 }
