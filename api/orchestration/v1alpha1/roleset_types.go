@@ -27,7 +27,10 @@ import (
 
 // RoleSetSpec defines the desired state of RoleSet
 type RoleSetSpec struct {
-	Roles []RoleSpec `json:"roles,omitempty"`
+	// +kubebuilder:validation:MinItems=1
+	// +listType=map
+	// +listMapKey=name
+	Roles []RoleSpec `json:"roles"`
 
 	// +optional
 	// +kubebuilder:validation:Enum={Parallel,Sequential,Interleave}
@@ -195,10 +198,15 @@ type DisruptionTolerance struct {
 }
 
 type RoleSpec struct {
-	Name string `json:"name,omitempty"`
+	// Name identifies the role and is used to derive child resource names.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
 
 	// Replicas is the number of desired replicas.
 	// +optional
+	// +kubebuilder:validation:Minimum=0
 	Replicas *int32 `json:"replicas,omitempty"`
 
 	// UpgradeOrder specifies the order in which this role should be upgraded.
