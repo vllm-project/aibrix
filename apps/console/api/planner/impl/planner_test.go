@@ -31,6 +31,7 @@ import (
 	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
 	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
+	"github.com/vllm-project/aibrix/apps/console/api/store/models"
 )
 
 const (
@@ -423,7 +424,168 @@ func TestEnqueueReturnsPendingPlaceholder(t *testing.T) {
 	if job.Batch == nil || job.Batch.Status != openai.BatchStatus("queued") {
 		t.Errorf("Batch.Status = %v, want queued", job.Batch)
 	}
+
+	q.mu.RLock()
+	queued := q.jobs["j1"]
+	q.mu.RUnlock()
+	queued.mu.RLock()
+	expiresAt := queued.expiresAt
+	queued.mu.RUnlock()
+	if !expiresAt.IsZero() {
+		t.Fatalf("queued job deadline = %v, want zero until resource allocation or MDS submission", expiresAt)
+	}
 	close(release)
+}
+
+func TestRecoverReschedulesPreProvisionJobWithLegacyExpiredDeadline(t *testing.T) {
+	for _, recoveredStatus := range []plannerapi.JobStatus{
+		plannerapi.JobStatusQueued,
+		plannerapi.JobStatusPlanned,
+	} {
+		t.Run(string(recoveredStatus), func(t *testing.T) {
+			memStore := store.NewMemoryStore(nil)
+			t.Cleanup(func() { _ = memStore.Close() })
+
+			queuedAt := time.Now().UTC().Add(-2 * time.Hour)
+			legacyDeadline := queuedAt.Add(time.Hour)
+			jobID := "j-recover-" + string(recoveredStatus)
+			if err := memStore.UpsertJob(context.Background(), &models.Job{
+				ID:               jobID,
+				Endpoint:         "/v1/chat/completions",
+				InputDataset:     "file-" + jobID,
+				CompletionWindow: "1h",
+				Status:           string(recoveredStatus),
+				QueuedAt:         &queuedAt,
+				ExpiresAt:        &legacyDeadline,
+			}); err != nil {
+				t.Fatalf("persist legacy job: %v", err)
+			}
+
+			provisionStarted := make(chan struct{})
+			unblockProvision := make(chan struct{})
+			var provisionOnce sync.Once
+			prov := &fakeProvisioner{
+				ProvisionFn: func(ctx context.Context, req *rmtypes.ResourceProvision) (*rmtypes.ProvisionResult, error) {
+					provisionOnce.Do(func() { close(provisionStarted) })
+					select {
+					case <-unblockProvision:
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					}
+					return &rmtypes.ProvisionResult{
+						ProvisionID:    "prov-" + req.IdempotencyKey,
+						IdempotencyKey: req.IdempotencyKey,
+						Status:         rmtypes.ProvisionStatusRunning,
+					}, nil
+				},
+			}
+			q := NewPlanner(PlannerConfig{
+				BatchClient:            &fakeBatchClient{},
+				Provisioner:            prov,
+				Store:                  memStore,
+				PolicyType:             PlanningPolicyTypeSimple,
+				WorkerCount:            1,
+				PlanningInterval:       100 * time.Millisecond,
+				MaxConcurrentProvision: 1,
+			})
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(func() {
+				cancel()
+				_ = q.Close()
+			})
+			if err := q.Recover(ctx); err != nil {
+				t.Fatalf("Recover: %v", err)
+			}
+
+			select {
+			case <-provisionStarted:
+			case <-time.After(defaultTimeout):
+				t.Fatalf("recovered %s job with legacy deadline was not provisioned", recoveredStatus)
+			}
+
+			q.mu.RLock()
+			recovered := q.jobs[jobID]
+			q.mu.RUnlock()
+			recovered.mu.RLock()
+			expiresAt := recovered.expiresAt
+			recovered.mu.RUnlock()
+			if !expiresAt.IsZero() {
+				t.Fatalf("recovered pre-provision deadline = %v, want legacy deadline cleared", expiresAt)
+			}
+
+			storedJob, err := memStore.GetJob(context.Background(), jobID)
+			if err != nil {
+				t.Fatalf("GetJob from store: %v", err)
+			}
+			if storedJob == nil {
+				t.Fatal("recovered job missing from store")
+			}
+			if storedJob.Status != string(plannerapi.JobStatusQueued) {
+				t.Fatalf("stored job status = %q, want %q", storedJob.Status, plannerapi.JobStatusQueued)
+			}
+			if storedJob.ExpiresAt != nil && !storedJob.ExpiresAt.IsZero() {
+				t.Fatalf("stored job expiresAt = %v, want zero/nil", storedJob.ExpiresAt)
+			}
+
+			listedJobs, err := q.ListJobs(context.Background(), &plannerapi.ListJobsRequest{Limit: 10})
+			if err != nil {
+				t.Fatalf("ListJobs after recovery: %v", err)
+			}
+			if len(listedJobs.Data) != 1 {
+				t.Fatalf("ListJobs returned %d jobs, want 1", len(listedJobs.Data))
+			}
+			if listedJobs.Data[0].Batch.Status != openai.BatchStatus("queued") {
+				t.Fatalf("listed job status = %q, want queued", listedJobs.Data[0].Batch.Status)
+			}
+			if listedJobs.Data[0].Batch.ExpiresAt != 0 {
+				t.Fatalf("listed job expiresAt = %d, want 0", listedJobs.Data[0].Batch.ExpiresAt)
+			}
+
+			visibleJob, err := q.GetJob(context.Background(), jobID)
+			if err != nil {
+				t.Fatalf("GetJob after recovery: %v", err)
+			}
+			if visibleJob.Batch.Status != openai.BatchStatus("queued") {
+				t.Fatalf("recovered job status = %q, want queued", visibleJob.Batch.Status)
+			}
+			if visibleJob.Batch.ExpiresAt != 0 {
+				t.Fatalf("recovered job expiresAt = %d, want 0", visibleJob.Batch.ExpiresAt)
+			}
+
+			close(unblockProvision)
+		})
+	}
+}
+
+func TestSimplePolicySchedulesQueuedJobPastLegacyDeadline(t *testing.T) {
+	q := NewPlanner(PlannerConfig{
+		BatchClient:            &fakeBatchClient{},
+		Provisioner:            &fakeProvisioner{},
+		PolicyType:             PlanningPolicyTypeSimple,
+		MaxConcurrentProvision: 1,
+	})
+	job := &queuedJob{
+		req:       validReq("j-legacy-deadline"),
+		status:    plannerapi.JobStatusQueued,
+		expiresAt: time.Now().UTC().Add(-time.Hour),
+		queue:     q.pendingQueue,
+	}
+	q.pendingQueue.Push(job, 0)
+
+	if err := q.policy.Plan(context.Background(), PlanningInput[*queuedJob]{
+		PlannerBackend: q.backend,
+		RunningQueue:   q.runningQueue,
+		PendingQueue:   q.pendingQueue,
+	}); err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	job.mu.RLock()
+	scheduled := job.scheduledResource
+	job.mu.RUnlock()
+	if scheduled == nil {
+		t.Fatal("queued job with legacy deadline was skipped instead of scheduled")
+	}
 }
 
 func TestHappyPathReachesSubmitted(t *testing.T) {

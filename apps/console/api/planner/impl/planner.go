@@ -307,9 +307,35 @@ func (q *Planner) Recover(ctx context.Context) error {
 			continue
 		}
 
+		// A completion window starts when MDS accepts the batch, not while the
+		// job is waiting in the planner queue. So, when recovering pre-provision
+		// states, clear the legacy expiresAt in case it was set.
+		modified := false
+		if (job.status == plannerapi.JobStatusQueued || job.status == plannerapi.JobStatusPlanned) &&
+			!job.expiresAt.IsZero() {
+			job.expiresAt = time.Time{}
+			modified = true
+		}
+
+		// A process can stop after changing the in-memory status to planned
+		// but before Provision returns, so a recovered planned job must be
+		// scheduled again.
+		if job.status == plannerapi.JobStatusPlanned {
+			job.status = plannerapi.JobStatusQueued
+			modified = true
+		}
+
+		if modified {
+			if job.batch != nil {
+				job.batch.Status = job.status.ToBatchStatus()
+				job.batch.ExpiresAt = 0
+			}
+			q.persist(ctx, job)
+		}
+
 		q.jobs[job.req.JobID] = job
 		// Re-enqueue the job onto the queue based on the status
-		if job.status == plannerapi.JobStatusQueued || job.status == plannerapi.JobStatusPlanned {
+		if job.status == plannerapi.JobStatusQueued {
 			q.pendingQueue.Push(job, 0)
 			job.queue = q.pendingQueue
 		} else {
@@ -361,12 +387,10 @@ func (q *Planner) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (
 		q.mu.Unlock()
 		return nil, fmt.Errorf("%w: duplicate job_id %q", plannerapi.ErrInvalidJob, req.JobID)
 	}
-	completionWindow, _ := utils.ParseCompletionWindow(string(req.BatchParams.CompletionWindow))
 	job := &queuedJob{
 		req:        req,
 		status:     plannerapi.JobStatusQueued,
 		queuedAt:   now,
-		expiresAt:  now.Add(completionWindow),
 		pqPriority: 0,
 		queue:      q.pendingQueue,
 	}
