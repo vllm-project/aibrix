@@ -202,7 +202,7 @@ spec:
       name: {{ .Release.Namespace }}/{{ include "aibrix.fullname" . }}-eg/https
       operation:
         op: add
-        path: /default_filter_chain/filters/{{- if gt (int .Values.gateway.clientTrafficPolicy.connection.connectionLimit.value) 0 }}1{{- else }}0{{- end }}/typed_config/preserve_external_request_id
+        path: /filter_chains/0/filters/{{ if gt (int .Values.gateway.clientTrafficPolicy.connection.connectionLimit.value) 0 }}1{{ else }}0{{ end }}/typed_config/preserve_external_request_id
         value: {{ .Values.gateway.envoyPatchPolicy.preserveExternalRequestID }}
     {{- end }}
 {{- end }}

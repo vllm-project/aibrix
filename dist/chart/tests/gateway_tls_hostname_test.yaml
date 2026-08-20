@@ -76,3 +76,6 @@ tests:
       - equal:
           path: spec.jsonPatches[2].name
           value: aibrix-system/aibrix-eg/https
+      - equal:
+          path: spec.jsonPatches[2].operation.path
+          value: /filter_chains/0/filters/1/typed_config/preserve_external_request_id
