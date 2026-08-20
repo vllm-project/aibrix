@@ -73,9 +73,12 @@ from aibrix.batch.job_entity import (
     ConditionStatus,
     ConditionType,
     RequestCountStats,
+    ensure_batch_job_error,
 )
+from aibrix.batch.metrics import tags_from_job
 from aibrix.context.infra import InfrastructureContext
 from aibrix.logger import init_logger
+from aibrix.metadata.core.metrics import Emitter, T, metrics_names
 
 logger = init_logger(__name__)
 
@@ -87,7 +90,10 @@ _RETRY_BASE_DELAY_ENV = "AIBRIX_BATCH_RETRY_BASE_DELAY_SECONDS"
 _RETRY_MAX_DELAY_ENV = "AIBRIX_BATCH_RETRY_MAX_DELAY_SECONDS"
 _DEFAULT_ADAPTIVE_MAX_FACTOR = 8.0
 _DEFAULT_TELEMETRY_INTERVAL_SECONDS = 5.0
-_DEFAULT_INFERENCE_MAX_RETRIES = 120
+_DEFAULT_INFERENCE_MAX_RETRIES = 5
+# A no-endpoint attempt only re-queries service discovery,
+# so 120 tries against the 5s delay cap buys ~10 minutes of waiting out a
+# cold-starting deployment.
 _DEFAULT_NO_ENDPOINT_MAX_RETRIES = 120
 _DEFAULT_RETRY_BASE_DELAY_SECONDS = 0.5
 _DEFAULT_RETRY_MAX_DELAY_SECONDS = 5.0
@@ -503,10 +509,9 @@ class BaseJobDriver:
     def _ensure_batch_job_error(
         error: Exception,
         default_code: BatchJobErrorCode = BatchJobErrorCode.INTERNAL_ERROR,
+        **kwargs,
     ) -> BatchJobError:
-        if isinstance(error, BatchJobError):
-            return error
-        return BatchJobError(code=default_code, message=str(error))
+        return ensure_batch_job_error(error, default_code, **kwargs)
 
     @staticmethod
     def _error_code_from_reason(reason: Optional[str]) -> BatchJobErrorCode:
@@ -557,13 +562,45 @@ class BaseJobDriver:
     def _log_cancelled(self, job_id: str) -> None:
         logger.info("Execution interrupted by job deletion", job_id=job_id)  # type: ignore[call-arg]
 
-    def _log_failed(self, job_id: str, error: BatchJobError) -> None:
+    def _emit_request_completion_metrics(
+        self,
+        job: BatchJob,
+        *,
+        completed: int = 0,
+        failed: int = 0,
+    ) -> None:
+        if completed > 0:
+            Emitter.counter(
+                metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_COMPLETED,
+                completed,
+                *tags_from_job(job),
+                T("result", "success"),
+            )
+        if failed > 0:
+            Emitter.counter(
+                metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_COMPLETED,
+                failed,
+                *tags_from_job(job),
+                T("result", "fail"),
+            )
+
+    def _log_failed(self, job: BatchJob, error: BatchJobError) -> None:
         logger.error(
             "Failed to execute job",
-            job_id=job_id,
+            job_id=job.job_id,
             error_code=error.code,
             error=error.message,
+            line=error.line,
+            param=error.param,
         )  # type: ignore[call-arg]
+
+    @staticmethod
+    def _simplified_input_param(request_input: dict[str, Any]) -> Optional[str]:
+        """Return a sanitized request identifier for persisted batch errors."""
+        custom_id = request_input.get("custom_id")
+        if isinstance(custom_id, str) and custom_id.strip():
+            return f"custom_id={custom_id.strip()}"
+        return None
 
     def _log_completed(self, job: BatchJob) -> None:
         logger.debug(
@@ -571,6 +608,35 @@ class BaseJobDriver:
             job_id=job.job_id,
             status=job.status.state.value,
         )  # type: ignore[call-arg]
+
+    def _emit_request_usage_metrics(
+        self, job: BatchJob, usage: Optional[BatchUsage]
+    ) -> None:
+        if usage is None:
+            return
+
+        Emitter.counter(
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_USAGE_TOKENS,
+            usage.input_tokens,
+            *tags_from_job(job),
+            T("token_type", "input_token"),
+        )
+        Emitter.counter(
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_USAGE_TOKENS,
+            usage.output_tokens,
+            *tags_from_job(job),
+            T("token_type", "output_token"),
+        )
+        Emitter.counter(
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_CACHED_TOKENS,
+            usage.input_tokens_details.cached_tokens,
+            *tags_from_job(job),
+        )
+        Emitter.counter(
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_REASONING_TOKENS,
+            usage.output_tokens_details.reasoning_tokens,
+            *tags_from_job(job),
+        )
 
     def _should_stop_before_proceed(self, job: BatchJob, reload: bool = False) -> bool:
         """Check for interruption signal"""
@@ -733,7 +799,7 @@ class BaseJobDriver:
 
     def _accumulate_usage(
         self, job_id: str, custom_id: Optional[str], raw_usage: Optional[dict]
-    ) -> None:
+    ) -> Optional[BatchUsage]:
         """Add a single response's usage to the running per-job total.
 
         Maps OpenAI Completions naming (``prompt_tokens`` /
@@ -742,34 +808,39 @@ class BaseJobDriver:
         a duplicate ``custom_id`` within the job (retry) is skipped too.
         """
         if not raw_usage or not isinstance(raw_usage, dict):
-            return
+            return None
 
         self._ensure_local_job_state(job_id)
         seen = self._usage_counted_ids
         if custom_id is not None:
             if custom_id in seen:
-                return
+                return None
             seen.add(custom_id)
 
         if self._usage is None:
             self._usage = BatchUsage()
+        emitted_usage = BatchUsage()
         usage = self._usage
         prompt = int(raw_usage.get("prompt_tokens") or 0)
         completion = int(raw_usage.get("completion_tokens") or 0)
         usage.input_tokens += prompt
         usage.output_tokens += completion
         usage.total_tokens += prompt + completion
+        emitted_usage.input_tokens = prompt
+        emitted_usage.output_tokens = completion
+        emitted_usage.total_tokens = prompt + completion
 
         prompt_details = raw_usage.get("prompt_tokens_details") or {}
         if isinstance(prompt_details, dict):
-            usage.input_tokens_details.cached_tokens += int(
-                prompt_details.get("cached_tokens") or 0
-            )
+            cached_tokens = int(prompt_details.get("cached_tokens") or 0)
+            usage.input_tokens_details.cached_tokens += cached_tokens
+            emitted_usage.input_tokens_details.cached_tokens = cached_tokens
         completion_details = raw_usage.get("completion_tokens_details") or {}
         if isinstance(completion_details, dict):
-            usage.output_tokens_details.reasoning_tokens += int(
-                completion_details.get("reasoning_tokens") or 0
-            )
+            reasoning_tokens = int(completion_details.get("reasoning_tokens") or 0)
+            usage.output_tokens_details.reasoning_tokens += reasoning_tokens
+            emitted_usage.output_tokens_details.reasoning_tokens = reasoning_tokens
+        return emitted_usage
 
     def _get_accumulated_usage(self, job_id: str) -> Optional[BatchUsage]:
         """Return the running token usage for a job, or None if no successful
@@ -887,6 +958,11 @@ class BaseJobDriver:
             completed_request_ids,
             failed_request_ids,
         )
+        self._emit_request_completion_metrics(
+            job,
+            completed=len(completed_request_ids),
+            failed=len(failed_request_ids),
+        )
         job = await self._persist_worker_status(job)
         return job, len(completed_results)
 
@@ -897,34 +973,50 @@ class BaseJobDriver:
     ) -> tuple[int, bool]:
         """Execute one request and persist its output record."""
         request_id = request_input.pop("_request_index")
+        input_line_no = request_id
+        input_line_data = self._simplified_input_param(request_input)
         self._accumulate_dispatched_request(job.job_id, request_id)
         custom_id = request_input.get("custom_id", "")
 
-        if "body" not in request_input:
-            raise BatchJobError(
-                code=BatchJobErrorCode.INVALID_INPUT_FILE,
-                message="Request missing 'body' field",
-                line=request_id,
+        try:
+            if "body" not in request_input:
+                raise BatchJobError(
+                    code=BatchJobErrorCode.INVALID_INPUT_FILE,
+                    message="Request missing 'body' field",
+                    param=input_line_data,
+                    line=input_line_no,
+                )
+
+            request_output, last_error = await self._send_one(
+                job.spec.endpoint, request_input["body"], request_id
             )
 
-        request_output, last_error = await self._send_one(
-            job.spec.endpoint, request_input["body"], request_id
-        )
+            if last_error is None and isinstance(request_output, dict):
+                emitted_usage = self._accumulate_usage(
+                    job.job_id,
+                    custom_id,
+                    request_output.get("usage"),
+                )
+                self._emit_request_usage_metrics(job, emitted_usage)
 
-        if last_error is None and isinstance(request_output, dict):
-            self._accumulate_usage(job.job_id, custom_id, request_output.get("usage"))
-
-        response = self._build_response(
-            custom_id,
-            job.job_id,
-            request_id,
-            job.spec,
-            request_output,
-            last_error,
-            request_payload=request_input.get("body"),
-        )
-        await storage.write_job_output_data(job, request_id, response)
-        return request_id, last_error is not None
+            response = self._build_response(
+                custom_id,
+                job.job_id,
+                request_id,
+                job.spec,
+                request_output,
+                last_error,
+                request_payload=request_input.get("body"),
+            )
+            await storage.write_job_output_data(job, request_id, response)
+            return request_id, last_error is not None
+        except Exception as exc:
+            raise self._ensure_batch_job_error(
+                exc,
+                default_code=self._default_failure_code,
+                line=input_line_no,
+                param=input_line_data,
+            ) from exc
 
     # ── lifecycle template ───────────────────────────────────────────────
 
@@ -963,6 +1055,7 @@ class BaseJobDriver:
                 DispatchEngine(
                     endpoint.source,
                     retry=self._retry_config_for_job(job),
+                    job_id=job.job_id,
                 )
                 if endpoint.source is not None
                 else None
@@ -983,7 +1076,7 @@ class BaseJobDriver:
                 raise
             except Exception as ex:  # noqa: BLE001 - finalize must still run
                 normalized_error = self._make_failure_error(ex)
-                self._log_failed(job.job_id, normalized_error)
+                self._log_failed(job, normalized_error)
                 job = await self._progress_manager.mark_job_failed(
                     job.job_id, normalized_error
                 )
@@ -1247,6 +1340,8 @@ class BaseJobDriver:
                         return
 
                     request_id = request_input.pop("_request_index", -1)
+                    input_line_no = request_id
+                    input_line_data = self._simplified_input_param(request_input)
                     if request_id < 0:
                         continue
                     self._accumulate_dispatched_request(job_id, request_id)
@@ -1257,14 +1352,24 @@ class BaseJobDriver:
                         raise BatchJobError(
                             code=BatchJobErrorCode.INVALID_INPUT_FILE,
                             message="Request missing 'body' field",
-                            line=request_id,
+                            param=input_line_data,
+                            line=input_line_no,
                         )
 
                     custom_id = request_input.get("custom_id", "")
+                    try:
+                        payload = self._shape_payload(request_input["body"])
+                    except Exception as exc:
+                        raise self._ensure_batch_job_error(
+                            exc,
+                            default_code=self._default_failure_code,
+                            line=input_line_no,
+                            param=input_line_data,
+                        ) from exc
                     yield InferenceRequest(
                         path=job.spec.endpoint,
-                        payload=self._shape_payload(request_input["body"]),
-                        ref=(request_id, custom_id),
+                        payload=payload,
+                        ref=(request_id, custom_id, input_line_data),
                     )
 
                 await round_drained.wait()
@@ -1324,28 +1429,37 @@ class BaseJobDriver:
             error: Optional[InferenceError],
         ) -> None:
             nonlocal job, processed_requests
-            request_id, custom_id = request.ref
-            if error is None and isinstance(response, dict):
-                async with self._usage_lock:
-                    self._accumulate_usage(job_id, custom_id, response.get("usage"))
+            request_id, custom_id, input_line_data = request.ref
+            input_line_no = request_id
+            try:
+                if error is None and isinstance(response, dict):
+                    async with self._usage_lock:
+                        self._accumulate_usage(job_id, custom_id, response.get("usage"))
 
-            record = self._build_response(
-                custom_id,
-                job_id,
-                request_id,
-                job.spec,
-                response,
-                error,
-                request_payload=request.payload,
-            )
-            await storage.write_job_output_data(job, request_id, record)
-            await completed_request_ids.put((request_id, error is not None))
-            processed_requests += 1
-            await self._apply_error_injector_breakpoint(
-                job,
-                BREAKPOINT_AFTER_N_REQUESTS,
-                n=processed_requests,
-            )
+                record = self._build_response(
+                    custom_id,
+                    job_id,
+                    request_id,
+                    job.spec,
+                    response,
+                    error,
+                    request_payload=request.payload,
+                )
+                await storage.write_job_output_data(job, request_id, record)
+                await completed_request_ids.put((request_id, error is not None))
+                processed_requests += 1
+                await self._apply_error_injector_breakpoint(
+                    job,
+                    BREAKPOINT_AFTER_N_REQUESTS,
+                    n=processed_requests,
+                )
+            except Exception as exc:
+                raise self._ensure_batch_job_error(
+                    exc,
+                    default_code=self._default_failure_code,
+                    line=input_line_no,
+                    param=input_line_data,
+                ) from exc
 
         stats = DispatchStats()
         telemetry_interval = _telemetry_interval_seconds()

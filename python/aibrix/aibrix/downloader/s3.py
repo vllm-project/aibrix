@@ -363,7 +363,9 @@ class S3BaseDownloader(BaseDownloader):
             local_path=local_path, file_name=relative_path, source=self._source.value
         )
 
-        if not need_to_download(local_file, meta_data_file, file_size, etag):
+        if not need_to_download(
+            local_file, meta_data_file, file_size, etag, self.force_download
+        ):
             return
 
         # construct TransferConfig

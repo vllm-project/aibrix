@@ -1140,7 +1140,7 @@ async def test_discovery_source_uses_cache_until_refresh_interval():
 
 
 @pytest.mark.asyncio
-async def test_discovery_source_refreshes_and_removes_failed_channel():
+async def test_discovery_source_refreshes_but_keeps_failed_channel():
     from aibrix.batch.client.sources import DiscoveryEndpointSource
 
     now = 0.0
@@ -1185,6 +1185,7 @@ async def test_discovery_source_refreshes_and_removes_failed_channel():
         )
 
         assert [channel.id for channel in await source.channels()] == [
+            "http://bad",
             "http://good",
             "http://new",
         ]
@@ -1194,7 +1195,7 @@ async def test_discovery_source_refreshes_and_removes_failed_channel():
 
 
 @pytest.mark.asyncio
-async def test_discovery_source_removes_failed_channel_even_if_refresh_fails():
+async def test_discovery_source_keeps_channels_when_refresh_fails():
     from aibrix.batch.client.sources import DiscoveryEndpointSource
 
     discovery = _FailingThenSequenceDiscovery(
@@ -1229,7 +1230,10 @@ async def test_discovery_source_removes_failed_channel_even_if_refresh_fails():
             ),
         )
 
-        assert [channel.id for channel in await source.channels()] == ["http://good"]
+        assert [channel.id for channel in await source.channels()] == [
+            "http://bad",
+            "http://good",
+        ]
         assert discovery.calls == 2
     finally:
         await source.aclose()

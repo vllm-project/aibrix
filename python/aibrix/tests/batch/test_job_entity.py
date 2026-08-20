@@ -1,3 +1,17 @@
+# Copyright 2024 The Aibrix Team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# 	http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Unit tests for BatchJobError and related job entity classes"""
 
 import json
@@ -27,8 +41,10 @@ from aibrix.batch.job_entity import (
     ResourceAllocation,
     ResourceDetail,
     RuntimeSpec,
+    ensure_batch_job_error,
 )
 from aibrix.batch.job_entity.aibrix_metadata import MAX_CLIENT_CONCURRENCY
+from aibrix.batch.job_entity.batch_job import format_completion_window
 from aibrix.batch.manifest.renderer import JobManifestRenderer, RenderError
 from aibrix.batch.template import local_profile_registry, local_template_registry
 
@@ -158,13 +174,11 @@ class TestBatchJobEntityCreation:
         assert spec.completion_window == 86400
         assert spec.metadata == {"priority": "high"}
 
-    def test_batch_job_spec_supported_completion_windows(self):
+    def test_batch_job_spec_accepts_arbitrary_valid_completion_windows(self):
         windows = {
             "1h": 3600,
-            "2h": 7200,
-            "6h": 21600,
-            "12h": 43200,
-            "24h": 86400,
+            "6min": 360,
+            "1d1h1min": 90060,
         }
         for window, seconds in windows.items():
             spec = BatchJobSpec.from_strings(
@@ -173,6 +187,30 @@ class TestBatchJobEntityCreation:
                 completion_window=window,
             )
             assert spec.completion_window == seconds
+
+    @pytest.mark.parametrize(
+        ("seconds", "expected"),
+        [
+            (90060, "1d1h1min"),
+            (176404, "2d1h"),
+            (5880, "1h38min"),
+            (2, "0h"),
+        ],
+    )
+    def test_format_completion_window(self, seconds, expected):
+        assert format_completion_window(seconds) == expected
+
+    @pytest.mark.parametrize(
+        "window",
+        ["0min", "59s", "1.5h", "38min1h"],
+    )
+    def test_batch_job_spec_rejects_invalid_completion_windows(self, window):
+        with pytest.raises(ValueError):
+            BatchJobSpec.from_strings(
+                input_file_id="test-input-123",
+                endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+                completion_window=window,
+            )
 
     def test_batch_job_spec_creation_with_aibrix_metadata(self):
         spec = BatchJobSpec(
@@ -312,7 +350,7 @@ class TestBatchJobEntityCreation:
         job.status.state = BatchJobState.FINALIZED
         assert job.status.expired is True
 
-    def test_batch_job_is_expiring_checks_completion_window_only(self):
+    def test_batch_job_is_expiring_prefers_resource_deadline(self):
         now = int(datetime.now(timezone.utc).timestamp())
         due_job = BatchJob(
             typeMeta={"apiVersion": "batch/v1", "kind": "Job"},
@@ -335,7 +373,7 @@ class TestBatchJobEntityCreation:
             ),
         )
 
-        assert due_job.is_expiring() is True
+        assert due_job.is_expiring() is False
 
         fresh_job = BatchJob(
             typeMeta={"apiVersion": "batch/v1", "kind": "Job"},
@@ -358,7 +396,7 @@ class TestBatchJobEntityCreation:
             ),
         )
 
-        assert fresh_job.is_expiring() is False
+        assert fresh_job.is_expiring() is True
 
     def test_batch_job_status_execution_accepts_legacy_single_ref(self):
         status = BatchJobStatus.model_validate(
@@ -631,6 +669,94 @@ class TestExceptionMessageConversion:
         error = BatchJobError(code=BatchJobErrorCode.FINALIZING_ERROR, message=str(fe))
 
         assert error.message == "Multi-line\nerror\tmessage\nwith\ttabs"
+
+
+class TestEnsureBatchJobError:
+    def test_unknown_exception_records_traceback_source(self):
+        def raise_unknown():
+            raise RuntimeError("boom")
+
+        try:
+            raise_unknown()
+        except RuntimeError as exc:
+            error = ensure_batch_job_error(exc, BatchJobErrorCode.INTERNAL_ERROR)
+
+        assert error.code == BatchJobErrorCode.INTERNAL_ERROR.value
+        assert error.message.startswith("RuntimeError: boom")
+        assert "(source: test_job_entity.py:" in error.message
+        assert error.param is None
+        assert error.line is None
+
+    def test_unknown_exception_without_message_uses_class_name(self):
+        try:
+            raise Exception()
+        except Exception as exc:
+            error = ensure_batch_job_error(exc, BatchJobErrorCode.INTERNAL_ERROR)
+
+        assert error.message.startswith("Exception")
+
+    def test_unknown_exception_uses_input_line_context(self):
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError as exc:
+            error = ensure_batch_job_error(
+                exc,
+                BatchJobErrorCode.INTERNAL_ERROR,
+                line=79,
+                param="custom_id=req-79",
+            )
+
+        assert error.line == 79
+        assert error.param == "custom_id=req-79"
+        assert error.message.startswith("RuntimeError: boom")
+
+    def test_unknown_exception_ignores_unexpected_kwargs(self):
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError as exc:
+            error = ensure_batch_job_error(
+                exc,
+                BatchJobErrorCode.INTERNAL_ERROR,
+                line=13,
+                param="custom_id=req-13",
+                request_id="req-13",
+            )
+
+        assert error.line == 13
+        assert error.param == "custom_id=req-13"
+        assert error.message.startswith("RuntimeError: boom")
+
+    def test_existing_batch_job_error_keeps_existing_context(self):
+        original = BatchJobError(
+            code=BatchJobErrorCode.INTERNAL_ERROR,
+            message="known",
+            param="status",
+            line=7,
+        )
+
+        error = ensure_batch_job_error(original, BatchJobErrorCode.FINALIZING_ERROR)
+
+        assert error is original
+        assert error.param == "status"
+        assert error.line == 7
+
+    def test_existing_batch_job_error_fills_missing_input_context(self):
+        original = BatchJobError(
+            code=BatchJobErrorCode.INTERNAL_ERROR,
+            message="known",
+        )
+
+        error = ensure_batch_job_error(
+            original,
+            BatchJobErrorCode.FINALIZING_ERROR,
+            line=11,
+            param="custom_id=req-11",
+        )
+
+        assert error is not original
+        assert error.message == "known"
+        assert error.line == 11
+        assert error.param == "custom_id=req-11"
 
 
 class TestBatchJobErrorFastAPICompatibility:

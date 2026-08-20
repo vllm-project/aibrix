@@ -86,14 +86,6 @@ func JobLimitsConfig() JobLimits {
 	}
 }
 
-var supportedCompletionWindows = map[string]struct{}{
-	"1h":  {},
-	"2h":  {},
-	"6h":  {},
-	"12h": {},
-	"24h": {},
-}
-
 // JobHandler implements console.v1.JobService.
 type JobHandler struct {
 	pb.UnimplementedJobServiceServer
@@ -258,11 +250,12 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 	if completionWindow == "" {
 		completionWindow = string(openai.BatchNewParamsCompletionWindow24h)
 	}
-	if _, ok := supportedCompletionWindows[completionWindow]; !ok {
+	if _, err := utils.ParseCompletionWindow(completionWindow); err != nil {
 		return nil, status.Errorf(
 			codes.InvalidArgument,
-			"unsupported completion_window %q; supported values: 1h, 2h, 6h, 12h, 24h",
+			"invalid completion_window %q: %v",
 			completionWindow,
+			err,
 		)
 	}
 
@@ -456,7 +449,7 @@ func mapSDKError(err error, op string) error {
 		case http.StatusNotFound:
 			c = codes.NotFound
 		case http.StatusConflict:
-			c = codes.FailedPrecondition
+			c = codes.Aborted
 		case http.StatusUnauthorized, http.StatusForbidden:
 			c = codes.PermissionDenied
 		default:
@@ -464,7 +457,11 @@ func mapSDKError(err error, op string) error {
 				c = codes.Unavailable
 			}
 		}
-		return status.Error(c, apiErr.Error())
+		msg := apiErr.Message
+		if msg == "" {
+			msg = apiErr.Error()
+		}
+		return status.Error(c, msg)
 	}
 
 	return status.Errorf(codes.Unavailable, "%s: %v", op, err)

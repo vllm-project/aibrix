@@ -47,9 +47,13 @@ type RequestFeatures []float64
 // Populated from model.aibrix.ai/config annotation based on config-profile header or defaultProfile.
 // Nil when no config is present;
 type ResolvedConfigProfile struct {
-	RoutingStrategy   string
-	RoutingConfig     json.RawMessage
-	RequestsPerSecond int64
+	// LockedRoutingStrategy pins the routing strategy model-wide when set.
+	// It takes precedence over the routing-strategy request header, the profile
+	// RoutingStrategy and the ROUTING_ALGORITHM environment variable.
+	LockedRoutingStrategy string
+	RoutingStrategy       string
+	RoutingConfig         json.RawMessage
+	RequestsPerSecond     int64
 }
 
 // RoutingAlgorithm defines the routing algorithms

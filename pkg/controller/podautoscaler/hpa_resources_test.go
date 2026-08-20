@@ -24,6 +24,7 @@ import (
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
+	"github.com/vllm-project/aibrix/pkg/utils/paschedules"
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
@@ -168,4 +169,36 @@ func TestMakeHPA(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, actualHPA)
 	assert.Equal(t, expectedHPA, actualHPA)
+}
+
+func TestMakeHPAWithScheduledBounds(t *testing.T) {
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: v1.ObjectMeta{
+			Name:      "test-llm-pa",
+			Namespace: "default",
+		},
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{
+				APIVersion: "apps/v1",
+				Kind:       "Deployment",
+				Name:       "test-llm",
+			},
+			MinReplicas: ptr.To(int32(1)),
+			MaxReplicas: int32(10),
+			MetricsSources: []autoscalingv1alpha1.MetricSource{{
+				MetricSourceType: autoscalingv1alpha1.RESOURCE,
+				TargetMetric:     "cpu",
+				TargetValue:      "30",
+			}},
+		},
+	}
+	ctx := context.NewBaseScalingContext()
+
+	hpa, err := makeHPAWithBounds(pa, ctx, paschedules.Bounds{MinReplicas: 3, MaxReplicas: 12, ActiveSchedule: "business-hours"})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, hpa)
+	assert.NotNil(t, hpa.Spec.MinReplicas)
+	assert.Equal(t, int32(3), *hpa.Spec.MinReplicas)
+	assert.Equal(t, int32(12), hpa.Spec.MaxReplicas)
 }

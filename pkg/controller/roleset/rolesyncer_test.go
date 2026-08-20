@@ -124,24 +124,99 @@ func TestStatelessRoleSyncer_Scale(t *testing.T) {
 			description:    "Should cleanup terminated pods",
 		},
 		{
-			// readyPods: 2
+			// readyPods: 2, not-ready: 2
 			// expectedReplicas: 3
 			// maxUnavailable: 1
 			// minAvailable: 2 (expectedReplicas - maxUnavailable)
-			// expectedDelete: 0 (readyPods - minAvailable)
+			// The 2 ready pods sit at the minAvailable floor and must be preserved,
+			// but the excess not-ready pod is trimmed (diff = 4 - 3 = 1).
+			// expectedDelete: 1 (one not-ready pod; ready availability preserved)
 			name:    "respect maxUnavailable during scale down",
 			roleSet: newTestRoleSet("test-roleset", "test-ns"),
 			role:    newTestRoleSpec("worker", 3, intStrPtr(intstr.FromInt(0)), intStrPtr(intstr.FromInt(1))),
 			existingPods: []*v1.Pod{
 				newTestPod(testPodOne, "test-ns", "worker", "test-roleset", true, false),
 				newTestPod(testPodTwo, "test-ns", "worker", "test-roleset", true, false),
-				newTestPod("pod-3", "test-ns", "worker", "test-roleset", false, false), // not ready
+				newTestPod("pod-3", "test-ns", "worker", "test-roleset", false, false), // not ready (pending)
 				newTestPod("pod-4", "test-ns", "worker", "test-roleset", false, false),
+			},
+			expectedChange: true,
+			expectedCreate: 0,
+			expectedDelete: 1,
+			description:    "Should trim excess not-ready pods while preserving the ready-pod availability floor",
+		},
+		{
+			// Regression: scale-down must not get stuck when a not-ready (Pending) pod
+			// exists but the ready pods already sit at the minAvailable floor.
+			// readyPods: 2, pending: 1
+			// expectedReplicas: 2
+			// maxSurge: 1, maxUnavailable: 0 (maxSurge>0 keeps maxUnavailable honored at 0)
+			// minAvailable: 2 (expectedReplicas - maxUnavailable)
+			// diff = 3 - 2 = 1. The pending pod does not contribute to availability,
+			// so it must be removed even though readyCount(2) == minAvailable(2).
+			name:    "scale down trims pending pod even when ready pods at minAvailable floor",
+			roleSet: newTestRoleSet("test-roleset", "test-ns"),
+			role:    newTestRoleSpec("worker", 2, intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromInt(0))),
+			existingPods: []*v1.Pod{
+				newTestPod(testPodOne, "test-ns", "worker", "test-roleset", true, false),
+				newTestPod(testPodTwo, "test-ns", "worker", "test-roleset", true, false),
+				newTestPod("pod-pending", "test-ns", "worker", "test-roleset", false, false), // pending
+			},
+			expectedChange: true,
+			expectedCreate: 0,
+			expectedDelete: 1,
+			description:    "Should delete the pending pod instead of getting stuck at the availability floor",
+		},
+		{
+			// Regression: scale-down must not get stuck when *every* active pod is
+			// not-ready (Pending). Pending pods never contribute to availability, so
+			// they must be trimmed down to expectedReplicas even though readyCount(0)
+			// already sits below the minAvailable floor. Without the fix the loop
+			// broke immediately (readyCount <= minAvailable) and the role stayed
+			// over-replicated forever.
+			// pendingPods: 4
+			// expectedReplicas: 2
+			// maxSurge: 0, maxUnavailable: 1
+			// minAvailable: 1 (expectedReplicas - maxUnavailable)
+			// readyCount: 0, so the availability floor never shields a not-ready pod.
+			// diff = 4 - 2 = 2 -> delete 2 pending pods.
+			name:    "scale down trims all pending pods when none are ready",
+			roleSet: newTestRoleSet("test-roleset", "test-ns"),
+			role:    newTestRoleSpec("worker", 2, intStrPtr(intstr.FromInt(0)), intStrPtr(intstr.FromInt(1))),
+			existingPods: []*v1.Pod{
+				newTestPod(testPodOne, "test-ns", "worker", "test-roleset", false, false), // pending
+				newTestPod(testPodTwo, "test-ns", "worker", "test-roleset", false, false),
+				newTestPod("pod-3", "test-ns", "worker", "test-roleset", false, false),
+				newTestPod("pod-4", "test-ns", "worker", "test-roleset", false, false),
+			},
+			expectedChange: true,
+			expectedCreate: 0,
+			expectedDelete: 2,
+			description:    "Should trim pending pods down to expectedReplicas when no ready pods exist",
+		},
+		{
+			// Regression: during a rollout (maxSurge=1, maxUnavailable=0) Rollout brings
+			// up a new surge Pod before tearing an old one down. That surge Pod is Pending
+			// (not ready) and pushes activePods one above expectedReplicas, so Scale sees
+			// diff=1. Scale must NOT trim the surge Pod: doing so makes Scale and Rollout
+			// thrash — Rollout creates it, Scale deletes it, Rollout recreates it, forever.
+			// outdated ready Pods: 2 (hash oldHash != desired newHash)
+			// surge (current-hash) pending Pod: 1 (hash newHash == desired)
+			// expectedReplicas: 2, maxSurge: 1, maxUnavailable: 0, minAvailable: 2
+			// readyCount(2) sits at the floor so the old Pods are kept; the surge Pod is
+			// mid-rollout (outdated Pods still exist) and must also be kept -> delete 0.
+			name:    "scale down preserves rollout surge pod instead of thrashing",
+			roleSet: newTestRoleSet("test-roleset", "test-ns"),
+			role:    newTestRoleSpec("worker", 2, intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromInt(0))),
+			existingPods: []*v1.Pod{
+				newTestPodWithHash(testPodOne, "test-ns", true, false, oldHash),
+				newTestPodWithHash(testPodTwo, "test-ns", true, false, oldHash),
+				newTestPodWithHash("pod-surge", "test-ns", false, false, newHash), // pending surge Pod
 			},
 			expectedChange: false,
 			expectedCreate: 0,
 			expectedDelete: 0,
-			description:    "Should respect maxUnavailable constraint during scale down",
+			description:    "Should not delete the rollout surge pod (avoids Scale/Rollout thrash)",
 		},
 		{
 			// expectedReplicas: 5
@@ -204,6 +279,111 @@ func TestStatelessRoleSyncer_Scale(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestStatelessRoleSyncer_Scale_BreakStallsOnNotReadySurgeDuringScaleDown shows the one
+// observable edge case of using `break` (rather than `continue`) at the availability floor.
+//
+// Scale cannot distinguish "diff>0 caused by a surge Pod" (steady rollout: the surge Pod
+// must be kept, else Scale/Rollout thrash) from "diff>0 caused by a real replica decrease"
+// (a genuine scale-down: the not-ready surge Pod is now excess and could be trimmed). It
+// therefore conservatively keeps the not-ready surge Pod.
+//
+// Consequence: a scale-down that overlaps an in-flight rollout stalls at expectedReplicas+1
+// (holding the surge Pod) while the surge Pod stays not-ready, then converges once it becomes
+// ready. It never thrashes (no create/delete loop) and the over-replication is bounded by
+// the number of not-ready surge Pods (<= maxSurge, since Rollout caps surge creation).
+func TestStatelessRoleSyncer_Scale_BreakStallsOnNotReadySurgeDuringScaleDown(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, v1.AddToScheme(scheme))
+	require.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
+
+	// expectedReplicas=2 but we hold 3 outdated-ready + 1 not-ready surge = 4 (e.g. replicas
+	// was just lowered from 3 to 2 while a rollout was mid-flight).
+	roleSet := newTestRoleSet("test-roleset", "test-ns")
+	role := newTestRoleSpec("worker", 2, intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromInt(0)))
+	pods := []*v1.Pod{
+		newTestPodWithHash("pod-old-1", "test-ns", true, false, oldHash),
+		newTestPodWithHash("pod-old-2", "test-ns", true, false, oldHash),
+		newTestPodWithHash("pod-old-3", "test-ns", true, false, oldHash),
+		newTestPodWithHash("pod-surge", "test-ns", false, false, newHash), // stuck not-ready surge
+	}
+	objs := make([]client.Object, len(pods))
+	for i, p := range pods {
+		objs[i] = p
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+	syncer := &StatelessRoleSyncer{cli: fakeClient, computeHashFunc: fakeComputeHashFunc}
+
+	listCount := func() int {
+		l := &v1.PodList{}
+		require.NoError(t, fakeClient.List(ctx, l))
+		return len(l.Items)
+	}
+
+	// Phase 1: surge Pod stays not-ready across several reconciles. The excess outdated Pods
+	// are trimmed, but the surge Pod is held -> the role stalls at 3 (expectedReplicas+1),
+	// never reaching 2 and never thrashing.
+	for r := 0; r < 3; r++ {
+		_, err := syncer.Scale(ctx, roleSet, role)
+		require.NoError(t, err)
+	}
+	assert.Equal(t, 3, listCount(), "stalled at expectedReplicas+1 holding the not-ready surge pod (not 2, but not thrashing)")
+
+	// Phase 2: the surge Pod becomes ready; Scale can now drop an outdated Pod and converge.
+	surge := &v1.Pod{}
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKey{Name: "pod-surge", Namespace: "test-ns"}, surge))
+	surge.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
+	require.NoError(t, fakeClient.Status().Update(ctx, surge))
+	_, err := syncer.Scale(ctx, roleSet, role)
+	require.NoError(t, err)
+	assert.Equal(t, 2, listCount(), "converges to expectedReplicas once the surge pod becomes ready")
+}
+
+// TestStatelessRoleSyncer_Rollout_NotReadyOldPodsAtAvailabilityFloor probes the case
+// where the old deployment has some ready + some pending Pods and sits below the
+// availability floor (ready < expectedReplicas - maxUnavailable), so ready Pods cannot be
+// removed (deleteBudget <= 0). The rollout loop trims the not-ready (pending) outdated Pods
+// freely (no budget check) and creates surge Pods. This is safe: pending Pods were never
+// available, so availability is unchanged, and nothing recreates old-template Pods so it
+// never thrashes. It converges once a surge Pod becomes ready.
+func TestStatelessRoleSyncer_Rollout_NotReadyOldPodsAtAvailabilityFloor(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, v1.AddToScheme(scheme))
+	require.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
+
+	// expectedReplicas=3, maxSurge=1, maxUnavailable=0 -> minAvailable=3, but only 2 ready.
+	roleSet := newTestRoleSet("test-roleset", "test-ns")
+	role := newTestRoleSpec("worker", 3, intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromInt(0)))
+	pods := []*v1.Pod{
+		newTestPodWithHash("pod-old-ready-1", "test-ns", true, false, oldHash),
+		newTestPodWithHash("pod-old-ready-2", "test-ns", true, false, oldHash),
+		newTestPodWithHash("pod-old-pending", "test-ns", false, false, oldHash), // pending old Pod
+	}
+	objs := make([]client.Object, len(pods))
+	for i, p := range pods {
+		objs[i] = p
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+	syncer := &StatelessRoleSyncer{cli: fakeClient, computeHashFunc: fakeComputeHashFunc}
+
+	require.NoError(t, syncer.Rollout(ctx, roleSet, role))
+
+	l := &v1.PodList{}
+	require.NoError(t, fakeClient.List(ctx, l))
+	got := map[string]*v1.Pod{}
+	for i := range l.Items {
+		got[l.Items[i].Name] = &l.Items[i]
+	}
+
+	assert.Contains(t, got, "pod-old-ready-1", "ready outdated Pod preserved (at availability floor)")
+	assert.Contains(t, got, "pod-old-ready-2", "ready outdated Pod preserved (at availability floor)")
+	assert.NotContains(t, got, "pod-old-pending", "pending outdated Pod trimmed freely (no budget check)")
+	// 2 ready-old preserved + 1 surge created in place of the pending Pod: count held at 3,
+	// so availability (2 ready) is unchanged and the rollout makes progress without thrashing.
+	assert.Equal(t, 3, len(got), "pod count held at expectedReplicas (2 ready old + 1 surge)")
 }
 
 func TestStatelessRoleSyncer_Rollout(t *testing.T) {

@@ -16,7 +16,16 @@ limitations under the License.
 
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+)
+
+const (
+	testMetadataFileUploadTimeout    = 45 * time.Minute
+	testMetadataFileUploadTimeoutEnv = "45m"
+)
 
 func TestLoadSeparatesKubernetesClusterAndWorkloadConfig(t *testing.T) {
 	t.Setenv("AUTH_MODE", AuthModeDev)
@@ -42,5 +51,35 @@ func TestLoadSeparatesKubernetesClusterAndWorkloadConfig(t *testing.T) {
 		got.ContainerPort != 9000 || got.ServicePort != 9001 ||
 		got.CPURequest != "500m" || got.HPATargetCPUUtilization != 70 {
 		t.Fatalf("unexpected Kubernetes workload config: %+v", got)
+	}
+}
+
+func TestLoadMetadataFileUploadTimeout(t *testing.T) {
+	t.Setenv("AUTH_MODE", AuthModeDev)
+	t.Setenv("METADATA_FILE_UPLOAD_TIMEOUT", testMetadataFileUploadTimeoutEnv)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.MetadataFileUploadTimeout != testMetadataFileUploadTimeout {
+		t.Fatalf(
+			"MetadataFileUploadTimeout = %v, want %v",
+			cfg.MetadataFileUploadTimeout,
+			testMetadataFileUploadTimeout,
+		)
+	}
+}
+
+func TestLoadRejectsNonPositiveMetadataFileUploadTimeout(t *testing.T) {
+	t.Setenv("AUTH_MODE", AuthModeDev)
+	t.Setenv("METADATA_FILE_UPLOAD_TIMEOUT", "0s")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid upload timeout error")
+	}
+	if !strings.Contains(err.Error(), "METADATA_FILE_UPLOAD_TIMEOUT must be greater than zero") {
+		t.Fatalf("Load() error = %q, want upload timeout validation error", err)
 	}
 }

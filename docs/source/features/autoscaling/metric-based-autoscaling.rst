@@ -116,6 +116,40 @@ Example KPA policy with a 10-minute stable window and a 1-minute panic window:
        name: deepseek-r1-distill-llama-8b
 
 
+Scheduled replica bounds
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+``PodAutoscaler`` supports optional scheduled replica bounds under
+``spec.schedules``. Each entry defines a recurring daily wall-clock window with
+``startTime`` and ``endTime`` in strict zero-padded ``HH:MM`` format. The start
+time is inclusive and the end time is exclusive. While active, a schedule
+overrides the base ``spec.minReplicas`` and/or ``spec.maxReplicas``.
+
+If ``timezone`` is omitted, schedules are evaluated in UTC. When set,
+``timezone`` must be a valid IANA timezone such as
+``America/Los_Angeles``. If ``daysOfWeek`` is omitted, the schedule applies
+every day. When set, ``daysOfWeek`` accepts English three-letter weekday names
+such as ``Mon`` through ``Sun``.
+
+Scheduled entries may set either ``minReplicas``, ``maxReplicas``, or both. A
+partial override inherits the missing bound from the base PodAutoscaler spec.
+Validation rejects entries that do not set either bound, produce an effective
+minimum greater than the effective maximum, use invalid timezones or invalid
+time formats, span midnight, or overlap with another scheduled bounds entry.
+Overlapping windows are rejected instead of relying on implicit priority.
+
+HPA, KPA, and APA all use the effective scheduled bounds. For HPA strategy,
+AIBrix writes the effective bounds to the generated Kubernetes
+``HorizontalPodAutoscaler``. If the effective minimum is ``0``, the generated
+HPA omits ``spec.minReplicas`` to preserve the existing Kubernetes HPA
+compatibility behavior.
+
+Example APA policy with weekday business-hour bounds:
+
+.. literalinclude:: ../../../../samples/autoscaling/scheduled-bounds-apa.yaml
+   :language: yaml
+
+
 Example APA yaml config
 ^^^^^^^^^^^^^^^^^^^^^^^
 

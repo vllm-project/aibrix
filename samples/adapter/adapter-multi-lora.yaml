@@ -1,0 +1,68 @@
+# Create one ModelAdapter per LoRA. All adapters target the same base model
+# deployment and can be served together because base.yaml sets --max-loras 4.
+apiVersion: model.aibrix.ai/v1alpha1
+kind: ModelAdapter
+metadata:
+  name: qwen-code-lora-a
+  namespace: default
+  labels:
+    model.aibrix.ai/name: qwen-code-lora-a
+    model.aibrix.ai/port: "8000"
+spec:
+  baseModel: qwen-coder-1-5b-instruct
+  podSelector:
+    matchLabels:
+      model.aibrix.ai/name: qwen-coder-1-5b-instruct
+      adapter.model.aibrix.ai/enabled: "true"
+  artifactURL: huggingface://ai-blond/Qwen-Qwen2.5-Coder-1.5B-Instruct-lora
+---
+# These adapters intentionally reuse the same public artifact so that the
+# documentation example works without finding four separate compatible LoRAs.
+# Replace each URL with a different compatible adapter for your own workload.
+apiVersion: model.aibrix.ai/v1alpha1
+kind: ModelAdapter
+metadata:
+  name: qwen-code-lora-b
+  namespace: default
+  labels:
+    model.aibrix.ai/name: qwen-code-lora-b
+    model.aibrix.ai/port: "8000"
+spec:
+  baseModel: qwen-coder-1-5b-instruct
+  podSelector:
+    matchLabels:
+      model.aibrix.ai/name: qwen-coder-1-5b-instruct
+      adapter.model.aibrix.ai/enabled: "true"
+  artifactURL: huggingface://ai-blond/Qwen-Qwen2.5-Coder-1.5B-Instruct-lora
+---
+apiVersion: model.aibrix.ai/v1alpha1
+kind: ModelAdapter
+metadata:
+  name: qwen-code-lora-c
+  namespace: default
+  labels:
+    model.aibrix.ai/name: qwen-code-lora-c
+    model.aibrix.ai/port: "8000"
+spec:
+  baseModel: qwen-coder-1-5b-instruct
+  podSelector:
+    matchLabels:
+      model.aibrix.ai/name: qwen-coder-1-5b-instruct
+      adapter.model.aibrix.ai/enabled: "true"
+  artifactURL: huggingface://ai-blond/Qwen-Qwen2.5-Coder-1.5B-Instruct-lora
+---
+apiVersion: model.aibrix.ai/v1alpha1
+kind: ModelAdapter
+metadata:
+  name: qwen-code-lora-d
+  namespace: default
+  labels:
+    model.aibrix.ai/name: qwen-code-lora-d
+    model.aibrix.ai/port: "8000"
+spec:
+  baseModel: qwen-coder-1-5b-instruct
+  podSelector:
+    matchLabels:
+      model.aibrix.ai/name: qwen-coder-1-5b-instruct
+      adapter.model.aibrix.ai/enabled: "true"
+  artifactURL: huggingface://ai-blond/Qwen-Qwen2.5-Coder-1.5B-Instruct-lora

@@ -12,5 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .config import settings
+from .metrics import MetricsConfig, load_metrics_config, load_public_metrics_config
 
-__all__ = ["settings"]
+__all__ = [
+    "MetricsConfig",
+    "load_metrics_config",
+    "load_public_metrics_config",
+    "settings",
+]

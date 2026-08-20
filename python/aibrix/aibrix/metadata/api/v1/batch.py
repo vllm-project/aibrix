@@ -15,19 +15,19 @@
 import asyncio
 import traceback
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
 from aibrix.batch import BatchDriver
+from aibrix.batch.job_driver.driver import TerminateResult
 from aibrix.batch.job_entity import (
     AibrixMetadata,
     BatchJob,
     BatchJobEndpoint,
     BatchJobError,
-    BatchJobErrorCode,
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
@@ -40,7 +40,12 @@ from aibrix.batch.job_entity import (
     ResourceAllocation,
     RuntimeSpec,
 )
+from aibrix.batch.job_entity.batch_job import (
+    format_completion_window,
+    parse_completion_window,
+)
 from aibrix.batch.manifest import RenderError
+from aibrix.batch.metrics import tags_from_job
 from aibrix.batch.template import (
     BatchProfile,
     ModelDeploymentTemplate,
@@ -49,6 +54,7 @@ from aibrix.batch.template import (
 )
 from aibrix.context import InfrastructureContext, get_deployment_detail_provider
 from aibrix.logger import init_logger
+from aibrix.metadata.core.metrics import Emitter, metrics_names
 
 logger = init_logger(__name__)
 
@@ -224,8 +230,8 @@ class BatchSpec(BaseModel):
     endpoint: BatchJobEndpoint = Field(
         description="The API endpoint to be used for all requests in the batch"
     )
-    completion_window: CompletionWindow = Field(
-        default=CompletionWindow.TWENTY_FOUR_HOURS,
+    completion_window: str = Field(
+        default=CompletionWindow.TWENTY_FOUR_HOURS.value,
         description="The time window for completion",
     )
     metadata: Optional[Dict[str, str]] = Field(
@@ -241,6 +247,12 @@ class BatchSpec(BaseModel):
             "Absent block routes to the legacy yaml path."
         ),
     )
+
+    @field_validator("completion_window")
+    @classmethod
+    def validate_completion_window(cls, value: str) -> str:
+        parse_completion_window(value)
+        return value.strip()
 
     @classmethod
     def newBatchJobSpec(cls, spec: "BatchSpec") -> BatchJobSpec:
@@ -258,7 +270,7 @@ class BatchSpec(BaseModel):
         return BatchJobSpec(
             input_file_id=spec.input_file_id,
             endpoint=spec.endpoint.value,
-            completion_window=spec.completion_window.expires_at(),
+            completion_window=parse_completion_window(spec.completion_window),
             metadata=spec.metadata,
             aibrix=aibrix,
         )
@@ -474,9 +486,7 @@ def _batch_job_to_openai_response(
     created_at_unix = dt_to_unix(status.created_at)
     assert created_at_unix is not None
 
-    delta = timedelta(seconds=spec.completion_window)
-    total_hours = delta.total_seconds() / 3600
-    completion_window = f"{int(total_hours)}h"
+    completion_window = format_completion_window(spec.completion_window)
 
     # Map the internal state machine to the client-facing status:
     #   - CREATED: accepted and waiting in the scheduler's pending pool for
@@ -540,7 +550,7 @@ def _batch_job_to_openai_response(
         error_file_id=error_file_id,
         created_at=created_at_unix,
         in_progress_at=dt_to_unix(status.in_progress_at),
-        expires_at=created_at_unix + spec.completion_window,
+        expires_at=int(batch_job.expiration_timestamp()),
         finalizing_at=dt_to_unix(status.finalizing_at),
         completed_at=dt_to_unix(status.completed_at),
         failed_at=dt_to_unix(status.failed_at),
@@ -595,6 +605,11 @@ async def create_batch(request: Request, batch_spec: BatchSpec) -> BatchResponse
         if not job:
             logger.error("Created job not found", job_id=job_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=500, detail="Created batch not found")
+        Emitter.counter(
+            metrics_names.METRIC_METADATA_BATCH_API_JOB_INCOMING,
+            1,
+            *tags_from_job(job),
+        )
 
         logger.info("Batch created successfully", job_id=job_id, session_id=session_id)  # type: ignore[call-arg]
 
@@ -726,24 +741,26 @@ async def cancel_batch(request: Request, batch_id: str) -> BatchResponse:
             logger.error("Job not found after cancellation", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=500, detail="Internal server error")
 
-        if terminate_result.value == "rejected":
-            if updated_job.status.errors is None:
-                updated_job.status.errors = []
-            updated_job.status.errors.append(
-                BatchJobError(
-                    code=BatchJobErrorCode.CANCEL_REJECTED_ERROR,
-                    message=(
-                        "Batch cannot be cancelled in current state "
-                        f"'{updated_job.status.state.value}'"
-                    ),
-                    param="status",
-                )
+        if terminate_result == TerminateResult.REJECTED:
+            message = (
+                f"Cannot cancel a batch with status '{updated_job.status.state.value}'."
             )
             logger.info(  # type: ignore[call-arg]
                 "Batch cancel request rejected by current state",
                 batch_id=batch_id,
                 state=updated_job.status.state,
             )
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": {
+                        "message": message,
+                        "type": "invalid_request_error",
+                    }
+                },
+            )
+        if terminate_result == TerminateResult.ALREADY_REQUESTED:
+            logger.info("Batch cancellation already requested", batch_id=batch_id)  # type: ignore[call-arg]
         else:
             logger.info("Batch cancelled successfully", batch_id=batch_id)  # type: ignore[call-arg]
 

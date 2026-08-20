@@ -19,12 +19,14 @@ A single JobEntityManager whose document store is the **batch metastore**
 Role split (see ``JobEntityManager``):
   * command store — document CRUD delegated to the metastore (one source of truth);
   * event source — committed / updated / deleted emitted on writes;
-  * recovery — ``_list_recovery_jobs`` reads the metastore on startup.
+  * active job listing — ``_list_active_jobs`` reads the metastore during
+    startup and refreshes.
 
 """
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any, List, Optional
 
@@ -37,6 +39,15 @@ from aibrix.batch.storage.batch_metastore import (
     initialize_batch_metastore,
     list_batch_jobs,
     put_batch_job,
+)
+from aibrix.metadata.core.metrics import (
+    Emitter,
+    T,
+    begin_backend_operation_count,
+    duration_ms,
+    get_backend_operation_count,
+    metrics_names,
+    reset_backend_operation_count,
 )
 from aibrix.metadata.setting import settings
 from aibrix.storage.types import StorageListOrdering
@@ -54,34 +65,77 @@ class JobStore(JobEntityManager):
         if batch_metastore.p_metastore is None:
             initialize_batch_metastore(self._storage_type, self._params)
 
+    def _metrics_tags(self, operation: str):
+        storage_type = (
+            self._storage_type.value
+            if hasattr(self._storage_type, "value")
+            else str(self._storage_type)
+        )
+        return (T("operation", operation), T("storage_type", storage_type))
+
+    async def _run_tracked_operation(self, operation: str, func):
+        existing_counter = get_backend_operation_count()
+        if existing_counter is not None:
+            return await func()
+
+        start_time = time.perf_counter()
+        token = begin_backend_operation_count()
+        tags = self._metrics_tags(operation)
+        try:
+            return await func()
+        finally:
+            storage_operations = get_backend_operation_count() or 0
+            reset_backend_operation_count(token)
+            Emitter.counter(metrics_names.METRIC_METADATA_JOB_STORE_OPERATION, 1, *tags)
+            Emitter.counter(
+                metrics_names.METRIC_METADATA_JOB_STORE_STORAGE_OPERATIONS,
+                storage_operations,
+                *tags,
+            )
+            duration_ms(
+                Emitter,
+                metrics_names.METRIC_METADATA_JOB_STORE_DURATION,
+                start_time,
+                *tags,
+            )
+
     async def get_job(
         self, job_id: str, force_reload: bool = False
     ) -> Optional[BatchJob]:
-        if job_id in self.active_jobs and not force_reload:
-            return self.active_jobs[job_id]
-        job = await get_batch_job(job_id)
-        await self._publish_active_job_on_cache_miss(job)
-        if job is not None and not job.status.finished:
-            return self.active_jobs.get(job_id, job)
-        return job
+        async def _impl() -> Optional[BatchJob]:
+            if job_id in self.active_jobs and not force_reload:
+                return self.active_jobs[job_id]
+            job = await get_batch_job(job_id)
+            await self._publish_active_job_on_cache_miss(job)
+            if job is not None and not job.status.finished:
+                return self.active_jobs.get(job_id, job)
+            return job
+
+        return await self._run_tracked_operation("get_job", _impl)
 
     async def list_jobs(
         self,
         after: Optional[str] = None,
         limit: int = JobEntityManager.DEFAULT_JOB_PAGE_LIMIT,
     ) -> List[BatchJob]:
-        return await list_batch_jobs(
-            after=after,
-            limit=limit,
-            cached_job_getter=self.active_jobs.get,
-        )
+        async def _impl() -> List[BatchJob]:
+            return await list_batch_jobs(
+                after=after,
+                limit=limit,
+                cached_job_getter=self.active_jobs.get,
+            )
 
-    async def _list_recovery_jobs(self) -> List[BatchJob]:
-        return await self._list_jobs_for_recovery(
-            await batch_metastore.get_oldest_unfinished_job_created_at()
-        )
+        return await self._run_tracked_operation("list_jobs", _impl)
 
-    def _supports_created_at_desc_recovery_ordering(self) -> bool:
+    async def _list_active_jobs(self) -> List[BatchJob]:
+        async def _impl() -> List[BatchJob]:
+            return await self._list_active_job_impl(
+                await batch_metastore.get_oldest_unfinished_job_created_at()
+            )
+
+        return await self._run_tracked_operation("list_active_jobs", _impl)
+
+    def _supports_created_at_desc_job_ordering(self) -> bool:
         return (
             batch_metastore.p_metastore is not None
             and batch_metastore.p_metastore.get_list_ordering()
@@ -91,27 +145,39 @@ class JobStore(JobEntityManager):
     async def submit_job(
         self, session_id: str, job_spec: BatchJobSpec, request_count: int = 0
     ):
-        job = BatchJob.new_local(spec=job_spec, request_count=request_count)
-        job.session_id = session_id
-        stored_job = await self._upsert_job(job, None)
-        await self.job_committed(stored_job)
+        async def _impl() -> None:
+            job = BatchJob.new_local(spec=job_spec, request_count=request_count)
+            job.session_id = session_id
+            stored_job = await self._upsert_job(job, None)
+            await self.job_committed(stored_job)
+
+        await self._run_tracked_operation("submit_job", _impl)
 
     async def update_job_ready(self, job: BatchJob):
-        await self._update_existing_job(job)
+        await self._run_tracked_operation(
+            "update_job_ready", lambda: self._update_existing_job(job)
+        )
 
     async def update_job_status(self, job: BatchJob):
-        await self._update_existing_job(job)
+        await self._run_tracked_operation(
+            "update_job_status", lambda: self._update_existing_job(job)
+        )
 
     async def cancel_job(self, job: BatchJob):
-        await self._update_existing_job(job)
+        await self._run_tracked_operation(
+            "cancel_job", lambda: self._update_existing_job(job)
+        )
 
     async def delete_job(self, job: BatchJob):
-        if job.job_id is None:
-            raise ValueError("job_id is required")
-        existing_job = await self.get_job(job.job_id) or job
-        await delete_batch_job(job.job_id)
-        await self.job_deleted(existing_job)
-        await self._persist_oldest_unfinished_job_created_at(None)
+        async def _impl() -> None:
+            if job.job_id is None:
+                raise ValueError("job_id is required")
+            existing_job = await self.get_job(job.job_id) or job
+            await delete_batch_job(job.job_id)
+            await self.job_deleted(existing_job)
+            await self._persist_oldest_unfinished_job_created_at(None)
+
+        await self._run_tracked_operation("delete_job", _impl)
 
     async def _update_existing_job(self, job: BatchJob) -> None:
         if job.job_id is None:

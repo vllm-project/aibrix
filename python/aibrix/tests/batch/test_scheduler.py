@@ -28,8 +28,7 @@ _SENTINEL_DRIVER = object()
 
 
 def _pending_job(job_id, due_epoch):
-    """Stub pending job whose deadline (created_at + completion_window) equals
-    ``due_epoch`` — created_at is epoch 0, so completion_window carries it."""
+    """Stub pending job with the supplied authoritative deadline."""
     return SimpleNamespace(
         job_id=job_id,
         status=SimpleNamespace(
@@ -37,6 +36,7 @@ def _pending_job(job_id, due_epoch):
             created_at=datetime.fromtimestamp(0, tz=timezone.utc),
         ),
         spec=SimpleNamespace(completion_window=due_epoch),
+        expiration_timestamp=lambda: due_epoch,
     )
 
 

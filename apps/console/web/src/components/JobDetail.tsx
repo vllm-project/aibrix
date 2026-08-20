@@ -10,7 +10,7 @@ import {
   Server,
   XCircle,
 } from 'lucide-react';
-import { cancelJob, getJob, getUserInfo } from '../utils/api';
+import { APIError, cancelJob, getJob, getUserInfo } from '../utils/api';
 import {
   canCancelBatchJob,
   copyBatchIdentifier,
@@ -295,6 +295,14 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
       setJob(next);
       setConfirmCancel(false);
     } catch (err) {
+      if (err instanceof APIError && err.status === 409) {
+        try {
+          const latest = await getJob(job.id, { includeDeployment: hasDeploymentDetail.current });
+          setJob(latest);
+        } catch (refreshErr) {
+          console.error('Failed to refresh job after cancel conflict:', refreshErr);
+        }
+      }
       setCancelError(err instanceof Error ? err.message : String(err));
     } finally {
       setCancellingJob(false);

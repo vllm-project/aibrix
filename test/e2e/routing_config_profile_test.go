@@ -36,7 +36,7 @@ import (
 //   - defaultProfile: "least-request"
 //   - profiles: "least-request" (routingStrategy: least-request), "throughput" (routingStrategy: throughput)
 //
-// The gateway resolves config-profile header -> ResolveProfile -> deriveRoutingStrategyFromContext
+// The gateway resolves config-profile header -> ResolveConfig -> deriveRoutingStrategyFromContext
 // and sets routing-strategy in the response headers.
 func TestConfigProfileRoutingStrategy(t *testing.T) {
 	msg := "config-profile routing test message"

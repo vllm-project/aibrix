@@ -39,6 +39,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/monitor"
 	podutils "github.com/vllm-project/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/utils/paschedules"
 	"k8s.io/apimachinery/pkg/labels"
 	ktypes "k8s.io/apimachinery/pkg/types"
 
@@ -261,6 +262,7 @@ type PodAutoscalerReconciler struct {
 	recommendations   map[string][]timestampedRecommendation
 
 	monitor monitor.Monitor
+	now     func() time.Time
 
 	scalingTargetMu   sync.RWMutex
 	scalingTargetToPA map[string]ktypes.NamespacedName // keyStr → PA
@@ -402,6 +404,9 @@ func (r *PodAutoscalerReconciler) validateSpec(pa *autoscalingv1alpha1.PodAutosc
 	if vr := r.validateMetricWindows(pa); !vr.Valid {
 		return vr
 	}
+	if vr := r.validateSchedules(pa); !vr.Valid {
+		return vr
+	}
 	if vr := r.validateMetricsSources(pa); !vr.Valid {
 		return vr
 	}
@@ -416,8 +421,21 @@ func (r *PodAutoscalerReconciler) validateScaleTargetRef(pa *autoscalingv1alpha1
 }
 
 func (r *PodAutoscalerReconciler) validateReplicaBounds(pa *autoscalingv1alpha1.PodAutoscaler) ValidationResult {
+	if pa.Spec.MinReplicas != nil && *pa.Spec.MinReplicas < 0 {
+		return invalid(ReasonInvalidBounds, "minReplicas must not be negative.")
+	}
+	if pa.Spec.MaxReplicas <= 0 {
+		return invalid(ReasonInvalidBounds, "maxReplicas must be positive.")
+	}
 	if pa.Spec.MinReplicas != nil && pa.Spec.MaxReplicas < *pa.Spec.MinReplicas {
 		return invalid(ReasonInvalidBounds, "minReplicas cannot be greater than maxReplicas.")
+	}
+	return validOK()
+}
+
+func (r *PodAutoscalerReconciler) validateSchedules(pa *autoscalingv1alpha1.PodAutoscaler) ValidationResult {
+	if errs := paschedules.Validate(pa); len(errs) > 0 {
+		return invalid(ReasonInvalidSpec, errs[0].Error())
 	}
 	return validOK()
 }
@@ -588,10 +606,11 @@ func (r *PodAutoscalerReconciler) setInvalidSpecStatus(
 	})
 
 	st := &autoscalingv1alpha1.PodAutoscalerStatus{
-		LastScaleTime: pa.Status.LastScaleTime,
-		DesiredScale:  pa.Status.DesiredScale,
-		ActualScale:   pa.Status.ActualScale,
-		Conditions:    conds,
+		LastScaleTime:   pa.Status.LastScaleTime,
+		DesiredScale:    pa.Status.DesiredScale,
+		ActualScale:     pa.Status.ActualScale,
+		Conditions:      conds,
+		ScheduledBounds: scheduledBoundsStatus(pa, time.Now()),
 	}
 	return r.updateStatusIfNeeded(ctx, st, pa)
 }
@@ -647,10 +666,11 @@ func computeStatus(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler,
 	specValidationResult, conflictValidationResult ValidationResult) *autoscalingv1alpha1.PodAutoscalerStatus {
 	now := metav1.Now()
 	st := &autoscalingv1alpha1.PodAutoscalerStatus{
-		LastScaleTime: pa.Status.LastScaleTime,
-		DesiredScale:  pa.Status.DesiredScale,
-		ActualScale:   pa.Status.ActualScale,
-		Conditions:    pa.Status.Conditions, // upsert onto existing
+		LastScaleTime:   pa.Status.LastScaleTime,
+		DesiredScale:    pa.Status.DesiredScale,
+		ActualScale:     pa.Status.ActualScale,
+		Conditions:      pa.Status.Conditions, // upsert onto existing
+		ScheduledBounds: scheduledBoundsStatus(&pa, now.Time),
 	}
 
 	// ValidSpec
@@ -713,11 +733,16 @@ func computeStatus(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler,
 // reconcileHPA handles HPA strategy by creating and managing Kubernetes HorizontalPodAutoscaler resources.
 // This provides KEDA-like functionality where we wrap standard K8s HPA with additional features.
 func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
+	now := r.nowTime()
+	bounds, err := paschedules.Resolve(&pa, now)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 	// Create ScalingContext as single source of truth for configuration
-	scalingContext := r.createScalingContext(pa)
+	scalingContext := r.createScalingContextWithBounds(pa, bounds)
 
 	// Generate a corresponding HorizontalPodAutoscaler
-	hpa, err := makeHPA(&pa, scalingContext)
+	hpa, err := makeHPAWithBounds(&pa, scalingContext, bounds)
 	if err != nil {
 		klog.ErrorS(err, "Failed to generate a HPA object", "PA", ktypes.NamespacedName{Name: pa.Name, Namespace: pa.Namespace})
 		return ctrl.Result{}, err
@@ -755,14 +780,14 @@ func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscali
 	pa.Status.ActualScale = existingHPA.Status.CurrentReplicas
 	pa.Status.DesiredScale = existingHPA.Status.DesiredReplicas
 	pa.Status.LastScaleTime = existingHPA.Status.LastScaleTime
+	pa.Status.ScheduledBounds = scheduledBoundsStatus(&pa, now)
 	for _, condition := range existingHPA.Status.Conditions {
 		setCondition(&pa, string(condition.Type), metav1.ConditionStatus(condition.Status), condition.Reason, condition.Message)
 	}
 	if err = r.Status().Update(ctx, &pa); err != nil {
 		klog.ErrorS(err, "Failed to update PodAutoscaler status")
 	}
-	// Return with no error and no requeue needed.
-	return ctrl.Result{}, nil
+	return resultWithNextScheduleRequeue(&pa, now), nil
 }
 
 // reconcileCustomPA handles KPA and APA strategies using WorkloadScaler (generic /scale or StormService role-level).
@@ -817,12 +842,11 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 	// Step 4: Apply scaling if needed
 	var scaleError error
 	if scaleDecision.ShouldScale {
-		scaleError := r.workloadScaleClient.SetDesiredReplicas(ctx, &pa, scaleDecision.DesiredReplicas)
+		scaleError = r.workloadScaleClient.SetDesiredReplicas(ctx, &pa, scaleDecision.DesiredReplicas)
 		if scaleError != nil {
 			r.recordScaleError(&pa, "FailedRescale", scaleError)
 			setCondition(&pa, "AbleToScale", metav1.ConditionFalse, "FailedUpdateScale", "unable to apply desired replicas: %v", scaleError)
 			klog.ErrorS(scaleError, "Failed to apply scaling", "PodAutoscaler", klog.KObj(&pa))
-			return ctrl.Result{}, fmt.Errorf("failed to apply scaling for %s: %w", scaleReference, scaleError)
 		} else {
 			klog.InfoS("Successfully rescaled",
 				"PodAutoscaler", klog.KObj(&pa),
@@ -841,7 +865,10 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 	if err := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, nil
+	if scaleError != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to apply scaling for %s: %w", scaleReference, scaleError)
+	}
+	return resultWithNextScheduleRequeue(&pa, r.nowTime()), nil
 }
 
 // scaleForResourceMappings attempts to fetch the scale for the resource with the given name and namespace,
@@ -912,11 +939,12 @@ func setCondition(pa *autoscalingv1alpha1.PodAutoscaler, conditionType string, s
 // desired replicas, as well as the metric statuses and optionally records a scaling decision
 func setStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas, desiredReplicas int32, rescale bool, reason string, success bool, err error) {
 	pa.Status = autoscalingv1alpha1.PodAutoscalerStatus{
-		ActualScale:    currentReplicas,
-		DesiredScale:   desiredReplicas,
-		LastScaleTime:  pa.Status.LastScaleTime,
-		Conditions:     pa.Status.Conditions,
-		ScalingHistory: pa.Status.ScalingHistory, // preserve existing history
+		ActualScale:     currentReplicas,
+		DesiredScale:    desiredReplicas,
+		LastScaleTime:   pa.Status.LastScaleTime,
+		Conditions:      pa.Status.Conditions,
+		ScalingHistory:  pa.Status.ScalingHistory, // preserve existing history
+		ScheduledBounds: scheduledBoundsStatus(pa, time.Now()),
 	}
 
 	if rescale || !success {
@@ -1038,13 +1066,17 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 	scaleObj *unstructured.Unstructured,
 	currentReplicas int32,
 ) (*ScaleDecision, error) {
-	var minReplicas int32 = 1
-	if pa.Spec.MinReplicas != nil {
-		minReplicas = *pa.Spec.MinReplicas
+	bounds, err := paschedules.Resolve(&pa, r.nowTime())
+	if err != nil {
+		return nil, err
 	}
+	minReplicas := bounds.MinReplicas
+	maxReplicas := bounds.MaxReplicas
 
-	// Check if scaling should be disabled (replica is 0 and minReplicas != 0)
-	if currentReplicas == 0 && minReplicas != 0 {
+	// Check if scaling should be disabled (replica is 0 and minReplicas != 0).
+	// An active schedule with an explicit minReplicas is allowed to warm replicas
+	// from zero during its window.
+	if currentReplicas == 0 && minReplicas != 0 && !bounds.ActiveScheduleHasMinReplicas {
 		return &ScaleDecision{
 			DesiredReplicas: 0,
 			ShouldScale:     false,
@@ -1054,9 +1086,9 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 	}
 
 	// Check boundary conditions first
-	if currentReplicas > pa.Spec.MaxReplicas {
+	if currentReplicas > maxReplicas {
 		return &ScaleDecision{
-			DesiredReplicas: pa.Spec.MaxReplicas,
+			DesiredReplicas: maxReplicas,
 			ShouldScale:     true,
 			Reason:          "current replicas exceed maximum",
 			Algorithm:       "boundary-check",
@@ -1073,7 +1105,7 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 	}
 
 	// Create scaling context as single source of truth for PA-level configuration
-	scalingContext := r.createScalingContext(pa)
+	scalingContext := r.createScalingContextWithBounds(pa, bounds)
 
 	// Use autoscaler for metric-based scaling with provided selector
 	replicaResult, err := r.computeMetricBasedReplicas(ctx, pa, scalingContext, scaleObj, currentReplicas)
@@ -1083,6 +1115,9 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 
 	metricDesiredReplicas := replicaResult.DesiredReplicas
 	metricName := replicaResult.Algorithm
+	if metricName == "" {
+		metricName = string(pa.Spec.ScalingStrategy)
+	}
 
 	// Apply cooldown window for KPA/APA (not for HPA which is managed by K8s)
 	desiredReplicas := metricDesiredReplicas
@@ -1093,10 +1128,10 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 	reason := ""
 
 	// Apply constraints
-	if desiredReplicas > pa.Spec.MaxReplicas {
+	if desiredReplicas > maxReplicas {
 		klog.InfoS("Scaling adjustment: Algorithm recommended scaling above maximum limit",
-			"recommendedReplicas", desiredReplicas, "adjustedTo", pa.Spec.MaxReplicas)
-		desiredReplicas = pa.Spec.MaxReplicas
+			"recommendedReplicas", desiredReplicas, "adjustedTo", maxReplicas)
+		desiredReplicas = maxReplicas
 	} else if desiredReplicas < minReplicas {
 		klog.InfoS("Scaling adjustment: Algorithm recommended scaling below minimum limit",
 			"recommendedReplicas", desiredReplicas, "adjustedTo", minReplicas)
@@ -1167,7 +1202,7 @@ func (r *PodAutoscalerReconciler) computeMetricBasedReplicas(
 		ScalingContext:  scalingContext,
 		CurrentReplicas: currentReplicas,
 		Pods:            podList.Items,
-		Timestamp:       time.Now(),
+		Timestamp:       r.nowTime(),
 	}
 
 	// Use autoscaler to compute desired replicas
@@ -1184,7 +1219,7 @@ func (r *PodAutoscalerReconciler) stabilizeRecommendation(
 	current int32,
 ) int32 {
 	key := fmt.Sprintf("%s/%s", pa.Namespace, pa.Name)
-	now := time.Now()
+	now := r.nowTime()
 
 	// Get cooldown window durations from ScalingContext
 	scaleUpWindow := scalingContext.GetScaleUpCooldownWindow()
@@ -1260,6 +1295,13 @@ func (r *PodAutoscalerReconciler) stabilizeRecommendation(
 	return stabilized
 }
 
+func (r *PodAutoscalerReconciler) nowTime() time.Time {
+	if r.now != nil {
+		return r.now()
+	}
+	return time.Now()
+}
+
 // cleanOldRecommendations removes recommendations older than the largest window
 func (r *PodAutoscalerReconciler) cleanOldRecommendations(key string, now time.Time, scaleUpWindow, scaleDownWindow time.Duration) {
 	maxWindow := scaleUpWindow
@@ -1282,6 +1324,10 @@ func (r *PodAutoscalerReconciler) cleanOldRecommendations(key string, now time.T
 // createScalingContext creates a ScalingContext for the given PodAutoscaler
 // This is the single source of truth for all PA-level configuration
 func (r *PodAutoscalerReconciler) createScalingContext(pa autoscalingv1alpha1.PodAutoscaler) scalingctx.ScalingContext {
+	return r.createScalingContextWithBounds(pa, paschedules.BaseBounds(&pa))
+}
+
+func (r *PodAutoscalerReconciler) createScalingContextWithBounds(pa autoscalingv1alpha1.PodAutoscaler, bounds paschedules.Bounds) scalingctx.ScalingContext {
 	// Create base context with defaults
 	ctx := scalingctx.NewBaseScalingContext()
 
@@ -1292,13 +1338,31 @@ func (r *PodAutoscalerReconciler) createScalingContext(pa autoscalingv1alpha1.Po
 			"namespace", pa.Namespace, "name", pa.Name)
 	}
 
-	// Set min/max replicas
-	minReplicas := int32(1)
-	if pa.Spec.MinReplicas != nil {
-		minReplicas = *pa.Spec.MinReplicas
-	}
-	ctx.SetMinReplicas(minReplicas)
-	ctx.SetMaxReplicas(pa.Spec.MaxReplicas)
+	ctx.SetMinReplicas(bounds.MinReplicas)
+	ctx.SetMaxReplicas(bounds.MaxReplicas)
 
 	return ctx
+}
+
+func scheduledBoundsStatus(pa *autoscalingv1alpha1.PodAutoscaler, now time.Time) *autoscalingv1alpha1.ScheduledBoundsStatus {
+	bounds, err := paschedules.Resolve(pa, now)
+	if err != nil {
+		bounds = paschedules.BaseBounds(pa)
+	}
+	status := &autoscalingv1alpha1.ScheduledBoundsStatus{
+		EffectiveMinReplicas: bounds.MinReplicas,
+		EffectiveMaxReplicas: bounds.MaxReplicas,
+	}
+	if bounds.ActiveSchedule != "" {
+		status.ActiveSchedule = bounds.ActiveSchedule
+	}
+	return status
+}
+
+func resultWithNextScheduleRequeue(pa *autoscalingv1alpha1.PodAutoscaler, now time.Time) ctrl.Result {
+	next, ok, err := paschedules.NextTransition(pa, now)
+	if err != nil || !ok {
+		return ctrl.Result{}
+	}
+	return ctrl.Result{RequeueAfter: next}
 }

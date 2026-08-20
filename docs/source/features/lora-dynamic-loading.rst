@@ -462,6 +462,93 @@ Best Practices for Production
 More configurations
 -------------------
 
+Multi-LoRA Inference
+^^^^^^^^^^^^^^^^^^^^
+
+vLLM can serve requests for different LoRA adapters in a single batch. SGLang supports `a similar feature <https://lmsysorg.mintlify.app/docs/advanced_features/lora>`_.
+The base model in ``samples/adapter/base.yaml`` uses the following arguments to allow up to four distinct adapters per batch:
+
+.. code-block:: yaml
+
+    - --enable-lora
+    - --max-loras
+    - "4"
+    - --max-cpu-loras
+    - "4"
+
+The vLLM `max_loras <https://docs.vllm.ai/en/latest/api/vllm/config/lora/#vllm.config.lora.LoRAConfig.max_loras>`_
+setting limits the number of distinct adapters in one batch, not the total number of requests or ``ModelAdapter``
+resources. ``max_cpu_loras`` controls the CPU LoRA cache and must be greater than or equal to ``max_loras``.
+
+Create one ``ModelAdapter`` resource for each LoRA. The adapters must all be compatible with the base model.
+For a readily reproducible example, the following manifest assigns four names to the same public LoRA artifact.
+Consequently, their generated outputs may be similar. Replace the ``artifactURL`` values with different compatible
+adapters when testing your own models. Each resource omits ``spec.replicas``, so AIBrix loads every adapter on all
+matching base-model pods.
+
+.. literalinclude:: ../../../samples/adapter/adapter-multi-lora.yaml
+   :language: yaml
+
+From the AIBrix repository root, create or update the base model. If you completed the single-LoRA example above,
+delete its adapter first so that all four cache slots are available. Then create the four adapters and wait until they
+are ready:
+
+.. code-block:: bash
+
+    kubectl apply -f samples/adapter/base.yaml
+    kubectl rollout status deployment/qwen-coder-1-5b-instruct --timeout=10m
+
+    kubectl delete modeladapter qwen-code-lora --ignore-not-found
+    kubectl apply -f samples/adapter/adapter-multi-lora.yaml
+
+    kubectl wait --for=jsonpath='{.status.phase}'=Running \
+        modeladapter/qwen-code-lora-a \
+        modeladapter/qwen-code-lora-b \
+        modeladapter/qwen-code-lora-c \
+        modeladapter/qwen-code-lora-d \
+        --timeout=10m
+
+In one terminal, forward a local port to the AIBrix gateway and leave the command running:
+
+.. code-block:: bash
+
+    ENVOY_SERVICE=$(kubectl get service -n envoy-gateway-system \
+        --selector=gateway.envoyproxy.io/owning-gateway-namespace=aibrix-system,gateway.envoyproxy.io/owning-gateway-name=aibrix-eg \
+        -o jsonpath='{.items[0].metadata.name}')
+
+    kubectl port-forward -n envoy-gateway-system \
+        "service/${ENVOY_SERVICE}" 8080:80
+
+In a second terminal, send one request to each adapter concurrently. The response from each adapter is saved and then
+printed after all four requests finish:
+
+.. code-block:: bash
+
+    ENDPOINT=localhost:8080
+    RESULT_DIR=$(mktemp -d)
+
+    for MODEL in qwen-code-lora-a qwen-code-lora-b \
+                 qwen-code-lora-c qwen-code-lora-d; do
+        curl --fail-with-body --silent --show-error \
+            "http://${ENDPOINT}/v1/completions" \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"model\": \"${MODEL}\",
+                \"prompt\": \"Implement merge sort in Python.\",
+                \"max_tokens\": 256,
+                \"temperature\": 0
+            }" > "${RESULT_DIR}/${MODEL}.json" &
+    done
+
+    wait
+
+    for MODEL in qwen-code-lora-a qwen-code-lora-b \
+                 qwen-code-lora-c qwen-code-lora-d; do
+        echo "=== ${MODEL} ==="
+        cat "${RESULT_DIR}/${MODEL}.json"
+        echo
+    done
+
 Model Registry
 ^^^^^^^^^^^^^^
 

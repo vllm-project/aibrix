@@ -25,14 +25,15 @@ import (
 // PodAutoscalerSpecApplyConfiguration represents a declarative configuration of the PodAutoscalerSpec type for use
 // with apply.
 type PodAutoscalerSpecApplyConfiguration struct {
-	ScaleTargetRef       *v1.ObjectReference                      `json:"scaleTargetRef,omitempty"`
-	SubTargetSelector    *SubTargetSelectorApplyConfiguration     `json:"subTargetSelector,omitempty"`
-	MinReplicas          *int32                                   `json:"minReplicas,omitempty"`
-	MaxReplicas          *int32                                   `json:"maxReplicas,omitempty"`
-	MetricsSources       []MetricSourceApplyConfiguration         `json:"metricsSources,omitempty"`
-	ObserveWindowSeconds *int64                                   `json:"observeWindowSeconds,omitempty"`
-	PanicWindowSeconds   *int64                                   `json:"panicWindowSeconds,omitempty"`
-	ScalingStrategy      *autoscalingv1alpha1.ScalingStrategyType `json:"scalingStrategy,omitempty"`
+	ScaleTargetRef       *v1.ObjectReference                       `json:"scaleTargetRef,omitempty"`
+	SubTargetSelector    *SubTargetSelectorApplyConfiguration      `json:"subTargetSelector,omitempty"`
+	MinReplicas          *int32                                    `json:"minReplicas,omitempty"`
+	MaxReplicas          *int32                                    `json:"maxReplicas,omitempty"`
+	Schedules            []PodAutoscalerScheduleApplyConfiguration `json:"schedules,omitempty"`
+	MetricsSources       []MetricSourceApplyConfiguration          `json:"metricsSources,omitempty"`
+	ObserveWindowSeconds *int64                                    `json:"observeWindowSeconds,omitempty"`
+	PanicWindowSeconds   *int64                                    `json:"panicWindowSeconds,omitempty"`
+	ScalingStrategy      *autoscalingv1alpha1.ScalingStrategyType  `json:"scalingStrategy,omitempty"`
 }
 
 // PodAutoscalerSpecApplyConfiguration constructs a declarative configuration of the PodAutoscalerSpec type for use with
@@ -70,6 +71,19 @@ func (b *PodAutoscalerSpecApplyConfiguration) WithMinReplicas(value int32) *PodA
 // If called multiple times, the MaxReplicas field is set to the value of the last call.
 func (b *PodAutoscalerSpecApplyConfiguration) WithMaxReplicas(value int32) *PodAutoscalerSpecApplyConfiguration {
 	b.MaxReplicas = &value
+	return b
+}
+
+// WithSchedules adds the given value to the Schedules field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Schedules field.
+func (b *PodAutoscalerSpecApplyConfiguration) WithSchedules(values ...*PodAutoscalerScheduleApplyConfiguration) *PodAutoscalerSpecApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithSchedules")
+		}
+		b.Schedules = append(b.Schedules, *values[i])
+	}
 	return b
 }
 

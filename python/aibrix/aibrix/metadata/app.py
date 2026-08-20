@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
@@ -23,6 +24,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from kubernetes import client as k8s_client
 from kubernetes import config
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from aibrix.batch import BatchDriver
 from aibrix.batch.client import (
@@ -34,6 +36,14 @@ from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger, logging_basic_config
 from aibrix.metadata.api.v1 import batch, files, models, users
 from aibrix.metadata.core import HTTPXClientWrapper
+from aibrix.metadata.core.metrics import (
+    Emitter,
+    T,
+    duration_ms,
+    metrics_names,
+    setup_metrics,
+    shutdown_metrics,
+)
 from aibrix.metadata.setting import settings
 from aibrix.metadata.store import RedisMetadataStore
 from aibrix.storage import create_storage
@@ -48,6 +58,7 @@ _LOG_HTTP_BODIES = os.getenv("AIBRIX_MDS_HTTP_BODY_LOG", "").lower() in (
     "true",
     "yes",
 )
+_METRICS_PATH = "/metrics"
 
 
 def _load_batch_k8s_context(
@@ -204,6 +215,7 @@ async def lifespan(app: FastAPI):
     elif hasattr(app.state, "redis_client"):
         await app.state.redis_client.aclose()  # type: ignore[attr-defined]
         logger.info("Redis client closed")
+    shutdown_metrics()
 
 
 def _iter_upgrade_candidate_storages(app: FastAPI):
@@ -243,6 +255,17 @@ def build_app(args: argparse.Namespace, params={}):
             redoc_url=None,
             redirect_slashes=False,
         )
+
+    metrics_runtime = setup_metrics(settings.METRICS)
+    app.state.metrics = metrics_runtime
+    if metrics_runtime.registry is not None:
+
+        @app.get(_METRICS_PATH, include_in_schema=False)
+        async def metrics_endpoint():
+            return Response(
+                content=generate_latest(metrics_runtime.registry),
+                media_type=CONTENT_TYPE_LATEST,
+            )
 
     if args.enable_k8s_support:
         try:
@@ -284,45 +307,64 @@ def build_app(args: argparse.Namespace, params={}):
     # to avoid buffering large payloads.
     @app.middleware("http")
     async def _log_http_traffic(request: Request, call_next):
+        if request.url.path == _METRICS_PATH:
+            return await call_next(request)
+
         method = request.method
         path = request.url.path
+        start_time = time.perf_counter()
+        status_code = 500
 
-        if not _LOG_HTTP_BODIES:
+        try:
+            if not _LOG_HTTP_BODIES:
+                response = await call_next(request)
+                status_code = response.status_code
+                print(
+                    f"[MDS HTTP] {method} {path} -> {response.status_code}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return response
+
+            req_ct = request.headers.get("content-type", "")
+            req_body: bytes = b""
+            if req_ct.startswith("application/json"):
+                try:
+                    req_body = await request.body()
+                except Exception:  # noqa: BLE001
+                    pass
+
             response = await call_next(request)
-            print(
-                f"[MDS HTTP] {method} {path} -> {response.status_code}",
-                file=sys.stderr,
-                flush=True,
+            status_code = response.status_code
+
+            resp_ct = response.headers.get("content-type", "")
+            if resp_ct.startswith("application/json"):
+                chunks = []
+                async for chunk in response.body_iterator:
+                    chunks.append(chunk)
+                resp_body = b"".join(chunks)
+                _emit_traffic(method, path, req_body, response.status_code, resp_body)
+                return Response(
+                    content=resp_body,
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                    media_type=response.media_type,
+                )
+            _emit_traffic(
+                method, path, req_body, response.status_code, None, resp_ct=resp_ct
             )
             return response
-
-        req_ct = request.headers.get("content-type", "")
-        req_body: bytes = b""
-        if req_ct.startswith("application/json"):
-            try:
-                req_body = await request.body()
-            except Exception:  # noqa: BLE001
-                pass
-
-        response = await call_next(request)
-
-        resp_ct = response.headers.get("content-type", "")
-        if resp_ct.startswith("application/json"):
-            chunks = []
-            async for chunk in response.body_iterator:
-                chunks.append(chunk)
-            resp_body = b"".join(chunks)
-            _emit_traffic(method, path, req_body, response.status_code, resp_body)
-            return Response(
-                content=resp_body,
-                status_code=response.status_code,
-                headers=dict(response.headers),
-                media_type=response.media_type,
+        finally:
+            route = getattr(request.scope.get("route"), "path", "unmatched")
+            tags = (
+                T("method", method),
+                T("route", route),
+                T("status", str(status_code)),
             )
-        _emit_traffic(
-            method, path, req_body, response.status_code, None, resp_ct=resp_ct
-        )
-        return response
+            duration_ms(
+                Emitter, metrics_names.METRIC_METADATA_HTTP_DURATION, start_time, *tags
+            )
+            Emitter.counter(metrics_names.METRIC_METADATA_HTTP_REQUEST, 1, *tags)
 
     app.include_router(router)
 

@@ -1,7 +1,22 @@
+# Copyright 2024 The Aibrix Team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# 	http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 
@@ -23,6 +38,7 @@ from aibrix.batch.job_entity import (
 )
 from aibrix.batch.worker import SingleJobRunner
 from aibrix.context.infra import InfrastructureContext
+from aibrix.metadata.core.metrics import Emitter, metrics_names
 
 
 def _make_job(
@@ -68,6 +84,49 @@ def test_assign_worker_id_normalizes_runtime_owner_ref_slashes():
     worker_id = driver._assign_worker_id("cluster-a/default/workload-1")
 
     assert worker_id == "cluster-a-default-workload-1-token1234"
+
+
+def test_ensure_batch_job_error_records_unknown_exception_source():
+    def raise_unknown():
+        raise RuntimeError("driver boom")
+
+    try:
+        raise_unknown()
+    except RuntimeError as exc:
+        error = BaseJobDriver._ensure_batch_job_error(exc)
+
+    assert error.code == BatchJobErrorCode.INTERNAL_ERROR.value
+    assert error.message.startswith("RuntimeError: driver boom")
+    assert "(source: test_base_job_driver.py:" in error.message
+    assert error.param is None
+    assert error.line is None
+
+
+def test_log_failed_includes_input_line_and_custom_id():
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        cast(RunningJobs, None),
+    )
+    job = _make_job()
+    job.status.job_id = "job-79"
+    error = BatchJobError(
+        code=BatchJobErrorCode.INTERNAL_ERROR,
+        message="RuntimeError: boom",
+        param="custom_id=req-79",
+        line=79,
+    )
+
+    with patch.object(base_module.logger, "error") as mock_error:
+        driver._log_failed(job, error)
+
+    mock_error.assert_called_once_with(
+        "Failed to execute job",
+        job_id="job-79",
+        error_code=BatchJobErrorCode.INTERNAL_ERROR.value,
+        error="RuntimeError: boom",
+        line=79,
+        param="custom_id=req-79",
+    )
 
 
 class _DeadlineStopRuntime:
@@ -145,6 +204,100 @@ def test_should_stop_before_proceed_when_job_expired():
     )
 
     assert driver._should_stop_before_proceed(job) is True
+
+
+def test_emit_request_completion_metrics_counts_finished_requests(monkeypatch):
+    job = _make_job()
+    driver = _make_driver(job)
+    metric_calls: list[tuple[str, float, tuple[str, ...]]] = []
+    base_tags = (
+        job.spec.endpoint,
+        str(job.spec.completion_window),
+        job.job_id,
+        "none",
+    )
+
+    def _record_counter(name, value, *tags):
+        metric_calls.append((name, value, tuple(tag.value for tag in tags)))
+
+    monkeypatch.setattr(Emitter, "counter", _record_counter)
+
+    driver._emit_request_completion_metrics(job, completed=3, failed=2)
+
+    assert metric_calls == [
+        (
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_COMPLETED,
+            3,
+            (*base_tags, "success"),
+        ),
+        (
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_COMPLETED,
+            2,
+            (*base_tags, "fail"),
+        ),
+    ]
+
+
+def test_request_usage_metrics_emit_when_request_finishes(monkeypatch):
+    job = _make_job()
+    driver = _make_driver(job)
+    metric_calls: list[tuple[str, float, tuple[str, ...]]] = []
+    base_tags = (
+        job.spec.endpoint,
+        str(job.spec.completion_window),
+        job.job_id,
+        "none",
+    )
+
+    def _record_counter(name, value, *tags):
+        metric_calls.append((name, value, tuple(tag.value for tag in tags)))
+
+    monkeypatch.setattr(Emitter, "counter", _record_counter)
+
+    emitted_usage = driver._accumulate_usage(
+        job.job_id,
+        "req-1",
+        {
+            "prompt_tokens": 11,
+            "completion_tokens": 7,
+            "prompt_tokens_details": {"cached_tokens": 5},
+            "completion_tokens_details": {"reasoning_tokens": 3},
+        },
+    )
+    driver._emit_request_usage_metrics(job, emitted_usage)
+
+    duplicate_usage = driver._accumulate_usage(
+        job.job_id,
+        "req-1",
+        {
+            "prompt_tokens": 11,
+            "completion_tokens": 7,
+        },
+    )
+    driver._emit_request_usage_metrics(job, duplicate_usage)
+
+    assert metric_calls == [
+        (
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_USAGE_TOKENS,
+            11,
+            (*base_tags, "input_token"),
+        ),
+        (
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_USAGE_TOKENS,
+            7,
+            (*base_tags, "output_token"),
+        ),
+        (
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_CACHED_TOKENS,
+            5,
+            base_tags,
+        ),
+        (
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_REASONING_TOKENS,
+            3,
+            base_tags,
+        ),
+    ]
 
 
 @pytest.mark.asyncio

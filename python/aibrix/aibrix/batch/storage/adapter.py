@@ -15,7 +15,7 @@
 import asyncio
 import json
 import uuid
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, cast
 
 from aibrix import envs
 from aibrix.batch.job_entity import BatchJob, BatchJobError
@@ -24,6 +24,7 @@ from aibrix.batch.storage.batch_metastore import (
     METASTORE_LIST_PAGE_SIZE,
     delete_metadata,
     get_metadata,
+    get_metastore_type,
     is_request_done,
     is_request_locking_supported,
     list_metastore_keys,
@@ -141,7 +142,6 @@ class BatchStorageAdapter:
                     "Locked and will processing request in the job",
                     job_id=job.job_id,
                     line_no=idx,
-                    requset=request_data,
                 )  # type:ignore[call-arg]
                 yield request_data
             elif await is_request_done(lock_key):
@@ -234,12 +234,20 @@ class BatchStorageAdapter:
             request_index: Index of the request being processed
             output_data: Single result dictionary
         """
-        assert (
-            job.status.output_file_id
-            and job.status.error_file_id
-            and job.status.temp_output_file_id
-            and job.status.temp_error_file_id
-        )
+        required_file_ids = {
+            "output_file_id": job.status.output_file_id,
+            "error_file_id": job.status.error_file_id,
+            "temp_output_file_id": job.status.temp_output_file_id,
+            "temp_error_file_id": job.status.temp_error_file_id,
+        }
+        missing_file_ids = [
+            name for name, value in required_file_ids.items() if not value
+        ]
+        if missing_file_ids:
+            raise RuntimeError(
+                f"Batch output files are not prepared for job {job.job_id}: "
+                f"missing {', '.join(missing_file_ids)}"
+            )
 
         # output_data["error"] may be a BatchJobError when inference
         # fails (see job_driver.create_response_record). The class
@@ -248,19 +256,69 @@ class BatchStorageAdapter:
         # surface as the batch-level error message.
         json_str = json.dumps(output_data, default=BatchJobError.json_serializer) + "\n"
         is_error = "error" in output_data and output_data["error"] is not None
-        etag = await self.storage.upload_part(
+        custom_id = output_data.get("custom_id")
+        result_type = "error" if is_error else "output"
+        file_id = cast(
+            str,
             job.status.error_file_id if is_error else job.status.output_file_id,
-            job.status.temp_error_file_id
-            if is_error
-            else job.status.temp_output_file_id,
-            request_index,
-            json_str,
         )
+        upload_id = cast(
+            str,
+            (
+                job.status.temp_error_file_id
+                if is_error
+                else job.status.temp_output_file_id
+            ),
+        )
+        storage_type = self.storage.get_type().value
+        try:
+            etag = await self.storage.upload_part(
+                file_id,
+                upload_id,
+                request_index,
+                json_str,
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to persist batch request result",
+                job_id=job.job_id,
+                request_index=request_index,
+                custom_id=custom_id,
+                stage="output_storage_upload",
+                result_type=result_type,
+                storage_type=storage_type,
+                file_id=file_id,
+                upload_id=upload_id,
+                exception_type=type(e).__name__,
+                exception_repr=repr(e),
+                exc_info=True,
+            )  # type: ignore[call-arg]
+            raise
 
         # Unlock the request by setting completion status.
         unlock_key = self._get_request_meta_output_key(job, request_index)
         completion_status = self._get_request_meta_output_val(is_error, etag)
-        await unlock_request(unlock_key, completion_status)
+        try:
+            metastore_type = get_metastore_type().value
+        except Exception:
+            metastore_type = "unknown"
+        try:
+            await unlock_request(unlock_key, completion_status)
+        except Exception as e:
+            logger.error(
+                "Failed to persist batch request result",
+                job_id=job.job_id,
+                request_index=request_index,
+                custom_id=custom_id,
+                stage="completion_metastore_write",
+                result_type=result_type,
+                metastore_type=metastore_type,
+                metastore_key=unlock_key,
+                exception_type=type(e).__name__,
+                exception_repr=repr(e),
+                exc_info=True,
+            )  # type: ignore[call-arg]
+            raise
 
         logger.debug(
             f"Stored result for job {job.job_id} request {request_index}, status: {completion_status}"
@@ -274,6 +332,17 @@ class BatchStorageAdapter:
             or job.status.temp_output_file_id is None
             or job.status.temp_error_file_id is None
         ):
+            # Skipping aggregation leaves the job with no output file, yet the
+            # caller still marks it done -- so this path is indistinguishable
+            # from a clean finish unless it says so here.
+            logger.error(
+                "Skipping output aggregation: job is missing output file ids",
+                job_id=job.job_id,
+                output_file_id=job.status.output_file_id,
+                error_file_id=job.status.error_file_id,
+                temp_output_file_id=job.status.temp_output_file_id,
+                temp_error_file_id=job.status.temp_error_file_id,
+            )  # type: ignore[call-arg]
             return job
 
         prefix = self._get_request_meta_output_key(job, None)
@@ -285,6 +354,11 @@ class BatchStorageAdapter:
         launched = 0
         max_index = -1
         continuation_token = None
+        # Requests dropped from both the assembled output and the recomputed
+        # counts below: ``missing`` lost its metastore key entirely, ``pending``
+        # still holds the lock value instead of a result etag.
+        missing_keys = 0
+        pending_keys = 0
 
         while True:
             # 1. Get keys
@@ -327,10 +401,12 @@ class BatchStorageAdapter:
                 # 3. Calculate actual counts based on metastore keys
                 for (idx, key), (meta_val, exist) in zip(indexed_keys, etag_results):
                     if not exist:
+                        missing_keys += 1
                         continue
 
                     etag, is_error = self._parse_request_meta_output_val(meta_val)
                     if etag == "":
+                        pending_keys += 1
                         continue
 
                     valid_keys.append(key)
@@ -356,7 +432,22 @@ class BatchStorageAdapter:
             total=total,
             metastore_total=metastore_total,
             authoritative_total=authoritative_total,
+            missing_keys=missing_keys,
+            pending_keys=pending_keys,
         )  # type: ignore[call-arg]
+
+        if missing_keys or pending_keys:
+            # These requests are absent from the assembled output file and from
+            # the counts written below, so total will exceed completed + failed.
+            logger.warning(
+                "Dropped requests while assembling job output",
+                job_id=job.job_id,
+                missing_keys=missing_keys,
+                pending_keys=pending_keys,
+                total=total,
+                completed=completed,
+                failed=failed,
+            )  # type: ignore[call-arg]
 
         # 4. Update job object with calculated request counts if they differ.
         # Preserve the validated input total when it is larger, but allow

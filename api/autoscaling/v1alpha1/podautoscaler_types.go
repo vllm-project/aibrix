@@ -74,6 +74,12 @@ type PodAutoscalerSpec struct {
 	// It cannot be less than minReplicas
 	MaxReplicas int32 `json:"maxReplicas"`
 
+	// Schedules defines time-based autoscaling configuration. The initial
+	// version supports scheduled replica bounds only.
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	Schedules []PodAutoscalerSchedule `json:"schedules,omitempty"`
+
 	// MetricsSources defines a list of sources from which metrics are collected to make scaling decisions.
 	// +kubebuilder:validation:MinItems=1
 	MetricsSources []MetricSource `json:"metricsSources,omitempty"`
@@ -95,6 +101,48 @@ type PodAutoscalerSpec struct {
 	// ScalingStrategy defines the strategy to use for scaling.
 	// +kubebuilder:validation:Enum={HPA,KPA,APA}
 	ScalingStrategy ScalingStrategyType `json:"scalingStrategy"`
+}
+
+// PodAutoscalerSchedule defines a recurring daily time window for scheduled
+// autoscaling configuration. The initial version supports min/max replica
+// bounds only.
+type PodAutoscalerSchedule struct {
+	// Name identifies this schedule. Names must be unique within spec.schedules
+	// and use Kubernetes DNS label style.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// Timezone is an optional IANA timezone used to evaluate this schedule. If
+	// omitted, UTC is used.
+	// +optional
+	Timezone string `json:"timezone,omitempty"`
+
+	// DaysOfWeek optionally restricts this schedule to specific weekdays. If
+	// omitted, the schedule applies every day. Values are case-insensitive
+	// three-letter English weekday names: Mon, Tue, Wed, Thu, Fri, Sat, Sun.
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	DaysOfWeek []string `json:"daysOfWeek,omitempty"`
+
+	// StartTime is the inclusive daily window start in strict HH:MM format.
+	// +kubebuilder:validation:Pattern=`^([01][0-9]|2[0-3]):[0-5][0-9]$`
+	StartTime string `json:"startTime"`
+
+	// EndTime is the exclusive daily window end in strict HH:MM format. It must
+	// be later than startTime; cross-midnight windows are not supported.
+	// +kubebuilder:validation:Pattern=`^([01][0-9]|2[0-3]):[0-5][0-9]$`
+	EndTime string `json:"endTime"`
+
+	// MinReplicas optionally overrides spec.minReplicas while this schedule is active.
+	// At least one of minReplicas or maxReplicas must be set.
+	// +optional
+	MinReplicas *int32 `json:"minReplicas,omitempty"`
+
+	// MaxReplicas optionally overrides spec.maxReplicas while this schedule is active.
+	// At least one of minReplicas or maxReplicas must be set.
+	// +optional
+	MaxReplicas *int32 `json:"maxReplicas,omitempty"`
 }
 
 // SubTargetSelector identifies a sub-component within the scale target
@@ -209,6 +257,24 @@ type PodAutoscalerStatus struct {
 	// +optional
 	// +kubebuilder:validation:MaxItems=5
 	ScalingHistory []ScalingDecision `json:"scalingHistory,omitempty"`
+
+	// ScheduledBounds is the observed scheduled replica bounds state.
+	// +optional
+	ScheduledBounds *ScheduledBoundsStatus `json:"scheduledBounds,omitempty"`
+}
+
+// ScheduledBoundsStatus captures the currently effective scheduled replica bounds.
+type ScheduledBoundsStatus struct {
+	// ActiveSchedule is the name of the currently active schedule. It is omitted
+	// when no schedule is active and base bounds are in effect.
+	// +optional
+	ActiveSchedule string `json:"activeSchedule,omitempty"`
+
+	// EffectiveMinReplicas is the current effective minimum replica bound.
+	EffectiveMinReplicas int32 `json:"effectiveMinReplicas"`
+
+	// EffectiveMaxReplicas is the current effective maximum replica bound.
+	EffectiveMaxReplicas int32 `json:"effectiveMaxReplicas"`
 }
 
 // +kubebuilder:object:root=true

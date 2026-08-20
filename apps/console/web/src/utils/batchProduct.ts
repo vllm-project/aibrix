@@ -195,8 +195,49 @@ export function getBatchJobSummary(
   );
 }
 
-export function getBatchDatasetRows(job: Pick<Job, 'status' | 'inputDataset' | 'outputDataset' | 'errorDataset'>): BatchDatasetRow[] {
+function hasPositiveUnix(value?: number): boolean {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+function isFinalizedAfterFinalizing(
+  job: Pick<
+    Job,
+    | 'finalizingAt'
+    | 'completedAt'
+    | 'failedAt'
+    | 'expiredAt'
+    | 'cancelledAt'
+    | 'errors'
+  >,
+): boolean {
+  const finalized =
+    hasPositiveUnix(job.completedAt) ||
+    hasPositiveUnix(job.failedAt) ||
+    hasPositiveUnix(job.expiredAt) ||
+    hasPositiveUnix(job.cancelledAt);
+  const hasFinalizingFailedError = (job.errors || []).some(
+    (error) => error && error.code === 'finalizing_failed',
+  );
+  return hasPositiveUnix(job.finalizingAt) && finalized && !hasFinalizingFailedError;
+}
+
+export function getBatchDatasetRows(
+  job: Pick<
+    Job,
+    | 'status'
+    | 'inputDataset'
+    | 'outputDataset'
+    | 'errorDataset'
+    | 'finalizingAt'
+    | 'completedAt'
+    | 'failedAt'
+    | 'expiredAt'
+    | 'cancelledAt'
+    | 'errors'
+  >,
+): BatchDatasetRow[] {
   const rows: BatchDatasetRow[] = [];
+  const finalizedAfterFinalizing = isFinalizedAfterFinalizing(job);
   if (job.inputDataset) {
     rows.push({
       key: 'input',
@@ -205,7 +246,7 @@ export function getBatchDatasetRows(job: Pick<Job, 'status' | 'inputDataset' | '
       unavailableReason: '',
     });
   }
-  if (job.outputDataset || job.status === 'completed') {
+  if (job.outputDataset || job.status === 'completed' || finalizedAfterFinalizing) {
     rows.push({
       key: 'output',
       label: 'Output Dataset',
@@ -219,7 +260,8 @@ export function getBatchDatasetRows(job: Pick<Job, 'status' | 'inputDataset' | '
     job.status === 'expired' ||
     job.status === 'cancelled' ||
     job.status === 'resource_failed' ||
-    job.status === 'submit_failed'
+    job.status === 'submit_failed' ||
+    finalizedAfterFinalizing
   ) {
     rows.push({
       key: 'error',

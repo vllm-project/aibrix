@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"sort"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -76,8 +77,11 @@ type fakeAutoScaler struct {
 
 func (f *fakeAutoScaler) ComputeDesiredReplicas(ctx context.Context, req ReplicaComputeRequest) (*ReplicaComputeResult, error) {
 	f.lastRequest = &req
+	if f.err != nil {
+		return f.result, f.err
+	}
 	if f.result == nil {
-		return &ReplicaComputeResult{DesiredReplicas: req.CurrentReplicas}, nil
+		return &ReplicaComputeResult{DesiredReplicas: req.CurrentReplicas, Valid: true}, nil
 	}
 	return f.result, f.err
 }
@@ -295,6 +299,127 @@ func TestValidateSpecRejectsPanicWindowGreaterThanObserveWindow(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateSpecRejectsInvalidBaseReplicaBounds(t *testing.T) {
+	tests := map[string]struct {
+		mutate      func(*autoscalingv1alpha1.PodAutoscaler)
+		wantReason  string
+		wantMessage string
+	}{
+		"negative minReplicas": {
+			mutate: func(pa *autoscalingv1alpha1.PodAutoscaler) {
+				pa.Spec.MinReplicas = ptr.To(int32(-1))
+			},
+			wantReason:  ReasonInvalidBounds,
+			wantMessage: "minReplicas must not be negative.",
+		},
+		"non-positive maxReplicas": {
+			mutate: func(pa *autoscalingv1alpha1.PodAutoscaler) {
+				pa.Spec.MaxReplicas = 0
+			},
+			wantReason:  ReasonInvalidBounds,
+			wantMessage: "maxReplicas must be positive.",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			pa := validPodAutoscalerForSpec()
+			tt.mutate(pa)
+
+			result := (&PodAutoscalerReconciler{}).validateSpec(pa)
+
+			if result.Valid {
+				t.Fatal("expected invalid base replica bounds to be rejected")
+			}
+			if result.Reason != tt.wantReason {
+				t.Fatalf("expected reason=%s, got %s", tt.wantReason, result.Reason)
+			}
+			if result.Message != tt.wantMessage {
+				t.Fatalf("expected message %q, got %q", tt.wantMessage, result.Message)
+			}
+		})
+	}
+}
+
+func validPodAutoscalerForSpec() *autoscalingv1alpha1.PodAutoscaler {
+	return &autoscalingv1alpha1.PodAutoscaler{Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+		ScaleTargetRef:  corev1.ObjectReference{Name: "test-deployment", Kind: "Deployment"},
+		MinReplicas:     ptr.To(int32(1)),
+		MaxReplicas:     10,
+		ScalingStrategy: autoscalingv1alpha1.KPA,
+		MetricsSources: []autoscalingv1alpha1.MetricSource{{
+			MetricSourceType: autoscalingv1alpha1.RESOURCE,
+			TargetMetric:     "cpu",
+			TargetValue:      "50",
+		}},
+	}}
+}
+
+func TestComputeScaleDecisionAllowsScheduledMinReplicasFromZero(t *testing.T) {
+	activeTime := mustParseTime(t, "2026-08-03T09:30:00Z")
+	tests := []struct {
+		name          string
+		schedule      autoscalingv1alpha1.PodAutoscalerSchedule
+		wantDesired   int32
+		wantShouldRun bool
+	}{
+		{
+			name: "explicit scheduled min scales from zero",
+			schedule: autoscalingv1alpha1.PodAutoscalerSchedule{
+				Name:        "business-hours",
+				StartTime:   "09:00",
+				EndTime:     "10:00",
+				MinReplicas: ptr.To[int32](4),
+			},
+			wantDesired:   4,
+			wantShouldRun: true,
+		},
+		{
+			name: "inherited min keeps scale from zero disabled",
+			schedule: autoscalingv1alpha1.PodAutoscalerSchedule{
+				Name:        "capacity-window",
+				StartTime:   "09:00",
+				EndTime:     "10:00",
+				MaxReplicas: ptr.To[int32](8),
+			},
+			wantDesired:   0,
+			wantShouldRun: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &PodAutoscalerReconciler{
+				now: func() time.Time {
+					return activeTime
+				},
+			}
+			pa := *validPodAutoscalerForSpec()
+			pa.Spec.Schedules = []autoscalingv1alpha1.PodAutoscalerSchedule{tt.schedule}
+
+			decision, err := r.computeScaleDecision(context.Background(), pa, nil, 0)
+			if err != nil {
+				t.Fatalf("computeScaleDecision returned error: %v", err)
+			}
+			if decision.DesiredReplicas != tt.wantDesired {
+				t.Fatalf("DesiredReplicas=%d, want %d", decision.DesiredReplicas, tt.wantDesired)
+			}
+			if decision.ShouldScale != tt.wantShouldRun {
+				t.Fatalf("ShouldScale=%t, want %t", decision.ShouldScale, tt.wantShouldRun)
+			}
+		})
+	}
+}
+
+func mustParseTime(t *testing.T, value string) time.Time {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		t.Fatalf("failed to parse time %q: %v", value, err)
+	}
+	return parsed
 }
 
 // ---- helpers ----

@@ -177,11 +177,15 @@ class DispatchEngine:
         scheduler: Optional[Scheduler] = None,
         max_retries: int = 2,
         retry: Optional[RetryConfig] = None,
+        job_id: Optional[str] = None,
     ) -> None:
         self._source = source
         self._router: Router = router or RoundRobin()
         self._scheduler: Scheduler = scheduler or FIFO()
         self._retry = retry or RetryConfig(max_retries=max_retries)
+        # One engine serves one job. Carrying the id lets every line this layer
+        # emits be filtered per job, which the request ref alone cannot do.
+        self._job_id = job_id
 
     @property
     def source(self) -> EndpointSource:
@@ -358,6 +362,14 @@ class DispatchEngine:
                 last_error = no_endpoint
                 causes.append(str(no_endpoint))
                 if endpoint_attempt < self._retry.no_endpoint_retries():
+                    if endpoint_attempt == 0 or endpoint_attempt % 20 == 0:
+                        logger.warning(
+                            "No reachable endpoint; waiting for discovery",
+                            job_id=self._job_id,
+                            ref=request.ref,
+                            attempt=endpoint_attempt + 1,
+                            max_retries=self._retry.no_endpoint_retries(),
+                        )  # type: ignore[call-arg]
                     await self._refresh_source()
                     await self._sleep_before_retry(endpoint_attempt)
                     endpoint_attempt += 1
@@ -378,6 +390,23 @@ class DispatchEngine:
                     raise ex
                 await self._report_channel_error(channel.id, ex)
                 if send_attempt < self._retry.max_retries:
+                    # Retries happen entirely inside this call, so the dispatch
+                    # counters stay flat while a request spins here. Without
+                    # this line a retry storm is indistinguishable from a slow
+                    # backend.
+                    logger.warning(
+                        "Retrying inference request",
+                        job_id=self._job_id,
+                        ref=request.ref,
+                        attempt=send_attempt + 1,
+                        max_retries=self._retry.max_retries,
+                        channel_id=channel.id,
+                        error_code=ex.code.value,
+                        status_code=ex.status_code,
+                        # TRANSPORT_ERROR covers both timeouts and connection
+                        # failures; only the message tells them apart.
+                        error=ex.message,
+                    )  # type: ignore[call-arg]
                     await self._sleep_before_retry(send_attempt)
                     send_attempt += 1
                     continue

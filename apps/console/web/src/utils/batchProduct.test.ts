@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   formatModelSelectionLabel,
+  getBatchDatasetRows,
   getBatchTiming,
   parseCompletionWindowSeconds,
 } from './batchProduct';
@@ -79,5 +80,41 @@ describe('batch product helpers', () => {
     expect(timing.terminalAt).toBe(1700000300);
     expect(timing.remainingSeconds).toBeNull();
     expect(timing.elapsedSeconds).toBe(300);
+  });
+
+  it('shows output and error dataset rows after finalization even without finalizing_failed', () => {
+    const rows = getBatchDatasetRows({
+      status: 'failed',
+      inputDataset: 'file-input-1',
+      outputDataset: 'file-output-1',
+      errorDataset: 'file-error-1',
+      finalizingAt: 1700000800,
+      failedAt: 1700000900,
+      completedAt: 0,
+      expiredAt: 0,
+      cancelledAt: 0,
+      errors: [{ code: 'internal_error', message: 'boom' }],
+    });
+
+    expect(rows.map((row) => row.key)).toEqual(['input', 'output', 'error']);
+    expect(rows.find((row) => row.key === 'output')?.fileId).toBe('file-output-1');
+    expect(rows.find((row) => row.key === 'error')?.fileId).toBe('file-error-1');
+  });
+
+  it('does not force finalized dataset rows when finalizing_failed is present', () => {
+    const rows = getBatchDatasetRows({
+      status: 'in_progress',
+      inputDataset: 'file-input-1',
+      outputDataset: '',
+      errorDataset: '',
+      finalizingAt: 1700000800,
+      failedAt: 1700000900,
+      completedAt: 0,
+      expiredAt: 0,
+      cancelledAt: 0,
+      errors: [{ code: 'finalizing_failed', message: 'finalize failed' }],
+    });
+
+    expect(rows.map((row) => row.key)).toEqual(['input']);
   });
 });

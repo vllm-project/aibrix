@@ -542,9 +542,35 @@ Add the ``model.aibrix.ai/config`` annotation to the pod template of your ``Depl
           }
         }
 
+Optionally pin a single routing strategy model-wide so it cannot be overridden at
+request time (see Routing strategy priority below). ``lockedRoutingStrategy`` only
+locks the strategy: the remaining per-profile knobs (``requestsPerSecond``,
+``routingConfig``) still follow the profile selected by ``config-profile``:
+
+.. code-block:: yaml
+
+    annotations:
+      model.aibrix.ai/config: |
+        {
+          "lockedRoutingStrategy": "pd",
+          "defaultProfile": "default",
+          "profiles": {
+            "default": {
+              "routingStrategy": "pd"
+            },
+            "batch": {
+              "routingStrategy": "random",
+              "requestsPerSecond": 50
+            }
+          }
+        }
+
 **Selecting a profile at request time**
 
-Add the ``config-profile`` header. If the header is absent, the ``defaultProfile`` is used:
+Two request headers drive the config at request time:
+
+* ``config-profile`` selects a named profile; when absent, ``defaultProfile`` (or ``"default"``) is used.
+* ``routing-strategy`` overrides the selected profile's ``routingStrategy``, unless ``lockedRoutingStrategy`` is set (see Routing strategy priority below).
 
 .. code-block:: bash
 
@@ -553,6 +579,21 @@ Add the ``config-profile`` header. If the header is absent, the ``defaultProfile
       -H "config-profile: batch" \
       -H "Content-Type: application/json" \
       -d '{"model": "my-model", "messages": [{"role": "user", "content": "Summarize..."}]}'
+
+**Top-level fields**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Field
+     - Description
+   * - ``lockedRoutingStrategy``
+     - Pins a single routing strategy model-wide. When set, it takes precedence over the ``routing-strategy`` header, the per-profile ``routingStrategy`` and the ``ROUTING_ALGORITHM`` env. The remaining per-profile knobs (``requestsPerSecond``, ``routingConfig``) are still applied normally.
+   * - ``defaultProfile``
+     - Profile name used when no ``config-profile`` header is sent. Falls back to ``"default"`` when omitted.
+   * - ``profiles``
+     - Map of named profiles, each carrying the per-profile fields below.
 
 **Profile fields**
 
@@ -571,11 +612,12 @@ Add the ``config-profile`` header. If the header is absent, the ``defaultProfile
 
 **Routing strategy priority** (highest to lowest):
 
-1. ``routing-strategy`` request header — always wins, even if a profile is active.
-2. ``routingStrategy`` from the resolved config profile.
-3. ``ROUTING_ALGORITHM`` environment variable on the gateway plugin.
+1. ``lockedRoutingStrategy`` pinned model-wide in the config — always wins when set, even over the ``routing-strategy`` header.
+2. ``routing-strategy`` request header.
+3. ``routingStrategy`` from the resolved config profile.
+4. ``ROUTING_ALGORITHM`` environment variable on the gateway plugin.
 
-**Backward compatibility**: if a pod has no ``model.aibrix.ai/config`` annotation, the gateway falls back to the ``model.aibrix.ai/routing-strategy`` pod label and the ``ROUTING_ALGORITHM`` env. No migration is required for existing deployments.
+**Backward compatibility**: if a pod has no ``model.aibrix.ai/config`` annotation, the gateway falls back to the ``routing-strategy`` request header and then the ``ROUTING_ALGORITHM`` env (steps 2 and 4 above). No migration is required for existing deployments.
 
 .. _prometheus-api-access:
 

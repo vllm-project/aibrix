@@ -206,47 +206,63 @@ func TestParseModelConfigWithoutRoutingConfig(t *testing.T) {
 	}
 }
 
-func TestResolveProfile(t *testing.T) {
-	configJSON := `{"defaultProfile":"pd","profiles":{"default":{"routingStrategy":"random","routingConfig":{"promptLenBucketMinLength":0,"promptLenBucketMaxLength":4096}},"pd":{"routingStrategy":"pd","routingConfig":{"promptLenBucketMinLength":0,"promptLenBucketMaxLength":2048}}}}`
-
+func TestResolveConfig(t *testing.T) {
 	podWithAnno := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "pod1",
 			Namespace:   "default",
-			Annotations: map[string]string{constants.ModelAnnoConfig: configJSON},
+			Annotations: map[string]string{constants.ModelAnnoConfig: `{"defaultProfile":"pd","profiles":{"default":{"routingStrategy":"random"},"pd":{"routingStrategy":"pd"}}}`},
 		},
 	}
-	podNoAnno := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "default"},
+	podWithLock := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "pod2",
+			Namespace:   "default",
+			Annotations: map[string]string{constants.ModelAnnoConfig: `{"lockedRoutingStrategy":"pd","profiles":{"burst":{"routingStrategy":"random"}}}`},
+		},
 	}
+	podWithBoth := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "pod3",
+			Namespace:   "default",
+			Annotations: map[string]string{constants.ModelAnnoConfig: `{"lockedRoutingStrategy":"pd","defaultProfile":"default","profiles":{"default":{"routingStrategy":"random"}}}`},
+		},
+	}
+	podNoAnno := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod4", Namespace: "default"}}
+	podInvalid := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod5", Namespace: "default", Annotations: map[string]string{constants.ModelAnnoConfig: `{`}}}
 
 	tests := []struct {
 		name          string
 		pods          []*v1.Pod
 		headerProfile string
 		wantProfile   string
+		wantLocked    string
 	}{
-		{"no pods", nil, "", ""},
-		{"pods without anno", []*v1.Pod{podNoAnno}, "", ""},
-		{"pods with anno, no header", []*v1.Pod{podWithAnno}, "", "pd"},
-		{"pods with anno, header pd", []*v1.Pod{podWithAnno}, "pd", "pd"},
-		{"pods with anno, header default", []*v1.Pod{podWithAnno}, "default", "random"},
+		{"no pods", nil, "", "", ""},
+		{"pod without annotation", []*v1.Pod{podNoAnno}, "", "", ""},
+		{"profile only", []*v1.Pod{podWithAnno}, "", "pd", ""},
+		{"profile selected by header", []*v1.Pod{podWithAnno}, "default", "random", ""},
+		{"lock without resolvable profile", []*v1.Pod{podWithLock}, "", "", "pd"},
+		{"profile and lock together", []*v1.Pod{podWithBoth}, "", "random", "pd"},
+		{"invalid config skipped", []*v1.Pod{podInvalid, podWithAnno}, "", "pd", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := ResolveProfile(tt.pods, tt.headerProfile)
+			profile, locked := ResolveConfig(tt.pods, tt.headerProfile)
 			if tt.wantProfile == "" {
-				if p != nil {
-					t.Errorf("ResolveProfile() = %v, want nil", p)
+				if profile != nil {
+					t.Errorf("ResolveConfig() profile = %v, want nil", profile)
 				}
-				return
+			} else {
+				if profile == nil {
+					t.Fatalf("ResolveConfig() profile = nil, want routingStrategy=%s", tt.wantProfile)
+				}
+				if profile.RoutingStrategy != tt.wantProfile {
+					t.Errorf("ResolveConfig().profile.RoutingStrategy = %s, want %s", profile.RoutingStrategy, tt.wantProfile)
+				}
 			}
-			if p == nil {
-				t.Errorf("ResolveProfile() = nil, want profile with routingStrategy=%s", tt.wantProfile)
-				return
-			}
-			if p.RoutingStrategy != tt.wantProfile {
-				t.Errorf("ResolveProfile().RoutingStrategy = %s, want %s", p.RoutingStrategy, tt.wantProfile)
+			if locked != tt.wantLocked {
+				t.Errorf("ResolveConfig() locked = %q, want %q", locked, tt.wantLocked)
 			}
 		})
 	}

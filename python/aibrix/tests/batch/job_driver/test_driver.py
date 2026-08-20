@@ -14,6 +14,7 @@
 
 import asyncio
 import json
+import os
 import tempfile
 from pathlib import Path
 
@@ -489,5 +490,7 @@ async def test_batch_driver_survives_job_failure_with_fail_after_n_requests():
         await driver.clear_job(job_id)
 
     finally:
-        # Clean up temporary file
+        # Clean up temporary file. mkstemp hands back an open descriptor, and Windows refuses to
+        # unlink a file that still has one, so close it before removing the path.
+        os.close(temp_file_descriptor)
         Path(temp_path).unlink(missing_ok=True)
