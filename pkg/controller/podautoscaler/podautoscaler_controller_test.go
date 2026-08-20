@@ -140,7 +140,7 @@ func TestValidateMetricsSourcesRequiresTargetMetricForK8sExternalMetrics(t *test
 	}
 }
 
-func TestValidateMetricsSourcesRejectsUnknownPodMetric(t *testing.T) {
+func TestValidateMetricsSourcesAllowsUnregisteredPodMetric(t *testing.T) {
 	r := &PodAutoscalerReconciler{}
 	pa := &autoscalingv1alpha1.PodAutoscaler{
 		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
@@ -159,14 +159,8 @@ func TestValidateMetricsSourcesRejectsUnknownPodMetric(t *testing.T) {
 
 	result := r.validateMetricsSources(pa)
 
-	if result.Valid {
-		t.Fatal("expected unknown POD targetMetric to be invalid")
-	}
-	if result.Reason != ReasonMetricsConfigError {
-		t.Fatalf("expected reason=%s, got %s", ReasonMetricsConfigError, result.Reason)
-	}
-	if result.Message != "unknown targetMetric \"running_requests\"; must be a metric in the central registry (for example num_requests_running, gpu_cache_usage_perc)." {
-		t.Fatalf("unexpected message: %s", result.Message)
+	if !result.Valid {
+		t.Fatalf("expected unregistered POD targetMetric to be valid, got reason=%s message=%s", result.Reason, result.Message)
 	}
 }
 

@@ -396,7 +396,7 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 			},
 			expectError: false,
 		},
-		"Unknown POD TargetMetric Is Rejected": {
+		"Unregistered POD TargetMetric Is Allowed": {
 			pa: &autoscalingv1alpha1.PodAutoscaler{
 				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
 					ScaleTargetRef: corev1.ObjectReference{
@@ -417,8 +417,7 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 					},
 				},
 			},
-			expectError: true,
-			errorMsg:    "targetMetric",
+			expectError: false,
 		},
 		"Known POD TargetMetric Is Allowed": {
 			pa: &autoscalingv1alpha1.PodAutoscaler{

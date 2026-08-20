@@ -38,7 +38,6 @@ import (
 	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/monitor"
-	enginemetrics "github.com/vllm-project/aibrix/pkg/metrics"
 	podutils "github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/paschedules"
 	"k8s.io/apimachinery/pkg/labels"
@@ -536,12 +535,6 @@ func (r *PodAutoscalerReconciler) validatePodMetricSource(ms *autoscalingv1alpha
 	}
 	if ms.Path == "" {
 		return invalid(ReasonMetricsConfigError, "path is required for metricSourceType=pod.")
-	}
-	if ms.TargetMetric != "" {
-		if _, ok := enginemetrics.Metrics[ms.TargetMetric]; !ok {
-			return invalid(ReasonMetricsConfigError,
-				fmt.Sprintf("unknown targetMetric %q; must be a metric in the central registry (for example num_requests_running, gpu_cache_usage_perc).", ms.TargetMetric))
-		}
 	}
 	return validOK()
 }
