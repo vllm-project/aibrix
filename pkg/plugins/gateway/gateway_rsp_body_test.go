@@ -29,6 +29,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/api/core/v1"
 )
 
 // mockRateLimiter implements ratelimiter.RateLimiter for testing
@@ -652,6 +653,97 @@ func TestHandleResponseBody_DoesNotFinalizeTrace(t *testing.T) {
 	assert.True(t, complete)
 	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}, usage)
 	mockCache.AssertNotCalled(t, "DoneRequestTrace", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestHandleResponseBody_DoesNotFinalizeOrReleaseRoutingContext(t *testing.T) {
+	mockCache := &MockCache{}
+	server := &Server{cache: mockCache}
+
+	routerCtx := types.NewRoutingContext(
+		context.Background(), "random", "m", "", "request-a", "",
+	)
+	routerCtx.ReqPath = PathChatCompletions
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body: []byte(
+					`{"model":"m","usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`,
+				),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	_, complete, _ := server.HandleResponseBody(
+		context.Background(), routerCtx, "request-a",
+		req, utils.User{}, 0, "m", false, false,
+	)
+
+	assert.True(t, complete)
+	assert.Equal(t, "request-a", routerCtx.RequestID)
+
+	// Delete() changes an unrouted targetPod from nilPod to nil, preventing a
+	// subsequent SetTargetPod call from succeeding. This assertion therefore
+	// detects an early Delete deterministically, without relying on sync.Pool
+	// returning the same pointer.
+	pod := &v1.Pod{}
+	routerCtx.SetTargetPod(pod)
+	assert.True(t, routerCtx.HasRouted(),
+		"HandleResponseBody must not release RoutingContext")
+
+	mockCache.AssertNotCalled(t, "DoneRequestTrace",
+		mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything)
+	mockCache.AssertNotCalled(t, "DoneRequestCount",
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestFinishRequest_FinalizesExactlyOnceAfterContextCorruption(t *testing.T) {
+	mc := &MockCache{}
+	routerCtx := types.NewRoutingContext(
+		context.Background(), "random", "m", "", "request-a", "",
+	)
+
+	st := &processState{
+		routerCtx: routerCtx,
+		requestID: "request-a",
+		model:     "m",
+		traceTerm: 7,
+	}
+
+	var recordedContextRequestID string
+	mc.On(
+		"DoneRequestTrace",
+		routerCtx,
+		"request-a",
+		"m",
+		int64(10),
+		int64(5),
+		int64(7),
+	).Run(func(args mock.Arguments) {
+		recordedContextRequestID =
+			args.Get(0).(*types.RoutingContext).RequestID
+	}).Return().Once()
+
+	server := &Server{cache: mc}
+
+	server.finishRequestTrace(st, TokenUsage{
+		PromptTokens:     10,
+		CompletionTokens: 5,
+	})
+
+	// Simulate the pointer being reset for request B.
+	routerCtx.RequestID = "request-b"
+
+	// Simulate a second finalization path later in Process.
+	server.finishRequestCount(st)
+
+	assert.Equal(t, "request-a", recordedContextRequestID)
+	mc.AssertNumberOfCalls(t, "DoneRequestTrace", 1)
+	mc.AssertNotCalled(t, "DoneRequestCount",
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	mc.AssertExpectations(t)
 }
 
 func TestHandleResponseBody_SSEParsing(t *testing.T) {
