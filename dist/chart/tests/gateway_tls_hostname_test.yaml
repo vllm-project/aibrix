@@ -64,6 +64,7 @@ tests:
       gateway.tls.hostname: "*.example.com"
       gateway.tls.secretName: "aibrix-gateway-tls"
     release:
+      name: aibrix
       namespace: aibrix-system
     documentSelector:
       path: kind
