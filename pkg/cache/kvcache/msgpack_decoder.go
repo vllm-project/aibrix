@@ -24,41 +24,108 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// DecodeEventBatch parses a raw msgpack batch of events.
+// DecodeEventBatch parses a raw msgpack payload of KV cache events.
 // The subscriber must supply batch timestamp + model/pod name.
+//
+// The real vLLM ZMQ publisher emits ONE event per message, encoded with
+// msgspec:
+//
+//   - vLLM >= #42892 (2026-06): map encoding, a flat map with a "type" key:
+//     {"type": "BlockStored", "block_hashes": [...], ...}
+//   - vLLM < #42892: positional array encoding with the tag first:
+//     ["BlockStored", block_hashes, parent_block_hash, token_ids, block_size, ...]
+//
+// In addition, older code paths (and aibrix's own test encoder) wrap events in
+// a batch array: [ts, [event1, event2, ...]] (optionally with a third
+// data_parallel_rank element). All three shapes are accepted here.
 func DecodeEventBatch(
 	data []byte,
 	modelName string,
 	podName string,
 ) (*EventBatch, error) {
-	// The batch contains [ts, events]
-	var rawBatch []interface{}
-	if err := msgpack.Unmarshal(data, &rawBatch); err != nil {
+	var raw interface{}
+	if err := msgpack.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal event batch: %w", err)
 	}
+
+	switch v := raw.(type) {
+	case map[string]interface{}:
+		// Current vLLM (map encoding): a single event payload.
+		evt, err := parseEventMap(v)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse map event: %w", err)
+		}
+		ts := time.Now().UTC()
+		applyBatchMetadata(evt, ts, modelName, podName)
+		return &EventBatch{
+			Timestamp: ts,
+			Events:    []KVEvent{evt},
+		}, nil
+
+	case []interface{}:
+		return decodeEventArray(v, modelName, podName)
+
+	default:
+		return nil, fmt.Errorf("unexpected event payload type: %T", raw)
+	}
+}
+
+// decodeEventArray dispatches an array payload to either a single legacy event
+// (tag string first, as the pre-#42892 vLLM publisher emits) or a batch
+// [ts, events] (aibrix encoder / older batch mode).
+func decodeEventArray(arr []interface{}, modelName, podName string) (*EventBatch, error) {
+	if len(arr) == 0 {
+		return nil, fmt.Errorf("empty event array payload")
+	}
+
+	switch arr[0].(type) {
+	case string:
+		// Single legacy event: [tag, fields...]
+		evt, err := parseEventArray(arr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse single event: %w", err)
+		}
+		ts := time.Now().UTC()
+		applyBatchMetadata(evt, ts, modelName, podName)
+		return &EventBatch{
+			Timestamp: ts,
+			Events:    []KVEvent{evt},
+		}, nil
+
+	case float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		// Batch: [ts, events] (+ optional data_parallel_rank)
+		return decodeBatchArray(arr, modelName, podName)
+
+	default:
+		return nil, fmt.Errorf("unexpected first element type in event payload: %T", arr[0])
+	}
+}
+
+// decodeBatchArray parses the [ts, events] batch wrapper.
+func decodeBatchArray(arr []interface{}, modelName, podName string) (*EventBatch, error) {
 	// if size of rawBatch is 3, the third element is the data parallel rank
 	// data_parallel_rank is not used in aibrix now
-	if len(rawBatch) == 3 {
-		if data_parallel_rank, err := parseInt(rawBatch[2]); err != nil {
-			return nil, fmt.Errorf("data_parallel_rank is not an int: %T", rawBatch[2])
+	if len(arr) == 3 {
+		if data_parallel_rank, err := parseInt(arr[2]); err != nil {
+			return nil, fmt.Errorf("data_parallel_rank is not an int: %T", arr[2])
 		} else {
 			klog.V(4).Infof("event has data_parallel_rank: %d", data_parallel_rank)
 		}
-	} else if len(rawBatch) != 2 {
-		return nil, fmt.Errorf("expected 2 elements in batch (ts, events), got %d", len(rawBatch))
+	} else if len(arr) != 2 {
+		return nil, fmt.Errorf("expected 2 elements in batch (ts, events), got %d", len(arr))
 	}
 
 	// 0: batch timestamp
-	tsFloat, ok := rawBatch[0].(float64)
+	tsFloat, ok := arr[0].(float64)
 	if !ok {
-		return nil, fmt.Errorf("invalid batch timestamp type: %T", rawBatch[0])
+		return nil, fmt.Errorf("invalid batch timestamp type: %T", arr[0])
 	}
 	batchTS := time.Unix(int64(tsFloat), int64((tsFloat-float64(int64(tsFloat)))*1e9)).UTC()
 
 	// 1: events array
-	eventsRaw, ok := rawBatch[1].([]interface{})
+	eventsRaw, ok := arr[1].([]interface{})
 	if !ok {
-		return nil, fmt.Errorf("expected events array, got %T", rawBatch[1])
+		return nil, fmt.Errorf("expected events array, got %T", arr[1])
 	}
 
 	batch := &EventBatch{
@@ -67,12 +134,16 @@ func DecodeEventBatch(
 	}
 
 	for i, raw := range eventsRaw {
-		arr, ok := raw.([]interface{})
-		if !ok {
-			return nil, fmt.Errorf("event %d: expected msgpack array, got %T", i, raw)
+		var evt KVEvent
+		var err error
+		switch e := raw.(type) {
+		case []interface{}:
+			evt, err = parseEventArray(e)
+		case map[string]interface{}:
+			evt, err = parseEventMap(e)
+		default:
+			return nil, fmt.Errorf("event %d: expected msgpack array or map, got %T", i, raw)
 		}
-
-		evt, err := parseEventArray(arr)
 		if err != nil {
 			return nil, fmt.Errorf("event %d: %w", i, err)
 		}
@@ -154,8 +225,7 @@ func parseEventArray(arr []interface{}) (KVEvent, error) {
 
 		// Optional fields added by newer vLLM builds. msgspec omit_defaults may
 		// drop trailing ones, so read by position with bounds checks and leave
-		// the rest nil. Position 8 (extra_keys) is skipped here; group_idx is
-		// still indexed at its fixed position 9.
+		// the rest nil.
 		if len(arr) > 5 {
 			if ev.LoraID, err = toInt64Ptr(arr[5]); err != nil {
 				return nil, fmt.Errorf("invalid lora_id: %w", err)
@@ -171,9 +241,29 @@ func parseEventArray(arr []interface{}) (KVEvent, error) {
 				return nil, fmt.Errorf("invalid lora_name: %w", err)
 			}
 		}
+		if len(arr) > 8 {
+			if ev.ExtraKeys, err = toExtraKeys(arr[8]); err != nil {
+				return nil, fmt.Errorf("invalid extra_keys: %w", err)
+			}
+		}
 		if len(arr) > 9 {
 			if ev.GroupIdx, err = toInt64Ptr(arr[9]); err != nil {
 				return nil, fmt.Errorf("invalid group_idx: %w", err)
+			}
+		}
+		if len(arr) > 10 {
+			if ev.KVCacheSpecKind, err = toStringPtr(arr[10]); err != nil {
+				return nil, fmt.Errorf("invalid kv_cache_spec_kind: %w", err)
+			}
+		}
+		if len(arr) > 11 {
+			if ev.KVCacheSpecSlidingWindow, err = toInt64Ptr(arr[11]); err != nil {
+				return nil, fmt.Errorf("invalid kv_cache_spec_sliding_window: %w", err)
+			}
+		}
+		if len(arr) > 12 {
+			if ev.Locality, err = toStringPtr(arr[12]); err != nil {
+				return nil, fmt.Errorf("invalid locality: %w", err)
 			}
 		}
 
@@ -194,6 +284,24 @@ func parseEventArray(arr []interface{}) (KVEvent, error) {
 			BlockHashes: blockHashes,
 		}
 
+		// BlockRemoved carries [tag, block_hashes, medium, group_idx, locality]
+		// in newer vLLM builds. Read by position with bounds checks.
+		if len(arr) > 2 {
+			if ev.Medium, err = toStringPtr(arr[2]); err != nil {
+				return nil, fmt.Errorf("invalid medium: %w", err)
+			}
+		}
+		if len(arr) > 3 {
+			if ev.GroupIdx, err = toInt64Ptr(arr[3]); err != nil {
+				return nil, fmt.Errorf("invalid group_idx: %w", err)
+			}
+		}
+		if len(arr) > 4 {
+			if ev.Locality, err = toStringPtr(arr[4]); err != nil {
+				return nil, fmt.Errorf("invalid locality: %w", err)
+			}
+		}
+
 		return ev, nil
 
 	case EventTypeAllCleared:
@@ -204,6 +312,150 @@ func parseEventArray(arr []interface{}) (KVEvent, error) {
 	default:
 		return nil, fmt.Errorf("unknown event type: %s", tag)
 	}
+}
+
+// parseEventMap parses a single event encoded as a msgpack map (vLLM's
+// post-#42892 encoding). The map is flat, with the event type under the
+// "type" key and all fields under their Python attribute names.
+func parseEventMap(m map[string]interface{}) (KVEvent, error) {
+	rawTag, ok := m["type"]
+	if !ok {
+		return nil, fmt.Errorf("map event missing 'type' key")
+	}
+	tagStr, ok := rawTag.(string)
+	if !ok {
+		return nil, fmt.Errorf("event tag not string: %T", rawTag)
+	}
+	tag := EventType(tagStr)
+
+	switch tag {
+
+	case EventTypeBlockStored:
+		blockHashes, err := toBlockHashSlice(m["block_hashes"])
+		if err != nil {
+			return nil, fmt.Errorf("invalid block_hashes: %w", err)
+		}
+
+		parentHash, err := toBlockHashPtr(m["parent_block_hash"])
+		if err != nil {
+			return nil, fmt.Errorf("invalid parent_block_hash: %w", err)
+		}
+
+		rawTokenIDs, ok := m["token_ids"].([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("invalid token_ids type: %T", m["token_ids"])
+		}
+
+		blockSize, err := parseInt(m["block_size"])
+		if err != nil {
+			return nil, fmt.Errorf("invalid block_size: %w", err)
+		}
+
+		tokenIDs := make([]uint32, len(rawTokenIDs))
+		for i, v := range rawTokenIDs {
+			n, err := parseUint32(v)
+			if err != nil {
+				return nil, fmt.Errorf("token_ids[%d]: %w", i, err)
+			}
+			tokenIDs[i] = n
+		}
+
+		tokens, err := convertTokenIDs(tokenIDs, blockSize)
+		if err != nil {
+			return nil, err
+		}
+
+		ev := &BlockStoredEvent{
+			Type:            EventTypeBlockStored,
+			BlockHashes:     blockHashes,
+			ParentBlockHash: parentHash,
+			TokenIDs:        tokens,
+		}
+
+		if ev.LoraID, err = toInt64Ptr(m["lora_id"]); err != nil {
+			return nil, fmt.Errorf("invalid lora_id: %w", err)
+		}
+		if ev.Medium, err = toStringPtr(m["medium"]); err != nil {
+			return nil, fmt.Errorf("invalid medium: %w", err)
+		}
+		if ev.LoraName, err = toStringPtr(m["lora_name"]); err != nil {
+			return nil, fmt.Errorf("invalid lora_name: %w", err)
+		}
+		if ev.ExtraKeys, err = toExtraKeys(m["extra_keys"]); err != nil {
+			return nil, fmt.Errorf("invalid extra_keys: %w", err)
+		}
+		if ev.GroupIdx, err = toInt64Ptr(m["group_idx"]); err != nil {
+			return nil, fmt.Errorf("invalid group_idx: %w", err)
+		}
+		if ev.KVCacheSpecKind, err = toStringPtr(m["kv_cache_spec_kind"]); err != nil {
+			return nil, fmt.Errorf("invalid kv_cache_spec_kind: %w", err)
+		}
+		if ev.KVCacheSpecSlidingWindow, err = toInt64Ptr(m["kv_cache_spec_sliding_window"]); err != nil {
+			return nil, fmt.Errorf("invalid kv_cache_spec_sliding_window: %w", err)
+		}
+		if ev.Locality, err = toStringPtr(m["locality"]); err != nil {
+			return nil, fmt.Errorf("invalid locality: %w", err)
+		}
+
+		return ev, nil
+
+	case EventTypeBlockRemoved:
+		blockHashes, err := toBlockHashSlice(m["block_hashes"])
+		if err != nil {
+			return nil, fmt.Errorf("invalid block_hashes: %w", err)
+		}
+
+		ev := &BlockRemovedEvent{
+			Type:        tag,
+			BlockHashes: blockHashes,
+		}
+
+		if ev.Medium, err = toStringPtr(m["medium"]); err != nil {
+			return nil, fmt.Errorf("invalid medium: %w", err)
+		}
+		if ev.GroupIdx, err = toInt64Ptr(m["group_idx"]); err != nil {
+			return nil, fmt.Errorf("invalid group_idx: %w", err)
+		}
+		if ev.Locality, err = toStringPtr(m["locality"]); err != nil {
+			return nil, fmt.Errorf("invalid locality: %w", err)
+		}
+
+		return ev, nil
+
+	case EventTypeAllCleared:
+		return &AllBlocksClearedEvent{
+			Type: tag,
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("unknown event type: %s", tag)
+	}
+}
+
+// toExtraKeys converts the extra_keys field (one entry per block, each a list
+// of hash-computation inputs or nil) into [][]interface{}. A nil field or a
+// list of nils yields a nil slice so callers can treat it as "not provided".
+func toExtraKeys(v any) ([][]interface{}, error) {
+	if v == nil {
+		return nil, nil
+	}
+	raw, ok := v.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("expected []interface{}, got %T", v)
+	}
+	out := make([][]interface{}, len(raw))
+	for i, x := range raw {
+		if x == nil {
+			out[i] = nil
+			continue
+		}
+		entry, ok := x.([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("extra_keys[%d]: expected []interface{}, got %T", i, x)
+		}
+		out[i] = entry
+	}
+	return out, nil
 }
 
 func applyBatchMetadata(evt KVEvent, ts time.Time, model, pod string) {
