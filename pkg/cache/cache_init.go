@@ -46,6 +46,9 @@ var (
 
 // InitOptions configures the cache initialization behavior
 type InitOptions struct {
+	// IsGateway marks the caller as the gateway-plugins service.
+	IsGateway bool
+
 	// EnableKVSync configures whether to start the ZMQ KV event sync
 	EnableKVSync bool
 
@@ -325,14 +328,7 @@ func InitForTest() *Store {
 func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptions) *Store {
 	once.Do(func() {
 		// Log initialization based on configuration
-		var service string
-		if opts.EnableKVSync {
-			service = "gateway"
-		} else if opts.RedisClient != nil {
-			service = "metadata"
-		} else {
-			service = "controllers"
-		}
+		service := serviceIdentity(opts)
 
 		klog.InfoS("initialize cache",
 			"service", service,
@@ -392,6 +388,18 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 	})
 
 	return store
+}
+
+// serviceIdentity returns the component identity implied by opts.
+func serviceIdentity(opts InitOptions) string {
+	switch {
+	case opts.IsGateway:
+		return "gateway"
+	case opts.RedisClient != nil:
+		return "metadata"
+	default:
+		return "controllers"
+	}
 }
 
 // initMetricsCache initializes metrics cache update loop
