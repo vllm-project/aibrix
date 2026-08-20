@@ -38,6 +38,7 @@ import (
 	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/monitor"
+	enginemetrics "github.com/vllm-project/aibrix/pkg/metrics"
 	podutils "github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/paschedules"
 	"k8s.io/apimachinery/pkg/labels"
@@ -473,11 +474,14 @@ func (r *PodAutoscalerReconciler) validateScalingStrategy(pa *autoscalingv1alpha
 	if !checkValidAutoscalingStrategy(pa.Spec.ScalingStrategy) {
 		return invalid(ReasonInvalidScalingStrategy, "Unsupported scalingStrategy; must be one of HPA/KPA/APA.")
 	}
-	if pa.Spec.ScalingStrategy == autoscalingv1alpha1.HPA &&
-		pa.Spec.SubTargetSelector != nil &&
-		pa.Spec.SubTargetSelector.RoleName != "" {
-		return invalid(ReasonInvalidScalingStrategy,
-			"subTargetSelector.roleName is not supported with scalingStrategy=HPA; use APA or KPA for StormService role-level autoscaling.")
+	if pa.Spec.SubTargetSelector != nil && pa.Spec.SubTargetSelector.RoleName != "" {
+		if pa.Spec.ScalingStrategy == autoscalingv1alpha1.HPA {
+			return invalid(ReasonInvalidScalingStrategy,
+				"subTargetSelector.roleName is not supported with scalingStrategy=HPA; use APA or KPA for StormService role-level autoscaling.")
+		}
+		if pa.Spec.ScaleTargetRef.Kind != StormService {
+			return invalid(ReasonInvalidSpec, "subTargetSelector.roleName is only supported for StormService.")
+		}
 	}
 	return validOK()
 }
@@ -532,6 +536,12 @@ func (r *PodAutoscalerReconciler) validatePodMetricSource(ms *autoscalingv1alpha
 	}
 	if ms.Path == "" {
 		return invalid(ReasonMetricsConfigError, "path is required for metricSourceType=pod.")
+	}
+	if ms.TargetMetric != "" {
+		if _, ok := enginemetrics.Metrics[ms.TargetMetric]; !ok {
+			return invalid(ReasonMetricsConfigError,
+				fmt.Sprintf("unknown targetMetric %q; must be a metric in the central registry (for example num_requests_running, gpu_cache_usage_perc).", ms.TargetMetric))
+		}
 	}
 	return validOK()
 }

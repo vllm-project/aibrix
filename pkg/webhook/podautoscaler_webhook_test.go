@@ -343,6 +343,106 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 			expectError: true,
 			errorMsg:    "subTargetSelector",
 		},
+		"KPA Deployment Does Not Support Role Subtarget": {
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{
+						Name: "test-deployment",
+						Kind: "Deployment",
+					},
+					SubTargetSelector: &autoscalingv1alpha1.SubTargetSelector{
+						RoleName: "prefill",
+					},
+					MaxReplicas:     6,
+					ScalingStrategy: autoscalingv1alpha1.KPA,
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{
+							MetricSourceType: autoscalingv1alpha1.POD,
+							ProtocolType:     autoscalingv1alpha1.HTTP,
+							Port:             "8000",
+							Path:             "/metrics",
+							TargetMetric:     "num_requests_running",
+							TargetValue:      "1",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "subTargetSelector",
+		},
+		"KPA StormService Role Subtarget Is Allowed": {
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{
+						Name: "test-stormservice",
+						Kind: "StormService",
+					},
+					SubTargetSelector: &autoscalingv1alpha1.SubTargetSelector{
+						RoleName: "prefill",
+					},
+					MaxReplicas:     6,
+					ScalingStrategy: autoscalingv1alpha1.KPA,
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{
+							MetricSourceType: autoscalingv1alpha1.POD,
+							ProtocolType:     autoscalingv1alpha1.HTTP,
+							Port:             "8000",
+							Path:             "/metrics",
+							TargetMetric:     "num_requests_running",
+							TargetValue:      "1",
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		"Unknown POD TargetMetric Is Rejected": {
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{
+						Name: "test-deployment",
+						Kind: "Deployment",
+					},
+					MaxReplicas:     6,
+					ScalingStrategy: autoscalingv1alpha1.APA,
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{
+							MetricSourceType: autoscalingv1alpha1.POD,
+							ProtocolType:     autoscalingv1alpha1.HTTP,
+							Port:             "8000",
+							Path:             "/metrics",
+							TargetMetric:     "running_requests",
+							TargetValue:      "1",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "targetMetric",
+		},
+		"Known POD TargetMetric Is Allowed": {
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{
+						Name: "test-deployment",
+						Kind: "Deployment",
+					},
+					MaxReplicas:     6,
+					ScalingStrategy: autoscalingv1alpha1.APA,
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{
+							MetricSourceType: autoscalingv1alpha1.POD,
+							ProtocolType:     autoscalingv1alpha1.HTTP,
+							Port:             "8000",
+							Path:             "/metrics",
+							TargetMetric:     "num_requests_running",
+							TargetValue:      "1",
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
 		"Observe Window Must Be Positive": {
 			pa: &autoscalingv1alpha1.PodAutoscaler{
 				Spec: autoscalingv1alpha1.PodAutoscalerSpec{

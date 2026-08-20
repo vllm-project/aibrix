@@ -97,10 +97,9 @@ func (f *RestMetricsFetcher) fetchFromPod(ctx context.Context, pod v1.Pod, sourc
 	// Use the centralized engine fetcher with real pod information
 	metricValue, err := f.engineFetcher.FetchTypedMetric(ctx, endpoint, engineType, identifier, source.TargetMetric)
 	if err != nil {
-		klog.Warningf("Failed to fetch metric %s from pod %s: %v. Returning zero value.",
+		klog.Warningf("Failed to fetch metric %s from pod %s: %v",
 			source.TargetMetric, identifier, err)
-		// Return zero value with warning instead of error - business logic can decide how to handle
-		return 0.0, nil
+		return 0.0, err
 	}
 
 	return metricValue.GetSimpleValue(), nil
@@ -276,9 +275,9 @@ func (f *ExternalMetricsFetcher) fetchFromGPUOptimizer(ctx context.Context, pod 
 	// This gives us a global value that we need to adapt to per-pod semantics
 	metricValue, err := f.engineFetcher.FetchTypedMetric(ctx, source.Endpoint, "external", "gpu-optimizer", source.TargetMetric)
 	if err != nil {
-		klog.Warningf("Failed to fetch metric %s from GPU-Optimizer %s: %v. Returning zero value.",
+		klog.Warningf("Failed to fetch metric %s from GPU-Optimizer %s: %v",
 			source.TargetMetric, source.Endpoint, err)
-		return 0.0, nil
+		return 0.0, err
 	}
 
 	// Adaptation: Global metric -> per-pod value

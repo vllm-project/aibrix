@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils/paschedules"
 )
 
@@ -196,6 +197,9 @@ func validateScalingStrategy(pa *autoscalingv1alpha1.PodAutoscaler, specPath *fi
 	if err := validateHPARoleSubtarget(pa, specPath); err != nil {
 		errs = append(errs, err)
 	}
+	if err := validateRoleSubtargetKind(pa, specPath); err != nil {
+		errs = append(errs, err)
+	}
 	return errs
 }
 
@@ -269,6 +273,15 @@ func validatePodMetricSource(ms *autoscalingv1alpha1.MetricSource, msPath *field
 	if ms.Path == "" {
 		errs = append(errs, field.Required(msPath.Child("path"), "required for metricSourceType=pod"))
 	}
+	if ms.TargetMetric != "" {
+		if _, ok := metrics.Metrics[ms.TargetMetric]; !ok {
+			errs = append(errs, field.Invalid(
+				msPath.Child("targetMetric"),
+				ms.TargetMetric,
+				"unknown metric; must be a name in the central registry (for example num_requests_running, gpu_cache_usage_perc)",
+			))
+		}
+	}
 	return errs
 }
 
@@ -335,6 +348,19 @@ func validateHPARoleSubtarget(pa *autoscalingv1alpha1.PodAutoscaler, specPath *f
 	return field.Forbidden(
 		specPath.Child("subTargetSelector").Child("roleName"),
 		"not supported with scalingStrategy=HPA; use APA or KPA for StormService role-level autoscaling",
+	)
+}
+
+func validateRoleSubtargetKind(pa *autoscalingv1alpha1.PodAutoscaler, specPath *field.Path) *field.Error {
+	if pa.Spec.SubTargetSelector == nil || pa.Spec.SubTargetSelector.RoleName == "" {
+		return nil
+	}
+	if pa.Spec.ScaleTargetRef.Kind == "" || pa.Spec.ScaleTargetRef.Kind == "StormService" {
+		return nil
+	}
+	return field.Forbidden(
+		specPath.Child("subTargetSelector").Child("roleName"),
+		"only supported for StormService",
 	)
 }
 

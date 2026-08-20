@@ -98,6 +98,74 @@ func TestRestMetricsFetcher_FetchPodMetrics(t *testing.T) {
 	assert.Equal(t, expectedMetricValue, actualMetricValue)
 }
 
+func TestRestMetricsFetcher_UnknownMetricReturnsError(t *testing.T) {
+	fetcher := NewRestMetricsFetcherWithConfig(metrics.EngineMetricsFetcherConfig{
+		Timeout:    time.Second,
+		MaxRetries: 0,
+	})
+
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "pod-1",
+			Labels: map[string]string{
+				constants.ModelLabelEngine: "vllm",
+			},
+		},
+		Status: corev1.PodStatus{
+			PodIP: "127.0.0.1",
+		},
+	}
+	source := autoscalingv1alpha1.MetricSource{
+		MetricSourceType: autoscalingv1alpha1.POD,
+		TargetMetric:     "running_requests",
+		Port:             "8000",
+	}
+
+	actualMetricValue, err := fetcher.FetchPodMetrics(context.TODO(), pod, source)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found in central registry")
+	assert.Equal(t, 0.0, actualMetricValue)
+}
+
+func TestRestMetricsFetcher_FetchFailureReturnsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	ip, port := parseURL(server.URL)
+	require.NotEmpty(t, ip)
+	require.NotEmpty(t, port)
+
+	fetcher := NewRestMetricsFetcherWithConfig(metrics.EngineMetricsFetcherConfig{
+		Timeout:    time.Second,
+		MaxRetries: 0,
+	})
+
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "pod-1",
+			Labels: map[string]string{
+				constants.ModelLabelEngine: "vllm",
+			},
+		},
+		Status: corev1.PodStatus{
+			PodIP: ip,
+		},
+	}
+	source := autoscalingv1alpha1.MetricSource{
+		MetricSourceType: autoscalingv1alpha1.POD,
+		TargetMetric:     "gpu_cache_usage_perc",
+		Port:             port,
+	}
+
+	actualMetricValue, err := fetcher.FetchPodMetrics(context.TODO(), pod, source)
+
+	assert.Error(t, err)
+	assert.Equal(t, 0.0, actualMetricValue)
+}
+
 func TestResourceMetricsFetcher_FetchPodMetrics(t *testing.T) {
 	expectedMetricValue := 50000.0
 

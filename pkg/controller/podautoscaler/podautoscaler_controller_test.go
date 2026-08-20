@@ -140,6 +140,100 @@ func TestValidateMetricsSourcesRequiresTargetMetricForK8sExternalMetrics(t *test
 	}
 }
 
+func TestValidateMetricsSourcesRejectsUnknownPodMetric(t *testing.T) {
+	r := &PodAutoscalerReconciler{}
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			MetricsSources: []autoscalingv1alpha1.MetricSource{
+				{
+					MetricSourceType: autoscalingv1alpha1.POD,
+					ProtocolType:     autoscalingv1alpha1.HTTP,
+					Port:             "8000",
+					Path:             "/metrics",
+					TargetMetric:     "running_requests",
+					TargetValue:      "1",
+				},
+			},
+		},
+	}
+
+	result := r.validateMetricsSources(pa)
+
+	if result.Valid {
+		t.Fatal("expected unknown POD targetMetric to be invalid")
+	}
+	if result.Reason != ReasonMetricsConfigError {
+		t.Fatalf("expected reason=%s, got %s", ReasonMetricsConfigError, result.Reason)
+	}
+	if result.Message != "unknown targetMetric \"running_requests\"; must be a metric in the central registry (for example num_requests_running, gpu_cache_usage_perc)." {
+		t.Fatalf("unexpected message: %s", result.Message)
+	}
+}
+
+func TestValidateMetricsSourcesAllowsKnownPodMetric(t *testing.T) {
+	r := &PodAutoscalerReconciler{}
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			MetricsSources: []autoscalingv1alpha1.MetricSource{
+				{
+					MetricSourceType: autoscalingv1alpha1.POD,
+					ProtocolType:     autoscalingv1alpha1.HTTP,
+					Port:             "8000",
+					Path:             "/metrics",
+					TargetMetric:     "num_requests_running",
+					TargetValue:      "1",
+				},
+			},
+		},
+	}
+
+	result := r.validateMetricsSources(pa)
+
+	if !result.Valid {
+		t.Fatalf("expected known POD targetMetric to be valid, got reason=%s message=%s", result.Reason, result.Message)
+	}
+}
+
+func TestValidateSpecRejectsKPARoleSubtargetForDeployment(t *testing.T) {
+	r := &PodAutoscalerReconciler{}
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{
+				Name: "custom-pa-target",
+				Kind: "Deployment",
+			},
+			SubTargetSelector: &autoscalingv1alpha1.SubTargetSelector{
+				RoleName: "prefill",
+			},
+			MinReplicas:     ptr.To(int32(1)),
+			MaxReplicas:     6,
+			ScalingStrategy: autoscalingv1alpha1.KPA,
+			MetricsSources: []autoscalingv1alpha1.MetricSource{
+				{
+					MetricSourceType: autoscalingv1alpha1.POD,
+					ProtocolType:     autoscalingv1alpha1.HTTP,
+					Port:             "8000",
+					Path:             "/metrics",
+					TargetMetric:     "num_requests_running",
+					TargetValue:      "1",
+				},
+			},
+		},
+	}
+
+	result := r.validateSpec(pa)
+
+	if result.Valid {
+		t.Fatal("expected KPA with subTargetSelector.roleName on a Deployment to be invalid")
+	}
+	if result.Reason != ReasonInvalidSpec {
+		t.Fatalf("expected reason=%s, got %s", ReasonInvalidSpec, result.Reason)
+	}
+	if result.Message != "subTargetSelector.roleName is only supported for StormService." {
+		t.Fatalf("unexpected message: %s", result.Message)
+	}
+}
+
 func TestValidateSpecRejectsHPARoleSubtarget(t *testing.T) {
 	r := &PodAutoscalerReconciler{}
 	pa := &autoscalingv1alpha1.PodAutoscaler{
