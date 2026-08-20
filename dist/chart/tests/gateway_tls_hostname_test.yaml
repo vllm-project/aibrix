@@ -10,11 +10,13 @@ tests:
       gateway.tls.enabled: true
       gateway.tls.hostname: "*.example.com"
       gateway.tls.secretName: "aibrix-gateway-tls"
+    documentSelector:
+      path: kind
+      value: Gateway
     asserts:
       - equal:
           path: spec.listeners[0].hostname
           value: "*.example.com"
-        documentIndex: 4
 
   - it: should omit HTTPS listener hostname when TLS hostname is empty
     set:
@@ -24,7 +26,51 @@ tests:
       gateway.tls.enabled: true
       gateway.tls.hostname: ""
       gateway.tls.secretName: "aibrix-gateway-tls"
+    documentSelector:
+      path: kind
+      value: Gateway
     asserts:
       - notExists:
           path: spec.listeners[0].hostname
-        documentIndex: 4
+
+  - it: should render both HTTP and HTTPS listeners when both are enabled
+    set:
+      gateway.enable: true
+      gateway.envoyAsSideCar: false
+      gateway.http.enabled: true
+      gateway.tls.enabled: true
+      gateway.tls.hostname: "*.example.com"
+      gateway.tls.secretName: "aibrix-gateway-tls"
+    documentSelector:
+      path: kind
+      value: Gateway
+    asserts:
+      - equal:
+          path: spec.listeners[0].name
+          value: http
+      - equal:
+          path: spec.listeners[1].name
+          value: https
+      - equal:
+          path: spec.listeners[1].hostname
+          value: "*.example.com"
+
+  - it: should render preserve_external_request_id for the HTTPS listener
+    set:
+      gateway.enable: true
+      gateway.envoyAsSideCar: false
+      gateway.http.enabled: false
+      gateway.tls.enabled: true
+      gateway.tls.hostname: "*.example.com"
+      gateway.tls.secretName: "aibrix-gateway-tls"
+    release:
+      namespace: aibrix-system
+    documentSelector:
+      path: kind
+      value: EnvoyPatchPolicy
+    asserts:
+      - contains:
+          path: spec.jsonPatches
+          content:
+            type: type.googleapis.com/envoy.config.listener.v3.Listener
+            name: aibrix-system/aibrix-eg/https

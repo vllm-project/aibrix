@@ -254,6 +254,7 @@
             "if": {
               "properties": {
                 "tls": {
+                    "required": ["enabled"],
                   "properties": {
                     "enabled": {
                       "const": true
@@ -265,7 +266,43 @@
             "then": {
               "properties": {
                 "tls": {
-                  "required": ["secretName"]
+                    "required": ["secretName"],
+                    "properties": {
+                      "secretName": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "tls": {
+                    "required": ["enabled", "autoGenerate"],
+                    "properties": {
+                      "enabled": {
+                        "const": true
+                      },
+                      "autoGenerate": {
+                        "const": true
+                      }
+                    }
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "tls": {
+                    "required": ["hostname"],
+                    "properties": {
+                      "hostname": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
                 }
               }
             }

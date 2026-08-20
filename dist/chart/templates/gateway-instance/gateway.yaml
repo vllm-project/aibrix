@@ -164,52 +164,10 @@ spec:
     name: {{ include "aibrix.fullname" . }}-eg
   jsonPatches:
     {{- if .Values.gateway.http.enabled }}
-    - type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
-      name: {{ .Release.Namespace }}/{{ include "aibrix.fullname" . }}-eg/http
-      operation:
-        op: add
-        path: "/virtual_hosts/0/routes/0"
-        value:
-          name: original_route
-          match:
-            prefix: "/"
-            headers:
-              - name: "routing-strategy"
-                string_match:
-                  safe_regex:
-                    regex: ".*"
-          route:
-            cluster: original_destination_cluster
-            timeout: {{ .Values.gateway.envoyPatchPolicy.route.timeout }}
-            idle_timeout: {{ .Values.gateway.envoyPatchPolicy.route.idleTimeout }}
-          typed_per_filter_config:
-            "envoy.filters.http.ext_proc/envoyextensionpolicy/{{ .Release.Namespace }}/{{ include "aibrix.fullname" . }}-gateway-plugins-extension-policy/extproc/0":
-              "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig"
-              config: {}
+    {{- include "aibrix.gateway.routeConfigurationPatch" (dict "root" . "listenerName" "http") | nindent 4 }}
     {{- end }}
     {{- if .Values.gateway.tls.enabled }}
-    - type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
-      name: {{ .Release.Namespace }}/{{ include "aibrix.fullname" . }}-eg/https
-      operation:
-        op: add
-        path: "/virtual_hosts/0/routes/0"
-        value:
-          name: original_route
-          match:
-            prefix: "/"
-            headers:
-              - name: "routing-strategy"
-                string_match:
-                  safe_regex:
-                    regex: ".*"
-          route:
-            cluster: original_destination_cluster
-            timeout: {{ .Values.gateway.envoyPatchPolicy.route.timeout }}
-            idle_timeout: {{ .Values.gateway.envoyPatchPolicy.route.idleTimeout }}
-          typed_per_filter_config:
-            "envoy.filters.http.ext_proc/envoyextensionpolicy/{{ .Release.Namespace }}/{{ include "aibrix.fullname" . }}-gateway-plugins-extension-policy/extproc/0":
-              "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig"
-              config: {}
+    {{- include "aibrix.gateway.routeConfigurationPatch" (dict "root" . "listenerName" "https") | nindent 4 }}
     {{- end }}
     - type: "type.googleapis.com/envoy.config.cluster.v3.Cluster"
       name: "envoy-patch-policy-override2"
@@ -237,6 +195,14 @@ spec:
       operation:
         op: add
         path: /default_filter_chain/filters/{{- if gt (int .Values.gateway.clientTrafficPolicy.connection.connectionLimit.value) 0 }}1{{- else }}0{{- end }}/typed_config/preserve_external_request_id
-        value: {{.Values.gateway.envoyPatchPolicy.preserveExternalRequestID}}
+        value: {{ .Values.gateway.envoyPatchPolicy.preserveExternalRequestID }}
+    {{- end }}
+    {{- if .Values.gateway.tls.enabled }}
+    - type: type.googleapis.com/envoy.config.listener.v3.Listener
+      name: {{ .Release.Namespace }}/{{ include "aibrix.fullname" . }}-eg/https
+      operation:
+        op: add
+        path: /default_filter_chain/filters/{{- if gt (int .Values.gateway.clientTrafficPolicy.connection.connectionLimit.value) 0 }}1{{- else }}0{{- end }}/typed_config/preserve_external_request_id
+        value: {{ .Values.gateway.envoyPatchPolicy.preserveExternalRequestID }}
     {{- end }}
 {{- end }}

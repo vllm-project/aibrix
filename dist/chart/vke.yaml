@@ -104,7 +104,7 @@ gpuOptimizer:
   affinity: {}
 
 gateway:
-  # Mode Selection (mutually exclusive; values must be opposite)
+  # Mode Selection
   # | gateway.enable | envoyAsSideCar | Notes |
   # | -------------- | ------------------- | ----- |
   # | true           | false               | Envoy managed by Envoy Gateway (data plane). Installs Gateway, GatewayClass, EnvoyProxy, and gateway-plugins. |

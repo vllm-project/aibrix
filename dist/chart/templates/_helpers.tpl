@@ -103,7 +103,6 @@ Create the name of the gateway plugin service account
 {{- end -}}
 {{- end -}}
 
-
 {{/*
 Create the name of the gpu optimizer service account
 */}}
@@ -126,6 +125,31 @@ Create the name of the metadata service service account
 {{- end -}}
 {{- end -}}
 
+{{- define "aibrix.gateway.routeConfigurationPatch" -}}
+- type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
+  name: {{ .root.Release.Namespace }}/{{ include "aibrix.fullname" .root }}-eg/{{ .listenerName }}
+  operation:
+    op: add
+    path: "/virtual_hosts/0/routes/0"
+    value:
+      name: original_route
+      match:
+        prefix: "/"
+        headers:
+          - name: "routing-strategy"
+            string_match:
+              safe_regex:
+                regex: ".*"
+      route:
+        cluster: original_destination_cluster
+        timeout: {{ .root.Values.gateway.envoyPatchPolicy.route.timeout }}
+        idle_timeout: {{ .root.Values.gateway.envoyPatchPolicy.route.idleTimeout }}
+      typed_per_filter_config:
+        "envoy.filters.http.ext_proc/envoyextensionpolicy/{{ .root.Release.Namespace }}/{{ include "aibrix.fullname" .root }}-gateway-plugins-extension-policy/extproc/0":
+          "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig"
+          config: {}
+{{- end -}}
+
 {{- define "aibrix.validateValues" -}}
 {{- if and .Values.gateway.enable .Values.gateway.envoyAsSideCar -}}
 {{- fail "gateway.enable and gateway.envoyAsSideCar are mutually exclusive and cannot both be true." -}}
@@ -136,11 +160,12 @@ Create the name of the metadata service service account
 {{- $tlsEnabled := dig "tls" "enabled" false .Values.gateway -}}
 {{- $tlsAutoGenerate := dig "tls" "autoGenerate" false .Values.gateway -}}
 {{- $tlsHostname := dig "tls" "hostname" "" .Values.gateway -}}
-{{- if and $httpEnabled $tlsEnabled -}}
-{{- fail "exactly one of gateway.http.enabled or gateway.tls.enabled must be true when gateway.enable=true and gateway.envoyAsSideCar=false." -}}
-{{- end -}}
+{{- $tlsSecretName := dig "tls" "secretName" "" .Values.gateway -}}
 {{- if and (not $httpEnabled) (not $tlsEnabled) -}}
-{{- fail "exactly one of gateway.http.enabled or gateway.tls.enabled must be true when gateway.enable=true and gateway.envoyAsSideCar=false." -}}
+{{- fail "at least one of gateway.http.enabled or gateway.tls.enabled must be true when gateway.enable=true and gateway.envoyAsSideCar=false." -}}
+{{- end -}}
+{{- if and $tlsEnabled (empty (trim $tlsSecretName)) -}}
+{{- fail "gateway.tls.secretName is required when gateway.tls.enabled=true." -}}
 {{- end -}}
 {{- if and $tlsEnabled $tlsAutoGenerate (empty (trim $tlsHostname)) -}}
 {{- fail "gateway.tls.hostname is required when gateway.tls.autoGenerate=true." -}}
