@@ -1,0 +1,30 @@
+suite: Test Gateway TLS Hostname Rendering
+templates:
+  - gateway-instance/gateway.yaml
+tests:
+  - it: should render wildcard hostname on HTTPS listener when TLS hostname is configured
+    set:
+      gateway.enable: true
+      gateway.envoyAsSideCar: false
+      gateway.http.enabled: false
+      gateway.tls.enabled: true
+      gateway.tls.hostname: "*.example.com"
+      gateway.tls.secretName: "aibrix-gateway-tls"
+    asserts:
+      - equal:
+          path: spec.listeners[0].hostname
+          value: "*.example.com"
+        documentIndex: 4
+
+  - it: should omit HTTPS listener hostname when TLS hostname is empty
+    set:
+      gateway.enable: true
+      gateway.envoyAsSideCar: false
+      gateway.http.enabled: false
+      gateway.tls.enabled: true
+      gateway.tls.hostname: ""
+      gateway.tls.secretName: "aibrix-gateway-tls"
+    asserts:
+      - notExists:
+          path: spec.listeners[0].hostname
+        documentIndex: 4

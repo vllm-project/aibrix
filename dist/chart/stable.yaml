@@ -105,6 +105,15 @@ gpuOptimizer:
   tolerations: []
 
 gateway:
+  http:
+    enabled: true
+  tls:
+    enabled: false
+    autoGenerate: false
+    hostname: ""
+    validityDays: 365
+    secretName: ""
+    port: 443
   envoyProxy:
     replicas: 1
     imagePullSecrets: []

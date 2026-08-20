@@ -131,6 +131,22 @@ Create the name of the metadata service service account
 {{- fail "gateway.enable and gateway.envoyAsSideCar are mutually exclusive and cannot both be true." -}}
 {{- end -}}
 
+{{- if and .Values.gateway.enable (not .Values.gateway.envoyAsSideCar) -}}
+{{- $httpEnabled := dig "http" "enabled" false .Values.gateway -}}
+{{- $tlsEnabled := dig "tls" "enabled" false .Values.gateway -}}
+{{- $tlsAutoGenerate := dig "tls" "autoGenerate" false .Values.gateway -}}
+{{- $tlsHostname := dig "tls" "hostname" "" .Values.gateway -}}
+{{- if and $httpEnabled $tlsEnabled -}}
+{{- fail "exactly one of gateway.http.enabled or gateway.tls.enabled must be true when gateway.enable=true and gateway.envoyAsSideCar=false." -}}
+{{- end -}}
+{{- if and (not $httpEnabled) (not $tlsEnabled) -}}
+{{- fail "exactly one of gateway.http.enabled or gateway.tls.enabled must be true when gateway.enable=true and gateway.envoyAsSideCar=false." -}}
+{{- end -}}
+{{- if and $tlsEnabled $tlsAutoGenerate (empty (trim $tlsHostname)) -}}
+{{- fail "gateway.tls.hostname is required when gateway.tls.autoGenerate=true." -}}
+{{- end -}}
+{{- end -}}
+
 {{- $builtInRedisEnabled := dig "redis" "enabled" true .Values.metadata -}}
 {{- $sharedEnablePassword := dig "redis" "enablePassword" false .Values.metadata -}}
 {{- $sharedPassword := dig "redis" "password" "" .Values.metadata -}}

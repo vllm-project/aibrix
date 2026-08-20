@@ -113,6 +113,15 @@ gateway:
   # | true           | true                | INVALID: Do not enable both. Values must be opposite. |
   enable: true
   envoyAsSideCar: false
+  http:
+    enabled: true
+  tls:
+    enabled: false
+    autoGenerate: false
+    hostname: ""
+    validityDays: 365
+    secretName: ""
+    port: 443
   envoySideCar:
     ports:
       http: 10080

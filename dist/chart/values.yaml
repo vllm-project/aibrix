@@ -160,6 +160,19 @@ gateway:
   # | true           | true                | INVALID: Do not enable both. Values must be opposite. |
   enable: true
   envoyAsSideCar: false
+  http:
+    enabled: true
+  tls:
+    enabled: false
+    autoGenerate: false
+    # Optional Gateway listener hostname, for example "*.example.com".
+    hostname: ""
+    # Validity period in days for the generated self-signed certificate.
+    validityDays: 365
+    # Existing Kubernetes TLS secret used by the Gateway HTTPS listener.
+    # The secret must contain the standard tls.crt and tls.key entries.
+    secretName: ""
+    port: 443
   envoySideCar:
     ports:
       http: 10080
