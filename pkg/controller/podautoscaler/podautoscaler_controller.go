@@ -29,6 +29,8 @@ package podautoscaler
 import (
 	"context"
 	"fmt"
+	"math"
+	"strconv"
 	"sync"
 	"time"
 
@@ -499,6 +501,22 @@ func (r *PodAutoscalerReconciler) validateMetricsSources(pa *autoscalingv1alpha1
 			return invalid(ReasonMetricsConfigError,
 				fmt.Sprintf("metricsSource[%d]: targetValue must be specified", i))
 		}
+		// Mirror the webhook's validateMetricTargetValue: targetValue must be a
+		// plain positive float (e.g., "50"), not a Kubernetes quantity (e.g., "100m").
+		// Without this check an unparseable value passes validateSpec and later
+		// fails in makeHPAWithBounds, leaving the PodAutoscaler stuck reporting
+		// ValidSpec=True/Ready=True while no HPA can ever be generated.
+		targetValue, err := strconv.ParseFloat(ms.TargetValue, 64)
+		if err != nil {
+			return invalid(ReasonMetricsConfigError,
+				fmt.Sprintf("metricsSource[%d]: targetValue %q must be a valid number", i, ms.TargetValue))
+		}
+		// ParseFloat accepts "NaN", "Inf" and "Infinity" without error, and NaN
+		// comparisons are always false, so these must be rejected explicitly.
+		if math.IsNaN(targetValue) || math.IsInf(targetValue, 0) || targetValue <= 0 {
+			return invalid(ReasonMetricsConfigError,
+				fmt.Sprintf("metricsSource[%d]: targetValue %q must be a finite number greater than 0", i, ms.TargetValue))
+		}
 
 		var result ValidationResult
 		switch ms.MetricSourceType {
@@ -612,7 +630,9 @@ func (r *PodAutoscalerReconciler) setInvalidSpecStatus(
 		Conditions:      conds,
 		ScheduledBounds: scheduledBoundsStatus(pa, time.Now()),
 	}
-	return r.updateStatusIfNeeded(ctx, st, pa)
+	paCopy := pa.DeepCopy()
+	paCopy.Status = *st
+	return r.updateStatusIfNeeded(ctx, &pa.Status, paCopy)
 }
 
 // Run periodically enqueues all PodAutoscaler objects until ctx is cancelled.
@@ -745,6 +765,11 @@ func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscali
 	hpa, err := makeHPAWithBounds(&pa, scalingContext, bounds)
 	if err != nil {
 		klog.ErrorS(err, "Failed to generate a HPA object", "PA", ktypes.NamespacedName{Name: pa.Name, Namespace: pa.Namespace})
+		// Surface the failure in the PodAutoscaler conditions so the resource
+		// never keeps reporting Ready/ValidSpec while no HPA can be generated.
+		if statusErr := r.setInvalidSpecStatus(ctx, &pa, ReasonMetricsConfigError, err.Error()); statusErr != nil {
+			klog.ErrorS(statusErr, "Failed to update PodAutoscaler status after HPA generation failure", "PA", ktypes.NamespacedName{Name: pa.Name, Namespace: pa.Namespace})
+		}
 		return ctrl.Result{}, err
 	}
 	hpaName := ktypes.NamespacedName{

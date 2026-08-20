@@ -171,6 +171,53 @@ func TestMakeHPA(t *testing.T) {
 	assert.Equal(t, expectedHPA, actualHPA)
 }
 
+func TestMakeHPAFractionalTargetValueRoundsUp(t *testing.T) {
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: v1.ObjectMeta{
+			Name:      "test-fractional-pa",
+			Namespace: "default",
+		},
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{
+				APIVersion: "apps/v1",
+				Kind:       "Deployment",
+				Name:       "test-llm",
+			},
+			MinReplicas: ptr.To(int32(1)),
+			MaxReplicas: int32(5),
+			MetricsSources: []autoscalingv1alpha1.MetricSource{
+				{
+					MetricSourceType: autoscalingv1alpha1.RESOURCE,
+					TargetMetric:     "memory",
+					TargetValue:      "0.5",
+				},
+				{
+					MetricSourceType: autoscalingv1alpha1.POD,
+					TargetMetric:     "gpu_cache_usage_perc",
+					TargetValue:      "1.2",
+				},
+			},
+		},
+	}
+
+	hpa, err := makeHPA(pa, context.NewBaseScalingContext())
+
+	assert.NoError(t, err)
+	assert.NotNil(t, hpa)
+	assert.Len(t, hpa.Spec.Metrics, 2)
+
+	// Fractional targetValue must round up (like the CPU path) instead of being
+	// truncated by int64(): 0.5 MiB -> 1 MiB, never 0 bytes.
+	memoryTarget := hpa.Spec.Metrics[0].Resource.Target
+	assert.NotNil(t, memoryTarget.AverageValue)
+	assert.Equal(t, int64(1*1024*1024), memoryTarget.AverageValue.Value())
+
+	// 1.2 -> 2 for pod metrics.
+	podsTarget := hpa.Spec.Metrics[1].Pods.Target
+	assert.NotNil(t, podsTarget.AverageValue)
+	assert.Equal(t, int64(2), podsTarget.AverageValue.Value())
+}
+
 func TestMakeHPAWithScheduledBounds(t *testing.T) {
 	pa := &autoscalingv1alpha1.PodAutoscaler{
 		ObjectMeta: v1.ObjectMeta{

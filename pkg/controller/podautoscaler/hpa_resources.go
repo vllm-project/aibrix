@@ -99,7 +99,7 @@ func makeHPAWithBounds(pa *pav1.PodAutoscaler, scalingContext scalingctx.Scaling
 				})
 
 			case pav1.Memory:
-				memory := resource.NewQuantity(int64(targetValue)*1024*1024, resource.BinarySI)
+				memory := resource.NewQuantity(int64(math.Ceil(targetValue))*1024*1024, resource.BinarySI)
 				hpa.Spec.Metrics = append(hpa.Spec.Metrics, autoscalingv2.MetricSpec{
 					Type: autoscalingv2.ResourceMetricSourceType,
 					Resource: &autoscalingv2.ResourceMetricSource{
@@ -112,7 +112,7 @@ func makeHPAWithBounds(pa *pav1.PodAutoscaler, scalingContext scalingctx.Scaling
 				})
 
 			default:
-				targetQuantity := resource.NewQuantity(int64(targetValue), resource.DecimalSI)
+				targetQuantity := resource.NewQuantity(int64(math.Ceil(targetValue)), resource.DecimalSI)
 				hpa.Spec.Metrics = append(hpa.Spec.Metrics, autoscalingv2.MetricSpec{
 					Type: autoscalingv2.PodsMetricSourceType,
 					Pods: &autoscalingv2.PodsMetricSource{

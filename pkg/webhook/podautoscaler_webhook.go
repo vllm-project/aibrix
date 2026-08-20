@@ -19,6 +19,7 @@ package webhook
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -252,8 +253,10 @@ func validateMetricTargetValue(ms *autoscalingv1alpha1.MetricSource, msPath *fie
 	if err != nil {
 		return field.ErrorList{field.Invalid(msPath.Child("targetValue"), ms.TargetValue, "must be a valid number")}
 	}
-	if targetValue <= 0 {
-		return field.ErrorList{field.Invalid(msPath.Child("targetValue"), ms.TargetValue, "must be greater than 0")}
+	// ParseFloat accepts "NaN", "Inf" and "Infinity" without error, and NaN
+	// comparisons are always false, so these must be rejected explicitly.
+	if math.IsNaN(targetValue) || math.IsInf(targetValue, 0) || targetValue <= 0 {
+		return field.ErrorList{field.Invalid(msPath.Child("targetValue"), ms.TargetValue, "must be a finite number greater than 0")}
 	}
 	return nil
 }
