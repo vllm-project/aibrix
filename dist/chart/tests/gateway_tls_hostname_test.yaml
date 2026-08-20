@@ -60,7 +60,7 @@ tests:
       gateway.enable: true
       gateway.envoyAsSideCar: false
       gateway.http.enabled: false
-        gateway.clientTrafficPolicy.connection.connectionLimit.value: 1024
+      gateway.clientTrafficPolicy.connection.connectionLimit.value: 1024
       gateway.tls.enabled: true
       gateway.tls.hostname: "*.example.com"
       gateway.tls.secretName: "aibrix-gateway-tls"
