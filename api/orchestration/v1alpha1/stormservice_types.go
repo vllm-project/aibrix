@@ -70,7 +70,7 @@ type RoleSetTemplateSpec struct {
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
 
-	// +optional
+	// +kubebuilder:validation:Required
 	Spec *RoleSetSpec `json:"spec,omitempty"`
 }
 

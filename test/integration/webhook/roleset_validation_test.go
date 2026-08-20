@@ -18,6 +18,7 @@ package webhook
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
@@ -81,6 +82,15 @@ var _ = ginkgo.Describe("RoleSet spec admission", func() {
 			gomega.Expect(k8sClient.Create(ctx, stormService)).To(gomega.HaveOccurred())
 		})
 	}
+
+	ginkgo.It("rejects a StormService without a nested spec", func() {
+		stormService := validStormService("nested-missing-spec", ns.Name, []orchestrationapi.RoleSpec{
+			validRole("worker", 1),
+		})
+		stormService.Spec.Template.Spec = nil
+		err := k8sClient.Create(ctx, stormService)
+		gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "expected schema validation error, got %v", err)
+	})
 
 	ginkgo.It("accepts zero replicas and multiple distinct roles", func() {
 		roles := []orchestrationapi.RoleSpec{

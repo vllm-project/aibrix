@@ -4144,6 +4144,8 @@ spec:
                     required:
                     - roles
                     type: object
+                required:
+                - spec
                 type: object
               updateStrategy:
                 properties:
