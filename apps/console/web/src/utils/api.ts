@@ -87,9 +87,11 @@ export interface CreateJobRequest {
 
 export interface JobResourceRequest {
   replicas?: number;
+  providerConfig?: Record<string, unknown>;
 }
 
-export interface JobLimits {
+export interface JobCapabilities {
+  provider: string;
   resourceRequest: {
     minReplicas: number;
     maxReplicas: number;
@@ -554,8 +556,8 @@ export async function listAllJobs(options: ListAllJobsOptions = {}): Promise<Job
   return all;
 }
 
-export async function getJobLimits(): Promise<JobLimits> {
-  return apiFetch<JobLimits>('/api/v1/config/job-limits');
+export async function getJobCapabilities(): Promise<JobCapabilities> {
+  return apiFetch<JobCapabilities>('/api/v1/config/job-capabilities');
 }
 
 export async function getJob(id: string, options?: { includeDeployment?: boolean }): Promise<Job> {

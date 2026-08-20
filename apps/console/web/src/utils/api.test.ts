@@ -106,6 +106,32 @@ describe('api helpers', () => {
     });
   });
 
+  it('serializes job resource duration to the API contract', () => {
+    expect(camelToSnake({
+      inputDataset: 'file-input',
+      endpoint: '/v1/chat/completions',
+      completionWindow: '6h',
+      name: 'flex-window',
+      resourceRequest: {
+        replicas: 2,
+        providerConfig: {
+          duration: '1h',
+        },
+      },
+    })).toEqual({
+      input_dataset: 'file-input',
+      endpoint: '/v1/chat/completions',
+      completion_window: '6h',
+      name: 'flex-window',
+      resource_request: {
+        replicas: 2,
+        provider_config: {
+          duration: '1h',
+        },
+      },
+    });
+  });
+
   it('publishes the first jobs page while older pages are still loading', async () => {
     let resolveSecondPage!: (response: Response) => void;
     const secondPage = new Promise<Response>((resolve) => {

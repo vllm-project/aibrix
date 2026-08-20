@@ -68,8 +68,9 @@ const (
 	metricConsoleJobError = "console.job.error"
 )
 
-type JobLimits struct {
+type JobCapabilities struct {
 	ResourceRequest JobResourceRequestLimits `json:"resource_request"`
+	Provider        string                   `json:"provider"`
 }
 
 type JobResourceRequestLimits struct {
@@ -77,12 +78,16 @@ type JobResourceRequestLimits struct {
 	MaxReplicas int32 `json:"max_replicas"`
 }
 
-func JobLimitsConfig() JobLimits {
-	return JobLimits{
+func JobCapabilitiesConfig(provider string, devMode bool) JobCapabilities {
+	if devMode {
+		provider = "demo"
+	}
+	return JobCapabilities{
 		ResourceRequest: JobResourceRequestLimits{
 			MinReplicas: minJobReplicas,
 			MaxReplicas: maxJobReplicas,
 		},
+		Provider: provider,
 	}
 }
 
@@ -250,13 +255,19 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 	if completionWindow == "" {
 		completionWindow = string(openai.BatchNewParamsCompletionWindow24h)
 	}
-	if _, err := utils.ParseCompletionWindow(completionWindow); err != nil {
+	_, err := utils.ParseCompletionWindow(completionWindow)
+	if err != nil {
 		return nil, status.Errorf(
 			codes.InvalidArgument,
 			"invalid completion_window %q: %v",
 			completionWindow,
 			err,
 		)
+	}
+
+	var providerConfig map[string]any
+	if req.ResourceRequest != nil && req.ResourceRequest.ProviderConfig != nil {
+		providerConfig = req.ResourceRequest.ProviderConfig.AsMap()
 	}
 
 	// Console-generated JobID. The async Scheduler will own a durable
@@ -338,7 +349,8 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 		},
 		InjectionConfig: injectionConfig,
 		ResourceRequest: &plannerapi.ResourceRequest{
-			Replicas: int(replicas),
+			Replicas:       int(replicas),
+			ProviderConfig: providerConfig,
 		},
 		Client: toPlannerClientConfig(req.Client),
 	}

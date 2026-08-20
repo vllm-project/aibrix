@@ -20,6 +20,7 @@ option go_package = "github.com/vllm-project/aibrix/apps/console/api/gen/console
 
 import "google/api/annotations.proto";
 import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
 
 // =============================================================================
 // Deployment Service
@@ -355,6 +356,7 @@ message CreateJobRequest {
 
 message JobResourceRequest {
   int32 replicas = 1;
+  google.protobuf.Struct provider_config = 2;
 }
 
 // JobClientConfig mirrors the metadata-service aibrix.client block. Optional

@@ -253,10 +253,10 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 	s.auth.RegisterAuthRoutes(mux)
 
 	// Register frontend-consumed configuration.
-	if err := mux.HandlePath("GET", "/api/v1/config/job-limits", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+	if err := mux.HandlePath("GET", "/api/v1/config/job-capabilities", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(handler.JobLimitsConfig()); err != nil {
-			klog.Errorf("write job limits response: %v", err)
+		if err := json.NewEncoder(w).Encode(handler.JobCapabilitiesConfig(s.cfg.Provisioner, s.cfg.DevMode)); err != nil {
+			klog.Errorf("write job capabilities response: %v", err)
 		}
 	}); err != nil {
 		return err

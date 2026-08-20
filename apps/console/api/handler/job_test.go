@@ -29,6 +29,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/vllm-project/aibrix/apps/console/api/common"
 	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
@@ -226,16 +227,30 @@ func TestCreateJobAcceptsMaxReplicas(t *testing.T) {
 	if got := planner.enqueued.ResourceRequest.Replicas; got != int(maxJobReplicas) {
 		t.Fatalf("replicas = %d, want %d", got, maxJobReplicas)
 	}
+	if got := planner.enqueued.ResourceRequest.ProviderConfig; got != nil {
+		t.Fatalf("provider config = %#v, want omitted", got)
+	}
 }
 
-func TestJobLimitsConfigMatchesValidationConstants(t *testing.T) {
-	limits := JobLimitsConfig()
+func TestJobCapabilitiesConfigMatchesValidationConstants(t *testing.T) {
+	capabilities := JobCapabilitiesConfig("kubernetes", false)
 
-	if got := limits.ResourceRequest.MinReplicas; got != minJobReplicas {
+	if got := capabilities.ResourceRequest.MinReplicas; got != minJobReplicas {
 		t.Fatalf("min replicas = %d, want %d", got, minJobReplicas)
 	}
-	if got := limits.ResourceRequest.MaxReplicas; got != maxJobReplicas {
+	if got := capabilities.ResourceRequest.MaxReplicas; got != maxJobReplicas {
 		t.Fatalf("max replicas = %d, want %d", got, maxJobReplicas)
+	}
+	if got := capabilities.Provider; got != "kubernetes" {
+		t.Fatalf("provider = %q, want kubernetes", got)
+	}
+}
+
+func TestJobCapabilitiesConfigUsesDemoProviderInDevMode(t *testing.T) {
+	capabilities := JobCapabilitiesConfig("kubernetes", true)
+
+	if got := capabilities.Provider; got != "demo" {
+		t.Fatalf("provider = %q, want demo", got)
 	}
 }
 
@@ -298,6 +313,46 @@ func TestCreateJobAcceptsValidCompletionWindows(t *testing.T) {
 	}
 	if got := string(planner.enqueued.BatchParams.CompletionWindow); got != window {
 		t.Fatalf("completion window = %q, want %q", got, window)
+	}
+}
+
+func TestCreateJobForwardsProviderConfig(t *testing.T) {
+	planner := &fakeJobPlanner{
+		job: plannerJobWithOwner("job-console-1", "owner@example.com"),
+	}
+	handler := NewJobHandler(nil, planner, "", false, nil)
+	providerConfig, err := structpb.NewStruct(map[string]any{
+		"duration": "2h",
+		"nested": map[string]any{
+			"enabled": true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewStruct: %v", err)
+	}
+
+	_, err = handler.CreateJob(context.Background(), &pb.CreateJobRequest{
+		InputDataset:     "file-input",
+		Endpoint:         "/v1/chat/completions",
+		CompletionWindow: "6h",
+		ResourceRequest: &pb.JobResourceRequest{
+			ProviderConfig: providerConfig,
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("CreateJob returned error: %v", err)
+	}
+	if planner.enqueued == nil || planner.enqueued.ResourceRequest == nil {
+		t.Fatal("planner.Enqueue was not called with resource request")
+	}
+	got := planner.enqueued.ResourceRequest.ProviderConfig
+	if got["duration"] != "2h" {
+		t.Fatalf("duration = %#v, want 2h", got["duration"])
+	}
+	nested, ok := got["nested"].(map[string]any)
+	if !ok || nested["enabled"] != true {
+		t.Fatalf("nested provider config = %#v, want enabled=true", got["nested"])
 	}
 }
 

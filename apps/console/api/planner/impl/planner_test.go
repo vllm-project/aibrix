@@ -663,6 +663,58 @@ func TestHandleResourcePreparingUsesBackendAllocationTimeWindow(t *testing.T) {
 	}
 }
 
+func TestBatchParamsForProvisionDeadlineUsesResourceLifetime(t *testing.T) {
+	now := time.Date(2026, time.August, 19, 10, 0, 0, 0, time.UTC)
+	resourceEnd := now.Add(2 * time.Hour)
+	params, err := batchParamsForProvisionDeadline(
+		openai.BatchNewParams{CompletionWindow: "6h"},
+		&rmtypes.TimeWindow{EndTime: &resourceEnd},
+		now,
+	)
+	if err != nil {
+		t.Fatalf("batchParamsForProvisionDeadline: %v", err)
+	}
+	if got := params.CompletionWindow; got != "2h" {
+		t.Fatalf("completion window = %q, want 2h", got)
+	}
+}
+
+func TestJobModelRoundTripPreservesProviderConfig(t *testing.T) {
+	req := validReq("j-provider-config-round-trip")
+	req.ResourceRequest = &plannerapi.ResourceRequest{
+		Replicas: 2,
+		ProviderConfig: map[string]any{
+			"duration": "3h",
+			"nested": map[string]any{
+				"enabled": true,
+			},
+		},
+	}
+	req.BatchParams.Metadata = map[string]string{
+		"existing": "value",
+	}
+
+	restored := modelToJob(jobToModel(&queuedJob{
+		req:      req,
+		status:   plannerapi.JobStatusQueued,
+		queuedAt: time.Now().UTC(),
+	}))
+
+	if restored.req.ResourceRequest == nil {
+		t.Fatal("resource request was not restored")
+	}
+	if got := restored.req.ResourceRequest.ProviderConfig["duration"]; got != "3h" {
+		t.Fatalf("duration = %#v, want 3h", got)
+	}
+	nested, ok := restored.req.ResourceRequest.ProviderConfig["nested"].(map[string]any)
+	if !ok || nested["enabled"] != true {
+		t.Fatalf("nested provider config = %#v, want enabled=true", restored.req.ResourceRequest.ProviderConfig["nested"])
+	}
+	if got := restored.req.BatchParams.Metadata["existing"]; got != "value" {
+		t.Fatalf("metadata existing = %q, want value", got)
+	}
+}
+
 func TestGetJobRefreshesInProgressRequestCountsFromMDS(t *testing.T) {
 	const (
 		jobID   = "j-progress"

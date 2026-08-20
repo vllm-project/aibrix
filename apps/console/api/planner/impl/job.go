@@ -194,6 +194,18 @@ func modelToJob(rec *models.Job) *queuedJob {
 				}
 				delete(m, common.BatchExtraBodyField)
 			}
+			if providerConfigValue := m[common.MetadataConsoleProviderConfig]; providerConfigValue != "" {
+				var providerConfig map[string]any
+				if parseErr := json.Unmarshal([]byte(providerConfigValue), &providerConfig); parseErr == nil {
+					if req.ResourceRequest == nil {
+						req.ResourceRequest = &plannerapi.ResourceRequest{}
+					}
+					req.ResourceRequest.ProviderConfig = providerConfig
+				} else {
+					klog.Warningf("modelToJob: invalid provider config: %v", parseErr)
+				}
+				delete(m, common.MetadataConsoleProviderConfig)
+			}
 			req.BatchParams.Metadata = m
 		} else {
 			klog.Errorf("modelToJob: failed to marshal metadata: %v", err)
@@ -232,6 +244,16 @@ func modelToJob(rec *models.Job) *queuedJob {
 
 // jobToModel projects a queuedJob into the storage row.
 func jobToModel(j *queuedJob) *models.Job {
+	metadata := make(map[string]string, len(j.req.BatchParams.Metadata)+1)
+	for key, value := range j.req.BatchParams.Metadata {
+		metadata[key] = value
+	}
+	if j.req.ResourceRequest != nil && len(j.req.ResourceRequest.ProviderConfig) > 0 {
+		if providerConfigValue, err := json.Marshal(j.req.ResourceRequest.ProviderConfig); err == nil {
+			metadata[common.MetadataConsoleProviderConfig] = string(providerConfigValue)
+		}
+	}
+
 	rec := &models.Job{
 		ID:                  j.req.JobID,
 		Status:              string(j.status),
@@ -263,7 +285,7 @@ func jobToModel(j *queuedJob) *models.Job {
 		rec.ModelTemplateName = j.req.ModelTemplate.Name
 		rec.ModelTemplateVersion = j.req.ModelTemplate.Version
 	}
-	if md := j.req.BatchParams.Metadata; len(md) > 0 {
+	if md := metadata; len(md) > 0 {
 		// extraBody is embedded in metadata
 		if j.extraBody != nil {
 			md[common.BatchExtraBodyField] = string(j.extraBody)

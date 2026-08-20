@@ -65,6 +65,8 @@ type EnqueueRequest struct {
 // ResourceRequest captures user resource intent before planner/RM resolution.
 type ResourceRequest struct {
 	Replicas int `json:"replicas,omitempty"`
+	// ProviderConfig contains opaque provider-specific resource settings.
+	ProviderConfig map[string]any `json:"provider_config,omitempty"`
 }
 
 // ClientConfig is the Console-supplied per-job smart-client control block. The
