@@ -70,8 +70,9 @@ tests:
       path: kind
       value: EnvoyPatchPolicy
     asserts:
-      - contains:
-          path: spec.jsonPatches
-          content:
-            type: type.googleapis.com/envoy.config.listener.v3.Listener
-            name: aibrix-system/aibrix-eg/https
+      - equal:
+          path: spec.jsonPatches[2].type
+          value: type.googleapis.com/envoy.config.listener.v3.Listener
+      - equal:
+          path: spec.jsonPatches[2].name
+          value: aibrix-system/aibrix-eg/https
