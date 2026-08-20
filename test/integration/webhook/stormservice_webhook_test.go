@@ -207,5 +207,33 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 			},
 			failed: true,
 		}),
+
+		ginkgo.Entry("rejects role dependency on missing role", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				stormService := wrapper.MakeStormService("missing-dependency").
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					WithRole("worker", false, nil).
+					Obj()
+				stormService.Spec.Template.Spec.Roles[0].Dependencies = []string{"head"}
+				return stormService
+			},
+			failed: true,
+		}),
+
+		ginkgo.Entry("rejects circular role dependency", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				stormService := wrapper.MakeStormService("circular-dependency").
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					WithRole("head", false, nil).
+					WithRole("worker", false, nil).
+					Obj()
+				stormService.Spec.Template.Spec.Roles[0].Dependencies = []string{"worker"}
+				stormService.Spec.Template.Spec.Roles[1].Dependencies = []string{"head"}
+				return stormService
+			},
+			failed: true,
+		}),
 	)
 })

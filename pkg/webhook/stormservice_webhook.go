@@ -44,7 +44,7 @@ type StormServiceCustomDefaulter struct {
 
 //+kubebuilder:webhook:path=/mutate-orchestration-aibrix-ai-v1alpha1-stormservice,mutating=true,failurePolicy=ignore,sideEffects=None,groups=orchestration.aibrix.ai,resources=stormservices,verbs=create;update,versions=v1alpha1,name=mstormservice.kb.io,admissionReviewVersions=v1
 
-var _ webhook.CustomDefaulter = &StormServiceCustomDefaulter{}
+var _ webhook.CustomValidator = &StormServiceCustomDefaulter{}
 
 // Default implements webhook.Defaulter so a webhook will be registered for the type
 func (r *StormServiceCustomDefaulter) Default(_ context.Context, obj runtime.Object) error {
@@ -171,9 +171,17 @@ func (r *StormServiceCustomDefaulter) ValidateCreate(ctx context.Context, obj ru
 		return nil, fmt.Errorf("expected a StormService object but got %T", obj)
 	}
 
+	if stormService.Spec.Template.Spec == nil {
+		return nil, fmt.Errorf("stormService template spec is nil")
+	}
+
 	// 1. Validate StormService.Name itself (≤63, DNS-1123 compliant)
 	if len(stormService.Name) > 63 {
 		return nil, fmt.Errorf("StormService name must be no more than 63 characters")
+	}
+
+	if err := validateRoleDependencies(stormService.Spec.Template.Spec.Roles); err != nil {
+		return nil, err
 	}
 
 	// 2. Only validate roles that actually create PodSet (i.e., PodGroupSize > 1)
@@ -205,13 +213,60 @@ func (r *StormServiceCustomDefaulter) ValidateCreate(ctx context.Context, obj ru
 }
 
 // ValidateUpdate implements webhook.Validator so a webhook will be registered for the type
-func (r *StormServiceCustomDefaulter) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	// TODO(user): fill in your validation logic upon object update.
-	return nil, nil
+func (r *StormServiceCustomDefaulter) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+	return r.ValidateCreate(ctx, newObj)
 }
 
 // ValidateDelete implements webhook.Validator so a webhook will be registered for the type
 func (r *StormServiceCustomDefaulter) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 	// TODO(user): fill in your validation logic upon object deletion.
 	return nil, nil
+}
+
+func validateRoleDependencies(roles []orchestrationv1alpha1.RoleSpec) error {
+	roleNames := make(map[string]struct{}, len(roles))
+	inDegree := make(map[string]int, len(roles))
+	graph := make(map[string][]string, len(roles))
+
+	for _, role := range roles {
+		if _, ok := roleNames[role.Name]; ok {
+			return fmt.Errorf("duplicate role name %q", role.Name)
+		}
+		roleNames[role.Name] = struct{}{}
+		inDegree[role.Name] = 0
+	}
+
+	for _, role := range roles {
+		for _, depName := range role.Dependencies {
+			if _, ok := roleNames[depName]; !ok {
+				return fmt.Errorf("role %q depends on non-existent role %q", role.Name, depName)
+			}
+			graph[depName] = append(graph[depName], role.Name)
+			inDegree[role.Name]++
+		}
+	}
+
+	queue := make([]string, 0, len(roles))
+	for name, degree := range inDegree {
+		if degree == 0 {
+			queue = append(queue, name)
+		}
+	}
+
+	visited := 0
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		visited++
+		for _, dependent := range graph[current] {
+			inDegree[dependent]--
+			if inDegree[dependent] == 0 {
+				queue = append(queue, dependent)
+			}
+		}
+	}
+	if visited != len(roles) {
+		return fmt.Errorf("circular dependency detected among roles")
+	}
+	return nil
 }

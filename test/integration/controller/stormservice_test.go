@@ -192,6 +192,102 @@ var _ = ginkgo.Describe("StormService controller test", func() {
 				},
 			},
 		),
+		ginkgo.Entry("respect role dependencies in StormService with multiple replicas",
+			&testValidatingCase{
+				makeStormService: func() *orchestrationapi.StormService {
+					const (
+						headRoleName   = "head"
+						workerRoleName = "worker"
+					)
+					matchLabel := map[string]string{"app": "storm-deps-test"}
+					podTemplate := corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: matchLabel,
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "dummy", Image: "alpine:latest", Command: []string{"sleep", "3600"}},
+							},
+						},
+					}
+
+					roleSetSpec := &orchestrationapi.RoleSetSpec{
+						Roles: []orchestrationapi.RoleSpec{
+							{
+								Name:     headRoleName,
+								Replicas: ptr.To(int32(1)),
+								Template: podTemplate,
+							},
+							{
+								Name:         workerRoleName,
+								Replicas:     ptr.To(int32(2)),
+								Dependencies: []string{headRoleName},
+								Template:     podTemplate,
+							},
+						},
+						UpdateStrategy: orchestrationapi.SequentialRoleSetStrategyType,
+					}
+
+					return wrapper.MakeStormService("stormservice-with-deps").
+						Namespace(ns.Name).
+						Replicas(ptr.To(int32(2))).
+						Selector(metav1.SetAsLabelSelector(matchLabel)).
+						UpdateStrategyType(orchestrationapi.InPlaceUpdateStormServiceStrategyType).
+						RoleSetTemplateMeta(metav1.ObjectMeta{Labels: matchLabel}, roleSetSpec).
+						Obj()
+				},
+				updates: []*update{
+					{
+						updateFunc: func(ss *orchestrationapi.StormService) {
+							gomega.Expect(k8sClient.Create(ctx, ss)).To(gomega.Succeed())
+							validation.WaitForRoleSetsCreated(ctx, k8sClient, ns.Name, ss.Name, 2)
+							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.StormServiceNameLabelKey, ss.Name, 2)
+							validation.MarkPodsReady(ctx, k8sClient, ns.Name, constants.RoleNameLabelKey, "head")
+						},
+						checkFunc: func(ctx context.Context, k8sClient client.Client, ss *orchestrationapi.StormService) {
+							gomega.Eventually(func(g gomega.Gomega) {
+								roleSets := listStormServiceRoleSets(ctx, k8sClient, ns.Name, ss.Name)
+								g.Expect(roleSets).To(gomega.HaveLen(2))
+								for i := range roleSets {
+									g.Expect(validation.ValidateRoleStatus(&roleSets[i], "head", 1)).To(gomega.Succeed())
+								}
+							}, time.Second*10, time.Millisecond*250).Should(gomega.Succeed())
+						},
+					},
+					{
+						updateFunc: func(ss *orchestrationapi.StormService) {
+							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.StormServiceNameLabelKey, ss.Name, 6)
+							validation.MarkPodsReady(ctx, k8sClient, ns.Name, constants.RoleNameLabelKey, "worker")
+						},
+						checkFunc: func(ctx context.Context, k8sClient client.Client, ss *orchestrationapi.StormService) {
+							gomega.Eventually(func(g gomega.Gomega) {
+								latest := &orchestrationapi.StormService{}
+								g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ss), latest)).To(gomega.Succeed())
+
+								foundHead := false
+								foundWorker := false
+								for _, rs := range latest.Status.RoleStatuses {
+									if rs.Name == "head" {
+										g.Expect(rs.Replicas).To(gomega.Equal(int32(2)))
+										g.Expect(rs.ReadyReplicas).To(gomega.Equal(int32(2)))
+										foundHead = true
+									}
+									if rs.Name == "worker" {
+										g.Expect(rs.Replicas).To(gomega.Equal(int32(4)))
+										g.Expect(rs.ReadyReplicas).To(gomega.Equal(int32(4)))
+										foundWorker = true
+									}
+								}
+								g.Expect(foundHead).To(gomega.BeTrue())
+								g.Expect(foundWorker).To(gomega.BeTrue())
+								g.Expect(latest.Status.Replicas).To(gomega.Equal(int32(2)))
+								g.Expect(latest.Status.ReadyReplicas).To(gomega.Equal(int32(2)))
+							}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
+						},
+					},
+				},
+			},
+		),
 		ginkgo.Entry("scale-in deletes not-ready RoleSet before ready RoleSet in same revision",
 			func() *testValidatingCase {
 				var readyRoleSetName string

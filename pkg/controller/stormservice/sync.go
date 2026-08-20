@@ -70,6 +70,82 @@ func (r *StormServiceReconciler) sync(ctx context.Context, stormService *orchest
 	return 0, nil
 }
 
+// topologicalSortRolesFromSpec sorts roles by their dependencies using Kahn's algorithm.
+// Returns sorted []RoleSpec, or error if the dependency graph is invalid.
+func (r *StormServiceReconciler) topologicalSortRolesFromSpec(roles []orchestrationv1alpha1.RoleSpec) ([]orchestrationv1alpha1.RoleSpec, error) {
+	if len(roles) == 0 {
+		return roles, nil
+	}
+
+	// Build name -> role map and graph
+	nameToRole := make(map[string]orchestrationv1alpha1.RoleSpec)
+	roleNames := make(map[string]bool)
+	for _, role := range roles {
+		if roleNames[role.Name] {
+			return nil, fmt.Errorf("duplicate role name %q", role.Name)
+		}
+		nameToRole[role.Name] = role
+		roleNames[role.Name] = true
+	}
+
+	// Validate dependencies exist
+	for _, role := range roles {
+		for _, dep := range role.Dependencies {
+			if !roleNames[dep] {
+				return nil, fmt.Errorf("role %q depends on non-existent role %q", role.Name, dep)
+			}
+		}
+	}
+
+	// Build adjacency list and in-degree
+	graph := make(map[string][]string) // dep -> [dependents]
+	inDegree := make(map[string]int)
+
+	for _, role := range roles {
+		graph[role.Name] = []string{}
+		inDegree[role.Name] = 0
+	}
+
+	for _, role := range roles {
+		for _, dep := range role.Dependencies {
+			graph[dep] = append(graph[dep], role.Name)
+			inDegree[role.Name]++
+		}
+	}
+
+	// Kahn's algorithm
+	queue := []string{}
+	for _, role := range roles {
+		if inDegree[role.Name] == 0 {
+			queue = append(queue, role.Name)
+		}
+	}
+
+	resultNames := []string{}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		resultNames = append(resultNames, cur)
+		for _, next := range graph[cur] {
+			inDegree[next]--
+			if inDegree[next] == 0 {
+				queue = append(queue, next)
+			}
+		}
+	}
+
+	if len(resultNames) != len(roles) {
+		return nil, fmt.Errorf("circular dependency detected among roles")
+	}
+
+	// Reconstruct sorted RoleSpec slice
+	sorted := make([]orchestrationv1alpha1.RoleSpec, len(resultNames))
+	for i, name := range resultNames {
+		sorted[i] = nameToRole[name]
+	}
+	return sorted, nil
+}
+
 func (r *StormServiceReconciler) syncHeadlessService(ctx context.Context, service *orchestrationv1alpha1.StormService) error {
 	expectedService := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{

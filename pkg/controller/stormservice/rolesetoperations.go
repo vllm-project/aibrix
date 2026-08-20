@@ -58,6 +58,19 @@ func (r *StormServiceReconciler) getRoleSetList(ctx context.Context, selector *m
 
 // renderRoleSet creates a RoleSet with per-role revision annotations
 func (r *StormServiceReconciler) renderRoleSet(stormService *orchestrationv1alpha1.StormService, index *int, revisionName string, roleRevisions map[string]*apps.ControllerRevision) (*orchestrationv1alpha1.RoleSet, error) {
+	// deep copy the template spec first
+	spec := stormService.Spec.Template.Spec.DeepCopy()
+	if spec == nil {
+		return nil, fmt.Errorf("stormService template spec is nil")
+	}
+
+	// Sort roles by dependency topological order
+	sortedRoles, err := r.topologicalSortRolesFromSpec(spec.Roles)
+	if err != nil {
+		return nil, fmt.Errorf("failed to topologically sort roles in StormService %s/%s: %w", stormService.Namespace, stormService.Name, err)
+	}
+	spec.Roles = sortedRoles
+
 	roleSet := &orchestrationv1alpha1.RoleSet{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: utils.Shorten(fmt.Sprintf("%s-roleset-", stormService.Name), true, true),
@@ -68,7 +81,7 @@ func (r *StormServiceReconciler) renderRoleSet(stormService *orchestrationv1alph
 			Labels:      utils.DeepCopyMap(stormService.Spec.Template.Labels),
 			Annotations: utils.DeepCopyMap(stormService.Spec.Template.Annotations),
 		},
-		Spec: *stormService.Spec.Template.Spec.DeepCopy(),
+		Spec: *spec,
 	}
 	if roleSet.Labels == nil {
 		roleSet.Labels = make(map[string]string)
