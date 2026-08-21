@@ -305,20 +305,50 @@ Target and General Headers
 
 .. list-table::
    :header-rows: 1
-   :widths: 25 75
+   :widths: 25 20 55
 
    * - Header Name
+     - Direction
      - Description
    * - ``request-id``
+     - Response
      - Unique request ID associated with the client request. Useful for correlating logs.
    * - ``x-went-into-req-headers``
+     - Backend request, Response
      - Indicates whether request headers were processed correctly. Used for debugging header parsing issues.
    * - ``target-pod``
-     - The destination pod selected by the routing algorithm. Useful for verifying routing decisions.
+     - Response
+     - Name of the destination pod selected by the routing algorithm. Useful for verifying routing decisions.
+   * - ``target-pod-ip``
+     - Response
+     - Address of the destination pod selected by the routing algorithm.
    * - ``routing-strategy``
-     - The routing strategy applied to this request.
+     - Request, Response
+     - Selects the routing strategy for the request and reports the strategy applied in the response.
    * - ``external-filter``
+     - Request
      - Label selector expression used to further filter candidate pods before routing.
+   * - ``model``
+     - Backend request
+     - Model name injected into the backend request when no explicit routing strategy is selected.
+   * - ``config-profile``
+     - Request
+     - Selects a model configuration profile for the request.
+   * - ``x-session-id``
+     - Request, Response
+     - Session identifier used by ``session-affinity`` routing. The response value should be sent on subsequent requests to retain affinity.
+   * - ``x-aibrix-session-key``
+     - Request
+     - Caller-owned opaque session key used by ``session-affinity`` routing.
+   * - ``traceparent``
+     - Request, Backend request
+     - W3C Trace Context propagated through requests initiated by the gateway, including prefill-decode routing.
+   * - ``prefill-target-pod``
+     - Response
+     - Name of the prefill pod selected by ``pd`` routing.
+   * - ``prefill-target-pod-ip``
+     - Response
+     - Address of the prefill pod selected by ``pd`` routing.
 
 Routing and Error Debugging Headers
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
