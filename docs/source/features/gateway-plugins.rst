@@ -321,7 +321,7 @@ Target and General Headers
      - Name of the destination pod selected by the routing algorithm. Useful for verifying routing decisions.
    * - ``target-pod-ip``
      - Response
-     - Address of the destination pod selected by the routing algorithm.
+     - IP address of the destination pod selected by the routing algorithm.
    * - ``routing-strategy``
      - Request, Response
      - Selects the routing strategy for the request and reports the strategy applied in the response.
@@ -348,7 +348,7 @@ Target and General Headers
      - Name of the prefill pod selected by ``pd`` routing.
    * - ``prefill-target-pod-ip``
      - Response
-     - Address of the prefill pod selected by ``pd`` routing.
+     - IP address of the prefill pod selected by ``pd`` routing.
 
 Routing and Error Debugging Headers
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
