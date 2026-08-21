@@ -101,6 +101,9 @@ func (f *RestMetricsFetcher) fetchFromPod(ctx context.Context, pod v1.Pod, sourc
 			source.TargetMetric, identifier, err)
 		return 0.0, err
 	}
+	if metricValue == nil {
+		return 0.0, fmt.Errorf("metric value is nil for %s", source.TargetMetric)
+	}
 
 	return metricValue.GetSimpleValue(), nil
 }
@@ -278,6 +281,9 @@ func (f *ExternalMetricsFetcher) fetchFromGPUOptimizer(ctx context.Context, pod 
 		klog.Warningf("Failed to fetch metric %s from GPU-Optimizer %s: %v",
 			source.TargetMetric, source.Endpoint, err)
 		return 0.0, err
+	}
+	if metricValue == nil {
+		return 0.0, fmt.Errorf("metric value is nil for %s", source.TargetMetric)
 	}
 
 	// Adaptation: Global metric -> per-pod value
