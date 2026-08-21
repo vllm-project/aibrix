@@ -32,11 +32,7 @@ import (
 
 const (
 	RouterSessionAffinity types.RoutingAlgorithm = "session-affinity"
-	// NOTE: sessionIDHeader must strictly match types.HeaderSessionID
-	// defined in pkg/plugins/gateway/types.go to prevent routing failures.
-	sessionIDHeader  string = "x-session-id"
-	sessionKeyHeader string = "x-aibrix-session-key"
-	maxSessionKeyLen        = 256
+	maxSessionKeyLen                              = 256
 )
 
 func init() {
@@ -59,7 +55,7 @@ func (r *sessionAffinityRouter) Route(ctx *types.RoutingContext, readyPodList ty
 		return r.fallbackRoute(ctx, readyPodList)
 	}
 
-	sessionID := ctx.ReqHeaders[sessionIDHeader]
+	sessionID := ctx.ReqHeaders[types.HeaderSessionID]
 	var targetAddr string
 
 	if sessionID != "" {
@@ -90,7 +86,7 @@ func (r *sessionAffinityRouter) Route(ctx *types.RoutingContext, readyPodList ty
 		}
 	}
 
-	if selected := rendezvousPod(ctx, readyPodList.All(), ctx.ReqHeaders[sessionKeyHeader]); selected != nil {
+	if selected := rendezvousPod(ctx, readyPodList.All(), ctx.ReqHeaders[types.HeaderSessionKey]); selected != nil {
 		port := utils.GetModelPortForPod(ctx.RequestID, selected)
 		addr := net.JoinHostPort(selected.Status.PodIP, strconv.Itoa(int(port)))
 		ctx.SetTargetPod(selected)
@@ -151,7 +147,7 @@ func (r *sessionAffinityRouter) setSessionHeader(ctx *types.RoutingContext, addr
 	if ctx.RespHeaders == nil {
 		ctx.RespHeaders = make(map[string]string)
 	}
-	ctx.RespHeaders[sessionIDHeader] = base64.StdEncoding.EncodeToString([]byte(addr))
+	ctx.RespHeaders[types.HeaderSessionID] = base64.StdEncoding.EncodeToString([]byte(addr))
 }
 
 // fallbackRoute selects a random ready pod and returns its IP:Port as the target address.
@@ -192,7 +188,7 @@ func (r *sessionAffinityRouter) ScoreAll(ctx *types.RoutingContext, readyPodList
 		return scores, scored, nil
 	}
 
-	sessionID := ctx.ReqHeaders[sessionIDHeader]
+	sessionID := ctx.ReqHeaders[types.HeaderSessionID]
 	var targetAddr string
 
 	if sessionID != "" {
@@ -224,7 +220,7 @@ func (r *sessionAffinityRouter) ScoreAll(ctx *types.RoutingContext, readyPodList
 	}
 
 	if !matchedSessionID {
-		if selected := rendezvousPod(ctx, pods, ctx.ReqHeaders[sessionKeyHeader]); selected != nil {
+		if selected := rendezvousPod(ctx, pods, ctx.ReqHeaders[types.HeaderSessionKey]); selected != nil {
 			for i, pod := range pods {
 				if pod == selected {
 					scores[i] = 1

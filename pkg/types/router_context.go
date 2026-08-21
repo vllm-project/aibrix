@@ -67,6 +67,14 @@ const (
 	PolarityMost                  // Higher score is better
 )
 
+const (
+	// HeaderSessionID is the header used for session affinity routing.
+	HeaderSessionID = "x-session-id"
+	// HeaderSessionKey carries a caller-owned, opaque session key. Unlike
+	// HeaderSessionID, it never encodes or exposes a backend address.
+	HeaderSessionKey = "x-aibrix-session-key"
+)
+
 // PodScorer defines the interface for strategies that support batch soft-scoring
 type PodScorer interface {
 	ScoreAll(ctx *RoutingContext, readyPodList PodList) (scores []float64, scored []bool, err error)
