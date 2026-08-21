@@ -211,6 +211,8 @@ Specialized
   .. note::
       ``x-session-id`` encodes only network location. It is not a security token and must not be used for authentication or authorization.
 
+      Callers can instead send a stable, opaque ``x-aibrix-session-key`` value. The gateway consistently maps that value to a ready pod without exposing a backend address. The key is only used when ``routing-strategy`` is ``session-affinity`` and must not be used for authentication or authorization.
+
   .. code-block:: bash
 
       curl -v http://${ENDPOINT}/v1/chat/completions \
@@ -317,14 +319,14 @@ Target and General Headers
      - Backend request, Response
      - Indicates whether request headers were processed correctly. Used for debugging header parsing issues.
    * - ``target-pod``
-     - Response
-     - Name of the destination pod selected by the routing algorithm. Useful for verifying routing decisions.
+     - Backend request, Response
+     - Identifies the destination selected by the routing algorithm: the backend request receives its ``IP:port`` address, while the response reports its pod name.
    * - ``target-pod-ip``
      - Response
-     - IP address of the destination pod selected by the routing algorithm.
+     - ``IP:port`` address of the destination pod selected by the routing algorithm.
    * - ``routing-strategy``
-     - Request, Response
-     - Selects the routing strategy for the request and reports the strategy applied in the response.
+     - Request, Backend request, Response
+     - Selects the routing strategy for the request, forwards the applied strategy to the backend, and reports it in the response.
    * - ``external-filter``
      - Request
      - Label selector expression used to further filter candidate pods before routing.
@@ -334,6 +336,9 @@ Target and General Headers
    * - ``config-profile``
      - Request
      - Selects a model configuration profile for the request.
+   * - ``x-aibrix-config-profile``
+     - Response
+     - Reports the concrete profile selected when ``config-profile`` is ``auto``.
    * - ``x-session-id``
      - Request, Response
      - Session identifier used by ``session-affinity`` routing. The response value should be sent on subsequent requests to retain affinity.
