@@ -48,6 +48,10 @@ type Store interface {
 	// Returns jobs sorted by created_at descending, hasMore indicates if more results exist.
 	ListAllJobs(ctx context.Context, after string, limit int) ([]*models.Job, bool, error)
 
+	// Catalog snapshots are independently replaced by provider and view type.
+	UpsertCatalogSnapshot(ctx context.Context, snapshot *models.CatalogSnapshot) error
+	ListCatalogSnapshots(ctx context.Context, provider string) ([]*models.CatalogSnapshot, error)
+
 	// Models
 	ListModels(ctx context.Context, search, category string) ([]*pb.Model, error)
 	GetModel(ctx context.Context, id string) (*pb.Model, error)

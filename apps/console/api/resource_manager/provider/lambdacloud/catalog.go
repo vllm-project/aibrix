@@ -114,14 +114,14 @@ func (c *lambdaCatalog) ListPricing(ctx context.Context, _ *catalog.ResourceList
 // per-region capacity, not the allocated/allocatable/supply breakdown that
 // catalog.Resource represents.
 func (c *lambdaCatalog) ListResources(_ context.Context, _ *catalog.ResourceListOptions) ([]catalog.Resource, error) {
-	return []catalog.Resource{}, nil
+	return nil, types.ErrNotImplemented
 }
 
 // ListResourcePredictions is not supported for Lambda.
 func (c *lambdaCatalog) ListResourcePredictions(
 	_ context.Context, _ *catalog.ResourceListOptions,
 ) (map[string]catalog.Resource, error) {
-	return map[string]catalog.Resource{}, nil
+	return nil, types.ErrNotImplemented
 }
 
 // ListPricingPredictions is not supported for Lambda (on-demand pricing only).
