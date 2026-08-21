@@ -297,15 +297,30 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 	requestBuffers.Delete(requestID)
 
 	if err := sonic.Unmarshal(finalBody, &res); err != nil {
-		klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
+		klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(finalBody))
 		complete = true
 		processingRes = buildErrorResponse(envoyTypePb.StatusCode_InternalServerError, err.Error(), "", "", HeaderErrorResponseUnmarshal, "true")
 		return
 	}
 
 	if len(res.Model) == 0 {
+		// The body is not a recognized OpenAI response. Normalize any upstream error payload
+		// (nested {"error":{...}} or the flat shape) to a single envelope and pass it through;
+		// headerStatus == 0 because this 200 path carries a fake-success status, so the real
+		// status is derived from the body's numeric code (see upstreamErrorHTTPStatus).
+		if body, code, ok := normalizeUpstreamErrorBody(finalBody, 0); ok {
+			klog.ErrorS(ErrorUnknownResponse, "unexpected response", "requestID", requestID, "responseBody", string(finalBody))
+			complete = true
+			errHeaders := buildEnvoyProxyHeaders(nil, HeaderErrorResponseUnknown, "true")
+			processingRes = buildErrorResponseWithBody(code, body, errHeaders)
+			return
+		}
+
+		// Fallback: the body is not a recognizable error payload (e.g. non-JSON or an
+		// arbitrary object). Wrap the reassembled finalBody as the error message rather
+		// than the current chunk, so multi-chunk error bodies are preserved in full.
 		msg := ErrorUnknownResponse.Error()
-		responseBodyContent := string(b.ResponseBody.GetBody())
+		responseBodyContent := string(finalBody)
 		if len(responseBodyContent) != 0 {
 			msg = responseBodyContent
 		}
@@ -340,6 +355,112 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 		}
 	}
 	return
+}
+
+// normalizeUpstreamErrorBody normalizes an upstream engine's error payload to the nested
+// {"error": {...}} shape. It recognizes both the nested form ({"error": {...}}) and the
+// flat form where the error fields sit at the top level. It returns the normalized body,
+// the HTTP status to use for the response, and whether the body was a recognizable error
+// payload (false for invalid JSON, a non-object "error" field, or for flat payloads:
+// missing message). For nested payloads, a missing message falls back to a generic error
+// string rather than rejecting the payload.
+//
+// headerStatus is the upstream HTTP status the gateway observed (> 0 for a real non-200
+// :status, 0 when the 200 header is a fake success over an error body). The HTTPS-status
+// precedence rule (header wins over body code, semantic string code only preserved) lives in
+// upstreamErrorHTTPStatus.
+func normalizeUpstreamErrorBody(body []byte, headerStatus int) (string, envoyTypePb.StatusCode, bool) {
+	if !gjson.ValidBytes(body) {
+		return "", 0, false
+	}
+
+	nested := gjson.GetBytes(body, "error")
+	if nested.Exists() && nested.IsObject() {
+		return renderErrorBody(nested), upstreamErrorHTTPStatus(nested, headerStatus), true
+	}
+
+	// Flat shape: the error fields sit at the top level. Require a JSON object with a
+	// message field so ordinary (non-error) responses such as arrays or primitives are
+	// not misclassified.
+	flat := gjson.ParseBytes(body)
+	if !flat.IsObject() || !flat.Get("message").Exists() {
+		return "", 0, false
+	}
+	return renderErrorBody(flat), upstreamErrorHTTPStatus(flat, headerStatus), true
+}
+
+// renderErrorBody renders the normalized {"error": {...}} JSON body from a gjson Result
+// representing either the nested error object or the flat error object. Fields absent from
+// the upstream payload are emitted as JSON null, except message which falls back to a
+// generic error string. The "code" field preserves whatever type the upstream supplied
+// (integer HTTP status, string semantic code, or null) verbatim.
+func renderErrorBody(e gjson.Result) string {
+	obj := map[string]interface{}{}
+
+	if m := e.Get("message"); m.Exists() && m.Type != gjson.Null {
+		obj["message"] = m.String()
+	} else {
+		obj["message"] = ErrorUnknownResponse.Error()
+	}
+
+	if t := e.Get("type"); t.Exists() && t.Type != gjson.Null {
+		obj["type"] = t.String()
+	} else {
+		obj["type"] = nil
+	}
+
+	if p := e.Get("param"); p.Exists() && p.Type != gjson.Null {
+		obj["param"] = p.Value()
+	} else {
+		obj["param"] = nil
+	}
+
+	if c := e.Get("code"); c.Exists() && c.Type != gjson.Null {
+		obj["code"] = c.Value()
+	} else {
+		obj["code"] = nil
+	}
+
+	body, err := sonic.Marshal(map[string]interface{}{"error": obj})
+	if err != nil {
+		klog.ErrorS(err, "failed to marshal upstream error body")
+		return `{"error":{"message":"internal server error while formatting error response","type":"api_error","code":null,"param":null}}`
+	}
+	return string(body)
+}
+
+// upstreamErrorHTTPStatus derives the envoy HTTP status for an upstream error payload.
+// Precedence (unified across both response paths via headerStatus):
+//
+//  1. headerStatus > 0 (a real non-200 :status): use it — authoritative, and the body's own
+//     "code" must not override a genuine transport status.
+//  2. headerStatus == 0 (a 200 body that smuggled an error): the 200 header is a fake success,
+//     so derive the status from the body's numeric "code" (stringified integers like "400" too)
+//     — this stops clients getting HTTP 200 wrapping an error body.
+//  3. A non-numeric semantic "code" (e.g. "invalid_api_key") never derives the status; it is
+//     only preserved verbatim in the body. Residual case with no usable status: return 500.
+//
+// Callers MUST pass the real observed header status (respErrorCode on the non-200 path, 0 on
+// the 200 path) rather than re-deriving it, so the rule stays in one place.
+func upstreamErrorHTTPStatus(e gjson.Result, headerStatus int) envoyTypePb.StatusCode {
+	if headerStatus > 0 {
+		return envoyTypePb.StatusCode(headerStatus)
+	}
+	c := e.Get("code")
+	if c.Exists() && c.Type == gjson.Number {
+		if v := c.Int(); v >= 100 && v < 600 {
+			return envoyTypePb.StatusCode(v)
+		}
+	}
+	// Some upstream engines or intermediary proxies stringify the status code.
+	if c.Exists() && c.Type == gjson.String {
+		if v, err := strconv.Atoi(c.String()); err == nil {
+			if v >= 100 && v < 600 {
+				return envoyTypePb.StatusCode(v)
+			}
+		}
+	}
+	return envoyTypePb.StatusCode_InternalServerError
 }
 
 func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time.Time,

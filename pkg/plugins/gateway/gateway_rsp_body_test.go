@@ -23,14 +23,19 @@ import (
 	"time"
 
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/tidwall/gjson"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 )
+
+// sentinelNull is a test-only sentinel meaning "the expected value should be JSON null".
+const sentinelNull = "<null>"
 
 // mockRateLimiter implements ratelimiter.RateLimiter for testing
 type mockRateLimiter struct {
@@ -317,6 +322,234 @@ func TestProcessLanguageResponse_ChunkedAccumulation(t *testing.T) {
 	assert.Equal(t, int64(10), promptTokens)
 	assert.Equal(t, int64(5), completionTokens)
 	assert.Equal(t, int64(15), totalTokens)
+}
+
+func TestProcessLanguageResponse_UpstreamErrorNormalization(t *testing.T) {
+	tests := []struct {
+		name      string
+		chunks    [][]byte
+		wantCode  envoyTypePb.StatusCode
+		wantMsg   string
+		wantType  string
+		wantParam string // sentinelNull means expect JSON null
+	}{
+		{
+			name:      "nested shape passthrough",
+			chunks:    [][]byte{[]byte(`{"error": {"message": "top_p must be in (0, 1], got 2.0.", "type": "BadRequestError", "param": "top_p", "code": 400}}`)},
+			wantCode:  envoyTypePb.StatusCode_BadRequest,
+			wantMsg:   "top_p must be in (0, 1], got 2.0.",
+			wantType:  "BadRequestError",
+			wantParam: "top_p",
+		},
+		{
+			name: "flat shape normalized",
+			chunks: [][]byte{[]byte(
+				`{"object": "error", "message": "max_new_tokens must be at least 0, got -1.", "type": "BadRequestError", "param": null, "code": 400}`,
+			)},
+			wantCode:  envoyTypePb.StatusCode_BadRequest,
+			wantMsg:   "max_new_tokens must be at least 0, got -1.",
+			wantType:  "BadRequestError",
+			wantParam: sentinelNull,
+		},
+		{
+			name:      "non-error JSON body falls back to string wrap",
+			chunks:    [][]byte{[]byte(`{"foo": "bar"}`)},
+			wantCode:  envoyTypePb.StatusCode_InternalServerError,
+			wantMsg:   `{"foo": "bar"}`,
+			wantType:  "api_error",
+			wantParam: sentinelNull,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requestID := "test-err-norm-" + tt.name + "-" + time.Now().Format("150405.000")
+
+			var res *extProcPb.ProcessingResponse
+			var complete bool
+			for i, chunk := range tt.chunks {
+				isLast := i == len(tt.chunks)-1
+				req := &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{
+						Body:        chunk,
+						EndOfStream: isLast,
+					},
+				}
+				res, complete, _, _, _ = processLanguageResponse(requestID, req)
+				if !isLast {
+					assert.False(t, complete, "should not be complete on partial chunk %d", i)
+					assert.NotNil(t, res)
+				}
+			}
+
+			assert.True(t, complete)
+			assert.NotNil(t, res)
+			immResp := res.GetImmediateResponse()
+			assert.NotNil(t, immResp)
+			assert.Equal(t, tt.wantCode, immResp.Status.Code)
+
+			errObj := gjson.Parse(immResp.Body).Get("error")
+			assert.True(t, errObj.IsObject(), "expected nested error object, got: %s", immResp.Body)
+			assert.Equal(t, tt.wantMsg, errObj.Get("message").String())
+			assert.Equal(t, tt.wantType, errObj.Get("type").String())
+
+			if tt.wantParam == sentinelNull {
+				assert.True(t, errObj.Get("param").Exists() && errObj.Get("param").Type == gjson.Null, "expected param to be null, got: %s", immResp.Body)
+			} else if tt.wantParam != "" {
+				assert.Equal(t, tt.wantParam, errObj.Get("param").String())
+			}
+		})
+	}
+}
+
+func TestNormalizeUpstreamError(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      []byte
+		wantOK    bool
+		wantCode  envoyTypePb.StatusCode
+		wantMsg   string
+		wantType  string
+		wantParam string
+		wantCodeV string
+	}{
+		{
+			name:      "nested shape with all fields",
+			body:      []byte(`{"error": {"message": "bad request", "type": "BadRequestError", "param": "top_p", "code": 400}}`),
+			wantOK:    true,
+			wantCode:  envoyTypePb.StatusCode_BadRequest,
+			wantMsg:   "bad request",
+			wantType:  "BadRequestError",
+			wantParam: "top_p",
+			wantCodeV: "400",
+		},
+		{
+			name:      "flat shape with null param",
+			body:      []byte(`{"object": "error", "message": "max_new_tokens must be at least 0, got -1.", "type": "BadRequestError", "param": null, "code": 400}`),
+			wantOK:    true,
+			wantCode:  envoyTypePb.StatusCode_BadRequest,
+			wantMsg:   "max_new_tokens must be at least 0, got -1.",
+			wantType:  "BadRequestError",
+			wantParam: sentinelNull,
+			wantCodeV: "400",
+		},
+		{
+			name:     "nested error missing message falls back to generic",
+			body:     []byte(`{"error": {"type": "BadRequestError", "code": 400}}`),
+			wantOK:   true,
+			wantCode: envoyTypePb.StatusCode_BadRequest,
+			wantMsg:  "<fallback>",
+		},
+		{
+			name:   "non-error JSON is not classified as error",
+			body:   []byte(`{"model": "test-model", "choices": []}`),
+			wantOK: false,
+		},
+		{
+			name:   "invalid JSON",
+			body:   []byte(`{invalid json}`),
+			wantOK: false,
+		},
+		{
+			name:      "string semantic code falls back to 500 but preserves code in body",
+			body:      []byte(`{"error": {"message": "invalid api key", "type": "authentication_error", "code": "invalid_api_key"}}`),
+			wantOK:    true,
+			wantCode:  envoyTypePb.StatusCode_InternalServerError,
+			wantMsg:   "invalid api key",
+			wantType:  "authentication_error",
+			wantCodeV: "invalid_api_key",
+		},
+		{
+			name:      "flat shape with only message, others null",
+			body:      []byte(`{"message": "something went wrong"}`),
+			wantOK:    true,
+			wantCode:  envoyTypePb.StatusCode_InternalServerError,
+			wantMsg:   "something went wrong",
+			wantType:  sentinelNull,
+			wantParam: sentinelNull,
+			wantCodeV: sentinelNull,
+		},
+		{
+			name:      "missing code emits null in body and falls back to 500",
+			body:      []byte(`{"error": {"message": "bad request", "type": "BadRequestError"}}`),
+			wantOK:    true,
+			wantCode:  envoyTypePb.StatusCode_InternalServerError,
+			wantMsg:   "bad request",
+			wantType:  "BadRequestError",
+			wantCodeV: sentinelNull,
+		},
+		{
+			name:      "stringified integer code is parsed for HTTP status",
+			body:      []byte(`{"error": {"message": "bad request", "type": "BadRequestError", "code": "400"}}`),
+			wantOK:    true,
+			wantCode:  envoyTypePb.StatusCode_BadRequest,
+			wantMsg:   "bad request",
+			wantType:  "BadRequestError",
+			wantCodeV: "400",
+		},
+		{
+			name:   "top-level JSON array is not classified as error",
+			body:   []byte(`[{"message": "not an error object"}]`),
+			wantOK: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rendered, code, ok := normalizeUpstreamErrorBody(tt.body, 0)
+			assert.Equal(t, tt.wantOK, ok)
+			if !tt.wantOK {
+				return
+			}
+			assert.Equal(t, tt.wantCode, code)
+			errObj := gjson.Parse(rendered).Get("error")
+			assert.True(t, errObj.IsObject(), "rendered: %s", rendered)
+			if tt.wantMsg == "<fallback>" {
+				assert.Equal(t, ErrorUnknownResponse.Error(), errObj.Get("message").String())
+			} else if tt.wantMsg != "" {
+				assert.Equal(t, tt.wantMsg, errObj.Get("message").String())
+			}
+			if tt.wantType == sentinelNull {
+				assert.True(t, errObj.Get("type").Type == gjson.Null, "type should be null")
+			} else if tt.wantType != "" {
+				assert.Equal(t, tt.wantType, errObj.Get("type").String())
+			}
+			if tt.wantParam == sentinelNull {
+				assert.True(t, errObj.Get("param").Type == gjson.Null, "param should be null")
+			} else if tt.wantParam != "" {
+				assert.Equal(t, tt.wantParam, errObj.Get("param").String())
+			}
+			if tt.wantCodeV == sentinelNull {
+				assert.True(t, errObj.Get("code").Type == gjson.Null, "code should be null")
+			} else if tt.wantCodeV != "" {
+				assert.Equal(t, tt.wantCodeV, errObj.Get("code").String())
+			}
+		})
+	}
+}
+
+func TestBuildErrorResponseWithBody(t *testing.T) {
+	resp := buildErrorResponseWithBody(
+		envoyTypePb.StatusCode_BadRequest,
+		`{"error":{"message":"bad","type":"BadRequestError"}}`,
+		buildEnvoyProxyHeaders(nil, "x-upstream-error", "true"),
+	)
+	immResp := resp.GetImmediateResponse()
+	assert.NotNil(t, immResp)
+	assert.Equal(t, envoyTypePb.StatusCode_BadRequest, immResp.Status.Code)
+	assert.Equal(t, `{"error":{"message":"bad","type":"BadRequestError"}}`, immResp.Body)
+
+	headers := immResp.GetHeaders().GetSetHeaders()
+	hasJSON, hasHeader := false, false
+	for _, h := range headers {
+		if h.Header.Key == "Content-Type" && h.Header.Value == "application/json" {
+			hasJSON = true
+		}
+		if h.Header.Key == "x-upstream-error" {
+			hasHeader = true
+		}
+	}
+	assert.True(t, hasJSON, "expected Content-Type: application/json header")
+	assert.True(t, hasHeader, "expected x-upstream-error header")
 }
 
 func TestHandleResponseBody_NonStreamWithUsage(t *testing.T) {

@@ -804,26 +804,8 @@ func getChatCompletionsMessage(requestID string, chatCompletionObj openai.ChatCo
 // errorCode and param are optional (pass "" for null)
 func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configPb.HeaderValueOption, message, errorCode, param string) *extProcPb.ProcessingResponse {
 	// Set the Content-Type header to application/json
-	headers = append(headers, &configPb.HeaderValueOption{
-		Header: &configPb.HeaderValue{
-			Key:   "Content-Type",
-			Value: "application/json",
-		},
-	})
-
-	return &extProcPb.ProcessingResponse{
-		Response: &extProcPb.ProcessingResponse_ImmediateResponse{
-			ImmediateResponse: &extProcPb.ImmediateResponse{
-				Status: &envoyTypePb.HttpStatus{
-					Code: statusCode,
-				},
-				Headers: &extProcPb.HeaderMutation{
-					SetHeaders: headers,
-				},
-				Body: generateErrorMessageWithHTTPCode(message, int(statusCode), errorCode, param),
-			},
-		},
-	}
+	headers = append(headers, contentTypeHeader())
+	return immediateErrorResponse(statusCode, generateErrorMessageWithHTTPCode(message, int(statusCode), errorCode, param), headers)
 }
 
 // generateErrorMessage constructs a JSON error message in OpenAI format
@@ -875,8 +857,41 @@ func generateErrorMessageWithHTTPCode(message string, httpStatusCode int, errorC
 }
 
 // buildErrorResponse constructs an error response with OpenAI-compatible error format
-// errorCode and param are optional (pass "" for null)
+// errorCode and param are optional (pass "" for null). Unlike buildErrorResponseWithBody,
+// it builds the body from the supplied fields and does not add a Content-Type header.
 func buildErrorResponse(statusCode envoyTypePb.StatusCode, errBody, errorCode, param string, headers ...string) *extProcPb.ProcessingResponse {
+	return immediateErrorResponse(
+		statusCode,
+		generateErrorMessageWithHTTPCode(errBody, int(statusCode), errorCode, param),
+		buildEnvoyProxyHeaders([]*configPb.HeaderValueOption{}, headers...),
+	)
+}
+
+// buildErrorResponseWithBody constructs an immediate error response whose body is passed
+// through verbatim (already an OpenAI-shaped error payload) with no re-wrapping. The caller
+// supplies the full header set it wants to be forwarded (typically the upstream headers plus the
+// error header); a Content-Type: application/json header is always prepended.
+func buildErrorResponseWithBody(statusCode envoyTypePb.StatusCode, body string, headers []*configPb.HeaderValueOption) *extProcPb.ProcessingResponse {
+	setHeaders := make([]*configPb.HeaderValueOption, 0, 1+len(headers))
+	setHeaders = append(setHeaders, contentTypeHeader())
+	setHeaders = append(setHeaders, headers...)
+	return immediateErrorResponse(statusCode, body, setHeaders)
+}
+
+// contentTypeHeader returns a fresh Content-Type: application/json header.
+func contentTypeHeader() *configPb.HeaderValueOption {
+	return &configPb.HeaderValueOption{
+		Header: &configPb.HeaderValue{
+			Key:   "Content-Type",
+			Value: "application/json",
+		},
+	}
+}
+
+// immediateErrorResponse builds an envoy ImmediateResponse error with the given status, body,
+// and header set. Shared by all gateway error builders so the ImmediateResponse construction
+// lives in exactly one place.
+func immediateErrorResponse(statusCode envoyTypePb.StatusCode, body string, headers []*configPb.HeaderValueOption) *extProcPb.ProcessingResponse {
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_ImmediateResponse{
 			ImmediateResponse: &extProcPb.ImmediateResponse{
@@ -884,9 +899,9 @@ func buildErrorResponse(statusCode envoyTypePb.StatusCode, errBody, errorCode, p
 					Code: statusCode,
 				},
 				Headers: &extProcPb.HeaderMutation{
-					SetHeaders: buildEnvoyProxyHeaders([]*configPb.HeaderValueOption{}, headers...),
+					SetHeaders: headers,
 				},
-				Body: generateErrorMessageWithHTTPCode(errBody, int(statusCode), errorCode, param),
+				Body: body,
 			},
 		},
 	}

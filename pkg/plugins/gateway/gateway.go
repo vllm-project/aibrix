@@ -756,6 +756,16 @@ func (s *Server) responseErrorProcessingWithHeaders(ctx context.Context, routing
 	}
 	klog.ErrorS(nil, "request end", "requestID", requestID, "errorCode", respErrorCode, "errorMessage", errMsg)
 
+	// On a non-2xx upstream status the body often carries the engine's own OpenAI-style
+	// error. Normalize it to a single envelope and pass it through verbatim instead of
+	// re-wrapping the raw JSON into error.message. The HTTP status stays the
+	// authoritative respErrorCode; the body's own code is preserved inside the body.
+	if normalizedBody, code, ok := normalizeUpstreamErrorBody([]byte(errMsg), respErrorCode); ok {
+		errHeaders := append(append([]*configPb.HeaderValueOption{}, headers...),
+			buildEnvoyProxyHeaders(nil, HeaderErrorResponseUnknown, "true")...)
+		return buildErrorResponseWithBody(code, normalizedBody, errHeaders)
+	}
+
 	// Determine appropriate error code based on HTTP status
 	errorCode := ""
 	if respErrorCode == 401 {
