@@ -73,9 +73,9 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 		case HeaderConfigProfile:
 			reqConfigProfile = strings.TrimSpace(string(n.RawValue))
 		case constants.HeaderSessionID:
-			reqHeaders[n.Key] = string(n.RawValue)
+			reqHeaders[constants.HeaderSessionID] = string(n.RawValue)
 		case constants.HeaderSessionKey:
-			reqHeaders[n.Key] = string(n.RawValue)
+			reqHeaders[constants.HeaderSessionKey] = string(n.RawValue)
 		case HeaderTraceParent: // Preserve the trace context for requests initiated by the gateway plugin. like PD
 			reqHeaders[n.Key] = string(n.RawValue)
 			if !rootSpan.SpanContext().HasTraceID() { // prefers rootSpan traceID over traceparent

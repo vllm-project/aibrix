@@ -18,6 +18,7 @@ package gateway
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -166,10 +167,10 @@ func Test_handleRequestHeaders(t *testing.T) {
 			validate: defaultSuccessValidator,
 		},
 		{
-			name: "extract x-session-id for session affinity routing",
+			name: "extract mixed-case x-session-id for session affinity routing",
 			requestHeaders: []*configPb.HeaderValue{
 				{
-					Key:      HeaderSessionID,
+					Key:      strings.ToUpper(HeaderSessionID),
 					RawValue: []byte("MTI3LjAuMC4xOjg4OTk="),
 				},
 				{
@@ -194,10 +195,10 @@ func Test_handleRequestHeaders(t *testing.T) {
 			validate: defaultSuccessValidator,
 		},
 		{
-			name: "extract opaque session key for session affinity routing",
+			name: "extract mixed-case opaque session key for session affinity routing",
 			requestHeaders: []*configPb.HeaderValue{
 				{
-					Key:      HeaderSessionKey,
+					Key:      strings.ToUpper(HeaderSessionKey),
 					RawValue: []byte("agent-session-42"),
 				},
 				{
