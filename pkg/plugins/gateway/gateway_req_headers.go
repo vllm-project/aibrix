@@ -29,6 +29,7 @@ import (
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -71,9 +72,9 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 			reqHeaders[n.Key] = string(n.RawValue)
 		case HeaderConfigProfile:
 			reqConfigProfile = strings.TrimSpace(string(n.RawValue))
-		case HeaderSessionID:
+		case constants.HeaderSessionID:
 			reqHeaders[n.Key] = string(n.RawValue)
-		case HeaderSessionKey:
+		case constants.HeaderSessionKey:
 			reqHeaders[n.Key] = string(n.RawValue)
 		case HeaderTraceParent: // Preserve the trace context for requests initiated by the gateway plugin. like PD
 			reqHeaders[n.Key] = string(n.RawValue)

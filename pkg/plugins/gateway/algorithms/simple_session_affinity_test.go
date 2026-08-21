@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/types"
 
 	v1 "k8s.io/api/core/v1"
@@ -39,7 +40,7 @@ func TestSessionAffinityRouter(t *testing.T) {
 		{
 			name: "valid session ID matches ready pod",
 			reqHeaders: map[string]string{
-				sessionIDHeader: base64.StdEncoding.EncodeToString([]byte("10.0.0.2:8000")),
+				constants.HeaderSessionID: base64.StdEncoding.EncodeToString([]byte("10.0.0.2:8000")),
 			},
 			readyPods: []*v1.Pod{
 				newPod("pod1", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
@@ -62,7 +63,7 @@ func TestSessionAffinityRouter(t *testing.T) {
 		{
 			name: "invalid base64 session ID → fallback",
 			reqHeaders: map[string]string{
-				sessionIDHeader: "%%%INVALID_BASE64%%%",
+				constants.HeaderSessionID: "%%%INVALID_BASE64%%%",
 			},
 			readyPods: []*v1.Pod{
 				newPod("a", "192.168.1.10", true, map[string]string{"model.aibrix.ai/port": "8000"}),
@@ -74,7 +75,7 @@ func TestSessionAffinityRouter(t *testing.T) {
 		{
 			name: "session ID points to non-existent address → fallback",
 			reqHeaders: map[string]string{
-				sessionIDHeader: base64.StdEncoding.EncodeToString([]byte("10.99.99.99:8000")), // non-existent IP
+				constants.HeaderSessionID: base64.StdEncoding.EncodeToString([]byte("10.99.99.99:8000")), // non-existent IP
 			},
 			readyPods: []*v1.Pod{
 				newPod("x", "10.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
@@ -103,13 +104,13 @@ func TestSessionAffinityRouter(t *testing.T) {
 
 			assert.NoError(t, err)
 			assert.NotNil(t, ctx.RespHeaders, "RespHeaders should not be nil")
-			assert.Contains(t, ctx.RespHeaders, sessionIDHeader, "Response must include session ID header")
+			assert.Contains(t, ctx.RespHeaders, constants.HeaderSessionID, "Response must include session ID header")
 
 			// verify the returned address is one of the expected ready pod addresses
 			assert.Contains(t, tt.expectPossibleAddrs, addr, "selected address must be one of the ready pods' IP:port")
 
 			// verify that the session ID in the response decodes to the same address
-			sessionB64 := ctx.RespHeaders[sessionIDHeader]
+			sessionB64 := ctx.RespHeaders[constants.HeaderSessionID]
 			sessionBytes, decodeErr := base64.StdEncoding.DecodeString(sessionB64)
 			assert.NoError(t, decodeErr, "session ID must be valid base64")
 			actualSessionAddr := string(sessionBytes)
@@ -149,7 +150,7 @@ func TestSessionAffinity_ScoreAll(t *testing.T) {
 	// 2. With session ID targeting pA
 	ctx2 := types.NewRoutingContext(context.Background(), "test", "m1", "", "req", "")
 	ctx2.ReqHeaders = make(map[string]string)
-	ctx2.ReqHeaders[sessionIDHeader] = base64.StdEncoding.EncodeToString([]byte("1.1.1.1:8000"))
+	ctx2.ReqHeaders[constants.HeaderSessionID] = base64.StdEncoding.EncodeToString([]byte("1.1.1.1:8000"))
 
 	scores, _, err = scorer.ScoreAll(ctx2, podList)
 	assert.NoError(t, err)
@@ -173,13 +174,13 @@ func TestSessionAffinityPostRouteUpdateFollowsFinalTargetPod(t *testing.T) {
 	router := &sessionAffinityRouter{}
 	ctx := types.NewRoutingContext(context.Background(), "test", "m1", "", "req", "")
 	ctx.ReqHeaders = map[string]string{
-		sessionIDHeader: base64.StdEncoding.EncodeToString([]byte("1.1.1.1:8000")),
+		constants.HeaderSessionID: base64.StdEncoding.EncodeToString([]byte("1.1.1.1:8000")),
 	}
 
 	err := router.PostRouteUpdate(ctx, podList, podB)
 	assert.NoError(t, err)
 
-	sessionBytes, decodeErr := base64.StdEncoding.DecodeString(ctx.RespHeaders[sessionIDHeader])
+	sessionBytes, decodeErr := base64.StdEncoding.DecodeString(ctx.RespHeaders[constants.HeaderSessionID])
 	assert.NoError(t, decodeErr)
 	assert.Equal(t, "2.2.2.2:8000", string(sessionBytes))
 }
@@ -192,11 +193,11 @@ func TestSessionAffinityOpaqueKeyIsDeterministic(t *testing.T) {
 
 	route := func(pods []*v1.Pod) string {
 		ctx := types.NewRoutingContext(context.Background(), "test", "model1", "", "", "")
-		ctx.ReqHeaders = map[string]string{sessionKeyHeader: "agent-session-42"}
+		ctx.ReqHeaders = map[string]string{constants.HeaderSessionKey: "agent-session-42"}
 		addr, err := router.Route(ctx, newMockPodList(pods, nil))
 		assert.NoError(t, err)
-		assert.NotEmpty(t, ctx.RespHeaders[sessionIDHeader])
-		assert.NotContains(t, ctx.RespHeaders, sessionKeyHeader)
+		assert.NotEmpty(t, ctx.RespHeaders[constants.HeaderSessionID])
+		assert.NotContains(t, ctx.RespHeaders, constants.HeaderSessionKey)
 		return addr
 	}
 
@@ -211,8 +212,8 @@ func TestSessionAffinityCookieTakesPrecedenceOverOpaqueKey(t *testing.T) {
 	router := &sessionAffinityRouter{}
 	ctx := types.NewRoutingContext(context.Background(), "test", "model1", "", "", "")
 	ctx.ReqHeaders = map[string]string{
-		sessionIDHeader:  base64.StdEncoding.EncodeToString([]byte("10.0.0.2:8000")),
-		sessionKeyHeader: "agent-session-42",
+		constants.HeaderSessionID:  base64.StdEncoding.EncodeToString([]byte("10.0.0.2:8000")),
+		constants.HeaderSessionKey: "agent-session-42",
 	}
 
 	addr, err := router.Route(ctx, newMockPodList([]*v1.Pod{podA, podB}, nil))
@@ -226,7 +227,7 @@ func TestSessionAffinityOpaqueKeyScoreAll(t *testing.T) {
 	pods := []*v1.Pod{podA, podB}
 	router := &sessionAffinityRouter{}
 	ctx := types.NewRoutingContext(context.Background(), "test", "model1", "", "", "")
-	ctx.ReqHeaders = map[string]string{sessionKeyHeader: "agent-session-42"}
+	ctx.ReqHeaders = map[string]string{constants.HeaderSessionKey: "agent-session-42"}
 
 	scores, scored, err := router.ScoreAll(ctx, newMockPodList(pods, nil))
 	assert.NoError(t, err)

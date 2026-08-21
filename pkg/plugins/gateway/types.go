@@ -19,6 +19,8 @@ package gateway
 import (
 	"errors"
 	"sync"
+
+	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
 const (
@@ -53,13 +55,10 @@ const (
 	HeaderExternalFilter      = "external-filter"
 	HeaderConfigProfile       = "config-profile"
 	HeaderAIBrixConfigProfile = "x-aibrix-config-profile"
-	// HeaderSessionID is the header used for session affinity routing.
-	// NOTE: If you change this value, you MUST also update sessionIDHeader in
-	// pkg/plugins/gateway/algorithms/simple_session_affinity.go
-	HeaderSessionID = "x-session-id"
-	// HeaderSessionKey carries a caller-owned, opaque session key. Unlike
-	// HeaderSessionID, it never encodes or exposes a backend address.
-	HeaderSessionKey  = "x-aibrix-session-key"
+	// HeaderSessionID aliases the shared session-affinity header used by request parsing and routing.
+	HeaderSessionID = constants.HeaderSessionID
+	// HeaderSessionKey aliases the shared opaque session-key header.
+	HeaderSessionKey  = constants.HeaderSessionKey
 	HeaderTraceParent = "traceparent"
 
 	// RPM & TPM Update Errors
