@@ -24,6 +24,7 @@ import (
 	"github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
@@ -132,15 +133,21 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 	)
 
 	type testValidatingCase struct {
-		stormservice func() *orchestrationapi.StormService
-		failed       bool
+		stormservice  func() *orchestrationapi.StormService
+		failed        bool
+		expectInvalid bool
 	}
 	ginkgo.DescribeTable("test validating",
 		func(tc *testValidatingCase) {
+			err := k8sClient.Create(ctx, tc.stormservice())
 			if tc.failed {
-				gomega.Expect(k8sClient.Create(ctx, tc.stormservice())).Should(gomega.HaveOccurred())
+				gomega.Expect(err).Should(gomega.HaveOccurred())
+				if tc.expectInvalid {
+					gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(),
+						"expected schema validation error, got %v", err)
+				}
 			} else {
-				gomega.Expect(k8sClient.Create(ctx, tc.stormservice())).To(gomega.Succeed())
+				gomega.Expect(err).To(gomega.Succeed())
 			}
 		},
 		// Valid StormService with short name and default config (includes sidecar annotations).
@@ -152,6 +159,19 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 					Obj()
 			},
 			failed: false,
+		}),
+
+		ginkgo.Entry("rejects a missing nested RoleSet spec", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				stormService := wrapper.MakeStormService("missing-nested-spec").
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					Obj()
+				stormService.Spec.Template.Spec = nil
+				return stormService
+			},
+			failed:        true,
+			expectInvalid: true,
 		}),
 
 		// StormService name exceeds 63 characters → rejected by Kubernetes naming rules.
