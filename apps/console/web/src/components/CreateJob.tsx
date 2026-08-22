@@ -76,6 +76,8 @@ const STEP_INDEX: Record<Step, number> = { model: 1, template: 2, dataset: 3, se
 const MIN_CLIENT_MAX_CONCURRENCY = 1;
 const MAX_CLIENT_MAX_CONCURRENCY = 1024;
 const MIN_ADAPTIVE_MAX_FACTOR = 1;
+const MIN_ADAPTIVE_HEALTHY_WINDOW = 1;
+const MIN_ADAPTIVE_ADDITIVE_INCREASE = 1;
 const BYTES_PER_MEBIBYTE = 1024 * 1024;
 const FULL_PARSE_CACHE_MAX_BYTES = 20 * BYTES_PER_MEBIBYTE;
 
@@ -100,6 +102,8 @@ export function CreateJob({ onBack }: CreateJobProps) {
   const [maxConcurrency, setMaxConcurrency] = useState('');
   const [adaptiveConcurrency, setAdaptiveConcurrency] = useState(true);
   const [adaptiveMaxFactor, setAdaptiveMaxFactor] = useState('');
+  const [adaptiveHealthyWindow, setAdaptiveHealthyWindow] = useState('');
+  const [adaptiveAdditiveIncrease, setAdaptiveAdditiveIncrease] = useState('');
   const [retryMaxRetries, setRetryMaxRetries] = useState('');
   const [retryBaseDelay, setRetryBaseDelay] = useState('');
   const [retryMaxDelay, setRetryMaxDelay] = useState('');
@@ -422,6 +426,8 @@ export function CreateJob({ onBack }: CreateJobProps) {
       // Only forward the toggle when the user diverged from the default (on).
       adaptiveConcurrency: adaptiveConcurrency ? undefined : false,
       adaptiveMaxFactor: parseNumber(adaptiveMaxFactor),
+      adaptiveHealthyWindow: parseNumber(adaptiveHealthyWindow),
+      adaptiveAdditiveIncrease: parseNumber(adaptiveAdditiveIncrease),
       retryPolicy: hasRetry ? retry : undefined,
     };
     const hasAny = Object.values(client).some(v => v !== undefined);
@@ -1077,7 +1083,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
                     Optional smart-client concurrency and retry controls. Leave blank to use service defaults.
                   </p>
 
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm mb-1">Max Concurrency</label>
                       <p className="text-xs text-gray-400 mb-1">{MIN_CLIENT_MAX_CONCURRENCY} - {MAX_CLIENT_MAX_CONCURRENCY}</p>
@@ -1111,6 +1117,54 @@ export function CreateJob({ onBack }: CreateJobProps) {
                         <p className="text-xs text-red-500 mt-1">{paramErrors.adaptiveMaxFactor}</p>
                       )}
                     </div>
+
+                    <div>
+                      <label className="block text-sm mb-1">Adaptive Healthy Window</label>
+                      <p className="text-xs text-gray-400 mb-1">Healthy completions before each increase, &ge; 1</p>
+                      <input
+                        type="text"
+                        value={adaptiveHealthyWindow}
+                        onChange={(e) => handleParamChange(
+                          'adaptiveHealthyWindow',
+                          e.target.value,
+                          setAdaptiveHealthyWindow,
+                          MIN_ADAPTIVE_HEALTHY_WINDOW,
+                          undefined,
+                          true,
+                        )}
+                        placeholder="e.g. 8"
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
+                          paramErrors.adaptiveHealthyWindow ? 'border-red-300' : 'border-gray-200'
+                        }`}
+                      />
+                      {paramErrors.adaptiveHealthyWindow && (
+                        <p className="text-xs text-red-500 mt-1">{paramErrors.adaptiveHealthyWindow}</p>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm mb-1">Adaptive Additive Increase</label>
+                      <p className="text-xs text-gray-400 mb-1">Fixed growth step after the first decrease, &ge; 1</p>
+                      <input
+                        type="text"
+                        value={adaptiveAdditiveIncrease}
+                        onChange={(e) => handleParamChange(
+                          'adaptiveAdditiveIncrease',
+                          e.target.value,
+                          setAdaptiveAdditiveIncrease,
+                          MIN_ADAPTIVE_ADDITIVE_INCREASE,
+                          undefined,
+                          true,
+                        )}
+                        placeholder="e.g. 1"
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
+                          paramErrors.adaptiveAdditiveIncrease ? 'border-red-300' : 'border-gray-200'
+                        }`}
+                      />
+                      {paramErrors.adaptiveAdditiveIncrease && (
+                        <p className="text-xs text-red-500 mt-1">{paramErrors.adaptiveAdditiveIncrease}</p>
+                      )}
+                    </div>
                   </div>
 
                   <label className="flex items-center gap-2 mt-3 text-sm">
@@ -1126,8 +1180,12 @@ export function CreateJob({ onBack }: CreateJobProps) {
                     </span>
                   </label>
 
+                  <p className="text-xs text-gray-400 mt-2">
+                    Initial probing grows by at least 25%; after the first decrease, growth uses the Additive Increase step.
+                  </p>
+
                   <h4 className="text-sm font-medium mt-4 mb-2">Retry Policy</h4>
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm mb-1">Max Retries</label>
                       <p className="text-xs text-gray-400 mb-1">&ge; 0</p>
