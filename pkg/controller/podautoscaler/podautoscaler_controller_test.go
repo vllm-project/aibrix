@@ -24,11 +24,13 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/selection"
+	ktypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -340,6 +342,149 @@ func TestValidateSpecRejectsInvalidBaseReplicaBounds(t *testing.T) {
 				t.Fatalf("expected message %q, got %q", tt.wantMessage, result.Message)
 			}
 		})
+	}
+}
+
+func TestValidateSpecRejectsInvalidTargetValue(t *testing.T) {
+	tests := map[string]struct {
+		targetValue string
+		wantReason  string
+		wantMessage string
+	}{
+		"kubernetes quantity format": {
+			targetValue: "100m",
+			wantReason:  ReasonMetricsConfigError,
+			wantMessage: `metricsSource[0]: targetValue "100m" must be a valid number`,
+		},
+		"non-numeric": {
+			targetValue: "abc",
+			wantReason:  ReasonMetricsConfigError,
+			wantMessage: `metricsSource[0]: targetValue "abc" must be a valid number`,
+		},
+		"zero": {
+			targetValue: "0",
+			wantReason:  ReasonMetricsConfigError,
+			wantMessage: `metricsSource[0]: targetValue "0" must be a finite number greater than 0`,
+		},
+		"negative": {
+			targetValue: "-5",
+			wantReason:  ReasonMetricsConfigError,
+			wantMessage: `metricsSource[0]: targetValue "-5" must be a finite number greater than 0`,
+		},
+		"NaN": {
+			targetValue: "NaN",
+			wantReason:  ReasonMetricsConfigError,
+			wantMessage: `metricsSource[0]: targetValue "NaN" must be a finite number greater than 0`,
+		},
+		"positive infinity": {
+			targetValue: "+Inf",
+			wantReason:  ReasonMetricsConfigError,
+			wantMessage: `metricsSource[0]: targetValue "+Inf" must be a finite number greater than 0`,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			pa := validPodAutoscalerForSpec()
+			pa.Spec.MetricsSources[0].TargetValue = tt.targetValue
+
+			result := (&PodAutoscalerReconciler{}).validateSpec(pa)
+
+			if result.Valid {
+				t.Fatalf("expected targetValue %q to be rejected", tt.targetValue)
+			}
+			if result.Reason != tt.wantReason {
+				t.Fatalf("expected reason=%s, got %s", tt.wantReason, result.Reason)
+			}
+			if result.Message != tt.wantMessage {
+				t.Fatalf("expected message %q, got %q", tt.wantMessage, result.Message)
+			}
+		})
+	}
+}
+
+func TestSetInvalidSpecStatusPersistsConditions(t *testing.T) {
+	ctx := context.Background()
+
+	sch := runtime.NewScheme()
+	_ = scheme.AddToScheme(sch)
+	_ = corev1.AddToScheme(sch)
+	_ = autoscalingv1alpha1.AddToScheme(sch)
+
+	pa := validPodAutoscalerForSpec()
+	pa.APIVersion = autoscalingv1alpha1.GroupVersion.String()
+	pa.Kind = "PodAutoscaler"
+	pa.Namespace = ns
+	pa.Name = "test-pa"
+	// Simulate an existing PodAutoscaler after a successful reconcile. In this
+	// case every condition updated by setInvalidSpecStatus already exists, so no
+	// append can accidentally hide a shared Conditions backing array.
+	for _, condition := range []metav1.Condition{
+		{Type: ConditionValidSpec, Status: metav1.ConditionTrue, Reason: ReasonAsExpected},
+		{Type: ConditionScalingActive, Status: metav1.ConditionFalse, Reason: ReasonStable},
+		{Type: ConditionAbleToScale, Status: metav1.ConditionTrue, Reason: ReasonConfigured},
+		{Type: ConditionReady, Status: metav1.ConditionTrue, Reason: ReasonAsExpected},
+	} {
+		apimeta.SetStatusCondition(&pa.Status.Conditions, condition)
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(sch).
+		WithStatusSubresource(&autoscalingv1alpha1.PodAutoscaler{}).
+		WithObjects(pa).
+		Build()
+	r := &PodAutoscalerReconciler{Client: cl}
+
+	if err := r.setInvalidSpecStatus(ctx, pa, ReasonMetricsConfigError, "boom"); err != nil {
+		t.Fatalf("setInvalidSpecStatus returned error: %v", err)
+	}
+
+	latest := &autoscalingv1alpha1.PodAutoscaler{}
+	if err := cl.Get(ctx, ktypes.NamespacedName{Namespace: ns, Name: "test-pa"}, latest); err != nil {
+		t.Fatalf("failed to get updated PodAutoscaler: %v", err)
+	}
+	validSpec := apimeta.FindStatusCondition(latest.Status.Conditions, ConditionValidSpec)
+	if validSpec == nil || validSpec.Status != metav1.ConditionFalse {
+		t.Fatalf("expected ValidSpec=False to be persisted, got %+v", validSpec)
+	}
+	if validSpec.Reason != ReasonMetricsConfigError {
+		t.Fatalf("expected reason=%s, got %s", ReasonMetricsConfigError, validSpec.Reason)
+	}
+	ready := apimeta.FindStatusCondition(latest.Status.Conditions, ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionFalse {
+		t.Fatalf("expected Ready=False to be persisted, got %+v", ready)
+	}
+}
+
+func TestComputeStatusDoesNotMutateInputConditions(t *testing.T) {
+	pa := validPodAutoscalerForSpec()
+	for _, condition := range []metav1.Condition{
+		{Type: ConditionValidSpec, Status: metav1.ConditionTrue, Reason: ReasonAsExpected},
+		{Type: ConditionScalingActive, Status: metav1.ConditionFalse, Reason: ReasonStable},
+		{Type: ConditionAbleToScale, Status: metav1.ConditionTrue, Reason: ReasonConfigured},
+		{Type: ConditionReady, Status: metav1.ConditionTrue, Reason: ReasonAsExpected},
+	} {
+		apimeta.SetStatusCondition(&pa.Status.Conditions, condition)
+	}
+	originalStatus := pa.Status.DeepCopy()
+
+	newStatus := computeStatus(
+		context.Background(),
+		*pa,
+		invalid(ReasonMetricsConfigError, "invalid targetValue"),
+		validOK(),
+	)
+
+	if !reflect.DeepEqual(pa.Status, *originalStatus) {
+		t.Fatalf("computeStatus mutated its input status: got %+v, want %+v", pa.Status, *originalStatus)
+	}
+	validSpec := apimeta.FindStatusCondition(newStatus.Conditions, ConditionValidSpec)
+	if validSpec == nil || validSpec.Status != metav1.ConditionFalse {
+		t.Fatalf("expected computed ValidSpec=False, got %+v", validSpec)
+	}
+	ready := apimeta.FindStatusCondition(newStatus.Conditions, ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionFalse {
+		t.Fatalf("expected computed Ready=False, got %+v", ready)
 	}
 }
 

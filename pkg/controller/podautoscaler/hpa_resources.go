@@ -17,13 +17,14 @@ limitations under the License.
 package podautoscaler
 
 import (
+	"errors"
 	"fmt"
 	"math"
-	"strconv"
 	"strings"
 
 	pav1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
+	"github.com/vllm-project/aibrix/pkg/utils/pametrics"
 	"github.com/vllm-project/aibrix/pkg/utils/paschedules"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -32,6 +33,8 @@ import (
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 )
+
+var errInvalidHPABounds = errors.New("invalid HPA replica bounds")
 
 // MakeHPA creates an HPA resource from a PodAutoscaler resource.
 func makeHPA(pa *pav1.PodAutoscaler, scalingContext scalingctx.ScalingContext) (*autoscalingv2.HorizontalPodAutoscaler, error) {
@@ -68,7 +71,7 @@ func makeHPAWithBounds(pa *pav1.PodAutoscaler, scalingContext scalingctx.Scaling
 		hpa.Spec.MinReplicas = &minReplicas
 		// if minReplicas exist, check validation of minReplicas and maxReplicas
 		if maxReplicas < minReplicas {
-			return nil, fmt.Errorf("HPA Strategy: maxReplicas %d must be equal or larger than minReplicas %d", maxReplicas, minReplicas)
+			return nil, fmt.Errorf("%w: HPA Strategy: maxReplicas %d must be equal or larger than minReplicas %d", errInvalidHPABounds, maxReplicas, minReplicas)
 		}
 	}
 
@@ -79,7 +82,7 @@ func makeHPAWithBounds(pa *pav1.PodAutoscaler, scalingContext scalingctx.Scaling
 	}
 
 	for _, source := range sources {
-		if targetValue, err := strconv.ParseFloat(source.TargetValue, 64); err != nil {
+		if targetValue, err := pametrics.ParseTargetValue(source.TargetValue); err != nil {
 			return nil, fmt.Errorf("failed to parse target value of the metric source: %w", err)
 		} else {
 			klog.V(4).InfoS("Creating HPA", "metric", source.TargetMetric, "target", targetValue)
@@ -99,7 +102,7 @@ func makeHPAWithBounds(pa *pav1.PodAutoscaler, scalingContext scalingctx.Scaling
 				})
 
 			case pav1.Memory:
-				memory := resource.NewQuantity(int64(targetValue)*1024*1024, resource.BinarySI)
+				memory := resource.NewQuantity(int64(math.Ceil(targetValue))*1024*1024, resource.BinarySI)
 				hpa.Spec.Metrics = append(hpa.Spec.Metrics, autoscalingv2.MetricSpec{
 					Type: autoscalingv2.ResourceMetricSourceType,
 					Resource: &autoscalingv2.ResourceMetricSource{
@@ -112,7 +115,7 @@ func makeHPAWithBounds(pa *pav1.PodAutoscaler, scalingContext scalingctx.Scaling
 				})
 
 			default:
-				targetQuantity := resource.NewQuantity(int64(targetValue), resource.DecimalSI)
+				targetQuantity := resource.NewQuantity(int64(math.Ceil(targetValue)), resource.DecimalSI)
 				hpa.Spec.Metrics = append(hpa.Spec.Metrics, autoscalingv2.MetricSpec{
 					Type: autoscalingv2.PodsMetricSourceType,
 					Pods: &autoscalingv2.PodsMetricSource{

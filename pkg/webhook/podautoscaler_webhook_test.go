@@ -213,7 +213,7 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 				},
 			},
 			expectError: true,
-			errorMsg:    "must be greater than 0",
+			errorMsg:    "must be a finite number greater than 0",
 		},
 		"Negative Target Value": {
 			pa: &autoscalingv1alpha1.PodAutoscaler{
@@ -233,7 +233,7 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 				},
 			},
 			expectError: true,
-			errorMsg:    "must be greater than 0",
+			errorMsg:    "must be a finite number greater than 0",
 		},
 		"Invalid Number Target Value": {
 			pa: &autoscalingv1alpha1.PodAutoscaler{
@@ -275,6 +275,48 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 			},
 			expectError: true,
 			errorMsg:    "must be a valid number",
+		},
+		"NaN Target Value": {
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{
+						Name: "test-deployment",
+						Kind: "Deployment",
+					},
+					MaxReplicas:     10,
+					ScalingStrategy: autoscalingv1alpha1.HPA,
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{
+							MetricSourceType: autoscalingv1alpha1.RESOURCE,
+							TargetMetric:     "cpu",
+							TargetValue:      "NaN",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "must be a finite number greater than 0",
+		},
+		"Positive Infinity Target Value": {
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{
+						Name: "test-deployment",
+						Kind: "Deployment",
+					},
+					MaxReplicas:     10,
+					ScalingStrategy: autoscalingv1alpha1.HPA,
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{
+							MetricSourceType: autoscalingv1alpha1.RESOURCE,
+							TargetMetric:     "cpu",
+							TargetValue:      "+Inf",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "must be a finite number greater than 0",
 		},
 		"Negative MinReplicas": {
 			pa: &autoscalingv1alpha1.PodAutoscaler{

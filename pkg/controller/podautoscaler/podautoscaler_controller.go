@@ -28,6 +28,7 @@ package podautoscaler
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"sync"
 	"time"
@@ -39,6 +40,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/monitor"
 	podutils "github.com/vllm-project/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/utils/pametrics"
 	"github.com/vllm-project/aibrix/pkg/utils/paschedules"
 	"k8s.io/apimachinery/pkg/labels"
 	ktypes "k8s.io/apimachinery/pkg/types"
@@ -46,7 +48,7 @@ import (
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -283,7 +285,7 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	var pa autoscalingv1alpha1.PodAutoscaler
 	if err := r.Get(ctx, req.NamespacedName, &pa); err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			// Object might have been deleted after reconcile request
 			r.cleanupDeletedPA(req.NamespacedName)
 			klog.Infof("PodAutoscaler resource not found. Object %s must have been deleted", req.NamespacedName)
@@ -499,6 +501,11 @@ func (r *PodAutoscalerReconciler) validateMetricsSources(pa *autoscalingv1alpha1
 			return invalid(ReasonMetricsConfigError,
 				fmt.Sprintf("metricsSource[%d]: targetValue must be specified", i))
 		}
+		_, err := pametrics.ParseTargetValue(ms.TargetValue)
+		if err != nil {
+			return invalid(ReasonMetricsConfigError,
+				fmt.Sprintf("metricsSource[%d]: targetValue %q %s", i, ms.TargetValue, err))
+		}
 
 		var result ValidationResult
 		switch ms.MetricSourceType {
@@ -587,7 +594,10 @@ func (r *PodAutoscalerReconciler) setInvalidSpecStatus(
 	pa *autoscalingv1alpha1.PodAutoscaler,
 	reason, msg string,
 ) error {
-	conds := pa.Status.Conditions
+	// SetStatusCondition updates existing entries in place. Work on a deep copy
+	// so the old status remains an immutable baseline for updateStatusIfNeeded.
+	paCopy := pa.DeepCopy()
+	conds := paCopy.Status.Conditions
 	now := metav1.Now()
 
 	apimeta.SetStatusCondition(&conds, metav1.Condition{
@@ -606,13 +616,14 @@ func (r *PodAutoscalerReconciler) setInvalidSpecStatus(
 	})
 
 	st := &autoscalingv1alpha1.PodAutoscalerStatus{
-		LastScaleTime:   pa.Status.LastScaleTime,
-		DesiredScale:    pa.Status.DesiredScale,
-		ActualScale:     pa.Status.ActualScale,
+		LastScaleTime:   paCopy.Status.LastScaleTime,
+		DesiredScale:    paCopy.Status.DesiredScale,
+		ActualScale:     paCopy.Status.ActualScale,
 		Conditions:      conds,
-		ScheduledBounds: scheduledBoundsStatus(pa, time.Now()),
+		ScheduledBounds: scheduledBoundsStatus(paCopy, time.Now()),
 	}
-	return r.updateStatusIfNeeded(ctx, st, pa)
+	paCopy.Status = *st
+	return r.updateStatusIfNeeded(ctx, &pa.Status, paCopy)
 }
 
 // Run periodically enqueues all PodAutoscaler objects until ctx is cancelled.
@@ -665,11 +676,14 @@ func (r *PodAutoscalerReconciler) enqueuePodAutoscalers(ctx context.Context) err
 func computeStatus(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler,
 	specValidationResult, conflictValidationResult ValidationResult) *autoscalingv1alpha1.PodAutoscalerStatus {
 	now := metav1.Now()
+	// SetStatusCondition mutates existing entries in place, so the desired
+	// status must not share the input status's Conditions backing array.
+	conditions := pa.Status.DeepCopy().Conditions
 	st := &autoscalingv1alpha1.PodAutoscalerStatus{
 		LastScaleTime:   pa.Status.LastScaleTime,
 		DesiredScale:    pa.Status.DesiredScale,
 		ActualScale:     pa.Status.ActualScale,
-		Conditions:      pa.Status.Conditions, // upsert onto existing
+		Conditions:      conditions, // upsert onto an isolated copy
 		ScheduledBounds: scheduledBoundsStatus(&pa, now.Time),
 	}
 
@@ -745,6 +759,11 @@ func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscali
 	hpa, err := makeHPAWithBounds(&pa, scalingContext, bounds)
 	if err != nil {
 		klog.ErrorS(err, "Failed to generate a HPA object", "PA", ktypes.NamespacedName{Name: pa.Name, Namespace: pa.Namespace})
+		// Surface the failure in the PodAutoscaler conditions so the resource
+		// never keeps reporting Ready/ValidSpec while no HPA can be generated.
+		if statusErr := r.setInvalidSpecStatus(ctx, &pa, reasonForHPAGenerationError(err), err.Error()); statusErr != nil {
+			klog.ErrorS(statusErr, "Failed to update PodAutoscaler status after HPA generation failure", "PA", ktypes.NamespacedName{Name: pa.Name, Namespace: pa.Namespace})
+		}
 		return ctrl.Result{}, err
 	}
 	hpaName := ktypes.NamespacedName{
@@ -754,7 +773,7 @@ func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscali
 
 	existingHPA := &autoscalingv2.HorizontalPodAutoscaler{}
 	err = r.Get(ctx, hpaName, existingHPA)
-	if err != nil && errors.IsNotFound(err) {
+	if err != nil && apierrors.IsNotFound(err) {
 		// HPA does not exist, create a new one.
 		klog.InfoS("Creating a new HPA", "HPA", hpaName)
 		if err = r.Create(ctx, hpa); err != nil {
@@ -788,6 +807,13 @@ func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscali
 		klog.ErrorS(err, "Failed to update PodAutoscaler status")
 	}
 	return resultWithNextScheduleRequeue(&pa, now), nil
+}
+
+func reasonForHPAGenerationError(err error) string {
+	if stderrors.Is(err, errInvalidHPABounds) {
+		return ReasonInvalidBounds
+	}
+	return ReasonMetricsConfigError
 }
 
 // reconcileCustomPA handles KPA and APA strategies using WorkloadScaler (generic /scale or StormService role-level).
