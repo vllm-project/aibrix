@@ -18,6 +18,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	v1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
@@ -25,6 +26,7 @@ import (
 // with apply.
 type StormServiceSpecApplyConfiguration struct {
 	Replicas             *int32                                        `json:"replicas,omitempty"`
+	Mode                 *v1alpha1.StormServiceMode                    `json:"mode,omitempty"`
 	Selector             *v1.LabelSelectorApplyConfiguration           `json:"selector,omitempty"`
 	Stateful             *bool                                         `json:"stateful,omitempty"`
 	Template             *RoleSetTemplateSpecApplyConfiguration        `json:"template,omitempty"`
@@ -45,6 +47,14 @@ func StormServiceSpec() *StormServiceSpecApplyConfiguration {
 // If called multiple times, the Replicas field is set to the value of the last call.
 func (b *StormServiceSpecApplyConfiguration) WithReplicas(value int32) *StormServiceSpecApplyConfiguration {
 	b.Replicas = &value
+	return b
+}
+
+// WithMode sets the Mode field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Mode field is set to the value of the last call.
+func (b *StormServiceSpecApplyConfiguration) WithMode(value v1alpha1.StormServiceMode) *StormServiceSpecApplyConfiguration {
+	b.Mode = &value
 	return b
 }
 
