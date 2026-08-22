@@ -97,10 +97,12 @@ func (f *RestMetricsFetcher) fetchFromPod(ctx context.Context, pod v1.Pod, sourc
 	// Use the centralized engine fetcher with real pod information
 	metricValue, err := f.engineFetcher.FetchTypedMetric(ctx, endpoint, engineType, identifier, source.TargetMetric)
 	if err != nil {
-		klog.Warningf("Failed to fetch metric %s from pod %s: %v. Returning zero value.",
+		klog.Warningf("Failed to fetch metric %s from pod %s: %v",
 			source.TargetMetric, identifier, err)
-		// Return zero value with warning instead of error - business logic can decide how to handle
-		return 0.0, nil
+		return 0.0, err
+	}
+	if metricValue == nil {
+		return 0.0, fmt.Errorf("metric value is nil for %s", source.TargetMetric)
 	}
 
 	return metricValue.GetSimpleValue(), nil
@@ -132,15 +134,14 @@ func (f *ResourceMetricsFetcher) fetchResourceMetric(ctx context.Context, pod v1
 		"metric", source.TargetMetric)
 
 	if f.metricsClient == nil {
-		klog.Warningf("Kubernetes resource metrics client not initialized for metric %s", source.TargetMetric)
-		return 0.0, nil
+		return 0.0, fmt.Errorf("kubernetes resource metrics client not initialized for metric %s", source.TargetMetric)
 	}
 
 	// Use existing ResourceMetricsFetcher logic
 	podMetrics, err := f.metricsClient.MetricsV1beta1().PodMetricses(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
 	if err != nil {
-		klog.Warningf("Failed to fetch resource metrics for pod %s: %v. Returning zero value.", pod.Name, err)
-		return 0.0, nil
+		klog.Warningf("Failed to fetch resource metrics for pod %s: %v", pod.Name, err)
+		return 0.0, err
 	}
 
 	var total float64
@@ -190,8 +191,7 @@ func (f *CustomMetricsFetcher) fetchCustomMetric(ctx context.Context, pod v1.Pod
 		"metric", source.TargetMetric)
 
 	if f.customMetricsClient == nil {
-		klog.Warningf("Kubernetes custom metrics client not initialized for metric %s", source.TargetMetric)
-		return 0.0, nil
+		return 0.0, fmt.Errorf("kubernetes custom metrics client not initialized for metric %s", source.TargetMetric)
 	}
 
 	// Use existing CustomMetricsFetcher logic
@@ -207,8 +207,8 @@ func (f *CustomMetricsFetcher) fetchCustomMetric(ctx context.Context, pod v1.Pod
 
 	metricList, err := f.customMetricsClient.NamespacedMetrics(pod.Namespace).GetForObject(podGK, podRef.Name, source.TargetMetric, labels.Everything())
 	if err != nil {
-		klog.Warningf("Failed to fetch custom metric %s for pod %s: %v. Returning zero value.", source.TargetMetric, pod.Name, err)
-		return 0.0, nil
+		klog.Warningf("Failed to fetch custom metric %s for pod %s: %v", source.TargetMetric, pod.Name, err)
+		return 0.0, err
 	}
 
 	return float64(metricList.Value.Value()), nil
@@ -276,9 +276,12 @@ func (f *ExternalMetricsFetcher) fetchFromGPUOptimizer(ctx context.Context, pod 
 	// This gives us a global value that we need to adapt to per-pod semantics
 	metricValue, err := f.engineFetcher.FetchTypedMetric(ctx, source.Endpoint, "external", "gpu-optimizer", source.TargetMetric)
 	if err != nil {
-		klog.Warningf("Failed to fetch metric %s from GPU-Optimizer %s: %v. Returning zero value.",
+		klog.Warningf("Failed to fetch metric %s from GPU-Optimizer %s: %v",
 			source.TargetMetric, source.Endpoint, err)
-		return 0.0, nil
+		return 0.0, err
+	}
+	if metricValue == nil {
+		return 0.0, fmt.Errorf("metric value is nil for %s", source.TargetMetric)
 	}
 
 	// Adaptation: Global metric -> per-pod value

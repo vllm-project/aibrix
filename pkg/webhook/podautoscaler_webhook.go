@@ -196,6 +196,9 @@ func validateScalingStrategy(pa *autoscalingv1alpha1.PodAutoscaler, specPath *fi
 	if err := validateHPARoleSubtarget(pa, specPath); err != nil {
 		errs = append(errs, err)
 	}
+	if err := validateRoleSubtargetKind(pa, specPath); err != nil {
+		errs = append(errs, err)
+	}
 	return errs
 }
 
@@ -335,6 +338,19 @@ func validateHPARoleSubtarget(pa *autoscalingv1alpha1.PodAutoscaler, specPath *f
 	return field.Forbidden(
 		specPath.Child("subTargetSelector").Child("roleName"),
 		"not supported with scalingStrategy=HPA; use APA or KPA for StormService role-level autoscaling",
+	)
+}
+
+func validateRoleSubtargetKind(pa *autoscalingv1alpha1.PodAutoscaler, specPath *field.Path) *field.Error {
+	if pa.Spec.SubTargetSelector == nil || pa.Spec.SubTargetSelector.RoleName == "" {
+		return nil
+	}
+	if pa.Spec.ScaleTargetRef.Kind == "" || pa.Spec.ScaleTargetRef.Kind == "StormService" {
+		return nil
+	}
+	return field.Forbidden(
+		specPath.Child("subTargetSelector").Child("roleName"),
+		"only supported for StormService",
 	)
 }
 
