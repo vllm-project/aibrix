@@ -249,3 +249,26 @@ func TestMakeHPAWithScheduledBounds(t *testing.T) {
 	assert.Equal(t, int32(3), *hpa.Spec.MinReplicas)
 	assert.Equal(t, int32(12), hpa.Spec.MaxReplicas)
 }
+
+func TestMakeHPAWithInvalidScheduledBounds(t *testing.T) {
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: v1.ObjectMeta{Name: "test-llm-pa", Namespace: "default"},
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{APIVersion: "apps/v1", Kind: "Deployment", Name: "test-llm"},
+			MetricsSources: []autoscalingv1alpha1.MetricSource{{
+				MetricSourceType: autoscalingv1alpha1.RESOURCE,
+				TargetMetric:     "cpu",
+				TargetValue:      "30",
+			}},
+		},
+	}
+
+	_, err := makeHPAWithBounds(pa, context.NewBaseScalingContext(), paschedules.Bounds{MinReplicas: 3, MaxReplicas: 2})
+
+	assert.ErrorIs(t, err, errInvalidHPABounds)
+	assert.Equal(t, ReasonInvalidBounds, reasonForHPAGenerationError(err))
+}
+
+func TestReasonForHPAGenerationErrorDefaultsToMetricsConfig(t *testing.T) {
+	assert.Equal(t, ReasonMetricsConfigError, reasonForHPAGenerationError(assert.AnError))
+}

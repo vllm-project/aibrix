@@ -19,8 +19,6 @@ package webhook
 import (
 	"context"
 	"fmt"
-	"math"
-	"strconv"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -32,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/utils/pametrics"
 	"github.com/vllm-project/aibrix/pkg/utils/paschedules"
 )
 
@@ -249,14 +248,9 @@ func validateMetricTargetValue(ms *autoscalingv1alpha1.MetricSource, msPath *fie
 		return field.ErrorList{field.Required(msPath.Child("targetValue"), "must be set")}
 	}
 
-	targetValue, err := strconv.ParseFloat(ms.TargetValue, 64)
+	_, err := pametrics.ParseTargetValue(ms.TargetValue)
 	if err != nil {
-		return field.ErrorList{field.Invalid(msPath.Child("targetValue"), ms.TargetValue, "must be a valid number")}
-	}
-	// ParseFloat accepts "NaN", "Inf" and "Infinity" without error, and NaN
-	// comparisons are always false, so these must be rejected explicitly.
-	if math.IsNaN(targetValue) || math.IsInf(targetValue, 0) || targetValue <= 0 {
-		return field.ErrorList{field.Invalid(msPath.Child("targetValue"), ms.TargetValue, "must be a finite number greater than 0")}
+		return field.ErrorList{field.Invalid(msPath.Child("targetValue"), ms.TargetValue, err.Error())}
 	}
 	return nil
 }

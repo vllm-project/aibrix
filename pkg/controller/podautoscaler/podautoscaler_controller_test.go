@@ -416,12 +416,17 @@ func TestSetInvalidSpecStatusPersistsConditions(t *testing.T) {
 	pa.Kind = "PodAutoscaler"
 	pa.Namespace = ns
 	pa.Name = "test-pa"
-	// Simulate what computeStatus writes during Reconcile: ValidSpec=True.
-	apimeta.SetStatusCondition(&pa.Status.Conditions, metav1.Condition{
-		Type:   ConditionValidSpec,
-		Status: metav1.ConditionTrue,
-		Reason: ReasonAsExpected,
-	})
+	// Simulate an existing PodAutoscaler after a successful reconcile. In this
+	// case every condition updated by setInvalidSpecStatus already exists, so no
+	// append can accidentally hide a shared Conditions backing array.
+	for _, condition := range []metav1.Condition{
+		{Type: ConditionValidSpec, Status: metav1.ConditionTrue, Reason: ReasonAsExpected},
+		{Type: ConditionScalingActive, Status: metav1.ConditionFalse, Reason: ReasonStable},
+		{Type: ConditionAbleToScale, Status: metav1.ConditionTrue, Reason: ReasonConfigured},
+		{Type: ConditionReady, Status: metav1.ConditionTrue, Reason: ReasonAsExpected},
+	} {
+		apimeta.SetStatusCondition(&pa.Status.Conditions, condition)
+	}
 
 	cl := fake.NewClientBuilder().
 		WithScheme(sch).
@@ -448,6 +453,38 @@ func TestSetInvalidSpecStatusPersistsConditions(t *testing.T) {
 	ready := apimeta.FindStatusCondition(latest.Status.Conditions, ConditionReady)
 	if ready == nil || ready.Status != metav1.ConditionFalse {
 		t.Fatalf("expected Ready=False to be persisted, got %+v", ready)
+	}
+}
+
+func TestComputeStatusDoesNotMutateInputConditions(t *testing.T) {
+	pa := validPodAutoscalerForSpec()
+	for _, condition := range []metav1.Condition{
+		{Type: ConditionValidSpec, Status: metav1.ConditionTrue, Reason: ReasonAsExpected},
+		{Type: ConditionScalingActive, Status: metav1.ConditionFalse, Reason: ReasonStable},
+		{Type: ConditionAbleToScale, Status: metav1.ConditionTrue, Reason: ReasonConfigured},
+		{Type: ConditionReady, Status: metav1.ConditionTrue, Reason: ReasonAsExpected},
+	} {
+		apimeta.SetStatusCondition(&pa.Status.Conditions, condition)
+	}
+	originalStatus := pa.Status.DeepCopy()
+
+	newStatus := computeStatus(
+		context.Background(),
+		*pa,
+		invalid(ReasonMetricsConfigError, "invalid targetValue"),
+		validOK(),
+	)
+
+	if !reflect.DeepEqual(pa.Status, *originalStatus) {
+		t.Fatalf("computeStatus mutated its input status: got %+v, want %+v", pa.Status, *originalStatus)
+	}
+	validSpec := apimeta.FindStatusCondition(newStatus.Conditions, ConditionValidSpec)
+	if validSpec == nil || validSpec.Status != metav1.ConditionFalse {
+		t.Fatalf("expected computed ValidSpec=False, got %+v", validSpec)
+	}
+	ready := apimeta.FindStatusCondition(newStatus.Conditions, ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionFalse {
+		t.Fatalf("expected computed Ready=False, got %+v", ready)
 	}
 }
 
