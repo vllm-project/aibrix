@@ -97,7 +97,10 @@
           "metric": "aibrix_console.prod.console.file.error",
           "refId": "A",
           "tags": {},
-          "tenant": "default"
+          "tenant": "default",
+          "isCounter": true,
+          "rateDownsampleType": "before_downsample",
+          "shouldComputeDelta": true
         },
         {
           "aggregator": "sum",
@@ -110,7 +113,10 @@
           "metric": "aibrix_console.prod.console.job.error",
           "refId": "B",
           "tags": {},
-          "tenant": "default"
+          "tenant": "default",
+          "isCounter": true,
+          "rateDownsampleType": "before_downsample",
+          "shouldComputeDelta": true
         },
         {
           "aggregator": "sum",
@@ -123,7 +129,10 @@
           "metric": "aibrix_console.prod.console.store.error",
           "refId": "C",
           "tags": {},
-          "tenant": "default"
+          "tenant": "default",
+          "isCounter": true,
+          "rateDownsampleType": "before_downsample",
+          "shouldComputeDelta": true
         },
         {
           "aggregator": "sum",
@@ -136,7 +145,10 @@
           "metric": "aibrix_console.prod.console.planner.error",
           "refId": "D",
           "tags": {},
-          "tenant": "default"
+          "tenant": "default",
+          "isCounter": true,
+          "rateDownsampleType": "before_downsample",
+          "shouldComputeDelta": true
         }
       ],
       "thresholds": [
@@ -692,7 +704,10 @@
           "metric": "aibrix_console.prod.console.file.error",
           "refId": "A",
           "tags": {},
-          "tenant": "default"
+          "tenant": "default",
+          "isCounter": true,
+          "rateDownsampleType": "before_downsample",
+          "shouldComputeDelta": true
         }
       ],
       "thresholds": [
@@ -980,7 +995,10 @@
           "metric": "aibrix_console.prod.console.store.error",
           "refId": "A",
           "tags": {},
-          "tenant": "default"
+          "tenant": "default",
+          "isCounter": true,
+          "rateDownsampleType": "before_downsample",
+          "shouldComputeDelta": true
         }
       ],
       "thresholds": [
@@ -1268,7 +1286,10 @@
           "metric": "aibrix_console.prod.console.planner.error",
           "refId": "A",
           "tags": {},
-          "tenant": "default"
+          "tenant": "default",
+          "isCounter": true,
+          "rateDownsampleType": "before_downsample",
+          "shouldComputeDelta": true
         }
       ],
       "thresholds": [
@@ -1391,7 +1412,10 @@
           "metric": "aibrix_console.prod.console.planner.job.failed",
           "refId": "A",
           "tags": {},
-          "tenant": "default"
+          "tenant": "default",
+          "isCounter": true,
+          "rateDownsampleType": "before_downsample",
+          "shouldComputeDelta": true
         }
       ],
       "thresholds": [
@@ -1588,6 +1612,338 @@
         "x": 0,
         "y": 39
       },
+      "id": 34,
+      "panels": [],
+      "title": "Catalog Resource Views",
+      "type": "row"
+    },
+    {
+      "aliasColors": {
+        "running": "#73BF00",
+        "pending": "#FFA646"
+      },
+      "bars": false,
+      "cacheTimeout": null,
+      "dashLength": 10,
+      "dashes": false,
+      "datasource": "${datasrc}",
+      "fieldConfig": {
+        "defaults": {
+          "links": []
+        },
+        "overrides": []
+      },
+      "fill": 1,
+      "fillGradient": 0,
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
+      "hiddenSeries": false,
+      "id": 35,
+      "legend": {
+        "alignAsTable": true,
+        "avg": true,
+        "current": true,
+        "max": true,
+        "min": false,
+        "rightSide": false,
+        "show": true,
+        "sort": "current",
+        "sortDesc": true,
+        "total": false,
+        "values": true
+      },
+      "lines": true,
+      "linewidth": 2,
+      "links": [],
+      "nullPointMode": "connected",
+      "options": {
+        "alertThreshold": true
+      },
+      "percentage": false,
+      "pluginVersion": "7.5.3",
+      "pointradius": 2,
+      "points": false,
+      "renderer": "flot",
+      "seriesOverrides": [
+        {
+          "alias": "supply",
+          "color": "#5794F2",
+          "linewidth": 2
+        },
+        {
+          "alias": "allocatable",
+          "color": "#73BF69",
+          "linewidth": 2
+        },
+        {
+          "alias": "allocated",
+          "color": "#FF9830",
+          "linewidth": 2
+        }
+      ],
+      "spaceLength": 10,
+      "stack": false,
+      "steppedLine": false,
+      "targets": [
+        {
+          "aggregator": "sum",
+          "alias": "supply",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "filters": [],
+          "metric": "aibrix_console.prod.console.planner.catalog.resource.supply",
+          "refId": "A",
+          "tags": {
+            "resource_type": "gpu|xpu"
+          },
+          "tenant": "default"
+        },
+        {
+          "aggregator": "sum",
+          "alias": "allocatable",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "filters": [],
+          "metric": "aibrix_console.prod.console.planner.catalog.resource.allocatable",
+          "refId": "B",
+          "tags": {
+            "resource_type": "gpu|xpu"
+          },
+          "tenant": "default"
+        },
+        {
+          "aggregator": "sum",
+          "alias": "allocated",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "filters": [],
+          "metric": "aibrix_console.prod.console.planner.catalog.resource.allocated",
+          "refId": "C",
+          "tags": {
+            "resource_type": "gpu|xpu"
+          },
+          "tenant": "default"
+        }
+      ],
+      "thresholds": [],
+      "timeFrom": null,
+      "timeRegions": [],
+      "timeShift": null,
+      "title": "Catalog Resources",
+      "tooltip": {
+        "shared": true,
+        "sort": 0,
+        "value_type": "individual"
+      },
+      "type": "graph",
+      "xaxis": {
+        "buckets": null,
+        "mode": "time",
+        "name": null,
+        "show": true,
+        "values": []
+      },
+      "yaxes": [
+        {
+          "format": "short",
+          "label": null,
+          "logBase": 1,
+          "max": null,
+          "min": "0",
+          "show": true
+        },
+        {
+          "format": "short",
+          "label": null,
+          "logBase": 1,
+          "max": null,
+          "min": null,
+          "show": true
+        }
+      ],
+      "yaxis": {
+        "align": false,
+        "alignLevel": null
+      }
+    },
+    {
+      "aliasColors": {
+        "running": "#73BF00",
+        "pending": "#FFA646"
+      },
+      "bars": false,
+      "cacheTimeout": null,
+      "dashLength": 10,
+      "dashes": false,
+      "datasource": "${datasrc}",
+      "fieldConfig": {
+        "defaults": {
+          "links": []
+        },
+        "overrides": []
+      },
+      "fill": 1,
+      "fillGradient": 0,
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 40
+      },
+      "hiddenSeries": false,
+      "id": 36,
+      "legend": {
+        "alignAsTable": true,
+        "avg": true,
+        "current": true,
+        "max": true,
+        "min": false,
+        "rightSide": false,
+        "show": true,
+        "sort": "current",
+        "sortDesc": true,
+        "total": false,
+        "values": true
+      },
+      "lines": true,
+      "linewidth": 2,
+      "links": [],
+      "nullPointMode": "connected",
+      "options": {
+        "alertThreshold": true
+      },
+      "percentage": false,
+      "pluginVersion": "7.5.3",
+      "pointradius": 2,
+      "points": false,
+      "renderer": "flot",
+      "seriesOverrides": [
+        {
+          "alias": "supply",
+          "color": "#5794F2",
+          "linewidth": 2
+        },
+        {
+          "alias": "allocatable",
+          "color": "#73BF69",
+          "linewidth": 2
+        },
+        {
+          "alias": "allocated",
+          "color": "#FF9830",
+          "linewidth": 2
+        }
+      ],
+      "spaceLength": 10,
+      "stack": false,
+      "steppedLine": false,
+      "targets": [
+        {
+          "aggregator": "sum",
+          "alias": "supply",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "filters": [],
+          "metric": "aibrix_console.prod.console.planner.catalog.prediction.supply",
+          "refId": "A",
+          "tags": {
+            "resource_type": "gpu|xpu"
+          },
+          "tenant": "default"
+        },
+        {
+          "aggregator": "sum",
+          "alias": "allocatable",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "filters": [],
+          "metric": "aibrix_console.prod.console.planner.catalog.prediction.allocatable",
+          "refId": "B",
+          "tags": {
+            "resource_type": "gpu|xpu"
+          },
+          "tenant": "default"
+        },
+        {
+          "aggregator": "sum",
+          "alias": "allocated",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "filters": [],
+          "metric": "aibrix_console.prod.console.planner.catalog.prediction.allocated",
+          "refId": "C",
+          "tags": {
+            "resource_type": "gpu|xpu"
+          },
+          "tenant": "default"
+        }
+      ],
+      "thresholds": [],
+      "timeFrom": null,
+      "timeRegions": [],
+      "timeShift": null,
+      "title": "Predicted Catalog Resources",
+      "tooltip": {
+        "shared": true,
+        "sort": 0,
+        "value_type": "individual"
+      },
+      "type": "graph",
+      "xaxis": {
+        "buckets": null,
+        "mode": "time",
+        "name": null,
+        "show": true,
+        "values": []
+      },
+      "yaxes": [
+        {
+          "format": "short",
+          "label": null,
+          "logBase": 1,
+          "max": null,
+          "min": "0",
+          "show": true
+        },
+        {
+          "format": "short",
+          "label": null,
+          "logBase": 1,
+          "max": null,
+          "min": null,
+          "show": true
+        }
+      ],
+      "yaxis": {
+        "align": false,
+        "alignLevel": null
+      }
+    },
+    {
+      "collapsed": false,
+      "datasource": null,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 47
+      },
       "id": 40,
       "panels": [],
       "title": "Job",
@@ -1615,7 +1971,7 @@
         "h": 7,
         "w": 24,
         "x": 0,
-        "y": 40
+        "y": 48
       },
       "hiddenSeries": false,
       "id": 41,
@@ -1671,7 +2027,10 @@
           "metric": "aibrix_console.prod.console.job.error",
           "refId": "A",
           "tags": {},
-          "tenant": "default"
+          "tenant": "default",
+          "isCounter": true,
+          "rateDownsampleType": "before_downsample",
+          "shouldComputeDelta": true
         },
         {
           "aggregator": "sum",
@@ -1684,7 +2043,10 @@
           "metric": "aibrix_console.prod.console.planner.job.failed",
           "refId": "B",
           "tags": {},
-          "tenant": "default"
+          "tenant": "default",
+          "isCounter": true,
+          "rateDownsampleType": "before_downsample",
+          "shouldComputeDelta": true
         }
       ],
       "thresholds": [

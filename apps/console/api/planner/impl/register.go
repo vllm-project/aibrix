@@ -17,34 +17,35 @@ limitations under the License.
 package impl
 
 import (
+	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/catalog"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/provisioner"
 	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 )
 
 func init() {
-	RegisterBackend(rmtypes.ResourceProvisionTypeKubernetes, func(prov provisioner.Provisioner) plannerBackend {
-		return &defaultPlannerBackend{provider: prov.Type()}
+	RegisterBackend(rmtypes.ResourceProvisionTypeKubernetes, func(prov provisioner.Provisioner, resourceCatalog catalog.Catalog) plannerBackend {
+		return &defaultPlannerBackend{provider: prov.Type(), catalog: resourceCatalog}
 	})
 	RegisterPlanningPolicy(rmtypes.ResourceProvisionTypeKubernetes, PlanningPolicyTypeSimple, func(cfg PolicyConfig) (PlanningPolicy[*queuedJob], error) {
 		return &SimplePolicy{cfg}, nil
 	})
 
-	RegisterBackend(rmtypes.ResourceProvisionTypeAWS, func(prov provisioner.Provisioner) plannerBackend {
-		return &defaultPlannerBackend{provider: prov.Type()}
+	RegisterBackend(rmtypes.ResourceProvisionTypeAWS, func(prov provisioner.Provisioner, resourceCatalog catalog.Catalog) plannerBackend {
+		return &defaultPlannerBackend{provider: prov.Type(), catalog: resourceCatalog}
 	})
 	RegisterPlanningPolicy(rmtypes.ResourceProvisionTypeAWS, PlanningPolicyTypeSimple, func(cfg PolicyConfig) (PlanningPolicy[*queuedJob], error) {
 		return &SimplePolicy{cfg}, nil
 	})
 
-	RegisterBackend(rmtypes.ResourceProvisionTypeLambdaCloud, func(prov provisioner.Provisioner) plannerBackend {
-		return &defaultPlannerBackend{provider: prov.Type()}
+	RegisterBackend(rmtypes.ResourceProvisionTypeLambdaCloud, func(prov provisioner.Provisioner, resourceCatalog catalog.Catalog) plannerBackend {
+		return &defaultPlannerBackend{provider: prov.Type(), catalog: resourceCatalog}
 	})
 	RegisterPlanningPolicy(rmtypes.ResourceProvisionTypeLambdaCloud, PlanningPolicyTypeSimple, func(cfg PolicyConfig) (PlanningPolicy[*queuedJob], error) {
 		return &SimplePolicy{cfg}, nil
 	})
 
-	RegisterBackend(rmtypes.ResourceProvisionTypeRunPod, func(prov provisioner.Provisioner) plannerBackend {
-		return &defaultPlannerBackend{provider: prov.Type()}
+	RegisterBackend(rmtypes.ResourceProvisionTypeRunPod, func(prov provisioner.Provisioner, resourceCatalog catalog.Catalog) plannerBackend {
+		return &defaultPlannerBackend{provider: prov.Type(), catalog: resourceCatalog}
 	})
 	RegisterPlanningPolicy(rmtypes.ResourceProvisionTypeRunPod, PlanningPolicyTypeSimple, func(cfg PolicyConfig) (PlanningPolicy[*queuedJob], error) {
 		return &SimplePolicy{cfg}, nil

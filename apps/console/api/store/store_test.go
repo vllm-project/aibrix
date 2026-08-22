@@ -30,6 +30,7 @@ import (
 	"github.com/vllm-project/aibrix/apps/console/api/store/models"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"gorm.io/datatypes"
 )
 
 const testDeploymentName = "gsm-8k-20260118"
@@ -414,6 +415,47 @@ func TestMemoryStore(t *testing.T) {
 				t.Error("expected error for nil job")
 			}
 		})
+	})
+
+	t.Run("CatalogSnapshots", func(t *testing.T) {
+		windowStart := time.Now().UTC().Truncate(time.Hour)
+		windowEnd := windowStart.Add(time.Hour)
+		snapshots := []*models.CatalogSnapshot{
+			{Provider: "test", ViewType: models.CatalogViewResource, WindowStart: windowStart, WindowEnd: windowEnd, Payload: datatypes.JSON(`[{"view":"resource"}]`)},
+			{Provider: "test", ViewType: models.CatalogViewPrediction, WindowStart: windowStart, WindowEnd: windowEnd, Payload: datatypes.JSON(`{"slot":{"view":"prediction"}}`)},
+		}
+
+		if err := s.UpsertCatalogSnapshot(ctx, nil); status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("nil snapshot error = %v, want InvalidArgument", err)
+		}
+		for _, snapshot := range snapshots {
+			if err := s.UpsertCatalogSnapshot(ctx, snapshot); err != nil {
+				t.Fatalf("UpsertCatalogSnapshot(%s): %v", snapshot.ViewType, err)
+			}
+		}
+		for _, snapshot := range []*models.CatalogSnapshot{
+			{Provider: "test", ViewType: models.CatalogViewResource, WindowStart: windowStart, WindowEnd: windowEnd, Payload: datatypes.JSON(`[]`)},
+			{Provider: "test", ViewType: models.CatalogViewPrediction, WindowStart: windowStart, WindowEnd: windowEnd, Payload: datatypes.JSON(`{}`)},
+		} {
+			if err := s.UpsertCatalogSnapshot(ctx, snapshot); err != nil {
+				t.Fatalf("second UpsertCatalogSnapshot(%s): %v", snapshot.ViewType, err)
+			}
+		}
+
+		got, err := s.ListCatalogSnapshots(ctx, "test")
+		if err != nil {
+			t.Fatalf("ListCatalogSnapshots: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("catalog snapshots = %d, want latest resource/prediction rows", len(got))
+		}
+		payloads := map[models.CatalogViewType]string{}
+		for _, snapshot := range got {
+			payloads[snapshot.ViewType] = string(snapshot.Payload)
+		}
+		if payloads[models.CatalogViewResource] != `[]` || payloads[models.CatalogViewPrediction] != `{}` {
+			t.Fatalf("latest payloads = %#v, want updated resource/prediction", payloads)
+		}
 	})
 
 	t.Run("Models", func(t *testing.T) {

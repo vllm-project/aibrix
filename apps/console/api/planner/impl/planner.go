@@ -30,6 +30,7 @@ import (
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
 	pu "github.com/vllm-project/aibrix/apps/console/api/planner/utils"
+	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/catalog"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/provisioner"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 	"github.com/vllm-project/aibrix/apps/console/api/store/models"
@@ -96,6 +97,7 @@ type Planner struct {
 type PlannerConfig struct {
 	BatchClient            plannerclient.BatchClient
 	Provisioner            provisioner.Provisioner
+	Catalog                catalog.Catalog
 	Store                  store.Store
 	PolicyType             PlanningPolicyType
 	WorkerCount            int                      // concurrent job processing, default 10
@@ -144,7 +146,7 @@ func NewPlanner(cfg PlannerConfig) *Planner {
 		bc:           cfg.BatchClient,
 		prov:         cfg.Provisioner,
 		store:        cfg.Store,
-		backend:      newPlannerBackend(cfg.Provisioner),
+		backend:      newPlannerBackend(cfg.Provisioner, cfg.Catalog),
 		policy:       planningPolicy,
 		pendingQueue: pu.NewPriorityQueue[*queuedJob](),
 		runningQueue: pu.NewPriorityQueue[*queuedJob](),
