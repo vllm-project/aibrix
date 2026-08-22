@@ -78,6 +78,11 @@ const MAX_CLIENT_MAX_CONCURRENCY = 1024;
 const MIN_ADAPTIVE_MAX_FACTOR = 1;
 const MIN_ADAPTIVE_HEALTHY_WINDOW = 1;
 const MIN_ADAPTIVE_ADDITIVE_INCREASE = 1;
+const ADAPTIVE_CLIENT_PARAM_FIELDS = new Set([
+  'adaptiveMaxFactor',
+  'adaptiveHealthyWindow',
+  'adaptiveAdditiveIncrease',
+]);
 const BYTES_PER_MEBIBYTE = 1024 * 1024;
 const FULL_PARSE_CACHE_MAX_BYTES = 20 * BYTES_PER_MEBIBYTE;
 
@@ -408,7 +413,9 @@ export function CreateJob({ onBack }: CreateJobProps) {
     setParamErrors(prev => ({ ...prev, replicas: err }));
   }, [replicaLimits, replicas]);
 
-  const hasParamErrors = Object.values(paramErrors).some(e => e !== '');
+  const hasParamErrors = Object.entries(paramErrors).some(([field, error]) => (
+    error !== '' && (adaptiveConcurrency || !ADAPTIVE_CLIENT_PARAM_FIELDS.has(field))
+  ));
 
   // Assemble extra_body.aibrix.client from the Settings inputs, omitting blanks
   // so unset fields fall back to metadata-service defaults. Returns undefined
@@ -425,9 +432,9 @@ export function CreateJob({ onBack }: CreateJobProps) {
       maxConcurrency: parseNumber(maxConcurrency),
       // Only forward the toggle when the user diverged from the default (on).
       adaptiveConcurrency: adaptiveConcurrency ? undefined : false,
-      adaptiveMaxFactor: parseNumber(adaptiveMaxFactor),
-      adaptiveHealthyWindow: parseNumber(adaptiveHealthyWindow),
-      adaptiveAdditiveIncrease: parseNumber(adaptiveAdditiveIncrease),
+      adaptiveMaxFactor: adaptiveConcurrency ? parseNumber(adaptiveMaxFactor) : undefined,
+      adaptiveHealthyWindow: adaptiveConcurrency ? parseNumber(adaptiveHealthyWindow) : undefined,
+      adaptiveAdditiveIncrease: adaptiveConcurrency ? parseNumber(adaptiveAdditiveIncrease) : undefined,
       retryPolicy: hasRetry ? retry : undefined,
     };
     const hasAny = Object.values(client).some(v => v !== undefined);
@@ -1083,6 +1090,23 @@ export function CreateJob({ onBack }: CreateJobProps) {
                     Optional smart-client concurrency and retry controls. Leave blank to use service defaults.
                   </p>
 
+                  <label className="flex items-center gap-2 mb-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={adaptiveConcurrency}
+                      onChange={(e) => setAdaptiveConcurrency(e.target.checked)}
+                      className="rounded border-gray-300 text-teal-600 focus:ring-teal-500/30"
+                    />
+                    Adaptive concurrency
+                    <span className="text-xs text-gray-400">
+                      (grow toward Max Concurrency; off = fixed concurrency)
+                    </span>
+                  </label>
+
+                  <p className="text-xs text-gray-400 mb-4">
+                    Initial probing grows by at least 25%; after the first decrease, growth uses the Additive Increase step.
+                  </p>
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm mb-1">Max Concurrency</label>
@@ -1107,13 +1131,14 @@ export function CreateJob({ onBack }: CreateJobProps) {
                       <input
                         type="text"
                         value={adaptiveMaxFactor}
+                        disabled={!adaptiveConcurrency}
                         onChange={(e) => handleParamChange('adaptiveMaxFactor', e.target.value, setAdaptiveMaxFactor, MIN_ADAPTIVE_MAX_FACTOR, undefined, false)}
                         placeholder="e.g. 8"
-                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
-                          paramErrors.adaptiveMaxFactor ? 'border-red-300' : 'border-gray-200'
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 disabled:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed ${
+                          adaptiveConcurrency && paramErrors.adaptiveMaxFactor ? 'border-red-300' : 'border-gray-200'
                         }`}
                       />
-                      {paramErrors.adaptiveMaxFactor && (
+                      {adaptiveConcurrency && paramErrors.adaptiveMaxFactor && (
                         <p className="text-xs text-red-500 mt-1">{paramErrors.adaptiveMaxFactor}</p>
                       )}
                     </div>
@@ -1124,6 +1149,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
                       <input
                         type="text"
                         value={adaptiveHealthyWindow}
+                        disabled={!adaptiveConcurrency}
                         onChange={(e) => handleParamChange(
                           'adaptiveHealthyWindow',
                           e.target.value,
@@ -1133,11 +1159,11 @@ export function CreateJob({ onBack }: CreateJobProps) {
                           true,
                         )}
                         placeholder="e.g. 8"
-                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
-                          paramErrors.adaptiveHealthyWindow ? 'border-red-300' : 'border-gray-200'
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 disabled:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed ${
+                          adaptiveConcurrency && paramErrors.adaptiveHealthyWindow ? 'border-red-300' : 'border-gray-200'
                         }`}
                       />
-                      {paramErrors.adaptiveHealthyWindow && (
+                      {adaptiveConcurrency && paramErrors.adaptiveHealthyWindow && (
                         <p className="text-xs text-red-500 mt-1">{paramErrors.adaptiveHealthyWindow}</p>
                       )}
                     </div>
@@ -1148,6 +1174,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
                       <input
                         type="text"
                         value={adaptiveAdditiveIncrease}
+                        disabled={!adaptiveConcurrency}
                         onChange={(e) => handleParamChange(
                           'adaptiveAdditiveIncrease',
                           e.target.value,
@@ -1157,32 +1184,15 @@ export function CreateJob({ onBack }: CreateJobProps) {
                           true,
                         )}
                         placeholder="e.g. 1"
-                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
-                          paramErrors.adaptiveAdditiveIncrease ? 'border-red-300' : 'border-gray-200'
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 disabled:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed ${
+                          adaptiveConcurrency && paramErrors.adaptiveAdditiveIncrease ? 'border-red-300' : 'border-gray-200'
                         }`}
                       />
-                      {paramErrors.adaptiveAdditiveIncrease && (
+                      {adaptiveConcurrency && paramErrors.adaptiveAdditiveIncrease && (
                         <p className="text-xs text-red-500 mt-1">{paramErrors.adaptiveAdditiveIncrease}</p>
                       )}
                     </div>
                   </div>
-
-                  <label className="flex items-center gap-2 mt-3 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={adaptiveConcurrency}
-                      onChange={(e) => setAdaptiveConcurrency(e.target.checked)}
-                      className="rounded border-gray-300 text-teal-600 focus:ring-teal-500/30"
-                    />
-                    Adaptive concurrency
-                    <span className="text-xs text-gray-400">
-                      (grow toward Max Concurrency; off = fixed concurrency)
-                    </span>
-                  </label>
-
-                  <p className="text-xs text-gray-400 mt-2">
-                    Initial probing grows by at least 25%; after the first decrease, growth uses the Additive Increase step.
-                  </p>
 
                   <h4 className="text-sm font-medium mt-4 mb-2">Retry Policy</h4>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
