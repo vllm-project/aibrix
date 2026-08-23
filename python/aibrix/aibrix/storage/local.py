@@ -17,6 +17,7 @@ import hashlib
 import os
 import shutil
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
@@ -173,7 +174,14 @@ class LocalStorage(BaseStorage2):
                     f.write(str(reader))
                     f.flush()
                     os.fsync(f.fileno())
-            os.replace(tmp_path, path)
+            for attempt in range(5):
+                try:
+                    os.replace(tmp_path, path)
+                    break
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.01 * (attempt + 1))
         except Exception:
             try:
                 os.close(fd)
