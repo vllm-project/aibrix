@@ -26,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/webhook"
@@ -69,7 +70,9 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 		func(tc *testDefaultingCase) {
 			model := tc.stormservice()
 			gomega.Expect(k8sClient.Create(ctx, model)).To(gomega.Succeed())
-			gomega.Expect(model).To(gomega.BeComparableTo(tc.wantStormService(),
+			want := tc.wantStormService()
+			want.Spec.ProgressDeadlineSeconds = ptr.To(int32(600))
+			gomega.Expect(model).To(gomega.BeComparableTo(want,
 				cmpopts.IgnoreTypes(orchestrationapi.StormServiceStatus{}),
 				cmpopts.IgnoreFields(metav1.ObjectMeta{}, "UID",
 					"ResourceVersion", "Generation", "CreationTimestamp", "ManagedFields")),
