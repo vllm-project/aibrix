@@ -53,6 +53,10 @@ spec:
                 type: object
               paused:
                 type: boolean
+              progressDeadlineSeconds:
+                default: 600
+                format: int32
+                type: integer
               replicas:
                 format: int32
                 type: integer

@@ -1063,6 +1063,11 @@ func (in *StormServiceSpec) DeepCopyInto(out *StormServiceSpec) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.ProgressDeadlineSeconds != nil {
+		in, out := &in.ProgressDeadlineSeconds, &out.ProgressDeadlineSeconds
+		*out = new(int32)
+		**out = **in
+	}
 	in.DisruptionTolerance.DeepCopyInto(&out.DisruptionTolerance)
 }
 

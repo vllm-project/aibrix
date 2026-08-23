@@ -65,7 +65,7 @@ func (r *StormServiceReconciler) sync(ctx context.Context, stormService *orchest
 		klog.Errorf("failed to update status for stormservice %s/%s, err: %v", stormService.Namespace, stormService.Name, err)
 		return 0, err
 	} else if !ready {
-		return DefaultRequeueAfter, nil
+		return progressDeadlineRequeueAfter(stormService, time.Now()), nil
 	}
 	return 0, nil
 }
@@ -405,9 +405,7 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 			*utils.NewCondition(orchestrationv1alpha1.StormServiceReady, corev1.ConditionTrue, "Ready", ""),
 		}
 	} else {
-		stormService.Status.Conditions = []orchestrationv1alpha1.Condition{
-			*utils.NewCondition(orchestrationv1alpha1.StormServiceProgressing, corev1.ConditionTrue, "Processing", ""),
-		}
+		syncStormServiceProgressingCondition(stormService, checkpoint, time.Now())
 	}
 	// support scale sub resources.
 	// TODO: add pod template hash to avoid errors during upgrade.
