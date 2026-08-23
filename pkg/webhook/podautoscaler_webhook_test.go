@@ -65,6 +65,43 @@ func TestPodAutoscalerCustomValidator_MetricsSources(t *testing.T) {
 	})
 }
 
+func TestPodAutoscalerCustomValidator_HPAMetricTargetBounds(t *testing.T) {
+	validator := &PodAutoscalerCustomValidator{}
+	tests := map[string]autoscalingv1alpha1.MetricSource{
+		"cpu": {
+			MetricSourceType: autoscalingv1alpha1.RESOURCE,
+			TargetMetric:     "cpu",
+			TargetValue:      "2147483647.1",
+		},
+		"memory": {
+			MetricSourceType: autoscalingv1alpha1.RESOURCE,
+			TargetMetric:     "memory",
+			TargetValue:      "8796093022207.1",
+		},
+		"pods": {
+			MetricSourceType: autoscalingv1alpha1.CUSTOM,
+			TargetMetric:     "requests",
+			TargetValue:      "9223372036854775808",
+		},
+	}
+
+	for name, source := range tests {
+		t.Run(name, func(t *testing.T) {
+			pa := &autoscalingv1alpha1.PodAutoscaler{Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+				ScaleTargetRef:  corev1.ObjectReference{Name: "test-deployment", Kind: "Deployment"},
+				MaxReplicas:     10,
+				ScalingStrategy: autoscalingv1alpha1.HPA,
+				MetricsSources:  []autoscalingv1alpha1.MetricSource{source},
+			}}
+
+			err := validator.validatePodAutoscaler(pa)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "must be representable as an HPA metric target")
+		})
+	}
+}
+
 func TestPodAutoscalerCustomValidator_Schedules(t *testing.T) {
 	validator := &PodAutoscalerCustomValidator{}
 	validPA := func(schedules []autoscalingv1alpha1.PodAutoscalerSchedule) *autoscalingv1alpha1.PodAutoscaler {

@@ -50,3 +50,31 @@ func TestParseTargetValue(t *testing.T) {
 		})
 	}
 }
+
+func TestParseHPATargetValue(t *testing.T) {
+	tests := map[string]struct {
+		value        string
+		targetMetric string
+		wantErr      error
+	}{
+		"cpu maximum":        {value: "2147483647", targetMetric: "cpu"},
+		"cpu overflow":       {value: "2147483647.1", targetMetric: "cpu", wantErr: errTargetValueOutOfRange},
+		"memory maximum MiB": {value: "8796093022207", targetMetric: "memory"},
+		"memory multiplication overflow": {
+			value:        "8796093022207.1",
+			targetMetric: "memory",
+			wantErr:      errTargetValueOutOfRange,
+		},
+		"pod target below int64 limit": {value: "9223372036854774784", targetMetric: "requests"},
+		"pod target int64 overflow":    {value: "9223372036854775808", targetMetric: "requests", wantErr: errTargetValueOutOfRange},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseHPATargetValue(tt.value, tt.targetMetric)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("ParseHPATargetValue(%q, %q) error=%v, want %v", tt.value, tt.targetMetric, err, tt.wantErr)
+			}
+		})
+	}
+}

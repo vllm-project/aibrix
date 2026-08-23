@@ -294,6 +294,12 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		klog.ErrorS(err, "Failed to get PodAutoscaler", "obj", req.NamespacedName)
 		return ctrl.Result{}, err
 	}
+	// Deterministic spec failures are terminal for the current generation. A
+	// status update also enqueues the object, so honor the recorded generation
+	// instead of briefly reporting the same unchanged spec as valid again.
+	if hasObservedInvalidSpec(&pa) {
+		return ctrl.Result{}, nil
+	}
 
 	// validate spec; if invalid, write conditions and exit without requeue
 	specVR := r.validateSpec(&pa)
@@ -501,7 +507,12 @@ func (r *PodAutoscalerReconciler) validateMetricsSources(pa *autoscalingv1alpha1
 			return invalid(ReasonMetricsConfigError,
 				fmt.Sprintf("metricsSource[%d]: targetValue must be specified", i))
 		}
-		_, err := pametrics.ParseTargetValue(ms.TargetValue)
+		var err error
+		if pa.Spec.ScalingStrategy == autoscalingv1alpha1.HPA {
+			_, err = pametrics.ParseHPATargetValue(ms.TargetValue, ms.TargetMetric)
+		} else {
+			_, err = pametrics.ParseTargetValue(ms.TargetValue)
+		}
 		if err != nil {
 			return invalid(ReasonMetricsConfigError,
 				fmt.Sprintf("metricsSource[%d]: targetValue %q %s", i, ms.TargetValue, err))
@@ -605,6 +616,15 @@ func (r *PodAutoscalerReconciler) setInvalidSpecStatus(
 		Status:             metav1.ConditionFalse,
 		Reason:             reason,
 		Message:            msg,
+		ObservedGeneration: pa.Generation,
+		LastTransitionTime: now,
+	})
+	apimeta.SetStatusCondition(&conds, metav1.Condition{
+		Type:               ConditionAbleToScale,
+		Status:             metav1.ConditionFalse,
+		Reason:             ReasonInvalidSpec,
+		Message:            msg,
+		ObservedGeneration: pa.Generation,
 		LastTransitionTime: now,
 	})
 	apimeta.SetStatusCondition(&conds, metav1.Condition{
@@ -612,6 +632,7 @@ func (r *PodAutoscalerReconciler) setInvalidSpecStatus(
 		Status:             metav1.ConditionFalse,
 		Reason:             ReasonInvalidSpec,
 		Message:            "Spec invalid; controller will not reconcile until fixed.",
+		ObservedGeneration: pa.Generation,
 		LastTransitionTime: now,
 	})
 
@@ -620,6 +641,7 @@ func (r *PodAutoscalerReconciler) setInvalidSpecStatus(
 		DesiredScale:    paCopy.Status.DesiredScale,
 		ActualScale:     paCopy.Status.ActualScale,
 		Conditions:      conds,
+		ScalingHistory:  paCopy.Status.ScalingHistory,
 		ScheduledBounds: scheduledBoundsStatus(paCopy, time.Now()),
 	}
 	paCopy.Status = *st
@@ -684,6 +706,7 @@ func computeStatus(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler,
 		DesiredScale:    pa.Status.DesiredScale,
 		ActualScale:     pa.Status.ActualScale,
 		Conditions:      conditions, // upsert onto an isolated copy
+		ScalingHistory:  pa.Status.ScalingHistory,
 		ScheduledBounds: scheduledBoundsStatus(&pa, now.Time),
 	}
 
@@ -693,6 +716,7 @@ func computeStatus(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler,
 		Status:             boolToCond(specValidationResult.Valid),
 		Reason:             map[bool]string{true: ReasonAsExpected, false: specValidationResult.Reason}[specValidationResult.Valid],
 		Message:            specValidationResult.Message,
+		ObservedGeneration: pa.Generation,
 		LastTransitionTime: now,
 	})
 
@@ -763,8 +787,9 @@ func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscali
 		// never keeps reporting Ready/ValidSpec while no HPA can be generated.
 		if statusErr := r.setInvalidSpecStatus(ctx, &pa, reasonForHPAGenerationError(err), err.Error()); statusErr != nil {
 			klog.ErrorS(statusErr, "Failed to update PodAutoscaler status after HPA generation failure", "PA", ktypes.NamespacedName{Name: pa.Name, Namespace: pa.Namespace})
+			return ctrl.Result{}, stderrors.Join(err, statusErr)
 		}
-		return ctrl.Result{}, err
+		return ctrl.Result{}, nil
 	}
 	hpaName := ktypes.NamespacedName{
 		Name:      hpa.Name,
@@ -814,6 +839,14 @@ func reasonForHPAGenerationError(err error) string {
 		return ReasonInvalidBounds
 	}
 	return ReasonMetricsConfigError
+}
+
+func hasObservedInvalidSpec(pa *autoscalingv1alpha1.PodAutoscaler) bool {
+	condition := apimeta.FindStatusCondition(pa.Status.Conditions, ConditionValidSpec)
+	return pa.Generation > 0 &&
+		condition != nil &&
+		condition.Status == metav1.ConditionFalse &&
+		condition.ObservedGeneration == pa.Generation
 }
 
 // reconcileCustomPA handles KPA and APA strategies using WorkloadScaler (generic /scale or StormService role-level).

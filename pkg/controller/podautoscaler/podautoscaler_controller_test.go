@@ -20,6 +20,7 @@ import (
 	"context"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -403,6 +404,41 @@ func TestValidateSpecRejectsInvalidTargetValue(t *testing.T) {
 	}
 }
 
+func TestValidateSpecRejectsHPATargetValueOverflow(t *testing.T) {
+	tests := map[string]struct {
+		targetMetric string
+		targetValue  string
+	}{
+		"cpu":    {targetMetric: "cpu", targetValue: "2147483647.1"},
+		"memory": {targetMetric: "memory", targetValue: "8796093022207.1"},
+		"pods":   {targetMetric: "requests", targetValue: "9223372036854775808"},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			pa := validPodAutoscalerForSpec()
+			pa.Spec.ScalingStrategy = autoscalingv1alpha1.HPA
+			pa.Spec.MetricsSources[0].TargetMetric = tt.targetMetric
+			pa.Spec.MetricsSources[0].TargetValue = tt.targetValue
+			if tt.targetMetric != "cpu" && tt.targetMetric != "memory" {
+				pa.Spec.MetricsSources[0].MetricSourceType = autoscalingv1alpha1.CUSTOM
+			}
+
+			result := (&PodAutoscalerReconciler{}).validateSpec(pa)
+
+			if result.Valid {
+				t.Fatalf("expected HPA targetValue %q for %s to be rejected", tt.targetValue, tt.targetMetric)
+			}
+			if result.Reason != ReasonMetricsConfigError {
+				t.Fatalf("expected reason=%s, got %s", ReasonMetricsConfigError, result.Reason)
+			}
+			if !strings.Contains(result.Message, "must be representable as an HPA metric target") {
+				t.Fatalf("unexpected message: %q", result.Message)
+			}
+		})
+	}
+}
+
 func TestSetInvalidSpecStatusPersistsConditions(t *testing.T) {
 	ctx := context.Background()
 
@@ -416,6 +452,15 @@ func TestSetInvalidSpecStatusPersistsConditions(t *testing.T) {
 	pa.Kind = "PodAutoscaler"
 	pa.Namespace = ns
 	pa.Name = "test-pa"
+	pa.Generation = 7
+	pa.Status.ScalingHistory = []autoscalingv1alpha1.ScalingDecision{{
+		Timestamp:     metav1.NewTime(time.Date(2026, time.August, 23, 12, 0, 0, 0, time.UTC)),
+		PreviousScale: 1,
+		NewScale:      2,
+		Reason:        "test scaling decision",
+		Success:       true,
+	}}
+	wantScalingHistory := append([]autoscalingv1alpha1.ScalingDecision(nil), pa.Status.ScalingHistory...)
 	// Simulate an existing PodAutoscaler after a successful reconcile. In this
 	// case every condition updated by setInvalidSpecStatus already exists, so no
 	// append can accidentally hide a shared Conditions backing array.
@@ -450,14 +495,47 @@ func TestSetInvalidSpecStatusPersistsConditions(t *testing.T) {
 	if validSpec.Reason != ReasonMetricsConfigError {
 		t.Fatalf("expected reason=%s, got %s", ReasonMetricsConfigError, validSpec.Reason)
 	}
+	if validSpec.ObservedGeneration != pa.Generation {
+		t.Fatalf("expected observedGeneration=%d, got %d", pa.Generation, validSpec.ObservedGeneration)
+	}
+	ableToScale := apimeta.FindStatusCondition(latest.Status.Conditions, ConditionAbleToScale)
+	if ableToScale == nil || ableToScale.Status != metav1.ConditionFalse {
+		t.Fatalf("expected AbleToScale=False to be persisted, got %+v", ableToScale)
+	}
 	ready := apimeta.FindStatusCondition(latest.Status.Conditions, ConditionReady)
 	if ready == nil || ready.Status != metav1.ConditionFalse {
 		t.Fatalf("expected Ready=False to be persisted, got %+v", ready)
+	}
+	if len(latest.Status.ScalingHistory) != len(wantScalingHistory) {
+		t.Fatalf("scaling history length changed: got %d, want %d", len(latest.Status.ScalingHistory), len(wantScalingHistory))
+	}
+	gotDecision, wantDecision := latest.Status.ScalingHistory[0], wantScalingHistory[0]
+	if !gotDecision.Timestamp.Time.Equal(wantDecision.Timestamp.Time) ||
+		gotDecision.PreviousScale != wantDecision.PreviousScale ||
+		gotDecision.NewScale != wantDecision.NewScale ||
+		gotDecision.Reason != wantDecision.Reason ||
+		gotDecision.Success != wantDecision.Success ||
+		gotDecision.Error != wantDecision.Error {
+		t.Fatalf("scaling history changed: got %+v, want %+v", latest.Status.ScalingHistory, wantScalingHistory)
+	}
+	if !hasObservedInvalidSpec(latest) {
+		t.Fatal("expected invalid spec to be gated for the observed generation")
+	}
+	latest.Generation++
+	if hasObservedInvalidSpec(latest) {
+		t.Fatal("expected a new spec generation to be reconciled")
 	}
 }
 
 func TestComputeStatusDoesNotMutateInputConditions(t *testing.T) {
 	pa := validPodAutoscalerForSpec()
+	pa.Status.ScalingHistory = []autoscalingv1alpha1.ScalingDecision{{
+		Timestamp:     metav1.NewTime(time.Date(2026, time.August, 23, 12, 0, 0, 0, time.UTC)),
+		PreviousScale: 1,
+		NewScale:      2,
+		Reason:        "test scaling decision",
+		Success:       true,
+	}}
 	for _, condition := range []metav1.Condition{
 		{Type: ConditionValidSpec, Status: metav1.ConditionTrue, Reason: ReasonAsExpected},
 		{Type: ConditionScalingActive, Status: metav1.ConditionFalse, Reason: ReasonStable},
@@ -485,6 +563,9 @@ func TestComputeStatusDoesNotMutateInputConditions(t *testing.T) {
 	ready := apimeta.FindStatusCondition(newStatus.Conditions, ConditionReady)
 	if ready == nil || ready.Status != metav1.ConditionFalse {
 		t.Fatalf("expected computed Ready=False, got %+v", ready)
+	}
+	if !reflect.DeepEqual(newStatus.ScalingHistory, pa.Status.ScalingHistory) {
+		t.Fatalf("computeStatus did not preserve scaling history: got %+v, want %+v", newStatus.ScalingHistory, pa.Status.ScalingHistory)
 	}
 }
 

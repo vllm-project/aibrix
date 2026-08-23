@@ -18,14 +18,19 @@ package pametrics
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"strconv"
+	"strings"
 )
 
 var (
 	errInvalidTargetValue     = errors.New("must be a valid number")
 	errNonPositiveTargetValue = errors.New("must be a finite number greater than 0")
+	errTargetValueOutOfRange  = errors.New("must be representable as an HPA metric target")
 )
+
+const bytesPerMiB = int64(1024 * 1024)
 
 // ParseTargetValue parses the plain positive floating-point format shared by
 // PodAutoscaler admission, controller validation, and HPA generation.
@@ -36,6 +41,32 @@ func ParseTargetValue(value string) (float64, error) {
 	}
 	if math.IsNaN(targetValue) || math.IsInf(targetValue, 0) || targetValue <= 0 {
 		return 0, errNonPositiveTargetValue
+	}
+	return targetValue, nil
+}
+
+// ParseHPATargetValue parses a target value and verifies that rounding it up
+// cannot overflow the integer representation used by the HPA API.
+func ParseHPATargetValue(value, targetMetric string) (float64, error) {
+	targetValue, err := ParseTargetValue(value)
+	if err != nil {
+		return 0, err
+	}
+
+	roundedTarget := math.Ceil(targetValue)
+	var inRange bool
+	switch strings.ToLower(targetMetric) {
+	case "cpu":
+		inRange = roundedTarget <= math.MaxInt32
+	case "memory":
+		inRange = roundedTarget <= float64(math.MaxInt64/bytesPerMiB)
+	default:
+		// float64(math.MaxInt64) rounds to 2^63, which is already outside
+		// the int64 range, so use an exclusive upper bound here.
+		inRange = roundedTarget < math.Ldexp(1, 63)
+	}
+	if !inRange {
+		return 0, fmt.Errorf("%w for targetMetric %q", errTargetValueOutOfRange, targetMetric)
 	}
 	return targetValue, nil
 }

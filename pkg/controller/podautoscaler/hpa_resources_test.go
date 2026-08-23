@@ -218,6 +218,52 @@ func TestMakeHPAFractionalTargetValueRoundsUp(t *testing.T) {
 	assert.Equal(t, int64(2), podsTarget.AverageValue.Value())
 }
 
+func TestMakeHPARejectsTargetValueOverflow(t *testing.T) {
+	tests := map[string]struct {
+		metricSourceType autoscalingv1alpha1.MetricSourceType
+		targetMetric     string
+		targetValue      string
+	}{
+		"cpu": {
+			metricSourceType: autoscalingv1alpha1.RESOURCE,
+			targetMetric:     "cpu",
+			targetValue:      "2147483647.1",
+		},
+		"memory": {
+			metricSourceType: autoscalingv1alpha1.RESOURCE,
+			targetMetric:     "memory",
+			targetValue:      "8796093022207.1",
+		},
+		"pods": {
+			metricSourceType: autoscalingv1alpha1.CUSTOM,
+			targetMetric:     "requests",
+			targetValue:      "9223372036854775808",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			pa := &autoscalingv1alpha1.PodAutoscaler{
+				ObjectMeta: v1.ObjectMeta{Name: "test-overflow-pa", Namespace: "default"},
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{APIVersion: "apps/v1", Kind: "Deployment", Name: "test-llm"},
+					MinReplicas:    ptr.To(int32(1)),
+					MaxReplicas:    5,
+					MetricsSources: []autoscalingv1alpha1.MetricSource{{
+						MetricSourceType: tt.metricSourceType,
+						TargetMetric:     tt.targetMetric,
+						TargetValue:      tt.targetValue,
+					}},
+				},
+			}
+
+			_, err := makeHPA(pa, context.NewBaseScalingContext())
+
+			assert.ErrorContains(t, err, "must be representable as an HPA metric target")
+		})
+	}
+}
+
 func TestMakeHPAWithScheduledBounds(t *testing.T) {
 	pa := &autoscalingv1alpha1.PodAutoscaler{
 		ObjectMeta: v1.ObjectMeta{

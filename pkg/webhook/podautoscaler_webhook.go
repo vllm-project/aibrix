@@ -210,17 +210,17 @@ func validateMetricsSources(pa *autoscalingv1alpha1.PodAutoscaler, specPath *fie
 	}
 	for i := range pa.Spec.MetricsSources {
 		ms := &pa.Spec.MetricsSources[i]
-		errs = append(errs, validateMetricSource(ms, metricsPath.Index(i))...)
+		errs = append(errs, validateMetricSource(ms, pa.Spec.ScalingStrategy, metricsPath.Index(i))...)
 	}
 	return errs
 }
 
-func validateMetricSource(ms *autoscalingv1alpha1.MetricSource, msPath *field.Path) field.ErrorList {
+func validateMetricSource(ms *autoscalingv1alpha1.MetricSource, strategy autoscalingv1alpha1.ScalingStrategyType, msPath *field.Path) field.ErrorList {
 	var errs field.ErrorList
 	if ms.TargetMetric == "" {
 		errs = append(errs, field.Required(msPath.Child("targetMetric"), "must be set"))
 	}
-	errs = append(errs, validateMetricTargetValue(ms, msPath)...)
+	errs = append(errs, validateMetricTargetValue(ms, strategy, msPath)...)
 
 	switch ms.MetricSourceType {
 	case autoscalingv1alpha1.POD:
@@ -243,12 +243,17 @@ func validateMetricSource(ms *autoscalingv1alpha1.MetricSource, msPath *field.Pa
 	return errs
 }
 
-func validateMetricTargetValue(ms *autoscalingv1alpha1.MetricSource, msPath *field.Path) field.ErrorList {
+func validateMetricTargetValue(ms *autoscalingv1alpha1.MetricSource, strategy autoscalingv1alpha1.ScalingStrategyType, msPath *field.Path) field.ErrorList {
 	if ms.TargetValue == "" {
 		return field.ErrorList{field.Required(msPath.Child("targetValue"), "must be set")}
 	}
 
-	_, err := pametrics.ParseTargetValue(ms.TargetValue)
+	var err error
+	if strategy == autoscalingv1alpha1.HPA {
+		_, err = pametrics.ParseHPATargetValue(ms.TargetValue, ms.TargetMetric)
+	} else {
+		_, err = pametrics.ParseTargetValue(ms.TargetValue)
+	}
 	if err != nil {
 		return field.ErrorList{field.Invalid(msPath.Child("targetValue"), ms.TargetValue, err.Error())}
 	}

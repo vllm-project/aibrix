@@ -82,7 +82,7 @@ func makeHPAWithBounds(pa *pav1.PodAutoscaler, scalingContext scalingctx.Scaling
 	}
 
 	for _, source := range sources {
-		if targetValue, err := pametrics.ParseTargetValue(source.TargetValue); err != nil {
+		if targetValue, err := pametrics.ParseHPATargetValue(source.TargetValue, source.TargetMetric); err != nil {
 			return nil, fmt.Errorf("failed to parse target value of the metric source: %w", err)
 		} else {
 			klog.V(4).InfoS("Creating HPA", "metric", source.TargetMetric, "target", targetValue)
