@@ -32,7 +32,7 @@ import (
 
 const (
 	RouterSessionAffinity types.RoutingAlgorithm = "session-affinity"
-	maxSessionKeyLen                              = 256
+	maxSessionKeyLen                             = 256
 )
 
 func init() {
