@@ -129,3 +129,8 @@ Next Steps
    - Example YAML specifications for each autoscaler type.
 
 Let us know which would be most helpful!
+
+.. seealso::
+
+   :doc:`../features/autoscaling/autoscaling`
+       Configuring PodAutoscaler with HPA, KPA, and APA strategies.

@@ -530,3 +530,8 @@ These are set on the **gateway plugin** deployment.
    * - ``AIBRIX_TRT_MACHINE_ID``
      - ``0``
      - 10-bit machine ID used in Snowflake-style ``disagg_request_id`` generation for TensorRT-LLM (valid range: ``[0, 1024)``).
+
+.. seealso::
+
+   :doc:`../designs/aibrix-stormservice`
+       StormService, the orchestration layer behind PD disaggregation.

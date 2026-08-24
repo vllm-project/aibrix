@@ -654,6 +654,7 @@ Two request headers drive the config at request time:
      - Profile name used when no ``config-profile`` header is sent. Falls back to ``"default"`` when omitted.
    * - ``profiles``
      - Map of named profiles, each carrying the per-profile fields below.
+
 **Profile fields**
 
 .. list-table::

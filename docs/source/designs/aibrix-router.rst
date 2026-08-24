@@ -150,3 +150,10 @@ Additional router interfaces in ``pkg/types/router.go`` support optional capabil
 
 - ``QueueRouter`` — for routers that maintain an internal queue and expose queue length.
 - ``FallbackRouter`` — enables chaining by delegating to a secondary router when the primary cannot make a decision.
+
+.. seealso::
+
+   :doc:`../features/gateway-plugins`
+       Configuring the gateway and choosing a routing strategy.
+   :doc:`../production/gateway`
+       Production gateway deployment.

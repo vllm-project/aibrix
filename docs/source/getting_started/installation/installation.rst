@@ -191,3 +191,11 @@ Available controllers:
 - ``model-adapter-controller``: LoRA adapter management
 - ``kv-cache-controller``: Distributed KV cache server orchestration with consistent hashing
 - ``stormservice-controller``: Multi-node orchestration with P/D and AFD support
+
+.. card:: What's next?
+   :class-card: sd-border-1
+
+   * :doc:`../quickstart`: deploy your first model
+   * :doc:`../../production/model-deployment`: production model deployment guidance
+   * :doc:`../../production/gateway`: production gateway configuration
+   * :doc:`../../production/observability`: metrics, dashboards, and telemetry

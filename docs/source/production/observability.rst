@@ -86,3 +86,10 @@ OpenTelemetry
 -------------
 
 To enable the telemetry components, please refer to :ref:`observability_telemetry` for details.
+
+.. card:: What's next?
+   :class-card: sd-border-1
+
+   * :doc:`gateway`: gateway configuration that produces these metrics
+   * :doc:`model-deployment`: the signals worth alerting on
+   * :doc:`../features/benchmark-and-generator`: generate load to exercise them

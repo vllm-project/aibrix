@@ -487,3 +487,8 @@ In the Kubernetes ecosystem, `ControllerRevision` is a crucial resource object u
     NAME                  CONTROLLER                                      REVISION   AGE
     llm-xpyd-69df6b87d8   stormservice.orchestration.aibrix.ai/llm-xpyd   1          73s
     llm-xpyd-75ddc56d8c   stormservice.orchestration.aibrix.ai/llm-xpyd   2          3s
+
+.. seealso::
+
+   :doc:`../features/pd-disaggregation`
+       Prefill/decode disaggregation built on StormService.

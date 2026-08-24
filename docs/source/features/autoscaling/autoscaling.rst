@@ -12,3 +12,8 @@ Autoscaling is crucial for deploying Large Language Model (LLM) services on Kube
 
    metric-based-autoscaling
    optimizer-based-autoscaling
+
+.. seealso::
+
+   :doc:`../../designs/aibrix-autoscaler`
+       Internal design of the AIBrix autoscaler.
