@@ -54,7 +54,7 @@ rest of these docs comes from not knowing which plane a component belongs to.
 
 **Control plane**: the components that decide what *should* exist, such as how many
 replicas, which adapters are loaded where, and which pods form a distributed inference
-group. This is the Kubernetes controllers that reconcile the custom resources listed below,
+group. These are the Kubernetes controllers that reconcile the custom resources listed below,
 and also the **AI Runtime**, a sidecar in each engine pod that downloads model weights, loads
 and unloads LoRA adapters, and normalizes engine metrics into a consistent shape. See
 :doc:`../designs/architecture` and :doc:`../features/runtime`.
