@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import pytest
@@ -171,7 +171,47 @@ def test_retry_config_prefers_job_client_and_falls_back_to_env(monkeypatch):
     assert retry.no_endpoint_retries() == 11
     assert retry.base_delay_seconds == 2
     assert retry.max_delay_seconds == 6
+    expected_deadline = (
+        job.status.created_at.replace(tzinfo=timezone.utc).timestamp()
+        + job.spec.completion_window
+    )
+    assert retry.no_endpoint_deadline_epoch_seconds == expected_deadline
     assert base_module._inference_max_retries() == 9
+
+
+def test_no_endpoint_default_uses_job_deadline_without_retry_cap(monkeypatch):
+    monkeypatch.delenv("AIBRIX_BATCH_NO_ENDPOINT_MAX_RETRIES", raising=False)
+    job = _make_job(total=1)
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        SingleJobRunner(job),
+        ExternalRuntime(None),
+    )
+
+    retry = driver._retry_config_for_job(job)
+
+    assert retry.no_endpoint_retries() is None
+    assert retry.no_endpoint_deadline_epoch_seconds is not None
+
+
+def test_no_endpoint_deadline_prefers_provision_resource_deadline(monkeypatch):
+    monkeypatch.delenv("AIBRIX_BATCH_NO_ENDPOINT_MAX_RETRIES", raising=False)
+    job = _make_job(total=1)
+    provision_deadline = int(job.status.created_at.timestamp()) + 3600
+    job.spec.aibrix = AibrixMetadata(
+        resource_allocation={
+            "provision_resource_deadline": provision_deadline,
+        }
+    )
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        SingleJobRunner(job),
+        ExternalRuntime(None),
+    )
+
+    retry = driver._retry_config_for_job(job)
+
+    assert retry.no_endpoint_deadline_epoch_seconds == provision_deadline
 
 
 def test_retry_backoff_delays_are_configurable_from_env(monkeypatch):

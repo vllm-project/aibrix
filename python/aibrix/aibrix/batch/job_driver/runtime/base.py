@@ -184,6 +184,8 @@ class Endpoint:
 
     source: Optional[EndpointSource]
     model_name: Optional[str] = None
+    # Desired backend width when all configured replicas are available.
+    configured_capacity: Optional[int] = None
 
 
 @runtime_checkable
