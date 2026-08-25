@@ -4,6 +4,55 @@
 AI Engine Runtime
 =================
 
+Overview
+--------
+
+The AI Engine Runtime is a small HTTP service that runs next to the inference engine, usually as
+a sidecar container in the same pod. It gives the AIBrix control plane one stable API for things
+that otherwise differ from engine to engine:
+
+* **Metric standardization**: it scrapes the engine's ``/metrics`` and re-exports them on its
+  own port with a consistent naming, so the autoscaler and the gateway can read one shape.
+* **Model and adapter management**: it downloads model weights from HuggingFace, S3 or TOS and
+  loads or unloads LoRA adapters on the engine. The :doc:`lora-dynamic-loading` controller
+  calls these endpoints.
+* **Runtime model lifecycle**: an experimental set of endpoints used by :doc:`modelclaim` to
+  start, sleep, wake and deactivate engine processes in a shared pod.
+
+The runtime does not proxy inference traffic: Envoy forwards requests straight to the engine
+container. The only contact the gateway has with the runtime is the wake call it makes for a
+sleeping ModelClaim engine. Most deployments do not need the runtime. Install it when you use
+dynamic LoRA loading or ModelClaim.
+
+How it works
+------------
+
+.. mermaid::
+
+   graph LR
+       CP["Control plane<br/>ModelAdapter / ModelClaim controllers"] -->|":8080 HTTP"| RT["aibrix-runtime<br/>sidecar"]
+       PROM["Prometheus / autoscaler"] -->|"/metrics :8080"| RT
+       RT -->|"/metrics, /v1/load_lora_adapter, ..."| ENG["Engine<br/>:8000"]
+       subgraph POD["Engine pod"]
+           RT
+           ENG
+       end
+
+* The runtime listens on port ``8080`` and reaches the engine through
+  ``INFERENCE_ENGINE_ENDPOINT`` (``http://localhost:8000`` by default).
+* The controller manager flag ``--enable-runtime-sidecar`` only affects the ModelAdapter
+  (LoRA) controller. With it on, that controller uses the runtime API on ``8080`` when a
+  container named ``aibrix-runtime`` is present and the engine's own API on ``8000`` otherwise;
+  with it off (the default) it always calls the engine. The ModelClaim controller and the
+  gateway's wake path always use the runtime on ``8080``, regardless of the flag.
+* Metrics are collected on each scrape: the runtime fetches the engine's metrics page, applies
+  the standardization rules for ``INFERENCE_ENGINE`` and serves the result. Rule sets for
+  ``sglang`` and ``trtllm`` exist in the code, but the runtime only starts with
+  ``INFERENCE_ENGINE=vllm``: the engine client it initialises at startup rejects every other
+  value.
+* The model management API (``/v1/lora_adapter/*``, ``/v1/models``) is implemented for vLLM
+  0.6.1 and later. Other engines are not supported by those endpoints yet.
+
 Installation
 ------------
 
@@ -31,6 +80,24 @@ The easiest way to enable the runtime is through automatic sidecar injection. Si
             # Your container configuration...
 
 The webhook will automatically inject the ``aibrix-runtime`` sidecar container into your pods.
+
+What gets injected, so you know what to expect in the pod spec:
+
+* a container named ``aibrix-runtime`` running ``aibrix_runtime --port 8080`` from image
+  ``aibrix/runtime:v0.5.0`` unless overridden by the image annotation below;
+* ``INFERENCE_ENGINE`` taken from the ``model.aibrix.ai/engine`` annotation on the workload
+  when set, otherwise inferred from the engine container's image name (``vllm``, ``sglang``,
+  ``tgi``, ``triton``, ``llamacpp``, else ``unknown``), and
+  ``INFERENCE_ENGINE_ENDPOINT=http://localhost:8000``. Only ``vllm`` yields a runtime that
+  starts, so inject it only into vLLM workloads;
+* a container port named ``metrics`` on ``8080``, a liveness probe on ``/healthz`` and a
+  readiness probe on ``/ready``;
+* a volume ``adapter-storage`` mounted at ``/tmp/aibrix/adapters`` for downloaded adapters;
+* resource requests of ``100m`` CPU and ``256Mi`` memory, limits of ``500m`` and ``512Mi``.
+
+The webhook is registered for ``Deployment`` and ``StormService`` objects with
+``failurePolicy: Ignore``, so a webhook outage never blocks workload creation; it only means
+the sidecar is not added.
 
 **For StormService**
 
@@ -113,7 +180,7 @@ If you prefer manual control, you can add the runtime sidecar directly to your d
         - "8080"
         env:
         - name: INFERENCE_ENGINE
-          value: "vllm"  # or sglang, tgi, triton, llamacpp
+          value: "vllm"  # only vllm is supported
         - name: INFERENCE_ENGINE_ENDPOINT
           value: "http://localhost:8000"
         ports:
@@ -154,8 +221,78 @@ Define the information related to the inference engine side in the container env
     INFERENCE_ENGINE=vllm INFERENCE_ENGINE_ENDPOINT="http://localhost:8000" aibrix_runtime --port 8080
 
 
-And runtime will provide unified inference metrics on ``http://localhost:8080/metrics``. Right now, you notice that the metrics are exact same as the vllm metrics. This is subject to change in the future once more engines are supported.
-Unified metrics help to standardize the metrics for different inference engines and also components like autoscaler, etc.
+The runtime serves the result on ``http://localhost:8080/metrics``. Every metric the engine
+exposes is passed through unchanged, and for the metrics that have a standardization rule the
+runtime additionally emits a copy under an engine-neutral ``aibrix:`` name. The SGLang and
+TRT-LLM columns below describe rule sets present in the code; they cannot be selected today
+because the runtime only starts with ``INFERENCE_ENGINE=vllm``.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 31 23 23 23
+
+   * - Standard name
+     - vLLM source
+     - SGLang source
+     - TRT-LLM source
+   * - ``aibrix:queue_size``
+     - ``vllm:num_requests_waiting``
+     - ``sglang:num_queue_reqs``
+     - N/A
+   * - ``aibrix:gpu_cache_usage_perc``
+     - ``vllm:gpu_cache_usage_perc``
+     - N/A
+     - N/A
+   * - ``aibrix:kv_cache_usage_perc``
+     - ``vllm:kv_cache_usage_perc``
+     - N/A
+     - ``kv_cache_utilization``
+   * - ``aibrix:token_usage``
+     - N/A
+     - ``sglang:token_usage``
+     - N/A
+   * - ``aibrix:prompt_tokens_total``
+     - ``vllm:prompt_tokens_total``
+     - ``sglang:prompt_tokens_total``
+     - N/A
+   * - ``aibrix:generation_tokens_total``
+     - ``vllm:generation_tokens_total``
+     - ``sglang:generation_tokens_total``
+     - N/A
+   * - ``aibrix:generation_throughput``
+     - N/A
+     - ``sglang:gen_throughput``
+     - N/A
+   * - ``aibrix:time_to_first_token_seconds``
+     - ``vllm:time_to_first_token_seconds``
+     - ``sglang:time_to_first_token_seconds``
+     - ``time_to_first_token_seconds``
+   * - ``aibrix:time_per_output_token_seconds``
+     - ``vllm:time_per_output_token_seconds``
+     - ``sglang:time_per_output_token_seconds``
+     - ``time_per_output_token_seconds``
+   * - ``aibrix:e2e_request_latency_seconds``
+     - ``vllm:e2e_request_latency_seconds``
+     - ``sglang:e2e_request_latency_seconds``
+     - ``e2e_request_latency_seconds``
+   * - ``aibrix:request_success_total``
+     - ``vllm:request_success_total``
+     - N/A
+     - ``request_success_total``
+   * - ``aibrix:cache_hit_rate``
+     - N/A
+     - ``sglang:cache_hit_rate``
+     - N/A
+   * - ``aibrix:kv_cache_hit_rate``
+     - N/A
+     - N/A
+     - ``kv_cache_hit_rate``
+
+Set ``METRICS_RAW_PASSTHROUGH_MODE=1`` (or ``METRICS_ENABLE_TRANSFORMATION=0``) to skip the
+copies and serve the engine's metrics exactly as they are. If a rule fails on a scrape, the
+runtime logs the error and falls back to raw passthrough for that scrape rather than dropping
+metrics. A sample of the vLLM output as served by the runtime:
+
 
 .. code-block:: bash
 
@@ -218,7 +355,9 @@ Unified metrics help to standardize the metrics for different inference engines 
 
 
 .. attention::
-    Since vLLM is the only supported engine for now, we didn't use vendor-agnostic metrics. This is subject to change in the future once more engines are supported..
+    The sample above was captured before the ``aibrix:`` names were introduced and shows only
+    the pass-through metrics. Current versions also emit the standardized copies listed in the
+    table.
 
 
 Model Downloading
@@ -414,6 +553,122 @@ Let's assume you already have a base model and runtime deployed and you want to 
         ]
     }
 
+
+Configuration reference
+-----------------------
+
+**Command line.** ``aibrix_runtime`` accepts ``--host`` (default ``0.0.0.0``), ``--port``
+(default ``8080``) and ``--enable-fastapi-docs`` to serve the OpenAPI schema and Swagger UI.
+
+**Environment variables**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 36 22 42
+
+   * - Variable
+     - Default
+     - Meaning
+   * - ``INFERENCE_ENGINE``
+     - ``vllm``
+     - Engine type. Must be ``vllm``; the runtime fails to start with any other value.
+   * - ``INFERENCE_ENGINE_VERSION``
+     - ``0.6.1``
+     - Engine version. For vLLM, versions from ``0.6.1`` enable the LoRA endpoints.
+   * - ``INFERENCE_ENGINE_ENDPOINT``
+     - ``http://localhost:8000``
+     - Base URL of the engine.
+   * - ``METRIC_SCRAPE_PATH``
+     - ``/metrics``
+     - Path scraped on the engine.
+   * - ``METRICS_ENABLE_TRANSFORMATION``
+     - ``1``
+     - Apply standardization rules. ``0`` forces raw passthrough.
+   * - ``METRICS_RAW_PASSTHROUGH_MODE``
+     - ``0``
+     - Serve the engine's metrics unchanged.
+   * - ``PROMETHEUS_MULTIPROC_DIR``
+     - ``/tmp/aibrix/metrics/``
+     - Scratch directory for the Prometheus client.
+   * - ``DOWNLOADER_LOCAL_DIR``
+     - ``/tmp/aibrix/models/``
+     - Where models are downloaded when a request does not name a directory.
+   * - ``DOWNLOADER_NUM_THREADS``
+     - ``32``
+     - Parallel download threads.
+   * - ``DOWNLOADER_ALLOW_FILE_SUFFIX``
+     - *(all files)*
+     - Comma-separated suffixes to fetch, for example ``json, safetensors``.
+   * - ``DOWNLOADER_PART_THRESHOLD`` / ``DOWNLOADER_PART_CHUNKSIZE``
+     - ``67108864``
+     - Size in bytes above which a file is fetched in parts, and the part size.
+   * - ``DOWNLOADER_FORCE_DOWNLOAD``
+     - ``0``
+     - Re-download even if the files already exist locally.
+   * - ``DOWNLOADER_CHECK_FILE_EXIST``
+     - ``1``
+     - Skip files that already exist locally.
+   * - ``HF_TOKEN``, ``HF_ENDPOINT``, ``HF_REVISION``
+     - *(unset)*
+     - HuggingFace credentials, mirror endpoint and revision.
+   * - ``AWS_ACCESS_KEY_ID``, ``AWS_SECRET_ACCESS_KEY``, ``AWS_ENDPOINT_URL``, ``AWS_REGION``
+     - *(unset)*
+     - S3 credentials and endpoint. ``DOWNLOADER_S3_MAX_IO_QUEUE`` (``100``) and
+       ``DOWNLOADER_S3_IO_CHUNKSIZE`` (``16777216``) tune the transfer.
+   * - ``TOS_ACCESS_KEY``, ``TOS_SECRET_KEY``, ``TOS_ENDPOINT``, ``TOS_REGION``
+     - *(unset)*
+     - TOS credentials and endpoint. ``DOWNLOADER_TOS_VERSION`` (``v2``) selects the client
+       API and ``TOS_ENABLE_CRC`` enables checksums.
+
+**Annotations and flags**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 50 50
+
+   * - Setting
+     - Meaning
+   * - ``model.aibrix.ai/sidecar-injection: "true"`` (annotation)
+     - Ask the webhook to inject the runtime into a ``Deployment`` or ``StormService``.
+   * - ``model.aibrix.ai/sidecar-runtime-image`` (annotation)
+     - Runtime image to inject instead of the default.
+   * - ``--enable-runtime-sidecar`` (controller manager flag, default ``false``)
+     - Let controllers use the runtime API when the ``aibrix-runtime`` container is present.
+
+HTTP API reference
+------------------
+
+All endpoints are served on the runtime port (``8080`` by default).
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 66
+
+   * - Endpoint
+     - Description
+   * - ``GET /healthz``
+     - Liveness. Always ``200`` once the process is up.
+   * - ``GET /ready``
+     - Readiness. Used as the pod readiness probe when injected.
+   * - ``GET /metrics``
+     - Standardized engine metrics in Prometheus format.
+   * - ``POST /v1/lora_adapter/load``
+     - Body ``{"lora_name": ..., "lora_path": ...}``. Loads an adapter on the engine.
+       ``lora_path`` is passed to the engine unchanged, so it must be a path the engine can
+       open. A second body form, ``{"lora_name": ..., "artifact_url": ...}``, makes the
+       runtime download the artifact first; this is what the ModelAdapter controller sends.
+   * - ``POST /v1/lora_adapter/unload``
+     - Body ``{"lora_name": ...}``.
+   * - ``GET /v1/models``
+     - Models currently served by the engine, proxied from the engine.
+   * - ``POST /v1/model/download``
+     - Body ``{"model_uri": ..., "local_dir": ..., "model_name": ..., "download_extra_config": {...}}``.
+       Only ``model_uri`` is required.
+   * - ``GET /v1/model/list``
+     - Body ``{"local_dir": ...}``. Lists models present in a local directory.
+   * - ``/v1/runtime/models/*`` and ``GET /v1/runtime/snapshot``
+     - Experimental engine lifecycle endpoints (``activate``, ``deactivate``, ``sleep``,
+       ``wake``, ``kv-limit``) used by :doc:`modelclaim`. Not intended for direct use.
 
 .. seealso::
 
