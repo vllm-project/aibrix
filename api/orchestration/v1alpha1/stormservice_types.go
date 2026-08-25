@@ -59,6 +59,7 @@ type StormServiceSpec struct {
 	// StormServices and surface a condition with a ProgressDeadlineExceeded reason.
 	// Progress is not estimated while a StormService is paused. Defaults to 600s.
 	// +kubebuilder:default=600
+	// +kubebuilder:validation:Minimum=1
 	// +optional
 	ProgressDeadlineSeconds *int32 `json:"progressDeadlineSeconds,omitempty" protobuf:"varint,9,opt,name=progressDeadlineSeconds"`
 

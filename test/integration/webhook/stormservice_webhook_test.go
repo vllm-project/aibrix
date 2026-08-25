@@ -164,6 +164,32 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 			failed: false,
 		}),
 
+		ginkgo.Entry("rejects zero progress deadline", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				stormService := wrapper.MakeStormService("zero-progress-deadline").
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					Obj()
+				stormService.Spec.ProgressDeadlineSeconds = ptr.To(int32(0))
+				return stormService
+			},
+			failed:        true,
+			expectInvalid: true,
+		}),
+
+		ginkgo.Entry("rejects negative progress deadline", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				stormService := wrapper.MakeStormService("negative-progress-deadline").
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					Obj()
+				stormService.Spec.ProgressDeadlineSeconds = ptr.To(int32(-1))
+				return stormService
+			},
+			failed:        true,
+			expectInvalid: true,
+		}),
+
 		ginkgo.Entry("rejects a missing nested RoleSet spec", &testValidatingCase{
 			stormservice: func() *orchestrationapi.StormService {
 				stormService := wrapper.MakeStormService("missing-nested-spec").
