@@ -40,7 +40,7 @@ rest of these docs comes from not knowing which plane a component belongs to.
 
    graph TD
        Client[Client] --> Envoy[Envoy Gateway]
-       Envoy <-->|ext_proc| GW["Gateway plugins<br/>returns a target-pod header"]
+       Envoy <-->|ext_proc| GW["Gateway plugins<br/>return a target-pod header"]
        Envoy -->|forwards the request| ENG
 
        subgraph Pod["Engine pod"]
