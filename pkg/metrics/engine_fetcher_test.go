@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -522,6 +523,27 @@ vllm:deployment_replicas{model_name="deepseek-r1-distill-llama-8b"} 3
 		_, err := fetcher.FetchRawMetric(ctx, url, "gpu-optimizer", "vllm:deployment_replicas")
 
 		require.Error(t, err)
+	})
+
+	t.Run("TransportFailureIsNotCountedAsEngineQueryFailure", func(t *testing.T) {
+		counter, cleanup := SetupCounterMetricsForTest(LLMEngineMetricsQueryFail, []string{"gateway_pod", "model"})
+		defer cleanup()
+
+		// A closed server yields a connection error, the only path that emits the counter.
+		deadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		deadURL := deadServer.URL
+		deadServer.Close()
+
+		_, err := fetcher.FetchRawMetric(ctx, deadURL+"/metrics/default/model", "gpu-optimizer", "vllm:deployment_replicas")
+		require.Error(t, err)
+		assert.Equal(t, 0, testutil.CollectAndCount(counter),
+			"external metric fetch failures must not increment llm_engine_metrics_query_fail")
+
+		// The engine path must keep counting, so the counter is still useful for engine scrapes.
+		_, err = fetcher.FetchTypedMetric(ctx, strings.TrimPrefix(deadURL, "http://"), "vllm", "test-pod", NumRequestsRunning)
+		require.Error(t, err)
+		assert.Equal(t, 1, testutil.CollectAndCount(counter),
+			"engine metric fetch failures should still increment llm_engine_metrics_query_fail")
 	})
 }
 

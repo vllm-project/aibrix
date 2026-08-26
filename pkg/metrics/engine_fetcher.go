@@ -170,7 +170,8 @@ func (ef *EngineMetricsFetcher) FetchRawMetric(ctx context.Context, url, identif
 			}
 		}
 
-		allMetrics, err := ef.fetchAllMetricsFromURL(ctx, url)
+		// Do not attribute failures of external sources to the engine failure counter.
+		allMetrics, err := ef.fetchMetricsFromURL(ctx, url, "")
 		if err != nil {
 			klog.V(4).InfoS("Failed to fetch metrics from URL",
 				"attempt", attempt+1, "identifier", identifier, "url", url, "error", err)
@@ -475,8 +476,16 @@ func (ef *EngineMetricsFetcher) parseMetricInstance(familyMetric *dto.Metric, me
 	return nil, fmt.Errorf("unsupported metric type for raw parsing: %v", metric.MetricType)
 }
 
-// fetchAllMetricsFromURL performs a single HTTP request and parses all Prometheus metrics
+// fetchAllMetricsFromURL performs a single HTTP request against an engine endpoint and parses
+// all Prometheus metrics. Transport failures are counted in llm_engine_metrics_query_fail.
 func (ef *EngineMetricsFetcher) fetchAllMetricsFromURL(ctx context.Context, url string) (map[string]*dto.MetricFamily, error) {
+	return ef.fetchMetricsFromURL(ctx, url, LLMEngineMetricsQueryFail)
+}
+
+// fetchMetricsFromURL performs a single HTTP request and parses all Prometheus metrics in the
+// response. If failureMetric is non-empty, transport failures increment that counter; callers
+// scraping non-engine sources pass an empty name so their failures are not attributed to engines.
+func (ef *EngineMetricsFetcher) fetchMetricsFromURL(ctx context.Context, url, failureMetric string) (map[string]*dto.MetricFamily, error) {
 	// Use our configured HTTP client with the existing parsing logic
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -485,7 +494,9 @@ func (ef *EngineMetricsFetcher) fetchAllMetricsFromURL(ctx context.Context, url 
 
 	resp, err := ef.client.Do(req)
 	if err != nil {
-		EmitMetricToPrometheus(nil, nil, LLMEngineMetricsQueryFail, &SimpleMetricValue{Value: 1.0}, nil)
+		if failureMetric != "" {
+			EmitMetricToPrometheus(nil, nil, failureMetric, &SimpleMetricValue{Value: 1.0}, nil)
+		}
 		return nil, fmt.Errorf("failed to fetch metrics from %s: %v", url, err)
 	}
 	defer func() {
