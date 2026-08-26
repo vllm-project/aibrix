@@ -77,11 +77,7 @@ func DeleteGaugeMetricForPod(metricName string, routingCtx *types.RoutingContext
 		return
 	}
 
-	var model string
-	if routingCtx != nil {
-		model = routingCtx.Model
-	}
-	labelNames, labelValues := buildMetricLabels(pod, model, extras)
+	labelNames, labelValues := buildMetricLabels(pod, routingCtx, extras)
 	if len(canonicalNames) == 0 {
 		_ = gauge.DeleteLabelValues(labelValues...)
 		return
@@ -166,24 +162,12 @@ func IncrementCounterMetric(name string, help string, value float64, labelNames 
 }
 
 func emitGaugeMetric(routingCtx *types.RoutingContext, pod *v1.Pod, name string, value float64, extras map[string]string) {
-	var model string
-	if routingCtx == nil {
-		model = ""
-	} else {
-		model = routingCtx.Model
-	}
-	labelNames, labelValues := buildMetricLabels(pod, model, extras)
+	labelNames, labelValues := buildMetricLabels(pod, routingCtx, extras)
 	SetGaugeMetric(name, GetMetricHelp(name), value, labelNames, labelValues...)
 }
 
 func emitCounterMetric(routingCtx *types.RoutingContext, pod *v1.Pod, name string, value float64, extras map[string]string) {
-	var model string
-	if routingCtx == nil {
-		model = ""
-	} else {
-		model = routingCtx.Model
-	}
-	labelNames, labelValues := buildMetricLabels(pod, model, extras)
+	labelNames, labelValues := buildMetricLabels(pod, routingCtx, extras)
 	IncrementCounterMetricFnForTest(name, GetMetricHelp(name), value, labelNames, labelValues...)
 }
 
@@ -350,9 +334,9 @@ func SetupMetricsForTest(metricName string, labelNames []string) (*prometheus.Ga
 	testRegistry.MustRegister(testGauge)
 
 	originalFn := SetGaugeMetricFnForTest
-	SetGaugeMetricFnForTest = func(name string, help string, value float64, labels []string, labelValues ...string) {
+	SetGaugeMetricFnForTest = func(name string, help string, value float64, gotNames []string, gotValues ...string) {
 		if name == metricName {
-			testGauge.WithLabelValues(labelValues...).Set(value)
+			testGauge.WithLabelValues(projectLabelValues(labelNames, gotNames, gotValues)...).Set(value)
 		}
 	}
 
@@ -368,23 +352,36 @@ func SetupCounterMetricsForTest(metricName string, labelNames []string) (*promet
 	testRegistry.MustRegister(testCounter)
 
 	originalFn := IncrementCounterMetricFnForTest
-	IncrementCounterMetricFnForTest = func(name string, help string, value float64, labels []string, labelValues ...string) {
+	IncrementCounterMetricFnForTest = func(name string, help string, value float64, gotNames []string, gotValues ...string) {
 		if name == metricName {
-			testCounter.WithLabelValues(labelValues...).Add(value)
+			testCounter.WithLabelValues(projectLabelValues(labelNames, gotNames, gotValues)...).Add(value)
 		}
 	}
 
 	return testCounter, func() { IncrementCounterMetricFnForTest = originalFn }
 }
 
+// projectLabelValues maps emitted label values onto the subset of names a test
+// CounterVec/GaugeVec was registered with, so tests can ignore extra default
+// labels (lora_adapter, ...).
+func projectLabelValues(wantNames, gotNames, gotValues []string) []string {
+	m := make(map[string]string, len(gotNames))
+	for i, n := range gotNames {
+		if i < len(gotValues) {
+			m[n] = gotValues[i]
+		}
+	}
+	out := make([]string, len(wantNames))
+	for i, n := range wantNames {
+		out[i] = m[n]
+	}
+	return out
+}
+
 func EmitMetricToPrometheus(routingCtx *types.RoutingContext, pod *v1.Pod, metricName string, metricValue MetricValue, extra map[string]string) {
 	metricDef, exists := Metrics[metricName]
 	if !exists {
 		return
-	}
-	var model string
-	if routingCtx != nil {
-		model = routingCtx.Model
 	}
 
 	switch metricDef.MetricType.Raw {
@@ -393,7 +390,7 @@ func EmitMetricToPrometheus(routingCtx *types.RoutingContext, pod *v1.Pod, metri
 	case Counter:
 		emitCounterMetric(routingCtx, pod, metricName, metricValue.GetSimpleValue(), extra)
 	default:
-		labelNames, labelValues := buildMetricLabels(pod, model, extra)
+		labelNames, labelValues := buildMetricLabels(pod, routingCtx, extra)
 		if hv := metricValue.GetHistogramValue(); hv != nil {
 			SetHistogramMetric(metricName, GetMetricHelp(metricName), hv, labelNames, labelValues...)
 			p50, _ := hv.GetPercentile(50)
@@ -406,8 +403,8 @@ func EmitMetricToPrometheus(routingCtx *types.RoutingContext, pod *v1.Pod, metri
 	}
 }
 
-func buildMetricLabels(pod *v1.Pod, model string, extras map[string]string) ([]string, []string) {
-	defaultLabelMap := generateDefaultMetricLabelsMap(pod, model)
+func buildMetricLabels(pod *v1.Pod, routingCtx *types.RoutingContext, extras map[string]string) ([]string, []string) {
+	defaultLabelMap := generateDefaultMetricLabelsMap(pod, routingCtx)
 	labelNames := make([]string, 0, len(defaultLabelMap)+len(extras))
 	labelValues := make([]string, 0, len(defaultLabelMap)+len(extras))
 
@@ -441,23 +438,37 @@ func buildMetricLabels(pod *v1.Pod, model string, extras map[string]string) ([]s
 	return labelNames, labelValues
 }
 
-func generateDefaultMetricLabelsMap(pod *v1.Pod, model string) map[string]string {
+func generateDefaultMetricLabelsMap(pod *v1.Pod, routingCtx *types.RoutingContext) map[string]string {
+	model, loraAdapter := metricModelLabels(routingCtx)
 	if pod == nil {
 		return map[string]string{
-			"model":       model,
-			"gateway_pod": gatewayPodName,
+			"model":        model,
+			"lora_adapter": loraAdapter,
+			"gateway_pod":  gatewayPodName,
 		}
 	}
 	return map[string]string{
 		"namespace":          pod.Namespace,
 		"pod":                pod.Name,
 		"model":              model,
+		"lora_adapter":       loraAdapter,
 		"engine_type":        GetEngineType(*pod),
 		"roleset":            utils.GetPodEnv(pod, "ROLESET_NAME", ""),
 		"role":               resolvePodRole(pod),
 		"role_replica_index": utils.GetPodEnv(pod, "ROLE_REPLICA_INDEX", ""),
 		"gateway_pod":        gatewayPodName,
 	}
+}
+
+// metricModelLabels returns (model, lora_adapter) for gateway request metrics.
+// model is always the served base-model name so existing $model dashboard
+// filters keep working. For a LoRA request, lora_adapter is the adapter name;
+// for a base-model request it is empty.
+func metricModelLabels(routingCtx *types.RoutingContext) (model, loraAdapter string) {
+	if routingCtx == nil {
+		return "", ""
+	}
+	return routingCtx.MetricModel(), routingCtx.MetricLoraAdapter()
 }
 
 func resolvePodRole(pod *v1.Pod) string {

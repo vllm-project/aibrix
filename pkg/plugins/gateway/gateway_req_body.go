@@ -75,6 +75,9 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 	routingCtx.Message = message
 	routingCtx.Stream = stream
 	routingCtx.ReqBody = body.RequestBody.GetBody()
+	if base, ok := s.cache.ModelBaseModel(model); ok {
+		routingCtx.BaseModel = base
+	}
 
 	// early reject if model doesn't exist or no pods are ready
 	var podsArr types.PodList
