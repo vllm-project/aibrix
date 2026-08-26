@@ -38,6 +38,30 @@ func TestGetReadyReplicaCountForRole(t *testing.T) {
 	assert.Equal(t, int32(2), count)
 }
 
+func TestRenderStormServicePodVolcanoScheduler(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test"},
+		Spec: orchestrationv1alpha1.RoleSetSpec{
+			SchedulingStrategy: &orchestrationv1alpha1.SchedulingStrategy{
+				VolcanoSchedulingStrategy: &orchestrationv1alpha1.VolcanoSchedulingStrategySpec{},
+			},
+		},
+	}
+	role := &orchestrationv1alpha1.RoleSpec{Name: "worker"}
+
+	t.Run("injects volcano when unset", func(t *testing.T) {
+		pod := &corev1.Pod{}
+		renderStormServicePod(roleSet, role, pod, nil)
+		assert.Equal(t, "volcano", pod.Spec.SchedulerName)
+	})
+
+	t.Run("preserves an explicit scheduler", func(t *testing.T) {
+		pod := &corev1.Pod{Spec: corev1.PodSpec{SchedulerName: "custom"}}
+		renderStormServicePod(roleSet, role, pod, nil)
+		assert.Equal(t, "custom", pod.Spec.SchedulerName)
+	})
+}
+
 func TestSetAndRemoveRoleSetCondition(t *testing.T) {
 	status := &orchestrationv1alpha1.RoleSetStatus{}
 	now := metav1.Now()
