@@ -307,3 +307,11 @@ This allows the same gateway to enforce different routing strategies, prompt-len
 and PD modes per model without deploying separate gateway instances.
 
 For config profile setup and the full annotation schema see :ref:`config_profiles` in the Gateway Routing guide. For production guidance including RPS limiting see :ref:`model_deployment_production`.
+
+.. card:: What's next?
+   :class-card: sd-border-1
+
+   * :doc:`model-deployment`: deploy models behind this gateway
+   * :doc:`observability`: gateway metrics and dashboards
+   * :doc:`../features/pd-disaggregation`: split prefill from decode
+   * :doc:`../designs/aibrix-router`: how routing decisions are made

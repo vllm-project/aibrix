@@ -414,3 +414,8 @@ Let's assume you already have a base model and runtime deployed and you want to 
         ]
     }
 
+
+.. seealso::
+
+   :doc:`../designs/aibrix-engine-runtime`
+       Internal design of the AI Runtime sidecar.

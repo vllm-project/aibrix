@@ -37,8 +37,9 @@ Deployment Mode
 Stormservice supports two deployment modes: **Replica Mode** and **Pooled Mode**.
 
 .. note::
-    1. These two modes are mutually exclusive. There is no dedicated configuration item to explicitly specify the deployment mode; it is solely controlled by the `stormservice.spec.replicas` field.
-    2. The deployment mode of StormService is automatically determined, replica mode is activated when `replicas > 1` and pooled mode is activated when `replicas = 1`.
+    1. These two modes are mutually exclusive. The mode is declared through the `stormservice.spec.mode` field, which accepts `Replica` or `Pooled`.
+    2. `spec.mode` is optional and is not defaulted. When it is omitted the mode is inferred for backward compatibility from `stormservice.spec.replicas`: replica mode when `replicas > 1`, otherwise pooled mode.
+    3. When `spec.mode` is set to `Pooled`, `spec.replicas` must stay at `1`; roles are scaled through `spec.template.spec.roles[].replicas`.
 
 
 Replica Mode
@@ -487,3 +488,8 @@ In the Kubernetes ecosystem, `ControllerRevision` is a crucial resource object u
     NAME                  CONTROLLER                                      REVISION   AGE
     llm-xpyd-69df6b87d8   stormservice.orchestration.aibrix.ai/llm-xpyd   1          73s
     llm-xpyd-75ddc56d8c   stormservice.orchestration.aibrix.ai/llm-xpyd   2          3s
+
+.. seealso::
+
+   :doc:`../features/pd-disaggregation`
+       Prefill/decode disaggregation built on StormService.

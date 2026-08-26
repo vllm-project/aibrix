@@ -78,11 +78,12 @@ metadata:
   name: ss-pool
   namespace: default
 spec:
+  mode: Pooled
   updateStrategy:
     type: InPlaceUpdate
     maxSurge: 2
     maxUnavailable: 1
-  replicas: 1  # Pooled mode
+  replicas: 1
   stateful: true
   selector:
     matchLabels:

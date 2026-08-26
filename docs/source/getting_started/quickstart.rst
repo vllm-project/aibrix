@@ -192,3 +192,11 @@ If you meet problems exposing external IPs, feel free to debug with following co
     envoy-gateway                            ClusterIP      10.96.166.226   <none>        18000/TCP,18001/TCP,18002/TCP,19001/TCP   10d
 
 For advanced development usage, please refer to the :ref:`development` section.
+
+.. card:: What's next?
+   :class-card: sd-border-1
+
+   * :doc:`installation/installation`: production installation for your platform
+   * :doc:`../features/gateway-plugins`: choose a routing strategy for your workload
+   * :doc:`../features/autoscaling/autoscaling`: scale replicas on inference metrics
+   * :doc:`../production/observability`: see what the system is doing

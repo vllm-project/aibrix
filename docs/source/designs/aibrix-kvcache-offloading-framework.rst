@@ -511,3 +511,10 @@ RocksDB connector is used for testing purposes.
    * - AIBRIX_KV_CACHE_OL_ROCKSDB_MAX_BACKGROUND_JOBS
      - "8"
      - Max background jobs.
+
+.. seealso::
+
+   :doc:`../features/kvcache-offloading`
+       Deploying and configuring distributed KV cache.
+   :doc:`../features/kv-event-sync`
+       Synchronizing KV cache events with the gateway.

@@ -240,3 +240,11 @@ Before shipping to production, ensure you have visibility into:
 - **Prefill timeout rate** (PD only) — ``pd-prefill-request-error`` log entries; a high rate suggests prefill pods are overloaded.
 
 See the `Observability <observability.html>`_ guide for the full metrics reference.
+
+.. card:: What's next?
+   :class-card: sd-border-1
+
+   * :doc:`gateway`: production gateway configuration
+   * :doc:`observability`: full metrics reference
+   * :doc:`../features/autoscaling/autoscaling`: autoscale the deployment
+   * :doc:`../features/kvcache-offloading`: reduce prefill cost with KV reuse

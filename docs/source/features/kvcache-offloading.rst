@@ -325,3 +325,8 @@ Run a task to generate requests to the inference engine, and you can browse the 
   :alt: aibrix-kvcache-profiling
   :width: 99%
   :align: center
+
+.. seealso::
+
+   :doc:`../designs/aibrix-kvcache-offloading-framework`
+       Internal design of the KV cache offloading framework.
