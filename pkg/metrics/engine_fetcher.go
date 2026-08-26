@@ -124,10 +124,8 @@ func (ef *EngineMetricsFetcher) FetchTypedMetric(ctx context.Context, endpoint, 
 			klog.V(4).InfoS("Retrying typed metric fetch from engine endpoint",
 				"attempt", attempt, "delay", delay, "identifier", identifier, "metric", metricName)
 
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(delay):
+			if err := sleepWithContext(ctx, delay); err != nil {
+				return nil, err
 			}
 		}
 
@@ -167,10 +165,8 @@ func (ef *EngineMetricsFetcher) FetchRawMetric(ctx context.Context, url, identif
 			klog.V(4).InfoS("Retrying raw metric fetch",
 				"attempt", attempt, "delay", delay, "identifier", identifier, "metric", rawMetricName)
 
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(delay):
+			if err := sleepWithContext(ctx, delay); err != nil {
+				return nil, err
 			}
 		}
 
@@ -222,10 +218,8 @@ func (ef *EngineMetricsFetcher) FetchAllTypedMetrics(ctx context.Context, endpoi
 			klog.V(4).InfoS("Retrying all typed metrics fetch from engine endpoint",
 				"attempt", attempt, "delay", delay, "identifier", identifier)
 
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(delay):
+			if err := sleepWithContext(ctx, delay); err != nil {
+				return nil, err
 			}
 		}
 
@@ -317,6 +311,21 @@ func (ef *EngineMetricsFetcher) calculateBackoffDelay(attempt int) time.Duration
 		delay = ef.config.MaxDelay
 	}
 	return delay
+}
+
+// sleepWithContext blocks for the given delay or until ctx is done, whichever comes first.
+// It uses an explicit timer that is stopped on early return so a cancelled context does not
+// leave a pending timer behind, unlike time.After, whose timer cannot be stopped.
+func sleepWithContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // getAvailableMetricsForEngine returns all metrics available for a given engine type
