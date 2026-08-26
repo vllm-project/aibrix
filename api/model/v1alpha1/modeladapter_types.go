@@ -132,8 +132,12 @@ const (
 // +kubebuilder:printcolumn:name="Desired",type=integer,JSONPath=`.status.desiredReplicas`
 // +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyReplicas`
 // +kubebuilder:printcolumn:name="Candidates",type=integer,JSONPath=`.status.candidates`
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=='Ready')].reason`
+// +kubebuilder:printcolumn:name="Base Model",type=string,JSONPath=`.spec.baseModel`,priority=1
 // +kubebuilder:printcolumn:name="Model Path",type=string,JSONPath=`.spec.artifactURL`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:printcolumn:name="Instances",type=string,JSONPath=`.status.instances`,priority=1
+// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=='Ready')].message`,priority=1
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // ModelAdapter is the Schema for the modeladapters API
