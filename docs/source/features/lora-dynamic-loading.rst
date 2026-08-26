@@ -33,26 +33,30 @@ The ModelAdapter goes through several distinct phases during its lifecycle. Unde
 
 ::
 
-    Pending → Scheduled → Loading → Bound → Running
-       ↓         ↓         ↓        ↓        ↓
-    Starting  Pod      Adapter   Service   Ready for
-    reconcile Selected  Loading   Created   Inference
+    Pending → Scheduled → Running
+       ↓         ↓          ↓
+    Waiting   Pod        Adapter loaded,
+    for pods  selected   ready for inference
+
+    Loading fails on every candidate pod → Failed (retried until one load succeeds)
 
 **Phase Details:**
 
-1. **Pending**: Initial state when the ModelAdapter is first created. The controller starts reconciliation and validates the configuration.
+1. **Pending**: The controller has started reconciliation but no adapter instance is loaded yet. The ``Ready`` condition says why: reason ``PodNotReady`` means no ready pod matches the ``podSelector``; reason ``ModelAdapterUnavailable`` means candidate pods exist but the adapter is not loaded on any of them yet, for example while a pod is still settling after becoming ready.
 
-2. **Scheduled**: The controller has successfully identified and selected suitable pods that match the ``podSelector`` criteria. Pods are validated for readiness and stability before selection.
+2. **Scheduled**: Only with ``replicas: 1``. The controller has selected a pod that matches the ``podSelector`` and is loading the adapter on it. Pods are validated for readiness and stability before selection. Loading includes:
 
-3. **Loading**: The controller is actively loading the LoRA adapter onto the selected pods. This includes:
-   
-   - Downloading the adapter from the specified ``artifactURL`` 
+   - Downloading the adapter from the specified ``artifactURL``
    - Registering the adapter with the vLLM engine
-   - Handling retry mechanisms with exponential backoff if loading fails
+   - Retrying with exponential backoff if loading fails
 
-4. **Bound**: The LoRA adapter has been successfully loaded onto the pods and the controller is creating the associated Kubernetes Service and EndpointSlice resources for service discovery.
+   Without ``replicas`` (load on all matching pods) the adapter moves from ``Pending`` straight to ``Running``.
 
-5. **Running**: The ModelAdapter is fully operational and ready to serve inference requests. The LoRA model is accessible through the gateway using the adapter name.
+3. **Running**: The adapter is loaded on at least one pod and the Kubernetes Service and EndpointSlice for service discovery exist. The LoRA model is accessible through the gateway using the adapter name. ``readyReplicas`` out of ``desiredReplicas`` in the status shows how many candidate pods have the adapter loaded.
+
+4. **Failed**: Loading failed on every candidate pod. The ``Ready`` condition carries reason ``ModelAdapterLoadingError`` and the per-pod errors in its message. The controller keeps retrying and the adapter returns to ``Running`` as soon as one load succeeds.
+
+``Bound`` and ``ResourceCreated`` are not steps of the normal flow. They show up as the phase only when the controller hits an error while loading the adapter (``Bound``) or while creating the Service or EndpointSlice (``ResourceCreated``); the condition of the same name carries the error details, and the controller keeps retrying.
 
 **Error Handling and Reliability Features:**
 
@@ -63,13 +67,35 @@ The ModelAdapter goes through several distinct phases during its lifecycle. Unde
 
 **Monitoring Phase Transitions:**
 
-You can monitor the current phase and detailed status using:
+``kubectl get modeladapter`` shows the phase, the replica counters and the reason of the ``Ready`` condition at a glance. While the base model pod is still starting:
+
+.. code-block:: bash
+
+    $ kubectl get modeladapter
+    NAME             PHASE     DESIRED   READY   CANDIDATES   REASON        MODEL PATH                                                     AGE
+    qwen-code-lora   Pending                                  PodNotReady   huggingface://ai-blond/Qwen-Qwen2.5-Coder-1.5B-Instruct-lora   5s
+
+Once the adapter is loaded:
+
+.. code-block:: bash
+
+    $ kubectl get modeladapter
+    NAME             PHASE     DESIRED   READY   CANDIDATES   REASON                  MODEL PATH                                                     AGE
+    qwen-code-lora   Running   1         1       1            ModelAdapterAvailable   huggingface://ai-blond/Qwen-Qwen2.5-Coder-1.5B-Instruct-lora   2m
+
+Blank counter cells mean zero. ``-o wide`` adds the base model, the pods hosting the adapter and the full ``Ready`` condition message:
+
+.. code-block:: bash
+
+    $ kubectl get modeladapter -o wide
+    NAME             PHASE     DESIRED   READY   CANDIDATES   REASON                  BASE MODEL                 MODEL PATH                                                     AGE   INSTANCES                                       MESSAGE
+    qwen-code-lora   Running   1         1       1            ModelAdapterAvailable   qwen-coder-1-5b-instruct   huggingface://ai-blond/Qwen-Qwen2.5-Coder-1.5B-Instruct-lora   2m    ["qwen-coder-1-5b-instruct-5587f4c57d-kml6s"]   ModelAdapter default/qwen-code-lora is ready
+
+For the full condition history with timestamps and reasons for each state change, use:
 
 .. code-block:: bash
 
     kubectl describe modeladapter <adapter-name>
-
-The status section will show the current phase and transition history with timestamps and reasons for each state change.
 
 Model Adapter Service Discovery
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -149,7 +175,7 @@ If you run ```kubectl describe modeladapter qwen-code-lora``, you will see the s
         Type:                  Initialized
       Phase:  Pending
 
-**Phase 2: Scheduled**
+**Phase 2: Scheduled** (only with ``replicas: 1``)
 
 .. code-block:: bash
 
@@ -168,12 +194,13 @@ If you run ```kubectl describe modeladapter qwen-code-lora``, you will see the s
         Type:                  Scheduled
       Phase:  Scheduled
 
-**Phase 3-5: Loading → Bound → Running**
+**Phase 3: Running**
 
 .. code-block:: bash
 
     $ kubectl describe modeladapter qwen-code-lora
     Status:
+      Candidates:  1
       Conditions:
         Last Transition Time:  2025-02-16T19:14:50Z
         Message:               Starting reconciliation
@@ -190,9 +217,11 @@ If you run ```kubectl describe modeladapter qwen-code-lora``, you will see the s
         Reason:                ModelAdapterAvailable
         Status:                True
         Type:                  Ready
+      Desired Replicas:  1
       Instances:
         qwen-coder-1-5b-instruct-5587f4c57d-kml6s
-      Phase:  Running
+      Phase:           Running
+      Ready Replicas:  1
 
 Send request using lora model name to the gateway.
 
@@ -244,7 +273,7 @@ If your ModelAdapter gets stuck in a particular phase, here are common issues an
 - Check controller logs for any loading errors: ``kubectl logs -n aibrix-system deployment/aibrix-controller-manager``
 - Verify vLLM pods have ``VLLM_ALLOW_RUNTIME_LORA_UPDATING`` enabled
 
-**Stuck in Loading Phase:**
+**Stuck in Failed Phase (loading errors):**
 
 - Check if the ``artifactURL`` is accessible and valid
 - For Hugging Face models, ensure the model path exists
