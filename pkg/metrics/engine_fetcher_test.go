@@ -476,6 +476,55 @@ func TestEngineMetricsFetcher_RetryLogic(t *testing.T) {
 	})
 }
 
+func TestEngineMetricsFetcher_FetchRawMetric(t *testing.T) {
+	optimizerMetrics := `# HELP vllm:deployment_replicas Number of suggested replicas.
+# TYPE vllm:deployment_replicas gauge
+vllm:deployment_replicas{model_name="deepseek-r1-distill-llama-8b"} 3
+`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/metrics/default/deepseek-r1-distill-llama-8b" {
+			w.WriteHeader(404)
+			return
+		}
+		w.WriteHeader(200)
+		fmt.Fprint(w, optimizerMetrics)
+	}))
+	defer server.Close()
+
+	config := EngineMetricsFetcherConfig{
+		Timeout:     5 * time.Second,
+		MaxRetries:  0,
+		BaseDelay:   10 * time.Millisecond,
+		MaxDelay:    100 * time.Millisecond,
+		InsecureTLS: true,
+	}
+	fetcher := NewEngineMetricsFetcherWithConfig(config)
+	ctx := context.Background()
+
+	t.Run("FetchUnregisteredMetricFromExplicitPath", func(t *testing.T) {
+		url := server.URL + "/metrics/default/deepseek-r1-distill-llama-8b"
+		value, err := fetcher.FetchRawMetric(ctx, url, "gpu-optimizer", "vllm:deployment_replicas")
+
+		require.NoError(t, err)
+		assert.Equal(t, 3.0, value.GetSimpleValue())
+	})
+
+	t.Run("MetricMissingFromResponse", func(t *testing.T) {
+		url := server.URL + "/metrics/default/deepseek-r1-distill-llama-8b"
+		_, err := fetcher.FetchRawMetric(ctx, url, "gpu-optimizer", "vllm:missing_metric")
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to fetch raw metric")
+	})
+
+	t.Run("WrongPathReturnsError", func(t *testing.T) {
+		url := server.URL + "/metrics"
+		_, err := fetcher.FetchRawMetric(ctx, url, "gpu-optimizer", "vllm:deployment_replicas")
+
+		require.Error(t, err)
+	})
+}
+
 func TestEngineMetricsFetcher_BackoffDelay(t *testing.T) {
 	config := DefaultEngineMetricsFetcherConfig()
 	fetcher := NewEngineMetricsFetcherWithConfig(config)

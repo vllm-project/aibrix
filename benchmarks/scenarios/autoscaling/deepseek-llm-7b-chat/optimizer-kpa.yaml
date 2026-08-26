@@ -14,7 +14,7 @@ spec:
   maxReplicas: 8
   metricsSources:
     - endpoint: aibrix-gpu-optimizer.aibrix-system.svc.cluster.local:8080
-      metricSourceType: domain
+      metricSourceType: external
       path: /metrics/default/deepseek-llm-7b-chat
       protocolType: http
       targetMetric: vllm:deployment_replicas

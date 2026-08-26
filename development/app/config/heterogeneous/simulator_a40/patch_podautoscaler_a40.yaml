@@ -11,7 +11,7 @@ spec:
     kind: Deployment
     name: simulator-llama2-7b-a40
   metricsSources: 
-    - metricSourceType: domain
+    - metricSourceType: external
       protocolType: http
       endpoint: aibrix-gpu-optimizer.aibrix-system.svc.cluster.local:8080
       path: /metrics/default/simulator-llama2-7b-a40

@@ -156,6 +156,49 @@ func (ef *EngineMetricsFetcher) FetchTypedMetric(ctx context.Context, endpoint, 
 		metricName, identifier, ef.config.MaxRetries+1)
 }
 
+// FetchRawMetric fetches a metric by its raw Prometheus name from an explicit metrics URL,
+// bypassing the central metric registry. External sources such as the GPU optimizer expose
+// caller-defined metrics on caller-defined paths, so neither the registry's metric
+// definitions nor its per-engine paths apply to them.
+func (ef *EngineMetricsFetcher) FetchRawMetric(ctx context.Context, url, identifier, rawMetricName string) (MetricValue, error) {
+	for attempt := 0; attempt <= ef.config.MaxRetries; attempt++ {
+		if attempt > 0 {
+			delay := ef.calculateBackoffDelay(attempt)
+			klog.V(4).InfoS("Retrying raw metric fetch",
+				"attempt", attempt, "delay", delay, "identifier", identifier, "metric", rawMetricName)
+
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+
+		allMetrics, err := ef.fetchAllMetricsFromURL(ctx, url)
+		if err != nil {
+			klog.V(4).InfoS("Failed to fetch metrics from URL",
+				"attempt", attempt+1, "identifier", identifier, "url", url, "error", err)
+			continue
+		}
+
+		family, exists := allMetrics[rawMetricName]
+		if !exists || len(family.Metric) == 0 {
+			klog.V(4).InfoS("Raw metric not found in response",
+				"attempt", attempt+1, "identifier", identifier, "metric", rawMetricName)
+			continue
+		}
+
+		metricValue, err := GetCounterGaugeValue(family.Metric[0], family.GetType())
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse raw metric %s from %s: %w", rawMetricName, identifier, err)
+		}
+		return metricValue, nil
+	}
+
+	return nil, fmt.Errorf("failed to fetch raw metric %s from %s after %d attempts",
+		rawMetricName, identifier, ef.config.MaxRetries+1)
+}
+
 // FetchAllTypedMetrics fetches all available typed metrics from an engine endpoint
 func (ef *EngineMetricsFetcher) FetchAllTypedMetrics(ctx context.Context, endpoint, engineType, identifier string, requestedMetrics []string) (*EngineMetricsResult, error) {
 	result := &EngineMetricsResult{

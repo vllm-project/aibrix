@@ -12,7 +12,7 @@ spec:
   maxReplicas: 10
   metricsSources:
   - endpoint: aibrix-gpu-optimizer.aibrix-system.svc.cluster.local:8080
-    metricSourceType: domain
+    metricSourceType: external
     path: /metrics/default/deepseek-coder-7b-l20
     protocolType: http
     targetMetric: vllm:deployment_replicas
