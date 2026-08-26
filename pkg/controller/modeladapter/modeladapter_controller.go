@@ -31,6 +31,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -435,8 +436,18 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 	copy(oldInstances, instance.Status.Instances)
 
 	// Step 1: Reconcile Pod instances for ModelAdapter based on desired replicas
-	if ctrlResult, err := r.reconcileReplicas(ctx, instance); err != nil || ctrlResult.Requeue || ctrlResult.RequeueAfter > 0 {
-		return ctrlResult, err
+	replicasResult, err := r.reconcileReplicas(ctx, instance)
+	if err != nil {
+		return replicasResult, err
+	}
+	if replicasResult.Requeue || replicasResult.RequeueAfter > 0 {
+		// Waiting for pods to become schedulable. Persist the refreshed Candidates and
+		// DesiredReplicas together with a Ready=False reason so that `kubectl get` does
+		// not keep showing a stale phase while the adapter waits.
+		if err := r.syncReadinessStatus(ctx, oldInstance, instance); err != nil {
+			return ctrl.Result{}, err
+		}
+		return replicasResult, nil
 	}
 
 	// Step 2: Reconcile Loading (pass oldInstances to detect pod removal)
@@ -480,13 +491,10 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 		return ctrlResult, err
 	}
 
-	// Check if we need to update the status.
-	if r.inconsistentModelAdapterStatus(oldInstance.Status, instance.Status) {
-		condition := NewCondition(string(modelv1alpha1.ModelAdapterConditionReady), metav1.ConditionTrue,
-			ModelAdapterAvailable, fmt.Sprintf("ModelAdapter %s is ready", klog.KObj(instance)))
-		if err := r.updateStatus(ctx, instance, condition); err != nil {
-			return reconcile.Result{}, fmt.Errorf("update modelAdapter status error: %v", err)
-		}
+	// Derive ReadyReplicas, Phase and the Ready condition from the final instance set
+	// and persist only when something observable changed.
+	if err := r.syncReadinessStatus(ctx, oldInstance, instance); err != nil {
+		return reconcile.Result{}, fmt.Errorf("update modelAdapter status error: %v", err)
 	}
 
 	return ctrl.Result{}, nil
@@ -994,7 +1002,6 @@ func (r *ModelAdapterReconciler) reconcileEndpointSlice(ctx context.Context, ins
 		if err := r.Create(ctx, eps); err != nil {
 			return ctrl.Result{}, err
 		}
-		instance.Status.Phase = modelv1alpha1.ModelAdapterRunning
 		return ctrl.Result{}, nil
 	}
 
@@ -1006,7 +1013,6 @@ func (r *ModelAdapterReconciler) reconcileEndpointSlice(ctx context.Context, ins
 	if err := r.Update(ctx, found); err != nil {
 		return ctrl.Result{}, err
 	}
-	instance.Status.Phase = modelv1alpha1.ModelAdapterRunning
 	return ctrl.Result{}, nil
 }
 
@@ -1023,7 +1029,50 @@ func (r *ModelAdapterReconciler) inconsistentModelAdapterStatus(oldStatus, newSt
 		return true
 	}
 
+	// A changed Ready condition (for example a new reason) must be persisted too.
+	if !apiequality.Semantic.DeepEqual(oldStatus.Conditions, newStatus.Conditions) {
+		return true
+	}
+
 	return false
+}
+
+// recomputeReadiness derives ReadyReplicas, Phase and the Ready condition from the
+// current Instances and Candidates so that `kubectl get modeladapter` never shows
+// Running or Ready=True without a loaded instance. It only mutates the in-memory
+// object; the caller decides whether to persist. A Failed phase (recorded by
+// reconcileLoading together with its Ready=False loading-error condition) is kept
+// until an instance loads successfully.
+func recomputeReadiness(instance *modelv1alpha1.ModelAdapter) {
+	status := &instance.Status
+	status.ReadyReplicas = int32(len(status.Instances))
+
+	switch {
+	case status.ReadyReplicas > 0:
+		status.Phase = modelv1alpha1.ModelAdapterRunning
+		meta.SetStatusCondition(&status.Conditions, NewCondition(string(modelv1alpha1.ModelAdapterConditionReady), metav1.ConditionTrue,
+			ModelAdapterAvailable, fmt.Sprintf("ModelAdapter %s is ready", klog.KObj(instance))))
+	case status.Phase == modelv1alpha1.ModelAdapterFailed:
+		// Keep the loading error recorded by reconcileLoading visible.
+	case status.Candidates == 0:
+		status.Phase = modelv1alpha1.ModelAdapterPending
+		meta.SetStatusCondition(&status.Conditions, NewCondition(string(modelv1alpha1.ModelAdapterConditionReady), metav1.ConditionFalse,
+			PodNotReadyReason, "no ready pods match the pod selector"))
+	default:
+		status.Phase = modelv1alpha1.ModelAdapterPending
+		meta.SetStatusCondition(&status.Conditions, NewCondition(string(modelv1alpha1.ModelAdapterConditionReady), metav1.ConditionFalse,
+			ModelAdapterUnavailable, fmt.Sprintf("adapter is not loaded on any of the %d candidate pods", status.Candidates)))
+	}
+}
+
+// syncReadinessStatus recomputes the derived readiness fields and persists the status
+// only when something observable changed during this reconcile.
+func (r *ModelAdapterReconciler) syncReadinessStatus(ctx context.Context, oldInstance, instance *modelv1alpha1.ModelAdapter) error {
+	recomputeReadiness(instance)
+	if !r.inconsistentModelAdapterStatus(oldInstance.Status, instance.Status) {
+		return nil
+	}
+	return r.updateStatus(ctx, instance)
 }
 
 // isPodReadyForScheduling checks if a pod is ready and stable for scheduling
