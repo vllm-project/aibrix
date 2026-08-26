@@ -30,9 +30,40 @@ import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
+
+func TestStormServiceScalingMode(t *testing.T) {
+	tests := map[string]struct {
+		specMode   orchestrationv1alpha1.StormServiceMode
+		annotation string
+		want       orchestrationv1alpha1.StormServiceMode
+	}{
+		"declared replica mode wins":                     {specMode: orchestrationv1alpha1.StormServiceReplicaMode, want: orchestrationv1alpha1.StormServiceReplicaMode},
+		"declared pooled mode wins over annotation":      {specMode: orchestrationv1alpha1.StormServicePooledMode, annotation: "replica", want: orchestrationv1alpha1.StormServicePooledMode},
+		"declared replica mode wins over annotation":     {specMode: orchestrationv1alpha1.StormServiceReplicaMode, annotation: "pool", want: orchestrationv1alpha1.StormServiceReplicaMode},
+		"no mode falls back to replica annotation":       {annotation: "replica", want: orchestrationv1alpha1.StormServiceReplicaMode},
+		"no mode with pool annotation defaults to pool":  {annotation: "pool", want: orchestrationv1alpha1.StormServicePooledMode},
+		"no mode and no annotation defaults to pool":     {want: orchestrationv1alpha1.StormServicePooledMode},
+		"no mode with unknown annotation stays pooled":   {annotation: "bogus", want: orchestrationv1alpha1.StormServicePooledMode},
+		"declared pooled mode with no annotation pooled": {specMode: orchestrationv1alpha1.StormServicePooledMode, want: orchestrationv1alpha1.StormServicePooledMode},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			pa := &autoscalingv1alpha1.PodAutoscaler{}
+			if tc.annotation != "" {
+				pa.Annotations = map[string]string{AutoscalingStormServiceModeAnnotationKey: tc.annotation}
+			}
+			ss := &orchestrationv1alpha1.StormService{
+				Spec: orchestrationv1alpha1.StormServiceSpec{Mode: tc.specMode},
+			}
+			assert.Equal(t, tc.want, stormServiceScalingMode(pa, ss))
+		})
+	}
+}
 
 func TestGetCurrentReplicasFromScale(t *testing.T) {
 	expectedReplicas := int32(2)
@@ -160,6 +191,74 @@ func TestGetCurrentReplicasFromScale(t *testing.T) {
 									Replicas: &expectedReplicas,
 								},
 							},
+						},
+					},
+				},
+			},
+			scale: scaleStormService,
+		},
+		{
+			// spec.mode replaces the annotation as the mode signal.
+			name: "storm_service_with_declared_replica_mode",
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				ObjectMeta: v1.ObjectMeta{
+					Namespace: "default",
+				},
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					SubTargetSelector: &autoscalingv1alpha1.SubTargetSelector{},
+					ScaleTargetRef: corev1.ObjectReference{
+						Kind: "StormService",
+						Name: "test-storm",
+					},
+				},
+			},
+			ss: &orchestrationv1alpha1.StormService{
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-storm",
+					Namespace: "default",
+				},
+				Spec: orchestrationv1alpha1.StormServiceSpec{
+					Mode:     orchestrationv1alpha1.StormServiceReplicaMode,
+					Replicas: &expectedReplicas,
+				},
+			},
+			scale: scaleStormService,
+		},
+		{
+			// A declared pooled mode wins over a stale "replica" annotation:
+			// the role status is reported, not spec.replicas.
+			name: "storm_service_declared_pooled_mode_wins_over_annotation",
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				ObjectMeta: v1.ObjectMeta{
+					Namespace: "default",
+					Annotations: map[string]string{
+						AutoscalingStormServiceModeAnnotationKey: "replica",
+					},
+				},
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					SubTargetSelector: &autoscalingv1alpha1.SubTargetSelector{
+						RoleName: "prefill",
+					},
+					ScaleTargetRef: corev1.ObjectReference{
+						Kind: "StormService",
+						Name: "test-storm",
+					},
+				},
+			},
+			ss: &orchestrationv1alpha1.StormService{
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-storm",
+					Namespace: "default",
+				},
+				Spec: orchestrationv1alpha1.StormServiceSpec{
+					Mode:     orchestrationv1alpha1.StormServicePooledMode,
+					Replicas: ptr.To(int32(5)), // must not be reported in pooled mode
+				},
+				Status: orchestrationv1alpha1.StormServiceStatus{
+					RoleStatuses: []orchestrationv1alpha1.RoleStatus{
+						{
+							Name:     "prefill",
+							Replicas: expectedReplicas,
 						},
 					},
 				},
@@ -453,6 +552,92 @@ func TestSetDesiredReplicas(t *testing.T) {
 				err := fakeClient.Get(context.TODO(), client.ObjectKey{Namespace: "default", Name: "test-storm"}, ss)
 				assert.NoError(t, err)
 				assert.Equal(t, expectedReplicas, *ss.Spec.Template.Spec.Roles[0].Replicas)
+			},
+		},
+		{
+			// spec.mode replaces the annotation as the mode signal: a declared
+			// replica mode updates spec.replicas without any annotation set.
+			name: "storm_service_with_declared_replica_mode",
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				ObjectMeta: v1.ObjectMeta{
+					Namespace: "default",
+				},
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					SubTargetSelector: &autoscalingv1alpha1.SubTargetSelector{
+						RoleName: "",
+					},
+					ScaleTargetRef: corev1.ObjectReference{
+						Kind: "StormService",
+						Name: "test-storm",
+					},
+				},
+			},
+			deployment: &appsv1.Deployment{},
+			ss: &orchestrationv1alpha1.StormService{
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-storm",
+					Namespace: "default",
+				},
+				Spec: orchestrationv1alpha1.StormServiceSpec{
+					Mode:     orchestrationv1alpha1.StormServiceReplicaMode,
+					Replicas: &currentReplicas,
+				},
+			},
+			assertReplicas: func(t *testing.T, fakeClient client.Client) {
+				ss := &orchestrationv1alpha1.StormService{}
+				err := fakeClient.Get(context.TODO(), client.ObjectKey{Namespace: "default", Name: "test-storm"}, ss)
+				assert.NoError(t, err)
+				assert.Equal(t, expectedReplicas, *ss.Spec.Replicas)
+			},
+		},
+		{
+			// A declared pooled mode wins over a stale "replica" annotation: the
+			// targeted role scales while spec.replicas stays untouched.
+			name: "storm_service_declared_pooled_mode_wins_over_annotation",
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				ObjectMeta: v1.ObjectMeta{
+					Namespace: "default",
+					Annotations: map[string]string{
+						AutoscalingStormServiceModeAnnotationKey: "replica",
+					},
+				},
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					SubTargetSelector: &autoscalingv1alpha1.SubTargetSelector{
+						RoleName: "prefill",
+					},
+					ScaleTargetRef: corev1.ObjectReference{
+						Kind: "StormService",
+						Name: "test-storm",
+					},
+				},
+			},
+			deployment: &appsv1.Deployment{},
+			ss: &orchestrationv1alpha1.StormService{
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-storm",
+					Namespace: "default",
+				},
+				Spec: orchestrationv1alpha1.StormServiceSpec{
+					Mode:     orchestrationv1alpha1.StormServicePooledMode,
+					Replicas: ptr.To(int32(1)),
+					Template: orchestrationv1alpha1.RoleSetTemplateSpec{
+						Spec: &orchestrationv1alpha1.RoleSetSpec{
+							Roles: []orchestrationv1alpha1.RoleSpec{
+								{
+									Name:     "prefill",
+									Replicas: &currentReplicas,
+								},
+							},
+						},
+					},
+				},
+			},
+			assertReplicas: func(t *testing.T, fakeClient client.Client) {
+				ss := &orchestrationv1alpha1.StormService{}
+				err := fakeClient.Get(context.TODO(), client.ObjectKey{Namespace: "default", Name: "test-storm"}, ss)
+				assert.NoError(t, err)
+				assert.Equal(t, expectedReplicas, *ss.Spec.Template.Spec.Roles[0].Replicas)
+				assert.Equal(t, int32(1), *ss.Spec.Replicas)
 			},
 		},
 	}

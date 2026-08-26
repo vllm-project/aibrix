@@ -272,17 +272,16 @@ func (r *StormServiceReconciler) rollout(ctx context.Context, stormService, curr
 	if len(updated) == int(expectReplica) {
 		return nil
 	}
-	switch stormService.Spec.UpdateStrategy.Type {
-	case "":
-		// By default use RollingUpdate strategy
-		fallthrough
-	case orchestrationv1alpha1.RollingUpdateStormServiceStrategyType:
-		return r.rollingUpdate(allRoleSets, stormService, current, currentCR, updateCR)
-	case orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType:
-		return r.inPlaceUpdate(allRoleSets, stormService, current, currentCR, updateCR)
-	default:
-		return fmt.Errorf("unexpected stormService strategy type: %s", stormService.Spec.UpdateStrategy.Type)
+	// The update path follows the declared spec.mode when it is set and falls back to
+	// the legacy updateStrategy.type selection otherwise, see EffectiveUpdateStrategyType.
+	strategyType, err := EffectiveUpdateStrategyType(stormService)
+	if err != nil {
+		return err
 	}
+	if strategyType == orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType {
+		return r.inPlaceUpdate(allRoleSets, stormService, current, currentCR, updateCR)
+	}
+	return r.rollingUpdate(allRoleSets, stormService, current, currentCR, updateCR)
 }
 
 // rollingUpdate: rolling update logic for replica mode

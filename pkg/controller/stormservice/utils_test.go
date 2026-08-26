@@ -27,6 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 )
 
 func newStormService(replicas int32, surge, unavail string) orchestrationv1alpha1.StormService {
@@ -115,6 +116,92 @@ func TestIsRollingUpdate(t *testing.T) {
 
 	ss.Spec.UpdateStrategy.Type = orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType
 	assert.False(t, IsRollingUpdate(&ss))
+}
+
+func TestEffectiveUpdateStrategyType(t *testing.T) {
+	tests := map[string]struct {
+		mode         orchestrationv1alpha1.StormServiceMode
+		strategyType orchestrationv1alpha1.StormServiceUpdateStrategyType
+		replicas     *int32
+		want         orchestrationv1alpha1.StormServiceUpdateStrategyType
+		wantErr      bool
+	}{
+		// Undeclared mode keeps the legacy strategy-driven selection, regardless
+		// of what ResolvedMode would infer from spec.replicas.
+		"no mode, empty type defaults to rolling": {
+			want: orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
+		},
+		"no mode, rolling type stays rolling even when pooled is inferred": {
+			strategyType: orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
+			replicas:     ptr.To(int32(1)),
+			want:         orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
+		},
+		"no mode, in-place type stays in-place even when replica is inferred": {
+			strategyType: orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType,
+			replicas:     ptr.To(int32(3)),
+			want:         orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType,
+		},
+		"no mode, unknown type errors": {
+			strategyType: orchestrationv1alpha1.StormServiceUpdateStrategyType("Bogus"),
+			wantErr:      true,
+		},
+		// A declared mode is the source of truth for the update path.
+		"replica mode with empty type rolls": {
+			mode: orchestrationv1alpha1.StormServiceReplicaMode,
+			want: orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
+		},
+		"replica mode with rolling type rolls": {
+			mode:         orchestrationv1alpha1.StormServiceReplicaMode,
+			strategyType: orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
+			want:         orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
+		},
+		"replica mode overrides in-place type": {
+			// Rejected at admission; kept deterministic for objects that bypassed the webhook.
+			mode:         orchestrationv1alpha1.StormServiceReplicaMode,
+			strategyType: orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType,
+			want:         orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
+		},
+		"pooled mode with empty type updates in place": {
+			mode: orchestrationv1alpha1.StormServicePooledMode,
+			want: orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType,
+		},
+		"pooled mode overrides rolling type": {
+			// RollingUpdate may come from CRD defaulting, so the declared mode wins.
+			mode:         orchestrationv1alpha1.StormServicePooledMode,
+			strategyType: orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
+			want:         orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType,
+		},
+		"pooled mode with in-place type updates in place": {
+			mode:         orchestrationv1alpha1.StormServicePooledMode,
+			strategyType: orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType,
+			want:         orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType,
+		},
+		"unknown mode errors": {
+			mode:    orchestrationv1alpha1.StormServiceMode("Bogus"),
+			wantErr: true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			ss := &orchestrationv1alpha1.StormService{
+				Spec: orchestrationv1alpha1.StormServiceSpec{
+					Mode:     tc.mode,
+					Replicas: tc.replicas,
+					UpdateStrategy: orchestrationv1alpha1.StormServiceUpdateStrategy{
+						Type: tc.strategyType,
+					},
+				},
+			}
+			got, err := EffectiveUpdateStrategyType(ss)
+			if tc.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
 
 func TestSortRoleSetByRevision(t *testing.T) {

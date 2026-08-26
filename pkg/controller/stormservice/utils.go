@@ -17,6 +17,7 @@ limitations under the License.
 package stormservice
 
 import (
+	"fmt"
 	"sort"
 
 	ctrlutil "github.com/vllm-project/aibrix/pkg/controller/util"
@@ -91,6 +92,51 @@ func MaxSurge(stormService *orchestrationv1alpha1.StormService) int32 {
 // IsRollingUpdate returns true if the strategy type is a rolling update.
 func IsRollingUpdate(stormService *orchestrationv1alpha1.StormService) bool {
 	return stormService.Spec.UpdateStrategy.Type == "" || stormService.Spec.UpdateStrategy.Type == orchestrationv1alpha1.RollingUpdateStormServiceStrategyType
+}
+
+// EffectiveUpdateStrategyType returns the update strategy type that drives the rollout path.
+//
+// A declared spec.mode is the source of truth: Replica mode replaces RoleSets through the
+// RollingUpdate path and Pooled mode updates its single RoleSet through the InPlaceUpdate
+// path. The webhook rejects a declared InPlaceUpdate strategy combined with Replica mode.
+// The reverse conflict (Pooled with RollingUpdate) cannot be rejected at admission because
+// the CRD defaults spec.updateStrategy.type to RollingUpdate whenever the updateStrategy
+// block is present, so a RollingUpdate value is indistinguishable from the default; the
+// controller resolves that conflict in favor of the declared mode and logs the override.
+//
+// When spec.mode is unset, the legacy updateStrategy.type selection is kept so existing
+// manifests behave as before. ResolvedMode is intentionally not consulted for the inferred
+// case: its replicas-based inference does not always match the declared strategy type
+// (for example replicas: 1 with RollingUpdate infers Pooled but must keep rolling).
+func EffectiveUpdateStrategyType(stormService *orchestrationv1alpha1.StormService) (orchestrationv1alpha1.StormServiceUpdateStrategyType, error) {
+	declaredType := stormService.Spec.UpdateStrategy.Type
+	if stormService.Spec.Mode != "" {
+		switch mode := stormService.Spec.ResolvedMode(); mode {
+		case orchestrationv1alpha1.StormServiceReplicaMode:
+			if declaredType == orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType {
+				klog.Infof("stormservice %s/%s declares mode %s, overriding updateStrategy.type %s with %s",
+					stormService.Namespace, stormService.Name, mode, declaredType, orchestrationv1alpha1.RollingUpdateStormServiceStrategyType)
+			}
+			return orchestrationv1alpha1.RollingUpdateStormServiceStrategyType, nil
+		case orchestrationv1alpha1.StormServicePooledMode:
+			if declaredType == orchestrationv1alpha1.RollingUpdateStormServiceStrategyType {
+				klog.Infof("stormservice %s/%s declares mode %s, overriding updateStrategy.type %s with %s",
+					stormService.Namespace, stormService.Name, mode, declaredType, orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType)
+			}
+			return orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType, nil
+		default:
+			return "", fmt.Errorf("unexpected stormService mode: %s", mode)
+		}
+	}
+	switch declaredType {
+	case "":
+		// By default use RollingUpdate strategy
+		return orchestrationv1alpha1.RollingUpdateStormServiceStrategyType, nil
+	case orchestrationv1alpha1.RollingUpdateStormServiceStrategyType, orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType:
+		return declaredType, nil
+	default:
+		return "", fmt.Errorf("unexpected stormService strategy type: %s", declaredType)
+	}
 }
 
 // ResolveFenceposts resolves both maxSurge and maxUnavailable. This needs to happen in one

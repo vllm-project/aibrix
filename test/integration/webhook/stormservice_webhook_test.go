@@ -298,6 +298,60 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 			failed: false,
 		}),
 
+		// Declared Replica mode drives the rolling update path, so a declared
+		// InPlaceUpdate strategy is a contradiction and is rejected.
+		ginkgo.Entry("rejects explicit Replica mode with InPlaceUpdate strategy", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				return wrapper.MakeStormService("replica-inplace-conflict").
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					Mode(orchestrationapi.StormServiceReplicaMode).
+					Replicas(ptr.To(int32(3))).
+					UpdateStrategyType(orchestrationapi.InPlaceUpdateStormServiceStrategyType).
+					Obj()
+			},
+			failed: true,
+		}),
+
+		ginkgo.Entry("accepts explicit Replica mode with RollingUpdate strategy", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				return wrapper.MakeStormService("replica-rolling").
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					Mode(orchestrationapi.StormServiceReplicaMode).
+					Replicas(ptr.To(int32(3))).
+					Obj()
+			},
+			failed: false,
+		}),
+
+		// A RollingUpdate type may come from CRD defaulting, so an explicit Pooled
+		// mode does not reject it; the controller resolves the path from the mode.
+		ginkgo.Entry("accepts explicit Pooled mode with defaulted RollingUpdate strategy", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				return wrapper.MakeStormService("pooled-defaulted-rolling").
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					Mode(orchestrationapi.StormServicePooledMode).
+					Obj()
+			},
+			failed: false,
+		}),
+
+		// Undeclared mode keeps choosing InPlaceUpdate freely (legacy in-place
+		// updates for inferred replica mode stay valid).
+		ginkgo.Entry("accepts InPlaceUpdate with replicas > 1 when mode is not declared", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				return wrapper.MakeStormService("undeclared-mode-inplace").
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					Replicas(ptr.To(int32(3))).
+					UpdateStrategyType(orchestrationapi.InPlaceUpdateStormServiceStrategyType).
+					Obj()
+			},
+			failed: false,
+		}),
+
 		// Volcano gang scheduling: the webhook rejects configurations that the RoleSet controller
 		// or Volcano cannot honour. The default roles are "worker" (roles[0]) and "master" (roles[1]).
 		ginkgo.Entry("accepts a valid Volcano gang", &testValidatingCase{

@@ -263,15 +263,31 @@ func schedulingConfigChanged(oldSpec, newSpec *orchestrationv1alpha1.RoleSetSpec
 	return false
 }
 
-// validateStormServiceMode rejects mode/replicas combinations that cannot be satisfied.
+// validateStormServiceMode rejects declared mode combinations that cannot be satisfied.
+//
 // Pooled mode runs a single RoleSet and scales roles through spec.template.spec.roles[],
-// so a replica count above one is ambiguous. Only an explicitly declared spec.mode is
-// checked, so objects that rely on the inferred mode keep scaling spec.replicas freely.
+// so a replica count above one is ambiguous. Replica mode derives its update path from
+// the mode (rolling replacement of RoleSets), so combining it with a declared
+// spec.updateStrategy.type of InPlaceUpdate is contradictory; InPlaceUpdate can only be
+// user-written because the CRD defaults the type to RollingUpdate. The reverse
+// combination (Pooled with RollingUpdate) is not rejected: a RollingUpdate value is
+// indistinguishable from the CRD default, so the controller resolves it in favor of the
+// declared mode instead (see EffectiveUpdateStrategyType in the stormservice controller).
+//
+// Only an explicitly declared spec.mode is checked, so objects that rely on the inferred
+// mode keep scaling spec.replicas and choosing updateStrategy.type freely.
 func validateStormServiceMode(stormService *orchestrationv1alpha1.StormService) error {
-	if stormService.Spec.Mode == orchestrationv1alpha1.StormServicePooledMode &&
-		stormService.Spec.Replicas != nil && *stormService.Spec.Replicas > 1 {
-		return fmt.Errorf("StormService in %s mode must not set spec.replicas > 1 (got %d); scale roles through spec.template.spec.roles[].replicas instead",
-			orchestrationv1alpha1.StormServicePooledMode, *stormService.Spec.Replicas)
+	switch stormService.Spec.Mode {
+	case orchestrationv1alpha1.StormServicePooledMode:
+		if stormService.Spec.Replicas != nil && *stormService.Spec.Replicas > 1 {
+			return fmt.Errorf("StormService in %s mode must not set spec.replicas > 1 (got %d); scale roles through spec.template.spec.roles[].replicas instead",
+				orchestrationv1alpha1.StormServicePooledMode, *stormService.Spec.Replicas)
+		}
+	case orchestrationv1alpha1.StormServiceReplicaMode:
+		if stormService.Spec.UpdateStrategy.Type == orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType {
+			return fmt.Errorf("StormService in %s mode must not set spec.updateStrategy.type %s; use %s, or leave spec.mode unset to keep in-place updates for inferred replica mode",
+				orchestrationv1alpha1.StormServiceReplicaMode, orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType, orchestrationv1alpha1.RollingUpdateStormServiceStrategyType)
+		}
 	}
 	return nil
 }
