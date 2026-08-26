@@ -121,7 +121,10 @@ func syncStormServiceProgressingCondition(stormService *orchestrationv1alpha1.St
 		condition = *currentCondition
 	}
 
-	stormService.Status.Conditions = orchestrationv1alpha1.Conditions{condition}
+	stormService.Status.Conditions = append(
+		utils.FilterOutCondition(stormService.Status.Conditions, orchestrationv1alpha1.StormServiceProgressing),
+		condition,
+	)
 }
 
 func progressDeadlineRequeueAfter(stormService *orchestrationv1alpha1.StormService, now time.Time) time.Duration {

@@ -456,6 +456,74 @@ var _ = ginkgo.Describe("StormService controller test", func() {
 		}, time.Second*10, time.Millisecond*100).Should(gomega.Succeed())
 	})
 
+	ginkgo.It("preserves other conditions while updating rollout progress", func() {
+		ss := makeProgressDeadlineStormService("stormservice-progress-preserve-conditions", 1)
+		ss.Spec.Paused = true
+
+		gomega.Expect(k8sClient.Create(ctx, ss)).To(gomega.Succeed())
+		validation.WaitForRoleSetsCreated(ctx, k8sClient, ns.Name, ss.Name, 1)
+		validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.StormServiceNameLabelKey, ss.Name, 1)
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := &orchestrationapi.StormService{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ss), latest)).To(gomega.Succeed())
+			progressing := validation.FindCondition(
+				string(orchestrationapi.StormServiceProgressing),
+				latest.Status.Conditions,
+			)
+			g.Expect(progressing).NotTo(gomega.BeNil())
+			g.Expect(progressing.Reason).To(gomega.Equal("DeploymentPaused"))
+		}, time.Second*10, time.Millisecond*100).Should(gomega.Succeed())
+
+		readyUpdated := metav1.NewTime(time.Date(2026, 8, 26, 1, 2, 3, 0, time.UTC))
+		readyCondition := orchestrationapi.Condition{
+			Type:               orchestrationapi.StormServiceReady,
+			Status:             corev1.ConditionFalse,
+			Reason:             "MinimumReplicasUnavailable",
+			Message:            "StormService does not have minimum availability.",
+			LastUpdateTime:     &readyUpdated,
+			LastTransitionTime: &readyUpdated,
+		}
+		gomega.Eventually(func() error {
+			latest := &orchestrationapi.StormService{}
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(ss), latest); err != nil {
+				return err
+			}
+			conditions := make(orchestrationapi.Conditions, 0, len(latest.Status.Conditions)+1)
+			for _, condition := range latest.Status.Conditions {
+				if condition.Type != orchestrationapi.StormServiceReady {
+					conditions = append(conditions, condition)
+				}
+			}
+			latest.Status.Conditions = append(conditions, readyCondition)
+			if err := k8sClient.Status().Update(ctx, latest); err != nil {
+				return err
+			}
+			latest.Spec.Paused = false
+			return k8sClient.Update(ctx, latest)
+		}, time.Second*10, time.Millisecond*100).Should(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := &orchestrationapi.StormService{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ss), latest)).To(gomega.Succeed())
+			progressing := validation.FindCondition(
+				string(orchestrationapi.StormServiceProgressing),
+				latest.Status.Conditions,
+			)
+			g.Expect(progressing).NotTo(gomega.BeNil())
+			g.Expect(progressing.Reason).To(gomega.Equal("DeploymentResumed"))
+			ready := validation.FindCondition(string(orchestrationapi.StormServiceReady), latest.Status.Conditions)
+			g.Expect(ready).NotTo(gomega.BeNil())
+			g.Expect(ready.Type).To(gomega.Equal(readyCondition.Type))
+			g.Expect(ready.Status).To(gomega.Equal(readyCondition.Status))
+			g.Expect(ready.Reason).To(gomega.Equal(readyCondition.Reason))
+			g.Expect(ready.Message).To(gomega.Equal(readyCondition.Message))
+			g.Expect(ready.LastUpdateTime.Time).To(gomega.BeTemporally("==", readyCondition.LastUpdateTime.Time))
+			g.Expect(ready.LastTransitionTime.Time).To(gomega.BeTemporally("==", readyCondition.LastTransitionTime.Time))
+			g.Expect(ready.LastUpdateMicroTime).To(gomega.BeNil())
+		}, time.Second*10, time.Millisecond*100).Should(gomega.Succeed())
+	})
+
 	ginkgo.It("excludes time spent paused from the progress deadline", func() {
 		ss := makeProgressDeadlineStormService("stormservice-progress-paused", 1)
 		ss.Spec.Paused = true

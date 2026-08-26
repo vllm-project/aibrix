@@ -103,6 +103,51 @@ func TestSyncStormServiceProgressingConditionRefreshesOnlyOnProgress(t *testing.
 	assert.Equal(t, started.Add(-time.Minute), condition.LastTransitionTime.Time)
 }
 
+func TestSyncStormServiceProgressingConditionPreservesOtherConditions(t *testing.T) {
+	started := time.Date(2026, 8, 23, 1, 2, 3, 0, time.UTC)
+	now := started.Add(9 * time.Second)
+	readyUpdated := metav1.NewTime(started.Add(-2 * time.Minute))
+	readyTransitioned := metav1.NewTime(started.Add(-3 * time.Minute))
+	readyCondition := orchestrationv1alpha1.Condition{
+		Type:               orchestrationv1alpha1.StormServiceReady,
+		Status:             corev1.ConditionFalse,
+		Reason:             "MinimumReplicasUnavailable",
+		Message:            "StormService does not have minimum availability.",
+		LastUpdateTime:     &readyUpdated,
+		LastTransitionTime: &readyTransitioned,
+	}
+	oldStatus := orchestrationv1alpha1.StormServiceStatus{
+		Replicas:             2,
+		UpdatedReplicas:      1,
+		ReadyReplicas:        1,
+		UpdatedReadyReplicas: 1,
+		Conditions: orchestrationv1alpha1.Conditions{
+			readyCondition,
+			progressingCondition(corev1.ConditionTrue, ProgressingReason, started, started.Add(-time.Minute)),
+			// A malformed duplicate must not survive the type-specific replacement.
+			progressingCondition(corev1.ConditionTrue, ProgressingReason, started.Add(-time.Second), started.Add(-time.Minute)),
+		},
+	}
+	stormService := &orchestrationv1alpha1.StormService{
+		ObjectMeta: metav1.ObjectMeta{Name: "progressing"},
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			ProgressDeadlineSeconds: ptr.To[int32](10),
+		},
+		Status: *oldStatus.DeepCopy(),
+	}
+	stormService.Status.UpdatedReplicas = 2
+
+	syncStormServiceProgressingCondition(stormService, &oldStatus, now)
+
+	ready := utils.GetCondition(stormService.Status.Conditions, orchestrationv1alpha1.StormServiceReady)
+	require.NotNil(t, ready)
+	assert.Equal(t, readyCondition, *ready)
+	progressing := utils.GetCondition(stormService.Status.Conditions, orchestrationv1alpha1.StormServiceProgressing)
+	require.NotNil(t, progressing)
+	assert.Equal(t, now, progressing.LastUpdateTime.Time)
+	assert.Len(t, stormService.Status.Conditions, 2)
+}
+
 func TestSyncStormServiceProgressingConditionDoesNotRefreshWithoutProgress(t *testing.T) {
 	started := time.Date(2026, 8, 23, 1, 2, 3, 0, time.UTC)
 	transitioned := started.Add(-time.Minute)
