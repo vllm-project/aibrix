@@ -134,6 +134,9 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 		}
 		if roleSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy != nil {
 			pod.Labels[constants.VolcanoPodGroupNameAnnotationKey] = roleSet.Name
+			if pod.Spec.SchedulerName == "" {
+				pod.Spec.SchedulerName = "volcano"
+			}
 		}
 	}
 
