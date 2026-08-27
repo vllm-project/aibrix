@@ -88,6 +88,10 @@ const (
 	ModelAdapterLoadingErrorReason = "ModelAdapterLoadingError"
 	// ValidationFailedReason is added when model adapter object fails the validation
 	ValidationFailedReason = "ValidationFailed"
+	// NoReadyPodsReason is added when no backend pods are ready for scheduling.
+	NoReadyPodsReason = "NoReadyPods"
+	// InsufficientReadyPodsReason is added when fewer backend pods are ready than required.
+	InsufficientReadyPodsReason = "InsufficientReadyPods"
 	// StableInstanceFoundReason is added if there's stale pod and instance has been deleted successfully.
 	StableInstanceFoundReason = "StableInstanceFound"
 	// ConditionNotReason is added when there's no condition found in the cluster.
@@ -493,10 +497,10 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 }
 
 func newSchedulingPendingCondition(instance *modelv1alpha1.ModelAdapter, available, needed int) metav1.Condition {
-	reason := "NoReadyPods"
+	reason := NoReadyPodsReason
 	message := fmt.Sprintf("ModelAdapter %s has no ready backend pods available for scheduling", klog.KObj(instance))
 	if available > 0 {
-		reason = "InsufficientReadyPods"
+		reason = InsufficientReadyPodsReason
 		message = fmt.Sprintf("ModelAdapter %s has %d ready backend pods, but needs %d for scheduling", klog.KObj(instance), available, needed)
 	}
 	return NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeScheduled), metav1.ConditionFalse, reason, message)
