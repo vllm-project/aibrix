@@ -3859,6 +3859,17 @@ spec:
                           - type: integer
                           - type: string
                           x-kubernetes-int-or-string: true
+                        replacementScheduling:
+                          properties:
+                            historicalNode:
+                              properties:
+                                mode:
+                                  default: Preferred
+                                  enum:
+                                  - Preferred
+                                  type: string
+                              type: object
+                          type: object
                         type:
                           default: Recreate
                           enum:

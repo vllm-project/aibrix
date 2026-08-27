@@ -44,6 +44,8 @@ const (
 	RoleInPlaceUpdatePendingReasonAnnotationKey = "stormservice.orchestration.aibrix.ai/in-place-update-pending-reason"
 	// RoleInPlaceUpdateReadyCondition is an optional readiness gate condition set during in-place image updates.
 	RoleInPlaceUpdateReadyCondition = "stormservice.orchestration.aibrix.ai/in-place-update-ready"
+	// RoleSetHistoricalNodeBindingsAnnotationKey stores controller-owned historical node bindings for RoleSet replacement scheduling.
+	RoleSetHistoricalNodeBindingsAnnotationKey = "orchestration.aibrix.ai/historical-node-bindings"
 
 	RoleInPlaceUpdatePendingReasonPodNotReady            = "PodNotReady"
 	RoleInPlaceUpdatePendingReasonContainerStatusMissing = "ContainerStatusMissing"

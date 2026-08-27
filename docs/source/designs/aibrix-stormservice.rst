@@ -249,6 +249,76 @@ See the complete `topology policy samples`_ in the AIBrix repository.
 .. _topology policy samples: https://github.com/vllm-project/aibrix/tree/main/samples/orchestration/topology-policy
 
 
+Historical-Node Replacement Scheduling
+--------------------------------------
+
+RoleSet historical-node scheduling lets replacement Pods prefer nodes that
+previously ran the same role workload. It is useful for inference workloads
+where node locality can preserve useful warm state, such as downloaded model
+files, runtime caches, or KV cache artifacts.
+
+Enable the policy on a role with
+``spec.roles[].updateStrategy.replacementScheduling.historicalNode``. The same
+field can be used through ``StormService.spec.template.spec.roles[]`` because
+StormService templates carry RoleSet role specs.
+
+.. code-block:: yaml
+
+   updateStrategy:
+     type: Recreate
+     maxSurge: 0
+     maxUnavailable: 1
+     replacementScheduling:
+       historicalNode:
+         mode: Preferred
+
+``mode: Preferred`` injects a preferred ``kubernetes.io/hostname`` node
+affinity into replacement Pods. The preference is soft: Kubernetes can still
+place the Pod on another node when the historical node is unavailable or lacks
+capacity.
+
+The controller records historical node bindings in the RoleSet annotation
+``orchestration.aibrix.ai/historical-node-bindings``. Because the history is
+persisted on the RoleSet, replacement scheduling can continue to use remembered
+nodes after the controller restarts.
+
+Stateful and stateless roles use different history scopes because they have
+different identity semantics:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 35 40
+
+   * - Role type
+     - History scope
+     - Reason
+   * - Stateful
+     - Replica slot, for example ``worker/0 -> node-a``
+     - A stateful slot remains the same logical replica after its Pod is
+       deleted and recreated, so the controller can safely bind history to the
+       slot.
+   * - Stateless
+     - Role-level recent-node list, for example ``worker -> [node-a, node-b]``
+     - Stateless Pods do not have stable per-replica identity, so a replacement
+       Pod cannot safely inherit one exact old Pod's slot binding.
+
+The policy applies when the RoleSet controller creates replacement Pods during
+recreate-style rollouts. For stateful roles, empty-slot creation can also reuse
+an existing slot binding. Stateless scale-up is not replacement and does not use
+historical-node affinity because the new Pod adds capacity instead of replacing
+a remembered logical replica.
+
+Historical-node scheduling only adds preferred node affinity. The controller
+skips injection when the Pod template already defines required node affinity,
+when the RoleSet has a required topology policy using
+``kubernetes.io/hostname``, or when the role uses ``podGroupSize`` greater than
+1. When injection is skipped, the controller logs the reason.
+
+See
+``samples/orchestration/roleset-historical-node-scheduling.yaml`` for stateful
+and stateless examples with inline comments.
+
+
 Update Strategy
 ---------------
 
