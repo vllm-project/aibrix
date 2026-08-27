@@ -89,9 +89,20 @@ func MaxSurge(stormService *orchestrationv1alpha1.StormService) int32 {
 	return maxSurge
 }
 
-// IsRollingUpdate returns true if the strategy type is a rolling update.
+// IsRollingUpdate returns true if the effective strategy type is a rolling update.
+//
+// It intentionally resolves the strategy through EffectiveUpdateStrategyType instead of
+// reading spec.updateStrategy.type directly, so a declared spec.mode wins over the
+// (possibly CRD-defaulted) strategy type. In Pooled mode this returns false, which makes
+// MaxSurge, MaxUnavailable and MinAvailable evaluate to 0 and keeps scaling() from ever
+// creating RoleSets beyond spec.replicas for a pooled StormService.
 func IsRollingUpdate(stormService *orchestrationv1alpha1.StormService) bool {
-	return stormService.Spec.UpdateStrategy.Type == "" || stormService.Spec.UpdateStrategy.Type == orchestrationv1alpha1.RollingUpdateStormServiceStrategyType
+	effectiveType, err := EffectiveUpdateStrategyType(stormService)
+	if err != nil {
+		// An unresolvable mode/strategy combination must not surge; rollout() surfaces the error.
+		return false
+	}
+	return effectiveType == orchestrationv1alpha1.RollingUpdateStormServiceStrategyType
 }
 
 // EffectiveUpdateStrategyType returns the update strategy type that drives the rollout path.
@@ -102,7 +113,8 @@ func IsRollingUpdate(stormService *orchestrationv1alpha1.StormService) bool {
 // The reverse conflict (Pooled with RollingUpdate) cannot be rejected at admission because
 // the CRD defaults spec.updateStrategy.type to RollingUpdate whenever the updateStrategy
 // block is present, so a RollingUpdate value is indistinguishable from the default; the
-// controller resolves that conflict in favor of the declared mode and logs the override.
+// controller resolves that conflict in favor of the declared mode and logs the override
+// at verbose level only, because it recurs on every reconcile.
 //
 // When spec.mode is unset, the legacy updateStrategy.type selection is kept so existing
 // manifests behave as before. ResolvedMode is intentionally not consulted for the inferred
@@ -114,13 +126,19 @@ func EffectiveUpdateStrategyType(stormService *orchestrationv1alpha1.StormServic
 		switch mode := stormService.Spec.ResolvedMode(); mode {
 		case orchestrationv1alpha1.StormServiceReplicaMode:
 			if declaredType == orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType {
-				klog.Infof("stormservice %s/%s declares mode %s, overriding updateStrategy.type %s with %s",
+				// The webhook rejects Replica mode with a declared InPlaceUpdate, so this
+				// branch is only reachable for objects that bypassed admission; keep a
+				// verbose-only trace for those.
+				klog.V(4).Infof("stormservice %s/%s declares mode %s, overriding updateStrategy.type %s with %s",
 					stormService.Namespace, stormService.Name, mode, declaredType, orchestrationv1alpha1.RollingUpdateStormServiceStrategyType)
 			}
 			return orchestrationv1alpha1.RollingUpdateStormServiceStrategyType, nil
 		case orchestrationv1alpha1.StormServicePooledMode:
 			if declaredType == orchestrationv1alpha1.RollingUpdateStormServiceStrategyType {
-				klog.Infof("stormservice %s/%s declares mode %s, overriding updateStrategy.type %s with %s",
+				// RollingUpdate is the CRD default whenever the updateStrategy block is
+				// present, so this override is steady state for pooled objects and fires
+				// on every reconcile; log at verbose level to avoid flooding operator logs.
+				klog.V(4).Infof("stormservice %s/%s declares mode %s, overriding updateStrategy.type %s with %s",
 					stormService.Namespace, stormService.Name, mode, declaredType, orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType)
 			}
 			return orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType, nil

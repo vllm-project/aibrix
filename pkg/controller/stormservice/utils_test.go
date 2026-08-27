@@ -116,6 +116,46 @@ func TestIsRollingUpdate(t *testing.T) {
 
 	ss.Spec.UpdateStrategy.Type = orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType
 	assert.False(t, IsRollingUpdate(&ss))
+
+	// A declared mode wins over the (possibly CRD-defaulted) strategy type.
+	ss.Spec.UpdateStrategy.Type = orchestrationv1alpha1.RollingUpdateStormServiceStrategyType
+	ss.Spec.Mode = orchestrationv1alpha1.StormServicePooledMode
+	assert.False(t, IsRollingUpdate(&ss), "pooled mode must not roll even with a defaulted RollingUpdate type")
+
+	ss.Spec.UpdateStrategy.Type = orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType
+	ss.Spec.Mode = orchestrationv1alpha1.StormServiceReplicaMode
+	assert.True(t, IsRollingUpdate(&ss), "replica mode rolls even when a bypassed-webhook object declares InPlaceUpdate")
+
+	// An unresolvable mode must not surge.
+	ss.Spec.Mode = orchestrationv1alpha1.StormServiceMode("Bogus")
+	assert.False(t, IsRollingUpdate(&ss))
+}
+
+// TestPooledModeZeroesSurgeAndUnavailable guards the pooled single-RoleSet contract:
+// with mode: Pooled and the CRD-defaulted RollingUpdate type, surge and unavailable
+// budgets consumed by scaling() must all evaluate to 0 regardless of maxSurge.
+func TestPooledModeZeroesSurgeAndUnavailable(t *testing.T) {
+	ss := newStormService(10, "25%", "20%") // surge=3, unavail=2 when rolling
+	ss.Spec.Mode = orchestrationv1alpha1.StormServicePooledMode
+	assert.Equal(t, int32(0), MaxSurge(&ss))
+	assert.Equal(t, int32(0), MaxUnavailable(ss))
+	assert.Equal(t, int32(0), MinAvailable(&ss))
+
+	// maxSurge as a plain integer, the shape the reviewer's scenario uses.
+	surge := intstrutil.FromInt32(2)
+	pooled := orchestrationv1alpha1.StormService{
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Replicas: ptr.To(int32(1)),
+			Mode:     orchestrationv1alpha1.StormServicePooledMode,
+			UpdateStrategy: orchestrationv1alpha1.StormServiceUpdateStrategy{
+				Type:     orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
+				MaxSurge: &surge,
+			},
+		},
+	}
+	assert.Equal(t, int32(0), MaxSurge(&pooled))
+	assert.Equal(t, int32(0), MaxUnavailable(pooled))
+	assert.Equal(t, int32(0), MinAvailable(&pooled))
 }
 
 func TestEffectiveUpdateStrategyType(t *testing.T) {
