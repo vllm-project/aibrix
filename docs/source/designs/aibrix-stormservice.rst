@@ -302,6 +302,12 @@ different identity semantics:
      - Stateless Pods do not have stable per-replica identity, so a replacement
        Pod cannot safely inherit one exact old Pod's slot binding.
 
+For stateless roles, the controller injects the remembered node list as one
+preferred affinity term. The Kubernetes scheduler chooses among those nodes with
+normal scheduling scoring; the RoleSet controller does not choose one node from
+the list, and multiple replacement Pods can still land on the same historical
+node when that node is the scheduler's best fit.
+
 The policy applies when the RoleSet controller creates replacement Pods during
 recreate-style rollouts. For stateful roles, empty-slot creation can also reuse
 an existing slot binding. Stateless scale-up is not replacement and does not use
@@ -315,7 +321,7 @@ when the RoleSet has a required topology policy using
 1. When injection is skipped, the controller logs the reason.
 
 See
-``samples/orchestration/roleset-historical-node-scheduling.yaml`` for stateful
+``samples/orchestration/stormservice-historical-node-scheduling.yaml`` for stateful
 and stateless examples with inline comments.
 
 
