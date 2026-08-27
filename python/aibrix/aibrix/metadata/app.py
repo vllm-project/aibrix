@@ -32,6 +32,7 @@ from aibrix.batch.client import (
     NoopEndpointSource,
 )
 from aibrix.batch.state import JobStore
+from aibrix.batch.template import k8s_profile_registry, k8s_template_registry
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger, logging_basic_config
 from aibrix.metadata.api.v1 import batch, files, models, users
@@ -60,6 +61,10 @@ _LOG_HTTP_BODIES = os.getenv("AIBRIX_MDS_HTTP_BODY_LOG", "").lower() in (
 )
 _METRICS_PATH = "/metrics"
 
+ENV_AIBRIX_TEMPLATE_NAMESPACE = "aibrix-batch-v1alpha-model-deployment-templates"
+ENV_AIBRIX_PROFILE_NAMESPACE = "aibrix-batch-v1alpha-batch-profiles"
+MDS_NAMESPACE = "aibrix-system"
+
 
 def _load_batch_k8s_context(
     args, context: Optional[InfrastructureContext] = None
@@ -73,6 +78,26 @@ def _load_batch_k8s_context(
     if args.enable_k8s_support:
         context.core_v1_api = k8s_client.CoreV1Api()
         context.apps_v1_api = k8s_client.AppsV1Api()
+
+        # Determine the namespace where the batch ConfigMaps live.
+        # The Helm deployment injects POD_NAMESPACE (=aibrix-system) via the
+        # downward API
+        namespace_template = os.getenv(ENV_AIBRIX_TEMPLATE_NAMESPACE, MDS_NAMESPACE)
+        namespace_profile = os.getenv(ENV_AIBRIX_PROFILE_NAMESPACE, MDS_NAMESPACE)
+
+        # Build ConfigMap-backed registries and load their contents synchronously
+        # before the API server starts accepting requests so that incoming
+        # batches never observe an empty registry.
+        context.template_registry = k8s_template_registry(
+            core_v1_api=context.core_v1_api,
+            namespace=namespace_template,
+        )
+        context.profile_registry = k8s_profile_registry(
+            core_v1_api=context.core_v1_api,
+            namespace=namespace_profile,
+        )
+        context.template_registry.reload()
+        context.profile_registry.reload()
 
     return context
 
