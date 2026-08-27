@@ -19,6 +19,7 @@ package modeladapter
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -521,5 +522,28 @@ func TestScheduledPodsManagement(t *testing.T) {
 	emptyPods := r.getScheduledPods(instance)
 	if emptyPods != nil {
 		t.Errorf("Expected nil, got %v", emptyPods)
+	}
+}
+
+func TestNewSchedulingPendingCondition(t *testing.T) {
+	instance := &modelv1alpha1.ModelAdapter{ObjectMeta: metav1.ObjectMeta{Name: "adapter", Namespace: "default"}}
+
+	tests := []struct {
+		name, reason, message string
+		available, needed     int
+	}{
+		{"no ready pods", "NoReadyPods", "has no ready backend pods available for scheduling", 0, 1},
+		{"insufficient ready pods", "InsufficientReadyPods", "has 1 ready backend pods, but needs 2 for scheduling", 1, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			condition := newSchedulingPendingCondition(instance, tt.available, tt.needed)
+			if condition.Status != metav1.ConditionFalse || condition.Reason != tt.reason {
+				t.Fatalf("unexpected condition: %#v", condition)
+			}
+			if !strings.Contains(condition.Message, tt.message) {
+				t.Fatalf("message %q does not contain %q", condition.Message, tt.message)
+			}
+		})
 	}
 }

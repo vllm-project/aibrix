@@ -492,6 +492,16 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 	return ctrl.Result{}, nil
 }
 
+func newSchedulingPendingCondition(instance *modelv1alpha1.ModelAdapter, available, needed int) metav1.Condition {
+	reason := "NoReadyPods"
+	message := fmt.Sprintf("ModelAdapter %s has no ready backend pods available for scheduling", klog.KObj(instance))
+	if available > 0 {
+		reason = "InsufficientReadyPods"
+		message = fmt.Sprintf("ModelAdapter %s has %d ready backend pods, but needs %d for scheduling", klog.KObj(instance), available, needed)
+	}
+	return NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeScheduled), metav1.ConditionFalse, reason, message)
+}
+
 func (r *ModelAdapterReconciler) updateStatus(ctx context.Context, instance *modelv1alpha1.ModelAdapter, conditions ...metav1.Condition) error {
 	changed := false
 	for _, condition := range conditions {
@@ -665,10 +675,16 @@ func (r *ModelAdapterReconciler) reconcileLoadOnSinglePod(ctx context.Context, i
 		} else if len(candidatePods) > 0 {
 			// Some pods available but not enough, try with what we have
 			klog.Infof("Only %d ready pods available for model adapter %s, need %d more, will wait", len(candidatePods), klog.KObj(instance), neededReplicas)
+			if err := r.updateStatus(ctx, instance, newSchedulingPendingCondition(instance, len(candidatePods), neededReplicas)); err != nil {
+				return ctrl.Result{}, err
+			}
 			return ctrl.Result{RequeueAfter: time.Duration(RetryBackoffSeconds) * time.Second}, nil
 		} else {
 			// No ready pods available, wait for pods to become ready
 			klog.Infof("No ready pods available for model adapter %s, waiting for pods to become ready", klog.KObj(instance))
+			if err := r.updateStatus(ctx, instance, newSchedulingPendingCondition(instance, 0, neededReplicas)); err != nil {
+				return ctrl.Result{}, err
+			}
 			return ctrl.Result{RequeueAfter: time.Duration(RetryBackoffSeconds) * time.Second}, nil
 		}
 	} else if currentReplicas > desiredReplicas {
