@@ -61,8 +61,8 @@ _LOG_HTTP_BODIES = os.getenv("AIBRIX_MDS_HTTP_BODY_LOG", "").lower() in (
 )
 _METRICS_PATH = "/metrics"
 
-ENV_AIBRIX_TEMPLATE_NAMESPACE = "aibrix-batch-v1alpha-model-deployment-templates"
-ENV_AIBRIX_PROFILE_NAMESPACE = "aibrix-batch-v1alpha-batch-profiles"
+ENV_AIBRIX_TEMPLATE_NAMESPACE = "AIBRIX_TEMPLATE_NAMESPACE"
+ENV_AIBRIX_PROFILE_NAMESPACE = "AIBRIX_PROFILE_NAMESPACE"
 MDS_NAMESPACE = "aibrix-system"
 
 
