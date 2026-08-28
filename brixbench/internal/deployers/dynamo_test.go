@@ -801,6 +801,57 @@ func TestDynamoDeployerDeployControlPlanePreparesReleaseBuildsDependenciesAndIns
 	}
 }
 
+func TestDynamoDeployerDeployControlPlaneUsesClusterWideOperatorForV131(t *testing.T) {
+	projectRoot := t.TempDir()
+	chartPath := filepath.Join(t.TempDir(), "deploy", "helm", "charts", "platform")
+	writeDynamoChartLock(t, chartPath)
+	releaseSource := &fakeDynamoReleaseSource{
+		release: &DynamoRelease{
+			Version:   "v1.3.1",
+			RepoPath:  filepath.Join(projectRoot, ".tmp", "dynamo", "v1.3.1"),
+			ChartPath: chartPath,
+		},
+	}
+	runner := &fakeCommandRunner{}
+	deployer := &DynamoDeployer{
+		namespace:     "brixbench-dynamo",
+		projectRoot:   projectRoot,
+		version:       "v1.3.1",
+		releaseSource: releaseSource,
+		runner:        runner,
+	}
+
+	if err := deployer.DeployControlPlane(context.Background()); err != nil {
+		t.Fatalf("DeployControlPlane returned error: %v", err)
+	}
+	installArgs := strings.Join(runner.calls[len(runner.calls)-1].args, " ")
+	if strings.Contains(installArgs, "namespaceRestriction.enabled") {
+		t.Fatalf("v1.3.1 must use a cluster-wide operator for CRD upgrades: %s", installArgs)
+	}
+}
+
+func TestDynamoNeedsClusterWideCRDUpgrade(t *testing.T) {
+	tests := []struct {
+		version string
+		want    bool
+	}{
+		{version: "v1.2.1", want: false},
+		{version: "v1.3.0", want: false},
+		{version: "v1.3.1", want: true},
+		{version: "v1.4.0", want: true},
+		{version: "v2.0.0", want: true},
+		{version: "invalid", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.version, func(t *testing.T) {
+			if got := dynamoNeedsClusterWideCRDUpgrade(tt.version); got != tt.want {
+				t.Fatalf("dynamoNeedsClusterWideCRDUpgrade(%q) = %t, want %t", tt.version, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDynamoDeployerDeployControlPlaneRetriesRetryableHelmRepoFailures(t *testing.T) {
 	projectRoot := t.TempDir()
 	chartPath := filepath.Join(t.TempDir(), "deploy", "helm", "charts", "platform")
