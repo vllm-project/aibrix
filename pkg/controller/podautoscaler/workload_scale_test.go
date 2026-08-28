@@ -288,6 +288,55 @@ func TestGetCurrentReplicasFromScale(t *testing.T) {
 	}
 }
 
+// TestGetCurrentReplicasReplicaModeNilReplicas covers the review scenario for an
+// omitted spec.replicas in replica mode: the field is optional with a documented
+// default of 1 that neither the CRD nor a webhook materializes, so the autoscaler
+// must resolve nil to 1 rather than report a scaled-to-zero workload.
+func TestGetCurrentReplicasReplicaModeNilReplicas(t *testing.T) {
+	scale := &unstructured.Unstructured{}
+	scale.SetAPIVersion("orchestration.aibrix.ai/v1alpha1")
+	scale.SetKind("StormService")
+
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: v1.ObjectMeta{
+			Namespace: "default",
+		},
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			SubTargetSelector: &autoscalingv1alpha1.SubTargetSelector{},
+			ScaleTargetRef: corev1.ObjectReference{
+				Kind: "StormService",
+				Name: "test-storm",
+			},
+		},
+	}
+	ss := &orchestrationv1alpha1.StormService{
+		ObjectMeta: v1.ObjectMeta{
+			Name:      "test-storm",
+			Namespace: "default",
+		},
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Mode: orchestrationv1alpha1.StormServiceReplicaMode,
+			// Replicas intentionally omitted.
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	_ = autoscalingv1alpha1.AddToScheme(scheme)
+	_ = orchestrationv1alpha1.AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pa, ss).
+		Build()
+
+	workloadScale := NewWorkloadScale(fakeClient, nil)
+
+	currentReplicas, err := workloadScale.GetCurrentReplicasFromScale(context.TODO(), pa, scale)
+
+	assert.NoError(t, err)
+	assert.Equal(t, int32(1), currentReplicas)
+}
+
 func TestGetPodSelectorFromScale(t *testing.T) {
 	t.Run("llm_model", func(t *testing.T) {
 		scheme := runtime.NewScheme()

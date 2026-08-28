@@ -599,3 +599,76 @@ func TestScalingPooledModeNeverCreatesSecondRoleSet(t *testing.T) {
 		})
 	}
 }
+
+// TestScalingNilReplicasResolvesToDefault covers the review scenario for an omitted
+// spec.replicas: the field is optional with a documented default of 1 that neither the
+// CRD schema nor the mutating webhook materializes, so nil reaches the reconcile loop.
+// scaling() must treat it as 1 RoleSet, and the rolling-update budget helpers it calls
+// (MinAvailable, MaxSurge) must not dereference the nil pointer, which panicked before
+// spec.replicas was resolved through ResolvedReplicas().
+func TestScalingNilReplicasResolvesToDefault(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = orchestrationv1alpha1.AddToScheme(scheme)
+
+	stormService := &orchestrationv1alpha1.StormService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "nil-replicas-storm",
+			Namespace: "default",
+			UID:       "nil-replicas-storm-uid",
+		},
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			// Replicas intentionally omitted; the update strategy is left empty so the
+			// legacy default RollingUpdate path (and its budget helpers) is exercised.
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "nil-replicas-storm"},
+			},
+			Template: orchestrationv1alpha1.RoleSetTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": "nil-replicas-storm"},
+				},
+				Spec: &orchestrationv1alpha1.RoleSetSpec{
+					Roles: []orchestrationv1alpha1.RoleSpec{
+						{
+							Name:     "engine",
+							Replicas: ptr.To(int32(1)),
+							Template: corev1.PodTemplateSpec{
+								Spec: corev1.PodSpec{
+									Containers: []corev1.Container{
+										{Name: "main", Image: "engine:v1"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &StormServiceReconciler{
+		Client:        fakeClient,
+		EventRecorder: &record.FakeRecorder{},
+	}
+	cr := &appsv1.ControllerRevision{
+		ObjectMeta: metav1.ObjectMeta{Name: "nil-replicas-storm-rev1", Namespace: "default"},
+		Revision:   1,
+	}
+
+	scaling, err := r.scaling(context.TODO(), stormService, stormService, cr, cr)
+	if err != nil {
+		t.Fatalf("scaling() error = %v", err)
+	}
+	if !scaling {
+		t.Errorf("scaling() = false, want true: an omitted spec.replicas must scale out to the default of 1")
+	}
+
+	roleSetList := &orchestrationv1alpha1.RoleSetList{}
+	if err := fakeClient.List(context.TODO(), roleSetList); err != nil {
+		t.Fatalf("failed to list roleSets: %v", err)
+	}
+	if len(roleSetList.Items) != 1 {
+		t.Fatalf("expected 1 roleSet for an omitted spec.replicas, got %d", len(roleSetList.Items))
+	}
+}

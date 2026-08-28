@@ -178,12 +178,11 @@ func (s *workloadScale) getCurrentReplicasForRole(ctx context.Context, pa *autos
 		return 0, err
 	}
 
-	// Replica mode scales the whole StormService, so report spec.replicas directly.
+	// Replica mode scales the whole StormService, so report spec.replicas. An omitted
+	// spec.replicas resolves to the documented default of 1 instead of reading as a
+	// scaled-to-zero workload, matching how the stormservice controller reconciles it.
 	if stormServiceScalingMode(pa, ss) == orchestrationv1alpha1.StormServiceReplicaMode {
-		if ss.Spec.Replicas == nil {
-			return 0, nil
-		}
-		return *ss.Spec.Replicas, nil
+		return ss.Spec.ResolvedReplicas(), nil
 	}
 
 	roleName := pa.Spec.SubTargetSelector.RoleName

@@ -42,3 +42,21 @@ func TestStormServiceSpecResolvedMode(t *testing.T) {
 		})
 	}
 }
+
+func TestStormServiceSpecResolvedReplicas(t *testing.T) {
+	tests := map[string]struct {
+		replicas *int32
+		want     int32
+	}{
+		"unset resolves to the documented default of 1": {replicas: nil, want: 1},
+		"explicit zero is preserved":                    {replicas: ptr.To[int32](0), want: 0},
+		"explicit count is returned as is":              {replicas: ptr.To[int32](3), want: 3},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			spec := &StormServiceSpec{Replicas: tc.replicas}
+			assert.Equal(t, tc.want, spec.ResolvedReplicas())
+		})
+	}
+}

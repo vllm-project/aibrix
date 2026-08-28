@@ -60,13 +60,14 @@ func RemoveStormServiceCondition(status *orchestrationv1alpha1.StormServiceStatu
 
 // MaxUnavailable returns the maximum unavailable roleSets a rolling stormService can take.
 func MaxUnavailable(stormService orchestrationv1alpha1.StormService) int32 {
-	if !IsRollingUpdate(&stormService) || *(stormService.Spec.Replicas) == 0 {
+	replicas := stormService.Spec.ResolvedReplicas()
+	if !IsRollingUpdate(&stormService) || replicas == 0 {
 		return int32(0)
 	}
 	// Error caught by validation
-	_, maxUnavailable, _ := ResolveFenceposts(stormService.Spec.UpdateStrategy.MaxSurge, stormService.Spec.UpdateStrategy.MaxUnavailable, *(stormService.Spec.Replicas))
-	if maxUnavailable > *stormService.Spec.Replicas {
-		return *stormService.Spec.Replicas
+	_, maxUnavailable, _ := ResolveFenceposts(stormService.Spec.UpdateStrategy.MaxSurge, stormService.Spec.UpdateStrategy.MaxUnavailable, replicas)
+	if maxUnavailable > replicas {
+		return replicas
 	}
 	return maxUnavailable
 }
@@ -76,7 +77,7 @@ func MinAvailable(stormService *orchestrationv1alpha1.StormService) int32 {
 	if !IsRollingUpdate(stormService) {
 		return int32(0)
 	}
-	return *(stormService.Spec.Replicas) - MaxUnavailable(*stormService)
+	return stormService.Spec.ResolvedReplicas() - MaxUnavailable(*stormService)
 }
 
 // MaxSurge returns the maximum surge roleSets a rolling stormService can take.
@@ -85,7 +86,7 @@ func MaxSurge(stormService *orchestrationv1alpha1.StormService) int32 {
 		return int32(0)
 	}
 	// Error caught by validation
-	maxSurge, _, _ := ResolveFenceposts(stormService.Spec.UpdateStrategy.MaxSurge, stormService.Spec.UpdateStrategy.MaxUnavailable, *(stormService.Spec.Replicas))
+	maxSurge, _, _ := ResolveFenceposts(stormService.Spec.UpdateStrategy.MaxSurge, stormService.Spec.UpdateStrategy.MaxUnavailable, stormService.Spec.ResolvedReplicas())
 	return maxSurge
 }
 
