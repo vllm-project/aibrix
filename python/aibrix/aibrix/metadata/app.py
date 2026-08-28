@@ -82,8 +82,9 @@ def _load_batch_k8s_context(
         # Determine the namespace where the batch ConfigMaps live.
         # The Helm deployment injects POD_NAMESPACE (=aibrix-system) via the
         # downward API
-        namespace_template = os.getenv(ENV_AIBRIX_TEMPLATE_NAMESPACE, MDS_NAMESPACE)
-        namespace_profile = os.getenv(ENV_AIBRIX_PROFILE_NAMESPACE, MDS_NAMESPACE)
+        pod_namespace = os.getenv("POD_NAMESPACE", MDS_NAMESPACE)
+        namespace_template = os.getenv(ENV_AIBRIX_TEMPLATE_NAMESPACE, pod_namespace)
+        namespace_profile = os.getenv(ENV_AIBRIX_PROFILE_NAMESPACE, pod_namespace)
 
         # Build ConfigMap-backed registries and load their contents synchronously
         # before the API server starts accepting requests so that incoming
