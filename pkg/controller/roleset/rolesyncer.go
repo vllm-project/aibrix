@@ -75,7 +75,7 @@ func (s *StatefulRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1
 	slots, toDelete := s.podSlotForRole(role, activePods)
 	podsToDelete = append(podsToDelete, toDelete...)
 	createBudget := int32(len(slots)) + MaxSurge(role) - int32(len(activePods)) - int32(len(terminatingPods))
-	historicalBindings := historicalNodeBindingsForPodCreation(roleSet)
+	historicalBindings := historicalNodeBindingsForPodCreation(roleSet, role)
 	// check pods for each slot
 	for i := range slots {
 		if len(slots[i]) == 0 {
@@ -201,7 +201,7 @@ func (s *StatefulRoleSyncer) Rollout(ctx context.Context, roleSet *orchestration
 		}
 		recordInPlaceFallback(s.recorder, roleSet, role, reason)
 	}
-	historicalBindings := historicalNodeBindingsForPodCreation(roleSet)
+	historicalBindings := historicalNodeBindingsForPodCreation(roleSet, role)
 	for i := range slots {
 		if len(slots[i]) != 1 {
 			// wait for scale to handle this slot
@@ -284,7 +284,7 @@ func (s *StatefulRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orchest
 		}
 		recordInPlaceFallback(s.recorder, roleSet, role, reason)
 	}
-	historicalBindings := historicalNodeBindingsForPodCreation(roleSet)
+	historicalBindings := historicalNodeBindingsForPodCreation(roleSet, role)
 	for i := range slots {
 		if len(slots[i]) != 1 {
 			// wait for scale to handle this slot
@@ -555,7 +555,7 @@ func (s *StatelessRoleSyncer) Rollout(ctx context.Context, roleSet *orchestratio
 	terminatingPodCount := len(terminatingPods)
 	// take terminating pods into account
 	createBudget := utils.MinInt32(expectedReplicas+MaxSurge(role)-int32(len(activePods))-int32(terminatingPodCount), expectedReplicas-int32(len(updated)))
-	historicalBindings := historicalNodeBindingsForPodCreation(roleSet)
+	historicalBindings := historicalNodeBindingsForPodCreation(roleSet, role)
 	for i := int32(0); i < createBudget; i++ {
 		pod, err := ctrlutil.GetPodFromTemplate(&role.Template, roleSet, metav1.NewControllerRef(roleSet, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.RoleSetKind)))
 		if err != nil {
@@ -725,7 +725,7 @@ func (s *StatelessRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orches
 	// - Step constraint: By the end of this step, we aim to have expectedUpdatedReplicas new Pods,
 	//   so we must avoid creating more than necessary.
 	createBudget := utils.MinInt32(expectedReplicas+MaxSurge(role)-int32(len(activePods))-int32(terminatingPodCount), expectedUpdatedReplicas-int32(len(updated)))
-	historicalBindings := historicalNodeBindingsForPodCreation(roleSet)
+	historicalBindings := historicalNodeBindingsForPodCreation(roleSet, role)
 	for i := int32(0); i < createBudget; i++ {
 		pod, err := ctrlutil.GetPodFromTemplate(&role.Template, roleSet, metav1.NewControllerRef(roleSet, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.RoleSetKind)))
 		if err != nil {

@@ -50,9 +50,8 @@ func TestRefreshHistoricalNodeBindingsFromPods(t *testing.T) {
 		historicalNodePod("unscheduled", "test-ns", "prefill", "test-roleset", "", nil),
 	}
 
-	bindings, changed, err := refreshHistoricalNodeBindingsFromPods(rs, []orchestrationv1alpha1.RoleSpec{*statefulRole, *statelessRole}, pods)
+	bindings, changed := refreshHistoricalNodeBindingsFromPods(rs, []orchestrationv1alpha1.RoleSpec{*statefulRole, *statelessRole}, pods)
 
-	require.NoError(t, err)
 	assert.True(t, changed)
 	assert.Equal(t, "node-a", bindings.ReplicaSlots["decode/0"])
 	assert.Equal(t, "node-b", bindings.ReplicaSlots["decode/1"])
@@ -65,9 +64,8 @@ func TestRefreshHistoricalNodeBindingsRebuildsInvalidAnnotation(t *testing.T) {
 		constants.RoleSetHistoricalNodeBindingsAnnotationKey: "{invalid-json",
 	}
 
-	bindings, changed, err := refreshHistoricalNodeBindingsFromPods(rs, nil, nil)
+	bindings, changed := refreshHistoricalNodeBindingsFromPods(rs, nil, nil)
 
-	require.NoError(t, err)
 	assert.True(t, changed)
 	assert.Empty(t, bindings.ReplicaSlots)
 	assert.Empty(t, bindings.Roles)
@@ -88,15 +86,55 @@ func TestRefreshHistoricalNodeBindingsSortsPodsDeterministically(t *testing.T) {
 	pods[1].CreationTimestamp = oldest
 	pods[2].CreationTimestamp = middle
 
-	bindings, changed, err := refreshHistoricalNodeBindingsFromPods(
+	bindings, changed := refreshHistoricalNodeBindingsFromPods(
 		rs,
 		[]orchestrationv1alpha1.RoleSpec{*statelessRole},
 		pods,
 	)
 
-	require.NoError(t, err)
 	assert.True(t, changed)
 	assert.Equal(t, []string{"node-newest", "node-middle", "node-oldest"}, bindings.Roles["prefill"])
+}
+
+func TestRefreshHistoricalNodeBindingsPrunesStaleEntries(t *testing.T) {
+	rs := newTestRoleSet("test-roleset", "test-ns")
+	setHistoricalNodeBindingsAnnotation(t, rs, historicalNodeBindings{
+		ReplicaSlots: map[string]string{
+			"decode/0":       "node-a",
+			"decode/1":       "node-b",
+			"decode/9":       "node-stale-slot",
+			"removed-role/0": "node-stale-role",
+		},
+		Roles: map[string][]string{
+			"prefill":      {"node-c"},
+			"removed-role": {"node-stale-role"},
+		},
+	})
+	statefulRole := historicalNodeRole("decode", true, 1, intstr.FromInt(1), intstr.FromInt(1))
+	statelessRole := historicalNodeRole("prefill", false, 2, intstr.FromInt(1), intstr.FromInt(1))
+
+	bindings, changed := refreshHistoricalNodeBindingsFromPods(
+		rs,
+		[]orchestrationv1alpha1.RoleSpec{*statefulRole, *statelessRole},
+		nil,
+	)
+
+	assert.True(t, changed)
+	assert.Equal(t, map[string]string{"decode/0": "node-a"}, bindings.ReplicaSlots)
+	assert.Equal(t, map[string][]string{"prefill": {"node-c"}}, bindings.Roles)
+}
+
+func TestHistoricalNodeBindingsForPodCreationSkipsDisabledRoleBeforeParsing(t *testing.T) {
+	rs := newTestRoleSet("test-roleset", "test-ns")
+	rs.Annotations = map[string]string{
+		constants.RoleSetHistoricalNodeBindingsAnnotationKey: "{invalid-json",
+	}
+	role := historicalNodeRole("worker", false, 1, intstr.FromInt(1), intstr.FromInt(1))
+	role.UpdateStrategy.ReplacementScheduling = nil
+
+	bindings := historicalNodeBindingsForPodCreation(rs, role)
+
+	assert.Nil(t, bindings)
 }
 
 func TestMaybeInjectHistoricalNodeAffinity(t *testing.T) {

@@ -66,7 +66,7 @@ func parseHistoricalNodeBindings(roleSet *orchestrationv1alpha1.RoleSet) (histor
 	return bindings, nil
 }
 
-func refreshHistoricalNodeBindingsFromPods(roleSet *orchestrationv1alpha1.RoleSet, roles []orchestrationv1alpha1.RoleSpec, pods []*v1.Pod) (historicalNodeBindings, bool, error) {
+func refreshHistoricalNodeBindingsFromPods(roleSet *orchestrationv1alpha1.RoleSet, roles []orchestrationv1alpha1.RoleSpec, pods []*v1.Pod) (historicalNodeBindings, bool) {
 	oldBindings, err := parseHistoricalNodeBindings(roleSet)
 	invalidAnnotation := false
 	if err != nil {
@@ -114,8 +114,44 @@ func refreshHistoricalNodeBindingsFromPods(roleSet *orchestrationv1alpha1.RoleSe
 		}
 		bindings.Roles[roleName] = prependUniqueNode(bindings.Roles[roleName], nodeName)
 	}
+	pruneHistoricalNodeBindings(&bindings, roles)
 
-	return bindings, invalidAnnotation || !reflect.DeepEqual(oldBindings, bindings), nil
+	return bindings, invalidAnnotation || !reflect.DeepEqual(oldBindings, bindings)
+}
+
+func pruneHistoricalNodeBindings(bindings *historicalNodeBindings, roles []orchestrationv1alpha1.RoleSpec) {
+	bindings.normalize()
+
+	validReplicaSlots := map[string]struct{}{}
+	validRoles := map[string]struct{}{}
+	for i := range roles {
+		role := &roles[i]
+		validRoles[role.Name] = struct{}{}
+		if !role.Stateful {
+			continue
+		}
+		for slot := int32(0); slot < getRoleReplicas(role); slot++ {
+			validReplicaSlots[historicalReplicaSlotKey(role.Name, int(slot))] = struct{}{}
+		}
+	}
+
+	for key := range bindings.ReplicaSlots {
+		if _, ok := validReplicaSlots[key]; !ok {
+			delete(bindings.ReplicaSlots, key)
+		}
+	}
+	for roleName := range bindings.Roles {
+		roleIsCurrent := false
+		for i := range roles {
+			if roles[i].Name == roleName && !roles[i].Stateful {
+				roleIsCurrent = true
+				break
+			}
+		}
+		if _, ok := validRoles[roleName]; !ok || !roleIsCurrent {
+			delete(bindings.Roles, roleName)
+		}
+	}
 }
 
 func (b historicalNodeBindings) deepCopy() historicalNodeBindings {
@@ -179,10 +215,7 @@ func syncHistoricalNodeBindings(ctx context.Context, cli client.Client, roleSet 
 	for i := range podList.Items {
 		pods = append(pods, &podList.Items[i])
 	}
-	bindings, changed, err := refreshHistoricalNodeBindingsFromPods(roleSet, roleSet.Spec.Roles, pods)
-	if err != nil {
-		return err
-	}
+	bindings, changed := refreshHistoricalNodeBindingsFromPods(roleSet, roleSet.Spec.Roles, pods)
 	if !changed {
 		return nil
 	}
@@ -221,7 +254,10 @@ func historicalNodeSchedulingEnabled(role *orchestrationv1alpha1.RoleSpec) bool 
 		role.UpdateStrategy.ReplacementScheduling.HistoricalNode != nil
 }
 
-func historicalNodeBindingsForPodCreation(roleSet *orchestrationv1alpha1.RoleSet) *historicalNodeBindings {
+func historicalNodeBindingsForPodCreation(roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) *historicalNodeBindings {
+	if !historicalNodeSchedulingEnabled(role) {
+		return nil
+	}
 	bindings, err := parseHistoricalNodeBindings(roleSet)
 	if err != nil {
 		klog.Warningf("roleset %s/%s skip historical-node affinity: invalid historical-node bindings annotation: %v", roleSet.Namespace, roleSet.Name, err)
