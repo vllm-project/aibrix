@@ -141,7 +141,6 @@ func buildAggregateRows(scenario *resolver.Scenario, summary scenarioSummary, ru
 		topology := inferTopology(result.TestCase)
 		router := inferRouter(result.TestCase, platform)
 		model := firstNonEmpty(stringifyValue(metrics["model_id"]), "qwen3-8b")
-		engineVersion := inferEngineVersion(metrics, platform)
 		platformVersion := strings.TrimSpace(result.Version)
 		if platformVersion == "" {
 			platformVersion = strings.TrimSpace(tc.Version)
@@ -150,6 +149,7 @@ func buildAggregateRows(scenario *resolver.Scenario, summary scenarioSummary, ru
 			// Avoid blank platform_version in dashboards; tip/unknown builds use main.
 			platformVersion = "main"
 		}
+		engineVersion := inferEngineVersion(metrics, platform, platformVersion)
 		platformCommit := shortCommit(firstNonEmpty(result.ResolvedCommit, result.Commit, tc.ResolvedCommit, tc.Commit))
 		platformTitle := platform
 		if platform != "" {
@@ -476,14 +476,16 @@ func inferRouter(testcase, platform string) string {
 	}
 }
 
-func inferEngineVersion(metrics map[string]any, platform string) string {
-	_ = platform
+func inferEngineVersion(metrics map[string]any, platform, platformVersion string) string {
 	if tok := stringifyValue(metrics["tokenizer_id"]); strings.Contains(tok, "Qwen3") {
 		// tokenizer path is not engine version; fall through to defaults.
 	}
 	// Defaults used by current multi-node fixtures.
 	switch platform {
 	case "dynamo":
+		if strings.HasPrefix(strings.TrimPrefix(platformVersion, "v"), "1.3.") {
+			return "0.23.0"
+		}
 		return "0.21.0"
 	case "llmd":
 		return "0.23.0"
@@ -620,6 +622,24 @@ func TestInferTopologyAndRouter(t *testing.T) {
 	}
 	if got := inferRouter("llmd-pd-4p4d-multinode-r8", "llmd"); got != "pd" {
 		t.Fatalf("router=%q", got)
+	}
+}
+
+func TestInferEngineVersionForDynamoRelease(t *testing.T) {
+	tests := []struct {
+		version string
+		want    string
+	}{
+		{version: "v1.2.1", want: "0.21.0"},
+		{version: "v1.3.1", want: "0.23.0"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.version, func(t *testing.T) {
+			if got := inferEngineVersion(nil, "dynamo", tt.version); got != tt.want {
+				t.Fatalf("inferEngineVersion(dynamo, %q) = %q, want %q", tt.version, got, tt.want)
+			}
+		})
 	}
 }
 
