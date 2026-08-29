@@ -227,16 +227,40 @@ func (r *StormServiceCustomDefaulter) ValidateUpdate(_ context.Context, oldObj, 
 	if err := validateStormServiceMode(stormService); err != nil {
 		return nil, err
 	}
-	// Re-validate the scheduling strategy only when the RoleSet template changed. Objects that
-	// predate this validation must keep accepting metadata-only updates, in particular the
-	// controller's finalizer removal, or they could never be deleted.
+	// Re-run the scheduling validation only when one of its inputs changed; its result cannot
+	// differ otherwise. Objects that predate this validation must keep accepting unrelated
+	// updates, in particular the controller's finalizer removal, or they could never be deleted.
+	// Comparing the whole template would not do: the defaulter may inject the sidecar into an
+	// object that was stored without it, which looks like a template change on every update.
 	oldStormService, ok := oldObj.(*orchestrationv1alpha1.StormService)
-	if !ok || !equality.Semantic.DeepEqual(oldStormService.Spec.Template.Spec, stormService.Spec.Template.Spec) {
+	if !ok || schedulingConfigChanged(oldStormService.Spec.Template.Spec, stormService.Spec.Template.Spec) {
 		if err := validateStormServiceSchedulingStrategy(stormService); err != nil {
 			return nil, err
 		}
 	}
 	return nil, nil
+}
+
+// schedulingConfigChanged reports whether any input of validateRoleSetSchedulingStrategy differs
+// between two RoleSet specs: the RoleSet-level strategy, the role names, or a role's strategy.
+// Reordering roles counts as a change, which only errs on the side of re-validating.
+func schedulingConfigChanged(oldSpec, newSpec *orchestrationv1alpha1.RoleSetSpec) bool {
+	if oldSpec == nil || newSpec == nil {
+		return oldSpec != newSpec
+	}
+	if !equality.Semantic.DeepEqual(oldSpec.SchedulingStrategy, newSpec.SchedulingStrategy) {
+		return true
+	}
+	if len(oldSpec.Roles) != len(newSpec.Roles) {
+		return true
+	}
+	for i := range newSpec.Roles {
+		if oldSpec.Roles[i].Name != newSpec.Roles[i].Name ||
+			!equality.Semantic.DeepEqual(oldSpec.Roles[i].SchedulingStrategy, newSpec.Roles[i].SchedulingStrategy) {
+			return true
+		}
+	}
+	return false
 }
 
 // validateStormServiceMode rejects mode/replicas combinations that cannot be satisfied.

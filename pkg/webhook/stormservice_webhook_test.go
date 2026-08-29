@@ -266,8 +266,8 @@ func TestValidateRoleSetSchedulingStrategy_NilSpec(t *testing.T) {
 }
 
 // Objects created before the scheduling validation existed must keep accepting updates that do
-// not touch the RoleSet template, otherwise the controller's finalizer removal would be rejected
-// and the object could never be deleted.
+// not touch the scheduling configuration, otherwise the controller's finalizer removal would be
+// rejected and the object could never be deleted.
 func TestStormServiceValidateUpdate_SchedulingStrategy(t *testing.T) {
 	validator := &StormServiceCustomDefaulter{}
 	prefill := roleWithStrategy("prefill", nil)
@@ -295,13 +295,28 @@ func TestStormServiceValidateUpdate_SchedulingStrategy(t *testing.T) {
 			expectError: false,
 		},
 		"template change introducing invalid config is rejected": {old: valid(), new: invalid(), expectError: true},
-		"template change that keeps invalid config is rejected": {
+		"unrelated template change on invalid config is allowed": {
 			old: invalid(),
 			new: func() *orchestrationv1alpha1.StormService {
 				ss := invalid()
 				ss.Spec.Template.Spec.Roles[0].Replicas = ptr.To[int32](2)
+				ss.Spec.Template.Spec.Roles[0].Template.Spec.SchedulerName = "custom"
 				return ss
 			}(),
+			expectError: false,
+		},
+		"role rename with invalid config is rejected": {
+			old: invalid(),
+			new: func() *orchestrationv1alpha1.StormService {
+				ss := invalid()
+				ss.Spec.Template.Spec.Roles[0].Name = "decode"
+				return ss
+			}(),
+			expectError: true,
+		},
+		"role-level strategy change is validated": {
+			old:         stormServiceWithTemplate(nil, prefill),
+			new:         stormServiceWithTemplate(nil, roleWithStrategy("prefill", volcanoStrategy(0, nil))),
 			expectError: true,
 		},
 		"template change fixing invalid config is allowed": {old: invalid(), new: valid(), expectError: false},
@@ -318,4 +333,71 @@ func TestStormServiceValidateUpdate_SchedulingStrategy(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The defaulter may inject the sidecar into an object that was stored without it (for example
+// because the mutating webhook was unavailable when it was created). That must not count as a
+// scheduling change, or such an object with a pre-existing invalid gang config could never have
+// its finalizer removed.
+func TestStormServiceValidateUpdate_SidecarInjectionDoesNotTriggerSchedulingValidation(t *testing.T) {
+	webhook := &StormServiceCustomDefaulter{}
+
+	stored := stormServiceWithTemplate(volcanoStrategy(0, nil), roleWithStrategy("prefill", nil))
+	stored.Annotations = map[string]string{SidecarInjectionAnnotation: "true"}
+	stored.Finalizers = []string{"orchestration.aibrix.ai/stormservice-finalizer"}
+
+	updated := stored.DeepCopy()
+	updated.Finalizers = nil
+	// The API server runs the defaulter on the new object only.
+	require.NoError(t, webhook.Default(context.Background(), updated))
+	require.NotEqual(t, stored.Spec.Template.Spec, updated.Spec.Template.Spec, "defaulter should have injected the sidecar")
+
+	_, err := webhook.ValidateUpdate(context.Background(), stored, updated)
+	require.NoError(t, err)
+}
+
+func TestSchedulingConfigChanged(t *testing.T) {
+	base := func() *orchestrationv1alpha1.RoleSetSpec {
+		return &orchestrationv1alpha1.RoleSetSpec{
+			SchedulingStrategy: volcanoStrategy(2, nil),
+			Roles: []orchestrationv1alpha1.RoleSpec{
+				roleWithStrategy("prefill", nil),
+				roleWithStrategy("decode", nil),
+			},
+		}
+	}
+
+	tests := map[string]struct {
+		mutate  func(spec *orchestrationv1alpha1.RoleSetSpec)
+		changed bool
+	}{
+		"identical":         {mutate: func(*orchestrationv1alpha1.RoleSetSpec) {}, changed: false},
+		"role replicas":     {mutate: func(s *orchestrationv1alpha1.RoleSetSpec) { s.Roles[0].Replicas = ptr.To[int32](3) }, changed: false},
+		"role pod template": {mutate: func(s *orchestrationv1alpha1.RoleSetSpec) { s.Roles[0].Template.Spec.SchedulerName = "x" }, changed: false},
+		"roleset update strategy": {mutate: func(s *orchestrationv1alpha1.RoleSetSpec) {
+			s.UpdateStrategy = orchestrationv1alpha1.ParallelRoleSetUpdateStrategyType
+		}, changed: false},
+		"roleset strategy minMember": {mutate: func(s *orchestrationv1alpha1.RoleSetSpec) {
+			s.SchedulingStrategy.VolcanoSchedulingStrategy.MinMember = 3
+		}, changed: true},
+		"roleset strategy removed": {mutate: func(s *orchestrationv1alpha1.RoleSetSpec) { s.SchedulingStrategy = nil }, changed: true},
+		"role added":               {mutate: func(s *orchestrationv1alpha1.RoleSetSpec) { s.Roles = append(s.Roles, roleWithStrategy("worker", nil)) }, changed: true},
+		"role renamed":             {mutate: func(s *orchestrationv1alpha1.RoleSetSpec) { s.Roles[1].Name = "worker" }, changed: true},
+		"role strategy added":      {mutate: func(s *orchestrationv1alpha1.RoleSetSpec) { s.Roles[1].SchedulingStrategy = volcanoStrategy(1, nil) }, changed: true},
+		"roles reordered errs on the side of validating": {mutate: func(s *orchestrationv1alpha1.RoleSetSpec) { s.Roles[0], s.Roles[1] = s.Roles[1], s.Roles[0] }, changed: true},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			oldSpec, newSpec := base(), base()
+			tc.mutate(newSpec)
+			assert.Equal(t, tc.changed, schedulingConfigChanged(oldSpec, newSpec))
+		})
+	}
+
+	t.Run("nil specs", func(t *testing.T) {
+		assert.False(t, schedulingConfigChanged(nil, nil))
+		assert.True(t, schedulingConfigChanged(nil, base()))
+		assert.True(t, schedulingConfigChanged(base(), nil))
+	})
 }
