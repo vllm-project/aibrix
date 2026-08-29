@@ -161,30 +161,62 @@ var (
 	autoBlendLeastRequestWeight = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT", 1)
 )
 
+// maxCachedAlgorithmStrings bounds how many distinct algorithm-string keys
+// RouterManager.multiRouterCache and unblendableLogged will retain. Both maps are keyed by the
+// client-controlled routing-strategy string — which may embed an arbitrary weight coefficient
+// even on an otherwise-fixed strategy name (e.g. "prefix-cache:12345") — and neither map is
+// otherwise evicted except by a full Register/RegisterProvider/Init reset. Without a cap, a
+// client varying that coefficient across requests could grow either map without bound. Once a
+// map is at the cap, additional unique strings simply skip caching/log-dedup for that request
+// rather than growing the map further.
+var maxCachedAlgorithmStrings = utils.LoadEnvInt("AIBRIX_ROUTER_MAX_CACHED_ALGORITHM_STRINGS", 4096)
+
+// mentionedAlgorithmNames returns the set of algorithm names appearing in algStr, regardless
+// of weight coefficient — including ones explicitly weighted to 0. ParseMultiRouterConfig
+// drops weight-0 items entirely (that's its "skip this algorithm" convention), so its output
+// can't tell "caller explicitly disabled X" apart from "caller never mentioned X". This raw
+// scan preserves that distinction for appendLoadBalanceBlend, which must not silently
+// re-introduce a strategy the caller explicitly zeroed out. algStr is assumed to already be
+// syntactically valid (checked via ParseMultiRouterConfig by the caller).
+func mentionedAlgorithmNames(algStr string) map[string]bool {
+	mentioned := make(map[string]bool)
+	for _, part := range strings.Split(algStr, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		name := part
+		if idx := strings.Index(part, ":"); idx >= 0 {
+			name = strings.TrimSpace(part[:idx])
+		}
+		if name != "" {
+			mentioned[name] = true
+		}
+	}
+	return mentioned
+}
+
 // appendLoadBalanceBlend silently expands algStr into a hidden multi-strategy composite that
 // also scores pods on load-balance's capacity-aware pending_time, so no single strategy can
 // keep steering traffic at an already-hot pod. least-request is appended alongside it (unless
 // already present) purely so multi-port/data-parallel pod routing keeps working: the
 // multi-strategy router's port selection only engages when "least-request" is one of the
-// configured scorers (see setTargetPortIfNeeded).
+// configured scorers (see setTargetPortIfNeeded). cfg is algStr's own already-parsed config,
+// passed in by the caller (Select) so algStr isn't parsed twice per request.
 //
 // algStr itself is never modified by this function, so ctx.Algorithm, response headers, and
 // Validate() all continue to reflect exactly what the caller asked for — load-balance is never
 // surfaced as something the caller chose or needs to know about.
 //
-// Returns ok=false when there's nothing to add: the blend is disabled, algStr failed to parse,
-// algStr already resolves to an exclusive strategy (pd, slo*) that manages its own pod
-// selection and must not be blended with anything else, or algStr is already the standalone
-// "load-balance" strategy (which must keep running its own Route(), not a blend).
-func appendLoadBalanceBlend(algStr string) (string, bool) {
+// Returns ok=false when there's nothing to add: the blend is disabled, algStr already resolves
+// to an exclusive strategy (pd, slo*) that manages its own pod selection and must not be
+// blended with anything else, or algStr is already the standalone "load-balance" strategy
+// (which must keep running its own Route(), not a blend).
+func appendLoadBalanceBlend(algStr string, cfg *MultiRouterConfig) (string, bool) {
 	if autoBlendLoadBalanceWeight <= 0 {
 		return "", false
 	}
 
-	cfg, err := ParseMultiRouterConfig(algStr)
-	if err != nil {
-		return "", false
-	}
 	if len(cfg.Items) == 1 && (isExclusiveStrategyName(cfg.Items[0].Name) || cfg.Items[0].Name == string(RouterLoadBalance)) {
 		// Exclusive strategies (pd, slo*) manage their own pod selection and must not be
 		// blended. An explicit, standalone "load-balance" selection is also left alone: it
@@ -194,16 +226,16 @@ func appendLoadBalanceBlend(algStr string) (string, bool) {
 		return "", false
 	}
 
-	have := make(map[string]bool, len(cfg.Items))
-	for _, item := range cfg.Items {
-		have[item.Name] = true
-	}
+	// Use the raw mention set, not cfg.Items, so an explicit "load-balance:0" or
+	// "least-request:0" (caller opting out) isn't mistaken for "never mentioned" and
+	// silently re-added — cfg.Items has already dropped weight-0 entries by this point.
+	mentioned := mentionedAlgorithmNames(algStr)
 
 	blended := algStr
-	if !have[string(RouterLoadBalance)] {
+	if !mentioned[string(RouterLoadBalance)] {
 		blended += fmt.Sprintf(",%s:%d", RouterLoadBalance, autoBlendLoadBalanceWeight)
 	}
-	if !have[string(RouterLeastRequest)] && autoBlendLeastRequestWeight > 0 {
+	if !mentioned[string(RouterLeastRequest)] && autoBlendLeastRequestWeight > 0 {
 		blended += fmt.Sprintf(",%s:%d", RouterLeastRequest, autoBlendLeastRequestWeight)
 	}
 	if blended == algStr {
@@ -310,14 +342,18 @@ func (m *multiStrategyRouter) runPostRouteUpdates(ctx *types.RoutingContext, rea
 func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodList types.PodList) (*v1.Pod, map[*v1.Pod]float64, error) {
 	pods := readyPodList.All()
 	finalScores := make(map[*v1.Pod]float64)
+	logEnabled := klog.V(4).Enabled()
 
 	// To collect diagnostic info for klog
 	type podDiag struct {
 		StrategyLog []string
 	}
-	diags := make(map[*v1.Pod]*podDiag, len(pods))
-	for _, pod := range pods {
-		diags[pod] = &podDiag{}
+	var diags map[*v1.Pod]*podDiag
+	if logEnabled {
+		diags = make(map[*v1.Pod]*podDiag, len(pods))
+		for _, pod := range pods {
+			diags[pod] = &podDiag{}
+		}
 	}
 
 	// Calculate total weight to act as denominator
@@ -351,13 +387,15 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 			weightedScore := normScores[i] * weightFraction
 			finalScores[pod] += weightedScore
 
-			// Record diagnostic information for this pod and strategy
-			rawScoreStr := "N/A"
-			if scored[i] {
-				rawScoreStr = fmt.Sprintf("%.2f", scores[i])
+			if logEnabled {
+				// Record diagnostic information for this pod and strategy
+				rawScoreStr := "N/A"
+				if scored[i] {
+					rawScoreStr = fmt.Sprintf("%.2f", scores[i])
+				}
+				diagStr := fmt.Sprintf("%s(raw:%s, norm:%.2f, weight:%.3f)", item.Name, rawScoreStr, normScores[i], weightedScore)
+				diags[pod].StrategyLog = append(diags[pod].StrategyLog, diagStr)
 			}
-			diagStr := fmt.Sprintf("%s(raw:%s, norm:%.2f, weight:%.3f)", item.Name, rawScoreStr, normScores[i], weightedScore)
-			diags[pod].StrategyLog = append(diags[pod].StrategyLog, diagStr)
 		}
 	}
 
@@ -384,24 +422,26 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 	winner := topPods[0]
 
 	// 5. Log the routing decision and all candidate metrics to klog
-	c, cacheErr := cache.Get()
-	var logBuilder strings.Builder
-	logBuilder.WriteString(fmt.Sprintf("Multi-strategy routing decision for request [%s]. Selected target pod: [%s]. Candidate pod details:\n", ctx.RequestID, winner.Name))
-	for _, pod := range pods {
-		winnerFlag := " "
-		if pod.Name == winner.Name {
-			winnerFlag = "*"
-		}
-		outstandingStr := "N/A"
-		if cacheErr == nil {
-			if v, err := c.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning); err == nil && v != nil {
-				outstandingStr = fmt.Sprintf("%.0f", v.GetSimpleValue())
+	if logEnabled {
+		c, cacheErr := cache.Get()
+		var logBuilder strings.Builder
+		logBuilder.WriteString(fmt.Sprintf("Multi-strategy routing decision for request [%s]. Selected target pod: [%s]. Candidate pod details:\n", ctx.RequestID, winner.Name))
+		for _, pod := range pods {
+			winnerFlag := " "
+			if pod.Name == winner.Name {
+				winnerFlag = "*"
 			}
+			outstandingStr := "N/A"
+			if cacheErr == nil {
+				if v, err := c.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning); err == nil && v != nil {
+					outstandingStr = fmt.Sprintf("%.0f", v.GetSimpleValue())
+				}
+			}
+			logBuilder.WriteString(fmt.Sprintf("  [%s] Pod: %-30s | FinalScore: %.4f | Outstanding: %-4s | Details: %s\n",
+				winnerFlag, pod.Name, finalScores[pod], outstandingStr, strings.Join(diags[pod].StrategyLog, ", ")))
 		}
-		logBuilder.WriteString(fmt.Sprintf("  [%s] Pod: %-30s | FinalScore: %.4f | Outstanding: %-4s | Details: %s\n",
-			winnerFlag, pod.Name, finalScores[pod], outstandingStr, strings.Join(diags[pod].StrategyLog, ", ")))
+		klog.Info(logBuilder.String())
 	}
-	klog.V(4).Info(logBuilder.String())
 
 	return winner, finalScores, nil
 }
@@ -528,13 +568,16 @@ type RouterManager struct {
 	routerDoneInit    context.CancelFunc
 	routerFactory     map[types.RoutingAlgorithm]types.RouterProviderFunc
 	routerConstructor map[types.RoutingAlgorithm]types.RouterProviderRegistrationFunc
-	multiRouterCache  map[string]*multiStrategyRouter
-	// failedAutoBlends remembers blended strategy strings (see appendLoadBalanceBlend) that
-	// failed to construct, so Select doesn't re-attempt and re-log the same doomed blend on
-	// every single request for a strategy that simply can't be blended (e.g. it doesn't
-	// implement types.PodScorer).
-	failedAutoBlends map[string]struct{}
-	routerMu         sync.RWMutex
+	// multiRouterCache is keyed by (possibly blended) algorithm string; both it and
+	// unblendableLogged below are capped at maxCachedAlgorithmStrings since the key is
+	// client-controlled and neither map is otherwise evicted.
+	multiRouterCache map[string]*multiStrategyRouter
+	// unblendableLogged is the set of original algorithm strings for which we've already
+	// emitted a V(2) "skipping auto-blend" line. It is log-once bookkeeping only: Select
+	// still re-evaluates the blend on every request so a later Register/Init can start
+	// blending, and so a transient construct error is retried rather than black-holed.
+	unblendableLogged map[string]struct{}
+	routerMu          sync.RWMutex
 }
 
 func NewRouterManager() *RouterManager {
@@ -543,7 +586,7 @@ func NewRouterManager() *RouterManager {
 	rm.routerFactory = make(map[types.RoutingAlgorithm]types.RouterProviderFunc)
 	rm.routerConstructor = make(map[types.RoutingAlgorithm]types.RouterProviderRegistrationFunc)
 	rm.multiRouterCache = make(map[string]*multiStrategyRouter)
-	rm.failedAutoBlends = make(map[string]struct{})
+	rm.unblendableLogged = make(map[string]struct{})
 	return rm
 }
 
@@ -590,49 +633,24 @@ func Validate(algorithms string) (types.RoutingAlgorithm, bool) {
 func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error) {
 	algStr := string(ctx.Algorithm)
 
-	// Silently blend in load-balance's capacity-aware scoring (and, when needed,
-	// least-request for multi-port support) behind whatever strategy the caller asked for.
-	// The caller never sees this: ctx.Algorithm/algStr below is untouched, so headers,
-	// Validate(), and error messages all still reflect the original strategy name.
-	blended, ok := appendLoadBalanceBlend(algStr)
-	klog.V(4).Infof("routing select: algStr=%q autoBlendLoadBalanceWeight=%d autoBlendLeastRequestWeight=%d blend_ok=%v blended=%q", algStr, autoBlendLoadBalanceWeight, autoBlendLeastRequestWeight, ok, blended)
-	if ok {
-		rm.routerMu.RLock()
-		_, knownBad := rm.failedAutoBlends[blended]
-		rm.routerMu.RUnlock()
+	// Parse once and reuse for both the auto-blend attempt below and the legacy
+	// multi-strategy fallback, instead of re-parsing algStr repeatedly per request.
+	cfg, cfgErr := ParseMultiRouterConfig(algStr)
 
-		if knownBad {
-			klog.Infof("Skipping known-bad blend %s (a previous request already failed to construct it), routing %s alone", blended, algStr)
-		}
-
-		if !knownBad {
-			// allRegistered is a pure map-lookup check (no provider construction) so a
-			// permanently-unblendable strategy (e.g. load-balance/least-request not
-			// registered at all) is rejected without invoking anyone's provider.
-			blendedCfg, parseErr := ParseMultiRouterConfig(blended)
-			switch {
-			case parseErr != nil:
-				klog.Infof("Cannot silently blend load-balance into %s: blended config %q failed to parse: %v, falling back to %s alone", algStr, blended, parseErr, algStr)
-			case len(blendedCfg.Items) <= 1:
-				klog.Infof("Cannot silently blend load-balance into %s: blended config %q collapsed to a single strategy, falling back to %s alone", algStr, blended, algStr)
-			case !rm.allRegistered(blendedCfg):
-				klog.Infof("Cannot silently blend load-balance into %s: one or more strategies in %q are not registered, falling back to %s alone", algStr, blended, algStr)
-			default:
-				if multiRouter, err := rm.getOrCreateMultiStrategyRouter(blended, blendedCfg, ctx); err == nil {
-					return multiRouter, nil
-				} else {
-					klog.Infof("Cannot silently blend load-balance into %s: %v, falling back to %s alone", algStr, err, algStr)
-				}
+	if cfgErr == nil {
+		// Silently blend in load-balance's capacity-aware scoring (and, when needed,
+		// least-request for multi-port support) behind whatever strategy the caller asked
+		// for. The caller never sees this: ctx.Algorithm/algStr below is untouched, so
+		// headers, Validate(), and error messages all still reflect the original strategy
+		// name.
+		blended, ok := appendLoadBalanceBlend(algStr, cfg)
+		klog.V(4).Infof("routing select: algStr=%q autoBlendLoadBalanceWeight=%d autoBlendLeastRequestWeight=%d blend_ok=%v blended=%q", algStr, autoBlendLoadBalanceWeight, autoBlendLeastRequestWeight, ok, blended)
+		if ok {
+			if router, blendedOK := rm.tryAutoBlend(ctx, algStr, cfg, blended); blendedOK {
+				return router, nil
 			}
-			rm.routerMu.Lock()
-			rm.failedAutoBlends[blended] = struct{}{}
-			rm.routerMu.Unlock()
 		}
-	}
 
-	// Check if it's a multi-strategy config.
-	cfg, err := ParseMultiRouterConfig(algStr)
-	if err == nil {
 		if len(cfg.Items) > 1 {
 			multiRouter, err := rm.getOrCreateMultiStrategyRouter(algStr, cfg, ctx)
 			if err == nil {
@@ -651,7 +669,7 @@ func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error)
 	} else {
 		// Log the error but don't fallback to Random. Allow the request to fail down the line,
 		// preserving the HTTP 400 Bad Request API contract.
-		klog.Warningf("Failed to parse multi-strategy config '%s': %v", algStr, err)
+		klog.Warningf("Failed to parse multi-strategy config '%s': %v", algStr, cfgErr)
 	}
 
 	// Legacy Single strategy fallback
@@ -666,6 +684,89 @@ func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error)
 }
 func Select(ctx *types.RoutingContext) (types.Router, error) {
 	return defaultRM.Select(ctx)
+}
+
+// tryAutoBlend attempts to construct the silent load-balance composite for algStr. origCfg is
+// algStr's own already-parsed config (reused from Select rather than re-parsed here).
+// Returns ok=false when the blend cannot be used this request; the caller then routes
+// algStr alone. Permanent skips (primary is not a PodScorer, blend not registered) are
+// logged once at V(2). Transient construct errors are not remembered, so the next
+// request retries.
+func (rm *RouterManager) tryAutoBlend(ctx *types.RoutingContext, algStr string, origCfg *MultiRouterConfig, blended string) (types.Router, bool) {
+	// Fast path: once blended has been constructed successfully once, every later request
+	// for it is a single lock-protected map read — no re-parsing, re-registration check, or
+	// re-probing of the primary strategy's PodScorer-ness on every request.
+	rm.routerMu.RLock()
+	cached, hit := rm.multiRouterCache[blended]
+	rm.routerMu.RUnlock()
+	if hit {
+		return cached, true
+	}
+
+	blendedCfg, parseErr := ParseMultiRouterConfig(blended)
+	if parseErr != nil || len(blendedCfg.Items) <= 1 {
+		rm.logUnblendableOnce(algStr, "blended config is invalid or collapsed to a single strategy")
+		return nil, false
+	}
+	if !rm.allRegistered(blendedCfg) {
+		rm.logUnblendableOnce(algStr, "one or more blended strategies are not registered")
+		return nil, false
+	}
+
+	// Probe the caller's own strategies before constructing the composite for the first
+	// time. random (and any other non-PodScorer) is a permanent skip: building the
+	// composite would fail the same way on every request and used to log that at Info on
+	// the hot path.
+	scorerOK, transientErr := rm.allImplementPodScorer(origCfg, ctx)
+	if transientErr != nil {
+		klog.V(4).Infof("Cannot auto-blend %s this request: %v", algStr, transientErr)
+		return nil, false
+	}
+	if !scorerOK {
+		rm.logUnblendableOnce(algStr, "primary strategy does not implement types.PodScorer")
+		return nil, false
+	}
+
+	multiRouter, err := rm.getOrCreateMultiStrategyRouter(blended, blendedCfg, ctx)
+	if err != nil {
+		klog.V(4).Infof("Cannot silently blend load-balance into %s: %v, falling back to %s alone", algStr, err, algStr)
+		return nil, false
+	}
+	return multiRouter, true
+}
+
+func (rm *RouterManager) logUnblendableOnce(algStr, reason string) {
+	rm.routerMu.Lock()
+	_, seen := rm.unblendableLogged[algStr]
+	if !seen && len(rm.unblendableLogged) < maxCachedAlgorithmStrings {
+		rm.unblendableLogged[algStr] = struct{}{}
+	}
+	rm.routerMu.Unlock()
+	if !seen {
+		klog.V(2).Infof("Skipping auto-blend for %s (%s), routing it alone", algStr, reason)
+	}
+}
+
+// allImplementPodScorer reports whether every strategy in cfg constructs as a
+// types.PodScorer. A provider error is returned separately so the caller can retry
+// next request instead of treating it as a permanent "not a scorer" skip.
+func (rm *RouterManager) allImplementPodScorer(cfg *MultiRouterConfig, ctx *types.RoutingContext) (bool, error) {
+	for _, item := range cfg.Items {
+		rm.routerMu.RLock()
+		provider, ok := rm.routerFactory[types.RoutingAlgorithm(item.Name)]
+		rm.routerMu.RUnlock()
+		if !ok || provider == nil {
+			return false, nil
+		}
+		router, err := provider(ctx)
+		if err != nil {
+			return false, err
+		}
+		if _, isScorer := router.(types.PodScorer); !isScorer {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // allRegistered reports whether every strategy in cfg has a registered provider, without
@@ -699,7 +800,9 @@ func (rm *RouterManager) getOrCreateMultiStrategyRouter(algStr string, cfg *Mult
 	if cached, ok := rm.multiRouterCache[algStr]; ok {
 		return cached, nil
 	}
-	rm.multiRouterCache[algStr] = router
+	if len(rm.multiRouterCache) < maxCachedAlgorithmStrings {
+		rm.multiRouterCache[algStr] = router
+	}
 	return router, nil
 }
 
@@ -707,7 +810,7 @@ func (rm *RouterManager) Register(algorithm types.RoutingAlgorithm, constructor 
 	rm.routerMu.Lock()
 	defer rm.routerMu.Unlock()
 	rm.multiRouterCache = make(map[string]*multiStrategyRouter)
-	rm.failedAutoBlends = make(map[string]struct{})
+	rm.unblendableLogged = make(map[string]struct{})
 	rm.routerConstructor[algorithm] = func() types.RouterProviderFunc {
 		router, err := constructor()
 		if err != nil {
@@ -728,7 +831,7 @@ func (rm *RouterManager) RegisterProvider(algorithm types.RoutingAlgorithm, prov
 	defer rm.routerMu.Unlock()
 	rm.routerFactory[algorithm] = provider
 	rm.multiRouterCache = make(map[string]*multiStrategyRouter)
-	rm.failedAutoBlends = make(map[string]struct{})
+	rm.unblendableLogged = make(map[string]struct{})
 	klog.V(4).Infof("Registered router for %s", algorithm)
 }
 func RegisterProvider(algorithm types.RoutingAlgorithm, provider types.RouterProviderFunc) {
@@ -769,7 +872,7 @@ func (rm *RouterManager) Init() {
 		klog.V(4).Infof("Registered router for %s", algorithm)
 	}
 	rm.multiRouterCache = make(map[string]*multiStrategyRouter)
-	rm.failedAutoBlends = make(map[string]struct{})
+	rm.unblendableLogged = make(map[string]struct{})
 	rm.routerDoneInit()
 }
 func Init() {

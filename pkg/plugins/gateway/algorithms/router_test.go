@@ -646,6 +646,26 @@ func TestMultiStrategyRouterRoute_SelectsLeastLoadedPortForMultiPortPod(t *testi
 	assert.Equal(t, 8001, ctx.TargetPort())
 }
 
+func withAutoBlendWeights(t *testing.T, loadBalance, leastRequest int) {
+	t.Helper()
+	oldLB, oldLR := autoBlendLoadBalanceWeight, autoBlendLeastRequestWeight
+	autoBlendLoadBalanceWeight = loadBalance
+	autoBlendLeastRequestWeight = leastRequest
+	t.Cleanup(func() {
+		autoBlendLoadBalanceWeight = oldLB
+		autoBlendLeastRequestWeight = oldLR
+	})
+}
+
+func registerBlendScorers(rm *RouterManager) {
+	rm.RegisterProvider(RouterLoadBalance, func(_ *types.RoutingContext) (types.Router, error) {
+		return &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityLeast}}, nil
+	})
+	rm.RegisterProvider(RouterLeastRequest, func(_ *types.RoutingContext) (types.Router, error) {
+		return &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityLeast}}, nil
+	})
+}
+
 func TestSelectSingleStrategyUsesLegacyRouter(t *testing.T) {
 	rm := NewRouterManager()
 	expectedRouter := &fakeScoreableRouter{}
@@ -662,6 +682,175 @@ func TestSelectSingleStrategyUsesLegacyRouter(t *testing.T) {
 	actualRouter, ok := router.(*fakeScoreableRouter)
 	assert.True(t, ok)
 	assert.Same(t, expectedRouter, actualRouter)
+}
+
+func TestSelectSkipsAutoBlendForNonScorerPrimary(t *testing.T) {
+	withAutoBlendWeights(t, 1, 1)
+	rm := NewRouterManager()
+	rm.RegisterProvider(RouterRandom, RandomRouterProviderFunc)
+	registerBlendScorers(rm)
+
+	for i := 0; i < 3; i++ {
+		ctx := types.NewRoutingContext(context.Background(), RouterRandom, testModelName, "hello", fmt.Sprintf("req-random-%d", i), "")
+		router, err := rm.Select(ctx)
+		assert.NoError(t, err)
+		_, isMulti := router.(*multiStrategyRouter)
+		assert.False(t, isMulti, "random must not be silently blended")
+		_, isRandom := router.(*randomRouter)
+		assert.True(t, isRandom)
+	}
+
+	rm.routerMu.RLock()
+	_, logged := rm.unblendableLogged[string(RouterRandom)]
+	rm.routerMu.RUnlock()
+	assert.True(t, logged, "non-scorer skip should be recorded so it is logged only once")
+}
+
+func TestSelectRetriesAutoBlendAfterTransientConstructError(t *testing.T) {
+	withAutoBlendWeights(t, 1, 1)
+	rm := NewRouterManager()
+
+	primary := &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityMost}}
+	rm.RegisterProvider(types.RoutingAlgorithm("blendable-primary"), func(_ *types.RoutingContext) (types.Router, error) {
+		return primary, nil
+	})
+	rm.RegisterProvider(RouterLeastRequest, func(_ *types.RoutingContext) (types.Router, error) {
+		return &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityLeast}}, nil
+	})
+
+	lbCalls := 0
+	rm.RegisterProvider(RouterLoadBalance, func(_ *types.RoutingContext) (types.Router, error) {
+		lbCalls++
+		if lbCalls == 1 {
+			return nil, fmt.Errorf("cache unavailable")
+		}
+		return &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityLeast}}, nil
+	})
+
+	ctx1 := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("blendable-primary"), testModelName, "hello", "req-transient-1", "")
+	router1, err := rm.Select(ctx1)
+	assert.NoError(t, err)
+	_, isMulti := router1.(*multiStrategyRouter)
+	assert.False(t, isMulti)
+	assert.Same(t, primary, router1)
+
+	ctx2 := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("blendable-primary"), testModelName, "hello", "req-transient-2", "")
+	router2, err := rm.Select(ctx2)
+	assert.NoError(t, err)
+	_, isMulti = router2.(*multiStrategyRouter)
+	assert.True(t, isMulti, "transient construct error must not be remembered")
+}
+
+func TestSelectAutoBlendsWhenPrimaryIsPodScorer(t *testing.T) {
+	withAutoBlendWeights(t, 1, 1)
+	rm := NewRouterManager()
+	primary := &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityMost}}
+	rm.RegisterProvider(types.RoutingAlgorithm("blendable-primary"), func(_ *types.RoutingContext) (types.Router, error) {
+		return primary, nil
+	})
+	registerBlendScorers(rm)
+
+	ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("blendable-primary"), testModelName, "hello", "req-blend-on", "")
+	router, err := rm.Select(ctx)
+	assert.NoError(t, err)
+	multi, isMulti := router.(*multiStrategyRouter)
+	assert.True(t, isMulti)
+	assert.Contains(t, multi.scorers, string(RouterLoadBalance))
+	assert.Contains(t, multi.scorers, string(RouterLeastRequest))
+	assert.Contains(t, multi.scorers, "blendable-primary")
+}
+
+func TestSelectHonorsExplicitZeroWeightOptOutForLoadBalance(t *testing.T) {
+	withAutoBlendWeights(t, 1, 1)
+	rm := NewRouterManager()
+	primary := &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityMost}}
+	rm.RegisterProvider(types.RoutingAlgorithm("blendable-primary"), func(_ *types.RoutingContext) (types.Router, error) {
+		return primary, nil
+	})
+	registerBlendScorers(rm)
+
+	ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("blendable-primary,load-balance:0"), testModelName, "hello", "req-optout-lb", "")
+	router, err := rm.Select(ctx)
+	assert.NoError(t, err)
+	multi, isMulti := router.(*multiStrategyRouter)
+	assert.True(t, isMulti)
+	assert.NotContains(t, multi.scorers, string(RouterLoadBalance), "explicit load-balance:0 must not be silently re-added by auto-blend")
+	assert.Contains(t, multi.scorers, string(RouterLeastRequest))
+	assert.Contains(t, multi.scorers, "blendable-primary")
+}
+
+func TestSelectHonorsExplicitZeroWeightOptOutForLeastRequest(t *testing.T) {
+	withAutoBlendWeights(t, 1, 1)
+	rm := NewRouterManager()
+	primary := &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityMost}}
+	rm.RegisterProvider(types.RoutingAlgorithm("blendable-primary"), func(_ *types.RoutingContext) (types.Router, error) {
+		return primary, nil
+	})
+	registerBlendScorers(rm)
+
+	ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("blendable-primary,least-request:0"), testModelName, "hello", "req-optout-lr", "")
+	router, err := rm.Select(ctx)
+	assert.NoError(t, err)
+	multi, isMulti := router.(*multiStrategyRouter)
+	assert.True(t, isMulti)
+	assert.NotContains(t, multi.scorers, string(RouterLeastRequest), "explicit least-request:0 must not be silently re-added by auto-blend")
+	assert.Contains(t, multi.scorers, string(RouterLoadBalance))
+	assert.Contains(t, multi.scorers, "blendable-primary")
+}
+
+func TestSelectAutoBlendFastPathSkipsReprobingOnCacheHit(t *testing.T) {
+	withAutoBlendWeights(t, 1, 1)
+	rm := NewRouterManager()
+	primaryCalls := 0
+	rm.RegisterProvider(types.RoutingAlgorithm("blendable-primary"), func(_ *types.RoutingContext) (types.Router, error) {
+		primaryCalls++
+		return &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityMost}}, nil
+	})
+	registerBlendScorers(rm)
+
+	firstCtx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("blendable-primary"), testModelName, "hello", "req-fastpath-0", "")
+	_, err := rm.Select(firstCtx)
+	assert.NoError(t, err)
+	callsAfterFirst := primaryCalls
+	assert.Positive(t, callsAfterFirst, "the first request must construct+probe the primary strategy")
+
+	for i := 1; i < 5; i++ {
+		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("blendable-primary"), testModelName, "hello", fmt.Sprintf("req-fastpath-%d", i), "")
+		router, err := rm.Select(ctx)
+		assert.NoError(t, err)
+		_, isMulti := router.(*multiStrategyRouter)
+		assert.True(t, isMulti)
+	}
+
+	assert.Equal(t, callsAfterFirst, primaryCalls, "once the blended composite is cached, later requests must not reconstruct the primary strategy just to re-probe PodScorer support")
+}
+
+func TestGetOrCreateMultiStrategyRouterCapsCacheSize(t *testing.T) {
+	oldMax := maxCachedAlgorithmStrings
+	maxCachedAlgorithmStrings = 2
+	t.Cleanup(func() { maxCachedAlgorithmStrings = oldMax })
+
+	rm := NewRouterManager()
+	rm.RegisterProvider(types.RoutingAlgorithm("cap-s1"), func(_ *types.RoutingContext) (types.Router, error) {
+		return &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityMost}}, nil
+	})
+	rm.RegisterProvider(types.RoutingAlgorithm("cap-s2"), func(_ *types.RoutingContext) (types.Router, error) {
+		return &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityMost}}, nil
+	})
+
+	for i := 0; i < 5; i++ {
+		algStr := fmt.Sprintf("cap-s1:%d,cap-s2:1", i+1)
+		cfg, err := ParseMultiRouterConfig(algStr)
+		assert.NoError(t, err)
+		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algStr), testModelName, "hello", fmt.Sprintf("req-cap-%d", i), "")
+		_, err = rm.getOrCreateMultiStrategyRouter(algStr, cfg, ctx)
+		assert.NoError(t, err)
+	}
+
+	rm.routerMu.RLock()
+	cacheSize := len(rm.multiRouterCache)
+	rm.routerMu.RUnlock()
+	assert.LessOrEqual(t, cacheSize, 2, "multiRouterCache must stay bounded by maxCachedAlgorithmStrings regardless of how many distinct client-supplied strings are seen")
 }
 
 func TestSelectCachesMultiStrategyRouter(t *testing.T) {

@@ -18,6 +18,7 @@ package routingalgorithms
 
 import (
 	"math"
+	"strconv"
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -44,13 +45,29 @@ var (
 var (
 	loadImbalanceEvents     *prometheus.CounterVec
 	loadImbalanceEventsOnce sync.Once
+
+	kvSyncEnabledOnce  sync.Once
+	kvSyncEnabledValue bool
 )
 
-// recordLoadImbalance increments the load-imbalance gate counter for model. Only this
-// router's own Route() calls it today, but the metric is named generically (not
-// prefix_cache_*) because the gate is a load-balance scheduling safeguard, not a
-// prefix-caching concern. using_kv_sync is always "false" since load-balance has no
-// KV-sync mode, unlike prefix-cache's kvSyncPrefixCacheRouter.
+// kvSyncEnabled reports whether KV event sync is enabled for this deployment, per the same
+// env var prefix_cache.go's NewPrefixCacheRouter reads. The value is a process-wide
+// deployment setting decided once at startup, so it's cached rather than re-read from the
+// environment on every request.
+func kvSyncEnabled() bool {
+	kvSyncEnabledOnce.Do(func() {
+		kvSyncEnabledValue = utils.LoadEnvBool(constants.EnvPrefixCacheKVEventSyncEnabled, false)
+	})
+	return kvSyncEnabledValue
+}
+
+// recordLoadImbalance increments the load-imbalance gate counter for model. The gate itself
+// is applied centrally by the gateway ahead of whichever strategy actually routes the request
+// (see ApplyLoadImbalanceGate), so the metric is named generically (not prefix_cache_*)
+// rather than being a prefix-caching-specific concern. using_kv_sync reflects this
+// deployment's KV-sync configuration so the label still splits the same way it did when this
+// counter (then prefix_cache_load_imbalance_total) was recorded separately by the plain and
+// KV-sync prefix-cache routers.
 func recordLoadImbalance(model string) {
 	loadImbalanceEventsOnce.Do(func() {
 		loadImbalanceEvents = prometheus.NewCounterVec(
@@ -68,7 +85,7 @@ func recordLoadImbalance(model string) {
 		}
 	})
 	if loadImbalanceEvents != nil {
-		loadImbalanceEvents.WithLabelValues(model, "false").Inc()
+		loadImbalanceEvents.WithLabelValues(model, strconv.FormatBool(kvSyncEnabled())).Inc()
 	}
 }
 
