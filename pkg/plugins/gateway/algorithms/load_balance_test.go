@@ -24,6 +24,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -124,6 +125,37 @@ func TestLoadBalanceRoute_TiesBrokenRandomly(t *testing.T) {
 	}
 	assert.Contains(t, seen, "1.1.1.1:8000", "p1 should be selected at least once")
 	assert.Contains(t, seen, "2.2.2.2:8000", "p2 should be selected at least once")
+}
+
+func TestLoadBalanceRoute_TiesBrokenByLeastKvCache(t *testing.T) {
+	pods := []*v1.Pod{
+		makeLBPod("p1", "1.1.1.1"),
+		makeLBPod("p2", "2.2.2.2"),
+	}
+	// Both have identical pending_time score: 2 req / 2 drain = 1.0, so the tie is broken
+	// by combined GPU+CPU KV-cache usage instead of randomly. p2 has less cache pressure.
+	podMetrics := map[string]map[string]metrics.MetricValue{
+		"p1": {
+			metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 2},
+			metrics.KVCacheUsagePerc:                   &metrics.SimpleMetricValue{Value: 0.8},
+			metrics.CPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.1},
+		},
+		"p2": {
+			metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 2},
+			metrics.KVCacheUsagePerc:                   &metrics.SimpleMetricValue{Value: 0.1},
+			metrics.CPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.1},
+		},
+	}
+	c := cache.NewWithPodsMetricsForTest(pods, "m1", podMetrics)
+	r := &loadBalanceRouter{cache: c}
+	for i := 0; i < 20; i++ {
+		ctx := types.NewRoutingContext(context.Background(), RouterLoadBalance, "m1", "input", "req1", "")
+		target, err := r.Route(ctx, podsFromCache(c))
+		assert.NoError(t, err)
+		assert.Equal(t, "2.2.2.2:8000", target, "p2 should always win the tie via lower KV-cache usage")
+	}
 }
 
 func TestLoadBalanceRoute_ZeroDrainRateFallsBackToUniform(t *testing.T) {
@@ -228,4 +260,80 @@ func TestLoadBalanceScoreAll_ReturnsScoreForEachPod(t *testing.T) {
 func TestLoadBalancePolarity(t *testing.T) {
 	r := &loadBalanceRouter{}
 	assert.Equal(t, types.PolarityLeast, r.Polarity())
+}
+
+// TestLoadBalanceRoute_LoadImbalanceGateRestrictsCandidates verifies the load-imbalance gate
+// (moved here from the prefix-cache routers) narrows the candidate set to the least-loaded
+// pods by raw running-request count *before* pending-time scoring runs. The busy pod is given
+// a drain rate so high that, absent the gate, it would win on pending_time despite having far
+// more in-flight requests — proving the gate actually excludes it rather than pending_time
+// coincidentally avoiding it.
+//
+// The gate itself is applied by the gateway centrally (see gateway.go's selectTargetPod), not
+// by Route() anymore, so this test applies it explicitly first to mirror that call site.
+func TestLoadBalanceRoute_LoadImbalanceGateRestrictsCandidates(t *testing.T) {
+	pods := []*v1.Pod{
+		makeLBPod("light-1", "1.1.1.1"),
+		makeLBPod("light-2", "2.2.2.2"),
+		makeLBPod("light-3", "3.3.3.3"),
+		makeLBPod("busy", "4.4.4.4"),
+	}
+	// meanOfOthers (excluding busy) = (2+2+2)/3 = 2.0; gate fires since 20 > 2.0*(2.0+1)=6.0
+	// AND 20-2=18 >= 8. Without the gate, busy's huge drain rate (20/1000=0.02) would beat
+	// the light pods' pending_time (2/1=2.0) on pure ScoreAll.
+	podMetrics := map[string]map[string]metrics.MetricValue{
+		"light-1": {
+			metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 1},
+		},
+		"light-2": {
+			metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 1},
+		},
+		"light-3": {
+			metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 1},
+		},
+		"busy": {
+			metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 20},
+			metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 1000},
+		},
+	}
+	c := cache.NewWithPodsMetricsForTest(pods, "m1", podMetrics)
+	r := &loadBalanceRouter{cache: c}
+	ctx := types.NewRoutingContext(context.Background(), RouterLoadBalance, "m1", "input", "req1", "")
+	gated := ApplyLoadImbalanceGate(ctx, c, pods)
+	target, err := r.Route(ctx, &utils.PodArray{Pods: gated})
+	assert.NoError(t, err)
+	assert.NotEqual(t, "4.4.4.4:8000", target, "gate should exclude the busy pod even though it scores lowest")
+	assert.Contains(t, []string{"1.1.1.1:8000", "2.2.2.2:8000", "3.3.3.3:8000"}, target)
+}
+
+// Two-replica clusters skip the relative factor check (it never holds for n=2 with
+// factor=2) and fire on the absolute gap alone, so a hot pod still sheds to the idle replica.
+func TestLoadBalanceRoute_TwoPodLoadImbalanceGateRestrictsToIdle(t *testing.T) {
+	pods := []*v1.Pod{
+		makeLBPod("idle", "1.1.1.1"),
+		makeLBPod("busy", "2.2.2.2"),
+	}
+	// gap=18 >= minGap=8. Without the n=2 special case the factor check is
+	// 20 <= 2*(11+1)=24 and the gate never fires; busy's drain rate would then
+	// win on pending_time (20/1000=0.02 vs idle 2/1=2.0).
+	podMetrics := map[string]map[string]metrics.MetricValue{
+		"idle": {
+			metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 1},
+		},
+		"busy": {
+			metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 20},
+			metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 1000},
+		},
+	}
+	c := cache.NewWithPodsMetricsForTest(pods, "m1", podMetrics)
+	r := &loadBalanceRouter{cache: c}
+	ctx := types.NewRoutingContext(context.Background(), RouterLoadBalance, "m1", "input", "req1", "")
+	gated := ApplyLoadImbalanceGate(ctx, c, pods)
+	target, err := r.Route(ctx, &utils.PodArray{Pods: gated})
+	assert.NoError(t, err)
+	assert.Equal(t, "1.1.1.1:8000", target, "gate should restrict to the idle replica")
 }

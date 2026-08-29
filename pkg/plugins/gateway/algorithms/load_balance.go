@@ -18,9 +18,11 @@ package routingalgorithms
 
 import (
 	"math"
-	"math/rand"
+	"sync"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -29,6 +31,46 @@ import (
 )
 
 var RouterLoadBalance types.RoutingAlgorithm = "load-balance"
+
+// podRunningRequestImbalanceFactor triggers the load-imbalance gate when
+// max > factor*(mean+1). Used only for 3+ pods; two pods skip this check
+// because factor=2 reduces to max > max+2, which never holds.
+// podRunningRequestImbalanceMinGap is the minimum absolute gap required to trigger.
+var (
+	podRunningRequestImbalanceFactor = utils.LoadEnvFloat("AIBRIX_LOAD_BALANCE_IMBALANCE_FACTOR", 2.0)
+	podRunningRequestImbalanceMinGap = utils.LoadEnvInt("AIBRIX_LOAD_BALANCE_IMBALANCE_MIN_GAP", 8)
+)
+
+var (
+	loadImbalanceEvents     *prometheus.CounterVec
+	loadImbalanceEventsOnce sync.Once
+)
+
+// recordLoadImbalance increments the load-imbalance gate counter for model. Only this
+// router's own Route() calls it today, but the metric is named generically (not
+// prefix_cache_*) because the gate is a load-balance scheduling safeguard, not a
+// prefix-caching concern. using_kv_sync is always "false" since load-balance has no
+// KV-sync mode, unlike prefix-cache's kvSyncPrefixCacheRouter.
+func recordLoadImbalance(model string) {
+	loadImbalanceEventsOnce.Do(func() {
+		loadImbalanceEvents = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Subsystem: constants.AibrixSubsystemName,
+				Name:      "load_imbalance_total",
+				Help:      "Total number of requests where pod load was imbalanced",
+			},
+			[]string{"model", "using_kv_sync"},
+		)
+		if err := prometheus.Register(loadImbalanceEvents); err != nil {
+			if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
+				klog.ErrorS(err, "failed to register load imbalance metric")
+			}
+		}
+	})
+	if loadImbalanceEvents != nil {
+		loadImbalanceEvents.WithLabelValues(model, "false").Inc()
+	}
+}
 
 func init() {
 	Register(RouterLoadBalance, NewLoadBalanceRouter)
@@ -75,7 +117,15 @@ func (r *loadBalanceRouter) Polarity() types.Polarity {
 	return types.PolarityLeast
 }
 
-// Route selects the pod with minimum pending_time, breaking ties randomly.
+// Route selects the pod with minimum pending_time. Ties are broken using least combined
+// GPU+CPU KV-cache usage (falling back to random when cache metrics are unavailable), the
+// same way prefix-cache breaks ties in prefix-match percentage using request count.
+//
+// The load-imbalance hotspot gate (ApplyLoadImbalanceGate) is not applied here: the gateway
+// applies it once, centrally, ahead of whichever strategy actually routes the request (see
+// gateway.go's selectTargetPod), so readyPodList arrives already narrowed when load is severely
+// skewed. Applying it again here would double the metric-fetch work and double-count the
+// load_imbalance_total counter for every request.
 func (r *loadBalanceRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	pods := readyPodList.All()
 	if len(pods) == 0 {
@@ -88,14 +138,14 @@ func (r *loadBalanceRouter) Route(ctx *types.RoutingContext, readyPodList types.
 	}
 
 	minScore := math.MaxFloat64
-	var candidates []string
+	var candidates []*v1.Pod
 	for i, pod := range pods {
 		s := scores[i]
 		if s < minScore {
 			minScore = s
-			candidates = []string{pod.Name}
+			candidates = []*v1.Pod{pod}
 		} else if s == minScore {
-			candidates = append(candidates, pod.Name)
+			candidates = append(candidates, pod)
 		}
 	}
 
@@ -103,9 +153,11 @@ func (r *loadBalanceRouter) Route(ctx *types.RoutingContext, readyPodList types.
 		return "", ErrorNoAvailablePod
 	}
 
-	targetPod, _ := utils.FilterPodByName(candidates[rand.Intn(len(candidates))], pods)
-	if targetPod == nil {
-		return "", ErrorNoAvailablePod
+	// Reuse the least-kv-cache strategy's own scorer to break the tie, rather than a
+	// bespoke lookup: any registered types.PodScorer works here as a tie-breaker.
+	targetPod, err := RouteByScore(ctx, &utils.PodArray{Pods: candidates}, newLeastKvCacheRouter(r.cache))
+	if err != nil {
+		return "", err
 	}
 
 	klog.V(4).InfoS("load_balance_selected",
@@ -126,4 +178,84 @@ func (r *loadBalanceRouter) capacityOf(pod *v1.Pod) float64 {
 		}
 	}
 	return 1.0
+}
+
+// ApplyLoadImbalanceGate narrows readyPods to the least-loaded subset when running-request load
+// is severely skewed (see getTargetPodListOnLoadImbalance). Returns readyPods unchanged if not
+// imbalanced.
+//
+// It is exported so the gateway can apply this hotspot safeguard once, centrally, ahead of
+// whichever routing strategy a request actually resolves to — including "load-balance" itself,
+// whose own Route() relies on the caller having already applied this gate rather than calling it
+// again. Callers should skip invoking this for exclusive strategies (pd, slo*), which manage
+// their own pod subsets and would have their role split disrupted by a blanket
+// running-request-count filter applied ahead of time.
+func ApplyLoadImbalanceGate(ctx *types.RoutingContext, c cache.Cache, readyPods []*v1.Pod) []*v1.Pod {
+	if c == nil || len(readyPods) < 2 {
+		return readyPods
+	}
+
+	podRequestCount := getRequestCounts(c, readyPods)
+	leastPods, imbalanced := getTargetPodListOnLoadImbalance(podRequestCount, readyPods)
+	if !imbalanced {
+		return readyPods
+	}
+
+	recordLoadImbalance(ctx.Model)
+	klog.V(4).InfoS("load_balance_imbalance_gate",
+		"request_id", ctx.RequestID,
+		"restricted_pod_count", len(leastPods),
+		"total_pod_count", len(readyPods))
+	return leastPods
+}
+
+// getTargetPodListOnLoadImbalance returns the least-loaded pods when load is severely skewed.
+// The absolute gap must be at least podRunningRequestImbalanceMinGap. For 3+ pods the busiest
+// pod must also exceed podRunningRequestImbalanceFactor*(meanOfOthers+1), where meanOfOthers
+// excludes the busiest pod itself. Excluding it matters: folding the busiest pod's own count
+// into the baseline it's compared against makes the baseline rise in lockstep as that pod gets
+// busier, so the check keeps almost-but-not-quite firing (the busiest pod would need to reach
+// roughly factor times the *combined* load of every other pod before triggering, not factor
+// times a typical pod's load) — silently permitting severe, worsening imbalance. Two pods skip
+// the factor check: with the default factor of 2, max > 2*(mean+1) reduces to max > max+2 and
+// never fires, which would disable hotspot protection on the common 2-replica deployment.
+func getTargetPodListOnLoadImbalance(podRequestCount map[string]int, readyPods []*v1.Pod) ([]*v1.Pod, bool) {
+	n := len(podRequestCount)
+	if n == 0 {
+		return nil, false
+	}
+
+	minValue := -1
+	maxValue := 0
+	sum := 0
+	for _, v := range podRequestCount {
+		sum += v
+		if minValue < 0 || v < minValue {
+			minValue = v
+		}
+		if v > maxValue {
+			maxValue = v
+		}
+	}
+
+	if maxValue-minValue < podRunningRequestImbalanceMinGap {
+		return nil, false
+	}
+	if n > 2 {
+		meanOfOthers := float64(sum-maxValue) / float64(n-1)
+		if float64(maxValue) <= podRunningRequestImbalanceFactor*(meanOfOthers+1) {
+			return nil, false
+		}
+	}
+
+	var targetPodList []*v1.Pod
+	for podname, v := range podRequestCount {
+		if v == minValue {
+			pod, _ := utils.FilterPodByName(podname, readyPods)
+			if pod != nil {
+				targetPodList = append(targetPodList, pod)
+			}
+		}
+	}
+	return targetPodList, len(targetPodList) > 0
 }

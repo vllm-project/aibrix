@@ -1056,7 +1056,7 @@ func ComputeHash(template *orchestrationv1alpha1.RayClusterTemplateSpec, collisi
 // Copied from k8s.io/kubernetes/pkg/util/hash/hash.go#DeepHashObject
 func DeepHashObject(hasher hash.Hash, objectToWrite interface{}) {
 	hasher.Reset()
-	fmt.Fprintf(hasher, "%v", dump.ForHash(objectToWrite))
+	_, _ = fmt.Fprintf(hasher, "%v", dump.ForHash(objectToWrite))
 }
 
 // self options

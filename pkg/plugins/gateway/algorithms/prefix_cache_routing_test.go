@@ -747,33 +747,44 @@ func TestGetTargetPodListOnLoadImbalance(t *testing.T) {
 			expectImbalance: false, // gap=5 < minGap=8
 		},
 		{
-			name:            "gap_exactly_at_threshold_no_imbalance",
-			requestCounts:   map[string]int{"p0": 0, "p1": 8},
-			expectImbalance: false, // gap=8, condition is < 8 which is false, BUT factor check: 8 <= 2*(4+1)=10 → no imbalance
+			name:            "two_pods_gap_below_min_no_imbalance",
+			requestCounts:   map[string]int{"p0": 0, "p1": 7},
+			expectImbalance: false, // gap=7 < minGap=8
 		},
 		{
-			name:            "moderate_load_within_factor_no_imbalance",
+			// Two pods skip the relative factor check (it never holds for n=2 with factor=2)
+			// and fire on the absolute gap alone.
+			name:            "two_pods_gap_at_min_triggers",
+			requestCounts:   map[string]int{"p0": 0, "p1": 8},
+			expectImbalance: true, // gap=8 >= minGap=8
+			expectMinPods:   []string{"p0"},
+		},
+		{
+			// meanOfOthers excludes the busiest pod itself: (5+5+5)/3=5, 15>2*(5+1)=12, so
+			// this now correctly fires. The old mean-inclusive formula ((5+5+5+15)/4=7.5,
+			// 15<=2*(7.5+1)=17) folded the busiest pod's own count into its own baseline,
+			// masking a pod carrying 3x its peers' load as "not imbalanced".
+			name:            "moderate_load_now_detected_as_imbalance",
 			requestCounts:   map[string]int{"p0": 5, "p1": 5, "p2": 5, "p3": 15},
-			expectImbalance: false, // mean=7.5, 15 <= 2*(7.5+1)=17
+			expectImbalance: true, // gap=15-5=10>=8; 15>2*(5+1)=12
+			expectMinPods:   []string{"p0", "p1", "p2"},
 		},
 		{
 			name:            "severe_skew_triggers_imbalance",
 			requestCounts:   map[string]int{"p0": 0, "p1": 0, "p2": 0, "p3": 15},
-			expectImbalance: true, // mean=3.75, 15>2*(3.75+1)=9.5; gap=15>=8
+			expectImbalance: true, // meanOfOthers=0, 15>2*(0+1)=2; gap=15>=8
 			expectMinPods:   []string{"p0", "p1", "p2"},
 		},
 		{
-			// With 2 pods [0, x]: mean=x/2, factor*(mean+1)=2*(x/2+1)=x+2, so max=x <= x+2 always.
-			// The factor gate never fires with exactly 2 pods — by design, restricting to 1 of 2 pods
-			// offers no meaningful diversity benefit.
-			name:            "two_pods_gate_never_fires",
+			name:            "two_pods_large_gap_triggers",
 			requestCounts:   map[string]int{"p0": 0, "p1": 100},
-			expectImbalance: false,
+			expectImbalance: true, // n=2 skips factor check; gap=100 >= minGap=8
+			expectMinPods:   []string{"p0"},
 		},
 		{
 			name:            "four_pods_one_overloaded",
 			requestCounts:   map[string]int{"p0": 0, "p1": 0, "p2": 5, "p3": 20},
-			expectImbalance: true, // mean=6.25, 20>2*(6.25+1)=14.5; gap=20>=8
+			expectImbalance: true, // meanOfOthers=(0+0+5)/3=1.67, 20>2*(1.67+1)=5.33; gap=20>=8
 			expectMinPods:   []string{"p0", "p1"},
 		},
 		{
@@ -784,13 +795,13 @@ func TestGetTargetPodListOnLoadImbalance(t *testing.T) {
 		{
 			name:            "large_spread_triggers_imbalance",
 			requestCounts:   map[string]int{"p0": 0, "p1": 5, "p2": 50, "p3": 100},
-			expectImbalance: true, // mean=38.75, 100>2*(38.75+1)=79.5; gap=100>=8
+			expectImbalance: true, // meanOfOthers=(0+5+50)/3=18.33, 100>2*(18.33+1)=38.67; gap=100>=8
 			expectMinPods:   []string{"p0"},
 		},
 		{
 			name:            "multiple_min_pods_returned",
 			requestCounts:   map[string]int{"p0": 0, "p1": 0, "p2": 50, "p3": 100},
-			expectImbalance: true, // mean=37.5, 100>2*(37.5+1)=77; gap=100>=8
+			expectImbalance: true, // meanOfOthers=(0+0+50)/3=16.67, 100>2*(16.67+1)=35.33; gap=100>=8
 			expectMinPods:   []string{"p0", "p1"},
 		},
 	}

@@ -178,23 +178,13 @@ AIBrix uses conditional compilation to manage ZMQ dependencies:
 Routing Behavior
 ----------------
 
-The KV sync router applies the same two-stage selection logic as the standard prefix-cache router:
+The KV sync router applies the same prefix-match-with-stddev-filter selection logic as the
+standard prefix-cache router. It does not apply a load-imbalance gate itself — that concern is
+handled centrally by the gateway, which applies the load-balance router's
+(``algorithms/load_balance.go``) ``ApplyLoadImbalanceGate`` once ahead of whichever strategy
+actually routes the request, KV sync included.
 
-**Stage 1 — Load-imbalance gate**
-
-Before prefix matching, the router checks whether pod load is severely skewed:
-
-.. code-block:: text
-
-   gate fires when:
-     max_running_requests > IMBALANCE_FACTOR × (mean_running_requests + 1)
-     AND (max_running_requests − min_running_requests) ≥ IMBALANCE_GAP
-
-When both conditions hold, the candidate set for prefix matching is restricted to the
-least-loaded pod(s) only. This prevents a heavily-cached pod from monopolising traffic
-while other pods sit idle.
-
-**Stage 2 — Prefix match with stddev filter**
+**Prefix match with stddev filter**
 
 Pods are matched against the sync indexer and sorted by prefix-match percentage
 (descending), then by running requests (ascending). The first pod satisfying:
@@ -215,12 +205,6 @@ Relevant environment variables:
    * - Variable
      - Default
      - Description
-   * - ``AIBRIX_PREFIX_CACHE_LOAD_IMBALANCE_FACTOR``
-     - ``2.0``
-     - Multiplier for the load-imbalance gate trigger condition.
-   * - ``AIBRIX_PREFIX_CACHE_LOAD_IMBALANCE_MIN_GAP``
-     - ``8``
-     - Minimum absolute gap (max − min requests) required to trigger the gate.
    * - ``AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``
      - ``1``
      - Controls how aggressively overloaded cache-holding pods are skipped during selection.

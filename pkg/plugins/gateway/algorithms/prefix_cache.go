@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"os"
 	"sort"
 	"strconv"
 	"sync"
@@ -54,11 +55,6 @@ var (
 	RouterPrefixCache       types.RoutingAlgorithm = "prefix-cache"
 	tokenizerType                                  = utils.LoadEnv(constants.EnvPrefixCacheTokenizerType, "character")
 	standardDeviationFactor int                    = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR", defaultStandardDeviationFactor)
-
-	// podRunningRequestImbalanceFactor triggers load-gate when max > factor*(mean+1).
-	// podRunningRequestImbalanceMinGap is the minimum absolute gap required to trigger.
-	podRunningRequestImbalanceFactor = utils.LoadEnvFloat("AIBRIX_PREFIX_CACHE_LOAD_IMBALANCE_FACTOR", 2.0)
-	podRunningRequestImbalanceMinGap = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_LOAD_IMBALANCE_MIN_GAP", 8)
 )
 
 // PrefixCacheMetrics holds all prefix cache metrics
@@ -174,6 +170,17 @@ func getPrefixCacheMetrics() *PrefixCacheMetrics {
 
 func init() {
 	Register(RouterPrefixCache, NewPrefixCacheRouter)
+
+	// This prefix-cache-specific gate (and its tuning knob) was replaced by the centralized
+	// load-imbalance gate the gateway now applies ahead of every non-exclusive strategy (see
+	// ApplyLoadImbalanceGate in load_balance.go). Warn rather than silently ignoring the old
+	// var, since an operator who tuned it would otherwise have no signal their setting stopped
+	// taking effect.
+	if _, ok := os.LookupEnv("AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT"); ok {
+		klog.Warning("AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT is no longer used: " +
+			"the load-imbalance gate is now centralized in the gateway and configured via " +
+			"AIBRIX_LOAD_BALANCE_IMBALANCE_MIN_GAP / AIBRIX_LOAD_BALANCE_IMBALANCE_FACTOR instead.")
+	}
 }
 
 // kvSyncPrefixCacheRouter handles routing when KV sync is enabled
@@ -391,21 +398,8 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 		readyPodsMap[pod.Name] = struct{}{}
 	}
 
-	// Compute request counts once; reused by load-gate, pod selection, and log calls.
+	// Compute request counts once; reused by pod selection and log calls.
 	podRequestCount := getRequestCounts(p.cache, readyPods)
-
-	// If load is severely imbalanced, restrict prefix matching to the least-loaded pods.
-	// This prevents cache-holding pods from monopolizing all traffic while others sit idle.
-	if leastPods, imbalanced := getTargetPodListOnLoadImbalance(podRequestCount, readyPods); imbalanced {
-		klog.V(4).InfoS("prefix_cache_load_gate",
-			"request_id", ctx.RequestID,
-			"restricted_pod_count", len(leastPods),
-			"total_pod_count", len(readyPods))
-		readyPodsMap = map[string]struct{}{}
-		for _, pod := range leastPods {
-			readyPodsMap[pod.Name] = struct{}{}
-		}
-	}
 
 	matchedPods, prefixHashes = p.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
 	klog.V(4).InfoS("prefix_hashes", "request_id", ctx.RequestID, "prefix_hashes", prefixHashes)
@@ -781,21 +775,6 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 		readyPodsMap[podKey] = struct{}{}
 	}
 
-	// If load is severely imbalanced, restrict prefix matching to the least-loaded pods.
-	// This prevents cache-holding pods from monopolizing traffic while others sit idle.
-	podRequestCount := getRequestCounts(k.cache, readyPods)
-	if leastPods, imbalanced := getTargetPodListOnLoadImbalance(podRequestCount, readyPods); imbalanced {
-		klog.V(4).InfoS("prefix_cache_kvsync_load_gate",
-			"request_id", ctx.RequestID,
-			"restricted_pod_count", len(leastPods),
-			"total_pod_count", len(readyPods))
-		readyPodsMap = map[string]struct{}{}
-		for _, pod := range leastPods {
-			podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
-			readyPodsMap[podKey] = struct{}{}
-		}
-	}
-
 	// Match prefixes using sync indexer
 	if k.syncIndexer == nil {
 		recordRoutingError(modelName, "sync_indexer_unavailable", true)
@@ -961,45 +940,6 @@ func getTargetPodFromMatchedPodsFromCounts(podRequestCount map[string]int, ready
 	}
 	targetPod, _ := utils.FilterPodByName(targetPodName, readyPods)
 	return targetPod
-}
-
-// getTargetPodListOnLoadImbalance returns the least-loaded pods when load is severely skewed.
-// It triggers when the busiest pod exceeds podRunningRequestImbalanceFactor*(mean+1) requests
-// AND the absolute gap is at least podRunningRequestImbalanceMinGap. Restricting prefix
-// matching to these pods prevents cache-holding pods from monopolizing traffic.
-func getTargetPodListOnLoadImbalance(podRequestCount map[string]int, readyPods []*v1.Pod) ([]*v1.Pod, bool) {
-	if len(podRequestCount) == 0 {
-		return nil, false
-	}
-
-	minValue := -1
-	maxValue := 0
-	sum := 0
-	for _, v := range podRequestCount {
-		sum += v
-		if minValue < 0 || v < minValue {
-			minValue = v
-		}
-		if v > maxValue {
-			maxValue = v
-		}
-	}
-
-	mean := float64(sum) / float64(len(podRequestCount))
-	if float64(maxValue) <= podRunningRequestImbalanceFactor*(mean+1) || maxValue-minValue < podRunningRequestImbalanceMinGap {
-		return nil, false
-	}
-
-	var targetPodList []*v1.Pod
-	for podname, v := range podRequestCount {
-		if v == minValue {
-			pod, _ := utils.FilterPodByName(podname, readyPods)
-			if pod != nil {
-				targetPodList = append(targetPodList, pod)
-			}
-		}
-	}
-	return targetPodList, len(targetPodList) > 0
 }
 
 // getRequestCountsWithKeys returns running request count for each pod using pod keys

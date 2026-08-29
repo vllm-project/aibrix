@@ -87,38 +87,9 @@ func (r *leastRequestRouter) Route(ctx *types.RoutingContext, readyPodList types
 		return r.apiServerRoute(ctx, readyPods, readyPodList.ListPortsForPod())
 	}
 
-	scores, scored, err := r.ScoreAll(ctx, readyPodList)
+	targetPod, err := RouteByScore(ctx, readyPodList, r)
 	if err != nil {
 		return "", err
-	}
-
-	var targetPod *v1.Pod
-	var targetPods []string
-	minCount := math.MaxFloat64
-
-	for i, pod := range readyPods {
-		if !scored[i] {
-			continue
-		}
-
-		if scores[i] < minCount {
-			minCount = scores[i]
-			targetPods = []string{pod.Name}
-		} else if scores[i] == minCount {
-			targetPods = append(targetPods, pod.Name)
-		}
-	}
-
-	if len(targetPods) > 0 {
-		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
-	}
-
-	// Use fallback if no valid metrics
-	if targetPod == nil {
-		targetPod, err = SelectRandomPodAsFallback(ctx, readyPods, rand.Intn)
-		if err != nil {
-			return "", err
-		}
 	}
 
 	ctx.SetTargetPod(targetPod)

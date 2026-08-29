@@ -575,12 +575,26 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		return "", fmt.Errorf("no ready pods for routing")
 	}
 
-	if routeCtx.Algorithm == routing.RouterPD {
-		engine, err := routing.ValidateAndGetLLMEngine(readyPods)
-		if err != nil {
-			return "", fmt.Errorf("engine validation failed for request %s: %w", routeCtx.RequestID, err)
+	// Resolve exclusivity from the caller's raw algorithm string rather than comparing it
+	// directly against "pd": the string may itself be a multi-strategy config that collapses
+	// to a single exclusive strategy (e.g. "pd:1,least-request:1" resolves to "pd", and bare
+	// "slo-pack-load"/"slo-least-load" are exclusive too), and a plain equality check would
+	// miss those and wrongly narrow readyPods ahead of them.
+	resolvedExclusive, isExclusive := routing.ResolveExclusiveStrategy(string(routeCtx.Algorithm))
+	if isExclusive {
+		if resolvedExclusive == string(routing.RouterPD) {
+			engine, err := routing.ValidateAndGetLLMEngine(readyPods)
+			if err != nil {
+				return "", fmt.Errorf("engine validation failed for request %s: %w", routeCtx.RequestID, err)
+			}
+			routeCtx.Engine = engine
 		}
-		routeCtx.Engine = engine
+	} else {
+		// Apply the load-imbalance hotspot gate ahead of whichever strategy actually routes
+		// this request. Exclusive strategies (pd, slo*) are exempted above: they manage their
+		// own pod subsets (prefill/decode, SLO tiers), which a blanket running-request-count
+		// filter would distort.
+		readyPods = routing.ApplyLoadImbalanceGate(routeCtx, s.cache, readyPods)
 	}
 
 	router, err := routing.Select(routeCtx)
@@ -588,7 +602,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		return "", err
 	}
 
-	if len(readyPods) == 1 && len(utils.GetPortsForPod(readyPods[0])) <= 1 && routeCtx.Algorithm != routing.RouterPD {
+	if len(readyPods) == 1 && len(utils.GetPortsForPod(readyPods[0])) <= 1 && !isExclusive {
 		routeCtx.SetTargetPod(readyPods[0])
 		return routeCtx.TargetAddress(), nil
 	}
@@ -706,7 +720,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		fmt.Fprintf(w, `{"error":"method not allowed"}`)
+		_, _ = fmt.Fprintf(w, `{"error":"method not allowed"}`)
 		return
 	}
 

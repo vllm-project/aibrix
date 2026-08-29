@@ -829,7 +829,7 @@ func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscali
 	pa.Status.LastScaleTime = existingHPA.Status.LastScaleTime
 	pa.Status.ScheduledBounds = scheduledBoundsStatus(&pa, now)
 	for _, condition := range existingHPA.Status.Conditions {
-		setCondition(&pa, string(condition.Type), metav1.ConditionStatus(condition.Status), condition.Reason, condition.Message)
+		setCondition(&pa, string(condition.Type), metav1.ConditionStatus(condition.Status), condition.Reason, "%s", condition.Message)
 	}
 	if err = r.Status().Update(ctx, &pa); err != nil {
 		klog.ErrorS(err, "Failed to update PodAutoscaler status")

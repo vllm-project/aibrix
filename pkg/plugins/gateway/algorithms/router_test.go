@@ -472,6 +472,29 @@ func TestNormalizeScoresArrayHandlesInfiniteValues(t *testing.T) {
 	assert.Equal(t, 0.0, normScores[3])
 }
 
+// TestNormalizeScoresArrayWinsorizesOutlier is a regression test for a production incident:
+// one pod's pending-time collapsed to an extreme, unrelated outlier (a broken drain-rate
+// reading), which stretched plain min-max scaling's scale so far that a genuinely overloaded
+// pod (3.7x the load of the healthiest one) was scored only marginally worse than it — the
+// router kept sending that pod more traffic instead of avoiding it. Winsorizing the outlier
+// before scaling should keep the two non-outlier pods clearly distinguished.
+func TestNormalizeScoresArrayWinsorizesOutlier(t *testing.T) {
+	m := &multiStrategyRouter{}
+	// healthy=91 (best), overloaded=333 (3.7x healthy's load), brokenOutlier=4534.67
+	// (unrelated pod whose drain-rate metric collapsed).
+	normScores := m.normalizeScoresArray(
+		[]float64{91, 333, 4534.67},
+		[]bool{true, true, true},
+		types.PolarityLeast,
+	)
+
+	healthy, overloaded, brokenOutlier := normScores[0], normScores[1], normScores[2]
+
+	assert.InDelta(t, 1.0, healthy, 1e-9, "least-loaded pod should still score best")
+	assert.Less(t, overloaded, 0.8, "overloaded pod must be visibly penalized relative to the healthy pod, not compressed near 1.0 by the outlier")
+	assert.Less(t, brokenOutlier, overloaded, "the broken outlier should remain the worst score")
+}
+
 func TestScoreAndRankWithDiagnosticLoggingDisabled(t *testing.T) {
 	if klog.V(4).Enabled() {
 		t.Skip("V(4) logging is enabled; this test specifically covers the no-diagnostic-allocation path")
