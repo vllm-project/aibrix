@@ -18,6 +18,7 @@ package utils
 
 import (
 	"container/heap"
+	"slices"
 	"sync"
 )
 
@@ -224,7 +225,23 @@ func (pq *PriorityQueueImpl[T]) ForEach(fn func(item T) bool) {
 	pq.mu.RLock()
 	defer pq.mu.RUnlock()
 
-	for _, entry := range pq.h {
+	entries := slices.Clone(pq.h)
+	slices.SortFunc(entries, func(a, b *pqEntry[T]) int {
+		if a.priority != b.priority {
+			if a.priority > b.priority {
+				return -1
+			}
+			return 1
+		}
+		if a.sequence < b.sequence {
+			return -1
+		}
+		if a.sequence > b.sequence {
+			return 1
+		}
+		return 0
+	})
+	for _, entry := range entries {
 		if !fn(entry.item) {
 			break
 		}
