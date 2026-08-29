@@ -126,7 +126,7 @@ func (r *RoleSetReconciler) syncPods(ctx context.Context, roleSet *orchestration
 	return manager.Next(ctx, roleSet)
 }
 
-func (r *RoleSetReconciler) calculateStatus(ctx context.Context, rs *orchestrationv1alpha1.RoleSet, managedErrors []error) (*orchestrationv1alpha1.RoleSetStatus, error) {
+func (r *RoleSetReconciler) calculateStatus(ctx context.Context, rs *orchestrationv1alpha1.RoleSet, managedErrors []error, podGroupSyncErr error) (*orchestrationv1alpha1.RoleSetStatus, error) {
 	newStatus := rs.Status.DeepCopy()
 	newStatus.Roles = nil
 	var notReadyRoles []string
@@ -159,6 +159,9 @@ func (r *RoleSetReconciler) calculateStatus(ctx context.Context, rs *orchestrati
 		RemoveRoleSetCondition(newStatus, orchestrationv1alpha1.RoleSetReplicaFailure)
 	}
 	// TODO: what if new errors added and failureCond is not nil. can it reflect the new errors?
+	if err := r.setVolcanoGangConditions(ctx, rs, newStatus, podGroupSyncErr); err != nil {
+		return nil, err
+	}
 	return newStatus, nil
 }
 

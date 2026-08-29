@@ -53,12 +53,36 @@ func TestRenderStormServicePodVolcanoScheduler(t *testing.T) {
 		pod := &corev1.Pod{}
 		renderStormServicePod(roleSet, role, pod, nil)
 		assert.Equal(t, "volcano", pod.Spec.SchedulerName)
+		assert.Equal(t, "worker", pod.Labels[constants.VolcanoTaskSpecKey])
+		assert.Equal(t, "worker", pod.Annotations[constants.VolcanoTaskSpecKey])
 	})
 
 	t.Run("preserves an explicit scheduler", func(t *testing.T) {
 		pod := &corev1.Pod{Spec: corev1.PodSpec{SchedulerName: "custom"}}
 		renderStormServicePod(roleSet, role, pod, nil)
 		assert.Equal(t, "custom", pod.Spec.SchedulerName)
+	})
+
+	t.Run("preserves an explicit task spec annotation", func(t *testing.T) {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{constants.VolcanoTaskSpecKey: "explicit"},
+			},
+		}
+		renderStormServicePod(roleSet, role, pod, nil)
+		assert.Equal(t, "explicit", pod.Annotations[constants.VolcanoTaskSpecKey])
+		assert.NotContains(t, pod.Labels, constants.VolcanoTaskSpecKey)
+	})
+
+	t.Run("preserves an explicit task spec label", func(t *testing.T) {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{constants.VolcanoTaskSpecKey: "explicit"},
+			},
+		}
+		renderStormServicePod(roleSet, role, pod, nil)
+		assert.Equal(t, "explicit", pod.Labels[constants.VolcanoTaskSpecKey])
+		assert.NotContains(t, pod.Annotations, constants.VolcanoTaskSpecKey)
 	})
 }
 
@@ -308,6 +332,8 @@ func TestRenderStormServicePod_WithRoleSetVolcanoPodGroup(t *testing.T) {
 	// Verify pod group labels and annotations
 	assert.Equal(t, "test-role-set", pod.Labels[constants.VolcanoPodGroupNameAnnotationKey])
 	assert.Equal(t, "test-role-set", pod.Annotations[constants.VolcanoPodGroupNameAnnotationKey])
+	assert.Equal(t, "test-role", pod.Labels[constants.VolcanoTaskSpecKey])
+	assert.Equal(t, "test-role", pod.Annotations[constants.VolcanoTaskSpecKey])
 }
 
 func TestRenderStormServicePod_EmptyLabelsAndAnnotations(t *testing.T) {
@@ -849,6 +875,50 @@ func TestCreatePodSetForRole_TopologyPolicyDefaultsToPreferred(t *testing.T) {
 	assert.Equal(t, int32(100), preferred[0].Weight)
 	assert.Equal(t, "kubernetes.io/hostname", preferred[0].PodAffinityTerm.TopologyKey)
 	assert.Equal(t, "test-roleset", preferred[0].PodAffinityTerm.LabelSelector.MatchLabels[constants.RoleSetNameLabelKey])
+}
+
+func TestCreatePodSetForRole_VolcanoTaskSpec(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-roleset",
+			Namespace: "test-ns",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-stormservice",
+			},
+			Annotations: map[string]string{
+				constants.RoleSetIndexAnnotationKey: "0",
+			},
+		},
+		Spec: orchestrationv1alpha1.RoleSetSpec{
+			SchedulingStrategy: &orchestrationv1alpha1.SchedulingStrategy{
+				VolcanoSchedulingStrategy: &orchestrationv1alpha1.VolcanoSchedulingStrategySpec{
+					MinMember:     6,
+					MinTaskMember: map[string]int32{"prefill": 4, "decode": 2},
+				},
+			},
+		},
+	}
+	podGroupSize := int32(2)
+	roleIndex := 0
+	role := &orchestrationv1alpha1.RoleSpec{
+		Name:         "prefill",
+		PodGroupSize: &podGroupSize,
+		Template: corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{Name: "prefill"}},
+			},
+		},
+	}
+	syncer := &PodSetRoleSyncer{
+		computeHashFunc: fakeComputeHashFunc,
+	}
+
+	podSet := syncer.createPodSetForRole(roleSet, role, &roleIndex)
+
+	assert.Equal(t, "test-roleset", podSet.Labels[constants.VolcanoPodGroupNameAnnotationKey])
+	assert.Equal(t, "test-roleset", podSet.Annotations[constants.VolcanoPodGroupNameAnnotationKey])
+	assert.Equal(t, "prefill", podSet.Labels[constants.VolcanoTaskSpecKey])
+	assert.Equal(t, "prefill", podSet.Annotations[constants.VolcanoTaskSpecKey])
 }
 
 func TestInjectContainerEnvVars(t *testing.T) {

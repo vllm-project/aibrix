@@ -150,6 +150,7 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 	if roleSet.Spec.SchedulingStrategy != nil {
 		if roleSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy != nil {
 			pod.Annotations[constants.VolcanoPodGroupNameAnnotationKey] = roleSet.Name
+			ensureVolcanoTaskSpec(pod.Labels, pod.Annotations, role.Name)
 		}
 		if roleSet.Spec.SchedulingStrategy.GodelSchedulingStrategy != nil {
 			pod.Annotations[constants.GodelPodGroupNameAnnotationKey] = roleSet.Name
@@ -242,6 +243,17 @@ func injectContainerEnvVars(
 	}
 
 	container.Env = envs
+}
+
+func ensureVolcanoTaskSpec(labels, annotations map[string]string, roleName string) {
+	if _, ok := annotations[constants.VolcanoTaskSpecKey]; ok {
+		return
+	}
+	if _, ok := labels[constants.VolcanoTaskSpecKey]; ok {
+		return
+	}
+	annotations[constants.VolcanoTaskSpecKey] = roleName
+	labels[constants.VolcanoTaskSpecKey] = roleName
 }
 
 // injectTopologyAffinityToPodSpec injects pod affinity into the given PodSpec
