@@ -28,8 +28,10 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 )
 
@@ -448,9 +450,6 @@ func TestInitPrometheusAPI_EndpointSet(t *testing.T) {
 	require.NotNil(t, api)
 }
 
-// TestUpdatePodMetricsNonBlocking verifies that updatePodMetrics does not block
-// when the worker pool is saturated (channel buffer full). This prevents the
-// metrics refresh goroutine from stalling when workers are stuck on slow pods.
 func TestUpdateModelReplicaMetrics(t *testing.T) {
 	t.Setenv("POD_NAME", "gateway-0")
 
@@ -533,43 +532,270 @@ func TestUpdateModelReplicaMetrics(t *testing.T) {
 }
 
 func TestUpdatePodMetricsNonBlocking(t *testing.T) {
-	// Create a store with a tiny channel buffer and NO workers draining it
+	var counters []counterCall
+	restore := captureCounterCalls(&counters)
+	defer restore()
+
 	store := &Store{
 		podMetricsJobs: make(chan *Pod, 2),
 	}
 
-	// Add 5 ready pods — more than the channel buffer can hold
 	for i := range 5 {
 		name := fmt.Sprintf("pod-%d", i)
-		store.metaPods.Store(name, &Pod{
-			Pod: &v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{Name: name},
-				Status: v1.PodStatus{
-					Phase: v1.PodRunning,
-					PodIP: fmt.Sprintf("10.0.0.%d", i+1),
-					Conditions: []v1.PodCondition{
-						{Type: v1.PodReady, Status: v1.ConditionTrue},
-					},
-				},
-			},
+		pod := newReadyMetricsPod(name, "uid-"+name)
+		pod.Status.PodIP = fmt.Sprintf("10.0.0.%d", i+1)
+		store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
+	}
+
+	store.updatePodMetrics()
+
+	require.Equal(t, 2, len(store.podMetricsJobs))
+	require.Equal(t, 3, countCounterCalls(counters, metrics.PodMetricsEnqueueDroppedTotal, "reason", metrics.PodMetricsDropReasonQueueFull))
+}
+
+func TestPodMetricsConfigDefaultsAndOverrides(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		t.Setenv("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", "")
+		t.Setenv("AIBRIX_POD_METRICS_WORKER_COUNT", "")
+		t.Setenv("AIBRIX_POD_METRICS_JOB_QUEUE_SIZE", "")
+
+		require.Equal(t, time.Second, loadPodMetricRefreshInterval())
+		workerCount := loadPodMetricsWorkerCount()
+		require.Equal(t, 10, workerCount)
+		require.Equal(t, 100, loadPodMetricsJobQueueSize(workerCount))
+	})
+
+	t.Run("overrides", func(t *testing.T) {
+		t.Setenv("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", "2500")
+		t.Setenv("AIBRIX_POD_METRICS_WORKER_COUNT", "20")
+		t.Setenv("AIBRIX_POD_METRICS_JOB_QUEUE_SIZE", "55")
+
+		require.Equal(t, 2500*time.Millisecond, loadPodMetricRefreshInterval())
+		workerCount := loadPodMetricsWorkerCount()
+		require.Equal(t, 20, workerCount)
+		require.Equal(t, 55, loadPodMetricsJobQueueSize(workerCount))
+	})
+
+	t.Run("invalid values", func(t *testing.T) {
+		t.Setenv("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", "0")
+		t.Setenv("AIBRIX_POD_METRICS_WORKER_COUNT", "-1")
+		t.Setenv("AIBRIX_POD_METRICS_JOB_QUEUE_SIZE", "bad")
+
+		require.Equal(t, time.Second, loadPodMetricRefreshInterval())
+		workerCount := loadPodMetricsWorkerCount()
+		require.Equal(t, 10, workerCount)
+		require.Equal(t, 100, loadPodMetricsJobQueueSize(workerCount))
+	})
+}
+
+func TestPodMetricsBackoffTransitions(t *testing.T) {
+	store := &Store{}
+	pod := newReadyMetricsPod("pod-0", "uid-0")
+	now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
+
+	require.False(t, store.shouldSkipPodMetricsFetch(pod, now))
+
+	store.recordPodMetricsFetchFailure(pod, now)
+	state, ok := store.podMetricsBackoff.Load(podMetricsBackoffKey(pod))
+	require.True(t, ok)
+	require.Equal(t, 1, state.failures)
+	require.Equal(t, now.Add(time.Second), state.nextFetchAt)
+	require.True(t, store.shouldSkipPodMetricsFetch(pod, now.Add(500*time.Millisecond)))
+	require.False(t, store.shouldSkipPodMetricsFetch(pod, now.Add(time.Second)))
+
+	store.recordPodMetricsFetchFailure(pod, now.Add(time.Second))
+	state, ok = store.podMetricsBackoff.Load(podMetricsBackoffKey(pod))
+	require.True(t, ok)
+	require.Equal(t, 2, state.failures)
+	require.Equal(t, now.Add(3*time.Second), state.nextFetchAt)
+
+	store.recordPodMetricsFetchSuccess(pod)
+	require.Equal(t, 0, store.podMetricsBackoff.Len())
+}
+
+func TestPodMetricsBackoffCapsAtMaxDelay(t *testing.T) {
+	store := &Store{}
+	pod := newReadyMetricsPod("pod-0", "uid-0")
+	now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
+
+	for range 10 {
+		store.recordPodMetricsFetchFailure(pod, now)
+	}
+
+	state, ok := store.podMetricsBackoff.Load(podMetricsBackoffKey(pod))
+	require.True(t, ok)
+	require.Equal(t, now.Add(30*time.Second), state.nextFetchAt)
+}
+
+func TestPodMetricsBackoffConcurrentFailuresDoNotLoseUpdates(t *testing.T) {
+	store := &Store{}
+	pod := newReadyMetricsPod("pod-0", "uid-0")
+	now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
+	const failureCount = 100
+
+	var wg sync.WaitGroup
+	wg.Add(failureCount)
+	for range failureCount {
+		go func() {
+			defer wg.Done()
+			store.recordPodMetricsFetchFailure(pod, now)
+		}()
+	}
+	wg.Wait()
+
+	state, ok := store.podMetricsBackoff.Load(podMetricsBackoffKey(pod))
+	require.True(t, ok)
+	require.Equal(t, failureCount, state.failures)
+	require.Equal(t, now.Add(30*time.Second), state.nextFetchAt)
+}
+
+func TestPodMetricsBackoffUIDChangeClearsState(t *testing.T) {
+	store := &Store{}
+	pod := newReadyMetricsPod("pod-0", "uid-0")
+	now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
+
+	store.recordPodMetricsFetchFailure(pod, now)
+	recreated := newReadyMetricsPod("pod-0", "uid-1")
+
+	require.False(t, store.shouldSkipPodMetricsFetch(recreated, now.Add(500*time.Millisecond)))
+	require.Equal(t, 0, store.podMetricsBackoff.Len())
+}
+
+func TestUpdatePodMetricsSkipsBackoffPods(t *testing.T) {
+	var counters []counterCall
+	restore := captureCounterCalls(&counters)
+	defer restore()
+
+	store := &Store{
+		podMetricsJobs: make(chan *Pod, 2),
+	}
+	backoffPod := newReadyMetricsPod("pod-backoff", "uid-backoff")
+	readyPod := newReadyMetricsPod("pod-ready", "uid-ready")
+	store.metaPods.Store(utils.GeneratePodKey(backoffPod.Namespace, backoffPod.Name), backoffPod)
+	store.metaPods.Store(utils.GeneratePodKey(readyPod.Namespace, readyPod.Name), readyPod)
+	store.recordPodMetricsFetchFailure(backoffPod, time.Now())
+
+	store.updatePodMetrics()
+
+	require.Equal(t, 1, len(store.podMetricsJobs))
+	require.Equal(t, 1, countCounterCalls(counters, metrics.PodMetricsEnqueueDroppedTotal, "reason", metrics.PodMetricsDropReasonBackoff))
+}
+
+func TestDeletePodClearsPodMetricsBackoff(t *testing.T) {
+	store := &Store{}
+	pod := newReadyMetricsPod("pod-0", "uid-0")
+	store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
+	store.recordPodMetricsFetchFailure(pod, time.Now())
+	require.Equal(t, 1, store.podMetricsBackoff.Len())
+
+	store.deletePod(pod.Pod)
+
+	require.Equal(t, 0, store.podMetricsBackoff.Len())
+}
+
+func BenchmarkUpdatePodMetricsEnqueue(b *testing.B) {
+	scenarios := []struct {
+		name         string
+		pods         int
+		queueSize    int
+		backoffEvery int
+	}{
+		{name: "pods_100_no_backoff", pods: 100, queueSize: 100},
+		{name: "pods_1000_no_backoff", pods: 1000, queueSize: 1000},
+		{name: "pods_1000_queue_full", pods: 1000, queueSize: 10},
+		{name: "pods_1000_50pct_backoff", pods: 1000, queueSize: 1000, backoffEvery: 2},
+		{name: "pods_1000_90pct_backoff", pods: 1000, queueSize: 1000, backoffEvery: 10},
+	}
+
+	for _, scenario := range scenarios {
+		b.Run(scenario.name, func(b *testing.B) {
+			var counters []counterCall
+			restore := captureCounterCalls(&counters)
+			defer restore()
+
+			store := &Store{
+				podMetricsJobs: make(chan *Pod, scenario.queueSize),
+			}
+			now := time.Now()
+			for i := range scenario.pods {
+				pod := newReadyMetricsPod(fmt.Sprintf("pod-%d", i), fmt.Sprintf("uid-%d", i))
+				store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
+				if scenario.backoffEvery > 0 && i%scenario.backoffEvery != 0 {
+					store.recordPodMetricsFetchFailure(pod, now)
+				}
+			}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			var enqueuedTotal int
+			for range b.N {
+				store.podMetricsJobs = make(chan *Pod, scenario.queueSize)
+				store.updatePodMetrics()
+				enqueuedTotal += len(store.podMetricsJobs)
+			}
+			b.StopTimer()
+
+			b.ReportMetric(float64(enqueuedTotal)/float64(b.N), "jobs_enqueued/op")
+			b.ReportMetric(float64(countCounterCalls(counters, metrics.PodMetricsEnqueueDroppedTotal, "reason", metrics.PodMetricsDropReasonQueueFull))/float64(b.N), "queue_full_drops/op")
+			b.ReportMetric(float64(countCounterCalls(counters, metrics.PodMetricsEnqueueDroppedTotal, "reason", metrics.PodMetricsDropReasonBackoff))/float64(b.N), "backoff_drops/op")
 		})
 	}
+}
 
-	// updatePodMetrics must return promptly without blocking.
-	// With the old blocking send, this would deadlock since no worker is reading.
-	done := make(chan struct{})
-	go func() {
-		store.updatePodMetrics()
-		close(done)
-	}()
+type counterCall struct {
+	name        string
+	labelNames  []string
+	labelValues []string
+}
 
-	select {
-	case <-done:
-		// Success: updatePodMetrics returned without blocking
-	case <-time.After(2 * time.Second):
-		t.Fatal("updatePodMetrics blocked — channel send is not non-blocking")
+func captureCounterCalls(calls *[]counterCall) func() {
+	originalFn := metrics.IncrementCounterMetricFnForTest
+	metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		*calls = append(*calls, counterCall{
+			name:        name,
+			labelNames:  append([]string(nil), labelNames...),
+			labelValues: append([]string(nil), labelValues...),
+		})
 	}
+	return func() {
+		metrics.IncrementCounterMetricFnForTest = originalFn
+	}
+}
 
-	// Exactly 2 pods should have been enqueued (channel buffer size)
-	require.Equal(t, 2, len(store.podMetricsJobs))
+func countCounterCalls(calls []counterCall, name, labelName, labelValue string) int {
+	count := 0
+	for _, call := range calls {
+		if call.name != name {
+			continue
+		}
+		for i, ln := range call.labelNames {
+			if ln == labelName && i < len(call.labelValues) && call.labelValues[i] == labelValue {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func newReadyMetricsPod(name, uid string) *Pod {
+	return &Pod{
+		Pod: &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+				UID:       k8stypes.UID(uid),
+				Labels: map[string]string{
+					constants.ModelLabelName: "model",
+				},
+			},
+			Status: v1.PodStatus{
+				Phase: v1.PodRunning,
+				PodIP: "10.0.0.1",
+				Conditions: []v1.PodCondition{
+					{Type: v1.PodReady, Status: v1.ConditionTrue},
+				},
+			},
+		},
+		Models: utils.NewRegistry[string](),
+	}
 }

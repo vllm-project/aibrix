@@ -43,11 +43,14 @@ const (
 	engineLabel                         = constants.ModelLabelEngine
 	defaultMetricPort                   = 8000
 	defaultEngineLabelValue             = "vllm"
-	defaultPodMetricRefreshIntervalInMS = 50
+	defaultPodMetricRefreshIntervalInMS = 1000
 	defaultPodMetricsWorkerCount        = 10
+	defaultPodMetricsQueuePerWorker     = 10
 	defaultPromQueryIntervalInMS        = 200
 	defaultPromQueryTimeoutInMS         = 2000
 	undefinedMetricLabelValue           = "undefined"
+	podMetricsBackoffBaseDelay          = time.Second
+	podMetricsBackoffMaxDelay           = 30 * time.Second
 )
 
 var (
@@ -119,10 +122,56 @@ var (
 		metrics.WaitingLoraAdapters,
 		metrics.RunningLoraAdapters,
 	}
-	podMetricRefreshInterval = time.Duration(utils.LoadEnvInt("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", defaultPodMetricRefreshIntervalInMS)) * time.Millisecond
+	podMetricRefreshInterval = loadPodMetricRefreshInterval()
 	promQueryInterval        = time.Duration(utils.LoadEnvInt("AIBRIX_PROMETHEUS_QUERY_INTERVAL_MS", defaultPromQueryIntervalInMS)) * time.Millisecond
 	promQueryTimeout         = time.Duration(utils.LoadEnvInt("AIBRIX_PROMETHEUS_QUERY_TIMEOUT_MS", defaultPromQueryTimeoutInMS)) * time.Millisecond
 )
+
+type podMetricsBackoffState struct {
+	mu          sync.Mutex
+	uid         string
+	failures    int
+	nextFetchAt time.Time
+}
+
+func loadPodMetricRefreshInterval() time.Duration {
+	return time.Duration(utils.LoadEnvInt("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", defaultPodMetricRefreshIntervalInMS)) * time.Millisecond
+}
+
+func loadPodMetricsWorkerCount() int {
+	workerCount := utils.LoadEnvInt("AIBRIX_POD_METRICS_WORKER_COUNT", defaultPodMetricsWorkerCount)
+	if workerCount <= 0 {
+		return defaultPodMetricsWorkerCount
+	}
+	return workerCount
+}
+
+func loadPodMetricsJobQueueSize(workerCount int) int {
+	defaultQueueSize := workerCount * defaultPodMetricsQueuePerWorker
+	queueSize := utils.LoadEnvInt("AIBRIX_POD_METRICS_JOB_QUEUE_SIZE", defaultQueueSize)
+	if queueSize <= 0 {
+		return defaultQueueSize
+	}
+	return queueSize
+}
+
+func podMetricsBackoffKey(pod *Pod) string {
+	return utils.GeneratePodKey(pod.Namespace, pod.Name)
+}
+
+func podMetricsBackoffDelay(failures int) time.Duration {
+	if failures <= 0 {
+		return podMetricsBackoffBaseDelay
+	}
+	if failures >= 6 {
+		return podMetricsBackoffMaxDelay
+	}
+	delay := podMetricsBackoffBaseDelay
+	for i := 1; i < failures; i++ {
+		delay *= 2
+	}
+	return delay
+}
 
 // MetricSnapshot represents a metric value at a specific timestamp
 type MetricSnapshot struct {
@@ -241,19 +290,27 @@ func (c *Store) getPodModelMetricName(modelName string, metricName string) strin
 }
 
 func (c *Store) updatePodMetrics() {
+	now := time.Now()
 	c.metaPods.Range(func(key string, metaPod *Pod) bool {
 		if !utils.FilterReadyPod(metaPod.Pod) {
 			// Skip unready pod
 			return true
 		}
+		if c.shouldSkipPodMetricsFetch(metaPod, now) {
+			metrics.IncrementPodMetricsEnqueueDropped(metrics.PodMetricsDropReasonBackoff)
+			klog.V(4).InfoS("Pod metrics fetch is in backoff, skipping pod metrics update",
+				"pod", metaPod.Name, "namespace", metaPod.Namespace)
+			return true
+		}
 		// Non-blocking send: if the worker pool is saturated (all workers busy
 		// and channel buffer full), skip this pod. It will be retried on the
-		// next refresh cycle (every 50ms). This prevents the metrics refresh
+		// next refresh cycle. This prevents the metrics refresh
 		// goroutine from blocking indefinitely when workers are stuck on slow
 		// or unreachable engine pods.
 		select {
 		case c.podMetricsJobs <- metaPod:
 		default:
+			metrics.IncrementPodMetricsEnqueueDropped(metrics.PodMetricsDropReasonQueueFull)
 			klog.V(4).InfoS("Metrics worker pool saturated, skipping pod metrics update",
 				"pod", metaPod.Name)
 		}
@@ -273,11 +330,14 @@ func (c *Store) worker(jobs <-chan *Pod) {
 		identifier := pod.Name
 		result, err := c.engineMetricsFetcher.FetchAllTypedMetrics(ctx, endpoint, engineType, identifier, metricsToFetch)
 		if err != nil {
+			metrics.IncrementPodMetricsFetchFailure(engineType, metrics.PodMetricsFetchFailureReasonFetchError)
+			c.recordPodMetricsFetchFailure(pod, time.Now())
 			klog.V(4).InfoS("Failed to fetch typed metrics from engine pod",
 				"pod", pod.Name, "podIP", pod.Status.PodIP, "port", podMetricPort, "error", err)
 			cancel()
 			continue
 		}
+		c.recordPodMetricsFetchSuccess(pod)
 
 		for metricName, metricValue := range result.Metrics {
 			sanitizeMetricValueLabels(pod, metricValue)
@@ -328,6 +388,46 @@ func (c *Store) worker(jobs <-chan *Pod) {
 
 		cancel()
 	}
+}
+
+func (c *Store) shouldSkipPodMetricsFetch(pod *Pod, now time.Time) bool {
+	key := podMetricsBackoffKey(pod)
+	state, ok := c.podMetricsBackoff.Load(key)
+	if !ok {
+		return false
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.uid != string(pod.UID) {
+		c.podMetricsBackoff.Delete(key)
+		return false
+	}
+	return now.Before(state.nextFetchAt)
+}
+
+func (c *Store) recordPodMetricsFetchFailure(pod *Pod, now time.Time) {
+	key := podMetricsBackoffKey(pod)
+	state, ok := c.podMetricsBackoff.Load(key)
+	if !ok {
+		state, _ = c.podMetricsBackoff.LoadOrStore(key, &podMetricsBackoffState{uid: string(pod.UID)})
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.uid != string(pod.UID) {
+		state.uid = string(pod.UID)
+		state.failures = 0
+	}
+	state.failures++
+	state.nextFetchAt = now.Add(podMetricsBackoffDelay(state.failures))
+}
+
+func (c *Store) recordPodMetricsFetchSuccess(pod *Pod) {
+	c.clearPodMetricsBackoff(pod.Namespace, pod.Name)
+}
+
+func (c *Store) clearPodMetricsBackoff(namespace, name string) {
+	c.podMetricsBackoff.Delete(utils.GeneratePodKey(namespace, name))
 }
 
 func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) (queryErr error) {

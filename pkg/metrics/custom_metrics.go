@@ -48,9 +48,41 @@ var (
 	IncrementCounterMetricFnForTest = defaultIncrementCounterMetric
 )
 
+const (
+	PodMetricsEnqueueDroppedTotal = "aibrix_pod_metrics_enqueue_dropped_total"
+	PodMetricsFetchFailuresTotal  = "aibrix_pod_metrics_fetch_failures_total"
+
+	PodMetricsDropReasonQueueFull            = "queue_full"
+	PodMetricsDropReasonBackoff              = "backoff"
+	PodMetricsFetchFailureReasonFetchError   = "fetch_error"
+	podMetricsEnqueueDroppedTotalDescription = "Total number of pod metrics enqueue attempts dropped by the gateway cache."
+	podMetricsFetchFailuresTotalDescription  = "Total number of pod metrics fetch failures observed by the gateway cache."
+)
+
 // GatewayPodName returns the gateway pod name used as the gateway_pod metric label.
 func GatewayPodName() string {
 	return gatewayPodName
+}
+
+func IncrementPodMetricsEnqueueDropped(reason string) {
+	IncrementCounterMetric(
+		PodMetricsEnqueueDroppedTotal,
+		podMetricsEnqueueDroppedTotalDescription,
+		1,
+		[]string{"reason"},
+		reason,
+	)
+}
+
+func IncrementPodMetricsFetchFailure(engineType, reason string) {
+	IncrementCounterMetric(
+		PodMetricsFetchFailuresTotal,
+		podMetricsFetchFailuresTotalDescription,
+		1,
+		[]string{"engine_type", "reason"},
+		engineType,
+		reason,
+	)
 }
 
 func SetGaugeMetric(name string, help string, value float64, labelNames []string, labelValues ...string) {
