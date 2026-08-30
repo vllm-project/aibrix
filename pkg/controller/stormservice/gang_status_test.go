@@ -110,6 +110,22 @@ func TestSetGangSchedulingConditions(t *testing.T) {
 		assert.Equal(t, "PodGroupSyncIncomplete", syncedCond.Reason)
 		assert.Contains(t, syncedCond.Message, "rs-1")
 	})
+
+	t.Run("aggregates unknown gang scheduling error", func(t *testing.T) {
+		status := &orchestrationv1alpha1.StormServiceStatus{}
+
+		setGangSchedulingConditions(status, []*orchestrationv1alpha1.RoleSet{
+			newVolcanoRoleSetWithConditions("rs-0",
+				condition(orchestrationv1alpha1.RoleSetGangSchedulingError, corev1.ConditionUnknown, "PodGroupObservationDisabled"),
+				condition(orchestrationv1alpha1.RoleSetPodGroupSynced, corev1.ConditionUnknown, "PodGroupObservationDisabled"),
+			),
+		})
+
+		errCond := ctrlutils.GetCondition(status.Conditions, orchestrationv1alpha1.StormServiceGangSchedulingError)
+		assert.Equal(t, corev1.ConditionUnknown, errCond.Status)
+		assert.Equal(t, "GangSchedulingUnknown", errCond.Reason)
+		assert.Contains(t, errCond.Message, "rs-0")
+	})
 }
 
 func newRoleSetWithConditions(name string, conditions ...orchestrationv1alpha1.Condition) *orchestrationv1alpha1.RoleSet {

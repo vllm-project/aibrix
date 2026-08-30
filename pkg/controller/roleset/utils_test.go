@@ -71,7 +71,7 @@ func TestRenderStormServicePodVolcanoScheduler(t *testing.T) {
 		}
 		renderStormServicePod(roleSet, role, pod, nil)
 		assert.Equal(t, "explicit", pod.Annotations[constants.VolcanoTaskSpecKey])
-		assert.NotContains(t, pod.Labels, constants.VolcanoTaskSpecKey)
+		assert.Equal(t, "worker", pod.Labels[constants.VolcanoTaskSpecKey])
 	})
 
 	t.Run("preserves an explicit task spec label", func(t *testing.T) {
@@ -82,7 +82,7 @@ func TestRenderStormServicePodVolcanoScheduler(t *testing.T) {
 		}
 		renderStormServicePod(roleSet, role, pod, nil)
 		assert.Equal(t, "explicit", pod.Labels[constants.VolcanoTaskSpecKey])
-		assert.NotContains(t, pod.Annotations, constants.VolcanoTaskSpecKey)
+		assert.Equal(t, "worker", pod.Annotations[constants.VolcanoTaskSpecKey])
 	})
 }
 

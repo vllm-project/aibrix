@@ -18,10 +18,10 @@ package stormservice
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	utils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
@@ -36,12 +36,20 @@ func setGangSchedulingConditions(status *orchestrationv1alpha1.StormServiceStatu
 	}
 
 	errorRoleSets := conditionRoleSetNames(roleSets, orchestrationv1alpha1.RoleSetGangSchedulingError, corev1.ConditionTrue)
+	unknownRoleSets := conditionRoleSetNames(roleSets, orchestrationv1alpha1.RoleSetGangSchedulingError, corev1.ConditionUnknown)
 	if len(errorRoleSets) > 0 {
 		SetStormServiceCondition(status, *utils.NewCondition(
 			orchestrationv1alpha1.StormServiceGangSchedulingError,
 			corev1.ConditionTrue,
 			"GangSchedulingError",
 			fmt.Sprintf("gang scheduling errors reported by RoleSets: %s", strings.Join(errorRoleSets, ",")),
+		))
+	} else if len(unknownRoleSets) > 0 {
+		SetStormServiceCondition(status, *utils.NewCondition(
+			orchestrationv1alpha1.StormServiceGangSchedulingError,
+			corev1.ConditionUnknown,
+			"GangSchedulingUnknown",
+			fmt.Sprintf("gang scheduling state is unknown for RoleSets: %s", strings.Join(unknownRoleSets, ",")),
 		))
 	} else {
 		SetStormServiceCondition(status, *utils.NewCondition(
@@ -100,24 +108,9 @@ func conditionRoleSetNames(roleSets []*orchestrationv1alpha1.RoleSet, condType o
 }
 
 func roleSetNamesWithout(names, excluded []string) []string {
-	excludedSet := map[string]struct{}{}
-	for _, name := range excluded {
-		excludedSet[name] = struct{}{}
-	}
-	remaining := map[string]struct{}{}
-	for _, name := range names {
-		if _, ok := excludedSet[name]; !ok {
-			remaining[name] = struct{}{}
-		}
-	}
-	return sortedRoleSetNames(remaining)
+	return sets.NewString(names...).Difference(sets.NewString(excluded...)).List()
 }
 
 func sortedRoleSetNames(nameSet map[string]struct{}) []string {
-	names := make([]string, 0, len(nameSet))
-	for name := range nameSet {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return sets.StringKeySet(nameSet).List()
 }

@@ -246,14 +246,12 @@ func injectContainerEnvVars(
 }
 
 func ensureVolcanoTaskSpec(labels, annotations map[string]string, roleName string) {
-	if _, ok := annotations[constants.VolcanoTaskSpecKey]; ok {
-		return
+	if _, ok := annotations[constants.VolcanoTaskSpecKey]; !ok {
+		annotations[constants.VolcanoTaskSpecKey] = roleName
 	}
-	if _, ok := labels[constants.VolcanoTaskSpecKey]; ok {
-		return
+	if _, ok := labels[constants.VolcanoTaskSpecKey]; !ok {
+		labels[constants.VolcanoTaskSpecKey] = roleName
 	}
-	annotations[constants.VolcanoTaskSpecKey] = roleName
-	labels[constants.VolcanoTaskSpecKey] = roleName
 }
 
 // injectTopologyAffinityToPodSpec injects pod affinity into the given PodSpec
