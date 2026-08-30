@@ -558,34 +558,88 @@ func TestPodMetricsConfigDefaultsAndOverrides(t *testing.T) {
 		t.Setenv("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", "")
 		t.Setenv("AIBRIX_POD_METRICS_WORKER_COUNT", "")
 		t.Setenv("AIBRIX_POD_METRICS_JOB_QUEUE_SIZE", "")
+		t.Setenv("AIBRIX_POD_METRICS_FETCH_TIMEOUT_MS", "")
 
 		require.Equal(t, time.Second, loadPodMetricRefreshInterval())
 		workerCount := loadPodMetricsWorkerCount()
 		require.Equal(t, 10, workerCount)
 		require.Equal(t, 100, loadPodMetricsJobQueueSize(workerCount))
+		require.Equal(t, 5*time.Second, loadPodMetricsFetchTimeout())
 	})
 
 	t.Run("overrides", func(t *testing.T) {
 		t.Setenv("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", "2500")
 		t.Setenv("AIBRIX_POD_METRICS_WORKER_COUNT", "20")
 		t.Setenv("AIBRIX_POD_METRICS_JOB_QUEUE_SIZE", "55")
+		t.Setenv("AIBRIX_POD_METRICS_FETCH_TIMEOUT_MS", "1500")
 
 		require.Equal(t, 2500*time.Millisecond, loadPodMetricRefreshInterval())
 		workerCount := loadPodMetricsWorkerCount()
 		require.Equal(t, 20, workerCount)
 		require.Equal(t, 55, loadPodMetricsJobQueueSize(workerCount))
+		require.Equal(t, 1500*time.Millisecond, loadPodMetricsFetchTimeout())
 	})
 
 	t.Run("invalid values", func(t *testing.T) {
 		t.Setenv("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", "0")
 		t.Setenv("AIBRIX_POD_METRICS_WORKER_COUNT", "-1")
 		t.Setenv("AIBRIX_POD_METRICS_JOB_QUEUE_SIZE", "bad")
+		t.Setenv("AIBRIX_POD_METRICS_FETCH_TIMEOUT_MS", "0")
 
 		require.Equal(t, time.Second, loadPodMetricRefreshInterval())
 		workerCount := loadPodMetricsWorkerCount()
 		require.Equal(t, 10, workerCount)
 		require.Equal(t, 100, loadPodMetricsJobQueueSize(workerCount))
+		require.Equal(t, 5*time.Second, loadPodMetricsFetchTimeout())
 	})
+}
+
+func TestUpdatePodMetricsDedupesQueuedPods(t *testing.T) {
+	var counters []counterCall
+	restore := captureCounterCalls(&counters)
+	defer restore()
+
+	store := &Store{
+		podMetricsJobs: make(chan *Pod, 10),
+	}
+	pod := newReadyMetricsPod("pod-0", "uid-0")
+	store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
+
+	store.updatePodMetrics()
+	store.updatePodMetrics()
+
+	require.Equal(t, 1, len(store.podMetricsJobs))
+	require.Equal(t, 1, store.podMetricsScheduling.Len())
+	require.Equal(t, 1, countCounterCalls(counters, metrics.PodMetricsEnqueueDroppedTotal, "reason", metrics.PodMetricsDropReasonAlreadyQueued))
+}
+
+func TestPodMetricsSchedulingUIDChangeClearsState(t *testing.T) {
+	store := &Store{
+		podMetricsJobs: make(chan *Pod, 10),
+	}
+	pod := newReadyMetricsPod("pod-0", "uid-0")
+	recreated := newReadyMetricsPod("pod-0", "uid-1")
+	store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
+
+	require.True(t, store.tryMarkPodMetricsQueued(pod))
+	require.True(t, store.tryMarkPodMetricsQueued(recreated))
+	require.Equal(t, 1, store.podMetricsScheduling.Len())
+}
+
+func TestPodMetricsSchedulingCompletesAndAllowsRequeue(t *testing.T) {
+	store := &Store{
+		podMetricsJobs: make(chan *Pod, 10),
+	}
+	pod := newReadyMetricsPod("pod-0", "uid-0")
+
+	require.True(t, store.tryMarkPodMetricsQueued(pod))
+	require.False(t, store.tryMarkPodMetricsQueued(pod))
+
+	store.markPodMetricsInFlight(pod)
+	require.False(t, store.tryMarkPodMetricsQueued(pod))
+
+	store.finishPodMetricsScheduling(pod)
+	require.True(t, store.tryMarkPodMetricsQueued(pod))
 }
 
 func TestPodMetricsBackoffTransitions(t *testing.T) {
@@ -693,6 +747,18 @@ func TestDeletePodClearsPodMetricsBackoff(t *testing.T) {
 	require.Equal(t, 0, store.podMetricsBackoff.Len())
 }
 
+func TestDeletePodClearsPodMetricsScheduling(t *testing.T) {
+	store := &Store{}
+	pod := newReadyMetricsPod("pod-0", "uid-0")
+	store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
+	require.True(t, store.tryMarkPodMetricsQueued(pod))
+	require.Equal(t, 1, store.podMetricsScheduling.Len())
+
+	store.deletePod(pod.Pod)
+
+	require.Equal(t, 0, store.podMetricsScheduling.Len())
+}
+
 func BenchmarkUpdatePodMetricsEnqueue(b *testing.B) {
 	scenarios := []struct {
 		name         string
@@ -732,6 +798,9 @@ func BenchmarkUpdatePodMetricsEnqueue(b *testing.B) {
 				store.podMetricsJobs = make(chan *Pod, scenario.queueSize)
 				store.updatePodMetrics()
 				enqueuedTotal += len(store.podMetricsJobs)
+				for len(store.podMetricsJobs) > 0 {
+					store.finishPodMetricsScheduling(<-store.podMetricsJobs)
+				}
 			}
 			b.StopTimer()
 

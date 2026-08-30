@@ -115,6 +115,9 @@ type Store struct {
 	// podMetricsBackoff tracks per-pod fetch failure backoff for metrics collection.
 	podMetricsBackoff utils.SyncMap[string, *podMetricsBackoffState]
 
+	// podMetricsScheduling tracks queued or in-flight pod metrics jobs.
+	podMetricsScheduling utils.SyncMap[string, *podMetricsSchedulingState]
+
 	// Sync prefix indexer - only created when KV sync is enabled
 	syncPrefixIndexer *syncindexer.SyncPrefixHashTable
 

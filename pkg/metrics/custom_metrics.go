@@ -54,6 +54,7 @@ const (
 
 	PodMetricsDropReasonQueueFull            = "queue_full"
 	PodMetricsDropReasonBackoff              = "backoff"
+	PodMetricsDropReasonAlreadyQueued        = "already_queued"
 	PodMetricsFetchFailureReasonFetchError   = "fetch_error"
 	podMetricsEnqueueDroppedTotalDescription = "Total number of pod metrics enqueue attempts dropped by the gateway cache."
 	podMetricsFetchFailuresTotalDescription  = "Total number of pod metrics fetch failures observed by the gateway cache."

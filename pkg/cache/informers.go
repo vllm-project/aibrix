@@ -269,6 +269,7 @@ func (c *Store) deletePod(obj interface{}) {
 	c.modelClaims.clearPod(utils.GeneratePodKey(namespace, name))
 
 	c.clearPodMetricsBackoff(namespace, name)
+	c.clearPodMetricsScheduling(namespace, name)
 	rateCalculator.PurgeEntriesForPod(name)
 
 	klog.V(4).Infof("POD DELETED: %s/%s", namespace, name)

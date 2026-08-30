@@ -46,6 +46,7 @@ const (
 	defaultPodMetricRefreshIntervalInMS = 1000
 	defaultPodMetricsWorkerCount        = 10
 	defaultPodMetricsQueuePerWorker     = 10
+	defaultPodMetricsFetchTimeoutInMS   = 5000
 	defaultPromQueryIntervalInMS        = 200
 	defaultPromQueryTimeoutInMS         = 2000
 	undefinedMetricLabelValue           = "undefined"
@@ -123,6 +124,7 @@ var (
 		metrics.RunningLoraAdapters,
 	}
 	podMetricRefreshInterval = loadPodMetricRefreshInterval()
+	podMetricsFetchTimeout   = loadPodMetricsFetchTimeout()
 	promQueryInterval        = time.Duration(utils.LoadEnvInt("AIBRIX_PROMETHEUS_QUERY_INTERVAL_MS", defaultPromQueryIntervalInMS)) * time.Millisecond
 	promQueryTimeout         = time.Duration(utils.LoadEnvInt("AIBRIX_PROMETHEUS_QUERY_TIMEOUT_MS", defaultPromQueryTimeoutInMS)) * time.Millisecond
 )
@@ -133,6 +135,19 @@ type podMetricsBackoffState struct {
 	failures    int
 	nextFetchAt time.Time
 }
+
+type podMetricsSchedulingState struct {
+	mu     sync.Mutex
+	uid    string
+	status podMetricsSchedulingStatus
+}
+
+type podMetricsSchedulingStatus string
+
+const (
+	podMetricsQueued   podMetricsSchedulingStatus = "queued"
+	podMetricsInFlight podMetricsSchedulingStatus = "in_flight"
+)
 
 func loadPodMetricRefreshInterval() time.Duration {
 	return time.Duration(utils.LoadEnvInt("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", defaultPodMetricRefreshIntervalInMS)) * time.Millisecond
@@ -153,6 +168,14 @@ func loadPodMetricsJobQueueSize(workerCount int) int {
 		return defaultQueueSize
 	}
 	return queueSize
+}
+
+func loadPodMetricsFetchTimeout() time.Duration {
+	timeout := utils.LoadEnvInt("AIBRIX_POD_METRICS_FETCH_TIMEOUT_MS", defaultPodMetricsFetchTimeoutInMS)
+	if timeout <= 0 {
+		timeout = defaultPodMetricsFetchTimeoutInMS
+	}
+	return time.Duration(timeout) * time.Millisecond
 }
 
 func podMetricsBackoffKey(pod *Pod) string {
@@ -302,6 +325,12 @@ func (c *Store) updatePodMetrics() {
 				"pod", metaPod.Name, "namespace", metaPod.Namespace)
 			return true
 		}
+		if !c.tryMarkPodMetricsQueued(metaPod) {
+			metrics.IncrementPodMetricsEnqueueDropped(metrics.PodMetricsDropReasonAlreadyQueued)
+			klog.V(4).InfoS("Pod metrics fetch is already queued or in flight, skipping duplicate pod metrics update",
+				"pod", metaPod.Name, "namespace", metaPod.Namespace)
+			return true
+		}
 		// Non-blocking send: if the worker pool is saturated (all workers busy
 		// and channel buffer full), skip this pod. It will be retried on the
 		// next refresh cycle. This prevents the metrics refresh
@@ -310,6 +339,7 @@ func (c *Store) updatePodMetrics() {
 		select {
 		case c.podMetricsJobs <- metaPod:
 		default:
+			c.finishPodMetricsScheduling(metaPod)
 			metrics.IncrementPodMetricsEnqueueDropped(metrics.PodMetricsDropReasonQueueFull)
 			klog.V(4).InfoS("Metrics worker pool saturated, skipping pod metrics update",
 				"pod", metaPod.Name)
@@ -320,74 +350,128 @@ func (c *Store) updatePodMetrics() {
 
 func (c *Store) worker(jobs <-chan *Pod) {
 	for pod := range jobs {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		c.markPodMetricsInFlight(pod)
+		ctx, cancel := context.WithTimeout(context.Background(), podMetricsFetchTimeout)
 		podMetricPort := getPodMetricPort(pod)
+		func() {
+			defer c.finishPodMetricsScheduling(pod)
+			defer cancel()
 
-		// Use centralized typed metrics fetcher for better engine abstraction and error handling
-		metricsToFetch := c.getAllAvailableMetrics()
-		endpoint := fmt.Sprintf("%s:%d", pod.Status.PodIP, podMetricPort)
-		engineType := metrics.GetEngineType(*pod.Pod)
-		identifier := pod.Name
-		result, err := c.engineMetricsFetcher.FetchAllTypedMetrics(ctx, endpoint, engineType, identifier, metricsToFetch)
-		if err != nil {
-			metrics.IncrementPodMetricsFetchFailure(engineType, metrics.PodMetricsFetchFailureReasonFetchError)
-			c.recordPodMetricsFetchFailure(pod, time.Now())
-			klog.V(4).InfoS("Failed to fetch typed metrics from engine pod",
-				"pod", pod.Name, "podIP", pod.Status.PodIP, "port", podMetricPort, "error", err)
-			cancel()
-			continue
-		}
-		c.recordPodMetricsFetchSuccess(pod)
-
-		for metricName, metricValue := range result.Metrics {
-			sanitizeMetricValueLabels(pod, metricValue)
-			if shouldSkipMetric(pod.Name, metricName) {
-				continue
+			// Use centralized typed metrics fetcher for better engine abstraction and error handling
+			metricsToFetch := c.getAllAvailableMetrics()
+			endpoint := fmt.Sprintf("%s:%d", pod.Status.PodIP, podMetricPort)
+			engineType := metrics.GetEngineType(*pod.Pod)
+			identifier := pod.Name
+			result, err := c.engineMetricsFetcher.FetchAllTypedMetrics(ctx, endpoint, engineType, identifier, metricsToFetch)
+			if err != nil {
+				metrics.IncrementPodMetricsFetchFailure(engineType, metrics.PodMetricsFetchFailureReasonFetchError)
+				c.recordPodMetricsFetchFailure(pod, time.Now())
+				klog.V(4).InfoS("Failed to fetch typed metrics from engine pod",
+					"pod", pod.Name, "podIP", pod.Status.PodIP, "port", podMetricPort, "error", err)
+				return
 			}
-			metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: ""}, pod.Pod, metricName, metricValue, metricValue.GetLabelValues())
-		}
+			c.recordPodMetricsFetchSuccess(pod)
 
-		for metricName, metricValue := range result.ModelMetrics {
-			sanitizeMetricValueLabels(pod, metricValue)
-			parts := strings.SplitN(metricName, "/", 2)
-			if len(parts) != 2 {
-				continue
-			}
-			model := parts[0]
-			metric := parts[1]
-
-			model = resolveMetricModelName(pod, model)
-
-			if shouldSkipMetric(pod.Name, metric) {
-				continue
+			for metricName, metricValue := range result.Metrics {
+				sanitizeMetricValueLabels(pod, metricValue)
+				if shouldSkipMetric(pod.Name, metricName) {
+					continue
+				}
+				metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: ""}, pod.Pod, metricName, metricValue, metricValue.GetLabelValues())
 			}
 
-			c.updateThroughputToksPerS(pod, model, metric, metricValue)
-			metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, pod.Pod, metric, metricValue, metricValue.GetLabelValues())
-		}
-		// Update pod metrics using typed results
-		c.updatePodMetricsFromTypedResult(pod, result)
+			for metricName, metricValue := range result.ModelMetrics {
+				sanitizeMetricValueLabels(pod, metricValue)
+				parts := strings.SplitN(metricName, "/", 2)
+				if len(parts) != 2 {
+					continue
+				}
+				model := parts[0]
+				metric := parts[1]
 
-		c.syncRunningRequestsGlobally(pod)
+				model = resolveMetricModelName(pod, model)
 
-		c.updateRealtimeRunningRequestsDrainRate1m(pod)
+				if shouldSkipMetric(pod.Name, metric) {
+					continue
+				}
 
-		// Handle Prometheus-based metrics separately (these require PromQL queries)
-		if c.prometheusApi != nil {
-			c.enqueuePromQL(pod)
-		} else {
-			klog.V(4).InfoS("Prometheus API not initialized, skipping PromQL metrics", "pod", pod.Name)
-		}
+				c.updateThroughputToksPerS(pod, model, metric, metricValue)
+				metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, pod.Pod, metric, metricValue, metricValue.GetLabelValues())
+			}
+			// Update pod metrics using typed results
+			c.updatePodMetricsFromTypedResult(pod, result)
 
-		// Log successful processing
-		klog.V(5).InfoS("Successfully processed metrics for pod",
-			"pod", pod.Name,
-			"podMetrics", len(result.Metrics),
-			"modelMetrics", len(result.ModelMetrics),
-			"errors", len(result.Errors))
+			c.syncRunningRequestsGlobally(pod)
 
-		cancel()
+			c.updateRealtimeRunningRequestsDrainRate1m(pod)
+
+			// Handle Prometheus-based metrics separately (these require PromQL queries)
+			if c.prometheusApi != nil {
+				c.enqueuePromQL(pod)
+			} else {
+				klog.V(4).InfoS("Prometheus API not initialized, skipping PromQL metrics", "pod", pod.Name)
+			}
+
+			// Log successful processing
+			klog.V(5).InfoS("Successfully processed metrics for pod",
+				"pod", pod.Name,
+				"podMetrics", len(result.Metrics),
+				"modelMetrics", len(result.ModelMetrics),
+				"errors", len(result.Errors))
+		}()
 	}
+}
+
+func (c *Store) tryMarkPodMetricsQueued(pod *Pod) bool {
+	key := podMetricsBackoffKey(pod)
+	state, loaded := c.podMetricsScheduling.LoadOrStore(key, &podMetricsSchedulingState{
+		uid:    string(pod.UID),
+		status: podMetricsQueued,
+	})
+	if !loaded {
+		return true
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.uid != string(pod.UID) {
+		c.podMetricsScheduling.Store(key, &podMetricsSchedulingState{
+			uid:    string(pod.UID),
+			status: podMetricsQueued,
+		})
+		return true
+	}
+	return false
+}
+
+func (c *Store) markPodMetricsInFlight(pod *Pod) {
+	key := podMetricsBackoffKey(pod)
+	state, ok := c.podMetricsScheduling.Load(key)
+	if !ok {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.uid == string(pod.UID) {
+		state.status = podMetricsInFlight
+	}
+}
+
+func (c *Store) finishPodMetricsScheduling(pod *Pod) {
+	key := podMetricsBackoffKey(pod)
+	state, ok := c.podMetricsScheduling.Load(key)
+	if !ok {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.uid == string(pod.UID) {
+		c.podMetricsScheduling.CompareAndDelete(key, state)
+	}
+}
+
+func (c *Store) clearPodMetricsScheduling(namespace, name string) {
+	c.podMetricsScheduling.Delete(utils.GeneratePodKey(namespace, name))
 }
 
 func (c *Store) shouldSkipPodMetricsFetch(pod *Pod, now time.Time) bool {
