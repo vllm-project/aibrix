@@ -33,6 +33,7 @@ import (
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
+	"github.com/vllm-project/aibrix/pkg/controller/stormservice/metrics"
 	utils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
 	"github.com/vllm-project/aibrix/pkg/controller/util/patch"
 )
@@ -391,6 +392,9 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 	ready, notReady := filterReadyRoleSets(allRoleSets)
 	stormService.Status.ReadyReplicas = int32(len(ready))
 	stormService.Status.NotReadyReplicas = int32(len(notReady))
+	metrics.StormServiceRoleSetReplicas.WithLabelValues(stormService.Namespace, stormService.Name, metrics.StateDesired).Set(float64(stormService.Status.Replicas))
+	metrics.StormServiceRoleSetReplicas.WithLabelValues(stormService.Namespace, stormService.Name, metrics.StateReady).Set(float64(stormService.Status.ReadyReplicas))
+	metrics.StormServiceRoleSetReplicas.WithLabelValues(stormService.Namespace, stormService.Name, metrics.StateUnavailable).Set(float64(stormService.Status.NotReadyReplicas))
 	// set conditions
 	var specReplica int32
 	if stormService.Spec.Replicas != nil {
@@ -400,6 +404,9 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 		stormService.Status.UpdatedReplicas == *stormService.Spec.Replicas &&
 		stormService.Status.Replicas == *stormService.Spec.Replicas &&
 		stormService.Status.CurrentRevision == stormService.Status.UpdateRevision
+	if err := r.trackRolloutDuration(ctx, stormService, checkpoint, stormServiceReady); err != nil {
+		klog.Errorf("failed to track rollout duration for stormservice %s/%s, err: %v", stormService.Namespace, stormService.Name, err)
+	}
 	if stormServiceReady {
 		stormService.Status.Conditions = []orchestrationv1alpha1.Condition{
 			*utils.NewCondition(orchestrationv1alpha1.StormServiceReady, corev1.ConditionTrue, "Ready", ""),

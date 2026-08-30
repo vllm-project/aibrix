@@ -33,6 +33,7 @@ import (
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
+	"github.com/vllm-project/aibrix/pkg/controller/stormservice/metrics"
 	ctrlutil "github.com/vllm-project/aibrix/pkg/controller/util"
 	utils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
 	"github.com/vllm-project/aibrix/pkg/controller/util/patch"
@@ -140,6 +141,9 @@ func (r *RoleSetReconciler) calculateStatus(ctx context.Context, rs *orchestrati
 			if roleStatus.ReadyReplicas < *role.Replicas {
 				notReadyRoles = append(notReadyRoles, role.Name)
 			}
+			metrics.RoleSetRolePodReplicas.WithLabelValues(rs.Namespace, rs.Name, role.Name, metrics.StateDesired).Set(float64(roleStatus.Replicas))
+			metrics.RoleSetRolePodReplicas.WithLabelValues(rs.Namespace, rs.Name, role.Name, metrics.StateReady).Set(float64(roleStatus.ReadyReplicas))
+			metrics.RoleSetRolePodReplicas.WithLabelValues(rs.Namespace, rs.Name, role.Name, metrics.StateUnavailable).Set(float64(roleStatus.NotReadyReplicas))
 		}
 	}
 
