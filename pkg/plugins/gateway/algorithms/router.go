@@ -201,8 +201,21 @@ func mentionedAlgorithmNames(algStr string) map[string]bool {
 // keep steering traffic at an already-hot pod. least-request is appended alongside it (unless
 // already present) purely so multi-port/data-parallel pod routing keeps working: the
 // multi-strategy router's port selection only engages when "least-request" is one of the
-// configured scorers (see setTargetPortIfNeeded). cfg is algStr's own already-parsed config,
-// passed in by the caller (Select) so algStr isn't parsed twice per request.
+// configured scorers (see setTargetPortIfNeeded) — except when prefix-cache is one of the
+// caller's strategies: prefix-cache already accounts for pod load via the gateway's
+// ApplyLoadImbalanceGate and its own stddev-based candidate filtering
+// (getTargetPodFromMatchedPodsFromCounts), so also blending in least-request as a full scoring
+// participant would double-count "current load" against prefix-cache's own cache-affinity
+// signal (load-balance and least-request are both direct functions of the same running-request
+// metric, so they aren't independent votes) and can override cache locality far more readily
+// than intended. For prefix-cache, only load-balance is blended in.
+//
+// One tradeoff of that exception: a prefix-cache request against multi-port/data-parallel pods
+// won't get setTargetPortIfNeeded's port selection, since that lookup requires least-request to
+// be one of the configured scorers.
+//
+// cfg is algStr's own already-parsed config, passed in by the caller (Select) so algStr isn't
+// parsed twice per request.
 //
 // algStr itself is never modified by this function, so ctx.Algorithm, response headers, and
 // Validate() all continue to reflect exactly what the caller asked for — load-balance is never
@@ -231,11 +244,19 @@ func appendLoadBalanceBlend(algStr string, cfg *MultiRouterConfig) (string, bool
 	// silently re-added — cfg.Items has already dropped weight-0 entries by this point.
 	mentioned := mentionedAlgorithmNames(algStr)
 
+	includesPrefixCache := false
+	for _, item := range cfg.Items {
+		if item.Name == string(RouterPrefixCache) {
+			includesPrefixCache = true
+			break
+		}
+	}
+
 	blended := algStr
 	if !mentioned[string(RouterLoadBalance)] {
 		blended += fmt.Sprintf(",%s:%d", RouterLoadBalance, autoBlendLoadBalanceWeight)
 	}
-	if !mentioned[string(RouterLeastRequest)] && autoBlendLeastRequestWeight > 0 {
+	if !includesPrefixCache && !mentioned[string(RouterLeastRequest)] && autoBlendLeastRequestWeight > 0 {
 		blended += fmt.Sprintf(",%s:%d", RouterLeastRequest, autoBlendLeastRequestWeight)
 	}
 	if blended == algStr {

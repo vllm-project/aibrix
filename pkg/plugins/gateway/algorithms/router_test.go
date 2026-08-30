@@ -760,6 +760,41 @@ func TestSelectAutoBlendsWhenPrimaryIsPodScorer(t *testing.T) {
 	assert.Contains(t, multi.scorers, "blendable-primary")
 }
 
+func TestSelectPrefixCacheBlendExcludesLeastRequest(t *testing.T) {
+	withAutoBlendWeights(t, 1, 1)
+	rm := NewRouterManager()
+	rm.RegisterProvider(RouterPrefixCache, func(_ *types.RoutingContext) (types.Router, error) {
+		return &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityMost}}, nil
+	})
+	registerBlendScorers(rm)
+
+	ctx := types.NewRoutingContext(context.Background(), RouterPrefixCache, testModelName, "hello", "req-blend-prefix-cache", "")
+	router, err := rm.Select(ctx)
+	assert.NoError(t, err)
+	multi, isMulti := router.(*multiStrategyRouter)
+	assert.True(t, isMulti)
+	assert.Contains(t, multi.scorers, string(RouterPrefixCache))
+	assert.Contains(t, multi.scorers, string(RouterLoadBalance))
+	assert.NotContains(t, multi.scorers, string(RouterLeastRequest), "prefix-cache already accounts for load via ApplyLoadImbalanceGate and its own stddev filtering, so least-request must not also dilute its cache-affinity signal")
+}
+
+func TestSelectNonPrefixCacheBlendStillIncludesLeastRequest(t *testing.T) {
+	withAutoBlendWeights(t, 1, 1)
+	rm := NewRouterManager()
+	rm.RegisterProvider(types.RoutingAlgorithm("blendable-primary"), func(_ *types.RoutingContext) (types.Router, error) {
+		return &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityMost}}, nil
+	})
+	registerBlendScorers(rm)
+
+	ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("blendable-primary"), testModelName, "hello", "req-blend-non-prefix-cache", "")
+	router, err := rm.Select(ctx)
+	assert.NoError(t, err)
+	multi, isMulti := router.(*multiStrategyRouter)
+	assert.True(t, isMulti)
+	assert.Contains(t, multi.scorers, string(RouterLoadBalance))
+	assert.Contains(t, multi.scorers, string(RouterLeastRequest), "non-prefix-cache strategies should still get least-request blended in for multi-port support")
+}
+
 func TestSelectHonorsExplicitZeroWeightOptOutForLoadBalance(t *testing.T) {
 	withAutoBlendWeights(t, 1, 1)
 	rm := NewRouterManager()
