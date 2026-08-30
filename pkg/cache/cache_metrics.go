@@ -483,7 +483,7 @@ func (c *Store) shouldSkipPodMetricsFetch(pod *Pod, now time.Time) bool {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if state.uid != string(pod.UID) {
-		c.podMetricsBackoff.Delete(key)
+		c.podMetricsBackoff.CompareAndDelete(key, state)
 		return false
 	}
 	return now.Before(state.nextFetchAt)
@@ -498,6 +498,12 @@ func (c *Store) recordPodMetricsFetchFailure(pod *Pod, now time.Time) {
 
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	if !c.isCurrentPodMetricsPod(pod) {
+		if state.uid == string(pod.UID) {
+			c.podMetricsBackoff.CompareAndDelete(key, state)
+		}
+		return
+	}
 	if state.uid != string(pod.UID) {
 		state.uid = string(pod.UID)
 		state.failures = 0
@@ -507,11 +513,29 @@ func (c *Store) recordPodMetricsFetchFailure(pod *Pod, now time.Time) {
 }
 
 func (c *Store) recordPodMetricsFetchSuccess(pod *Pod) {
-	c.clearPodMetricsBackoff(pod.Namespace, pod.Name)
+	c.clearPodMetricsBackoffForPod(pod)
+}
+
+func (c *Store) clearPodMetricsBackoffForPod(pod *Pod) {
+	key := podMetricsBackoffKey(pod)
+	state, ok := c.podMetricsBackoff.Load(key)
+	if !ok {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.uid == string(pod.UID) {
+		c.podMetricsBackoff.CompareAndDelete(key, state)
+	}
 }
 
 func (c *Store) clearPodMetricsBackoff(namespace, name string) {
 	c.podMetricsBackoff.Delete(utils.GeneratePodKey(namespace, name))
+}
+
+func (c *Store) isCurrentPodMetricsPod(pod *Pod) bool {
+	current, ok := c.metaPods.Load(utils.GeneratePodKey(pod.Namespace, pod.Name))
+	return ok && string(current.UID) == string(pod.UID)
 }
 
 func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) (queryErr error) {

@@ -547,7 +547,17 @@ func TestUpdatePodMetricsNonBlocking(t *testing.T) {
 		store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
 	}
 
-	store.updatePodMetrics()
+	done := make(chan struct{})
+	go func() {
+		store.updatePodMetrics()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("updatePodMetrics blocked while pod metrics queue was full")
+	}
 
 	require.Equal(t, 2, len(store.podMetricsJobs))
 	require.Equal(t, 3, countCounterCalls(counters, metrics.PodMetricsEnqueueDroppedTotal, "reason", metrics.PodMetricsDropReasonQueueFull))
@@ -645,6 +655,7 @@ func TestPodMetricsSchedulingCompletesAndAllowsRequeue(t *testing.T) {
 func TestPodMetricsBackoffTransitions(t *testing.T) {
 	store := &Store{}
 	pod := newReadyMetricsPod("pod-0", "uid-0")
+	store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
 	now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
 
 	require.False(t, store.shouldSkipPodMetricsFetch(pod, now))
@@ -670,6 +681,7 @@ func TestPodMetricsBackoffTransitions(t *testing.T) {
 func TestPodMetricsBackoffCapsAtMaxDelay(t *testing.T) {
 	store := &Store{}
 	pod := newReadyMetricsPod("pod-0", "uid-0")
+	store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
 	now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
 
 	for range 10 {
@@ -684,6 +696,7 @@ func TestPodMetricsBackoffCapsAtMaxDelay(t *testing.T) {
 func TestPodMetricsBackoffConcurrentFailuresDoNotLoseUpdates(t *testing.T) {
 	store := &Store{}
 	pod := newReadyMetricsPod("pod-0", "uid-0")
+	store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
 	now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
 	const failureCount = 100
 
@@ -706,6 +719,7 @@ func TestPodMetricsBackoffConcurrentFailuresDoNotLoseUpdates(t *testing.T) {
 func TestPodMetricsBackoffUIDChangeClearsState(t *testing.T) {
 	store := &Store{}
 	pod := newReadyMetricsPod("pod-0", "uid-0")
+	store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
 	now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
 
 	store.recordPodMetricsFetchFailure(pod, now)
@@ -735,6 +749,34 @@ func TestUpdatePodMetricsSkipsBackoffPods(t *testing.T) {
 	require.Equal(t, 1, countCounterCalls(counters, metrics.PodMetricsEnqueueDroppedTotal, "reason", metrics.PodMetricsDropReasonBackoff))
 }
 
+func TestPodMetricsFetchSuccessDoesNotClearRecreatedPodBackoff(t *testing.T) {
+	store := &Store{}
+	stalePod := newReadyMetricsPod("pod-0", "uid-0")
+	recreatedPod := newReadyMetricsPod("pod-0", "uid-1")
+	now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
+	store.metaPods.Store(utils.GeneratePodKey(recreatedPod.Namespace, recreatedPod.Name), recreatedPod)
+	store.podMetricsBackoff.Store(podMetricsBackoffKey(recreatedPod), &podMetricsBackoffState{
+		uid:         string(recreatedPod.UID),
+		failures:    1,
+		nextFetchAt: now.Add(time.Second),
+	})
+
+	store.recordPodMetricsFetchSuccess(stalePod)
+
+	state, ok := store.podMetricsBackoff.Load(podMetricsBackoffKey(recreatedPod))
+	require.True(t, ok)
+	require.Equal(t, string(recreatedPod.UID), state.uid)
+}
+
+func TestPodMetricsFailureDoesNotRecordBackoffForDeletedPod(t *testing.T) {
+	store := &Store{}
+	pod := newReadyMetricsPod("pod-0", "uid-0")
+
+	store.recordPodMetricsFetchFailure(pod, time.Now())
+
+	require.Equal(t, 0, store.podMetricsBackoff.Len())
+}
+
 func TestDeletePodClearsPodMetricsBackoff(t *testing.T) {
 	store := &Store{}
 	pod := newReadyMetricsPod("pod-0", "uid-0")
@@ -757,6 +799,40 @@ func TestDeletePodClearsPodMetricsScheduling(t *testing.T) {
 	store.deletePod(pod.Pod)
 
 	require.Equal(t, 0, store.podMetricsScheduling.Len())
+}
+
+func TestUpdatePodClearsPodMetricsStateWhenModelInfoIsRemoved(t *testing.T) {
+	store := &Store{}
+	oldPod := newReadyMetricsPod("pod-0", "uid-0")
+	newPod := oldPod.DeepCopy()
+	newPod.Labels = map[string]string{}
+	metaPod := &Pod{Pod: oldPod.Pod, Models: utils.NewRegistry[string]()}
+	metaPod.Models.Store("model", "model")
+	store.metaPods.Store(utils.GeneratePodKey(oldPod.Namespace, oldPod.Name), metaPod)
+	store.recordPodMetricsFetchFailure(metaPod, time.Now())
+	require.True(t, store.tryMarkPodMetricsQueued(metaPod))
+
+	store.updatePod(oldPod.Pod, newPod)
+
+	require.Equal(t, 0, store.podMetricsBackoff.Len())
+	require.Equal(t, 0, store.podMetricsScheduling.Len())
+}
+
+func TestUpdatePodPreservesPodMetricsStateWhenPodRemainsTracked(t *testing.T) {
+	store := &Store{}
+	oldPod := newReadyMetricsPod("pod-0", "uid-0")
+	newPod := oldPod.DeepCopy()
+	newPod.Status.PodIP = "10.0.0.2"
+	metaPod := &Pod{Pod: oldPod.Pod, Models: utils.NewRegistry[string]()}
+	metaPod.Models.Store("model", "model")
+	store.metaPods.Store(utils.GeneratePodKey(oldPod.Namespace, oldPod.Name), metaPod)
+	store.recordPodMetricsFetchFailure(metaPod, time.Now())
+	require.True(t, store.tryMarkPodMetricsQueued(metaPod))
+
+	store.updatePod(oldPod.Pod, newPod)
+
+	require.Equal(t, 1, store.podMetricsBackoff.Len())
+	require.Equal(t, 1, store.podMetricsScheduling.Len())
 }
 
 func BenchmarkUpdatePodMetricsEnqueue(b *testing.B) {
