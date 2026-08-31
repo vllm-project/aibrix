@@ -16,6 +16,8 @@
 # Prepending host library paths bypasses CUDA 13 compatibility on the VKE 575
 # driver. The official v1.4.0 disagg example omits DYN_HEALTH_CHECK_ENABLED;
 # keep it false here so VKE pod Ready does not wait on K8s-injected canaries.
+# Dynamo v1.4.0 frontend rejects --router-reset-states (unknown argument);
+# omit it here and keep the flag on the v1.2.1 and v1.3.1 fixtures.
 # UCX_NET_DEVICES is auto-detected per pod at startup (ucx_info -d): the VKE
 # RDMA CNI wires a different HCA (mlx5_0..7) into each pod, so a static pin
 # either silently falls back to TCP (KV transfer ~1s TTFT floor) or crashes.
@@ -89,8 +91,7 @@ spec:
               export ROUTER_MODE=round-robin
               python3 -m dynamo.frontend \
                 --model-path /models/$MODEL \
-                --router-mode $ROUTER_MODE \
-                --router-reset-states
+                --router-mode $ROUTER_MODE
 
     VllmDecodeWorker:
       dynamoNamespace: vllm-dynamo
