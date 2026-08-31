@@ -99,6 +99,7 @@ var _ = BeforeSuite(func() {
 		CRDDirectoryPaths: []string{
 			filepath.Join("..", "..", "..", "config", "crd", "bases"),                           // Aibrix CRDs
 			filepath.Join("..", "..", "..", "config", "dependency", "kuberay-operator", "crds"), // KubeRay CRDs (dependency)
+			filepath.Join("testdata", "crd"),                                                    // Gateway API CRDs used by ModelRouter
 		},
 
 		ErrorIfCRDPathMissing: true,
