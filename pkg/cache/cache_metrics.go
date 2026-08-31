@@ -771,12 +771,10 @@ func (c *Store) syncRunningRequestsGlobally(pod *Pod) {
 }
 
 // updateRealtimeRunningRequestsDrainRate1m computes the 1-minute rolling rate at which completed
-// requests are draining on decode pods and stores it under RealtimeRunningRequestsDrainRate1m.
-// Only applies to decode pods; no-ops for all others.
+// requests are draining on the pod and stores it under RealtimeRunningRequestsDrainRate1m.
+// Computed for all pods since capacityOf (algorithms/load_balance.go) relies on it as a
+// general capacity signal, not just for PD-disaggregation decode pods.
 func (c *Store) updateRealtimeRunningRequestsDrainRate1m(pod *Pod) {
-	if !strings.Contains(pod.Name, "decode") {
-		return
-	}
 	completed := float64(atomic.LoadInt64(&pod.completedRequests))
 	drainRate := c.calculateRate1m(pod, "completed_requests", completed)
 	if drainRate >= 0 {

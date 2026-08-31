@@ -486,12 +486,6 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 	}
 
 	node, matchedTokens, _ := p.cache.AddPrefix(tokens, ctx.Model, "")
-	// Check for load imbalance using real-time running request counts
-	leastReqPodList, isLoadImbalanced := getTargetPodListOnLoadImbalance(p.metricCache, readyPods)
-	if isLoadImbalanced {
-		klog.InfoS("Load imbalance detected, restricting to least-loaded pods", "requestID", ctx.RequestID)
-		readyPods = leastReqPodList
-	}
 	readyPodsMap := readyPodsByName(readyPods)
 
 	var matchedPods []*v1.Pod

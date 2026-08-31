@@ -92,8 +92,8 @@ func TestMigrationPath_CleanupInClusterRedis(t *testing.T) {
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{
 				{
-					Name:  "redis",
-					Image: "valkey/valkey:8",
+					Name:    "redis",
+					Image:   "valkey/valkey:8",
 					Command: []string{"valkey-server"},
 				},
 			},
