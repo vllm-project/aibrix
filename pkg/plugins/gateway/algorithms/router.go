@@ -439,7 +439,17 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 		return nil, nil, errors.New("no valid target pod found after scoring")
 	}
 
-	// Tie-break: select the first pod in the shuffled ready list
+	// Tie-break: select deterministically by pod name. topPods' order otherwise reflects
+	// readyPodList's underlying order, which traces back to Go map iteration over the pod
+	// registry (see pkg/utils/registry.go) and gets reshuffled whenever that cache is
+	// invalidated — including on ordinary pod-object update churn between requests, not just
+	// membership changes. Without a deterministic tie-break, a request whose scores legitimately
+	// tie across two pods (e.g. once prefix-cache match and load-balance load both equalize) can
+	// flip its winner from one call to the next for reasons unrelated to load or cache affinity,
+	// causing spurious reroutes/thrashing instead of a stable pick.
+	if len(topPods) > 1 {
+		sort.Slice(topPods, func(i, j int) bool { return topPods[i].Name < topPods[j].Name })
+	}
 	winner := topPods[0]
 
 	// 5. Log the routing decision and all candidate metrics to klog

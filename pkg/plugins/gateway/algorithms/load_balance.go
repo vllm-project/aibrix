@@ -213,16 +213,36 @@ func ApplyLoadImbalanceGate(ctx *types.RoutingContext, c cache.Cache, readyPods 
 	}
 
 	podRequestCount := getRequestCounts(c, readyPods)
-	leastPods, imbalanced := getTargetPodListOnLoadImbalance(podRequestCount, readyPods)
+	leastPods, minValue, maxValue, imbalanced := getTargetPodListOnLoadImbalance(podRequestCount, readyPods)
 	if !imbalanced {
 		return readyPods
 	}
 
 	recordLoadImbalance(ctx.Model)
-	klog.V(4).InfoS("load_balance_imbalance_gate",
-		"request_id", ctx.RequestID,
-		"restricted_pod_count", len(leastPods),
-		"total_pod_count", len(readyPods))
+	if klog.V(4).Enabled() {
+		selected := make([]string, 0, len(leastPods))
+		selectedSet := make(map[string]struct{}, len(leastPods))
+		for _, pod := range leastPods {
+			selected = append(selected, pod.Name)
+			selectedSet[pod.Name] = struct{}{}
+		}
+		skipped := make([]string, 0, len(readyPods)-len(leastPods))
+		for _, pod := range readyPods {
+			if _, ok := selectedSet[pod.Name]; !ok {
+				skipped = append(skipped, pod.Name)
+			}
+		}
+		klog.V(4).InfoS("load_balance_imbalance_gate",
+			"request_id", ctx.RequestID,
+			"restricted_pod_count", len(leastPods),
+			"total_pod_count", len(readyPods),
+			"min_running_requests", minValue,
+			"max_running_requests", maxValue,
+			"factor", podRunningRequestImbalanceFactor,
+			"min_gap", podRunningRequestImbalanceMinGap,
+			"selected_pods", selected,
+			"skipped_pods", skipped)
+	}
 	return leastPods
 }
 
@@ -236,14 +256,13 @@ func ApplyLoadImbalanceGate(ctx *types.RoutingContext, c cache.Cache, readyPods 
 // times a typical pod's load) — silently permitting severe, worsening imbalance. Two pods skip
 // the factor check: with the default factor of 2, max > 2*(mean+1) reduces to max > max+2 and
 // never fires, which would disable hotspot protection on the common 2-replica deployment.
-func getTargetPodListOnLoadImbalance(podRequestCount map[string]int, readyPods []*v1.Pod) ([]*v1.Pod, bool) {
+func getTargetPodListOnLoadImbalance(podRequestCount map[string]int, readyPods []*v1.Pod) (targetPodList []*v1.Pod, minValue, maxValue int, imbalanced bool) {
 	n := len(podRequestCount)
 	if n == 0 {
-		return nil, false
+		return nil, 0, 0, false
 	}
 
-	minValue := -1
-	maxValue := 0
+	minValue = -1
 	sum := 0
 	for _, v := range podRequestCount {
 		sum += v
@@ -256,16 +275,15 @@ func getTargetPodListOnLoadImbalance(podRequestCount map[string]int, readyPods [
 	}
 
 	if maxValue-minValue < podRunningRequestImbalanceMinGap {
-		return nil, false
+		return nil, minValue, maxValue, false
 	}
 	if n > 2 {
 		meanOfOthers := float64(sum-maxValue) / float64(n-1)
 		if float64(maxValue) <= podRunningRequestImbalanceFactor*(meanOfOthers+1) {
-			return nil, false
+			return nil, minValue, maxValue, false
 		}
 	}
 
-	var targetPodList []*v1.Pod
 	for podname, v := range podRequestCount {
 		if v == minValue {
 			pod, _ := utils.FilterPodByName(podname, readyPods)
@@ -274,5 +292,5 @@ func getTargetPodListOnLoadImbalance(podRequestCount map[string]int, readyPods [
 			}
 		}
 	}
-	return targetPodList, len(targetPodList) > 0
+	return targetPodList, minValue, maxValue, len(targetPodList) > 0
 }

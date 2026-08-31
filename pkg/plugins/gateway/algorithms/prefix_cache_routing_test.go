@@ -816,7 +816,7 @@ func TestGetTargetPodListOnLoadImbalance(t *testing.T) {
 				})
 			}
 
-			result, imbalanced := getTargetPodListOnLoadImbalance(tt.requestCounts, pods)
+			result, _, _, imbalanced := getTargetPodListOnLoadImbalance(tt.requestCounts, pods)
 			assert.Equal(t, tt.expectImbalance, imbalanced)
 			if tt.expectImbalance {
 				assert.NotEmpty(t, result)

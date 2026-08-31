@@ -520,6 +520,36 @@ func TestScoreAndRankWithDiagnosticLoggingDisabled(t *testing.T) {
 	assert.InDelta(t, 1.0, scores[podB], 1e-9)
 }
 
+// TestScoreAndRankTieBreakIsDeterministic is a regression test: readyPodList's pod order
+// traces back to Go map iteration over the pod registry (pkg/utils/registry.go) and gets
+// reshuffled whenever that cache is invalidated, including on ordinary pod-object update churn
+// between requests. Before this fix, a tied score picked topPods[0] positionally, so a tie
+// between the same two pods could flip its winner purely because the input slice order changed
+// between calls — causing spurious reroutes/thrashing (observed as prefix-cache affinity
+// ping-ponging every turn in a multi-turn conversation) even though load and cache affinity
+// hadn't actually changed. The winner must depend only on the pod set, not on its order.
+func TestScoreAndRankTieBreakIsDeterministic(t *testing.T) {
+	podA := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "podA"}}
+	podB := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "podB"}}
+	m := &multiStrategyRouter{
+		config: &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}}},
+		scorers: map[string]types.PodScorer{
+			"s1": &fakeScorer{
+				polarity: types.PolarityMost,
+				scores:   map[*v1.Pod]float64{podA: 1, podB: 1}, // tied
+			},
+		},
+	}
+
+	winnerAB, _, err := m.scoreAndRank(&types.RoutingContext{}, wrapper{pods: []*v1.Pod{podA, podB}})
+	assert.NoError(t, err)
+
+	winnerBA, _, err := m.scoreAndRank(&types.RoutingContext{}, wrapper{pods: []*v1.Pod{podB, podA}})
+	assert.NoError(t, err)
+
+	assert.Same(t, winnerAB, winnerBA, "tie-break winner must not depend on input pod order")
+}
+
 func TestMultiStrategyRouterRoute_PostRouteUpdate(t *testing.T) {
 	podA := newPod("pod-a", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
 	podB := newPod("pod-b", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"})
