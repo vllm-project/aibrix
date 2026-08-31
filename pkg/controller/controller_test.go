@@ -53,6 +53,8 @@ func (r errorReader) Get(context.Context, client.ObjectKey, client.Object, ...cl
 	return r.err
 }
 
+// isolateControllerRegistration isolates the global controller registration state for testing.
+// It is not thread-safe; tests using it must not call t.Parallel.
 func isolateControllerRegistration(t *testing.T) {
 	t.Helper()
 
