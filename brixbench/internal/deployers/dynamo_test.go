@@ -69,6 +69,10 @@ func wantDynamoHelmArgs(t *testing.T, projectRoot string, helmArgs ...string) []
 	return append(args, helmArgs...)
 }
 
+func wantDynamoGitArgs(gitArgs ...string) []string {
+	return append([]string{dynamoGitLFSSkipSmudgeEnv, "git"}, gitArgs...)
+}
+
 func (r *fakeCommandRunner) Run(ctx context.Context, name string, args ...string) (string, error) {
 	r.calls = append(r.calls, fakeCommandCall{
 		name: name,
@@ -310,12 +314,12 @@ func TestGitDynamoReleaseSourcePrepareReleaseClonesAndReturnsChartPath(t *testin
 		t.Fatalf("unexpected release: %+v", release)
 	}
 
-	wantCloneArgs := []string{"clone", "--depth=1", "--branch", "v1.2.1", testDynamoRepoURL, repoPath}
+	wantCloneArgs := wantDynamoGitArgs("clone", "--depth=1", "--branch", "v1.2.1", testDynamoRepoURL, repoPath)
 	if len(runner.calls) != 2 {
 		t.Fatalf("expected 2 command calls, got %d", len(runner.calls))
 	}
-	if runner.calls[1].name != "git" {
-		t.Fatalf("expected git command, got %s", runner.calls[1].name)
+	if runner.calls[1].name != "env" {
+		t.Fatalf("expected env command, got %s", runner.calls[1].name)
 	}
 	if !reflect.DeepEqual(runner.calls[1].args, wantCloneArgs) {
 		t.Fatalf("expected clone args %v, got %v", wantCloneArgs, runner.calls[1].args)
@@ -359,20 +363,20 @@ func TestGitDynamoReleaseSourcePrepareReleaseReusesExistingCheckout(t *testing.T
 			args: []string{"ls-remote", "--tags", "--refs", testDynamoRepoURL, "refs/tags/v1.2.1"},
 		},
 		{
-			name: "git",
-			args: []string{"-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "fetch", "--filter=blob:none", "--force", testDynamoRepoURL, "+refs/tags/v1.2.1:refs/tags/v1.2.1"},
+			name: "env",
+			args: wantDynamoGitArgs("-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "fetch", "--filter=blob:none", "--force", testDynamoRepoURL, "+refs/tags/v1.2.1:refs/tags/v1.2.1"),
 		},
 		{
-			name: "git",
-			args: []string{"-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "checkout", "--force", "--detach", "v1.2.1^{commit}"},
+			name: "env",
+			args: wantDynamoGitArgs("-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "checkout", "--force", "--detach", "v1.2.1^{commit}"),
 		},
 		{
-			name: "git",
-			args: []string{"-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "reset", "--hard", "v1.2.1^{commit}"},
+			name: "env",
+			args: wantDynamoGitArgs("-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "reset", "--hard", "v1.2.1^{commit}"),
 		},
 		{
-			name: "git",
-			args: []string{"-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "clean", "-ffdx"},
+			name: "env",
+			args: wantDynamoGitArgs("-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "clean", "-ffdx"),
 		},
 	}
 	if !reflect.DeepEqual(runner.calls, wantCalls) {
@@ -415,10 +419,10 @@ func TestGitDynamoReleaseSourcePrepareReleaseReclonesWhenSyncFails(t *testing.T)
 	if len(runner.calls) != 3 {
 		t.Fatalf("expected tag validation, failed sync, and clone commands, got %d calls", len(runner.calls))
 	}
-	if runner.calls[1].name != "git" || runner.calls[1].args[2] != "fetch" {
+	if runner.calls[1].name != "env" || runner.calls[1].args[4] != "fetch" {
 		t.Fatalf("expected fetch sync command, got %+v", runner.calls[1])
 	}
-	if runner.calls[2].name != "git" || runner.calls[2].args[0] != "clone" || runner.calls[2].args[len(runner.calls[2].args)-1] != repoPath {
+	if runner.calls[2].name != "env" || runner.calls[2].args[2] != "clone" || runner.calls[2].args[len(runner.calls[2].args)-1] != repoPath {
 		t.Fatalf("expected fresh clone command, got %+v", runner.calls[2])
 	}
 }
@@ -798,6 +802,57 @@ func TestDynamoDeployerDeployControlPlanePreparesReleaseBuildsDependenciesAndIns
 	}
 	if !reflect.DeepEqual(runner.calls[3].args, wantDynamoHelmArgs(t, projectRoot, wantInstallArgs...)) {
 		t.Fatalf("expected args %v, got %v", wantInstallArgs, runner.calls[3].args)
+	}
+}
+
+func TestDynamoDeployerDeployControlPlaneUsesClusterWideOperatorForV131(t *testing.T) {
+	projectRoot := t.TempDir()
+	chartPath := filepath.Join(t.TempDir(), "deploy", "helm", "charts", "platform")
+	writeDynamoChartLock(t, chartPath)
+	releaseSource := &fakeDynamoReleaseSource{
+		release: &DynamoRelease{
+			Version:   "v1.3.1",
+			RepoPath:  filepath.Join(projectRoot, ".tmp", "dynamo", "v1.3.1"),
+			ChartPath: chartPath,
+		},
+	}
+	runner := &fakeCommandRunner{}
+	deployer := &DynamoDeployer{
+		namespace:     "brixbench-dynamo",
+		projectRoot:   projectRoot,
+		version:       "v1.3.1",
+		releaseSource: releaseSource,
+		runner:        runner,
+	}
+
+	if err := deployer.DeployControlPlane(context.Background()); err != nil {
+		t.Fatalf("DeployControlPlane returned error: %v", err)
+	}
+	installArgs := strings.Join(runner.calls[len(runner.calls)-1].args, " ")
+	if strings.Contains(installArgs, "namespaceRestriction.enabled") {
+		t.Fatalf("v1.3.1 must use a cluster-wide operator for CRD upgrades: %s", installArgs)
+	}
+}
+
+func TestDynamoNeedsClusterWideCRDUpgrade(t *testing.T) {
+	tests := []struct {
+		version string
+		want    bool
+	}{
+		{version: "v1.2.1", want: false},
+		{version: "v1.3.0", want: false},
+		{version: "v1.3.1", want: true},
+		{version: "v1.4.0", want: true},
+		{version: "v2.0.0", want: true},
+		{version: "invalid", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.version, func(t *testing.T) {
+			if got := dynamoNeedsClusterWideCRDUpgrade(tt.version); got != tt.want {
+				t.Fatalf("dynamoNeedsClusterWideCRDUpgrade(%q) = %t, want %t", tt.version, got, tt.want)
+			}
+		})
 	}
 }
 

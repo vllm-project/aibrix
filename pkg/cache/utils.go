@@ -228,7 +228,7 @@ func (c *Store) calculatePerSecondRate(pod *Pod, modelName, metricName string, c
 // over an approximate 1-minute window. It is designed for gateway-tracked counters
 // (e.g. completedRequests) that are available even when engine metrics are not.
 //
-// Snapshots are throttled to ~5-second intervals so the 50ms metric refresh loop
+// Snapshots are throttled to ~5-second intervals so the metric refresh loop
 // does not flood the history buffer. The baseline is the snapshot closest to
 // 1 minute ago; if less than 1 minute of history exists, the oldest available
 // snapshot is used. Returns -1 when insufficient data is available.

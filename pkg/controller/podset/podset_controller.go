@@ -364,6 +364,9 @@ func (r *PodSetReconciler) createPodFromTemplate(podSet *orchestrationv1alpha1.P
 	if pod.Labels == nil {
 		pod.Labels = make(map[string]string)
 	}
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
+	}
 	pod.Labels[constants.PodSetNameLabelKey] = podSet.Name
 	pod.Labels[constants.PodGroupIndexLabelKey] = strconv.Itoa(podIndex)
 
@@ -377,6 +380,9 @@ func (r *PodSetReconciler) createPodFromTemplate(podSet *orchestrationv1alpha1.P
 		if _, ok := pod.Annotations[k]; !ok {
 			pod.Annotations[k] = v
 		}
+	}
+	if pod.Spec.SchedulerName == "" && podHasVolcanoPodGroup(pod) {
+		pod.Spec.SchedulerName = "volcano"
 	}
 
 	// manually set the hostname and subdomain for FQDN
@@ -417,6 +423,19 @@ func (r *PodSetReconciler) createPodFromTemplate(podSet *orchestrationv1alpha1.P
 	}
 
 	return pod, nil
+}
+
+func podHasVolcanoPodGroup(pod *v1.Pod) bool {
+	if pod == nil {
+		return false
+	}
+	if _, ok := pod.Labels[constants.VolcanoPodGroupNameAnnotationKey]; ok {
+		return true
+	}
+	if _, ok := pod.Annotations[constants.VolcanoPodGroupNameAnnotationKey]; ok {
+		return true
+	}
+	return false
 }
 
 func (r *PodSetReconciler) getPodsForPodSet(ctx context.Context, podSet *orchestrationv1alpha1.PodSet) (*v1.PodList, error) {

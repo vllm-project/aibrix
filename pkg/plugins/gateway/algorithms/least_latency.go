@@ -17,14 +17,9 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"math"
-	"math/rand"
-
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
-	v1 "k8s.io/api/core/v1"
-	klog "k8s.io/klog/v2"
 )
 
 const RouterLeastLatency types.RoutingAlgorithm = "least-latency"
@@ -147,35 +142,9 @@ func (r leastExpectedLatencyRouter) ScoreAll(ctx *types.RoutingContext, readyPod
 }
 
 func (r leastExpectedLatencyRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
-	scores, scored, err := r.ScoreAll(ctx, readyPodList)
+	targetPod, err := RouteByScore(ctx, readyPodList, r)
 	if err != nil {
 		return "", err
-	}
-
-	var targetPod *v1.Pod
-	minExpectedLatency := math.MaxFloat64
-	pods := readyPodList.All()
-
-	for i, pod := range pods {
-		if !scored[i] {
-			continue
-		}
-
-		klog.V(4).Infof("pod: %v, podIP: %v, totalExpectedLatency: %v",
-			pod.Name, pod.Status.PodIP, scores[i])
-
-		if scores[i] <= minExpectedLatency {
-			minExpectedLatency = scores[i]
-			targetPod = pod
-		}
-	}
-
-	// Use fallback if no valid metrics
-	if targetPod == nil {
-		targetPod, err = SelectRandomPodAsFallback(ctx, pods, rand.Intn)
-		if err != nil {
-			return "", err
-		}
 	}
 
 	ctx.SetTargetPod(targetPod)
