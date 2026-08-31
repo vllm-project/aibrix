@@ -17,10 +17,6 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"fmt"
-	"math"
-	"math/rand"
-
 	"github.com/vllm-project/aibrix/pkg/cache"
 	metrics "github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -44,9 +40,29 @@ func NewLeastKvCacheRouter() (types.Router, error) {
 		return nil, err
 	}
 
-	return leastKvCacheRouter{
-		cache: c,
-	}, nil
+	return newLeastKvCacheRouter(c), nil
+}
+
+// newLeastKvCacheRouter builds a leastKvCacheRouter around an existing cache handle, for
+// callers that already hold one (e.g. load_balance.go reusing it purely as a types.PodScorer
+// tie-breaker) rather than fetching their own via cache.Get(). Keeping construction here means
+// a future change to this struct's fields only needs updating in this file.
+func newLeastKvCacheRouter(c cache.Cache) leastKvCacheRouter {
+	return leastKvCacheRouter{cache: c}
+}
+
+// cpuCacheUsage returns the pod's CPU KV-cache usage, or 0 when the engine does not report
+// it. vLLM's V1 engine dropped cpu_cache_usage_perc along with KV swapping (it recomputes
+// preempted requests instead), so on V1 the metric is simply absent and GPU usage alone
+// describes the pod's KV pressure. Treating that as fatal would mark every pod unscored and
+// drop this router to its random fallback, which is worse than the load-aware choice this
+// router exists for.
+func cpuCacheUsage(c cache.Cache, pod *v1.Pod, model string) float64 {
+	cpuCache, err := c.GetMetricValueByPodModel(pod.Name, pod.Namespace, model, metrics.CPUCacheUsagePerc)
+	if err != nil {
+		return 0
+	}
+	return cpuCache.GetSimpleValue()
 }
 
 // ScoreAll computes the combined GPU and CPU cache usage percentage for all ready pods in a single batch operation.
@@ -62,12 +78,7 @@ func (r leastKvCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList typ
 			klog.V(4).ErrorS(err, "failed to get GPU cache metrics")
 			continue
 		}
-		cpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.CPUCacheUsagePerc)
-		if err != nil {
-			klog.V(4).ErrorS(err, "failed to get CPU cache metrics")
-			continue
-		}
-		scores[i] = gpuCache.GetSimpleValue() + cpuCache.GetSimpleValue()
+		scores[i] = gpuCache.GetSimpleValue() + cpuCacheUsage(r.cache, pod, ctx.Model)
 		scored[i] = true
 		klog.V(4).Infof("pod: %v, podIP: %v, total cache: %v", pod.Name, pod.Status.PodIP, scores[i])
 	}
@@ -81,48 +92,11 @@ func (r leastKvCacheRouter) Polarity() types.Polarity {
 }
 
 func (r leastKvCacheRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
-	var targetPod *v1.Pod
-	minKvCache := math.MaxFloat64
-
-	for _, pod := range readyPodList.All() {
-		// Due to metric refactor (pull/543) to better support lora and multi models,
-		// we change to use PodModelMetrics instead of PodMetrics in some scenarios.
-		// This works but doesn't look very promising, we can revisit this part later.
-		gpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.KVCacheUsagePerc)
-		if err != nil {
-			klog.Error(err)
-			continue
-		}
-		cpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.CPUCacheUsagePerc)
-		if err != nil {
-			klog.Error(err)
-			continue
-		}
-		totalCache := gpuCache.GetSimpleValue() + cpuCache.GetSimpleValue()
-
-		klog.V(4).Infof("pod: %v, podIP: %v, gpuCache: %v, cpuCache: %v, kaCache: %v",
-			pod.Name, pod.Status.PodIP, gpuCache.GetSimpleValue(), cpuCache.GetSimpleValue(), totalCache)
-
-		if totalCache <= minKvCache {
-			minKvCache = totalCache
-			targetPod = pod
-		}
+	targetPod, err := RouteByScore(ctx, readyPodList, r)
+	if err != nil {
+		return "", err
 	}
 
-	// Use fallback if no valid metrics
-	if targetPod == nil {
-		var err error
-		targetPod, err = SelectRandomPodAsFallback(ctx, readyPodList.All(), rand.Intn)
-		if err != nil {
-			return "", err
-		}
-	}
-
-	if targetPod == nil {
-		return "", fmt.Errorf("no pods to forward request")
-	}
-
-	klog.V(4).Infof("targetPod: %s(%s)", targetPod.Name, targetPod.Status.PodIP)
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil
 }

@@ -75,6 +75,7 @@ func (s *StatefulRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1
 	slots, toDelete := s.podSlotForRole(role, activePods)
 	podsToDelete = append(podsToDelete, toDelete...)
 	createBudget := int32(len(slots)) + MaxSurge(role) - int32(len(activePods)) - int32(len(terminatingPods))
+	historicalBindings := historicalNodeBindingsForPodCreation(roleSet, role)
 	// check pods for each slot
 	for i := range slots {
 		if len(slots[i]) == 0 {
@@ -86,6 +87,7 @@ func (s *StatefulRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1
 				return false, err
 			}
 			renderStormServicePod(roleSet, role, pod, &i)
+			maybeInjectHistoricalNodeAffinity(roleSet, role, pod, historicalBindings, &i, false)
 			podsToCreate = append(podsToCreate, pod)
 			createBudget--
 		} else if len(slots[i]) > 1 {
@@ -199,6 +201,7 @@ func (s *StatefulRoleSyncer) Rollout(ctx context.Context, roleSet *orchestration
 		}
 		recordInPlaceFallback(s.recorder, roleSet, role, reason)
 	}
+	historicalBindings := historicalNodeBindingsForPodCreation(roleSet, role)
 	for i := range slots {
 		if len(slots[i]) != 1 {
 			// wait for scale to handle this slot
@@ -220,6 +223,7 @@ func (s *StatefulRoleSyncer) Rollout(ctx context.Context, roleSet *orchestration
 				return err
 			}
 			renderStormServicePod(roleSet, role, pod, &i)
+			maybeInjectHistoricalNodeAffinity(roleSet, role, pod, historicalBindings, &i, true)
 			toCreate = append(toCreate, pod)
 			createBudget--
 		}
@@ -280,6 +284,7 @@ func (s *StatefulRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orchest
 		}
 		recordInPlaceFallback(s.recorder, roleSet, role, reason)
 	}
+	historicalBindings := historicalNodeBindingsForPodCreation(roleSet, role)
 	for i := range slots {
 		if len(slots[i]) != 1 {
 			// wait for scale to handle this slot
@@ -301,6 +306,7 @@ func (s *StatefulRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orchest
 				return err
 			}
 			renderStormServicePod(roleSet, role, pod, &i)
+			maybeInjectHistoricalNodeAffinity(roleSet, role, pod, historicalBindings, &i, true)
 			toCreate = append(toCreate, pod)
 			createBudget--
 		}
@@ -549,12 +555,14 @@ func (s *StatelessRoleSyncer) Rollout(ctx context.Context, roleSet *orchestratio
 	terminatingPodCount := len(terminatingPods)
 	// take terminating pods into account
 	createBudget := utils.MinInt32(expectedReplicas+MaxSurge(role)-int32(len(activePods))-int32(terminatingPodCount), expectedReplicas-int32(len(updated)))
+	historicalBindings := historicalNodeBindingsForPodCreation(roleSet, role)
 	for i := int32(0); i < createBudget; i++ {
 		pod, err := ctrlutil.GetPodFromTemplate(&role.Template, roleSet, metav1.NewControllerRef(roleSet, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.RoleSetKind)))
 		if err != nil {
 			return err
 		}
 		renderStormServicePod(roleSet, role, pod, nil)
+		maybeInjectHistoricalNodeAffinity(roleSet, role, pod, historicalBindings, nil, false)
 		toCreate = append(toCreate, pod)
 	}
 	klog.Infof("[StatelessRoleSyncer.Rollout] roleset %s/%s outdated %d, expectedReplicas %d, deleteBudget %d, createBudget %d, allPods %d, toDelete %d, toCreate %d", roleSet.Namespace, roleSet.Name, len(outdated), expectedReplicas, deleteBudget, createBudget, len(allPods), len(toDelete), len(toCreate))
@@ -717,12 +725,14 @@ func (s *StatelessRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orches
 	// - Step constraint: By the end of this step, we aim to have expectedUpdatedReplicas new Pods,
 	//   so we must avoid creating more than necessary.
 	createBudget := utils.MinInt32(expectedReplicas+MaxSurge(role)-int32(len(activePods))-int32(terminatingPodCount), expectedUpdatedReplicas-int32(len(updated)))
+	historicalBindings := historicalNodeBindingsForPodCreation(roleSet, role)
 	for i := int32(0); i < createBudget; i++ {
 		pod, err := ctrlutil.GetPodFromTemplate(&role.Template, roleSet, metav1.NewControllerRef(roleSet, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.RoleSetKind)))
 		if err != nil {
 			return err
 		}
 		renderStormServicePod(roleSet, role, pod, nil)
+		maybeInjectHistoricalNodeAffinity(roleSet, role, pod, historicalBindings, nil, false)
 		toCreate = append(toCreate, pod)
 	}
 	klog.Infof("[StatelessRoleSyncer.RolloutByStep] Step %d: roleset %s/%s outdated %d, expectedReplicas %d, expectedUpdatedReplicas %d, deleteBudget %d, createBudget %d, allPods %d, toDelete %d, toCreate %d", currentStep, roleSet.Namespace, roleSet.Name, len(outdated), expectedReplicas, expectedUpdatedReplicas, deleteBudget, createBudget, len(allPods), len(toDelete), len(toCreate))

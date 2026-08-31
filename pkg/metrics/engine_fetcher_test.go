@@ -99,7 +99,7 @@ func setupMockServer(metrics string, statusCode int, delay time.Duration) *httpt
 		}
 		w.WriteHeader(statusCode)
 		w.Header().Set("Content-Type", "text/plain")
-		fmt.Fprint(w, metrics)
+		_, _ = fmt.Fprint(w, metrics)
 	}))
 }
 
@@ -431,7 +431,7 @@ func TestEngineMetricsFetcher_RetryLogic(t *testing.T) {
 				return
 			}
 			w.WriteHeader(200)
-			fmt.Fprint(w, mockVllmMetrics)
+			_, _ = fmt.Fprint(w, mockVllmMetrics)
 		}))
 		defer server.Close()
 
@@ -488,7 +488,7 @@ vllm:deployment_replicas{model_name="deepseek-r1-distill-llama-8b"} 3
 			return
 		}
 		w.WriteHeader(200)
-		fmt.Fprint(w, optimizerMetrics)
+		_, _ = fmt.Fprint(w, optimizerMetrics)
 	}))
 	defer server.Close()
 

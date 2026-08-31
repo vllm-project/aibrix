@@ -416,7 +416,7 @@ func (r *ModelAdapterReconciler) enqueueModelAdapters(ctx context.Context) error
 
 func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Request, instance *modelv1alpha1.ModelAdapter) (ctrl.Result, error) {
 	// Let's set the initial status when no status is available
-	if instance.Status.Conditions == nil || len(instance.Status.Conditions) == 0 {
+	if len(instance.Status.Conditions) == 0 {
 		instance.Status.Phase = modelv1alpha1.ModelAdapterPending
 		condition := NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeInitialized), metav1.ConditionUnknown,
 			ModelAdapterInitializedReason, "Starting reconciliation")

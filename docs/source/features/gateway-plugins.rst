@@ -161,13 +161,14 @@ General load balancing
 * ``least-kv-cache``: routes to the pod with the smallest KV cache occupancy (least VRAM used).
 * ``least-gpu-cache``: routes to the pod with the lowest GPU cache utilization.
 * ``least-utilization``: routes to the pod with the lowest overall utilization score.
+* ``load-balance``: capacity-aware weighted least-request routing. Scores each pod as ``running_requests / drain_rate`` (pending time), where ``drain_rate`` is the observed request completion rate. Selects the pod with the lowest pending time, breaking ties using least combined GPU+CPU KV-cache usage (falling back to a random pick if cache metrics are unavailable for the tied pods). Falls back to uniform capacity (``drain_rate = 1``) when metrics are unavailable. Its load-imbalance gate, which restricts candidates to the least-loaded pods when load is severely skewed, is applied centrally by the gateway ahead of whichever strategy actually routes each request — not just when ``load-balance`` itself is selected (see ``pkg/plugins/gateway/ENV_VARS.md``).
 * ``throughput``: routes to the pod that has processed the fewest total weighted tokens, favoring underloaded pods.
 * ``power-of-two``: applies power-of-two-choices — randomly samples two pods and selects the better one.
 
 KV-cache aware
 ^^^^^^^^^^^^^^
 
-* ``prefix-cache``: routes to a pod that already holds a KV cache matching the request's prompt prefix, with load balancing and multi-turn conversation support.
+* ``prefix-cache``: routes to a pod that already holds a KV cache matching the request's prompt prefix, selecting the best prefix-matched pod within a configurable stddev threshold. Purely about prefix caching — it does not itself gate on cluster-wide load imbalance (the gateway applies that gate centrally ahead of it; see ``load-balance`` above). Supports two modes: standard (local hash table) and KV sync (real-time distributed index via ``AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true``).
 * ``prefix-cache-preble``: routes considering both prefix cache hits and pod load, based on `Preble: Efficient Distributed Prompt Scheduling for LLM Serving <https://arxiv.org/abs/2407.00023>`_.
 
 Fairness
@@ -223,6 +224,20 @@ Specialized
           "messages": [{"role": "user", "content": "Say this is a test!"}],
           "temperature": 0.7
       }'
+
+Auto-blended capacity awareness
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+This auto-blend is **enabled by default** — no opt-in is required. Every strategy above, except
+the exclusive ones (``pd``, ``slo``/``slo-*``) and an explicit standalone ``load-balance``
+selection, silently gets ``load-balance``'s capacity-aware scoring blended in behind the scenes —
+and ``least-request`` too, when the selected strategy doesn't already route by request count, to
+keep multi-port/data-parallel pod routing working under the blend. The caller never sees this:
+``ctx.Algorithm``, response headers, and ``Validate()`` all still reflect exactly the strategy
+that was requested. This keeps any single strategy from steering traffic at an already-hot pod
+even outside the load-imbalance gate described above. Both blend weights default to ``1`` (see
+``pkg/plugins/gateway/ENV_VARS.md``); set ``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT=0`` to
+disable it.
 
 To override the strategy for a single request, pass the ``routing-strategy`` header with any of the values above:
 

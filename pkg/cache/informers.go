@@ -164,8 +164,9 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	_, existed := c.metaPods.Load(utils.GeneratePodKey(oldPod.Namespace, oldPod.Name)) // Make sure nothing left.
 	newModelName, newOk := getModelNameFromPod(newPod)
 	newModelClaims := utils.ModelClaimBindingsFromPod(newPod)
+	newHasModelInfo := newOk || len(newModelClaims) > 0
 
-	if !oldOk && !existed && !newOk && len(newModelClaims) == 0 {
+	if !oldOk && !existed && !newHasModelInfo {
 		return // No model information to track in either old or new pod
 	}
 
@@ -189,12 +190,14 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	oldNodeType := oldPod.Labels[nodeType]
 	newNodeType := newPod.Labels[nodeType]
 	if oldNodeType == nodeWorker || newNodeType == nodeWorker {
+		c.clearPodMetricsBackoff(oldPod.Namespace, oldPod.Name)
+		c.clearPodMetricsScheduling(oldPod.Namespace, oldPod.Name)
 		klog.InfoS("ignored ray worker pod", "old pod", oldPod.Name, "new pod", newPod.Name)
 		return
 	}
 
 	// Add new mappings if present
-	if (newOk || len(newModelClaims) > 0) && !newIsWorker {
+	if newHasModelInfo && !newIsWorker {
 		metaPod := c.addPodLocked(newPod)
 		if newOk {
 			c.addPodAndModelMappingLocked(metaPod, newModelName)
@@ -206,6 +209,9 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 				c.addPodAndModelMappingLocked(metaPod, servedModel)
 			}
 		}
+	} else {
+		c.clearPodMetricsBackoff(oldPod.Namespace, oldPod.Name)
+		c.clearPodMetricsScheduling(oldPod.Namespace, oldPod.Name)
 	}
 
 	klog.V(4).Infof("POD UPDATED: %s/%s %s", newPod.Namespace, newPod.Name, newPod.Status.Phase)
@@ -268,6 +274,8 @@ func (c *Store) deletePod(obj interface{}) {
 	}
 	c.modelClaims.clearPod(utils.GeneratePodKey(namespace, name))
 
+	c.clearPodMetricsBackoff(namespace, name)
+	c.clearPodMetricsScheduling(namespace, name)
 	rateCalculator.PurgeEntriesForPod(name)
 
 	klog.V(4).Infof("POD DELETED: %s/%s", namespace, name)
