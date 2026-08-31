@@ -322,6 +322,55 @@ func (s *GORMStore) UpsertJob(ctx context.Context, rec *models.Job) error {
 	return nil
 }
 
+func (s *GORMStore) UpsertCatalogSnapshot(ctx context.Context, snapshot *models.CatalogSnapshot) error {
+	start := time.Now().UTC()
+	defer func() {
+		metrics.Duration(metrics.Emitter, metricConsoleStoreDuration, start, metrics.T("method", "upsert_catalog_snapshot"))
+	}()
+
+	if snapshot == nil {
+		return status.Error(codes.InvalidArgument, "catalog snapshot is required")
+	}
+	if snapshot.Provider == "" {
+		return status.Error(codes.InvalidArgument, "catalog snapshot provider is required")
+	}
+	if snapshot.ViewType != models.CatalogViewResource && snapshot.ViewType != models.CatalogViewPrediction {
+		return status.Errorf(codes.InvalidArgument, "invalid catalog view type %q", snapshot.ViewType)
+	}
+	if !snapshot.WindowEnd.After(snapshot.WindowStart) {
+		return status.Error(codes.InvalidArgument, "catalog snapshot window must have end after start")
+	}
+	if len(snapshot.Payload) == 0 {
+		return status.Error(codes.InvalidArgument, "catalog snapshot payload is required")
+	}
+	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "provider"}, {Name: "view_type"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"window_start", "window_end", "payload", "updated_at",
+		}),
+	}).Create(snapshot).Error; err != nil {
+		metrics.Emitter.Counter(metricConsoleStoreError, 1, metrics.T("method", "upsert_catalog_snapshot"))
+		return status.Errorf(codes.Internal, "upsert catalog snapshot: %v", err)
+	}
+	return nil
+}
+
+func (s *GORMStore) ListCatalogSnapshots(ctx context.Context, provider string) ([]*models.CatalogSnapshot, error) {
+	q := s.db.WithContext(ctx).Model(&models.CatalogSnapshot{})
+	if provider != "" {
+		q = q.Where("provider = ?", provider)
+	}
+	var rows []models.CatalogSnapshot
+	if err := q.Order("provider, view_type").Find(&rows).Error; err != nil {
+		return nil, status.Errorf(codes.Internal, "list catalog snapshots: %v", err)
+	}
+	out := make([]*models.CatalogSnapshot, len(rows))
+	for i := range rows {
+		out[i] = &rows[i]
+	}
+	return out, nil
+}
+
 func (s *GORMStore) GetJob(ctx context.Context, id string) (*models.Job, error) {
 	start := time.Now().UTC()
 	defer func() {

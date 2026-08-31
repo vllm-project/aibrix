@@ -32,14 +32,18 @@ import (
 
 // planningLoop runs the planning loop.
 type planningLoop struct {
-	trigger      chan struct{}
-	planInterval time.Duration
-	planner      *Planner
-	ctx          context.Context
-	cancel       context.CancelFunc
-	wg           sync.WaitGroup // tracks goroutine completion
-	ready        chan struct{}  // signaled when goroutine is ready to receive triggers
-	isRunning    atomic.Bool
+	trigger        chan struct{}
+	catalogTrigger chan time.Time
+	planInterval   time.Duration
+	planner        *Planner
+	ctx            context.Context
+	cancel         context.CancelFunc
+	wg             sync.WaitGroup // tracks goroutine completion
+	ready          chan struct{}  // signaled when goroutine is ready to receive triggers
+	isRunning      atomic.Bool
+	// lastCatalogTrigger is only accessed by the planning goroutine. It limits
+	// enqueue-triggered cycles independently from the job planning interval.
+	lastCatalogTrigger time.Time
 	// workerPool executes queue processing functions submitted by planningLoop
 	workerPool *utils.WorkerPool
 }
@@ -47,11 +51,12 @@ type planningLoop struct {
 // newPlanningLoop creates a new planning worker.
 func newPlanningLoop(planner *Planner, interval time.Duration, workerCount int) *planningLoop {
 	return &planningLoop{
-		trigger:      make(chan struct{}, 1),
-		planInterval: interval,
-		planner:      planner,
-		ready:        make(chan struct{}),
-		workerPool:   utils.NewWorkerPool(workerCount),
+		trigger:        make(chan struct{}, 1),
+		catalogTrigger: make(chan time.Time, 1),
+		planInterval:   interval,
+		planner:        planner,
+		ready:          make(chan struct{}),
+		workerPool:     utils.NewWorkerPool(workerCount),
 	}
 }
 
@@ -71,11 +76,41 @@ func (w *planningLoop) Start(ctx context.Context) {
 	}
 	w.isRunning.Store(true)
 	w.ctx, w.cancel = context.WithCancel(ctx)
-	w.wg.Add(1)
+	w.wg.Add(2)
 	w.workerPool.Start(w.ctx)
 	go w.runWithTrigger()
+	go w.runCatalogCollector()
 	// Wait for goroutine to be ready to receive triggers
 	<-w.ready
+}
+
+func (w *planningLoop) triggerCatalogCollection(cycleTime time.Time) {
+	if w.planner.store == nil {
+		return
+	}
+	if !w.lastCatalogTrigger.IsZero() && cycleTime.Sub(w.lastCatalogTrigger) < catalogCollectionInterval {
+		return
+	}
+	select {
+	case w.catalogTrigger <- cycleTime:
+		w.lastCatalogTrigger = cycleTime
+	default:
+		// A collection is running or already pending. Coalesce this cycle.
+	}
+}
+
+func (w *planningLoop) runCatalogCollector() {
+	defer w.wg.Done()
+	for {
+		select {
+		case <-w.ctx.Done():
+			return
+		case cycleTime := <-w.catalogTrigger:
+			ctx, cancel := context.WithTimeout(w.ctx, catalogCollectionTimeout)
+			w.collectCatalogSnapshots(ctx, cycleTime)
+			cancel()
+		}
+	}
 }
 
 // Stop stops the planning worker and waits for the goroutine to exit
@@ -116,7 +151,10 @@ func (w *planningLoop) planOnce() {
 	// 1. Remove terminal jobs
 	w.removeTerminalJobs()
 
-	// 2. Run policy
+	// 2. Trigger catalog collection without blocking job scheduling.
+	w.triggerCatalogCollection(cycleStart)
+
+	// 3. Run policy
 	err := w.planner.policy.Plan(w.ctx, PlanningInput[*queuedJob]{
 		PlannerBackend: w.planner.backend,
 		RunningQueue:   w.planner.runningQueue,
@@ -128,11 +166,11 @@ func (w *planningLoop) planOnce() {
 		return
 	}
 
-	// 3. Collect jobs from each queue and submit individual tasks
+	// 4. Collect jobs from each queue and submit individual tasks
 	w.processPendingQueue()
 	w.processRunningQueue()
 
-	// 4. Emit queue gauges and cycle latency
+	// 5. Emit queue gauges and cycle latency
 	metrics.Emitter.Gauge("console.planner.queue.pending.size", float32(w.planner.pendingQueue.Len()))
 	metrics.Emitter.Gauge("console.planner.queue.running.size", float32(w.planner.runningQueue.Len()))
 	metrics.Duration(metrics.Emitter, metricConsolePlannerDuration, cycleStart, metrics.T("method", "planning_loop"))

@@ -23,6 +23,7 @@ import (
 
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
+	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/catalog"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/provisioner"
 	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"k8s.io/utils/ptr"
@@ -46,6 +47,8 @@ type plannerBackend interface {
 	BuildRuntime(req *plannerapi.EnqueueRequest, prov *rmtypes.ProvisionResult) (*plannerapi.RuntimeRef, error)
 	BuildResourceAllocation(spec rmtypes.ResourceProvisionSpec, prov *rmtypes.ProvisionResult) plannerclient.ResourceAllocation
 	AllocationTimeWindow(prov *rmtypes.ProvisionResult) *rmtypes.TimeWindow
+	ListResources(ctx context.Context, opts *catalog.ResourceListOptions) ([]catalog.Resource, error)
+	ListResourcePredictions(ctx context.Context, opts *catalog.ResourceListOptions) (map[string]catalog.Resource, error)
 }
 
 // provisionResponseLogger is an optional capability to log provider-specific
@@ -55,7 +58,7 @@ type provisionResponseLogger interface {
 }
 
 // backendFactory constructs a plannerBackend for a provisioner type.
-type backendFactory func(prov provisioner.Provisioner) plannerBackend
+type backendFactory func(prov provisioner.Provisioner, catalog catalog.Catalog) plannerBackend
 
 // backendRegistry holds plannerBackend factories registered from init()
 // by provider-specific files.
@@ -68,15 +71,15 @@ func RegisterBackend(t rmtypes.ResourceProvisionType, f backendFactory) {
 
 // newPlannerBackend returns the registered backend for prov, or
 // defaultPlannerBackend when none is registered (or prov is nil).
-func newPlannerBackend(prov provisioner.Provisioner) plannerBackend {
+func newPlannerBackend(prov provisioner.Provisioner, resourceCatalog catalog.Catalog) plannerBackend {
 	if prov == nil {
-		return &defaultPlannerBackend{}
+		return &defaultPlannerBackend{catalog: resourceCatalog}
 	}
 	t := prov.Type()
 	if f, ok := backendRegistry[t]; ok {
-		return f(prov)
+		return f(prov, resourceCatalog)
 	}
-	return &defaultPlannerBackend{provider: t}
+	return &defaultPlannerBackend{provider: t, catalog: resourceCatalog}
 }
 
 // decodeAcceleratorFromTemplate parses ModelTemplateRef.Spec (a protojson-
@@ -167,6 +170,7 @@ func defaultResourceDetailsFromProvisionSpec(spec rmtypes.ResourceProvisionSpec)
 // allocation behavior.
 type defaultPlannerBackend struct {
 	provider rmtypes.ResourceProvisionType
+	catalog  catalog.Catalog
 }
 
 func (b *defaultPlannerBackend) ValidateRequest(*plannerapi.EnqueueRequest) error {
@@ -207,4 +211,18 @@ func (b *defaultPlannerBackend) BuildResourceAllocation(spec rmtypes.ResourcePro
 
 func (b *defaultPlannerBackend) AllocationTimeWindow(*rmtypes.ProvisionResult) *rmtypes.TimeWindow {
 	return nil
+}
+
+func (b *defaultPlannerBackend) ListResources(ctx context.Context, opts *catalog.ResourceListOptions) ([]catalog.Resource, error) {
+	if b.catalog == nil {
+		return nil, rmtypes.ErrUnsupportedCatalog
+	}
+	return b.catalog.ListResources(ctx, opts)
+}
+
+func (b *defaultPlannerBackend) ListResourcePredictions(ctx context.Context, opts *catalog.ResourceListOptions) (map[string]catalog.Resource, error) {
+	if b.catalog == nil {
+		return nil, rmtypes.ErrUnsupportedCatalog
+	}
+	return b.catalog.ListResourcePredictions(ctx, opts)
 }

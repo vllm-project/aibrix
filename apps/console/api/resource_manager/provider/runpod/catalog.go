@@ -57,14 +57,14 @@ func (c *runpodCatalog) ListPricing(_ context.Context, _ *catalog.ResourceListOp
 
 // ListResources is not exposed by the RunPod REST API.
 func (c *runpodCatalog) ListResources(_ context.Context, _ *catalog.ResourceListOptions) ([]catalog.Resource, error) {
-	return []catalog.Resource{}, nil
+	return nil, types.ErrNotImplemented
 }
 
 // ListResourcePredictions is not supported for RunPod.
 func (c *runpodCatalog) ListResourcePredictions(
 	_ context.Context, _ *catalog.ResourceListOptions,
 ) (map[string]catalog.Resource, error) {
-	return map[string]catalog.Resource{}, nil
+	return nil, types.ErrNotImplemented
 }
 
 // ListPricingPredictions is not supported for RunPod.

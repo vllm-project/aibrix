@@ -268,3 +268,21 @@ CREATE TABLE IF NOT EXISTS provision_results (
     INDEX idx_provision_results_provider (provider),
     INDEX idx_provision_results_status_deleted (status, deleted)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Provision result records';
+
+-- ---------------------------------------------------------------------------
+-- Catalog Snapshots
+-- Latest complete resource/prediction views collected by the planner.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS catalog_snapshots (
+    row_id       BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT 'Auto-increment primary key',
+    provider     VARCHAR(32)   NOT NULL COMMENT 'Resource provider',
+    view_type    VARCHAR(16)   NOT NULL COMMENT 'resource or prediction',
+    window_start TIMESTAMP     NOT NULL COMMENT 'Catalog query window start',
+    window_end   TIMESTAMP     NOT NULL COMMENT 'Catalog query window end',
+    payload      JSON          NOT NULL COMMENT 'Raw catalog resource view',
+    created_at   TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Creation timestamp',
+    updated_at   TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Last update timestamp',
+
+    PRIMARY KEY (row_id),
+    UNIQUE INDEX uniq_catalog_snapshots_provider_view (provider, view_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Latest planner catalog resource views';

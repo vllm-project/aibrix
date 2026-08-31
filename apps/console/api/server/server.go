@@ -152,6 +152,7 @@ func (s *Server) StartGRPC(addr string) error {
 	s.planner = plannerimpl.NewPlanner(plannerimpl.PlannerConfig{
 		BatchClient: batchClient,
 		Provisioner: rm.Provisioner,
+		Catalog:     rm.Catalog,
 		Store:       s.store,
 		PolicyType:  plannerimpl.PlanningPolicyType(s.cfg.PlanningPolicy),
 		WorkerCount: s.cfg.PlannerWorkerCount,
