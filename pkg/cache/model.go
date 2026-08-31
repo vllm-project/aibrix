@@ -37,5 +37,9 @@ type Model struct {
 	// QueueRouter maintains a local request queue, enabling flexible request reordering.
 	QueueRouter types.QueueRouter
 
+	// BaseModel is the served base-model name a LoRA adapter is attached to
+	// (ModelAdapter spec.baseModel). Empty for base models.
+	BaseModel string
+
 	pendingRequests int32
 }

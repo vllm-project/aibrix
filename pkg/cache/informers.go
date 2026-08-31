@@ -18,6 +18,7 @@ package cache
 import (
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
@@ -163,8 +164,9 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	_, existed := c.metaPods.Load(utils.GeneratePodKey(oldPod.Namespace, oldPod.Name)) // Make sure nothing left.
 	newModelName, newOk := getModelNameFromPod(newPod)
 	newModelClaims := utils.ModelClaimBindingsFromPod(newPod)
+	newHasModelInfo := newOk || len(newModelClaims) > 0
 
-	if !oldOk && !existed && !newOk && len(newModelClaims) == 0 {
+	if !oldOk && !existed && !newHasModelInfo {
 		return // No model information to track in either old or new pod
 	}
 
@@ -188,12 +190,14 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	oldNodeType := oldPod.Labels[nodeType]
 	newNodeType := newPod.Labels[nodeType]
 	if oldNodeType == nodeWorker || newNodeType == nodeWorker {
+		c.clearPodMetricsBackoff(oldPod.Namespace, oldPod.Name)
+		c.clearPodMetricsScheduling(oldPod.Namespace, oldPod.Name)
 		klog.InfoS("ignored ray worker pod", "old pod", oldPod.Name, "new pod", newPod.Name)
 		return
 	}
 
 	// Add new mappings if present
-	if (newOk || len(newModelClaims) > 0) && !newIsWorker {
+	if newHasModelInfo && !newIsWorker {
 		metaPod := c.addPodLocked(newPod)
 		if newOk {
 			c.addPodAndModelMappingLocked(metaPod, newModelName)
@@ -205,6 +209,9 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 				c.addPodAndModelMappingLocked(metaPod, servedModel)
 			}
 		}
+	} else {
+		c.clearPodMetricsBackoff(oldPod.Namespace, oldPod.Name)
+		c.clearPodMetricsScheduling(oldPod.Namespace, oldPod.Name)
 	}
 
 	klog.V(4).Infof("POD UPDATED: %s/%s %s", newPod.Namespace, newPod.Name, newPod.Status.Phase)
@@ -267,6 +274,8 @@ func (c *Store) deletePod(obj interface{}) {
 	}
 	c.modelClaims.clearPod(utils.GeneratePodKey(namespace, name))
 
+	c.clearPodMetricsBackoff(namespace, name)
+	c.clearPodMetricsScheduling(namespace, name)
 	rateCalculator.PurgeEntriesForPod(name)
 
 	klog.V(4).Infof("POD DELETED: %s/%s", namespace, name)
@@ -281,6 +290,7 @@ func (c *Store) addModelAdapter(obj interface{}) {
 	for _, pod := range model.Status.Instances {
 		c.addPodAndModelMappingLockedByName(pod, model.Namespace, model.Name)
 	}
+	c.setModelBaseModelLocked(model)
 
 	klog.V(4).Infof("MODELADAPTER CREATED: %s/%s", model.Namespace, model.Name)
 	c.debugInfo()
@@ -300,8 +310,36 @@ func (c *Store) updateModelAdapter(oldObj interface{}, newObj interface{}) {
 	for _, pod := range newModel.Status.Instances {
 		c.addPodAndModelMappingLockedByName(pod, newModel.Namespace, newModel.Name)
 	}
+	c.setModelBaseModelLocked(newModel)
 
 	c.debugInfo()
+}
+
+// setModelBaseModelLocked records the adapter → base-model mapping on the cache
+// entry. Caller must hold c.mu. Prefers spec.baseModel; falls back to the host
+// pod's model.aibrix.ai/name label when spec is empty.
+func (c *Store) setModelBaseModelLocked(model *modelv1alpha1.ModelAdapter) {
+	meta, ok := c.metaModels.Load(model.Name)
+	if !ok {
+		return
+	}
+	base := ""
+	if model.Spec.BaseModel != nil {
+		base = strings.TrimSpace(*model.Spec.BaseModel)
+	}
+	if base == "" {
+		for _, podName := range model.Status.Instances {
+			metaPod, ok := c.metaPods.Load(utils.GeneratePodKey(model.Namespace, podName))
+			if !ok || metaPod.Pod == nil || metaPod.Pod.Labels == nil {
+				continue
+			}
+			if v := strings.TrimSpace(metaPod.Pod.Labels[constants.ModelLabelName]); v != "" {
+				base = v
+				break
+			}
+		}
+	}
+	meta.BaseModel = base
 }
 
 func (c *Store) deleteModelAdapter(obj interface{}) {
