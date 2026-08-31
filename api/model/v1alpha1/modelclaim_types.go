@@ -144,11 +144,36 @@ type ModelClaimStatus struct {
 	// +optional
 	Instances []ModelClaimInstance `json:"instances,omitempty"`
 
+	// ObservedFootprint is the last measured GPU footprint of this model,
+	// recorded together with the artifact it was measured for.
+	// +optional
+	ObservedFootprint *ModelClaimObservedFootprint `json:"observedFootprint,omitempty"`
+
 	// Conditions represents the latest observations of the model's state.
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// ModelClaimObservedFootprint is a measured GPU footprint together with the
+// artifact it belongs to. The two are stored as one value because a footprint
+// is only meaningful for the weights it was measured against: a claim repointed
+// at a larger model must not be sized from the previous model's measurement.
+type ModelClaimObservedFootprint struct {
+	// ArtifactURL is the artifact the engine itself reported when the
+	// measurement was taken, not the one in spec. Changing spec.artifactURL
+	// does not restart a running engine, so it keeps serving the previous
+	// weights; attributing its footprint to the new artifact would be wrong.
+	// +optional
+	ArtifactURL string `json:"artifactURL,omitempty"`
+
+	// Bytes is the non-KV GPU memory the engine held: weights, captured CUDA
+	// graphs and allocator retention. It is measured from a live engine rather
+	// than estimated from the artifact size, because most of the gap between
+	// the two is allocator retention that does not scale with the weights.
+	// +optional
+	Bytes int64 `json:"bytes,omitempty"`
 }
 
 // ModelClaimConditionType enumerates the condition types reported in status.
