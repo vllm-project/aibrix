@@ -483,10 +483,15 @@ func inferEngineVersion(metrics map[string]any, platform, platformVersion string
 	// Defaults used by current multi-node fixtures.
 	switch platform {
 	case "dynamo":
-		if strings.HasPrefix(strings.TrimPrefix(platformVersion, "v"), "1.3.") {
+		ver := strings.TrimPrefix(platformVersion, "v")
+		switch {
+		case strings.HasPrefix(ver, "1.4."):
+			return "0.26.0"
+		case strings.HasPrefix(ver, "1.3."):
 			return "0.23.0"
+		default:
+			return "0.21.0"
 		}
-		return "0.21.0"
 	case "llmd":
 		return "0.23.0"
 	default:
@@ -632,6 +637,7 @@ func TestInferEngineVersionForDynamoRelease(t *testing.T) {
 	}{
 		{version: "v1.2.1", want: "0.21.0"},
 		{version: "v1.3.1", want: "0.23.0"},
+		{version: "v1.4.0", want: "0.26.0"},
 	}
 
 	for _, tt := range tests {
