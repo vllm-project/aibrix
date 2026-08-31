@@ -124,10 +124,8 @@ func (ef *EngineMetricsFetcher) FetchTypedMetric(ctx context.Context, endpoint, 
 			klog.V(4).InfoS("Retrying typed metric fetch from engine endpoint",
 				"attempt", attempt, "delay", delay, "identifier", identifier, "metric", metricName)
 
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(delay):
+			if err := sleepWithContext(ctx, delay); err != nil {
+				return nil, err
 			}
 		}
 
@@ -156,6 +154,48 @@ func (ef *EngineMetricsFetcher) FetchTypedMetric(ctx context.Context, endpoint, 
 		metricName, identifier, ef.config.MaxRetries+1)
 }
 
+// FetchRawMetric fetches a metric by its raw Prometheus name from an explicit metrics URL,
+// bypassing the central metric registry. External sources such as the GPU optimizer expose
+// caller-defined metrics on caller-defined paths, so neither the registry's metric
+// definitions nor its per-engine paths apply to them.
+func (ef *EngineMetricsFetcher) FetchRawMetric(ctx context.Context, url, identifier, rawMetricName string) (MetricValue, error) {
+	for attempt := 0; attempt <= ef.config.MaxRetries; attempt++ {
+		if attempt > 0 {
+			delay := ef.calculateBackoffDelay(attempt)
+			klog.V(4).InfoS("Retrying raw metric fetch",
+				"attempt", attempt, "delay", delay, "identifier", identifier, "metric", rawMetricName)
+
+			if err := sleepWithContext(ctx, delay); err != nil {
+				return nil, err
+			}
+		}
+
+		// Do not attribute failures of external sources to the engine failure counter.
+		allMetrics, err := ef.fetchMetricsFromURL(ctx, url, "")
+		if err != nil {
+			klog.V(4).InfoS("Failed to fetch metrics from URL",
+				"attempt", attempt+1, "identifier", identifier, "url", url, "error", err)
+			continue
+		}
+
+		family, exists := allMetrics[rawMetricName]
+		if !exists || len(family.Metric) == 0 {
+			klog.V(4).InfoS("Raw metric not found in response",
+				"attempt", attempt+1, "identifier", identifier, "metric", rawMetricName)
+			continue
+		}
+
+		metricValue, err := GetCounterGaugeValue(family.Metric[0], family.GetType())
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse raw metric %s from %s: %w", rawMetricName, identifier, err)
+		}
+		return metricValue, nil
+	}
+
+	return nil, fmt.Errorf("failed to fetch raw metric %s from %s after %d attempts",
+		rawMetricName, identifier, ef.config.MaxRetries+1)
+}
+
 // FetchAllTypedMetrics fetches all available typed metrics from an engine endpoint
 func (ef *EngineMetricsFetcher) FetchAllTypedMetrics(ctx context.Context, endpoint, engineType, identifier string, requestedMetrics []string) (*EngineMetricsResult, error) {
 	result := &EngineMetricsResult{
@@ -179,10 +219,8 @@ func (ef *EngineMetricsFetcher) FetchAllTypedMetrics(ctx context.Context, endpoi
 			klog.V(4).InfoS("Retrying all typed metrics fetch from engine endpoint",
 				"attempt", attempt, "delay", delay, "identifier", identifier)
 
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(delay):
+			if err := sleepWithContext(ctx, delay); err != nil {
+				return nil, err
 			}
 		}
 
@@ -274,6 +312,21 @@ func (ef *EngineMetricsFetcher) calculateBackoffDelay(attempt int) time.Duration
 		delay = ef.config.MaxDelay
 	}
 	return delay
+}
+
+// sleepWithContext blocks for the given delay or until ctx is done, whichever comes first.
+// It uses an explicit timer that is stopped on early return so a cancelled context does not
+// leave a pending timer behind, unlike time.After, whose timer cannot be stopped.
+func sleepWithContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // getAvailableMetricsForEngine returns all metrics available for a given engine type
@@ -423,8 +476,16 @@ func (ef *EngineMetricsFetcher) parseMetricInstance(familyMetric *dto.Metric, me
 	return nil, fmt.Errorf("unsupported metric type for raw parsing: %v", metric.MetricType)
 }
 
-// fetchAllMetricsFromURL performs a single HTTP request and parses all Prometheus metrics
+// fetchAllMetricsFromURL performs a single HTTP request against an engine endpoint and parses
+// all Prometheus metrics. Transport failures are counted in llm_engine_metrics_query_fail.
 func (ef *EngineMetricsFetcher) fetchAllMetricsFromURL(ctx context.Context, url string) (map[string]*dto.MetricFamily, error) {
+	return ef.fetchMetricsFromURL(ctx, url, LLMEngineMetricsQueryFail)
+}
+
+// fetchMetricsFromURL performs a single HTTP request and parses all Prometheus metrics in the
+// response. If failureMetric is non-empty, transport failures increment that counter; callers
+// scraping non-engine sources pass an empty name so their failures are not attributed to engines.
+func (ef *EngineMetricsFetcher) fetchMetricsFromURL(ctx context.Context, url, failureMetric string) (map[string]*dto.MetricFamily, error) {
 	// Use our configured HTTP client with the existing parsing logic
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -433,7 +494,9 @@ func (ef *EngineMetricsFetcher) fetchAllMetricsFromURL(ctx context.Context, url 
 
 	resp, err := ef.client.Do(req)
 	if err != nil {
-		EmitMetricToPrometheus(nil, nil, LLMEngineMetricsQueryFail, &SimpleMetricValue{Value: 1.0}, nil)
+		if failureMetric != "" {
+			EmitMetricToPrometheus(nil, nil, failureMetric, &SimpleMetricValue{Value: 1.0}, nil)
+		}
 		return nil, fmt.Errorf("failed to fetch metrics from %s: %v", url, err)
 	}
 	defer func() {

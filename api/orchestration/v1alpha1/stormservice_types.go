@@ -187,6 +187,10 @@ const (
 	// StormServiceReplicaFailure is added in a stormService when one of its workloads fails to be created
 	// or deleted.
 	StormServiceReplicaFailure ConditionType = "ReplicaFailure"
+	// StormServicePodGroupSynced summarizes scheduler PodGroup sync across owned RoleSets.
+	StormServicePodGroupSynced ConditionType = "PodGroupSynced"
+	// StormServiceGangSchedulingError summarizes gang scheduling errors across owned RoleSets.
+	StormServiceGangSchedulingError ConditionType = "GangSchedulingError"
 )
 
 type StormServiceUpdateStrategy struct {

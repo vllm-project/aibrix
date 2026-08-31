@@ -401,12 +401,11 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 		stormService.Status.Replicas == *stormService.Spec.Replicas &&
 		stormService.Status.CurrentRevision == stormService.Status.UpdateRevision
 	if stormServiceReady {
-		stormService.Status.Conditions = []orchestrationv1alpha1.Condition{
-			*utils.NewCondition(orchestrationv1alpha1.StormServiceReady, corev1.ConditionTrue, "Ready", ""),
-		}
+		setStormServiceAvailabilityCondition(&stormService.Status, true)
 	} else {
 		syncStormServiceProgressingCondition(stormService, checkpoint, time.Now())
 	}
+	setGangSchedulingConditions(&stormService.Status, allRoleSets)
 	// support scale sub resources.
 	// TODO: add pod template hash to avoid errors during upgrade.
 	stormService.Status.ScalingTargetSelector = fmt.Sprintf("%s=%s", constants.StormServiceNameLabelKey, stormService.Name)
@@ -422,6 +421,16 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 		}
 	}
 	return stormServiceReady, nil
+}
+
+func setStormServiceAvailabilityCondition(status *orchestrationv1alpha1.StormServiceStatus, ready bool) {
+	if ready {
+		RemoveStormServiceCondition(status, orchestrationv1alpha1.StormServiceProgressing)
+		SetStormServiceCondition(status, *utils.NewCondition(orchestrationv1alpha1.StormServiceReady, corev1.ConditionTrue, "Ready", ""))
+		return
+	}
+	RemoveStormServiceCondition(status, orchestrationv1alpha1.StormServiceReady)
+	SetStormServiceCondition(status, *utils.NewCondition(orchestrationv1alpha1.StormServiceProgressing, corev1.ConditionTrue, "Processing", ""))
 }
 
 func (r *StormServiceReconciler) finalize(ctx context.Context, stormService *orchestrationv1alpha1.StormService) (bool, error) {
