@@ -279,6 +279,10 @@ const (
 	RoleSetReady          ConditionType = "Ready"
 	RoleSetReplicaFailure ConditionType = "ReplicaFailure"
 	RoleSetProgressing    ConditionType = "Progressing"
+	// RoleSetPodGroupSynced means the scheduler PodGroup for this RoleSet has been reconciled.
+	RoleSetPodGroupSynced ConditionType = "PodGroupSynced"
+	// RoleSetGangSchedulingError means the RoleSet has an observed gang scheduling configuration or runtime error.
+	RoleSetGangSchedulingError ConditionType = "GangSchedulingError"
 )
 
 type RoleStatus struct {

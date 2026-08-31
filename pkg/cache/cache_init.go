@@ -112,6 +112,12 @@ type Store struct {
 	// podMetricsJobs Channel for sending Pod metrics update jobs to workers
 	podMetricsJobs chan *Pod
 
+	// podMetricsBackoff tracks per-pod fetch failure backoff for metrics collection.
+	podMetricsBackoff utils.SyncMap[string, *podMetricsBackoffState]
+
+	// podMetricsScheduling tracks queued or in-flight pod metrics jobs.
+	podMetricsScheduling utils.SyncMap[string, *podMetricsSchedulingState]
+
 	// Sync prefix indexer - only created when KV sync is enabled
 	syncPrefixIndexer *syncindexer.SyncPrefixHashTable
 
@@ -155,6 +161,8 @@ func Get() (Cache, error) {
 //
 //	Store: Initialized cache store instance
 func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterProvider ModelRouterProviderFunc) *Store {
+	podMetricsWorkerCount := loadPodMetricsWorkerCount()
+	podMetricsJobQueueSize := loadPodMetricsJobQueueSize(podMetricsWorkerCount)
 
 	store = &Store{
 		initialized:           true,
@@ -163,8 +171,8 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterP
 		enableTracing:         enableGPUOptimizerTracing,
 		requestTrace:          &utils.SyncMap[string, *RequestTrace]{},
 		modelRouterProvider:   modelRouterProvider,
-		podMetricsWorkerCount: defaultPodMetricsWorkerCount,
-		podMetricsJobs:        make(chan *Pod, 100),              // Initialize the job channel with a buffer size of 100
+		podMetricsWorkerCount: podMetricsWorkerCount,
+		podMetricsJobs:        make(chan *Pod, podMetricsJobQueueSize),
 		engineMetricsFetcher:  metrics.NewEngineMetricsFetcher(), // Initialize centralized typed metrics fetcher
 		enableProfileCaching:  enableModelGPUProfileCaching,
 	}

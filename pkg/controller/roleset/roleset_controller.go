@@ -44,6 +44,7 @@ const (
 	RoleSetFinalizer          = "orchestration.aibrix.ai/roleset-finalizer"
 	DefaultRequeueAfter       = 15 * time.Second
 	DefaultRetryDelay         = 1 * time.Second
+	PodGroupStatusRefresh     = 1 * time.Minute
 	PodBurst                  = 500
 	PodOperationInitBatchSize = 16
 )
@@ -135,7 +136,9 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	var managedErrors []error
 
 	// 1. sync pod group
+	var podGroupSyncErr error
 	if err := r.syncPodGroup(ctx, roleSet, &roleSet.Spec); err != nil {
+		podGroupSyncErr = err
 		managedErrors = append(managedErrors, fmt.Errorf("sync pod group error %v", err))
 	}
 
@@ -149,7 +152,7 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// 3. update roleset status
-	status, err := r.calculateStatus(ctx, roleSet, managedErrors)
+	status, err := r.calculateStatus(ctx, roleSet, managedErrors, podGroupSyncErr)
 	if err != nil {
 		klog.Infof("roleset %s/%s calculate status error %v", roleSet.Namespace, roleSet.Name, err)
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, err
@@ -165,6 +168,10 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			klog.Infof("roleset %s/%s not ready, reconcile after %v seconds", roleSet.Namespace, roleSet.Name, DefaultRetryDelay)
 			return ctrl.Result{RequeueAfter: DefaultRetryDelay}, nil
 		}
+		if hasVolcanoScheduling(roleSet) {
+			klog.Infof("roleset %s/%s has volcano scheduling configured, refresh PodGroup status after %v", roleSet.Namespace, roleSet.Name, PodGroupStatusRefresh)
+			return ctrl.Result{RequeueAfter: PodGroupStatusRefresh}, nil
+		}
 		return ctrl.Result{}, nil
 	}
 	roleSet.Status = *status
@@ -178,5 +185,13 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		klog.Infof("roleset %s/%s has in-place update in progress, reconcile after %v seconds", roleSet.Namespace, roleSet.Name, DefaultRetryDelay)
 		return ctrl.Result{RequeueAfter: DefaultRetryDelay}, nil
 	}
+	if hasVolcanoScheduling(roleSet) {
+		klog.Infof("roleset %s/%s has volcano scheduling configured, refresh PodGroup status after %v", roleSet.Namespace, roleSet.Name, PodGroupStatusRefresh)
+		return ctrl.Result{RequeueAfter: PodGroupStatusRefresh}, nil
+	}
 	return ctrl.Result{}, nil
+}
+
+func hasVolcanoScheduling(roleSet *orchestrationv1alpha1.RoleSet) bool {
+	return roleSet.Spec.SchedulingStrategy != nil && roleSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy != nil
 }
