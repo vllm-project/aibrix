@@ -665,7 +665,9 @@ All endpoints are served on the runtime port (``8080`` by default).
      - Body ``{"model_uri": ..., "local_dir": ..., "model_name": ..., "download_extra_config": {...}}``.
        Only ``model_uri`` is required.
    * - ``GET /v1/model/list``
-     - Body ``{"local_dir": ...}``. Lists models present in a local directory.
+     - Lists models present in a local directory. Takes an optional JSON body
+       ``{"local_dir": ...}`` (a body, not a query parameter, even though the method is GET);
+       without it the runtime's default download directory is listed.
    * - ``/v1/runtime/models/*`` and ``GET /v1/runtime/snapshot``
      - Experimental engine lifecycle endpoints (``activate``, ``deactivate``, ``sleep``,
        ``wake``, ``kv-limit``) used by :doc:`modelclaim`. Not intended for direct use.

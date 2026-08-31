@@ -44,8 +44,7 @@ How it works
    mix within the SLO at minimum cost.
 4. **Scaling.** The recommendation is exposed as the Prometheus metric
    ``vllm:deployment_replicas`` at ``/metrics/<namespace>/<deployment>``. A ``PodAutoscaler``
-   with an ``external`` metric source (``domain`` in the sample, a deprecated alias) consumes
-   it.
+   with an ``external`` metric source consumes it.
 
 Prerequisites
 -------------
@@ -115,22 +114,14 @@ Example Optimizer-based KPA yaml config
 .. literalinclude:: ../../../../samples/autoscaling/optimizer-kpa.yaml
    :language: yaml
 
-The part that makes this an optimizer-driven autoscaler is the ``metricsSources`` entry
-pointing at the optimizer's service with ``targetMetric: vllm:deployment_replicas``;
-``minReplicas`` and ``maxReplicas`` bound what the optimizer may request.
-
-.. note::
-
-   Two details of this sample do not match the current controller, so check them against the
-   AIBrix version you run:
-
-   * The ``kpa.autoscaling.aibrix.ai/scale-down-delay`` annotation is not read by the
-     controller. The supported key for shortening scale-down is
-     ``autoscaling.aibrix.ai/scale-down-cooldown-window`` (default ``300s``), listed in
-     :doc:`metric-based-autoscaling`.
-   * The external metric fetcher requests ``http://<endpoint>/metrics`` regardless of ``path``
-     and looks ``targetMetric`` up in AIBrix's metric registry, which does not currently list
-     ``vllm:deployment_replicas``.
+The part that makes this an optimizer-driven autoscaler is the ``metricsSources`` entry: the
+controller requests ``<protocolType>://<endpoint>/<path>`` and reads ``targetMetric`` from the
+response by its literal Prometheus name, so ``path`` must be the optimizer's per-deployment
+route ``/metrics/<namespace>/<deployment>`` and ``targetMetric`` stays
+``vllm:deployment_replicas``. ``minReplicas`` and ``maxReplicas`` bound what the optimizer may
+request. The ``autoscaling.aibrix.ai/scale-down-cooldown-window: 0s`` annotation removes the
+default five minute scale-down cooldown so replicas can follow the recommendation down without
+delay; :doc:`metric-based-autoscaling` lists the rest of that annotation family.
 
 Verify
 ------
@@ -202,8 +193,7 @@ tracing on.
        requests are flowing. Keep at least one deployment per model at ``"1"`` so a ready pod
        always exists.
 
-**PodAutoscaler**: use ``scalingStrategy: KPA`` and an ``external`` metric source (the sample
-still says ``domain``, a deprecated alias that behaves the same) whose
+**PodAutoscaler**: use ``scalingStrategy: KPA`` and an ``external`` metric source whose
 ``endpoint`` is ``aibrix-gpu-optimizer.aibrix-system.svc.cluster.local:8080``, ``path`` is
 ``/metrics/<namespace>/<deployment>`` and ``targetMetric`` is ``vllm:deployment_replicas``. Set
 ``minReplicas`` to ``0`` when the optimizer should be free to turn a deployment off; a higher

@@ -74,20 +74,23 @@ Metric sources
 --------------
 
 ``metricSourceType`` accepts ``pod``, ``external``, ``resource`` and ``custom``. ``domain`` is
-a deprecated alias of ``external`` that older samples still use. The two the documentation and
-samples use are:
+a deprecated alias of ``external`` kept for manifests written before the rename. The two the
+documentation and samples use are:
 
-* ``pod``: scrape each target pod. Set ``port`` and ``path`` (for example ``8000`` and
-  ``/metrics``) and ``targetMetric`` to one of AIBrix's engine-neutral metric names, such as
+* ``pod``: scrape each target pod. Validation requires ``port``, ``path`` and
+  ``protocolType``, but only ``port`` shapes the request: the controller always scrapes plain
+  HTTP at the path implied by the pod's ``model.aibrix.ai/engine`` label (``/metrics``, or
+  ``/prometheus/metrics`` for ``trtllm``), and ``path`` does not override it. Set
+  ``targetMetric`` to one of AIBrix's engine-neutral metric names, such as
   ``num_requests_waiting`` or ``gpu_cache_usage_perc``. AIBrix translates the name to what the
   pod's engine actually exports (``vllm:num_requests_waiting`` for vLLM, ``sglang:num_queue_reqs``
   for SGLang), so do not use the raw engine names here.
-* ``external``: read one HTTP endpoint instead of the pods. ``endpoint`` is the host and port;
-  ``path`` and ``protocolType`` must be present to pass validation. The fetcher requests
-  ``http://<endpoint>/metrics`` and resolves ``targetMetric`` through the same metric registry
-  as the ``pod`` source. This is the shape the GPU optimizer sample uses; see
-  :doc:`optimizer-based-autoscaling`. If ``endpoint`` is left empty, the controller queries the
-  Kubernetes ``external.metrics`` API for ``targetMetric`` instead.
+* ``external``: read one HTTP endpoint instead of the pods. ``endpoint`` is the host and port,
+  and ``path`` and ``protocolType`` are required alongside it. The fetcher requests
+  ``<protocolType>://<endpoint>/<path>`` and reads ``targetMetric`` from the response by its
+  literal Prometheus name, with no registry translation. This is the shape the GPU optimizer
+  sample uses; see :doc:`optimizer-based-autoscaling`. If ``endpoint`` is left empty, the
+  controller queries the Kubernetes ``external.metrics`` API for ``targetMetric`` instead.
 
 For the engine-neutral names and what each engine exports for them, see the table in
 :doc:`../multi-engine`.

@@ -56,8 +56,9 @@ How it works
 3. Routing policies ask for abstract names. When the engine has no mapping for a metric a
    policy needs, most policies (``least-request``, ``least-kv-cache``, ``least-latency``,
    ``least-busy-time``, ``least-gpu-cache``, ``least-util``, ``throughput``) fall back to a
-   random pod for that request. ``least-load`` and ``pack-load`` return an error instead, which
-   surfaces to the client as HTTP 503.
+   random pod for that request. The SLO family (``slo-least-load``, ``slo-pack-load``,
+   ``slo-least-load-pulling``) returns an error instead, which surfaces to the client as
+   HTTP 503.
 
 The optional :doc:`runtime` sidecar is a separate mechanism: it re-exports engine metrics in a
 standardized shape on its own port. The engine label works without it.
