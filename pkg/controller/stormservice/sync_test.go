@@ -20,6 +20,7 @@ import (
 	"context"
 	"reflect"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,6 +31,7 @@ import (
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
+	ctrlutils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
 )
 
 func TestCalculateReplicas(t *testing.T) {
@@ -124,6 +126,36 @@ func TestCalculateReplicas(t *testing.T) {
 		if c != test.desiredCurrent || u != test.desiredUpdated {
 			t.Errorf("failed %+v, current %d, updated %d", test, c, u)
 		}
+	}
+}
+
+func TestSetStormServiceAvailabilityConditionPreservesGangConditionTransitionTime(t *testing.T) {
+	oldTransition := metav1.NewTime(time.Now().Add(-time.Hour))
+	status := &orchestrationv1alpha1.StormServiceStatus{
+		Conditions: orchestrationv1alpha1.Conditions{
+			{
+				Type:               orchestrationv1alpha1.StormServiceGangSchedulingError,
+				Status:             corev1.ConditionFalse,
+				Reason:             "GangSchedulingHealthy",
+				LastTransitionTime: &oldTransition,
+			},
+		},
+	}
+
+	setStormServiceAvailabilityCondition(status, true)
+	SetStormServiceCondition(status, *ctrlutils.NewCondition(
+		orchestrationv1alpha1.StormServiceGangSchedulingError,
+		corev1.ConditionFalse,
+		"GangSchedulingHealthy",
+		"",
+	))
+
+	gangCondition := ctrlutils.GetCondition(status.Conditions, orchestrationv1alpha1.StormServiceGangSchedulingError)
+	if gangCondition == nil {
+		t.Fatal("expected gang scheduling condition to be preserved")
+	}
+	if gangCondition.LastTransitionTime == nil || !gangCondition.LastTransitionTime.Equal(&oldTransition) {
+		t.Fatalf("expected gang scheduling LastTransitionTime %v, got %v", oldTransition, gangCondition.LastTransitionTime)
 	}
 }
 

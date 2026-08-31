@@ -4,74 +4,114 @@
 Multi-Node Inference
 ====================
 
+Distributed inference splits and processes an LLM across multiple nodes or devices.
+This approach is needed for large models that exceed the memory capacity of a single machine.
 
-Distributed inference refers to the technique of splitting and processing LLM model across multiple nodes or devices.
-This approach is particularly useful for large models that cannot fit into the memory of a single machine.
-This solution relies on KubeRay to orchestrate the Ray Clusters.
+AIBrix provides two orchestration paths for multi-node inference:
 
-Key API Design
---------------
+1. Ray-based Orchestration (``RayClusterFleet`` / ``RayClusterReplicaSet``): Uses KubeRay for intra-application worker placement and coordination, with Kubernetes managing replica scaling and rollouts.
+2. Native PodSet Orchestration (``StormService``): Kubernetes-native multi-role and multi-node grouping via ``podGroupSize`` without requiring KubeRay.
 
-In the landscape of distributed computing, the need for efficient orchestration of multi-node inference tasks has become paramount.
-Kubernetes has established itself as a leading platform for managing containerized applications, offering robust resource management and scalability.
-On the other hand, Ray has emerged as a powerful framework for building and running distributed applications, particularly well-suited for handling complex machine learning workflows.
-However, the existing approaches to orchestration often fall short in terms of flexibility and simplicity.
-Kubernetes operators, while powerful, can become overly complex when dealing with fine-grained orchestration of distributed applications.
-Ray, although excellent for internal task scheduling and resource management, lacks the broader resource orchestration capabilities provided by Kubernetes.
+.. contents:: On this page
+   :local:
+   :depth: 2
 
-To address these challenges, we propose a new orchestration approach that synergizes the strengths of both Kubernetes and Ray.
-This approach leverages Ray for ``internal fine-grained application orchestration``, allowing users to utilize Ray's APIs for distributed computation Simultaneously,
-Kubernetes will handle the overall application resource orchestration, focusing on ``coarse-grained resource allocation`` and environment configuration.
-This division of responsibilities simplifies the design of Kubernetes operators and enhances the overall flexibility and efficiency of the orchestration process.
 
-We introduce two key APIs for RayCluster Management, it's ``RayClusterReplicaSet`` and ``RayClusterFleet``.
-It's similar like Kubernetes core concept ``ReplicaSet`` and ``Deployment``. Most of the time, you only need to use ``RayClusterFleet``.
+Choosing an Orchestration Abstraction
+--------------------------------------
+
+Operators can pick the abstraction matching their deployment topology and infrastructure setup:
+
+.. list-table::
+   :widths: 25 35 40
+   :header-rows: 1
+
+   * - Abstraction
+     - Infrastructure Requirement
+     - Best Suited For
+   * - RayClusterFleet
+     - KubeRay operator installed
+     - Standard multi-node vLLM deployments where Ray handles process placement and worker coordination.
+   * - StormService
+     - Native Kubernetes (no KubeRay required)
+     - Prefill-Decode (PD) disaggregated setups, custom multi-role architectures, or direct engine-native distributed backends (like SGLang or vLLM with MPI/NCCL and RDMA networking).
+
+
+KubeRay Orchestration (RayClusterFleet)
+----------------------------------------
+
+In distributed computing, managing multi-node inference requires coordination at two layers: fine-grained task execution inside the cluster, and standard operational management from Kubernetes.
+
+Ray handles intra-application task scheduling and worker communication well, but relies on external systems for cluster lifecycle operations. Kubernetes excels at container scheduling, autoscaling, and rolling updates.
+
+AIBrix combines both: Ray handles internal distributed computation, while Kubernetes manages replica lifecycle and environment setup.
+
+Two key APIs manage Ray clusters: ``RayClusterReplicaSet`` and ``RayClusterFleet``.
+These mirror Kubernetes ``ReplicaSet`` and ``Deployment`` patterns. In most cases, ``RayClusterFleet`` is the primary resource to configure.
 
 .. figure:: ../assets/images/mix-grain-orchestration.png
   :alt: mix-grain-orchestration
   :width: 70%
   :align: center
 
-- Ray Framework Focus: In this model, Ray is emphasized solely for its role in intra-application orchestration. Each application instance corresponds to a single Ray Cluster, and multiple service instances of an application equate to multiple Ray Clusters. This ensures that Ray handles the distributed nature of the application internally without interference from external orchestration systems.
-
-- Kubernetes Layer: Kubernetes operates at the outer layer, responsible for initiating Ray Clusters and managing standard Kubernetes functionalities such as autoscaling and rolling updates. The Kubernetes layer doesn't orchestrate the roles inside the application anymore. These features are well-established within the Kubernetes ecosystem, ensuring robust and reliable resource management, scaling, and update processes. By leveraging Kubernetes for these operations, we can achieve a seamless integration of Ray’s distributed computing capabilities with Kubernetes’ mature operational management.
-
-- Service Encapsulation and Mapping: At a higher level, services are encapsulated in a manner analogous to Kubernetes Deployments and ReplicaSets. The key difference lies in the mapping: instead of Pods, we now have Ray Clusters representing application instances. Traditionally, a single Pod would constitute an application instance; however, in this distributed model, a Ray Cluster serves this purpose, encapsulating the complexity of distributed execution within itself.
+- Ray Framework Focus: Ray handles intra-application orchestration. Each application instance corresponds to a single Ray cluster.
+- Kubernetes Layer: Kubernetes operates at the outer layer, handling Ray cluster creation, autoscaling, and rolling updates.
+- Service Encapsulation: Services map to Ray clusters representing application instances rather than single pods.
 
 .. attention::
-    We already submit our ideas to KubeRay community. Hopefully, we can merge into the repo pretty soon.
+    We already submitted our ideas to the KubeRay community.
 
 
-Workloads Examples
-------------------
+RayClusterFleet Example
+^^^^^^^^^^^^^^^^^^^^^^^
 
-.. attention::
-
-    Starting from v0.6.6, we've added essential packages to run distributed inference with vLLM official container image distribution out of the box.
-    If you use earlier versions, you can follow guidance below to build your own image compatible with multi-node inference.
-
-
-This is the ``RayClusterFleet`` example, you can apply this yaml in your cluster.
+Below is a ``RayClusterFleet`` example deploying a two-node distributed inference cluster:
 
 .. literalinclude:: ../../../samples/distributed/fleet-two-node.yaml
    :language: yaml
 
 
-vLLM Version
-^^^^^^^^^^^^
+Native PodSet Orchestration (StormService)
+------------------------------------------
 
-If you are using vLLM earlier version, you have two options.
+For deployments that do not run KubeRay, or for disaggregated architectures requiring explicit role separation (such as separate Prefill and Decode roles), AIBrix provides native multi-node grouping via ``StormService``.
+
+Using ``podGroupSize`` within a role template, ``StormService`` allocates multiple synchronized pods for each replica instance and injects deterministic distributed environment variables (such as ``$POD_GROUP_INDEX`` and ``$PODSET_NAME``). This enables engine-native Tensor Parallelism (TP) across multiple nodes.
+
+Key capabilities:
+
+- No external dependencies: Runs directly on Kubernetes without installing KubeRay.
+- Multi-Role and Disaggregation support: Allows defining separate roles (such as routing, prefill, and decode) with distinct resource profiles and pod group sizes within a single service definition.
+- Deterministic rank and discovery: Pods within a group discover peers via predictable headless service DNS entries (such as ``${PODSET_NAME}-0.${STORM_SERVICE_NAME}``).
+
+StormService Multi-Node TP Sample
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Below is a complete multi-node Tensor Parallelism example with Prefill/Decode disaggregation (2-node prefill and 2-node decode with ``podGroupSize: 2`` and ``--nnodes 2 --tp-size 2``):
+
+.. literalinclude:: ../../../samples/disaggregation/sglang/tp-1p1d.yaml
+   :language: yaml
+
+
+Container Image Requirements
+-----------------------------
+
+.. attention::
+
+    Starting from v0.6.6, essential packages to run distributed inference with the official vLLM container image distribution are included out of the box.
+    If you use earlier versions, follow the guidance below to build a compatible image.
+
+If you are using an earlier vLLM version, you have two options:
 
 * Use our built image ``aibrix/vllm-openai:v0.6.1.post2-distributed``.
-* Build your own image and follow steps here.
+* Build your own image following these steps:
 
 .. code-block:: Dockerfile
 
     FROM vllm/vllm-openai:v0.6.1.post2
-    RUN apt update && apt install -y wget # important for future healthcheck
-    RUN pip3 install ray[default] # important for future healthcheck
+    RUN apt update && apt install -y wget
+    RUN pip3 install ray[default]
     ENTRYPOINT [""]
-
 
 .. code-block:: bash
 
