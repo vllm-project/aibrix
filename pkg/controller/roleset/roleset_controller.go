@@ -142,6 +142,10 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		managedErrors = append(managedErrors, fmt.Errorf("sync pod group error %v", err))
 	}
 
+	if err := syncHistoricalNodeBindings(ctx, r.Client, roleSet); err != nil {
+		klog.Warningf("roleset %s/%s sync historical-node bindings error %v", roleSet.Namespace, roleSet.Name, err)
+	}
+
 	// 2. sync pods
 	err := r.syncPods(ctx, roleSet)
 	if err != nil {
