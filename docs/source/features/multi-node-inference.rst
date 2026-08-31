@@ -4,18 +4,66 @@
 Multi-Node Inference
 ====================
 
-Distributed inference splits one model across several nodes or devices. It is the path to take
-when a model does not fit into the GPU memory of a single machine, or when you want tensor or
-pipeline parallelism to span more accelerators than one node provides.
+Distributed inference splits and processes an LLM across multiple nodes or devices.
+This approach is needed for large models that exceed the memory capacity of a single machine.
 
-AIBrix implements multi-node inference on top of `KubeRay <https://github.com/ray-project/kuberay>`_.
-Each replica of a model is a Ray cluster: one head pod that runs the inference engine and one or
-more worker pods that contribute GPUs. AIBrix adds two custom resources, ``RayClusterFleet`` and
-``RayClusterReplicaSet``, that manage those Ray clusters the way a ``Deployment`` and a
-``ReplicaSet`` manage pods.
+AIBrix provides two orchestration paths for multi-node inference:
+
+1. Ray-based Orchestration (``RayClusterFleet`` / ``RayClusterReplicaSet``): Uses KubeRay for intra-application worker placement and coordination, with Kubernetes managing replica scaling and rollouts.
+2. Native PodSet Orchestration (``StormService``): Kubernetes-native multi-role and multi-node grouping via ``podGroupSize`` without requiring KubeRay.
+
+.. contents:: On this page
+   :local:
+   :depth: 2
+
+
+Choosing an Orchestration Abstraction
+--------------------------------------
+
+Operators can pick the abstraction matching their deployment topology and infrastructure setup:
+
+.. list-table::
+   :widths: 25 35 40
+   :header-rows: 1
+
+   * - Abstraction
+     - Infrastructure Requirement
+     - Best Suited For
+   * - RayClusterFleet
+     - KubeRay operator installed
+     - Standard multi-node vLLM deployments where Ray handles process placement and worker coordination.
+   * - StormService
+     - Native Kubernetes (no KubeRay required)
+     - Prefill-Decode (PD) disaggregated setups, custom multi-role architectures, or direct engine-native distributed backends (like SGLang or vLLM with MPI/NCCL and RDMA networking).
+
+
+KubeRay Orchestration (RayClusterFleet)
+----------------------------------------
+
+In distributed computing, managing multi-node inference requires coordination at two layers: fine-grained task execution inside the cluster, and standard operational management from Kubernetes.
+
+Ray handles intra-application task scheduling and worker communication well, but relies on external systems for cluster lifecycle operations. Kubernetes excels at container scheduling, autoscaling, and rolling updates.
+
+AIBrix combines both: Ray handles internal distributed computation, while Kubernetes manages replica lifecycle and environment setup.
+
+Two key APIs manage Ray clusters: ``RayClusterReplicaSet`` and ``RayClusterFleet``.
+These mirror Kubernetes ``ReplicaSet`` and ``Deployment`` patterns. In most cases, ``RayClusterFleet`` is the primary resource to configure.
+
+.. figure:: ../assets/images/mix-grain-orchestration.png
+  :alt: mix-grain-orchestration
+  :width: 70%
+  :align: center
+
+- Ray Framework Focus: Ray handles intra-application orchestration. Each application instance corresponds to a single Ray cluster.
+- Kubernetes Layer: Kubernetes operates at the outer layer, handling Ray cluster creation, autoscaling, and rolling updates.
+- Service Encapsulation: Services map to Ray clusters representing application instances rather than single pods.
+
+.. attention::
+    We already submitted our ideas to the KubeRay community.
+
 
 How it works
-------------
+^^^^^^^^^^^^
 
 .. mermaid::
 
@@ -63,7 +111,7 @@ only. The fleet controller stamps every pod with
 back to the fleet that owns the pod.
 
 Prerequisites
--------------
+^^^^^^^^^^^^^
 
 * The KubeRay operator. It is optional for the rest of AIBrix and only needed for
   ``RayClusterFleet`` and ``RayClusterReplicaSet``. Install it with the Helm command in
@@ -71,42 +119,10 @@ Prerequisites
   image and turns on the ``RayClusterStatusConditions`` feature gate that readiness depends on.
 * GPU nodes for the head pod and each worker pod.
 * An engine image that contains Ray. Official vLLM images from v0.6.6 onward work out of the
-  box; for older versions see `vLLM Version`_ below.
-
-Key API Design
---------------
-
-In the landscape of distributed computing, the need for efficient orchestration of multi-node inference tasks has become paramount.
-Kubernetes has established itself as a leading platform for managing containerized applications, offering robust resource management and scalability.
-On the other hand, Ray has emerged as a powerful framework for building and running distributed applications, particularly well-suited for handling complex machine learning workflows.
-However, the existing approaches to orchestration often fall short in terms of flexibility and simplicity.
-Kubernetes operators, while powerful, can become overly complex when dealing with fine-grained orchestration of distributed applications.
-Ray, although excellent for internal task scheduling and resource management, lacks the broader resource orchestration capabilities provided by Kubernetes.
-
-To address these challenges, we propose a new orchestration approach that synergizes the strengths of both Kubernetes and Ray.
-This approach leverages Ray for ``internal fine-grained application orchestration``, allowing users to utilize Ray's APIs for distributed computation Simultaneously,
-Kubernetes will handle the overall application resource orchestration, focusing on ``coarse-grained resource allocation`` and environment configuration.
-This division of responsibilities simplifies the design of Kubernetes operators and enhances the overall flexibility and efficiency of the orchestration process.
-
-We introduce two key APIs for RayCluster Management, it's ``RayClusterReplicaSet`` and ``RayClusterFleet``.
-It's similar like Kubernetes core concept ``ReplicaSet`` and ``Deployment``. Most of the time, you only need to use ``RayClusterFleet``.
-
-.. figure:: ../assets/images/mix-grain-orchestration.png
-  :alt: mix-grain-orchestration
-  :width: 70%
-  :align: center
-
-- Ray Framework Focus: In this model, Ray is emphasized solely for its role in intra-application orchestration. Each application instance corresponds to a single Ray Cluster, and multiple service instances of an application equate to multiple Ray Clusters. This ensures that Ray handles the distributed nature of the application internally without interference from external orchestration systems.
-
-- Kubernetes Layer: Kubernetes operates at the outer layer, responsible for initiating Ray Clusters and managing standard Kubernetes functionalities such as autoscaling and rolling updates. The Kubernetes layer doesn't orchestrate the roles inside the application anymore. These features are well-established within the Kubernetes ecosystem, ensuring robust and reliable resource management, scaling, and update processes. By leveraging Kubernetes for these operations, we can achieve a seamless integration of Ray’s distributed computing capabilities with Kubernetes’ mature operational management.
-
-- Service Encapsulation and Mapping: At a higher level, services are encapsulated in a manner analogous to Kubernetes Deployments and ReplicaSets. The key difference lies in the mapping: instead of Pods, we now have Ray Clusters representing application instances. Traditionally, a single Pod would constitute an application instance; however, in this distributed model, a Ray Cluster serves this purpose, encapsulating the complexity of distributed execution within itself.
-
-.. attention::
-    We already submit our ideas to KubeRay community. Hopefully, we can merge into the repo pretty soon.
+  box; for older versions see `Container Image Requirements`_ below.
 
 Configuration reference
------------------------
+^^^^^^^^^^^^^^^^^^^^^^^
 
 Both resources live in the ``orchestration.aibrix.ai/v1alpha1`` API group.
 
@@ -181,16 +197,10 @@ Both resources live in the ``orchestration.aibrix.ai/v1alpha1`` API group.
 number of GPUs in the whole Ray cluster (head plus workers). The sample below runs
 ``--tensor-parallel-size 2`` on a head pod with one GPU and one worker pod with one GPU.
 
-Workloads Examples
-------------------
+RayClusterFleet Example
+^^^^^^^^^^^^^^^^^^^^^^^
 
-.. attention::
-
-    Starting from v0.6.6, we've added essential packages to run distributed inference with vLLM official container image distribution out of the box.
-    If you use earlier versions, you can follow guidance below to build your own image compatible with multi-node inference.
-
-
-This is the ``RayClusterFleet`` example, you can apply this yaml in your cluster.
+Below is a ``RayClusterFleet`` example deploying a two-node distributed inference cluster:
 
 .. literalinclude:: ../../../samples/distributed/fleet-two-node.yaml
    :language: yaml
@@ -214,7 +224,7 @@ What the sample is doing, section by section:
   :doc:`../production/gateway`.
 
 Verify the deployment
----------------------
+^^^^^^^^^^^^^^^^^^^^^
 
 .. code-block:: bash
 
@@ -247,7 +257,7 @@ Then send a request through the gateway exactly as you would for a single-pod mo
       -d '{"model": "qwen-coder-7b-instruct", "messages": [{"role": "user", "content": "hello"}]}'
 
 Troubleshooting
----------------
+^^^^^^^^^^^^^^^
 
 **The fleet never reports ready replicas.**
 Run ``kubectl describe raycluster <name>`` and look at ``Status.Conditions``. AIBrix requires
@@ -269,21 +279,47 @@ The gateway only routes to head pods that carry ``model.aibrix.ai/name`` and are
 that the label is on the head pod template (not only on the fleet) and that the readiness probe
 on the runtime sidecar (port 8080, ``/ready``) is passing.
 
-vLLM Version
-------------
+Native PodSet Orchestration (StormService)
+------------------------------------------
 
-If you are using vLLM earlier version, you have two options.
+For deployments that do not run KubeRay, or for disaggregated architectures requiring explicit role separation (such as separate Prefill and Decode roles), AIBrix provides native multi-node grouping via ``StormService``.
+
+Using ``podGroupSize`` within a role template, ``StormService`` allocates multiple synchronized pods for each replica instance and injects deterministic distributed environment variables (such as ``$POD_GROUP_INDEX`` and ``$PODSET_NAME``). This enables engine-native Tensor Parallelism (TP) across multiple nodes.
+
+Key capabilities:
+
+- No external dependencies: Runs directly on Kubernetes without installing KubeRay.
+- Multi-Role and Disaggregation support: Allows defining separate roles (such as routing, prefill, and decode) with distinct resource profiles and pod group sizes within a single service definition.
+- Deterministic rank and discovery: Pods within a group discover peers via predictable headless service DNS entries (such as ``${PODSET_NAME}-0.${STORM_SERVICE_NAME}``).
+
+StormService Multi-Node TP Sample
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Below is a complete multi-node Tensor Parallelism example with Prefill/Decode disaggregation (2-node prefill and 2-node decode with ``podGroupSize: 2`` and ``--nnodes 2 --tp-size 2``):
+
+.. literalinclude:: ../../../samples/disaggregation/sglang/tp-1p1d.yaml
+   :language: yaml
+
+
+Container Image Requirements
+-----------------------------
+
+.. attention::
+
+    Starting from v0.6.6, essential packages to run distributed inference with the official vLLM container image distribution are included out of the box.
+    If you use earlier versions, follow the guidance below to build a compatible image.
+
+If you are using an earlier vLLM version, you have two options:
 
 * Use our built image ``aibrix/vllm-openai:v0.6.1.post2-distributed``.
-* Build your own image and follow steps here.
+* Build your own image following these steps:
 
 .. code-block:: Dockerfile
 
     FROM vllm/vllm-openai:v0.6.1.post2
-    RUN apt update && apt install -y wget # important for future healthcheck
-    RUN pip3 install ray[default] # important for future healthcheck
+    RUN apt update && apt install -y wget
+    RUN pip3 install ray[default]
     ENTRYPOINT [""]
-
 
 .. code-block:: bash
 
@@ -292,4 +328,4 @@ If you are using vLLM earlier version, you have two options.
 .. seealso::
 
    :doc:`pd-disaggregation`
-       Prefill/decode disaggregation with ``StormService``, the other multi-pod topology AIBrix supports.
+       The complete guide to prefill/decode disaggregation with ``StormService``.

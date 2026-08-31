@@ -164,7 +164,9 @@ func (d *DynamoDeployer) DeployControlPlane(ctx context.Context) error {
 		"upgrade", "--install", dynamoPlatformHelmReleaseName, release.ChartPath,
 		"-n", d.namespace,
 		"--create-namespace",
-		"--set", "dynamo-operator.namespaceRestriction.enabled=true",
+	}
+	if !dynamoNeedsClusterWideCRDUpgrade(d.version) {
+		installArgs = append(installArgs, "--set", "dynamo-operator.namespaceRestriction.enabled=true")
 	}
 	if d.platformValues == "" {
 		platformValues, err := d.writeDynamoDefaultPlatformValues()
@@ -380,6 +382,14 @@ nats:
   natsBox:
     enabled: false
 `, operatorTag)
+}
+
+func dynamoNeedsClusterWideCRDUpgrade(version string) bool {
+	var major, minor, patch int
+	if _, err := fmt.Sscanf(strings.TrimPrefix(strings.TrimSpace(version), "v"), "%d.%d.%d", &major, &minor, &patch); err != nil {
+		return false
+	}
+	return major > 1 || major == 1 && (minor > 3 || minor == 3 && patch >= 1)
 }
 
 func (d *DynamoDeployer) patchDynamoComponentDeploymentFinalizers(ctx context.Context, namespace string) ([]string, error) {

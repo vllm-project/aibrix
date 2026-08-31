@@ -19,6 +19,7 @@ package metrics
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -272,9 +273,16 @@ func (f *ExternalMetricsFetcher) fetchFromGPUOptimizer(ctx context.Context, pod 
 		"path", source.Path,
 		"metric", source.TargetMetric)
 
-	// Use the centralized engine fetcher for external HTTP calls
-	// This gives us a global value that we need to adapt to per-pod semantics
-	metricValue, err := f.engineFetcher.FetchTypedMetric(ctx, source.Endpoint, "external", "gpu-optimizer", source.TargetMetric)
+	protocol := source.ProtocolType
+	if protocol == "" {
+		protocol = autoscalingv1alpha1.HTTP
+	}
+	url := fmt.Sprintf("%s://%s/%s", protocol, source.Endpoint, strings.TrimLeft(source.Path, "/"))
+
+	// External metrics are not engine metrics: fetch the raw metric directly from the
+	// configured endpoint and path instead of resolving through the central registry.
+	// This gives us a global value that we need to adapt to per-pod semantics.
+	metricValue, err := f.engineFetcher.FetchRawMetric(ctx, url, source.Endpoint, source.TargetMetric)
 	if err != nil {
 		klog.Warningf("Failed to fetch metric %s from GPU-Optimizer %s: %v",
 			source.TargetMetric, source.Endpoint, err)

@@ -189,3 +189,45 @@ func TestCreatePodFromTemplate_EnvConflict(t *testing.T) {
 	assert.Equal(t, "USER_VAR", env.Name, "Only non-conflicting user-defined env var should be present")
 	assert.Equal(t, "value", env.Value, "User-defined env var value should be preserved")
 }
+
+func TestCreatePodFromTemplate_VolcanoSchedulingMetadata(t *testing.T) {
+	podSet := &orchestrationv1alpha1.PodSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-podset",
+			Namespace: "test-namespace",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey:         "test-service",
+				constants.VolcanoPodGroupNameAnnotationKey: "test-podset",
+				constants.VolcanoTaskSpecKey:               "prefill",
+			},
+			Annotations: map[string]string{
+				constants.VolcanoPodGroupNameAnnotationKey: "test-podset",
+				constants.VolcanoTaskSpecKey:               "prefill",
+			},
+		},
+		Spec: orchestrationv1alpha1.PodSetSpec{
+			PodGroupSize: 2,
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "test-container"}},
+				},
+			},
+		},
+	}
+	scheme := runtime.NewScheme()
+	reconciler := &PodSetReconciler{
+		Client:        clientFake.NewClientBuilder().Build(),
+		Scheme:        scheme,
+		EventRecorder: &record.FakeRecorder{},
+		DynamicClient: dynamicFake.NewSimpleDynamicClient(scheme),
+	}
+
+	pod, err := reconciler.createPodFromTemplate(podSet, 0)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "volcano", pod.Spec.SchedulerName)
+	assert.Equal(t, "test-podset", pod.Labels[constants.VolcanoPodGroupNameAnnotationKey])
+	assert.Equal(t, "test-podset", pod.Annotations[constants.VolcanoPodGroupNameAnnotationKey])
+	assert.Equal(t, "prefill", pod.Labels[constants.VolcanoTaskSpecKey])
+	assert.Equal(t, "prefill", pod.Annotations[constants.VolcanoTaskSpecKey])
+}

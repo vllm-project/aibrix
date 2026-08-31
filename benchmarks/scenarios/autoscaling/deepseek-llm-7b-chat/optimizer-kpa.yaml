@@ -7,14 +7,14 @@ metadata:
     app.kubernetes.io/name: aibrix
     app.kubernetes.io/managed-by: kustomize
   annotations:
-    kpa.autoscaling.aibrix.ai/scale-down-delay: 0s
+    autoscaling.aibrix.ai/scale-down-cooldown-window: 0s
 spec:
   scalingStrategy: KPA 
   minReplicas: 1
   maxReplicas: 8
   metricsSources:
     - endpoint: aibrix-gpu-optimizer.aibrix-system.svc.cluster.local:8080
-      metricSourceType: domain
+      metricSourceType: external
       path: /metrics/default/deepseek-llm-7b-chat
       protocolType: http
       targetMetric: vllm:deployment_replicas

@@ -285,6 +285,8 @@ jobs:
           kind get kubeconfig --name installation-test > /tmp/admin.conf
           export KUBECONFIG=/tmp/admin.conf
           export AIBRIX_ROLESET_INPLACE_E2E=true
+          export AIBRIX_ROLESET_HISTORICAL_NODE_E2E=true
+          export AIBRIX_ROLESET_CONTROLLER_DEPLOYMENT=aibrix-controller-manager
           make test-e2e
           export EXTERNAL_METRICS_E2E_CLUSTER=kind
           export EXTERNAL_METRICS_E2E_USE_EXISTING_CONTROLLER=true

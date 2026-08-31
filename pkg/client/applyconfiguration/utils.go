@@ -79,6 +79,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationorchestrationv1alpha1.DisruptionToleranceApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("GodelSchedulingStrategySpec"):
 		return &applyconfigurationorchestrationv1alpha1.GodelSchedulingStrategySpecApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("HistoricalNodeSchedulingPolicy"):
+		return &applyconfigurationorchestrationv1alpha1.HistoricalNodeSchedulingPolicyApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleet"):
 		return &applyconfigurationorchestrationv1alpha1.RayClusterFleetApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleetCondition"):
@@ -95,6 +97,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationorchestrationv1alpha1.RayClusterReplicaSetStatusApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterTemplateSpec"):
 		return &applyconfigurationorchestrationv1alpha1.RayClusterTemplateSpecApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RoleReplacementScheduling"):
+		return &applyconfigurationorchestrationv1alpha1.RoleReplacementSchedulingApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RoleSetSpec"):
 		return &applyconfigurationorchestrationv1alpha1.RoleSetSpecApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RoleSetTemplateSpec"):

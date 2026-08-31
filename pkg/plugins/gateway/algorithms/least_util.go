@@ -17,13 +17,9 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"math"
-	"math/rand"
-
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
-	v1 "k8s.io/api/core/v1"
 	klog "k8s.io/klog/v2"
 )
 
@@ -75,44 +71,9 @@ func (r leastUtilRouter) Polarity() types.Polarity {
 }
 
 func (r leastUtilRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
-	pods := readyPodList.All()
-	scores, scored, err := r.ScoreAll(ctx, readyPodList)
+	targetPod, err := RouteByScore(ctx, readyPodList, r)
 	if err != nil {
 		return "", err
-	}
-
-	var targetPod *v1.Pod
-	minUtilization := math.MaxFloat64 // <= 1 in general
-	var candidatePods []*v1.Pod
-
-	for i, pod := range pods {
-		if !scored[i] {
-			continue
-		}
-		utilizationValue := scores[i]
-
-		if utilizationValue < minUtilization {
-			minUtilization = utilizationValue
-			candidatePods = []*v1.Pod{pod}
-		} else if utilizationValue == minUtilization {
-			candidatePods = append(candidatePods, pod)
-		}
-	}
-
-	if len(candidatePods) > 0 {
-		targetPod = candidatePods[rand.Intn(len(candidatePods))]
-	}
-
-	// Use fallback if no valid metrics
-	if targetPod == nil {
-		var err error
-		targetPod, err = SelectRandomPodAsFallback(ctx, pods, rand.Intn)
-		if err != nil {
-			return "", err
-		}
-		klog.V(4).Infof("select random pod: %v, podIP: %v", targetPod.Name, targetPod.Status.PodIP)
-	} else {
-		klog.V(4).Infof("select target pod: %v, podIP: %v, engine utilization: %v", targetPod.Name, targetPod.Status.PodIP, minUtilization)
 	}
 
 	ctx.SetTargetPod(targetPod)

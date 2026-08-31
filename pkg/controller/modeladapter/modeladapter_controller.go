@@ -88,6 +88,10 @@ const (
 	ModelAdapterLoadingErrorReason = "ModelAdapterLoadingError"
 	// ValidationFailedReason is added when model adapter object fails the validation
 	ValidationFailedReason = "ValidationFailed"
+	// NoReadyPodsReason is added when no backend pods are ready for scheduling.
+	NoReadyPodsReason = "NoReadyPods"
+	// InsufficientReadyPodsReason is added when fewer backend pods are ready than required.
+	InsufficientReadyPodsReason = "InsufficientReadyPods"
 	// StableInstanceFoundReason is added if there's stale pod and instance has been deleted successfully.
 	StableInstanceFoundReason = "StableInstanceFound"
 	// ConditionNotReason is added when there's no condition found in the cluster.
@@ -416,7 +420,7 @@ func (r *ModelAdapterReconciler) enqueueModelAdapters(ctx context.Context) error
 
 func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Request, instance *modelv1alpha1.ModelAdapter) (ctrl.Result, error) {
 	// Let's set the initial status when no status is available
-	if instance.Status.Conditions == nil || len(instance.Status.Conditions) == 0 {
+	if len(instance.Status.Conditions) == 0 {
 		instance.Status.Phase = modelv1alpha1.ModelAdapterPending
 		condition := NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeInitialized), metav1.ConditionUnknown,
 			ModelAdapterInitializedReason, "Starting reconciliation")
@@ -490,6 +494,16 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func newSchedulingPendingCondition(instance *modelv1alpha1.ModelAdapter, available, needed int) metav1.Condition {
+	reason := NoReadyPodsReason
+	message := fmt.Sprintf("ModelAdapter %s has no ready backend pods available for scheduling", klog.KObj(instance))
+	if available > 0 {
+		reason = InsufficientReadyPodsReason
+		message = fmt.Sprintf("ModelAdapter %s has %d ready backend pods, but needs %d for scheduling", klog.KObj(instance), available, needed)
+	}
+	return NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeScheduled), metav1.ConditionFalse, reason, message)
 }
 
 func (r *ModelAdapterReconciler) updateStatus(ctx context.Context, instance *modelv1alpha1.ModelAdapter, conditions ...metav1.Condition) error {
@@ -665,10 +679,16 @@ func (r *ModelAdapterReconciler) reconcileLoadOnSinglePod(ctx context.Context, i
 		} else if len(candidatePods) > 0 {
 			// Some pods available but not enough, try with what we have
 			klog.Infof("Only %d ready pods available for model adapter %s, need %d more, will wait", len(candidatePods), klog.KObj(instance), neededReplicas)
+			if err := r.updateStatus(ctx, instance, newSchedulingPendingCondition(instance, len(candidatePods), neededReplicas)); err != nil {
+				return ctrl.Result{}, err
+			}
 			return ctrl.Result{RequeueAfter: time.Duration(RetryBackoffSeconds) * time.Second}, nil
 		} else {
 			// No ready pods available, wait for pods to become ready
 			klog.Infof("No ready pods available for model adapter %s, waiting for pods to become ready", klog.KObj(instance))
+			if err := r.updateStatus(ctx, instance, newSchedulingPendingCondition(instance, 0, neededReplicas)); err != nil {
+				return ctrl.Result{}, err
+			}
 			return ctrl.Result{RequeueAfter: time.Duration(RetryBackoffSeconds) * time.Second}, nil
 		}
 	} else if currentReplicas > desiredReplicas {

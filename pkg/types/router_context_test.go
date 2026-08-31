@@ -75,6 +75,7 @@ var _ = Describe("RouterContext", func() {
 		Expect(rctx.targetPod.Load()).To(BeNil()) // target pod set
 		Expect(rctx.getError()).ToNot(BeNil())    // No blocking
 
+		rctx.BaseModel = "stale-base"
 		rctx.Delete()
 		ctx2 := context.Background()
 		rctx2 := NewRoutingContext(ctx2, "algorithm2", "model2", "message2", "r2", "")
@@ -83,6 +84,7 @@ var _ = Describe("RouterContext", func() {
 		Expect(rctx2.Algorithm).To(Equal(RoutingAlgorithm("algorithm2")))
 		Expect(rctx.RequestID).To(Equal("r2"))
 		Expect(rctx2.Model).To(Equal("model2"))
+		Expect(rctx2.BaseModel).To(Equal(""))
 		Expect(rctx2.Message).To(Equal("message2"))
 		Expect(rctx.predictor).To(BeNil())
 		shouldBlock(func() { rctx.TargetPod() }, 100*time.Millisecond)
@@ -90,6 +92,16 @@ var _ = Describe("RouterContext", func() {
 		Expect(rctx.getError()).To(BeNil()) // No blocking
 
 		rctx.Delete()
+	})
+
+	It("should MetricModel use the base model for LoRA requests", func() {
+		lora := &RoutingContext{Model: "hip-adapter", BaseModel: "qwen3-8b"}
+		Expect(lora.MetricModel()).To(Equal("qwen3-8b"))
+		Expect(lora.MetricLoraAdapter()).To(Equal("hip-adapter"))
+
+		plain := &RoutingContext{Model: "qwen3-8b"}
+		Expect(plain.MetricModel()).To(Equal("qwen3-8b"))
+		Expect(plain.MetricLoraAdapter()).To(Equal(""))
 	})
 
 	It("should SetTargetPod accept nil", func() {
