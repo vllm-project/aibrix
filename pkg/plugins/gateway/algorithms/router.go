@@ -161,6 +161,21 @@ var (
 	autoBlendLeastRequestWeight = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT", 1)
 )
 
+// autoBlendPrefixCacheWeight/autoBlendPrefixCacheLoadBalanceWeight set the default blend ratio
+// between prefix-cache and load-balance specifically, used in place of the flat
+// autoBlendLoadBalanceWeight when a caller requests plain "prefix-cache" with no explicit weight
+// of its own (see the len(cfg.Items) == 1 branch in appendLoadBalanceBlend). 5:4 == 1.25:1: a
+// deliberate, modest lean toward cache-affinity so it edges out load-balance on an exact-tie
+// disagreement (see the multiStrategyRouter.Route tie-break comment) instead of falling to an
+// arbitrary alphabetical pick, without giving it enough weight to keep steering traffic at a
+// cache-warm pod once load-balance clearly disagrees — a stronger lean risks masking real
+// congestion on a pod whose capacity/drain-rate estimate hasn't caught up yet under sustained
+// concurrent load.
+var (
+	autoBlendPrefixCacheWeight            = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT", 5)
+	autoBlendPrefixCacheLoadBalanceWeight = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT", 4)
+)
+
 // maxCachedAlgorithmStrings bounds how many distinct algorithm-string keys
 // RouterManager.multiRouterCache and unblendableLogged will retain. Both maps are keyed by the
 // client-controlled routing-strategy string — which may embed an arbitrary weight coefficient
@@ -252,9 +267,19 @@ func appendLoadBalanceBlend(algStr string, cfg *MultiRouterConfig) (string, bool
 		}
 	}
 
+	// A bare "prefix-cache" request (no explicit weight, nothing else blended in) gets the
+	// dedicated prefix-cache/load-balance ratio instead of the flat autoBlendLoadBalanceWeight
+	// append: with only one item, the caller's own coefficient carries no information before
+	// blending, so rewriting it here doesn't discard anything the caller expressed.
+	prefixCacheOnly := len(cfg.Items) == 1 && includesPrefixCache
+
 	blended := algStr
 	if !mentioned[string(RouterLoadBalance)] {
-		blended += fmt.Sprintf(",%s:%d", RouterLoadBalance, autoBlendLoadBalanceWeight)
+		if prefixCacheOnly {
+			blended = fmt.Sprintf("%s:%d,%s:%d", RouterPrefixCache, autoBlendPrefixCacheWeight, RouterLoadBalance, autoBlendPrefixCacheLoadBalanceWeight)
+		} else {
+			blended += fmt.Sprintf(",%s:%d", RouterLoadBalance, autoBlendLoadBalanceWeight)
+		}
 	}
 	if !includesPrefixCache && !mentioned[string(RouterLeastRequest)] && autoBlendLeastRequestWeight > 0 {
 		blended += fmt.Sprintf(",%s:%d", RouterLeastRequest, autoBlendLeastRequestWeight)
