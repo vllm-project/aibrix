@@ -65,7 +65,7 @@ func (r *StormServiceReconciler) sync(ctx context.Context, stormService *orchest
 		klog.Errorf("failed to update status for stormservice %s/%s, err: %v", stormService.Namespace, stormService.Name, err)
 		return 0, err
 	} else if !ready {
-		return DefaultRequeueAfter, nil
+		return progressDeadlineRequeueAfter(stormService, time.Now()), nil
 	}
 	return 0, nil
 }
@@ -358,10 +358,14 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 	stormService.Status.UpdateRevision = updateRevision.Name
 	stormService.Status.CollisionCount = &collisionCount
 	if reconcileErr != nil {
-		condition := []orchestrationv1alpha1.Condition{
-			*utils.NewCondition(orchestrationv1alpha1.StormServiceReplicaFailure, corev1.ConditionTrue, "Failure", reconcileErr.Error()),
-		}
-		stormService.Status.Conditions = condition
+		RemoveStormServiceCondition(&stormService.Status, orchestrationv1alpha1.StormServiceReady)
+		SetStormServiceCondition(&stormService.Status, *utils.NewCondition(
+			orchestrationv1alpha1.StormServiceReplicaFailure,
+			corev1.ConditionTrue,
+			"Failure",
+			reconcileErr.Error(),
+		))
+		syncStormServiceProgressingCondition(stormService, checkpoint, time.Now())
 		err := r.Client.Status().Update(ctx, stormService)
 		return false, err
 	}
@@ -369,6 +373,7 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 	if err != nil {
 		return false, err
 	}
+	RemoveStormServiceCondition(&stormService.Status, orchestrationv1alpha1.StormServiceReplicaFailure)
 	stormService.Status.Replicas = int32(len(allRoleSets))
 	stormService.Status.CurrentReplicas = 0
 	stormService.Status.UpdatedReplicas = 0
@@ -400,7 +405,12 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 		stormService.Status.UpdatedReplicas == *stormService.Spec.Replicas &&
 		stormService.Status.Replicas == *stormService.Spec.Replicas &&
 		stormService.Status.CurrentRevision == stormService.Status.UpdateRevision
-	setStormServiceAvailabilityCondition(&stormService.Status, stormServiceReady)
+	if stormServiceReady {
+		setStormServiceAvailabilityCondition(&stormService.Status, true)
+	} else {
+		RemoveStormServiceCondition(&stormService.Status, orchestrationv1alpha1.StormServiceReady)
+		syncStormServiceProgressingCondition(stormService, checkpoint, time.Now())
+	}
 	setGangSchedulingConditions(&stormService.Status, allRoleSets)
 	// support scale sub resources.
 	// TODO: add pod template hash to avoid errors during upgrade.

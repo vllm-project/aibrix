@@ -228,6 +228,8 @@ New KVCache backends can be easily added by implementing the ``Connector`` inter
 
 Please refer to the `existing connectors <https://github.com/vllm-project/aibrix/tree/main/python/aibrix_kvcache/aibrix_kvcache/l2/connectors>`_ for more details.
 
+.. _kvcache_env_reference:
+
 Environment Variables Reference
 -------------------------------
 

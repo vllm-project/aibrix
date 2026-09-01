@@ -58,6 +58,11 @@ spec:
                 type: string
               paused:
                 type: boolean
+              progressDeadlineSeconds:
+                default: 600
+                format: int32
+                minimum: 1
+                type: integer
               replicas:
                 format: int32
                 type: integer

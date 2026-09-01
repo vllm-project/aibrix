@@ -70,7 +70,9 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 		func(tc *testDefaultingCase) {
 			model := tc.stormservice()
 			gomega.Expect(k8sClient.Create(ctx, model)).To(gomega.Succeed())
-			gomega.Expect(model).To(gomega.BeComparableTo(tc.wantStormService(),
+			want := tc.wantStormService()
+			want.Spec.ProgressDeadlineSeconds = ptr.To(int32(600))
+			gomega.Expect(model).To(gomega.BeComparableTo(want,
 				cmpopts.IgnoreTypes(orchestrationapi.StormServiceStatus{}),
 				cmpopts.IgnoreFields(metav1.ObjectMeta{}, "UID",
 					"ResourceVersion", "Generation", "CreationTimestamp", "ManagedFields")),
@@ -165,6 +167,32 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 					Obj()
 			},
 			failed: false,
+		}),
+
+		ginkgo.Entry("rejects zero progress deadline", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				stormService := wrapper.MakeStormService("zero-progress-deadline").
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					Obj()
+				stormService.Spec.ProgressDeadlineSeconds = ptr.To(int32(0))
+				return stormService
+			},
+			failed:        true,
+			expectInvalid: true,
+		}),
+
+		ginkgo.Entry("rejects negative progress deadline", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				stormService := wrapper.MakeStormService("negative-progress-deadline").
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					Obj()
+				stormService.Spec.ProgressDeadlineSeconds = ptr.To(int32(-1))
+				return stormService
+			},
+			failed:        true,
+			expectInvalid: true,
 		}),
 
 		ginkgo.Entry("rejects a missing nested RoleSet spec", &testValidatingCase{
