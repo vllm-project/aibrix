@@ -96,6 +96,24 @@ func podWithLabelFilter(labelKey string) predicate.Predicate {
 	}
 }
 
+// kvCacheRequestsForPod maps a Pod carrying the KVCache identifier label back to
+// the KVCache it belongs to. Pods without the label enqueue nothing.
+func kvCacheRequestsForPod(_ context.Context, obj client.Object) []reconcile.Request {
+	cacheName, ok := obj.GetLabels()[constants.KVCacheLabelKeyIdentifier]
+	if !ok {
+		return nil
+	}
+
+	return []ctrl.Request{
+		{
+			NamespacedName: types.NamespacedName{
+				Namespace: obj.GetNamespace(),
+				Name:      cacheName,
+			},
+		},
+	}
+}
+
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// use the builder fashion. If we need more fine grain control later, we can switch to `controller.New()`
@@ -105,21 +123,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		Owns(&corev1.Service{}).
 		Owns(&appsv1.Deployment{}).
 		Watches(&corev1.Pod{},
-			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
-				cacheName, ok := obj.GetLabels()[constants.KVCacheLabelKeyIdentifier]
-				if !ok {
-					return nil
-				}
-
-				return []ctrl.Request{
-					{
-						NamespacedName: types.NamespacedName{
-							Namespace: obj.GetNamespace(),
-							Name:      cacheName,
-						},
-					},
-				}
-			}),
+			handler.EnqueueRequestsFromMapFunc(kvCacheRequestsForPod),
 			builder.WithPredicates(podWithLabelFilter(constants.KVCacheLabelKeyIdentifier))).
 		Complete(r)
 	if err != nil {
