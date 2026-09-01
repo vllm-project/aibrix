@@ -61,8 +61,9 @@ var _ = ginkgo.Describe("ModelRouter controller test", func() {
 	})
 
 	ginkgo.AfterEach(func() {
-		cleanupHTTPRoutesInAibrixSystem()
-		gomega.Expect(k8sClient.Delete(ctx, ns)).To(gomega.Succeed())
+		cleanupHTTPRoutesInAibrixSystem(ns.Name)
+		err := k8sClient.Delete(ctx, ns)
+		gomega.Expect(client.IgnoreNotFound(err)).To(gomega.Succeed())
 	})
 
 	ginkgo.It("creates an HTTPRoute from Deployment, ModelAdapter, and RayClusterFleet informer events", func() {
@@ -171,13 +172,28 @@ func ensureAibrixSystemNamespace() {
 	}
 }
 
-func cleanupHTTPRoutesInAibrixSystem() {
+func cleanupHTTPRoutesInAibrixSystem(namespace string) {
 	routes := &gatewayv1.HTTPRouteList{}
 	if err := k8sClient.List(ctx, routes, client.InNamespace(aibrixSystemNS)); err != nil {
 		return
 	}
 	for i := range routes.Items {
-		_ = k8sClient.Delete(ctx, &routes.Items[i])
+		route := &routes.Items[i]
+		shouldDelete := false
+		for _, rule := range route.Spec.Rules {
+			for _, backend := range rule.BackendRefs {
+				if backend.Namespace != nil && string(*backend.Namespace) == namespace {
+					shouldDelete = true
+					break
+				}
+			}
+			if shouldDelete {
+				break
+			}
+		}
+		if shouldDelete {
+			_ = k8sClient.Delete(ctx, route)
+		}
 	}
 }
 
