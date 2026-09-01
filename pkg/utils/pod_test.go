@@ -62,7 +62,7 @@ func genPods(cnt int, readyCnt int) []*v1.Pod {
 		case 2:
 			pod.Status.Conditions[0].Status = v1.ConditionFalse
 		case 3:
-			pod.ObjectMeta.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+			pod.DeletionTimestamp = &metav1.Time{Time: time.Now()}
 		}
 		pods = append(pods, pod)
 	}
@@ -136,7 +136,7 @@ func getRayClusterHead(withLabel bool) *v1.Pod {
 		},
 	}
 	if withLabel {
-		pod.ObjectMeta.Labels[ReyClusterFleetIdentifier] = "qwen-coder-7b-instruct-by-label"
+		pod.Labels[ReyClusterFleetIdentifier] = "qwen-coder-7b-instruct-by-label"
 	}
 	return pod
 }

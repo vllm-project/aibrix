@@ -181,7 +181,7 @@ func (r *RoleSetReconciler) calculateStatusForRole(ctx context.Context, rs *orch
 
 	// Use traditional pod-based status calculation for podGroupSize <= 1
 	allPods := &v1.PodList{}
-	if err := r.Client.List(ctx, allPods, client.InNamespace(rs.Namespace), client.MatchingLabels{
+	if err := r.List(ctx, allPods, client.InNamespace(rs.Namespace), client.MatchingLabels{
 		constants.RoleSetNameLabelKey: rs.Name,
 	}); err != nil {
 		return nil, err
@@ -211,7 +211,7 @@ func (r *RoleSetReconciler) calculateStatusForRole(ctx context.Context, rs *orch
 func (r *RoleSetReconciler) calculateStatusFromPodSets(ctx context.Context, rs *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (*orchestrationv1alpha1.RoleStatus, error) {
 	// Get PodSets for this role
 	podSetList := &orchestrationv1alpha1.PodSetList{}
-	err := r.Client.List(ctx, podSetList, client.InNamespace(rs.Namespace), client.MatchingLabels{
+	err := r.List(ctx, podSetList, client.InNamespace(rs.Namespace), client.MatchingLabels{
 		constants.RoleSetNameLabelKey: rs.Name,
 		constants.RoleNameLabelKey:    role.Name,
 	})
@@ -254,12 +254,12 @@ func (r *RoleSetReconciler) finalize(ctx context.Context, roleSet *orchestration
 	selectorOpt := client.MatchingLabels{constants.RoleSetNameLabelKey: roleSet.Name}
 	// 1. check if all podsets are delete for podGroupSize > 1
 	allPodSets := &orchestrationv1alpha1.PodSetList{}
-	if err := r.Client.List(ctx, allPodSets, client.InNamespace(roleSet.Namespace), selectorOpt); err != nil {
+	if err := r.List(ctx, allPodSets, client.InNamespace(roleSet.Namespace), selectorOpt); err != nil {
 		return false, err
 	} else if len(allPodSets.Items) != 0 {
 		// delete pods
 		for i := range allPodSets.Items {
-			if err = r.Client.Delete(ctx, &allPodSets.Items[i]); err != nil {
+			if err = r.Delete(ctx, &allPodSets.Items[i]); err != nil {
 				if apierrors.IsNotFound(err) {
 					continue
 				}
@@ -272,12 +272,12 @@ func (r *RoleSetReconciler) finalize(ctx context.Context, roleSet *orchestration
 
 	// 2. check if all pods are deleted.
 	allPods := &v1.PodList{}
-	if err := r.Client.List(ctx, allPods, client.InNamespace(roleSet.Namespace), selectorOpt); err != nil {
+	if err := r.List(ctx, allPods, client.InNamespace(roleSet.Namespace), selectorOpt); err != nil {
 		return false, err
 	} else if len(allPods.Items) != 0 {
 		// delete pods
 		for i := range allPods.Items {
-			if err = r.Client.Delete(ctx, &allPods.Items[i]); err != nil {
+			if err = r.Delete(ctx, &allPods.Items[i]); err != nil {
 				if apierrors.IsNotFound(err) {
 					continue
 				}

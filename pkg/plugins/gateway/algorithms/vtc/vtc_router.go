@@ -63,7 +63,7 @@ func DefaultVTCConfig() VTCConfig {
 func NewVTCBasicRouter() (types.Router, error) {
 	config := DefaultVTCConfig()
 	configPtr := &config
-	var tokenEstimator TokenEstimator = NewSimpleTokenEstimator()
-	var tokenTracker TokenTracker = NewInMemorySlidingWindowTokenTracker(configPtr)
+	var tokenEstimator = NewSimpleTokenEstimator()
+	var tokenTracker = NewInMemorySlidingWindowTokenTracker(configPtr)
 	return NewBasicVTCRouter(tokenTracker, tokenEstimator, configPtr)
 }

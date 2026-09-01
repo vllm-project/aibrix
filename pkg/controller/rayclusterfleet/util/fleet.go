@@ -670,8 +670,8 @@ func FindOldReplicaSets(deployment *orchestrationv1alpha1.RayClusterFleet, rsLis
 func SetFromReplicaSetTemplate(fleet *orchestrationv1alpha1.RayClusterFleet, template orchestrationv1alpha1.RayClusterTemplateSpec) *orchestrationv1alpha1.RayClusterFleet {
 	fleet.Spec.Template.ObjectMeta = template.ObjectMeta
 	fleet.Spec.Template.Spec = template.Spec
-	fleet.Spec.Template.ObjectMeta.Labels = labelsutil.CloneAndRemoveLabel(
-		fleet.Spec.Template.ObjectMeta.Labels,
+	fleet.Spec.Template.Labels = labelsutil.CloneAndRemoveLabel(
+		fleet.Spec.Template.Labels,
 		appsv1.DefaultDeploymentUniqueLabelKey)
 	return fleet
 }

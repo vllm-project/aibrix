@@ -44,11 +44,12 @@ func NewDistributedReconciler(c client.Client, backend string) *DistributedRecon
 		BaseReconciler: &BaseReconciler{Client: c},
 	}
 
-	if backend == constants.KVCacheBackendInfinistore {
+	switch backend {
+	case constants.KVCacheBackendInfinistore:
 		reconciler.Backend = InfiniStoreBackend{}
-	} else if backend == constants.KVCacheBackendHPKV {
+	case constants.KVCacheBackendHPKV:
 		reconciler.Backend = HpKVBackend{}
-	} else {
+	default:
 		panic(fmt.Sprintf("unsupported backend: %s", backend))
 	}
 	return reconciler
@@ -185,7 +186,7 @@ func (r *DistributedReconciler) validateSecretExists(ctx context.Context, namesp
 	secretName, secretKey := parseSecretRef(secretRef)
 
 	secret := &corev1.Secret{}
-	if err := r.Client.Get(ctx, types.NamespacedName{
+	if err := r.Get(ctx, types.NamespacedName{
 		Namespace: namespace,
 		Name:      secretName,
 	}, secret); err != nil {
@@ -210,7 +211,7 @@ func (r *DistributedReconciler) cleanupInClusterRedis(ctx context.Context, kvCac
 	pod := &corev1.Pod{}
 	pod.Name = redisPodName
 	pod.Namespace = kvCache.Namespace
-	if err := r.Client.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
+	if err := r.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete Redis Pod %s: %w", redisPodName, err)
 	} else if err == nil {
 		klog.Infof("Deleted orphaned in-cluster Redis Pod %s/%s", kvCache.Namespace, redisPodName)
@@ -220,7 +221,7 @@ func (r *DistributedReconciler) cleanupInClusterRedis(ctx context.Context, kvCac
 	svc := &corev1.Service{}
 	svc.Name = redisServiceName
 	svc.Namespace = kvCache.Namespace
-	if err := r.Client.Delete(ctx, svc); err != nil && !apierrors.IsNotFound(err) {
+	if err := r.Delete(ctx, svc); err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete Redis Service %s: %w", redisServiceName, err)
 	} else if err == nil {
 		klog.Infof("Deleted orphaned in-cluster Redis Service %s/%s", kvCache.Namespace, redisServiceName)

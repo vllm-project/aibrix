@@ -209,7 +209,7 @@ func TestInformerEventsSkipWorkloadsWithoutModelName(t *testing.T) {
 	})
 
 	routes := &gatewayv1.HTTPRouteList{}
-	if err := m.Client.List(context.Background(), routes); err != nil {
+	if err := m.List(context.Background(), routes); err != nil {
 		t.Fatal(err)
 	}
 	if len(routes.Items) != 0 {
@@ -253,7 +253,7 @@ func TestCrossNamespaceReferenceGrantCreation(t *testing.T) {
 
 		_ = getHTTPRoute(t, m.Client, "llama-7b")
 		grant := &gatewayv1beta1.ReferenceGrant{}
-		err := m.Client.Get(context.Background(), client.ObjectKey{
+		err := m.Get(context.Background(), client.ObjectKey{
 			Namespace: aibrixEnvoyGatewayNamespace,
 			Name:      fmt.Sprintf("%s-reserved-referencegrant-in-%s", aibrixEnvoyGatewayNamespace, aibrixEnvoyGatewayNamespace),
 		}, grant)
@@ -279,14 +279,14 @@ func TestRouteAndReferenceGrantCleanupAfterWorkloadDeletion(t *testing.T) {
 
 		m.deleteRouteFromDeployment(deploy)
 
-		err := m.Client.Get(context.Background(), client.ObjectKey{
+		err := m.Get(context.Background(), client.ObjectKey{
 			Namespace: aibrixEnvoyGatewayNamespace,
 			Name:      utils.ModelRouterName("llama-7b"),
 		}, &gatewayv1.HTTPRoute{})
 		if !apierrors.IsNotFound(err) {
 			t.Fatalf("HTTPRoute after delete: %v, want NotFound", err)
 		}
-		err = m.Client.Get(context.Background(), client.ObjectKey{
+		err = m.Get(context.Background(), client.ObjectKey{
 			Namespace: "models",
 			Name:      fmt.Sprintf("%s-reserved-referencegrant-in-%s", aibrixEnvoyGatewayNamespace, "models"),
 		}, &gatewayv1beta1.ReferenceGrant{})
@@ -314,7 +314,7 @@ func TestRouteAndReferenceGrantCleanupAfterWorkloadDeletion(t *testing.T) {
 		m.addRouteFromDeployment(deploy)
 		m.deleteRouteFromDeployment(deploy)
 
-		err := m.Client.Get(context.Background(), client.ObjectKey{
+		err := m.Get(context.Background(), client.ObjectKey{
 			Namespace: aibrixEnvoyGatewayNamespace,
 			Name:      utils.ModelRouterName("llama-7b"),
 		}, &gatewayv1.HTTPRoute{})
@@ -342,7 +342,7 @@ func TestRouteAndReferenceGrantCleanupAfterWorkloadDeletion(t *testing.T) {
 		}
 		m.addRouteFromModelAdapter(adapter)
 		m.deleteRouteFromModelAdapter(adapter)
-		err := m.Client.Get(context.Background(), client.ObjectKey{
+		err := m.Get(context.Background(), client.ObjectKey{
 			Namespace: aibrixEnvoyGatewayNamespace,
 			Name:      utils.ModelRouterName("llama-adapter"),
 		}, &gatewayv1.HTTPRoute{})
@@ -370,7 +370,7 @@ func TestRouteAndReferenceGrantCleanupAfterWorkloadDeletion(t *testing.T) {
 		}
 		m.addRouteFromRayClusterFleet(fleet)
 		m.deleteRouteFromRayClusterFleet(fleet)
-		err := m.Client.Get(context.Background(), client.ObjectKey{
+		err := m.Get(context.Background(), client.ObjectKey{
 			Namespace: aibrixEnvoyGatewayNamespace,
 			Name:      utils.ModelRouterName("llama-fleet"),
 		}, &gatewayv1.HTTPRoute{})
@@ -398,7 +398,7 @@ func TestRouteAndReferenceGrantCleanupAfterWorkloadDeletion(t *testing.T) {
 		}
 		m.addRouteFromDeployment(deploy)
 		m.deleteRouteFromDeployment(deploy)
-		err := m.Client.Get(context.Background(), client.ObjectKey{
+		err := m.Get(context.Background(), client.ObjectKey{
 			Namespace: aibrixEnvoyGatewayNamespace,
 			Name:      utils.ModelRouterName("llama-7b"),
 		}, &gatewayv1.HTTPRoute{})
@@ -429,7 +429,7 @@ func TestRouteAndReferenceGrantCleanupAfterWorkloadDeletion(t *testing.T) {
 		}
 		m.addRouteFromDeployment(deploy)
 		m.deleteRouteFromDeployment(deploy)
-		err := m.Client.Get(context.Background(), client.ObjectKey{
+		err := m.Get(context.Background(), client.ObjectKey{
 			Namespace: aibrixEnvoyGatewayNamespace,
 			Name:      utils.ModelRouterName("llama-7b"),
 		}, &gatewayv1.HTTPRoute{})
@@ -450,7 +450,7 @@ func TestRouteAndReferenceGrantCleanupAfterWorkloadDeletion(t *testing.T) {
 		}
 		m.addRouteFromModelAdapter(adapter)
 		m.deleteRouteFromModelAdapter(adapter)
-		err := m.Client.Get(context.Background(), client.ObjectKey{
+		err := m.Get(context.Background(), client.ObjectKey{
 			Namespace: aibrixEnvoyGatewayNamespace,
 			Name:      utils.ModelRouterName("adapter-model"),
 		}, &gatewayv1.HTTPRoute{})
@@ -470,7 +470,7 @@ func TestRouteAndReferenceGrantCleanupAfterWorkloadDeletion(t *testing.T) {
 		}
 		m.addRouteFromRayClusterFleet(fleet)
 		m.deleteRouteFromRayClusterFleet(fleet)
-		err := m.Client.Get(context.Background(), client.ObjectKey{
+		err := m.Get(context.Background(), client.ObjectKey{
 			Namespace: aibrixEnvoyGatewayNamespace,
 			Name:      utils.ModelRouterName("fleet-model"),
 		}, &gatewayv1.HTTPRoute{})
@@ -490,7 +490,7 @@ func TestRouteAndReferenceGrantCleanupAfterWorkloadDeletion(t *testing.T) {
 		}
 		m.addRouteFromDeployment(deploy)
 		m.deleteRouteFromDeployment(cache.DeletedFinalStateUnknown{Obj: deploy})
-		err := m.Client.Get(context.Background(), client.ObjectKey{
+		err := m.Get(context.Background(), client.ObjectKey{
 			Namespace: aibrixEnvoyGatewayNamespace,
 			Name:      utils.ModelRouterName("tombstone-model"),
 		}, &gatewayv1.HTTPRoute{})

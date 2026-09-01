@@ -279,7 +279,7 @@ func (s *SyncPrefixHashTable) ProcessBlockStored(event BlockStored) error {
 		}
 
 		// Compute hash with proper parent lookup
-		var parentAibrixHash uint64 = s.seed
+		var parentAibrixHash = s.seed
 		if event.ParentBlockHash != nil {
 			if ph, exists := hashMapping.engineToAibrix[*event.ParentBlockHash]; exists {
 				parentAibrixHash = ph

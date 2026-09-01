@@ -31,8 +31,8 @@ import (
 )
 
 var (
-	nilPod       = &v1.Pod{}
-	unknownError = errors.New("unknown error")
+	nilPod     = &v1.Pod{}
+	ErrUnknown = errors.New("unknown error")
 )
 
 const (
@@ -237,7 +237,7 @@ func (r *RoutingContext) SetTargetPod(pod *v1.Pod) {
 // Do not call this function from synchronize routers. Asynchronize routers call this to set an error.
 func (r *RoutingContext) SetError(err error) {
 	if err == nil {
-		r.lastError.Store(&unknownError)
+		r.lastError.Store(&ErrUnknown)
 	} else {
 		r.lastError.Store(&err)
 	}
@@ -251,8 +251,8 @@ func (r *RoutingContext) TargetPod() *v1.Pod {
 	if targetPod == nilPod {
 		r.debugWait()
 		select {
-		case <-r.Context.Done():
-			r.SetError(r.Context.Err())
+		case <-r.Done():
+			r.SetError(r.Err())
 		case <-r.targetPodSet: // No blocking if targetPod is set after last "targetPod == nil"
 		}
 		targetPod = r.targetPod.Load()

@@ -386,10 +386,8 @@ func (s *workloadScale) GetPodSelectorFromScale(ctx context.Context, pa *autosca
 }
 
 func (s *workloadScale) isStormServiceWorkload(scale *unstructured.Unstructured) bool {
-	isStormService := false
-	if scale.GetAPIVersion() == "orchestration.aibrix.ai/v1alpha1" && scale.GetKind() == "StormService" {
-		isStormService = true
-	}
+	isStormService := scale.GetAPIVersion() == "orchestration.aibrix.ai/v1alpha1" && scale.GetKind() == "StormService"
+
 	return isStormService
 }
 

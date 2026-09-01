@@ -23,7 +23,6 @@ import (
 	"strconv"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -245,10 +244,10 @@ func (r *PodSetReconciler) reconcilePods(ctx context.Context, podSet *orchestrat
 }
 
 func (r *PodSetReconciler) handleReplaceUnhealthy(ctx context.Context, podSet *orchestrationv1alpha1.PodSet,
-	activePods []corev1.Pod, currentPodCount, desiredPodCount int) (controllerdrain.Result, error) {
+	activePods []v1.Pod, currentPodCount, desiredPodCount int) (controllerdrain.Result, error) {
 
 	// Proactively find and delete unhealthy pods
-	var podsToDelete []*corev1.Pod
+	var podsToDelete []*v1.Pod
 	for i := range activePods {
 		for _, cs := range activePods[i].Status.ContainerStatuses {
 			if cs.RestartCount > 0 {
@@ -264,13 +263,13 @@ func (r *PodSetReconciler) handleReplaceUnhealthy(ctx context.Context, podSet *o
 		if err != nil {
 			return result, err
 		}
-		r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "DeletingUnhealthyPods", "Deleting %d unhealthy pods due to container restarts.", len(podsToDelete))
+		r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, "DeletingUnhealthyPods", "Deleting %d unhealthy pods due to container restarts.", len(podsToDelete))
 		return result, nil
 	}
 
 	// If no unhealthy pods deleted, fill missing slots
 	if desiredPodCount-currentPodCount > 0 {
-		r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "ReplacingUnhealthy",
+		r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, "ReplacingUnhealthy",
 			"ReplaceUnhealthy policy: creating %d pod(s) to replace missing ones, aiming for %d total.",
 			desiredPodCount-currentPodCount, desiredPodCount)
 	}
@@ -304,13 +303,13 @@ func (r *PodSetReconciler) handleReplaceUnhealthy(ctx context.Context, podSet *o
 }
 
 func (r *PodSetReconciler) handleRecreateStrategy(ctx context.Context, podSet *orchestrationv1alpha1.PodSet,
-	activePods []corev1.Pod, desiredPodCount int) (controllerdrain.Result, error) {
+	activePods []v1.Pod, desiredPodCount int) (controllerdrain.Result, error) {
 
 	if len(activePods) > 0 {
 		klog.InfoS("Recreate strategy: deleting active pods", "podset", podSet.Name, "count", len(activePods))
-		r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "RecreatingAllPods",
+		r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, "RecreatingAllPods",
 			"Recreate policy triggered: deleting all %d active pods before creating new ones", len(activePods))
-		podsToDelete := make([]*corev1.Pod, 0, len(activePods))
+		podsToDelete := make([]*v1.Pod, 0, len(activePods))
 		for i := range activePods {
 			podsToDelete = append(podsToDelete, &activePods[i])
 		}
@@ -335,19 +334,19 @@ func (r *PodSetReconciler) handleRecreateStrategy(ctx context.Context, podSet *o
 }
 
 func (r *PodSetReconciler) handleScaleDown(ctx context.Context, podSet *orchestrationv1alpha1.PodSet,
-	activePods []corev1.Pod, currentPodCount, desiredPodCount int) (controllerdrain.Result, error) {
+	activePods []v1.Pod, currentPodCount, desiredPodCount int) (controllerdrain.Result, error) {
 
 	podsToDelete := currentPodCount - desiredPodCount
 	if timeout, ok := drainTimeoutSeconds(podSet.Spec.Drain); ok {
-		r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "ScalingDown",
+		r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, "ScalingDown",
 			"Draining %d excess pods before deletion to meet desired count of %d (timeout=%ds)", podsToDelete, desiredPodCount, timeout)
 	} else {
-		r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "ScalingDown",
+		r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, "ScalingDown",
 			"Deleting %d excess pods to meet desired count of %d", podsToDelete, desiredPodCount)
 	}
 
 	sortPodsByIndex(activePods)
-	podList := make([]*corev1.Pod, 0, podsToDelete)
+	podList := make([]*v1.Pod, 0, podsToDelete)
 	for i := 0; i < podsToDelete; i++ {
 		podList = append(podList, &activePods[len(activePods)-1-i])
 	}
@@ -366,7 +365,7 @@ func (r *PodSetReconciler) handleScaleDown(ctx context.Context, podSet *orchestr
 	return result, nil
 }
 
-func (r *PodSetReconciler) cancelStaleScaleInDrain(ctx context.Context, podSet *orchestrationv1alpha1.PodSet, activePods []corev1.Pod, podsToDelete []*corev1.Pod) (controllerdrain.Result, error) {
+func (r *PodSetReconciler) cancelStaleScaleInDrain(ctx context.Context, podSet *orchestrationv1alpha1.PodSet, activePods []v1.Pod, podsToDelete []*v1.Pod) (controllerdrain.Result, error) {
 	deleteSet := make(map[string]struct{}, len(podsToDelete))
 	for _, pod := range podsToDelete {
 		if pod == nil {
@@ -374,7 +373,7 @@ func (r *PodSetReconciler) cancelStaleScaleInDrain(ctx context.Context, podSet *
 		}
 		deleteSet[pod.Namespace+"/"+pod.Name] = struct{}{}
 	}
-	stale := make([]*corev1.Pod, 0)
+	stale := make([]*v1.Pod, 0)
 	for i := range activePods {
 		pod := &activePods[i]
 		if !podutil.IsPodDraining(pod) {
@@ -537,7 +536,7 @@ func (r *PodSetReconciler) finalizePodSet(ctx context.Context, podSet *orchestra
 	}
 
 	if len(podSetList.Items) > 0 {
-		podsToDelete := make([]*corev1.Pod, 0, len(podSetList.Items))
+		podsToDelete := make([]*v1.Pod, 0, len(podSetList.Items))
 		for i := range podSetList.Items {
 			podsToDelete = append(podsToDelete, &podSetList.Items[i])
 		}

@@ -37,7 +37,7 @@ import (
 func (r *StormServiceReconciler) getControllerRevision(ctx context.Context, obj metav1.Object) ([]*apps.ControllerRevision, error) {
 	revisionList := &apps.ControllerRevisionList{}
 	matchLabels := client.MatchingLabels(getRevisionLabels(obj))
-	if err := r.Client.List(ctx, revisionList, matchLabels, client.InNamespace(obj.GetNamespace())); err != nil {
+	if err := r.List(ctx, revisionList, matchLabels, client.InNamespace(obj.GetNamespace())); err != nil {
 		return nil, fmt.Errorf("list controller revision failed, %v", err)
 	}
 
@@ -104,8 +104,8 @@ func newRevision(stormService *orchestrationv1alpha1.StormService, revision int6
 	if err != nil {
 		return nil, err
 	}
-	if cr.ObjectMeta.Annotations == nil {
-		cr.ObjectMeta.Annotations = make(map[string]string)
+	if cr.Annotations == nil {
+		cr.Annotations = make(map[string]string)
 	}
 	return cr, nil
 }
@@ -131,10 +131,10 @@ func (r *StormServiceReconciler) createControllerRevision(ctx context.Context, p
 		clone.Name = history.ControllerRevisionName(parent.GetName(), hash)
 		clone.Namespace = parent.GetNamespace()
 
-		createErr := r.Client.Create(ctx, clone)
+		createErr := r.Create(ctx, clone)
 		if errors.IsAlreadyExists(createErr) {
 			exists := &apps.ControllerRevision{}
-			err := r.Client.Get(ctx, client.ObjectKey{Namespace: clone.Namespace, Name: clone.Name}, exists)
+			err := r.Get(ctx, client.ObjectKey{Namespace: clone.Namespace, Name: clone.Name}, exists)
 			if err != nil {
 				return nil, err
 			}
@@ -156,12 +156,12 @@ func (r *StormServiceReconciler) updateControllerRevision(revision *apps.Control
 		}
 		clone.Revision = newRevision
 
-		updateErr := r.Client.Update(context.TODO(), clone)
+		updateErr := r.Update(context.TODO(), clone)
 		if updateErr == nil {
 			return nil
 		}
 		fresh := &apps.ControllerRevision{}
-		if err := r.Client.Get(context.TODO(), client.ObjectKey{Namespace: clone.Namespace, Name: clone.Name}, fresh); err == nil {
+		if err := r.Get(context.TODO(), client.ObjectKey{Namespace: clone.Namespace, Name: clone.Name}, fresh); err == nil {
 			clone = fresh.DeepCopy()
 		}
 		return updateErr
@@ -274,7 +274,7 @@ func (r *StormServiceReconciler) truncateHistory(ctx context.Context, stormServi
 	// delete any non-live history to maintain the revision limit.
 	revisionHistory = revisionHistory[:(historyLen - historyLimit)]
 	for i := 0; i < len(revisionHistory); i++ {
-		if err := r.Client.Delete(ctx, revisionHistory[i]); err != nil {
+		if err := r.Delete(ctx, revisionHistory[i]); err != nil {
 			return err
 		}
 	}

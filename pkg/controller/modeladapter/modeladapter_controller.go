@@ -337,7 +337,7 @@ func (r *ModelAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return reconcile.Result{}, err
 	}
 
-	if modelAdapter.ObjectMeta.DeletionTimestamp.IsZero() {
+	if modelAdapter.DeletionTimestamp.IsZero() {
 		// the object is not being deleted, so if it does not have the finalizer,
 		// then lets add the finalizer and update the object.
 		if !controllerutil.ContainsFinalizer(modelAdapter, ModelAdapterFinalizer) {

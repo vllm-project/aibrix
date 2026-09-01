@@ -32,7 +32,7 @@ import (
 var _ = Describe("SimpleQueue", func() {
 	var (
 		queue *SimpleQueue[int]
-		cap   int = 10
+		cap   = 10
 	)
 
 	BeforeEach(func() {

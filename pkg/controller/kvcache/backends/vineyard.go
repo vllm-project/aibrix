@@ -218,7 +218,7 @@ func buildEtcdAggregateService(kvCache *orchestrationv1alpha1.KVCache) *corev1.S
 
 func buildVineyardDeployment(kvCache *orchestrationv1alpha1.KVCache) *appsv1.Deployment {
 	envs := []corev1.EnvVar{
-		{Name: "VINEYARDD_UID", Value: string(kvCache.ObjectMeta.UID)},
+		{Name: "VINEYARDD_UID", Value: string(kvCache.UID)},
 		{Name: "VINEYARDD_NAME", Value: kvCache.Name},
 		{Name: "VINEYARDD_NAMESPACE", Value: kvCache.Namespace},
 		{Name: "MY_NODE_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"}}},

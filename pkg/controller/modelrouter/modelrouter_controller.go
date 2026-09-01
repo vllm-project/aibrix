@@ -313,7 +313,7 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 
 	appendCustomModelRouterPaths(&httpRoute, modelHeaderMatch, annotations)
 
-	err = m.Client.Create(context.Background(), &httpRoute)
+	err = m.Create(context.Background(), &httpRoute)
 	if err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			klog.V(4).Infof("httproute: %v already exists in namespace: %v", httpRoute.Name, namespace)
@@ -339,7 +339,7 @@ func (m *ModelRouter) createReferenceGrant(namespace string) {
 		},
 	}
 
-	if err := m.Client.Get(context.Background(), client.ObjectKeyFromObject(&referenceGrant), &referenceGrant); err == nil {
+	if err := m.Get(context.Background(), client.ObjectKeyFromObject(&referenceGrant), &referenceGrant); err == nil {
 		klog.V(4).InfoS("reference grant already exists", "referencegrant", referenceGrant.Name)
 		return
 	}
@@ -365,7 +365,7 @@ func (m *ModelRouter) createReferenceGrant(namespace string) {
 			},
 		},
 	}
-	if err := m.Client.Create(context.Background(), &referenceGrant); err != nil {
+	if err := m.Create(context.Background(), &referenceGrant); err != nil {
 		klog.ErrorS(err, "error on creating referencegrant", "referencegrant", referenceGrant)
 		return
 	}
@@ -386,7 +386,7 @@ func (m *ModelRouter) deleteHTTPRoute(namespace string, labels, annotations map[
 		},
 	}
 
-	err := m.Client.Delete(ctx, &httpRoute)
+	err := m.Delete(ctx, &httpRoute)
 	if err != nil {
 		klog.Errorln(err)
 	}
@@ -418,7 +418,7 @@ func (m *ModelRouter) deleteReferenceGrant(ctx context.Context, namespace string
 			Namespace: namespace,
 		},
 	}
-	if err := m.Client.Delete(ctx, &referenceGrant); err != nil {
+	if err := m.Delete(ctx, &referenceGrant); err != nil {
 		if !apierrors.IsNotFound(err) {
 			klog.ErrorS(err, "Failed to delete ReferenceGrant", "name", referenceGrantName, "namespace", namespace)
 			return err
@@ -430,7 +430,7 @@ func (m *ModelRouter) deleteReferenceGrant(ctx context.Context, namespace string
 
 func (m *ModelRouter) namespaceHasModelWorkload(ctx context.Context, namespace string) (bool, error) {
 	var deploymentList appsv1.DeploymentList
-	if err := m.Client.List(ctx, &deploymentList, client.InNamespace(namespace)); err != nil {
+	if err := m.List(ctx, &deploymentList, client.InNamespace(namespace)); err != nil {
 		klog.ErrorS(err, "Failed to list model deployments", "namespace", namespace)
 		return false, err
 	}
@@ -444,7 +444,7 @@ func (m *ModelRouter) namespaceHasModelWorkload(ctx context.Context, namespace s
 	}
 
 	var adapterList modelv1alpha1.ModelAdapterList
-	if err := m.Client.List(ctx, &adapterList, client.InNamespace(namespace)); err != nil {
+	if err := m.List(ctx, &adapterList, client.InNamespace(namespace)); err != nil {
 		klog.ErrorS(err, "Failed to list model adapters", "namespace", namespace)
 		return false, err
 	}
@@ -458,7 +458,7 @@ func (m *ModelRouter) namespaceHasModelWorkload(ctx context.Context, namespace s
 	}
 
 	var fleetList orchestrationv1alpha1.RayClusterFleetList
-	if err := m.Client.List(ctx, &fleetList, client.InNamespace(namespace)); err != nil {
+	if err := m.List(ctx, &fleetList, client.InNamespace(namespace)); err != nil {
 		klog.ErrorS(err, "Failed to list ray cluster fleets", "namespace", namespace)
 		return false, err
 	}
@@ -480,7 +480,7 @@ func (m *ModelRouter) namespaceHasModelWorkload(ctx context.Context, namespace s
 			Version: gvk.Version,
 			Kind:    gvk.Kind + "List",
 		})
-		if err := m.Client.List(ctx, list, client.InNamespace(namespace)); err != nil {
+		if err := m.List(ctx, list, client.InNamespace(namespace)); err != nil {
 			if meta.IsNoMatchError(err) {
 				// CRD not installed; treat as "not present", not as "has workload".
 				klog.V(4).InfoS("optional workload CRD not present", "GVK", gvk, "namespace", namespace)

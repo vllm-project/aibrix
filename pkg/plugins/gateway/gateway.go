@@ -799,9 +799,10 @@ func (s *Server) responseErrorProcessingWithHeaders(ctx context.Context, routing
 
 	// Determine appropriate error code based on HTTP status
 	errorCode := ""
-	if respErrorCode == 401 {
+	switch respErrorCode {
+	case 401:
 		errorCode = ErrorCodeInvalidAPIKey
-	} else if respErrorCode == 503 {
+	case 503:
 		errorCode = ErrorCodeServiceUnavailable
 	}
 
