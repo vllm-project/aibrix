@@ -93,7 +93,7 @@ def _make_scheduler(progress_manager, pool_size=1):
 
 
 @pytest.mark.asyncio
-async def test_schedule_next_job_pops_fifo_and_validates():
+async def test_schedule_next_job_pops_fifo_without_admitting():
     progress_manager = FakeProgressManager(
         {
             "job-1": BatchJobState.CREATED,
@@ -106,24 +106,19 @@ async def test_schedule_next_job_pops_fifo_and_validates():
 
     first = await scheduler.schedule_next_job()
     second = await scheduler.schedule_next_job()
-    assert first is not None and first[0] == "job-1"
-    assert second is not None and second[0] == "job-2"
-    assert progress_manager.validated_job_ids == ["job-1", "job-2"]
+    assert first == "job-1"
+    assert second == "job-2"
+    assert progress_manager.validated_job_ids == []
 
 
 @pytest.mark.asyncio
-async def test_schedule_next_job_skips_unadmittable_jobs():
-    # "gone-job" is not admittable (admit returns None, e.g. it expired); the
-    # scheduler must advance past it to the next admittable job.
-    progress_manager = FakeProgressManager({"good-job": BatchJobState.CREATED})
+async def test_admit_and_execute_skips_unadmittable_job():
+    progress_manager = FakeProgressManager()
     scheduler = _make_scheduler(progress_manager)
-    scheduler.append_job("gone-job")
-    scheduler.append_job("good-job")
 
-    result = await scheduler.schedule_next_job()
-    assert result is not None and result[0] == "good-job"
-    # admit() is the gate: attempted on the gone job (None) then the good one.
-    assert progress_manager.validated_job_ids == ["gone-job", "good-job"]
+    await scheduler._admit_and_execute_scheduled_job("gone-job")
+
+    assert progress_manager.validated_job_ids == ["gone-job"]
 
 
 @pytest.mark.asyncio
@@ -183,48 +178,82 @@ def test_fifo_scheduling_policy_order_and_empty():
 
 
 @pytest.mark.asyncio
-async def test_jobs_running_loop_dispatches_second_job_while_first_is_blocked(
-    monkeypatch,
-):
-    scheduler = _make_scheduler(FakeProgressManager(), pool_size=2)
-    first_job_entered = asyncio.Event()
-    release_first_job = asyncio.Event()
-    second_job_started = asyncio.Event()
-    scheduled = []
+async def test_jobs_running_loop_admits_up_to_pool_size_concurrently():
+    pool_size = 4
+    job_ids = [f"job-{index}" for index in range(pool_size)]
+    all_admits_started = asyncio.Event()
+    release_admits = asyncio.Event()
 
     class _Driver:
-        def __init__(self, job_id):
-            self.job_id = job_id
-
         async def execute(self, job_id):
-            assert job_id == self.job_id
-            if job_id == "job-1":
-                first_job_entered.set()
-                await release_first_job.wait()
-                return
-            second_job_started.set()
+            assert release_admits.is_set()
 
-    scheduled.extend(
-        [
-            ("job-1", _Driver("job-1")),
-            ("job-2", _Driver("job-2")),
-        ]
-    )
+    class _ProgressManager(FakeProgressManager):
+        async def admit(self, job_id):
+            self.validated_job_ids.append(job_id)
+            if len(self.validated_job_ids) == pool_size:
+                all_admits_started.set()
+            await release_admits.wait()
+            return _Driver()
 
-    async def _schedule_next_job():
-        if scheduled:
-            return scheduled.pop(0)
-        await asyncio.sleep(0)
-        return None
-
-    monkeypatch.setattr(scheduler, "schedule_next_job", _schedule_next_job)
+    progress_manager = _ProgressManager()
+    scheduler = _make_scheduler(progress_manager, pool_size=pool_size)
+    for job_id in job_ids:
+        scheduler.append_job(job_id)
 
     task = asyncio.create_task(scheduler.jobs_running_loop())
     try:
-        await asyncio.wait_for(first_job_entered.wait(), timeout=1)
-        await asyncio.wait_for(second_job_started.wait(), timeout=1)
+        await asyncio.wait_for(all_admits_started.wait(), timeout=1)
+        assert progress_manager.validated_job_ids == job_ids
+        assert len(scheduler._job_execution_tasks) == pool_size
     finally:
-        release_first_job.set()
+        release_admits.set()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+        await asyncio.gather(
+            *scheduler._job_execution_tasks.values(),
+            return_exceptions=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_jobs_running_loop_skips_duplicate_active_job():
+    job_id = "job-1"
+    first_admit_started = asyncio.Event()
+    release_admit = asyncio.Event()
+    admit_tasks = []
+
+    class _Driver:
+        async def execute(self, job_id):
+            pass
+
+    class _ProgressManager(FakeProgressManager):
+        async def admit(self, job_id):
+            current_task = asyncio.current_task()
+            assert current_task is not None
+            admit_tasks.append(current_task)
+            self.validated_job_ids.append(job_id)
+            first_admit_started.set()
+            await release_admit.wait()
+            return _Driver()
+
+    progress_manager = _ProgressManager()
+    scheduler = _make_scheduler(progress_manager, pool_size=2)
+    scheduler.append_job(job_id)
+    scheduler.append_job(job_id)
+
+    task = asyncio.create_task(scheduler.jobs_running_loop())
+    try:
+        await asyncio.wait_for(first_admit_started.wait(), timeout=1)
+        while not scheduler._policy.empty():
+            await asyncio.sleep(0)
+
+        assert progress_manager.validated_job_ids == [job_id]
+        assert scheduler._job_execution_tasks[job_id] is admit_tasks[0]
+    finally:
+        release_admit.set()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.gather(*admit_tasks, return_exceptions=True)
