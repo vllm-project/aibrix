@@ -26,6 +26,7 @@ import (
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -475,14 +476,14 @@ var _ = ginkgo.Describe("StormService controller test", func() {
 			g.Expect(progressing.Reason).To(gomega.Equal("DeploymentPaused"))
 		}, time.Second*10, time.Millisecond*100).Should(gomega.Succeed())
 
-		readyUpdated := metav1.NewTime(time.Date(2026, 8, 26, 1, 2, 3, 0, time.UTC))
-		readyCondition := orchestrationapi.Condition{
-			Type:               orchestrationapi.StormServiceReady,
+		externalUpdated := metav1.NewTime(time.Date(2026, 8, 26, 1, 2, 3, 0, time.UTC))
+		externalCondition := orchestrationapi.Condition{
+			Type:               orchestrationapi.ConditionType("ExternalHealth"),
 			Status:             corev1.ConditionFalse,
-			Reason:             "MinimumReplicasUnavailable",
-			Message:            "StormService does not have minimum availability.",
-			LastUpdateTime:     &readyUpdated,
-			LastTransitionTime: &readyUpdated,
+			Reason:             "ProbeUnavailable",
+			Message:            "External health probe is unavailable.",
+			LastUpdateTime:     &externalUpdated,
+			LastTransitionTime: &externalUpdated,
 		}
 		gomega.Eventually(func() error {
 			latest := &orchestrationapi.StormService{}
@@ -491,11 +492,11 @@ var _ = ginkgo.Describe("StormService controller test", func() {
 			}
 			conditions := make(orchestrationapi.Conditions, 0, len(latest.Status.Conditions)+1)
 			for _, condition := range latest.Status.Conditions {
-				if condition.Type != orchestrationapi.StormServiceReady {
+				if condition.Type != externalCondition.Type {
 					conditions = append(conditions, condition)
 				}
 			}
-			latest.Status.Conditions = append(conditions, readyCondition)
+			latest.Status.Conditions = append(conditions, externalCondition)
 			if err := k8sClient.Status().Update(ctx, latest); err != nil {
 				return err
 			}
@@ -512,15 +513,15 @@ var _ = ginkgo.Describe("StormService controller test", func() {
 			)
 			g.Expect(progressing).NotTo(gomega.BeNil())
 			g.Expect(progressing.Reason).To(gomega.Equal("DeploymentResumed"))
-			ready := validation.FindCondition(string(orchestrationapi.StormServiceReady), latest.Status.Conditions)
-			g.Expect(ready).NotTo(gomega.BeNil())
-			g.Expect(ready.Type).To(gomega.Equal(readyCondition.Type))
-			g.Expect(ready.Status).To(gomega.Equal(readyCondition.Status))
-			g.Expect(ready.Reason).To(gomega.Equal(readyCondition.Reason))
-			g.Expect(ready.Message).To(gomega.Equal(readyCondition.Message))
-			g.Expect(ready.LastUpdateTime.Time).To(gomega.BeTemporally("==", readyCondition.LastUpdateTime.Time))
-			g.Expect(ready.LastTransitionTime.Time).To(gomega.BeTemporally("==", readyCondition.LastTransitionTime.Time))
-			g.Expect(ready.LastUpdateMicroTime).To(gomega.BeNil())
+			external := validation.FindCondition(string(externalCondition.Type), latest.Status.Conditions)
+			g.Expect(external).NotTo(gomega.BeNil())
+			g.Expect(external.Type).To(gomega.Equal(externalCondition.Type))
+			g.Expect(external.Status).To(gomega.Equal(externalCondition.Status))
+			g.Expect(external.Reason).To(gomega.Equal(externalCondition.Reason))
+			g.Expect(external.Message).To(gomega.Equal(externalCondition.Message))
+			g.Expect(external.LastUpdateTime.Time).To(gomega.BeTemporally("==", externalCondition.LastUpdateTime.Time))
+			g.Expect(external.LastTransitionTime.Time).To(gomega.BeTemporally("==", externalCondition.LastTransitionTime.Time))
+			g.Expect(external.LastUpdateMicroTime).To(gomega.BeNil())
 		}, time.Second*10, time.Millisecond*100).Should(gomega.Succeed())
 	})
 
@@ -556,6 +557,67 @@ var _ = ginkgo.Describe("StormService controller test", func() {
 			)
 			return condition != nil && condition.Status == corev1.ConditionUnknown && condition.Reason == "DeploymentPaused"
 		}, 3*time.Second, time.Millisecond*100).Should(gomega.BeTrue())
+	})
+
+	ginkgo.It("clears Ready when a completed StormService starts a stalled rollout", func() {
+		ss := makeProgressDeadlineStormService("stormservice-ready-rollout-deadline", 1)
+		ss.Spec.ProgressDeadlineSeconds = ptr.To(int32(2))
+
+		gomega.Expect(k8sClient.Create(ctx, ss)).To(gomega.Succeed())
+		validation.WaitForRoleSetsCreated(ctx, k8sClient, ns.Name, ss.Name, 1)
+		validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.StormServiceNameLabelKey, ss.Name, 1)
+		validation.MarkPodsReady(ctx, k8sClient, ns.Name, constants.StormServiceNameLabelKey, ss.Name)
+		validation.ValidateStormServiceStatus(ctx, k8sClient, ss, 1, 1, 0, 1, 1, 1, true)
+
+		initialRoleSets := listStormServiceRoleSets(ctx, k8sClient, ns.Name, ss.Name)
+		gomega.Expect(initialRoleSets).To(gomega.HaveLen(1))
+		initialRoleSetUID := initialRoleSets[0].UID
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := &orchestrationapi.StormService{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ss), latest)).To(gomega.Succeed())
+			ready := validation.FindCondition(
+				string(orchestrationapi.StormServiceReady),
+				latest.Status.Conditions,
+			)
+			g.Expect(ready).NotTo(gomega.BeNil())
+			g.Expect(ready.Status).To(gomega.Equal(corev1.ConditionTrue))
+			latest.Spec.Template.Spec.Roles[0].Template.Spec.Containers[0].Image = "vllm-openai:stalled-rollout"
+			g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+		}, time.Second*10, time.Millisecond*100).Should(gomega.Succeed())
+
+		var rolloutRoleSetUID types.UID
+		gomega.Eventually(func(g gomega.Gomega) {
+			roleSets := listStormServiceRoleSets(ctx, k8sClient, ns.Name, ss.Name)
+			g.Expect(roleSets).To(gomega.HaveLen(1))
+			g.Expect(roleSets[0].UID).NotTo(gomega.Equal(initialRoleSetUID))
+			rolloutRoleSetUID = roleSets[0].UID
+		}, time.Second*10, time.Millisecond*100).Should(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := &orchestrationapi.StormService{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ss), latest)).To(gomega.Succeed())
+			progressing := validation.FindCondition(
+				string(orchestrationapi.StormServiceProgressing),
+				latest.Status.Conditions,
+			)
+			g.Expect(progressing).NotTo(gomega.BeNil())
+			g.Expect(progressing.Status).To(gomega.Equal(corev1.ConditionFalse))
+			g.Expect(progressing.Reason).To(gomega.Equal("ProgressDeadlineExceeded"))
+		}, time.Second*15, time.Millisecond*100).Should(gomega.Succeed())
+
+		timedOut := &orchestrationapi.StormService{}
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ss), timedOut)).To(gomega.Succeed())
+		ready := validation.FindCondition(
+			string(orchestrationapi.StormServiceReady),
+			timedOut.Status.Conditions,
+		)
+		ginkgo.GinkgoWriter.Printf("timed-out StormService conditions: %#v\n", timedOut.Status.Conditions)
+		gomega.Expect(ready == nil || ready.Status != corev1.ConditionTrue).To(gomega.BeTrue())
+
+		timedOutRoleSets := listStormServiceRoleSets(ctx, k8sClient, ns.Name, ss.Name)
+		gomega.Expect(timedOutRoleSets).To(gomega.HaveLen(1))
+		gomega.Expect(timedOutRoleSets[0].UID).To(gomega.Equal(rolloutRoleSetUID))
 	})
 
 	ginkgo.It("reports a stalled vLLM rollout deadline and recovers without replacing the RoleSet", func() {
