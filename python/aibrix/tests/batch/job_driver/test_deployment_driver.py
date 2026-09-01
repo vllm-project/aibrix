@@ -707,14 +707,15 @@ async def test_scheduler_uses_create_job_driver_for_deployment_jobs(monkeypatch)
         created["kwargs"] = kwargs
         return _Driver()
 
+    scheduled_job_ids = [job.job_id]
+
     async def _one_job():
-        return (job.job_id, driver)
+        return scheduled_job_ids.pop(0) if scheduled_job_ids else None
 
     monkeypatch.setattr(
         "aibrix.batch.batch_manager.create_job_driver",
         _create_job_driver,
     )
-    driver = await progress_manager.admit(job.job_id)
     scheduler = BatchScheduler(context, progress_manager, 1)
     monkeypatch.setattr(scheduler, "schedule_next_job", _one_job)
 
