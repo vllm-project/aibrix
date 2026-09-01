@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>aiconfigurator · 图形化配置推荐</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="title">
+    <h1>aiconfigurator <span class="dim">GUI</span></h1>
+    <p class="sub">LLM 推理部署配置推荐 · 选择模式 → 填参数 → 运行 → 查看推荐并行度 / 卡数 / 吞吐</p>
+  </div>
+  <div id="env-badge" class="badge badge-unknown">检测环境中…</div>
+</header>
+
+<main>
+  <!-- ================= LEFT: mode + params ================= -->
+  <section class="panel panel-left">
+    <nav class="tabs" id="mode-tabs">
+      <button data-mode="default" class="tab active">default<div class="tab-desc">给定卡数找最优配置</div></button>
+      <button data-mode="recommend" class="tab">recommend<div class="tab-desc">按性能目标倒推卡数</div></button>
+      <button data-mode="estimate" class="tab">estimate<div class="tab-desc">单点性能估算</div></button>
+      <button data-mode="support" class="tab">support<div class="tab-desc">组合支持性检查</div></button>
+      <button data-mode="generate" class="tab">generate<div class="tab-desc">快速朴素配置</div></button>
+      <button data-mode="exp" class="tab">exp<div class="tab-desc">自定义 YAML 实验</div></button>
+    </nav>
+
+    <div class="presets">
+      <span class="presets-label">快速填充示例：</span>
+      <button class="preset" data-preset="default8">Qwen3-32B · 8×H200</button>
+      <button class="preset" data-preset="recommendRate">容量规划 50 req/s</button>
+      <button class="preset" data-preset="estimatePoint">离线 batch 单点估算</button>
+      <button class="preset" data-preset="disaggCompare">DeepSeek-V3 disagg</button>
+    </div>
+
+    <form id="param-form" onsubmit="return false;">
+      <!-- common params -->
+      <fieldset class="group" data-group="common">
+        <legend>模型与环境</legend>
+        <label>model_path（HF ID 或本地 config.json 目录）
+          <input list="model-presets" id="model_path" placeholder="Qwen/Qwen3-32B-FP8">
+          <datalist id="model-presets">
+            <option value="Qwen/Qwen3-32B-FP8"></option>
+            <option value="meta-llama/Llama-3.1-70B-Instruct"></option>
+            <option value="deepseek-ai/DeepSeek-V3"></option>
+            <option value="Qwen/Qwen3-235B-A22B-FP8"></option>
+            <option value="mistralai/Mixtral-8x7B-Instruct-v0.1"></option>
+            <option value="Qwen/Qwen3-VL-30B-A3B-Instruct"></option>
+          </datalist>
+        </label>
+        <div class="row2">
+          <label>system（GPU 型号）
+            <select id="system"></select>
+          </label>
+          <label>backend
+            <select id="backend">
+              <option value="trtllm">trtllm</option>
+              <option value="vllm">vllm</option>
+              <option value="sglang">sglang</option>
+              <option value="auto">auto（三后端横评）</option>
+            </select>
+          </label>
+        </div>
+        <label>database_mode（数据来源 / 可信度）
+          <select id="database_mode">
+            <option value="SILICON">SILICON（仅实测数据，可复现）</option>
+            <option value="HYBRID">HYBRID（实测优先，缺失外推）</option>
+            <option value="EMPIRICAL">EMPIRICAL（SOL+经验公式）</option>
+            <option value="SOL">SOL（理论上限）</option>
+          </select>
+        </label>
+      </fieldset>
+
+      <fieldset class="group" data-group="common">
+        <legend>负载形状与 SLO</legend>
+        <div class="row3">
+          <label>isl（输入长度）<input type="number" id="isl" value="4000"></label>
+          <label>osl（输出长度）<input type="number" id="osl" value="1000"></label>
+          <label>prefix（缓存前缀）<input type="number" id="prefix" value="0"></label>
+        </div>
+        <div class="row2">
+          <label>ttft SLO（ms，离线可放宽）<input type="number" id="ttft" value="2000"></label>
+          <label>tpot SLO（ms）<input type="number" id="tpot" value="30"></label>
+        </div>
+        <label class="inline"><input type="checkbox" id="strict_sla"> strict_sla（Pareto 也过滤不达标配置）</label>
+      </fieldset>
+
+      <!-- default -->
+      <fieldset class="group" data-group="default generate">
+        <legend>资源规模</legend>
+        <div class="row2">
+          <label>total_gpus（总卡数）<input type="number" id="total_gpus" value="8"></label>
+          <label>top_n（每类输出前 N）<input type="number" id="top_n" value="5"></label>
+        </div>
+      </fieldset>
+
+      <!-- recommend -->
+      <fieldset class="group" data-group="recommend">
+        <legend>性能目标（二选一）</legend>
+        <div class="row2">
+          <label>目标类型
+            <select id="target_type">
+              <option value="target_request_rate">target_request_rate（req/s）</option>
+              <option value="target_concurrency">target_concurrency（并发用户数）</option>
+            </select>
+          </label>
+          <label>目标值<input type="number" id="target_value" value="50" step="0.1"></label>
+        </div>
+      </fieldset>
+
+      <!-- estimate -->
+      <fieldset class="group" data-group="estimate">
+        <legend>单点估算配置</legend>
+        <div class="row2">
+          <label>estimate mode
+            <select id="est_mode">
+              <option value="static">static（离线静态批处理）</option>
+              <option value="agg">agg（IFB 稳态服务）</option>
+              <option value="static_ctx">static_ctx（仅 prefill）</option>
+              <option value="static_gen">static_gen（仅 decode）</option>
+              <option value="disagg">disagg（P/D 解耦）</option>
+            </select>
+          </label>
+          <label>batch_size<input type="number" id="est_bs" value="128"></label>
+        </div>
+        <div class="row3">
+          <label>tp_size<input type="number" id="est_tp" value="1"></label>
+          <label>pp_size<input type="number" id="est_pp" value="1"></label>
+          <label>attention_dp_size<input type="number" id="est_dp" value="1"></label>
+        </div>
+        <p class="hint" id="est-hint" style="display:none">⚠ 当前安装的 aiconfigurator 版本不含 cli_estimate，此模式不可用。</p>
+      </fieldset>
+
+      <!-- exp -->
+      <fieldset class="group" data-group="exp">
+        <legend>实验 YAML（exps 定义执行顺序，每个实验一个顶层 key）</legend>
+        <textarea id="exp_yaml" rows="14" spellcheck="false"></textarea>
+      </fieldset>
+
+      <div class="actions">
+        <button id="run-btn" type="button" class="run-btn">▶ 运行</button>
+        <span id="run-status" class="run-status"></span>
+      </div>
+
+      <fieldset class="group cmd-group">
+        <legend>等价 CLI 命令</legend>
+        <textarea id="cmd-preview" rows="3" readonly spellcheck="false"></textarea>
+      </fieldset>
+    </form>
+  </section>
+
+  <!-- ================= RIGHT: results ================= -->
+  <section class="panel panel-right">
+    <div class="results-header">
+      <h2>运行结果</h2>
+      <div class="result-actions">
+        <button id="tab-table" class="seg active">表格</button>
+        <button id="tab-json" class="seg">原始 JSON</button>
+      </div>
+    </div>
+    <div id="result-placeholder" class="placeholder">
+      <p>选择模式并填写参数后，点击「运行」。</p>
+      <p class="dim">default / recommend 会输出各实验的 Top-N 推荐配置（并行度、卡数、bs、吞吐、延迟、显存）。</p>
+    </div>
+    <div id="result-error" class="error-box" style="display:none"></div>
+    <div id="result-content" style="display:none"></div>
+    <pre id="result-json" class="json-box" style="display:none"></pre>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
