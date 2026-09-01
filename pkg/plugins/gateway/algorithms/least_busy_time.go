@@ -17,13 +17,9 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"math"
-	"math/rand"
-
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
-	v1 "k8s.io/api/core/v1"
 	klog "k8s.io/klog/v2"
 )
 
@@ -75,31 +71,9 @@ func (r leastBusyTimeRouter) Polarity() types.Polarity {
 }
 
 func (r leastBusyTimeRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
-	var targetPod *v1.Pod
-	minBusyTimeRatio := math.MaxFloat64 // <= 1 in general
-
-	for _, pod := range readyPodList.All() {
-		busyTimeRatio, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.GPUBusyTimeRatio) // todo: replace mock
-		if err != nil {
-			klog.Error(err)
-			continue
-		}
-		busyTimeRatioValue := busyTimeRatio.GetSimpleValue()
-		klog.V(4).Infof("pod: %v, podIP: %v, GPU busy time ratio: %v", pod.Name, pod.Status.PodIP, busyTimeRatioValue)
-
-		if busyTimeRatioValue < minBusyTimeRatio {
-			minBusyTimeRatio = busyTimeRatioValue
-			targetPod = pod
-		}
-	}
-
-	// Use fallback if no valid metrics
-	if targetPod == nil {
-		var err error
-		targetPod, err = SelectRandomPodAsFallback(ctx, readyPodList.All(), rand.Intn)
-		if err != nil {
-			return "", err
-		}
+	targetPod, err := RouteByScore(ctx, readyPodList, r)
+	if err != nil {
+		return "", err
 	}
 
 	ctx.SetTargetPod(targetPod)

@@ -70,7 +70,9 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 		func(tc *testDefaultingCase) {
 			model := tc.stormservice()
 			gomega.Expect(k8sClient.Create(ctx, model)).To(gomega.Succeed())
-			gomega.Expect(model).To(gomega.BeComparableTo(tc.wantStormService(),
+			want := tc.wantStormService()
+			want.Spec.ProgressDeadlineSeconds = ptr.To(int32(600))
+			gomega.Expect(model).To(gomega.BeComparableTo(want,
 				cmpopts.IgnoreTypes(orchestrationapi.StormServiceStatus{}),
 				cmpopts.IgnoreFields(metav1.ObjectMeta{}, "UID",
 					"ResourceVersion", "Generation", "CreationTimestamp", "ManagedFields")),
@@ -137,6 +139,8 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 		stormservice  func() *orchestrationapi.StormService
 		failed        bool
 		expectInvalid bool
+		// wantErr, when set, must appear in the admission error message.
+		wantErr string
 	}
 	ginkgo.DescribeTable("test validating",
 		func(tc *testValidatingCase) {
@@ -146,6 +150,9 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 				if tc.expectInvalid {
 					gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(),
 						"expected schema validation error, got %v", err)
+				}
+				if tc.wantErr != "" {
+					gomega.Expect(err.Error()).To(gomega.ContainSubstring(tc.wantErr))
 				}
 			} else {
 				gomega.Expect(err).To(gomega.Succeed())
@@ -160,6 +167,32 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 					Obj()
 			},
 			failed: false,
+		}),
+
+		ginkgo.Entry("rejects zero progress deadline", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				stormService := wrapper.MakeStormService("zero-progress-deadline").
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					Obj()
+				stormService.Spec.ProgressDeadlineSeconds = ptr.To(int32(0))
+				return stormService
+			},
+			failed:        true,
+			expectInvalid: true,
+		}),
+
+		ginkgo.Entry("rejects negative progress deadline", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				stormService := wrapper.MakeStormService("negative-progress-deadline").
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					Obj()
+				stormService.Spec.ProgressDeadlineSeconds = ptr.To(int32(-1))
+				return stormService
+			},
+			failed:        true,
+			expectInvalid: true,
 		}),
 
 		ginkgo.Entry("rejects a missing nested RoleSet spec", &testValidatingCase{
@@ -264,6 +297,82 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 			},
 			failed: false,
 		}),
+
+		// Volcano gang scheduling: the webhook rejects configurations that the RoleSet controller
+		// or Volcano cannot honour. The default roles are "worker" (roles[0]) and "master" (roles[1]).
+		ginkgo.Entry("accepts a valid Volcano gang", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				return gangStormService("gang-valid", ns.Name,
+					volcanoStrategy(3, map[string]int32{"master": 1, "worker": 2}), nil)
+			},
+			failed: false,
+		}),
+		ginkgo.Entry("accepts a Volcano gang without minTaskMember", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				return gangStormService("gang-no-task-member", ns.Name, volcanoStrategy(2, nil), nil)
+			},
+			failed: false,
+		}),
+		ginkgo.Entry("rejects Volcano minMember of zero", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				return gangStormService("gang-min-member-zero", ns.Name, volcanoStrategy(0, nil), nil)
+			},
+			failed:        true,
+			expectInvalid: true,
+			wantErr:       "spec.template.spec.schedulingStrategy.volcanoSchedulingStrategy.minMember",
+		}),
+		ginkgo.Entry("rejects a Volcano minTaskMember value of zero", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				return gangStormService("gang-task-member-zero", ns.Name,
+					volcanoStrategy(2, map[string]int32{"master": 0, "worker": 2}), nil)
+			},
+			failed:        true,
+			expectInvalid: true,
+			wantErr:       "volcanoSchedulingStrategy.minTaskMember[master]",
+		}),
+		ginkgo.Entry("rejects a Volcano minTaskMember key that is not a role name", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				return gangStormService("gang-unknown-role", ns.Name,
+					volcanoStrategy(2, map[string]int32{"prefill": 2}), nil)
+			},
+			failed:        true,
+			expectInvalid: true,
+			wantErr:       "volcanoSchedulingStrategy.minTaskMember[prefill]",
+		}),
+		ginkgo.Entry("rejects Volcano minMember below the sum of minTaskMember", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				return gangStormService("gang-min-member-low", ns.Name,
+					volcanoStrategy(2, map[string]int32{"master": 1, "worker": 2}), nil)
+			},
+			failed:        true,
+			expectInvalid: true,
+			wantErr:       "sum of minTaskMember values (3)",
+		}),
+		ginkgo.Entry("rejects RoleSet-level and Role-level scheduling strategies together", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				return gangStormService("gang-both-levels", ns.Name, volcanoStrategy(2, nil),
+					map[string]*orchestrationapi.SchedulingStrategy{"worker": volcanoStrategy(1, nil)})
+			},
+			failed:        true,
+			expectInvalid: true,
+			wantErr:       "spec.template.spec.roles[0].schedulingStrategy: Forbidden",
+		}),
+		ginkgo.Entry("accepts a Role-level Volcano gang keyed by its own role", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				return gangStormService("gang-role-level", ns.Name, nil,
+					map[string]*orchestrationapi.SchedulingStrategy{"worker": volcanoStrategy(1, map[string]int32{"worker": 1})})
+			},
+			failed: false,
+		}),
+		ginkgo.Entry("rejects a Role-level Volcano gang keyed by another role", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				return gangStormService("gang-role-level-wrong-key", ns.Name, nil,
+					map[string]*orchestrationapi.SchedulingStrategy{"worker": volcanoStrategy(1, map[string]int32{"master": 1})})
+			},
+			failed:        true,
+			expectInvalid: true,
+			wantErr:       "spec.template.spec.roles[0].schedulingStrategy.volcanoSchedulingStrategy.minTaskMember[master]",
+		}),
 	)
 
 	ginkgo.It("rejects scaling an explicit Pooled StormService above one replica", func() {
@@ -277,4 +386,50 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 		stormService.Spec.Replicas = ptr.To(int32(3))
 		gomega.Expect(k8sClient.Update(ctx, stormService)).ShouldNot(gomega.Succeed())
 	})
+
+	ginkgo.It("rejects an update that makes the Volcano gang invalid", func() {
+		stormService := gangStormService("gang-update-invalid", ns.Name,
+			volcanoStrategy(3, map[string]int32{"master": 1, "worker": 2}), nil)
+		gomega.Expect(k8sClient.Create(ctx, stormService)).To(gomega.Succeed())
+
+		stormService.Spec.Template.Spec.SchedulingStrategy.VolcanoSchedulingStrategy.MinMember = 0
+		err := k8sClient.Update(ctx, stormService)
+		gomega.Expect(err).To(gomega.HaveOccurred())
+		gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "expected an Invalid error, got %v", err)
+	})
+
+	ginkgo.It("accepts an update that keeps the Volcano gang valid", func() {
+		stormService := gangStormService("gang-update-valid", ns.Name,
+			volcanoStrategy(3, map[string]int32{"master": 1, "worker": 2}), nil)
+		gomega.Expect(k8sClient.Create(ctx, stormService)).To(gomega.Succeed())
+
+		stormService.Spec.Template.Spec.SchedulingStrategy.VolcanoSchedulingStrategy.MinMember = 4
+		gomega.Expect(k8sClient.Update(ctx, stormService)).To(gomega.Succeed())
+	})
 })
+
+// volcanoStrategy returns a scheduling strategy that gang schedules through Volcano.
+func volcanoStrategy(minMember int32, minTaskMember map[string]int32) *orchestrationapi.SchedulingStrategy {
+	return &orchestrationapi.SchedulingStrategy{
+		VolcanoSchedulingStrategy: &orchestrationapi.VolcanoSchedulingStrategySpec{
+			MinMember:     minMember,
+			MinTaskMember: minTaskMember,
+		},
+	}
+}
+
+// gangStormService builds a StormService with the default "worker" (roles[0]) and "master"
+// (roles[1]) roles, a RoleSet-level strategy, and per-role strategies keyed by role name.
+func gangStormService(name, namespace string, roleSetStrategy *orchestrationapi.SchedulingStrategy,
+	roleStrategies map[string]*orchestrationapi.SchedulingStrategy) *orchestrationapi.StormService {
+	stormService := wrapper.MakeStormService(name).
+		Namespace(namespace).
+		WithDefaultConfiguration().
+		Obj()
+	stormService.Spec.Template.Spec.SchedulingStrategy = roleSetStrategy
+	for i := range stormService.Spec.Template.Spec.Roles {
+		role := &stormService.Spec.Template.Spec.Roles[i]
+		role.SchedulingStrategy = roleStrategies[role.Name]
+	}
+	return stormService
+}

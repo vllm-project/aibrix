@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -26,9 +27,11 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
@@ -1000,6 +1003,94 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 	})
 })
 
+var _ = ginkgo.Describe("RoleSet historical-node replacement scheduling", func() {
+	var ns *corev1.Namespace
+
+	ginkgo.BeforeEach(func() {
+		ns = &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{GenerateName: "test-roleset-history-"},
+		}
+		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
+		gomega.Eventually(func() error {
+			return k8sClient.Get(ctx, client.ObjectKeyFromObject(ns), ns)
+		}, time.Second*3).Should(gomega.Succeed())
+	})
+
+	ginkgo.AfterEach(func() {
+		gomega.Expect(k8sClient.Delete(ctx, ns)).To(gomega.Succeed())
+	})
+
+	ginkgo.It("uses annotation-backed stateful slot history after delete-before-create", func() {
+		maxSurge := intstr.FromInt32(0)
+		maxUnavailable := intstr.FromInt32(1)
+		role := historicalNodeIntegrationRole(prefill, true, 1, maxSurge, maxUnavailable)
+		rs := wrapper.MakeRoleSet("stateful-history-test").
+			Namespace(ns.Name).
+			UpdateStrategy(orchestrationapi.ParallelRoleSetUpdateStrategyType).
+			WithRoleAdvanced(role).
+			Obj()
+
+		gomega.Expect(k8sClient.Create(ctx, rs)).To(gomega.Succeed())
+		validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.RoleSetNameLabelKey, rs.Name, 1)
+		initialPod := waitForSingleRolePod(ctx, k8sClient, ns.Name, rs.Name, prefill)
+		bindPodToNode(ctx, k8sClient, initialPod, "node-a")
+		markPodReadyWithRuntimeImage(ctx, k8sClient, initialPod, prefillImageVersionV1)
+		validation.WaitForRolesReady(ctx, k8sClient, rs, []string{prefill})
+		waitForHistoricalNodeAnnotation(ctx, k8sClient, ns.Name, rs.Name, "node-a")
+		setHistoricalNodeIntegrationAnnotation(ctx, k8sClient, ns.Name, rs.Name, map[string]string{
+			"prefill/0": "node-a",
+		}, nil)
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := &orchestrationapi.RoleSet{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest)).To(gomega.Succeed())
+			latest.Spec.Roles[0].Template.Spec.Containers[0].Image = prefillImageVersionV2
+			g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+		}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
+		gomega.Expect(k8sClient.Delete(ctx, initialPod, client.GracePeriodSeconds(0))).To(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			pod := waitForSingleRolePod(ctx, k8sClient, ns.Name, rs.Name, prefill)
+			g.Expect(pod.UID).NotTo(gomega.Equal(initialPod.UID))
+			g.Expect(pod.Spec.Containers[0].Image).To(gomega.Equal(prefillImageVersionV2))
+			g.Expect(historicalNodeIntegrationAffinityValues(pod)).To(gomega.Equal([]string{"node-a"}))
+		}, time.Second*20, time.Millisecond*250).Should(gomega.Succeed())
+	})
+
+	ginkgo.It("uses annotation-backed stateless role history for rollout replacement", func() {
+		maxSurge := intstr.FromInt32(1)
+		maxUnavailable := intstr.FromInt32(0)
+		role := historicalNodeIntegrationRole(prefill, false, 1, maxSurge, maxUnavailable)
+		rs := wrapper.MakeRoleSet("stateless-history-test").
+			Namespace(ns.Name).
+			UpdateStrategy(orchestrationapi.ParallelRoleSetUpdateStrategyType).
+			WithRoleAdvanced(role).
+			Obj()
+
+		gomega.Expect(k8sClient.Create(ctx, rs)).To(gomega.Succeed())
+		validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.RoleSetNameLabelKey, rs.Name, 1)
+		initialPod := waitForSingleRolePod(ctx, k8sClient, ns.Name, rs.Name, prefill)
+		bindPodToNode(ctx, k8sClient, initialPod, "node-c")
+		markPodReadyWithRuntimeImage(ctx, k8sClient, initialPod, prefillImageVersionV1)
+		validation.WaitForRolesReady(ctx, k8sClient, rs, []string{prefill})
+		waitForHistoricalNodeAnnotation(ctx, k8sClient, ns.Name, rs.Name, "node-c")
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := &orchestrationapi.RoleSet{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest)).To(gomega.Succeed())
+			latest.Spec.Roles[0].Template.Spec.Containers[0].Image = prefillImageVersionV2
+			g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+		}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			pods := getRolePods(ctx, k8sClient, ns.Name, rs.Name, prefill)
+			replacements := podsWithImage(pods, prefillImageVersionV2)
+			g.Expect(replacements).NotTo(gomega.BeEmpty())
+			g.Expect(historicalNodeIntegrationAffinityValues(replacements[0])).To(gomega.Equal([]string{"node-c"}))
+		}, time.Second*20, time.Millisecond*250).Should(gomega.Succeed())
+	})
+})
+
 func waitForSingleRolePod(
 	ctx context.Context,
 	k8sClient client.Client,
@@ -1012,6 +1103,124 @@ func waitForSingleRolePod(
 		g.Expect(err).ToNot(gomega.HaveOccurred())
 	}, time.Second*10, time.Millisecond*250).Should(gomega.Succeed())
 	return pod
+}
+
+func historicalNodeIntegrationRole(
+	name string,
+	stateful bool,
+	replicas int32,
+	maxSurge, maxUnavailable intstr.IntOrString,
+) orchestrationapi.RoleSpec {
+	role := orchestrationapi.RoleSpec{
+		Name:     name,
+		Replicas: ptr.To(replicas),
+		Stateful: stateful,
+		Template: validation.MakePodTemplate(prefillImageVersionV1),
+		UpdateStrategy: orchestrationapi.RoleUpdateStrategy{
+			Type:           orchestrationapi.RecreateRoleUpdateStrategyType,
+			MaxSurge:       &maxSurge,
+			MaxUnavailable: &maxUnavailable,
+			ReplacementScheduling: &orchestrationapi.RoleReplacementScheduling{
+				HistoricalNode: &orchestrationapi.HistoricalNodeSchedulingPolicy{
+					Mode: orchestrationapi.HistoricalNodeSchedulingPreferred,
+				},
+			},
+		},
+	}
+	return role
+}
+
+func bindPodToNode(ctx context.Context, k8sClient client.Client, pod *corev1.Pod, nodeName string) {
+	gomega.Eventually(func(g gomega.Gomega) {
+		node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}}
+		err := k8sClient.Create(ctx, node)
+		g.Expect(err == nil || apierrors.IsAlreadyExists(err)).To(gomega.BeTrue())
+
+		latest := &corev1.Pod{}
+		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(pod), latest)).To(gomega.Succeed())
+		binding := &corev1.Binding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      latest.Name,
+				Namespace: latest.Namespace,
+			},
+			Target: corev1.ObjectReference{
+				Kind: "Node",
+				Name: nodeName,
+			},
+		}
+		err = k8sClient.SubResource("binding").Create(ctx, latest, binding)
+		g.Expect(err == nil || apierrors.IsConflict(err)).To(gomega.BeTrue())
+	}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
+}
+
+func waitForHistoricalNodeAnnotation(
+	ctx context.Context,
+	k8sClient client.Client,
+	namespace, roleSetName, nodeName string,
+) {
+	gomega.Eventually(func(g gomega.Gomega) {
+		latest := &orchestrationapi.RoleSet{}
+		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: roleSetName}, latest)).To(gomega.Succeed())
+		value := latest.Annotations[constants.RoleSetHistoricalNodeBindingsAnnotationKey]
+		g.Expect(value).NotTo(gomega.BeEmpty())
+		var bindings struct {
+			ReplicaSlots map[string]string   `json:"replicaSlots,omitempty"`
+			Roles        map[string][]string `json:"roles,omitempty"`
+		}
+		g.Expect(json.Unmarshal([]byte(value), &bindings)).To(gomega.Succeed())
+		nodes := map[string]bool{}
+		for _, stored := range bindings.ReplicaSlots {
+			nodes[stored] = true
+		}
+		for _, storedList := range bindings.Roles {
+			for _, stored := range storedList {
+				nodes[stored] = true
+			}
+		}
+		g.Expect(nodes[nodeName]).To(gomega.BeTrue())
+	}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
+}
+
+func setHistoricalNodeIntegrationAnnotation(
+	ctx context.Context,
+	k8sClient client.Client,
+	namespace, roleSetName string,
+	replicaSlots map[string]string,
+	roles map[string][]string,
+) {
+	gomega.Eventually(func(g gomega.Gomega) {
+		latest := &orchestrationapi.RoleSet{}
+		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: roleSetName}, latest)).To(gomega.Succeed())
+		original := latest.DeepCopy()
+		data, err := json.Marshal(struct {
+			ReplicaSlots map[string]string   `json:"replicaSlots,omitempty"`
+			Roles        map[string][]string `json:"roles,omitempty"`
+		}{ReplicaSlots: replicaSlots, Roles: roles})
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		if latest.Annotations == nil {
+			latest.Annotations = map[string]string{}
+		}
+		latest.Annotations[constants.RoleSetHistoricalNodeBindingsAnnotationKey] = string(data)
+		err = k8sClient.Patch(ctx, latest, client.MergeFrom(original))
+		if apierrors.IsConflict(err) {
+			return
+		}
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+	}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
+}
+
+func historicalNodeIntegrationAffinityValues(pod *corev1.Pod) []string {
+	if pod.Spec.Affinity == nil || pod.Spec.Affinity.NodeAffinity == nil {
+		return nil
+	}
+	for _, term := range pod.Spec.Affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution {
+		for _, expression := range term.Preference.MatchExpressions {
+			if expression.Key == corev1.LabelHostname && expression.Operator == corev1.NodeSelectorOpIn {
+				return expression.Values
+			}
+		}
+	}
+	return nil
 }
 
 func waitForRolePods(

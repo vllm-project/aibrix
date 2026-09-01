@@ -150,12 +150,13 @@ func (s *Server) StartGRPC(addr string) error {
 		return fmt.Errorf("resource manager init: %w", err)
 	}
 	s.planner = plannerimpl.NewPlanner(plannerimpl.PlannerConfig{
-		BatchClient: batchClient,
-		Provisioner: rm.Provisioner,
-		Store:       s.store,
-		PolicyType:  plannerimpl.PlanningPolicyType(s.cfg.PlanningPolicy),
-		WorkerCount: s.cfg.PlannerWorkerCount,
-		Injector:    s.injector,
+		BatchClient:     batchClient,
+		Provisioner:     rm.Provisioner,
+		Store:           s.store,
+		PolicyType:      plannerimpl.PlanningPolicyType(s.cfg.PlanningPolicy),
+		WorkerCount:     s.cfg.PlannerWorkerCount,
+		WorkerQueueSize: s.cfg.PlannerWorkerQueueSize,
+		Injector:        s.injector,
 	})
 	if err := s.planner.Recover(context.Background()); err != nil {
 		klog.Warningf("planner recovery failed (continuing without recovered jobs): %v", err)

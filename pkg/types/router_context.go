@@ -83,8 +83,11 @@ type PostRouteUpdater interface {
 // It can be extended with more fields as needed in the future.
 type RoutingContext struct {
 	context.Context
-	Algorithm      RoutingAlgorithm
-	Model          string
+	Algorithm RoutingAlgorithm
+	Model     string
+	// BaseModel is the served base-model name when Model is a LoRA adapter.
+	// Empty for base-model requests.
+	BaseModel      string
 	Engine         string
 	Stream         bool
 	Message        string
@@ -348,6 +351,27 @@ func (r *RoutingContext) targetAddressWithPort(podIP string, port int) string {
 	return fmt.Sprintf("%v:%v", podIP, port)
 }
 
+// MetricModel returns the model name to emit on gateway metrics.
+// For a LoRA request this is the attached base model; otherwise the requested name.
+func (r *RoutingContext) MetricModel() string {
+	if r == nil {
+		return ""
+	}
+	if r.BaseModel != "" {
+		return r.BaseModel
+	}
+	return r.Model
+}
+
+// MetricLoraAdapter returns the adapter name for gateway metrics.
+// Empty for base-model requests.
+func (r *RoutingContext) MetricLoraAdapter() string {
+	if r == nil || r.BaseModel == "" || r.BaseModel == r.Model {
+		return ""
+	}
+	return r.Model
+}
+
 func (r *RoutingContext) getError() (err error) {
 	errAddr := r.lastError.Load()
 	if errAddr != nil {
@@ -360,6 +384,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.Context = ctx
 	r.Algorithm = algorithms
 	r.Model = model
+	r.BaseModel = ""
 	r.Engine = ""
 	r.Stream = false
 	r.Message = message

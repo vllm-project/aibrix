@@ -18,18 +18,23 @@ package stormservice
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
+	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
+	ctrlutils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
 )
 
 func TestCalculateReplicas(t *testing.T) {
@@ -124,6 +129,152 @@ func TestCalculateReplicas(t *testing.T) {
 		if c != test.desiredCurrent || u != test.desiredUpdated {
 			t.Errorf("failed %+v, current %d, updated %d", test, c, u)
 		}
+	}
+}
+
+func TestSetStormServiceAvailabilityConditionPreservesGangConditionTransitionTime(t *testing.T) {
+	oldTransition := metav1.NewTime(time.Now().Add(-time.Hour))
+	status := &orchestrationv1alpha1.StormServiceStatus{
+		Conditions: orchestrationv1alpha1.Conditions{
+			{
+				Type:               orchestrationv1alpha1.StormServiceGangSchedulingError,
+				Status:             corev1.ConditionFalse,
+				Reason:             "GangSchedulingHealthy",
+				LastTransitionTime: &oldTransition,
+			},
+		},
+	}
+
+	setStormServiceAvailabilityCondition(status, true)
+	SetStormServiceCondition(status, *ctrlutils.NewCondition(
+		orchestrationv1alpha1.StormServiceGangSchedulingError,
+		corev1.ConditionFalse,
+		"GangSchedulingHealthy",
+		"",
+	))
+
+	gangCondition := ctrlutils.GetCondition(status.Conditions, orchestrationv1alpha1.StormServiceGangSchedulingError)
+	if gangCondition == nil {
+		t.Fatal("expected gang scheduling condition to be preserved")
+	}
+	if gangCondition.LastTransitionTime == nil || !gangCondition.LastTransitionTime.Equal(&oldTransition) {
+		t.Fatalf("expected gang scheduling LastTransitionTime %v, got %v", oldTransition, gangCondition.LastTransitionTime)
+	}
+}
+
+func TestUpdateStatusPreservesProgressDeadlineAcrossReconcileError(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := orchestrationv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add StormService scheme: %v", err)
+	}
+
+	started := time.Now().Add(-time.Hour).Truncate(time.Second)
+	ready := *ctrlutils.NewCondition(
+		orchestrationv1alpha1.StormServiceReady,
+		corev1.ConditionTrue,
+		"Ready",
+		"",
+	)
+	external := *ctrlutils.NewCondition(
+		orchestrationv1alpha1.ConditionType("ExternalHealth"),
+		corev1.ConditionTrue,
+		"Healthy",
+		"",
+	)
+	stormService := &orchestrationv1alpha1.StormService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "reconcile-error",
+			Namespace:  "default",
+			Generation: 2,
+		},
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Replicas:                ptr.To(int32(1)),
+			Selector:                &metav1.LabelSelector{MatchLabels: map[string]string{"app": "reconcile-error"}},
+			ProgressDeadlineSeconds: ptr.To(int32(1)),
+		},
+		Status: orchestrationv1alpha1.StormServiceStatus{
+			Conditions: orchestrationv1alpha1.Conditions{
+				ready,
+				progressingCondition(corev1.ConditionTrue, ProgressingReason, started, started),
+				external,
+			},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&orchestrationv1alpha1.StormService{}).
+		WithObjects(stormService).
+		Build()
+	reconciler := &StormServiceReconciler{Client: fakeClient, Scheme: scheme}
+	currentRevision := &appsv1.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "revision-1"}}
+	updateRevision := &appsv1.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "revision-2"}}
+
+	current := &orchestrationv1alpha1.StormService{}
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(stormService), current); err != nil {
+		t.Fatalf("get StormService: %v", err)
+	}
+	readyResult, err := reconciler.updateStatus(
+		context.Background(),
+		current,
+		errors.New("transient rollout error"),
+		currentRevision,
+		updateRevision,
+		0,
+	)
+	if err != nil {
+		t.Fatalf("update error status: %v", err)
+	}
+	if readyResult {
+		t.Fatal("expected StormService with a reconcile error to be not ready")
+	}
+
+	failed := &orchestrationv1alpha1.StormService{}
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(stormService), failed); err != nil {
+		t.Fatalf("get failed StormService: %v", err)
+	}
+	if condition := ctrlutils.GetCondition(failed.Status.Conditions, orchestrationv1alpha1.StormServiceReady); condition != nil {
+		t.Fatalf("expected stale Ready condition to be removed, got %#v", condition)
+	}
+	progressing := ctrlutils.GetCondition(failed.Status.Conditions, orchestrationv1alpha1.StormServiceProgressing)
+	if progressing == nil || progressing.LastUpdateTime == nil || progressing.Status != corev1.ConditionFalse || progressing.Reason != ProgressDeadlineExceededReason {
+		t.Fatalf("expected progress deadline to expire across reconcile error, got %#v", progressing)
+	}
+	if condition := ctrlutils.GetCondition(failed.Status.Conditions, orchestrationv1alpha1.StormServiceReplicaFailure); condition == nil {
+		t.Fatal("expected ReplicaFailure condition")
+	}
+	if condition := ctrlutils.GetCondition(failed.Status.Conditions, external.Type); condition == nil {
+		t.Fatal("expected unrelated condition to be preserved")
+	}
+	timedOutAt := progressing.LastUpdateTime.DeepCopy()
+
+	readyResult, err = reconciler.updateStatus(
+		context.Background(),
+		failed,
+		nil,
+		currentRevision,
+		updateRevision,
+		0,
+	)
+	if err != nil {
+		t.Fatalf("update recovered status: %v", err)
+	}
+	if readyResult {
+		t.Fatal("expected StormService without RoleSets to be not ready")
+	}
+
+	recovered := &orchestrationv1alpha1.StormService{}
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(stormService), recovered); err != nil {
+		t.Fatalf("get recovered StormService: %v", err)
+	}
+	if condition := ctrlutils.GetCondition(recovered.Status.Conditions, orchestrationv1alpha1.StormServiceReplicaFailure); condition != nil {
+		t.Fatalf("expected ReplicaFailure to clear after successful reconcile, got %#v", condition)
+	}
+	progressing = ctrlutils.GetCondition(recovered.Status.Conditions, orchestrationv1alpha1.StormServiceProgressing)
+	if progressing == nil || progressing.LastUpdateTime == nil || !progressing.LastUpdateTime.Equal(timedOutAt) {
+		t.Fatalf("expected progress deadline clock to remain at %v, got %#v", timedOutAt, progressing)
+	}
+	if condition := ctrlutils.GetCondition(recovered.Status.Conditions, external.Type); condition == nil {
+		t.Fatal("expected unrelated condition to remain after recovery")
 	}
 }
 

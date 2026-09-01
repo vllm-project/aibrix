@@ -62,6 +62,15 @@ type StormServiceSpec struct {
 	// +optional
 	Paused bool `json:"paused,omitempty" protobuf:"varint,7,opt,name=paused"`
 
+	// The maximum time in seconds for a StormService to make progress before it
+	// is considered to be failed. The controller will continue to process failed
+	// StormServices and surface a condition with a ProgressDeadlineExceeded reason.
+	// Progress is not estimated while a StormService is paused. Defaults to 600s.
+	// +kubebuilder:default=600
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	ProgressDeadlineSeconds *int32 `json:"progressDeadlineSeconds,omitempty" protobuf:"varint,9,opt,name=progressDeadlineSeconds"`
+
 	// DisruptionTolerance indicates how many roleSets can be unavailable during the preemption/eviction.
 	// +optional
 	DisruptionTolerance DisruptionTolerance `json:"disruptionTolerance,omitempty"`
@@ -178,6 +187,10 @@ const (
 	// StormServiceReplicaFailure is added in a stormService when one of its workloads fails to be created
 	// or deleted.
 	StormServiceReplicaFailure ConditionType = "ReplicaFailure"
+	// StormServicePodGroupSynced summarizes scheduler PodGroup sync across owned RoleSets.
+	StormServicePodGroupSynced ConditionType = "PodGroupSynced"
+	// StormServiceGangSchedulingError summarizes gang scheduling errors across owned RoleSets.
+	StormServiceGangSchedulingError ConditionType = "GangSchedulingError"
 )
 
 type StormServiceUpdateStrategy struct {

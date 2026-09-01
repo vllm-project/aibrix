@@ -83,3 +83,35 @@ func TestLoadRejectsNonPositiveMetadataFileUploadTimeout(t *testing.T) {
 		t.Fatalf("Load() error = %q, want upload timeout validation error", err)
 	}
 }
+
+func TestLoadPlannerWorkerQueueSize(t *testing.T) {
+	t.Setenv("AUTH_MODE", AuthModeDev)
+	t.Setenv("PLANNER_WORKER_QUEUE_SIZE", "128")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.PlannerWorkerQueueSize != 128 {
+		t.Fatalf(
+			"PlannerWorkerQueueSize = %d, want 128",
+			cfg.PlannerWorkerQueueSize,
+		)
+	}
+}
+
+func TestLoadRejectsInvalidPlannerWorkerQueueSize(t *testing.T) {
+	t.Setenv("AUTH_MODE", AuthModeDev)
+	t.Setenv("PLANNER_WORKER_QUEUE_SIZE", "0")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid worker queue size error")
+	}
+	if !strings.Contains(
+		err.Error(),
+		"PLANNER_WORKER_QUEUE_SIZE must be a positive integer",
+	) {
+		t.Fatalf("Load() error = %q, want worker queue size validation error", err)
+	}
+}
