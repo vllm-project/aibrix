@@ -40,6 +40,10 @@ import (
 
 const (
 	defaultTTFTThreshold = 1
+	// maxStreamBufferSize bounds the trailing partial SSE line carried over between
+	// HandleResponseBody calls, so a malformed or malicious upstream that never emits
+	// a newline cannot grow streamBuffers without bound.
+	maxStreamBufferSize = 1024 * 1024 // 1MB
 )
 
 var (
@@ -84,7 +88,9 @@ func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bo
 	// not only after "usage" has already appeared. Reassemble any trailing partial
 	// line carried over from the previous chunk before scanning.
 	if v, ok := streamBuffers.LoadAndDelete(requestID); ok {
-		bodyBytes = append(v.([]byte), bodyBytes...)
+		if buf, ok := v.([]byte); ok {
+			bodyBytes = append(buf, bodyBytes...)
+		}
 	}
 
 	// Unless this is the final chunk, carve off any trailing line that isn't yet
@@ -92,14 +98,32 @@ func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bo
 	// it currently contains "usage" -- the "usage" key itself may not have arrived
 	// yet. This keeps the scanning below operating only on complete lines, so a
 	// chunk boundary landing mid-JSON never gets misreported as malformed JSON.
+	// The carried-over tail is capped so a malformed upstream that never emits a
+	// newline cannot grow this buffer without bound.
 	if !endOfStream {
 		if idx := bytes.LastIndexByte(bodyBytes, '\n'); idx >= 0 {
 			if tail := bodyBytes[idx+1:]; len(tail) > 0 {
-				streamBuffers.Store(requestID, append([]byte(nil), tail...))
+				if len(tail) > maxStreamBufferSize {
+					return usage, generateErrorResponse(
+						envoyTypePb.StatusCode_InternalServerError,
+						[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+							Key: HeaderErrorStreaming, RawValue: []byte("true"),
+						}}},
+						"buffered SSE line exceeded size limit", "", "")
+				}
+				streamBuffers.Store(requestID, bytes.Clone(tail))
 				bodyBytes = bodyBytes[:idx+1]
 			}
 		} else if len(bodyBytes) > 0 {
-			streamBuffers.Store(requestID, append([]byte(nil), bodyBytes...))
+			if len(bodyBytes) > maxStreamBufferSize {
+				return usage, generateErrorResponse(
+					envoyTypePb.StatusCode_InternalServerError,
+					[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+						Key: HeaderErrorStreaming, RawValue: []byte("true"),
+					}}},
+					"buffered SSE line exceeded size limit", "", "")
+			}
+			streamBuffers.Store(requestID, bytes.Clone(bodyBytes))
 			bodyBytes = nil
 		}
 	}
