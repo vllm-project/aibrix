@@ -74,8 +74,35 @@ type TokenUsage struct {
 	TotalTokens      int64
 }
 
-func processStreamingResponse(requestID string, bodyBytes []byte) (TokenUsage, *extProcPb.ProcessingResponse) {
+func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bool) (TokenUsage, *extProcPb.ProcessingResponse) {
 	var usage TokenUsage
+
+	// HandleResponseBody runs once per ext_proc callback, and Envoy delivers response
+	// body chunks as TCP data arrives rather than aligned to SSE line boundaries. A
+	// "data: {...}" line (and the "usage" field inside it) can therefore be split
+	// across two consecutive calls, and the split can land anywhere in the line --
+	// not only after "usage" has already appeared. Reassemble any trailing partial
+	// line carried over from the previous chunk before scanning.
+	if v, ok := streamBuffers.LoadAndDelete(requestID); ok {
+		bodyBytes = append(v.([]byte), bodyBytes...)
+	}
+
+	// Unless this is the final chunk, carve off any trailing line that isn't yet
+	// newline-terminated and carry it over to the next call, regardless of whether
+	// it currently contains "usage" -- the "usage" key itself may not have arrived
+	// yet. This keeps the scanning below operating only on complete lines, so a
+	// chunk boundary landing mid-JSON never gets misreported as malformed JSON.
+	if !endOfStream {
+		if idx := bytes.LastIndexByte(bodyBytes, '\n'); idx >= 0 {
+			if tail := bodyBytes[idx+1:]; len(tail) > 0 {
+				streamBuffers.Store(requestID, append([]byte(nil), tail...))
+				bodyBytes = bodyBytes[:idx+1]
+			}
+		} else if len(bodyBytes) > 0 {
+			streamBuffers.Store(requestID, append([]byte(nil), bodyBytes...))
+			bodyBytes = nil
+		}
+	}
 
 	// The previous implementation unmarshalled every single SSE chunk into a struct (openai.ChatCompletionChunk).
 	// This caused significant CPU overhead and high GC pressure under heavy concurrency.
@@ -86,7 +113,10 @@ func processStreamingResponse(requestID string, bodyBytes []byte) (TokenUsage, *
 
 		for len(remaining) > 0 {
 			var line []byte
-			// Manually find the newline to avoid the allocations of bytes.Split
+			// Manually find the newline to avoid the allocations of bytes.Split.
+			// Every line here is guaranteed complete: bodyBytes was trimmed to a
+			// newline boundary above unless this is the final chunk, in which case
+			// a trailing line with no newline is legitimately the last line.
 			if idx := bytes.IndexByte(remaining, '\n'); idx >= 0 {
 				line = remaining[:idx]
 				remaining = remaining[idx+1:]
@@ -192,7 +222,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 
 	if stream {
 		var streamRes *extProcPb.ProcessingResponse
-		usage, streamRes = processStreamingResponse(requestID, b.ResponseBody.GetBody())
+		usage, streamRes = processStreamingResponse(requestID, b.ResponseBody.GetBody(), b.ResponseBody.EndOfStream)
 		if streamRes != nil {
 			complete = true
 			return streamRes, complete, usage

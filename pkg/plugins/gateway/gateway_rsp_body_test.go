@@ -1081,6 +1081,64 @@ func TestHandleResponseBody_SSEParsing(t *testing.T) {
 	}
 }
 
+// TestHandleResponseBody_SSEChunkSplitAcrossCallbacks reproduces
+// https://github.com/vllm-project/aibrix/issues/2638: Envoy ext_proc delivers
+// response body chunks as TCP data arrives, so a single SSE "data: {...}" line
+// carrying the final usage payload can be split across two HandleResponseBody
+// invocations, and the split can land anywhere in the line -- including before
+// the "usage" key itself has arrived. The first (non-final) call must not treat
+// its truncated tail as malformed JSON; the second call should complete the
+// line and extract usage.
+func TestHandleResponseBody_SSEChunkSplitAcrossCallbacks(t *testing.T) {
+	full := []byte("data: {\"id\": \"1\", \"usage\": {\"prompt_tokens\": 10, \"completion_tokens\": 20, \"total_tokens\": 30}}\n\n")
+
+	tests := []struct {
+		name    string
+		splitAt int
+	}{
+		{name: "split after the usage key has appeared", splitAt: 40},
+		{name: "split before the usage key appears", splitAt: 10},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := &Server{}
+
+			routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", "test-req-id", "")
+			routerCtx.ReqPath = PathChatCompletions
+			routerCtx.RequestTime = time.Now()
+
+			firstHalf, secondHalf := full[:tt.splitAt], full[tt.splitAt:]
+
+			firstReq := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{
+						Body:        firstHalf,
+						EndOfStream: false,
+					},
+				},
+			}
+			resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", firstReq, utils.User{}, 0, "test-model", true, false)
+			assert.False(t, complete, "stream is not complete after the first partial chunk")
+			assert.Equal(t, TokenUsage{}, usage)
+			assert.Nil(t, resp.GetImmediateResponse(), "a mid-stream chunk boundary must not be reported as malformed JSON")
+
+			secondReq := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{
+						Body:        secondHalf,
+						EndOfStream: true,
+					},
+				},
+			}
+			resp, complete, usage = server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", secondReq, utils.User{}, 0, "test-model", true, false)
+			assert.True(t, complete)
+			assert.Nil(t, resp.GetImmediateResponse())
+			assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30}, usage)
+		})
+	}
+}
+
 func TestRequestEndHelper_EmitsTokenUsageMetrics(t *testing.T) {
 	var counterCalls []struct {
 		name  string

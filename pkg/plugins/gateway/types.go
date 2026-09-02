@@ -123,4 +123,5 @@ const (
 var (
 	ErrorUnknownResponse = errors.New("unknown response")
 	requestBuffers       sync.Map // Thread-safe map to track buffers per request
+	streamBuffers        sync.Map // Thread-safe map to track the trailing partial SSE line per streaming request
 )
