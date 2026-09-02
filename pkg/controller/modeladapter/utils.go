@@ -52,9 +52,9 @@ func extractHuggingFacePath(artifactURL string) (string, error) {
 		return "", fmt.Errorf("failed to parse URL: %w", err)
 	}
 
-	// Check if the scheme is "huggingface"
-	if parsedURL.Scheme != "huggingface" {
-		return "", errors.New("unsupported protocol, only huggingface:// is allowed")
+	// Check if the scheme is "huggingface" or its short alias "hf"
+	if parsedURL.Scheme != "huggingface" && parsedURL.Scheme != "hf" {
+		return "", errors.New("unsupported protocol, only huggingface:// or hf:// is allowed")
 	}
 
 	// Extract the path part (xxx/yyy) and trim any leading slashes

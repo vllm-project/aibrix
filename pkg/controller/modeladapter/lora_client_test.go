@@ -44,9 +44,10 @@ func TestLoadAdapter(t *testing.T) {
 		loadApiStatusCode  int
 		loadApiWantUrl     string
 
-		wantErr    bool
-		wantExists bool
-		wantLoaded bool
+		wantErr        bool
+		wantErrContain string
+		wantExists     bool
+		wantLoaded     bool
 	}{
 		{
 			name:          "pod with vllm and without sidecar - model loaded ok",
@@ -147,6 +148,7 @@ func TestLoadAdapter(t *testing.T) {
 			modelApiResponse:  prepareModelApiResponseWithOneModel("vllm", "qwen2-5-0-5b"),
 			loadApiStatusCode: 200,
 			wantErr:           true,
+			wantErrContain:    "cannot be fetched by the inference engine directly",
 			wantExists:        false,
 			wantLoaded:        false,
 		},
@@ -171,6 +173,7 @@ func TestLoadAdapter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			loadApiCalled := false
 			server := mockServer(t, tt.pod.Status.PodIP, tt.port, func(w http.ResponseWriter, r *http.Request) {
 				// GET model API
 				if r.URL.Path == `/v1/models` {
@@ -183,6 +186,7 @@ func TestLoadAdapter(t *testing.T) {
 				}
 
 				// POST load adapter API
+				loadApiCalled = true
 				if r.URL.Path != tt.loadApiWantUrl {
 					t.Errorf("load api path mis-match, want=%s, got=%s", tt.loadApiWantUrl, r.URL.Path)
 				} else {
@@ -201,6 +205,10 @@ func TestLoadAdapter(t *testing.T) {
 
 			if tt.wantErr {
 				assert.Error(t, err)
+				if tt.wantErrContain != "" {
+					assert.Contains(t, err.Error(), tt.wantErrContain)
+					assert.False(t, loadApiCalled, "load adapter endpoint should not be called when the artifact URL is rejected up front")
+				}
 			} else {
 				assert.NoError(t, err)
 				assert.Equal(t, tt.wantExists, exists)
