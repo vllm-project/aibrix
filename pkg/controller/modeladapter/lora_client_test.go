@@ -132,6 +132,25 @@ func TestLoadAdapter(t *testing.T) {
 			wantLoaded:        true,
 		},
 		{
+			name:          "pod with vllm and without sidecar - s3 artifact url rejected before reaching engine",
+			enableSidecar: false,
+			ma: &modelv1alpha1.ModelAdapter{
+				ObjectMeta: v1.ObjectMeta{
+					Name: "qwen-lora-test",
+				},
+				Spec: modelv1alpha1.ModelAdapterSpec{
+					ArtifactURL: "s3://s3-bucket/llama-3.1-nemoguard-8b-topic-control",
+				},
+			},
+			pod:               newPod("127.0.0.1", VLLMEngine, false),
+			port:              8000,
+			modelApiResponse:  prepareModelApiResponseWithOneModel("vllm", "qwen2-5-0-5b"),
+			loadApiStatusCode: 200,
+			wantErr:           true,
+			wantExists:        false,
+			wantLoaded:        false,
+		},
+		{
 			name:          "pod with sglang and without sidecar - model loaded ok",
 			enableSidecar: false,
 			ma: &modelv1alpha1.ModelAdapter{
