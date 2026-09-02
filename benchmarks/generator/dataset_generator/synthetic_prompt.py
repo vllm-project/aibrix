@@ -64,6 +64,26 @@ LOCATIONS = [
 ]
 
 
+def _truncate_to_target_length(tokenizer: PreTrainedTokenizer,
+                                token_ids: list,
+                                target_token_length: int) -> str:
+    """
+    Truncate token ids to target_token_length and decode to text, making sure
+    the decoded text re-encodes to at most target_token_length tokens.
+
+    decode(ids[:n]) followed by re-encoding is not guaranteed to round-trip to
+    n tokens (e.g. a truncation boundary can split a multi-byte character or a
+    merge), so the resulting prompt can silently exceed the caller's requested
+    length. Shrink further until the re-encoded length fits.
+    """
+    truncated_ids = token_ids[:max(0, target_token_length)]
+    text = tokenizer.decode(truncated_ids, skip_special_tokens=True)
+    while truncated_ids and len(tokenizer.encode(text)) > target_token_length:
+        truncated_ids = truncated_ids[:-1]
+        text = tokenizer.decode(truncated_ids, skip_special_tokens=True)
+    return text
+
+
 PADDING_PROMPT = [
                 f" Additionally, I'm interested in learning about {random.choice(TOPICS)}.",
                 f" Could you also explain how this relates to {random.choice(TOPICS)}?",
@@ -145,9 +165,10 @@ def generate_synthetic_prompt(tokenizer: PreTrainedTokenizer,
     
     # If the prompt is too long, truncate it to the desired length
     if token_count > target_token_length:
-        tokenized = tokenizer.encode(filled_template)[:target_token_length]
-        filled_template = tokenizer.decode(tokenized, skip_special_tokens=True)
-    
+        tokenized = tokenizer.encode(filled_template)
+        filled_template = _truncate_to_target_length(tokenizer, tokenized, target_token_length)
+        token_count = len(tokenizer.encode(filled_template))
+
     return filled_template, token_count
 
 
@@ -180,8 +201,8 @@ def adjust_prompt_length(tokenizer: PreTrainedTokenizer,
             adjusted_prompt += random.choice(additional_content)
             token_count = len(tokenizer.encode(adjusted_prompt))
     elif token_count > target_token_length:
-        adjusted_prompt_tokenized = tokenizer.encode(prompt)[:target_token_length]
-        adjusted_prompt = tokenizer.decode(adjusted_prompt_tokenized, skip_special_tokens=True)
+        adjusted_prompt_tokenized = tokenizer.encode(prompt)
+        adjusted_prompt = _truncate_to_target_length(tokenizer, adjusted_prompt_tokenized, target_token_length)
     return adjusted_prompt
     
 
