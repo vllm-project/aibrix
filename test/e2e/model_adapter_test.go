@@ -359,13 +359,14 @@ func TestModelAdapterRetryAnnotations(t *testing.T) {
 }
 
 // TestModelAdapterMultipleReplicas tests adapter with multiple replicas
+// TestModelAdapterMultipleReplicas verifies that an adapter with Replicas left nil (the only
+// supported way to load onto more than one pod -- spec.replicas otherwise only accepts 1) gets
+// scheduled onto every matching pod, each on a distinct pod.
 func TestModelAdapterMultipleReplicas(t *testing.T) {
 	adapterName := "multi-replica-test-lora"
 	adapter := createModelAdapterConfig(adapterName, "llama2-7b")
 
-	// Set multiple replicas
-	replicas := int32(2)
-	adapter.Spec.Replicas = &replicas
+	const expectedInstances = 3
 
 	k8sClient, v1alpha1Client := initializeClient(context.Background(), t)
 
@@ -375,7 +376,7 @@ func TestModelAdapterMultipleReplicas(t *testing.T) {
 	})
 
 	// Ensure we have enough pods for multiple replicas
-	validateAllPodsAreReady(t, k8sClient, 3, baseModelPodLabelSelector("llama2-7b"))
+	validateAllPodsAreReady(t, k8sClient, expectedInstances, baseModelPodLabelSelector("llama2-7b"))
 
 	// Create model adapter
 	t.Log("creating model adapter with multiple replicas")
@@ -393,20 +394,20 @@ func TestModelAdapterMultipleReplicas(t *testing.T) {
 			}
 
 			// Check if we have the desired number of instances
-			if len(adapter.Status.Instances) >= int(replicas) &&
+			if len(adapter.Status.Instances) >= expectedInstances &&
 				(adapter.Status.Phase == modelv1alpha1.ModelAdapterRunning ||
 					adapter.Status.Phase == modelv1alpha1.ModelAdapterBound) {
 				return true, nil
 			}
 
 			t.Logf("waiting for %d replicas, currently have %d instances, phase: %s",
-				replicas, len(adapter.Status.Instances), adapter.Status.Phase)
+				expectedInstances, len(adapter.Status.Instances), adapter.Status.Phase)
 			return false, nil
 		}))
 
 	// Validate final state
-	assert.Equal(t, int(replicas), len(adapter.Status.Instances),
-		"should have exactly %d instances", replicas)
+	assert.Equal(t, expectedInstances, len(adapter.Status.Instances),
+		"should have exactly %d instances", expectedInstances)
 	assert.Contains(t, []modelv1alpha1.ModelAdapterPhase{
 		modelv1alpha1.ModelAdapterBound,
 		modelv1alpha1.ModelAdapterRunning,
@@ -417,7 +418,7 @@ func TestModelAdapterMultipleReplicas(t *testing.T) {
 	for _, podName := range adapter.Status.Instances {
 		uniquePods[podName] = true
 	}
-	assert.Equal(t, int(replicas), len(uniquePods),
+	assert.Equal(t, expectedInstances, len(uniquePods),
 		"all replicas should be on different pods")
 }
 
