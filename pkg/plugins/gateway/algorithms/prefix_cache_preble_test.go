@@ -222,7 +222,11 @@ func TestPrefixCacheAndLoadRouterRouting(t *testing.T) {
 			},
 		},
 		{
-			name: "load_imbalance_restricts_to_least_loaded_pods",
+			// Preble no longer applies a load-imbalance gate itself (that now lives solely in
+			// the load-balance router; see Test_LoadBalanceRouter_LoadImbalanceGate). Even with
+			// a severe running-request skew across cache-holding pods, Preble's own cost model
+			// must still be free to select any of them.
+			name: "severe_running_request_skew_does_not_restrict_candidates",
 			setupRouter: func() *prefixCacheAndLoadRouter {
 				pods := []*v1.Pod{
 					newPod("pod-light-1", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
@@ -231,7 +235,7 @@ func TestPrefixCacheAndLoadRouterRouting(t *testing.T) {
 					newPod("pod-busy-2", "10.0.0.4", true, map[string]string{"model.aibrix.ai/port": "8000"}),
 				}
 				// light pods: 1 running request each, busy pods: 10 running requests each
-				// diff = 9, which exceeds default threshold of 8
+				// diff = 9, which would have exceeded the old default gate threshold of 8
 				metricCache := cache.NewWithPodsMetricsForTest(
 					pods,
 					"test-model",
@@ -283,9 +287,18 @@ func TestPrefixCacheAndLoadRouterRouting(t *testing.T) {
 				selectedPodName := ctx.TargetPod().Name
 				t.Logf("Selected pod: %s", selectedPodName)
 
-				// Under load imbalance, only light pods should be selected
-				if selectedPodName != "pod-light-1" && selectedPodName != "pod-light-2" {
-					t.Errorf("Expected pod-light-1 or pod-light-2 (least loaded pods) under imbalance, got %s", selectedPodName)
+				// All four pods are valid candidates; Preble must not silently drop the busy
+				// ones from consideration the way the old shared load-imbalance gate did.
+				validNames := []string{"pod-light-1", "pod-light-2", "pod-busy-1", "pod-busy-2"}
+				found := false
+				for _, name := range validNames {
+					if selectedPodName == name {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("Expected one of %v, got %s", validNames, selectedPodName)
 				}
 			},
 		},

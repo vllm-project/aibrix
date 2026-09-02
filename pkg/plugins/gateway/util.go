@@ -648,42 +648,125 @@ func validateStreamOptions(requestID string, user utils.User, stream *bool, stre
 	return nil
 }
 
-// applyConfigProfile resolves the model config from pod annotation (model.aibrix.ai/config)
-// and applies the selected profile: sets ConfigProfile on routingCtx.
-// - If the client provides config-profile, use that profile name.
-// - If not provided or not found, fall back to defaultProfile (or "default") in the JSON.
+// applyConfigProfile resolves the model config from the pod annotation
+// (model.aibrix.ai/config) and applies the selected profile plus the model-wide
+// locked routing strategy onto routingCtx.ConfigProfile.
+//   - The profile is selected by the config-profile header, falling back to
+//     defaultProfile (or "default") in the JSON.
+//   - config-profile: auto evaluates request-local hints in profile routingConfig
+//     and resolves to a concrete profile before routing strategy derivation.
+//   - lockedRoutingStrategy (top-level) is applied even when no profile resolves, so a
+//     model-wide lock cannot be bypassed by selecting a profile or sending a header.
 func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
-	headerProfile := routingCtx.ReqConfigProfile
-	profile := configprofiles.ResolveProfile(pods, headerProfile)
-	if profile == nil {
+	if routingCtx == nil {
 		return
 	}
-	routingCtx.ConfigProfile = &types.ResolvedConfigProfile{
-		RoutingStrategy:   profile.RoutingStrategy,
-		RoutingConfig:     profile.RoutingConfig,
-		RequestsPerSecond: profile.RequestsPerSecond,
+	reqConfigProfile := routingCtx.ReqConfigProfile
+	var features configprofiles.RequestFeatures
+	if strings.EqualFold(strings.TrimSpace(reqConfigProfile), "auto") {
+		features = buildConfigProfileRequestFeatures(routingCtx)
 	}
+	profile, profileName, locked := configprofiles.ResolveConfigForRequest(pods, reqConfigProfile, features)
+	if profile == nil && locked == "" {
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(reqConfigProfile), "auto") && profileName != "" {
+		routingCtx.ReqConfigProfile = profileName
+		if routingCtx.RespHeaders == nil {
+			routingCtx.RespHeaders = make(map[string]string)
+		}
+		routingCtx.RespHeaders[HeaderAIBrixConfigProfile] = profileName
+	}
+	cp := &types.ResolvedConfigProfile{LockedRoutingStrategy: locked}
+	if profile != nil {
+		cp.RoutingStrategy = profile.RoutingStrategy
+		cp.RoutingConfig = profile.RoutingConfig
+		cp.RequestsPerSecond = profile.RequestsPerSecond
+	}
+	routingCtx.ConfigProfile = cp
+}
+
+func buildConfigProfileRequestFeatures(routingCtx *types.RoutingContext) configprofiles.RequestFeatures {
+	if routingCtx == nil {
+		return configprofiles.RequestFeatures{}
+	}
+	features := configprofiles.RequestFeatures{
+		PromptTokens: estimatePromptTokens(routingCtx.Message),
+		MaxTokens:    maxTokensFromRequestBody(routingCtx.ReqBody),
+	}
+	return features
+}
+
+func estimatePromptTokens(message string) *int {
+	tokens, err := utils.TokenizeInputText(message)
+	if err != nil {
+		klog.V(4).InfoS("failed to estimate prompt tokens for config profile selection", "err", err)
+		return nil
+	}
+	tokenCount := len(tokens)
+	return &tokenCount
+}
+
+func maxTokensFromRequestBody(body []byte) *int64 {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil
+	}
+	var req map[string]json.RawMessage
+	if err := sonic.Unmarshal(body, &req); err != nil {
+		return nil
+	}
+	if v, ok := int64Field(req, "max_tokens"); ok {
+		return &v
+	}
+	if v, ok := int64Field(req, "max_completion_tokens"); ok {
+		return &v
+	}
+	return nil
+}
+
+func int64Field(req map[string]json.RawMessage, key string) (int64, bool) {
+	raw, ok := req[key]
+	if !ok {
+		return 0, false
+	}
+	var v int64
+	if err := sonic.Unmarshal(raw, &v); err != nil {
+		return 0, false
+	}
+	return v, true
 }
 
 var defaultRoutingStrategy, defaultRoutingStrategyEnabled = utils.LookupEnv(EnvRoutingAlgorithm)
 
-// deriveRoutingStrategyFromContext retrieves routing strategy from headers or resolved profile, falling back to env defaults.
+// deriveRoutingStrategyFromContext retrieves routing strategy with the following
+// precedence (highest first):
+//  1. lockedRoutingStrategy pinned model-wide in the model config
+//  2. routing-strategy request header
+//  3. routingStrategy from the resolved config profile
+//  4. ROUTING_ALGORITHM environment variable
 func deriveRoutingStrategyFromContext(routingCtx *types.RoutingContext) (string, bool) {
+	if routingCtx == nil {
+		return defaultRoutingStrategy, defaultRoutingStrategyEnabled
+	}
+
+	// Check locked routing strategy from model config (top-level, model-wide).
+	if cp := routingCtx.ConfigProfile; cp != nil {
+		if s := strings.TrimSpace(cp.LockedRoutingStrategy); s != "" {
+			return s, true
+		}
+	}
 	// Check request headers (case-insensitive key match)
-	if routingCtx != nil && routingCtx.ReqHeaders != nil {
-		for k, v := range routingCtx.ReqHeaders {
-			if strings.EqualFold(k, HeaderRoutingStrategy) {
-				if strings.TrimSpace(v) != "" {
-					return v, true
-				}
-				break
+	for k, v := range routingCtx.ReqHeaders {
+		if strings.EqualFold(k, HeaderRoutingStrategy) {
+			if s := strings.TrimSpace(v); s != "" {
+				return s, true
 			}
+			break
 		}
 	}
 	// Fallback to resolved profile on routing context
-	if routingCtx != nil && routingCtx.ConfigProfile != nil {
-		s := strings.TrimSpace(routingCtx.ConfigProfile.RoutingStrategy)
-		if s != "" {
+	if cp := routingCtx.ConfigProfile; cp != nil {
+		if s := strings.TrimSpace(cp.RoutingStrategy); s != "" {
 			return s, true
 		}
 	}
@@ -721,26 +804,8 @@ func getChatCompletionsMessage(requestID string, chatCompletionObj openai.ChatCo
 // errorCode and param are optional (pass "" for null)
 func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configPb.HeaderValueOption, message, errorCode, param string) *extProcPb.ProcessingResponse {
 	// Set the Content-Type header to application/json
-	headers = append(headers, &configPb.HeaderValueOption{
-		Header: &configPb.HeaderValue{
-			Key:   "Content-Type",
-			Value: "application/json",
-		},
-	})
-
-	return &extProcPb.ProcessingResponse{
-		Response: &extProcPb.ProcessingResponse_ImmediateResponse{
-			ImmediateResponse: &extProcPb.ImmediateResponse{
-				Status: &envoyTypePb.HttpStatus{
-					Code: statusCode,
-				},
-				Headers: &extProcPb.HeaderMutation{
-					SetHeaders: headers,
-				},
-				Body: generateErrorMessageWithHTTPCode(message, int(statusCode), errorCode, param),
-			},
-		},
-	}
+	headers = append(headers, contentTypeHeader())
+	return immediateErrorResponse(statusCode, generateErrorMessageWithHTTPCode(message, int(statusCode), errorCode, param), headers)
 }
 
 // generateErrorMessage constructs a JSON error message in OpenAI format
@@ -792,8 +857,41 @@ func generateErrorMessageWithHTTPCode(message string, httpStatusCode int, errorC
 }
 
 // buildErrorResponse constructs an error response with OpenAI-compatible error format
-// errorCode and param are optional (pass "" for null)
+// errorCode and param are optional (pass "" for null). Unlike buildErrorResponseWithBody,
+// it builds the body from the supplied fields and does not add a Content-Type header.
 func buildErrorResponse(statusCode envoyTypePb.StatusCode, errBody, errorCode, param string, headers ...string) *extProcPb.ProcessingResponse {
+	return immediateErrorResponse(
+		statusCode,
+		generateErrorMessageWithHTTPCode(errBody, int(statusCode), errorCode, param),
+		buildEnvoyProxyHeaders([]*configPb.HeaderValueOption{}, headers...),
+	)
+}
+
+// buildErrorResponseWithBody constructs an immediate error response whose body is passed
+// through verbatim (already an OpenAI-shaped error payload) with no re-wrapping. The caller
+// supplies the full header set it wants to be forwarded (typically the upstream headers plus the
+// error header); a Content-Type: application/json header is always prepended.
+func buildErrorResponseWithBody(statusCode envoyTypePb.StatusCode, body string, headers []*configPb.HeaderValueOption) *extProcPb.ProcessingResponse {
+	setHeaders := make([]*configPb.HeaderValueOption, 0, 1+len(headers))
+	setHeaders = append(setHeaders, contentTypeHeader())
+	setHeaders = append(setHeaders, headers...)
+	return immediateErrorResponse(statusCode, body, setHeaders)
+}
+
+// contentTypeHeader returns a fresh Content-Type: application/json header.
+func contentTypeHeader() *configPb.HeaderValueOption {
+	return &configPb.HeaderValueOption{
+		Header: &configPb.HeaderValue{
+			Key:   "Content-Type",
+			Value: "application/json",
+		},
+	}
+}
+
+// immediateErrorResponse builds an envoy ImmediateResponse error with the given status, body,
+// and header set. Shared by all gateway error builders so the ImmediateResponse construction
+// lives in exactly one place.
+func immediateErrorResponse(statusCode envoyTypePb.StatusCode, body string, headers []*configPb.HeaderValueOption) *extProcPb.ProcessingResponse {
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_ImmediateResponse{
 			ImmediateResponse: &extProcPb.ImmediateResponse{
@@ -801,9 +899,9 @@ func buildErrorResponse(statusCode envoyTypePb.StatusCode, errBody, errorCode, p
 					Code: statusCode,
 				},
 				Headers: &extProcPb.HeaderMutation{
-					SetHeaders: buildEnvoyProxyHeaders([]*configPb.HeaderValueOption{}, headers...),
+					SetHeaders: headers,
 				},
-				Body: generateErrorMessageWithHTTPCode(errBody, int(statusCode), errorCode, param),
+				Body: body,
 			},
 		},
 	}

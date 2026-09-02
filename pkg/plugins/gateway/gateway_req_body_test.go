@@ -35,6 +35,7 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	routingalgorithms "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -653,6 +654,13 @@ func Test_handleRequestBody(t *testing.T) {
 
 			// Initialize mock cache and router for each test
 			mockCache := &MockCache{Cache: cache.NewForTest()}
+			// selectTargetPod now applies the load-imbalance gate ahead of every non-PD
+			// strategy, which reads running-request counts via GetMetricValueByPod. Stub a
+			// harmless default (0 requests, gate never fires) so test cases that don't care
+			// about this don't need to mock it themselves; individual test cases are free to
+			// override with a more specific expectation.
+			mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+				Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
 			mockRouter := new(mockRouter)
 			if tt.mockSetup != nil {
 				tt.mockSetup(mockCache, mockRouter)
@@ -797,17 +805,11 @@ func responseHeader(response *extProcPb.ProcessingResponse, key string) string {
 }
 
 func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
-	routingalgorithms.Init()
-
 	mockCache := &MockCache{Cache: cache.NewForTest()}
 	mockRouter := new(mockRouter)
 	mockModelRL := &mockRateLimiter{}
 
-	mockRouterProvider := func() (types.Router, error) {
-		return mockRouter, nil
-	}
-	routingalgorithms.Register(TestRouterAlgorithm, mockRouterProvider)
-	routingalgorithms.Init()
+	registerTestRouter(mockRouter)
 
 	// Config profile enables model RPS checks.
 	profileJSON := `{"defaultProfile":"rps-limited","profiles":{"rps-limited":{"requestsPerSecond":5}}}`
@@ -842,6 +844,8 @@ func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
 
 	mockCache.On("HasModel", "test-model").Return(true).Once()
 	mockCache.On("ListPodsByModel", "test-model").Return(podList, nil).Once()
+	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
 
 	// enforceModelRPS atomically pre-charges (+1); routing then fails so the deferred
 	// compensation refunds (-1).
@@ -877,4 +881,148 @@ func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
 	mockCache.AssertExpectations(t)
 	mockRouter.AssertExpectations(t)
 	mockModelRL.AssertExpectations(t)
+}
+
+// registerTestRouter registers the shared TestRouterAlgorithm mock router so a
+// request can be routed with it. Idempotent across tests.
+func registerTestRouter(mockRouter *mockRouter) {
+	mockRouterProvider := func() (types.Router, error) {
+		return mockRouter, nil
+	}
+	routingalgorithms.Register(TestRouterAlgorithm, mockRouterProvider)
+	routingalgorithms.Init()
+}
+
+// routingStrategyHeaderFromResponse reads the routing-strategy from the
+// request-header mutation that HandleRequestBody sets on the upstream request.
+// The gateway propagates the resolved strategy to the backend via a request-header
+// mutation (not an HTTP response header), which is why it is read from RequestBody.
+func routingStrategyHeaderFromResponse(resp *extProcPb.ProcessingResponse) string {
+	headers := resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders()
+	for _, h := range headers {
+		if h.Header.Key == HeaderRoutingStrategy {
+			return string(h.Header.RawValue)
+		}
+	}
+	return ""
+}
+
+// configProfilePods builds two ready pods carrying the given model.aibrix.ai/config
+// annotation. Two pods are used so selectTargetPod goes through the routing
+// algorithm instead of the single-pod shortcut.
+func configProfilePods(anno string) []*v1.Pod {
+	return []*v1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        "pod-a",
+				Namespace:   "default",
+				Annotations: map[string]string{constants.ModelAnnoConfig: anno},
+			},
+			Status: v1.PodStatus{
+				PodIP:      "1.2.3.4",
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        "pod-b",
+				Namespace:   "default",
+				Annotations: map[string]string{constants.ModelAnnoConfig: anno},
+			},
+			Status: v1.PodStatus{
+				PodIP:      "4.5.6.7",
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		},
+	}
+}
+
+// TestHandleRequestBody_LockedRoutingStrategy verifies the routing-strategy
+// precedence chain end to end: a model-wide lockedRoutingStrategy wins over the
+// routing-strategy header; an invalid locked value is rejected; and the header
+// still wins over the profile when no lock is set.
+func TestHandleRequestBody_LockedRoutingStrategy(t *testing.T) {
+	tests := []struct {
+		name         string
+		profileJSON  string
+		headerValue  string
+		wantStrategy string // expected routing-strategy response header; empty when routing is expected to fail
+		wantStatus   envoyTypePb.StatusCode
+	}{
+		{
+			name:         "locked strategy wins over header",
+			profileJSON:  `{"lockedRoutingStrategy":"test-router","defaultProfile":"default","profiles":{"default":{"routingStrategy":"least-request"}}}`,
+			headerValue:  "least-request",
+			wantStrategy: "test-router",
+			wantStatus:   envoyTypePb.StatusCode_OK,
+		},
+		{
+			name:         "locked strategy applies without a resolvable profile",
+			profileJSON:  `{"lockedRoutingStrategy":"test-router","profiles":{"burst":{"routingStrategy":"least-request"}}}`,
+			headerValue:  "least-request",
+			wantStrategy: "test-router",
+			wantStatus:   envoyTypePb.StatusCode_OK,
+		},
+		{
+			name:        "invalid locked strategy is rejected",
+			profileJSON: `{"lockedRoutingStrategy":"invalid-strategy","profiles":{"default":{"routingStrategy":"test-router"}}}`,
+			headerValue: string(TestRouterAlgorithm),
+			wantStatus:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			name:         "header wins without a locked strategy",
+			profileJSON:  `{"profiles":{"default":{"routingStrategy":"least-request"}}}`,
+			headerValue:  string(TestRouterAlgorithm),
+			wantStrategy: "test-router",
+			wantStatus:   envoyTypePb.StatusCode_OK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockCache := &MockCache{Cache: cache.NewForTest()}
+			mockRouter := new(mockRouter)
+			registerTestRouter(mockRouter)
+
+			podList := &utils.PodArray{Pods: configProfilePods(tt.profileJSON)}
+
+			mockCache.On("HasModel", "test-model").Return(true)
+			mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+			mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+				Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+			if tt.wantStatus == envoyTypePb.StatusCode_OK {
+				mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1))
+				mockRouter.On("Route", mock.Anything, mock.Anything).Return("1.2.3.4:8000", nil).Once()
+			}
+
+			server := &Server{cache: mockCache}
+
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_RequestBody{
+					RequestBody: &extProcPb.HttpBody{
+						Body: []byte(`{"model":"test-model","messages":[{"role":"user","content":"test"}]}`),
+					},
+				},
+			}
+
+			routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+			routingCtx.ReqPath = PathChatCompletions
+			routingCtx.ReqHeaders[HeaderRoutingStrategy] = tt.headerValue
+
+			resp, _, _, term := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+			require.NotNil(t, resp)
+			if tt.wantStatus == envoyTypePb.StatusCode_OK {
+				assert.Nil(t, resp.GetImmediateResponse(), "successful routing should not return an immediate response")
+				assert.Equal(t, tt.wantStrategy, routingStrategyHeaderFromResponse(resp))
+				mockRouter.AssertCalled(t, "Route", mock.Anything, mock.Anything)
+			} else {
+				assert.Equal(t, tt.wantStatus, resp.GetImmediateResponse().GetStatus().GetCode())
+				assert.Equal(t, int64(0), term)
+				mockRouter.AssertNotCalled(t, "Route", mock.Anything, mock.Anything)
+			}
+			mockCache.AssertExpectations(t)
+			mockRouter.AssertExpectations(t)
+		})
+	}
 }

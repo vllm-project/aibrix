@@ -82,8 +82,9 @@ type Planner struct {
 	// planning worker
 	planningLoop *planningLoop
 
-	baseCtx    context.Context
-	baseCancel context.CancelFunc
+	baseCtx     context.Context
+	baseCancel  context.CancelFunc
+	lifecycleMu sync.Mutex
 
 	mu   sync.RWMutex          // guards jobs
 	jobs map[string]*queuedJob // JobID -> state
@@ -99,6 +100,7 @@ type PlannerConfig struct {
 	Store                  store.Store
 	PolicyType             PlanningPolicyType
 	WorkerCount            int                      // concurrent job processing, default 10
+	WorkerQueueSize        int                      // pending worker tasks, default 1000
 	PlanningInterval       time.Duration            // planning loop interval, default 60s
 	MaxConcurrentProvision int                      // max concurrent provisioning jobs, default 1
 	Injector               error_injection.Injector // error injection for testing
@@ -108,6 +110,7 @@ type PlannerConfig struct {
 func DefaultPlannerConfig() PlannerConfig {
 	return PlannerConfig{
 		WorkerCount:            defaultWorkerCount,
+		WorkerQueueSize:        pu.DefaultWorkerQueueSize,
 		PlanningInterval:       defaultPlanningInterval,
 		PolicyType:             PlanningPolicyTypeSimple,
 		MaxConcurrentProvision: DefaultPolicyConfig().MaxConcurrentProvisioning,
@@ -120,6 +123,9 @@ func NewPlanner(cfg PlannerConfig) *Planner {
 	// Apply defaults
 	if cfg.WorkerCount < 1 {
 		cfg.WorkerCount = DefaultPlannerConfig().WorkerCount
+	}
+	if cfg.WorkerQueueSize < 1 {
+		cfg.WorkerQueueSize = DefaultPlannerConfig().WorkerQueueSize
 	}
 	if cfg.PlanningInterval <= 0 {
 		cfg.PlanningInterval = DefaultPlannerConfig().PlanningInterval
@@ -154,16 +160,28 @@ func NewPlanner(cfg PlannerConfig) *Planner {
 	}
 
 	// Planning loop
-	q.planningLoop = newPlanningLoop(q, cfg.PlanningInterval, cfg.WorkerCount)
+	q.planningLoop = newPlanningLoop(
+		q,
+		cfg.PlanningInterval,
+		cfg.WorkerCount,
+		cfg.WorkerQueueSize,
+	)
 
-	klog.Infof("[planner] created planning loop interval=%v worker_pool_size=%d",
-		cfg.PlanningInterval, cfg.WorkerCount)
+	klog.Infof(
+		"[planner] created planning loop interval=%v worker_pool_size=%d worker_queue_size=%d",
+		cfg.PlanningInterval,
+		cfg.WorkerCount,
+		cfg.WorkerQueueSize,
+	)
 	return q
 }
 
 var _ plannerapi.Planner = (*Planner)(nil)
 
 func (q *Planner) Start(ctx context.Context) error {
+	q.lifecycleMu.Lock()
+	defer q.lifecycleMu.Unlock()
+
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -183,6 +201,9 @@ func (q *Planner) Start(ctx context.Context) error {
 
 // Close cancels in-flight work and waits for all workers to exit.
 func (q *Planner) Close() error {
+	q.lifecycleMu.Lock()
+	defer q.lifecycleMu.Unlock()
+
 	if q.baseCancel != nil {
 		q.baseCancel()
 	}
@@ -307,9 +328,35 @@ func (q *Planner) Recover(ctx context.Context) error {
 			continue
 		}
 
+		// A completion window starts when MDS accepts the batch, not while the
+		// job is waiting in the planner queue. So, when recovering pre-provision
+		// states, clear the legacy expiresAt in case it was set.
+		modified := false
+		if (job.status == plannerapi.JobStatusQueued || job.status == plannerapi.JobStatusPlanned) &&
+			!job.expiresAt.IsZero() {
+			job.expiresAt = time.Time{}
+			modified = true
+		}
+
+		// A process can stop after changing the in-memory status to planned
+		// but before Provision returns, so a recovered planned job must be
+		// scheduled again.
+		if job.status == plannerapi.JobStatusPlanned {
+			job.status = plannerapi.JobStatusQueued
+			modified = true
+		}
+
+		if modified {
+			if job.batch != nil {
+				job.batch.Status = job.status.ToBatchStatus()
+				job.batch.ExpiresAt = 0
+			}
+			q.persist(ctx, job)
+		}
+
 		q.jobs[job.req.JobID] = job
 		// Re-enqueue the job onto the queue based on the status
-		if job.status == plannerapi.JobStatusQueued || job.status == plannerapi.JobStatusPlanned {
+		if job.status == plannerapi.JobStatusQueued {
 			q.pendingQueue.Push(job, 0)
 			job.queue = q.pendingQueue
 		} else {
@@ -361,12 +408,10 @@ func (q *Planner) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (
 		q.mu.Unlock()
 		return nil, fmt.Errorf("%w: duplicate job_id %q", plannerapi.ErrInvalidJob, req.JobID)
 	}
-	completionWindow, _ := time.ParseDuration(string(req.BatchParams.CompletionWindow))
 	job := &queuedJob{
 		req:        req,
 		status:     plannerapi.JobStatusQueued,
 		queuedAt:   now,
-		expiresAt:  now.Add(completionWindow),
 		pqPriority: 0,
 		queue:      q.pendingQueue,
 	}

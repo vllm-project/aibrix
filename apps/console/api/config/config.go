@@ -22,10 +22,14 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 )
 
 // AuthModeDev is the development auth mode name.
 const AuthModeDev = "dev"
+
+const defaultMetadataFileUploadTimeout = 30 * time.Minute
+const defaultPlannerWorkerQueueSize = 1000
 
 // KubernetesProviderConfig identifies the cluster and namespace used by the
 // Kubernetes deployment provider.
@@ -61,6 +65,8 @@ type Config struct {
 	GatewayEndpoint string
 	// MetadataServiceURL is the metadata service URL for file proxy operations.
 	MetadataServiceURL string
+	// MetadataFileUploadTimeout bounds file uploads proxied to metadata service.
+	MetadataFileUploadTimeout time.Duration
 	// DefaultBatchModelDeploymentTemplate is injected as aibrix.model_template
 	// on CreateJob requests when the caller does not provide one. Temporary
 	// stop-gap until the Model entity carries a per-model batch_template.
@@ -75,6 +81,9 @@ type Config struct {
 	// PlannerWorkerCount is the number of worker threads to use for the planner.
 	// Defaults to 10.
 	PlannerWorkerCount int
+	// PlannerWorkerQueueSize bounds queued planner work without blocking the
+	// planning loop. Defaults to 1000.
+	PlannerWorkerQueueSize int
 
 	// GRPCAddr is the listen address for the gRPC server.
 	GRPCAddr string
@@ -189,15 +198,34 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	plannerWorkerQueueSize, err := strconv.Atoi(envOrDefault(
+		"PLANNER_WORKER_QUEUE_SIZE",
+		strconv.Itoa(defaultPlannerWorkerQueueSize),
+	))
+	if err != nil {
+		return nil, fmt.Errorf("PLANNER_WORKER_QUEUE_SIZE must be a positive integer: %w", err)
+	}
+	if plannerWorkerQueueSize <= 0 {
+		return nil, fmt.Errorf("PLANNER_WORKER_QUEUE_SIZE must be a positive integer")
+	}
+	metadataFileUploadTimeout, err := envDurationOrDefault(
+		"METADATA_FILE_UPLOAD_TIMEOUT",
+		defaultMetadataFileUploadTimeout,
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	return &Config{
 		StoreURI:                            envOrDefault("STORE_URI", "sqlite:/tmp/aibrix-console.db"),
 		GatewayEndpoint:                     envOrDefault("GATEWAY_ENDPOINT", "http://localhost:8888"),
 		MetadataServiceURL:                  envOrDefault("METADATA_SERVICE_URL", "http://localhost:8090"),
+		MetadataFileUploadTimeout:           metadataFileUploadTimeout,
 		DefaultBatchModelDeploymentTemplate: envOrDefault("DEFAULT_BATCH_MODEL_DEPLOYMENT_TEMPLATE", ""),
 		Provisioner:                         envOrDefault("PROVISIONER", "kubernetes"),
 		PlanningPolicy:                      envOrDefault("PLANNING_POLICY", "simple"),
 		PlannerWorkerCount:                  plannerWorkerCount,
+		PlannerWorkerQueueSize:              plannerWorkerQueueSize,
 		GRPCAddr:                            envOrDefault("GRPC_ADDR", ":50060"),
 		HTTPAddr:                            envOrDefault("HTTP_ADDR", ":8080"),
 		AuthMode:                            authMode,
@@ -283,6 +311,21 @@ func envInt32Compat(key, legacyKey string, fallback int32) int32 {
 		}
 	}
 	return fallback
+}
+
+func envDurationOrDefault(key string, fallback time.Duration) (time.Duration, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a valid duration: %w", key, err)
+	}
+	if duration <= 0 {
+		return 0, fmt.Errorf("%s must be greater than zero", key)
+	}
+	return duration, nil
 }
 
 // requiredSecret returns the env var value if set. In dev mode it generates a

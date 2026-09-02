@@ -19,9 +19,16 @@ package webhook
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -171,6 +178,13 @@ func (r *StormServiceCustomDefaulter) ValidateCreate(ctx context.Context, obj ru
 		return nil, fmt.Errorf("expected a StormService object but got %T", obj)
 	}
 
+	if err := validateStormServiceMode(stormService); err != nil {
+		return nil, err
+	}
+	if err := validateStormServiceSchedulingStrategy(stormService); err != nil {
+		return nil, err
+	}
+
 	// 1. Validate StormService.Name itself (≤63, DNS-1123 compliant)
 	if len(stormService.Name) > 63 {
 		return nil, fmt.Errorf("StormService name must be no more than 63 characters")
@@ -206,8 +220,175 @@ func (r *StormServiceCustomDefaulter) ValidateCreate(ctx context.Context, obj ru
 
 // ValidateUpdate implements webhook.Validator so a webhook will be registered for the type
 func (r *StormServiceCustomDefaulter) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	// TODO(user): fill in your validation logic upon object update.
+	stormService, ok := newObj.(*orchestrationv1alpha1.StormService)
+	if !ok {
+		return nil, fmt.Errorf("expected a StormService object but got %T", newObj)
+	}
+	if err := validateStormServiceMode(stormService); err != nil {
+		return nil, err
+	}
+	// Re-run the scheduling validation only when one of its inputs changed; its result cannot
+	// differ otherwise. Objects that predate this validation must keep accepting unrelated
+	// updates, in particular the controller's finalizer removal, or they could never be deleted.
+	// Comparing the whole template would not do: the defaulter may inject the sidecar into an
+	// object that was stored without it, which looks like a template change on every update.
+	oldStormService, ok := oldObj.(*orchestrationv1alpha1.StormService)
+	if !ok || schedulingConfigChanged(oldStormService.Spec.Template.Spec, stormService.Spec.Template.Spec) {
+		if err := validateStormServiceSchedulingStrategy(stormService); err != nil {
+			return nil, err
+		}
+	}
 	return nil, nil
+}
+
+// schedulingConfigChanged reports whether any input of validateRoleSetSchedulingStrategy differs
+// between two RoleSet specs: the RoleSet-level strategy, the role names, or a role's strategy.
+// Reordering roles counts as a change, which only errs on the side of re-validating.
+func schedulingConfigChanged(oldSpec, newSpec *orchestrationv1alpha1.RoleSetSpec) bool {
+	if oldSpec == nil || newSpec == nil {
+		return oldSpec != newSpec
+	}
+	if !equality.Semantic.DeepEqual(oldSpec.SchedulingStrategy, newSpec.SchedulingStrategy) {
+		return true
+	}
+	if len(oldSpec.Roles) != len(newSpec.Roles) {
+		return true
+	}
+	for i := range newSpec.Roles {
+		if oldSpec.Roles[i].Name != newSpec.Roles[i].Name ||
+			!equality.Semantic.DeepEqual(oldSpec.Roles[i].SchedulingStrategy, newSpec.Roles[i].SchedulingStrategy) {
+			return true
+		}
+	}
+	return false
+}
+
+// validateStormServiceMode rejects declared mode combinations that cannot be satisfied.
+//
+// Pooled mode runs a single RoleSet and scales roles through spec.template.spec.roles[],
+// so a replica count above one is ambiguous. Replica mode derives its update path from
+// the mode (rolling replacement of RoleSets), so combining it with a declared
+// spec.updateStrategy.type of InPlaceUpdate is contradictory; InPlaceUpdate can only be
+// user-written because the CRD defaults the type to RollingUpdate. The reverse
+// combination (Pooled with RollingUpdate) is not rejected: a RollingUpdate value is
+// indistinguishable from the CRD default, so the controller resolves it in favor of the
+// declared mode instead (see EffectiveUpdateStrategyType in the stormservice controller).
+//
+// Only an explicitly declared spec.mode is checked, so objects that rely on the inferred
+// mode keep scaling spec.replicas and choosing updateStrategy.type freely.
+func validateStormServiceMode(stormService *orchestrationv1alpha1.StormService) error {
+	switch stormService.Spec.Mode {
+	case orchestrationv1alpha1.StormServicePooledMode:
+		if stormService.Spec.Replicas != nil && *stormService.Spec.Replicas > 1 {
+			return fmt.Errorf("StormService in %s mode must not set spec.replicas > 1 (got %d); scale roles through spec.template.spec.roles[].replicas instead",
+				orchestrationv1alpha1.StormServicePooledMode, *stormService.Spec.Replicas)
+		}
+	case orchestrationv1alpha1.StormServiceReplicaMode:
+		if stormService.Spec.UpdateStrategy.Type == orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType {
+			return fmt.Errorf("StormService in %s mode must not set spec.updateStrategy.type %s; use %s, or leave spec.mode unset to keep in-place updates for inferred replica mode",
+				orchestrationv1alpha1.StormServiceReplicaMode, orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType, orchestrationv1alpha1.RollingUpdateStormServiceStrategyType)
+		}
+	}
+	return nil
+}
+
+// validateStormServiceSchedulingStrategy rejects gang scheduling configurations in the RoleSet
+// template that the RoleSet controller or Volcano cannot honour.
+func validateStormServiceSchedulingStrategy(stormService *orchestrationv1alpha1.StormService) error {
+	allErrs := validateRoleSetSchedulingStrategy(stormService.Spec.Template.Spec, field.NewPath("spec", "template", "spec"))
+	if len(allErrs) == 0 {
+		return nil
+	}
+	return apierrors.NewInvalid(
+		schema.GroupKind{Group: orchestrationv1alpha1.GroupVersion.Group, Kind: orchestrationv1alpha1.StormServiceKind},
+		stormService.Name,
+		allErrs,
+	)
+}
+
+// validateRoleSetSchedulingStrategy validates the scheduling strategies declared on a RoleSet spec.
+// It takes the RoleSetSpec and its field path rather than the StormService so that a RoleSet
+// webhook can reuse it.
+//
+// The RoleSet-level strategy and the Role-level strategies are mutually exclusive: the RoleSet
+// controller points every pod at the RoleSet-level PodGroup and then re-points PodSet pods at the
+// Role-level PodGroup, so setting both splits one gang across two PodGroups that can never both
+// be satisfied.
+func validateRoleSetSchedulingStrategy(spec *orchestrationv1alpha1.RoleSetSpec, specPath *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	if spec == nil {
+		return allErrs
+	}
+
+	roleNames := sets.New[string]()
+	for _, role := range spec.Roles {
+		roleNames.Insert(role.Name)
+	}
+
+	roleSetStrategyPath := specPath.Child("schedulingStrategy")
+	if spec.SchedulingStrategy != nil {
+		allErrs = append(allErrs, validateVolcanoSchedulingStrategy(
+			spec.SchedulingStrategy.VolcanoSchedulingStrategy, roleNames, roleSetStrategyPath.Child("volcanoSchedulingStrategy"))...)
+	}
+
+	for i, role := range spec.Roles {
+		if role.SchedulingStrategy == nil {
+			continue
+		}
+		roleStrategyPath := specPath.Child("roles").Index(i).Child("schedulingStrategy")
+		if spec.SchedulingStrategy != nil {
+			allErrs = append(allErrs, field.Forbidden(roleStrategyPath,
+				fmt.Sprintf("must not be set together with %s; RoleSet-level and Role-level scheduling strategies are mutually exclusive", roleSetStrategyPath)))
+		}
+		// A Role-level PodGroup only ever contains pods of that role.
+		allErrs = append(allErrs, validateVolcanoSchedulingStrategy(
+			role.SchedulingStrategy.VolcanoSchedulingStrategy, sets.New(role.Name), roleStrategyPath.Child("volcanoSchedulingStrategy"))...)
+	}
+	return allErrs
+}
+
+// validateVolcanoSchedulingStrategy checks the Volcano PodGroup fields that Volcano itself does not
+// validate. taskNames holds the role names that minTaskMember keys may refer to.
+func validateVolcanoSchedulingStrategy(strategy *orchestrationv1alpha1.VolcanoSchedulingStrategySpec, taskNames sets.Set[string], path *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	if strategy == nil {
+		return allErrs
+	}
+
+	minMemberPath := path.Child("minMember")
+	if strategy.MinMember <= 0 {
+		allErrs = append(allErrs, field.Invalid(minMemberPath, strategy.MinMember, "must be greater than 0 when Volcano gang scheduling is configured"))
+	}
+
+	taskKeys := make([]string, 0, len(strategy.MinTaskMember))
+	for key := range strategy.MinTaskMember {
+		taskKeys = append(taskKeys, key)
+	}
+	sort.Strings(taskKeys) // deterministic error ordering
+
+	var minTaskMemberSum int64
+	taskMembersValid := true
+	for _, key := range taskKeys {
+		value := strategy.MinTaskMember[key]
+		keyPath := path.Child("minTaskMember").Key(key)
+		if value <= 0 {
+			taskMembersValid = false
+			allErrs = append(allErrs, field.Invalid(keyPath, value, "must be greater than 0"))
+		}
+		if !taskNames.Has(key) {
+			allErrs = append(allErrs, field.Invalid(keyPath, key,
+				fmt.Sprintf("must match a role name; valid names are: %s", strings.Join(sets.List(taskNames), ", "))))
+		}
+		minTaskMemberSum += int64(value)
+	}
+
+	// Volcano skips every per-task check when minMember is smaller than the sum of minTaskMember,
+	// which silently disables the per-role guarantees the user asked for.
+	if strategy.MinMember > 0 && taskMembersValid && int64(strategy.MinMember) < minTaskMemberSum {
+		allErrs = append(allErrs, field.Invalid(minMemberPath, strategy.MinMember,
+			fmt.Sprintf("must not be smaller than the sum of minTaskMember values (%d); Volcano ignores minTaskMember otherwise", minTaskMemberSum)))
+	}
+	return allErrs
 }
 
 // ValidateDelete implements webhook.Validator so a webhook will be registered for the type

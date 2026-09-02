@@ -27,6 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 )
 
 func newStormService(replicas int32, surge, unavail string) orchestrationv1alpha1.StormService {
@@ -115,6 +116,132 @@ func TestIsRollingUpdate(t *testing.T) {
 
 	ss.Spec.UpdateStrategy.Type = orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType
 	assert.False(t, IsRollingUpdate(&ss))
+
+	// A declared mode wins over the (possibly CRD-defaulted) strategy type.
+	ss.Spec.UpdateStrategy.Type = orchestrationv1alpha1.RollingUpdateStormServiceStrategyType
+	ss.Spec.Mode = orchestrationv1alpha1.StormServicePooledMode
+	assert.False(t, IsRollingUpdate(&ss), "pooled mode must not roll even with a defaulted RollingUpdate type")
+
+	ss.Spec.UpdateStrategy.Type = orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType
+	ss.Spec.Mode = orchestrationv1alpha1.StormServiceReplicaMode
+	assert.True(t, IsRollingUpdate(&ss), "replica mode rolls even when a bypassed-webhook object declares InPlaceUpdate")
+
+	// An unresolvable mode must not surge.
+	ss.Spec.Mode = orchestrationv1alpha1.StormServiceMode("Bogus")
+	assert.False(t, IsRollingUpdate(&ss))
+}
+
+// TestPooledModeZeroesSurgeAndUnavailable guards the pooled single-RoleSet contract:
+// with mode: Pooled and the CRD-defaulted RollingUpdate type, surge and unavailable
+// budgets consumed by scaling() must all evaluate to 0 regardless of maxSurge.
+func TestPooledModeZeroesSurgeAndUnavailable(t *testing.T) {
+	ss := newStormService(10, "25%", "20%") // surge=3, unavail=2 when rolling
+	ss.Spec.Mode = orchestrationv1alpha1.StormServicePooledMode
+	assert.Equal(t, int32(0), MaxSurge(&ss))
+	assert.Equal(t, int32(0), MaxUnavailable(ss))
+	assert.Equal(t, int32(0), MinAvailable(&ss))
+
+	// maxSurge as a plain integer, the shape the reviewer's scenario uses.
+	surge := intstrutil.FromInt32(2)
+	pooled := orchestrationv1alpha1.StormService{
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Replicas: ptr.To(int32(1)),
+			Mode:     orchestrationv1alpha1.StormServicePooledMode,
+			UpdateStrategy: orchestrationv1alpha1.StormServiceUpdateStrategy{
+				Type:     orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
+				MaxSurge: &surge,
+			},
+		},
+	}
+	assert.Equal(t, int32(0), MaxSurge(&pooled))
+	assert.Equal(t, int32(0), MaxUnavailable(pooled))
+	assert.Equal(t, int32(0), MinAvailable(&pooled))
+}
+
+func TestEffectiveUpdateStrategyType(t *testing.T) {
+	tests := map[string]struct {
+		mode         orchestrationv1alpha1.StormServiceMode
+		strategyType orchestrationv1alpha1.StormServiceUpdateStrategyType
+		replicas     *int32
+		want         orchestrationv1alpha1.StormServiceUpdateStrategyType
+		wantErr      bool
+	}{
+		// Undeclared mode keeps the legacy strategy-driven selection, regardless
+		// of what ResolvedMode would infer from spec.replicas.
+		"no mode, empty type defaults to rolling": {
+			want: orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
+		},
+		"no mode, rolling type stays rolling even when pooled is inferred": {
+			strategyType: orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
+			replicas:     ptr.To(int32(1)),
+			want:         orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
+		},
+		"no mode, in-place type stays in-place even when replica is inferred": {
+			strategyType: orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType,
+			replicas:     ptr.To(int32(3)),
+			want:         orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType,
+		},
+		"no mode, unknown type errors": {
+			strategyType: orchestrationv1alpha1.StormServiceUpdateStrategyType("Bogus"),
+			wantErr:      true,
+		},
+		// A declared mode is the source of truth for the update path.
+		"replica mode with empty type rolls": {
+			mode: orchestrationv1alpha1.StormServiceReplicaMode,
+			want: orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
+		},
+		"replica mode with rolling type rolls": {
+			mode:         orchestrationv1alpha1.StormServiceReplicaMode,
+			strategyType: orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
+			want:         orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
+		},
+		"replica mode overrides in-place type": {
+			// Rejected at admission; kept deterministic for objects that bypassed the webhook.
+			mode:         orchestrationv1alpha1.StormServiceReplicaMode,
+			strategyType: orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType,
+			want:         orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
+		},
+		"pooled mode with empty type updates in place": {
+			mode: orchestrationv1alpha1.StormServicePooledMode,
+			want: orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType,
+		},
+		"pooled mode overrides rolling type": {
+			// RollingUpdate may come from CRD defaulting, so the declared mode wins.
+			mode:         orchestrationv1alpha1.StormServicePooledMode,
+			strategyType: orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
+			want:         orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType,
+		},
+		"pooled mode with in-place type updates in place": {
+			mode:         orchestrationv1alpha1.StormServicePooledMode,
+			strategyType: orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType,
+			want:         orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType,
+		},
+		"unknown mode errors": {
+			mode:    orchestrationv1alpha1.StormServiceMode("Bogus"),
+			wantErr: true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			ss := &orchestrationv1alpha1.StormService{
+				Spec: orchestrationv1alpha1.StormServiceSpec{
+					Mode:     tc.mode,
+					Replicas: tc.replicas,
+					UpdateStrategy: orchestrationv1alpha1.StormServiceUpdateStrategy{
+						Type: tc.strategyType,
+					},
+				},
+			}
+			got, err := EffectiveUpdateStrategyType(ss)
+			if tc.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
 
 func TestSortRoleSetByRevision(t *testing.T) {

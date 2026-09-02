@@ -130,12 +130,11 @@ class DiscoveryEndpointSource:
     async def report_channel_error(self, channel_id: str, error: Exception) -> None:
         chained = error.__cause__ or error.__context__
         logger.warning(
-            "Removing channel due to error",
+            "Channel reported an error",
             channel_id=channel_id,
             error=f"{error!r}" + (f" (caused by {chained!r})" if chained else ""),
-            remaining_before=len(self._channels),
+            active_channels=len(self._channels),
         )  # type: ignore[call-arg]
-        await self._remove_channel(channel_id)
         try:
             await self.refresh()
         except Exception as exc:  # noqa: BLE001 - discovery is best-effort here.
@@ -145,10 +144,14 @@ class DiscoveryEndpointSource:
                 channel_id=channel_id,
                 error=f"{exc!r}" + (f" (caused by {chained!r})" if chained else ""),
             )  # type: ignore[call-arg]
-        # A stale discovery snapshot may re-add the failed endpoint during refresh.
-        await self._remove_channel(channel_id)
 
     async def _remove_channel(self, channel_id: str) -> None:
+        """Deprecated: no longer called on request failures.
+
+        Kept so the eviction path can be restored behind a real health signal
+        (repeated failures on the same endpoint, say). Driving it from a single
+        request error is what drained the active set.
+        """
         async with self._lock:
             failed = self._by_url.pop(channel_id, None)
             if failed is not None:
@@ -185,9 +188,10 @@ class DiscoveryEndpointSource:
 
     async def _apply(self, snapshot: _Snapshot) -> None:
         async with self._lock:
-            if snapshot.version == self._version:
-                return
             new_urls = [endpoint.base_url for endpoint in snapshot.endpoints]
+            if set(new_urls) == set(self._by_url):
+                self._version = snapshot.version
+                return
             keep: Dict[str, Channel] = {}
             for url in new_urls:
                 keep[url] = self._by_url.get(url) or HttpChannel(

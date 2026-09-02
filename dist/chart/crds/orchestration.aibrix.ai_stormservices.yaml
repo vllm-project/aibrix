@@ -51,8 +51,18 @@ spec:
                     - type: string
                     x-kubernetes-int-or-string: true
                 type: object
+              mode:
+                enum:
+                - Replica
+                - Pooled
+                type: string
               paused:
                 type: boolean
+              progressDeadlineSeconds:
+                default: 600
+                format: int32
+                minimum: 1
+                type: integer
               replicas:
                 format: int32
                 type: integer
@@ -122,6 +132,9 @@ spec:
                                   x-kubernetes-int-or-string: true
                               type: object
                             name:
+                              maxLength: 63
+                              minLength: 1
+                              pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                               type: string
                             podGroupSize:
                               format: int32
@@ -130,6 +143,7 @@ spec:
                               type: integer
                             replicas:
                               format: int32
+                              minimum: 0
                               type: integer
                             schedulingStrategy:
                               maxProperties: 1
@@ -3930,6 +3944,17 @@ spec:
                                   - type: integer
                                   - type: string
                                   x-kubernetes-int-or-string: true
+                                replacementScheduling:
+                                  properties:
+                                    historicalNode:
+                                      properties:
+                                        mode:
+                                          default: Preferred
+                                          enum:
+                                          - Preferred
+                                          type: string
+                                      type: object
+                                  type: object
                                 type:
                                   default: Recreate
                                   enum:
@@ -3941,8 +3966,14 @@ spec:
                               format: int32
                               minimum: 1
                               type: integer
+                          required:
+                          - name
                           type: object
+                        minItems: 1
                         type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
                       schedulingStrategy:
                         maxProperties: 1
                         properties:
@@ -4131,7 +4162,11 @@ spec:
                         - Sequential
                         - Interleave
                         type: string
+                    required:
+                    - roles
                     type: object
+                required:
+                - spec
                 type: object
               updateStrategy:
                 properties:

@@ -46,7 +46,7 @@ spec:
     spec:
       serviceAccountName: pd-disaggregation-nvidia-gpu-vllm-sa
       nodeSelector:
-        kubernetes.io/hostname: 192.168.0.6
+        kubernetes.io/hostname: 192.168.0.7
       containers:
         - name: modelserver
           image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/llmd-vllm-openai:v0.23.0
@@ -209,7 +209,7 @@ spec:
     spec:
       serviceAccountName: pd-disaggregation-nvidia-gpu-vllm-sa
       nodeSelector:
-        kubernetes.io/hostname: 192.168.0.6
+        kubernetes.io/hostname: 192.168.0.7
       initContainers:
         - name: routing-proxy
           image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/llmd-router-disagg-sidecar:v0.9.0

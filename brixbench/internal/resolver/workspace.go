@@ -44,7 +44,10 @@ func PrepareWorkspace(ctx context.Context, projectRoot string, test *Test) (*Wor
 		return prepareWorkspaceFromLocalPath(ctx, projectRoot, test)
 	}
 
-	requestedRef := requestedWorkspaceRef(test)
+	requestedRef, err := requestedWorkspaceRef(test)
+	if err != nil {
+		return nil, err
+	}
 	if requestedRef == "" {
 		return nil, nil
 	}
@@ -151,12 +154,19 @@ func normalizeLocalPath(path string) (string, error) {
 	return absolutePath, nil
 }
 
-func requestedWorkspaceRef(test *Test) string {
+func requestedWorkspaceRef(test *Test) (string, error) {
 	requestedRef := strings.TrimSpace(test.Commit)
 	if requestedRef != "" {
-		return requestedRef
+		if prebuiltCommit := strings.TrimSpace(os.Getenv("BENCHMARK_GATEWAY_COMMIT")); prebuiltCommit != "" {
+			normalizedCommit, err := normalizeFullCommitSHA(prebuiltCommit)
+			if err != nil {
+				return "", fmt.Errorf("invalid BENCHMARK_GATEWAY_COMMIT %q: %w", prebuiltCommit, err)
+			}
+			return normalizedCommit, nil
+		}
+		return requestedRef, nil
 	}
-	return strings.TrimSpace(test.Version)
+	return strings.TrimSpace(test.Version), nil
 }
 
 func isGitRepository(path string) bool {

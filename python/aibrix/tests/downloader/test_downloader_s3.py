@@ -22,8 +22,9 @@ from aibrix.common.errors import (
     ArgNotCongiuredError,
     ModelNotFoundError,
 )
-from aibrix.downloader.base import get_downloader
+from aibrix.downloader.base import DownloadExtraConfig, get_downloader
 from aibrix.downloader.s3 import S3Downloader
+from aibrix.downloader.utils import meta_file, save_meta_data
 
 S3_BOTO3_MODULE = "aibrix.downloader.s3.boto3"
 ENVS_MODULE = "aibrix.downloader.s3.envs"
@@ -211,6 +212,92 @@ def test_s3_atomic_write(monkeypatch, tmp_path):
     final = tmp_path / "m" / "path" / "file.txt"
     assert final.exists()
     assert not Path(str(final) + ".part").exists()
+
+
+def _make_fake_s3_client_for_force_download_test():
+    class FakeS3Client:
+        def __init__(self):
+            self.objects = {
+                "bucket": {"path/file.txt": {"ETag": "etag", "ContentLength": 4}}
+            }
+            self.download_calls = 0
+
+        def head_bucket(self, Bucket):
+            return {}
+
+        def head_object(self, Bucket, Key):
+            return self.objects[Bucket][Key]
+
+        def get_paginator(self, name):
+            assert name == "list_objects_v2"
+            return types.SimpleNamespace(
+                paginate=lambda **kwargs: iter(
+                    [{"Contents": [{"Key": "path/file.txt"}], "KeyCount": 1}]
+                )
+            )
+
+        def download_file(self, Bucket, Key, Filename, Config, Callback=None):
+            self.download_calls += 1
+            Path(Filename).parent.mkdir(parents=True, exist_ok=True)
+            Path(Filename).write_bytes(b"data")
+
+    return FakeS3Client()
+
+
+def _prepopulate_matching_local_file(model_path, source_value):
+    # Matches the relative path S3BaseDownloader.download() computes for
+    # this fixture (see test_s3_atomic_write above): "path/file.txt".
+    local_file = model_path / "path" / "file.txt"
+    local_file.parent.mkdir(parents=True, exist_ok=True)
+    local_file.write_bytes(b"data")
+    meta_data_file = meta_file(model_path, "path/file.txt", source=source_value)
+    save_meta_data(meta_data_file, "etag")
+
+
+def test_s3_skips_matching_file_when_not_forced(monkeypatch, tmp_path):
+    # Control for test_s3_force_download_override_bypasses_exist_check: with
+    # no force_download override, a local file matching remote ETag/size is
+    # skipped, as before.
+    from aibrix.downloader import s3 as s3_mod
+
+    fake_client = _make_fake_s3_client_for_force_download_test()
+    monkeypatch.setattr(
+        s3_mod,
+        "boto3",
+        types.SimpleNamespace(client=lambda service_name, config, **auth: fake_client),
+    )
+
+    d = s3_mod.S3Downloader("s3://bucket/path/file.txt", model_name="m")
+    _prepopulate_matching_local_file(tmp_path / "m", d.source.value)
+
+    d.download_model(local_path=str(tmp_path))
+
+    assert fake_client.download_calls == 0
+
+
+def test_s3_force_download_override_bypasses_exist_check(monkeypatch, tmp_path):
+    # Regression test: DownloadExtraConfig(force_download=True) must force a
+    # re-download even when the local file already matches remote size/etag,
+    # the same guarantee HuggingFaceDownloader already provides.
+    from aibrix.downloader import s3 as s3_mod
+
+    fake_client = _make_fake_s3_client_for_force_download_test()
+    monkeypatch.setattr(
+        s3_mod,
+        "boto3",
+        types.SimpleNamespace(client=lambda service_name, config, **auth: fake_client),
+    )
+
+    d = s3_mod.S3Downloader(
+        "s3://bucket/path/file.txt",
+        model_name="m",
+        download_extra_config=DownloadExtraConfig(force_download=True),
+    )
+    _prepopulate_matching_local_file(tmp_path / "m", d.source.value)
+
+    d.download_model(local_path=str(tmp_path))
+
+    assert fake_client.download_calls == 1
 
 
 def test_s3_recursive_download(monkeypatch, tmp_path):

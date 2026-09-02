@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"bytes"
+	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -73,6 +75,59 @@ func TestPodAutoscalerInitialization(t *testing.T) {
 		t.Errorf("Spec.ScalingStrategy = %v, want %v", got, want)
 	}
 
+}
+
+func TestPodAutoscalerScheduledBoundsJSONRoundTrip(t *testing.T) {
+	minReplicas := int32(3)
+	maxReplicas := int32(12)
+
+	pa := &PodAutoscaler{
+		Spec: PodAutoscalerSpec{
+			Schedules: []PodAutoscalerSchedule{
+				{
+					Name:        "business-hours",
+					Timezone:    "America/Los_Angeles",
+					DaysOfWeek:  []string{"Mon", "Tue", "Wed", "Thu", "Fri"},
+					StartTime:   "09:00",
+					EndTime:     "17:00",
+					MinReplicas: &minReplicas,
+					MaxReplicas: &maxReplicas,
+				},
+			},
+		},
+	}
+
+	data, err := json.Marshal(pa)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	for _, field := range []string{"schedules", "name", "timezone", "daysOfWeek", "startTime", "endTime", "minReplicas", "maxReplicas"} {
+		if !bytes.Contains(data, []byte(`"`+field+`"`)) {
+			t.Errorf("json.Marshal() output missing %q: %s", field, data)
+		}
+	}
+
+	var roundTripped PodAutoscaler
+	if err := json.Unmarshal(data, &roundTripped); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if got := len(roundTripped.Spec.Schedules); got != 1 {
+		t.Fatalf("len(Spec.Schedules) = %d, want 1", got)
+	}
+
+	got := roundTripped.Spec.Schedules[0]
+	if got.Name != "business-hours" || got.Timezone != "America/Los_Angeles" ||
+		got.StartTime != "09:00" || got.EndTime != "17:00" {
+		t.Errorf("round-tripped scheduled bounds = %#v, want all scalar fields preserved", got)
+	}
+	if !reflect.DeepEqual(got.DaysOfWeek, []string{"Mon", "Tue", "Wed", "Thu", "Fri"}) {
+		t.Errorf("round-tripped daysOfWeek = %v, want weekdays", got.DaysOfWeek)
+	}
+	if got.MinReplicas == nil || *got.MinReplicas != minReplicas || got.MaxReplicas == nil || *got.MaxReplicas != maxReplicas {
+		t.Errorf("round-tripped replica bounds = min %v, max %v; want %d and %d", got.MinReplicas, got.MaxReplicas, minReplicas, maxReplicas)
+	}
 }
 
 // Additional test cases can be added here to further validate other aspects of the PodAutoscaler.

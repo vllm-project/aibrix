@@ -27,7 +27,10 @@ import (
 
 // RoleSetSpec defines the desired state of RoleSet
 type RoleSetSpec struct {
-	Roles []RoleSpec `json:"roles,omitempty"`
+	// +kubebuilder:validation:MinItems=1
+	// +listType=map
+	// +listMapKey=name
+	Roles []RoleSpec `json:"roles"`
 
 	// +optional
 	// +kubebuilder:validation:Enum={Parallel,Sequential,Interleave}
@@ -195,10 +198,15 @@ type DisruptionTolerance struct {
 }
 
 type RoleSpec struct {
-	Name string `json:"name,omitempty"`
+	// Name identifies the role and is used to derive child resource names.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
 
 	// Replicas is the number of desired replicas.
 	// +optional
+	// +kubebuilder:validation:Minimum=0
 	Replicas *int32 `json:"replicas,omitempty"`
 
 	// UpgradeOrder specifies the order in which this role should be upgraded.
@@ -254,6 +262,39 @@ type RoleUpdateStrategy struct {
 
 	// +optional
 	MaxSurge *intstr.IntOrString `json:"maxSurge,omitempty" protobuf:"bytes,2,opt,name=maxSurge"`
+
+	// ReplacementScheduling configures scheduling preferences for replacement Pods.
+	// +optional
+	ReplacementScheduling *RoleReplacementScheduling `json:"replacementScheduling,omitempty"`
+}
+
+// RoleReplacementScheduling configures scheduling preferences that only apply
+// to replacement Pods created during role reconciliation.
+type RoleReplacementScheduling struct {
+	// HistoricalNode makes replacement Pods prefer nodes that previously ran the
+	// same role workload. The field is presence-based; omitting it disables this
+	// policy.
+	// +optional
+	HistoricalNode *HistoricalNodeSchedulingPolicy `json:"historicalNode,omitempty"`
+}
+
+// +enum
+type HistoricalNodeSchedulingMode string
+
+const (
+	// HistoricalNodeSchedulingPreferred injects a best-effort preferred node
+	// affinity term for remembered historical nodes.
+	HistoricalNodeSchedulingPreferred HistoricalNodeSchedulingMode = "Preferred"
+)
+
+// HistoricalNodeSchedulingPolicy configures historical-node replacement scheduling.
+type HistoricalNodeSchedulingPolicy struct {
+	// Mode defines how strongly historical nodes should be preferred. Defaults to
+	// Preferred when omitted. v1 only supports Preferred.
+	// +kubebuilder:validation:Enum=Preferred
+	// +kubebuilder:default=Preferred
+	// +optional
+	Mode HistoricalNodeSchedulingMode `json:"mode,omitempty"`
 }
 
 // RoleSetStatus defines the observed state of RoleSet
@@ -271,6 +312,10 @@ const (
 	RoleSetReady          ConditionType = "Ready"
 	RoleSetReplicaFailure ConditionType = "ReplicaFailure"
 	RoleSetProgressing    ConditionType = "Progressing"
+	// RoleSetPodGroupSynced means the scheduler PodGroup for this RoleSet has been reconciled.
+	RoleSetPodGroupSynced ConditionType = "PodGroupSynced"
+	// RoleSetGangSchedulingError means the RoleSet has an observed gang scheduling configuration or runtime error.
+	RoleSetGangSchedulingError ConditionType = "GangSchedulingError"
 )
 
 type RoleStatus struct {

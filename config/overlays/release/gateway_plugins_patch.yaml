@@ -35,7 +35,7 @@ spec:
               value: "128"
             - name: AIBRIX_PREFIX_CACHE_BLOCK_NUMBER
               value: "200000"
-            - name: AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT
+            - name: AIBRIX_LOAD_BALANCE_IMBALANCE_MIN_GAP
               value: "16"
             - name: AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR
               value: "2"

@@ -428,6 +428,7 @@ func (p *PodSetRoleSyncer) createPodSetForRole(roleSet *orchestrationv1alpha1.Ro
 		if roleSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy != nil {
 			podSet.Annotations[constants.VolcanoPodGroupNameAnnotationKey] = roleSet.Name
 			podSet.Labels[constants.VolcanoPodGroupNameAnnotationKey] = roleSet.Name
+			ensureVolcanoTaskSpec(podSet.Labels, podSet.Annotations, role.Name)
 		}
 	}
 	if role.SchedulingStrategy != nil { // note that roleSet.Spec.SchedulingStrategy and role.SchedulingStrategy should not be set concurrently
@@ -441,6 +442,7 @@ func (p *PodSetRoleSyncer) createPodSetForRole(roleSet *orchestrationv1alpha1.Ro
 		if role.SchedulingStrategy.VolcanoSchedulingStrategy != nil {
 			podSet.Annotations[constants.VolcanoPodGroupNameAnnotationKey] = podSet.Name
 			podSet.Labels[constants.VolcanoPodGroupNameAnnotationKey] = podSet.Name
+			ensureVolcanoTaskSpec(podSet.Labels, podSet.Annotations, role.Name)
 		}
 	}
 

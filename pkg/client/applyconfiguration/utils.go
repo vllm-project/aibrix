@@ -39,12 +39,16 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &autoscalingv1alpha1.MetricSourceApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("PodAutoscaler"):
 		return &autoscalingv1alpha1.PodAutoscalerApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("PodAutoscalerSchedule"):
+		return &autoscalingv1alpha1.PodAutoscalerScheduleApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("PodAutoscalerSpec"):
 		return &autoscalingv1alpha1.PodAutoscalerSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("PodAutoscalerStatus"):
 		return &autoscalingv1alpha1.PodAutoscalerStatusApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ScalingDecision"):
 		return &autoscalingv1alpha1.ScalingDecisionApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("ScheduledBoundsStatus"):
+		return &autoscalingv1alpha1.ScheduledBoundsStatusApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("SubTargetSelector"):
 		return &autoscalingv1alpha1.SubTargetSelectorApplyConfiguration{}
 
@@ -75,6 +79,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationorchestrationv1alpha1.DisruptionToleranceApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("GodelSchedulingStrategySpec"):
 		return &applyconfigurationorchestrationv1alpha1.GodelSchedulingStrategySpecApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("HistoricalNodeSchedulingPolicy"):
+		return &applyconfigurationorchestrationv1alpha1.HistoricalNodeSchedulingPolicyApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleet"):
 		return &applyconfigurationorchestrationv1alpha1.RayClusterFleetApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleetCondition"):
@@ -91,6 +97,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationorchestrationv1alpha1.RayClusterReplicaSetStatusApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterTemplateSpec"):
 		return &applyconfigurationorchestrationv1alpha1.RayClusterTemplateSpecApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RoleReplacementScheduling"):
+		return &applyconfigurationorchestrationv1alpha1.RoleReplacementSchedulingApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RoleSetSpec"):
 		return &applyconfigurationorchestrationv1alpha1.RoleSetSpecApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RoleSetTemplateSpec"):

@@ -149,8 +149,14 @@ func (r *StormServiceReconciler) updateRoleSet(stormService *orchestrationv1alph
 		// overwrite labels and annotations, to keep the revision updated
 		toUpdate[i].Labels = target.Labels
 		rsIdx := toUpdate[i].Annotations[constants.RoleSetIndexAnnotationKey]
-		toUpdate[i].Annotations = target.Annotations
-		toUpdate[i].Annotations[constants.RoleSetIndexAnnotationKey] = rsIdx
+		historicalNodeBindings := toUpdate[i].Annotations[constants.RoleSetHistoricalNodeBindingsAnnotationKey]
+		toUpdate[i].Annotations = utils.DeepCopyMap(target.Annotations)
+		if rsIdx != "" {
+			toUpdate[i].Annotations[constants.RoleSetIndexAnnotationKey] = rsIdx
+		}
+		if historicalNodeBindings != "" {
+			toUpdate[i].Annotations[constants.RoleSetHistoricalNodeBindingsAnnotationKey] = historicalNodeBindings
+		}
 		// update roleset spec
 		toUpdate[i].Spec = target.Spec
 		return r.Client.Update(context.TODO(), toUpdate[i])

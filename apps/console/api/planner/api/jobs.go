@@ -65,6 +65,8 @@ type EnqueueRequest struct {
 // ResourceRequest captures user resource intent before planner/RM resolution.
 type ResourceRequest struct {
 	Replicas int `json:"replicas,omitempty"`
+	// ProviderConfig contains opaque provider-specific resource settings.
+	ProviderConfig map[string]any `json:"provider_config,omitempty"`
 }
 
 // ClientConfig is the Console-supplied per-job smart-client control block. The
@@ -73,10 +75,12 @@ type ResourceRequest struct {
 // field falls back to the metadata-service env defaults rather than overriding
 // with a zero value.
 type ClientConfig struct {
-	MaxConcurrency      *int32             `json:"max_concurrency,omitempty"`
-	AdaptiveConcurrency *bool              `json:"adaptive_concurrency,omitempty"`
-	AdaptiveMaxFactor   *float64           `json:"adaptive_max_factor,omitempty"`
-	RetryPolicy         *ClientRetryPolicy `json:"retry_policy,omitempty"`
+	MaxConcurrency           *int32             `json:"max_concurrency,omitempty"`
+	AdaptiveConcurrency      *bool              `json:"adaptive_concurrency,omitempty"`
+	AdaptiveMaxFactor        *float64           `json:"adaptive_max_factor,omitempty"`
+	AdaptiveHealthyWindow    *int32             `json:"adaptive_healthy_window,omitempty"`
+	AdaptiveAdditiveIncrease *int32             `json:"adaptive_additive_increase,omitempty"`
+	RetryPolicy              *ClientRetryPolicy `json:"retry_policy,omitempty"`
 }
 
 // ClientRetryPolicy mirrors the metadata-service aibrix.client.retry_policy block.

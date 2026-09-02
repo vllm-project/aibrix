@@ -57,7 +57,7 @@ gatewayPlugin:
       AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: "50"
       AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE: "character"
       AIBRIX_PREFIX_CACHE_BLOCK_SIZE: "128"
-      AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT: "16"
+      AIBRIX_LOAD_BALANCE_IMBALANCE_MIN_GAP: "16"
       AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR: "2"
       AIBRIX_PREFILL_REQUEST_TIMEOUT: "60"
   dependencies:
@@ -104,7 +104,7 @@ gpuOptimizer:
   affinity: {}
 
 gateway:
-  # Mode Selection (mutually exclusive; values must be opposite)
+  # Mode Selection
   # | gateway.enable | envoyAsSideCar | Notes |
   # | -------------- | ------------------- | ----- |
   # | true           | false               | Envoy managed by Envoy Gateway (data plane). Installs Gateway, GatewayClass, EnvoyProxy, and gateway-plugins. |
@@ -113,6 +113,15 @@ gateway:
   # | true           | true                | INVALID: Do not enable both. Values must be opposite. |
   enable: true
   envoyAsSideCar: false
+  http:
+    enabled: true
+  tls:
+    enabled: false
+    autoGenerate: false
+    hostname: ""
+    validityDays: 365
+    secretName: ""
+    port: 443
   envoySideCar:
     ports:
       http: 10080

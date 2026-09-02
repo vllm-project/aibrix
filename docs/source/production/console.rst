@@ -237,3 +237,10 @@ intended Console surface:
 .. code-block:: bash
 
    VITE_ENABLE_DEPLOYMENTS=false VITE_ENABLE_PLAYGROUND=false npm run build
+
+.. card:: What's next?
+   :class-card: sd-border-1
+
+   * :doc:`observability`: metrics and dashboards behind the Console views
+   * :doc:`model-deployment`: deploy the models the Console manages
+   * :doc:`../features/batch-api`: submit and track offline batch jobs

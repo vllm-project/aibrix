@@ -79,7 +79,7 @@ func TestValidateLLMdSourceSelectionRejectsUnsupportedInputs(t *testing.T) {
 		{
 			name: "localPath",
 			test: Test{Name: "llmd", Version: "v0.8.1", LocalPath: "~/llm-d", ControlPlane: []string{valuesFile}},
-			want: "not localPath",
+			want: "does not support localPath",
 		},
 		{
 			name: "platform values",

@@ -73,8 +73,18 @@ from aibrix.batch.job_entity import (
 )
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
+from aibrix.metadata.core.metrics import Emitter, T, metrics_names
 
 logger = init_logger(__name__)
+
+
+def _emit_runtime_torn_down(runtime_type: str) -> None:
+    Emitter.counter(
+        metrics_names.METRIC_METADATA_BATCH_RUNTIME_TORN_DOWN,
+        1,
+        T("runtime_type", runtime_type),
+    )
+
 
 RUNTIME_WAIT_MODE_PROVISION = "provision"
 RUNTIME_WAIT_MODE_RECONNECT = "reconnect"
@@ -708,6 +718,7 @@ class RuntimeBase:
                     worker_id=worker_id,
                 )
             await self._teardown(handle)
+            _emit_runtime_torn_down(self._get_runtime_key(job))
         except Exception as teardown_exc:
             logger.warning(
                 "Runtime teardown failed during retry recovery; continuing with retry",
@@ -748,6 +759,7 @@ class RuntimeBase:
                         worker_id=worker_id,
                     )
                 await self._teardown(handle)
+                _emit_runtime_torn_down(self._get_runtime_key(job))
                 # Do not clear persisted runtime_ref on session exit.
                 #
                 # Without an atomic compare-and-swap in `progress_manager`, a
@@ -833,6 +845,7 @@ class RuntimeBase:
                     return
                 raise
             await self._teardown(handle)
+            _emit_runtime_torn_down(self._get_runtime_key(job))
         finally:
             self._active_job_id = saved_active_job_id
             self._active_task = saved_active_task
@@ -1082,6 +1095,7 @@ class RuntimeBase:
         body_error: BaseException | None = None
         liveness_state: dict[str, Optional[BaseException]] = {"error": None}
         liveness_task: asyncio.Task[None] | None = None
+        runtime_type = self._get_runtime_key(job)
         try:
             if self._stop_requested.is_set() or self._stopped.is_set():
                 raise asyncio.CancelledError(
@@ -1165,6 +1179,11 @@ class RuntimeBase:
                             BREAKPOINT_RUNTIME_INITIALIZATION,
                         )
                         handle = await self._provision(job, job_id)
+                        Emitter.counter(
+                            metrics_names.METRIC_METADATA_BATCH_RUNTIME_STARTED,
+                            1,
+                            T("runtime_type", runtime_type),
+                        )
                     # Run after both reconnect and provision. On provision this
                     # persists the active runtime ref; on reconnect it refreshes
                     # the worker-local execution binding so the recovered/live

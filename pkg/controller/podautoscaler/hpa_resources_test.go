@@ -24,6 +24,7 @@ import (
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
+	"github.com/vllm-project/aibrix/pkg/utils/paschedules"
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
@@ -168,4 +169,152 @@ func TestMakeHPA(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, actualHPA)
 	assert.Equal(t, expectedHPA, actualHPA)
+}
+
+func TestMakeHPAFractionalTargetValueRoundsUp(t *testing.T) {
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: v1.ObjectMeta{
+			Name:      "test-fractional-pa",
+			Namespace: "default",
+		},
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{
+				APIVersion: "apps/v1",
+				Kind:       "Deployment",
+				Name:       "test-llm",
+			},
+			MinReplicas: ptr.To(int32(1)),
+			MaxReplicas: int32(5),
+			MetricsSources: []autoscalingv1alpha1.MetricSource{
+				{
+					MetricSourceType: autoscalingv1alpha1.RESOURCE,
+					TargetMetric:     "memory",
+					TargetValue:      "0.5",
+				},
+				{
+					MetricSourceType: autoscalingv1alpha1.POD,
+					TargetMetric:     "gpu_cache_usage_perc",
+					TargetValue:      "1.2",
+				},
+			},
+		},
+	}
+
+	hpa, err := makeHPA(pa, context.NewBaseScalingContext())
+
+	assert.NoError(t, err)
+	assert.NotNil(t, hpa)
+	assert.Len(t, hpa.Spec.Metrics, 2)
+
+	// Fractional targetValue must round up (like the CPU path) instead of being
+	// truncated by int64(): 0.5 MiB -> 1 MiB, never 0 bytes.
+	memoryTarget := hpa.Spec.Metrics[0].Resource.Target
+	assert.NotNil(t, memoryTarget.AverageValue)
+	assert.Equal(t, int64(1*1024*1024), memoryTarget.AverageValue.Value())
+
+	// 1.2 -> 2 for pod metrics.
+	podsTarget := hpa.Spec.Metrics[1].Pods.Target
+	assert.NotNil(t, podsTarget.AverageValue)
+	assert.Equal(t, int64(2), podsTarget.AverageValue.Value())
+}
+
+func TestMakeHPARejectsTargetValueOverflow(t *testing.T) {
+	tests := map[string]struct {
+		metricSourceType autoscalingv1alpha1.MetricSourceType
+		targetMetric     string
+		targetValue      string
+	}{
+		"cpu": {
+			metricSourceType: autoscalingv1alpha1.RESOURCE,
+			targetMetric:     "cpu",
+			targetValue:      "2147483647.1",
+		},
+		"memory": {
+			metricSourceType: autoscalingv1alpha1.RESOURCE,
+			targetMetric:     "memory",
+			targetValue:      "8796093022207.1",
+		},
+		"pods": {
+			metricSourceType: autoscalingv1alpha1.CUSTOM,
+			targetMetric:     "requests",
+			targetValue:      "9223372036854775808",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			pa := &autoscalingv1alpha1.PodAutoscaler{
+				ObjectMeta: v1.ObjectMeta{Name: "test-overflow-pa", Namespace: "default"},
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{APIVersion: "apps/v1", Kind: "Deployment", Name: "test-llm"},
+					MinReplicas:    ptr.To(int32(1)),
+					MaxReplicas:    5,
+					MetricsSources: []autoscalingv1alpha1.MetricSource{{
+						MetricSourceType: tt.metricSourceType,
+						TargetMetric:     tt.targetMetric,
+						TargetValue:      tt.targetValue,
+					}},
+				},
+			}
+
+			_, err := makeHPA(pa, context.NewBaseScalingContext())
+
+			assert.ErrorContains(t, err, "must be representable as an HPA metric target")
+		})
+	}
+}
+
+func TestMakeHPAWithScheduledBounds(t *testing.T) {
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: v1.ObjectMeta{
+			Name:      "test-llm-pa",
+			Namespace: "default",
+		},
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{
+				APIVersion: "apps/v1",
+				Kind:       "Deployment",
+				Name:       "test-llm",
+			},
+			MinReplicas: ptr.To(int32(1)),
+			MaxReplicas: int32(10),
+			MetricsSources: []autoscalingv1alpha1.MetricSource{{
+				MetricSourceType: autoscalingv1alpha1.RESOURCE,
+				TargetMetric:     "cpu",
+				TargetValue:      "30",
+			}},
+		},
+	}
+	ctx := context.NewBaseScalingContext()
+
+	hpa, err := makeHPAWithBounds(pa, ctx, paschedules.Bounds{MinReplicas: 3, MaxReplicas: 12, ActiveSchedule: "business-hours"})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, hpa)
+	assert.NotNil(t, hpa.Spec.MinReplicas)
+	assert.Equal(t, int32(3), *hpa.Spec.MinReplicas)
+	assert.Equal(t, int32(12), hpa.Spec.MaxReplicas)
+}
+
+func TestMakeHPAWithInvalidScheduledBounds(t *testing.T) {
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: v1.ObjectMeta{Name: "test-llm-pa", Namespace: "default"},
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{APIVersion: "apps/v1", Kind: "Deployment", Name: "test-llm"},
+			MetricsSources: []autoscalingv1alpha1.MetricSource{{
+				MetricSourceType: autoscalingv1alpha1.RESOURCE,
+				TargetMetric:     "cpu",
+				TargetValue:      "30",
+			}},
+		},
+	}
+
+	_, err := makeHPAWithBounds(pa, context.NewBaseScalingContext(), paschedules.Bounds{MinReplicas: 3, MaxReplicas: 2})
+
+	assert.ErrorIs(t, err, errInvalidHPABounds)
+	assert.Equal(t, ReasonInvalidBounds, reasonForHPAGenerationError(err))
+}
+
+func TestReasonForHPAGenerationErrorDefaultsToMetricsConfig(t *testing.T) {
+	assert.Equal(t, ReasonMetricsConfigError, reasonForHPAGenerationError(assert.AnError))
 }

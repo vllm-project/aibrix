@@ -1,3 +1,6 @@
+# Shared multinode 4p8d routing workload (RATE=16, PROMPTS=1000).
+# so multi-node results are directly comparable to the single-node 4p8d compare run.
+# BASE_URL / namespace are overridden by the Brixbench runner per provider.
 kind: vllm-bench
 execution: cluster
 image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/vllm-bench:v0.21.0-20260521
@@ -13,13 +16,13 @@ artifacts:
   resultFilename: bench_results.json
   logDir: testdata/logs
 vllmArgs:
-  base-url: http://124.174.59.197:80
+  base-url: http://127.0.0.1:8000
   endpoint: /v1/completions
   backend: openai
   model: qwen3-8b
   tokenizer: /data01/models/Qwen3-8B
   num-prompts: 1000
-  request-rate: 8
+  request-rate: 16
   concurrency: 32
   metric-percentiles: "50,90,95,99"
   percentile-metrics: "ttft,tpot,itl,e2el"
@@ -28,7 +31,7 @@ vllmArgs:
     - "tpot:250"
   ignore-eos: true
   seed: 111
-  save-detailed: true
+  save-detailed: false
   ready-check-timeout-sec: 30
   dataset-name: prefix_repetition
   prefix-repetition-num-prefixes: 20

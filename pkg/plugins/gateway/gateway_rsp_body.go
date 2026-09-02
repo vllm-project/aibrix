@@ -67,14 +67,15 @@ type OpenAIResponse struct {
 	Code int `json:"code"`
 }
 
-type tokenUsage struct {
-	promptTokens     int64
-	completionTokens int64
-	totalTokens      int64
+// TokenUsage contains the token counts reported by an inference response.
+type TokenUsage struct {
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
 }
 
-func processStreamingResponse(requestID string, bodyBytes []byte) (tokenUsage, *extProcPb.ProcessingResponse) {
-	var usage tokenUsage
+func processStreamingResponse(requestID string, bodyBytes []byte) (TokenUsage, *extProcPb.ProcessingResponse) {
+	var usage TokenUsage
 
 	// The previous implementation unmarshalled every single SSE chunk into a struct (openai.ChatCompletionChunk).
 	// This caused significant CPU overhead and high GC pressure under heavy concurrency.
@@ -137,21 +138,21 @@ func processStreamingResponse(requestID string, bodyBytes []byte) (tokenUsage, *
 					// the primary field is genuinely absent (Exists() == false), since a
 					// zero count is a semantically valid value.
 					if pt := usageResult.Get("prompt_tokens"); pt.Exists() {
-						usage.promptTokens = pt.Int()
+						usage.PromptTokens = pt.Int()
 					} else {
-						usage.promptTokens = usageResult.Get("input_tokens").Int()
+						usage.PromptTokens = usageResult.Get("input_tokens").Int()
 					}
 					if ct := usageResult.Get("completion_tokens"); ct.Exists() {
-						usage.completionTokens = ct.Int()
+						usage.CompletionTokens = ct.Int()
 					} else {
-						usage.completionTokens = usageResult.Get("output_tokens").Int()
+						usage.CompletionTokens = usageResult.Get("output_tokens").Int()
 					}
-					usage.totalTokens = usageResult.Get("total_tokens").Int()
+					usage.TotalTokens = usageResult.Get("total_tokens").Int()
 				}
 			}
 		}
 		// warnings when "usage" is triggered by a false positive in generated content.
-		if usage.promptTokens == 0 && usage.totalTokens == 0 {
+		if usage.PromptTokens == 0 && usage.TotalTokens == 0 {
 			klog.V(4).Infof("usage string detected but no valid tokens parsed (likely generated text), requestID: %s", requestID)
 		}
 	}
@@ -159,7 +160,16 @@ func processStreamingResponse(requestID string, bodyBytes []byte) (tokenUsage, *
 	return usage, nil
 }
 
-func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.RoutingContext, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
+// HandleResponseBody parses and accounts for a response body but deliberately
+// does not finalize cache bookkeeping or release routerCtx. Process owns that
+// lifecycle and keeps the context valid until its final deferred cleanup.
+func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.RoutingContext, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, stream bool, hasCompleted bool) (*extProcPb.ProcessingResponse, bool, TokenUsage) {
+	if routerCtx == nil {
+		return generateErrorResponse(
+			envoyTypePb.StatusCode_InternalServerError,
+			nil,
+			"routing context is nil", "", ""), true, TokenUsage{}
+	}
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
 	arrival := time.Now()
 
@@ -168,59 +178,47 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 	// metrics are only emitted on the final chunk. Without capturing the first
 	// arrival here, TTFT and KV-transfer time would be measured from the last
 	// chunk (≈ total request time) instead of the first token.
-	if stream && routerCtx != nil && routerCtx.FirstTokenTime.IsZero() {
+	if stream && routerCtx.FirstTokenTime.IsZero() {
 		routerCtx.FirstTokenTime = arrival
 	}
 
 	var processingRes *extProcPb.ProcessingResponse
-	var promptTokens, completionTokens, totalTokens int64
+	var usage TokenUsage
 	var headers []*configPb.HeaderValueOption
 	complete := hasCompleted
 
 	// Omitted tracer.Start(ctx, "HandleResponseBody") here to avoid excessive CPU and gRPC overhead.
 	// Creating a span for each individual token in the stream is too resource-intensive.
 
-	defer func() {
-		// Wrapped in a function to delay the evaluation of parameters. Using complete to make sure DoneRequestTrace only call once for a request.
-		if !hasCompleted && complete {
-			s.cache.DoneRequestTrace(routerCtx, requestID, model, promptTokens, completionTokens, traceTerm)
-			if routerCtx != nil {
-				routerCtx.Delete()
-			}
-		}
-	}()
-
 	if stream {
-		usage, streamRes := processStreamingResponse(requestID, b.ResponseBody.GetBody())
-		promptTokens = usage.promptTokens
-		completionTokens = usage.completionTokens
-		totalTokens = usage.totalTokens
+		var streamRes *extProcPb.ProcessingResponse
+		usage, streamRes = processStreamingResponse(requestID, b.ResponseBody.GetBody())
 		if streamRes != nil {
 			complete = true
-			return streamRes, complete
+			return streamRes, complete, usage
 		}
 	} else {
 		if isLanguageRequest(routerCtx.ReqPath) {
-			processingRes, complete, promptTokens, completionTokens, totalTokens = processLanguageResponse(requestID, b)
+			processingRes, complete, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens = processLanguageResponse(requestID, b)
 			if processingRes != nil {
-				return processingRes, complete
+				return processingRes, complete, usage
 			}
 		}
 	}
 
-	if totalTokens != 0 {
+	if usage.TotalTokens != 0 {
 		complete = true
 
 		// Count token per user.
 		if user.Name != "" {
-			tpm, err := s.ratelimiter.Incr(routerCtx, fmt.Sprintf("%v_TPM_CURRENT", user.Name), totalTokens)
+			tpm, err := s.ratelimiter.Incr(routerCtx, fmt.Sprintf("%v_TPM_CURRENT", user.Name), usage.TotalTokens)
 			if err != nil {
 				return generateErrorResponse(
 					envoyTypePb.StatusCode_InternalServerError,
 					[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 						Key: HeaderErrorIncrTPM, RawValue: []byte("true"),
 					}}},
-					err.Error(), "", ""), complete
+					err.Error(), "", ""), complete, usage
 			}
 
 			headers = buildEnvoyProxyHeaders(headers,
@@ -233,7 +231,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 		// requestEndHelper derives TTFT from routerCtx.FirstTokenTime for streaming
 		// requests, so passing the final arrival here (rather than the first chunk's)
 		// keeps decode-time/KV-transfer math, which spans first-token-to-end, correct.
-		fields := s.requestEndHelper(routerCtx, arrival, promptTokens, completionTokens, totalTokens)
+		fields := s.requestEndHelper(routerCtx, arrival, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
 		if routerCtx.Span != nil {
 			routerCtx.Span.SetAttributes(fieldsToAttributes(fields)...)
 		}
@@ -252,7 +250,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 				},
 			},
 		},
-	}, complete
+	}, complete, usage
 }
 
 func isLanguageRequest(requestPath string) bool {
@@ -299,15 +297,30 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 	requestBuffers.Delete(requestID)
 
 	if err := sonic.Unmarshal(finalBody, &res); err != nil {
-		klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
+		klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(finalBody))
 		complete = true
 		processingRes = buildErrorResponse(envoyTypePb.StatusCode_InternalServerError, err.Error(), "", "", HeaderErrorResponseUnmarshal, "true")
 		return
 	}
 
 	if len(res.Model) == 0 {
+		// The body is not a recognized OpenAI response. Normalize any upstream error payload
+		// (nested {"error":{...}} or the flat shape) to a single envelope and pass it through;
+		// headerStatus == 0 because this 200 path carries a fake-success status, so the real
+		// status is derived from the body's numeric code (see upstreamErrorHTTPStatus).
+		if body, code, ok := normalizeUpstreamErrorBody(finalBody, 0); ok {
+			klog.ErrorS(ErrorUnknownResponse, "unexpected response", "requestID", requestID, "responseBody", string(finalBody))
+			complete = true
+			errHeaders := buildEnvoyProxyHeaders(nil, HeaderErrorResponseUnknown, "true")
+			processingRes = buildErrorResponseWithBody(code, body, errHeaders)
+			return
+		}
+
+		// Fallback: the body is not a recognizable error payload (e.g. non-JSON or an
+		// arbitrary object). Wrap the reassembled finalBody as the error message rather
+		// than the current chunk, so multi-chunk error bodies are preserved in full.
 		msg := ErrorUnknownResponse.Error()
-		responseBodyContent := string(b.ResponseBody.GetBody())
+		responseBodyContent := string(finalBody)
 		if len(responseBodyContent) != 0 {
 			msg = responseBodyContent
 		}
@@ -342,6 +355,112 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 		}
 	}
 	return
+}
+
+// normalizeUpstreamErrorBody normalizes an upstream engine's error payload to the nested
+// {"error": {...}} shape. It recognizes both the nested form ({"error": {...}}) and the
+// flat form where the error fields sit at the top level. It returns the normalized body,
+// the HTTP status to use for the response, and whether the body was a recognizable error
+// payload (false for invalid JSON, a non-object "error" field, or for flat payloads:
+// missing message). For nested payloads, a missing message falls back to a generic error
+// string rather than rejecting the payload.
+//
+// headerStatus is the upstream HTTP status the gateway observed (> 0 for a real non-200
+// :status, 0 when the 200 header is a fake success over an error body). The HTTPS-status
+// precedence rule (header wins over body code, semantic string code only preserved) lives in
+// upstreamErrorHTTPStatus.
+func normalizeUpstreamErrorBody(body []byte, headerStatus int) (string, envoyTypePb.StatusCode, bool) {
+	if !gjson.ValidBytes(body) {
+		return "", 0, false
+	}
+
+	nested := gjson.GetBytes(body, "error")
+	if nested.Exists() && nested.IsObject() {
+		return renderErrorBody(nested), upstreamErrorHTTPStatus(nested, headerStatus), true
+	}
+
+	// Flat shape: the error fields sit at the top level. Require a JSON object with a
+	// message field so ordinary (non-error) responses such as arrays or primitives are
+	// not misclassified.
+	flat := gjson.ParseBytes(body)
+	if !flat.IsObject() || !flat.Get("message").Exists() {
+		return "", 0, false
+	}
+	return renderErrorBody(flat), upstreamErrorHTTPStatus(flat, headerStatus), true
+}
+
+// renderErrorBody renders the normalized {"error": {...}} JSON body from a gjson Result
+// representing either the nested error object or the flat error object. Fields absent from
+// the upstream payload are emitted as JSON null, except message which falls back to a
+// generic error string. The "code" field preserves whatever type the upstream supplied
+// (integer HTTP status, string semantic code, or null) verbatim.
+func renderErrorBody(e gjson.Result) string {
+	obj := map[string]interface{}{}
+
+	if m := e.Get("message"); m.Exists() && m.Type != gjson.Null {
+		obj["message"] = m.String()
+	} else {
+		obj["message"] = ErrorUnknownResponse.Error()
+	}
+
+	if t := e.Get("type"); t.Exists() && t.Type != gjson.Null {
+		obj["type"] = t.String()
+	} else {
+		obj["type"] = nil
+	}
+
+	if p := e.Get("param"); p.Exists() && p.Type != gjson.Null {
+		obj["param"] = p.Value()
+	} else {
+		obj["param"] = nil
+	}
+
+	if c := e.Get("code"); c.Exists() && c.Type != gjson.Null {
+		obj["code"] = c.Value()
+	} else {
+		obj["code"] = nil
+	}
+
+	body, err := sonic.Marshal(map[string]interface{}{"error": obj})
+	if err != nil {
+		klog.ErrorS(err, "failed to marshal upstream error body")
+		return `{"error":{"message":"internal server error while formatting error response","type":"api_error","code":null,"param":null}}`
+	}
+	return string(body)
+}
+
+// upstreamErrorHTTPStatus derives the envoy HTTP status for an upstream error payload.
+// Precedence (unified across both response paths via headerStatus):
+//
+//  1. headerStatus > 0 (a real non-200 :status): use it — authoritative, and the body's own
+//     "code" must not override a genuine transport status.
+//  2. headerStatus == 0 (a 200 body that smuggled an error): the 200 header is a fake success,
+//     so derive the status from the body's numeric "code" (stringified integers like "400" too)
+//     — this stops clients getting HTTP 200 wrapping an error body.
+//  3. A non-numeric semantic "code" (e.g. "invalid_api_key") never derives the status; it is
+//     only preserved verbatim in the body. Residual case with no usable status: return 500.
+//
+// Callers MUST pass the real observed header status (respErrorCode on the non-200 path, 0 on
+// the 200 path) rather than re-deriving it, so the rule stays in one place.
+func upstreamErrorHTTPStatus(e gjson.Result, headerStatus int) envoyTypePb.StatusCode {
+	if headerStatus > 0 {
+		return envoyTypePb.StatusCode(headerStatus)
+	}
+	c := e.Get("code")
+	if c.Exists() && c.Type == gjson.Number {
+		if v := c.Int(); v >= 100 && v < 600 {
+			return envoyTypePb.StatusCode(v)
+		}
+	}
+	// Some upstream engines or intermediary proxies stringify the status code.
+	if c.Exists() && c.Type == gjson.String {
+		if v, err := strconv.Atoi(c.String()); err == nil {
+			if v >= 100 && v < 600 {
+				return envoyTypePb.StatusCode(v)
+			}
+		}
+	}
+	return envoyTypePb.StatusCode_InternalServerError
 }
 
 func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time.Time,

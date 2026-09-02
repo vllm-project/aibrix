@@ -138,7 +138,7 @@ func createOpenAIClientWithRoutingStrategy(baseURL, apiKey, routingStrategy stri
 // The gateway plugin selects routing-strategy from the model's config profile (model.aibrix.ai/config)
 // based on this header, rather than from the routing-strategy header.
 func createOpenAIClientWithConfigProfile(baseURL, apiKey, configProfile string,
-	respOpt option.RequestOption) openai.Client {
+	respOpts ...option.RequestOption) openai.Client {
 	transport := &http.Transport{
 		DisableKeepAlives: true,
 		MaxIdleConns:      0,
@@ -157,8 +157,10 @@ func createOpenAIClientWithConfigProfile(baseURL, apiKey, configProfile string,
 	if configProfile != "" {
 		opts = append(opts, option.WithHeader("config-profile", configProfile))
 	}
-	if respOpt != nil {
-		opts = append(opts, respOpt)
+	for _, respOpt := range respOpts {
+		if respOpt != nil {
+			opts = append(opts, respOpt)
+		}
 	}
 
 	return openai.NewClient(opts...)

@@ -18,18 +18,24 @@ package stormservice
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
+	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
+	ctrlutils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
 )
 
 func TestCalculateReplicas(t *testing.T) {
@@ -124,6 +130,152 @@ func TestCalculateReplicas(t *testing.T) {
 		if c != test.desiredCurrent || u != test.desiredUpdated {
 			t.Errorf("failed %+v, current %d, updated %d", test, c, u)
 		}
+	}
+}
+
+func TestSetStormServiceAvailabilityConditionPreservesGangConditionTransitionTime(t *testing.T) {
+	oldTransition := metav1.NewTime(time.Now().Add(-time.Hour))
+	status := &orchestrationv1alpha1.StormServiceStatus{
+		Conditions: orchestrationv1alpha1.Conditions{
+			{
+				Type:               orchestrationv1alpha1.StormServiceGangSchedulingError,
+				Status:             corev1.ConditionFalse,
+				Reason:             "GangSchedulingHealthy",
+				LastTransitionTime: &oldTransition,
+			},
+		},
+	}
+
+	setStormServiceAvailabilityCondition(status, true)
+	SetStormServiceCondition(status, *ctrlutils.NewCondition(
+		orchestrationv1alpha1.StormServiceGangSchedulingError,
+		corev1.ConditionFalse,
+		"GangSchedulingHealthy",
+		"",
+	))
+
+	gangCondition := ctrlutils.GetCondition(status.Conditions, orchestrationv1alpha1.StormServiceGangSchedulingError)
+	if gangCondition == nil {
+		t.Fatal("expected gang scheduling condition to be preserved")
+	}
+	if gangCondition.LastTransitionTime == nil || !gangCondition.LastTransitionTime.Equal(&oldTransition) {
+		t.Fatalf("expected gang scheduling LastTransitionTime %v, got %v", oldTransition, gangCondition.LastTransitionTime)
+	}
+}
+
+func TestUpdateStatusPreservesProgressDeadlineAcrossReconcileError(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := orchestrationv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add StormService scheme: %v", err)
+	}
+
+	started := time.Now().Add(-time.Hour).Truncate(time.Second)
+	ready := *ctrlutils.NewCondition(
+		orchestrationv1alpha1.StormServiceReady,
+		corev1.ConditionTrue,
+		"Ready",
+		"",
+	)
+	external := *ctrlutils.NewCondition(
+		orchestrationv1alpha1.ConditionType("ExternalHealth"),
+		corev1.ConditionTrue,
+		"Healthy",
+		"",
+	)
+	stormService := &orchestrationv1alpha1.StormService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "reconcile-error",
+			Namespace:  "default",
+			Generation: 2,
+		},
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Replicas:                ptr.To(int32(1)),
+			Selector:                &metav1.LabelSelector{MatchLabels: map[string]string{"app": "reconcile-error"}},
+			ProgressDeadlineSeconds: ptr.To(int32(1)),
+		},
+		Status: orchestrationv1alpha1.StormServiceStatus{
+			Conditions: orchestrationv1alpha1.Conditions{
+				ready,
+				progressingCondition(corev1.ConditionTrue, ProgressingReason, started, started),
+				external,
+			},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&orchestrationv1alpha1.StormService{}).
+		WithObjects(stormService).
+		Build()
+	reconciler := &StormServiceReconciler{Client: fakeClient, Scheme: scheme}
+	currentRevision := &appsv1.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "revision-1"}}
+	updateRevision := &appsv1.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "revision-2"}}
+
+	current := &orchestrationv1alpha1.StormService{}
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(stormService), current); err != nil {
+		t.Fatalf("get StormService: %v", err)
+	}
+	readyResult, err := reconciler.updateStatus(
+		context.Background(),
+		current,
+		errors.New("transient rollout error"),
+		currentRevision,
+		updateRevision,
+		0,
+	)
+	if err != nil {
+		t.Fatalf("update error status: %v", err)
+	}
+	if readyResult {
+		t.Fatal("expected StormService with a reconcile error to be not ready")
+	}
+
+	failed := &orchestrationv1alpha1.StormService{}
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(stormService), failed); err != nil {
+		t.Fatalf("get failed StormService: %v", err)
+	}
+	if condition := ctrlutils.GetCondition(failed.Status.Conditions, orchestrationv1alpha1.StormServiceReady); condition != nil {
+		t.Fatalf("expected stale Ready condition to be removed, got %#v", condition)
+	}
+	progressing := ctrlutils.GetCondition(failed.Status.Conditions, orchestrationv1alpha1.StormServiceProgressing)
+	if progressing == nil || progressing.LastUpdateTime == nil || progressing.Status != corev1.ConditionFalse || progressing.Reason != ProgressDeadlineExceededReason {
+		t.Fatalf("expected progress deadline to expire across reconcile error, got %#v", progressing)
+	}
+	if condition := ctrlutils.GetCondition(failed.Status.Conditions, orchestrationv1alpha1.StormServiceReplicaFailure); condition == nil {
+		t.Fatal("expected ReplicaFailure condition")
+	}
+	if condition := ctrlutils.GetCondition(failed.Status.Conditions, external.Type); condition == nil {
+		t.Fatal("expected unrelated condition to be preserved")
+	}
+	timedOutAt := progressing.LastUpdateTime.DeepCopy()
+
+	readyResult, err = reconciler.updateStatus(
+		context.Background(),
+		failed,
+		nil,
+		currentRevision,
+		updateRevision,
+		0,
+	)
+	if err != nil {
+		t.Fatalf("update recovered status: %v", err)
+	}
+	if readyResult {
+		t.Fatal("expected StormService without RoleSets to be not ready")
+	}
+
+	recovered := &orchestrationv1alpha1.StormService{}
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(stormService), recovered); err != nil {
+		t.Fatalf("get recovered StormService: %v", err)
+	}
+	if condition := ctrlutils.GetCondition(recovered.Status.Conditions, orchestrationv1alpha1.StormServiceReplicaFailure); condition != nil {
+		t.Fatalf("expected ReplicaFailure to clear after successful reconcile, got %#v", condition)
+	}
+	progressing = ctrlutils.GetCondition(recovered.Status.Conditions, orchestrationv1alpha1.StormServiceProgressing)
+	if progressing == nil || progressing.LastUpdateTime == nil || !progressing.LastUpdateTime.Equal(timedOutAt) {
+		t.Fatalf("expected progress deadline clock to remain at %v, got %#v", timedOutAt, progressing)
+	}
+	if condition := ctrlutils.GetCondition(recovered.Status.Conditions, external.Type); condition == nil {
+		t.Fatal("expected unrelated condition to remain after recovery")
 	}
 }
 
@@ -277,5 +429,246 @@ func TestSyncHeadlessService(t *testing.T) {
 				t.Errorf("Expected PublishNotReadyAddresses to be true, got %v", service.Spec.PublishNotReadyAddresses)
 			}
 		})
+	}
+}
+
+// newPooledStormServiceWithSurge returns a pooled StormService shaped the way the CRD
+// persists it: mode: Pooled with updateStrategy.type defaulted to RollingUpdate and an
+// explicit maxSurge. Before IsRollingUpdate was routed through EffectiveUpdateStrategyType,
+// this combination handed scaling() a non-zero surge budget.
+func newPooledStormServiceWithSurge(maxSurge int32) *orchestrationv1alpha1.StormService {
+	surge := intstrutil.FromInt32(maxSurge)
+	return &orchestrationv1alpha1.StormService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pooled-storm",
+			Namespace: "default",
+			UID:       "pooled-storm-uid",
+		},
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Replicas: ptr.To(int32(1)),
+			Mode:     orchestrationv1alpha1.StormServicePooledMode,
+			UpdateStrategy: orchestrationv1alpha1.StormServiceUpdateStrategy{
+				// The CRD defaults type to RollingUpdate whenever the updateStrategy
+				// block is present, so this is what a pooled object with maxSurge set
+				// actually looks like in the API server.
+				Type:     orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
+				MaxSurge: &surge,
+			},
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "pooled-storm"},
+			},
+			Template: orchestrationv1alpha1.RoleSetTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": "pooled-storm"},
+				},
+				Spec: &orchestrationv1alpha1.RoleSetSpec{
+					Roles: []orchestrationv1alpha1.RoleSpec{
+						{
+							Name:     "engine",
+							Replicas: ptr.To(int32(1)),
+							Template: corev1.PodTemplateSpec{
+								Spec: corev1.PodSpec{
+									Containers: []corev1.Container{
+										{Name: "main", Image: "engine:v1"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// pooledRoleSet returns a RoleSet owned by newPooledStormServiceWithSurge's object at the
+// given revision. Terminating RoleSets carry a DeletionTimestamp plus a finalizer so the
+// fake client keeps them around, mirroring a RoleSet that is still tearing down.
+func pooledRoleSet(name, revision string, terminating bool) *orchestrationv1alpha1.RoleSet {
+	rs := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "default",
+			Labels: map[string]string{
+				"app":                                  "pooled-storm",
+				constants.StormServiceNameLabelKey:     "pooled-storm",
+				constants.StormServiceRevisionLabelKey: revision,
+			},
+		},
+	}
+	if terminating {
+		now := metav1.Now()
+		rs.DeletionTimestamp = &now
+		rs.Finalizers = []string{"orchestration.aibrix.ai/test-teardown"}
+	}
+	return rs
+}
+
+// TestScalingPooledModeNeverCreatesSecondRoleSet covers the review scenario for
+// mode: Pooled + CRD-defaulted RollingUpdate + maxSurge: 2: the surge budget must
+// evaluate to 0 so scaling() never brings a second RoleSet into existence next to
+// the one RoleSet a pooled StormService owns.
+func TestScalingPooledModeNeverCreatesSecondRoleSet(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = orchestrationv1alpha1.AddToScheme(scheme)
+
+	const revision = "pooled-storm-rev1"
+
+	tests := []struct {
+		name             string
+		existingRoleSets []*orchestrationv1alpha1.RoleSet
+		wantScaling      bool
+		wantRoleSets     int
+	}{
+		{
+			name:             "steady state keeps the single roleset",
+			existingRoleSets: []*orchestrationv1alpha1.RoleSet{pooledRoleSet("pooled-storm-roleset-a", revision, false)},
+			wantScaling:      false,
+			wantRoleSets:     1,
+		},
+		{
+			name:             "scale out from zero creates exactly one roleset",
+			existingRoleSets: nil,
+			wantScaling:      true,
+			wantRoleSets:     1,
+		},
+		{
+			// The regression case: with the surge budget read from the raw
+			// updateStrategy.type, scaling() created a replacement RoleSet while the
+			// old one was still terminating, so two RoleSets existed at once.
+			name:             "no replacement is surged while the old roleset terminates",
+			existingRoleSets: []*orchestrationv1alpha1.RoleSet{pooledRoleSet("pooled-storm-roleset-a", revision, true)},
+			wantScaling:      false,
+			wantRoleSets:     1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var objs []client.Object
+			for _, rs := range tt.existingRoleSets {
+				objs = append(objs, rs)
+			}
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objs...).
+				Build()
+
+			r := &StormServiceReconciler{
+				Client:        fakeClient,
+				EventRecorder: &record.FakeRecorder{},
+			}
+
+			stormService := newPooledStormServiceWithSurge(2)
+			cr := &appsv1.ControllerRevision{
+				ObjectMeta: metav1.ObjectMeta{Name: revision, Namespace: "default"},
+				Revision:   1,
+			}
+
+			scaling, err := r.scaling(context.TODO(), stormService, stormService, cr, cr)
+			if err != nil {
+				t.Fatalf("scaling() error = %v", err)
+			}
+			if scaling != tt.wantScaling {
+				t.Errorf("scaling() = %v, want %v", scaling, tt.wantScaling)
+			}
+
+			roleSetList := &orchestrationv1alpha1.RoleSetList{}
+			if err := fakeClient.List(context.TODO(), roleSetList); err != nil {
+				t.Fatalf("failed to list roleSets: %v", err)
+			}
+			if len(roleSetList.Items) != tt.wantRoleSets {
+				names := make([]string, 0, len(roleSetList.Items))
+				for _, rs := range roleSetList.Items {
+					names = append(names, rs.Name)
+				}
+				t.Fatalf("expected %d roleSet(s), got %d: %v", tt.wantRoleSets, len(roleSetList.Items), names)
+			}
+			// A pooled StormService must never own more than one RoleSet, no matter
+			// how often scaling() runs; re-run to make sure the budget stays zero.
+			if _, err := r.scaling(context.TODO(), stormService, stormService, cr, cr); err != nil {
+				t.Fatalf("second scaling() error = %v", err)
+			}
+			if err := fakeClient.List(context.TODO(), roleSetList); err != nil {
+				t.Fatalf("failed to list roleSets: %v", err)
+			}
+			if len(roleSetList.Items) > 1 {
+				t.Fatalf("pooled stormservice ended up with %d roleSets, a second RoleSet must never be created", len(roleSetList.Items))
+			}
+		})
+	}
+}
+
+// TestScalingNilReplicasResolvesToDefault covers the review scenario for an omitted
+// spec.replicas: the field is optional with a documented default of 1 that neither the
+// CRD schema nor the mutating webhook materializes, so nil reaches the reconcile loop.
+// scaling() must treat it as 1 RoleSet, and the rolling-update budget helpers it calls
+// (MinAvailable, MaxSurge) must not dereference the nil pointer, which panicked before
+// spec.replicas was resolved through ResolvedReplicas().
+func TestScalingNilReplicasResolvesToDefault(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = orchestrationv1alpha1.AddToScheme(scheme)
+
+	stormService := &orchestrationv1alpha1.StormService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "nil-replicas-storm",
+			Namespace: "default",
+			UID:       "nil-replicas-storm-uid",
+		},
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			// Replicas intentionally omitted; the update strategy is left empty so the
+			// legacy default RollingUpdate path (and its budget helpers) is exercised.
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "nil-replicas-storm"},
+			},
+			Template: orchestrationv1alpha1.RoleSetTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": "nil-replicas-storm"},
+				},
+				Spec: &orchestrationv1alpha1.RoleSetSpec{
+					Roles: []orchestrationv1alpha1.RoleSpec{
+						{
+							Name:     "engine",
+							Replicas: ptr.To(int32(1)),
+							Template: corev1.PodTemplateSpec{
+								Spec: corev1.PodSpec{
+									Containers: []corev1.Container{
+										{Name: "main", Image: "engine:v1"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &StormServiceReconciler{
+		Client:        fakeClient,
+		EventRecorder: &record.FakeRecorder{},
+	}
+	cr := &appsv1.ControllerRevision{
+		ObjectMeta: metav1.ObjectMeta{Name: "nil-replicas-storm-rev1", Namespace: "default"},
+		Revision:   1,
+	}
+
+	scaling, err := r.scaling(context.TODO(), stormService, stormService, cr, cr)
+	if err != nil {
+		t.Fatalf("scaling() error = %v", err)
+	}
+	if !scaling {
+		t.Errorf("scaling() = false, want true: an omitted spec.replicas must scale out to the default of 1")
+	}
+
+	roleSetList := &orchestrationv1alpha1.RoleSetList{}
+	if err := fakeClient.List(context.TODO(), roleSetList); err != nil {
+		t.Fatalf("failed to list roleSets: %v", err)
+	}
+	if len(roleSetList.Items) != 1 {
+		t.Fatalf("expected 1 roleSet for an omitted spec.replicas, got %d", len(roleSetList.Items))
 	}
 }

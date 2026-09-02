@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/vllm-project/aibrix/apps/console/api/common"
 	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
@@ -145,6 +147,28 @@ func TestCancelJobAllowsOwner(t *testing.T) {
 	}
 }
 
+func TestCancelJobMapsUpstreamConflictToAborted(t *testing.T) {
+	planner := &fakeJobPlanner{
+		job: plannerJobWithOwner("job-console-1", "owner@example.com"),
+		cancelErr: &openai.Error{
+			StatusCode: http.StatusConflict,
+			Message:    "Cannot cancel a batch with status 'finalized'.",
+		},
+	}
+	handler := NewJobHandler(nil, planner, "", false, nil)
+
+	_, err := handler.CancelJob(contextWithUserEmail("owner@example.com"), &pb.CancelJobRequest{
+		Id: "job-console-1",
+	})
+
+	if status.Code(err) != codes.Aborted {
+		t.Fatalf("CancelJob code = %v, want Aborted; err=%v", status.Code(err), err)
+	}
+	if status.Convert(err).Message() != "Cannot cancel a batch with status 'finalized'." {
+		t.Fatalf("CancelJob message = %q", status.Convert(err).Message())
+	}
+}
+
 func TestGetJobMapsPlannerNotFound(t *testing.T) {
 	planner := &fakeJobPlanner{
 		getErr: fmt.Errorf("%w: job-console-missing", plannerapi.ErrJobNotFound),
@@ -180,6 +204,26 @@ func TestCreateJobDefaultsCompletionWindowTo24h(t *testing.T) {
 	}
 }
 
+func TestToPlannerClientConfigForwardsAdaptiveRampControls(t *testing.T) {
+	healthyWindow := int32(8)
+	additiveIncrease := int32(2)
+
+	got := toPlannerClientConfig(&pb.JobClientConfig{
+		AdaptiveHealthyWindow:    &healthyWindow,
+		AdaptiveAdditiveIncrease: &additiveIncrease,
+	})
+
+	if got == nil {
+		t.Fatal("toPlannerClientConfig returned nil")
+	}
+	if got.AdaptiveHealthyWindow == nil || *got.AdaptiveHealthyWindow != healthyWindow {
+		t.Fatalf("adaptive healthy window = %v, want %d", got.AdaptiveHealthyWindow, healthyWindow)
+	}
+	if got.AdaptiveAdditiveIncrease == nil || *got.AdaptiveAdditiveIncrease != additiveIncrease {
+		t.Fatalf("adaptive additive increase = %v, want %d", got.AdaptiveAdditiveIncrease, additiveIncrease)
+	}
+}
+
 func TestCreateJobAcceptsMaxReplicas(t *testing.T) {
 	planner := &fakeJobPlanner{
 		job: plannerJobWithOwner("job-console-1", "owner@example.com"),
@@ -203,16 +247,30 @@ func TestCreateJobAcceptsMaxReplicas(t *testing.T) {
 	if got := planner.enqueued.ResourceRequest.Replicas; got != int(maxJobReplicas) {
 		t.Fatalf("replicas = %d, want %d", got, maxJobReplicas)
 	}
+	if got := planner.enqueued.ResourceRequest.ProviderConfig; got != nil {
+		t.Fatalf("provider config = %#v, want omitted", got)
+	}
 }
 
-func TestJobLimitsConfigMatchesValidationConstants(t *testing.T) {
-	limits := JobLimitsConfig()
+func TestJobCapabilitiesConfigMatchesValidationConstants(t *testing.T) {
+	capabilities := JobCapabilitiesConfig("kubernetes", false)
 
-	if got := limits.ResourceRequest.MinReplicas; got != minJobReplicas {
+	if got := capabilities.ResourceRequest.MinReplicas; got != minJobReplicas {
 		t.Fatalf("min replicas = %d, want %d", got, minJobReplicas)
 	}
-	if got := limits.ResourceRequest.MaxReplicas; got != maxJobReplicas {
+	if got := capabilities.ResourceRequest.MaxReplicas; got != maxJobReplicas {
 		t.Fatalf("max replicas = %d, want %d", got, maxJobReplicas)
+	}
+	if got := capabilities.Provider; got != "kubernetes" {
+		t.Fatalf("provider = %q, want kubernetes", got)
+	}
+}
+
+func TestJobCapabilitiesConfigUsesDemoProviderInDevMode(t *testing.T) {
+	capabilities := JobCapabilitiesConfig("kubernetes", true)
+
+	if got := capabilities.Provider; got != "demo" {
+		t.Fatalf("provider = %q, want demo", got)
 	}
 }
 
@@ -254,48 +312,85 @@ func TestCreateJobRejectsReplicasOutsideAllowedRange(t *testing.T) {
 	}
 }
 
-func TestCreateJobAcceptsSupportedCompletionWindows(t *testing.T) {
-	for _, window := range []string{"1h", "2h", "6h", "12h", "24h"} {
-		t.Run(window, func(t *testing.T) {
-			planner := &fakeJobPlanner{
-				job: plannerJobWithOwner("job-console-1", "owner@example.com"),
-			}
-			handler := NewJobHandler(nil, planner, "", false, nil)
+func TestCreateJobAcceptsValidCompletionWindows(t *testing.T) {
+	const window = "1d1h1min"
+	planner := &fakeJobPlanner{
+		job: plannerJobWithOwner("job-console-1", "owner@example.com"),
+	}
+	handler := NewJobHandler(nil, planner, "", false, nil)
 
-			_, err := handler.CreateJob(context.Background(), &pb.CreateJobRequest{
-				InputDataset:     "file-input",
-				Endpoint:         "/v1/chat/completions",
-				CompletionWindow: window,
-			})
+	_, err := handler.CreateJob(context.Background(), &pb.CreateJobRequest{
+		InputDataset:     "file-input",
+		Endpoint:         "/v1/chat/completions",
+		CompletionWindow: window,
+	})
 
-			if err != nil {
-				t.Fatalf("CreateJob returned error: %v", err)
-			}
-			if planner.enqueued == nil {
-				t.Fatal("planner.Enqueue was not called")
-			}
-			if got := string(planner.enqueued.BatchParams.CompletionWindow); got != window {
-				t.Fatalf("completion window = %q, want %q", got, window)
-			}
-		})
+	if err != nil {
+		t.Fatalf("CreateJob returned error: %v", err)
+	}
+	if planner.enqueued == nil {
+		t.Fatal("planner.Enqueue was not called")
+	}
+	if got := string(planner.enqueued.BatchParams.CompletionWindow); got != window {
+		t.Fatalf("completion window = %q, want %q", got, window)
 	}
 }
 
-func TestCreateJobRejectsUnsupportedCompletionWindow(t *testing.T) {
+func TestCreateJobForwardsProviderConfig(t *testing.T) {
+	planner := &fakeJobPlanner{
+		job: plannerJobWithOwner("job-console-1", "owner@example.com"),
+	}
+	handler := NewJobHandler(nil, planner, "", false, nil)
+	providerConfig, err := structpb.NewStruct(map[string]any{
+		"duration": "2h",
+		"nested": map[string]any{
+			"enabled": true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewStruct: %v", err)
+	}
+
+	_, err = handler.CreateJob(context.Background(), &pb.CreateJobRequest{
+		InputDataset:     "file-input",
+		Endpoint:         "/v1/chat/completions",
+		CompletionWindow: "6h",
+		ResourceRequest: &pb.JobResourceRequest{
+			ProviderConfig: providerConfig,
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("CreateJob returned error: %v", err)
+	}
+	if planner.enqueued == nil || planner.enqueued.ResourceRequest == nil {
+		t.Fatal("planner.Enqueue was not called with resource request")
+	}
+	got := planner.enqueued.ResourceRequest.ProviderConfig
+	if got["duration"] != "2h" {
+		t.Fatalf("duration = %#v, want 2h", got["duration"])
+	}
+	nested, ok := got["nested"].(map[string]any)
+	if !ok || nested["enabled"] != true {
+		t.Fatalf("nested provider config = %#v, want enabled=true", got["nested"])
+	}
+}
+
+func TestCreateJobRejectsInvalidCompletionWindow(t *testing.T) {
 	planner := &fakeJobPlanner{}
 	handler := NewJobHandler(nil, planner, "", false, nil)
 
 	_, err := handler.CreateJob(context.Background(), &pb.CreateJobRequest{
 		InputDataset:     "file-input",
 		Endpoint:         "/v1/chat/completions",
-		CompletionWindow: "3h",
+		CompletionWindow: "best_effort",
 	})
 
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("CreateJob code = %v, want InvalidArgument; err=%v", status.Code(err), err)
 	}
 	if planner.enqueued != nil {
-		t.Fatalf("planner.Enqueue called for unsupported completion window: %#v", planner.enqueued)
+		t.Fatalf("planner.Enqueue called for invalid completion window: %#v", planner.enqueued)
 	}
 }
 

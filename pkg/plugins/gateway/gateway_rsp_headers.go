@@ -26,6 +26,8 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
+// HandleResponseHeaders parses upstream headers without finalizing request
+// bookkeeping or releasing routerCtx; Process owns both lifecycle operations.
 func (s *Server) HandleResponseHeaders(ctx context.Context, routerCtx *types.RoutingContext, requestID string, model string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, bool, int) {
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseHeaders)
 
@@ -34,14 +36,6 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, routerCtx *types.Rou
 
 	var isProcessingError bool
 	var processingErrorCode int
-	defer func() {
-		if isProcessingError {
-			s.cache.DoneRequestCount(routerCtx, requestID, model, 0)
-			if routerCtx != nil {
-				routerCtx.Delete()
-			}
-		}
-	}()
 
 	headers := []*configPb.HeaderValueOption{}
 	headers = buildEnvoyProxyHeaders(headers, HeaderWentIntoReqHeaders, "true", HeaderRequestID, requestID)

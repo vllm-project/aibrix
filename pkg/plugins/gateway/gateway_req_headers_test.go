@@ -18,6 +18,7 @@ package gateway
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -166,6 +167,44 @@ func Test_handleRequestHeaders(t *testing.T) {
 			validate: defaultSuccessValidator,
 		},
 		{
+			name: "normalize mixed-case request header keys",
+			requestHeaders: []*configPb.HeaderValue{
+				{
+					Key:      strings.ToUpper(HeaderExternalFilter),
+					RawValue: []byte("gpu=true"),
+				},
+				{
+					Key:      strings.ToUpper(contentTypeKey),
+					RawValue: []byte("application/json"),
+				},
+				{
+					Key:      strings.ToUpper(HeaderRoutingStrategy),
+					RawValue: []byte("random"),
+				},
+				{
+					Key:      strings.ToUpper(HeaderTraceParent),
+					RawValue: []byte("00-" + traceID + "-00f067aa0ba902b7-01"),
+				},
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_OK,
+				headers: []*configPb.HeaderValueOption{
+					{Header: &configPb.HeaderValue{Key: HeaderWentIntoReqHeaders, RawValue: []byte("true")}},
+				},
+				routingCtx: &types.RoutingContext{
+					ReqHeaders: map[string]string{
+						HeaderExternalFilter:  "gpu=true",
+						contentTypeKey:        "application/json",
+						HeaderRoutingStrategy: "random",
+						HeaderTraceParent:     "00-" + traceID + "-00f067aa0ba902b7-01",
+					},
+				},
+				user: utils.User{},
+				rpm:  0,
+			},
+			validate: defaultSuccessValidator,
+		},
+		{
 			name: "extract x-session-id for session affinity routing",
 			requestHeaders: []*configPb.HeaderValue{
 				{
@@ -198,6 +237,62 @@ func Test_handleRequestHeaders(t *testing.T) {
 			requestHeaders: []*configPb.HeaderValue{
 				{
 					Key:      HeaderSessionKey,
+					RawValue: []byte("agent-session-42"),
+				},
+				{
+					Key:      HeaderRoutingStrategy,
+					RawValue: []byte("session-affinity"),
+				},
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_OK,
+				headers: []*configPb.HeaderValueOption{
+					{Header: &configPb.HeaderValue{Key: HeaderWentIntoReqHeaders, RawValue: []byte("true")}},
+				},
+				routingCtx: &types.RoutingContext{
+					ReqHeaders: map[string]string{
+						HeaderSessionKey:      "agent-session-42",
+						HeaderRoutingStrategy: "session-affinity",
+					},
+				},
+				user: utils.User{},
+				rpm:  0,
+			},
+			validate: defaultSuccessValidator,
+		},
+		{
+			name: "extract mixed-case x-session-id for session affinity routing",
+			requestHeaders: []*configPb.HeaderValue{
+				{
+					Key:      strings.ToUpper(HeaderSessionID),
+					RawValue: []byte("MTI3LjAuMC4xOjg4OTk="),
+				},
+				{
+					Key:      HeaderRoutingStrategy,
+					RawValue: []byte("session-affinity"),
+				},
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_OK,
+				headers: []*configPb.HeaderValueOption{
+					{Header: &configPb.HeaderValue{Key: HeaderWentIntoReqHeaders, RawValue: []byte("true")}},
+				},
+				routingCtx: &types.RoutingContext{
+					ReqHeaders: map[string]string{
+						HeaderSessionID:       "MTI3LjAuMC4xOjg4OTk=",
+						HeaderRoutingStrategy: "session-affinity",
+					},
+				},
+				user: utils.User{},
+				rpm:  0,
+			},
+			validate: defaultSuccessValidator,
+		},
+		{
+			name: "extract mixed-case opaque session key for session affinity routing",
+			requestHeaders: []*configPb.HeaderValue{
+				{
+					Key:      strings.ToUpper(HeaderSessionKey),
 					RawValue: []byte("agent-session-42"),
 				},
 				{

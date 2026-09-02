@@ -38,20 +38,28 @@ type planningLoop struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	wg           sync.WaitGroup // tracks goroutine completion
-	ready        chan struct{}  // signaled when goroutine is ready to receive triggers
+	lifecycleMu  sync.Mutex
+	ready        chan struct{} // signaled when goroutine is ready to receive triggers
 	isRunning    atomic.Bool
+	runningFirst bool
 	// workerPool executes queue processing functions submitted by planningLoop
 	workerPool *utils.WorkerPool
 }
 
 // newPlanningLoop creates a new planning worker.
-func newPlanningLoop(planner *Planner, interval time.Duration, workerCount int) *planningLoop {
+func newPlanningLoop(
+	planner *Planner,
+	interval time.Duration,
+	workerCount int,
+	workerQueueSize int,
+) *planningLoop {
 	return &planningLoop{
 		trigger:      make(chan struct{}, 1),
 		planInterval: interval,
 		planner:      planner,
 		ready:        make(chan struct{}),
-		workerPool:   utils.NewWorkerPool(workerCount),
+		runningFirst: true,
+		workerPool:   utils.NewWorkerPoolWithQueueSize(workerCount, workerQueueSize),
 	}
 }
 
@@ -66,9 +74,13 @@ func (w *planningLoop) Trigger() {
 
 // Start starts the planning worker and waits for the goroutine to be ready.
 func (w *planningLoop) Start(ctx context.Context) {
+	w.lifecycleMu.Lock()
+	defer w.lifecycleMu.Unlock()
+
 	if w.isRunning.Load() {
 		return
 	}
+	w.ready = make(chan struct{})
 	w.isRunning.Store(true)
 	w.ctx, w.cancel = context.WithCancel(ctx)
 	w.wg.Add(1)
@@ -80,6 +92,9 @@ func (w *planningLoop) Start(ctx context.Context) {
 
 // Stop stops the planning worker and waits for the goroutine to exit
 func (w *planningLoop) Stop() {
+	w.lifecycleMu.Lock()
+	defer w.lifecycleMu.Unlock()
+
 	if w.cancel != nil {
 		w.cancel()
 	}
@@ -88,6 +103,7 @@ func (w *planningLoop) Stop() {
 	}
 	w.wg.Wait() // Wait for goroutine to exit
 	w.isRunning.Store(false)
+	w.cancel = nil
 }
 
 func (w *planningLoop) runWithTrigger() {
@@ -128,14 +144,35 @@ func (w *planningLoop) planOnce() {
 		return
 	}
 
-	// 3. Collect jobs from each queue and submit individual tasks
-	w.processPendingQueue()
-	w.processRunningQueue()
+	// 3. Alternate which queue gets first access to bounded worker capacity so
+	// neither active jobs nor pending provisioning can starve under saturation.
+	if w.runningFirst {
+		w.processRunningQueue()
+		w.processPendingQueue()
+	} else {
+		w.processPendingQueue()
+		w.processRunningQueue()
+	}
+	w.runningFirst = !w.runningFirst
 
 	// 4. Emit queue gauges and cycle latency
 	metrics.Emitter.Gauge("console.planner.queue.pending.size", float32(w.planner.pendingQueue.Len()))
 	metrics.Emitter.Gauge("console.planner.queue.running.size", float32(w.planner.runningQueue.Len()))
 	metrics.Duration(metrics.Emitter, metricConsolePlannerDuration, cycleStart, metrics.T("method", "planning_loop"))
+}
+
+func (w *planningLoop) trySubmitJobTask(job *queuedJob, fn func()) bool {
+	if job == nil || fn == nil || !job.workInFlight.CompareAndSwap(false, true) {
+		return false
+	}
+	if w.workerPool.TrySubmit(func() {
+		defer job.workInFlight.Store(false)
+		fn()
+	}) {
+		return true
+	}
+	job.workInFlight.Store(false)
+	return false
 }
 
 func (w *planningLoop) processPendingQueue() {
@@ -166,18 +203,22 @@ func (w *planningLoop) processPendingQueue() {
 		if w.planner.injector != nil && job.req.InjectionConfig != nil {
 			ctx = error_injection.WithInjectionContext(ctx, job.req.InjectionConfig)
 		}
-		handleCleanup(ctx, w.planner, job, plannerapi.JobStatusCancelling, plannerapi.JobStatusCancelled)
+		w.trySubmitJobTask(job, func() {
+			handleCleanup(ctx, w.planner, job, plannerapi.JobStatusCancelling, plannerapi.JobStatusCancelled)
+		})
 	}
 
 	// Execute provisioning
 	for _, job := range toProvision {
-		handleProvisioning(p, job)
+		w.trySubmitJobTask(job, func() {
+			handleProvisioning(p, job)
+		})
 	}
 }
 
 func (w *planningLoop) processRunningQueue() {
-	wp := w.workerPool
 	p := w.planner
+	accepted := make([]*queuedJob, 0)
 
 	// First, submit ready jobs to MDS
 	var toSubmit []*queuedJob
@@ -185,16 +226,26 @@ func (w *planningLoop) processRunningQueue() {
 		job.mu.RLock()
 		status := job.status
 		readyToSubmit := job.readyToSubmit
+		allocatedResource := job.allocatedResource
 		job.mu.RUnlock()
 
-		if status == plannerapi.JobStatusResourcePreparing && readyToSubmit {
+		if status == plannerapi.JobStatusResourcePreparing &&
+			readyToSubmit &&
+			provisionStartReached(
+				p.backend.AllocationTimeWindow(allocatedResource),
+				time.Now().UTC(),
+			) {
 			toSubmit = append(toSubmit, job)
 		}
 		return true
 	})
 
 	for _, job := range toSubmit {
-		submitToMDS(p, job)
+		if w.trySubmitJobTask(job, func() {
+			submitToMDS(p, job)
+		}) {
+			accepted = append(accepted, job)
+		}
 	}
 
 	// Then, dispatch query-only operations to worker pool
@@ -223,7 +274,11 @@ func (w *planningLoop) processRunningQueue() {
 			// output/counts). Force a planner-side expiry only as a fallback once
 			// the runtime is unresponsive past the grace period.
 			if !isBatchRunning(status) || now.After(deadline.Add(expiryFinalizeGracePeriod)) {
-				wp.Submit(func() { handleCleanup(ctx, w.planner, job, status, plannerapi.JobStatusExpired) })
+				if w.trySubmitJobTask(job, func() {
+					handleCleanup(ctx, w.planner, job, status, plannerapi.JobStatusExpired)
+				}) {
+					accepted = append(accepted, job)
+				}
 				return true
 			}
 			// else: fall through to poll MDS for the runtime's finalized state.
@@ -231,19 +286,44 @@ func (w *planningLoop) processRunningQueue() {
 
 		switch status {
 		case plannerapi.JobStatusCancelling:
-			wp.Submit(func() { handleCleanup(ctx, w.planner, job, status, plannerapi.JobStatusCancelled) })
+			if w.trySubmitJobTask(job, func() {
+				handleCleanup(ctx, w.planner, job, status, plannerapi.JobStatusCancelled)
+			}) {
+				accepted = append(accepted, job)
+			}
 		case plannerapi.JobStatusResourcePreparing:
-			// Query provision status only, mark readyToSubmit if ready
-			wp.Submit(func() { handleResourcePreparing(w.planner, job) })
+			job.mu.RLock()
+			hasAllocation := job.allocatedResource != nil
+			job.mu.RUnlock()
+			if !hasAllocation {
+				// Query until RM reports the allocation ready. Once ready, wait
+				// locally for the provision start time without polling RM again.
+				if w.trySubmitJobTask(job, func() {
+					handleResourcePreparing(w.planner, job)
+				}) {
+					accepted = append(accepted, job)
+				}
+			}
 		default:
 			if isBatchRunning(status) {
 				// Query batch status only, update job state
-				wp.Submit(func() { handleRunning(w.planner, job) })
+				if w.trySubmitJobTask(job, func() {
+					handleRunning(w.planner, job)
+				}) {
+					accepted = append(accepted, job)
+				}
 			}
 			// skip others
 		}
 		return true
 	})
+
+	// Move accepted work to the back of the FIFO so a saturated bounded queue
+	// cannot select the same prefix on every planning cycle.
+	for _, job := range accepted {
+		p.runningQueue.Remove(job.Key())
+		p.runningQueue.Push(job, 0)
+	}
 }
 
 // removeTerminalJobs removes jobs that have failed

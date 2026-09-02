@@ -150,12 +150,13 @@ func (s *Server) StartGRPC(addr string) error {
 		return fmt.Errorf("resource manager init: %w", err)
 	}
 	s.planner = plannerimpl.NewPlanner(plannerimpl.PlannerConfig{
-		BatchClient: batchClient,
-		Provisioner: rm.Provisioner,
-		Store:       s.store,
-		PolicyType:  plannerimpl.PlanningPolicyType(s.cfg.PlanningPolicy),
-		WorkerCount: s.cfg.PlannerWorkerCount,
-		Injector:    s.injector,
+		BatchClient:     batchClient,
+		Provisioner:     rm.Provisioner,
+		Store:           s.store,
+		PolicyType:      plannerimpl.PlanningPolicyType(s.cfg.PlanningPolicy),
+		WorkerCount:     s.cfg.PlannerWorkerCount,
+		WorkerQueueSize: s.cfg.PlannerWorkerQueueSize,
+		Injector:        s.injector,
 	})
 	if err := s.planner.Recover(context.Background()); err != nil {
 		klog.Warningf("planner recovery failed (continuing without recovered jobs): %v", err)
@@ -235,7 +236,12 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 	}
 
 	// Register file proxy routes
-	fileHandler := handler.NewFileHandler(s.cfg.MetadataServiceURL, s.injector, s.store)
+	fileHandler := handler.NewFileHandler(
+		s.cfg.MetadataServiceURL,
+		s.cfg.MetadataFileUploadTimeout,
+		s.injector,
+		s.store,
+	)
 	fileHandler.RegisterRoutes(mux)
 
 	// Register the Kubernetes-backed ModelAdapter BFF.
@@ -248,10 +254,10 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 	s.auth.RegisterAuthRoutes(mux)
 
 	// Register frontend-consumed configuration.
-	if err := mux.HandlePath("GET", "/api/v1/config/job-limits", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+	if err := mux.HandlePath("GET", "/api/v1/config/job-capabilities", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(handler.JobLimitsConfig()); err != nil {
-			klog.Errorf("write job limits response: %v", err)
+		if err := json.NewEncoder(w).Encode(handler.JobCapabilitiesConfig(s.cfg.Provisioner, s.cfg.DevMode)); err != nil {
+			klog.Errorf("write job capabilities response: %v", err)
 		}
 	}); err != nil {
 		return err
@@ -284,6 +290,8 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 		httpHandler = staticFileMiddleware(s.cfg.StaticFilesDir, httpHandler)
 	}
 
+	// A server-level ReadTimeout would independently cap inbound file uploads.
+	// Keep it aligned with MetadataFileUploadTimeout if one is introduced.
 	s.httpServer = &http.Server{
 		Addr:    httpAddr,
 		Handler: httpHandler,

@@ -1015,6 +1015,62 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 			assert.Nil(t, errObj["code"])
 		}
 	})
+
+	t.Run("400 with nested upstream error body is not double-wrapped (#2578)", func(t *testing.T) {
+		s := &Server{gatewayClient: nil}
+		body := `{"error": {"message": "top_p must be in (0, 1], got 2.0.", "type": "BadRequestError", "param": "top_p", "code": 400}}`
+		// Provide an explicit-routing ctx so validateHTTPRouteStatus is skipped.
+		rctx := types.NewRoutingContext(context.Background(), routing.RouterLeastRequest, "m", "", "rid", "")
+		out := s.responseErrorProcessingWithHeaders(context.Background(), rctx, baseResp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders(), 400, "m", "rid", body)
+		ir := out.GetImmediateResponse()
+		if assert.NotNil(t, ir) {
+			assert.Equal(t, envoyTypePb.StatusCode(400), ir.GetStatus().GetCode())
+			var parsed map[string]any
+			require.NoError(t, json.Unmarshal([]byte(ir.GetBody()), &parsed))
+			errObj, ok := parsed["error"].(map[string]any)
+			require.True(t, ok, "expected nested error object, got: %s", ir.GetBody())
+			assert.Equal(t, "top_p must be in (0, 1], got 2.0.", errObj["message"])
+			assert.Equal(t, "BadRequestError", errObj["type"])
+			assert.Equal(t, "top_p", errObj["param"])
+			assert.EqualValues(t, 400, errObj["code"])
+		}
+	})
+
+	t.Run("400 with non-error body falls back to string wrap", func(t *testing.T) {
+		s := &Server{gatewayClient: nil}
+		rctx := types.NewRoutingContext(context.Background(), routing.RouterLeastRequest, "m", "", "rid", "")
+		out := s.responseErrorProcessingWithHeaders(context.Background(), rctx, nil, 400, "m", "rid", "plain text failure")
+		ir := out.GetImmediateResponse()
+		if assert.NotNil(t, ir) {
+			var parsed map[string]any
+			require.NoError(t, json.Unmarshal([]byte(ir.GetBody()), &parsed))
+			errObj := parsed["error"].(map[string]any)
+			assert.Equal(t, "plain text failure", errObj["message"])
+			assert.Equal(t, ErrorTypeInvalidRequest, errObj["type"])
+		}
+	})
+
+	// Header status wins over a semantic (string) body "code". The upstream body carries
+	// code:"invalid_api_key", but the gateway observed a 401 header status; the HTTP status
+	// must stay 401 and the string code is preserved verbatim in the body. Regression guard
+	// for the unified status-precedence rule.
+	t.Run("401 header status wins over semantic string body code", func(t *testing.T) {
+		s := &Server{gatewayClient: nil}
+		rctx := types.NewRoutingContext(context.Background(), routing.RouterLeastRequest, "m", "", "rid", "")
+		body := `{"error": {"message": "invalid api key", "type": "authentication_error", "param": null, "code": "invalid_api_key"}}`
+		out := s.responseErrorProcessingWithHeaders(context.Background(), rctx, nil, 401, "m", "rid", body)
+		ir := out.GetImmediateResponse()
+		if assert.NotNil(t, ir) {
+			assert.Equal(t, envoyTypePb.StatusCode(401), ir.GetStatus().GetCode())
+			var parsed map[string]any
+			require.NoError(t, json.Unmarshal([]byte(ir.GetBody()), &parsed))
+			errObj, ok := parsed["error"].(map[string]any)
+			require.True(t, ok, "expected nested error object, got: %s", ir.GetBody())
+			assert.Equal(t, "invalid api key", errObj["message"])
+			assert.Equal(t, "authentication_error", errObj["type"])
+			assert.Equal(t, "invalid_api_key", errObj["code"])
+		}
+	})
 }
 
 func Test_getMetricErr(t *testing.T) {
@@ -1141,6 +1197,88 @@ func TestHandleProcessingRequest_ResponseBody_ErrorFromPreviousStage_UsesErrorPr
 		assert.Equal(t, envoyTypePb.StatusCode(401), imm.GetStatus().GetCode())
 	}
 	// metricLabel should be set for response body processing
+	assert.Equal(t, gatewayRespBody, st.metricLabel)
+}
+
+// TestHandleProcessingRequest_Non200ResponseHeadersThenErrorBody is the end-to-end
+// reproduction for #2578: an upstream engine (vLLM / SGLang) returns a non-2xx status
+// with an OpenAI-style error body. The prior fix only normalized error bodies on the
+// 200 path (processLanguageResponse), so this non-200 path must normalize too,
+// otherwise the raw upstream JSON gets double-wrapped into error.message.
+func TestHandleProcessingRequest_Non200ResponseHeadersThenErrorBody(t *testing.T) {
+	testPod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+		Status: v1.PodStatus{
+			PodIP:      "1.2.3.4",
+			Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+		},
+	}
+	testCache := cache.NewWithPodsForTest([]*v1.Pod{testPod}, "test-model")
+	s := &Server{cache: testCache}
+
+	requestID := "req-2578"
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.RequestTime = time.Now()
+	routerCtx.SetTargetPod(testPod)
+
+	st := &processState{
+		ctx:       context.Background(),
+		routerCtx: routerCtx,
+		requestID: requestID,
+		model:     "test-model",
+		stream:    false,
+	}
+
+	// 1) Upstream returns :status 400.
+	headersReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseHeaders{
+			ResponseHeaders: &extProcPb.HttpHeaders{
+				Headers: &configPb.HeaderMap{
+					Headers: []*configPb.HeaderValue{
+						{Key: ":status", RawValue: []byte("400")},
+					},
+				},
+			},
+		},
+	}
+	resp, err := s.handleProcessingRequest(st, headersReq)
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, st.isRespError, "expected isRespError=true after non-200 response header")
+	assert.Equal(t, 400, st.respErrorCode)
+
+	// 2) Upstream error body arrives. This is the exact #2578 payload.
+	errorBody := `{"error": {"message": "top_p must be in (0, 1], got 2.0. (parameter=top_p, value=2.0)", "type": "BadRequestError", "param": "top_p", "code": 400}}`
+	bodyReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(errorBody),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, err = s.handleProcessingRequest(st, bodyReq)
+	assert.NoError(t, err)
+	if assert.NotNil(t, resp) {
+		imm := resp.GetImmediateResponse()
+		if assert.NotNil(t, imm, "expected ImmediateResponse for error path") {
+			assert.Equal(t, envoyTypePb.StatusCode(400), imm.GetStatus().GetCode())
+
+			var parsed map[string]any
+			require.NoError(t, json.Unmarshal([]byte(imm.GetBody()), &parsed))
+			errObj, ok := parsed["error"].(map[string]any)
+			require.True(t, ok, "expected nested error object, got: %s", imm.GetBody())
+
+			// The upstream message must NOT be re-wrapped into a stringified JSON.
+			assert.Equal(t, "top_p must be in (0, 1], got 2.0. (parameter=top_p, value=2.0)", errObj["message"])
+			assert.Equal(t, "BadRequestError", errObj["type"])
+			assert.Equal(t, "top_p", errObj["param"])
+			// code is preserved as the upstream integer 400 (rendered by normalizeUpstreamErrorBody).
+			assert.EqualValues(t, 400, errObj["code"])
+		}
+	}
 	assert.Equal(t, gatewayRespBody, st.metricLabel)
 }
 
@@ -1616,8 +1754,8 @@ func TestProcess_RecvEOF_DuringShutdown(t *testing.T) {
 // even if the client context is cancelled concurrently.
 func TestProcess_CompletedExitsLoop(t *testing.T) {
 	mc := &MockCache{}
-	// mock all funcs we need
-	mc.On("DoneRequestCount", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	// A successful response with usage data is finalized through
+	// DoneRequestTrace only; Process must not follow it with DoneRequestCount.
 	mc.On("AddRequestCount", mock.Anything, mock.Anything, mock.Anything).Return(int64(0))
 	mc.On("DoneRequestTrace", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 	mc.On("HasModel", mock.Anything).Return(true)
@@ -1762,6 +1900,45 @@ func TestModelInFlightTracking(t *testing.T) {
 	st.releaseModelInFlight() // idempotent
 	require.Len(t, gauges, 2)
 	require.Equal(t, "dec", gauges[1]["_dir"])
+}
+
+func TestModelInFlightTracking_LoraAdapter(t *testing.T) {
+	var gauges []map[string]string
+	originalIncFn := metrics.IncGaugeMetricFnForTest
+	originalDecFn := metrics.DecGaugeMetricFnForTest
+	defer func() {
+		metrics.IncGaugeMetricFnForTest = originalIncFn
+		metrics.DecGaugeMetricFnForTest = originalDecFn
+	}()
+	recordFn := func(dir string) func(name string, help string, labelNames []string, labelValues ...string) {
+		return func(name string, help string, labelNames []string, labelValues ...string) {
+			if name != metrics.GatewayModelInFlight {
+				return
+			}
+			labels := make(map[string]string, len(labelNames))
+			for i, ln := range labelNames {
+				labels[ln] = labelValues[i]
+			}
+			labels["_dir"] = dir
+			gauges = append(gauges, labels)
+		}
+	}
+	metrics.IncGaugeMetricFnForTest = recordFn("inc")
+	metrics.DecGaugeMetricFnForTest = recordFn("dec")
+
+	st := &processState{
+		model:     "hip-adapter",
+		routerCtx: &types.RoutingContext{Model: "hip-adapter", BaseModel: "qwen3-8b"},
+	}
+	st.trackModelInFlight()
+	require.Len(t, gauges, 1)
+	require.Equal(t, "qwen3-8b", gauges[0]["model"])
+	require.Equal(t, "hip-adapter", gauges[0]["lora_adapter"])
+
+	st.releaseModelInFlight()
+	require.Len(t, gauges, 2)
+	require.Equal(t, "qwen3-8b", gauges[1]["model"])
+	require.Equal(t, "hip-adapter", gauges[1]["lora_adapter"])
 }
 
 func TestModelInFlightTracking_ModelChange(t *testing.T) {

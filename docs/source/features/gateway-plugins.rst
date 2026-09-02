@@ -161,13 +161,14 @@ General load balancing
 * ``least-kv-cache``: routes to the pod with the smallest KV cache occupancy (least VRAM used).
 * ``least-gpu-cache``: routes to the pod with the lowest GPU cache utilization.
 * ``least-utilization``: routes to the pod with the lowest overall utilization score.
+* ``load-balance``: capacity-aware weighted least-request routing. Scores each pod as ``running_requests / drain_rate`` (pending time), where ``drain_rate`` is the observed request completion rate. Selects the pod with the lowest pending time, breaking ties using least combined GPU+CPU KV-cache usage (falling back to a random pick if cache metrics are unavailable for the tied pods). Falls back to uniform capacity (``drain_rate = 1``) when metrics are unavailable. Its load-imbalance gate, which restricts candidates to the least-loaded pods when load is severely skewed, is applied centrally by the gateway ahead of whichever strategy actually routes each request — not just when ``load-balance`` itself is selected (see ``pkg/plugins/gateway/ENV_VARS.md``).
 * ``throughput``: routes to the pod that has processed the fewest total weighted tokens, favoring underloaded pods.
 * ``power-of-two``: applies power-of-two-choices — randomly samples two pods and selects the better one.
 
 KV-cache aware
 ^^^^^^^^^^^^^^
 
-* ``prefix-cache``: routes to a pod that already holds a KV cache matching the request's prompt prefix, with load balancing and multi-turn conversation support.
+* ``prefix-cache``: routes to a pod that already holds a KV cache matching the request's prompt prefix, selecting the best prefix-matched pod within a configurable stddev threshold. Purely about prefix caching — it does not itself gate on cluster-wide load imbalance (the gateway applies that gate centrally ahead of it; see ``load-balance`` above). Supports two modes: standard (local hash table) and KV sync (real-time distributed index via ``AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true``).
 * ``prefix-cache-preble``: routes considering both prefix cache hits and pod load, based on `Preble: Efficient Distributed Prompt Scheduling for LLM Serving <https://arxiv.org/abs/2407.00023>`_.
 
 Fairness
@@ -211,6 +212,8 @@ Specialized
   .. note::
       ``x-session-id`` encodes only network location. It is not a security token and must not be used for authentication or authorization.
 
+      Callers can instead send a stable, opaque ``x-aibrix-session-key`` value. The gateway consistently maps that value to a ready pod without exposing a backend address. The key is only used when ``routing-strategy`` is ``session-affinity`` and must not be used for authentication or authorization.
+
   .. code-block:: bash
 
       curl -v http://${ENDPOINT}/v1/chat/completions \
@@ -221,6 +224,20 @@ Specialized
           "messages": [{"role": "user", "content": "Say this is a test!"}],
           "temperature": 0.7
       }'
+
+Auto-blended capacity awareness
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+This auto-blend is **enabled by default** — no opt-in is required. Every strategy above, except
+the exclusive ones (``pd``, ``slo``/``slo-*``) and an explicit standalone ``load-balance``
+selection, silently gets ``load-balance``'s capacity-aware scoring blended in behind the scenes —
+and ``least-request`` too, when the selected strategy doesn't already route by request count, to
+keep multi-port/data-parallel pod routing working under the blend. The caller never sees this:
+``ctx.Algorithm``, response headers, and ``Validate()`` all still reflect exactly the strategy
+that was requested. This keeps any single strategy from steering traffic at an already-hot pod
+even outside the load-imbalance gate described above. Both blend weights default to ``1`` (see
+``pkg/plugins/gateway/ENV_VARS.md``); set ``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT=0`` to
+disable it.
 
 To override the strategy for a single request, pass the ``routing-strategy`` header with any of the values above:
 
@@ -305,20 +322,53 @@ Target and General Headers
 
 .. list-table::
    :header-rows: 1
-   :widths: 25 75
+   :widths: 25 20 55
 
    * - Header Name
+     - Direction
      - Description
    * - ``request-id``
+     - Response
      - Unique request ID associated with the client request. Useful for correlating logs.
    * - ``x-went-into-req-headers``
+     - Backend request, Response
      - Indicates whether request headers were processed correctly. Used for debugging header parsing issues.
    * - ``target-pod``
-     - The destination pod selected by the routing algorithm. Useful for verifying routing decisions.
+     - Backend request, Response
+     - Identifies the destination selected by the routing algorithm: the backend request receives its ``IP:port`` address, while the response reports its pod name.
+   * - ``target-pod-ip``
+     - Response
+     - ``IP:port`` address of the destination pod selected by the routing algorithm.
    * - ``routing-strategy``
-     - The routing strategy applied to this request.
+     - Request, Backend request, Response
+     - Selects the routing strategy for the request, forwards the applied strategy to the backend, and reports it in the response.
    * - ``external-filter``
+     - Request
      - Label selector expression used to further filter candidate pods before routing.
+   * - ``model``
+     - Backend request
+     - Model name injected into the backend request when no explicit routing strategy is selected.
+   * - ``config-profile``
+     - Request
+     - Selects a model configuration profile for the request.
+   * - ``x-aibrix-config-profile``
+     - Response
+     - Reports the concrete profile selected when ``config-profile`` is ``auto``.
+   * - ``x-session-id``
+     - Request, Response
+     - Session identifier used by ``session-affinity`` routing. The response value should be sent on subsequent requests to retain affinity.
+   * - ``x-aibrix-session-key``
+     - Request
+     - Caller-owned opaque session key used by ``session-affinity`` routing.
+   * - ``traceparent``
+     - Request, Backend request
+     - W3C Trace Context propagated through requests initiated by the gateway, including prefill-decode routing.
+   * - ``prefill-target-pod``
+     - Response
+     - Name of the prefill pod selected by ``pd`` routing.
+   * - ``prefill-target-pod-ip``
+     - Response
+     - IP address of the prefill pod selected by ``pd`` routing.
 
 Routing and Error Debugging Headers
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -533,18 +583,61 @@ Add the ``model.aibrix.ai/config`` annotation to the pod template of your ``Depl
           "defaultProfile": "default",
           "profiles": {
             "default": {
-              "routingStrategy": "least-latency",
-              "requestsPerSecond": 100
+              "routingStrategy": "least-request",
+              "requestsPerSecond": 200
+            },
+            "large-input": {
+              "routingStrategy": "pd",
+              "routingConfig": {
+                "promptLenBucketMinLength": 8192,
+                "promptTokensGte": 8192,
+                "prefillScorePolicy": "prefix_cache",
+                "decodeScorePolicy": "load_balancing"
+              },
+              "requestsPerSecond": 50
+            },
+            "cache-friendly": {
+              "routingStrategy": "least-kv-cache",
+              "requestsPerSecond": 150
+            },
+            "offline-generation": {
+              "routingStrategy": "throughput",
+              "routingConfig": {
+                "maxTokensGte": 2048
+              }
+            }
+          }
+        }
+
+Optionally pin a single routing strategy model-wide so it cannot be overridden at
+request time (see Routing strategy priority below). ``lockedRoutingStrategy`` only
+locks the strategy: the remaining per-profile knobs (``requestsPerSecond``,
+``routingConfig``) still follow the profile selected by ``config-profile``:
+
+.. code-block:: yaml
+
+    annotations:
+      model.aibrix.ai/config: |
+        {
+          "lockedRoutingStrategy": "pd",
+          "defaultProfile": "default",
+          "profiles": {
+            "default": {
+              "routingStrategy": "pd"
             },
             "batch": {
-              "routingStrategy": "throughput"
+              "routingStrategy": "random",
+              "requestsPerSecond": 50
             }
           }
         }
 
 **Selecting a profile at request time**
 
-Add the ``config-profile`` header. If the header is absent, the ``defaultProfile`` is used:
+Two request headers drive the config at request time:
+
+* ``config-profile`` selects a named profile; when absent, ``defaultProfile`` (or ``"default"``) is used. ``config-profile: auto`` asks the gateway to select a concrete profile from request-local hints in each profile's ``routingConfig``.
+* ``routing-strategy`` overrides the selected profile's ``routingStrategy``, unless ``lockedRoutingStrategy`` is set (see Routing strategy priority below).
 
 .. code-block:: bash
 
@@ -553,6 +646,29 @@ Add the ``config-profile`` header. If the header is absent, the ``defaultProfile
       -H "config-profile: batch" \
       -H "Content-Type: application/json" \
       -d '{"model": "my-model", "messages": [{"role": "user", "content": "Summarize..."}]}'
+
+.. code-block:: bash
+
+    # Let the gateway resolve a concrete profile from routingConfig hints
+    curl http://${ENDPOINT}/v1/chat/completions \
+      -H "config-profile: auto" \
+      -H "Content-Type: application/json" \
+      -d '{"model": "my-model", "messages": [{"role": "user", "content": "Summarize..."}], "max_tokens": 4096}'
+
+**Top-level fields**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Field
+     - Description
+   * - ``lockedRoutingStrategy``
+     - Pins a single routing strategy model-wide. When set, it takes precedence over the ``routing-strategy`` header, the per-profile ``routingStrategy`` and the ``ROUTING_ALGORITHM`` env. The remaining per-profile knobs (``requestsPerSecond``, ``routingConfig``) are still applied normally.
+   * - ``defaultProfile``
+     - Profile name used when no ``config-profile`` header is sent. Falls back to ``"default"`` when omitted.
+   * - ``profiles``
+     - Map of named profiles, each carrying the per-profile fields below.
 
 **Profile fields**
 
@@ -567,15 +683,24 @@ Add the ``config-profile`` header. If the header is absent, the ``defaultProfile
    * - ``requestsPerSecond``
      - Model-level RPS cap for this profile. Requests that exceed the limit are rejected with HTTP 429. Omit or set to ``0`` for no limit. See `Production Model Deployments <../production/model-deployment.html>`_ for details.
    * - ``routingConfig``
-     - Algorithm-specific settings as a nested JSON object. Currently used by the ``pd`` strategy for prompt-length bucketing and standard inference pod configuration. See `Prefill-Decode Disaggregation <pd-disaggregation.html>`_ for details.
+     - Algorithm-specific settings as a nested JSON object. ``config-profile: auto`` also reads request-local selection hints from this object. Currently supported auto-selection hints are ``promptTokensGte``, ``promptTokensLt``, ``maxTokensGte`` and ``maxTokensLt``. Existing strategy-specific fields, such as ``promptLenBucketMinLength`` for ``pd``, remain available. See `Prefill-Decode Disaggregation <pd-disaggregation.html>`_ for details.
+
+When ``config-profile: auto`` is used, the gateway evaluates the supported
+request-local hints inside each profile's ``routingConfig``. A profile matches
+only when all of its supported hints match the request. If no profile matches,
+the gateway uses ``defaultProfile`` (or ``"default"``). ``promptTokens*`` uses
+the gateway's existing prompt text extraction and local token estimation.
+``maxTokens*`` reads ``max_tokens`` first, then ``max_completion_tokens`` when
+``max_tokens`` is absent.
 
 **Routing strategy priority** (highest to lowest):
 
-1. ``routing-strategy`` request header — always wins, even if a profile is active.
-2. ``routingStrategy`` from the resolved config profile.
-3. ``ROUTING_ALGORITHM`` environment variable on the gateway plugin.
+1. ``lockedRoutingStrategy`` pinned model-wide in the config — always wins when set, even over the ``routing-strategy`` header.
+2. ``routing-strategy`` request header.
+3. ``routingStrategy`` from the resolved profile. The resolved profile comes from the concrete ``config-profile`` header, ``config-profile: auto`` routingConfig hints, or ``defaultProfile``.
+4. ``ROUTING_ALGORITHM`` environment variable on the gateway plugin.
 
-**Backward compatibility**: if a pod has no ``model.aibrix.ai/config`` annotation, the gateway falls back to the ``model.aibrix.ai/routing-strategy`` pod label and the ``ROUTING_ALGORITHM`` env. No migration is required for existing deployments.
+**Backward compatibility**: if a pod has no ``model.aibrix.ai/config`` annotation, the gateway falls back to the ``routing-strategy`` request header and then the ``ROUTING_ALGORITHM`` env (steps 2 and 4 above). No migration is required for existing deployments.
 
 .. _prometheus-api-access:
 

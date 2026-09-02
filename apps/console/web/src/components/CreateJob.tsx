@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import {
   createJob,
-  getJobLimits,
+  getJobCapabilities,
   listFiles,
   uploadFile,
   listModels as apiListModels,
@@ -24,7 +24,7 @@ import {
 } from '../utils/api';
 import type {
   FileInfo,
-  JobLimits,
+  JobCapabilities,
   ModelDeploymentTemplate,
   JobClientConfig,
   JobClientRetryPolicy,
@@ -56,6 +56,10 @@ import {
   getCreateJobReadiness,
 } from '../utils/batchProduct';
 import { Model } from '../data/mockData';
+import {
+  getCreateJobResourcePlugin,
+  type CreateJobResourceConfig,
+} from './createJobResourceConfig';
 
 interface CreateJobProps {
   onBack: () => void;
@@ -88,6 +92,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
   const [n, setN] = useState('');
   const [replicas, setReplicas] = useState('1');
   const [completionWindow, setCompletionWindow] = useState<CompletionWindowOption>(DEFAULT_COMPLETION_WINDOW);
+  const [resourceConfig, setResourceConfig] = useState<CreateJobResourceConfig>({});
   const [selectedEndpoint, setSelectedEndpoint] = useState('');
 
   // Client settings (extra_body.aibrix.client). All optional; blank = use
@@ -103,8 +108,8 @@ export function CreateJob({ onBack }: CreateJobProps) {
   const [models, setModels] = useState<Model[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelSearchQuery, setModelSearchQuery] = useState('');
-  const [jobLimits, setJobLimits] = useState<JobLimits | null>(null);
-  const [jobLimitsError, setJobLimitsError] = useState<string | null>(null);
+  const [jobCapabilities, setJobCapabilities] = useState<JobCapabilities | null>(null);
+  const [jobCapabilitiesError, setJobCapabilitiesError] = useState<string | null>(null);
 
   // Template selection
   const [templates, setTemplates] = useState<ModelDeploymentTemplate[]>([]);
@@ -136,7 +141,9 @@ export function CreateJob({ onBack }: CreateJobProps) {
   const [paramErrors, setParamErrors] = useState<Record<string, string>>({});
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const replicaLimits = jobLimits?.resourceRequest;
+  const replicaLimits = jobCapabilities?.resourceRequest;
+  const resourcePlugin = getCreateJobResourcePlugin(jobCapabilities?.provider ?? '');
+  const ResourceFields = resourcePlugin?.Fields;
 
   useEffect(() => {
     apiListModels().then(m => {
@@ -149,14 +156,14 @@ export function CreateJob({ onBack }: CreateJobProps) {
   }, []);
 
   useEffect(() => {
-    getJobLimits()
-      .then((limits) => {
-        setJobLimits(limits);
-        setJobLimitsError(null);
+    getJobCapabilities()
+      .then((capabilities) => {
+        setJobCapabilities(capabilities);
+        setJobCapabilitiesError(null);
       })
       .catch((err) => {
-        setJobLimits(null);
-        setJobLimitsError(err instanceof Error ? err.message : String(err));
+        setJobCapabilities(null);
+        setJobCapabilitiesError(err instanceof Error ? err.message : String(err));
       });
   }, []);
 
@@ -468,9 +475,9 @@ export function CreateJob({ onBack }: CreateJobProps) {
     selectedExistingFileId: selectedExistingFile?.id ?? '',
     hasInferenceOverrides,
   });
-  const canSubmit = readiness.canSubmit && jobLimits !== null;
-  const blockedReason = jobLimits === null
-    ? (jobLimitsError ? `Failed to load job limits: ${jobLimitsError}` : 'Loading job limits...')
+  const canSubmit = readiness.canSubmit && jobCapabilities !== null;
+  const blockedReason = jobCapabilities === null
+    ? (jobCapabilitiesError ? `Failed to load job capabilities: ${jobCapabilitiesError}` : 'Loading job capabilities...')
     : readiness.reason;
   const canContinueDataset = selectedExistingFile != null || (selectedFile != null && (validation?.valid ?? false));
   const selectedModelLabel = formatModelSelectionLabel(selectedModel, selectedServingName);
@@ -526,6 +533,10 @@ export function CreateJob({ onBack }: CreateJobProps) {
           selectedEndpoint,
           selectedTemplate,
         }) as JobEndpoint;
+      const providerConfig = resourcePlugin?.toProviderConfig?.(
+        resourceConfig,
+        completionWindow,
+      ) ?? {};
 
       // maxTokens/temperature/topP/n are baked into the JSONL via
       // applyBatchOverrides above; no need to forward them to BFF.
@@ -539,6 +550,9 @@ export function CreateJob({ onBack }: CreateJobProps) {
         modelId: selectedModelId || undefined,
         resourceRequest: {
           replicas: parseNumber(replicas) ?? 1,
+          providerConfig: Object.keys(providerConfig).length > 0
+            ? providerConfig
+            : undefined,
         },
         client: buildClientConfig(),
       });
@@ -992,7 +1006,13 @@ export function CreateJob({ onBack }: CreateJobProps) {
                   <label className="block text-sm mb-2">Completion window</label>
                   <select
                     value={completionWindow}
-                    onChange={(e) => setCompletionWindow(e.target.value as CompletionWindowOption)}
+                    onChange={(e) => {
+                      const nextCompletionWindow = e.target.value as CompletionWindowOption;
+                      setCompletionWindow(nextCompletionWindow);
+                      setResourceConfig(current => (
+                        resourcePlugin?.normalize?.(current, nextCompletionWindow) ?? current
+                      ));
+                    }}
                     className="w-full px-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 bg-white"
                   >
                     {COMPLETION_WINDOW_OPTIONS.map((option) => (
@@ -1015,9 +1035,9 @@ export function CreateJob({ onBack }: CreateJobProps) {
                   <p className="text-xs text-gray-400 mb-4">
                     Choose how many dedicated workers this batch should provision.
                   </p>
-                  {jobLimitsError && (
+                  {jobCapabilitiesError && (
                     <p className="text-xs text-red-500 mb-4">
-                      Failed to load job limits: {jobLimitsError}
+                      Failed to load job capabilities: {jobCapabilitiesError}
                     </p>
                   )}
 
@@ -1040,6 +1060,13 @@ export function CreateJob({ onBack }: CreateJobProps) {
                         <p className="text-xs text-red-500 mt-1">{paramErrors.replicas}</p>
                       )}
                     </div>
+                    {ResourceFields && (
+                      <ResourceFields
+                        completionWindow={completionWindow}
+                        value={resourceConfig}
+                        onChange={setResourceConfig}
+                      />
+                    )}
                   </div>
                 </div>
 

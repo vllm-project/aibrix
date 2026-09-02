@@ -21,7 +21,7 @@ or job-progress dependency.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import floor
+from math import ceil, floor
 from time import monotonic
 from typing import Any, Optional, Protocol, runtime_checkable
 
@@ -29,6 +29,9 @@ from aibrix.batch.client.errors import InferenceError
 
 _OVERLOAD_STATUSES = {408, 429, 500, 502, 503, 504}
 _CLIENT_ERROR_STATUSES = {400, 401, 403, 404, 422}
+DEFAULT_ADAPTIVE_HEALTHY_WINDOW = 8
+DEFAULT_ADAPTIVE_ADDITIVE_INCREASE = 1
+_PROBE_INCREASE_RATIO = 0.25
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,11 +82,16 @@ class LLMAdaptiveConcurrencySettings:
     Absolute targets are optional because many backends do not expose TTFT/TPOT
     yet. When absent, the controller still reacts to overload errors and can use
     EWMA-relative TTFT/TPOT slowdowns once those metrics are present.
+
+    ``healthy_window`` is the number of healthy completions required for each
+    growth step. During initial probing, that step is the greater of
+    ``additive_increase`` and 25% of the current limit. The first decrease ends
+    probing permanently, after which ``additive_increase`` is the fixed step.
     """
 
     min_limit: int = 1
-    healthy_window: int = 8
-    additive_increase: int = 1
+    healthy_window: int = DEFAULT_ADAPTIVE_HEALTHY_WINDOW
+    additive_increase: int = DEFAULT_ADAPTIVE_ADDITIVE_INCREASE
     overload_decrease_factor: float = 0.9
     overload_error_rate_threshold: float = 0.1
     slow_decrease_factor: float = 0.8
@@ -128,6 +136,8 @@ class LLMAdaptiveConcurrencySettings:
 class LLMAdaptiveConcurrencyController:
     """Windowed AIMD controller for LLM serving backends.
 
+    Capacity probing uses bounded proportional increases until the first
+    decrease, then switches to additive congestion avoidance.
     Capacity errors are evaluated once per current-limit sample window so a
     burst of failures from the same in-flight cohort causes at most one
     decrease.
@@ -145,6 +155,7 @@ class LLMAdaptiveConcurrencyController:
         self._limit = min(
             max(int(initial_limit), self._settings.min_limit), self._max_limit
         )
+        self._probing = True
         self._healthy = 0
         self._ttft_ewma: Optional[float] = None
         self._tpot_ewma: Optional[float] = None
@@ -195,9 +206,7 @@ class LLMAdaptiveConcurrencyController:
         self._healthy += 1
         if self._healthy >= self._settings.healthy_window:
             self._healthy = 0
-            self._limit = min(
-                self._max_limit, self._limit + self._settings.additive_increase
-            )
+            self._increase()
 
     def _is_capacity_error(self, outcome: ConcurrencyOutcome) -> bool:
         if outcome.success:
@@ -282,11 +291,18 @@ class LLMAdaptiveConcurrencyController:
         return alpha * value + (1 - alpha) * current
 
     def _decrease(self, factor: float) -> None:
+        self._probing = False
         self._healthy = 0
         next_limit = max(self._settings.min_limit, floor(self._limit * factor))
         if next_limit >= self._limit and self._limit > self._settings.min_limit:
             next_limit = self._limit - 1
         self._limit = next_limit
+
+    def _increase(self) -> None:
+        increase = self._settings.additive_increase
+        if self._probing:
+            increase = max(increase, ceil(self._limit * _PROBE_INCREASE_RATIO))
+        self._limit = min(self._max_limit, self._limit + increase)
 
     def _observe_overload_window(self, capacity_error: bool) -> Optional[int]:
         if self._overload_samples == 0:

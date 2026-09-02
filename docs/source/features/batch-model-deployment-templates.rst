@@ -312,6 +312,8 @@ The MDS API accepts this AIBrix extension block:
          "max_concurrency": 256,
          "adaptive_concurrency": true,
          "adaptive_max_factor": 16,
+         "adaptive_healthy_window": 2,
+         "adaptive_additive_increase": 4,
          "retry_policy": {
            "max_retries": 5,
            "base_delay_seconds": 2,
@@ -323,13 +325,22 @@ The MDS API accepts this AIBrix extension block:
    }
 
 ``client`` controls per-job smart-client behavior. ``max_concurrency`` is an
-absolute job-global in-flight cap, hard limited to 256 (requests above are
+absolute job-global in-flight cap, hard limited to 1024 (requests above are
 rejected). If adaptive concurrency is enabled, the cap limits adaptive growth;
 if adaptive concurrency is disabled, it becomes the fixed concurrency. Omitted
 fields fall back to metadata-service environment
-defaults and then built-in defaults. This public block intentionally does not
-expose telemetry interval, QPS, request timeout, or fine-grained adaptive
-controller internals.
+defaults and then built-in defaults. ``adaptive_healthy_window`` is the number
+of healthy completions required for each growth step (default 8).
+During initial capacity probing, the controller increases by the greater of
+``adaptive_additive_increase`` and 25% of the current limit. After the first
+overload or latency-driven decrease, probing ends permanently and the
+controller uses ``adaptive_additive_increase`` as the fixed AIMD
+congestion-avoidance step (default 1). Smaller windows and larger increases
+ramp up faster but can overshoot backend capacity. Operators can set their
+process-wide fallbacks with
+``AIBRIX_BATCH_ADAPTIVE_HEALTHY_WINDOW`` and
+``AIBRIX_BATCH_ADAPTIVE_ADDITIVE_INCREASE``. Other fine-grained adaptive
+controller internals remain private.
 
 The known upstream runtime targets are:
 

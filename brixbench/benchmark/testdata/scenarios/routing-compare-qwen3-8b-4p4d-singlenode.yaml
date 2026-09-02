@@ -1,0 +1,89 @@
+# Sequential multi-provider comparison: AIBrix → Dynamo → llm-d.
+# Shared workload: single-node 4p4d @ 192.168.0.7, RATE=8 and 16, PROMPTS=1000,
+# prefix_repetition (prefix=6000, suffix=2000, output=1024, concurrency=32, seed=111).
+#
+# Run with:
+#   BENCHMARK_PUBLISH_RESULTS=true BENCHMARK_CLEANUP_AFTER_TEST=true \
+#     go test -v ./benchmark -run TestAIBrixBenchmarkSuite \
+#     -scenario testdata/scenarios/routing-compare-qwen3-8b-4p4d-singlenode.yaml -count=1
+Scenario: routing-compare-qwen3-8b-4p4d-singlenode
+Tests:
+- name: aibrix-pd-4p4d-singlenode-r8
+  provider: aibrix
+  fullstack: false
+  version: v0.6.0
+  gateway:
+    image:
+      baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+      outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+    env:
+      ROUTING_ALGORITHM: pd
+      AIBRIX_PREFIX_CACHE_BLOCK_SIZE: 512
+    resources:
+    - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-gateway-resources.yaml
+  engine:
+    type: vllm
+    manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p4d-singlenode.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p4d-singlenode-r8-p1000.yaml
+
+- name: aibrix-pd-4p4d-singlenode-r16
+  provider: aibrix
+  fullstack: false
+  version: v0.6.0
+  gateway:
+    image:
+      baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+      outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+    env:
+      ROUTING_ALGORITHM: pd
+      AIBRIX_PREFIX_CACHE_BLOCK_SIZE: 512
+    resources:
+    - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-gateway-resources.yaml
+  engine:
+    type: vllm
+    manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p4d-singlenode.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p4d-singlenode-r16-p1000.yaml
+
+- name: dynamo-v1.2.1-qwen3-8b-round-robin-4p4d-singlenode-r8
+  provider: dynamo
+  version: 1.2.1
+  platform:
+    valuesFile: testdata/deployments/dynamo/platform-aibrix-mirror-dev-operator.yaml
+  engine:
+    type: vllm
+    manifest: testdata/deployments/dynamo/qwen3-8b-round-robin-4p4d-singlenode.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p4d-singlenode-r8-p1000.yaml
+
+- name: dynamo-v1.2.1-qwen3-8b-round-robin-4p4d-singlenode-r16
+  provider: dynamo
+  version: 1.2.1
+  platform:
+    valuesFile: testdata/deployments/dynamo/platform-aibrix-mirror-dev-operator.yaml
+  engine:
+    type: vllm
+    manifest: testdata/deployments/dynamo/qwen3-8b-round-robin-4p4d-singlenode.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p4d-singlenode-r16-p1000.yaml
+
+- name: llmd-pd-4p4d-singlenode-r8
+  provider: llmd
+  version: v0.8.1
+  controlplane:
+  - testdata/deployments/llmd/router/base-values.yaml
+  - testdata/deployments/llmd/router/policies/pd-disaggregation-official.yaml
+  engine:
+    type: vllm
+    manifest: testdata/deployments/llmd/models/qwen3-8b-pd-4p4d-singlenode.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p4d-singlenode-r8-p1000.yaml
+
+- name: llmd-pd-4p4d-singlenode-r16
+  provider: llmd
+  version: v0.8.1
+  controlplane:
+  - testdata/deployments/llmd/router/base-values.yaml
+  - testdata/deployments/llmd/router/policies/pd-disaggregation-official.yaml
+  engine:
+    type: vllm
+    manifest: testdata/deployments/llmd/models/qwen3-8b-pd-4p4d-singlenode.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p4d-singlenode-r16-p1000.yaml

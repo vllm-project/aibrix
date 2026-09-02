@@ -26,6 +26,16 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
+func int64Ptr(v int64) *int64 {
+	return &v
+}
+
+func intPtr(v int) *int {
+	return &v
+}
+
+const randomRoutingStrategy = "random"
+
 func TestParseModelConfig(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -47,6 +57,10 @@ func TestParseModelConfig(t *testing.T) {
 		{
 			name: "with routingConfig",
 			json: `{"profiles":{"default":{"routingStrategy":"pd","routingConfig":{"key":"value"}}}}`,
+		},
+		{
+			name: "with auto profile hints in routingConfig",
+			json: `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"random"},"large":{"routingStrategy":"pd","routingConfig":{"promptTokensGte":8192}}}}`,
 		},
 		{
 			name:    "invalid json",
@@ -74,6 +88,179 @@ func TestParseModelConfig(t *testing.T) {
 			}
 			if tt.json != "" && cfg == nil {
 				t.Errorf("ParseModelConfig() expected config for non-empty input")
+			}
+		})
+	}
+}
+
+func TestResolveConfigForRequestAutoProfileRoutingConfigHints(t *testing.T) {
+	configJSON := `{
+		"defaultProfile":"default",
+		"profiles":{
+			"default":{"routingStrategy":"random"},
+			"large-input":{"routingStrategy":"pd","routingConfig":{"promptTokensGte":8192}},
+			"offline-generation":{"routingStrategy":"throughput","routingConfig":{"maxTokensGte":2048}},
+			"combined":{"routingStrategy":"least-request","routingConfig":{"promptTokensGte":8192,"maxTokensGte":2048}},
+			"broad-short-input":{"routingStrategy":"least-request","routingConfig":{"promptTokensLt":2048}},
+			"narrow-short-input":{"routingStrategy":"least-latency","routingConfig":{"promptTokensLt":512}},
+			"broad-short-output":{"routingStrategy":"least-request","routingConfig":{"maxTokensLt":4096}},
+			"narrow-short-output":{"routingStrategy":"random","routingConfig":{"maxTokensLt":1024}}
+		}
+	}`
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "pod1",
+			Namespace:   "default",
+			Annotations: map[string]string{constants.ModelAnnoConfig: configJSON},
+		},
+	}
+
+	tests := []struct {
+		name          string
+		headerProfile string
+		features      RequestFeatures
+		wantProfile   string
+		wantName      string
+	}{
+		{
+			name:          "concrete profile bypasses auto selection",
+			headerProfile: "offline-generation",
+			features:      RequestFeatures{PromptTokens: intPtr(9000)},
+			wantProfile:   "throughput",
+			wantName:      "offline-generation",
+		},
+		{
+			name:          "auto selects prompt token profile",
+			headerProfile: "auto",
+			features:      RequestFeatures{PromptTokens: intPtr(9000)},
+			wantProfile:   "pd",
+			wantName:      "large-input",
+		},
+		{
+			name:          "auto selects max token profile",
+			headerProfile: "auto",
+			features:      RequestFeatures{MaxTokens: int64Ptr(2048)},
+			wantProfile:   "throughput",
+			wantName:      "offline-generation",
+		},
+		{
+			name:          "auto selects more specific matching profile",
+			headerProfile: "auto",
+			features:      RequestFeatures{PromptTokens: intPtr(9000), MaxTokens: int64Ptr(2048)},
+			wantProfile:   "least-request",
+			wantName:      "combined",
+		},
+		{
+			name:          "auto falls back when no profile hints match",
+			headerProfile: "auto",
+			features:      RequestFeatures{PromptTokens: intPtr(2048)},
+			wantProfile:   randomRoutingStrategy,
+			wantName:      "default",
+		},
+		{
+			name:          "auto selects narrower prompt token upper bound",
+			headerProfile: "auto",
+			features:      RequestFeatures{PromptTokens: intPtr(100)},
+			wantProfile:   "least-latency",
+			wantName:      "narrow-short-input",
+		},
+		{
+			name:          "auto selects narrower max token upper bound",
+			headerProfile: "auto",
+			features:      RequestFeatures{MaxTokens: int64Ptr(512)},
+			wantProfile:   randomRoutingStrategy,
+			wantName:      "narrow-short-output",
+		},
+		{
+			name:          "auto does not match prompt token hint when prompt tokens are unknown",
+			headerProfile: "auto",
+			features:      RequestFeatures{},
+			wantProfile:   randomRoutingStrategy,
+			wantName:      "default",
+		},
+		{
+			name:          "case insensitive auto value",
+			headerProfile: " AUTO ",
+			features:      RequestFeatures{PromptTokens: intPtr(9000)},
+			wantProfile:   "pd",
+			wantName:      "large-input",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			profile, name, locked := ResolveConfigForRequest([]*v1.Pod{pod}, tt.headerProfile, tt.features)
+			if profile == nil {
+				t.Fatal("ResolveConfigForRequest() profile = nil")
+			}
+			if profile.RoutingStrategy != tt.wantProfile {
+				t.Errorf("ResolveConfigForRequest().RoutingStrategy = %s, want %s", profile.RoutingStrategy, tt.wantProfile)
+			}
+			if name != tt.wantName {
+				t.Errorf("ResolveConfigForRequest() name = %q, want %q", name, tt.wantName)
+			}
+			if locked != "" {
+				t.Errorf("ResolveConfigForRequest() locked = %q, want empty", locked)
+			}
+		})
+	}
+}
+
+func TestResolveConfigForRequestConcreteProfileFallbackName(t *testing.T) {
+	configJSON := `{
+		"defaultProfile":"default",
+		"profiles":{
+			"default":{"routingStrategy":"random"},
+			"pd":{"routingStrategy":"pd"}
+		}
+	}`
+	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{constants.ModelAnnoConfig: configJSON}}}
+
+	profile, name, _ := ResolveConfigForRequest([]*v1.Pod{pod}, "missing", RequestFeatures{})
+	if profile == nil {
+		t.Fatal("ResolveConfigForRequest() profile = nil")
+	}
+	if profile.RoutingStrategy != randomRoutingStrategy {
+		t.Errorf("ResolveConfigForRequest().RoutingStrategy = %s, want %s", profile.RoutingStrategy, randomRoutingStrategy)
+	}
+	if name != "default" {
+		t.Errorf("ResolveConfigForRequest() name = %q, want default", name)
+	}
+}
+
+func TestResolveConfigForRequestAutoFallbacks(t *testing.T) {
+	tests := []struct {
+		name        string
+		configJSON  string
+		wantProfile string
+		wantName    string
+	}{
+		{
+			name:        "missing auto selection hints use default profile",
+			configJSON:  `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"random"},"pd":{"routingStrategy":"pd"}}}`,
+			wantProfile: randomRoutingStrategy,
+			wantName:    "default",
+		},
+		{
+			name:        "invalid routingConfig hint is ignored",
+			configJSON:  `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"random"},"pd":{"routingStrategy":"pd","routingConfig":"invalid"}}}`,
+			wantProfile: randomRoutingStrategy,
+			wantName:    "default",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{constants.ModelAnnoConfig: tt.configJSON}}}
+			profile, name, _ := ResolveConfigForRequest([]*v1.Pod{pod}, "auto", RequestFeatures{PromptTokens: intPtr(2)})
+			if profile == nil {
+				t.Fatal("ResolveConfigForRequest() profile = nil")
+			}
+			if profile.RoutingStrategy != tt.wantProfile {
+				t.Errorf("ResolveConfigForRequest().RoutingStrategy = %s, want %s", profile.RoutingStrategy, tt.wantProfile)
+			}
+			if name != tt.wantName {
+				t.Errorf("ResolveConfigForRequest() name = %q, want %q", name, tt.wantName)
 			}
 		})
 	}
@@ -206,47 +393,63 @@ func TestParseModelConfigWithoutRoutingConfig(t *testing.T) {
 	}
 }
 
-func TestResolveProfile(t *testing.T) {
-	configJSON := `{"defaultProfile":"pd","profiles":{"default":{"routingStrategy":"random","routingConfig":{"promptLenBucketMinLength":0,"promptLenBucketMaxLength":4096}},"pd":{"routingStrategy":"pd","routingConfig":{"promptLenBucketMinLength":0,"promptLenBucketMaxLength":2048}}}}`
-
+func TestResolveConfig(t *testing.T) {
 	podWithAnno := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "pod1",
 			Namespace:   "default",
-			Annotations: map[string]string{constants.ModelAnnoConfig: configJSON},
+			Annotations: map[string]string{constants.ModelAnnoConfig: `{"defaultProfile":"pd","profiles":{"default":{"routingStrategy":"random"},"pd":{"routingStrategy":"pd"}}}`},
 		},
 	}
-	podNoAnno := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "default"},
+	podWithLock := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "pod2",
+			Namespace:   "default",
+			Annotations: map[string]string{constants.ModelAnnoConfig: `{"lockedRoutingStrategy":"pd","profiles":{"burst":{"routingStrategy":"random"}}}`},
+		},
 	}
+	podWithBoth := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "pod3",
+			Namespace:   "default",
+			Annotations: map[string]string{constants.ModelAnnoConfig: `{"lockedRoutingStrategy":"pd","defaultProfile":"default","profiles":{"default":{"routingStrategy":"random"}}}`},
+		},
+	}
+	podNoAnno := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod4", Namespace: "default"}}
+	podInvalid := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod5", Namespace: "default", Annotations: map[string]string{constants.ModelAnnoConfig: `{`}}}
 
 	tests := []struct {
 		name          string
 		pods          []*v1.Pod
 		headerProfile string
 		wantProfile   string
+		wantLocked    string
 	}{
-		{"no pods", nil, "", ""},
-		{"pods without anno", []*v1.Pod{podNoAnno}, "", ""},
-		{"pods with anno, no header", []*v1.Pod{podWithAnno}, "", "pd"},
-		{"pods with anno, header pd", []*v1.Pod{podWithAnno}, "pd", "pd"},
-		{"pods with anno, header default", []*v1.Pod{podWithAnno}, "default", "random"},
+		{"no pods", nil, "", "", ""},
+		{"pod without annotation", []*v1.Pod{podNoAnno}, "", "", ""},
+		{"profile only", []*v1.Pod{podWithAnno}, "", "pd", ""},
+		{"profile selected by header", []*v1.Pod{podWithAnno}, "default", "random", ""},
+		{"lock without resolvable profile", []*v1.Pod{podWithLock}, "", "", "pd"},
+		{"profile and lock together", []*v1.Pod{podWithBoth}, "", "random", "pd"},
+		{"invalid config skipped", []*v1.Pod{podInvalid, podWithAnno}, "", "pd", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := ResolveProfile(tt.pods, tt.headerProfile)
+			profile, locked := ResolveConfig(tt.pods, tt.headerProfile)
 			if tt.wantProfile == "" {
-				if p != nil {
-					t.Errorf("ResolveProfile() = %v, want nil", p)
+				if profile != nil {
+					t.Errorf("ResolveConfig() profile = %v, want nil", profile)
 				}
-				return
+			} else {
+				if profile == nil {
+					t.Fatalf("ResolveConfig() profile = nil, want routingStrategy=%s", tt.wantProfile)
+				}
+				if profile.RoutingStrategy != tt.wantProfile {
+					t.Errorf("ResolveConfig().profile.RoutingStrategy = %s, want %s", profile.RoutingStrategy, tt.wantProfile)
+				}
 			}
-			if p == nil {
-				t.Errorf("ResolveProfile() = nil, want profile with routingStrategy=%s", tt.wantProfile)
-				return
-			}
-			if p.RoutingStrategy != tt.wantProfile {
-				t.Errorf("ResolveProfile().RoutingStrategy = %s, want %s", p.RoutingStrategy, tt.wantProfile)
+			if locked != tt.wantLocked {
+				t.Errorf("ResolveConfig() locked = %q, want %q", locked, tt.wantLocked)
 			}
 		})
 	}

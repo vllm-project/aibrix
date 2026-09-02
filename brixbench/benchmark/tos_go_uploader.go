@@ -19,6 +19,7 @@ package benchmark
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -26,16 +27,23 @@ import (
 	"strings"
 	"time"
 
-	"github.com/volcengine/ve-tos-golang-sdk/v2/tos"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 )
 
 const (
-	defaultTOSEndpoint = "https://tos-cn-beijing.volces.com"
+	// Default Volcengine TOS S3-compatible endpoint (not the TOS-native host).
+	defaultTOSEndpoint = "https://tos-s3-cn-beijing.volces.com"
 	defaultTOSRegion   = "cn-beijing"
 )
 
-// tosUploader uploads official benchmark artifacts to TOS.
-// AppendBytes is used for appendable aggregate CSV objects only.
+// tosUploader uploads official benchmark artifacts to TOS (S3-compatible API).
+// AppendBytes is used for aggregate CSV objects only (get + concat + put; S3 has
+// no native AppendObject).
 // Exists is a lightweight metadata check (Head) without downloading content.
 type tosUploader interface {
 	Upload(localPath, remoteURI string) error
@@ -46,16 +54,16 @@ type tosUploader interface {
 }
 
 type goTOSUploader struct {
-	client *tos.ClientV2
+	client *s3.Client
 }
 
 func newGoTOSUploader() (tosUploader, error) {
 	ak := strings.TrimSpace(os.Getenv("TOS_ACCESS_KEY"))
 	sk := strings.TrimSpace(os.Getenv("TOS_SECRET_KEY"))
-	if ak == "" || sk == "" {
-		return nil, fmt.Errorf("TOS_ACCESS_KEY and TOS_SECRET_KEY must be set to publish results (do not embed credentials in source)")
+	if (ak == "") != (sk == "") {
+		return nil, fmt.Errorf("TOS_ACCESS_KEY and TOS_SECRET_KEY must both be set or both unset (unset uses the AWS default credential chain)")
 	}
-	endpoint := strings.TrimSpace(os.Getenv("TOS_ENDPOINT"))
+	endpoint := normalizeTOSS3Endpoint(strings.TrimSpace(os.Getenv("TOS_ENDPOINT")))
 	if endpoint == "" {
 		endpoint = defaultTOSEndpoint
 	}
@@ -63,16 +71,28 @@ func newGoTOSUploader() (tosUploader, error) {
 	if region == "" {
 		region = defaultTOSRegion
 	}
-	client, err := tos.NewClientV2(
-		endpoint,
-		tos.WithRegion(region),
-		tos.WithCredentials(tos.NewStaticCredentials(ak, sk)),
-		tos.WithEnableCRC(true),
-		tos.WithMaxRetryCount(3),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("create TOS client: %w", err)
+	forcePathStyle := envTruthy(os.Getenv("TOS_S3_FORCE_PATH_STYLE"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	loadOpts := []func(*config.LoadOptions) error{
+		config.WithRegion(region),
 	}
+	if ak != "" && sk != "" {
+		loadOpts = append(loadOpts, config.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(ak, sk, ""),
+		))
+	}
+	cfg, err := config.LoadDefaultConfig(ctx, loadOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("load S3/TOS config: %w", err)
+	}
+
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(endpoint)
+		o.UsePathStyle = forcePathStyle
+	})
 	return &goTOSUploader{client: client}, nil
 }
 
@@ -92,13 +112,11 @@ func (u *goTOSUploader) Upload(localPath, remoteURI string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	_, err = u.client.PutObjectV2(ctx, &tos.PutObjectV2Input{
-		PutObjectBasicInput: tos.PutObjectBasicInput{
-			Bucket:        bucket,
-			Key:           key,
-			ContentLength: info.Size(),
-		},
-		Content: f,
+	_, err = u.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:        aws.String(bucket),
+		Key:           aws.String(key),
+		Body:          f,
+		ContentLength: aws.Int64(info.Size()),
 	})
 	if err != nil {
 		return fmt.Errorf("tos put %s: %w", remoteURI, err)
@@ -113,11 +131,14 @@ func (u *goTOSUploader) Download(remoteURI, localPath string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	out, err := u.client.GetObjectV2(ctx, &tos.GetObjectV2Input{Bucket: bucket, Key: key})
+	out, err := u.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
 	if err != nil {
 		return fmt.Errorf("tos get %s: %w", remoteURI, err)
 	}
-	defer out.Content.Close()
+	defer out.Body.Close()
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 		return err
 	}
@@ -126,7 +147,7 @@ func (u *goTOSUploader) Download(remoteURI, localPath string) error {
 		return err
 	}
 	defer f.Close()
-	if _, err := io.Copy(f, out.Content); err != nil {
+	if _, err := io.Copy(f, out.Body); err != nil {
 		return err
 	}
 	return nil
@@ -139,7 +160,10 @@ func (u *goTOSUploader) Delete(remoteURI string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	_, err = u.client.DeleteObjectV2(ctx, &tos.DeleteObjectV2Input{Bucket: bucket, Key: key})
+	_, err = u.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
 	if err != nil {
 		if isTOSNotFound(err) {
 			return nil
@@ -156,7 +180,10 @@ func (u *goTOSUploader) Exists(remoteURI string) (bool, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	_, err = u.client.HeadObjectV2(ctx, &tos.HeadObjectV2Input{Bucket: bucket, Key: key})
+	_, err = u.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
 	if err == nil {
 		return true, nil
 	}
@@ -166,6 +193,8 @@ func (u *goTOSUploader) Exists(remoteURI string) (bool, error) {
 	return false, fmt.Errorf("tos head %s: %w", remoteURI, err)
 }
 
+// AppendBytes downloads any existing object, concatenates data, and PutObject.
+// S3-compatible APIs (including Volcengine TOS S3) have no AppendObject.
 func (u *goTOSUploader) AppendBytes(remoteURI string, data []byte) error {
 	if len(data) == 0 {
 		return nil
@@ -177,26 +206,33 @@ func (u *goTOSUploader) AppendBytes(remoteURI string, data []byte) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	input := &tos.AppendObjectV2Input{
-		Bucket:        bucket,
-		Key:           key,
-		Content:       bytes.NewReader(data),
-		ContentLength: int64(len(data)),
-	}
-	head, headErr := u.client.HeadObjectV2(ctx, &tos.HeadObjectV2Input{Bucket: bucket, Key: key})
-	if headErr == nil {
-		if head.ObjectType != "" && !strings.EqualFold(head.ObjectType, "Appendable") {
-			return fmt.Errorf("tos append %s: object exists but is not Appendable (object_type=%q); delete it and recreate via AppendObject", remoteURI, head.ObjectType)
+	var body []byte
+	out, getErr := u.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
+	if getErr == nil {
+		// Close immediately after ReadAll; do not defer across PutObject.
+		existing, readErr := io.ReadAll(out.Body)
+		_ = out.Body.Close()
+		if readErr != nil {
+			return fmt.Errorf("tos get body %s: %w", remoteURI, readErr)
 		}
-		input.Offset = head.ContentLength
-		input.PreHashCrc64ecma = head.HashCrc64ecma
-	} else if !isTOSNotFound(headErr) {
-		return fmt.Errorf("tos head %s: %w", remoteURI, headErr)
+		body = append(existing, data...)
+	} else if isTOSNotFound(getErr) {
+		body = data
+	} else {
+		return fmt.Errorf("tos get %s: %w", remoteURI, getErr)
 	}
 
-	_, err = u.client.AppendObjectV2(ctx, input)
+	_, err = u.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:        aws.String(bucket),
+		Key:           aws.String(key),
+		Body:          bytes.NewReader(body),
+		ContentLength: aws.Int64(int64(len(body))),
+	})
 	if err != nil {
-		return fmt.Errorf("tos append %s: %w", remoteURI, err)
+		return fmt.Errorf("tos append(put) %s: %w", remoteURI, err)
 	}
 	return nil
 }
@@ -214,14 +250,57 @@ func parseTOSURI(remoteURI string) (bucket, key string, err error) {
 	return parts[0], strings.TrimPrefix(parts[1], "/"), nil
 }
 
+// normalizeTOSS3Endpoint rewrites Volcengine TOS-native hosts to the S3 API host.
+// Non-Volc / already-S3 / internal endpoints are left unchanged (https ensured).
+func normalizeTOSS3Endpoint(endpoint string) string {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return ""
+	}
+	if !strings.Contains(endpoint, "://") {
+		endpoint = "https://" + endpoint
+	}
+	// tos-cn-<region>.volces.com → tos-s3-cn-<region>.volces.com
+	// (leave tos-s3-* alone)
+	const marker = "://tos-cn-"
+	const s3Marker = "://tos-s3-cn-"
+	if strings.Contains(endpoint, marker) && !strings.Contains(endpoint, s3Marker) {
+		endpoint = strings.Replace(endpoint, marker, s3Marker, 1)
+	}
+	return endpoint
+}
+
+func envTruthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 func isTOSNotFound(err error) bool {
 	if err == nil {
 		return false
 	}
+	var nsk *types.NoSuchKey
+	if errors.As(err, &nsk) {
+		return true
+	}
+	var nsb *types.NotFound
+	if errors.As(err, &nsb) {
+		return true
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.ErrorCode() {
+		case "NotFound", "NoSuchKey", "404", "NoSuchBucket":
+			return true
+		}
+	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "404") ||
-		strings.Contains(msg, "not found") ||
+	return strings.Contains(msg, "status code: 404") ||
 		strings.Contains(msg, "nosuchkey") ||
-		strings.Contains(msg, "does not exist") ||
+		strings.Contains(msg, "not found") ||
 		strings.Contains(msg, "no such key")
 }

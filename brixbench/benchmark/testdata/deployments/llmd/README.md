@@ -37,8 +37,9 @@ Router/EPP image:
 These are intentionally separate pins for the smoke path:
 
 - Scenario YAML `version` (for example `v0.8.1`) is the **llm-d git release
-  tag**. The deployer validates that tag in the local `LLMD_REPO` checkout
-  (guides / recipe alignment). It does **not** select the Helm chart version.
+  tag**. The deployer validates that tag with `git ls-remote` against
+  `https://github.com/llm-d/llm-d.git` (no local llm-d checkout / `LLMD_REPO`
+  required). It does **not** select the Helm chart version.
 - The standalone router chart is pinned in the deployer as
   `llmdRouterChartVersion` (`v0.9.0` today), matching the Images section above
   and `router/base-values.yaml`.

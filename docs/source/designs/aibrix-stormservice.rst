@@ -37,8 +37,11 @@ Deployment Mode
 Stormservice supports two deployment modes: **Replica Mode** and **Pooled Mode**.
 
 .. note::
-    1. These two modes are mutually exclusive. There is no dedicated configuration item to explicitly specify the deployment mode; it is solely controlled by the `stormservice.spec.replicas` field.
-    2. The deployment mode of StormService is automatically determined, replica mode is activated when `replicas > 1` and pooled mode is activated when `replicas = 1`.
+    1. These two modes are mutually exclusive. The mode is declared through the `stormservice.spec.mode` field, which accepts `Replica` or `Pooled`.
+    2. `spec.mode` is optional and is not defaulted. When it is omitted the mode is inferred for backward compatibility from `stormservice.spec.replicas`: replica mode when `replicas > 1`, otherwise pooled mode.
+    3. When `spec.mode` is set to `Pooled`, `spec.replicas` must stay at `1`; roles are scaled through `spec.template.spec.roles[].replicas`.
+    4. A declared `spec.mode` drives the update path: `Replica` uses the rolling update path and `Pooled` uses the in-place update path, even when `spec.updateStrategy.type` holds the (possibly CRD-defaulted) `RollingUpdate` value. Declaring `mode: Replica` together with `updateStrategy.type: InPlaceUpdate` is rejected by the webhook. When `spec.mode` is omitted, `spec.updateStrategy.type` keeps selecting the update path as before.
+    5. A declared `spec.mode` is also the source of truth for PodAutoscaler role-level scaling. The `autoscaling.aibrix.ai/storm-service-mode` annotation is deprecated and only honored when the target StormService does not declare `spec.mode`.
 
 
 Replica Mode
@@ -246,6 +249,82 @@ PodSet templates pick up the new affinity after replacement or recreation.
 See the complete `topology policy samples`_ in the AIBrix repository.
 
 .. _topology policy samples: https://github.com/vllm-project/aibrix/tree/main/samples/orchestration/topology-policy
+
+
+Historical-Node Replacement Scheduling
+--------------------------------------
+
+RoleSet historical-node scheduling lets replacement Pods prefer nodes that
+previously ran the same role workload. It is useful for inference workloads
+where node locality can preserve useful warm state, such as downloaded model
+files, runtime caches, or KV cache artifacts.
+
+Enable the policy on a role with
+``spec.roles[].updateStrategy.replacementScheduling.historicalNode``. The same
+field can be used through ``StormService.spec.template.spec.roles[]`` because
+StormService templates carry RoleSet role specs.
+
+.. code-block:: yaml
+
+   updateStrategy:
+     type: Recreate
+     maxSurge: 0
+     maxUnavailable: 1
+     replacementScheduling:
+       historicalNode:
+         mode: Preferred
+
+``mode: Preferred`` injects a preferred ``kubernetes.io/hostname`` node
+affinity into replacement Pods. The preference is soft: Kubernetes can still
+place the Pod on another node when the historical node is unavailable or lacks
+capacity.
+
+The controller records historical node bindings in the RoleSet annotation
+``orchestration.aibrix.ai/historical-node-bindings``. Because the history is
+persisted on the RoleSet, replacement scheduling can continue to use remembered
+nodes after the controller restarts.
+
+Stateful and stateless roles use different history scopes because they have
+different identity semantics:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 35 40
+
+   * - Role type
+     - History scope
+     - Reason
+   * - Stateful
+     - Replica slot, for example ``worker/0 -> node-a``
+     - A stateful slot remains the same logical replica after its Pod is
+       deleted and recreated, so the controller can safely bind history to the
+       slot.
+   * - Stateless
+     - Role-level recent-node list, for example ``worker -> [node-a, node-b]``
+     - Stateless Pods do not have stable per-replica identity, so a replacement
+       Pod cannot safely inherit one exact old Pod's slot binding.
+
+For stateless roles, the controller injects the remembered node list as one
+preferred affinity term. The Kubernetes scheduler chooses among those nodes with
+normal scheduling scoring; the RoleSet controller does not choose one node from
+the list, and multiple replacement Pods can still land on the same historical
+node when that node is the scheduler's best fit.
+
+The policy applies when the RoleSet controller creates replacement Pods during
+recreate-style rollouts. For stateful roles, empty-slot creation can also reuse
+an existing slot binding. Stateless scale-up is not replacement and does not use
+historical-node affinity because the new Pod adds capacity instead of replacing
+a remembered logical replica.
+
+Historical-node scheduling only adds preferred node affinity. The controller
+skips injection when the Pod template already defines required node affinity,
+when the RoleSet has a required topology policy using
+``kubernetes.io/hostname``, or when the role uses ``podGroupSize`` greater than
+1. When injection is skipped, the controller logs the reason.
+
+See
+``samples/orchestration/stormservice-historical-node-scheduling.yaml`` for stateful
+and stateless examples with inline comments.
 
 
 Update Strategy
@@ -487,3 +566,8 @@ In the Kubernetes ecosystem, `ControllerRevision` is a crucial resource object u
     NAME                  CONTROLLER                                      REVISION   AGE
     llm-xpyd-69df6b87d8   stormservice.orchestration.aibrix.ai/llm-xpyd   1          73s
     llm-xpyd-75ddc56d8c   stormservice.orchestration.aibrix.ai/llm-xpyd   2          3s
+
+.. seealso::
+
+   :doc:`../features/pd-disaggregation`
+       Prefill/decode disaggregation built on StormService.

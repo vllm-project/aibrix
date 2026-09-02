@@ -1,3 +1,4 @@
+# AIBrix Qwen3-8B PD 8p8d multi-node (Prefill@.6, Decode@.7)
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: StormService
 metadata:
@@ -6,7 +7,7 @@ metadata:
   labels:
     engine: "vllm"
     deployment: "disaggregated"
-    routing-test-config: "conf-rt-04"
+    routing-test-config: "conf-rt-04-multinode"
 spec:
   replicas: 1
   updateStrategy:
@@ -22,7 +23,7 @@ spec:
     spec:
       roles:
         - name: prefill
-          replicas: 4
+          replicas: 8
           stateful: true
           template:
             metadata:
@@ -129,7 +130,7 @@ spec:
                     medium: Memory
                   name: shared-mem
         - name: decode
-          replicas: 4
+          replicas: 8
           stateful: true
           template:
             metadata:
@@ -143,7 +144,7 @@ spec:
                 model.aibrix.ai/role: decode
             spec:
               nodeSelector:
-                kubernetes.io/hostname: 192.168.0.6
+                kubernetes.io/hostname: 192.168.0.7
               containers:
                 - name: decode
                   image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.22.0-cu129

@@ -65,6 +65,29 @@ def test_completions_endpoint_supported():
     assert BatchJobEndpoint(endpoint) == BatchJobEndpoint.COMPLETIONS
 
 
+def test_batch_spec_accepts_arbitrary_completion_window():
+    spec = BatchSpec.model_validate(
+        {
+            "input_file_id": "file-1",
+            "endpoint": "/v1/chat/completions",
+            "completion_window": "1d1h1min",
+        }
+    )
+
+    assert BatchSpec.newBatchJobSpec(spec).completion_window == 90060
+
+
+def test_batch_spec_rejects_invalid_completion_window():
+    with pytest.raises(ValidationError):
+        BatchSpec.model_validate(
+            {
+                "input_file_id": "file-1",
+                "endpoint": "/v1/chat/completions",
+                "completion_window": "best_effort",
+            }
+        )
+
+
 def test_embeddings_endpoint_supported():
     """Test that /v1/embeddings endpoint is supported."""
     endpoint = "/v1/embeddings"
@@ -331,6 +354,8 @@ def test_batch_spec_accepts_client_config():
                     "max_concurrency": MAX_CLIENT_CONCURRENCY,
                     "adaptive_concurrency": True,
                     "adaptive_max_factor": 16,
+                    "adaptive_healthy_window": 2,
+                    "adaptive_additive_increase": 4,
                     "retry_policy": {
                         "max_retries": 5,
                         "base_delay_seconds": 2,
@@ -349,6 +374,8 @@ def test_batch_spec_accepts_client_config():
     assert batch_job_spec.aibrix.client.max_concurrency == MAX_CLIENT_CONCURRENCY
     assert batch_job_spec.aibrix.client.adaptive_concurrency is True
     assert batch_job_spec.aibrix.client.adaptive_max_factor == 16
+    assert batch_job_spec.aibrix.client.adaptive_healthy_window == 2
+    assert batch_job_spec.aibrix.client.adaptive_additive_increase == 4
     retry = batch_job_spec.aibrix.client.retry_policy
     assert retry is not None
     assert retry.max_retries == 5
@@ -363,6 +390,8 @@ def test_batch_spec_accepts_client_config():
         {"max_concurrency": 0},
         {"max_concurrency": MAX_CLIENT_CONCURRENCY + 1},
         {"adaptive_max_factor": 0.5},
+        {"adaptive_healthy_window": 0},
+        {"adaptive_additive_increase": 0},
         {"retry_policy": {"max_retries": -1}},
         {"retry_policy": {"base_delay_seconds": -0.1}},
     ],
@@ -523,6 +552,36 @@ def _minimal_batch_job(status: BatchJobStatus) -> BatchJob:
         ),
         status=status,
     )
+
+
+def test_batch_response_uses_exact_provision_resource_deadline():
+    provision_deadline = 2_000_000_000
+    created_at = datetime.now(timezone.utc)
+    batch_job = BatchJob(
+        typeMeta=TypeMeta(apiVersion="batch/v1", kind="BatchJob"),
+        metadata=ObjectMeta(name="test-batch", namespace="default"),
+        spec=BatchJobSpec(
+            input_file_id="file-123",
+            endpoint="/v1/chat/completions",
+            completion_window=360,
+            aibrix=AibrixMetadata(
+                resource_allocation=ResourceAllocation(
+                    provision_id="reservation-1",
+                    provision_resource_deadline=provision_deadline,
+                )
+            ),
+        ),
+        status=BatchJobStatus(
+            jobID="job-123",
+            state=BatchJobState.CREATED,
+            createdAt=created_at,
+        ),
+    )
+
+    response = _batch_job_to_openai_response(batch_job)
+
+    assert response.completion_window == "6min"
+    assert response.expires_at == provision_deadline
 
 
 def test_output_file_ids_hidden_until_finished():

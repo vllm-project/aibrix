@@ -107,6 +107,7 @@ type processState struct {
 	isGatewayRspDone bool
 	completed        bool
 	trackedModel     string
+	requestDone      sync.Once
 	rootSpan         trace.Span // main span
 	inferenceSpan    trace.Span // routing completion to final response body
 	firstRespSpan    trace.Span // routing completion to first response body chunk
@@ -124,12 +125,12 @@ func (st *processState) trackModelInFlight() {
 		st.releaseModelInFlight()
 	}
 	st.trackedModel = st.model
+	labelNames, labelValues := st.modelInFlightLabels()
 	metrics.IncGaugeMetric(
 		metrics.GatewayModelInFlight,
 		metrics.GetMetricHelp(metrics.GatewayModelInFlight),
-		[]string{"gateway_pod", "model"},
-		podName,
-		st.model,
+		labelNames,
+		labelValues...,
 	)
 }
 
@@ -139,13 +140,53 @@ func (st *processState) releaseModelInFlight() {
 	}
 	modelToRelease := st.trackedModel
 	st.trackedModel = ""
+	labelNames, labelValues := st.modelInFlightLabelsFor(modelToRelease)
 	metrics.DecGaugeMetric(
 		metrics.GatewayModelInFlight,
 		metrics.GetMetricHelp(metrics.GatewayModelInFlight),
-		[]string{"gateway_pod", "model"},
-		podName,
-		modelToRelease,
+		labelNames,
+		labelValues...,
 	)
+}
+
+func (st *processState) modelInFlightLabels() ([]string, []string) {
+	return st.modelInFlightLabelsFor(st.model)
+}
+
+func (st *processState) modelInFlightLabelsFor(model string) ([]string, []string) {
+	loraAdapter := ""
+	if st.routerCtx != nil {
+		if m := st.routerCtx.MetricModel(); m != "" {
+			model = m
+		}
+		loraAdapter = st.routerCtx.MetricLoraAdapter()
+	}
+	return []string{"gateway_pod", "model", "lora_adapter"},
+		[]string{podName, model, loraAdapter}
+}
+
+// finishRequestCount and finishRequestTrace are the only production lifecycle
+// completion points. A request can reach several terminal paths in quick
+// succession (for example, response completion followed by EOF), so cache
+// bookkeeping must be finalized exactly once while routerCtx is still owned by
+// this processState.
+func (s *Server) finishRequestCount(st *processState) {
+	st.requestDone.Do(func() {
+		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+	})
+}
+
+func (s *Server) finishRequestTrace(st *processState, usage TokenUsage) {
+	st.requestDone.Do(func() {
+		s.cache.DoneRequestTrace(
+			st.routerCtx,
+			st.requestID,
+			st.model,
+			usage.PromptTokens,
+			usage.CompletionTokens,
+			st.traceTerm,
+		)
+	})
 }
 
 func httpRouteCacheTTL() time.Duration {
@@ -207,6 +248,12 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 
 	metrics.IncGaugeMetric(metrics.GatewayInFlight, metrics.GetMetricHelp(metrics.GatewayInFlight), []string{"gateway_pod"}, podName)
 	defer func() {
+		// This is a fallback for any terminal path that did not explicitly finish
+		// bookkeeping. A non-empty model and routing context mean request-body
+		// processing progressed far enough that AddRequestCount may have run.
+		if st.model != "" && st.routerCtx != nil {
+			s.finishRequestCount(st)
+		}
 		requestBuffers.Delete(st.requestID)
 		// end spans created by this server
 		for _, span := range []trace.Span{st.toLastRespSpan, st.firstRespSpan, st.inferenceSpan} {
@@ -216,6 +263,13 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		}
 		st.releaseModelInFlight()
 		metrics.DecGaugeMetric(metrics.GatewayInFlight, metrics.GetMetricHelp(metrics.GatewayInFlight), []string{"gateway_pod"}, podName)
+		// routerCtx must remain valid until every completion path above has
+		// returned. Returning it to the pool earlier lets another request reset
+		// the same object while this Process still holds the pointer.
+		if st.routerCtx != nil {
+			st.routerCtx.Delete()
+			st.routerCtx = nil
+		}
 	}()
 
 	klog.InfoS("processing request", "requestID", st.requestID)
@@ -236,9 +290,9 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			klog.V(4).InfoS("request actively finished, breaking ext_proc stream", "requestID", st.requestID)
 			if st.model != "" && !st.isGatewayRspDone {
 				st.isGatewayRspDone = true
-				s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200")
+				s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200", st.routerCtx)
 			}
-			s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+			s.finishRequestCount(st)
 			return nil
 		}
 	}
@@ -275,8 +329,8 @@ func (s *Server) processOnce(srv extProcPb.ExternalProcessor_ProcessServer, st *
 		req = r.req
 	case <-s.shutdownCh:
 		if st.model != "" {
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "aibrix_gateway_server_shutdown", "503")
-			s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "aibrix_gateway_server_shutdown", "503", st.routerCtx)
+			s.finishRequestCount(st)
 		}
 		klog.ErrorS(nil, "server shutdown requested; aborting blocked Recv", "request_id", st.requestID, "model", st.model)
 		return status.Error(codes.Unavailable, "server shutdown in progress")
@@ -293,8 +347,8 @@ func (s *Server) preRecvCheck(st *processState) error {
 	select {
 	case <-s.shutdownCh:
 		if st.model != "" {
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "aibrix_gateway_server_shutdown", "503")
-			s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "aibrix_gateway_server_shutdown", "503", st.routerCtx)
+			s.finishRequestCount(st)
 		}
 		klog.ErrorS(nil, "server shutdown requested; draining request", "request_id", st.requestID, "model", st.model)
 		return status.Error(codes.Unavailable, "server shutdown in progress")
@@ -302,8 +356,8 @@ func (s *Server) preRecvCheck(st *processState) error {
 	// Client cancelled or deadline exceeded
 	case <-st.ctx.Done():
 		if st.model != "" {
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "context_cancelled", "499")
-			s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "context_cancelled", "499", st.routerCtx)
+			s.finishRequestCount(st)
 		}
 		klog.ErrorS(st.ctx.Err(), "context cancelled", "request_id", st.requestID, "model", st.model)
 		return st.ctx.Err()
@@ -319,8 +373,8 @@ func (s *Server) handleRecvError(st *processState, err error) error {
 		// check for shutdown
 		case <-s.shutdownCh:
 			if st.model != "" {
-				s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "aibrix_gateway_server_shutdown", "503")
-				s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+				s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "aibrix_gateway_server_shutdown", "503", st.routerCtx)
+				s.finishRequestCount(st)
 			}
 			klog.ErrorS(nil, "server shutdown requested; stream closed (EOF) during shutdown drain", "requestID", st.requestID, "model", st.model)
 			return status.Error(codes.Unavailable, "server shutdown in progress")
@@ -332,19 +386,19 @@ func (s *Server) handleRecvError(st *processState, err error) error {
 		if st.completed {
 			if st.model != "" && !st.isGatewayRspDone {
 				st.isGatewayRspDone = true
-				s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200")
+				s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200", st.routerCtx)
 			}
 			klog.V(2).InfoS("stream closed (EOF): completed", "requestID", st.requestID, "model", st.model)
-			s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+			s.finishRequestCount(st)
 			return nil
 		}
 
 		// client closed stream (EOF)
 		if st.model != "" {
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "client_cancelled_eof", "499")
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "client_cancelled_eof", "499", st.routerCtx)
 		}
 		klog.ErrorS(nil, "client closed stream (EOF) before completion", "requestID", st.requestID, "model", st.model)
-		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		s.finishRequestCount(st)
 		return io.EOF
 	}
 
@@ -353,22 +407,25 @@ func (s *Server) handleRecvError(st *processState, err error) error {
 	if ok && stErr.Code() == codes.Canceled {
 		if st.model != "" && !st.isGatewayRspDone {
 			st.isGatewayRspDone = true
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200")
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200", st.routerCtx)
 		}
-		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		s.finishRequestCount(st)
 		return status.Error(codes.Canceled, "request canceled")
 	}
 
 	// Record failed request metric for other gRPC errors
 	if ok {
 		if st.model != "" {
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "gateway_request_fail", strconv.FormatUint(uint64(stErr.Code()), 10))
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "gateway_request_fail", strconv.FormatUint(uint64(stErr.Code()), 10), st.routerCtx)
 		}
 		klog.ErrorS(err, "error receiving stream from Envoy extproc", "requestID", st.requestID, "model", st.model, "grpc_code", stErr.Code(), "grpc_message", stErr.Message())
-		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		s.finishRequestCount(st)
 		return stErr.Err()
 	}
 
+	if st.model != "" && st.routerCtx != nil {
+		s.finishRequestCount(st)
+	}
 	klog.ErrorS(err, "error receiving stream from Envoy extproc (non-gRPC)", "requestID", st.requestID)
 	return status.Errorf(codes.Unknown, "recv stream error: %v", err)
 }
@@ -402,6 +459,7 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		resp, st.isRespError, st.respErrorCode = s.HandleResponseHeaders(st.ctx, st.routerCtx, st.requestID, st.model, req)
 		st.lastRespHeaders = resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders()
 		if st.isRespError {
+			s.finishRequestCount(st)
 			resp = s.responseForResponseHeaderError(st, resp)
 		}
 		st.metricLabel = gatewayRespHeaders
@@ -420,7 +478,11 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 			body := string(req.Request.(*extProcPb.ProcessingRequest_ResponseBody).ResponseBody.GetBody())
 			resp = s.responseErrorProcessingWithHeaders(st.ctx, st.routerCtx, st.lastRespHeaders, st.respErrorCode, st.model, st.requestID, body)
 		} else {
-			resp, st.completed = s.HandleResponseBody(st.ctx, st.routerCtx, st.requestID, req, st.user, st.rpm, st.model, st.stream, st.traceTerm, st.completed)
+			var usage TokenUsage
+			resp, st.completed, usage = s.HandleResponseBody(st.ctx, st.routerCtx, st.requestID, req, st.user, st.rpm, st.model, st.stream, st.completed)
+			if st.completed {
+				s.finishRequestTrace(st, usage)
+			}
 		}
 		st.metricLabel = gatewayRespBody
 
@@ -432,8 +494,8 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 
 	if resp == nil {
 		klog.ErrorS(nil, "no ProcessingResponse generated for message", "requestID", st.requestID, "msg_type", fmt.Sprintf("%T", req.Request))
-		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "no_response_err", "500")
-		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "no_response_err", "500", st.routerCtx)
+		s.finishRequestCount(st)
 		return nil, status.Errorf(codes.Internal, "no response generated for %T", req.Request)
 	}
 
@@ -447,14 +509,14 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		}
 		if st.completed && !st.isGatewayRspDone {
 			st.isGatewayRspDone = true
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, st.metricLabel+"_success", "200")
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, st.metricLabel+"_success", "200", st.routerCtx)
 		}
 		return resp, nil
 	}
 
 	statusCode := strconv.Itoa(int(resp.GetImmediateResponse().GetStatus().GetCode()))
 	metricFail := getMetricErr(resp.GetImmediateResponse(), st.metricLabel)
-	s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, metricFail+"_fail", statusCode)
+	s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, metricFail+"_fail", statusCode, st.routerCtx)
 
 	return resp, nil
 }
@@ -473,13 +535,8 @@ func (s *Server) responseForResponseHeaderError(st *processState, resp *extProcP
 func (s *Server) sendProcessingResponse(srv extProcPb.ExternalProcessor_ProcessServer, st *processState, resp *extProcPb.ProcessingResponse) error {
 	if err := srv.Send(resp); err != nil && len(st.model) > 0 {
 		klog.ErrorS(err, "gateway fail to send response to envoy-proxy", "requestID", st.requestID)
-		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "send_envoy_proxy", "499")
-		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
-		// Manually delete routerCtx on error paths;
-		// HandleResponseBody() and HandleResponseHeaders() will handle it on the happy path.
-		if st.routerCtx != nil {
-			st.routerCtx.Delete()
-		}
+		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "send_envoy_proxy", "499", st.routerCtx)
+		s.finishRequestCount(st)
 
 		if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "EOF") {
 			klog.Warning("Stream already closed by client", "requestID", st.requestID)
@@ -518,12 +575,26 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		return "", fmt.Errorf("no ready pods for routing")
 	}
 
-	if routeCtx.Algorithm == routing.RouterPD {
-		engine, err := routing.ValidateAndGetLLMEngine(readyPods)
-		if err != nil {
-			return "", fmt.Errorf("engine validation failed for request %s: %w", routeCtx.RequestID, err)
+	// Resolve exclusivity from the caller's raw algorithm string rather than comparing it
+	// directly against "pd": the string may itself be a multi-strategy config that collapses
+	// to a single exclusive strategy (e.g. "pd:1,least-request:1" resolves to "pd", and bare
+	// "slo-pack-load"/"slo-least-load" are exclusive too), and a plain equality check would
+	// miss those and wrongly narrow readyPods ahead of them.
+	resolvedExclusive, isExclusive := routing.ResolveExclusiveStrategy(string(routeCtx.Algorithm))
+	if isExclusive {
+		if resolvedExclusive == string(routing.RouterPD) {
+			engine, err := routing.ValidateAndGetLLMEngine(readyPods)
+			if err != nil {
+				return "", fmt.Errorf("engine validation failed for request %s: %w", routeCtx.RequestID, err)
+			}
+			routeCtx.Engine = engine
 		}
-		routeCtx.Engine = engine
+	} else {
+		// Apply the load-imbalance hotspot gate ahead of whichever strategy actually routes
+		// this request. Exclusive strategies (pd, slo*) are exempted above: they manage their
+		// own pod subsets (prefill/decode, SLO tiers), which a blanket running-request-count
+		// filter would distort.
+		readyPods = routing.ApplyLoadImbalanceGate(routeCtx, s.cache, readyPods)
 	}
 
 	router, err := routing.Select(routeCtx)
@@ -531,7 +602,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		return "", err
 	}
 
-	if len(readyPods) == 1 && len(utils.GetPortsForPod(readyPods[0])) <= 1 && routeCtx.Algorithm != routing.RouterPD {
+	if len(readyPods) == 1 && len(utils.GetPortsForPod(readyPods[0])) <= 1 && !isExclusive {
 		routeCtx.SetTargetPod(readyPods[0])
 		return routeCtx.TargetAddress(), nil
 	}
@@ -649,7 +720,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		fmt.Fprintf(w, `{"error":"method not allowed"}`)
+		_, _ = fmt.Fprintf(w, `{"error":"method not allowed"}`)
 		return
 	}
 
@@ -715,6 +786,16 @@ func (s *Server) responseErrorProcessingWithHeaders(ctx context.Context, routing
 	}
 	klog.ErrorS(nil, "request end", "requestID", requestID, "errorCode", respErrorCode, "errorMessage", errMsg)
 
+	// On a non-2xx upstream status the body often carries the engine's own OpenAI-style
+	// error. Normalize it to a single envelope and pass it through verbatim instead of
+	// re-wrapping the raw JSON into error.message. The HTTP status stays the
+	// authoritative respErrorCode; the body's own code is preserved inside the body.
+	if normalizedBody, code, ok := normalizeUpstreamErrorBody([]byte(errMsg), respErrorCode); ok {
+		errHeaders := append(append([]*configPb.HeaderValueOption{}, headers...),
+			buildEnvoyProxyHeaders(nil, HeaderErrorResponseUnknown, "true")...)
+		return buildErrorResponseWithBody(code, normalizedBody, errHeaders)
+	}
+
 	// Determine appropriate error code based on HTTP status
 	errorCode := ""
 	if respErrorCode == 401 {
@@ -729,9 +810,12 @@ func (s *Server) responseErrorProcessingWithHeaders(ctx context.Context, routing
 		errMsg, errorCode, "")
 }
 
-func (s *Server) emitMetricsCounterHelper(metricName, model, status, statusCode string) {
+func (s *Server) emitMetricsCounterHelper(metricName, model, status, statusCode string, routingCtx *types.RoutingContext) {
+	if routingCtx == nil {
+		routingCtx = &types.RoutingContext{Model: model}
+	}
 	labels := buildGatewayPodMetricLabels(model, status, statusCode)
-	metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, nil, metricName, &metrics.SimpleMetricValue{Value: 1.0}, labels)
+	metrics.EmitMetricToPrometheus(routingCtx, nil, metricName, &metrics.SimpleMetricValue{Value: 1.0}, labels)
 }
 
 func getMetricErr(resp *extProcPb.ImmediateResponse, metricLabel string) string {

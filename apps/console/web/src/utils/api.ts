@@ -87,9 +87,11 @@ export interface CreateJobRequest {
 
 export interface JobResourceRequest {
   replicas?: number;
+  providerConfig?: Record<string, unknown>;
 }
 
-export interface JobLimits {
+export interface JobCapabilities {
+  provider: string;
   resourceRequest: {
     minReplicas: number;
     maxReplicas: number;
@@ -102,6 +104,8 @@ export interface JobClientConfig {
   maxConcurrency?: number;       // absolute in-flight cap, 1..1024
   adaptiveConcurrency?: boolean; // grow concurrency adaptively
   adaptiveMaxFactor?: number;    // adaptive growth factor, >= 1
+  adaptiveHealthyWindow?: number; // healthy completions per growth step, >= 1
+  adaptiveAdditiveIncrease?: number; // minimum probe and post-probe growth step, >= 1
   retryPolicy?: JobClientRetryPolicy;
 }
 
@@ -472,8 +476,8 @@ async function apiFetch<T>(
       // the 401 body during the navigation.
       return new Promise<T>(() => {});
     }
-    const text = await response.text().catch(() => 'Unknown error');
-    throw new APIError(text, response.status);
+    const message = await readAPIErrorMessage(response);
+    throw new APIError(message, response.status);
   }
 
   if (response.status === 204) {
@@ -482,6 +486,29 @@ async function apiFetch<T>(
 
   const json = await response.json();
   return snakeToCamel<T>(json);
+}
+
+async function readAPIErrorMessage(response: Response): Promise<string> {
+  const fallback = response.statusText || 'Unknown error';
+  const raw = await response.text().catch(() => '');
+  if (!raw) return fallback;
+
+  try {
+    const parsed = JSON.parse(raw) as {
+      error?: { message?: string };
+      message?: string;
+    };
+    if (typeof parsed.error?.message === 'string' && parsed.error.message.trim() !== '') {
+      return parsed.error.message;
+    }
+    if (typeof parsed.message === 'string' && parsed.message.trim() !== '') {
+      return parsed.message;
+    }
+  } catch {
+    // Fall back to the raw body for non-JSON error payloads.
+  }
+
+  return raw;
 }
 
 function buildQuery(params: Record<string, string | undefined>): string {
@@ -506,25 +533,33 @@ export async function listJobs(params?: { after?: string; limit?: number }): Pro
   return normalizeJobsResponse(await apiFetch<ListJobsResponse>(`/api/v1/jobs${query}`));
 }
 
-// Fetch every job by following the cursor until the server reports no more pages.
-export async function listAllJobs(): Promise<Job[]> {
-  const PAGE_LIMIT = 200;
-  const MAX_PAGES = 50;
+export interface ListAllJobsOptions {
+  pageLimit?: number;
+  onPage?: (jobs: Job[], hasMore: boolean) => void;
+}
+
+// Fetch every job by following the cursor until the server reports no more
+// pages. onPage lets list views render progressively while older pages load.
+export async function listAllJobs(options: ListAllJobsOptions = {}): Promise<Job[]> {
+  const pageLimit = options.pageLimit ?? 200;
+  const maxPages = 50;
   const all: Job[] = [];
   let after: string | undefined;
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const res = await listJobs({ after, limit: PAGE_LIMIT });
+  for (let page = 0; page < maxPages; page++) {
+    const res = await listJobs({ after, limit: pageLimit });
     const batch = res.jobs ?? [];
     all.push(...batch);
     const last = batch[batch.length - 1];
-    if (!res.hasMore || !last?.id) break;
+    const hasMore = res.hasMore && !!last?.id;
+    options.onPage?.([...all], hasMore);
+    if (!hasMore) break;
     after = last.id;
   }
   return all;
 }
 
-export async function getJobLimits(): Promise<JobLimits> {
-  return apiFetch<JobLimits>('/api/v1/config/job-limits');
+export async function getJobCapabilities(): Promise<JobCapabilities> {
+  return apiFetch<JobCapabilities>('/api/v1/config/job-capabilities');
 }
 
 export async function getJob(id: string, options?: { includeDeployment?: boolean }): Promise<Job> {

@@ -45,6 +45,11 @@ from aibrix.batch.job_entity import (
     aggregate_batch_job_status,
     ensure_batch_job_error,
 )
+from aibrix.batch.metrics import (
+    metric_duration_ms,
+    tags_from_finalized_job,
+    tags_from_job,
+)
 from aibrix.batch.state import (
     BatchRegistry,
     EntityManagerBridge,
@@ -54,6 +59,7 @@ from aibrix.batch.state import (
 )
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
+from aibrix.metadata.core.metrics import Emitter, T, metrics_names
 
 
 # Custom exceptions for batch manager
@@ -99,6 +105,18 @@ def _preserve_local_timestamps(
             and getattr(old_status, field) is not None
         ):
             setattr(new_status, field, getattr(old_status, field))
+
+
+def _runtime_connected_at(job: BatchJob) -> Optional[datetime]:
+    execution = job.status.execution or {}
+    connected_times = [
+        ref.connected_at
+        for ref in execution.values()
+        if ref is not None and ref.connected_at is not None
+    ]
+    if not connected_times:
+        return None
+    return min(connected_times)
 
 
 class BatchManager(RunningJobs, SchedulableJobs):
@@ -164,6 +182,62 @@ class BatchManager(RunningJobs, SchedulableJobs):
         self._creation_timeouts: Dict[str, asyncio.Task] = {}
         self._session_metadata: Dict[str, Dict[str, Any]] = {}
         self._pending_deleted_jobs: set[str] = set()
+
+    def _emit_finished_job_metrics(self, job: BatchJob) -> None:
+        """Emit metrics for a job that has just reached a terminal state."""
+        try:
+            finalized_tags = tags_from_finalized_job(job)
+            Emitter.counter(
+                metrics_names.METRIC_METADATA_BATCH_API_JOB_FINISHED,
+                1,
+                *finalized_tags,
+            )
+
+            execution_ms = metric_duration_ms(
+                job.status.in_progress_at,
+                job.status.finalized_at,
+            )
+            if execution_ms is not None and execution_ms >= 0:
+                Emitter.timer(
+                    f"{metrics_names.METRIC_METADATA_BATCH_API_JOB_EXECUTION_TIME}.ms",
+                    execution_ms,
+                    *finalized_tags,
+                )
+        except Exception:
+            logger.warning(
+                "Failed to emit finished job metrics",
+                job_id=job.job_id,
+                condition=job.status.condition.value
+                if job.status.condition
+                else "complete",
+                exc_info=True,
+            )  # type: ignore[call-arg]
+
+    def _emit_execution_phase_metric(
+        self,
+        job: BatchJob,
+        *,
+        phase: str,
+        start_at: Optional[datetime],
+        end_at: Optional[datetime],
+    ) -> None:
+        try:
+            phase_ms = metric_duration_ms(start_at, end_at)
+            if phase_ms is None or phase_ms < 0:
+                return
+            Emitter.timer(
+                f"{metrics_names.METRIC_METADATA_BATCH_API_JOB_EXECUTION_PHASE_TIME}.ms",
+                phase_ms,
+                *tags_from_job(job),
+                T("phase", phase),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to emit execution phase metric",
+                job_id=job.job_id,
+                phase=phase,
+                exc_info=True,
+            )  # type: ignore[call-arg]
 
     # The three pools live in the BatchRegistry; these proxies keep the existing
     # by-pool access (orchestration logic + tests) working unchanged while the
@@ -592,11 +666,16 @@ class BatchManager(RunningJobs, SchedulableJobs):
             if old_job_in_category is None:
                 logger.warning(
                     "Job is not in old category, ignore updating",
+                    job_id=job_id,
                     old_category=old_name,
                     new_category=new_name,
                 )  # type: ignore[call-arg]
                 return False
             old_job = old_job_in_category
+            was_finished = old_job.status.finished
+            had_in_progress_at = old_job.status.in_progress_at is not None
+            had_runtime_connection = _runtime_connected_at(old_job) is not None
+            was_finalizing = old_job.status.finalizing_at is not None
 
             # Validate state transition
             if not self._validate_state_transition(old_job, new_job):
@@ -636,6 +715,39 @@ class BatchManager(RunningJobs, SchedulableJobs):
                     new_category=new_name,
                 )  # type: ignore[call-arg]
 
+            if not had_in_progress_at and new_job.status.in_progress_at is not None:
+                self._emit_execution_phase_metric(
+                    new_job,
+                    phase="scheduling",
+                    start_at=new_job.status.created_at,
+                    end_at=new_job.status.in_progress_at,
+                )
+            if (
+                not had_runtime_connection
+                and _runtime_connected_at(new_job) is not None
+            ):
+                self._emit_execution_phase_metric(
+                    new_job,
+                    phase="runtime_provision",
+                    start_at=new_job.status.in_progress_at,
+                    end_at=_runtime_connected_at(new_job),
+                )
+            if not was_finalizing and new_job.status.finalizing_at is not None:
+                self._emit_execution_phase_metric(
+                    new_job,
+                    phase="task_execution",
+                    start_at=_runtime_connected_at(new_job)
+                    or new_job.status.in_progress_at,
+                    end_at=new_job.status.finalizing_at,
+                )
+            if not was_finished and new_job.status.finished:
+                self._emit_execution_phase_metric(
+                    new_job,
+                    phase="finalization",
+                    start_at=new_job.status.finalizing_at,
+                    end_at=new_job.status.finalized_at,
+                )
+                self._emit_finished_job_metrics(new_job)
             if job_id in self._pending_deleted_jobs and new_job.status.finished:
                 await self.job_deleted_handler(new_job)
             return True
@@ -830,6 +942,8 @@ class BatchManager(RunningJobs, SchedulableJobs):
 
         if self._job_entity_manager is not None:
             await self._job_entity_manager.update_job_status(validated)
+            current_job = await self.get_job(job_id)
+            return current_job if current_job is not None else validated
         await self.job_updated_handler(meta_data, validated)
         return validated
 
@@ -838,6 +952,8 @@ class BatchManager(RunningJobs, SchedulableJobs):
         updated = meta_data.copy(status)
         if self._job_entity_manager is not None:
             await self._job_entity_manager.update_job_status(updated)
+            current_job = await self.get_job(job_id)
+            return current_job if current_job is not None else updated
         await self.job_updated_handler(meta_data, updated)
         return updated
 
@@ -892,6 +1008,8 @@ class BatchManager(RunningJobs, SchedulableJobs):
 
         if self._job_entity_manager is not None:
             await self._job_entity_manager.update_job_status(persisted)
+            current_job = await self.get_job(job_id)
+            return current_job if current_job is not None else persisted
         await self.job_updated_handler(meta_data, persisted)
         return persisted
 
@@ -940,8 +1058,10 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 )
             )
 
-        if self._job_entity_manager:
+        if self._job_entity_manager is not None:
             await self._job_entity_manager.update_job_status(persisted)
+            current_job = await self.get_job(job_id)
+            return current_job if current_job is not None else persisted
         await self.job_updated_handler(meta_data, persisted)
         return persisted
 

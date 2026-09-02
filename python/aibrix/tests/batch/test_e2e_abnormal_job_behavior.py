@@ -47,6 +47,7 @@ from aibrix.batch.job_entity import (
     ClientConfig,
     ResourceAllocation,
 )
+from aibrix.batch.job_entity.batch_job import parse_completion_window
 from aibrix.context import InfrastructureContext
 from tests.batch.conftest import (
     backend_has_feature,
@@ -64,6 +65,10 @@ T = TypeVar("T")
 TEST_OPTS_PENDING_AFTER_N_REQUESTS = "pending_after_n_requests"
 _ORIGINAL_RUNTIME_DELAY_SEND: Any = None
 _PATCHED_RUNTIME_DELAY_SECONDS = 0.0
+
+
+def _completion_window_seconds(value: str) -> int:
+    return 0 if value == "0h" else parse_completion_window(value)
 
 
 def _backend(test_backend):
@@ -663,7 +668,9 @@ def validate_batch_response(
             "Required field 'input_file_id' should not be None"
         )
 
-    assert response["completion_window"] == expected_completion_window, (
+    assert _completion_window_seconds(
+        response["completion_window"]
+    ) == _completion_window_seconds(expected_completion_window), (
         f"Expected completion_window '{expected_completion_window}', got '{response['completion_window']}'"
     )
 
@@ -691,7 +698,7 @@ def validate_batch_response(
     assert isinstance(response["expires_at"], int), (
         "Expected 'expires_at' to be unix timestamp (int)"
     )
-    if expected_completion_window == "24h":
+    if _completion_window_seconds(expected_completion_window) == 86400:
         assert response["expires_at"] == response["created_at"] + 86400, (
             "Expected 'expires_at' to be 'created_at' + 86400"
         )
@@ -2333,7 +2340,13 @@ async def test_job_cancellation_in_finalizing(e2e_test_app, test_backend):
 
                 # Step 5: Cancellation should not interrupt finalization once it has started
                 cancel_response = client.post(f"/v1/batches/{batch_id}/cancel")
-                assert cancel_response.status_code == 200
+                assert cancel_response.status_code == 409
+                assert cancel_response.json() == {
+                    "error": {
+                        "message": "Cannot cancel a batch with status 'finalized'.",
+                        "type": "invalid_request_error",
+                    }
+                }
 
                 # Step 6: Wait for final status and verify the job still completes
                 final_status = await wait_for_status(
@@ -2357,7 +2370,7 @@ async def test_job_cancellation_in_finalizing(e2e_test_app, test_backend):
                     expected_finalizing_at=True,  # Should have reached finalizing
                     expected_cancelling_at=False,
                     expected_cancelled_at=False,
-                    expected_errors="cancel_rejected",
+                    expected_errors=False,
                     expected_output_file_id=True,  # Should have output file
                     expected_error_file_id=False,  # No failures -> no error file
                     expected_request_counts=True,  # Should have request counts

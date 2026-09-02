@@ -228,6 +228,8 @@ New KVCache backends can be easily added by implementing the ``Connector`` inter
 
 Please refer to the `existing connectors <https://github.com/vllm-project/aibrix/tree/main/python/aibrix_kvcache/aibrix_kvcache/l2/connectors>`_ for more details.
 
+.. _kvcache_env_reference:
+
 Environment Variables Reference
 -------------------------------
 
@@ -511,3 +513,10 @@ RocksDB connector is used for testing purposes.
    * - AIBRIX_KV_CACHE_OL_ROCKSDB_MAX_BACKGROUND_JOBS
      - "8"
      - Max background jobs.
+
+.. seealso::
+
+   :doc:`../features/kvcache-offloading`
+       Deploying and configuring distributed KV cache.
+   :doc:`../features/kv-event-sync`
+       Synchronizing KV cache events with the gateway.

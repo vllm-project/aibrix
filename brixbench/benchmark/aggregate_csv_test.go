@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/vllm-project/aibrix/brixbench/internal/resolver"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -36,7 +37,7 @@ const (
 	aggregateCSVObjectName    = "benchmark_metrics.csv"
 )
 
-// Aggregate CSV columns (frozen for Goal 3.1).
+// Aggregate CSV columns
 // TOS path: tos://{bucket}/{prefix}/aggregates/benchmark_metrics.csv
 var aggregateCSVHeader = []string{
 	"schema_version",
@@ -46,6 +47,7 @@ var aggregateCSVHeader = []string{
 	"category",
 	"status",
 	"started_at",
+	"run_date",
 	"finished_at",
 	"row_updated_at",
 	"platform",
@@ -115,15 +117,19 @@ func maybeUpdateAggregateCSV(t *testing.T, uploader tosUploader, config publishC
 
 func buildAggregateRows(scenario *resolver.Scenario, summary scenarioSummary, runID string, config publishConfig, startedAt, finishedAt time.Time) []map[string]string {
 	byName := make(map[string]resolver.Test, len(scenario.Tests))
+	workloadByName := make(map[string]aggregateWorkloadFields, len(scenario.Tests))
 	for _, tc := range scenario.Tests {
 		byName[tc.Name] = tc
+		workloadByName[tc.Name] = loadAggregateWorkloadFields(tc.Benchmark)
 	}
 	now := time.Now().In(benchmarkLocation()).Format(time.RFC3339)
 	start := startedAt.In(benchmarkLocation()).Format(time.RFC3339)
+	runDate := startedAt.In(benchmarkLocation()).Format("2006-01-02")
 	finish := finishedAt.In(benchmarkLocation()).Format(time.RFC3339)
 	rows := make([]map[string]string, 0, len(summary.Results))
 	for _, result := range summary.Results {
 		tc := byName[result.TestCase]
+		workload := workloadByName[result.TestCase]
 		platform := tc.ProviderName()
 		if platform == "" {
 			platform = "vllm"
@@ -135,7 +141,6 @@ func buildAggregateRows(scenario *resolver.Scenario, summary scenarioSummary, ru
 		topology := inferTopology(result.TestCase)
 		router := inferRouter(result.TestCase, platform)
 		model := firstNonEmpty(stringifyValue(metrics["model_id"]), "qwen3-8b")
-		engineVersion := inferEngineVersion(metrics, platform)
 		platformVersion := strings.TrimSpace(result.Version)
 		if platformVersion == "" {
 			platformVersion = strings.TrimSpace(tc.Version)
@@ -144,6 +149,7 @@ func buildAggregateRows(scenario *resolver.Scenario, summary scenarioSummary, ru
 			// Avoid blank platform_version in dashboards; tip/unknown builds use main.
 			platformVersion = "main"
 		}
+		engineVersion := inferEngineVersion(metrics, platform, platformVersion)
 		platformCommit := shortCommit(firstNonEmpty(result.ResolvedCommit, result.Commit, tc.ResolvedCommit, tc.Commit))
 		platformTitle := platform
 		if platform != "" {
@@ -151,7 +157,7 @@ func buildAggregateRows(scenario *resolver.Scenario, summary scenarioSummary, ru
 		}
 		platformLabelVersion := platformVersion
 		if platform == "aibrix" &&
-			strings.TrimSpace(os.Getenv("BENCHMARK_GATEWAY_COMMIT")) != "" &&
+			platformVersion == "main" &&
 			platformCommit != "" {
 			platformLabelVersion += "@" + platformCommit
 		}
@@ -170,6 +176,7 @@ func buildAggregateRows(scenario *resolver.Scenario, summary scenarioSummary, ru
 			"category":           scenarioCategory(scenario.Name),
 			"status":             result.Status,
 			"started_at":         start,
+			"run_date":           runDate,
 			"finished_at":        finish,
 			"row_updated_at":     now,
 			"platform":           platform,
@@ -185,10 +192,10 @@ func buildAggregateRows(scenario *resolver.Scenario, summary scenarioSummary, ru
 			"benchmark_kind":     firstNonEmpty(result.BenchmarkKind, tc.BenchmarkKind, "vllm-bench"),
 			"rate":               metricString(metrics, "request_rate"),
 			"concurrency":        metricString(metrics, "max_concurrency"),
-			"num_prefixes":       "",
-			"prefix_len":         "",
-			"suffix_len":         "",
-			"output_len":         "",
+			"num_prefixes":       workload.numPrefixes,
+			"prefix_len":         workload.prefixLen,
+			"suffix_len":         workload.suffixLen,
+			"output_len":         workload.outputLen,
 			"num_prompts":        metricString(metrics, "num_prompts"),
 			"series_label":       seriesLabel,
 			"sort_key":           platformSortKey(platform, platformVersion),
@@ -213,6 +220,48 @@ func buildAggregateRows(scenario *resolver.Scenario, summary scenarioSummary, ru
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+type aggregateWorkloadFields struct {
+	numPrefixes string
+	prefixLen   string
+	suffixLen   string
+	outputLen   string
+}
+
+type aggregateBenchmarkConfig struct {
+	VLLMArgs map[string]any `yaml:"vllmArgs"`
+}
+
+func loadAggregateWorkloadFields(benchmarkPath string) aggregateWorkloadFields {
+	benchmarkPath = strings.TrimSpace(benchmarkPath)
+	if benchmarkPath == "" {
+		return aggregateWorkloadFields{}
+	}
+	data, err := os.ReadFile(benchmarkPath)
+	if err != nil && !filepath.IsAbs(benchmarkPath) {
+		data, err = os.ReadFile(filepath.Join("..", benchmarkPath))
+	}
+	if err != nil {
+		return aggregateWorkloadFields{}
+	}
+	var config aggregateBenchmarkConfig
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return aggregateWorkloadFields{}
+	}
+	return aggregateWorkloadFields{
+		numPrefixes: yamlValueString(config.VLLMArgs["prefix-repetition-num-prefixes"]),
+		prefixLen:   yamlValueString(config.VLLMArgs["prefix-repetition-prefix-len"]),
+		suffixLen:   yamlValueString(config.VLLMArgs["prefix-repetition-suffix-len"]),
+		outputLen:   yamlValueString(config.VLLMArgs["prefix-repetition-output-len"]),
+	}
+}
+
+func yamlValueString(value any) string {
+	if value == nil {
+		return ""
+	}
+	return metricString(map[string]any{"value": value}, "value")
 }
 
 func appendAggregateCSV(uploader tosUploader, config publishConfig, newRows []map[string]string) error {
@@ -375,24 +424,19 @@ type jsonNumberStringer interface {
 
 func inferTopology(testcase string) string {
 	name := strings.ToLower(testcase)
-	switch {
-	case strings.Contains(name, "4p4d"):
+	for _, size := range []string{"4p4d", "4p8d", "8p4d", "8p8d"} {
+		if !strings.Contains(name, size) {
+			continue
+		}
 		if strings.Contains(name, "multinode") {
-			return "4p4d-multinode"
+			return size + "-multinode"
 		}
 		if strings.Contains(name, "singlenode") {
-			return "4p4d-singlenode"
+			return size + "-singlenode"
 		}
-		return "4p4d"
-	case strings.Contains(name, "4p8d"):
-		return "4p8d"
-	case strings.Contains(name, "8p4d"):
-		return "8p4d"
-	case strings.Contains(name, "8p8d"):
-		return "8p8d"
-	default:
-		return ""
+		return size
 	}
+	return ""
 }
 
 func shortCommit(commit string) string {
@@ -432,15 +476,22 @@ func inferRouter(testcase, platform string) string {
 	}
 }
 
-func inferEngineVersion(metrics map[string]any, platform string) string {
-	_ = platform
+func inferEngineVersion(metrics map[string]any, platform, platformVersion string) string {
 	if tok := stringifyValue(metrics["tokenizer_id"]); strings.Contains(tok, "Qwen3") {
 		// tokenizer path is not engine version; fall through to defaults.
 	}
 	// Defaults used by current multi-node fixtures.
 	switch platform {
 	case "dynamo":
-		return "0.21.0"
+		ver := strings.TrimPrefix(platformVersion, "v")
+		switch {
+		case strings.HasPrefix(ver, "1.4."):
+			return "0.26.0"
+		case strings.HasPrefix(ver, "1.3."):
+			return "0.23.0"
+		default:
+			return "0.21.0"
+		}
 	case "llmd":
 		return "0.23.0"
 	default:
@@ -562,6 +613,15 @@ func TestInferTopologyAndRouter(t *testing.T) {
 	if got := inferTopology("aibrix-pd-4p4d-singlenode-r8"); got != "4p4d-singlenode" {
 		t.Fatalf("topology=%q", got)
 	}
+	if got := inferTopology("dynamo-v1.2.1-qwen3-8b-round-robin-4p8d-multinode-r8"); got != "4p8d-multinode" {
+		t.Fatalf("topology=%q", got)
+	}
+	if got := inferTopology("llmd-pd-8p4d-multinode-r16"); got != "8p4d-multinode" {
+		t.Fatalf("topology=%q", got)
+	}
+	if got := inferTopology("aibrix-pd-8p8d-r8"); got != "8p8d" {
+		t.Fatalf("topology=%q", got)
+	}
 	if got := inferRouter("dynamo-v1.2.1-qwen3-8b-round-robin-4p4d-multinode-r8", "dynamo"); got != "round-robin" {
 		t.Fatalf("router=%q", got)
 	}
@@ -570,7 +630,28 @@ func TestInferTopologyAndRouter(t *testing.T) {
 	}
 }
 
+func TestInferEngineVersionForDynamoRelease(t *testing.T) {
+	tests := []struct {
+		version string
+		want    string
+	}{
+		{version: "v1.2.1", want: "0.21.0"},
+		{version: "v1.3.1", want: "0.23.0"},
+		{version: "v1.4.0", want: "0.26.0"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.version, func(t *testing.T) {
+			if got := inferEngineVersion(nil, "dynamo", tt.version); got != tt.want {
+				t.Fatalf("inferEngineVersion(dynamo, %q) = %q, want %q", tt.version, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildAggregateRowsSeriesLabelAndCommit(t *testing.T) {
+	t.Setenv("BENCHMARK_GATEWAY_COMMIT", "0123456789abcdef0123456789abcdef01234567")
+
 	aibrix, dynamo, llmd := "aibrix", "dynamo", "llmd"
 	scenario := &resolver.Scenario{
 		Name: "routing-compare-qwen3-8b-4p4d-singlenode",
@@ -585,9 +666,13 @@ func TestBuildAggregateRowsSeriesLabelAndCommit(t *testing.T) {
 		{TestCase: "dynamo-v1.2.1-qwen3-8b-round-robin-4p4d-singlenode-r16", Status: "passed", Version: "v1.2.1", Metrics: map[string]any{"request_rate": 16}},
 		{TestCase: "llmd-pd-4p4d-singlenode-r8", Status: "failed"},
 	}}
-	rows := buildAggregateRows(scenario, summary, "run-1", publishConfig{bucket: "b", prefix: "p"}, time.Now(), time.Now())
+	startedAt := time.Date(2026, time.August, 5, 3, 6, 37, 0, time.FixedZone("CST", 8*60*60))
+	rows := buildAggregateRows(scenario, summary, "run-1", publishConfig{bucket: "b", prefix: "p"}, startedAt, startedAt.Add(time.Hour))
 	if len(rows) != 3 {
 		t.Fatalf("rows=%d", len(rows))
+	}
+	if rows[0]["run_date"] != "2026-08-05" {
+		t.Fatalf("run_date=%q", rows[0]["run_date"])
 	}
 	if rows[0]["series_label"] != "Aibrix v0.6.0 + vllm 0.22.0 + pd" {
 		t.Fatalf("aibrix series_label=%q", rows[0]["series_label"])
@@ -620,6 +705,9 @@ func TestBuildAggregateRowsSeriesLabelAndCommit(t *testing.T) {
 	if _, ok := got[0]["platform_commit"]; !ok {
 		t.Fatalf("missing platform_commit column in round-trip")
 	}
+	if got[0]["run_date"] != "2026-08-05" {
+		t.Fatalf("round-trip run_date=%q", got[0]["run_date"])
+	}
 	header := aggregateCSVHeader
 	found := false
 	for _, h := range header {
@@ -633,7 +721,7 @@ func TestBuildAggregateRowsSeriesLabelAndCommit(t *testing.T) {
 	}
 }
 
-func TestBuildAggregateRowsLabelsPrebuiltGatewayCommit(t *testing.T) {
+func TestBuildAggregateRowsLabelsMainCommit(t *testing.T) {
 	const gatewayCommit = "9aa8b21ef6053dc19dde76f71552247b82f93630"
 	t.Setenv("BENCHMARK_GATEWAY_COMMIT", gatewayCommit)
 
@@ -643,13 +731,11 @@ func TestBuildAggregateRowsLabelsPrebuiltGatewayCommit(t *testing.T) {
 		Tests: []resolver.Test{{
 			Name:     "aibrix-pd-4p4d-multinode-r8",
 			Provider: &aibrix,
-			Version:  "v0.6.0",
 		}},
 	}
 	summary := scenarioSummary{Results: []scenarioCaseResult{{
 		TestCase:       "aibrix-pd-4p4d-multinode-r8",
 		Status:         "passed",
-		Version:        "v0.6.0",
 		ResolvedCommit: gatewayCommit,
 		Metrics:        map[string]any{"request_rate": 8},
 	}}}
@@ -665,14 +751,76 @@ func TestBuildAggregateRowsLabelsPrebuiltGatewayCommit(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("rows=%d", len(rows))
 	}
-	if rows[0]["platform_version"] != "v0.6.0" {
+	if rows[0]["platform_version"] != "main" {
 		t.Fatalf("platform_version=%q", rows[0]["platform_version"])
 	}
 	if rows[0]["platform_commit"] != "9aa8b21" {
 		t.Fatalf("platform_commit=%q", rows[0]["platform_commit"])
 	}
-	const wantLabel = "Aibrix v0.6.0@9aa8b21 + vllm 0.22.0 + pd"
+	const wantLabel = "Aibrix main@9aa8b21 + vllm 0.22.0 + pd"
 	if rows[0]["series_label"] != wantLabel {
 		t.Fatalf("series_label=%q, want %q", rows[0]["series_label"], wantLabel)
+	}
+}
+
+func TestBuildAggregateRowsPrefixRepetitionWorkloadFields(t *testing.T) {
+	dir := t.TempDir()
+	withPrefixArgs := filepath.Join(dir, "prefix.yaml")
+	if err := os.WriteFile(withPrefixArgs, []byte(`
+kind: vllm-bench
+vllmArgs:
+  prefix-repetition-num-prefixes: 20
+  prefix-repetition-prefix-len: 6000
+  prefix-repetition-suffix-len: 2000
+  prefix-repetition-output-len: 1024
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	withoutPrefixArgs := filepath.Join(dir, "plain.yaml")
+	if err := os.WriteFile(withoutPrefixArgs, []byte(`
+kind: vllm-bench
+vllmArgs:
+  num-prompts: 1000
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	aibrix := "aibrix"
+	scenario := &resolver.Scenario{
+		Name: "aibrix-routing-qwen3-8b-4p4d-multinode",
+		Tests: []resolver.Test{
+			{Name: "aibrix-pd-4p4d-multinode-r8", Provider: &aibrix, Benchmark: withPrefixArgs},
+			{Name: "aibrix-pd-4p4d-multinode-r16", Provider: &aibrix, Benchmark: withoutPrefixArgs},
+		},
+	}
+	summary := scenarioSummary{Results: []scenarioCaseResult{
+		{TestCase: "aibrix-pd-4p4d-multinode-r8", Status: "passed", Metrics: map[string]any{"request_rate": 8}},
+		{TestCase: "aibrix-pd-4p4d-multinode-r16", Status: "passed", Metrics: map[string]any{"request_rate": 16}},
+	}}
+
+	rows := buildAggregateRows(
+		scenario,
+		summary,
+		"run-workload",
+		publishConfig{bucket: "b", prefix: "p"},
+		time.Now(),
+		time.Now(),
+	)
+	if len(rows) != 2 {
+		t.Fatalf("rows=%d", len(rows))
+	}
+	want := map[string]string{
+		"num_prefixes": "20",
+		"prefix_len":   "6000",
+		"suffix_len":   "2000",
+		"output_len":   "1024",
+	}
+	for key, value := range want {
+		if rows[0][key] != value {
+			t.Fatalf("rows[0][%s]=%q, want %q", key, rows[0][key], value)
+		}
+		if rows[1][key] != "" {
+			t.Fatalf("rows[1][%s]=%q, want empty", key, rows[1][key])
+		}
 	}
 }

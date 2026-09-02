@@ -9,8 +9,10 @@ import aibrix.batch.constant as constant
 from aibrix import envs
 from aibrix.batch.job_driver.running_jobs import RunningJobs
 from aibrix.batch.job_entity import BatchJob, BatchJobError, BatchJobErrorCode
+from aibrix.batch.metrics import tags_from_job
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
+from aibrix.metadata.core.metrics import Emitter, T, metrics_names
 
 logger = init_logger(__name__)
 
@@ -90,6 +92,7 @@ class JobDriverErrorInjector:
         ] = None,
     ) -> None:
         self._job_id = job.job_id if job is not None else None
+        self._job = job
         self._progress_manager = progress_manager
         opts = dict(job.spec.opts or {}) if job is not None and job.spec.opts else {}
         if not envs.BATCH_ERROR_INJECTION_ENABLED:
@@ -349,6 +352,15 @@ class JobDriverErrorInjector:
         )
 
     def _log_event(self, event: JobDriverErrorInjectionEvent) -> None:
+        job_tags = tags_from_job(self._job)
+        Emitter.counter(
+            metrics_names.METRIC_METADATA_BATCH_DRIVER_FAILURE_INJECTION,
+            1,
+            *job_tags,
+            T("injection_type", event.opt_key),
+            T("breakpoint", event.breakpoint),
+            T("action", event.action),
+        )
         log_data: dict[str, Any] = {
             "job_id": self._job_id,
             "opt_key": event.opt_key,

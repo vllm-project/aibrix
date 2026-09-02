@@ -68,8 +68,9 @@ const (
 	metricConsoleJobError = "console.job.error"
 )
 
-type JobLimits struct {
+type JobCapabilities struct {
 	ResourceRequest JobResourceRequestLimits `json:"resource_request"`
+	Provider        string                   `json:"provider"`
 }
 
 type JobResourceRequestLimits struct {
@@ -77,21 +78,17 @@ type JobResourceRequestLimits struct {
 	MaxReplicas int32 `json:"max_replicas"`
 }
 
-func JobLimitsConfig() JobLimits {
-	return JobLimits{
+func JobCapabilitiesConfig(provider string, devMode bool) JobCapabilities {
+	if devMode {
+		provider = "demo"
+	}
+	return JobCapabilities{
 		ResourceRequest: JobResourceRequestLimits{
 			MinReplicas: minJobReplicas,
 			MaxReplicas: maxJobReplicas,
 		},
+		Provider: provider,
 	}
-}
-
-var supportedCompletionWindows = map[string]struct{}{
-	"1h":  {},
-	"2h":  {},
-	"6h":  {},
-	"12h": {},
-	"24h": {},
 }
 
 // JobHandler implements console.v1.JobService.
@@ -258,12 +255,19 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 	if completionWindow == "" {
 		completionWindow = string(openai.BatchNewParamsCompletionWindow24h)
 	}
-	if _, ok := supportedCompletionWindows[completionWindow]; !ok {
+	_, err := utils.ParseCompletionWindow(completionWindow)
+	if err != nil {
 		return nil, status.Errorf(
 			codes.InvalidArgument,
-			"unsupported completion_window %q; supported values: 1h, 2h, 6h, 12h, 24h",
+			"invalid completion_window %q: %v",
 			completionWindow,
+			err,
 		)
+	}
+
+	var providerConfig map[string]any
+	if req.ResourceRequest != nil && req.ResourceRequest.ProviderConfig != nil {
+		providerConfig = req.ResourceRequest.ProviderConfig.AsMap()
 	}
 
 	// Console-generated JobID. The async Scheduler will own a durable
@@ -345,7 +349,8 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 		},
 		InjectionConfig: injectionConfig,
 		ResourceRequest: &plannerapi.ResourceRequest{
-			Replicas: int(replicas),
+			Replicas:       int(replicas),
+			ProviderConfig: providerConfig,
 		},
 		Client: toPlannerClientConfig(req.Client),
 	}
@@ -367,9 +372,11 @@ func toPlannerClientConfig(c *pb.JobClientConfig) *plannerapi.ClientConfig {
 		return nil
 	}
 	out := &plannerapi.ClientConfig{
-		MaxConcurrency:      c.MaxConcurrency,
-		AdaptiveConcurrency: c.AdaptiveConcurrency,
-		AdaptiveMaxFactor:   c.AdaptiveMaxFactor,
+		MaxConcurrency:           c.MaxConcurrency,
+		AdaptiveConcurrency:      c.AdaptiveConcurrency,
+		AdaptiveMaxFactor:        c.AdaptiveMaxFactor,
+		AdaptiveHealthyWindow:    c.AdaptiveHealthyWindow,
+		AdaptiveAdditiveIncrease: c.AdaptiveAdditiveIncrease,
 	}
 	if rp := c.RetryPolicy; rp != nil {
 		out.RetryPolicy = &plannerapi.ClientRetryPolicy{
@@ -456,7 +463,7 @@ func mapSDKError(err error, op string) error {
 		case http.StatusNotFound:
 			c = codes.NotFound
 		case http.StatusConflict:
-			c = codes.FailedPrecondition
+			c = codes.Aborted
 		case http.StatusUnauthorized, http.StatusForbidden:
 			c = codes.PermissionDenied
 		default:
@@ -464,7 +471,11 @@ func mapSDKError(err error, op string) error {
 				c = codes.Unavailable
 			}
 		}
-		return status.Error(c, apiErr.Error())
+		msg := apiErr.Message
+		if msg == "" {
+			msg = apiErr.Error()
+		}
+		return status.Error(c, msg)
 	}
 
 	return status.Errorf(codes.Unavailable, "%s: %v", op, err)

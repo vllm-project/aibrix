@@ -799,6 +799,28 @@ async def test_adaptive_concurrency_respects_absolute_max_cap():
 
 
 @pytest.mark.asyncio
+async def test_adaptive_concurrency_uses_configured_ramp_up():
+    source = _FakeSource([_FakeChannel("a")])
+    engine = DispatchEngine(source, max_retries=0)
+    controller = await engine._resolve_concurrency_controller(
+        max_concurrency=None,
+        adaptive_concurrency=True,
+        adaptive_max_factor=1,
+        adaptive_max_concurrency=16,
+        adaptive_healthy_window=2,
+        adaptive_additive_increase=4,
+        concurrency_controller=None,
+    )
+    healthy = ConcurrencyOutcome(success=True)
+
+    controller.on_complete(healthy)
+    assert controller.limit() == 1
+
+    controller.on_complete(healthy)
+    assert controller.limit() == 5
+
+
+@pytest.mark.asyncio
 async def test_adaptive_concurrency_can_decrease_below_source_capacity():
     source = _FakeSource([_FakeChannel("a"), _FakeChannel("b")])
     engine = DispatchEngine(source, max_retries=0)
@@ -807,6 +829,8 @@ async def test_adaptive_concurrency_can_decrease_below_source_capacity():
         adaptive_concurrency=True,
         adaptive_max_factor=1,
         adaptive_max_concurrency=32,
+        adaptive_healthy_window=8,
+        adaptive_additive_increase=1,
         concurrency_controller=None,
     )
     overload = ConcurrencyOutcome(success=False, status_code=503, retryable=True)
@@ -1140,7 +1164,7 @@ async def test_discovery_source_uses_cache_until_refresh_interval():
 
 
 @pytest.mark.asyncio
-async def test_discovery_source_refreshes_and_removes_failed_channel():
+async def test_discovery_source_refreshes_but_keeps_failed_channel():
     from aibrix.batch.client.sources import DiscoveryEndpointSource
 
     now = 0.0
@@ -1185,6 +1209,7 @@ async def test_discovery_source_refreshes_and_removes_failed_channel():
         )
 
         assert [channel.id for channel in await source.channels()] == [
+            "http://bad",
             "http://good",
             "http://new",
         ]
@@ -1194,7 +1219,7 @@ async def test_discovery_source_refreshes_and_removes_failed_channel():
 
 
 @pytest.mark.asyncio
-async def test_discovery_source_removes_failed_channel_even_if_refresh_fails():
+async def test_discovery_source_keeps_channels_when_refresh_fails():
     from aibrix.batch.client.sources import DiscoveryEndpointSource
 
     discovery = _FailingThenSequenceDiscovery(
@@ -1229,7 +1254,10 @@ async def test_discovery_source_removes_failed_channel_even_if_refresh_fails():
             ),
         )
 
-        assert [channel.id for channel in await source.channels()] == ["http://good"]
+        assert [channel.id for channel in await source.channels()] == [
+            "http://bad",
+            "http://good",
+        ]
         assert discovery.calls == 2
     finally:
         await source.aclose()

@@ -14,10 +14,12 @@
 
 import asyncio
 import time
+from functools import wraps
 from typing import BinaryIO, Optional, TextIO, Union
 
 import aibrix.client.redis as redis
 from aibrix import envs
+from aibrix.metadata.core.metrics.tracking import record_backend_operation
 from aibrix.storage.base import (
     PutObjectOptions,
     StorageConfig,
@@ -27,6 +29,23 @@ from aibrix.storage.base2 import BaseStorage2
 from aibrix.storage.reader import Reader
 from aibrix.storage.types import StorageListOrdering
 from aibrix.storage.utils import ObjectMetadata
+
+
+class _TrackedRedisClientProxy:
+    def __init__(self, client: redis.AsyncRedis) -> None:
+        self._client = client
+
+    def __getattr__(self, name: str):
+        attr = getattr(self._client, name)
+        if not callable(attr):
+            return attr
+
+        @wraps(attr)
+        def _wrapped(*args, **kwargs):
+            record_backend_operation()
+            return attr(*args, **kwargs)
+
+        return _wrapped
 
 
 class RedisStorage(BaseStorage2):
@@ -124,7 +143,7 @@ class RedisStorage(BaseStorage2):
             client_kwargs = {**self._kwargs, "decode_responses": False}  # Keep as bytes
             redis_client = redis.get_redis_client(**client_kwargs)
             self._redis_clients[loop_id] = redis_client
-        return redis_client
+        return _TrackedRedisClientProxy(redis_client)
 
     async def close(self):
         """Close Redis connection."""
