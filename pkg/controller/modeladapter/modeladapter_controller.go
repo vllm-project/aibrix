@@ -105,6 +105,10 @@ const (
 	ModelAdapterAvailable = "ModelAdapterAvailable"
 	// ModelAdapterUnavailable is added in a ModelAdapter when it doesn't have any pod hosting it.
 	ModelAdapterUnavailable = "ModelAdapterUnavailable"
+	// ModelAdapterBoundReason is added in a ModelAdapter when it is successfully loaded on at least one pod.
+	ModelAdapterBoundReason = "ModelAdapterBound"
+	// ModelAdapterScheduledReason is added in a ModelAdapter when it has pods scheduled and loaded.
+	ModelAdapterScheduledReason = "Scheduled"
 
 	// Inference Service path and ports
 	DefaultInferenceEnginePort      = "8000"
@@ -484,11 +488,29 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 		return ctrlResult, err
 	}
 
-	// Check if we need to update the status.
-	if r.inconsistentModelAdapterStatus(oldInstance.Status, instance.Status) {
-		condition := NewCondition(string(modelv1alpha1.ModelAdapterConditionReady), metav1.ConditionTrue,
+	// Check if we need to update the status. Besides the usual field-level diff, also repair
+	// Bound/Scheduled if either is stuck False from an earlier failure/migration whose recovery
+	// path didn't clear it (see reconcileLoading and the Step 2 error path) -- otherwise, once
+	// the adapter has been stably healthy for a cycle, oldInstance/instance stop differing and
+	// the stale condition would never get another chance to be corrected.
+	conditionUnhealthy := func(condType string) bool {
+		cond := meta.FindStatusCondition(instance.Status.Conditions, condType)
+		return cond == nil || cond.Status != metav1.ConditionTrue
+	}
+	if r.inconsistentModelAdapterStatus(oldInstance.Status, instance.Status) ||
+		conditionUnhealthy(string(modelv1alpha1.ModelAdapterConditionTypeBound)) ||
+		conditionUnhealthy(string(modelv1alpha1.ModelAdapterConditionTypeScheduled)) {
+		readyCondition := NewCondition(string(modelv1alpha1.ModelAdapterConditionReady), metav1.ConditionTrue,
 			ModelAdapterAvailable, fmt.Sprintf("ModelAdapter %s is ready", klog.KObj(instance)))
-		if err := r.updateStatus(ctx, instance, condition); err != nil {
+		// Reaching here means reconcileLoading returned no error, i.e. the adapter is
+		// actually loaded on at least one pod. Reassert Bound/Scheduled as healthy too,
+		// so a stale False left over from an earlier failure or migration (reconcileLoading's
+		// podRemoved branch, or the Step 2 error path) doesn't linger once the adapter recovers.
+		boundCondition := NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeBound), metav1.ConditionTrue,
+			ModelAdapterBoundReason, fmt.Sprintf("ModelAdapter %s is bound to %d pod(s)", klog.KObj(instance), instance.Status.ReadyReplicas))
+		scheduledCondition := NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeScheduled), metav1.ConditionTrue,
+			ModelAdapterScheduledReason, fmt.Sprintf("ModelAdapter %s is scheduled on %d pod(s)", klog.KObj(instance), instance.Status.ReadyReplicas))
+		if err := r.updateStatus(ctx, instance, readyCondition, boundCondition, scheduledCondition); err != nil {
 			return reconcile.Result{}, fmt.Errorf("update modelAdapter status error: %v", err)
 		}
 	}
@@ -754,7 +776,9 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 
 	if len(activePods) == 0 {
 		klog.V(4).InfoS("No active pods found for ModelAdapter", "ModelAdapter", klog.KObj(instance))
-		return nil
+		// Fall through instead of returning early: instance.Status.Instances/ReadyReplicas
+		// and the Ready condition still need to be reconciled to reflect that no pods
+		// are currently backing this adapter (e.g. the base model pod was deleted).
 	}
 
 	// Create a map of active pods for quick lookup
