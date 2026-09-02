@@ -259,11 +259,12 @@ func (c *loraClient) loadAdapterCall(ctx context.Context, url string, instance *
 				klog.ErrorS(err, "Invalid artifact URL", "artifactURL", artifactURL)
 				return err
 			}
-		} else if strings.HasPrefix(artifactURL, "s3://") || strings.HasPrefix(artifactURL, "gcs://") || strings.HasPrefix(artifactURL, "tos://") {
-			// These schemes need the artifact downloaded before the inference engine can
-			// load it; the engine only understands local paths and HuggingFace repo ids,
-			// so forwarding the raw URL causes it to be misread as a HuggingFace repo id
-			// (e.g. HFValidationError). Fail fast with an actionable error instead.
+		} else if strings.Contains(artifactURL, "://") {
+			// Any remaining scheme (s3://, gcs://, tos://, oss://, https://, ...) needs the
+			// artifact downloaded before the inference engine can load it; the engine only
+			// understands local paths and HuggingFace repo ids, so forwarding the raw URL
+			// causes it to be misread as a HuggingFace repo id (e.g. HFValidationError).
+			// Fail fast with an actionable error instead.
 			err := fmt.Errorf("artifact URL %q requires downloading via the aibrix runtime sidecar, "+
 				"which is not enabled for ModelAdapter %q; enable it with the "+
 				"\"model.aibrix.ai/sidecar-injection: true\" annotation on the target pod, "+
