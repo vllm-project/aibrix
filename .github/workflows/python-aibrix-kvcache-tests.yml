@@ -5,17 +5,19 @@ on:
     branches: [ "main", "release-*" ]
     paths:
       - 'python/aibrix_kvcache/**'
+      - '.github/workflows/python-aibrix-kvcache-tests.yml'
   pull_request:
     branches: [ "main" ]
     paths:
       - 'python/aibrix_kvcache/**'
+      - '.github/workflows/python-aibrix-kvcache-tests.yml'
 jobs:
   lint:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: ["3.11", "3.12"]
-    name: Lint
+    name: Python AIBrix KVCache Tests (${{ matrix.python-version }})
     steps:
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@v1.3.1

@@ -103,7 +103,7 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.12"]
-    name: publish
+    name: Publish AIBrix Python Wheel
     steps:
       - name: Check out source repository
         uses: actions/checkout@v6
@@ -147,7 +147,7 @@ jobs:
       url: https://pypi.org/p/aibrix_kvcache
     permissions:
       id-token: write
-    name: publish
+    name: Publish AIBrix KVCache Python Wheel
     steps:
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@v1.3.1

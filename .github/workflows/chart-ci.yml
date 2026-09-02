@@ -50,6 +50,7 @@ jobs:
           retention-days: 1
 
   test:
+    name: Helm Chart Install Test
     needs: [build-images]
     runs-on: ubuntu-latest
     steps:

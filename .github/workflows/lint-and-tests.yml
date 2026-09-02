@@ -31,6 +31,7 @@ on:
 
 jobs:
   lint:
+    name: Go Lint
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
@@ -43,6 +44,7 @@ jobs:
         run: make lint-all
 
   verify:
+    name: Verify Generated Code
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
@@ -58,7 +60,8 @@ jobs:
       - name: Verify CRD Synchronization
         run: bash ${GITHUB_WORKSPACE}/hack/verify-crd-sync.sh
 
-  test:
+  unit-test:
+    name: Go Unit Tests
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -97,17 +100,42 @@ jobs:
           path: cover.out
           if-no-files-found: error
           retention-days: 1
-      
+
+  race-test:
+    name: Go Race Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.22'
+      - name: Install ZMQ dependencies
+        run: sudo apt-get update && sudo apt-get install -y libkrb5-dev libzmq3-dev
       - name: Run Race Condition Tests
         run: make test-race-condition
 
+  integration-test:
+    name: Go Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.22'
+      - name: Install ZMQ dependencies
+        run: sudo apt-get update && sudo apt-get install -y libkrb5-dev libzmq3-dev
       - name: Run Integration Tests
         run: make test-integration
 
 
   check-coverage:
+    name: Go Coverage
     runs-on: ubuntu-latest
-    needs: test
+    needs: unit-test
     permissions:
       packages: write
       contents: read
