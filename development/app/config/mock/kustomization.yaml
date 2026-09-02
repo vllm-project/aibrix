@@ -7,6 +7,5 @@ resources:
   - sglang-pd-config.yaml
   - trtllm-pd-config.yaml
 
-# enable following patch when we test lora + api-key
-# patches:
-#   - path: api-key-patch.yaml
+patches:
+  - path: api-key-patch.yaml
