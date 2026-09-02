@@ -143,14 +143,12 @@ func TestLoadAdapter(t *testing.T) {
 					ArtifactURL: "s3://s3-bucket/llama-3.1-nemoguard-8b-topic-control",
 				},
 			},
-			pod:               newPod("127.0.0.1", VLLMEngine, false),
-			port:              8000,
-			modelApiResponse:  prepareModelApiResponseWithOneModel("vllm", "qwen2-5-0-5b"),
-			loadApiStatusCode: 200,
-			wantErr:           true,
-			wantErrContain:    "cannot be fetched by the inference engine directly",
-			wantExists:        false,
-			wantLoaded:        false,
+			pod:            newPod("127.0.0.1", VLLMEngine, false),
+			port:           8000,
+			wantErr:        true,
+			wantErrContain: "cannot be fetched by the inference engine directly",
+			wantExists:     false,
+			wantLoaded:     false,
 		},
 		{
 			name:          "pod with sglang and without sidecar - model loaded ok",
@@ -173,10 +171,12 @@ func TestLoadAdapter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			modelApiCalled := false
 			loadApiCalled := false
 			server := mockServer(t, tt.pod.Status.PodIP, tt.port, func(w http.ResponseWriter, r *http.Request) {
 				// GET model API
 				if r.URL.Path == `/v1/models` {
+					modelApiCalled = true
 					if tt.modelApiResponse != "" {
 						_, _ = w.Write([]byte(tt.modelApiResponse))
 					} else {
@@ -207,6 +207,7 @@ func TestLoadAdapter(t *testing.T) {
 				assert.Error(t, err)
 				if tt.wantErrContain != "" {
 					assert.Contains(t, err.Error(), tt.wantErrContain)
+					assert.False(t, modelApiCalled, "list-models endpoint should not be called when the artifact URL is rejected up front")
 					assert.False(t, loadApiCalled, "load adapter endpoint should not be called when the artifact URL is rejected up front")
 				}
 			} else {

@@ -88,6 +88,12 @@ func (c *loraClient) LoadAdapter(ctx context.Context, instance *modelv1alpha1.Mo
 		klog.V(4).InfoS("Using runtime sidecar API for adapter loading", "pod", targetPod.Name, "adapter", instance.Name)
 	} else {
 		klog.V(4).InfoS("Using direct engine API for adapter loading", "pod", targetPod.Name, "adapter", instance.Name)
+		// Validate the artifact URL before calling out to the pod at all, so a
+		// ModelAdapter the direct path can never load fails immediately instead of
+		// after a pointless list-models round trip.
+		if _, err := resolveDirectPathArtifactURL(instance); err != nil {
+			return false, false, err
+		}
 	}
 
 	urls := BuildURLs(targetPod.Status.PodIP, c.runtimeConfig, useSidecar, metrics.GetEngineType(*targetPod))
@@ -204,6 +210,40 @@ func (c *loraClient) getModels(url string, instance *modelv1alpha1.ModelAdapter)
 	return models, nil
 }
 
+// resolveDirectPathArtifactURL transforms instance's ArtifactURL into the form the inference
+// engine's direct load-adapter API expects, or returns an error if the engine can't load it
+// directly (e.g. it needs the aibrix runtime sidecar to download it first).
+func resolveDirectPathArtifactURL(instance *modelv1alpha1.ModelAdapter) (string, error) {
+	artifactURL := instance.Spec.ArtifactURL
+
+	// Transform huggingface:// (and its hf:// alias) URLs to paths
+	if strings.HasPrefix(artifactURL, "huggingface://") || strings.HasPrefix(artifactURL, "hf://") {
+		transformed, err := extractHuggingFacePath(artifactURL)
+		if err != nil {
+			klog.ErrorS(err, "Invalid artifact URL", "artifactURL", artifactURL)
+			return "", err
+		}
+		return transformed, nil
+	}
+
+	if strings.Contains(artifactURL, "://") {
+		// Any remaining scheme (s3://, gcs://, tos://, oss://, https://, ...) needs the
+		// artifact downloaded before the inference engine can load it; the engine only
+		// understands local paths and HuggingFace repo ids, so forwarding the raw URL
+		// causes it to be misread as a HuggingFace repo id (e.g. HFValidationError).
+		// Fail fast with an actionable error instead.
+		err := fmt.Errorf("artifact URL %q cannot be fetched by the inference engine directly for ModelAdapter %q; "+
+			"either enable the aibrix runtime sidecar (the \"model.aibrix.ai/sidecar-injection: true\" pod "+
+			"annotation, and the controller must be started with --enable-runtime-sidecar), or use a "+
+			"huggingface://, hf://, or pre-mounted local path instead", artifactURL, instance.Name)
+		klog.ErrorS(err, "Unsupported artifact URL for direct engine loading", "ModelAdapter", klog.KObj(instance))
+		return "", err
+	}
+
+	// TODO: Add support for other URL transformations if needed
+	return artifactURL, nil
+}
+
 // Separate method to load the LoRA adapter
 func (c *loraClient) loadAdapterCall(ctx context.Context, url string, instance *modelv1alpha1.ModelAdapter, useSidecar bool) error {
 	var payloadBytes []byte
@@ -249,30 +289,10 @@ func (c *loraClient) loadAdapterCall(ctx context.Context, url string, instance *
 
 	} else {
 		// Direct path - transform URL for engine (existing logic)
-		artifactURL := instance.Spec.ArtifactURL
-
-		// Transform huggingface:// (and its hf:// alias) URLs to paths
-		if strings.HasPrefix(instance.Spec.ArtifactURL, "huggingface://") || strings.HasPrefix(instance.Spec.ArtifactURL, "hf://") {
-			var err error
-			artifactURL, err = extractHuggingFacePath(instance.Spec.ArtifactURL)
-			if err != nil {
-				klog.ErrorS(err, "Invalid artifact URL", "artifactURL", artifactURL)
-				return err
-			}
-		} else if strings.Contains(artifactURL, "://") {
-			// Any remaining scheme (s3://, gcs://, tos://, oss://, https://, ...) needs the
-			// artifact downloaded before the inference engine can load it; the engine only
-			// understands local paths and HuggingFace repo ids, so forwarding the raw URL
-			// causes it to be misread as a HuggingFace repo id (e.g. HFValidationError).
-			// Fail fast with an actionable error instead.
-			err := fmt.Errorf("artifact URL %q cannot be fetched by the inference engine directly for ModelAdapter %q; "+
-				"either enable the aibrix runtime sidecar (the \"model.aibrix.ai/sidecar-injection: true\" pod "+
-				"annotation, and the controller must be started with --enable-runtime-sidecar), or use a "+
-				"huggingface://, hf://, or pre-mounted local path instead", artifactURL, instance.Name)
-			klog.ErrorS(err, "Unsupported artifact URL for direct engine loading", "ModelAdapter", klog.KObj(instance))
-			return err
+		artifactURL, resolveErr := resolveDirectPathArtifactURL(instance)
+		if resolveErr != nil {
+			return resolveErr
 		}
-		// TODO: Add support for other URL transformations if needed
 
 		payload := map[string]string{
 			"lora_name": instance.Name,
