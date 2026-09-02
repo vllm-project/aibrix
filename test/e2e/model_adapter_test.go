@@ -70,7 +70,7 @@ func TestModelAdapter(t *testing.T) {
 	// delete pod and ensure model adapter is rescheduled
 	t.Log("deleting pod instance to force model adapter rescheduling")
 	assert.NoError(t, k8sClient.CoreV1().Pods("default").Delete(context.Background(), oldPod, v1.DeleteOptions{}))
-	validateAllPodsAreReady(t, k8sClient, 3)
+	validateAllPodsAreReady(t, k8sClient, 3, baseModelPodLabelSelector("llama2-7b"))
 	time.Sleep(3 * time.Second)
 	adapter = validateModelAdapter(t, v1alpha1Client, adapter.Name)
 	newPod := adapter.Status.Instances[0]
@@ -88,7 +88,7 @@ func TestModelAdapterRetryMechanism(t *testing.T) {
 	k8sClient, v1alpha1Client := initializeClient(context.Background(), t)
 
 	// Ensure pods are ready for the test
-	validateAllPodsAreReady(t, k8sClient, 3)
+	validateAllPodsAreReady(t, k8sClient, 3, baseModelPodLabelSelector("llama2-7b"))
 
 	t.Cleanup(func() {
 		_ = v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Delete(context.Background(),
@@ -250,7 +250,7 @@ func TestModelAdapterPodSwitching(t *testing.T) {
 	})
 
 	// Ensure we have multiple pods available for switching
-	validateAllPodsAreReady(t, k8sClient, 3)
+	validateAllPodsAreReady(t, k8sClient, 3, baseModelPodLabelSelector("llama2-7b"))
 
 	// Create model adapter
 	t.Log("creating model adapter to test pod switching")
@@ -301,7 +301,7 @@ func TestModelAdapterRetryAnnotations(t *testing.T) {
 	k8sClient, v1alpha1Client := initializeClient(context.Background(), t)
 
 	// Ensure pods are ready for the test
-	validateAllPodsAreReady(t, k8sClient, 3)
+	validateAllPodsAreReady(t, k8sClient, 3, baseModelPodLabelSelector("llama2-7b"))
 
 	t.Cleanup(func() {
 		_ = v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Delete(context.Background(),
@@ -375,7 +375,7 @@ func TestModelAdapterMultipleReplicas(t *testing.T) {
 	})
 
 	// Ensure we have enough pods for multiple replicas
-	validateAllPodsAreReady(t, k8sClient, 3)
+	validateAllPodsAreReady(t, k8sClient, 3, baseModelPodLabelSelector("llama2-7b"))
 
 	// Create model adapter
 	t.Log("creating model adapter with multiple replicas")
@@ -439,7 +439,7 @@ func TestModelAdapterAllPodsRemoved(t *testing.T) {
 	adapter := createModelAdapterConfig(adapterName, "llama2-7b")
 	k8sClient, v1alpha1Client := initializeClient(context.Background(), t)
 
-	validateAllPodsAreReady(t, k8sClient, 3)
+	validateAllPodsAreReady(t, k8sClient, 3, baseModelPodLabelSelector("llama2-7b"))
 
 	t.Cleanup(func() {
 		_ = v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Delete(context.Background(),
@@ -482,7 +482,7 @@ func TestModelAdapterAllPodsRemoved(t *testing.T) {
 		}))
 
 	assert.True(t, adapter.Status.ReadyReplicas > 0, "adapter should have recovered with ready replicas")
-	validateAllPodsAreReady(t, k8sClient, 3)
+	validateAllPodsAreReady(t, k8sClient, 3, baseModelPodLabelSelector("llama2-7b"))
 	validateInference(t, adapterName)
 }
 
@@ -498,7 +498,7 @@ func TestModelAdapterNoReadyPodsCondition(t *testing.T) {
 	adapter.Spec.Replicas = &replicas
 	k8sClient, v1alpha1Client := initializeClient(context.Background(), t)
 
-	validateAllPodsAreReady(t, k8sClient, 3)
+	validateAllPodsAreReady(t, k8sClient, 3, baseModelPodLabelSelector("llama2-7b"))
 
 	t.Cleanup(func() {
 		_ = v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Delete(context.Background(),
@@ -535,7 +535,7 @@ func TestModelAdapterNoReadyPodsCondition(t *testing.T) {
 
 	assert.True(t, observedNoReadyPods,
 		"expected to observe a NoReadyPods/InsufficientReadyPods Scheduled condition while pods were recovering")
-	validateAllPodsAreReady(t, k8sClient, 3)
+	validateAllPodsAreReady(t, k8sClient, 3, baseModelPodLabelSelector("llama2-7b"))
 }
 
 // TestModelAdapterServiceAndEndpointSliceReflectScheduledPod verifies the resources
@@ -549,7 +549,7 @@ func TestModelAdapterServiceAndEndpointSliceReflectScheduledPod(t *testing.T) {
 	adapter.Spec.Replicas = &replicas
 	k8sClient, v1alpha1Client := initializeClient(context.Background(), t)
 
-	validateAllPodsAreReady(t, k8sClient, 3)
+	validateAllPodsAreReady(t, k8sClient, 3, baseModelPodLabelSelector("llama2-7b"))
 
 	t.Cleanup(func() {
 		_ = v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Delete(context.Background(),
@@ -589,7 +589,7 @@ func TestModelAdapterReplicasModeSwitch(t *testing.T) {
 	adapter.Spec.Replicas = &replicas
 	k8sClient, v1alpha1Client := initializeClient(context.Background(), t)
 
-	validateAllPodsAreReady(t, k8sClient, 3)
+	validateAllPodsAreReady(t, k8sClient, 3, baseModelPodLabelSelector("llama2-7b"))
 
 	t.Cleanup(func() {
 		_ = v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Delete(context.Background(),
@@ -643,7 +643,7 @@ func TestModelAdapterConcurrentAdaptersShareBaseModelPods(t *testing.T) {
 	adapterB := createModelAdapterConfig(adapterBName, "llama2-7b")
 	k8sClient, v1alpha1Client := initializeClient(context.Background(), t)
 
-	validateAllPodsAreReady(t, k8sClient, 3)
+	validateAllPodsAreReady(t, k8sClient, 3, baseModelPodLabelSelector("llama2-7b"))
 
 	t.Cleanup(func() {
 		_ = v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Delete(context.Background(),
@@ -679,7 +679,7 @@ func TestModelAdapterDeletionCleansUpOwnedResources(t *testing.T) {
 	adapter := createModelAdapterConfig(adapterName, "llama2-7b")
 	k8sClient, v1alpha1Client := initializeClient(context.Background(), t)
 
-	validateAllPodsAreReady(t, k8sClient, 3)
+	validateAllPodsAreReady(t, k8sClient, 3, baseModelPodLabelSelector("llama2-7b"))
 
 	t.Log("creating model adapter")
 	adapter, err := v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Create(context.Background(),
