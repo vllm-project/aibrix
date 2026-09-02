@@ -484,6 +484,22 @@ func (s *StatelessRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv
 			if diff == 0 {
 				break
 			}
+			if !podutil.IsPodDraining(activePods[i]) {
+				continue
+			}
+			toDelete = append(toDelete, activePods[i])
+			if podutil.IsPodReady(activePods[i]) {
+				readyCount--
+			}
+			diff--
+		}
+		for i := 0; i < len(activePods); i++ {
+			if diff == 0 {
+				break
+			}
+			if podutil.IsPodDraining(activePods[i]) {
+				continue
+			}
 			// Stop at the availability floor: removing a ready Pod here would violate
 			// maxUnavailable. break (not continue) is safe because sortPodsByTemplateHash
 			// orders not-ready Pods before ready ones, so the only not-ready Pod that can

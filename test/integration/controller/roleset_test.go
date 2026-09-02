@@ -541,14 +541,22 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 			g.Expect(drainingPod.Annotations).To(gomega.HaveKey(aibrixconst.PodDrainStartTimeAnnotationKey))
 			_, err := time.Parse(time.RFC3339, drainingPod.Annotations[aibrixconst.PodDrainStartTimeAnnotationKey])
 			g.Expect(err).ToNot(gomega.HaveOccurred())
-			g.Expect(drainingPod.Annotations[aibrixconst.PodDrainReasonAnnotationKey]).To(gomega.Equal(aibrixconst.PodDrainReasonScaleIn))
-			g.Expect(drainingPod.Annotations[aibrixconst.PodDrainTargetActionAnnotationKey]).To(gomega.Equal(aibrixconst.PodDrainTargetActionDelete))
+			g.Expect(drainingPod.Annotations[aibrixconst.PodDrainReasonAnnotationKey]).To(
+				gomega.Equal(aibrixconst.PodDrainReasonScaleIn),
+			)
+			g.Expect(drainingPod.Annotations[aibrixconst.PodDrainTargetActionAnnotationKey]).To(
+				gomega.Equal(aibrixconst.PodDrainTargetActionDelete),
+			)
 			drainingPodName = drainingPod.Name
 		}, time.Second*10, time.Millisecond*250).Should(gomega.Succeed())
 
 		gomega.Consistently(func(g gomega.Gomega) {
 			pod := &corev1.Pod{}
-			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: drainingPodName}, pod)).To(gomega.Succeed())
+			g.Expect(k8sClient.Get(
+				ctx,
+				types.NamespacedName{Namespace: ns.Name, Name: drainingPodName},
+				pod,
+			)).To(gomega.Succeed())
 			g.Expect(pod.DeletionTimestamp).To(gomega.BeNil())
 		}, time.Second, time.Millisecond*200).Should(gomega.Succeed())
 

@@ -88,6 +88,42 @@ func TestStatelessRoleSyncerScaleDownStartsDrain(t *testing.T) {
 	assert.Equal(t, 1, draining)
 }
 
+func TestStatelessRoleSyncerScaleDownDeletesExpiredDrainingPod(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, v1.AddToScheme(scheme))
+	require.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
+
+	roleSet := newTestRoleSet("test-roleset", "test-ns")
+	role := newTestRoleSpec("worker", 1, intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromInt(1)))
+	timeout := int32(1)
+	role.Drain = &orchestrationv1alpha1.RoleDrainSpec{TimeoutSeconds: &timeout}
+	drainingPod := newTestPod("pod-draining", "test-ns", "worker", "test-roleset", true, false)
+	drainingPod.Annotations = map[string]string{
+		aibrixconst.PodDrainingAnnotationKey:          "true",
+		aibrixconst.PodDrainStartTimeAnnotationKey:    time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
+		aibrixconst.PodDrainReasonAnnotationKey:       aibrixconst.PodDrainReasonScaleIn,
+		aibrixconst.PodDrainTargetActionAnnotationKey: aibrixconst.PodDrainTargetActionDelete,
+	}
+	keptPod := newTestPod("pod-kept", "test-ns", "worker", "test-roleset", true, false)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(drainingPod, keptPod).Build()
+	syncer := &StatelessRoleSyncer{
+		cli:             fakeClient,
+		computeHashFunc: fakeComputeHashFunc,
+		recorder:        record.NewFakeRecorder(1),
+	}
+
+	result, err := syncer.Scale(ctx, roleSet, role)
+
+	require.NoError(t, err)
+	assert.True(t, result.Changed)
+	assert.Zero(t, result.RequeueAfter)
+	pods := &v1.PodList{}
+	require.NoError(t, fakeClient.List(ctx, pods))
+	require.Len(t, pods.Items, 1)
+	assert.Equal(t, keptPod.Name, pods.Items[0].Name)
+}
+
 func TestStatelessRoleSyncer_Scale(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
