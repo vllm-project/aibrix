@@ -751,9 +751,6 @@ func createModelAdapterConfig(name, model string) *modelv1alpha1.ModelAdapter {
 				},
 			},
 			ArtifactURL: "huggingface://yard1/llama-2-7b-sql-lora-test",
-			AdditionalConfig: map[string]string{
-				"api-key": "test-key-1234567890",
-			},
 		},
 	}
 }

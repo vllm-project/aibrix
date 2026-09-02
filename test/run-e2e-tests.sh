@@ -145,7 +145,7 @@ collect_logs() {
   done
 }
 
-trap "collect_logs" ERR
+# trap "collect_logs" ERR
 
 # Start port forwarding before running tests
 start_port_forwards
@@ -155,8 +155,7 @@ start_port_forwards
 # so CI can detect failures
 
 echo "Running e2e tests..."
-# TODO(jiaxin): add TestModelAdapter.* back once the runtime issue is fixed
-go test ./test/e2e/ -v -timeout 0 -skip "TestModelAdapter.*"
+go test ./test/e2e/ -v -timeout 0
 TEST_EXIT_CODE=$?
 
 # Exit with the test's exit code
