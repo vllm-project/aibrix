@@ -1,6 +1,9 @@
+import logging
 import random
-from typing import Tuple
+from typing import List, Tuple
 from transformers import PreTrainedTokenizer
+
+logger = logging.getLogger(__name__)
 
 # A collection of realistic text templates for generating prompts
 REALISTIC_TEMPLATES = [
@@ -65,7 +68,7 @@ LOCATIONS = [
 
 
 def _truncate_to_target_length(tokenizer: PreTrainedTokenizer,
-                                token_ids: list,
+                                token_ids: List[int],
                                 target_token_length: int) -> Tuple[str, int]:
     """
     Truncate token ids to target_token_length and decode to text, making sure
@@ -81,11 +84,18 @@ def _truncate_to_target_length(tokenizer: PreTrainedTokenizer,
     """
     truncated_ids = token_ids[:max(0, target_token_length)]
     text = tokenizer.decode(truncated_ids, skip_special_tokens=True)
-    encoded = tokenizer.encode(text)
+    encoded = tokenizer.encode(text, add_special_tokens=True)
     while truncated_ids and len(encoded) > target_token_length:
         truncated_ids = truncated_ids[:-1]
         text = tokenizer.decode(truncated_ids, skip_special_tokens=True)
-        encoded = tokenizer.encode(text)
+        encoded = tokenizer.encode(text, add_special_tokens=True)
+    if not truncated_ids and len(encoded) > target_token_length:
+        logger.warning(
+            "_truncate_to_target_length drained to an empty string but the "
+            "re-encoded length (%d) still exceeds target_token_length (%d); "
+            "the tokenizer likely adds special tokens even for empty text.",
+            len(encoded), target_token_length,
+        )
     return text, len(encoded)
 
 
@@ -204,8 +214,9 @@ def adjust_prompt_length(tokenizer: PreTrainedTokenizer,
             ]
             adjusted_prompt += random.choice(additional_content)
             token_count = len(tokenizer.encode(adjusted_prompt))
-    elif token_count > target_token_length:
-        adjusted_prompt_tokenized = tokenizer.encode(prompt)
+
+    if token_count > target_token_length:
+        adjusted_prompt_tokenized = tokenizer.encode(adjusted_prompt)
         adjusted_prompt, _ = _truncate_to_target_length(tokenizer, adjusted_prompt_tokenized, target_token_length)
     return adjusted_prompt
     

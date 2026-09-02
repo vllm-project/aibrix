@@ -16,7 +16,7 @@ class _ExpandingTokenizer:
     truncation boundary and overshoot the requested length on re-encode.
     """
 
-    def encode(self, text):
+    def encode(self, text, add_special_tokens=True):
         ids = []
         for word in text.split():
             if word == "bonus":
@@ -38,7 +38,7 @@ class _ExpandingTokenizer:
 class _WordTokenizer:
     """Simple whitespace tokenizer used to check returned token counts."""
 
-    def encode(self, text):
+    def encode(self, text, add_special_tokens=True):
         return text.split()
 
     def decode(self, ids, skip_special_tokens=True):
@@ -67,6 +67,15 @@ class AdjustPromptLengthTest(unittest.TestCase):
     def test_truncated_prompt_never_exceeds_target_on_reencode(self):
         tokenizer = _ExpandingTokenizer()
         prompt = "w1 w2 w3 w4 w5 w6 w7"
+        adjusted = adjust_prompt_length(tokenizer, prompt, target_token_length=5)
+        self.assertLessEqual(len(tokenizer.encode(adjusted)), 5)
+
+    def test_truncates_after_padding_overshoots_target(self):
+        # A short prompt is padded in whole-sentence chunks, so it can jump
+        # past target_token_length in a single append. Truncation must still
+        # run afterwards to bring it back down to the target.
+        tokenizer = _WordTokenizer()
+        prompt = "w1 w2"
         adjusted = adjust_prompt_length(tokenizer, prompt, target_token_length=5)
         self.assertLessEqual(len(tokenizer.encode(adjusted)), 5)
 
