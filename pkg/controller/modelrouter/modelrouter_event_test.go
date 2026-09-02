@@ -321,6 +321,90 @@ func TestRouteAndReferenceGrantCleanupAfterWorkloadDeletion(t *testing.T) {
 		_ = getReferenceGrant(t, m.Client, "models")
 	})
 
+	t.Run("keeps grant when another model adapter remains", func(t *testing.T) {
+		remaining := &modelv1alpha1.ModelAdapter{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "other-adapter",
+				Namespace: "models",
+				Labels:    modelWorkloadLabels("mistral-adapter", "8000"),
+			},
+		}
+		m := newEventTestRouter(t, remaining)
+		adapter := &modelv1alpha1.ModelAdapter{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "llama-adapter",
+				Namespace: "models",
+				Labels:    modelWorkloadLabels("llama-adapter", "8000"),
+			},
+		}
+		m.addRouteFromModelAdapter(adapter)
+		m.deleteRouteFromModelAdapter(adapter)
+		err := m.Client.Get(context.Background(), client.ObjectKey{
+			Namespace: aibrixEnvoyGatewayNamespace,
+			Name:      utils.ModelRouterName("llama-adapter"),
+		}, &gatewayv1.HTTPRoute{})
+		if !apierrors.IsNotFound(err) {
+			t.Fatalf("HTTPRoute after adapter delete: %v, want NotFound", err)
+		}
+		_ = getReferenceGrant(t, m.Client, "models")
+	})
+
+	t.Run("keeps grant when another ray cluster fleet remains", func(t *testing.T) {
+		remaining := &orchestrationv1alpha1.RayClusterFleet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "other-fleet",
+				Namespace: "models",
+				Labels:    modelWorkloadLabels("mistral-fleet", "8000"),
+			},
+		}
+		m := newEventTestRouter(t, remaining)
+		fleet := &orchestrationv1alpha1.RayClusterFleet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "llama-fleet",
+				Namespace: "models",
+				Labels:    modelWorkloadLabels("llama-fleet", "8000"),
+			},
+		}
+		m.addRouteFromRayClusterFleet(fleet)
+		m.deleteRouteFromRayClusterFleet(fleet)
+		err := m.Client.Get(context.Background(), client.ObjectKey{
+			Namespace: aibrixEnvoyGatewayNamespace,
+			Name:      utils.ModelRouterName("llama-fleet"),
+		}, &gatewayv1.HTTPRoute{})
+		if !apierrors.IsNotFound(err) {
+			t.Fatalf("HTTPRoute after fleet delete: %v, want NotFound", err)
+		}
+		_ = getReferenceGrant(t, m.Client, "models")
+	})
+
+	t.Run("keeps grant when a deployment is deleted but a model adapter remains", func(t *testing.T) {
+		remaining := &modelv1alpha1.ModelAdapter{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "remaining-adapter",
+				Namespace: "models",
+				Labels:    modelWorkloadLabels("adapter-model", "8000"),
+			},
+		}
+		m := newEventTestRouter(t, remaining)
+		deploy := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "llama-deploy",
+				Namespace: "models",
+				Labels:    modelWorkloadLabels("llama-7b", "8000"),
+			},
+		}
+		m.addRouteFromDeployment(deploy)
+		m.deleteRouteFromDeployment(deploy)
+		err := m.Client.Get(context.Background(), client.ObjectKey{
+			Namespace: aibrixEnvoyGatewayNamespace,
+			Name:      utils.ModelRouterName("llama-7b"),
+		}, &gatewayv1.HTTPRoute{})
+		if !apierrors.IsNotFound(err) {
+			t.Fatalf("HTTPRoute after deployment delete: %v, want NotFound", err)
+		}
+		_ = getReferenceGrant(t, m.Client, "models")
+	})
+
 	t.Run("model adapter delete removes route", func(t *testing.T) {
 		m := newEventTestRouter(t)
 		adapter := &modelv1alpha1.ModelAdapter{

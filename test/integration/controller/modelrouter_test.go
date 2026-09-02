@@ -143,6 +143,60 @@ var _ = ginkgo.Describe("ModelRouter controller test", func() {
 		}, modelRouterTimeout, modelRouterInterval).Should(gomega.Succeed())
 	})
 
+	ginkgo.It("keeps the ReferenceGrant while another ModelAdapter remains in the namespace", func() {
+		firstModel := uniqueModelName(ns.Name, "keep-adapter-a")
+		secondModel := uniqueModelName(ns.Name, "keep-adapter-b")
+		first := createModelAdapter(ns.Name, "keep-adapter-a", firstModel, nil)
+		second := createModelAdapter(ns.Name, "keep-adapter-b", secondModel, nil)
+		_ = waitForHTTPRoute(firstModel)
+		_ = waitForHTTPRoute(secondModel)
+		_ = waitForReferenceGrant(ns.Name)
+
+		gomega.Expect(k8sClient.Delete(ctx, first)).To(gomega.Succeed())
+		waitForHTTPRouteDeleted(firstModel)
+		expectReferenceGrantAndRoute(ns.Name, secondModel)
+
+		gomega.Expect(k8sClient.Delete(ctx, second)).To(gomega.Succeed())
+		waitForHTTPRouteDeleted(secondModel)
+		waitForReferenceGrantDeleted(ns.Name)
+	})
+
+	ginkgo.It("keeps the ReferenceGrant while another RayClusterFleet remains in the namespace", func() {
+		firstModel := uniqueModelName(ns.Name, "keep-fleet-a")
+		secondModel := uniqueModelName(ns.Name, "keep-fleet-b")
+		first := createModelRayClusterFleet(ns.Name, "keep-fleet-a", firstModel)
+		second := createModelRayClusterFleet(ns.Name, "keep-fleet-b", secondModel)
+		_ = waitForHTTPRoute(firstModel)
+		_ = waitForHTTPRoute(secondModel)
+		_ = waitForReferenceGrant(ns.Name)
+
+		gomega.Expect(k8sClient.Delete(ctx, first)).To(gomega.Succeed())
+		waitForHTTPRouteDeleted(firstModel)
+		expectReferenceGrantAndRoute(ns.Name, secondModel)
+
+		gomega.Expect(k8sClient.Delete(ctx, second)).To(gomega.Succeed())
+		waitForHTTPRouteDeleted(secondModel)
+		waitForReferenceGrantDeleted(ns.Name)
+	})
+
+	ginkgo.It("keeps the ReferenceGrant when a Deployment is deleted but a ModelAdapter remains", func() {
+		deployModel := uniqueModelName(ns.Name, "keep-mixed-deploy")
+		adapterModel := uniqueModelName(ns.Name, "keep-mixed-adapter")
+		deploy := createModelDeployment(ns.Name, "keep-mixed-deploy", deployModel, nil)
+		adapter := createModelAdapter(ns.Name, "keep-mixed-adapter", adapterModel, nil)
+		_ = waitForHTTPRoute(deployModel)
+		_ = waitForHTTPRoute(adapterModel)
+		_ = waitForReferenceGrant(ns.Name)
+
+		gomega.Expect(k8sClient.Delete(ctx, deploy)).To(gomega.Succeed())
+		waitForHTTPRouteDeleted(deployModel)
+		expectReferenceGrantAndRoute(ns.Name, adapterModel)
+
+		gomega.Expect(k8sClient.Delete(ctx, adapter)).To(gomega.Succeed())
+		waitForHTTPRouteDeleted(adapterModel)
+		waitForReferenceGrantDeleted(ns.Name)
+	})
+
 	ginkgo.It("appends custom model router paths onto the HTTPRoute matches", func() {
 		modelName := uniqueModelName(ns.Name, "paths")
 		createModelDeployment(ns.Name, "paths-deploy", modelName, map[string]string{
@@ -323,6 +377,21 @@ func waitForReferenceGrantDeleted(namespace string) {
 		}, &gatewayv1beta1.ReferenceGrant{})
 		return apierrors.IsNotFound(err)
 	}, modelRouterTimeout, modelRouterInterval).Should(gomega.BeTrue())
+}
+
+func expectReferenceGrantAndRoute(namespace, remainingModel string) {
+	gomega.Consistently(func() error {
+		return k8sClient.Get(ctx, client.ObjectKey{
+			Namespace: namespace,
+			Name:      referenceGrantName(namespace),
+		}, &gatewayv1beta1.ReferenceGrant{})
+	}, time.Second*2, modelRouterInterval).Should(gomega.Succeed())
+	gomega.Eventually(func() error {
+		return k8sClient.Get(ctx, client.ObjectKey{
+			Namespace: aibrixSystemNS,
+			Name:      utils.ModelRouterName(remainingModel),
+		}, &gatewayv1.HTTPRoute{})
+	}, modelRouterTimeout, modelRouterInterval).Should(gomega.Succeed())
 }
 
 func httpRoutePaths(route *gatewayv1.HTTPRoute) []string {

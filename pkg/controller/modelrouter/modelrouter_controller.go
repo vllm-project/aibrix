@@ -398,18 +398,8 @@ func (m *ModelRouter) deleteHTTPRoute(namespace string, labels, annotations map[
 }
 
 func (m *ModelRouter) deleteReferenceGrant(namespace string) {
-	var deploymentList appsv1.DeploymentList
-	if err := m.Client.List(context.Background(), &deploymentList, client.InNamespace(namespace)); err != nil {
-		klog.ErrorS(err, "Failed to list model deployments", "namespace", namespace)
+	if m.namespaceHasModelWorkload(namespace) {
 		return
-	}
-	for i := range deploymentList.Items {
-		deployment := &deploymentList.Items[i]
-		if _, ok := constants.ModelNameFromMetadata(deployment.Labels, deployment.Annotations); ok {
-			klog.InfoS("Skip deleting ReferenceGrant: model deployment still exists",
-				"namespace", namespace, "deployment", deployment.Name)
-			return
-		}
 	}
 
 	referenceGrantName := fmt.Sprintf("%s-reserved-referencegrant-in-%s", aibrixEnvoyGatewayNamespace, namespace)
@@ -426,6 +416,53 @@ func (m *ModelRouter) deleteReferenceGrant(namespace string) {
 		}
 	}
 	klog.InfoS("delete reference grant", "referencegrant", referenceGrantName)
+}
+
+func (m *ModelRouter) namespaceHasModelWorkload(namespace string) bool {
+	ctx := context.Background()
+
+	var deploymentList appsv1.DeploymentList
+	if err := m.Client.List(ctx, &deploymentList, client.InNamespace(namespace)); err != nil {
+		klog.ErrorS(err, "Failed to list model deployments", "namespace", namespace)
+		return true
+	}
+	for i := range deploymentList.Items {
+		deployment := &deploymentList.Items[i]
+		if _, ok := constants.ModelNameFromMetadata(deployment.Labels, deployment.Annotations); ok {
+			klog.InfoS("Skip deleting ReferenceGrant: model deployment still exists",
+				"namespace", namespace, "deployment", deployment.Name)
+			return true
+		}
+	}
+
+	var adapterList modelv1alpha1.ModelAdapterList
+	if err := m.Client.List(ctx, &adapterList, client.InNamespace(namespace)); err != nil {
+		klog.ErrorS(err, "Failed to list model adapters", "namespace", namespace)
+		return true
+	}
+	for i := range adapterList.Items {
+		adapter := &adapterList.Items[i]
+		if _, ok := constants.ModelNameFromMetadata(adapter.Labels, adapter.Annotations); ok {
+			klog.InfoS("Skip deleting ReferenceGrant: model adapter still exists",
+				"namespace", namespace, "modeladapter", adapter.Name)
+			return true
+		}
+	}
+
+	var fleetList orchestrationv1alpha1.RayClusterFleetList
+	if err := m.Client.List(ctx, &fleetList, client.InNamespace(namespace)); err != nil {
+		klog.ErrorS(err, "Failed to list ray cluster fleets", "namespace", namespace)
+		return true
+	}
+	for i := range fleetList.Items {
+		fleet := &fleetList.Items[i]
+		if _, ok := constants.ModelNameFromMetadata(fleet.Labels, fleet.Annotations); ok {
+			klog.InfoS("Skip deleting ReferenceGrant: ray cluster fleet still exists",
+				"namespace", namespace, "rayclusterfleet", fleet.Name)
+			return true
+		}
+	}
+	return false
 }
 
 func consoleRouteLabels(labels map[string]string) map[string]string {

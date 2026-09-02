@@ -97,9 +97,12 @@ var _ = BeforeSuite(func() {
 	testEnv = &envtest.Environment{
 		// Paths to CRD YAML files required for the tests
 		CRDDirectoryPaths: []string{
-			filepath.Join("..", "..", "..", "config", "crd", "bases"),                           // Aibrix CRDs
-			filepath.Join("..", "..", "..", "config", "dependency", "kuberay-operator", "crds"), // KubeRay CRDs (dependency)
-			filepath.Join("testdata", "crd"),                                                    // Gateway API CRDs used by ModelRouter
+			// Aibrix CRDs
+			filepath.Join("..", "..", "..", "config", "crd", "bases"),
+			// KubeRay CRDs (dependency)
+			filepath.Join("..", "..", "..", "config", "dependency", "kuberay-operator", "crds"),
+			// Gateway API CRDs used by ModelRouter
+			filepath.Join("testdata", "crd"),
 		},
 
 		ErrorIfCRDPathMissing: true,
