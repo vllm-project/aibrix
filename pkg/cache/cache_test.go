@@ -239,26 +239,6 @@ var _ = Describe("Cache", func() {
 		Expect(exist).To(BeFalse())
 	})
 
-	It("should addModelAdapter fall back to a name-only pod lookup across namespaces", func() {
-		// Pod lives in "default", but the ModelAdapter (and the namespace it passes down
-		// to addPodAndModelMappingLockedByName) is "aibrix-system" -- addModelAdapter must
-		// not miss the mapping just because the namespaces differ.
-		cache.addPod(getReadyPod("p1", "default", "m1", 0))
-
-		cache.addModelAdapter(getNewModelAdapter("m1adapter", "aibrix-system", "p1"))
-
-		metaPod, exist := cache.metaPods.Load("default/p1")
-		Expect(exist).To(BeTrue())
-		_, exist = metaPod.Models.Load("m1adapter")
-		Expect(exist).To(BeTrue())
-
-		metaModel, exist := cache.metaModels.Load("m1adapter")
-		Expect(exist).To(BeTrue())
-		modelPod, exist := metaModel.Pods.Load("default/p1")
-		Expect(exist).To(BeTrue())
-		Expect(modelPod).To(Equal(metaPod.Pod))
-	})
-
 	It("should resyncModelAdapters repair missing adapter mapping", func() {
 		cache.addPod(getReadyPod("p1", "default", "m1", 0))
 
@@ -311,29 +291,6 @@ var _ = Describe("Cache", func() {
 		modelName, exist := metaPod.Models.Load("m1adapter")
 		Expect(exist).To(BeTrue())
 		Expect(modelName).To(Equal("m1adapter"))
-
-		metaModel, exist := cache.metaModels.Load("m1adapter")
-		Expect(exist).To(BeTrue())
-		modelPod, exist := metaModel.Pods.Load("default/p1")
-		Expect(exist).To(BeTrue())
-		Expect(modelPod).To(Equal(metaPod.Pod))
-	})
-
-	It("should resyncModelAdapters repair mapping across namespaces", func() {
-		// Pod lives in "default"; the ModelAdapter lives in "aibrix-system". resyncModelAdapters
-		// must find the pod via the name-only fallback instead of reporting it missing.
-		cache.addPod(getReadyPod("p1", "default", "m1", 0))
-
-		adapter := getNewModelAdapter("m1adapter", "aibrix-system", "p1")
-		store := k8scache.NewStore(k8scache.MetaNamespaceKeyFunc)
-		Expect(store.Add(adapter)).To(Succeed())
-
-		cache.resyncModelAdapters(store, nil)
-
-		metaPod, exist := cache.metaPods.Load("default/p1")
-		Expect(exist).To(BeTrue())
-		_, exist = metaPod.Models.Load("m1adapter")
-		Expect(exist).To(BeTrue())
 
 		metaModel, exist := cache.metaModels.Load("m1adapter")
 		Expect(exist).To(BeTrue())
@@ -557,26 +514,6 @@ var _ = Describe("Cache", func() {
 		Expect(exist).To(BeTrue())
 		_, exist = metaModel.Pods.Load("default/p3")
 		Expect(exist).To(BeTrue())
-	})
-
-	It("should deleteModelAdapter remove mappings across namespaces", func() {
-		// Pod lives in "default"; the ModelAdapter lives in "aibrix-system". deleteModelAdapter
-		// must still find and clear the pod's mapping via the name-only fallback.
-		cache.addPod(getReadyPod("p1", "default", "m1", 0))
-		adapter := getNewModelAdapter("m1adapter1", "aibrix-system", "p1")
-		cache.addModelAdapter(adapter)
-
-		metaPod, exist := cache.metaPods.Load("default/p1")
-		Expect(exist).To(BeTrue())
-		_, exist = metaPod.Models.Load("m1adapter1")
-		Expect(exist).To(BeTrue())
-
-		cache.deleteModelAdapter(adapter)
-
-		_, exist = metaPod.Models.Load("m1adapter1")
-		Expect(exist).To(BeFalse())
-		_, exist = cache.metaModels.Load("m1adapter1")
-		Expect(exist).To(BeFalse())
 	})
 
 	It("if set modelRouterProvider, should cache being used as a model router manager", func() {

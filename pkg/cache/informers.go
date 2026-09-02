@@ -303,8 +303,7 @@ func (c *Store) updateModelAdapter(oldObj interface{}, newObj interface{}) {
 	oldModel := oldObj.(*modelv1alpha1.ModelAdapter)
 	newModel := newObj.(*modelv1alpha1.ModelAdapter)
 	for _, pod := range oldModel.Status.Instances {
-		// oldModel.Namespace is only a fast-path hint, not a guarantee: deletePodAndModelMappingLocked
-		// falls back to a name-only lookup when the pod isn't in that namespace.
+		// the namespace of the pod is same as the namespace of model
 		c.deletePodAndModelMappingLocked(pod, oldModel.Namespace, oldModel.Name, 0)
 	}
 
@@ -360,8 +359,7 @@ func (c *Store) deleteModelAdapter(obj interface{}) {
 	defer c.mu.Unlock()
 
 	for _, pod := range model.Status.Instances {
-		// model.Namespace is only a fast-path hint, not a guarantee: deletePodAndModelMappingLocked
-		// falls back to a name-only lookup when the pod isn't in that namespace.
+		// the namespace of the pod is same as the namespace of model
 		c.deletePodAndModelMappingLocked(pod, model.Namespace, model.Name, 0)
 	}
 
@@ -387,33 +385,11 @@ func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
 func (c *Store) addPodAndModelMappingLockedByName(podName, namespace, modelName string) {
 	pod, ok := c.metaPods.Load(utils.GeneratePodKey(namespace, podName))
 	if !ok {
-		// ModelAdapter.Status.Instances stores bare pod names, and PodSelector is not
-		// namespace-scoped, so the ModelAdapter's own namespace does not necessarily match
-		// the namespace of the pods it targets (e.g. ModelAdapters live in aibrix-system
-		// while the model pods they select live in default). Fall back to a name-only scan.
-		pod, ok = c.findPodByNameLocked(podName)
-	}
-	if !ok {
 		klog.Errorf("pod %s does not exist in internal-cache", podName)
 		return
 	}
 
 	c.addPodAndModelMappingLocked(pod, modelName)
-}
-
-// findPodByNameLocked resolves a cached pod by name alone, for callers that only have a
-// ModelAdapter's Status.Instances entry (a bare pod name with no namespace attached) and
-// cannot assume the pod lives in the same namespace as the ModelAdapter. Caller must hold c.mu.
-func (c *Store) findPodByNameLocked(podName string) (*Pod, bool) {
-	var found *Pod
-	c.metaPods.Range(func(_ string, metaPod *Pod) bool {
-		if metaPod != nil && metaPod.Pod != nil && metaPod.Pod.Name == podName {
-			found = metaPod
-			return false
-		}
-		return true
-	})
-	return found, found != nil
 }
 
 func (c *Store) addPodAndModelMappingLocked(metaPod *Pod, modelName string) {
@@ -454,21 +430,11 @@ func (c *Store) deletePodLocked(podName, podNamespace string) *Pod {
 // If ignoreMapping < 0, modelToPod mapping will be ignored
 func (c *Store) deletePodAndModelMappingLocked(podName, namespace, modelName string, ignoreMapping int) {
 	podKey := utils.GeneratePodKey(namespace, podName)
-	metaPod, ok := c.metaPods.Load(podKey)
-	if !ok {
-		// See addPodAndModelMappingLockedByName: namespace cannot be assumed from the
-		// ModelAdapter. Fall back to a name-only lookup and use the pod's real key so
-		// meta.Pods.Delete below actually matches what addPodAndModelMappingLocked stored.
-		if fallback, found := c.findPodByNameLocked(podName); found {
-			metaPod = fallback
-			podKey = utils.GeneratePodKey(fallback.Namespace, fallback.Name)
-			ok = true
+	if ignoreMapping <= 0 {
+		if metaPod, ok := c.metaPods.Load(podKey); ok {
+			metaPod.Models.Delete(modelName)
+			// PodToModelMapping entry should only be deleted during pod deleting.
 		}
-	}
-
-	if ignoreMapping <= 0 && ok {
-		metaPod.Models.Delete(modelName)
-		// PodToModelMapping entry should only be deleted during pod deleting.
 	}
 
 	if ignoreMapping >= 0 {
@@ -509,22 +475,15 @@ func (c *Store) resyncModelAdapters(store cache.Store, stopCh <-chan struct{}) {
 
 			c.mu.Lock()
 			for _, podName := range modelAdapter.Status.Instances {
-				// modelAdapter.Namespace is only a fast-path hint (the ModelAdapter and the pods
-				// it selects are not necessarily in the same namespace), so fall back to a
-				// name-only lookup before declaring the pod missing.
 				podKey := utils.GeneratePodKey(modelAdapter.Namespace, podName)
-				metaPod, exists := c.metaPods.Load(podKey)
-				if !exists {
-					metaPod, exists = c.findPodByNameLocked(podName)
-				}
-				if exists {
+				if metaPod, exists := c.metaPods.Load(podKey); exists {
 					c.addPodAndModelMappingLocked(metaPod, modelAdapter.Name)
-					klog.V(4).Infof("Resynced pod mapping for adapter %s, pod %s",
-						modelAdapter.Name, podName)
+					klog.V(4).Infof("Resynced pod mapping for adapter %s, pod %s/%s",
+						modelAdapter.Name, modelAdapter.Namespace, podName)
 				} else {
 					missingPods = append(missingPods, podName)
-					klog.V(4).Infof("Pod %s not found in cache for ModelAdapter %s during resync (attempt %d/%d)",
-						podName, modelAdapter.Name, i+1, modelAdapterResyncMaxRetries)
+					klog.V(4).Infof("Pod %s/%s not found in cache for ModelAdapter %s during resync (attempt %d/%d)",
+						modelAdapter.Namespace, podName, modelAdapter.Name, i+1, modelAdapterResyncMaxRetries)
 				}
 			}
 			c.mu.Unlock()

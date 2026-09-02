@@ -78,6 +78,82 @@ func TestReconcileLoading_NoActivePods_FallsThrough(t *testing.T) {
 	}
 }
 
+// TestDoReconcile_SingleReplica_PodDisappears_ResetsReadyReplicas guards a gap the
+// reconcileLoading fix above didn't cover: in single-replica mode (Spec.Replicas: 1),
+// when the backing pod disappears, reconcileReplicas -> reconcileLoadOnSinglePod takes
+// the "no ready pods" branch and returns ctrl.Result{RequeueAfter: ...}. DoReconcile's
+// Step 1 early-return on RequeueAfter>0 then skips reconcileLoading entirely for that
+// cycle, so ReadyReplicas/Ready must be reset inside reconcileLoadOnSinglePod itself --
+// otherwise a single-replica adapter keeps reporting Ready:True/ReadyReplicas:1
+// indefinitely after its one pod is gone, even though reconcileLoading now handles the
+// load-on-all case correctly.
+func TestDoReconcile_SingleReplica_PodDisappears_ResetsReadyReplicas(t *testing.T) {
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{
+		modelv1alpha1.AddToScheme, corev1.AddToScheme, discoveryv1.AddToScheme,
+	} {
+		if err := add(scheme); err != nil {
+			t.Fatalf("failed to register scheme: %v", err)
+		}
+	}
+
+	replicas := int32(1)
+	seed := &modelv1alpha1.ModelAdapter{
+		ObjectMeta: metav1.ObjectMeta{Name: "adapter1", Namespace: "default"},
+		Spec: modelv1alpha1.ModelAdapterSpec{
+			Replicas:    &replicas,
+			PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "base-model"}},
+		},
+		Status: modelv1alpha1.ModelAdapterStatus{
+			Phase:           modelv1alpha1.ModelAdapterRunning,
+			Instances:       []string{"test-pod"},
+			Candidates:      1,
+			DesiredReplicas: 1,
+			ReadyReplicas:   1,
+			Conditions: []metav1.Condition{
+				NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeInitialized), metav1.ConditionTrue,
+					ModelAdapterInitializedReason, "initialized"),
+				NewCondition(string(modelv1alpha1.ModelAdapterConditionReady), metav1.ConditionTrue,
+					ModelAdapterAvailable, "ready"),
+				NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeBound), metav1.ConditionTrue,
+					ModelAdapterBoundReason, "bound"),
+				NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeScheduled), metav1.ConditionTrue,
+					"Scheduled", "scheduled"),
+			},
+		},
+	}
+
+	// No pod registered in the client: "test-pod" is gone, and nothing else matches the selector.
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&modelv1alpha1.ModelAdapter{}).
+		WithObjects(seed).
+		Build()
+
+	instance := &modelv1alpha1.ModelAdapter{}
+	ctx := context.Background()
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: "default", Name: "adapter1"}, instance); err != nil {
+		t.Fatalf("failed to fetch seeded ModelAdapter: %v", err)
+	}
+
+	r := &ModelAdapterReconciler{Client: cl, Scheme: scheme, RuntimeConfig: config.RuntimeConfig{}}
+
+	result, err := r.DoReconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "adapter1"}}, instance)
+	if err != nil {
+		t.Fatalf("expected DoReconcile to succeed (recoverable state), got error: %v", err)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatalf("expected a RequeueAfter result while waiting for a replacement pod, got %+v", result)
+	}
+
+	if instance.Status.ReadyReplicas != 0 {
+		t.Errorf("expected ReadyReplicas to be reset to 0 once the single backing pod is gone, got %d", instance.Status.ReadyReplicas)
+	}
+	if readyCond := apimeta.FindStatusCondition(instance.Status.Conditions, string(modelv1alpha1.ModelAdapterConditionReady)); readyCond == nil || readyCond.Status != metav1.ConditionFalse {
+		t.Errorf("expected Ready condition to be False once the single backing pod is gone, got %v", readyCond)
+	}
+}
+
 // TestDoReconcile_HealsStaleBoundScheduledConditions guards against the other half of
 // the same fix: DoReconcile only refreshed the Ready condition when the field-level
 // status diff (inconsistentModelAdapterStatus) found a change. Once an adapter had

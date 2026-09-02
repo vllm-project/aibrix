@@ -518,14 +518,14 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 	return ctrl.Result{}, nil
 }
 
-func newSchedulingPendingCondition(instance *modelv1alpha1.ModelAdapter, available, needed int) metav1.Condition {
+func newSchedulingPendingCondition(instance *modelv1alpha1.ModelAdapter, condType string, available, needed int) metav1.Condition {
 	reason := NoReadyPodsReason
 	message := fmt.Sprintf("ModelAdapter %s has no ready backend pods available for scheduling", klog.KObj(instance))
 	if available > 0 {
 		reason = InsufficientReadyPodsReason
 		message = fmt.Sprintf("ModelAdapter %s has %d ready backend pods, but needs %d for scheduling", klog.KObj(instance), available, needed)
 	}
-	return NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeScheduled), metav1.ConditionFalse, reason, message)
+	return NewCondition(condType, metav1.ConditionFalse, reason, message)
 }
 
 func (r *ModelAdapterReconciler) updateStatus(ctx context.Context, instance *modelv1alpha1.ModelAdapter, conditions ...metav1.Condition) error {
@@ -701,14 +701,27 @@ func (r *ModelAdapterReconciler) reconcileLoadOnSinglePod(ctx context.Context, i
 		} else if len(candidatePods) > 0 {
 			// Some pods available but not enough, try with what we have
 			klog.Infof("Only %d ready pods available for model adapter %s, need %d more, will wait", len(candidatePods), klog.KObj(instance), neededReplicas)
-			if err := r.updateStatus(ctx, instance, newSchedulingPendingCondition(instance, len(candidatePods), neededReplicas)); err != nil {
+			// reconcileReplicas already filtered Instances down to active pods, so this
+			// reflects reality: if the previously-bound pod just vanished, currentReplicas
+			// (and therefore ReadyReplicas) must drop to 0 here. Without this, DoReconcile's
+			// early return on RequeueAfter skips reconcileLoading entirely, leaving
+			// ReadyReplicas/Ready stuck at their last value indefinitely.
+			instance.Status.ReadyReplicas = int32(len(instance.Status.Instances))
+			scheduledCondition := newSchedulingPendingCondition(instance, string(modelv1alpha1.ModelAdapterConditionTypeScheduled), len(candidatePods), neededReplicas)
+			readyCondition := newSchedulingPendingCondition(instance, string(modelv1alpha1.ModelAdapterConditionReady), len(candidatePods), neededReplicas)
+			if err := r.updateStatus(ctx, instance, scheduledCondition, readyCondition); err != nil {
 				return ctrl.Result{}, err
 			}
 			return ctrl.Result{RequeueAfter: time.Duration(RetryBackoffSeconds) * time.Second}, nil
 		} else {
 			// No ready pods available, wait for pods to become ready
 			klog.Infof("No ready pods available for model adapter %s, waiting for pods to become ready", klog.KObj(instance))
-			if err := r.updateStatus(ctx, instance, newSchedulingPendingCondition(instance, 0, neededReplicas)); err != nil {
+			// See the branch above: reset ReadyReplicas here too so it doesn't stay stuck
+			// at a stale value once every candidate pod is gone.
+			instance.Status.ReadyReplicas = int32(len(instance.Status.Instances))
+			scheduledCondition := newSchedulingPendingCondition(instance, string(modelv1alpha1.ModelAdapterConditionTypeScheduled), 0, neededReplicas)
+			readyCondition := newSchedulingPendingCondition(instance, string(modelv1alpha1.ModelAdapterConditionReady), 0, neededReplicas)
+			if err := r.updateStatus(ctx, instance, scheduledCondition, readyCondition); err != nil {
 				return ctrl.Result{}, err
 			}
 			return ctrl.Result{RequeueAfter: time.Duration(RetryBackoffSeconds) * time.Second}, nil
