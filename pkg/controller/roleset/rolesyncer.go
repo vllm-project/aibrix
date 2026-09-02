@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,16 +29,18 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	aibrixconst "github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
+	controllerdrain "github.com/vllm-project/aibrix/pkg/controller/drain"
 	ctrlutil "github.com/vllm-project/aibrix/pkg/controller/util"
 	utils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
 	podutil "github.com/vllm-project/aibrix/pkg/utils"
 )
 
 type RoleRollingSyncer interface {
-	Scale(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error)
-	Rollout(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) error
-	RolloutByStep(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, currentStep int32) error
+	Scale(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (controllerdrain.Result, error)
+	Rollout(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (controllerdrain.Result, error)
+	RolloutByStep(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, currentStep int32) (controllerdrain.Result, error)
 	AllReady(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error)
 	CheckCurrentStep(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, int32, error)
 }
@@ -49,22 +52,22 @@ type StatefulRoleSyncer struct {
 	recorder        record.EventRecorder
 }
 
-func (s *StatefulRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
+func (s *StatefulRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (controllerdrain.Result, error) {
 	// Clean up orphan PodSets left by the old PodSetRoleSyncer
 	// when podGroupSize was switched from >1 to <=1.
 	cleaned, err := cleanupOrphanPodSets(ctx, s.cli, roleSet, role)
 	if err != nil {
-		return cleaned, err
+		return controllerdrain.Result{Changed: cleaned}, err
 	}
 	if cleaned {
 		klog.V(4).Infof("[StatefulRoleSyncer.Scale] cleaned orphan podsets for roleset %s/%s role %s, waiting for next reconcile", roleSet.Namespace, roleSet.Name, role.Name)
-		return true, nil
+		return controllerdrain.Result{Changed: true}, nil
 	}
 
 	var podsToCreate, podsToDelete []*v1.Pod
 	allPods, err := getRolePods(ctx, s.cli, roleSet.Namespace, roleSet.Name, role.Name)
 	if err != nil {
-		return false, err
+		return controllerdrain.Result{}, err
 	}
 	// delete pods that are in terminated state
 	activePods, inactivePods := filterActivePods(allPods)
@@ -84,7 +87,7 @@ func (s *StatefulRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1
 			}
 			pod, err := ctrlutil.GetPodFromTemplate(&role.Template, roleSet, metav1.NewControllerRef(roleSet, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.RoleSetKind)))
 			if err != nil {
-				return false, err
+				return controllerdrain.Result{}, err
 			}
 			renderStormServicePod(roleSet, role, pod, &i)
 			maybeInjectHistoricalNodeAffinity(roleSet, role, pod, historicalBindings, &i, false)
@@ -114,14 +117,17 @@ func (s *StatefulRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1
 			}
 		}
 	}
-	if _, err = createPodsInBatch(ctx, s.cli, podsToCreate); err != nil {
-		return false, err
+	created, err := createPodsInBatch(ctx, s.cli, podsToCreate)
+	if err != nil {
+		return controllerdrain.Result{}, err
 	}
-	if _, err = deletePodsInBatch(ctx, s.cli, podsToDelete); err != nil {
-		return false, err
+	result, err := controllerdrain.DeletePods(ctx, s.cli, s.recorder, roleSet, podsToDelete, role.Drain, aibrixconst.PodDrainReasonScaleIn, time.Now())
+	if err != nil {
+		return controllerdrain.Result{}, err
 	}
+	result.Changed = result.Changed || created > 0
 	s.printLog(roleSet, role, podsToCreate, podsToDelete)
-	return len(podsToCreate) > 0 || len(podsToDelete) > 0, nil
+	return result, nil
 }
 
 func (s *StatefulRoleSyncer) readySlotNum(role *orchestrationv1alpha1.RoleSpec, allPods []*v1.Pod) int {
@@ -166,11 +172,11 @@ func (s *StatefulRoleSyncer) updatedSlotNum(role *orchestrationv1alpha1.RoleSpec
 	return int32(updatedTotal), int32(updatedReadyTotal), int32(outdatedTotal)
 }
 
-func (s *StatefulRoleSyncer) Rollout(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) error {
+func (s *StatefulRoleSyncer) Rollout(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (controllerdrain.Result, error) {
 	var toCreate, toDelete []*v1.Pod
 	allPods, err := getRolePods(ctx, s.cli, roleSet.Namespace, roleSet.Name, role.Name)
 	if err != nil {
-		return err
+		return controllerdrain.Result{}, err
 	}
 	expectedReplicas := getRoleReplicas(role)
 	activePods, _ := filterActivePods(allPods)
@@ -194,10 +200,10 @@ func (s *StatefulRoleSyncer) Rollout(ctx context.Context, roleSet *orchestration
 	if strategy == orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType {
 		possible, reason, err := canRolloutPodsInPlace(roleSet, role, outdatedPods, roleTemplateHash, s.computeHashFunc)
 		if err != nil {
-			return err
+			return controllerdrain.Result{}, err
 		}
 		if possible {
-			return rolloutPodsInPlace(ctx, s.cli, roleSet, role, outdatedPods, roleTemplateHash, deleteBudget, s.computeHashFunc, s.recorder)
+			return controllerdrain.Result{}, rolloutPodsInPlace(ctx, s.cli, roleSet, role, outdatedPods, roleTemplateHash, deleteBudget, s.computeHashFunc, s.recorder)
 		}
 		recordInPlaceFallback(s.recorder, roleSet, role, reason)
 	}
@@ -220,7 +226,7 @@ func (s *StatefulRoleSyncer) Rollout(ctx context.Context, roleSet *orchestration
 		} else if createBudget > 0 {
 			pod, err := ctrlutil.GetPodFromTemplate(&role.Template, roleSet, metav1.NewControllerRef(roleSet, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.RoleSetKind)))
 			if err != nil {
-				return err
+				return controllerdrain.Result{}, err
 			}
 			renderStormServicePod(roleSet, role, pod, &i)
 			maybeInjectHistoricalNodeAffinity(roleSet, role, pod, historicalBindings, &i, true)
@@ -228,21 +234,24 @@ func (s *StatefulRoleSyncer) Rollout(ctx context.Context, roleSet *orchestration
 			createBudget--
 		}
 	}
-	if _, err = createPodsInBatch(ctx, s.cli, toCreate); err != nil {
-		return err
+	created, err := createPodsInBatch(ctx, s.cli, toCreate)
+	if err != nil {
+		return controllerdrain.Result{}, err
 	}
-	if _, err = deletePodsInBatch(ctx, s.cli, toDelete); err != nil {
-		return err
+	result, err := controllerdrain.DeletePods(ctx, s.cli, s.recorder, roleSet, toDelete, role.Drain, aibrixconst.PodDrainReasonRollout, time.Now())
+	if err != nil {
+		return controllerdrain.Result{}, err
 	}
+	result.Changed = result.Changed || created > 0
 	s.printLog(roleSet, role, toCreate, toDelete)
-	return nil
+	return result, nil
 }
 
-func (s *StatefulRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, currentStep int32) error {
+func (s *StatefulRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, currentStep int32) (controllerdrain.Result, error) {
 	var toCreate, toDelete []*v1.Pod
 	allPods, err := getRolePods(ctx, s.cli, roleSet.Namespace, roleSet.Name, role.Name)
 	if err != nil {
-		return err
+		return controllerdrain.Result{}, err
 	}
 
 	expectedReplicas := getRoleReplicas(role)
@@ -276,11 +285,11 @@ func (s *StatefulRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orchest
 		}
 		possible, reason, err := canRolloutPodsInPlace(roleSet, role, outdatedPods, roleTemplateHash, s.computeHashFunc)
 		if err != nil {
-			return err
+			return controllerdrain.Result{}, err
 		}
 		if possible {
 			selected := selectInPlaceOutdatedPodsForStep(outdatedPods, roleTemplateHash, expectedUpdatedReplicas-updatedTotal)
-			return rolloutPodsInPlace(ctx, s.cli, roleSet, role, selected, roleTemplateHash, deleteBudget, s.computeHashFunc, s.recorder)
+			return controllerdrain.Result{}, rolloutPodsInPlace(ctx, s.cli, roleSet, role, selected, roleTemplateHash, deleteBudget, s.computeHashFunc, s.recorder)
 		}
 		recordInPlaceFallback(s.recorder, roleSet, role, reason)
 	}
@@ -303,7 +312,7 @@ func (s *StatefulRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orchest
 		} else if createBudget > 0 {
 			pod, err := ctrlutil.GetPodFromTemplate(&role.Template, roleSet, metav1.NewControllerRef(roleSet, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.RoleSetKind)))
 			if err != nil {
-				return err
+				return controllerdrain.Result{}, err
 			}
 			renderStormServicePod(roleSet, role, pod, &i)
 			maybeInjectHistoricalNodeAffinity(roleSet, role, pod, historicalBindings, &i, true)
@@ -311,14 +320,17 @@ func (s *StatefulRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orchest
 			createBudget--
 		}
 	}
-	if _, err = createPodsInBatch(ctx, s.cli, toCreate); err != nil {
-		return err
+	created, err := createPodsInBatch(ctx, s.cli, toCreate)
+	if err != nil {
+		return controllerdrain.Result{}, err
 	}
-	if _, err = deletePodsInBatch(ctx, s.cli, toDelete); err != nil {
-		return err
+	result, err := controllerdrain.DeletePods(ctx, s.cli, s.recorder, roleSet, toDelete, role.Drain, aibrixconst.PodDrainReasonRollout, time.Now())
+	if err != nil {
+		return controllerdrain.Result{}, err
 	}
+	result.Changed = result.Changed || created > 0
 	s.printLog(roleSet, role, toCreate, toDelete)
-	return nil
+	return result, nil
 }
 
 func (s *StatefulRoleSyncer) AllReady(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
@@ -437,22 +449,22 @@ type StatelessRoleSyncer struct {
 	recorder        record.EventRecorder
 }
 
-func (s *StatelessRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
+func (s *StatelessRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (controllerdrain.Result, error) {
 	// Clean up orphan PodSets left by the old PodSetRoleSyncer
 	// when podGroupSize was switched from >1 to <=1.
 	cleaned, err := cleanupOrphanPodSets(ctx, s.cli, roleSet, role)
 	if err != nil {
-		return cleaned, err
+		return controllerdrain.Result{Changed: cleaned}, err
 	}
 	if cleaned {
 		klog.V(4).Infof("[StatelessRoleSyncer.Scale] cleaned orphan podsets for roleset %s/%s role %s, waiting for next reconcile", roleSet.Namespace, roleSet.Name, role.Name)
-		return true, nil
+		return controllerdrain.Result{Changed: true}, nil
 	}
 
 	var toCreate, toDelete []*v1.Pod
 	allPods, err := getRolePods(ctx, s.cli, roleSet.Namespace, roleSet.Name, role.Name)
 	if err != nil {
-		return false, err
+		return controllerdrain.Result{}, err
 	}
 	// delete pods that are in terminated state
 	activePods, inactivePods := filterActivePods(allPods)
@@ -496,27 +508,30 @@ func (s *StatelessRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv
 		for i := int32(0); i < createBudget; i++ {
 			pod, err := ctrlutil.GetPodFromTemplate(&role.Template, roleSet, metav1.NewControllerRef(roleSet, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.RoleSetKind)))
 			if err != nil {
-				return false, err
+				return controllerdrain.Result{}, err
 			}
 			renderStormServicePod(roleSet, role, pod, nil)
 			toCreate = append(toCreate, pod)
 		}
 		klog.Infof("[StatelessRoleSyncer.Scale] roleset %s/%s role %s toCreate %d pods", roleSet.Namespace, roleSet.Name, role.Name, len(toCreate))
 	}
-	if _, err = createPodsInBatch(ctx, s.cli, toCreate); err != nil {
-		return false, err
+	created, err := createPodsInBatch(ctx, s.cli, toCreate)
+	if err != nil {
+		return controllerdrain.Result{}, err
 	}
-	if _, err = deletePodsInBatch(ctx, s.cli, toDelete); err != nil {
-		return false, err
+	result, err := controllerdrain.DeletePods(ctx, s.cli, s.recorder, roleSet, toDelete, role.Drain, aibrixconst.PodDrainReasonScaleIn, time.Now())
+	if err != nil {
+		return controllerdrain.Result{}, err
 	}
-	return len(toCreate) > 0 || len(toDelete) > 0, nil
+	result.Changed = result.Changed || created > 0
+	return result, nil
 }
 
-func (s *StatelessRoleSyncer) Rollout(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) error {
+func (s *StatelessRoleSyncer) Rollout(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (controllerdrain.Result, error) {
 	var toCreate, toDelete []*v1.Pod
 	allPods, err := getRolePods(ctx, s.cli, roleSet.Namespace, roleSet.Name, role.Name)
 	if err != nil {
-		return err
+		return controllerdrain.Result{}, err
 	}
 	activePods, _ := filterActivePods(allPods)
 	expectedReplicas := getRoleReplicas(role)
@@ -529,13 +544,13 @@ func (s *StatelessRoleSyncer) Rollout(ctx context.Context, roleSet *orchestratio
 	if strategy == orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType {
 		possible, reason, err := canRolloutPodsInPlace(roleSet, role, outdated, roleTemplateHash, s.computeHashFunc)
 		if err != nil {
-			return err
+			return controllerdrain.Result{}, err
 		}
 		if possible {
 			if err := s.rolloutInPlace(ctx, roleSet, role, outdated, roleTemplateHash, deleteBudget); err != nil {
-				return err
+				return controllerdrain.Result{}, err
 			}
-			return nil
+			return controllerdrain.Result{}, nil
 		}
 		recordInPlaceFallback(s.recorder, roleSet, role, reason)
 	}
@@ -559,20 +574,23 @@ func (s *StatelessRoleSyncer) Rollout(ctx context.Context, roleSet *orchestratio
 	for i := int32(0); i < createBudget; i++ {
 		pod, err := ctrlutil.GetPodFromTemplate(&role.Template, roleSet, metav1.NewControllerRef(roleSet, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.RoleSetKind)))
 		if err != nil {
-			return err
+			return controllerdrain.Result{}, err
 		}
 		renderStormServicePod(roleSet, role, pod, nil)
 		maybeInjectHistoricalNodeAffinity(roleSet, role, pod, historicalBindings, nil, false)
 		toCreate = append(toCreate, pod)
 	}
 	klog.Infof("[StatelessRoleSyncer.Rollout] roleset %s/%s outdated %d, expectedReplicas %d, deleteBudget %d, createBudget %d, allPods %d, toDelete %d, toCreate %d", roleSet.Namespace, roleSet.Name, len(outdated), expectedReplicas, deleteBudget, createBudget, len(allPods), len(toDelete), len(toCreate))
-	if _, err = createPodsInBatch(ctx, s.cli, toCreate); err != nil {
-		return err
+	created, err := createPodsInBatch(ctx, s.cli, toCreate)
+	if err != nil {
+		return controllerdrain.Result{}, err
 	}
-	if _, err = deletePodsInBatch(ctx, s.cli, toDelete); err != nil {
-		return err
+	result, err := controllerdrain.DeletePods(ctx, s.cli, s.recorder, roleSet, toDelete, role.Drain, aibrixconst.PodDrainReasonRollout, time.Now())
+	if err != nil {
+		return controllerdrain.Result{}, err
 	}
-	return nil
+	result.Changed = result.Changed || created > 0
+	return result, nil
 }
 
 func (s *StatelessRoleSyncer) rolloutInPlace(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, outdated []*v1.Pod, roleTemplateHash string, unavailableBudget int32) error {
@@ -670,11 +688,11 @@ func recordInPlaceUpdateCompleted(recorder record.EventRecorder, roleSet *orches
 }
 
 // RolloutByStep performs rollout in steps based on the defined step size
-func (s *StatelessRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, currentStep int32) error {
+func (s *StatelessRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, currentStep int32) (controllerdrain.Result, error) {
 	var toCreate, toDelete []*v1.Pod
 	allPods, err := getRolePods(ctx, s.cli, roleSet.Namespace, roleSet.Name, role.Name)
 	if err != nil {
-		return err
+		return controllerdrain.Result{}, err
 	}
 
 	activePods, _ := filterActivePods(allPods)
@@ -685,7 +703,7 @@ func (s *StatelessRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orches
 	updated, outdated := filterUpdatedPods(activePods, roleTemplateHash)
 	klog.Infof("[StatelessRoleSyncer.RolloutByStep] Step %d: roleset %s/%s role %s updated %d, outdated %d, expectedReplicas %d, expectedUpdatedReplicas %d, hash %s", currentStep, roleSet.Namespace, roleSet.Name, role.Name, len(updated), len(outdated), expectedReplicas, expectedUpdatedReplicas, roleTemplateHash)
 	if int32(len(updated)) >= expectedUpdatedReplicas {
-		return nil
+		return controllerdrain.Result{}, nil
 	}
 
 	ready, _ := filterReadyPods(activePods)
@@ -699,11 +717,11 @@ func (s *StatelessRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orches
 	if strategy == orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType {
 		possible, reason, err := canRolloutPodsInPlace(roleSet, role, outdated, roleTemplateHash, s.computeHashFunc)
 		if err != nil {
-			return err
+			return controllerdrain.Result{}, err
 		}
 		if possible {
 			selected := selectInPlaceOutdatedPodsForStep(outdated, roleTemplateHash, expectedUpdatedReplicas-int32(len(updated)))
-			return s.rolloutInPlace(ctx, roleSet, role, selected, roleTemplateHash, deleteBudget)
+			return controllerdrain.Result{}, s.rolloutInPlace(ctx, roleSet, role, selected, roleTemplateHash, deleteBudget)
 		}
 		recordInPlaceFallback(s.recorder, roleSet, role, reason)
 	}
@@ -729,20 +747,23 @@ func (s *StatelessRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orches
 	for i := int32(0); i < createBudget; i++ {
 		pod, err := ctrlutil.GetPodFromTemplate(&role.Template, roleSet, metav1.NewControllerRef(roleSet, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.RoleSetKind)))
 		if err != nil {
-			return err
+			return controllerdrain.Result{}, err
 		}
 		renderStormServicePod(roleSet, role, pod, nil)
 		maybeInjectHistoricalNodeAffinity(roleSet, role, pod, historicalBindings, nil, false)
 		toCreate = append(toCreate, pod)
 	}
 	klog.Infof("[StatelessRoleSyncer.RolloutByStep] Step %d: roleset %s/%s outdated %d, expectedReplicas %d, expectedUpdatedReplicas %d, deleteBudget %d, createBudget %d, allPods %d, toDelete %d, toCreate %d", currentStep, roleSet.Namespace, roleSet.Name, len(outdated), expectedReplicas, expectedUpdatedReplicas, deleteBudget, createBudget, len(allPods), len(toDelete), len(toCreate))
-	if _, err = createPodsInBatch(ctx, s.cli, toCreate); err != nil {
-		return err
+	created, err := createPodsInBatch(ctx, s.cli, toCreate)
+	if err != nil {
+		return controllerdrain.Result{}, err
 	}
-	if _, err = deletePodsInBatch(ctx, s.cli, toDelete); err != nil {
-		return err
+	result, err := controllerdrain.DeletePods(ctx, s.cli, s.recorder, roleSet, toDelete, role.Drain, aibrixconst.PodDrainReasonRollout, time.Now())
+	if err != nil {
+		return controllerdrain.Result{}, err
 	}
-	return nil
+	result.Changed = result.Changed || created > 0
+	return result, nil
 }
 
 func selectInPlaceOutdatedPodsForStep(outdated []*v1.Pod, roleTemplateHash string, remaining int32) []*v1.Pod {

@@ -19,6 +19,7 @@ package roleset
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	aibrixconst "github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
 )
 
@@ -47,6 +49,43 @@ const (
 
 var fakeComputeHashFunc = func(template *v1.PodTemplateSpec, collisionCount *int32) string {
 	return newHash
+}
+
+func TestStatelessRoleSyncerScaleDownStartsDrain(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, v1.AddToScheme(scheme))
+	require.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
+
+	roleSet := newTestRoleSet("test-roleset", "test-ns")
+	role := newTestRoleSpec("worker", 1, intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromInt(1)))
+	timeout := int32(20)
+	role.Drain = &orchestrationv1alpha1.RoleDrainSpec{TimeoutSeconds: &timeout}
+	pod1 := newTestPod("pod-1", "test-ns", "worker", "test-roleset", true, false)
+	pod2 := newTestPod("pod-2", "test-ns", "worker", "test-roleset", true, false)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pod1, pod2).Build()
+	syncer := &StatelessRoleSyncer{
+		cli:             fakeClient,
+		computeHashFunc: fakeComputeHashFunc,
+		recorder:        record.NewFakeRecorder(1),
+	}
+
+	result, err := syncer.Scale(ctx, roleSet, role)
+
+	require.NoError(t, err)
+	assert.True(t, result.Changed)
+	assert.Equal(t, 20*time.Second, result.RequeueAfter)
+	pods := &v1.PodList{}
+	require.NoError(t, fakeClient.List(ctx, pods))
+	draining := 0
+	for i := range pods.Items {
+		if pods.Items[i].Annotations[aibrixconst.PodDrainingAnnotationKey] == "true" {
+			draining++
+			assert.Equal(t, aibrixconst.PodDrainReasonScaleIn, pods.Items[i].Annotations[aibrixconst.PodDrainReasonAnnotationKey])
+			assert.Equal(t, aibrixconst.PodDrainTargetActionDelete, pods.Items[i].Annotations[aibrixconst.PodDrainTargetActionAnnotationKey])
+		}
+	}
+	assert.Equal(t, 1, draining)
 }
 
 func TestStatelessRoleSyncer_Scale(t *testing.T) {
@@ -264,7 +303,7 @@ func TestStatelessRoleSyncer_Scale(t *testing.T) {
 
 			assert.NoError(t, err, tt.description)
 
-			assert.Equal(t, tt.expectedChange, changed, tt.description)
+			assert.Equal(t, tt.expectedChange, changed.Changed, tt.description)
 
 			finalPods := &v1.PodList{}
 			err = fakeClient.List(ctx, finalPods)
@@ -369,7 +408,8 @@ func TestStatelessRoleSyncer_Rollout_NotReadyOldPodsAtAvailabilityFloor(t *testi
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
 	syncer := &StatelessRoleSyncer{cli: fakeClient, computeHashFunc: fakeComputeHashFunc}
 
-	require.NoError(t, syncer.Rollout(ctx, roleSet, role))
+	_, err := syncer.Rollout(ctx, roleSet, role)
+	require.NoError(t, err)
 
 	l := &v1.PodList{}
 	require.NoError(t, fakeClient.List(ctx, l))
@@ -525,7 +565,7 @@ func TestStatelessRoleSyncer_Rollout(t *testing.T) {
 			initialCount := len(initialPods.Items)
 
 			// Execute rollout
-			err = syncer.Rollout(ctx, tt.roleSet, tt.role)
+			_, err = syncer.Rollout(ctx, tt.roleSet, tt.role)
 
 			// Assert error expectation
 			if tt.expectedError {
@@ -589,7 +629,8 @@ func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleUsesInPlaceForImageOnlyChan
 		recorder:        recorder,
 	}
 
-	require.NoError(t, syncer.Rollout(ctx, roleSet, role))
+	_, err = syncer.Rollout(ctx, roleSet, role)
+	require.NoError(t, err)
 
 	pods := &v1.PodList{}
 	require.NoError(t, fakeClient.List(ctx, pods))
@@ -646,7 +687,8 @@ func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleRecordsCompletedEvent(t *te
 		recorder:        recorder,
 	}
 
-	require.NoError(t, syncer.Rollout(ctx, roleSet, role))
+	_, err = syncer.Rollout(ctx, roleSet, role)
+	require.NoError(t, err)
 
 	updated := &v1.Pod{}
 	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(pod), updated))
@@ -696,7 +738,8 @@ func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleFallsBackToRecreateForNonIm
 		recorder:        recorder,
 	}
 
-	require.NoError(t, syncer.Rollout(ctx, roleSet, role))
+	_, err = syncer.Rollout(ctx, roleSet, role)
+	require.NoError(t, err)
 
 	pods := &v1.PodList{}
 	require.NoError(t, fakeClient.List(ctx, pods))
@@ -760,7 +803,8 @@ func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleRespectsMaxUnavailable(t *t
 		computeHashFunc: fakeComputeHashFunc,
 	}
 
-	require.NoError(t, syncer.Rollout(ctx, roleSet, role))
+	_, err = syncer.Rollout(ctx, roleSet, role)
+	require.NoError(t, err)
 
 	updated := &v1.Pod{}
 	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(pod), updated))
@@ -810,7 +854,8 @@ func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleWaitsForChangedImageID(t *t
 		computeHashFunc: fakeComputeHashFunc,
 	}
 
-	require.NoError(t, syncer.Rollout(ctx, roleSet, role))
+	_, err = syncer.Rollout(ctx, roleSet, role)
+	require.NoError(t, err)
 
 	updated := &v1.Pod{}
 	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(pod), updated))
@@ -869,7 +914,8 @@ func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleCountsInProgressReadyPodsAg
 		computeHashFunc: fakeComputeHashFunc,
 	}
 
-	require.NoError(t, syncer.Rollout(ctx, roleSet, role))
+	_, err = syncer.Rollout(ctx, roleSet, role)
+	require.NoError(t, err)
 
 	updatedWaiting := &v1.Pod{}
 	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(waitingPod), updatedWaiting))
@@ -913,7 +959,8 @@ func TestStatefulRoleSyncer_RolloutInPlaceIfPossible(t *testing.T) {
 		computeHashFunc: fakeComputeHashFunc,
 	}
 
-	require.NoError(t, syncer.Rollout(ctx, roleSet, role))
+	_, err = syncer.Rollout(ctx, roleSet, role)
+	require.NoError(t, err)
 
 	updated := &v1.Pod{}
 	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(pod), updated))
@@ -973,7 +1020,8 @@ func TestStatefulRoleSyncer_RolloutInPlaceIfPossibleCountsInProgressReadyPodsAga
 		computeHashFunc: fakeComputeHashFunc,
 	}
 
-	require.NoError(t, syncer.Rollout(ctx, roleSet, role))
+	_, err = syncer.Rollout(ctx, roleSet, role)
+	require.NoError(t, err)
 
 	updatedWaiting := &v1.Pod{}
 	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(waitingPod), updatedWaiting))
@@ -1029,7 +1077,8 @@ func TestStatelessRoleSyncer_RolloutByStepInPlaceIfPossibleUsesInPlaceForImageOn
 		computeHashFunc: fakeComputeHashFunc,
 	}
 
-	require.NoError(t, syncer.RolloutByStep(ctx, roleSet, role, 1))
+	_, err = syncer.RolloutByStep(ctx, roleSet, role, 1)
+	require.NoError(t, err)
 
 	pods := &v1.PodList{}
 	require.NoError(t, fakeClient.List(ctx, pods))
@@ -1072,7 +1121,8 @@ func TestPodSetRoleSyncer_RolloutInPlaceIfPossibleRecordsFallbackEvent(t *testin
 	podSet.Labels[constants.RoleTemplateHashLabelKey] = oldHash
 	require.NoError(t, fakeClient.Create(ctx, podSet))
 
-	require.NoError(t, syncer.Rollout(ctx, roleSet, role))
+	_, err := syncer.Rollout(ctx, roleSet, role)
+	require.NoError(t, err)
 	require.Len(t, recorder.Events, 1)
 	event := <-recorder.Events
 	assert.Contains(t, event, InPlaceFallbackEventType)

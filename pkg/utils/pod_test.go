@@ -69,6 +69,24 @@ func genPods(cnt int, readyCnt int) []*v1.Pod {
 	return pods
 }
 
+func TestFilterReadyPodExcludesDrainingPod(t *testing.T) {
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{constants.PodDrainingAnnotationKey: "true"},
+		},
+		Status: v1.PodStatus{
+			PodIP: "10.0.0.1",
+			Conditions: []v1.PodCondition{
+				{Type: v1.PodReady, Status: v1.ConditionTrue},
+			},
+		},
+	}
+
+	if FilterReadyPod(pod) {
+		t.Fatalf("expected draining pod to be excluded from ready routing filter")
+	}
+}
+
 // Sample ray cluser head:
 //
 //	apiVersion: v1

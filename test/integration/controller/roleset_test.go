@@ -35,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	aibrixconst "github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
 	"github.com/vllm-project/aibrix/test/utils/validation"
 	"github.com/vllm-project/aibrix/test/utils/wrapper"
@@ -493,6 +494,69 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 			g.Expect(pod.Labels[constants.RoleTemplateHashLabelKey]).To(gomega.Equal(targetHash))
 			g.Expect(pod.Annotations).NotTo(gomega.HaveKey(constants.RoleInPlaceUpdateTargetHashAnnotationKey))
 		}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
+	})
+
+	ginkgo.It("marks scale-down pods draining before deleting them", func() {
+		timeoutSeconds := int32(5)
+		role := orchestrationapi.RoleSpec{
+			Name:     prefill,
+			Replicas: ptr.To[int32](2),
+			Drain: &orchestrationapi.RoleDrainSpec{
+				TimeoutSeconds: ptr.To(timeoutSeconds),
+			},
+			Template: validation.MakePodTemplate(prefillImageVersionV1),
+		}
+		rs := wrapper.MakeRoleSet("drain-scale-down-test").
+			Namespace(ns.Name).
+			UpdateStrategy(orchestrationapi.ParallelRoleSetUpdateStrategyType).
+			WithRoleAdvanced(role).
+			Obj()
+
+		gomega.Expect(k8sClient.Create(ctx, rs)).To(gomega.Succeed())
+		validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.RoleSetNameLabelKey, rs.Name, 2)
+		validation.MarkPodsReady(ctx, k8sClient, ns.Name, constants.RoleSetNameLabelKey, rs.Name)
+		validation.WaitForRolesReady(ctx, k8sClient, rs, []string{prefill})
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := &orchestrationapi.RoleSet{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest)).To(gomega.Succeed())
+			latest.Spec.Roles[0].Replicas = ptr.To[int32](1)
+			g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+		}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
+
+		var drainingPodName string
+		gomega.Eventually(func(g gomega.Gomega) {
+			pods := getRolePods(ctx, k8sClient, ns.Name, rs.Name, prefill)
+			g.Expect(pods).To(gomega.HaveLen(2))
+
+			var drainingPods []*corev1.Pod
+			for _, pod := range pods {
+				if pod.Annotations[aibrixconst.PodDrainingAnnotationKey] == "true" {
+					drainingPods = append(drainingPods, pod)
+				}
+			}
+			g.Expect(drainingPods).To(gomega.HaveLen(1))
+			drainingPod := drainingPods[0]
+			g.Expect(drainingPod.DeletionTimestamp).To(gomega.BeNil())
+			g.Expect(drainingPod.Annotations).To(gomega.HaveKey(aibrixconst.PodDrainStartTimeAnnotationKey))
+			_, err := time.Parse(time.RFC3339, drainingPod.Annotations[aibrixconst.PodDrainStartTimeAnnotationKey])
+			g.Expect(err).ToNot(gomega.HaveOccurred())
+			g.Expect(drainingPod.Annotations[aibrixconst.PodDrainReasonAnnotationKey]).To(gomega.Equal(aibrixconst.PodDrainReasonScaleIn))
+			g.Expect(drainingPod.Annotations[aibrixconst.PodDrainTargetActionAnnotationKey]).To(gomega.Equal(aibrixconst.PodDrainTargetActionDelete))
+			drainingPodName = drainingPod.Name
+		}, time.Second*10, time.Millisecond*250).Should(gomega.Succeed())
+
+		gomega.Consistently(func(g gomega.Gomega) {
+			pod := &corev1.Pod{}
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: drainingPodName}, pod)).To(gomega.Succeed())
+			g.Expect(pod.DeletionTimestamp).To(gomega.BeNil())
+		}, time.Second, time.Millisecond*200).Should(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			pods := getRolePods(ctx, k8sClient, ns.Name, rs.Name, prefill)
+			g.Expect(pods).To(gomega.HaveLen(1))
+			g.Expect(pods[0].Annotations).NotTo(gomega.HaveKey(aibrixconst.PodDrainingAnnotationKey))
+		}, time.Second*30, time.Millisecond*250).Should(gomega.Succeed())
 	})
 
 	ginkgo.It("updates interleave role pods in place one step at a time", func() {

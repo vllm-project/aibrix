@@ -30,6 +30,7 @@ import (
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
+	controllerdrain "github.com/vllm-project/aibrix/pkg/controller/drain"
 	utils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
 )
 
@@ -42,22 +43,22 @@ type PodSetRoleSyncer struct {
 	recorder        record.EventRecorder
 }
 
-func (p *PodSetRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
+func (p *PodSetRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (controllerdrain.Result, error) {
 	// Clean up orphan Pods left by the old StatefulRoleSyncer/StatelessRoleSyncer
 	// when podGroupSize was switched from <=1 to >1.
 	cleaned, err := cleanupOrphanPods(ctx, p.cli, roleSet, role)
 	if err != nil {
-		return cleaned, err
+		return controllerdrain.Result{Changed: cleaned}, err
 	}
 	if cleaned {
 		klog.V(4).Infof("[PodSetRoleSyncer.Scale] cleaned orphan pods for roleset %s/%s role %s, waiting for next reconcile", roleSet.Namespace, roleSet.Name, role.Name)
-		return true, nil
+		return controllerdrain.Result{Changed: true}, nil
 	}
 
 	var podSetsToCreate, podSetsToDelete []*orchestrationv1alpha1.PodSet
 	allPodSets, err := getRolePodSets(ctx, p.cli, roleSet.Namespace, roleSet.Name, role.Name)
 	if err != nil {
-		return false, err
+		return controllerdrain.Result{}, err
 	}
 	// delete podsets that are in terminated state
 	activePodSets, inactivePodSets := filterActivePodSets(allPodSets)
@@ -102,13 +103,13 @@ func (p *PodSetRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1al
 		}
 	}
 	if _, err = createPodSetsInBatch(ctx, p.cli, podSetsToCreate); err != nil {
-		return false, err
+		return controllerdrain.Result{}, err
 	}
 	if _, err = deletePodSetsInBatch(ctx, p.cli, podSetsToDelete); err != nil {
-		return false, err
+		return controllerdrain.Result{}, err
 	}
 	p.printLog(roleSet, role, podSetsToCreate, podSetsToDelete)
-	return len(podSetsToCreate) > 0 || len(podSetsToDelete) > 0, nil
+	return controllerdrain.Result{Changed: len(podSetsToCreate) > 0 || len(podSetsToDelete) > 0}, nil
 }
 
 func (p *PodSetRoleSyncer) readySlotNum(role *orchestrationv1alpha1.RoleSpec, allPodSets []*orchestrationv1alpha1.PodSet) int {
@@ -153,11 +154,11 @@ func (p *PodSetRoleSyncer) updatedSlotNum(role *orchestrationv1alpha1.RoleSpec, 
 	return int32(updatedTotal), int32(updatedReadyTotal), int32(outdatedTotal)
 }
 
-func (p *PodSetRoleSyncer) Rollout(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) error {
+func (p *PodSetRoleSyncer) Rollout(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (controllerdrain.Result, error) {
 	var toCreate, toDelete []*orchestrationv1alpha1.PodSet
 	allPodSets, err := getRolePodSets(ctx, p.cli, roleSet.Namespace, roleSet.Name, role.Name)
 	if err != nil {
-		return err
+		return controllerdrain.Result{}, err
 	}
 	expectedReplicas := getRoleReplicas(role)
 	activePodSets, _ := filterActivePodSets(allPodSets)
@@ -193,20 +194,20 @@ func (p *PodSetRoleSyncer) Rollout(ctx context.Context, roleSet *orchestrationv1
 		}
 	}
 	if _, err = createPodSetsInBatch(ctx, p.cli, toCreate); err != nil {
-		return err
+		return controllerdrain.Result{}, err
 	}
 	if _, err = deletePodSetsInBatch(ctx, p.cli, toDelete); err != nil {
-		return err
+		return controllerdrain.Result{}, err
 	}
 	p.printLog(roleSet, role, toCreate, toDelete)
-	return nil
+	return controllerdrain.Result{Changed: len(toCreate) > 0 || len(toDelete) > 0}, nil
 }
 
-func (p *PodSetRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, currentStep int32) error {
+func (p *PodSetRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, currentStep int32) (controllerdrain.Result, error) {
 	var toCreate, toDelete []*orchestrationv1alpha1.PodSet
 	allPodSets, err := getRolePodSets(ctx, p.cli, roleSet.Namespace, roleSet.Name, role.Name)
 	if err != nil {
-		return err
+		return controllerdrain.Result{}, err
 	}
 
 	expectedReplicas := getRoleReplicas(role)
@@ -255,13 +256,13 @@ func (p *PodSetRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orchestra
 		}
 	}
 	if _, err = createPodSetsInBatch(ctx, p.cli, toCreate); err != nil {
-		return err
+		return controllerdrain.Result{}, err
 	}
 	if _, err = deletePodSetsInBatch(ctx, p.cli, toDelete); err != nil {
-		return err
+		return controllerdrain.Result{}, err
 	}
 	p.printLog(roleSet, role, toCreate, toDelete)
-	return nil
+	return controllerdrain.Result{Changed: len(toCreate) > 0 || len(toDelete) > 0}, nil
 }
 
 func (p *PodSetRoleSyncer) AllReady(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
@@ -398,6 +399,7 @@ func (p *PodSetRoleSyncer) createPodSetForRole(roleSet *orchestrationv1alpha1.Ro
 			PodGroupSize:       *role.PodGroupSize,
 			Template:           podTemplate,
 			Stateful:           role.Stateful,
+			Drain:              role.Drain,
 			SchedulingStrategy: role.SchedulingStrategy,
 		},
 	}

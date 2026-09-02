@@ -35,6 +35,7 @@ import (
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
+	controllerdrain "github.com/vllm-project/aibrix/pkg/controller/drain"
 	orchestrationctrl "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
 	"github.com/vllm-project/aibrix/pkg/controller/util/patch"
 )
@@ -147,7 +148,7 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// 2. sync pods
-	err := r.syncPods(ctx, roleSet)
+	syncResult, err := r.syncPods(ctx, roleSet)
 	if err != nil {
 		managedErrors = append(managedErrors, fmt.Errorf("sync pod error %v", err))
 	}
@@ -167,6 +168,10 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		} else if inProgress {
 			klog.Infof("roleset %s/%s has in-place update in progress, reconcile after %v seconds", roleSet.Namespace, roleSet.Name, DefaultRetryDelay)
 			return ctrl.Result{RequeueAfter: DefaultRetryDelay}, nil
+		}
+		if syncResult.RequeueAfter > 0 {
+			klog.V(4).Infof("roleset %s/%s has pending pod drain, reconcile after %v", roleSet.Namespace, roleSet.Name, syncResult.RequeueAfter)
+			return drainRequeueResult(syncResult), nil
 		}
 		if !orchestrationctrl.IsRoleSetReady(roleSet) {
 			klog.Infof("roleset %s/%s not ready, reconcile after %v seconds", roleSet.Namespace, roleSet.Name, DefaultRetryDelay)
@@ -189,6 +194,10 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		klog.Infof("roleset %s/%s has in-place update in progress, reconcile after %v seconds", roleSet.Namespace, roleSet.Name, DefaultRetryDelay)
 		return ctrl.Result{RequeueAfter: DefaultRetryDelay}, nil
 	}
+	if syncResult.RequeueAfter > 0 {
+		klog.V(4).Infof("roleset %s/%s has pending pod drain, reconcile after %v", roleSet.Namespace, roleSet.Name, syncResult.RequeueAfter)
+		return drainRequeueResult(syncResult), nil
+	}
 	if hasVolcanoScheduling(roleSet) {
 		klog.Infof("roleset %s/%s has volcano scheduling configured, refresh PodGroup status after %v", roleSet.Namespace, roleSet.Name, PodGroupStatusRefresh)
 		return ctrl.Result{RequeueAfter: PodGroupStatusRefresh}, nil
@@ -198,4 +207,11 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 func hasVolcanoScheduling(roleSet *orchestrationv1alpha1.RoleSet) bool {
 	return roleSet.Spec.SchedulingStrategy != nil && roleSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy != nil
+}
+
+func drainRequeueResult(result controllerdrain.Result) ctrl.Result {
+	if result.RequeueAfter <= 0 {
+		return ctrl.Result{}
+	}
+	return ctrl.Result{RequeueAfter: result.RequeueAfter}
 }

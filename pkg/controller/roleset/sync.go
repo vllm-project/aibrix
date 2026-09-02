@@ -33,6 +33,7 @@ import (
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
+	controllerdrain "github.com/vllm-project/aibrix/pkg/controller/drain"
 	ctrlutil "github.com/vllm-project/aibrix/pkg/controller/util"
 	utils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
 	"github.com/vllm-project/aibrix/pkg/controller/util/patch"
@@ -99,7 +100,7 @@ func (r *RoleSetReconciler) syncPodGroup(ctx context.Context, roleSet *orchestra
 	return nil
 }
 
-func (r *RoleSetReconciler) syncPods(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet) error {
+func (r *RoleSetReconciler) syncPods(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet) (controllerdrain.Result, error) {
 	var manager RollingManager
 	switch roleSet.Spec.UpdateStrategy {
 	case orchestrationv1alpha1.SequentialRoleSetStrategyType:

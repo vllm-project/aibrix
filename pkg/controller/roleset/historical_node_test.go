@@ -218,7 +218,7 @@ func TestHistoricalNodeAffinitySyncers(t *testing.T) {
 		changed, err := syncer.Scale(ctx, rs, role)
 
 		require.NoError(t, err)
-		assert.True(t, changed)
+		assert.True(t, changed.Changed)
 		pods := &v1.PodList{}
 		require.NoError(t, syncer.cli.List(ctx, pods))
 		require.Len(t, pods.Items, 1)
@@ -235,7 +235,7 @@ func TestHistoricalNodeAffinitySyncers(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(oldPod).Build()
 		syncer := &StatelessRoleSyncer{cli: fakeClient, computeHashFunc: fakeComputeHashFunc}
 
-		err := syncer.Rollout(ctx, rs, role)
+		_, err := syncer.Rollout(ctx, rs, role)
 
 		require.NoError(t, err)
 		pods := &v1.PodList{}
@@ -265,7 +265,7 @@ func TestHistoricalNodeAffinitySyncers(t *testing.T) {
 		changed, err := syncer.Scale(ctx, rs, role)
 
 		require.NoError(t, err)
-		assert.True(t, changed)
+		assert.True(t, changed.Changed)
 		pods := &v1.PodList{}
 		require.NoError(t, syncer.cli.List(ctx, pods))
 		require.Len(t, pods.Items, 1)
