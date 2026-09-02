@@ -514,15 +514,16 @@ func TestModelAdapterNoReadyPodsCondition(t *testing.T) {
 		adapter, v1.CreateOptions{})
 	require.NoError(t, err)
 
-	t.Log("waiting for the adapter to converge, watching for a NoReadyPods/InsufficientReadyPods Scheduled condition along the way")
+	t.Log("waiting for the adapter to converge, watching for a NoReadyPods/InsufficientReadyPods condition")
 	var observedNoReadyPods bool
+	scheduledCondType := string(modelv1alpha1.ModelAdapterConditionTypeScheduled)
 	assert.NoError(t, wait.PollUntilContextTimeout(context.Background(), 500*time.Millisecond, 90*time.Second, true,
 		func(ctx context.Context) (done bool, err error) {
 			adapter, err = v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Get(ctx, adapterName, v1.GetOptions{})
 			if err != nil {
 				return false, err
 			}
-			if cond := apimeta.FindStatusCondition(adapter.Status.Conditions, string(modelv1alpha1.ModelAdapterConditionTypeScheduled)); cond != nil {
+			if cond := apimeta.FindStatusCondition(adapter.Status.Conditions, scheduledCondType); cond != nil {
 				t.Logf("Scheduled condition: status=%s reason=%s", cond.Status, cond.Reason)
 				if cond.Status == v1.ConditionFalse && (cond.Reason == "NoReadyPods" || cond.Reason == "InsufficientReadyPods") {
 					observedNoReadyPods = true
@@ -561,7 +562,8 @@ func TestModelAdapterServiceAndEndpointSliceReflectScheduledPod(t *testing.T) {
 	adapter = validateModelAdapter(t, v1alpha1Client, adapter.Name)
 	require.Len(t, adapter.Status.Instances, 1, "single-replica adapter should have exactly one instance")
 
-	scheduledPod, err := k8sClient.CoreV1().Pods("default").Get(context.Background(), adapter.Status.Instances[0], v1.GetOptions{})
+	scheduledPod, err := k8sClient.CoreV1().Pods("default").Get(context.Background(),
+		adapter.Status.Instances[0], v1.GetOptions{})
 	require.NoError(t, err)
 
 	t.Log("validating the owned Service points at port 8000")
@@ -644,14 +646,18 @@ func TestModelAdapterConcurrentAdaptersShareBaseModelPods(t *testing.T) {
 	validateAllPodsAreReady(t, k8sClient, 3)
 
 	t.Cleanup(func() {
-		_ = v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Delete(context.Background(), adapterAName, v1.DeleteOptions{})
-		_ = v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Delete(context.Background(), adapterBName, v1.DeleteOptions{})
+		_ = v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Delete(context.Background(),
+			adapterAName, v1.DeleteOptions{})
+		_ = v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Delete(context.Background(),
+			adapterBName, v1.DeleteOptions{})
 	})
 
 	t.Log("creating two model adapters that target the same base model pods")
-	_, err := v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Create(context.Background(), adapterA, v1.CreateOptions{})
+	_, err := v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Create(context.Background(),
+		adapterA, v1.CreateOptions{})
 	require.NoError(t, err)
-	_, err = v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Create(context.Background(), adapterB, v1.CreateOptions{})
+	_, err = v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Create(context.Background(),
+		adapterB, v1.CreateOptions{})
 	require.NoError(t, err)
 
 	gotA := validateModelAdapter(t, v1alpha1Client, adapterAName)
