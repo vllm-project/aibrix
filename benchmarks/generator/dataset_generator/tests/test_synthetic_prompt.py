@@ -51,14 +51,16 @@ class TruncateToTargetLengthTest(unittest.TestCase):
         # ids[:5] decodes to "w1 w2 w3 w4 w5 bonus", which re-encodes to 6
         # tokens -- one more than requested.
         token_ids = [1, 2, 3, 4, 5, 6, 7]
-        text = _truncate_to_target_length(tokenizer, token_ids, 5)
+        text, token_count = _truncate_to_target_length(tokenizer, token_ids, 5)
+        self.assertLessEqual(token_count, 5)
         self.assertLessEqual(len(tokenizer.encode(text)), 5)
 
     def test_no_op_when_round_trip_already_fits(self):
         tokenizer = _WordTokenizer()
         token_ids = ["w1", "w2", "w3", "w4", "w5", "w6"]
-        text = _truncate_to_target_length(tokenizer, token_ids, 4)
+        text, token_count = _truncate_to_target_length(tokenizer, token_ids, 4)
         self.assertEqual(text, "w1 w2 w3 w4")
+        self.assertEqual(token_count, 4)
 
 
 class AdjustPromptLengthTest(unittest.TestCase):
