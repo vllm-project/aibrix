@@ -17,6 +17,7 @@ limitations under the License.
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -1102,9 +1103,12 @@ func TestHandleResponseBody_SSEChunkSplitAcrossCallbacks(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			requestID := "test-req-id-" + tt.name + "-" + time.Now().Format("150405.000000")
+			t.Cleanup(func() { streamBuffers.Delete(requestID) })
+
 			server := &Server{}
 
-			routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", "test-req-id", "")
+			routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
 			routerCtx.ReqPath = PathChatCompletions
 			routerCtx.RequestTime = time.Now()
 
@@ -1118,7 +1122,7 @@ func TestHandleResponseBody_SSEChunkSplitAcrossCallbacks(t *testing.T) {
 					},
 				},
 			}
-			resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", firstReq, utils.User{}, 0, "test-model", true, false)
+			resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, firstReq, utils.User{}, 0, "test-model", true, false)
 			assert.False(t, complete, "stream is not complete after the first partial chunk")
 			assert.Equal(t, TokenUsage{}, usage)
 			assert.Nil(t, resp.GetImmediateResponse(), "a mid-stream chunk boundary must not be reported as malformed JSON")
@@ -1131,12 +1135,193 @@ func TestHandleResponseBody_SSEChunkSplitAcrossCallbacks(t *testing.T) {
 					},
 				},
 			}
-			resp, complete, usage = server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", secondReq, utils.User{}, 0, "test-model", true, false)
+			resp, complete, usage = server.HandleResponseBody(context.Background(), routerCtx, requestID, secondReq, utils.User{}, 0, "test-model", true, false)
 			assert.True(t, complete)
 			assert.Nil(t, resp.GetImmediateResponse())
 			assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30}, usage)
 		})
 	}
+}
+
+// TestHandleResponseBody_SSEEmptyEOSChunkAfterBufferedTail covers a standard Envoy
+// ext_proc pattern that TestHandleResponseBody_SSEChunkSplitAcrossCallbacks does not: the
+// final chunk carrying EndOfStream can itself have an empty body, with the actual last
+// bytes of the line having arrived in the previous (non-final) chunk. The buffered tail
+// must still be reassembled and scanned on EOS even though the EOS chunk contributes no
+// new bytes.
+func TestHandleResponseBody_SSEEmptyEOSChunkAfterBufferedTail(t *testing.T) {
+	// No trailing "\n\n": the whole line arrives with no newline terminator at all, so it
+	// is entirely carried over into streamBuffers rather than scanned on this call.
+	noTerminator := []byte("data: {\"id\": \"1\", \"usage\": {\"prompt_tokens\": 10, \"completion_tokens\": 20, \"total_tokens\": 30}}")
+
+	requestID := "test-req-id-empty-eos-" + time.Now().Format("150405.000000")
+	t.Cleanup(func() { streamBuffers.Delete(requestID) })
+
+	server := &Server{}
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.RequestTime = time.Now()
+
+	firstReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        noTerminator,
+				EndOfStream: false,
+			},
+		},
+	}
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, firstReq, utils.User{}, 0, "test-model", true, false)
+	assert.False(t, complete)
+	assert.Equal(t, TokenUsage{}, usage)
+	assert.Nil(t, resp.GetImmediateResponse())
+
+	eosReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte{},
+				EndOfStream: true,
+			},
+		},
+	}
+	resp, complete, usage = server.HandleResponseBody(context.Background(), routerCtx, requestID, eosReq, utils.User{}, 0, "test-model", true, false)
+	assert.True(t, complete)
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30}, usage)
+}
+
+// TestHandleResponseBody_SSEChunkSplitThreeWays covers a line split across three (not just
+// two) consecutive HandleResponseBody calls, chaining the trailing-buffer carry-over twice.
+func TestHandleResponseBody_SSEChunkSplitThreeWays(t *testing.T) {
+	full := []byte("data: {\"id\": \"1\", \"usage\": {\"prompt_tokens\": 10, \"completion_tokens\": 20, \"total_tokens\": 30}}\n\n")
+
+	requestID := "test-req-id-three-way-" + time.Now().Format("150405.000000")
+	t.Cleanup(func() { streamBuffers.Delete(requestID) })
+
+	server := &Server{}
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.RequestTime = time.Now()
+
+	part1, part2, part3 := full[:10], full[10:40], full[40:]
+
+	for i, part := range [][]byte{part1, part2} {
+		req := &extProcPb.ProcessingRequest{
+			Request: &extProcPb.ProcessingRequest_ResponseBody{
+				ResponseBody: &extProcPb.HttpBody{
+					Body:        part,
+					EndOfStream: false,
+				},
+			},
+		}
+		resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{}, 0, "test-model", true, false)
+		assert.False(t, complete, "part %d should not complete the stream", i)
+		assert.Equal(t, TokenUsage{}, usage)
+		assert.Nil(t, resp.GetImmediateResponse(), "part %d must not be reported as malformed JSON", i)
+	}
+
+	finalReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        part3,
+				EndOfStream: true,
+			},
+		},
+	}
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, finalReq, utils.User{}, 0, "test-model", true, false)
+	assert.True(t, complete)
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30}, usage)
+}
+
+// TestHandleResponseBody_SSECarriageReturnSplitAcrossCallbacks covers the line terminator
+// itself being split across callbacks: one chunk ends with '\r' and the next begins with
+// '\n'. bytes.TrimSpace strips a trailing '\r' from the line content either way, but the
+// buffering must not treat the dangling '\r' as part of an unterminated next line.
+func TestHandleResponseBody_SSECarriageReturnSplitAcrossCallbacks(t *testing.T) {
+	full := []byte("data: {\"id\": \"1\", \"usage\": {\"prompt_tokens\": 10, \"completion_tokens\": 20, \"total_tokens\": 30}}\r\n\r\n")
+	splitAt := bytes.IndexByte(full, '\r') + 1 // split right after the '\r', before the '\n'
+
+	requestID := "test-req-id-crlf-split-" + time.Now().Format("150405.000000")
+	t.Cleanup(func() { streamBuffers.Delete(requestID) })
+
+	server := &Server{}
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.RequestTime = time.Now()
+
+	firstReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        full[:splitAt],
+				EndOfStream: false,
+			},
+		},
+	}
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, firstReq, utils.User{}, 0, "test-model", true, false)
+	assert.False(t, complete)
+	assert.Equal(t, TokenUsage{}, usage)
+	assert.Nil(t, resp.GetImmediateResponse())
+
+	secondReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        full[splitAt:],
+				EndOfStream: true,
+			},
+		},
+	}
+	resp, complete, usage = server.HandleResponseBody(context.Background(), routerCtx, requestID, secondReq, utils.User{}, 0, "test-model", true, false)
+	assert.True(t, complete)
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30}, usage)
+}
+
+// TestHandleResponseBody_SSELineExceedsBufferLimit reproduces a single SSE event (e.g. a
+// large tool-call/reasoning/multimodal delta) that exceeds maxStreamBufferSize before a
+// newline arrives. Per https://github.com/vllm-project/aibrix/pull/2653#issuecomment
+// feedback, this must not abort the client's stream with a 500 -- that reproduces the
+// original bug (issue #2638) for a different reason. The gateway should drop the oversized
+// line and let the stream continue; only usage extraction for that one line is lost.
+func TestHandleResponseBody_SSELineExceedsBufferLimit(t *testing.T) {
+	requestID := "test-req-id-oversized-line-" + time.Now().Format("150405.000000")
+	t.Cleanup(func() { streamBuffers.Delete(requestID) })
+
+	server := &Server{}
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.RequestTime = time.Now()
+
+	// A single line, no newline yet, larger than maxStreamBufferSize.
+	oversizedChunk := append([]byte("data: "), bytes.Repeat([]byte("a"), maxStreamBufferSize+1)...)
+
+	firstReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        oversizedChunk,
+				EndOfStream: false,
+			},
+		},
+	}
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, firstReq, utils.User{}, 0, "test-model", true, false)
+	assert.False(t, complete)
+	assert.Equal(t, TokenUsage{}, usage)
+	assert.Nil(t, resp.GetImmediateResponse(), "an oversized single-line SSE event must not abort the client stream with a 500")
+
+	// The line finally terminates, along with a well-formed subsequent usage line. The
+	// terminator here only closes out (and discards) the oversized line; usage extraction
+	// for that dropped line is lost, but the stream must still complete cleanly.
+	finalReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte("\n\ndata: {\"id\": \"2\", \"usage\": {\"prompt_tokens\": 1, \"completion_tokens\": 1, \"total_tokens\": 2}}\n\n"),
+				EndOfStream: true,
+			},
+		},
+	}
+	resp, complete, usage = server.HandleResponseBody(context.Background(), routerCtx, requestID, finalReq, utils.User{}, 0, "test-model", true, false)
+	assert.True(t, complete)
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.Equal(t, TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}, usage)
 }
 
 func TestRequestEndHelper_EmitsTokenUsageMetrics(t *testing.T) {

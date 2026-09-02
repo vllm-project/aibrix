@@ -78,6 +78,12 @@ type TokenUsage struct {
 	TotalTokens      int64
 }
 
+// streamBufferOverflow is stored in streamBuffers (in place of the actual trailing bytes)
+// to mark that a request's current SSE line grew past maxStreamBufferSize. It is a
+// zero-length, non-nil slice, which is otherwise never stored (the normal path only stores
+// a tail once len(tail) > 0), so it is unambiguous as a sentinel.
+var streamBufferOverflow = []byte{}
+
 func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bool) (TokenUsage, *extProcPb.ProcessingResponse) {
 	var usage TokenUsage
 
@@ -88,7 +94,24 @@ func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bo
 	// not only after "usage" has already appeared. Reassemble any trailing partial
 	// line carried over from the previous chunk before scanning.
 	if v, ok := streamBuffers.LoadAndDelete(requestID); ok {
-		if buf, ok := v.([]byte); ok {
+		buf, ok := v.([]byte)
+		if !ok {
+			klog.Warningf("streamBuffers held unexpected type %T for requestID %s; discarding", v, requestID)
+		} else if len(buf) == 0 {
+			// A previous call gave up on this line after it exceeded maxStreamBufferSize
+			// (see below). Discard bytes up to and including the next newline -- the rest
+			// of that same oversized line -- without attempting to validate/parse it, since
+			// its beginning was already dropped, then resume normal processing on whatever
+			// follows.
+			if idx := bytes.IndexByte(bodyBytes, '\n'); idx >= 0 {
+				bodyBytes = bodyBytes[idx+1:]
+			} else {
+				if !endOfStream {
+					streamBuffers.Store(requestID, streamBufferOverflow)
+				}
+				return usage, nil
+			}
+		} else {
 			bodyBytes = append(buf, bodyBytes...)
 		}
 	}
@@ -98,32 +121,31 @@ func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bo
 	// it currently contains "usage" -- the "usage" key itself may not have arrived
 	// yet. This keeps the scanning below operating only on complete lines, so a
 	// chunk boundary landing mid-JSON never gets misreported as malformed JSON.
-	// The carried-over tail is capped so a malformed upstream that never emits a
-	// newline cannot grow this buffer without bound.
+	//
+	// The carried-over tail is capped so a malformed upstream that never emits a newline
+	// cannot grow this buffer without bound. A single SSE event legitimately exceeding the
+	// cap (e.g. a large tool-call/reasoning/multimodal delta arriving as one long line) must
+	// not abort the client's stream with a 500 -- that reproduces the original bug this
+	// buffering was added to fix. So instead of erroring, drop the oversized tail, skip usage
+	// extraction for that one line, and let the stream continue; the loss is logged.
 	if !endOfStream {
 		if idx := bytes.LastIndexByte(bodyBytes, '\n'); idx >= 0 {
 			if tail := bodyBytes[idx+1:]; len(tail) > 0 {
 				if len(tail) > maxStreamBufferSize {
-					return usage, generateErrorResponse(
-						envoyTypePb.StatusCode_InternalServerError,
-						[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-							Key: HeaderErrorStreaming, RawValue: []byte("true"),
-						}}},
-						"buffered SSE line exceeded size limit", "", "")
+					klog.Warningf("requestID %s: buffered SSE line exceeded %d bytes; dropping remainder, usage extraction for that line may be lost", requestID, maxStreamBufferSize)
+					streamBuffers.Store(requestID, streamBufferOverflow)
+				} else {
+					streamBuffers.Store(requestID, bytes.Clone(tail))
 				}
-				streamBuffers.Store(requestID, bytes.Clone(tail))
 				bodyBytes = bodyBytes[:idx+1]
 			}
 		} else if len(bodyBytes) > 0 {
 			if len(bodyBytes) > maxStreamBufferSize {
-				return usage, generateErrorResponse(
-					envoyTypePb.StatusCode_InternalServerError,
-					[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-						Key: HeaderErrorStreaming, RawValue: []byte("true"),
-					}}},
-					"buffered SSE line exceeded size limit", "", "")
+				klog.Warningf("requestID %s: buffered SSE line exceeded %d bytes; dropping remainder, usage extraction for that line may be lost", requestID, maxStreamBufferSize)
+				streamBuffers.Store(requestID, streamBufferOverflow)
+			} else {
+				streamBuffers.Store(requestID, bytes.Clone(bodyBytes))
 			}
-			streamBuffers.Store(requestID, bytes.Clone(bodyBytes))
 			bodyBytes = nil
 		}
 	}
