@@ -26,6 +26,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -197,6 +199,24 @@ var _ = ginkgo.Describe("ModelRouter controller test", func() {
 		waitForReferenceGrantDeleted(ns.Name)
 	})
 
+	ginkgo.It("keeps the ReferenceGrant while a LeaderWorkerSet remains in the namespace", func() {
+		deployModel := uniqueModelName(ns.Name, "keep-lws-deploy")
+		lwsModel := uniqueModelName(ns.Name, "keep-lws")
+		deploy := createModelDeployment(ns.Name, "keep-lws-deploy", deployModel, nil)
+		lws := createModelLeaderWorkerSet(ns.Name, "keep-lws", lwsModel)
+		_ = waitForHTTPRoute(deployModel)
+		_ = waitForHTTPRoute(lwsModel)
+		_ = waitForReferenceGrant(ns.Name)
+
+		gomega.Expect(k8sClient.Delete(ctx, deploy)).To(gomega.Succeed())
+		waitForHTTPRouteDeleted(deployModel)
+		expectReferenceGrantAndRoute(ns.Name, lwsModel)
+
+		gomega.Expect(k8sClient.Delete(ctx, lws)).To(gomega.Succeed())
+		waitForHTTPRouteDeleted(lwsModel)
+		waitForReferenceGrantDeleted(ns.Name)
+	})
+
 	ginkgo.It("appends custom model router paths onto the HTTPRoute matches", func() {
 		modelName := uniqueModelName(ns.Name, "paths")
 		createModelDeployment(ns.Name, "paths-deploy", modelName, map[string]string{
@@ -228,9 +248,8 @@ func ensureAibrixSystemNamespace() {
 
 func cleanupHTTPRoutesInAibrixSystem(namespace string) {
 	routes := &gatewayv1.HTTPRouteList{}
-	if err := k8sClient.List(ctx, routes, client.InNamespace(aibrixSystemNS)); err != nil {
-		return
-	}
+	err := k8sClient.List(ctx, routes, client.InNamespace(aibrixSystemNS))
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	for i := range routes.Items {
 		route := &routes.Items[i]
 		shouldDelete := false
@@ -306,6 +325,20 @@ func createModelAdapter(namespace, name, modelName string, annotations map[strin
 	adapter.Annotations = annotations
 	gomega.Expect(k8sClient.Create(ctx, adapter)).To(gomega.Succeed())
 	return adapter
+}
+
+func createModelLeaderWorkerSet(namespace, name, modelName string) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "leaderworkerset.x-k8s.io",
+		Version: "v1",
+		Kind:    "LeaderWorkerSet",
+	})
+	u.SetName(name)
+	u.SetNamespace(namespace)
+	u.SetLabels(modelLabels(modelName))
+	gomega.Expect(k8sClient.Create(ctx, u)).To(gomega.Succeed())
+	return u
 }
 
 func createModelRayClusterFleet(namespace, name, modelName string) *orchestrationapi.RayClusterFleet {

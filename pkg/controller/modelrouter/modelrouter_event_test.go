@@ -23,8 +23,11 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -405,6 +408,37 @@ func TestRouteAndReferenceGrantCleanupAfterWorkloadDeletion(t *testing.T) {
 		_ = getReferenceGrant(t, m.Client, "models")
 	})
 
+	t.Run("keeps grant when a labeled LeaderWorkerSet remains", func(t *testing.T) {
+		m := newEventTestRouter(t)
+		m.Client = &listHookClient{
+			Client: m.Client,
+			hook: func(ctx context.Context, base client.Client, list client.ObjectList, opts ...client.ListOption) error {
+				if uList, ok := list.(*unstructured.UnstructuredList); ok && isLeaderWorkerSetList(uList) {
+					uList.Items = []unstructured.Unstructured{*labeledLeaderWorkerSet("models", "remaining-lws", "lws-model")}
+					return nil
+				}
+				return base.List(ctx, list, opts...)
+			},
+		}
+		deploy := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "llama-deploy",
+				Namespace: "models",
+				Labels:    modelWorkloadLabels("llama-7b", "8000"),
+			},
+		}
+		m.addRouteFromDeployment(deploy)
+		m.deleteRouteFromDeployment(deploy)
+		err := m.Client.Get(context.Background(), client.ObjectKey{
+			Namespace: aibrixEnvoyGatewayNamespace,
+			Name:      utils.ModelRouterName("llama-7b"),
+		}, &gatewayv1.HTTPRoute{})
+		if !apierrors.IsNotFound(err) {
+			t.Fatalf("HTTPRoute after deployment delete: %v, want NotFound", err)
+		}
+		_ = getReferenceGrant(t, m.Client, "models")
+	})
+
 	t.Run("model adapter delete removes route", func(t *testing.T) {
 		m := newEventTestRouter(t)
 		adapter := &modelv1alpha1.ModelAdapter{
@@ -510,4 +544,96 @@ func TestCustomModelRouterPathsAreAppended(t *testing.T) {
 			t.Errorf("custom match[%d] headers = %#v, want model header custom-model", i, headers)
 		}
 	}
+}
+
+type listHookClient struct {
+	client.Client
+	hook func(ctx context.Context, base client.Client, list client.ObjectList, opts ...client.ListOption) error
+}
+
+func (c *listHookClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if c.hook != nil {
+		return c.hook(ctx, c.Client, list, opts...)
+	}
+	return c.Client.List(ctx, list, opts...)
+}
+
+func isLeaderWorkerSetList(list *unstructured.UnstructuredList) bool {
+	gvk := list.GroupVersionKind()
+	return gvk.Group == "leaderworkerset.x-k8s.io" && gvk.Kind == "LeaderWorkerSetList"
+}
+
+func labeledLeaderWorkerSet(namespace, name, modelName string) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "leaderworkerset.x-k8s.io",
+		Version: "v1",
+		Kind:    "LeaderWorkerSet",
+	})
+	u.SetName(name)
+	u.SetNamespace(namespace)
+	u.SetLabels(modelWorkloadLabels(modelName, "8000"))
+	return u
+}
+
+func TestNamespaceHasModelWorkloadOptionalLWS(t *testing.T) {
+	t.Run("NoKindMatchError is treated as absent", func(t *testing.T) {
+		m := newEventTestRouter(t)
+		m.Client = &listHookClient{
+			Client: m.Client,
+			hook: func(ctx context.Context, base client.Client, list client.ObjectList, opts ...client.ListOption) error {
+				if uList, ok := list.(*unstructured.UnstructuredList); ok && isLeaderWorkerSetList(uList) {
+					return &meta.NoKindMatchError{GroupKind: schema.GroupKind{Group: "leaderworkerset.x-k8s.io", Kind: "LeaderWorkerSet"}}
+				}
+				return base.List(ctx, list, opts...)
+			},
+		}
+		has, err := m.namespaceHasModelWorkload(context.Background(), "models")
+		if err != nil {
+			t.Fatalf("namespaceHasModelWorkload returned error for missing LWS CRD: %v", err)
+		}
+		if has {
+			t.Fatal("namespaceHasModelWorkload treated NoKindMatchError as remaining workload")
+		}
+	})
+
+	t.Run("other list errors are returned", func(t *testing.T) {
+		m := newEventTestRouter(t)
+		m.Client = &listHookClient{
+			Client: m.Client,
+			hook: func(ctx context.Context, base client.Client, list client.ObjectList, opts ...client.ListOption) error {
+				return fmt.Errorf("api unavailable")
+			},
+		}
+		has, err := m.namespaceHasModelWorkload(context.Background(), "models")
+		if err == nil {
+			t.Fatal("namespaceHasModelWorkload omitted list error")
+		}
+		if has {
+			t.Fatal("namespaceHasModelWorkload treated list error as remaining workload")
+		}
+	})
+}
+
+func TestDeleteReferenceGrantDoesNotDeleteOnListError(t *testing.T) {
+	m := newEventTestRouter(t)
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "llama-deploy",
+			Namespace: "models",
+			Labels:    modelWorkloadLabels("llama-7b", "8000"),
+		},
+	}
+	m.addRouteFromDeployment(deploy)
+	_ = getReferenceGrant(t, m.Client, "models")
+
+	m.Client = &listHookClient{
+		Client: m.Client,
+		hook: func(ctx context.Context, base client.Client, list client.ObjectList, opts ...client.ListOption) error {
+			return fmt.Errorf("api unavailable")
+		},
+	}
+	m.deleteRouteFromDeployment(deploy)
+
+	_ = getReferenceGrant(t, m.Client, "models")
 }

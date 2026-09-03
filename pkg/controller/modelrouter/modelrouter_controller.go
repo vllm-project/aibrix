@@ -24,6 +24,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -377,6 +378,7 @@ func (m *ModelRouter) deleteHTTPRoute(namespace string, labels, annotations map[
 		return
 	}
 
+	ctx := context.Background()
 	httpRoute := gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      utils.ModelRouterName(modelName),
@@ -384,7 +386,7 @@ func (m *ModelRouter) deleteHTTPRoute(namespace string, labels, annotations map[
 		},
 	}
 
-	err := m.Client.Delete(context.Background(), &httpRoute)
+	err := m.Client.Delete(ctx, &httpRoute)
 	if err != nil {
 		klog.Errorln(err)
 	}
@@ -393,13 +395,20 @@ func (m *ModelRouter) deleteHTTPRoute(namespace string, labels, annotations map[
 	}
 
 	if aibrixEnvoyGatewayNamespace != namespace {
-		m.deleteReferenceGrant(namespace)
+		if err := m.deleteReferenceGrant(ctx, namespace); err != nil {
+			klog.ErrorS(err, "Failed to delete ReferenceGrant after checking remaining workloads",
+				"namespace", namespace)
+		}
 	}
 }
 
-func (m *ModelRouter) deleteReferenceGrant(namespace string) {
-	if m.namespaceHasModelWorkload(namespace) {
-		return
+func (m *ModelRouter) deleteReferenceGrant(ctx context.Context, namespace string) error {
+	has, err := m.namespaceHasModelWorkload(ctx, namespace)
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
 	}
 
 	referenceGrantName := fmt.Sprintf("%s-reserved-referencegrant-in-%s", aibrixEnvoyGatewayNamespace, namespace)
@@ -409,60 +418,87 @@ func (m *ModelRouter) deleteReferenceGrant(namespace string) {
 			Namespace: namespace,
 		},
 	}
-	if err := m.Client.Delete(context.Background(), &referenceGrant); err != nil {
+	if err := m.Client.Delete(ctx, &referenceGrant); err != nil {
 		if !apierrors.IsNotFound(err) {
 			klog.ErrorS(err, "Failed to delete ReferenceGrant", "name", referenceGrantName, "namespace", namespace)
-			return
+			return err
 		}
 	}
 	klog.InfoS("delete reference grant", "referencegrant", referenceGrantName)
+	return nil
 }
 
-func (m *ModelRouter) namespaceHasModelWorkload(namespace string) bool {
-	ctx := context.Background()
-
+func (m *ModelRouter) namespaceHasModelWorkload(ctx context.Context, namespace string) (bool, error) {
 	var deploymentList appsv1.DeploymentList
 	if err := m.Client.List(ctx, &deploymentList, client.InNamespace(namespace)); err != nil {
 		klog.ErrorS(err, "Failed to list model deployments", "namespace", namespace)
-		return true
+		return false, err
 	}
 	for i := range deploymentList.Items {
 		deployment := &deploymentList.Items[i]
 		if _, ok := constants.ModelNameFromMetadata(deployment.Labels, deployment.Annotations); ok {
-			klog.InfoS("Skip deleting ReferenceGrant: model deployment still exists",
+			klog.InfoS("found labeled model deployment in namespace",
 				"namespace", namespace, "deployment", deployment.Name)
-			return true
+			return true, nil
 		}
 	}
 
 	var adapterList modelv1alpha1.ModelAdapterList
 	if err := m.Client.List(ctx, &adapterList, client.InNamespace(namespace)); err != nil {
 		klog.ErrorS(err, "Failed to list model adapters", "namespace", namespace)
-		return true
+		return false, err
 	}
 	for i := range adapterList.Items {
 		adapter := &adapterList.Items[i]
 		if _, ok := constants.ModelNameFromMetadata(adapter.Labels, adapter.Annotations); ok {
-			klog.InfoS("Skip deleting ReferenceGrant: model adapter still exists",
+			klog.InfoS("found labeled model adapter in namespace",
 				"namespace", namespace, "modeladapter", adapter.Name)
-			return true
+			return true, nil
 		}
 	}
 
 	var fleetList orchestrationv1alpha1.RayClusterFleetList
 	if err := m.Client.List(ctx, &fleetList, client.InNamespace(namespace)); err != nil {
 		klog.ErrorS(err, "Failed to list ray cluster fleets", "namespace", namespace)
-		return true
+		return false, err
 	}
 	for i := range fleetList.Items {
 		fleet := &fleetList.Items[i]
 		if _, ok := constants.ModelNameFromMetadata(fleet.Labels, fleet.Annotations); ok {
-			klog.InfoS("Skip deleting ReferenceGrant: ray cluster fleet still exists",
+			klog.InfoS("found labeled ray cluster fleet in namespace",
 				"namespace", namespace, "rayclusterfleet", fleet.Name)
-			return true
+			return true, nil
 		}
 	}
-	return false
+
+	// LeaderWorkerSet (and any other optional watched workload) is listed as
+	// unstructured so clusters without the CRD do not leak ReferenceGrants.
+	for _, gvk := range watchedWorkloads {
+		list := &unstructured.UnstructuredList{}
+		list.SetGroupVersionKind(schema.GroupVersionKind{
+			Group:   gvk.Group,
+			Version: gvk.Version,
+			Kind:    gvk.Kind + "List",
+		})
+		if err := m.Client.List(ctx, list, client.InNamespace(namespace)); err != nil {
+			if meta.IsNoMatchError(err) {
+				// CRD not installed; treat as "not present", not as "has workload".
+				klog.V(4).InfoS("optional workload CRD not present", "GVK", gvk, "namespace", namespace)
+				continue
+			}
+			klog.ErrorS(err, "Failed to list optional model workloads", "GVK", gvk, "namespace", namespace)
+			return false, err
+		}
+		for i := range list.Items {
+			u := &list.Items[i]
+			if _, ok := constants.ModelNameFromMetadata(u.GetLabels(), u.GetAnnotations()); ok {
+				klog.InfoS("found labeled model workload in namespace",
+					"namespace", namespace, "gvk", gvk.String(), "name", u.GetName())
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func consoleRouteLabels(labels map[string]string) map[string]string {
