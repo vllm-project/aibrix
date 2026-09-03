@@ -51,6 +51,7 @@ const (
 	decodeImageVersionV2  = "decode:v2"
 	routerImageVersionV1  = "router:v1"
 	routerImageVersionV2  = "router:v2"
+	podDrainingValue      = "true"
 )
 
 var _ = ginkgo.Describe("RoleSet controller test", func() {
@@ -531,7 +532,7 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 
 			var drainingPods []*corev1.Pod
 			for _, pod := range pods {
-				if pod.Annotations[aibrixconst.PodDrainingAnnotationKey] == "true" {
+				if pod.Annotations[aibrixconst.PodDrainingAnnotationKey] == podDrainingValue {
 					drainingPods = append(drainingPods, pod)
 				}
 			}
@@ -601,7 +602,7 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 
 			var drainingPods []*corev1.Pod
 			for _, pod := range pods {
-				if pod.Annotations[aibrixconst.PodDrainingAnnotationKey] == "true" {
+				if pod.Annotations[aibrixconst.PodDrainingAnnotationKey] == podDrainingValue {
 					drainingPods = append(drainingPods, pod)
 				}
 			}

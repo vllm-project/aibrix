@@ -196,7 +196,7 @@ var _ = ginkgo.Describe("PodSet controller test", func() {
 
 			var drainingPods []*corev1.Pod
 			for _, pod := range pods {
-				if pod.Annotations[aibrixconst.PodDrainingAnnotationKey] == "true" {
+				if pod.Annotations[aibrixconst.PodDrainingAnnotationKey] == podDrainingValue {
 					drainingPods = append(drainingPods, pod)
 				}
 			}
