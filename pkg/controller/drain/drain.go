@@ -35,7 +35,10 @@ import (
 const (
 	EventStarted      = "PodDrainStarted"
 	EventCompleted    = "PodDrainCompleted"
+	EventCancelled    = "PodDrainCancelled"
 	EventStateInvalid = "PodDrainStateInvalid"
+
+	drainingAnnotationValue = "true"
 )
 
 type Result struct {
@@ -94,6 +97,38 @@ func deletePodsImmediately(ctx context.Context, cli client.Client, pods []*corev
 	return result, nil
 }
 
+func CancelPods(ctx context.Context, cli client.Client, recorder record.EventRecorder, owner runtime.Object, pods []*corev1.Pod, reason string) (Result, error) {
+	var result Result
+	for _, pod := range pods {
+		if pod == nil || pod.DeletionTimestamp != nil {
+			continue
+		}
+		annotations := pod.GetAnnotations()
+		if annotations[aibrixconst.PodDrainingAnnotationKey] != drainingAnnotationValue {
+			continue
+		}
+		if reason != "" && annotations[aibrixconst.PodDrainReasonAnnotationKey] != reason {
+			continue
+		}
+		before := pod.DeepCopy()
+		next := copyStringMap(annotations)
+		delete(next, aibrixconst.PodDrainingAnnotationKey)
+		delete(next, aibrixconst.PodDrainStartTimeAnnotationKey)
+		delete(next, aibrixconst.PodDrainReasonAnnotationKey)
+		delete(next, aibrixconst.PodDrainTargetActionAnnotationKey)
+		pod.SetAnnotations(next)
+		if err := cli.Patch(ctx, pod, client.MergeFrom(before)); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return result, err
+		}
+		recordEvent(recorder, owner, corev1.EventTypeNormal, EventCancelled, "cancelled drain for pod %s", pod.Name)
+		result.Changed = true
+	}
+	return result, nil
+}
+
 func processPod(ctx context.Context, cli client.Client, recorder record.EventRecorder, owner runtime.Object, pod *corev1.Pod, reason string, timeout time.Duration, now time.Time) (Result, error) {
 	if pod == nil || pod.DeletionTimestamp != nil {
 		return Result{}, nil
@@ -102,7 +137,7 @@ func processPod(ctx context.Context, cli client.Client, recorder record.EventRec
 		return deletePodsImmediately(ctx, cli, []*corev1.Pod{pod})
 	}
 	annotations := pod.GetAnnotations()
-	if annotations[aibrixconst.PodDrainingAnnotationKey] != "true" {
+	if annotations[aibrixconst.PodDrainingAnnotationKey] != drainingAnnotationValue {
 		return startDrain(ctx, cli, recorder, owner, pod, reason, timeout, now, false, "")
 	}
 
@@ -159,7 +194,7 @@ func startDrain(ctx context.Context, cli client.Client, recorder record.EventRec
 	} else {
 		annotations = copyStringMap(annotations)
 	}
-	annotations[aibrixconst.PodDrainingAnnotationKey] = "true"
+	annotations[aibrixconst.PodDrainingAnnotationKey] = drainingAnnotationValue
 	annotations[aibrixconst.PodDrainStartTimeAnnotationKey] = now.UTC().Format(time.RFC3339)
 	annotations[aibrixconst.PodDrainReasonAnnotationKey] = reason
 	annotations[aibrixconst.PodDrainTargetActionAnnotationKey] = aibrixconst.PodDrainTargetActionDelete

@@ -161,6 +161,52 @@ func TestDeletePodsIgnoresPatchNotFound(t *testing.T) {
 	assert.Empty(t, recorder.Events)
 }
 
+func TestCancelPodsClearsScaleInDrainAnnotations(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 2, 1, 2, 3, 0, time.UTC)
+	pod := drainTestPod("pod-1")
+	pod.Annotations = drainAnnotations(now, aibrixconst.PodDrainReasonScaleIn)
+	pod.Annotations["app"] = "runtime"
+	roleSet := drainTestRoleSet()
+	fakeClient := drainFakeClient(t, roleSet, pod)
+	recorder := record.NewFakeRecorder(1)
+
+	result, err := CancelPods(ctx, fakeClient, recorder, roleSet, []*corev1.Pod{pod}, aibrixconst.PodDrainReasonScaleIn)
+
+	require.NoError(t, err)
+	assert.True(t, result.Changed)
+	assert.Zero(t, result.RequeueAfter)
+	updated := &corev1.Pod{}
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(pod), updated))
+	assert.Equal(t, "runtime", updated.Annotations["app"])
+	assert.Empty(t, updated.Annotations[aibrixconst.PodDrainingAnnotationKey])
+	assert.Empty(t, updated.Annotations[aibrixconst.PodDrainStartTimeAnnotationKey])
+	assert.Empty(t, updated.Annotations[aibrixconst.PodDrainReasonAnnotationKey])
+	assert.Empty(t, updated.Annotations[aibrixconst.PodDrainTargetActionAnnotationKey])
+	assert.Contains(t, <-recorder.Events, EventCancelled)
+}
+
+func TestCancelPodsSkipsDifferentDrainReason(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 2, 1, 2, 3, 0, time.UTC)
+	pod := drainTestPod("pod-1")
+	pod.Annotations = drainAnnotations(now, aibrixconst.PodDrainReasonRollout)
+	roleSet := drainTestRoleSet()
+	fakeClient := drainFakeClient(t, roleSet, pod)
+	recorder := record.NewFakeRecorder(1)
+
+	result, err := CancelPods(ctx, fakeClient, recorder, roleSet, []*corev1.Pod{pod}, aibrixconst.PodDrainReasonScaleIn)
+
+	require.NoError(t, err)
+	assert.False(t, result.Changed)
+	assert.Zero(t, result.RequeueAfter)
+	updated := &corev1.Pod{}
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(pod), updated))
+	assert.Equal(t, "true", updated.Annotations[aibrixconst.PodDrainingAnnotationKey])
+	assert.Equal(t, aibrixconst.PodDrainReasonRollout, updated.Annotations[aibrixconst.PodDrainReasonAnnotationKey])
+	assert.Empty(t, recorder.Events)
+}
+
 func drainTestPod(name string) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},

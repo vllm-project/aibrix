@@ -567,6 +567,74 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 		}, time.Second*30, time.Millisecond*250).Should(gomega.Succeed())
 	})
 
+	ginkgo.It("cancels scale-down drain when replicas are restored before timeout", func() {
+		timeoutSeconds := int32(30)
+		role := orchestrationapi.RoleSpec{
+			Name:     prefill,
+			Replicas: ptr.To[int32](2),
+			Drain: &orchestrationapi.RoleDrainSpec{
+				TimeoutSeconds: ptr.To(timeoutSeconds),
+			},
+			Template: validation.MakePodTemplate(prefillImageVersionV1),
+		}
+		rs := wrapper.MakeRoleSet("drain-scale-cancel-test").
+			Namespace(ns.Name).
+			UpdateStrategy(orchestrationapi.ParallelRoleSetUpdateStrategyType).
+			WithRoleAdvanced(role).
+			Obj()
+
+		gomega.Expect(k8sClient.Create(ctx, rs)).To(gomega.Succeed())
+		validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.RoleSetNameLabelKey, rs.Name, 2)
+		validation.MarkPodsReady(ctx, k8sClient, ns.Name, constants.RoleSetNameLabelKey, rs.Name)
+		validation.WaitForRolesReady(ctx, k8sClient, rs, []string{prefill})
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := &orchestrationapi.RoleSet{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest)).To(gomega.Succeed())
+			latest.Spec.Roles[0].Replicas = ptr.To[int32](1)
+			g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+		}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			pods := getRolePods(ctx, k8sClient, ns.Name, rs.Name, prefill)
+			g.Expect(pods).To(gomega.HaveLen(2))
+
+			var drainingPods []*corev1.Pod
+			for _, pod := range pods {
+				if pod.Annotations[aibrixconst.PodDrainingAnnotationKey] == "true" {
+					drainingPods = append(drainingPods, pod)
+				}
+			}
+			g.Expect(drainingPods).To(gomega.HaveLen(1))
+			g.Expect(drainingPods[0].DeletionTimestamp).To(gomega.BeNil())
+			g.Expect(drainingPods[0].Annotations[aibrixconst.PodDrainReasonAnnotationKey]).To(
+				gomega.Equal(aibrixconst.PodDrainReasonScaleIn),
+			)
+			g.Expect(drainingPods[0].Annotations[aibrixconst.PodDrainTargetActionAnnotationKey]).To(
+				gomega.Equal(aibrixconst.PodDrainTargetActionDelete),
+			)
+		}, time.Second*10, time.Millisecond*250).Should(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := &orchestrationapi.RoleSet{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest)).To(gomega.Succeed())
+			latest.Spec.Roles[0].Replicas = ptr.To[int32](2)
+			g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+		}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			pods := getRolePods(ctx, k8sClient, ns.Name, rs.Name, prefill)
+			g.Expect(pods).To(gomega.HaveLen(2))
+			for _, pod := range pods {
+				g.Expect(pod.DeletionTimestamp).To(gomega.BeNil())
+				g.Expect(pod.Annotations).NotTo(gomega.HaveKey(aibrixconst.PodDrainingAnnotationKey))
+				g.Expect(pod.Annotations).NotTo(gomega.HaveKey(aibrixconst.PodDrainStartTimeAnnotationKey))
+				g.Expect(pod.Annotations).NotTo(gomega.HaveKey(aibrixconst.PodDrainReasonAnnotationKey))
+				g.Expect(pod.Annotations).NotTo(gomega.HaveKey(aibrixconst.PodDrainTargetActionAnnotationKey))
+			}
+		}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
+	})
+
 	ginkgo.It("updates interleave role pods in place one step at a time", func() {
 		int32Ptr := func(i int32) *int32 { return &i }
 		maxSurge := intstr.FromInt32(0)

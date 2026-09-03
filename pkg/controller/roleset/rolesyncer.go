@@ -121,10 +121,15 @@ func (s *StatefulRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}
+	cancelResult, err := controllerdrain.CancelPods(ctx, s.cli, s.recorder, roleSet, staleScaleInDrainingPods(activePods, podsToDelete), aibrixconst.PodDrainReasonScaleIn)
+	if err != nil {
+		return controllerdrain.Result{}, err
+	}
 	result, err := controllerdrain.DeletePods(ctx, s.cli, s.recorder, roleSet, podsToDelete, role.Drain, aibrixconst.PodDrainReasonScaleIn, time.Now())
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}
+	result.Merge(cancelResult)
 	result.Changed = result.Changed || created > 0
 	s.printLog(roleSet, role, podsToCreate, podsToDelete)
 	return result, nil
@@ -238,7 +243,7 @@ func (s *StatefulRoleSyncer) Rollout(ctx context.Context, roleSet *orchestration
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}
-	result, err := controllerdrain.DeletePods(ctx, s.cli, s.recorder, roleSet, toDelete, role.Drain, aibrixconst.PodDrainReasonRollout, time.Now())
+	result, err := deletePodsForRollout(ctx, s.cli, s.recorder, roleSet, toDelete, role.Drain, time.Now())
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}
@@ -324,7 +329,7 @@ func (s *StatefulRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orchest
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}
-	result, err := controllerdrain.DeletePods(ctx, s.cli, s.recorder, roleSet, toDelete, role.Drain, aibrixconst.PodDrainReasonRollout, time.Now())
+	result, err := deletePodsForRollout(ctx, s.cli, s.recorder, roleSet, toDelete, role.Drain, time.Now())
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}
@@ -535,12 +540,66 @@ func (s *StatelessRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}
+	cancelResult, err := controllerdrain.CancelPods(ctx, s.cli, s.recorder, roleSet, staleScaleInDrainingPods(activePods, toDelete), aibrixconst.PodDrainReasonScaleIn)
+	if err != nil {
+		return controllerdrain.Result{}, err
+	}
 	result, err := controllerdrain.DeletePods(ctx, s.cli, s.recorder, roleSet, toDelete, role.Drain, aibrixconst.PodDrainReasonScaleIn, time.Now())
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}
+	result.Merge(cancelResult)
 	result.Changed = result.Changed || created > 0
 	return result, nil
+}
+
+func staleScaleInDrainingPods(activePods, toDelete []*v1.Pod) []*v1.Pod {
+	deleteSet := make(map[string]struct{}, len(toDelete))
+	for _, pod := range toDelete {
+		if pod == nil {
+			continue
+		}
+		deleteSet[pod.Namespace+"/"+pod.Name] = struct{}{}
+	}
+	stale := make([]*v1.Pod, 0)
+	for _, pod := range activePods {
+		if pod == nil || !podutil.IsPodDraining(pod) {
+			continue
+		}
+		if pod.Annotations[aibrixconst.PodDrainReasonAnnotationKey] != aibrixconst.PodDrainReasonScaleIn {
+			continue
+		}
+		if _, deleting := deleteSet[pod.Namespace+"/"+pod.Name]; deleting {
+			continue
+		}
+		stale = append(stale, pod)
+	}
+	return stale
+}
+
+func deletePodsForRollout(ctx context.Context, cli client.Client, recorder record.EventRecorder, roleSet *orchestrationv1alpha1.RoleSet, pods []*v1.Pod, spec *orchestrationv1alpha1.RoleDrainSpec, now time.Time) (controllerdrain.Result, error) {
+	readyPods, notReadyPods := splitPodsByReady(pods)
+	result, err := controllerdrain.DeletePods(ctx, cli, recorder, roleSet, notReadyPods, nil, aibrixconst.PodDrainReasonRollout, now)
+	if err != nil {
+		return result, err
+	}
+	readyResult, err := controllerdrain.DeletePods(ctx, cli, recorder, roleSet, readyPods, spec, aibrixconst.PodDrainReasonRollout, now)
+	if err != nil {
+		return result, err
+	}
+	result.Merge(readyResult)
+	return result, nil
+}
+
+func splitPodsByReady(pods []*v1.Pod) (readyPods, notReadyPods []*v1.Pod) {
+	for _, pod := range pods {
+		if podutil.IsPodReady(pod) {
+			readyPods = append(readyPods, pod)
+		} else {
+			notReadyPods = append(notReadyPods, pod)
+		}
+	}
+	return readyPods, notReadyPods
 }
 
 func (s *StatelessRoleSyncer) Rollout(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (controllerdrain.Result, error) {
@@ -601,7 +660,7 @@ func (s *StatelessRoleSyncer) Rollout(ctx context.Context, roleSet *orchestratio
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}
-	result, err := controllerdrain.DeletePods(ctx, s.cli, s.recorder, roleSet, toDelete, role.Drain, aibrixconst.PodDrainReasonRollout, time.Now())
+	result, err := deletePodsForRollout(ctx, s.cli, s.recorder, roleSet, toDelete, role.Drain, time.Now())
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}
@@ -774,7 +833,7 @@ func (s *StatelessRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orches
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}
-	result, err := controllerdrain.DeletePods(ctx, s.cli, s.recorder, roleSet, toDelete, role.Drain, aibrixconst.PodDrainReasonRollout, time.Now())
+	result, err := deletePodsForRollout(ctx, s.cli, s.recorder, roleSet, toDelete, role.Drain, time.Now())
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}

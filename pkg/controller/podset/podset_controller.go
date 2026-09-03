@@ -241,7 +241,7 @@ func (r *PodSetReconciler) reconcilePods(ctx context.Context, podSet *orchestrat
 		return r.handleScaleDown(ctx, podSet, activePods, currentPodCount, desiredPodCount)
 	}
 
-	return controllerdrain.Result{}, nil
+	return r.cancelStaleScaleInDrain(ctx, podSet, activePods, nil)
 }
 
 func (r *PodSetReconciler) handleReplaceUnhealthy(ctx context.Context, podSet *orchestrationv1alpha1.PodSet,
@@ -351,14 +351,44 @@ func (r *PodSetReconciler) handleScaleDown(ctx context.Context, podSet *orchestr
 	for i := 0; i < podsToDelete; i++ {
 		podList = append(podList, &activePods[len(activePods)-1-i])
 	}
+	cancelResult, err := r.cancelStaleScaleInDrain(ctx, podSet, activePods, podList)
+	if err != nil {
+		return cancelResult, err
+	}
 	result, err := controllerdrain.DeletePods(ctx, r.Client, r.EventRecorder, podSet, podList, podSet.Spec.Drain, aibrixconst.PodDrainReasonScaleIn, time.Now())
 	if err != nil {
 		return result, fmt.Errorf("failed to delete pods for scale down: %w", err)
 	}
+	result.Merge(cancelResult)
 	for _, pod := range podList {
 		klog.InfoS("Processed pod deletion", "pod", pod.Name, "podset", podSet.Name)
 	}
 	return result, nil
+}
+
+func (r *PodSetReconciler) cancelStaleScaleInDrain(ctx context.Context, podSet *orchestrationv1alpha1.PodSet, activePods []corev1.Pod, podsToDelete []*corev1.Pod) (controllerdrain.Result, error) {
+	deleteSet := make(map[string]struct{}, len(podsToDelete))
+	for _, pod := range podsToDelete {
+		if pod == nil {
+			continue
+		}
+		deleteSet[pod.Namespace+"/"+pod.Name] = struct{}{}
+	}
+	stale := make([]*corev1.Pod, 0)
+	for i := range activePods {
+		pod := &activePods[i]
+		if !podutil.IsPodDraining(pod) {
+			continue
+		}
+		if pod.Annotations[aibrixconst.PodDrainReasonAnnotationKey] != aibrixconst.PodDrainReasonScaleIn {
+			continue
+		}
+		if _, deleting := deleteSet[pod.Namespace+"/"+pod.Name]; deleting {
+			continue
+		}
+		stale = append(stale, pod)
+	}
+	return controllerdrain.CancelPods(ctx, r.Client, r.EventRecorder, podSet, stale, aibrixconst.PodDrainReasonScaleIn)
 }
 
 func drainTimeoutSeconds(spec *orchestrationv1alpha1.RoleDrainSpec) (int32, bool) {

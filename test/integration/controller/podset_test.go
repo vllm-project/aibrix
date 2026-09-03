@@ -24,9 +24,11 @@ import (
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	aibrixconst "github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
 	"github.com/vllm-project/aibrix/test/utils/validation"
 	"github.com/vllm-project/aibrix/test/utils/wrapper"
@@ -149,4 +151,98 @@ var _ = ginkgo.Describe("PodSet controller test", func() {
 		),
 		// TODO: add more test case
 	)
+
+	ginkgo.It("cancels scale-down drain when pod group size is restored before timeout", func() {
+		timeoutSeconds := int32(30)
+		podTemplate := corev1.PodTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{
+					"app": "nginx",
+				},
+			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:  "nginx",
+						Image: "nginx:latest",
+					},
+				},
+			},
+		}
+		podset := wrapper.MakePodSet("podset-drain-cancel").
+			Namespace(ns.Name).
+			PodGroupSize(3).
+			PodTemplate(podTemplate).
+			Obj()
+		podset.Spec.Drain = &orchestrationapi.RoleDrainSpec{
+			TimeoutSeconds: ptr.To(timeoutSeconds),
+		}
+
+		gomega.Expect(k8sClient.Create(ctx, podset)).To(gomega.Succeed())
+		validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.PodSetNameLabelKey, podset.Name, 3)
+		validation.MarkPodsReady(ctx, k8sClient, ns.Name, constants.PodSetNameLabelKey, podset.Name)
+		validation.ValidatePodSetStatus(ctx, k8sClient, podset, orchestrationapi.PodSetPhaseReady, 3, 3)
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := &orchestrationapi.PodSet{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(podset), latest)).To(gomega.Succeed())
+			latest.Spec.PodGroupSize = 2
+			g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+		}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			pods := getPodSetPods(ctx, k8sClient, ns.Name, podset.Name)
+			g.Expect(pods).To(gomega.HaveLen(3))
+
+			var drainingPods []*corev1.Pod
+			for _, pod := range pods {
+				if pod.Annotations[aibrixconst.PodDrainingAnnotationKey] == "true" {
+					drainingPods = append(drainingPods, pod)
+				}
+			}
+			g.Expect(drainingPods).To(gomega.HaveLen(1))
+			g.Expect(drainingPods[0].DeletionTimestamp).To(gomega.BeNil())
+			g.Expect(drainingPods[0].Annotations[aibrixconst.PodDrainReasonAnnotationKey]).To(
+				gomega.Equal(aibrixconst.PodDrainReasonScaleIn),
+			)
+			g.Expect(drainingPods[0].Annotations[aibrixconst.PodDrainTargetActionAnnotationKey]).To(
+				gomega.Equal(aibrixconst.PodDrainTargetActionDelete),
+			)
+		}, time.Second*10, time.Millisecond*250).Should(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := &orchestrationapi.PodSet{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(podset), latest)).To(gomega.Succeed())
+			latest.Spec.PodGroupSize = 3
+			g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+		}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			pods := getPodSetPods(ctx, k8sClient, ns.Name, podset.Name)
+			g.Expect(pods).To(gomega.HaveLen(3))
+			for _, pod := range pods {
+				g.Expect(pod.DeletionTimestamp).To(gomega.BeNil())
+				g.Expect(pod.Annotations).NotTo(gomega.HaveKey(aibrixconst.PodDrainingAnnotationKey))
+				g.Expect(pod.Annotations).NotTo(gomega.HaveKey(aibrixconst.PodDrainStartTimeAnnotationKey))
+				g.Expect(pod.Annotations).NotTo(gomega.HaveKey(aibrixconst.PodDrainReasonAnnotationKey))
+				g.Expect(pod.Annotations).NotTo(gomega.HaveKey(aibrixconst.PodDrainTargetActionAnnotationKey))
+			}
+		}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
+	})
 })
+
+func getPodSetPods(ctx context.Context, k8sClient client.Client, namespace, podSetName string) []*corev1.Pod {
+	podList := &corev1.PodList{}
+	gomega.Expect(k8sClient.List(
+		ctx,
+		podList,
+		client.InNamespace(namespace),
+		client.MatchingLabels{constants.PodSetNameLabelKey: podSetName},
+	)).To(gomega.Succeed())
+
+	pods := make([]*corev1.Pod, 0, len(podList.Items))
+	for i := range podList.Items {
+		pods = append(pods, &podList.Items[i])
+	}
+	return pods
+}
