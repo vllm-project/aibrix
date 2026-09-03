@@ -10,7 +10,7 @@ const MODE_LABELS = {
   support: "support", generate: "generate", exp: "exp",
 };
 
-const EXP_YAML_EXAMPLE = `# exps 控制执行顺序；每个顶层 key 是一个实验
+const EXP_YAML_EXAMPLE = `# exps controls execution order; each top-level key is one experiment
 exps:
   - agg_demo
   - disagg_demo
@@ -178,12 +178,12 @@ function updateCmdPreview() {
 $("run-btn").addEventListener("click", async () => {
   const params = gatherParams();
   if (!params.model_path && currentMode !== "exp") {
-    showError("请先填写 model_path（HuggingFace ID 或本地模型目录）。", "");
+    showError("Please fill in model_path first (HuggingFace ID or local model directory).", "");
     return;
   }
   const btn = $("run-btn");
   btn.disabled = true;
-  $("run-status").textContent = "运行中（sweep 通常 5 秒～数分钟）…";
+  $("run-status").textContent = "Running (sweeps typically take 5 seconds to a few minutes)…";
   hideError();
   try {
     const resp = await fetch("/api/run", {
@@ -192,13 +192,13 @@ $("run-btn").addEventListener("click", async () => {
     });
     const payload = await resp.json();
     if (!payload.ok) {
-      showError(payload.error || "运行失败", payload.traceback || payload.stderr || "");
+      showError(payload.error || "Run failed", payload.traceback || payload.stderr || "");
     } else {
       lastResult = payload.data;
       renderResult(payload.data);
     }
   } catch (e) {
-    showError(`请求失败: ${e.message}`, "");
+    showError(`Request failed: ${e.message}`, "");
   } finally {
     btn.disabled = false;
     $("run-status").textContent = "";
@@ -245,10 +245,10 @@ function card(k, v, unit, cls) {
 
 function renderSupport(c, d) {
   c.innerHTML = `<div class="verdict">
-    <div class="card"><div class="k">Aggregated 支持</div><div class="v ${d.agg_supported ? "good" : "bad"}">${d.agg_supported ? "✓ 支持" : "✗ 不支持"}</div></div>
-    <div class="card"><div class="k">Disaggregated 支持</div><div class="v ${d.disagg_supported ? "good" : "bad"}">${d.disagg_supported ? "✓ 支持" : "✗ 不支持"}</div></div>
+    <div class="card"><div class="k">Aggregated support</div><div class="v ${d.agg_supported ? "good" : "bad"}">${d.agg_supported ? "✓ Supported" : "✗ Not supported"}</div></div>
+    <div class="card"><div class="k">Disaggregated support</div><div class="v ${d.disagg_supported ? "good" : "bad"}">${d.disagg_supported ? "✓ Supported" : "✗ Not supported"}</div></div>
   </div>
-  <p class="hint">注：support 基于支持矩阵多数票的轻量检查，最终以 default/exp 实际运行结果为准。</p>`;
+  <p class="hint">Note: support is a lightweight check based on a majority vote over the support matrix; the actual default/exp run results are authoritative.</p>`;
 }
 
 function renderGenerate(c, d) {
@@ -262,24 +262,24 @@ function renderEstimate(c, d) {
   const cards = [
     card("TTFT / prefill", fmt(d.ttft_ms), "ms"),
     card("TPOT", fmt(d.tpot_ms), "ms"),
-    card("端到端请求延迟", fmt(d.request_latency_ms), "ms"),
-    card("请求吞吐", fmt(d.seq_per_second), "req/s"),
-    card("总吞吐", fmt(d.tokens_per_second), "tok/s"),
-    card("单卡吞吐", fmt(d.tokens_per_second_per_gpu), "tok/s/gpu"),
-    card("每副本 GPU 数", fmt(d.num_total_gpus), "GPU/副本"),
-    card("显存占用", fmt(d.memory_gb), "GB/GPU"),
-    card("功耗", d.power_w ? fmt(d.power_w) : "N/A", "W/GPU"),
-    card("模式", d.mode, ""),
+    card("End-to-end request latency", fmt(d.request_latency_ms), "ms"),
+    card("Request throughput", fmt(d.seq_per_second), "req/s"),
+    card("Total throughput", fmt(d.tokens_per_second), "tok/s"),
+    card("Per-GPU throughput", fmt(d.tokens_per_second_per_gpu), "tok/s/gpu"),
+    card("GPUs per replica", fmt(d.num_total_gpus), "GPU/replica"),
+    card("Memory usage", fmt(d.memory_gb), "GB/GPU"),
+    card("Power", d.power_w ? fmt(d.power_w) : "N/A", "W/GPU"),
+    card("Mode", d.mode, ""),
   ].join("");
   let html = `<div class="summary-cards">${cards}</div>`;
   if (d.context_latency_ms || d.generation_latency_ms) {
-    html += `<p class="hint">单轮拆解：prefill ${fmt(d.context_latency_ms)} ms + decode ${fmt(d.generation_latency_ms)} ms` +
-      (d.global_bs ? `；每轮完成 ${d.global_bs} 条请求，离线任务总时长 ≈ 总请求数 ÷ (${fmt(d.seq_per_second)} req/s × 副本数)` : "") +
-      `。</p>`;
+    html += `<p class="hint">Single-round breakdown: prefill ${fmt(d.context_latency_ms)} ms + decode ${fmt(d.generation_latency_ms)} ms` +
+      (d.global_bs ? `; ${d.global_bs} requests complete per round, total offline job duration ≈ total requests ÷ (${fmt(d.seq_per_second)} req/s × replica count)` : "") +
+      `.</p>`;
   }
   if (d.kv_cache_warning) html += `<p class="hint">⚠ ${escapeHtml(d.kv_cache_warning)}</p>`;
   if (d.per_ops && Object.keys(d.per_ops).length) {
-    html += `<div class="exp-block"><h3 class="exp-title">逐算子延迟分解（ms）</h3>` +
+    html += `<div class="exp-block"><h3 class="exp-title">Per-op latency breakdown (ms)</h3>` +
       renderOpsTable(d.per_ops, d.per_ops_source) + `</div>`;
   }
   c.innerHTML = html;
@@ -300,7 +300,7 @@ function renderOpsTable(perOps, source) {
     `<tr><td>${escapeHtml(r.step)}</td><td style="text-align:left">${escapeHtml(r.op)}</td><td class="hl">${fmt(r.val)}</td><td>${escapeHtml(r.src || "")}</td></tr>`
   ).join("");
   return `<div class="table-wrap"><table>
-    <thead><tr><th>阶段</th><th style="text-align:left">算子</th><th>耗时(ms)</th><th>数据来源</th></tr></thead>
+    <thead><tr><th>Phase</th><th style="text-align:left">Op</th><th>Latency (ms)</th><th>Data source</th></tr></thead>
     <tbody>${body}</tbody></table></div>`;
 }
 
@@ -333,16 +333,16 @@ function renderCliResult(c, d) {
   const exps = Object.keys(d.best_configs || {});
   const bestTp = d.best_throughputs && d.chosen_exp ? d.best_throughputs[d.chosen_exp] : null;
   let html = `<div class="summary-cards">
-    ${card("最优实验", d.chosen_exp || "-", "")}
-    ${card("最佳集群吞吐", bestTp != null ? fmt(bestTp) : "-", "tok/s/gpu")}
-    ${card("实验数量", exps.length, "")}
+    ${card("Best experiment", d.chosen_exp || "-", "")}
+    ${card("Best cluster throughput", bestTp != null ? fmt(bestTp) : "-", "tok/s/gpu")}
+    ${card("Number of experiments", exps.length, "")}
   </div>`;
   for (const name of exps) {
     const rows = d.best_configs[name] || [];
     const isBest = name === d.chosen_exp;
     html += `<div class="exp-block">
-      <h3 class="exp-title">${escapeHtml(name)} · Top ${rows.length} 配置${isBest ? '<span class="tag-best">最优</span>' : ""}</h3>
-      ${rows.length ? renderConfigTable(rows, name) : "<p class='hint'>该实验无可行配置（可能 SLA 过紧或无性能数据）。</p>"}
+      <h3 class="exp-title">${escapeHtml(name)} · Top ${rows.length} configs${isBest ? '<span class="tag-best">Best</span>' : ""}</h3>
+      ${rows.length ? renderConfigTable(rows, name) : "<p class='hint'>No feasible configs for this experiment (SLO may be too tight or no performance data available).</p>"}
     </div>`;
   }
   c.innerHTML = html;
@@ -398,7 +398,7 @@ async function boot() {
       badge.textContent = "Python bridge: " + health.python.split("/").slice(-3, -1).join("/");
     } else {
       badge.className = "badge badge-bad";
-      badge.textContent = "未找到含 aiconfigurator 的 Python（设 AIC_PYTHON）";
+      badge.textContent = "No Python with aiconfigurator found (set AIC_PYTHON)";
     }
   } catch (e) { /* server up but health failed */ }
 
