@@ -31,9 +31,8 @@ spec:
   # Available schedulers: "default", "least-adapters"
   schedulerName: default
 
-  # Lifecycle phases: Pending → Scheduled → Loading → Bound → Running
-  # - Pending: Starting reconciliation
-  # - Scheduled: Pods selected and validated for readiness
-  # - Loading: Adapter being downloaded and loaded (with retry mechanism)
-  # - Bound: Successfully loaded, creating service resources
-  # - Running: Ready for inference requests
+  # Lifecycle phases: Pending → Scheduled (replicas: 1 only) → Running, or Failed
+  # - Pending: No adapter instance loaded yet; the Ready condition reason says why
+  # - Scheduled: A pod was selected for the adapter (single-pod mode)
+  # - Running: Adapter loaded on at least one pod, ready for inference requests
+  # - Failed: Loading failed on every candidate pod; the controller keeps retrying
