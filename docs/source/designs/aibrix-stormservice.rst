@@ -39,7 +39,7 @@ Stormservice supports two deployment modes: **Replica Mode** and **Pooled Mode**
 .. note::
     1. These two modes are mutually exclusive. The mode is declared through the `stormservice.spec.mode` field, which accepts `Replica` or `Pooled`.
     2. `spec.mode` is optional and is not defaulted. When it is omitted the mode is inferred for backward compatibility from `stormservice.spec.replicas`: replica mode when `replicas > 1`, otherwise pooled mode.
-    3. When `spec.mode` is set to `Pooled`, `spec.replicas` must stay at `1`; roles are scaled through `spec.template.spec.roles[].replicas`.
+    3. When `spec.mode` is set to `Pooled`, `spec.replicas` must stay at `1`; roles are scaled through `spec.template.spec.roles[].replicas`. The validating webhook enforces this on create/update and on the `/scale` subresource (`kubectl scale`, HPA, and other external autoscalers).
     4. A declared `spec.mode` drives the update path: `Replica` uses the rolling update path and `Pooled` uses the in-place update path, even when `spec.updateStrategy.type` holds the (possibly CRD-defaulted) `RollingUpdate` value. Declaring `mode: Replica` together with `updateStrategy.type: InPlaceUpdate` is rejected by the webhook. When `spec.mode` is omitted, `spec.updateStrategy.type` keeps selecting the update path as before.
     5. A declared `spec.mode` is also the source of truth for PodAutoscaler role-level scaling. The `autoscaling.aibrix.ai/storm-service-mode` annotation is deprecated and only honored when the target StormService does not declare `spec.mode`.
 
@@ -607,7 +607,7 @@ Autoscaling
 -----------
 
 - **Replica Mode**: StormService enables the `/scale` subresource on its CRD. The scale unit is `RoleSet`. It involves extending the StormService status with a dynamic label selector and implementing the controller logic to ensure this selector is correctly populated, thereby allowing external autoscalers to manage StormService replicas effectively.
-- **Pooled Mode**: In pooled mode, each role in the RoleSet is supposed to be independently scalable.
+- **Pooled Mode**: In pooled mode, each role in the RoleSet is supposed to be independently scalable. The `/scale` subresource still exists, but scaling `spec.replicas` above 1 is rejected when `spec.mode` is `Pooled`.
 
 .. warning::
    Pooled mode autoscaling (independent scaling of each role) is not yet supported. See Issue `#1260 <https://github.com/vllm-project/aibrix/issues/1260>`_ for more details.
