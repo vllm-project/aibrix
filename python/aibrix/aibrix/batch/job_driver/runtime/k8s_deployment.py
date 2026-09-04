@@ -262,7 +262,16 @@ class DeploymentRuntime(RuntimeBase):
 
     async def _connect(self, handle: DeploymentHandle) -> Endpoint:
         handle.source = self._build_endpoint_source(handle)
-        return Endpoint(source=handle.source, model_name=handle.model_name)
+        configured_capacity = (
+            max(handle.replicas, 1)
+            if isinstance(handle.source, DiscoveryEndpointSource)
+            else None
+        )
+        return Endpoint(
+            source=handle.source,
+            model_name=handle.model_name,
+            configured_capacity=configured_capacity,
+        )
 
     async def _teardown(self, handle: Optional[DeploymentHandle]) -> None:
         if handle is not None:

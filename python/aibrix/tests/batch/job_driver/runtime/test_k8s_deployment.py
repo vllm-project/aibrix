@@ -21,6 +21,7 @@ import pytest
 from kubernetes.client import ApiException
 
 from aibrix.batch.client.sources import (
+    DiscoveryEndpointSource,
     InClusterEndpointSource,
     PortForwardEndpointSource,
 )
@@ -408,6 +409,31 @@ async def test_k8s_deployment_runtime_connect_uses_in_cluster_source(monkeypatch
 
     assert isinstance(endpoint.source, InClusterEndpointSource)
     assert endpoint.model_name == "rendered-model"
+    assert endpoint.configured_capacity is None
+
+
+@pytest.mark.asyncio
+async def test_k8s_deployment_runtime_exposes_configured_discovery_capacity(
+    monkeypatch,
+):
+    runtime = _make_runtime(renderer=FakeRenderer())
+    handle = DeploymentHandle(
+        namespace="default",
+        deployment_name="rendered-deployment",
+        service_name="rendered-service",
+        model_name="rendered-model",
+        base_url="http://rendered-service.default.svc.cluster.local:8000",
+        service_port=8000,
+        replicas=3,
+    )
+
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+    monkeypatch.setenv("AIBRIX_BATCH_K8S_ENDPOINT_SOURCE", "endpointslice")
+    monkeypatch.setattr(runtime, "_discovery_v1_api", lambda: object())
+    endpoint = await runtime._connect(handle)
+
+    assert isinstance(endpoint.source, DiscoveryEndpointSource)
+    assert endpoint.configured_capacity == 3
 
 
 @pytest.mark.asyncio
@@ -430,6 +456,7 @@ async def test_k8s_deployment_runtime_connect_uses_port_forward_source_outside_c
 
     assert isinstance(endpoint.source, PortForwardEndpointSource)
     assert endpoint.model_name == "rendered-model"
+    assert endpoint.configured_capacity is None
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,7 @@ import ast
 import asyncio
 import pkgutil
 from dataclasses import dataclass
+from time import monotonic, time
 
 import httpx
 import pytest
@@ -74,6 +75,30 @@ class _FakeSource:
     async def aclose(self):
         for channel in self._channels:
             await channel.aclose()
+
+
+class _MutableCapacitySource(_FakeSource):
+    def __init__(self, channels, capacity):
+        super().__init__(channels)
+        self._capacity = capacity
+        self._version = 0
+        self._changes = asyncio.Queue()
+
+    async def capacity(self):
+        return CapacitySignal(count=self._capacity, version=self._version)
+
+    async def wait_capacity_change(self, previous):
+        while True:
+            signal = await self._changes.get()
+            if signal != previous:
+                return signal
+
+    def set_capacity(self, capacity):
+        self._capacity = capacity
+        self._version += 1
+        self._changes.put_nowait(
+            CapacitySignal(count=self._capacity, version=self._version)
+        )
 
 
 class _ErrorChannel(_FakeChannel):
@@ -228,6 +253,8 @@ async def test_http_channel_truncates_large_error_body():
 def test_retry_config_rejects_invalid_values():
     with pytest.raises(ValueError):
         RetryConfig(max_retries=-1)
+    with pytest.raises(ValueError):
+        RetryConfig(no_endpoint_deadline_epoch_seconds=0)
 
 
 @pytest.mark.asyncio
@@ -387,6 +414,30 @@ async def test_no_endpoint_retry_budget_is_separate_from_send_retry_budget():
 
     assert result["by"] == "good"
     assert source.calls == 4
+
+
+@pytest.mark.asyncio
+async def test_no_endpoint_retries_until_job_deadline():
+    deadline = time() + 0.03
+    engine = DispatchEngine(
+        _FakeSource([]),
+        retry=RetryConfig(
+            max_retries=0,
+            base_delay_seconds=0.01,
+            max_delay_seconds=0.01,
+            no_endpoint_deadline_epoch_seconds=deadline,
+        ),
+    )
+
+    started = monotonic()
+    with pytest.raises(InferenceError) as excinfo:
+        await asyncio.wait_for(
+            engine.send_one(InferenceRequest("/test", {}, ref="r1")),
+            timeout=0.5,
+        )
+
+    assert excinfo.value.code == InferenceErrorCode.NO_ENDPOINT
+    assert monotonic() - started >= 0.02
 
 
 @pytest.mark.asyncio
@@ -609,6 +660,141 @@ async def test_explicit_concurrency_overrides_capacity():
     await engine.run(feed(), on_result, max_concurrency=4)
     assert len(results) == 10
     assert 1 < peak <= 4
+
+
+@pytest.mark.asyncio
+async def test_fixed_concurrency_scales_with_dynamic_source_capacity():
+    started = 0
+    initial_limit_reached = asyncio.Event()
+    expanded_limit_reached = asyncio.Event()
+    release = asyncio.Event()
+
+    class _BlockingChannel(_FakeChannel):
+        async def send(self, request):
+            nonlocal started
+            started += 1
+            if started == 2:
+                initial_limit_reached.set()
+            if started == 4:
+                expanded_limit_reached.set()
+            await release.wait()
+            return {"ok": True}
+
+    source = _MutableCapacitySource([_BlockingChannel("s")], capacity=1)
+    engine = DispatchEngine(
+        source,
+        max_retries=0,
+        configured_capacity=4,
+    )
+    results = []
+
+    async def feed():
+        for request in _reqs(6):
+            yield request
+
+    async def on_result(req, resp, err):
+        results.append((req.ref, resp, err))
+
+    task = asyncio.create_task(
+        engine.run(
+            feed(),
+            on_result,
+            max_concurrency=8,
+        )
+    )
+    try:
+        await asyncio.wait_for(initial_limit_reached.wait(), timeout=1.0)
+        await asyncio.sleep(0)
+        assert started == 2
+
+        source.set_capacity(2)
+        await asyncio.wait_for(expanded_limit_reached.wait(), timeout=1.0)
+        assert started == 4
+    finally:
+        release.set()
+        await task
+    assert len(results) == 6
+
+
+@pytest.mark.asyncio
+async def test_zero_capacity_keeps_one_recovery_probe():
+    channel = _FakeChannel("s")
+    source = _MutableCapacitySource([channel], capacity=0)
+    engine = DispatchEngine(
+        source,
+        max_retries=0,
+        configured_capacity=1,
+    )
+    pulled = []
+    results = []
+
+    async def feed():
+        for request in _reqs(1):
+            pulled.append(request.ref)
+            yield request
+
+    async def on_result(req, resp, err):
+        results.append((req.ref, resp, err))
+
+    task = asyncio.create_task(engine.run(feed(), on_result, adaptive_concurrency=True))
+    await asyncio.wait_for(task, timeout=1.0)
+    assert pulled == [0]
+    assert channel.calls == [0]
+    assert len(results) == 1
+
+
+@pytest.mark.asyncio
+async def test_positive_capacity_never_scales_limit_to_zero():
+    source = _MutableCapacitySource([_FakeChannel("s")], capacity=9)
+    engine = DispatchEngine(
+        source,
+        max_retries=0,
+        configured_capacity=10,
+    )
+
+    controller = await engine._resolve_concurrency_controller(
+        max_concurrency=1,
+        adaptive_concurrency=False,
+        adaptive_max_factor=1,
+        adaptive_max_concurrency=None,
+        adaptive_healthy_window=8,
+        adaptive_additive_increase=1,
+        concurrency_controller=None,
+    )
+
+    assert controller.limit() == 1
+
+
+@pytest.mark.asyncio
+async def test_adaptive_concurrency_max_scales_with_source_capacity():
+    source = _MutableCapacitySource([_FakeChannel("s")], capacity=2)
+    engine = DispatchEngine(
+        source,
+        max_retries=0,
+        configured_capacity=10,
+    )
+    controller = await engine._resolve_concurrency_controller(
+        max_concurrency=None,
+        adaptive_concurrency=True,
+        adaptive_max_factor=1,
+        adaptive_max_concurrency=100,
+        adaptive_healthy_window=8,
+        adaptive_additive_increase=1,
+        concurrency_controller=None,
+    )
+    healthy = ConcurrencyOutcome(success=True)
+
+    for _ in range(200):
+        controller.on_complete(healthy)
+    assert controller.limit() == 20
+
+    controller.update_capacity(CapacitySignal(count=1, version=1))
+    assert controller.limit() == 10
+
+    controller.update_capacity(CapacitySignal(count=5, version=2))
+    for _ in range(8):
+        controller.on_complete(healthy)
+    assert controller.limit() == 13
 
 
 @pytest.mark.asyncio

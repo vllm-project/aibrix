@@ -68,6 +68,9 @@ class FixedConcurrencyController:
     def limit(self) -> int:
         return self._limit
 
+    def set_max_limit(self, max_limit: int) -> None:
+        self._limit = max(int(max_limit), 1)
+
     def admission_delay_seconds(self) -> float:
         return 0.0
 
@@ -171,6 +174,17 @@ class LLMAdaptiveConcurrencyController:
 
     def limit(self) -> int:
         return self._limit
+
+    def set_max_limit(self, max_limit: int) -> None:
+        next_max_limit = max(int(max_limit), self._settings.min_limit)
+        if next_max_limit == self._max_limit:
+            return
+        self._max_limit = next_max_limit
+        self._limit = min(self._limit, self._max_limit)
+        self._healthy = 0
+        self._overload_samples = 0
+        self._overload_errors = 0
+        self._overload_window_size = 0
 
     def admission_delay_seconds(self) -> float:
         if self._backoff_error_count < self._settings.failure_backoff_after:

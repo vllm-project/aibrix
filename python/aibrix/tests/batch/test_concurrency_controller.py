@@ -202,6 +202,23 @@ def test_llm_controller_recovers_after_healthy_window():
     assert controller.limit() == 4
 
 
+def test_llm_controller_clamps_to_updated_max_and_regrows():
+    settings = LLMAdaptiveConcurrencySettings(healthy_window=1)
+    controller = LLMAdaptiveConcurrencyController(
+        initial_limit=8,
+        max_limit=8,
+        settings=settings,
+    )
+
+    controller.set_max_limit(4)
+    assert controller.limit() == 4
+
+    controller.set_max_limit(8)
+    assert controller.limit() == 4
+    controller.on_complete(ConcurrencyOutcome(success=True))
+    assert controller.limit() == 5
+
+
 def test_llm_controller_waits_for_warmup_before_relative_slowdown():
     settings = LLMAdaptiveConcurrencySettings(
         relative_slowdown_warmup=2,
