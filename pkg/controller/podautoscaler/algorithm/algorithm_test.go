@@ -47,7 +47,7 @@ func TestApplyConstraints(t *testing.T) {
 			}
 
 			if got := applyConstraints(tt.replicas, ctx); got != tt.want {
-				t.Errorf("applyConstraints(%d) = %d, want %d", tt.replicas, got, tt.want)
+				t.Errorf("applyConstraints(%d) with min=%d, max=%d = %d, want %d", tt.replicas, tt.minReplicas, tt.maxReplicas, got, tt.want)
 			}
 		})
 	}
@@ -75,6 +75,20 @@ func TestNewScalingAlgorithm(t *testing.T) {
 
 			if got := algo.GetAlgorithmType(); got != tt.want {
 				t.Errorf("GetAlgorithmType() = %q, want %q", got, tt.want)
+			}
+
+			var correctType bool
+			switch tt.want {
+			case "kpa":
+				_, correctType = algo.(*KPAAlgorithm)
+			case "apa":
+				_, correctType = algo.(*APAAlgorithm)
+			case "hpa":
+				_, correctType = algo.(*HPAAlgorithm)
+			}
+
+			if !correctType {
+				t.Errorf("NewScalingAlgorithm(%q) returned unexpected concrete type %T", tt.strategy, algo)
 			}
 		})
 	}
