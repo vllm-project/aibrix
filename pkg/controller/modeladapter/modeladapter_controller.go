@@ -689,6 +689,9 @@ func (r *ModelAdapterReconciler) reconcileLoadOnSinglePod(ctx context.Context, i
 
 			// Persist the scheduling decision in annotations
 			r.setScheduledPods(instance, getPodNames(selectedPods))
+			if err := r.persistAnnotations(ctx, instance); err != nil {
+				return ctrl.Result{}, err
+			}
 			klog.InfoS("Selected pods for adapter scheduling", "ModelAdapter", klog.KObj(instance), "selectedPods", getPodNames(selectedPods))
 
 			instance.Status.Phase = modelv1alpha1.ModelAdapterScheduled
@@ -870,6 +873,9 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 				// Clear scheduled pods annotation once we have successful loadings
 				if loadedCount == 1 {
 					r.clearScheduledPods(instance)
+					if err := r.persistAnnotations(ctx, instance); err != nil {
+						return err
+					}
 
 					// If this is a recovery from pod removal, update Scheduled condition back to True
 					if podRemoved {
@@ -1127,12 +1133,15 @@ func (r *ModelAdapterReconciler) tryLoadModelAdapterOnPod(ctx context.Context, i
 		return false, false, fmt.Errorf("max retries (%d) exceeded", MaxLoadingRetries)
 	}
 
-	// Update retry info
-	r.updateRetryInfo(instance, pod.Name, retryCount+1)
-
 	_, exists, err := r.loraClient.LoadAdapter(ctx, instance, pod)
 
 	if err != nil {
+		// Record the failed attempt only after LoadAdapter returns an error so a
+		// successful (re)verification does not churn retry annotations.
+		r.updateRetryInfo(instance, pod.Name, retryCount+1)
+		if perr := r.persistAnnotations(ctx, instance); perr != nil {
+			klog.ErrorS(perr, "Failed to persist retry annotations", "pod", pod.Name, "ModelAdapter", klog.KObj(instance))
+		}
 		if r.isRetriableError(err) {
 			klog.V(4).InfoS("Retriable error loading adapter", "pod", pod.Name, "error", err)
 			return false, true, err
@@ -1142,14 +1151,17 @@ func (r *ModelAdapterReconciler) tryLoadModelAdapterOnPod(ctx context.Context, i
 		return false, false, err
 	}
 
+	if retryCount > 0 || !lastRetryTime.IsZero() {
+		r.clearRetryInfo(instance, pod.Name)
+		if perr := r.persistAnnotations(ctx, instance); perr != nil {
+			return false, true, perr
+		}
+	}
+
 	if exists {
 		klog.V(4).InfoS("LoRA adapter already exists on pod", "pod", pod.Name)
-		// Reset retry count on success
-		r.clearRetryInfo(instance, pod.Name)
 		return true, false, nil
 	}
-	// Success - reset retry count
-	r.clearRetryInfo(instance, pod.Name)
 	klog.InfoS("Successfully loaded adapter on pod", "pod", pod.Name, "ModelAdapter", klog.KObj(instance))
 	return true, false, nil
 }
@@ -1180,6 +1192,24 @@ func (r *ModelAdapterReconciler) isRetriableError(err error) bool {
 	}
 
 	return false
+}
+
+// persistAnnotations writes instance.Annotations to the API object so retry and
+// scheduling state survives across reconcile cycles. A merge patch is used so we
+// do not clobber unrelated metadata and so status subresource updates keep a
+// coherent resourceVersion on the in-memory object.
+func (r *ModelAdapterReconciler) persistAnnotations(ctx context.Context, instance *modelv1alpha1.ModelAdapter) error {
+	latest := &modelv1alpha1.ModelAdapter{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name}, latest); err != nil {
+		return err
+	}
+	before := latest.DeepCopy()
+	latest.Annotations = instance.Annotations
+	if err := r.Patch(ctx, latest, client.MergeFrom(before)); err != nil {
+		return err
+	}
+	instance.SetResourceVersion(latest.GetResourceVersion())
+	return nil
 }
 
 // getRetryInfo gets retry count and last retry time from annotations
