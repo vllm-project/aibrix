@@ -413,7 +413,9 @@ def _float_from_nested(mapping: Any, *keys: str) -> Optional[float]:
                 try:
                     return float(value)
                 except (TypeError, ValueError):
-                    continue
+                    # Fall through to the `_ms` form below: a non-numeric value under the
+                    # plain key should not hide a usable one under `<key>_ms`.
+                    pass
             ms_value = candidate.get(f"{key}_ms")
             if ms_value is not None:
                 try:
