@@ -190,7 +190,10 @@ var _ = ginkgo.Describe("ModelAdapter controller test", func() {
 				g.Expect(latest.Status.Candidates).To(gomega.Equal(int32(0)))
 				g.Expect(latest.Status.ReadyReplicas).To(gomega.Equal(int32(0)))
 
-				scheduled := apimeta.FindStatusCondition(latest.Status.Conditions, string(modelapi.ModelAdapterConditionTypeScheduled))
+				scheduled := apimeta.FindStatusCondition(
+					latest.Status.Conditions,
+					string(modelapi.ModelAdapterConditionTypeScheduled),
+				)
 				g.Expect(scheduled).NotTo(gomega.BeNil())
 				g.Expect(scheduled.Status).To(gomega.Equal(metav1.ConditionFalse))
 				g.Expect(scheduled.Reason).To(gomega.Equal(modeladapter.NoReadyPodsReason))
@@ -216,7 +219,10 @@ var _ = ginkgo.Describe("ModelAdapter controller test", func() {
 				g.Expect(latest.Status.ReadyReplicas).To(gomega.Equal(int32(0)))
 				g.Expect(latest.Status.Instances).To(gomega.BeEmpty())
 
-				scheduled := apimeta.FindStatusCondition(latest.Status.Conditions, string(modelapi.ModelAdapterConditionTypeScheduled))
+				scheduled := apimeta.FindStatusCondition(
+					latest.Status.Conditions,
+					string(modelapi.ModelAdapterConditionTypeScheduled),
+				)
 				g.Expect(scheduled).NotTo(gomega.BeNil())
 				g.Expect(scheduled.Status).To(gomega.Equal(metav1.ConditionFalse))
 				g.Expect(scheduled.Reason).To(gomega.Equal(modeladapter.NoReadyPodsReason))
@@ -473,7 +479,10 @@ func startModelAdapterMockEngine(handler http.HandlerFunc) *modelAdapterMockEngi
 	modelAdapterListenMu.Lock()
 	defer modelAdapterListenMu.Unlock()
 
-	gomega.Expect(modelAdapterEngineIP).NotTo(gomega.BeEmpty(), "need a non-loopback local IPv4 for EndpointSlice-compatible mock engine")
+	gomega.Expect(modelAdapterEngineIP).NotTo(
+		gomega.BeEmpty(),
+		"need a non-loopback local IPv4 for EndpointSlice-compatible mock engine",
+	)
 
 	mock := &modelAdapterMockEngine{handler: handler}
 	addr := fmt.Sprintf("%s:%d", modelAdapterEngineIP, modelAdapterEnginePort)

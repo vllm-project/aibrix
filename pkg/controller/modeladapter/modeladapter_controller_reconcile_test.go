@@ -263,3 +263,65 @@ func TestDoReconcile_HealsStaleBoundScheduledConditions(t *testing.T) {
 		}
 	}
 }
+
+// TestPersistAnnotations_ScopesToManagedPrefix ensures persistAnnotations only
+// syncs adapter.model.aibrix.ai/* keys. Concurrently-added unrelated annotations
+// on the API object must survive the merge patch, and managed keys cleared on the
+// in-memory instance must still be deleted.
+func TestPersistAnnotations_ScopesToManagedPrefix(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := modelv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("failed to register scheme: %v", err)
+	}
+
+	seed := &modelv1alpha1.ModelAdapter{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "adapter1",
+			Namespace: "default",
+			Annotations: map[string]string{
+				"user.custom/annotation":                "server-side-value",
+				ScheduledPodsAnnotationKey:              "old-pod",
+				RetryCountAnnotationKey + ".old-pod":    "3",
+				LastRetryTimeAnnotationKey + ".old-pod": "2026-01-01T00:00:00Z",
+			},
+		},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(seed).Build()
+	r := &ModelAdapterReconciler{Client: cl, Scheme: scheme}
+
+	// Stale in-memory view: missing the user annotation that landed on the API
+	// object after the original fetch, with updated managed scheduling state and
+	// cleared retry annotations for the departed pod.
+	instance := &modelv1alpha1.ModelAdapter{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "adapter1",
+			Namespace: "default",
+			Annotations: map[string]string{
+				ScheduledPodsAnnotationKey: "new-pod",
+			},
+		},
+	}
+
+	if err := r.persistAnnotations(context.Background(), instance); err != nil {
+		t.Fatalf("persistAnnotations returned error: %v", err)
+	}
+
+	latest := &modelv1alpha1.ModelAdapter{}
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "adapter1"}, latest); err != nil {
+		t.Fatalf("failed to fetch patched ModelAdapter: %v", err)
+	}
+
+	if got := latest.Annotations["user.custom/annotation"]; got != "server-side-value" {
+		t.Errorf("unrelated annotation was clobbered: got %q, want %q", got, "server-side-value")
+	}
+	if got := latest.Annotations[ScheduledPodsAnnotationKey]; got != "new-pod" {
+		t.Errorf("managed annotation not updated: got %q, want %q", got, "new-pod")
+	}
+	if _, exists := latest.Annotations[RetryCountAnnotationKey+".old-pod"]; exists {
+		t.Errorf("cleared managed retry-count annotation should have been deleted")
+	}
+	if _, exists := latest.Annotations[LastRetryTimeAnnotationKey+".old-pod"]; exists {
+		t.Errorf("cleared managed last-retry-time annotation should have been deleted")
+	}
+}

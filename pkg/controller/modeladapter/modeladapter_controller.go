@@ -1194,17 +1194,40 @@ func (r *ModelAdapterReconciler) isRetriableError(err error) bool {
 	return false
 }
 
-// persistAnnotations writes instance.Annotations to the API object so retry and
-// scheduling state survives across reconcile cycles. A merge patch is used so we
-// do not clobber unrelated metadata and so status subresource updates keep a
-// coherent resourceVersion on the in-memory object.
+// persistAnnotations writes managed annotations from instance to the API object
+// so retry and scheduling state survives across reconcile cycles. Only keys under
+// the adapter.model.aibrix.ai/ prefix are copied or deleted; unrelated annotations
+// added concurrently on the API object are left alone. A merge patch keeps
+// resourceVersion coherent on the in-memory object after status updates.
 func (r *ModelAdapterReconciler) persistAnnotations(ctx context.Context, instance *modelv1alpha1.ModelAdapter) error {
 	latest := &modelv1alpha1.ModelAdapter{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name}, latest); err != nil {
 		return err
 	}
 	before := latest.DeepCopy()
-	latest.Annotations = instance.Annotations
+
+	if latest.Annotations == nil {
+		latest.Annotations = make(map[string]string)
+	}
+
+	const managedAnnotationPrefix = "adapter.model.aibrix.ai/"
+
+	// Copy or update annotations managed by this controller.
+	for k, v := range instance.Annotations {
+		if strings.HasPrefix(k, managedAnnotationPrefix) {
+			latest.Annotations[k] = v
+		}
+	}
+
+	// Remove any managed annotations that were cleared on the in-memory instance.
+	for k := range latest.Annotations {
+		if strings.HasPrefix(k, managedAnnotationPrefix) {
+			if _, exists := instance.Annotations[k]; !exists {
+				delete(latest.Annotations, k)
+			}
+		}
+	}
+
 	if err := r.Patch(ctx, latest, client.MergeFrom(before)); err != nil {
 		return err
 	}
