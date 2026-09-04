@@ -35,6 +35,7 @@ worker only after the output files it writes to exist.
 import asyncio
 import contextlib
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from math import isfinite
@@ -94,6 +95,12 @@ _INFERENCE_MAX_RETRIES_ENV = "AIBRIX_BATCH_INFERENCE_MAX_RETRIES"
 _NO_ENDPOINT_MAX_RETRIES_ENV = "AIBRIX_BATCH_NO_ENDPOINT_MAX_RETRIES"
 _RETRY_BASE_DELAY_ENV = "AIBRIX_BATCH_RETRY_BASE_DELAY_SECONDS"
 _RETRY_MAX_DELAY_ENV = "AIBRIX_BATCH_RETRY_MAX_DELAY_SECONDS"
+_OUTPUT_PERSISTENCE_FAILURE_THRESHOLD_ENV = (
+    "AIBRIX_BATCH_OUTPUT_PERSISTENCE_FAILURE_THRESHOLD"
+)
+_OUTPUT_PERSISTENCE_FAILURE_BUCKET_SECONDS_ENV = (
+    "AIBRIX_BATCH_OUTPUT_PERSISTENCE_FAILURE_BUCKET_SECONDS"
+)
 _DEFAULT_ADAPTIVE_MAX_FACTOR = 8.0
 _DEFAULT_TELEMETRY_INTERVAL_SECONDS = 5.0
 _DEFAULT_INFERENCE_MAX_RETRIES = 5
@@ -103,6 +110,8 @@ _DEFAULT_INFERENCE_MAX_RETRIES = 5
 _DEFAULT_NO_ENDPOINT_MAX_RETRIES = 120
 _DEFAULT_RETRY_BASE_DELAY_SECONDS = 0.5
 _DEFAULT_RETRY_MAX_DELAY_SECONDS = 5.0
+_DEFAULT_OUTPUT_PERSISTENCE_FAILURE_THRESHOLD = 3
+_DEFAULT_OUTPUT_PERSISTENCE_FAILURE_BUCKET_SECONDS = 15
 _DONE_RECONCILE_CHUNK_SIZE = 256
 
 
@@ -171,6 +180,26 @@ def _retry_max_delay_seconds() -> float:
     return max(
         _float_env(_RETRY_MAX_DELAY_ENV, _DEFAULT_RETRY_MAX_DELAY_SECONDS),
         0.0,
+    )
+
+
+def _output_persistence_failure_threshold() -> int:
+    return max(
+        _int_env(
+            _OUTPUT_PERSISTENCE_FAILURE_THRESHOLD_ENV,
+            _DEFAULT_OUTPUT_PERSISTENCE_FAILURE_THRESHOLD,
+        ),
+        1,
+    )
+
+
+def _output_persistence_failure_bucket_seconds() -> int:
+    return max(
+        _int_env(
+            _OUTPUT_PERSISTENCE_FAILURE_BUCKET_SECONDS_ENV,
+            _DEFAULT_OUTPUT_PERSISTENCE_FAILURE_BUCKET_SECONDS,
+        ),
+        1,
     )
 
 
@@ -279,6 +308,9 @@ class BaseJobDriver:
         self._usage_counted_ids: Set[str] = set()
         self._request_counts: Optional[RequestCountStats] = None
         self._launched_request_ids: Set[int] = set()
+        self._output_persistence_consecutive_failed_buckets = 0
+        self._output_persistence_last_failed_bucket: Optional[int] = None
+        self._output_persistence_last_success_bucket: Optional[int] = None
         self._set_error_injector(job)
         self._usage_lock = asyncio.Lock()
 
@@ -779,6 +811,9 @@ class BaseJobDriver:
         self._usage = None
         self._usage_counted_ids.clear()
         self._launched_request_ids = set()
+        self._output_persistence_consecutive_failed_buckets = 0
+        self._output_persistence_last_failed_bucket = None
+        self._output_persistence_last_success_bucket = None
 
     # ── usage accounting ─────────────────────────────────────────────────
 
@@ -878,6 +913,63 @@ class BaseJobDriver:
             emitted_usage.output_tokens_details.reasoning_tokens = reasoning_tokens
         return emitted_usage
 
+    def _record_output_persistence_success(self) -> None:
+        self._output_persistence_last_success_bucket = (
+            self._current_output_persistence_failure_bucket()
+        )
+
+    def _current_output_persistence_failure_bucket(self) -> int:
+        return int(time.monotonic() // _output_persistence_failure_bucket_seconds())
+
+    def _should_defer_output_persistence_failure(
+        self,
+        *,
+        job_id: str,
+        request_id: int,
+        custom_id: str,
+        error: Exception,
+    ) -> bool:
+        threshold = _output_persistence_failure_threshold()
+        bucket = self._current_output_persistence_failure_bucket()
+        last_failed_bucket = self._output_persistence_last_failed_bucket
+        last_success_bucket = self._output_persistence_last_success_bucket
+
+        # Collapse bursts inside the same time bucket into one streak increment so
+        # a transient concurrency spike does not look like multiple independent
+        # storage outages.
+        if last_failed_bucket == bucket:
+            return self._output_persistence_consecutive_failed_buckets < threshold
+
+        # Idle time between slow requests should not break the streak. Only a
+        # successful persistence attempt clears the active-bucket failure run.
+        success_cleared_streak = (
+            last_success_bucket is not None
+            and last_failed_bucket is not None
+            and last_success_bucket >= last_failed_bucket
+        )
+        if last_failed_bucket is None or success_cleared_streak:
+            self._output_persistence_consecutive_failed_buckets = 1
+        else:
+            self._output_persistence_consecutive_failed_buckets += 1
+        self._output_persistence_last_failed_bucket = bucket
+
+        consecutive_failed_buckets = self._output_persistence_consecutive_failed_buckets
+        if consecutive_failed_buckets >= threshold:
+            return False
+        logger.warning(
+            "Deferring batch request completion after output persistence error",
+            job_id=job_id,
+            request_id=request_id,
+            custom_id=custom_id,
+            bucket=bucket,
+            bucket_seconds=_output_persistence_failure_bucket_seconds(),
+            consecutive_failed_buckets=consecutive_failed_buckets,
+            abort_after_failed_buckets=threshold,
+            error=str(error),
+            error_type=type(error).__name__,
+        )  # type: ignore[call-arg]
+        return True
+
     def _get_accumulated_usage(self, job_id: str) -> Optional[BatchUsage]:
         """Return the running token usage for a job, or None if no successful
         inference has been recorded yet."""
@@ -953,6 +1045,13 @@ class BaseJobDriver:
                 kwargs["max_concurrency"] = max_concurrency
         return kwargs
 
+    def _pending_request_retry_poll_seconds(self, job: BatchJob) -> float:
+        client = job.spec.aibrix.client if job.spec.aibrix else None
+        request_timeout_seconds = getattr(client, "request_timeout_seconds", None)
+        if request_timeout_seconds is None:
+            return 0.1
+        return min(max(float(request_timeout_seconds) / 10.0, 0.1), 1.0)
+
     def _drop_usage_state(self, job_id: str) -> None:
         """Release per-job usage state after terminal persistence.
         Subclasses override this when they aggregate usage differently or need
@@ -965,6 +1064,9 @@ class BaseJobDriver:
         self._usage_counted_ids.clear()
         self._request_counts = None
         self._launched_request_ids.clear()
+        self._output_persistence_consecutive_failed_buckets = 0
+        self._output_persistence_last_failed_bucket = None
+        self._output_persistence_last_success_bucket = None
 
     async def _persist_worker_status(self, job: BatchJob) -> BatchJob:
         """Persist per-worker status after progress or failure updates.
@@ -990,16 +1092,16 @@ class BaseJobDriver:
     async def _sync_completed_request_tasks(
         self,
         job: BatchJob,
-        completed_request_results: Iterable[tuple[int, bool]],
+        completed_request_results: Iterable[tuple[int, Optional[bool]]],
     ) -> tuple[BatchJob, int]:
         """Compatibility seam for tests and drivers that sync completions after
         a pass or request batch."""
         completed_results = list(completed_request_results)
         completed_request_ids = [
-            request_id for request_id, failed in completed_results if not failed
+            request_id for request_id, failed in completed_results if failed is False
         ]
         failed_request_ids = [
-            request_id for request_id, failed in completed_results if failed
+            request_id for request_id, failed in completed_results if failed is True
         ]
         self._accumulate_done_requests(
             job.job_id,
@@ -1012,13 +1114,13 @@ class BaseJobDriver:
             failed=len(failed_request_ids),
         )
         job = await self._persist_worker_status(job)
-        return job, len(completed_results)
+        return job, len(completed_request_ids) + len(failed_request_ids)
 
     async def _execute_request(
         self,
         job: BatchJob,
         request_input: dict[str, Any],
-    ) -> tuple[int, bool]:
+    ) -> tuple[int, Optional[bool]]:
         """Execute one request and persist its output record."""
         request_id = request_input.pop("_request_index")
         input_line_no = request_id
@@ -1056,7 +1158,19 @@ class BaseJobDriver:
                 last_error,
                 request_payload=request_input.get("body"),
             )
-            await storage.write_job_output_data(job, request_id, response)
+
+            try:
+                await storage.write_job_output_data(job, request_id, response)
+            except Exception as exc:
+                if self._should_defer_output_persistence_failure(
+                    job_id=job.job_id,
+                    request_id=request_id,
+                    custom_id=custom_id,
+                    error=exc,
+                ):
+                    return request_id, None
+                raise
+            self._record_output_persistence_success()
             return request_id, last_error is not None
         except Exception as exc:
             raise self._ensure_batch_job_error(
@@ -1342,7 +1456,7 @@ class BaseJobDriver:
         job_id = job.job_id
         assert job_id is not None
 
-        completed_request_ids: asyncio.Queue[Optional[tuple[int, bool]]] = (
+        completed_request_ids: asyncio.Queue[Optional[tuple[int, Optional[bool]]]] = (
             asyncio.Queue()
         )
         if start_index is None:
@@ -1381,6 +1495,7 @@ class BaseJobDriver:
             nonlocal job, start_index, pending_in_round
             # The loop is necessary in cases of job driver lock a request but unable to process it (complete or fail), e.g., server crash.
             while start_index >= 0:
+                dispatched_in_pass = False
                 async for request_input in storage.read_job_next_request(
                     job, start_index
                 ):
@@ -1399,6 +1514,7 @@ class BaseJobDriver:
                     self._accumulate_dispatched_request(job_id, request_id)
                     pending_in_round += 1
                     round_drained.clear()
+                    dispatched_in_pass = True
 
                     if "body" not in request_input:
                         raise BatchJobError(
@@ -1433,6 +1549,12 @@ class BaseJobDriver:
                 if self._should_stop_before_proceed(job):
                     return
                 start_index = await self._get_next_pass_start(job)
+                if start_index >= 0 and not dispatched_in_pass:
+                    # Nothing was dispatchable in this pass, which usually means
+                    # the next remaining request is still lock-held by an earlier
+                    # timed-out/deferred attempt. Sleep briefly so we poll for
+                    # lock expiry / external completion instead of hot-spinning.
+                    await asyncio.sleep(self._pending_request_retry_poll_seconds(job))
                 local_request_counts = self._get_local_request_counts(job_id)
                 if start_index < 0 and local_request_counts.total > 0:
                     job = self._mark_job_completed_when_reconciled(job)
@@ -1446,7 +1568,9 @@ class BaseJobDriver:
         async def sync_completed_requests() -> None:
             nonlocal job, pending_in_round
 
-            async def sync_batch(request_results: list[tuple[int, bool]]) -> None:
+            async def sync_batch(
+                request_results: list[tuple[int, Optional[bool]]],
+            ) -> None:
                 nonlocal job, pending_in_round
                 if not request_results:
                     return
@@ -1481,7 +1605,7 @@ class BaseJobDriver:
             response: Optional[dict[str, Any]],
             error: Optional[InferenceError],
         ) -> None:
-            nonlocal job, processed_requests
+            nonlocal job, processed_requests, pending_in_round
             request_id, custom_id, input_line_data = request.ref
             input_line_no = request_id
             try:
@@ -1498,7 +1622,21 @@ class BaseJobDriver:
                     error,
                     request_payload=request.payload,
                 )
-                await storage.write_job_output_data(job, request_id, record)
+                try:
+                    await storage.write_job_output_data(job, request_id, record)
+                except Exception as exc:
+                    if self._should_defer_output_persistence_failure(
+                        job_id=job_id,
+                        request_id=request_id,
+                        custom_id=custom_id,
+                        error=exc,
+                    ):
+                        pending_in_round = max(0, pending_in_round - 1)
+                        if pending_in_round == 0:
+                            round_drained.set()
+                        return
+                    raise
+                self._record_output_persistence_success()
                 await completed_request_ids.put((request_id, error is not None))
                 processed_requests += 1
                 await self._apply_error_injector_breakpoint(

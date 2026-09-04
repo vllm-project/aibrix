@@ -1,9 +1,13 @@
 import ast
 import asyncio
 from io import BytesIO
-from typing import AsyncIterator, Union
+from typing import AsyncIterator, Awaitable, Callable, Union
 
-from aibrix.storage.base import BaseStorage
+from aibrix.storage.base import (
+    LOCAL_PART_PROVIDER_MARKER,
+    LOCAL_PART_PROVIDER_MARKER_VALUE,
+    BaseStorage,
+)
 
 
 class BaseStorage2(BaseStorage):
@@ -18,7 +22,14 @@ class BaseStorage2(BaseStorage):
         upload_id: str,
         parts: list[dict[str, Union[str, int]]],
         staged_part_keys: list[str],
-    ) -> AsyncIterator[tuple[int, bytes]]:
+        *,
+        tolerate_part_get_error: bool = False,
+        failed_parts: list[dict[str, Union[str, int]]] | None = None,
+        local_part_provider: Callable[
+            [dict[str, Union[str, int]]], Awaitable[bytes | str | None]
+        ]
+        | None = None,
+    ) -> AsyncIterator[tuple[dict[str, Union[str, int]], bytes]]:
         prefetch_concurrency = max(
             1,
             min(
@@ -28,11 +39,32 @@ class BaseStorage2(BaseStorage):
         )
 
         async def _load_part(
-            part_number: int, staged_part_key: str
-        ) -> tuple[int, bytes]:
+            part: dict[str, Union[str, int]], staged_part_key: str
+        ) -> tuple[dict[str, Union[str, int]], bytes]:
+            part_number = int(part["part_number"])
+            # Only explicitly tagged internal parts may bypass remote reads via
+            # the local provider. Unmarked parts still use the staged-object
+            # contract first, but tolerant callers may ask the provider for a
+            # local fallback body if the staged read fails.
+            if (
+                local_part_provider is not None
+                and part.get(LOCAL_PART_PROVIDER_MARKER)
+                == LOCAL_PART_PROVIDER_MARKER_VALUE
+            ):
+                provided_part = await local_part_provider(part)
+                if isinstance(provided_part, str):
+                    return part, provided_part.encode("utf-8")
+                if isinstance(provided_part, bytes):
+                    return part, provided_part
             try:
-                return part_number, await self.get_object(staged_part_key)
+                return part, await self.get_object(staged_part_key)
             except Exception as exc:
+                if local_part_provider is not None and tolerate_part_get_error:
+                    provided_part = await local_part_provider(part)
+                    if isinstance(provided_part, str):
+                        return part, provided_part.encode("utf-8")
+                    if isinstance(provided_part, bytes):
+                        return part, provided_part
                 raise ValueError(
                     f"Failed to retrieve part {part_number} for upload {upload_id}"
                 ) from exc
@@ -43,11 +75,18 @@ class BaseStorage2(BaseStorage):
                 chunk_start : chunk_start + prefetch_concurrency
             ]
             tasks = [
-                asyncio.create_task(
-                    _load_part(int(part["part_number"]), staged_part_key)
-                )
+                asyncio.create_task(_load_part(part, staged_part_key))
                 for part, staged_part_key in zip(chunk_parts, chunk_keys)
             ]
+            if tolerate_part_get_error:
+                chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
+                for part, result in zip(chunk_parts, chunk_results):
+                    if isinstance(result, BaseException):
+                        if failed_parts is not None:
+                            failed_parts.append(dict(part))
+                        continue
+                    yield result
+                continue
             try:
                 chunk_results = await asyncio.gather(*tasks)
             except Exception:
@@ -62,38 +101,51 @@ class BaseStorage2(BaseStorage):
                 await asyncio.gather(*tasks, return_exceptions=True)
                 raise
 
-            for part_number, part_data in chunk_results:
-                yield part_number, part_data
+            for part, part_data in await asyncio.gather(*tasks):
+                yield part, part_data
 
     async def complete_multipart_upload(
         self,
         key: str,
         upload_id: str,
         parts: list[dict[str, Union[str, int]]],
-    ) -> None:
+        *,
+        tolerate_part_get_error: bool = False,
+        local_part_provider: Callable[
+            [dict[str, Union[str, int]]], Awaitable[bytes | str | None]
+        ]
+        | None = None,
+    ) -> list[dict[str, Union[str, int]]]:
         """Complete small-parts uploads using bounded native multipart reassembly."""
         try:
             metadata_data = await self.get_object(self._multipart_upload_key(upload_id))
             upload_metadata = ast.literal_eval(metadata_data.decode("utf-8"))
         except Exception:
             if self.is_native_multipart_supported():
-                return await self._native_complete_multipart_upload(
-                    key, upload_id, parts
-                )
+                await self._native_complete_multipart_upload(key, upload_id, parts)
+                return []
             raise ValueError(f"Upload ID {upload_id} not found or corrupted")
 
         content_type = upload_metadata.get("content_type")
         metadata = upload_metadata.get("metadata", {})
         sorted_parts = sorted(parts, key=lambda p: p["part_number"])
-        staged_part_keys = [
-            self._multipart_upload_part_key(upload_id, int(part["part_number"]))
-            for part in sorted_parts
-        ]
+        staged_part_keys: list[str] = []
+        for part in sorted_parts:
+            source_upload_id = part.get("source_upload_id")
+            part_upload_id = (
+                source_upload_id if isinstance(source_upload_id, str) else upload_id
+            )
+            staged_part_keys.append(
+                self._multipart_upload_part_key(
+                    part_upload_id, int(part["part_number"])
+                )
+            )
+        failed_parts: list[dict[str, Union[str, int]]] = []
 
         if not sorted_parts:
             await self.put_object(key, b"", content_type, metadata)
             await self.abort_multipart_upload(key, upload_id)
-            return
+            return []
 
         if self.is_native_multipart_supported():
             strict_min_part_size = self._is_strict_multipart_min_part_size_enabled()
@@ -105,7 +157,12 @@ class BaseStorage2(BaseStorage):
 
             try:
                 async for _, part_data in self._iter_prefetched_staged_parts(
-                    upload_id, sorted_parts, staged_part_keys
+                    upload_id,
+                    sorted_parts,
+                    staged_part_keys,
+                    tolerate_part_get_error=tolerate_part_get_error,
+                    failed_parts=failed_parts,
+                    local_part_provider=local_part_provider,
                 ):
                     buffer.extend(part_data)
                     flush_threshold = (
@@ -134,8 +191,9 @@ class BaseStorage2(BaseStorage):
                             "final part"
                         )
                     await self.put_object(key, bytes(buffer), content_type, metadata)
-                    await self.abort_multipart_upload(key, upload_id)
-                    return
+                    if not failed_parts:
+                        await self.abort_multipart_upload(key, upload_id)
+                    return failed_parts
 
                 if buffer or not aggregated_parts:
                     if native_upload_id is None:
@@ -160,18 +218,26 @@ class BaseStorage2(BaseStorage):
                     await self._native_abort_multipart_upload(key, native_upload_id)
                 raise
 
-            await self.abort_multipart_upload(key, upload_id)
-            return
+            if not failed_parts:
+                await self.abort_multipart_upload(key, upload_id)
+            return failed_parts
 
         aggregated_data = BytesIO()
         async for _, part_data in self._iter_prefetched_staged_parts(
-            upload_id, sorted_parts, staged_part_keys
+            upload_id,
+            sorted_parts,
+            staged_part_keys,
+            tolerate_part_get_error=tolerate_part_get_error,
+            failed_parts=failed_parts,
+            local_part_provider=local_part_provider,
         ):
             aggregated_data.write(part_data)
 
         aggregated_data.seek(0)
         await self.put_object(key, aggregated_data, content_type, metadata)
-        await self.abort_multipart_upload(key, upload_id)
+        if not failed_parts:
+            await self.abort_multipart_upload(key, upload_id)
+        return failed_parts
 
     async def abort_multipart_upload(
         self,

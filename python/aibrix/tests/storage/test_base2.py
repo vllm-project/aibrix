@@ -21,7 +21,12 @@ from typing import Any, Union
 import pytest
 import tos
 
-from aibrix.storage.base import StorageConfig
+from aibrix.storage.base import (
+    LOCAL_PART_PROVIDER_MARKER,
+    LOCAL_PART_PROVIDER_MARKER_VALUE,
+    BaseStorage,
+    StorageConfig,
+)
 from aibrix.storage.base2 import BaseStorage2
 from aibrix.storage.reader import Reader
 from aibrix.storage.s3 import S3Storage
@@ -434,6 +439,203 @@ class TestBaseStorage2:
         assert storage.native_upload_part_calls == []
         assert storage.native_complete_calls == []
         assert storage.native_abort_calls == []
+
+    @pytest.mark.asyncio
+    async def test_complete_multipart_upload_tolerates_missing_staged_parts(self):
+        storage = NativeMultipartTestStorage(multipart_threshold=8)
+        key = "test/native_small_parts_tolerant.txt"
+
+        upload_id = await storage.create_multipart_upload(
+            key,
+            content_type="text/plain",
+            metadata={"source": "batch"},
+            small_parts=True,
+        )
+
+        parts: list[dict[str, Union[str, int]]] = []
+        for part_number, payload in enumerate((b"abc", b"def", b"ghi"), start=1):
+            etag = await storage.upload_part(key, upload_id, part_number, payload)
+            parts.append({"part_number": part_number, "etag": etag})
+
+        await storage.delete_object(storage._multipart_upload_part_key(upload_id, 2))
+
+        failed_parts = await storage.complete_multipart_upload(
+            key,
+            upload_id,
+            parts,
+            tolerate_part_get_error=True,
+        )
+
+        assert failed_parts == [{"part_number": 2, "etag": parts[1]["etag"]}]
+        assert await storage.get_object(key) == b"abcghi"
+        assert await storage.object_exists(storage._multipart_upload_key(upload_id))
+        assert await storage.object_exists(
+            storage._multipart_upload_part_key(upload_id, 1)
+        )
+
+    @pytest.mark.asyncio
+    async def test_complete_multipart_upload_uses_local_part_provider(self):
+        storage = NativeMultipartTestStorage(multipart_threshold=8)
+        key = "test/native_small_parts_local_provider.txt"
+
+        upload_id = await storage.create_multipart_upload(
+            key,
+            content_type="text/plain",
+            metadata={"source": "batch"},
+            small_parts=True,
+        )
+
+        etag = await storage.upload_part(key, upload_id, 1, b"provider-part")
+        parts: list[dict[str, Union[str, int]]] = [
+            {
+                "part_number": 1,
+                "etag": etag,
+                LOCAL_PART_PROVIDER_MARKER: LOCAL_PART_PROVIDER_MARKER_VALUE,
+            }
+        ]
+        await storage.delete_object(storage._multipart_upload_part_key(upload_id, 1))
+
+        async def local_part_provider(
+            part: dict[str, Union[str, int]],
+        ) -> bytes | None:
+            if int(part["part_number"]) == 1:
+                return b"provider-part"
+            return None
+
+        failed_parts = await storage.complete_multipart_upload(
+            key,
+            upload_id,
+            parts,
+            local_part_provider=local_part_provider,
+        )
+
+        assert failed_parts == []
+        assert await storage.get_object(key) == b"provider-part"
+
+    @pytest.mark.asyncio
+    async def test_complete_multipart_upload_ignores_provider_without_marker(self):
+        storage = NativeMultipartTestStorage(multipart_threshold=8)
+        key = "test/native_small_parts_unmarked_provider.txt"
+
+        upload_id = await storage.create_multipart_upload(
+            key,
+            content_type="text/plain",
+            metadata={"source": "batch"},
+            small_parts=True,
+        )
+
+        etag = await storage.upload_part(key, upload_id, 1, b"stored-part")
+        parts: list[dict[str, Union[str, int]]] = [{"part_number": 1, "etag": etag}]
+
+        async def local_part_provider(
+            part: dict[str, Union[str, int]],
+        ) -> bytes | None:
+            _ = part
+            return b"provider-part"
+
+        failed_parts = await storage.complete_multipart_upload(
+            key,
+            upload_id,
+            parts,
+            local_part_provider=local_part_provider,
+        )
+
+        assert failed_parts == []
+        assert await storage.get_object(key) == b"stored-part"
+
+    @pytest.mark.asyncio
+    async def test_complete_multipart_upload_uses_provider_as_fallback_on_read_error(
+        self,
+    ):
+        storage = NativeMultipartTestStorage(multipart_threshold=8)
+        key = "test/native_small_parts_provider_fallback.txt"
+
+        upload_id = await storage.create_multipart_upload(
+            key,
+            content_type="text/plain",
+            metadata={"source": "batch"},
+            small_parts=True,
+        )
+
+        etag = await storage.upload_part(key, upload_id, 1, b"stored-part")
+        parts: list[dict[str, Union[str, int]]] = [
+            {"part_number": 1, "etag": etag, "custom_id": "request-1"}
+        ]
+        await storage.delete_object(storage._multipart_upload_part_key(upload_id, 1))
+
+        async def local_part_provider(
+            part: dict[str, Union[str, int]],
+        ) -> bytes | None:
+            if int(part["part_number"]) == 1:
+                return b"provider-fallback"
+            return None
+
+        failed_parts = await storage.complete_multipart_upload(
+            key,
+            upload_id,
+            parts,
+            tolerate_part_get_error=True,
+            local_part_provider=local_part_provider,
+        )
+
+        assert failed_parts == []
+        assert await storage.get_object(key) == b"provider-fallback"
+
+    @pytest.mark.asyncio
+    async def test_complete_multipart_upload_reads_from_source_upload_id(self):
+        storage = NativeMultipartTestStorage(multipart_threshold=8)
+        output_key = "test/output.jsonl"
+        error_key = "test/error.jsonl"
+
+        output_upload_id = await storage.create_multipart_upload(
+            output_key,
+            content_type="application/jsonl",
+            metadata={"source": "output"},
+            small_parts=True,
+        )
+        error_upload_id = await storage.create_multipart_upload(
+            error_key,
+            content_type="application/jsonl",
+            metadata={"source": "error"},
+            small_parts=True,
+        )
+
+        output_etag = await storage.upload_part(
+            output_key,
+            output_upload_id,
+            1,
+            b'{"id":"rerouted"}\n',
+        )
+
+        failed_parts = await storage.complete_multipart_upload(
+            error_key,
+            error_upload_id,
+            [
+                {
+                    "part_number": 1,
+                    "etag": output_etag,
+                    "source_upload_id": output_upload_id,
+                }
+            ],
+        )
+
+        assert failed_parts == []
+        assert await storage.get_object(error_key) == b'{"id":"rerouted"}\n'
+
+    @pytest.mark.asyncio
+    async def test_base_storage_complete_multipart_upload_fails_fast(self):
+        storage = NativeMultipartTestStorage(multipart_threshold=8)
+
+        with pytest.raises(
+            NotImplementedError,
+            match="BaseStorage.complete_multipart_upload\\(\\) must not be called",
+        ):
+            await BaseStorage.complete_multipart_upload(
+                storage,
+                "test/fail-fast.txt",
+                "upload-id",
+                [],
+            )
 
 
 class TestTOSStorageConfig:
