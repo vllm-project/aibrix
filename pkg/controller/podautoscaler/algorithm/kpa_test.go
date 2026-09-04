@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
 )
 
 func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
@@ -201,6 +202,39 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			result := algorithm.computeTargetReplicas(tt.currentPodCount, tt.context, metricsName)
 			if result != tt.expected {
 				t.Errorf("computeTargetReplicas() = %d, expected %d. %s", result, tt.expected, tt.description)
+			}
+		})
+	}
+}
+
+func TestKPAAlgorithm_shouldEnterPanicMode(t *testing.T) {
+	tests := []struct {
+		name           string
+		stableValue    float64
+		panicValue     float64
+		panicThreshold float64
+		want           bool
+	}{
+		// no usable stable history, guard against division by zero
+		{"zero stable value enters panic", 0, 5, 2.0, true},
+		{"negative stable value enters panic", -1, 5, 2.0, true},
+		// ratio compared against the threshold
+		{"ratio above threshold enters panic", 10, 30, 2.0, true},
+		{"ratio below threshold stays stable", 10, 15, 2.0, false},
+		{"ratio exactly at threshold stays stable", 10, 20, 2.0, false},
+	}
+
+	a := &KPAAlgorithm{}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			metrics := &types.AggregatedMetrics{
+				StableValue: tt.stableValue,
+				PanicValue:  tt.panicValue,
+			}
+			if got := a.shouldEnterPanicMode(metrics, tt.panicThreshold); got != tt.want {
+				t.Errorf("shouldEnterPanicMode(stable=%v, panic=%v, threshold=%v) = %v, want %v",
+					tt.stableValue, tt.panicValue, tt.panicThreshold, got, tt.want)
 			}
 		})
 	}
