@@ -123,6 +123,10 @@ class RuntimeOwnershipConflictError(BatchJobError):
             current_worker_id=self.current_worker_id,
             retry_after_s=self.retry_after_s,
         )
+        # Keep any retry suffix appended after __init__; reconstructing via
+        # original fields would otherwise regenerate the base message.
+        new_copy.message = self.message
+        new_copy.args = self.args
         memo[id(self)] = new_copy
         return new_copy
 
@@ -152,6 +156,10 @@ class RuntimeDeleteInProgressError(BatchJobError):
             runtime_key=self.runtime_key,
             retry_after_s=self.retry_after_s,
         )
+        # Keep any retry suffix appended after __init__; reconstructing via
+        # original fields would otherwise regenerate the base message.
+        new_copy.message = self.message
+        new_copy.args = self.args
         memo[id(self)] = new_copy
         return new_copy
 
@@ -266,8 +274,9 @@ class RuntimeBase:
     """
 
     provisions: bool = False
-    session_retry_attempts: int = 5
+    session_retry_attempts: int = envs.BATCH_SESSION_RETRY_ATTEMPTS
     session_retry_base_delay_s: float = 2.0
+    session_retry_max_delay_s: float = 60.0
     session_liveness_check_interval_s: float = 30.0
     session_liveness_failure_threshold: Optional[int] = None
 
@@ -1003,17 +1012,46 @@ class RuntimeBase:
         # meaningful left to tear down; retry by provisioning a fresh resource.
         return not self._is_not_found_error(exc)
 
-    async def _sleep_before_session_retry(self, attempt: int) -> None:
-        await asyncio.sleep(self.session_retry_base_delay_s * (2**attempt))
+    def _get_session_retry_delay_s(self, attempt: int) -> float:
+        # set a hard-coded cap for avoiding OverflowError
+        safe_attempt = min(attempt, 10)
+        return min(
+            self.session_retry_base_delay_s * (2**safe_attempt),
+            self.session_retry_max_delay_s,
+        )
+
+    def _annotate_exhausted_session_error(
+        self, exc: Exception, *, retries_completed: int
+    ) -> Exception:
+        if retries_completed <= 0:
+            return exc
+        suffix = (
+            f" [session_retries={retries_completed}, "
+            f"session_attempts={retries_completed + 1}]"
+        )
+        if isinstance(exc, BatchJobError):
+            if suffix not in exc.message:
+                exc.message = f"{exc.message}{suffix}"
+                exc.args = (exc.message,)
+            return exc
+        if exc.args and isinstance(exc.args[0], str):
+            if suffix not in exc.args[0]:
+                exc.args = (f"{exc.args[0]}{suffix}", *exc.args[1:])
+        else:
+            exc.args = (*exc.args, suffix)
+        return exc
 
     async def _sleep_before_session_error_retry(
         self, attempt: int, exc: Exception
     ) -> None:
-        delay = self.session_retry_base_delay_s * (2**attempt)
+        delay = self._get_session_retry_delay_s(attempt)
         if isinstance(
             exc, (RuntimeOwnershipConflictError, RuntimeDeleteInProgressError)
         ):
-            delay = max(delay, exc.retry_after_s)
+            delay = min(
+                max(delay, exc.retry_after_s),
+                self.session_retry_max_delay_s,
+            )
         await asyncio.sleep(delay)
 
     def _should_run_session_liveness_checks(self, handle: Any) -> bool:
@@ -1251,6 +1289,12 @@ class RuntimeBase:
                     elif not should_retry:
                         handle = None
                     if not should_retry:
+                        self._annotate_exhausted_session_error(
+                            exc,
+                            retries_completed=attempt,
+                        )
+                        # Re-raise the active exception so its original
+                        # traceback is preserved after in-place annotation.
                         raise
                     handle = None
                     runtimeRef = None
