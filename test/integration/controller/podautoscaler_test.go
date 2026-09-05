@@ -18,12 +18,17 @@ package controller
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -114,6 +119,41 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 		}
 		gomega.Expect(k8sClient.Create(ctx, deployment)).To(gomega.Succeed())
 		return deployment
+	}
+
+	createPodWithReadiness := func(name, namespace string, podLabels map[string]string, ready bool, podIP string) {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace,
+				Labels:    podLabels,
+			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:  "target",
+						Image: "nginx:latest",
+					},
+				},
+			},
+		}
+		gomega.Expect(k8sClient.Create(ctx, pod)).To(gomega.Succeed())
+
+		conditionStatus := corev1.ConditionFalse
+		phase := corev1.PodPending
+		if ready {
+			conditionStatus = corev1.ConditionTrue
+			phase = corev1.PodRunning
+			pod.Status.PodIP = podIP
+		}
+		pod.Status.Phase = phase
+		pod.Status.Conditions = []corev1.PodCondition{
+			{
+				Type:   corev1.PodReady,
+				Status: conditionStatus,
+			},
+		}
+		gomega.Expect(k8sClient.Status().Update(ctx, pod)).To(gomega.Succeed())
 	}
 
 	// Helper: creates a StormService with two roles (prefill and decode)
@@ -224,6 +264,77 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 							expectedCondition, expectedStatus,
 							expectedReason,
 						)
+					},
+				},
+			},
+		}
+	}
+
+	makePendingReplicaGuardTestCase := func() *testValidatingCase {
+		var metricsServer *httptest.Server
+
+		return &testValidatingCase{
+			makePodAutoscaler: func() *autoscalingv1alpha1.PodAutoscaler {
+				return wrapper.MakePodAutoscaler("pa-pending-replica-guard").
+					Namespace(ns.Name).
+					ScalingStrategy(autoscalingv1alpha1.APA).
+					MinReplicas(1).
+					MaxReplicas(20).
+					ScaleTargetRefWithKind("Deployment", "apps/v1", "pending-guard-deployment").
+					MetricSource(autoscalingv1alpha1.MetricSource{
+						MetricSourceType: autoscalingv1alpha1.EXTERNAL,
+						ProtocolType:     autoscalingv1alpha1.HTTP,
+						Endpoint:         "pending-guard.invalid",
+						Path:             "/metrics",
+						TargetMetric:     "aibrix_test_queue_depth",
+						TargetValue:      "50",
+					}).
+					Obj()
+			},
+			updates: []*update{
+				{
+					updateFunc: func(pa *autoscalingv1alpha1.PodAutoscaler) {
+						metricsServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							_, _ = w.Write([]byte("# TYPE aibrix_test_queue_depth gauge\n"))
+							_, _ = w.Write([]byte("aibrix_test_queue_depth 90\n"))
+						}))
+						ginkgo.DeferCleanup(metricsServer.Close)
+						pa.Spec.MetricsSources[0].Endpoint = strings.TrimPrefix(metricsServer.URL, "http://")
+
+						createDeployment("pending-guard-deployment", ns.Name, 4)
+						podLabels := map[string]string{"app": "pending-guard-deployment"}
+						createPodWithReadiness("pending-guard-pod-1", ns.Name, podLabels, true, "10.0.0.1")
+						createPodWithReadiness("pending-guard-pod-2", ns.Name, podLabels, true, "10.0.0.2")
+						createPodWithReadiness("pending-guard-pod-3", ns.Name, podLabels, false, "")
+						createPodWithReadiness("pending-guard-pod-4", ns.Name, podLabels, false, "")
+
+						gomega.Expect(k8sClient.Create(ctx, pa)).To(gomega.Succeed())
+						ginkgo.DeferCleanup(func() {
+							err := k8sClient.Delete(ctx, pa)
+							gomega.Expect(err == nil || apierrors.IsNotFound(err)).To(gomega.BeTrue())
+							gomega.Eventually(func() bool {
+								err := k8sClient.Get(ctx, client.ObjectKeyFromObject(pa), &autoscalingv1alpha1.PodAutoscaler{})
+								return apierrors.IsNotFound(err)
+							}, time.Second*10, time.Millisecond*250).Should(gomega.BeTrue())
+						})
+					},
+					checkFunc: func(ctx context.Context, k8sClient client.Client, pa *autoscalingv1alpha1.PodAutoscaler) {
+						gomega.Eventually(func(g gomega.Gomega) {
+							deployment := &appsv1.Deployment{}
+							key := client.ObjectKey{Namespace: ns.Name, Name: "pending-guard-deployment"}
+							g.Expect(k8sClient.Get(ctx, key, deployment)).To(gomega.Succeed())
+							g.Expect(deployment.Spec.Replicas).NotTo(gomega.BeNil())
+							g.Expect(*deployment.Spec.Replicas).To(gomega.Equal(int32(4)))
+
+							fetched := validation.GetPodAutoscaler(ctx, k8sClient, pa)
+							g.Expect(fetched.Status.ActualScale).To(gomega.Equal(int32(4)))
+							g.Expect(fetched.Status.DesiredScale).To(gomega.Equal(int32(4)))
+
+							condition := apimeta.FindStatusCondition(fetched.Status.Conditions, ConditionScalingActive)
+							g.Expect(condition).NotTo(gomega.BeNil())
+							g.Expect(condition.Reason).To(gomega.Equal("PendingReplicas"))
+							g.Expect(condition.Message).To(gomega.ContainSubstring("pending replicas"))
+						}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
 					},
 				},
 			},
@@ -769,6 +880,10 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 					},
 				},
 			},
+		),
+
+		ginkgo.Entry("Scale Target - APA pending replica guard holds current replicas",
+			makePendingReplicaGuardTestCase(),
 		),
 
 		// =========================================================================
