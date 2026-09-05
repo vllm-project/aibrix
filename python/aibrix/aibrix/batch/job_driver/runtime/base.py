@@ -1050,10 +1050,17 @@ class RuntimeBase:
                             job_id=job_id,
                             consecutive_failures=consecutive_failures,
                             abort_after_failures=liveness_failure_threshold,
-                            error=str(exc),
+                            error=repr(exc),
                         )  # type: ignore[call-arg]
                         continue
                     error_sink["error"] = exc
+                    logger.warning(
+                        "Runtime liveness check failed; cancelling session",
+                        job_id=job_id,
+                        consecutive_failures=consecutive_failures,
+                        abort_after_failures=liveness_failure_threshold,
+                        error=repr(exc),
+                    )  # type: ignore[call-arg]
                     current_task.cancel()
                     return
 
@@ -1067,7 +1074,7 @@ class RuntimeBase:
                     logger.warning(
                         "Failed to refresh runtime ref heartbeat",
                         job_id=job_id,
-                        error=str(exc),
+                        error=repr(exc),
                     )  # type: ignore[call-arg]
         except asyncio.CancelledError:
             raise

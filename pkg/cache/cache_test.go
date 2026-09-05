@@ -59,7 +59,7 @@ func getReadyPod(podName, podNamespcae string, modelName string, id int) *v1.Pod
 			},
 		},
 	}
-	pod.ObjectMeta.Labels[modelIdentifier] = modelName
+	pod.Labels[modelIdentifier] = modelName
 	return pod
 }
 
@@ -157,21 +157,21 @@ var _ = Describe("Cache", func() {
 	It("should both addPod create both pods and metaModels entry", func() {
 		// Ignore pods without model label
 		podWOModel := getReadyPod("p1", "default", "m1", 0)
-		podWOModel.ObjectMeta.Labels = nil
+		podWOModel.Labels = nil
 		cache.addPod(podWOModel)
 		_, exist := cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeFalse())
 
 		// Ignore pods without model label
 		podRayWorker := getReadyPod("p1", "default", "m1", 0)
-		podRayWorker.ObjectMeta.Labels[nodeType] = nodeWorker
+		podRayWorker.Labels[nodeType] = nodeWorker
 		cache.addPod(podRayWorker)
 		_, exist = cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeFalse())
 
 		// Ignore pods with podGroupIndex > 0
 		podGroupWorker := getReadyPod("p1", "default", "m1", 0)
-		podGroupWorker.ObjectMeta.Labels[podGroupIndex] = "1"
+		podGroupWorker.Labels[podGroupIndex] = "1"
 		cache.addPod(podGroupWorker)
 		_, exist = cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeFalse())
@@ -364,18 +364,18 @@ var _ = Describe("Cache", func() {
 
 	It("should updatePod after podIndex updated", func() {
 		oldPod := getNewPod("p1", "default", "m1", 0)
-		oldPod.ObjectMeta.Labels[podGroupIndex] = "1"
+		oldPod.Labels[podGroupIndex] = "1"
 		cache.addPod(oldPod)
 		_, exist := cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeFalse())
 
 		newPod := getReadyPod("p1", "default", "m1", 0) // IP may changed due to migration
-		newPod.ObjectMeta.Labels[podGroupIndex] = "1"
+		newPod.Labels[podGroupIndex] = "1"
 		cache.updatePod(oldPod, newPod)
 		_, exist = cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeFalse())
 
-		newPod.ObjectMeta.Labels[podGroupIndex] = "0"
+		newPod.Labels[podGroupIndex] = "0"
 		cache.updatePod(oldPod, newPod)
 		_, exist = cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeTrue())
@@ -383,13 +383,13 @@ var _ = Describe("Cache", func() {
 
 	It("should not delete pod after podIndex updated", func() {
 		oldPod := getNewPod("p1", "default", "m1", 0)
-		oldPod.ObjectMeta.Labels[podGroupIndex] = "0"
+		oldPod.Labels[podGroupIndex] = "0"
 		cache.addPod(oldPod)
 		_, exist := cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeTrue())
 
 		newPod := getReadyPod("p1", "default", "m1", 0) // IP may changed due to migration
-		newPod.ObjectMeta.Labels[podGroupIndex] = "1"
+		newPod.Labels[podGroupIndex] = "1"
 		cache.updatePod(oldPod, newPod)
 		_, exist = cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeFalse())
@@ -416,7 +416,7 @@ var _ = Describe("Cache", func() {
 		cache.addPod(pod)
 		_, exist = cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeTrue())
-		pod.ObjectMeta.Labels = nil
+		pod.Labels = nil
 		cache.deletePod(pod)
 		_, exist = cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeFalse())

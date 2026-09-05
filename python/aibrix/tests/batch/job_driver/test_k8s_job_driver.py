@@ -24,7 +24,14 @@ from aibrix.batch.job_driver.base import BaseJobDriver
 from aibrix.batch.job_driver.driver_factory import create_job_driver
 from aibrix.batch.job_driver.runtime import Completion, Endpoint
 from aibrix.batch.job_driver.runtime.k8s_job import K8sJobHandle, K8sJobRuntime
-from aibrix.batch.job_entity import BatchJobError, BatchJobErrorCode, BatchJobState
+from aibrix.batch.job_entity import (
+    BatchJob,
+    BatchJobEndpoint,
+    BatchJobError,
+    BatchJobErrorCode,
+    BatchJobSpec,
+    BatchJobState,
+)
 from aibrix.context.infra import InfrastructureContext
 
 
@@ -140,8 +147,14 @@ async def test_on_prepared_unsuspends_the_job():
 
 
 def test_factory_selects_k8s_job_runtime_for_kubernetes_job_provider():
-    job = SimpleNamespace(
-        spec=SimpleNamespace(runtime_target="KubernetesJob"),
+    job = BatchJob.new_from_spec(
+        "job",
+        "default",
+        BatchJobSpec.from_strings(
+            input_file_id="file",
+            endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+            runtime_target="KubernetesJob",
+        ),
     )
     ctx = SimpleNamespace(
         batch_v1_api=object(), template_registry=None, profile_registry=None

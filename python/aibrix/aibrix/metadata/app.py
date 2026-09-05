@@ -362,7 +362,10 @@ def build_app(args: argparse.Namespace, params={}):
                 T("status", str(status_code)),
             )
             duration_ms(
-                Emitter, metrics_names.METRIC_METADATA_HTTP_DURATION, start_time, *tags
+                Emitter,
+                metrics_names.METRIC_METADATA_HTTP_DURATION,
+                start_time,
+                *tags,
             )
             Emitter.counter(metrics_names.METRIC_METADATA_HTTP_REQUEST, 1, *tags)
 

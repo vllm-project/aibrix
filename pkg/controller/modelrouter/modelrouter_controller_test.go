@@ -56,7 +56,7 @@ func TestCreateHTTPRouteSupportsAnnotatedModelAndServiceNames(t *testing.T) {
 	)
 
 	routes := &gatewayv1.HTTPRouteList{}
-	if err := m.Client.List(context.Background(), routes, client.InNamespace(aibrixEnvoyGatewayNamespace)); err != nil {
+	if err := m.List(context.Background(), routes, client.InNamespace(aibrixEnvoyGatewayNamespace)); err != nil {
 		t.Fatal(err)
 	}
 	if len(routes.Items) != 1 {
@@ -92,7 +92,7 @@ func TestCreateHTTPRouteSupportsAnnotatedModelAndServiceNames(t *testing.T) {
 	}
 
 	grant := &gatewayv1beta1.ReferenceGrant{}
-	if err := m.Client.Get(context.Background(), client.ObjectKey{
+	if err := m.Get(context.Background(), client.ObjectKey{
 		Namespace: "default",
 		Name:      "aibrix-system-reserved-referencegrant-in-default",
 	}, grant); err != nil {

@@ -585,7 +585,10 @@ def test_factory_kubernetes_without_k8s_context_raises_invalid_driver():
 
 
 def test_factory_external_runtime_uses_injected_endpoint_source():
-    job = SimpleNamespace(spec=SimpleNamespace(runtime_target="External"))
+    job = _make_job(job_id="job-external")
+    assert job.spec.aibrix is not None
+    assert job.spec.aibrix.runtime is not None
+    job.spec.aibrix.runtime.target = "External"
     sentinel = object()
 
     driver = create_job_driver(

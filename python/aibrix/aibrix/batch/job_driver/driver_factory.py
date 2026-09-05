@@ -76,7 +76,7 @@ def create_job_driver(
             if endpoint_source is not None
             else None,
         )  # type: ignore[call-arg]
-        return BaseJobDriver(context, progress_manager, runtime)
+        return BaseJobDriver(context, progress_manager, runtime, job=job)
 
     try:
         runtime = create_runtime(
@@ -98,4 +98,4 @@ def create_job_driver(
         runtime=type(runtime).__name__,
         registered=registered_runtimes(),
     )  # type: ignore[call-arg]
-    return BaseJobDriver(context, progress_manager, runtime)
+    return BaseJobDriver(context, progress_manager, runtime, job=job)

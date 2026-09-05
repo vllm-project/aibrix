@@ -118,5 +118,5 @@ func (jp *JSONPatch) JsonPatch() (client.Patch, error) {
 }
 
 func FixPathToValid(path string) string {
-	return strings.Replace(path, "/", "~1", -1)
+	return strings.ReplaceAll(path, "/", "~1")
 }

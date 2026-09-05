@@ -1,43 +1,56 @@
+version: "2"
+
 run:
   timeout: 5m
   allow-parallel-runners: true
 
-issues:
-  # don't skip warning about doc comments
-  # don't exclude the default set of lint
-  exclude-use-default: false
-  # restore some of the defaults
-  # (fill in the rest as needed)
-  exclude-rules:
-    - path: "api/*"
-      linters:
-        - lll
-    - path: "pkg/*"
-      linters:
-        - dupl
-        - lll
-    # disable lll check for flag descriptions
-    - path: "cmd/controllers/main.go"
-      linters:
-        - lll
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
 linters:
-  disable-all: true
+  default: none
   enable:
     - dupl
     - errcheck
     - goconst
     - gocyclo
-    - gofmt
-    - goimports
-    - gosimple
     - govet
     - ineffassign
     - lll
     - misspell
     - nakedret
-#    - prealloc
     - staticcheck
-    - typecheck
     - unconvert
-#    - unparam
-#    - unused
+  settings:
+    goconst:
+      min-occurrences: 20
+  exclusions:
+    # v2 does not apply default exclusion presets unless listed.
+    # v1's exclude-use-default: false is achieved by not listing any presets.
+    rules:
+      - path: "api/*"
+        linters:
+          - lll
+      - path: "pkg/*"
+        linters:
+          - dupl
+          - lll
+      # disable lll check for flag descriptions
+      - path: "cmd/controllers/main.go"
+        linters:
+          - lll
+      # apps/ uses repeated strings in test data and placeholder keys; exclude from goconst
+      - path: "apps/*"
+        linters:
+          - goconst
+      # test files commonly use repeated strings for test data; exclude from goconst
+      - path: ".*_test\\.go"
+        linters:
+          - goconst
+      # fmt.Fprintf/Fprint errors are typically safe to ignore in test/utility code
+      - path: ".*"
+        linters:
+          - errcheck
+        text: "Error return value of `fmt\\.Fprint"

@@ -26,6 +26,9 @@ from pydantic_core import core_schema
 
 from aibrix.batch.job_entity.aibrix_metadata import AibrixMetadata
 from aibrix.batch.job_entity.base import _Strict
+from aibrix.logger import init_logger
+
+logger = init_logger(__name__)
 
 
 class BatchJobEndpoint(str, Enum):
@@ -568,14 +571,38 @@ def ensure_batch_job_error(
         )
     return BatchJobError(
         code=default_code,
-        message=_format_exception_message(e),
+        message=_format_exception_message(e, **kwargs),
         param=input_line_data,
         line=input_line,
     )
 
 
-def _format_exception_message(error: BaseException) -> str:
+def _format_exception_message(error: BaseException, **kwargs: Any) -> str:
     """Return a stable, non-empty message for generic exceptions."""
+    if error.__traceback__ is not None:
+        log_kwargs: Dict[str, Any] = {
+            "error_type": error.__class__.__name__,
+            "exc_info": error,
+        }
+        job_id = _exception_job_id(kwargs)
+        if job_id is not None:
+            log_kwargs["job_id"] = job_id
+        cause = error.__cause__
+        if cause is not None:
+            log_kwargs["cause_type"] = cause.__class__.__name__
+            cause_message = str(cause).strip()
+            if cause_message:
+                log_kwargs["cause_message"] = cause_message
+        context = error.__context__
+        if context is not None and context is not cause:
+            log_kwargs["context_type"] = context.__class__.__name__
+            context_message = str(context).strip()
+            if context_message:
+                log_kwargs["context_message"] = context_message
+        logger.error(
+            "Normalizing generic batch exception",
+            **log_kwargs,
+        )  # type: ignore[call-arg]
     class_name = error.__class__.__name__
     text = str(error).strip()
     if text:
@@ -588,6 +615,18 @@ def _format_exception_message(error: BaseException) -> str:
     if source is not None:
         return f"{details} (source: {source})"
     return details
+
+
+def _exception_job_id(kwargs: Dict[str, Any]) -> Optional[str]:
+    """Best-effort job identifier for normalization logs."""
+    job_id = kwargs.get("job_id")
+    if job_id is not None:
+        return str(job_id)
+    job = kwargs.get("job")
+    if job is None:
+        return None
+    resolved = getattr(job, "job_id", None)
+    return str(resolved) if resolved is not None else None
 
 
 def _exception_source_details(error: BaseException) -> Optional[str]:

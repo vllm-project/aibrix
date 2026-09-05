@@ -330,10 +330,10 @@ func (c *Store) setModelBaseModelLocked(model *modelv1alpha1.ModelAdapter) {
 	if base == "" {
 		for _, podName := range model.Status.Instances {
 			metaPod, ok := c.metaPods.Load(utils.GeneratePodKey(model.Namespace, podName))
-			if !ok || metaPod.Pod == nil || metaPod.Pod.Labels == nil {
+			if !ok || metaPod.Pod == nil || metaPod.Labels == nil {
 				continue
 			}
-			if v := strings.TrimSpace(metaPod.Pod.Labels[constants.ModelLabelName]); v != "" {
+			if v := strings.TrimSpace(metaPod.Labels[constants.ModelLabelName]); v != "" {
 				base = v
 				break
 			}

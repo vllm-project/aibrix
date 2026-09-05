@@ -48,7 +48,7 @@ func standardDeviation(numbers []float64) float64 {
 	avg := mean(numbers)
 	sumOfSquares := 0.0
 	for _, number := range numbers {
-		sumOfSquares += math.Pow(number-avg, 2)
+		sumOfSquares += (number - avg) * (number - avg)
 	}
 	variance := sumOfSquares / float64(len(numbers)-1)
 	return math.Sqrt(variance)

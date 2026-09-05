@@ -89,11 +89,11 @@ func (r *StormServiceReconciler) syncHeadlessService(ctx context.Context, servic
 	}
 
 	headlessService := &corev1.Service{}
-	err := r.Client.Get(ctx, client.ObjectKey{Name: service.Name, Namespace: service.Namespace}, headlessService)
+	err := r.Get(ctx, client.ObjectKey{Name: service.Name, Namespace: service.Namespace}, headlessService)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// service doesn't exist, create it
-			if createErr := r.Client.Create(ctx, expectedService); createErr != nil {
+			if createErr := r.Create(ctx, expectedService); createErr != nil {
 				return fmt.Errorf("failed to create headless service: %w", createErr)
 			}
 			r.EventRecorder.Eventf(service, corev1.EventTypeNormal, HeadlessServiceEventType, "Headless Service(discovery) %s created", service.Name)
@@ -104,7 +104,7 @@ func (r *StormServiceReconciler) syncHeadlessService(ctx context.Context, servic
 
 	if !isServiceEqual(headlessService, expectedService) {
 		headlessService.Spec = expectedService.Spec
-		if err := r.Client.Update(ctx, headlessService); err != nil {
+		if err := r.Update(ctx, headlessService); err != nil {
 			return fmt.Errorf("failed to update headless service: %w", err)
 		}
 		r.EventRecorder.Eventf(service, corev1.EventTypeNormal, HeadlessServiceEventType, "Headless Service %s updated", service.Name)

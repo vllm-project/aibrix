@@ -100,6 +100,11 @@ const (
 	NumRequestsSwapped              = "num_requests_swapped"
 	AvgPromptThroughputToksPerS     = "avg_prompt_throughput_toks_per_s"
 	AvgGenerationThroughputToksPerS = "avg_generation_throughput_toks_per_s"
+
+	// Engine names
+	EngineNameVLLM   = "vllm"
+	EngineNameSGLang = "sglang"
+	EngineNameTRTLLM = "trtllm"
 )
 
 var (
@@ -112,8 +117,8 @@ var (
 				Raw: Gauge,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:num_requests_running",
-				"sglang": "sglang:num_running_reqs",
+				EngineNameVLLM: "vllm:num_requests_running",
+				"sglang":       "sglang:num_running_reqs",
 			},
 			Description: "Number of running requests",
 		},
@@ -124,8 +129,8 @@ var (
 				Raw: Gauge,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:num_requests_waiting",
-				"sglang": "sglang:num_queue_reqs",
+				EngineNameVLLM: "vllm:num_requests_waiting",
+				"sglang":       "sglang:num_queue_reqs",
 			},
 			Description: "Number of waiting requests",
 		},
@@ -136,8 +141,8 @@ var (
 				Raw: Gauge,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:num_requests_swapped",
-				"sglang": "sglang:num_retracted_reqs",
+				EngineNameVLLM: "vllm:num_requests_swapped",
+				"sglang":       "sglang:num_retracted_reqs",
 			},
 			Description: "Number of swapped requests",
 		},
@@ -148,7 +153,7 @@ var (
 				Raw: Gauge,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:engine_sleep_state",
+				EngineNameVLLM: "vllm:engine_sleep_state",
 			},
 			Description: "Engine sleep state; awake = 0 means engine is sleeping; awake = 1 means engine is awake; weights_offloaded = 1 means sleep level 1; discard_all = 1 means sleep level 2.",
 		},
@@ -159,7 +164,7 @@ var (
 				Raw: Counter,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:http_requests_total",
+				EngineNameVLLM: "vllm:http_requests_total",
 			},
 			Description: "Total number of requests by method, status and handler.",
 		},
@@ -170,7 +175,7 @@ var (
 				Raw: Counter,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:num_preemptions_total",
+				EngineNameVLLM: "vllm:num_preemptions_total",
 			},
 			Description: "Number of preemptions",
 		},
@@ -181,9 +186,9 @@ var (
 				Raw: Counter,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:num_requests_success_total",
-				"sglang": "sglang:num_requests_total",
-				"trtllm": "trtllm_request_success_total",
+				EngineNameVLLM: "vllm:num_requests_success_total",
+				"sglang":       "sglang:num_requests_total",
+				"trtllm":       "trtllm_request_success_total",
 			},
 			Description: "Number of successful requests",
 		},
@@ -217,9 +222,9 @@ var (
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:e2e_request_latency_seconds",
-				"sglang": "sglang:e2e_request_latency_seconds",
-				"trtllm": "trtllm_e2e_request_latency_seconds",
+				EngineNameVLLM: "vllm:e2e_request_latency_seconds",
+				"sglang":       "sglang:e2e_request_latency_seconds",
+				"trtllm":       "trtllm_e2e_request_latency_seconds",
 			},
 			Description: "End-to-end request latency in seconds",
 		},
@@ -230,8 +235,8 @@ var (
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:request_queue_time_seconds",
-				"trtllm": "trtllm_request_queue_time_seconds",
+				EngineNameVLLM: "vllm:request_queue_time_seconds",
+				"trtllm":       "trtllm_request_queue_time_seconds",
 			},
 			Description: "Request queue time in seconds",
 		},
@@ -242,7 +247,7 @@ var (
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:request_inference_time_seconds",
+				EngineNameVLLM: "vllm:request_inference_time_seconds",
 			},
 			Description: "Request inference time in seconds",
 		},
@@ -264,7 +269,7 @@ var (
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "http_request_duration_seconds",
+				EngineNameVLLM: "http_request_duration_seconds",
 			},
 			Description: "Histogram of request duration in seconds",
 		},
@@ -275,7 +280,7 @@ var (
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "http_request_duration_highr_seconds",
+				EngineNameVLLM: "http_request_duration_highr_seconds",
 			},
 			Description: "Histogram of request duration in seconds for high priority requests",
 		},
@@ -286,7 +291,7 @@ var (
 				Raw: Counter,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:prompt_tokens_total",
+				EngineNameVLLM: "vllm:prompt_tokens_total",
 			},
 			Description: "Total prompt tokens",
 		},
@@ -297,7 +302,7 @@ var (
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:request_prompt_tokens",
+				EngineNameVLLM: "vllm:request_prompt_tokens",
 			},
 			Description: "Histogram of prompt tokens",
 		},
@@ -308,7 +313,7 @@ var (
 				Raw: Counter,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:generation_tokens_total",
+				EngineNameVLLM: "vllm:generation_tokens_total",
 			},
 			Description: "Total generation tokens",
 		},
@@ -319,7 +324,7 @@ var (
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:request_generation_tokens",
+				EngineNameVLLM: "vllm:request_generation_tokens",
 			},
 			Description: "Histogram of generation tokens",
 		},
@@ -330,7 +335,7 @@ var (
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:request_max_num_generation_tokens",
+				EngineNameVLLM: "vllm:request_max_num_generation_tokens",
 			},
 			Description: "Histogram of max number of generation tokens",
 		},
@@ -341,7 +346,7 @@ var (
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:iteration_tokens_total",
+				EngineNameVLLM: "vllm:iteration_tokens_total",
 			},
 			Description: "Total iteration tokens",
 		},
@@ -352,9 +357,9 @@ var (
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:time_to_first_token_seconds",
-				"sglang": "sglang:time_to_first_token_seconds",
-				"trtllm": "trtllm_time_to_first_token_seconds",
+				EngineNameVLLM: "vllm:time_to_first_token_seconds",
+				"sglang":       "sglang:time_to_first_token_seconds",
+				"trtllm":       "trtllm_time_to_first_token_seconds",
 			},
 			Description: "Time to first token in seconds",
 		},
@@ -365,9 +370,9 @@ var (
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:time_per_output_token_seconds",
-				"sglang": "sglang:inter_token_latency_seconds",
-				"trtllm": "trtllm_time_per_output_token_seconds",
+				EngineNameVLLM: "vllm:time_per_output_token_seconds",
+				"sglang":       "sglang:inter_token_latency_seconds",
+				"trtllm":       "trtllm_time_per_output_token_seconds",
 			},
 			Description: "Time per output token in seconds",
 		},
@@ -378,9 +383,9 @@ var (
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:inter_token_latency_seconds",
-				"sglang": "sglang:inter_token_latency_seconds",
-				"trtllm": "trtllm_time_per_output_token_seconds",
+				EngineNameVLLM: "vllm:inter_token_latency_seconds",
+				"sglang":       "sglang:inter_token_latency_seconds",
+				"trtllm":       "trtllm_time_per_output_token_seconds",
 			},
 			Description: "Inter-token latency in seconds",
 		},
@@ -391,7 +396,7 @@ var (
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:request_decode_time_seconds",
+				EngineNameVLLM: "vllm:request_decode_time_seconds",
 			},
 			Description: "Request decode time in seconds",
 		},
@@ -402,7 +407,7 @@ var (
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:request_prefill_time_seconds",
+				EngineNameVLLM: "vllm:request_prefill_time_seconds",
 			},
 			Description: "Request prefill time in seconds",
 		},
@@ -413,7 +418,7 @@ var (
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:request_time_per_output_token_seconds",
+				EngineNameVLLM: "vllm:request_time_per_output_token_seconds",
 			},
 			Description: "Time per output token in seconds",
 		},
@@ -424,9 +429,9 @@ var (
 				Raw: Gauge,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:gpu_cache_usage_perc",
-				"sglang": "sglang:token_usage", // Based on https://github.com/sgl-project/sglang/issues/5979
-				"xllm":   "kv_cache_utilization",
+				EngineNameVLLM: "vllm:gpu_cache_usage_perc",
+				"sglang":       "sglang:token_usage", // Based on https://github.com/sgl-project/sglang/issues/5979
+				"xllm":         "kv_cache_utilization",
 			},
 			Description: "GPU cache usage percentage",
 		},
@@ -448,7 +453,7 @@ var (
 				Raw: Gauge,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:cpu_cache_usage_perc",
+				EngineNameVLLM: "vllm:cpu_cache_usage_perc",
 			},
 			Description: "CPU cache usage percentage",
 		},
@@ -459,10 +464,10 @@ var (
 				Raw: Gauge,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:kv_cache_usage_perc",
-				"sglang": "sglang:token_usage", // Based on https://github.com/sgl-project/sglang/issues/5979
-				"trtllm": "trtllm_kv_cache_utilization",
-				"xllm":   "kv_cache_utilization",
+				EngineNameVLLM: "vllm:kv_cache_usage_perc",
+				"sglang":       "sglang:token_usage", // Based on https://github.com/sgl-project/sglang/issues/5979
+				"trtllm":       "trtllm_kv_cache_utilization",
+				"xllm":         "kv_cache_utilization",
 			},
 			Description: "KV-cache usage. 1 means 100 percent usage.",
 		},
@@ -484,7 +489,7 @@ var (
 				Raw: Counter,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:prefix_cache_queries_total",
+				EngineNameVLLM: "vllm:prefix_cache_queries_total",
 			},
 			Description: "Prefix cache queries, in terms of number of queried tokens..",
 		},
@@ -495,7 +500,7 @@ var (
 				Raw: Counter,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:prefix_cache_hits_total",
+				EngineNameVLLM: "vllm:prefix_cache_hits_total",
 			},
 			Description: "Prefix cache hits, in terms of number of cached tokens.",
 		},
@@ -506,7 +511,7 @@ var (
 				Raw: Counter,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:external_prefix_cache_queries_total",
+				EngineNameVLLM: "vllm:external_prefix_cache_queries_total",
 			},
 			Description: "External prefix cache queries from KV connector cross-instance cache sharing, in terms of number of queried tokens.",
 		},
@@ -517,7 +522,7 @@ var (
 				Raw: Counter,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:external_prefix_cache_hits_total",
+				EngineNameVLLM: "vllm:external_prefix_cache_hits_total",
 			},
 			Description: "External prefix cache hits from KV connector cross-instance cache sharing, in terms of number of cached tokens.",
 		},
@@ -529,7 +534,7 @@ var (
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:nixl_xfer_time_seconds",
+				EngineNameVLLM: "vllm:nixl_xfer_time_seconds",
 			},
 			Description: "transfer duration for NIXL KV Cache transfers",
 		},
@@ -540,7 +545,7 @@ var (
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:nixl_post_time_seconds",
+				EngineNameVLLM: "vllm:nixl_post_time_seconds",
 			},
 			Description: "transfer post time for NIXL KV Cache transfers",
 		},
@@ -551,7 +556,7 @@ var (
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:nixl_bytes_transferred",
+				EngineNameVLLM: "vllm:nixl_bytes_transferred",
 			},
 			Description: "number of bytes transferred per NIXL KV Cache transfer",
 		},
@@ -562,7 +567,7 @@ var (
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:nixl_num_descriptors",
+				EngineNameVLLM: "vllm:nixl_num_descriptors",
 			},
 			Description: "number of descriptors per NIXL  KV Cache transfers",
 		},
@@ -573,7 +578,7 @@ var (
 				Raw: Counter,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:nixl_num_failed_transfers",
+				EngineNameVLLM: "vllm:nixl_num_failed_transfers",
 			},
 			Description: "number of failed NIXL KV Cache transfers",
 		},
@@ -584,7 +589,7 @@ var (
 				Raw: Counter,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:nixl_num_failed_notifications",
+				EngineNameVLLM: "vllm:nixl_num_failed_notifications",
 			},
 			Description: "number of failed NIXL KV Cache notifications",
 		},
@@ -700,7 +705,7 @@ var (
 				Raw: Gauge,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:avg_prompt_throughput_toks_per_s",
+				EngineNameVLLM: "vllm:avg_prompt_throughput_toks_per_s",
 			},
 			Description: "Average prompt throughput in tokens per second",
 		},
@@ -711,8 +716,8 @@ var (
 				Raw: Gauge,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:avg_generation_throughput_toks_per_s",
-				"sglang": "sglang:gen_throughput",
+				EngineNameVLLM: "vllm:avg_generation_throughput_toks_per_s",
+				"sglang":       "sglang:gen_throughput",
 			},
 			Description: "Average generation throughput in tokens per second",
 		},
@@ -742,7 +747,7 @@ var (
 			},
 			LabelKey: "max_lora",
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:lora_requests_info",
+				EngineNameVLLM: "vllm:lora_requests_info",
 			},
 			Description: "Max count of Lora Adapters",
 		},
@@ -754,7 +759,7 @@ var (
 			},
 			LabelKey: "running_lora_adapters",
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:lora_requests_info",
+				EngineNameVLLM: "vllm:lora_requests_info",
 			},
 			Description: "Count of running Lora Adapters",
 		},
@@ -766,7 +771,7 @@ var (
 			},
 			LabelKey: "waiting_lora_adapters",
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:lora_requests_info",
+				EngineNameVLLM: "vllm:lora_requests_info",
 			},
 			Description: "Count of waiting Lora Adapters",
 		},
