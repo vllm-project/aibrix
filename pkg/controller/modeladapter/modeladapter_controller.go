@@ -41,6 +41,7 @@ import (
 	discoverylisters "k8s.io/client-go/listers/discovery/v1"
 	toolscache "k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -689,6 +690,9 @@ func (r *ModelAdapterReconciler) reconcileLoadOnSinglePod(ctx context.Context, i
 
 			// Persist the scheduling decision in annotations
 			r.setScheduledPods(instance, getPodNames(selectedPods))
+			if err := r.persistAnnotations(ctx, instance); err != nil {
+				return ctrl.Result{}, err
+			}
 			klog.InfoS("Selected pods for adapter scheduling", "ModelAdapter", klog.KObj(instance), "selectedPods", getPodNames(selectedPods))
 
 			instance.Status.Phase = modelv1alpha1.ModelAdapterScheduled
@@ -870,6 +874,12 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 				// Clear scheduled pods annotation once we have successful loadings
 				if loadedCount == 1 {
 					r.clearScheduledPods(instance)
+					if perr := r.persistAnnotations(ctx, instance); perr != nil {
+						// Load already succeeded; do not treat a metadata patch failure as a
+						// loading error or skip Status.Instances updates.
+						klog.ErrorS(perr, "Failed to persist cleared scheduled-pods annotation after successful load",
+							"ModelAdapter", klog.KObj(instance))
+					}
 
 					// If this is a recovery from pod removal, update Scheduled condition back to True
 					if podRemoved {
@@ -1127,12 +1137,18 @@ func (r *ModelAdapterReconciler) tryLoadModelAdapterOnPod(ctx context.Context, i
 		return false, false, fmt.Errorf("max retries (%d) exceeded", MaxLoadingRetries)
 	}
 
-	// Update retry info
-	r.updateRetryInfo(instance, pod.Name, retryCount+1)
-
 	_, exists, err := r.loraClient.LoadAdapter(ctx, instance, pod)
 
 	if err != nil {
+		// Record the failed attempt only after LoadAdapter returns an error so a
+		// successful (re)verification does not churn retry annotations.
+		r.updateRetryInfo(instance, pod.Name, retryCount+1)
+		if perr := r.persistAnnotations(ctx, instance); perr != nil {
+			klog.ErrorS(perr, "Failed to persist retry annotations", "pod", pod.Name, "ModelAdapter", klog.KObj(instance))
+			// Return the persist error so reconcile requeues and retry state can stick;
+			// Status().Update does not persist annotations on its own.
+			return false, true, fmt.Errorf("load failed: %w; also failed to persist retry annotations: %v", err, perr)
+		}
 		if r.isRetriableError(err) {
 			klog.V(4).InfoS("Retriable error loading adapter", "pod", pod.Name, "error", err)
 			return false, true, err
@@ -1142,14 +1158,20 @@ func (r *ModelAdapterReconciler) tryLoadModelAdapterOnPod(ctx context.Context, i
 		return false, false, err
 	}
 
+	if retryCount > 0 || !lastRetryTime.IsZero() {
+		r.clearRetryInfo(instance, pod.Name)
+		if perr := r.persistAnnotations(ctx, instance); perr != nil {
+			// Adapter is already loaded on the pod; a metadata patch failure must not
+			// be reported as a load failure (which would skip Status.Instances).
+			klog.ErrorS(perr, "Failed to persist cleared retry annotations after successful load",
+				"pod", pod.Name, "ModelAdapter", klog.KObj(instance))
+		}
+	}
+
 	if exists {
 		klog.V(4).InfoS("LoRA adapter already exists on pod", "pod", pod.Name)
-		// Reset retry count on success
-		r.clearRetryInfo(instance, pod.Name)
 		return true, false, nil
 	}
-	// Success - reset retry count
-	r.clearRetryInfo(instance, pod.Name)
 	klog.InfoS("Successfully loaded adapter on pod", "pod", pod.Name, "ModelAdapter", klog.KObj(instance))
 	return true, false, nil
 }
@@ -1180,6 +1202,59 @@ func (r *ModelAdapterReconciler) isRetriableError(err error) bool {
 	}
 
 	return false
+}
+
+// managedAnnotationPrefix is derived from RetryCountAnnotationKey so the scoped
+// merge patch stays aligned with controller-managed annotation naming.
+func managedAnnotationPrefix() string {
+	idx := strings.LastIndex(RetryCountAnnotationKey, "/")
+	if idx < 0 {
+		return RetryCountAnnotationKey
+	}
+	return RetryCountAnnotationKey[:idx+1]
+}
+
+// persistAnnotations writes managed annotations from instance to the API object
+// so retry and scheduling state survives across reconcile cycles. Only keys under
+// the managed adapter.model.aibrix.ai/ prefix are copied or deleted; unrelated
+// annotations added concurrently on the API object are left alone. A merge patch
+// keeps resourceVersion coherent on the in-memory object after status updates.
+func (r *ModelAdapterReconciler) persistAnnotations(ctx context.Context, instance *modelv1alpha1.ModelAdapter) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &modelv1alpha1.ModelAdapter{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name}, latest); err != nil {
+			return err
+		}
+		before := latest.DeepCopy()
+
+		if latest.Annotations == nil {
+			latest.Annotations = make(map[string]string)
+		}
+
+		prefix := managedAnnotationPrefix()
+
+		// Copy or update annotations managed by this controller.
+		for k, v := range instance.Annotations {
+			if strings.HasPrefix(k, prefix) {
+				latest.Annotations[k] = v
+			}
+		}
+
+		// Remove any managed annotations that were cleared on the in-memory instance.
+		for k := range latest.Annotations {
+			if strings.HasPrefix(k, prefix) {
+				if _, exists := instance.Annotations[k]; !exists {
+					delete(latest.Annotations, k)
+				}
+			}
+		}
+
+		if err := r.Patch(ctx, latest, client.MergeFrom(before)); err != nil {
+			return err
+		}
+		instance.SetResourceVersion(latest.GetResourceVersion())
+		return nil
+	})
 }
 
 // getRetryInfo gets retry count and last retry time from annotations
