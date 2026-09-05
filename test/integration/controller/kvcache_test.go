@@ -178,6 +178,28 @@ var _ = ginkgo.Describe("KVCache controller test", func() {
 		}, kvCacheQuietWindow, kvCacheInterval).Should(gomega.BeTrue())
 	}
 
+	// waitForDistributedKVCacheToSettle ensures the initial reconcile has
+	// created both distributed resources, then gives owner-triggered Service
+	// events a quiet window to drain before tests remove the unwatched
+	// StatefulSet. Without this stabilization, a delayed Service-owner reconcile
+	// can recreate the StatefulSet before the Pod event under test arrives.
+	waitForDistributedKVCacheToSettle := func(name string) {
+		ginkgo.GinkgoHelper()
+
+		serviceName := fmt.Sprintf("%s-headless-service", name)
+		eventuallyGet(name, &appsv1.StatefulSet{})
+		eventuallyGet(serviceName, &corev1.Service{})
+
+		gomega.Consistently(func() error {
+			statefulSetKey := types.NamespacedName{Namespace: ns.Name, Name: name}
+			if err := k8sClient.Get(ctx, statefulSetKey, &appsv1.StatefulSet{}); err != nil {
+				return err
+			}
+			serviceKey := types.NamespacedName{Namespace: ns.Name, Name: serviceName}
+			return k8sClient.Get(ctx, serviceKey, &corev1.Service{})
+		}, kvCacheQuietWindow, kvCacheInterval).Should(gomega.Succeed())
+	}
+
 	ginkgo.Context("backend selection", func() {
 		ginkgo.It("defaults to the vineyard backend when no backend annotation is set", func() {
 			kv := makeKVCache(ns.Name, "default-backend", "")
@@ -286,9 +308,10 @@ var _ = ginkgo.Describe("KVCache controller test", func() {
 			kv := makeKVCache(ns.Name, "pod-trigger", constants.KVCacheBackendInfinistore)
 			gomega.Expect(k8sClient.Create(ctx, kv)).To(gomega.Succeed())
 
+			waitForDistributedKVCacheToSettle(kv.Name)
+
 			sts := &appsv1.StatefulSet{}
 			eventuallyGet(kv.Name, sts)
-
 			gomega.Expect(k8sClient.Delete(ctx, sts)).To(gomega.Succeed())
 			consistentlyAbsent(kv.Name, &appsv1.StatefulSet{})
 
@@ -300,6 +323,8 @@ var _ = ginkgo.Describe("KVCache controller test", func() {
 		ginkgo.It("reconciles the matching KVCache when a labeled Pod is deleted", func() {
 			kv := makeKVCache(ns.Name, "pod-delete", constants.KVCacheBackendInfinistore)
 			gomega.Expect(k8sClient.Create(ctx, kv)).To(gomega.Succeed())
+
+			waitForDistributedKVCacheToSettle(kv.Name)
 
 			sts := &appsv1.StatefulSet{}
 			eventuallyGet(kv.Name, sts)
@@ -327,9 +352,10 @@ var _ = ginkgo.Describe("KVCache controller test", func() {
 			kv := makeKVCache(ns.Name, "pod-no-label", constants.KVCacheBackendInfinistore)
 			gomega.Expect(k8sClient.Create(ctx, kv)).To(gomega.Succeed())
 
+			waitForDistributedKVCacheToSettle(kv.Name)
+
 			sts := &appsv1.StatefulSet{}
 			eventuallyGet(kv.Name, sts)
-
 			gomega.Expect(k8sClient.Delete(ctx, sts)).To(gomega.Succeed())
 
 			gomega.Expect(k8sClient.Create(ctx, makePod(ns.Name, "unlabeled-pod", ""))).To(gomega.Succeed())
@@ -343,6 +369,9 @@ var _ = ginkgo.Describe("KVCache controller test", func() {
 			other := makeKVCache(ns.Name, "route-other", constants.KVCacheBackendInfinistore)
 			gomega.Expect(k8sClient.Create(ctx, target)).To(gomega.Succeed())
 			gomega.Expect(k8sClient.Create(ctx, other)).To(gomega.Succeed())
+
+			waitForDistributedKVCacheToSettle(target.Name)
+			waitForDistributedKVCacheToSettle(other.Name)
 
 			targetSts := &appsv1.StatefulSet{}
 			otherSts := &appsv1.StatefulSet{}
