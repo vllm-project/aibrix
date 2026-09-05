@@ -125,6 +125,11 @@ func TestIsLanguageRequest(t *testing.T) {
 			want:        false,
 		},
 		{
+			name:        "tokenize is not language",
+			requestPath: "/tokenize",
+			want:        false,
+		},
+		{
 			name:        "empty path is language",
 			requestPath: "",
 			want:        true,

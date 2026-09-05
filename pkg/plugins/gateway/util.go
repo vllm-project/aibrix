@@ -48,6 +48,8 @@ var (
 	POD_NAME = os.Getenv("POD_NAME")
 )
 
+const jsonNull = "null"
+
 // chatReqMinimal is a lightweight alternative to openai.ChatCompletionNewParams used
 // in validateRequestBody. It avoids the reflection-heavy apijson decoder and gjson
 // parsing in the openai SDK by capturing only the fields we actually need.
@@ -80,6 +82,15 @@ type responsesReqMinimal struct {
 // parseResponsesInput.
 type contentItem struct {
 	Content json.RawMessage `json:"content"`
+}
+
+// tokenizeReqMinimal captures the fields needed to route a vLLM /tokenize request: the
+// completion form carries "prompt", the chat form "messages". Prompt stays raw JSON so a
+// wrongly-typed prompt reaches the engine's validator instead of failing this unmarshal.
+type tokenizeReqMinimal struct {
+	Model    string          `json:"model"`
+	Prompt   json.RawMessage `json:"prompt"`
+	Messages []contentItem   `json:"messages"`
 }
 
 // embeddingReqMinimal captures the embedding fields needed for validation in a
@@ -129,7 +140,7 @@ func parseChatMessages(requestID string, msgs []contentItem) (string, *extProcPb
 // array of input items whose "content" is itself a string or an array of content
 // parts; in all cases we reuse the same text-extraction strategy as chat messages.
 func parseResponsesInput(requestID string, input json.RawMessage) (string, *extProcPb.ProcessingResponse) {
-	if len(input) == 0 || string(input) == "null" {
+	if len(input) == 0 || string(input) == jsonNull {
 		klog.ErrorS(nil, "no input in the request body", "requestID", requestID)
 		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property", "", "input", HeaderErrorRequestBodyProcessing, "true")
 	}
@@ -159,6 +170,7 @@ func parseResponsesInput(requestID string, input json.RawMessage) (string, *extP
 
 // validateRequestBody validates input by unmarshaling request body into respective openai-golang struct based on requestpath.
 // The per-path parsing is delegated to dedicated validate* helpers to keep this dispatcher simple.
+// nolint:nakedret
 func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	switch requestPath {
 	case PathChatCompletions, PathMessages:
@@ -175,6 +187,8 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		model, message, errRes = validateRerankRequest(requestID, requestBody)
 	case PathClassify:
 		model, message, errRes = validateClassifyRequest(requestID, requestBody)
+	case PathTokenize:
+		model, message, errRes = validateTokenizeRequest(requestID, requestBody)
 	case PathAudioTranscriptions, PathAudioTranslations:
 		// Audio endpoints require multipart/form-data content-type, not JSON
 		// This case handles the error when JSON is sent to audio endpoints
@@ -477,6 +491,35 @@ func validateRerankRequest(requestID string, requestBody []byte) (model, message
 	return
 }
 
+// validateTokenizeRequest parses and validates a vLLM /tokenize request body. Only "model"
+// is required - the gateway needs it to route, though vLLM itself treats it as optional -
+// and the rest of the schema is left to the engine. Nothing is metered: no tokens are generated.
+// nolint:nakedret
+func validateTokenizeRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	var req tokenizeReqMinimal
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		klog.ErrorS(err, "error to unmarshal tokenize object", "requestID", requestID, "requestBody", string(requestBody))
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if req.Model == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	model = req.Model
+
+	// Best-effort: a body with neither field still reaches the engine, which owns the error.
+	// parseChatMessages already unquotes JSON strings, so prompt goes through as one item.
+	switch {
+	case len(req.Prompt) > 0 && string(req.Prompt) != jsonNull:
+		message, errRes = parseChatMessages(requestID, []contentItem{{Content: req.Prompt}})
+	case len(req.Messages) > 0:
+		message, errRes = parseChatMessages(requestID, req.Messages)
+	}
+	return
+}
+
 // pathWithoutQuery strips the query string from an Envoy :path value. HTTP/2
 // :path includes both path and query (RFC 7540), so exact/prefix matchers must
 // cut on '?' before comparing.
@@ -516,7 +559,7 @@ func validateClassifyRequest(requestID string, requestBody []byte) (model, messa
 		return
 	}
 
-	if len(req.Input) == 0 || string(req.Input) == "null" {
+	if len(req.Input) == 0 || string(req.Input) == jsonNull {
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property", "", "input", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
