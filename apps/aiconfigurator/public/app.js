@@ -251,6 +251,19 @@ function renderSupport(c, d) {
   <p class="hint">Note: support is a lightweight check based on a majority vote over the support matrix; the actual default/exp run results are authoritative.</p>`;
 }
 
+function flatten(obj, prefix = "") {
+  const res = {};
+  for (const [k, v] of Object.entries(obj)) {
+    const key = prefix ? `${prefix}.${k}` : k;
+    if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+      Object.assign(res, flatten(v, key));
+    } else {
+      res[key] = v;
+    }
+  }
+  return res;
+}
+
 function renderGenerate(c, d) {
   const cfg = d.config || {};
   const rows = Object.entries(flatten(cfg)).map(([k, v]) =>

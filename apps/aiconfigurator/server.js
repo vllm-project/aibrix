@@ -76,7 +76,8 @@ function serveStatic(req, res) {
   let urlPath = decodeURIComponent(req.url.split('?')[0]);
   if (urlPath === '/') urlPath = '/index.html';
   const filePath = path.normalize(path.join(PUBLIC_DIR, urlPath));
-  if (!filePath.startsWith(PUBLIC_DIR)) {
+  const relative = path.relative(PUBLIC_DIR, filePath);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
     res.writeHead(403); res.end('forbidden'); return;
   }
   fs.readFile(filePath, (err, data) => {
@@ -91,7 +92,11 @@ function runRunner(payload) {
     const child = spawn(PYTHON, [RUNNER], { cwd: UI_DIR });
     let stdout = '';
     let stderr = '';
+    let completed = false;
+
     const timer = setTimeout(() => {
+      if (completed) return;
+      completed = true;
       child.kill('SIGKILL');
       resolve({ ok: false, error: `runner timed out after ${RUN_TIMEOUT_MS / 1000}s`, stderr: stderr.slice(-4000) });
     }, RUN_TIMEOUT_MS);
@@ -99,6 +104,8 @@ function runRunner(payload) {
     child.stdout.on('data', (d) => { stdout += d; });
     child.stderr.on('data', (d) => { stderr += d; });
     child.on('close', (code) => {
+      if (completed) return;
+      completed = true;
       clearTimeout(timer);
       if (code !== 0) {
         resolve({ ok: false, error: `python runner exited with code ${code}`, stderr: stderr.slice(-8000) });
@@ -116,6 +123,8 @@ function runRunner(payload) {
       }
     });
     child.on('error', (e) => {
+      if (completed) return;
+      completed = true;
       clearTimeout(timer);
       resolve({ ok: false, error: `failed to spawn python: ${e.message}`, stderr });
     });
