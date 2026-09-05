@@ -220,7 +220,7 @@ function showError(title, detail) {
   box.style.display = "";
   $("result-placeholder").style.display = "none";
   $("result-content").style.display = "none";
-  box.innerHTML = `<div class="err-title">✗ ${title}</div>` +
+  box.innerHTML = `<div class="err-title">✗ ${escapeHtml(title)}</div>` +
     (detail ? `<pre style="white-space:pre-wrap;margin:8px 0 0;font-size:12px;overflow:auto;max-height:300px">${escapeHtml(detail)}</pre>` : "");
 }
 function hideError() { $("result-error").style.display = "none"; }
