@@ -341,7 +341,7 @@ def main():
 
 def _emit(obj):
     sys.stdout.write("\n__AIC_UI_JSON__\n")
-    sys.stdout.write(json.dumps(obj, ensure_ascii=False, default=str))
+    sys.stdout.write(json.dumps(obj, default=str))
     sys.stdout.write("\n")
     sys.stdout.flush()
 
