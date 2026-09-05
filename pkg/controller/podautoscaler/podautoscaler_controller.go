@@ -94,6 +94,7 @@ const (
 	ReasonMetricsConfigError        = "MetricsConfigError"
 	ReasonInvalidSpec               = "InvalidSpec"
 	ReasonConfigured                = "Configured"
+	ReasonPendingReplicas           = "PendingReplicas"
 	maxScalingHistorySize           = 5
 	minScalingHistoryRecordInterval = 5 * time.Second
 	maxMetricWindowSeconds          = int64(3600)
@@ -883,7 +884,7 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 	// Pass ScaleTargetRef to handle special cases like RayClusterFleet
 	scaleDecision, err := r.computeScaleDecision(ctx, pa, scaleObj, currentReplicas)
 	if err != nil {
-		setStatus(&pa, currentReplicas, currentReplicas, false, "FailedComputeScale", false, err)
+		setStatus(&pa, currentReplicas, currentReplicas, false, "FailedComputeScale", false, false, err)
 		if updateErr := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
@@ -922,7 +923,7 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 
 	// Step 5: Update status
 	setStatus(&pa, currentReplicas, scaleDecision.DesiredReplicas,
-		scaleDecision.ShouldScale, scaleDecision.Reason, scaleError == nil, scaleError)
+		scaleDecision.ShouldScale, scaleDecision.Reason, scaleDecision.PendingReplicaGuardActive, scaleError == nil, scaleError)
 
 	if err := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); err != nil {
 		return ctrl.Result{}, err
@@ -999,7 +1000,7 @@ func setCondition(pa *autoscalingv1alpha1.PodAutoscaler, conditionType string, s
 
 // setStatus recreates the status of the given PA, updating the current and
 // desired replicas, as well as the metric statuses and optionally records a scaling decision
-func setStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas, desiredReplicas int32, rescale bool, reason string, success bool, err error) {
+func setStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas, desiredReplicas int32, rescale bool, reason string, pendingGuardActive bool, success bool, err error) {
 	pa.Status = autoscalingv1alpha1.PodAutoscalerStatus{
 		ActualScale:     currentReplicas,
 		DesiredScale:    desiredReplicas,
@@ -1008,6 +1009,19 @@ func setStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas, desiredRe
 		ScalingHistory:  pa.Status.ScalingHistory, // preserve existing history
 		ScheduledBounds: scheduledBoundsStatus(pa, time.Now()),
 	}
+
+	scalingActive := desiredReplicas != currentReplicas
+	scalingMessage := fmt.Sprintf("desired=%d, actual=%d", desiredReplicas, currentReplicas)
+	if reason != "" {
+		scalingMessage = fmt.Sprintf("%s; reason=%s", scalingMessage, reason)
+	}
+	scalingReason := ReasonStable
+	if scalingActive {
+		scalingReason = ReasonReconcilingScaleDiff
+	} else if pendingGuardActive {
+		scalingReason = ReasonPendingReplicas
+	}
+	setCondition(pa, ConditionScalingActive, boolToCond(scalingActive), scalingReason, scalingMessage)
 
 	if rescale || !success {
 		now := metav1.NewTime(time.Now())
@@ -1091,10 +1105,11 @@ func (r *PodAutoscalerReconciler) updateStatus(ctx context.Context, pa *autoscal
 
 // ScaleDecision represents a scaling decision made by the autoscaler
 type ScaleDecision struct {
-	DesiredReplicas int32
-	ShouldScale     bool
-	Reason          string
-	Algorithm       string
+	DesiredReplicas           int32
+	ShouldScale               bool
+	Reason                    string
+	Algorithm                 string
+	PendingReplicaGuardActive bool
 }
 
 // getScaleResource retrieves the scale resource for the PodAutoscaler target
@@ -1147,17 +1162,7 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 		}, nil
 	}
 
-	// Check boundary conditions first
-	if currentReplicas > maxReplicas {
-		return &ScaleDecision{
-			DesiredReplicas: maxReplicas,
-			ShouldScale:     true,
-			Reason:          "current replicas exceed maximum",
-			Algorithm:       "boundary-check",
-		}, nil
-	}
-
-	if currentReplicas < minReplicas {
+	if currentReplicas == 0 && minReplicas > 0 {
 		return &ScaleDecision{
 			DesiredReplicas: minReplicas,
 			ShouldScale:     true,
@@ -1189,7 +1194,9 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 
 	reason := ""
 
-	// Apply constraints
+	pendingGuardActive := replicaResult.PendingReplicaGuardActive
+
+	// Hard replica bounds always take precedence over metric and pending-replica recommendations.
 	if desiredReplicas > maxReplicas {
 		klog.InfoS("Scaling adjustment: Algorithm recommended scaling above maximum limit",
 			"recommendedReplicas", desiredReplicas, "adjustedTo", maxReplicas)
@@ -1207,15 +1214,18 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 		} else {
 			reason = "All metrics below target"
 		}
+	} else if pendingGuardActive {
+		reason = replicaResult.Reason
 	} else {
 		reason = "stable"
 	}
 
 	return &ScaleDecision{
-		DesiredReplicas: desiredReplicas,
-		ShouldScale:     shouldScale,
-		Reason:          reason,
-		Algorithm:       metricName,
+		DesiredReplicas:           desiredReplicas,
+		ShouldScale:               shouldScale,
+		Reason:                    reason,
+		Algorithm:                 metricName,
+		PendingReplicaGuardActive: pendingGuardActive,
 	}, nil
 }
 
@@ -1257,12 +1267,14 @@ func (r *PodAutoscalerReconciler) computeMetricBasedReplicas(
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pod list: %w", err)
 	}
+	replicaState := replicaStateFromPods(podList.Items, currentReplicas)
 
 	// Create request for autoscaler with ScalingContext
 	replicaRequest := ReplicaComputeRequest{
 		PodAutoscaler:   pa,
 		ScalingContext:  scalingContext,
 		CurrentReplicas: currentReplicas,
+		ReplicaState:    replicaState,
 		Pods:            podList.Items,
 		Timestamp:       r.nowTime(),
 	}

@@ -89,6 +89,24 @@ func (f *fakeAutoScaler) ComputeDesiredReplicas(ctx context.Context, req Replica
 	return f.result, f.err
 }
 
+func readyPod(ns, name string, lbls map[string]string) *corev1.Pod {
+	pod := buildPod(ns, name, lbls)
+	pod.Status.Conditions = []corev1.PodCondition{{
+		Type:   corev1.PodReady,
+		Status: corev1.ConditionTrue,
+	}}
+	return pod
+}
+
+func notReadyPod(ns, name string, lbls map[string]string) *corev1.Pod {
+	pod := buildPod(ns, name, lbls)
+	pod.Status.Conditions = []corev1.PodCondition{{
+		Type:   corev1.PodReady,
+		Status: corev1.ConditionFalse,
+	}}
+	return pod
+}
+
 func TestValidateMetricsSourcesAllowsK8sExternalMetrics(t *testing.T) {
 	for _, metricSourceType := range []autoscalingv1alpha1.MetricSourceType{
 		autoscalingv1alpha1.EXTERNAL,
@@ -724,6 +742,84 @@ func TestComputeScaleDecisionAllowsScheduledMinReplicasFromZero(t *testing.T) {
 				t.Fatalf("ShouldScale=%t, want %t", decision.ShouldScale, tt.wantShouldRun)
 			}
 		})
+	}
+}
+
+func TestComputeScaleDecisionPendingGuardDoesNotOverrideHardBounds(t *testing.T) {
+	sch := runtime.NewScheme()
+	_ = scheme.AddToScheme(sch)
+	_ = corev1.AddToScheme(sch)
+	_ = autoscalingv1alpha1.AddToScheme(sch)
+
+	r := &PodAutoscalerReconciler{
+		Client:              fake.NewClientBuilder().WithScheme(sch).Build(),
+		workloadScaleClient: &fakeWorkloadScaleClient{},
+		autoScaler: &fakeAutoScaler{
+			result: &ReplicaComputeResult{
+				DesiredReplicas:           12,
+				Algorithm:                 "apa",
+				Reason:                    "scale-up suppressed: pending replicas have no metrics yet",
+				Valid:                     true,
+				PendingReplicaGuardActive: true,
+			},
+		},
+	}
+	pa := *validPodAutoscalerForSpec()
+	pa.Namespace = ns
+	pa.Spec.ScalingStrategy = autoscalingv1alpha1.APA
+	pa.Spec.MinReplicas = ptr.To[int32](6)
+	pa.Spec.MaxReplicas = 10
+
+	scaleObj := buildScaleObject("apps/v1", "Deployment", ns, "test-deployment")
+
+	decision, err := r.computeScaleDecision(context.Background(), pa, scaleObj, 12)
+
+	if err != nil {
+		t.Fatalf("computeScaleDecision returned error: %v", err)
+	}
+	if decision.DesiredReplicas != 10 {
+		t.Fatalf("DesiredReplicas=%d, want 10", decision.DesiredReplicas)
+	}
+	if !decision.ShouldScale {
+		t.Fatal("expected maxReplicas boundary to override pending guard")
+	}
+	if decision.Reason != "All metrics below target" {
+		t.Fatalf("Reason=%q", decision.Reason)
+	}
+}
+
+func TestReplicaStateFromPodsUsesCurrentReplicasMinusReadyPodsAsPending(t *testing.T) {
+	labels := map[string]string{"app": "foo"}
+	state := replicaStateFromPods([]corev1.Pod{
+		*readyPod(ns, "old-ready-1", labels),
+		*readyPod(ns, "old-ready-2", labels),
+		*readyPod(ns, "old-ready-3", labels),
+		*readyPod(ns, "old-ready-4", labels),
+		*readyPod(ns, "old-ready-5", labels),
+		*notReadyPod(ns, "new-pending-1", labels),
+		*notReadyPod(ns, "new-pending-2", labels),
+	}, 4)
+
+	if state.ReadyReplicas != 4 {
+		t.Fatalf("ReadyReplicas=%d, want 4", state.ReadyReplicas)
+	}
+	if state.PendingReplicas != 0 {
+		t.Fatalf("PendingReplicas=%d, want 0", state.PendingReplicas)
+	}
+}
+
+func TestReplicaStateFromPodsTreatsMissingPodsAsPending(t *testing.T) {
+	labels := map[string]string{"app": "foo"}
+	state := replicaStateFromPods([]corev1.Pod{
+		*readyPod(ns, "ready-1", labels),
+		*readyPod(ns, "ready-2", labels),
+	}, 4)
+
+	if state.ReadyReplicas != 2 {
+		t.Fatalf("ReadyReplicas=%d, want 2", state.ReadyReplicas)
+	}
+	if state.PendingReplicas != 2 {
+		t.Fatalf("PendingReplicas=%d, want 2", state.PendingReplicas)
 	}
 }
 
