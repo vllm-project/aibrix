@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -106,10 +107,7 @@ var _ = ginkgo.Describe("ModelAdapter controller test", func() {
 		ginkgo.It("creates an owned headless Service and EndpointSlice after the adapter loads", func() {
 			adapterName := "adapter-svc"
 			pod := createModelAdapterEnginePod(ns.Name, "engine-0", "base-model", true, time.Now().Add(-30*time.Second))
-			srv.setHandler(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte(modelListJSON(adapterName)))
-			})
+			srv.setHandler(newModelAdapterLoadHandler(adapterName, 0))
 
 			adapter := createIntegrationModelAdapter(ns.Name, adapterName, "base-model", nil)
 
@@ -119,7 +117,7 @@ var _ = ginkgo.Describe("ModelAdapter controller test", func() {
 			}, modelAdapterTimeout, modelAdapterInterval).Should(gomega.Succeed())
 			gomega.Expect(svc.Spec.ClusterIP).To(gomega.Equal(corev1.ClusterIPNone))
 			gomega.Expect(svc.Spec.Ports).ToNot(gomega.BeEmpty())
-			gomega.Expect(svc.Spec.Ports[0].Port).To(gomega.Equal(int32(8000)))
+			gomega.Expect(svc.Spec.Ports[0].Port).To(gomega.Equal(int32(modelAdapterEnginePort)))
 			expectModelAdapterOwnedBy(svc, adapter)
 
 			eps := &discoveryv1.EndpointSlice{}
@@ -147,10 +145,7 @@ var _ = ginkgo.Describe("ModelAdapter controller test", func() {
 		ginkgo.It("updates EndpointSlice addresses when another engine pod becomes ready", func() {
 			adapterName := "adapter-eps-update"
 			_ = createModelAdapterEnginePod(ns.Name, "engine-a", "base-model", true, time.Now().Add(-30*time.Second))
-			srv.setHandler(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte(modelListJSON(adapterName)))
-			})
+			srv.setHandler(newModelAdapterLoadHandler(adapterName, 0))
 			adapter := createIntegrationModelAdapter(ns.Name, adapterName, "base-model", nil)
 
 			gomega.Eventually(func(g gomega.Gomega) {
@@ -206,8 +201,13 @@ var _ = ginkgo.Describe("ModelAdapter controller test", func() {
 		})
 
 		ginkgo.It("waits out the readiness backoff before scheduling a recently ready pod", func() {
-			_ = createModelAdapterEnginePod(ns.Name, "fresh-ready", "base-model", true, time.Now().Add(-1*time.Second))
-			adapter := createIntegrationModelAdapter(ns.Name, "adapter-backoff", "base-model", ptr.To(int32(1)))
+			adapterName := "adapter-backoff"
+			podName := "fresh-ready"
+			srv := startModelAdapterMockEngine(newModelAdapterLoadHandler(adapterName, 0))
+			defer srv.Close()
+
+			_ = createModelAdapterEnginePod(ns.Name, podName, "base-model", true, time.Now().Add(-1*time.Second))
+			adapter := createIntegrationModelAdapter(ns.Name, adapterName, "base-model", ptr.To(int32(1)))
 
 			// While the pod is still inside the RetryBackoffSeconds window, the
 			// single-replica path must not schedule it (Candidates may be 1 from
@@ -234,28 +234,23 @@ var _ = ginkgo.Describe("ModelAdapter controller test", func() {
 				g.Expect(latest.Status.Instances).To(gomega.BeEmpty())
 				g.Expect(latest.Status.ReadyReplicas).To(gomega.Equal(int32(0)))
 			}, time.Second*2, modelAdapterInterval).Should(gomega.Succeed())
+
+			// After the remaining RetryBackoffSeconds window elapses, the pod should
+			// be scheduled and the mock engine should accept the load path.
+			gomega.Eventually(func(g gomega.Gomega) {
+				latest := &modelapi.ModelAdapter{}
+				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(adapter), latest)).To(gomega.Succeed())
+				g.Expect(latest.Status.Instances).To(gomega.ConsistOf(podName))
+				g.Expect(latest.Status.ReadyReplicas).To(gomega.Equal(int32(1)))
+			}, modelAdapterTimeout, modelAdapterInterval).Should(gomega.Succeed())
 		})
 	})
 
 	ginkgo.Context("retry annotations", func() {
 		ginkgo.It("sets retry annotations on load failure and clears them after a successful load", func() {
 			adapterName := "adapter-retry"
-			var failLoad sync.Mutex
-			shouldFail := true
-
-			srv := startModelAdapterMockEngine(func(w http.ResponseWriter, r *http.Request) {
-				failLoad.Lock()
-				fail := shouldFail
-				failLoad.Unlock()
-				if fail {
-					// Retriable engine error so the controller records retry annotations.
-					w.WriteHeader(http.StatusServiceUnavailable)
-					_, _ = w.Write([]byte("service unavailable"))
-					return
-				}
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte(modelListJSON(adapterName)))
-			})
+			// Fail only the first POST /v1/load_lora_adapter so retryCount stays exactly 1.
+			srv := startModelAdapterMockEngine(newModelAdapterLoadHandler(adapterName, 1))
 			defer srv.Close()
 
 			pod := createModelAdapterEnginePod(ns.Name, "retry-engine", "base-model", true, time.Now().Add(-30*time.Second))
@@ -264,6 +259,7 @@ var _ = ginkgo.Describe("ModelAdapter controller test", func() {
 			retryCountKey := fmt.Sprintf("%s.%s", modeladapter.RetryCountAnnotationKey, pod.Name)
 			lastRetryKey := fmt.Sprintf("%s.%s", modeladapter.LastRetryTimeAnnotationKey, pod.Name)
 
+			var observedCount int
 			gomega.Eventually(func(g gomega.Gomega) {
 				latest := &modelapi.ModelAdapter{}
 				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(adapter), latest)).To(gomega.Succeed())
@@ -271,15 +267,13 @@ var _ = ginkgo.Describe("ModelAdapter controller test", func() {
 				g.Expect(latest.Annotations).To(gomega.HaveKey(lastRetryKey))
 				count, err := strconv.Atoi(latest.Annotations[retryCountKey])
 				g.Expect(err).NotTo(gomega.HaveOccurred())
-				g.Expect(count).To(gomega.BeNumerically(">=", 1))
+				g.Expect(count).To(gomega.Equal(1))
+				observedCount = count
 			}, modelAdapterTimeout, modelAdapterInterval).Should(gomega.Succeed())
 
-			failLoad.Lock()
-			shouldFail = false
-			failLoad.Unlock()
-
-			// Allow the exponential backoff window (5s * 2^retryCount) to elapse after the
-			// recorded failure before asserting that annotations were cleared on success.
+			// Backoff after retryCount=1 is RetryBackoffSeconds * 2^1; wait that out plus
+			// the usual reconcile timeout for the successful load to clear annotations.
+			backoff := time.Duration(modeladapter.RetryBackoffSeconds*(1<<observedCount)) * time.Second
 			gomega.Eventually(func(g gomega.Gomega) {
 				latest := &modelapi.ModelAdapter{}
 				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(adapter), latest)).To(gomega.Succeed())
@@ -292,7 +286,7 @@ var _ = ginkgo.Describe("ModelAdapter controller test", func() {
 				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: adapterName}, svc)).To(gomega.Succeed())
 				eps := &discoveryv1.EndpointSlice{}
 				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: adapterName}, eps)).To(gomega.Succeed())
-			}, time.Second*45, modelAdapterInterval).Should(gomega.Succeed())
+			}, backoff+modelAdapterTimeout, modelAdapterInterval).Should(gomega.Succeed())
 		})
 	})
 })
@@ -402,6 +396,50 @@ func modelListJSON(adapterName string) string {
 }`, adapterName)
 }
 
+func emptyModelListJSON() string {
+	return `{
+  "object": "list",
+  "data": []
+}`
+}
+
+// newModelAdapterLoadHandler returns a mock engine handler that exercises the real
+// load path: GET /v1/models is empty until a successful POST /v1/load_lora_adapter,
+// after which the adapter appears in the model list. failLoadPosts controls how
+// many load POSTs return 503 before succeeding (0 = succeed immediately).
+func newModelAdapterLoadHandler(adapterName string, failLoadPosts int) http.HandlerFunc {
+	var mu sync.Mutex
+	loaded := false
+	remainingFails := failLoadPosts
+	return func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/v1/models"):
+			w.WriteHeader(http.StatusOK)
+			if loaded {
+				_, _ = w.Write([]byte(modelListJSON(adapterName)))
+			} else {
+				_, _ = w.Write([]byte(emptyModelListJSON()))
+			}
+		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "load_lora_adapter"):
+			if remainingFails > 0 {
+				remainingFails--
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte("service unavailable"))
+				return
+			}
+			loaded = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}
+}
+
 func localNonLoopbackIPv4() string {
 	// Prefer an address already assigned to the host that EndpointSlice will accept
 	// and that we can bind the mock engine to.
@@ -436,9 +474,6 @@ func localNonLoopbackIPv4() string {
 		}
 		_ = ln.Close()
 		return candidate
-	}
-	if len(candidates) > 0 {
-		return candidates[0]
 	}
 	return ""
 }
