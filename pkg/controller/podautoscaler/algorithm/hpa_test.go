@@ -21,6 +21,9 @@ import (
 	"testing"
 )
 
+// hpaAlgorithmType is the algorithm identifier reported by HPAAlgorithm.
+const hpaAlgorithmType = "hpa"
+
 func TestHPAAlgorithm_ComputeRecommendation(t *testing.T) {
 	// HPA scaling is delegated to the Kubernetes HPA controller, so the
 	// recommendation must echo the current replica count unchanged.
@@ -47,8 +50,8 @@ func TestHPAAlgorithm_ComputeRecommendation(t *testing.T) {
 			if got.DesiredReplicas != tt.currentReplicas {
 				t.Errorf("DesiredReplicas = %d, want %d", got.DesiredReplicas, tt.currentReplicas)
 			}
-			if got.Algorithm != "hpa" {
-				t.Errorf("Algorithm = %q, want %q", got.Algorithm, "hpa")
+			if got.Algorithm != hpaAlgorithmType {
+				t.Errorf("Algorithm = %q, want %q", got.Algorithm, hpaAlgorithmType)
 			}
 			if !got.ScaleValid {
 				t.Error("ScaleValid = false, want true")
@@ -62,7 +65,7 @@ func TestHPAAlgorithm_ComputeRecommendation(t *testing.T) {
 
 func TestHPAAlgorithm_GetAlgorithmType(t *testing.T) {
 	a := &HPAAlgorithm{}
-	if got := a.GetAlgorithmType(); got != "hpa" {
-		t.Errorf("GetAlgorithmType() = %q, want %q", got, "hpa")
+	if got := a.GetAlgorithmType(); got != hpaAlgorithmType {
+		t.Errorf("GetAlgorithmType() = %q, want %q", got, hpaAlgorithmType)
 	}
 }
