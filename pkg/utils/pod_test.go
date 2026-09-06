@@ -62,11 +62,29 @@ func genPods(cnt int, readyCnt int) []*v1.Pod {
 		case 2:
 			pod.Status.Conditions[0].Status = v1.ConditionFalse
 		case 3:
-			pod.ObjectMeta.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+			pod.DeletionTimestamp = &metav1.Time{Time: time.Now()}
 		}
 		pods = append(pods, pod)
 	}
 	return pods
+}
+
+func TestFilterReadyPodExcludesDrainingPod(t *testing.T) {
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{constants.PodDrainingAnnotationKey: "true"},
+		},
+		Status: v1.PodStatus{
+			PodIP: "10.0.0.1",
+			Conditions: []v1.PodCondition{
+				{Type: v1.PodReady, Status: v1.ConditionTrue},
+			},
+		},
+	}
+
+	if FilterReadyPod(pod) {
+		t.Fatalf("expected draining pod to be excluded from ready routing filter")
+	}
 }
 
 // Sample ray cluser head:
@@ -118,7 +136,7 @@ func getRayClusterHead(withLabel bool) *v1.Pod {
 		},
 	}
 	if withLabel {
-		pod.ObjectMeta.Labels[ReyClusterFleetIdentifier] = "qwen-coder-7b-instruct-by-label"
+		pod.Labels[ReyClusterFleetIdentifier] = "qwen-coder-7b-instruct-by-label"
 	}
 	return pod
 }

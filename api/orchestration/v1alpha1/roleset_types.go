@@ -209,6 +209,10 @@ type RoleSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	Replicas *int32 `json:"replicas,omitempty"`
 
+	// Drain configures a grace period before controller-managed pod deletion.
+	// +optional
+	Drain *RoleDrainSpec `json:"drain,omitempty"`
+
 	// UpgradeOrder specifies the order in which this role should be upgraded.
 	// Lower values are upgraded first. If not specified, roles upgrade after all explicitly ordered roles.
 	// +optional
@@ -239,6 +243,15 @@ type RoleSpec struct {
 
 	// +optional
 	SchedulingStrategy *SchedulingStrategy `json:"schedulingStrategy,omitempty"`
+}
+
+// RoleDrainSpec configures drain behavior before RoleSet-managed pod deletion.
+type RoleDrainSpec struct {
+	// TimeoutSeconds is the minimum time to wait after marking a pod draining
+	// before the controller deletes it.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	TimeoutSeconds *int32 `json:"timeoutSeconds,omitempty"`
 }
 
 // +enum

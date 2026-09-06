@@ -102,6 +102,7 @@ jobs:
           retention-days: 1
 
   installation-test:
+    name: Installation E2E Tests
     needs: [build-images]
     runs-on: ubuntu-latest
     steps:
@@ -206,7 +207,7 @@ jobs:
           kind create cluster --name installation-test --config=./hack/ci/kind-config.yaml
           kubectl cluster-info --context kind-installation-test
 
-      - name: Load image into Kind
+      - name: Load images into kind
         run: |
           set -euo pipefail
           sha="${{ github.sha }}"
@@ -245,7 +246,7 @@ jobs:
             aibrix/inplace-e2e:v2 \
             --name installation-test
 
-      - name: Deploy controller with the built image
+      - name: Deploy AIBrix control plane
         run: |
           kubectl apply -k config/dependency --server-side
           kubectl apply -k config/crd --server-side
@@ -256,14 +257,14 @@ jobs:
           cd ${{ github.workspace }}
           kubectl apply -k config/test
 
-      - name: Deploy Workload
+      - name: Deploy mock workload
         run: |
           cd development/app/config/mock
           kustomize edit set image aibrix/vllm-mock=aibrix/vllm-mock:${{ github.sha }}
           kustomize edit set image aibrix/runtime=aibrix/runtime:${{ github.sha }}
           kubectl apply -k .
 
-      - name: Check pod status
+      - name: Wait for pods and open port forwards
         run: |
           sleep 60s
           
@@ -280,7 +281,7 @@ jobs:
           kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc  8888:80 &
           kubectl -n aibrix-system port-forward service/aibrix-redis-master 6379:6379 &
 
-      - name: Run e2e tests
+      - name: Run installation e2e tests
         run: |
           kind get kubeconfig --name installation-test > /tmp/admin.conf
           export KUBECONFIG=/tmp/admin.conf
@@ -294,12 +295,17 @@ jobs:
           make test-e2e-external-metrics
 
       - name: Clean up
-        run: kind delete cluster --name installation-test
+        if: always()
+        continue-on-error: true
+        run: kind delete cluster --name installation-test || true
 
   delete-artifacts:
-    needs: [installation-test]
+    name: Delete image artifacts
+    needs: [build-images, installation-test]
+    if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest  
     steps:   
       - uses: geekyeggo/delete-artifact@v5
         with:
-          name: vllm-mock-image
+          name: '*-image'
+          failOnError: false

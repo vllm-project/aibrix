@@ -192,7 +192,7 @@ func TestComputeDesiredReplicasConfiguresMetricWindowsFromPodAutoscalerSpec(t *t
 	_, err := autoScaler.ComputeDesiredReplicas(context.TODO(), request)
 	require.NoError(t, err)
 
-	mockFactory.mockMetricFetcher.metricsValue = 70.0
+	mockFactory.metricsValue = 70.0
 	request.Timestamp = request.Timestamp.Add(60 * time.Second)
 	_, err = autoScaler.ComputeDesiredReplicas(context.TODO(), request)
 	require.NoError(t, err)

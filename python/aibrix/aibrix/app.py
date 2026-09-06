@@ -121,6 +121,7 @@ def init_app_state(state: State) -> None:
         envs.INFERENCE_ENGINE,
         envs.INFERENCE_ENGINE_VERSION,
         envs.INFERENCE_ENGINE_ENDPOINT,
+        api_key=envs.INFERENCE_ENGINE_API_KEY,
     )
 
 

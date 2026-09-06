@@ -724,6 +724,7 @@ async def test_runtime_base_session_periodically_checks_liveness_and_surfaces_fa
 
     class _LivenessRuntime(_R):
         session_liveness_check_interval_s = 0.01
+        session_liveness_failure_threshold = 3
 
     runtime = _LivenessRuntime(
         check_liveness=_check_liveness,
@@ -862,6 +863,47 @@ async def test_runtime_base_session_preserves_liveness_error_when_teardown_fails
         ):
             await asyncio.wait_for(liveness_failure_seen.wait(), timeout=1)
             await asyncio.sleep(1)
+
+
+@pytest.mark.asyncio
+async def test_runtime_base_session_logs_terminal_liveness_cancellation(caplog):
+    liveness_failure_seen = asyncio.Event()
+
+    async def _check_liveness(handle, reason="unspecified"):
+        del handle, reason
+        liveness_failure_seen.set()
+        raise RuntimeError("runtime lost")
+
+    async def _teardown(handle):
+        del handle
+
+    class _LivenessRuntime(_R):
+        session_liveness_check_interval_s = 0.01
+        session_liveness_failure_threshold = 1
+
+    runtime = _LivenessRuntime(
+        check_liveness=_check_liveness,
+        teardown=_teardown,
+    )
+
+    with caplog.at_level("WARNING"):
+        with pytest.raises(RuntimeError, match="runtime lost"):
+            async with runtime.session(
+                job=_make_test_job(job_id="job-1"),
+                job_id="job-1",
+                progress_manager=_FakeProgressManager(),
+                worker_id_generator=_fake_worker_id_generator,
+            ):
+                await asyncio.wait_for(liveness_failure_seen.wait(), timeout=1)
+                await asyncio.sleep(1)
+
+    assert any(
+        '"event": "Runtime liveness check failed; cancelling session"' in record.message
+        and '"job_id": "job-1"' in record.message
+        and '"consecutive_failures": 1' in record.message
+        and '"abort_after_failures": 1' in record.message
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio

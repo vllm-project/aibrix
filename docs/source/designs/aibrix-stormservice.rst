@@ -40,6 +40,8 @@ Stormservice supports two deployment modes: **Replica Mode** and **Pooled Mode**
     1. These two modes are mutually exclusive. The mode is declared through the `stormservice.spec.mode` field, which accepts `Replica` or `Pooled`.
     2. `spec.mode` is optional and is not defaulted. When it is omitted the mode is inferred for backward compatibility from `stormservice.spec.replicas`: replica mode when `replicas > 1`, otherwise pooled mode.
     3. When `spec.mode` is set to `Pooled`, `spec.replicas` must stay at `1`; roles are scaled through `spec.template.spec.roles[].replicas`.
+    4. A declared `spec.mode` drives the update path: `Replica` uses the rolling update path and `Pooled` uses the in-place update path, even when `spec.updateStrategy.type` holds the (possibly CRD-defaulted) `RollingUpdate` value. Declaring `mode: Replica` together with `updateStrategy.type: InPlaceUpdate` is rejected by the webhook. When `spec.mode` is omitted, `spec.updateStrategy.type` keeps selecting the update path as before.
+    5. A declared `spec.mode` is also the source of truth for PodAutoscaler role-level scaling. The `autoscaling.aibrix.ai/storm-service-mode` annotation is deprecated and only honored when the target StormService does not declare `spec.mode`.
 
 
 Replica Mode
@@ -62,6 +64,69 @@ Pooled Mode
 
 - **Resource Pool**: Prefill or Decode instance form a shared pool.
 - **Independent Role Scaling**: Each role can be scaled independently based on its specific load and requirements.
+
+
+Drain Before Controller-Managed Deletion
+----------------------------------------
+
+RoleSet can mark Pods as draining before controller-managed deletion. This is
+useful for scale-in and recreate rollouts where the gateway should stop sending
+new requests to a Pod before the Pod is deleted.
+
+Configure drain per role through ``spec.template.spec.roles[].drain`` on a
+StormService, or ``spec.roles[].drain`` when managing a RoleSet directly:
+
+.. code-block:: yaml
+
+   spec:
+     template:
+       spec:
+         roles:
+         - name: decode
+           replicas: 4
+           drain:
+             timeoutSeconds: 30
+
+``timeoutSeconds`` is optional and must be non-negative. When it is omitted or
+set to ``0``, the controller keeps the previous behavior and deletes selected
+Pods immediately.
+
+When ``timeoutSeconds`` is greater than ``0``, the RoleSet controller handles a
+selected Pod in two phases:
+
+1. Patch the Pod with drain annotations and requeue until the timeout expires.
+2. Delete the Pod after the configured timeout has elapsed.
+
+The controller writes the following annotations:
+
+.. list-table:: Drain annotations
+   :header-rows: 1
+   :widths: 35 65
+
+   * - Annotation
+     - Purpose
+   * - ``aibrix.ai/draining=true``
+     - Marks the Pod as draining. Gateway ready-pod filtering excludes Pods
+       with this value.
+   * - ``aibrix.ai/drain-start-time``
+     - RFC3339 UTC timestamp used by the controller to calculate timeout
+       expiry.
+   * - ``aibrix.ai/drain-reason``
+     - Diagnostic reason, such as ``scale-in`` or ``rollout``.
+   * - ``aibrix.ai/drain-target-action=delete``
+     - Confirms the controller intends to delete this Pod after drain. If this
+       value is missing or unexpected, the controller resets the drain state
+       instead of deleting immediately.
+
+The controller emits ``PodDrainStarted`` when drain begins,
+``PodDrainCompleted`` when the Pod is deleted after the timeout, and
+``PodDrainStateInvalid`` when it repairs malformed drain state. It does not emit
+an event while simply waiting for the timeout; waiting is logged at verbose
+level only.
+
+For roles using ``podGroupSize > 1``, the RoleSet controller propagates the role
+drain configuration to the internal PodSet so grouped Pods follow the same
+drain-before-delete behavior.
 
 
 Topology Policy

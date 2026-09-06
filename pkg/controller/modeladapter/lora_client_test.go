@@ -44,9 +44,10 @@ func TestLoadAdapter(t *testing.T) {
 		loadApiStatusCode  int
 		loadApiWantUrl     string
 
-		wantErr    bool
-		wantExists bool
-		wantLoaded bool
+		wantErr        bool
+		wantErrContain string
+		wantExists     bool
+		wantLoaded     bool
 	}{
 		{
 			name:          "pod with vllm and without sidecar - model loaded ok",
@@ -132,6 +133,24 @@ func TestLoadAdapter(t *testing.T) {
 			wantLoaded:        true,
 		},
 		{
+			name:          "pod with vllm and without sidecar - s3 artifact url rejected before reaching engine",
+			enableSidecar: false,
+			ma: &modelv1alpha1.ModelAdapter{
+				ObjectMeta: v1.ObjectMeta{
+					Name: "qwen-lora-test",
+				},
+				Spec: modelv1alpha1.ModelAdapterSpec{
+					ArtifactURL: "s3://s3-bucket/llama-3.1-nemoguard-8b-topic-control",
+				},
+			},
+			pod:            newPod("127.0.0.1", VLLMEngine, false),
+			port:           8000,
+			wantErr:        true,
+			wantErrContain: "cannot be fetched by the inference engine directly",
+			wantExists:     false,
+			wantLoaded:     false,
+		},
+		{
 			name:          "pod with sglang and without sidecar - model loaded ok",
 			enableSidecar: false,
 			ma: &modelv1alpha1.ModelAdapter{
@@ -152,9 +171,12 @@ func TestLoadAdapter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			modelApiCalled := false
+			loadApiCalled := false
 			server := mockServer(t, tt.pod.Status.PodIP, tt.port, func(w http.ResponseWriter, r *http.Request) {
 				// GET model API
 				if r.URL.Path == `/v1/models` {
+					modelApiCalled = true
 					if tt.modelApiResponse != "" {
 						_, _ = w.Write([]byte(tt.modelApiResponse))
 					} else {
@@ -164,6 +186,7 @@ func TestLoadAdapter(t *testing.T) {
 				}
 
 				// POST load adapter API
+				loadApiCalled = true
 				if r.URL.Path != tt.loadApiWantUrl {
 					t.Errorf("load api path mis-match, want=%s, got=%s", tt.loadApiWantUrl, r.URL.Path)
 				} else {
@@ -182,6 +205,11 @@ func TestLoadAdapter(t *testing.T) {
 
 			if tt.wantErr {
 				assert.Error(t, err)
+				if tt.wantErrContain != "" {
+					assert.Contains(t, err.Error(), tt.wantErrContain)
+					assert.False(t, modelApiCalled, "list-models endpoint should not be called when the artifact URL is rejected up front")
+					assert.False(t, loadApiCalled, "load adapter endpoint should not be called when the artifact URL is rejected up front")
+				}
 			} else {
 				assert.NoError(t, err)
 				assert.Equal(t, tt.wantExists, exists)

@@ -43,7 +43,7 @@ func (r *StormServiceReconciler) getRoleSetList(ctx context.Context, selector *m
 		return nil, fmt.Errorf("bad selector format: %v", err)
 	}
 	roleSetList := &orchestrationv1alpha1.RoleSetList{}
-	err = r.Client.List(ctx, roleSetList, client.MatchingLabelsSelector{Selector: roleSetSelector})
+	err = r.List(ctx, roleSetList, client.MatchingLabelsSelector{Selector: roleSetSelector})
 	if err != nil {
 		klog.Errorf("failed to list roleSets")
 		return nil, err
@@ -122,14 +122,14 @@ func (r *StormServiceReconciler) createRoleSet(stormService *orchestrationv1alph
 	}
 	return utils.SlowStartBatch(len(toCreate), ctrlutil.SlowStartInitialBatchSize, func(i int) error {
 		klog.Infof("[rolesetoperation] create roleset for stormservice %s/%s", stormService.Namespace, stormService.Name)
-		return r.Client.Create(context.TODO(), toCreate[i])
+		return r.Create(context.TODO(), toCreate[i])
 	})
 }
 
 func (r *StormServiceReconciler) deleteRoleSet(toDelete []*orchestrationv1alpha1.RoleSet) (int, error) {
 	return utils.SlowStartBatch(len(toDelete), ctrlutil.SlowStartInitialBatchSize, func(i int) error {
 		klog.Infof("[rolesetoperation] delete roleset %s", toDelete[i].Name)
-		err := r.Client.Delete(context.TODO(), toDelete[i])
+		err := r.Delete(context.TODO(), toDelete[i])
 		if err != nil && apierrors.IsNotFound(err) {
 			// NotFound will be ignored
 			return nil
@@ -159,6 +159,6 @@ func (r *StormServiceReconciler) updateRoleSet(stormService *orchestrationv1alph
 		}
 		// update roleset spec
 		toUpdate[i].Spec = target.Spec
-		return r.Client.Update(context.TODO(), toUpdate[i])
+		return r.Update(context.TODO(), toUpdate[i])
 	})
 }

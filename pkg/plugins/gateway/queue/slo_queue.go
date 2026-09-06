@@ -168,7 +168,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 		if len(q.dequeueCandidates) == 0 {
 			q.validateDequeueCandidatesLocked(1)
 			q.dequeueCandidates = q.dequeueCandidates[:1]
-		} else if q.dequeueCandidates[0].RoutingContext.RequestTime.Before(subReq.RequestTime) {
+		} else if q.dequeueCandidates[0].RequestTime.Before(subReq.RequestTime) {
 			// Skip this subqueue
 			return true
 		}
@@ -258,7 +258,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 	sort.Slice(dequeueCandidates, func(i, j int) bool {
 		// Keep original order for no slo violation if fifoOnNonSLOViolation enabled.
 		if fifoOnNonSLOViolation && dequeueCandidates[i].Profiles[0].Rank < 0 && dequeueCandidates[j].Profiles[0].Rank < 0 {
-			return dequeueCandidates[i].RoutingContext.RequestTime.Before(dequeueCandidates[j].RoutingContext.RequestTime)
+			return dequeueCandidates[i].RequestTime.Before(dequeueCandidates[j].RequestTime)
 		} else {
 			return q.higherRank(dequeueCandidates[i].Profiles[0].Rank, dequeueCandidates[j].Profiles[0].Rank) > 0
 		}
@@ -278,14 +278,14 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 				// Try routing.
 				_, lastErr = q.subRoute(candidate.RoutingContext, &utils.PodArray{Pods: pods.ListByIndex(profile.Key)})
 				// If monogenousGPURoutingOnly is enabled, only the most relaxing profile is considered.
-				if monogenousGPURoutingOnly || candidate.RoutingContext.HasRouted() {
+				if monogenousGPURoutingOnly || candidate.HasRouted() {
 					break
 				}
 			}
 		} else {
 			_, lastErr = q.subRoute(candidate.RoutingContext, pods)
 		}
-		if candidate.RoutingContext.HasRouted() {
+		if candidate.HasRouted() {
 			q.lastCandidateSubKey = candidate.SubKey
 			return candidate.RoutingContext, nil
 		} else if lastErr != cache.ErrorLoadCapacityReached {
@@ -495,7 +495,7 @@ func (q *SLOQueue) debugCandidates(msg string, candidates []*candidateRouterRequ
 		for _, profile := range candidate.Profiles {
 			logMsg.WriteString(profile.Key)
 			logMsg.WriteRune(':')
-			logMsg.WriteString(fmt.Sprintf("%.3f", profile.Rank))
+			fmt.Fprintf(&logMsg, "%.3f", profile.Rank)
 			logMsg.WriteRune(' ')
 		}
 		logMsg.WriteString(") ")

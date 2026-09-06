@@ -97,6 +97,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationorchestrationv1alpha1.RayClusterReplicaSetStatusApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterTemplateSpec"):
 		return &applyconfigurationorchestrationv1alpha1.RayClusterTemplateSpecApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RoleDrainSpec"):
+		return &applyconfigurationorchestrationv1alpha1.RoleDrainSpecApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RoleReplacementScheduling"):
 		return &applyconfigurationorchestrationv1alpha1.RoleReplacementSchedulingApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RoleSetSpec"):

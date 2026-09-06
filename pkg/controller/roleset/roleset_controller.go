@@ -35,6 +35,7 @@ import (
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
+	controllerdrain "github.com/vllm-project/aibrix/pkg/controller/drain"
 	orchestrationctrl "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
 	"github.com/vllm-project/aibrix/pkg/controller/util/patch"
 )
@@ -108,26 +109,26 @@ type RoleSetReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=pods/status,verbs=get;list;watch;update;patch
 
 func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	klog.Infof("Reconciling RoleSet %s", req.NamespacedName.String())
+	klog.Infof("Reconciling RoleSet %s", req.String())
 	ctx, cancel := context.WithTimeout(ctx, 1*time.Minute)
 	defer cancel()
 	roleSet := &orchestrationv1alpha1.RoleSet{}
-	if err := r.Client.Get(ctx, req.NamespacedName, roleSet); err != nil {
+	if err := r.Get(ctx, req.NamespacedName, roleSet); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if roleSet.DeletionTimestamp != nil {
 		if done, err := r.finalize(ctx, roleSet); err != nil {
-			klog.Errorf("Reconciling RoleSet %s finalize error %v", req.NamespacedName.String(), err)
+			klog.Errorf("Reconciling RoleSet %s finalize error %v", req.String(), err)
 			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
 		} else if !done {
-			klog.Infof("Reconciling RoleSet %s finalize not done yet, reconcile after %v seconds", req.NamespacedName.String(), DefaultRequeueAfter)
+			klog.Infof("Reconciling RoleSet %s finalize not done yet, reconcile after %v seconds", req.String(), DefaultRequeueAfter)
 			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, nil
 		}
 		return ctrl.Result{}, nil
 	} else if !controllerutil.ContainsFinalizer(roleSet, RoleSetFinalizer) {
 		// add finalizer if not exist
 		if err := orchestrationctrl.Patch(ctx, r.Client, roleSet, patch.AddFinalizerPatch(roleSet, RoleSetFinalizer)); err != nil {
-			klog.Errorf("Adding RoleSet %s finalizer error %v", req.NamespacedName.String(), err)
+			klog.Errorf("Adding RoleSet %s finalizer error %v", req.String(), err)
 			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
 		}
 		return ctrl.Result{}, nil
@@ -147,7 +148,7 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// 2. sync pods
-	err := r.syncPods(ctx, roleSet)
+	syncResult, err := r.syncPods(ctx, roleSet)
 	if err != nil {
 		managedErrors = append(managedErrors, fmt.Errorf("sync pod error %v", err))
 	}
@@ -167,6 +168,10 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		} else if inProgress {
 			klog.Infof("roleset %s/%s has in-place update in progress, reconcile after %v seconds", roleSet.Namespace, roleSet.Name, DefaultRetryDelay)
 			return ctrl.Result{RequeueAfter: DefaultRetryDelay}, nil
+		}
+		if syncResult.RequeueAfter > 0 {
+			klog.V(4).Infof("roleset %s/%s has pending pod drain, reconcile after %v", roleSet.Namespace, roleSet.Name, syncResult.RequeueAfter)
+			return drainRequeueResult(syncResult), nil
 		}
 		if !orchestrationctrl.IsRoleSetReady(roleSet) {
 			klog.Infof("roleset %s/%s not ready, reconcile after %v seconds", roleSet.Namespace, roleSet.Name, DefaultRetryDelay)
@@ -189,6 +194,10 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		klog.Infof("roleset %s/%s has in-place update in progress, reconcile after %v seconds", roleSet.Namespace, roleSet.Name, DefaultRetryDelay)
 		return ctrl.Result{RequeueAfter: DefaultRetryDelay}, nil
 	}
+	if syncResult.RequeueAfter > 0 {
+		klog.V(4).Infof("roleset %s/%s has pending pod drain, reconcile after %v", roleSet.Namespace, roleSet.Name, syncResult.RequeueAfter)
+		return drainRequeueResult(syncResult), nil
+	}
 	if hasVolcanoScheduling(roleSet) {
 		klog.Infof("roleset %s/%s has volcano scheduling configured, refresh PodGroup status after %v", roleSet.Namespace, roleSet.Name, PodGroupStatusRefresh)
 		return ctrl.Result{RequeueAfter: PodGroupStatusRefresh}, nil
@@ -198,4 +207,11 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 func hasVolcanoScheduling(roleSet *orchestrationv1alpha1.RoleSet) bool {
 	return roleSet.Spec.SchedulingStrategy != nil && roleSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy != nil
+}
+
+func drainRequeueResult(result controllerdrain.Result) ctrl.Result {
+	if result.RequeueAfter <= 0 {
+		return ctrl.Result{}
+	}
+	return ctrl.Result{RequeueAfter: result.RequeueAfter}
 }

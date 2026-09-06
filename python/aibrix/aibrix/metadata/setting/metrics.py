@@ -14,29 +14,16 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from typing import Optional
 
-
-def _env_bool(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _env_list(name: str) -> list[str]:
-    value = os.getenv(name, "")
-    if value == "":
-        return []
-    return [item.strip() for item in value.split(",") if item.strip()]
+from aibrix import envs
 
 
 @dataclass(frozen=True)
 class MetricsConfig:
     service_name: str = "aibrix-metadata"
-    prometheus_enabled: bool = True
+    prometheus_enabled: bool = False
     statsd_addr: str = ""
     statsite_addr: str = ""
     dogstatsd_addr: str = ""
@@ -45,12 +32,12 @@ class MetricsConfig:
 
 def load_public_metrics_config() -> Optional[MetricsConfig]:
     config = MetricsConfig(
-        service_name=os.getenv("METRICS_SERVICE_NAME", "aibrix-metadata"),
-        prometheus_enabled=_env_bool("METRICS_PROMETHEUS_ENABLED", True),
-        statsd_addr=os.getenv("METRICS_STATSD_ADDR", ""),
-        statsite_addr=os.getenv("METRICS_STATSITE_ADDR", ""),
-        dogstatsd_addr=os.getenv("METRICS_DOGSTATSD_ADDR", ""),
-        dogstatsd_tags=_env_list("METRICS_DOGSTATSD_TAGS"),
+        service_name=envs.METRICS_SERVICE_NAME,
+        prometheus_enabled=envs.METRICS_PROMETHEUS_ENABLED,
+        statsd_addr=envs.METRICS_STATSD_ADDR,
+        statsite_addr=envs.METRICS_STATSITE_ADDR,
+        dogstatsd_addr=envs.METRICS_DOGSTATSD_ADDR,
+        dogstatsd_tags=list(envs.METRICS_DOGSTATSD_TAGS),
     )
 
     if (

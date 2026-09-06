@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -49,6 +50,10 @@ func TestRecomputeReadiness(t *testing.T) {
 		ModelAdapterLoadingErrorReason, failedMsg)
 	staleReady := NewCondition(string(modelv1alpha1.ModelAdapterConditionReady), metav1.ConditionTrue,
 		ModelAdapterAvailable, "ModelAdapter default/adapter is ready")
+	noStablePods := NewCondition(string(modelv1alpha1.ModelAdapterConditionReady), metav1.ConditionFalse,
+		NoReadyPodsReason, "ModelAdapter default/adapter has no ready backend pods available for scheduling")
+	insufficientPods := NewCondition(string(modelv1alpha1.ModelAdapterConditionReady), metav1.ConditionFalse,
+		InsufficientReadyPodsReason, "ModelAdapter default/adapter has 1 ready backend pods, but needs 1 for scheduling")
 
 	tests := []struct {
 		name           string
@@ -84,7 +89,25 @@ func TestRecomputeReadiness(t *testing.T) {
 				Conditions: []metav1.Condition{staleReady},
 			},
 			wantPhase: modelv1alpha1.ModelAdapterPending, wantReady: 0,
-			wantCondStatus: metav1.ConditionFalse, wantReason: PodNotReadyReason, wantMsgPart: "no ready pods",
+			wantCondStatus: metav1.ConditionFalse, wantReason: NoReadyPodsReason, wantMsgPart: "no ready pods",
+		},
+		{
+			name: "scheduler wait reason is kept while no candidate is stable",
+			status: modelv1alpha1.ModelAdapterStatus{
+				Phase: modelv1alpha1.ModelAdapterRunning, ReadyReplicas: 1, DesiredReplicas: 1, Candidates: 1,
+				Conditions: []metav1.Condition{noStablePods},
+			},
+			wantPhase: modelv1alpha1.ModelAdapterPending, wantReady: 0,
+			wantCondStatus: metav1.ConditionFalse, wantReason: NoReadyPodsReason, wantMsgPart: "backend pods available",
+		},
+		{
+			name: "insufficient ready pods reason is kept",
+			status: modelv1alpha1.ModelAdapterStatus{
+				Phase: modelv1alpha1.ModelAdapterScheduled, DesiredReplicas: 1, Candidates: 2,
+				Conditions: []metav1.Condition{insufficientPods},
+			},
+			wantPhase: modelv1alpha1.ModelAdapterPending, wantReady: 0,
+			wantCondStatus: metav1.ConditionFalse, wantReason: InsufficientReadyPodsReason, wantMsgPart: "needs 1",
 		},
 		{
 			name: "candidates but nothing loaded",
@@ -131,6 +154,45 @@ func TestRecomputeReadiness(t *testing.T) {
 			assert.Contains(t, cond.Message, tt.wantMsgPart)
 		})
 	}
+}
+
+func TestRecomputeReadinessReassertsBoundAndScheduled(t *testing.T) {
+	staleBound := NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeBound), metav1.ConditionFalse,
+		ModelAdapterLoadingErrorReason, "stale from a prior failure")
+	staleScheduled := NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeScheduled), metav1.ConditionFalse,
+		"Rescheduling", "stale from a prior migration")
+
+	loaded := &modelv1alpha1.ModelAdapter{
+		ObjectMeta: metav1.ObjectMeta{Name: "adapter", Namespace: "default"},
+		Status: modelv1alpha1.ModelAdapterStatus{
+			Instances: []string{"a"}, DesiredReplicas: 1, Candidates: 1,
+			Conditions: []metav1.Condition{staleBound, staleScheduled},
+		},
+	}
+	recomputeReadiness(loaded)
+	for _, condType := range []modelv1alpha1.ModelAdapterConditionType{
+		modelv1alpha1.ModelAdapterConditionTypeBound, modelv1alpha1.ModelAdapterConditionTypeScheduled,
+	} {
+		cond := meta.FindStatusCondition(loaded.Status.Conditions, string(condType))
+		require.NotNil(t, cond, "%s condition missing", condType)
+		assert.Equal(t, metav1.ConditionTrue, cond.Status, "%s must be healed once an instance is loaded", condType)
+		assert.Contains(t, cond.Message, "1 pod(s)")
+	}
+	assert.Equal(t, ModelAdapterBoundReason, meta.FindStatusCondition(loaded.Status.Conditions, string(modelv1alpha1.ModelAdapterConditionTypeBound)).Reason)
+	assert.Equal(t, ModelAdapterScheduledReason, meta.FindStatusCondition(loaded.Status.Conditions, string(modelv1alpha1.ModelAdapterConditionTypeScheduled)).Reason)
+
+	unloaded := &modelv1alpha1.ModelAdapter{
+		ObjectMeta: metav1.ObjectMeta{Name: "adapter", Namespace: "default"},
+		Status: modelv1alpha1.ModelAdapterStatus{
+			DesiredReplicas: 1, Candidates: 1,
+			Conditions: []metav1.Condition{staleBound, staleScheduled},
+		},
+	}
+	recomputeReadiness(unloaded)
+	assert.Equal(t, metav1.ConditionFalse, meta.FindStatusCondition(unloaded.Status.Conditions, string(modelv1alpha1.ModelAdapterConditionTypeBound)).Status,
+		"Bound must not be reasserted without a loaded instance")
+	assert.Equal(t, metav1.ConditionFalse, meta.FindStatusCondition(unloaded.Status.Conditions, string(modelv1alpha1.ModelAdapterConditionTypeScheduled)).Status,
+		"Scheduled must not be reasserted without a loaded instance")
 }
 
 func TestRecomputeReadinessIsIdempotent(t *testing.T) {
@@ -229,17 +291,17 @@ func TestDoReconcileNoPodsLoadOnAll(t *testing.T) {
 
 	res, ma := reconcileTwice(t, r, key)
 
-	assert.Equal(t, ctrl.Result{}, res)
-	assert.Equal(t, modelv1alpha1.ModelAdapterPending, ma.Status.Phase, "must not report Running without any pod")
+	assert.Equal(t, ctrl.Result{RequeueAfter: defaultRequeueDuration}, res)
+	assert.Equal(t, modelv1alpha1.ModelAdapterPending, ma.Status.Phase, "must not report Running or Bound without any pod")
 	assert.Equal(t, int32(0), ma.Status.Candidates)
 	assert.Equal(t, int32(0), ma.Status.DesiredReplicas)
 	assert.Equal(t, int32(0), ma.Status.ReadyReplicas)
 	cond := readyCondition(t, ma)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
-	assert.Equal(t, PodNotReadyReason, cond.Reason)
+	assert.Equal(t, NoReadyPodsReason, cond.Reason)
 
 	svc := &corev1.Service{}
-	assert.NoError(t, r.Get(context.Background(), key, svc), "service is still created while waiting for pods")
+	assert.True(t, apierrors.IsNotFound(r.Get(context.Background(), key, svc)), "service is only created once the adapter is loaded")
 }
 
 func TestDoReconcileNoReadyPodsSinglePod(t *testing.T) {
@@ -258,7 +320,7 @@ func TestDoReconcileNoReadyPodsSinglePod(t *testing.T) {
 	assert.Equal(t, int32(0), ma.Status.ReadyReplicas)
 	cond := readyCondition(t, ma)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
-	assert.Equal(t, PodNotReadyReason, cond.Reason)
+	assert.Equal(t, NoReadyPodsReason, cond.Reason)
 }
 
 func TestDoReconcileUnstablePodSinglePod(t *testing.T) {
@@ -277,8 +339,8 @@ func TestDoReconcileUnstablePodSinglePod(t *testing.T) {
 	assert.Equal(t, int32(0), ma.Status.ReadyReplicas)
 	cond := readyCondition(t, ma)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
-	assert.Equal(t, ModelAdapterUnavailable, cond.Reason)
-	assert.Contains(t, cond.Message, "1 candidate")
+	assert.Equal(t, NoReadyPodsReason, cond.Reason, "the scheduler's reason must survive the phase update")
+	assert.Contains(t, cond.Message, "no ready backend pods available for scheduling")
 }
 
 func TestDoReconcileAllPodsGoneAfterRunning(t *testing.T) {
@@ -310,15 +372,15 @@ func TestDoReconcileAllPodsGoneAfterRunning(t *testing.T) {
 	require.NoError(t, r.Get(ctx, key, ma))
 	res, err := r.DoReconcile(ctx, ctrl.Request{NamespacedName: key}, ma)
 	require.NoError(t, err)
-	assert.Equal(t, ctrl.Result{}, res)
+	assert.Equal(t, ctrl.Result{RequeueAfter: defaultRequeueDuration}, res)
 
 	require.NoError(t, r.Get(ctx, key, ma))
-	assert.Equal(t, modelv1alpha1.ModelAdapterPending, ma.Status.Phase, "must not stay Running once every pod is gone")
+	assert.Equal(t, modelv1alpha1.ModelAdapterPending, ma.Status.Phase, "must not stay Running or report Bound once every pod is gone")
 	assert.Equal(t, int32(0), ma.Status.ReadyReplicas, "ready count must not go stale")
 	assert.Equal(t, int32(0), ma.Status.Candidates)
 	assert.Equal(t, int32(0), ma.Status.DesiredReplicas)
 	assert.Empty(t, ma.Status.Instances)
 	cond := readyCondition(t, ma)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
-	assert.Equal(t, PodNotReadyReason, cond.Reason)
+	assert.Equal(t, NoReadyPodsReason, cond.Reason)
 }

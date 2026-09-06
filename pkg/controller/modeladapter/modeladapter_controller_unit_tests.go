@@ -537,7 +537,7 @@ func TestNewSchedulingPendingCondition(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			condition := newSchedulingPendingCondition(instance, tt.available, tt.needed)
+			condition := newSchedulingPendingCondition(instance, string(modelv1alpha1.ModelAdapterConditionTypeScheduled), tt.available, tt.needed)
 			if condition.Status != metav1.ConditionFalse || condition.Reason != tt.reason {
 				t.Fatalf("unexpected condition: %#v", condition)
 			}

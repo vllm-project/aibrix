@@ -42,7 +42,7 @@ The ModelAdapter goes through several distinct phases during its lifecycle. Unde
 
 **Phase Details:**
 
-1. **Pending**: The controller has started reconciliation but no adapter instance is loaded yet. The ``Ready`` condition says why: reason ``PodNotReady`` means no ready pod matches the ``podSelector``; reason ``ModelAdapterUnavailable`` means candidate pods exist but the adapter is not loaded on any of them yet, for example while a pod is still settling after becoming ready.
+1. **Pending**: The controller has started reconciliation but no adapter instance is loaded yet. The ``Ready`` condition says why: reason ``NoReadyPods`` means no ready pod matches the ``podSelector`` (with ``replicas: 1`` it also covers pods that became ready too recently to be scheduled); reason ``ModelAdapterUnavailable`` means candidate pods exist but the adapter is not loaded on any of them yet.
 
 2. **Scheduled**: Only with ``replicas: 1``. The controller has selected a pod that matches the ``podSelector`` and is loading the adapter on it. Pods are validated for readiness and stability before selection. Loading includes:
 
@@ -56,7 +56,7 @@ The ModelAdapter goes through several distinct phases during its lifecycle. Unde
 
 4. **Failed**: Loading failed on every candidate pod. The ``Ready`` condition carries reason ``ModelAdapterLoadingError`` and the per-pod errors in its message. The controller keeps retrying and the adapter returns to ``Running`` as soon as one load succeeds.
 
-``Bound`` and ``ResourceCreated`` are not steps of the normal flow. They show up as the phase only when the controller hits an error while loading the adapter (``Bound``) or while creating the Service or EndpointSlice (``ResourceCreated``); the condition of the same name carries the error details, and the controller keeps retrying.
+``ResourceCreated`` is not a step of the normal flow. It shows up as the phase only when creating the Service or EndpointSlice fails; the condition of the same name carries the error details, and the controller keeps retrying. ``Bound`` is a condition, not a phase: it is ``True`` (together with the ``Scheduled`` condition) while the adapter is loaded, and turns ``False`` with reason ``ModelAdapterLoadingError`` when a loading pass fails, while the phase stays ``Pending`` or ``Failed``.
 
 **Error Handling and Reliability Features:**
 
@@ -73,7 +73,7 @@ The ModelAdapter goes through several distinct phases during its lifecycle. Unde
 
     $ kubectl get modeladapter
     NAME             PHASE     DESIRED   READY   CANDIDATES   REASON        MODEL PATH                                                     AGE
-    qwen-code-lora   Pending                                  PodNotReady   huggingface://ai-blond/Qwen-Qwen2.5-Coder-1.5B-Instruct-lora   5s
+    qwen-code-lora   Pending                                  NoReadyPods   huggingface://ai-blond/Qwen-Qwen2.5-Coder-1.5B-Instruct-lora   5s
 
 Once the adapter is loaded:
 

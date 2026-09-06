@@ -305,7 +305,7 @@ func InitWithPodsModelMetrics(st *Store, podMetrics map[string]map[string]metric
 			return true
 		}
 		if podmetrics, ok := podMetrics[podName]; ok {
-			modelName, _ := constants.ModelNameFromMetadata(metaPod.Pod.Labels, metaPod.Pod.Annotations)
+			modelName, _ := constants.ModelNameFromMetadata(metaPod.Labels, metaPod.Annotations)
 			for metricName, metric := range podmetrics {
 				if err := st.updatePodRecord(metaPod, modelName, metricName, metrics.PodModelMetricScope, metric); err != nil {
 					return false
@@ -595,6 +595,7 @@ func (s *Store) initKVEventSync() error {
 	}
 
 	// Validate configuration before allocating more resources
+	//nolint:staticcheck // SA4023: always true in non-ZMQ build, but required for ZMQ build
 	if err := s.kvEventManager.validateConfiguration(); err != nil {
 		return fmt.Errorf("invalid KV event sync configuration: %w", err)
 	}
@@ -692,7 +693,7 @@ func (c *Store) promQueryLoop(stopCh <-chan struct{}) {
 	podKey := func(p *Pod) string {
 		ns := p.Namespace
 		if ns == "" && p.Pod != nil {
-			ns = p.Pod.Namespace
+			ns = p.Namespace
 		}
 		return ns + "/" + p.Name
 	}

@@ -42,6 +42,7 @@ import (
 	discoverylisters "k8s.io/client-go/listers/discovery/v1"
 	toolscache "k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -106,6 +107,10 @@ const (
 	ModelAdapterAvailable = "ModelAdapterAvailable"
 	// ModelAdapterUnavailable is added in a ModelAdapter when it doesn't have any pod hosting it.
 	ModelAdapterUnavailable = "ModelAdapterUnavailable"
+	// ModelAdapterBoundReason is added in a ModelAdapter when it is successfully loaded on at least one pod.
+	ModelAdapterBoundReason = "ModelAdapterBound"
+	// ModelAdapterScheduledReason is added in a ModelAdapter when it has pods scheduled and loaded.
+	ModelAdapterScheduledReason = "Scheduled"
 
 	// Inference Service path and ports
 	DefaultInferenceEnginePort      = "8000"
@@ -334,7 +339,7 @@ func (r *ModelAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return reconcile.Result{}, err
 	}
 
-	if modelAdapter.ObjectMeta.DeletionTimestamp.IsZero() {
+	if modelAdapter.DeletionTimestamp.IsZero() {
 		// the object is not being deleted, so if it does not have the finalizer,
 		// then lets add the finalizer and update the object.
 		if !controllerutil.ContainsFinalizer(modelAdapter, ModelAdapterFinalizer) {
@@ -445,8 +450,9 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 		return replicasResult, err
 	}
 	if replicasResult.Requeue || replicasResult.RequeueAfter > 0 {
-		// Waiting for pods to become schedulable. Persist the refreshed Candidates and
-		// DesiredReplicas together with a Ready=False reason so that `kubectl get` does
+		// Waiting for pods to become schedulable. reconcileLoadOnSinglePod has recorded
+		// why in the Ready condition; derive the phase from the instance set and persist
+		// it with the refreshed Candidates and DesiredReplicas so that `kubectl get` does
 		// not keep showing a stale phase while the adapter waits.
 		if err := r.syncReadinessStatus(ctx, oldInstance, instance); err != nil {
 			return ctrl.Result{}, err
@@ -458,7 +464,9 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 	if err := r.reconcileLoading(ctx, instance, oldInstances); err != nil {
 		// Don't overwrite Failed status - it should be preserved for visibility
 		if instance.Status.Phase != modelv1alpha1.ModelAdapterFailed {
-			instance.Status.Phase = modelv1alpha1.ModelAdapterBound
+			// reconcileLoading also fails when no active pod backs the adapter at all, so
+			// derive the phase from the instance set instead of reporting Bound.
+			recomputeReadiness(instance)
 			condition := NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeBound), metav1.ConditionFalse,
 				ModelAdapterLoadingErrorReason, fmt.Sprintf("ModelAdapter %s loading failed", klog.KObj(instance)))
 			if err := r.updateStatus(ctx, instance, condition); err != nil {
@@ -495,8 +503,9 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 		return ctrlResult, err
 	}
 
-	// Derive ReadyReplicas, Phase and the Ready condition from the final instance set
-	// and persist only when something observable changed.
+	// Derive ReadyReplicas, Phase and the Ready condition from the final instance set,
+	// reassert Bound and Scheduled while an instance is loaded, and persist only when
+	// something observable changed.
 	if err := r.syncReadinessStatus(ctx, oldInstance, instance); err != nil {
 		return reconcile.Result{}, fmt.Errorf("update modelAdapter status error: %v", err)
 	}
@@ -504,14 +513,14 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 	return ctrl.Result{}, nil
 }
 
-func newSchedulingPendingCondition(instance *modelv1alpha1.ModelAdapter, available, needed int) metav1.Condition {
+func newSchedulingPendingCondition(instance *modelv1alpha1.ModelAdapter, condType string, available, needed int) metav1.Condition {
 	reason := NoReadyPodsReason
 	message := fmt.Sprintf("ModelAdapter %s has no ready backend pods available for scheduling", klog.KObj(instance))
 	if available > 0 {
 		reason = InsufficientReadyPodsReason
 		message = fmt.Sprintf("ModelAdapter %s has %d ready backend pods, but needs %d for scheduling", klog.KObj(instance), available, needed)
 	}
-	return NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeScheduled), metav1.ConditionFalse, reason, message)
+	return NewCondition(condType, metav1.ConditionFalse, reason, message)
 }
 
 func (r *ModelAdapterReconciler) updateStatus(ctx context.Context, instance *modelv1alpha1.ModelAdapter, conditions ...metav1.Condition) error {
@@ -675,6 +684,9 @@ func (r *ModelAdapterReconciler) reconcileLoadOnSinglePod(ctx context.Context, i
 
 			// Persist the scheduling decision in annotations
 			r.setScheduledPods(instance, getPodNames(selectedPods))
+			if err := r.persistAnnotations(ctx, instance); err != nil {
+				return ctrl.Result{}, err
+			}
 			klog.InfoS("Selected pods for adapter scheduling", "ModelAdapter", klog.KObj(instance), "selectedPods", getPodNames(selectedPods))
 
 			instance.Status.Phase = modelv1alpha1.ModelAdapterScheduled
@@ -687,14 +699,27 @@ func (r *ModelAdapterReconciler) reconcileLoadOnSinglePod(ctx context.Context, i
 		} else if len(candidatePods) > 0 {
 			// Some pods available but not enough, try with what we have
 			klog.Infof("Only %d ready pods available for model adapter %s, need %d more, will wait", len(candidatePods), klog.KObj(instance), neededReplicas)
-			if err := r.updateStatus(ctx, instance, newSchedulingPendingCondition(instance, len(candidatePods), neededReplicas)); err != nil {
+			// reconcileReplicas already filtered Instances down to active pods, so this
+			// reflects reality: if the previously-bound pod just vanished, currentReplicas
+			// (and therefore ReadyReplicas) must drop to 0 here. Without this, DoReconcile's
+			// early return on RequeueAfter skips reconcileLoading entirely, leaving
+			// ReadyReplicas/Ready stuck at their last value indefinitely.
+			instance.Status.ReadyReplicas = int32(len(instance.Status.Instances))
+			scheduledCondition := newSchedulingPendingCondition(instance, string(modelv1alpha1.ModelAdapterConditionTypeScheduled), len(candidatePods), neededReplicas)
+			readyCondition := newSchedulingPendingCondition(instance, string(modelv1alpha1.ModelAdapterConditionReady), len(candidatePods), neededReplicas)
+			if err := r.updateStatus(ctx, instance, scheduledCondition, readyCondition); err != nil {
 				return ctrl.Result{}, err
 			}
 			return ctrl.Result{RequeueAfter: time.Duration(RetryBackoffSeconds) * time.Second}, nil
 		} else {
 			// No ready pods available, wait for pods to become ready
 			klog.Infof("No ready pods available for model adapter %s, waiting for pods to become ready", klog.KObj(instance))
-			if err := r.updateStatus(ctx, instance, newSchedulingPendingCondition(instance, 0, neededReplicas)); err != nil {
+			// See the branch above: reset ReadyReplicas here too so it doesn't stay stuck
+			// at a stale value once every candidate pod is gone.
+			instance.Status.ReadyReplicas = int32(len(instance.Status.Instances))
+			scheduledCondition := newSchedulingPendingCondition(instance, string(modelv1alpha1.ModelAdapterConditionTypeScheduled), 0, neededReplicas)
+			readyCondition := newSchedulingPendingCondition(instance, string(modelv1alpha1.ModelAdapterConditionReady), 0, neededReplicas)
+			if err := r.updateStatus(ctx, instance, scheduledCondition, readyCondition); err != nil {
 				return ctrl.Result{}, err
 			}
 			return ctrl.Result{RequeueAfter: time.Duration(RetryBackoffSeconds) * time.Second}, nil
@@ -762,7 +787,9 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 
 	if len(activePods) == 0 {
 		klog.V(4).InfoS("No active pods found for ModelAdapter", "ModelAdapter", klog.KObj(instance))
-		return nil
+		// Fall through instead of returning early: instance.Status.Instances/ReadyReplicas
+		// and the Ready condition still need to be reconciled to reflect that no pods
+		// are currently backing this adapter (e.g. the base model pod was deleted).
 	}
 
 	// Create a map of active pods for quick lookup
@@ -841,6 +868,12 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 				// Clear scheduled pods annotation once we have successful loadings
 				if loadedCount == 1 {
 					r.clearScheduledPods(instance)
+					if perr := r.persistAnnotations(ctx, instance); perr != nil {
+						// Load already succeeded; do not treat a metadata patch failure as a
+						// loading error or skip Status.Instances updates.
+						klog.ErrorS(perr, "Failed to persist cleared scheduled-pods annotation after successful load",
+							"ModelAdapter", klog.KObj(instance))
+					}
 
 					// If this is a recovery from pod removal, update Scheduled condition back to True
 					if podRemoved {
@@ -1059,10 +1092,13 @@ func (r *ModelAdapterReconciler) inconsistentModelAdapterStatus(oldStatus, newSt
 
 // recomputeReadiness derives ReadyReplicas, Phase and the Ready condition from the
 // current Instances and Candidates so that `kubectl get modeladapter` never shows
-// Running or Ready=True without a loaded instance. It only mutates the in-memory
+// Running or Ready=True without a loaded instance. While an instance is loaded it also
+// reasserts Bound and Scheduled, so a False left behind by an earlier failure or pod
+// migration does not linger once the adapter recovers. It only mutates the in-memory
 // object; the caller decides whether to persist. A Failed phase (recorded by
 // reconcileLoading together with its Ready=False loading-error condition) is kept
-// until an instance loads successfully.
+// until an instance loads successfully, and a Ready=False scheduling reason recorded
+// by reconcileLoadOnSinglePod is kept because it is more specific.
 func recomputeReadiness(instance *modelv1alpha1.ModelAdapter) {
 	status := &instance.Status
 	status.ReadyReplicas = int32(len(status.Instances))
@@ -1072,17 +1108,34 @@ func recomputeReadiness(instance *modelv1alpha1.ModelAdapter) {
 		status.Phase = modelv1alpha1.ModelAdapterRunning
 		meta.SetStatusCondition(&status.Conditions, NewCondition(string(modelv1alpha1.ModelAdapterConditionReady), metav1.ConditionTrue,
 			ModelAdapterAvailable, fmt.Sprintf("ModelAdapter %s is ready", klog.KObj(instance))))
+		meta.SetStatusCondition(&status.Conditions, NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeBound), metav1.ConditionTrue,
+			ModelAdapterBoundReason, fmt.Sprintf("ModelAdapter %s is bound to %d pod(s)", klog.KObj(instance), status.ReadyReplicas)))
+		meta.SetStatusCondition(&status.Conditions, NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeScheduled), metav1.ConditionTrue,
+			ModelAdapterScheduledReason, fmt.Sprintf("ModelAdapter %s is scheduled on %d pod(s)", klog.KObj(instance), status.ReadyReplicas)))
 	case status.Phase == modelv1alpha1.ModelAdapterFailed:
 		// Keep the loading error recorded by reconcileLoading visible.
+	case hasSchedulingWaitReason(status.Conditions):
+		// reconcileLoadOnSinglePod already explained why no pod could be scheduled.
+		status.Phase = modelv1alpha1.ModelAdapterPending
 	case status.Candidates == 0:
 		status.Phase = modelv1alpha1.ModelAdapterPending
 		meta.SetStatusCondition(&status.Conditions, NewCondition(string(modelv1alpha1.ModelAdapterConditionReady), metav1.ConditionFalse,
-			PodNotReadyReason, "no ready pods match the pod selector"))
+			NoReadyPodsReason, "no ready pods match the pod selector"))
 	default:
 		status.Phase = modelv1alpha1.ModelAdapterPending
 		meta.SetStatusCondition(&status.Conditions, NewCondition(string(modelv1alpha1.ModelAdapterConditionReady), metav1.ConditionFalse,
 			ModelAdapterUnavailable, fmt.Sprintf("adapter is not loaded on any of the %d candidate pods", status.Candidates)))
 	}
+}
+
+// hasSchedulingWaitReason reports whether the Ready condition is False with one of the
+// reasons reconcileLoadOnSinglePod records while it waits for a schedulable pod.
+func hasSchedulingWaitReason(conditions []metav1.Condition) bool {
+	cond := meta.FindStatusCondition(conditions, string(modelv1alpha1.ModelAdapterConditionReady))
+	if cond == nil || cond.Status != metav1.ConditionFalse {
+		return false
+	}
+	return cond.Reason == NoReadyPodsReason || cond.Reason == InsufficientReadyPodsReason
 }
 
 // syncReadinessStatus recomputes the derived readiness fields and persists the status
@@ -1139,12 +1192,18 @@ func (r *ModelAdapterReconciler) tryLoadModelAdapterOnPod(ctx context.Context, i
 		return false, false, fmt.Errorf("max retries (%d) exceeded", MaxLoadingRetries)
 	}
 
-	// Update retry info
-	r.updateRetryInfo(instance, pod.Name, retryCount+1)
-
 	_, exists, err := r.loraClient.LoadAdapter(ctx, instance, pod)
 
 	if err != nil {
+		// Record the failed attempt only after LoadAdapter returns an error so a
+		// successful (re)verification does not churn retry annotations.
+		r.updateRetryInfo(instance, pod.Name, retryCount+1)
+		if perr := r.persistAnnotations(ctx, instance); perr != nil {
+			klog.ErrorS(perr, "Failed to persist retry annotations", "pod", pod.Name, "ModelAdapter", klog.KObj(instance))
+			// Return the persist error so reconcile requeues and retry state can stick;
+			// Status().Update does not persist annotations on its own.
+			return false, true, fmt.Errorf("load failed: %w; also failed to persist retry annotations: %v", err, perr)
+		}
 		if r.isRetriableError(err) {
 			klog.V(4).InfoS("Retriable error loading adapter", "pod", pod.Name, "error", err)
 			return false, true, err
@@ -1154,14 +1213,20 @@ func (r *ModelAdapterReconciler) tryLoadModelAdapterOnPod(ctx context.Context, i
 		return false, false, err
 	}
 
+	if retryCount > 0 || !lastRetryTime.IsZero() {
+		r.clearRetryInfo(instance, pod.Name)
+		if perr := r.persistAnnotations(ctx, instance); perr != nil {
+			// Adapter is already loaded on the pod; a metadata patch failure must not
+			// be reported as a load failure (which would skip Status.Instances).
+			klog.ErrorS(perr, "Failed to persist cleared retry annotations after successful load",
+				"pod", pod.Name, "ModelAdapter", klog.KObj(instance))
+		}
+	}
+
 	if exists {
 		klog.V(4).InfoS("LoRA adapter already exists on pod", "pod", pod.Name)
-		// Reset retry count on success
-		r.clearRetryInfo(instance, pod.Name)
 		return true, false, nil
 	}
-	// Success - reset retry count
-	r.clearRetryInfo(instance, pod.Name)
 	klog.InfoS("Successfully loaded adapter on pod", "pod", pod.Name, "ModelAdapter", klog.KObj(instance))
 	return true, false, nil
 }
@@ -1192,6 +1257,59 @@ func (r *ModelAdapterReconciler) isRetriableError(err error) bool {
 	}
 
 	return false
+}
+
+// managedAnnotationPrefix is derived from RetryCountAnnotationKey so the scoped
+// merge patch stays aligned with controller-managed annotation naming.
+func managedAnnotationPrefix() string {
+	idx := strings.LastIndex(RetryCountAnnotationKey, "/")
+	if idx < 0 {
+		return RetryCountAnnotationKey
+	}
+	return RetryCountAnnotationKey[:idx+1]
+}
+
+// persistAnnotations writes managed annotations from instance to the API object
+// so retry and scheduling state survives across reconcile cycles. Only keys under
+// the managed adapter.model.aibrix.ai/ prefix are copied or deleted; unrelated
+// annotations added concurrently on the API object are left alone. A merge patch
+// keeps resourceVersion coherent on the in-memory object after status updates.
+func (r *ModelAdapterReconciler) persistAnnotations(ctx context.Context, instance *modelv1alpha1.ModelAdapter) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &modelv1alpha1.ModelAdapter{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name}, latest); err != nil {
+			return err
+		}
+		before := latest.DeepCopy()
+
+		if latest.Annotations == nil {
+			latest.Annotations = make(map[string]string)
+		}
+
+		prefix := managedAnnotationPrefix()
+
+		// Copy or update annotations managed by this controller.
+		for k, v := range instance.Annotations {
+			if strings.HasPrefix(k, prefix) {
+				latest.Annotations[k] = v
+			}
+		}
+
+		// Remove any managed annotations that were cleared on the in-memory instance.
+		for k := range latest.Annotations {
+			if strings.HasPrefix(k, prefix) {
+				if _, exists := instance.Annotations[k]; !exists {
+					delete(latest.Annotations, k)
+				}
+			}
+		}
+
+		if err := r.Patch(ctx, latest, client.MergeFrom(before)); err != nil {
+			return err
+		}
+		instance.SetResourceVersion(latest.GetResourceVersion())
+		return nil
+	})
 }
 
 // getRetryInfo gets retry count and last retry time from annotations

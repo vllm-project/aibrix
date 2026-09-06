@@ -504,7 +504,7 @@ GO_TEST_COVERAGE = $(LOCALBIN)/go-test-coverage-$(GO_TEST_COVERAGE_VERSION)
 KUSTOMIZE_VERSION ?= v5.3.0
 CONTROLLER_TOOLS_VERSION ?= v0.16.1
 ENVTEST_VERSION ?= release-0.19
-GOLANGCI_LINT_VERSION ?= v1.57.2
+GOLANGCI_LINT_VERSION ?= v2.13.1
 GO_TEST_COVERAGE_VERSION ?= v2.14.3
 
 .PHONY: kustomize
@@ -525,7 +525,7 @@ $(ENVTEST): $(LOCALBIN)
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
-	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/cmd/golangci-lint,${GOLANGCI_LINT_VERSION})
+	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,${GOLANGCI_LINT_VERSION})
 
 .PHONY: go-test-coverage
 go-test-coverage: $(GO_TEST_COVERAGE) ## Download go-test-coverage locally if necessary.

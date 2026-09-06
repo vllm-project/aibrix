@@ -1021,3 +1021,20 @@ func TestInjectContainerEnvVars(t *testing.T) {
 		assert.Equal(t, expectedName, container.Env[actualIndex].Name, "User-defined env var should maintain original order")
 	}
 }
+
+func TestPodSetRoleSyncerCreatePodSetCopiesDrainSpec(t *testing.T) {
+	roleSet := newTestRoleSet("test-roleset", "test-ns")
+	role := newTestRoleSpec("worker", 1, intStrPtr(intstrutil.FromInt(1)), intStrPtr(intstrutil.FromInt(1)))
+	podGroupSize := int32(2)
+	drainTimeout := int32(30)
+	role.PodGroupSize = &podGroupSize
+	role.Drain = &orchestrationv1alpha1.RoleDrainSpec{TimeoutSeconds: &drainTimeout}
+	roleIndex := 0
+
+	syncer := &PodSetRoleSyncer{computeHashFunc: fakeComputeHashFunc}
+	podSet := syncer.createPodSetForRole(roleSet, role, &roleIndex)
+
+	assert.NotNil(t, podSet.Spec.Drain)
+	assert.NotNil(t, podSet.Spec.Drain.TimeoutSeconds)
+	assert.Equal(t, drainTimeout, *podSet.Spec.Drain.TimeoutSeconds)
+}

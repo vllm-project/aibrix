@@ -16,6 +16,7 @@ import ast
 import asyncio
 import pkgutil
 from dataclasses import dataclass
+from http import HTTPStatus
 
 import httpx
 import pytest
@@ -74,6 +75,10 @@ class _FakeSource:
     async def aclose(self):
         for channel in self._channels:
             await channel.aclose()
+
+
+class _ReadTimeout(Exception):
+    pass
 
 
 class _ErrorChannel(_FakeChannel):
@@ -431,6 +436,155 @@ async def test_retryable_error_reports_failed_channel_before_retry():
 
     assert result["by"] == "good"
     assert source.reported == [("bad", InferenceErrorCode.TRANSPORT_ERROR)]
+    assert bad.calls == ["r1"]
+    assert good.calls == ["r1"]
+
+
+@pytest.mark.asyncio
+async def test_source_channels_error_is_reported_per_request():
+    class _BrokenSource:
+        async def channels(self):
+            raise _ReadTimeout("timed out resolving endpoints")
+
+        async def capacity(self):
+            return CapacitySignal(count=1)
+
+        async def wait_capacity_change(self, previous):
+            raise AssertionError("unused")
+
+        async def aclose(self):
+            return None
+
+    results = await _drain(_BrokenSource(), _reqs(1), max_retries=0)
+
+    _, resp, err = results[0]
+    assert resp is None
+    assert isinstance(err, InferenceError)
+    assert err.code == InferenceErrorCode.CONNECTION_SETUP
+    assert err.retryable is True
+    assert "dispatch request" in err.message
+
+
+@pytest.mark.asyncio
+async def test_source_refresh_error_is_reported_per_request():
+    class _RefreshingSource:
+        def __init__(self):
+            self.calls = 0
+            self.refreshes = 0
+
+        async def channels(self):
+            self.calls += 1
+            return []
+
+        async def capacity(self):
+            return CapacitySignal(count=1)
+
+        async def wait_capacity_change(self, previous):
+            raise AssertionError("unused")
+
+        async def refresh(self):
+            self.refreshes += 1
+            raise _ReadTimeout("timed out refreshing endpoints")
+
+        async def aclose(self):
+            return None
+
+    source = _RefreshingSource()
+    results = await _drain(
+        source,
+        _reqs(1),
+        retry=RetryConfig(
+            max_retries=0,
+            no_endpoint_max_retries=0,
+            base_delay_seconds=0.001,
+        ),
+    )
+
+    _, resp, err = results[0]
+    assert resp is None
+    assert isinstance(err, InferenceError)
+    assert err.code == InferenceErrorCode.NO_ENDPOINT
+    assert err.retryable is None
+    assert source.refreshes == 0
+
+
+@pytest.mark.asyncio
+async def test_report_channel_error_failure_does_not_override_inference_error():
+    bad = _ErrorChannel(
+        "bad",
+        InferenceError(
+            InferenceErrorCode.TRANSPORT_ERROR,
+            "backend timed out",
+            retryable=True,
+        ),
+    )
+    good = _FakeChannel("good")
+
+    class _ReportingSource:
+        async def channels(self):
+            return [bad, good]
+
+        async def capacity(self):
+            return CapacitySignal(count=2)
+
+        async def wait_capacity_change(self, previous):
+            raise AssertionError("unused")
+
+        async def report_channel_error(self, channel_id, error):
+            del channel_id, error
+            raise _ReadTimeout("timed out reporting channel failure")
+
+        async def aclose(self):
+            return None
+
+    results = await _drain(_ReportingSource(), _reqs(1), max_retries=1)
+
+    _, resp, err = results[0]
+    assert err is None
+    assert resp["by"] == "good"
+    assert bad.calls == [0]
+    assert good.calls == [0]
+
+
+@pytest.mark.asyncio
+async def test_retryable_server_error_reports_channel_failure_before_retry():
+    bad = _ErrorChannel(
+        "bad",
+        InferenceError(
+            InferenceErrorCode.HTTP_ERROR,
+            "service unavailable",
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+            retryable=True,
+        ),
+    )
+    good = _FakeChannel("good")
+
+    class _ReportingSource:
+        def __init__(self):
+            self.reported = []
+
+        async def channels(self):
+            return [bad, good]
+
+        async def capacity(self):
+            return CapacitySignal(count=2)
+
+        async def wait_capacity_change(self, previous):
+            raise AssertionError("unused")
+
+        async def report_channel_error(self, channel_id, error):
+            self.reported.append((channel_id, error.code))
+
+        async def aclose(self):
+            return None
+
+    source = _ReportingSource()
+    engine = DispatchEngine(source, max_retries=1)
+
+    result = await engine.send_one(InferenceRequest("/test", {}, ref="r1"))
+
+    assert result["by"] == "good"
+    assert source.reported == [("bad", InferenceErrorCode.HTTP_ERROR)]
     assert bad.calls == ["r1"]
     assert good.calls == ["r1"]
 

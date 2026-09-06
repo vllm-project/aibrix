@@ -121,14 +121,14 @@ func (d *fakeDeltaSyncable) markUpdated(id string, data []byte) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.updated[id] = data
-	d.fakeSyncable.state[id] = data
+	d.state[id] = data
 }
 
 func (d *fakeDeltaSyncable) markDeleted(id string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.deleted = append(d.deleted, id)
-	delete(d.fakeSyncable.state, id)
+	delete(d.state, id)
 }
 
 // fakeTombstoneSyncable adds TombstoneSupport on top of fakeDeltaSyncable.
@@ -153,7 +153,7 @@ func (ts *fakeTombstoneSyncable) IsTombstone(_ context.Context, _ string, data [
 
 func (ts *fakeTombstoneSyncable) DeleteLocal(_ context.Context, id string) error {
 	ts.deletedLocal = append(ts.deletedLocal, id)
-	delete(ts.fakeSyncable.state, id)
+	delete(ts.state, id)
 	return nil
 }
 

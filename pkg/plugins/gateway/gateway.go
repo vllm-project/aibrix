@@ -255,6 +255,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			s.finishRequestCount(st)
 		}
 		requestBuffers.Delete(st.requestID)
+		streamBuffers.Delete(st.requestID)
 		// end spans created by this server
 		for _, span := range []trace.Span{st.toLastRespSpan, st.firstRespSpan, st.inferenceSpan} {
 			if span != nil {
@@ -798,9 +799,10 @@ func (s *Server) responseErrorProcessingWithHeaders(ctx context.Context, routing
 
 	// Determine appropriate error code based on HTTP status
 	errorCode := ""
-	if respErrorCode == 401 {
+	switch respErrorCode {
+	case 401:
 		errorCode = ErrorCodeInvalidAPIKey
-	} else if respErrorCode == 503 {
+	case 503:
 		errorCode = ErrorCodeServiceUnavailable
 	}
 

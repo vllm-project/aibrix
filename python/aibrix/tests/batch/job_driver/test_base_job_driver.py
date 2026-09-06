@@ -36,6 +36,7 @@ from aibrix.batch.job_entity import (
     ObjectMeta,
     TypeMeta,
 )
+from aibrix.batch.job_entity import batch_job as batch_job_module
 from aibrix.batch.worker import SingleJobRunner
 from aibrix.context.infra import InfrastructureContext
 from aibrix.metadata.core.metrics import Emitter, metrics_names
@@ -127,6 +128,24 @@ def test_log_failed_includes_input_line_and_custom_id():
         line=79,
         param="custom_id=req-79",
     )
+
+
+def test_make_failure_error_prefers_explicit_job_context_for_normalization_log():
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        cast(RunningJobs, None),
+    )
+
+    with patch.object(batch_job_module.logger, "error") as mock_error:
+        try:
+            raise RuntimeError("driver boom")
+        except RuntimeError as exc:
+            error = driver._make_failure_error(exc, job_id="job-explicit")
+
+    assert error.code == BatchJobErrorCode.INFERENCE_FAILED.value
+    assert error.message.startswith("RuntimeError: driver boom")
+    _, kwargs = mock_error.call_args
+    assert kwargs["job_id"] == "job-explicit"
 
 
 class _DeadlineStopRuntime:

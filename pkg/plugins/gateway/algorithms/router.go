@@ -481,7 +481,7 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 	if logEnabled {
 		c, cacheErr := cache.Get()
 		var logBuilder strings.Builder
-		logBuilder.WriteString(fmt.Sprintf("Multi-strategy routing decision for request [%s]. Selected target pod: [%s]. Candidate pod details:\n", ctx.RequestID, winner.Name))
+		fmt.Fprintf(&logBuilder, "Multi-strategy routing decision for request [%s]. Selected target pod: [%s]. Candidate pod details:\n", ctx.RequestID, winner.Name)
 		for _, pod := range pods {
 			winnerFlag := " "
 			if pod.Name == winner.Name {
@@ -493,8 +493,8 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 					outstandingStr = fmt.Sprintf("%.0f", v.GetSimpleValue())
 				}
 			}
-			logBuilder.WriteString(fmt.Sprintf("  [%s] Pod: %-30s | FinalScore: %.4f | Outstanding: %-4s | Details: %s\n",
-				winnerFlag, pod.Name, finalScores[pod], outstandingStr, strings.Join(diags[pod].StrategyLog, ", ")))
+			fmt.Fprintf(&logBuilder, "  [%s] Pod: %-30s | FinalScore: %.4f | Outstanding: %-4s | Details: %s\n",
+				winnerFlag, pod.Name, finalScores[pod], outstandingStr, strings.Join(diags[pod].StrategyLog, ", "))
 		}
 		klog.Info(logBuilder.String())
 	}

@@ -79,6 +79,68 @@ func TestStormServiceValidateCreate_ModeReplicas(t *testing.T) {
 	}
 }
 
+func TestStormServiceValidateCreate_ModeUpdateStrategy(t *testing.T) {
+	validator := &StormServiceCustomDefaulter{}
+
+	tests := map[string]struct {
+		mode         orchestrationv1alpha1.StormServiceMode
+		strategyType orchestrationv1alpha1.StormServiceUpdateStrategyType
+		expectError  bool
+	}{
+		// InPlaceUpdate can only be user-written (the CRD defaults the type to
+		// RollingUpdate), so it is a provable contradiction with Replica mode.
+		"replica with in-place strategy is rejected": {mode: orchestrationv1alpha1.StormServiceReplicaMode, strategyType: orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType, expectError: true},
+		"replica with rolling strategy is allowed":   {mode: orchestrationv1alpha1.StormServiceReplicaMode, strategyType: orchestrationv1alpha1.RollingUpdateStormServiceStrategyType, expectError: false},
+		"replica with empty strategy is allowed":     {mode: orchestrationv1alpha1.StormServiceReplicaMode, strategyType: "", expectError: false},
+		// A RollingUpdate type may come from CRD defaulting rather than the user,
+		// so pooled mode does not reject it; the controller resolves it to in-place.
+		"pooled with rolling strategy is allowed":  {mode: orchestrationv1alpha1.StormServicePooledMode, strategyType: orchestrationv1alpha1.RollingUpdateStormServiceStrategyType, expectError: false},
+		"pooled with in-place strategy is allowed": {mode: orchestrationv1alpha1.StormServicePooledMode, strategyType: orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType, expectError: false},
+		// Undeclared mode keeps choosing the strategy freely.
+		"no mode with in-place strategy is allowed": {mode: "", strategyType: orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType, expectError: false},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			ss := &orchestrationv1alpha1.StormService{
+				Spec: orchestrationv1alpha1.StormServiceSpec{
+					Mode: tc.mode,
+					UpdateStrategy: orchestrationv1alpha1.StormServiceUpdateStrategy{
+						Type: tc.strategyType,
+					},
+					Template: orchestrationv1alpha1.RoleSetTemplateSpec{
+						Spec: &orchestrationv1alpha1.RoleSetSpec{},
+					},
+				},
+			}
+			_, err := validator.ValidateCreate(context.Background(), ss)
+			if tc.expectError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestStormServiceValidateUpdate_ModeUpdateStrategy(t *testing.T) {
+	validator := &StormServiceCustomDefaulter{}
+
+	oldSS := &orchestrationv1alpha1.StormService{
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Mode: orchestrationv1alpha1.StormServiceReplicaMode,
+			UpdateStrategy: orchestrationv1alpha1.StormServiceUpdateStrategy{
+				Type: orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
+			},
+		},
+	}
+	newSS := oldSS.DeepCopy()
+	newSS.Spec.UpdateStrategy.Type = orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType
+
+	_, err := validator.ValidateUpdate(context.Background(), oldSS, newSS)
+	require.Error(t, err)
+}
+
 func TestStormServiceValidateUpdate_ModeReplicas(t *testing.T) {
 	validator := &StormServiceCustomDefaulter{}
 

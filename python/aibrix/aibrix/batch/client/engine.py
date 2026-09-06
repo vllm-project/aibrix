@@ -361,6 +361,14 @@ class DispatchEngine:
         return FixedConcurrencyController(limit)
 
     async def _send_with_failover(self, request: InferenceRequest) -> Response:
+        try:
+            return await self._send_with_failover_impl(request)
+        except InferenceError:
+            raise
+        except Exception as ex:
+            raise _normalize_source_error("dispatch request", ex) from ex
+
+    async def _send_with_failover_impl(self, request: InferenceRequest) -> Response:
         causes: list[str] = []
         last_error: Optional[InferenceError] = None
         attempted_channel = False
@@ -401,7 +409,9 @@ class DispatchEngine:
                 causes.append(str(ex))
                 if not _should_retry(ex):
                     raise ex
-                await self._report_channel_error(channel.id, ex)
+                await self._report_channel_error(
+                    channel.id, ex, request_ref=request.ref
+                )
                 if send_attempt < self._retry.max_retries:
                     # Retries happen entirely inside this call, so the dispatch
                     # counters stay flat while a request spins here. Without
@@ -456,11 +466,26 @@ class DispatchEngine:
             await _maybe_await(refresh())
 
     async def _report_channel_error(
-        self, channel_id: str, error: InferenceError
+        self,
+        channel_id: str,
+        error: InferenceError,
+        *,
+        request_ref: Any = None,
     ) -> None:
         report = getattr(self._source, "report_channel_error", None)
         if callable(report):
-            await _maybe_await(report(channel_id, error))
+            try:
+                await _maybe_await(report(channel_id, error))
+            except Exception as ex:
+                logger.warning(
+                    "Failed to report channel error",
+                    job_id=self._job_id,
+                    ref=request_ref,
+                    channel_id=channel_id,
+                    error_code=error.code.value,
+                    error=error.message,
+                    report_error=repr(ex),
+                )  # type: ignore[call-arg]
 
     @staticmethod
     def _adaptive_max_limit(initial_limit: int, factor: float) -> int:
@@ -514,6 +539,17 @@ async def _maybe_await(value: Any) -> Any:
     if asyncio.iscoroutine(value):
         return await value
     return value
+
+
+def _normalize_source_error(action: str, error: Exception) -> InferenceError:
+    if isinstance(error, InferenceError):
+        return error
+    detail = repr(error)
+    return InferenceError(
+        InferenceErrorCode.CONNECTION_SETUP,
+        f"endpoint source failed to {action}: {detail}",
+        retryable=True,
+    )
 
 
 def _should_retry(error: InferenceError) -> bool:

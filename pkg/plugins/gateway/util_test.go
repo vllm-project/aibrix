@@ -297,11 +297,36 @@ func Test_ValidateRequestBody_Embeddings(t *testing.T) {
 			requestBody: []byte(`{"model": "text-embedding-ada-002", "input": [[]]}`),
 			statusCode:  envoyTypePb.StatusCode_BadRequest,
 		},
+		// Long inputs are not rejected here: the gateway cannot measure them in
+		// the target model's tokens, so the backend decides. This holds whether
+		// or not the client asked the backend to truncate, and the three cases
+		// below must not collapse into an identical gateway-side 400.
 		{
-			message:     "/v1/embeddings string exceeding max tokens",
+			message:     "/v1/embeddings long string is forwarded, no truncate_prompt_tokens",
 			requestPath: "/v1/embeddings",
-			requestBody: []byte(`{"model": "text-embedding-ada-002", "input": "` + strings.Repeat("word ", MaxInputTokensPerModel+1) + `"}`),
-			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			requestBody: []byte(`{"model": "text-embedding-ada-002", "input": "` + strings.Repeat("word ", 9000) + `"}`),
+			model:       "text-embedding-ada-002",
+			messages:    "",
+			stream:      false,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings long string is forwarded with truncate_prompt_tokens -1",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "text-embedding-ada-002", "truncate_prompt_tokens": -1, "input": "` + strings.Repeat("word ", 9000) + `"}`),
+			model:       "text-embedding-ada-002",
+			messages:    "",
+			stream:      false,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings long string is forwarded with explicit truncate_prompt_tokens",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "text-embedding-ada-002", "truncate_prompt_tokens": 400, "input": "` + strings.Repeat("word ", 9000) + `"}`),
+			model:       "text-embedding-ada-002",
+			messages:    "",
+			stream:      false,
+			statusCode:  envoyTypePb.StatusCode_OK,
 		},
 
 		// Stream validation errors
@@ -539,14 +564,15 @@ func TestValidateEmbeddingInput(t *testing.T) {
 			errorMsg:    "input cannot be an empty string",
 		},
 		{
-			name: "string input exceeding max tokens per model",
+			// The gateway does not enforce a context length; the backend does,
+			// with the addressed model's own tokenizer.
+			name: "long string input is accepted",
 			input: openai.EmbeddingNewParams{
 				Input: openai.EmbeddingNewParamsInputUnion{
-					OfString: openai.Opt(strings.Repeat("word ", MaxInputTokensPerModel+1)),
+					OfString: openai.Opt(strings.Repeat("word ", 9000)),
 				},
 			},
-			expectError: true,
-			errorMsg:    "input exceeds max tokens per model",
+			expectError: false,
 		},
 
 		// Array of strings tests
@@ -580,28 +606,25 @@ func TestValidateEmbeddingInput(t *testing.T) {
 			errorMsg:    "input at index 1 cannot be an empty string",
 		},
 		{
-			name: "array of strings with one exceeding max tokens",
+			name: "array of strings with one long entry is accepted",
 			input: openai.EmbeddingNewParams{
 				Input: openai.EmbeddingNewParamsInputUnion{
-					OfArrayOfStrings: []string{"Hello", strings.Repeat("word ", MaxInputTokensPerModel+1)},
+					OfArrayOfStrings: []string{"Hello", strings.Repeat("word ", 9000)},
 				},
 			},
-			expectError: true,
-			errorMsg:    "input at index 1 exceeds max tokens per model",
+			expectError: false,
 		},
 		{
-			name: "array of strings exceeding total tokens",
+			name: "array of strings with a large total length is accepted",
 			input: openai.EmbeddingNewParams{
 				Input: openai.EmbeddingNewParamsInputUnion{
 					OfArrayOfStrings: func() []string {
-						// Create an array that would exceed MaxTotalTokens
-						largeString := strings.Repeat("word ", MaxTotalTokens/2)
+						largeString := strings.Repeat("word ", 9000)
 						return []string{largeString, largeString, largeString}
 					}(),
 				},
 			},
-			expectError: true,
-			errorMsg:    "input at index 0 exceeds max tokens per model (8192)",
+			expectError: false,
 		},
 
 		// Single token array tests
@@ -625,24 +648,16 @@ func TestValidateEmbeddingInput(t *testing.T) {
 			errorMsg:    "token array cannot be empty",
 		},
 		{
-			name: "single token array exceeding max tokens per model",
-			input: openai.EmbeddingNewParams{
-				Input: openai.EmbeddingNewParamsInputUnion{
-					OfArrayOfTokens: make([]int64, MaxInputTokensPerModel+1),
-				},
-			},
-			expectError: true,
-			errorMsg:    "token array exceeds max tokens per model",
-		},
-		{
-			name: "single token array exceeding max dimensions",
+			// A long pre-tokenized input is accepted, exactly as the same
+			// content sent as a string would be. MaxArrayDimensions bounds the
+			// batch, not the token count of one input.
+			name: "long single token array is accepted",
 			input: openai.EmbeddingNewParams{
 				Input: openai.EmbeddingNewParamsInputUnion{
 					OfArrayOfTokens: make([]int64, MaxArrayDimensions+1),
 				},
 			},
-			expectError: true,
-			errorMsg:    "token array exceeds max dimensions",
+			expectError: false,
 		},
 
 		// Multiple token arrays tests
@@ -694,20 +709,7 @@ func TestValidateEmbeddingInput(t *testing.T) {
 			errorMsg:    "token array at index 1 cannot be empty",
 		},
 		{
-			name: "multiple token arrays with one exceeding max tokens per model",
-			input: openai.EmbeddingNewParams{
-				Input: openai.EmbeddingNewParamsInputUnion{
-					OfArrayOfTokenArrays: [][]int64{
-						{1, 2, 3},
-						make([]int64, MaxInputTokensPerModel+1),
-					},
-				},
-			},
-			expectError: true,
-			errorMsg:    "token array at index 1 exceeds max tokens per model",
-		},
-		{
-			name: "multiple token arrays with one exceeding max dimensions",
+			name: "batch with one long token array is accepted",
 			input: openai.EmbeddingNewParams{
 				Input: openai.EmbeddingNewParamsInputUnion{
 					OfArrayOfTokenArrays: [][]int64{
@@ -716,22 +718,56 @@ func TestValidateEmbeddingInput(t *testing.T) {
 					},
 				},
 			},
-			expectError: true,
-			errorMsg:    "token array at index 1 exceeds max dimensions",
+			expectError: false,
 		},
 		{
-			name: "multiple token arrays exceeding total tokens",
+			name: "multiple token arrays with a large total length is accepted",
 			input: openai.EmbeddingNewParams{
 				Input: openai.EmbeddingNewParamsInputUnion{
 					OfArrayOfTokenArrays: func() [][]int64 {
-						// Create arrays that would exceed MaxTotalTokens
-						largeArray := make([]int64, MaxTotalTokens/2)
+						// Each array is within MaxArrayDimensions; only the sum
+						// is large, which is no longer capped.
+						largeArray := make([]int64, MaxArrayDimensions)
 						return [][]int64{largeArray, largeArray, largeArray}
 					}(),
 				},
 			},
+			expectError: false,
+		},
+
+		// Batch size is still bounded: MaxArrayDimensions is OpenAI's maxItems
+		// for the input array, which the gateway can measure exactly.
+		{
+			name: "array of strings exceeding max batch size",
+			input: openai.EmbeddingNewParams{
+				Input: openai.EmbeddingNewParamsInputUnion{
+					OfArrayOfStrings: func() []string {
+						inputs := make([]string, MaxArrayDimensions+1)
+						for i := range inputs {
+							inputs[i] = "hello"
+						}
+						return inputs
+					}(),
+				},
+			},
 			expectError: true,
-			errorMsg:    "token array at index 0 exceeds max tokens per model (8192)",
+			errorMsg:    "input array exceeds max dimensions (2048)",
+		},
+		{
+			name: "multiple token arrays exceeding max batch size",
+			input: openai.EmbeddingNewParams{
+				Input: openai.EmbeddingNewParamsInputUnion{
+					OfArrayOfTokenArrays: func() [][]int64 {
+						arrays := make([][]int64, MaxArrayDimensions+1)
+						for i := range arrays {
+							arrays[i] = []int64{1, 2, 3}
+						}
+						return arrays
+					}(),
+				},
+			},
+			expectError: true,
+			errorMsg:    "input array exceeds max dimensions (2048)",
 		},
 
 		// Nil input test
@@ -776,6 +812,30 @@ func TestValidateStringInputs(t *testing.T) {
 			name:        "valid multiple strings",
 			inputs:      []string{"Hello", "world", "test"},
 			expectError: false,
+		},
+		{
+			// Length is the backend's call, not the gateway's: the gateway has
+			// no access to the target model's tokenizer or context length.
+			name:        "very long single string",
+			inputs:      []string{strings.Repeat("word ", 100000)},
+			expectError: false,
+		},
+		{
+			name:        "non-ASCII input that cl100k over-counts",
+			inputs:      []string{strings.Repeat("Příliš žluťoučký kůň úpěl ďábelské ódy. ", 2000)},
+			expectError: false,
+		},
+		{
+			name: "array exceeding max batch size",
+			inputs: func() []string {
+				inputs := make([]string, MaxArrayDimensions+1)
+				for i := range inputs {
+					inputs[i] = "hello"
+				}
+				return inputs
+			}(),
+			expectError: true,
+			errorMsg:    "input array exceeds max dimensions (2048)",
 		},
 		{
 			name:        "empty array",
@@ -849,28 +909,24 @@ func TestValidateTokenInputs(t *testing.T) {
 			errorMsg:    "token array at index 1 cannot be empty",
 		},
 		{
-			name:        "single token array exceeding max tokens per model",
-			tokenArrays: [][]int64{make([]int64, MaxInputTokensPerModel+1)},
-			expectError: true,
-			errorMsg:    "token array exceeds max tokens per model (8192)",
+			// Token count per input is not capped: that is a context-length
+			// question, and the same content sent as a string is accepted.
+			name:        "long token arrays are accepted",
+			tokenArrays: [][]int64{make([]int64, MaxArrayDimensions+1), make([]int64, MaxArrayDimensions+1)},
+			expectError: false,
 		},
 		{
-			name:        "multiple token arrays with one exceeding max tokens per model",
-			tokenArrays: [][]int64{{1, 2, 3}, make([]int64, MaxInputTokensPerModel+1)},
+			// Batch size is capped, per OpenAI's maxItems for the input array.
+			name: "batch exceeding max dimensions",
+			tokenArrays: func() [][]int64 {
+				arrays := make([][]int64, MaxArrayDimensions+1)
+				for i := range arrays {
+					arrays[i] = []int64{1, 2, 3}
+				}
+				return arrays
+			}(),
 			expectError: true,
-			errorMsg:    "token array at index 1 exceeds max tokens per model",
-		},
-		{
-			name:        "single token array exceeding max dimensions",
-			tokenArrays: [][]int64{make([]int64, MaxArrayDimensions+1)},
-			expectError: true,
-			errorMsg:    "token array exceeds max dimensions (2048)",
-		},
-		{
-			name:        "multiple token arrays with one exceeding max dimensions",
-			tokenArrays: [][]int64{{1, 2, 3}, make([]int64, MaxArrayDimensions+1)},
-			expectError: true,
-			errorMsg:    "token array at index 1 exceeds max dimensions",
+			errorMsg:    "input array exceeds max dimensions (2048)",
 		},
 	}
 

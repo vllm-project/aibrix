@@ -186,10 +186,18 @@ func validateInferenceWithClient(t *testing.T, client openai.Client, modelName s
 	assert.NotNil(t, chatCompletion.Choices[0].Message.Content, "chat completion has no message returned")
 }
 
-func validateAllPodsAreReady(t *testing.T, client *kubernetes.Clientset, expectedPodCount int) {
+// validateAllPodsAreReady waits until the default namespace has exactly expectedPodCount
+// active pods. An optional labelSelector scopes the count to a subset of pods, which is
+// necessary when other, unrelated workloads share the namespace.
+func validateAllPodsAreReady(t *testing.T, client *kubernetes.Clientset, expectedPodCount int,
+	labelSelector ...string) {
+	selector := ""
+	if len(labelSelector) > 0 {
+		selector = labelSelector[0]
+	}
 	err := wait.PollUntilContextTimeout(context.Background(), 2*time.Second, 60*time.Second,
 		true, func(ctx context.Context) (bool, error) {
-			podList, err := client.CoreV1().Pods("default").List(ctx, v1.ListOptions{})
+			podList, err := client.CoreV1().Pods("default").List(ctx, v1.ListOptions{LabelSelector: selector})
 			if err != nil {
 				t.Logf("failed to list pods: %v", err)
 				return false, err

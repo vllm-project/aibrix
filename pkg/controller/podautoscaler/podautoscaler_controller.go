@@ -1023,7 +1023,7 @@ func setStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas, desiredRe
 			// 2. The desired scale is different from the last recorded scale, or
 			// 3. The success status has changed (success to failure or vice versa), or
 			// 4. There's a different error message
-			timeSinceLastScale := now.Time.Sub(lastScale.Timestamp.Time)
+			timeSinceLastScale := now.Sub(lastScale.Timestamp.Time)
 			if timeSinceLastScale > minScalingHistoryRecordInterval ||
 				lastScale.NewScale != desiredReplicas ||
 				lastScale.Success != success ||

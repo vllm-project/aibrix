@@ -610,9 +610,10 @@ func (c *Store) queryUpdatePromQLMetrics(ctx context.Context, metric metrics.Met
 // Update `PodMetrics` and `PodModelMetrics` according to the metric scope
 // TODO: replace in-place metric update podMetrics and podModelMetrics to fresh copy for preventing stale metric keys
 func (c *Store) updatePodRecord(pod *Pod, modelName string, metricName string, scope metrics.MetricScope, metricValue metrics.MetricValue) error {
-	if scope == metrics.PodMetricScope {
+	switch scope {
+	case metrics.PodMetricScope:
 		pod.Metrics.Store(metricName, metricValue)
-	} else if scope == metrics.PodModelMetricScope {
+	case metrics.PodModelMetricScope:
 		if modelName == "" {
 			var ok bool
 			modelName, ok = constants.ModelNameFromMetadata(pod.Labels, pod.Annotations)
@@ -621,7 +622,7 @@ func (c *Store) updatePodRecord(pod *Pod, modelName string, metricName string, s
 			}
 		}
 		pod.ModelMetrics.Store(c.getPodModelMetricName(modelName, metricName), metricValue)
-	} else {
+	default:
 		return fmt.Errorf("scope %v is not supported", scope)
 	}
 	return nil

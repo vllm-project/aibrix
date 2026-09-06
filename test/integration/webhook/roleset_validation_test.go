@@ -67,6 +67,10 @@ var _ = ginkgo.Describe("RoleSet spec admission", func() {
 			name:  "negative replicas",
 			roles: []orchestrationapi.RoleSpec{validRole("worker", -1)},
 		},
+		{
+			name:  "negative drain timeout",
+			roles: []orchestrationapi.RoleSpec{validRoleWithDrain("worker", 1, -1)},
+		},
 	}
 
 	for _, tc := range invalidCases {
@@ -95,6 +99,19 @@ var _ = ginkgo.Describe("RoleSet spec admission", func() {
 		gomega.Expect(k8sClient.Create(ctx, stormService)).To(gomega.Succeed())
 	})
 
+	ginkgo.It("accepts non-negative drain timeout on direct RoleSet and nested StormService creation", func() {
+		roles := []orchestrationapi.RoleSpec{
+			validRoleWithDrain("leader", 0, 0),
+			validRoleWithDrain("worker", 2, 30),
+		}
+
+		roleSet := validRoleSet("direct-drain-valid", ns.Name, roles)
+		gomega.Expect(k8sClient.Create(ctx, roleSet)).To(gomega.Succeed())
+
+		stormService := validStormService("nested-drain-valid", ns.Name, roles)
+		gomega.Expect(k8sClient.Create(ctx, stormService)).To(gomega.Succeed())
+	})
+
 	ginkgo.It("rejects an invalid direct RoleSet update", func() {
 		roleSet := validRoleSet("direct-update", ns.Name, []orchestrationapi.RoleSpec{
 			validRole("worker", 1),
@@ -112,6 +129,26 @@ var _ = ginkgo.Describe("RoleSet spec admission", func() {
 		gomega.Expect(k8sClient.Create(ctx, stormService)).To(gomega.Succeed())
 
 		stormService.Spec.Template.Spec.Roles[0].Replicas = ptr.To(int32(-1))
+		gomega.Expect(k8sClient.Update(ctx, stormService)).To(gomega.HaveOccurred())
+	})
+
+	ginkgo.It("rejects a direct RoleSet update with negative drain timeout", func() {
+		roleSet := validRoleSet("direct-drain-update", ns.Name, []orchestrationapi.RoleSpec{
+			validRoleWithDrain("worker", 1, 1),
+		})
+		gomega.Expect(k8sClient.Create(ctx, roleSet)).To(gomega.Succeed())
+
+		roleSet.Spec.Roles[0].Drain.TimeoutSeconds = ptr.To(int32(-1))
+		gomega.Expect(k8sClient.Update(ctx, roleSet)).To(gomega.HaveOccurred())
+	})
+
+	ginkgo.It("rejects a nested StormService update with negative drain timeout", func() {
+		stormService := validStormService("nested-drain-update", ns.Name, []orchestrationapi.RoleSpec{
+			validRoleWithDrain("worker", 1, 1),
+		})
+		gomega.Expect(k8sClient.Create(ctx, stormService)).To(gomega.Succeed())
+
+		stormService.Spec.Template.Spec.Roles[0].Drain.TimeoutSeconds = ptr.To(int32(-1))
 		gomega.Expect(k8sClient.Update(ctx, stormService)).To(gomega.HaveOccurred())
 	})
 })
@@ -132,6 +169,14 @@ func validRole(name string, replicas int32) orchestrationapi.RoleSpec {
 			},
 		},
 	}
+}
+
+func validRoleWithDrain(name string, replicas, timeoutSeconds int32) orchestrationapi.RoleSpec {
+	role := validRole(name, replicas)
+	role.Drain = &orchestrationapi.RoleDrainSpec{
+		TimeoutSeconds: ptr.To(timeoutSeconds),
+	}
+	return role
 }
 
 func validRoleSet(name, namespace string, roles []orchestrationapi.RoleSpec) *orchestrationapi.RoleSet {

@@ -26,7 +26,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	aibrixconst "github.com/vllm-project/aibrix/pkg/constants"
 	controllerconstants "github.com/vllm-project/aibrix/pkg/controller/constants"
+	draincontroller "github.com/vllm-project/aibrix/pkg/controller/drain"
 	rolesetcontroller "github.com/vllm-project/aibrix/pkg/controller/roleset"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -52,6 +54,8 @@ const (
 	roleSetInPlaceImageV1       = "aibrix/inplace-e2e:v1"
 	roleSetInPlaceImageV2       = "aibrix/inplace-e2e:v2"
 	roleSetInPlaceMissingImage  = "aibrix/inplace-e2e:missing"
+
+	roleSetDrainE2EEnv = "AIBRIX_ROLESET_DRAIN_E2E"
 
 	roleSetHistoricalNodeE2EEnv                  = "AIBRIX_ROLESET_HISTORICAL_NODE_E2E"
 	roleSetHistoricalNodeControllerNamespaceEnv  = "AIBRIX_ROLESET_CONTROLLER_NAMESPACE"
@@ -190,6 +194,66 @@ func TestRoleSetInPlaceUpdate(t *testing.T) {
 		)
 		require.NotEqual(t, initialUID, replacementPodSet.GetUID())
 		waitForRoleSetEvent(ctx, t, k8sClient, name, rolesetcontroller.InPlaceFallbackEventType)
+	})
+}
+
+func TestRoleSetDrainScaleDown(t *testing.T) {
+	if strings.ToLower(strings.TrimSpace(envOrDefault(roleSetDrainE2EEnv, "false"))) != e2eEnabledValue {
+		t.Skipf("set %s=true to run RoleSet drain e2e tests", roleSetDrainE2EEnv)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	k8sClient, dynamicClient := roleSetInPlaceClients(t)
+
+	t.Run("scale down marks pod draining before deletion", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
+		defer cancel()
+
+		name := "roleset-drain-scale-down"
+		drainTimeoutSeconds := int32(5)
+		cleanupRoleSetInPlaceE2E(ctx, t, k8sClient, dynamicClient, name)
+		defer cleanupRoleSetInPlaceE2EAfterTest(ctx, t, k8sClient, dynamicClient, name)
+
+		createDrainRoleSet(ctx, t, dynamicClient, name, roleSetInPlaceImageV1, 2, drainTimeoutSeconds)
+		waitForRoleSetPodsReady(ctx, t, k8sClient, name, 2)
+
+		updateRoleSetReplicas(ctx, t, dynamicClient, name, 1)
+
+		drainingPod := waitForRoleSetPodMatching(ctx, t, k8sClient, name, func(pod *corev1.Pod) bool {
+			annotations := pod.GetAnnotations()
+			return annotations[aibrixconst.PodDrainingAnnotationKey] == "true" &&
+				annotations[aibrixconst.PodDrainStartTimeAnnotationKey] != "" &&
+				annotations[aibrixconst.PodDrainReasonAnnotationKey] == aibrixconst.PodDrainReasonScaleIn &&
+				annotations[aibrixconst.PodDrainTargetActionAnnotationKey] == aibrixconst.PodDrainTargetActionDelete
+		})
+		require.Nil(t, drainingPod.DeletionTimestamp)
+
+		drainHoldUntil := time.Now().Add(2 * time.Second)
+		require.NoError(t, wait.PollUntilContextTimeout(
+			ctx,
+			500*time.Millisecond,
+			3*time.Second,
+			true,
+			func(ctx context.Context) (bool, error) {
+				if time.Now().After(drainHoldUntil) {
+					return true, nil
+				}
+				current, err := k8sClient.CoreV1().Pods(roleSetInPlaceNamespace).Get(ctx, drainingPod.Name, metav1.GetOptions{})
+				if err != nil {
+					return false, err
+				}
+				if current.DeletionTimestamp != nil {
+					return false, fmt.Errorf("draining pod %s was deleted before drain timeout elapsed", current.Name)
+				}
+				return false, nil
+			},
+		))
+
+		waitForRoleSetPodsReady(ctx, t, k8sClient, name, 1)
+		waitForRoleSetEvent(ctx, t, k8sClient, name, draincontroller.EventStarted)
+		waitForRoleSetEvent(ctx, t, k8sClient, name, draincontroller.EventCompleted)
 	})
 }
 
@@ -393,6 +457,56 @@ func createHistoricalNodeRoleSet(
 	require.NoError(t, err)
 }
 
+func createDrainRoleSet(
+	ctx context.Context,
+	t *testing.T,
+	dynamicClient dynamic.Interface,
+	name, image string,
+	replicas, drainTimeoutSeconds int32,
+) {
+	t.Helper()
+
+	role := orchestrationapi.RoleSpec{
+		Name:     roleSetInPlaceRoleName,
+		Replicas: ptr.To(replicas),
+		Drain: &orchestrationapi.RoleDrainSpec{
+			TimeoutSeconds: ptr.To(drainTimeoutSeconds),
+		},
+		Template: corev1.PodTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{"app": name},
+			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{
+					Name:            roleSetInPlaceContainerName,
+					Image:           image,
+					ImagePullPolicy: corev1.PullIfNotPresent,
+				}},
+			},
+		},
+	}
+	roleSet := &orchestrationapi.RoleSet{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "orchestration.aibrix.ai/v1alpha1",
+			Kind:       "RoleSet",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: roleSetInPlaceNamespace,
+		},
+		Spec: orchestrationapi.RoleSetSpec{
+			UpdateStrategy: orchestrationapi.ParallelRoleSetUpdateStrategyType,
+			Roles:          []orchestrationapi.RoleSpec{role},
+		},
+	}
+
+	objMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(roleSet)
+	require.NoError(t, err)
+	obj := &unstructured.Unstructured{Object: objMap}
+	_, err = dynamicClient.Resource(roleSetGVR).Namespace(roleSetInPlaceNamespace).Create(ctx, obj, metav1.CreateOptions{})
+	require.NoError(t, err)
+}
+
 func updateRoleSetContainerImage(
 	ctx context.Context,
 	t *testing.T,
@@ -419,6 +533,25 @@ func updateRoleSetCommand(
 			commandValues[i] = command[i]
 		}
 		setFirstRoleContainerField(t, obj, "command", commandValues)
+	})
+}
+
+func updateRoleSetReplicas(
+	ctx context.Context,
+	t *testing.T,
+	dynamicClient dynamic.Interface,
+	name string,
+	replicas int32,
+) {
+	t.Helper()
+	updateRoleSet(ctx, t, dynamicClient, name, func(obj *unstructured.Unstructured) {
+		roles, found, err := unstructured.NestedSlice(obj.Object, "spec", "roles")
+		require.NoError(t, err)
+		require.True(t, found)
+		require.NotEmpty(t, roles)
+		role := roles[0].(map[string]interface{})
+		role["replicas"] = int64(replicas)
+		require.NoError(t, unstructured.SetNestedSlice(obj.Object, roles, "spec", "roles"))
 	})
 }
 

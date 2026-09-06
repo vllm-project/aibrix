@@ -10,8 +10,6 @@ kind: PodAutoscaler
 metadata:
   name: ss-replica-hpa
   namespace: default
-  annotations:
-    autoscaling.aibrix.ai/storm-service-mode: "replica"
 spec:
   scaleTargetRef:
     apiVersion: orchestration.aibrix.ai/v1alpha1

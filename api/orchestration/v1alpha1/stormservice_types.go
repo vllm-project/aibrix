@@ -109,6 +109,18 @@ func (s *StormServiceSpec) ResolvedMode() StormServiceMode {
 	return StormServicePooledMode
 }
 
+// ResolvedReplicas returns the effective number of desired RoleSets. spec.replicas is
+// optional and documented to default to 1 when not specified, but neither the CRD schema
+// nor the mutating webhook materializes that default, so an omitted value reaches the
+// controllers as nil and is resolved here. An explicit 0 is preserved: the field is a
+// pointer precisely to tell explicit zero apart from not specified.
+func (s *StormServiceSpec) ResolvedReplicas() int32 {
+	if s.Replicas == nil {
+		return 1
+	}
+	return *s.Replicas
+}
+
 type RoleSetTemplateSpec struct {
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
