@@ -314,6 +314,339 @@ See the complete `topology policy samples`_ in the AIBrix repository.
 .. _topology policy samples: https://github.com/vllm-project/aibrix/tree/main/samples/orchestration/topology-policy
 
 
+Gang Scheduling Strategies
+--------------------------
+
+StormService supports PodGroup-based gang scheduling through
+``spec.template.spec.schedulingStrategy``. This is the StormService entry point
+for configuring all Pods in each generated RoleSet as one gang-scheduled group.
+
+Gang scheduling is useful for PD-disaggregated serving and other multi-role
+inference workloads where starting only part of the service replica is not
+useful. For example, a Prefill/Decode replica may need enough Prefill Pods and
+enough Decode Pods to be admitted together before it can serve traffic.
+
+``schedulingStrategy`` currently accepts one of the following scheduler-specific
+strategies:
+
+.. list-table:: Gang scheduling strategies
+   :header-rows: 1
+   :widths: 20 35 45
+
+   * - Strategy field
+     - PodGroup API
+     - Main fields
+   * - ``volcanoSchedulingStrategy``
+     - Volcano ``PodGroup``
+     - ``minMember``, ``minTaskMember``, ``queue``,
+       ``priorityClassName``, ``minResources``
+   * - ``godelSchedulingStrategy``
+     - Godel ``PodGroup``
+     - ``minMember``, ``priorityClassName``,
+       ``scheduleTimeoutSeconds``, ``application``, ``affinity``
+   * - ``coschedulingSchedulingStrategy``
+     - Kubernetes scheduler-plugins ``PodGroup``
+     - ``minMember``, ``minResources``, ``scheduleTimeoutSeconds``
+
+When the scheduling strategy is set on the StormService template, the
+StormService controller copies it to each managed RoleSet. The RoleSet
+controller creates one scheduler-specific ``PodGroup`` for the RoleSet and
+attaches generated Pods or PodSets to that PodGroup. For Volcano, the
+controller also marks each role with the Volcano task name
+``volcano.sh/task-spec=<role name>``. ``minTaskMember`` keys therefore match
+StormService role names.
+
+The rest of this section focuses on Volcano because it supports both
+group-level ``minMember`` and role-level ``minTaskMember`` from the
+StormService entry point.
+
+For single-Pod role replicas, the RoleSet can create Pods directly. For
+multi-node inference, set ``podGroupSize > 1`` on a role. Each role replica then
+becomes one PodSet, and the PodSet creates the multiple Pods that form that
+replica. A RoleSet-level scheduling strategy still creates one PodGroup for the
+whole RoleSet, so Volcano admits the Prefill and Decode PodSets together.
+
+.. mermaid::
+
+   graph TD
+       SS["StormService<br/>replicas: 1<br/>template.spec.schedulingStrategy"]
+       RS["RoleSet replica 0<br/>copied schedulingStrategy"]
+       PG["Volcano PodGroup<br/>RoleSet-level gang<br/>minMember: 6"]
+
+       RP["Role: prefill<br/>replicas: 2<br/>podGroupSize: 2"]
+       RD["Role: decode<br/>replicas: 3<br/>podGroupSize: 2"]
+
+       PSP["2 prefill PodSets<br/>4 Pods<br/>task: prefill"]
+       PSD["3 decode PodSets<br/>6 Pods<br/>task: decode"]
+
+       PP["prefill Pods<br/>schedulerName: volcano"]
+       PD["decode Pods<br/>schedulerName: volcano"]
+
+       MT["minTaskMember<br/>prefill: 4<br/>decode: 2"]
+
+       SS --> RS
+       RS --> RP
+       RS --> RD
+       RP --> PSP
+       RD --> PSD
+       PSP --> PP
+       PSD --> PD
+
+       RS -. creates .-> PG
+       PG -. admits together .-> PSP
+       PG -. admits together .-> PSD
+       MT -. role task gates .-> PG
+
+Group-level ``minMember``
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``minMember`` is the minimum total number of Pods that must be schedulable for
+the Volcano PodGroup. If fewer than ``minMember`` Pods can be admitted, Volcano
+keeps the gang pending instead of starting only a partial RoleSet.
+
+The following multi-node shape shows how ``minMember`` applies when role
+replicas are expanded into PodSets. The YAML after the diagram uses the same
+shape: two Prefill replicas and three Decode replicas, each with
+``podGroupSize: 2``.
+
+.. code-block:: text
+
+   minMember gates the whole RoleSet PodGroup.
+
+   +-----------------------------------------------------------+
+   | StormService: sglang-pd                                   |
+   | replicas: 1                                               |
+   +-----------------------------------------------------------+
+   | RoleSet-0                                                 |
+   |   Volcano PodGroup: RoleSet-0                             |
+   |   minMember: 6                                            |
+   |                                                           |
+   |   role: prefill, replicas: 2, podGroupSize: 2             |
+   |     +---------------------+                               |
+   |     | PodSet prefill-0    |                               |
+   |     |  Pod prefill-0-0    |                               |
+   |     |  Pod prefill-0-1    |                               |
+   |     +---------------------+                               |
+   |     +---------------------+                               |
+   |     | PodSet prefill-1    |                               |
+   |     |  Pod prefill-1-0    |                               |
+   |     |  Pod prefill-1-1    |                               |
+   |     +---------------------+                               |
+   |                                                           |
+   |   role: decode, replicas: 3, podGroupSize: 2              |
+   |     +---------------------+                               |
+   |     | PodSet decode-0     |                               |
+   |     |  Pod decode-0-0     |                               |
+   |     |  Pod decode-0-1     |                               |
+   |     +---------------------+                               |
+   |     +---------------------+                               |
+   |     | PodSet decode-1     |                               |
+   |     |  Pod decode-1-0     |                               |
+   |     |  Pod decode-1-1     |                               |
+   |     +---------------------+                               |
+   |     +---------------------+                               |
+   |     | PodSet decode-2     |                               |
+   |     |  Pod decode-2-0     |                               |
+   |     |  Pod decode-2-1     |                               |
+   |     +---------------------+                               |
+   +-----------------------------------------------------------+
+
+   Volcano may admit this RoleSet when any 6 of the 10 Pods from the PodSets
+   can be scheduled together. minMember does not require a specific
+   prefill/decode mix.
+
+.. code-block:: yaml
+
+   apiVersion: orchestration.aibrix.ai/v1alpha1
+   kind: StormService
+   metadata:
+     name: sglang-pd
+   spec:
+     replicas: 1
+     selector:
+       matchLabels:
+         app: sglang-pd
+     template:
+       metadata:
+         labels:
+           app: sglang-pd
+       spec:
+         schedulingStrategy:
+           volcanoSchedulingStrategy:
+             minMember: 6
+             queue: default
+         roles:
+           - name: prefill
+             replicas: 2
+             podGroupSize: 2
+             template:
+               spec:
+                 schedulerName: volcano
+                 containers:
+                   - name: prefill
+                     image: example/sglang:latest
+           - name: decode
+             replicas: 3
+             podGroupSize: 2
+             template:
+               spec:
+                 schedulerName: volcano
+                 containers:
+                   - name: decode
+                     image: example/sglang:latest
+
+Role-level ``minTaskMember``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``minTaskMember`` adds per-task minimums inside the same Volcano PodGroup. In a
+StormService-created RoleSet, each role becomes a Volcano task, so the map keys
+are role names such as ``prefill`` and ``decode``.
+
+The following multi-node shape shows how ``minTaskMember`` applies to the Pods
+inside each role's PodSet. The YAML after the diagram keeps the same
+multi-node shape and requires all Pods from the two Prefill PodSets and at
+least one Decode PodSet worth of Pods before the PodGroup is considered ready
+for task-level admission.
+
+.. code-block:: text
+
+   minTaskMember gates Pods by Volcano task, which AIBrix derives from the
+   StormService role name.
+
+   +-----------------------------------------------------------+
+   | StormService: sglang-pd                                   |
+   | replicas: 1                                               |
+   +-----------------------------------------------------------+
+   | RoleSet-0                                                 |
+   |   Volcano PodGroup: RoleSet-0                             |
+   |   minMember: 6                                            |
+   |   minTaskMember: prefill=4, decode=2                      |
+   |                                                           |
+   |   role: prefill, replicas: 2, podGroupSize: 2             |
+   |   volcano.sh/task-spec=prefill                            |
+   |     +---------------------+                               |
+   |     | PodSet prefill-0    |                               |
+   |     |  Pod prefill-0-0    |                               |
+   |     |  Pod prefill-0-1    |                               |
+   |     +---------------------+                               |
+   |     +---------------------+                               |
+   |     | PodSet prefill-1    |                               |
+   |     |  Pod prefill-1-0    |                               |
+   |     |  Pod prefill-1-1    |                               |
+   |     +---------------------+                               |
+   |                                                           |
+   |   role: decode, replicas: 3, podGroupSize: 2              |
+   |   volcano.sh/task-spec=decode                             |
+   |     +---------------------+                               |
+   |     | PodSet decode-0     |                               |
+   |     |  Pod decode-0-0     |                               |
+   |     |  Pod decode-0-1     |                               |
+   |     +---------------------+                               |
+   |     +---------------------+                               |
+   |     | PodSet decode-1     |                               |
+   |     |  Pod decode-1-0     |                               |
+   |     |  Pod decode-1-1     |                               |
+   |     +---------------------+                               |
+   |     +---------------------+                               |
+   |     | PodSet decode-2     |                               |
+   |     |  Pod decode-2-0     |                               |
+   |     |  Pod decode-2-1     |                               |
+   |     +---------------------+                               |
+   +-----------------------------------------------------------+
+
+   Volcano must satisfy both the total PodGroup gate and the per-task gates:
+   at least 6 Pods total, including 4 prefill Pods and 2 decode Pods from the
+   PodSets.
+
+.. code-block:: yaml
+
+   apiVersion: orchestration.aibrix.ai/v1alpha1
+   kind: StormService
+   metadata:
+     name: sglang-pd
+   spec:
+     replicas: 1
+     selector:
+       matchLabels:
+         app: sglang-pd
+     template:
+       metadata:
+         labels:
+           app: sglang-pd
+       spec:
+         schedulingStrategy:
+           volcanoSchedulingStrategy:
+             minMember: 6
+             minTaskMember:
+               prefill: 4
+               decode: 2
+             queue: default
+         roles:
+           - name: prefill
+             replicas: 2
+             podGroupSize: 2
+             template:
+               spec:
+                 schedulerName: volcano
+                 containers:
+                   - name: prefill
+                     image: example/sglang:latest
+           - name: decode
+             replicas: 3
+             podGroupSize: 2
+             template:
+               spec:
+                 schedulerName: volcano
+                 containers:
+                   - name: decode
+                     image: example/sglang:latest
+
+``minTaskMember`` counts Pods, not logical role replicas. If a role uses
+``podGroupSize`` greater than 1 for multi-pod replicas, translate replica
+minimums into Pod counts yourself. For example, if each Prefill replica has two
+Pods and the desired minimum is two Prefill replicas, set
+``minTaskMember.prefill`` to ``4``.
+
+RoleSet-level and per-role scheduling
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Set ``spec.template.spec.schedulingStrategy`` on StormService when the whole
+generated RoleSet should share one PodGroup. This is the common setting for
+PD-disaggregated serving, because Prefill and Decode Pods are admitted as one
+service replica.
+
+Set ``spec.template.spec.roles[].schedulingStrategy`` only when a specific role
+needs its own scheduling strategy. For roles that use ``podGroupSize > 1``, the
+controller creates PodSet resources for the role, and a role-level scheduling
+strategy applies to those PodSets instead of the whole RoleSet. Do not set
+``spec.template.spec.schedulingStrategy`` together with any
+``spec.template.spec.roles[].schedulingStrategy`` entry; RoleSet-level and
+role-level scheduling strategies are mutually exclusive.
+
+Scheduler and limitations
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Set each Pod template's ``schedulerName`` to the scheduler that should consume
+the selected PodGroup. The Volcano examples set ``schedulerName: volcano``
+explicitly so the scheduling intent is visible in the StormService manifest.
+AIBrix also defaults generated Pods and PodSet Pods to the Volcano scheduler
+when it attaches them to a Volcano PodGroup, but keeping the field explicit
+makes the configuration easier to review and debug. For Godel or
+Coscheduling, use the scheduler name installed in your cluster.
+
+``minTaskMember`` is not the same as Volcano ``subGroupPolicy``. AIBrix exposes
+Volcano ``minTaskMember`` as a simple per-task Pod-count minimum; it does not
+expose ``subGroupPolicy`` through the StormService API. If a workload needs
+subgroup semantics beyond per-role Pod counts, that behavior is outside the
+current StormService API.
+
+When using ``minTaskMember``, keep ``minMember`` greater than or equal to the
+sum of all ``minTaskMember`` values. If ``minMember`` is lower than that sum,
+the StormService and RoleSet webhooks reject the object as invalid because
+Volcano would otherwise ignore ``minTaskMember``. If validation is bypassed,
+AIBrix reports the same issue through the ``GangSchedulingError`` condition.
+
+
 Historical-Node Replacement Scheduling
 --------------------------------------
 
