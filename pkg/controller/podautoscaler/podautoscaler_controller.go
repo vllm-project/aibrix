@@ -1177,6 +1177,22 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 	// Use autoscaler for metric-based scaling with provided selector
 	replicaResult, err := r.computeMetricBasedReplicas(ctx, pa, scalingContext, scaleObj, currentReplicas)
 	if err != nil {
+		if currentReplicas > maxReplicas {
+			return &ScaleDecision{
+				DesiredReplicas: maxReplicas,
+				ShouldScale:     true,
+				Reason:          "current replicas above maximum",
+				Algorithm:       "boundary-check",
+			}, nil
+		}
+		if currentReplicas < minReplicas {
+			return &ScaleDecision{
+				DesiredReplicas: minReplicas,
+				ShouldScale:     true,
+				Reason:          "current replicas below minimum",
+				Algorithm:       "boundary-check",
+			}, nil
+		}
 		return nil, fmt.Errorf("failed to compute metric-based replicas: %w", err)
 	}
 

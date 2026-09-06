@@ -68,6 +68,7 @@ type ReplicaComputeResult struct {
 	DesiredReplicas           int32
 	Algorithm                 string
 	MetricName                string
+	MetricSourceType          autoscalingv1alpha1.MetricSourceType
 	MetricValue               float64
 	Reason                    string
 	Valid                     bool
@@ -214,6 +215,7 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 		DesiredReplicas:           bestResult.DesiredReplicas,
 		Algorithm:                 bestResult.Algorithm,
 		MetricName:                bestResult.MetricName,
+		MetricSourceType:          bestResult.MetricSourceType,
 		MetricValue:               bestResult.MetricValue,
 		Reason:                    bestResult.Reason,
 		Valid:                     true,
@@ -227,6 +229,10 @@ func applyPendingReplicaGuard(request ReplicaComputeRequest, result *ReplicaComp
 	}
 	if request.PodAutoscaler.Spec.ScalingStrategy != autoscalingv1alpha1.KPA &&
 		request.PodAutoscaler.Spec.ScalingStrategy != autoscalingv1alpha1.APA {
+		return result
+	}
+	if result.MetricSourceType != autoscalingv1alpha1.POD &&
+		result.MetricSourceType != autoscalingv1alpha1.RESOURCE {
 		return result
 	}
 	if request.ReplicaState.PendingReplicas <= 0 || result.DesiredReplicas == request.CurrentReplicas {
@@ -263,7 +269,7 @@ func applyPendingReplicaGuard(request ReplicaComputeRequest, result *ReplicaComp
 
 	if result.DesiredReplicas > request.CurrentReplicas {
 		adjustedMetricValue := result.MetricValue * readyCount / currentReplicas
-		desiredReplicas = computePendingAdjustedReplicas(request, result, adjustedMetricValue, targetValue)
+		desiredReplicas = computePendingAdjustedReplicas(request, result, adjustedMetricValue, targetValue, readyReplicas, pendingReplicas)
 		if desiredReplicas < request.CurrentReplicas {
 			desiredReplicas = request.CurrentReplicas
 		}
@@ -273,7 +279,7 @@ func applyPendingReplicaGuard(request ReplicaComputeRequest, result *ReplicaComp
 		reason = "scale-up adjusted: pending replicas treated as missing metrics"
 	} else {
 		adjustedMetricValue := (result.MetricValue*readyCount + targetValue*pendingCount) / currentReplicas
-		desiredReplicas = computePendingAdjustedReplicas(request, result, adjustedMetricValue, targetValue)
+		desiredReplicas = computePendingAdjustedReplicas(request, result, adjustedMetricValue, targetValue, readyReplicas, pendingReplicas)
 		if desiredReplicas > request.CurrentReplicas {
 			desiredReplicas = request.CurrentReplicas
 		}
@@ -291,6 +297,7 @@ func applyPendingReplicaGuard(request ReplicaComputeRequest, result *ReplicaComp
 		DesiredReplicas:           desiredReplicas,
 		Algorithm:                 result.Algorithm,
 		MetricName:                result.MetricName,
+		MetricSourceType:          result.MetricSourceType,
 		MetricValue:               result.MetricValue,
 		Reason:                    reason,
 		Valid:                     true,
@@ -303,11 +310,16 @@ func computePendingAdjustedReplicas(
 	result *ReplicaComputeResult,
 	adjustedMetricValue float64,
 	targetValue float64,
+	readyReplicas int32,
+	pendingReplicas int32,
 ) int32 {
 	switch request.PodAutoscaler.Spec.ScalingStrategy {
 	case autoscalingv1alpha1.APA:
 		return int32(math.Ceil(float64(request.CurrentReplicas) * adjustedMetricValue / targetValue))
 	case autoscalingv1alpha1.KPA:
+		if result.DesiredReplicas < request.CurrentReplicas {
+			return int32(math.Ceil((result.MetricValue*float64(readyReplicas) + targetValue*float64(pendingReplicas)) / targetValue))
+		}
 		return int32(math.Ceil(adjustedMetricValue / targetValue))
 	default:
 		return result.DesiredReplicas
@@ -337,12 +349,13 @@ func (a *DefaultAutoScaler) computeReplicasForSingleMetric(
 	}
 
 	return &ReplicaComputeResult{
-		DesiredReplicas: recommendation.DesiredReplicas,
-		Algorithm:       recommendation.Algorithm,
-		MetricName:      metricSource.TargetMetric,
-		MetricValue:     recommendationMetricValue(recommendation),
-		Reason:          recommendation.Reason,
-		Valid:           true,
+		DesiredReplicas:  recommendation.DesiredReplicas,
+		Algorithm:        recommendation.Algorithm,
+		MetricName:       metricSource.TargetMetric,
+		MetricSourceType: metricSource.MetricSourceType,
+		MetricValue:      recommendationMetricValue(recommendation),
+		Reason:           recommendation.Reason,
+		Valid:            true,
 	}, nil
 }
 

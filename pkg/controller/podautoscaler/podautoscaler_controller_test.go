@@ -18,6 +18,7 @@ package podautoscaler
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"sort"
 	"strings"
@@ -785,6 +786,71 @@ func TestComputeScaleDecisionPendingGuardDoesNotOverrideHardBounds(t *testing.T)
 	}
 	if decision.Reason != "All metrics below target" {
 		t.Fatalf("Reason=%q", decision.Reason)
+	}
+}
+
+func TestComputeScaleDecisionAppliesHardBoundsWhenMetricsFail(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		currentReplicas int32
+		minReplicas     int32
+		maxReplicas     int32
+		wantReplicas    int32
+		wantReason      string
+	}{
+		{
+			name:            "above max",
+			currentReplicas: 12,
+			minReplicas:     1,
+			maxReplicas:     10,
+			wantReplicas:    10,
+			wantReason:      "current replicas above maximum",
+		},
+		{
+			name:            "below min",
+			currentReplicas: 2,
+			minReplicas:     4,
+			maxReplicas:     10,
+			wantReplicas:    4,
+			wantReason:      "current replicas below minimum",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sch := runtime.NewScheme()
+			_ = scheme.AddToScheme(sch)
+			_ = corev1.AddToScheme(sch)
+			_ = autoscalingv1alpha1.AddToScheme(sch)
+
+			r := &PodAutoscalerReconciler{
+				Client:              fake.NewClientBuilder().WithScheme(sch).Build(),
+				workloadScaleClient: &fakeWorkloadScaleClient{},
+				autoScaler: &fakeAutoScaler{
+					err: errors.New("metrics unavailable"),
+				},
+			}
+			pa := *validPodAutoscalerForSpec()
+			pa.Namespace = ns
+			pa.Spec.ScalingStrategy = autoscalingv1alpha1.APA
+			pa.Spec.MinReplicas = ptr.To(tt.minReplicas)
+			pa.Spec.MaxReplicas = tt.maxReplicas
+
+			scaleObj := buildScaleObject("apps/v1", "Deployment", ns, "test-deployment")
+
+			decision, err := r.computeScaleDecision(context.Background(), pa, scaleObj, tt.currentReplicas)
+
+			if err != nil {
+				t.Fatalf("computeScaleDecision returned error: %v", err)
+			}
+			if decision.DesiredReplicas != tt.wantReplicas {
+				t.Fatalf("DesiredReplicas=%d, want %d", decision.DesiredReplicas, tt.wantReplicas)
+			}
+			if !decision.ShouldScale {
+				t.Fatal("expected hard boundary to apply when metrics fail")
+			}
+			if decision.Reason != tt.wantReason {
+				t.Fatalf("Reason=%q", decision.Reason)
+			}
+		})
 	}
 }
 

@@ -216,51 +216,91 @@ func TestComputeDesiredReplicasAdjustsKPAAPAConservativelyWhenReplicasPending(t 
 	for _, tt := range []struct {
 		name         string
 		strategy     autoscalingv1alpha1.ScalingStrategyType
+		sourceType   autoscalingv1alpha1.MetricSourceType
 		metricValue  float64
+		currentPods  int32
 		readyPods    int32
 		pendingPods  int32
 		wantReason   string
 		wantReplicas int32
+		wantGuard    bool
 	}{
 		{
 			name:         "kpa scale-up adjusted",
 			strategy:     autoscalingv1alpha1.KPA,
+			sourceType:   autoscalingv1alpha1.POD,
 			metricValue:  250,
+			currentPods:  4,
 			readyPods:    2,
 			pendingPods:  2,
 			wantReason:   "scale-up adjusted: pending replicas treated as missing metrics",
 			wantReplicas: 4,
+			wantGuard:    true,
 		},
 		{
 			name:         "kpa scale-up dampened",
 			strategy:     autoscalingv1alpha1.KPA,
+			sourceType:   autoscalingv1alpha1.POD,
 			metricValue:  350,
+			currentPods:  4,
 			readyPods:    3,
 			pendingPods:  1,
 			wantReason:   "scale-up adjusted: pending replicas treated as missing metrics",
 			wantReplicas: 6,
+			wantGuard:    true,
+		},
+		{
+			name:         "kpa scale-down adjusted",
+			strategy:     autoscalingv1alpha1.KPA,
+			sourceType:   autoscalingv1alpha1.POD,
+			metricValue:  10,
+			currentPods:  10,
+			readyPods:    5,
+			pendingPods:  5,
+			wantReason:   "scale-down adjusted: pending replicas treated at target utilization",
+			wantReplicas: 6,
+			wantGuard:    true,
+		},
+		{
+			name:         "kpa external metric not adjusted",
+			strategy:     autoscalingv1alpha1.KPA,
+			sourceType:   autoscalingv1alpha1.EXTERNAL,
+			metricValue:  350,
+			currentPods:  4,
+			readyPods:    2,
+			pendingPods:  2,
+			wantReason:   "stable mode scaling",
+			wantReplicas: 7,
+			wantGuard:    false,
 		},
 		{
 			name:         "apa scale-up adjusted",
 			strategy:     autoscalingv1alpha1.APA,
+			sourceType:   autoscalingv1alpha1.POD,
 			metricValue:  90,
+			currentPods:  4,
 			readyPods:    2,
 			pendingPods:  2,
 			wantReason:   "scale-up adjusted: pending replicas treated as missing metrics",
 			wantReplicas: 4,
+			wantGuard:    true,
 		},
 		{
 			name:         "apa scale-down adjusted",
 			strategy:     autoscalingv1alpha1.APA,
+			sourceType:   autoscalingv1alpha1.POD,
 			metricValue:  10,
+			currentPods:  4,
 			readyPods:    2,
 			pendingPods:  2,
 			wantReason:   "scale-down adjusted: pending replicas treated at target utilization",
 			wantReplicas: 3,
+			wantGuard:    true,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			pa := testPodAutoscaler(tt.strategy)
+			pa.Spec.MetricsSources[0].MetricSourceType = tt.sourceType
 			autoScaler := NewDefaultAutoScaler(&mockMetricFetcherFactory{
 				mockMetricFetcher: mockMetricFetcher{metricsValue: tt.metricValue},
 			}, fake.NewClientBuilder().Build())
@@ -269,7 +309,7 @@ func TestComputeDesiredReplicasAdjustsKPAAPAConservativelyWhenReplicasPending(t 
 			result, err := autoScaler.ComputeDesiredReplicas(context.TODO(), ReplicaComputeRequest{
 				PodAutoscaler:   pa,
 				ScalingContext:  scalingContext,
-				CurrentReplicas: 4,
+				CurrentReplicas: tt.currentPods,
 				ReplicaState: ReplicaState{
 					ReadyReplicas:   tt.readyPods,
 					PendingReplicas: tt.pendingPods,
@@ -285,7 +325,7 @@ func TestComputeDesiredReplicasAdjustsKPAAPAConservativelyWhenReplicasPending(t 
 			require.NotNil(t, result)
 			assert.Equal(t, tt.wantReplicas, result.DesiredReplicas)
 			assert.Equal(t, tt.wantReason, result.Reason)
-			assert.True(t, result.PendingReplicaGuardActive)
+			assert.Equal(t, tt.wantGuard, result.PendingReplicaGuardActive)
 		})
 	}
 }

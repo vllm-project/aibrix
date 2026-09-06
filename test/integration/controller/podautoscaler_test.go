@@ -20,7 +20,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"net/url"
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
@@ -35,6 +35,7 @@ import (
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/test/utils/validation"
 	"github.com/vllm-project/aibrix/test/utils/wrapper"
 )
@@ -272,6 +273,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 
 	makePendingReplicaGuardTestCase := func() *testValidatingCase {
 		var metricsServer *httptest.Server
+		var metricsHost string
+		var metricsPort string
 
 		return &testValidatingCase{
 			makePodAutoscaler: func() *autoscalingv1alpha1.PodAutoscaler {
@@ -282,11 +285,11 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 					MaxReplicas(20).
 					ScaleTargetRefWithKind("Deployment", "apps/v1", "pending-guard-deployment").
 					MetricSource(autoscalingv1alpha1.MetricSource{
-						MetricSourceType: autoscalingv1alpha1.EXTERNAL,
+						MetricSourceType: autoscalingv1alpha1.POD,
 						ProtocolType:     autoscalingv1alpha1.HTTP,
-						Endpoint:         "pending-guard.invalid",
+						Port:             "0",
 						Path:             "/metrics",
-						TargetMetric:     "aibrix_test_queue_depth",
+						TargetMetric:     "gpu_cache_usage_perc",
 						TargetValue:      "50",
 					}).
 					Obj()
@@ -295,16 +298,25 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 				{
 					updateFunc: func(pa *autoscalingv1alpha1.PodAutoscaler) {
 						metricsServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-							_, _ = w.Write([]byte("# TYPE aibrix_test_queue_depth gauge\n"))
-							_, _ = w.Write([]byte("aibrix_test_queue_depth 90\n"))
+							_, _ = w.Write([]byte("# TYPE vllm:gpu_cache_usage_perc gauge\n"))
+							_, _ = w.Write([]byte("vllm:gpu_cache_usage_perc 90\n"))
 						}))
 						ginkgo.DeferCleanup(metricsServer.Close)
-						pa.Spec.MetricsSources[0].Endpoint = strings.TrimPrefix(metricsServer.URL, "http://")
+						metricsURL, err := url.Parse(metricsServer.URL)
+						gomega.Expect(err).NotTo(gomega.HaveOccurred())
+						metricsHost = metricsURL.Hostname()
+						metricsPort = metricsURL.Port()
+						gomega.Expect(metricsHost).NotTo(gomega.BeEmpty())
+						gomega.Expect(metricsPort).NotTo(gomega.BeEmpty())
+						pa.Spec.MetricsSources[0].Port = metricsPort
 
 						createDeployment("pending-guard-deployment", ns.Name, 4)
-						podLabels := map[string]string{"app": "pending-guard-deployment"}
-						createPodWithReadiness("pending-guard-pod-1", ns.Name, podLabels, true, "10.0.0.1")
-						createPodWithReadiness("pending-guard-pod-2", ns.Name, podLabels, true, "10.0.0.2")
+						podLabels := map[string]string{
+							"app":                      "pending-guard-deployment",
+							constants.ModelLabelEngine: "vllm",
+						}
+						createPodWithReadiness("pending-guard-pod-1", ns.Name, podLabels, true, metricsHost)
+						createPodWithReadiness("pending-guard-pod-2", ns.Name, podLabels, true, metricsHost)
 						createPodWithReadiness("pending-guard-pod-3", ns.Name, podLabels, false, "")
 						createPodWithReadiness("pending-guard-pod-4", ns.Name, podLabels, false, "")
 
