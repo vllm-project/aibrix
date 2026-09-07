@@ -29,6 +29,8 @@ SKIP_INSTALL=${SKIP_INSTALL:-}
 SET_KUBECONFIG=${SET_KUBECONFIG:-}
 INSTALL_AIBRIX=${INSTALL_AIBRIX:-}
 AIBRIX_ROLESET_INPLACE_E2E=${AIBRIX_ROLESET_INPLACE_E2E:-}
+AIBRIX_E2E_SUITE=${AIBRIX_E2E_SUITE:-all}
+AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE=${AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE:-false}
 
 # setup kind cluster
 if [ -n "$KIND_E2E" ]; then
@@ -63,13 +65,13 @@ if [ -n "$INSTALL_AIBRIX" ]; then
     docker build \
       --build-arg INPLACE_E2E_VERSION=v1 \
       -t aibrix/inplace-e2e:v1 \
-      -f test/e2e/roleset-inplace-image/Dockerfile \
-      test/e2e/roleset-inplace-image
+      -f test/e2e/controller/roleset/inplace-image/Dockerfile \
+      test/e2e/controller/roleset/inplace-image
     docker build \
       --build-arg INPLACE_E2E_VERSION=v2 \
       -t aibrix/inplace-e2e:v2 \
-      -f test/e2e/roleset-inplace-image/Dockerfile \
-      test/e2e/roleset-inplace-image
+      -f test/e2e/controller/roleset/inplace-image/Dockerfile \
+      test/e2e/controller/roleset/inplace-image
     kind load docker-image aibrix/inplace-e2e:v1 aibrix/inplace-e2e:v2
   fi
 
@@ -114,11 +116,16 @@ start_port_forwards() {
 
 # Comprehensive cleanup function that handles both k8s resources and port forwards
 function cleanup {
+  exit_code=$?
   echo "Running cleanup..."
   # Always kill port forwards when exiting
   kill_existing_port_forwards
 
   if [ -n "$INSTALL_AIBRIX" ]; then
+    if [ "$exit_code" -ne 0 ] && [ "$AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE" = "true" ]; then
+      echo "Preserving e2e resources after failure"
+      return
+    fi
     echo "Cleaning up k8s resources..."
     # Clean up k8s resources if INSTALL_AIBRIX is set
     kubectl delete --ignore-not-found=true -k config/test
@@ -145,7 +152,7 @@ collect_logs() {
   done
 }
 
-# trap "collect_logs" ERR
+trap 'collect_logs' ERR
 
 # Start port forwarding before running tests
 start_port_forwards
@@ -154,8 +161,29 @@ start_port_forwards
 # The test exit code is captured and used as the script's exit code
 # so CI can detect failures
 
-echo "Running e2e tests..."
-go test ./test/e2e/ -v -timeout 0
+case "$AIBRIX_E2E_SUITE" in
+  all)
+    E2E_PACKAGES=(./test/e2e/gateway/... ./test/e2e/controller/...)
+    ;;
+  gateway)
+    E2E_PACKAGES=(./test/e2e/gateway/...)
+    ;;
+  controller)
+    E2E_PACKAGES=(./test/e2e/controller/...)
+    ;;
+  gateway-pd)
+    E2E_PACKAGES=(./test/e2e/gateway/pd)
+    ;;
+  *)
+    echo "invalid AIBRIX_E2E_SUITE: $AIBRIX_E2E_SUITE (expected all, gateway, controller, or gateway-pd)" >&2
+    exit 2
+    ;;
+esac
+
+echo "Running $AIBRIX_E2E_SUITE e2e suite..."
+# E2E packages share one cluster, fixed mock resources, and Redis state. Keep package
+# execution serial even when a suite grows new subdirectories.
+go test -p 1 "${E2E_PACKAGES[@]}" -v -timeout 0
 TEST_EXIT_CODE=$?
 
 # Exit with the test's exit code

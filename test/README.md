@@ -7,6 +7,9 @@ This directory contains the comprehensive testing suite for AIBrix, including un
 ```
 test/
 ├── e2e/                    # End-to-end tests against live clusters
+│   ├── framework/           # Shared live-cluster test infrastructure
+│   ├── gateway/             # Gateway API, routing, and PD tests
+│   └── controller/          # Controller-owned lifecycle tests
 ├── integration/           # Integration tests using Ginkgo framework  
 ├── regression/           # Performance regression tests for releases
 ├── utils/               # Shared test utilities and helpers
@@ -70,7 +73,7 @@ make test-e2e
 
 # Or run script directly
 # Note: Required port-forwards should be active in this mode
-go test ./test/e2e/ -v -timeout 0
+go test -p 1 ./test/e2e/gateway/... ./test/e2e/controller/... -v -timeout 0
 ```
 
 #### CI Environment (Automated Testing)
@@ -90,6 +93,9 @@ or
 - `INSTALL_AIBRIX=true` - Builds images, installs dependencies, and deploys AIBrix
 - `AIBRIX_ROLESET_INPLACE_E2E=true` - Runs RoleSet in-place update e2e tests and builds/loads their local test images when `INSTALL_AIBRIX=true`
 - `AIBRIX_ROLESET_INPLACE_E2E_KEEP_ON_FAILURE=true` - Preserves RoleSet in-place e2e resources for debugging failed runs
+- `AIBRIX_E2E_SUITE=all|gateway|controller|gateway-pd` - Selects the e2e suite; defaults to `all`
+- `AIBRIX_E2E_GATEWAY_URL`, `AIBRIX_E2E_NAMESPACE`, `AIBRIX_E2E_API_KEY`, `AIBRIX_E2E_GATEWAY_NAMESPACE` - Override live-cluster e2e endpoints and namespaces
+- `AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE=true` - Preserves installed e2e resources after a failed local run
 - `SKIP_KUBECTL_INSTALL=true` - Skip kubectl installation (default: true)
 - `SKIP_KIND_INSTALL=true` - Skip Kind installation (default: true)
 
