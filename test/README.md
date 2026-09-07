@@ -73,7 +73,7 @@ make test-e2e
 
 # Or run script directly
 # Note: Required port-forwards should be active in this mode
-go test ./test/e2e/gateway/... ./test/e2e/controller/... -v -timeout 0
+go test -p 1 ./test/e2e/gateway/... ./test/e2e/controller/... -v -timeout 0
 ```
 
 #### CI Environment (Automated Testing)
