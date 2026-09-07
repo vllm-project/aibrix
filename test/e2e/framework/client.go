@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package e2e
+package e2eframework
 
 import (
 	"context"
@@ -42,18 +42,15 @@ import (
 )
 
 const (
-	gatewayURL          = "http://localhost:8888"
-	engineURL           = "http://localhost:8000"
-	apiKey              = "test-key-1234567890"
-	modelName           = "llama2-7b"
-	modelNameQwen3      = "qwen3-8b"
-	modelNameVLLM       = "llama2-7b-vllm"
-	modelNameVLLMBucket = "llama2-7b-vllm-bucket"
-	modelNameSGLang     = "llama2-7b-sglang"
-	modelNameTRTLLM     = "llama2-7b-trtllm"
+	ModelName           = "llama2-7b"
+	ModelNameQwen3      = "qwen3-8b"
+	ModelNameVLLM       = "llama2-7b-vllm"
+	ModelNameVLLMBucket = "llama2-7b-vllm-bucket"
+	ModelNameSGLang     = "llama2-7b-sglang"
+	ModelNameTRTLLM     = "llama2-7b-trtllm"
 )
 
-func initializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset, *v1alpha1.Clientset) {
+func InitializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset, *v1alpha1.Clientset) {
 	var err error
 	var config *rest.Config
 
@@ -93,7 +90,7 @@ func initializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset,
 	return k8sClientSet, crdClientSet
 }
 
-func createOpenAIClient(baseURL, apiKey string) openai.Client {
+func NewOpenAIClient(baseURL, apiKey string) openai.Client {
 	// For strict testing, use a custom http.Transport with disabled keep-alives and caching to avoid flaky tests.
 	transport := &http.Transport{
 		DisableKeepAlives: true,
@@ -112,7 +109,7 @@ func createOpenAIClient(baseURL, apiKey string) openai.Client {
 	)
 }
 
-func createOpenAIClientWithRoutingStrategy(baseURL, apiKey, routingStrategy string,
+func NewOpenAIClientWithRoutingStrategy(baseURL, apiKey, routingStrategy string,
 	respOpt option.RequestOption) openai.Client {
 	// For strict testing, use a custom http.Transport with disabled keep-alives and caching to avoid flaky tests.
 	transport := &http.Transport{
@@ -134,10 +131,10 @@ func createOpenAIClientWithRoutingStrategy(baseURL, apiKey, routingStrategy stri
 	)
 }
 
-// createOpenAIClientWithConfigProfile creates a client that sends config-profile header.
+// NewOpenAIClientWithConfigProfile creates a client that sends config-profile header.
 // The gateway plugin selects routing-strategy from the model's config profile (model.aibrix.ai/config)
 // based on this header, rather than from the routing-strategy header.
-func createOpenAIClientWithConfigProfile(baseURL, apiKey, configProfile string,
+func NewOpenAIClientWithConfigProfile(baseURL, apiKey, configProfile string,
 	respOpts ...option.RequestOption) openai.Client {
 	transport := &http.Transport{
 		DisableKeepAlives: true,
@@ -166,12 +163,13 @@ func createOpenAIClientWithConfigProfile(baseURL, apiKey, configProfile string,
 	return openai.NewClient(opts...)
 }
 
-func validateInference(t *testing.T, modelName string) {
-	client := createOpenAIClient(gatewayURL, apiKey)
-	validateInferenceWithClient(t, client, modelName)
+func ValidateInference(t *testing.T, modelName string) {
+	config := LoadConfig()
+	client := NewOpenAIClient(config.GatewayURL, config.APIKey)
+	ValidateInferenceWithClient(t, client, modelName)
 }
 
-func validateInferenceWithClient(t *testing.T, client openai.Client, modelName string) {
+func ValidateInferenceWithClient(t *testing.T, client openai.Client, modelName string) {
 	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage("Say this is a test"),
@@ -186,18 +184,19 @@ func validateInferenceWithClient(t *testing.T, client openai.Client, modelName s
 	assert.NotNil(t, chatCompletion.Choices[0].Message.Content, "chat completion has no message returned")
 }
 
-// validateAllPodsAreReady waits until the default namespace has exactly expectedPodCount
+// ValidateAllPodsAreReady waits until the default namespace has exactly expectedPodCount
 // active pods. An optional labelSelector scopes the count to a subset of pods, which is
 // necessary when other, unrelated workloads share the namespace.
-func validateAllPodsAreReady(t *testing.T, client *kubernetes.Clientset, expectedPodCount int,
+func ValidateAllPodsAreReady(t *testing.T, client *kubernetes.Clientset, expectedPodCount int,
 	labelSelector ...string) {
 	selector := ""
 	if len(labelSelector) > 0 {
 		selector = labelSelector[0]
 	}
+	namespace := LoadConfig().Namespace
 	err := wait.PollUntilContextTimeout(context.Background(), 2*time.Second, 60*time.Second,
 		true, func(ctx context.Context) (bool, error) {
-			podList, err := client.CoreV1().Pods("default").List(ctx, v1.ListOptions{LabelSelector: selector})
+			podList, err := client.CoreV1().Pods(namespace).List(ctx, v1.ListOptions{LabelSelector: selector})
 			if err != nil {
 				t.Logf("failed to list pods: %v", err)
 				return false, err
@@ -213,12 +212,13 @@ func validateAllPodsAreReady(t *testing.T, client *kubernetes.Clientset, expecte
 	assert.NoError(t, err, "timeout waiting for all pods to be ready")
 }
 
-// waitForPDDisaggregationRouting polls until the gateway can route a PD request for modelName.
+// WaitForPDDisaggregationRouting polls until the gateway can route a PD request for modelName.
 // Pod readiness alone is not enough: the gateway pod cache may lag after pod churn.
-func waitForPDDisaggregationRouting(t *testing.T, modelName string) {
+func WaitForPDDisaggregationRouting(t *testing.T, modelName string) {
 	t.Helper()
 	var dst *http.Response
-	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
+	config := LoadConfig()
+	client := NewOpenAIClientWithRoutingStrategy(config.GatewayURL, config.APIKey, "pd", option.WithResponseInto(&dst))
 
 	err := wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 30*time.Second,
 		true, func(ctx context.Context) (bool, error) {
@@ -244,12 +244,13 @@ func waitForPDDisaggregationRouting(t *testing.T, modelName string) {
 	assert.NoError(t, err, "timeout waiting for PD routing to be ready for model %s", modelName)
 }
 
-// waitForPDCombinedRouting polls until the gateway routes a long prompt to a combined pod
+// WaitForPDCombinedRouting polls until the gateway routes a long prompt to a combined pod
 // (no prefill-target-pod header). Pod cache may lag behind Kubernetes readiness.
-func waitForPDCombinedRouting(t *testing.T, modelName, combinedStormName, longPrompt string) {
+func WaitForPDCombinedRouting(t *testing.T, modelName, combinedStormName, longPrompt string) {
 	t.Helper()
 	var dst *http.Response
-	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
+	config := LoadConfig()
+	client := NewOpenAIClientWithRoutingStrategy(config.GatewayURL, config.APIKey, "pd", option.WithResponseInto(&dst))
 
 	err := wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 30*time.Second,
 		true, func(ctx context.Context) (bool, error) {

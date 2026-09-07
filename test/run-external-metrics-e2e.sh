@@ -12,9 +12,9 @@ CONTROLLER_IMAGE="aibrix/controller-manager:${IMAGE_TAG}"
 ADAPTER_IMAGE="aibrix/external-metrics-adapter:e2e"
 
 cleanup() {
-  kubectl delete -k test/e2e/testdata/external-metrics-adapter --ignore-not-found=true || true
+  kubectl delete -k test/e2e/controller/autoscaling/testdata/external-metrics-adapter --ignore-not-found=true || true
   if [ "${EXTERNAL_METRICS_E2E_USE_EXISTING_CONTROLLER}" != "true" ]; then
-    kubectl delete -k test/e2e/testdata/external-metrics-autoscaler/aibrix --ignore-not-found=true || true
+    kubectl delete -k test/e2e/controller/autoscaling/testdata/external-metrics-autoscaler/aibrix --ignore-not-found=true || true
   fi
 }
 
@@ -81,11 +81,11 @@ mkdir -p bin
 if [ "${EXTERNAL_METRICS_E2E_USE_EXISTING_CONTROLLER}" != "true" ]; then
   CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" go build -tags="nozmq" -o bin/controller-manager-e2e cmd/controllers/main.go
 fi
-CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" go build -o bin/external-metrics-adapter-e2e ./test/e2e/external-metrics-adapter
+CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" go build -o bin/external-metrics-adapter-e2e ./test/e2e/controller/autoscaling/external-metrics-adapter
 if [ "${EXTERNAL_METRICS_E2E_USE_EXISTING_CONTROLLER}" != "true" ]; then
-  docker build -t "${CONTROLLER_IMAGE}" -f test/e2e/controller-manager/Dockerfile .
+  docker build -t "${CONTROLLER_IMAGE}" -f test/e2e/controller/autoscaling/controller-manager/Dockerfile .
 fi
-docker build -t "${ADAPTER_IMAGE}" -f test/e2e/external-metrics-adapter/Dockerfile.local .
+docker build -t "${ADAPTER_IMAGE}" -f test/e2e/controller/autoscaling/external-metrics-adapter/Dockerfile.local .
 
 case "${EXTERNAL_METRICS_E2E_CLUSTER}" in
   minikube)
@@ -107,16 +107,16 @@ kubectl create namespace aibrix-system --dry-run=client -o yaml | kubectl apply 
 if [ "${EXTERNAL_METRICS_E2E_USE_EXISTING_CONTROLLER}" = "true" ]; then
   kubectl -n aibrix-system rollout status deployment/aibrix-controller-manager --timeout=180s
 else
-  kubectl apply -k test/e2e/testdata/external-metrics-autoscaler/aibrix
+  kubectl apply -k test/e2e/controller/autoscaling/testdata/external-metrics-autoscaler/aibrix
   kubectl -n aibrix-system rollout status deployment/aibrix-autoscaling-controller-manager --timeout=180s
 fi
 
-kubectl apply -k test/e2e/testdata/external-metrics-adapter
+kubectl apply -k test/e2e/controller/autoscaling/testdata/external-metrics-adapter
 kubectl -n aibrix-system rollout status deployment/aibrix-external-metrics-adapter --timeout=180s
 kubectl wait --for=condition=Available apiservice/v1beta1.external.metrics.k8s.io --timeout=180s
 
 if ! AIBRIX_EXTERNAL_METRICS_E2E=true AIBRIX_EXTERNAL_METRICS_E2E_KEEP_ON_FAILURE=true \
-  go test ./test/e2e -v -run TestExternalMetricsAutoscaler -count=1 -timeout=5m; then
+  go test ./test/e2e/controller/autoscaling -v -run TestExternalMetricsAutoscaler -count=1 -timeout=5m; then
   diagnose
   exit 1
 fi
