@@ -398,3 +398,201 @@ func TestFilterPodsByLabelSelector(t *testing.T) {
 		})
 	}
 }
+
+func TestGeneratePodKey(t *testing.T) {
+	tests := []struct {
+		name      string
+		namespace string
+		podName   string
+		want      string
+	}{
+		{"namespace and name are joined with a slash", "default", "mypod", "default/mypod"},
+		{"empty name still produces a separator", "default", "", "default/"},
+		{"empty namespace still produces a separator", "", "mypod", "/mypod"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := GeneratePodKey(tt.namespace, tt.podName); got != tt.want {
+				t.Errorf("GeneratePodKey(%q, %q) = %q, want %q",
+					tt.namespace, tt.podName, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParsePodKey(t *testing.T) {
+	// A key is only parsed when it splits into exactly two segments. Callers
+	// build keys with GeneratePodKey from Kubernetes object fields, which can
+	// neither be empty nor contain a slash, so the empty-segment cases below
+	// record the observed behaviour rather than assert that it is desirable.
+	tests := []struct {
+		name          string
+		key           string
+		wantNamespace string
+		wantName      string
+		wantOK        bool
+	}{
+		{"well formed key is split into namespace and name", "default/mypod", "default", "mypod", true},
+		// more than two segments: the length check rejects the key outright
+		{"three segments are rejected", "a/b/c", "", "", false},
+		// no separator at all
+		{"no separator is rejected", "abc", "", "", false},
+		{"empty key is rejected", "", "", "", false},
+		// exactly two segments, but one of them is empty
+		{"two segments with an empty name are reported as parsed", "a/", "a", "", true},
+		{"two segments with an empty namespace are reported as parsed", "/name", "", "name", true},
+		{"a lone separator is reported as parsed", "/", "", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotNamespace, gotName, gotOK := ParsePodKey(tt.key)
+
+			if gotOK != tt.wantOK {
+				t.Errorf("ParsePodKey(%q) ok = %v, want %v", tt.key, gotOK, tt.wantOK)
+			}
+			if gotNamespace != tt.wantNamespace {
+				t.Errorf("ParsePodKey(%q) namespace = %q, want %q", tt.key, gotNamespace, tt.wantNamespace)
+			}
+			if gotName != tt.wantName {
+				t.Errorf("ParsePodKey(%q) name = %q, want %q", tt.key, gotName, tt.wantName)
+			}
+		})
+	}
+}
+
+func TestGenerateParsePodKeyRoundTrip(t *testing.T) {
+	tests := []struct {
+		name      string
+		namespace string
+		podName   string
+	}{
+		{"typical namespace and name", "default", "mypod"},
+		{"namespace with hyphens", "kube-system", "coredns-abc123"},
+		{"single character segments", "a", "b"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := GeneratePodKey(tt.namespace, tt.podName)
+
+			gotNamespace, gotName, ok := ParsePodKey(key)
+			if !ok {
+				t.Fatalf("ParsePodKey(%q) failed for a key built by GeneratePodKey(%q, %q)",
+					key, tt.namespace, tt.podName)
+			}
+			if gotNamespace != tt.namespace || gotName != tt.podName {
+				t.Errorf("round trip through %q returned (%q, %q), want (%q, %q)",
+					key, gotNamespace, gotName, tt.namespace, tt.podName)
+			}
+		})
+	}
+}
+
+// routableTestPod builds a pod that FilterRoutablePods accepts: it has a pod IP,
+// is not terminating, is not draining, and reports the Ready condition as true.
+func routableTestPod(name string) *v1.Pod {
+	return &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Status: v1.PodStatus{
+			PodIP:      "10.0.0.1",
+			Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+		},
+	}
+}
+
+func TestSelectRandomPod(t *testing.T) {
+	tests := []struct {
+		name string
+		pods []*v1.Pod
+		// randomIndex is what the injected randomFn returns, which makes the
+		// selection deterministic.
+		randomIndex int
+		wantPodName string
+		wantErr     bool
+		// wantRandomFnArg is the value randomFn is expected to receive, i.e. the
+		// number of pods left after filtering. -1 means randomFn is never called.
+		wantRandomFnArg int
+	}{
+		{
+			name:            "no pods at all is an error",
+			pods:            nil,
+			wantErr:         true,
+			wantRandomFnArg: -1,
+		},
+		{
+			name:            "pods that are all unroutable is an error",
+			pods:            []*v1.Pod{{ObjectMeta: metav1.ObjectMeta{Name: "no-ip"}}},
+			wantErr:         true,
+			wantRandomFnArg: -1,
+		},
+		{
+			name:            "single routable pod is selected at index 0",
+			pods:            []*v1.Pod{routableTestPod("only")},
+			randomIndex:     0,
+			wantPodName:     "only",
+			wantRandomFnArg: 1,
+		},
+		{
+			name:            "index returned by randomFn picks the pod",
+			pods:            []*v1.Pod{routableTestPod("first"), routableTestPod("second"), routableTestPod("third")},
+			randomIndex:     1,
+			wantPodName:     "second",
+			wantRandomFnArg: 3,
+		},
+		{
+			name:            "last index is selectable",
+			pods:            []*v1.Pod{routableTestPod("first"), routableTestPod("second"), routableTestPod("third")},
+			randomIndex:     2,
+			wantPodName:     "third",
+			wantRandomFnArg: 3,
+		},
+		{
+			// randomFn is handed the filtered count, not the length of the input,
+			// so the unroutable pods must not widen the index range.
+			name: "unroutable pods are filtered out before indexing",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "no-ip"}},
+				routableTestPod("routable"),
+				{ObjectMeta: metav1.ObjectMeta{Name: "also-no-ip"}},
+			},
+			randomIndex:     0,
+			wantPodName:     "routable",
+			wantRandomFnArg: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotRandomFnArg := -1
+			randomFn := func(n int) int {
+				gotRandomFnArg = n
+				return tt.randomIndex
+			}
+
+			got, err := SelectRandomPod(tt.pods, randomFn)
+
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("SelectRandomPod() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if gotRandomFnArg != tt.wantRandomFnArg {
+				t.Errorf("randomFn received %d, want %d", gotRandomFnArg, tt.wantRandomFnArg)
+			}
+
+			if tt.wantErr {
+				if got != nil {
+					t.Errorf("SelectRandomPod() = %v, want nil on error", got)
+				}
+				return
+			}
+
+			if got == nil {
+				t.Fatalf("SelectRandomPod() returned nil pod without an error")
+			}
+			if got.Name != tt.wantPodName {
+				t.Errorf("SelectRandomPod() selected %q, want %q", got.Name, tt.wantPodName)
+			}
+		})
+	}
+}
