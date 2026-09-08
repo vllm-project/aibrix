@@ -220,7 +220,7 @@ func WaitForPDDisaggregationRouting(t *testing.T, modelName string) {
 	config := LoadConfig()
 	client := NewOpenAIClientWithRoutingStrategy(config.GatewayURL, config.APIKey, "pd", option.WithResponseInto(&dst))
 
-	err := wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 30*time.Second,
+	err := wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 2*time.Minute,
 		true, func(ctx context.Context) (bool, error) {
 			_, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 				Messages: []openai.ChatCompletionMessageParamUnion{
@@ -252,7 +252,7 @@ func WaitForPDCombinedRouting(t *testing.T, modelName, combinedStormName, longPr
 	config := LoadConfig()
 	client := NewOpenAIClientWithRoutingStrategy(config.GatewayURL, config.APIKey, "pd", option.WithResponseInto(&dst))
 
-	err := wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 30*time.Second,
+	err := wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 2*time.Minute,
 		true, func(ctx context.Context) (bool, error) {
 			_, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 				Messages: []openai.ChatCompletionMessageParamUnion{

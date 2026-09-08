@@ -58,6 +58,8 @@ func promptWithTokenLength(t *testing.T, tokenCount int) string {
 
 func assertPDBucketingRoute(t *testing.T, prompt, stormName string, expectCombined bool) {
 	t.Helper()
+	waitForPDDisaggregationRouting(t, modelNameVLLMBucket)
+
 	var dst *http.Response
 	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
 

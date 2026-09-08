@@ -33,6 +33,8 @@ import (
 // asserts that the response carries distinct prefill-target-pod and target-pod headers.
 func assertPDDisaggregation(t *testing.T, modelName, prompt, errMsg, logPrefix string) {
 	t.Helper()
+	waitForPDDisaggregationRouting(t, modelName)
+
 	var dst *http.Response
 	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
 
@@ -134,8 +136,10 @@ func assertPDDisaggregationAfterPodDeletion(t *testing.T, roleLabel, modelName, 
 		t.Logf("%s pod %s has been recreated and cluster is back to %d pods", roleLabel, podToDelete, initialCount)
 	})
 
-	// Give the gateway time to detect the pod is gone.
+	// Give the gateway time to detect the pod is gone and re-converge on the
+	// remaining roleset before asserting on individual requests below.
 	time.Sleep(3 * time.Second)
+	waitForPDDisaggregationRouting(t, modelName)
 
 	var dst *http.Response
 	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
