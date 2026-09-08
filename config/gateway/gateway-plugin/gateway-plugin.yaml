@@ -209,6 +209,9 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/video/generations
+        - path:
+            type: PathPrefix
+            value: /v1/videos
       backendRefs:
         - name: aibrix-gateway-plugins
           port: 50052
@@ -232,4 +235,4 @@ spec:
           body: Buffered
         response:
           body: Streamed
-      messageTimeout: 60s
+      messageTimeout: 600s

@@ -475,9 +475,24 @@ func validateRerankRequest(requestID string, requestBody []byte) (model, message
 	return
 }
 
-// isAudioRequest returns true if the request path is an audio endpoint
-func isAudioRequest(requestPath string) bool {
-	return requestPath == PathAudioTranscriptions || requestPath == PathAudioTranslations
+// pathWithoutQuery strips the query string from an Envoy :path value. HTTP/2
+// :path includes both path and query (RFC 7540), so exact/prefix matchers must
+// cut on '?' before comparing.
+func pathWithoutQuery(requestPath string) string {
+	path, _, _ := strings.Cut(requestPath, "?")
+	return path
+}
+
+// isMultipartFormPath returns true if requestPath is an endpoint whose request
+// body is multipart/form-data rather than JSON -- audio endpoints, and
+// vLLM-Omni's Videos API create endpoints (PathVideos, PathVideosSync).
+func isMultipartFormPath(requestPath string) bool {
+	switch pathWithoutQuery(requestPath) {
+	case PathAudioTranscriptions, PathAudioTranslations, PathVideos, PathVideosSync:
+		return true
+	default:
+		return false
+	}
 }
 
 // validateClassifyRequest validates a classify request and returns the model and message.

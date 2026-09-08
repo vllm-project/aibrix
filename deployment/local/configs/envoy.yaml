@@ -93,7 +93,7 @@ static_resources:
                       grpc_service:
                         envoy_grpc:
                           cluster_name: gateway_ext_proc
-                        timeout: 30s
+                        timeout: 600s
                       processing_mode:
                         request_header_mode: SEND
                         request_body_mode: BUFFERED
@@ -101,7 +101,7 @@ static_resources:
                         response_body_mode: STREAMED
                         request_trailer_mode: SKIP
                         response_trailer_mode: SKIP
-                      message_timeout: 60s
+                      message_timeout: 600s
                       failure_mode_allow: false
 
                   - name: envoy.filters.http.router

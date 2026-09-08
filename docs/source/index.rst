@@ -89,6 +89,7 @@ Documentation
    features/gateway-plugins.rst
    features/pd-disaggregation.rst
    features/semantic-router.rst
+   features/vllm-omni.rst
 
 .. toctree::
    :maxdepth: 1

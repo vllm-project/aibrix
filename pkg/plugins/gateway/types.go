@@ -45,6 +45,9 @@ const (
 	// Multipart/Audio Headers
 	HeaderErrorMultipartParsing = "x-error-multipart-parsing"
 
+	// Video Job Headers
+	HeaderErrorVideoNotFound = "x-error-video-not-found"
+
 	// Request & Target Headers
 	HeaderWentIntoReqHeaders  = "x-went-into-req-headers"
 	HeaderTargetPodIP         = "target-pod-ip"
@@ -92,6 +95,7 @@ const (
 	ErrorCodeModelNotFound      = "model_not_found"
 	ErrorCodeRateLimitExceeded  = "rate_limit_exceeded"
 	ErrorCodeServiceUnavailable = "service_unavailable"
+	ErrorCodeVideoNotFound      = "video_not_found"
 
 	// Embedding Constraints
 	// https://github.com/openai/openai-go/blob/main/embedding.go#L126
@@ -113,6 +117,12 @@ const (
 	PathAudioTranslations   = "/v1/audio/translations"
 	PathRerank              = "/v1/rerank"
 	PathClassify            = "/v1/classify"
+	// PathVideos and PathVideosSync are vLLM-Omni's native Videos API (multipart/form-data),
+	// distinct from the OpenAI/Sora-shaped PathVideoGenerations (JSON) above. PathVideos also
+	// covers its GET/DELETE sub-resources (/v1/videos/{id}, /v1/videos/{id}/content) via
+	// prefix matching in isLanguageRequest and extractVideoIDFromPath.
+	PathVideos     = "/v1/videos"
+	PathVideosSync = "/v1/videos/sync"
 
 	// Engine-specific paths (xdit)
 	PathXditGenerate      = "/generate"

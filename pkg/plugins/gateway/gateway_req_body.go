@@ -49,20 +49,28 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 	ctx, span := tracer.Start(ctx, "process.handle_request_body")
 	defer span.End()
 
+	// Async video job follow-ups (GET status/content, DELETE) carry their routing
+	// key -- video_id -- in the path, not the (often empty) body. The generated
+	// video only exists on the pod that created it, so this bypasses the normal
+	// model-based routing below and pins directly back to that pod.
+	if videoID, isSubResource := extractVideoIDFromPath(requestPath); isSubResource {
+		return s.handleVideoJobSubResource(ctx, routingCtx, requestID, requestPath, videoID, body.RequestBody.GetBody())
+	}
+
 	var model, message string
 	var stream bool
 	var routingAlgorithm types.RoutingAlgorithm
 	var errRes *extProcPb.ProcessingResponse
 
-	// Check if this is a multipart request (audio endpoints)
+	// Check if this is a multipart request (audio endpoints, vLLM-Omni video generation)
 	contentType := routingCtx.ReqHeaders[contentTypeKey]
-	if isAudioRequest(requestPath) && isMultipartRequest(contentType) {
-		// Parse multipart form data for audio endpoints
+	if isMultipartFormPath(requestPath) && isMultipartRequest(contentType) {
+		// Parse multipart form data for audio/video endpoints
 		model, stream, errRes = parseMultipartFormData(requestID, contentType, body.RequestBody.GetBody())
 		if errRes != nil {
 			return errRes, model, stream, term
 		}
-		message = "" // Audio requests don't have a text message for token counting
+		message = "" // Audio/video requests don't have a text message for token counting
 	} else {
 		// Use existing JSON validation for other endpoints
 		model, message, stream, errRes = validateRequestBody(requestID, requestPath, body.RequestBody.GetBody(), user)

@@ -85,6 +85,11 @@ type Server struct {
 	httprouteCache      sync.Map
 	httprouteCacheTTL   time.Duration
 	httprouteSFGroup    singleflight.Group
+	// videoJobCache maps a vLLM-Omni async video_id to the pod that owns it (see
+	// gateway_video_routing.go). Local in-memory cache, warmed from and
+	// write-through to redisClient (when configured) so any gateway replica can
+	// resolve a video_id created by a different replica.
+	videoJobCache sync.Map
 	// Broadcast channel for server-initiated shutdown
 	shutdownCh   <-chan struct{}
 	shutdown     chan struct{}
@@ -217,7 +222,7 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 	routing.Init()
 
 	shutdown := make(chan struct{})
-	return &Server{
+	s := &Server{
 		redisClient:         redisClient,
 		ratelimiter:         r,
 		modelRateLimiter:    mr,
@@ -231,6 +236,8 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 		shutdownCh:          shutdown,
 		shutdown:            shutdown,
 	}
+	s.startVideoJobCacheSync(shutdown)
+	return s
 }
 
 func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
@@ -436,7 +443,7 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 
 	switch req.Request.(type) {
 	case *extProcPb.ProcessingRequest_RequestHeaders:
-		resp, st.user, st.rpm, st.routerCtx = s.HandleRequestHeaders(st.ctx, st.requestID, st.rootSpan, req)
+		resp, st.user, st.rpm, st.routerCtx, st.traceTerm = s.HandleRequestHeaders(st.ctx, st.requestID, st.rootSpan, req)
 		if st.routerCtx != nil {
 			st.model = st.routerCtx.Model
 			st.routerCtx.Span = st.rootSpan
