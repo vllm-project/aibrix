@@ -288,7 +288,7 @@ Configure the range in the pod's ``routingConfig``:
    * - ``combined``
      - ``true`` = this pod is a standard inference pod (runs both prefill and decode). Default: ``false``.
    * - ``prefillScorePolicy``
-     - How to score prefill pods. ``prefix_cache`` (default), ``least_request``, or ``conductor``.
+     - How to score prefill pods. ``prefix_cache`` (default), ``least_request``, ``conductor``, or ``token_load``.
    * - ``decodeScorePolicy``
      - How to score decode pods. ``load_balancing`` (default), ``least_request``, or ``conductor``.
 
@@ -344,6 +344,85 @@ Or set gateway-wide via ``AIBRIX_PREFILL_SCORE_POLICY`` and ``AIBRIX_DECODE_SCOR
 - You want routing based on predicted latency rather than just request count
 - Your workload has variable prompt lengths and mixed cache-hit patterns
 - You need to account for GPU memory pressure in decode routing
+
+
+.. _pd-token-load-policy:
+
+Token Load Scoring Policy
+-------------------------
+
+The ``token_load`` prefill scoring policy spreads prefill work by prompt size instead of by request count. ``least_request`` treats a 100-token prompt and a 30,000-token prompt as the same unit of load, so a pod that drew a few long prompts keeps receiving new requests until its count catches up with its neighbours. Under a mix of short and long prompts this shows up as a long TTFT tail on the pods that hold the long prompts. ``token_load`` charges each request by its estimated prompt tokens, so one long prompt counts as much as many short ones.
+
+**Scoring**
+
+The router keeps two per-pod counters and scores each prefill pod as (lower is better):
+
+.. code-block:: text
+
+    score = active_tokens + kv_weight × kv_tokens
+
+- ``active_tokens`` — prompt tokens of the prefill requests the pod is computing right now.
+- ``kv_tokens`` — prompt tokens whose KV cache is still resident on the pod because the decode pod has not finished with the request yet. Weighted by ``kv_weight`` (``AIBRIX_TOKEN_LOAD_KV_WEIGHT``, default ``0.3``) since resident KV costs the pod less than active compute.
+
+Each request is charged ``request_cost + prompt_tokens``, where ``request_cost`` (``AIBRIX_TOKEN_LOAD_REQUEST_COST``, default ``3500``) models the fixed scheduling and KV-transfer work that does not scale with prompt length, and ``prompt_tokens`` is estimated as one token per four bytes of request body. The prefix cache is not consulted.
+
+**Charge lifecycle**
+
+1. The request is charged to the selected prefill pod in the same critical section as the selection itself, so concurrent selections see each other's charges.
+2. When the prefill HTTP call returns, the ``active_tokens`` part is released; ``kv_tokens`` stays.
+3. When the request completes (or the prefill call fails), the ``kv_tokens`` part is released too.
+
+A charge whose release never arrives is force-released after ``AIBRIX_TOKEN_LOAD_TTL_SECONDS`` (default ``3600``) with a warning log, so a leaked entry cannot pin load on a pod indefinitely. Releases are idempotent and the counters never go below zero.
+
+**Metrics**
+
+The gateway exports the two counters per prefill pod as gauges labelled by ``pod_name``:
+
+- ``pd_token_load_active_tokens``
+- ``pd_token_load_kv_tokens``
+
+**Configuration**
+
+Enable ``token_load`` via the routing config:
+
+.. code-block:: yaml
+
+    annotations:
+      model.aibrix.ai/config: |
+        {
+          "profiles": {
+            "default": {
+              "routingStrategy": "pd",
+              "routingConfig": {
+                "prefillScorePolicy": "token_load"
+              }
+            }
+          }
+        }
+
+Or set gateway-wide via ``AIBRIX_PREFILL_SCORE_POLICY=token_load``. The tunables are gateway-wide environment variables:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 36 12 52
+
+   * - Variable
+     - Default
+     - Description
+   * - ``AIBRIX_TOKEN_LOAD_KV_WEIGHT``
+     - ``0.3``
+     - Weight of resident KV tokens in the score.
+   * - ``AIBRIX_TOKEN_LOAD_REQUEST_COST``
+     - ``3500``
+     - Fixed per-request cost added to every charge, in tokens.
+   * - ``AIBRIX_TOKEN_LOAD_TTL_SECONDS``
+     - ``3600``
+     - Maximum age of an outstanding charge before it is force-released.
+
+**When to use token_load:**
+
+- Your prompt lengths vary widely (for example agentic or RAG traffic mixed with short chat) and you see a TTFT tail on some prefill pods under ``least_request``
+- Prefix-cache locality matters less than balancing prefill compute, or your prefix cache hit rate is low
 
 
 Complete Example
@@ -463,6 +542,7 @@ Each prefill pod is scored by the selected policy. Pods with a request count mor
 
 - ``prefix_cache`` (default): ``score = (100 − prefix_match_percent) × 0.1 + req_count / max_req_count`` — lower score means more cache hits and less load.
 - ``least_request``: ``score = req_count``.
+- ``token_load``: ``score = active_tokens + kv_weight × kv_tokens`` — the token-weighted load the router has charged to the pod; see :ref:`Token Load Scoring Policy <pd-token-load-policy>`.
 
 **Step 4 — Decode scoring**
 
@@ -502,7 +582,16 @@ These are set on the **gateway plugin** deployment.
      - Seconds before a prefill request to a prefill pod times out.
    * - ``AIBRIX_PREFILL_SCORE_POLICY``
      - ``prefix_cache``
-     - Default scoring policy for selecting prefill pods. ``prefix_cache``, ``least_request``, or ``conductor``.
+     - Default scoring policy for selecting prefill pods. ``prefix_cache``, ``least_request``, ``conductor``, or ``token_load``.
+   * - ``AIBRIX_TOKEN_LOAD_KV_WEIGHT``
+     - ``0.3``
+     - ``token_load`` only. Weight of resident KV tokens in the prefill score. Must be positive.
+   * - ``AIBRIX_TOKEN_LOAD_REQUEST_COST``
+     - ``3500``
+     - ``token_load`` only. Fixed per-request cost, in tokens, added to every prefill charge. Must be positive.
+   * - ``AIBRIX_TOKEN_LOAD_TTL_SECONDS``
+     - ``3600``
+     - ``token_load`` only. Charges older than this are force-released and logged; must exceed the longest legitimate request. Must be positive.
    * - ``AIBRIX_DECODE_SCORE_POLICY``
      - ``load_balancing``
      - Default scoring policy for selecting decode pods. ``load_balancing``, ``least_request``, or ``conductor``.
