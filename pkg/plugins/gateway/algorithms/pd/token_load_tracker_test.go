@@ -263,6 +263,31 @@ func TestTokenLoadTracker_JanitorDoesNotDoubleReleaseTokens(t *testing.T) {
 	assertLoad(t, tr, "pod-a", 0, 0)
 }
 
+func TestTokenLoadTracker_CloseStopsJanitor(t *testing.T) {
+	tr := NewTokenLoadTrackerWithConfig(testTokenLoadConfig())
+	require.NotNil(t, tr.janitorDone, "a positive TTL starts the janitor")
+
+	done := make(chan struct{})
+	go func() {
+		tr.Close()
+		tr.Close() // idempotent
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return: janitor still running")
+	}
+
+	// The tracker stays usable after Close.
+	tr.AcquirePrefill("req-1", "pod-a", 1000)
+	assertLoad(t, tr, "pod-a", 1000, 1000)
+
+	// Close on a tracker without a janitor returns immediately.
+	noJanitor, _ := newTestTokenLoadTracker(t, testTokenLoadConfig())
+	noJanitor.Close()
+}
+
 func TestTokenLoadTracker_JanitorDisabledWithZeroTTL(t *testing.T) {
 	cfg := testTokenLoadConfig()
 	cfg.TTL = 0

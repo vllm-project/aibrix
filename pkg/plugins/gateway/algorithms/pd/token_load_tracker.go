@@ -108,6 +108,11 @@ type TokenLoadTracker struct {
 	entries      sync.Map // map[string]*tokenLoadEntry, request ID → charge
 
 	cfg TokenLoadConfig
+	// stopCh is closed by Close to stop the janitor; janitorDone is closed by
+	// the janitor when it has stopped.
+	stopCh      chan struct{}
+	janitorDone chan struct{}
+	closeOnce   sync.Once
 	// clock is injectable so unit tests can age entries without sleeping.
 	clock func() time.Time
 }
@@ -145,7 +150,16 @@ func NewTokenLoadTrackerWithConfig(cfg TokenLoadConfig) *TokenLoadTracker {
 // newTokenLoadTracker builds a tracker without a janitor goroutine; tests use
 // it with a fake clock and drive sweepExpired directly.
 func newTokenLoadTracker(cfg TokenLoadConfig, clock func() time.Time) *TokenLoadTracker {
-	return &TokenLoadTracker{cfg: cfg, clock: clock}
+	return &TokenLoadTracker{cfg: cfg, clock: clock, stopCh: make(chan struct{})}
+}
+
+// Close stops the janitor goroutine, if one was started, and returns once it
+// has exited. Charges and counters stay readable. Safe to call more than once.
+func (t *TokenLoadTracker) Close() {
+	t.closeOnce.Do(func() { close(t.stopCh) })
+	if t.janitorDone != nil {
+		<-t.janitorDone
+	}
 }
 
 // Config returns the tracker's tunables.
@@ -250,13 +264,20 @@ func (t *TokenLoadTracker) addKV(pod string, delta float64) {
 		value, []string{"pod_name"}, pod)
 }
 
-// startJanitor runs sweepExpired every interval for the life of the process.
+// startJanitor runs sweepExpired every interval until Close is called.
 func (t *TokenLoadTracker) startJanitor(interval time.Duration) {
+	t.janitorDone = make(chan struct{})
 	go func() {
+		defer close(t.janitorDone)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-		for range ticker.C {
-			t.sweepExpired()
+		for {
+			select {
+			case <-ticker.C:
+				t.sweepExpired()
+			case <-t.stopCh:
+				return
+			}
 		}
 	}()
 }
@@ -288,9 +309,13 @@ func (t *TokenLoadTracker) sweepExpired() int {
 }
 
 // addFloat atomically adds delta to the float64 stored under key, clamps the
-// result at zero, and returns the new value.
+// result at zero, and returns the new value. The counter is only allocated
+// the first time a pod is seen; later calls take the read path.
 func addFloat(m *sync.Map, key string, delta float64) float64 {
-	v, _ := m.LoadOrStore(key, &atomic.Uint64{})
+	v, ok := m.Load(key)
+	if !ok {
+		v, _ = m.LoadOrStore(key, &atomic.Uint64{})
+	}
 	a := v.(*atomic.Uint64)
 	for {
 		old := a.Load()
