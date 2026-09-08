@@ -288,7 +288,7 @@ Configure the range in the pod's ``routingConfig``:
    * - ``combined``
      - ``true`` = this pod is a standard inference pod (runs both prefill and decode). Default: ``false``.
    * - ``prefillScorePolicy``
-     - How to score prefill pods. ``prefix_cache`` (default), ``least_request``, ``conductor``, or ``token_load``.
+     - How to score prefill pods. ``prefix_cache`` (default), ``least_request``, ``conductor``, ``token_load``, or ``hybrid_cache_load``.
    * - ``decodeScorePolicy``
      - How to score decode pods. ``load_balancing`` (default), ``least_request``, or ``conductor``.
 
@@ -364,7 +364,11 @@ The router keeps two per-pod counters and scores each prefill pod as (lower is b
 - ``active_tokens`` — prompt tokens of the prefill requests the pod is computing right now.
 - ``kv_tokens`` — prompt tokens whose KV cache is still resident on the pod because the decode pod has not finished with the request yet. Weighted by ``kv_weight`` (``AIBRIX_TOKEN_LOAD_KV_WEIGHT``, default ``0.3``) since resident KV costs the pod less than active compute.
 
-Each request is charged ``request_cost + prompt_tokens``, where ``request_cost`` (``AIBRIX_TOKEN_LOAD_REQUEST_COST``, default ``3500``) models the fixed scheduling and KV-transfer work that does not scale with prompt length, and ``prompt_tokens`` is estimated as one token per four bytes of request body. The prefix cache is not consulted.
+Each request is charged ``request_cost + new_tokens``, where ``request_cost`` (``AIBRIX_TOKEN_LOAD_REQUEST_COST``, default ``3500``) models the fixed scheduling and KV-transfer work that does not scale with prompt length, and ``new_tokens`` is the part of the prompt the pod actually has to compute. ``prompt_tokens`` is estimated as one token per four bytes of request body; ``new_tokens`` is derived from it by the first rule that applies:
+
+1. **Session delta.** If the request carries an ``x-session-id`` header and the gateway has seen a shorter prompt for that session (and model) recently, the charge is the growth since that prompt. Each turn of a chat resends the whole history, but the engine only computes the new turn: charging the whole prompt again would make a long conversation look several times more expensive than it is. The last prompt size of a session is kept for ``AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS`` (default ``1800``).
+2. **Prefix match.** If the scoring policy looked the prompt up in the prefix cache (``hybrid_cache_load``), the charge is ``prompt_tokens × (1 − match_percent / 100)``.
+3. **Whole prompt.** Otherwise the whole prompt is charged. ``token_load`` itself does not consult the prefix cache, so without a session header this is what it charges.
 
 **Charge lifecycle**
 
@@ -418,11 +422,78 @@ Or set gateway-wide via ``AIBRIX_PREFILL_SCORE_POLICY=token_load``. The tunables
    * - ``AIBRIX_TOKEN_LOAD_TTL_SECONDS``
      - ``3600``
      - Maximum age of an outstanding charge before it is force-released.
+   * - ``AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS``
+     - ``1800``
+     - How long the last prompt size of a session is remembered for the session-delta charge.
 
 **When to use token_load:**
 
 - Your prompt lengths vary widely (for example agentic or RAG traffic mixed with short chat) and you see a TTFT tail on some prefill pods under ``least_request``
 - Prefix-cache locality matters less than balancing prefill compute, or your prefix cache hit rate is low
+
+If prefix-cache locality does matter, use :ref:`hybrid_cache_load <pd-hybrid-cache-load-policy>` instead, which keeps this ledger and adds the cache lookup on top.
+
+.. _pd-hybrid-cache-load-policy:
+
+Hybrid Cache-Load Scoring Policy
+--------------------------------
+
+``hybrid_cache_load`` combines the prefix-cache lookup of ``prefix_cache`` with the token ledger of ``token_load``. ``prefix_cache`` always prefers the pod that holds the prompt's prefix, even when that pod is buried under long prompts and an idle neighbour would answer sooner; ``token_load`` ignores the cache and recomputes prefixes another pod already holds. The hybrid policy lets the cache decide between idle pods and the load decide between busy ones.
+
+.. code-block:: text
+
+    r        = match_percent / 100        (0 when below AIBRIX_MIN_MATCH_PCT)
+    discount = 1 − r² × factor
+    score    = load × discount            when load ≥ 1
+    score    = discount                   when load < 1 (idle pod)
+
+where ``load = active_tokens + kv_weight × kv_tokens`` is the same ledger ``token_load`` reads and ``factor`` is ``AIBRIX_HYBRID_CACHE_LOAD_FACTOR`` (default ``0.5``). Lower is better.
+
+- On idle pods every score is a bare discount below 1, so the pod with the best prefix match wins outright.
+- On busy pods the match only discounts the load. With the default factor a full match halves a pod's load, so a pod holding the prefix loses once it carries more than twice the load of an idle neighbour.
+- The square keeps small matches from moving the decision: a 30 % match discounts by 4.5 %, a 70 % match by 24.5 %.
+
+**Minimum match.** Prompts that share only a system prompt or a few template tokens would otherwise all attract to the pod that served the first of them. ``AIBRIX_MIN_MATCH_PCT`` (default ``0``, i.e. off) treats any match below the threshold as no match, both in the score and in the ``new_tokens`` charge. A value between ``30`` and ``60`` is a reasonable starting point when your system prompt is a small part of a typical request.
+
+The charge lifecycle, the metrics and the ``AIBRIX_TOKEN_LOAD_*`` tunables are those of :ref:`token_load <pd-token-load-policy>`; the prefix-match rule of the ``new_tokens`` estimate applies, so a pod that already holds most of the prompt is charged only for the rest. Like ``prefix_cache``, the policy needs a tokenizer (``AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE``) and warms the prefix index with the selected pod after each request.
+
+**Configuration**
+
+.. code-block:: yaml
+
+    annotations:
+      model.aibrix.ai/config: |
+        {
+          "profiles": {
+            "default": {
+              "routingStrategy": "pd",
+              "routingConfig": {
+                "prefillScorePolicy": "hybrid_cache_load"
+              }
+            }
+          }
+        }
+
+Or set gateway-wide via ``AIBRIX_PREFILL_SCORE_POLICY=hybrid_cache_load``.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 36 12 52
+
+   * - Variable
+     - Default
+     - Description
+   * - ``AIBRIX_HYBRID_CACHE_LOAD_FACTOR``
+     - ``0.5``
+     - Discount a full prefix match applies to a pod's load. Higher values favour cache affinity over balance.
+   * - ``AIBRIX_MIN_MATCH_PCT``
+     - ``0``
+     - Prefix-match percentage below which a match is ignored. ``0`` disables the threshold.
+
+**When to use hybrid_cache_load:**
+
+- Multi-turn or shared-prefix traffic where prefix-cache hits are worth chasing, but prompt lengths vary enough that ``prefix_cache`` leaves some pods with a TTFT tail
+- You already run ``token_load`` and want cache affinity back without giving up the load balance
 
 
 Complete Example
@@ -543,6 +614,7 @@ Each prefill pod is scored by the selected policy. Pods with a request count mor
 - ``prefix_cache`` (default): ``score = (100 − prefix_match_percent) × 0.1 + req_count / max_req_count`` — lower score means more cache hits and less load.
 - ``least_request``: ``score = req_count``.
 - ``token_load``: ``score = active_tokens + kv_weight × kv_tokens`` — the token-weighted load the router has charged to the pod; see :ref:`Token Load Scoring Policy <pd-token-load-policy>`.
+- ``hybrid_cache_load``: ``score = load × (1 − (prefix_match_percent / 100)² × factor)``, or just the discount when the pod is idle — cache affinity decides between idle pods, load between busy ones; see :ref:`Hybrid Cache-Load Scoring Policy <pd-hybrid-cache-load-policy>`.
 
 **Step 4 — Decode scoring**
 
@@ -582,16 +654,25 @@ These are set on the **gateway plugin** deployment.
      - Seconds before a prefill request to a prefill pod times out.
    * - ``AIBRIX_PREFILL_SCORE_POLICY``
      - ``prefix_cache``
-     - Default scoring policy for selecting prefill pods. ``prefix_cache``, ``least_request``, ``conductor``, or ``token_load``.
+     - Default scoring policy for selecting prefill pods. ``prefix_cache``, ``least_request``, ``conductor``, ``token_load``, or ``hybrid_cache_load``.
    * - ``AIBRIX_TOKEN_LOAD_KV_WEIGHT``
      - ``0.3``
-     - ``token_load`` only. Weight of resident KV tokens in the prefill score. Must be positive.
+     - ``token_load`` and ``hybrid_cache_load``. Weight of resident KV tokens in the prefill score. Must be positive.
    * - ``AIBRIX_TOKEN_LOAD_REQUEST_COST``
      - ``3500``
-     - ``token_load`` only. Fixed per-request cost, in tokens, added to every prefill charge. Must be positive.
+     - ``token_load`` and ``hybrid_cache_load``. Fixed per-request cost, in tokens, added to every prefill charge. Must be positive.
    * - ``AIBRIX_TOKEN_LOAD_TTL_SECONDS``
      - ``3600``
-     - ``token_load`` only. Charges older than this are force-released and logged; must exceed the longest legitimate request. Must be positive.
+     - ``token_load`` and ``hybrid_cache_load``. Charges older than this are force-released and logged; must exceed the longest legitimate request. Must be positive.
+   * - ``AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS``
+     - ``1800``
+     - ``token_load`` and ``hybrid_cache_load``. How long the last prompt size of an ``x-session-id`` session is remembered for the session-delta charge. Must be positive.
+   * - ``AIBRIX_HYBRID_CACHE_LOAD_FACTOR``
+     - ``0.5``
+     - ``hybrid_cache_load`` only. Discount a full prefix match applies to a pod's token load. Must be positive.
+   * - ``AIBRIX_MIN_MATCH_PCT``
+     - ``0``
+     - ``hybrid_cache_load`` only. Prefix matches below this percentage are ignored. ``0`` disables the threshold.
    * - ``AIBRIX_DECODE_SCORE_POLICY``
      - ``load_balancing``
      - Default scoring policy for selecting decode pods. ``load_balancing``, ``least_request``, or ``conductor``.

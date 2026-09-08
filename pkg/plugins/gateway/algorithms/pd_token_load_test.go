@@ -45,7 +45,11 @@ var tokenLoadTestConfig = pd.TokenLoadConfig{KVWeight: 0.5, RequestCost: 0, TTL:
 // prefill calls go through client, mirroring NewPDRouter's wiring of the
 // tracker into the policy and the executor.
 func newTokenLoadTestRouter(client *http.Client) (*pdRouter, *pd.TokenLoadTracker) {
-	tokenLoad := pd.NewTokenLoadTrackerWithConfig(tokenLoadTestConfig)
+	return newTokenLoadTestRouterWithConfig(client, tokenLoadTestConfig)
+}
+
+func newTokenLoadTestRouterWithConfig(client *http.Client, cfg pd.TokenLoadConfig) (*pdRouter, *pd.TokenLoadTracker) {
+	tokenLoad := pd.NewTokenLoadTrackerWithConfig(cfg)
 	tracker := pd.NewPrefillRequestTracker()
 	r := &pdRouter{
 		cache:                 cache.NewForTest(),
