@@ -209,6 +209,7 @@ export interface Deployment {
   implementationKind?: string;
   servingName: string;
   createdAt: string;
+  inferenceUrl?: string;
 }
 
 export type ModelCategory = 'LLM' | 'Audio' | 'Image' | 'Video' | 'Vision' | 'Embedding' | 'Reranks';

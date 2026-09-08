@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Deployment } from '../data/mockData';
-import { callableDeployments, streamPlaygroundChat } from './playground';
+import { callableDeployments, preferredDeployment, streamPlaygroundChat } from './playground';
 
 function deployment(overrides: Partial<Deployment>): Deployment {
   return {
@@ -23,11 +23,15 @@ function deployment(overrides: Partial<Deployment>): Deployment {
 
 describe('Playground helpers', () => {
   it('lists only ready deployments with a serving name', () => {
-    expect(callableDeployments([
+    const items = [
       deployment({ id: 'ready' }),
       deployment({ id: 'starting', status: 'Deploying' }),
       deployment({ id: 'unnamed', servingName: '' }),
-    ]).map((item) => item.id)).toEqual(['ready']);
+    ];
+    const callable = callableDeployments(items);
+    expect(callable.map((item) => item.id)).toEqual(['ready']);
+    expect(preferredDeployment(callable, 'ready')?.id).toBe('ready');
+    expect(preferredDeployment(callable, '/models/mock')?.id).toBe('ready');
   });
 
   it('streams fragmented OpenAI chat completion events', async () => {

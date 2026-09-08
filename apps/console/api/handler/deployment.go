@@ -35,8 +35,9 @@ const (
 
 type DeploymentHandler struct {
 	pb.UnimplementedDeploymentServiceServer
-	store     store.Store
-	providers *provider.Registry
+	store           store.Store
+	providers       *provider.Registry
+	gatewayEndpoint string
 }
 
 func NewDeploymentHandler(s store.Store, registries ...*provider.Registry) *DeploymentHandler {
@@ -47,12 +48,19 @@ func NewDeploymentHandler(s store.Store, registries ...*provider.Registry) *Depl
 	return &DeploymentHandler{store: s, providers: registry}
 }
 
+// SetGatewayEndpoint records the AIBrix gateway used to call deployments.
+// The chat completions URL is derived from this value and stamped onto
+// Deployment responses; it is not persisted.
+func (h *DeploymentHandler) SetGatewayEndpoint(endpoint string) {
+	h.gatewayEndpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
+}
+
 func (h *DeploymentHandler) ListDeployments(ctx context.Context, req *pb.ListDeploymentsRequest) (*pb.ListDeploymentsResponse, error) {
 	deployments, err := h.store.ListDeployments(ctx, req.Search)
 	if err != nil {
 		return nil, err
 	}
-	return &pb.ListDeploymentsResponse{Deployments: deployments}, nil
+	return &pb.ListDeploymentsResponse{Deployments: h.withInferenceMetadata(deployments...)}, nil
 }
 
 func (h *DeploymentHandler) GetDeployment(ctx context.Context, req *pb.GetDeploymentRequest) (*pb.Deployment, error) {
@@ -60,7 +68,11 @@ func (h *DeploymentHandler) GetDeployment(ctx context.Context, req *pb.GetDeploy
 	if err != nil {
 		return nil, err
 	}
-	return h.refreshDeploymentStatus(ctx, deployment)
+	refreshed, err := h.refreshDeploymentStatus(ctx, deployment)
+	if err != nil {
+		return nil, err
+	}
+	return h.withInferenceMetadata(refreshed)[0], nil
 }
 
 func (h *DeploymentHandler) CreateDeployment(ctx context.Context, req *pb.CreateDeploymentRequest) (*pb.Deployment, error) {
@@ -114,12 +126,16 @@ func (h *DeploymentHandler) CreateDeployment(ctx context.Context, req *pb.Create
 			}
 			return nil, err
 		}
-		return saved, nil
+		return h.withInferenceMetadata(saved)[0], nil
 	}
 	if req.GetImplementation() != nil || req.GetOverrides() != nil {
 		return nil, status.Error(codes.InvalidArgument, "template is required when implementation or overrides are set")
 	}
-	return h.store.CreateDeployment(ctx, req)
+	created, err := h.store.CreateDeployment(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return h.withInferenceMetadata(created)[0], nil
 }
 
 func (h *DeploymentHandler) DeleteDeployment(ctx context.Context, req *pb.DeleteDeploymentRequest) (*emptypb.Empty, error) {
@@ -179,4 +195,26 @@ func (h *DeploymentHandler) refreshDeploymentStatus(ctx context.Context, deploym
 		return refreshed, nil
 	}
 	return h.store.UpdateDeploymentStatus(ctx, refreshed)
+}
+
+func inferenceChatCompletionsURL(endpoint string) string {
+	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
+	if endpoint == "" {
+		return ""
+	}
+	return endpoint + "/v1/chat/completions"
+}
+
+func (h *DeploymentHandler) withInferenceMetadata(deployments ...*pb.Deployment) []*pb.Deployment {
+	url := ""
+	if h != nil {
+		url = inferenceChatCompletionsURL(h.gatewayEndpoint)
+	}
+	for _, deployment := range deployments {
+		if deployment == nil || url == "" || deployment.GetServingName() == "" {
+			continue
+		}
+		deployment.InferenceUrl = url
+	}
+	return deployments
 }

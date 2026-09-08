@@ -84,7 +84,7 @@ func deploymentContext(email string) context.Context {
 
 func TestDeploymentProtoExposesDetailMetadata(t *testing.T) {
 	fields := (&pb.Deployment{}).ProtoReflect().Descriptor().Fields()
-	for _, name := range []string{"serving_name", "created_at"} {
+	for _, name := range []string{"serving_name", "created_at", "inference_url"} {
 		if fields.ByName(protoreflect.Name(name)) == nil {
 			t.Errorf("Deployment proto is missing %s", name)
 		}
@@ -117,6 +117,7 @@ func TestDeploymentHandlerTemplateLifecycle(t *testing.T) {
 
 	implementation := &fakeDeploymentProvider{}
 	handler := NewDeploymentHandler(s, provider.NewRegistry(implementation))
+	handler.SetGatewayEndpoint("http://gateway.example/")
 	created, err := handler.CreateDeployment(ctx, &pb.CreateDeploymentRequest{
 		Name: "test-deployment",
 		Template: &pb.DeploymentTemplateRef{
@@ -136,6 +137,12 @@ func TestDeploymentHandlerTemplateLifecycle(t *testing.T) {
 	}
 	if created.GetServingName() != model.GetServingName() {
 		t.Fatalf("serving_name = %q, want %q", created.GetServingName(), model.GetServingName())
+	}
+	if created.GetInferenceUrl() != "http://gateway.example/v1/chat/completions" {
+		t.Fatalf("inference_url = %q", created.GetInferenceUrl())
+	}
+	if created.GetDeploymentId() == "" {
+		t.Fatalf("deployment_id is empty")
 	}
 	if _, err := time.Parse(time.RFC3339, created.GetCreatedAt()); err != nil {
 		t.Fatalf("created_at = %q, want RFC3339 timestamp: %v", created.GetCreatedAt(), err)
