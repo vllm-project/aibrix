@@ -54,6 +54,7 @@ gatewayPlugin:
     image:
       repository: busybox
       tag: stable
+      imagePullPolicy: IfNotPresent
   container:
     image:
       repository: aibrix/gateway-plugins
@@ -131,6 +132,7 @@ gpuOptimizer:
     image:
       repository: aibrix/metadata-service
       tag: nightly
+      imagePullPolicy: IfNotPresent
     resources:
       limits:
         cpu: 500m
@@ -265,6 +267,7 @@ metadata:
       image:
         repository: busybox
         tag: stable
+        imagePullPolicy: IfNotPresent
     container:
       image:
         repository: aibrix/metadata-service

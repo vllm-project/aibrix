@@ -23,6 +23,7 @@ spec:
       containers:
         - name: gpu-optimizer
           image: {{ .Values.gpuOptimizer.container.image.repository }}:{{ .Values.gpuOptimizer.container.image.tag }}
+          imagePullPolicy: {{ .Values.gpuOptimizer.container.image.imagePullPolicy | default "IfNotPresent" }}
           command: ["python", "-m", "aibrix.gpu_optimizer.app"]
           ports:
             - containerPort: 8080
