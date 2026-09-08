@@ -470,7 +470,7 @@ func (s *Server) pinVideoJobSubResource(ctx context.Context, routingCtx *types.R
 	}
 
 	pod, err := s.cache.GetPod(podName, podNamespace)
-	if err != nil || !utils.IsPodReady(pod) {
+	if err != nil || pod == nil || !utils.IsPodReady(pod) {
 		s.forgetVideoJobPod(ctx, videoID)
 		klog.ErrorS(err, "video job's pod is no longer available", "requestID", requestID, "videoID", videoID, "podName", podName, "podNamespace", podNamespace)
 		return nil, model, term, videoNotFoundResponse(videoID)
@@ -519,7 +519,7 @@ func (s *Server) maybeForgetVideoJobAfterDelete(ctx context.Context, routerCtx *
 	if routerCtx == nil || routerCtx.ReqHeaders[methodKey] != http.MethodDelete {
 		return
 	}
-	if !((statusCode >= 200 && statusCode < 300) || statusCode == http.StatusNotFound) {
+	if (statusCode < 200 || statusCode >= 300) && statusCode != http.StatusNotFound {
 		return
 	}
 	videoID, ok := extractVideoIDFromPath(routerCtx.ReqPath)
