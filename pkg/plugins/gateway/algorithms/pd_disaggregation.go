@@ -206,6 +206,20 @@ type pdRouter struct {
 	selectionCounts       map[string]int64
 	podSelector           selector.PodSelector
 	prefillExecutor       prefill.PrefillExecutor
+
+	// selectMu makes "read every candidate's tracked load, pick the best,
+	// register the pick" one atomic step in filterPrefillDecodePods. Without
+	// it, concurrent requests in a burst all read the same pre-burst tracker
+	// snapshot and pile onto whichever pods looked idle at read time, because
+	// the registration that would have made them visible to each other only
+	// happened after selection returned.
+	//
+	// Only load-dependent work runs under it: the imbalance fast paths, the
+	// per-pod scoring, finalPDScore and the two tracker registrations.
+	// Tokenization and prefix matching (PrefillScorePolicy.Prepare) depend
+	// only on the request and run before the lock is taken. countersMu is
+	// taken inside selectMu (in finalPDScore) and never the other way round.
+	selectMu sync.Mutex
 }
 
 func newPrefixCachePrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashTable) pd.PrefillScorePolicy {
@@ -288,6 +302,9 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		}
 	}
 
+	// Select registers the chosen pods with pendingDecodeTracker and
+	// prefillRequestTracker atomically with the decision (see selectMu);
+	// Route owns the matching removals.
 	prefillPod, decodePod, err := r.podSelector.Select(ctx, readyPods)
 	if err != nil {
 		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
@@ -295,7 +312,6 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		return "", fmt.Errorf("failed to filter prefill/decode pods for request %s: %w", ctx.RequestID, err)
 	}
 
-	r.pendingDecodeTracker.AddPendingDecode(ctx.RequestID, decodePod.Name)
 	defer r.pendingDecodeTracker.RemovePendingDecode(ctx.RequestID)
 
 	if prefillPod != nil {
@@ -306,9 +322,8 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		}
 		ctx.RespHeaders[HeaderPrefillTargetPod] = prefillPod.Name
 		ctx.RespHeaders[HeaderPrefillTargetPodIP] = prefillPod.Status.PodIP
-		// Register before doPrefillRequest so concurrent scorers see in-flight work.
-		// Executor RemovePrefillRequest (sync/async) is the matching decrement.
-		r.prefillRequestTracker.AddPrefillRequest(ctx.RequestID, prefillPod.Name)
+		// The prefill registration was made by Select; the executor's
+		// RemovePrefillRequest (sync/async) is the matching decrement.
 		err = r.doPrefillRequest(ctx, prefillPod, ctx.Engine)
 
 		if err != nil {
@@ -363,8 +378,15 @@ type Scores struct {
 //     independent: both can fire on the same request if both prefill and decode are
 //     imbalanced, with each narrowing its own side of the pair.
 //
-//  6. Score remaining candidates — scorePrefillPods and scoreDecodePods evaluate
-//     every roleset; finalPDScore picks the roleset with the lowest combined score.
+//  6. Score remaining candidates — scorePreparedPrefillPods and scoreDecodePods
+//     evaluate every roleset; finalPDScore picks the roleset with the lowest
+//     combined score.
+//
+//  7. Register — the chosen decode pod is recorded in pendingDecodeTracker and the
+//     chosen prefill pod in prefillRequestTracker before returning, so the next
+//     selection sees this one. Steps 3b-7 read tracker state and run under
+//     selectMu; steps 1-3a and the policy Prepare step (tokenization, prefix
+//     matching) run before the lock is taken. Route owns the matching removals.
 func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, *v1.Pod, error) {
 	var promptLength int
 	if aibrixPromptLengthBucketing {
@@ -389,18 +411,36 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 				klog.InfoS("no bucket matches prompt length, routing to combined pod",
 					"requestId", routingCtx.RequestID, "promptLength", promptLength, "combinedPods", len(combinedPods),
 					"bucketPrefillPods", len(promptLengthBucketingPrefillPods), "bucketDecodePods", len(promptLengthBucketingDecodePods))
-				return nil, combinedPods[rand.Intn(len(combinedPods))], nil
+				combinedPod := combinedPods[rand.Intn(len(combinedPods))]
+				r.pendingDecodeTracker.AddPendingDecode(routingCtx.RequestID, combinedPod.Name)
+				return nil, combinedPod, nil
 			}
 			// Do not fall back to unfiltered PD pods: each pod group (storm) is sized for a
 			// specific prompt-length range and cross-bucket routing produces incorrect results.
 			return nil, nil, fmt.Errorf("no prompt-length bucket matches prompt length %d and no combined pods available", promptLength)
 		}
+	}
 
+	prefillPol, decodePol, err := r.effectiveScorePolicies(routingCtx)
+	if err != nil {
+		return nil, nil, err
+	}
+	prefillScorer, err := r.preparePrefillScorer(routingCtx, prefillPods, prefillPol)
+	if err != nil {
+		return nil, nil, fmt.Errorf("prefill scorer preparation failed: %w", err)
+	}
+
+	// Everything below reads tracker state that concurrent selections mutate.
+	r.selectMu.Lock()
+	defer r.selectMu.Unlock()
+
+	if aibrixPromptLengthBucketing {
 		// Bucket match exists; check if load imbalance favours a combined pod instead.
 		if r.shouldPickCombined(routingCtx, promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods, combinedPods) {
 			combinedPod := r.scoreCombinedPods(routingCtx, combinedPods)
 			if combinedPod != nil {
 				klog.InfoS("load imbalance detected, selecting combined pod", "requestId", routingCtx.RequestID, "selectedCombinedPod", combinedPod.Name)
+				r.pendingDecodeTracker.AddPendingDecode(routingCtx.RequestID, combinedPod.Name)
 				return nil, combinedPod, nil
 			}
 		}
@@ -429,18 +469,16 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 		)
 	}
 
-	prefillPol, decodePol, err := r.effectiveScorePolicies(routingCtx)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	prefillScores, maxPrefillScore, prefixHashes := r.scorePrefillPods(routingCtx, prefillPods, prefillPol)
+	prefillScores, maxPrefillScore, prefixHashes := r.scorePreparedPrefillPods(routingCtx, prefillPods, prefillScorer)
 	decodeRun := r.scoreDecodePods(routingCtx, decodePods, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage, decodePol)
 	selectedPrefill, selectedDecode, err := r.finalPDScore(routingCtx, prefixHashes, prefillScores, maxPrefillScore, decodeRun)
 	if err != nil {
 		return nil, nil, err
 	}
 
+	// Register while still holding selectMu so the next selection counts this one.
+	r.pendingDecodeTracker.AddPendingDecode(routingCtx.RequestID, selectedDecode.Name)
+	r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, selectedPrefill.Name)
 	return selectedPrefill, selectedDecode, nil
 }
 
@@ -449,7 +487,8 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 //
 // podRequestCount holds per-pod active prefill counts from PrefillRequestTracker for
 // in-flight prefill HTTP calls from other concurrent requests. The current request is
-// not counted yet — it is registered by the caller after selection completes.
+// not counted yet — filterPrefillDecodePods registers it after selection completes,
+// under the same selectMu hold.
 // readyPods is shuffled before evaluation so ties among equally-loaded pods are broken
 // randomly rather than by map iteration order.
 //
@@ -650,7 +689,25 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 // all pods were filtered by the stddev check).
 //
 // Policy resolution: the policy argument, then r.prefillPolicy, then prefix_cache.
+//
+// scorePrefillPods is preparePrefillScorer followed by scorePreparedPrefillPods;
+// filterPrefillDecodePods calls the two halves separately so that Prepare runs
+// before selectMu is taken and only the tracker-dependent half runs under it.
 func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPods []*v1.Pod, prefillPolicy pd.PrefillScorePolicy) (map[string]*Scores, float64, []uint64) {
+	scorer, err := r.preparePrefillScorer(routingCtx, prefillPods, prefillPolicy)
+	if err != nil {
+		return nil, 0, nil
+	}
+	return r.scorePreparedPrefillPods(routingCtx, prefillPods, scorer)
+}
+
+// preparePrefillScorer resolves the prefill policy (the argument, then
+// r.prefillPolicy, then prefix_cache) and runs its Prepare step: tokenization
+// and prefix-cache matching over prefillPods. Prepare depends only on the
+// request and the prefix index, not on tracker state, so callers may run it
+// before taking selectMu. prefillPods may later be narrowed by the imbalance
+// fast paths; a scorer prepared over the wider set scores any subset of it.
+func (r *pdRouter) preparePrefillScorer(routingCtx *types.RoutingContext, prefillPods []*v1.Pod, prefillPolicy pd.PrefillScorePolicy) (pd.PrefillScorer, error) {
 	policy := prefillPolicy
 	if policy == nil {
 		policy = r.prefillPolicy
@@ -662,15 +719,28 @@ func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPod
 		}
 		policy = newPrefixCachePrefillPolicy(tbl)
 	}
+	readyPodsMap := make(map[string]struct{}, len(prefillPods))
+	for _, pod := range prefillPods {
+		readyPodsMap[pod.Name] = struct{}{}
+	}
+	scorer, err := policy.Prepare(routingCtx, prefillPods, readyPodsMap)
+	if err != nil {
+		klog.ErrorS(err, "prefill scorer preparation failed",
+			"request_id", routingCtx.RequestID, "policy", policy.Name(), "model", routingCtx.Model)
+		return nil, err
+	}
+	return scorer, nil
+}
+
+// scorePreparedPrefillPods is the tracker-dependent half of scorePrefillPods:
+// it reads the current prefill request counts and scores prefillPods with an
+// already-prepared scorer. filterPrefillDecodePods calls it under selectMu.
+func (r *pdRouter) scorePreparedPrefillPods(routingCtx *types.RoutingContext, prefillPods []*v1.Pod, scorer pd.PrefillScorer) (map[string]*Scores, float64, []uint64) {
 	utils.CryptoShuffle(prefillPods)
 	podRequestCount := r.prefillRequestTracker.GetPrefillRequestCountsForPods(prefillPods)
 
 	var maxRequestCount float64 = 1
 	requestCounts := make([]float64, 0, len(podRequestCount))
-	readyPodsMap := make(map[string]struct{}, len(prefillPods))
-	for _, pod := range prefillPods {
-		readyPodsMap[pod.Name] = struct{}{}
-	}
 	for _, cnt := range podRequestCount {
 		cf := float64(cnt)
 		requestCounts = append(requestCounts, cf)
@@ -680,13 +750,6 @@ func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPod
 	}
 	meanRequestCount := mean(requestCounts)
 	stdDevRequestCount := standardDeviation(requestCounts)
-
-	scorer, err := policy.Prepare(routingCtx, prefillPods, readyPodsMap)
-	if err != nil {
-		klog.ErrorS(err, "prefill scorer preparation failed",
-			"request_id", routingCtx.RequestID, "policy", policy.Name(), "model", routingCtx.Model)
-		return nil, 0, nil
-	}
 
 	prefillScores := map[string]*Scores{}
 	maxPrefillScore := float64(1)
