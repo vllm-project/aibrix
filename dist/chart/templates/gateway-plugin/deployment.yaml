@@ -58,6 +58,7 @@ spec:
       initContainers:
         - name: init-c
           image: {{ .Values.gatewayPlugin.initContainer.image.repository }}:{{ .Values.gatewayPlugin.initContainer.image.tag }}
+          imagePullPolicy: {{ .Values.gatewayPlugin.initContainer.image.imagePullPolicy | default "IfNotPresent" }}
           {{- if include "aibrix.redis.connectionHasPassword" (dict "Values" .Values "component" "gatewayPlugin") }}
           env:
             - name: REDIS_PASSWORD

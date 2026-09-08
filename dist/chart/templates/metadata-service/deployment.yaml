@@ -24,6 +24,7 @@ spec:
       initContainers:
         - name: init-redis
           image: {{ .Values.metadata.service.initContainer.image.repository }}:{{ .Values.metadata.service.initContainer.image.tag }}
+          imagePullPolicy: {{ .Values.metadata.service.initContainer.image.imagePullPolicy | default "IfNotPresent" }}
           {{- if include "aibrix.redis.connectionHasPassword" (dict "Values" .Values "component" "metadataService") }}
           env:
             - name: REDIS_PASSWORD
