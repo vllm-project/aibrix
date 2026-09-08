@@ -66,7 +66,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 	contentType := routingCtx.ReqHeaders[contentTypeKey]
 	if isMultipartFormPath(requestPath) && isMultipartRequest(contentType) {
 		// Parse multipart form data for audio/video endpoints
-		model, stream, errRes = parseMultipartFormData(requestID, contentType, body.RequestBody.GetBody())
+		model, stream, errRes = parseMultipartFormData(requestID, requestPath, contentType, body.RequestBody.GetBody())
 		if errRes != nil {
 			return errRes, model, stream, term
 		}
@@ -112,6 +112,20 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 			klog.ErrorS(nil, "incorrect routing strategy", "requestID", requestID, "routing-strategy", strategy)
 			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("incorrect routing strategy %s", strategy), "", "", HeaderErrorRouting, "true"), model, stream, term
 		}
+		routingCtx.Algorithm = routingAlgorithm
+	}
+
+	// The async video job (POST /v1/videos) must always be pinned to the pod that
+	// creates it: the generated video lives on that pod's local disk, and
+	// recordVideoJobPodFromResponse (called from HandleResponseBody) records
+	// routingCtx's target pod so follow-up GET/DELETE calls can be routed back to
+	// it. RouterNotSet delegates routing to the HTTPRoute/k8s Service below and
+	// never calls SetTargetPod, which would leave that pod mapping unrecorded and
+	// block recordVideoJobPodFromResponse's TargetPod() call until the request's
+	// context is done. Force a real algorithm here regardless of the client's
+	// routing-strategy header (or lack of one).
+	if routingAlgorithm == routing.RouterNotSet && pathWithoutQuery(requestPath) == PathVideos {
+		routingAlgorithm = routing.RouterLeastRequest
 		routingCtx.Algorithm = routingAlgorithm
 	}
 

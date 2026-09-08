@@ -19,6 +19,7 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -199,6 +200,35 @@ func TestHandleVideoJobSubResourceHeaders_UnknownVideoReturns404(t *testing.T) {
 	require.NotNil(t, resp.GetImmediateResponse())
 	assert.Equal(t, envoyTypePb.StatusCode_NotFound, resp.GetImmediateResponse().GetStatus().GetCode())
 	assert.EqualValues(t, 0, term)
+}
+
+// TestHandleVideoJobSubResourceHeaders_PodUnavailableSetsModelForMetrics covers
+// the case where the video_id is known but its owning pod is no longer
+// available (stale/rescheduled pod). Before the fix, routingCtx.Model was only
+// set on the success path, so gateway.go's st.model (taken from this same
+// routingCtx) stayed empty and the caller's if st.model == "" check silently
+// skipped emitMetricsCounterHelper(GatewayRequestModelFailTotal, ...),
+// undercounting this failure mode in gateway_request_fail metrics even though
+// the client still correctly got a 404.
+func TestHandleVideoJobSubResourceHeaders_PodUnavailableSetsModelForMetrics(t *testing.T) {
+	mockCache := new(MockCache)
+	s := &Server{cache: mockCache}
+	ctx := context.Background()
+
+	s.rememberVideoJobPod(ctx, "video-1", "pod-a", "ns-a", "wan2.1-vace-1.3b", time.Hour)
+	mockCache.On("GetPod", "pod-a", "ns-a").Return((*v1.Pod)(nil), errors.New("pod not found"))
+
+	routingCtx := types.NewRoutingContext(ctx, "", "", "", "req-1", "")
+	routingCtx.ReqHeaders = map[string]string{methodKey: "GET"}
+
+	resp, term := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, "req-1", "/v1/videos/video-1", "video-1")
+
+	require.NotNil(t, resp.GetImmediateResponse())
+	assert.Equal(t, envoyTypePb.StatusCode_NotFound, resp.GetImmediateResponse().GetStatus().GetCode())
+	assert.EqualValues(t, 0, term)
+	assert.Equal(t, "wan2.1-vace-1.3b", routingCtx.Model, "model must be attributed on routingCtx even when the pod lookup fails, so the fail-metric isn't silently dropped")
+
+	mockCache.AssertExpectations(t)
 }
 
 // TestHandleRequestHeaders_VideoStatusPoll_Bodyless reproduces the reported

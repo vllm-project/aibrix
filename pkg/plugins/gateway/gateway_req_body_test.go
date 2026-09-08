@@ -883,6 +883,77 @@ func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
 	mockModelRL.AssertExpectations(t)
 }
 
+// TestHandleRequestBody_AsyncVideoJobWithoutRoutingStrategyGetsPinned guards against a
+// regression where POST /v1/videos submitted without a routing-strategy header (the
+// out-of-the-box default, and what the async example in docs/source/features/vllm-omni.rst
+// uses) fell into the RouterNotSet branch, which never calls SetTargetPod. That left
+// recordVideoJobPodFromResponse's routerCtx.TargetPod() call (see gateway_video_routing.go)
+// blocking until the request's context was done, and the video_id -> pod mapping never
+// recorded -- breaking all follow-up GET/DELETE calls for that job.
+func TestHandleRequestBody_AsyncVideoJobWithoutRoutingStrategyGetsPinned(t *testing.T) {
+	cache.InitForTest()
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: "ns-a"},
+		Status: v1.PodStatus{
+			PodIP:      "1.2.3.4",
+			Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+		},
+	}
+	podList := &utils.PodArray{Pods: []*v1.Pod{pod}}
+
+	mockCache.On("HasModel", "wan2.1").Return(true)
+	mockCache.On("ListPodsByModel", "wan2.1").Return(podList, nil)
+	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "wan2.1").Return(int64(1))
+	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+	server := &Server{cache: mockCache}
+
+	body, contentType := buildMultipartForm(t, map[string]string{"model": "wan2.1", "prompt": "a cat"})
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{Body: body},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathVideos
+	routingCtx.ReqHeaders[contentTypeKey] = contentType
+	// Deliberately no routing-strategy header: this is the RouterNotSet default.
+
+	resp, model, stream, term := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	require.NotNil(t, resp)
+	require.Nil(t, resp.GetImmediateResponse(), "async video job submission must not be rejected")
+	assert.Equal(t, "wan2.1", model)
+	assert.False(t, stream)
+	assert.Equal(t, int64(1), term)
+	assert.Equal(t, routingalgorithms.RouterLeastRequest, routingCtx.Algorithm,
+		"POST /v1/videos must not stay on RouterNotSet's HTTPRoute passthrough")
+
+	// TargetPod() must already be set -- it must not need to wait on ctx.Done() to unblock.
+	done := make(chan *v1.Pod, 1)
+	go func() { done <- routingCtx.TargetPod() }()
+	select {
+	case targetPod := <-done:
+		require.NotNil(t, targetPod)
+		assert.Equal(t, "pod-a", targetPod.Name)
+	case <-time.After(time.Second):
+		t.Fatal("TargetPod() blocked: the async video job was never pinned to a pod")
+	}
+
+	foundTargetPod := false
+	for _, h := range resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders() {
+		if h.Header.Key == HeaderTargetPod {
+			foundTargetPod = true
+		}
+	}
+	assert.True(t, foundTargetPod, "HeaderTargetPod must be set so envoy pins the request to the recorded pod")
+}
+
 // registerTestRouter registers the shared TestRouterAlgorithm mock router so a
 // request can be routed with it. Idempotent across tests.
 func registerTestRouter(mockRouter *mockRouter) {

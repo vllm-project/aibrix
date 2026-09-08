@@ -17,7 +17,9 @@ limitations under the License.
 package gateway
 
 import (
+	"bytes"
 	"context"
+	"mime/multipart"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +29,7 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -34,6 +37,19 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// buildMultipartForm encodes fields as a multipart/form-data body and returns
+// the body along with the Content-Type header (including boundary).
+func buildMultipartForm(t *testing.T, fields map[string]string) (body []byte, contentType string) {
+	t.Helper()
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	for k, v := range fields {
+		require.NoError(t, w.WriteField(k, v))
+	}
+	require.NoError(t, w.Close())
+	return buf.Bytes(), w.FormDataContentType()
+}
 
 func int64Ptr(v int64) *int64 {
 	return &v
@@ -1741,6 +1757,41 @@ func TestDeriveRoutingStrategyFromContext(t *testing.T) {
 			got, ok := deriveRoutingStrategyFromContext(tt.ctx)
 			assert.Equal(t, tt.want, got)
 			assert.Equal(t, tt.wantOK, ok)
+		})
+	}
+}
+
+// TestParseMultipartFormData_IgnoresStreamForVideoPaths guards against a
+// client (or an SDK reusing a generic multipart helper across audio/video
+// calls) sending stream=true on the async, never-streamed Videos API. If that
+// field were honored, HandleResponseBody would take the SSE branch instead of
+// calling recordVideoJobPodFromResponse, and the video_id->pod mapping would
+// never be recorded -- breaking follow-up GET/DELETE calls with a spurious
+// "video not found".
+func TestParseMultipartFormData_IgnoresStreamForVideoPaths(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		wantStream bool
+	}{
+		{"videos create ignores stream field", PathVideos, false},
+		{"videos sync create ignores stream field", PathVideosSync, false},
+		{"videos create with query string still ignores stream field", PathVideos + "?foo=bar", false},
+		{"audio transcription honors stream field", PathAudioTranscriptions, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, contentType := buildMultipartForm(t, map[string]string{
+				"model":  "test-model",
+				"stream": "true",
+			})
+
+			model, stream, errRes := parseMultipartFormData("req-1", tt.path, contentType, body)
+
+			assert.Nil(t, errRes)
+			assert.Equal(t, "test-model", model)
+			assert.Equal(t, tt.wantStream, stream)
 		})
 	}
 }

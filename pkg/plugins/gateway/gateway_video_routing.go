@@ -469,6 +469,13 @@ func (s *Server) pinVideoJobSubResource(ctx context.Context, routingCtx *types.R
 		return nil, "", term, videoNotFoundResponse(videoID)
 	}
 
+	// Set as soon as the model is known (even on the error returns below) so
+	// gateway.go's st.model, taken from this same routingCtx, isn't left empty --
+	// an empty model there skips emitMetricsCounterHelper(GatewayRequestModelFailTotal),
+	// which would otherwise make stale/rescheduled-pod failures invisible to
+	// gateway_request_fail metrics.
+	routingCtx.Model = model
+
 	pod, err := s.cache.GetPod(podName, podNamespace)
 	if err != nil || pod == nil || !utils.IsPodReady(pod) {
 		s.forgetVideoJobPod(ctx, videoID)
@@ -476,7 +483,6 @@ func (s *Server) pinVideoJobSubResource(ctx context.Context, routingCtx *types.R
 		return nil, model, term, videoNotFoundResponse(videoID)
 	}
 
-	routingCtx.Model = model
 	routingCtx.SetTargetPod(pod)
 	targetPodIP := routingCtx.TargetAddress()
 	if targetPodIP == "" {

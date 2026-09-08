@@ -24,7 +24,8 @@ Video generation needs a bit more from the gateway than a stateless chat complet
 
 .. code-block:: text
 
-    POST /v1/videos              ──►  routed to any ready pod for the model (normal routing)
+    POST /v1/videos              ──►  gateway selects a pod for the model (least-request,
+                                       even without an explicit routing-strategy header)
                                        gateway records: video_id → owning pod
 
     GET  /v1/videos/{id}         ──►  pinned back to the owning pod (only it has the job)

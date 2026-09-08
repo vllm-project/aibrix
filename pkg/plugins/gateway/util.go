@@ -555,9 +555,17 @@ func isMultipartRequest(contentType string) bool {
 
 // parseMultipartFormData parses multipart/form-data request body and extracts the model field.
 // It returns the model name, stream flag, and any processing error response.
+//
+// requestPath is used to skip the "stream" field for vLLM-Omni's Videos API
+// (PathVideos, PathVideosSync): video creation is an async job -- HandleResponseBody
+// relies on stream being false there to reach recordVideoJobPodFromResponse, so a
+// stray stream=true field (e.g. from an SDK reusing a generic multipart helper across
+// audio/video calls) must not be allowed to route the response down the SSE branch
+// instead.
 // nolint:nakedret
-func parseMultipartFormData(requestID string, contentType string, requestBody []byte) (model string, stream bool, errRes *extProcPb.ProcessingResponse) {
+func parseMultipartFormData(requestID, requestPath, contentType string, requestBody []byte) (model string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	const trueStr = "true"
+	isVideoPath := pathWithoutQuery(requestPath) == PathVideos || pathWithoutQuery(requestPath) == PathVideosSync
 
 	// Extract boundary from Content-Type
 	mediaType, params, err := mime.ParseMediaType(contentType)
@@ -604,6 +612,11 @@ func parseMultipartFormData(requestID string, contentType string, requestBody []
 			model = strings.TrimSpace(string(modelBytes))
 
 		case "stream":
+			if isVideoPath {
+				// Video creation never streams; ignore a client-supplied stream field
+				// rather than letting it flip HandleResponseBody onto the SSE branch.
+				break
+			}
 			streamBytes, err := io.ReadAll(part)
 			if err == nil {
 				streamVal := strings.TrimSpace(strings.ToLower(string(streamBytes)))
