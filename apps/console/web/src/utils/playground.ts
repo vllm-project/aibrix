@@ -20,10 +20,14 @@ export interface PlaygroundChatRequest {
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
+function servingNameOf(deployment: Deployment): string {
+  return deployment.servingName?.trim() ?? '';
+}
+
 export function callableDeployments(deployments: Deployment[]): Deployment[] {
   return deployments.filter(
     (deployment) => normalizeDeploymentStatus(deployment.status) === 'Ready'
-      && deployment.servingName.trim() !== '',
+      && servingNameOf(deployment) !== '',
   );
 }
 
@@ -34,7 +38,7 @@ export function preferredDeployment(
   if (!requestedDeployment) return deployments[0] ?? null;
   return deployments.find(
     (deployment) => deployment.id === requestedDeployment
-      || deployment.servingName === requestedDeployment,
+      || servingNameOf(deployment) === requestedDeployment,
   ) ?? deployments[0] ?? null;
 }
 

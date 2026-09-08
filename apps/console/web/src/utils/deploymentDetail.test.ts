@@ -3,7 +3,9 @@ import type { Deployment } from '../data/mockData';
 import {
   canOpenInPlayground,
   deploymentCodeExample,
+  deploymentExamplesAvailable,
   formatDeploymentCreatedAt,
+  playgroundHref,
 } from './deploymentDetail';
 
 const deployment: Deployment = {
@@ -14,6 +16,7 @@ const deployment: Deployment = {
   baseModelId: 'model-1',
   servingName: '/models/mock',
   createdAt: '2026-07-26T08:30:00Z',
+  inferenceUrl: 'http://gateway.example/v1/chat/completions',
   replicas: '1',
   gpusPerReplica: 0,
   gpuType: 'CPU',
@@ -29,11 +32,19 @@ describe('deployment detail helpers', () => {
     expect(canOpenInPlayground({ ...deployment, servingName: '' })).toBe(false);
   });
 
-  it('builds examples from the real serving name and shared gateway endpoint', () => {
+  it('builds examples from the real serving name and inference URL', () => {
     const shell = deploymentCodeExample(deployment, 'shell');
-    expect(shell).toContain('$AIBRIX_GATEWAY_URL/v1/chat/completions');
+    expect(shell).toContain('http://gateway.example/v1/chat/completions');
     expect(shell).toContain('"model": "/models/mock"');
     expect(shell).not.toContain('seedjeffwan');
+    expect(shell).not.toContain('api.aibrix.ai');
+    expect(deploymentExamplesAvailable(deployment)).toBe(true);
+    expect(deploymentExamplesAvailable({ ...deployment, inferenceUrl: '' })).toBe(false);
+  });
+
+  it('carries the selected deployment to the Playground route', () => {
+    expect(playgroundHref(deployment)).toBe('/playground?deployment=deployment-1');
+    expect(playgroundHref({ ...deployment, id: '', servingName: '/models/mock' })).toBe('/playground?deployment=%2Fmodels%2Fmock');
   });
 
   it('formats the API timestamp without inventing a date', () => {
