@@ -63,13 +63,12 @@ func assertPDBucketingRoute(t *testing.T, prompt, stormName string, expectCombin
 	var dst *http.Response
 	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
 
-	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+	chatCompletion := pollPDChatCompletion(t, client, openai.ChatCompletionNewParams{
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage(prompt),
 		},
 		Model: modelNameVLLMBucket,
 	})
-	require.NoError(t, err, "PD bucketing chat completion failed for storm %s", stormName)
 	assert.Equal(t, modelNameVLLMBucket, chatCompletion.Model)
 
 	decodePod := dst.Header.Get("target-pod")
@@ -90,6 +89,37 @@ func assertPDBucketingRoute(t *testing.T, prompt, stormName string, expectCombin
 	}
 
 	t.Logf("storm=%s combined=%v — prefill: %s, decode: %s", stormName, expectCombined, prefillPod, decodePod)
+}
+
+// TestPDDisaggregationVLLMPromptLengthBucketing verifies that with
+// AIBRIX_PROMPT_LENGTH_BUCKETING enabled, the gateway routes prompts to the
+// correct StormService bucket: 0–15 and 16–32 use matching prefill/decode
+// rolesets; prompts above 32 fall back to the combined role.
+func TestPDDisaggregationVLLMPromptLengthBucketing(t *testing.T) {
+	waitForPDDisaggregationRouting(t, modelNameVLLMBucket)
+
+	shortPrompt := promptWithTokenLength(t, 10)
+	mediumPrompt := promptWithTokenLength(t, 20)
+	longPrompt := promptWithTokenLength(t, 40)
+
+	shortTokens, err := utils.TokenizeInputText(shortPrompt)
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(shortTokens), 15)
+
+	mediumTokens, err := utils.TokenizeInputText(mediumPrompt)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(mediumTokens), 16)
+	require.LessOrEqual(t, len(mediumTokens), 32)
+
+	longTokens, err := utils.TokenizeInputText(longPrompt)
+	require.NoError(t, err)
+	require.Greater(t, len(longTokens), 32)
+
+	waitForPDCombinedRouting(t, modelNameVLLMBucket, bucketCombinedStorm, longPrompt)
+
+	assertPDBucketingRoute(t, shortPrompt, bucketShortStorm, false)
+	assertPDBucketingRoute(t, mediumPrompt, bucketMediumStorm, false)
+	assertPDBucketingRoute(t, longPrompt, bucketCombinedStorm, true)
 }
 
 // TestPDDisaggregationVLLMBucketDecodeDownFallbackToCombined verifies that when the
@@ -157,35 +187,4 @@ func TestPDDisaggregationVLLMBucketDecodeDownFallbackToCombined(t *testing.T) {
 	assert.True(t, strings.Contains(decodePod, bucketCombinedStorm),
 		"expected combined pod, got decode=%s", decodePod)
 	t.Logf("fallback confirmed — decode: %s", decodePod)
-}
-
-// TestPDDisaggregationVLLMPromptLengthBucketing verifies that with
-// AIBRIX_PROMPT_LENGTH_BUCKETING enabled, the gateway routes prompts to the
-// correct StormService bucket: 0–15 and 16–32 use matching prefill/decode
-// rolesets; prompts above 32 fall back to the combined role.
-func TestPDDisaggregationVLLMPromptLengthBucketing(t *testing.T) {
-	waitForPDDisaggregationRouting(t, modelNameVLLMBucket)
-
-	shortPrompt := promptWithTokenLength(t, 10)
-	mediumPrompt := promptWithTokenLength(t, 20)
-	longPrompt := promptWithTokenLength(t, 40)
-
-	shortTokens, err := utils.TokenizeInputText(shortPrompt)
-	require.NoError(t, err)
-	require.LessOrEqual(t, len(shortTokens), 15)
-
-	mediumTokens, err := utils.TokenizeInputText(mediumPrompt)
-	require.NoError(t, err)
-	require.GreaterOrEqual(t, len(mediumTokens), 16)
-	require.LessOrEqual(t, len(mediumTokens), 32)
-
-	longTokens, err := utils.TokenizeInputText(longPrompt)
-	require.NoError(t, err)
-	require.Greater(t, len(longTokens), 32)
-
-	waitForPDCombinedRouting(t, modelNameVLLMBucket, bucketCombinedStorm, longPrompt)
-
-	assertPDBucketingRoute(t, shortPrompt, bucketShortStorm, false)
-	assertPDBucketingRoute(t, mediumPrompt, bucketMediumStorm, false)
-	assertPDBucketingRoute(t, longPrompt, bucketCombinedStorm, true)
 }

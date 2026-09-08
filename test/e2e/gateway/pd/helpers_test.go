@@ -30,6 +30,7 @@ var (
 	validateAllPodsAreReady               = framework.ValidateAllPodsAreReady
 	waitForPDDisaggregationRouting        = framework.WaitForPDDisaggregationRouting
 	waitForPDCombinedRouting              = framework.WaitForPDCombinedRouting
+	pollPDChatCompletion                  = framework.PollPDChatCompletion
 )
 
 const (

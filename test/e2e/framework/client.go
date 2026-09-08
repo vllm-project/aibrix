@@ -36,6 +36,7 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -48,6 +49,14 @@ const (
 	ModelNameVLLMBucket = "llama2-7b-vllm-bucket"
 	ModelNameSGLang     = "llama2-7b-sglang"
 	ModelNameTRTLLM     = "llama2-7b-trtllm"
+
+	// config/test runs two gateway-plugin replicas. Each has its own pod cache, so one
+	// successful PD probe is not enough after pod churn — Envoy may send the next
+	// request to the replica that has not seen the update yet.
+	pdRoutingConsecutiveSuccesses = 3
+	pdRoutingWaitTimeout          = 2 * time.Minute
+	pdChatRetryTimeout            = 30 * time.Second
+	pdChatRetryInterval           = 1 * time.Second
 )
 
 func InitializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset, *v1alpha1.Clientset) {
@@ -194,7 +203,7 @@ func ValidateAllPodsAreReady(t *testing.T, client *kubernetes.Clientset, expecte
 		selector = labelSelector[0]
 	}
 	namespace := LoadConfig().Namespace
-	err := wait.PollUntilContextTimeout(context.Background(), 2*time.Second, 60*time.Second,
+	err := wait.PollUntilContextTimeout(context.Background(), 2*time.Second, 2*time.Minute,
 		true, func(ctx context.Context) (bool, error) {
 			podList, err := client.CoreV1().Pods(namespace).List(ctx, v1.ListOptions{LabelSelector: selector})
 			if err != nil {
@@ -209,39 +218,87 @@ func ValidateAllPodsAreReady(t *testing.T, client *kubernetes.Clientset, expecte
 			t.Logf("Waiting for %d pods to be ready. Current count: %d", expectedPodCount, len(activePods))
 			return false, nil
 		})
-	assert.NoError(t, err, "timeout waiting for all pods to be ready")
+	require.NoError(t, err, "timeout waiting for all pods to be ready")
+}
+
+// PollPDChatCompletion retries a PD chat completion until it succeeds or timeout.
+// A single 503 after pod churn is not treated as failure: Envoy may still be
+// hitting a gateway-plugin replica whose pod cache has not caught up.
+func PollPDChatCompletion(
+	t *testing.T, client openai.Client, params openai.ChatCompletionNewParams,
+) *openai.ChatCompletion {
+	t.Helper()
+	var last *openai.ChatCompletion
+	var lastErr error
+	err := wait.PollUntilContextTimeout(context.Background(), pdChatRetryInterval, pdChatRetryTimeout, true,
+		func(ctx context.Context) (bool, error) {
+			resp, err := client.Chat.Completions.New(ctx, params)
+			if err != nil {
+				lastErr = err
+				t.Logf("retrying PD chat completion: %v", err)
+				return false, nil
+			}
+			last = resp
+			lastErr = nil
+			return true, nil
+		})
+	if lastErr != nil {
+		require.NoError(t, err, "timeout waiting for PD chat completion: %v", lastErr)
+	}
+	require.NoError(t, err, "timeout waiting for PD chat completion")
+	return last
+}
+
+func waitForConsecutivePDSuccesses(
+	t *testing.T, modelName string, attempt func(ctx context.Context) (ok bool, msg string),
+) {
+	t.Helper()
+	consecutive := 0
+	err := wait.PollUntilContextTimeout(context.Background(), pdChatRetryInterval, pdRoutingWaitTimeout, true,
+		func(ctx context.Context) (bool, error) {
+			ok, msg := attempt(ctx)
+			if !ok {
+				consecutive = 0
+				t.Logf("%s", msg)
+				return false, nil
+			}
+			consecutive++
+			if consecutive < pdRoutingConsecutiveSuccesses {
+				t.Logf("%s (%d/%d consecutive)", msg, consecutive, pdRoutingConsecutiveSuccesses)
+				return false, nil
+			}
+			t.Logf("%s", msg)
+			return true, nil
+		})
+	require.NoError(t, err, "timeout waiting for PD routing to be ready for model %s", modelName)
 }
 
 // WaitForPDDisaggregationRouting polls until the gateway can route a PD request for modelName.
-// Pod readiness alone is not enough: the gateway pod cache may lag after pod churn.
+// Pod readiness alone is not enough: the gateway pod cache may lag after pod churn, and
+// with two plugin replicas one success can be a lucky hit on the warm replica.
 func WaitForPDDisaggregationRouting(t *testing.T, modelName string) {
 	t.Helper()
 	var dst *http.Response
 	config := LoadConfig()
 	client := NewOpenAIClientWithRoutingStrategy(config.GatewayURL, config.APIKey, "pd", option.WithResponseInto(&dst))
 
-	err := wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 2*time.Minute,
-		true, func(ctx context.Context) (bool, error) {
-			_, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-				Messages: []openai.ChatCompletionMessageParamUnion{
-					openai.UserMessage("PD routing readiness check"),
-				},
-				Model: modelName,
-			})
-			if err != nil {
-				t.Logf("waiting for PD routing for model %s: %v", modelName, err)
-				return false, nil
-			}
-			prefillPod := dst.Header.Get("prefill-target-pod")
-			decodePod := dst.Header.Get("target-pod")
-			if prefillPod == "" || decodePod == "" || prefillPod == decodePod {
-				t.Logf("waiting for valid PD routing headers for model %s", modelName)
-				return false, nil
-			}
-			t.Logf("PD routing ready for model %s", modelName)
-			return true, nil
+	waitForConsecutivePDSuccesses(t, modelName, func(ctx context.Context) (bool, string) {
+		_, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+			Messages: []openai.ChatCompletionMessageParamUnion{
+				openai.UserMessage("PD routing readiness check"),
+			},
+			Model: modelName,
 		})
-	assert.NoError(t, err, "timeout waiting for PD routing to be ready for model %s", modelName)
+		if err != nil {
+			return false, "waiting for PD routing for model " + modelName + ": " + err.Error()
+		}
+		prefillPod := dst.Header.Get("prefill-target-pod")
+		decodePod := dst.Header.Get("target-pod")
+		if prefillPod == "" || decodePod == "" || prefillPod == decodePod {
+			return false, "waiting for valid PD routing headers for model " + modelName
+		}
+		return true, "PD routing ready for model " + modelName
+	})
 }
 
 // WaitForPDCombinedRouting polls until the gateway routes a long prompt to a combined pod
@@ -252,26 +309,22 @@ func WaitForPDCombinedRouting(t *testing.T, modelName, combinedStormName, longPr
 	config := LoadConfig()
 	client := NewOpenAIClientWithRoutingStrategy(config.GatewayURL, config.APIKey, "pd", option.WithResponseInto(&dst))
 
-	err := wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 2*time.Minute,
-		true, func(ctx context.Context) (bool, error) {
-			_, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-				Messages: []openai.ChatCompletionMessageParamUnion{
-					openai.UserMessage(longPrompt),
-				},
-				Model: modelName,
-			})
-			if err != nil {
-				t.Logf("waiting for combined PD routing for model %s: %v", modelName, err)
-				return false, nil
-			}
-			prefillPod := dst.Header.Get("prefill-target-pod")
-			decodePod := dst.Header.Get("target-pod")
-			if prefillPod != "" || decodePod == "" || !strings.Contains(decodePod, combinedStormName) {
-				t.Logf("waiting for combined routing for model %s: prefill=%s decode=%s", modelName, prefillPod, decodePod)
-				return false, nil
-			}
-			t.Logf("combined PD routing ready for model %s (decode=%s)", modelName, decodePod)
-			return true, nil
+	waitForConsecutivePDSuccesses(t, modelName, func(ctx context.Context) (bool, string) {
+		_, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+			Messages: []openai.ChatCompletionMessageParamUnion{
+				openai.UserMessage(longPrompt),
+			},
+			Model: modelName,
 		})
-	assert.NoError(t, err, "timeout waiting for combined PD routing for model %s", modelName)
+		if err != nil {
+			return false, "waiting for combined PD routing for model " + modelName + ": " + err.Error()
+		}
+		prefillPod := dst.Header.Get("prefill-target-pod")
+		decodePod := dst.Header.Get("target-pod")
+		if prefillPod != "" || decodePod == "" || !strings.Contains(decodePod, combinedStormName) {
+			return false, "waiting for combined routing for model " + modelName +
+				": prefill=" + prefillPod + " decode=" + decodePod
+		}
+		return true, "combined PD routing ready for model " + modelName + " (decode=" + decodePod + ")"
+	})
 }
