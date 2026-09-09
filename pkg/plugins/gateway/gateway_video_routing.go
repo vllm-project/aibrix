@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Aibrix Team.
+Copyright 2026 The Aibrix Team.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -301,11 +301,26 @@ func extractVideoIDFromPath(requestPath string) (videoID string, ok bool) {
 }
 
 // videoNotFoundResponse builds the 404 returned when a video_id is unknown,
-// expired, or its owning pod is no longer available.
+// expired, or its owning pod is confirmed gone (not found in cache, or
+// terminating). This is terminal: the mapping is forgotten before this is
+// returned, since the client has no reason to retry the same video_id.
 func videoNotFoundResponse(videoID string) *extProcPb.ProcessingResponse {
 	return buildErrorResponse(envoyTypePb.StatusCode_NotFound,
 		fmt.Sprintf("video %s not found", videoID), ErrorCodeVideoNotFound, "",
 		HeaderErrorVideoNotFound, "true")
+}
+
+// videoJobPodUnavailableResponse builds the 503 returned when a video_id's
+// owning pod is only transiently unavailable (NotReady, or no routable
+// address yet) rather than confirmed gone. Unlike videoNotFoundResponse, the
+// mapping is left in place so a retry can still land on the same pod once it
+// recovers -- the generated video lives on that pod's local disk, so pinning
+// elsewhere is not an option.
+func videoJobPodUnavailableResponse(videoID string) *extProcPb.ProcessingResponse {
+	return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
+		fmt.Sprintf("video %s's pod is temporarily unavailable, please retry", videoID),
+		ErrorCodeVideoJobPodUnavailable, "",
+		HeaderErrorVideoJobPodUnavailable, "true")
 }
 
 // parseVideoListRequest reports whether requestPath is the bare /v1/videos
@@ -526,18 +541,36 @@ func (s *Server) pinVideoJobSubResource(ctx context.Context, routingCtx *types.R
 	routingCtx.Model = model
 
 	pod, err := s.cache.GetPod(podName, podNamespace)
-	if err != nil || pod == nil || !utils.IsPodReady(pod) {
+	if err != nil || pod == nil {
+		// Not in the informer cache at all: as confirmed-gone as this gateway can
+		// observe. Forget the mapping so a later create can reuse videoID's slot
+		// (Redis keys are namespaced by videoID, not by pod).
 		s.forgetVideoJobPod(ctx, videoID)
 		klog.ErrorS(err, "video job's pod is no longer available", "requestID", requestID, "videoID", videoID, "podName", podName, "podNamespace", podNamespace)
 		return nil, model, term, videoNotFoundResponse(videoID)
+	}
+	if utils.IsPodTerminating(pod) {
+		// Has a DeletionTimestamp: won't come back under this name. Terminal,
+		// same as the cache-miss case above.
+		s.forgetVideoJobPod(ctx, videoID)
+		klog.ErrorS(nil, "video job's pod is terminating", "requestID", requestID, "videoID", videoID, "podName", podName, "podNamespace", podNamespace)
+		return nil, model, term, videoNotFoundResponse(videoID)
+	}
+	if !utils.IsPodReady(pod) {
+		// Pod exists and isn't being torn down -- a readiness flap, restart, or
+		// startup probe still pending. Keep the mapping: the video's own disk is
+		// still on this pod, and IsPodReady may well flip back on the next poll.
+		klog.InfoS("video job's pod is temporarily not ready, keeping mapping for retry", "requestID", requestID, "videoID", videoID, "podName", podName, "podNamespace", podNamespace)
+		return nil, model, term, videoJobPodUnavailableResponse(videoID)
 	}
 
 	routingCtx.SetTargetPod(pod)
 	targetPodIP := routingCtx.TargetAddress()
 	if targetPodIP == "" {
-		s.forgetVideoJobPod(ctx, videoID)
-		klog.ErrorS(nil, "video job's pod has no routable address", "requestID", requestID, "videoID", videoID, "podName", podName)
-		return nil, model, term, videoNotFoundResponse(videoID)
+		// Ready but not yet routable (e.g. IP not propagated to this cache entry):
+		// same reasoning as the NotReady branch above, keep the mapping.
+		klog.InfoS("video job's pod has no routable address yet, keeping mapping for retry", "requestID", requestID, "videoID", videoID, "podName", podName)
+		return nil, model, term, videoJobPodUnavailableResponse(videoID)
 	}
 
 	applyConfigProfile(routingCtx, []*v1.Pod{pod})

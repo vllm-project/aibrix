@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Aibrix Team.
+Copyright 2026 The Aibrix Team.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -227,6 +227,69 @@ func TestHandleVideoJobSubResourceHeaders_PodUnavailableSetsModelForMetrics(t *t
 	assert.Equal(t, envoyTypePb.StatusCode_NotFound, resp.GetImmediateResponse().GetStatus().GetCode())
 	assert.EqualValues(t, 0, term)
 	assert.Equal(t, "wan2.1-vace-1.3b", routingCtx.Model, "model must be attributed on routingCtx even when the pod lookup fails, so the fail-metric isn't silently dropped")
+
+	mockCache.AssertExpectations(t)
+}
+
+// TestHandleVideoJobSubResourceHeaders_NotReadyPodReturns503AndKeepsMapping
+// covers a transiently unavailable pod (readiness flap, restart, startup
+// probe still pending): before the fix this was indistinguishable from a
+// confirmed-gone pod, evicted the mapping, and returned a permanent-looking
+// 404. It must now return a retryable 503 and leave the mapping intact so a
+// follow-up poll can still land on the same pod once it recovers.
+func TestHandleVideoJobSubResourceHeaders_NotReadyPodReturns503AndKeepsMapping(t *testing.T) {
+	mockCache := new(MockCache)
+	s := &Server{cache: mockCache}
+	ctx := context.Background()
+
+	s.rememberVideoJobPod(ctx, "video-1", "pod-a", "ns-a", "wan2.1-vace-1.3b", time.Hour)
+
+	notReadyPod := readyPod("pod-a", "ns-a", "10.0.0.5")
+	notReadyPod.Status.Conditions = nil
+	mockCache.On("GetPod", "pod-a", "ns-a").Return(notReadyPod, nil)
+
+	routingCtx := types.NewRoutingContext(ctx, "", "", "", "req-1", "")
+	routingCtx.ReqHeaders = map[string]string{methodKey: "GET"}
+
+	resp, term := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, "req-1", "/v1/videos/video-1", "video-1")
+
+	require.NotNil(t, resp.GetImmediateResponse())
+	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, resp.GetImmediateResponse().GetStatus().GetCode())
+	assert.EqualValues(t, 0, term)
+
+	_, _, _, ok := s.lookupVideoJobPod(ctx, "video-1")
+	assert.True(t, ok, "mapping must survive a transient NotReady pod so a retry can still resolve it")
+
+	mockCache.AssertExpectations(t)
+}
+
+// TestHandleVideoJobSubResourceHeaders_TerminatingPodReturns404AndForgetsMapping
+// covers a pod that is confirmed going away (DeletionTimestamp set): unlike
+// the NotReady case, this pod will not come back under this name, so the
+// mapping is forgotten and the client gets the terminal 404.
+func TestHandleVideoJobSubResourceHeaders_TerminatingPodReturns404AndForgetsMapping(t *testing.T) {
+	mockCache := new(MockCache)
+	s := &Server{cache: mockCache}
+	ctx := context.Background()
+
+	s.rememberVideoJobPod(ctx, "video-1", "pod-a", "ns-a", "wan2.1-vace-1.3b", time.Hour)
+
+	terminatingPod := readyPod("pod-a", "ns-a", "10.0.0.5")
+	now := metav1.Now()
+	terminatingPod.DeletionTimestamp = &now
+	mockCache.On("GetPod", "pod-a", "ns-a").Return(terminatingPod, nil)
+
+	routingCtx := types.NewRoutingContext(ctx, "", "", "", "req-1", "")
+	routingCtx.ReqHeaders = map[string]string{methodKey: "GET"}
+
+	resp, term := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, "req-1", "/v1/videos/video-1", "video-1")
+
+	require.NotNil(t, resp.GetImmediateResponse())
+	assert.Equal(t, envoyTypePb.StatusCode_NotFound, resp.GetImmediateResponse().GetStatus().GetCode())
+	assert.EqualValues(t, 0, term)
+
+	_, _, _, ok := s.lookupVideoJobPod(ctx, "video-1")
+	assert.False(t, ok, "mapping must be forgotten once the pod is confirmed terminating")
 
 	mockCache.AssertExpectations(t)
 }

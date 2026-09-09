@@ -46,7 +46,8 @@ const (
 	HeaderErrorMultipartParsing = "x-error-multipart-parsing"
 
 	// Video Job Headers
-	HeaderErrorVideoNotFound = "x-error-video-not-found"
+	HeaderErrorVideoNotFound          = "x-error-video-not-found"
+	HeaderErrorVideoJobPodUnavailable = "x-error-video-job-pod-unavailable"
 
 	// Request & Target Headers
 	HeaderWentIntoReqHeaders  = "x-went-into-req-headers"
@@ -91,11 +92,12 @@ const (
 	ErrorTypeOverloaded     = "overloaded_error"
 
 	// OpenAI Error Codes
-	ErrorCodeInvalidAPIKey      = "invalid_api_key"
-	ErrorCodeModelNotFound      = "model_not_found"
-	ErrorCodeRateLimitExceeded  = "rate_limit_exceeded"
-	ErrorCodeServiceUnavailable = "service_unavailable"
-	ErrorCodeVideoNotFound      = "video_not_found"
+	ErrorCodeInvalidAPIKey          = "invalid_api_key"
+	ErrorCodeModelNotFound          = "model_not_found"
+	ErrorCodeRateLimitExceeded      = "rate_limit_exceeded"
+	ErrorCodeServiceUnavailable     = "service_unavailable"
+	ErrorCodeVideoNotFound          = "video_not_found"
+	ErrorCodeVideoJobPodUnavailable = "video_job_pod_unavailable"
 
 	// Embedding Constraints
 	// https://github.com/openai/openai-go/blob/main/embedding.go#L126
