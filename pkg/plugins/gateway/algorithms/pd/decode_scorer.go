@@ -149,12 +149,14 @@ func (LoadBalancingDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext
 	numer := decodeLBWeightRunningReq*normalizedRunningReqs + decodeLBWeightThroughput*normalizedThroughput
 	decodeScore := numer / normalizedFreeGPUPercent
 
-	klog.V(4).InfoS("decode_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
-		"policy", DecodePolicyLoadBalancing, "decode_score", decodeScore,
-		"score", fmt.Sprintf("(%g*%f + %g*%f) / %f", decodeLBWeightRunningReq, normalizedRunningReqs, decodeLBWeightThroughput, normalizedThroughput, normalizedFreeGPUPercent),
-		"running_reqs", in.RunningReqs, "max_running_reqs", in.MaxRequestCount,
-		"throughput", in.Throughput, "max_throughput", in.MaxThroughput,
-		"free_gpu", in.FreeGPUPercent, "max_free_gpu_usage", in.MaxFreeGPUUsage)
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("decode_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
+			"policy", DecodePolicyLoadBalancing, "decode_score", decodeScore,
+			"score", fmt.Sprintf("(%g*%f + %g*%f) / %f", decodeLBWeightRunningReq, normalizedRunningReqs, decodeLBWeightThroughput, normalizedThroughput, normalizedFreeGPUPercent),
+			"running_reqs", in.RunningReqs, "max_running_reqs", in.MaxRequestCount,
+			"throughput", in.Throughput, "max_throughput", in.MaxThroughput,
+			"free_gpu", in.FreeGPUPercent, "max_free_gpu_usage", in.MaxFreeGPUUsage)
+	}
 
 	return decodeScore
 }
@@ -172,8 +174,10 @@ func (LeastRequestDecodePolicy) Describe() string {
 }
 
 func (LeastRequestDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext, pod *v1.Pod, in DecodePodInput) float64 {
-	klog.V(4).InfoS("decode_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
-		"policy", DecodePolicyLeastRequest, "running_reqs", in.RunningReqs)
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("decode_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
+			"policy", DecodePolicyLeastRequest, "running_reqs", in.RunningReqs)
+	}
 
 	return in.RunningReqs
 }
@@ -210,11 +214,13 @@ func (ConductorDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext, po
 		estimatedTBT *= DefaultGPUCachePressurePenalty
 	}
 
-	klog.V(4).InfoS("decode_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
-		"policy", DecodePolicyConductor, "decode_score", estimatedTBT,
-		"current_tbt_ms", currentTBTMs, "running_reqs", in.RunningReqs,
-		"gpu_cache_usage", gpuCacheUsage, "throughput", in.Throughput,
-		"free_gpu_percent", in.FreeGPUPercent)
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("decode_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
+			"policy", DecodePolicyConductor, "decode_score", estimatedTBT,
+			"current_tbt_ms", currentTBTMs, "running_reqs", in.RunningReqs,
+			"gpu_cache_usage", gpuCacheUsage, "throughput", in.Throughput,
+			"free_gpu_percent", in.FreeGPUPercent)
+	}
 
 	return estimatedTBT
 }

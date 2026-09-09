@@ -20,6 +20,7 @@ import (
 	crand "crypto/rand"
 	"fmt"
 	"math/big"
+	mrand "math/rand/v2"
 	"os"
 	"strconv"
 	"time"
@@ -303,6 +304,10 @@ func IsDataParallelPod(pod *v1.Pod) bool {
 	return false
 }
 
+// CryptoShuffle shuffles slice in place using crypto/rand. Every swap reads
+// the OS entropy source, so it costs a getrandom syscall and several
+// allocations per swap; use it where unpredictability matters, not on hot
+// paths. See Shuffle.
 func CryptoShuffle[T any](slice []T) {
 	n := len(slice)
 	for i := n - 1; i > 0; i-- {
@@ -310,6 +315,16 @@ func CryptoShuffle[T any](slice []T) {
 		j := int(jBig.Int64())
 		slice[i], slice[j] = slice[j], slice[i]
 	}
+}
+
+// Shuffle shuffles slice in place using math/rand/v2's process-wide generator,
+// which is safe for concurrent use and neither allocates nor enters the
+// kernel. It is the right choice for tie-breaking on request hot paths, where
+// the order only needs to be unbiased, not unpredictable.
+func Shuffle[T any](slice []T) {
+	mrand.Shuffle(len(slice), func(i, j int) {
+		slice[i], slice[j] = slice[j], slice[i]
+	})
 }
 
 func HasVolume(vols []v1.Volume, name string) bool {

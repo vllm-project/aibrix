@@ -179,11 +179,13 @@ func (s *prefixCacheScorer) PrefixHashes() []uint64 { return s.hashes }
 func (s *prefixCacheScorer) ScorePod(pod *v1.Pod, reqCnt, maxRequestCount float64) float64 {
 	matchPct := float64(s.matchedPods[pod.Name])
 	score := (100-matchPct)*.1 + reqCnt/maxRequestCount
-	klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
-		"policy", PrefillScorePolicyPrefixCache,
-		"score", fmt.Sprintf("(100 - %f) * 0.1 + %f / %f", matchPct, reqCnt, maxRequestCount),
-		"prefix_match_percent", matchPct,
-		"running_reqs", reqCnt, "max_running_reqs", maxRequestCount)
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
+			"policy", PrefillScorePolicyPrefixCache,
+			"score", fmt.Sprintf("(100 - %f) * 0.1 + %f / %f", matchPct, reqCnt, maxRequestCount),
+			"prefix_match_percent", matchPct,
+			"running_reqs", reqCnt, "max_running_reqs", maxRequestCount)
+	}
 	return score
 }
 
@@ -215,9 +217,11 @@ type leastRequestScorer struct{}
 func (s leastRequestScorer) PrefixHashes() []uint64 { return nil }
 
 func (s leastRequestScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
-	klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
-		"policy", PrefillScorePolicyLeastRequest,
-		"running_reqs", reqCnt)
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
+			"policy", PrefillScorePolicyLeastRequest,
+			"running_reqs", reqCnt)
+	}
 	return reqCnt
 }
 
@@ -374,17 +378,19 @@ func (s *conductorScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
 	prefillEst := s.estimatePrefill(unmatchedTokens)
 	score := queueEst + prefixEst + prefillEst
 
-	klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
-		"policy", PrefillScorePolicyConductor,
-		"score", score,
-		"running_reqs", reqCnt,
-		"total_tokens", s.totalTokens,
-		"prefix_match_percent", matchPct,
-		"matched_tokens", matchedTokens,
-		"unmatched_tokens", unmatchedTokens,
-		"queue_estimate", queueEst,
-		"prefix_estimate", prefixEst,
-		"prefill_estimate", prefillEst)
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
+			"policy", PrefillScorePolicyConductor,
+			"score", score,
+			"running_reqs", reqCnt,
+			"total_tokens", s.totalTokens,
+			"prefix_match_percent", matchPct,
+			"matched_tokens", matchedTokens,
+			"unmatched_tokens", unmatchedTokens,
+			"queue_estimate", queueEst,
+			"prefix_estimate", prefixEst,
+			"prefill_estimate", prefillEst)
+	}
 	return score
 }
 
@@ -602,10 +608,12 @@ func (s *hybridCacheLoadScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64
 	if load >= 1 {
 		score = load * discount
 	}
-	klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
-		"policy", PrefillScorePolicyHybridCacheLoad,
-		"score", score, "token_load", load, "discount", discount,
-		"prefix_match_percent", matchPct, "raw_match_percent", s.matchedPods[pod.Name],
-		"running_reqs", reqCnt)
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
+			"policy", PrefillScorePolicyHybridCacheLoad,
+			"score", score, "token_load", load, "discount", discount,
+			"prefix_match_percent", matchPct, "raw_match_percent", s.matchedPods[pod.Name],
+			"running_reqs", reqCnt)
+	}
 	return score
 }

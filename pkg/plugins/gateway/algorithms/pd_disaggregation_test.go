@@ -21,12 +21,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"testing"
 	"time"
@@ -3101,4 +3103,100 @@ func TestRoute_SGLangDuplicateFieldsRejectsBeforeSelector(t *testing.T) {
 
 	var invalidReqErr *engine.InvalidRequestError
 	assert.True(t, errors.As(err, &invalidReqErr), "must return *InvalidRequestError")
+}
+
+// setKlogVerbosity raises klog's -v level for the duration of one test and restores
+// the previous value in t.Cleanup. klog verbosity is process-wide state, so tests
+// that use this helper must not run in parallel.
+func setKlogVerbosity(t *testing.T, level string) {
+	t.Helper()
+
+	fs := flag.NewFlagSet("klog-verbosity", flag.ContinueOnError)
+	klog.InitFlags(fs)
+	vFlag := fs.Lookup("v")
+	if vFlag == nil {
+		t.Fatal("klog -v flag is not registered")
+	}
+
+	previous := vFlag.Value.String()
+	if err := vFlag.Value.Set(level); err != nil {
+		t.Fatalf("set klog verbosity to %s: %v", level, err)
+	}
+	t.Cleanup(func() {
+		if err := vFlag.Value.Set(previous); err != nil {
+			t.Errorf("restore klog verbosity to %s: %v", previous, err)
+		}
+	})
+}
+
+// TestScoreDecodePods_VerboseSummaryPopulated guards the V(4) fast path in
+// scoreDecodePods: the per-pod score strings are built only when the decode_score_summary
+// log is going to be written, so this checks they are still populated at -v=4.
+func TestScoreDecodePods_VerboseSummaryPopulated(t *testing.T) {
+	setKlogVerbosity(t, "4")
+
+	var logs bytes.Buffer
+	klog.LogToStderr(false)
+	klog.SetOutput(&logs)
+	t.Cleanup(func() {
+		klog.Flush()
+		klog.SetOutput(io.Discard)
+		klog.LogToStderr(true)
+	})
+
+	if !klog.V(4).Enabled() {
+		t.Fatal("klog V(4) is not enabled after raising verbosity")
+	}
+
+	pods := []*v1.Pod{
+		makePDPod("verbose-decode-1", "rs1", "decode", nil),
+		makePDPod("verbose-decode-2", "rs1", "decode", nil),
+		makePDPod("verbose-decode-3", "rs2", "decode", nil),
+	}
+
+	podMetrics := make(map[string]map[string]metrics.MetricValue, len(pods))
+	podRequestCounts := make(map[string]float64, len(pods))
+	podThroughputs := make(map[string]float64, len(pods))
+	podFreeGPUUsage := make(map[string]float64, len(pods))
+	for i, pod := range pods {
+		requestCount := float64(i + 1)
+		throughput := float64(512 + i*64)
+		freeGPUUsage := float64(25 + i*10)
+
+		podMetrics[pod.Name] = map[string]metrics.MetricValue{
+			metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: requestCount},
+			metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: throughput},
+			metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.3},
+		}
+		podRequestCounts[pod.Name] = requestCount
+		podThroughputs[pod.Name] = throughput
+		podFreeGPUUsage[pod.Name] = freeGPUUsage
+	}
+
+	router := &pdRouter{cache: cache.NewWithPodsMetricsForTest(pods, "model", podMetrics)}
+	ctx := types.NewRoutingContext(context.Background(), RouterPD, "model", "hello", "req-verbose-decode", "user")
+	defer ctx.Delete()
+
+	for _, pod := range pods {
+		if !router.decodePodMetricsReady(ctx, pod) {
+			t.Fatalf("decode pod %s should have ready metrics", pod.Name)
+		}
+	}
+
+	run := router.scoreDecodePods(ctx, pods, 3, 640, 45,
+		podRequestCounts, podThroughputs, podFreeGPUUsage, nil)
+	klog.Flush()
+
+	assert.NotEmpty(t, run.PerRoleset, "scoreDecodePods should pick one pod per roleset")
+
+	out := logs.String()
+	assert.Contains(t, out, "decode_score_summary")
+
+	match := regexp.MustCompile(`scored="([^"]*)"`).FindStringSubmatch(out)
+	if assert.NotNil(t, match, "decode_score_summary should carry a scored= field, got: %s", out) {
+		assert.NotEmpty(t, match[1], "scored= must be populated when verbosity is 4")
+		for _, pod := range pods {
+			assert.Contains(t, match[1], pod.Name, "scored= should list every scored pod")
+		}
+	}
 }
