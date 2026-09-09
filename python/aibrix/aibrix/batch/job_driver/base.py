@@ -104,10 +104,6 @@ _OUTPUT_PERSISTENCE_FAILURE_BUCKET_SECONDS_ENV = (
 _DEFAULT_ADAPTIVE_MAX_FACTOR = 8.0
 _DEFAULT_TELEMETRY_INTERVAL_SECONDS = 5.0
 _DEFAULT_INFERENCE_MAX_RETRIES = 5
-# A no-endpoint attempt only re-queries service discovery,
-# so 120 tries against the 5s delay cap buys ~10 minutes of waiting out a
-# cold-starting deployment.
-_DEFAULT_NO_ENDPOINT_MAX_RETRIES = 120
 _DEFAULT_RETRY_BASE_DELAY_SECONDS = 0.5
 _DEFAULT_RETRY_MAX_DELAY_SECONDS = 5.0
 _DEFAULT_OUTPUT_PERSISTENCE_FAILURE_THRESHOLD = 3
@@ -149,14 +145,19 @@ def _telemetry_interval_seconds() -> float:
     )
 
 
-def _no_endpoint_max_retries() -> int:
-    return max(
-        _int_env(
-            _NO_ENDPOINT_MAX_RETRIES_ENV,
-            _DEFAULT_NO_ENDPOINT_MAX_RETRIES,
-        ),
-        0,
-    )
+def _no_endpoint_max_retries() -> Optional[int]:
+    raw = os.environ.get(_NO_ENDPOINT_MAX_RETRIES_ENV)
+    if raw is None or raw == "":
+        return None
+    try:
+        return max(int(raw), 0)
+    except ValueError:
+        logger.warning(
+            "Invalid integer environment value; ignoring retry cap",
+            name=_NO_ENDPOINT_MAX_RETRIES_ENV,
+            value=raw,
+        )  # type: ignore[call-arg]
+        return None
 
 
 def _inference_max_retries() -> int:
@@ -1007,6 +1008,7 @@ class BaseJobDriver:
                 if policy is not None and policy.no_endpoint_max_retries is not None
                 else _no_endpoint_max_retries()
             ),
+            no_endpoint_deadline_epoch_seconds=job.expiration_timestamp(),
         )
 
     def _dispatch_run_kwargs_for_job(self, job: BatchJob) -> Dict[str, Any]:
@@ -1219,6 +1221,7 @@ class BaseJobDriver:
                     endpoint.source,
                     retry=self._retry_config_for_job(job),
                     job_id=job.job_id,
+                    configured_capacity=getattr(endpoint, "configured_capacity", None),
                 )
                 if endpoint.source is not None
                 else None
