@@ -119,6 +119,21 @@ BATCH_JOB_POOL_SIZE = int(os.getenv("AIBRIX_BATCH_JOB_POOL_SIZE", "10"))
 BATCH_ERROR_INJECTION_ENABLED = _is_true(
     os.getenv("AIBRIX_BATCH_ERROR_INJECTION_ENABLED", "0")
 )
+# Controls how many additional times a batch job runtime session retries the
+# provision/reconnect bracket after a session setup failure.
+BATCH_SESSION_RETRY_ATTEMPTS = int(
+    os.getenv("AIBRIX_BATCH_SESSION_RETRY_ATTEMPTS", "5")
+)
+# Controls the initial exponential-backoff sleep, in seconds, between failed
+# batch job runtime session attempts.
+BATCH_SESSION_RETRY_BASE_DELAY_S = float(
+    os.getenv("AIBRIX_BATCH_SESSION_RETRY_BASE_DELAY_S", "2.0")
+)
+# Caps the exponential-backoff sleep, in seconds, between failed batch job
+# runtime session attempts.
+BATCH_SESSION_RETRY_MAX_DELAY_S = float(
+    os.getenv("AIBRIX_BATCH_SESSION_RETRY_MAX_DELAY_S", "60.0")
+)
 BATCH_SESSION_LIVENESS_FAILURE_THRESHOLD = int(
     os.getenv("AIBRIX_BATCH_SESSION_LIVENESS_FAILURE_THRESHOLD", "5")
 )
