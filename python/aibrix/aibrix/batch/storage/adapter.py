@@ -13,12 +13,14 @@
 # limitations under the License.
 
 import asyncio
+import hashlib
 import json
+import math
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, cast
 
 from aibrix import envs
-from aibrix.batch.job_entity import BatchJob, BatchJobError
+from aibrix.batch.job_entity import BatchJob, BatchJobError, BatchJobErrorCode
 from aibrix.batch.job_entity.batch_job import BatchUsage
 from aibrix.batch.storage.batch_metastore import (
     METASTORE_LIST_PAGE_SIZE,
@@ -32,9 +34,20 @@ from aibrix.batch.storage.batch_metastore import (
     unlock_request,
 )
 from aibrix.logger import init_logger
-from aibrix.storage.base import BaseStorage
+from aibrix.storage.base import (
+    LOCAL_PART_PROVIDER_MARKER,
+    LOCAL_PART_PROVIDER_MARKER_VALUE,
+    BaseStorage,
+)
 
 logger = init_logger(__name__)
+
+UNREADABLE_COMPLETED_OUTPUT_PART_MESSAGE = (
+    "Failed to read completed request output part during batch finalization"
+)
+UNREADABLE_FAILED_ERROR_PART_MESSAGE = (
+    "Failed to read failed request error part during batch finalization"
+)
 
 
 class BatchStorageAdapter:
@@ -47,6 +60,14 @@ class BatchStorageAdapter:
 
     def __init__(self, storage: BaseStorage):
         self.storage = storage
+
+    def _request_lock_timeout_seconds(self, job: BatchJob) -> int:
+        timeout_seconds = int(envs.INFERENCE_TASK_TIMEOUT)
+        client = job.spec.aibrix.client if job.spec.aibrix else None
+        request_timeout_seconds = getattr(client, "request_timeout_seconds", None)
+        if request_timeout_seconds is None:
+            return timeout_seconds
+        return max(1, math.ceil(float(request_timeout_seconds)))
 
     async def write_job_input_data(
         self, file_id: str, input_data_file_name: str
@@ -123,7 +144,8 @@ class BatchStorageAdapter:
                 try:
                     # Try to acquire lock with configurable expiration
                     locked = await lock_request(
-                        lock_key, expiration_seconds=envs.INFERENCE_TASK_TIMEOUT
+                        lock_key,
+                        expiration_seconds=self._request_lock_timeout_seconds(job),
                     )
                 except Exception as e:
                     logger.warning(
@@ -297,7 +319,7 @@ class BatchStorageAdapter:
 
         # Unlock the request by setting completion status.
         unlock_key = self._get_request_meta_output_key(job, request_index)
-        completion_status = self._get_request_meta_output_val(is_error, etag)
+        completion_status = self._get_request_meta_output_val(is_error, etag, custom_id)
         try:
             metastore_type = get_metastore_type().value
         except Exception:
@@ -404,13 +426,17 @@ class BatchStorageAdapter:
                         missing_keys += 1
                         continue
 
-                    etag, is_error = self._parse_request_meta_output_val(meta_val)
+                    etag, is_error, custom_id = self._parse_request_meta_output_val(
+                        meta_val
+                    )
                     if etag == "":
                         pending_keys += 1
                         continue
 
                     valid_keys.append(key)
                     val: Dict[str, str | int] = {"etag": etag, "part_number": idx}
+                    if custom_id is not None:
+                        val["custom_id"] = custom_id
 
                     if is_error:
                         error.append(val)
@@ -449,6 +475,40 @@ class BatchStorageAdapter:
                 failed=failed,
             )  # type: ignore[call-arg]
 
+        # Aggregate results sequentially: parallel completes hammer
+        # MinIO bucket-level locks under small_parts mode (each complete
+        # does N list/delete/put_object calls under .multipart/).
+        failed_output_parts = await self.storage.complete_multipart_upload(
+            job.status.output_file_id,
+            job.status.temp_output_file_id,
+            output,
+            tolerate_part_get_error=True,
+        )
+        rerouted_output_parts: List[Dict[str, str | int]] = []
+        if failed_output_parts:
+            rerouted_output_parts, skipped_rerouted_parts = (
+                self._filter_rerouted_output_parts(error, failed_output_parts)
+            )
+            synthesized_error_parts = self._synthesize_unreadable_error_parts(
+                rerouted_output_parts,
+                message=UNREADABLE_COMPLETED_OUTPUT_PART_MESSAGE,
+            )
+            error, inserted_rerouted_parts, duplicate_rerouted_parts = (
+                self._merge_error_parts_by_part_number(error, synthesized_error_parts)
+            )
+            completed -= inserted_rerouted_parts
+            failed += inserted_rerouted_parts
+            logger.warning(
+                "Synthesizing error records for unreadable output parts",
+                job_id=job.job_id,
+                failed_output_part_count=len(rerouted_output_parts),
+                skipped_rerouted_part_count=skipped_rerouted_parts,
+                inserted_rerouted_part_count=inserted_rerouted_parts,
+                duplicate_rerouted_part_count=duplicate_rerouted_parts,
+                completed=completed,
+                failed=failed,
+            )  # type: ignore[call-arg]
+
         # 4. Update job object with calculated request counts if they differ.
         # Preserve the validated input total when it is larger, but allow
         # metastore truth to grow a stale lower total after restart recovery.
@@ -477,22 +537,50 @@ class BatchStorageAdapter:
             job.status.request_counts.completed = completed
             job.status.request_counts.failed = failed
 
-        # Aggregate results sequentially: parallel completes hammer
-        # MinIO bucket-level locks under small_parts mode (each complete
-        # does N list/delete/put_object calls under .multipart/).
-        await self.storage.complete_multipart_upload(
-            job.status.output_file_id,
-            job.status.temp_output_file_id,
-            output,
-        )
-        await self.storage.complete_multipart_upload(
+        async def provide_local_error_part(
+            part: Dict[str, str | int],
+        ) -> bytes | None:
+            if part.get(LOCAL_PART_PROVIDER_MARKER) == LOCAL_PART_PROVIDER_MARKER_VALUE:
+                return self._build_unreadable_error_part_body(
+                    part,
+                    message=UNREADABLE_COMPLETED_OUTPUT_PART_MESSAGE,
+                )
+            return self._build_unreadable_error_part_body(
+                part,
+                message=UNREADABLE_FAILED_ERROR_PART_MESSAGE,
+            )
+
+        # The local provider is consulted only for parts carrying
+        # LOCAL_PART_PROVIDER_MARKER=LOCAL_PART_PROVIDER_MARKER_VALUE for the
+        # local-only rerouted output records. During tolerant reads, BaseStorage2
+        # also asks the provider for an unmarked error part if its staged object
+        # cannot be loaded, so unreadable original error records are synthesized
+        # in the same pass instead of requiring a second completion attempt.
+        unexpected_failed_error_parts = await self.storage.complete_multipart_upload(
             job.status.error_file_id,
             job.status.temp_error_file_id,
             error,
+            tolerate_part_get_error=True,
+            local_part_provider=provide_local_error_part,
         )
+        if unexpected_failed_error_parts:
+            raise RuntimeError(
+                "Error-file completion unexpectedly returned unreadable parts "
+                "after local fallback was enabled"
+            )
+        if rerouted_output_parts:
+            await self.storage.abort_multipart_upload(
+                job.status.output_file_id,
+                job.status.temp_output_file_id,
+            )
 
         # Sum usage from the assembled output file.
         job.status.usage = await self._sum_usage_from_output(job.status.output_file_id)
+        if rerouted_output_parts:
+            self._merge_usage(
+                job.status.usage,
+                await self._sum_usage_from_output(job.status.error_file_id),
+            )
 
         # Delete metadata for valid keys only
         if valid_keys:
@@ -589,18 +677,166 @@ class BatchStorageAdapter:
             return prefix
         return f"{prefix}{idx}"
 
-    def _get_request_meta_output_val(self, is_error: bool, etag: str) -> str:
-        return f"{'error' if is_error else 'output'}:{etag}"
+    def _get_request_meta_output_val(
+        self,
+        is_error: bool,
+        etag: str,
+        custom_id: Optional[str] = None,
+    ) -> str:
+        payload: Dict[str, str] = {
+            "result": "error" if is_error else "output",
+            "etag": etag,
+        }
+        if custom_id:
+            payload["custom_id"] = custom_id
+        return json.dumps(payload, separators=(",", ":"))
 
-    def _parse_request_meta_output_val(self, meta_val: str) -> Tuple[str, bool]:
+    def _parse_request_meta_output_val(
+        self, meta_val: str
+    ) -> Tuple[str, bool, Optional[str]]:
         """valid output can be:
-        1. output:[etag]
-        2. error:[etag]
-        3. processing
+        1. {"result":"output","etag":"...","custom_id":"..."}
+        2. output:[etag]
+        3. error:[etag]
+        4. processing
         """
+        try:
+            parsed = json.loads(meta_val)
+        except Exception:
+            parsed = None
+
+        if isinstance(parsed, dict):
+            result = parsed.get("result")
+            etag = parsed.get("etag")
+            custom_id = parsed.get("custom_id")
+            if isinstance(result, str) and isinstance(etag, str):
+                return (
+                    etag,
+                    result == "error",
+                    (custom_id if isinstance(custom_id, str) else None),
+                )
+
         status = meta_val.split(":", 1)
         if len(status) == 2:
             is_error, etag = status
-            return etag, is_error == "error"
+            return etag, is_error == "error", None
         else:
-            return "", False
+            return "", False, None
+
+    def _merge_usage(self, target: BatchUsage, source: BatchUsage) -> None:
+        target.input_tokens += source.input_tokens
+        target.output_tokens += source.output_tokens
+        target.total_tokens += source.total_tokens
+        target.input_tokens_details.cached_tokens += (
+            source.input_tokens_details.cached_tokens
+        )
+        target.output_tokens_details.reasoning_tokens += (
+            source.output_tokens_details.reasoning_tokens
+        )
+
+    def _merge_error_parts_by_part_number(
+        self,
+        existing_error_parts: List[Dict[str, str | int]],
+        rerouted_error_parts: List[Dict[str, str | int]],
+    ) -> Tuple[List[Dict[str, str | int]], int, int]:
+        merged_by_part_number: Dict[int, Dict[str, str | int]] = {
+            int(part["part_number"]): dict(part) for part in existing_error_parts
+        }
+        inserted = 0
+        duplicates = 0
+
+        for part in rerouted_error_parts:
+            part_number = int(part["part_number"])
+            if part_number in merged_by_part_number:
+                duplicates += 1
+                continue
+            merged_by_part_number[part_number] = dict(part)
+            inserted += 1
+
+        merged_parts = [
+            merged_by_part_number[part_number]
+            for part_number in sorted(merged_by_part_number)
+        ]
+        return merged_parts, inserted, duplicates
+
+    def _filter_rerouted_output_parts(
+        self,
+        existing_error_parts: List[Dict[str, str | int]],
+        candidate_rerouted_parts: List[Dict[str, str | int]],
+    ) -> Tuple[List[Dict[str, str | int]], int]:
+        existing_part_numbers = {
+            int(part["part_number"]) for part in existing_error_parts
+        }
+        filtered_parts: List[Dict[str, str | int]] = []
+        seen_part_numbers: set[int] = set()
+        skipped_parts = 0
+
+        for part in sorted(
+            candidate_rerouted_parts, key=lambda item: int(item["part_number"])
+        ):
+            part_number = int(part["part_number"])
+            if part_number in existing_part_numbers or part_number in seen_part_numbers:
+                skipped_parts += 1
+                continue
+            filtered_parts.append(dict(part))
+            seen_part_numbers.add(part_number)
+
+        return filtered_parts, skipped_parts
+
+    def _build_unreadable_error_part_body(
+        self,
+        part: Dict[str, str | int],
+        *,
+        message: str,
+    ) -> bytes:
+        part_number = int(part["part_number"])
+        custom_id = part.get("custom_id")
+        if not isinstance(custom_id, str) or not custom_id:
+            custom_id = f"request-{part_number}"
+
+        error_record = {
+            "id": f"unreadable-{part_number}",
+            "error": BatchJobError(
+                code=BatchJobErrorCode.INTERNAL_ERROR,
+                message=message,
+                line=part_number,
+            ),
+            "response": None,
+            "custom_id": custom_id,
+        }
+        return (
+            json.dumps(error_record, default=BatchJobError.json_serializer) + "\n"
+        ).encode("utf-8")
+
+    def _synthesize_unreadable_error_parts(
+        self,
+        unreadable_parts: List[Dict[str, str | int]],
+        *,
+        message: str,
+    ) -> List[Dict[str, str | int]]:
+        synthesized_error_parts: List[Dict[str, str | int]] = []
+
+        for part in unreadable_parts:
+            part_number = int(part["part_number"])
+            custom_id = part.get("custom_id")
+            if not isinstance(custom_id, str) or not custom_id:
+                custom_id = f"request-{part_number}"
+
+            error_body = self._build_unreadable_error_part_body(
+                part,
+                message=message,
+            )
+            etag = hashlib.md5(error_body).hexdigest()
+            synthesized_error_parts.append(
+                {
+                    "etag": etag,
+                    "part_number": part_number,
+                    "custom_id": custom_id,
+                    # Mark this synthesized part as local-only so error-file
+                    # completion consumes the in-memory body instead of trying
+                    # to fetch a staged part object that was never uploaded.
+                    LOCAL_PART_PROVIDER_MARKER: LOCAL_PART_PROVIDER_MARKER_VALUE,
+                }
+            )
+
+        return synthesized_error_parts

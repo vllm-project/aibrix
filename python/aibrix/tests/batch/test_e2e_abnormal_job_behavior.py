@@ -23,6 +23,7 @@ These tests cover various failure modes and edge cases in the batch job lifecycl
 """
 
 import asyncio
+import json
 import pydoc
 import threading
 import time
@@ -36,6 +37,8 @@ from fastapi.testclient import TestClient
 import aibrix.batch.constant as constant
 from aibrix import envs
 from aibrix.batch.batch_manager import BatchManager
+from aibrix.batch.client.engine import DispatchEngine
+from aibrix.batch.client.errors import InferenceError, InferenceErrorCode
 from aibrix.batch.job_driver import BaseJobDriver, JobDriver, TerminateResult
 from aibrix.batch.job_entity import (
     AibrixMetadata,
@@ -48,6 +51,12 @@ from aibrix.batch.job_entity import (
     ResourceAllocation,
 )
 from aibrix.batch.job_entity.batch_job import parse_completion_window
+from aibrix.batch.storage import batch_storage
+from aibrix.batch.storage.adapter import (
+    UNREADABLE_COMPLETED_OUTPUT_PART_MESSAGE,
+    UNREADABLE_FAILED_ERROR_PART_MESSAGE,
+    BatchStorageAdapter,
+)
 from aibrix.context import InfrastructureContext
 from tests.batch.conftest import (
     backend_has_feature,
@@ -412,6 +421,7 @@ def install_request_lock_retry_harness(
     monkeypatch,
     *,
     lock_timeout_seconds: float,
+    respect_expiration_seconds: bool = False,
 ):
     import aibrix.batch.storage.adapter as storage_adapter_module
 
@@ -434,11 +444,15 @@ def install_request_lock_retry_harness(
             purge_expired(key)
 
     async def fake_lock_request(key: str, expiration_seconds: int = 3600) -> bool:
-        del expiration_seconds
         purge_expired(key)
         if key in lock_state:
             return False
-        lock_state[key] = ("processing", time.monotonic() + lock_timeout_seconds)
+        effective_timeout = (
+            float(expiration_seconds)
+            if respect_expiration_seconds
+            else lock_timeout_seconds
+        )
+        lock_state[key] = ("processing", time.monotonic() + effective_timeout)
         return True
 
     async def fake_unlock_request(key: str, status: str) -> bool:
@@ -567,6 +581,11 @@ async def wait_for_completed_at_least(
             return result
         await asyncio.sleep(poll_interval)
     return result
+
+
+def decode_jsonl_content(content: bytes) -> List[Dict[str, Any]]:
+    lines = content.decode("utf-8").splitlines()
+    return [json.loads(line) for line in lines if line.strip()]
 
 
 def validate_batch_response(
@@ -1862,6 +1881,231 @@ async def test_job_finalizing_failure(e2e_test_app, test_backend):
                     finalizing_patcher.stop()
                 except RuntimeError:
                     pass
+
+
+@pytest.mark.asyncio
+async def test_job_deferred_persistence_error_and_finalization_reroute(
+    e2e_test_app, test_backend, monkeypatch
+):
+    """Exercise a mixed abnormal batch where finalization must handle both:
+    - a completed output part that became unreadable and must be rerouted into
+      the synthesized error file, and
+    - an original failed-request error part that became unreadable and must be
+      rebuilt by the local error-part callback during error-file completion.
+
+    The same run also keeps the deferred-after-durable persistence path alive so
+    the larger request set covers the current end-to-end recovery contract."""
+    print("Test 3b: Deferred persistence error with finalization reroute scenario")
+
+    monkeypatch.setenv("AIBRIX_BATCH_OUTPUT_PERSISTENCE_FAILURE_THRESHOLD", "2")
+    retry_timeout_seconds = 1.0
+    inject_job_creation_client_config(
+        monkeypatch,
+        e2e_test_app,
+        {
+            "max_concurrency": 1,
+            "adaptive_concurrency": False,
+            "request_timeout_seconds": retry_timeout_seconds,
+        },
+    )
+    install_request_lock_retry_harness(
+        monkeypatch,
+        lock_timeout_seconds=retry_timeout_seconds,
+        respect_expiration_seconds=True,
+    )
+
+    with create_test_client(e2e_test_app) as client:
+        input_file_id = upload_batch_input_file(client, 4)
+        debug_state = capture_runtime_debug_state(e2e_test_app, test_backend)
+        batch_id = None
+
+        adapter = batch_storage.p_storage
+        assert isinstance(adapter, BatchStorageAdapter)
+        storage_backend = adapter.storage
+        import aibrix.batch.storage.adapter as storage_adapter_module
+
+        original_write_job_output_data = adapter.write_job_output_data
+        original_get_object = storage_backend.get_object
+        original_send_with_failover = DispatchEngine._send_with_failover
+        original_unlock_request = storage_adapter_module.unlock_request
+        write_attempts: Dict[int, int] = {}
+        write_attempt_times: Dict[int, List[float]] = {}
+        deferred_failure_count = 0
+        rerouted_output_part_key: Optional[str] = None
+        unreadable_error_part_key: Optional[str] = None
+        deferred_unlock_key: Optional[str] = None
+
+        async def patched_send_with_failover(self, request):
+            request_id = request.ref[0]
+            # Force request-3 down the real error-record path so finalization
+            # has an original staged error part to read back.
+            if request_id == 2:
+                raise InferenceError(
+                    InferenceErrorCode.HTTP_ERROR,
+                    "simulated per-request inference failure",
+                    status_code=500,
+                    response_body={"error": "simulated failure"},
+                )
+            return await original_send_with_failover(self, request)
+
+        async def flaky_write_job_output_data(job, request_index, output_data):
+            nonlocal rerouted_output_part_key
+            nonlocal unreadable_error_part_key
+            nonlocal deferred_unlock_key
+            write_attempts[request_index] = write_attempts.get(request_index, 0) + 1
+            write_attempt_times.setdefault(request_index, []).append(time.monotonic())
+            # Capture the staged multipart keys that finalization will read
+            # later so the test can selectively make one completed-output part
+            # and one error part unreadable.
+            if request_index == 1 and job.status.temp_output_file_id is not None:
+                rerouted_output_part_key = storage_backend._multipart_upload_part_key(
+                    job.status.temp_output_file_id,
+                    1,
+                )
+            if request_index == 2 and job.status.temp_error_file_id is not None:
+                unreadable_error_part_key = storage_backend._multipart_upload_part_key(
+                    job.status.temp_error_file_id,
+                    2,
+                )
+            if request_index == 0:
+                # Request 0 is the deferred-persistence case. We do not fail the
+                # upload itself; instead we remember the metastore key and fail
+                # the first unlock below so the request stays "processing" until
+                # the lock timeout expires and the next pass retries it.
+                deferred_unlock_key = adapter._get_request_meta_output_key(
+                    job, request_index
+                )
+            return await original_write_job_output_data(job, request_index, output_data)
+
+        async def flaky_get_object(key: str):
+            if rerouted_output_part_key is not None and key == rerouted_output_part_key:
+                raise FileNotFoundError("simulated unreadable completed output part")
+            if (
+                unreadable_error_part_key is not None
+                and key == unreadable_error_part_key
+            ):
+                raise FileNotFoundError("simulated unreadable failed error part")
+            return await original_get_object(key)
+
+        async def flaky_unlock_request(key: str, status: str) -> bool:
+            nonlocal deferred_failure_count
+            if key == deferred_unlock_key and deferred_failure_count == 0:
+                deferred_failure_count += 1
+                # Simulate "part upload succeeded but completion marker write
+                # failed". The request remains locked, so the concurrent worker
+                # has to wait for lock expiry and retry the request in a later
+                # pass.
+                raise RuntimeError(
+                    "simulated completion metastore write failure after durable write"
+                )
+            return await original_unlock_request(key, status)
+
+        monkeypatch.setattr(
+            DispatchEngine, "_send_with_failover", patched_send_with_failover
+        )
+        monkeypatch.setattr(
+            adapter, "write_job_output_data", flaky_write_job_output_data
+        )
+        monkeypatch.setattr(storage_backend, "get_object", flaky_get_object)
+        monkeypatch.setattr(
+            storage_adapter_module, "unlock_request", flaky_unlock_request
+        )
+
+        try:
+            batch_id = create_batch_job(
+                client, input_file_id, test_backend=test_backend
+            )
+
+            await wait_for_status(
+                client,
+                batch_id,
+                "in_progress",
+                **backend_status_wait_kwargs(
+                    test_backend, expected_status="in_progress"
+                ),
+            )
+            final_status = await wait_for_status(
+                client,
+                batch_id,
+                "completed",
+                max_polls=120,
+                poll_interval=0.5,
+                **backend_status_wait_kwargs(test_backend, expected_status="completed"),
+            )
+
+            validate_batch_response_with_runtime_teardown(
+                final_status,
+                e2e_test_app=e2e_test_app,
+                test_backend=test_backend,
+                batch_id=batch_id,
+                debug_state=debug_state,
+                expect_runtime_teardown=backend_expect_runtime_teardown(test_backend),
+                expected_status="completed",
+                expected_endpoint="/v1/chat/completions",
+                expected_input_file_id=input_file_id,
+                expected_in_progress_at=True,
+                expected_finalizing_at=True,
+                expected_completed_at=True,
+                expected_failed_at=False,
+                expected_expired_at=False,
+                expected_cancelling_at=False,
+                expected_cancelled_at=False,
+                expected_errors=False,
+                expected_output_file_id=True,
+                expected_error_file_id=True,
+                expected_request_counts={"total": 4, "completed": 2, "failed": 2},
+            )
+
+            # Request 0 simulates the real deferred-after-durable flow:
+            # the first write lands, the worker observes a transient failure,
+            # the processing lock times out after request_timeout_seconds, and
+            # the next worker pass retries the same request and persists it
+            # again. Assert both the retry and the lock-timeout gap.
+            assert deferred_failure_count == 1
+            assert write_attempts.get(0, 0) == 2
+            assert len(write_attempt_times.get(0, [])) == 2
+            retry_delay = write_attempt_times[0][1] - write_attempt_times[0][0]
+            assert retry_delay >= retry_timeout_seconds
+            assert write_attempts.get(1, 0) >= 1
+            assert write_attempts.get(2, 0) >= 1
+            assert write_attempts.get(3, 0) >= 1
+
+            output_response = client.get(
+                f"/v1/files/{final_status['output_file_id']}/content"
+            )
+            assert output_response.status_code == 200, output_response.text
+            output_rows = decode_jsonl_content(output_response.content)
+            assert len(output_rows) == 2
+            output_rows_by_custom_id = {row["custom_id"]: row for row in output_rows}
+            assert set(output_rows_by_custom_id) == {"request-1", "request-4"}
+            assert output_rows_by_custom_id["request-1"]["error"] is None
+            assert output_rows_by_custom_id["request-4"]["error"] is None
+
+            error_response = client.get(
+                f"/v1/files/{final_status['error_file_id']}/content"
+            )
+            assert error_response.status_code == 200, error_response.text
+            error_rows = decode_jsonl_content(error_response.content)
+            assert len(error_rows) == 2
+            error_rows_by_custom_id = {row["custom_id"]: row for row in error_rows}
+            assert set(error_rows_by_custom_id) == {"request-2", "request-3"}
+            assert error_rows_by_custom_id["request-2"]["response"] is None
+            assert (
+                error_rows_by_custom_id["request-2"]["error"]["message"]
+                == UNREADABLE_COMPLETED_OUTPUT_PART_MESSAGE
+            )
+            assert error_rows_by_custom_id["request-3"]["response"] is None
+            assert (
+                error_rows_by_custom_id["request-3"]["error"]["message"]
+                == UNREADABLE_FAILED_ERROR_PART_MESSAGE
+            )
+
+            print(
+                "✅ Deferred persistence error and finalization reroute test completed successfully"
+            )
+        finally:
+            if batch_id is not None:
+                await e2e_test_app.state.batch_driver.clear_job(batch_id)
 
 
 @pytest.mark.asyncio

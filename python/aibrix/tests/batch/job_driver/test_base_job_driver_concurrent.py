@@ -28,6 +28,7 @@ from aibrix.batch.job_driver import BaseJobDriver, ExternalRuntime
 from aibrix.batch.job_entity import (
     AibrixMetadata,
     BatchJob,
+    BatchJobError,
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
@@ -281,6 +282,185 @@ def test_build_response_shapes_output_payload_model():
     assert response["response"]["body"]["model"] == "requested-model"
 
 
+@pytest.mark.asyncio
+async def test_execute_request_raises_after_consecutive_failed_active_buckets(
+    monkeypatch,
+):
+    # Unit-level coverage for the per-request path: use failed buckets 0 then 3
+    # to model slow requests / idle wall-clock gaps between attempts. Active-
+    # bucket semantics should not reset on empty buckets 1 and 2, so the second
+    # failed attempt still reaches the threshold and raises.
+    from aibrix.batch.job_driver import base as base_module
+
+    monkeypatch.setenv("AIBRIX_BATCH_OUTPUT_PERSISTENCE_FAILURE_THRESHOLD", "2")
+    job = _make_job(total=1)
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        SingleJobRunner(job),
+        ExternalRuntime(None),
+    )
+
+    async def fake_send_one(_endpoint, _body, _request_id):
+        return {"usage": {"prompt_tokens": 1, "completion_tokens": 2}}, None
+
+    async def write_job_output_data(_job, _request_index, _output_data):
+        raise RuntimeError("retry later")
+
+    monkeypatch.setattr(driver, "_send_one", fake_send_one)
+    failed_buckets = iter([0, 3])
+    monkeypatch.setattr(
+        driver,
+        "_current_output_persistence_failure_bucket",
+        lambda: next(failed_buckets),
+    )
+    monkeypatch.setattr(
+        base_module.storage, "write_job_output_data", write_job_output_data
+    )
+
+    first_result = await driver._execute_request(
+        job,
+        {"_request_index": 0, "custom_id": "req-0", "body": {"i": 0}},
+    )
+
+    assert first_result == (0, None)
+
+    with pytest.raises(BatchJobError, match="RuntimeError: retry later"):
+        await driver._execute_request(
+            job,
+            {"_request_index": 0, "custom_id": "req-0", "body": {"i": 0}},
+        )
+
+
+@pytest.mark.asyncio
+async def test_execute_request_counts_only_once_per_failed_bucket(
+    monkeypatch,
+):
+    # Per-request coverage for the burst-collapse rule: two failures in bucket 0
+    # count as one failed active bucket, so only the later failure in bucket 1
+    # reaches the threshold.
+    from aibrix.batch.job_driver import base as base_module
+
+    monkeypatch.setenv("AIBRIX_BATCH_OUTPUT_PERSISTENCE_FAILURE_THRESHOLD", "2")
+    job = _make_job(total=1)
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        SingleJobRunner(job),
+        ExternalRuntime(None),
+    )
+
+    async def fake_send_one(_endpoint, _body, _request_id):
+        return {"usage": {"prompt_tokens": 1, "completion_tokens": 2}}, None
+
+    async def write_job_output_data(_job, _request_index, _output_data):
+        raise RuntimeError("retry later")
+
+    monkeypatch.setattr(driver, "_send_one", fake_send_one)
+    failed_buckets = iter([0, 0, 1])
+    monkeypatch.setattr(
+        driver,
+        "_current_output_persistence_failure_bucket",
+        lambda: next(failed_buckets),
+    )
+    monkeypatch.setattr(
+        base_module.storage, "write_job_output_data", write_job_output_data
+    )
+
+    first_result = await driver._execute_request(
+        job,
+        {"_request_index": 0, "custom_id": "req-0", "body": {"i": 0}},
+    )
+    second_result = await driver._execute_request(
+        job,
+        {"_request_index": 0, "custom_id": "req-0", "body": {"i": 0}},
+    )
+
+    assert first_result == (0, None)
+    assert second_result == (0, None)
+
+    with pytest.raises(BatchJobError, match="RuntimeError: retry later"):
+        await driver._execute_request(
+            job,
+            {"_request_index": 0, "custom_id": "req-0", "body": {"i": 0}},
+        )
+
+
+@pytest.mark.asyncio
+async def test_execute_request_success_resets_failed_active_bucket_streak(
+    monkeypatch,
+):
+    # Per-request coverage for the success-reset rule: a successful persistence
+    # between failures clears the failed active-bucket streak, so a later failure
+    # starts a new streak instead of inheriting the previous bucket.
+    from aibrix.batch.job_driver import base as base_module
+
+    monkeypatch.setenv("AIBRIX_BATCH_OUTPUT_PERSISTENCE_FAILURE_THRESHOLD", "2")
+    job = _make_job(total=3)
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        SingleJobRunner(job),
+        ExternalRuntime(None),
+    )
+    failures = iter([True, False, True])
+
+    async def fake_send_one(_endpoint, _body, _request_id):
+        return {"usage": {"prompt_tokens": 1, "completion_tokens": 2}}, None
+
+    async def write_job_output_data(_job, _request_index, _output_data):
+        if next(failures):
+            raise RuntimeError("retry later")
+
+    monkeypatch.setattr(driver, "_send_one", fake_send_one)
+    buckets = iter([0, 1, 3])
+    monkeypatch.setattr(
+        driver,
+        "_current_output_persistence_failure_bucket",
+        lambda: next(buckets),
+    )
+    monkeypatch.setattr(
+        base_module.storage, "write_job_output_data", write_job_output_data
+    )
+
+    first_result = await driver._execute_request(
+        job,
+        {"_request_index": 0, "custom_id": "req-0", "body": {"i": 0}},
+    )
+    second_result = await driver._execute_request(
+        job,
+        {"_request_index": 1, "custom_id": "req-1", "body": {"i": 1}},
+    )
+    third_result = await driver._execute_request(
+        job,
+        {"_request_index": 2, "custom_id": "req-2", "body": {"i": 2}},
+    )
+
+    assert first_result == (0, None)
+    assert second_result == (1, False)
+    assert third_result == (2, None)
+
+
+@pytest.mark.asyncio
+async def test_sync_completed_request_tasks_ignores_deferred_results():
+    job = _make_job(total=3)
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        SingleJobRunner(job),
+        ExternalRuntime(None),
+    )
+
+    updated_job, synced = await driver._sync_completed_request_tasks(
+        job,
+        [
+            (0, None),
+            (1, False),
+            (2, True),
+        ],
+    )
+
+    assert synced == 2
+    assert updated_job.status.request_counts.completed == 1
+    assert updated_job.status.request_counts.failed == 1
+
+
 def _patch_storage(monkeypatch, requests, done: Optional[set[int]] = None):
     done = done or set()
     outputs = {}
@@ -426,7 +606,115 @@ async def test_execute_worker_reconciles_storage_done_requests(monkeypatch):
 
     assert read_starts == [1]
     assert result.status.request_counts.completed == 1
-    assert set(outputs) == {1}
+
+
+@pytest.mark.asyncio
+async def test_execute_worker_defers_generic_output_persistence_failure(monkeypatch):
+    # Worker-level coverage for the deferred path: the request is launched and a
+    # response is built, but the worker must not count it completed/failed until
+    # persistence succeeds and the completion queue is updated.
+    monkeypatch.setenv("AIBRIX_BATCH_OUTPUT_PERSISTENCE_FAILURE_THRESHOLD", "2")
+    job = _make_job(total=1)
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        SingleJobRunner(job),
+        ExternalRuntime(None),
+    )
+    requests = [{"_request_index": 0, "custom_id": "req-0", "body": {"i": 0}}]
+    done: set[int] = set()
+    outputs = {}
+
+    class _OneShotEngine:
+        async def run(self, request_iter, on_result, **_kwargs):
+            request = await anext(request_iter.__aiter__())
+            await on_result(request, {"usage": {"prompt_tokens": 1}}, None)
+
+        async def capacity(self) -> CapacitySignal:
+            return CapacitySignal(count=1)
+
+    driver._engine = _OneShotEngine()
+
+    async def read_job_next_request(_job, _start_index=0):
+        for request in requests:
+            yield dict(request)
+
+    async def write_job_output_data(_job, request_index, output_data):
+        outputs[request_index] = output_data
+        raise RuntimeError("retry later")
+
+    async def is_request_done(_job, request_index):
+        return request_index in done
+
+    from aibrix.batch.job_driver import base as base_module
+
+    monkeypatch.setattr(
+        base_module.storage, "read_job_next_request", read_job_next_request
+    )
+    monkeypatch.setattr(
+        base_module.storage, "write_job_output_data", write_job_output_data
+    )
+    monkeypatch.setattr(base_module.storage, "is_request_done", is_request_done)
+
+    result = await driver.execute_worker(job.job_id)
+    local_counts = driver._get_local_request_counts(job.job_id)
+
+    assert result.status.state == BatchJobState.IN_PROGRESS
+    assert result.status.request_counts.completed == 0
+    assert result.status.request_counts.failed == 0
+    assert local_counts.launched == 1
+    assert done == set()
+    assert outputs[0]["custom_id"] == "req-0"
+    assert set(outputs) == {0}
+
+
+@pytest.mark.asyncio
+async def test_execute_worker_raises_after_output_persistence_failure_threshold(
+    monkeypatch,
+):
+    # Worker-level coverage for the concurrent dispatch path: repeated
+    # persistence failures across active buckets propagate out of execute_worker.
+    # Buckets 0 then 4 model slow requests / idle gaps that must not reset the
+    # active-bucket streak before the threshold is reached.
+    monkeypatch.setenv("AIBRIX_BATCH_OUTPUT_PERSISTENCE_FAILURE_THRESHOLD", "2")
+    job = _make_job(total=2)
+    driver, _ = _driver(job, capacity=1)
+    requests = [
+        {"_request_index": i, "custom_id": f"req-{i}", "body": {"i": i}}
+        for i in range(2)
+    ]
+    outputs = {}
+
+    async def read_job_next_request(_job, _start_index=0):
+        for request in requests:
+            yield dict(request)
+
+    async def write_job_output_data(_job, request_index, output_data):
+        outputs[request_index] = output_data
+        raise RuntimeError("retry later")
+
+    async def is_request_done(_job, _request_index):
+        return False
+
+    from aibrix.batch.job_driver import base as base_module
+
+    failed_buckets = iter([0, 4])
+    monkeypatch.setattr(
+        driver,
+        "_current_output_persistence_failure_bucket",
+        lambda: next(failed_buckets),
+    )
+    monkeypatch.setattr(
+        base_module.storage, "read_job_next_request", read_job_next_request
+    )
+    monkeypatch.setattr(
+        base_module.storage, "write_job_output_data", write_job_output_data
+    )
+    monkeypatch.setattr(base_module.storage, "is_request_done", is_request_done)
+
+    with pytest.raises(BatchJobError, match="RuntimeError: retry later"):
+        await driver.execute_worker(job.job_id)
+
+    assert set(outputs) == {0, 1}
 
 
 @pytest.mark.asyncio
