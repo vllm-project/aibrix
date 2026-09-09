@@ -29,11 +29,13 @@ import httpx
 
 from aibrix.batch.client.errors import InferenceError, InferenceErrorCode
 from aibrix.logger import init_logger
+from aibrix.metadata.core import HTTPXClientWrapper
 
 logger = init_logger(__name__)
 
 Response = Dict[str, Any]
 _MAX_ERROR_BODY_CHARS = 4096
+_HTTPXLikeClient = HTTPXClientWrapper | httpx.AsyncClient
 
 # Idle connections must be discarded before the server's own keep-alive timeout,
 # not at the same moment. httpx defaults to 5s and so does uvicorn: under
@@ -86,7 +88,7 @@ class HttpChannel:
         base_url: str,
         *,
         timeout: float = 30.0,
-        client: Optional[httpx.AsyncClient] = None,
+        client: Optional[_HTTPXLikeClient] = None,
     ) -> None:
         self._base_url = base_url
         self._timeout = timeout
@@ -110,9 +112,12 @@ class HttpChannel:
             "requesting inference", url=url, model=request.payload.get("model")
         )  # type: ignore[call-arg]
         try:
-            response = await client.post(
-                url, json=request.payload, timeout=self._timeout_config
-            )
+            post_kwargs = {"json": request.payload, "timeout": self._timeout_config}
+            if isinstance(client, HTTPXClientWrapper):
+                post_kwargs["telemetry_call_site"] = (
+                    "batch.client.channel.HttpChannel.send"
+                )
+            response = await client.post(url, **post_kwargs)  # type: ignore[arg-type]
         except httpx.TimeoutException as ex:
             # repr, not str: httpx timeout exceptions often stringify to an
             # empty message, which would leave the log with a bare URL.
@@ -152,16 +157,17 @@ class HttpChannel:
                 retryable=False,
             ) from ex
 
-    def _ensure_client(self) -> httpx.AsyncClient:
+    def _ensure_client(self) -> _HTTPXLikeClient:
         if self._client is None:
-            self._client = httpx.AsyncClient(
+            self._client = HTTPXClientWrapper(
+                client_id=f"http-channel-{self._base_url}",
                 limits=httpx.Limits(
                     # Restate httpx's own defaults: constructing Limits() to set
                     # keepalive_expiry alone would reset these two to unbounded.
                     max_connections=100,
                     max_keepalive_connections=20,
                     keepalive_expiry=_KEEPALIVE_EXPIRY_SECONDS,
-                )
+                ),
             )
         return self._client
 

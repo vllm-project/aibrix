@@ -16,11 +16,10 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
-import httpx
-
 from aibrix.batch.client.sources.static import GatewayEndpointSource
 from aibrix.batch.job_driver.runtime import Endpoint, RuntimeBase
 from aibrix.batch.job_entity import BatchJob
+from aibrix.metadata.core import HTTPXClientWrapper
 
 
 @dataclass(slots=True)
@@ -173,7 +172,15 @@ class SSHLaunchRuntime(RuntimeBase, abc.ABC):
         url = self._base_url(handle) + "/health"
         loop = asyncio.get_event_loop()
         deadline = loop.time() + self._ready_timeout_s
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        # Since _wait_ready is a short-lived polling loop, enabling telemetry for
+        # this ephemeral client is unnecessary and will flood the logs with
+        # telemetry summaries and task lifecycle logs.
+        # We should disable telemetry for this client by setting telemetry_enabled=False.
+        async with HTTPXClientWrapper(
+            client_id="ssh-launch-ready",
+            timeout=10.0,
+            telemetry_enabled=False,
+        ) as client:
             while True:
                 try:
                     resp = await client.get(url)
@@ -192,7 +199,12 @@ class SSHLaunchRuntime(RuntimeBase, abc.ABC):
     ) -> None:
         del reason
         url = self._base_url(handle) + "/health"
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        # For the same reason as _wait_ready, we disable telemetry for this client.
+        async with HTTPXClientWrapper(
+            client_id="ssh-launch-liveness",
+            timeout=10.0,
+            telemetry_enabled=False,
+        ) as client:
             try:
                 resp = await client.get(url)
             except Exception as ex:

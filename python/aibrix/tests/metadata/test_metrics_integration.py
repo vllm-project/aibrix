@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import argparse
 import asyncio
 import os
 from unittest.mock import patch
@@ -22,7 +21,7 @@ from prometheus_client import generate_latest
 
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 
-from aibrix.metadata.app import build_app
+from aibrix.metadata.app import build_app, build_app_args
 from aibrix.metadata.core.metrics import MetricsConfig, setup_metrics, shutdown_metrics
 from aibrix.metadata.setting import load_metrics_config, settings
 from aibrix.metadata.store import RedisMetadataStore
@@ -31,14 +30,13 @@ from tests.fake.redis import FakeRedisClient
 
 def _args(**overrides):
     defaults = {
-        "enable_fastapi_docs": False,
         "enable_k8s_support": False,
         "disable_batch_api": True,
         "disable_file_api": True,
         "dry_run": False,
     }
     defaults.update(overrides)
-    return argparse.Namespace(**defaults)
+    return build_app_args(**defaults)
 
 
 def test_metrics_endpoint_exposes_metadata_http_metrics(monkeypatch):

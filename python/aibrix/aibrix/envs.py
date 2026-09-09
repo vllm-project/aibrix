@@ -36,6 +36,12 @@ def _parse_int_or_none(value: Optional[str]) -> Optional[int]:
     return int(value)
 
 
+def _parse_float(value: Optional[str], default: float) -> float:
+    if value is None:
+        return default
+    return float(value)
+
+
 # Model Download Related Config
 
 # Downloader Default Directory
@@ -170,3 +176,31 @@ INFERENCE_ENGINE_ENDPOINT = os.getenv(
 )
 INFERENCE_ENGINE_API_KEY = os.getenv("INFERENCE_ENGINE_API_KEY")
 INFERENCE_TASK_TIMEOUT = int(os.getenv("INFERENCE_TASK_TIMEOUT", "600"))
+
+# Metadata service HTTPX client config.
+#
+# Telemetry helps diagnose client-side load and failure modes in the shared
+# metadata HTTPX AsyncClient: request volume, concurrency, latency, and
+# exception spikes become visible in logs without requiring a separate metrics
+# backend. These settings are referenced when `metadata.app.build_app()`
+# instantiates the shared `HTTPXClientWrapper`, when
+# `metadata.app.build_app_arg_parser()` exposes CLI defaults, and when
+# `metadata.core.httpx_client` falls back to env-backed telemetry defaults.
+#
+# Metadata shared HTTPX AsyncClient timeout in seconds.
+CORE_HTTPX_ASYNC_CLIENT_TIMEOUT_SECOND = _parse_float(
+    os.getenv("AIBRIX_HTTPX_ASYNC_CLIENT_TIMEOUT_SECOND"),
+    10.0,
+)
+# Metadata shared HTTPX AsyncClient telemetry logging toggle.
+CORE_HTTPX_ASYNC_CLIENT_TELEMETRY_ENABLED = _is_true(
+    os.getenv("AIBRIX_HTTPX_CLIENT_TELEMETRY_ENABLED", "0")
+)
+# Metadata shared HTTPX AsyncClient telemetry emission interval in seconds.
+CORE_HTTPX_ASYNC_CLIENT_TELEMETRY_INTERVAL_SECONDS = max(
+    _parse_float(
+        os.getenv("AIBRIX_HTTPX_CLIENT_TELEMETRY_INTERVAL_SECONDS"),
+        60.0,
+    ),
+    15.0,
+)
