@@ -126,8 +126,10 @@ func (s *Server) syncVideoJobCacheFromRedis() {
 		for i, id := range idChunk {
 			raw, ok := vals[i].(string)
 			if !ok {
-				// Nil or unexpected type: Redis no longer vouches for this mapping.
-				s.videoJobCache.Delete(id)
+				// Nil or unexpected type: either Redis genuinely no longer vouches
+				// for this mapping, or this replica's own write to it is still
+				// pending/failed -- handleVideoJobCacheSyncMiss tells those apart.
+				s.handleVideoJobCacheSyncMiss(ctx, id)
 				continue
 			}
 			var entry videoJobCacheEntry
@@ -135,8 +137,31 @@ func (s *Server) syncVideoJobCacheFromRedis() {
 				klog.V(4).ErrorS(err, "failed to unmarshal video job entry during cache sync", "videoID", id)
 				continue
 			}
-			s.videoJobCache.Store(id, entry)
+			s.videoJobCache.Store(id, videoJobCacheItem{entry: entry, confirmed: true})
 		}
+	}
+}
+
+// handleVideoJobCacheSyncMiss reacts to videoID being absent from Redis during
+// a sync pass. A previously confirmed entry (this replica successfully wrote
+// or read it from Redis at some point) is evicted: Redis no longer vouches
+// for it, most likely a DELETE or a forgotten pod on another replica. An
+// entry that was never confirmed means this replica's own write to Redis is
+// still pending or failed outright -- a nil read says nothing about whether
+// that mapping is still valid, so it's retried here instead of being dropped
+// as the only surviving copy (see the confirmed field on videoJobCacheItem).
+func (s *Server) handleVideoJobCacheSyncMiss(ctx context.Context, videoID string) {
+	cached, found := s.videoJobCache.Load(videoID)
+	if !found {
+		return
+	}
+	item, ok := cached.(videoJobCacheItem)
+	if !ok || item.confirmed || !time.Now().Before(item.entry.ExpiresAt) {
+		s.videoJobCache.Delete(videoID)
+		return
+	}
+	if s.persistVideoJobToRedis(ctx, videoID, item.entry, time.Until(item.entry.ExpiresAt)) {
+		s.videoJobCache.Store(videoID, videoJobCacheItem{entry: item.entry, confirmed: true})
 	}
 }
 
@@ -148,6 +173,36 @@ type videoJobCacheEntry struct {
 	PodNamespace string    `json:"pod_namespace"`
 	Model        string    `json:"model"`
 	ExpiresAt    time.Time `json:"expires_at"`
+}
+
+// videoJobCacheItem is what's actually stored in Server.videoJobCache.
+// confirmed is local-only bookkeeping (never marshaled to Redis) recording
+// whether entry is known to exist in Redis. See handleVideoJobCacheSyncMiss
+// for why that distinction matters.
+type videoJobCacheItem struct {
+	entry     videoJobCacheEntry
+	confirmed bool
+}
+
+// persistVideoJobToRedis write-throughs entry to Redis under videoID's key
+// and reports whether Redis now has it. A false return (no redisClient, a
+// marshal error, or a Set error -- both logged here) means the caller's local
+// copy is this replica's only copy, and a later Redis miss for videoID must
+// not be read as proof the mapping was deleted elsewhere.
+func (s *Server) persistVideoJobToRedis(ctx context.Context, videoID string, entry videoJobCacheEntry, ttl time.Duration) bool {
+	if s.redisClient == nil {
+		return false
+	}
+	payload, err := sonic.Marshal(entry)
+	if err != nil {
+		klog.ErrorS(err, "failed to marshal video job entry for redis", "videoID", videoID)
+		return false
+	}
+	if err := s.redisClient.Set(ctx, videoJobRedisKey(videoID), string(payload), ttl).Err(); err != nil {
+		klog.ErrorS(err, "failed to persist video job pod to redis", "videoID", videoID)
+		return false
+	}
+	return true
 }
 
 // rememberVideoJobPod stores videoID's owning pod locally and, when Redis is
@@ -166,19 +221,13 @@ func (s *Server) rememberVideoJobPod(ctx context.Context, videoID, podName, podN
 		Model:        model,
 		ExpiresAt:    time.Now().Add(ttl),
 	}
-	s.videoJobCache.Store(videoID, entry)
 
-	if s.redisClient == nil {
-		return
-	}
-	payload, err := sonic.Marshal(entry)
-	if err != nil {
-		klog.ErrorS(err, "failed to marshal video job entry for redis", "videoID", videoID)
-		return
-	}
-	if err := s.redisClient.Set(ctx, videoJobRedisKey(videoID), string(payload), ttl).Err(); err != nil {
-		klog.ErrorS(err, "failed to persist video job pod to redis", "videoID", videoID)
-	}
+	// Write-through to Redis before the local Store below: syncVideoJobCacheFromRedis
+	// walks locally-cached IDs and evicts unconfirmed entries when this fails, so
+	// storing locally first would open a window where a concurrent sync tick sees
+	// this videoID still missing from Redis and evicts/retries prematurely.
+	confirmed := s.persistVideoJobToRedis(ctx, videoID, entry, ttl)
+	s.videoJobCache.Store(videoID, videoJobCacheItem{entry: entry, confirmed: confirmed})
 }
 
 // lookupVideoJobPod returns the pod that owns videoID, or ok=false if the
@@ -186,11 +235,11 @@ func (s *Server) rememberVideoJobPod(ctx context.Context, videoID, podName, podN
 // A local miss falls back to Redis (cross-replica) and warms the local cache.
 func (s *Server) lookupVideoJobPod(ctx context.Context, videoID string) (podName, podNamespace, model string, ok bool) {
 	if cached, found := s.videoJobCache.Load(videoID); found {
-		entry, ok := cached.(videoJobCacheEntry)
-		if !ok {
+		item, itemOK := cached.(videoJobCacheItem)
+		if !itemOK {
 			s.videoJobCache.Delete(videoID)
-		} else if time.Now().Before(entry.ExpiresAt) {
-			return entry.PodName, entry.PodNamespace, entry.Model, true
+		} else if time.Now().Before(item.entry.ExpiresAt) {
+			return item.entry.PodName, item.entry.PodNamespace, item.entry.Model, true
 		} else {
 			s.videoJobCache.Delete(videoID)
 		}
@@ -217,7 +266,7 @@ func (s *Server) lookupVideoJobPod(ctx context.Context, videoID string) (podName
 		return "", "", "", false
 	}
 
-	s.videoJobCache.Store(videoID, entry)
+	s.videoJobCache.Store(videoID, videoJobCacheItem{entry: entry, confirmed: true})
 	return entry.PodName, entry.PodNamespace, entry.Model, true
 }
 

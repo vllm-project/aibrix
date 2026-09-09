@@ -118,10 +118,10 @@ func TestServer_VideoJobPodTracking(t *testing.T) {
 	// Expired entries are evicted on read. rememberVideoJobPod itself can't produce
 	// an already-expired entry (it coerces ttl<=0 to the default, per the video-2
 	// case above), so store one directly to exercise the expiry path.
-	s.videoJobCache.Store("video-3", videoJobCacheEntry{
+	s.videoJobCache.Store("video-3", videoJobCacheItem{entry: videoJobCacheEntry{
 		PodName: "pod-c", PodNamespace: "ns-c", Model: "m",
 		ExpiresAt: time.Now().Add(-time.Second),
-	})
+	}})
 	_, _, _, ok = s.lookupVideoJobPod(ctx, "video-3")
 	assert.False(t, ok)
 	_, found := s.videoJobCache.Load("video-3")
@@ -346,20 +346,73 @@ func TestSyncVideoJobCacheFromRedis_RefreshesChangedEntry(t *testing.T) {
 // TestSyncVideoJobCacheFromRedis_EvictsRedisMiss covers the DELETE/pod-gone
 // cross-replica case directly: another replica's forgetVideoJobPod removed the
 // Redis key, and this replica's local (not-yet-expired) copy must be evicted on
-// the next sync rather than continuing to serve/pin against it.
+// the next sync rather than continuing to serve/pin against it. The entry is
+// stored confirmed:true -- this replica previously verified it in Redis (e.g.
+// via an earlier sync or lookup), so a later miss is trustworthy evidence of a
+// genuine deletion, not an unwritten local-only entry (see the "never
+// confirmed" self-heal case in TestSyncVideoJobCacheFromRedis_SelfHealsUnconfirmedEntry).
 func TestSyncVideoJobCacheFromRedis_EvictsRedisMiss(t *testing.T) {
 	s, _ := newTestVideoJobRedisServer(t)
 
-	// Store locally without ever writing to Redis, standing in for "some other
-	// replica already called forgetVideoJobPod and deleted the Redis key".
-	s.videoJobCache.Store("video-2", videoJobCacheEntry{
-		PodName: "pod-a", PodNamespace: "ns-a", Model: "m", ExpiresAt: time.Now().Add(time.Hour),
+	s.videoJobCache.Store("video-2", videoJobCacheItem{
+		entry: videoJobCacheEntry{
+			PodName: "pod-a", PodNamespace: "ns-a", Model: "m", ExpiresAt: time.Now().Add(time.Hour),
+		},
+		confirmed: true,
 	})
 
 	s.syncVideoJobCacheFromRedis()
 
 	_, found := s.videoJobCache.Load("video-2")
-	assert.False(t, found, "local entry must be evicted once Redis no longer has it")
+	assert.False(t, found, "confirmed local entry must be evicted once Redis no longer has it")
+}
+
+// TestSyncVideoJobCacheFromRedis_SelfHealsUnconfirmedEntry covers the case
+// where this replica's own write-through to Redis failed (rememberVideoJobPod
+// logs the error but still stores locally, fail-open) or was still in flight
+// when a sync tick ran. Before this fix, the next sync's Redis miss for that
+// videoID was indistinguishable from "another replica deleted it" and evicted
+// the only surviving copy of the mapping -- causing follow-up GET/DELETE on
+// this replica to 404 a job that was still live on its pod. An unconfirmed
+// entry must instead be retried into Redis and kept.
+func TestSyncVideoJobCacheFromRedis_SelfHealsUnconfirmedEntry(t *testing.T) {
+	s, mr := newTestVideoJobRedisServer(t)
+
+	// Simulate rememberVideoJobPod's Redis write having failed: stored locally,
+	// never confirmed in Redis, and (since the write never landed) absent there.
+	entry := videoJobCacheEntry{PodName: "pod-a", PodNamespace: "ns-a", Model: "m", ExpiresAt: time.Now().Add(time.Hour)}
+	s.videoJobCache.Store("video-4", videoJobCacheItem{entry: entry, confirmed: false})
+	_, err := mr.Get(videoJobRedisKey("video-4"))
+	require.Error(t, err, "precondition: redis must not already have this key")
+
+	s.syncVideoJobCacheFromRedis()
+
+	cached, found := s.videoJobCache.Load("video-4")
+	require.True(t, found, "unconfirmed entry must survive a redis miss, not be treated as an authoritative deletion")
+	item := cached.(videoJobCacheItem)
+	assert.Equal(t, "pod-a", item.entry.PodName)
+	assert.True(t, item.confirmed, "sync must retry the write and mark the entry confirmed once it lands")
+
+	raw, err := mr.Get(videoJobRedisKey("video-4"))
+	require.NoError(t, err, "sync must have persisted the unconfirmed entry to redis")
+	assert.Contains(t, raw, "pod-a")
+}
+
+// TestSyncVideoJobCacheFromRedis_EvictsExpiredUnconfirmedEntry ensures the
+// self-heal path in TestSyncVideoJobCacheFromRedis_SelfHealsUnconfirmedEntry
+// doesn't retry forever: once an unconfirmed entry's own TTL has passed, sync
+// must evict it like any other expired entry rather than keep re-attempting
+// the Redis write.
+func TestSyncVideoJobCacheFromRedis_EvictsExpiredUnconfirmedEntry(t *testing.T) {
+	s, _ := newTestVideoJobRedisServer(t)
+
+	entry := videoJobCacheEntry{PodName: "pod-a", PodNamespace: "ns-a", Model: "m", ExpiresAt: time.Now().Add(-time.Second)}
+	s.videoJobCache.Store("video-5", videoJobCacheItem{entry: entry, confirmed: false})
+
+	s.syncVideoJobCacheFromRedis()
+
+	_, found := s.videoJobCache.Load("video-5")
+	assert.False(t, found, "expired entry must not be retried indefinitely")
 }
 
 // TestSyncVideoJobCacheFromRedis_LeavesLocalCacheUntouchedOnRedisError ensures a
@@ -378,7 +431,7 @@ func TestSyncVideoJobCacheFromRedis_LeavesLocalCacheUntouchedOnRedisError(t *tes
 
 	cached, found := s.videoJobCache.Load("video-3")
 	require.True(t, found, "local entry must survive a whole-batch redis error")
-	assert.Equal(t, "pod-a", cached.(videoJobCacheEntry).PodName)
+	assert.Equal(t, "pod-a", cached.(videoJobCacheItem).entry.PodName)
 }
 
 func TestParseVideoListRequest(t *testing.T) {

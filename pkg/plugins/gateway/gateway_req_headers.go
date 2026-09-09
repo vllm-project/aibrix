@@ -155,6 +155,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 			if model == "" {
 				return videoListModelRequiredResponse(), user, rpm, routingCtx, term
 			}
+			routingCtx.Model = model
 			return s.handleVideoListHeaders(requestID, model), user, rpm, routingCtx, term
 		}
 	}
