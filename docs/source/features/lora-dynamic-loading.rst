@@ -599,7 +599,7 @@ User may pass in the argument ``--api-key`` or environment variable ``VLLM_API_K
 
     vllm serve --api-key sk-kFJ12nKsFakefVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BFake
 
-We already have an example and you can ``kubectl apply -f samples/adapter/adapter-with-key.yaml``.
+We already have an example and you can ``kubectl apply -f samples/adapter/base-api-key.yaml``.
 
 
 In that case, lora model adapter can not query the vLLM server correctly, showing ``{"error":"Unauthorized"}`` error. You need to update ``additionalConfig`` field to pass in the API key.
