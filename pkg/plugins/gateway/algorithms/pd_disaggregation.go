@@ -367,10 +367,12 @@ func (r *pdRouter) chargeTokenLoad(routingCtx *types.RoutingContext, pod *v1.Pod
 	matchPct := pd.PrefixMatchPercent(scorer, pod.Name)
 	newTokens, source := r.tokenLoadTracker.NewTokens(routingCtx.Model, sessionID, promptTokens, matchPct)
 	cost := r.tokenLoadTracker.PrefillCost(newTokens)
-	klog.V(4).InfoS("pd_router token_load charge",
-		"request_id", routingCtx.RequestID, "pod_name", pod.Name, "policy", policy.Name(),
-		"prompt_tokens", promptTokens, "new_tokens", newTokens, "source", source,
-		"prefix_match_percent", matchPct, "cost", cost)
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("pd_router token_load charge",
+			"request_id", routingCtx.RequestID, "pod_name", pod.Name, "policy", policy.Name(),
+			"prompt_tokens", promptTokens, "new_tokens", newTokens, "source", source,
+			"prefix_match_percent", matchPct, "cost", cost)
+	}
 	r.tokenLoadTracker.AcquirePrefill(routingCtx.RequestID, pod.Name, cost)
 }
 
@@ -546,10 +548,12 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	if isImbalanced && targetPod != nil {
 		prefillPods = []*v1.Pod{targetPod}
 		decodePods = utils.FilterPodsByLabel(decodePods, PDRoleSetIdentifier, targetPod.Labels[PDRoleSetIdentifier])
-		klog.V(4).InfoS("load imbalance detected, selecting least-loaded prefill pod",
-			"request_id", routingCtx.RequestID, "selected_prefill_pod", targetPod.Name,
-			"roleset", targetPod.Labels[PDRoleSetIdentifier], "decode_pods_after_align", pdPodNames(decodePods),
-		)
+		if klog.V(4).Enabled() {
+			klog.V(4).InfoS("load imbalance detected, selecting least-loaded prefill pod",
+				"request_id", routingCtx.RequestID, "selected_prefill_pod", targetPod.Name,
+				"roleset", targetPod.Labels[PDRoleSetIdentifier], "decode_pods_after_align", pdPodNames(decodePods),
+			)
+		}
 	}
 
 	targetPod, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage := r.loadImbalanceSelectDecodePod(routingCtx, decodePods)
@@ -558,10 +562,12 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 		if aligned := utils.FilterPodsByLabel(prefillPods, PDRoleSetIdentifier, targetPod.Labels[PDRoleSetIdentifier]); len(aligned) > 0 {
 			prefillPods = aligned
 		}
-		klog.V(4).InfoS("load imbalance detected in decode pods",
-			"request_id", routingCtx.RequestID, "selected_decode_pod", targetPod.Name,
-			"roleset", targetPod.Labels[PDRoleSetIdentifier], "prefill_pods_after_align", pdPodNames(prefillPods),
-		)
+		if klog.V(4).Enabled() {
+			klog.V(4).InfoS("load imbalance detected in decode pods",
+				"request_id", routingCtx.RequestID, "selected_decode_pod", targetPod.Name,
+				"roleset", targetPod.Labels[PDRoleSetIdentifier], "prefill_pods_after_align", pdPodNames(prefillPods),
+			)
+		}
 	}
 
 	prefillScores, maxPrefillScore, prefixHashes := r.scorePreparedPrefillPods(routingCtx, prefillPods, prefillScorer)
@@ -585,8 +591,9 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 // in-flight prefill HTTP calls from other concurrent requests. The current request is
 // not counted yet — filterPrefillDecodePods registers it after selection completes,
 // under the same selectMu hold.
-// readyPods is shuffled before evaluation so ties among equally-loaded pods are broken
-// randomly rather than by map iteration order.
+// Ties among equally-loaded pods are broken by drawing uniformly at random from the tied
+// pod names; readyPods is only used to resolve that name back to a pod, so its order does
+// not influence the result.
 //
 // Returns one pod tied for the minimum count and imbalance=true when
 // max(count) − min(count) > aibrixPrefillLoadImbalanceMinSpread (strictly greater than).
@@ -600,7 +607,6 @@ func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequest
 	targetPods := []string{}
 	minValue := int32(math.MaxInt32)
 	maxValue := int32(math.MinInt32)
-	utils.CryptoShuffle(readyPods)
 
 	if len(podRequestCount) == 0 {
 		return targetPod, imbalance
@@ -623,7 +629,7 @@ func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequest
 	if maxValue-minValue > aibrixPrefillLoadImbalanceMinSpread && len(targetPods) > 0 {
 		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
 		imbalance = true
-		if targetPod != nil {
+		if targetPod != nil && klog.V(4).Enabled() {
 			klog.V(4).InfoS("prefill request imbalance detected, selecting least-loaded pod",
 				"min_request_count", minValue, "max_request_count", maxValue,
 				"selected_prefill_pod", targetPod.Name, "roleset", targetPod.Labels[PDRoleSetIdentifier],
@@ -679,7 +685,7 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 	minObservedRequestCount := math.MaxFloat64
 	maxObservedThroughput := float64(0)
 	minObservedThroughput := math.MaxFloat64
-	utils.CryptoShuffle(filteredDecodePods)
+	utils.Shuffle(filteredDecodePods)
 
 	for _, pod := range filteredDecodePods {
 		runningReqs, runningErr := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning)
@@ -832,7 +838,7 @@ func (r *pdRouter) preparePrefillScorer(routingCtx *types.RoutingContext, prefil
 // it reads the current prefill request counts and scores prefillPods with an
 // already-prepared scorer. filterPrefillDecodePods calls it under selectMu.
 func (r *pdRouter) scorePreparedPrefillPods(routingCtx *types.RoutingContext, prefillPods []*v1.Pod, scorer pd.PrefillScorer) (map[string]*Scores, float64, []uint64) {
-	utils.CryptoShuffle(prefillPods)
+	utils.Shuffle(prefillPods)
 	podRequestCount := r.prefillRequestTracker.GetPrefillRequestCountsForPods(prefillPods)
 
 	var maxRequestCount float64 = 1
@@ -911,7 +917,7 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 		return out
 	}
 
-	utils.CryptoShuffle(filteredDecodePods)
+	utils.Shuffle(filteredDecodePods)
 
 	anyMetricsReady := false
 	metricsReadyByPod := make(map[string]bool, len(filteredDecodePods))
@@ -923,8 +929,15 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 		}
 	}
 
-	scoredPods := make([]string, 0, len(filteredDecodePods))
-	skippedPods := make([]string, 0, len(filteredDecodePods))
+	// The per-pod score strings exist only for the decode_score_summary log,
+	// so build them only when that log is going to be written; this runs
+	// under selectMu for every request.
+	verbose := klog.V(4).Enabled()
+	var scoredPods, skippedPods []string
+	if verbose {
+		scoredPods = make([]string, 0, len(filteredDecodePods))
+		skippedPods = make([]string, 0, len(filteredDecodePods))
+	}
 
 	for _, pod := range filteredDecodePods {
 		rolesetName := pod.Labels[PDRoleSetIdentifier]
@@ -934,10 +947,12 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 			// Once the pod's first request completes and metrics arrive, it transitions to full scoring.
 			pending := float64(r.pendingDecodeTracker.GetPendingDecodeCount(pod.Name))
 			coldScore := 1.0 + pending
-			scoredPods = append(scoredPods, fmt.Sprintf("%s:score=%.4f,roleset=%s(cold)", pod.Name, coldScore, rolesetName))
-			klog.V(4).InfoS("decode pod metrics not ready, using cold-start score",
-				"request_id", routingCtx.RequestID, "pod", pod.Name, "roleset", rolesetName,
-				"cold_score", coldScore, "pending", pending)
+			if verbose {
+				scoredPods = append(scoredPods, fmt.Sprintf("%s:score=%.4f,roleset=%s(cold)", pod.Name, coldScore, rolesetName))
+				klog.V(4).InfoS("decode pod metrics not ready, using cold-start score",
+					"request_id", routingCtx.RequestID, "pod", pod.Name, "roleset", rolesetName,
+					"cold_score", coldScore, "pending", pending)
+			}
 			if existing, exists := out.PerRoleset[rolesetName]; !exists || coldScore < existing.Score {
 				out.PerRoleset[rolesetName] = pd.RolesetDecodePick{Pod: pod, Score: coldScore}
 			}
@@ -962,15 +977,19 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 				out.FallbackUsed = true
 			}
 			if pd.InvalidDecodeScore(decodeScore) {
-				skippedPods = append(skippedPods, fmt.Sprintf("%s:invalid_score", pod.Name))
-				klog.V(4).InfoS("decode score invalid after policy and load_balancing fallback, skipping pod",
-					"request_id", routingCtx.RequestID, "pod", pod.Name, "policy", policyName,
-					"roleset", pod.Labels[PDRoleSetIdentifier])
+				if verbose {
+					skippedPods = append(skippedPods, fmt.Sprintf("%s:invalid_score", pod.Name))
+					klog.V(4).InfoS("decode score invalid after policy and load_balancing fallback, skipping pod",
+						"request_id", routingCtx.RequestID, "pod", pod.Name, "policy", policyName,
+						"roleset", pod.Labels[PDRoleSetIdentifier])
+				}
 				continue
 			}
 		}
 
-		scoredPods = append(scoredPods, fmt.Sprintf("%s:score=%.4f,roleset=%s", pod.Name, decodeScore, rolesetName))
+		if verbose {
+			scoredPods = append(scoredPods, fmt.Sprintf("%s:score=%.4f,roleset=%s", pod.Name, decodeScore, rolesetName))
+		}
 
 		if existing, exists := out.PerRoleset[rolesetName]; !exists || decodeScore < existing.Score {
 			out.PerRoleset[rolesetName] = pd.RolesetDecodePick{Pod: pod, Score: decodeScore}
@@ -980,7 +999,7 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 		}
 	}
 
-	if klog.V(4).Enabled() {
+	if verbose {
 		perRolesetBest := make([]string, 0, len(out.PerRoleset))
 		for roleset, pick := range out.PerRoleset {
 			perRolesetBest = append(perRolesetBest, fmt.Sprintf("%s:%s=%.4f", roleset, pick.Pod.Name, pick.Score))
@@ -1052,14 +1071,16 @@ func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 			targetDecodePod = decodePick.Pod
 		}
 
-		klog.V(4).InfoS("final_score",
-			"request_id", routingCtx.RequestID, "roleset", roleset,
-			"final_score", final, "prefill_pod", prefillScore.Pod.Name,
-			"decode_pod", decodePick.Pod.Name,
-			"prefill_score", prefillScore.Score, "normalized_prefill_score", normalizedPrefillScore,
-			"decode_score", decodePick.Score, "normalized_decode_score", normalizedDecodeScore,
-			"decode_policy", decodeRun.Policy, "decode_fallback_used", decodeRun.FallbackUsed,
-		)
+		if klog.V(4).Enabled() {
+			klog.V(4).InfoS("final_score",
+				"request_id", routingCtx.RequestID, "roleset", roleset,
+				"final_score", final, "prefill_pod", prefillScore.Pod.Name,
+				"decode_pod", decodePick.Pod.Name,
+				"prefill_score", prefillScore.Score, "normalized_prefill_score", normalizedPrefillScore,
+				"decode_score", decodePick.Score, "normalized_decode_score", normalizedDecodeScore,
+				"decode_policy", decodeRun.Policy, "decode_fallback_used", decodeRun.FallbackUsed,
+			)
+		}
 	}
 
 	if targetPrefillPod == nil {
@@ -1241,7 +1262,9 @@ func (r *pdRouter) shouldPickCombined(routingCtx *types.RoutingContext, prefillP
 		}
 	}
 	if !combinedLowLoad {
-		klog.V(4).InfoS("combined_load", "requestId", routingCtx.RequestID, "prefillHighLoad", false, "decodeHighLoad", false, "combinedLowLoad", combinedLowLoad)
+		if klog.V(4).Enabled() {
+			klog.V(4).InfoS("combined_load", "requestId", routingCtx.RequestID, "prefillHighLoad", false, "decodeHighLoad", false, "combinedLowLoad", combinedLowLoad)
+		}
 		return false
 	}
 
@@ -1263,19 +1286,23 @@ func (r *pdRouter) shouldPickCombined(routingCtx *types.RoutingContext, prefillP
 		}
 	}
 
-	klog.V(4).InfoS("loads", "requestId", routingCtx.RequestID, "prefillHighLoad", prefillHighLoad, "decodeHighLoad", decodeHighLoad, "combinedLowLoad", combinedLowLoad)
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("loads", "requestId", routingCtx.RequestID, "prefillHighLoad", prefillHighLoad, "decodeHighLoad", decodeHighLoad, "combinedLowLoad", combinedLowLoad)
+	}
 	return (prefillHighLoad || decodeHighLoad) && combinedLowLoad
 }
 
 // scoreCombinedPods returns the combined pod with the lowest request-rate score.
 // Pods are shuffled before scoring so ties are broken randomly.
 func (r *pdRouter) scoreCombinedPods(routingCtx *types.RoutingContext, combinedPods []*v1.Pod) *v1.Pod {
-	utils.CryptoShuffle(combinedPods)
+	utils.Shuffle(combinedPods)
 	var bestPod *v1.Pod
 	minScore := math.MaxFloat64
 	for _, pod := range combinedPods {
 		score := calculatePodScoreBasedOffRequestRate(routingCtx, r.cache, pod)
-		klog.V(4).InfoS("combined_pod_score", "requestId", routingCtx.RequestID, "pod_name", pod.Name, "score", score)
+		if klog.V(4).Enabled() {
+			klog.V(4).InfoS("combined_pod_score", "requestId", routingCtx.RequestID, "pod_name", pod.Name, "score", score)
+		}
 		if score < minScore {
 			minScore = score
 			bestPod = pod

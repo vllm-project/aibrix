@@ -30,7 +30,9 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -326,4 +328,119 @@ func suppressKlogForBenchmark(b *testing.B) {
 		klog.SetOutput(os.Stderr)
 		klog.LogToStderr(true)
 	})
+}
+
+// BenchmarkFilterPrefillDecodePods times one full PD selection for a request:
+// policy Prepare (outside selectMu) plus everything the router does while it
+// holds selectMu (imbalance checks, prefill and decode scoring, final pairing,
+// tracker registration). With least_request the Prepare step is trivial, so
+// that sub-benchmark is effectively the cost of the selectMu critical section.
+// 4 rolesets x 2 replicas = 8 prefill + 8 decode pods, all equally loaded so
+// no imbalance fast path fires and every pod is scored.
+func BenchmarkFilterPrefillDecodePods(b *testing.B) {
+	suppressKlogForBenchmark(b)
+
+	const (
+		rolesetCount = 4
+		replicaCount = 2
+		model        = "benchmark-model"
+	)
+	prefillPods := benchmarkPDPods(VLLMEngine, "prefill", rolesetCount, replicaCount)
+	decodePods := benchmarkPDPods(VLLMEngine, "decode", rolesetCount, replicaCount)
+	readyPods := append(append([]*v1.Pod{}, prefillPods...), decodePods...)
+
+	podMetrics := make(map[string]map[string]metrics.MetricValue, len(decodePods))
+	for _, pod := range decodePods {
+		podMetrics[pod.Name] = map[string]metrics.MetricValue{
+			metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 2},
+			metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 512},
+			metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.3},
+		}
+	}
+	c := cache.NewWithPodsMetricsForTest(readyPods, model, podMetrics)
+
+	prefixTable := prefixcacheindexer.NewPrefixHashTable()
+	policies := []struct {
+		name   string
+		policy pd.PrefillScorePolicy
+	}{
+		{name: pd.PrefillScorePolicyLeastRequest, policy: pd.NewLeastRequestPrefillPolicy()},
+		{name: pd.PrefillScorePolicyPrefixCache, policy: newPrefixCachePrefillPolicy(prefixTable)},
+	}
+
+	for _, tc := range policies {
+		b.Run(tc.name, func(b *testing.B) {
+			tracker := pd.NewPrefillRequestTracker()
+			pending := pd.NewPendingDecodeTracker()
+			router := &pdRouter{
+				cache:                 c,
+				prefillPolicy:         tc.policy,
+				prefixCacheIndexer:    prefixTable,
+				prefillRequestTracker: tracker,
+				pendingDecodeTracker:  pending,
+				prefixUpdateCh:        make(chan prefixUpdateJob, 1024),
+				selectionCounts:       map[string]int64{},
+			}
+
+			// In production startPrefixUpdater() runs a goroutine that drains
+			// prefixUpdateCh. Without a consumer the 1024-slot buffer fills up and
+			// every later enqueuePrefixUpdate takes the drop branch and logs a
+			// warning, which is pure benchmark artefact. Drain and discard the jobs
+			// so the send stays on the normal (non-dropping) path without adding
+			// concurrent indexer writes to what is being measured.
+			updaterStop := make(chan struct{})
+			updaterDone := make(chan struct{})
+			go func() {
+				defer close(updaterDone)
+				for {
+					select {
+					case <-router.prefixUpdateCh:
+					case <-updaterStop:
+						return
+					}
+				}
+			}()
+			b.Cleanup(func() {
+				close(updaterStop)
+				<-updaterDone
+			})
+
+			ctx := types.NewRoutingContext(context.Background(), RouterPD, model,
+				strings.Repeat("filter prefill decode benchmark prompt ", 32),
+				"bench-filter-pd", "bench-user")
+			defer ctx.Delete()
+			ctx.Engine = VLLMEngine
+			ctx.ReqPath = "/v1/chat/completions"
+			ctx.ReqBody = randReqBody(4000)
+
+			// Seed the shared prefix table so the prefix_cache sub-benchmark measures
+			// the match path instead of scoring every prefill pod as a cache miss.
+			// newTokenizer() is what newPrefixCachePrefillPolicy hands the policy, so
+			// these are the hashes the policy looks up.
+			seedTokens, err := newTokenizer().TokenizeInputText(ctx.Message)
+			if err != nil {
+				b.Fatalf("tokenize prompt: %v", err)
+			}
+			seedHashes := prefixTable.GetPrefixHashes(seedTokens)
+			for i, pod := range prefillPods {
+				if i%2 == 0 {
+					prefixTable.AddPrefix(seedHashes, ctx.Model, pod.Name)
+				}
+			}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				prefillPod, decodePod, err := router.filterPrefillDecodePods(ctx, readyPods)
+				if err != nil {
+					b.Fatalf("filterPrefillDecodePods: %v", err)
+				}
+				if prefillPod == nil || decodePod == nil {
+					b.Fatal("filterPrefillDecodePods returned a nil pod")
+				}
+				tracker.RemovePrefillRequest(ctx.RequestID)
+				pending.RemovePendingDecode(ctx.RequestID)
+			}
+		})
+	}
 }

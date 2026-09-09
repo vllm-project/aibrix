@@ -39,9 +39,11 @@ func calculatePodScoreBasedOffRequestRate(routingCtx *types.RoutingContext, cach
 	decodePreallocQueue := GetPodModelMetricsSimpleValue(cache, pod.Name, pod.Namespace, modelName, metrics.NumDecodePreallocQueueReqs)
 	drainRate1m := GetPodModelMetricsSimplePrometheusValue(cache, pod.Name, pod.Namespace, modelName, metrics.DrainRate1m)
 
-	klog.V(4).InfoS("pod_metrics", "requestId",
-		routingCtx.RequestID, "podName", pod.Name, "namespace", pod.Namespace, "modelName", modelName,
-		"waitingReqs", waitingReqs, "prefillPreallocQueue", prefillPreallocQueue, "decodePreallocQueue", decodePreallocQueue, "drainRate1m", drainRate1m)
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("pod_metrics", "requestId",
+			routingCtx.RequestID, "podName", pod.Name, "namespace", pod.Namespace, "modelName", modelName,
+			"waitingReqs", waitingReqs, "prefillPreallocQueue", prefillPreallocQueue, "decodePreallocQueue", decodePreallocQueue, "drainRate1m", drainRate1m)
+	}
 
 	return (waitingReqs + prefillPreallocQueue + decodePreallocQueue) / drainRate1m
 }
