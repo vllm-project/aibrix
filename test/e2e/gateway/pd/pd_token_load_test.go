@@ -207,7 +207,9 @@ func TestPDDisaggregationVLLMTokenLoad(t *testing.T) {
 			if g.podName != podName {
 				continue
 			}
-			found = true
+			if g.metric == metrics.PDTokenLoadKVTokens {
+				found = true
+			}
 			assert.Zero(t, g.value, "%s should be released after the request completed", g)
 		}
 		assert.True(t, found, "prefill pod %s served a token_load request but no %s series was published for it",

@@ -96,10 +96,12 @@ func DefaultTokenLoadConfig() TokenLoadConfig {
 //     returns.
 //  3. ReleaseKVCache(requestID): kv -= cost, when the whole request completes.
 //
-// Every Release is idempotent per request ID and the counters are clamped at
-// zero, so a duplicate release can never drive a pod negative. A charge whose
-// release never arrives (the completion path was skipped) is force-released by
-// the TTL janitor so it cannot pin load on a pod forever.
+// The two releases may arrive in either order; each subtracts its part once,
+// and the request is forgotten as soon as both parts are released. Releases
+// are idempotent per request ID and the counters are clamped at zero, so a
+// duplicate release can never drive a pod negative. A charge whose release
+// never arrives (the completion path was skipped) is force-released by the
+// TTL janitor so it cannot pin load on a pod forever.
 //
 // All methods are safe for concurrent use. Reads do not allocate.
 type TokenLoadTracker struct {
@@ -123,9 +125,16 @@ type tokenLoadEntry struct {
 	pod        string
 	cost       float64
 	acquiredAt time.Time
-	// tokensReleased flips once when ReleaseTokens runs, so neither a second
-	// ReleaseTokens nor the janitor subtracts the active charge again.
+	// tokensReleased and kvReleased each flip once, when the matching release
+	// runs, so neither a repeated release nor the janitor subtracts a part of
+	// the charge twice. The entry leaves the ledger once both are set.
 	tokensReleased atomic.Bool
+	kvReleased     atomic.Bool
+}
+
+// released reports whether both parts of the charge have been released.
+func (e *tokenLoadEntry) released() bool {
+	return e.tokensReleased.Load() && e.kvReleased.Load()
 }
 
 // NewTokenLoadTracker creates a tracker with DefaultTokenLoadConfig and starts
@@ -181,12 +190,19 @@ func EstimatePromptTokens(reqBody []byte) int {
 }
 
 // AcquirePrefill charges cost to both the active and the resident-KV counter
-// of pod and records the charge under requestID for later release. A second
-// AcquirePrefill for the same requestID replaces the first charge without
-// releasing it; callers pair every acquire with a release.
+// of pod and records the charge under requestID for later release. Request
+// IDs are unique per request, so a second AcquirePrefill for the same
+// requestID is a caller bug; it is tolerated by releasing whatever the
+// earlier charge still holds before the new one replaces it, with a warning.
 func (t *TokenLoadTracker) AcquirePrefill(requestID, pod string, cost float64) {
 	entry := &tokenLoadEntry{pod: pod, cost: cost, acquiredAt: t.now()}
-	t.entries.Store(requestID, entry)
+	if prev, loaded := t.entries.Swap(requestID, entry); loaded {
+		old := prev.(*tokenLoadEntry)
+		klog.Warningf("token_load_tracker re-acquire for request_id=%s: releasing earlier charge pod_name=%s cost=%g before charging pod_name=%s cost=%g",
+			requestID, old.pod, old.cost, pod, cost)
+		t.releaseTokens(requestID, old)
+		t.releaseKV(requestID, old)
+	}
 	t.addActive(pod, cost)
 	t.addKV(pod, cost)
 	klog.V(4).InfoS("token_load_acquired", "request_id", requestID, "pod_name", pod, "cost", cost)
@@ -196,31 +212,51 @@ func (t *TokenLoadTracker) AcquirePrefill(requestID, pod string, cost float64) {
 // Call it when the prefill HTTP call returns. The KV charge stays until
 // ReleaseKVCache. No-op for an unknown request ID or a repeated call.
 func (t *TokenLoadTracker) ReleaseTokens(requestID string) {
-	v, ok := t.entries.Load(requestID)
-	if !ok {
-		return
+	if v, ok := t.entries.Load(requestID); ok {
+		t.releaseTokens(requestID, v.(*tokenLoadEntry))
 	}
-	entry := v.(*tokenLoadEntry)
+}
+
+// ReleaseKVCache subtracts requestID's charge from its pod's resident-KV
+// counter. Call it when the request completes. It does not touch the active
+// counter: a request that completes while its prefill call is somehow still
+// outstanding keeps that charge, and stays in the ledger, until ReleaseTokens
+// or the janitor. No-op for an unknown request ID or a repeated call.
+func (t *TokenLoadTracker) ReleaseKVCache(requestID string) {
+	if v, ok := t.entries.Load(requestID); ok {
+		t.releaseKV(requestID, v.(*tokenLoadEntry))
+	}
+}
+
+// releaseTokens releases the active part of entry, once.
+func (t *TokenLoadTracker) releaseTokens(requestID string, entry *tokenLoadEntry) {
 	if !entry.tokensReleased.CompareAndSwap(false, true) {
 		return
 	}
 	t.addActive(entry.pod, -entry.cost)
 	klog.V(4).InfoS("token_load_tokens_released", "request_id", requestID, "pod_name", entry.pod, "cost", entry.cost)
+	t.forgetIfReleased(requestID, entry)
 }
 
-// ReleaseKVCache subtracts requestID's charge from its pod's resident-KV
-// counter and forgets the request. Call it when the request completes. It
-// does not touch the active counter: a request that completes while its
-// prefill call is somehow still outstanding keeps that charge until
-// ReleaseTokens or the janitor. No-op for an unknown request ID.
-func (t *TokenLoadTracker) ReleaseKVCache(requestID string) {
-	v, ok := t.entries.LoadAndDelete(requestID)
-	if !ok {
+// releaseKV releases the resident-KV part of entry, once.
+func (t *TokenLoadTracker) releaseKV(requestID string, entry *tokenLoadEntry) {
+	if !entry.kvReleased.CompareAndSwap(false, true) {
 		return
 	}
-	entry := v.(*tokenLoadEntry)
 	t.addKV(entry.pod, -entry.cost)
 	klog.V(4).InfoS("token_load_kv_released", "request_id", requestID, "pod_name", entry.pod, "cost", entry.cost)
+	t.forgetIfReleased(requestID, entry)
+}
+
+// forgetIfReleased drops entry from the ledger once both of its parts are
+// released. Each release sets its own flag before checking both, so whichever
+// of two concurrent releases finishes last sees both flags and deletes. The
+// delete is keyed on the entry pointer, so it never removes a newer charge
+// that replaced this one under the same request ID.
+func (t *TokenLoadTracker) forgetIfReleased(requestID string, entry *tokenLoadEntry) {
+	if entry.released() {
+		t.entries.CompareAndDelete(requestID, entry)
+	}
 }
 
 // ReleaseAll releases whatever requestID still holds on both counters and
@@ -299,9 +335,11 @@ func (t *TokenLoadTracker) sweepExpired() int {
 		requestID := key.(string)
 		klog.Warningf("token_load_tracker force-releasing stale charge: request_id=%s pod_name=%s cost=%g age_seconds=%.0f ttl_seconds=%.0f",
 			requestID, entry.pod, entry.cost, age.Seconds(), t.cfg.TTL.Seconds())
-		// The releases re-check the entry under the map's own atomics, so a
-		// concurrent normal release between Range and here is harmless.
-		t.ReleaseAll(requestID)
+		// Release this entry, not whatever is under requestID now: the flags
+		// make a concurrent normal release harmless, and a re-acquire that
+		// replaced the entry in the meantime must keep its own charge.
+		t.releaseTokens(requestID, entry)
+		t.releaseKV(requestID, entry)
 		released++
 		return true
 	})

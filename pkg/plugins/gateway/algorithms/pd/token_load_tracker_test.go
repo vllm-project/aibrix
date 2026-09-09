@@ -155,17 +155,75 @@ func TestTokenLoadTracker_CountersClampAtZero(t *testing.T) {
 }
 
 func TestTokenLoadTracker_ReacquireSameRequestReplacesCharge(t *testing.T) {
+	var logs bytes.Buffer
+	klog.LogToStderr(false)
+	klog.SetOutput(&logs)
+	defer func() {
+		klog.Flush()
+		klog.SetOutput(io.Discard)
+		klog.LogToStderr(true)
+	}()
+
 	tr, _ := newTestTokenLoadTracker(t, testTokenLoadConfig())
 
+	// A re-acquire is a caller bug, but it must not leak the first charge.
 	tr.AcquirePrefill("req-1", "pod-a", 100)
 	tr.AcquirePrefill("req-1", "pod-b", 200)
-	assertLoad(t, tr, "pod-a", 100, 100)
+	assertLoad(t, tr, "pod-a", 0, 0)
 	assertLoad(t, tr, "pod-b", 200, 200)
+	klog.Flush()
+	assert.Contains(t, logs.String(), "re-acquire for request_id=req-1")
 
 	// Only the latest charge is tracked; the release subtracts that one.
 	tr.ReleaseAll("req-1")
-	assertLoad(t, tr, "pod-a", 100, 100)
+	assertLoad(t, tr, "pod-a", 0, 0)
 	assertLoad(t, tr, "pod-b", 0, 0)
+	_, tracked := tr.entries.Load("req-1")
+	assert.False(t, tracked)
+
+	// A partially released charge gives back only what it still holds.
+	tr.AcquirePrefill("req-2", "pod-a", 100)
+	tr.ReleaseTokens("req-2")
+	tr.AcquirePrefill("req-3", "pod-a", 50)
+	assertLoad(t, tr, "pod-a", 50, 150)
+	tr.AcquirePrefill("req-2", "pod-b", 10)
+	assertLoad(t, tr, "pod-a", 50, 50)
+	assertLoad(t, tr, "pod-b", 10, 10)
+}
+
+func TestTokenLoadTracker_KVReleasedBeforeTokens(t *testing.T) {
+	tr, clock := newTestTokenLoadTracker(t, testTokenLoadConfig())
+
+	// The request completes while its prefill call is still outstanding: the
+	// KV part goes, the active part stays and the entry stays with it.
+	tr.AcquirePrefill("req-1", "pod-a", 100)
+	tr.ReleaseKVCache("req-1")
+	assertLoad(t, tr, "pod-a", 100, 0)
+	_, tracked := tr.entries.Load("req-1")
+	assert.True(t, tracked, "entry must survive until the active part is released too")
+
+	tr.ReleaseKVCache("req-1") // idempotent
+	assertLoad(t, tr, "pod-a", 100, 0)
+
+	tr.ReleaseTokens("req-1")
+	assertLoad(t, tr, "pod-a", 0, 0)
+	_, tracked = tr.entries.Load("req-1")
+	assert.False(t, tracked, "entry is forgotten once both parts are released")
+
+	// ReleaseAll after a KV-first release gives back only the active part.
+	tr.AcquirePrefill("req-2", "pod-a", 100)
+	tr.ReleaseKVCache("req-2")
+	tr.ReleaseAll("req-2")
+	assertLoad(t, tr, "pod-a", 0, 0)
+
+	// The janitor does not subtract an already released KV part again.
+	tr.AcquirePrefill("req-3", "pod-a", 100)
+	tr.AcquirePrefill("req-4", "pod-a", 100)
+	tr.ReleaseKVCache("req-3")
+	assertLoad(t, tr, "pod-a", 200, 100)
+	clock.Advance(2 * time.Minute)
+	assert.Equal(t, 2, tr.sweepExpired())
+	assertLoad(t, tr, "pod-a", 0, 0)
 }
 
 func TestTokenLoadTracker_PrefillCostAndEstimate(t *testing.T) {
