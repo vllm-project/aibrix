@@ -68,6 +68,7 @@ var (
 	standalone      bool
 	endpointsConfig string
 	pprofAddr       string
+	etcdConfig      string
 )
 
 type kubeAPIOptions struct {
@@ -175,7 +176,9 @@ func main() {
 	flag.StringVar(&pprofAddr, "pprof-bind-address", "localhost:6060",
 		"The address the pprof debug server binds to. Empty disables it.")
 	flag.StringVar(&endpointsConfig, "endpoints-config", "",
-		"Path to endpoints config file (required in standalone mode).")
+		"Path to static endpoints config file (standalone mode).")
+	flag.StringVar(&etcdConfig, "etcd-config", "",
+		"Path to etcd discovery config file (standalone mode; mutually exclusive with --endpoints-config).")
 	klog.InitFlags(flag.CommandLine)
 	defer klog.Flush()
 	flag.Parse()
@@ -196,9 +199,9 @@ func main() {
 		}
 	}
 
-	// Validate standalone mode flags
-	if standalone && endpointsConfig == "" {
-		klog.Fatal("--endpoints-config is required when running in standalone mode")
+	// Validate discovery mode before initializing external clients.
+	if err := validateDiscoveryFlags(standalone, endpointsConfig, etcdConfig); err != nil {
+		klog.Fatal(err)
 	}
 
 	redisClient := utils.GetRedisClient()
@@ -230,9 +233,20 @@ func main() {
 	var discoveryProvider discovery.Provider
 
 	if standalone {
-		// Standalone mode: use file-based discovery
+		// Standalone mode: select the configured discovery backend.
 		klog.Info("Running in standalone mode")
-		discoveryProvider = discovery.NewStaticProvider(endpointsConfig)
+		if etcdConfig != "" {
+			etcdOptions, err := loadEtcdConfig(etcdConfig)
+			if err != nil {
+				klog.Fatalf("Invalid etcd discovery configuration: %v", err)
+			}
+			discoveryProvider, err = discovery.NewEtcdProvider(etcdOptions)
+			if err != nil {
+				klog.Fatalf("Failed to initialize etcd discovery: %v", err)
+			}
+		} else {
+			discoveryProvider = discovery.NewStaticProvider(endpointsConfig)
+		}
 	} else {
 		// Kubernetes mode: load config and create clients
 		var err error
