@@ -65,16 +65,42 @@ func decPrefillOutstanding() {
 type DefaultExecutor struct {
 	httpClient     *http.Client
 	tracker        *pd.PrefillRequestTracker
-	requestTimeout int // seconds
+	tokenLoad      *pd.TokenLoadTracker // optional; nil when no policy charges it
+	requestTimeout int                  // seconds
+}
+
+// ExecutorOption customizes a DefaultExecutor.
+type ExecutorOption func(*DefaultExecutor)
+
+// WithTokenLoadTracker makes the executor release a request's active
+// token-load charge (TokenLoadTracker.ReleaseTokens) at the same point where
+// it removes the request from the PrefillRequestTracker: when the prefill
+// HTTP call returns, on both the sync and the async path.
+func WithTokenLoadTracker(tokenLoad *pd.TokenLoadTracker) ExecutorOption {
+	return func(e *DefaultExecutor) { e.tokenLoad = tokenLoad }
 }
 
 // NewDefaultExecutor constructs a DefaultExecutor.
 // httpClient and tracker are shared with the router; requestTimeout is in seconds.
-func NewDefaultExecutor(httpClient *http.Client, tracker *pd.PrefillRequestTracker, requestTimeout int) PrefillExecutor {
-	return &DefaultExecutor{
+func NewDefaultExecutor(httpClient *http.Client, tracker *pd.PrefillRequestTracker, requestTimeout int, opts ...ExecutorOption) PrefillExecutor {
+	e := &DefaultExecutor{
 		httpClient:     httpClient,
 		tracker:        tracker,
 		requestTimeout: requestTimeout,
+	}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e
+}
+
+// prefillDone is the single point where a finished prefill call is taken off
+// the router's ledgers: the request-count tracker always, the token-load
+// tracker when one is attached.
+func (e *DefaultExecutor) prefillDone(requestID string) {
+	e.tracker.RemovePrefillRequest(requestID)
+	if e.tokenLoad != nil {
+		e.tokenLoad.ReleaseTokens(requestID)
 	}
 }
 
@@ -133,7 +159,7 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 		go func() {
 			incPrefillOutstanding()
 			defer decPrefillOutstanding()
-			defer e.tracker.RemovePrefillRequest(requestID)
+			defer e.prefillDone(requestID)
 
 			if _, err := e.executeHTTP(apiURL, asyncCtx, payload); err != nil {
 				klog.ErrorS(err, "prefill_request_failed",
@@ -174,7 +200,7 @@ func (e *DefaultExecutor) handleSync(
 ) error {
 	incPrefillOutstanding()
 	defer decPrefillOutstanding()
-	defer e.tracker.RemovePrefillRequest(routingCtx.RequestID)
+	defer e.prefillDone(routingCtx.RequestID)
 
 	responseData, err := e.executeHTTP(apiURL, routingCtx, payload)
 	if err != nil {

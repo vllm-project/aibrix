@@ -19,12 +19,15 @@ limitations under the License.
 // files:
 //
 //   - prefill_scorer.go  — PrefillScorePolicy / PrefillScorer interfaces and
-//     their built-in implementations (prefix_cache, least_request).
+//     their built-in implementations (prefix_cache, least_request, conductor,
+//     token_load).
 //   - decode_scorer.go   — DecodeScorePolicy / DecodeScorer interfaces and
 //     their built-in implementations (load_balancing, least_request), plus the
 //     policy registry used by AIBRIX_DECODE_SCORE_POLICY.
 //   - trackers.go        — PrefillRequestTracker and PendingDecodeTracker,
 //     which bridge the gap between pod selection and actual request start.
+//   - token_load_tracker.go — TokenLoadTracker, the token-weighted prefill
+//     load ledger behind the token_load policy.
 package pd
 
 import (
@@ -54,6 +57,11 @@ const (
 	// PrefillScorePolicyConductor selects the conductor scoring policy, which
 	// estimates the TTFT (contains queue, prefix, and prefill) for each pod
 	PrefillScorePolicyConductor = "conductor"
+
+	// PrefillScorePolicyTokenLoad selects the token-load scoring policy, which
+	// routes prefill requests to the pod with the lowest token-weighted load
+	// as tracked by TokenLoadTracker, without consulting the prefix cache.
+	PrefillScorePolicyTokenLoad = "token_load"
 
 	// Default TTFT estimation coefficients for conductor policy.
 	// Units: time in milliseconds, tokens are unitless.
@@ -361,5 +369,64 @@ func (s *conductorScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
 		"queue_estimate", queueEst,
 		"prefix_estimate", prefixEst,
 		"prefill_estimate", prefillEst)
+	return score
+}
+
+// tokenLoadPrefillPolicy scores prefill pods by the token-weighted load the
+// router has charged to them in a shared TokenLoadTracker:
+//
+//	score = active_tokens + kv_weight * kv_tokens
+//
+// Lower is better. Unlike least_request, a pod holding one long prompt scores
+// higher than a pod holding two short ones, so long prompts are spread by
+// their cost rather than by count. The prefix cache is not consulted.
+//
+// The policy is stateless apart from the read-only tracker handle; the router
+// that owns the tracker charges and releases it around each request. Obtain an
+// instance via NewTokenLoadPrefillPolicy.
+type tokenLoadPrefillPolicy struct {
+	tracker *TokenLoadTracker
+}
+
+// NewTokenLoadPrefillPolicy returns a token_load PrefillScorePolicy reading
+// from tracker.
+func NewTokenLoadPrefillPolicy(tracker *TokenLoadTracker) PrefillScorePolicy {
+	return &tokenLoadPrefillPolicy{tracker: tracker}
+}
+
+// Prepare returns a tokenLoadScorer; no tokenization or cache lookup is performed.
+func (p *tokenLoadPrefillPolicy) Prepare(_ *types.RoutingContext, _ []*v1.Pod, _ map[string]struct{}) (PrefillScorer, error) {
+	return tokenLoadScorer{tracker: p.tracker}, nil
+}
+
+func (p *tokenLoadPrefillPolicy) Name() string { return PrefillScorePolicyTokenLoad }
+
+// UsesTokenLoad reports whether policy scores from a TokenLoadTracker, i.e.
+// whether the router must charge the tracker for requests scored by it.
+func UsesTokenLoad(policy PrefillScorePolicy) bool {
+	return policy != nil && policy.Name() == PrefillScorePolicyTokenLoad
+}
+
+// tokenLoadScorer is the request-scoped scorer produced by tokenLoadPrefillPolicy.
+type tokenLoadScorer struct {
+	tracker *TokenLoadTracker
+}
+
+// PrefixHashes returns nil because this policy does not use the prefix cache.
+func (s tokenLoadScorer) PrefixHashes() []uint64 { return nil }
+
+func (s tokenLoadScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
+	if s.tracker == nil {
+		// No ledger to read; every pod ties and the caller's tie-break applies.
+		return 0
+	}
+	score := s.tracker.GetPriority(pod.Name)
+	if klog.V(4).Enabled() {
+		active, kv := s.tracker.GetLoad(pod.Name)
+		klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
+			"policy", PrefillScorePolicyTokenLoad,
+			"score", score, "active_tokens", active, "kv_tokens", kv,
+			"running_reqs", reqCnt)
+	}
 	return score
 }

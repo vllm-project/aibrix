@@ -100,7 +100,7 @@ var (
 	aibrixPromptLengthBucketing bool = utils.LoadEnvBool("AIBRIX_PROMPT_LENGTH_BUCKETING", false)
 	// KV transfer backend: "shfs" (GPU/SHFS) or "nixl" (Neuron)
 	aibrixKVConnectorType string = utils.LoadEnv("AIBRIX_KV_CONNECTOR_TYPE", KVConnectorTypeSHFS)
-	// prefill pod scoring strategy: "prefix_cache" or "least_request"
+	// prefill pod scoring strategy: "prefix_cache", "least_request", "conductor" or "token_load"
 	aibrixPrefillScorePolicy string = utils.LoadEnv("AIBRIX_PREFILL_SCORE_POLICY", pd.PrefillScorePolicyPrefixCache)
 	// decode pod scoring strategy: "load_balancing" or "least_request"
 	aibrixDecodeScorePolicy string = utils.LoadEnv("AIBRIX_DECODE_SCORE_POLICY", pd.ScorePolicyLoadBalancing)
@@ -108,6 +108,15 @@ var (
 
 // loadBalancingDecodePolicy is shared for nil-policy fallback and invalid-score fallback (stateless type).
 var loadBalancingDecodePolicy = pd.LoadBalancingDecodePolicy{}
+
+// validPrefillScorePolicies lists the accepted AIBRIX_PREFILL_SCORE_POLICY /
+// routingConfig.prefillScorePolicy values, for log lines.
+var validPrefillScorePolicies = []string{
+	pd.PrefillScorePolicyPrefixCache,
+	pd.PrefillScorePolicyLeastRequest,
+	pd.PrefillScorePolicyConductor,
+	pd.PrefillScorePolicyTokenLoad,
+}
 
 func init() {
 	Register(RouterPD, NewPDRouter)
@@ -168,10 +177,12 @@ func (r *pdRouter) effectiveScorePolicies(routingCtx *types.RoutingContext) (pd.
 			prefill = newPrefixCachePrefillPolicy(r.prefixCacheIndexer)
 		case pd.PrefillScorePolicyConductor:
 			prefill = newConductorPrefillPolicy(r.prefixCacheIndexer, r.cache)
+		case pd.PrefillScorePolicyTokenLoad:
+			prefill = pd.NewTokenLoadPrefillPolicy(r.tokenLoadTracker)
 		default:
 			klog.InfoS("unknown prefillScorePolicy in routingConfig, keeping env-based policy",
 				"request_id", routingCtx.RequestID, "value", s,
-				"valid", []string{pd.PrefillScorePolicyPrefixCache, pd.PrefillScorePolicyLeastRequest, pd.PrefillScorePolicyConductor})
+				"valid", validPrefillScorePolicies)
 			prefill = r.prefillPolicy
 		}
 	}
@@ -207,6 +218,14 @@ type pdRouter struct {
 	podSelector           selector.PodSelector
 	prefillExecutor       prefill.PrefillExecutor
 
+	// tokenLoadTracker is the token-weighted prefill ledger read by the
+	// token_load policy. It is charged in filterPrefillDecodePods for requests
+	// scored by that policy, released by the prefill executor when the prefill
+	// call returns, and released fully on request completion through the
+	// cache.RequestTracker callbacks (see DoneRequestCount). nil in routers
+	// built without one (tests); every access is nil-guarded.
+	tokenLoadTracker *pd.TokenLoadTracker
+
 	// selectMu makes "read every candidate's tracked load, pick the best,
 	// register the pick" one atomic step in filterPrefillDecodePods. Without
 	// it, concurrent requests in a burst all read the same pre-burst tracker
@@ -238,6 +257,9 @@ func NewPDRouter() (types.Router, error) {
 	}
 
 	sharedPrefixTable := prefixcacheindexer.GetSharedPrefixHashTable()
+	// One tracker per router, created unconditionally so that a routingConfig
+	// can switch a model to token_load without a gateway restart.
+	tokenLoadTracker := pd.NewTokenLoadTracker()
 
 	var policy pd.PrefillScorePolicy
 	switch aibrixPrefillScorePolicy {
@@ -247,9 +269,11 @@ func NewPDRouter() (types.Router, error) {
 		policy = newPrefixCachePrefillPolicy(sharedPrefixTable)
 	case pd.PrefillScorePolicyConductor:
 		policy = newConductorPrefillPolicy(sharedPrefixTable, c)
+	case pd.PrefillScorePolicyTokenLoad:
+		policy = pd.NewTokenLoadPrefillPolicy(tokenLoadTracker)
 	default:
 		klog.InfoS("pd_router unknown AIBRIX_PREFILL_SCORE_POLICY, using prefix_cache",
-			"value", aibrixPrefillScorePolicy, "valid", []string{pd.PrefillScorePolicyPrefixCache, pd.PrefillScorePolicyLeastRequest})
+			"value", aibrixPrefillScorePolicy, "valid", validPrefillScorePolicies)
 		policy = newPrefixCachePrefillPolicy(sharedPrefixTable)
 	}
 	klog.InfoS("pd_router prefill score policy", "policy", policy.Name())
@@ -279,15 +303,58 @@ func NewPDRouter() (types.Router, error) {
 		prefixCacheIndexer:    sharedPrefixTable,
 		prefillRequestTracker: pd.NewPrefillRequestTracker(),
 		pendingDecodeTracker:  pd.NewPendingDecodeTracker(),
+		tokenLoadTracker:      tokenLoadTracker,
 		httpClient:            httpClient,
 		prefixUpdateCh:        make(chan prefixUpdateJob, 1024),
 		selectionCounts:       make(map[string]int64),
 	}
 	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
-	r.prefillExecutor = prefill.NewDefaultExecutor(httpClient, r.prefillRequestTracker, prefillRequestTimeout)
+	r.prefillExecutor = prefill.NewDefaultExecutor(httpClient, r.prefillRequestTracker, prefillRequestTimeout,
+		prefill.WithTokenLoadTracker(tokenLoadTracker))
+	// Request completion is only observable through the cache's request
+	// tracker callbacks; that is where the resident-KV charge is released.
+	c.RegisterRequestTracker(r)
 
 	r.startPrefixUpdater()
 	return r, nil
+}
+
+// AddRequestCount implements cache.RequestTracker. The pd router charges its
+// ledgers at selection time (filterPrefillDecodePods), so there is nothing to
+// do here.
+func (r *pdRouter) AddRequestCount(_ *types.RoutingContext, _ string, _ string) int64 { return 0 }
+
+// DoneRequestCount implements cache.RequestTracker: the request is finished,
+// so nothing of it can still be resident on its prefill pod. The callbacks
+// fire for every gateway request, not only pd-routed ones; unknown request
+// IDs are a cheap no-op. ctx may be nil (request cancelled before routing).
+func (r *pdRouter) DoneRequestCount(_ *types.RoutingContext, requestID string, _ string, _ int64) {
+	r.releaseTokenLoad(requestID)
+}
+
+// DoneRequestTrace implements cache.RequestTracker; see DoneRequestCount.
+func (r *pdRouter) DoneRequestTrace(_ *types.RoutingContext, requestID string, _ string, _, _, _ int64) {
+	r.releaseTokenLoad(requestID)
+}
+
+// chargeTokenLoad charges the request's estimated prefill cost to pod when
+// policy scores from the token-load tracker. Called under selectMu right after
+// the prefill registration so the next selection sees this charge.
+func (r *pdRouter) chargeTokenLoad(routingCtx *types.RoutingContext, pod *v1.Pod, policy pd.PrefillScorePolicy) {
+	if r.tokenLoadTracker == nil || !pd.UsesTokenLoad(policy) {
+		return
+	}
+	cost := r.tokenLoadTracker.PrefillCost(pd.EstimatePromptTokens(routingCtx.ReqBody))
+	r.tokenLoadTracker.AcquirePrefill(routingCtx.RequestID, pod.Name, cost)
+}
+
+// releaseTokenLoad drops whatever the request still holds on the token-load
+// tracker: the terminal paths (prefill failure, request completion).
+func (r *pdRouter) releaseTokenLoad(requestID string) {
+	if r.tokenLoadTracker == nil {
+		return
+	}
+	r.tokenLoadTracker.ReleaseAll(requestID)
 }
 
 func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
@@ -329,6 +396,7 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		if err != nil {
 			// Remove is a no-op if the executor already cleaned up (e.g. sync HTTP failure).
 			r.prefillRequestTracker.RemovePrefillRequest(ctx.RequestID)
+			r.releaseTokenLoad(ctx.RequestID)
 			metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 				map[string]string{"status": pdRoutePrefillRequestError, "status_code": "500"})
 			klog.ErrorS(err, pdRoutePrefillRequestError, "request_id", ctx.RequestID)
@@ -383,7 +451,8 @@ type Scores struct {
 //     combined score.
 //
 //  7. Register — the chosen decode pod is recorded in pendingDecodeTracker and the
-//     chosen prefill pod in prefillRequestTracker before returning, so the next
+//     chosen prefill pod in prefillRequestTracker (and, under the token_load
+//     policy, charged to tokenLoadTracker) before returning, so the next
 //     selection sees this one. Steps 3b-7 read tracker state and run under
 //     selectMu; steps 1-3a and the policy Prepare step (tokenization, prefix
 //     matching) run before the lock is taken. Route owns the matching removals.
@@ -479,6 +548,7 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	// Register while still holding selectMu so the next selection counts this one.
 	r.pendingDecodeTracker.AddPendingDecode(routingCtx.RequestID, selectedDecode.Name)
 	r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, selectedPrefill.Name)
+	r.chargeTokenLoad(routingCtx, selectedPrefill, prefillPol)
 	return selectedPrefill, selectedDecode, nil
 }
 

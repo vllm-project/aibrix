@@ -48,6 +48,11 @@ const (
 	PDSelectedPrefillPodTotal = "pd_selected_prefill_pod_total"
 	PDSelectedDecodePodTotal  = "pd_selected_decode_pod_total"
 
+	// gauges to track the token-weighted prefill load the pd router has
+	// charged to each prefill pod (token_load prefill score policy)
+	PDTokenLoadActiveTokens = "pd_token_load_active_tokens"
+	PDTokenLoadKVTokens     = "pd_token_load_kv_tokens"
+
 	// Duration bucket counters for timing breakdowns
 	GatewayRoutingTimeBucketTotal    = "gateway_routing_time_bucket_total"
 	GatewayPrefillTimeBucketTotal    = "gateway_prefill_time_bucket_total"
@@ -110,6 +115,22 @@ var (
 				Raw: Gauge,
 			},
 			Description: "Total number of outstanding prefill requests received by the gateway",
+		},
+		PDTokenLoadActiveTokens: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			Description: "Estimated prompt tokens of the prefill requests currently in flight on a prefill pod, as charged by the pd router",
+		},
+		PDTokenLoadKVTokens: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			Description: "Estimated prompt tokens whose KV cache is still resident on a prefill pod, as charged by the pd router",
 		},
 		GatewayInFlight: {
 			MetricScope:  PodMetricScope,
