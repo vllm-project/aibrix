@@ -20,7 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"net/http"
 	"sort"
 	"strings"
@@ -508,7 +508,7 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 				klog.InfoS("no bucket matches prompt length, routing to combined pod",
 					"requestId", routingCtx.RequestID, "promptLength", promptLength, "combinedPods", len(combinedPods),
 					"bucketPrefillPods", len(promptLengthBucketingPrefillPods), "bucketDecodePods", len(promptLengthBucketingDecodePods))
-				combinedPod := combinedPods[rand.Intn(len(combinedPods))]
+				combinedPod := combinedPods[rand.IntN(len(combinedPods))]
 				r.pendingDecodeTracker.AddPendingDecode(routingCtx.RequestID, combinedPod.Name)
 				return nil, combinedPod, nil
 			}
@@ -627,7 +627,7 @@ func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequest
 	}
 
 	if maxValue-minValue > aibrixPrefillLoadImbalanceMinSpread && len(targetPods) > 0 {
-		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
+		targetPod, _ = utils.FilterPodByName(targetPods[rand.IntN(len(targetPods))], readyPods)
 		imbalance = true
 		if targetPod != nil && klog.V(4).Enabled() {
 			klog.V(4).InfoS("prefill request imbalance detected, selecting least-loaded pod",
