@@ -69,7 +69,7 @@ func hybridRequest(t *testing.T, requestID string, bodyBytes int, sessionID stri
 	ctx := tokenLoadRequest(t, requestID, bodyBytes)
 	ctx.Message = hybridTestMessage
 	if sessionID != "" {
-		ctx.ReqHeaders = map[string]string{constants.HeaderSessionID: sessionID}
+		ctx.ReqHeaders = map[string]string{constants.HeaderSessionKey: sessionID}
 	}
 	return ctx
 }

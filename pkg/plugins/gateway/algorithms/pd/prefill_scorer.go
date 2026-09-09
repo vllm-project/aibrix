@@ -33,11 +33,12 @@ package pd
 import (
 	"fmt"
 	"math"
+	"os"
+	"strconv"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
@@ -482,14 +483,33 @@ type HybridCacheLoadConfig struct {
 }
 
 // DefaultHybridCacheLoadConfig returns the defaults, overridden by the
-// AIBRIX_HYBRID_CACHE_LOAD_FACTOR and AIBRIX_MIN_MATCH_PCT environment
-// variables. Each must be positive; an unset, empty or invalid value keeps the
-// default.
+// AIBRIX_HYBRID_CACHE_LOAD_FACTOR (0 to 1) and AIBRIX_MIN_MATCH_PCT (0 to
+// 100) environment variables. An unset, empty or out-of-range value keeps the
+// default. A factor of 1 makes a full match score 0, so it always wins; above
+// 1 the discount would go negative, which is why the range stops there.
 func DefaultHybridCacheLoadConfig() HybridCacheLoadConfig {
 	return HybridCacheLoadConfig{
-		Factor:      utils.LoadEnvFloat("AIBRIX_HYBRID_CACHE_LOAD_FACTOR", DefaultHybridCacheLoadFactor),
-		MinMatchPct: utils.LoadEnvFloat("AIBRIX_MIN_MATCH_PCT", DefaultMinMatchPct),
+		Factor:      loadEnvFloatInRange("AIBRIX_HYBRID_CACHE_LOAD_FACTOR", DefaultHybridCacheLoadFactor, 0, 1),
+		MinMatchPct: loadEnvFloatInRange("AIBRIX_MIN_MATCH_PCT", DefaultMinMatchPct, 0, 100),
 	}
+}
+
+// loadEnvFloatInRange is utils.LoadEnvFloat for a knob whose valid values are
+// the closed range [lo, hi] rather than "positive": 0 is a valid setting of
+// both hybrid_cache_load knobs, and each has an upper bound.
+func loadEnvFloatInRange(key string, defaultValue, lo, hi float64) float64 {
+	raw := os.Getenv(key)
+	if raw == "" {
+		klog.Infof("set %s: %g, using default value", key, defaultValue)
+		return defaultValue
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(value) || value < lo || value > hi {
+		klog.Warningf("invalid %s: %s (valid range %g to %g), falling back to default: %g", key, raw, lo, hi, defaultValue)
+		return defaultValue
+	}
+	klog.Infof("set %s: %g", key, value)
+	return value
 }
 
 // ClampMinMatch returns matchPct, or 0 when a positive minPct is set and

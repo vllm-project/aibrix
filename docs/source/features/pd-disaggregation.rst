@@ -366,7 +366,7 @@ The router keeps two per-pod counters and scores each prefill pod as (lower is b
 
 Each request is charged ``request_cost + new_tokens``, where ``request_cost`` (``AIBRIX_TOKEN_LOAD_REQUEST_COST``, default ``3500``) models the fixed scheduling and KV-transfer work that does not scale with prompt length, and ``new_tokens`` is the part of the prompt the pod actually has to compute. ``prompt_tokens`` is estimated as one token per four bytes of request body; ``new_tokens`` is derived from it by the first rule that applies:
 
-1. **Session delta.** If the request carries an ``x-session-id`` header and the gateway has seen a shorter prompt for that session (and model) recently, the charge is the growth since that prompt. Each turn of a chat resends the whole history, but the engine only computes the new turn: charging the whole prompt again would make a long conversation look several times more expensive than it is. The last prompt size of a session is kept for ``AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS`` (default ``1800``).
+1. **Session delta.** If the request carries an ``x-aibrix-session-key`` header (the caller-owned opaque key also used by ``session-affinity`` routing; not the gateway-issued ``x-session-id``) and the gateway has seen a shorter prompt for that key (and model) recently, the charge is the growth since that prompt. Each turn of a chat resends the whole history, but an engine that still holds the conversation's KV cache only computes the new turn: charging the whole prompt again would make a long conversation look several times more expensive than it is. The rule assumes the earlier turns are reachable from whichever prefill pod is selected, through a shared or tiered KV store, sticky routing or the pod's own prefix cache; if your prefill pods only have a local prefix cache and the router may move a conversation between them, do not send the key, or set ``AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS=0`` to turn the rule off, and rely on rule 2. The last prompt size of a key is kept for ``AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS`` (default ``1800``); keys longer than 256 bytes are ignored, and at most ``AIBRIX_TOKEN_LOAD_MAX_SESSIONS`` (default ``100000``) keys are remembered at once, so a client cannot grow the table without bound. Once the table is full, new keys are charged by rules 2 and 3 until the janitor forgets idle ones.
 2. **Prefix match.** If the scoring policy looked the prompt up in the prefix cache (``hybrid_cache_load``), the charge is ``prompt_tokens × (1 − match_percent / 100)``.
 3. **Whole prompt.** Otherwise the whole prompt is charged. ``token_load`` itself does not consult the prefix cache, so without a session header this is what it charges.
 
@@ -424,7 +424,10 @@ Or set gateway-wide via ``AIBRIX_PREFILL_SCORE_POLICY=token_load``. The tunables
      - Maximum age of an outstanding charge before it is force-released.
    * - ``AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS``
      - ``1800``
-     - How long the last prompt size of a session is remembered for the session-delta charge.
+     - How long the last prompt size of a session is remembered for the session-delta charge. ``0`` turns the session-delta rule off.
+   * - ``AIBRIX_TOKEN_LOAD_MAX_SESSIONS``
+     - ``100000``
+     - Maximum number of sessions remembered at once; new sessions beyond it are charged without a delta.
 
 **When to use token_load:**
 
@@ -485,10 +488,10 @@ Or set gateway-wide via ``AIBRIX_PREFILL_SCORE_POLICY=hybrid_cache_load``.
      - Description
    * - ``AIBRIX_HYBRID_CACHE_LOAD_FACTOR``
      - ``0.5``
-     - Discount a full prefix match applies to a pod's load. Higher values favour cache affinity over balance.
+     - Discount a full prefix match applies to a pod's load, ``0`` to ``1``. Higher values favour cache affinity over balance; at ``1`` a fully matched pod scores ``0`` and always wins.
    * - ``AIBRIX_MIN_MATCH_PCT``
      - ``0``
-     - Prefix-match percentage below which a match is ignored. ``0`` disables the threshold.
+     - Prefix-match percentage below which a match is ignored, ``0`` to ``100``. ``0`` disables the threshold.
 
 **When to use hybrid_cache_load:**
 
@@ -666,13 +669,16 @@ These are set on the **gateway plugin** deployment.
      - ``token_load`` and ``hybrid_cache_load``. Charges older than this are force-released and logged; must exceed the longest legitimate request. Must be positive.
    * - ``AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS``
      - ``1800``
-     - ``token_load`` and ``hybrid_cache_load``. How long the last prompt size of an ``x-session-id`` session is remembered for the session-delta charge. Must be positive.
+     - ``token_load`` and ``hybrid_cache_load``. How long the last prompt size of an ``x-aibrix-session-key`` session is remembered for the session-delta charge. ``0`` turns the session-delta rule off; otherwise must be positive.
+   * - ``AIBRIX_TOKEN_LOAD_MAX_SESSIONS``
+     - ``100000``
+     - ``token_load`` and ``hybrid_cache_load``. Maximum number of sessions remembered at once for the session-delta charge. Must be positive.
    * - ``AIBRIX_HYBRID_CACHE_LOAD_FACTOR``
      - ``0.5``
-     - ``hybrid_cache_load`` only. Discount a full prefix match applies to a pod's token load. Must be positive.
+     - ``hybrid_cache_load`` only. Discount a full prefix match applies to a pod's token load, ``0`` to ``1``. ``1`` makes a fully matched pod always win; ``0`` turns the discount off.
    * - ``AIBRIX_MIN_MATCH_PCT``
      - ``0``
-     - ``hybrid_cache_load`` only. Prefix matches below this percentage are ignored. ``0`` disables the threshold.
+     - ``hybrid_cache_load`` only. Prefix matches below this percentage are ignored, ``0`` to ``100``. ``0`` disables the threshold.
    * - ``AIBRIX_DECODE_SCORE_POLICY``
      - ``load_balancing``
      - Default scoring policy for selecting decode pods. ``load_balancing``, ``least_request``, or ``conductor``.

@@ -352,16 +352,18 @@ func (r *pdRouter) DoneRequestTrace(_ *types.RoutingContext, requestID string, _
 // the prefill registration so the next selection sees this charge.
 //
 // The charge covers only the tokens pod has to compute: the growth of the
-// conversation since its previous turn when the request carries a session
-// header, otherwise the part of the prompt the pod's prefix cache does not
-// hold when scorer looked it up, otherwise the whole prompt. See
-// TokenLoadTracker.NewTokens.
+// conversation since its previous turn when the request carries the
+// caller-owned x-aibrix-session-key header, otherwise the part of the prompt
+// the pod's prefix cache does not hold when scorer looked it up, otherwise
+// the whole prompt. See TokenLoadTracker.NewTokens. The gateway-issued
+// x-session-id of session-affinity routing is deliberately not consulted:
+// it names a backend, not a conversation.
 func (r *pdRouter) chargeTokenLoad(routingCtx *types.RoutingContext, pod *v1.Pod, policy pd.PrefillScorePolicy, scorer pd.PrefillScorer) {
 	if r.tokenLoadTracker == nil || !pd.UsesTokenLoad(policy) {
 		return
 	}
 	promptTokens := pd.EstimatePromptTokens(routingCtx.ReqBody)
-	sessionID := routingCtx.ReqHeaders[constants.HeaderSessionID]
+	sessionID := routingCtx.ReqHeaders[constants.HeaderSessionKey]
 	matchPct := pd.PrefixMatchPercent(scorer, pod.Name)
 	newTokens, source := r.tokenLoadTracker.NewTokens(routingCtx.Model, sessionID, promptTokens, matchPct)
 	cost := r.tokenLoadTracker.PrefillCost(newTokens)

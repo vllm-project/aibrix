@@ -184,5 +184,25 @@ func TestDefaultHybridCacheLoadConfig(t *testing.T) {
 	t.Setenv("AIBRIX_MIN_MATCH_PCT", "0")
 	cfg = DefaultHybridCacheLoadConfig()
 	assert.Equal(t, DefaultHybridCacheLoadFactor, cfg.Factor, "invalid value falls back to the default")
-	assert.Equal(t, DefaultMinMatchPct, cfg.MinMatchPct, "0 keeps the default of no threshold")
+	assert.Equal(t, float64(0), cfg.MinMatchPct, "0 is a valid setting: no threshold")
+
+	// The range ends are valid; anything outside falls back.
+	t.Setenv("AIBRIX_HYBRID_CACHE_LOAD_FACTOR", "1")
+	t.Setenv("AIBRIX_MIN_MATCH_PCT", "100")
+	cfg = DefaultHybridCacheLoadConfig()
+	assert.Equal(t, float64(1), cfg.Factor)
+	assert.Equal(t, float64(100), cfg.MinMatchPct)
+	t.Setenv("AIBRIX_HYBRID_CACHE_LOAD_FACTOR", "0")
+	cfg = DefaultHybridCacheLoadConfig()
+	assert.Equal(t, float64(0), cfg.Factor, "a factor of 0 turns the discount off")
+
+	for _, tc := range []struct{ factor, minMatch string }{
+		{"1.5", "150"}, {"-0.1", "-1"}, {"NaN", "Inf"},
+	} {
+		t.Setenv("AIBRIX_HYBRID_CACHE_LOAD_FACTOR", tc.factor)
+		t.Setenv("AIBRIX_MIN_MATCH_PCT", tc.minMatch)
+		cfg = DefaultHybridCacheLoadConfig()
+		assert.Equalf(t, DefaultHybridCacheLoadFactor, cfg.Factor, "factor %q is out of range", tc.factor)
+		assert.Equalf(t, DefaultMinMatchPct, cfg.MinMatchPct, "min match %q is out of range", tc.minMatch)
+	}
 }
