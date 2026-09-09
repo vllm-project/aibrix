@@ -212,13 +212,14 @@ type prefixCacheScorer struct {
 func (s *prefixCacheScorer) PrefixHashes() []uint64 { return s.hashes }
 
 func (s *prefixCacheScorer) ScorePod(pod *v1.Pod, reqCnt, maxRequestCount float64) float64 {
-	matchPct := float64(ClampMinMatch(s.matchedPods[pod.Name], s.minMatchPct))
+	rawMatch := s.matchedPods[pod.Name]
+	matchPct := float64(ClampMinMatch(rawMatch, s.minMatchPct))
 	score := (100-matchPct)*.1 + reqCnt/maxRequestCount
 	if klog.V(4).Enabled() {
 		klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
 			"policy", PrefillScorePolicyPrefixCache,
 			"score", fmt.Sprintf("(100 - %f) * 0.1 + %f / %f", matchPct, reqCnt, maxRequestCount),
-			"prefix_match_percent", matchPct,
+			"prefix_match_percent", matchPct, "raw_match_percent", rawMatch,
 			"running_reqs", reqCnt, "max_running_reqs", maxRequestCount)
 	}
 	return score
