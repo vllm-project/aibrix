@@ -549,7 +549,7 @@ func (s *Server) sendProcessingResponse(srv extProcPb.ExternalProcessor_ProcessS
 
 func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingContext, pods types.PodList, externalFilterExpr string) (string, error) {
 	var span trace.Span
-	_, span = tracer.Start(ctx, "process.select_target_pod")
+	ctx, span = tracer.Start(ctx, "process.select_target_pod")
 	defer span.End()
 
 	if pods.Len() == 0 {
@@ -608,6 +608,11 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		return routeCtx.TargetAddress(), nil
 	}
 	utils.CryptoShuffle(readyPods)
+	// PD issues an additional HTTP request while routing. Pass the current span
+	// to that request without changing Context semantics for other routers.
+	if routeCtx.Algorithm == routing.RouterPD {
+		routeCtx.Context = ctx
+	}
 	return router.Route(routeCtx, &utils.PodArray{Pods: readyPods})
 }
 

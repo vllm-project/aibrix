@@ -39,6 +39,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -295,15 +296,17 @@ func NewPDRouter() (types.Router, error) {
 	}
 	klog.InfoS("pd_router decode score policy", "policy", decodePol.Name(), "describe", decodePol.Describe())
 
-	// Create a shared HTTP client with connection pooling
+	// Create a shared HTTP client with connection pooling. otelhttp creates the
+	// prefill client span and injects its trace context into the outbound request.
+	transport := &http.Transport{
+		// TODO: tune settings later
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+	}
 	httpClient := &http.Client{
-		Timeout: time.Duration(prefillRequestTimeout) * time.Second,
-		Transport: &http.Transport{
-			// TODO: tune settings later
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 10,
-			IdleConnTimeout:     90 * time.Second,
-		},
+		Timeout:   time.Duration(prefillRequestTimeout) * time.Second,
+		Transport: otelhttp.NewTransport(transport),
 	}
 
 	r := &pdRouter{
