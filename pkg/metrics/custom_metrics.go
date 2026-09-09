@@ -101,6 +101,27 @@ func DecGaugeMetric(name string, help string, labelNames []string, labelValues .
 	DecGaugeMetricFnForTest(name, help, labelNames, labelValues...)
 }
 
+// DeleteGaugeMetric removes one label combination of a custom gauge so the
+// series is no longer exported. No-op when the gauge or the series does not
+// exist, or when labelNames and labelValues differ in length.
+func DeleteGaugeMetric(name string, labelNames []string, labelValues ...string) {
+	if len(labelNames) != len(labelValues) {
+		return
+	}
+	customGaugesMu.RLock()
+	gauge, ok := customGauges[name]
+	canonicalNames := customGaugeLabelNames[name]
+	customGaugesMu.RUnlock()
+	if !ok || gauge == nil {
+		return
+	}
+	if len(canonicalNames) == 0 {
+		_ = gauge.DeleteLabelValues(labelValues...)
+		return
+	}
+	_ = gauge.DeleteLabelValues(orderedGaugeLabelValues(canonicalNames, labelNames, labelValues)...)
+}
+
 func DeleteGaugeMetricForPod(metricName string, routingCtx *types.RoutingContext, pod *v1.Pod, extras map[string]string) {
 	customGaugesMu.RLock()
 	gauge, ok := customGauges[metricName]

@@ -46,7 +46,9 @@ const (
 	// a TTL of 0 in TokenLoadConfig disables the janitor.
 	DefaultTokenLoadTTLSeconds = 3600
 
-	// tokenLoadJanitorInterval is the scan period of the TTL janitor.
+	// tokenLoadJanitorInterval is the scan period of the janitor, which
+	// force-releases charges older than the TTL and prunes idle pods. It also
+	// bounds how long a pod must be idle before it is pruned.
 	tokenLoadJanitorInterval = 60 * time.Second
 
 	// bytesPerTokenEstimate is the prompt-size heuristic used when the router
@@ -101,13 +103,21 @@ func DefaultTokenLoadConfig() TokenLoadConfig {
 // are idempotent per request ID and the counters are clamped at zero, so a
 // duplicate release can never drive a pod negative. A charge whose release
 // never arrives (the completion path was skipped) is force-released by the
-// TTL janitor so it cannot pin load on a pod forever.
+// TTL janitor so it cannot pin load on a pod forever. The janitor also drops
+// the counters and gauge series of pods that saw no traffic for a whole
+// sweep interval, so pod churn does not grow the ledger without bound.
 //
 // All methods are safe for concurrent use. Reads do not allocate.
 type TokenLoadTracker struct {
-	activeTokens sync.Map // map[string]*atomic.Uint64 (float64 bits), pod name → tokens
-	kvTokens     sync.Map // map[string]*atomic.Uint64 (float64 bits), pod name → tokens
+	activeTokens sync.Map // map[string]*podCounter, pod name → tokens
+	kvTokens     sync.Map // map[string]*podCounter, pod name → tokens
 	entries      sync.Map // map[string]*tokenLoadEntry, request ID → charge
+
+	// countersMu serialises the janitor's pruning of idle pods (write lock)
+	// with counter updates (read lock), so a counter and its gauge series are
+	// never dropped between a writer's update and its gauge refresh. Reads of
+	// the counters take no lock.
+	countersMu sync.RWMutex
 
 	cfg TokenLoadConfig
 	// stopCh is closed by Close to stop the janitor; janitorDone is closed by
@@ -136,6 +146,19 @@ type tokenLoadEntry struct {
 func (e *tokenLoadEntry) released() bool {
 	return e.tokensReleased.Load() && e.kvReleased.Load()
 }
+
+// podCounter is one per-pod token counter: the bits of a float64 value and a
+// flag that records any write since the janitor last looked, so the janitor
+// can tell a pod that is merely between requests from one that is gone.
+type podCounter struct {
+	bits    atomic.Uint64
+	touched atomic.Bool
+}
+
+func (c *podCounter) load() float64 { return math.Float64frombits(c.bits.Load()) }
+
+// tokenLoadGaugeLabels is the label set of the per-pod gauges.
+var tokenLoadGaugeLabels = []string{"pod_name"}
 
 // NewTokenLoadTracker creates a tracker with DefaultTokenLoadConfig and starts
 // its TTL janitor when the TTL is positive.
@@ -289,18 +312,25 @@ func (t *TokenLoadTracker) now() time.Time {
 }
 
 func (t *TokenLoadTracker) addActive(pod string, delta float64) {
-	value := addFloat(&t.activeTokens, pod, delta)
-	metrics.SetGaugeMetric(metrics.PDTokenLoadActiveTokens, metrics.GetMetricHelp(metrics.PDTokenLoadActiveTokens),
-		value, []string{"pod_name"}, pod)
+	t.addCounter(&t.activeTokens, metrics.PDTokenLoadActiveTokens, pod, delta)
 }
 
 func (t *TokenLoadTracker) addKV(pod string, delta float64) {
-	value := addFloat(&t.kvTokens, pod, delta)
-	metrics.SetGaugeMetric(metrics.PDTokenLoadKVTokens, metrics.GetMetricHelp(metrics.PDTokenLoadKVTokens),
-		value, []string{"pod_name"}, pod)
+	t.addCounter(&t.kvTokens, metrics.PDTokenLoadKVTokens, pod, delta)
 }
 
-// startJanitor runs sweepExpired every interval until Close is called.
+// addCounter adds delta to pod's counter in m and publishes the result as the
+// gauge metricName. The shared lock only excludes the janitor's pruning;
+// writers still run concurrently with each other.
+func (t *TokenLoadTracker) addCounter(m *sync.Map, metricName, pod string, delta float64) {
+	t.countersMu.RLock()
+	defer t.countersMu.RUnlock()
+	value := addFloat(m, pod, delta)
+	metrics.SetGaugeMetric(metricName, metrics.GetMetricHelp(metricName), value, tokenLoadGaugeLabels, pod)
+}
+
+// startJanitor runs sweepExpired and pruneIdle every interval until Close is
+// called.
 func (t *TokenLoadTracker) startJanitor(interval time.Duration) {
 	t.janitorDone = make(chan struct{})
 	go func() {
@@ -311,6 +341,7 @@ func (t *TokenLoadTracker) startJanitor(interval time.Duration) {
 			select {
 			case <-ticker.C:
 				t.sweepExpired()
+				t.pruneIdle()
 			case <-t.stopCh:
 				return
 			}
@@ -346,22 +377,72 @@ func (t *TokenLoadTracker) sweepExpired() int {
 	return released
 }
 
+// pruneIdle drops the counters and gauge series of every pod that has been
+// idle since the previous call, meaning both counters are zero and neither
+// was written in between, and returns how many pods it dropped. Pods come
+// and go under autoscaling and rollouts; without pruning each one would keep
+// two counters and two gauge series on the gateway forever. A pruned pod is
+// re-created, from zero, by its next charge.
+func (t *TokenLoadTracker) pruneIdle() int {
+	t.countersMu.Lock()
+	defer t.countersMu.Unlock()
+
+	pods := map[string]struct{}{}
+	collect := func(key, _ any) bool {
+		pods[key.(string)] = struct{}{}
+		return true
+	}
+	t.activeTokens.Range(collect)
+	t.kvTokens.Range(collect)
+
+	pruned := 0
+	for pod := range pods {
+		// Clear both flags before deciding, so a pod that is active on one
+		// counter is re-examined from scratch next time.
+		active := idleCounter(&t.activeTokens, pod)
+		kv := idleCounter(&t.kvTokens, pod)
+		if !active || !kv {
+			continue
+		}
+		t.activeTokens.Delete(pod)
+		t.kvTokens.Delete(pod)
+		metrics.DeleteGaugeMetric(metrics.PDTokenLoadActiveTokens, tokenLoadGaugeLabels, pod)
+		metrics.DeleteGaugeMetric(metrics.PDTokenLoadKVTokens, tokenLoadGaugeLabels, pod)
+		pruned++
+		klog.V(4).InfoS("token_load_pod_pruned", "pod_name", pod)
+	}
+	return pruned
+}
+
+// idleCounter reports whether pod's counter in m is zero and was not written
+// since the last call, and clears the written flag. A missing counter is idle.
+func idleCounter(m *sync.Map, pod string) bool {
+	v, ok := m.Load(pod)
+	if !ok {
+		return true
+	}
+	c := v.(*podCounter)
+	touched := c.touched.Swap(false)
+	return !touched && c.load() == 0
+}
+
 // addFloat atomically adds delta to the float64 stored under key, clamps the
 // result at zero, and returns the new value. The counter is only allocated
 // the first time a pod is seen; later calls take the read path.
 func addFloat(m *sync.Map, key string, delta float64) float64 {
 	v, ok := m.Load(key)
 	if !ok {
-		v, _ = m.LoadOrStore(key, &atomic.Uint64{})
+		v, _ = m.LoadOrStore(key, &podCounter{})
 	}
-	a := v.(*atomic.Uint64)
+	c := v.(*podCounter)
 	for {
-		old := a.Load()
+		old := c.bits.Load()
 		next := math.Float64frombits(old) + delta
 		if next < 0 {
 			next = 0
 		}
-		if a.CompareAndSwap(old, math.Float64bits(next)) {
+		if c.bits.CompareAndSwap(old, math.Float64bits(next)) {
+			c.touched.Store(true)
 			return next
 		}
 	}
@@ -372,5 +453,5 @@ func loadFloat(m *sync.Map, key string) float64 {
 	if !ok {
 		return 0
 	}
-	return math.Float64frombits(v.(*atomic.Uint64).Load())
+	return v.(*podCounter).load()
 }

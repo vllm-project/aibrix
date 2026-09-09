@@ -372,7 +372,7 @@ Each request is charged ``request_cost + prompt_tokens``, where ``request_cost``
 2. When the prefill HTTP call returns, the ``active_tokens`` part is released; ``kv_tokens`` stays.
 3. When the request completes (or the prefill call fails), the ``kv_tokens`` part is released too.
 
-A charge whose release never arrives is force-released after ``AIBRIX_TOKEN_LOAD_TTL_SECONDS`` (default ``3600``) with a warning log, so a leaked entry cannot pin load on a pod indefinitely. Releases are idempotent and the counters never go below zero.
+A charge whose release never arrives is force-released after ``AIBRIX_TOKEN_LOAD_TTL_SECONDS`` (default ``3600``) with a warning log, so a leaked entry cannot pin load on a pod indefinitely. Releases are idempotent and the counters never go below zero. The same janitor, which runs once a minute, drops the counters and metric series of any pod that has been at zero load and untouched for a whole minute, so prefill pods that come and go under autoscaling or rollouts do not accumulate on the gateway; the next charge re-creates the pod from zero.
 
 **Metrics**
 

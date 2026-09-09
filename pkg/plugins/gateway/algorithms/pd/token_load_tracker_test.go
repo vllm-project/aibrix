@@ -24,8 +24,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"k8s.io/klog/v2"
 )
 
@@ -355,6 +357,143 @@ func TestTokenLoadTracker_JanitorDisabledWithZeroTTL(t *testing.T) {
 	clock.Advance(365 * 24 * time.Hour)
 	assert.Equal(t, 0, tr.sweepExpired())
 	assertLoad(t, tr, "pod-a", 1000, 1000)
+}
+
+// tokenLoadSeriesPublished reports whether the default registry currently
+// exports a series of metricName for pod.
+func tokenLoadSeriesPublished(t *testing.T, metricName, pod string) bool {
+	t.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	for _, family := range families {
+		if family.GetName() != metricName {
+			continue
+		}
+		for _, m := range family.GetMetric() {
+			for _, label := range m.GetLabel() {
+				if label.GetName() == "pod_name" && label.GetValue() == pod {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func assertPodTracked(t *testing.T, tr *TokenLoadTracker, pod string, want bool) {
+	t.Helper()
+	_, active := tr.activeTokens.Load(pod)
+	_, kv := tr.kvTokens.Load(pod)
+	assert.Equal(t, want, active, "active counter for %s tracked", pod)
+	assert.Equal(t, want, kv, "kv counter for %s tracked", pod)
+	assert.Equal(t, want, tokenLoadSeriesPublished(t, metrics.PDTokenLoadActiveTokens, pod), "active series for %s", pod)
+	assert.Equal(t, want, tokenLoadSeriesPublished(t, metrics.PDTokenLoadKVTokens, pod), "kv series for %s", pod)
+}
+
+func TestTokenLoadTracker_JanitorPrunesIdlePods(t *testing.T) {
+	tr, _ := newTestTokenLoadTracker(t, testTokenLoadConfig())
+
+	tr.AcquirePrefill("req-1", "prune-a", 100)
+	tr.AcquirePrefill("req-2", "prune-b", 100)
+	tr.ReleaseAll("req-1")
+	assertPodTracked(t, tr, "prune-a", true)
+	assertPodTracked(t, tr, "prune-b", true)
+
+	// prune-a was written since the last sweep, so it is only observed idle;
+	// prune-b still carries a charge.
+	assert.Equal(t, 0, tr.pruneIdle())
+	assertPodTracked(t, tr, "prune-a", true)
+
+	// Traffic between sweeps keeps a pod alive even if it is back at zero.
+	tr.AcquirePrefill("req-3", "prune-a", 10)
+	tr.ReleaseAll("req-3")
+	assert.Equal(t, 0, tr.pruneIdle())
+	assertPodTracked(t, tr, "prune-a", true)
+
+	// A full quiet interval at zero gets the pod pruned; a pod with a
+	// charge outstanding is never pruned, however long it stays untouched.
+	assert.Equal(t, 1, tr.pruneIdle())
+	assertPodTracked(t, tr, "prune-a", false)
+	assertPodTracked(t, tr, "prune-b", true)
+	assertLoad(t, tr, "prune-a", 0, 0)
+	assertLoad(t, tr, "prune-b", 100, 100)
+
+	// The next charge re-creates the pod from zero.
+	tr.AcquirePrefill("req-4", "prune-a", 7)
+	assertPodTracked(t, tr, "prune-a", true)
+	assertLoad(t, tr, "prune-a", 7, 7)
+
+	// A pod whose KV part is still resident is not pruned either.
+	tr.ReleaseTokens("req-2")
+	assert.Equal(t, 0, tr.pruneIdle())
+	assert.Equal(t, 0, tr.pruneIdle())
+	assertPodTracked(t, tr, "prune-b", true)
+	tr.ReleaseKVCache("req-2")
+	assert.Equal(t, 0, tr.pruneIdle())
+	assert.Equal(t, 1, tr.pruneIdle())
+	assertPodTracked(t, tr, "prune-b", false)
+}
+
+func TestTokenLoadTracker_JanitorPrunesAfterForceRelease(t *testing.T) {
+	tr, clock := newTestTokenLoadTracker(t, testTokenLoadConfig())
+
+	// A leaked charge on a pod that is gone: the sweep releases it, and the
+	// pod is pruned once nothing has touched it for another interval.
+	tr.AcquirePrefill("leaked", "prune-c", 100)
+	clock.Advance(2 * time.Minute)
+	assert.Equal(t, 1, tr.sweepExpired())
+	assert.Equal(t, 0, tr.pruneIdle())
+	assert.Equal(t, 1, tr.pruneIdle())
+	assertPodTracked(t, tr, "prune-c", false)
+}
+
+func TestTokenLoadTracker_PruneRacesWithCharges(t *testing.T) {
+	tr, _ := newTestTokenLoadTracker(t, testTokenLoadConfig())
+
+	const (
+		workers   = 8
+		perWorker = 500
+		cost      = 3.0
+	)
+	stop := make(chan struct{})
+	var pruner sync.WaitGroup
+	pruner.Add(1)
+	go func() {
+		defer pruner.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				tr.pruneIdle()
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				id := fmt.Sprintf("race-w%d-r%d", w, i)
+				tr.AcquirePrefill(id, "prune-race", cost)
+				tr.ReleaseTokens(id)
+				tr.ReleaseKVCache(id)
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(stop)
+	pruner.Wait()
+
+	// Every charge was balanced by its releases whether or not the pruner
+	// dropped the counters in between, so nothing is left on the pod, and
+	// at most two more quiet sweeps drop it (the pruner may already have).
+	assertLoad(t, tr, "prune-race", 0, 0)
+	tr.pruneIdle()
+	tr.pruneIdle()
+	assertPodTracked(t, tr, "prune-race", false)
 }
 
 func TestTokenLoadTracker_ConcurrentChargesBalance(t *testing.T) {
