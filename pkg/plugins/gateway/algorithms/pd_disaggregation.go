@@ -116,6 +116,7 @@ var validPrefillScorePolicies = []string{
 	pd.PrefillScorePolicyLeastRequest,
 	pd.PrefillScorePolicyConductor,
 	pd.PrefillScorePolicyTokenLoad,
+	pd.PrefillScorePolicyHybridCacheLoad,
 }
 
 func init() {
@@ -179,6 +180,8 @@ func (r *pdRouter) effectiveScorePolicies(routingCtx *types.RoutingContext) (pd.
 			prefill = newConductorPrefillPolicy(r.prefixCacheIndexer, r.cache)
 		case pd.PrefillScorePolicyTokenLoad:
 			prefill = pd.NewTokenLoadPrefillPolicy(r.tokenLoadTracker)
+		case pd.PrefillScorePolicyHybridCacheLoad:
+			prefill = newHybridCacheLoadPrefillPolicy(r.prefixCacheIndexer, r.tokenLoadTracker)
 		default:
 			klog.InfoS("unknown prefillScorePolicy in routingConfig, keeping env-based policy",
 				"request_id", routingCtx.RequestID, "value", s,
@@ -249,6 +252,10 @@ func newConductorPrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashT
 	return pd.NewConductorPrefillPolicy(newTokenizer(), sharedPrefixTable, metricCache, pd.NewConductorPrefillPolicyConfig())
 }
 
+func newHybridCacheLoadPrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashTable, tracker *pd.TokenLoadTracker) pd.PrefillScorePolicy {
+	return pd.NewHybridCacheLoadPrefillPolicy(newTokenizer(), sharedPrefixTable, tracker, pd.DefaultHybridCacheLoadConfig())
+}
+
 func NewPDRouter() (types.Router, error) {
 	c, err := cache.Get()
 	if err != nil {
@@ -258,7 +265,8 @@ func NewPDRouter() (types.Router, error) {
 
 	sharedPrefixTable := prefixcacheindexer.GetSharedPrefixHashTable()
 	// One tracker per router, created unconditionally so that a routingConfig
-	// can switch a model to token_load without a gateway restart.
+	// can switch a model to token_load or hybrid_cache_load without a gateway
+	// restart.
 	tokenLoadTracker := pd.NewTokenLoadTracker()
 
 	var policy pd.PrefillScorePolicy
@@ -271,6 +279,8 @@ func NewPDRouter() (types.Router, error) {
 		policy = newConductorPrefillPolicy(sharedPrefixTable, c)
 	case pd.PrefillScorePolicyTokenLoad:
 		policy = pd.NewTokenLoadPrefillPolicy(tokenLoadTracker)
+	case pd.PrefillScorePolicyHybridCacheLoad:
+		policy = newHybridCacheLoadPrefillPolicy(sharedPrefixTable, tokenLoadTracker)
 	default:
 		klog.InfoS("pd_router unknown AIBRIX_PREFILL_SCORE_POLICY, using prefix_cache",
 			"value", aibrixPrefillScorePolicy, "valid", validPrefillScorePolicies)
@@ -340,11 +350,27 @@ func (r *pdRouter) DoneRequestTrace(_ *types.RoutingContext, requestID string, _
 // chargeTokenLoad charges the request's estimated prefill cost to pod when
 // policy scores from the token-load tracker. Called under selectMu right after
 // the prefill registration so the next selection sees this charge.
-func (r *pdRouter) chargeTokenLoad(routingCtx *types.RoutingContext, pod *v1.Pod, policy pd.PrefillScorePolicy) {
+//
+// The charge covers only the tokens pod has to compute: the growth of the
+// conversation since its previous turn when the request carries the
+// caller-owned x-aibrix-session-key header, otherwise the part of the prompt
+// the pod's prefix cache does not hold when scorer looked it up, otherwise
+// the whole prompt. See TokenLoadTracker.NewTokens. The gateway-issued
+// x-session-id of session-affinity routing is deliberately not consulted:
+// it names a backend, not a conversation.
+func (r *pdRouter) chargeTokenLoad(routingCtx *types.RoutingContext, pod *v1.Pod, policy pd.PrefillScorePolicy, scorer pd.PrefillScorer) {
 	if r.tokenLoadTracker == nil || !pd.UsesTokenLoad(policy) {
 		return
 	}
-	cost := r.tokenLoadTracker.PrefillCost(pd.EstimatePromptTokens(routingCtx.ReqBody))
+	promptTokens := pd.EstimatePromptTokens(routingCtx.ReqBody)
+	sessionID := routingCtx.ReqHeaders[constants.HeaderSessionKey]
+	matchPct := pd.PrefixMatchPercent(scorer, pod.Name)
+	newTokens, source := r.tokenLoadTracker.NewTokens(routingCtx.Model, sessionID, promptTokens, matchPct)
+	cost := r.tokenLoadTracker.PrefillCost(newTokens)
+	klog.V(4).InfoS("pd_router token_load charge",
+		"request_id", routingCtx.RequestID, "pod_name", pod.Name, "policy", policy.Name(),
+		"prompt_tokens", promptTokens, "new_tokens", newTokens, "source", source,
+		"prefix_match_percent", matchPct, "cost", cost)
 	r.tokenLoadTracker.AcquirePrefill(routingCtx.RequestID, pod.Name, cost)
 }
 
@@ -548,7 +574,7 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	// Register while still holding selectMu so the next selection counts this one.
 	r.pendingDecodeTracker.AddPendingDecode(routingCtx.RequestID, selectedDecode.Name)
 	r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, selectedPrefill.Name)
-	r.chargeTokenLoad(routingCtx, selectedPrefill, prefillPol)
+	r.chargeTokenLoad(routingCtx, selectedPrefill, prefillPol, prefillScorer)
 	return selectedPrefill, selectedDecode, nil
 }
 

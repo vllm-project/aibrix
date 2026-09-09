@@ -20,19 +20,21 @@ limitations under the License.
 //
 //   - prefill_scorer.go  — PrefillScorePolicy / PrefillScorer interfaces and
 //     their built-in implementations (prefix_cache, least_request, conductor,
-//     token_load).
+//     token_load, hybrid_cache_load).
 //   - decode_scorer.go   — DecodeScorePolicy / DecodeScorer interfaces and
 //     their built-in implementations (load_balancing, least_request), plus the
 //     policy registry used by AIBRIX_DECODE_SCORE_POLICY.
 //   - trackers.go        — PrefillRequestTracker and PendingDecodeTracker,
 //     which bridge the gap between pod selection and actual request start.
 //   - token_load_tracker.go — TokenLoadTracker, the token-weighted prefill
-//     load ledger behind the token_load policy.
+//     load ledger behind the token_load and hybrid_cache_load policies.
 package pd
 
 import (
 	"fmt"
 	"math"
+	"os"
+	"strconv"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
@@ -62,6 +64,20 @@ const (
 	// routes prefill requests to the pod with the lowest token-weighted load
 	// as tracked by TokenLoadTracker, without consulting the prefix cache.
 	PrefillScorePolicyTokenLoad = "token_load"
+
+	// PrefillScorePolicyHybridCacheLoad selects the hybrid scoring policy,
+	// which discounts a pod's token-weighted load by its prefix-cache match so
+	// that cache affinity wins on idle pods and load wins on busy ones.
+	PrefillScorePolicyHybridCacheLoad = "hybrid_cache_load"
+
+	// DefaultHybridCacheLoadFactor is how much a full prefix match discounts a
+	// pod's token load under hybrid_cache_load: score = load × (1 − factor)
+	// at 100 % match.
+	DefaultHybridCacheLoadFactor = 0.5
+
+	// DefaultMinMatchPct is the prefix-match percentage below which
+	// hybrid_cache_load treats a match as no match. 0 keeps every match.
+	DefaultMinMatchPct = 0.0
 
 	// Default TTFT estimation coefficients for conductor policy.
 	// Units: time in milliseconds, tokens are unitless.
@@ -404,7 +420,14 @@ func (p *tokenLoadPrefillPolicy) Name() string { return PrefillScorePolicyTokenL
 // UsesTokenLoad reports whether policy scores from a TokenLoadTracker, i.e.
 // whether the router must charge the tracker for requests scored by it.
 func UsesTokenLoad(policy PrefillScorePolicy) bool {
-	return policy != nil && policy.Name() == PrefillScorePolicyTokenLoad
+	if policy == nil {
+		return false
+	}
+	switch policy.Name() {
+	case PrefillScorePolicyTokenLoad, PrefillScorePolicyHybridCacheLoad:
+		return true
+	}
+	return false
 }
 
 // tokenLoadScorer is the request-scoped scorer produced by tokenLoadPrefillPolicy.
@@ -428,5 +451,161 @@ func (s tokenLoadScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
 			"score", score, "active_tokens", active, "kv_tokens", kv,
 			"running_reqs", reqCnt)
 	}
+	return score
+}
+
+// PrefixMatchScorer is implemented by PrefillScorers that looked the request
+// up in the prefix cache during Prepare. The router uses it to charge only
+// the uncached part of the prompt to the token-load tracker.
+type PrefixMatchScorer interface {
+	// PrefixMatchPercent returns how much of the request's prompt (0-100) the
+	// named pod already holds in its prefix cache, or -1 when unknown.
+	PrefixMatchPercent(podName string) int
+}
+
+// PrefixMatchPercent returns the prefix-match percentage scorer reports for
+// podName, or -1 when scorer does not implement PrefixMatchScorer.
+func PrefixMatchPercent(scorer PrefillScorer, podName string) int {
+	if m, ok := scorer.(PrefixMatchScorer); ok {
+		return m.PrefixMatchPercent(podName)
+	}
+	return -1
+}
+
+// HybridCacheLoadConfig tunes the hybrid_cache_load policy.
+type HybridCacheLoadConfig struct {
+	// Factor is the discount a full prefix match applies to a pod's token
+	// load; see hybridCacheLoadPrefillPolicy for the formula.
+	Factor float64
+	// MinMatchPct is the prefix-match percentage below which a match is
+	// treated as no match, so a few shared tokens do not attract a request.
+	MinMatchPct float64
+}
+
+// DefaultHybridCacheLoadConfig returns the defaults, overridden by the
+// AIBRIX_HYBRID_CACHE_LOAD_FACTOR (0 to 1) and AIBRIX_MIN_MATCH_PCT (0 to
+// 100) environment variables. An unset, empty or out-of-range value keeps the
+// default. A factor of 1 makes a full match score 0, so it always wins; above
+// 1 the discount would go negative, which is why the range stops there.
+func DefaultHybridCacheLoadConfig() HybridCacheLoadConfig {
+	return HybridCacheLoadConfig{
+		Factor:      loadEnvFloatInRange("AIBRIX_HYBRID_CACHE_LOAD_FACTOR", DefaultHybridCacheLoadFactor, 0, 1),
+		MinMatchPct: loadEnvFloatInRange("AIBRIX_MIN_MATCH_PCT", DefaultMinMatchPct, 0, 100),
+	}
+}
+
+// loadEnvFloatInRange is utils.LoadEnvFloat for a knob whose valid values are
+// the closed range [lo, hi] rather than "positive": 0 is a valid setting of
+// both hybrid_cache_load knobs, and each has an upper bound.
+func loadEnvFloatInRange(key string, defaultValue, lo, hi float64) float64 {
+	raw := os.Getenv(key)
+	if raw == "" {
+		klog.Infof("set %s: %g, using default value", key, defaultValue)
+		return defaultValue
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(value) || value < lo || value > hi {
+		klog.Warningf("invalid %s: %s (valid range %g to %g), falling back to default: %g", key, raw, lo, hi, defaultValue)
+		return defaultValue
+	}
+	klog.Infof("set %s: %g", key, value)
+	return value
+}
+
+// ClampMinMatch returns matchPct, or 0 when a positive minPct is set and
+// matchPct falls below it.
+func ClampMinMatch(matchPct int, minPct float64) int {
+	if minPct > 0 && float64(matchPct) < minPct {
+		return 0
+	}
+	return matchPct
+}
+
+// hybridCacheLoadPrefillPolicy combines the prefix-cache lookup of prefix_cache
+// with the token-weighted load of token_load:
+//
+//	r        = matchPercent / 100        (0 when below MinMatchPct)
+//	discount = 1 − r² × factor
+//	score    = load × discount           when load ≥ 1
+//	score    = discount                  when load < 1 (idle pod)
+//
+// where load = active_tokens + kv_weight × kv_tokens from the TokenLoadTracker.
+// Lower is better. On idle pods every score is below 1 and the best prefix
+// match wins outright; on busy pods the match only discounts the load, so a
+// pod holding the prefix but also a queue of long prompts loses to an idle
+// neighbour. The square keeps small matches from moving the decision.
+//
+// Obtain an instance via NewHybridCacheLoadPrefillPolicy.
+type hybridCacheLoadPrefillPolicy struct {
+	tok                tokenizer.Tokenizer
+	prefixCacheIndexer *prefixcacheindexer.PrefixHashTable
+	tracker            *TokenLoadTracker
+	cfg                HybridCacheLoadConfig
+}
+
+// NewHybridCacheLoadPrefillPolicy constructs a hybrid_cache_load
+// PrefillScorePolicy over the given tokenizer, shared prefix-hash table and
+// token-load tracker.
+func NewHybridCacheLoadPrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer *prefixcacheindexer.PrefixHashTable, tracker *TokenLoadTracker, cfg HybridCacheLoadConfig) PrefillScorePolicy {
+	return &hybridCacheLoadPrefillPolicy{
+		tok:                tok,
+		prefixCacheIndexer: prefixCacheIndexer,
+		tracker:            tracker,
+		cfg:                cfg,
+	}
+}
+
+// Prepare tokenizes routingCtx.Message and looks it up in the prefix cache,
+// exactly as prefix_cache does; the load side is read at ScorePod time.
+func (p *hybridCacheLoadPrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ []*v1.Pod, readyPodsMap map[string]struct{}) (PrefillScorer, error) {
+	tokens, err := p.tok.TokenizeInputText(routingCtx.Message)
+	if err != nil {
+		return nil, err
+	}
+	matchedPods, hashes := p.prefixCacheIndexer.MatchPrefix(tokens, routingCtx.Model, readyPodsMap)
+	return &hybridCacheLoadScorer{
+		tracker:     p.tracker,
+		cfg:         p.cfg,
+		matchedPods: matchedPods,
+		hashes:      hashes,
+	}, nil
+}
+
+func (p *hybridCacheLoadPrefillPolicy) Name() string { return PrefillScorePolicyHybridCacheLoad }
+
+// hybridCacheLoadScorer is the request-scoped scorer produced by
+// hybridCacheLoadPrefillPolicy.
+type hybridCacheLoadScorer struct {
+	tracker     *TokenLoadTracker
+	cfg         HybridCacheLoadConfig
+	matchedPods map[string]int
+	hashes      []uint64
+}
+
+func (s *hybridCacheLoadScorer) PrefixHashes() []uint64 { return s.hashes }
+
+// PrefixMatchPercent implements PrefixMatchScorer with the clamped match, so
+// the router's charge and the score agree on what counts as cached.
+func (s *hybridCacheLoadScorer) PrefixMatchPercent(podName string) int {
+	return ClampMinMatch(s.matchedPods[podName], s.cfg.MinMatchPct)
+}
+
+func (s *hybridCacheLoadScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
+	matchPct := s.PrefixMatchPercent(pod.Name)
+	r := float64(matchPct) / 100
+	discount := 1 - r*r*s.cfg.Factor
+	load := 0.0
+	if s.tracker != nil {
+		load = s.tracker.GetPriority(pod.Name)
+	}
+	score := discount
+	if load >= 1 {
+		score = load * discount
+	}
+	klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
+		"policy", PrefillScorePolicyHybridCacheLoad,
+		"score", score, "token_load", load, "discount", discount,
+		"prefix_match_percent", matchPct, "raw_match_percent", s.matchedPods[pod.Name],
+		"running_reqs", reqCnt)
 	return score
 }

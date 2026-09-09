@@ -10,6 +10,7 @@
 # profiles used by config-profile e2e tests are declared on each role:
 #   - "pd" (default): PD routing with the gateway's default prefill score policy
 #   - "token-load":   PD routing with prefillScorePolicy token_load
+#   - "hybrid-cache-load": PD routing with prefillScorePolicy hybrid_cache_load
 #
 # Apply alongside components.yaml (provides mocked-app-sa and RBAC).
 apiVersion: orchestration.aibrix.ai/v1alpha1
@@ -67,6 +68,12 @@ spec:
                         "routingConfig": {
                           "prefillScorePolicy": "token_load"
                         }
+                      },
+                      "hybrid-cache-load": {
+                        "routingStrategy": "pd",
+                        "routingConfig": {
+                          "prefillScorePolicy": "hybrid_cache_load"
+                        }
                       }
                     }
                   }
@@ -116,6 +123,12 @@ spec:
                         "routingStrategy": "pd",
                         "routingConfig": {
                           "prefillScorePolicy": "token_load"
+                        }
+                      },
+                      "hybrid-cache-load": {
+                        "routingStrategy": "pd",
+                        "routingConfig": {
+                          "prefillScorePolicy": "hybrid_cache_load"
                         }
                       }
                     }

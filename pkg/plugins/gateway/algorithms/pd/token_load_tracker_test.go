@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -250,19 +251,256 @@ func TestTokenLoadTracker_DefaultConfigFromEnv(t *testing.T) {
 	t.Setenv("AIBRIX_TOKEN_LOAD_KV_WEIGHT", "0.7")
 	t.Setenv("AIBRIX_TOKEN_LOAD_REQUEST_COST", "100")
 	t.Setenv("AIBRIX_TOKEN_LOAD_TTL_SECONDS", "42")
+	t.Setenv("AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS", "7")
+	t.Setenv("AIBRIX_TOKEN_LOAD_MAX_SESSIONS", "500")
 
 	cfg := DefaultTokenLoadConfig()
 	assert.Equal(t, 0.7, cfg.KVWeight)
 	assert.Equal(t, float64(100), cfg.RequestCost)
 	assert.Equal(t, 42*time.Second, cfg.TTL)
+	assert.Equal(t, 7*time.Second, cfg.SessionTTL)
+	assert.Equal(t, 500, cfg.MaxSessions)
 
 	t.Setenv("AIBRIX_TOKEN_LOAD_KV_WEIGHT", "not-a-number")
 	t.Setenv("AIBRIX_TOKEN_LOAD_REQUEST_COST", "")
 	t.Setenv("AIBRIX_TOKEN_LOAD_TTL_SECONDS", "0")
+	t.Setenv("AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS", "-1")
+	t.Setenv("AIBRIX_TOKEN_LOAD_MAX_SESSIONS", "0")
 	cfg = DefaultTokenLoadConfig()
 	assert.Equal(t, DefaultTokenLoadKVWeight, cfg.KVWeight, "invalid value falls back to the default")
 	assert.Equal(t, float64(DefaultTokenLoadRequestCost), cfg.RequestCost, "empty value falls back to the default")
 	assert.Equal(t, DefaultTokenLoadTTLSeconds*time.Second, cfg.TTL, "non-positive value falls back to the default")
+	assert.Equal(t, DefaultTokenLoadSessionTTLSeconds*time.Second, cfg.SessionTTL, "negative value falls back to the default")
+	assert.Equal(t, DefaultTokenLoadMaxSessions, cfg.MaxSessions, "non-positive value falls back to the default")
+
+	// 0 is the documented way to turn session tracking off.
+	t.Setenv("AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS", " 0 ")
+	assert.Equal(t, time.Duration(0), DefaultTokenLoadConfig().SessionTTL, "0 disables session tracking")
+
+	// A config without MaxSessions gets the default bound.
+	assert.Equal(t, DefaultTokenLoadMaxSessions, NewTokenLoadTrackerWithConfig(TokenLoadConfig{}).Config().MaxSessions)
+}
+
+// sessionTestConfig enables session tracking on top of testTokenLoadConfig.
+func sessionTestConfig() TokenLoadConfig {
+	cfg := testTokenLoadConfig()
+	cfg.SessionTTL = 30 * time.Minute
+	return cfg
+}
+
+func TestTokenLoadTracker_NewTokensWithoutSession(t *testing.T) {
+	tr, _ := newTestTokenLoadTracker(t, sessionTestConfig())
+
+	cases := []struct {
+		name         string
+		promptTokens int
+		matchPct     int
+		wantTokens   int
+		wantSource   string
+	}{
+		{"no match info charges the whole prompt", 1000, -1, 1000, NewTokensSourcePrompt},
+		{"zero match charges the whole prompt", 1000, 0, 1000, NewTokensSourcePrefixMatch},
+		{"partial match charges the uncached part", 1000, 60, 400, NewTokensSourcePrefixMatch},
+		{"full match charges nothing", 1000, 100, 0, NewTokensSourcePrefixMatch},
+		{"match above 100 is clamped", 1000, 150, 0, NewTokensSourcePrefixMatch},
+		{"negative prompt is treated as empty", -5, -1, 0, NewTokensSourcePrompt},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, source := tr.NewTokens("model", "", tc.promptTokens, tc.matchPct)
+			assert.Equal(t, tc.wantTokens, got)
+			assert.Equal(t, tc.wantSource, source)
+		})
+	}
+}
+
+func TestTokenLoadTracker_NewTokensSessionDelta(t *testing.T) {
+	tr, _ := newTestTokenLoadTracker(t, sessionTestConfig())
+
+	// First turn: nothing to diff against, so the prefix-match rule applies.
+	got, source := tr.NewTokens("model", "s1", 1000, 40)
+	assert.Equal(t, 600, got)
+	assert.Equal(t, NewTokensSourcePrefixMatch, source)
+
+	// Second turn resends the history plus 500 new tokens: only the growth is
+	// charged, whatever the prefix cache says.
+	got, source = tr.NewTokens("model", "s1", 1500, 0)
+	assert.Equal(t, 500, got)
+	assert.Equal(t, NewTokensSourceSession, source)
+
+	// A repeated prompt has no growth to charge; fall back to the match rule.
+	got, source = tr.NewTokens("model", "s1", 1500, 90)
+	assert.Equal(t, 150, got)
+	assert.Equal(t, NewTokensSourcePrefixMatch, source)
+
+	// A shorter prompt (history trimmed, new conversation under the same ID)
+	// falls back too and becomes the new baseline.
+	got, source = tr.NewTokens("model", "s1", 800, -1)
+	assert.Equal(t, 800, got)
+	assert.Equal(t, NewTokensSourcePrompt, source)
+	got, source = tr.NewTokens("model", "s1", 1000, -1)
+	assert.Equal(t, 200, got)
+	assert.Equal(t, NewTokensSourceSession, source)
+
+	// The same session ID against another model is a different conversation.
+	got, source = tr.NewTokens("other-model", "s1", 1000, -1)
+	assert.Equal(t, 1000, got)
+	assert.Equal(t, NewTokensSourcePrompt, source)
+}
+
+func TestTokenLoadTracker_NewTokensSessionDisabled(t *testing.T) {
+	tr, _ := newTestTokenLoadTracker(t, testTokenLoadConfig()) // SessionTTL 0
+
+	got, _ := tr.NewTokens("model", "s1", 1000, -1)
+	assert.Equal(t, 1000, got)
+	got, source := tr.NewTokens("model", "s1", 1500, -1)
+	assert.Equal(t, 1500, got, "sessions are not remembered when SessionTTL is 0")
+	assert.Equal(t, NewTokensSourcePrompt, source)
+}
+
+func TestTokenLoadTracker_NewTokensIgnoresOverlongSessionID(t *testing.T) {
+	tr, _ := newTestTokenLoadTracker(t, sessionTestConfig())
+
+	longID := strings.Repeat("s", maxTokenLoadSessionIDLen+1)
+	tr.NewTokens("model", longID, 1000, -1)
+	got, source := tr.NewTokens("model", longID, 1500, -1)
+	assert.Equal(t, 1500, got, "an over-long session ID is treated as no session")
+	assert.Equal(t, NewTokensSourcePrompt, source)
+	assert.Equal(t, int64(0), tr.sessionCount.Load(), "nothing is recorded for it")
+
+	maxID := strings.Repeat("s", maxTokenLoadSessionIDLen)
+	tr.NewTokens("model", maxID, 1000, -1)
+	got, source = tr.NewTokens("model", maxID, 1500, -1)
+	assert.Equal(t, 500, got, "an ID at the limit is recorded")
+	assert.Equal(t, NewTokensSourceSession, source)
+	assert.Equal(t, int64(1), tr.sessionCount.Load())
+}
+
+func TestTokenLoadTracker_SessionTableIsBounded(t *testing.T) {
+	cfg := sessionTestConfig()
+	cfg.MaxSessions = 2
+	tr, clock := newTestTokenLoadTracker(t, cfg)
+
+	tr.NewTokens("model", "s1", 1000, -1)
+	tr.NewTokens("model", "s2", 1000, -1)
+	assert.Equal(t, int64(2), tr.sessionCount.Load())
+
+	// The table is full: s3 is not recorded and keeps being charged by the
+	// other rules, while the live sessions still get their delta.
+	for i := 0; i < 3; i++ {
+		got, source := tr.NewTokens("model", "s3", 1000+500*i, 40)
+		assert.Equal(t, (1000+500*i)*60/100, got, "turn %d of an unadmitted session is charged by the prefix rule", i)
+		assert.Equal(t, NewTokensSourcePrefixMatch, source)
+	}
+	assert.Equal(t, int64(2), tr.sessionCount.Load())
+	got, source := tr.NewTokens("model", "s1", 1500, 40)
+	assert.Equal(t, 500, got)
+	assert.Equal(t, NewTokensSourceSession, source)
+
+	// Once the janitor sweeps an idle session, a new one can be admitted.
+	clock.Advance(cfg.SessionTTL + time.Minute)
+	tr.NewTokens("model", "s1", 1600, -1) // keep s1 alive
+	tr.sweepExpired()
+	assert.Equal(t, int64(1), tr.sessionCount.Load(), "s2 was swept")
+	tr.NewTokens("model", "s3", 1000, -1)
+	got, source = tr.NewTokens("model", "s3", 1500, -1)
+	assert.Equal(t, 500, got, "s3 is admitted into the freed slot")
+	assert.Equal(t, NewTokensSourceSession, source)
+	assert.Equal(t, int64(2), tr.sessionCount.Load())
+}
+
+// TestTokenLoadTracker_SweptSessionIsNotRefreshed covers the writer side of
+// the sweep race: a writer that loaded a session pointer just before the
+// janitor removed it must not refresh the orphan but start a new session.
+func TestTokenLoadTracker_SweptSessionIsNotRefreshed(t *testing.T) {
+	tr, _ := newTestTokenLoadTracker(t, sessionTestConfig())
+
+	tr.NewTokens("model", "s1", 1000, -1)
+	v, ok := tr.sessions.Load(sessionKey("model", "s1"))
+	require.True(t, ok)
+	orphan := v.(*tokenLoadSession)
+
+	// What sweepExpired does once it finds the session idle.
+	orphan.mu.Lock()
+	orphan.deleted = true
+	tr.sessions.Delete(sessionKey("model", "s1"))
+	tr.sessionCount.Add(-1)
+	orphan.mu.Unlock()
+
+	got, source := tr.NewTokens("model", "s1", 1500, -1)
+	assert.Equal(t, 1500, got, "the swept baseline is gone")
+	assert.Equal(t, NewTokensSourcePrompt, source)
+	v, ok = tr.sessions.Load(sessionKey("model", "s1"))
+	require.True(t, ok, "a fresh session was inserted")
+	assert.NotSame(t, orphan, v.(*tokenLoadSession))
+	assert.Equal(t, int64(1), tr.sessionCount.Load())
+	got, source = tr.NewTokens("model", "s1", 2000, -1)
+	assert.Equal(t, 500, got, "the fresh session is the new baseline")
+	assert.Equal(t, NewTokensSourceSession, source)
+}
+
+// TestTokenLoadTracker_SessionCountSurvivesConcurrentSweeps races writers
+// against the janitor and checks the live-session count against the map.
+func TestTokenLoadTracker_SessionCountSurvivesConcurrentSweeps(t *testing.T) {
+	cfg := sessionTestConfig()
+	cfg.SessionTTL = time.Millisecond
+	cfg.MaxSessions = 8
+	tr := newTokenLoadTracker(cfg, time.Now)
+
+	stop := make(chan struct{})
+	sweeperDone := make(chan struct{})
+	go func() {
+		defer close(sweeperDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				tr.sweepExpired()
+			}
+		}
+	}()
+	var writers sync.WaitGroup
+	for w := 0; w < 4; w++ {
+		writers.Add(1)
+		go func(w int) {
+			defer writers.Done()
+			for i := 0; i < 2000; i++ {
+				tr.NewTokens("model", fmt.Sprintf("s-%d", (w*7+i)%16), 1000+i, -1)
+			}
+		}(w)
+	}
+	writers.Wait()
+	close(stop)
+	<-sweeperDone
+
+	live := 0
+	tr.sessions.Range(func(_, _ any) bool { live++; return true })
+	assert.Equal(t, int64(live), tr.sessionCount.Load(), "count matches the map after concurrent admissions and sweeps")
+	assert.LessOrEqual(t, live, cfg.MaxSessions)
+}
+
+func TestTokenLoadTracker_JanitorForgetsIdleSessions(t *testing.T) {
+	cfg := sessionTestConfig()
+	cfg.TTL = 0 // charges are never swept here; only sessions are
+	tr, clock := newTestTokenLoadTracker(t, cfg)
+
+	tr.AcquirePrefill("req-1", "pod-a", 1000)
+	tr.NewTokens("model", "fresh", 1000, -1)
+	tr.NewTokens("model", "stale", 1000, -1)
+	clock.Advance(20 * time.Minute)
+	tr.NewTokens("model", "fresh", 1200, -1) // touches the session
+
+	clock.Advance(15 * time.Minute) // stale idle for 35 min, fresh for 15
+	assert.Equal(t, 0, tr.sweepExpired())
+	assertLoad(t, tr, "pod-a", 1000, 1000)
+
+	got, source := tr.NewTokens("model", "fresh", 1500, -1)
+	assert.Equal(t, 300, got)
+	assert.Equal(t, NewTokensSourceSession, source)
+	got, source = tr.NewTokens("model", "stale", 1500, -1)
+	assert.Equal(t, 1500, got, "an idle session is forgotten and starts over")
+	assert.Equal(t, NewTokensSourcePrompt, source)
 }
 
 func TestTokenLoadTracker_JanitorReleasesStaleCharges(t *testing.T) {

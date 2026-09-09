@@ -359,7 +359,7 @@ Target and General Headers
      - Session identifier used by ``session-affinity`` routing. The response value should be sent on subsequent requests to retain affinity.
    * - ``x-aibrix-session-key``
      - Request
-     - Caller-owned opaque session key used by ``session-affinity`` routing.
+     - Caller-owned opaque session key used by ``session-affinity`` routing and, under ``pd`` routing with the ``token_load`` or ``hybrid_cache_load`` prefill policy, to charge a multi-turn conversation only for its new tokens.
    * - ``traceparent``
      - Request, Backend request
      - W3C Trace Context propagated through requests initiated by the gateway, including prefill-decode routing.

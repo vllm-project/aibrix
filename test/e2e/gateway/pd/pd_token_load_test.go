@@ -166,9 +166,19 @@ func TestPDDisaggregationVLLMTokenLoad(t *testing.T) {
 		t.Logf("request %d — prefill: %s, decode: %s", i, prefillPod, decodePod)
 	}
 
-	// Every prefill pod that served a request must have been charged on the
-	// gateway replica that routed it, and all charges must be back at zero
-	// once the responses have been delivered.
+	lastGauges := assertTokenLoadGaugesSettle(t, ctx, k8sClient, gatewayPods, prefillPods, "token_load")
+	t.Logf("token_load gauges after %d requests: %v", iterations, lastGauges)
+}
+
+// assertTokenLoadGaugesSettle waits until every pod in prefillPods has a
+// pd_token_load_* series on the gateway replica that routed to it and all of
+// those series are back at zero, then returns the final scrape. policy names
+// the prefill score policy under test for log and failure messages.
+func assertTokenLoadGaugesSettle(
+	t *testing.T, ctx context.Context, k8sClient *kubernetes.Clientset, gatewayPods []corev1.Pod,
+	prefillPods map[string]struct{}, policy string,
+) []tokenLoadGauge {
+	t.Helper()
 	var lastGauges []tokenLoadGauge
 	err := wait.PollUntilContextTimeout(ctx, time.Second, 30*time.Second, true,
 		func(ctx context.Context) (bool, error) {
@@ -193,13 +203,13 @@ func TestPDDisaggregationVLLMTokenLoad(t *testing.T) {
 				}
 			}
 			if len(charged) != len(prefillPods) || !settled {
-				t.Logf("waiting for token_load gauges (charged %d/%d prefill pods, settled=%v)",
-					len(charged), len(prefillPods), settled)
+				t.Logf("waiting for %s gauges (charged %d/%d prefill pods, settled=%v)",
+					policy, len(charged), len(prefillPods), settled)
 				return false, nil
 			}
 			return true, nil
 		})
-	require.NoError(t, err, "token_load gauges did not settle; last scrape: %v", lastGauges)
+	require.NoError(t, err, "%s gauges did not settle; last scrape: %v", policy, lastGauges)
 
 	for podName := range prefillPods {
 		found := false
@@ -212,8 +222,8 @@ func TestPDDisaggregationVLLMTokenLoad(t *testing.T) {
 			}
 			assert.Zero(t, g.value, "%s should be released after the request completed", g)
 		}
-		assert.True(t, found, "prefill pod %s served a token_load request but no %s series was published for it",
-			podName, metrics.PDTokenLoadKVTokens)
+		assert.True(t, found, "prefill pod %s served a %s request but no %s series was published for it",
+			podName, policy, metrics.PDTokenLoadKVTokens)
 	}
-	t.Logf("token_load gauges after %d requests: %v", iterations, lastGauges)
+	return lastGauges
 }

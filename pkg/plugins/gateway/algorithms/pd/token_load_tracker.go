@@ -18,6 +18,9 @@ package pd
 
 import (
 	"math"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -43,8 +46,26 @@ const (
 	// before the janitor force-releases it. It must exceed the longest
 	// legitimate request; an hour leaves a wide margin while still capping the
 	// damage a leaked entry can do. The environment variable must be positive;
-	// a TTL of 0 in TokenLoadConfig disables the janitor.
+	// a TTL of 0 in TokenLoadConfig disables the sweep of stale charges.
 	DefaultTokenLoadTTLSeconds = 3600
+
+	// DefaultTokenLoadSessionTTLSeconds bounds how long the last prompt size
+	// of a session is remembered for the session-delta cost estimate. It only
+	// needs to outlive the gap between two turns of one conversation.
+	DefaultTokenLoadSessionTTLSeconds = 1800
+
+	// DefaultTokenLoadMaxSessions bounds how many (model, session) baselines
+	// the tracker remembers at once. The session header is client-supplied,
+	// so without a bound a stream of distinct IDs could grow the table by
+	// QPS × SessionTTL entries before the janitor sweeps them. Once the
+	// table is full, new sessions are not recorded and their requests are
+	// charged by the prefix-match or whole-prompt rule instead.
+	DefaultTokenLoadMaxSessions = 100000
+
+	// maxTokenLoadSessionIDLen is the longest session ID the tracker records,
+	// the same bound session-affinity routing applies to the caller-owned
+	// session key. Longer IDs are treated as absent.
+	maxTokenLoadSessionIDLen = 256
 
 	// tokenLoadJanitorInterval is the scan period of the janitor, which
 	// force-releases charges older than the TTL and prunes idle pods. It also
@@ -63,20 +84,44 @@ type TokenLoadConfig struct {
 	KVWeight float64
 	// RequestCost is the fixed per-request cost added to every charge, in tokens.
 	RequestCost float64
-	// TTL is the maximum age of an outstanding charge; 0 disables the janitor.
+	// TTL is the maximum age of an outstanding charge; 0 disables the sweep
+	// of stale charges.
 	TTL time.Duration
+	// SessionTTL is how long a session's last prompt size is remembered for
+	// the session-delta cost estimate; 0 disables session tracking.
+	SessionTTL time.Duration
+	// MaxSessions bounds the number of sessions remembered at once; 0 selects
+	// DefaultTokenLoadMaxSessions.
+	MaxSessions int
 }
 
 // DefaultTokenLoadConfig returns the defaults, overridden by the
-// AIBRIX_TOKEN_LOAD_KV_WEIGHT, AIBRIX_TOKEN_LOAD_REQUEST_COST and
-// AIBRIX_TOKEN_LOAD_TTL_SECONDS environment variables. Each must be positive;
-// an unset, empty or invalid value keeps the default.
+// AIBRIX_TOKEN_LOAD_KV_WEIGHT, AIBRIX_TOKEN_LOAD_REQUEST_COST,
+// AIBRIX_TOKEN_LOAD_TTL_SECONDS, AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS and
+// AIBRIX_TOKEN_LOAD_MAX_SESSIONS environment variables. Each must be
+// positive, except that a session TTL of 0 turns session tracking off; an
+// unset, empty or invalid value keeps the default.
 func DefaultTokenLoadConfig() TokenLoadConfig {
 	return TokenLoadConfig{
 		KVWeight:    utils.LoadEnvFloat("AIBRIX_TOKEN_LOAD_KV_WEIGHT", DefaultTokenLoadKVWeight),
 		RequestCost: utils.LoadEnvFloat("AIBRIX_TOKEN_LOAD_REQUEST_COST", DefaultTokenLoadRequestCost),
 		TTL:         time.Duration(utils.LoadEnvInt("AIBRIX_TOKEN_LOAD_TTL_SECONDS", DefaultTokenLoadTTLSeconds)) * time.Second,
+		SessionTTL:  loadSessionTTL(),
+		MaxSessions: utils.LoadEnvInt("AIBRIX_TOKEN_LOAD_MAX_SESSIONS", DefaultTokenLoadMaxSessions),
 	}
+}
+
+// loadSessionTTL reads AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS. Unlike the
+// other tunables, 0 is a valid setting here: it disables the session-delta
+// rule for deployments whose prefill pods cannot reach a conversation's
+// earlier KV cache. Anything else goes through utils.LoadEnvInt.
+func loadSessionTTL() time.Duration {
+	const key = "AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS"
+	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key))); err == nil && v == 0 {
+		klog.Infof("set %s: 0, session tracking disabled", key)
+		return 0
+	}
+	return time.Duration(utils.LoadEnvInt(key, DefaultTokenLoadSessionTTLSeconds)) * time.Second
 }
 
 // TokenLoadTracker keeps a token-weighted ledger of the prefill load the
@@ -112,6 +157,14 @@ type TokenLoadTracker struct {
 	activeTokens sync.Map // map[string]*podCounter, pod name → tokens
 	kvTokens     sync.Map // map[string]*podCounter, pod name → tokens
 	entries      sync.Map // map[string]*tokenLoadEntry, request ID → charge
+	// sessions remembers the last prompt size per (model, session) so a
+	// multi-turn continuation is charged only for what the engine computes.
+	// sessionCount is its size, kept so admission can stop at MaxSessions
+	// without walking the map; sessionsFull records that the cap was hit,
+	// so the warning is logged once.
+	sessions     sync.Map // map[string]*tokenLoadSession, sessionKey → last prompt
+	sessionCount atomic.Int64
+	sessionsFull atomic.Bool
 
 	// countersMu serialises the janitor's pruning of idle pods (write lock)
 	// with counter updates (read lock), so a counter and its gauge series are
@@ -160,28 +213,44 @@ func (c *podCounter) load() float64 { return math.Float64frombits(c.bits.Load())
 // tokenLoadGaugeLabels is the label set of the per-pod gauges.
 var tokenLoadGaugeLabels = []string{"pod_name"}
 
+// tokenLoadSession is the last prompt seen for one (model, session).
+type tokenLoadSession struct {
+	mu           sync.Mutex
+	promptTokens int
+	lastSeen     time.Time
+	// deleted is set, under mu, when the janitor removes the session from
+	// the map, so a writer that loaded the pointer just before the removal
+	// re-inserts instead of refreshing an orphan.
+	deleted bool
+}
+
 // NewTokenLoadTracker creates a tracker with DefaultTokenLoadConfig and starts
-// its TTL janitor when the TTL is positive.
+// its TTL janitor when either TTL is positive.
 func NewTokenLoadTracker() *TokenLoadTracker {
 	return NewTokenLoadTrackerWithConfig(DefaultTokenLoadConfig())
 }
 
 // NewTokenLoadTrackerWithConfig creates a tracker with an explicit config and
-// starts its TTL janitor when cfg.TTL is positive.
+// starts its TTL janitor when cfg.TTL or cfg.SessionTTL is positive.
 func NewTokenLoadTrackerWithConfig(cfg TokenLoadConfig) *TokenLoadTracker {
 	t := newTokenLoadTracker(cfg, time.Now)
-	if cfg.TTL > 0 {
+	janitor := cfg.TTL > 0 || cfg.SessionTTL > 0
+	if janitor {
 		t.startJanitor(tokenLoadJanitorInterval)
 	}
 	klog.InfoS("token_load_tracker created",
 		"kv_weight", cfg.KVWeight, "request_cost", cfg.RequestCost,
-		"ttl_seconds", int(cfg.TTL.Seconds()), "janitor_enabled", cfg.TTL > 0)
+		"ttl_seconds", int(cfg.TTL.Seconds()), "session_ttl_seconds", int(cfg.SessionTTL.Seconds()),
+		"max_sessions", t.cfg.MaxSessions, "janitor_enabled", janitor)
 	return t
 }
 
 // newTokenLoadTracker builds a tracker without a janitor goroutine; tests use
 // it with a fake clock and drive sweepExpired directly.
 func newTokenLoadTracker(cfg TokenLoadConfig, clock func() time.Time) *TokenLoadTracker {
+	if cfg.MaxSessions <= 0 {
+		cfg.MaxSessions = DefaultTokenLoadMaxSessions
+	}
 	return &TokenLoadTracker{cfg: cfg, clock: clock, stopCh: make(chan struct{})}
 }
 
@@ -210,6 +279,97 @@ func (t *TokenLoadTracker) PrefillCost(promptTokens int) float64 {
 // size when no token count is available.
 func EstimatePromptTokens(reqBody []byte) int {
 	return len(reqBody) / bytesPerTokenEstimate
+}
+
+// Sources of the NewTokens estimate, for logs.
+const (
+	NewTokensSourceSession     = "session_delta"
+	NewTokensSourcePrefixMatch = "prefix_match"
+	NewTokensSourcePrompt      = "prompt"
+)
+
+// NewTokens estimates how many of a request's promptTokens the selected pod
+// has to compute, the new_tokens term of the prefill cost. It returns the
+// estimate and which rule produced it:
+//
+//  1. When sessionID is set and the (model, session) was seen before with a
+//     shorter prompt, the growth since that prompt. Each turn of a
+//     conversation resends the whole history, but an engine that still holds
+//     the conversation's KV cache only computes the new turn. This rule
+//     therefore assumes the earlier turns are reachable from the selected
+//     pod (sticky routing, a shared or tiered KV store, or the same pod's
+//     prefix cache); callers whose deployment cannot offer that should not
+//     send a session ID. The prompt size is recorded for the next turn, so
+//     call this once per charged request. A session ID longer than 256
+//     bytes is ignored, and once MaxSessions sessions are live a new one is
+//     not recorded, so its requests fall through to the rules below.
+//  2. Otherwise, when matchPct (0-100) is non-negative, the part of the
+//     prompt the pod's prefix cache does not cover: promptTokens × (1 −
+//     matchPct/100). Pass a negative matchPct when no match information is
+//     available.
+//  3. Otherwise the whole prompt.
+//
+// The result is never negative or larger than promptTokens.
+func (t *TokenLoadTracker) NewTokens(model, sessionID string, promptTokens, matchPct int) (int, string) {
+	if promptTokens < 0 {
+		promptTokens = 0
+	}
+	if sessionID != "" && len(sessionID) <= maxTokenLoadSessionIDLen && t.cfg.SessionTTL > 0 {
+		if last, seen := t.recordSessionPrompt(model, sessionID, promptTokens); seen && promptTokens > last {
+			return promptTokens - last, NewTokensSourceSession
+		}
+	}
+	if matchPct >= 0 {
+		if matchPct > 100 {
+			matchPct = 100
+		}
+		return promptTokens * (100 - matchPct) / 100, NewTokensSourcePrefixMatch
+	}
+	return promptTokens, NewTokensSourcePrompt
+}
+
+// recordSessionPrompt stores promptTokens as the last prompt of (model,
+// session) and returns the previous value and whether there was one. A new
+// session is admitted only while fewer than MaxSessions are live; otherwise
+// nothing is recorded and the caller charges by the other rules.
+func (t *TokenLoadTracker) recordSessionPrompt(model, sessionID string, promptTokens int) (int, bool) {
+	now := t.now()
+	key := sessionKey(model, sessionID)
+	for {
+		v, loaded := t.sessions.Load(key)
+		if !loaded {
+			if t.sessionCount.Add(1) > int64(t.cfg.MaxSessions) {
+				t.sessionCount.Add(-1)
+				if t.sessionsFull.CompareAndSwap(false, true) {
+					klog.Warningf("token_load_tracker session table is full (max_sessions=%d): new sessions are charged without a session delta until the janitor sweeps idle ones", t.cfg.MaxSessions)
+				}
+				return 0, false
+			}
+			if _, raced := t.sessions.LoadOrStore(key, &tokenLoadSession{promptTokens: promptTokens, lastSeen: now}); raced {
+				t.sessionCount.Add(-1) // another writer admitted it first; read theirs
+				continue
+			}
+			return 0, false
+		}
+		sess := v.(*tokenLoadSession)
+		sess.mu.Lock()
+		if sess.deleted {
+			sess.mu.Unlock() // swept between Load and Lock; start over
+			continue
+		}
+		last := sess.promptTokens
+		sess.promptTokens = promptTokens
+		sess.lastSeen = now
+		sess.mu.Unlock()
+		return last, true
+	}
+}
+
+// sessionKey qualifies a client-supplied session ID with the model: the same
+// ID may be reused against different models, and the delta only makes sense
+// against the same one.
+func sessionKey(model, sessionID string) string {
+	return model + "\x00" + sessionID
 }
 
 // AcquirePrefill charges cost to both the active and the resident-KV counter
@@ -349,13 +509,31 @@ func (t *TokenLoadTracker) startJanitor(interval time.Duration) {
 	}()
 }
 
-// sweepExpired force-releases every charge older than the TTL and returns how
-// many it released. No-op when the TTL is not positive.
+// sweepExpired force-releases every charge older than TTL and forgets every
+// session idle for longer than SessionTTL. It returns how many charges it
+// released. Each part is a no-op when its TTL is not positive.
 func (t *TokenLoadTracker) sweepExpired() int {
+	now := t.now()
+	if t.cfg.SessionTTL > 0 {
+		t.sessions.Range(func(key, val any) bool {
+			sess := val.(*tokenLoadSession)
+			// The expiry check, the removal and the tombstone happen under
+			// the session lock, so a concurrent refresh either lands before
+			// the check and keeps the session, or sees the tombstone and
+			// re-inserts; it can never be lost.
+			sess.mu.Lock()
+			if now.Sub(sess.lastSeen) > t.cfg.SessionTTL {
+				sess.deleted = true
+				t.sessions.Delete(key)
+				t.sessionCount.Add(-1)
+			}
+			sess.mu.Unlock()
+			return true
+		})
+	}
 	if t.cfg.TTL <= 0 {
 		return 0
 	}
-	now := t.now()
 	released := 0
 	t.entries.Range(func(key, val any) bool {
 		entry := val.(*tokenLoadEntry)
