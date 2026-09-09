@@ -35,6 +35,7 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	routingalgorithms "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -653,6 +654,13 @@ func Test_handleRequestBody(t *testing.T) {
 
 			// Initialize mock cache and router for each test
 			mockCache := &MockCache{Cache: cache.NewForTest()}
+			// selectTargetPod now applies the load-imbalance gate ahead of every non-PD
+			// strategy, which reads running-request counts via GetMetricValueByPod. Stub a
+			// harmless default (0 requests, gate never fires) so test cases that don't care
+			// about this don't need to mock it themselves; individual test cases are free to
+			// override with a more specific expectation.
+			mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+				Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
 			mockRouter := new(mockRouter)
 			if tt.mockSetup != nil {
 				tt.mockSetup(mockCache, mockRouter)
@@ -836,6 +844,8 @@ func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
 
 	mockCache.On("HasModel", "test-model").Return(true).Once()
 	mockCache.On("ListPodsByModel", "test-model").Return(podList, nil).Once()
+	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
 
 	// enforceModelRPS atomically pre-charges (+1); routing then fails so the deferred
 	// compensation refunds (-1).
@@ -978,6 +988,8 @@ func TestHandleRequestBody_LockedRoutingStrategy(t *testing.T) {
 
 			mockCache.On("HasModel", "test-model").Return(true)
 			mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+			mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+				Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
 			if tt.wantStatus == envoyTypePb.StatusCode_OK {
 				mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1))
 				mockRouter.On("Route", mock.Anything, mock.Anything).Return("1.2.3.4:8000", nil).Once()

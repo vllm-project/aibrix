@@ -1,6 +1,9 @@
+import logging
 import random
-from typing import Tuple
+from typing import List, Tuple
 from transformers import PreTrainedTokenizer
+
+logger = logging.getLogger(__name__)
 
 # A collection of realistic text templates for generating prompts
 REALISTIC_TEMPLATES = [
@@ -62,6 +65,38 @@ LOCATIONS = [
     "a futuristic city", "a remote island with high-speed internet", "a hackathon",
     "an innovation lab", "a digital marketplace", "an AI research center"
 ]
+
+
+def _truncate_to_target_length(tokenizer: PreTrainedTokenizer,
+                                token_ids: List[int],
+                                target_token_length: int) -> Tuple[str, int]:
+    """
+    Truncate token ids to target_token_length and decode to text, making sure
+    the decoded text re-encodes to at most target_token_length tokens.
+
+    decode(ids[:n]) followed by re-encoding is not guaranteed to round-trip to
+    n tokens (e.g. a truncation boundary can split a multi-byte character or a
+    merge), so the resulting prompt can silently exceed the caller's requested
+    length. Shrink further until the re-encoded length fits.
+
+    Returns the decoded text and its actual re-encoded token count, so callers
+    don't need to re-tokenize the result to find out.
+    """
+    truncated_ids = token_ids[:max(0, target_token_length)]
+    text = tokenizer.decode(truncated_ids, skip_special_tokens=True)
+    encoded = tokenizer.encode(text, add_special_tokens=True)
+    while truncated_ids and len(encoded) > target_token_length:
+        truncated_ids = truncated_ids[:-1]
+        text = tokenizer.decode(truncated_ids, skip_special_tokens=True)
+        encoded = tokenizer.encode(text, add_special_tokens=True)
+    if not truncated_ids and len(encoded) > target_token_length:
+        logger.warning(
+            "_truncate_to_target_length drained to an empty string but the "
+            "re-encoded length (%d) still exceeds target_token_length (%d); "
+            "the tokenizer likely adds special tokens even for empty text.",
+            len(encoded), target_token_length,
+        )
+    return text, len(encoded)
 
 
 PADDING_PROMPT = [
@@ -145,9 +180,9 @@ def generate_synthetic_prompt(tokenizer: PreTrainedTokenizer,
     
     # If the prompt is too long, truncate it to the desired length
     if token_count > target_token_length:
-        tokenized = tokenizer.encode(filled_template)[:target_token_length]
-        filled_template = tokenizer.decode(tokenized, skip_special_tokens=True)
-    
+        tokenized = tokenizer.encode(filled_template)
+        filled_template, token_count = _truncate_to_target_length(tokenizer, tokenized, target_token_length)
+
     return filled_template, token_count
 
 
@@ -179,9 +214,10 @@ def adjust_prompt_length(tokenizer: PreTrainedTokenizer,
             ]
             adjusted_prompt += random.choice(additional_content)
             token_count = len(tokenizer.encode(adjusted_prompt))
-    elif token_count > target_token_length:
-        adjusted_prompt_tokenized = tokenizer.encode(prompt)[:target_token_length]
-        adjusted_prompt = tokenizer.decode(adjusted_prompt_tokenized, skip_special_tokens=True)
+
+    if token_count > target_token_length:
+        adjusted_prompt_tokenized = tokenizer.encode(adjusted_prompt)
+        adjusted_prompt, _ = _truncate_to_target_length(tokenizer, adjusted_prompt_tokenized, target_token_length)
     return adjusted_prompt
     
 

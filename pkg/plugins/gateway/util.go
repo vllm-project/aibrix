@@ -296,17 +296,15 @@ type embeddingContentPart struct {
 	Video    string          `json:"video"`
 }
 
-// validateEmbeddingContentParts validates a multimodal embeddings `input` array. Only
-// "text" parts are tokenized and counted against MaxInputTokensPerModel / MaxTotalTokens;
-// image/video parts are excluded because the gateway's text tokenizer cannot estimate
-// their cost, and the backend's own multimodal processor is responsible for that
-// accounting.
+// validateEmbeddingContentParts validates the shape of a multimodal embeddings
+// `input` array. Text length is not checked, for the reasons given on
+// validateStringInputs. Image and video parts were never counted anyway, since
+// the gateway's text tokenizer cannot estimate their cost.
 func validateEmbeddingContentParts(parts []embeddingContentPart) error {
 	if len(parts) == 0 {
 		return errors.New("input array cannot be empty")
 	}
 
-	totalEstimatedTokens := 0
 	for i, part := range parts {
 		typ := part.Type
 		if typ == "" {
@@ -328,16 +326,6 @@ func validateEmbeddingContentParts(parts []embeddingContentPart) error {
 			if part.Text == "" {
 				return fmt.Errorf("input at index %d cannot be an empty string", i)
 			}
-			tokens, err := utils.TokenizeInputText(part.Text)
-			if err != nil {
-				return fmt.Errorf("failed to tokenize input for validation: %w", err)
-			}
-			estimatedTokens := len(tokens)
-			if estimatedTokens > MaxInputTokensPerModel {
-				return fmt.Errorf("input at index %d exceeds max tokens per model (%d), estimated tokens: %d",
-					i, MaxInputTokensPerModel, estimatedTokens)
-			}
-			totalEstimatedTokens += estimatedTokens
 		case "image_url":
 			if len(part.ImageURL) == 0 {
 				return fmt.Errorf("input at index %d is missing image_url", i)
@@ -357,11 +345,6 @@ func validateEmbeddingContentParts(parts []embeddingContentPart) error {
 		default:
 			return fmt.Errorf("input at index %d has unsupported content type %q", i, typ)
 		}
-	}
-
-	if totalEstimatedTokens > MaxTotalTokens {
-		return fmt.Errorf("total tokens across all inputs exceeds maximum (%d), estimated total: %d",
-			MaxTotalTokens, totalEstimatedTokens)
 	}
 
 	return nil
@@ -960,13 +943,35 @@ func embeddingNewParamsInputUnionAsAny(u *openai.EmbeddingNewParamsInputUnion) a
 	return nil
 }
 
-// validateStringInputs validates string inputs (both single string and array of strings)
+// validateStringInputs validates the shape of string inputs (both single string
+// and array of strings).
+//
+// Input length is deliberately not checked here. The gateway estimates tokens
+// with tiktoken (cl100k_base), but the limit that matters is denominated in the
+// target model's own tokens -- a different unit. For sentencepiece models such
+// as bge-m3 or multilingual-e5, cl100k over-counts non-English text by roughly
+// 2x, so valid requests are rejected with a misleading message. The gateway
+// also cannot know which model's limit to apply: validateRequestBody runs
+// before the pod list and engine are resolved, so the addressed model's
+// tokenizer and context length are both out of reach.
+//
+// The backend already enforces the real limit with the model's own tokenizer
+// and reports it accurately. It also honours truncate_prompt_tokens, which a
+// gateway-side rejection pre-empts entirely -- clients that ask the backend to
+// truncate oversized input currently get a 400 from the gateway instead.
+//
+// The batch size is still bounded: MaxArrayDimensions is OpenAI's documented
+// maxItems for the input array, a property of the request rather than of the
+// model, so the gateway can and does check it.
 func validateStringInputs(inputs []string) error {
 	if len(inputs) == 0 {
 		return errors.New("input array cannot be empty")
 	}
 
-	totalEstimatedTokens := 0
+	if len(inputs) > MaxArrayDimensions {
+		return fmt.Errorf("input array exceeds max dimensions (%d), actual dimensions: %d",
+			MaxArrayDimensions, len(inputs))
+	}
 
 	for i, input := range inputs {
 		if input == "" {
@@ -975,39 +980,32 @@ func validateStringInputs(inputs []string) error {
 			}
 			return fmt.Errorf("input at index %d cannot be an empty string", i)
 		}
-
-		tokens, err := utils.TokenizeInputText(input)
-		if err != nil {
-			return fmt.Errorf("failed to tokenize input for validation: %w", err)
-		}
-		estimatedTokens := len(tokens)
-		if estimatedTokens > MaxInputTokensPerModel {
-			if len(inputs) == 1 {
-				return fmt.Errorf("input exceeds max tokens per model (%d), estimated tokens: %d",
-					MaxInputTokensPerModel, estimatedTokens)
-			}
-			return fmt.Errorf("input at index %d exceeds max tokens per model (%d), estimated tokens: %d",
-				i, MaxInputTokensPerModel, estimatedTokens)
-		}
-
-		totalEstimatedTokens += estimatedTokens
-	}
-
-	if totalEstimatedTokens > MaxTotalTokens {
-		return fmt.Errorf("total tokens across all inputs exceeds maximum (%d), estimated total: %d",
-			MaxTotalTokens, totalEstimatedTokens)
 	}
 
 	return nil
 }
 
-// validateTokenInputs validates token inputs (both single token array and multiple token arrays)
+// validateTokenInputs validates pre-tokenized inputs (both single token array
+// and multiple token arrays).
+//
+// As in validateStringInputs, the token count is not checked against a context
+// length: a single global constant cannot match every served model, and only
+// the backend knows the real limit.
+//
+// MaxArrayDimensions bounds the batch size, matching OpenAI's maxItems for the
+// input array. It is deliberately not compared against len(tokens): the number
+// of tokens in one input is a context-length question, and capping it at 2048
+// would reject a pre-tokenized input that the same model accepts happily when
+// sent as a string.
 func validateTokenInputs(tokenArrays [][]int64) error {
 	if len(tokenArrays) == 0 {
 		return errors.New("token arrays cannot be empty")
 	}
 
-	totalTokens := 0
+	if len(tokenArrays) > MaxArrayDimensions {
+		return fmt.Errorf("input array exceeds max dimensions (%d), actual dimensions: %d",
+			MaxArrayDimensions, len(tokenArrays))
+	}
 
 	for i, tokens := range tokenArrays {
 		if len(tokens) == 0 {
@@ -1016,31 +1014,6 @@ func validateTokenInputs(tokenArrays [][]int64) error {
 			}
 			return fmt.Errorf("token array at index %d cannot be empty", i)
 		}
-
-		if len(tokens) > MaxInputTokensPerModel {
-			if len(tokenArrays) == 1 {
-				return fmt.Errorf("token array exceeds max tokens per model (%d), actual tokens: %d",
-					MaxInputTokensPerModel, len(tokens))
-			}
-			return fmt.Errorf("token array at index %d exceeds max tokens per model (%d), actual tokens: %d",
-				i, MaxInputTokensPerModel, len(tokens))
-		}
-
-		if len(tokens) > MaxArrayDimensions {
-			if len(tokenArrays) == 1 {
-				return fmt.Errorf("token array exceeds max dimensions (%d), actual dimensions: %d",
-					MaxArrayDimensions, len(tokens))
-			}
-			return fmt.Errorf("token array at index %d exceeds max dimensions (%d), actual dimensions: %d",
-				i, MaxArrayDimensions, len(tokens))
-		}
-
-		totalTokens += len(tokens)
-	}
-
-	if totalTokens > MaxTotalTokens {
-		return fmt.Errorf("total tokens across all inputs exceeds maximum (%d), actual total: %d",
-			MaxTotalTokens, totalTokens)
 	}
 
 	return nil

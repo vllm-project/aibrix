@@ -155,6 +155,7 @@ func main() {
 	remoteTokenizerEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheUseRemoteTokenizer, false)
 
 	cache.InitWithOptions(config, stopCh, cache.InitOptions{
+		IsGateway:           true,
 		EnableKVSync:        kvSyncEnabled && remoteTokenizerEnabled,
 		RedisClient:         redisClient,
 		ModelRouterProvider: routing.ModelRouterFactory,

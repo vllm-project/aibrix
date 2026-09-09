@@ -922,6 +922,61 @@ async def test_job_deleted_handler_deletes_after_finalized_when_cancel_triggered
     assert "test-job-id-4" not in job_manager._done_jobs
 
 
+@pytest.mark.asyncio
+async def test_job_updated_handler_accepts_same_state_refresh_from_entity_manager():
+    _set_current_loop_name("test_same_state_refresh_from_entity_manager")
+    entity_manager = MockJobEntityManager(delay=0.0)
+    job_manager = _job_manager()
+    await job_manager.set_job_entity_manager(entity_manager)
+
+    meta_job = _in_progress_meta_job("test-job-id-terminal-replay", total_requests=1)
+    stale_old = meta_job.batch_job.model_copy(deep=True)
+    stale_old.metadata.resource_version = "4"
+
+    finalized_job = stale_old.model_copy(deep=True)
+    finalized_at = datetime.now()
+    finalized_job.metadata.resource_version = "5"
+    finalized_job.status.state = BatchJobState.FINALIZED
+    finalized_job.status.finalizing_at = finalized_at
+    finalized_job.status.finalized_at = finalized_at
+    finalized_job.status.completed_at = finalized_at
+    finalized_job.status.output_file_id = "output-v1"
+    finalized_job.status.add_condition(
+        Condition(
+            type=ConditionType.COMPLETED,
+            status=ConditionStatus.TRUE,
+            lastTransitionTime=finalized_at,
+        )
+    )
+    job_manager._done_jobs[finalized_job.job_id] = finalized_job.model_copy(deep=True)
+
+    refreshed_finalized = finalized_job.model_copy(deep=True)
+    refreshed_finalized.metadata.resource_version = "6"
+    refreshed_finalized.status.output_file_id = "output-v2"
+
+    entity_manager._monitored_job_snapshots[stale_old.job_id] = stale_old.model_copy(
+        deep=True
+    )
+
+    result = await entity_manager.job_updated(
+        stale_old,
+        refreshed_finalized,
+        source="refresh",
+    )
+
+    assert result is True
+    assert (
+        job_manager._done_jobs[refreshed_finalized.job_id].metadata.resource_version
+        == "6"
+    )
+    assert (
+        job_manager._done_jobs[refreshed_finalized.job_id].status.output_file_id
+        == "output-v2"
+    )
+    assert refreshed_finalized.job_id not in entity_manager._monitored_job_snapshots
+    assert refreshed_finalized.job_id not in entity_manager.active_jobs
+
+
 class MockJobEntityManager(JobEntityManager):
     """Mock JobEntityManager for testing async job creation."""
 

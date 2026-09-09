@@ -21,7 +21,6 @@ import (
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -74,6 +73,12 @@ func (w *StormServiceWrapper) Annotations(annotations map[string]string) *StormS
 // Replicas sets the replicas of the StormService.
 func (w *StormServiceWrapper) Replicas(replicas *int32) *StormServiceWrapper {
 	w.stormService.Spec.Replicas = replicas
+	return w
+}
+
+// Mode sets the deployment mode of the StormService.
+func (w *StormServiceWrapper) Mode(mode orchestrationapi.StormServiceMode) *StormServiceWrapper {
+	w.stormService.Spec.Mode = mode
 	return w
 }
 
@@ -153,15 +158,15 @@ func (w *StormServiceWrapper) WithRole(name string, stateful bool, podGroupSize 
 			Type: orchestrationapi.RecreateRoleUpdateStrategyType,
 		},
 		Stateful: stateful,
-		Template: v1.PodTemplateSpec{
+		Template: corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
 				Labels: map[string]string{
 					"role": name,
 					"app":  "my-ai-app",
 				},
 			},
-			Spec: v1.PodSpec{
-				Containers: []v1.Container{
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
 					{
 						Name:  fmt.Sprintf("vllm-%s", name),
 						Image: "vllm/vllm-openai:latest",
@@ -169,13 +174,13 @@ func (w *StormServiceWrapper) WithRole(name string, stateful bool, podGroupSize 
 							"--model", "meta-llama/Llama-3-8b",
 							"--tensor-parallel-size", "1",
 						},
-						Ports: []v1.ContainerPort{
+						Ports: []corev1.ContainerPort{
 							{ContainerPort: 8000, Protocol: "TCP"},
 						},
-						Resources: v1.ResourceRequirements{
-							Requests: v1.ResourceList{
-								v1.ResourceCPU:    resource.MustParse("4"),
-								v1.ResourceMemory: resource.MustParse("16Gi"),
+						Resources: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("4"),
+								corev1.ResourceMemory: resource.MustParse("16Gi"),
 							},
 						},
 					},
@@ -209,21 +214,21 @@ func (w *StormServiceWrapper) WithSidecarInjection(runtimeImage string) *StormSe
 		runtimeImage = webhook.SidecarImage
 	}
 
-	sidecarContainer := v1.Container{
+	sidecarContainer := corev1.Container{
 		Name:  webhook.SidecarName,
 		Image: runtimeImage,
 		Command: []string{
 			"aibrix_runtime",
 			"--port", strconv.Itoa(webhook.SidecarPort),
 		},
-		Ports: []v1.ContainerPort{
+		Ports: []corev1.ContainerPort{
 			{
 				Name:          "metrics",
 				ContainerPort: webhook.SidecarPort,
 				Protocol:      "TCP",
 			},
 		},
-		Env: []v1.EnvVar{
+		Env: []corev1.EnvVar{
 			{
 				Name:  "INFERENCE_ENGINE",
 				Value: "vllm",
@@ -233,7 +238,7 @@ func (w *StormServiceWrapper) WithSidecarInjection(runtimeImage string) *StormSe
 				Value: webhook.DefaultEngineEndpoint,
 			},
 		},
-		Resources: v1.ResourceRequirements{
+		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
 				corev1.ResourceCPU:    resource.MustParse("100m"),
 				corev1.ResourceMemory: resource.MustParse("256Mi"),
@@ -243,9 +248,9 @@ func (w *StormServiceWrapper) WithSidecarInjection(runtimeImage string) *StormSe
 				corev1.ResourceMemory: resource.MustParse("512Mi"),
 			},
 		},
-		LivenessProbe: &v1.Probe{
-			ProbeHandler: v1.ProbeHandler{
-				HTTPGet: &v1.HTTPGetAction{
+		LivenessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
 					Path:   "/healthz",
 					Port:   intstr.FromInt(webhook.SidecarPort),
 					Scheme: corev1.URISchemeHTTP,
@@ -254,9 +259,9 @@ func (w *StormServiceWrapper) WithSidecarInjection(runtimeImage string) *StormSe
 			InitialDelaySeconds: 3,
 			PeriodSeconds:       2,
 		},
-		ReadinessProbe: &v1.Probe{
-			ProbeHandler: v1.ProbeHandler{
-				HTTPGet: &v1.HTTPGetAction{
+		ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
 					Path:   "/ready",
 					Port:   intstr.FromInt(webhook.SidecarPort),
 					Scheme: corev1.URISchemeHTTP,
@@ -265,7 +270,7 @@ func (w *StormServiceWrapper) WithSidecarInjection(runtimeImage string) *StormSe
 			InitialDelaySeconds: 5,
 			PeriodSeconds:       10,
 		},
-		VolumeMounts: []v1.VolumeMount{
+		VolumeMounts: []corev1.VolumeMount{
 			{
 				Name:      webhook.DefaultAdapterVolumeName,
 				MountPath: webhook.DefaultAdapterMountPath,
@@ -282,8 +287,8 @@ func (w *StormServiceWrapper) WithSidecarInjection(runtimeImage string) *StormSe
 			v := &role.Template.Spec.Volumes[vi]
 			if v.Name == webhook.DefaultAdapterVolumeName {
 				if v.EmptyDir == nil {
-					v.VolumeSource = v1.VolumeSource{
-						EmptyDir: &v1.EmptyDirVolumeSource{},
+					v.VolumeSource = corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
 					}
 				}
 				foundEmptyDirVolume = true
@@ -291,10 +296,10 @@ func (w *StormServiceWrapper) WithSidecarInjection(runtimeImage string) *StormSe
 			}
 		}
 		if !foundEmptyDirVolume {
-			role.Template.Spec.Volumes = append(role.Template.Spec.Volumes, v1.Volume{
+			role.Template.Spec.Volumes = append(role.Template.Spec.Volumes, corev1.Volume{
 				Name: webhook.DefaultAdapterVolumeName,
-				VolumeSource: v1.VolumeSource{
-					EmptyDir: &v1.EmptyDirVolumeSource{},
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
 				},
 			})
 		}
@@ -305,7 +310,7 @@ func (w *StormServiceWrapper) WithSidecarInjection(runtimeImage string) *StormSe
 				continue
 			}
 			if !utils.HasVolumeMount(container.VolumeMounts, webhook.DefaultAdapterVolumeName, webhook.DefaultAdapterMountPath) {
-				container.VolumeMounts = append(container.VolumeMounts, v1.VolumeMount{
+				container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
 					Name:      webhook.DefaultAdapterVolumeName,
 					MountPath: webhook.DefaultAdapterMountPath,
 				})
@@ -324,7 +329,7 @@ func (w *StormServiceWrapper) WithSidecarInjection(runtimeImage string) *StormSe
 			continue
 		}
 		// Prepend sidecar container
-		role.Template.Spec.Containers = append([]v1.Container{sidecarContainer}, role.Template.Spec.Containers...)
+		role.Template.Spec.Containers = append([]corev1.Container{sidecarContainer}, role.Template.Spec.Containers...)
 	}
 
 	return w

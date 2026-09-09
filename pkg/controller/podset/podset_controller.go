@@ -23,7 +23,6 @@ import (
 	"strconv"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -41,7 +40,9 @@ import (
 	schedv1alpha1 "github.com/kubewharf/godel-scheduler-api/pkg/apis/scheduling/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
+	aibrixconst "github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
+	controllerdrain "github.com/vllm-project/aibrix/pkg/controller/drain"
 	ctrlutil "github.com/vllm-project/aibrix/pkg/controller/util"
 	utils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
 	podutil "github.com/vllm-project/aibrix/pkg/utils"
@@ -139,7 +140,8 @@ func (r *PodSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	// Reconcile pods
-	if err := r.reconcilePods(ctx, podSet); err != nil {
+	podResult, err := r.reconcilePods(ctx, podSet)
+	if err != nil {
 		r.EventRecorder.Eventf(podSet, v1.EventTypeWarning, "ReconcileError", "Failed to reconcile pods: %v", err)
 		return ctrl.Result{}, err
 	}
@@ -147,6 +149,9 @@ func (r *PodSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	// Update status
 	if err := r.updateStatus(ctx, podSet); err != nil {
 		return ctrl.Result{}, err
+	}
+	if podResult.RequeueAfter > 0 {
+		return ctrl.Result{RequeueAfter: podResult.RequeueAfter}, nil
 	}
 
 	return ctrl.Result{}, nil
@@ -213,11 +218,11 @@ func (r *PodSetReconciler) reconcilePodGroup(ctx context.Context, podSet *orches
 	return nil
 }
 
-func (r *PodSetReconciler) reconcilePods(ctx context.Context, podSet *orchestrationv1alpha1.PodSet) error {
+func (r *PodSetReconciler) reconcilePods(ctx context.Context, podSet *orchestrationv1alpha1.PodSet) (controllerdrain.Result, error) {
 	// Get existing pods
 	podList, err := r.getPodsForPodSet(ctx, podSet)
 	if err != nil {
-		return fmt.Errorf("failed to get pods for PodSet: %w", err)
+		return controllerdrain.Result{}, fmt.Errorf("failed to get pods for PodSet: %w", err)
 	}
 
 	activePods := filterActivePods(podList.Items)
@@ -235,39 +240,36 @@ func (r *PodSetReconciler) reconcilePods(ctx context.Context, podSet *orchestrat
 		return r.handleScaleDown(ctx, podSet, activePods, currentPodCount, desiredPodCount)
 	}
 
-	return nil
+	return r.cancelStaleScaleInDrain(ctx, podSet, activePods, nil)
 }
 
 func (r *PodSetReconciler) handleReplaceUnhealthy(ctx context.Context, podSet *orchestrationv1alpha1.PodSet,
-	activePods []corev1.Pod, currentPodCount, desiredPodCount int) error {
+	activePods []v1.Pod, currentPodCount, desiredPodCount int) (controllerdrain.Result, error) {
 
 	// Proactively find and delete unhealthy pods
-	var podsToDelete []*corev1.Pod
+	var podsToDelete []*v1.Pod
 	for i := range activePods {
-		pod := activePods[i]
-		for _, cs := range pod.Status.ContainerStatuses {
+		for _, cs := range activePods[i].Status.ContainerStatuses {
 			if cs.RestartCount > 0 {
-				klog.InfoS("Marking pod as unhealthy due to container restarts", "pod", pod.Name, "restarts", cs.RestartCount)
-				podsToDelete = append(podsToDelete, &pod)
+				klog.InfoS("Marking pod as unhealthy due to container restarts", "pod", activePods[i].Name, "restarts", cs.RestartCount)
+				podsToDelete = append(podsToDelete, &activePods[i])
 				break
 			}
 		}
 	}
 	if len(podsToDelete) > 0 {
 		klog.InfoS("Found unhealthy pods to be deleted", "count", len(podsToDelete), "podset", podSet.Name)
-		for _, pod := range podsToDelete {
-			if err := r.Delete(ctx, pod); err != nil {
-				klog.ErrorS(err, "Failed to delete unhealthy pod", "pod", pod.Name)
-				continue
-			}
+		result, err := controllerdrain.DeletePods(ctx, r.Client, r.EventRecorder, podSet, podsToDelete, nil, aibrixconst.PodDrainReasonRollout, time.Now())
+		if err != nil {
+			return result, err
 		}
-		r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "DeletingUnhealthyPods", "Deleting %d unhealthy pods due to container restarts.", len(podsToDelete))
-		return nil
+		r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, "DeletingUnhealthyPods", "Deleting %d unhealthy pods due to container restarts.", len(podsToDelete))
+		return result, nil
 	}
 
 	// If no unhealthy pods deleted, fill missing slots
 	if desiredPodCount-currentPodCount > 0 {
-		r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "ReplacingUnhealthy",
+		r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, "ReplacingUnhealthy",
 			"ReplaceUnhealthy policy: creating %d pod(s) to replace missing ones, aiming for %d total.",
 			desiredPodCount-currentPodCount, desiredPodCount)
 	}
@@ -285,69 +287,114 @@ func (r *PodSetReconciler) handleReplaceUnhealthy(ctx context.Context, podSet *o
 		if _, exists := existingIndices[i]; !exists {
 			pod, err := r.createPodFromTemplate(podSet, i)
 			if err != nil {
-				return fmt.Errorf("failed to create pod template: %w", err)
+				return controllerdrain.Result{}, fmt.Errorf("failed to create pod template: %w", err)
 			}
 			if err := r.Create(ctx, pod); err != nil {
 				if apierrors.IsAlreadyExists(err) {
 					klog.InfoS("Pod already exists, skipping", "pod", pod.Name, "podset", podSet.Name)
 					continue
 				}
-				return fmt.Errorf("failed to create pod %v: %w", pod.Name, err)
+				return controllerdrain.Result{}, fmt.Errorf("failed to create pod %v: %w", pod.Name, err)
 			}
 			klog.InfoS("Created pod (missing)", "pod", pod.Name, "podset", podSet.Name)
 		}
 	}
-	return nil
+	return controllerdrain.Result{}, nil
 }
 
 func (r *PodSetReconciler) handleRecreateStrategy(ctx context.Context, podSet *orchestrationv1alpha1.PodSet,
-	activePods []corev1.Pod, desiredPodCount int) error {
+	activePods []v1.Pod, desiredPodCount int) (controllerdrain.Result, error) {
 
 	if len(activePods) > 0 {
 		klog.InfoS("Recreate strategy: deleting active pods", "podset", podSet.Name, "count", len(activePods))
-		r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "RecreatingAllPods",
+		r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, "RecreatingAllPods",
 			"Recreate policy triggered: deleting all %d active pods before creating new ones", len(activePods))
+		podsToDelete := make([]*v1.Pod, 0, len(activePods))
 		for i := range activePods {
-			if err := r.Delete(ctx, &activePods[i]); err != nil {
-				return fmt.Errorf("failed to delete pod %v: %w", activePods[i].Name, err)
-			}
+			podsToDelete = append(podsToDelete, &activePods[i])
 		}
-		return nil
+		return controllerdrain.DeletePods(ctx, r.Client, r.EventRecorder, podSet, podsToDelete, podSet.Spec.Drain, aibrixconst.PodDrainReasonRollout, time.Now())
 	}
 
 	klog.InfoS("FullRecreate strategy: creating new pods", "podset", podSet.Name, "count", desiredPodCount)
 	for i := 0; i < desiredPodCount; i++ {
 		pod, err := r.createPodFromTemplate(podSet, i)
 		if err != nil {
-			return fmt.Errorf("failed to create pod template: %w", err)
+			return controllerdrain.Result{}, fmt.Errorf("failed to create pod template: %w", err)
 		}
 		if err := r.Create(ctx, pod); err != nil {
 			if apierrors.IsAlreadyExists(err) {
 				continue
 			}
-			return fmt.Errorf("failed to create pod %v: %w", pod.Name, err)
+			return controllerdrain.Result{}, fmt.Errorf("failed to create pod %v: %w", pod.Name, err)
 		}
 		klog.InfoS("Created pod", "pod", pod.Name)
 	}
-	return nil
+	return controllerdrain.Result{}, nil
 }
 
 func (r *PodSetReconciler) handleScaleDown(ctx context.Context, podSet *orchestrationv1alpha1.PodSet,
-	activePods []corev1.Pod, currentPodCount, desiredPodCount int) error {
+	activePods []v1.Pod, currentPodCount, desiredPodCount int) (controllerdrain.Result, error) {
 
 	podsToDelete := currentPodCount - desiredPodCount
-	r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "ScalingDown",
-		"Deleting %d excess pods to meet desired count of %d", podsToDelete, desiredPodCount)
+	if timeout, ok := drainTimeoutSeconds(podSet.Spec.Drain); ok {
+		r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, "ScalingDown",
+			"Draining %d excess pods before deletion to meet desired count of %d (timeout=%ds)", podsToDelete, desiredPodCount, timeout)
+	} else {
+		r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, "ScalingDown",
+			"Deleting %d excess pods to meet desired count of %d", podsToDelete, desiredPodCount)
+	}
 
 	sortPodsByIndex(activePods)
+	podList := make([]*v1.Pod, 0, podsToDelete)
 	for i := 0; i < podsToDelete; i++ {
-		podToDelete := activePods[len(activePods)-1-i]
-		if err := r.Delete(ctx, &podToDelete); err != nil {
-			return fmt.Errorf("failed to delete pod %s: %w", podToDelete.Name, err)
-		}
-		klog.InfoS("Deleted pod", "pod", podToDelete.Name, "podset", podSet.Name)
+		podList = append(podList, &activePods[len(activePods)-1-i])
 	}
-	return nil
+	cancelResult, err := r.cancelStaleScaleInDrain(ctx, podSet, activePods, podList)
+	if err != nil {
+		return cancelResult, err
+	}
+	result, err := controllerdrain.DeletePods(ctx, r.Client, r.EventRecorder, podSet, podList, podSet.Spec.Drain, aibrixconst.PodDrainReasonScaleIn, time.Now())
+	if err != nil {
+		return result, fmt.Errorf("failed to delete pods for scale down: %w", err)
+	}
+	result.Merge(cancelResult)
+	for _, pod := range podList {
+		klog.InfoS("Processed pod deletion", "pod", pod.Name, "podset", podSet.Name)
+	}
+	return result, nil
+}
+
+func (r *PodSetReconciler) cancelStaleScaleInDrain(ctx context.Context, podSet *orchestrationv1alpha1.PodSet, activePods []v1.Pod, podsToDelete []*v1.Pod) (controllerdrain.Result, error) {
+	deleteSet := make(map[string]struct{}, len(podsToDelete))
+	for _, pod := range podsToDelete {
+		if pod == nil {
+			continue
+		}
+		deleteSet[pod.Namespace+"/"+pod.Name] = struct{}{}
+	}
+	stale := make([]*v1.Pod, 0)
+	for i := range activePods {
+		pod := &activePods[i]
+		if !podutil.IsPodDraining(pod) {
+			continue
+		}
+		if pod.Annotations[aibrixconst.PodDrainReasonAnnotationKey] != aibrixconst.PodDrainReasonScaleIn {
+			continue
+		}
+		if _, deleting := deleteSet[pod.Namespace+"/"+pod.Name]; deleting {
+			continue
+		}
+		stale = append(stale, pod)
+	}
+	return controllerdrain.CancelPods(ctx, r.Client, r.EventRecorder, podSet, stale, aibrixconst.PodDrainReasonScaleIn)
+}
+
+func drainTimeoutSeconds(spec *orchestrationv1alpha1.RoleDrainSpec) (int32, bool) {
+	if spec == nil || spec.TimeoutSeconds == nil || *spec.TimeoutSeconds <= 0 {
+		return 0, false
+	}
+	return *spec.TimeoutSeconds, true
 }
 
 func (r *PodSetReconciler) createPodFromTemplate(podSet *orchestrationv1alpha1.PodSet, podIndex int) (*v1.Pod, error) {
@@ -364,6 +411,9 @@ func (r *PodSetReconciler) createPodFromTemplate(podSet *orchestrationv1alpha1.P
 	if pod.Labels == nil {
 		pod.Labels = make(map[string]string)
 	}
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
+	}
 	pod.Labels[constants.PodSetNameLabelKey] = podSet.Name
 	pod.Labels[constants.PodGroupIndexLabelKey] = strconv.Itoa(podIndex)
 
@@ -377,6 +427,9 @@ func (r *PodSetReconciler) createPodFromTemplate(podSet *orchestrationv1alpha1.P
 		if _, ok := pod.Annotations[k]; !ok {
 			pod.Annotations[k] = v
 		}
+	}
+	if pod.Spec.SchedulerName == "" && podHasVolcanoPodGroup(pod) {
+		pod.Spec.SchedulerName = "volcano"
 	}
 
 	// manually set the hostname and subdomain for FQDN
@@ -417,6 +470,19 @@ func (r *PodSetReconciler) createPodFromTemplate(podSet *orchestrationv1alpha1.P
 	}
 
 	return pod, nil
+}
+
+func podHasVolcanoPodGroup(pod *v1.Pod) bool {
+	if pod == nil {
+		return false
+	}
+	if _, ok := pod.Labels[constants.VolcanoPodGroupNameAnnotationKey]; ok {
+		return true
+	}
+	if _, ok := pod.Annotations[constants.VolcanoPodGroupNameAnnotationKey]; ok {
+		return true
+	}
+	return false
 }
 
 func (r *PodSetReconciler) getPodsForPodSet(ctx context.Context, podSet *orchestrationv1alpha1.PodSet) (*v1.PodList, error) {
@@ -470,10 +536,16 @@ func (r *PodSetReconciler) finalizePodSet(ctx context.Context, podSet *orchestra
 	}
 
 	if len(podSetList.Items) > 0 {
-		for _, pod := range podSetList.Items {
-			if err := r.Delete(ctx, &pod); err != nil && !apierrors.IsNotFound(err) {
-				return ctrl.Result{}, fmt.Errorf("failed to delete pod %s: %w", pod.Name, err)
-			}
+		podsToDelete := make([]*v1.Pod, 0, len(podSetList.Items))
+		for i := range podSetList.Items {
+			podsToDelete = append(podsToDelete, &podSetList.Items[i])
+		}
+		result, err := controllerdrain.DeletePods(ctx, r.Client, r.EventRecorder, podSet, podsToDelete, podSet.Spec.Drain, aibrixconst.PodDrainReasonScaleIn, time.Now())
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to delete pods: %w", err)
+		}
+		if result.RequeueAfter > 0 {
+			return ctrl.Result{RequeueAfter: result.RequeueAfter}, nil
 		}
 		// Wait for pods to be deleted
 		return ctrl.Result{Requeue: true}, nil

@@ -157,6 +157,66 @@ Example APA yaml config
    :language: yaml
 
 
+Using Kubernetes external metrics
+---------------------------------
+
+Besides scraping a metrics endpoint directly, a ``PodAutoscaler`` can read its
+target metric from the Kubernetes ``external.metrics.k8s.io`` API. This lets you
+scale on any metric published by an external metrics adapter, such as Prometheus
+Adapter or an adapter of your own, without AiBrix having to reach the workload's
+metrics port itself.
+
+This is useful when the signal you want to scale on does not live on the pod, for
+example a queue depth held in a broker, or a metric already aggregated by an
+existing monitoring stack.
+
+Selecting the external metrics API
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A metric source uses the Kubernetes external metrics API when
+``metricSourceType`` is ``external`` and ``endpoint`` is left unset. Setting
+``endpoint`` switches the same source type back to scraping that HTTP endpoint,
+in which case ``protocolType``, ``endpoint`` and ``path`` are all required.
+
+So for the external metrics API, specify only the metric and its target:
+
+.. code-block:: yaml
+
+    metricsSources:
+      - metricSourceType: external
+        targetMetric: aibrix_running_requests
+        targetValue: "100"
+
+Omitting ``endpoint``, ``path`` and ``protocolType`` is deliberate here, not an
+incomplete example.
+
+Requirements
+^^^^^^^^^^^^
+
+- An external metrics adapter must be installed and serving the
+  ``external.metrics.k8s.io`` API group in the cluster.
+- The adapter must expose the metric named in ``targetMetric``, in the same
+  namespace as the target workload.
+- The AiBrix controller needs ``get`` and ``list`` on
+  ``external.metrics.k8s.io``. The shipped RBAC already grants this.
+
+If the external metrics client cannot be constructed at controller startup, the
+controller logs a warning and continues with external metrics unavailable, so
+check the controller logs if a ``PodAutoscaler`` using this mode never scales.
+
+Example external metrics KPA config
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. literalinclude:: ../../../../samples/autoscaling/external-metrics-kpa.yaml
+   :language: yaml
+
+Example external metrics APA config
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. literalinclude:: ../../../../samples/autoscaling/external-metrics-apa.yaml
+   :language: yaml
+
+
 Supported PodAutoscaler annotations
 -----------------------------------
 
@@ -243,9 +303,9 @@ Example:
 StormService Role-Level Autoscaling
 ------------------------------------
 
-For StormService in pooled mode (``replicas=1``), different roles (e.g., prefill and decode) can be autoscaled independently. This enables fine-grained control where each role scales based on its specific metrics.
+For StormService in pooled mode (``spec.mode: Pooled``), different roles (e.g., prefill and decode) can be autoscaled independently. This enables fine-grained control where each role scales based on its specific metrics.
 
-Use the ``subTargetSelector`` field to target a specific role within a StormService. Additionally, add the annotation `autoscaling.aibrix.ai/storm-service-mode: "pool"` to the PodAutoscaler object. This helps the AIBrix autoscaler better distinguish ``replicas=1`` scenarios.
+Use the ``subTargetSelector`` field to target a specific role within a StormService, and declare ``spec.mode`` on the StormService (``Pooled`` to scale the targeted role, ``Replica`` to scale ``spec.replicas``). The autoscaler reads ``spec.mode`` to route role-level scaling; ``replicas=1`` alone cannot distinguish the two modes. The PodAutoscaler annotation ``autoscaling.aibrix.ai/storm-service-mode`` is deprecated and only honored as a compatibility fallback when the target StormService does not declare ``spec.mode``.
 
 **Key features:**
 

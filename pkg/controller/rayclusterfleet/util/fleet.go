@@ -670,8 +670,8 @@ func FindOldReplicaSets(deployment *orchestrationv1alpha1.RayClusterFleet, rsLis
 func SetFromReplicaSetTemplate(fleet *orchestrationv1alpha1.RayClusterFleet, template orchestrationv1alpha1.RayClusterTemplateSpec) *orchestrationv1alpha1.RayClusterFleet {
 	fleet.Spec.Template.ObjectMeta = template.ObjectMeta
 	fleet.Spec.Template.Spec = template.Spec
-	fleet.Spec.Template.ObjectMeta.Labels = labelsutil.CloneAndRemoveLabel(
-		fleet.Spec.Template.ObjectMeta.Labels,
+	fleet.Spec.Template.Labels = labelsutil.CloneAndRemoveLabel(
+		fleet.Spec.Template.Labels,
 		appsv1.DefaultDeploymentUniqueLabelKey)
 	return fleet
 }
@@ -1056,7 +1056,7 @@ func ComputeHash(template *orchestrationv1alpha1.RayClusterTemplateSpec, collisi
 // Copied from k8s.io/kubernetes/pkg/util/hash/hash.go#DeepHashObject
 func DeepHashObject(hasher hash.Hash, objectToWrite interface{}) {
 	hasher.Reset()
-	fmt.Fprintf(hasher, "%v", dump.ForHash(objectToWrite))
+	_, _ = fmt.Fprintf(hasher, "%v", dump.ForHash(objectToWrite))
 }
 
 // self options

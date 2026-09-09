@@ -147,7 +147,7 @@ func TestSlidingWindowTokenTracker_UpdateTokenCount_WithCustomWeights(t *testing
 func TestTokenTrackerInterface(t *testing.T) {
 	config := DefaultVTCConfig()
 
-	var tracker TokenTracker = NewInMemorySlidingWindowTokenTracker(&config)
+	var tracker = NewInMemorySlidingWindowTokenTracker(&config)
 
 	ctx := context.Background()
 	_, err := tracker.GetTokenCount(ctx, "user")

@@ -29,6 +29,7 @@ import (
 
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
+	plannerutils "github.com/vllm-project/aibrix/apps/console/api/planner/utils"
 	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 	"github.com/vllm-project/aibrix/apps/console/api/store/models"
@@ -271,6 +272,37 @@ func newTestPlannerWithConfig(t *testing.T, bc plannerclient.BatchClient, prov *
 		cancel()
 	})
 	return q
+}
+
+func TestPlanningLoopDeduplicatesJobTasks(t *testing.T) {
+	workerPool := plannerutils.NewWorkerPoolWithQueueSize(1, 1)
+	workerPool.Start(context.Background())
+	defer workerPool.Stop()
+
+	loop := &planningLoop{workerPool: workerPool}
+	job := &queuedJob{req: validReq("single-flight")}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	if !loop.trySubmitJobTask(job, func() {
+		close(started)
+		<-release
+	}) {
+		t.Fatal("first job task was not submitted")
+	}
+	select {
+	case <-started:
+	case <-time.After(defaultTimeout):
+		t.Fatal("first job task did not start")
+	}
+	if loop.trySubmitJobTask(job, func() {}) {
+		t.Fatal("overlapping task for the same job was submitted")
+	}
+
+	close(release)
+	workerPool.Wait()
+	if job.workInFlight.Load() {
+		t.Fatal("job work-in-flight flag remained set after completion")
+	}
 }
 
 // validReq returns a minimal EnqueueRequest that passes validation.
@@ -1101,15 +1133,13 @@ func TestSlowProvisionDoesNotBlockEnqueue(t *testing.T) {
 	}
 }
 
-// TestPolicyConcurrencyLimit: verifies that SimplePolicy respects MaxConcurrentProvision.
-// Since handleProvisioning executes serially, we can't test peak in-flight Provisions.
-// Instead, we verify that all jobs complete successfully without policy over-scheduling.
-// The policy must count jobs in Provisioning state and not schedule beyond the limit.
+// TestPolicyConcurrencyLimit verifies that SimplePolicy and the worker pool
+// respect MaxConcurrentProvision without duplicate provisioning.
 func TestPolicyConcurrencyLimit(t *testing.T) {
 	const concurrency = 4 // MaxConcurrentProvision
 	const submitted = 8
 
-	// Provision completes quickly (no blocking) to allow serial execution
+	// Provision completes quickly so every job can progress through the pipeline.
 	prov := &fakeProvisioner{}
 	bc := &fakeBatchClient{}
 	q := newTestPlannerWithConfig(t, bc, prov, concurrency, concurrency)
@@ -1142,13 +1172,10 @@ func TestPolicyConcurrencyLimit(t *testing.T) {
 		}
 	}
 
-	// Since handleProvisioning executes serially, peak in-flight == 1
-	// This is expected behavior given the serial execution constraint
 	_, _, peak := prov.snapshot()
 	if peak > concurrency {
 		t.Errorf("peak in-flight = %d; should not exceed MaxConcurrentProvision=%d", peak, concurrency)
 	}
-	// Note: peak will be 1 due to serial execution, but policy control still works
 }
 
 // =============================================================================
@@ -1617,12 +1644,9 @@ func TestCancelDuringCreateBatchHonored(t *testing.T) {
 
 // TestCloseCancelsInflightProvision: when Close fires while jobs are
 // provisioning or planned, baseCtx cancellation must propagate correctly.
-// Serial provisioning: first job blocks in Provision, subsequent jobs may also
-// enter before planning loop exits.
 func TestCloseCancelsInflightProvision(t *testing.T) {
-	const concurrency = 3               // MaxConcurrentProvision
-	var provisioningCancel atomic.Int32 // First job that blocked in Provision
-	var plannedCancel atomic.Int32      // Jobs that entered after ctx canceled or never entered
+	const concurrency = 3
+	var provisioningCancel atomic.Int32
 
 	var firstJobID atomic.Value // Track which job was first to block
 
@@ -1630,26 +1654,14 @@ func TestCloseCancelsInflightProvision(t *testing.T) {
 		ProvisionFn: func(ctx context.Context, req *rmtypes.ResourceProvision) (*rmtypes.ProvisionResult, error) {
 			jobID := req.IdempotencyKey
 
-			// First job: record ID and block until ctx cancels
+			// Record the first caller, then let every admitted provision block until
+			// planner shutdown cancels the shared context.
 			if firstJobID.Load() == nil {
 				firstJobID.Store(jobID)
-				<-ctx.Done()
-				provisioningCancel.Add(1)
-				return nil, ctx.Err()
 			}
-
-			// Other jobs: check if this is after ctx canceled
-			select {
-			case <-ctx.Done():
-				// ctx was already canceled when this job entered Provision
-				plannedCancel.Add(1)
-				return nil, ctx.Err()
-			default:
-				// Edge case: this job also blocks (shouldn't happen in normal flow)
-				<-ctx.Done()
-				provisioningCancel.Add(1)
-				return nil, ctx.Err()
-			}
+			<-ctx.Done()
+			provisioningCancel.Add(1)
+			return nil, ctx.Err()
 		},
 	}
 
@@ -1673,7 +1685,7 @@ func TestCloseCancelsInflightProvision(t *testing.T) {
 		return
 	}
 
-	// Enqueue 3 jobs: Policy schedules all 3, serial execution processes them sequentially
+	// Enqueue 3 jobs: the policy and worker pool admit all three concurrently.
 	for i := 0; i < concurrency; i++ {
 		if _, err := q.Enqueue(context.Background(), validReq(fmt.Sprintf("j%d", i))); err != nil {
 			cancel()
@@ -1683,7 +1695,7 @@ func TestCloseCancelsInflightProvision(t *testing.T) {
 		}
 	}
 
-	// Wait for first job to enter Provision (serial provisioning starts)
+	// Wait for provisioning to start.
 	waitFor(t, defaultTimeout, func() bool {
 		return firstJobID.Load() != nil
 	}, "first provision never started")
@@ -1703,9 +1715,9 @@ func TestCloseCancelsInflightProvision(t *testing.T) {
 		t.Fatal("Close did not return within 3s; worker didn't honor ctx cancel")
 	}
 
-	// Verify first job blocked in Provision and received ctx.Done()
-	if got := provisioningCancel.Load(); got != 1 {
-		t.Errorf("Provisioning cancel count = %d; want 1 (first job that blocked)", got)
+	// Every admitted provision must observe the cancellation.
+	if got := provisioningCancel.Load(); got != concurrency {
+		t.Errorf("Provisioning cancel count = %d; want %d", got, concurrency)
 	}
 
 	// Verify other jobs were canceled (either in Provision or in Planned state)
@@ -1758,6 +1770,51 @@ func TestCloseIsIdempotent(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("second Close deadlocked")
+	}
+}
+
+func TestPlannerCanRestartAfterClose(t *testing.T) {
+	q := NewPlanner(PlannerConfig{
+		BatchClient:      &fakeBatchClient{},
+		Provisioner:      &fakeProvisioner{},
+		PolicyType:       PlanningPolicyTypeSimple,
+		WorkerCount:      1,
+		PlanningInterval: time.Hour,
+	})
+
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := q.Start(context.Background()); err != nil {
+			t.Fatalf("attempt %d: Start() error = %v", attempt, err)
+		}
+		if err := q.Close(); err != nil {
+			t.Fatalf("attempt %d: Close() error = %v", attempt, err)
+		}
+	}
+}
+
+func TestPlannerSerializesConcurrentStartAndClose(t *testing.T) {
+	q := NewPlanner(PlannerConfig{
+		BatchClient:      &fakeBatchClient{},
+		Provisioner:      &fakeProvisioner{},
+		PolicyType:       PlanningPolicyTypeSimple,
+		WorkerCount:      1,
+		PlanningInterval: time.Hour,
+	})
+
+	var calls sync.WaitGroup
+	calls.Add(2)
+	go func() {
+		defer calls.Done()
+		_ = q.Start(context.Background())
+	}()
+	go func() {
+		defer calls.Done()
+		_ = q.Close()
+	}()
+	calls.Wait()
+
+	if err := q.Close(); err != nil {
+		t.Fatalf("final Close() error = %v", err)
 	}
 }
 

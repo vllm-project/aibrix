@@ -2,7 +2,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-- ../../../../../config/standalone/autoscaler-controller
+- ../../../../../../../config/standalone/autoscaler-controller
 
 images:
 - name: aibrix/controller-manager

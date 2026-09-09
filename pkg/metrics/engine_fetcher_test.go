@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -98,7 +99,7 @@ func setupMockServer(metrics string, statusCode int, delay time.Duration) *httpt
 		}
 		w.WriteHeader(statusCode)
 		w.Header().Set("Content-Type", "text/plain")
-		fmt.Fprint(w, metrics)
+		_, _ = fmt.Fprint(w, metrics)
 	}))
 }
 
@@ -430,7 +431,7 @@ func TestEngineMetricsFetcher_RetryLogic(t *testing.T) {
 				return
 			}
 			w.WriteHeader(200)
-			fmt.Fprint(w, mockVllmMetrics)
+			_, _ = fmt.Fprint(w, mockVllmMetrics)
 		}))
 		defer server.Close()
 
@@ -473,6 +474,76 @@ func TestEngineMetricsFetcher_RetryLogic(t *testing.T) {
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "after 3 attempts")
+	})
+}
+
+func TestEngineMetricsFetcher_FetchRawMetric(t *testing.T) {
+	optimizerMetrics := `# HELP vllm:deployment_replicas Number of suggested replicas.
+# TYPE vllm:deployment_replicas gauge
+vllm:deployment_replicas{model_name="deepseek-r1-distill-llama-8b"} 3
+`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/metrics/default/deepseek-r1-distill-llama-8b" {
+			w.WriteHeader(404)
+			return
+		}
+		w.WriteHeader(200)
+		_, _ = fmt.Fprint(w, optimizerMetrics)
+	}))
+	defer server.Close()
+
+	config := EngineMetricsFetcherConfig{
+		Timeout:     5 * time.Second,
+		MaxRetries:  0,
+		BaseDelay:   10 * time.Millisecond,
+		MaxDelay:    100 * time.Millisecond,
+		InsecureTLS: true,
+	}
+	fetcher := NewEngineMetricsFetcherWithConfig(config)
+	ctx := context.Background()
+
+	t.Run("FetchUnregisteredMetricFromExplicitPath", func(t *testing.T) {
+		url := server.URL + "/metrics/default/deepseek-r1-distill-llama-8b"
+		value, err := fetcher.FetchRawMetric(ctx, url, "gpu-optimizer", "vllm:deployment_replicas")
+
+		require.NoError(t, err)
+		assert.Equal(t, 3.0, value.GetSimpleValue())
+	})
+
+	t.Run("MetricMissingFromResponse", func(t *testing.T) {
+		url := server.URL + "/metrics/default/deepseek-r1-distill-llama-8b"
+		_, err := fetcher.FetchRawMetric(ctx, url, "gpu-optimizer", "vllm:missing_metric")
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to fetch raw metric")
+	})
+
+	t.Run("WrongPathReturnsError", func(t *testing.T) {
+		url := server.URL + "/metrics"
+		_, err := fetcher.FetchRawMetric(ctx, url, "gpu-optimizer", "vllm:deployment_replicas")
+
+		require.Error(t, err)
+	})
+
+	t.Run("TransportFailureIsNotCountedAsEngineQueryFailure", func(t *testing.T) {
+		counter, cleanup := SetupCounterMetricsForTest(LLMEngineMetricsQueryFail, []string{"gateway_pod", "model"})
+		defer cleanup()
+
+		// A closed server yields a connection error, the only path that emits the counter.
+		deadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		deadURL := deadServer.URL
+		deadServer.Close()
+
+		_, err := fetcher.FetchRawMetric(ctx, deadURL+"/metrics/default/model", "gpu-optimizer", "vllm:deployment_replicas")
+		require.Error(t, err)
+		assert.Equal(t, 0, testutil.CollectAndCount(counter),
+			"external metric fetch failures must not increment llm_engine_metrics_query_fail")
+
+		// The engine path must keep counting, so the counter is still useful for engine scrapes.
+		_, err = fetcher.FetchTypedMetric(ctx, strings.TrimPrefix(deadURL, "http://"), "vllm", "test-pod", NumRequestsRunning)
+		require.Error(t, err)
+		assert.Equal(t, 1, testutil.CollectAndCount(counter),
+			"engine metric fetch failures should still increment llm_engine_metrics_query_fail")
 	})
 }
 

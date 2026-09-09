@@ -87,38 +87,9 @@ func (r *leastRequestRouter) Route(ctx *types.RoutingContext, readyPodList types
 		return r.apiServerRoute(ctx, readyPods, readyPodList.ListPortsForPod())
 	}
 
-	scores, scored, err := r.ScoreAll(ctx, readyPodList)
+	targetPod, err := RouteByScore(ctx, readyPodList, r)
 	if err != nil {
 		return "", err
-	}
-
-	var targetPod *v1.Pod
-	var targetPods []string
-	minCount := math.MaxFloat64
-
-	for i, pod := range readyPods {
-		if !scored[i] {
-			continue
-		}
-
-		if scores[i] < minCount {
-			minCount = scores[i]
-			targetPods = []string{pod.Name}
-		} else if scores[i] == minCount {
-			targetPods = append(targetPods, pod.Name)
-		}
-	}
-
-	if len(targetPods) > 0 {
-		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
-	}
-
-	// Use fallback if no valid metrics
-	if targetPod == nil {
-		targetPod, err = SelectRandomPodAsFallback(ctx, readyPods, rand.Intn)
-		if err != nil {
-			return "", err
-		}
 	}
 
 	ctx.SetTargetPod(targetPod)
@@ -146,11 +117,14 @@ func (r *leastRequestRouter) SubscribedMetrics() []string {
 }
 
 func selectTargetPodWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod) *v1.Pod {
+	return selectTargetPodWithLeastRequestCountFromCounts(getRequestCounts(cache, readyPods), readyPods)
+}
+
+func selectTargetPodWithLeastRequestCountFromCounts(podRequestCount map[string]int, readyPods []*v1.Pod) *v1.Pod {
 	var targetPod *v1.Pod
 	targetPods := []string{}
 
 	minCount := math.MaxInt32
-	podRequestCount := getRequestCounts(cache, readyPods)
 	klog.V(4).InfoS("selectTargetPodWithLeastRequestCount", "podRequestCount", podRequestCount)
 	for podname, totalReq := range podRequestCount {
 		if totalReq < minCount {

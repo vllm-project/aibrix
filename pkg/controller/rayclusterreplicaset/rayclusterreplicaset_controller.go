@@ -108,7 +108,7 @@ type RayClusterReplicaSetReconciler struct {
 // Reconcile method moves the RayClusterReplicaSet to desired State
 func (r *RayClusterReplicaSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	replicaset := &orchestrationv1alpha1.RayClusterReplicaSet{}
-	rsKey := req.NamespacedName.String()
+	rsKey := req.String()
 	if err := r.Get(ctx, req.NamespacedName, replicaset); err != nil {
 		klog.ErrorS(err, "unable to fetch object", "RayClusterReplicaSet", req.NamespacedName)
 		// deletion & recreation will find the exception exist, even it always return true (result is same) but the logic is different.
@@ -125,7 +125,7 @@ func (r *RayClusterReplicaSetReconciler) Reconcile(ctx context.Context, req ctrl
 		client.MatchingLabels(replicaset.Spec.Selector.MatchLabels),
 	}
 
-	if err := r.Client.List(ctx, rayClusterList, ListOps...); err != nil {
+	if err := r.List(ctx, rayClusterList, ListOps...); err != nil {
 		klog.ErrorS(err, "unable to list ray clusters")
 		return ctrl.Result{}, err
 	}

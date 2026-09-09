@@ -78,6 +78,10 @@ func IsPodTerminating(p *v1.Pod) bool {
 		p.DeletionTimestamp != nil
 }
 
+func IsPodDraining(p *v1.Pod) bool {
+	return p != nil && p.Annotations[constants.PodDrainingAnnotationKey] == "true"
+}
+
 // In order to avoid introduce k8s.io/kubernetes package, some helpers code are replicated here.
 // source code: https://github.com/kubernetes/kubernetes/blob/master/pkg/api/v1/pod/util.go
 
@@ -195,7 +199,7 @@ func CountReadyPods(podList *v1.PodList) (int64, error) {
 }
 
 func FilterReadyPod(pod *v1.Pod) bool {
-	return pod.Status.PodIP != "" && !IsPodTerminating(pod) && IsPodReady(pod)
+	return pod.Status.PodIP != "" && !IsPodTerminating(pod) && !IsPodDraining(pod) && IsPodReady(pod)
 }
 
 // CountRoutablePods filters and returns the number of pods that are routable.

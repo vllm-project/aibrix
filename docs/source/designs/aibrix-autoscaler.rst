@@ -95,15 +95,18 @@ Metrics
 The AIBrix autoscaling framework integrates tightly with the serving layer,
 directly consuming metrics exposed by engines like ``vllm``.
 
-Examples include:
+Examples of metrics the autoscaler can consume. These are AIBrix's engine-neutral names, which
+the controller maps to the engine's own metric (for vLLM, ``num_requests_waiting`` becomes
+``vllm:num_requests_waiting``):
 
-- ``request_count``
-- ``token_in_count`` / ``token_out_count``
-- ``engine_latency_ms``
-- ``kv_cache_size``
-- ``engine_gpu_utilization``
+- ``num_requests_running`` / ``num_requests_waiting``
+- ``gpu_cache_usage_perc``
+- ``time_to_first_token_seconds``
+- ``e2e_request_latency_seconds``
+- ``vllm:deployment_replicas`` (produced by the GPU optimizer rather than the engine)
 
-For full details, see the `vLLM Metrics Documentation <https://docs.vllm.ai/en/stable/serving/metrics.html>`_.
+For the full list, including what each name maps to for SGLang, xLLM and TRT-LLM, see the
+metric table in :doc:`../features/multi-engine`, and the `vLLM Metrics Documentation <https://docs.vllm.ai/en/stable/serving/metrics.html>`_.
 
 Extending or Selecting Autoscalers
 ----------------------------------
@@ -117,15 +120,7 @@ Future improvements include:
 - Combining proactive (optimizer-based) and reactive (metrics-based) mechanisms into hybrid autoscalers
   for maximum robustness and efficiency.
 
-Next Steps
-----------
+.. seealso::
 
-.. note::
-
-   If you would like, we can also add:
-
-   - A pros/cons matrix comparing HPA, KPA, APA, and Optimizer-based approaches.
-   - A sequence diagram for APA’s scaling loop vs. a schematic of the optimizer-driven workflow.
-   - Example YAML specifications for each autoscaler type.
-
-Let us know which would be most helpful!
+   :doc:`../features/autoscaling/autoscaling`
+       Configuring PodAutoscaler with HPA, KPA, and APA strategies.

@@ -21,6 +21,42 @@ Key features:
 - **KVCache Offloading and Cross-Engine KV Reuse**: High-Performance KVCache offloading framework supporting both naive KV offloading and cross-engine KV reuse.
 - **Benchmark Tool**: A tool for measuring inference performance and resource efficiency.
 
+Where to start
+==============
+
+.. grid:: 1 1 3 3
+   :gutter: 3
+
+   .. grid-item-card:: Beginner
+      :class-card: sd-border-1
+
+      New to AIBrix. Get one model serving.
+
+      1. :doc:`getting_started/overview`
+      2. :doc:`getting_started/quickstart`
+      3. :doc:`getting_started/installation/installation`
+      4. :doc:`features/gateway-plugins`
+
+   .. grid-item-card:: Intermediate
+      :class-card: sd-border-1
+
+      Serving works. Make it efficient.
+
+      1. :doc:`features/autoscaling/autoscaling`
+      2. :doc:`features/lora-dynamic-loading`
+      3. :doc:`features/kvcache-offloading`
+      4. :doc:`production/observability`
+
+   .. grid-item-card:: Advanced
+      :class-card: sd-border-1
+
+      Scale, cost, and latency targets.
+
+      1. :doc:`features/pd-disaggregation`
+      2. :doc:`features/multi-node-inference`
+      3. :doc:`features/heterogeneous-gpu`
+      4. :doc:`production/model-deployment`
+
 Documentation
 =============
 
@@ -28,9 +64,11 @@ Documentation
    :maxdepth: 1
    :caption: Getting Started
 
+   getting_started/overview.rst
    getting_started/quickstart.rst
    getting_started/container-images.rst
    getting_started/installation/installation.rst
+   getting_started/advanced-k8s-examples.rst
    getting_started/faq.rst
 
 .. toctree::

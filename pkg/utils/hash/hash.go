@@ -29,7 +29,7 @@ import (
 // ensuring the hash does not change when a pointer changes.
 func DeepHashObject(hasher hash.Hash, objectToWrite interface{}) {
 	hasher.Reset()
-	fmt.Fprintf(hasher, "%v", dump.ForHash(objectToWrite))
+	_, _ = fmt.Fprintf(hasher, "%v", dump.ForHash(objectToWrite))
 }
 
 // ShortSafeEncodeString returns a shortened (6-char) DNS-safe hash to mitigate 63-char name limits.

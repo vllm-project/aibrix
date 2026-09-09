@@ -66,6 +66,12 @@ func TestExtractHuggingFacePath(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name:        "Valid hf alias URL",
+			artifactURL: "hf://xxx/yyy",
+			expected:    "xxx/yyy",
+			expectError: false,
+		},
+		{
 			name:        "Empty path in HuggingFace URL",
 			artifactURL: "huggingface://",
 			expectError: true,

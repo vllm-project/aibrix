@@ -31,6 +31,7 @@ import { ApiKeysPage } from './components/settings/ApiKeysPage';
 import { SecretsPage } from './components/settings/SecretsPage';
 import { Toast } from './components/settings/Toast';
 import { features } from './config/features';
+import { playgroundHref } from './utils/deploymentDetail';
 
 // ── Route adapters: each one reads useParams/useNavigate and forwards to the
 // existing component. Keeps the leaf components unchanged.
@@ -149,7 +150,7 @@ function DeploymentDetailRoute() {
     <DeploymentDetail
       deploymentId={deploymentId ?? null}
       onBack={() => navigate('/deployments')}
-      onOpenPlayground={(deployment) => navigate(`/playground?deployment=${encodeURIComponent(deployment.id)}`)}
+      onOpenPlayground={(deployment) => navigate(playgroundHref(deployment))}
     />
   );
 }

@@ -107,7 +107,7 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 		"outputTokens", outputTokens)
 
 	var targetPod *v1.Pod
-	var minScore float64 = math.MaxFloat64
+	var minScore = math.MaxFloat64
 
 	// Simple vtc-basic implementation
 	// Using clamped-linear instead of modulo - offers good monotonicity, fairness based routing.

@@ -19,6 +19,205 @@ KVCache Offloading
 .. warning::
     Currently, only FlashAttention and XFormers are supported.
 
+Overview
+--------
+
+An inference engine keeps the key/value tensors of every token it has processed in GPU memory,
+and evicts them when that memory fills up. Any later request that shares a prefix with an
+evicted sequence has to recompute it, which shows up directly as time to first token.
+
+KVCache offloading extends the engine's KV cache beyond the GPU:
+
+* **L1** is a DRAM cache inside the engine pod. It is managed by the AIBrix connector that runs
+  in the engine process, so it needs no extra deployment. Computed blocks are saved to host
+  memory and reloaded when a matching prefix comes back.
+* **L2** is a distributed KV cache cluster outside the engine pods. Several engine replicas share
+  it, so a prefix computed by one replica can be reused by another. AIBrix provisions and tracks
+  the cluster through the ``KVCache`` custom resource and connects engines to it through a
+  pluggable backend.
+
+The two levels are independent: you can run L1 alone, L2 alone, or both. This page shows how to
+turn each on. The design page, :doc:`../designs/aibrix-kvcache-offloading-framework`, explains
+the cache management algorithms and holds the complete environment variable reference.
+
+This feature is different from :doc:`kv-event-sync`, which only publishes *which* prefixes each
+engine holds so the gateway can route to the warmest pod. Offloading moves the cache contents
+themselves.
+
+Architecture
+------------
+
+.. mermaid::
+
+   graph LR
+       subgraph EP["Engine pod"]
+           E["vLLM / SGLang"] --- C["AIBrix offloading connector"]
+           C --- L1["L1: DRAM cache<br/>S3FIFO eviction"]
+       end
+       C -->|"put / get blocks"| L2["L2 backend cluster<br/>InfiniStore, HPKV, PrisKV, ..."]
+       C -->|"member list"| M["Meta service<br/>(Redis)"]
+       K["KVCache CR"] -->|provisions| L2
+       K -->|provisions| M
+       K -->|provisions| W["Watcher pod<br/>registers members"]
+
+* The **connector** is loaded by the engine. For vLLM it is selected with
+  ``--kv-transfer-config '{"kv_connector":"AIBrixOffloadingConnectorV1Type3", "kv_role":"kv_both"}'``
+  (V1 engine, ``VLLM_USE_V1=1``). For SGLang, use the ``aibrix_kvcache`` storage backend
+  linked in the note above.
+* **L1** lives in the engine process. Its size and eviction policy are environment variables;
+  ``S3FIFO`` is the default policy.
+* **L2** is reached through a backend connector chosen by
+  ``AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND``. The framework ships connectors for InfiniStore, HPKV,
+  PrisKV, RocksDB, EIC, SHFS and a mock backend used in tests.
+* For InfiniStore and HPKV, the **meta service** is a Redis instance that holds the L2 cluster
+  membership. Engines read it to learn where cache nodes are; a watcher pod keeps it current as
+  cache pods come and go.
+* The ``KVCache`` custom resource creates the cache pods and a ``Service``, plus the backend's
+  metadata store: an etcd for Vineyard, or the Redis meta service and (when ``spec.watcher`` is
+  set) the watcher pod for InfiniStore and HPKV. Which backend it deploys is set by an
+  annotation.
+
+Choosing a configuration
+------------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 42 40
+
+   * - Setup
+     - What you get
+     - Use it when
+   * - L1 only
+     - Host-memory cache per engine pod. No extra components.
+     - You have spare pod memory and repeated prefixes mostly hit the same replica. Start here.
+   * - L2 only
+     - A shared cache across replicas, no host-memory cache.
+     - Pod memory is tight, or replicas are many and prefix reuse across them matters more
+       than per-pod locality. Requires the ``KVCache`` cluster; InfiniStore performs best over
+       RDMA and also supports TCP.
+   * - L1 + L2
+     - Every replica keeps its own L1. Blocks that become hot in L1 are also written to L2
+       (the default ``HOT`` ingestion policy) so other replicas can reuse them.
+     - Both conditions above hold. L1 absorbs the fast path and L2 catches cross-replica reuse.
+
+Configuration reference
+-----------------------
+
+**Engine-side environment variables.** All of them start with ``AIBRIX_KV_CACHE_OL_`` and are
+read by the connector at engine start. The most commonly changed ones are below; the complete
+list with every backend's settings is in the
+:ref:`environment variables reference <kvcache_env_reference>` of the design page.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 44 14 42
+
+   * - Variable
+     - Default
+     - Meaning
+   * - ``AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED``
+     - ``1``
+     - Turn L1 on or off. Set ``0`` for an L2-only setup.
+   * - ``AIBRIX_KV_CACHE_OL_L1_CACHE_CAPACITY_GB``
+     - ``10``
+     - DRAM budget for L1. Must fit inside the pod's memory request together with the engine's
+       own host-memory needs; see the note in the L1 example.
+   * - ``AIBRIX_KV_CACHE_OL_L1_CACHE_EVICTION_POLICY``
+     - ``S3FIFO``
+     - Eviction policy for L1.
+   * - ``AIBRIX_KV_CACHE_OL_DEVICE``
+     - ``cpu``
+     - Device used for cache operations, ``cpu`` or ``cuda``.
+   * - ``AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND``
+     - *(empty)*
+     - Empty disables L2. Otherwise one of ``INFINISTORE``, ``HPKV``, ``PRISKV``, ``ROCKSDB``,
+       ``EIC``, ``SHFS`` or ``MOCK``; the value is case-insensitive.
+   * - ``AIBRIX_KV_CACHE_OL_L2_CACHE_NAMESPACE``
+     - ``aibrix``
+     - Key namespace in the L2 store. Engines only share entries within the same namespace.
+   * - ``AIBRIX_KV_CACHE_OL_META_SERVICE_BACKEND``
+     - *(empty)*
+     - ``redis`` when using a ``KVCache``-managed cluster.
+   * - ``AIBRIX_KV_CACHE_OL_META_SERVICE_URL``
+     - *(empty)*
+     - Redis URL of the meta service, for example ``redis://kvcache-cluster-redis:6379``.
+   * - ``AIBRIX_KV_CACHE_OL_META_SERVICE_CLUSTER_META_KEY``
+     - *(empty)*
+     - Key under which the membership list is stored. Must match what the watcher writes:
+       ``kvcache_nodes`` for InfiniStore, ``hpkv_cluster_metadata`` for HPKV.
+   * - ``AIBRIX_KV_CACHE_OL_META_SERVICE_REFRESH_INTERVAL_S``
+     - ``30``
+     - How often the engine re-reads the membership list.
+   * - ``AIBRIX_KV_CACHE_OL_INFINISTORE_CONNECTION_TYPE``
+     - ``RDMA``
+     - InfiniStore transport, ``RDMA`` or ``TCP``.
+   * - ``AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE``
+     - ``Ethernet``
+     - ``Ethernet`` for RoCE, ``IB`` for InfiniBand.
+   * - ``AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST``
+     - *(empty)*
+     - Comma-separated RDMA devices the engine may use, optionally with a GID index
+       (``mlx5_1:7,mlx5_2:7``).
+   * - ``AIBRIX_KV_CACHE_OL_PROFILING_ENABLED``
+     - ``0``
+     - Send connector profiles to the profiling service; see the profiling example.
+   * - ``AIBRIX_KV_CACHE_OL_PROFILING_SERVER_ADDRESS``
+     - ``http://0.0.0.0:4040``
+     - Address of that service.
+
+**The KVCache custom resource** (``orchestration.aibrix.ai/v1alpha1``, kind ``KVCache``)
+describes an L2 cluster.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 26 74
+
+   * - Field
+     - Meaning
+   * - ``spec.mode``
+     - ``distributed`` or ``centralized``. Present in the API but not read by the current
+       controller; the backend annotation below decides what is deployed.
+   * - ``spec.metadata.redis``
+     - Used by the InfiniStore and HPKV backends. Give it a ``runtime`` block (image,
+       replicas, resources) to have the controller deploy Redis, or an ``externalConnection``
+       (``address``, ``passwordSecretRef``) to reuse an existing instance.
+   * - ``spec.metadata.etcd``
+     - Used by the Vineyard backend. Only the ``runtime`` block is supported;
+       ``externalConnection`` is not implemented for etcd.
+   * - ``spec.cache``
+     - The cache pods: ``replicas`` (default 1), ``image``, ``imagePullPolicy``, ``env``,
+       ``resources``, or a full ``template`` for advanced pod settings.
+   * - ``spec.watcher``
+     - InfiniStore and HPKV only. The watcher registers cache members in Redis; without it the
+       engines never learn the cluster membership, so set it for those backends. ``image``,
+       ``imagePullPolicy``, ``env`` and ``resources`` are honoured; ``replicas`` and
+       ``template`` are ignored.
+   * - ``spec.service``
+     - ``type`` (default ``ClusterIP``) and ``ports`` for the cache service.
+
+Annotations on the ``KVCache`` object select the backend and its placement:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 56 44
+
+   * - Annotation
+     - Meaning
+   * - ``kvcache.orchestration.aibrix.ai/backend``
+     - ``infinistore``, ``hpkv`` or ``vineyard``. Defaults to ``vineyard`` when absent.
+   * - ``kvcache.orchestration.aibrix.ai/pod-affinity-workload``
+     - Vineyard backend only. Name of the model workload the cache pods should be co-located
+       with.
+   * - ``kvcache.orchestration.aibrix.ai/pod-anti-affinity``
+     - Vineyard backend only. Spread cache pods away from each other.
+   * - ``kvcache.orchestration.aibrix.ai/node-affinity-key`` and ``.../node-affinity-gpu-type``
+     - Vineyard backend only. Pin cache pods to nodes carrying a given label and value.
+   * - ``infinistore.kvcache.orchestration.aibrix.ai/link-type`` and ``.../hint-gid-index``
+     - InfiniStore transport settings passed to the cache pods.
+   * - ``hpkv.kvcache.orchestration.aibrix.ai/*``
+     - HPKV sizing: ``block-size-bytes``, ``block-count``, ``total-slots``,
+       ``virtual-node-count``, ``rdma-port``, ``admin-port``.
+
 .. _l1_cache_example:
 
 L1 Cache Example
@@ -325,3 +524,8 @@ Run a task to generate requests to the inference engine, and you can browse the 
   :alt: aibrix-kvcache-profiling
   :width: 99%
   :align: center
+
+.. seealso::
+
+   :doc:`../designs/aibrix-kvcache-offloading-framework`
+       Internal design of the KV cache offloading framework.

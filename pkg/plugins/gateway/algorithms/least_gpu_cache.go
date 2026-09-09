@@ -17,14 +17,9 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"fmt"
-	"math"
-	"math/rand"
-
 	"github.com/vllm-project/aibrix/pkg/cache"
 	metrics "github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
-	v1 "k8s.io/api/core/v1"
 	klog "k8s.io/klog/v2"
 )
 
@@ -76,50 +71,11 @@ func (r leastGpuCacheRouter) Polarity() types.Polarity {
 }
 
 func (r leastGpuCacheRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
-	var targetPod *v1.Pod
-	minGpuCache := math.MaxFloat64
-	var candidatePods []*v1.Pod
-
-	for _, pod := range readyPodList.All() {
-		gpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.GPUCacheUsagePerc)
-		if err != nil {
-			klog.Error(err)
-			continue
-		}
-		totalCache := gpuCache.GetSimpleValue()
-
-		klog.V(4).Infof("pod: %v, podIP: %v, gpuCache: %v",
-			pod.Name, pod.Status.PodIP, gpuCache.GetSimpleValue())
-
-		if totalCache < minGpuCache {
-			minGpuCache = totalCache
-			candidatePods = []*v1.Pod{pod}
-		} else if totalCache == minGpuCache {
-			candidatePods = append(candidatePods, pod)
-		}
+	targetPod, err := RouteByScore(ctx, readyPodList, r)
+	if err != nil {
+		return "", err
 	}
 
-	if len(candidatePods) > 0 {
-		targetPod = candidatePods[rand.Intn(len(candidatePods))]
-	}
-
-	// Use fallback if no valid metrics
-	if targetPod == nil {
-		var err error
-		targetPod, err = SelectRandomPodAsFallback(ctx, readyPodList.All(), rand.Intn)
-		if err != nil {
-			return "", err
-		}
-		klog.V(4).Infof("select targetPod: %s(%s)", targetPod.Name, targetPod.Status.PodIP)
-	} else {
-		klog.V(4).Infof("select targetPod: %s(%s) gpuCache: %v", targetPod.Name, targetPod.Status.PodIP, minGpuCache)
-	}
-
-	if targetPod == nil {
-		return "", fmt.Errorf("no pods to forward request")
-	}
-
-	klog.V(4).Infof("targetPod: %s(%s)", targetPod.Name, targetPod.Status.PodIP)
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil
 }

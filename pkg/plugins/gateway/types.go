@@ -95,9 +95,11 @@ const (
 
 	// Embedding Constraints
 	// https://github.com/openai/openai-go/blob/main/embedding.go#L126
-	MaxInputTokensPerModel = 8192
-	MaxTotalTokens         = 300000
-	MaxArrayDimensions     = 2048
+	//
+	// The token-count limits from that reference (8192 per input, 300000 per
+	// batch) are not enforced here: they are denominated in the target model's
+	// tokens, which the gateway cannot measure. See validateStringInputs.
+	MaxArrayDimensions = 2048
 
 	// Request Paths
 	PathChatCompletions     = "/v1/chat/completions"
@@ -123,4 +125,5 @@ const (
 var (
 	ErrorUnknownResponse = errors.New("unknown response")
 	requestBuffers       sync.Map // Thread-safe map to track buffers per request
+	streamBuffers        sync.Map // Thread-safe map to track the trailing partial SSE line per streaming request
 )

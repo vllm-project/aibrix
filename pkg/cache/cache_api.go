@@ -76,6 +76,11 @@ type ModelCache interface {
 	//   map[string]struct{}: Set of model names
 	//   error: Error information if operation fails
 	ListModelsByPod(podName, podNamespace string) ([]string, error)
+
+	// ModelBaseModel returns the base-model name a LoRA adapter is attached to
+	// (ModelAdapter spec.baseModel, or the host pod's model label as fallback).
+	// Returns ("", false) for base models and for adapters with no known base.
+	ModelBaseModel(modelName string) (string, bool)
 }
 
 // ModelClaimBindingProvider is an optional cache extension used by the

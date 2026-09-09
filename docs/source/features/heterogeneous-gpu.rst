@@ -17,6 +17,24 @@ There are three main components in Heterogeneous GPU Inference Feature: (1) LLM 
   :align: center
 
 
+This feature is the heterogeneous form of :doc:`autoscaling/optimizer-based-autoscaling`:
+the same GPU optimizer, fed one benchmark profile per GPU type, decides how many replicas of
+each type to run. Read that page first for the request-tracing and profiling workflow; this
+page covers what is specific to mixing GPU types.
+
+Prerequisites
+-------------
+
+* One ``Deployment`` per GPU type, all carrying the same ``model.aibrix.ai/name`` label and
+  each pinned to its GPU type through node selectors or affinity. The gateway treats them as
+  one model.
+* One ``PodAutoscaler`` per deployment, each reading the optimizer's metric for its own
+  deployment.
+* Request tracing enabled on the gateway plugin and the ``aibrix`` Python package installed
+  locally for benchmarking, as described in :doc:`autoscaling/optimizer-based-autoscaling`.
+* For SLO-aware routing across the GPU types, profiling data for each workload on each GPU
+  type (see `Routing Support`_).
+
 Example
 -------
 
@@ -45,14 +63,18 @@ Alternatively, you can enable the feature by editing the gateway plugin deployme
 **Step 1: Deploy the heterogeneous deployments.**
 
 One deployment and corresponding PodAutoscaler should be deployed for each GPU type.
-See `sample heterogeneous configuration <https://github.com/vllm-project/aibrix/tree/main/samples/heterogeneous>`_ for an example of heterogeneous configuration composed of two GPU types. The following codes
-deploy heterogeneous deployments using L20 and V100 GPU.
+See `sample heterogeneous configuration <https://github.com/vllm-project/aibrix/tree/main/samples/heterogeneous>`_ for an example of heterogeneous configuration composed of two GPU types. The following command
+deploys heterogeneous deployments using L20 and V100 GPUs.
 
 .. code-block:: bash
 
-    kubectl apply -f samples/heterogeneous
+    kubectl apply -k samples/heterogeneous
 
-After deployment, you will see a inference service with two pods running on simulated L20 and A10 GPUs:
+The sample is a kustomization that creates one Service and two deployments,
+``deepseek-coder-7b-l20`` (4 replicas) and ``deepseek-coder-7b-v100`` (0 replicas), each pinned
+to its GPU type through node affinity on the ``machine.cluster.vke.volcengine.com/gpu-name``
+label. Adjust the affinity and replica counts to your cluster. The output below comes from a
+test environment with one pod per GPU type:
 
 .. code-block:: bash
 
@@ -126,6 +148,31 @@ A new label label ``model.aibrix.ai/min_replicas`` is added to specifies the min
     ... rest yaml deployments
 
 Important: The ``minReplicas`` field in the PodAutoscaler spec must be set to 0 to allow proper scaling behavior. Setting it to any value greater than 0 will interfere with the GPU optimizer's scaling decisions. For instance, if the GPU optimizer determines an optimal configuration of ``{v100: 0, l20: 4}`` but the v100 PodAutoscaler has ``minReplicas: 1``, the system won't be able to scale the v100 down to 0 as recommended.
+
+Configuration reference
+-----------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Setting
+     - Meaning
+   * - ``AIBRIX_GPU_OPTIMIZER_TRACING_FLAG`` (gateway plugin env, default ``false``)
+     - Records per-request token statistics for the optimizer. Required.
+   * - ``model.aibrix.ai/name`` (label on every deployment)
+     - The shared model name. Must match the ``model`` used when profiles were stored.
+   * - ``model.aibrix.ai/min_replicas`` (label on a deployment)
+     - Replicas to keep for that GPU type when there is no traffic. Set it to ``"1"`` on at
+       least one deployment so the model always has a ready pod.
+   * - ``spec.minReplicas: 0`` (on each PodAutoscaler)
+     - Required. Any higher value prevents the optimizer from scaling that GPU type to zero.
+   * - ``aibrix_gen_profile ... --cost <n>``
+     - Relative cost of the GPU type. The optimizer minimises total cost, so give each GPU
+       type its own value.
+   * - ``routing-strategy: slo`` (request header)
+     - Turn on SLO-aware routing for the request. Variants: ``slo-pack-load``,
+       ``slo-least-load``, ``slo-least-load-pulling`` (the default for ``slo``).
 
 Routing Support
 ---------------

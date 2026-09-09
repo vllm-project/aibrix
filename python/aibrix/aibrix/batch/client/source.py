@@ -17,6 +17,12 @@ The source is the single seam for deployment topology. A gateway / ClusterIP /
 external LB yields exactly one self-balancing channel (the engine Router then
 degenerates to identity); direct-to-pod and discovery yield N channels. The
 ``capacity`` signal feeds the engine's concurrency sizing.
+
+Source methods on the hot request path should be best-effort and avoid raising:
+return an empty channel set when nothing is currently reachable, and keep
+``refresh`` / channel-error reporting non-fatal in individual implementations.
+The engine still keeps an outer safety net so an unexpected raw exception does
+not escape as a job-level internal error.
 """
 
 from __future__ import annotations
@@ -49,7 +55,14 @@ class EndpointSource(Protocol):
     not an off-contract ``close()`` bolted onto a client.
     """
 
-    async def channels(self) -> List[Channel]: ...
+    async def channels(self) -> List[Channel]:
+        """Return the currently reachable channels.
+
+        Implementations should prefer returning ``[]`` over raising when the
+        backend is temporarily unavailable so the engine can apply its explicit
+        no-endpoint retry policy.
+        """
+        ...
 
     async def capacity(self) -> CapacitySignal: ...
 
@@ -58,3 +71,21 @@ class EndpointSource(Protocol):
     ) -> CapacitySignal: ...
 
     async def aclose(self) -> None: ...
+
+
+@runtime_checkable
+class RefreshableEndpointSource(Protocol):
+    async def refresh(self) -> None:
+        """Best-effort source refresh.
+
+        Implementations should swallow transient backend failures, log them, and
+        leave the source in its previous state when possible.
+        """
+        ...
+
+
+@runtime_checkable
+class ErrorReportingEndpointSource(Protocol):
+    async def report_channel_error(self, channel_id: str, error: Exception) -> None:
+        """Best-effort channel health feedback from the engine."""
+        ...

@@ -1,0 +1,38 @@
+name: Docs Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main", "release-*" ]
+    paths:
+      - 'docs/**'
+      - '.readthedocs.yaml'
+      - '.github/workflows/docs-build.yml'
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - 'docs/**'
+      - '.readthedocs.yaml'
+      - '.github/workflows/docs-build.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Sphinx HTML
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@v6
+      - name: Set up Python environment
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+      - name: Install documentation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r docs/requirements-docs.txt
+      # HTML only. The PDF builder additionally requires the mermaid CLI (`mmdc`,
+      # a Node binary) to rasterize diagrams, and warns without it; HTML renders
+      # mermaid in the browser and is unaffected.
+      - name: Build HTML documentation
+        run: |
+          sphinx-build -b html -W --keep-going docs/source docs/_build/html

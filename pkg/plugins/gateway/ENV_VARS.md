@@ -35,8 +35,7 @@ This document covers all environment variables used in the `pkg/plugins/gateway`
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|
 | `AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE` | string | `"character"` | Tokenizer type for prefix cache hashing. Options: `character`, `tiktoken`, `remote`. | [algorithms/prefix_cache.go](algorithms/prefix_cache.go) |
-| `AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT` | int | `8` | Absolute running-request count difference threshold that triggers load-imbalance routing. | [algorithms/prefix_cache.go](algorithms/prefix_cache.go) |
-| `AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR` | int | `1` | Factor multiplied by the standard deviation of pod loads during imbalance calculation. | [algorithms/prefix_cache.go](algorithms/prefix_cache.go) |
+| `AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR` | int | `1` | Factor multiplied by the standard deviation of pod loads when selecting among prefix-matched pods (`pod.req ≤ mean + factor × σ`). | [algorithms/prefix_cache.go](algorithms/prefix_cache.go) |
 | `AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER` | bool | `false` | Use a remote HTTP tokenizer service instead of the local tokenizer. Requires `AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE=remote`. | [algorithms/prefix_cache.go](algorithms/prefix_cache.go) |
 | `AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED` | bool | `false` | Enable KV cache event synchronization across gateway replicas. When `true`, also requires `AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER=true`. | [algorithms/prefix_cache.go](algorithms/prefix_cache.go) |
 | `AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT` | string | `""` | Remote tokenizer service endpoint URL. Required when `AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true`. | [pkg/constants/kv_event_sync.go](../../constants/kv_event_sync.go) |
@@ -54,6 +53,51 @@ These configure the pool of remote tokenizer connections used when `AIBRIX_PREFI
 | `AIBRIX_TOKENIZER_TTL` | duration | `300s` | TTL for cached tokenizer connections in the pool. |
 | `AIBRIX_MAX_TOKENIZERS_PER_POOL` | int | `100` | Maximum number of tokenizer connections in the pool. |
 | `AIBRIX_TOKENIZER_REQUEST_TIMEOUT` | duration | `5s` | Timeout for individual remote tokenizer requests. |
+
+---
+
+## Load Balance Router (`algorithms/load_balance.go`)
+
+The load-imbalance gate below is applied centrally by the gateway (`selectTargetPod` in
+`gateway.go`), once per request, ahead of whichever strategy actually routes it — not just when
+`load-balance` is selected. It restricts candidates to the least-loaded pods before that
+strategy runs when load is severely skewed, and it **is** applied to the Prefix Cache and
+Preble routers (this replaces the prefix-cache-specific gate that used to live in
+`prefix_cache.go`; see the deprecation note under [Variable Dependency
+Notes](#variable-dependency-notes)). It is exempted only for exclusive strategies (`pd`,
+`slo*`), which manage their own pod subsets and would have that management disrupted by a
+blanket running-request-count filter applied ahead of time. It does not participate in
+multi-strategy soft-scoring (`ScoreAll`) for strategies blended alongside `load-balance` — see
+`AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT` below for how `load-balance` itself gets
+silently blended into other strategies to compensate.
+
+When `load-balance` is the (sole, non-blended) strategy that routes the request and multiple
+pods tie on the lowest pending-time score, `Route()` breaks the tie using least combined
+GPU+CPU KV-cache usage (falling back to a random pick if cache metrics are unavailable for the
+tied pods) — the same secondary-signal pattern the Prefix Cache router uses to break ties in
+prefix-match percentage via request count.
+
+| Variable | Type | Default | Description | Source |
+|---|---|---|---|---|
+| `AIBRIX_LOAD_BALANCE_IMBALANCE_FACTOR` | float64 | `2.0` | Gate multiplier for 3+ pods: gate fires when `max_req > factor × (mean_req + 1)`. Ignored for 2-pod clusters (the relative check never holds there). | [algorithms/load_balance.go](algorithms/load_balance.go) |
+| `AIBRIX_LOAD_BALANCE_IMBALANCE_MIN_GAP` | int | `8` | Minimum absolute gap (`max_req − min_req`) required to trigger the load-imbalance gate. For 2 pods this is the sole trigger; for 3+ pods it is required alongside the factor check. | [algorithms/load_balance.go](algorithms/load_balance.go) |
+
+---
+
+## Router Selection / Auto-Blend (`algorithms/router.go`)
+
+`RouterManager.Select` silently blends `load-balance` (and, when needed, `least-request`)
+behind whatever strategy a caller actually asked for, so no single strategy can keep steering
+traffic at an already-hot pod even without going through the central load-imbalance gate above.
+The caller never sees this: `ctx.Algorithm`, response headers, and `Validate()` all continue to
+reflect exactly what was requested. The blend is skipped entirely for exclusive strategies
+(`pd`, `slo*`) and for an explicit, standalone `load-balance` selection, both of which must keep
+running their own dedicated routing logic.
+
+| Variable | Type | Default | Description | Source |
+|---|---|---|---|---|
+| `AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT` | int | `1` | Weight coefficient for the silently-appended `load-balance` scorer. Set to `0` to disable the whole auto-blend feature. | [algorithms/router.go](algorithms/router.go) |
+| `AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT` | int | `1` | Weight coefficient for the silently-appended `least-request` scorer (only added when not already present; needed so multi-port/data-parallel pod routing keeps working under the blend). Set to `0` to omit it from the blend. | [algorithms/router.go](algorithms/router.go) |
 
 ---
 
@@ -139,6 +183,15 @@ The following variables have interdependencies that must be satisfied together:
   ```
 
 - **Remote tokenizer pool** is initialized whenever `AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER=true`. The pool variables (`AIBRIX_VLLM_TOKENIZER_ENDPOINT_TEMPLATE`, `AIBRIX_TOKENIZER_*`, `AIBRIX_MAX_TOKENIZERS_PER_POOL`) all apply in that case.
+
+- **`AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT` is removed.** The
+  prefix-cache-specific load-imbalance gate it used to tune was replaced by the centralized gate
+  described under [Load Balance Router](#load-balance-router-algorithmsload_balancego), which
+  now applies to prefix-cache (and every other non-exclusive strategy) via
+  `AIBRIX_LOAD_BALANCE_IMBALANCE_MIN_GAP` / `AIBRIX_LOAD_BALANCE_IMBALANCE_FACTOR` instead. The
+  trigger condition also changed: the old gate fired on absolute gap alone; the new one
+  additionally requires a relative `factor × (mean + 1)` check for 3+ pod clusters, so it fires
+  less often on larger fleets. Setting the old variable now only logs a startup warning.
 
 ## OpenTelemetry
 

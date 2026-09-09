@@ -208,21 +208,23 @@ func (h *SlidingWindowHistogram) getPrefillCost(node *prefixcacheindexer.TreeNod
 	numTokens := node.NumTokens()
 	contextLength := node.ContextLength()
 	baseTime := 0.0
-	if targetGPU == "A6000" {
+	switch targetGPU {
+	case "A6000":
 		baseTime = mistral7BA6000LinearTime(numTokens) + mistral7BA6000AttentionTime(1, contextLength, numTokens)
-	} else if targetGPU == "V100" {
+	case "V100":
 		baseTime = mistral7BV100LinearTime(numTokens) + mistral7BV100AttentionTime(1, contextLength, numTokens)
-	} else {
+	default:
 		klog.Warningf("Unknown target GPU: %s. Assume V100 as default", targetGPU)
 		baseTime = mistral7BV100LinearTime(numTokens) + mistral7BV100AttentionTime(1, contextLength, numTokens)
 	}
 
 	attnQuad := 0.0
-	if targetGPU == "A6000" {
+	switch targetGPU {
+	case "A6000":
 		attnQuad = calculateAttnQuadA6000(numTokens, nil)
-	} else if targetGPU == "V100" {
+	case "V100":
 		attnQuad = calculateAttnQuadV100(numTokens, nil)
-	} else {
+	default:
 		klog.Warningf("Unknown target GPU: %s. Assume V100 as default", targetGPU)
 		attnQuad = calculateAttnQuadV100(numTokens, nil)
 	}
@@ -486,12 +488,6 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 	}
 
 	node, matchedTokens, _ := p.cache.AddPrefix(tokens, ctx.Model, "")
-	// Check for load imbalance using real-time running request counts
-	leastReqPodList, isLoadImbalanced := getTargetPodListOnLoadImbalance(p.metricCache, readyPods)
-	if isLoadImbalanced {
-		klog.InfoS("Load imbalance detected, restricting to least-loaded pods", "requestID", ctx.RequestID)
-		readyPods = leastReqPodList
-	}
 	readyPodsMap := readyPodsByName(readyPods)
 
 	var matchedPods []*v1.Pod

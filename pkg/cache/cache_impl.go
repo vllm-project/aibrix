@@ -121,6 +121,15 @@ func (c *Store) ListModelsByPod(podName, podNamespace string) ([]string, error) 
 	return metaPod.Models.Array(), nil
 }
 
+// ModelBaseModel returns the base-model name a LoRA adapter is attached to.
+func (c *Store) ModelBaseModel(modelName string) (string, bool) {
+	meta, ok := c.metaModels.Load(modelName)
+	if !ok || meta.BaseModel == "" {
+		return "", false
+	}
+	return meta.BaseModel, true
+}
+
 // GetMetricValueByPod retrieves metric value for a Pod
 // Parameters:
 //

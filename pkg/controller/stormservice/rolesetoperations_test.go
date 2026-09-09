@@ -372,7 +372,8 @@ func TestUpdateRoleSet(t *testing.T) {
 				"app": "test",
 			},
 			Annotations: map[string]string{
-				constants.RoleSetIndexAnnotationKey: "0",
+				constants.RoleSetIndexAnnotationKey:                  "0",
+				constants.RoleSetHistoricalNodeBindingsAnnotationKey: `{"replicaSlots":{"worker/0":"node-a"}}`,
 			},
 		},
 		Spec: orchestrationv1alpha1.RoleSetSpec{
@@ -398,6 +399,7 @@ func TestUpdateRoleSet(t *testing.T) {
 	assert.Equal(t, "updated-role", updatedRoleSet.Spec.Roles[0].Name)
 	assert.Equal(t, "new-revision", updatedRoleSet.Labels[constants.StormServiceRevisionLabelKey])
 	assert.Equal(t, "0", updatedRoleSet.Annotations[constants.RoleSetIndexAnnotationKey])
+	assert.Equal(t, `{"replicaSlots":{"worker/0":"node-a"}}`, updatedRoleSet.Annotations[constants.RoleSetHistoricalNodeBindingsAnnotationKey])
 }
 
 func TestCreateRoleSet(t *testing.T) {

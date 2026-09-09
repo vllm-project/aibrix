@@ -779,7 +779,7 @@ def test_factory_unknown_provider_raises_invalid_driver():
 
 
 def test_factory_kubernetes_without_entity_manager_still_creates_runtime():
-    job = SimpleNamespace(spec=SimpleNamespace(runtime_target="Kubernetes"))
+    job = _make_job(job_id="job-k8s-no-em")
     driver = create_job_driver(
         _make_infrastructure_context(),
         FakeProgressManager(_make_job()),
@@ -804,7 +804,10 @@ def test_factory_kubernetes_without_k8s_context_raises_invalid_driver():
 
 
 def test_factory_external_provider_uses_local_runtime():
-    job = SimpleNamespace(spec=SimpleNamespace(runtime_target="External"))
+    job = _make_job(job_id="job-external")
+    assert job.spec.aibrix is not None
+    assert job.spec.aibrix.runtime is not None
+    job.spec.aibrix.runtime.target = "External"
     sentinel = object()
     driver = create_job_driver(
         _make_infrastructure_context(),
@@ -816,3 +819,17 @@ def test_factory_external_provider_uses_local_runtime():
     assert isinstance(driver, BaseJobDriver)
     assert isinstance(driver._runtime, ExternalRuntime)
     assert driver._runtime._source is sentinel
+
+
+def test_factory_preserves_job_id_on_driver():
+    job = _make_job(job_id="job-factory")
+
+    driver = create_job_driver(
+        _make_infrastructure_context(),
+        FakeProgressManager(job),
+        entity_manager=FakeEntityManager(),
+        job=job,
+    )
+
+    assert isinstance(driver, BaseJobDriver)
+    assert driver._job_id == "job-factory"

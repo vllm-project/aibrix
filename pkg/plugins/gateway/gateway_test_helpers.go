@@ -116,6 +116,18 @@ func (m *MockCache) ListModelsByPod(namespace string, podName string) ([]string,
 	return args.Get(0).([]string), args.Error(1)
 }
 
+// ModelBaseModel is called on the request path so LoRA metrics can record
+// both the adapter name and its base model. Default to ("", false).
+func (m *MockCache) ModelBaseModel(model string) (string, bool) {
+	for _, call := range m.ExpectedCalls {
+		if call.Method == "ModelBaseModel" {
+			args := m.Called(model)
+			return args.String(0), args.Bool(1)
+		}
+	}
+	return "", false
+}
+
 // MockGatewayClient implements gatewayapi.Clientset interface
 type MockGatewayClient struct {
 	mock.Mock

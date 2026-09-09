@@ -1,0 +1,465 @@
+/*
+Copyright 2026 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package webhook
+
+import (
+	"context"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/utils/ptr"
+
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+)
+
+// Defaulting spec.mode would pin an inferred mode onto objects that never declared
+// one, which then blocks a later scale-up through validateStormServiceMode.
+func TestStormServiceDefault_LeavesModeUnset(t *testing.T) {
+	defaulter := &StormServiceCustomDefaulter{}
+
+	ss := &orchestrationv1alpha1.StormService{
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Replicas: ptr.To[int32](1),
+		},
+	}
+
+	require.NoError(t, defaulter.Default(context.Background(), ss))
+	assert.Empty(t, ss.Spec.Mode)
+}
+
+func TestStormServiceValidateCreate_ModeReplicas(t *testing.T) {
+	validator := &StormServiceCustomDefaulter{}
+
+	tests := map[string]struct {
+		replicas    *int32
+		mode        orchestrationv1alpha1.StormServiceMode
+		expectError bool
+	}{
+		"pooled with replicas > 1 is rejected":  {replicas: ptr.To[int32](3), mode: orchestrationv1alpha1.StormServicePooledMode, expectError: true},
+		"pooled with replicas 1 is allowed":     {replicas: ptr.To[int32](1), mode: orchestrationv1alpha1.StormServicePooledMode, expectError: false},
+		"pooled with replicas unset is allowed": {replicas: nil, mode: orchestrationv1alpha1.StormServicePooledMode, expectError: false},
+		"replica with replicas > 1 is allowed":  {replicas: ptr.To[int32](3), mode: orchestrationv1alpha1.StormServiceReplicaMode, expectError: false},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			ss := &orchestrationv1alpha1.StormService{
+				Spec: orchestrationv1alpha1.StormServiceSpec{
+					Replicas: tc.replicas,
+					Mode:     tc.mode,
+					Template: orchestrationv1alpha1.RoleSetTemplateSpec{
+						Spec: &orchestrationv1alpha1.RoleSetSpec{},
+					},
+				},
+			}
+			_, err := validator.ValidateCreate(context.Background(), ss)
+			if tc.expectError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestStormServiceValidateCreate_ModeUpdateStrategy(t *testing.T) {
+	validator := &StormServiceCustomDefaulter{}
+
+	tests := map[string]struct {
+		mode         orchestrationv1alpha1.StormServiceMode
+		strategyType orchestrationv1alpha1.StormServiceUpdateStrategyType
+		expectError  bool
+	}{
+		// InPlaceUpdate can only be user-written (the CRD defaults the type to
+		// RollingUpdate), so it is a provable contradiction with Replica mode.
+		"replica with in-place strategy is rejected": {mode: orchestrationv1alpha1.StormServiceReplicaMode, strategyType: orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType, expectError: true},
+		"replica with rolling strategy is allowed":   {mode: orchestrationv1alpha1.StormServiceReplicaMode, strategyType: orchestrationv1alpha1.RollingUpdateStormServiceStrategyType, expectError: false},
+		"replica with empty strategy is allowed":     {mode: orchestrationv1alpha1.StormServiceReplicaMode, strategyType: "", expectError: false},
+		// A RollingUpdate type may come from CRD defaulting rather than the user,
+		// so pooled mode does not reject it; the controller resolves it to in-place.
+		"pooled with rolling strategy is allowed":  {mode: orchestrationv1alpha1.StormServicePooledMode, strategyType: orchestrationv1alpha1.RollingUpdateStormServiceStrategyType, expectError: false},
+		"pooled with in-place strategy is allowed": {mode: orchestrationv1alpha1.StormServicePooledMode, strategyType: orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType, expectError: false},
+		// Undeclared mode keeps choosing the strategy freely.
+		"no mode with in-place strategy is allowed": {mode: "", strategyType: orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType, expectError: false},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			ss := &orchestrationv1alpha1.StormService{
+				Spec: orchestrationv1alpha1.StormServiceSpec{
+					Mode: tc.mode,
+					UpdateStrategy: orchestrationv1alpha1.StormServiceUpdateStrategy{
+						Type: tc.strategyType,
+					},
+					Template: orchestrationv1alpha1.RoleSetTemplateSpec{
+						Spec: &orchestrationv1alpha1.RoleSetSpec{},
+					},
+				},
+			}
+			_, err := validator.ValidateCreate(context.Background(), ss)
+			if tc.expectError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestStormServiceValidateUpdate_ModeUpdateStrategy(t *testing.T) {
+	validator := &StormServiceCustomDefaulter{}
+
+	oldSS := &orchestrationv1alpha1.StormService{
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Mode: orchestrationv1alpha1.StormServiceReplicaMode,
+			UpdateStrategy: orchestrationv1alpha1.StormServiceUpdateStrategy{
+				Type: orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
+			},
+		},
+	}
+	newSS := oldSS.DeepCopy()
+	newSS.Spec.UpdateStrategy.Type = orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType
+
+	_, err := validator.ValidateUpdate(context.Background(), oldSS, newSS)
+	require.Error(t, err)
+}
+
+func TestStormServiceValidateUpdate_ModeReplicas(t *testing.T) {
+	validator := &StormServiceCustomDefaulter{}
+
+	tests := map[string]struct {
+		oldMode     orchestrationv1alpha1.StormServiceMode
+		oldReplicas *int32
+		newMode     orchestrationv1alpha1.StormServiceMode
+		newReplicas *int32
+		expectError bool
+	}{
+		"inferred mode scales up":               {oldReplicas: ptr.To[int32](1), newReplicas: ptr.To[int32](3), expectError: false},
+		"declared replica mode scales up":       {oldMode: orchestrationv1alpha1.StormServiceReplicaMode, oldReplicas: ptr.To[int32](1), newMode: orchestrationv1alpha1.StormServiceReplicaMode, newReplicas: ptr.To[int32](3), expectError: false},
+		"declared pooled mode rejects scale up": {oldMode: orchestrationv1alpha1.StormServicePooledMode, oldReplicas: ptr.To[int32](1), newMode: orchestrationv1alpha1.StormServicePooledMode, newReplicas: ptr.To[int32](3), expectError: true},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			oldSS := &orchestrationv1alpha1.StormService{
+				Spec: orchestrationv1alpha1.StormServiceSpec{
+					Replicas: tc.oldReplicas,
+					Mode:     tc.oldMode,
+				},
+			}
+			newSS := &orchestrationv1alpha1.StormService{
+				Spec: orchestrationv1alpha1.StormServiceSpec{
+					Replicas: tc.newReplicas,
+					Mode:     tc.newMode,
+				},
+			}
+			_, err := validator.ValidateUpdate(context.Background(), oldSS, newSS)
+			if tc.expectError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func volcanoStrategy(minMember int32, minTaskMember map[string]int32) *orchestrationv1alpha1.SchedulingStrategy {
+	return &orchestrationv1alpha1.SchedulingStrategy{
+		VolcanoSchedulingStrategy: &orchestrationv1alpha1.VolcanoSchedulingStrategySpec{
+			MinMember:     minMember,
+			MinTaskMember: minTaskMember,
+		},
+	}
+}
+
+func roleWithStrategy(name string, strategy *orchestrationv1alpha1.SchedulingStrategy) orchestrationv1alpha1.RoleSpec {
+	return orchestrationv1alpha1.RoleSpec{Name: name, SchedulingStrategy: strategy}
+}
+
+func stormServiceWithTemplate(roleSetStrategy *orchestrationv1alpha1.SchedulingStrategy, roles ...orchestrationv1alpha1.RoleSpec) *orchestrationv1alpha1.StormService {
+	ss := &orchestrationv1alpha1.StormService{
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Template: orchestrationv1alpha1.RoleSetTemplateSpec{
+				Spec: &orchestrationv1alpha1.RoleSetSpec{
+					Roles:              roles,
+					SchedulingStrategy: roleSetStrategy,
+				},
+			},
+		},
+	}
+	ss.Name = "test"
+	return ss
+}
+
+func TestStormServiceValidateCreate_SchedulingStrategy(t *testing.T) {
+	validator := &StormServiceCustomDefaulter{}
+	prefill := roleWithStrategy("prefill", nil)
+	decode := roleWithStrategy("decode", nil)
+	const roleSetVolcanoPath = "spec.template.spec.schedulingStrategy.volcanoSchedulingStrategy"
+
+	tests := map[string]struct {
+		roleSetStrategy *orchestrationv1alpha1.SchedulingStrategy
+		roles           []orchestrationv1alpha1.RoleSpec
+		// wantErrs lists substrings that must all appear in the error; empty means the object is valid.
+		wantErrs []string
+	}{
+		"no scheduling strategy": {
+			roles: []orchestrationv1alpha1.RoleSpec{prefill, decode},
+		},
+		"valid volcano gang with minTaskMember": {
+			roleSetStrategy: volcanoStrategy(6, map[string]int32{"prefill": 4, "decode": 2}),
+			roles:           []orchestrationv1alpha1.RoleSpec{prefill, decode},
+		},
+		"valid volcano gang without minTaskMember": {
+			roleSetStrategy: volcanoStrategy(2, nil),
+			roles:           []orchestrationv1alpha1.RoleSpec{prefill, decode},
+		},
+		"minMember above minTaskMember sum is allowed": {
+			roleSetStrategy: volcanoStrategy(8, map[string]int32{"prefill": 4, "decode": 2}),
+			roles:           []orchestrationv1alpha1.RoleSpec{prefill, decode},
+		},
+		"minMember zero is rejected": {
+			roleSetStrategy: volcanoStrategy(0, nil),
+			roles:           []orchestrationv1alpha1.RoleSpec{prefill},
+			wantErrs:        []string{roleSetVolcanoPath + ".minMember", "must be greater than 0"},
+		},
+		"minMember negative is rejected": {
+			roleSetStrategy: volcanoStrategy(-1, nil),
+			roles:           []orchestrationv1alpha1.RoleSpec{prefill},
+			wantErrs:        []string{roleSetVolcanoPath + ".minMember", "must be greater than 0"},
+		},
+		"minTaskMember zero is rejected": {
+			roleSetStrategy: volcanoStrategy(4, map[string]int32{"prefill": 0, "decode": 4}),
+			roles:           []orchestrationv1alpha1.RoleSpec{prefill, decode},
+			wantErrs:        []string{roleSetVolcanoPath + ".minTaskMember[prefill]", "must be greater than 0"},
+		},
+		"minTaskMember negative is rejected": {
+			roleSetStrategy: volcanoStrategy(4, map[string]int32{"prefill": -2}),
+			roles:           []orchestrationv1alpha1.RoleSpec{prefill},
+			wantErrs:        []string{roleSetVolcanoPath + ".minTaskMember[prefill]", "must be greater than 0"},
+		},
+		"minTaskMember key not matching a role is rejected": {
+			roleSetStrategy: volcanoStrategy(4, map[string]int32{"worker": 4}),
+			roles:           []orchestrationv1alpha1.RoleSpec{prefill, decode},
+			wantErrs:        []string{roleSetVolcanoPath + ".minTaskMember[worker]", "must match a role name", "decode, prefill"},
+		},
+		"minMember below minTaskMember sum is rejected": {
+			roleSetStrategy: volcanoStrategy(4, map[string]int32{"prefill": 4, "decode": 2}),
+			roles:           []orchestrationv1alpha1.RoleSpec{prefill, decode},
+			wantErrs:        []string{roleSetVolcanoPath + ".minMember", "sum of minTaskMember values (6)"},
+		},
+		"roleset-level and role-level strategies together are rejected": {
+			roleSetStrategy: volcanoStrategy(2, nil),
+			roles:           []orchestrationv1alpha1.RoleSpec{roleWithStrategy("prefill", volcanoStrategy(1, nil))},
+			wantErrs:        []string{"spec.template.spec.roles[0].schedulingStrategy", "Forbidden", "mutually exclusive"},
+		},
+		"roleset-level and role-level strategies together are rejected for non-volcano schedulers": {
+			roleSetStrategy: &orchestrationv1alpha1.SchedulingStrategy{
+				GodelSchedulingStrategy: &orchestrationv1alpha1.GodelSchedulingStrategySpec{MinMember: 2},
+			},
+			roles: []orchestrationv1alpha1.RoleSpec{
+				prefill,
+				roleWithStrategy("decode", &orchestrationv1alpha1.SchedulingStrategy{
+					CoschedulingSchedulingStrategy: &orchestrationv1alpha1.CoschedulingSchedulingStrategySpec{MinMember: 1},
+				}),
+			},
+			wantErrs: []string{"spec.template.spec.roles[1].schedulingStrategy", "Forbidden"},
+		},
+		"role-level volcano keyed by its own role is allowed": {
+			roles: []orchestrationv1alpha1.RoleSpec{prefill, roleWithStrategy("decode", volcanoStrategy(2, map[string]int32{"decode": 2}))},
+		},
+		"role-level volcano keyed by another role is rejected": {
+			roles:    []orchestrationv1alpha1.RoleSpec{prefill, roleWithStrategy("decode", volcanoStrategy(2, map[string]int32{"prefill": 2}))},
+			wantErrs: []string{"spec.template.spec.roles[1].schedulingStrategy.volcanoSchedulingStrategy.minTaskMember[prefill]", "valid names are: decode"},
+		},
+		"non-volcano strategies are not checked": {
+			roleSetStrategy: &orchestrationv1alpha1.SchedulingStrategy{
+				GodelSchedulingStrategy: &orchestrationv1alpha1.GodelSchedulingStrategySpec{MinMember: 0},
+			},
+			roles: []orchestrationv1alpha1.RoleSpec{prefill},
+		},
+		"all errors are reported together": {
+			roleSetStrategy: volcanoStrategy(0, map[string]int32{"worker": 0}),
+			roles:           []orchestrationv1alpha1.RoleSpec{prefill},
+			wantErrs: []string{
+				roleSetVolcanoPath + ".minMember: Invalid value: 0",
+				roleSetVolcanoPath + ".minTaskMember[worker]: Invalid value: 0",
+				roleSetVolcanoPath + ".minTaskMember[worker]: Invalid value: \"worker\"",
+			},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			ss := stormServiceWithTemplate(tc.roleSetStrategy, tc.roles...)
+			_, err := validator.ValidateCreate(context.Background(), ss)
+			if len(tc.wantErrs) == 0 {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.True(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
+			for _, want := range tc.wantErrs {
+				assert.Contains(t, err.Error(), want)
+			}
+		})
+	}
+}
+
+func TestValidateRoleSetSchedulingStrategy_NilSpec(t *testing.T) {
+	assert.Empty(t, validateRoleSetSchedulingStrategy(nil, field.NewPath("spec")))
+}
+
+// Objects created before the scheduling validation existed must keep accepting updates that do
+// not touch the scheduling configuration, otherwise the controller's finalizer removal would be
+// rejected and the object could never be deleted.
+func TestStormServiceValidateUpdate_SchedulingStrategy(t *testing.T) {
+	validator := &StormServiceCustomDefaulter{}
+	prefill := roleWithStrategy("prefill", nil)
+	invalid := func() *orchestrationv1alpha1.StormService {
+		return stormServiceWithTemplate(volcanoStrategy(0, nil), prefill)
+	}
+	valid := func() *orchestrationv1alpha1.StormService {
+		return stormServiceWithTemplate(volcanoStrategy(1, nil), prefill)
+	}
+
+	tests := map[string]struct {
+		old         *orchestrationv1alpha1.StormService
+		new         *orchestrationv1alpha1.StormService
+		expectError bool
+	}{
+		"unchanged invalid template is allowed": {old: invalid(), new: invalid(), expectError: false},
+		"metadata-only update on invalid template is allowed": {
+			old: invalid(),
+			new: func() *orchestrationv1alpha1.StormService {
+				ss := invalid()
+				ss.Finalizers = []string{"orchestration.aibrix.ai/stormservice-finalizer"}
+				ss.Spec.Replicas = ptr.To[int32](3)
+				return ss
+			}(),
+			expectError: false,
+		},
+		"template change introducing invalid config is rejected": {old: valid(), new: invalid(), expectError: true},
+		"unrelated template change on invalid config is allowed": {
+			old: invalid(),
+			new: func() *orchestrationv1alpha1.StormService {
+				ss := invalid()
+				ss.Spec.Template.Spec.Roles[0].Replicas = ptr.To[int32](2)
+				ss.Spec.Template.Spec.Roles[0].Template.Spec.SchedulerName = "custom"
+				return ss
+			}(),
+			expectError: false,
+		},
+		"role rename with invalid config is rejected": {
+			old: invalid(),
+			new: func() *orchestrationv1alpha1.StormService {
+				ss := invalid()
+				ss.Spec.Template.Spec.Roles[0].Name = "decode"
+				return ss
+			}(),
+			expectError: true,
+		},
+		"role-level strategy change is validated": {
+			old:         stormServiceWithTemplate(nil, prefill),
+			new:         stormServiceWithTemplate(nil, roleWithStrategy("prefill", volcanoStrategy(0, nil))),
+			expectError: true,
+		},
+		"template change fixing invalid config is allowed": {old: invalid(), new: valid(), expectError: false},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := validator.ValidateUpdate(context.Background(), tc.old, tc.new)
+			if tc.expectError {
+				require.Error(t, err)
+				assert.True(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// The defaulter may inject the sidecar into an object that was stored without it (for example
+// because the mutating webhook was unavailable when it was created). That must not count as a
+// scheduling change, or such an object with a pre-existing invalid gang config could never have
+// its finalizer removed.
+func TestStormServiceValidateUpdate_SidecarInjectionDoesNotTriggerSchedulingValidation(t *testing.T) {
+	webhook := &StormServiceCustomDefaulter{}
+
+	stored := stormServiceWithTemplate(volcanoStrategy(0, nil), roleWithStrategy("prefill", nil))
+	stored.Annotations = map[string]string{SidecarInjectionAnnotation: "true"}
+	stored.Finalizers = []string{"orchestration.aibrix.ai/stormservice-finalizer"}
+
+	updated := stored.DeepCopy()
+	updated.Finalizers = nil
+	// The API server runs the defaulter on the new object only.
+	require.NoError(t, webhook.Default(context.Background(), updated))
+	require.NotEqual(t, stored.Spec.Template.Spec, updated.Spec.Template.Spec, "defaulter should have injected the sidecar")
+
+	_, err := webhook.ValidateUpdate(context.Background(), stored, updated)
+	require.NoError(t, err)
+}
+
+func TestSchedulingConfigChanged(t *testing.T) {
+	base := func() *orchestrationv1alpha1.RoleSetSpec {
+		return &orchestrationv1alpha1.RoleSetSpec{
+			SchedulingStrategy: volcanoStrategy(2, nil),
+			Roles: []orchestrationv1alpha1.RoleSpec{
+				roleWithStrategy("prefill", nil),
+				roleWithStrategy("decode", nil),
+			},
+		}
+	}
+
+	tests := map[string]struct {
+		mutate  func(spec *orchestrationv1alpha1.RoleSetSpec)
+		changed bool
+	}{
+		"identical":         {mutate: func(*orchestrationv1alpha1.RoleSetSpec) {}, changed: false},
+		"role replicas":     {mutate: func(s *orchestrationv1alpha1.RoleSetSpec) { s.Roles[0].Replicas = ptr.To[int32](3) }, changed: false},
+		"role pod template": {mutate: func(s *orchestrationv1alpha1.RoleSetSpec) { s.Roles[0].Template.Spec.SchedulerName = "x" }, changed: false},
+		"roleset update strategy": {mutate: func(s *orchestrationv1alpha1.RoleSetSpec) {
+			s.UpdateStrategy = orchestrationv1alpha1.ParallelRoleSetUpdateStrategyType
+		}, changed: false},
+		"roleset strategy minMember": {mutate: func(s *orchestrationv1alpha1.RoleSetSpec) {
+			s.SchedulingStrategy.VolcanoSchedulingStrategy.MinMember = 3
+		}, changed: true},
+		"roleset strategy removed": {mutate: func(s *orchestrationv1alpha1.RoleSetSpec) { s.SchedulingStrategy = nil }, changed: true},
+		"role added":               {mutate: func(s *orchestrationv1alpha1.RoleSetSpec) { s.Roles = append(s.Roles, roleWithStrategy("worker", nil)) }, changed: true},
+		"role renamed":             {mutate: func(s *orchestrationv1alpha1.RoleSetSpec) { s.Roles[1].Name = "worker" }, changed: true},
+		"role strategy added":      {mutate: func(s *orchestrationv1alpha1.RoleSetSpec) { s.Roles[1].SchedulingStrategy = volcanoStrategy(1, nil) }, changed: true},
+		"roles reordered errs on the side of validating": {mutate: func(s *orchestrationv1alpha1.RoleSetSpec) { s.Roles[0], s.Roles[1] = s.Roles[1], s.Roles[0] }, changed: true},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			oldSpec, newSpec := base(), base()
+			tc.mutate(newSpec)
+			assert.Equal(t, tc.changed, schedulingConfigChanged(oldSpec, newSpec))
+		})
+	}
+
+	t.Run("nil specs", func(t *testing.T) {
+		assert.False(t, schedulingConfigChanged(nil, nil))
+		assert.True(t, schedulingConfigChanged(nil, base()))
+		assert.True(t, schedulingConfigChanged(base(), nil))
+	})
+}

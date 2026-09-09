@@ -26,8 +26,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	aibrixconst "github.com/vllm-project/aibrix/pkg/constants"
 	controllerconstants "github.com/vllm-project/aibrix/pkg/controller/constants"
+	draincontroller "github.com/vllm-project/aibrix/pkg/controller/drain"
 	rolesetcontroller "github.com/vllm-project/aibrix/pkg/controller/roleset"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -51,6 +54,14 @@ const (
 	roleSetInPlaceImageV1       = "aibrix/inplace-e2e:v1"
 	roleSetInPlaceImageV2       = "aibrix/inplace-e2e:v2"
 	roleSetInPlaceMissingImage  = "aibrix/inplace-e2e:missing"
+
+	roleSetDrainE2EEnv = "AIBRIX_ROLESET_DRAIN_E2E"
+
+	roleSetHistoricalNodeE2EEnv                  = "AIBRIX_ROLESET_HISTORICAL_NODE_E2E"
+	roleSetHistoricalNodeControllerNamespaceEnv  = "AIBRIX_ROLESET_CONTROLLER_NAMESPACE"
+	roleSetHistoricalNodeControllerDeploymentEnv = "AIBRIX_ROLESET_CONTROLLER_DEPLOYMENT"
+	roleSetHistoricalNodeControllerNamespace     = "aibrix-system"
+	roleSetHistoricalNodeControllerDeployment    = "controller-manager"
 )
 
 var (
@@ -186,6 +197,129 @@ func TestRoleSetInPlaceUpdate(t *testing.T) {
 	})
 }
 
+func TestRoleSetDrainScaleDown(t *testing.T) {
+	if strings.ToLower(strings.TrimSpace(envOrDefault(roleSetDrainE2EEnv, "false"))) != e2eEnabledValue {
+		t.Skipf("set %s=true to run RoleSet drain e2e tests", roleSetDrainE2EEnv)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	k8sClient, dynamicClient := roleSetInPlaceClients(t)
+
+	t.Run("scale down marks pod draining before deletion", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
+		defer cancel()
+
+		name := "roleset-drain-scale-down"
+		drainTimeoutSeconds := int32(5)
+		cleanupRoleSetInPlaceE2E(ctx, t, k8sClient, dynamicClient, name)
+		defer cleanupRoleSetInPlaceE2EAfterTest(ctx, t, k8sClient, dynamicClient, name)
+
+		createDrainRoleSet(ctx, t, dynamicClient, name, roleSetInPlaceImageV1, 2, drainTimeoutSeconds)
+		waitForRoleSetPodsReady(ctx, t, k8sClient, name, 2)
+
+		updateRoleSetReplicas(ctx, t, dynamicClient, name, 1)
+
+		drainingPod := waitForRoleSetPodMatching(ctx, t, k8sClient, name, func(pod *corev1.Pod) bool {
+			annotations := pod.GetAnnotations()
+			return annotations[aibrixconst.PodDrainingAnnotationKey] == "true" &&
+				annotations[aibrixconst.PodDrainStartTimeAnnotationKey] != "" &&
+				annotations[aibrixconst.PodDrainReasonAnnotationKey] == aibrixconst.PodDrainReasonScaleIn &&
+				annotations[aibrixconst.PodDrainTargetActionAnnotationKey] == aibrixconst.PodDrainTargetActionDelete
+		})
+		require.Nil(t, drainingPod.DeletionTimestamp)
+
+		drainHoldUntil := time.Now().Add(2 * time.Second)
+		require.NoError(t, wait.PollUntilContextTimeout(
+			ctx,
+			500*time.Millisecond,
+			3*time.Second,
+			true,
+			func(ctx context.Context) (bool, error) {
+				if time.Now().After(drainHoldUntil) {
+					return true, nil
+				}
+				current, err := k8sClient.CoreV1().Pods(roleSetInPlaceNamespace).Get(ctx, drainingPod.Name, metav1.GetOptions{})
+				if err != nil {
+					return false, err
+				}
+				if current.DeletionTimestamp != nil {
+					return false, fmt.Errorf("draining pod %s was deleted before drain timeout elapsed", current.Name)
+				}
+				return false, nil
+			},
+		))
+
+		waitForRoleSetPodsReady(ctx, t, k8sClient, name, 1)
+		waitForRoleSetEvent(ctx, t, k8sClient, name, draincontroller.EventStarted)
+		waitForRoleSetEvent(ctx, t, k8sClient, name, draincontroller.EventCompleted)
+	})
+}
+
+func TestRoleSetHistoricalNodeReplacementScheduling(t *testing.T) {
+	if strings.ToLower(strings.TrimSpace(envOrDefault(roleSetHistoricalNodeE2EEnv, "false"))) != e2eEnabledValue {
+		t.Skipf("set %s=true to run RoleSet historical-node replacement scheduling e2e tests", roleSetHistoricalNodeE2EEnv)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	k8sClient, dynamicClient := roleSetInPlaceClients(t)
+
+	t.Run("stateful restart keeps slot history", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+
+		name := "roleset-history-stateful"
+		cleanupRoleSetInPlaceE2E(ctx, t, k8sClient, dynamicClient, name)
+		defer cleanupRoleSetInPlaceE2EAfterTest(ctx, t, k8sClient, dynamicClient, name)
+
+		createHistoricalNodeRoleSet(ctx, t, dynamicClient, name, true, 0, 1)
+		initialPod := waitForSingleRoleSetPodReady(ctx, t, k8sClient, name)
+		initialNode := initialPod.Spec.NodeName
+		require.NotEmpty(t, initialNode)
+		waitForRoleSetHistoricalNodeAnnotation(ctx, t, dynamicClient, name, initialNode)
+
+		restartRoleSetController(ctx, t, k8sClient)
+		updateRoleSetContainerImage(ctx, t, dynamicClient, name, roleSetInPlaceImageV2)
+		require.NoError(t, k8sClient.CoreV1().Pods(roleSetInPlaceNamespace).Delete(ctx, initialPod.Name, metav1.DeleteOptions{
+			GracePeriodSeconds: ptr.To[int64](0),
+		}))
+
+		replacementPod := waitForSingleRoleSetPod(ctx, t, k8sClient, name, func(pod *corev1.Pod) bool {
+			return pod.UID != initialPod.UID &&
+				pod.Spec.Containers[0].Image == roleSetInPlaceImageV2 &&
+				hasHistoricalNodeAffinity(pod, initialNode)
+		})
+		require.NotEqual(t, initialPod.Name, replacementPod.Name)
+	})
+
+	t.Run("stateless restart keeps recent role history", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+
+		name := "roleset-history-stateless"
+		cleanupRoleSetInPlaceE2E(ctx, t, k8sClient, dynamicClient, name)
+		defer cleanupRoleSetInPlaceE2EAfterTest(ctx, t, k8sClient, dynamicClient, name)
+
+		createHistoricalNodeRoleSet(ctx, t, dynamicClient, name, false, 1, 0)
+		initialPod := waitForSingleRoleSetPodReady(ctx, t, k8sClient, name)
+		initialNode := initialPod.Spec.NodeName
+		require.NotEmpty(t, initialNode)
+		waitForRoleSetHistoricalNodeAnnotation(ctx, t, dynamicClient, name, initialNode)
+
+		restartRoleSetController(ctx, t, k8sClient)
+		updateRoleSetContainerImage(ctx, t, dynamicClient, name, roleSetInPlaceImageV2)
+
+		waitForRoleSetPodMatching(ctx, t, k8sClient, name, func(pod *corev1.Pod) bool {
+			return pod.UID != initialPod.UID &&
+				pod.Spec.Containers[0].Image == roleSetInPlaceImageV2 &&
+				hasHistoricalNodeAffinity(pod, initialNode)
+		})
+	})
+}
+
 func roleSetInPlaceClients(t *testing.T) (*kubernetes.Clientset, dynamic.Interface) {
 	t.Helper()
 
@@ -262,6 +396,117 @@ func createRoleSet(
 	require.NoError(t, err)
 }
 
+func createHistoricalNodeRoleSet(
+	ctx context.Context,
+	t *testing.T,
+	dynamicClient dynamic.Interface,
+	name string,
+	stateful bool,
+	maxSurgeValue, maxUnavailableValue int32,
+) {
+	t.Helper()
+
+	maxSurge := intstr.FromInt32(maxSurgeValue)
+	maxUnavailable := intstr.FromInt32(maxUnavailableValue)
+	role := orchestrationapi.RoleSpec{
+		Name:     roleSetInPlaceRoleName,
+		Replicas: ptr.To[int32](1),
+		Stateful: stateful,
+		UpdateStrategy: orchestrationapi.RoleUpdateStrategy{
+			Type:           orchestrationapi.RecreateRoleUpdateStrategyType,
+			MaxSurge:       &maxSurge,
+			MaxUnavailable: &maxUnavailable,
+			ReplacementScheduling: &orchestrationapi.RoleReplacementScheduling{
+				HistoricalNode: &orchestrationapi.HistoricalNodeSchedulingPolicy{
+					Mode: orchestrationapi.HistoricalNodeSchedulingPreferred,
+				},
+			},
+		},
+		Template: corev1.PodTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{"app": name},
+			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{
+					Name:            roleSetInPlaceContainerName,
+					Image:           roleSetInPlaceImageV1,
+					ImagePullPolicy: corev1.PullIfNotPresent,
+				}},
+			},
+		},
+	}
+	roleSet := &orchestrationapi.RoleSet{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "orchestration.aibrix.ai/v1alpha1",
+			Kind:       "RoleSet",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: roleSetInPlaceNamespace,
+		},
+		Spec: orchestrationapi.RoleSetSpec{
+			UpdateStrategy: orchestrationapi.ParallelRoleSetUpdateStrategyType,
+			Roles:          []orchestrationapi.RoleSpec{role},
+		},
+	}
+
+	objMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(roleSet)
+	require.NoError(t, err)
+	obj := &unstructured.Unstructured{Object: objMap}
+	_, err = dynamicClient.Resource(roleSetGVR).Namespace(roleSetInPlaceNamespace).Create(ctx, obj, metav1.CreateOptions{})
+	require.NoError(t, err)
+}
+
+func createDrainRoleSet(
+	ctx context.Context,
+	t *testing.T,
+	dynamicClient dynamic.Interface,
+	name, image string,
+	replicas, drainTimeoutSeconds int32,
+) {
+	t.Helper()
+
+	role := orchestrationapi.RoleSpec{
+		Name:     roleSetInPlaceRoleName,
+		Replicas: ptr.To(replicas),
+		Drain: &orchestrationapi.RoleDrainSpec{
+			TimeoutSeconds: ptr.To(drainTimeoutSeconds),
+		},
+		Template: corev1.PodTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{"app": name},
+			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{
+					Name:            roleSetInPlaceContainerName,
+					Image:           image,
+					ImagePullPolicy: corev1.PullIfNotPresent,
+				}},
+			},
+		},
+	}
+	roleSet := &orchestrationapi.RoleSet{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "orchestration.aibrix.ai/v1alpha1",
+			Kind:       "RoleSet",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: roleSetInPlaceNamespace,
+		},
+		Spec: orchestrationapi.RoleSetSpec{
+			UpdateStrategy: orchestrationapi.ParallelRoleSetUpdateStrategyType,
+			Roles:          []orchestrationapi.RoleSpec{role},
+		},
+	}
+
+	objMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(roleSet)
+	require.NoError(t, err)
+	obj := &unstructured.Unstructured{Object: objMap}
+	_, err = dynamicClient.Resource(roleSetGVR).Namespace(roleSetInPlaceNamespace).Create(ctx, obj, metav1.CreateOptions{})
+	require.NoError(t, err)
+}
+
 func updateRoleSetContainerImage(
 	ctx context.Context,
 	t *testing.T,
@@ -288,6 +533,25 @@ func updateRoleSetCommand(
 			commandValues[i] = command[i]
 		}
 		setFirstRoleContainerField(t, obj, "command", commandValues)
+	})
+}
+
+func updateRoleSetReplicas(
+	ctx context.Context,
+	t *testing.T,
+	dynamicClient dynamic.Interface,
+	name string,
+	replicas int32,
+) {
+	t.Helper()
+	updateRoleSet(ctx, t, dynamicClient, name, func(obj *unstructured.Unstructured) {
+		roles, found, err := unstructured.NestedSlice(obj.Object, "spec", "roles")
+		require.NoError(t, err)
+		require.True(t, found)
+		require.NotEmpty(t, roles)
+		role := roles[0].(map[string]interface{})
+		role["replicas"] = int64(replicas)
+		require.NoError(t, unstructured.SetNestedSlice(obj.Object, roles, "spec", "roles"))
 	})
 }
 
@@ -382,6 +646,139 @@ func waitForSingleRoleSetPod(
 		},
 	))
 	return matched
+}
+
+func waitForRoleSetPodMatching(
+	ctx context.Context,
+	t *testing.T,
+	k8sClient *kubernetes.Clientset,
+	roleSetName string,
+	predicate func(*corev1.Pod) bool,
+) *corev1.Pod {
+	t.Helper()
+	var matched *corev1.Pod
+	require.NoError(t, wait.PollUntilContextTimeout(
+		ctx,
+		time.Second,
+		120*time.Second,
+		true,
+		func(ctx context.Context) (bool, error) {
+			pods, err := listRoleSetPods(ctx, k8sClient, roleSetName)
+			if err != nil {
+				return false, err
+			}
+			for i := range pods {
+				if predicate(&pods[i]) {
+					matched = pods[i].DeepCopy()
+					return true, nil
+				}
+			}
+			t.Logf("waiting for matching active pod for RoleSet %s, got %d active pods", roleSetName, len(pods))
+			return false, nil
+		},
+	))
+	return matched
+}
+
+func restartRoleSetController(ctx context.Context, t *testing.T, k8sClient *kubernetes.Clientset) {
+	t.Helper()
+	namespace := envOrDefault(roleSetHistoricalNodeControllerNamespaceEnv, roleSetHistoricalNodeControllerNamespace)
+	deploymentName := envOrDefault(roleSetHistoricalNodeControllerDeploymentEnv, roleSetHistoricalNodeControllerDeployment)
+	deploymentClient := k8sClient.AppsV1().Deployments(namespace)
+	podClient := k8sClient.CoreV1().Pods(namespace)
+
+	deployment, err := deploymentClient.Get(ctx, deploymentName, metav1.GetOptions{})
+	require.NoError(t, err)
+	selector, err := metav1.LabelSelectorAsSelector(deployment.Spec.Selector)
+	require.NoError(t, err)
+	require.NotEmpty(t, selector.String())
+
+	pods, err := podClient.List(ctx, metav1.ListOptions{LabelSelector: selector.String()})
+	require.NoError(t, err)
+	require.NotEmpty(
+		t,
+		pods.Items,
+		"expected controller deployment %s/%s to have at least one pod",
+		namespace,
+		deploymentName,
+	)
+	for i := range pods.Items {
+		require.NoError(t, podClient.Delete(ctx, pods.Items[i].Name, metav1.DeleteOptions{
+			GracePeriodSeconds: ptr.To[int64](0),
+		}))
+	}
+
+	require.NoError(t, wait.PollUntilContextTimeout(
+		ctx,
+		time.Second,
+		120*time.Second,
+		true,
+		func(ctx context.Context) (bool, error) {
+			current, err := deploymentClient.Get(ctx, deploymentName, metav1.GetOptions{})
+			if err != nil {
+				return false, err
+			}
+			return controllerDeploymentAvailable(current), nil
+		},
+	))
+}
+
+func controllerDeploymentAvailable(deployment *appsv1.Deployment) bool {
+	if deployment.Generation > deployment.Status.ObservedGeneration {
+		return false
+	}
+	desired := int32(1)
+	if deployment.Spec.Replicas != nil {
+		desired = *deployment.Spec.Replicas
+	}
+	return deployment.Status.ReadyReplicas >= desired && deployment.Status.AvailableReplicas >= desired
+}
+
+func waitForRoleSetHistoricalNodeAnnotation(
+	ctx context.Context,
+	t *testing.T,
+	dynamicClient dynamic.Interface,
+	roleSetName, nodeName string,
+) {
+	t.Helper()
+	require.NoError(t, wait.PollUntilContextTimeout(
+		ctx,
+		time.Second,
+		60*time.Second,
+		true,
+		func(ctx context.Context) (bool, error) {
+			obj, err := dynamicClient.Resource(roleSetGVR).
+				Namespace(roleSetInPlaceNamespace).
+				Get(ctx, roleSetName, metav1.GetOptions{})
+			if err != nil {
+				return false, err
+			}
+			value := obj.GetAnnotations()[controllerconstants.RoleSetHistoricalNodeBindingsAnnotationKey]
+			return strings.Contains(value, nodeName), nil
+		},
+	), "expected RoleSet %s historical-node annotation to contain node %s", roleSetName, nodeName)
+}
+
+func hasHistoricalNodeAffinity(pod *corev1.Pod, nodeName string) bool {
+	if pod.Spec.Affinity == nil || pod.Spec.Affinity.NodeAffinity == nil {
+		return false
+	}
+	for _, term := range pod.Spec.Affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution {
+		if term.Weight != 100 {
+			continue
+		}
+		for _, expression := range term.Preference.MatchExpressions {
+			if expression.Key != corev1.LabelHostname || expression.Operator != corev1.NodeSelectorOpIn {
+				continue
+			}
+			for _, value := range expression.Values {
+				if value == nodeName {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func waitForRoleSetPodsReady(

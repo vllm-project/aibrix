@@ -51,8 +51,18 @@ spec:
                     - type: string
                     x-kubernetes-int-or-string: true
                 type: object
+              mode:
+                enum:
+                - Replica
+                - Pooled
+                type: string
               paused:
                 type: boolean
+              progressDeadlineSeconds:
+                default: 600
+                format: int32
+                minimum: 1
+                type: integer
               replicas:
                 format: int32
                 type: integer
@@ -120,6 +130,13 @@ spec:
                                   - type: integer
                                   - type: string
                                   x-kubernetes-int-or-string: true
+                              type: object
+                            drain:
+                              properties:
+                                timeoutSeconds:
+                                  format: int32
+                                  minimum: 0
+                                  type: integer
                               type: object
                             name:
                               maxLength: 63
@@ -3934,6 +3951,17 @@ spec:
                                   - type: integer
                                   - type: string
                                   x-kubernetes-int-or-string: true
+                                replacementScheduling:
+                                  properties:
+                                    historicalNode:
+                                      properties:
+                                        mode:
+                                          default: Preferred
+                                          enum:
+                                          - Preferred
+                                          type: string
+                                      type: object
+                                  type: object
                                 type:
                                   default: Recreate
                                   enum:

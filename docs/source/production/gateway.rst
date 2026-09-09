@@ -281,6 +281,36 @@ for deployment requirements and configuration options.
     critical. For any production deployment, explicitly set ``routing-strategy`` to avoid
     relying on the default.
 
+Draining Pods
+-------------
+
+The gateway excludes Pods annotated with ``aibrix.ai/draining=true`` from its
+ready-pod routing candidates. RoleSet and PodSet controllers set this annotation
+before deleting serving Pods when a role configures
+``drain.timeoutSeconds > 0``. This gives the gateway time to stop assigning new
+requests before the controller removes the Pod.
+
+The gateway treats the drain annotation as a routing signal only:
+
+.. code-block:: text
+
+   RoleSet/PodSet controller
+      -> patch Pod: aibrix.ai/draining=true
+      -> patch Pod: aibrix.ai/drain-start-time=<RFC3339 UTC>
+      -> patch Pod: aibrix.ai/drain-reason=scale-in|rollout
+      -> patch Pod: aibrix.ai/drain-target-action=delete
+
+   Gateway pod cache
+      -> observes the Pod update
+      -> filters the Pod out of ready routing candidates
+
+   RoleSet/PodSet controller
+      -> waits for drain.timeoutSeconds
+      -> deletes the Pod
+
+The controller owns the timeout and deletion decision. The gateway does not
+parse ``drain-start-time`` and does not emit drain lifecycle events.
+
 Per-Model Routing Configuration
 ---------------------------------
 
@@ -307,3 +337,11 @@ This allows the same gateway to enforce different routing strategies, prompt-len
 and PD modes per model without deploying separate gateway instances.
 
 For config profile setup and the full annotation schema see :ref:`config_profiles` in the Gateway Routing guide. For production guidance including RPS limiting see :ref:`model_deployment_production`.
+
+.. card:: What's next?
+   :class-card: sd-border-1
+
+   * :doc:`model-deployment`: deploy models behind this gateway
+   * :doc:`observability`: gateway metrics and dashboards
+   * :doc:`../features/pd-disaggregation`: split prefill from decode
+   * :doc:`../designs/aibrix-router`: how routing decisions are made

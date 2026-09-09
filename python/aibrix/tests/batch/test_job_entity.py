@@ -17,9 +17,12 @@
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
+import aibrix.batch.job_entity.batch_job as batch_job_module
 from aibrix.batch.job_entity import (
     AibrixMetadata,
     BatchJob,
@@ -729,6 +732,44 @@ class TestEnsureBatchJobError:
         assert error.line == 13
         assert error.param == "custom_id=req-13"
         assert error.message.startswith("RuntimeError: boom")
+
+    def test_unknown_exception_logs_job_and_cause_context(self):
+        with patch.object(batch_job_module.logger, "error") as mock_error:
+            try:
+                try:
+                    raise ValueError("inner boom")
+                except ValueError as cause:
+                    raise RuntimeError("outer boom") from cause
+            except RuntimeError as exc:
+                error = ensure_batch_job_error(
+                    exc,
+                    BatchJobErrorCode.INTERNAL_ERROR,
+                    job=SimpleNamespace(job_id="job-123"),
+                )
+
+        assert error.message.startswith("RuntimeError: outer boom")
+        mock_error.assert_called_once()
+        _, kwargs = mock_error.call_args
+        assert kwargs["job_id"] == "job-123"
+        assert kwargs["error_type"] == "RuntimeError"
+        assert kwargs["cause_type"] == "ValueError"
+        assert kwargs["cause_message"] == "inner boom"
+        assert "context_type" not in kwargs
+        assert kwargs["exc_info"].__class__ is RuntimeError
+
+    def test_unknown_exception_logs_job_id_without_job_object(self):
+        with patch.object(batch_job_module.logger, "error") as mock_error:
+            try:
+                raise RuntimeError("boom")
+            except RuntimeError as exc:
+                ensure_batch_job_error(
+                    exc,
+                    BatchJobErrorCode.INTERNAL_ERROR,
+                    job_id="job-456",
+                )
+
+        _, kwargs = mock_error.call_args
+        assert kwargs["job_id"] == "job-456"
 
     def test_existing_batch_job_error_keeps_existing_context(self):
         original = BatchJobError(

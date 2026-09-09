@@ -5,17 +5,19 @@ on:
     branches: [ "main", "release-*" ]
     paths:
       - 'python/aibrix/**'
+      - '.github/workflows/python-aibrix-tests.yml'
   pull_request:
     branches: [ "main" ]
     paths:
       - 'python/aibrix/**'
+      - '.github/workflows/python-aibrix-tests.yml'
 jobs:
   lint:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
-    name: Lint
+    name: Python AIBrix Tests (${{ matrix.python-version }})
     steps:
       - name: Check out source repository
         uses: actions/checkout@v6

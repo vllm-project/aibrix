@@ -175,6 +175,40 @@ AIBrix uses conditional compilation to manage ZMQ dependencies:
 - ``metadata-service``: Uses default build
 - ``runtime``: Python component, no ZMQ needed
 
+Routing Behavior
+----------------
+
+The KV sync router applies the same prefix-match-with-stddev-filter selection logic as the
+standard prefix-cache router. It does not apply a load-imbalance gate itself — that concern is
+handled centrally by the gateway, which applies the load-balance router's
+(``algorithms/load_balance.go``) ``ApplyLoadImbalanceGate`` once ahead of whichever strategy
+actually routes the request, KV sync included.
+
+**Prefix match with stddev filter**
+
+Pods are matched against the sync indexer and sorted by prefix-match percentage
+(descending), then by running requests (ascending). The first pod satisfying:
+
+.. code-block:: text
+
+   running_requests ≤ mean + STANDARD_DEVIATION_FACTOR × σ
+
+is selected. If no matched pod meets the threshold, the router falls back to the globally
+least-loaded ready pod.
+
+Relevant environment variables:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 45 15 40
+
+   * - Variable
+     - Default
+     - Description
+   * - ``AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``
+     - ``1``
+     - Controls how aggressively overloaded cache-holding pods are skipped during selection.
+
 Event Types
 -----------
 

@@ -99,11 +99,29 @@ class DiscoveryEndpointSource:
         self._last_refresh_at: Optional[float] = None
 
     async def channels(self) -> List[Channel]:
-        await self._refresh_if_needed()
+        try:
+            await self._refresh_if_needed()
+        except Exception as exc:
+            chained = exc.__cause__ or exc.__context__
+            logger.warning(
+                "Failed to refresh discovered endpoints while listing channels",
+                model=self._model,
+                service_id=self._service_id,
+                error=f"{exc!r}" + (f" (caused by {chained!r})" if chained else ""),
+            )  # type: ignore[call-arg]
         return list(self._channels)
 
     async def capacity(self) -> CapacitySignal:
-        await self._refresh_if_needed()
+        try:
+            await self._refresh_if_needed()
+        except Exception as exc:
+            chained = exc.__cause__ or exc.__context__
+            logger.warning(
+                "Failed to refresh discovered endpoints while reading capacity",
+                model=self._model,
+                service_id=self._service_id,
+                error=f"{exc!r}" + (f" (caused by {chained!r})" if chained else ""),
+            )  # type: ignore[call-arg]
         return CapacitySignal(count=len(self._channels), version=self._version or 0)
 
     async def wait_capacity_change(self, previous: CapacitySignal) -> CapacitySignal:
@@ -125,7 +143,16 @@ class DiscoveryEndpointSource:
         await self.refresh()
 
     async def refresh(self) -> None:
-        await self._refresh_if_needed(force=True)
+        try:
+            await self._refresh_if_needed(force=True)
+        except Exception as exc:
+            chained = exc.__cause__ or exc.__context__
+            logger.warning(
+                "Failed to refresh discovered endpoints",
+                model=self._model,
+                service_id=self._service_id,
+                error=f"{exc!r}" + (f" (caused by {chained!r})" if chained else ""),
+            )  # type: ignore[call-arg]
 
     async def report_channel_error(self, channel_id: str, error: Exception) -> None:
         chained = error.__cause__ or error.__context__

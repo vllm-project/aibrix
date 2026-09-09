@@ -23,6 +23,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/vllm-project/aibrix/pkg/types"
 )
 
 const (
@@ -218,4 +219,29 @@ func TestSetHistogramMetric(t *testing.T) {
 		assert.InDelta(t, 3.0, h.GetSampleSum(), 1e-9)
 	}
 	assert.True(t, found)
+}
+
+func TestBuildMetricLabels_LoraVsBase(t *testing.T) {
+	t.Setenv("POD_NAME", "gw-0")
+	gatewayPodName = "gw-0"
+
+	loraCtx := &types.RoutingContext{Model: "hip-adapter", BaseModel: "qwen3-8b"}
+	names, values := buildMetricLabels(nil, loraCtx, nil)
+	got := zipLabels(names, values)
+	assert.Equal(t, "qwen3-8b", got["model"])
+	assert.Equal(t, "hip-adapter", got["lora_adapter"])
+
+	baseCtx := &types.RoutingContext{Model: "qwen3-8b"}
+	names, values = buildMetricLabels(nil, baseCtx, nil)
+	got = zipLabels(names, values)
+	assert.Equal(t, "qwen3-8b", got["model"])
+	assert.Equal(t, "", got["lora_adapter"])
+}
+
+func zipLabels(names, values []string) map[string]string {
+	out := make(map[string]string, len(names))
+	for i, n := range names {
+		out[n] = values[i]
+	}
+	return out
 }

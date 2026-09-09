@@ -1902,6 +1902,45 @@ func TestModelInFlightTracking(t *testing.T) {
 	require.Equal(t, "dec", gauges[1]["_dir"])
 }
 
+func TestModelInFlightTracking_LoraAdapter(t *testing.T) {
+	var gauges []map[string]string
+	originalIncFn := metrics.IncGaugeMetricFnForTest
+	originalDecFn := metrics.DecGaugeMetricFnForTest
+	defer func() {
+		metrics.IncGaugeMetricFnForTest = originalIncFn
+		metrics.DecGaugeMetricFnForTest = originalDecFn
+	}()
+	recordFn := func(dir string) func(name string, help string, labelNames []string, labelValues ...string) {
+		return func(name string, help string, labelNames []string, labelValues ...string) {
+			if name != metrics.GatewayModelInFlight {
+				return
+			}
+			labels := make(map[string]string, len(labelNames))
+			for i, ln := range labelNames {
+				labels[ln] = labelValues[i]
+			}
+			labels["_dir"] = dir
+			gauges = append(gauges, labels)
+		}
+	}
+	metrics.IncGaugeMetricFnForTest = recordFn("inc")
+	metrics.DecGaugeMetricFnForTest = recordFn("dec")
+
+	st := &processState{
+		model:     "hip-adapter",
+		routerCtx: &types.RoutingContext{Model: "hip-adapter", BaseModel: "qwen3-8b"},
+	}
+	st.trackModelInFlight()
+	require.Len(t, gauges, 1)
+	require.Equal(t, "qwen3-8b", gauges[0]["model"])
+	require.Equal(t, "hip-adapter", gauges[0]["lora_adapter"])
+
+	st.releaseModelInFlight()
+	require.Len(t, gauges, 2)
+	require.Equal(t, "qwen3-8b", gauges[1]["model"])
+	require.Equal(t, "hip-adapter", gauges[1]["lora_adapter"])
+}
+
 func TestModelInFlightTracking_ModelChange(t *testing.T) {
 	var gauges []map[string]string
 	originalIncFn := metrics.IncGaugeMetricFnForTest

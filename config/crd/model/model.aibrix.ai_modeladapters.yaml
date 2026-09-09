@@ -27,12 +27,27 @@ spec:
     - jsonPath: .status.candidates
       name: Candidates
       type: integer
+    - jsonPath: .status.conditions[?(@.type=='Ready')].reason
+      name: Reason
+      type: string
+    - jsonPath: .spec.baseModel
+      name: Base Model
+      priority: 1
+      type: string
     - jsonPath: .spec.artifactURL
       name: Model Path
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
+    - jsonPath: .status.instances
+      name: Instances
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].message
+      name: Message
+      priority: 1
+      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:

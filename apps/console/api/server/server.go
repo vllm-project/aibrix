@@ -150,12 +150,13 @@ func (s *Server) StartGRPC(addr string) error {
 		return fmt.Errorf("resource manager init: %w", err)
 	}
 	s.planner = plannerimpl.NewPlanner(plannerimpl.PlannerConfig{
-		BatchClient: batchClient,
-		Provisioner: rm.Provisioner,
-		Store:       s.store,
-		PolicyType:  plannerimpl.PlanningPolicyType(s.cfg.PlanningPolicy),
-		WorkerCount: s.cfg.PlannerWorkerCount,
-		Injector:    s.injector,
+		BatchClient:     batchClient,
+		Provisioner:     rm.Provisioner,
+		Store:           s.store,
+		PolicyType:      plannerimpl.PlanningPolicyType(s.cfg.PlanningPolicy),
+		WorkerCount:     s.cfg.PlannerWorkerCount,
+		WorkerQueueSize: s.cfg.PlannerWorkerQueueSize,
+		Injector:        s.injector,
 	})
 	if err := s.planner.Recover(context.Background()); err != nil {
 		klog.Warningf("planner recovery failed (continuing without recovered jobs): %v", err)
@@ -168,7 +169,9 @@ func (s *Server) StartGRPC(addr string) error {
 	)
 
 	// Register all service handlers
-	pb.RegisterDeploymentServiceServer(s.grpcServer, handler.NewDeploymentHandler(s.store, deploymentProviders))
+	deploymentHandler := handler.NewDeploymentHandler(s.store, deploymentProviders)
+	deploymentHandler.SetGatewayEndpoint(s.cfg.GatewayEndpoint)
+	pb.RegisterDeploymentServiceServer(s.grpcServer, deploymentHandler)
 	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, s.planner, s.cfg.DefaultBatchModelDeploymentTemplate, s.cfg.DevMode, s.injector))
 	pb.RegisterModelServiceServer(s.grpcServer, handler.NewModelHandler(s.store))
 	pb.RegisterModelDeploymentTemplateServiceServer(s.grpcServer, handler.NewModelDeploymentTemplateHandler(s.store))
