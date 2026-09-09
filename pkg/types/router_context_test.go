@@ -18,11 +18,14 @@ package types
 import (
 	"context"
 	"fmt"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func getBlockChannel(cb func(), duration time.Duration) chan bool {
@@ -219,3 +222,48 @@ var _ = Describe("RouterContext", func() {
 		shouldNotBlock(func() { ctx.GetError() }, 100*time.Millisecond)
 	})
 })
+
+func TestTargetAddressFormatsBackendAddresses(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		host     string
+		expected string
+	}{
+		{name: "IPv4", host: "127.0.0.1", expected: "127.0.0.1"},
+		{name: "DNS", host: "worker.example", expected: "worker.example"},
+		{name: "IPv6", host: "2001:db8::1", expected: "[2001:db8::1]"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pod := &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "worker",
+					Labels: map[string]string{
+						constants.ModelLabelPort: "8000",
+					},
+				},
+				Status: v1.PodStatus{PodIP: test.host},
+			}
+			ctx := NewRoutingContext(context.Background(), "random", "model", "", "request", "")
+			defer ctx.Delete()
+			ctx.SetTargetPod(pod)
+			if actual := ctx.TargetAddress(); actual != test.expected+":8000" {
+				t.Errorf("label port: got %q, want %q", actual, test.expected+":8000")
+			}
+			ctx.SetTargetPort(9000)
+			if actual := ctx.TargetAddress(); actual != test.expected+":9000" {
+				t.Errorf("explicit port: got %q, want %q", actual, test.expected+":9000")
+			}
+
+			claimPod := pod.DeepCopy()
+			claimPod.Annotations = map[string]string{
+				constants.ModelClaimPodAnnotationPrefix + "claimed": `{"model":"model","port":9100}`,
+			}
+			claimCtx := NewRoutingContext(context.Background(), "random", "model", "", "claim-request", "")
+			defer claimCtx.Delete()
+			claimCtx.SetTargetPod(claimPod)
+			if actual := claimCtx.TargetAddress(); actual != test.expected+":9100" {
+				t.Errorf("model claim port: got %q, want %q", actual, test.expected+":9100")
+			}
+		})
+	}
+}

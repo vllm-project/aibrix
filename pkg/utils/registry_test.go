@@ -17,6 +17,12 @@ limitations under the License.
 package utils
 
 import (
+	"runtime"
+	"slices"
+	"strconv"
+	"sync"
+	"testing"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	v1 "k8s.io/api/core/v1"
@@ -227,3 +233,119 @@ var _ = Describe("Registry", func() {
 		})
 	})
 })
+
+// Returned snapshots remain usable while discovery replaces or removes entries.
+func TestRegistrySnapshotStability(t *testing.T) {
+	registry := NewRegistry[string]()
+	testRegistrySnapshotStability(t, registry.Store, registry.Delete, registry.Array)
+}
+
+func TestCustomizedRegistrySnapshotStability(t *testing.T) {
+	registry := NewRegistryWithArrayProvider(func(values []string) *registryStringSnapshot {
+		return &registryStringSnapshot{values: values}
+	})
+	testRegistrySnapshotStability(t, registry.Store, registry.Delete, func() []string {
+		return registry.Array().values
+	})
+	cached := registry.Array()
+	if registry.Array() != cached {
+		t.Fatal("unchanged registry must reuse its customized snapshot")
+	}
+	registry.Delete("missing")
+	if registry.Array() != cached {
+		t.Fatal("deleting an absent key must preserve the cached snapshot")
+	}
+}
+
+type registryStringSnapshot struct {
+	values []string
+}
+
+func testRegistrySnapshotStability(t *testing.T, store func(string, string), remove func(string), array func() []string) {
+	t.Helper()
+	store("worker", "old")
+	original := array()
+	store("worker", "replacement")
+	if current := array(); !slices.Equal(current, []string{"replacement"}) {
+		t.Fatalf("replacement snapshot = %v", current)
+	}
+	if !slices.Equal(original, []string{"old"}) {
+		t.Errorf("replacing an entry changed the previous snapshot: %v", original)
+	}
+
+	store("second", "second")
+	beforeDelete := array()
+	expected := slices.Clone(beforeDelete)
+	remove("worker")
+	if current := array(); !slices.Equal(current, []string{"second"}) {
+		t.Fatalf("deletion snapshot = %v", current)
+	}
+	if !slices.Equal(beforeDelete, expected) {
+		t.Errorf("deleting an entry changed the previous snapshot: got %v, want %v", beforeDelete, expected)
+	}
+
+	beforeAdd := array()
+	store("third", "third")
+	_ = array()
+	if !slices.Equal(beforeAdd, []string{"second"}) {
+		t.Errorf("adding an entry changed the previous snapshot: %v", beforeAdd)
+	}
+}
+
+func TestRegistryConcurrentSnapshots(t *testing.T) {
+	t.Run("base", func(t *testing.T) {
+		registry := NewRegistry[string]()
+		testRegistryConcurrentSnapshots(t, registry.Store, registry.Delete, registry.Len, registry.Array)
+	})
+	t.Run("customized", func(t *testing.T) {
+		registry := NewRegistryWithArrayProvider(func(values []string) *registryStringSnapshot {
+			return &registryStringSnapshot{values: values}
+		})
+		testRegistryConcurrentSnapshots(t, registry.Store, registry.Delete, registry.Len, func() []string {
+			return registry.Array().values
+		})
+	})
+}
+
+func testRegistryConcurrentSnapshots(t *testing.T, store func(string, string), remove func(string), length func() int, array func() []string) {
+	t.Helper()
+	const iterations = 256
+	const keys = 8
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	workers.Add(4)
+	go func() {
+		defer workers.Done()
+		<-start
+		for i := range iterations {
+			key := strconv.Itoa(i % keys)
+			store(key, strconv.Itoa(i))
+			if i%3 == 0 {
+				remove(key)
+			}
+			_ = array()
+			runtime.Gosched()
+		}
+	}()
+	for range 3 {
+		go func() {
+			defer workers.Done()
+			<-start
+			for range iterations {
+				current := array()
+				expected := slices.Clone(current)
+				runtime.Gosched()
+				if !slices.Equal(current, expected) {
+					t.Errorf("published snapshot changed during concurrent updates: got %v, want %v", current, expected)
+					return
+				}
+				if n := length(); n < 0 || n > keys {
+					t.Errorf("registry length outside possible key count: %d", n)
+					return
+				}
+			}
+		}()
+	}
+	close(start)
+	workers.Wait()
+}

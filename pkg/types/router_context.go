@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -344,11 +346,11 @@ func (r *RoutingContext) targetAddress(pod *v1.Pod) string {
 		// back to the default deployment port on this warm pool pod.
 		return ""
 	}
-	return fmt.Sprintf("%v:%v", pod.Status.PodIP, utils.GetModelPortForPod(r.RequestID, pod))
+	return net.JoinHostPort(pod.Status.PodIP, strconv.FormatInt(utils.GetModelPortForPod(r.RequestID, pod), 10))
 }
 
 func (r *RoutingContext) targetAddressWithPort(podIP string, port int) string {
-	return fmt.Sprintf("%v:%v", podIP, port)
+	return net.JoinHostPort(podIP, strconv.Itoa(port))
 }
 
 // MetricModel returns the model name to emit on gateway metrics.

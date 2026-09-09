@@ -22,7 +22,9 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -112,10 +114,9 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 		return fmt.Errorf("failed to prepare prefill payload for request %s: %w", routingCtx.RequestID, err)
 	}
 
-	apiURL := fmt.Sprintf("http://%s:%d%s",
-		prefillPod.Status.PodIP,
-		utils.GetModelPortForPod(routingCtx.RequestID, prefillPod),
-		routingCtx.ReqPath)
+	address := net.JoinHostPort(prefillPod.Status.PodIP,
+		strconv.FormatInt(utils.GetModelPortForPod(routingCtx.RequestID, prefillPod), 10))
+	apiURL := "http://" + address + routingCtx.ReqPath
 
 	fields := []interface{}{
 		"request_id", routingCtx.RequestID,
