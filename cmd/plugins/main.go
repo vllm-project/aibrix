@@ -27,6 +27,7 @@ import (
 	"syscall"
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc/filters"
 	_ "go.uber.org/automaxprocs"
 	"google.golang.org/grpc"
 	"k8s.io/client-go/kubernetes"
@@ -200,7 +201,13 @@ func main() {
 		if err != nil || telApp == nil {
 			klog.Fatalf("Failed to initialize OpenTelemetry: %v", err)
 		}
-		opts = append(opts, grpc.StatsHandler(otelgrpc.NewServerHandler()))
+		opts = append(opts, grpc.StatsHandler(
+			otelgrpc.NewServerHandler(
+				otelgrpc.WithFilter(
+					filters.Not(filters.HealthCheck()),
+				),
+			),
+		))
 	}
 
 	grpcMaxMessageSize := utils.LoadEnvInt(envGRPCMaxMessageSizeBytes, defaultGRPCMaxMessageSizeBytes)
