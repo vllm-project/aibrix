@@ -20,6 +20,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pkoukk/tiktoken-go"
 	tiktoken_loader "github.com/pkoukk/tiktoken-go-loader"
@@ -101,4 +102,34 @@ func TestShuffle(t *testing.T) {
 		}
 		wg.Wait()
 	})
+}
+
+func TestLoadEnvDuration(t *testing.T) {
+	const key = "AIBRIX_TEST_LOAD_ENV_DURATION"
+	const def = 10 * time.Second
+
+	tests := []struct {
+		name  string
+		value string
+		want  time.Duration
+	}{
+		{name: "unset uses default", value: "", want: def},
+		{name: "seconds", value: "45s", want: 45 * time.Second},
+		{name: "compound duration", value: "1m30s", want: 90 * time.Second},
+		{name: "sub-second", value: "250ms", want: 250 * time.Millisecond},
+		{name: "unparsable uses default", value: "soon", want: def},
+		{name: "missing unit uses default", value: "30", want: def},
+		// time.ParseDuration accepts a bare "0" without a unit, so it has to be
+		// rejected by the positivity check rather than by the parser.
+		{name: "bare zero uses default", value: "0", want: def},
+		{name: "zero uses default", value: "0s", want: def},
+		{name: "negative uses default", value: "-1s", want: def},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(key, tt.value)
+			assert.Equal(t, tt.want, LoadEnvDuration(key, def))
+		})
+	}
 }
