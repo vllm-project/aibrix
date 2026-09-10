@@ -1,0 +1,926 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/features/semantic-router.rst:5
+msgid "vLLM Semantic Router"
+msgstr "vLLM Semantic Router"
+
+#: ../../source/features/semantic-router.rst:7
+msgid ""
+"Imagine you're building an AI assistant that handles everything — math "
+"homework, legal questions, creative writing, and medical queries. You "
+"*could* run a single large model for all of it. But what if you could "
+"automatically send math and physics questions to a reasoning-optimized "
+"model, and route everyday conversational queries to a faster, lighter "
+"model — all transparently, with no changes to how your clients make "
+"requests?"
+msgstr ""
+"假设你正在构建一个处理各类请求的 AI 助手——数学作业、法律问题、创意写作和医疗咨询。"
+"你*可以*用单个大模型处理全部请求。但如果能自动把数学和物理问题发给针对推理优化的模型，"
+"把日常对话发给更快、更轻的模型——且对客户端请求方式完全透明、无需改动呢？"
+
+#: ../../source/features/semantic-router.rst:9
+msgid ""
+"That's exactly what the **vLLM Semantic Router** does. It sits in front "
+"of your model fleet and classifies each incoming prompt by topic and "
+"intent, then forwards it to the best-fit model with the right "
+"configuration. Clients always call the same endpoint with the same API — "
+"the router handles the rest."
+msgstr ""
+"这正是 **vLLM Semantic Router** 所做的事。它位于模型集群前方，按主题和意图对每条"
+"入站 prompt 分类，再转发到最匹配的模型并带上合适配置。客户端始终用同一接口和同一 "
+"API 调用——其余由路由器处理。"
+
+#: ../../source/features/semantic-router.rst:11
+msgid ""
+"This guide walks you through deploying the semantic router with AIBrix "
+"and Envoy Gateway, using a concrete example that routes between "
+"``qwen3-8b`` (for STEM and reasoning tasks) and ``llama3-8b-instruct`` "
+"(for business, legal, and general queries)."
+msgstr ""
+"本指南介绍如何在 AIBrix 和 Envoy Gateway 上部署语义路由器，并用一个具体示例在 ``qwen3-8b`` （STEM 与推理任务）和 "
+"``llama3-8b-instruct`` （商务、法律与通用查询）之间路由。"
+
+#: ../../source/features/semantic-router.rst:14
+msgid ""
+"All sample manifests referenced in this guide live under `samples"
+"/semantic-router/ <https://github.com/vllm-"
+"project/aibrix/tree/main/samples/semantic-router>`_ in the AIBrix "
+"repository."
+msgstr ""
+"本指南引用的全部示例清单位于 AIBrix 仓库的 `samples/semantic-router/ <https://github.com/vllm-project/aibrix/tree/main/samples/semantic-router>`_ "
+"。"
+
+#: ../../source/features/semantic-router.rst:19
+msgid "How It Works"
+msgstr "工作原理"
+
+#: ../../source/features/semantic-router.rst:21
+msgid ""
+"The router integrates as an `Envoy External Processor (ext_proc) "
+"<https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/ext_proc_filter>`_"
+" — a gRPC sidecar that Envoy consults before forwarding each request. "
+"Here's the full request path:"
+msgstr ""
+"路由器以 `Envoy External Processor (ext_proc) "
+"<https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/ext_proc_filter>`_"
+" 方式集成——这是一个 gRPC sidecar，Envoy 在转发每个请求前会向其咨询。完整请求路径如下："
+
+#: ../../source/features/semantic-router.rst:39
+msgid "**What the router does for each request:**"
+msgstr "**路由器对每个请求执行的操作：**"
+
+#: ../../source/features/semantic-router.rst:41
+msgid "Receives the full buffered request body from Envoy over gRPC."
+msgstr "通过 gRPC 从 Envoy 接收完整缓冲的请求体。"
+
+#: ../../source/features/semantic-router.rst:42
+msgid "Extracts the user's message content."
+msgstr "提取用户消息内容。"
+
+#: ../../source/features/semantic-router.rst:43
+msgid ""
+"Runs an **embedding-based domain classifier** (or a fast **keyword "
+"scanner** for explicit signals like \"think step by step\")."
+msgstr "运行**基于 embedding 的领域分类器** （或对 \"think step by step\" 这类显式信号使用快速**关键词扫描器** ）。"
+
+#: ../../source/features/semantic-router.rst:44
+msgid "Selects the highest-priority matching decision."
+msgstr "选择优先级最高的匹配决策。"
+
+#: ../../source/features/semantic-router.rst:45
+msgid ""
+"Rewrites the request — replacing the ``model`` field, injecting a system "
+"prompt, and optionally enabling reasoning mode."
+msgstr "改写请求——替换 ``model`` 字段、注入系统提示词，并可选择启用推理模式。"
+
+#: ../../source/features/semantic-router.rst:46
+msgid ""
+"Returns the mutated request to Envoy, which forwards it to the selected "
+"backend."
+msgstr "将改写后的请求返回给 Envoy，再由其转发到所选后端。"
+
+#: ../../source/features/semantic-router.rst:48
+msgid ""
+"The client always uses ``\"model\": \"MoM\"`` (Model of Models). The "
+"router replaces this with the real backend model name. No client changes "
+"are needed."
+msgstr "客户端始终使用 ``\"model\": \"MoM\"`` （Model of Models）。路由器将其替换为真实后端模型名。无需改动客户端。"
+
+#: ../../source/features/semantic-router.rst:53
+msgid "Prerequisites"
+msgstr "前置条件"
+
+#: ../../source/features/semantic-router.rst:55
+msgid "Before you begin, make sure you have:"
+msgstr "开始前请确认具备："
+
+#: ../../source/features/semantic-router.rst:57
+msgid ""
+"A running Kubernetes cluster with `AIBrix installed <https://github.com"
+"/vllm-project/aibrix>`_ (includes Envoy Gateway)."
+msgstr ""
+"已运行的 Kubernetes 集群，并已 `安装 AIBrix <https://github.com/vllm-project/aibrix>`_ "
+"（包含 Envoy Gateway）。"
+
+#: ../../source/features/semantic-router.rst:58
+msgid "``kubectl`` configured to talk to your cluster."
+msgstr "已配置 ``kubectl`` 以访问集群。"
+
+#: ../../source/features/semantic-router.rst:59
+msgid "GPU nodes available for model serving."
+msgstr "可用于模型服务的 GPU 节点。"
+
+#: ../../source/features/semantic-router.rst:60
+msgid "A Hugging Face account and API token (for downloading model weights)."
+msgstr "Hugging Face 账号和 API token（用于下载模型权重）。"
+
+#: ../../source/features/semantic-router.rst:61
+msgid ""
+"Model weights pre-staged on your nodes at ``/data01/models/``, or access "
+"to pull them from HuggingFace."
+msgstr "模型权重已预置在节点的 ``/data01/models/`` ，或可从 Hugging Face 拉取。"
+
+#: ../../source/features/semantic-router.rst:64
+msgid ""
+"The sample uses ``qwen3-8b`` and ``llama3-8b-instruct``. Each model "
+"requires one GPU with at least 48 GB of GPU memory."
+msgstr "示例使用 ``qwen3-8b`` 和 ``llama3-8b-instruct`` 。每个模型需要一块至少 48 GB 显存的 GPU。"
+
+#: ../../source/features/semantic-router.rst:69
+msgid "Step 1 — Create the Namespace and Credentials"
+msgstr "步骤 1 — 创建命名空间和凭证"
+
+#: ../../source/features/semantic-router.rst:71
+msgid ""
+"Create a dedicated namespace for the semantic router, then store your "
+"Hugging Face token as a Kubernetes secret (used by the router to download"
+" its embedding model):"
+msgstr ""
+"为语义路由器创建专用命名空间，然后将 Hugging Face token 存为 Kubernetes secret"
+"（路由器用于下载其 embedding 模型）："
+
+#: ../../source/features/semantic-router.rst:85
+msgid "Step 2 — Deploy the Backend Model Services"
+msgstr "步骤 2 — 部署后端模型服务"
+
+#: ../../source/features/semantic-router.rst:87
+msgid ""
+"The router needs the actual model servers to be running before it can "
+"forward requests. Deploy both backends:"
+msgstr "路由器转发请求前，实际模型服务必须已在运行。部署两个后端："
+
+#: ../../source/features/semantic-router.rst:94
+msgid ""
+"Each manifest creates a ``Deployment`` (3 replicas) and a ``Service`` in "
+"the ``default`` namespace. The AIBrix controller automatically creates an"
+" ``HTTPRoute`` for each model so Envoy Gateway can discover them."
+msgstr ""
+"每个清单在 ``default`` 命名空间中创建一个 ``Deployment`` （3 个副本）和一个 ``Service`` 。AIBrix "
+"控制器会为每个模型自动创建 ``HTTPRoute`` ，以便 Envoy Gateway 发现它们。"
+
+#: ../../source/features/semantic-router.rst:96
+msgid "Wait until both deployments are ready before proceeding:"
+msgstr "继续之前请等待两个部署都就绪："
+
+#: ../../source/features/semantic-router.rst:106
+msgid "Step 3 — Deploy the Semantic Router"
+msgstr "步骤 3 — 部署语义路由器"
+
+#: ../../source/features/semantic-router.rst:108
+msgid "Apply the router's ConfigMap (routing rules) and the router Deployment:"
+msgstr "应用路由器的 ConfigMap（路由规则）和路由器 Deployment："
+
+#: ../../source/features/semantic-router.rst:115
+msgid ""
+"The router container (``ghcr.io/vllm-project/semantic-"
+"router/extproc:latest``) downloads its embedding model at startup — allow"
+" up to **60 seconds** for this. You can watch progress with:"
+msgstr ""
+"路由器容器（``ghcr.io/vllm-project/semantic-router/extproc:latest`` ）在启动时下载 embedding "
+"模型——请预留最多 **60 秒** 。可用以下方式查看进度："
+
+#: ../../source/features/semantic-router.rst:121
+msgid "The router exposes three ports:"
+msgstr "路由器暴露三个端口："
+
+#: ../../source/features/semantic-router.rst:127
+msgid "Port"
+msgstr "端口"
+
+#: ../../source/features/semantic-router.rst:128
+msgid "Protocol"
+msgstr "协议"
+
+#: ../../source/features/semantic-router.rst:129
+msgid "Purpose"
+msgstr "用途"
+
+#: ../../source/features/semantic-router.rst:130
+msgid "``50051``"
+msgstr "``50051``"
+
+#: ../../source/features/semantic-router.rst:131
+msgid "gRPC"
+msgstr "gRPC"
+
+#: ../../source/features/semantic-router.rst:132
+msgid "ext_proc interface — receives requests from Envoy"
+msgstr "ext_proc 接口——接收来自 Envoy 的请求"
+
+#: ../../source/features/semantic-router.rst:133
+msgid "``8080``"
+msgstr "``8080``"
+
+#: ../../source/features/semantic-router.rst:134
+#: ../../source/features/semantic-router.rst:137
+msgid "HTTP"
+msgstr "HTTP"
+
+#: ../../source/features/semantic-router.rst:135
+msgid "Classification REST API (useful for debugging)"
+msgstr "分类 REST API（便于调试）"
+
+#: ../../source/features/semantic-router.rst:136
+msgid "``9190``"
+msgstr "``9190``"
+
+#: ../../source/features/semantic-router.rst:138
+msgid "Prometheus metrics"
+msgstr "Prometheus 指标"
+
+#: ../../source/features/semantic-router.rst:143
+msgid "Step 4 — Wire the Router into Envoy Gateway"
+msgstr "步骤 4 — 将路由器接入 Envoy Gateway"
+
+#: ../../source/features/semantic-router.rst:145
+msgid ""
+"Apply the Gateway API resources that register the semantic router as an "
+"ext_proc filter on the Envoy listener:"
+msgstr "应用 Gateway API 资源，将语义路由器注册为 Envoy 监听器上的 ext_proc 过滤器："
+
+#: ../../source/features/semantic-router.rst:151
+msgid "This applies an ``EnvoyPatchPolicy`` with two JSON patches:"
+msgstr "这会应用带两个 JSON patch 的 ``EnvoyPatchPolicy`` ："
+
+#: ../../source/features/semantic-router.rst:153
+msgid ""
+"**Patch 1** adds the ``semantic-router-extproc`` HTTP filter to Envoy's "
+"filter chain. It uses ``BUFFERED`` body mode so Envoy accumulates the "
+"complete request body before handing it to the router — no streaming "
+"complexity."
+msgstr ""
+"**Patch 1** 将 ``semantic-router-extproc`` HTTP 过滤器加入 Envoy 的过滤器链。"
+"它使用 ``BUFFERED`` body 模式，使 Envoy 在把请求交给路由器前累积完整请求体——"
+"无需处理流式复杂性。"
+
+#: ../../source/features/semantic-router.rst:155
+msgid ""
+"**Patch 2** registers the router as an upstream cluster (``STRICT_DNS``, "
+"HTTP/2 for gRPC) so Envoy knows how to reach it at ``semantic-router"
+".vllm-semantic-router-system.svc.cluster.local:50051``."
+msgstr ""
+"**Patch 2** 将路由器注册为上游集群（``STRICT_DNS`` ，gRPC 使用 HTTP/2），以便 Envoy 能访问 ``semantic-router.vllm-semantic-router-system.svc.cluster.local:50051`` "
+"。"
+
+#: ../../source/features/semantic-router.rst:157
+msgid "Verify the patch was accepted:"
+msgstr "确认 patch 已被接受："
+
+#: ../../source/features/semantic-router.rst:163
+msgid "Look for ``Status: True`` under ``Conditions``."
+msgstr "在 ``Conditions`` 下查找 ``Status: True`` 。"
+
+#: ../../source/features/semantic-router.rst:168
+msgid "Step 5 — Access the Gateway"
+msgstr "步骤 5 — 访问网关"
+
+#: ../../source/features/semantic-router.rst:170
+msgid "Port-forward the Envoy service to test locally:"
+msgstr "将 Envoy 服务端口转发到本地以便测试："
+
+#: ../../source/features/semantic-router.rst:180
+msgid "In production, use the LoadBalancer external IP instead:"
+msgstr "生产环境请改用 LoadBalancer 外部 IP："
+
+#: ../../source/features/semantic-router.rst:191
+msgid "Step 6 — Test Semantic Routing"
+msgstr "步骤 6 — 测试语义路由"
+
+#: ../../source/features/semantic-router.rst:193
+msgid ""
+"All requests use the virtual model name ``\"MoM\"`` (Model of Models). "
+"The router transparently selects the right backend."
+msgstr "所有请求使用虚拟模型名 ``\"MoM\"`` （Model of Models）。路由器透明地选择正确后端。"
+
+#: ../../source/features/semantic-router.rst:195
+msgid "**Math question → routed to qwen3-8b (reasoning enabled)**"
+msgstr "**数学问题 → 路由到 qwen3-8b（启用推理）**"
+
+#: ../../source/features/semantic-router.rst:209
+msgid ""
+"The router classifies this as the ``math`` domain, selects ``qwen3-8b``, "
+"injects a mathematics expert system prompt, and enables chain-of-thought "
+"reasoning (``chat_template_kwargs.enable_thinking: true``)."
+msgstr ""
+"路由器将其分类为 ``math`` 领域，选择 ``qwen3-8b`` ，注入数学专家系统提示词，并启用思维链推理（``chat_template_kwargs.enable_thinking: "
+"true`` ）。"
+
+#: ../../source/features/semantic-router.rst:211
+msgid "**Business question → routed to llama3-8b-instruct (standard mode)**"
+msgstr "**商务问题 → 路由到 llama3-8b-instruct（标准模式）**"
+
+#: ../../source/features/semantic-router.rst:225
+msgid "**Explicit reasoning trigger → overrides domain classification**"
+msgstr "**显式推理触发 → 覆盖领域分类**"
+
+#: ../../source/features/semantic-router.rst:227
+msgid ""
+"If the user explicitly asks for step-by-step thinking, the ``thinking`` "
+"keyword rule fires (priority 15, highest in the config) regardless of the"
+" detected domain:"
+msgstr ""
+"若用户明确要求逐步思考，无论检测到的领域是什么，``thinking`` 关键词规则都会触发"
+"（优先级 15，配置中最高）："
+
+#: ../../source/features/semantic-router.rst:241
+msgid ""
+"Even though this is a business query, \"walk me through\" matches the "
+"``thinking`` keyword set, so it routes to ``qwen3-8b`` with reasoning "
+"enabled."
+msgstr ""
+"尽管这是商务查询，\"walk me through\" 匹配 ``thinking`` 关键词集，因此路由到 "
+"``qwen3-8b`` 并启用推理。"
+
+#: ../../source/features/semantic-router.rst:246
+msgid "Routing Rules Reference"
+msgstr "路由规则参考"
+
+#: ../../source/features/semantic-router.rst:248
+msgid ""
+"The complete routing table for the sample (15 rules, defined in "
+"`semantic-router-configmap.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/semantic-router/semantic-router-"
+"configmap.yaml>`_):"
+msgstr ""
+"示例的完整路由表（15 条规则，定义于 `semantic-router-configmap.yaml <https://github.com/vllm-project/aibrix/blob/main/samples/semantic-router/semantic-router-configmap.yaml>`_ "
+"）："
+
+#: ../../source/features/semantic-router.rst:254
+msgid "Domain / Keyword"
+msgstr "领域 / 关键词"
+
+#: ../../source/features/semantic-router.rst:255
+msgid "Match Type"
+msgstr "匹配类型"
+
+#: ../../source/features/semantic-router.rst:256
+msgid "Model"
+msgstr "模型"
+
+#: ../../source/features/semantic-router.rst:257
+msgid "Reasoning"
+msgstr "推理"
+
+#: ../../source/features/semantic-router.rst:258
+msgid "Priority"
+msgstr "优先级"
+
+#: ../../source/features/semantic-router.rst:259
+msgid ""
+"``thinking`` (keywords: *step by step, think step, chain of thought, "
+"reason through, show your work, walk me through*)"
+msgstr ""
+"``thinking`` （关键词：*step by step, think step, chain of thought, reason through, "
+"show your work, walk me through*）"
+
+#: ../../source/features/semantic-router.rst:260
+msgid "keyword"
+msgstr "keyword"
+
+#: ../../source/features/semantic-router.rst:261
+#: ../../source/features/semantic-router.rst:266
+#: ../../source/features/semantic-router.rst:271
+#: ../../source/features/semantic-router.rst:276
+#: ../../source/features/semantic-router.rst:281
+#: ../../source/features/semantic-router.rst:286
+#: ../../source/features/semantic-router.rst:291
+msgid "``qwen3-8b``"
+msgstr "``qwen3-8b``"
+
+#: ../../source/features/semantic-router.rst:262
+#: ../../source/features/semantic-router.rst:267
+#: ../../source/features/semantic-router.rst:272
+#: ../../source/features/semantic-router.rst:277
+#: ../../source/features/semantic-router.rst:282
+#: ../../source/features/semantic-router.rst:287
+#: ../../source/features/semantic-router.rst:292
+msgid "on"
+msgstr "on"
+
+#: ../../source/features/semantic-router.rst:263
+msgid "15"
+msgstr "15"
+
+#: ../../source/features/semantic-router.rst:264
+msgid "``math``"
+msgstr "``math``"
+
+#: ../../source/features/semantic-router.rst:265
+#: ../../source/features/semantic-router.rst:270
+#: ../../source/features/semantic-router.rst:275
+#: ../../source/features/semantic-router.rst:280
+#: ../../source/features/semantic-router.rst:285
+#: ../../source/features/semantic-router.rst:290
+#: ../../source/features/semantic-router.rst:295
+#: ../../source/features/semantic-router.rst:300
+#: ../../source/features/semantic-router.rst:305
+#: ../../source/features/semantic-router.rst:310
+#: ../../source/features/semantic-router.rst:315
+#: ../../source/features/semantic-router.rst:320
+#: ../../source/features/semantic-router.rst:325
+#: ../../source/features/semantic-router.rst:330
+msgid "domain"
+msgstr "domain"
+
+#: ../../source/features/semantic-router.rst:268
+#: ../../source/features/semantic-router.rst:273
+#: ../../source/features/semantic-router.rst:278
+#: ../../source/features/semantic-router.rst:283
+#: ../../source/features/semantic-router.rst:288
+#: ../../source/features/semantic-router.rst:293
+#: ../../source/features/semantic-router.rst:298
+#: ../../source/features/semantic-router.rst:303
+#: ../../source/features/semantic-router.rst:308
+#: ../../source/features/semantic-router.rst:313
+#: ../../source/features/semantic-router.rst:318
+#: ../../source/features/semantic-router.rst:323
+#: ../../source/features/semantic-router.rst:328
+msgid "10"
+msgstr "10"
+
+#: ../../source/features/semantic-router.rst:269
+msgid "``physics``"
+msgstr "``physics``"
+
+#: ../../source/features/semantic-router.rst:274
+msgid "``computer science``"
+msgstr "``computer science``"
+
+#: ../../source/features/semantic-router.rst:279
+msgid "``biology``"
+msgstr "``biology``"
+
+#: ../../source/features/semantic-router.rst:284
+msgid "``chemistry``"
+msgstr "``chemistry``"
+
+#: ../../source/features/semantic-router.rst:289
+msgid "``engineering``"
+msgstr "``engineering``"
+
+#: ../../source/features/semantic-router.rst:294
+msgid "``business``"
+msgstr "``business``"
+
+#: ../../source/features/semantic-router.rst:296
+#: ../../source/features/semantic-router.rst:301
+#: ../../source/features/semantic-router.rst:306
+#: ../../source/features/semantic-router.rst:311
+#: ../../source/features/semantic-router.rst:316
+#: ../../source/features/semantic-router.rst:321
+#: ../../source/features/semantic-router.rst:326
+#: ../../source/features/semantic-router.rst:331
+msgid "``llama3-8b-instruct``"
+msgstr "``llama3-8b-instruct``"
+
+#: ../../source/features/semantic-router.rst:297
+#: ../../source/features/semantic-router.rst:302
+#: ../../source/features/semantic-router.rst:307
+#: ../../source/features/semantic-router.rst:312
+#: ../../source/features/semantic-router.rst:317
+#: ../../source/features/semantic-router.rst:322
+#: ../../source/features/semantic-router.rst:327
+#: ../../source/features/semantic-router.rst:332
+msgid "off"
+msgstr "off"
+
+#: ../../source/features/semantic-router.rst:299
+msgid "``law``"
+msgstr "``law``"
+
+#: ../../source/features/semantic-router.rst:304
+msgid "``psychology``"
+msgstr "``psychology``"
+
+#: ../../source/features/semantic-router.rst:309
+msgid "``health``"
+msgstr "``health``"
+
+#: ../../source/features/semantic-router.rst:314
+msgid "``economics``"
+msgstr "``economics``"
+
+#: ../../source/features/semantic-router.rst:319
+msgid "``history``"
+msgstr "``history``"
+
+#: ../../source/features/semantic-router.rst:324
+msgid "``philosophy``"
+msgstr "``philosophy``"
+
+#: ../../source/features/semantic-router.rst:329
+msgid "``other`` (catch-all)"
+msgstr "``other`` （兜底）"
+
+#: ../../source/features/semantic-router.rst:333
+msgid "5"
+msgstr "5"
+
+#: ../../source/features/semantic-router.rst:335
+msgid ""
+"Higher priority rules are evaluated first. The ``thinking`` keyword rule "
+"(priority 15) always overrides domain rules (priority 10)."
+msgstr ""
+"优先级更高的规则先评估。``thinking`` 关键词规则（优先级 15）始终覆盖领域规则"
+"（优先级 10）。"
+
+#: ../../source/features/semantic-router.rst:340
+msgid "Understanding the Configuration"
+msgstr "理解配置"
+
+#: ../../source/features/semantic-router.rst:342
+msgid ""
+"All routing behavior is controlled by `semantic-router-configmap.yaml "
+"<https://github.com/vllm-project/aibrix/blob/main/samples/semantic-router"
+"/semantic-router-configmap.yaml>`_. Here's how the key pieces fit "
+"together."
+msgstr ""
+"全部路由行为由 `semantic-router-configmap.yaml "
+"<https://github.com/vllm-project/aibrix/blob/main/samples/semantic-router"
+"/semantic-router-configmap.yaml>`_ 控制。以下是各关键部分如何配合。"
+
+#: ../../source/features/semantic-router.rst:345
+msgid "Decision Structure"
+msgstr "决策结构"
+
+#: ../../source/features/semantic-router.rst:347
+msgid "Each routing decision looks like this:"
+msgstr "每条路由决策如下："
+
+#: ../../source/features/semantic-router.rst:372
+msgid "Rule Types"
+msgstr "规则类型"
+
+#: ../../source/features/semantic-router.rst:378
+msgid "Type"
+msgstr "类型"
+
+#: ../../source/features/semantic-router.rst:379
+msgid "How it matches"
+msgstr "匹配方式"
+
+#: ../../source/features/semantic-router.rst:380
+msgid "``domain``"
+msgstr "``domain``"
+
+#: ../../source/features/semantic-router.rst:381
+msgid ""
+"Embedding-based cosine similarity between the prompt and a named domain "
+"label. The router picks the domain whose embedding is closest to the "
+"prompt."
+msgstr ""
+"prompt 与命名领域标签之间基于 embedding 的余弦相似度。路由器选择 embedding 最接近 "
+"prompt 的领域。"
+
+#: ../../source/features/semantic-router.rst:382
+msgid "``keyword``"
+msgstr "``keyword``"
+
+#: ../../source/features/semantic-router.rst:383
+msgid ""
+"Fast exact substring search (case-insensitive by default). Matches if any"
+" keyword in the set appears anywhere in the prompt."
+msgstr ""
+"快速精确子串搜索（默认不区分大小写）。集合中任一关键词出现在 prompt 任意位置即匹配。"
+
+#: ../../source/features/semantic-router.rst:386
+msgid "Priority Strategy"
+msgstr "优先级策略"
+
+#: ../../source/features/semantic-router.rst:388
+msgid "With ``strategy: priority`` (the default):"
+msgstr "使用 ``strategy: priority`` （默认）时："
+
+#: ../../source/features/semantic-router.rst:390
+msgid "All decisions whose rules match the prompt are collected."
+msgstr "收集规则匹配该 prompt 的全部决策。"
+
+#: ../../source/features/semantic-router.rst:391
+msgid "The decision with the **highest ``priority`` value** wins."
+msgstr "**``priority`` 值最高** 的决策胜出。"
+
+#: ../../source/features/semantic-router.rst:392
+msgid "Ties are broken by **declaration order** in the YAML — first wins."
+msgstr "平局按 YAML 中的**声明顺序** 打破——先声明者胜出。"
+
+#: ../../source/features/semantic-router.rst:395
+msgid "Signals Catalog"
+msgstr "信号目录"
+
+#: ../../source/features/semantic-router.rst:397
+msgid ""
+"Every domain or keyword set used in rules must be declared under "
+"``routing.signals``:"
+msgstr "规则中使用的每个领域或关键词集必须在 ``routing.signals`` 下声明："
+
+#: ../../source/features/semantic-router.rst:421
+msgid "Model Reasoning Activation"
+msgstr "模型推理激活"
+
+#: ../../source/features/semantic-router.rst:423
+msgid ""
+"The ``use_reasoning: true/false`` flag on a ``modelRef`` controls whether"
+" the router injects reasoning-activation parameters into the forwarded "
+"request. Different model families use different parameters."
+msgstr ""
+"``modelRef`` 上的 ``use_reasoning: true/false`` 标志控制路由器是否向转发请求注入"
+"推理激活参数。不同模型族使用不同参数。"
+
+#: ../../source/features/semantic-router.rst:426
+msgid "Reasoning Families"
+msgstr "推理族"
+
+#: ../../source/features/semantic-router.rst:428
+msgid "Defined under ``providers.defaults.reasoning_families``:"
+msgstr "定义在 ``providers.defaults.reasoning_families`` 下："
+
+#: ../../source/features/semantic-router.rst:447
+msgid "Assigning a Reasoning Family to a Model"
+msgstr "为模型指定推理族"
+
+#: ../../source/features/semantic-router.rst:466
+msgid ""
+"When ``use_reasoning: true`` fires for ``qwen3-8b``, the router adds to "
+"the outbound request body:"
+msgstr "当 ``qwen3-8b`` 触发 ``use_reasoning: true`` 时，路由器向出站请求体添加："
+
+#: ../../source/features/semantic-router.rst:476
+msgid ""
+"vLLM reads this field and activates Qwen3's built-in chain-of-thought "
+"path."
+msgstr "vLLM 读取该字段并激活 Qwen3 内置的思维链路径。"
+
+#: ../../source/features/semantic-router.rst:481
+msgid "Plugins"
+msgstr "插件"
+
+#: ../../source/features/semantic-router.rst:483
+msgid "Plugins are applied in declaration order after a decision is selected."
+msgstr "选定决策后，插件按声明顺序应用。"
+
+#: ../../source/features/semantic-router.rst:486
+msgid "System Prompt Plugin"
+msgstr "系统提示词插件"
+
+#: ../../source/features/semantic-router.rst:488
+msgid "Injects or replaces the system message in ``messages[]``:"
+msgstr "注入或替换 ``messages[]`` 中的系统消息："
+
+#: ../../source/features/semantic-router.rst:503
+msgid "Mode"
+msgstr "模式"
+
+#: ../../source/features/semantic-router.rst:504
+msgid "Behaviour"
+msgstr "行为"
+
+#: ../../source/features/semantic-router.rst:505
+msgid "``replace``"
+msgstr "``replace``"
+
+#: ../../source/features/semantic-router.rst:506
+msgid "Removes any existing system message and prepends a new one."
+msgstr "移除已有系统消息并在开头插入新的系统消息。"
+
+#: ../../source/features/semantic-router.rst:507
+msgid "``prepend``"
+msgstr "``prepend``"
+
+#: ../../source/features/semantic-router.rst:508
+msgid "Inserts before existing system messages."
+msgstr "插入到已有系统消息之前。"
+
+#: ../../source/features/semantic-router.rst:509
+msgid "``append``"
+msgstr "``append``"
+
+#: ../../source/features/semantic-router.rst:510
+msgid "Inserts after existing system messages."
+msgstr "插入到已有系统消息之后。"
+
+#: ../../source/features/semantic-router.rst:513
+msgid "Semantic Cache Plugin"
+msgstr "语义缓存插件"
+
+#: ../../source/features/semantic-router.rst:515
+msgid ""
+"Caches responses by prompt embedding similarity. On a cache hit the "
+"router short-circuits the backend call and returns the cached response "
+"directly — great for frequently repeated queries:"
+msgstr ""
+"按 prompt embedding 相似度缓存响应。命中缓存时，路由器短路后端调用并直接返回缓存响应——"
+"适合频繁重复的查询："
+
+#: ../../source/features/semantic-router.rst:525
+msgid ""
+"Global cache settings (TTL, max entries, eviction) are configured under "
+"``global.stores.semantic_cache``:"
+msgstr "全局缓存设置（TTL、最大条目数、驱逐）配置在 ``global.stores.semantic_cache`` 下："
+
+#: ../../source/features/semantic-router.rst:541
+msgid ""
+"The semantic cache is particularly valuable for domains like ``health`` "
+"(threshold 0.95 — very strict) and ``other`` (threshold 0.75 — more "
+"permissive), where many users ask similar questions with slightly "
+"different wording."
+msgstr ""
+"语义缓存在 ``health`` （阈值 0.95——非常严格）和 ``other`` （阈值 0.75——更宽松）这类领域尤其有用，许多用户会用略有不同的措辞提出相似问题。"
+
+#: ../../source/features/semantic-router.rst:546
+msgid "Adding a New Route"
+msgstr "添加新路由"
+
+#: ../../source/features/semantic-router.rst:548
+msgid ""
+"Adding a new topic (e.g., \"cybersecurity\") takes three steps and a "
+"config reload:"
+msgstr "添加新主题（例如 \"cybersecurity\"）需要三步并重新加载配置："
+
+#: ../../source/features/semantic-router.rst:550
+msgid "**1. Declare the domain** under ``routing.signals.domains``:"
+msgstr "**1. 声明领域** ，写在 ``routing.signals.domains`` 下："
+
+#: ../../source/features/semantic-router.rst:556
+msgid "**2. Add the decision** under ``routing.decisions``:"
+msgstr "**2. 添加决策** ，写在 ``routing.decisions`` 下："
+
+#: ../../source/features/semantic-router.rst:578
+msgid "**3. Apply and reload**:"
+msgstr "**3. 应用并重新加载：**"
+
+#: ../../source/features/semantic-router.rst:590
+msgid "Observability"
+msgstr "可观测性"
+
+#: ../../source/features/semantic-router.rst:592
+msgid ""
+"The router exposes Prometheus metrics on port ``9190``. To scrape them "
+"locally:"
+msgstr "路由器在端口 ``9190`` 暴露 Prometheus 指标。要在本地抓取："
+
+#: ../../source/features/semantic-router.rst:599
+msgid ""
+"Then open ``http://localhost:9190/metrics`` in your browser or point "
+"Prometheus at it."
+msgstr "然后在浏览器中打开 ``http://localhost:9190/metrics`` ，或让 Prometheus 指向它。"
+
+#: ../../source/features/semantic-router.rst:601
+msgid ""
+"To enable distributed tracing (OpenTelemetry / Jaeger), set the following"
+" in the ConfigMap:"
+msgstr "要启用分布式追踪（OpenTelemetry / Jaeger），在 ConfigMap 中设置："
+
+#: ../../source/features/semantic-router.rst:618
+msgid "Troubleshooting"
+msgstr "故障排查"
+
+#: ../../source/features/semantic-router.rst:620
+msgid "**Router pod is slow to start**"
+msgstr "**路由器 Pod 启动较慢**"
+
+#: ../../source/features/semantic-router.rst:622
+msgid ""
+"The embedding model download can take up to 60 seconds. The startup probe"
+" retries for up to 60 minutes (``failureThreshold: 360``), so the pod "
+"will eventually become ready. Watch the logs:"
+msgstr ""
+"embedding 模型下载最多可能需要 60 秒。启动探针最多重试 60 分钟（``failureThreshold: 360`` ），因此 "
+"Pod 最终会就绪。查看日志："
+
+#: ../../source/features/semantic-router.rst:628
+msgid "**Envoy can't reach the router**"
+msgstr "**Envoy 无法访问路由器**"
+
+#: ../../source/features/semantic-router.rst:630
+msgid "Verify the EnvoyPatchPolicy was accepted:"
+msgstr "确认 EnvoyPatchPolicy 已被接受："
+
+#: ../../source/features/semantic-router.rst:636
+msgid "Check that the router Service is reachable:"
+msgstr "检查路由器 Service 是否可达："
+
+#: ../../source/features/semantic-router.rst:642
+msgid "**All requests go to the fallback model**"
+msgstr "**所有请求都落到兜底模型**"
+
+#: ../../source/features/semantic-router.rst:644
+msgid ""
+"The ``other_decision`` (priority 5) catches any prompt that doesn't match"
+" a known domain. Check whether the domain embeddings are loaded by "
+"querying the classification API directly:"
+msgstr "``other_decision`` （优先级 5）捕获任何未匹配已知领域的 prompt。可直接查询分类 API，确认领域 embedding 是否已加载："
+
+#: ../../source/features/semantic-router.rst:654
+msgid "**Config changes aren't taking effect**"
+msgstr "**配置变更未生效**"
+
+#: ../../source/features/semantic-router.rst:656
+msgid ""
+"The router reads config at startup. After applying a new ConfigMap, "
+"rolling-restart the deployment:"
+msgstr "路由器在启动时读取配置。应用新 ConfigMap 后，滚动重启 Deployment："
+
+#: ../../source/features/semantic-router.rst:665
+msgid "Sample Files"
+msgstr "示例文件"
+
+#: ../../source/features/semantic-router.rst:667
+msgid "All manifests for this example are in the AIBrix repository:"
+msgstr "本示例的全部清单位于 AIBrix 仓库："
+
+#: ../../source/features/semantic-router.rst:669
+msgid ""
+"`samples/semantic-router/README.md <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/semantic-router/README.md>`_ — quick-"
+"start guide"
+msgstr ""
+"`samples/semantic-router/README.md <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/semantic-router/README.md>`_ — 快速入门"
+
+#: ../../source/features/semantic-router.rst:670
+msgid ""
+"`samples/semantic-router/DESIGN.md <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/semantic-router/DESIGN.md>`_ — deep-dive"
+" architecture reference"
+msgstr ""
+"`samples/semantic-router/DESIGN.md <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/semantic-router/DESIGN.md>`_ — 架构深入参考"
+
+#: ../../source/features/semantic-router.rst:671
+msgid ""
+"`samples/semantic-router/semantic-router-configmap.yaml "
+"<https://github.com/vllm-project/aibrix/blob/main/samples/semantic-router"
+"/semantic-router-configmap.yaml>`_ — full routing configuration with all "
+"15 rules"
+msgstr ""
+"`samples/semantic-router/semantic-router-configmap.yaml "
+"<https://github.com/vllm-project/aibrix/blob/main/samples/semantic-router"
+"/semantic-router-configmap.yaml>`_ — 包含全部 15 条规则的完整路由配置"
+
+#: ../../source/features/semantic-router.rst:672
+msgid ""
+"`samples/semantic-router/semantic-router.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/semantic-router/semantic-router.yaml>`_ "
+"— router Deployment, Services, and RBAC"
+msgstr ""
+"`samples/semantic-router/semantic-router.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/semantic-router/semantic-router.yaml>`_ "
+"— 路由器 Deployment、Service 和 RBAC"
+
+#: ../../source/features/semantic-router.rst:673
+msgid ""
+"`samples/semantic-router/gwapi-resources.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/semantic-router/gwapi-resources.yaml>`_ "
+"— EnvoyPatchPolicy that wires the router into the gateway"
+msgstr ""
+"`samples/semantic-router/gwapi-resources.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/semantic-router/gwapi-resources.yaml>`_ "
+"— 将路由器接入网关的 EnvoyPatchPolicy"
+
+#: ../../source/features/semantic-router.rst:674
+msgid ""
+"`samples/semantic-router/models/ <https://github.com/vllm-"
+"project/aibrix/tree/main/samples/semantic-router/models>`_ — model "
+"Deployment and Service manifests"
+msgstr ""
+"`samples/semantic-router/models/ <https://github.com/vllm-"
+"project/aibrix/tree/main/samples/semantic-router/models>`_ — 模型 Deployment "
+"和 Service 清单"

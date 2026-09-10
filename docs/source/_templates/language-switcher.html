@@ -1,0 +1,7 @@
+<label class="aibrix-lang-switcher">
+  <select aria-label="Language">
+    {% for lang in docs_languages %}
+      <option value="{{ lang.slug }}"{% if lang.id == docs_language %} selected{% endif %}>{{ lang.label }}</option>
+    {% endfor %}
+  </select>
+</label>
