@@ -610,7 +610,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	utils.CryptoShuffle(readyPods)
 	// PD issues an additional HTTP request while routing. Pass the current span
 	// to that request without changing Context semantics for other routers.
-	if routeCtx.Algorithm == routing.RouterPD {
+	if isExclusive && resolvedExclusive == string(routing.RouterPD) {
 		routeCtx.Context = ctx
 	}
 	return router.Route(routeCtx, &utils.PodArray{Pods: readyPods})
