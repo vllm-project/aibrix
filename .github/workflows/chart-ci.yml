@@ -5,8 +5,29 @@ on:
   pull_request:
     paths:
       - 'dist/chart/**'
+      - 'config/crd/**'
+      - 'hack/verify-crd-sync.sh'
+      - '.github/workflows/chart-ci.yml'
 
 jobs:
+  verify-crd-sync:
+    name: Verify Helm CRD Sync
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.22'
+
+      - name: Generate CRDs
+        run: make manifests
+
+      - name: Verify CRD synchronization (modules + Helm chart)
+        run: bash ${GITHUB_WORKSPACE}/hack/verify-crd-sync.sh
+
   build-images:
     name: Build image (${{ matrix.image }})
     runs-on: ubuntu-latest
