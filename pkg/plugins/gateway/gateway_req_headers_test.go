@@ -373,7 +373,7 @@ func Test_handleRequestHeaders(t *testing.T) {
 			}
 
 			rootSpan := trace.SpanFromContext(context.Background())
-			resp, user, rpm, routingCtx := server.HandleRequestHeaders(
+			resp, user, rpm, routingCtx, _ := server.HandleRequestHeaders(
 				context.Background(),
 				fallbackRequestID,
 				rootSpan,
@@ -426,7 +426,7 @@ func TestHandleRequestHeaders_PrefersRootSpanTraceIDOverTraceparent(t *testing.T
 
 	server := &Server{}
 	requestID := rootSpan.SpanContext().TraceID().String()
-	_, _, _, routingCtx := server.HandleRequestHeaders(ctx, requestID, rootSpan, req)
+	_, _, _, routingCtx, _ := server.HandleRequestHeaders(ctx, requestID, rootSpan, req)
 
 	if assert.NotNil(t, routingCtx) {
 		assert.Equal(t, rootTraceID, routingCtx.RequestID)
@@ -456,7 +456,7 @@ func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 		}
 
 		rootSpan := trace.SpanFromContext(context.TODO())
-		resp, user, rpm, routingCtx := server.HandleRequestHeaders(context.Background(), "test-request-id", rootSpan, req)
+		resp, user, rpm, routingCtx, _ := server.HandleRequestHeaders(context.Background(), "test-request-id", rootSpan, req)
 
 		assert.Nil(t, resp.GetImmediateResponse())
 		assert.Equal(t, utils.User{}, user)
@@ -484,7 +484,7 @@ func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 		}
 
 		rootSpan := trace.SpanFromContext(context.TODO())
-		resp, user, rpm, routingCtx := server.HandleRequestHeaders(context.Background(), "test-request-id", rootSpan, req)
+		resp, user, rpm, routingCtx, _ := server.HandleRequestHeaders(context.Background(), "test-request-id", rootSpan, req)
 
 		assert.Equal(t, envoyTypePb.StatusCode_Unauthorized, resp.GetImmediateResponse().GetStatus().GetCode())
 		assert.Equal(t, utils.User{}, user)
@@ -513,7 +513,7 @@ func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 		}
 
 		rootSpan := trace.SpanFromContext(context.TODO())
-		resp, user, rpm, routingCtx := server.HandleRequestHeaders(context.Background(), "test-request-id", rootSpan, req)
+		resp, user, rpm, routingCtx, _ := server.HandleRequestHeaders(context.Background(), "test-request-id", rootSpan, req)
 
 		assert.Equal(t, envoyTypePb.StatusCode_Unauthorized, resp.GetImmediateResponse().GetStatus().GetCode())
 		assert.Equal(t, utils.User{}, user)
@@ -541,7 +541,7 @@ func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 		}
 
 		rootSpan := trace.SpanFromContext(context.TODO())
-		resp, user, rpm, routingCtx := server.HandleRequestHeaders(context.Background(), "test-request-id", rootSpan, req)
+		resp, user, rpm, routingCtx, _ := server.HandleRequestHeaders(context.Background(), "test-request-id", rootSpan, req)
 
 		assert.Equal(t, envoyTypePb.StatusCode_Unauthorized, resp.GetImmediateResponse().GetStatus().GetCode())
 		assert.Equal(t, utils.User{}, user)

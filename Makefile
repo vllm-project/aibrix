@@ -213,8 +213,9 @@ python-ci:
 ##@ Build
 
 .PHONY: build
-build: manifests generate fmt vet ## Build manager binary.
+build: manifests generate fmt vet ## Build manager and gateway-plugins binaries.
 	go build -o bin/manager cmd/controllers/main.go
+	go build -o bin/gateway-plugins cmd/plugins/main.go
 
 .PHONY: build-controller-manager
 build-controller-manager: manifests generate fmt vet ## Build controller-manager binary without ZMQ.

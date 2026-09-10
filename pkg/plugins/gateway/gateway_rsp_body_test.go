@@ -105,6 +105,26 @@ func TestIsLanguageRequest(t *testing.T) {
 			want:        false,
 		},
 		{
+			name:        "videos create is not language",
+			requestPath: "/v1/videos",
+			want:        false,
+		},
+		{
+			name:        "videos sync is not language",
+			requestPath: "/v1/videos/sync",
+			want:        false,
+		},
+		{
+			name:        "videos status poll is not language",
+			requestPath: "/v1/videos/video_gen_abc123",
+			want:        false,
+		},
+		{
+			name:        "videos content download is not language",
+			requestPath: "/v1/videos/video_gen_abc123/content",
+			want:        false,
+		},
+		{
 			name:        "empty path is language",
 			requestPath: "",
 			want:        true,

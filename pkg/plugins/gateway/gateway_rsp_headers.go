@@ -69,10 +69,11 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, routerCtx *types.Rou
 				processingErrorCode = 500
 				break
 			}
-			if code != 200 {
+			if code < 200 || code >= 300 {
 				isProcessingError = true
 				processingErrorCode = code
 			}
+			s.maybeForgetVideoJobAfterDelete(ctx, routerCtx, code)
 			headers = buildEnvoyProxyHeaders(headers, headerValue.Key, string(headerValue.RawValue))
 			break
 		}

@@ -18,6 +18,7 @@ package gateway
 
 import (
 	"context"
+	"net/http"
 	"strings"
 
 	"go.opentelemetry.io/otel"
@@ -38,14 +39,15 @@ import (
 const (
 	userKey          = "user"
 	pathKey          = ":path"
+	methodKey        = ":method"
 	authorizationKey = "authorization"
 	contentTypeKey   = "content-type"
 )
 
-func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, rootSpan trace.Span, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, *types.RoutingContext) {
+func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, rootSpan trace.Span, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, *types.RoutingContext, int64) {
 	var username, requestPath string
 	var user utils.User
-	var rpm int64
+	var rpm, term int64
 	var err error
 	var errRes *extProcPb.ProcessingResponse
 	var routingCtx *types.RoutingContext
@@ -62,6 +64,8 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 			username = string(n.RawValue)
 		case pathKey:
 			requestPath = string(n.RawValue)
+		case methodKey:
+			reqHeaders[n.Key] = string(n.RawValue)
 		case authorizationKey:
 			reqHeaders[n.Key] = string(n.RawValue)
 		case HeaderExternalFilter:
@@ -101,7 +105,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 				"Incorrect API key provided",
 				ErrorCodeInvalidAPIKey,
 				"api_key",
-			), utils.User{}, rpm, nil
+			), utils.User{}, rpm, nil, term
 		}
 	}
 
@@ -117,13 +121,13 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: HeaderErrorUser, RawValue: []byte("true"),
 				}}},
-				err.Error(), "", ""), utils.User{}, rpm, routingCtx
+				err.Error(), "", ""), utils.User{}, rpm, routingCtx, term
 		}
 
 		rpm, errRes, err = s.checkLimits(ctx, user)
 		if errRes != nil {
 			klog.ErrorS(err, "error on checking limits", "requestID", requestID, "username", username)
-			return errRes, utils.User{}, rpm, routingCtx
+			return errRes, utils.User{}, rpm, routingCtx, term
 		}
 	}
 
@@ -131,6 +135,30 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 	routingCtx.ReqPath = requestPath
 	routingCtx.ReqHeaders = reqHeaders
 	routingCtx.ReqConfigProfile = reqConfigProfile
+
+	// Async video job follow-ups (GET status/content, DELETE) carry their routing
+	// key -- video_id -- in the path, not the (often empty/absent) body. Envoy's
+	// ext_proc filter only invokes RequestBody processing when the request
+	// actually has a body, so a bodyless request must be pinned here, at
+	// RequestHeaders, or it never gets pinned at all (see
+	// handleVideoJobSubResourceHeaders for the full explanation). When a body IS
+	// coming (EndOfStream false), HandleRequestBody's existing handling covers it.
+	if h.RequestHeaders.EndOfStream {
+		if videoID, isSubResource := extractVideoIDFromPath(requestPath); isSubResource {
+			resp, videoTerm := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, requestID, requestPath, videoID)
+			return resp, user, rpm, routingCtx, videoTerm
+		}
+		// GET /v1/videos (list, no video_id) is fanned out across all of a
+		// model's pods and answered directly here -- see handleVideoListHeaders
+		// for why this can't be a normal single-pod routing decision.
+		if model, isListPath := parseVideoListRequest(requestPath); isListPath && reqHeaders[methodKey] == http.MethodGet {
+			if model == "" {
+				return videoListModelRequiredResponse(), user, rpm, routingCtx, term
+			}
+			routingCtx.Model = model
+			return s.handleVideoListHeaders(requestID, model), user, rpm, routingCtx, term
+		}
+	}
 
 	headers := []*configPb.HeaderValueOption{}
 	headers = append(headers, &configPb.HeaderValueOption{
@@ -168,5 +196,5 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 				},
 			},
 		},
-	}, user, rpm, routingCtx
+	}, user, rpm, routingCtx, term
 }

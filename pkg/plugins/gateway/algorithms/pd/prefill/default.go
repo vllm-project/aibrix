@@ -23,6 +23,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -241,7 +242,15 @@ func (e *DefaultExecutor) executeHTTP(url string, routingCtx *types.RoutingConte
 		return nil, fmt.Errorf("failed to create http prefill request: %w", err)
 	}
 
+	// ReqHeaders is populated from Envoy and includes HTTP/2 pseudo-headers
+	// such as ":method". net/http rejects those names on the outbound HTTP/1
+	// prefill call (invalid header field name), which fails every PD route
+	// before the prefill pod is contacted. Combined routing never makes this
+	// call, so only the prefill/decode path would 503.
 	for key, value := range routingCtx.ReqHeaders {
+		if !forwardablePrefillHeader(key) {
+			continue
+		}
 		req.Header.Set(key, value)
 	}
 	req.Header.Set("content-type", "application/json")
@@ -284,4 +293,11 @@ func (e *DefaultExecutor) executeHTTP(url string, routingCtx *types.RoutingConte
 	}
 
 	return responseData, nil
+}
+
+// forwardablePrefillHeader reports whether key can be copied onto the
+// outbound prefill HTTP request. Envoy :pseudo-headers are not valid HTTP/1
+// field names and must be dropped.
+func forwardablePrefillHeader(key string) bool {
+	return key != "" && !strings.HasPrefix(key, ":")
 }

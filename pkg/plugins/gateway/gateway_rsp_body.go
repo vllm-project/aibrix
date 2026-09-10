@@ -279,6 +279,11 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 			if processingRes != nil {
 				return processingRes, complete, usage
 			}
+		} else if pathWithoutQuery(routerCtx.ReqPath) == PathVideos {
+			// Exact match only: excludes /v1/videos/sync (no follow-up calls to pin)
+			// and /v1/videos/{id} sub-resource responses (already routed by
+			// handleVideoJobSubResource, nothing new to record).
+			s.recordVideoJobPodFromResponse(ctx, requestID, routerCtx, b)
 		}
 	}
 
@@ -333,6 +338,9 @@ func isLanguageRequest(requestPath string) bool {
 	nonLanguagePrefixes := []string{
 		PathImagesGenerations,
 		PathVideoGenerations,
+		// Prefix match: also covers /v1/videos/sync and the GET/DELETE sub-resources
+		// (/v1/videos/{id}, /v1/videos/{id}/content).
+		PathVideos,
 		PathAudioTranscriptions,
 		PathAudioTranslations,
 	}

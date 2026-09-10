@@ -31,18 +31,19 @@ import (
 
 // assertPDDisaggregation sends a single PD-routed chat completion for the given model and
 // asserts that the response carries distinct prefill-target-pod and target-pod headers.
-func assertPDDisaggregation(t *testing.T, modelName, prompt, errMsg, logPrefix string) {
+func assertPDDisaggregation(t *testing.T, modelName, prompt, logPrefix string) {
 	t.Helper()
+	waitForPDDisaggregationRouting(t, modelName)
+
 	var dst *http.Response
 	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
 
-	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+	chatCompletion := pollPDChatCompletion(t, client, openai.ChatCompletionNewParams{
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage(prompt),
 		},
 		Model: modelName,
 	})
-	require.NoError(t, err, errMsg)
 
 	assert.Equal(t, modelName, chatCompletion.Model)
 	assert.NotEmpty(t, chatCompletion.Choices, "chat completion returned no choices")
@@ -73,7 +74,6 @@ func assertPDDisaggregation(t *testing.T, modelName, prompt, errMsg, logPrefix s
 func TestPDDisaggregationVLLM(t *testing.T) {
 	assertPDDisaggregation(t, modelNameVLLM,
 		"Say this is a test for vLLM PD disaggregation",
-		"vLLM PD chat completion request failed",
 		"vLLM")
 }
 
@@ -87,7 +87,6 @@ func TestPDDisaggregationVLLM(t *testing.T) {
 func TestPDDisaggregationSGLang(t *testing.T) {
 	assertPDDisaggregation(t, modelNameSGLang,
 		"Say this is a test for SGLang PD disaggregation",
-		"SGLang PD chat completion request failed",
 		"SGLang")
 }
 
@@ -99,14 +98,13 @@ func TestPDDisaggregationSGLang(t *testing.T) {
 func TestPDDisaggregationTRTLLM(t *testing.T) {
 	assertPDDisaggregation(t, modelNameTRTLLM,
 		"Say this is a test for TensorRT-LLM PD disaggregation",
-		"TRT-LLM PD chat completion request failed",
 		"TRT-LLM")
 }
 
 // assertPDDisaggregationAfterPodDeletion deletes one pod for modelName and roleLabel,
 // waits for the gateway to notice, then verifies PD-routed requests still succeed via
 // remaining pods (requires at least two matching pods, i.e. 2x1P1D for that model).
-func assertPDDisaggregationAfterPodDeletion(t *testing.T, roleLabel, modelName, prompt, requestErrMsg string) {
+func assertPDDisaggregationAfterPodDeletion(t *testing.T, roleLabel, modelName, prompt string) {
 	t.Helper()
 	ctx := context.Background()
 	k8sClient, _ := initializeClient(ctx, t)
@@ -134,20 +132,21 @@ func assertPDDisaggregationAfterPodDeletion(t *testing.T, roleLabel, modelName, 
 		t.Logf("%s pod %s has been recreated and cluster is back to %d pods", roleLabel, podToDelete, initialCount)
 	})
 
-	// Give the gateway time to detect the pod is gone.
+	// Give the gateway time to detect the pod is gone and re-converge on the
+	// remaining roleset before asserting on individual requests below.
 	time.Sleep(3 * time.Second)
+	waitForPDDisaggregationRouting(t, modelName)
 
 	var dst *http.Response
 	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
 
 	for i := 0; i < 10; i++ {
-		_, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+		_ = pollPDChatCompletion(t, client, openai.ChatCompletionNewParams{
 			Messages: []openai.ChatCompletionMessageParamUnion{
 				openai.UserMessage(prompt),
 			},
 			Model: modelName,
 		})
-		require.NoError(t, err, requestErrMsg, i)
 
 		decodePod := dst.Header.Get("target-pod")
 		prefillPod := dst.Header.Get("prefill-target-pod")
@@ -165,24 +164,10 @@ func assertPDDisaggregationAfterPodDeletion(t *testing.T, roleLabel, modelName, 
 	}
 }
 
-// TestPDDisaggregationVLLMPrefillPodFailure verifies that with 2x1P1D setup, taking down one
-// prefill pod still allows 10 requests to succeed via the remaining complete roleset.
-func TestPDDisaggregationVLLMPrefillPodFailure(t *testing.T) {
-	assertPDDisaggregationAfterPodDeletion(t, "prefill", modelNameVLLM,
-		"PD prefill-pod-failure resilience test",
-		"request %d failed after prefill pod deletion")
-}
-
-// TestPDDisaggregationVLLMDecodePodFailure verifies that with 2x1P1D setup, taking down one
-// decode pod still allows 10 requests to succeed via the remaining complete roleset.
-func TestPDDisaggregationVLLMDecodePodFailure(t *testing.T) {
-	assertPDDisaggregationAfterPodDeletion(t, "decode", modelNameVLLM,
-		"PD decode-pod-failure resilience test",
-		"request %d failed after decode pod deletion")
-}
-
 // TestPDDisaggregationVLLMMultipleRequests sends several requests to verify that the
 // PD router consistently selects valid prefill/decode pod pairs across requests.
+// Runs before the pod-deletion tests so it is not immediately after StormService
+// recreate, when gateway-plugin caches can still disagree.
 func TestPDDisaggregationVLLMMultipleRequests(t *testing.T) {
 	const iterations = 5
 
@@ -192,13 +177,12 @@ func TestPDDisaggregationVLLMMultipleRequests(t *testing.T) {
 	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
 
 	for i := 0; i < iterations; i++ {
-		_, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+		_ = pollPDChatCompletion(t, client, openai.ChatCompletionNewParams{
 			Messages: []openai.ChatCompletionMessageParamUnion{
 				openai.UserMessage("vLLM PD disaggregation stress test message"),
 			},
 			Model: modelNameVLLM,
 		})
-		require.NoError(t, err, "vLLM PD chat completion request %d failed", i)
 
 		decodePod := dst.Header.Get("target-pod")
 		prefillPod := dst.Header.Get("prefill-target-pod")
@@ -210,4 +194,18 @@ func TestPDDisaggregationVLLMMultipleRequests(t *testing.T) {
 
 		t.Logf("request %d — prefill: %s, decode: %s", i, prefillPod, decodePod)
 	}
+}
+
+// TestPDDisaggregationVLLMPrefillPodFailure verifies that with 2x1P1D setup, taking down one
+// prefill pod still allows 10 requests to succeed via the remaining complete roleset.
+func TestPDDisaggregationVLLMPrefillPodFailure(t *testing.T) {
+	assertPDDisaggregationAfterPodDeletion(t, "prefill", modelNameVLLM,
+		"PD prefill-pod-failure resilience test")
+}
+
+// TestPDDisaggregationVLLMDecodePodFailure verifies that with 2x1P1D setup, taking down one
+// decode pod still allows 10 requests to succeed via the remaining complete roleset.
+func TestPDDisaggregationVLLMDecodePodFailure(t *testing.T) {
+	assertPDDisaggregationAfterPodDeletion(t, "decode", modelNameVLLM,
+		"PD decode-pod-failure resilience test")
 }
