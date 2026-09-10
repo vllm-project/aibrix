@@ -1,0 +1,34 @@
+name: AIBrix Bot
+
+on:
+  issues:
+    types: [opened, edited]
+  # Use the trusted base-branch workflow so a PR cannot replace the bot script
+  # before it receives a token with write permissions.
+  pull_request_target:
+    types: [opened, edited, synchronize]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Run AIBrix bot
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 .github/scripts/aibrix-bot.py "$GITHUB_EVENT_PATH"
