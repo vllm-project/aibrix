@@ -225,6 +225,27 @@ func newTokenizer() tokenizer.Tokenizer {
 	return tokenizer.NewCharacterTokenizer()
 }
 
+// loadTokenizerPoolConfigFromEnv builds the remote tokenizer pool configuration
+// from the AIBRIX_TOKENIZER_* environment variables.
+//
+// The duration defaults are time.Duration values on purpose: utils.LoadEnvDuration
+// parses the environment value with time.ParseDuration and already returns a
+// time.Duration, so scaling its result by time.Second again would multiply any
+// user-supplied value by 1e9. Only KV Event Sync constants are defined in
+// pkg/constants, the rest are read by name here.
+func loadTokenizerPoolConfigFromEnv() TokenizerPoolConfig {
+	return TokenizerPoolConfig{
+		EnableVLLMRemote:     true, // We're using it, so enable it
+		EndpointTemplate:     utils.LoadEnv("AIBRIX_VLLM_TOKENIZER_ENDPOINT_TEMPLATE", "http://%s:8000"),
+		HealthCheckPeriod:    utils.LoadEnvDuration("AIBRIX_TOKENIZER_HEALTH_CHECK_PERIOD", 30*time.Second),
+		TokenizerTTL:         utils.LoadEnvDuration("AIBRIX_TOKENIZER_TTL", 300*time.Second),
+		MaxTokenizersPerPool: utils.LoadEnvInt("AIBRIX_MAX_TOKENIZERS_PER_POOL", 100),
+		DefaultTokenizer:     nil, // Set by the caller
+		Timeout:              utils.LoadEnvDuration("AIBRIX_TOKENIZER_REQUEST_TIMEOUT", 5*time.Second),
+		ModelServiceMap:      make(map[string]string),
+	}
+}
+
 func NewPrefixCacheRouter() (types.Router, error) {
 	// Initialize prefix cache metrics if enabled
 	if err := initializePrefixCacheMetrics(); err != nil {
@@ -266,17 +287,7 @@ func NewPrefixCacheRouter() (types.Router, error) {
 	// Configure TokenizerPool if remote tokenizer is needed
 	if useRemoteTokenizer {
 		// Load pool configuration from environment
-		// Only KV Event Sync constants are defined in pkg/constants
-		poolConfig := TokenizerPoolConfig{
-			EnableVLLMRemote:     true, // We're using it, so enable it
-			EndpointTemplate:     utils.LoadEnv("AIBRIX_VLLM_TOKENIZER_ENDPOINT_TEMPLATE", "http://%s:8000"),
-			HealthCheckPeriod:    utils.LoadEnvDuration("AIBRIX_TOKENIZER_HEALTH_CHECK_PERIOD", 30) * time.Second,
-			TokenizerTTL:         utils.LoadEnvDuration("AIBRIX_TOKENIZER_TTL", 300) * time.Second,
-			MaxTokenizersPerPool: utils.LoadEnvInt("AIBRIX_MAX_TOKENIZERS_PER_POOL", 100),
-			DefaultTokenizer:     nil, // Will be set below
-			Timeout:              utils.LoadEnvDuration("AIBRIX_TOKENIZER_REQUEST_TIMEOUT", 5) * time.Second,
-			ModelServiceMap:      make(map[string]string),
-		}
+		poolConfig := loadTokenizerPoolConfigFromEnv()
 
 		// Create default tokenizer based on configured type
 		var defaultTokenizer = newTokenizer()
