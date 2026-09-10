@@ -456,7 +456,7 @@ where ``load = active_tokens + kv_weight × kv_tokens`` is the same ledger ``tok
 - On busy pods the match only discounts the load. With the default factor a full match halves a pod's load, so a pod holding the prefix loses once it carries more than twice the load of an idle neighbour.
 - The square keeps small matches from moving the decision: a 30 % match discounts by 4.5 %, a 70 % match by 24.5 %.
 
-**Minimum match.** Prompts that share only a system prompt or a few template tokens would otherwise all attract to the pod that served the first of them. ``AIBRIX_MIN_MATCH_PCT`` (default ``0``, i.e. off) treats any match below the threshold as no match, both in the score and in the ``new_tokens`` charge. A value between ``30`` and ``60`` is a reasonable starting point when your system prompt is a small part of a typical request.
+**Minimum match.** Prompts that share only a system prompt or a few template tokens would otherwise all attract to the pod that served the first of them. ``AIBRIX_MIN_MATCH_PCT`` (default ``0``, i.e. off) treats any match below the threshold as no match, both in the score and in the ``new_tokens`` charge. A value between ``30`` and ``60`` is a reasonable starting point when your system prompt is a small part of a typical request. The same variable also applies to ``prefix_cache`` scoring (there is no ``new_tokens`` charge there), where the effect is larger: its cache term spans ``10.0`` against a load term of ``1.0``, so without a threshold a 1 % incidental match outweighs the whole load range and the pod that served the first of a burst of cold prompts attracts the rest of the burst.
 
 The charge lifecycle, the metrics and the ``AIBRIX_TOKEN_LOAD_*`` tunables are those of :ref:`token_load <pd-token-load-policy>`; the prefix-match rule of the ``new_tokens`` estimate applies, so a pod that already holds most of the prompt is charged only for the rest. Like ``prefix_cache``, the policy needs a tokenizer (``AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE``) and warms the prefix index with the selected pod after each request.
 
@@ -491,7 +491,7 @@ Or set gateway-wide via ``AIBRIX_PREFILL_SCORE_POLICY=hybrid_cache_load``.
      - Discount a full prefix match applies to a pod's load, ``0`` to ``1``. Higher values favour cache affinity over balance; at ``1`` a fully matched pod scores ``0`` and always wins.
    * - ``AIBRIX_MIN_MATCH_PCT``
      - ``0``
-     - Prefix-match percentage below which a match is ignored, ``0`` to ``100``. ``0`` disables the threshold.
+     - Prefix-match percentage below which a match is ignored, ``0`` to ``100``. ``0`` disables the threshold. Also honoured by ``prefix_cache``.
 
 **When to use hybrid_cache_load:**
 
@@ -614,7 +614,7 @@ Three ordered checks run against decode pods. The first that fires selects a sin
 
 Each prefill pod is scored by the selected policy. Pods with a request count more than ``N`` standard deviations above the mean are skipped (``N = AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``). The lowest-scoring pod per roleset is kept as the roleset's prefill candidate.
 
-- ``prefix_cache`` (default): ``score = (100 − prefix_match_percent) × 0.1 + req_count / max_req_count`` — lower score means more cache hits and less load.
+- ``prefix_cache`` (default): ``score = (100 − prefix_match_percent) × 0.1 + req_count / max_req_count`` — lower score means more cache hits and less load. Matches below ``AIBRIX_MIN_MATCH_PCT`` count as ``0``.
 - ``least_request``: ``score = req_count``.
 - ``token_load``: ``score = active_tokens + kv_weight × kv_tokens`` — the token-weighted load the router has charged to the pod; see :ref:`Token Load Scoring Policy <pd-token-load-policy>`.
 - ``hybrid_cache_load``: ``score = load × (1 − (prefix_match_percent / 100)² × factor)``, or just the discount when the pod is idle — cache affinity decides between idle pods, load between busy ones; see :ref:`Hybrid Cache-Load Scoring Policy <pd-hybrid-cache-load-policy>`.
@@ -678,7 +678,7 @@ These are set on the **gateway plugin** deployment.
      - ``hybrid_cache_load`` only. Discount a full prefix match applies to a pod's token load, ``0`` to ``1``. ``1`` makes a fully matched pod always win; ``0`` turns the discount off.
    * - ``AIBRIX_MIN_MATCH_PCT``
      - ``0``
-     - ``hybrid_cache_load`` only. Prefix matches below this percentage are ignored, ``0`` to ``100``. ``0`` disables the threshold.
+     - ``prefix_cache`` and ``hybrid_cache_load``. Prefix matches below this percentage are ignored, ``0`` to ``100``. ``0`` disables the threshold.
    * - ``AIBRIX_DECODE_SCORE_POLICY``
      - ``load_balancing``
      - Default scoring policy for selecting decode pods. ``load_balancing``, ``least_request``, or ``conductor``.

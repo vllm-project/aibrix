@@ -245,7 +245,7 @@ type pdRouter struct {
 }
 
 func newPrefixCachePrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashTable) pd.PrefillScorePolicy {
-	return pd.NewPrefixCachePrefillPolicy(newTokenizer(), sharedPrefixTable)
+	return pd.NewPrefixCachePrefillPolicyWithConfig(newTokenizer(), sharedPrefixTable, pd.DefaultPrefixCacheConfig())
 }
 
 func newConductorPrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashTable, metricCache cache.MetricCache) pd.PrefillScorePolicy {

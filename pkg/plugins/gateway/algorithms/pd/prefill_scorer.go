@@ -76,7 +76,8 @@ const (
 	DefaultHybridCacheLoadFactor = 0.5
 
 	// DefaultMinMatchPct is the prefix-match percentage below which
-	// hybrid_cache_load treats a match as no match. 0 keeps every match.
+	// prefix_cache and hybrid_cache_load treat a match as no match. 0 keeps
+	// every match.
 	DefaultMinMatchPct = 0.0
 
 	// Default TTFT estimation coefficients for conductor policy.
@@ -136,19 +137,51 @@ type PrefillScorePolicy interface {
 // final score is determined solely by load. A pod with no match contributes
 // 10.0 from the cache term, making it significantly less preferred.
 //
+// The cache term spans 10.0 while the load term spans 1.0, so any match at
+// all outweighs the whole load range: a 1 % match scores 9.9 + load against
+// 10.0 + load for an unmatched pod. Concurrent cold prompts that share only a
+// system prompt or a template header match each other's first blocks by a few
+// percent on whichever pod was inserted first, which makes that pod a
+// deterministic magnet for the rest of the burst. PrefixCacheConfig.MinMatchPct
+// treats matches below the threshold as no match so that such incidental
+// overlap falls through to the load term.
+//
 // The policy is stateless: tok and prefixCacheIndexer are read-only handles
 // shared across all requests. Obtain an instance via NewPrefixCachePrefillPolicy.
 type prefixCachePrefillPolicy struct {
 	tok                tokenizer.Tokenizer
 	prefixCacheIndexer *prefixcacheindexer.PrefixHashTable
+	cfg                PrefixCacheConfig
+}
+
+// PrefixCacheConfig tunes the prefix_cache policy.
+type PrefixCacheConfig struct {
+	// MinMatchPct is the prefix-match percentage below which a match is
+	// treated as no match, so a few shared tokens do not attract a request.
+	// 0 keeps every match, which is the historical behaviour.
+	MinMatchPct float64
+}
+
+// DefaultPrefixCacheConfig returns the defaults, overridden by the
+// AIBRIX_MIN_MATCH_PCT (0 to 100) environment variable, the same knob
+// hybrid_cache_load reads.
+func DefaultPrefixCacheConfig() PrefixCacheConfig {
+	return PrefixCacheConfig{MinMatchPct: loadMinMatchPct()}
 }
 
 // NewPrefixCachePrefillPolicy constructs a prefix_cache PrefillScorePolicy with
-// the given tokenizer and shared prefix-hash table.
+// the given tokenizer and shared prefix-hash table and no minimum match.
 func NewPrefixCachePrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer *prefixcacheindexer.PrefixHashTable) PrefillScorePolicy {
+	return NewPrefixCachePrefillPolicyWithConfig(tok, prefixCacheIndexer, PrefixCacheConfig{})
+}
+
+// NewPrefixCachePrefillPolicyWithConfig is NewPrefixCachePrefillPolicy with an
+// explicit PrefixCacheConfig.
+func NewPrefixCachePrefillPolicyWithConfig(tok tokenizer.Tokenizer, prefixCacheIndexer *prefixcacheindexer.PrefixHashTable, cfg PrefixCacheConfig) PrefillScorePolicy {
 	return &prefixCachePrefillPolicy{
 		tok:                tok,
 		prefixCacheIndexer: prefixCacheIndexer,
+		cfg:                cfg,
 	}
 }
 
@@ -161,7 +194,7 @@ func (p *prefixCachePrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ [
 		return nil, err
 	}
 	matchedPods, hashes := p.prefixCacheIndexer.MatchPrefix(tokens, routingCtx.Model, readyPodsMap)
-	return &prefixCacheScorer{matchedPods: matchedPods, hashes: hashes}, nil
+	return &prefixCacheScorer{matchedPods: matchedPods, hashes: hashes, minMatchPct: p.cfg.MinMatchPct}, nil
 }
 
 func (p *prefixCachePrefillPolicy) Name() string { return PrefillScorePolicyPrefixCache }
@@ -169,21 +202,24 @@ func (p *prefixCachePrefillPolicy) Name() string { return PrefillScorePolicyPref
 // prefixCacheScorer is the request-scoped scorer produced by PrefixCachePrefillPolicy.
 // matchedPods maps pod name → prefix-match percentage (0–100); hashes are the
 // token-prefix hashes to be added to the index once a pod is selected.
+// Matches below minMatchPct score as no match.
 type prefixCacheScorer struct {
 	matchedPods map[string]int
 	hashes      []uint64
+	minMatchPct float64
 }
 
 func (s *prefixCacheScorer) PrefixHashes() []uint64 { return s.hashes }
 
 func (s *prefixCacheScorer) ScorePod(pod *v1.Pod, reqCnt, maxRequestCount float64) float64 {
-	matchPct := float64(s.matchedPods[pod.Name])
+	rawMatch := s.matchedPods[pod.Name]
+	matchPct := float64(ClampMinMatch(rawMatch, s.minMatchPct))
 	score := (100-matchPct)*.1 + reqCnt/maxRequestCount
 	if klog.V(4).Enabled() {
 		klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
 			"policy", PrefillScorePolicyPrefixCache,
 			"score", fmt.Sprintf("(100 - %f) * 0.1 + %f / %f", matchPct, reqCnt, maxRequestCount),
-			"prefix_match_percent", matchPct,
+			"prefix_match_percent", matchPct, "raw_match_percent", rawMatch,
 			"running_reqs", reqCnt, "max_running_reqs", maxRequestCount)
 	}
 	return score
@@ -496,13 +532,19 @@ type HybridCacheLoadConfig struct {
 func DefaultHybridCacheLoadConfig() HybridCacheLoadConfig {
 	return HybridCacheLoadConfig{
 		Factor:      loadEnvFloatInRange("AIBRIX_HYBRID_CACHE_LOAD_FACTOR", DefaultHybridCacheLoadFactor, 0, 1),
-		MinMatchPct: loadEnvFloatInRange("AIBRIX_MIN_MATCH_PCT", DefaultMinMatchPct, 0, 100),
+		MinMatchPct: loadMinMatchPct(),
 	}
+}
+
+// loadMinMatchPct reads AIBRIX_MIN_MATCH_PCT (0 to 100), shared by the
+// prefix_cache and hybrid_cache_load policies.
+func loadMinMatchPct() float64 {
+	return loadEnvFloatInRange("AIBRIX_MIN_MATCH_PCT", DefaultMinMatchPct, 0, 100)
 }
 
 // loadEnvFloatInRange is utils.LoadEnvFloat for a knob whose valid values are
 // the closed range [lo, hi] rather than "positive": 0 is a valid setting of
-// both hybrid_cache_load knobs, and each has an upper bound.
+// the discount factor and of the minimum match, and each has an upper bound.
 func loadEnvFloatInRange(key string, defaultValue, lo, hi float64) float64 {
 	raw := os.Getenv(key)
 	if raw == "" {
