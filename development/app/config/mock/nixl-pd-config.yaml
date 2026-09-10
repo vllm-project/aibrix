@@ -1,36 +1,29 @@
-# SGLang PD (Prefill-Decode) disaggregation mock StormService for e2e tests.
+# vLLM NIXL PD (Prefill-Decode) disaggregation mock StormService for e2e tests.
 #
-# A single StormService replica with two roles ("prefill" and "decode") backed
-# by the vllm-mock image.  The gateway PD router pairs pods from the same
-# roleset (auto-assigned by the StormService controller as "roleset-name") and
-# fires an async prefill request to the prefill pod (SGLang uses the bootstrap
-# mechanism to coordinate KV transfer) before sending the full request to the
-# decode pod.
-#
-# The prefill pod carries the model.aibrix.ai/sglang-bootstrap-port annotation
-# so the gateway knows which port the SGLang bootstrap server listens on.
+# A separate 2x1P1D topology keeps NIXL connector selection isolated from the
+# SHFS vLLM topology while preserving the same mock service conventions.
 #
 # Apply alongside components.yaml (provides mocked-app-sa and RBAC).
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: StormService
 metadata:
-  name: mock-llama2-7b-pd-sglang
+  name: mock-llama2-7b-pd-vllm-nixl
   namespace: default
   labels:
-    model.aibrix.ai/name: "llama2-7b-sglang"
+    model.aibrix.ai/name: "llama2-7b-vllm-nixl"
     model.aibrix.ai/port: "8000"
 spec:
-  replicas: 1
+  replicas: 2
   updateStrategy:
     type: InPlaceUpdate
   stateful: true
   selector:
     matchLabels:
-      app: "mock-llama2-7b-pd-sglang"
+      app: "mock-llama2-7b-pd-vllm-nixl"
   template:
     metadata:
       labels:
-        app: "mock-llama2-7b-pd-sglang"
+        app: "mock-llama2-7b-pd-vllm-nixl"
       annotations:
         model.aibrix.ai/config: |
           {
@@ -49,16 +42,13 @@ spec:
           template:
             metadata:
               labels:
-                app: "mock-llama2-7b-pd-sglang"
-                app.kubernetes.io/name: "mock-llama2-7b-pd-sglang"
-                model.aibrix.ai/name: "llama2-7b-sglang"
+                app: "mock-llama2-7b-pd-vllm-nixl"
+                app.kubernetes.io/name: "mock-llama2-7b-pd-vllm-nixl"
+                model.aibrix.ai/name: "llama2-7b-vllm-nixl"
                 model.aibrix.ai/port: "8000"
-                model.aibrix.ai/engine: sglang
+                model.aibrix.ai/engine: vllm
+                model.aibrix.ai/kv-connector-type: nixl
                 adapter.model.aibrix.ai/enabled: "true"
-              annotations:
-                # Port of the SGLang bootstrap server used to coordinate KV transfer
-                # between prefill and decode pods. Defaults to 8998 if omitted.
-                model.aibrix.ai/sglang-bootstrap-port: "8998"
             spec:
               serviceAccountName: mocked-app-sa
               containers:
@@ -67,10 +57,8 @@ spec:
                   ports:
                     - containerPort: 8000
                   env:
-                    - name: LLM_ENGINE
-                      value: sglang
                     - name: MOCK_PD_CONTRACT
-                      value: sglang-http
+                      value: vllm-aibrix-nixl
                     - name: MOCK_PD_ROLE
                       value: prefill
                     - name: DEPLOYMENT_NAME
@@ -95,11 +83,12 @@ spec:
           template:
             metadata:
               labels:
-                app: "mock-llama2-7b-pd-sglang"
-                app.kubernetes.io/name: "mock-llama2-7b-pd-sglang"
-                model.aibrix.ai/name: "llama2-7b-sglang"
+                app: "mock-llama2-7b-pd-vllm-nixl"
+                app.kubernetes.io/name: "mock-llama2-7b-pd-vllm-nixl"
+                model.aibrix.ai/name: "llama2-7b-vllm-nixl"
                 model.aibrix.ai/port: "8000"
-                model.aibrix.ai/engine: sglang
+                model.aibrix.ai/engine: vllm
+                model.aibrix.ai/kv-connector-type: nixl
                 adapter.model.aibrix.ai/enabled: "true"
             spec:
               serviceAccountName: mocked-app-sa
@@ -109,10 +98,8 @@ spec:
                   ports:
                     - containerPort: 8000
                   env:
-                    - name: LLM_ENGINE
-                      value: sglang
                     - name: MOCK_PD_CONTRACT
-                      value: sglang-http
+                      value: vllm-aibrix-nixl
                     - name: MOCK_PD_ROLE
                       value: decode
                     - name: DEPLOYMENT_NAME
