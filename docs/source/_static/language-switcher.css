@@ -1,0 +1,11 @@
+.aibrix-lang-switcher {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 0.75rem;
+}
+
+.aibrix-lang-switcher select {
+  font-size: 0.9rem;
+  line-height: 1.4;
+  padding: 0.15rem 0.35rem;
+}

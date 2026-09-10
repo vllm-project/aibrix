@@ -30,7 +30,19 @@ extensions = [
 ]
 
 templates_path = ['_templates']
-exclude_patterns = []
+exclude_patterns = ['locale']
+
+# -- Internationalization ----------------------------------------------------
+# https://www.sphinx-doc.org/en/master/usage/advanced/intl.html
+locale_dirs = ['locale/']
+gettext_compact = False
+
+html_context = {
+    'docs_languages': [
+        {'id': 'en', 'slug': 'en', 'label': 'English'},
+        {'id': 'zh_CN', 'slug': 'zh-cn', 'label': '中文'},
+    ],
+}
 
 # Exclude the prompt "$" when copying code
 copybutton_prompt_text = r"\$ "
@@ -44,6 +56,8 @@ html_title = project
 html_theme = 'sphinx_book_theme'
 html_logo = 'assets/logos/aibrix-logo.jpeg'
 html_static_path = ['_static']
+html_css_files = ['language-switcher.css']
+html_js_files = ['language-switcher.js']
 html_theme_options = {
     # repository level setting
     'repository_url': 'https://github.com/vllm-project/aibrix',
@@ -65,6 +79,7 @@ html_theme_options = {
     ],
     'navigation_depth': 3,
     'primary_sidebar_end': [],
+    'navbar_end': ['language-switcher', 'theme-switcher', 'navbar-icon-links'],
 
     # article
 
@@ -80,3 +95,13 @@ intersphinx_mapping = {
     "pillow": ("https://pillow.readthedocs.io/en/stable", None),
     "psutil": ("https://psutil.readthedocs.io/en/stable", None),
 }
+
+
+def setup(app):
+    def on_config(app, config):
+        zh = (config.language or '').replace('-', '_').lower() in ('zh_cn', 'zh')
+        config.language = 'zh_CN' if zh else 'en'
+        config.html_search_language = 'zh' if zh else 'en'
+        config.html_context['docs_language'] = config.language
+
+    app.connect('config-inited', on_config)

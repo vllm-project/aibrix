@@ -1,0 +1,110 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/designs/aibrix-engine-runtime.rst:5
+msgid "AIBrix Engine Runtime"
+msgstr "AIBrix Engine Runtime"
+
+#: ../../source/designs/aibrix-engine-runtime.rst:7
+msgid ""
+"AI Engine Runtime is a Unified Management Layer for Inference Containers."
+" It is a versatile sidecar enabling metric standardization, model "
+"downloading, and local model management. The AI Runtime hides various "
+"implementation details on the inference engine side, providing a "
+"universal method to guide model download and management, as well as "
+"expose inference monitoring metrics."
+msgstr ""
+"AI Engine Runtime 是推理容器的统一管理层。"
+"它是一个多功能 sidecar，用于指标标准化、模型下载和本地模型管理。"
+"AI Runtime 屏蔽推理引擎侧的实现细节，提供统一方式来指导模型下载与管理，并暴露推理监控指标。"
+
+#: ../../source/designs/aibrix-engine-runtime.rst:10
+msgid ""
+"Currently, this component is mainly designed for the lora model "
+"deployment and multi-engine support. You do not necessarily need to "
+"install the runtime for most of the cases. As we expand the support for "
+"more inference engines and enrich the features for cold start management "
+"etc, the runtime will be more useful."
+msgstr ""
+"当前该组件主要用于 LoRA 模型部署和多引擎支持。大多数场景不必安装 runtime。"
+"随着对更多推理引擎的支持以及冷启动管理等能力的完善，runtime 会更加有用。"
+
+#: ../../source/designs/aibrix-engine-runtime.rst:14
+msgid "Introduction"
+msgstr "简介"
+
+#: ../../source/designs/aibrix-engine-runtime.rst:16
+msgid ""
+"AI Engine Runtime serves as an essential bridge between the AIBrix "
+"Control Plane and inference engine pods, enabling model management, "
+"engine configuration, observability, and vendor-agnostic engine support."
+msgstr ""
+"AI Engine Runtime 是 AIBrix 控制面与推理引擎 Pod 之间的桥梁，"
+"用于模型管理、引擎配置、可观测性以及与厂商无关的引擎支持。"
+
+#: ../../source/designs/aibrix-engine-runtime.rst:18
+msgid ""
+"**API for Control Plane Integration**: It ensures seamless communication "
+"between the control plane and inference pods. This allows components like"
+" the LoRA adapter controller, autoscaler, and cold start manager to "
+"interact dynamically with inference containers, managing resources in a "
+"cloud-native way."
+msgstr ""
+"**控制面集成 API** ：确保控制面与推理 Pod 之间的通信。LoRA 适配器控制器、自动扩缩容器和冷启动管理器等组件可以通过云原生方式动态管理推理容器资源。"
+
+#: ../../source/designs/aibrix-engine-runtime.rst:19
+msgid ""
+"**Abstracting Vendor-Specific Inference Engines**: AI Engine Runtime is "
+"designed to work with diverse inference engines, including most popular "
+"ones. However, the engine api are all different. Instead of tightly "
+"coupling with any specific engine, AIRuntime abstracts key operations "
+"like model loading/unloading, adapter configuration, and performance "
+"monitoring, allowing new inference backends to be integrated with minimal"
+" friction."
+msgstr ""
+"**抽象厂商特定的推理引擎** ：AI Engine Runtime 面向多种推理引擎（含主流引擎）设计。各引擎 API 并不相同。AIRuntime "
+"不与特定引擎紧耦合，而是抽象模型加载/卸载、适配器配置和性能监控等关键操作，使新的推理后端可以低成本接入。"
+
+#: ../../source/designs/aibrix-engine-runtime.rst:20
+msgid ""
+"**Observability**: It provides a unified interface for monitoring across "
+"different inference engines, allowing for consistent performance tracking"
+" and troubleshooting."
+msgstr "**可观测性** ：为不同推理引擎提供统一监控接口，便于一致地跟踪性能并排查问题。"
+
+#: ../../source/designs/aibrix-engine-runtime.rst:23
+msgid ""
+"This runtime is different from Istio sidecar. Data plane traffic won't go"
+" through this runtime, it just provide some management capabilities for "
+"control plane interaction."
+msgstr ""
+"该 runtime 不同于 Istio sidecar。数据面流量不会经过它，它只为控制面交互提供管理能力。"
+
+#: ../../source/designs/aibrix-engine-runtime.rst:25
+msgid "ai-engine-runtime-overview"
+msgstr "ai-engine-runtime-overview"
+
+#: ../../source/designs/aibrix-engine-runtime.rst:32
+msgid ":doc:`../features/runtime`"
+msgstr ":doc:`../features/runtime`"
+
+#: ../../source/designs/aibrix-engine-runtime.rst:33
+msgid "Using the AI Runtime sidecar."
+msgstr "使用 AI Runtime sidecar。"

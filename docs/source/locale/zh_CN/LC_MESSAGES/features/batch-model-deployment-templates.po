@@ -1,0 +1,577 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 19:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/features/batch-model-deployment-templates.rst:5
+msgid "Batch Model Deployment Templates"
+msgstr "批处理模型部署模板"
+
+#: ../../source/features/batch-model-deployment-templates.rst:7
+msgid ""
+"AIBrix Batch carries model deployment intent through "
+"``extra_body.aibrix`` on the OpenAI-compatible Batch API. The current "
+"runtime contract is:"
+msgstr ""
+"AIBrix Batch 通过兼容 OpenAI 的 Batch API 上的 ``extra_body.aibrix`` "
+"传递模型部署意图。当前运行时约定为："
+
+#: ../../source/features/batch-model-deployment-templates.rst:11
+msgid ""
+"``aibrix.model_template`` describes the engine, model source, "
+"accelerator, parallelism, and supported endpoints."
+msgstr ""
+"``aibrix.model_template`` 描述引擎、模型源、加速器、并行度以及支持的端点。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:13
+msgid ""
+"``aibrix.runtime`` selects the MDS runtime backend, such as "
+"``Kubernetes``, ``KubernetesJob``, ``LambdaCloud``, ``RunPod``, or "
+"``External``."
+msgstr ""
+"``aibrix.runtime`` 选择 MDS 运行时后端，例如 ``Kubernetes`` 、``KubernetesJob`` 、``LambdaCloud`` "
+"、``RunPod`` 或 ``External`` 。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:16
+msgid ""
+"``aibrix.resource_allocation`` records resource-manager output, such as "
+"the provision id returned by Console's Resource Manager."
+msgstr ""
+"``aibrix.resource_allocation`` 记录资源管理器输出，例如 Console Resource Manager "
+"返回的 provision id。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:21
+msgid "Why Templates Exist"
+msgstr "模板存在的原因"
+
+#: ../../source/features/batch-model-deployment-templates.rst:23
+msgid ""
+"OpenAI's Batch API treats the model as a black-box string, for example "
+"``model: \"gpt-4-turbo\"``. Self-hosted deployments need more control:"
+msgstr "OpenAI 的 Batch API 将模型视为黑盒字符串，例如 ``model: \"gpt-4-turbo\"`` 。自托管部署需要更多控制："
+
+#: ../../source/features/batch-model-deployment-templates.rst:26
+msgid "inference engine and image, such as vLLM or SGLang"
+msgstr "推理引擎和镜像，例如 vLLM 或 SGLang"
+
+#: ../../source/features/batch-model-deployment-templates.rst:27
+msgid "GPU Type and GPU count"
+msgstr "GPU 类型和 GPU 数量"
+
+#: ../../source/features/batch-model-deployment-templates.rst:28
+msgid "model artifact location"
+msgstr "模型产物位置"
+
+#: ../../source/features/batch-model-deployment-templates.rst:29
+msgid "tensor, pipeline, data, and expert parallelism"
+msgstr "张量、流水线、数据和专家并行"
+
+#: ../../source/features/batch-model-deployment-templates.rst:30
+msgid "engine flags such as max model length or prefix caching"
+msgstr "引擎标志，例如最大模型长度或前缀缓存"
+
+#: ../../source/features/batch-model-deployment-templates.rst:31
+msgid "supported OpenAI endpoints for the selected model"
+msgstr "所选模型支持的 OpenAI 端点"
+
+#: ../../source/features/batch-model-deployment-templates.rst:33
+msgid ""
+"Templates keep those controls in platform-owned metadata while preserving"
+" the OpenAI SDK request shape."
+msgstr "模板将这些控制保留在平台侧元数据中，同时保持 OpenAI SDK 的请求形态。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:38
+msgid "Current Data Flow"
+msgstr "当前数据流"
+
+#: ../../source/features/batch-model-deployment-templates.rst:72
+msgid ""
+"Direct MDS callers can also submit ``extra_body.aibrix`` themselves. If "
+"the MDS deployment has no template registry configured, direct callers "
+"must include ``aibrix.model_template.spec`` inline."
+msgstr ""
+"直接调用 MDS 的调用方也可自行提交 ``extra_body.aibrix`` 。若 MDS 部署未配置模板注册表，直接调用方必须内联包含 "
+"``aibrix.model_template.spec`` 。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:77
+msgid "Quick Start: Console Path"
+msgstr "快速开始：Console 路径"
+
+#: ../../source/features/batch-model-deployment-templates.rst:79
+msgid ""
+"The Console path is the supported path for Resource Manager backed batch "
+"jobs, including RunPod and Lambda Cloud."
+msgstr "Console 路径是 Resource Manager 支持的批作业（包括 RunPod 和 Lambda Cloud）的受支持路径。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:82
+msgid ""
+"Register or create a model deployment template in the Console store. The "
+"template must include at least ``engine``, ``model_source``, "
+"``accelerator``, and ``supported_endpoints``."
+msgstr ""
+"在 Console store 中注册或创建模型部署模板。模板必须至少包含 ``engine`` 、``model_source`` 、``accelerator`` "
+"和 ``supported_endpoints`` 。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:86
+msgid "Submit a Console job with the selected template:"
+msgstr "使用所选模板提交 Console 作业："
+
+#: ../../source/features/batch-model-deployment-templates.rst:100
+msgid ""
+"Console resolves the template, sends ``aibrix.model_template.spec`` to "
+"MDS, and the planner uses the same spec to provision resources."
+msgstr ""
+"Console 解析模板，将 ``aibrix.model_template.spec`` 发送给 MDS，planner 使用同一 spec "
+"调配资源。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:103
+msgid ""
+"For cloud providers, the Console backend must also be configured with a "
+"single Resource Manager provider via ``PROVISIONER``. See :doc:`batch-"
+"resource-manager`."
+msgstr ""
+"对云厂商，Console 后端还必须通过 ``PROVISIONER`` 配置单一 Resource Manager 提供方。参见 :doc:`batch-resource-manager` "
+"。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:109
+msgid "Direct MDS Request Shape"
+msgstr "直接 MDS 请求形态"
+
+#: ../../source/features/batch-model-deployment-templates.rst:111
+msgid ""
+"Direct callers use the OpenAI SDK's ``extra_body`` escape hatch. This "
+"example uses an inline template spec so it does not depend on a ConfigMap"
+" registry:"
+msgstr ""
+"直接调用方使用 OpenAI SDK 的 ``extra_body`` 扩展通道。"
+"本示例使用内联模板 spec，因此不依赖 ConfigMap 注册表："
+
+#: ../../source/features/batch-model-deployment-templates.rst:165
+msgid ""
+"The response exposes the persisted AIBrix block in ``batch.aibrix``. "
+"There is no current ``_aibrix.resolved_endpoint`` response field."
+msgstr ""
+"响应在 ``batch.aibrix`` 中暴露已持久化的 AIBrix 块。"
+"当前没有 ``_aibrix.resolved_endpoint`` 响应字段。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:170
+msgid "ModelDeploymentTemplate Schema"
+msgstr "ModelDeploymentTemplate Schema"
+
+#: ../../source/features/batch-model-deployment-templates.rst:172
+msgid ""
+"The source of truth is :py:mod:`aibrix.batch.template.schema`. "
+"``ModelDeploymentTemplateSpec`` is strict: unknown fields are rejected. "
+"In particular, current templates do not have a ``provider_config`` field."
+" Provider selection belongs to Resource Manager / runtime selection, not "
+"to the template schema."
+msgstr ""
+"事实来源是 :py:mod:`aibrix.batch.template.schema` 。``ModelDeploymentTemplateSpec`` "
+"是严格的：未知字段会被拒绝。特别地，当前模板没有 ``provider_config`` 字段。提供方选择属于 Resource Manager "
+"/ 运行时选择，而非模板 schema。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:178
+msgid "**Required top-level fields when a complete template object is stored:**"
+msgstr "**存储完整模板对象时必填的顶层字段：**"
+
+#: ../../source/features/batch-model-deployment-templates.rst:180
+msgid "``name``: logical template name."
+msgstr "``name`` ：逻辑模板名称。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:181
+msgid ""
+"``version``: version string. If omitted in an inline spec path, consumers"
+" use the ref version or schema default."
+msgstr "``version`` ：版本字符串。若在内联 spec 路径中省略，消费方使用引用版本或 schema 默认值。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:183
+msgid ""
+"``status``: ``active``, ``deprecated``, or ``draft`` for registry-backed "
+"templates."
+msgstr "``status`` ：基于注册表的模板为 ``active`` 、``deprecated`` 或 ``draft`` 。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:185
+msgid "``spec``: the deployment body."
+msgstr "``spec`` ：部署主体。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:187
+msgid "**Required fields inside ``spec``:**"
+msgstr "**``spec`` 内的必填字段：**"
+
+#: ../../source/features/batch-model-deployment-templates.rst:193
+#: ../../source/features/batch-model-deployment-templates.rst:220
+#: ../../source/features/batch-model-deployment-templates.rst:254
+msgid "Field"
+msgstr "字段"
+
+#: ../../source/features/batch-model-deployment-templates.rst:194
+msgid "Required?"
+msgstr "是否必填？"
+
+#: ../../source/features/batch-model-deployment-templates.rst:195
+#: ../../source/features/batch-model-deployment-templates.rst:222
+msgid "Current meaning"
+msgstr "当前含义"
+
+#: ../../source/features/batch-model-deployment-templates.rst:196
+msgid "``engine``"
+msgstr "``engine``"
+
+#: ../../source/features/batch-model-deployment-templates.rst:197
+#: ../../source/features/batch-model-deployment-templates.rst:201
+#: ../../source/features/batch-model-deployment-templates.rst:206
+#: ../../source/features/batch-model-deployment-templates.rst:210
+msgid "yes"
+msgstr "是"
+
+#: ../../source/features/batch-model-deployment-templates.rst:198
+msgid ""
+"Engine type, version, image, raw ``serve_args``, health endpoint, and "
+"readiness timeout. ``vllm`` and ``mock`` have manifest adapters today."
+msgstr "引擎类型、版本、镜像、原始 ``serve_args`` 、健康检查端点和就绪超时。目前 ``vllm`` 和 ``mock`` 有清单适配器。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:200
+#: ../../source/features/batch-model-deployment-templates.rst:268
+msgid "``model_source``"
+msgstr "``model_source``"
+
+#: ../../source/features/batch-model-deployment-templates.rst:202
+msgid ""
+"Model artifact source. Kubernetes renderers can use this for model "
+"download and vLLM ``--model`` args. Cloud SSH runtimes require the "
+"resolved ``aibrix.model`` to be directly loadable by vLLM."
+msgstr ""
+"模型产物源。Kubernetes 渲染器可用它进行模型下载和 vLLM ``--model`` 参数。"
+"云 SSH 运行时要求解析后的 ``aibrix.model`` 可被 vLLM 直接加载。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:205
+#: ../../source/features/batch-model-deployment-templates.rst:272
+msgid "``accelerator``"
+msgstr "``accelerator``"
+
+#: ../../source/features/batch-model-deployment-templates.rst:207
+msgid ""
+"Free-form GPU type and GPU count. Console Resource Manager reads ``type``"
+" and ``count`` to request cloud resources."
+msgstr ""
+"自由形式的 GPU 类型和 GPU 数量。Console Resource Manager 读取 ``type`` 和 ``count`` "
+"以请求云资源。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:209
+msgid "``supported_endpoints``"
+msgstr "``supported_endpoints``"
+
+#: ../../source/features/batch-model-deployment-templates.rst:211
+msgid ""
+"OpenAI endpoints this deployment can serve, such as "
+"``/v1/chat/completions``."
+msgstr "该部署可服务的 OpenAI 端点，例如 ``/v1/chat/completions`` 。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:214
+msgid "**Optional/defaulted fields inside ``spec``:**"
+msgstr "**``spec`` 内的可选/有默认值字段：**"
+
+#: ../../source/features/batch-model-deployment-templates.rst:221
+msgid "Default"
+msgstr "默认值"
+
+#: ../../source/features/batch-model-deployment-templates.rst:223
+msgid "``parallelism``"
+msgstr "``parallelism``"
+
+#: ../../source/features/batch-model-deployment-templates.rst:224
+msgid "all degrees ``1``"
+msgstr "所有维度为 ``1``"
+
+#: ../../source/features/batch-model-deployment-templates.rst:225
+msgid "``tp * pp * dp * ep`` must equal ``accelerator.count``."
+msgstr "``tp * pp * dp * ep`` 必须等于 ``accelerator.count`` 。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:226
+#: ../../source/features/batch-model-deployment-templates.rst:265
+msgid "``engine_args``"
+msgstr "``engine_args``"
+
+#: ../../source/features/batch-model-deployment-templates.rst:227
+#: ../../source/features/batch-model-deployment-templates.rst:232
+msgid "empty"
+msgstr "空"
+
+#: ../../source/features/batch-model-deployment-templates.rst:228
+msgid ""
+"Typed and extra engine flags. Kubernetes vLLM rendering converts these "
+"into CLI flags. Console cloud runtime construction does not pass this "
+"field today; use ``engine.serve_args`` for LambdaCloud/RunPod flags."
+msgstr ""
+"类型化及额外的引擎标志。Kubernetes vLLM 渲染会将其转换为 CLI 标志。目前 Console 云运行时构建不会传递该字段；对 LambdaCloud/RunPod "
+"标志请使用 ``engine.serve_args`` 。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:231
+msgid "``quantization``"
+msgstr "``quantization``"
+
+#: ../../source/features/batch-model-deployment-templates.rst:233
+msgid ""
+"Kubernetes vLLM rendering maps weight and KV-cache quantization into CLI "
+"flags. Cloud SSH runtimes honor only flags that appear in "
+"``engine.serve_args`` today."
+msgstr ""
+"Kubernetes vLLM 渲染将权重和 KV-cache 量化映射为 CLI 标志。"
+"目前云 SSH 运行时只生效出现在 ``engine.serve_args`` 中的标志。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:236
+msgid "``service_id``"
+msgstr "``service_id``"
+
+#: ../../source/features/batch-model-deployment-templates.rst:237
+msgid "``null``"
+msgstr "``null``"
+
+#: ../../source/features/batch-model-deployment-templates.rst:238
+msgid ""
+"Optional service/discovery identifier for Kubernetes manifest labels and "
+"discovery paths."
+msgstr "可选的服务/发现标识符，用于 Kubernetes 清单标签和发现路径。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:240
+msgid "``deployment_mode``"
+msgstr "``deployment_mode``"
+
+#: ../../source/features/batch-model-deployment-templates.rst:241
+msgid "``dedicated``"
+msgstr "``dedicated``"
+
+#: ../../source/features/batch-model-deployment-templates.rst:242
+msgid ""
+"``dedicated`` is the only fully honored mode today. ``shared`` and "
+"``external`` are schema values but are not accepted by the Kubernetes Job"
+" renderer."
+msgstr ""
+"目前只有 ``dedicated`` 被完全支持。``shared`` 和 ``external`` 是 schema 取值，"
+"但不被 Kubernetes Job 渲染器接受。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:248
+msgid "Runtime Consumption Matrix"
+msgstr "运行时消费矩阵"
+
+#: ../../source/features/batch-model-deployment-templates.rst:255
+msgid "Kubernetes renderers"
+msgstr "Kubernetes 渲染器"
+
+#: ../../source/features/batch-model-deployment-templates.rst:256
+msgid "Console cloud path"
+msgstr "Console 云路径"
+
+#: ../../source/features/batch-model-deployment-templates.rst:257
+msgid "``engine.image``"
+msgstr "``engine.image``"
+
+#: ../../source/features/batch-model-deployment-templates.rst:258
+msgid "Engine container image."
+msgstr "引擎容器镜像。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:259
+msgid ""
+"Passed to MDS runtime options. LambdaCloud uses it as the Docker image. "
+"RunPod provisioning uses ``RUNPOD_IMAGE`` for the pod image today."
+msgstr ""
+"传递给 MDS 运行时选项。LambdaCloud 将其用作 Docker 镜像。"
+"目前 RunPod 调配使用 ``RUNPOD_IMAGE`` 作为 pod 镜像。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:261
+msgid "``engine.serve_args``"
+msgstr "``engine.serve_args``"
+
+#: ../../source/features/batch-model-deployment-templates.rst:262
+msgid ""
+"Appended last to engine CLI args, so admin raw flags can override "
+"generated args."
+msgstr "追加在引擎 CLI 参数末尾，因此管理员原始标志可覆盖生成的参数。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:264
+msgid "Passed as runtime ``vllm_args`` for LambdaCloud and RunPod."
+msgstr "作为 LambdaCloud 和 RunPod 的运行时 ``vllm_args`` 传递。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:266
+msgid "Converted to vLLM CLI flags by the engine adapter."
+msgstr "由引擎适配器转换为 vLLM CLI 标志。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:267
+msgid "Not consumed by Console's cloud runtime construction today."
+msgstr "目前不被 Console 的云运行时构建消费。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:269
+msgid "Used by downloader/model args and auth secret rendering."
+msgstr "用于 downloader/模型参数以及认证 secret 渲染。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:270
+msgid ""
+"Used by Console to resolve ``aibrix.model`` when no model serving name is"
+" set. Cloud SSH runtimes do not apply Kubernetes secrets."
+msgstr "当未设置模型服务名称时，Console 用它解析 ``aibrix.model`` 。云 SSH 运行时不会应用 Kubernetes secrets。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:273
+msgid "Used for resource requests and validation."
+msgstr "用于资源请求和校验。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:274
+msgid ""
+"Used by Resource Manager scheduling. RunPod requires provider-accepted "
+"GPU type strings; LambdaCloud normalizes common GPU family names."
+msgstr ""
+"由 Resource Manager 调度使用。RunPod 要求使用提供方接受的 GPU 类型字符串；"
+"LambdaCloud 会规范化常见 GPU 系列名称。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:276
+msgid "``parallelism`` and ``quantization``"
+msgstr "``parallelism`` 和 ``quantization``"
+
+#: ../../source/features/batch-model-deployment-templates.rst:277
+msgid "Used by Kubernetes vLLM argument rendering."
+msgstr "由 Kubernetes vLLM 参数渲染使用。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:278
+msgid "Not read directly; express required cloud flags in ``serve_args``."
+msgstr "不直接读取；在 ``serve_args`` 中表达所需的云标志。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:282
+msgid "``extra_body.aibrix`` Contract"
+msgstr "``extra_body.aibrix`` 约定"
+
+#: ../../source/features/batch-model-deployment-templates.rst:284
+msgid "The MDS API accepts this AIBrix extension block:"
+msgstr "MDS API 接受此 AIBrix 扩展块："
+
+#: ../../source/features/batch-model-deployment-templates.rst:327
+#, python-format
+msgid ""
+"``client`` controls per-job smart-client behavior. ``max_concurrency`` is"
+" an absolute job-global in-flight cap, hard limited to 1024 (requests "
+"above are rejected). If adaptive concurrency is enabled, the cap limits "
+"adaptive growth; if adaptive concurrency is disabled, it becomes the "
+"fixed concurrency. Omitted fields fall back to metadata-service "
+"environment defaults and then built-in defaults. "
+"``adaptive_healthy_window`` is the number of healthy completions required"
+" for each growth step (default 8). During initial capacity probing, the "
+"controller increases by the greater of ``adaptive_additive_increase`` and"
+" 25% of the current limit. After the first overload or latency-driven "
+"decrease, probing ends permanently and the controller uses "
+"``adaptive_additive_increase`` as the fixed AIMD congestion-avoidance "
+"step (default 1). Smaller windows and larger increases ramp up faster but"
+" can overshoot backend capacity. Operators can set their process-wide "
+"fallbacks with ``AIBRIX_BATCH_ADAPTIVE_HEALTHY_WINDOW`` and "
+"``AIBRIX_BATCH_ADAPTIVE_ADDITIVE_INCREASE``. Other fine-grained adaptive "
+"controller internals remain private."
+msgstr ""
+"``client`` 控制每个作业的 smart-client 行为。``max_concurrency`` 是作业全局的绝对在途上限，"
+"硬限制为 1024（超过的请求会被拒绝）。若启用自适应并发，该上限限制自适应增长；"
+"若禁用自适应并发，它成为固定并发。省略的字段回退到 metadata-service 环境默认值，"
+"再回退到内置默认值。``adaptive_healthy_window`` 是每步增长所需的健康完成次数（默认 8）。"
+"初始容量探测期间，控制器按 ``adaptive_additive_increase`` 与 25% of 当前限制中的较大者增加。"
+"首次因过载或延迟导致下降后，探测永久结束，控制器将 ``adaptive_additive_increase`` "
+"作为固定的 AIMD 拥塞避免步长（默认 1）。更小的窗口和更大的增量会更快爬升，但可能超出后端容量。"
+"运维可通过 ``AIBRIX_BATCH_ADAPTIVE_HEALTHY_WINDOW`` 和 "
+"``AIBRIX_BATCH_ADAPTIVE_ADDITIVE_INCREASE`` 设置进程级回退。"
+"其他细粒度自适应控制器内部实现保持私有。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:345
+msgid "The known upstream runtime targets are:"
+msgstr "已知的上游运行时目标为："
+
+#: ../../source/features/batch-model-deployment-templates.rst:347
+msgid "``Kubernetes``"
+msgstr "``Kubernetes``"
+
+#: ../../source/features/batch-model-deployment-templates.rst:348
+msgid "``KubernetesJob``"
+msgstr "``KubernetesJob``"
+
+#: ../../source/features/batch-model-deployment-templates.rst:349
+msgid "``LambdaCloud``"
+msgstr "``LambdaCloud``"
+
+#: ../../source/features/batch-model-deployment-templates.rst:350
+msgid "``RunPod``"
+msgstr "``RunPod``"
+
+#: ../../source/features/batch-model-deployment-templates.rst:351
+msgid "``External``"
+msgstr "``External``"
+
+#: ../../source/features/batch-model-deployment-templates.rst:353
+msgid ""
+"``runtime.target`` is validated against the live runtime registry, so "
+"downstream runtimes can register additional target strings."
+msgstr "``runtime.target`` 对照实时运行时注册表校验，因此下游运行时可注册额外的目标字符串。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:358
+msgid "Operational Notes"
+msgstr "运维说明"
+
+#: ../../source/features/batch-model-deployment-templates.rst:360
+msgid ""
+"For Resource Manager backed jobs, submit through Console. Direct MDS "
+"``/v1/batches`` requests do not provision RunPod or Lambda Cloud "
+"resources."
+msgstr ""
+"对 Resource Manager 支持的作业，请通过 Console 提交。直接调用 MDS ``/v1/batches`` "
+"不会调配 RunPod 或 Lambda Cloud 资源。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:362
+msgid ""
+"Console currently selects one Resource Manager provider per backend "
+"process via ``PROVISIONER``. Per-job provider preference is not "
+"implemented."
+msgstr ""
+"Console 目前通过 ``PROVISIONER`` 为每个后端进程选择一个 Resource Manager 提供方。"
+"尚未实现按作业选择提供方。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:364
+msgid ""
+"Cloud SSH runtimes require ``aibrix.model`` to be directly loadable by "
+"vLLM on the remote host. Template ``auth_secret_ref`` is a Kubernetes "
+"manifest feature and is not automatically applied to LambdaCloud/RunPod."
+msgstr ""
+"云 SSH 运行时要求 ``aibrix.model`` 可在远程主机上被 vLLM 直接加载。"
+"模板 ``auth_secret_ref`` 是 Kubernetes 清单特性，不会自动应用到 LambdaCloud/RunPod。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:367
+msgid ""
+"Use ``AIBRIX_MDS_HTTP_BODY_LOG=1`` on MDS when debugging the exact "
+"``extra_body.aibrix`` payload received by the metadata service."
+msgstr ""
+"调试元数据服务收到的精确 ``extra_body.aibrix`` 负载时，在 MDS 上使用 ``AIBRIX_MDS_HTTP_BODY_LOG=1`` "
+"。"
+
+#: ../../source/features/batch-model-deployment-templates.rst:372
+msgid "See Also"
+msgstr "另见"
+
+#: ../../source/features/batch-model-deployment-templates.rst:374
+msgid ":doc:`batch-api` - OpenAI Batch API surface and request/response details"
+msgstr ":doc:`batch-api` - OpenAI Batch API 表面及请求/响应细节"
+
+#: ../../source/features/batch-model-deployment-templates.rst:375
+msgid ""
+":doc:`batch-resource-manager` - using RunPod and Lambda Cloud with the "
+"Console batch planner"
+msgstr ":doc:`batch-resource-manager` - 在 Console 批处理 planner 中使用 RunPod 和 Lambda Cloud"
+
+#: ../../source/features/batch-model-deployment-templates.rst:377
+msgid ":py:mod:`aibrix.batch.template.schema` - Pydantic source of truth"
+msgstr ":py:mod:`aibrix.batch.template.schema` - Pydantic 事实来源"

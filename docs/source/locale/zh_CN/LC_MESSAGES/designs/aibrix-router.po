@@ -1,0 +1,407 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/designs/aibrix-router.rst:5
+msgid "AIBrix Router"
+msgstr "AIBrix Router"
+
+#: ../../source/designs/aibrix-router.rst:8
+msgid "Overview"
+msgstr "概述"
+
+#: ../../source/designs/aibrix-router.rst:10
+msgid ""
+"The AIBrix Router is a pluggable, intelligent traffic management "
+"component embedded in the AIBrix LLM serving stack. It is designed as an "
+"Envoy Gateway extension via external processing hooks, serving as the "
+"single entry point for all LLM inference requests."
+msgstr ""
+"AIBrix Router 是嵌入 AIBrix LLM 服务栈的可插拔智能流量管理组件。"
+"它通过外部处理钩子作为 Envoy Gateway 扩展，是所有 LLM 推理请求的统一入口。"
+
+#: ../../source/designs/aibrix-router.rst:12
+msgid ""
+"This gateway abstracts away the underlying complexity of managing "
+"multiple models, LoRA adapters, heterogeneous GPU backends, and diverse "
+"scaling strategies."
+msgstr ""
+"该网关屏蔽了管理多模型、LoRA 适配器、异构 GPU 后端以及多种扩缩容策略的底层复杂性。"
+
+#: ../../source/designs/aibrix-router.rst:14
+msgid "gateway-design"
+msgstr "gateway-design"
+
+#: ../../source/designs/aibrix-router.rst:20
+msgid "Core Principle"
+msgstr "核心原则"
+
+#: ../../source/designs/aibrix-router.rst:22
+msgid ""
+"The router maintains a high-frequency local cache of pod metrics via "
+"periodic pulls and subscriptions. This allows it to apply sophisticated "
+"multi-objective routing logic without blocking on live queries to pods, "
+"keeping latency low on the hot path and enabling scaling to thousands of "
+"QPS."
+msgstr ""
+"路由器通过周期性拉取和订阅，维护 Pod 指标的高频本地缓存。"
+"因此可以在不阻塞实时查询 Pod 的情况下应用多目标路由逻辑，"
+"保持热路径低延迟，并支持扩展到数千 QPS。"
+
+#: ../../source/designs/aibrix-router.rst:24
+msgid ""
+"The active routing strategy can be set per-request via the ``routing-"
+"strategy`` HTTP header, or globally via the ``ROUTING_ALGORITHM`` "
+"environment variable, or through a model config profile annotation."
+msgstr ""
+"可通过 ``routing-strategy`` HTTP 请求头按请求设置路由策略，"
+"也可通过 ``ROUTING_ALGORITHM`` 环境变量全局设置，或通过模型配置 profile 注解设置。"
+
+#: ../../source/designs/aibrix-router.rst:27
+msgid "Detailed Sequence Flow"
+msgstr "详细时序流程"
+
+#: ../../source/designs/aibrix-router.rst:61
+msgid "Supported Routing Strategies"
+msgstr "支持的路由策略"
+
+#: ../../source/designs/aibrix-router.rst:63
+msgid ""
+"AIBrix ships with a set of built-in algorithms, each optimized for "
+"different workload patterns."
+msgstr "AIBrix 内置一组算法，分别针对不同工作负载模式优化。"
+
+#: ../../source/designs/aibrix-router.rst:65
+msgid "**General load balancing**"
+msgstr "**通用负载均衡**"
+
+#: ../../source/designs/aibrix-router.rst:67
+msgid ""
+"``random``: routes to a randomly selected pod. Useful as a baseline or "
+"when pods are homogeneous and load is uniform."
+msgstr "``random`` ：路由到随机选中的 Pod。适合作为基线，或 Pod 同质且负载均匀时使用。"
+
+#: ../../source/designs/aibrix-router.rst:68
+msgid "``least-request``: routes to the pod with the fewest in-flight requests."
+msgstr "``least-request`` ：路由到进行中请求数最少的 Pod。"
+
+#: ../../source/designs/aibrix-router.rst:69
+msgid ""
+"``least-busy-time``: routes to the pod with the least cumulative busy "
+"processing time."
+msgstr "``least-busy-time`` ：路由到累计忙处理时间最少的 Pod。"
+
+#: ../../source/designs/aibrix-router.rst:70
+msgid ""
+"``least-latency``: routes to the pod with the lowest average processing "
+"latency."
+msgstr "``least-latency`` ：路由到平均处理延迟最低的 Pod。"
+
+#: ../../source/designs/aibrix-router.rst:71
+msgid ""
+"``least-kv-cache``: routes to the pod with the smallest current KV cache "
+"occupancy (least VRAM used)."
+msgstr "``least-kv-cache`` ：路由到当前 KVCache 占用最小（显存使用最少）的 Pod。"
+
+#: ../../source/designs/aibrix-router.rst:72
+msgid ""
+"``least-gpu-cache``: routes to the pod with the lowest GPU cache "
+"utilization."
+msgstr "``least-gpu-cache`` ：路由到 GPU cache 利用率最低的 Pod。"
+
+#: ../../source/designs/aibrix-router.rst:73
+msgid ""
+"``least-utilization``: routes to the pod with the lowest overall "
+"utilization score."
+msgstr "``least-utilization`` ：路由到综合利用率分数最低的 Pod。"
+
+#: ../../source/designs/aibrix-router.rst:74
+msgid ""
+"``load-balance``: capacity-aware weighted least-request routing. Scores "
+"each pod as ``running_requests / drain_rate`` (pending time), where "
+"``drain_rate`` is the observed request completion rate. Selects the pod "
+"with the lowest pending time, breaking ties using least combined GPU+CPU "
+"KV-cache usage (falling back to a random pick if cache metrics are "
+"unavailable for the tied pods) — the same secondary-signal pattern "
+"``prefix-cache`` uses to break ties in prefix-match percentage via "
+"request count. Falls back to uniform capacity when drain-rate metrics are"
+" unavailable. Its load-imbalance gate, which restricts candidates to the "
+"least-loaded pods when load is severely skewed, is applied centrally by "
+"the gateway ahead of whichever strategy actually routes each request — "
+"not just when ``load-balance`` itself is selected (see "
+"``pkg/plugins/gateway/ENV_VARS.md``)."
+msgstr ""
+"``load-balance`` ：感知容量的加权最少请求路由。按 ``running_requests / drain_rate`` （待处理时间）为每个 "
+"Pod 打分，其中 ``drain_rate`` 是观测到的请求完成速率。选择待处理时间最低的 Pod；并列时用 GPU+CPU KVCache "
+"合计占用最低者打破平局（若并列 Pod 缺少缓存指标则随机选择）——与 ``prefix-cache`` 用请求数打破前缀匹配百分比平局的次级信号模式相同。当 "
+"drain-rate 指标不可用时回退到均匀容量。其负载不均衡门控会在负载严重倾斜时把候选限制为负载最低的 Pod；该门控由网关在实际路由策略之前统一应用，而不仅在选择 "
+"``load-balance`` 时生效（见 ``pkg/plugins/gateway/ENV_VARS.md`` ）。"
+
+#: ../../source/designs/aibrix-router.rst:75
+msgid ""
+"``throughput``: routes to the pod that has processed the fewest total "
+"weighted tokens, favoring underloaded pods."
+msgstr "``throughput`` ：路由到已处理加权 token 总数最少的 Pod，偏向负载较低的 Pod。"
+
+#: ../../source/designs/aibrix-router.rst:76
+msgid ""
+"``power-of-two``: applies the power-of-two choices algorithm — samples "
+"two pods and selects the better one."
+msgstr "``power-of-two`` ：应用 power-of-two choices 算法——抽样两个 Pod 并选择更优者。"
+
+#: ../../source/designs/aibrix-router.rst:78
+msgid "**KV-cache aware**"
+msgstr "**感知 KVCache**"
+
+#: ../../source/designs/aibrix-router.rst:80
+msgid ""
+"``prefix-cache``: routes to a pod that already has a KV cache matching "
+"the request's prompt prefix; the best prefix-matched pod within a stddev "
+"load threshold is selected. Purely about prefix caching — it does not "
+"itself gate on cluster-wide load imbalance (the gateway applies that gate"
+" centrally ahead of it; see ``load-balance`` above). Supports standard "
+"mode (local hash table) and KV sync mode (real-time distributed index, "
+"enabled via ``AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true``)."
+msgstr ""
+"``prefix-cache`` ：路由到已有与请求 prompt 前缀匹配的 KVCache 的 Pod；在标准差负载阈值内选择前缀匹配最好的 "
+"Pod。仅关注前缀缓存——自身不对集群范围负载不均衡做门控（网关会在其之前统一应用该门控；见上文 ``load-balance`` ）。支持标准模式（本地哈希表）和 "
+"KV sync 模式（实时分布式索引，通过 ``AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true`` "
+"启用）。"
+
+#: ../../source/designs/aibrix-router.rst:81
+msgid ""
+"``prefix-cache-preble``: routes considering both prefix cache hits and "
+"pod load. Based on `Preble: Efficient Distributed Prompt Scheduling for "
+"LLM Serving <https://arxiv.org/abs/2407.00023>`_."
+msgstr ""
+"``prefix-cache-preble`` ：同时考虑前缀缓存命中与 Pod 负载进行路由。基于 `Preble: Efficient Distributed "
+"Prompt Scheduling for LLM Serving <https://arxiv.org/abs/2407.00023>`_ 。"
+
+#: ../../source/designs/aibrix-router.rst:83
+msgid "**Fairness**"
+msgstr "**公平性**"
+
+#: ../../source/designs/aibrix-router.rst:85
+msgid ""
+"``vtc-basic``: routes using a hybrid score that balances per-user token "
+"fairness and pod utilization. A simplified variant of the Virtual Token "
+"Counter (VTC) algorithm. See `VTC-artifact <https://github.com/Ying1123"
+"/VTC-artifact>`_ for background."
+msgstr ""
+"``vtc-basic`` ：使用兼顾每用户 token 公平性与 Pod 利用率的混合分数进行路由。是 Virtual Token Counter（VTC）算法的简化变体。背景见 "
+"`VTC-artifact <https://github.com/Ying1123/VTC-artifact>`_ 。"
+
+#: ../../source/designs/aibrix-router.rst:87
+msgid "**SLO-aware**"
+msgstr "**感知 SLO**"
+
+#: ../../source/designs/aibrix-router.rst:89
+msgid "``slo``: routes with awareness of per-request service-level objectives."
+msgstr "``slo`` ：感知每请求服务等级目标进行路由。"
+
+#: ../../source/designs/aibrix-router.rst:90
+msgid ""
+"``slo-pack-load``: SLO-aware routing that packs load onto fewer pods to "
+"improve efficiency."
+msgstr "``slo-pack-load`` ：感知 SLO 的路由，将负载集中到更少 Pod 以提升效率。"
+
+#: ../../source/designs/aibrix-router.rst:91
+msgid ""
+"``slo-least-load``: SLO-aware routing that spreads load to the least "
+"loaded pod."
+msgstr "``slo-least-load`` ：感知 SLO 的路由，将负载分散到负载最低的 Pod。"
+
+#: ../../source/designs/aibrix-router.rst:92
+msgid ""
+"``slo-least-load-pulling``: variant of ``slo-least-load`` that pulls "
+"metrics directly rather than relying on the cached snapshot."
+msgstr "``slo-least-load-pulling`` ：``slo-least-load`` 的变体，直接拉取指标而不依赖缓存快照。"
+
+#: ../../source/designs/aibrix-router.rst:94
+msgid "**Specialized**"
+msgstr "**专用策略**"
+
+#: ../../source/designs/aibrix-router.rst:96
+msgid ""
+"``pd``: prefill-decode disaggregation routing. Splits processing between "
+"dedicated prefill pods and decode pods for optimized end-to-end latency."
+msgstr "``pd`` ：Prefill/Decode 分离路由。将处理拆分到专用 prefill Pod 和 decode Pod，以优化端到端延迟。"
+
+#: ../../source/designs/aibrix-router.rst:97
+msgid ""
+"``session-affinity``: sticky session routing. Encodes the target pod's "
+"address (``IP:Port``) as a base64 value in the ``x-session-id`` response "
+"header. Subsequent requests carrying that header are routed to the same "
+"pod. Falls back to a random ready pod and issues a new session ID if the "
+"original pod is unavailable."
+msgstr ""
+"``session-affinity`` ：会话粘滞路由。将目标 Pod 地址（``IP:Port`` ）编码为 base64，写入 ``x-session-id`` "
+"响应头。后续携带该头的请求会路由到同一 Pod。若原 Pod 不可用，则回退到随机就绪 Pod 并签发新的 session ID。"
+
+#: ../../source/designs/aibrix-router.rst:99
+msgid "**Auto-blended capacity awareness**"
+msgstr "**自动混合的容量感知**"
+
+#: ../../source/designs/aibrix-router.rst:101
+msgid ""
+"Every strategy above, except the exclusive ones (``pd``, "
+"``slo``/``slo-*``) and an explicit standalone ``load-balance`` selection,"
+" silently gets ``load-balance``'s capacity-aware scoring blended in "
+"behind the scenes — and ``least-request`` too, when the selected strategy"
+" doesn't already route by request count, to keep multi-port/data-parallel"
+" pod routing working under the blend. The caller never sees this: "
+"``ctx.Algorithm``, response headers, and ``Validate()`` all still reflect"
+" exactly the strategy that was requested. This keeps any single strategy "
+"from steering traffic at an already-hot pod even outside the load-"
+"imbalance gate described above. Set "
+"``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT=0`` to disable it (see "
+"``pkg/plugins/gateway/ENV_VARS.md``)."
+msgstr ""
+"除独占策略（``pd`` 、``slo``/``slo-*`` ）以及显式单独选择 ``load-balance`` 外，上述每种策略都会在后台静默混入 "
+"``load-balance`` 的容量感知打分；当所选策略本身不按请求数路由时，还会混入 ``least-request`` ，以保证混合后多端口/数据并行 "
+"Pod 路由仍可用。调用方看不到这一层：``ctx.Algorithm`` 、响应头和 ``Validate()`` 仍反映所请求的策略。这样即使在上文负载不均衡门控之外，单一策略也不会把流量导向已经过热的 "
+"Pod。设置 ``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT=0`` 可关闭该行为（见 ``pkg/plugins/gateway/ENV_VARS.md`` "
+"）。"
+
+#: ../../source/designs/aibrix-router.rst:113
+msgid "How to Extend Routing Algorithms"
+msgstr "如何扩展路由算法"
+
+#: ../../source/designs/aibrix-router.rst:115
+msgid ""
+"The routing framework is designed to be highly pluggable. All routing "
+"logic is expressed through the ``Router`` interface:"
+msgstr "路由框架高度可插拔。所有路由逻辑都通过 ``Router`` 接口表达："
+
+#: ../../source/designs/aibrix-router.rst:126
+msgid "**Parameters**"
+msgstr "**参数**"
+
+#: ../../source/designs/aibrix-router.rst:128
+msgid ""
+"``ctx *RoutingContext``: Per-request context carrying routing inputs. Key"
+" fields include:"
+msgstr "``ctx *RoutingContext`` ：携带路由输入的每请求上下文。关键字段包括："
+
+#: ../../source/designs/aibrix-router.rst:130
+msgid "``Algorithm`` — the active routing strategy name."
+msgstr "``Algorithm`` — 当前路由策略名称。"
+
+#: ../../source/designs/aibrix-router.rst:131
+msgid "``Model`` — the model name extracted from the request body."
+msgstr "``Model`` — 从请求体提取的模型名称。"
+
+#: ../../source/designs/aibrix-router.rst:132
+msgid "``Message`` — the raw prompt text (available for token-level decisions)."
+msgstr "``Message`` — 原始 prompt 文本（可用于 token 级决策）。"
+
+#: ../../source/designs/aibrix-router.rst:133
+msgid ""
+"``User`` — the optional user identifier (used by fairness-based "
+"algorithms)."
+msgstr "``User`` — 可选用户标识（公平性算法使用）。"
+
+#: ../../source/designs/aibrix-router.rst:134
+msgid "``ReqHeaders`` — a copy of the incoming HTTP request headers."
+msgstr "``ReqHeaders`` — 入站 HTTP 请求头的副本。"
+
+#: ../../source/designs/aibrix-router.rst:135
+msgid ""
+"``ConfigProfile`` — resolved model config profile (strategy override, RPS"
+" limit, etc.), or ``nil`` if not set."
+msgstr "``ConfigProfile`` — 解析后的模型配置 profile（策略覆盖、RPS 限制等）；未设置时为 ``nil`` 。"
+
+#: ../../source/designs/aibrix-router.rst:137
+msgid ""
+"``readyPodList PodList``: Pre-filtered list of pods that are healthy and "
+"eligible for routing. Guaranteed non-empty."
+msgstr "``readyPodList PodList`` ：已预过滤、健康且可路由的 Pod 列表。保证非空。"
+
+#: ../../source/designs/aibrix-router.rst:139
+msgid "**Return value**"
+msgstr "**返回值**"
+
+#: ../../source/designs/aibrix-router.rst:141
+msgid ""
+"The IP address of the selected pod (e.g. ``\"10.0.0.5:8080\"``), or a "
+"non-nil error if selection fails."
+msgstr "所选 Pod 的 IP 地址（例如 ``\"10.0.0.5:8080\"`` ）；选择失败时返回非 nil 错误。"
+
+#: ../../source/designs/aibrix-router.rst:143
+msgid "**Steps to add a new algorithm**"
+msgstr "**添加新算法的步骤**"
+
+#: ../../source/designs/aibrix-router.rst:145
+msgid ""
+"Implement the ``Router`` interface in a new ``*.go`` file under "
+"``pkg/plugins/gateway/algorithms/``."
+msgstr ""
+"在 ``pkg/plugins/gateway/algorithms/`` 下新建 ``*.go`` 文件并实现 ``Router`` 接口。"
+
+#: ../../source/designs/aibrix-router.rst:146
+msgid "Declare a typed constant for the strategy name:"
+msgstr "为策略名称声明类型化常量："
+
+#: ../../source/designs/aibrix-router.rst:152
+msgid ""
+"Register the constructor in an ``init()`` function so it is picked up at "
+"startup:"
+msgstr "在 ``init()`` 函数中注册构造函数，以便启动时加载："
+
+#: ../../source/designs/aibrix-router.rst:160
+msgid ""
+"Specify it per-request via the ``routing-strategy`` HTTP header, or set "
+"``ROUTING_ALGORITHM=my-strategy`` to use it as the default."
+msgstr ""
+"通过 ``routing-strategy`` HTTP 请求头按请求指定，或设置 "
+"``ROUTING_ALGORITHM=my-strategy`` 作为默认策略。"
+
+#: ../../source/designs/aibrix-router.rst:162
+msgid ""
+"Additional router interfaces in ``pkg/types/router.go`` support optional "
+"capabilities:"
+msgstr "``pkg/types/router.go`` 中还有额外路由器接口，用于可选能力："
+
+#: ../../source/designs/aibrix-router.rst:164
+msgid ""
+"``QueueRouter`` — for routers that maintain an internal queue and expose "
+"queue length."
+msgstr "``QueueRouter`` — 维护内部队列并暴露队列长度的路由器。"
+
+#: ../../source/designs/aibrix-router.rst:165
+msgid ""
+"``FallbackRouter`` — enables chaining by delegating to a secondary router"
+" when the primary cannot make a decision."
+msgstr "``FallbackRouter`` — 主路由器无法决策时委托给次级路由器，以支持链式回退。"
+
+#: ../../source/designs/aibrix-router.rst:169
+msgid ":doc:`../features/gateway-plugins`"
+msgstr ":doc:`../features/gateway-plugins`"
+
+#: ../../source/designs/aibrix-router.rst:170
+msgid "Configuring the gateway and choosing a routing strategy."
+msgstr "配置网关并选择路由策略。"
+
+#: ../../source/designs/aibrix-router.rst:171
+msgid ":doc:`../production/gateway`"
+msgstr ":doc:`../production/gateway`"
+
+#: ../../source/designs/aibrix-router.rst:172
+msgid "Production gateway deployment."
+msgstr "生产环境网关部署。"

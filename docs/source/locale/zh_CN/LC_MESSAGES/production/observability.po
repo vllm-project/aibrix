@@ -1,0 +1,226 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/production/observability.rst:5
+msgid "Observability"
+msgstr "可观测性"
+
+#: ../../source/production/observability.rst:7
+msgid ""
+"To enable observability for your AIBrix deployment, we provide **Built-in"
+" Grafana Dashboards** that cover the key system components:"
+msgstr "要为 AIBrix 部署启用可观测性，我们提供覆盖关键系统组件的 **内置 Grafana 仪表盘** ："
+
+#: ../../source/production/observability.rst:9
+msgid "**Control Plane Runtime Dashboard**"
+msgstr "**Control Plane Runtime Dashboard**"
+
+#: ../../source/production/observability.rst:10
+msgid ""
+"Monitors controller runtime performance, reconciliation behavior, and "
+"health status of the control plane."
+msgstr "监控控制器运行时性能、调和行为以及控制面健康状态。"
+
+#: ../../source/production/observability.rst:12
+msgid "**Envoy Gateway Dashboard**"
+msgstr "**Envoy Gateway Dashboard**"
+
+#: ../../source/production/observability.rst:13
+msgid ""
+"Visualizes traffic metrics including request counts, latencies, and "
+"external processing statistics."
+msgstr "可视化流量指标，包括请求数、延迟和外部处理统计。"
+
+#: ../../source/production/observability.rst:15
+msgid "**Model Service Dashboard**"
+msgstr "**Model Service Dashboard**"
+
+#: ../../source/production/observability.rst:16
+msgid ""
+"Tracks per-model service metrics such as request QPS, prompt and output "
+"length, TTFT/TPOT, and stop reasons etc."
+msgstr "跟踪每个模型的服务指标，例如请求 QPS、prompt 与输出长度、TTFT/TPOT 以及停止原因等。"
+
+#: ../../source/production/observability.rst:18
+msgid "**ModelClaim Runtime Dashboard**"
+msgstr "**ModelClaim Runtime Dashboard**"
+
+#: ../../source/production/observability.rst:19
+msgid ""
+"Tracks ModelClaim desired/ready/activating lifecycle, warm-pool resident "
+"density, kvcached KV use/capacity, and HBM peak per co-resident model."
+msgstr ""
+"跟踪 ModelClaim 的 desired/ready/activating 生命周期、warm-pool 驻留密度、"
+"kvcached 的 KV 使用量/容量，以及每个共驻模型的 HBM 峰值。"
+
+#: ../../source/production/observability.rst:22
+msgid "Prerequisites"
+msgstr "前置条件"
+
+#: ../../source/production/observability.rst:24
+msgid ""
+"Before enabling metrics and dashboards, make sure the `kube-prometheus-"
+"stack <https://github.com/prometheus-community/helm-"
+"charts/blob/main/charts/kube-prometheus-stack/README.md>`_ is installed "
+"in your cluster. This provides Prometheus, Grafana, and CRDs like "
+"`ServiceMonitor` required for scraping metrics."
+msgstr ""
+"启用指标和仪表盘之前，请确保集群中已安装 `kube-prometheus-stack <https://github.com/prometheus-community/helm-charts/blob/main/charts/kube-prometheus-stack/README.md>`_ "
+"。它提供 Prometheus、Grafana，以及抓取指标所需的 `ServiceMonitor` 等 CRD。"
+
+#: ../../source/production/observability.rst:33
+msgid "Metric Enablement Steps"
+msgstr "启用指标的步骤"
+
+#: ../../source/production/observability.rst:35
+msgid "To activate metric collection for each component:"
+msgstr "要为各组件启用指标采集："
+
+#: ../../source/production/observability.rst:37
+msgid ""
+"**Control Plane Runtime** - The default controller manager installation "
+"already expose the metrics."
+msgstr "**Control Plane Runtime** - 默认的 controller manager 安装已暴露指标。"
+
+#: ../../source/production/observability.rst:43
+msgid ""
+"**Envoy Gateway** - In addition to a `ServiceMonitor`, you must deploy an"
+" **auxiliary metrics service** that exposes Envoy's admin interface "
+"metrics (e.g., `/stats/prometheus`) to Prometheus."
+msgstr ""
+"**Envoy Gateway** - 除 `ServiceMonitor` 外，还必须部署一个 **辅助指标服务** ，将 Envoy 管理接口指标（例如 "
+"`/stats/prometheus` ）暴露给 Prometheus。"
+
+#: ../../source/production/observability.rst:53
+msgid ""
+"**Model Service** - We provides a sample `ServiceMonitor` as a reference,"
+" you can change the definition based on your model setups."
+msgstr "**Model Service** - 我们提供示例 `ServiceMonitor` 作为参考，可根据模型配置修改其定义。"
+
+#: ../../source/production/observability.rst:59
+msgid ""
+"**ModelClaim Runtime** - Scrapes the warm-pool `aibrix-runtime` sidecar "
+"`/metrics` endpoint. Services must be labeled ``aibrix.ai/metrics: "
+"modelclaim-runtime`` (see ``samples/modelclaim/warm-runtime-pool.yaml``)."
+" The monitor attaches a bounded ``pool`` label from "
+"``pool.aibrix.ai/name``."
+msgstr ""
+"**ModelClaim Runtime** - 抓取 warm-pool `aibrix-runtime` sidecar 的 `/metrics` "
+"端点。Service 必须带有标签 ``aibrix.ai/metrics: modelclaim-runtime`` （参见 ``samples/modelclaim/warm-runtime-pool.yaml`` "
+"）。该 monitor 会从 ``pool.aibrix.ai/name`` 附加有界的 ``pool`` 标签。"
+
+#: ../../source/production/observability.rst:66
+msgid "Import Grafana Dashboard"
+msgstr "导入 Grafana 仪表盘"
+
+#: ../../source/production/observability.rst:68
+msgid ""
+"For production monitoring, we provide pre-built Grafana dashboards to "
+"visualize metrics from the control plane, Envoy Gateway, model services, "
+"and ModelClaim warm pools. These dashboards offer insights into system "
+"performance, request patterns, error rates, and more. You can import them"
+" into your Grafana instance by uploading the corresponding JSON files. "
+"Ensure your Prometheus data source is correctly configured before "
+"importing. Once imported, the dashboards will begin displaying live "
+"metrics as long as `ServiceMonitor` resources are properly set up and the"
+" kube-prometheus stack is actively scraping data."
+msgstr ""
+"对于生产监控，我们提供预构建的 Grafana 仪表盘，用于可视化控制面、Envoy Gateway、模型服务以及 ModelClaim "
+"warm pool 的指标。这些仪表盘可洞察系统性能、请求模式、错误率等。可通过上传对应 JSON 文件导入到 Grafana 实例。"
+"导入前请确保 Prometheus 数据源配置正确。导入后，只要 `ServiceMonitor` 资源配置正确，且 kube-prometheus "
+"stack 正在抓取数据，仪表盘就会开始显示实时指标。"
+
+#: ../../source/production/observability.rst:73
+msgid ""
+"See ``observability/grafana/README.md`` for the ModelClaim metric "
+"contract and import notes."
+msgstr "ModelClaim 指标约定与导入说明见 ``observability/grafana/README.md`` 。"
+
+#: ../../source/production/observability.rst:75
+msgid ""
+"`AIBrix Control Plane Runtime Dashboard "
+"<https://raw.githubusercontent.com/vllm-"
+"project/aibrix/main/observability/grafana/AIBrix_Control_Plane_Runtime_Dashboard.json>`_"
+msgstr ""
+"`AIBrix Control Plane Runtime Dashboard "
+"<https://raw.githubusercontent.com/vllm-"
+"project/aibrix/main/observability/grafana/AIBrix_Control_Plane_Runtime_Dashboard.json>`_"
+
+#: ../../source/production/observability.rst:76
+msgid ""
+"`AIBrix Envoy Gateway Dashboard <https://raw.githubusercontent.com/vllm-"
+"project/aibrix/main/observability/grafana/AIBrix_Envoy_Gateway_Dashboard.json>`_"
+msgstr ""
+"`AIBrix Envoy Gateway Dashboard <https://raw.githubusercontent.com/vllm-"
+"project/aibrix/main/observability/grafana/AIBrix_Envoy_Gateway_Dashboard.json>`_"
+
+#: ../../source/production/observability.rst:77
+msgid ""
+"`AIBrix vLLM Engine Dashboard <https://raw.githubusercontent.com/vllm-"
+"project/aibrix/main/observability/grafana/AIBrix_vLLM_Engine_Dashboard.json>`_"
+msgstr ""
+"`AIBrix vLLM Engine Dashboard <https://raw.githubusercontent.com/vllm-"
+"project/aibrix/main/observability/grafana/AIBrix_vLLM_Engine_Dashboard.json>`_"
+
+#: ../../source/production/observability.rst:78
+msgid ""
+"`AIBrix ModelClaim Runtime Dashboard <https://raw.githubusercontent.com"
+"/vllm-"
+"project/aibrix/main/observability/grafana/AIBrix_ModelClaim_Runtime_Dashboard.json>`_"
+msgstr ""
+"`AIBrix ModelClaim Runtime Dashboard <https://raw.githubusercontent.com"
+"/vllm-"
+"project/aibrix/main/observability/grafana/AIBrix_ModelClaim_Runtime_Dashboard.json>`_"
+
+#: ../../source/production/observability.rst:81
+msgid "Production Monitoring"
+msgstr "生产监控"
+
+#: ../../source/production/observability.rst:83
+msgid ""
+"TODO: Screenshots and visual examples will be added soon to illustrate "
+"key views and usage patterns."
+msgstr "TODO：将很快补充截图和可视化示例，以说明关键视图和使用方式。"
+
+#: ../../source/production/observability.rst:86
+msgid "OpenTelemetry"
+msgstr "OpenTelemetry"
+
+#: ../../source/production/observability.rst:88
+msgid ""
+"To enable the telemetry components, please refer to "
+":ref:`observability_telemetry` for details."
+msgstr "要启用遥测组件，请参见 :ref:`observability_telemetry` 。"
+
+#: ../../source/production/observability.rst:90
+msgid "What's next?"
+msgstr "下一步？"
+
+#: ../../source/production/observability.rst:93
+msgid ":doc:`gateway`: gateway configuration that produces these metrics"
+msgstr ":doc:`gateway` ：产生这些指标的网关配置"
+
+#: ../../source/production/observability.rst:94
+msgid ":doc:`model-deployment`: the signals worth alerting on"
+msgstr ":doc:`model-deployment` ：值得告警的信号"
+
+#: ../../source/production/observability.rst:95
+msgid ":doc:`../features/benchmark-and-generator`: generate load to exercise them"
+msgstr ":doc:`../features/benchmark-and-generator` ：生成负载以验证这些指标"

@@ -1,0 +1,813 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/features/kvcache-offloading.rst:5
+msgid "KVCache Offloading"
+msgstr "KVCache 卸载"
+
+#: ../../source/features/kvcache-offloading.rst:8
+msgid ""
+"If you’re not yet familiar with the concepts of KVCache L1 and L2, please"
+" refer to AIBrix KVCache Offloading document at :ref:`aibrix_kvcache-"
+"offloading-framework`."
+msgstr "若尚不熟悉 KVCache L1 和 L2 的概念，请参阅 :ref:`aibrix_kvcache-offloading-framework` 。"
+
+#: ../../source/features/kvcache-offloading.rst:11
+msgid ""
+"The AIBrix KVCache Offloading framework can be used as a standalone "
+"component — there’s no need to install the entire AIBrix stack."
+msgstr "AIBrix KVCache Offloading 框架可单独使用，无需安装完整 AIBrix 栈。"
+
+#: ../../source/features/kvcache-offloading.rst:14
+msgid "Since v0.4.0, both vLLM V0 and V1 connectors are supported."
+msgstr "自 v0.4.0 起，同时支持 vLLM V0 和 V1 connector。"
+
+#: ../../source/features/kvcache-offloading.rst:17
+msgid ""
+"Since v0.5.0, both vLLM and `SGLang <https://github.com/sgl-"
+"project/sglang/tree/main/python/sglang/srt/mem_cache/storage/aibrix_kvcache>`_"
+" are supported."
+msgstr ""
+"自 v0.5.0 起，同时支持 vLLM 和 `SGLang <https://github.com/sgl-project/sglang/tree/main/python/sglang/srt/mem_cache/storage/aibrix_kvcache>`_ "
+"。"
+
+#: ../../source/features/kvcache-offloading.rst:20
+msgid "Currently, only FlashAttention and XFormers are supported."
+msgstr "目前仅支持 FlashAttention 和 XFormers。"
+
+#: ../../source/features/kvcache-offloading.rst:23
+msgid "Overview"
+msgstr "概述"
+
+#: ../../source/features/kvcache-offloading.rst:25
+msgid ""
+"An inference engine keeps the key/value tensors of every token it has "
+"processed in GPU memory, and evicts them when that memory fills up. Any "
+"later request that shares a prefix with an evicted sequence has to "
+"recompute it, which shows up directly as time to first token."
+msgstr ""
+"推理引擎将已处理每个 token 的 key/value 张量保存在 GPU 内存中，内存满时会驱逐它们。之后若有请求与被驱逐序列共享前缀，就必须重新计算，这会直接体现在首 token 时间上。"
+
+#: ../../source/features/kvcache-offloading.rst:29
+msgid "KVCache offloading extends the engine's KV cache beyond the GPU:"
+msgstr "KVCache 卸载将引擎的 KV cache 扩展到 GPU 之外："
+
+#: ../../source/features/kvcache-offloading.rst:31
+msgid ""
+"**L1** is a DRAM cache inside the engine pod. It is managed by the AIBrix"
+" connector that runs in the engine process, so it needs no extra "
+"deployment. Computed blocks are saved to host memory and reloaded when a "
+"matching prefix comes back."
+msgstr ""
+"**L1** 是引擎 Pod 内的 DRAM cache。由运行在引擎进程中的 AIBrix connector 管理，无需额外部署。已计算的 block 会保存到主机内存，匹配前缀再次出现时再加载回来。"
+
+#: ../../source/features/kvcache-offloading.rst:34
+msgid ""
+"**L2** is a distributed KV cache cluster outside the engine pods. Several"
+" engine replicas share it, so a prefix computed by one replica can be "
+"reused by another. AIBrix provisions and tracks the cluster through the "
+"``KVCache`` custom resource and connects engines to it through a "
+"pluggable backend."
+msgstr ""
+"**L2** 是引擎 Pod 外的分布式 KV cache 集群。多个引擎副本共享它，一个副本计算过的前缀可被另一个副本复用。AIBrix 通过 ``KVCache`` 自定义资源创建并跟踪该集群，引擎经可插拔后端接入。"
+
+#: ../../source/features/kvcache-offloading.rst:39
+msgid ""
+"The two levels are independent: you can run L1 alone, L2 alone, or both. "
+"This page shows how to turn each on. The design page, :doc:`../designs"
+"/aibrix-kvcache-offloading-framework`, explains the cache management "
+"algorithms and holds the complete environment variable reference."
+msgstr ""
+"两级相互独立：可以只开 L1、只开 L2，或两者都开。本页说明如何分别启用。设计文档 :doc:`../designs/aibrix-kvcache-offloading-framework` 解释 cache 管理算法，并提供完整环境变量参考。"
+
+#: ../../source/features/kvcache-offloading.rst:43
+msgid ""
+"This feature is different from :doc:`kv-event-sync`, which only publishes"
+" *which* prefixes each engine holds so the gateway can route to the "
+"warmest pod. Offloading moves the cache contents themselves."
+msgstr "该特性不同于 :doc:`kv-event-sync` ：后者只发布各引擎持有*哪些*前缀，以便网关路由到最热的 Pod。卸载则会搬移 cache 内容本身。"
+
+#: ../../source/features/kvcache-offloading.rst:48
+msgid "Architecture"
+msgstr "架构"
+
+#: ../../source/features/kvcache-offloading.rst:63
+#, python-brace-format
+msgid ""
+"The **connector** is loaded by the engine. For vLLM it is selected with "
+"``--kv-transfer-config "
+"'{\"kv_connector\":\"AIBrixOffloadingConnectorV1Type3\", "
+"\"kv_role\":\"kv_both\"}'`` (V1 engine, ``VLLM_USE_V1=1``). For SGLang, "
+"use the ``aibrix_kvcache`` storage backend linked in the note above."
+msgstr ""
+"**connector** 由引擎加载。对 vLLM，通过 ``--kv-transfer-config '{\"kv_connector\":\"AIBrixOffloadingConnectorV1Type3\", "
+"\"kv_role\":\"kv_both\"}'`` 选择（V1 引擎，``VLLM_USE_V1=1`` ）。对 SGLang，使用上文注释中链接的 "
+"``aibrix_kvcache`` 存储后端。"
+
+#: ../../source/features/kvcache-offloading.rst:67
+msgid ""
+"**L1** lives in the engine process. Its size and eviction policy are "
+"environment variables; ``S3FIFO`` is the default policy."
+msgstr "**L1** 位于引擎进程内。其大小和驱逐策略由环境变量控制；默认策略为 ``S3FIFO`` 。"
+
+#: ../../source/features/kvcache-offloading.rst:69
+msgid ""
+"**L2** is reached through a backend connector chosen by "
+"``AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND``. The framework ships connectors "
+"for InfiniStore, HPKV, PrisKV, RocksDB, EIC, SHFS and a mock backend used"
+" in tests."
+msgstr ""
+"**L2** 通过 ``AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND`` 选定的后端 connector 访问。框架内置 InfiniStore、HPKV、PrisKV、RocksDB、EIC、SHFS 以及测试用 mock 后端。"
+
+#: ../../source/features/kvcache-offloading.rst:72
+msgid ""
+"For InfiniStore and HPKV, the **meta service** is a Redis instance that "
+"holds the L2 cluster membership. Engines read it to learn where cache "
+"nodes are; a watcher pod keeps it current as cache pods come and go."
+msgstr ""
+"对 InfiniStore 和 HPKV，**meta service** 是保存 L2 集群成员信息的 Redis 实例。引擎从中获知 cache 节点位置；watcher Pod 随 cache Pod 增减保持其最新。"
+
+#: ../../source/features/kvcache-offloading.rst:75
+msgid ""
+"The ``KVCache`` custom resource creates the cache pods and a ``Service``,"
+" plus the backend's metadata store: an etcd for Vineyard, or the Redis "
+"meta service and (when ``spec.watcher`` is set) the watcher pod for "
+"InfiniStore and HPKV. Which backend it deploys is set by an annotation."
+msgstr ""
+"``KVCache`` 自定义资源会创建 cache Pod 和 ``Service`` ，以及后端的元数据存储：Vineyard 使用 etcd；InfiniStore "
+"和 HPKV 使用 Redis meta service，并在设置 ``spec.watcher`` 时创建 watcher Pod。部署哪种后端由 "
+"annotation 决定。"
+
+#: ../../source/features/kvcache-offloading.rst:81
+msgid "Choosing a configuration"
+msgstr "选择配置"
+
+#: ../../source/features/kvcache-offloading.rst:87
+msgid "Setup"
+msgstr "方案"
+
+#: ../../source/features/kvcache-offloading.rst:88
+msgid "What you get"
+msgstr "效果"
+
+#: ../../source/features/kvcache-offloading.rst:89
+msgid "Use it when"
+msgstr "适用场景"
+
+#: ../../source/features/kvcache-offloading.rst:90
+msgid "L1 only"
+msgstr "仅 L1"
+
+#: ../../source/features/kvcache-offloading.rst:91
+msgid "Host-memory cache per engine pod. No extra components."
+msgstr "每个引擎 Pod 的主机内存 cache。无额外组件。"
+
+#: ../../source/features/kvcache-offloading.rst:92
+msgid ""
+"You have spare pod memory and repeated prefixes mostly hit the same "
+"replica. Start here."
+msgstr "Pod 有多余内存，且重复前缀大多打到同一副本。建议从此开始。"
+
+#: ../../source/features/kvcache-offloading.rst:93
+msgid "L2 only"
+msgstr "仅 L2"
+
+#: ../../source/features/kvcache-offloading.rst:94
+msgid "A shared cache across replicas, no host-memory cache."
+msgstr "跨副本的共享 cache，无主机内存 cache。"
+
+#: ../../source/features/kvcache-offloading.rst:95
+msgid ""
+"Pod memory is tight, or replicas are many and prefix reuse across them "
+"matters more than per-pod locality. Requires the ``KVCache`` cluster; "
+"InfiniStore performs best over RDMA and also supports TCP."
+msgstr ""
+"Pod 内存紧张，或副本很多且跨副本前缀复用比单 Pod 局部性更重要。需要 ``KVCache`` 集群；InfiniStore 在 RDMA 上表现最好，也支持 TCP。"
+
+#: ../../source/features/kvcache-offloading.rst:98
+msgid "L1 + L2"
+msgstr "L1 + L2"
+
+#: ../../source/features/kvcache-offloading.rst:99
+msgid ""
+"Every replica keeps its own L1. Blocks that become hot in L1 are also "
+"written to L2 (the default ``HOT`` ingestion policy) so other replicas "
+"can reuse them."
+msgstr "每个副本保留自己的 L1。L1 中变热的 block 也会写入 L2（默认 ``HOT`` 摄入策略），以便其他副本复用。"
+
+#: ../../source/features/kvcache-offloading.rst:101
+msgid ""
+"Both conditions above hold. L1 absorbs the fast path and L2 catches "
+"cross-replica reuse."
+msgstr "上述两种情况同时成立。L1 承接快路径，L2 承接跨副本复用。"
+
+#: ../../source/features/kvcache-offloading.rst:104
+msgid "Configuration reference"
+msgstr "配置参考"
+
+#: ../../source/features/kvcache-offloading.rst:106
+msgid ""
+"**Engine-side environment variables.** All of them start with "
+"``AIBRIX_KV_CACHE_OL_`` and are read by the connector at engine start. "
+"The most commonly changed ones are below; the complete list with every "
+"backend's settings is in the :ref:`environment variables reference "
+"<kvcache_env_reference>` of the design page."
+msgstr ""
+"**引擎侧环境变量。** 均以 ``AIBRIX_KV_CACHE_OL_`` 开头，由 connector 在引擎启动时读取。最常修改的如下；各后端的完整列表见设计页的 "
+":ref:`environment variables reference <kvcache_env_reference>` 。"
+
+#: ../../source/features/kvcache-offloading.rst:115
+msgid "Variable"
+msgstr "变量"
+
+#: ../../source/features/kvcache-offloading.rst:116
+msgid "Default"
+msgstr "默认值"
+
+#: ../../source/features/kvcache-offloading.rst:117
+#: ../../source/features/kvcache-offloading.rst:176
+#: ../../source/features/kvcache-offloading.rst:205
+msgid "Meaning"
+msgstr "含义"
+
+#: ../../source/features/kvcache-offloading.rst:118
+msgid "``AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED``"
+msgstr "``AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED``"
+
+#: ../../source/features/kvcache-offloading.rst:119
+msgid "``1``"
+msgstr "``1``"
+
+#: ../../source/features/kvcache-offloading.rst:120
+msgid "Turn L1 on or off. Set ``0`` for an L2-only setup."
+msgstr "开启或关闭 L1。仅 L2 时设为 ``0`` 。"
+
+#: ../../source/features/kvcache-offloading.rst:121
+msgid "``AIBRIX_KV_CACHE_OL_L1_CACHE_CAPACITY_GB``"
+msgstr "``AIBRIX_KV_CACHE_OL_L1_CACHE_CAPACITY_GB``"
+
+#: ../../source/features/kvcache-offloading.rst:122
+msgid "``10``"
+msgstr "``10``"
+
+#: ../../source/features/kvcache-offloading.rst:123
+msgid ""
+"DRAM budget for L1. Must fit inside the pod's memory request together "
+"with the engine's own host-memory needs; see the note in the L1 example."
+msgstr "L1 的 DRAM 配额。须与引擎自身的主机内存需求一起落在 Pod 的 memory request 之内；见 L1 示例中的说明。"
+
+#: ../../source/features/kvcache-offloading.rst:125
+msgid "``AIBRIX_KV_CACHE_OL_L1_CACHE_EVICTION_POLICY``"
+msgstr "``AIBRIX_KV_CACHE_OL_L1_CACHE_EVICTION_POLICY``"
+
+#: ../../source/features/kvcache-offloading.rst:126
+msgid "``S3FIFO``"
+msgstr "``S3FIFO``"
+
+#: ../../source/features/kvcache-offloading.rst:127
+msgid "Eviction policy for L1."
+msgstr "L1 的驱逐策略。"
+
+#: ../../source/features/kvcache-offloading.rst:128
+msgid "``AIBRIX_KV_CACHE_OL_DEVICE``"
+msgstr "``AIBRIX_KV_CACHE_OL_DEVICE``"
+
+#: ../../source/features/kvcache-offloading.rst:129
+msgid "``cpu``"
+msgstr "``cpu``"
+
+#: ../../source/features/kvcache-offloading.rst:130
+msgid "Device used for cache operations, ``cpu`` or ``cuda``."
+msgstr "cache 操作使用的设备，``cpu`` 或 ``cuda`` 。"
+
+#: ../../source/features/kvcache-offloading.rst:131
+msgid "``AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND``"
+msgstr "``AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND``"
+
+#: ../../source/features/kvcache-offloading.rst:132
+#: ../../source/features/kvcache-offloading.rst:139
+#: ../../source/features/kvcache-offloading.rst:142
+#: ../../source/features/kvcache-offloading.rst:145
+#: ../../source/features/kvcache-offloading.rst:158
+msgid "*(empty)*"
+msgstr "*(空)*"
+
+#: ../../source/features/kvcache-offloading.rst:133
+msgid ""
+"Empty disables L2. Otherwise one of ``INFINISTORE``, ``HPKV``, "
+"``PRISKV``, ``ROCKSDB``, ``EIC``, ``SHFS`` or ``MOCK``; the value is "
+"case-insensitive."
+msgstr ""
+"为空则禁用 L2。否则为 ``INFINISTORE`` 、``HPKV`` 、``PRISKV`` 、``ROCKSDB`` 、``EIC`` "
+"、``SHFS`` 或 ``MOCK`` 之一；大小写不敏感。"
+
+#: ../../source/features/kvcache-offloading.rst:135
+msgid "``AIBRIX_KV_CACHE_OL_L2_CACHE_NAMESPACE``"
+msgstr "``AIBRIX_KV_CACHE_OL_L2_CACHE_NAMESPACE``"
+
+#: ../../source/features/kvcache-offloading.rst:136
+msgid "``aibrix``"
+msgstr "``aibrix``"
+
+#: ../../source/features/kvcache-offloading.rst:137
+msgid ""
+"Key namespace in the L2 store. Engines only share entries within the same"
+" namespace."
+msgstr "L2 存储中的 key 命名空间。引擎仅在同一命名空间内共享条目。"
+
+#: ../../source/features/kvcache-offloading.rst:138
+msgid "``AIBRIX_KV_CACHE_OL_META_SERVICE_BACKEND``"
+msgstr "``AIBRIX_KV_CACHE_OL_META_SERVICE_BACKEND``"
+
+#: ../../source/features/kvcache-offloading.rst:140
+msgid "``redis`` when using a ``KVCache``-managed cluster."
+msgstr "使用 ``KVCache`` 管理的集群时为 ``redis`` 。"
+
+#: ../../source/features/kvcache-offloading.rst:141
+msgid "``AIBRIX_KV_CACHE_OL_META_SERVICE_URL``"
+msgstr "``AIBRIX_KV_CACHE_OL_META_SERVICE_URL``"
+
+#: ../../source/features/kvcache-offloading.rst:143
+msgid ""
+"Redis URL of the meta service, for example ``redis://kvcache-cluster-"
+"redis:6379``."
+msgstr "meta service 的 Redis URL，例如 ``redis://kvcache-cluster-redis:6379`` 。"
+
+#: ../../source/features/kvcache-offloading.rst:144
+msgid "``AIBRIX_KV_CACHE_OL_META_SERVICE_CLUSTER_META_KEY``"
+msgstr "``AIBRIX_KV_CACHE_OL_META_SERVICE_CLUSTER_META_KEY``"
+
+#: ../../source/features/kvcache-offloading.rst:146
+msgid ""
+"Key under which the membership list is stored. Must match what the "
+"watcher writes: ``kvcache_nodes`` for InfiniStore, "
+"``hpkv_cluster_metadata`` for HPKV."
+msgstr ""
+"成员列表所在的 key。必须与 watcher 写入的一致：InfiniStore 为 ``kvcache_nodes`` ，HPKV 为 ``hpkv_cluster_metadata`` "
+"。"
+
+#: ../../source/features/kvcache-offloading.rst:148
+msgid "``AIBRIX_KV_CACHE_OL_META_SERVICE_REFRESH_INTERVAL_S``"
+msgstr "``AIBRIX_KV_CACHE_OL_META_SERVICE_REFRESH_INTERVAL_S``"
+
+#: ../../source/features/kvcache-offloading.rst:149
+msgid "``30``"
+msgstr "``30``"
+
+#: ../../source/features/kvcache-offloading.rst:150
+msgid "How often the engine re-reads the membership list."
+msgstr "引擎重新读取成员列表的间隔。"
+
+#: ../../source/features/kvcache-offloading.rst:151
+msgid "``AIBRIX_KV_CACHE_OL_INFINISTORE_CONNECTION_TYPE``"
+msgstr "``AIBRIX_KV_CACHE_OL_INFINISTORE_CONNECTION_TYPE``"
+
+#: ../../source/features/kvcache-offloading.rst:152
+msgid "``RDMA``"
+msgstr "``RDMA``"
+
+#: ../../source/features/kvcache-offloading.rst:153
+msgid "InfiniStore transport, ``RDMA`` or ``TCP``."
+msgstr "InfiniStore 传输，``RDMA`` 或 ``TCP`` 。"
+
+#: ../../source/features/kvcache-offloading.rst:154
+msgid "``AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE``"
+msgstr "``AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE``"
+
+#: ../../source/features/kvcache-offloading.rst:155
+msgid "``Ethernet``"
+msgstr "``Ethernet``"
+
+#: ../../source/features/kvcache-offloading.rst:156
+msgid "``Ethernet`` for RoCE, ``IB`` for InfiniBand."
+msgstr "RoCE 用 ``Ethernet`` ，InfiniBand 用 ``IB`` 。"
+
+#: ../../source/features/kvcache-offloading.rst:157
+msgid "``AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST``"
+msgstr "``AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST``"
+
+#: ../../source/features/kvcache-offloading.rst:159
+msgid ""
+"Comma-separated RDMA devices the engine may use, optionally with a GID "
+"index (``mlx5_1:7,mlx5_2:7``)."
+msgstr "引擎可用的 RDMA 设备，逗号分隔，可选附带 GID 索引（``mlx5_1:7,mlx5_2:7`` ）。"
+
+#: ../../source/features/kvcache-offloading.rst:161
+msgid "``AIBRIX_KV_CACHE_OL_PROFILING_ENABLED``"
+msgstr "``AIBRIX_KV_CACHE_OL_PROFILING_ENABLED``"
+
+#: ../../source/features/kvcache-offloading.rst:162
+msgid "``0``"
+msgstr "``0``"
+
+#: ../../source/features/kvcache-offloading.rst:163
+msgid ""
+"Send connector profiles to the profiling service; see the profiling "
+"example."
+msgstr "将 connector profile 发送到 profiling 服务；见 profiling 示例。"
+
+#: ../../source/features/kvcache-offloading.rst:164
+msgid "``AIBRIX_KV_CACHE_OL_PROFILING_SERVER_ADDRESS``"
+msgstr "``AIBRIX_KV_CACHE_OL_PROFILING_SERVER_ADDRESS``"
+
+#: ../../source/features/kvcache-offloading.rst:165
+msgid "``http://0.0.0.0:4040``"
+msgstr "``http://0.0.0.0:4040``"
+
+#: ../../source/features/kvcache-offloading.rst:166
+msgid "Address of that service."
+msgstr "该服务的地址。"
+
+#: ../../source/features/kvcache-offloading.rst:168
+msgid ""
+"**The KVCache custom resource** (``orchestration.aibrix.ai/v1alpha1``, "
+"kind ``KVCache``) describes an L2 cluster."
+msgstr ""
+"**KVCache 自定义资源** （``orchestration.aibrix.ai/v1alpha1`` ，kind ``KVCache`` "
+"）描述一个 L2 集群。"
+
+#: ../../source/features/kvcache-offloading.rst:175
+msgid "Field"
+msgstr "字段"
+
+#: ../../source/features/kvcache-offloading.rst:177
+msgid "``spec.mode``"
+msgstr "``spec.mode``"
+
+#: ../../source/features/kvcache-offloading.rst:178
+msgid ""
+"``distributed`` or ``centralized``. Present in the API but not read by "
+"the current controller; the backend annotation below decides what is "
+"deployed."
+msgstr ""
+"``distributed`` 或 ``centralized`` 。存在于 API 中，但当前 controller 不读取；实际部署由下方的后端 "
+"annotation 决定。"
+
+#: ../../source/features/kvcache-offloading.rst:180
+msgid "``spec.metadata.redis``"
+msgstr "``spec.metadata.redis``"
+
+#: ../../source/features/kvcache-offloading.rst:181
+msgid ""
+"Used by the InfiniStore and HPKV backends. Give it a ``runtime`` block "
+"(image, replicas, resources) to have the controller deploy Redis, or an "
+"``externalConnection`` (``address``, ``passwordSecretRef``) to reuse an "
+"existing instance."
+msgstr ""
+"InfiniStore 和 HPKV 后端使用。提供 ``runtime`` 块（image、replicas、resources）让 controller "
+"部署 Redis，或提供 ``externalConnection`` （``address`` 、``passwordSecretRef`` "
+"）以复用已有实例。"
+
+#: ../../source/features/kvcache-offloading.rst:184
+msgid "``spec.metadata.etcd``"
+msgstr "``spec.metadata.etcd``"
+
+#: ../../source/features/kvcache-offloading.rst:185
+msgid ""
+"Used by the Vineyard backend. Only the ``runtime`` block is supported; "
+"``externalConnection`` is not implemented for etcd."
+msgstr "Vineyard 后端使用。仅支持 ``runtime`` 块；etcd 的 ``externalConnection`` 尚未实现。"
+
+#: ../../source/features/kvcache-offloading.rst:187
+msgid "``spec.cache``"
+msgstr "``spec.cache``"
+
+#: ../../source/features/kvcache-offloading.rst:188
+msgid ""
+"The cache pods: ``replicas`` (default 1), ``image``, ``imagePullPolicy``,"
+" ``env``, ``resources``, or a full ``template`` for advanced pod "
+"settings."
+msgstr ""
+"cache Pod：``replicas`` （默认 1）、``image`` 、``imagePullPolicy`` 、``env`` 、``resources`` "
+"，或用于高级 Pod 设置的完整 ``template`` 。"
+
+#: ../../source/features/kvcache-offloading.rst:190
+msgid "``spec.watcher``"
+msgstr "``spec.watcher``"
+
+#: ../../source/features/kvcache-offloading.rst:191
+msgid ""
+"InfiniStore and HPKV only. The watcher registers cache members in Redis; "
+"without it the engines never learn the cluster membership, so set it for "
+"those backends. ``image``, ``imagePullPolicy``, ``env`` and ``resources``"
+" are honoured; ``replicas`` and ``template`` are ignored."
+msgstr ""
+"仅 InfiniStore 和 HPKV。watcher 在 Redis 中注册 cache 成员；没有它引擎无法获知集群成员，因此这些后端必须设置。``image`` "
+"、``imagePullPolicy`` 、``env`` 和 ``resources`` 生效；``replicas`` 和 ``template`` "
+"被忽略。"
+
+#: ../../source/features/kvcache-offloading.rst:195
+msgid "``spec.service``"
+msgstr "``spec.service``"
+
+#: ../../source/features/kvcache-offloading.rst:196
+msgid "``type`` (default ``ClusterIP``) and ``ports`` for the cache service."
+msgstr "cache Service 的 ``type`` （默认 ``ClusterIP`` ）和 ``ports`` 。"
+
+#: ../../source/features/kvcache-offloading.rst:198
+msgid ""
+"Annotations on the ``KVCache`` object select the backend and its "
+"placement:"
+msgstr "``KVCache`` 对象上的 annotation 选择后端及其放置："
+
+#: ../../source/features/kvcache-offloading.rst:204
+msgid "Annotation"
+msgstr "Annotation"
+
+#: ../../source/features/kvcache-offloading.rst:206
+msgid "``kvcache.orchestration.aibrix.ai/backend``"
+msgstr "``kvcache.orchestration.aibrix.ai/backend``"
+
+#: ../../source/features/kvcache-offloading.rst:207
+msgid ""
+"``infinistore``, ``hpkv`` or ``vineyard``. Defaults to ``vineyard`` when "
+"absent."
+msgstr "``infinistore`` 、``hpkv`` 或 ``vineyard`` 。缺省时默认为 ``vineyard`` 。"
+
+#: ../../source/features/kvcache-offloading.rst:208
+msgid "``kvcache.orchestration.aibrix.ai/pod-affinity-workload``"
+msgstr "``kvcache.orchestration.aibrix.ai/pod-affinity-workload``"
+
+#: ../../source/features/kvcache-offloading.rst:209
+msgid ""
+"Vineyard backend only. Name of the model workload the cache pods should "
+"be co-located with."
+msgstr "仅 Vineyard 后端。cache Pod 应与之同置的模型工作负载名称。"
+
+#: ../../source/features/kvcache-offloading.rst:211
+msgid "``kvcache.orchestration.aibrix.ai/pod-anti-affinity``"
+msgstr "``kvcache.orchestration.aibrix.ai/pod-anti-affinity``"
+
+#: ../../source/features/kvcache-offloading.rst:212
+msgid "Vineyard backend only. Spread cache pods away from each other."
+msgstr "仅 Vineyard 后端。将 cache Pod 相互打散。"
+
+#: ../../source/features/kvcache-offloading.rst:213
+msgid ""
+"``kvcache.orchestration.aibrix.ai/node-affinity-key`` and ``.../node-"
+"affinity-gpu-type``"
+msgstr "``kvcache.orchestration.aibrix.ai/node-affinity-key`` 和 ``.../node-affinity-gpu-type``"
+
+#: ../../source/features/kvcache-offloading.rst:214
+msgid ""
+"Vineyard backend only. Pin cache pods to nodes carrying a given label and"
+" value."
+msgstr "仅 Vineyard 后端。将 cache Pod 固定到带有指定标签和值的节点。"
+
+#: ../../source/features/kvcache-offloading.rst:215
+msgid ""
+"``infinistore.kvcache.orchestration.aibrix.ai/link-type`` and ``.../hint-"
+"gid-index``"
+msgstr "``infinistore.kvcache.orchestration.aibrix.ai/link-type`` 和 ``.../hint-gid-index``"
+
+#: ../../source/features/kvcache-offloading.rst:216
+msgid "InfiniStore transport settings passed to the cache pods."
+msgstr "传给 cache Pod 的 InfiniStore 传输设置。"
+
+#: ../../source/features/kvcache-offloading.rst:217
+msgid "``hpkv.kvcache.orchestration.aibrix.ai/*``"
+msgstr "``hpkv.kvcache.orchestration.aibrix.ai/*``"
+
+#: ../../source/features/kvcache-offloading.rst:218
+msgid ""
+"HPKV sizing: ``block-size-bytes``, ``block-count``, ``total-slots``, "
+"``virtual-node-count``, ``rdma-port``, ``admin-port``."
+msgstr ""
+"HPKV 规模：``block-size-bytes`` 、``block-count`` 、``total-slots`` 、``virtual-node-count`` "
+"、``rdma-port`` 、``admin-port`` 。"
+
+#: ../../source/features/kvcache-offloading.rst:224
+msgid "L1 Cache Example"
+msgstr "L1 Cache 示例"
+
+#: ../../source/features/kvcache-offloading.rst:227
+msgid ""
+"We use a customized version of vLLM integrated with *AIBrix Offloading "
+"Connectors* to showcase the usage."
+msgstr "以下使用集成了 *AIBrix Offloading Connectors* 的定制 vLLM 展示用法。"
+
+#: ../../source/features/kvcache-offloading.rst:230
+msgid ""
+"Before deploying the inference engine, please use ``kubectl get pods -n "
+"aibrix-system`` and ``kubectl get pods -n envoy-gateway-system`` to "
+"ensure ``envoy-gateway`` and ``aibrix-gateway`` are running. Other "
+"components are optional."
+msgstr ""
+"部署推理引擎前，请用 ``kubectl get pods -n aibrix-system`` 和 ``kubectl get pods -n envoy-gateway-system`` 确认 ``envoy-gateway`` 和 ``aibrix-gateway`` 正在运行。其他组件可选。"
+
+#: ../../source/features/kvcache-offloading.rst:251
+#: ../../source/features/kvcache-offloading.rst:384
+msgid "Now let's use the following yaml to create an engine deployment:"
+msgstr "接下来用以下 yaml 创建引擎 Deployment："
+
+#: ../../source/features/kvcache-offloading.rst:268
+msgid ""
+"``AIBRIX_KV_CACHE_OL_L1_CACHE_CAPACITY_GB`` needs to choose a proper "
+"value based on the pod memory resource requirement. For instance, if the "
+"pod memory resource requirement is ``P`` GB and the estimated memory "
+"consumption of the inference engine is ``E`` GB, we can set "
+"``AIBRIX_KV_CACHE_OL_L1_CACHE_CAPACITY_GB`` to ``P / tensor-parallel-size"
+" - E``."
+msgstr ""
+"``AIBRIX_KV_CACHE_OL_L1_CACHE_CAPACITY_GB`` 需根据 Pod 内存资源需求选择合适的值。例如，若 Pod "
+"内存需求为 ``P`` GB、推理引擎预估内存消耗为 ``E`` GB，可将 ``AIBRIX_KV_CACHE_OL_L1_CACHE_CAPACITY_GB`` "
+"设为 ``P / tensor-parallel-size - E`` 。"
+
+#: ../../source/features/kvcache-offloading.rst:270
+#: ../../source/features/kvcache-offloading.rst:409
+msgid ""
+"Now let's use ``kubectl get pods`` command to ensure the inference "
+"service is running:"
+msgstr "接下来用 ``kubectl get pods`` 确认推理服务正在运行："
+
+#: ../../source/features/kvcache-offloading.rst:281
+#: ../../source/features/kvcache-offloading.rst:424
+msgid ""
+"Once the inference service is running, let's set up port forwarding so "
+"that we can test the service from local:"
+msgstr "推理服务运行后，设置端口转发以便从本地测试："
+
+#: ../../source/features/kvcache-offloading.rst:283
+#: ../../source/features/kvcache-offloading.rst:426
+msgid ""
+"Run ``kubectl get svc -n envoy-gateway-system`` to get the name of the "
+"Envoy Gateway service."
+msgstr "运行 ``kubectl get svc -n envoy-gateway-system`` 获取 Envoy Gateway Service 的名称。"
+
+#: ../../source/features/kvcache-offloading.rst:293
+#: ../../source/features/kvcache-offloading.rst:436
+msgid ""
+"Run ``kubectl -n envoy-gateway-system port-forward svc/envoy-aibrix-"
+"system-aibrix-eg-903790dc 8888:80 &`` to set up port forwarding"
+msgstr ""
+"运行 ``kubectl -n envoy-gateway-system port-forward svc/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 &`` 设置端口转发"
+
+#: ../../source/features/kvcache-offloading.rst:302
+#: ../../source/features/kvcache-offloading.rst:445
+msgid "Now, let's test the service:"
+msgstr "接下来测试服务："
+
+#: ../../source/features/kvcache-offloading.rst:315
+#: ../../source/features/kvcache-offloading.rst:458
+msgid "and its output would be:"
+msgstr "输出类似："
+
+#: ../../source/features/kvcache-offloading.rst:346
+msgid "L2 Cache Example"
+msgstr "L2 Cache 示例"
+
+#: ../../source/features/kvcache-offloading.rst:349
+msgid ""
+"let's deploy the distributed KV cache cluster with the following yaml "
+"configuration:"
+msgstr "用以下 yaml 配置部署分布式 KV cache 集群："
+
+#: ../../source/features/kvcache-offloading.rst:357
+msgid ""
+"We have changed L45 from one replica to three replicas in this example, "
+"thus we will find three KV cache pods running in the cluster."
+msgstr "本示例将第 45 行从 1 副本改为 3 副本，因此集群中会有 3 个 KV cache Pod 在运行。"
+
+#: ../../source/features/kvcache-offloading.rst:401
+msgid ""
+"In this example, we set ``AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED=0`` to "
+"explicitly disable ``L1Cache`` and use ``L2Cache`` only."
+msgstr ""
+"本示例设置 ``AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED=0`` ，显式禁用 ``L1Cache`` ，仅使用 ``L2Cache`` "
+"。"
+
+#: ../../source/features/kvcache-offloading.rst:402
+msgid ""
+"Current version only supports using ``InfiniStore`` with RDMA transport. "
+"Please ensure ``AIBRIX_KV_CACHE_OL_INFINISTORE_CONNECTION_TYPE=RDMA`` is "
+"configured."
+msgstr ""
+"当前版本仅支持使用 RDMA 传输的 ``InfiniStore`` 。请确保配置 ``AIBRIX_KV_CACHE_OL_INFINISTORE_CONNECTION_TYPE=RDMA`` "
+"。"
+
+#: ../../source/features/kvcache-offloading.rst:403
+msgid ""
+"For InfiniBand, please set "
+"``AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE=IB``. For RoCE, please keep "
+"the default value ``Ethernet``."
+msgstr ""
+"InfiniBand 请设置 ``AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE=IB`` 。RoCE 请保持默认值 "
+"``Ethernet`` 。"
+
+#: ../../source/features/kvcache-offloading.rst:404
+msgid ""
+"``AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST`` is used to configure "
+"which RDMA device can be used by the engine to access remote KV cache "
+"servers. For instance, if you allocate 8 GPUs for the engine pod and set "
+"``AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST=\"mlx5_1,mlx5_2\"``, "
+"then engine processes using GPU 0 to 3 will use ``mlx5_1``, and engine "
+"processes using GPU 4 to 7 will use ``mlx5_2``."
+msgstr ""
+"``AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST`` 用于配置引擎访问远程 KV cache "
+"服务器时可使用的 RDMA 设备。例如，若引擎 Pod 分配 8 块 GPU 并设置 ``AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST=\"mlx5_1,mlx5_2\"`` "
+"，则使用 GPU 0 到 3 的引擎进程使用 ``mlx5_1`` ，使用 GPU 4 到 7 的引擎进程使用 ``mlx5_2`` 。"
+
+#: ../../source/features/kvcache-offloading.rst:405
+msgid ""
+"If GID indexes of RDMA devices are required in your environment, please "
+"append the GID index to each RDMA device (e.g., ``mlx5_1:6,mlx5_2:7``) in"
+" ``AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST``."
+msgstr ""
+"若环境需要 RDMA 设备的 GID 索引，请在 ``AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST`` "
+"中为每个 RDMA 设备追加 GID 索引（例如 ``mlx5_1:6,mlx5_2:7`` ）。"
+
+#: ../../source/features/kvcache-offloading.rst:406
+msgid ""
+"``AIBRIX_KV_CACHE_OL_META_SERVICE_URL`` points to the Redis instance "
+"managing KV cache cluster metadata. In this example, it is set to ``redis"
+"://kvcache-cluster-redis:6379``, where ``kvcache-cluster`` is the KV "
+"cache deployment name."
+msgstr ""
+"``AIBRIX_KV_CACHE_OL_META_SERVICE_URL`` 指向管理 KV cache 集群元数据的 Redis 实例。本示例设为 "
+"``redis://kvcache-cluster-redis:6379`` ，其中 ``kvcache-cluster`` 是 KV cache "
+"Deployment 名称。"
+
+#: ../../source/features/kvcache-offloading.rst:407
+msgid ""
+"``AIBRIX_KV_CACHE_OL_META_SERVICE_BACKEND`` and "
+"``AIBRIX_KV_CACHE_OL_META_SERVICE_CLUSTER_META_KEY`` are fixed in current"
+" version and should not be modified."
+msgstr ""
+"当前版本中 ``AIBRIX_KV_CACHE_OL_META_SERVICE_BACKEND`` 和 ``AIBRIX_KV_CACHE_OL_META_SERVICE_CLUSTER_META_KEY`` 为固定值，不应修改。"
+
+#: ../../source/features/kvcache-offloading.rst:486
+msgid "Profiling Example"
+msgstr "Profiling 示例"
+
+#: ../../source/features/kvcache-offloading.rst:488
+msgid ""
+"To profile the AIBrix Offloading Connectors, before launching the "
+"inference engines, you need to start the profiling service with the "
+"following sample YAML file:"
+msgstr "要对 AIBrix Offloading Connectors 做 profiling，启动推理引擎前需用以下示例 YAML 启动 profiling 服务："
+
+#: ../../source/features/kvcache-offloading.rst:504
+msgid ""
+"Once the profiling service is running, let's set up port forwarding so "
+"that we can browse the profiling results and flamegraphs from local:"
+msgstr "profiling 服务运行后，设置端口转发以便从本地浏览 profiling 结果和火焰图："
+
+#: ../../source/features/kvcache-offloading.rst:506
+msgid ""
+"Run ``kubectl port-forward svc/aibrix-kvcache-profiling 4040:4040 &`` to "
+"set up port forwarding"
+msgstr "运行 ``kubectl port-forward svc/aibrix-kvcache-profiling 4040:4040 &`` 设置端口转发"
+
+#: ../../source/features/kvcache-offloading.rst:508
+msgid ""
+"Now let's launch the inference engine with the following environment "
+"variables set in engine's YAML file (please refer to "
+":ref:`l1_cache_example` and :ref:`l2_cache_example` for more details)."
+msgstr ""
+"接下来在引擎 YAML 中设置以下环境变量并启动推理引擎（详见 :ref:`l1_cache_example` 和 :ref:`l2_cache_example` "
+"）。"
+
+#: ../../source/features/kvcache-offloading.rst:518
+msgid ""
+"Run a task to generate requests to the inference engine, and you can "
+"browse the profiling results and flamegraphs from local after a while:"
+msgstr "运行任务向推理引擎生成请求，稍后即可从本地浏览 profiling 结果和火焰图："
+
+#: ../../source/features/kvcache-offloading.rst:520
+msgid "Open `http://localhost:4040` in your browser"
+msgstr "在浏览器中打开 `http://localhost:4040`"
+
+#: ../../source/features/kvcache-offloading.rst:521
+msgid ""
+"Adjust the query parameters as illustrated in the following figure to "
+"show the flamegraph of AIBrix Offloading Connectors"
+msgstr "按下图调整查询参数，以显示 AIBrix Offloading Connectors 的火焰图"
+
+#: ../../source/features/kvcache-offloading.rst:523
+msgid "aibrix-kvcache-profiling"
+msgstr "aibrix-kvcache-profiling"
+
+#: ../../source/features/kvcache-offloading.rst:530
+msgid ":doc:`../designs/aibrix-kvcache-offloading-framework`"
+msgstr ":doc:`../designs/aibrix-kvcache-offloading-framework`"
+
+#: ../../source/features/kvcache-offloading.rst:531
+msgid "Internal design of the KV cache offloading framework."
+msgstr "KV cache 卸载框架的内部设计。"

@@ -1,0 +1,413 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 19:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/getting_started/installation/gcp.rst:5
+msgid "Google Cloud Platform (GCP)"
+msgstr "Google Cloud Platform (GCP)"
+
+#: ../../source/getting_started/installation/gcp.rst:8
+msgid "Introduction"
+msgstr "简介"
+
+#: ../../source/getting_started/installation/gcp.rst:10
+msgid ""
+"This module deploys an AIBrix cluster in its entirety onto a Google "
+"Container Cluster. It is the quickest way to get up and running with "
+"AIBrix. The purpose of this module is to both allow developers to quickly"
+" spin up the stack, and allow for the team to test on the Google Cloud "
+"Platform."
+msgstr ""
+"该模块将完整的 AIBrix 集群部署到 Google Container Cluster。这是最快让 AIBrix "
+"跑起来的方式。目的是让开发者快速拉起整套栈，也方便团队在 Google Cloud Platform 上测试。"
+
+#: ../../source/getting_started/installation/gcp.rst:13
+msgid ""
+"This module was created to allow users to quickly spin up AIBrix on GCP. "
+"It is not currently built for production deployments. The user is "
+"responsible for any costs incurred by running this module."
+msgstr ""
+"该模块用于在 GCP 上快速拉起 AIBrix，目前并非面向生产部署。运行本模块产生的费用由用户自行承担。"
+
+#: ../../source/getting_started/installation/gcp.rst:14
+msgid ""
+"This module use terraform as the infrastructure as code tool. If you are "
+"looking for other means, feel free to cut an `issue <https://github.com"
+"/vllm-project/aibrix/issues>`_."
+msgstr ""
+"该模块使用 Terraform 作为基础设施即代码工具。如果需要其他方式，欢迎提交 `issue <https://github.com/vllm-project/aibrix/issues>`_ "
+"。"
+
+#: ../../source/getting_started/installation/gcp.rst:17
+msgid "Quickstart"
+msgstr "快速开始"
+
+#: ../../source/getting_started/installation/gcp.rst:20
+msgid "Prerequisites"
+msgstr "前置条件"
+
+#: ../../source/getting_started/installation/gcp.rst:22
+msgid "`GCloud CLI <https://cloud.google.com/sdk/docs/install>`_"
+msgstr "`GCloud CLI <https://cloud.google.com/sdk/docs/install>`_"
+
+#: ../../source/getting_started/installation/gcp.rst:23
+msgid ""
+"A quota of at least 1 GPU within your GCP project. More information can "
+"be found on the topic `here <https://cloud.google.com/compute/resource-"
+"usage#gpu_quota>`_."
+msgstr ""
+"GCP 项目中至少有 1 个 GPU 配额。更多信息见 `here <https://cloud.google.com/compute/resource-usage#gpu_quota>`_ "
+"。"
+
+#: ../../source/getting_started/installation/gcp.rst:24
+msgid ""
+"`Terraform CLI <https://developer.hashicorp.com/terraform/tutorials/aws-"
+"get-started/install-cli>`_"
+msgstr ""
+"`Terraform CLI <https://developer.hashicorp.com/terraform/tutorials/aws-"
+"get-started/install-cli>`_"
+
+#: ../../source/getting_started/installation/gcp.rst:27
+msgid "Steps"
+msgstr "步骤"
+
+#: ../../source/getting_started/installation/gcp.rst:29
+msgid "Change directory to the module location: ``cd /deployment/terraform/gcp``"
+msgstr "切换到模块目录：``cd /deployment/terraform/gcp``"
+
+#: ../../source/getting_started/installation/gcp.rst:30
+msgid ""
+"Run ``gcloud auth application-default login`` to setup credentials to "
+"Google."
+msgstr "运行 ``gcloud auth application-default login`` 配置 Google 凭据。"
+
+#: ../../source/getting_started/installation/gcp.rst:31
+msgid ""
+"Install cluster auth plugin with ``gcloud components install gke-gcloud-"
+"auth-plugin``."
+msgstr "使用 ``gcloud components install gke-gcloud-auth-plugin`` 安装集群认证插件。"
+
+#: ../../source/getting_started/installation/gcp.rst:32
+msgid ""
+"Rename ``terraform.tfvars.example`` to ``terraform.tfvars`` and fill in "
+"the required variables. You can also add any optional overrides here as "
+"well."
+msgstr ""
+"将 ``terraform.tfvars.example`` 重命名为 ``terraform.tfvars`` 并填写必填变量。"
+"也可以在此添加可选覆盖项。"
+
+#: ../../source/getting_started/installation/gcp.rst:33
+msgid "Run ``terraform init`` to initialize the module."
+msgstr "运行 ``terraform init`` 初始化模块。"
+
+#: ../../source/getting_started/installation/gcp.rst:34
+msgid ""
+"Run ``terraform plan`` to see details on the resources created by this "
+"module."
+msgstr "运行 ``terraform plan`` 查看本模块将创建的资源详情。"
+
+#: ../../source/getting_started/installation/gcp.rst:35
+msgid ""
+"When you are satisfied with the plan and want to create the resources, "
+"run ``terraform apply``."
+msgstr "确认计划无误并希望创建资源时，运行 ``terraform apply`` 。"
+
+#: ../../source/getting_started/installation/gcp.rst:38
+msgid ""
+"If you receive ``NodePool aibrix-gpu-nodes was created in the error state"
+" \"ERROR\"`` while running the script, check your quotas for GPUs and the"
+" specific instances you're trying to deploy."
+msgstr ""
+"如果运行脚本时收到 ``NodePool aibrix-gpu-nodes was created in the error state \"ERROR\"`` "
+"，请检查 GPU 配额以及要部署的具体实例规格。"
+
+#: ../../source/getting_started/installation/gcp.rst:40
+msgid ""
+"Wait for module to complete running. It will output a command to receive "
+"the kubernetes config file and a public IP address."
+msgstr "等待模块运行完成。它会输出获取 Kubernetes 配置文件的命令以及一个公网 IP。"
+
+#: ../../source/getting_started/installation/gcp.rst:41
+msgid "Run a command against the public IP:"
+msgstr "对公网 IP 运行命令："
+
+#: ../../source/getting_started/installation/gcp.rst:57
+msgid ""
+"When you are finished testing and no longer want the resources, run "
+"``terraform destroy``."
+msgstr "测试结束且不再需要这些资源时，运行 ``terraform destroy`` 。"
+
+#: ../../source/getting_started/installation/gcp.rst:60
+msgid ""
+"Ensure that you complete this step once you are done trying it out, as "
+"GPUs are expensive."
+msgstr "试用结束后务必完成此步，因为 GPU 费用较高。"
+
+#: ../../source/getting_started/installation/gcp.rst:63
+msgid "Inputs"
+msgstr "输入"
+
+#: ../../source/getting_started/installation/gcp.rst:69
+#: ../../source/getting_started/installation/gcp.rst:132
+#: ../../source/getting_started/installation/gcp.rst:146
+#: ../../source/getting_started/installation/gcp.rst:163
+msgid "Name"
+msgstr "名称"
+
+#: ../../source/getting_started/installation/gcp.rst:70
+#: ../../source/getting_started/installation/gcp.rst:133
+msgid "Description"
+msgstr "说明"
+
+#: ../../source/getting_started/installation/gcp.rst:71
+msgid "Type"
+msgstr "类型"
+
+#: ../../source/getting_started/installation/gcp.rst:72
+msgid "Default"
+msgstr "默认值"
+
+#: ../../source/getting_started/installation/gcp.rst:73
+msgid "Required"
+msgstr "必填"
+
+#: ../../source/getting_started/installation/gcp.rst:74
+msgid "aibrix_release_version"
+msgstr "aibrix_release_version"
+
+#: ../../source/getting_started/installation/gcp.rst:75
+msgid "The version of AIBrix to deploy."
+msgstr "要部署的 AIBrix 版本。"
+
+#: ../../source/getting_started/installation/gcp.rst:76
+#: ../../source/getting_started/installation/gcp.rst:81
+#: ../../source/getting_started/installation/gcp.rst:86
+#: ../../source/getting_started/installation/gcp.rst:91
+#: ../../source/getting_started/installation/gcp.rst:106
+#: ../../source/getting_started/installation/gcp.rst:111
+#: ../../source/getting_started/installation/gcp.rst:116
+#: ../../source/getting_started/installation/gcp.rst:121
+msgid "string"
+msgstr "string"
+
+#: ../../source/getting_started/installation/gcp.rst:77
+msgid "\"v0.2.0\""
+msgstr "\"v0.2.0\""
+
+#: ../../source/getting_started/installation/gcp.rst:78
+#: ../../source/getting_started/installation/gcp.rst:83
+#: ../../source/getting_started/installation/gcp.rst:88
+#: ../../source/getting_started/installation/gcp.rst:98
+#: ../../source/getting_started/installation/gcp.rst:103
+#: ../../source/getting_started/installation/gcp.rst:108
+#: ../../source/getting_started/installation/gcp.rst:113
+#: ../../source/getting_started/installation/gcp.rst:118
+msgid "no"
+msgstr "否"
+
+#: ../../source/getting_started/installation/gcp.rst:79
+msgid "cluster_name"
+msgstr "cluster_name"
+
+#: ../../source/getting_started/installation/gcp.rst:80
+msgid "Name of the GKE cluster."
+msgstr "GKE 集群名称。"
+
+#: ../../source/getting_started/installation/gcp.rst:82
+msgid "\"aibrix-inference-cluster\""
+msgstr "\"aibrix-inference-cluster\""
+
+#: ../../source/getting_started/installation/gcp.rst:84
+msgid "cluster_zone"
+msgstr "cluster_zone"
+
+#: ../../source/getting_started/installation/gcp.rst:85
+msgid ""
+"Zone to deploy cluster within. If not provided will be deployed to "
+"default region."
+msgstr "部署集群的可用区。未提供时将部署到默认区域。"
+
+#: ../../source/getting_started/installation/gcp.rst:87
+#: ../../source/getting_started/installation/gcp.rst:117
+msgid "\"\""
+msgstr "\"\""
+
+#: ../../source/getting_started/installation/gcp.rst:89
+msgid "default_region"
+msgstr "default_region"
+
+#: ../../source/getting_started/installation/gcp.rst:90
+msgid "Default region to deploy resources within."
+msgstr "部署资源的默认区域。"
+
+#: ../../source/getting_started/installation/gcp.rst:92
+#: ../../source/getting_started/installation/gcp.rst:122
+#: ../../source/getting_started/installation/gcp.rst:151
+#: ../../source/getting_started/installation/gcp.rst:154
+msgid "n/a"
+msgstr "n/a"
+
+#: ../../source/getting_started/installation/gcp.rst:93
+#: ../../source/getting_started/installation/gcp.rst:123
+msgid "yes"
+msgstr "是"
+
+#: ../../source/getting_started/installation/gcp.rst:94
+msgid "deploy_example_model"
+msgstr "deploy_example_model"
+
+#: ../../source/getting_started/installation/gcp.rst:95
+msgid "Whether to deploy the example model."
+msgstr "是否部署示例模型。"
+
+#: ../../source/getting_started/installation/gcp.rst:96
+msgid "bool"
+msgstr "bool"
+
+#: ../../source/getting_started/installation/gcp.rst:97
+msgid "true"
+msgstr "true"
+
+#: ../../source/getting_started/installation/gcp.rst:99
+msgid "node_pool_machine_count"
+msgstr "node_pool_machine_count"
+
+#: ../../source/getting_started/installation/gcp.rst:100
+msgid "Machine count for the node pool."
+msgstr "节点池机器数量。"
+
+#: ../../source/getting_started/installation/gcp.rst:101
+msgid "number"
+msgstr "number"
+
+#: ../../source/getting_started/installation/gcp.rst:102
+msgid "1"
+msgstr "1"
+
+#: ../../source/getting_started/installation/gcp.rst:104
+msgid "node_pool_machine_type"
+msgstr "node_pool_machine_type"
+
+#: ../../source/getting_started/installation/gcp.rst:105
+msgid "Machine type for the node pool. Must be in the A3, A2, or G2 series."
+msgstr "节点池机器类型。必须是 A3、A2 或 G2 系列。"
+
+#: ../../source/getting_started/installation/gcp.rst:107
+msgid "\"g2-standard-4\""
+msgstr "\"g2-standard-4\""
+
+#: ../../source/getting_started/installation/gcp.rst:109
+msgid "node_pool_name"
+msgstr "node_pool_name"
+
+#: ../../source/getting_started/installation/gcp.rst:110
+msgid "Name of the GPU node pool."
+msgstr "GPU 节点池名称。"
+
+#: ../../source/getting_started/installation/gcp.rst:112
+msgid "\"aibrix-gpu-nodes\""
+msgstr "\"aibrix-gpu-nodes\""
+
+#: ../../source/getting_started/installation/gcp.rst:114
+msgid "node_pool_zone"
+msgstr "node_pool_zone"
+
+#: ../../source/getting_started/installation/gcp.rst:115
+msgid ""
+"Zone to deploy GPU node pool within. If not provided will be deployed to "
+"zone in default region which has capacity for machine type."
+msgstr ""
+"部署 GPU 节点池的可用区。未提供时将部署到默认区域中对该机器类型有容量的可用区。"
+
+#: ../../source/getting_started/installation/gcp.rst:119
+msgid "project_id"
+msgstr "project_id"
+
+#: ../../source/getting_started/installation/gcp.rst:120
+msgid "GCP project to deploy resources within."
+msgstr "部署资源所在的 GCP 项目。"
+
+#: ../../source/getting_started/installation/gcp.rst:126
+msgid "Outputs"
+msgstr "输出"
+
+#: ../../source/getting_started/installation/gcp.rst:134
+msgid "aibrix_service_public_ip"
+msgstr "aibrix_service_public_ip"
+
+#: ../../source/getting_started/installation/gcp.rst:135
+msgid "Public IP address for AIBrix service."
+msgstr "AIBrix 服务的公网 IP。"
+
+#: ../../source/getting_started/installation/gcp.rst:136
+msgid "configure_kubectl_command"
+msgstr "configure_kubectl_command"
+
+#: ../../source/getting_started/installation/gcp.rst:137
+msgid "Command to run which will allow kubectl access."
+msgstr "用于获得 kubectl 访问权限的命令。"
+
+#: ../../source/getting_started/installation/gcp.rst:140
+msgid "Modules"
+msgstr "模块"
+
+#: ../../source/getting_started/installation/gcp.rst:147
+msgid "Source"
+msgstr "来源"
+
+#: ../../source/getting_started/installation/gcp.rst:148
+#: ../../source/getting_started/installation/gcp.rst:164
+msgid "Version"
+msgstr "版本"
+
+#: ../../source/getting_started/installation/gcp.rst:149
+msgid "aibrix"
+msgstr "aibrix"
+
+#: ../../source/getting_started/installation/gcp.rst:150
+msgid "deployment/terraform/kubernetes"
+msgstr "deployment/terraform/kubernetes"
+
+#: ../../source/getting_started/installation/gcp.rst:152
+msgid "cluster"
+msgstr "cluster"
+
+#: ../../source/getting_started/installation/gcp.rst:153
+msgid "deployment/terraform/gcp/cluster"
+msgstr "deployment/terraform/gcp/cluster"
+
+#: ../../source/getting_started/installation/gcp.rst:157
+msgid "Providers"
+msgstr "Provider"
+
+#: ../../source/getting_started/installation/gcp.rst:165
+msgid "google"
+msgstr "google"
+
+#: ../../source/getting_started/installation/gcp.rst:166
+msgid "6.22.0"
+msgstr "6.22.0"
+
+#: ../../source/getting_started/installation/gcp.rst:167
+msgid "kubernetes"
+msgstr "kubernetes"
+
+#: ../../source/getting_started/installation/gcp.rst:168
+msgid "2.36.0"
+msgstr "2.36.0"
