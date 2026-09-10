@@ -152,11 +152,14 @@ func LoadEnvBool(key string, defaultValue bool) bool {
 }
 
 // LoadEnvDuration loads a duration environment variable or returns a default value if not set.
+// Like LoadEnvInt and LoadEnvFloat, it rejects non-positive values. The result is used as a
+// period, TTL or timeout, where zero or a negative value does not mean "off": it either makes
+// a time.After-based loop spin without waiting or silently skips work gated on a positive period.
 func LoadEnvDuration(key string, defaultValue time.Duration) time.Duration {
 	value := os.Getenv(key)
 	if value != "" {
 		duration, err := time.ParseDuration(value)
-		if err != nil {
+		if err != nil || duration <= 0 {
 			klog.Warningf("invalid %s: %s, falling back to default: %v", key, value, defaultValue)
 		} else {
 			klog.Infof("set %s: %v", key, duration)
