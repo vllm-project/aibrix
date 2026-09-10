@@ -3,6 +3,8 @@
 # For the full list of built-in configuration values, see the documentation:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
+import os
+
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
@@ -37,11 +39,40 @@ exclude_patterns = ['locale']
 locale_dirs = ['locale/']
 gettext_compact = False
 
+_EN_LANGUAGE = {'id': 'en', 'slug': 'en', 'label': 'English'}
+_ZH_LANGUAGE = {'id': 'zh_CN', 'slug': 'zh-cn', 'label': '中文'}
+
+
+def _is_zh_language(language):
+    return (language or '').replace('-', '_').lower() in ('zh_cn', 'zh')
+
+
+def _env_flag(name):
+    return os.environ.get(name, '').strip().lower() in ('1', 'true', 'yes')
+
+
+def _docs_languages(language):
+    """Languages shown in the navbar switcher.
+
+    Chinese is always available for local builds. On Read the Docs English
+    builds it stays hidden until a zh-CN translation project is linked and
+    ``AIBRIX_DOCS_SHOW_ZH=1`` is set on the main project, so the switcher does
+    not send users to missing ``/zh-cn/`` pages.
+    """
+    languages = [_EN_LANGUAGE]
+    on_rtd = os.environ.get('READTHEDOCS') == 'True'
+    show_zh = (
+        not on_rtd
+        or _is_zh_language(language)
+        or _env_flag('AIBRIX_DOCS_SHOW_ZH')
+    )
+    if show_zh:
+        languages.append(_ZH_LANGUAGE)
+    return languages
+
+
 html_context = {
-    'docs_languages': [
-        {'id': 'en', 'slug': 'en', 'label': 'English'},
-        {'id': 'zh_CN', 'slug': 'zh-cn', 'label': '中文'},
-    ],
+    'docs_languages': _docs_languages(None),
 }
 
 # Exclude the prompt "$" when copying code
@@ -99,9 +130,13 @@ intersphinx_mapping = {
 
 def setup(app):
     def on_config(app, config):
-        zh = (config.language or '').replace('-', '_').lower() in ('zh_cn', 'zh')
-        config.language = 'zh_CN' if zh else 'en'
-        config.html_search_language = 'zh' if zh else 'en'
+        if _is_zh_language(config.language):
+            config.language = 'zh_CN'
+            config.html_search_language = 'zh'
+        elif not config.language:
+            config.language = 'en'
+            config.html_search_language = 'en'
         config.html_context['docs_language'] = config.language
+        config.html_context['docs_languages'] = _docs_languages(config.language)
 
     app.connect('config-inited', on_config)
