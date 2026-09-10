@@ -45,6 +45,8 @@ spec:
           template:
             metadata:
               labels:
+                app: "mock-llama2-7b-pd-vllm"
+                app.kubernetes.io/name: "mock-llama2-7b-pd-vllm"
                 model.aibrix.ai/name: "llama2-7b-vllm"
                 model.aibrix.ai/port: "8000"
                 model.aibrix.ai/engine: vllm
@@ -57,6 +59,10 @@ spec:
                   ports:
                     - containerPort: 8000
                   env:
+                    - name: MOCK_PD_CONTRACT
+                      value: vllm-aibrix-shfs
+                    - name: MOCK_PD_ROLE
+                      value: prefill
                     - name: DEPLOYMENT_NAME
                       valueFrom:
                         fieldRef:
@@ -79,6 +85,8 @@ spec:
           template:
             metadata:
               labels:
+                app: "mock-llama2-7b-pd-vllm"
+                app.kubernetes.io/name: "mock-llama2-7b-pd-vllm"
                 model.aibrix.ai/name: "llama2-7b-vllm"
                 model.aibrix.ai/port: "8000"
                 model.aibrix.ai/engine: vllm
@@ -91,6 +99,10 @@ spec:
                   ports:
                     - containerPort: 8000
                   env:
+                    - name: MOCK_PD_CONTRACT
+                      value: vllm-aibrix-shfs
+                    - name: MOCK_PD_ROLE
+                      value: decode
                     - name: DEPLOYMENT_NAME
                       valueFrom:
                         fieldRef:
