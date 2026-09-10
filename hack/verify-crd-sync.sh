@@ -80,6 +80,9 @@ verify_crd_sync() {
     # Compare the content of the source and destination files
     if ! diff -Naupr "$src_file" "$dst_file" >/dev/null 2>&1; then
       echo "❌ CRD file '${filename}' in '${dst_dir}' differs from 'bases/'." >&2
+      echo "--- diff ---" >&2
+      diff -u "$src_file" "$dst_file" >&2 || true
+      echo "------------" >&2
       echo "   Please run 'make sync-crds' to update it." >&2
       all_ok=false
     fi
@@ -127,6 +130,9 @@ verify_helm_crd_sync() {
 
     if ! diff -Naupr "$src_file" "$dst_file" >/dev/null 2>&1; then
       echo "❌ CRD file '${filename}' in '${dst_dir}' differs from 'bases/'." >&2
+      echo "--- diff ---" >&2
+      diff -u "$src_file" "$dst_file" >&2 || true
+      echo "------------" >&2
       echo "   Please run 'make sync-crds-to-helm' to update it." >&2
       all_ok=false
     fi
