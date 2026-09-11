@@ -17,7 +17,10 @@ limitations under the License.
 package e2eframework
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -33,6 +36,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/google/uuid"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/stretchr/testify/assert"
@@ -41,6 +45,55 @@ import (
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
+
+const pdRequestTimeout = 30 * time.Second
+
+// PDRequestResult contains the raw HTTP response from a PD gateway request.
+type PDRequestResult struct {
+	StatusCode int
+	Headers    http.Header
+	Body       []byte
+	RequestID  string
+}
+
+// NewRequestID returns a request ID suitable for correlating gateway and backend records.
+func NewRequestID(prefix string) string {
+	if prefix == "" {
+		prefix = "request"
+	}
+	return prefix + "-" + uuid.New().String()
+}
+
+// SendPDRequest sends an already-serialized JSON request through the gateway.
+func SendPDRequest(ctx context.Context, config Config, routingStrategy, requestID string, body []byte) (PDRequestResult, error) {
+	result := PDRequestResult{RequestID: requestID}
+	url := strings.TrimRight(config.GatewayURL, "/") + "/v1/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return result, err
+	}
+	req.Header.Set("Authorization", "Bearer "+config.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("routing-strategy", routingStrategy)
+	req.Header.Set("x-request-id", requestID)
+
+	resp, err := (&http.Client{Timeout: pdRequestTimeout}).Do(req)
+	if err != nil {
+		return result, err
+	}
+	defer resp.Body.Close()
+
+	result.StatusCode = resp.StatusCode
+	result.Headers = resp.Header.Clone()
+	result.Body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		return result, err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return result, fmt.Errorf("PD request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(result.Body)))
+	}
+	return result, nil
+}
 
 const (
 	ModelName           = "llama2-7b"
