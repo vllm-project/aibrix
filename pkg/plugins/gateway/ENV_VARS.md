@@ -2,6 +2,8 @@
 
 This document covers all environment variables used in the `pkg/plugins/gateway` package and its sub-packages.
 
+Variables of type `duration` are parsed with Go's [`time.ParseDuration`](https://pkg.go.dev/time#ParseDuration), so they need a unit: `30s`, `5m`, `1h30m`. A bare number such as `30`, or a zero or negative duration such as `0s` or `-1s`, is rejected with a warning and the default is used instead.
+
 ---
 
 ## General Gateway
