@@ -25,6 +25,7 @@ jobs:
 
       - name: Apply PR labels from changed paths
         if: github.event_name == 'pull_request_target'
+        continue-on-error: true
         uses: actions/labeler@v6
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
