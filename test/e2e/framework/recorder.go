@@ -60,13 +60,9 @@ func DecodeMockRequestRecords(body []byte) ([]MockRequestRecord, error) {
 }
 
 // SelectSuccessfulPDLegs returns the unique successful prefill and decode legs.
-//
-// The contract argument is retained for caller compatibility, but PR2 does not
-// emit a contract in recorder records. Contract validation belongs to the
-// caller's mock configuration and cannot be performed from this endpoint.
 func SelectSuccessfulPDLegs(
 	records []MockRequestRecord,
-	requestID, contract, engine string,
+	requestID, engine string,
 ) (prefill, decode MockRequestRecord, err error) {
 	var prefills, decodes []MockRequestRecord
 	for _, record := range records {
@@ -100,6 +96,9 @@ func QueryMockRequests(
 	client kubernetes.Interface,
 	namespace, podName, requestID string,
 ) ([]MockRequestRecord, error) {
+	if client == nil {
+		return nil, fmt.Errorf("kubernetes client is nil")
+	}
 	body, err := client.CoreV1().RESTClient().Get().
 		Namespace(namespace).
 		Resource("pods").
@@ -129,7 +128,7 @@ func QueryMockRequests(
 	return records, nil
 }
 
-func classifyPDRecords(records []MockRequestRecord, requestID, contract, engine, role string) (bool, error) {
+func classifyPDRecords(records []MockRequestRecord, requestID, engine, role string) (bool, error) {
 	matching := false
 	successful := 0
 	for _, record := range records {
@@ -159,12 +158,10 @@ func classifyPDRecords(records []MockRequestRecord, requestID, contract, engine,
 }
 
 // WaitForSuccessfulPDLegs waits for one successful HTTP-200 recorder entry per PD role.
-// The contract argument is retained for compatibility: PR2 records do not emit
-// contract metadata, so this function deliberately does not filter on it.
 func WaitForSuccessfulPDLegs(
 	t *testing.T,
 	client kubernetes.Interface,
-	namespace, prefillPod, decodePod, requestID, contract, engine string,
+	namespace, prefillPod, decodePod, requestID, engine string,
 ) (prefill, decode MockRequestRecord) {
 	t.Helper()
 	var lastPrefill, lastDecode []byte
@@ -177,27 +174,31 @@ func WaitForSuccessfulPDLegs(
 		func(ctx context.Context) (bool, error) {
 			prefillRecords, err := QueryMockRequests(ctx, client, namespace, prefillPod, requestID)
 			if err != nil {
-				if !apierrors.IsNotFound(err) {
-					return false, err
+				if apierrors.IsNotFound(err) {
+					prefillRecords = nil
+				} else {
+					t.Logf("recorder query for prefill pod %q failed; retrying: %v", prefillPod, err)
+					prefillRecords = nil
 				}
-				prefillRecords = nil
 			}
 			decodeRecords, err := QueryMockRequests(ctx, client, namespace, decodePod, requestID)
 			if err != nil {
-				if !apierrors.IsNotFound(err) {
-					return false, err
+				if apierrors.IsNotFound(err) {
+					decodeRecords = nil
+				} else {
+					t.Logf("recorder query for decode pod %q failed; retrying: %v", decodePod, err)
+					decodeRecords = nil
 				}
-				decodeRecords = nil
 			}
 			lastPrefill, _ = json.Marshal(prefillRecords)
 			lastDecode, _ = json.Marshal(decodeRecords)
 
-			if ready, err := classifyPDRecords(prefillRecords, requestID, contract, engine, "prefill"); err != nil {
+			if ready, err := classifyPDRecords(prefillRecords, requestID, engine, "prefill"); err != nil {
 				return false, err
 			} else if !ready {
 				return false, nil
 			}
-			if ready, err := classifyPDRecords(decodeRecords, requestID, contract, engine, "decode"); err != nil {
+			if ready, err := classifyPDRecords(decodeRecords, requestID, engine, "decode"); err != nil {
 				return false, err
 			} else if !ready {
 				return false, nil
@@ -220,7 +221,6 @@ func WaitForSuccessfulPDLegs(
 	prefill, decode, err = SelectSuccessfulPDLegs(
 		append(successfulPrefill, successfulDecode...),
 		requestID,
-		contract,
 		engine,
 	)
 	if err != nil {

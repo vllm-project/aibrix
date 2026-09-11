@@ -121,31 +121,44 @@ const (
 	pdChatRetryInterval           = 1 * time.Second
 )
 
-func InitializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset, *v1alpha1.Clientset) {
-	var err error
-	var config *rest.Config
-
+func buildKubernetesConfig(t *testing.T) *rest.Config {
 	kubeConfig := os.Getenv("KUBECONFIG")
 	if kubeConfig == "" {
-		t.Error("kubeConfig not set")
+		t.Fatal("kubeConfig not set")
 	}
 	t.Logf("using configuration from '%s'\n", kubeConfig)
 
-	config, err = clientcmd.BuildConfigFromFlags("", kubeConfig)
+	config, err := clientcmd.BuildConfigFromFlags("", kubeConfig)
 	if err != nil {
-		t.Errorf("Error during client creation with %v\n", err)
+		t.Fatalf("error building Kubernetes client configuration: %v", err)
 	}
 	// Informers and recorder Pod-proxy queries share this client. Keep recorder
 	// polling from exhausting client-go's default low QPS token bucket.
 	config.QPS = e2eClientQPS
 	config.Burst = e2eClientBurst
+	return config
+}
+
+// InitializeKubernetesClient creates a client for tests that only need direct API calls.
+// Unlike InitializeClient, it does not start shared informers or wait for cache sync.
+func InitializeKubernetesClient(t *testing.T) *kubernetes.Clientset {
+	config := buildKubernetesConfig(t)
 	k8sClientSet, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		t.Errorf("Error during client creation with %v\n", err)
+		t.Fatalf("error creating Kubernetes client: %v", err)
+	}
+	return k8sClientSet
+}
+
+func InitializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset, *v1alpha1.Clientset) {
+	config := buildKubernetesConfig(t)
+	k8sClientSet, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		t.Fatalf("error creating Kubernetes client: %v", err)
 	}
 	crdClientSet, err := v1alpha1.NewForConfig(config)
 	if err != nil {
-		t.Errorf("Error during client creation with %v\n", err)
+		t.Fatalf("error creating CRD client: %v", err)
 	}
 
 	factory := informers.NewSharedInformerFactoryWithOptions(k8sClientSet, 0)
@@ -159,7 +172,7 @@ func InitializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset,
 	crdFactory.Start(ctx.Done())
 
 	if !cache.WaitForCacheSync(ctx.Done(), podInformer.HasSynced, modelInformer.HasSynced) {
-		t.Error("timed out waiting for caches to sync")
+		t.Fatal("timed out waiting for caches to sync")
 	}
 
 	return k8sClientSet, crdClientSet

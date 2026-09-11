@@ -84,7 +84,7 @@ func TestClassifyPDRecordsTreatsEmptyOutcomeAsPending(t *testing.T) {
 	]`))
 	require.NoError(t, err)
 
-	ready, err := classifyPDRecords(records, "request-1", "vllm-aibrix-shfs", "vllm", "prefill")
+	ready, err := classifyPDRecords(records, "request-1", "vllm", "prefill")
 
 	require.False(t, ready)
 	require.NoError(t, err)
@@ -101,7 +101,7 @@ func TestClassifyPDRecordsReportsRejectedRecordDetails(t *testing.T) {
 		Error:      "invalid SHFS handoff",
 	}}
 
-	ready, err := classifyPDRecords(records, "request-1", "vllm-aibrix-shfs", "vllm", "prefill")
+	ready, err := classifyPDRecords(records, "request-1", "vllm", "prefill")
 
 	require.False(t, ready)
 	require.Error(t, err)
@@ -146,6 +146,13 @@ func TestQueryMockRequestsUsesPodProxy(t *testing.T) {
 	require.Len(t, records, 2)
 }
 
+func TestQueryMockRequestsRejectsNilClient(t *testing.T) {
+	_, err := QueryMockRequests(context.Background(), nil, "test", "mock-pod", "request-1")
+
+	require.Error(t, err)
+	require.ErrorContains(t, err, "kubernetes client is nil")
+}
+
 func TestWaitForSuccessfulPDLegsReturnsOneLegPerPod(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/prefill-pod/") {
@@ -175,12 +182,56 @@ func TestWaitForSuccessfulPDLegsReturnsOneLegPerPod(t *testing.T) {
 		"prefill-pod",
 		"decode-pod",
 		"request-1",
-		"vllm-aibrix-shfs",
 		"vllm",
 	)
 
 	require.Equal(t, 1, prefill.Sequence)
 	require.Equal(t, 2, decode.Sequence)
+}
+
+func TestWaitForSuccessfulPDLegsRetriesTransientProxyError(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			http.Error(w, "temporary proxy failure", http.StatusServiceUnavailable)
+			return
+		}
+		if strings.Contains(r.URL.Path, "/prefill-pod/") {
+			_, _ = fmt.Fprint(w, `[{"sequence":1,"request_id":"request-1",
+				"pod":"prefill-pod","engine":"vllm","role":"prefill",
+				"outcome":"success","status_code":200}]`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `[{"sequence":2,"request_id":"request-1",
+			"pod":"decode-pod","engine":"vllm","role":"decode",
+			"outcome":"success","status_code":200}]`)
+	}))
+	defer server.Close()
+
+	client, err := kubernetes.NewForConfig(&rest.Config{
+		Host:    server.URL,
+		APIPath: "/api",
+		ContentConfig: rest.ContentConfig{
+			GroupVersion:         &schema.GroupVersion{Group: "", Version: "v1"},
+			NegotiatedSerializer: scheme.Codecs,
+		},
+	})
+	require.NoError(t, err)
+
+	prefill, decode := WaitForSuccessfulPDLegs(
+		t,
+		client,
+		"test",
+		"prefill-pod",
+		"decode-pod",
+		"request-1",
+		"vllm",
+	)
+
+	require.Equal(t, 1, prefill.Sequence)
+	require.Equal(t, 2, decode.Sequence)
+	require.GreaterOrEqual(t, requestCount, 3)
 }
 
 func TestDecodeMockRequestRecordsRejectsMalformedJSON(t *testing.T) {
@@ -194,7 +245,7 @@ func TestSelectSuccessfulPDLegsWithoutContractField(t *testing.T) {
 	records, err := DecodeMockRequestRecords([]byte(recorderFixture))
 	require.NoError(t, err)
 
-	prefill, decode, err := SelectSuccessfulPDLegs(records, "request-1", "vllm-aibrix-shfs", "vllm")
+	prefill, decode, err := SelectSuccessfulPDLegs(records, "request-1", "vllm")
 
 	require.NoError(t, err)
 	require.Equal(t, "prefill-pod", prefill.Pod)
@@ -240,7 +291,6 @@ func TestSelectSuccessfulPDLegsRequiresExactlyOneSuccessfulLegPerRole(t *testing
 			_, _, err := SelectSuccessfulPDLegs(
 				test.modify(append([]MockRequestRecord(nil), base...)),
 				"request-1",
-				"vllm-aibrix-shfs",
 				"vllm",
 			)
 
@@ -255,7 +305,7 @@ func TestSelectSuccessfulPDLegsFiltersNonSuccessfulRecords(t *testing.T) {
 
 	records[0].Outcome = "failed"
 	records[0].StatusCode = http.StatusInternalServerError
-	_, _, err = SelectSuccessfulPDLegs(records, "request-1", "vllm-aibrix-shfs", "vllm")
+	_, _, err = SelectSuccessfulPDLegs(records, "request-1", "vllm")
 
 	require.Error(t, err)
 }

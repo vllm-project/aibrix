@@ -25,6 +25,7 @@ var (
 	apiKey                                = e2eConfig.APIKey
 	gatewayNamespace                      = e2eConfig.GatewayNamespace
 	initializeClient                      = framework.InitializeClient
+	initializeKubernetesClient            = framework.InitializeKubernetesClient
 	createOpenAIClientWithRoutingStrategy = framework.NewOpenAIClientWithRoutingStrategy
 	createOpenAIClientWithConfigProfile   = framework.NewOpenAIClientWithConfigProfile
 	validateAllPodsAreReady               = framework.ValidateAllPodsAreReady

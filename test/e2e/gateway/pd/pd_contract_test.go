@@ -28,7 +28,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-const vllmSHFSOpaqueSentinel = "aibrix-pd-contract-opaque-sentinel"
+const pdOpaqueSentinel = "aibrix-pd-contract-opaque-sentinel"
 
 const modelNameVLLMNIXL = "llama2-7b-vllm-nixl"
 
@@ -62,11 +62,17 @@ func decodeMockRequestBodyWithNumber(t *testing.T, record MockRequestRecord) map
 func requireExactIntegerJSONNumbers(t *testing.T, values []any) {
 	t.Helper()
 	for _, value := range values {
-		number, ok := value.(json.Number)
-		require.True(t, ok, "value must be a JSON number, got %T", value)
-		_, err := number.Int64()
-		require.NoError(t, err, "value must be an exact integer: %s", number)
+		requireExactIntegerJSONNumber(t, value)
 	}
+}
+
+func requireExactIntegerJSONNumber(t *testing.T, value any) json.Number {
+	t.Helper()
+	number, ok := value.(json.Number)
+	require.True(t, ok, "value must be a JSON number, got %T", value)
+	_, err := number.Int64()
+	require.NoError(t, err, "value must be an exact integer: %s", number)
+	return number
 }
 
 func requireNestedMap(t *testing.T, parent map[string]any, key string) map[string]any {
@@ -162,7 +168,7 @@ func TestPDContractVLLMSHFS(t *testing.T) {
 	require.NoError(t, err)
 	requireSuccessfulCompletion(t, result, modelNameVLLM)
 	gatewayRequestID := requireGatewayRequestID(t, result)
-	k8sClient, _ := initializeClient(context.Background(), t)
+	k8sClient := initializeKubernetesClient(t)
 
 	prefillPod := result.Headers.Get("prefill-target-pod")
 	decodePod := result.Headers.Get("target-pod")
@@ -171,7 +177,7 @@ func TestPDContractVLLMSHFS(t *testing.T) {
 	require.NotEqual(t, prefillPod, decodePod, "prefill and decode pods must differ")
 
 	prefill, decode := waitForSuccessfulPDLegs(t, k8sClient, e2eConfig.Namespace,
-		prefillPod, decodePod, gatewayRequestID, "vllm-aibrix-shfs", "vllm")
+		prefillPod, decodePod, gatewayRequestID, "vllm")
 	require.Equal(t, "/v1/chat/completions", prefill.Path)
 	require.Equal(t, "/v1/chat/completions", decode.Path)
 	require.Equal(t, "prefill", prefill.Role)
@@ -196,7 +202,7 @@ func TestPDContractVLLMSHFS(t *testing.T) {
 	remotePort, ok := decodeTransfer["remote_port"].(float64)
 	require.True(t, ok, "remote_port must be a JSON number, got %T", decodeTransfer["remote_port"])
 	require.Positive(t, remotePort)
-	require.Equal(t, vllmSHFSOpaqueSentinel, decodeTransfer["opaque"])
+	require.Equal(t, pdOpaqueSentinel, decodeTransfer["opaque"])
 }
 
 func TestPDContractVLLMNIXL(t *testing.T) {
@@ -217,7 +223,7 @@ func TestPDContractVLLMNIXL(t *testing.T) {
 	require.NoError(t, err)
 	requireSuccessfulCompletion(t, result, modelNameVLLMNIXL)
 	gatewayRequestID := requireGatewayRequestID(t, result)
-	k8sClient, _ := initializeClient(context.Background(), t)
+	k8sClient := initializeKubernetesClient(t)
 
 	prefillPod := result.Headers.Get("prefill-target-pod")
 	decodePod := result.Headers.Get("target-pod")
@@ -226,7 +232,7 @@ func TestPDContractVLLMNIXL(t *testing.T) {
 	require.NotEqual(t, prefillPod, decodePod, "prefill and decode pods must differ")
 
 	prefill, decode := waitForSuccessfulPDLegs(t, k8sClient, e2eConfig.Namespace,
-		prefillPod, decodePod, gatewayRequestID, "vllm-aibrix-nixl", "vllm")
+		prefillPod, decodePod, gatewayRequestID, "vllm")
 	for _, record := range []MockRequestRecord{prefill, decode} {
 		require.Equal(t, "/v1/chat/completions", record.Path)
 		require.Equal(t, "vllm", record.Engine)
@@ -249,7 +255,7 @@ func TestPDContractVLLMNIXL(t *testing.T) {
 	decodeBody := decodeMockRequestBody(t, decode)
 	var expectedHandoff map[string]any
 	require.NoError(t, json.Unmarshal(prefill.Response, &expectedHandoff), "decode prefill recorder response")
-	require.Equal(t, vllmSHFSOpaqueSentinel, expectedHandoff["opaque"])
+	require.Equal(t, pdOpaqueSentinel, expectedHandoff["opaque"])
 	require.Equal(t, modelNameVLLMNIXL, decodeBody["model"])
 	require.Equal(t, false, decodeBody["stream"])
 	require.Equal(t, float64(8), decodeBody["max_tokens"])
@@ -280,7 +286,7 @@ func TestPDContractSGLangRawJSON(t *testing.T) {
 	require.NoError(t, err)
 	requireSuccessfulCompletion(t, result, modelNameSGLang)
 	gatewayRequestID := requireGatewayRequestID(t, result)
-	k8sClient, _ := initializeClient(context.Background(), t)
+	k8sClient := initializeKubernetesClient(t)
 
 	prefillPod := result.Headers.Get("prefill-target-pod")
 	decodePod := result.Headers.Get("target-pod")
@@ -289,7 +295,7 @@ func TestPDContractSGLangRawJSON(t *testing.T) {
 	require.NotEqual(t, prefillPod, decodePod, "prefill and decode pods must differ")
 
 	prefill, decode := waitForSuccessfulPDLegs(t, k8sClient, e2eConfig.Namespace,
-		prefillPod, decodePod, gatewayRequestID, "sglang-http", "sglang")
+		prefillPod, decodePod, gatewayRequestID, "sglang")
 	for _, record := range []MockRequestRecord{prefill, decode} {
 		require.Equal(t, "/v1/chat/completions", record.Path)
 		require.Equal(t, "sglang", record.Engine)
@@ -312,8 +318,8 @@ func TestPDContractSGLangRawJSON(t *testing.T) {
 			"tools changed in %s body", record.Role)
 	}
 
-	prefillBody := decodeMockRequestBody(t, prefill)
-	decodeBody := decodeMockRequestBody(t, decode)
+	prefillBody := decodeMockRequestBodyWithNumber(t, prefill)
+	decodeBody := decodeMockRequestBodyWithNumber(t, decode)
 	prefillBootstrap := requireBootstrapFields(t, prefillBody)
 	decodeBootstrap := requireBootstrapFields(t, decodeBody)
 	require.Equal(t, prefillBootstrap.Host, decodeBootstrap.Host, "prefill and decode bootstrap hosts must match")
@@ -335,7 +341,7 @@ func TestPDContractTRTLLM(t *testing.T) {
 	require.NoError(t, err)
 	requireSuccessfulCompletion(t, result, modelNameTRTLLM)
 	gatewayRequestID := requireGatewayRequestID(t, result)
-	k8sClient, _ := initializeClient(context.Background(), t)
+	k8sClient := initializeKubernetesClient(t)
 
 	prefillPod := result.Headers.Get("prefill-target-pod")
 	decodePod := result.Headers.Get("target-pod")
@@ -344,7 +350,7 @@ func TestPDContractTRTLLM(t *testing.T) {
 	require.NotEqual(t, prefillPod, decodePod, "prefill and decode pods must differ")
 
 	prefill, decode := waitForSuccessfulPDLegs(t, k8sClient, e2eConfig.Namespace,
-		prefillPod, decodePod, gatewayRequestID, "trtllm-openai", "trtllm")
+		prefillPod, decodePod, gatewayRequestID, "trtllm")
 	for _, record := range []MockRequestRecord{prefill, decode} {
 		require.Equal(t, "/v1/chat/completions", record.Path)
 		require.Equal(t, "trtllm", record.Engine)
@@ -383,8 +389,8 @@ func TestPDContractTRTLLM(t *testing.T) {
 
 type bootstrapFields struct {
 	Host string
-	Port float64
-	Room float64
+	Port json.Number
+	Room json.Number
 }
 
 func requireBootstrapFields(t *testing.T, body map[string]any) bootstrapFields {
@@ -392,21 +398,27 @@ func requireBootstrapFields(t *testing.T, body map[string]any) bootstrapFields {
 	host, ok := body["bootstrap_host"].(string)
 	require.True(t, ok, "bootstrap_host must be a string, got %T", body["bootstrap_host"])
 	require.NotEmpty(t, host)
-	port, ok := body["bootstrap_port"].(float64)
-	require.True(t, ok, "bootstrap_port must be a JSON number, got %T", body["bootstrap_port"])
-	require.Greater(t, port, float64(0))
-	room, ok := body["bootstrap_room"].(float64)
-	require.True(t, ok, "bootstrap_room must be a JSON number, got %T", body["bootstrap_room"])
-	require.GreaterOrEqual(t, room, float64(0))
+	port := requireExactIntegerJSONNumber(t, body["bootstrap_port"])
+	portValue, err := port.Int64()
+	require.NoError(t, err, "bootstrap_port must be an exact integer")
+	require.Greater(t, portValue, int64(0))
+	room := requireExactIntegerJSONNumber(t, body["bootstrap_room"])
+	roomValue, err := room.Int64()
+	require.NoError(t, err, "bootstrap_room must be an exact integer")
+	require.GreaterOrEqual(t, roomValue, int64(0))
 	return bootstrapFields{Host: host, Port: port, Room: room}
 }
 
 func TestRequireBootstrapFieldsAllowsZeroRoom(t *testing.T) {
 	fields := requireBootstrapFields(t, map[string]any{
 		"bootstrap_host": "127.0.0.1",
-		"bootstrap_port": float64(8998),
-		"bootstrap_room": float64(0),
+		"bootstrap_port": json.Number("8998"),
+		"bootstrap_room": json.Number("0"),
 	})
 
-	require.Equal(t, bootstrapFields{Host: "127.0.0.1", Port: 8998, Room: 0}, fields)
+	require.Equal(t, bootstrapFields{
+		Host: "127.0.0.1",
+		Port: json.Number("8998"),
+		Room: json.Number("0"),
+	}, fields)
 }
