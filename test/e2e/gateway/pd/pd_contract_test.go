@@ -104,6 +104,24 @@ func requireSuccessfulCompletion(t *testing.T, result PDRequestResult, modelName
 	require.NotEmpty(t, content, "completion message content must be non-empty")
 }
 
+func requireGatewayRequestID(t *testing.T, result PDRequestResult) string {
+	t.Helper()
+	requestID := result.Headers.Get("request-id")
+	if requestID == "" {
+		requestID = result.Headers.Get("x-request-id")
+	}
+	require.NotEmpty(t, requestID, "gateway response must include request-id")
+	return requestID
+}
+
+func TestRequireGatewayRequestIDUsesResponseID(t *testing.T) {
+	result := PDRequestResult{
+		Headers: http.Header{"request-id": []string{"gateway-request-1"}},
+	}
+
+	require.Equal(t, "gateway-request-1", requireGatewayRequestID(t, result))
+}
+
 func TestDecodeMockRequestBody(t *testing.T) {
 	record := MockRequestRecord{RawBodyBase64: "eyJtb2RlbCI6ImxsYW1hIiwia2V5cyI6WzFdfQ=="}
 
@@ -143,6 +161,7 @@ func TestPDContractVLLMSHFS(t *testing.T) {
 	result, err := sendPDRequest(context.Background(), e2eConfig, "pd", requestID, body)
 	require.NoError(t, err)
 	requireSuccessfulCompletion(t, result, modelNameVLLM)
+	gatewayRequestID := requireGatewayRequestID(t, result)
 	k8sClient, _ := initializeClient(context.Background(), t)
 
 	prefillPod := result.Headers.Get("prefill-target-pod")
@@ -152,7 +171,7 @@ func TestPDContractVLLMSHFS(t *testing.T) {
 	require.NotEqual(t, prefillPod, decodePod, "prefill and decode pods must differ")
 
 	prefill, decode := waitForSuccessfulPDLegs(t, k8sClient, e2eConfig.Namespace,
-		prefillPod, decodePod, requestID, "vllm-aibrix-shfs", "vllm")
+		prefillPod, decodePod, gatewayRequestID, "vllm-aibrix-shfs", "vllm")
 	require.Equal(t, "/v1/chat/completions", prefill.Path)
 	require.Equal(t, "/v1/chat/completions", decode.Path)
 	require.Equal(t, "prefill", prefill.Role)
@@ -197,6 +216,7 @@ func TestPDContractVLLMNIXL(t *testing.T) {
 	result, err := sendPDRequest(context.Background(), e2eConfig, "pd", requestID, body)
 	require.NoError(t, err)
 	requireSuccessfulCompletion(t, result, modelNameVLLMNIXL)
+	gatewayRequestID := requireGatewayRequestID(t, result)
 	k8sClient, _ := initializeClient(context.Background(), t)
 
 	prefillPod := result.Headers.Get("prefill-target-pod")
@@ -206,7 +226,7 @@ func TestPDContractVLLMNIXL(t *testing.T) {
 	require.NotEqual(t, prefillPod, decodePod, "prefill and decode pods must differ")
 
 	prefill, decode := waitForSuccessfulPDLegs(t, k8sClient, e2eConfig.Namespace,
-		prefillPod, decodePod, requestID, "vllm-aibrix-nixl", "vllm")
+		prefillPod, decodePod, gatewayRequestID, "vllm-aibrix-nixl", "vllm")
 	for _, record := range []MockRequestRecord{prefill, decode} {
 		require.Equal(t, "/v1/chat/completions", record.Path)
 		require.Equal(t, "vllm", record.Engine)
@@ -259,6 +279,7 @@ func TestPDContractSGLangRawJSON(t *testing.T) {
 	result, err := sendPDRequest(context.Background(), e2eConfig, "pd", requestID, body)
 	require.NoError(t, err)
 	requireSuccessfulCompletion(t, result, modelNameSGLang)
+	gatewayRequestID := requireGatewayRequestID(t, result)
 	k8sClient, _ := initializeClient(context.Background(), t)
 
 	prefillPod := result.Headers.Get("prefill-target-pod")
@@ -268,7 +289,7 @@ func TestPDContractSGLangRawJSON(t *testing.T) {
 	require.NotEqual(t, prefillPod, decodePod, "prefill and decode pods must differ")
 
 	prefill, decode := waitForSuccessfulPDLegs(t, k8sClient, e2eConfig.Namespace,
-		prefillPod, decodePod, requestID, "sglang-http", "sglang")
+		prefillPod, decodePod, gatewayRequestID, "sglang-http", "sglang")
 	for _, record := range []MockRequestRecord{prefill, decode} {
 		require.Equal(t, "/v1/chat/completions", record.Path)
 		require.Equal(t, "sglang", record.Engine)
@@ -313,6 +334,7 @@ func TestPDContractTRTLLM(t *testing.T) {
 	result, err := sendPDRequest(context.Background(), e2eConfig, "pd", requestID, body)
 	require.NoError(t, err)
 	requireSuccessfulCompletion(t, result, modelNameTRTLLM)
+	gatewayRequestID := requireGatewayRequestID(t, result)
 	k8sClient, _ := initializeClient(context.Background(), t)
 
 	prefillPod := result.Headers.Get("prefill-target-pod")
@@ -322,7 +344,7 @@ func TestPDContractTRTLLM(t *testing.T) {
 	require.NotEqual(t, prefillPod, decodePod, "prefill and decode pods must differ")
 
 	prefill, decode := waitForSuccessfulPDLegs(t, k8sClient, e2eConfig.Namespace,
-		prefillPod, decodePod, requestID, "trtllm-openai", "trtllm")
+		prefillPod, decodePod, gatewayRequestID, "trtllm-openai", "trtllm")
 	for _, record := range []MockRequestRecord{prefill, decode} {
 		require.Equal(t, "/v1/chat/completions", record.Path)
 		require.Equal(t, "trtllm", record.Engine)
