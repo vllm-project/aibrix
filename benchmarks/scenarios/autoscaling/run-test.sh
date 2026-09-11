@@ -2,8 +2,10 @@
 
 input_workload_path=$1
 autoscaler=$2
-aibrix_repo="" # root dir of aibrix repo
-api_key="" # set your api key
+aibrix_repo=$3 # root dir of aibrix repo
+api_key=$4 # set your api key
+kube_context=$5
+
 k8s_yaml_dir="deepseek-llm-7b-chat"
 target_deployment="deepseek-llm-7b-chat" # "aibrix-model-deepseek-llm-7b-chat"
 target_ai_model=deepseek-llm-7b-chat
@@ -66,7 +68,7 @@ kubectl delete -f ${k8s_yaml_dir}/deploy.yaml
 kubectl apply -f ${k8s_yaml_dir}/deploy.yaml
 kubectl apply -f ${k8s_yaml_dir}/${autoscaler}.yaml
 echo "kubectl apply -f ${k8s_yaml_dir}/${autoscaler}.yaml"
-python3 ${aibrix_repo}/benchmarks/utils/set_num_replicas.py --deployment ${target_deployment} --replicas 1
+python3 ${aibrix_repo}/benchmarks/utils/set_num_replicas.py --deployment ${target_deployment} --replicas 1 --context ${kube_context}
 echo "Set number of replicas to \"1\". Autoscaling experiment will start from 1 pod"
 
 echo "Restart aibrix-controller-manager deployment"
@@ -82,9 +84,9 @@ kubectl rollout restart deploy ${target_deployment} -n default
 sleep_before_pod_check=20
 echo "Sleep for ${sleep_before_pod_check} seconds after restarting deployment"
 sleep ${sleep_before_pod_check}
-python3 ${aibrix_repo}/benchmarks/utils/check_k8s_is_ready.py ${target_deployment}
-python3 ${aibrix_repo}/benchmarks/utils/check_k8s_is_ready.py aibrix-controller-manager
-python3 ${aibrix_repo}/benchmarks/utils/check_k8s_is_ready.py aibrix-gateway-plugins
+python3 ${aibrix_repo}/benchmarks/utils/check_k8s_is_ready.py ${target_deployment} ${kube_context}
+python3 ${aibrix_repo}/benchmarks/utils/check_k8s_is_ready.py aibrix-controller-manager ${kube_context}
+python3 ${aibrix_repo}/benchmarks/utils/check_k8s_is_ready.py aibrix-gateway-plugins ${kube_context}
 
 # Start pod log monitoring
 pod_log_dir="${experiment_result_dir}/pod_logs"
@@ -94,7 +96,7 @@ mkdir -p ${pod_log_dir}
 cp ${input_workload_path} ${experiment_result_dir}
 
 # Start pod counter. It will run on background until the end of the experiment.
-python3 ${aibrix_repo}/benchmarks/utils/count_num_pods.py ${target_deployment} ${experiment_result_dir} &
+python3 ${aibrix_repo}/benchmarks/utils/count_num_pods.py ${target_deployment} ${experiment_result_dir} ${kube_context} &
 COUNT_NUM_POD_PID=$!
 echo "started count_num_pods.py with PID: $COUNT_NUM_POD_PID"
 
@@ -105,13 +107,13 @@ python3 ${aibrix_repo}/benchmarks/utils/streaming_pod_log_to_file.py aibrix-gate
 
 # Run experiment!!!
 output_jsonl_path=${experiment_result_dir}/output.jsonl
-python3 ${aibrix_repo}/benchmarks/generator/client.py \
+python3 ${aibrix_repo}/benchmarks/client/client.py \
     --workload-path ${input_workload_path} \
-    --endpoint "localhost:8888" \
+    --endpoint "http://localhost:8888" \
     --model ${target_ai_model} \
     --api-key ${api_key} \
-    --output-dir ${experiment_result_dir} \
-    --output-file-path ${output_jsonl_path}
+    --output-file-path ${output_jsonl_path} \
+    --streaming
 
 echo "Experiment is done. date: $(date)"
 
@@ -123,7 +125,7 @@ sleep 1
 
 # Cleanup
 kubectl delete podautoscaler --all --all-namespaces
-python3 ${aibrix_repo}/benchmarks/utils/set_num_replicas.py --deployment ${target_deployment} --replicas 1
+python3 ${aibrix_repo}/benchmarks/utils/set_num_replicas.py --deployment ${target_deployment} --replicas 1 --context ${kube_context}
 kubectl delete -f ${k8s_yaml_dir}/deploy.yaml
 
 # Stop monitoring processes
