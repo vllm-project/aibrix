@@ -64,7 +64,10 @@ func DecodeMockRequestRecords(body []byte) ([]MockRequestRecord, error) {
 // The contract argument is retained for caller compatibility, but PR2 does not
 // emit a contract in recorder records. Contract validation belongs to the
 // caller's mock configuration and cannot be performed from this endpoint.
-func SelectSuccessfulPDLegs(records []MockRequestRecord, requestID, contract, engine string) (prefill, decode MockRequestRecord, err error) {
+func SelectSuccessfulPDLegs(
+	records []MockRequestRecord,
+	requestID, contract, engine string,
+) (prefill, decode MockRequestRecord, err error) {
 	var prefills, decodes []MockRequestRecord
 	for _, record := range records {
 		if record.RequestID != requestID ||
@@ -92,7 +95,11 @@ func SelectSuccessfulPDLegs(records []MockRequestRecord, requestID, contract, en
 }
 
 // QueryMockRequests reads request records through the Kubernetes pod proxy.
-func QueryMockRequests(ctx context.Context, client kubernetes.Interface, namespace, podName, requestID string) ([]MockRequestRecord, error) {
+func QueryMockRequests(
+	ctx context.Context,
+	client kubernetes.Interface,
+	namespace, podName, requestID string,
+) ([]MockRequestRecord, error) {
 	body, err := client.CoreV1().RESTClient().Get().
 		Namespace(namespace).
 		Resource("pods").
@@ -103,11 +110,21 @@ func QueryMockRequests(ctx context.Context, client kubernetes.Interface, namespa
 		Do(ctx).
 		Raw()
 	if err != nil {
-		return nil, fmt.Errorf("query mock requests for pod %q request ID %q: %w", podName, requestID, err)
+		return nil, fmt.Errorf(
+			"query mock requests for pod %q request ID %q: %w",
+			podName,
+			requestID,
+			err,
+		)
 	}
 	records, err := DecodeMockRequestRecords(body)
 	if err != nil {
-		return nil, fmt.Errorf("query mock requests for pod %q request ID %q: %w", podName, requestID, err)
+		return nil, fmt.Errorf(
+			"query mock requests for pod %q request ID %q: %w",
+			podName,
+			requestID,
+			err,
+		)
 	}
 	return records, nil
 }
@@ -124,7 +141,13 @@ func classifyPDRecords(records []MockRequestRecord, requestID, contract, engine,
 			continue
 		}
 		if record.Outcome != "success" || record.StatusCode != http.StatusOK {
-			return false, fmt.Errorf("mock recorder rejected/failed pod %q role %q status code %d: %s", record.Pod, record.Role, record.StatusCode, record.Error)
+			return false, fmt.Errorf(
+				"mock recorder rejected/failed pod %q role %q status code %d: %s",
+				record.Pod,
+				record.Role,
+				record.StatusCode,
+				record.Error,
+			)
 		}
 		successful++
 	}
@@ -138,46 +161,68 @@ func classifyPDRecords(records []MockRequestRecord, requestID, contract, engine,
 // WaitForSuccessfulPDLegs waits for one successful HTTP-200 recorder entry per PD role.
 // The contract argument is retained for compatibility: PR2 records do not emit
 // contract metadata, so this function deliberately does not filter on it.
-func WaitForSuccessfulPDLegs(t *testing.T, client kubernetes.Interface, namespace, prefillPod, decodePod, requestID, contract, engine string) (prefill, decode MockRequestRecord) {
+func WaitForSuccessfulPDLegs(
+	t *testing.T,
+	client kubernetes.Interface,
+	namespace, prefillPod, decodePod, requestID, contract, engine string,
+) (prefill, decode MockRequestRecord) {
 	t.Helper()
 	var lastPrefill, lastDecode []byte
 	var successfulPrefill, successfulDecode []MockRequestRecord
-	err := wait.PollUntilContextTimeout(context.Background(), time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
-		prefillRecords, err := QueryMockRequests(ctx, client, namespace, prefillPod, requestID)
-		if err != nil {
-			if !apierrors.IsNotFound(err) {
-				return false, err
+	err := wait.PollUntilContextTimeout(
+		context.Background(),
+		time.Second,
+		2*time.Minute,
+		true,
+		func(ctx context.Context) (bool, error) {
+			prefillRecords, err := QueryMockRequests(ctx, client, namespace, prefillPod, requestID)
+			if err != nil {
+				if !apierrors.IsNotFound(err) {
+					return false, err
+				}
+				prefillRecords = nil
 			}
-			prefillRecords = nil
-		}
-		decodeRecords, err := QueryMockRequests(ctx, client, namespace, decodePod, requestID)
-		if err != nil {
-			if !apierrors.IsNotFound(err) {
-				return false, err
+			decodeRecords, err := QueryMockRequests(ctx, client, namespace, decodePod, requestID)
+			if err != nil {
+				if !apierrors.IsNotFound(err) {
+					return false, err
+				}
+				decodeRecords = nil
 			}
-			decodeRecords = nil
-		}
-		lastPrefill, _ = json.Marshal(prefillRecords)
-		lastDecode, _ = json.Marshal(decodeRecords)
+			lastPrefill, _ = json.Marshal(prefillRecords)
+			lastDecode, _ = json.Marshal(decodeRecords)
 
-		if ready, err := classifyPDRecords(prefillRecords, requestID, contract, engine, "prefill"); err != nil {
-			return false, err
-		} else if !ready {
-			return false, nil
-		}
-		if ready, err := classifyPDRecords(decodeRecords, requestID, contract, engine, "decode"); err != nil {
-			return false, err
-		} else if !ready {
-			return false, nil
-		}
-		successfulPrefill = prefillRecords
-		successfulDecode = decodeRecords
-		return true, nil
-	})
+			if ready, err := classifyPDRecords(prefillRecords, requestID, contract, engine, "prefill"); err != nil {
+				return false, err
+			} else if !ready {
+				return false, nil
+			}
+			if ready, err := classifyPDRecords(decodeRecords, requestID, contract, engine, "decode"); err != nil {
+				return false, err
+			} else if !ready {
+				return false, nil
+			}
+			successfulPrefill = prefillRecords
+			successfulDecode = decodeRecords
+			return true, nil
+		},
+	)
 	if err != nil {
-		t.Fatalf("wait for successful PD legs for request ID %q: %v; last prefill recorder JSON: %s; last decode recorder JSON: %s", requestID, err, lastPrefill, lastDecode)
+		t.Fatalf(
+			"wait for successful PD legs for request ID %q: %v; "+
+				"last prefill recorder JSON: %s; last decode recorder JSON: %s",
+			requestID,
+			err,
+			lastPrefill,
+			lastDecode,
+		)
 	}
-	prefill, decode, err = SelectSuccessfulPDLegs(append(successfulPrefill, successfulDecode...), requestID, contract, engine)
+	prefill, decode, err = SelectSuccessfulPDLegs(
+		append(successfulPrefill, successfulDecode...),
+		requestID,
+		contract,
+		engine,
+	)
 	if err != nil {
 		t.Fatalf("select successful PD legs for request ID %q: %v", requestID, err)
 	}

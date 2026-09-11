@@ -65,7 +65,12 @@ func NewRequestID(prefix string) string {
 }
 
 // SendPDRequest sends an already-serialized JSON request through the gateway.
-func SendPDRequest(ctx context.Context, config Config, routingStrategy, requestID string, body []byte) (PDRequestResult, error) {
+func SendPDRequest(
+	ctx context.Context,
+	config Config,
+	routingStrategy, requestID string,
+	body []byte,
+) (PDRequestResult, error) {
 	result := PDRequestResult{RequestID: requestID}
 	url := strings.TrimRight(config.GatewayURL, "/") + "/v1/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -81,7 +86,7 @@ func SendPDRequest(ctx context.Context, config Config, routingStrategy, requestI
 	if err != nil {
 		return result, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	result.StatusCode = resp.StatusCode
 	result.Headers = resp.Header.Clone()
@@ -90,7 +95,11 @@ func SendPDRequest(ctx context.Context, config Config, routingStrategy, requestI
 		return result, err
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return result, fmt.Errorf("PD request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(result.Body)))
+		return result, fmt.Errorf(
+			"PD request failed with status %d: %s",
+			resp.StatusCode,
+			strings.TrimSpace(string(result.Body)),
+		)
 	}
 	return result, nil
 }
@@ -126,6 +135,10 @@ func InitializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset,
 	if err != nil {
 		t.Errorf("Error during client creation with %v\n", err)
 	}
+	// Informers and recorder Pod-proxy queries share this client. Keep recorder
+	// polling from exhausting client-go's default low QPS token bucket.
+	config.QPS = e2eClientQPS
+	config.Burst = e2eClientBurst
 	k8sClientSet, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		t.Errorf("Error during client creation with %v\n", err)

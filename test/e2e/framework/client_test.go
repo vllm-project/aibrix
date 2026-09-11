@@ -76,7 +76,13 @@ func TestSendPDRequestSendsRawRequestAndReturnsResponse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result, err := SendPDRequest(context.Background(), Config{GatewayURL: server.URL + "/", APIKey: "test-key"}, "pd", "request-1", body)
+	result, err := SendPDRequest(
+		context.Background(),
+		Config{GatewayURL: server.URL + "/", APIKey: "test-key"},
+		"pd",
+		"request-1",
+		body,
+	)
 
 	require.NoError(t, <-handlerErr)
 	require.NoError(t, err)
@@ -93,7 +99,13 @@ func TestSendPDRequestReturnsResponseDetailsOnHTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result, err := SendPDRequest(context.Background(), Config{GatewayURL: server.URL, APIKey: "test-key"}, "pd", "request-2", []byte(`{}`))
+	result, err := SendPDRequest(
+		context.Background(),
+		Config{GatewayURL: server.URL, APIKey: "test-key"},
+		"pd",
+		"request-2",
+		[]byte(`{}`),
+	)
 
 	require.Error(t, err)
 	require.ErrorContains(t, err, "400")
