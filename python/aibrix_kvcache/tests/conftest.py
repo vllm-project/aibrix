@@ -182,11 +182,6 @@ def compact_layout_enabled(request):
 
     aibrix_kvcache.memory.memory_region.MR_USE_COMPACT_LAYOUT = origin
 
-@pytest.fixture()
-def kv_cache_factory_flashinfer():
-    from vllm.utils import create_kv_caches_with_random_flash
-    return create_kv_caches_with_random_flash
-
 def make_block_tables_slot_mapping(
         block_size: int,
         seq_lens: list[int],
