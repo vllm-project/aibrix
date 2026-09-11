@@ -180,6 +180,9 @@ func (a *syncIndexerAdapter) ProcessBlockStored(ctx context.Context, event kveve
 		SourcePod:       event.SourcePod,
 		ParentBlockHash: event.ParentBlockHash,
 		Tokens:          event.Tokens,
+		Medium:          event.Medium,
+		LoraName:        event.LoraName,
+		GroupIdx:        event.GroupIdx,
 	}
 
 	return a.indexer.ProcessBlockStored(syncEvent)
@@ -193,6 +196,8 @@ func (a *syncIndexerAdapter) ProcessBlockRemoved(ctx context.Context, event kvev
 		ModelName:   event.ModelName,
 		LoraID:      event.LoraID,
 		SourcePod:   event.SourcePod,
+		Medium:      event.Medium,
+		GroupIdx:    event.GroupIdx,
 	}
 
 	return a.indexer.ProcessBlockRemoved(syncEvent)

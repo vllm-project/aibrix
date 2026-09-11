@@ -39,6 +39,15 @@ const (
 	evictionBatchSize              = 100 // Process contexts in batches
 )
 
+// Storage tier constants mirroring vLLM's kv_events.py (MEDIUM_GPU/CPU/STORAGE).
+// A prefix held only on a slower tier is a weaker routing signal than one on
+// GPU, so match scores are weighted by tier (see mediumWeight).
+const (
+	MediumGPU     = "GPU"
+	MediumCPU     = "CPU"
+	MediumStorage = "STORAGE"
+)
+
 var (
 	maxContexts           = utils.LoadEnvInt("AIBRIX_SYNC_MAX_CONTEXTS", defaultMaxContexts)
 	maxPrefixesPerContext = utils.LoadEnvInt("AIBRIX_SYNC_MAX_PREFIXES_PER_CONTEXT", defaultMaxPrefixesPerContext)
@@ -71,6 +80,9 @@ type ModelContext struct {
 type PodInfo struct {
 	LastAccessTime atomic.Int64 // Unix timestamp (lock-free update)
 	SourcePod      string
+	// Medium is the storage tier this pod holds the prefix on
+	// ("GPU"/"CPU"/"STORAGE"; empty when the publisher does not emit it).
+	Medium string
 }
 
 // PrefixStore manages prefix hashes for a specific (model, lora_id) context
@@ -218,11 +230,18 @@ func (s *SyncPrefixHashTable) MatchPrefix(modelName string, loraID int64, tokens
 
 		prefixMatchPercent := (i + 1) * 100 / len(prefixHashes)
 
-		// Find ready pods with this prefix
+		// Find ready pods with this prefix. Scores are weighted by the
+		// storage tier the pod holds the prefix on: a pod that only has the
+		// prefix on CPU/STORAGE is a weaker hit than one with it on GPU
+		// (issue #2285). Later prefixes overwrite with higher percentages;
+		// per pod we keep the best weighted score.
 		hasMatch := false
-		for podName := range pods {
+		for podName, podInfo := range pods {
 			if _, isReady := readyPods[podName]; isReady {
-				prefixMatchPods[podName] = prefixMatchPercent
+				weighted := int(float64(prefixMatchPercent) * mediumWeight(podInfo.Medium))
+				if cur, ok := prefixMatchPods[podName]; !ok || weighted > cur {
+					prefixMatchPods[podName] = weighted
+				}
 				hasMatch = true
 			}
 		}
@@ -310,7 +329,7 @@ func (s *SyncPrefixHashTable) ProcessBlockStored(event BlockStored) error {
 
 		prefixStore := contextData.prefixStore
 		for _, update := range prefixUpdates {
-			s.addPrefixToPodLocked(prefixStore, update.hash, update.pod)
+			s.addPrefixToPodLocked(prefixStore, update.hash, update.pod, event.Medium)
 		}
 	}
 
@@ -371,8 +390,18 @@ func (s *SyncPrefixHashTable) ProcessAllBlocksCleared(event AllBlocksCleared) er
 	return nil
 }
 
-// AddPrefix adds prefix hashes for a specific model/lora context and pod
+// AddPrefix adds prefix hashes for a specific model/lora context and pod.
+// The medium is unknown here (callers without tier information), so entries
+// are stored as unspecified, which scores as a full-strength GPU hit for
+// backward compatibility.
 func (s *SyncPrefixHashTable) AddPrefix(modelName string, loraID int64, podName string, prefixHashes []uint64) error {
+	return s.AddPrefixWithMedium(modelName, loraID, podName, "", prefixHashes)
+}
+
+// AddPrefixWithMedium is AddPrefix with the storage tier the pod holds the
+// prefixes on. The tier is recorded per (prefix, pod) so MatchPrefix can score
+// non-GPU prefixes lower.
+func (s *SyncPrefixHashTable) AddPrefixWithMedium(modelName string, loraID int64, podName, medium string, prefixHashes []uint64) error {
 	ctx := ModelContext{
 		ModelName: modelName,
 		LoraID:    loraID,
@@ -411,6 +440,7 @@ func (s *SyncPrefixHashTable) AddPrefix(modelName string, loraID int64, podName 
 		} else {
 			pods[podName] = &PodInfo{
 				SourcePod: podName,
+				Medium:    medium,
 			}
 			pods[podName].LastAccessTime.Store(now)
 		}
@@ -536,7 +566,7 @@ func (s *SyncPrefixHashTable) computeHash(parentHash uint64, blockTokens []byte)
 }
 
 // addPrefixToPodLocked adds or updates pod info for a prefix (caller must hold lock)
-func (s *SyncPrefixHashTable) addPrefixToPodLocked(prefixStore *PrefixStore, prefixHash uint64, podName string) {
+func (s *SyncPrefixHashTable) addPrefixToPodLocked(prefixStore *PrefixStore, prefixHash uint64, podName, medium string) {
 	now := time.Now().Unix()
 
 	pods, exists := prefixStore.prefixMap[prefixHash]
@@ -551,8 +581,25 @@ func (s *SyncPrefixHashTable) addPrefixToPodLocked(prefixStore *PrefixStore, pre
 	} else {
 		pods[podName] = &PodInfo{
 			SourcePod: podName,
+			Medium:    medium,
 		}
 		pods[podName].LastAccessTime.Store(now)
+	}
+}
+
+// mediumWeight returns the routing score weight for a storage tier. Entries
+// without tier information (empty medium, e.g. from older vLLM or the plain
+// AddPrefix path) score at full strength to preserve legacy behavior.
+func mediumWeight(medium string) float64 {
+	switch medium {
+	case MediumGPU:
+		return 1.0
+	case MediumCPU:
+		return 0.5
+	case MediumStorage:
+		return 0.25
+	default:
+		return 1.0
 	}
 }
 

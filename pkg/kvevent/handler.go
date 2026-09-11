@@ -78,6 +78,18 @@ func (h *eventHandler) handleBlockStored(ctx context.Context, event *kvcache.Blo
 
 	// Convert to sync event
 	// Note: BlockHashes are already []int64 after msgpack decoding
+	var groupIdx int64 = -1
+	if event.GroupIdx != nil {
+		groupIdx = *event.GroupIdx
+	}
+	var medium string
+	if event.Medium != nil {
+		medium = *event.Medium
+	}
+	var loraName string
+	if event.LoraName != nil {
+		loraName = *event.LoraName
+	}
 	syncEvent := BlockStoredEvent{
 		BlockHashes:     event.BlockHashes,
 		ModelName:       h.modelName,
@@ -85,6 +97,9 @@ func (h *eventHandler) handleBlockStored(ctx context.Context, event *kvcache.Blo
 		SourcePod:       h.podKey,
 		ParentBlockHash: event.ParentBlockHash,
 		Tokens:          event.TokenIDs,
+		Medium:          medium,
+		LoraName:        loraName,
+		GroupIdx:        groupIdx,
 	}
 
 	// Process event
@@ -112,11 +127,21 @@ func (h *eventHandler) handleBlockRemoved(ctx context.Context, event *kvcache.Bl
 
 	// Convert to sync event
 	// Note: BlockHashes are already []int64 after msgpack decoding
+	var groupIdx int64 = -1
+	if event.GroupIdx != nil {
+		groupIdx = *event.GroupIdx
+	}
+	var medium string
+	if event.Medium != nil {
+		medium = *event.Medium
+	}
 	syncEvent := BlockRemovedEvent{
 		BlockHashes: event.BlockHashes,
 		ModelName:   h.modelName,
 		LoraID:      h.loraID,
 		SourcePod:   h.podKey,
+		Medium:      medium,
+		GroupIdx:    groupIdx,
 	}
 
 	// Process event
