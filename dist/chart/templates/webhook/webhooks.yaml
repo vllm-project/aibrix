@@ -206,8 +206,8 @@ webhooks:
     - v1
   clientConfig:
     service:
-      name: webhook-service
-      namespace: system
+      name: aibrix-webhook-service
+      namespace: {{ .Release.Namespace }}
       path: /validate-apps-v1-deployment
   failurePolicy: Ignore
   name: vedeployment.aibrix.ai
