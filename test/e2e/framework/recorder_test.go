@@ -17,10 +17,19 @@ limitations under the License.
 package e2eframework
 
 import (
+	"context"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 )
 
 const recorderFixture = `[
@@ -35,6 +44,7 @@ const recorderFixture = `[
     "role": "decode",
     "outcome": "success",
     "status_code": 200,
+    "error": "",
     "response": {"id": "decode-response"}
   },
   {
@@ -48,6 +58,7 @@ const recorderFixture = `[
     "role": "prefill",
     "outcome": "success",
     "status_code": 200,
+    "error": "",
     "response": {"id": "prefill-response"}
   }
 ]`
@@ -63,6 +74,76 @@ func TestDecodeMockRequestRecords(t *testing.T) {
 	require.Equal(t, "decode", records[1].Role)
 	require.JSONEq(t, `{"model":"model","prompt":"hello"}`, string(records[0].ParsedJSON))
 	require.JSONEq(t, `{"id":"decode-response"}`, string(records[1].Response))
+}
+
+func TestClassifyPDRecordsTreatsEmptyOutcomeAsPending(t *testing.T) {
+	records, err := DecodeMockRequestRecords([]byte(`[
+		{"sequence": 1, "request_id": "request-1", "pod": "prefill-pod", "engine": "vllm", "role": "prefill"},
+		{"sequence": 2, "request_id": "request-1", "pod": "decode-pod", "engine": "vllm", "role": "decode", "outcome": "success", "status_code": 200}
+	]`))
+	require.NoError(t, err)
+
+	ready, err := classifyPDRecords(records, "request-1", "vllm-aibrix-shfs", "vllm", "prefill")
+
+	require.False(t, ready)
+	require.NoError(t, err)
+}
+
+func TestClassifyPDRecordsReportsRejectedRecordDetails(t *testing.T) {
+	records := []MockRequestRecord{{
+		RequestID:  "request-1",
+		Pod:        "prefill-pod",
+		Engine:     "vllm",
+		Role:       "prefill",
+		Outcome:    "rejected",
+		StatusCode: http.StatusBadRequest,
+		Error:      "invalid SHFS handoff",
+	}}
+
+	ready, err := classifyPDRecords(records, "request-1", "vllm-aibrix-shfs", "vllm", "prefill")
+
+	require.False(t, ready)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "prefill-pod")
+	assert.ErrorContains(t, err, "prefill")
+	assert.ErrorContains(t, err, "400")
+	assert.ErrorContains(t, err, "invalid SHFS handoff")
+}
+
+func TestQueryMockRequestsUsesPodProxy(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/v1/namespaces/test/pods/mock-pod/proxy/debug/requests", r.URL.Path)
+		require.Equal(t, "request-1", r.URL.Query().Get("request_id"))
+		_, _ = fmt.Fprint(w, recorderFixture)
+	}))
+	defer server.Close()
+
+	client, err := kubernetes.NewForConfig(&rest.Config{Host: server.URL, APIPath: "/api", ContentConfig: rest.ContentConfig{GroupVersion: &schema.GroupVersion{Group: "", Version: "v1"}, NegotiatedSerializer: scheme.Codecs}})
+	require.NoError(t, err)
+
+	records, err := QueryMockRequests(context.Background(), client, "test", "mock-pod", "request-1")
+
+	require.NoError(t, err)
+	require.Len(t, records, 2)
+}
+
+func TestWaitForSuccessfulPDLegsReturnsOneLegPerPod(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/prefill-pod/") {
+			_, _ = fmt.Fprint(w, `[{"sequence":1,"request_id":"request-1","pod":"prefill-pod","engine":"vllm","role":"prefill","outcome":"success","status_code":200}]`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `[{"sequence":2,"request_id":"request-1","pod":"decode-pod","engine":"vllm","role":"decode","outcome":"success","status_code":200}]`)
+	}))
+	defer server.Close()
+
+	client, err := kubernetes.NewForConfig(&rest.Config{Host: server.URL, APIPath: "/api", ContentConfig: rest.ContentConfig{GroupVersion: &schema.GroupVersion{Group: "", Version: "v1"}, NegotiatedSerializer: scheme.Codecs}})
+	require.NoError(t, err)
+
+	prefill, decode := WaitForSuccessfulPDLegs(t, client, "test", "prefill-pod", "decode-pod", "request-1", "vllm-aibrix-shfs", "vllm")
+
+	require.Equal(t, 1, prefill.Sequence)
+	require.Equal(t, 2, decode.Sequence)
 }
 
 func TestDecodeMockRequestRecordsRejectsMalformedJSON(t *testing.T) {
