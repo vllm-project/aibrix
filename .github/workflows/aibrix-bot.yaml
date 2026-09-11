@@ -27,7 +27,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Run AIBrix bot
+      - name: Run AIBrix bot (advisory PR validation)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
