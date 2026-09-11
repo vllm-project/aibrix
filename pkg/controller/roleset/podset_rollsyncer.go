@@ -401,6 +401,7 @@ func (p *PodSetRoleSyncer) createPodSetForRole(roleSet *orchestrationv1alpha1.Ro
 			Stateful:           role.Stateful,
 			Drain:              role.Drain,
 			SchedulingStrategy: role.SchedulingStrategy,
+			RecoveryPolicy:     role.PodRecoveryPolicy,
 		},
 	}
 
