@@ -17,6 +17,7 @@ limitations under the License.
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -39,6 +40,33 @@ func decodeMockRequestBody(t *testing.T, record MockRequestRecord) map[string]an
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(rawBody, &body), "parse recorder body for %s request", record.Role)
 	return body
+}
+
+func decodeMockJSONNumber(t *testing.T, raw []byte) map[string]any {
+	t.Helper()
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+
+	var body map[string]any
+	require.NoError(t, decoder.Decode(&body), "parse JSON with exact numbers")
+	return body
+}
+
+func decodeMockRequestBodyWithNumber(t *testing.T, record MockRequestRecord) map[string]any {
+	t.Helper()
+	rawBody, err := base64.StdEncoding.DecodeString(record.RawBodyBase64)
+	require.NoError(t, err, "decode recorder body for %s request", record.Role)
+	return decodeMockJSONNumber(t, rawBody)
+}
+
+func requireExactIntegerJSONNumbers(t *testing.T, values []any) {
+	t.Helper()
+	for _, value := range values {
+		number, ok := value.(json.Number)
+		require.True(t, ok, "value must be a JSON number, got %T", value)
+		_, err := number.Int64()
+		require.NoError(t, err, "value must be an exact integer: %s", number)
+	}
 }
 
 func requireNestedMap(t *testing.T, parent map[string]any, key string) map[string]any {
@@ -83,6 +111,14 @@ func TestDecodeMockRequestBody(t *testing.T) {
 
 	require.Equal(t, "llama", body["model"])
 	require.Equal(t, []any{float64(1)}, requireNestedSlice(t, body, "keys"))
+}
+
+func TestDecodeTRTLLMJSONPreservesLargeDisaggRequestID(t *testing.T) {
+	body := decodeMockJSONNumber(t, []byte(`{"disaggregated_params":{"disagg_request_id":9007199254740993}}`))
+	params := requireNestedMap(t, body, "disaggregated_params")
+
+	require.Equal(t, json.Number("9007199254740993"), params["disagg_request_id"])
+	require.NotEqual(t, params["disagg_request_id"], json.Number("9007199254740992"))
 }
 
 func TestRequireSuccessfulCompletion(t *testing.T) {
@@ -265,19 +301,19 @@ func TestPDContractTRTLLM(t *testing.T) {
 	require.Equal(t, decodePod, decode.Pod)
 	require.NotEqual(t, prefill.Pod, decode.Pod)
 
-	prefillBody := decodeMockRequestBody(t, prefill)
+	prefillBody := decodeMockRequestBodyWithNumber(t, prefill)
 	prefillParams := requireNestedMap(t, prefillBody, "disaggregated_params")
 	require.Equal(t, "context_only", prefillParams["request_type"])
 
-	var prefillResponse map[string]any
-	require.NoError(t, json.Unmarshal(prefill.Response, &prefillResponse), "decode prefill recorder response")
+	prefillResponse := decodeMockJSONNumber(t, prefill.Response)
 	prefillChoices := requireNestedSlice(t, prefillResponse, "choices")
 	prefillChoice, ok := prefillChoices[0].(map[string]any)
 	require.True(t, ok, "prefill response choice must be an object, got %T", prefillChoices[0])
 	expectedParams := requireNestedMap(t, prefillChoice, "disaggregated_params")
 	expectedPromptTokenIDs := requireNestedSlice(t, prefillResponse, "prompt_token_ids")
+	requireExactIntegerJSONNumbers(t, expectedPromptTokenIDs)
 
-	decodeBody := decodeMockRequestBody(t, decode)
+	decodeBody := decodeMockRequestBodyWithNumber(t, decode)
 	decodeParams := requireNestedMap(t, decodeBody, "disaggregated_params")
 	require.Equal(t, "generation_only", decodeParams["request_type"])
 	for _, key := range []string{"disagg_request_id", "first_gen_tokens", "encoded_opaque_state"} {
@@ -287,11 +323,7 @@ func TestPDContractTRTLLM(t *testing.T) {
 	}
 	decodePromptTokenIDs := requireNestedSlice(t, decodeBody, "prompt_token_ids")
 	require.Equal(t, expectedPromptTokenIDs, decodePromptTokenIDs)
-	for _, tokenID := range decodePromptTokenIDs {
-		number, ok := tokenID.(float64)
-		require.True(t, ok, "prompt_token_ids must contain JSON numbers, got %T", tokenID)
-		require.Equal(t, number, float64(int64(number)), "prompt_token_ids must contain integers")
-	}
+	requireExactIntegerJSONNumbers(t, decodePromptTokenIDs)
 }
 
 type bootstrapFields struct {
