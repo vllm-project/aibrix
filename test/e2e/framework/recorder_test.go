@@ -111,9 +111,19 @@ func TestClassifyPDRecordsReportsRejectedRecordDetails(t *testing.T) {
 }
 
 func TestQueryMockRequestsUsesPodProxy(t *testing.T) {
+	handlerErr := make(chan error, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/api/v1/namespaces/test/pods/mock-pod/proxy/debug/requests", r.URL.Path)
-		require.Equal(t, "request-1", r.URL.Query().Get("request_id"))
+		if r.URL.Path != "/api/v1/namespaces/test/pods/mock-pod/proxy/debug/requests" {
+			handlerErr <- fmt.Errorf("unexpected pod proxy path %q", r.URL.Path)
+			http.Error(w, "unexpected pod proxy path", http.StatusInternalServerError)
+			return
+		}
+		if r.URL.Query().Get("request_id") != "request-1" {
+			handlerErr <- fmt.Errorf("unexpected request ID %q", r.URL.Query().Get("request_id"))
+			http.Error(w, "unexpected request ID", http.StatusInternalServerError)
+			return
+		}
+		handlerErr <- nil
 		_, _ = fmt.Fprint(w, recorderFixture)
 	}))
 	defer server.Close()
@@ -123,6 +133,7 @@ func TestQueryMockRequestsUsesPodProxy(t *testing.T) {
 
 	records, err := QueryMockRequests(context.Background(), client, "test", "mock-pod", "request-1")
 
+	require.NoError(t, <-handlerErr)
 	require.NoError(t, err)
 	require.Len(t, records, 2)
 }
