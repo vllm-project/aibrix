@@ -236,6 +236,64 @@ func TestPDContractSGLangRawJSON(t *testing.T) {
 	require.Equal(t, prefillBootstrap.Room, decodeBootstrap.Room, "prefill and decode bootstrap rooms must match")
 }
 
+func TestPDContractTRTLLM(t *testing.T) {
+	waitForPDDisaggregationRouting(t, modelNameTRTLLM)
+	requestID := newRequestID("trtllm-openai")
+	body := []byte(`{"model":"llama2-7b-trtllm","messages":[{"role":"user","content":"Say this is a test for TRT-LLM PD contract"}],"max_tokens":8,"stream":false}`)
+
+	result, err := sendPDRequest(context.Background(), e2eConfig, "pd", requestID, body)
+	require.NoError(t, err)
+	requireSuccessfulCompletion(t, result, modelNameTRTLLM)
+	k8sClient, _ := initializeClient(context.Background(), t)
+
+	prefillPod := result.Headers.Get("prefill-target-pod")
+	decodePod := result.Headers.Get("target-pod")
+	require.NotEmpty(t, prefillPod, "prefill-target-pod header must be set")
+	require.NotEmpty(t, decodePod, "target-pod header must be set")
+	require.NotEqual(t, prefillPod, decodePod, "prefill and decode pods must differ")
+
+	prefill, decode := waitForSuccessfulPDLegs(t, k8sClient, e2eConfig.Namespace,
+		prefillPod, decodePod, requestID, "trtllm-openai", "trtllm")
+	for _, record := range []MockRequestRecord{prefill, decode} {
+		require.Equal(t, "/v1/chat/completions", record.Path)
+		require.Equal(t, "trtllm", record.Engine)
+		require.Equal(t, "success", record.Outcome)
+	}
+	require.Equal(t, "prefill", prefill.Role)
+	require.Equal(t, "decode", decode.Role)
+	require.Equal(t, prefillPod, prefill.Pod)
+	require.Equal(t, decodePod, decode.Pod)
+	require.NotEqual(t, prefill.Pod, decode.Pod)
+
+	prefillBody := decodeMockRequestBody(t, prefill)
+	prefillParams := requireNestedMap(t, prefillBody, "disaggregated_params")
+	require.Equal(t, "context_only", prefillParams["request_type"])
+
+	var prefillResponse map[string]any
+	require.NoError(t, json.Unmarshal(prefill.Response, &prefillResponse), "decode prefill recorder response")
+	prefillChoices := requireNestedSlice(t, prefillResponse, "choices")
+	prefillChoice, ok := prefillChoices[0].(map[string]any)
+	require.True(t, ok, "prefill response choice must be an object, got %T", prefillChoices[0])
+	expectedParams := requireNestedMap(t, prefillChoice, "disaggregated_params")
+	expectedPromptTokenIDs := requireNestedSlice(t, prefillResponse, "prompt_token_ids")
+
+	decodeBody := decodeMockRequestBody(t, decode)
+	decodeParams := requireNestedMap(t, decodeBody, "disaggregated_params")
+	require.Equal(t, "generation_only", decodeParams["request_type"])
+	for _, key := range []string{"disagg_request_id", "first_gen_tokens", "encoded_opaque_state"} {
+		require.Contains(t, expectedParams, key, "prefill response must contain %q", key)
+		require.Contains(t, decodeParams, key, "decode request must contain %q", key)
+		require.Equal(t, expectedParams[key], decodeParams[key], "decode handoff field %q differs from prefill response", key)
+	}
+	decodePromptTokenIDs := requireNestedSlice(t, decodeBody, "prompt_token_ids")
+	require.Equal(t, expectedPromptTokenIDs, decodePromptTokenIDs)
+	for _, tokenID := range decodePromptTokenIDs {
+		number, ok := tokenID.(float64)
+		require.True(t, ok, "prompt_token_ids must contain JSON numbers, got %T", tokenID)
+		require.Equal(t, number, float64(int64(number)), "prompt_token_ids must contain integers")
+	}
+}
+
 type bootstrapFields struct {
 	Host string
 	Port float64
