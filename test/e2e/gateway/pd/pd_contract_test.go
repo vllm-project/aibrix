@@ -17,7 +17,6 @@ limitations under the License.
 package e2e
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -219,21 +218,47 @@ func TestPDContractSGLangRawJSON(t *testing.T) {
 	for _, record := range []MockRequestRecord{prefill, decode} {
 		rawBody, err := base64.StdEncoding.DecodeString(record.RawBodyBase64)
 		require.NoError(t, err, "decode recorder body for %s request", record.Role)
-		require.True(t, bytes.Contains(rawBody, []byte(originalMessages)), "messages changed in %s body", record.Role)
-		require.True(t, bytes.Contains(rawBody, []byte(originalTools)), "tools changed in %s body", record.Role)
+		require.Equal(t, originalMessages, gjson.GetBytes(rawBody, "messages").Raw,
+			"messages changed in %s body", record.Role)
+		require.Equal(t, originalTools, gjson.GetBytes(rawBody, "tools").Raw,
+			"tools changed in %s body", record.Role)
 	}
 
 	prefillBody := decodeMockRequestBody(t, prefill)
 	decodeBody := decodeMockRequestBody(t, decode)
-	prefillRoom := requireBootstrapFields(t, prefillBody)
-	decodeRoom := requireBootstrapFields(t, decodeBody)
-	require.Equal(t, prefillRoom, decodeRoom, "prefill and decode bootstrap rooms must match")
+	prefillBootstrap := requireBootstrapFields(t, prefillBody)
+	decodeBootstrap := requireBootstrapFields(t, decodeBody)
+	require.Equal(t, prefillBootstrap.Host, decodeBootstrap.Host, "prefill and decode bootstrap hosts must match")
+	require.Equal(t, prefillBootstrap.Port, decodeBootstrap.Port, "prefill and decode bootstrap ports must match")
+	require.Equal(t, prefillBootstrap.Room, decodeBootstrap.Room, "prefill and decode bootstrap rooms must match")
 }
 
-func requireBootstrapFields(t *testing.T, body map[string]any) any {
+type bootstrapFields struct {
+	Host string
+	Port float64
+	Room float64
+}
+
+func requireBootstrapFields(t *testing.T, body map[string]any) bootstrapFields {
 	t.Helper()
-	require.NotEmpty(t, body["bootstrap_host"])
-	require.Positive(t, body["bootstrap_port"])
-	require.NotEmpty(t, body["bootstrap_room"])
-	return body["bootstrap_room"]
+	host, ok := body["bootstrap_host"].(string)
+	require.True(t, ok, "bootstrap_host must be a string, got %T", body["bootstrap_host"])
+	require.NotEmpty(t, host)
+	port, ok := body["bootstrap_port"].(float64)
+	require.True(t, ok, "bootstrap_port must be a JSON number, got %T", body["bootstrap_port"])
+	require.Greater(t, port, float64(0))
+	room, ok := body["bootstrap_room"].(float64)
+	require.True(t, ok, "bootstrap_room must be a JSON number, got %T", body["bootstrap_room"])
+	require.GreaterOrEqual(t, room, float64(0))
+	return bootstrapFields{Host: host, Port: port, Room: room}
+}
+
+func TestRequireBootstrapFieldsAllowsZeroRoom(t *testing.T) {
+	fields := requireBootstrapFields(t, map[string]any{
+		"bootstrap_host": "127.0.0.1",
+		"bootstrap_port": float64(8998),
+		"bootstrap_room": float64(0),
+	})
+
+	require.Equal(t, bootstrapFields{Host: "127.0.0.1", Port: 8998, Room: 0}, fields)
 }
