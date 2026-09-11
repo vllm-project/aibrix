@@ -283,15 +283,23 @@ def handle_pull_request(event: dict, github: GitHub):
     pull_request = event["pull_request"]
     errors = validate_pr(pull_request.get("title", ""), pull_request.get("body") or "")
     labels = [TRIAGE_LABEL] if errors else []
-    github.sync_labels(pull_request["number"], labels, PR_MANAGED_LABELS)
     lines = [f"## AIBrix bot: PR #{pull_request['number']}"]
     if errors:
-        lines.append("PR checks: failed")
+        lines.append("PR checks: findings (advisory)")
         lines.extend(f"- {error}" for error in errors)
+        for error in errors:
+            print(f"::warning::{error}")
     else:
         lines.append("PR checks: passed")
     _summary(lines)
-    return bool(errors)
+    try:
+        github.sync_labels(pull_request["number"], labels, PR_MANAGED_LABELS)
+    except RuntimeError as error:
+        print(f"Unable to update PR labels: {error}", file=sys.stderr)
+        print("::warning::Unable to update PR labels")
+        _summary(["Label update: warning (label mutation failed; validation remains advisory)"])
+    # PR title and description checks are advisory and must not block CI.
+    return False
 
 
 def self_test() -> None:
