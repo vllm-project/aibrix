@@ -158,6 +158,14 @@ spec:
                   - pod
                   type: object
                 type: array
+              observedFootprint:
+                properties:
+                  artifactURL:
+                    type: string
+                  bytes:
+                    format: int64
+                    type: integer
+                type: object
               phase:
                 type: string
               readyReplicas:

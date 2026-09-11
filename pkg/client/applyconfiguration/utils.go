@@ -65,6 +65,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationmodelv1alpha1.ModelClaimEngineConfigApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelClaimInstance"):
 		return &applyconfigurationmodelv1alpha1.ModelClaimInstanceApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelClaimObservedFootprint"):
+		return &applyconfigurationmodelv1alpha1.ModelClaimObservedFootprintApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelClaimSpec"):
 		return &applyconfigurationmodelv1alpha1.ModelClaimSpecApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelClaimStatus"):

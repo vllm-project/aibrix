@@ -22,6 +22,7 @@ package modelclaim
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -393,18 +394,26 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 		return fmt.Errorf("invalid engineConfig parallelism: %w", err)
 	}
 	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL, parallelism)
+	footprint := placementFootprintBytes(pm, placementStates)
 
 	for desiredReplicas(pm) > int32(len(pm.Status.Instances)) {
 		pod, selectErr := selectPodForActivationWithState(
-			candidates, instancePods(pm), load, servedModelName(pm), r.Locality, placementStates,
+			candidates, instancePods(pm), load, servedModelName(pm), r.Locality, placementStates, footprint,
 		)
 		if selectErr != nil {
-			// No available warm pod right now; remain Pending and retry on requeue.
-			r.Recorder.Event(pm, corev1.EventTypeWarning, "NoMatchingPods", selectErr.Error())
+			// No usable warm pod right now; remain Pending and retry on requeue.
+			// The two reasons are kept apart because they need different
+			// responses: a full pool drains on its own, an unmatched selector
+			// does not.
+			reason := "NoMatchingPods"
+			if errors.Is(selectErr, errInsufficientCapacity) {
+				reason = "InsufficientCapacity"
+			}
+			r.Recorder.Event(pm, corev1.EventTypeWarning, reason, selectErr.Error())
 			meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
 				Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
 				Status:  metav1.ConditionFalse,
-				Reason:  "NoMatchingPods",
+				Reason:  reason,
 				Message: selectErr.Error(),
 			})
 			return nil
@@ -468,9 +477,90 @@ func (r *ModelClaimReconciler) collectPlacementStates(
 			continue
 		}
 		state := placementStateFromSnapshot(snapshot, artifactURL, parallelism)
+		// The floor is resolved per pod rather than once per claim: a selector
+		// may span pools, and each pool declares its own guarantee.
+		state.FloorBytes = r.poolFloorBytes(ctx, pod)
 		states[pod.Name] = state
 	}
 	return states
+}
+
+// poolFloorBytes reads the KV a pod's pool guarantees every model. It parses
+// the annotation directly instead of going through resolvePoolPolicy, which
+// emits Events and mutates policy-validity state that belongs to the KV policy
+// loop, not to placement. Any missing or invalid configuration yields zero, so
+// placement reserves nothing it cannot justify.
+func (r *ModelClaimReconciler) poolFloorBytes(ctx context.Context, pod *corev1.Pod) int64 {
+	deployment, err := r.poolDeploymentForPod(ctx, pod)
+	if err != nil || deployment == nil {
+		return 0
+	}
+	raw := deployment.Annotations[constants.ModelPoolPolicyAnnotationKey]
+	if raw == "" {
+		return 0
+	}
+	policy, err := parsePoolPolicy(raw)
+	if err != nil || policy == nil || policy.Reclaim == nil {
+		return 0
+	}
+	return percentOf(policy.Reclaim.CapacityBytes, policy.Reclaim.GuaranteedFloorPercent)
+}
+
+// placementFootprintBytes sizes the non-KV GPU memory this model needs.
+//
+// A measurement is used only when it was taken against the artifact the claim
+// currently asks for. spec.artifactURL is mutable and changing it does not
+// restart running engines, so a claim repointed at larger weights would
+// otherwise be sized from the previous model and placed somewhere it cannot fit.
+//
+// Otherwise the model has never run anywhere the controller could observe
+// against these weights, and the largest engine already on a candidate pod
+// stands in for it: within one pool that is the best available evidence of what
+// a model here costs. When nothing has been observed at all the result is zero,
+// which admits every pod.
+func placementFootprintBytes(pm *modelv1alpha1.ModelClaim, states map[string]PodPlacementState) int64 {
+	if observed := pm.Status.ObservedFootprint; observed != nil &&
+		observed.Bytes > 0 && observed.ArtifactURL == pm.Spec.ArtifactURL {
+		return observed.Bytes
+	}
+	largest := int64(0)
+	for _, state := range states {
+		if state.MaxFootprintBytes > largest {
+			largest = state.MaxFootprintBytes
+		}
+	}
+	return largest
+}
+
+// recordObservedFootprint stores what a ready engine holds beyond its KV pages:
+// weights, captured CUDA graphs and allocator retention. A later placement of
+// this model is then sized from a measurement rather than from a stand-in.
+//
+// The artifact recorded alongside it is the engine's own, not the one in spec.
+// Changing spec.artifactURL does not restart a running engine, so the engine
+// keeps serving the previous weights and its footprint belongs to those.
+//
+// Only ready engines are recorded. One that is still booting has not captured
+// its CUDA graphs, so it reads low and would understate what the model needs.
+// A runtime that reports no artifact is skipped rather than guessed at: an
+// unattributed measurement is worse than none, because placement cannot tell
+// whether it still applies.
+func recordObservedFootprint(
+	pm *modelv1alpha1.ModelClaim,
+	phase modelv1alpha1.ModelClaimPhase,
+	observed *RuntimeSnapshotModel,
+) {
+	if phase != modelv1alpha1.ModelClaimActive || observed == nil || observed.ArtifactURL == "" {
+		return
+	}
+	footprint := observed.HBMPeakBytes - observed.KVUsedBytes
+	if footprint <= 0 {
+		return
+	}
+	pm.Status.ObservedFootprint = &modelv1alpha1.ModelClaimObservedFootprint{
+		ArtifactURL: observed.ArtifactURL,
+		Bytes:       footprint,
+	}
 }
 
 // reconcileInstanceHealth reconciles routing from fresh runtime snapshot data.
@@ -516,6 +606,8 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(ctx context.Context, pm *
 			desiredPhase = modelv1alpha1.ModelClaimActive
 			routingPort = observedPort
 		}
+
+		recordObservedFootprint(pm, desiredPhase, observed)
 
 		pod := &corev1.Pod{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: pm.Namespace, Name: inst.Pod}, pod); err != nil {
