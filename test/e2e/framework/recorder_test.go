@@ -79,7 +79,8 @@ func TestDecodeMockRequestRecords(t *testing.T) {
 func TestClassifyPDRecordsTreatsEmptyOutcomeAsPending(t *testing.T) {
 	records, err := DecodeMockRequestRecords([]byte(`[
 		{"sequence": 1, "request_id": "request-1", "pod": "prefill-pod", "engine": "vllm", "role": "prefill"},
-		{"sequence": 2, "request_id": "request-1", "pod": "decode-pod", "engine": "vllm", "role": "decode", "outcome": "success", "status_code": 200}
+		{"sequence": 2, "request_id": "request-1", "pod": "decode-pod", "engine": "vllm",
+		 "role": "decode", "outcome": "success", "status_code": 200}
 	]`))
 	require.NoError(t, err)
 
@@ -128,7 +129,14 @@ func TestQueryMockRequestsUsesPodProxy(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := kubernetes.NewForConfig(&rest.Config{Host: server.URL, APIPath: "/api", ContentConfig: rest.ContentConfig{GroupVersion: &schema.GroupVersion{Group: "", Version: "v1"}, NegotiatedSerializer: scheme.Codecs}})
+	client, err := kubernetes.NewForConfig(&rest.Config{
+		Host:    server.URL,
+		APIPath: "/api",
+		ContentConfig: rest.ContentConfig{
+			GroupVersion:         &schema.GroupVersion{Group: "", Version: "v1"},
+			NegotiatedSerializer: scheme.Codecs,
+		},
+	})
 	require.NoError(t, err)
 
 	records, err := QueryMockRequests(context.Background(), client, "test", "mock-pod", "request-1")
@@ -141,17 +149,35 @@ func TestQueryMockRequestsUsesPodProxy(t *testing.T) {
 func TestWaitForSuccessfulPDLegsReturnsOneLegPerPod(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/prefill-pod/") {
-			_, _ = fmt.Fprint(w, `[{"sequence":1,"request_id":"request-1","pod":"prefill-pod","engine":"vllm","role":"prefill","outcome":"success","status_code":200}]`)
+			_, _ = fmt.Fprint(w, `[{"sequence":1,"request_id":"request-1","pod":"prefill-pod",
+				"engine":"vllm","role":"prefill","outcome":"success","status_code":200}]`)
 			return
 		}
-		_, _ = fmt.Fprint(w, `[{"sequence":2,"request_id":"request-1","pod":"decode-pod","engine":"vllm","role":"decode","outcome":"success","status_code":200}]`)
+		_, _ = fmt.Fprint(w, `[{"sequence":2,"request_id":"request-1","pod":"decode-pod",
+			"engine":"vllm","role":"decode","outcome":"success","status_code":200}]`)
 	}))
 	defer server.Close()
 
-	client, err := kubernetes.NewForConfig(&rest.Config{Host: server.URL, APIPath: "/api", ContentConfig: rest.ContentConfig{GroupVersion: &schema.GroupVersion{Group: "", Version: "v1"}, NegotiatedSerializer: scheme.Codecs}})
+	client, err := kubernetes.NewForConfig(&rest.Config{
+		Host:    server.URL,
+		APIPath: "/api",
+		ContentConfig: rest.ContentConfig{
+			GroupVersion:         &schema.GroupVersion{Group: "", Version: "v1"},
+			NegotiatedSerializer: scheme.Codecs,
+		},
+	})
 	require.NoError(t, err)
 
-	prefill, decode := WaitForSuccessfulPDLegs(t, client, "test", "prefill-pod", "decode-pod", "request-1", "vllm-aibrix-shfs", "vllm")
+	prefill, decode := WaitForSuccessfulPDLegs(
+		t,
+		client,
+		"test",
+		"prefill-pod",
+		"decode-pod",
+		"request-1",
+		"vllm-aibrix-shfs",
+		"vllm",
+	)
 
 	require.Equal(t, 1, prefill.Sequence)
 	require.Equal(t, 2, decode.Sequence)
@@ -211,7 +237,12 @@ func TestSelectSuccessfulPDLegsRequiresExactlyOneSuccessfulLegPerRole(t *testing
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, _, err := SelectSuccessfulPDLegs(test.modify(append([]MockRequestRecord(nil), base...)), "request-1", "vllm-aibrix-shfs", "vllm")
+			_, _, err := SelectSuccessfulPDLegs(
+				test.modify(append([]MockRequestRecord(nil), base...)),
+				"request-1",
+				"vllm-aibrix-shfs",
+				"vllm",
+			)
 
 			require.Error(t, err)
 		})

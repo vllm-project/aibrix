@@ -133,7 +133,12 @@ func TestRequireSuccessfulCompletion(t *testing.T) {
 func TestPDContractVLLMSHFS(t *testing.T) {
 	waitForPDDisaggregationRouting(t, modelNameVLLM)
 	requestID := newRequestID("vllm-shfs")
-	body := []byte(`{"model":"llama2-7b-vllm","messages":[{"role":"user","content":"Say this is a test for vLLM SHFS PD contract"}],"max_tokens":8,"stream":false}`)
+	body := []byte(`{
+		"model":"llama2-7b-vllm",
+		"messages":[{"role":"user","content":"Say this is a test for vLLM SHFS PD contract"}],
+		"max_tokens":8,
+		"stream":false
+	}`)
 
 	result, err := sendPDRequest(context.Background(), e2eConfig, "pd", requestID, body)
 	require.NoError(t, err)
@@ -178,7 +183,16 @@ func TestPDContractVLLMSHFS(t *testing.T) {
 func TestPDContractVLLMNIXL(t *testing.T) {
 	waitForPDDisaggregationRouting(t, modelNameVLLMNIXL)
 	requestID := newRequestID("vllm-nixl")
-	body := []byte(`{"model":"llama2-7b-vllm-nixl","messages":[{"role":"user","content":"Say this is a test for vLLM NIXL PD contract","metadata":{"marker":"nixl-nested-marker"}}],"max_tokens":8,"stream":false}`)
+	body := []byte(`{
+		"model":"llama2-7b-vllm-nixl",
+		"messages":[{
+			"role":"user",
+			"content":"Say this is a test for vLLM NIXL PD contract",
+			"metadata":{"marker":"nixl-nested-marker"}
+		}],
+		"max_tokens":8,
+		"stream":false
+	}`)
 
 	result, err := sendPDRequest(context.Background(), e2eConfig, "pd", requestID, body)
 	require.NoError(t, err)
@@ -226,7 +240,21 @@ func TestPDContractVLLMNIXL(t *testing.T) {
 func TestPDContractSGLangRawJSON(t *testing.T) {
 	waitForPDDisaggregationRouting(t, modelNameSGLang)
 	requestID := newRequestID("sglang-raw-json")
-	body := []byte(`{"model":"llama2-7b-sglang","messages":[{"role":"user","content":"Use the lookup tool","metadata":{"nested":{"marker":"sglang-nested-marker","values":[1,{"name":"value"}]}}}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}}],"max_tokens":8,"stream":false}`)
+	body := []byte(`{
+		"model":"llama2-7b-sglang",
+		"messages":[{
+			"role":"user",
+			"content":"Use the lookup tool",
+			"metadata":{"nested":{"marker":"sglang-nested-marker","values":[1,{"name":"value"}]}}
+		}],
+		"tools":[{
+			"type":"function",
+			"function":{"name":"lookup","parameters":{"type":"object",
+				"properties":{"query":{"type":"string"}},"required":["query"]}}
+		}],
+		"max_tokens":8,
+		"stream":false
+	}`)
 
 	result, err := sendPDRequest(context.Background(), e2eConfig, "pd", requestID, body)
 	require.NoError(t, err)
@@ -275,7 +303,12 @@ func TestPDContractSGLangRawJSON(t *testing.T) {
 func TestPDContractTRTLLM(t *testing.T) {
 	waitForPDDisaggregationRouting(t, modelNameTRTLLM)
 	requestID := newRequestID("trtllm-openai")
-	body := []byte(`{"model":"llama2-7b-trtllm","messages":[{"role":"user","content":"Say this is a test for TRT-LLM PD contract"}],"max_tokens":8,"stream":false}`)
+	body := []byte(`{
+		"model":"llama2-7b-trtllm",
+		"messages":[{"role":"user","content":"Say this is a test for TRT-LLM PD contract"}],
+		"max_tokens":8,
+		"stream":false
+	}`)
 
 	result, err := sendPDRequest(context.Background(), e2eConfig, "pd", requestID, body)
 	require.NoError(t, err)
