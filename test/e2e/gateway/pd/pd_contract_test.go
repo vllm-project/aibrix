@@ -177,10 +177,13 @@ func TestPDContractVLLMNIXL(t *testing.T) {
 	require.Equal(t, originalBody["messages"], prefillBody["messages"])
 
 	decodeBody := decodeMockRequestBody(t, decode)
+	var expectedHandoff map[string]any
+	require.NoError(t, json.Unmarshal(prefill.Response, &expectedHandoff), "decode prefill recorder response")
+	require.Equal(t, vllmSHFSOpaqueSentinel, expectedHandoff["opaque"])
 	require.Equal(t, modelNameVLLMNIXL, decodeBody["model"])
 	require.Equal(t, false, decodeBody["stream"])
 	require.Equal(t, float64(8), decodeBody["max_tokens"])
-	require.Equal(t, vllmSHFSOpaqueSentinel, requireNestedMap(t, decodeBody, "disagg_prefill_resp")["opaque"])
+	require.Equal(t, expectedHandoff, requireNestedMap(t, decodeBody, "disagg_prefill_resp"))
 	require.Equal(t, originalBody["messages"], decodeBody["messages"])
 }
 
