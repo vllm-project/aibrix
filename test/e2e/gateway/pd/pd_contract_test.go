@@ -116,7 +116,7 @@ func requireGatewayRequestID(t *testing.T, result PDRequestResult) string {
 
 func TestRequireGatewayRequestIDUsesResponseID(t *testing.T) {
 	result := PDRequestResult{
-		Headers: http.Header{"request-id": []string{"gateway-request-1"}},
+		Headers: http.Header{"Request-Id": []string{"gateway-request-1"}},
 	}
 
 	require.Equal(t, "gateway-request-1", requireGatewayRequestID(t, result))
