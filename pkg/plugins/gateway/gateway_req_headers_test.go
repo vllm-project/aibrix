@@ -551,3 +551,23 @@ func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 		assert.Contains(t, resp.GetImmediateResponse().GetBody(), `"param":"api_key"`)
 	})
 }
+
+func TestHandleRequestHeadersPreservesMockPDFailureHeader(t *testing.T) {
+	server := &Server{}
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestHeaders{
+			RequestHeaders: &extProcPb.HttpHeaders{
+				Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
+					{Key: pathKey, RawValue: []byte(PathCompletions)},
+					{Key: HeaderMockPDFailure, RawValue: []byte("prefill")},
+				}},
+			},
+		},
+	}
+
+	_, _, _, routingCtx, _ := server.HandleRequestHeaders(
+		context.Background(), "request-id", trace.SpanFromContext(context.Background()), req,
+	)
+
+	assert.Equal(t, "prefill", routingCtx.ReqHeaders[HeaderMockPDFailure])
+}

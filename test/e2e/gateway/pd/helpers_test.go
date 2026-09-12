@@ -34,7 +34,11 @@ var (
 	pollPDChatCompletion                  = framework.PollPDChatCompletion
 	newRequestID                          = framework.NewRequestID
 	sendPDRequest                         = framework.SendPDRequest
+	sendPDRequestWithHeaders              = framework.SendPDRequestWithHeaders
 	waitForSuccessfulPDLegs               = framework.WaitForSuccessfulPDLegs
+	waitForPDLegOutcome                   = framework.WaitForPDLegOutcome
+	waitForPDLegOutcomeOnPods             = framework.WaitForPDLegOutcomeOnPods
+	queryMockRequests                     = framework.QueryMockRequests
 )
 
 type MockRequestRecord = framework.MockRequestRecord

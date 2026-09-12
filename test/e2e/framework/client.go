@@ -71,6 +71,18 @@ func SendPDRequest(
 	routingStrategy, requestID string,
 	body []byte,
 ) (PDRequestResult, error) {
+	return SendPDRequestWithHeaders(ctx, config, routingStrategy, requestID, body, nil)
+}
+
+// SendPDRequestWithHeaders sends an already-serialized JSON request with
+// additional request-scoped headers used by mock PD contract tests.
+func SendPDRequestWithHeaders(
+	ctx context.Context,
+	config Config,
+	routingStrategy, requestID string,
+	body []byte,
+	extraHeaders http.Header,
+) (PDRequestResult, error) {
 	result := PDRequestResult{RequestID: requestID}
 	url := strings.TrimRight(config.GatewayURL, "/") + "/v1/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -81,6 +93,11 @@ func SendPDRequest(
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("routing-strategy", routingStrategy)
 	req.Header.Set("x-request-id", requestID)
+	for key, values := range extraHeaders {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
 
 	resp, err := (&http.Client{Timeout: pdRequestTimeout}).Do(req)
 	if err != nil {

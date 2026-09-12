@@ -111,6 +111,42 @@ func TestClassifyPDRecordsReportsRejectedRecordDetails(t *testing.T) {
 	assert.ErrorContains(t, err, "invalid SHFS handoff")
 }
 
+func TestFindPDLegOutcomeReturnsFailedRecord(t *testing.T) {
+	record := MockRequestRecord{
+		RequestID:  "request-1",
+		Pod:        "prefill-pod",
+		Engine:     "vllm",
+		Role:       "prefill",
+		Outcome:    "failed",
+		StatusCode: http.StatusInternalServerError,
+		Error:      "mock failure injected for role prefill",
+	}
+
+	found, ready, err := findPDLegOutcome(
+		[]MockRequestRecord{record}, "request-1", "vllm", "prefill", "failed",
+	)
+
+	require.True(t, ready)
+	require.NoError(t, err)
+	require.Equal(t, record, found)
+}
+
+func TestFindPDLegOutcomeKeepsPendingRecordPending(t *testing.T) {
+	record := MockRequestRecord{
+		RequestID: "request-1",
+		Pod:       "prefill-pod",
+		Engine:    "vllm",
+		Role:      "prefill",
+	}
+
+	_, ready, err := findPDLegOutcome(
+		[]MockRequestRecord{record}, "request-1", "vllm", "prefill", "failed",
+	)
+
+	require.False(t, ready)
+	require.NoError(t, err)
+}
+
 func TestQueryMockRequestsUsesPodProxy(t *testing.T) {
 	handlerErr := make(chan error, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -49,6 +49,44 @@ def query_records(client, request_id):
     return response.get_json()
 
 
+def test_sglang_prefill_failure_is_observed_by_decode(monkeypatch):
+    module = load_mock_module(monkeypatch, contract="sglang-http", role="prefill")
+    client = module.app.test_client()
+    payload = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "hello"}],
+        "bootstrap_host": "10.0.0.1",
+        "bootstrap_port": 8998,
+        "bootstrap_room": 123,
+    }
+    request_id = "sglang-failure"
+
+    prefill_response = post_json(
+        client,
+        "/v1/chat/completions",
+        payload,
+        request_id=request_id,
+        **{"x-aibrix-mock-fail": "prefill"},
+    )
+    assert prefill_response.status_code == 500
+    assert query_records(client, request_id)[0]["outcome"] == "failed"
+
+    monkeypatch.setenv("MOCK_PD_ROLE", "decode")
+    decode_response = post_json(
+        client,
+        "/v1/chat/completions",
+        payload,
+        request_id=request_id,
+        **{"x-aibrix-mock-fail": "prefill"},
+    )
+
+    assert decode_response.status_code == 500
+    assert "prefill handoff failed" in decode_response.get_json()["error"]["message"]
+    records = query_records(client, request_id)
+    assert records[-1]["role"] == "decode"
+    assert records[-1]["outcome"] == "failed"
+
+
 def test_legacy_completion_records_exact_raw_body_and_debug_endpoint_is_public(monkeypatch):
     module = load_mock_module(monkeypatch, api_key="secret")
     client = module.app.test_client()
