@@ -65,8 +65,25 @@ MANAGED_LABELS = {
 }
 PR_MANAGED_LABELS = {TRIAGE_LABEL, "kind/needs-info"}
 
-# Keep this table explicit and conservative. A later matching rule does not
-# override an earlier one, but multiple existing areas may be returned.
+# Area options offered on the Issue Forms' "Area" dropdown and the PR
+# template's "Area" checklist. These are the only values the explicit-area
+# parsers below will accept, and they map 1:1 onto "area/<name>" labels.
+AREA_OPTIONS = (
+    "gateway",
+    "orchestration",
+    "runtime",
+    "kv-cache",
+    "batch",
+    "website",
+    "cicd",
+    "installation",
+    "testing",
+)
+AREA_LABELS = {f"area/{name}" for name in AREA_OPTIONS}
+
+# Fallback only: used when an Issue does not carry an explicit Area selection.
+# Ordered by priority - the first matching rule wins so a single, best-guess
+# area is assigned instead of every rule that happens to match.
 AREA_RULES = (
     ("area/gateway", (r"\bgateway\b", r"envoy", r"routing")),
     ("area/orchestration", (r"\bcontroller(?:s)?\b", r"reconciliation", r"modelclaim", r"modeladapter", r"crd", r"custom resource")),
@@ -126,12 +143,33 @@ def _keyword_kind(title: str, body: str) -> str:
     return "kind/misc"
 
 
+def _explicit_area(body: str) -> str | None:
+    """Read the Issue Form / PR template "Area" field. Returns "area/<name>"
+    or None if the field is missing, left on its default, or unrecognized."""
+    value = _sections(body).get(_clean_heading("Area"), "").strip()
+    # Split on whitespace only - "kv-cache" must stay intact even though a
+    # dropdown option may read "kv-cache — distributed KV cache".
+    token = value.split()[0].lower() if value else ""
+    return f"area/{token}" if token in AREA_OPTIONS else None
+
+
 def classify_issue(title: str, body: str) -> IssueClassification:
     form = _form_name(title, body)
     kind = FORM_KIND[form] if form else _keyword_kind(title, body)
-    haystack = f"{title}\n{body}".lower()
-    areas = [label for label, patterns in AREA_RULES if any(re.search(pattern, haystack) for pattern in patterns)]
+    explicit_area = _explicit_area(body)
+    if explicit_area:
+        areas = [explicit_area]
+    else:
+        # Fallback: keyword match, first matching rule only, to avoid piling
+        # on unrelated area/* labels from broad matches across the body.
+        haystack = f"{title}\n{body}".lower()
+        areas = next(([label] for label, patterns in AREA_RULES if any(re.search(pattern, haystack) for pattern in patterns)), [])
     return IssueClassification(kind, areas, form)
+
+
+def _checked_pr_areas(body: str) -> list[str]:
+    value = _sections(body).get(_clean_heading("Area"), "")
+    return [item for item in re.findall(r"-\s*\[[xX]\]\s*([a-z-]+)", value) if item in AREA_OPTIONS]
 
 
 def _sections(body: str) -> dict[str, str]:
@@ -281,7 +319,8 @@ def handle_issue(event: dict, github: GitHub):
 
 def handle_pull_request(event: dict, github: GitHub):
     pull_request = event["pull_request"]
-    errors = validate_pr(pull_request.get("title", ""), pull_request.get("body") or "")
+    body = pull_request.get("body") or ""
+    errors = validate_pr(pull_request.get("title", ""), body)
     labels = [TRIAGE_LABEL] if errors else []
     lines = [f"## AIBrix bot: PR #{pull_request['number']}"]
     if errors:
@@ -291,9 +330,23 @@ def handle_pull_request(event: dict, github: GitHub):
             print(f"::warning::{error}")
     else:
         lines.append("PR checks: passed")
+    # The Area checklist is the primary source of intent. Changed-file paths
+    # (applied separately by the actions/labeler step, from .github/labeler.yml)
+    # are only a fallback, so we only touch area/* labels here when exactly one
+    # box was checked - otherwise the path-based labels stand as-is.
+    checked = _checked_pr_areas(body)
+    explicit_area = f"area/{checked[0]}" if len(checked) == 1 else None
+    if explicit_area:
+        lines.append(f"Area (explicit): {explicit_area}")
+    elif checked:
+        lines.append("Area: multiple boxes checked, ignoring - falling back to changed-file paths")
+    else:
+        lines.append("Area: none checked, using changed-file paths (path-based labeler)")
     _summary(lines)
     try:
         github.sync_labels(pull_request["number"], labels, PR_MANAGED_LABELS)
+        if explicit_area:
+            github.sync_labels(pull_request["number"], [explicit_area], AREA_LABELS)
     except RuntimeError as error:
         print(f"Unable to update PR labels: {error}", file=sys.stderr)
         print("::warning::Unable to update PR labels")
@@ -321,6 +374,31 @@ def self_test() -> None:
         "Fix gateway",
         "## Pull Request Description\n[Please provide a clear and concise description of your changes here]",
     )
+
+    # Explicit Area field wins over keyword matching, and never yields more
+    # than one label even when the body also mentions other components.
+    result = classify_issue(
+        "Bug in the console",
+        "### Area\n\nruntime — Python runtime, downloader, metadata-service\n\nAlso touches docs and the gateway.",
+    )
+    assert result.areas == ["area/runtime"]
+
+    # No usable Area field: keyword fallback returns only the first matching
+    # rule instead of every area the broad regexes happen to match.
+    result = classify_issue("Bug", "This touches the gateway routing and also our docs and CI workflow.")
+    assert result.areas == ["area/gateway"]
+
+    # An unrecognized or default ("Not sure") Area selection falls back too.
+    assert _explicit_area("### Area\n\nNot sure") is None
+    assert _explicit_area("### Area\n\nkv-cache — distributed KV cache") == "area/kv-cache"
+    assert _explicit_area("no area section at all") is None
+
+    # PR Area checklist: exactly one checked box is used, zero or multiple
+    # checked boxes both fall back to the path-based labeler untouched.
+    assert _checked_pr_areas("### Area\n\n- [x] runtime\n- [ ] gateway\n- [ ] testing") == ["runtime"]
+    assert _checked_pr_areas("### Area\n\n- [x] runtime\n- [x] gateway") == ["runtime", "gateway"]
+    assert _checked_pr_areas("### Area\n\n- [ ] runtime\n- [ ] gateway") == []
+
     print("AIBrix bot self-test passed")
 
 
