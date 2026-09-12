@@ -4,6 +4,20 @@
 ## Related Issues
 Resolves: #[Insert issue number(s)]
 
+## Area
+<!-- Check the single area this PR belongs to, if you know it. Leave everything
+unchecked if you're not sure - the area label will be inferred from the files
+this PR changes instead. -->
+- [ ] gateway
+- [ ] orchestration
+- [ ] runtime
+- [ ] kv-cache
+- [ ] batch
+- [ ] website
+- [ ] cicd
+- [ ] installation
+- [ ] testing
+
 **Important: Before submitting, please complete the description above and review the checklist below.**
 
 ---
