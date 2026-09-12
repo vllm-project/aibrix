@@ -25,13 +25,20 @@ var (
 	apiKey                                = e2eConfig.APIKey
 	gatewayNamespace                      = e2eConfig.GatewayNamespace
 	initializeClient                      = framework.InitializeClient
+	initializeKubernetesClient            = framework.InitializeKubernetesClient
 	createOpenAIClientWithRoutingStrategy = framework.NewOpenAIClientWithRoutingStrategy
 	createOpenAIClientWithConfigProfile   = framework.NewOpenAIClientWithConfigProfile
 	validateAllPodsAreReady               = framework.ValidateAllPodsAreReady
 	waitForPDDisaggregationRouting        = framework.WaitForPDDisaggregationRouting
 	waitForPDCombinedRouting              = framework.WaitForPDCombinedRouting
 	pollPDChatCompletion                  = framework.PollPDChatCompletion
+	newRequestID                          = framework.NewRequestID
+	sendPDRequest                         = framework.SendPDRequest
+	waitForSuccessfulPDLegs               = framework.WaitForSuccessfulPDLegs
 )
+
+type MockRequestRecord = framework.MockRequestRecord
+type PDRequestResult = framework.PDRequestResult
 
 const (
 	modelNameVLLM       = framework.ModelNameVLLM
