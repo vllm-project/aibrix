@@ -23,6 +23,8 @@ const (
 	defaultNamespace        = "default"
 	defaultAPIKey           = "test-key-1234567890"
 	defaultGatewayNamespace = "aibrix-system"
+	e2eClientQPS            = 50
+	e2eClientBurst          = 100
 )
 
 // Config holds the environment-dependent endpoints and namespaces for live-cluster e2e tests.

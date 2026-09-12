@@ -17,7 +17,10 @@ limitations under the License.
 package e2eframework
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -33,6 +36,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/google/uuid"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/stretchr/testify/assert"
@@ -41,6 +45,64 @@ import (
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
+
+const pdRequestTimeout = 30 * time.Second
+
+// PDRequestResult contains the raw HTTP response from a PD gateway request.
+type PDRequestResult struct {
+	StatusCode int
+	Headers    http.Header
+	Body       []byte
+	RequestID  string
+}
+
+// NewRequestID returns a request ID suitable for correlating gateway and backend records.
+func NewRequestID(prefix string) string {
+	if prefix == "" {
+		prefix = "request"
+	}
+	return prefix + "-" + uuid.New().String()
+}
+
+// SendPDRequest sends an already-serialized JSON request through the gateway.
+func SendPDRequest(
+	ctx context.Context,
+	config Config,
+	routingStrategy, requestID string,
+	body []byte,
+) (PDRequestResult, error) {
+	result := PDRequestResult{RequestID: requestID}
+	url := strings.TrimRight(config.GatewayURL, "/") + "/v1/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return result, err
+	}
+	req.Header.Set("Authorization", "Bearer "+config.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("routing-strategy", routingStrategy)
+	req.Header.Set("x-request-id", requestID)
+
+	resp, err := (&http.Client{Timeout: pdRequestTimeout}).Do(req)
+	if err != nil {
+		return result, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	result.StatusCode = resp.StatusCode
+	result.Headers = resp.Header.Clone()
+	result.Body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		return result, err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return result, fmt.Errorf(
+			"PD request failed with status %d: %s",
+			resp.StatusCode,
+			strings.TrimSpace(string(result.Body)),
+		)
+	}
+	return result, nil
+}
 
 const (
 	ModelName           = "llama2-7b"
@@ -59,27 +121,44 @@ const (
 	pdChatRetryInterval           = 1 * time.Second
 )
 
-func InitializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset, *v1alpha1.Clientset) {
-	var err error
-	var config *rest.Config
-
+func buildKubernetesConfig(t *testing.T) *rest.Config {
 	kubeConfig := os.Getenv("KUBECONFIG")
 	if kubeConfig == "" {
-		t.Error("kubeConfig not set")
+		t.Fatal("kubeConfig not set")
 	}
 	t.Logf("using configuration from '%s'\n", kubeConfig)
 
-	config, err = clientcmd.BuildConfigFromFlags("", kubeConfig)
+	config, err := clientcmd.BuildConfigFromFlags("", kubeConfig)
 	if err != nil {
-		t.Errorf("Error during client creation with %v\n", err)
+		t.Fatalf("error building Kubernetes client configuration: %v", err)
 	}
+	// Informers and recorder Pod-proxy queries share this client. Keep recorder
+	// polling from exhausting client-go's default low QPS token bucket.
+	config.QPS = e2eClientQPS
+	config.Burst = e2eClientBurst
+	return config
+}
+
+// InitializeKubernetesClient creates a client for tests that only need direct API calls.
+// Unlike InitializeClient, it does not start shared informers or wait for cache sync.
+func InitializeKubernetesClient(t *testing.T) *kubernetes.Clientset {
+	config := buildKubernetesConfig(t)
 	k8sClientSet, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		t.Errorf("Error during client creation with %v\n", err)
+		t.Fatalf("error creating Kubernetes client: %v", err)
+	}
+	return k8sClientSet
+}
+
+func InitializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset, *v1alpha1.Clientset) {
+	config := buildKubernetesConfig(t)
+	k8sClientSet, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		t.Fatalf("error creating Kubernetes client: %v", err)
 	}
 	crdClientSet, err := v1alpha1.NewForConfig(config)
 	if err != nil {
-		t.Errorf("Error during client creation with %v\n", err)
+		t.Fatalf("error creating CRD client: %v", err)
 	}
 
 	factory := informers.NewSharedInformerFactoryWithOptions(k8sClientSet, 0)
@@ -93,7 +172,7 @@ func InitializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset,
 	crdFactory.Start(ctx.Done())
 
 	if !cache.WaitForCacheSync(ctx.Done(), podInformer.HasSynced, modelInformer.HasSynced) {
-		t.Error("timed out waiting for caches to sync")
+		t.Fatal("timed out waiting for caches to sync")
 	}
 
 	return k8sClientSet, crdClientSet
