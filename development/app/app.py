@@ -20,6 +20,7 @@ from typing import Optional
 
 from mock_recorder import RequestRecorder
 from pd_contracts import add_prompt_token_ids, parse_fault_headers, validate_or_build
+from sglang_handoff import InMemorySGLangHandoffStore, KubernetesSGLangHandoffStore
 
 
 def _load_metrics_overrides():
@@ -576,6 +577,10 @@ app = Flask(__name__)
 disable_endpoint_logs()
 
 request_recorder = RequestRecorder()
+sglang_handoff_store = (
+    InMemorySGLangHandoffStore() if STANDALONE_MODE else None
+)
+_sglang_store_lock = threading.Lock()
 
 
 def _mock_pd_config():
@@ -593,6 +598,44 @@ def _mock_pd_config():
             else "vllm"
         )
     return contract, role, engine
+
+
+def _get_sglang_handoff_store():
+    global sglang_handoff_store
+    if sglang_handoff_store is None:
+        with _sglang_store_lock:
+            if sglang_handoff_store is None:
+                sglang_handoff_store = KubernetesSGLangHandoffStore(
+                    client.CoreV1Api(), NAMESPACE
+                )
+    return sglang_handoff_store
+
+
+def _mark_sglang_prefill_failure(request_id, payload, error):
+    if not request_id or not isinstance(payload, dict):
+        return False
+    room = payload.get("bootstrap_room")
+    if room is None:
+        return False
+    try:
+        _get_sglang_handoff_store().mark_failure(request_id, room, error)
+        return True
+    except Exception:
+        logger.warning("Unable to persist SGLang prefill failure", exc_info=True)
+        return False
+
+
+def _find_sglang_prefill_failure(request_id, payload):
+    if not request_id or not isinstance(payload, dict):
+        return None
+    room = payload.get("bootstrap_room")
+    if room is None:
+        return None
+    try:
+        return _get_sglang_handoff_store().get_failure(request_id, room)
+    except Exception:
+        logger.warning("Unable to read SGLang prefill failure", exc_info=True)
+        return None
 
 
 def _json_response_body(response):
@@ -765,6 +808,12 @@ def _recorded_completion(path):
 
                 if fault.injected_status_code is not None:
                     message = f"mock failure injected for role {role}"
+                    if contract == "sglang-http" and role == "prefill":
+                        _mark_sglang_prefill_failure(
+                            request_id,
+                            payload,
+                            f"prefill handoff failed: {message}",
+                        )
                     return make_response(
                         create_error_response(
                             message,
@@ -772,6 +821,32 @@ def _recorded_completion(path):
                             status_code=fault.injected_status_code,
                         )
                     )
+
+                if contract == "sglang-http" and role == "decode":
+                    prefill_failure = None
+                    if request.headers.get("X-Aibrix-Mock-Fail") == "prefill":
+                        room = payload.get("bootstrap_room") if isinstance(payload, dict) else None
+                        if not request_id or room is None:
+                            prefill_failure = "prefill handoff state unavailable"
+                        else:
+                            deadline = time.monotonic() + 5.0
+                            while time.monotonic() < deadline:
+                                prefill_failure = _find_sglang_prefill_failure(
+                                    request_id, payload
+                                )
+                                if prefill_failure:
+                                    break
+                                time.sleep(0.25)
+                            if not prefill_failure:
+                                prefill_failure = "prefill handoff state unavailable"
+                    if prefill_failure:
+                        return make_response(
+                            create_error_response(
+                                prefill_failure,
+                                error_type="api_error",
+                                status_code=500,
+                            )
+                        )
 
                 contract_result = None
                 if contract:

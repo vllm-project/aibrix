@@ -115,3 +115,26 @@ func TestSendPDRequestReturnsResponseDetailsOnHTTPError(t *testing.T) {
 	require.Equal(t, "request-2", result.RequestID)
 	require.Equal(t, "prefill rejected\n", string(result.Body))
 }
+
+func TestSendPDRequestWithHeadersPreservesFailureInjectionHeaders(t *testing.T) {
+	seen := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Get("x-aibrix-mock-fail")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"prefill handoff failed"}}`))
+	}))
+	defer server.Close()
+
+	result, err := SendPDRequestWithHeaders(
+		context.Background(),
+		Config{GatewayURL: server.URL, APIKey: "test-key"},
+		"pd",
+		"request-3",
+		[]byte(`{"model":"m"}`),
+		http.Header{"x-aibrix-mock-fail": []string{"prefill"}},
+	)
+
+	require.Error(t, err)
+	require.Equal(t, "prefill", <-seen)
+	require.Equal(t, http.StatusInternalServerError, result.StatusCode)
+}

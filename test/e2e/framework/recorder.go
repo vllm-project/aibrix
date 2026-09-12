@@ -157,6 +157,134 @@ func classifyPDRecords(records []MockRequestRecord, requestID, engine, role stri
 	return true, nil
 }
 
+func findPDLegOutcome(
+	records []MockRequestRecord,
+	requestID, engine, role, expectedOutcome string,
+) (MockRequestRecord, bool, error) {
+	var matches []MockRequestRecord
+	for _, record := range records {
+		if record.RequestID != requestID || record.Engine != engine || record.Role != role {
+			continue
+		}
+		if record.Outcome == "" {
+			continue
+		}
+		if record.Outcome != expectedOutcome {
+			return MockRequestRecord{}, false, fmt.Errorf(
+				"mock recorder observed unexpected outcome on pod %q role %q: got %q status code %d: %s",
+				record.Pod,
+				record.Role,
+				record.Outcome,
+				record.StatusCode,
+				record.Error,
+			)
+		}
+		matches = append(matches, record)
+	}
+	if len(matches) == 0 {
+		return MockRequestRecord{}, false, nil
+	}
+	if len(matches) != 1 {
+		return MockRequestRecord{}, false, fmt.Errorf(
+			"expected exactly one %s recorder entry for pod role %q, got %d",
+			expectedOutcome,
+			role,
+			len(matches),
+		)
+	}
+	return matches[0], true, nil
+}
+
+// WaitForPDLegOutcome waits for one recorder entry with the requested outcome.
+func WaitForPDLegOutcome(
+	t *testing.T,
+	client kubernetes.Interface,
+	namespace, podName, requestID, engine, role, expectedOutcome string,
+) MockRequestRecord {
+	t.Helper()
+	var lastRecords []byte
+	var matched MockRequestRecord
+	var ready bool
+	err := wait.PollUntilContextTimeout(
+		context.Background(),
+		time.Second,
+		2*time.Minute,
+		true,
+		func(ctx context.Context) (bool, error) {
+			records, err := QueryMockRequests(ctx, client, namespace, podName, requestID)
+			if err != nil {
+				t.Logf("recorder query for pod %q failed; retrying: %v", podName, err)
+				return false, nil
+			}
+			lastRecords, _ = json.Marshal(records)
+			matched, ready, err = findPDLegOutcome(
+				records, requestID, engine, role, expectedOutcome,
+			)
+			return ready, err
+		},
+	)
+	if err != nil {
+		t.Fatalf(
+			"wait for %s PD leg on pod %q for request ID %q: %v; last recorder JSON: %s",
+			expectedOutcome,
+			podName,
+			requestID,
+			err,
+			lastRecords,
+		)
+	}
+	return matched
+}
+
+// WaitForPDLegOutcomeOnPods waits for an outcome across a set of candidate
+// pods. This is used when a gateway returns an error before exposing routing
+// headers for the selected pods.
+func WaitForPDLegOutcomeOnPods(
+	t *testing.T,
+	client kubernetes.Interface,
+	namespace string,
+	podNames []string,
+	requestID, engine, role, expectedOutcome string,
+) MockRequestRecord {
+	t.Helper()
+	var lastRecords []byte
+	var matched MockRequestRecord
+	var ready bool
+	err := wait.PollUntilContextTimeout(
+		context.Background(),
+		time.Second,
+		2*time.Minute,
+		true,
+		func(ctx context.Context) (bool, error) {
+			for _, podName := range podNames {
+				records, err := QueryMockRequests(ctx, client, namespace, podName, requestID)
+				if err != nil {
+					continue
+				}
+				lastRecords, _ = json.Marshal(records)
+				matched, ready, err = findPDLegOutcome(
+					records, requestID, engine, role, expectedOutcome,
+				)
+				if err != nil || ready {
+					return ready, err
+				}
+			}
+			return false, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf(
+			"wait for %s PD leg role %q for request ID %q: %v; last recorder JSON: %s",
+			expectedOutcome,
+			role,
+			requestID,
+			err,
+			lastRecords,
+		)
+	}
+	return matched
+}
+
 // WaitForSuccessfulPDLegs waits for one successful HTTP-200 recorder entry per PD role.
 func WaitForSuccessfulPDLegs(
 	t *testing.T,

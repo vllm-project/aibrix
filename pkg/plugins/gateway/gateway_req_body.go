@@ -161,11 +161,12 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		if targetPodIP == "" || err != nil {
 			var invalidReqErr *engine.InvalidRequestError
 			if errors.As(err, &invalidReqErr) {
-				return buildErrorResponse(envoyTypePb.StatusCode_BadRequest,
+				return buildRoutingErrorResponse(routingCtx, requestID, envoyTypePb.StatusCode_BadRequest,
 					invalidReqErr.Error(), "", "", HeaderErrorRouting, "true"), model, stream, term
 			}
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingStrategy", routingAlgorithm, "model", model, "routingDuration", routingCtx.GetRoutingDelay())
-			return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, "error on selecting target pod", ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, stream, term
+			return buildRoutingErrorResponse(routingCtx, requestID, envoyTypePb.StatusCode_ServiceUnavailable,
+				"error on selecting target pod", ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, stream, term
 		}
 		headers = buildEnvoyProxyHeaders(headers,
 			HeaderRoutingStrategy, string(routingAlgorithm),
@@ -221,6 +222,25 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 			},
 		},
 	}, model, stream, term
+}
+
+func buildRoutingErrorResponse(
+	routingCtx *types.RoutingContext,
+	requestID string,
+	statusCode envoyTypePb.StatusCode,
+	errBody, errorCode, param string,
+	headers ...string,
+) *extProcPb.ProcessingResponse {
+	response := buildErrorResponse(statusCode, errBody, errorCode, param, headers...)
+	setHeaders := response.GetImmediateResponse().GetHeaders().GetSetHeaders()
+	setHeaders = buildEnvoyProxyHeaders(setHeaders, HeaderRequestID, requestID)
+	if routingCtx != nil {
+		for key, value := range routingCtx.RespHeaders {
+			setHeaders = buildEnvoyProxyHeaders(setHeaders, key, value)
+		}
+	}
+	response.GetImmediateResponse().GetHeaders().SetHeaders = setHeaders
+	return response
 }
 
 // getEngineBasedPathRewrite returns the rewritten path for image/video generation endpoints
