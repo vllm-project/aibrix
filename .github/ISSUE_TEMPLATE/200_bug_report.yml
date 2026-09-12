@@ -1,6 +1,6 @@
 name: 🐛 AIBrix Bug Report
 description: Report a bug to help us improve AIBrix's GenAI inference infrastructure
-labels: ["bug", "triage"]
+labels: ["kind/bug"]
 body:
   - type: markdown
     attributes:
@@ -49,6 +49,24 @@ body:
         - Client library version (if applicable):
     validations:
       required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: |
+        Which part of AIBrix does this affect? Leave as "Not sure" if you don't know - a maintainer will triage it. This is used to apply an `area/*` label instead of guessing from keywords in this report.
+      options:
+        - "Not sure"
+        - "gateway — routing, Envoy"
+        - "orchestration — controllers, CRDs, ModelAdapter/ModelClaim"
+        - "runtime — Python runtime, downloader, metadata-service"
+        - "kv-cache — distributed KV cache"
+        - "batch"
+        - "website — docs, console/UI"
+        - "cicd — GitHub Actions, workflows"
+        - "installation — Helm charts"
+        - "testing — e2e, integration"
+      default: 0
   - type: markdown
     attributes:
       value: |
