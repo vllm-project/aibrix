@@ -1,5 +1,6 @@
 name: 🚀 Feature Request
 description: Propose a new feature for AIBrix's GenAI inference infrastructure
+labels: ["kind/feature"]
 body:
 - type: markdown
   attributes:
@@ -36,6 +37,24 @@ body:
     placeholder: |
       One possible approach could be to [implementation idea]. 
       This would integrate with AIBrix's existing [component] by [method].
+- type: dropdown
+  id: area
+  attributes:
+    label: Area
+    description: |
+      Which part of AIBrix does this affect? Leave as "Not sure" if you don't know - a maintainer will triage it. This is used to apply an `area/*` label instead of guessing from keywords in this report.
+    options:
+      - "Not sure"
+      - "gateway — routing, Envoy"
+      - "orchestration — controllers, CRDs, ModelAdapter/ModelClaim"
+      - "runtime — Python runtime, downloader, metadata-service"
+      - "kv-cache — distributed KV cache"
+      - "batch"
+      - "website — docs, console/UI"
+      - "cicd — GitHub Actions, workflows"
+      - "installation — Helm charts"
+      - "testing — e2e, integration"
+    default: 0
 - type: markdown
   attributes:
     value: |
