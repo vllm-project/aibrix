@@ -140,7 +140,7 @@ Both resources live in the ``orchestration.aibrix.ai/v1alpha1`` API group.
      - Number of Ray clusters to run. Defaults to 1.
    * - ``selector``
      - LabelSelector
-     - Must match the labels in ``template.metadata.labels``. Required.
+     - Must be non-empty and match the labels in ``template.metadata.labels``. Required.
    * - ``template``
      - RayClusterTemplateSpec
      - ``metadata`` and ``spec`` for each Ray cluster. ``spec`` is a KubeRay ``RayClusterSpec``
@@ -161,6 +161,10 @@ Both resources live in the ``orchestration.aibrix.ai/v1alpha1`` API group.
    * - ``progressDeadlineSeconds``
      - int32
      - Seconds after which a stalled rollout is reported as failed in ``status.conditions``.
+
+The selector matches the RayCluster template, not the head or worker Pod templates.
+With webhooks enabled, AIBrix rejects Fleet creation and updates when the selector
+does not match the RayCluster template labels.
 
 **RayClusterFleet status** reports ``replicas``, ``updatedReplicas``, ``readyReplicas``,
 ``availableReplicas``, ``unavailableReplicas``, ``observedGeneration``, ``conditions`` and
