@@ -63,6 +63,7 @@ const (
 	gatewayRespHeaders       = "gateway_rsp_headers"
 	gatewayReqBody           = "gateway_req_body"
 	defaultHTTPRouteCacheTTL = 30 * time.Second
+	defaultHTTPRouteErrorTTL = 2 * time.Second
 	envHTTPRouteCacheTTL     = "AIBRIX_HTTPROUTE_CACHE_TTL"
 )
 
@@ -706,10 +707,10 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 		}
 
 		name := utils.ModelRouterName(model)
-		httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(defaultAIBrixNamespace).Get(context.Background(), name, metav1.GetOptions{})
+		httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(defaultAIBrixNamespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				s.httprouteCache.Store(model, httpRouteCacheEntry{err: err, expiresAt: time.Now().Add(s.httprouteCacheTTL)})
+				s.httprouteCache.Store(model, httpRouteCacheEntry{err: err, expiresAt: time.Now().Add(defaultHTTPRouteErrorTTL)})
 			}
 			return nil, err
 		}
@@ -735,7 +736,11 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 		if len(errMsg) > 0 {
 			result = errors.New(strings.Join(errMsg, ", "))
 		}
-		s.httprouteCache.Store(model, httpRouteCacheEntry{err: result, expiresAt: time.Now().Add(s.httprouteCacheTTL)})
+		ttl := s.httprouteCacheTTL
+		if result != nil {
+			ttl = defaultHTTPRouteErrorTTL
+		}
+		s.httprouteCache.Store(model, httpRouteCacheEntry{err: result, expiresAt: time.Now().Add(ttl)})
 		return result, nil
 	})
 

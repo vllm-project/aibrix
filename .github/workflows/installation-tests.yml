@@ -266,7 +266,7 @@ jobs:
 
       - name: Wait for pods and open port forwards
         run: |
-          sleep 60s
+          sleep 90s
           
           # Verify the mock deployment status.
           # This pod runs two containers: `llm-engine` (app) and `aibrix-runtime` (sidecar).
@@ -275,7 +275,7 @@ jobs:
           #  1) describing the pod to capture conditions/events, and
           #  2) dumping the *previous* crash logs from `aibrix-runtime`.
           kubectl get pods --all-namespaces
-          kubectl wait pod --all --for=condition=ready --all-namespaces --timeout=300s
+          kubectl wait pod --all --for=condition=ready --all-namespaces --timeout=600s
 
           kubectl port-forward svc/llama2-7b 8000:8000 &
           kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc  8888:80 &
@@ -293,6 +293,33 @@ jobs:
           export EXTERNAL_METRICS_E2E_USE_EXISTING_CONTROLLER=true
           export KIND_CLUSTER_NAME=installation-test
           make test-e2e-external-metrics
+
+      - name: Diagnose installation e2e failure
+        if: failure()
+        run: |
+          kind get kubeconfig --name installation-test > /tmp/admin.conf
+          export KUBECONFIG=/tmp/admin.conf
+
+          echo "=== Pods ==="
+          kubectl get pods --all-namespaces -o wide || true
+
+          echo "=== Events ==="
+          kubectl get events --all-namespaces --sort-by='.lastTimestamp' || true
+
+          echo "=== HTTPRoutes ==="
+          kubectl get httproutes.gateway.networking.k8s.io --all-namespaces -o yaml || true
+
+          echo "=== EndpointSlices ==="
+          kubectl get endpointslices --all-namespaces -o wide || true
+
+          echo "=== ModelAdapters ==="
+          kubectl get modeladapters --all-namespaces -o yaml || true
+
+          echo "=== Gateway logs ==="
+          kubectl logs -n aibrix-system -l app=gateway-plugins --all-containers --since=20m || true
+
+          echo "=== Controller logs ==="
+          kubectl logs -n aibrix-system -l control-plane=controller-manager --all-containers --since=20m || true
 
       - name: Clean up
         if: always()
