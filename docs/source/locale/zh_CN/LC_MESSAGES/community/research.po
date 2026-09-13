@@ -1,0 +1,150 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/community/research.rst:5
+msgid "Research Collaboration"
+msgstr "研究合作"
+
+#: ../../source/community/research.rst:7
+msgid ""
+"At AIBrix, we strongly support system-level research and are committed to"
+" fostering collaboration with researchers and academics in the AI "
+"infrastructure domain. Our platform provides a unique opportunity to "
+"bridge the gap between theoretical research and real-world production "
+"challenges. If you're a PhD student or researcher looking to explore "
+"innovative ideas in AI systems, we'd love to support your work."
+msgstr ""
+"AIBrix 大力支持系统级研究，并致力于与 AI 基础设施领域的研究人员和学者开展合作。"
+"我们的平台为弥合理论研究与真实生产挑战之间的差距提供了独特机会。"
+"如果你是博士生或研究人员，希望探索 AI 系统方面的创新想法，我们很乐意支持你的工作。"
+
+#: ../../source/community/research.rst:12
+msgid "Opportunities for Research"
+msgstr "研究机会"
+
+#: ../../source/community/research.rst:14
+msgid ""
+"**Unresolved Production Challenges**: The AI production environment "
+"presents numerous unresolved problems, from efficient resource allocation"
+" to scalable inference architectures. We can provide case studies and "
+"real-world scenarios for researchers interested in exploring and solving "
+"these challenges."
+msgstr ""
+"**尚未解决的生产挑战** ：AI 生产环境存在大量未解决问题，从高效资源分配到可扩展推理架构。我们可以为有意探索并解决这些挑战的研究者提供案例研究与真实场景。"
+
+#: ../../source/community/research.rst:16
+#, python-format
+msgid ""
+"**Research Paper Implementation**: Some research ideas have been "
+"integrated into AIBrix, making it a practical landing ground for cutting-"
+"edge innovations. We regularly publish `Help Wanted <https://github.com"
+"/vllm-"
+"project/aibrix/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22help%20wanted%22>`_"
+" issues on our GitHub, highlighting open research opportunities—feel free"
+" to take a look and contribute!"
+msgstr ""
+"**研究论文落地** ：部分研究想法已集成到 AIBrix 中，使其成为前沿创新的实际落地平台。我们会定期在 GitHub 上发布 `Help "
+"Wanted <https://github.com/vllm-project/aibrix/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22help%20wanted%22>`_ "
+"issue，标出开放的研究机会——欢迎查看并参与贡献！"
+
+#: ../../source/community/research.rst:18
+msgid ""
+"**AIBrix as a Research Testbed**: Our system is designed to serve as a "
+"research testbed for system-level problems in AI infrastructure. Whether "
+"it's testing new scheduling algorithms, optimizing inference latency, or "
+"improving resource efficiency, we provide hands-on support to help set up"
+" experiments and validate hypotheses."
+msgstr ""
+"**将 AIBrix 作为研究试验台** ：我们的系统设计为 AI 基础设施系统级问题的研究试验台。无论是测试新的调度算法、优化推理延迟，还是提升资源效率，我们都会提供实践支持，帮助搭建实验并验证假设。"
+
+#: ../../source/community/research.rst:21
+msgid "Acknowledgments"
+msgstr "致谢"
+
+#: ../../source/community/research.rst:23
+msgid ""
+"Many of our innovative ideas have been inspired by academic research, "
+"including works such as Preble, Melange, QLM, and MoonCake. Integrating "
+"cutting-edge research into a production-grade system has been an "
+"enriching journey, enabling us to transform theoretical concepts into "
+"real-world applications. These contributions have significantly "
+"influenced our work, and we sincerely appreciate the researchers behind "
+"them—thank you!"
+msgstr ""
+"我们的许多创新想法受到学术研究启发，包括 Preble、Melange、QLM 和 MoonCake 等工作。"
+"将前沿研究集成到生产级系统是一段充实的历程，使我们能够把理论概念转化为实际应用。"
+"这些贡献深刻影响了我们的工作，我们衷心感谢背后的研究者——谢谢你们！"
+
+#: ../../source/community/research.rst:25
+msgid ""
+"We also extend our gratitude to the vLLM community for their support in "
+"making AIBrix the control plane for vLLM, further strengthening our "
+"mission to build scalable and efficient AI infrastructure."
+msgstr ""
+"我们也感谢 vLLM 社区的支持，使 AIBrix 成为 vLLM 的控制面，进一步强化我们构建可扩展、高效 AI 基础设施的使命。"
+
+#: ../../source/community/research.rst:28
+msgid "Get Involved"
+msgstr "参与进来"
+
+#: ../../source/community/research.rst:30
+msgid ""
+"At AIBrix, we actively welcome research collaborations across a wide "
+"range of topics, from cloud infrastructure cost optimizations to engine "
+"and system co-design innovations. AIBrix offers a robust experimentation "
+"platform featuring:"
+msgstr ""
+"AIBrix 积极欢迎广泛主题的研究合作，从云基础设施成本优化到引擎与系统协同设计创新。"
+"AIBrix 提供稳健的实验平台，涵盖："
+
+#: ../../source/community/research.rst:32
+msgid "Request Routing Strategies"
+msgstr "请求路由策略"
+
+#: ../../source/community/research.rst:33
+msgid "LLM Specific Autoscaling"
+msgstr "面向 LLM 的自动扩缩容"
+
+#: ../../source/community/research.rst:34
+msgid "Disaggregated KV Cache Pool"
+msgstr "分离式 KV Cache 池"
+
+#: ../../source/community/research.rst:35
+msgid "Serverless & Engine Resource Elasticity"
+msgstr "Serverless 与引擎资源弹性"
+
+#: ../../source/community/research.rst:36
+msgid "Large scale inference system tracing and simulation"
+msgstr "大规模推理系统追踪与仿真"
+
+#: ../../source/community/research.rst:38
+msgid ""
+"Whether you're a researcher, an academic, or an engineer working on GenAI"
+" system optimization strategies, we invite you to collaborate with us and"
+" contribute to the future of scalable AI infrastructure."
+msgstr ""
+"无论你是研究者、学者，还是从事 GenAI 系统优化策略的工程师，我们都邀请你与我们合作，"
+"共同推动可扩展 AI 基础设施的未来。"
+
+#: ../../source/community/research.rst:40
+msgid ""
+"For inquiries or collaboration opportunities, feel free to reach out to "
+"us by cutting Github issues or through the Slack Channel."
+msgstr "如有咨询或合作意向，欢迎通过提交 GitHub issue 或 Slack 频道联系我们。"

@@ -1,0 +1,1157 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/features/lora-dynamic-loading.rst:5
+msgid "Lora Dynamic Loading"
+msgstr "LoRA 动态加载"
+
+#: ../../source/features/lora-dynamic-loading.rst:7
+msgid ""
+"The LoRA Model Adapter support is crucial for improving model density and"
+" reducing inference costs in large language models (LLMs). By enabling "
+"dynamic loading and unloading of LoRA adapters, it allows multiple models"
+" to be deployed more efficiently on a shared infrastructure."
+msgstr ""
+"LoRA Model Adapter 支持对提高大语言模型（LLM）的模型密度并降低推理成本至关重要。通过动态加载和卸载 LoRA adapter，可在共享基础设施上更高效地部署多个模型。"
+
+#: ../../source/features/lora-dynamic-loading.rst:10
+msgid ""
+"This reduces resource consumption by reusing base models across different"
+" tasks while swapping in lightweight LoRA adapters for specific model "
+"tuning. The approach optimizes GPU memory usage, decreases cold start "
+"times, and enhances scalability, making it ideal for high-density "
+"deployment and cost-effective inference in production environments."
+msgstr ""
+"通过在不同任务间复用基座模型，并换入轻量 LoRA adapter 做特定调优，可降低资源消耗。该方式优化 GPU 内存使用、缩短冷启动时间并提升可扩展性，适合生产环境中的高密度部署和低成本推理。"
+
+#: ../../source/features/lora-dynamic-loading.rst:14
+msgid "High Level Design"
+msgstr "高层设计"
+
+#: ../../source/features/lora-dynamic-loading.rst:17
+msgid "Model Adapter Controller"
+msgstr "Model Adapter Controller"
+
+#: ../../source/features/lora-dynamic-loading.rst:19
+msgid ""
+"We develop a ModelAdapter `controller "
+"<https://kubernetes.io/docs/concepts/architecture/controller/>`_ to "
+"manage the lora model adapter lifecycle. User can submit a lora `Custom "
+"Resource <https://kubernetes.io/docs/concepts/extend-kubernetes/api-"
+"extension/custom-resources/>`_ and controller will register to the "
+"matching pods, configure the service discovery and expose the adapter "
+"status."
+msgstr ""
+"我们开发了 ModelAdapter `controller <https://kubernetes.io/docs/concepts/architecture/controller/>`_ 来管理 LoRA model adapter 的生命周期。用户提交 LoRA `Custom Resource <https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/>`_ 后，controller 会注册到匹配的 Pod、配置服务发现并暴露 adapter 状态。"
+
+#: ../../source/features/lora-dynamic-loading.rst:22
+msgid "lora-controller-workflow"
+msgstr "lora-controller-workflow"
+
+#: ../../source/features/lora-dynamic-loading.rst:28
+msgid "ModelAdapter Lifecycle and Phase Transitions"
+msgstr "ModelAdapter 生命周期与阶段转换"
+
+#: ../../source/features/lora-dynamic-loading.rst:30
+msgid ""
+"The ModelAdapter goes through several distinct phases during its "
+"lifecycle. Understanding these phases helps users monitor and "
+"troubleshoot their LoRA deployments:"
+msgstr "ModelAdapter 生命周期中会经历若干阶段。了解这些阶段有助于监控和排查 LoRA 部署："
+
+#: ../../source/features/lora-dynamic-loading.rst:32
+msgid "**Phase Transition Flow:**"
+msgstr "**阶段转换流程：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:43
+msgid "**Phase Details:**"
+msgstr "**阶段说明：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:45
+msgid ""
+"**Pending**: The controller has started reconciliation but no adapter "
+"instance is loaded yet. The ``Ready`` condition says why: reason "
+"``NoReadyPods`` means no ready pod matches the ``podSelector`` (with "
+"``replicas: 1`` it also covers pods that became ready too recently to be "
+"scheduled); reason ``ModelAdapterUnavailable`` means candidate pods exist"
+" but the adapter is not loaded on any of them yet."
+msgstr ""
+"**Pending** ：controller 已开始调和，但尚未加载任何 adapter 实例。``Ready`` condition 说明原因：``NoReadyPods`` "
+"表示没有匹配 ``podSelector`` 的就绪 Pod（在 ``replicas: 1`` 时也包括刚就绪、尚不能调度的 Pod）；``ModelAdapterUnavailable`` "
+"表示已有候选 Pod，但 adapter 尚未加载到其中任何一个。"
+
+#: ../../source/features/lora-dynamic-loading.rst:47
+msgid ""
+"**Scheduled**: Only with ``replicas: 1``. The controller has selected a "
+"pod that matches the ``podSelector`` and is loading the adapter on it. "
+"Pods are validated for readiness and stability before selection. Loading "
+"includes:"
+msgstr ""
+"**Scheduled** ：仅在 ``replicas: 1`` 时出现。controller 已选出匹配 ``podSelector`` 的 "
+"Pod，并正在其上加载 adapter。选择前会校验 Pod 就绪与稳定。加载包括："
+
+#: ../../source/features/lora-dynamic-loading.rst:49
+msgid "Downloading the adapter from the specified ``artifactURL``"
+msgstr "从指定的 ``artifactURL`` 下载 adapter"
+
+#: ../../source/features/lora-dynamic-loading.rst:50
+msgid "Registering the adapter with the vLLM engine"
+msgstr "向 vLLM 引擎注册 adapter"
+
+#: ../../source/features/lora-dynamic-loading.rst:51
+msgid "Retrying with exponential backoff if loading fails"
+msgstr "加载失败时以指数退避重试"
+
+#: ../../source/features/lora-dynamic-loading.rst:53
+msgid ""
+"Without ``replicas`` (load on all matching pods) the adapter moves from "
+"``Pending`` straight to ``Running``."
+msgstr "未设置 ``replicas`` （在所有匹配 Pod 上加载）时，adapter 从 ``Pending`` 直接进入 ``Running`` 。"
+
+#: ../../source/features/lora-dynamic-loading.rst:55
+msgid ""
+"**Running**: The adapter is loaded on at least one pod and the Kubernetes"
+" Service and EndpointSlice for service discovery exist. The LoRA model is"
+" accessible through the gateway using the adapter name. ``readyReplicas``"
+" out of ``desiredReplicas`` in the status shows how many candidate pods "
+"have the adapter loaded."
+msgstr ""
+"**Running** ：adapter 已加载到至少一个 Pod，且用于服务发现的 Kubernetes Service 和 EndpointSlice "
+"已存在。可通过网关使用 adapter 名称访问该 LoRA 模型。status 中的 ``readyReplicas`` / ``desiredReplicas`` "
+"表示有多少候选 Pod 已加载该 adapter。"
+
+#: ../../source/features/lora-dynamic-loading.rst:57
+msgid ""
+"**Failed**: Loading failed on every candidate pod. The ``Ready`` "
+"condition carries reason ``ModelAdapterLoadingError`` and the per-pod "
+"errors in its message. The controller keeps retrying and the adapter "
+"returns to ``Running`` as soon as one load succeeds."
+msgstr ""
+"**Failed** ：在每个候选 Pod 上加载都失败。``Ready`` condition 的 reason 为 ``ModelAdapterLoadingError`` "
+"，message 中含各 Pod 错误。controller 持续重试，一旦有一次加载成功，adapter 即回到 ``Running`` 。"
+
+#: ../../source/features/lora-dynamic-loading.rst:59
+msgid ""
+"``ResourceCreated`` is not a step of the normal flow. It shows up as the "
+"phase only when creating the Service or EndpointSlice fails; the "
+"condition of the same name carries the error details, and the controller "
+"keeps retrying. ``Bound`` is a condition, not a phase: it is ``True`` "
+"(together with the ``Scheduled`` condition) while the adapter is loaded, "
+"and turns ``False`` with reason ``ModelAdapterLoadingError`` when a "
+"loading pass fails, while the phase stays ``Pending`` or ``Failed``."
+msgstr ""
+"``ResourceCreated`` 不是正常流程中的一步。仅在创建 Service 或 EndpointSlice 失败时才会作为 phase "
+"出现；同名 condition 携带错误详情，controller 会持续重试。``Bound`` 是 condition 而非 phase：adapter "
+"已加载时为 ``True`` （同时伴随 ``Scheduled`` condition）；某次加载失败时变为 ``False`` ，reason "
+"为 ``ModelAdapterLoadingError`` ，而 phase 仍为 ``Pending`` 或 ``Failed`` 。"
+
+#: ../../source/features/lora-dynamic-loading.rst:61
+msgid "**Error Handling and Reliability Features:**"
+msgstr "**错误处理与可靠性特性：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:63
+msgid ""
+"**Retry Mechanism**: Up to 5 retry attempts per pod with exponential "
+"backoff (starting at 5 seconds)"
+msgstr "**重试机制** ：每个 Pod 最多重试 5 次，指数退避（起始 5 秒）"
+
+#: ../../source/features/lora-dynamic-loading.rst:64
+msgid ""
+"**Pod Switching**: Automatic selection of alternative pods if loading "
+"fails on initial pods"
+msgstr "**Pod 切换** ：初始 Pod 加载失败时自动选择其他 Pod"
+
+#: ../../source/features/lora-dynamic-loading.rst:65
+msgid ""
+"**Pod Health Validation**: Ensures pods are ready and stable before "
+"scheduling adapters"
+msgstr "**Pod 健康校验** ：调度 adapter 前确保 Pod 就绪且稳定"
+
+#: ../../source/features/lora-dynamic-loading.rst:66
+msgid ""
+"**Connection Error Handling**: Graceful handling of common startup errors"
+" like \"connection refused\""
+msgstr "**连接错误处理** ：优雅处理常见启动错误，例如 \"connection refused\""
+
+#: ../../source/features/lora-dynamic-loading.rst:68
+msgid "**Monitoring Phase Transitions:**"
+msgstr "**监控阶段转换：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:70
+msgid ""
+"``kubectl get modeladapter`` shows the phase, the replica counters and "
+"the reason of the ``Ready`` condition at a glance. While the base model "
+"pod is still starting:"
+msgstr ""
+"``kubectl get modeladapter`` 可一眼看到 phase、副本计数以及 ``Ready`` condition 的 reason。基座模型 Pod 仍在启动时："
+
+#: ../../source/features/lora-dynamic-loading.rst:78
+msgid "Once the adapter is loaded:"
+msgstr "adapter 加载完成后："
+
+#: ../../source/features/lora-dynamic-loading.rst:86
+msgid ""
+"Blank counter cells mean zero. ``-o wide`` adds the base model, the pods "
+"hosting the adapter and the full ``Ready`` condition message:"
+msgstr "空白计数单元格表示 0。``-o wide`` 会额外显示基座模型、承载 adapter 的 Pod 以及完整的 ``Ready`` condition message："
+
+#: ../../source/features/lora-dynamic-loading.rst:94
+msgid ""
+"For the full condition history with timestamps and reasons for each state"
+" change, use:"
+msgstr "要查看带时间戳和每次状态变更 reason 的完整 condition 历史，使用："
+
+#: ../../source/features/lora-dynamic-loading.rst:101
+msgid "Model Adapter Service Discovery"
+msgstr "Model Adapter 服务发现"
+
+#: ../../source/features/lora-dynamic-loading.rst:103
+msgid ""
+"We aim to reuse the `Kubernetes Service "
+"<https://kubernetes.io/docs/concepts/services-networking/service/>`_ as "
+"the abstraction layer for each lora model. Traditionally, a single pod "
+"belongs to one service. However, for LoRA scenarios, we have multiple "
+"lora adapters in one pod which breaks kubernete native design. To support"
+" lora cases in kubernetes native way, we customize the lora endpoints and"
+" allow a single pod with different LoRAs belong to multiple services."
+msgstr ""
+"我们复用 `Kubernetes Service <https://kubernetes.io/docs/concepts/services-networking/service/>`_ 作为每个 LoRA 模型的抽象层。传统上一个 Pod 属于一个 Service。但 LoRA 场景下一个 Pod 会有多个 LoRA adapter，这打破了 Kubernetes 原生设计。为以 Kubernetes 原生方式支持 LoRA，我们定制了 LoRA endpoints，允许带有不同 LoRA 的单个 Pod 属于多个 Service。"
+
+#: ../../source/features/lora-dynamic-loading.rst:108
+msgid "vLLM Engine Changes"
+msgstr "vLLM 引擎改动"
+
+#: ../../source/features/lora-dynamic-loading.rst:110
+msgid ""
+"High density Lora support can not be done solely in the control plane "
+"side, we also write an RFC about improving the **Visibility of LoRA "
+"metadata**, **Dynamic Loading and Unloading**, **Remote Registry "
+"Support**, **Observability** to enhance LoRA management for production "
+"grade serving. Please check `[RFC]: Enhancing LoRA Management for "
+"Production Environments in vLLM <https://github.com/vllm-"
+"project/vllm/issues/6275>`_ for more details. Majority of the changes are"
+" done in vLLM, we just need to use the latest vLLM image and that would "
+"be ready for production."
+msgstr ""
+"高密度 LoRA 支持无法仅在控制面完成。我们还写了 RFC，改进 **LoRA 元数据可见性** 、**动态加载与卸载** 、**远程仓库支持** "
+"、**可观测性** ，以增强生产级 LoRA 管理。详见 `[RFC]: Enhancing LoRA Management for Production "
+"Environments in vLLM <https://github.com/vllm-project/vllm/issues/6275>`_ "
+"。大部分改动已在 vLLM 中完成，使用最新 vLLM 镜像即可用于生产。"
+
+#: ../../source/features/lora-dynamic-loading.rst:117
+msgid "Examples"
+msgstr "示例"
+
+#: ../../source/features/lora-dynamic-loading.rst:119
+msgid "Here's one example of how to create a lora adapter."
+msgstr "以下是创建 LoRA adapter 的示例。"
+
+#: ../../source/features/lora-dynamic-loading.rst:122
+msgid "Prerequisites"
+msgstr "前置条件"
+
+#: ../../source/features/lora-dynamic-loading.rst:124
+msgid "You have a base model deployed in the same namespace."
+msgstr "同一命名空间中已部署基座模型。"
+
+#: ../../source/features/lora-dynamic-loading.rst:125
+msgid ""
+"vLLM engine needs to enable `VLLM_ALLOW_RUNTIME_LORA_UPDATING "
+"<https://docs.vllm.ai/en/stable/features/lora.html#dynamically-serving-"
+"lora-adapters>`_ feature flag."
+msgstr ""
+"vLLM 引擎需启用 `VLLM_ALLOW_RUNTIME_LORA_UPDATING <https://docs.vllm.ai/en/stable/features/lora.html#dynamically-serving-lora-adapters>`_ 特性开关。"
+
+#: ../../source/features/lora-dynamic-loading.rst:126
+msgid "You have a lora model hosted on Huggingface or S3 compatible storage."
+msgstr "LoRA 模型托管在 Hugging Face 或 S3 兼容存储上。"
+
+#: ../../source/features/lora-dynamic-loading.rst:127
+msgid ""
+"(Optional) You have a Huggingface token to enable faster model downloads "
+"from Hugging Face."
+msgstr "（可选）有 Hugging Face token，以便更快从 Hugging Face 下载模型。"
+
+#: ../../source/features/lora-dynamic-loading.rst:135
+msgid "Create base model"
+msgstr "创建基座模型"
+
+#: ../../source/features/lora-dynamic-loading.rst:157
+msgid "Create lora model adapter"
+msgstr "创建 LoRA model adapter"
+
+#: ../../source/features/lora-dynamic-loading.rst:162
+msgid ""
+"If you run ```kubectl describe modeladapter qwen-code-lora``, you will "
+"see the status of the lora adapter progressing through different phases:"
+msgstr ""
+"If you run ```kubectl describe modeladapter qwen-code-lora``, you will "
+"see the status of the lora adapter progressing through different phases:"
+
+#: ../../source/features/lora-dynamic-loading.rst:164
+msgid "**Phase 1: Pending**"
+msgstr "**阶段 1：Pending**"
+
+#: ../../source/features/lora-dynamic-loading.rst:178
+msgid "**Phase 2: Scheduled** (only with ``replicas: 1``)"
+msgstr "**阶段 2：Scheduled** （仅在 ``replicas: 1`` 时）"
+
+#: ../../source/features/lora-dynamic-loading.rst:197
+msgid "**Phase 3: Running**"
+msgstr "**阶段 3：Running**"
+
+#: ../../source/features/lora-dynamic-loading.rst:226
+msgid "Send request using lora model name to the gateway."
+msgstr "使用 LoRA 模型名向网关发送请求。"
+
+#: ../../source/features/lora-dynamic-loading.rst:241
+msgid "Here's the resources created associated with the lora custom resource."
+msgstr "以下是与 LoRA 自定义资源关联创建的资源。"
+
+#: ../../source/features/lora-dynamic-loading.rst:243
+msgid "lora-service-discovery-resources"
+msgstr "lora-service-discovery-resources"
+
+#: ../../source/features/lora-dynamic-loading.rst:249
+msgid ""
+"A new Kubernetes service will be created with the exact same name as "
+"ModelAdapter name."
+msgstr "会创建一个名称与 ModelAdapter 名称完全相同的 Kubernetes Service。"
+
+#: ../../source/features/lora-dynamic-loading.rst:251
+msgid ""
+"2. The ``podSelector`` is used to filter the matching pods. In this case,"
+" it will match pods with label ``model.aibrix.ai/name=qwen-coder-1-5b-"
+"instruct``. Make sure your base model have this label. This ensures that "
+"the LoRA adapter is correctly associated with the right pods."
+msgstr ""
+"2. ``podSelector`` 用于过滤匹配的 Pod。本例中会匹配标签 ``model.aibrix.ai/name=qwen-coder-1-5b-instruct`` 的 Pod。请确保基座模型带有该标签，以便 LoRA adapter 正确关联到对应 Pod。"
+
+#: ../../source/features/lora-dynamic-loading.rst:256
+msgid ""
+"Note: this is only working with vLLM engine. If you use other engine, "
+"feel free to open an issue."
+msgstr "注意：目前仅适用于 vLLM 引擎。若使用其他引擎，可开 issue。"
+
+#: ../../source/features/lora-dynamic-loading.rst:260
+msgid "Troubleshooting Phase Transitions"
+msgstr "阶段转换故障排查"
+
+#: ../../source/features/lora-dynamic-loading.rst:262
+msgid ""
+"If your ModelAdapter gets stuck in a particular phase, here are common "
+"issues and solutions:"
+msgstr "若 ModelAdapter 卡在某一阶段，常见问题与解决办法如下："
+
+#: ../../source/features/lora-dynamic-loading.rst:264
+msgid "**Stuck in Pending Phase:**"
+msgstr "**卡在 Pending 阶段：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:266
+msgid "Check if pods matching ``podSelector`` exist and are running"
+msgstr "检查匹配 ``podSelector`` 的 Pod 是否存在且正在运行"
+
+#: ../../source/features/lora-dynamic-loading.rst:267
+msgid ""
+"Verify that pods have the correct labels (``model.aibrix.ai/name`` and "
+"``adapter.model.aibrix.ai/enabled=true``)"
+msgstr ""
+"确认 Pod 带有正确标签（``model.aibrix.ai/name`` 和 ``adapter.model.aibrix.ai/enabled=true`` "
+"）"
+
+#: ../../source/features/lora-dynamic-loading.rst:268
+msgid "Ensure pods are in Ready state"
+msgstr "确保 Pod 处于 Ready 状态"
+
+#: ../../source/features/lora-dynamic-loading.rst:270
+msgid "**Stuck in Scheduled Phase:**"
+msgstr "**卡在 Scheduled 阶段：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:272
+msgid "This was a known issue in earlier versions that has been fixed"
+msgstr "这是早期版本中的已知问题，现已修复"
+
+#: ../../source/features/lora-dynamic-loading.rst:273
+msgid ""
+"Check controller logs for any loading errors: ``kubectl logs -n aibrix-"
+"system deployment/aibrix-controller-manager``"
+msgstr "检查 controller 日志中的加载错误：``kubectl logs -n aibrix-system deployment/aibrix-controller-manager``"
+
+#: ../../source/features/lora-dynamic-loading.rst:274
+msgid "Verify vLLM pods have ``VLLM_ALLOW_RUNTIME_LORA_UPDATING`` enabled"
+msgstr "确认 vLLM Pod 已启用 ``VLLM_ALLOW_RUNTIME_LORA_UPDATING``"
+
+#: ../../source/features/lora-dynamic-loading.rst:276
+msgid "**Stuck in Failed Phase (loading errors):**"
+msgstr "**卡在 Failed 阶段（加载错误）：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:278
+msgid "Check if the ``artifactURL`` is accessible and valid"
+msgstr "检查 ``artifactURL`` 是否可访问且有效"
+
+#: ../../source/features/lora-dynamic-loading.rst:279
+msgid "For Hugging Face models, ensure the model path exists"
+msgstr "对于 Hugging Face 模型，确认模型路径存在"
+
+#: ../../source/features/lora-dynamic-loading.rst:280
+msgid "Check authentication if using private repositories"
+msgstr "使用私有仓库时检查认证"
+
+#: ../../source/features/lora-dynamic-loading.rst:281
+msgid "Review controller logs for specific loading errors"
+msgstr "查看 controller 日志中的具体加载错误"
+
+#: ../../source/features/lora-dynamic-loading.rst:282
+msgid ""
+"The controller will retry up to 5 times with exponential backoff before "
+"switching to alternative pods"
+msgstr "controller 会以指数退避最多重试 5 次，然后切换到其他 Pod"
+
+#: ../../source/features/lora-dynamic-loading.rst:284
+msgid "**Failed to Reach Running Phase:**"
+msgstr "**未能进入 Running 阶段：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:286
+msgid ""
+"Check if Kubernetes Service creation succeeded: ``kubectl get svc "
+"<adapter-name>``"
+msgstr "检查 Kubernetes Service 是否创建成功：``kubectl get svc <adapter-name>``"
+
+#: ../../source/features/lora-dynamic-loading.rst:287
+msgid "Verify EndpointSlice creation: ``kubectl get endpointslices``"
+msgstr "确认 EndpointSlice 已创建：``kubectl get endpointslices``"
+
+#: ../../source/features/lora-dynamic-loading.rst:288
+msgid "Check pod readiness and health status"
+msgstr "检查 Pod 就绪与健康状态"
+
+#: ../../source/features/lora-dynamic-loading.rst:290
+msgid "**Useful Commands for Debugging:**"
+msgstr "**有用的调试命令：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:307
+msgid "Reliability Features"
+msgstr "可靠性特性"
+
+#: ../../source/features/lora-dynamic-loading.rst:309
+msgid ""
+"AIBrix ModelAdapter includes several advanced reliability features to "
+"ensure robust LoRA adapter deployments in production environments:"
+msgstr "AIBrix ModelAdapter 包含若干高级可靠性特性，以确保生产环境中 LoRA adapter 部署稳健："
+
+#: ../../source/features/lora-dynamic-loading.rst:312
+msgid "Automatic Retry Mechanism"
+msgstr "自动重试机制"
+
+#: ../../source/features/lora-dynamic-loading.rst:314
+msgid "The controller implements an intelligent retry system for adapter loading:"
+msgstr "controller 为 adapter 加载实现了智能重试："
+
+#: ../../source/features/lora-dynamic-loading.rst:316
+msgid "**Up to 5 retry attempts** per pod with exponential backoff"
+msgstr "每个 Pod **最多重试 5 次** ，指数退避"
+
+#: ../../source/features/lora-dynamic-loading.rst:317
+msgid ""
+"**Base interval of 5 seconds**, doubling on each retry (5s, 10s, 20s, "
+"40s, 80s)"
+msgstr "**基础间隔 5 秒** ，每次重试加倍（5s、10s、20s、40s、80s）"
+
+#: ../../source/features/lora-dynamic-loading.rst:318
+msgid "**Intelligent error detection** for retriable vs. non-retriable errors"
+msgstr "**智能错误检测** ，区分可重试与不可重试错误"
+
+#: ../../source/features/lora-dynamic-loading.rst:319
+msgid "**Graceful handling** of common startup errors like \"connection refused\""
+msgstr "**优雅处理** 常见启动错误，例如 \"connection refused\""
+
+#: ../../source/features/lora-dynamic-loading.rst:329
+msgid "Pod Switching and Failover"
+msgstr "Pod 切换与故障转移"
+
+#: ../../source/features/lora-dynamic-loading.rst:331
+msgid "When adapter loading fails on initial pods after maximum retries:"
+msgstr "在初始 Pod 上达到最大重试次数后加载仍失败时："
+
+#: ../../source/features/lora-dynamic-loading.rst:333
+msgid "**Automatic pod selection** of alternative healthy pods"
+msgstr "**自动选择** 其他健康 Pod"
+
+#: ../../source/features/lora-dynamic-loading.rst:334
+msgid "**Maintains desired replica count** by switching to available pods"
+msgstr "通过切换到可用 Pod **维持期望副本数**"
+
+#: ../../source/features/lora-dynamic-loading.rst:335
+msgid ""
+"**Preserves scheduler preferences** (least-adapters, default) for new "
+"selections"
+msgstr "新选择时**保留调度偏好** （least-adapters、default）"
+
+#: ../../source/features/lora-dynamic-loading.rst:336
+msgid "**Ensures eventual consistency** - adapters will load on healthy pods"
+msgstr "**保证最终一致性** — adapter 会加载到健康 Pod 上"
+
+#: ../../source/features/lora-dynamic-loading.rst:339
+msgid "Pod Health Validation"
+msgstr "Pod 健康校验"
+
+#: ../../source/features/lora-dynamic-loading.rst:341
+msgid "The controller implements comprehensive pod health checks:"
+msgstr "controller 实现了全面的 Pod 健康检查："
+
+#: ../../source/features/lora-dynamic-loading.rst:343
+msgid "**Readiness validation**: Pods must be in Ready state before selection"
+msgstr "**就绪校验** ：选择前 Pod 必须处于 Ready 状态"
+
+#: ../../source/features/lora-dynamic-loading.rst:344
+msgid ""
+"**Stability requirements**: Pods must be stable (ready for 5+ seconds) to"
+" avoid flapping"
+msgstr "**稳定性要求** ：Pod 必须稳定（就绪 5 秒以上）以避免抖动"
+
+#: ../../source/features/lora-dynamic-loading.rst:345
+msgid ""
+"**Continuous monitoring**: Unhealthy pods are automatically removed from "
+"instances list"
+msgstr "**持续监控** ：不健康的 Pod 会自动从实例列表中移除"
+
+#: ../../source/features/lora-dynamic-loading.rst:346
+msgid "**Startup tolerance**: Handles pod startup delays gracefully"
+msgstr "**启动容忍** ：优雅处理 Pod 启动延迟"
+
+#: ../../source/features/lora-dynamic-loading.rst:349
+msgid "Connection Error Handling"
+msgstr "连接错误处理"
+
+#: ../../source/features/lora-dynamic-loading.rst:351
+msgid "Robust error handling for various network and startup conditions:"
+msgstr "针对多种网络与启动情况的稳健错误处理："
+
+#: ../../source/features/lora-dynamic-loading.rst:371
+msgid "Advanced Configuration Examples"
+msgstr "高级配置示例"
+
+#: ../../source/features/lora-dynamic-loading.rst:373
+msgid "**High-Availability Setup with Multi-Replica:**"
+msgstr "**多副本高可用配置：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:375
+msgid ""
+"Here’s a production-ready configuration demonstrating load balancing "
+"across multiple pods:"
+msgstr "以下是可在生产使用的配置，演示跨多个 Pod 的负载均衡："
+
+#: ../../source/features/lora-dynamic-loading.rst:381
+msgid "**Testing Commands:**"
+msgstr "**测试命令：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:402
+msgid "Monitoring and Observability"
+msgstr "监控与可观测性"
+
+#: ../../source/features/lora-dynamic-loading.rst:404
+msgid "**Phase Monitoring:**"
+msgstr "**阶段监控：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:406
+msgid ""
+"The reliability features are transparent through the standard "
+"ModelAdapter status:"
+msgstr "可靠性特性可通过标准 ModelAdapter status 透明观察："
+
+#: ../../source/features/lora-dynamic-loading.rst:416
+msgid "**Controller Logs:**"
+msgstr "**Controller 日志：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:418
+msgid "Monitor retry behavior and pod switching in controller logs:"
+msgstr "在 controller 日志中监控重试行为与 Pod 切换："
+
+#: ../../source/features/lora-dynamic-loading.rst:430
+msgid "**Events and Conditions:**"
+msgstr "**Events 与 Conditions：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:432
+msgid "Reliability events are recorded in the ModelAdapter status conditions:"
+msgstr "可靠性事件记录在 ModelAdapter status conditions 中："
+
+#: ../../source/features/lora-dynamic-loading.rst:448
+msgid "Best Practices for Production"
+msgstr "生产最佳实践"
+
+#: ../../source/features/lora-dynamic-loading.rst:450
+msgid "**Deploy Multiple Base Model Replicas:**"
+msgstr "**部署多个基座模型副本：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:458
+msgid "**Use Multiple Adapter Replicas:**"
+msgstr "**使用多个 adapter 副本：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:467
+msgid "**Configure Appropriate Health Checks:**"
+msgstr "**配置合适的健康检查：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:480
+msgid "**Monitor Adapter Health:**"
+msgstr "**监控 adapter 健康：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:492
+msgid "More configurations"
+msgstr "更多配置"
+
+#: ../../source/features/lora-dynamic-loading.rst:495
+msgid "Multi-LoRA Inference"
+msgstr "多 LoRA 推理"
+
+#: ../../source/features/lora-dynamic-loading.rst:497
+msgid ""
+"vLLM can serve requests for different LoRA adapters in a single batch. "
+"SGLang supports `a similar feature "
+"<https://lmsysorg.mintlify.app/docs/advanced_features/lora>`_. The base "
+"model in ``samples/adapter/base.yaml`` uses the following arguments to "
+"allow up to four distinct adapters per batch:"
+msgstr ""
+"vLLM 可在单个 batch 中服务不同 LoRA adapter 的请求。SGLang 支持 `类似特性 <https://lmsysorg.mintlify.app/docs/advanced_features/lora>`_ "
+"。``samples/adapter/base.yaml`` 中的基座模型使用以下参数，使每个 batch 最多允许四个不同 adapter："
+
+#: ../../source/features/lora-dynamic-loading.rst:508
+msgid ""
+"The vLLM `max_loras "
+"<https://docs.vllm.ai/en/latest/api/vllm/config/lora/#vllm.config.lora.LoRAConfig.max_loras>`_"
+" setting limits the number of distinct adapters in one batch, not the "
+"total number of requests or ``ModelAdapter`` resources. ``max_cpu_loras``"
+" controls the CPU LoRA cache and must be greater than or equal to "
+"``max_loras``."
+msgstr ""
+"vLLM 的 `max_loras <https://docs.vllm.ai/en/latest/api/vllm/config/lora/#vllm.config.lora.LoRAConfig.max_loras>`_ "
+"限制单个 batch 中不同 adapter 的数量，而非请求总数或 ``ModelAdapter`` 资源数。``max_cpu_loras`` "
+"控制 CPU LoRA cache，必须大于或等于 ``max_loras`` 。"
+
+#: ../../source/features/lora-dynamic-loading.rst:512
+msgid ""
+"Create one ``ModelAdapter`` resource for each LoRA. The adapters must all"
+" be compatible with the base model. For a readily reproducible example, "
+"the following manifest assigns four names to the same public LoRA "
+"artifact. Consequently, their generated outputs may be similar. Replace "
+"the ``artifactURL`` values with different compatible adapters when "
+"testing your own models. Each resource omits ``spec.replicas``, so AIBrix"
+" loads every adapter on all matching base-model pods."
+msgstr ""
+"为每个 LoRA 创建一个 ``ModelAdapter`` 资源。adapter 必须都与基座模型兼容。为便于复现，以下清单为同一公开 LoRA "
+"artifact 分配四个名称，因此生成输出可能相似。测试自有模型时请将 ``artifactURL`` 换成不同的兼容 adapter。每个资源都省略 "
+"``spec.replicas`` ，因此 AIBrix 会在所有匹配的基座模型 Pod 上加载每个 adapter。"
+
+#: ../../source/features/lora-dynamic-loading.rst:521
+msgid ""
+"From the AIBrix repository root, create or update the base model. If you "
+"completed the single-LoRA example above, delete its adapter first so that"
+" all four cache slots are available. Then create the four adapters and "
+"wait until they are ready:"
+msgstr ""
+"在 AIBrix 仓库根目录创建或更新基座模型。若已完成上文单 LoRA 示例，请先删除该 adapter，以便四个 cache 槽都可用。然后创建四个 adapter 并等待就绪："
+
+#: ../../source/features/lora-dynamic-loading.rst:540
+msgid ""
+"In one terminal, forward a local port to the AIBrix gateway and leave the"
+" command running:"
+msgstr "在一个终端将本地端口转发到 AIBrix 网关，并保持该命令运行："
+
+#: ../../source/features/lora-dynamic-loading.rst:551
+msgid ""
+"In a second terminal, send one request to each adapter concurrently. The "
+"response from each adapter is saved and then printed after all four "
+"requests finish:"
+msgstr "在第二个终端并发向每个 adapter 发送一个请求。各 adapter 的响应会先保存，四个请求都完成后打印："
+
+#: ../../source/features/lora-dynamic-loading.rst:582
+msgid "Model Registry"
+msgstr "模型仓库"
+
+#: ../../source/features/lora-dynamic-loading.rst:584
+msgid ""
+"Currently, we support Huggingface model registry, S3 compatible storage "
+"and local file system."
+msgstr "目前支持 Hugging Face 模型仓库、S3 兼容存储和本地文件系统。"
+
+#: ../../source/features/lora-dynamic-loading.rst:586
+msgid ""
+"If your model is hosted on Huggingface, you can use the ``artifactURL`` "
+"with ``huggingface://`` prefix to specify the model url. vLLM will "
+"download the model from Huggingface and load it into the pod in runtime."
+msgstr ""
+"若模型托管在 Hugging Face，可用带 ``huggingface://`` 前缀的 ``artifactURL`` 指定模型 URL。vLLM 会在运行时从 Hugging Face 下载模型并加载到 Pod。"
+
+#: ../../source/features/lora-dynamic-loading.rst:588
+msgid ""
+"If you put your model in S3 compatible storage, you have to use AIBrix AI"
+" Runtime at the same time. You can use the ``artifactURL`` with ``s3://``"
+" prefix to specify the model url. AIBrix AI Runtime will download the "
+"model from S3 on the pod and load it with ``local model path`` in vLLM."
+msgstr ""
+"若模型放在 S3 兼容存储，必须同时使用 AIBrix AI Runtime。可用带 ``s3://`` 前缀的 ``artifactURL`` 指定模型 URL。AIBrix AI Runtime 会在 Pod 上从 S3 下载模型，并以 ``local model path`` 在 vLLM 中加载。"
+
+#: ../../source/features/lora-dynamic-loading.rst:590
+msgid ""
+"If you use shared storage like NFS, you can use the ``artifactURL`` with "
+"``/`` absolute path to specify the model url (``/models/yard1/llama-2-7b-"
+"sql-lora-test`` as an example). It's users's responsibility to make sure "
+"the model is mounted to the pod."
+msgstr ""
+"若使用 NFS 等共享存储，可用以 ``/`` 开头的绝对路径作为 ``artifactURL`` 指定模型路径（例如 ``/models/yard1/llama-2-7b-sql-lora-test`` "
+"）。用户需自行确保模型已挂载到 Pod。"
+
+#: ../../source/features/lora-dynamic-loading.rst:594
+msgid "Model api-key Authentication"
+msgstr "模型 api-key 认证"
+
+#: ../../source/features/lora-dynamic-loading.rst:596
+msgid ""
+"User may pass in the argument ``--api-key`` or environment variable "
+"``VLLM_API_KEY`` to enable the server to check for API key in the header."
+msgstr "用户可传入参数 ``--api-key`` 或环境变量 ``VLLM_API_KEY`` ，使服务端检查请求头中的 API key。"
+
+#: ../../source/features/lora-dynamic-loading.rst:602
+msgid ""
+"We already have an example and you can ``kubectl apply -f samples/adapter"
+"/base-api-key.yaml``."
+msgstr "已有示例，可执行 ``kubectl apply -f samples/adapter/base-api-key.yaml`` 。"
+
+#: ../../source/features/lora-dynamic-loading.rst:605
+#, python-brace-format
+msgid ""
+"In that case, lora model adapter can not query the vLLM server correctly,"
+" showing ``{\"error\":\"Unauthorized\"}`` error. You need to update "
+"``additionalConfig`` field to pass in the API key."
+msgstr ""
+"此时 LoRA model adapter 无法正确查询 vLLM 服务，会显示 ``{\"error\":\"Unauthorized\"}`` 错误。需更新 ``additionalConfig`` 字段以传入 API key。"
+
+#: ../../source/features/lora-dynamic-loading.rst:611
+msgid ""
+"You need to send the request with ``--header 'Authorization: Bearer your-"
+"api-key'``"
+msgstr "发送请求时需带 ``--header 'Authorization: Bearer your-api-key'``"
+
+#: ../../source/features/lora-dynamic-loading.rst:628
+msgid "Runtime Support Sidecar"
+msgstr "Runtime 支持 Sidecar"
+
+#: ../../source/features/lora-dynamic-loading.rst:630
+msgid ""
+"Starting from v0.2.0, controller manager by default will talk to runtime "
+"sidecar to register the lora first and then the runtime sidecar will sync"
+" with inference engine to finish the eventual registration. This is used "
+"to build the abstraction between controller manager and inference engine."
+" If you like to directly sync with vLLM to load the loras, you can update"
+" the controller-manager ``kubectl edit deployment aibrix-controller-"
+"manager -n aibrix-system`` and remove the ``"
+msgstr ""
+"Starting from v0.2.0, controller manager by default will talk to runtime "
+"sidecar to register the lora first and then the runtime sidecar will sync"
+" with inference engine to finish the eventual registration. This is used "
+"to build the abstraction between controller manager and inference engine."
+" If you like to directly sync with vLLM to load the loras, you can update"
+" the controller-manager ``kubectl edit deployment aibrix-controller-"
+"manager -n aibrix-system`` and remove the ``"
+
+#: ../../source/features/lora-dynamic-loading.rst:646
+msgid "Private Artifact Storage Support"
+msgstr "私有 Artifact 存储支持"
+
+#: ../../source/features/lora-dynamic-loading.rst:648
+msgid ""
+"AIBrix supports loading LoRA adapters from private cloud storage backends"
+" including AWS S3, Google Cloud Storage (GCS), and Volcano Engine TOS. "
+"This feature requires the AIBrix runtime sidecar to handle artifact "
+"delegation - downloading artifacts from private storage and forwarding "
+"them to the inference engine."
+msgstr ""
+"AIBrix 支持从私有云存储后端加载 LoRA adapter，包括 AWS S3、Google Cloud Storage（GCS）和火山引擎 TOS。该特性需要 AIBrix runtime sidecar 处理 artifact 代理：从私有存储下载 artifact 并转发给推理引擎。"
+
+#: ../../source/features/lora-dynamic-loading.rst:650
+msgid "**Supported Storage Backends:**"
+msgstr "**支持的存储后端：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:652
+msgid "**AWS S3**: ``s3://bucket/path/to/adapter``"
+msgstr "**AWS S3** ：``s3://bucket/path/to/adapter``"
+
+#: ../../source/features/lora-dynamic-loading.rst:653
+msgid "**Google Cloud Storage**: ``gs://bucket/path/to/adapter``"
+msgstr "**Google Cloud Storage** ：``gs://bucket/path/to/adapter``"
+
+#: ../../source/features/lora-dynamic-loading.rst:654
+msgid "**Volcano Engine TOS**: ``tos://bucket/path/to/adapter``"
+msgstr "**火山引擎 TOS** ：``tos://bucket/path/to/adapter``"
+
+#: ../../source/features/lora-dynamic-loading.rst:655
+msgid "**Private HuggingFace**: ``huggingface://org/private-model`` (with token)"
+msgstr "**私有 Hugging Face** ：``huggingface://org/private-model`` （需 token）"
+
+#: ../../source/features/lora-dynamic-loading.rst:656
+msgid "**HTTP(S) with Authentication**: Any URL with custom headers"
+msgstr "**带认证的 HTTP(S)** ：任意带自定义请求头的 URL"
+
+#: ../../source/features/lora-dynamic-loading.rst:658
+msgid "**How It Works:**"
+msgstr "**工作原理：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:671
+msgid "The runtime sidecar:"
+msgstr "runtime sidecar："
+
+#: ../../source/features/lora-dynamic-loading.rst:673
+msgid "Receives the artifact URL and credentials from the controller"
+msgstr "从 controller 接收 artifact URL 和凭据"
+
+#: ../../source/features/lora-dynamic-loading.rst:674
+msgid "Downloads the artifact from private storage to local filesystem"
+msgstr "从私有存储将 artifact 下载到本地文件系统"
+
+#: ../../source/features/lora-dynamic-loading.rst:675
+msgid "Forwards the local path to the inference engine"
+msgstr "将本地路径转发给推理引擎"
+
+#: ../../source/features/lora-dynamic-loading.rst:676
+msgid "Manages artifact lifecycle (cleanup on unload)"
+msgstr "管理 artifact 生命周期（卸载时清理）"
+
+#: ../../source/features/lora-dynamic-loading.rst:678
+msgid "**Prerequisites:**"
+msgstr "**前置条件：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:680
+msgid "AIBrix runtime sidecar deployed alongside your inference engine"
+msgstr "AIBrix runtime sidecar 与推理引擎一起部署"
+
+#: ../../source/features/lora-dynamic-loading.rst:681
+msgid "Controller flag ``--enable-runtime-sidecar=true`` enabled"
+msgstr "已启用 controller 标志 ``--enable-runtime-sidecar=true``"
+
+#: ../../source/features/lora-dynamic-loading.rst:682
+msgid "Kubernetes secrets configured with storage credentials"
+msgstr "已配置含存储凭据的 Kubernetes Secret"
+
+#: ../../source/features/lora-dynamic-loading.rst:683
+msgid "Shared volume between runtime and engine containers"
+msgstr "runtime 与引擎容器之间有共享卷"
+
+#: ../../source/features/lora-dynamic-loading.rst:687
+msgid ""
+"When the AIBrix sidecar injection webhook is enabled, AIBrix injects a "
+"shared volume named ``adapter-storage`` mounted at "
+"``/tmp/aibrix/adapters`` into both the runtime and engine containers. The"
+" runtime downloads LoRA adapter artifacts into this directory by default."
+" See ``DefaultAdapterVolumeName`` and ``DefaultAdapterMountPath`` in "
+"``pkg/webhook/sidecar_injection.go``."
+msgstr ""
+"启用 AIBrix sidecar 注入 webhook 时，AIBrix 会向 runtime 和引擎容器注入名为 ``adapter-storage`` "
+"、挂载于 ``/tmp/aibrix/adapters`` 的共享卷。runtime 默认将 LoRA adapter artifact 下载到该目录。见 "
+"``pkg/webhook/sidecar_injection.go`` 中的 ``DefaultAdapterVolumeName`` 和 ``DefaultAdapterMountPath`` "
+"。"
+
+#: ../../source/features/lora-dynamic-loading.rst:693
+msgid "Setup: AWS S3 Storage"
+msgstr "配置：AWS S3 存储"
+
+#: ../../source/features/lora-dynamic-loading.rst:695
+msgid "**Step 1: Create S3 Credentials Secret**"
+msgstr "**步骤 1：创建 S3 凭据 Secret**"
+
+#: ../../source/features/lora-dynamic-loading.rst:710
+msgid "**Step 2: Deploy Pod with Runtime Sidecar**"
+msgstr "**步骤 2：部署带 Runtime Sidecar 的 Pod**"
+
+#: ../../source/features/lora-dynamic-loading.rst:759
+msgid "**Step 3: Create ModelAdapter with S3 URL**"
+msgstr "**步骤 3：用 S3 URL 创建 ModelAdapter**"
+
+#: ../../source/features/lora-dynamic-loading.rst:779
+msgid "**Step 4: Verify Artifact Delegation**"
+msgstr "**步骤 4：验证 Artifact 代理**"
+
+#: ../../source/features/lora-dynamic-loading.rst:797
+msgid "Setup: Google Cloud Storage (GCS)"
+msgstr "配置：Google Cloud Storage（GCS）"
+
+#: ../../source/features/lora-dynamic-loading.rst:799
+msgid "**Step 1: Create GCS Credentials Secret**"
+msgstr "**步骤 1：创建 GCS 凭据 Secret**"
+
+#: ../../source/features/lora-dynamic-loading.rst:822
+msgid "**Step 2: Create ModelAdapter with GCS URL**"
+msgstr "**步骤 2：用 GCS URL 创建 ModelAdapter**"
+
+#: ../../source/features/lora-dynamic-loading.rst:842
+msgid "Setup: Private HuggingFace Models"
+msgstr "配置：私有 Hugging Face 模型"
+
+#: ../../source/features/lora-dynamic-loading.rst:844
+msgid "**Step 1: Create HuggingFace Token Secret**"
+msgstr "**步骤 1：创建 Hugging Face Token Secret**"
+
+#: ../../source/features/lora-dynamic-loading.rst:856
+msgid "**Step 2: Create ModelAdapter with Private HuggingFace URL**"
+msgstr "**步骤 2：用私有 Hugging Face URL 创建 ModelAdapter**"
+
+#: ../../source/features/lora-dynamic-loading.rst:876
+msgid "Troubleshooting Artifact Delegation"
+msgstr "Artifact 代理故障排查"
+
+#: ../../source/features/lora-dynamic-loading.rst:878
+msgid "**Runtime Not Receiving Requests:**"
+msgstr "**Runtime 未收到请求：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:890
+msgid "**Download Failures:**"
+msgstr "**下载失败：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:902
+msgid "**Credential Issues:**"
+msgstr "**凭据问题：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:917
+msgid "**Engine Connection Errors:**"
+msgstr "**引擎连接错误：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:928
+msgid "**Supported URL Schemes Summary:**"
+msgstr "**支持的 URL scheme 汇总：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:934
+msgid "URL Scheme"
+msgstr "URL Scheme"
+
+#: ../../source/features/lora-dynamic-loading.rst:935
+msgid "Example"
+msgstr "示例"
+
+#: ../../source/features/lora-dynamic-loading.rst:936
+msgid "Requires Runtime"
+msgstr "需要 Runtime"
+
+#: ../../source/features/lora-dynamic-loading.rst:937
+msgid "Requires Credentials"
+msgstr "需要凭据"
+
+#: ../../source/features/lora-dynamic-loading.rst:938
+msgid "``s3://``"
+msgstr "``s3://``"
+
+#: ../../source/features/lora-dynamic-loading.rst:939
+msgid "``s3://bucket/path/``"
+msgstr "``s3://bucket/path/``"
+
+#: ../../source/features/lora-dynamic-loading.rst:940
+#: ../../source/features/lora-dynamic-loading.rst:941
+#: ../../source/features/lora-dynamic-loading.rst:944
+#: ../../source/features/lora-dynamic-loading.rst:945
+#: ../../source/features/lora-dynamic-loading.rst:948
+msgid "Yes"
+msgstr "是"
+
+#: ../../source/features/lora-dynamic-loading.rst:942
+msgid "``gs://``"
+msgstr "``gs://``"
+
+#: ../../source/features/lora-dynamic-loading.rst:943
+msgid "``gs://bucket/path/``"
+msgstr "``gs://bucket/path/``"
+
+#: ../../source/features/lora-dynamic-loading.rst:946
+msgid "``huggingface://`` (private)"
+msgstr "``huggingface://`` （私有）"
+
+#: ../../source/features/lora-dynamic-loading.rst:947
+msgid "``huggingface://org/model``"
+msgstr "``huggingface://org/model``"
+
+#: ../../source/features/lora-dynamic-loading.rst:949
+msgid "Yes (token)"
+msgstr "是（token）"
+
+#: ../../source/features/lora-dynamic-loading.rst:950
+msgid "``huggingface://`` (public)"
+msgstr "``huggingface://`` （公开）"
+
+#: ../../source/features/lora-dynamic-loading.rst:951
+msgid "``huggingface://meta-llama/model``"
+msgstr "``huggingface://meta-llama/model``"
+
+#: ../../source/features/lora-dynamic-loading.rst:952
+#: ../../source/features/lora-dynamic-loading.rst:953
+#: ../../source/features/lora-dynamic-loading.rst:956
+msgid "No"
+msgstr "否"
+
+#: ../../source/features/lora-dynamic-loading.rst:954
+msgid "``http://`` / ``https://``"
+msgstr "``http://`` / ``https://``"
+
+#: ../../source/features/lora-dynamic-loading.rst:955
+msgid "``https://example.com/adapter``"
+msgstr "``https://example.com/adapter``"
+
+#: ../../source/features/lora-dynamic-loading.rst:957
+msgid "Optional"
+msgstr "可选"
+
+#: ../../source/features/lora-dynamic-loading.rst:959
+msgid "**Best Practices:**"
+msgstr "**最佳实践：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:961
+msgid ""
+"**Use Separate Secrets per Storage Type**: Create dedicated secrets for "
+"S3, GCS credentials rather than mixing them"
+msgstr "**按存储类型使用独立 Secret** ：为 S3、GCS 凭据创建专用 Secret，不要混用"
+
+#: ../../source/features/lora-dynamic-loading.rst:962
+msgid ""
+"**Test Credentials First**: Verify credentials work by manually "
+"downloading from storage before creating ModelAdapter"
+msgstr "**先测试凭据** ：创建 ModelAdapter 前先手动从存储下载，确认凭据可用"
+
+#: ../../source/features/lora-dynamic-loading.rst:963
+msgid ""
+"**Monitor Runtime Logs**: Watch runtime logs during first deployment to "
+"catch credential or connectivity issues early"
+msgstr "**监控 Runtime 日志** ：首次部署时查看 runtime 日志，尽早发现凭据或连通性问题"
+
+#: ../../source/features/lora-dynamic-loading.rst:964
+msgid ""
+"**Shared Storage Volume**: Ensure the ``adapter-storage`` volume is "
+"properly shared between runtime and engine containers"
+msgstr "**共享存储卷** ：确保 ``adapter-storage`` 卷在 runtime 与引擎容器之间正确共享"
+
+#: ../../source/features/lora-dynamic-loading.rst:965
+msgid ""
+"**Artifact Size**: Large artifacts may take time to download; adjust "
+"timeout values if needed"
+msgstr "**Artifact 大小** ：大 artifact 下载可能较久；必要时调整超时"
+
+#: ../../source/features/lora-dynamic-loading.rst:968
+msgid "Runtime Metrics Configuration"
+msgstr "Runtime 指标配置"
+
+#: ../../source/features/lora-dynamic-loading.rst:970
+msgid ""
+"The AIBrix runtime provides flexible metrics transformation options to "
+"handle different inference engines (vLLM, SGLang) and ensure "
+"compatibility. You can control metrics behavior using environment "
+"variables:"
+msgstr ""
+"AIBrix runtime 提供灵活的指标转换选项，以处理不同推理引擎（vLLM、SGLang）并保证兼容。可用环境变量控制指标行为："
+
+#: ../../source/features/lora-dynamic-loading.rst:972
+msgid "**Default Mode (Recommended):**"
+msgstr "**默认模式（推荐）：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:982
+msgid ""
+"This mode standardizes metrics from different engines to a common "
+"``aibrix:`` namespace:"
+msgstr "该模式将不同引擎的指标标准化到统一的 ``aibrix:`` 命名空间："
+
+#: ../../source/features/lora-dynamic-loading.rst:984
+msgid "``vllm:num_requests_waiting`` → ``aibrix:queue_size``"
+msgstr "``vllm:num_requests_waiting`` → ``aibrix:queue_size``"
+
+#: ../../source/features/lora-dynamic-loading.rst:985
+msgid "``sglang:num_queue_reqs`` → ``aibrix:queue_size``"
+msgstr "``sglang:num_queue_reqs`` → ``aibrix:queue_size``"
+
+#: ../../source/features/lora-dynamic-loading.rst:986
+msgid "``vllm:prompt_tokens_total`` → ``aibrix:prompt_tokens_total``"
+msgstr "``vllm:prompt_tokens_total`` → ``aibrix:prompt_tokens_total``"
+
+#: ../../source/features/lora-dynamic-loading.rst:987
+msgid "``sglang:prompt_tokens_total`` → ``aibrix:prompt_tokens_total``"
+msgstr "``sglang:prompt_tokens_total`` → ``aibrix:prompt_tokens_total``"
+
+#: ../../source/features/lora-dynamic-loading.rst:989
+msgid "**Raw Passthrough Mode (Debugging/Fallback):**"
+msgstr "**原始透传模式（调试/回退）：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:996
+msgid "Use this mode when:"
+msgstr "在以下情况使用该模式："
+
+#: ../../source/features/lora-dynamic-loading.rst:998
+msgid "Debugging metrics transformation issues"
+msgstr "调试指标转换问题"
+
+#: ../../source/features/lora-dynamic-loading.rst:999
+msgid "Different engines have scale/semantic differences"
+msgstr "不同引擎存在量纲/语义差异"
+
+#: ../../source/features/lora-dynamic-loading.rst:1000
+msgid "You need engine-specific metric names preserved"
+msgstr "需要保留引擎专用指标名"
+
+#: ../../source/features/lora-dynamic-loading.rst:1001
+msgid "Fallback during transformation errors"
+msgstr "转换出错时回退"
+
+#: ../../source/features/lora-dynamic-loading.rst:1003
+msgid "**Complete Transformation Disable (Emergency):**"
+msgstr "**完全禁用转换（应急）：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:1010
+msgid ""
+"This is the safest fallback option that guarantees raw metrics regardless"
+" of any errors."
+msgstr "这是最安全的回退选项，无论是否出错都保证输出原始指标。"
+
+#: ../../source/features/lora-dynamic-loading.rst:1012
+msgid "**Automatic Error Recovery:**"
+msgstr "**自动错误恢复：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:1014
+msgid ""
+"The runtime automatically falls back to raw passthrough mode if metrics "
+"transformation encounters errors, ensuring metrics collection never fails"
+" completely."
+msgstr "若指标转换出错，runtime 会自动回退到原始透传模式，确保指标采集不会完全失败。"
+
+#: ../../source/features/lora-dynamic-loading.rst:1016
+msgid "**Configuration Priority:**"
+msgstr "**配置优先级：**"
+
+#: ../../source/features/lora-dynamic-loading.rst:1018
+msgid ""
+"``METRICS_ENABLE_TRANSFORMATION=0`` forces raw passthrough (highest "
+"priority)"
+msgstr "``METRICS_ENABLE_TRANSFORMATION=0`` 强制原始透传（最高优先级）"
+
+#: ../../source/features/lora-dynamic-loading.rst:1019
+msgid ""
+"``METRICS_RAW_PASSTHROUGH_MODE=1`` enables raw mode when transformation "
+"is enabled"
+msgstr "``METRICS_RAW_PASSTHROUGH_MODE=1`` 在启用转换时开启原始模式"
+
+#: ../../source/features/lora-dynamic-loading.rst:1020
+msgid "Automatic fallback on transformation errors (lowest priority)"
+msgstr "转换出错时自动回退（最低优先级）"
+
+#: ../../source/features/lora-dynamic-loading.rst:1022
+msgid ""
+"This configuration affects the ``/metrics`` endpoint exposed by the "
+"AIBrix runtime sidecar."
+msgstr "该配置影响 AIBrix runtime sidecar 暴露的 ``/metrics`` 端点。"

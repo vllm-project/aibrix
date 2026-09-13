@@ -1,0 +1,448 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/features/vllm-omni.rst:5
+msgid "vLLM-Omni Multi-Modal Serving"
+msgstr "vLLM-Omni 多模态服务"
+
+#: ../../source/features/vllm-omni.rst:7
+msgid ""
+"`vLLM-Omni <https://docs.vllm.ai/projects/vllm-omni/en/stable/>`_ extends"
+" vLLM's OpenAI-compatible serving to non-text modalities — image "
+"generation/editing, speech and general audio, and video generation — "
+"behind the same ``vllm serve`` entrypoint you already use for LLMs. "
+"AIBrix's gateway understands these endpoints natively: it routes requests"
+" to the right backend pods and, for video generation specifically, keeps "
+"track of which pod owns each in-progress job so follow-up calls land back"
+" on it."
+msgstr ""
+"`vLLM-Omni <https://docs.vllm.ai/projects/vllm-omni/en/stable/>`_ 将 vLLM "
+"的 OpenAI 兼容服务扩展到非文本模态——图像生成/编辑、语音与通用音频、以及视频生成——"
+"仍使用你已用于 LLM 的同一 ``vllm serve`` 入口。AIBrix 网关原生识别这些接口："
+"它将请求路由到正确的后端 Pod；对于视频生成，还会跟踪每个进行中任务由哪个 Pod 持有，"
+"以便后续调用回到同一 Pod。"
+
+#: ../../source/features/vllm-omni.rst:9
+msgid ""
+"This guide walks through deploying a vLLM-Omni video generation model — "
+"`Wan-AI/Wan2.1-VACE-1.3B-diffusers <https://huggingface.co/Wan-"
+"AI/Wan2.1-VACE-1.3B-diffusers>`_ — and driving it through AIBrix's "
+"gateway, both synchronously and as an async job you poll and download."
+msgstr ""
+"本指南介绍如何部署 vLLM-Omni 视频生成模型 `Wan-AI/Wan2.1-VACE-1.3B-diffusers <https://huggingface.co/Wan-AI/Wan2.1-VACE-1.3B-diffusers>`_ "
+"，并通过 AIBrix 网关调用：既支持同步生成，也支持异步任务轮询与下载。"
+
+#: ../../source/features/vllm-omni.rst:12
+msgid ""
+"The sample manifest referenced in this guide lives at "
+"`samples/vllm_omni/wan2.1-vace-1.3b.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/vllm_omni/wan2.1-vace-1.3b.yaml>`_ in "
+"the AIBrix repository. A text+audio example (`Qwen/Qwen2.5-Omni-7B "
+"<https://huggingface.co/Qwen/Qwen2.5-Omni-7B>`_) is also available at "
+"`samples/vllm_omni/qwen2-5-omni-7b.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/vllm_omni/qwen2-5-omni-7b.yaml>`_."
+msgstr ""
+"本指南引用的示例清单位于 AIBrix 仓库的 `samples/vllm_omni/wan2.1-vace-1.3b.yaml <https://github.com/vllm-project/aibrix/blob/main/samples/vllm_omni/wan2.1-vace-1.3b.yaml>`_ "
+"。文本+音频示例（`Qwen/Qwen2.5-Omni-7B <https://huggingface.co/Qwen/Qwen2.5-Omni-7B>`_ "
+"）见 `samples/vllm_omni/qwen2-5-omni-7b.yaml <https://github.com/vllm-project/aibrix/blob/main/samples/vllm_omni/qwen2-5-omni-7b.yaml>`_ "
+"。"
+
+#: ../../source/features/vllm-omni.rst:17
+msgid "How It Works"
+msgstr "工作原理"
+
+#: ../../source/features/vllm-omni.rst:19
+msgid ""
+"A vLLM-Omni pod is started the same way as any other model in AIBrix — a "
+"``Deployment`` labeled with ``model.aibrix.ai/name`` and a matching "
+"``Service`` — with one difference: passing ``--omni`` to ``vllm serve``. "
+"That flag auto-detects the model's task from its architecture and exposes"
+" the matching OpenAI-compatible endpoint (``/v1/images/generations``, "
+"``/v1/audio/speech``, ``/v1/videos``, ...)."
+msgstr ""
+"vLLM-Omni Pod 的启动方式与 AIBrix 中其他模型相同：带 ``model.aibrix.ai/name`` 标签的 ``Deployment`` "
+"以及对应的 ``Service`` 。区别是向 ``vllm serve`` 传入 ``--omni`` 。该标志根据模型架构自动识别任务，并暴露对应的 "
+"OpenAI 兼容接口（``/v1/images/generations`` 、``/v1/audio/speech`` 、``/v1/videos`` "
+"等）。"
+
+#: ../../source/features/vllm-omni.rst:21
+msgid ""
+"The stock gateway already matches ``/v1/videos`` on the reserved "
+"HTTPRoute (so requests reach ext_proc before a ``model`` header exists) "
+"and uses 600s Envoy / ext_proc / model-HTTPRoute timeouts so synchronous "
+"generation can finish. If you installed an older AIBrix release, add a "
+"PathPrefix ``/v1/videos`` match to ``aibrix-reserved-router`` and set "
+"``AIBRIX_GATEWAY_TIMEOUT_SECONDS=600`` on the controller-manager."
+msgstr ""
+"默认网关已在保留 HTTPRoute 上匹配 ``/v1/videos`` （因此请求在尚无 ``model`` 头时即可到达 ext_proc），并将 "
+"Envoy / ext_proc / 模型 HTTPRoute 超时设为 600s，以便同步生成能够完成。若安装的是较旧的 AIBrix 版本，请为 "
+"``aibrix-reserved-router`` 添加 PathPrefix ``/v1/videos`` 匹配，并在 controller-manager "
+"上设置 ``AIBRIX_GATEWAY_TIMEOUT_SECONDS=600`` 。"
+
+#: ../../source/features/vllm-omni.rst:23
+msgid ""
+"Video generation needs a bit more from the gateway than a stateless chat "
+"completion does. Because a generated video is written to local disk on "
+"whichever pod created it, the gateway has to remember that pod-to-job "
+"mapping and route follow-up calls back to the exact same pod:"
+msgstr ""
+"视频生成对网关的要求高于无状态 chat completion。生成的视频写在创建它的 Pod "
+"本地磁盘上，因此网关必须记住 Pod 与任务的映射，并将后续调用路由回同一 Pod："
+
+#: ../../source/features/vllm-omni.rst:38
+msgid ""
+"This mapping is kept in-memory per gateway replica and, when the gateway "
+"is configured with Redis, written through to Redis too — so a job created"
+" via one gateway replica can still be polled or fetched through a "
+"different replica. An unknown, expired, or no-longer-live video ID "
+"returns ``404`` rather than routing nowhere."
+msgstr ""
+"该映射保存在每个网关副本的内存中；若网关配置了 Redis，还会写入 Redis。因此通过一个网关副本创建的任务，仍可通过另一个副本轮询或获取。未知、过期或所属 "
+"Pod 已不存活的视频 ID 返回 ``404`` ，而不是路由到空处。"
+
+#: ../../source/features/vllm-omni.rst:40
+msgid ""
+"``POST /v1/videos/sync`` and image/audio endpoints don't need any of "
+"this: they're a single request/response, so ordinary model-based routing "
+"is enough."
+msgstr ""
+"``POST /v1/videos/sync`` 以及图像/音频接口不需要上述机制：它们是单次请求/响应，"
+"普通的基于模型路由即可。"
+
+#: ../../source/features/vllm-omni.rst:45
+msgid "Prerequisites"
+msgstr "前置条件"
+
+#: ../../source/features/vllm-omni.rst:47
+msgid "Before you begin, make sure you have:"
+msgstr "开始前请确认具备："
+
+#: ../../source/features/vllm-omni.rst:49
+msgid ""
+"A running Kubernetes cluster with `AIBrix installed <https://github.com"
+"/vllm-project/aibrix>`_ (includes Envoy Gateway)."
+msgstr ""
+"已运行的 Kubernetes 集群，并已 `安装 AIBrix <https://github.com/vllm-project/aibrix>`_ "
+"（包含 Envoy Gateway）。"
+
+#: ../../source/features/vllm-omni.rst:50
+msgid "``kubectl`` configured to talk to your cluster."
+msgstr "已配置 ``kubectl`` 以访问集群。"
+
+#: ../../source/features/vllm-omni.rst:51
+msgid ""
+"A GPU node (one GPU is enough for the 1.3B-parameter Wan model used "
+"below)."
+msgstr "一个 GPU 节点（下方使用的 1.3B 参数 Wan 模型一块 GPU 即可）。"
+
+#: ../../source/features/vllm-omni.rst:52
+msgid "``jq`` and ``curl`` for the examples below."
+msgstr "运行下方示例所需的 ``jq`` 和 ``curl`` 。"
+
+#: ../../source/features/vllm-omni.rst:57
+msgid "Step 1 — Deploy the Video Generation Model"
+msgstr "步骤 1 — 部署视频生成模型"
+
+#: ../../source/features/vllm-omni.rst:62
+msgid ""
+"Apply it and wait for the pod to become ready. The model is loaded from "
+"the host path ``/data00/models/Wan2.1-VACE-1.3B-diffusers`` (mounted at "
+"``/models``), so the weights must already be present on the node:"
+msgstr ""
+"应用清单并等待 Pod 就绪。模型从主机路径 ``/data00/models/Wan2.1-VACE-1.3B-diffusers`` 加载（挂载到 "
+"``/models`` ），因此权重必须已存在于该节点："
+
+#: ../../source/features/vllm-omni.rst:70
+msgid ""
+"To serve a different vLLM-Omni model (a different video model, or an "
+"image/audio one like ``qwen2-5-omni-7b.yaml``), swap the container's "
+"``vllm serve <model>`` argument, ``--served-model-name``, and the "
+"``model.aibrix.ai/name``/Service name — the request shape stays the same "
+"as long as the model belongs to the same task family. See vLLM-Omni's "
+"`supported models list <https://docs.vllm.ai/projects/vllm-"
+"omni/en/stable/>`_."
+msgstr ""
+"若要服务其他 vLLM-Omni 模型（其他视频模型，或 ``qwen2-5-omni-7b.yaml`` 这类图像/音频模型），替换容器的 ``vllm "
+"serve <model>`` 参数、``--served-model-name`` ，以及 ``model.aibrix.ai/name``/Service "
+"名称。只要模型属于同一任务族，请求形态保持不变。参见 vLLM-Omni 的 `支持模型列表 <https://docs.vllm.ai/projects/vllm-omni/en/stable/>`_ "
+"。"
+
+#: ../../source/features/vllm-omni.rst:75
+msgid "Step 2 — Access the Gateway"
+msgstr "步骤 2 — 访问网关"
+
+#: ../../source/features/vllm-omni.rst:77
+msgid "Port-forward the Envoy service to test locally:"
+msgstr "将 Envoy 服务端口转发到本地以便测试："
+
+#: ../../source/features/vllm-omni.rst:89
+msgid "In production, use the LoadBalancer external IP instead:"
+msgstr "生产环境请改用 LoadBalancer 外部 IP："
+
+#: ../../source/features/vllm-omni.rst:102
+msgid "Step 3 — Generate a Video Synchronously"
+msgstr "步骤 3 — 同步生成视频"
+
+#: ../../source/features/vllm-omni.rst:104
+msgid ""
+"``POST /v1/videos/sync`` blocks until generation completes and returns "
+"the raw MP4 bytes directly. Both video endpoints take ``multipart/form-"
+"data`` — do **not** set ``-H \"Content-Type: application/json\"``."
+msgstr ""
+"``POST /v1/videos/sync`` 会阻塞直到生成完成，并直接返回原始 MP4 字节。两个视频接口均接受 ``multipart/form-data``——**不要** "
+"设置 ``-H \"Content-Type: application/json\"`` 。"
+
+#: ../../source/features/vllm-omni.rst:124
+msgid ""
+"**Image-to-video**: VACE also supports using a reference image as the "
+"starting frame — pass it via ``input_reference``:"
+msgstr "**图生视频** ：VACE 也支持将参考图像作为起始帧——通过 ``input_reference`` 传入："
+
+#: ../../source/features/vllm-omni.rst:141
+msgid "Step 4 — Generate a Video Asynchronously"
+msgstr "步骤 4 — 异步生成视频"
+
+#: ../../source/features/vllm-omni.rst:143
+msgid ""
+"For longer generations, ``POST /v1/videos`` returns immediately with a "
+"job ID while generation continues in the background — poll for status and"
+" fetch the result once it's done."
+msgstr ""
+"对于更长的生成，``POST /v1/videos`` 立即返回任务 ID，生成在后台继续。"
+"轮询状态，完成后获取结果。"
+
+#: ../../source/features/vllm-omni.rst:145
+msgid "**Submit the job:**"
+msgstr "**提交任务：**"
+
+#: ../../source/features/vllm-omni.rst:165
+msgid ""
+"The raw response (before extracting ``.id``) looks like this. The same "
+"shape is returned by the poll step below, with ``status``, ``progress``, "
+"and ``completed_at`` updated as generation proceeds:"
+msgstr ""
+"提取 ``.id`` 之前的原始响应如下。下方轮询步骤返回相同结构，``status`` 、``progress`` 和 ``completed_at`` "
+"会随生成进度更新："
+
+#: ../../source/features/vllm-omni.rst:192
+msgid ""
+"**Poll status** until it reports ``completed`` or ``failed``. This "
+"request is transparently pinned to the pod that created the job, "
+"regardless of which pod would normally be picked by the gateway's routing"
+" policy:"
+msgstr ""
+"**轮询状态** ，直到报告 ``completed`` 或 ``failed`` 。该请求会透明地固定到创建任务的 Pod，而不论网关路由策略通常会选中哪个 "
+"Pod："
+
+#: ../../source/features/vllm-omni.rst:198
+msgid "**Download the result** once ``completed``:"
+msgstr "状态为 ``completed`` 后**下载结果** ："
+
+#: ../../source/features/vllm-omni.rst:204
+msgid ""
+"**List all jobs for a model** instead of polling one by ID (``model`` is "
+"required):"
+msgstr "**列出某模型的全部任务** ，而不是按 ID 轮询单个任务（``model`` 必填）："
+
+#: ../../source/features/vllm-omni.rst:210
+msgid "**Delete a job** once you no longer need it:"
+msgstr "不再需要时**删除任务** ："
+
+#: ../../source/features/vllm-omni.rst:219
+msgid "Endpoint Reference"
+msgstr "接口参考"
+
+#: ../../source/features/vllm-omni.rst:225
+msgid "Endpoint"
+msgstr "接口"
+
+#: ../../source/features/vllm-omni.rst:226
+msgid "Method"
+msgstr "方法"
+
+#: ../../source/features/vllm-omni.rst:227
+msgid "Behavior"
+msgstr "行为"
+
+#: ../../source/features/vllm-omni.rst:228
+#: ../../source/features/vllm-omni.rst:231
+msgid "``/v1/videos``"
+msgstr "``/v1/videos``"
+
+#: ../../source/features/vllm-omni.rst:229
+#: ../../source/features/vllm-omni.rst:235
+msgid "POST"
+msgstr "POST"
+
+#: ../../source/features/vllm-omni.rst:230
+msgid "Create an async video generation job. Returns a job ID immediately."
+msgstr "创建异步视频生成任务。立即返回任务 ID。"
+
+#: ../../source/features/vllm-omni.rst:232
+#: ../../source/features/vllm-omni.rst:238
+#: ../../source/features/vllm-omni.rst:241
+msgid "GET"
+msgstr "GET"
+
+#: ../../source/features/vllm-omni.rst:233
+msgid ""
+"List jobs for a model. Requires a ``model`` query parameter; fans out "
+"across every ready pod for that model."
+msgstr ""
+"列出某模型的任务。需要 ``model`` 查询参数；会扇出到该模型的每个就绪 Pod。"
+
+#: ../../source/features/vllm-omni.rst:234
+msgid "``/v1/videos/sync``"
+msgstr "``/v1/videos/sync``"
+
+#: ../../source/features/vllm-omni.rst:236
+msgid ""
+"Create a job and block until it completes; returns the video bytes "
+"directly."
+msgstr "创建任务并阻塞直到完成；直接返回视频字节。"
+
+#: ../../source/features/vllm-omni.rst:237
+#: ../../source/features/vllm-omni.rst:243
+#, python-brace-format
+msgid "``/v1/videos/{id}``"
+msgstr "``/v1/videos/{id}``"
+
+#: ../../source/features/vllm-omni.rst:239
+msgid "Poll a job's status. Pinned to the pod that created it."
+msgstr "轮询任务状态。固定到创建该任务的 Pod。"
+
+#: ../../source/features/vllm-omni.rst:240
+#, python-brace-format
+msgid "``/v1/videos/{id}/content``"
+msgstr "``/v1/videos/{id}/content``"
+
+#: ../../source/features/vllm-omni.rst:242
+msgid "Download the completed video. Pinned to the pod that created it."
+msgstr "下载已完成的视频。固定到创建该任务的 Pod。"
+
+#: ../../source/features/vllm-omni.rst:244
+msgid "DELETE"
+msgstr "DELETE"
+
+#: ../../source/features/vllm-omni.rst:245
+msgid ""
+"Delete a job and its stored video. Pinned to the pod that created it; the"
+" mapping is evicted after a 2xx or 404 response so a failed delete can "
+"still be retried."
+msgstr ""
+"删除任务及其存储的视频。固定到创建该任务的 Pod；在 2xx 或 404 响应后驱逐映射，"
+"因此删除失败仍可重试。"
+
+#: ../../source/features/vllm-omni.rst:250
+msgid "Troubleshooting"
+msgstr "故障排查"
+
+#: ../../source/features/vllm-omni.rst:252
+msgid "**``GET``/``DELETE`` on a video ID returns 404**"
+msgstr "**对视频 ID 执行 ``GET``/``DELETE`` 返回 404**"
+
+#: ../../source/features/vllm-omni.rst:254
+msgid ""
+"The job ID is unknown to the gateway, has passed its retention window, or"
+" its owning pod is no longer ready (e.g. it was rescheduled). Once a pod "
+"is gone, the video it generated is gone with it — resubmit the job."
+msgstr ""
+"网关不认识该任务 ID、已超过保留窗口，或其所属 Pod 不再就绪（例如被重新调度）。"
+"Pod 消失后，它生成的视频一并消失——请重新提交任务。"
+
+#: ../../source/features/vllm-omni.rst:256
+msgid "**``POST /v1/videos/sync`` returns 504 / ext_proc timeout**"
+msgstr "**``POST /v1/videos/sync`` 返回 504 / ext_proc 超时**"
+
+#: ../../source/features/vllm-omni.rst:258
+msgid ""
+"Synchronous generation can take several minutes. Current AIBrix defaults "
+"are 600s for the reserved-router ext_proc ``messageTimeout``, the "
+"ORIGINAL_DST route, and model HTTPRoutes "
+"(``AIBRIX_GATEWAY_TIMEOUT_SECONDS``). Older installs used 60s/120s and "
+"will abort first; raise those three timeouts to at least 600s."
+msgstr ""
+"同步生成可能需要数分钟。当前 AIBrix 默认将保留路由的 ext_proc ``messageTimeout`` 、ORIGINAL_DST "
+"路由以及模型 HTTPRoute 设为 600s（``AIBRIX_GATEWAY_TIMEOUT_SECONDS`` ）。旧安装使用 60s/120s，会先超时中止；请将这三处超时至少提高到 "
+"600s。"
+
+#: ../../source/features/vllm-omni.rst:260
+msgid "**``GET /v1/videos`` (list) returns 400**"
+msgstr "**``GET /v1/videos`` （列表）返回 400**"
+
+#: ../../source/features/vllm-omni.rst:262
+msgid ""
+"The ``model`` query parameter is required — the gateway needs it to know "
+"which pods to fan out to: ``curl -s \"$BASE/v1/videos?model=wan21-vace-"
+"13b\"``."
+msgstr ""
+"``model`` 查询参数为必填——网关需要它来确定扇出到哪些 Pod：``curl -s \"$BASE/v1/videos?model=wan21-vace-13b\"`` "
+"。"
+
+#: ../../source/features/vllm-omni.rst:264
+msgid "**Job created on one gateway replica can't be found via another**"
+msgstr "**在一个网关副本上创建的任务无法通过另一个副本找到**"
+
+#: ../../source/features/vllm-omni.rst:266
+msgid ""
+"This cross-replica lookup relies on AIBrix's gateway being configured "
+"with Redis. Without Redis, the video-job-to-pod mapping only lives in the"
+" replica that handled the ``POST /v1/videos`` call."
+msgstr ""
+"跨副本查找依赖 AIBrix 网关配置 Redis。没有 Redis 时，视频任务到 Pod 的映射"
+"只存在于处理 ``POST /v1/videos`` 的那个副本中。"
+
+#: ../../source/features/vllm-omni.rst:268
+msgid "**Pod takes a long time to become ready**"
+msgstr "**Pod 就绪耗时很长**"
+
+#: ../../source/features/vllm-omni.rst:270
+msgid ""
+"Confirm the weights exist on the node at ``/data00/models/Wan2.1-VACE-1"
+".3B-diffusers``. Loading a video diffusion model into GPU memory can "
+"still take a few minutes. Watch progress with:"
+msgstr ""
+"确认节点上存在权重 ``/data00/models/Wan2.1-VACE-1.3B-diffusers`` 。将视频扩散模型加载到 GPU "
+"内存仍可能需要几分钟。可用以下方式查看进度："
+
+#: ../../source/features/vllm-omni.rst:279
+msgid "Sample Files"
+msgstr "示例文件"
+
+#: ../../source/features/vllm-omni.rst:281
+msgid ""
+"`samples/vllm_omni/wan2.1-vace-1.3b.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/vllm_omni/wan2.1-vace-1.3b.yaml>`_ — "
+"Deployment and Service for the video generation example used in this "
+"guide"
+msgstr ""
+"`samples/vllm_omni/wan2.1-vace-1.3b.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/vllm_omni/wan2.1-vace-1.3b.yaml>`_ — "
+"本指南视频生成示例所用的 Deployment 和 Service"
+
+#: ../../source/features/vllm-omni.rst:282
+msgid ""
+"`samples/vllm_omni/qwen2-5-omni-7b.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/vllm_omni/qwen2-5-omni-7b.yaml>`_ — "
+"text+audio vLLM-Omni example"
+msgstr ""
+"`samples/vllm_omni/qwen2-5-omni-7b.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/vllm_omni/qwen2-5-omni-7b.yaml>`_ — "
+"文本+音频 vLLM-Omni 示例"

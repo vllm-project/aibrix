@@ -1,0 +1,83 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 19:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/getting_started/installation/vke.rst:5
+msgid "Volcano Engine"
+msgstr "火山引擎"
+
+#: ../../source/getting_started/installation/vke.rst:8
+msgid "Introduction"
+msgstr "简介"
+
+#: ../../source/getting_started/installation/vke.rst:10
+msgid "This doc deploys AIBrix in Volcano Engine Kubernetes Engine."
+msgstr "本文说明如何在火山引擎 Kubernetes 引擎（VKE）上部署 AIBrix。"
+
+#: ../../source/getting_started/installation/vke.rst:13
+msgid "Steps"
+msgstr "步骤"
+
+#: ../../source/getting_started/installation/vke.rst:16
+msgid "AIBrix Installation"
+msgstr "安装 AIBrix"
+
+#: ../../source/getting_started/installation/vke.rst:18
+msgid "Assume you already have VKE cluster up and running"
+msgstr "假定 VKE 集群已经就绪"
+
+#: ../../source/getting_started/installation/vke.rst:19
+msgid "Install AIBrix on VKE"
+msgstr "在 VKE 上安装 AIBrix"
+
+#: ../../source/getting_started/installation/vke.rst:27
+msgid "Wait for components to complete running."
+msgstr "等待组件运行完成。"
+
+#: ../../source/getting_started/installation/vke.rst:30
+msgid "Download Model in TOS"
+msgstr "在 TOS 中下载模型"
+
+#: ../../source/getting_started/installation/vke.rst:32
+msgid "Download models in TOS and create the credential in the cluster."
+msgstr "在 TOS 中下载模型，并在集群中创建凭据。"
+
+#: ../../source/getting_started/installation/vke.rst:40
+msgid "Deploy base model"
+msgstr "部署基座模型"
+
+#: ../../source/getting_started/installation/vke.rst:42
+msgid "Save yaml as `model.yaml` and run `kubectl apply -f model.yaml`."
+msgstr "将 yaml 保存为 `model.yaml` ，然后运行 `kubectl apply -f model.yaml` 。"
+
+#: ../../source/getting_started/installation/vke.rst:48
+msgid "Deploy Prefill-Decode (PD) Disaggregation Model"
+msgstr "部署 Prefill-Decode（PD）分离模型"
+
+#: ../../source/getting_started/installation/vke.rst:50
+msgid "Save yaml as `pd-model.yaml` and run `kubectl apply -f pd-model.yaml`."
+msgstr "将 yaml 保存为 `pd-model.yaml` ，然后运行 `kubectl apply -f pd-model.yaml` 。"
+
+#: ../../source/getting_started/installation/vke.rst:57
+msgid "Inference"
+msgstr "推理"
+
+#: ../../source/getting_started/installation/vke.rst:59
+msgid "Once the model is ready and running, you can test it by running:"
+msgstr "模型就绪并运行后，可运行以下命令进行测试："
