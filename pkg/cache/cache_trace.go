@@ -310,7 +310,7 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string, modelNa
 			} else {
 				utilization = target.pendingLoadUtilization.Add(ctx.PendingLoad)
 				mu.Unlock()
-				if c.updatePodRecord(target, "", metrics.RealtimeNormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization}) != nil {
+				if err := c.updatePodRecord(target, "", metrics.RealtimeNormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization}); err != nil {
 					klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s, err: %v", metrics.RealtimeNormalizedPendings, metaPod.Name, requestID, err)
 				}
 			}
