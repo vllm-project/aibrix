@@ -57,9 +57,9 @@ var _ = Describe("SLOQueue", func() {
 	It("should map the test request onto the zero-throughput cell", func() {
 		req := newTestRequest("req-1", g)
 		features, err := req.Features()
-		Expect(err).To(BeNil(), "expected no error, got %v", err)
+		Expect(err).NotTo(HaveOccurred())
 		signature, err := profile.GetSignature(features...)
-		Expect(err).To(BeNil(), "expected no error, got %v", err)
+		Expect(err).NotTo(HaveOccurred())
 		Expect(signature).To(Equal([]int{1, 1}))
 	})
 
@@ -67,11 +67,10 @@ var _ = Describe("SLOQueue", func() {
 		q := &SLOQueue{}
 		sub := NewSimpleQueue[*types.RoutingContext](4)
 		req := newTestRequest("req-1", g)
-		// nolint:errcheck
-		sub.Enqueue(req, time.Now())
+		Expect(sub.Enqueue(req, time.Now())).To(Succeed())
 		rank, err := q.queueRank(time.Now(), req, sub, profile)
 		Expect(math.IsNaN(rank)).To(BeTrue(), "expected rank to be NaN, got %v", rank)
-		Expect(err).To(BeNil(), "expected no error, got %v", err)
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	It("should return +Inf when throughput is zero and other requests are queued", func() {
@@ -79,14 +78,12 @@ var _ = Describe("SLOQueue", func() {
 		sub := NewSimpleQueue[*types.RoutingContext](4)
 
 		req := newTestRequest("req-1", g)
-		// nolint:errcheck
-		sub.Enqueue(req, time.Now())
+		Expect(sub.Enqueue(req, time.Now())).To(Succeed())
 
 		req1 := newTestRequest("req-2", g)
-		// nolint:errcheck
-		sub.Enqueue(req1, time.Now())
+		Expect(sub.Enqueue(req1, time.Now())).To(Succeed())
 		rank1, err := q.queueRank(time.Now(), req, sub, profile)
 		Expect(math.IsInf(rank1, 1)).To(BeTrue(), "expected rank to be +Inf, got %v", rank1)
-		Expect(err).To(BeNil(), "expected no error, got %v", err)
+		Expect(err).NotTo(HaveOccurred())
 	})
 })
