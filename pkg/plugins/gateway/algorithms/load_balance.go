@@ -105,6 +105,11 @@ func NewLoadBalanceRouter() (types.Router, error) {
 	return &loadBalanceRouter{cache: c}, nil
 }
 
+// NewLoadBalanceRouterWithCache constructs load-balance with an explicit cache.
+func NewLoadBalanceRouterWithCache(c cache.Cache) (types.Router, error) {
+	return &loadBalanceRouter{cache: c}, nil
+}
+
 // ScoreAll returns pending_time = request_count / capacity for each pod.
 // Lower pending_time means the pod has more headroom to accept this request.
 func (r *loadBalanceRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
