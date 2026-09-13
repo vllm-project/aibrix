@@ -43,6 +43,11 @@ func NewLeastKvCacheRouter() (types.Router, error) {
 	return newLeastKvCacheRouter(c), nil
 }
 
+// NewLeastKvCacheRouterWithCache constructs least-kv-cache with an explicit cache.
+func NewLeastKvCacheRouterWithCache(c cache.Cache) (types.Router, error) {
+	return newLeastKvCacheRouter(c), nil
+}
+
 // newLeastKvCacheRouter builds a leastKvCacheRouter around an existing cache handle, for
 // callers that already hold one (e.g. load_balance.go reusing it purely as a types.PodScorer
 // tie-breaker) rather than fetching their own via cache.Get(). Keeping construction here means

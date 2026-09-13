@@ -108,7 +108,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 	// Derive and validate routing strategy (headers -> profile -> env); return 400 on invalid
 	if strategy, enabled := deriveRoutingStrategyFromContext(routingCtx); enabled {
 		var ok bool
-		if routingAlgorithm, ok = routing.Validate(strategy); !ok {
+		if routingAlgorithm, ok = s.routers().Validate(strategy); !ok {
 			klog.ErrorS(nil, "incorrect routing strategy", "requestID", requestID, "routing-strategy", strategy)
 			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("incorrect routing strategy %s", strategy), "", "", HeaderErrorRouting, "true"), model, stream, term
 		}

@@ -247,6 +247,22 @@ func loadTokenizerPoolConfigFromEnv() TokenizerPoolConfig {
 }
 
 func NewPrefixCacheRouter() (types.Router, error) {
+	c, err := cache.Get()
+	if err != nil {
+		return nil, err
+	}
+	return NewPrefixCacheRouterWithCache(c)
+}
+
+// NewPrefixCacheRouterWithCache constructs the prefix-cache router with an
+// explicit cache while preserving tokenizer and indexer behavior.
+func NewPrefixCacheRouterWithCache(c cache.Cache) (types.Router, error) {
+	return NewPrefixCacheRouterWithOptions(c, nil)
+}
+
+// NewPrefixCacheRouterWithOptions constructs a prefix-cache router with
+// explicit cache and optional per-instance prefix table dependencies.
+func NewPrefixCacheRouterWithOptions(c cache.Cache, indexer *prefixcacheindexer.PrefixHashTable) (types.Router, error) {
 	// Initialize prefix cache metrics if enabled
 	if err := initializePrefixCacheMetrics(); err != nil {
 		klog.Errorf("Failed to initialize prefix cache metrics: %v", err)
@@ -275,13 +291,6 @@ func NewPrefixCacheRouter() (types.Router, error) {
 		klog.Warning("KV event sync requires remote tokenizer. " +
 			"Remote tokenizer will be automatically enabled.")
 		useRemoteTokenizer = true
-	}
-
-	// Get cache instance (this is existing code)
-	c, err := cache.Get()
-	if err != nil {
-		klog.Error("fail to get cache store in prefix cache router")
-		return nil, err
 	}
 
 	// Configure TokenizerPool if remote tokenizer is needed
@@ -315,10 +324,13 @@ func NewPrefixCacheRouter() (types.Router, error) {
 		"matched_pods_running_requests_standard_deviation_factor", standardDeviationFactor)
 
 	// Create main router with local indexer
+	if indexer == nil {
+		indexer = prefixcacheindexer.GetSharedPrefixHashTable()
+	}
 	router := prefixCacheRouter{
 		cache:              c,
 		tokenizer:          tokenizerObj,
-		prefixCacheIndexer: prefixcacheindexer.GetSharedPrefixHashTable(),
+		prefixCacheIndexer: indexer,
 		// Only assign tokenizerPool if it's not nil to avoid interface nil issues
 	}
 

@@ -53,6 +53,11 @@ func NewLeastRequestRouter() (types.Router, error) {
 	}, nil
 }
 
+// NewLeastRequestRouterWithCache constructs least-request with an explicit cache.
+func NewLeastRequestRouterWithCache(c cache.Cache) (types.Router, error) {
+	return &leastRequestRouter{cache: c}, nil
+}
+
 // Polarity returns the polarity for least-request strategy
 func (r *leastRequestRouter) Polarity() types.Polarity {
 	return types.PolarityLeast // The fewer requests, the better

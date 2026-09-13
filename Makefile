@@ -61,6 +61,7 @@ GINKGO_VERSION ?= $(shell go list -m -f '{{.Version}}' github.com/onsi/ginkgo/v2
 INTEGRATION_ROOT ?= ./test/integration
 INTEGRATION_WEBHOOK_TARGET ?= $(INTEGRATION_ROOT)/webhook/...
 INTEGRATION_CONTROLLER_TARGET ?= $(INTEGRATION_ROOT)/controller/...
+INTEGRATION_GATEWAY_TARGET ?= $(INTEGRATION_ROOT)/gateway/...
 INTEGRATION_TARGET ?= $(INTEGRATION_ROOT)/...
 
 GINKGO = $(shell pwd)/bin/ginkgo
@@ -149,7 +150,7 @@ test-code-coverage: test
 test-race-condition: manifests generate fmt vet envtest ## Run tests with race detection enabled.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test -race $$(go list ./... | grep -v '/e2e\|/integration')
 
-.PHONY: test-integration test-integration-webhook test-integration-controller
+.PHONY: test-integration test-integration-webhook test-integration-controller test-integration-gateway
 test-integration: manifests fmt vet envtest ginkgo
 	@echo "Running all integration tests..."
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
@@ -164,6 +165,11 @@ test-integration-controller: manifests fmt vet envtest ginkgo
 	@echo "Running controller integration tests only..."
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 	$(GINKGO) --junit-report=junit.controller.xml --output-dir=$(ARTIFACTS) -v $(INTEGRATION_CONTROLLER_TARGET)
+
+test-integration-gateway: manifests fmt vet envtest ginkgo
+	@echo "Running gateway integration tests only..."
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+	$(GINKGO) --junit-report=junit.gateway.xml --output-dir=$(ARTIFACTS) -v $(INTEGRATION_GATEWAY_TARGET)
 
 # Utilize Kind or modify the e2e tests to load the image locally, enabling compatibility with other vendors.
 .PHONY: test-e2e  # Run the e2e tests against a Kind k8s instance that is spun up.

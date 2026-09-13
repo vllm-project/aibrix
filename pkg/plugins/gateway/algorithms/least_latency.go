@@ -43,6 +43,11 @@ func NewLeastExpectedLatencyRouter() (types.Router, error) {
 	}, nil
 }
 
+// NewLeastLatencyRouterWithCache constructs least-latency with an explicit cache.
+func NewLeastLatencyRouterWithCache(c cache.Cache) (types.Router, error) {
+	return leastExpectedLatencyRouter{cache: c}, nil
+}
+
 // Polarity returns the polarity for least-latency strategy
 func (r leastExpectedLatencyRouter) Polarity() types.Polarity {
 	return types.PolarityLeast // The lower the expected latency, the better
