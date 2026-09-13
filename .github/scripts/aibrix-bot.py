@@ -169,7 +169,7 @@ def classify_issue(title: str, body: str) -> IssueClassification:
 
 def _checked_pr_areas(body: str) -> list[str]:
     value = _sections(body).get(_clean_heading("Area"), "")
-    return [item for item in re.findall(r"-\s*\[[xX]\]\s*([a-z-]+)", value) if item in AREA_OPTIONS]
+    return [item.lower() for item in re.findall(r"-\s*\[[xX]\]\s*([a-zA-Z-]+)", value) if item.lower() in AREA_OPTIONS]
 
 
 def _sections(body: str) -> dict[str, str]:
@@ -344,9 +344,10 @@ def handle_pull_request(event: dict, github: GitHub):
         lines.append("Area: none checked, using changed-file paths (path-based labeler)")
     _summary(lines)
     try:
-        github.sync_labels(pull_request["number"], labels, PR_MANAGED_LABELS)
         if explicit_area:
-            github.sync_labels(pull_request["number"], [explicit_area], AREA_LABELS)
+            github.sync_labels(pull_request["number"], labels + [explicit_area], PR_MANAGED_LABELS | AREA_LABELS)
+        else:
+            github.sync_labels(pull_request["number"], labels, PR_MANAGED_LABELS)
     except RuntimeError as error:
         print(f"Unable to update PR labels: {error}", file=sys.stderr)
         print("::warning::Unable to update PR labels")
@@ -356,6 +357,10 @@ def handle_pull_request(event: dict, github: GitHub):
 
 
 def self_test() -> None:
+    # Every AREA_RULES label must map onto a real AREA_OPTIONS/AREA_LABELS
+    # entry, so the two lists can't silently drift apart.
+    assert {label for label, _ in AREA_RULES} == AREA_LABELS
+
     result = classify_issue("RFC: gateway change", "### Summary\nImprove gateway routing")
     assert result.kind == "kind/feature"
     assert result.areas == ["area/gateway"]
@@ -398,6 +403,7 @@ def self_test() -> None:
     assert _checked_pr_areas("### Area\n\n- [x] runtime\n- [ ] gateway\n- [ ] testing") == ["runtime"]
     assert _checked_pr_areas("### Area\n\n- [x] runtime\n- [x] gateway") == ["runtime", "gateway"]
     assert _checked_pr_areas("### Area\n\n- [ ] runtime\n- [ ] gateway") == []
+    assert _checked_pr_areas("### Area\n\n- [x] Runtime") == ["runtime"]
 
     print("AIBrix bot self-test passed")
 
