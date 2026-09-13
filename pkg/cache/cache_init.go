@@ -94,6 +94,23 @@ type Store struct {
 	// Pod related storage
 	metaPods utils.SyncMap[string, *Pod] // pod_namespace/pod_name -> *Pod
 
+	// recentlyDeletedPods holds realtime-counter snapshots for pods just removed
+	// from metaPods, keyed the same way, so a fast re-add of the same pod key
+	// (see deletedPodSnapshot in informers.go) can resume its request-tracking
+	// counters instead of restarting at zero.
+	recentlyDeletedPods utils.SyncMap[string, *deletedPodSnapshot]
+	// nextStatsGeneration issues statsGeneration values for freshly added
+	// cache pods (not resumes). Never reused for the process lifetime so a
+	// stale completion cannot match a later generation of the same pod key.
+	nextStatsGeneration atomic.Int64
+
+	// podStatsMu stripes per-pod-key locks (see podStatsLockFor in cache_trace.go),
+	// synchronizing running-request counter mutations (addPodStats/donePodStats) against
+	// the pod delete/re-add resume cycle (deletePodLocked/addPodLocked in informers.go)
+	// for the same pod identity. A fixed-size stripe -- rather than a lock per pod key --
+	// avoids unbounded growth as distinct pod keys accumulate over the process lifetime.
+	podStatsMu [podStatsLockStripes]sync.Mutex
+
 	// Model related storage
 	metaModels utils.SyncMap[string, *Model] // model_name -> *Model
 	// ModelClaim advertisements include non-routable port-0 states and are kept
