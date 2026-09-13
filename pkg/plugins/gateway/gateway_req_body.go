@@ -108,7 +108,13 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 	// Derive and validate routing strategy (headers -> profile -> env); return 400 on invalid
 	if strategy, enabled := deriveRoutingStrategyFromContext(routingCtx); enabled {
 		var ok bool
-		if routingAlgorithm, ok = s.routers().Validate(strategy); !ok {
+		// Some legacy unit tests construct Server literals directly instead of
+		// using NewServerWithOptions. Keep those callers compatible while all
+		// production-constructed servers still receive a manager at construction.
+		if s.routerManager == nil {
+			s.routerManager = routing.DefaultRouterManager()
+		}
+		if routingAlgorithm, ok = s.routerManager.Validate(strategy); !ok {
 			klog.ErrorS(nil, "incorrect routing strategy", "requestID", requestID, "routing-strategy", strategy)
 			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("incorrect routing strategy %s", strategy), "", "", HeaderErrorRouting, "true"), model, stream, term
 		}

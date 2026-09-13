@@ -257,11 +257,10 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 			routerManager = routing.NewRouterManagerWithCache(c)
 		} else {
 			routing.Init()
+			routerManager = routing.DefaultRouterManager()
 		}
 	}
-	if routerManager != nil {
-		routerManager.Init()
-	}
+	routerManager.Init()
 
 	shutdown := make(chan struct{})
 	s := &Server{
@@ -282,13 +281,6 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 	}
 	s.startVideoJobCacheSync(shutdown)
 	return s
-}
-
-func (s *Server) routers() *routing.RouterManager {
-	if s.routerManager != nil {
-		return s.routerManager
-	}
-	return routing.DefaultRouterManager()
 }
 
 func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
@@ -492,9 +484,6 @@ func (s *Server) handleRecvError(st *processState, err error) error {
 		s.finishRequestCount(st)
 	}
 	klog.ErrorS(err, "error receiving stream from Envoy extproc (non-gRPC)", "requestID", st.requestID)
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return err
-	}
 	return status.Errorf(codes.Unknown, "recv stream error: %v", err)
 }
 
@@ -665,7 +654,11 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		readyPods = routing.ApplyLoadImbalanceGate(routeCtx, s.cache, readyPods)
 	}
 
-	router, err := s.routers().Select(routeCtx)
+	if s.routerManager == nil {
+		// Preserve compatibility for legacy tests that build Server literals.
+		s.routerManager = routing.DefaultRouterManager()
+	}
+	router, err := s.routerManager.Select(routeCtx)
 	if err != nil {
 		return "", err
 	}

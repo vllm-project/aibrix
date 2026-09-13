@@ -17,12 +17,13 @@ package gateway
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	gatewayplugin "github.com/vllm-project/aibrix/pkg/plugins/gateway"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -49,7 +50,7 @@ var _ = Describe("Gateway resilience boundary", Label("gateway", "integration"),
 		case <-time.After(2 * time.Second):
 			Fail("Process did not return after context cancellation")
 		}
-		Expect(errors.Is(err, context.Canceled)).To(BeTrue(), fixture.diagnostics())
+		Expect(status.Code(err)).To(Equal(codes.Canceled), fixture.diagnostics())
 		Expect(fixture.cache.finalizationCount(fixture.requestID)).To(Equal(1), fixture.diagnostics())
 		Expect(gatewayplugin.HasRequestBuffers(fixture.requestID)).To(BeFalse(), fixture.diagnostics())
 		Expect(fixture.cache.inFlightSnapshot()).To(Equal([]int{1, -1}), fixture.diagnostics())
@@ -78,7 +79,7 @@ var _ = Describe("Gateway resilience boundary", Label("gateway", "integration"),
 		case <-time.After(2 * time.Second):
 			Fail("Process did not return after request deadline")
 		}
-		Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue(), fixture.diagnostics())
+		Expect(status.Code(err)).To(Equal(codes.DeadlineExceeded), fixture.diagnostics())
 		Expect(fixture.cache.finalizationCount(fixture.requestID)).To(Equal(1), fixture.diagnostics())
 		Expect(gatewayplugin.HasRequestBuffers(fixture.requestID)).To(BeFalse(), fixture.diagnostics())
 		Expect(fixture.cache.inFlightSnapshot()).To(Equal([]int{1, -1}), fixture.diagnostics())

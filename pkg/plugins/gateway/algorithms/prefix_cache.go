@@ -251,7 +251,7 @@ func NewPrefixCacheRouter() (types.Router, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewPrefixCacheRouterWithCache(c)
+	return NewPrefixCacheRouterWithOptions(c, prefixcacheindexer.GetSharedPrefixHashTable())
 }
 
 // NewPrefixCacheRouterWithCache constructs the prefix-cache router with an
@@ -260,8 +260,10 @@ func NewPrefixCacheRouterWithCache(c cache.Cache) (types.Router, error) {
 	return NewPrefixCacheRouterWithOptions(c, nil)
 }
 
-// NewPrefixCacheRouterWithOptions constructs a prefix-cache router with
-// explicit cache and optional per-instance prefix table dependencies.
+// NewPrefixCacheRouterWithOptions constructs a prefix-cache router with an
+// explicit cache and optional per-instance prefix table. A nil indexer creates
+// a new private table; the production constructor passes the shared table
+// explicitly.
 func NewPrefixCacheRouterWithOptions(c cache.Cache, indexer *prefixcacheindexer.PrefixHashTable) (types.Router, error) {
 	// Initialize prefix cache metrics if enabled
 	if err := initializePrefixCacheMetrics(); err != nil {
@@ -325,7 +327,7 @@ func NewPrefixCacheRouterWithOptions(c cache.Cache, indexer *prefixcacheindexer.
 
 	// Create main router with local indexer
 	if indexer == nil {
-		indexer = prefixcacheindexer.GetSharedPrefixHashTable()
+		indexer = prefixcacheindexer.NewPrefixHashTable()
 	}
 	router := prefixCacheRouter{
 		cache:              c,

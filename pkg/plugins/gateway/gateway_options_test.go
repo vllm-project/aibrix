@@ -16,7 +16,11 @@ limitations under the License.
 
 package gateway
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/vllm-project/aibrix/pkg/cache"
+)
 
 func TestNewServerWithOptionsUsesInjectedCache(t *testing.T) {
 	injected := &MockCache{}
@@ -27,5 +31,29 @@ func TestNewServerWithOptionsUsesInjectedCache(t *testing.T) {
 	}
 	if server.routerManager == nil {
 		t.Fatal("NewServerWithOptions() with Cache-only options must create a local router manager")
+	}
+	assertProductionStrategiesRegistered(t, server)
+}
+
+func TestNewServerInitializesGlobalRouterManager(t *testing.T) {
+	cache.InitForTest()
+	server := NewServer(nil, nil, nil)
+	if server.routerManager == nil {
+		t.Fatal("NewServer() must retain the initialized global router manager")
+	}
+	assertProductionStrategiesRegistered(t, server)
+}
+
+func assertProductionStrategiesRegistered(t *testing.T, server *Server) {
+	t.Helper()
+	strategies := []string{
+		"pd", "slo-pack-load", "slo-least-load", "vtc-basic", "throughput",
+		"session-affinity", "least-busy-time", "least-gpu-cache", "least-utilization",
+		"least-request", "least-kv-cache", "least-latency", "load-balance", "prefix-cache",
+	}
+	for _, strategy := range strategies {
+		if _, ok := server.routerManager.Validate(strategy); !ok {
+			t.Fatalf("router manager does not validate production strategy %q", strategy)
+		}
 	}
 }

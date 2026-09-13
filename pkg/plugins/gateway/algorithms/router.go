@@ -654,13 +654,19 @@ func NewRouterManager() *RouterManager {
 // Gateway routing constructors. Unlike Init, it does not mutate the process
 // global manager.
 func NewRouterManagerWithDefaults() *RouterManager {
+	return newIsolatedRouterManager()
+}
+
+func newIsolatedRouterManager() *RouterManager {
 	rm := NewRouterManager()
-	rm.RegisterProvider(RouterRandom, RandomRouterProviderFunc)
-	rm.Register(RouterLeastRequest, NewLeastRequestRouter)
-	rm.Register(RouterLeastKvCache, NewLeastKvCacheRouter)
-	rm.Register(RouterLeastLatency, NewLeastExpectedLatencyRouter)
-	rm.Register(RouterLoadBalance, NewLoadBalanceRouter)
-	rm.Register(RouterPrefixCache, NewPrefixCacheRouter)
+	defaultRM.routerMu.RLock()
+	defer defaultRM.routerMu.RUnlock()
+	for algorithm, constructor := range defaultRM.routerConstructor {
+		rm.routerConstructor[algorithm] = constructor
+	}
+	for algorithm, provider := range defaultRM.routerFactory {
+		rm.routerFactory[algorithm] = provider
+	}
 	return rm
 }
 
@@ -678,7 +684,10 @@ func NewRouterManagerWithCacheAndPrefixIndexer(c cache.Cache, indexer *prefixcac
 	if indexer == nil {
 		indexer = prefixcacheindexer.NewPrefixHashTable()
 	}
-	rm := NewRouterManager()
+	rm := newIsolatedRouterManager()
+	// The six cache-backed strategies capture c. All other registrations are
+	// copied from the production manager and retain their original dependencies
+	// (for example, SLO providers still resolve their configured cache).
 	rm.RegisterProvider(RouterRandom, RandomRouterProviderFunc)
 	rm.Register(RouterLeastRequest, func() (types.Router, error) { return NewLeastRequestRouterWithCache(c) })
 	rm.Register(RouterLeastKvCache, func() (types.Router, error) { return NewLeastKvCacheRouterWithCache(c) })

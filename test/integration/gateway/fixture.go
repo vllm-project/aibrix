@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -31,7 +32,9 @@ import (
 	routingalgorithms "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -52,6 +55,7 @@ type fakeCache struct {
 	events         []requestEvent
 	nextTraceTerm  int64
 	metricValues   map[string]metrics.MetricValue
+	metricReads    map[string]int
 	inFlightEvents []int
 }
 
@@ -79,6 +83,7 @@ func newFakeCache(pods []*corev1.Pod) *fakeCache {
 		podsByModel:   map[string][]*corev1.Pod{"llama2-7b": append([]*corev1.Pod(nil), pods...)},
 		nextTraceTerm: 1,
 		metricValues:  values,
+		metricReads:   make(map[string]int),
 	}
 }
 func (c *fakeCache) HasModel(model string) bool {
@@ -121,10 +126,25 @@ func (c *fakeCache) GetMetricValueByPodModel(pod, _, _, metric string) (metrics.
 	return c.metricValue(pod, metric), nil
 }
 func (c *fakeCache) metricValue(pod, metric string) metrics.MetricValue {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.metricReads[pod+"/"+metric]++
 	if v, ok := c.metricValues[pod+"/"+metric]; ok {
 		return v
 	}
 	return &metrics.SimpleMetricValue{}
+}
+
+func (c *fakeCache) metricReadCount(metric string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	count := 0
+	for key, reads := range c.metricReads {
+		if strings.HasSuffix(key, "/"+metric) {
+			count += reads
+		}
+	}
+	return count
 }
 func (c *fakeCache) AddSubscriber(metrics.MetricSubscriber)      {}
 func (c *fakeCache) RegisterRequestTracker(cache.RequestTracker) {}
@@ -220,7 +240,6 @@ func newFakeProcessStream(ctx context.Context, inputs ...*extProcPb.ProcessingRe
 }
 func (s *fakeProcessStream) Recv() (*extProcPb.ProcessingRequest, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.inputPos >= len(s.inputs) {
 		if s.blockOnExhaustion {
 			s.recvOnce.Do(func() {
@@ -228,13 +247,19 @@ func (s *fakeProcessStream) Recv() (*extProcPb.ProcessingRequest, error) {
 					close(s.recvStarted)
 				}
 			})
+			s.mu.Unlock()
 			<-s.ctx.Done()
-			return nil, s.ctx.Err()
+			if s.ctx.Err() == context.DeadlineExceeded {
+				return nil, status.Error(codes.DeadlineExceeded, "context deadline exceeded")
+			}
+			return nil, status.Error(codes.Canceled, "context canceled")
 		}
+		s.mu.Unlock()
 		return nil, io.EOF
 	}
 	req := s.inputs[s.inputPos]
 	s.inputPos++
+	s.mu.Unlock()
 	return req, nil
 }
 func (s *fakeProcessStream) Send(resp *extProcPb.ProcessingResponse) error {

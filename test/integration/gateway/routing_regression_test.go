@@ -132,6 +132,9 @@ var _ = Describe("routing configuration regressions", Label("gateway", "integrat
 			"routing-strategy", "least-request:0,least-kv-cache:1,load-balance:0",
 		)
 		expectHeader(response.GetHeaderMutation().GetSetHeaders(), "target-pod", "10.0.0.3:8000")
+		// Balanced running counts make least-request prefer target while the
+		// enabled KV scorer prefers other; KV reads prove scorer participation.
+		Expect(fixture.cache.metricReadCount(metrics.KVCacheUsagePerc)).To(BeNumerically(">=", 2), fixture.diagnostics())
 		expectSuccessfulLifecycle(fixture)
 
 		// Full scorer-exclusion A/B coverage is a follow-up: the gateway's
@@ -286,8 +289,8 @@ func configureStrategyMetrics(c *fakeCache, strategy string) {
 }
 
 func configureZeroWeightMetrics(c *fakeCache) {
-	c.metricValues["target/"+metrics.RealtimeNumRequestsRunning] = &metrics.SimpleMetricValue{Value: 10}
-	c.metricValues["other/"+metrics.RealtimeNumRequestsRunning] = &metrics.SimpleMetricValue{Value: 1}
+	c.metricValues["target/"+metrics.RealtimeNumRequestsRunning] = &metrics.SimpleMetricValue{Value: 1}
+	c.metricValues["other/"+metrics.RealtimeNumRequestsRunning] = &metrics.SimpleMetricValue{Value: 3}
 	c.metricValues["target/"+metrics.KVCacheUsagePerc] = &metrics.SimpleMetricValue{Value: .9}
 	c.metricValues["target/"+metrics.CPUCacheUsagePerc] = &metrics.SimpleMetricValue{Value: .9}
 	c.metricValues["other/"+metrics.KVCacheUsagePerc] = &metrics.SimpleMetricValue{Value: .1}
