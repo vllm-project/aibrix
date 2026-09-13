@@ -36,6 +36,11 @@ type Pod struct {
 	runningRequests        int32 // Realtime running requests counter.
 	completedRequests      int64 // Monotonically increasing count of finished requests (gateway-tracked).
 	pendingLoadUtilization atomic_ext.Float64
+	// statsGeneration identifies this cache object's request-tracking counters.
+	// Copied on a same-IP resume (see addPodLocked) so in-flight Add/Done can
+	// follow the live object across a flap; incremented on a fresh add so a
+	// stale completion cannot bleed into a new generation after grace expiry.
+	statsGeneration int64
 
 	// Log frenquency control
 	lastTraceLogTimestamp int64
