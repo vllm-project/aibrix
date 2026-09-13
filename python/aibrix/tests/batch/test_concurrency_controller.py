@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pytest
+
 from aibrix.batch.client import (
     ConcurrencyOutcome,
     InferenceError,
@@ -277,6 +279,45 @@ def test_concurrency_outcome_preserves_error_metadata():
     assert outcome.error_code == InferenceErrorCode.HTTP_ERROR.value
 
 
+@pytest.mark.parametrize(
+    "error_count,base,maximum,expected",
+    [
+        (2, 0.5, 10.0, 0.5),
+        (3, 0.5, 10.0, 1.0),
+        (6, 0.5, 10.0, 8.0),
+        (7, 0.5, 10.0, 10.0),
+        (1026, 0.5, 10.0, 10.0),
+        (4096, 0.5, 10.0, 10.0),
+        (4096, 0.0, 10.0, 0.0),
+        (4096, 0.5, 0.0, 0.0),
+        (1026, float.fromhex("0x0.0000000000001p-1022"), 10.0, 2.0**-50),
+    ],
+)
+def test_llm_controller_backoff_handles_large_overload_windows(
+    monkeypatch, error_count, base, maximum, expected
+):
+    monkeypatch.setattr("aibrix.batch.client.concurrency.monotonic", lambda: 0.0)
+    controller = LLMAdaptiveConcurrencyController(
+        initial_limit=error_count,
+        max_limit=error_count,
+        settings=LLMAdaptiveConcurrencySettings(
+            healthy_window=1,
+            failure_backoff_base_seconds=base,
+            failure_backoff_max_seconds=maximum,
+        ),
+    )
+    overload = ConcurrencyOutcome(success=False, status_code=503, retryable=True)
+
+    for _ in range(error_count):
+        controller.on_complete(overload)
+
+    assert controller.admission_delay_seconds() == expected
+    assert controller.limit() < error_count
+
+    controller.on_complete(ConcurrencyOutcome(success=True))
+    assert controller.admission_delay_seconds() == 0.0
+
+
 def test_concurrency_outcome_extracts_nested_llm_latency_metrics():
     outcome = concurrency_outcome_from_result(
         {
@@ -301,3 +342,19 @@ def test_concurrency_outcome_extracts_nested_llm_latency_metrics():
     assert outcome.ttft_seconds == 0.12
     assert outcome.tpot_seconds == 0.025
     assert outcome.e2e_tpot_seconds == 0.1
+
+
+def test_llm_controller_backoff_with_large_healthy_window(monkeypatch):
+    monkeypatch.setattr("aibrix.batch.client.concurrency.monotonic", lambda: 0.0)
+    controller = LLMAdaptiveConcurrencyController(
+        initial_limit=32,
+        max_limit=32,
+        settings=LLMAdaptiveConcurrencySettings(healthy_window=2048),
+    )
+    overload = ConcurrencyOutcome(success=False, status_code=429, retryable=True)
+
+    for _ in range(2048):
+        controller.on_complete(overload)
+
+    assert controller.limit() == 28
+    assert controller.admission_delay_seconds() == 10.0
