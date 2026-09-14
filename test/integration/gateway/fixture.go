@@ -306,6 +306,14 @@ func newGatewayFixture(pods []*corev1.Pod) *gatewayFixture {
 }
 
 func newGatewayFixtureWithRequest(pods []*corev1.Pod, strategy, profile, externalFilter string) *gatewayFixture {
+	return newGatewayFixtureWithRequestBody(pods, strategy, profile, externalFilter, nil)
+}
+
+// newGatewayFixtureWithRequestBody is newGatewayFixtureWithRequest with an
+// explicit client request body; a nil body uses the default chat request.
+func newGatewayFixtureWithRequestBody(
+	pods []*corev1.Pod, strategy, profile, externalFilter string, body []byte,
+) *gatewayFixture {
 	c := newFakeCache(pods)
 	requestID := fmt.Sprintf("%032x", fixtureSequence.Add(1))
 	prefixIndexer := prefixcacheindexer.NewPrefixHashTable()
@@ -327,7 +335,7 @@ func newGatewayFixtureWithRequest(pods []*corev1.Pod, strategy, profile, externa
 	)
 	inputs := []*extProcPb.ProcessingRequest{
 		requestHeadersRequest(requestID, strategy, profile, externalFilter),
-		requestBodyRequest(),
+		requestBodyRequestWithBody(body),
 	}
 	_, valid := routerManager.Validate(strategy)
 	if hasReadyPod(pods) && (valid || profile != "") {
@@ -394,10 +402,17 @@ func requestHeadersRequest(requestID, strategy, profile, externalFilter string) 
 	}
 }
 func requestBodyRequest() *extProcPb.ProcessingRequest {
+	return requestBodyRequestWithBody(nil)
+}
+
+func requestBodyRequestWithBody(body []byte) *extProcPb.ProcessingRequest {
+	if body == nil {
+		body = []byte(`{"model":"llama2-7b","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	}
 	return &extProcPb.ProcessingRequest{
 		Request: &extProcPb.ProcessingRequest_RequestBody{
 			RequestBody: &extProcPb.HttpBody{
-				Body:        []byte(`{"model":"llama2-7b","messages":[{"role":"user","content":"hello"}],"stream":false}`),
+				Body:        body,
 				EndOfStream: true,
 			},
 		},

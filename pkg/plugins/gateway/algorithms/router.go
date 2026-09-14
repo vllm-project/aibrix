@@ -685,7 +685,7 @@ func NewRouterManagerWithCacheAndPrefixIndexer(c cache.Cache, indexer *prefixcac
 		indexer = prefixcacheindexer.NewPrefixHashTable()
 	}
 	rm := newIsolatedRouterManager()
-	// The six cache-backed strategies capture c. All other registrations are
+	// The seven cache-backed strategies capture c. All other registrations are
 	// copied from the production manager and retain their original dependencies
 	// (for example, SLO providers still resolve their configured cache).
 	rm.RegisterProvider(RouterRandom, RandomRouterProviderFunc)
@@ -695,6 +695,9 @@ func NewRouterManagerWithCacheAndPrefixIndexer(c cache.Cache, indexer *prefixcac
 	rm.Register(RouterLoadBalance, func() (types.Router, error) { return NewLoadBalanceRouterWithCache(c) })
 	rm.Register(RouterPrefixCache, func() (types.Router, error) {
 		return NewPrefixCacheRouterWithOptions(c, indexer)
+	})
+	rm.Register(RouterPD, func() (types.Router, error) {
+		return NewPDRouterWithCacheAndPrefixIndexer(c, indexer)
 	})
 	return rm
 }

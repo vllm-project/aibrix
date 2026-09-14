@@ -28,9 +28,10 @@ type DefaultHandler struct{}
 
 func (h *DefaultHandler) Name() string  { return "default" }
 func (h *DefaultHandler) IsAsync() bool { return false }
-func (h *DefaultHandler) AugmentPrefillRequest(_ *types.RoutingContext, _ *v1.Pod, _ map[string]any) error {
+func (h *DefaultHandler) AugmentPrefillRequest(_ *types.RoutingContext, _ *v1.Pod, body []byte) ([]byte, error) {
+	return body, nil
+}
+func (h *DefaultHandler) MergePrefillResponse(_ *types.RoutingContext, _ []byte, _ *v1.Pod) error {
 	return nil
 }
-func (h *DefaultHandler) MergePrefillResponse(_ *types.RoutingContext, _ map[string]any, _ *v1.Pod) error {
-	return nil
-}
+func (h *DefaultHandler) ControlledFields() []string { return nil }

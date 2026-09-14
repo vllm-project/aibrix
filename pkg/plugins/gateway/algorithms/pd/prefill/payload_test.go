@@ -25,133 +25,113 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
 )
 
-// fakeRawPreparer is a test double that simultaneously implements EngineHandler
-// and RawPrefillPayloadPreparer. It records whether each method was called and
-// returns a sentinel payload, allowing us to prove that PreparePayload routes
-// through the raw-body path.
-type fakeRawPreparer struct {
-	augmentCalled   bool
-	prepareCalled   bool
-	sentinelPayload []byte
+// fakeHandler is a test double implementing EngineHandler. It records the
+// body it was given, optionally injects a top-level field, and can fail.
+type fakeHandler struct {
+	augmentCalled bool
+	gotBody       []byte
+	failAugment   bool
 }
 
-func (f *fakeRawPreparer) Name() string  { return "fake-raw" }
-func (f *fakeRawPreparer) IsAsync() bool { return false }
+func (f *fakeHandler) Name() string               { return "fake" }
+func (f *fakeHandler) IsAsync() bool              { return false }
+func (f *fakeHandler) ControlledFields() []string { return nil }
 
-func (f *fakeRawPreparer) AugmentPrefillRequest(
-	_ *types.RoutingContext, _ *v1.Pod, _ map[string]any,
-) error {
-	f.augmentCalled = true
-	return nil
-}
-
-func (f *fakeRawPreparer) MergePrefillResponse(
-	_ *types.RoutingContext, _ map[string]any, _ *v1.Pod,
-) error {
-	return nil
-}
-
-func (f *fakeRawPreparer) PreparePrefillPayload(
-	routingCtx *types.RoutingContext, _ *v1.Pod,
+func (f *fakeHandler) AugmentPrefillRequest(
+	_ *types.RoutingContext, _ *v1.Pod, body []byte,
 ) ([]byte, error) {
-	f.prepareCalled = true
-	if f.sentinelPayload != nil {
-		// Simulate side-effecting ReqBody like a real handler would.
-		routingCtx.ReqBody = []byte(`{"decode":"body"}`)
-		return f.sentinelPayload, nil
+	f.augmentCalled = true
+	f.gotBody = body
+	if f.failAugment {
+		return nil, fmt.Errorf("sentinel error from fakeHandler")
 	}
-	return nil, fmt.Errorf("sentinel error from fakeRawPreparer")
+	return []byte(`{"injected":"by-handler","messages":[{"role":"user","content":"x"}],"stream":true,"stream_options":{"include_usage":true},"min_tokens":3}`), nil
 }
 
-func TestPreparePayload_RoutesToRawPreparer(t *testing.T) {
-	// Use a body that would FAIL sonic.Unmarshal. If PreparePayload tried the
-	// unmarshal path, the test would fail. Since the fake implements
-	// RawPrefillPayloadPreparer, the raw path is used and the sentinel payload
-	// is returned without ever touching sonic.
-	invalidJSON := []byte(`{this is not valid json`)
+func (f *fakeHandler) MergePrefillResponse(
+	_ *types.RoutingContext, _ []byte, _ *v1.Pod,
+) error {
+	return nil
+}
 
+func TestPreparePayload_AppliesControlFieldsOnHandlerOutput(t *testing.T) {
+	original := []byte(`{"messages":[],"max_tokens":256,"stream":true}`)
 	routingCtx := &types.RoutingContext{
-		ReqBody: invalidJSON,
+		ReqBody: original,
+		Context: context.Background(),
+	}
+	handler := &fakeHandler{}
+
+	payload, err := PreparePayload(routingCtx, &v1.Pod{}, "fake", handler)
+	require.NoError(t, err)
+
+	assert.True(t, handler.augmentCalled, "AugmentPrefillRequest must be called")
+	assert.Equal(t, original, handler.gotBody, "handler must receive the client body")
+
+	// Common prefill constraints are applied to what the handler returned.
+	assert.Equal(t, "by-handler", gjson.GetBytes(payload, "injected").String())
+	assert.Equal(t, int64(1), gjson.GetBytes(payload, "max_tokens").Int())
+	assert.Equal(t, int64(1), gjson.GetBytes(payload, "max_completion_tokens").Int())
+	assert.False(t, gjson.GetBytes(payload, "stream").Bool())
+	assert.False(t, gjson.GetBytes(payload, "stream_options").Exists())
+	assert.False(t, gjson.GetBytes(payload, "min_tokens").Exists())
+
+	// The decode body is untouched for handlers that do not modify it.
+	assert.Equal(t, original, routingCtx.ReqBody)
+}
+
+func TestPreparePayload_TRTLLMDropsMaxCompletionTokens(t *testing.T) {
+	routingCtx := &types.RoutingContext{
+		ReqBody: []byte(`{"messages":[],"max_completion_tokens":64}`),
 		Context: context.Background(),
 	}
 
-	sentinel := []byte(`{"sentinel":true}`)
-	handler := &fakeRawPreparer{sentinelPayload: sentinel}
-
-	payload, err := PreparePayload(routingCtx, &v1.Pod{}, "fake-raw", handler)
+	payload, err := PreparePayload(routingCtx, &v1.Pod{}, "trtllm", engine.Resolve("trtllm"))
 	require.NoError(t, err)
 
-	assert.Equal(t, sentinel, payload, "must return the sentinel payload from the raw preparer")
-	assert.True(t, handler.prepareCalled, "PreparePrefillPayload must be called")
-	assert.False(t, handler.augmentCalled, "AugmentPrefillRequest must NOT be called when raw preparer is used")
+	assert.Equal(t, int64(1), gjson.GetBytes(payload, "max_tokens").Int())
+	assert.False(t, gjson.GetBytes(payload, "max_completion_tokens").Exists(),
+		"TRT-LLM does not accept max_completion_tokens")
+	assert.Equal(t, "context_only", gjson.GetBytes(payload, "disaggregated_params.request_type").String())
 }
 
-func TestPreparePayload_RawPreparerErrorPropagates(t *testing.T) {
+func TestPreparePayload_HandlerErrorPropagates(t *testing.T) {
 	routingCtx := &types.RoutingContext{
 		ReqBody: []byte(`{"valid":"json"}`),
 		Context: context.Background(),
 	}
+	handler := &fakeHandler{failAugment: true}
 
-	// sentinelPayload is nil → PreparePrefillPayload returns an error.
-	handler := &fakeRawPreparer{}
-
-	_, err := PreparePayload(routingCtx, &v1.Pod{}, "fake-raw", handler)
-	assert.Error(t, err)
-	assert.True(t, handler.prepareCalled, "PreparePrefillPayload must be called")
-	assert.False(t, handler.augmentCalled, "AugmentPrefillRequest must NOT be called")
+	_, err := PreparePayload(routingCtx, &v1.Pod{}, "fake", handler)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sentinel error from fakeHandler")
 }
 
-// fakeNonRawHandler implements only EngineHandler (not RawPrefillPayloadPreparer),
-// ensuring the fallback unmarshal/marshal path is exercised.
-type fakeNonRawHandler struct {
-	augmentCalled bool
-}
+func TestPreparePayload_RejectsNonObjectBody(t *testing.T) {
+	for _, body := range []string{`{this is not valid json`, `[1,2,3]`, `"str"`, ``} {
+		routingCtx := &types.RoutingContext{
+			ReqBody: []byte(body),
+			Context: context.Background(),
+		}
+		handler := &fakeHandler{}
 
-func (f *fakeNonRawHandler) Name() string  { return "fake-non-raw" }
-func (f *fakeNonRawHandler) IsAsync() bool { return false }
+		_, err := PreparePayload(routingCtx, &v1.Pod{}, "fake", handler)
+		require.Error(t, err, "body %q", body)
 
-func (f *fakeNonRawHandler) AugmentPrefillRequest(
-	_ *types.RoutingContext, _ *v1.Pod, completionRequest map[string]any,
-) error {
-	f.augmentCalled = true
-	completionRequest["injected"] = "by-handler"
-	return nil
-}
-
-func (f *fakeNonRawHandler) MergePrefillResponse(
-	_ *types.RoutingContext, _ map[string]any, _ *v1.Pod,
-) error {
-	return nil
-}
-
-func TestPreparePayload_FallbackToUnmarshalPath(t *testing.T) {
-	routingCtx := &types.RoutingContext{
-		ReqBody: []byte(`{"messages":[],"max_tokens":256,"stream":true}`),
-		Context: context.Background(),
+		var invalidReqErr *engine.InvalidRequestError
+		assert.True(t, errors.As(err, &invalidReqErr), "body %q must yield *InvalidRequestError", body)
+		assert.False(t, handler.augmentCalled, "handler must not run on an invalid body")
 	}
-
-	handler := &fakeNonRawHandler{}
-
-	payload, err := PreparePayload(routingCtx, &v1.Pod{}, "fake-non-raw", handler)
-	require.NoError(t, err)
-
-	assert.True(t, handler.augmentCalled, "AugmentPrefillRequest must be called for non-raw handlers")
-
-	// Verify common prefill constraints were applied.
-	assert.Contains(t, string(payload), `"max_tokens":1`)
-	assert.Contains(t, string(payload), `"max_completion_tokens":1`)
-	assert.Contains(t, string(payload), `"stream":false`)
-	assert.NotContains(t, string(payload), "stream_options")
-	assert.NotContains(t, string(payload), "min_tokens")
 }
 
 // TestPreparePayload_SGLangHandlerIntegration exercises the full dispatcher
-// path: PreparePayload → SGLangHandler.PreparePrefillPayload. It verifies that
+// path: PreparePayload → SGLangHandler.AugmentPrefillRequest. It verifies that
 // the random bootstrap_room is identical in the returned prefill payload and
 // the side-effected routingCtx.ReqBody (decode body), and that messages/tools
 // are byte-identical across all three bodies (original, prefill, decode).
@@ -205,9 +185,60 @@ func TestPreparePayload_SGLangHandlerIntegration(t *testing.T) {
 	assert.True(t, gjson.GetBytes(decodeBody, "stream").Bool())
 }
 
+// TestPreparePayload_VLLMAndTRTLLMPreserveNestedBytes is the vLLM / TRT-LLM
+// counterpart of the SGLang integration test: nested objects must be
+// byte-identical between the original request, the prefill payload and the
+// decode body, and the prefill payload must be identical across repeated
+// calls. A map[string]any round trip would fail both properties because the
+// nested keys below are deliberately not in sorted order.
+func TestPreparePayload_VLLMAndTRTLLMPreserveNestedBytes(t *testing.T) {
+	originalBody := []byte(`{"model":"m","messages":[{"role":"system","content":"sys"},{"role":"user","content":[{"type":"text","text":"hi"},{"type":"image_url","image_url":{"url":"u","detail":"low"}}]}],"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"z":{"type":"string"},"a":{"type":"integer"}},"required":["z","a"]}}}],"temperature":0.7,"max_tokens":128,"stream":true,"stream_options":{"include_usage":true},"min_tokens":5}`)
+
+	for _, llmEngine := range []string{"vllm", "trtllm"} {
+		t.Run(llmEngine, func(t *testing.T) {
+			pod := &v1.Pod{Status: v1.PodStatus{PodIP: "10.0.0.1"}}
+			handler := engine.Resolve(llmEngine)
+
+			var first []byte
+			for i := 0; i < 100; i++ {
+				routingCtx := &types.RoutingContext{
+					ReqBody: originalBody,
+					Context: context.Background(),
+				}
+				prefillBody, err := PreparePayload(routingCtx, pod, llmEngine, handler)
+				require.NoError(t, err)
+
+				// Decode body is the client body, byte for byte.
+				assert.Equal(t, originalBody, routingCtx.ReqBody, "decode body must be the untouched client body")
+
+				for _, path := range []string{"messages", "tools", "model", "temperature"} {
+					assert.Equal(t, gjson.GetBytes(originalBody, path).Raw, gjson.GetBytes(prefillBody, path).Raw,
+						"%s must be byte-identical in prefill", path)
+				}
+				assert.Equal(t, int64(1), gjson.GetBytes(prefillBody, "max_tokens").Int())
+				assert.False(t, gjson.GetBytes(prefillBody, "stream").Bool())
+				assert.False(t, gjson.GetBytes(prefillBody, "stream_options").Exists())
+				assert.False(t, gjson.GetBytes(prefillBody, "min_tokens").Exists())
+
+				if llmEngine == "trtllm" {
+					// disagg_request_id changes per call; blank it and compare the rest.
+					require.True(t, gjson.GetBytes(prefillBody, "disaggregated_params.disagg_request_id").Exists())
+					prefillBody, err = sjson.SetBytes(prefillBody, "disaggregated_params.disagg_request_id", 0)
+					require.NoError(t, err)
+				}
+				if i == 0 {
+					first = prefillBody
+					continue
+				}
+				assert.Equal(t, string(first), string(prefillBody), "prefill payload must be stable across calls")
+			}
+		})
+	}
+}
+
 // TestPreparePayload_SGLangHandlerDuplicateFieldsRejected verifies that
 // ValidateSGLangRequest — called in Route() — rejects duplicate controlled
-// fields. PreparePrefillPayload itself no longer re-validates, so the test
+// fields. AugmentPrefillRequest itself no longer re-validates, so the test
 // exercises ValidateSGLangRequest directly.
 func TestPreparePayload_SGLangHandlerDuplicateFieldsRejected(t *testing.T) {
 	originalBody := []byte(`{"model":"m","messages":[],"bootstrap_host":"a","bootstrap_host":"b"}`)

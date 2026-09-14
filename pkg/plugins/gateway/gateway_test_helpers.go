@@ -91,6 +91,11 @@ func (m *MockCache) AddSubscriber(subscriber metrics.MetricSubscriber) {
 	m.Called(subscriber)
 }
 
+// RegisterRequestTracker is a no-op: the pd router registers itself on the
+// injected cache at construction time and the mock does not fan out request
+// lifecycle callbacks.
+func (m *MockCache) RegisterRequestTracker(tracker cache.RequestTracker) {}
+
 func (m *MockCache) GetMetricValueByPod(namespace string, podName string, metricName string) (metrics.MetricValue, error) {
 	args := m.Called(namespace, podName, metricName)
 	return args.Get(0).(metrics.MetricValue), args.Error(1)
