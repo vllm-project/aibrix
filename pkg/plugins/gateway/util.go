@@ -721,11 +721,13 @@ func rpsToLimitWindow(rps float64) (limit int64, windowSeconds int64) {
 //   - The profile's requestsInflight, if set, is a per-replica concurrency cap, and (like
 //     requestsPerSecondPerReplica) forces the routing strategy to least-request so the
 //     per-pod cap actually gets enforced -- selectTargetPod only runs, and thus only applies
-//     the cap, when a routing strategy resolves to something other than RouterNotSet. When
-//     both it and requestsPerSecondPerReplica are set and inflight < replica RPS, inflight is
-//     raised in-memory to ceil(replica RPS). Unlike RequestsPerSecond, neither
-//     requestsPerSecondPerReplica nor requestsInflight has an env-var form: both are
-//     configured directly in the profile.
+//     the cap, when a routing strategy resolves to something other than RouterNotSet.
+//     requestsInflight and requestsPerSecondPerReplica are independent, user-configured
+//     limits: when inflight is set below the resolved replica RPS, it is left as configured
+//     (only logged via warnIfReplicaInflightBelowRPS) rather than raised, since silently
+//     loosening the concurrency cap the user set would defeat its purpose. Unlike
+//     RequestsPerSecond, neither requestsPerSecondPerReplica nor requestsInflight has an
+//     env-var form: both are configured directly in the profile.
 func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 	if routingCtx == nil {
 		return

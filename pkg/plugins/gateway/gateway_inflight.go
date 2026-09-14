@@ -42,29 +42,40 @@ func replicaInflightLimit(routingCtx *types.RoutingContext) int64 {
 }
 
 // enforceReplicaInflight checks whether the already-selected target pod still has
-// capacity for one more concurrent request under its config profile's requestsInflight cap.
+// capacity for one more concurrent request under its config profile's requestsInflight cap,
+// and if so atomically reserves that capacity for this request.
 //
-// Uses getGlobalRunningRequestsByPod (the live cross-gateway count via
-// GetPodRunningRequests), not the local metric slot getRunningRequestsByPod reads for
-// per-request logging: an admission decision needs the live total, not a value that
-// can lag between scrape ticks. This is a read-only check: every routed request
-// already updates that counter via the normal request-tracking path regardless of
-// this cap, and a rejected request never touched it in the first place.
+// Uses AdmitPodRunningRequest, not a plain read (GetPodRunningRequests) followed by the
+// normal request-tracking path's later increment: this request (and any other concurrent
+// one to the same pod, on this gateway or another) would otherwise be able to observe the
+// same pre-increment count and all get admitted regardless of how tight limit is -- see
+// AdmitPodRunningRequest's doc comment. A successful admission here means this gateway's
+// own contribution to the pod's live count has already been applied, so it sets
+// routingCtx.ReplicaInflightAdmitted -- addPodStats (cache_trace.go) must see that and skip
+// its own increment of the same counter, or this request would be double-counted.
+//
+// err != nil means the pod dropped out of the cache between selection and this call (an
+// AdmitPodRunningRequest contract, mirroring GetPodRunningRequests) -- fail open, same as
+// the plain read this replaced did on error.
 func (s *Server) enforceReplicaInflight(ctx context.Context, model string, routingCtx *types.RoutingContext) *extProcPb.ProcessingResponse {
 	limit := replicaInflightLimit(routingCtx)
 	if limit <= 0 {
 		return nil
 	}
-	if routingCtx == nil || !routingCtx.HasRouted() || routingCtx.TargetPod() == nil {
+	if !routingCtx.HasRouted() || routingCtx.TargetPod() == nil {
 		return nil
 	}
 	pod := routingCtx.TargetPod()
-	running := int64(getGlobalRunningRequestsByPod(s, pod.Name, pod.Namespace))
-	if running >= limit {
+	admitted, err := s.cache.AdmitPodRunningRequest(pod.Name, pod.Namespace, limit)
+	if err != nil {
+		return nil
+	}
+	if !admitted {
 		klog.InfoS("replica_inflight_exceeded", "requestID", routingCtx.RequestID, "model", model,
-			"targetPod", pod.Name, "running", running, "limit", limit, "reason", "replica_at_capacity")
+			"targetPod", pod.Name, "limit", limit, "reason", "replica_at_capacity")
 		return replicaInflightExceededResponse(model, limit)
 	}
+	routingCtx.ReplicaInflightAdmitted = true
 	return nil
 }
 
@@ -80,6 +91,13 @@ func replicaInflightExceededResponse(model string, limit int64) *extProcPb.Proce
 // found in the cache) is kept so enforceReplicaInflight can fail-open on it later.
 // Uses GetPodsRunningRequests (one Redis round trip for every candidate) rather than
 // looping a single-pod read.
+//
+// This is only a best-effort pre-filter to steer selection away from saturated
+// replicas -- the actual hard cap is enforced later by enforceReplicaInflight's atomic
+// AdmitPodRunningRequest. So on a GetPodsRunningRequests error (e.g. a Redis blip),
+// failing open here (returning every candidate unfiltered) can at worst route to an
+// already-saturated pod, which enforceReplicaInflight will then reject; it does not
+// bypass the cap itself.
 func (s *Server) filterSaturatedReplicaInflight(pods []*v1.Pod, limit int64) []*v1.Pod {
 	if limit <= 0 || len(pods) == 0 {
 		return pods

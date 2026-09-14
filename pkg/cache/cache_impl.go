@@ -173,13 +173,37 @@ func (c *Store) GetMetricValueByPodModel(podName, podNamespace, modelName string
 	return c.getPodMetricImpl(podName, &metaPod.ModelMetrics, c.getPodModelMetricName(modelName, metricName))
 }
 
+// AdmitPodRunningRequest is the hard-cap counterpart of GetPodRunningRequests: instead of
+// just reading the live cross-gateway running-request count, it atomically checks that
+// count against limit and, only if still under it, includes this request's own
+// contribution in the count from this call onward (see admitRunningRequest). A plain read
+// followed by a later, separate increment cannot enforce a hard cap -- concurrent
+// requests can all observe the same pre-increment count and all be admitted regardless of
+// how tight limit is.
+//
+// admitted=false, err=nil means the pod is over its cap right now; err is non-nil only
+// when the pod itself isn't in the cache (mirrors GetPodRunningRequests), which the
+// caller should treat as fail-open, same as GetPodRunningRequests's error case.
+func (c *Store) AdmitPodRunningRequest(podName, podNamespace string, limit int64) (admitted bool, err error) {
+	key := utils.GeneratePodKey(podNamespace, podName)
+	metaPod, ok := c.metaPods.Load(key)
+	if !ok {
+		return false, fmt.Errorf("key does not exist in the cache: %s", key)
+	}
+	localRunning := int64(atomic.LoadInt32(&metaPod.runningRequests))
+	admitted, _ = c.admitRunningRequest(podNamespace, podName, limit, localRunning)
+	return admitted, nil
+}
+
 // realtimeRunningRequests is the live cross-gateway running-request total for one pod.
 // Prefer GetPodRunningRequests / GetPodsRunningRequests at call sites; this is the inner
 // Redis-or-local read they share (see readPodRunningRequests in cache_running_requests.go).
 //
 // Fallback to pod.runningRequests when Redis is nil, the read fails, or the hash is
 // missing (never routed, or idle past runningRequestsTTL). A hash that exists and sums
-// to 0 (only contributor is a now-dead gateway) is a real 0, not a fallback.
+// to 0 (every other contributor is a now-dead gateway) is a real 0, not a fallback --
+// readPodRunningRequests overlays this gateway's own hash field with this same
+// pod.runningRequests atomic before summing, so that self-contribution is never stale.
 func (c *Store) realtimeRunningRequests(pod *Pod) int64 {
 	if count, ok := c.readPodRunningRequests(pod.Namespace, pod.Name); ok {
 		return count

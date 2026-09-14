@@ -122,6 +122,21 @@ type MetricCache interface {
 	//   subscriber: Metric subscriber implementation
 	AddSubscriber(subscriber metrics.MetricSubscriber)
 
+	// AdmitPodRunningRequest is the hard-cap counterpart of GetPodRunningRequests: it
+	// atomically checks the pod's live cross-gateway running-request count against limit
+	// and, only if still under it, includes this request's own contribution in that count
+	// from this call onward -- so concurrent callers cannot all observe the same
+	// pre-increment count and all be admitted past limit, unlike a plain
+	// GetPodRunningRequests read followed by a later, separate increment.
+	// Parameters:
+	//   podName: Name of the pod
+	//   podNamespace: Namespace of the pod
+	//   limit: Maximum concurrent live requests to admit
+	// Returns:
+	//   bool: Whether this request was admitted (and, if so, already counted)
+	//   error: Error information if the pod is not found
+	AdmitPodRunningRequest(podName, podNamespace string, limit int64) (admitted bool, err error)
+
 	// GetPodRunningRequests is the single-pod live cross-gateway running-request count
 	// (Redis, falling back to this gateway's local atomic). Use GetPodsRunningRequests
 	// for a pod list -- looping this is N Redis round trips. Do not use

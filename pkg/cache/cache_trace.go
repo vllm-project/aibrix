@@ -324,11 +324,24 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string, modelNa
 	// via runningReqIncrDone/runningReqIncrOK so donePodStats' matching decrement
 	// (fired from its own goroutine) only ever pairs with a increment that actually
 	// landed -- see podStatsRecord's doc comment.
+	//
+	// ReplicaInflightAdmitted means enforceReplicaInflight's atomic admit-and-increment
+	// (pkg/plugins/gateway/gateway_inflight.go, Store.AdmitPodRunningRequest) already
+	// applied this gateway's +1 to this same Redis hash for this exact request, as part of
+	// its admission check. Calling incrPodRunningRequests here too would apply a second,
+	// uncounted +1 that nothing will ever undo (donePodStats only ever fires one matching
+	// decrement per request) -- so this must skip straight to recording success, exactly as
+	// if incrPodRunningRequests had been called and succeeded.
 	namespace, name := metaPod.Namespace, metaPod.Name
-	go func() {
-		defer close(podStats.runningReqIncrDone)
-		podStats.runningReqIncrOK = c.incrPodRunningRequests(namespace, name)
-	}()
+	if ctx.ReplicaInflightAdmitted {
+		podStats.runningReqIncrOK = true
+		close(podStats.runningReqIncrDone)
+	} else {
+		go func() {
+			defer close(podStats.runningReqIncrDone)
+			podStats.runningReqIncrOK = c.incrPodRunningRequests(namespace, name)
+		}()
+	}
 
 	// Update pending load. GetConsumption runs unlocked -- it can be slow (e.g. a GPU
 	// profile lookup) or take other locks, and stripe locks should stay short -- so

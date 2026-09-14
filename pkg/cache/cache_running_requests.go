@@ -197,6 +197,132 @@ func (c *Store) decrPodRunningRequests(namespace, name string) {
 	}
 }
 
+// runningRequestsAdmitScript atomically enforces a hard per-pod concurrency cap: it sums
+// the same live-gateway-filtered fields sumLiveFields/readPodRunningRequests would report
+// and, only if that sum is still under the limit, applies this gateway's own +1 to the
+// same hash incrPodRunningRequests/decrPodRunningRequests use -- all in one round trip.
+// This is what makes requestsInflight (see enforceReplicaInflight in
+// pkg/plugins/gateway/gateway_inflight.go) an actual hard cap: a plain read (the live sum)
+// followed by a *later*, separately-fired increment -- which is what this replaced -- lets
+// any number of concurrent requests to the same pod all observe the same pre-increment sum
+// and all get admitted, no matter how tight the limit, because none of their increments have
+// landed yet by the time the others check.
+//
+// This gateway's own field in the hash can be stale in either direction, and unlike
+// overlaySelfRunningRequests on the read side, the fix is a max() against localRunning, not
+// an outright substitution -- because which side leads depends on which path produced the
+// pending write:
+//
+//   - A request that didn't go through this admit path (no cap configured for it, or it hit
+//     the AdmitPodRunningRequest error/fail-open case) reaches the hash via
+//     incrPodRunningRequests, fired async from addPodStats (cache_trace.go) -- fire-and-
+//     forget with respect to the request path. localRunning (already incremented
+//     synchronously before that call) leads the hash here, so the raw field would
+//     undercount until the HINCRBY lands, and could admit past the cap.
+//   - A request THIS script itself just admitted is the mirror image: the HINCRBY below
+//     lands synchronously as part of that earlier call, but the matching increment to
+//     localRunning only happens later, downstream in addPodStats (which runs after
+//     enforceReplicaInflight returns). So immediately after such an admit, the hash field
+//     leads localRunning -- substituting localRunning here, as overlaySelfRunningRequests
+//     does for reads, would discard an already-confirmed admission and reopen the exact
+//     double-admission race this script exists to close.
+//
+// max() gets both right: it picks up a not-yet-landed plain increment same as a
+// substitution would, but never regresses below a hash value this script itself already
+// committed. The only cost is the equivalent lag on a decrement (localRunning, decremented
+// synchronously in donePodStats, can briefly read lower than the hash before the matching
+// decrPodRunningRequests call lands -- see decrCrossGatewayRunningRequests) -- max() then
+// keeps the still-live hash value, which can only make this check more conservative
+// (a spurious rejection right after a request completes), never less. Other gateways'
+// fields are trusted as-is -- there is no local signal for them.
+//
+// KEYS[1] = the pod's running-requests hash key
+// KEYS[2] = runningRequestsGatewaysKey (the liveness ZSET)
+// ARGV[1] = field name (this gateway's instance ID)
+// ARGV[2] = live-gateway cutoff (unix ms, inclusive lower bound) -- see liveGatewaysCutoffMillis
+// ARGV[3] = inflight limit
+// ARGV[4] = hash key TTL in milliseconds
+// ARGV[5] = this gateway's local atomic running-request count for the pod
+// Returns {1, sum} and increments if sum < limit, else {0, sum} with no increment -- sum is
+// always the live total *before* this call's own increment (if any).
+const runningRequestsAdmitScript = `
+local live = redis.call('ZRANGEBYSCORE', KEYS[2], ARGV[2], '+inf')
+local liveSet = {}
+for _, gw in ipairs(live) do
+  liveSet[gw] = true
+end
+local selfField = ARGV[1]
+local selfLocal = tonumber(ARGV[5]) or 0
+local selfSeen = false
+local fields = redis.call('HGETALL', KEYS[1])
+local sum = 0
+for i = 1, #fields, 2 do
+  if liveSet[fields[i]] then
+    local v = tonumber(fields[i + 1]) or 0
+    if fields[i] == selfField then
+      selfSeen = true
+      if selfLocal > v then
+        v = selfLocal
+      end
+    end
+    if v > 0 then
+      sum = sum + v
+    end
+  end
+end
+if not selfSeen and selfLocal > 0 then
+  sum = sum + selfLocal
+end
+if sum >= tonumber(ARGV[3]) then
+  return {0, sum}
+end
+redis.call('HINCRBY', KEYS[1], ARGV[1], 1)
+redis.call('PEXPIRE', KEYS[1], ARGV[4])
+return {1, sum}
+`
+
+// admitRunningRequest is the atomic, hard-cap counterpart of readPodRunningRequests -- see
+// runningRequestsAdmitScript. This sits on the request/admission path (like
+// readPodRunningRequests, unlike the fire-and-forget incr/decr), so it uses the same short
+// runningRequestsReadTimeout: an admission decision must never add meaningful latency to
+// routing.
+//
+// localRunning is the caller's already-known local atomic count for the pod (addPodStats
+// will still increment it normally regardless of this call's outcome -- that counter is
+// local bookkeeping, not part of this Redis-backed cap). Two roles: (1) the fallback
+// decision when Redis is unavailable -- failing open to a local-only decision (rather than
+// blocking admission, or admitting unconditionally) matches this package's
+// degrade-gracefully-under-a-slow/dead-Redis philosophy everywhere else, at the cost of the
+// cap being only best-effort for the duration of an actual outage; (2) passed into
+// runningRequestsAdmitScript as a floor on this gateway's own hash field -- a max(), not a
+// substitution like overlaySelfRunningRequests uses for reads, because that field's own
+// prior writes can come from this very script, which updates it before localRunning
+// catches up -- see the script's doc comment for why an unconditional substitution would
+// be wrong here specifically.
+func (c *Store) admitRunningRequest(namespace, name string, limit, localRunning int64) (admitted bool, running int64) {
+	if c.redisClient == nil {
+		return localRunning < limit, localRunning
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), runningRequestsReadTimeout)
+	defer cancel()
+	key := runningRequestsKey(namespace, name)
+	res, err := c.redisClient.Eval(ctx, runningRequestsAdmitScript, []string{key, runningRequestsGatewaysKey},
+		runningRequestsGatewayInstanceID, c.liveGatewaysCutoffMillis(), strconv.FormatInt(limit, 10),
+		strconv.FormatInt(runningRequestsTTL.Milliseconds(), 10), strconv.FormatInt(localRunning, 10)).Result()
+	if err != nil {
+		klog.V(4).ErrorS(err, "failed to atomically admit against running-requests inflight cap; falling back to local count", "key", key)
+		return localRunning < limit, localRunning
+	}
+	arr, ok := res.([]interface{})
+	if !ok || len(arr) != 2 {
+		klog.V(4).InfoS("unexpected running-requests admit script result shape; falling back to local count", "key", key)
+		return localRunning < limit, localRunning
+	}
+	admittedFlag, _ := arr[0].(int64)
+	running, _ = arr[1].(int64)
+	return admittedFlag == 1, running
+}
+
 // heartbeatRunningRequestsLiveness refreshes this gateway instance's entry in
 // runningRequestsGatewaysKey. Driven by a periodic ticker (initRunningRequestsLiveness)
 // rather than by request traffic, so a gateway that is alive but idle -- zero
@@ -233,15 +359,34 @@ func (c *Store) heartbeatRunningRequestsLiveness() {
 // ZADD this instance, refresh the ZSET's hygiene TTL, and trim members older than
 // runningRequestsFieldPruneWindow. Kept synchronous on the ticker so a live gateway
 // keeps its liveness score fresh even when the async hygiene pass is slow or skipped.
+//
+// The ZADD score and the prune cutoff both use c.redisNowMillis() (this process's
+// clock, corrected by the offset from the last successful sync) rather than raw
+// time.Now() -- and that same offset is what every reader uses to compute
+// liveGatewaysCutoffMillis/prunableGatewaysCutoffMillis (see redisNowMillis) -- so a
+// gateway pod whose local clock has drifted from Redis's still gets judged against
+// the same clock everyone else is using. TIME is piggybacked on this pipeline (one
+// extra command on an already off-hot-path, once-per-second round trip, not a new
+// round trip) and its result re-syncs the offset for use starting with the *next*
+// tick -- this tick's own score/cutoff necessarily still use the prior sync, but at
+// worst that is runningRequestsLivenessHeartbeatInterval stale, which only
+// re-introduces this process's own clock *drift rate* (not the skew being
+// corrected for) over that one second -- negligible next to
+// runningRequestsLivenessWindow.
 func (c *Store) writeRunningRequestsLivenessHeartbeat() {
 	ctx, cancel := context.WithTimeout(context.Background(), runningRequestsWriteTimeout)
 	defer cancel()
 	pipe := c.redisClient.Pipeline()
-	pipe.ZAdd(ctx, runningRequestsGatewaysKey, redis.Z{Score: float64(time.Now().UnixMilli()), Member: runningRequestsGatewayInstanceID})
+	timeCmd := pipe.Time(ctx)
+	pipe.ZAdd(ctx, runningRequestsGatewaysKey, redis.Z{Score: float64(c.redisNowMillis()), Member: runningRequestsGatewayInstanceID})
 	pipe.PExpire(ctx, runningRequestsGatewaysKey, runningRequestsTTL)
-	pipe.ZRemRangeByScore(ctx, runningRequestsGatewaysKey, "-inf", "("+prunableGatewaysCutoffMillis())
+	pipe.ZRemRangeByScore(ctx, runningRequestsGatewaysKey, "-inf", "("+c.prunableGatewaysCutoffMillis())
 	if _, err := pipe.Exec(ctx); err != nil {
 		klog.V(4).ErrorS(err, "failed to heartbeat running-requests liveness", "gateway", runningRequestsGatewayInstanceID)
+		return
+	}
+	if redisTime, err := timeCmd.Result(); err == nil {
+		c.runningRequestsClockOffsetMillis.Store(redisTime.UnixMilli() - time.Now().UnixMilli())
 	}
 }
 
@@ -315,18 +460,29 @@ func initRunningRequestsLiveness(store *Store, stopCh <-chan struct{}) {
 	}()
 }
 
+// redisNowMillis estimates the current time on Redis's clock (unix ms): this
+// process's own clock, corrected by the offset observed at the last successful
+// liveness heartbeat (see writeRunningRequestsLivenessHeartbeat). Every gateway
+// instance heartbeats its score and computes liveness cutoffs through this, rather
+// than through raw time.Now(), so all of them reason about liveness on one shared
+// clock instead of each other's potentially-skewed local clocks -- important given
+// how tight runningRequestsLivenessWindow is (3s).
+func (c *Store) redisNowMillis() int64 {
+	return time.Now().UnixMilli() + c.runningRequestsClockOffsetMillis.Load()
+}
+
 // liveGatewaysCutoffMillis is the earliest heartbeat timestamp (unix ms) still
 // considered live -- see runningRequestsLivenessWindow.
-func liveGatewaysCutoffMillis() string {
-	return strconv.FormatInt(time.Now().Add(-runningRequestsLivenessWindow).UnixMilli(), 10)
+func (c *Store) liveGatewaysCutoffMillis() string {
+	return strconv.FormatInt(c.redisNowMillis()-runningRequestsLivenessWindow.Milliseconds(), 10)
 }
 
 // prunableGatewaysCutoffMillis is the earliest heartbeat timestamp (unix ms) that
 // still protects a gateway's hash fields from deletion -- see
 // runningRequestsFieldPruneWindow. Deliberately a separate, much longer cutoff than
 // liveGatewaysCutoffMillis: summing and deleting need different safety margins.
-func prunableGatewaysCutoffMillis() string {
-	return strconv.FormatInt(time.Now().Add(-runningRequestsFieldPruneWindow).UnixMilli(), 10)
+func (c *Store) prunableGatewaysCutoffMillis() string {
+	return strconv.FormatInt(c.redisNowMillis()-runningRequestsFieldPruneWindow.Milliseconds(), 10)
 }
 
 // sumLiveFields sums fields whose gateway ID is in live, skipping stale/dead
@@ -354,6 +510,28 @@ func sumLiveFields(fields map[string]string, live map[string]struct{}) (total in
 		total += n
 	}
 	return total, excluded
+}
+
+// overlaySelfRunningRequests replaces this gateway's own field in fields (creating it
+// if absent) with its local pod.runningRequests atomic, and marks that field live.
+//
+// incrPodRunningRequests/decrPodRunningRequests are fired from a detached goroutine,
+// fire-and-forget with respect to the request path (see addPodStats/donePodStats), so
+// Redis's copy of THIS gateway's own contribution can briefly lag the true value in
+// either direction -- most visibly right after this same process just incremented
+// locally for a request that another, concurrent admission check (inflight cap,
+// routing score) needs to see immediately. The local atomic is not an approximation
+// of that field -- it IS the value this process would have written, had the write
+// already landed -- so it always wins over whatever Redis currently holds, regardless
+// of whether the field was present, stale, or missing. This does not help with lag in
+// OTHER gateways' fields; that remains bounded only by eventual consistency.
+func (c *Store) overlaySelfRunningRequests(namespace, name string, fields map[string]string, live map[string]struct{}) {
+	metaPod, ok := c.metaPods.Load(utils.GeneratePodKey(namespace, name))
+	if !ok {
+		return
+	}
+	fields[runningRequestsGatewayInstanceID] = strconv.FormatInt(int64(atomic.LoadInt32(&metaPod.runningRequests)), 10)
+	live[runningRequestsGatewayInstanceID] = struct{}{}
 }
 
 // enqueueDeadRunningRequestsPrune records hash fields that a read excluded from its
@@ -409,7 +587,7 @@ func (c *Store) flushPendingRunningRequestsPrunes() {
 	defer cancel()
 	client := c.redisClient
 	longLived, err := client.ZRangeByScore(ctx, runningRequestsGatewaysKey,
-		&redis.ZRangeBy{Min: prunableGatewaysCutoffMillis(), Max: "+inf"}).Result()
+		&redis.ZRangeBy{Min: c.prunableGatewaysCutoffMillis(), Max: "+inf"}).Result()
 	if err != nil {
 		klog.V(4).ErrorS(err, "failed to check long-window liveness before pruning running-requests fields")
 		for _, item := range items {
@@ -451,11 +629,15 @@ func (c *Store) flushPendingRunningRequestsPrunes() {
 // running-requests hash, then sums only the fields belonging to currently-live
 // gateways (see runningRequestsLivenessWindow), so a crashed gateway's leaked
 // contribution is excluded within that window regardless of how much traffic other
-// gateways keep sending to the same pod. ok is false when Redis isn't configured,
-// the read fails, or the pod's hash doesn't exist yet (never routed to, or fully
-// idle past runningRequestsTTL) -- letting the caller fall back to its local atomic
-// counter. A hash that DOES exist but sums to zero (e.g. its only contributor is a
-// now-dead gateway) is a valid, correct answer, not a fallback case.
+// gateways keep sending to the same pod. Before summing, this gateway's own field is
+// overlaid with its local atomic (see overlaySelfRunningRequests) so this process's
+// own just-applied increment/decrement is never masked by its own not-yet-landed
+// async Redis write. ok is false when Redis isn't configured, the read fails, or the
+// pod's hash doesn't exist yet (never routed to, or fully idle past
+// runningRequestsTTL) -- letting the caller fall back to its local atomic counter. A
+// hash that DOES exist but sums to zero (e.g. every other contributor is a now-dead
+// gateway, and this gateway's own overlaid count is also zero) is a valid, correct
+// answer, not a fallback case.
 func (c *Store) readPodRunningRequests(namespace, name string) (count int64, ok bool) {
 	if c.redisClient == nil {
 		return 0, false
@@ -465,7 +647,7 @@ func (c *Store) readPodRunningRequests(namespace, name string) (count int64, ok 
 	defer cancel()
 	client := c.redisClient
 	pipe := client.Pipeline()
-	liveCmd := pipe.ZRangeByScore(ctx, runningRequestsGatewaysKey, &redis.ZRangeBy{Min: liveGatewaysCutoffMillis(), Max: "+inf"})
+	liveCmd := pipe.ZRangeByScore(ctx, runningRequestsGatewaysKey, &redis.ZRangeBy{Min: c.liveGatewaysCutoffMillis(), Max: "+inf"})
 	hashCmd := pipe.HGetAll(ctx, key)
 	if _, err := pipe.Exec(ctx); err != nil {
 		klog.V(4).ErrorS(err, "failed to read running-requests counter", "namespace", namespace, "name", name)
@@ -480,7 +662,7 @@ func (c *Store) readPodRunningRequests(namespace, name string) (count int64, ok 
 	if err != nil || len(fields) == 0 {
 		return 0, false
 	}
-	live := make(map[string]struct{}, len(liveGateways))
+	live := make(map[string]struct{}, len(liveGateways)+1)
 	for _, gw := range liveGateways {
 		live[gw] = struct{}{}
 	}
@@ -488,6 +670,7 @@ func (c *Store) readPodRunningRequests(namespace, name string) (count int64, ok 
 	// whose only-ever contributor has gone stale correctly sums to zero -- crash
 	// recovery is this liveness check's job, not a signal that something is wrong
 	// with the read.
+	c.overlaySelfRunningRequests(namespace, name, fields, live)
 	total, excluded := sumLiveFields(fields, live)
 	if len(excluded) > 0 {
 		c.enqueueDeadRunningRequestsPrune(key, excluded)
@@ -522,7 +705,7 @@ func (c *Store) readPodsRunningRequests(pods []*v1.Pod) map[string]int64 {
 	defer cancel()
 	client := c.redisClient
 	pipe := client.Pipeline()
-	liveCmd := pipe.ZRangeByScore(ctx, runningRequestsGatewaysKey, &redis.ZRangeBy{Min: liveGatewaysCutoffMillis(), Max: "+inf"})
+	liveCmd := pipe.ZRangeByScore(ctx, runningRequestsGatewaysKey, &redis.ZRangeBy{Min: c.liveGatewaysCutoffMillis(), Max: "+inf"})
 	podKeys := make([]string, len(valid))
 	redisKeys := make([]string, len(valid))
 	hashCmds := make([]*redis.MapStringStringCmd, len(valid))
@@ -540,7 +723,7 @@ func (c *Store) readPodsRunningRequests(pods []*v1.Pod) map[string]int64 {
 		klog.V(4).ErrorS(err, "failed to read live gateways for running-requests counters")
 		return nil
 	}
-	live := make(map[string]struct{}, len(liveGateways))
+	live := make(map[string]struct{}, len(liveGateways)+1)
 	for _, gw := range liveGateways {
 		live[gw] = struct{}{}
 	}
@@ -554,6 +737,9 @@ func (c *Store) readPodsRunningRequests(pods []*v1.Pod) map[string]int64 {
 		if err != nil || len(fields) == 0 {
 			continue
 		}
+		// See overlaySelfRunningRequests: this gateway's own field must never be
+		// trusted stale just because it already exists in the hash.
+		c.overlaySelfRunningRequests(valid[i].Namespace, valid[i].Name, fields, live)
 		total, excluded := sumLiveFields(fields, live)
 		if len(excluded) > 0 {
 			c.enqueueDeadRunningRequestsPrune(redisKeys[i], excluded)

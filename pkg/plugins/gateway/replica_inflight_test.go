@@ -134,13 +134,15 @@ func TestEnforceReplicaInflight_AdmitThenReject(t *testing.T) {
 	s := &Server{cache: mockCache}
 	pod := podWithReplicaInflight("a", 1)
 
-	mockCache.On("GetPodRunningRequests", "a", "ns").Return(int64(0), nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(true, nil).Once()
 	routingCtx := types.NewRoutingContext(context.Background(), "", "m", "", "r1", "")
 	applyConfigProfile(routingCtx, []*v1.Pod{pod})
 	routingCtx.SetTargetPod(pod)
 	assert.Nil(t, s.enforceReplicaInflight(context.Background(), "m", routingCtx))
+	assert.True(t, routingCtx.ReplicaInflightAdmitted,
+		"a successful admission must be recorded so addPodStats does not double-increment")
 
-	mockCache.On("GetPodRunningRequests", "a", "ns").Return(int64(1), nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, nil).Once()
 	routingCtx2 := types.NewRoutingContext(context.Background(), "", "m", "", "r2", "")
 	applyConfigProfile(routingCtx2, []*v1.Pod{pod})
 	routingCtx2.SetTargetPod(pod)
@@ -151,6 +153,7 @@ func TestEnforceReplicaInflight_AdmitThenReject(t *testing.T) {
 	assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, imm.GetStatus().GetCode())
 	assert.Contains(t, imm.GetBody(), ErrorTypeOverloaded)
 	assert.Contains(t, imm.GetBody(), ErrorCodeReplicaInflightExceeded)
+	assert.False(t, routingCtx2.ReplicaInflightAdmitted)
 	mockCache.AssertExpectations(t)
 }
 
@@ -161,25 +164,25 @@ func TestEnforceReplicaInflight_TwoPodsIndependent(t *testing.T) {
 	podB := podWithReplicaInflight("b", 1)
 	pods := []*v1.Pod{podA, podB}
 
-	mockCache.On("GetPodRunningRequests", "a", "ns").Return(int64(0), nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(true, nil).Once()
 	ctxA := types.NewRoutingContext(context.Background(), "", "m", "", "r1", "")
 	applyConfigProfile(ctxA, pods)
 	ctxA.SetTargetPod(podA)
 	assert.Nil(t, s.enforceReplicaInflight(context.Background(), "m", ctxA))
 
-	mockCache.On("GetPodRunningRequests", "b", "ns").Return(int64(0), nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "b", "ns", int64(1)).Return(true, nil).Once()
 	ctxB := types.NewRoutingContext(context.Background(), "", "m", "", "r2", "")
 	applyConfigProfile(ctxB, pods)
 	ctxB.SetTargetPod(podB)
 	assert.Nil(t, s.enforceReplicaInflight(context.Background(), "m", ctxB))
 
-	mockCache.On("GetPodRunningRequests", "a", "ns").Return(int64(1), nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, nil).Once()
 	ctxA2 := types.NewRoutingContext(context.Background(), "", "m", "", "r3", "")
 	applyConfigProfile(ctxA2, pods)
 	ctxA2.SetTargetPod(podA)
 	assert.NotNil(t, s.enforceReplicaInflight(context.Background(), "m", ctxA2))
 
-	mockCache.On("GetPodRunningRequests", "b", "ns").Return(int64(1), nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "b", "ns", int64(1)).Return(false, nil).Once()
 	ctxB2 := types.NewRoutingContext(context.Background(), "", "m", "", "r4", "")
 	applyConfigProfile(ctxB2, pods)
 	ctxB2.SetTargetPod(podB)
@@ -193,7 +196,7 @@ func TestEnforceReplicaInflight_TwoPodsIndependent(t *testing.T) {
 // admits the request.
 func TestEnforceReplicaInflight_MetricLookupErrorFailsOpen(t *testing.T) {
 	mockCache := &MockCache{}
-	mockCache.On("GetPodRunningRequests", "a", "ns").Return(int64(0), assert.AnError)
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, assert.AnError)
 	s := &Server{cache: mockCache}
 	pod := podWithReplicaInflight("a", 1)
 	routingCtx := types.NewRoutingContext(context.Background(), "", "m", "", "r1", "")
@@ -201,6 +204,8 @@ func TestEnforceReplicaInflight_MetricLookupErrorFailsOpen(t *testing.T) {
 	routingCtx.SetTargetPod(pod)
 
 	assert.Nil(t, s.enforceReplicaInflight(context.Background(), "m", routingCtx))
+	assert.False(t, routingCtx.ReplicaInflightAdmitted,
+		"failing open on a lookup error must not be confused with a real, already-counted admission")
 }
 
 func TestFilterSaturatedReplicaInflight(t *testing.T) {
@@ -246,13 +251,13 @@ func TestHandleRequestBody_ReplicaInflightAdmitThenReject(t *testing.T) {
 	mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
 	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1)).Once()
 	// First request: filterSaturatedReplicaInflight's pre-routing check (batched,
-	// GetPodsRunningRequests) and enforceReplicaInflight's post-routing check
-	// (GetPodRunningRequests) both see the pod below the limit; the request_start log
-	// reads the unrelated local metric slot. Second request: filterSaturatedReplicaInflight
+	// GetPodsRunningRequests) sees the pod below the limit, and enforceReplicaInflight's
+	// post-routing atomic admission (AdmitPodRunningRequest) admits it; the request_start
+	// log reads the unrelated local metric slot. Second request: filterSaturatedReplicaInflight
 	// now sees the pod at the limit and rejects it before enforceReplicaInflight or
 	// request_start is ever reached.
 	mockCache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{"ns/a": 0}, nil).Once()
-	mockCache.On("GetPodRunningRequests", "a", "ns").Return(int64(0), nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(true, nil).Once()
 	mockCache.On("GetMetricValueByPod", "a", "ns", metrics.RealtimeNumRequestsRunning).
 		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Once()
 	mockCache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{"ns/a": 1}, nil).Once()
@@ -341,8 +346,8 @@ func TestHandleRequestBody_ReplicaInflightCoexistsWithReplicaRPS(t *testing.T) {
 	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1)).Once()
 	// Inflight cap is 2 and stays well under it on both requests -- the second request
 	// must be rejected by replica RPS (cap 1), not by inflight. GetPodsRunningRequests /
-	// GetPodRunningRequests are left unstubbed and fall back to MockCache's lenient
-	// zero-value default, which is comfortably under the cap of 2 either way.
+	// AdmitPodRunningRequest are left unstubbed and fall back to MockCache's lenient
+	// admit-by-default, which is comfortably under the cap of 2 either way.
 	mockCache.On("GetMetricValueByPod", "a", "ns", metrics.RealtimeNumRequestsRunning).
 		Return(&metrics.SimpleMetricValue{Value: 0}, nil)
 

@@ -341,24 +341,12 @@ func modelClaimRetryResponse(model, state string) *extProcPb.ProcessingResponse 
 // (RealtimeNumRequestsRunning), not a live cross-gateway read -- fine for per-request
 // logging (request_start/request_end sit on the ext_proc Send path, where an extra
 // Redis round trip is not worth paying), but not for a routing or admission decision.
-// Use getGlobalRunningRequestsByPod for those.
+// Use cache.GetPodRunningRequests (or, for admission, AdmitPodRunningRequest -- see
+// gateway_inflight.go's enforceReplicaInflight) for those.
 func getRunningRequestsByPod(s *Server, podName, namespace string) float64 {
 	mv, err := s.cache.GetMetricValueByPod(podName, namespace, metrics.RealtimeNumRequestsRunning)
 	if err != nil || mv == nil {
 		return 0
 	}
 	return mv.GetSimpleValue()
-}
-
-// getGlobalRunningRequestsByPod is a live cross-gateway read (GetPodRunningRequests,
-// Redis-backed with a short timeout -- see cache_running_requests.go). Do not call it
-// from request_start or request_end (see getRunningRequestsByPod); use it where
-// correctness matters more than an extra Redis round trip -- replica inflight
-// admission (gateway_inflight.go) and operator/debug surfaces that need a live total.
-func getGlobalRunningRequestsByPod(s *Server, podName, namespace string) float64 {
-	count, err := s.cache.GetPodRunningRequests(podName, namespace)
-	if err != nil {
-		return 0
-	}
-	return float64(count)
 }

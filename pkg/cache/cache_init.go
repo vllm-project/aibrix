@@ -166,6 +166,16 @@ type Store struct {
 	// (PEXPIRE in-flight hashes + drain pending prunes) is running. Extra heartbeat
 	// ticks skip rather than stacking goroutines.
 	runningRequestsHygieneBusy atomic.Bool
+	// runningRequestsClockOffsetMillis is (Redis server time - this process's local
+	// time), in milliseconds, as of the most recent successful liveness heartbeat.
+	// Every gateway instance stamps its heartbeat and computes liveness cutoffs from
+	// time.Now().UnixMilli()+offset instead of raw time.Now() -- see
+	// writeRunningRequestsLivenessHeartbeat / redisNowMillis -- so that clock skew
+	// between gateway pods' local clocks cannot make one instance look live or dead
+	// to another under the tight runningRequestsLivenessWindow. Zero until the first
+	// heartbeat completes, which just reproduces pre-sync (assume-synced) behavior
+	// for that one tick.
+	runningRequestsClockOffsetMillis atomic.Int64
 }
 
 // Get retrieves the cache instance

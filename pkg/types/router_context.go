@@ -136,6 +136,14 @@ type RoutingContext struct {
 	// based on config-profile header. Nil when no config is present.
 	ConfigProfile *ResolvedConfigProfile
 
+	// ReplicaInflightAdmitted is true once the gateway's replica-inflight admission check
+	// (enforceReplicaInflight, backed by cache.Store.AdmitPodRunningRequest) has atomically
+	// admitted this request AND, in doing so, already applied this gateway's own +1 to the
+	// target pod's cross-gateway running-requests counter. Consumers that also increment
+	// that counter (addPodStats) must check this first and skip their own increment, or the
+	// pod's count would be inflated by an extra, never-decremented +1 for this request.
+	ReplicaInflightAdmitted bool
+
 	targetPodSet chan struct{}
 	targetPod    atomic.Pointer[v1.Pod]
 	targetPort   atomic.Int32
@@ -422,6 +430,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.Span = nil
 	r.RespHeaders = map[string]string{}
 	r.ConfigProfile = nil
+	r.ReplicaInflightAdmitted = false
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)
 	r.targetPort.Store(0)

@@ -129,6 +129,17 @@ func (m *MockCache) GetPodRunningRequests(podName string, podNamespace string) (
 	return args.Get(0).(int64), args.Error(1)
 }
 
+// AdmitPodRunningRequest defaults to admitting (true, nil) when the test hasn't set up an
+// expectation, mirroring GetPodRunningRequests's harmless-zero-value default -- most tests
+// exercising other behavior don't care about the inflight cap at all.
+func (m *MockCache) AdmitPodRunningRequest(podName string, podNamespace string, limit int64) (bool, error) {
+	if !m.hasExpectation("AdmitPodRunningRequest") {
+		return true, nil
+	}
+	args := m.Called(podName, podNamespace, limit)
+	return args.Bool(0), args.Error(1)
+}
+
 func (m *MockCache) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error) {
 	if !m.hasExpectation("GetPodsRunningRequests") {
 		return nil, nil
