@@ -19,11 +19,13 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	atomic_ext "go.uber.org/atomic"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -375,9 +377,57 @@ func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
 	} else {
 		c.bufferPod.Pod = pod
 	}
-	metaPod, loaded := c.metaPods.LoadOrStore(utils.GeneratePodKey(pod.Namespace, pod.Name), c.bufferPod)
+
+	key := utils.GeneratePodKey(pod.Namespace, pod.Name)
+
+	// A pod key that was deleted moments ago (a transient health-check flap on a
+	// busy pod, or the delete+re-add updatePod does for every in-place K8s pod
+	// update -- see deletePodLocked) gets its realtime counters resumed here
+	// instead of restarting at zero. Without this, a pod that never actually
+	// stopped serving would briefly look empty to least-request/load-balance
+	// scoring right as it reappears, and get piled on with new requests on top
+	// of whatever it was already running.
+	//
+	// Gated on the reappearing pod's IP matching the deleted one's: the same
+	// name can legitimately be recreated as a genuinely different backend (e.g.
+	// a StatefulSet pod restarted with a fresh process on a new IP), which must
+	// start at zero rather than inherit a stale, unrelated count -- see
+	// TestDoneRequestCountAfterSameNamePodRecreationDoesNotDecrementNewPod.
+	//
+	// podStatsLockFor(key) is held across the snapshot-resume-and-publish sequence
+	// below so it can't interleave with a concurrent addPodStats/donePodStats for the
+	// same key (which take the same lock around resolving and mutating the counters
+	// this resumes) -- see podStatsLockFor's doc comment in cache_trace.go.
+	mu := c.podStatsLockFor(key)
+	mu.Lock()
+	defer mu.Unlock()
+
+	resumed := false
+	if snap, ok := c.recentlyDeletedPods.LoadAndDelete(key); ok {
+		if time.Since(snap.deletedAt) < recentlyDeletedPodGracePeriod &&
+			snap.podIP != "" && snap.podIP == pod.Status.PodIP {
+			c.bufferPod.runningRequests = atomic.LoadInt32(&snap.runningRequests)
+			c.bufferPod.completedRequests = atomic.LoadInt64(&snap.completedRequests)
+			c.bufferPod.pendingLoadUtilization.Store(snap.pendingLoadUtilization.Load())
+			c.bufferPod.statsGeneration = snap.statsGeneration
+			resumed = true
+		}
+	}
+	if !resumed {
+		c.bufferPod.statsGeneration = c.nextStatsGeneration.Add(1)
+	}
+
+	metaPod, loaded := c.metaPods.LoadOrStore(key, c.bufferPod)
 	if !loaded {
 		c.bufferPod = nil
+	} else {
+		// An entry already existed, so this buffer wasn't consumed and will
+		// be reused for an unrelated pod on some future call -- clear any
+		// counters just seeded onto it so they don't leak into that pod.
+		c.bufferPod.runningRequests = 0
+		c.bufferPod.completedRequests = 0
+		c.bufferPod.pendingLoadUtilization.Store(0)
+		c.bufferPod.statsGeneration = 0
 	}
 	return metaPod
 }
@@ -419,10 +469,69 @@ func (c *Store) addPodAndModelMappingLocked(metaPod *Pod, modelName string) {
 	klog.V(4).InfoS("Pod added to model", "model", modelName, "pod", podKey, "pods", metaModel.Pods.Len())
 }
 
+// deletedPodSnapshot preserves a deleted pod's realtime request-tracking
+// counters so a fast re-add of the same key (see addPodLocked) can resume
+// from where they left off instead of restarting at zero.
+//
+// It is stored and shared by pointer (not by value): a request that started
+// before the delete can still complete while the pod key is absent from
+// metaPods entirely -- mid-flap, before any re-add happens (see
+// donePodStats). Its counters must be mutable in place, atomically, so that
+// completion is reflected in whatever a later re-add resumes from, rather
+// than being silently lost.
+type deletedPodSnapshot struct {
+	pod                    *Pod   // Orphaned cache pod; same statsGeneration. addPodStats mid-gap stores this as podStats.pod so donePodStats can resolve back to this snapshot.
+	podIP                  string // Guards against reuse across a genuine pod recreation; see addPodLocked.
+	statsGeneration        int64  // Copied from pod at delete; resume copies it onto the new *Pod, fresh add does not.
+	runningRequests        int32  // atomic
+	completedRequests      int64  // atomic
+	pendingLoadUtilization atomic_ext.Float64
+	deletedAt              time.Time
+}
+
+// recentlyDeletedPodGracePeriod bounds how long a deletedPodSnapshot survives
+// waiting for a matching re-add before it's dropped as a genuine deletion.
+const recentlyDeletedPodGracePeriod = 60 * time.Second
+
 func (c *Store) deletePodLocked(podName, podNamespace string) *Pod {
 	key := utils.GeneratePodKey(podNamespace, podName)
-	metaPod, _ := c.metaPods.LoadAndDelete(key)
+
+	// See the matching lock in addPodLocked and podStatsLockFor's doc comment
+	// (cache_trace.go): held across the snapshot-take-and-publish sequence below so
+	// it can't interleave with a concurrent addPodStats/donePodStats for this key.
+	mu := c.podStatsLockFor(key)
+	mu.Lock()
+	defer mu.Unlock()
+
+	metaPod, ok := c.metaPods.LoadAndDelete(key)
+	if ok {
+		snap := &deletedPodSnapshot{
+			pod:               metaPod,
+			podIP:             metaPod.Status.PodIP,
+			statsGeneration:   metaPod.statsGeneration,
+			runningRequests:   atomic.LoadInt32(&metaPod.runningRequests),
+			completedRequests: atomic.LoadInt64(&metaPod.completedRequests),
+			deletedAt:         time.Now(),
+		}
+		snap.pendingLoadUtilization.Store(metaPod.pendingLoadUtilization.Load())
+		c.recentlyDeletedPods.Store(key, snap)
+		c.pruneExpiredDeletedPodSnapshotsLocked()
+	}
 	return metaPod
+}
+
+// pruneExpiredDeletedPodSnapshotsLocked drops snapshots whose grace period has
+// elapsed. Run from deletePodLocked (rather than a dedicated ticker) so pods
+// that never come back don't leak an entry here forever, while staying
+// bounded by delete frequency instead of needing its own background goroutine.
+func (c *Store) pruneExpiredDeletedPodSnapshotsLocked() {
+	now := time.Now()
+	c.recentlyDeletedPods.Range(func(key string, snap *deletedPodSnapshot) bool {
+		if now.Sub(snap.deletedAt) >= recentlyDeletedPodGracePeriod {
+			c.recentlyDeletedPods.Delete(key)
+		}
+		return true
+	})
 }
 
 // deletePodAndModelMapping delete mappings between pods and model by specified names.
