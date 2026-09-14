@@ -48,4 +48,10 @@ type KVTransferAgent interface {
 		prefillResponse []byte,
 		prefillPod *v1.Pod,
 	) error
+
+	// ControlledFields returns the top-level keys, in addition to
+	// pd.CommonControlledFields, that AugmentPrefillRequest or
+	// MergePrefillResponse may write. Client bodies repeating any of them
+	// are rejected before routing.
+	ControlledFields() []string
 }

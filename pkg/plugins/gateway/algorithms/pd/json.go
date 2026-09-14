@@ -106,6 +106,45 @@ func ValidateJSONObject(body []byte, what string) error {
 	return nil
 }
 
+// CommonControlledFields lists the top-level keys ApplyPrefillControlFields
+// sets or deletes on every engine's prefill body. Engine handlers and KV
+// transfer agents add their own keys on top (see ControlledFields).
+var CommonControlledFields = []string{
+	"max_tokens",
+	"max_completion_tokens",
+	"stream",
+	"stream_options",
+	"min_tokens",
+}
+
+// FindDuplicateTopLevelKey scans the root object of body once and returns the
+// first entry of controlledFields (in slice order) that occurs more than once
+// at the top level, or "" and false when there is none. body must already be
+// a valid JSON object (see ValidateJSONObject).
+//
+// sjson edits only the first occurrence of a key, so a duplicated controlled
+// key would let the client's second value survive and override whatever the
+// gateway wrote; callers reject such bodies instead.
+func FindDuplicateTopLevelKey(body []byte, controlledFields []string) (string, bool) {
+	controlled := make(map[string]bool, len(controlledFields))
+	for _, f := range controlledFields {
+		controlled[f] = true
+	}
+	counts := make(map[string]int, len(controlledFields))
+	gjson.ParseBytes(body).ForEach(func(key, _ gjson.Result) bool {
+		if k := key.String(); controlled[k] {
+			counts[k]++
+		}
+		return true
+	})
+	for _, f := range controlledFields {
+		if counts[f] > 1 {
+			return f, true
+		}
+	}
+	return "", false
+}
+
 // ApplyPrefillControlFields overrides the generation control fields so the
 // prefill pod returns right after filling the KV cache:
 //   - max_tokens=1 and max_completion_tokens=1 (TRT-LLM only supports

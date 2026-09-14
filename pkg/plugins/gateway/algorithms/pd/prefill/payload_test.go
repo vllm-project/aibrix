@@ -39,8 +39,9 @@ type fakeHandler struct {
 	failAugment   bool
 }
 
-func (f *fakeHandler) Name() string  { return "fake" }
-func (f *fakeHandler) IsAsync() bool { return false }
+func (f *fakeHandler) Name() string               { return "fake" }
+func (f *fakeHandler) IsAsync() bool              { return false }
+func (f *fakeHandler) ControlledFields() []string { return nil }
 
 func (f *fakeHandler) AugmentPrefillRequest(
 	_ *types.RoutingContext, _ *v1.Pod, body []byte,

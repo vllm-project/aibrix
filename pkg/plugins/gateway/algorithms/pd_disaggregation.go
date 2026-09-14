@@ -263,8 +263,18 @@ func NewPDRouter() (types.Router, error) {
 		klog.Error("fail to get cache store in prefix cache router")
 		return nil, err
 	}
+	return NewPDRouterWithCacheAndPrefixIndexer(c, prefixcacheindexer.GetSharedPrefixHashTable())
+}
 
-	sharedPrefixTable := prefixcacheindexer.GetSharedPrefixHashTable()
+// NewPDRouterWithCacheAndPrefixIndexer builds a PD router on an explicit cache
+// and prefix table instead of the process-global ones, so an isolated
+// RouterManager (see NewRouterManagerWithCacheAndPrefixIndexer) can route
+// "pd" without initialising the global cache. A nil sharedPrefixTable gets a
+// fresh table.
+func NewPDRouterWithCacheAndPrefixIndexer(c cache.Cache, sharedPrefixTable *prefixcacheindexer.PrefixHashTable) (types.Router, error) {
+	if sharedPrefixTable == nil {
+		sharedPrefixTable = prefixcacheindexer.NewPrefixHashTable()
+	}
 	// One tracker per router, created unconditionally so that a routingConfig
 	// can switch a model to token_load or hybrid_cache_load without a gateway
 	// restart.
@@ -391,13 +401,14 @@ func (r *pdRouter) releaseTokenLoad(requestID string) {
 func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	readyPods := readyPodList.All()
 
-	// Validate SGLang request body before any pod selection or prefix-index
-	// mutation. A malformed request must not pollute selection counters or
+	// Validate the request body before any pod selection or prefix-index
+	// mutation, for every engine: it must be a JSON object and must not
+	// repeat a gateway-controlled top-level key (sjson only edits the first
+	// occurrence, so a duplicate would let the client's value override the
+	// gateway's). A malformed request must not pollute selection counters or
 	// the prefix cache. ctx.Engine is already set by selectTargetPod.
-	if ctx.Engine == SGLangEngine {
-		if err := engine.ValidateSGLangRequest(ctx.ReqBody); err != nil {
-			return "", err
-		}
+	if err := engine.ValidateRequest(ctx.ReqBody, engine.Resolve(ctx.Engine)); err != nil {
+		return "", err
 	}
 
 	// Select registers the chosen pods with pendingDecodeTracker and

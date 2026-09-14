@@ -34,3 +34,4 @@ func (h *DefaultHandler) AugmentPrefillRequest(_ *types.RoutingContext, _ *v1.Po
 func (h *DefaultHandler) MergePrefillResponse(_ *types.RoutingContext, _ []byte, _ *v1.Pod) error {
 	return nil
 }
+func (h *DefaultHandler) ControlledFields() []string { return nil }

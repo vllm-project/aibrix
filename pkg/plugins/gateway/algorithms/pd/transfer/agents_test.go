@@ -131,3 +131,13 @@ func TestMooncakeAgent_NoOp(t *testing.T) {
 	require.NoError(t, a.MergePrefillResponse(ctx, []byte(`{"x":1}`), &v1.Pod{}))
 	assert.Equal(t, clientBody, string(ctx.ReqBody))
 }
+
+func TestControlledFields(t *testing.T) {
+	assert.Equal(t, []string{"kv_transfer_params"}, (&SHFSAgent{}).ControlledFields())
+	assert.Equal(t, []string{"disagg_prefill_resp"}, (&NIXLAgent{}).ControlledFields())
+	assert.Empty(t, (&MooncakeAgent{}).ControlledFields())
+
+	all := AllControlledFields()
+	assert.Equal(t, []string{"disagg_prefill_resp", "kv_transfer_params"}, all,
+		"union over every registered agent, sorted and de-duplicated")
+}

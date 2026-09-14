@@ -37,6 +37,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
@@ -3115,6 +3116,89 @@ func TestRoute_SGLangDuplicateFieldsRejectsBeforeSelector(t *testing.T) {
 
 	var invalidReqErr *engine.InvalidRequestError
 	assert.True(t, errors.As(err, &invalidReqErr), "must return *InvalidRequestError")
+}
+
+// TestRoute_DuplicateControlledFieldsRejectedForAllEngines verifies that the
+// controlled-field validation runs for every engine, before podSelector.Select
+// and before any prefill HTTP request: a vLLM/TRT-LLM/unknown-engine body that
+// repeats a gateway-written key is rejected with *InvalidRequestError.
+func TestRoute_DuplicateControlledFieldsRejectedForAllEngines(t *testing.T) {
+	cases := []struct {
+		engine string
+		body   string
+	}{
+		{VLLMEngine, `{"model":"m","messages":[],"max_tokens":1,"max_tokens":2}`},
+		{VLLMEngine, `{"model":"m","messages":[],"kv_transfer_params":{},"kv_transfer_params":{"remote_host":"x"}}`},
+		{VLLMEngine, `{"model":"m","messages":[],"disagg_prefill_resp":{},"disagg_prefill_resp":{}}`},
+		{TensorRTLLM, `{"model":"m","messages":[],"disaggregated_params":{},"disaggregated_params":{"request_type":"x"}}`},
+		{TensorRTLLM, `{"model":"m","messages":[],"stream":true,"stream":false}`},
+		{SGLangEngine, `{"model":"m","messages":[],"bootstrap_host":"a","bootstrap_host":"b"}`},
+		{"unknown-engine", `{"model":"m","messages":[],"min_tokens":1,"min_tokens":2}`},
+		{VLLMEngine, `null`},
+		{VLLMEngine, `[1,2,3]`},
+		{TensorRTLLM, `{not json`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.engine+"/"+tc.body, func(t *testing.T) {
+			selectorCalled := false
+			router := &pdRouter{
+				podSelector: selector.NewDefaultSelector(func(_ *types.RoutingContext, _ []*v1.Pod) (*v1.Pod, *v1.Pod, error) {
+					selectorCalled = true
+					return nil, nil, fmt.Errorf("selector should not have been called")
+				}),
+				prefillRequestTracker: pd.NewPrefillRequestTracker(),
+				pendingDecodeTracker:  pd.NewPendingDecodeTracker(),
+			}
+			ctx := &types.RoutingContext{
+				Engine:  tc.engine,
+				ReqBody: []byte(tc.body),
+				Context: context.Background(),
+				ReqPath: testChatCompletionsPath,
+			}
+
+			_, err := router.Route(ctx, &utils.PodArray{Pods: []*v1.Pod{}})
+			require.Error(t, err)
+			assert.False(t, selectorCalled, "podSelector.Select must not be called for invalid requests")
+			var invalidReqErr *engine.InvalidRequestError
+			assert.True(t, errors.As(err, &invalidReqErr), "must return *InvalidRequestError, got %T: %v", err, err)
+			assert.Equal(t, []byte(tc.body), ctx.ReqBody, "request body must be left untouched")
+		})
+	}
+}
+
+// TestRoute_DuplicateNonControlledFieldAcceptedForVLLM is the positive
+// counterpart: a duplicate of a key the gateway never writes still routes.
+func TestRoute_DuplicateNonControlledFieldAcceptedForVLLM(t *testing.T) {
+	ts, prefillPort := setupTestServer(t, http.StatusOK, "", VLLMEngine)
+	defer ts.Close()
+
+	testTracker := pd.NewPrefillRequestTracker()
+	testClient := &http.Client{}
+	r := pdRouter{
+		cache:                 cache.NewForTest(),
+		prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), prefixcacheindexer.NewPrefixHashTable()),
+		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+		prefillRequestTracker: testTracker,
+		httpClient:            testClient,
+		selectionCounts:       map[string]int64{},
+	}
+	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
+	r.prefillExecutor = prefill.NewDefaultExecutor(testClient, testTracker, prefillRequestTimeout)
+
+	readyPods := []*v1.Pod{
+		{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"roleset-name": "test", "role-name": "prefill", constants.ModelLabelPort: prefillPort}, Name: "prefill-1"},
+			Status: v1.PodStatus{PodIP: "127.0.0.1", Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
+		{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"roleset-name": "test", "role-name": "decode"}, Name: "decode-1"},
+			Status: v1.PodStatus{PodIP: "127.0.0.2", Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
+	}
+	ctx := types.NewRoutingContext(context.Background(), "test", "model", "message", "test-request", "user")
+	ctx.Engine = VLLMEngine
+	ctx.ReqPath = testChatCompletionsPath
+	ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"test"}],"extra":"a","extra":"b","stream":true}`)
+
+	result, err := r.Route(ctx, &utils.PodArray{Pods: readyPods})
+	require.NoError(t, err)
+	assert.Equal(t, "127.0.0.2:8000", result)
 }
 
 // setKlogVerbosity raises klog's -v level for the duration of one test and restores

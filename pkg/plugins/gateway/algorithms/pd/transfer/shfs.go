@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
@@ -35,22 +36,25 @@ type SHFSAgent struct{}
 
 func (a *SHFSAgent) Type() string { return ConnectorTypeSHFS }
 
+// ControlledFields returns kv_transfer_params, written on both bodies.
+func (a *SHFSAgent) ControlledFields() []string { return []string{"kv_transfer_params"} }
+
+// shfsPrefillKVTransferParams is the kv_transfer_params skeleton the prefill
+// pod expects; it fills in remote_engine_id / remote_block_ids / remote_port
+// for the decode side.
+const shfsPrefillKVTransferParams = `{"do_remote_decode":true,"do_remote_prefill":false,` +
+	`"remote_engine_id":null,"remote_block_ids":null,"remote_host":null,"remote_port":null}`
+
 // AugmentPrefillRequest replaces kv_transfer_params with the skeleton the
-// prefill pod expects, so it populates remote block IDs for the decode side.
-// Any client-supplied kv_transfer_params is dropped; nothing else in body changes.
+// prefill pod expects, in a single top-level edit. Any client-supplied
+// kv_transfer_params is dropped; nothing else in body changes.
 func (a *SHFSAgent) AugmentPrefillRequest(
 	_ *types.RoutingContext,
 	_ *v1.Pod,
 	body []byte,
 ) ([]byte, error) {
 	return pd.NewJSONEditor(body).
-		Delete("kv_transfer_params").
-		Set("kv_transfer_params.do_remote_decode", true).
-		Set("kv_transfer_params.do_remote_prefill", false).
-		Set("kv_transfer_params.remote_engine_id", nil).
-		Set("kv_transfer_params.remote_block_ids", nil).
-		Set("kv_transfer_params.remote_host", nil).
-		Set("kv_transfer_params.remote_port", nil).
+		SetRaw("kv_transfer_params", []byte(shfsPrefillKVTransferParams)).
 		Result()
 }
 
@@ -76,9 +80,14 @@ func (a *SHFSAgent) MergePrefillResponse(
 		return fmt.Errorf("kv_transfer_params has unexpected type %s, expected object", kvTransferParams.Type.String())
 	}
 
+	// Patch remote_host on the small kv_transfer_params fragment first, then
+	// splice it into the (much larger) request body with a single edit.
+	params, err := sjson.SetBytes([]byte(kvTransferParams.Raw), "remote_host", prefillPod.Status.PodIP)
+	if err != nil {
+		return fmt.Errorf("failed to set kv_transfer_params.remote_host: %w", err)
+	}
 	updatedReqBody, err := pd.NewJSONEditor(routingCtx.ReqBody).
-		SetRaw("kv_transfer_params", []byte(kvTransferParams.Raw)).
-		Set("kv_transfer_params.remote_host", prefillPod.Status.PodIP).
+		SetRaw("kv_transfer_params", params).
 		Result()
 	if err != nil {
 		return fmt.Errorf("failed to update request body: %w", err)

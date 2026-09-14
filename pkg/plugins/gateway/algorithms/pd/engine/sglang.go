@@ -52,8 +52,8 @@ func (h *SGLangHandler) IsAsync() bool { return true }
 // the caller applies the common prefill constraints on top of it. On error
 // routingCtx.ReqBody is left unchanged.
 //
-// ValidateSGLangRequest is already called in Route() before this method is
-// invoked, so duplicate controlled fields have been rejected by then.
+// ValidateRequest is already called in Route() before this method is invoked,
+// so duplicate controlled fields have been rejected by then.
 func (h *SGLangHandler) AugmentPrefillRequest(
 	routingCtx *types.RoutingContext,
 	pod *v1.Pod,
@@ -74,62 +74,23 @@ func sglangBootstrapFields(pod *v1.Pod) (host string, port int64, room int64) {
 	return pod.Status.PodIP, sglangBootstrapPortFor(pod), rand.Int63n(1<<63 - 1)
 }
 
-// sglangControlledFields lists all top-level keys that the gateway sets or
-// deletes on the decode/prefill bodies. A client request must not contain
-// duplicates of these keys; if it does, the request is rejected to prevent a
-// client-supplied value from surviving and overriding the gateway's value.
-var sglangControlledFields = []string{
-	"bootstrap_host",
-	"bootstrap_port",
-	"bootstrap_room",
-	"max_tokens",
-	"max_completion_tokens",
-	"stream",
-	"stream_options",
-	"min_tokens",
-}
+// sglangBootstrapFieldNames are the top-level keys AugmentPrefillRequest
+// writes on both the prefill and decode bodies.
+var sglangBootstrapFieldNames = []string{"bootstrap_host", "bootstrap_port", "bootstrap_room"}
 
-// sglangControlledSet is a set for O(1) lookup of controlled field names.
-var sglangControlledSet = func() map[string]bool {
-	m := make(map[string]bool, len(sglangControlledFields))
-	for _, f := range sglangControlledFields {
-		m[f] = true
-	}
-	return m
-}()
+// ControlledFields returns the SGLang bootstrap keys; the common prefill
+// control keys are added by ValidateRequest.
+func (h *SGLangHandler) ControlledFields() []string { return sglangBootstrapFieldNames }
 
 // ValidateSGLangRequest checks the request body for conditions that would make
 // SGLang PD routing unsafe or ambiguous. It returns *InvalidRequestError when
 // the request contains duplicate top-level controlled fields or is not a valid
 // JSON object, so the gateway layer can map the error to HTTP 400.
 //
-// This function must be called before both the separate-PD prefill path and
-// the combined-pod path to ensure consistent validation regardless of routing.
+// It is the SGLang-specific form of ValidateRequest and is kept for callers
+// that validate outside Route().
 func ValidateSGLangRequest(body []byte) error {
-	if !gjson.ValidBytes(body) {
-		return &InvalidRequestError{Message: "SGLang request body is not valid JSON"}
-	}
-	result := gjson.ParseBytes(body)
-	if !result.IsObject() {
-		return &InvalidRequestError{Message: "SGLang request body is not a JSON object"}
-	}
-
-	// Scan the root object once, counting only controlled fields.
-	counts := make(map[string]int, len(sglangControlledFields))
-	result.ForEach(func(key, _ gjson.Result) bool {
-		if sglangControlledSet[key.String()] {
-			counts[key.String()]++
-		}
-		return true
-	})
-	for _, field := range sglangControlledFields {
-		if counts[field] > 1 {
-			return &InvalidRequestError{
-				Message: fmt.Sprintf("duplicate top-level key %q in SGLang request body", field),
-			}
-		}
-	}
-	return nil
+	return validateRequestBody(body, sglangBootstrapFieldNames, "SGLang request body")
 }
 
 // sglangDecodeBody returns the client body with bootstrap_host/port/room

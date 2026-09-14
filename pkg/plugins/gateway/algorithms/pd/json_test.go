@@ -94,3 +94,30 @@ func TestJSONEditor(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to set")
 }
+
+func TestFindDuplicateTopLevelKey(t *testing.T) {
+	controlled := []string{"max_tokens", "stream", "kv_transfer_params"}
+
+	key, dup := FindDuplicateTopLevelKey([]byte(nestedBody), controlled)
+	assert.False(t, dup)
+	assert.Empty(t, key)
+
+	// Non-controlled duplicates are allowed.
+	key, dup = FindDuplicateTopLevelKey([]byte(`{"extra":1,"extra":2,"max_tokens":1}`), controlled)
+	assert.False(t, dup)
+	assert.Empty(t, key)
+
+	// The first duplicated key in controlled order is reported, not the first in body order.
+	key, dup = FindDuplicateTopLevelKey([]byte(`{"stream":true,"stream":false,"max_tokens":1,"max_tokens":2}`), controlled)
+	assert.True(t, dup)
+	assert.Equal(t, "max_tokens", key)
+
+	// Nested occurrences do not count.
+	key, dup = FindDuplicateTopLevelKey([]byte(`{"kv_transfer_params":{"stream":1,"stream":2},"stream":true}`), controlled)
+	assert.False(t, dup)
+	assert.Empty(t, key)
+
+	key, dup = FindDuplicateTopLevelKey([]byte(`{"kv_transfer_params":{},"kv_transfer_params":{"remote_host":"x"}}`), controlled)
+	assert.True(t, dup)
+	assert.Equal(t, "kv_transfer_params", key)
+}

@@ -31,6 +31,9 @@ type MooncakeAgent struct{}
 
 func (a *MooncakeAgent) Type() string { return ConnectorTypeMooncake }
 
+// ControlledFields is empty until the Mooncake contract is implemented.
+func (a *MooncakeAgent) ControlledFields() []string { return nil }
+
 // AugmentPrefillRequest adds any Mooncake-specific fields to the prefill request.
 // TODO: implement once vLLM MooncakeConnector prefill request contract is confirmed.
 func (a *MooncakeAgent) AugmentPrefillRequest(

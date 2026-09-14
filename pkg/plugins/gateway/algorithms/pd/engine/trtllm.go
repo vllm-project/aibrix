@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -94,19 +95,26 @@ type TRTLLMHandler struct{}
 func (h *TRTLLMHandler) Name() string  { return pd.EngineTRTLLM }
 func (h *TRTLLMHandler) IsAsync() bool { return false }
 
+// trtControlledFields are the top-level keys AugmentPrefillRequest and
+// MergePrefillResponse write: disaggregated_params on both bodies, and
+// prompt / prompt_token_ids on the decode body when the prefill response
+// carries prompt_token_ids.
+var trtControlledFields = []string{"disaggregated_params", "prompt", "prompt_token_ids"}
+
+func (h *TRTLLMHandler) ControlledFields() []string { return trtControlledFields }
+
 // AugmentPrefillRequest replaces disaggregated_params with request_type="context_only"
-// and a unique disagg_request_id generated from the machine snowflake ID. The
-// ID is written as an integer literal, so it never goes through float64 and
-// keeps full int64 precision.
+// and a unique disagg_request_id generated from the machine snowflake ID, in a
+// single top-level edit. The ID is written as an integer literal, so it never
+// goes through float64 and keeps full int64 precision.
 func (h *TRTLLMHandler) AugmentPrefillRequest(
 	_ *types.RoutingContext,
 	_ *v1.Pod,
 	body []byte,
 ) ([]byte, error) {
+	params := fmt.Sprintf(`{"request_type":"context_only","disagg_request_id":%d}`, GetDisaggRequestID(trtMachineID))
 	return pd.NewJSONEditor(body).
-		Delete("disaggregated_params").
-		Set("disaggregated_params.request_type", "context_only").
-		Set("disaggregated_params.disagg_request_id", GetDisaggRequestID(trtMachineID)).
+		SetRaw("disaggregated_params", []byte(params)).
 		Result()
 }
 
@@ -142,9 +150,13 @@ func (h *TRTLLMHandler) MergePrefillResponse(
 		return fmt.Errorf("disaggregated_params has unexpected type %s, expected object", disaggParams.Type.String())
 	}
 
-	e := pd.NewJSONEditor(routingCtx.ReqBody).
-		SetRaw("disaggregated_params", []byte(disaggParams.Raw)).
-		Set("disaggregated_params.request_type", "generation_only")
+	// Patch request_type on the small disaggregated_params fragment first,
+	// then splice it into the (much larger) request body with one edit.
+	params, err := sjson.SetBytes([]byte(disaggParams.Raw), "request_type", "generation_only")
+	if err != nil {
+		return fmt.Errorf("failed to set disaggregated_params.request_type: %w", err)
+	}
+	e := pd.NewJSONEditor(routingCtx.ReqBody).SetRaw("disaggregated_params", params)
 	if pti := gjson.GetBytes(prefillResponse, "prompt_token_ids"); pti.IsArray() {
 		switch routingCtx.ReqPath {
 		case "/v1/completions":

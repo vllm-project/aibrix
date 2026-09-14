@@ -35,6 +35,9 @@ type NIXLAgent struct{}
 
 func (a *NIXLAgent) Type() string { return ConnectorTypeNIXL }
 
+// ControlledFields returns disagg_prefill_resp, written on the decode body.
+func (a *NIXLAgent) ControlledFields() []string { return []string{"disagg_prefill_resp"} }
+
 // AugmentPrefillRequest is a no-op for NIXL: the backend manages KV transfer
 // through its own mechanism and does not require a prefill request skeleton.
 func (a *NIXLAgent) AugmentPrefillRequest(
