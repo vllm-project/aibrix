@@ -63,6 +63,8 @@ const (
 	gatewayRespHeaders       = "gateway_rsp_headers"
 	gatewayReqBody           = "gateway_req_body"
 	defaultHTTPRouteCacheTTL = 30 * time.Second
+	defaultHTTPRouteErrorTTL = 2 * time.Second
+	httpRouteLookupTimeout   = 5 * time.Second
 	envHTTPRouteCacheTTL     = "AIBRIX_HTTPROUTE_CACHE_TTL"
 )
 
@@ -86,6 +88,7 @@ type Server struct {
 	httpServer          *http.Server
 	httprouteCache      sync.Map
 	httprouteCacheTTL   time.Duration
+	httprouteErrorTTL   time.Duration
 	httprouteSFGroup    singleflight.Group
 	// videoJobCache maps a vLLM-Omni async video_id to the pod that owns it (see
 	// gateway_video_routing.go). Local in-memory cache, warmed from and
@@ -276,6 +279,7 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		inFlightObserver:    options.InFlightObserver,
 		wakeRequester:       newRuntimeModelWakeRequester(nil, defaultModelClaimRuntimePort),
 		httprouteCacheTTL:   httpRouteCacheTTL(),
+		httprouteErrorTTL:   defaultHTTPRouteErrorTTL,
 		shutdownCh:          shutdown,
 		shutdown:            shutdown,
 	}
@@ -677,8 +681,9 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 }
 
 // validateHTTPRouteStatus checks if httproute object exists and validates its conditions are true.
-// Results are cached with a TTL (default 30s, configurable via AIBRIX_HTTPROUTE_CACHE_TTL) to
-// avoid hammering the Kubernetes API on every request.
+// Successful results are cached with a TTL (default 30s, configurable via
+// AIBRIX_HTTPROUTE_CACHE_TTL). Transient errors use a short TTL so route
+// creation and recovery are observed quickly without hammering the API server.
 func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) error {
 	// Skip validation in standalone mode (no gateway client)
 	if s.gatewayClient == nil {
@@ -706,10 +711,16 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 		}
 
 		name := utils.ModelRouterName(model)
-		httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(defaultAIBrixNamespace).Get(context.Background(), name, metav1.GetOptions{})
+		lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), httpRouteLookupTimeout)
+		defer cancel()
+		httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(defaultAIBrixNamespace).Get(lookupCtx, name, metav1.GetOptions{})
 		if err != nil {
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				s.httprouteCache.Store(model, httpRouteCacheEntry{err: err, expiresAt: time.Now().Add(s.httprouteCacheTTL)})
+				ttl := s.httprouteErrorTTL
+				if ttl <= 0 {
+					ttl = defaultHTTPRouteErrorTTL
+				}
+				s.httprouteCache.Store(model, httpRouteCacheEntry{err: err, expiresAt: time.Now().Add(ttl)})
 			}
 			return nil, err
 		}
@@ -735,7 +746,14 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 		if len(errMsg) > 0 {
 			result = errors.New(strings.Join(errMsg, ", "))
 		}
-		s.httprouteCache.Store(model, httpRouteCacheEntry{err: result, expiresAt: time.Now().Add(s.httprouteCacheTTL)})
+		ttl := s.httprouteCacheTTL
+		if result != nil {
+			ttl = s.httprouteErrorTTL
+			if ttl <= 0 {
+				ttl = defaultHTTPRouteErrorTTL
+			}
+		}
+		s.httprouteCache.Store(model, httpRouteCacheEntry{err: result, expiresAt: time.Now().Add(ttl)})
 		return result, nil
 	})
 
