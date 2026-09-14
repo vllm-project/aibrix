@@ -274,6 +274,30 @@ func ValidateInference(t *testing.T, modelName string) {
 	ValidateInferenceWithClient(t, client, modelName)
 }
 
+// WaitForInference polls the public gateway until the model is actually
+// servable. Kubernetes objects may exist before HTTPRoute backend references
+// and gateway caches have converged, so object existence alone is not enough.
+func WaitForInference(t *testing.T, modelName string) {
+	t.Helper()
+	config := LoadConfig()
+	client := NewOpenAIClient(config.GatewayURL, config.APIKey)
+	err := wait.PollUntilContextTimeout(context.Background(), time.Second, 60*time.Second, true,
+		func(ctx context.Context) (bool, error) {
+			_, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+				Messages: []openai.ChatCompletionMessageParamUnion{
+					openai.UserMessage("Say this is a readiness check"),
+				},
+				Model: modelName,
+			})
+			if err != nil {
+				t.Logf("waiting for inference route for %s: %v", modelName, err)
+				return false, nil
+			}
+			return true, nil
+		})
+	require.NoError(t, err, "model %s did not become servable", modelName)
+}
+
 func ValidateInferenceWithClient(t *testing.T, client openai.Client, modelName string) {
 	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 		Messages: []openai.ChatCompletionMessageParamUnion{
