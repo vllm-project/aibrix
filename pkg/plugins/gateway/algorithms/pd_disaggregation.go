@@ -701,13 +701,19 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 	minObservedThroughput := math.MaxFloat64
 	utils.Shuffle(filteredDecodePods)
 
+	// Live cross-gateway running-request count (see cache_running_requests.go) for the
+	// whole candidate list in one Redis round trip, rather than
+	// GetMetricValueByPod(RealtimeNumRequestsRunning) per pod: that metric slot is a
+	// periodically synced cache that, between scrape ticks, only reflects this
+	// gateway's local view.
+	runningReqCounts, runningErr := r.cache.GetPodsRunningRequests(filteredDecodePods)
+
 	for _, pod := range filteredDecodePods {
-		runningReqs, runningErr := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning)
 		requestCount := r.pendingDecodeTracker.GetPendingDecodeCount(pod.Name)
 		if runningErr != nil {
 			podRequestCounts[pod.Name] = requestCount
 		} else {
-			requestCount += runningReqs.GetSimpleValue()
+			requestCount += float64(runningReqCounts[utils.GeneratePodKey(pod.Namespace, pod.Name)])
 			podRequestCounts[pod.Name] = requestCount
 			if requestCount < minObservedRequestCount {
 				minObservedRequestCount = requestCount

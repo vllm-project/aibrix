@@ -53,7 +53,18 @@ type ResolvedConfigProfile struct {
 	LockedRoutingStrategy string
 	RoutingStrategy       string
 	RoutingConfig         json.RawMessage
-	RequestsPerSecond     int64
+	// RequestsPerSecond is the per-model request-rate limit enforced by enforceModelRPS,
+	// resolved from the profile's requestsPerSecond or from its requestsPerSecondPerReplica
+	// (which takes precedence and scales it by the model's current routable replica count).
+	// Zero means unset/unlimited.
+	RequestsPerSecond int64
+	// RateWindowSeconds is the window size, in seconds, that RequestsPerSecond is enforced
+	// over. Defaults to a 1s window (0 or 1 both mean "1s") when unset; set above 1 for
+	// sub-1 RPS values expressed as "1 request every N seconds".
+	RateWindowSeconds int64
+	// RequestsInflight is the maximum number of concurrent (in-flight) requests allowed on
+	// a single replica, enforced per pod rather than as an aggregate. Zero means unset.
+	RequestsInflight int64
 }
 
 // RoutingAlgorithm defines the routing algorithms

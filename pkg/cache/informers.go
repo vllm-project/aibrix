@@ -368,7 +368,9 @@ func (c *Store) deleteModelAdapter(obj interface{}) {
 	c.debugInfo()
 }
 
+// addPodLocked adds/resumes pod into the cache.
 func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
+	key := utils.GeneratePodKey(pod.Namespace, pod.Name)
 	if c.bufferPod == nil {
 		c.bufferPod = &Pod{
 			Pod:    pod,
@@ -377,8 +379,6 @@ func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
 	} else {
 		c.bufferPod.Pod = pod
 	}
-
-	key := utils.GeneratePodKey(pod.Namespace, pod.Name)
 
 	// A pod key that was deleted moments ago (a transient health-check flap on a
 	// busy pod, or the delete+re-add updatePod does for every in-place K8s pod

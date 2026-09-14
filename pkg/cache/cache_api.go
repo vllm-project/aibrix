@@ -92,7 +92,10 @@ type ModelClaimBindingProvider interface {
 
 // MetricCache defines operations for metric data caching
 type MetricCache interface {
-	// GetMetricValueByPod gets metric value for a pod
+	// GetMetricValueByPod returns the last-written metric slot for a pod (scraped engine
+	// gauges, PromQL results, or gateway-derived values such as RealtimeNumRequestsRunning).
+	// This is NOT the live cross-gateway running-request count -- use GetPodRunningRequests
+	// / GetPodsRunningRequests for routing and MODEL_REPLICA_REQUESTS_INFLIGHT.
 	// Parameters:
 	//   podName: Name of the pod
 	//   podNamespace: Namespace of the pod
@@ -118,6 +121,35 @@ type MetricCache interface {
 	// Parameters:
 	//   subscriber: Metric subscriber implementation
 	AddSubscriber(subscriber metrics.MetricSubscriber)
+
+	// GetPodRunningRequests is the single-pod live cross-gateway running-request count
+	// (Redis, falling back to this gateway's local atomic). Use GetPodsRunningRequests
+	// for a pod list -- looping this is N Redis round trips. Do not use
+	// GetMetricValueByPod(RealtimeNumRequestsRunning) for routing or inflight; that slot
+	// is a periodically synced cache and can reflect this gateway's local view between ticks.
+	// Returns an error if the pod is not in the cache.
+	// Parameters:
+	//   podName: Name of the pod
+	//   podNamespace: Namespace of the pod
+	// Returns:
+	//   int64: Best-effort running request count
+	//   error: Error information if the pod is not found
+	GetPodRunningRequests(podName, podNamespace string) (int64, error)
+
+	// GetPodsRunningRequests is GetPodRunningRequests for a pod list in one Redis pipeline.
+	// Use this from routers (least-request, load-balance, prefix-cache) and the inflight
+	// saturation filter. The map is keyed by utils.GeneratePodKey(namespace, name).
+	// Local-atomic fallback is already applied; a missing key means the pod was not in
+	// the cache -- treat as 0. Do not treat a missing key as "read the local counter again."
+	// Parameters:
+	//   pods: Pods to resolve
+	// Returns:
+	//   map[string]int64: Running request count keyed by utils.GeneratePodKey(pod.Namespace, pod.Name).
+	//     A pod is present with either its live Redis-backed count or, if that isn't
+	//     available, its local atomic counter. Only pods not found in the cache at all
+	//     are omitted; treat those as 0.
+	//   error: Error information if the batch operation itself fails
+	GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error)
 }
 
 // RequestTracker defines operations for track workload statistics

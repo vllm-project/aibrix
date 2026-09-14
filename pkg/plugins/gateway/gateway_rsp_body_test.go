@@ -53,7 +53,7 @@ func (m *mockRateLimiter) GetLimit(ctx context.Context, key string) (int64, erro
 	return args.Get(0).(int64), args.Error(1)
 }
 
-func (m *mockRateLimiter) Incr(ctx context.Context, key string, val int64) (int64, error) {
+func (m *mockRateLimiter) Incr(ctx context.Context, key string, val int64, window ...time.Duration) (int64, error) {
 	args := m.Called(ctx, key, val)
 	return args.Get(0).(int64), args.Error(1)
 }

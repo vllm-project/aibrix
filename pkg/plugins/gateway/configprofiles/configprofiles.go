@@ -38,9 +38,21 @@ const (
 
 // ModelConfigProfile holds gateway options for a single profile.
 type ModelConfigProfile struct {
-	RoutingStrategy   string          `json:"routingStrategy"`
-	RoutingConfig     json.RawMessage `json:"routingConfig,omitempty"`
-	RequestsPerSecond int64           `json:"requestsPerSecond,omitempty"`
+	RoutingStrategy string          `json:"routingStrategy"`
+	RoutingConfig   json.RawMessage `json:"routingConfig,omitempty"`
+	// RequestsPerSecond caps the aggregate request rate for the model across all
+	// replicas. Superseded by RequestsPerSecondPerReplica when both are set.
+	RequestsPerSecond int64 `json:"requestsPerSecond,omitempty"`
+	// RequestsPerSecondPerReplica sets a per-replica request-per-second limit; the gateway
+	// multiplies it by the model's current routable replica count to derive the effective
+	// aggregate rate, so throughput scales automatically with replica count. Takes
+	// precedence over RequestsPerSecond when both are set. Supports fractional values
+	// (e.g. 0.5) for sub-1 rps limits, expressed as "1 request every N seconds".
+	RequestsPerSecondPerReplica float64 `json:"requestsPerSecondPerReplica,omitempty"`
+	// RequestsInflight caps the number of concurrent (in-flight) requests allowed on a
+	// single replica. Unlike RequestsPerSecond this is enforced per pod, not as an
+	// aggregate, so it needs no replica-count scaling.
+	RequestsInflight int64 `json:"requestsInflight,omitempty"`
 }
 
 // autoProfileRoutingConfig holds request-local profile selection hints embedded

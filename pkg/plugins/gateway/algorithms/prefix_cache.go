@@ -33,7 +33,6 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
-	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -967,16 +966,21 @@ func getTargetPodFromMatchedPodsFromCounts(podRequestCount map[string]int, ready
 	return targetPod
 }
 
-// getRequestCountsWithKeys returns running request count for each pod using pod keys
+// getRequestCountsWithKeys returns the live cross-gateway running request count for
+// each pod, keyed by pod key. Uses GetPodsRunningRequests (one Redis round trip for
+// the whole list), not GetMetricValueByPod(RealtimeNumRequestsRunning), which is a
+// periodically synced cache that, between scrape ticks, only reflects this gateway's
+// local view.
 func getRequestCountsWithKeys(cache cache.Cache, readyPods []*v1.Pod) map[string]int {
+	counts, err := cache.GetPodsRunningRequests(readyPods)
 	podRequestCount := map[string]int{}
 	for _, pod := range readyPods {
 		podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
-		runningReq, err := cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning)
-		if err != nil {
-			runningReq = &metrics.SimpleMetricValue{Value: 0}
+		if err == nil && counts != nil {
+			podRequestCount[podKey] = int(counts[podKey])
+		} else {
+			podRequestCount[podKey] = 0
 		}
-		podRequestCount[podKey] = int(runningReq.GetSimpleValue())
 	}
 	return podRequestCount
 }

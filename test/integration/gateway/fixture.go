@@ -31,6 +31,7 @@ import (
 	gatewayplugin "github.com/vllm-project/aibrix/pkg/plugins/gateway"
 	routingalgorithms "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -124,6 +125,20 @@ func (c *fakeCache) GetMetricValueByPod(pod, _, metric string) (metrics.MetricVa
 }
 func (c *fakeCache) GetMetricValueByPodModel(pod, _, _, metric string) (metrics.MetricValue, error) {
 	return c.metricValue(pod, metric), nil
+}
+func (c *fakeCache) GetPodRunningRequests(podName, podNamespace string) (int64, error) {
+	return int64(c.metricValue(podName, metrics.RealtimeNumRequestsRunning).GetSimpleValue()), nil
+}
+func (c *fakeCache) GetPodsRunningRequests(pods []*corev1.Pod) (map[string]int64, error) {
+	result := make(map[string]int64, len(pods))
+	for _, pod := range pods {
+		if pod == nil {
+			continue
+		}
+		key := utils.GeneratePodKey(pod.Namespace, pod.Name)
+		result[key] = int64(c.metricValue(pod.Name, metrics.RealtimeNumRequestsRunning).GetSimpleValue())
+	}
+	return result, nil
 }
 func (c *fakeCache) metricValue(pod, metric string) metrics.MetricValue {
 	c.mu.Lock()

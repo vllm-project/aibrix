@@ -173,6 +173,73 @@ func (c *Store) GetMetricValueByPodModel(podName, podNamespace, modelName string
 	return c.getPodMetricImpl(podName, &metaPod.ModelMetrics, c.getPodModelMetricName(modelName, metricName))
 }
 
+// realtimeRunningRequests is the live cross-gateway running-request total for one pod.
+// Prefer GetPodRunningRequests / GetPodsRunningRequests at call sites; this is the inner
+// Redis-or-local read they share (see readPodRunningRequests in cache_running_requests.go).
+//
+// Fallback to pod.runningRequests when Redis is nil, the read fails, or the hash is
+// missing (never routed, or idle past runningRequestsTTL). A hash that exists and sums
+// to 0 (only contributor is a now-dead gateway) is a real 0, not a fallback.
+func (c *Store) realtimeRunningRequests(pod *Pod) int64 {
+	if count, ok := c.readPodRunningRequests(pod.Namespace, pod.Name); ok {
+		return count
+	}
+	return int64(atomic.LoadInt32(&pod.runningRequests))
+}
+
+// GetPodRunningRequests is the single-pod load / inflight API.
+//
+// Use for: MODEL_REPLICA_REQUESTS_INFLIGHT on one pod, logging, any path that already
+// has one pod. For a ready-pod list, call GetPodsRunningRequests -- looping this is N
+// Redis round trips.
+//
+// Do not use GetMetricValueByPod(..., RealtimeNumRequestsRunning) for routing or inflight.
+// That slot is a periodically synced cache of this same count and is overwritten by this
+// gateway's local atomic on request start/end (cache_trace.go). Between scrape ticks it
+// is this gateway's local view, not the live cross-gateway total.
+//
+// Source: Redis hash summed over currently-live gateways (cache_running_requests.go).
+// Crashed-gateway leftovers age out with runningRequestsLivenessWindow; they do not leak.
+// Fallback: this gateway's pod.runningRequests atomic. Error if the pod is not in metaPods.
+func (c *Store) GetPodRunningRequests(podName, podNamespace string) (int64, error) {
+	key := utils.GeneratePodKey(podNamespace, podName)
+	metaPod, ok := c.metaPods.Load(key)
+	if !ok {
+		return 0, fmt.Errorf("key does not exist in the cache: %s", key)
+	}
+	return c.realtimeRunningRequests(metaPod), nil
+}
+
+// GetPodsRunningRequests is GetPodRunningRequests for a pod list in one Redis pipeline.
+//
+// Use from routers that score every ready pod (least-request, load-balance, prefix-cache
+// tie-break) and from the MODEL_REPLICA_REQUESTS_INFLIGHT saturation filter.
+// Do not range pods calling GetPodRunningRequests.
+//
+// Return map is keyed by utils.GeneratePodKey(namespace, name). The local-atomic fallback
+// is already applied. A missing key means the pod was nil or not in metaPods -- treat as 0.
+// Do not treat a missing key as "read the local counter again."
+func (c *Store) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error) {
+	live := c.readPodsRunningRequests(pods)
+	result := make(map[string]int64, len(pods))
+	for _, pod := range pods {
+		if pod == nil {
+			continue
+		}
+		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+		if count, ok := live[podKey]; ok {
+			result[podKey] = count
+			continue
+		}
+		metaPod, ok := c.metaPods.Load(podKey)
+		if !ok {
+			continue
+		}
+		result[podKey] = int64(atomic.LoadInt32(&metaPod.runningRequests))
+	}
+	return result, nil
+}
+
 // AddRequestCount tracks new request initiation.
 // If ctx is provided,  AddRequestCount can be called multiple times for the same request.
 //

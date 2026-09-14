@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
-	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -493,8 +492,8 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 			}
 			outstandingStr := "N/A"
 			if cacheErr == nil {
-				if v, err := c.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning); err == nil && v != nil {
-					outstandingStr = fmt.Sprintf("%.0f", v.GetSimpleValue())
+				if count, err := c.GetPodRunningRequests(pod.Name, pod.Namespace); err == nil {
+					outstandingStr = fmt.Sprintf("%d", count)
 				}
 			}
 			fmt.Fprintf(&logBuilder, "  [%s] Pod: %-30s | FinalScore: %.4f | Outstanding: %-4s | Details: %s\n",

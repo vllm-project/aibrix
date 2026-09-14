@@ -636,6 +636,13 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		return "", fmt.Errorf("no ready pods for routing")
 	}
 
+	if limit := replicaInflightLimit(routeCtx); limit > 0 {
+		readyPods = s.filterSaturatedReplicaInflight(readyPods, limit)
+		if len(readyPods) == 0 {
+			return "", errReplicaInflightExceeded
+		}
+	}
+
 	// Resolve exclusivity from the caller's raw algorithm string rather than comparing it
 	// directly against "pd": the string may itself be a multi-strategy config that collapses
 	// to a single exclusive strategy (e.g. "pd:1,least-request:1" resolves to "pd", and bare

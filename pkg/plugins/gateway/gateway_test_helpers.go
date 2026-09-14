@@ -106,6 +106,40 @@ func (m *MockCache) GetMetricValueByPodModel(namespace string, podName string, m
 	return args.Get(0).(metrics.MetricValue), args.Error(1)
 }
 
+// hasExpectation reports whether the test explicitly set up an .On(method, ...)
+// expectation. Used by GetPodRunningRequests/GetPodsRunningRequests below to default
+// to a harmless zero-value response for the many tests that don't care about this
+// value at all (e.g. it's only read for request_start logging) rather than requiring
+// every one of them to stub it -- tests that do care about it configure an
+// expectation as usual and get normal testify behavior.
+func (m *MockCache) hasExpectation(method string) bool {
+	for _, call := range m.ExpectedCalls {
+		if call.Method == method {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *MockCache) GetPodRunningRequests(podName string, podNamespace string) (int64, error) {
+	if !m.hasExpectation("GetPodRunningRequests") {
+		return 0, nil
+	}
+	args := m.Called(podName, podNamespace)
+	return args.Get(0).(int64), args.Error(1)
+}
+
+func (m *MockCache) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error) {
+	if !m.hasExpectation("GetPodsRunningRequests") {
+		return nil, nil
+	}
+	args := m.Called(pods)
+	if v := args.Get(0); v != nil {
+		return v.(map[string]int64), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
+
 func (m *MockCache) GetPod(namespace string, podName string) (*v1.Pod, error) {
 	args := m.Called(namespace, podName)
 	return args.Get(0).(*v1.Pod), args.Error(1)
