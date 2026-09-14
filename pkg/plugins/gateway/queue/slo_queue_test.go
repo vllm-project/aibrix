@@ -18,7 +18,6 @@ package queue
 
 import (
 	"context"
-	"math"
 	"time"
 
 	. "github.com/onsi/ginkgo"
@@ -45,45 +44,55 @@ func newTestRequest(requestID string, predictor types.OutputPredictor) *types.Ro
 
 var _ = Describe("SLOQueue", func() {
 	var (
-		g       = &fakeOutputPredictor{reply: 100}
-		profile = &cache.ModelGPUProfile{
+		predictor       = &fakeOutputPredictor{reply: 100}
+		zeroTputProfile = &cache.ModelGPUProfile{
+			// Indexes are stored in log2 space: ModelGPUProfile.Unmarshal converts them
+			// when loading a JSON profile, and GetSignature compares log2(feature) against
+			// them. A hand-built profile must supply them already converted, so {0, 1}
+			// below means 1 and 2 tokens.
 			Indexes: [][]float64{{0, 1}, {0, 0.5}},
 			Tputs:   [][]float64{{10, 10}, {10, 0}},
+			E2E:     [][]float64{{1, 1}, {1, 1}},
+			SLOs:    cache.ModelSLOs{E2E: 5.0},
+		}
+		nonZeroTputProfile = &cache.ModelGPUProfile{
+			Indexes: [][]float64{{0, 1}, {0, 0.5}},
+			Tputs:   [][]float64{{10, 10}, {10, 10}},
 			E2E:     [][]float64{{1, 1}, {1, 1}},
 			SLOs:    cache.ModelSLOs{E2E: 5.0},
 		}
 	)
 
 	It("should map the test request onto the zero-throughput cell", func() {
-		req := newTestRequest("req-1", g)
+		req := newTestRequest("req-1", predictor)
 		features, err := req.Features()
 		Expect(err).NotTo(HaveOccurred())
-		signature, err := profile.GetSignature(features...)
+		signature, err := zeroTputProfile.GetSignature(features...)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(signature).To(Equal([]int{1, 1}))
 	})
 
-	It("should return NaN when throughput is zero and the queue holds only the head request", func() {
+	It("should return ErrorSLOFailureRequest when the profile reports zero throughput", func() {
 		q := &SLOQueue{}
 		sub := NewSimpleQueue[*types.RoutingContext](4)
-		req := newTestRequest("req-1", g)
+		req := newTestRequest("req-1", predictor)
 		Expect(sub.Enqueue(req, time.Now())).To(Succeed())
-		rank, err := q.queueRank(time.Now(), req, sub, profile)
-		Expect(math.IsNaN(rank)).To(BeTrue(), "expected rank to be NaN, got %v", rank)
-		Expect(err).NotTo(HaveOccurred())
+		rank, err := q.queueRank(time.Now(), req, sub, zeroTputProfile)
+		Expect(err).To(MatchError(cache.ErrorSLOFailureRequest))
+		Expect(rank).To(BeZero())
 	})
 
-	It("should return +Inf when throughput is zero and other requests are queued", func() {
+	It("should return a finite rank when the profile reports non-zero throughput", func() {
 		q := &SLOQueue{}
 		sub := NewSimpleQueue[*types.RoutingContext](4)
 
-		req := newTestRequest("req-1", g)
+		req := newTestRequest("req-1", predictor)
 		Expect(sub.Enqueue(req, time.Now())).To(Succeed())
 
-		req1 := newTestRequest("req-2", g)
+		req1 := newTestRequest("req-2", predictor)
 		Expect(sub.Enqueue(req1, time.Now())).To(Succeed())
-		rank1, err := q.queueRank(time.Now(), req, sub, profile)
-		Expect(math.IsInf(rank1, 1)).To(BeTrue(), "expected rank to be +Inf, got %v", rank1)
+		rank1, err := q.queueRank(req.RequestTime, req, sub, nonZeroTputProfile)
 		Expect(err).NotTo(HaveOccurred())
+		Expect(rank1).To(BeNumerically("~", -3.9, 0.01))
 	})
 })

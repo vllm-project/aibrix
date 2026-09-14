@@ -390,6 +390,8 @@ func (q *SLOQueue) queueRank(currentTime time.Time, headReq *types.RoutingContex
 	throughput, err := profile.ThroughputRPS(signature...)
 	if err != nil {
 		return 0.0, err
+	} else if throughput == 0.0 {
+		return 0.0, cache.ErrorSLOFailureRequest
 	}
 
 	queueServiceTime := float64(sub.Len()-1) / throughput
