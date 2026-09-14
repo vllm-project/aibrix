@@ -828,3 +828,176 @@ func TestMemoryCleanup(t *testing.T) {
 	}
 	table.blockIndexMu.RUnlock()
 }
+
+// TestProcessBlockRemovedOnlyEvictsSourcePod verifies that a BlockRemoved event
+// drops only the pod that reported it, so replicas that still hold the block
+// keep matching.
+func TestProcessBlockRemovedOnlyEvictsSourcePod(t *testing.T) {
+	modelName := testModelName
+	loraID := int64(-1)
+	pod1 := testPod1Name
+	pod2 := "pod2"
+	tokens := makeTokens(16) // 16 bytes = 1 block with block size 16
+	blockHash := int64(7001)
+
+	testCases := []struct {
+		name        string
+		removedBy   []string // SourcePod of each BlockRemoved event, in order
+		wantMatches []string
+	}{
+		{
+			name:        "one of two pods evicts the block",
+			removedBy:   []string{pod1},
+			wantMatches: []string{pod2},
+		},
+		{
+			name:        "both pods evict the block",
+			removedBy:   []string{pod1, pod2},
+			wantMatches: nil,
+		},
+		{
+			name:        "event without a source pod clears the entry",
+			removedBy:   []string{""},
+			wantMatches: nil,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			table := NewSyncPrefixHashTable()
+			defer table.Close()
+
+			for _, pod := range []string{pod1, pod2} {
+				storeEvent := BlockStored{
+					BlockHashes: []int64{blockHash},
+					Tokens:      [][]byte{tokens},
+					ModelName:   modelName,
+					LoraID:      loraID,
+					SourcePod:   pod,
+				}
+				if err := table.ProcessBlockStored(storeEvent); err != nil {
+					t.Fatalf("failed to store block for %s: %v", pod, err)
+				}
+			}
+
+			readyPods := map[string]struct{}{pod1: {}, pod2: {}}
+			if matches, _ := table.MatchPrefix(modelName, loraID, tokens, readyPods); len(matches) != 2 {
+				t.Fatalf("expected both pods to match before removal, got %v", matches)
+			}
+
+			for _, sourcePod := range tc.removedBy {
+				removeEvent := BlockRemoved{
+					BlockHashes: []int64{blockHash},
+					ModelName:   modelName,
+					LoraID:      loraID,
+					SourcePod:   sourcePod,
+				}
+				if err := table.ProcessBlockRemoved(removeEvent); err != nil {
+					t.Fatalf("failed to remove block: %v", err)
+				}
+			}
+
+			matches, _ := table.MatchPrefix(modelName, loraID, tokens, readyPods)
+			if len(matches) != len(tc.wantMatches) {
+				t.Fatalf("expected %d matches, got %v", len(tc.wantMatches), matches)
+			}
+			for _, pod := range tc.wantMatches {
+				if _, exists := matches[pod]; !exists {
+					t.Errorf("%s still holds the block and should match, got %v", pod, matches)
+				}
+			}
+		})
+	}
+}
+
+// TestTotalPrefixesStaysConsistentAfterRemove verifies that the prefix counter
+// used to enforce maxPrefixesPerContext tracks the actual prefix map.
+func TestTotalPrefixesStaysConsistentAfterRemove(t *testing.T) {
+	modelName := testModelName
+	loraID := int64(-1)
+	pod1 := testPod1Name
+	pod2 := "pod2"
+	tokens := makeTokens(16) // 16 bytes = 1 block with block size 16
+	blockHash := int64(8001)
+
+	store := func(t *testing.T, table *SyncPrefixHashTable, pod string) {
+		t.Helper()
+		storeEvent := BlockStored{
+			BlockHashes: []int64{blockHash},
+			Tokens:      [][]byte{tokens},
+			ModelName:   modelName,
+			LoraID:      loraID,
+			SourcePod:   pod,
+		}
+		if err := table.ProcessBlockStored(storeEvent); err != nil {
+			t.Fatalf("failed to store block for %s: %v", pod, err)
+		}
+	}
+	remove := func(t *testing.T, table *SyncPrefixHashTable, pod string) {
+		t.Helper()
+		removeEvent := BlockRemoved{
+			BlockHashes: []int64{blockHash},
+			ModelName:   modelName,
+			LoraID:      loraID,
+			SourcePod:   pod,
+		}
+		if err := table.ProcessBlockRemoved(removeEvent); err != nil {
+			t.Fatalf("failed to remove block: %v", err)
+		}
+	}
+
+	testCases := []struct {
+		name      string
+		run       func(t *testing.T, table *SyncPrefixHashTable)
+		wantTotal int64
+	}{
+		{
+			name: "one of two pods evicts the block",
+			run: func(t *testing.T, table *SyncPrefixHashTable) {
+				store(t, table, pod1)
+				store(t, table, pod2)
+				remove(t, table, pod1)
+			},
+			wantTotal: 1,
+		},
+		{
+			name: "removal event arrives after the pod was unsubscribed",
+			run: func(t *testing.T, table *SyncPrefixHashTable) {
+				store(t, table, pod1)
+				if err := table.RemovePrefix(modelName, loraID, pod1); err != nil {
+					t.Fatalf("failed to remove prefix: %v", err)
+				}
+				remove(t, table, pod1)
+			},
+			wantTotal: 0,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			table := NewSyncPrefixHashTable()
+			defer table.Close()
+
+			tc.run(t, table)
+
+			ctx := ModelContext{ModelName: modelName, LoraID: loraID}
+			value, exists := table.contextMap.Load(ctx)
+			if !exists {
+				t.Fatal("context should exist")
+			}
+			contextData := value.(*ContextData)
+
+			contextData.prefixMu.RLock()
+			totalPrefixes := contextData.prefixStore.totalPrefixes
+			prefixMapSize := int64(len(contextData.prefixStore.prefixMap))
+			contextData.prefixMu.RUnlock()
+
+			if totalPrefixes != tc.wantTotal {
+				t.Errorf("expected totalPrefixes %d, got %d", tc.wantTotal, totalPrefixes)
+			}
+			if totalPrefixes != prefixMapSize {
+				t.Errorf("totalPrefixes %d disagrees with prefix map size %d", totalPrefixes, prefixMapSize)
+			}
+		})
+	}
+}

@@ -339,27 +339,49 @@ func (s *SyncPrefixHashTable) ProcessBlockRemoved(event BlockRemoved) error {
 		return nil
 	}
 
-	// First, check what needs to be removed using mapping lock
+	// First, resolve the affected prefixes using the mapping lock. The mapping
+	// can only be dropped once no pod holds the block, so resolve without
+	// mutating here.
 	contextData.mappingMu.Lock()
-	toRemove := make(map[uint64]bool)
+	defer contextData.mappingMu.Unlock()
+
+	toRemove := make(map[uint64][]int64) // aibrix prefix hash → engine block hashes
 	for _, engineBlockHash := range event.BlockHashes {
 		if aibrixHash, exists := contextData.hashMapping.engineToAibrix[engineBlockHash]; exists {
-			toRemove[aibrixHash] = true
-			delete(contextData.hashMapping.engineToAibrix, engineBlockHash)
+			toRemove[aibrixHash] = append(toRemove[aibrixHash], engineBlockHash)
 		}
+	}
+	if len(toRemove) == 0 {
+		return nil
+	}
+
+	// Then update prefix store, evicting only the pod that reported the removal.
+	// An empty SourcePod means the caller did not scope the event, so drop the
+	// whole entry as before.
+	orphaned := make([]int64, 0, len(toRemove))
+	contextData.prefixMu.Lock()
+	prefixStore := contextData.prefixStore
+	for aibrixHash, engineBlockHashes := range toRemove {
+		pods, exists := prefixStore.prefixMap[aibrixHash]
+		if exists && event.SourcePod != "" {
+			delete(pods, event.SourcePod)
+			if len(pods) > 0 {
+				continue
+			}
+		}
+		if exists {
+			delete(prefixStore.prefixMap, aibrixHash)
+			prefixStore.totalPrefixes--
+		}
+		orphaned = append(orphaned, engineBlockHashes...)
+	}
+	contextData.prefixMu.Unlock()
+
+	// Finally drop the mappings no pod references any more
+	for _, engineBlockHash := range orphaned {
+		delete(contextData.hashMapping.engineToAibrix, engineBlockHash)
 		// Update reverse index
 		s.updateBlockIndex(engineBlockHash, ctx, false)
-	}
-	contextData.mappingMu.Unlock()
-
-	// Then update prefix store if needed
-	if len(toRemove) > 0 {
-		contextData.prefixMu.Lock()
-		for aibrixHash := range toRemove {
-			delete(contextData.prefixStore.prefixMap, aibrixHash)
-			contextData.prefixStore.totalPrefixes--
-		}
-		contextData.prefixMu.Unlock()
 	}
 
 	return nil
