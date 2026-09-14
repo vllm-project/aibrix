@@ -18,11 +18,10 @@ package engine
 
 import (
 	"fmt"
-	"reflect"
 	"sync/atomic"
 	"time"
 
-	"github.com/bytedance/sonic"
+	"github.com/tidwall/gjson"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -92,79 +91,71 @@ func GetDisaggRequestID(machineID int64) int64 {
 // TRTLLMHandler implements EngineHandler for TensorRT-LLM.
 type TRTLLMHandler struct{}
 
-func (h *TRTLLMHandler) Name() string  { return "trtllm" }
+func (h *TRTLLMHandler) Name() string  { return pd.EngineTRTLLM }
 func (h *TRTLLMHandler) IsAsync() bool { return false }
 
-// AugmentPrefillRequest adds disaggregated_params with request_type="context_only"
-// and a unique disagg_request_id generated from the machine snowflake ID.
+// AugmentPrefillRequest replaces disaggregated_params with request_type="context_only"
+// and a unique disagg_request_id generated from the machine snowflake ID. The
+// ID is written as an integer literal, so it never goes through float64 and
+// keeps full int64 precision.
 func (h *TRTLLMHandler) AugmentPrefillRequest(
 	_ *types.RoutingContext,
 	_ *v1.Pod,
-	completionRequest map[string]any,
-) error {
-	completionRequest["disaggregated_params"] = map[string]any{
-		"request_type":      "context_only",
-		"disagg_request_id": GetDisaggRequestID(trtMachineID),
-	}
-	return nil
+	body []byte,
+) ([]byte, error) {
+	return pd.NewJSONEditor(body).
+		Delete("disaggregated_params").
+		Set("disaggregated_params.request_type", "context_only").
+		Set("disaggregated_params.disagg_request_id", GetDisaggRequestID(trtMachineID)).
+		Result()
 }
 
 // MergePrefillResponse injects TensorRT-LLM disaggregated_params from the
 // prefill response into routingCtx.ReqBody so the decode worker can resume
 // generation from the pre-filled KV cache.
+//
+// disaggregated_params is looked up at the top level first, then under
+// choices[0]. Its fragment is copied verbatim from the response with
+// request_type overridden to "generation_only", so large integer fields such
+// as disagg_request_id / ctx_request_id keep their exact value. When the
+// response includes prompt_token_ids they are routed into the decode body by
+// request path: "prompt" for /v1/completions, "prompt_token_ids" for
+// /v1/chat/completions.
 func (h *TRTLLMHandler) MergePrefillResponse(
 	routingCtx *types.RoutingContext,
-	responseData map[string]any,
+	prefillResponse []byte,
 	prefillPod *v1.Pod,
 ) error {
-	var originalRequest map[string]any
-	if err := pd.SonicJSONInt64.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
-		return fmt.Errorf("failed to unmarshal original request body: %w", err)
-	}
-	if originalRequest == nil {
-		return fmt.Errorf("original request body is empty or null")
+	if err := pd.ValidateJSONObject(routingCtx.ReqBody, "original request body"); err != nil {
+		return err
 	}
 
-	// Locate disaggregated_params: top-level first, then choices[0] fallback.
-	var disaggParams any
-	var exists bool
-
-	disaggParams, exists = responseData["disaggregated_params"]
-	if !exists {
-		if choices, ok := responseData["choices"].([]any); ok && len(choices) > 0 {
-			if choice, ok := choices[0].(map[string]any); ok {
-				disaggParams, exists = choice["disaggregated_params"]
-			}
-		}
+	disaggParams := gjson.GetBytes(prefillResponse, "disaggregated_params")
+	if !disaggParams.Exists() {
+		disaggParams = gjson.GetBytes(prefillResponse, "choices.0.disaggregated_params")
 	}
-
-	if !exists {
+	if !disaggParams.Exists() {
 		klog.InfoS("no disaggregated_params in TRT prefill response", "request_id", routingCtx.RequestID)
 		return nil
 	}
-
-	disaggParamsMap, ok := disaggParams.(map[string]any)
-	if !ok {
-		return fmt.Errorf("disaggregated_params has unexpected type %T, expected map[string]any", disaggParams)
+	if !disaggParams.IsObject() {
+		return fmt.Errorf("disaggregated_params has unexpected type %s, expected object", disaggParams.Type.String())
 	}
 
-	disaggParamsMap["request_type"] = "generation_only"
-	originalRequest["disaggregated_params"] = disaggParamsMap
-
-	if pti, ok := responseData["prompt_token_ids"]; ok && pti != nil {
-		if ids, ok := anySliceForJSON(pti); ok {
-			switch routingCtx.ReqPath {
-			case "/v1/completions":
-				originalRequest["prompt"] = ids
-			case "/v1/chat/completions":
-				originalRequest["prompt_token_ids"] = ids
-			}
+	e := pd.NewJSONEditor(routingCtx.ReqBody).
+		SetRaw("disaggregated_params", []byte(disaggParams.Raw)).
+		Set("disaggregated_params.request_type", "generation_only")
+	if pti := gjson.GetBytes(prefillResponse, "prompt_token_ids"); pti.IsArray() {
+		switch routingCtx.ReqPath {
+		case "/v1/completions":
+			e.SetRaw("prompt", []byte(pti.Raw))
+		case "/v1/chat/completions":
+			e.SetRaw("prompt_token_ids", []byte(pti.Raw))
 		}
 	}
-
-	updatedReqBody, err := sonic.Marshal(originalRequest)
+	updatedReqBody, err := e.Result()
 	if err != nil {
-		return fmt.Errorf("failed to marshal updated request body: %w", err)
+		return fmt.Errorf("failed to update request body: %w", err)
 	}
 	routingCtx.ReqBody = updatedReqBody
 
@@ -173,20 +164,4 @@ func (h *TRTLLMHandler) MergePrefillResponse(
 		"prefill_pod", prefillPod.Name,
 		"prefill_host", prefillPod.Status.PodIP)
 	return nil
-}
-
-// anySliceForJSON converts a JSON-decoded array into []any suitable for map[string]any marshaling.
-func anySliceForJSON(v any) ([]any, bool) {
-	if s, ok := v.([]any); ok {
-		return s, true
-	}
-	val := reflect.ValueOf(v)
-	if val.Kind() != reflect.Slice {
-		return nil, false
-	}
-	out := make([]any, val.Len())
-	for i := 0; i < val.Len(); i++ {
-		out[i] = val.Index(i).Interface()
-	}
-	return out, true
 }

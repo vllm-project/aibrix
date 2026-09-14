@@ -1427,7 +1427,7 @@ func TestUpdateRoutingContextWithKVTransferParams(t *testing.T) {
 				Context:   context.Background(),
 			}
 
-			err := router.updateRoutingContextWithKVTransferParams(routingCtx, tt.responseData, pod)
+			err := router.updateRoutingContextWithKVTransferParams(routingCtx, mustMarshalJSON(t, tt.responseData), pod)
 
 			if tt.expectError {
 				assert.Error(t, err, tt.description)
@@ -1521,7 +1521,7 @@ func TestUpdateRoutingContextNIXLMode(t *testing.T) {
 		Context:   context.Background(),
 	}
 
-	err := router.updateRoutingContextWithKVTransferParams(routingCtx, prefillResponse, pod)
+	err := router.updateRoutingContextWithKVTransferParams(routingCtx, mustMarshalJSON(t, prefillResponse), pod)
 	assert.NoError(t, err)
 
 	// Parse the updated request body
@@ -1659,7 +1659,7 @@ func TestVLLMKVTransferProcessing(t *testing.T) {
 			}
 
 			// Call the update function (this is only called for vLLM in real flow)
-			err := router.updateRoutingContextWithKVTransferParams(routingCtx, tt.response, pod)
+			err := router.updateRoutingContextWithKVTransferParams(routingCtx, mustMarshalJSON(t, tt.response), pod)
 			assert.NoError(t, err)
 
 			if tt.checkKV {
@@ -1807,7 +1807,7 @@ func TestUpdateRoutingContextWithTRTDisaggParams(t *testing.T) {
 				Context:   context.Background(),
 			}
 
-			err := router.updateRoutingContextWithTRTDisaggParams(routingCtx, tt.response, pod)
+			err := router.updateRoutingContextWithTRTDisaggParams(routingCtx, mustMarshalJSON(t, tt.response), pod)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -1835,6 +1835,18 @@ func TestUpdateRoutingContextWithTRTDisaggParams(t *testing.T) {
 }
 
 // Common test utilities
+
+// mustMarshalJSON encodes v as the raw JSON bytes a prefill pod would return,
+// so table-driven tests can keep describing responses as map[string]any.
+func mustMarshalJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := sonic.Marshal(v)
+	if err != nil {
+		t.Fatalf("failed to marshal test JSON: %v", err)
+	}
+	return b
+}
+
 // setupTestServer starts an httptest server on an OS-assigned free port
 // (127.0.0.1:0) and returns the server along with that port (as a string).
 // Using a dynamic port instead of a hardcoded 127.0.0.1:8000 avoids

@@ -17,9 +17,10 @@ limitations under the License.
 package transfer
 
 import (
+	"bytes"
 	"fmt"
 
-	"github.com/bytedance/sonic"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -39,30 +40,28 @@ func (a *NIXLAgent) Type() string { return ConnectorTypeNIXL }
 func (a *NIXLAgent) AugmentPrefillRequest(
 	_ *types.RoutingContext,
 	_ *v1.Pod,
-	_ map[string]any,
-) error {
-	return nil
+	body []byte,
+) ([]byte, error) {
+	return body, nil
 }
 
-// MergePrefillResponse wraps the entire prefill response under disagg_prefill_resp
-// so the NixlConnector on the decode side can locate and pull the KV blocks.
+// MergePrefillResponse wraps the entire prefill response, verbatim, under
+// disagg_prefill_resp so the NixlConnector on the decode side can locate and
+// pull the KV blocks.
 func (a *NIXLAgent) MergePrefillResponse(
 	routingCtx *types.RoutingContext,
-	prefillResponse map[string]any,
+	prefillResponse []byte,
 	prefillPod *v1.Pod,
 ) error {
-	var originalRequest map[string]any
-	if err := sonic.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
-		return fmt.Errorf("failed to unmarshal original request body: %w", err)
-	}
-	if originalRequest == nil {
-		return fmt.Errorf("original request body is empty or null")
+	if err := pd.ValidateJSONObject(routingCtx.ReqBody, "original request body"); err != nil {
+		return err
 	}
 
-	originalRequest["disagg_prefill_resp"] = prefillResponse
-	updatedReqBody, err := sonic.Marshal(originalRequest)
+	updatedReqBody, err := pd.NewJSONEditor(routingCtx.ReqBody).
+		SetRaw("disagg_prefill_resp", bytes.TrimSpace(prefillResponse)).
+		Result()
 	if err != nil {
-		return fmt.Errorf("failed to marshal updated request body: %w", err)
+		return fmt.Errorf("failed to update request body: %w", err)
 	}
 	routingCtx.ReqBody = updatedReqBody
 

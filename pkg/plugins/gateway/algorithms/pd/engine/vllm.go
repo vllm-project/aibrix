@@ -54,23 +54,23 @@ func (h *VLLMHandler) IsAsync() bool { return false }
 func (h *VLLMHandler) AugmentPrefillRequest(
 	routingCtx *types.RoutingContext,
 	pod *v1.Pod,
-	completionRequest map[string]any,
-) error {
+	body []byte,
+) ([]byte, error) {
 	agent, err := transfer.ResolveAgentForPod(pod, connectorTypeFunc())
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return agent.AugmentPrefillRequest(routingCtx, pod, completionRequest)
+	return agent.AugmentPrefillRequest(routingCtx, pod, body)
 }
 
 func (h *VLLMHandler) MergePrefillResponse(
 	routingCtx *types.RoutingContext,
-	responseData map[string]any,
+	prefillResponse []byte,
 	pod *v1.Pod,
 ) error {
 	agent, err := transfer.ResolveAgentForPod(pod, connectorTypeFunc())
 	if err != nil {
 		return err
 	}
-	return agent.MergePrefillResponse(routingCtx, responseData, pod)
+	return agent.MergePrefillResponse(routingCtx, prefillResponse, pod)
 }

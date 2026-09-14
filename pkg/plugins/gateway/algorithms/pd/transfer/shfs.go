@@ -19,7 +19,8 @@ package transfer
 import (
 	"fmt"
 
-	"github.com/bytedance/sonic"
+	"github.com/tidwall/gjson"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -34,56 +35,53 @@ type SHFSAgent struct{}
 
 func (a *SHFSAgent) Type() string { return ConnectorTypeSHFS }
 
-// AugmentPrefillRequest adds a kv_transfer_params skeleton so the prefill pod
-// knows to populate remote block IDs for the decode side.
+// AugmentPrefillRequest replaces kv_transfer_params with the skeleton the
+// prefill pod expects, so it populates remote block IDs for the decode side.
+// Any client-supplied kv_transfer_params is dropped; nothing else in body changes.
 func (a *SHFSAgent) AugmentPrefillRequest(
 	_ *types.RoutingContext,
 	_ *v1.Pod,
-	completionRequest map[string]any,
-) error {
-	completionRequest["kv_transfer_params"] = map[string]any{
-		"do_remote_decode":  true,
-		"do_remote_prefill": false,
-		"remote_engine_id":  nil,
-		"remote_block_ids":  nil,
-		"remote_host":       nil,
-		"remote_port":       nil,
-	}
-	return nil
+	body []byte,
+) ([]byte, error) {
+	return pd.NewJSONEditor(body).
+		Delete("kv_transfer_params").
+		Set("kv_transfer_params.do_remote_decode", true).
+		Set("kv_transfer_params.do_remote_prefill", false).
+		Set("kv_transfer_params.remote_engine_id", nil).
+		Set("kv_transfer_params.remote_block_ids", nil).
+		Set("kv_transfer_params.remote_host", nil).
+		Set("kv_transfer_params.remote_port", nil).
+		Result()
 }
 
-// MergePrefillResponse extracts kv_transfer_params from the prefill response,
-// sets remote_host to the prefill pod IP, and writes the merged params into
-// routingCtx.ReqBody so the decode pod can pull the KV cache blocks.
+// MergePrefillResponse copies kv_transfer_params verbatim from the prefill
+// response into routingCtx.ReqBody, with remote_host set to the prefill pod
+// IP, so the decode pod can pull the KV cache blocks. A response without
+// kv_transfer_params leaves the decode body unchanged.
 func (a *SHFSAgent) MergePrefillResponse(
 	routingCtx *types.RoutingContext,
-	prefillResponse map[string]any,
+	prefillResponse []byte,
 	prefillPod *v1.Pod,
 ) error {
-	var originalRequest map[string]any
-	if err := sonic.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
-		return fmt.Errorf("failed to unmarshal original request body: %w", err)
-	}
-	if originalRequest == nil {
-		return fmt.Errorf("original request body is empty or null")
+	if err := pd.ValidateJSONObject(routingCtx.ReqBody, "original request body"); err != nil {
+		return err
 	}
 
-	kvTransferParams, exists := prefillResponse["kv_transfer_params"]
-	if !exists {
+	kvTransferParams := gjson.GetBytes(prefillResponse, "kv_transfer_params")
+	if !kvTransferParams.Exists() {
 		klog.InfoS("no kv_transfer_params in prefill response (SHFS)", "request_id", routingCtx.RequestID)
 		return nil
 	}
-
-	kvTransferParamsMap, ok := kvTransferParams.(map[string]any)
-	if !ok {
-		return fmt.Errorf("kv_transfer_params has unexpected type %T, expected map[string]any", kvTransferParams)
+	if !kvTransferParams.IsObject() {
+		return fmt.Errorf("kv_transfer_params has unexpected type %s, expected object", kvTransferParams.Type.String())
 	}
-	kvTransferParamsMap["remote_host"] = prefillPod.Status.PodIP
 
-	originalRequest["kv_transfer_params"] = kvTransferParams
-	updatedReqBody, err := sonic.Marshal(originalRequest)
+	updatedReqBody, err := pd.NewJSONEditor(routingCtx.ReqBody).
+		SetRaw("kv_transfer_params", []byte(kvTransferParams.Raw)).
+		Set("kv_transfer_params.remote_host", prefillPod.Status.PodIP).
+		Result()
 	if err != nil {
-		return fmt.Errorf("failed to marshal updated request body: %w", err)
+		return fmt.Errorf("failed to update request body: %w", err)
 	}
 	routingCtx.ReqBody = updatedReqBody
 
