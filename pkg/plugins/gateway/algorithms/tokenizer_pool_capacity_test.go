@@ -46,7 +46,10 @@ func TestTokenizerPoolConcurrentCapacity(t *testing.T) {
 			}))
 			server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
 				if state == http.StateClosed {
-					closed <- struct{}{}
+					select {
+					case closed <- struct{}{}:
+					default:
+					}
 				}
 			}
 			server.Start()
@@ -88,7 +91,9 @@ func TestTokenizerPoolConcurrentCapacity(t *testing.T) {
 			}
 			close(release)
 			first, second := <-results, <-results
+			pool.mu.RLock()
 			assert.Len(t, pool.tokenizers, 1)
+			pool.mu.RUnlock()
 			if sameModel {
 				assert.Same(t, first, second)
 				assert.NotSame(t, fallback, first)
@@ -120,14 +125,18 @@ func TestTokenizerPoolReplaceUnhealthyAtCapacity(t *testing.T) {
 	defer func() { require.NoError(t, pool.Close()) }()
 	previous := &mockTokenizer{}
 	previous.On("Close").Return(nil).Once()
+	pool.mu.Lock()
 	pool.tokenizers["model"] = &tokenizerEntry{tokenizer: previous, healthStatus: false}
+	pool.mu.Unlock()
 
 	result := pool.GetTokenizer("model", nil)
 	assert.NotSame(t, fallback, result)
 	assert.NotSame(t, previous, result)
+	pool.mu.RLock()
 	assert.Len(t, pool.tokenizers, 1)
 	assert.Same(t, result, pool.tokenizers["model"].tokenizer)
 	assert.True(t, pool.tokenizers["model"].healthStatus)
+	pool.mu.RUnlock()
 	previous.AssertExpectations(t)
 }
 
@@ -139,7 +148,10 @@ func TestTokenizerPoolFailedHealthCheckReleasesClient(t *testing.T) {
 	}))
 	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
 		if state == http.StateClosed {
-			closed <- struct{}{}
+			select {
+			case closed <- struct{}{}:
+			default:
+			}
 		}
 	}
 	server.Start()
@@ -154,7 +166,9 @@ func TestTokenizerPoolFailedHealthCheckReleasesClient(t *testing.T) {
 	defer func() { require.NoError(t, pool.Close()) }()
 
 	assert.Same(t, fallback, pool.GetTokenizer("model", nil))
+	pool.mu.RLock()
 	assert.Empty(t, pool.tokenizers)
+	pool.mu.RUnlock()
 	select {
 	case <-closed:
 	case <-time.After(5 * time.Second):

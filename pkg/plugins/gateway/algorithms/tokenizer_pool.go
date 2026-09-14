@@ -343,6 +343,7 @@ func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) to
 		if closer, ok := tok.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		}
+		klog.Warningf("TokenizerPool reached max size %d, using default tokenizer", p.config.MaxTokenizersPerPool)
 		return p.config.DefaultTokenizer
 	}
 	if exists {
