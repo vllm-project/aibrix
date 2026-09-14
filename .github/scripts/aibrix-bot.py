@@ -153,15 +153,25 @@ def _explicit_area(body: str) -> str | None:
     return f"area/{token}" if token in AREA_OPTIONS else None
 
 
+def _has_area_section(body: str) -> bool:
+    return _clean_heading("Area") in _sections(body)
+
+
 def classify_issue(title: str, body: str) -> IssueClassification:
     form = _form_name(title, body)
     kind = FORM_KIND[form] if form else _keyword_kind(title, body)
     explicit_area = _explicit_area(body)
     if explicit_area:
         areas = [explicit_area]
+    elif _has_area_section(body):
+        # Area field is present but left on "Not sure" or unrecognized - the
+        # reporter explicitly declined to pick one, so respect that instead
+        # of guessing from keywords in the rest of the body.
+        areas = []
     else:
-        # Fallback: keyword match, first matching rule only, to avoid piling
-        # on unrelated area/* labels from broad matches across the body.
+        # No Area field at all (legacy / free-form issue): keyword match,
+        # first matching rule only, to avoid piling on unrelated area/*
+        # labels from broad matches across the body.
         haystack = f"{title}\n{body}".lower()
         areas = next(([label] for label, patterns in AREA_RULES if any(re.search(pattern, haystack) for pattern in patterns)), [])
     return IssueClassification(kind, areas, form)
@@ -388,15 +398,22 @@ def self_test() -> None:
     )
     assert result.areas == ["area/runtime"]
 
-    # No usable Area field: keyword fallback returns only the first matching
+    # No Area field at all: keyword fallback returns only the first matching
     # rule instead of every area the broad regexes happen to match.
     result = classify_issue("Bug", "This touches the gateway routing and also our docs and CI workflow.")
     assert result.areas == ["area/gateway"]
 
-    # An unrecognized or default ("Not sure") Area selection falls back too.
+    # An Area field left on "Not sure" is an explicit decline, not a missing
+    # field - it must NOT fall back to keyword matching even when the rest
+    # of the body mentions other components.
+    result = classify_issue("Bug", "### Area\n\nNot sure\n\nThis touches the gateway routing and also our docs and CI workflow.")
+    assert result.areas == []
+
     assert _explicit_area("### Area\n\nNot sure") is None
     assert _explicit_area("### Area\n\nkv-cache — distributed KV cache") == "area/kv-cache"
     assert _explicit_area("no area section at all") is None
+    assert _has_area_section("### Area\n\nNot sure") is True
+    assert _has_area_section("no area section at all") is False
 
     # PR Area checklist: exactly one checked box is used, zero or multiple
     # checked boxes both fall back to the path-based labeler untouched.
