@@ -358,7 +358,11 @@ func (s *SyncPrefixHashTable) ProcessBlockRemoved(event BlockRemoved) error {
 	// Then update prefix store, evicting only the pod that reported the removal.
 	// An empty SourcePod means the caller did not scope the event, so drop the
 	// whole entry as before.
-	orphaned := make([]int64, 0, len(toRemove))
+	if event.SourcePod == "" {
+		klog.Warningf("block removed event has no source pod, evicting prefixes for every pod: model=%s, lora_id=%d, block_hashes=%d",
+			event.ModelName, event.LoraID, len(event.BlockHashes))
+	}
+	orphaned := make([]int64, 0, len(event.BlockHashes))
 	contextData.prefixMu.Lock()
 	prefixStore := contextData.prefixStore
 	for aibrixHash, engineBlockHashes := range toRemove {

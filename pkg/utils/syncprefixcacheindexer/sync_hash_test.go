@@ -829,6 +829,35 @@ func TestMemoryCleanup(t *testing.T) {
 	table.blockIndexMu.RUnlock()
 }
 
+// blockTracked reports whether an engine block hash still has an entry in the
+// engine-to-aibrix mapping and in the reverse block index for ctx. Both must
+// survive for as long as any pod holds the block, otherwise a later replica's
+// BlockRemoved for the same block can no longer be resolved.
+func blockTracked(t *testing.T, table *SyncPrefixHashTable, ctx ModelContext, engineBlockHash int64) (mapped bool, indexed bool) {
+	t.Helper()
+
+	value, exists := table.contextMap.Load(ctx)
+	if !exists {
+		t.Fatalf("context %v should exist", ctx)
+	}
+	contextData := value.(*ContextData)
+
+	contextData.mappingMu.RLock()
+	_, mapped = contextData.hashMapping.engineToAibrix[engineBlockHash]
+	contextData.mappingMu.RUnlock()
+
+	table.blockIndexMu.RLock()
+	for _, indexedCtx := range table.blockIndex[engineBlockHash] {
+		if indexedCtx == ctx {
+			indexed = true
+			break
+		}
+	}
+	table.blockIndexMu.RUnlock()
+
+	return mapped, indexed
+}
+
 // TestProcessBlockRemovedOnlyEvictsSourcePod verifies that a BlockRemoved event
 // drops only the pod that reported it, so replicas that still hold the block
 // keep matching.
@@ -844,21 +873,25 @@ func TestProcessBlockRemovedOnlyEvictsSourcePod(t *testing.T) {
 		name        string
 		removedBy   []string // SourcePod of each BlockRemoved event, in order
 		wantMatches []string
+		wantTracked bool // mapping and reverse index still hold the block
 	}{
 		{
 			name:        "one of two pods evicts the block",
 			removedBy:   []string{pod1},
 			wantMatches: []string{pod2},
+			wantTracked: true,
 		},
 		{
 			name:        "both pods evict the block",
 			removedBy:   []string{pod1, pod2},
 			wantMatches: nil,
+			wantTracked: false,
 		},
 		{
 			name:        "event without a source pod clears the entry",
 			removedBy:   []string{""},
 			wantMatches: nil,
+			wantTracked: false,
 		},
 	}
 
@@ -906,7 +939,87 @@ func TestProcessBlockRemovedOnlyEvictsSourcePod(t *testing.T) {
 					t.Errorf("%s still holds the block and should match, got %v", pod, matches)
 				}
 			}
+
+			ctx := ModelContext{ModelName: modelName, LoraID: loraID}
+			mapped, indexed := blockTracked(t, table, ctx, blockHash)
+			if mapped != tc.wantTracked {
+				t.Errorf("engine-to-aibrix mapping for block %d: got present=%t, want %t", blockHash, mapped, tc.wantTracked)
+			}
+			if indexed != tc.wantTracked {
+				t.Errorf("reverse block index for block %d: got present=%t, want %t", blockHash, indexed, tc.wantTracked)
+			}
 		})
+	}
+}
+
+// TestProcessBlockRemovedMixedEvent covers the realistic vLLM eviction shape: one
+// BlockRemoved carrying several block hashes where the reporting pod is the last
+// holder of only some of them.
+func TestProcessBlockRemovedMixedEvent(t *testing.T) {
+	modelName := testModelName
+	loraID := int64(-1)
+	pod1 := testPod1Name
+	pod2 := "pod2"
+	tokens := makeTokens(32) // 32 bytes = 2 blocks with block size 16
+	sharedBlock := int64(9001)
+	pod1OnlyBlock := int64(9002)
+
+	table := NewSyncPrefixHashTable()
+	defer table.Close()
+
+	// Both pods hold the first block, only pod1 holds the second.
+	for _, pod := range []string{pod1, pod2} {
+		storeEvent := BlockStored{
+			BlockHashes: []int64{sharedBlock},
+			Tokens:      [][]byte{tokens[:16]},
+			ModelName:   modelName,
+			LoraID:      loraID,
+			SourcePod:   pod,
+		}
+		if err := table.ProcessBlockStored(storeEvent); err != nil {
+			t.Fatalf("failed to store shared block for %s: %v", pod, err)
+		}
+	}
+	storeEvent := BlockStored{
+		BlockHashes:     []int64{pod1OnlyBlock},
+		ParentBlockHash: &sharedBlock,
+		Tokens:          [][]byte{tokens[16:]},
+		ModelName:       modelName,
+		LoraID:          loraID,
+		SourcePod:       pod1,
+	}
+	if err := table.ProcessBlockStored(storeEvent); err != nil {
+		t.Fatalf("failed to store second block for %s: %v", pod1, err)
+	}
+
+	readyPods := map[string]struct{}{pod1: {}, pod2: {}}
+	matches, _ := table.MatchPrefix(modelName, loraID, tokens, readyPods)
+	if matches[pod1] != 100 || matches[pod2] != 50 {
+		t.Fatalf("expected %s at 100%% and %s at 50%% before removal, got %v", pod1, pod2, matches)
+	}
+
+	// pod1 evicts both blocks at once, but is the last holder of the second only.
+	removeEvent := BlockRemoved{
+		BlockHashes: []int64{sharedBlock, pod1OnlyBlock},
+		ModelName:   modelName,
+		LoraID:      loraID,
+		SourcePod:   pod1,
+	}
+	if err := table.ProcessBlockRemoved(removeEvent); err != nil {
+		t.Fatalf("failed to remove blocks: %v", err)
+	}
+
+	ctx := ModelContext{ModelName: modelName, LoraID: loraID}
+	if mapped, indexed := blockTracked(t, table, ctx, sharedBlock); !mapped || !indexed {
+		t.Errorf("block %d is still held by %s, want it kept (mapped=%t, indexed=%t)", sharedBlock, pod2, mapped, indexed)
+	}
+	if mapped, indexed := blockTracked(t, table, ctx, pod1OnlyBlock); mapped || indexed {
+		t.Errorf("block %d lost its last pod, want it dropped (mapped=%t, indexed=%t)", pod1OnlyBlock, mapped, indexed)
+	}
+
+	matches, _ = table.MatchPrefix(modelName, loraID, tokens, readyPods)
+	if len(matches) != 1 || matches[pod2] != 50 {
+		t.Errorf("expected only %s to match the first block at 50%%, got %v", pod2, matches)
 	}
 }
 
