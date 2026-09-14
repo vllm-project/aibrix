@@ -78,7 +78,7 @@ func TestModelAdapter(t *testing.T) {
 	assert.NotEqual(t, newPod, oldPod, "ensure old and new pods are different")
 
 	// run inference for model adapter
-	validateInference(t, loraName)
+	waitForInference(t, loraName)
 }
 
 // TestModelAdapterRetryMechanism tests the retry mechanism with exponential backoff

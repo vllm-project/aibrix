@@ -266,7 +266,7 @@ jobs:
 
       - name: Wait for pods and open port forwards
         run: |
-          sleep 90s
+          sleep 60s
           
           # Verify the mock deployment status.
           # This pod runs two containers: `llm-engine` (app) and `aibrix-runtime` (sidecar).

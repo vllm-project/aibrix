@@ -960,11 +960,48 @@ func TestValidateHTTPRouteStatus_TransientRouteErrorExpires(t *testing.T) {
 	s := &Server{
 		gatewayClient:     mockGW,
 		httprouteCacheTTL: 30 * time.Second,
+		httprouteErrorTTL: time.Millisecond,
 	}
 
 	assert.Error(t, s.validateHTTPRouteStatus(context.Background(), "transient-route"))
-	time.Sleep(defaultHTTPRouteErrorTTL + 10*time.Millisecond)
+	time.Sleep(5 * time.Millisecond)
 	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "transient-route"))
+
+	mockGW.AssertExpectations(t)
+	mockGWV1.AssertExpectations(t)
+	mockHTTP.AssertExpectations(t)
+}
+
+func TestValidateHTTPRouteStatus_UnresolvedRouteErrorExpires(t *testing.T) {
+	mockGW := &MockGatewayClient{}
+	mockGWV1 := &MockGatewayV1Client{}
+	mockHTTP := &MockHTTPRouteClient{}
+	mockGW.On("GatewayV1").Return(mockGWV1).Twice()
+	mockGWV1.On("HTTPRoutes", "aibrix-system").Return(mockHTTP).Twice()
+
+	invalidRoute := &gatewayv1.HTTPRoute{
+		Status: gatewayv1.HTTPRouteStatus{RouteStatus: gatewayv1.RouteStatus{
+			Parents: []gatewayv1.RouteParentStatus{{Conditions: []metav1.Condition{{
+				Type: string(gatewayv1.RouteConditionResolvedRefs), Reason: "BackendNotFound",
+			}}}},
+		}},
+	}
+	validRoute := &gatewayv1.HTTPRoute{
+		Status: gatewayv1.HTTPRouteStatus{RouteStatus: gatewayv1.RouteStatus{
+			Parents: []gatewayv1.RouteParentStatus{{Conditions: []metav1.Condition{{
+				Type: string(gatewayv1.RouteConditionAccepted), Reason: string(gatewayv1.RouteReasonAccepted),
+			}, {
+				Type: string(gatewayv1.RouteConditionResolvedRefs), Reason: string(gatewayv1.RouteReasonResolvedRefs),
+			}}}},
+		}},
+	}
+	mockHTTP.On("Get", mock.Anything, "unresolved-route-router", mock.Anything).Return(invalidRoute, nil).Once()
+	mockHTTP.On("Get", mock.Anything, "unresolved-route-router", mock.Anything).Return(validRoute, nil).Once()
+
+	s := &Server{gatewayClient: mockGW, httprouteCacheTTL: time.Second, httprouteErrorTTL: time.Millisecond}
+	assert.Error(t, s.validateHTTPRouteStatus(context.Background(), "unresolved-route"))
+	time.Sleep(5 * time.Millisecond)
+	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "unresolved-route"))
 
 	mockGW.AssertExpectations(t)
 	mockGWV1.AssertExpectations(t)
