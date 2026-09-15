@@ -80,7 +80,7 @@ jobs:
     timeout-minutes: 35
     env:
       KIND_CLUSTER_NAME: installation-smoke-kustomize
-      KUBECONFIG: ${{ runner.temp }}/installation-smoke-kustomize.conf
+      KUBECONFIG: /tmp/installation-smoke-kustomize.conf
       AIBRIX_E2E_GATEWAY_URL: http://127.0.0.1:8888
     steps:
       - name: Check out code
@@ -300,7 +300,7 @@ jobs:
     timeout-minutes: 35
     env:
       KIND_CLUSTER_NAME: installation-smoke-helm
-      KUBECONFIG: ${{ runner.temp }}/installation-smoke-helm.conf
+      KUBECONFIG: /tmp/installation-smoke-helm.conf
       AIBRIX_E2E_GATEWAY_URL: http://127.0.0.1:8888
     steps:
       - name: Check out code
