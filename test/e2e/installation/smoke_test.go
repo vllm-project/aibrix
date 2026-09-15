@@ -19,11 +19,11 @@ package installation
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"testing"
 	"time"
 
-	"github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/require"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	orchestrationclient "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/typed/orchestration/v1alpha1"
@@ -35,7 +35,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/utils/ptr"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
+	gatewayclient "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
 )
 
 const (
@@ -46,6 +50,7 @@ const (
 	modelEngine           = "model.aibrix.ai/engine"
 	modelConfigAnnotation = "model.aibrix.ai/config"
 	pdRoutingConfig       = `{"defaultProfile":"pd","profiles":{"pd":{"routingStrategy":"pd"}}}`
+	gatewayNamespace      = "aibrix-system"
 	stormServiceTimeout   = 4 * time.Minute
 	cleanupTimeout        = 2 * time.Minute
 )
@@ -55,6 +60,7 @@ func TestInstallationSmoke(t *testing.T) {
 	defer cancel()
 
 	kubernetesClient, aibrixClient := framework.InitializeClient(ctx, t)
+	gatewayClient := initializeGatewayClient(t)
 	verifyStormServiceAPI(t, kubernetesClient)
 	config := framework.LoadConfig()
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
@@ -64,6 +70,7 @@ func TestInstallationSmoke(t *testing.T) {
 		modelName := "smoke-single-" + suffix
 		runStormServiceScenario(t, ctx, kubernetesClient,
 			aibrixClient.OrchestrationV1alpha1().StormServices(config.Namespace),
+			gatewayClient,
 			newSingleStormService(config.Namespace, name, modelName),
 			map[string]int32{"worker": 1},
 			func(t *testing.T) {
@@ -76,20 +83,24 @@ func TestInstallationSmoke(t *testing.T) {
 		modelName := "smoke-pd-" + suffix
 		runStormServiceScenario(t, ctx, kubernetesClient,
 			aibrixClient.OrchestrationV1alpha1().StormServices(config.Namespace),
+			gatewayClient,
 			newPDStormService(config.Namespace, name, modelName),
 			map[string]int32{"prefill": 1, "decode": 1},
 			func(t *testing.T) {
-				client := framework.NewOpenAIClientWithRoutingStrategy(config.GatewayURL, config.APIKey, "pd", nil)
-				response := framework.PollPDChatCompletion(t, client, openai.ChatCompletionNewParams{
-					Messages: []openai.ChatCompletionMessageParamUnion{
-						openai.UserMessage("Say this is an installation smoke test"),
-					},
-					Model: modelName,
-				})
-				require.Equal(t, modelName, response.Model)
-				require.NotEmpty(t, response.Choices)
+				framework.WaitForPDDisaggregationRouting(t, modelName)
 			})
 	})
+}
+
+func initializeGatewayClient(t *testing.T) gatewayclient.Interface {
+	t.Helper()
+	kubeConfig := os.Getenv("KUBECONFIG")
+	require.NotEmpty(t, kubeConfig, "KUBECONFIG must point to the CI cluster")
+	config, err := clientcmd.BuildConfigFromFlags("", kubeConfig)
+	require.NoError(t, err, "build Gateway API client configuration")
+	client, err := gatewayclient.NewForConfig(config)
+	require.NoError(t, err, "create Gateway API client")
+	return client
 }
 
 func verifyStormServiceAPI(t *testing.T, client kubernetes.Interface) {
@@ -109,14 +120,13 @@ func runStormServiceScenario(
 	ctx context.Context,
 	kubernetesClient kubernetes.Interface,
 	stormServices orchestrationclient.StormServiceInterface,
+	gatewayClient gatewayclient.Interface,
 	stormService *orchestrationv1alpha1.StormService,
 	expectedRoles map[string]int32,
 	request func(*testing.T),
 ) {
 	t.Helper()
-	created, err := stormServices.Create(ctx, stormService, metav1.CreateOptions{})
-	require.NoError(t, err, "create StormService %s", stormService.Name)
-
+	service, route, grant := newRoutingResources(stormService.Namespace, stormService.Labels[modelNameLabel])
 	cleaned := false
 	t.Cleanup(func() {
 		if cleaned {
@@ -124,16 +134,33 @@ func runStormServiceScenario(
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
-		if err := deleteStormServiceAndWait(cleanupCtx, kubernetesClient, stormServices, created.Name); err != nil {
-			t.Errorf("clean up StormService %s: %v", created.Name, err)
+		if err := deleteStormServiceAndWait(cleanupCtx, kubernetesClient, stormServices, stormService.Name); err != nil {
+			t.Errorf("clean up StormService %s: %v", stormService.Name, err)
+		}
+		if err := deleteRoutingResourcesAndWait(cleanupCtx, kubernetesClient, gatewayClient, service, route, grant); err != nil {
+			t.Errorf("clean up Gateway resources for %s: %v", stormService.Name, err)
 		}
 	})
 
+	_, err := kubernetesClient.CoreV1().Services(service.Namespace).Create(ctx, service, metav1.CreateOptions{})
+	require.NoError(t, err, "create model Service %s", service.Name)
+	_, err = gatewayClient.GatewayV1beta1().ReferenceGrants(grant.Namespace).Create(ctx, grant, metav1.CreateOptions{})
+	require.NoError(t, err, "create ReferenceGrant %s", grant.Name)
+	_, err = gatewayClient.GatewayV1().HTTPRoutes(route.Namespace).Create(ctx, route, metav1.CreateOptions{})
+	require.NoError(t, err, "create HTTPRoute %s", route.Name)
+
+	created, err := stormServices.Create(ctx, stormService, metav1.CreateOptions{})
+	require.NoError(t, err, "create StormService %s", stormService.Name)
+
 	require.NoError(t, waitForStormServiceReady(ctx, stormServices, created.Name, expectedRoles),
 		"StormService %s did not become ready", created.Name)
+	require.NoError(t, waitForHTTPRouteReady(ctx, gatewayClient, route.Namespace, route.Name),
+		"HTTPRoute %s did not become ready", route.Name)
 	request(t)
 	require.NoError(t, deleteStormServiceAndWait(ctx, kubernetesClient, stormServices, created.Name),
 		"delete StormService %s and its pods", created.Name)
+	require.NoError(t, deleteRoutingResourcesAndWait(ctx, kubernetesClient, gatewayClient, service, route, grant),
+		"delete Gateway resources for %s", created.Name)
 	cleaned = true
 }
 
@@ -193,6 +220,124 @@ func deleteStormServiceAndWait(
 				return false, err
 			}
 			return len(pods.Items) == 0, nil
+		})
+}
+
+func newRoutingResources(namespace, modelName string) (*corev1.Service, *gatewayv1.HTTPRoute, *gatewayv1beta1.ReferenceGrant) {
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: namespace},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{modelNameLabel: modelName},
+			Ports: []corev1.ServicePort{{
+				Name:       "http",
+				Port:       8000,
+				TargetPort: intstr.FromInt32(8000),
+			}},
+		},
+	}
+
+	backendNamespace := gatewayv1.Namespace(namespace)
+	parentNamespace := gatewayv1.Namespace(gatewayNamespace)
+	path := "/v1/chat/completions"
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: modelName + "-router", Namespace: gatewayNamespace},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: []gatewayv1.ParentReference{{
+				Name:      "aibrix-eg",
+				Namespace: &parentNamespace,
+			}}},
+			Rules: []gatewayv1.HTTPRouteRule{{
+				Matches: []gatewayv1.HTTPRouteMatch{{
+					Path: &gatewayv1.HTTPPathMatch{
+						Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
+						Value: &path,
+					},
+					Headers: []gatewayv1.HTTPHeaderMatch{{
+						Type:  ptr.To(gatewayv1.HeaderMatchExact),
+						Name:  "model",
+						Value: modelName,
+					}},
+				}},
+				BackendRefs: []gatewayv1.HTTPBackendRef{{BackendRef: gatewayv1.BackendRef{
+					BackendObjectReference: gatewayv1.BackendObjectReference{
+						Name:      gatewayv1.ObjectName(modelName),
+						Namespace: &backendNamespace,
+						Port:      ptr.To(gatewayv1.PortNumber(8000)),
+					},
+				}}},
+			}},
+		},
+	}
+
+	grant := &gatewayv1beta1.ReferenceGrant{
+		ObjectMeta: metav1.ObjectMeta{Name: modelName + "-route-grant", Namespace: namespace},
+		Spec: gatewayv1beta1.ReferenceGrantSpec{
+			From: []gatewayv1beta1.ReferenceGrantFrom{{
+				Group:     gatewayv1.GroupName,
+				Kind:      "HTTPRoute",
+				Namespace: gatewayNamespace,
+			}},
+			To: []gatewayv1beta1.ReferenceGrantTo{{Group: "", Kind: "Service"}},
+		},
+	}
+	return service, route, grant
+}
+
+func waitForHTTPRouteReady(ctx context.Context, client gatewayclient.Interface, namespace, name string) error {
+	return wait.PollUntilContextTimeout(ctx, time.Second, time.Minute, true,
+		func(ctx context.Context) (bool, error) {
+			route, err := client.GatewayV1().HTTPRoutes(namespace).Get(ctx, name, metav1.GetOptions{})
+			if err != nil {
+				return false, err
+			}
+			for _, parent := range route.Status.Parents {
+				accepted := false
+				resolved := false
+				for _, condition := range parent.Conditions {
+					switch condition.Type {
+					case string(gatewayv1.RouteConditionAccepted):
+						accepted = condition.Status == metav1.ConditionTrue
+					case string(gatewayv1.RouteConditionResolvedRefs):
+						resolved = condition.Status == metav1.ConditionTrue
+					}
+				}
+				if accepted && resolved {
+					return true, nil
+				}
+			}
+			return false, nil
+		})
+}
+
+func deleteRoutingResourcesAndWait(
+	ctx context.Context,
+	kubernetesClient kubernetes.Interface,
+	gatewayClient gatewayclient.Interface,
+	service *corev1.Service,
+	route *gatewayv1.HTTPRoute,
+	grant *gatewayv1beta1.ReferenceGrant,
+) error {
+	if err := gatewayClient.GatewayV1().HTTPRoutes(route.Namespace).Delete(ctx, route.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete HTTPRoute %s: %w", route.Name, err)
+	}
+	if err := gatewayClient.GatewayV1beta1().ReferenceGrants(grant.Namespace).Delete(ctx, grant.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete ReferenceGrant %s: %w", grant.Name, err)
+	}
+	if err := kubernetesClient.CoreV1().Services(service.Namespace).Delete(ctx, service.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete Service %s: %w", service.Name, err)
+	}
+
+	return wait.PollUntilContextTimeout(ctx, time.Second, cleanupTimeout, true,
+		func(ctx context.Context) (bool, error) {
+			_, routeErr := gatewayClient.GatewayV1().HTTPRoutes(route.Namespace).Get(ctx, route.Name, metav1.GetOptions{})
+			_, grantErr := gatewayClient.GatewayV1beta1().ReferenceGrants(grant.Namespace).Get(ctx, grant.Name, metav1.GetOptions{})
+			_, serviceErr := kubernetesClient.CoreV1().Services(service.Namespace).Get(ctx, service.Name, metav1.GetOptions{})
+			for _, err := range []error{routeErr, grantErr, serviceErr} {
+				if err != nil && !apierrors.IsNotFound(err) {
+					return false, err
+				}
+			}
+			return apierrors.IsNotFound(routeErr) && apierrors.IsNotFound(grantErr) && apierrors.IsNotFound(serviceErr), nil
 		})
 }
 

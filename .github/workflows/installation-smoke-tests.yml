@@ -172,14 +172,22 @@ jobs:
           fi
 
           kubectl apply -k config/crd --server-side
+          wait_for_crd() {
+            local crd="$1"
+            local deadline=$((SECONDS + 300))
+            until kubectl wait --for=condition=Established "crd/${crd}" --timeout=15s; do
+              if ((SECONDS >= deadline)); then
+                echo "::error::CRD ${crd} did not become Established within 5 minutes"
+                kubectl get "crd/${crd}" -o yaml
+                return 1
+              fi
+            done
+          }
           for crd in \
             stormservices.orchestration.aibrix.ai \
             rolesets.orchestration.aibrix.ai \
             podsets.orchestration.aibrix.ai; do
-            if ! kubectl wait --for=condition=Established "crd/${crd}" --timeout=5m; then
-              echo "::error::CRD ${crd} did not become Established"
-              exit 1
-            fi
+            wait_for_crd "${crd}"
           done
 
           pushd config/default
@@ -226,8 +234,10 @@ jobs:
             echo "::error::Webhook Service aibrix-webhook-service has no ready endpoint"
             exit 1
           fi
-          if ! kubectl -n aibrix-system wait --for=condition=Programmed gateway/aibrix-eg --timeout=5m; then
-            echo "::error::Gateway aibrix-eg did not become Programmed"
+          if ! kubectl -n aibrix-system wait \
+            --for=jsonpath='{.status.listeners[0].conditions[?(@.type=="Programmed")].status}'=True \
+            gateway/aibrix-eg --timeout=5m; then
+            echo "::error::Gateway aibrix-eg listener did not become Programmed"
             exit 1
           fi
           kubectl -n aibrix-system get deployments -o custom-columns=NAME:.metadata.name,IMAGES:.spec.template.spec.containers[*].image
@@ -390,14 +400,22 @@ jobs:
         run: |
           set -euo pipefail
           kubectl apply -f dist/chart/crds --server-side
+          wait_for_crd() {
+            local crd="$1"
+            local deadline=$((SECONDS + 300))
+            until kubectl wait --for=condition=Established "crd/${crd}" --timeout=15s; do
+              if ((SECONDS >= deadline)); then
+                echo "::error::CRD ${crd} did not become Established within 5 minutes"
+                kubectl get "crd/${crd}" -o yaml
+                return 1
+              fi
+            done
+          }
           for crd in \
             stormservices.orchestration.aibrix.ai \
             rolesets.orchestration.aibrix.ai \
             podsets.orchestration.aibrix.ai; do
-            if ! kubectl wait --for=condition=Established "crd/${crd}" --timeout=5m; then
-              echo "::error::CRD ${crd} did not become Established"
-              exit 1
-            fi
+            wait_for_crd "${crd}"
           done
 
           helm install aibrix dist/chart \
@@ -452,8 +470,10 @@ jobs:
             echo "::error::Webhook Service aibrix-webhook-service has no ready endpoint"
             exit 1
           fi
-          if ! kubectl -n aibrix-system wait --for=condition=Programmed gateway/aibrix-eg --timeout=5m; then
-            echo "::error::Gateway aibrix-eg did not become Programmed"
+          if ! kubectl -n aibrix-system wait \
+            --for=jsonpath='{.status.listeners[0].conditions[?(@.type=="Programmed")].status}'=True \
+            gateway/aibrix-eg --timeout=5m; then
+            echo "::error::Gateway aibrix-eg listener did not become Programmed"
             exit 1
           fi
           kubectl -n aibrix-system get deployments -o custom-columns=NAME:.metadata.name,IMAGES:.spec.template.spec.containers[*].image

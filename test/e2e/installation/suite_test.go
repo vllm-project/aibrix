@@ -157,3 +157,30 @@ func TestStormServiceReady(t *testing.T) {
 		})
 	}
 }
+
+func TestRoutingResourceBuilders(t *testing.T) {
+	service, route, grant := newRoutingResources("default", "smoke-model")
+
+	require.Equal(t, "default", service.Namespace)
+	require.Equal(t, "smoke-model", service.Name)
+	require.Equal(t, "smoke-model", service.Spec.Selector[modelNameLabel])
+	require.Len(t, service.Spec.Ports, 1)
+	require.Equal(t, int32(8000), service.Spec.Ports[0].Port)
+
+	require.Equal(t, gatewayNamespace, route.Namespace)
+	require.Equal(t, "smoke-model-router", route.Name)
+	require.Len(t, route.Spec.ParentRefs, 1)
+	require.Equal(t, "aibrix-eg", string(route.Spec.ParentRefs[0].Name))
+	require.Len(t, route.Spec.Rules, 1)
+	require.Len(t, route.Spec.Rules[0].BackendRefs, 1)
+	require.Equal(t, "smoke-model", string(route.Spec.Rules[0].BackendRefs[0].Name))
+	require.Len(t, route.Spec.Rules[0].Matches, 1)
+	require.Equal(t, "smoke-model", route.Spec.Rules[0].Matches[0].Headers[0].Value)
+
+	require.Equal(t, "default", grant.Namespace)
+	require.Equal(t, "smoke-model-route-grant", grant.Name)
+	require.Len(t, grant.Spec.From, 1)
+	require.Equal(t, gatewayNamespace, string(grant.Spec.From[0].Namespace))
+	require.Len(t, grant.Spec.To, 1)
+	require.Equal(t, "Service", string(grant.Spec.To[0].Kind))
+}
