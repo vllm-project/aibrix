@@ -113,7 +113,7 @@ func (q *SLOQueue) Enqueue(ctx *types.RoutingContext, currentTime time.Time) err
 	if predictor, err := q.cache.GetOutputPredictor(ctx.Model); err != nil {
 		return err
 	} else {
-		ctx.SetOutputPreditor(predictor)
+		ctx.SetOutputPredictor(predictor)
 	}
 
 	newQueue := q.subpool.Get().(types.RouterQueue[*types.RoutingContext])

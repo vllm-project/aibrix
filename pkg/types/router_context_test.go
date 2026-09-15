@@ -60,7 +60,7 @@ var _ = Describe("RouterContext", func() {
 		predictor := &testOutputPredictor{}
 		ctx := context.Background()
 		rctx := NewRoutingContext(ctx, "algorithm", "model", "message", "r1", "")
-		rctx.SetOutputPreditor(predictor)
+		rctx.SetOutputPredictor(predictor)
 		Expect(rctx.Context).To(BeIdenticalTo(ctx))
 		Expect(rctx.Algorithm).To(Equal(RoutingAlgorithm("algorithm")))
 		Expect(rctx.RequestID).To(Equal("r1"))
