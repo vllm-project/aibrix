@@ -1,0 +1,310 @@
+/*
+Copyright 2026 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package installation
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/openai/openai-go/v3"
+	"github.com/stretchr/testify/require"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	orchestrationclient "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/typed/orchestration/v1alpha1"
+	controllerconstants "github.com/vllm-project/aibrix/pkg/controller/constants"
+	framework "github.com/vllm-project/aibrix/test/e2e/framework"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/utils/ptr"
+)
+
+const (
+	mockImage             = "aibrix/vllm-mock:nightly"
+	pdContract            = "vllm-aibrix-shfs"
+	modelNameLabel        = "model.aibrix.ai/name"
+	modelPortLabel        = "model.aibrix.ai/port"
+	modelEngine           = "model.aibrix.ai/engine"
+	modelConfigAnnotation = "model.aibrix.ai/config"
+	pdRoutingConfig       = `{"defaultProfile":"pd","profiles":{"pd":{"routingStrategy":"pd"}}}`
+	stormServiceTimeout   = 4 * time.Minute
+	cleanupTimeout        = 2 * time.Minute
+)
+
+func TestInstallationSmoke(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Minute)
+	defer cancel()
+
+	kubernetesClient, aibrixClient := framework.InitializeClient(ctx, t)
+	verifyStormServiceAPI(t, kubernetesClient)
+	config := framework.LoadConfig()
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+
+	t.Run("single-instance", func(t *testing.T) {
+		name := "install-smoke-single-" + suffix
+		modelName := "smoke-single-" + suffix
+		runStormServiceScenario(t, ctx, kubernetesClient,
+			aibrixClient.OrchestrationV1alpha1().StormServices(config.Namespace),
+			newSingleStormService(config.Namespace, name, modelName),
+			map[string]int32{"worker": 1},
+			func(t *testing.T) {
+				framework.WaitForInference(t, modelName)
+			})
+	})
+
+	t.Run("pd-disaggregated", func(t *testing.T) {
+		name := "install-smoke-pd-" + suffix
+		modelName := "smoke-pd-" + suffix
+		runStormServiceScenario(t, ctx, kubernetesClient,
+			aibrixClient.OrchestrationV1alpha1().StormServices(config.Namespace),
+			newPDStormService(config.Namespace, name, modelName),
+			map[string]int32{"prefill": 1, "decode": 1},
+			func(t *testing.T) {
+				client := framework.NewOpenAIClientWithRoutingStrategy(config.GatewayURL, config.APIKey, "pd", nil)
+				response := framework.PollPDChatCompletion(t, client, openai.ChatCompletionNewParams{
+					Messages: []openai.ChatCompletionMessageParamUnion{
+						openai.UserMessage("Say this is an installation smoke test"),
+					},
+					Model: modelName,
+				})
+				require.Equal(t, modelName, response.Model)
+				require.NotEmpty(t, response.Choices)
+			})
+	})
+}
+
+func verifyStormServiceAPI(t *testing.T, client kubernetes.Interface) {
+	t.Helper()
+	resources, err := client.Discovery().ServerResourcesForGroupVersion(orchestrationv1alpha1.GroupVersion.String())
+	require.NoError(t, err, "StormService API group is not served")
+	for _, resource := range resources.APIResources {
+		if resource.Name == "stormservices" {
+			return
+		}
+	}
+	t.Fatalf("StormService resource is not served in %s", orchestrationv1alpha1.GroupVersion.String())
+}
+
+func runStormServiceScenario(
+	t *testing.T,
+	ctx context.Context,
+	kubernetesClient kubernetes.Interface,
+	stormServices orchestrationclient.StormServiceInterface,
+	stormService *orchestrationv1alpha1.StormService,
+	expectedRoles map[string]int32,
+	request func(*testing.T),
+) {
+	t.Helper()
+	created, err := stormServices.Create(ctx, stormService, metav1.CreateOptions{})
+	require.NoError(t, err, "create StormService %s", stormService.Name)
+
+	cleaned := false
+	t.Cleanup(func() {
+		if cleaned {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		defer cancel()
+		if err := deleteStormServiceAndWait(cleanupCtx, kubernetesClient, stormServices, created.Name); err != nil {
+			t.Errorf("clean up StormService %s: %v", created.Name, err)
+		}
+	})
+
+	require.NoError(t, waitForStormServiceReady(ctx, stormServices, created.Name, expectedRoles),
+		"StormService %s did not become ready", created.Name)
+	request(t)
+	require.NoError(t, deleteStormServiceAndWait(ctx, kubernetesClient, stormServices, created.Name),
+		"delete StormService %s and its pods", created.Name)
+	cleaned = true
+}
+
+func waitForStormServiceReady(
+	ctx context.Context,
+	stormServices orchestrationclient.StormServiceInterface,
+	name string,
+	expectedRoles map[string]int32,
+) error {
+	var latest *orchestrationv1alpha1.StormService
+	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, stormServiceTimeout, true,
+		func(ctx context.Context) (bool, error) {
+			var err error
+			latest, err = stormServices.Get(ctx, name, metav1.GetOptions{})
+			if err != nil {
+				return false, err
+			}
+			return stormServiceReady(latest, expectedRoles), nil
+		})
+	if err == nil {
+		return nil
+	}
+	if latest == nil {
+		return fmt.Errorf("wait for StormService %s: %w", name, err)
+	}
+	return fmt.Errorf("wait for StormService %s: %w (generation=%d observed=%d ready=%d roles=%v conditions=%v)",
+		name, err, latest.Generation, latest.Status.ObservedGeneration, latest.Status.ReadyReplicas,
+		latest.Status.RoleStatuses, latest.Status.Conditions)
+}
+
+func deleteStormServiceAndWait(
+	ctx context.Context,
+	kubernetesClient kubernetes.Interface,
+	stormServices orchestrationclient.StormServiceInterface,
+	name string,
+) error {
+	propagation := metav1.DeletePropagationForeground
+	err := stormServices.Delete(ctx, name, metav1.DeleteOptions{PropagationPolicy: &propagation})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete StormService %s: %w", name, err)
+	}
+
+	selector := fmt.Sprintf("%s=%s", controllerconstants.StormServiceNameLabelKey, name)
+	return wait.PollUntilContextTimeout(ctx, time.Second, cleanupTimeout, true,
+		func(ctx context.Context) (bool, error) {
+			_, err := stormServices.Get(ctx, name, metav1.GetOptions{})
+			if err == nil {
+				return false, nil
+			}
+			if !apierrors.IsNotFound(err) {
+				return false, err
+			}
+
+			pods, err := kubernetesClient.CoreV1().Pods(metav1.NamespaceAll).List(ctx,
+				metav1.ListOptions{LabelSelector: selector})
+			if err != nil {
+				return false, err
+			}
+			return len(pods.Items) == 0, nil
+		})
+}
+
+func newSingleStormService(namespace, name, modelName string) *orchestrationv1alpha1.StormService {
+	return newStormService(namespace, name, modelName, []orchestrationv1alpha1.RoleSpec{
+		newMockRole("worker", modelName),
+	})
+}
+
+func newPDStormService(namespace, name, modelName string) *orchestrationv1alpha1.StormService {
+	prefill := newMockRole("prefill", modelName)
+	prefill.Template.Spec.Containers[0].Env = pdEnvironment("prefill")
+	prefill.Template.Annotations = map[string]string{modelConfigAnnotation: pdRoutingConfig}
+	decode := newMockRole("decode", modelName)
+	decode.Template.Spec.Containers[0].Env = pdEnvironment("decode")
+	decode.Template.Annotations = map[string]string{modelConfigAnnotation: pdRoutingConfig}
+
+	stormService := newStormService(namespace, name, modelName, []orchestrationv1alpha1.RoleSpec{prefill, decode})
+	stormService.Annotations = map[string]string{modelConfigAnnotation: pdRoutingConfig}
+	stormService.Spec.Template.Annotations = map[string]string{modelConfigAnnotation: pdRoutingConfig}
+	return stormService
+}
+
+func newStormService(namespace, name, modelName string, roles []orchestrationv1alpha1.RoleSpec) *orchestrationv1alpha1.StormService {
+	labels := map[string]string{
+		"app":          name,
+		modelNameLabel: modelName,
+		modelPortLabel: "8000",
+	}
+
+	return &orchestrationv1alpha1.StormService{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: orchestrationv1alpha1.GroupVersion.String(),
+			Kind:       orchestrationv1alpha1.StormServiceKind,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    labels,
+		},
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Replicas: ptr.To[int32](1),
+			Mode:     orchestrationv1alpha1.StormServicePooledMode,
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": name}},
+			Template: orchestrationv1alpha1.RoleSetTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": name}},
+				Spec:       &orchestrationv1alpha1.RoleSetSpec{Roles: roles},
+			},
+			UpdateStrategy: orchestrationv1alpha1.StormServiceUpdateStrategy{
+				Type: orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType,
+			},
+		},
+	}
+}
+
+func newMockRole(name, modelName string) orchestrationv1alpha1.RoleSpec {
+	probe := &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+			Path: "/ready",
+			Port: intstrFromInt32(8000),
+		}},
+		PeriodSeconds:    2,
+		FailureThreshold: 30,
+	}
+
+	return orchestrationv1alpha1.RoleSpec{
+		Name:     name,
+		Replicas: ptr.To[int32](1),
+		Template: corev1.PodTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
+				"app":                    modelName,
+				"app.kubernetes.io/name": modelName,
+				modelNameLabel:           modelName,
+				modelPortLabel:           "8000",
+				modelEngine:              "vllm",
+			}},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{
+				Name:           "llm-engine",
+				Image:          mockImage,
+				Ports:          []corev1.ContainerPort{{ContainerPort: 8000}},
+				ReadinessProbe: probe,
+			}}},
+		},
+	}
+}
+
+func pdEnvironment(role string) []corev1.EnvVar {
+	return []corev1.EnvVar{
+		{Name: "MOCK_PD_CONTRACT", Value: pdContract},
+		{Name: "MOCK_PD_ROLE", Value: role},
+	}
+}
+
+func stormServiceReady(stormService *orchestrationv1alpha1.StormService, expectedRoles map[string]int32) bool {
+	if stormService.Status.ObservedGeneration < stormService.Generation ||
+		stormService.Status.ReadyReplicas < stormService.Spec.ResolvedReplicas() ||
+		stormService.Status.Conditions.GetCondition(orchestrationv1alpha1.StormServiceReady).Status != corev1.ConditionTrue {
+		return false
+	}
+
+	readyRoles := make(map[string]int32, len(stormService.Status.RoleStatuses))
+	for _, role := range stormService.Status.RoleStatuses {
+		readyRoles[role.Name] = role.ReadyReplicas
+	}
+	for role, replicas := range expectedRoles {
+		if readyRoles[role] < replicas {
+			return false
+		}
+	}
+	return true
+}
+
+func intstrFromInt32(port int32) intstr.IntOrString {
+	return intstr.FromInt32(port)
+}
