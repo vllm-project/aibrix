@@ -143,7 +143,10 @@ func runStormServiceScenario(
 		if err := deleteStormServiceAndWait(cleanupCtx, kubernetesClient, stormServices, stormService.Name); err != nil {
 			t.Errorf("clean up StormService %s: %v", stormService.Name, err)
 		}
-		if err := deleteRoutingResourcesAndWait(cleanupCtx, kubernetesClient, gatewayClient, service, route, grant); err != nil {
+		err := deleteRoutingResourcesAndWait(
+			cleanupCtx, kubernetesClient, gatewayClient, service, route, grant,
+		)
+		if err != nil {
 			t.Errorf("clean up Gateway resources for %s: %v", stormService.Name, err)
 		}
 	})
@@ -244,7 +247,9 @@ func deleteStormServiceAndWait(
 		})
 }
 
-func newRoutingResources(namespace, modelName string) (*corev1.Service, *gatewayv1.HTTPRoute, *gatewayv1beta1.ReferenceGrant) {
+func newRoutingResources(
+	namespace, modelName string,
+) (*corev1.Service, *gatewayv1.HTTPRoute, *gatewayv1beta1.ReferenceGrant) {
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: modelName, Namespace: namespace},
 		Spec: corev1.ServiceSpec{
@@ -349,20 +354,26 @@ func deleteRoutingResourcesAndWait(
 	route *gatewayv1.HTTPRoute,
 	grant *gatewayv1beta1.ReferenceGrant,
 ) error {
-	if err := gatewayClient.GatewayV1().HTTPRoutes(route.Namespace).Delete(ctx, route.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+	err := gatewayClient.GatewayV1().HTTPRoutes(route.Namespace).Delete(ctx, route.Name, metav1.DeleteOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("delete HTTPRoute %s: %w", route.Name, err)
 	}
-	if err := gatewayClient.GatewayV1beta1().ReferenceGrants(grant.Namespace).Delete(ctx, grant.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+	err = gatewayClient.GatewayV1beta1().ReferenceGrants(grant.Namespace).
+		Delete(ctx, grant.Name, metav1.DeleteOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("delete ReferenceGrant %s: %w", grant.Name, err)
 	}
-	if err := kubernetesClient.CoreV1().Services(service.Namespace).Delete(ctx, service.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+	err = kubernetesClient.CoreV1().Services(service.Namespace).
+		Delete(ctx, service.Name, metav1.DeleteOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("delete Service %s: %w", service.Name, err)
 	}
 
 	return wait.PollUntilContextTimeout(ctx, time.Second, cleanupTimeout, true,
 		func(ctx context.Context) (bool, error) {
 			_, routeErr := gatewayClient.GatewayV1().HTTPRoutes(route.Namespace).Get(ctx, route.Name, metav1.GetOptions{})
-			_, grantErr := gatewayClient.GatewayV1beta1().ReferenceGrants(grant.Namespace).Get(ctx, grant.Name, metav1.GetOptions{})
+			_, grantErr := gatewayClient.GatewayV1beta1().ReferenceGrants(grant.Namespace).
+				Get(ctx, grant.Name, metav1.GetOptions{})
 			_, serviceErr := kubernetesClient.CoreV1().Services(service.Namespace).Get(ctx, service.Name, metav1.GetOptions{})
 			for _, err := range []error{routeErr, grantErr, serviceErr} {
 				if err == nil || apierrors.IsNotFound(err) {
@@ -397,7 +408,10 @@ func newPDStormService(namespace, name, modelName string) *orchestrationv1alpha1
 	return stormService
 }
 
-func newStormService(namespace, name, modelName string, roles []orchestrationv1alpha1.RoleSpec) *orchestrationv1alpha1.StormService {
+func newStormService(
+	namespace, name, modelName string,
+	roles []orchestrationv1alpha1.RoleSpec,
+) *orchestrationv1alpha1.StormService {
 	labels := map[string]string{
 		"app":          name,
 		modelNameLabel: modelName,
