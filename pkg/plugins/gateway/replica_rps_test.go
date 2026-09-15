@@ -42,10 +42,11 @@ func TestRpsToLimitWindow(t *testing.T) {
 		{"zero disables", 0, 0, 0},
 		{"negative disables", -5, 0, 0},
 		{"rps at or above 1 uses a 1s window", 5, 5, 1},
-		{"fractional rps rounds to nearest at exactly 1", 1, 1, 1},
-		{"0.18 rps floors to 1 request every 5s", 0.18, 1, 5},
-		{"0.5 rps floors to 1 request every 2s", 0.5, 1, 2},
-		{"0.99 rps floors to 1 request every 1s", 0.99, 1, 1},
+		{"exactly 1 rps uses a 1s window", 1, 1, 1},
+		{"1.6 rps floors down to 1 request per second, never up to 2", 1.6, 1, 1},
+		{"0.18 rps ceils to 1 request every 6s, never the faster every-5s", 0.18, 1, 6},
+		{"0.5 rps ceils to 1 request every 2s", 0.5, 1, 2},
+		{"0.99 rps ceils to 1 request every 2s, never the faster every-1s", 0.99, 1, 2},
 		{"tiny rps clamps to the max window", 0.0001, 1, maxRateWindowSeconds},
 	}
 	for _, tt := range tests {
@@ -64,14 +65,15 @@ func podWithReplicaRPS(name string, rps float64) *v1.Pod {
 }
 
 func TestApplyConfigProfile_FractionalModelReplicaRPS(t *testing.T) {
-	// 0.18 replica rps * 1 routable replica = 0.18 aggregate rps -> 1 request every 5s.
+	// 0.18 replica rps * 1 routable replica = 0.18 aggregate rps -> 1 request every 6s
+	// (ceil, not floor, so the derived rate never exceeds the configured 0.18 rps).
 	pods := []*v1.Pod{podWithReplicaRPS("a", 0.18)}
 	routingCtx := &types.RoutingContext{}
 
 	applyConfigProfile(routingCtx, pods)
 
 	assert.Equal(t, int64(1), routingCtx.ConfigProfile.RequestsPerSecond)
-	assert.Equal(t, int64(5), routingCtx.ConfigProfile.RateWindowSeconds)
+	assert.Equal(t, int64(6), routingCtx.ConfigProfile.RateWindowSeconds)
 	assert.Equal(t, string(routing.RouterLeastRequest), routingCtx.ConfigProfile.RoutingStrategy)
 }
 

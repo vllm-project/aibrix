@@ -177,6 +177,96 @@ The counter is stored in Redis and incremented atomically on each request. The 1
 Omit ``requestsPerSecond`` or set it to ``0`` to disable the limit.
 
 
+Scaling RPS Limits with Replica Count
+----------------------------------------
+
+What it is
+~~~~~~~~~~
+
+``requestsPerSecondPerReplica`` sets a **per-replica** RPS cap instead of a fixed model-wide one. The gateway multiplies it by the model's current routable replica count to derive the effective aggregate limit, so the cap scales automatically as the model is scaled up or down. When set, it takes precedence over ``requestsPerSecond`` on the same profile.
+
+Setting ``requestsPerSecondPerReplica`` also forces the profile's routing strategy to ``least-request`` (overriding whatever ``routingStrategy`` the profile specifies), because the per-replica figure only holds in aggregate if traffic is balanced evenly across replicas.
+
+How to configure it
+~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: yaml
+
+    annotations:
+      model.aibrix.ai/config: |
+        {
+          "profiles": {
+            "default": {
+              "routingStrategy": "least-latency",
+              "requestsPerSecondPerReplica": 10
+            }
+          }
+        }
+
+With 4 routable replicas, the effective aggregate cap above is 40 RPS; scaling to 8 replicas raises it to 80 RPS without editing the annotation.
+
+Fractional values (e.g. ``0.5``) are supported for sub-1 rps limits, expressed internally as "1 request every N seconds". The derived limit is always rounded so the delivered rate never exceeds what was configured — e.g. ``0.18`` becomes 1 request every 6 seconds (~0.167 rps), not every 5 (which would have been ~0.2 rps, over the configured cap).
+
+What clients see when the limit is hit
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The same response as plain ``requestsPerSecond`` — see above — since the per-replica figure is resolved to an aggregate ``requestsPerSecond`` value before enforcement.
+
+.. note::
+    Like ``requestsPerSecond``, this requires Redis to be enabled on the gateway plugin to be enforced cluster-wide. Neither ``requestsPerSecondPerReplica`` nor ``requestsInflight`` (below) has an environment-variable form — both are configured directly in the profile.
+
+
+Capping Per-Replica Concurrency (Inflight Limiting)
+-------------------------------------------------------
+
+What it is
+~~~~~~~~~~
+
+``requestsInflight`` caps the number of concurrent (in-flight) requests allowed on a single replica. Unlike the RPS limits above, this is enforced per pod, not as a cluster-wide aggregate, so it needs no replica-count scaling — it holds regardless of how many replicas the model has.
+
+Setting ``requestsInflight`` also forces the routing strategy to ``least-request``, for the same reason as ``requestsPerSecondPerReplica``: the per-pod cap is only enforced when a routing strategy actually selects a single target pod for the request.
+
+``requestsInflight`` and ``requestsPerSecondPerReplica`` are independent limits and can be set together (e.g. "at most 3 concurrent requests per replica, and also no more than 5 rps per replica"). If ``requestsInflight`` is configured below the resolved per-replica RPS, the gateway logs a warning that the RPS ceiling may be practically unreachable, but leaves the concurrency cap as configured rather than loosening it.
+
+How to configure it
+~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: yaml
+
+    annotations:
+      model.aibrix.ai/config: |
+        {
+          "profiles": {
+            "default": {
+              "routingStrategy": "least-latency",
+              "requestsInflight": 3
+            }
+          }
+        }
+
+What clients see when the limit is hit
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Once every routable replica is at its inflight cap, the gateway returns:
+
+.. code-block:: text
+
+    HTTP/1.1 429 Too Many Requests
+    x-error-model-replica-inflight-exceeded: true
+
+    {"error": {"message": "model: my-model has exceeded replica inflight limit: 3", "type": "overloaded_error", "code": "replica_inflight_exceeded"}}
+
+How it works internally
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+The per-pod running-request count is tracked in Redis and updated atomically as requests start and finish, so the cap holds across all gateway replicas sharing that Redis instance. Admission is atomic (increment-and-check in one round trip), so concurrent requests landing on the same pod across different gateway instances cannot all slip past the cap during the same check.
+
+.. note::
+    Without Redis enabled on the gateway plugin, ``requestsInflight`` falls back to a local, in-process count and is only enforced per gateway replica rather than cluster-wide for the model replica. See the `Deploying Gateway <gateway.html>`_ guide — Enabling Redis for Multi-Replica Deployments.
+
+Omit ``requestsInflight`` or set it to ``0`` to disable the limit.
+
+
 Readiness and Health
 ---------------------
 

@@ -679,22 +679,29 @@ func warnIfReplicaInflightBelowRPS(routingCtx *types.RoutingContext, inflight in
 // so a near-zero rps doesn't produce an unbounded Redis key TTL / bucket lifetime.
 const maxRateWindowSeconds = 3600
 
+// rpsRoundingEpsilon absorbs floating-point representation error (e.g. 0.2*10 evaluates to
+// 1.9999999999999998, and 1/0.5 can land a hair under 2) so a rate that is really an exact
+// integer, or an exact reciprocal, isn't pushed down a bucket by float noise. It's small
+// enough that no genuinely fractional rps (e.g. 1.6, or 0.18) is affected.
+const rpsRoundingEpsilon = 1e-9
+
 // rpsToLimitWindow converts a (possibly fractional) requests-per-second rate into a
 // (limit, windowSeconds) pair suitable for the fixed-window rate limiter: limit requests
-// are allowed per windowSeconds-second window.
-//   - rps >= 1 keeps today's behavior: a 1-second window with limit = round(rps).
+// are allowed per windowSeconds-second window. Both branches round towards a lower delivered
+// rate, never a higher one, so the derived pair never admits more than the configured rps.
+//   - rps >= 1 uses a 1-second window with limit = floor(rps): e.g. 1.6 -> 1 req/s, not 2.
 //   - 0 < rps < 1 is expressed as "1 request every N seconds", i.e. limit = 1 over a
-//     windowSeconds-second window, with windowSeconds = floor(1/rps) so the delivered rate
-//     is never slower than what was configured (e.g. 0.18 -> every 5s, not 5.56s).
+//     windowSeconds-second window, with windowSeconds = ceil(1/rps) so the delivered rate is
+//     never faster than what was configured (e.g. 0.18 -> every 6s, not every 5s).
 //   - rps <= 0 disables the limit (limit = 0, windowSeconds = 0).
 func rpsToLimitWindow(rps float64) (limit int64, windowSeconds int64) {
 	if rps <= 0 {
 		return 0, 0
 	}
 	if rps >= 1 {
-		return int64(math.Round(rps)), 1
+		return int64(math.Floor(rps + rpsRoundingEpsilon)), 1
 	}
-	windowSeconds = int64(math.Floor(1 / rps))
+	windowSeconds = int64(math.Ceil(1/rps - rpsRoundingEpsilon))
 	if windowSeconds < 1 {
 		windowSeconds = 1
 	}
