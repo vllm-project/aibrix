@@ -175,8 +175,8 @@ func NewRoutingContext(ctx context.Context, algorithms RoutingAlgorithm, model, 
 	return request
 }
 
-// SetOutputPreditor enables RoutingContext to use existing OutputPredictor to predict output length.
-func (r *RoutingContext) SetOutputPreditor(predictor OutputPredictor) (old OutputPredictor) {
+// SetOutputPredictor enables RoutingContext to use existing OutputPredictor to predict output length.
+func (r *RoutingContext) SetOutputPredictor(predictor OutputPredictor) (old OutputPredictor) {
 	old = r.predictor
 	r.predictor = predictor
 	return
