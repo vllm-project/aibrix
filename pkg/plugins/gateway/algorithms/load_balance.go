@@ -112,15 +112,20 @@ func NewLoadBalanceRouterWithCache(c cache.Cache) (types.Router, error) {
 
 // ScoreAll returns pending_time = request_count / capacity for each pod.
 // Lower pending_time means the pod has more headroom to accept this request.
+//
+// Uses GetPodsRunningRequests (the live cross-gateway count), not
+// GetMetricValueByPod(RealtimeNumRequestsRunning): that metric slot is a periodically
+// synced cache and, between scrape ticks, only reflects this gateway's local view.
 func (r *loadBalanceRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
 	pods := readyPodList.All()
 	scores := make([]float64, len(pods))
 	scored := make([]bool, len(pods))
 
+	counts, err := r.cache.GetPodsRunningRequests(pods)
 	for i, pod := range pods {
 		reqCount := 0.0
-		if v, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning); err == nil && v != nil {
-			reqCount = v.GetSimpleValue()
+		if err == nil && counts != nil {
+			reqCount = float64(counts[utils.GeneratePodKey(pod.Namespace, pod.Name)])
 		}
 		scores[i] = reqCount / r.capacityOf(pod)
 		scored[i] = true

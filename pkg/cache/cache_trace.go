@@ -164,6 +164,20 @@ type podStatsRecord struct {
 	// so a concurrent ctx-Done and nil-ctx Done of the same attempt cannot
 	// both apply the increment.
 	consumed int32
+	// runningReqIncrDone is closed once addPodStats' async cross-gateway increment
+	// (see cache_running_requests.go) has been attempted, win or lose. donePodStats'
+	// matching decrement waits on this before firing -- otherwise a very short
+	// request could decrement before its own increment lands (net -1 forever), or
+	// fire a decrement paired with an increment that never actually landed (net -1
+	// forever from the other direction). See runningReqIncrOK.
+	runningReqIncrDone chan struct{}
+	// runningReqIncrOK records whether the increment succeeded; only the matching
+	// decrement should ever fire, or an unpaired decrement would undercount by one
+	// for the rest of that key's life. Only valid to read after runningReqIncrDone
+	// is closed: the close happens-after this write in the same goroutine, and a
+	// channel close synchronizes-with the receive that observes it, so no separate
+	// lock/atomic is needed (see the Go memory model).
+	runningReqIncrOK bool
 }
 
 func (r *podStatsRecord) take() bool {
@@ -236,6 +250,22 @@ func (c *Store) getRequestTrace(modelName string) *RequestTrace {
 	return newer
 }
 
+// decrCrossGatewayRunningRequests is the Redis counterpart of a local running-request
+// decrement in donePodStats. Keyed by pod identity (namespace/name), not the Go
+// object pointer, so it's unaffected by which of snap/target this completion landed
+// on -- unlike the local atomic counter, no delete/re-add redirect logic is needed
+// here. Runs in its own goroutine, waiting for addPodStats' increment to have been
+// attempted (and only decrementing if it actually succeeded) -- see podStatsRecord's
+// doc comment.
+func (c *Store) decrCrossGatewayRunningRequests(podStats *podStatsRecord, namespace, name string) {
+	go func() {
+		<-podStats.runningReqIncrDone
+		if podStats.runningReqIncrOK {
+			c.decrPodRunningRequests(namespace, name)
+		}
+	}()
+}
+
 func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string, modelName string) {
 	if !ctx.HasRouted() {
 		return
@@ -270,7 +300,7 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string, modelNa
 			return
 		}
 	}
-	podStats := &podStatsRecord{pod: metaPod, port: port, ctx: ctx}
+	podStats := &podStatsRecord{pod: metaPod, port: port, ctx: ctx, runningReqIncrDone: make(chan struct{})}
 
 	// Update running requests
 	var requests int32
@@ -287,6 +317,31 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string, modelNa
 		}
 	}
 	mu.Unlock()
+	// Real-time cross-gateway counterpart of the local atomic increment above -- see
+	// cache_running_requests.go. Fired outside the stripe lock (and fire-and-forget
+	// with respect to the request path) so a slow/stuck Redis can never serialize
+	// concurrent requests to the same pod or add latency to routing. Records success
+	// via runningReqIncrDone/runningReqIncrOK so donePodStats' matching decrement
+	// (fired from its own goroutine) only ever pairs with a increment that actually
+	// landed -- see podStatsRecord's doc comment.
+	//
+	// ReplicaInflightAdmitted means enforceReplicaInflight's atomic admit-and-increment
+	// (pkg/plugins/gateway/gateway_inflight.go, Store.AdmitPodRunningRequest) already
+	// applied this gateway's +1 to this same Redis hash for this exact request, as part of
+	// its admission check. Calling incrPodRunningRequests here too would apply a second,
+	// uncounted +1 that nothing will ever undo (donePodStats only ever fires one matching
+	// decrement per request) -- so this must skip straight to recording success, exactly as
+	// if incrPodRunningRequests had been called and succeeded.
+	namespace, name := metaPod.Namespace, metaPod.Name
+	if ctx.ReplicaInflightAdmitted {
+		podStats.runningReqIncrOK = true
+		close(podStats.runningReqIncrDone)
+	} else {
+		go func() {
+			defer close(podStats.runningReqIncrDone)
+			podStats.runningReqIncrOK = c.incrPodRunningRequests(namespace, name)
+		}()
+	}
 
 	// Update pending load. GetConsumption runs unlocked -- it can be slow (e.g. a GPU
 	// profile lookup) or take other locks, and stripe locks should stay short -- so
@@ -383,6 +438,7 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string, modelN
 			snap.pendingLoadUtilization.Add(-podStats.pendingLoad)
 		}
 		mu.Unlock()
+		c.decrCrossGatewayRunningRequests(podStats, metaPod.Namespace, metaPod.Name)
 		if metaPod.CanLogPodTrace(5) {
 			klog.V(4).InfoS("pod stats updated on a snapshot pending re-add (donePodStats).",
 				"pod", metaPod.Name, "requestID", requestID, "pending_load", podStats.pendingLoad)
@@ -417,6 +473,7 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string, modelN
 		notifyQueueRouter = utilization < c.pendingLoadProvider.Cap()
 	}
 	mu.Unlock()
+	c.decrCrossGatewayRunningRequests(podStats, metaPod.Namespace, metaPod.Name)
 
 	if notifyQueueRouter {
 		// Notify queue router to try route with pending requests. Kept outside the

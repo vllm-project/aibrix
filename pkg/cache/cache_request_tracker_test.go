@@ -22,8 +22,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -286,6 +288,78 @@ func TestAddPodAfterFlakyDeleteWithSameIPPreservesRunningRequests(t *testing.T) 
 	// is never touched again -- the decrement above redirected to newMetaPod
 	// instead, so this stays at whatever it was when the flap happened.
 	assert.Equal(t, int32(1), atomic.LoadInt32(&oldMetaPod.runningRequests))
+}
+
+// TestAddPodStats_SkipsRedisIncrementWhenReplicaInflightAlreadyAdmitted covers the other
+// half of the replica-inflight hard cap fix (see admitRunningRequest in
+// cache_running_requests.go and enforceReplicaInflight in
+// pkg/plugins/gateway/gateway_inflight.go): when admission already atomically incremented
+// this gateway's Redis field for a request, addPodStats must not increment it a second
+// time, or the pod's live count would be permanently inflated by one extra per admitted
+// request. The eventual matching decrement (donePodStats) must still fire exactly once,
+// same as for any other request.
+func TestAddPodStats_SkipsRedisIncrementWhenReplicaInflightAlreadyAdmitted(t *testing.T) {
+	const (
+		modelName = "test-model"
+		namespace = "default"
+		podName   = "decode-0"
+		requestID = "req-inflight-admitted"
+	)
+
+	client := newTestRunningRequestsClient(t)
+	cache := NewForTest()
+	cache.redisClient = client
+	pod := requestTrackerTestPod(podName, namespace, modelName, "10.0.0.1")
+	cache.addPod(pod)
+
+	key := runningRequestsKey(namespace, podName)
+	// Simulate enforceReplicaInflight's atomic admit-and-increment having already landed
+	// this gateway's +1 for this request before AddRequestCount/addPodStats ever runs.
+	require.NoError(t, client.HSet(context.Background(), key, runningRequestsGatewayInstanceID, 1).Err())
+
+	routingCtx := types.NewRoutingContext(context.Background(), "least-request", modelName, "", requestID, "")
+	routingCtx.SetTargetPod(pod)
+	routingCtx.ReplicaInflightAdmitted = true
+
+	traceTerm := cache.AddRequestCount(routingCtx, requestID, modelName)
+
+	// Check the deterministic, implementation-level invariant directly rather than
+	// racing the (otherwise async) increment goroutine: when ReplicaInflightAdmitted is
+	// true, addPodStats must record success and close runningReqIncrDone synchronously,
+	// without ever spawning incrPodRunningRequests's goroutine.
+	podStats, ok := cache.podStats.Load(podStatsAttemptKey(routingCtx, modelName, requestID))
+	require.True(t, ok)
+	select {
+	case <-podStats.runningReqIncrDone:
+	default:
+		t.Fatal("runningReqIncrDone must already be closed synchronously when ReplicaInflightAdmitted is true")
+	}
+	assert.True(t, podStats.runningReqIncrOK)
+
+	// Belt-and-suspenders end-to-end check: the field must still read exactly what
+	// admission already set it to, both immediately and after giving a wrongly-spawned
+	// increment goroutine a window to run.
+	val, err := client.HGet(context.Background(), key, runningRequestsGatewayInstanceID).Result()
+	require.NoError(t, err)
+	assert.Equal(t, "1", val, "addPodStats must not increment the Redis field again when admission already did")
+	assert.Never(t, func() bool {
+		v, err := client.HGet(context.Background(), key, runningRequestsGatewayInstanceID).Result()
+		return err == nil && v == "2"
+	}, 200*time.Millisecond, 10*time.Millisecond, "no goroutine should ever double-increment this field")
+
+	// The local atomic is separate bookkeeping (unrelated to the Redis-backed cap) and
+	// must still track this request normally regardless of ReplicaInflightAdmitted.
+	metaPod, ok := cache.metaPods.Load(namespace + "/" + podName)
+	require.True(t, ok)
+	assert.EqualValues(t, 1, atomic.LoadInt32(&metaPod.runningRequests))
+
+	cache.DoneRequestCount(routingCtx, requestID, modelName, traceTerm)
+
+	require.Eventually(t, func() bool {
+		v, err := client.HGet(context.Background(), key, runningRequestsGatewayInstanceID).Result()
+		return err == nil && v == "0"
+	}, time.Second, 5*time.Millisecond,
+		"the matching decrement must still fire exactly once even though the increment was skipped")
 }
 
 // gapTestLoadProvider is a CappedLoadProvider that returns a fixed consumption

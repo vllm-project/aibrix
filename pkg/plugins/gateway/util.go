@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"mime/multipart"
 	"os"
@@ -34,6 +35,7 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/packages/param"
+	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -659,6 +661,56 @@ func validateStreamOptions(requestID string, user utils.User, stream *bool, stre
 	return nil
 }
 
+// warnIfReplicaInflightBelowRPS logs when requestsInflight is set tighter than
+// requestsPerSecondPerReplica. The two are independent limits set by the user on purpose
+// (e.g. "at most 3 concurrent, and also no more than 5 rps"), so this only surfaces the
+// resulting RPS ceiling being practically unreachable -- it must never silently raise the
+// concurrency cap the user configured.
+func warnIfReplicaInflightBelowRPS(routingCtx *types.RoutingContext, inflight int64, replicaRPS float64) {
+	if inflight <= 0 || replicaRPS <= 0 || float64(inflight) >= replicaRPS {
+		return
+	}
+	klog.InfoS("requestsInflight below requestsPerSecondPerReplica; replica RPS ceiling may be unreachable",
+		"requestID", routingCtx.RequestID, "model", routingCtx.Model,
+		"requestsInflight", inflight, "replicaRPS", replicaRPS)
+}
+
+// maxRateWindowSeconds bounds the window rpsToLimitWindow will derive for sub-1 rps values,
+// so a near-zero rps doesn't produce an unbounded Redis key TTL / bucket lifetime.
+const maxRateWindowSeconds = 3600
+
+// rpsRoundingEpsilon absorbs floating-point representation error (e.g. 0.2*10 evaluates to
+// 1.9999999999999998, and 1/0.5 can land a hair under 2) so a rate that is really an exact
+// integer, or an exact reciprocal, isn't pushed down a bucket by float noise. It's small
+// enough that no genuinely fractional rps (e.g. 1.6, or 0.18) is affected.
+const rpsRoundingEpsilon = 1e-9
+
+// rpsToLimitWindow converts a (possibly fractional) requests-per-second rate into a
+// (limit, windowSeconds) pair suitable for the fixed-window rate limiter: limit requests
+// are allowed per windowSeconds-second window. Both branches round towards a lower delivered
+// rate, never a higher one, so the derived pair never admits more than the configured rps.
+//   - rps >= 1 uses a 1-second window with limit = floor(rps): e.g. 1.6 -> 1 req/s, not 2.
+//   - 0 < rps < 1 is expressed as "1 request every N seconds", i.e. limit = 1 over a
+//     windowSeconds-second window, with windowSeconds = ceil(1/rps) so the delivered rate is
+//     never faster than what was configured (e.g. 0.18 -> every 6s, not every 5s).
+//   - rps <= 0 disables the limit (limit = 0, windowSeconds = 0).
+func rpsToLimitWindow(rps float64) (limit int64, windowSeconds int64) {
+	if rps <= 0 {
+		return 0, 0
+	}
+	if rps >= 1 {
+		return int64(math.Floor(rps + rpsRoundingEpsilon)), 1
+	}
+	windowSeconds = int64(math.Ceil(1/rps - rpsRoundingEpsilon))
+	if windowSeconds < 1 {
+		windowSeconds = 1
+	}
+	if windowSeconds > maxRateWindowSeconds {
+		windowSeconds = maxRateWindowSeconds
+	}
+	return 1, windowSeconds
+}
+
 // applyConfigProfile resolves the model config from the pod annotation
 // (model.aibrix.ai/config) and applies the selected profile plus the model-wide
 // locked routing strategy onto routingCtx.ConfigProfile.
@@ -668,6 +720,21 @@ func validateStreamOptions(requestID string, user utils.User, stream *bool, stre
 //     and resolves to a concrete profile before routing strategy derivation.
 //   - lockedRoutingStrategy (top-level) is applied even when no profile resolves, so a
 //     model-wide lock cannot be bypassed by selecting a profile or sending a header.
+//   - The profile's requestsPerSecondPerReplica, if set, always takes precedence over the
+//     resolved profile's requestsPerSecond: the effective limit becomes
+//     requestsPerSecondPerReplica times the model's current routable replica count, and the
+//     routing strategy is forced to least-request so traffic is balanced evenly enough
+//     across replicas for that per-replica figure to hold in aggregate.
+//   - The profile's requestsInflight, if set, is a per-replica concurrency cap, and (like
+//     requestsPerSecondPerReplica) forces the routing strategy to least-request so the
+//     per-pod cap actually gets enforced -- selectTargetPod only runs, and thus only applies
+//     the cap, when a routing strategy resolves to something other than RouterNotSet.
+//     requestsInflight and requestsPerSecondPerReplica are independent, user-configured
+//     limits: when inflight is set below the resolved replica RPS, it is left as configured
+//     (only logged via warnIfReplicaInflightBelowRPS) rather than raised, since silently
+//     loosening the concurrency cap the user set would defeat its purpose. Unlike
+//     RequestsPerSecond, neither requestsPerSecondPerReplica nor requestsInflight has an
+//     env-var form: both are configured directly in the profile.
 func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 	if routingCtx == nil {
 		return
@@ -678,9 +745,17 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 		features = buildConfigProfileRequestFeatures(routingCtx)
 	}
 	profile, profileName, locked := configprofiles.ResolveConfigForRequest(pods, reqConfigProfile, features)
-	if profile == nil && locked == "" {
+
+	var replicaRPS float64
+	var inflight int64
+	if profile != nil {
+		replicaRPS = profile.RequestsPerSecondPerReplica
+		inflight = profile.RequestsInflight
+	}
+	if profile == nil && locked == "" && replicaRPS <= 0 && inflight <= 0 {
 		return
 	}
+
 	if strings.EqualFold(strings.TrimSpace(reqConfigProfile), "auto") && profileName != "" {
 		routingCtx.ReqConfigProfile = profileName
 		if routingCtx.RespHeaders == nil {
@@ -695,6 +770,23 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 		cp.RequestsPerSecond = profile.RequestsPerSecond
 	}
 	routingCtx.ConfigProfile = cp
+
+	if replicaRPS > 0 {
+		replicas := int64(utils.CountRoutablePods(pods))
+		limit, windowSeconds := rpsToLimitWindow(replicaRPS * float64(replicas))
+		routingCtx.ConfigProfile.RequestsPerSecond = limit
+		routingCtx.ConfigProfile.RateWindowSeconds = windowSeconds
+		routingCtx.ConfigProfile.RoutingStrategy = string(routing.RouterLeastRequest)
+		klog.V(4).InfoS("applied requestsPerSecondPerReplica to config profile", "requestID", routingCtx.RequestID, "model", routingCtx.Model,
+			"replicaRPS", replicaRPS, "replicas", replicas, "limit", limit, "windowSeconds", windowSeconds)
+	}
+
+	if inflight > 0 {
+		warnIfReplicaInflightBelowRPS(routingCtx, inflight, replicaRPS)
+		routingCtx.ConfigProfile.RequestsInflight = inflight
+		routingCtx.ConfigProfile.RoutingStrategy = string(routing.RouterLeastRequest)
+		klog.V(4).InfoS("applied requestsInflight to config profile", "requestID", routingCtx.RequestID, "model", routingCtx.Model, "requestsInflight", inflight)
+	}
 }
 
 func buildConfigProfileRequestFeatures(routingCtx *types.RoutingContext) configprofiles.RequestFeatures {
@@ -871,9 +963,19 @@ func generateErrorMessageWithHTTPCode(message string, httpStatusCode int, errorC
 // errorCode and param are optional (pass "" for null). Unlike buildErrorResponseWithBody,
 // it builds the body from the supplied fields and does not add a Content-Type header.
 func buildErrorResponse(statusCode envoyTypePb.StatusCode, errBody, errorCode, param string, headers ...string) *extProcPb.ProcessingResponse {
+	return buildErrorResponseWithType(statusCode, errBody, "", errorCode, param, headers...)
+}
+
+// buildErrorResponseWithType is buildErrorResponse with an explicit OpenAI error.type.
+// Empty errorType falls back to the HTTP-status mapping used by generateErrorMessageWithHTTPCode.
+func buildErrorResponseWithType(statusCode envoyTypePb.StatusCode, errBody, errorType, errorCode, param string, headers ...string) *extProcPb.ProcessingResponse {
+	body := generateErrorMessageWithHTTPCode(errBody, int(statusCode), errorCode, param)
+	if errorType != "" {
+		body = generateErrorMessage(errBody, errorType, errorCode, param)
+	}
 	return immediateErrorResponse(
 		statusCode,
-		generateErrorMessageWithHTTPCode(errBody, int(statusCode), errorCode, param),
+		body,
 		buildEnvoyProxyHeaders([]*configPb.HeaderValueOption{}, headers...),
 	)
 }
