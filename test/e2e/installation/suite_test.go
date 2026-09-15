@@ -17,12 +17,17 @@ limitations under the License.
 package installation
 
 import (
+	"errors"
+	"io"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 func TestStormServiceBuilders(t *testing.T) {
@@ -47,10 +52,11 @@ func TestStormServiceBuilders(t *testing.T) {
 
 	t.Run("pd disaggregated", func(t *testing.T) {
 		stormService := newPDStormService("default", "pd-smoke", "smoke-pd")
+		expectedPDRoutingConfig := `{"defaultProfile":"pd","profiles":{"pd":{"routingStrategy":"pd"}}}`
 
 		require.Equal(t, "default", stormService.Namespace)
 		require.Equal(t, "pd-smoke", stormService.Name)
-		require.JSONEq(t, `{"defaultProfile":"pd","profiles":{"pd":{"routingStrategy":"pd"}}}`,
+		require.JSONEq(t, expectedPDRoutingConfig,
 			stormService.Annotations[modelConfigAnnotation])
 		require.NotNil(t, stormService.Spec.Replicas)
 		require.Equal(t, int32(1), *stormService.Spec.Replicas)
@@ -64,7 +70,7 @@ func TestStormServiceBuilders(t *testing.T) {
 			require.Equal(t, "8000", role.Template.Labels[modelPortLabel])
 			require.Len(t, role.Template.Spec.Containers, 1)
 			require.Equal(t, mockImage, role.Template.Spec.Containers[0].Image)
-			require.JSONEq(t, `{"defaultProfile":"pd","profiles":{"pd":{"routingStrategy":"pd"}}}`,
+			require.JSONEq(t, expectedPDRoutingConfig,
 				role.Template.Annotations[modelConfigAnnotation])
 
 			environment := map[string]string{}
@@ -128,6 +134,13 @@ func TestStormServiceReady(t *testing.T) {
 			expectedRoles: map[string]int32{"prefill": 1, "decode": 1},
 		},
 		{
+			name: "missing ready condition",
+			mutate: func(stormService *orchestrationv1alpha1.StormService) {
+				stormService.Status.Conditions = nil
+			},
+			expectedRoles: map[string]int32{"prefill": 1, "decode": 1},
+		},
+		{
 			name: "roleset not ready",
 			mutate: func(stormService *orchestrationv1alpha1.StormService) {
 				stormService.Status.ReadyReplicas = 0
@@ -154,6 +167,31 @@ func TestStormServiceReady(t *testing.T) {
 				test.mutate(stormService)
 			}
 			require.Equal(t, test.want, stormServiceReady(stormService, test.expectedRoles))
+		})
+	}
+}
+
+func TestIsRetryableAPIError(t *testing.T) {
+	resource := schema.GroupResource{Group: "orchestration.aibrix.ai", Resource: "stormservices"}
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "timeout", err: apierrors.NewTimeoutError("timeout", 1), want: true},
+		{name: "server timeout", err: apierrors.NewServerTimeout(resource, "get", 1), want: true},
+		{name: "too many requests", err: apierrors.NewTooManyRequests("busy", 1), want: true},
+		{name: "service unavailable", err: apierrors.NewServiceUnavailable("unavailable"), want: true},
+		{name: "unexpected EOF", err: io.ErrUnexpectedEOF, want: true},
+		{name: "connection reset", err: syscall.ECONNRESET, want: true},
+		{name: "connection refused", err: syscall.ECONNREFUSED, want: true},
+		{name: "forbidden", err: apierrors.NewForbidden(resource, "smoke", errors.New("denied"))},
+		{name: "not found", err: apierrors.NewNotFound(resource, "smoke")},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			require.Equal(t, test.want, isRetryableAPIError(test.err))
 		})
 	}
 }

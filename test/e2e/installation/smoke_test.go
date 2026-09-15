@@ -33,6 +33,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -51,21 +52,24 @@ const (
 	modelConfigAnnotation = "model.aibrix.ai/config"
 	pdRoutingConfig       = `{"defaultProfile":"pd","profiles":{"pd":{"routingStrategy":"pd"}}}`
 	gatewayNamespace      = "aibrix-system"
+	scenarioTimeout       = 4 * time.Minute
 	stormServiceTimeout   = 4 * time.Minute
 	cleanupTimeout        = 2 * time.Minute
 )
 
 func TestInstallationSmoke(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Minute)
-	defer cancel()
+	clientContext, cancelClients := context.WithCancel(context.Background())
+	defer cancelClients()
 
-	kubernetesClient, aibrixClient := framework.InitializeClient(ctx, t)
+	kubernetesClient, aibrixClient := framework.InitializeClient(clientContext, t)
 	gatewayClient := initializeGatewayClient(t)
 	verifyStormServiceAPI(t, kubernetesClient)
 	config := framework.LoadConfig()
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 
 	t.Run("single-instance", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), scenarioTimeout)
+		defer cancel()
 		name := "install-smoke-single-" + suffix
 		modelName := "smoke-single-" + suffix
 		runStormServiceScenario(t, ctx, kubernetesClient,
@@ -79,6 +83,8 @@ func TestInstallationSmoke(t *testing.T) {
 	})
 
 	t.Run("pd-disaggregated", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), scenarioTimeout)
+		defer cancel()
 		name := "install-smoke-pd-" + suffix
 		modelName := "smoke-pd-" + suffix
 		runStormServiceScenario(t, ctx, kubernetesClient,
@@ -171,19 +177,28 @@ func waitForStormServiceReady(
 	expectedRoles map[string]int32,
 ) error {
 	var latest *orchestrationv1alpha1.StormService
+	var lastTransientError error
 	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, stormServiceTimeout, true,
 		func(ctx context.Context) (bool, error) {
 			var err error
 			latest, err = stormServices.Get(ctx, name, metav1.GetOptions{})
 			if err != nil {
+				if isRetryableAPIError(err) {
+					lastTransientError = err
+					return false, nil
+				}
 				return false, err
 			}
+			lastTransientError = nil
 			return stormServiceReady(latest, expectedRoles), nil
 		})
 	if err == nil {
 		return nil
 	}
 	if latest == nil {
+		if lastTransientError != nil {
+			return fmt.Errorf("wait for StormService %s after transient API error %v: %w", name, lastTransientError, err)
+		}
 		return fmt.Errorf("wait for StormService %s: %w", name, err)
 	}
 	return fmt.Errorf("wait for StormService %s: %w (generation=%d observed=%d ready=%d roles=%v conditions=%v)",
@@ -211,12 +226,18 @@ func deleteStormServiceAndWait(
 				return false, nil
 			}
 			if !apierrors.IsNotFound(err) {
+				if isRetryableAPIError(err) {
+					return false, nil
+				}
 				return false, err
 			}
 
 			pods, err := kubernetesClient.CoreV1().Pods(metav1.NamespaceAll).List(ctx,
 				metav1.ListOptions{LabelSelector: selector})
 			if err != nil {
+				if isRetryableAPIError(err) {
+					return false, nil
+				}
 				return false, err
 			}
 			return len(pods.Items) == 0, nil
@@ -284,12 +305,18 @@ func newRoutingResources(namespace, modelName string) (*corev1.Service, *gateway
 }
 
 func waitForHTTPRouteReady(ctx context.Context, client gatewayclient.Interface, namespace, name string) error {
-	return wait.PollUntilContextTimeout(ctx, time.Second, time.Minute, true,
+	var lastTransientError error
+	err := wait.PollUntilContextTimeout(ctx, time.Second, time.Minute, true,
 		func(ctx context.Context) (bool, error) {
 			route, err := client.GatewayV1().HTTPRoutes(namespace).Get(ctx, name, metav1.GetOptions{})
 			if err != nil {
+				if isRetryableAPIError(err) {
+					lastTransientError = err
+					return false, nil
+				}
 				return false, err
 			}
+			lastTransientError = nil
 			for _, parent := range route.Status.Parents {
 				accepted := false
 				resolved := false
@@ -307,6 +334,11 @@ func waitForHTTPRouteReady(ctx context.Context, client gatewayclient.Interface, 
 			}
 			return false, nil
 		})
+	if err != nil && lastTransientError != nil {
+		return fmt.Errorf("wait for HTTPRoute %s/%s after transient API error %v: %w",
+			namespace, name, lastTransientError, err)
+	}
+	return err
 }
 
 func deleteRoutingResourcesAndWait(
@@ -333,9 +365,13 @@ func deleteRoutingResourcesAndWait(
 			_, grantErr := gatewayClient.GatewayV1beta1().ReferenceGrants(grant.Namespace).Get(ctx, grant.Name, metav1.GetOptions{})
 			_, serviceErr := kubernetesClient.CoreV1().Services(service.Namespace).Get(ctx, service.Name, metav1.GetOptions{})
 			for _, err := range []error{routeErr, grantErr, serviceErr} {
-				if err != nil && !apierrors.IsNotFound(err) {
-					return false, err
+				if err == nil || apierrors.IsNotFound(err) {
+					continue
 				}
+				if isRetryableAPIError(err) {
+					return false, nil
+				}
+				return false, err
 			}
 			return apierrors.IsNotFound(routeErr) && apierrors.IsNotFound(grantErr) && apierrors.IsNotFound(serviceErr), nil
 		})
@@ -397,7 +433,7 @@ func newMockRole(name, modelName string) orchestrationv1alpha1.RoleSpec {
 	probe := &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
 			Path: "/ready",
-			Port: intstrFromInt32(8000),
+			Port: intstr.FromInt32(8000),
 		}},
 		PeriodSeconds:    2,
 		FailureThreshold: 30,
@@ -450,6 +486,13 @@ func stormServiceReady(stormService *orchestrationv1alpha1.StormService, expecte
 	return true
 }
 
-func intstrFromInt32(port int32) intstr.IntOrString {
-	return intstr.FromInt32(port)
+func isRetryableAPIError(err error) bool {
+	return apierrors.IsTimeout(err) ||
+		apierrors.IsServerTimeout(err) ||
+		apierrors.IsTooManyRequests(err) ||
+		apierrors.IsServiceUnavailable(err) ||
+		utilnet.IsTimeout(err) ||
+		utilnet.IsProbableEOF(err) ||
+		utilnet.IsConnectionReset(err) ||
+		utilnet.IsConnectionRefused(err)
 }
