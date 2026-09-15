@@ -110,11 +110,11 @@ func NewSLOQueue(provider types.RouterProviderFunc, modelName string) (router *S
 
 func (q *SLOQueue) Enqueue(ctx *types.RoutingContext, currentTime time.Time) error {
 	// Set output predictor first
-	if predictor, err := q.cache.GetOutputPredictor(ctx.Model); err != nil {
+	predictor, err := q.cache.GetOutputPredictor(ctx.Model)
+	if err != nil {
 		return err
-	} else {
-		ctx.SetOutputPredictor(predictor)
 	}
+	ctx.SetOutputPredictor(predictor)
 
 	newQueue := q.subpool.Get().(types.RouterQueue[*types.RoutingContext])
 	features, err := ctx.Features()
