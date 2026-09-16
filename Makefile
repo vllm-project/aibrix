@@ -176,6 +176,11 @@ test-integration-gateway: manifests fmt vet envtest ginkgo
 test-e2e:
 	./test/run-e2e-tests.sh
 
+.PHONY: test-e2e-stormservice-volcano
+test-e2e-stormservice-volcano: ## Run the StormService Volcano gang scheduling e2e against a prepared cluster.
+	AIBRIX_STORMSERVICE_VOLCANO_E2E=true go test ./test/e2e/controller/stormservice \
+		-run '^TestStormServiceVolcanoGangScheduling$$' -v -count=1 -timeout 10m
+
 .PHONY: test-install-smoke
 test-install-smoke:
 	go test ./test/e2e/installation -v -count=1 -timeout 10m

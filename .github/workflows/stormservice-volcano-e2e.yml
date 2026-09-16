@@ -1,0 +1,198 @@
+name: StormService Volcano E2E
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main", "release-*"]
+    paths:
+      - ".github/workflows/stormservice-volcano-e2e.yml"
+      - "api/orchestration/**"
+      - "build/container/Dockerfile"
+      - "cmd/controllers/**"
+      - "pkg/client/**"
+      - "pkg/config/**"
+      - "pkg/constants/**"
+      - "pkg/features/**"
+      - "pkg/utils/**"
+      - "pkg/controller/constants/**"
+      - "pkg/controller/drain/**"
+      - "pkg/controller/stormservice/**"
+      - "pkg/controller/roleset/**"
+      - "pkg/controller/podset/**"
+      - "pkg/controller/util/**"
+      - "config/crd/**"
+      - "config/manager/**"
+      - "config/namespace/**"
+      - "config/rbac/**"
+      - "test/e2e/controller/stormservice/**"
+      - "test/e2e/controller/roleset/inplace-image/**"
+      - "hack/ci/kind-config.yaml"
+      - "Makefile"
+      - "go.mod"
+      - "go.sum"
+  pull_request:
+    branches: ["main", "release-*"]
+    paths:
+      - ".github/workflows/stormservice-volcano-e2e.yml"
+      - "api/orchestration/**"
+      - "build/container/Dockerfile"
+      - "cmd/controllers/**"
+      - "pkg/client/**"
+      - "pkg/config/**"
+      - "pkg/constants/**"
+      - "pkg/features/**"
+      - "pkg/utils/**"
+      - "pkg/controller/constants/**"
+      - "pkg/controller/drain/**"
+      - "pkg/controller/stormservice/**"
+      - "pkg/controller/roleset/**"
+      - "pkg/controller/podset/**"
+      - "pkg/controller/util/**"
+      - "config/crd/**"
+      - "config/manager/**"
+      - "config/namespace/**"
+      - "config/rbac/**"
+      - "test/e2e/controller/stormservice/**"
+      - "test/e2e/controller/roleset/inplace-image/**"
+      - "hack/ci/kind-config.yaml"
+      - "Makefile"
+      - "go.mod"
+      - "go.sum"
+
+permissions:
+  contents: read
+
+env:
+  KIND_VERSION: v0.24.0
+  KIND_NODE_IMAGE: kindest/node:v1.31.0@sha256:53df588e04085fd41ae12de0c3fe4c72f7013bba32a20e7325357a1ac94ba865
+  VOLCANO_VERSION: v1.11.2
+  VOLCANO_INSTALLER_REF: 735842af59b9be0da5090677db7693c98a798b2a
+  KIND_CLUSTER_NAME: stormservice-volcano-e2e
+
+jobs:
+  stormservice-volcano-e2e:
+    name: StormService Volcano Gang E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.22"
+
+      - name: Cache Kind
+        uses: actions/cache@v5
+        with:
+          path: /tmp/tools/kind
+          key: kind-${{ env.KIND_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install Kind
+        run: |
+          set -euo pipefail
+          if [ ! -f /tmp/tools/kind ]; then
+            mkdir -p /tmp/tools
+            curl -fsSL -o /tmp/tools/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+            chmod +x /tmp/tools/kind
+          fi
+          sudo cp /tmp/tools/kind /usr/local/bin/kind
+          kind version
+
+      - name: Create Kubernetes 1.31 cluster
+        run: |
+          set -euo pipefail
+          kind create cluster \
+            --name "${KIND_CLUSTER_NAME}" \
+            --image "${KIND_NODE_IMAGE}" \
+            --config hack/ci/kind-config.yaml
+          kind get kubeconfig --name "${KIND_CLUSTER_NAME}" > /tmp/stormservice-volcano-kubeconfig
+          kubectl --kubeconfig=/tmp/stormservice-volcano-kubeconfig cluster-info
+
+      - name: Build and load test images
+        run: |
+          set -euo pipefail
+          docker build -t aibrix/controller-manager:nightly -f build/container/Dockerfile .
+          docker build \
+            --build-arg INPLACE_E2E_VERSION=v1 \
+            -t aibrix/inplace-e2e:v1 \
+            -f test/e2e/controller/roleset/inplace-image/Dockerfile \
+            test/e2e/controller/roleset/inplace-image
+          docker build \
+            --build-arg INPLACE_E2E_VERSION=v2 \
+            -t aibrix/inplace-e2e:v2 \
+            -f test/e2e/controller/roleset/inplace-image/Dockerfile \
+            test/e2e/controller/roleset/inplace-image
+          kind load docker-image \
+            aibrix/controller-manager:nightly \
+            aibrix/inplace-e2e:v1 \
+            aibrix/inplace-e2e:v2 \
+            --name "${KIND_CLUSTER_NAME}"
+
+      - name: Install Volcano ${{ env.VOLCANO_VERSION }}
+        env:
+          KUBECONFIG: /tmp/stormservice-volcano-kubeconfig
+        run: |
+          set -euo pipefail
+          kubectl apply -f "https://raw.githubusercontent.com/volcano-sh/volcano/${VOLCANO_INSTALLER_REF}/installer/volcano-development.yaml"
+          kubectl wait --for=condition=Established crd/podgroups.scheduling.volcano.sh --timeout=5m
+          kubectl wait --for=condition=ready pod -l app=volcano-scheduler -n volcano-system --timeout=5m
+          kubectl wait --for=condition=ready pod -l app=volcano-admission -n volcano-system --timeout=5m
+          kubectl wait --for=condition=ready pod -l app=volcano-controller -n volcano-system --timeout=5m
+          kubectl get pods -n volcano-system -o wide
+
+      - name: Deploy minimal AIBrix controllers
+        env:
+          KUBECONFIG: /tmp/stormservice-volcano-kubeconfig
+        run: |
+          set -euo pipefail
+          kubectl apply --server-side -k test/e2e/controller/stormservice/testdata
+          kubectl rollout status deployment/aibrix-controller-manager -n aibrix-system --timeout=5m
+          args="$(kubectl get deployment/aibrix-controller-manager -n aibrix-system -o jsonpath='{.spec.template.spec.containers[?(@.name=="manager")].args}')"
+          grep -q -- '--controllers=stormservice-controller' <<<"${args}"
+          grep -q -- '--disable-webhook' <<<"${args}"
+
+      - name: Run StormService Volcano gang E2E
+        env:
+          KUBECONFIG: /tmp/stormservice-volcano-kubeconfig
+          AIBRIX_STORMSERVICE_E2E_KEEP_ON_FAILURE: "true"
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/stormservice-volcano-diagnostics
+          make test-e2e-stormservice-volcano 2>&1 | tee /tmp/stormservice-volcano-diagnostics/go-test.log
+
+      - name: Collect failure diagnostics
+        if: failure()
+        env:
+          KUBECONFIG: /tmp/stormservice-volcano-kubeconfig
+        run: |
+          set +e
+          diagnostics=/tmp/stormservice-volcano-diagnostics
+          mkdir -p "${diagnostics}"
+          kubectl get nodes -o yaml > "${diagnostics}/nodes.yaml" 2>&1
+          kubectl get pods -A -o wide > "${diagnostics}/pods.txt" 2>&1
+          kubectl get events -A --sort-by=.lastTimestamp > "${diagnostics}/events.txt" 2>&1
+          kubectl get stormservices,rolesets,podsets -A -o yaml > "${diagnostics}/aibrix-workloads.yaml" 2>&1
+          kubectl get podgroups.scheduling.volcano.sh -A -o yaml > "${diagnostics}/podgroups.yaml" 2>&1
+          kubectl get queues.scheduling.volcano.sh -o yaml > "${diagnostics}/queues.yaml" 2>&1
+          kubectl describe podgroups.scheduling.volcano.sh -A > "${diagnostics}/podgroups-describe.txt" 2>&1
+          kubectl describe pods -A > "${diagnostics}/pods-describe.txt" 2>&1
+          kubectl logs -n aibrix-system deployment/aibrix-controller-manager --all-containers --tail=-1 > "${diagnostics}/controller-manager.log" 2>&1
+          kubectl logs -n volcano-system -l app=volcano-scheduler --all-containers --tail=-1 > "${diagnostics}/volcano-scheduler.log" 2>&1
+          kubectl logs -n volcano-system -l app=volcano-controller --all-containers --tail=-1 > "${diagnostics}/volcano-controllers.log" 2>&1
+          kubectl logs -n volcano-system -l app=volcano-admission --all-containers --tail=-1 > "${diagnostics}/volcano-admission.log" 2>&1
+          kind export logs "${diagnostics}/kind-logs" --name "${KIND_CLUSTER_NAME}"
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: stormservice-volcano-e2e-${{ github.run_id }}
+          path: /tmp/stormservice-volcano-diagnostics
+          retention-days: 7
+
+      - name: Delete Kind cluster
+        if: always()
+        continue-on-error: true
+        run: kind delete cluster --name "${KIND_CLUSTER_NAME}"
