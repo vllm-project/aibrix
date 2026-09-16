@@ -37,6 +37,9 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/classify
+        - path:
+            type: PathPrefix
+            value: /tokenize
       backendRefs:
         - group: ''
           kind: Service

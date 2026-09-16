@@ -91,13 +91,41 @@ or
 **Environment Variables:**
 - `KIND_E2E=true` - Creates Kind cluster with proper configuration
 - `INSTALL_AIBRIX=true` - Builds images, installs dependencies, and deploys AIBrix
-- `AIBRIX_ROLESET_INPLACE_E2E=true` - Runs RoleSet in-place update e2e tests and builds/loads their local test images when `INSTALL_AIBRIX=true`
+- `AIBRIX_ROLESET_INPLACE_E2E=true` - Runs the additional RoleSet in-place update e2e tests; `INSTALL_AIBRIX=true` builds the shared v1/v2 images whenever the `all` or `controller` suite is selected
 - `AIBRIX_ROLESET_INPLACE_E2E_KEEP_ON_FAILURE=true` - Preserves RoleSet in-place e2e resources for debugging failed runs
 - `AIBRIX_E2E_SUITE=all|gateway|controller|gateway-pd` - Selects the e2e suite; defaults to `all`
 - `AIBRIX_E2E_GATEWAY_URL`, `AIBRIX_E2E_NAMESPACE`, `AIBRIX_E2E_API_KEY`, `AIBRIX_E2E_GATEWAY_NAMESPACE` - Override live-cluster e2e endpoints and namespaces
 - `AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE=true` - Preserves installed e2e resources after a failed local run
 - `SKIP_KUBECTL_INSTALL=true` - Skip kubectl installation (default: true)
 - `SKIP_KIND_INSTALL=true` - Skip Kind installation (default: true)
+
+#### StormService Controller E2E
+
+The StormService controller package contains three lifecycle tests that run as
+part of the default controller suite: Replica-mode creation and scaling,
+pause/resume with in-place and fallback updates, and progress-deadline failure
+and recovery. The installation E2E job builds and loads
+`aibrix/inplace-e2e:v1` and `aibrix/inplace-e2e:v2`, which these tests require.
+
+Volcano gang scheduling is opt-in because it requires a cluster with the
+Volcano scheduler and `scheduling.volcano.sh/v1beta1` PodGroup CRD installed.
+With `KUBECONFIG` pointing at a prepared cluster and the StormService, RoleSet,
+and PodSet controllers running, execute only that test with:
+
+```bash
+make test-e2e-stormservice-volcano
+```
+
+Set `AIBRIX_STORMSERVICE_E2E_KEEP_ON_FAILURE=true` to retain StormService,
+RoleSet, PodSet, Pod, ControllerRevision, Service, and PodGroup resources after
+a failure for inspection.
+
+The CI-tested scheduler pair is Kubernetes 1.31.0 with Volcano 1.11.2. AIBrix
+currently compiles against `volcano.sh/apis` v1.11.2 and validates the
+`minMember` and `minTaskMember` PodGroup fields. Volcano 1.14 and newer add the
+different `subGroupPolicy` model used by newer RBG tests; that model is outside
+this suite. Any Volcano upgrade must review the Go API module, installed CRD
+schema, and Volcano's Kubernetes compatibility matrix together.
 
 ### Performance Regression Testing
 
