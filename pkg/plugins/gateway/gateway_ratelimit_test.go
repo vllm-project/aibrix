@@ -20,11 +20,15 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
@@ -189,9 +193,14 @@ func TestEnforceModelRPS(t *testing.T) {
 		rl.AssertExpectations(t)
 	})
 
-	t.Run("exceeding limit returns 429", func(t *testing.T) {
+	t.Run("exceeding limit returns 429 and refunds the rejected increment", func(t *testing.T) {
 		rl := &mockRateLimiter{}
 		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(3), nil).Once()
+		// The overflowing increment never admitted a request, so it must be refunded
+		// immediately -- not left for HandleRequestBody's needsRollback defer, which is
+		// never registered because this call returns before reaching it (see
+		// TestHandleRequestBody in gateway_req_body_test.go for the end-to-end case).
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(-1)).Return(int64(2), nil).Once()
 
 		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
@@ -211,6 +220,23 @@ func TestEnforceModelRPS(t *testing.T) {
 		rl.AssertExpectations(t)
 	})
 
+	t.Run("exceeding limit still returns 429 even if the refund itself fails", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(3), nil).Once()
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(-1)).Return(int64(0), errors.New("redis down")).Once()
+
+		s := &Server{modelRateLimiter: rl}
+		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
+
+		resp := s.enforceModelRPS(context.Background(), "llama", rc)
+		if assert.NotNil(t, resp) {
+			imm := resp.GetImmediateResponse()
+			require.NotNil(t, imm)
+			assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, imm.GetStatus().GetCode())
+		}
+		rl.AssertExpectations(t)
+	})
+
 	t.Run("below limit increments and returns nil", func(t *testing.T) {
 		rl := &mockRateLimiter{}
 		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(2), nil).Once()
@@ -222,6 +248,32 @@ func TestEnforceModelRPS(t *testing.T) {
 		assert.Nil(t, resp)
 		rl.AssertExpectations(t)
 	})
+}
+
+// TestEnforceModelRPS_RejectDoesNotPostponeNextWindow is the end-to-end regression test for
+// the TTL bug: a 429 inside a window (here 2s, the kind of long window
+// requestsPerSecondPerReplica can produce for sub-1 rps limits, see rpsToLimitWindow) must
+// not push that window's expiry back out. If it did, a client that retries immediately after
+// being rejected would keep the model rate-limited long after the window should have reset.
+func TestEnforceModelRPS_RejectDoesNotPostponeNextWindow(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	s := &Server{modelRateLimiter: ratelimiter.NewRedisAccountRateLimiter("aibrix_model_test", client, time.Second)}
+	rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 1, RateWindowSeconds: 2}}
+
+	require.Nil(t, s.enforceModelRPS(context.Background(), "m", rc), "first request should be admitted")
+
+	mr.FastForward(500 * time.Millisecond)
+	resp := s.enforceModelRPS(context.Background(), "m", rc)
+	require.NotNil(t, resp, "immediate retry should be rejected by the still-open window")
+
+	// Advance to just past the *original* 2-second window. If the reject above had reset the
+	// TTL, the window would still be open here and this request would also be rejected.
+	mr.FastForward(1600 * time.Millisecond)
+	assert.Nil(t, s.enforceModelRPS(context.Background(), "m", rc),
+		"the original window must have expired on schedule despite the earlier reject")
 }
 
 func TestDecrModelRPS(t *testing.T) {

@@ -263,8 +263,18 @@ func NewPDRouter() (types.Router, error) {
 		klog.Error("fail to get cache store in prefix cache router")
 		return nil, err
 	}
+	return NewPDRouterWithCacheAndPrefixIndexer(c, prefixcacheindexer.GetSharedPrefixHashTable())
+}
 
-	sharedPrefixTable := prefixcacheindexer.GetSharedPrefixHashTable()
+// NewPDRouterWithCacheAndPrefixIndexer builds a PD router on an explicit cache
+// and prefix table instead of the process-global ones, so an isolated
+// RouterManager (see NewRouterManagerWithCacheAndPrefixIndexer) can route
+// "pd" without initialising the global cache. A nil sharedPrefixTable gets a
+// fresh table.
+func NewPDRouterWithCacheAndPrefixIndexer(c cache.Cache, sharedPrefixTable *prefixcacheindexer.PrefixHashTable) (types.Router, error) {
+	if sharedPrefixTable == nil {
+		sharedPrefixTable = prefixcacheindexer.NewPrefixHashTable()
+	}
 	// One tracker per router, created unconditionally so that a routingConfig
 	// can switch a model to token_load or hybrid_cache_load without a gateway
 	// restart.
@@ -391,13 +401,14 @@ func (r *pdRouter) releaseTokenLoad(requestID string) {
 func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	readyPods := readyPodList.All()
 
-	// Validate SGLang request body before any pod selection or prefix-index
-	// mutation. A malformed request must not pollute selection counters or
+	// Validate the request body before any pod selection or prefix-index
+	// mutation, for every engine: it must be a JSON object and must not
+	// repeat a gateway-controlled top-level key (sjson only edits the first
+	// occurrence, so a duplicate would let the client's value override the
+	// gateway's). A malformed request must not pollute selection counters or
 	// the prefix cache. ctx.Engine is already set by selectTargetPod.
-	if ctx.Engine == SGLangEngine {
-		if err := engine.ValidateSGLangRequest(ctx.ReqBody); err != nil {
-			return "", err
-		}
+	if err := engine.ValidateRequest(ctx.ReqBody, engine.Resolve(ctx.Engine)); err != nil {
+		return "", err
 	}
 
 	// Select registers the chosen pods with pendingDecodeTracker and
@@ -690,13 +701,19 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 	minObservedThroughput := math.MaxFloat64
 	utils.Shuffle(filteredDecodePods)
 
+	// Live cross-gateway running-request count (see cache_running_requests.go) for the
+	// whole candidate list in one Redis round trip, rather than
+	// GetMetricValueByPod(RealtimeNumRequestsRunning) per pod: that metric slot is a
+	// periodically synced cache that, between scrape ticks, only reflects this
+	// gateway's local view.
+	runningReqCounts, runningErr := r.cache.GetPodsRunningRequests(filteredDecodePods)
+
 	for _, pod := range filteredDecodePods {
-		runningReqs, runningErr := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning)
 		requestCount := r.pendingDecodeTracker.GetPendingDecodeCount(pod.Name)
 		if runningErr != nil {
 			podRequestCounts[pod.Name] = requestCount
 		} else {
-			requestCount += runningReqs.GetSimpleValue()
+			requestCount += float64(runningReqCounts[utils.GeneratePodKey(pod.Namespace, pod.Name)])
 			podRequestCounts[pod.Name] = requestCount
 			if requestCount < minObservedRequestCount {
 				minObservedRequestCount = requestCount

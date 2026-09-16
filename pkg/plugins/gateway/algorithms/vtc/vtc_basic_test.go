@@ -79,6 +79,18 @@ func (c *SimpleCache) GetMetricValueByPod(podName, podNamespace, metricName stri
 func (c *SimpleCache) AddSubscriber(subscriber metrics.MetricSubscriber) {
 }
 
+func (c *SimpleCache) GetPodRunningRequests(podName, podNamespace string) (int64, error) {
+	return 0, nil
+}
+
+func (c *SimpleCache) AdmitPodRunningRequest(podName, podNamespace string, limit int64) (bool, error) {
+	return true, nil
+}
+
+func (c *SimpleCache) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error) {
+	return nil, nil
+}
+
 // SimplePodList is a simplified implementation of PodList for testing
 type SimplePodList struct {
 	pods []*v1.Pod

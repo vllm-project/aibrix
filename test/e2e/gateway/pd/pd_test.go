@@ -162,10 +162,11 @@ func assertPDDisaggregationAfterPodDeletion(t *testing.T, roleLabel, modelName, 
 	}
 }
 
-// waitForPDDisaggregationExcludingPod waits until successful PD requests no longer
-// select the pod removed by the test. A generic routing-readiness check can pass
-// while a stale gateway-plugin replica still has the deleted pod in its cache.
-func waitForPDDisaggregationExcludingPod(t *testing.T, modelName, roleLabel, podToDelete, prompt string) {
+// waitForPDDisaggregationExcludingPod waits for the gateway to route several
+// successful requests without selecting the Pod removed by the test. A Pod
+// Ready condition can precede informer and EndpointSlice convergence, so a
+// fixed sleep is insufficient here.
+func waitForPDDisaggregationExcludingPod(t *testing.T, modelName, roleLabel, excludedPod, prompt string) {
 	t.Helper()
 	var dst *http.Response
 	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
@@ -180,29 +181,27 @@ func waitForPDDisaggregationExcludingPod(t *testing.T, modelName, roleLabel, pod
 			})
 			if err != nil {
 				consecutive = 0
-				t.Logf("waiting for PD routing to exclude pod %s: %v", podToDelete, err)
+				t.Logf("waiting for PD routing to exclude pod %s: %v", excludedPod, err)
 				return false, nil
 			}
 
 			prefillPod := dst.Header.Get("prefill-target-pod")
 			decodePod := dst.Header.Get("target-pod")
-			if prefillPod == "" || decodePod == "" || prefillPod == decodePod {
-				consecutive = 0
-				return false, nil
-			}
-			selectedPod := decodePod
+			selected := decodePod
 			if roleLabel == "prefill" {
-				selectedPod = prefillPod
+				selected = prefillPod
 			}
-			if selectedPod == podToDelete {
+			if prefillPod == "" || decodePod == "" || prefillPod == decodePod || selected == excludedPod {
 				consecutive = 0
+				t.Logf("waiting for gateway to exclude %s; prefill=%s decode=%s", excludedPod, prefillPod, decodePod)
 				return false, nil
 			}
+
 			consecutive++
-			t.Logf("PD routing excluded pod %s (%d/3 consecutive)", podToDelete, consecutive)
+			t.Logf("PD routing excludes %s (%d/3 consecutive)", excludedPod, consecutive)
 			return consecutive >= 3, nil
 		})
-	require.NoError(t, err, "timeout waiting for PD routing to exclude pod %s", podToDelete)
+	require.NoError(t, err, "gateway continued selecting deleted %s pod %s", roleLabel, excludedPod)
 }
 
 // TestPDDisaggregationVLLMMultipleRequests sends several requests to verify that the

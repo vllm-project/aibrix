@@ -79,6 +79,9 @@ const (
 	HeaderErrorModelRPSExceeded = "x-error-model-rps-exceeded"
 	HeaderErrorIncrModelRPS     = "x-error-incr-model-rps"
 
+	// Per-replica inflight Errors
+	HeaderErrorReplicaInflightExceeded = "x-error-model-replica-inflight-exceeded"
+
 	// Rate Limiting defaults
 	DefaultRPM           = 100
 	DefaultTPMMultiplier = 1000
@@ -94,12 +97,13 @@ const (
 	ErrorTypeOverloaded     = "overloaded_error"
 
 	// OpenAI Error Codes
-	ErrorCodeInvalidAPIKey          = "invalid_api_key"
-	ErrorCodeModelNotFound          = "model_not_found"
-	ErrorCodeRateLimitExceeded      = "rate_limit_exceeded"
-	ErrorCodeServiceUnavailable     = "service_unavailable"
-	ErrorCodeVideoNotFound          = "video_not_found"
-	ErrorCodeVideoJobPodUnavailable = "video_job_pod_unavailable"
+	ErrorCodeInvalidAPIKey           = "invalid_api_key"
+	ErrorCodeModelNotFound           = "model_not_found"
+	ErrorCodeRateLimitExceeded       = "rate_limit_exceeded"
+	ErrorCodeServiceUnavailable      = "service_unavailable"
+	ErrorCodeVideoNotFound           = "video_not_found"
+	ErrorCodeVideoJobPodUnavailable  = "video_job_pod_unavailable"
+	ErrorCodeReplicaInflightExceeded = "replica_inflight_exceeded"
 
 	// Embedding Constraints
 	// https://github.com/openai/openai-go/blob/main/embedding.go#L126
@@ -127,6 +131,8 @@ const (
 	// prefix matching in isLanguageRequest and extractVideoIDFromPath.
 	PathVideos     = "/v1/videos"
 	PathVideosSync = "/v1/videos/sync"
+
+	PathTokenize = "/tokenize"
 
 	// Engine-specific paths (xdit)
 	PathXditGenerate      = "/generate"

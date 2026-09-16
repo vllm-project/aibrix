@@ -28,9 +28,9 @@ import (
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
-	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -45,6 +45,9 @@ var (
 	ErrFallbackNotRegistered = errors.New("fallback router not registered")
 	defaultRM                = NewRouterManager()
 )
+
+// DefaultRouterManager returns the production process-wide router manager.
+func DefaultRouterManager() *RouterManager { return defaultRM }
 
 // RouterItem represents a single routing algorithm and its weight coefficient for multi-router config.
 type RouterItem struct {
@@ -489,8 +492,8 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 			}
 			outstandingStr := "N/A"
 			if cacheErr == nil {
-				if v, err := c.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning); err == nil && v != nil {
-					outstandingStr = fmt.Sprintf("%.0f", v.GetSimpleValue())
+				if count, err := c.GetPodRunningRequests(pod.Name, pod.Namespace); err == nil {
+					outstandingStr = fmt.Sprintf("%d", count)
 				}
 			}
 			fmt.Fprintf(&logBuilder, "  [%s] Pod: %-30s | FinalScore: %.4f | Outstanding: %-4s | Details: %s\n",
@@ -643,6 +646,58 @@ func NewRouterManager() *RouterManager {
 	rm.routerConstructor = make(map[types.RoutingAlgorithm]types.RouterProviderRegistrationFunc)
 	rm.multiRouterCache = make(map[string]*multiStrategyRouter)
 	rm.unblendableLogged = make(map[string]struct{})
+	return rm
+}
+
+// NewRouterManagerWithDefaults creates an isolated manager with the standard
+// Gateway routing constructors. Unlike Init, it does not mutate the process
+// global manager.
+func NewRouterManagerWithDefaults() *RouterManager {
+	return newIsolatedRouterManager()
+}
+
+func newIsolatedRouterManager() *RouterManager {
+	rm := NewRouterManager()
+	defaultRM.routerMu.RLock()
+	defer defaultRM.routerMu.RUnlock()
+	for algorithm, constructor := range defaultRM.routerConstructor {
+		rm.routerConstructor[algorithm] = constructor
+	}
+	for algorithm, provider := range defaultRM.routerFactory {
+		rm.routerFactory[algorithm] = provider
+	}
+	return rm
+}
+
+// NewRouterManagerWithCache creates an isolated manager whose cache-backed
+// constructors capture c instead of consulting the process-global cache.
+func NewRouterManagerWithCache(c cache.Cache) *RouterManager {
+	return NewRouterManagerWithCacheAndPrefixIndexer(c, nil)
+}
+
+// NewRouterManagerWithCacheAndPrefixIndexer creates an isolated manager whose
+// cache-backed constructors capture c and whose prefix-cache constructor uses
+// indexer when it is non-nil. A nil indexer preserves the default per-manager
+// prefix table behavior.
+func NewRouterManagerWithCacheAndPrefixIndexer(c cache.Cache, indexer *prefixcacheindexer.PrefixHashTable) *RouterManager {
+	if indexer == nil {
+		indexer = prefixcacheindexer.NewPrefixHashTable()
+	}
+	rm := newIsolatedRouterManager()
+	// The seven cache-backed strategies capture c. All other registrations are
+	// copied from the production manager and retain their original dependencies
+	// (for example, SLO providers still resolve their configured cache).
+	rm.RegisterProvider(RouterRandom, RandomRouterProviderFunc)
+	rm.Register(RouterLeastRequest, func() (types.Router, error) { return NewLeastRequestRouterWithCache(c) })
+	rm.Register(RouterLeastKvCache, func() (types.Router, error) { return NewLeastKvCacheRouterWithCache(c) })
+	rm.Register(RouterLeastLatency, func() (types.Router, error) { return NewLeastLatencyRouterWithCache(c) })
+	rm.Register(RouterLoadBalance, func() (types.Router, error) { return NewLoadBalanceRouterWithCache(c) })
+	rm.Register(RouterPrefixCache, func() (types.Router, error) {
+		return NewPrefixCacheRouterWithOptions(c, indexer)
+	})
+	rm.Register(RouterPD, func() (types.Router, error) {
+		return NewPDRouterWithCacheAndPrefixIndexer(c, indexer)
+	})
 	return rm
 }
 

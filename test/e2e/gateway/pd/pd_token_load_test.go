@@ -149,11 +149,10 @@ func TestPDDisaggregationVLLMTokenLoad(t *testing.T) {
 		if i%2 == 0 {
 			prompt = longPrompt
 		}
-		_, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+		_ = pollPDChatCompletion(t, client, openai.ChatCompletionNewParams{
 			Messages: []openai.ChatCompletionMessageParamUnion{openai.UserMessage(prompt)},
 			Model:    modelNameVLLM,
 		})
-		require.NoError(t, err, "token_load PD chat completion request %d failed", i)
 
 		assert.Equal(t, "pd", dst.Header.Get("routing-strategy"),
 			"request %d: config profile %q should resolve to PD routing", i, tokenLoadConfigProfile)

@@ -26,7 +26,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bytedance/sonic"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
@@ -36,11 +35,7 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// trtllmEngine is kept local to avoid importing routingalgorithms (circular).
-const (
-	trtllmEngine                = "trtllm"
-	prefillRequestSuccessStatus = "pd-prefill-request-success"
-)
+const prefillRequestSuccessStatus = "pd-prefill-request-success"
 
 func incPrefillOutstanding() {
 	metrics.IncGaugeMetric(
@@ -196,14 +191,14 @@ func (e *DefaultExecutor) handleSync(
 	llmEngine, apiURL string,
 	payload []byte,
 	fields []interface{},
-	mergeFn func(*types.RoutingContext, map[string]any, *v1.Pod) error,
+	mergeFn func(*types.RoutingContext, []byte, *v1.Pod) error,
 	errorContext string,
 ) error {
 	incPrefillOutstanding()
 	defer decPrefillOutstanding()
 	defer e.prefillDone(routingCtx.RequestID)
 
-	responseData, err := e.executeHTTP(apiURL, routingCtx, payload)
+	prefillResponse, err := e.executeHTTP(apiURL, routingCtx, payload)
 	if err != nil {
 		klog.ErrorS(err, "prefill_request_failed",
 			"request_id", routingCtx.RequestID,
@@ -215,7 +210,7 @@ func (e *DefaultExecutor) handleSync(
 	}
 
 	if mergeFn != nil {
-		if err := mergeFn(routingCtx, responseData, prefillPod); err != nil {
+		if err := mergeFn(routingCtx, prefillResponse, prefillPod); err != nil {
 			return fmt.Errorf("failed to update routing context with %s for request %s: %w", errorContext, routingCtx.RequestID, err)
 		}
 	}
@@ -229,11 +224,13 @@ func (e *DefaultExecutor) handleSync(
 	return nil
 }
 
-// executeHTTP posts payload to url and returns the parsed JSON response body.
-// Non-200 responses and transport errors are both recorded to Prometheus.
-// TRT-LLM responses are parsed with UseInt64=true to prevent float64 precision
-// loss on large integer fields such as disagg_request_id.
-func (e *DefaultExecutor) executeHTTP(url string, routingCtx *types.RoutingContext, payload []byte) (map[string]any, error) {
+// executeHTTP posts payload to url and returns the raw JSON response body,
+// which is guaranteed to be a JSON object. Non-200 responses and transport
+// errors are both recorded to Prometheus. The body is deliberately not
+// decoded: merge functions read the fields they need with gjson so that
+// large integers (e.g. TRT-LLM disagg_request_id) and nested key order are
+// preserved exactly.
+func (e *DefaultExecutor) executeHTTP(url string, routingCtx *types.RoutingContext, payload []byte) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(routingCtx.Context, time.Duration(e.requestTimeout)*time.Second)
 	defer cancel()
 
@@ -279,20 +276,11 @@ func (e *DefaultExecutor) executeHTTP(url string, routingCtx *types.RoutingConte
 		return nil, fmt.Errorf("http prefill request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// TRT-LLM prefill responses contain large integer IDs in disaggregated_params;
-	// use UseInt64 to avoid float64 precision loss during unmarshal.
-	var responseData map[string]any
-	var errUnmarshal error
-	if routingCtx.Engine == trtllmEngine {
-		errUnmarshal = pd.SonicJSONInt64.Unmarshal(body, &responseData)
-	} else {
-		errUnmarshal = sonic.Unmarshal(body, &responseData)
-	}
-	if errUnmarshal != nil {
-		return nil, fmt.Errorf("failed to unmarshal prefill response: %w", errUnmarshal)
+	if err := pd.ValidateJSONObject(body, "prefill response"); err != nil {
+		return nil, err
 	}
 
-	return responseData, nil
+	return body, nil
 }
 
 // forwardablePrefillHeader reports whether key can be copied onto the

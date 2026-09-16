@@ -33,6 +33,8 @@ var (
 )
 
 const (
-	modelName      = framework.ModelName
-	modelNameQwen3 = framework.ModelNameQwen3
+	modelName                     = framework.ModelName
+	modelNameQwen3                = framework.ModelNameQwen3
+	modelNameQwen3ReplicaRPS      = framework.ModelNameQwen3ReplicaRPS
+	modelNameQwen3ReplicaInflight = framework.ModelNameQwen3ReplicaInflight
 )

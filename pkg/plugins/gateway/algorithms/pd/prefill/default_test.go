@@ -25,6 +25,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
@@ -51,7 +52,7 @@ func TestExecuteHTTPSkipsEnvoyPseudoHeaders(t *testing.T) {
 		},
 	}, []byte(`{"model":"m"}`))
 	require.NoError(t, err)
-	assert.Equal(t, true, got["ok"])
+	assert.True(t, gjson.GetBytes(got, "ok").Bool())
 	assert.Empty(t, gotMethod, "HTTP/2 pseudo-headers must not be forwarded")
 	assert.Equal(t, "Bearer test", gotAuth)
 	assert.Equal(t, "pd", gotStrategy)

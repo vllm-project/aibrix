@@ -163,10 +163,10 @@ func TestPrepareSGLangRequestBodies_SameRoomInBothBodies(t *testing.T) {
 	assert.Equal(t, prefillRoom, decodeRoom, "bootstrap_room must be the same in prefill and decode")
 }
 
-func TestPreparePrefillPayload_ErrorDoesNotModifyReqBody(t *testing.T) {
-	// PreparePrefillPayload does not call ValidateSGLangRequest itself (Route()
-	// does that). The defense-in-depth guard in prepareSGLangRequestBodies
-	// catches invalid JSON and returns an error without modifying ReqBody.
+func TestAugmentPrefillRequest_ErrorDoesNotModifyReqBody(t *testing.T) {
+	// AugmentPrefillRequest does not call ValidateSGLangRequest itself (Route()
+	// does that). The defense-in-depth guard in sglangDecodeBody catches
+	// invalid JSON and returns an error without modifying ReqBody.
 	originalBody := []byte(`{not json`)
 	routingCtx := &types.RoutingContext{
 		ReqBody: originalBody,
@@ -175,14 +175,14 @@ func TestPreparePrefillPayload_ErrorDoesNotModifyReqBody(t *testing.T) {
 	handler := &SGLangHandler{}
 	pod := testPod()
 
-	_, err := handler.PreparePrefillPayload(routingCtx, pod)
+	_, err := handler.AugmentPrefillRequest(routingCtx, pod, routingCtx.ReqBody)
 	assert.Error(t, err)
 
 	// ReqBody should be unchanged on error.
 	assert.Equal(t, originalBody, routingCtx.ReqBody)
 }
 
-func TestPreparePrefillPayload_SuccessUpdatesReqBody(t *testing.T) {
+func TestAugmentPrefillRequest_SuccessUpdatesReqBody(t *testing.T) {
 	originalBody := []byte(toolRequestBody)
 	routingCtx := &types.RoutingContext{
 		ReqBody: originalBody,
@@ -191,16 +191,22 @@ func TestPreparePrefillPayload_SuccessUpdatesReqBody(t *testing.T) {
 	handler := &SGLangHandler{}
 	pod := testPod()
 
-	prefillBody, err := handler.PreparePrefillPayload(routingCtx, pod)
+	prefillBase, err := handler.AugmentPrefillRequest(routingCtx, pod, routingCtx.ReqBody)
 	require.NoError(t, err)
 
-	// After success, ReqBody should be the decode body (with bootstrap fields).
+	// After success, ReqBody should be the decode body (with bootstrap fields),
+	// and the returned prefill base body is that same decode body: the common
+	// prefill control fields are applied by prefill.PreparePayload on top.
 	assert.NotEqual(t, originalBody, routingCtx.ReqBody, "ReqBody should be updated to decode body")
+	assert.Equal(t, routingCtx.ReqBody, prefillBase)
 	assert.Equal(t, "10.0.0.1", gjson.GetBytes(routingCtx.ReqBody, "bootstrap_host").String())
+	assert.Equal(t, int64(8998), gjson.GetBytes(routingCtx.ReqBody, "bootstrap_port").Int())
+	assert.True(t, gjson.GetBytes(routingCtx.ReqBody, "bootstrap_room").Exists())
 
-	// Prefill body should have the prefill control fields.
-	assert.Equal(t, int64(1), gjson.GetBytes(prefillBody, "max_tokens").Int())
-	assert.False(t, gjson.GetBytes(prefillBody, "stream").Bool())
+	// Client generation params are untouched on the decode body.
+	assert.Equal(t, gjson.GetBytes(originalBody, "max_tokens").Raw, gjson.GetBytes(routingCtx.ReqBody, "max_tokens").Raw)
+	assert.Equal(t, gjson.GetBytes(originalBody, "messages").Raw, gjson.GetBytes(routingCtx.ReqBody, "messages").Raw)
+	assert.Equal(t, gjson.GetBytes(originalBody, "tools").Raw, gjson.GetBytes(routingCtx.ReqBody, "tools").Raw)
 }
 
 func TestPrepareSGLangRequestBodies_SHA256Stability_100Iterations(t *testing.T) {
@@ -229,28 +235,6 @@ func TestPrepareSGLangRequestBodies_SHA256Stability_100Iterations(t *testing.T) 
 			assert.Equal(t, firstPrefillHash, prefillHex, "prefill prompt hash must be stable across iterations")
 			assert.Equal(t, firstDecodeHash, decodeHex, "decode prompt hash must be stable across iterations")
 		}
-	}
-}
-
-func TestSGLangHandlerImplementsRawPreparer(t *testing.T) {
-	// Verify SGLangHandler satisfies the RawPrefillPayloadPreparer interface.
-	handler := &SGLangHandler{}
-	var _ RawPrefillPayloadPreparer = handler
-	assert.NotNil(t, handler)
-}
-
-// Verify that non-SGLang handlers (DefaultHandler, VLLMHandler, TRTLLMHandler)
-// do NOT implement RawPrefillPayloadPreparer, ensuring they keep using the
-// unmarshal/marshal path.
-func TestOtherHandlersDoNotImplementRawPreparer(t *testing.T) {
-	handlers := []EngineHandler{
-		&DefaultHandler{},
-		&VLLMHandler{},
-		&TRTLLMHandler{},
-	}
-	for _, h := range handlers {
-		_, ok := h.(RawPrefillPayloadPreparer)
-		assert.False(t, ok, "%s should not implement RawPrefillPayloadPreparer", h.Name())
 	}
 }
 

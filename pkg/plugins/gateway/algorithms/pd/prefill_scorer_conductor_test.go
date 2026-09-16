@@ -91,6 +91,18 @@ func (m *mockMetricCache) AddSubscriber(subscriber metrics.MetricSubscriber) {
 	// no-op for testing
 }
 
+func (m *mockMetricCache) GetPodRunningRequests(podName, podNamespace string) (int64, error) {
+	return 0, fmt.Errorf("not implemented in mock")
+}
+
+func (m *mockMetricCache) AdmitPodRunningRequest(podName, podNamespace string, limit int64) (bool, error) {
+	return false, fmt.Errorf("not implemented in mock")
+}
+
+func (m *mockMetricCache) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error) {
+	return nil, nil
+}
+
 // Helper to create a test pod
 func makeTestPod(name, namespace string) *v1.Pod {
 	return &v1.Pod{

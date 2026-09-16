@@ -63,6 +63,8 @@ const (
 	gatewayRespHeaders       = "gateway_rsp_headers"
 	gatewayReqBody           = "gateway_req_body"
 	defaultHTTPRouteCacheTTL = 30 * time.Second
+	defaultHTTPRouteErrorTTL = 2 * time.Second
+	httpRouteLookupTimeout   = 5 * time.Second
 	envHTTPRouteCacheTTL     = "AIBRIX_HTTPROUTE_CACHE_TTL"
 )
 
@@ -80,10 +82,13 @@ type Server struct {
 	gatewayClient       gatewayapi.Interface
 	requestCountTracker map[string]int
 	cache               cache.Cache
+	routerManager       *routing.RouterManager
+	inFlightObserver    func(int)
 	wakeRequester       modelWakeRequester
 	httpServer          *http.Server
 	httprouteCache      sync.Map
 	httprouteCacheTTL   time.Duration
+	httprouteErrorTTL   time.Duration
 	httprouteSFGroup    singleflight.Group
 	// videoJobCache maps a vLLM-Omni async video_id to the pod that owns it (see
 	// gateway_video_routing.go). Local in-memory cache, warmed from and
@@ -94,6 +99,16 @@ type Server struct {
 	shutdownCh   <-chan struct{}
 	shutdown     chan struct{}
 	shutdownOnce sync.Once
+}
+
+// HasRequestBuffers is a test-observation API: it reports whether an in-flight
+// request retains body state in either production buffer. sync.Map makes the
+// point-in-time lookup safe concurrently with Process cleanup; callers should
+// invoke it after Process returns when asserting terminal cleanup.
+func HasRequestBuffers(requestID string) bool {
+	_, requestPresent := requestBuffers.Load(requestID)
+	_, streamPresent := streamBuffers.Load(requestID)
+	return requestPresent || streamPresent
 }
 
 type processState struct {
@@ -203,10 +218,31 @@ func httpRouteCacheTTL() time.Duration {
 	return defaultHTTPRouteCacheTTL
 }
 
+// ServerOptions configures optional dependencies for a Server.
+type ServerOptions struct {
+	Cache         cache.Cache
+	RouterManager *routing.RouterManager
+	// InFlightObserver receives test/diagnostic lifecycle deltas (+1/-1). The
+	// callback must be non-blocking and non-panicking because it runs on the
+	// request processing path and is not recovered by Gateway.
+	InFlightObserver func(int)
+}
+
 func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayClient gatewayapi.Interface) *Server {
-	c, err := cache.Get()
-	if err != nil {
-		panic(err)
+	return NewServerWithOptions(redisClient, client, gatewayClient, ServerOptions{})
+}
+
+// NewServerWithOptions constructs a Gateway server with optional dependencies.
+// A supplied Cache without a RouterManager creates an isolated cache-aware
+// manager; with no options, production global cache and routing behavior apply.
+func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface, gatewayClient gatewayapi.Interface, options ServerOptions) *Server {
+	c := options.Cache
+	if c == nil {
+		var err error
+		c, err = cache.Get()
+		if err != nil {
+			panic(err)
+		}
 	}
 	var r ratelimiter.RateLimiter
 	var mr ratelimiter.RateLimiter
@@ -218,8 +254,16 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 		mr = ratelimiter.NewNoopRateLimiter()
 	}
 
-	// Initialize the routers
-	routing.Init()
+	routerManager := options.RouterManager
+	if routerManager == nil {
+		if options.Cache != nil {
+			routerManager = routing.NewRouterManagerWithCache(c)
+		} else {
+			routing.Init()
+			routerManager = routing.DefaultRouterManager()
+		}
+	}
+	routerManager.Init()
 
 	shutdown := make(chan struct{})
 	s := &Server{
@@ -231,8 +275,11 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 		gatewayClient:       gatewayClient,
 		requestCountTracker: map[string]int{},
 		cache:               c,
+		routerManager:       routerManager,
+		inFlightObserver:    options.InFlightObserver,
 		wakeRequester:       newRuntimeModelWakeRequester(nil, defaultModelClaimRuntimePort),
 		httprouteCacheTTL:   httpRouteCacheTTL(),
+		httprouteErrorTTL:   defaultHTTPRouteErrorTTL,
 		shutdownCh:          shutdown,
 		shutdown:            shutdown,
 	}
@@ -254,6 +301,9 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	}
 
 	metrics.IncGaugeMetric(metrics.GatewayInFlight, metrics.GetMetricHelp(metrics.GatewayInFlight), []string{"gateway_pod"}, podName)
+	if s.inFlightObserver != nil {
+		s.inFlightObserver(1)
+	}
 	defer func() {
 		// This is a fallback for any terminal path that did not explicitly finish
 		// bookkeeping. A non-empty model and routing context mean request-body
@@ -271,6 +321,9 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		}
 		st.releaseModelInFlight()
 		metrics.DecGaugeMetric(metrics.GatewayInFlight, metrics.GetMetricHelp(metrics.GatewayInFlight), []string{"gateway_pod"}, podName)
+		if s.inFlightObserver != nil {
+			s.inFlightObserver(-1)
+		}
 		// routerCtx must remain valid until every completion path above has
 		// returned. Returning it to the pool earlier lets another request reset
 		// the same object while this Process still holds the pointer.
@@ -583,6 +636,13 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		return "", fmt.Errorf("no ready pods for routing")
 	}
 
+	if limit := replicaInflightLimit(routeCtx); limit > 0 {
+		readyPods = s.filterSaturatedReplicaInflight(readyPods, limit)
+		if len(readyPods) == 0 {
+			return "", errReplicaInflightExceeded
+		}
+	}
+
 	// Resolve exclusivity from the caller's raw algorithm string rather than comparing it
 	// directly against "pd": the string may itself be a multi-strategy config that collapses
 	// to a single exclusive strategy (e.g. "pd:1,least-request:1" resolves to "pd", and bare
@@ -605,7 +665,11 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		readyPods = routing.ApplyLoadImbalanceGate(routeCtx, s.cache, readyPods)
 	}
 
-	router, err := routing.Select(routeCtx)
+	if s.routerManager == nil {
+		// Preserve compatibility for legacy tests that build Server literals.
+		s.routerManager = routing.DefaultRouterManager()
+	}
+	router, err := s.routerManager.Select(routeCtx)
 	if err != nil {
 		return "", err
 	}
@@ -624,8 +688,9 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 }
 
 // validateHTTPRouteStatus checks if httproute object exists and validates its conditions are true.
-// Results are cached with a TTL (default 30s, configurable via AIBRIX_HTTPROUTE_CACHE_TTL) to
-// avoid hammering the Kubernetes API on every request.
+// Successful results are cached with a TTL (default 30s, configurable via
+// AIBRIX_HTTPROUTE_CACHE_TTL). Transient errors use a short TTL so route
+// creation and recovery are observed quickly without hammering the API server.
 func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) error {
 	// Skip validation in standalone mode (no gateway client)
 	if s.gatewayClient == nil {
@@ -653,10 +718,16 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 		}
 
 		name := utils.ModelRouterName(model)
-		httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(defaultAIBrixNamespace).Get(context.Background(), name, metav1.GetOptions{})
+		lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), httpRouteLookupTimeout)
+		defer cancel()
+		httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(defaultAIBrixNamespace).Get(lookupCtx, name, metav1.GetOptions{})
 		if err != nil {
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				s.httprouteCache.Store(model, httpRouteCacheEntry{err: err, expiresAt: time.Now().Add(s.httprouteCacheTTL)})
+				ttl := s.httprouteErrorTTL
+				if ttl <= 0 {
+					ttl = defaultHTTPRouteErrorTTL
+				}
+				s.httprouteCache.Store(model, httpRouteCacheEntry{err: err, expiresAt: time.Now().Add(ttl)})
 			}
 			return nil, err
 		}
@@ -682,7 +753,14 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 		if len(errMsg) > 0 {
 			result = errors.New(strings.Join(errMsg, ", "))
 		}
-		s.httprouteCache.Store(model, httpRouteCacheEntry{err: result, expiresAt: time.Now().Add(s.httprouteCacheTTL)})
+		ttl := s.httprouteCacheTTL
+		if result != nil {
+			ttl = s.httprouteErrorTTL
+			if ttl <= 0 {
+				ttl = defaultHTTPRouteErrorTTL
+			}
+		}
+		s.httprouteCache.Store(model, httpRouteCacheEntry{err: result, expiresAt: time.Now().Add(ttl)})
 		return result, nil
 	})
 

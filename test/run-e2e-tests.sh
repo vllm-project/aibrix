@@ -61,7 +61,9 @@ if [ -n "$INSTALL_AIBRIX" ]; then
   make docker-build-all
   kind load docker-image aibrix/controller-manager:nightly aibrix/gateway-plugins:nightly aibrix/metadata-service:nightly aibrix/runtime:nightly
 
-  if [ "$AIBRIX_ROLESET_INPLACE_E2E" = "true" ]; then
+  if [ "$AIBRIX_E2E_SUITE" = "all" ] || [ "$AIBRIX_E2E_SUITE" = "controller" ]; then
+    # StormService lifecycle tests are part of the controller suite and always
+    # require these two small local images. RoleSet in-place tests reuse them.
     docker build \
       --build-arg INPLACE_E2E_VERSION=v1 \
       -t aibrix/inplace-e2e:v1 \

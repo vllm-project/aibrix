@@ -110,11 +110,11 @@ func NewSLOQueue(provider types.RouterProviderFunc, modelName string) (router *S
 
 func (q *SLOQueue) Enqueue(ctx *types.RoutingContext, currentTime time.Time) error {
 	// Set output predictor first
-	if predictor, err := q.cache.GetOutputPredictor(ctx.Model); err != nil {
+	predictor, err := q.cache.GetOutputPredictor(ctx.Model)
+	if err != nil {
 		return err
-	} else {
-		ctx.SetOutputPreditor(predictor)
 	}
+	ctx.SetOutputPredictor(predictor)
 
 	newQueue := q.subpool.Get().(types.RouterQueue[*types.RoutingContext])
 	features, err := ctx.Features()
@@ -390,6 +390,8 @@ func (q *SLOQueue) queueRank(currentTime time.Time, headReq *types.RoutingContex
 	throughput, err := profile.ThroughputRPS(signature...)
 	if err != nil {
 		return 0.0, err
+	} else if throughput == 0.0 {
+		return 0.0, cache.ErrorSLOFailureRequest
 	}
 
 	queueServiceTime := float64(sub.Len()-1) / throughput
