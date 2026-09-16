@@ -93,7 +93,6 @@ type Metric struct {
 	// first instance, unchanged for every metric that does not set this.
 	RequiredLabelKey   string
 	RequiredLabelValue string
-	// first instance, unchanged for every metric that does not set this.
 }
 
 // MetricValue is the interface for all metric values.
