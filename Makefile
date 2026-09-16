@@ -176,6 +176,11 @@ test-integration-gateway: manifests fmt vet envtest ginkgo
 test-e2e:
 	./test/run-e2e-tests.sh
 
+.PHONY: test-e2e-stormservice-volcano
+test-e2e-stormservice-volcano: ## Run the StormService Volcano gang scheduling e2e against a prepared cluster.
+	AIBRIX_STORMSERVICE_VOLCANO_E2E=true go test ./test/e2e/controller/stormservice \
+		-run '^TestStormServiceVolcanoGangScheduling$$' -v -count=1 -timeout 10m
+
 .PHONY: test-e2e-external-metrics
 test-e2e-external-metrics: ## Run external metrics autoscaler e2e against local minikube.
 	./test/run-external-metrics-e2e.sh
