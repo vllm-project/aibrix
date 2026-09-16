@@ -170,8 +170,8 @@ var _ = Describe("SLOQueue", func() {
 		_, expected, target, err := q.rankImpl(req.RequestTime, req, profile)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(expected).To(BeNumerically("~", 1.0, 0.01))
-		promptLen, err := req.PromptLength()
-		Expect(err).NotTo(HaveOccurred())
+		promptLen, promptLenErr := req.PromptLength()
+		Expect(promptLenErr).NotTo(HaveOccurred())
 		Expect(target).To(BeNumerically("~", 0.01*(float64(promptLen+100)), 0.01))
 	})
 
