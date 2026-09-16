@@ -94,8 +94,8 @@ func (reg *Registry[V]) Store(key string, value V) {
 	reg.registry[key] = value
 	if arr := reg.values.Load(); arr != nil && !exist {
 		// Copy on write, the published snapshot is never appended in place
-		updated := make([]V, len(*arr), len(*arr)+1)
-		copy(updated, *arr)
+		updated := make([]V, 0, len(*arr)+1)
+		updated = append(updated, *arr...)
 		updated = append(updated, value)
 		reg.values.Store(&updated)
 	} else {
