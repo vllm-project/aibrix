@@ -132,6 +132,24 @@ describe('api helpers', () => {
     });
   });
 
+  it('serializes adaptive AIMD settings to the job client contract', () => {
+    expect(camelToSnake({
+      client: {
+        adaptiveConcurrency: true,
+        adaptiveMaxFactor: 16,
+        adaptiveHealthyWindow: 8,
+        adaptiveAdditiveIncrease: 2,
+      },
+    })).toEqual({
+      client: {
+        adaptive_concurrency: true,
+        adaptive_max_factor: 16,
+        adaptive_healthy_window: 8,
+        adaptive_additive_increase: 2,
+      },
+    });
+  });
+
   it('publishes the first jobs page while older pages are still loading', async () => {
     let resolveSecondPage!: (response: Response) => void;
     const secondPage = new Promise<Response>((resolve) => {
