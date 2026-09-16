@@ -51,6 +51,18 @@ vllm_time_to_first_token_seconds_sum{model_name="meta-llama/Llama-2-7b-chat-hf"}
 vllm_time_to_first_token_seconds_count{model_name="meta-llama/Llama-2-7b-chat-hf"} 5.0
 `
 
+// mockVllmSleepStateMetrics deliberately lists the "awake" instance last, the
+// order a naive Metric[0] read would get wrong: vLLM registers the three
+// sleep_state series in "awake", "weights_offloaded", "discard_all" order
+// today, but nothing in the Prometheus exposition format guarantees a scrape
+// preserves that, and this fixture must not rely on it either.
+const mockVllmSleepStateMetrics = `# HELP vllm:engine_sleep_state Engine sleep state.
+# TYPE vllm:engine_sleep_state gauge
+vllm:engine_sleep_state{model_name="meta-llama/Llama-2-7b-chat-hf",sleep_state="discard_all"} 0.0
+vllm:engine_sleep_state{model_name="meta-llama/Llama-2-7b-chat-hf",sleep_state="weights_offloaded"} 1.0
+vllm:engine_sleep_state{model_name="meta-llama/Llama-2-7b-chat-hf",sleep_state="awake"} 0.0
+`
+
 const mockSglangMetrics = `# HELP sglang_running_requests Number of running requests.
 # TYPE sglang_running_requests gauge
 sglang_running_requests{model_name="meta-llama/Llama-2-7b-chat-hf"} 1.0
@@ -277,6 +289,27 @@ func TestEngineMetricsFetcher_FetchTypedMetric(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestEngineMetricsFetcher_FetchTypedMetric_SleepStateLabelFilter covers the
+// label-filtered read path (RequiredLabelKey/RequiredLabelValue) that
+// EngineSleepState relies on: vllm:engine_sleep_state reports three instances
+// under the same name, distinguished only by the sleep_state label, and the
+// mock fixture lists "awake" last so a Metric[0] read (the previous,
+// unfiltered behavior) would return the wrong series.
+func TestEngineMetricsFetcher_FetchTypedMetric_SleepStateLabelFilter(t *testing.T) {
+	setupMockMetrics()
+
+	server := setupMockServer(mockVllmSleepStateMetrics, 200, 0)
+	defer server.Close()
+
+	endpoint := strings.TrimPrefix(server.URL, "http://")
+	fetcher := NewEngineMetricsFetcher()
+
+	value, err := fetcher.FetchTypedMetric(context.Background(), endpoint, "vllm", "test-pod", EngineSleepState)
+	require.NoError(t, err)
+	require.NotNil(t, value)
+	assert.Equal(t, 0.0, value.GetSimpleValue(), "must read the awake=0 series, not whichever instance the scrape listed first")
 }
 
 func TestEngineMetricsFetcher_FetchAllTypedMetrics(t *testing.T) {

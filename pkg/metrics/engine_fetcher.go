@@ -354,7 +354,33 @@ func (ef *EngineMetricsFetcher) parseMetricFromFamily(allMetrics map[string]*dto
 		return nil, fmt.Errorf("no metric instances found for %s", rawMetricName)
 	}
 
-	return ef.parseMetricInstance(metricFamily.Metric[0], metricFamily, metric, rawMetricName)
+	instance, err := selectMetricInstance(metricFamily.Metric, metric, rawMetricName)
+	if err != nil {
+		return nil, err
+	}
+	return ef.parseMetricInstance(instance, metricFamily, metric, rawMetricName)
+}
+
+// selectMetricInstance returns the family instance parseMetricFromFamily
+// should read. Most metrics report exactly one instance per pod/model and
+// keep today's behavior of taking the first one; metric.RequiredLabelKey
+// narrows that to the instance whose label matches, for a family that
+// reports several instances under the same name distinguished only by a
+// label (e.g. vllm:engine_sleep_state, one gauge per sleep_state value).
+func selectMetricInstance(instances []*dto.Metric, metric Metric, rawMetricName string) (*dto.Metric, error) {
+	if metric.RequiredLabelKey == "" {
+		return instances[0], nil
+	}
+	for _, instance := range instances {
+		value, err := GetLabelValueForKey(instance, metric.RequiredLabelKey)
+		if err == nil && value == metric.RequiredLabelValue {
+			return instance, nil
+		}
+	}
+	return nil, fmt.Errorf(
+		"no instance of %s has label %s=%s",
+		rawMetricName, metric.RequiredLabelKey, metric.RequiredLabelValue,
+	)
 }
 
 // parseModelMetricsFromFamily returns one MetricValue per model_name in the family, so models on a

@@ -155,7 +155,16 @@ var (
 			EngineMetricsNameMapping: map[string]string{
 				EngineNameVLLM: "vllm:engine_sleep_state",
 			},
-			Description: "Engine sleep state; awake = 0 means engine is sleeping; awake = 1 means engine is awake; weights_offloaded = 1 means sleep level 1; discard_all = 1 means sleep level 2.",
+			// vLLM reports this as one gauge family with three instances per
+			// pod, distinguished only by the sleep_state label ("awake",
+			// "weights_offloaded", "discard_all"), each its own 0/1 series.
+			// Without a label filter, parseMetricFromFamily would read
+			// whichever instance the scrape happened to list first, which is
+			// not guaranteed. Filtering to sleep_state=awake gets the one
+			// series that answers "is this engine currently sleeping".
+			RequiredLabelKey:   "sleep_state",
+			RequiredLabelValue: "awake",
+			Description:        "Engine sleep state; awake = 0 means engine is sleeping; awake = 1 means engine is awake; weights_offloaded = 1 means sleep level 1; discard_all = 1 means sleep level 2.",
 		},
 		HTTPRequestTotal: {
 			MetricScope:  PodModelMetricScope,
