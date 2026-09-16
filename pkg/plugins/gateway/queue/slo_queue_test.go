@@ -38,7 +38,7 @@ func (f *fakeOutputPredictor) AddTrace(inputTokens, outputTokens int, cnt int32)
 
 func newTestRequest(requestID string, predictor types.OutputPredictor) *types.RoutingContext {
 	req := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("test"), "test-model", "hello world", requestID, "")
-	req.SetOutputPreditor(predictor)
+	req.SetOutputPredictor(predictor)
 	return req
 }
 

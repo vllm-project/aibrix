@@ -170,9 +170,17 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 				return buildRoutingErrorResponse(routingCtx, requestID, envoyTypePb.StatusCode_BadRequest,
 					invalidReqErr.Error(), "", "", HeaderErrorRouting, "true"), model, stream, term
 			}
+			if errors.Is(err, errReplicaInflightExceeded) {
+				limit := replicaInflightLimit(routingCtx)
+				klog.InfoS("replica_inflight_exceeded", "requestID", requestID, "model", model, "limit", limit, "reason", "all_replicas_saturated")
+				return replicaInflightExceededResponse(model, limit), model, stream, term
+			}
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingStrategy", routingAlgorithm, "model", model, "routingDuration", routingCtx.GetRoutingDelay())
 			return buildRoutingErrorResponse(routingCtx, requestID, envoyTypePb.StatusCode_ServiceUnavailable,
 				"error on selecting target pod", ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, stream, term
+		}
+		if errRes = s.enforceReplicaInflight(ctx, model, routingCtx); errRes != nil {
+			return errRes, model, stream, term
 		}
 		headers = buildEnvoyProxyHeaders(headers,
 			HeaderRoutingStrategy, string(routingAlgorithm),
@@ -328,7 +336,13 @@ func modelClaimRetryResponse(model, state string) *extProcPb.ProcessingResponse 
 		ErrorCodeServiceUnavailable, "model")
 }
 
-// Helper to fetch running requests on a pod with safe zero fallback.
+// getRunningRequestsByPod fetches the local metric slot for a pod's running-request
+// count, with a safe zero fallback. This is the periodically synced cache
+// (RealtimeNumRequestsRunning), not a live cross-gateway read -- fine for per-request
+// logging (request_start/request_end sit on the ext_proc Send path, where an extra
+// Redis round trip is not worth paying), but not for a routing or admission decision.
+// Use cache.GetPodRunningRequests (or, for admission, AdmitPodRunningRequest -- see
+// gateway_inflight.go's enforceReplicaInflight) for those.
 func getRunningRequestsByPod(s *Server, podName, namespace string) float64 {
 	mv, err := s.cache.GetMetricValueByPod(podName, namespace, metrics.RealtimeNumRequestsRunning)
 	if err != nil || mv == nil {

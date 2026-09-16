@@ -122,12 +122,14 @@ func SendPDRequestWithHeaders(
 }
 
 const (
-	ModelName           = "llama2-7b"
-	ModelNameQwen3      = "qwen3-8b"
-	ModelNameVLLM       = "llama2-7b-vllm"
-	ModelNameVLLMBucket = "llama2-7b-vllm-bucket"
-	ModelNameSGLang     = "llama2-7b-sglang"
-	ModelNameTRTLLM     = "llama2-7b-trtllm"
+	ModelName                     = "llama2-7b"
+	ModelNameQwen3                = "qwen3-8b"
+	ModelNameQwen3ReplicaRPS      = "qwen3-8b-replica-rps"
+	ModelNameQwen3ReplicaInflight = "qwen3-8b-replica-inflight"
+	ModelNameVLLM                 = "llama2-7b-vllm"
+	ModelNameVLLMBucket           = "llama2-7b-vllm-bucket"
+	ModelNameSGLang               = "llama2-7b-sglang"
+	ModelNameTRTLLM               = "llama2-7b-trtllm"
 
 	// config/test runs two gateway-plugin replicas. Each has its own pod cache, so one
 	// successful PD probe is not enough after pod churn — Envoy may send the next

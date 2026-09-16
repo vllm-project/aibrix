@@ -19,6 +19,7 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"time"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -113,19 +114,26 @@ func (s *Server) checkTPM(ctx context.Context, username string, tpmLimit int64) 
 }
 
 // enforceModelRPS atomically increments the per-model RPS counter and rejects the request
-// if the new value exceeds the limit.
+// if the new value exceeds the limit. A rejected increment never admitted a request, so it
+// is refunded immediately (rather than left for HandleRequestBody's needsRollback defer,
+// which is not registered until after this returns) -- otherwise every 429 would
+// permanently consume a slot in the window it was rejected from.
 func (s *Server) enforceModelRPS(ctx context.Context, model string, routingCtx *types.RoutingContext) *extProcPb.ProcessingResponse {
 	if routingCtx.ConfigProfile == nil || routingCtx.ConfigProfile.RequestsPerSecond <= 0 {
 		return nil
 	}
 	limit := routingCtx.ConfigProfile.RequestsPerSecond
-	newVal, err := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), 1)
+	window := rateWindow(routingCtx.ConfigProfile.RateWindowSeconds)
+	newVal, err := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), 1, window...)
 	if err != nil {
 		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			fmt.Sprintf("fail to increment RPS for model: %v", model),
 			"", "", HeaderErrorIncrModelRPS, "true")
 	}
 	if newVal > limit {
+		if _, derr := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), -1, window...); derr != nil {
+			klog.ErrorS(derr, "fail to refund rejected RPS increment for model", "model", model)
+		}
 		return buildErrorResponse(envoyTypePb.StatusCode_TooManyRequests,
 			fmt.Sprintf("model: %v has exceeded RPS: %v", model, limit),
 			ErrorCodeRateLimitExceeded, "", HeaderErrorModelRPSExceeded, "true")
@@ -144,11 +152,21 @@ func (s *Server) decrModelRPS(ctx context.Context, model string, routingCtx *typ
 	if routingCtx.ConfigProfile == nil || routingCtx.ConfigProfile.RequestsPerSecond <= 0 {
 		return
 	}
-	if _, err := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), -1); err != nil {
+	if _, err := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), -1, rateWindow(routingCtx.ConfigProfile.RateWindowSeconds)...); err != nil {
 		klog.ErrorS(err, "fail to decrement RPS for model", "model", model)
 	}
 }
 
 func modelRPSKey(model string) string {
 	return fmt.Sprintf("%v_MODEL_RPS_CURRENT", model)
+}
+
+// rateWindow converts RateWindowSeconds into the variadic window override accepted by
+// ratelimiter.RateLimiter.Incr. A window of 1s or less means "use the limiter's default",
+// so it's represented as no override at all.
+func rateWindow(seconds int64) []time.Duration {
+	if seconds <= 1 {
+		return nil
+	}
+	return []time.Duration{time.Duration(seconds) * time.Second}
 }

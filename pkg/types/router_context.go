@@ -53,7 +53,18 @@ type ResolvedConfigProfile struct {
 	LockedRoutingStrategy string
 	RoutingStrategy       string
 	RoutingConfig         json.RawMessage
-	RequestsPerSecond     int64
+	// RequestsPerSecond is the per-model request-rate limit enforced by enforceModelRPS,
+	// resolved from the profile's requestsPerSecond or from its requestsPerSecondPerReplica
+	// (which takes precedence and scales it by the model's current routable replica count).
+	// Zero means unset/unlimited.
+	RequestsPerSecond int64
+	// RateWindowSeconds is the window size, in seconds, that RequestsPerSecond is enforced
+	// over. Defaults to a 1s window (0 or 1 both mean "1s") when unset; set above 1 for
+	// sub-1 RPS values expressed as "1 request every N seconds".
+	RateWindowSeconds int64
+	// RequestsInflight is the maximum number of concurrent (in-flight) requests allowed on
+	// a single replica, enforced per pod rather than as an aggregate. Zero means unset.
+	RequestsInflight int64
 }
 
 // RoutingAlgorithm defines the routing algorithms
@@ -125,6 +136,14 @@ type RoutingContext struct {
 	// based on config-profile header. Nil when no config is present.
 	ConfigProfile *ResolvedConfigProfile
 
+	// ReplicaInflightAdmitted is true once the gateway's replica-inflight admission check
+	// (enforceReplicaInflight, backed by cache.Store.AdmitPodRunningRequest) has atomically
+	// admitted this request AND, in doing so, already applied this gateway's own +1 to the
+	// target pod's cross-gateway running-requests counter. Consumers that also increment
+	// that counter (addPodStats) must check this first and skip their own increment, or the
+	// pod's count would be inflated by an extra, never-decremented +1 for this request.
+	ReplicaInflightAdmitted bool
+
 	targetPodSet chan struct{}
 	targetPod    atomic.Pointer[v1.Pod]
 	targetPort   atomic.Int32
@@ -156,8 +175,8 @@ func NewRoutingContext(ctx context.Context, algorithms RoutingAlgorithm, model, 
 	return request
 }
 
-// SetOutputPreditor enables RoutingContext to use existing OutputPredictor to predict output length.
-func (r *RoutingContext) SetOutputPreditor(predictor OutputPredictor) (old OutputPredictor) {
+// SetOutputPredictor enables RoutingContext to use existing OutputPredictor to predict output length.
+func (r *RoutingContext) SetOutputPredictor(predictor OutputPredictor) (old OutputPredictor) {
 	old = r.predictor
 	r.predictor = predictor
 	return
@@ -411,6 +430,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.Span = nil
 	r.RespHeaders = map[string]string{}
 	r.ConfigProfile = nil
+	r.ReplicaInflightAdmitted = false
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)
 	r.targetPort.Store(0)

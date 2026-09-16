@@ -157,6 +157,25 @@ type Store struct {
 
 	// modelReplicaEmitted tracks pods currently exported via model_replicas for stale-series cleanup.
 	modelReplicaEmitted utils.SyncMap[string, modelReplicaState]
+
+	// runningRequestsPendingPrunes is Redis hash key -> gateway IDs that a read
+	// excluded from a live sum. Reads only enqueue; heartbeat hygiene drains this
+	// (see enqueueDeadRunningRequestsPrune / flushPendingRunningRequestsPrunes).
+	runningRequestsPendingPrunes utils.SyncMap[string, []string]
+	// runningRequestsHygieneBusy is true while one coalesced async hygiene pass
+	// (PEXPIRE in-flight hashes + drain pending prunes) is running. Extra heartbeat
+	// ticks skip rather than stacking goroutines.
+	runningRequestsHygieneBusy atomic.Bool
+	// runningRequestsClockOffsetMillis is (Redis server time - this process's local
+	// time), in milliseconds, as of the most recent successful liveness heartbeat.
+	// Every gateway instance stamps its heartbeat and computes liveness cutoffs from
+	// time.Now().UnixMilli()+offset instead of raw time.Now() -- see
+	// writeRunningRequestsLivenessHeartbeat / redisNowMillis -- so that clock skew
+	// between gateway pods' local clocks cannot make one instance look live or dead
+	// to another under the tight runningRequestsLivenessWindow. Zero until the first
+	// heartbeat completes, which just reproduces pre-sync (assume-synced) behavior
+	// for that one tick.
+	runningRequestsClockOffsetMillis atomic.Int64
 }
 
 // Get retrieves the cache instance
@@ -307,6 +326,14 @@ func InitWithPodsMetrics(st *Store, podMetrics map[string]map[string]metrics.Met
 				if err := st.updatePodRecord(metaPod, "", metricName, metrics.PodMetricScope, metric); err != nil {
 					return false
 				}
+				// Keep the local running-requests atomic in sync with any
+				// RealtimeNumRequestsRunning value tests configure here: it's the
+				// source of truth for GetPodRunningRequests/GetPodsRunningRequests
+				// (the cross-gateway aggregate's local fallback), which routing code
+				// reads instead of this metric map -- see cache_running_requests.go.
+				if metricName == metrics.RealtimeNumRequestsRunning {
+					atomic.StoreInt32(&metaPod.runningRequests, int32(metric.GetSimpleValue()))
+				}
 			}
 		}
 		return true
@@ -398,6 +425,13 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 		if opts.RedisClient != nil {
 			klog.Info("Initializing gateway snapshot sync")
 			initGatewaySnapshotSync(store, stopCh)
+		}
+
+		// Initialize the real-time running-requests liveness heartbeat if Redis is
+		// available -- see cache_running_requests.go.
+		if opts.RedisClient != nil {
+			klog.Info("Initializing running-requests liveness heartbeat")
+			initRunningRequestsLiveness(store, stopCh)
 		}
 
 		// Initialize KV event sync if enabled
