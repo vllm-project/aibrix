@@ -95,4 +95,97 @@ var _ = Describe("SLOQueue", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(rank1).To(BeNumerically("~", -3.9, 0.01))
 	})
+
+	It("should return a negative rank when no time has elapsed and the profile meets the SLO", func() {
+		q := &SLOQueue{}
+		req := newTestRequest("req-1", predictor)
+
+		rank, err := q.rank(req.RequestTime, req, nonZeroTputProfile)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(rank).To(BeNumerically("~", -4.0, 0.01))
+	})
+
+	It("should increase the rank by the elapsed time", func() {
+		q := &SLOQueue{}
+		req := newTestRequest("req-1", predictor)
+
+		rank, err := q.rank(req.RequestTime.Add(2*time.Second), req, nonZeroTputProfile)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(rank).To(BeNumerically("~", -2.0, 0.01))
+	})
+
+	It("should return errNoSLO when the profile has no SLO configured", func() {
+		q := &SLOQueue{}
+		req := newTestRequest("req-1", predictor)
+		nonSLOProfile := &cache.ModelGPUProfile{
+			Indexes: [][]float64{{0, 1}, {0, 0.5}},
+			Tputs:   [][]float64{{10, 10}, {10, 10}},
+			E2E:     [][]float64{{1, 1}, {1, 1}},
+		}
+		rank, err := q.rank(req.RequestTime, req, nonSLOProfile)
+		Expect(err).To(MatchError(errNoSLO))
+		Expect(rank).To(BeZero())
+	})
+
+	It("should prefer TPOT when all four SLOs are configured", func() {
+		q := &SLOQueue{}
+		req := newTestRequest("req-1", predictor)
+		profile := &cache.ModelGPUProfile{
+			Indexes: [][]float64{{0, 1}, {0, 0.5}},
+			Tputs:   [][]float64{{10, 10}, {10, 10}},
+			E2E:     [][]float64{{1, 1}, {1, 1}},
+			SLOs:    cache.ModelSLOs{TPOT: 0.1, TTFT: 0.5, TPAT: 0.01, E2E: 9},
+		}
+		_, expected, target, err := q.rankImpl(req.RequestTime, req, profile)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(expected).To(BeNumerically("~", 1.0, 0.01))
+		Expect(target).To(BeNumerically("~", 10.5, 0.01))
+	})
+
+	It("should fall back to TTFT when TPOT is not configured", func() {
+		q := &SLOQueue{}
+		req := newTestRequest("req-1", predictor)
+		profile := &cache.ModelGPUProfile{
+			Indexes: [][]float64{{0, 1}, {0, 0.5}},
+			Tputs:   [][]float64{{10, 10}, {10, 10}},
+			E2E:     [][]float64{{1, 1}, {1, 1}},
+			TTFT:    [][]float64{{0.2, 0.2}, {0.2, 0.2}},
+			SLOs:    cache.ModelSLOs{TTFT: 0.5, TPAT: 0.01, E2E: 9},
+		}
+		_, expected, target, err := q.rankImpl(req.RequestTime, req, profile)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(expected).To(BeNumerically("~", 0.2, 0.01))
+		Expect(target).To(BeNumerically("~", 0.5, 0.01))
+	})
+
+	It("should fall back to TPAT when neither TPOT nor TTFT is configured", func() {
+		q := &SLOQueue{}
+		req := newTestRequest("req-1", predictor)
+		profile := &cache.ModelGPUProfile{
+			Indexes: [][]float64{{0, 1}, {0, 0.5}},
+			Tputs:   [][]float64{{10, 10}, {10, 10}},
+			E2E:     [][]float64{{1, 1}, {1, 1}},
+			SLOs:    cache.ModelSLOs{TPAT: 0.01, E2E: 9},
+		}
+		_, expected, target, err := q.rankImpl(req.RequestTime, req, profile)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(expected).To(BeNumerically("~", 1.0, 0.01))
+		promptLen, err := req.PromptLength()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(target).To(BeNumerically("~", 0.01*(float64(promptLen+100)), 0.01))
+	})
+
+	It("should use E2E when only E2E is configured", func() {
+		q := &SLOQueue{}
+		req := newTestRequest("req-1", predictor)
+		profile := &cache.ModelGPUProfile{
+			Indexes: [][]float64{{0, 1}, {0, 0.5}},
+			Tputs:   [][]float64{{10, 10}, {10, 10}},
+			E2E:     [][]float64{{1, 1}, {1, 1}},
+			SLOs:    cache.ModelSLOs{E2E: 9},
+		}
+		_, _, target, err := q.rankImpl(req.RequestTime, req, profile)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(target).To(BeNumerically("~", 9, 0.01))
+	})
 })
