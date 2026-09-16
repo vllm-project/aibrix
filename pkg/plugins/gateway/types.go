@@ -132,6 +132,8 @@ const (
 	PathVideos     = "/v1/videos"
 	PathVideosSync = "/v1/videos/sync"
 
+	PathTokenize = "/tokenize"
+
 	// Engine-specific paths (xdit)
 	PathXditGenerate      = "/generate"
 	PathXditGenerateVideo = "/generatevideo"

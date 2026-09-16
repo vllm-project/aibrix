@@ -343,6 +343,7 @@ func isLanguageRequest(requestPath string) bool {
 		PathVideos,
 		PathAudioTranscriptions,
 		PathAudioTranslations,
+		PathTokenize,
 	}
 	for _, prefix := range nonLanguagePrefixes {
 		if strings.HasPrefix(requestPath, prefix) {

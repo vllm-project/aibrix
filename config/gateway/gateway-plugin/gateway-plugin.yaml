@@ -212,6 +212,9 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/videos
+        - path:
+            type: PathPrefix
+            value: /tokenize
       backendRefs:
         - name: aibrix-gateway-plugins
           port: 50052
