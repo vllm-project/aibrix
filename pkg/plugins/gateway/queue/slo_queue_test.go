@@ -188,4 +188,21 @@ var _ = Describe("SLOQueue", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(target).To(BeNumerically("~", 9, 0.01))
 	})
+
+	It("should require Peek before Dequeue", func() {
+		q := &SLOQueue{}
+
+		req, err := q.Dequeue(time.Now())
+		Expect(err).To(MatchError("call SLOQueue.Peek first"))
+		Expect(req).To(BeNil())
+	})
+
+	It("should return the SLO routing error recorded by Peek", func() {
+		q := &SLOQueue{lastCandidateError: cache.ErrorSLOFailureRequest}
+		req := newTestRequest("req-1", predictor)
+
+		address, err := q.Route(req, nil)
+		Expect(err).To(MatchError(cache.ErrorSLOFailureRequest))
+		Expect(address).To(BeEmpty())
+	})
 })
