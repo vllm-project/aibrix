@@ -94,12 +94,18 @@ traffic at an already-hot pod even without going through the central load-imbala
 The caller never sees this: `ctx.Algorithm`, response headers, and `Validate()` all continue to
 reflect exactly what was requested. The blend is skipped entirely for exclusive strategies
 (`pd`, `slo*`) and for an explicit, standalone `load-balance` selection, both of which must keep
-running their own dedicated routing logic.
+running their own dedicated routing logic. A bare `prefix-cache` or `session-affinity` request
+uses a 5:4 (1.25:1) ratio against `load-balance` instead of the flat weight-1 append, and does
+not receive `least-request`, so the affinity signal wins an exact-tie disagreement.
 
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|
 | `AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT` | int | `1` | Weight coefficient for the silently-appended `load-balance` scorer. Set to `0` to disable the whole auto-blend feature. | [algorithms/router.go](algorithms/router.go) |
 | `AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT` | int | `1` | Weight coefficient for the silently-appended `least-request` scorer (only added when not already present; needed so multi-port/data-parallel pod routing keeps working under the blend). Set to `0` to omit it from the blend. | [algorithms/router.go](algorithms/router.go) |
+| `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT` | int | `5` | Primary weight used when auto-blending a bare `prefix-cache` request. With the matching load-balance weight this is a 5:4 (1.25:1) lean toward cache affinity. | [algorithms/router.go](algorithms/router.go) |
+| `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT` | int | `4` | `load-balance` weight paired with `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT` for a bare `prefix-cache` request. | [algorithms/router.go](algorithms/router.go) |
+| `AIBRIX_ROUTING_AUTO_BLEND_SESSION_AFFINITY_WEIGHT` | int | `5` | Primary weight used when auto-blending a bare `session-affinity` request. With the matching load-balance weight this is a 5:4 (1.25:1) lean toward session stickiness. | [algorithms/router.go](algorithms/router.go) |
+| `AIBRIX_ROUTING_AUTO_BLEND_SESSION_AFFINITY_LOAD_BALANCE_WEIGHT` | int | `4` | `load-balance` weight paired with `AIBRIX_ROUTING_AUTO_BLEND_SESSION_AFFINITY_WEIGHT` for a bare `session-affinity` request. | [algorithms/router.go](algorithms/router.go) |
 
 ---
 

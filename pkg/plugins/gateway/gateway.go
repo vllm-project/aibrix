@@ -284,6 +284,11 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		shutdown:            shutdown,
 	}
 	s.startVideoJobCacheSync(shutdown)
+	if sar, err := routerManager.Lookup(routing.RouterSessionAffinity); err == nil {
+		if rb, ok := sar.(routing.RedisBackedRouter); ok {
+			rb.Start(shutdown, redisClient)
+		}
+	}
 	return s
 }
 
