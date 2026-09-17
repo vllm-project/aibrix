@@ -352,8 +352,17 @@ func TestAsyncJobStore_RepeatedPutIsIdempotent(t *testing.T) {
 }
 
 func TestRedisAsyncJobStore_Keys(t *testing.T) {
-	assert.Equal(t, "aibrix:gateway:async_job:record:scope:shared:job-1", asyncJobRecordKey(asyncJobOwnerShared, "job-1"))
-	assert.Equal(t, "aibrix:gateway:async_job:index:scope:user:alice:video", asyncJobIndexKey("scope:user:alice", asyncJobTypeVideo))
+	assert.Equal(t, "aibrix:gateway:async_job:{scope:shared}:record:job-1", asyncJobRecordKey(asyncJobOwnerShared, "job-1"))
+	assert.Equal(t, "aibrix:gateway:async_job:{scope:shared}:record:", asyncJobRecordKeyPrefix(asyncJobOwnerShared))
+	assert.Equal(t, "aibrix:gateway:async_job:{scope:user:alice}:index:video", asyncJobIndexKey("scope:user:alice", asyncJobTypeVideo))
+	assert.Equal(t, "aibrix:gateway:async_job:{scope:user:alice}:indexes", asyncJobIndexesKey("scope:user:alice"))
+}
+
+func TestIsValidPublicJobIDRejectsUnsafeCharacters(t *testing.T) {
+	assert.True(t, isValidPublicJobID("aibrixjob-0123456789abcdef"))
+	for _, id := range []string{"", "sync", "job:1", "job 1", "job\t1", "job\n1", "job\u00a01", "job\u007f1"} {
+		assert.False(t, isValidPublicJobID(id), "id %q must be rejected", id)
+	}
 }
 
 // TestRedisAsyncJobStore_PutWritesRecordAndIndexOnce asserts the Redis layout

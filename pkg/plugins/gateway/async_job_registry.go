@@ -18,18 +18,19 @@ package gateway
 
 import (
 	"context"
-	"crypto/rand"
+	crand "crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"math/big"
+	mrand "math/rand/v2"
 	"net"
 	"sort"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/bytedance/sonic"
 	"github.com/redis/go-redis/v9"
@@ -75,10 +76,7 @@ const (
 	asyncJobPublicIDPrefix = "aibrixjob-"
 	asyncJobPublicIDBytes  = 16
 
-	asyncJobRedisKeyPrefix   = "aibrix:gateway:async_job:"
-	asyncJobRecordKeyPrefix  = asyncJobRedisKeyPrefix + "record:"
-	asyncJobIndexKeyPrefix   = asyncJobRedisKeyPrefix + "index:"
-	asyncJobIndexesKeyPrefix = asyncJobRedisKeyPrefix + "indexes:"
+	asyncJobRedisKeyPrefix = "aibrix:gateway:async_job:"
 
 	// Async-job catalog pagination follows the OpenAI Videos API. Keeping the
 	// page bounded is also important for ext_proc: a single owner must not turn
@@ -285,7 +283,7 @@ func asyncJobOwnerFromUserName(userName string) string {
 
 func newAsyncJobPublicID() (string, error) {
 	buf := make([]byte, asyncJobPublicIDBytes)
-	if _, err := rand.Read(buf); err != nil {
+	if _, err := crand.Read(buf); err != nil {
 		return "", fmt.Errorf("generate async job public id: %w", err)
 	}
 	return asyncJobPublicIDPrefix + hex.EncodeToString(buf), nil
@@ -620,25 +618,30 @@ func (s *inMemoryAsyncJobStore) delete(_ context.Context, owner, publicJobID str
 // The owner is part of the record key rather than a field to compare after the
 // read: an unauthorized read then cannot be distinguished from a miss, and a
 // wrong-owner delete cannot reach a record it does not own.
-func asyncJobRecordKey(owner, publicJobID string) string {
-	return asyncJobRecordKeyPrefix + owner + ":" + publicJobID
+//
+// The owner is also the Redis Cluster hash tag. Every key touched by one of the
+// registry's multi-key Lua scripts therefore belongs to the same hash slot.
+func asyncJobOwnerKeyPrefix(owner string) string {
+	return asyncJobRedisKeyPrefix + "{" + owner + "}:"
 }
 
-// isValidPublicJobID checks that publicJobID has the expected format to prevent
-// key collision attacks. The registry embeds owner and publicJobID in Redis keys
-// as "prefix:owner:publicJobID". Without format validation, a crafted publicJobID
-// containing ":" could reach another owner's record (e.g., user "bo" requesting
-// "b:aibrixjob-XXXX" would collide with user "bob"'s key for "aibrixjob-XXXX").
+func asyncJobRecordKeyPrefix(owner string) string {
+	return asyncJobOwnerKeyPrefix(owner) + "record:"
+}
+
+func asyncJobRecordKey(owner, publicJobID string) string {
+	return asyncJobRecordKeyPrefix(owner) + publicJobID
+}
+
 // isValidPublicJobID checks that a public job id is safe to use in Redis keys.
-// It rejects ids containing colons (which would break the key namespace structure)
-// or control characters, but does not enforce a specific format to allow test flexibility.
+// It rejects ids containing key separators, whitespace, or control characters,
+// but does not enforce a specific format to allow test flexibility.
 func isValidPublicJobID(publicJobID string) bool {
 	if publicJobID == "" || publicJobID == "sync" {
 		return false
 	}
 	for _, r := range publicJobID {
-		// Reject colons (key separator), control chars, and whitespace
-		if r == ':' || r < 0x20 || r == 0x7F {
+		if r == ':' || unicode.IsSpace(r) || unicode.IsControl(r) {
 			return false
 		}
 	}
@@ -646,7 +649,7 @@ func isValidPublicJobID(publicJobID string) bool {
 }
 
 func asyncJobIndexKey(owner, jobType string) string {
-	return asyncJobIndexKeyPrefix + owner + ":" + jobType
+	return asyncJobOwnerKeyPrefix(owner) + "index:" + jobType
 }
 
 // asyncJobIndexesKey names the set of index keys one owner currently has jobs
@@ -655,7 +658,7 @@ func asyncJobIndexKey(owner, jobType string) string {
 // hard-coding the job types that own an index would leak an index member for
 // every job type added later.
 func asyncJobIndexesKey(owner string) string {
-	return asyncJobIndexesKeyPrefix + owner
+	return asyncJobOwnerKeyPrefix(owner) + "indexes"
 }
 
 // asyncJobRegisterScript writes the record and its index membership in one
@@ -958,7 +961,7 @@ func (s *redisAsyncJobStore) listPage(ctx context.Context, owner, jobType string
 		raw, err = asyncJobListPageScript.Run(ctx, s.client,
 			[]string{indexKey, asyncJobIndexesKey(owner)},
 			owner, jobType, options.After, options.Limit, options.Order,
-			asyncJobListMaxScan, asyncJobListScanBatch, asyncJobRecordKeyPrefix+owner+":").Slice()
+			asyncJobListMaxScan, asyncJobListScanBatch, asyncJobRecordKeyPrefix(owner)).Slice()
 		return err
 	}); err != nil {
 		return AsyncJobListPage{}, err
@@ -1141,11 +1144,7 @@ func retryAsyncJobStoreOp(ctx context.Context, policy asyncJobRetryPolicy, op st
 // does not have every in-flight request retrying in lockstep.
 func asyncJobRetryBackoff(base time.Duration, attempt int) time.Duration {
 	backoff := base << (attempt - 1)
-	jitter, err := rand.Int(rand.Reader, big.NewInt(int64(backoff)))
-	if err != nil {
-		return backoff
-	}
-	return backoff/2 + time.Duration(jitter.Int64())/2
+	return backoff/2 + time.Duration(mrand.Int64N(int64(backoff)))/2
 }
 
 // isTransientRedisError classifies a store failure as worth retrying. It errs
