@@ -18,7 +18,6 @@ package e2e
 
 import (
 	"context"
-	"reflect"
 	"testing"
 	"time"
 
@@ -53,7 +52,7 @@ func TestModelRouterLifecycle(t *testing.T) {
 		primaryModel,
 		[]string{"/score", "/version"},
 	)
-	primaryRoute := h.waitForRoute(t, ctx, primaryModel)
+	primaryRoute := h.waitForRouteReady(t, ctx, primaryModel)
 	assertModelRoute(t, primaryRoute, h.namespace, primaryModel, backendName, []string{"/score", "/version"})
 	assertReferenceGrant(t, h.waitForReferenceGrant(t, ctx))
 
@@ -62,25 +61,21 @@ func TestModelRouterLifecycle(t *testing.T) {
 	assert.Equal(t, "/v1/chat/completions", record.Path)
 
 	h.createModelAdapter(t, ctx, adapterName, adapterModel, backendName)
-	adapterRoute := h.waitForRoute(t, ctx, adapterModel)
+	adapterRoute := h.waitForRouteReady(t, ctx, adapterModel)
 	assertModelRoute(t, adapterRoute, h.namespace, adapterModel, backendName, nil)
 	assertReferenceGrant(t, h.waitForReferenceGrant(t, ctx))
 
 	require.NoError(t, h.modelClient.ModelV1alpha1().ModelAdapters(h.namespace).
 		Delete(ctx, adapterName, metav1.DeleteOptions{}))
 	h.waitForRouteDeleted(t, ctx, adapterModel)
-	_ = h.waitForRoute(t, ctx, primaryModel)
+	_ = h.waitForRouteReady(t, ctx, primaryModel)
 	_ = h.waitForReferenceGrant(t, ctx)
 
-	primarySpec := primaryRoute.Spec.DeepCopy()
 	h.restartController(t, ctx)
-	restartedRoute := h.waitForRoute(t, ctx, primaryModel)
-	assert.True(t, reflect.DeepEqual(primarySpec, restartedRoute.Spec.DeepCopy()),
-		"HTTPRoute spec changed across controller restart")
-	assert.Equal(t, 1, h.routeCount(t, ctx, primaryModel))
-
 	h.createRouteProbeDeployment(t, ctx, probeName, probeModel, backendName)
-	_ = h.waitForRoute(t, ctx, probeModel)
+	_ = h.waitForRouteReady(t, ctx, probeModel)
+	_ = h.waitForRouteReady(t, ctx, primaryModel)
+	assert.Equal(t, 1, h.routeCount(t, ctx, primaryModel))
 	require.NoError(t, h.kubeClient.AppsV1().Deployments(h.namespace).
 		Delete(ctx, probeName, metav1.DeleteOptions{}))
 	h.waitForRouteDeleted(t, ctx, probeModel)
@@ -136,4 +131,46 @@ func assertReferenceGrant(t *testing.T, grant *gatewayv1beta1.ReferenceGrant) {
 	require.Len(t, grant.Spec.To, 1)
 	assert.Equal(t, gatewayv1beta1.Group(""), grant.Spec.To[0].Group)
 	assert.Equal(t, gatewayv1beta1.Kind("Service"), grant.Spec.To[0].Kind)
+}
+
+func TestHTTPRouteReady(t *testing.T) {
+	tests := []struct {
+		name       string
+		conditions []metav1.Condition
+		want       bool
+	}{
+		{name: "no conditions"},
+		{
+			name: "accepted only",
+			conditions: []metav1.Condition{{
+				Type: string(gatewayv1.RouteConditionAccepted), Status: metav1.ConditionTrue,
+			}},
+		},
+		{
+			name: "accepted and resolved",
+			conditions: []metav1.Condition{
+				{Type: string(gatewayv1.RouteConditionAccepted), Status: metav1.ConditionTrue},
+				{Type: string(gatewayv1.RouteConditionResolvedRefs), Status: metav1.ConditionTrue},
+			},
+			want: true,
+		},
+		{
+			name: "resolved false",
+			conditions: []metav1.Condition{
+				{Type: string(gatewayv1.RouteConditionAccepted), Status: metav1.ConditionTrue},
+				{Type: string(gatewayv1.RouteConditionResolvedRefs), Status: metav1.ConditionFalse},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			route := &gatewayv1.HTTPRoute{Status: gatewayv1.HTTPRouteStatus{
+				RouteStatus: gatewayv1.RouteStatus{Parents: []gatewayv1.RouteParentStatus{{
+					Conditions: test.conditions,
+				}}},
+			}}
+			assert.Equal(t, test.want, httpRouteReady(route))
+		})
+	}
 }

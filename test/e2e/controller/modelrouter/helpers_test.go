@@ -31,6 +31,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -113,26 +114,34 @@ func newModelRouterHarness(t *testing.T, ctx context.Context) *modelRouterHarnes
 
 func (h *modelRouterHarness) cleanup(t *testing.T) {
 	t.Helper()
+	keepNamespace := false
 	if t.Failed() {
 		h.logDiagnostics(t)
-		if strings.EqualFold(strings.TrimSpace(os.Getenv(modelRouterKeepOnFailureEnv)), "true") {
-			t.Logf("preserving ModelRouter E2E namespace %s after failure", h.namespace)
-			return
-		}
+		keepNamespace = strings.EqualFold(strings.TrimSpace(os.Getenv(modelRouterKeepOnFailureEnv)), "true")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), modelRouterCleanupTimeout)
 	defer cancel()
+	h.deleteHTTPRoutes(t, ctx)
+	if keepNamespace {
+		t.Logf("preserving ModelRouter E2E namespace %s after failure", h.namespace)
+		return
+	}
+
+	err := h.kubeClient.CoreV1().Namespaces().Delete(ctx, h.namespace, metav1.DeleteOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		t.Errorf("delete ModelRouter E2E namespace %s: %v", h.namespace, err)
+	}
+}
+
+func (h *modelRouterHarness) deleteHTTPRoutes(t *testing.T, ctx context.Context) {
+	t.Helper()
 	for model := range h.models {
 		err := h.gatewayClient.GatewayV1().HTTPRoutes(modelRouterGatewayNamespace).
 			Delete(ctx, utils.ModelRouterName(model), metav1.DeleteOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
 			t.Errorf("delete HTTPRoute for model %s: %v", model, err)
 		}
-	}
-	err := h.kubeClient.CoreV1().Namespaces().Delete(ctx, h.namespace, metav1.DeleteOptions{})
-	if err != nil && !apierrors.IsNotFound(err) {
-		t.Errorf("delete ModelRouter E2E namespace %s: %v", h.namespace, err)
 	}
 }
 
@@ -298,8 +307,14 @@ func (h *modelRouterHarness) waitForReadyPod(t *testing.T, ctx context.Context, 
 			pods, err := h.kubeClient.CoreV1().Pods(h.namespace).List(ctx, metav1.ListOptions{
 				LabelSelector: "app=" + deployment,
 			})
-			if err != nil || len(pods.Items) != 1 {
+			if err != nil {
+				if isModelRouterRetryableAPIError(err) {
+					return false, nil
+				}
 				return false, err
+			}
+			if len(pods.Items) != 1 {
+				return false, nil
 			}
 			for _, condition := range pods.Items[0].Status.Conditions {
 				if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
@@ -315,7 +330,7 @@ func (h *modelRouterHarness) waitForReadyPod(t *testing.T, ctx context.Context, 
 	return podName
 }
 
-func (h *modelRouterHarness) waitForRoute(t *testing.T, ctx context.Context, model string) *gatewayv1.HTTPRoute {
+func (h *modelRouterHarness) waitForRouteReady(t *testing.T, ctx context.Context, model string) *gatewayv1.HTTPRoute {
 	t.Helper()
 	var route *gatewayv1.HTTPRoute
 	err := wait.PollUntilContextTimeout(ctx, modelRouterPollInterval, modelRouterPollTimeout, true,
@@ -326,13 +341,16 @@ func (h *modelRouterHarness) waitForRoute(t *testing.T, ctx context.Context, mod
 				return false, nil
 			}
 			if err != nil {
+				if isModelRouterRetryableAPIError(err) {
+					return false, nil
+				}
 				return false, err
 			}
 			route = current
-			return true, nil
+			return httpRouteReady(current), nil
 		})
 	if err != nil {
-		t.Fatalf("wait for HTTPRoute for model %s: %v", model, err)
+		t.Fatalf("wait for ready HTTPRoute for model %s: %v; latest=%+v", model, err, route)
 	}
 	return route
 }
@@ -345,6 +363,9 @@ func (h *modelRouterHarness) waitForRouteDeleted(t *testing.T, ctx context.Conte
 				Get(ctx, utils.ModelRouterName(model), metav1.GetOptions{})
 			if apierrors.IsNotFound(err) {
 				return true, nil
+			}
+			if isModelRouterRetryableAPIError(err) {
+				return false, nil
 			}
 			return false, err
 		})
@@ -368,6 +389,9 @@ func (h *modelRouterHarness) waitForReferenceGrant(
 				return false, nil
 			}
 			if err != nil {
+				if isModelRouterRetryableAPIError(err) {
+					return false, nil
+				}
 				return false, err
 			}
 			grant = current
@@ -388,6 +412,9 @@ func (h *modelRouterHarness) waitForReferenceGrantDeleted(t *testing.T, ctx cont
 				Get(ctx, name, metav1.GetOptions{})
 			if apierrors.IsNotFound(err) {
 				return true, nil
+			}
+			if isModelRouterRetryableAPIError(err) {
+				return false, nil
 			}
 			return false, err
 		})
@@ -417,7 +444,7 @@ func (h *modelRouterHarness) waitForGatewayRequest(
 	var lastErr error
 	err = wait.PollUntilContextTimeout(ctx, 2*time.Second, modelRouterPollTimeout, true,
 		func(ctx context.Context) (bool, error) {
-			_, lastErr = framework.SendPDRequest(ctx, h.config, "random", requestID, body)
+			_, lastErr = framework.SendPDRequest(ctx, h.config, "", requestID, body)
 			return lastErr == nil, nil
 		})
 	if err != nil {
@@ -467,9 +494,7 @@ func (h *modelRouterHarness) restartController(t *testing.T, ctx context.Context
 	oldUIDs := make(map[string]struct{}, len(pods.Items))
 	for i := range pods.Items {
 		oldUIDs[string(pods.Items[i].UID)] = struct{}{}
-		if err := podsClient.Delete(ctx, pods.Items[i].Name, metav1.DeleteOptions{
-			GracePeriodSeconds: ptr.To[int64](0),
-		}); err != nil {
+		if err := podsClient.Delete(ctx, pods.Items[i].Name, metav1.DeleteOptions{}); err != nil {
 			t.Fatalf("delete controller pod %s: %v", pods.Items[i].Name, err)
 		}
 	}
@@ -478,10 +503,16 @@ func (h *modelRouterHarness) restartController(t *testing.T, ctx context.Context
 		func(ctx context.Context) (bool, error) {
 			current, err := deployments.Get(ctx, modelRouterControllerDeployment, metav1.GetOptions{})
 			if err != nil {
+				if isModelRouterRetryableAPIError(err) {
+					return false, nil
+				}
 				return false, err
 			}
 			currentPods, err := podsClient.List(ctx, metav1.ListOptions{LabelSelector: selector.String()})
 			if err != nil {
+				if isModelRouterRetryableAPIError(err) {
+					return false, nil
+				}
 				return false, err
 			}
 			desired := int32(1)
@@ -540,6 +571,39 @@ func routePaths(route *gatewayv1.HTTPRoute) []string {
 	return paths
 }
 
+func httpRouteReady(route *gatewayv1.HTTPRoute) bool {
+	if route == nil {
+		return false
+	}
+	for _, parent := range route.Status.Parents {
+		accepted := false
+		resolved := false
+		for _, condition := range parent.Conditions {
+			switch condition.Type {
+			case string(gatewayv1.RouteConditionAccepted):
+				accepted = condition.Status == metav1.ConditionTrue
+			case string(gatewayv1.RouteConditionResolvedRefs):
+				resolved = condition.Status == metav1.ConditionTrue
+			}
+		}
+		if accepted && resolved {
+			return true
+		}
+	}
+	return false
+}
+
+func isModelRouterRetryableAPIError(err error) bool {
+	return apierrors.IsTimeout(err) ||
+		apierrors.IsServerTimeout(err) ||
+		apierrors.IsTooManyRequests(err) ||
+		apierrors.IsServiceUnavailable(err) ||
+		utilnet.IsTimeout(err) ||
+		utilnet.IsProbableEOF(err) ||
+		utilnet.IsConnectionReset(err) ||
+		utilnet.IsConnectionRefused(err)
+}
+
 func (h *modelRouterHarness) logDiagnostics(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -579,9 +643,14 @@ func (h *modelRouterHarness) logDiagnostics(t *testing.T) {
 	}
 	for i := range pods.Items {
 		logs, err := h.kubeClient.CoreV1().Pods(modelRouterGatewayNamespace).
-			GetLogs(pods.Items[i].Name, &corev1.PodLogOptions{TailLines: ptr.To[int64](200)}).
+			GetLogs(pods.Items[i].Name, &corev1.PodLogOptions{
+				Container: "manager",
+				TailLines: ptr.To[int64](200),
+			}).
 			DoRaw(ctx)
-		if err == nil {
+		if err != nil {
+			t.Logf("failed to get controller logs from %s: %v", pods.Items[i].Name, err)
+		} else {
 			t.Logf("controller logs from %s:\n%s", pods.Items[i].Name, logs)
 		}
 	}
