@@ -432,6 +432,10 @@ func (s *Server) handleVideoJobSubResource(ctx context.Context, routingCtx *type
 					HeaderMutation: &extProcPb.HeaderMutation{
 						SetHeaders: headers,
 					},
+					// The rewritten :path and pin headers are applied after Envoy's
+					// initial route selection, so bodyful follow-ups must rematch just
+					// like their bodyless RequestHeaders counterparts.
+					ClearRouteCache: true,
 					BodyMutation: &extProcPb.BodyMutation{
 						Mutation: &extProcPb.BodyMutation_Body{
 							Body: routingCtx.ReqBody,

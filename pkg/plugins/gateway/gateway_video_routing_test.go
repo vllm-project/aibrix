@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -271,6 +272,46 @@ func TestHandleVideoJobSubResourceHeaders_PinsAndRewritesPath(t *testing.T) {
 	assertHeaderRawValue(t, set, HeaderTargetPod, "10.0.0.5:8000")
 	assertHeaderRawValue(t, set, pathKey, PathVideos+"/video_gen_abc?variant=mp4")
 	assert.Equal(t, "wan2.1-vace-1.3b", routingCtx.Model)
+
+	mockCache.AssertExpectations(t)
+}
+
+// TestHandleVideoJobSubResource_PinsAndClearsRouteCache covers the RequestBody
+// variant used when a video follow-up carries a body. The pin headers and path
+// rewrite arrive after Envoy's initial route selection, so the response must
+// explicitly request a rematch onto the ORIGINAL_DST route.
+func TestHandleVideoJobSubResource_PinsAndClearsRouteCache(t *testing.T) {
+	s, mockCache, registry := newTestVideoJobServer(t)
+	ctx := context.Background()
+
+	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1", "video_gen_abc", pod)
+
+	mockCache.On("GetPod", "pod-a", "ns-a").Return(pod, nil)
+	mockCache.On("AddRequestCount", mock.Anything, "req-1", "wan2.1").Return(int64(3))
+
+	routingCtx := types.NewRoutingContext(ctx, "", "", "", "req-1", "")
+	routingCtx.ReqHeaders = map[string]string{methodKey: http.MethodDelete}
+	requestPath := PathVideos + "/" + record.PublicJobID
+	routingCtx.ReqPath = requestPath
+	reqBody := []byte(`{"reason":"cleanup"}`)
+
+	resp, model, stream, term := s.handleVideoJobSubResource(ctx, routingCtx, "req-1", requestPath, record.PublicJobID, reqBody)
+
+	require.NotNil(t, resp.GetRequestBody())
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.Equal(t, "wan2.1", model)
+	assert.False(t, stream)
+	assert.EqualValues(t, 3, term)
+
+	common := resp.GetRequestBody().GetResponse()
+	assert.True(t, common.GetClearRouteCache(), "bodyful follow-up must rematch after applying its pin headers and rewritten path")
+	assert.Equal(t, reqBody, common.GetBodyMutation().GetBody())
+	set := common.GetHeaderMutation().GetSetHeaders()
+	assertHeaderRawValue(t, set, HeaderRoutingStrategy, videoJobAffinityLabel)
+	assertHeaderRawValue(t, set, HeaderTargetPod, "10.0.0.5:8000")
+	assertHeaderRawValue(t, set, pathKey, PathVideos+"/video_gen_abc")
+	assertHeaderRawValue(t, set, "content-length", strconv.Itoa(len(reqBody)))
 
 	mockCache.AssertExpectations(t)
 }
