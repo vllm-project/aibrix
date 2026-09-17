@@ -187,7 +187,7 @@ SLO-aware
 Specialized
 ^^^^^^^^^^^
 
-* ``pd``: prefill-decode disaggregation routing. Splits processing between dedicated prefill pods and decode pods for optimized end-to-end latency.
+* ``pd``: prefill-decode disaggregation routing. Splits processing between dedicated prefill pods and decode pods for optimized end-to-end latency. See :doc:`pd-disaggregation` for the full guide.
 
   .. code-block:: bash
 
@@ -200,7 +200,7 @@ Specialized
           "temperature": 0.7
       }'
 
-* ``session-affinity``: sticky session routing. Encodes the target pod's address (``IP:Port``) as a base64 value in the ``x-session-id`` response header. Subsequent requests that include this header are routed to the same pod. If that pod is no longer available, the gateway transparently fails over to a new pod and issues a fresh session ID.
+* ``session-affinity``: sticky session routing. Encodes the target pod's address (``IP:Port``) as a base64 value in the ``x-session-id`` response header. Subsequent requests that include this header are routed to the same pod. If that pod is no longer available, the gateway transparently fails over to a new pod and issues a fresh session ID. See :doc:`agentic-routing` for the full guide.
 
   How it works:
 
@@ -212,7 +212,7 @@ Specialized
   .. note::
       ``x-session-id`` encodes only network location. It is not a security token and must not be used for authentication or authorization.
 
-      Callers can instead send a stable, opaque ``x-aibrix-session-key`` value. The gateway consistently maps that value to a ready pod without exposing a backend address. The key is only used when ``routing-strategy`` is ``session-affinity`` and must not be used for authentication or authorization.
+      Callers can instead send a stable, opaque ``x-aibrix-session-key`` value of their own choosing, usable from the very first request with no need to wait for a response first. This matters for agentic workflows that fan out concurrent sub-requests -- parallel tool calls, sub-agent turns -- before any one of them has produced an ``x-session-id`` to reuse.
 
   .. code-block:: bash
 
@@ -229,15 +229,21 @@ Auto-blended capacity awareness
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 This auto-blend is **enabled by default** — no opt-in is required. Every strategy above, except
-the exclusive ones (``pd``, ``slo``/``slo-*``) and an explicit standalone ``load-balance``
-selection, silently gets ``load-balance``'s capacity-aware scoring blended in behind the scenes —
-and ``least-request`` too, when the selected strategy doesn't already route by request count, to
-keep multi-port/data-parallel pod routing working under the blend. The caller never sees this:
-``ctx.Algorithm``, response headers, and ``Validate()`` all still reflect exactly the strategy
-that was requested. This keeps any single strategy from steering traffic at an already-hot pod
-even outside the load-imbalance gate described above. Both blend weights default to ``1`` (see
+the exclusive ones (``pd``, ``slo``/``slo-*``), an explicit standalone ``load-balance``
+selection, and a bare ``session-affinity`` selection, silently gets ``load-balance``'s
+capacity-aware scoring blended in behind the scenes — and ``least-request`` too, when the
+selected strategy doesn't already route by request count, to keep multi-port/data-parallel pod
+routing working under the blend. The caller never sees this: ``ctx.Algorithm``, response
+headers, and ``Validate()`` all still reflect exactly the strategy that was requested. This
+keeps any single strategy from steering traffic at an already-hot pod even outside the
+load-imbalance gate described above. Both blend weights default to ``1`` (see
 ``pkg/plugins/gateway/ENV_VARS.md``); set ``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT=0`` to
-disable it.
+disable it. A bare ``prefix-cache`` request instead uses a 5:4 (1.25:1) lean toward cache
+affinity over ``load-balance`` and does not receive ``least-request``, so cache locality wins an
+exact-tie disagreement. ``session-affinity`` gets no auto-blend at all: its scoring is binary
+(the resolved pod vs. everything else), so any load-balance weight small enough to still lose an
+exact tie could never override the pin either — blending it in would be dead weight, not a
+capacity safety net — so it keeps running its own ``Route()``/``ScoreAll()`` unblended.
 
 To override the strategy for a single request, pass the ``routing-strategy`` header with any of the values above:
 

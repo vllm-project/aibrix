@@ -284,6 +284,11 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		shutdown:            shutdown,
 	}
 	s.startVideoJobCacheSync(shutdown)
+	if sar, err := routerManager.Lookup(routing.RouterSessionAffinity); err == nil {
+		if rb, ok := sar.(routing.RedisBackedRouter); ok {
+			rb.Start(shutdown, redisClient)
+		}
+	}
 	return s
 }
 
@@ -676,6 +681,15 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 
 	if len(readyPods) == 1 && len(utils.GetPortsForPod(readyPods[0])) <= 1 && !isExclusive {
 		routeCtx.SetTargetPod(readyPods[0])
+		// This fast path skips router.Route() entirely, so a router with state to persist
+		// once a target pod is picked (e.g. session-affinity's Redis pin, or a multi-strategy
+		// blend wrapping it) never gets that chance unless we run its post-route hook here too.
+		if updater, ok := router.(types.PostRouteUpdater); ok {
+			podList := &utils.PodArray{Pods: readyPods}
+			if err := updater.PostRouteUpdate(routeCtx, podList, readyPods[0]); err != nil {
+				klog.Warningf("post-route update failed for request %s: %v", routeCtx.RequestID, err)
+			}
+		}
 		return routeCtx.TargetAddress(), nil
 	}
 	utils.CryptoShuffle(readyPods)
