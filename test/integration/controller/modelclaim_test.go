@@ -82,7 +82,10 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 			g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimPending))
 			g.Expect(latest.Status.Instances).To(gomega.BeEmpty())
 			g.Expect(latest.Status.ReadyReplicas).To(gomega.Equal(int32(0)))
-			initialized := meta.FindStatusCondition(latest.Status.Conditions, string(modelapi.ModelClaimConditionTypeInitialized))
+			initialized := meta.FindStatusCondition(
+				latest.Status.Conditions,
+				string(modelapi.ModelClaimConditionTypeInitialized),
+			)
 			g.Expect(initialized).NotTo(gomega.BeNil())
 			g.Expect(initialized.Status).To(gomega.Equal(metav1.ConditionTrue))
 			scheduled := meta.FindStatusCondition(latest.Status.Conditions, string(modelapi.ModelClaimConditionTypeScheduled))
@@ -100,7 +103,10 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 			g.Expect(latest.Status.ReadyReplicas).To(gomega.Equal(int32(0)))
 			g.Expect(latest.Status.Instances).To(gomega.HaveLen(1))
 			g.Expect(latest.Status.Instances[0].Pod).To(gomega.Equal(pod.Name))
-			initialized := meta.FindStatusCondition(latest.Status.Conditions, string(modelapi.ModelClaimConditionTypeInitialized))
+			initialized := meta.FindStatusCondition(
+				latest.Status.Conditions,
+				string(modelapi.ModelClaimConditionTypeInitialized),
+			)
 			g.Expect(initialized).NotTo(gomega.BeNil())
 			g.Expect(initialized.Status).To(gomega.Equal(metav1.ConditionTrue))
 			ready := meta.FindStatusCondition(latest.Status.Conditions, string(modelapi.ModelClaimConditionReady))
@@ -123,9 +129,17 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 			ready := meta.FindStatusCondition(latest.Status.Conditions, string(modelapi.ModelClaimConditionReady))
 			g.Expect(ready).NotTo(gomega.BeNil())
 			g.Expect(ready.Status).To(gomega.Equal(metav1.ConditionTrue))
-			fixture.ExpectRoute(g, ns.Name, pod.Name, claim.Name, latest.Status.Instances[0].Port, constants.ModelClaimRoutingStateActive)
+			fixture.ExpectRoute(
+				g, ns.Name, pod.Name, claim.Name,
+				latest.Status.Instances[0].Port,
+				constants.ModelClaimRoutingStateActive,
+			)
 		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
-		gomega.Consistently(fixture.Runtime().ActivateCallCount, time.Second, modelClaimInterval).Should(gomega.Equal(activationCallsWhileStarting))
+		gomega.Consistently(
+			fixture.Runtime().ActivateCallCount,
+			time.Second,
+			modelClaimInterval,
+		).Should(gomega.Equal(activationCallsWhileStarting))
 	})
 
 	ginkgo.It("reports NoMatchingPods and recovers when a warm pod appears", func() {
@@ -279,7 +293,11 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 			g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
 			g.Expect(latest.Status.Instances).To(gomega.HaveLen(1))
 			g.Expect(latest.Finalizers).To(gomega.ContainElement(modelclaimcontroller.ModelClaimFinalizer))
-			fixture.ExpectRoute(g, ns.Name, pod.Name, claim.Name, latest.Status.Instances[0].Port, constants.ModelClaimRoutingStateActive)
+			fixture.ExpectRoute(
+				g, ns.Name, pod.Name, claim.Name,
+				latest.Status.Instances[0].Port,
+				constants.ModelClaimRoutingStateActive,
+			)
 		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
 
 		gomega.Expect(k8sClient.Delete(ctx, claim)).To(gomega.Succeed())
@@ -308,7 +326,11 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 			g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
 			g.Expect(latest.Status.Instances).To(gomega.HaveLen(1))
 			latestPod := &corev1.Pod{}
-			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: pod.Name}, latestPod)).To(gomega.Succeed())
+			g.Expect(k8sClient.Get(
+				ctx,
+				types.NamespacedName{Namespace: ns.Name, Name: pod.Name},
+				latestPod,
+			)).To(gomega.Succeed())
 			originalAnnotation = latestPod.Annotations[constants.ModelClaimPodAnnotationPrefix+claim.Name]
 			g.Expect(originalAnnotation).NotTo(gomega.BeEmpty())
 		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
@@ -324,8 +346,14 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 			g.Expect(latest.Status.Instances).To(gomega.HaveLen(1))
 			g.Expect(fixture.Runtime().ActivateCallCount()).To(gomega.Equal(originalActivationCalls))
 			latestPod := &corev1.Pod{}
-			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: pod.Name}, latestPod)).To(gomega.Succeed())
-			g.Expect(latestPod.Annotations[constants.ModelClaimPodAnnotationPrefix+claim.Name]).To(gomega.Equal(originalAnnotation))
+			g.Expect(k8sClient.Get(
+				ctx,
+				types.NamespacedName{Namespace: ns.Name, Name: pod.Name},
+				latestPod,
+			)).To(gomega.Succeed())
+			g.Expect(
+				latestPod.Annotations[constants.ModelClaimPodAnnotationPrefix+claim.Name],
+			).To(gomega.Equal(originalAnnotation))
 		}, 2*time.Second, modelClaimInterval).Should(gomega.Succeed())
 	})
 
@@ -346,9 +374,17 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 			g.Expect(secondLatest.Status.Instances[0].Pod).To(gomega.Equal(pod.Name))
 			g.Expect(fixture.Runtime().ClaimUIDs()).To(gomega.ConsistOf(string(first.UID), string(second.UID)))
 			latestPod := &corev1.Pod{}
-			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: pod.Name}, latestPod)).To(gomega.Succeed())
-			g.Expect(latestPod.Annotations).To(gomega.HaveKey(constants.ModelClaimPodAnnotationPrefix + first.Name))
-			g.Expect(latestPod.Annotations).To(gomega.HaveKey(constants.ModelClaimPodAnnotationPrefix + second.Name))
+			g.Expect(k8sClient.Get(
+				ctx,
+				types.NamespacedName{Namespace: ns.Name, Name: pod.Name},
+				latestPod,
+			)).To(gomega.Succeed())
+			g.Expect(latestPod.Annotations).To(gomega.HaveKey(
+				constants.ModelClaimPodAnnotationPrefix + first.Name,
+			))
+			g.Expect(latestPod.Annotations).To(gomega.HaveKey(
+				constants.ModelClaimPodAnnotationPrefix + second.Name,
+			))
 		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
 
 		fixture.Runtime().SetClaimState(string(first.UID), "sleeping", false, "")
@@ -357,9 +393,17 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 			g.Expect(fixture.GetClaim(g, first).Status.Phase).To(gomega.Equal(modelapi.ModelClaimSleeping))
 			g.Expect(fixture.GetClaim(g, second).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
 			latestPod := &corev1.Pod{}
-			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: pod.Name}, latestPod)).To(gomega.Succeed())
-			g.Expect(latestPod.Annotations[constants.ModelClaimPodAnnotationPrefix+first.Name]).To(gomega.ContainSubstring(`"state":"sleeping"`))
-			g.Expect(latestPod.Annotations[constants.ModelClaimPodAnnotationPrefix+second.Name]).To(gomega.ContainSubstring(`"state":"active"`))
+			g.Expect(k8sClient.Get(
+				ctx,
+				types.NamespacedName{Namespace: ns.Name, Name: pod.Name},
+				latestPod,
+			)).To(gomega.Succeed())
+			g.Expect(
+				latestPod.Annotations[constants.ModelClaimPodAnnotationPrefix+first.Name],
+			).To(gomega.ContainSubstring(`"state":"sleeping"`))
+			g.Expect(
+				latestPod.Annotations[constants.ModelClaimPodAnnotationPrefix+second.Name],
+			).To(gomega.ContainSubstring(`"state":"active"`))
 		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
 	})
 })

@@ -27,7 +27,13 @@ import (
 )
 
 // CreateNamespace creates a namespace and waits until it can be retrieved.
-func CreateNamespace(ctx context.Context, c client.Client, generateName string, timeout time.Duration, pollingInterval ...time.Duration) *corev1.Namespace {
+func CreateNamespace(
+	ctx context.Context,
+	c client.Client,
+	generateName string,
+	timeout time.Duration,
+	pollingInterval ...time.Duration,
+) *corev1.Namespace {
 	ginkgo.GinkgoHelper()
 	if len(pollingInterval) > 1 {
 		ginkgo.Fail("CreateNamespace accepts at most one polling interval")

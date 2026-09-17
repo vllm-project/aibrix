@@ -32,7 +32,10 @@ func FindBindableNonLoopbackIPv4(port int) string {
 
 	interfaces, err := net.Interfaces()
 	if err != nil {
-		ginkgo.Fail(fmt.Sprintf("list network interfaces while looking for a non-loopback IPv4 address that can bind port %d: %v", port, err))
+		ginkgo.Fail(fmt.Sprintf(
+			"list network interfaces while looking for a non-loopback IPv4 address that can bind port %d: %v",
+			port, err,
+		))
 		return ""
 	}
 	for _, iface := range interfaces {
@@ -64,12 +67,22 @@ func FindBindableNonLoopbackIPv4(port int) string {
 		}
 	}
 
-	ginkgo.Fail(fmt.Sprintf("no non-loopback IPv4 address can bind port %d; check local network interfaces and whether the port is already in use", port))
+	ginkgo.Fail(fmt.Sprintf(
+		"no non-loopback IPv4 address can bind port %d; "+
+			"check local network interfaces and whether the port is already in use",
+		port,
+	))
 	return ""
 }
 
 // StartFixedPortHTTPServer starts handler on ip:port, retrying temporary port conflicts.
-func StartFixedPortHTTPServer(ip string, port int, handler http.Handler, timeout time.Duration, interval time.Duration) *httptest.Server {
+func StartFixedPortHTTPServer(
+	ip string,
+	port int,
+	handler http.Handler,
+	timeout time.Duration,
+	interval time.Duration,
+) *httptest.Server {
 	ginkgo.GinkgoHelper()
 	gomega.Expect(ip).NotTo(gomega.BeEmpty(), "need a non-loopback local IPv4 for fixed-port HTTP server")
 
