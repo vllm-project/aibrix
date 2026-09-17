@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	controllerutils "github.com/vllm-project/aibrix/test/utils/controller"
 )
 
 const (
@@ -41,19 +42,12 @@ var _ = ginkgo.Describe("RayClusterFleet controller test", func() {
 	var ns *corev1.Namespace
 
 	ginkgo.BeforeEach(func() {
-		ns = &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				GenerateName: "test-rayclusterfleet-",
-			},
-		}
-		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
-		gomega.Eventually(func() error {
-			return k8sClient.Get(ctx, client.ObjectKeyFromObject(ns), ns)
-		}, time.Second*3, rayClusterFleetInterval).Should(gomega.Succeed())
+		ns = nil
+		ns = controllerutils.CreateNamespace(ctx, k8sClient, "test-rayclusterfleet-", 3*time.Second, rayClusterFleetInterval)
 	})
 
 	ginkgo.AfterEach(func() {
-		gomega.Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, ns))).To(gomega.Succeed())
+		controllerutils.DeleteNamespace(ctx, k8sClient, ns)
 	})
 
 	ginkgo.It("creates an owned RayClusterReplicaSet for a Fleet", func() {
