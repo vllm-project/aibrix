@@ -118,7 +118,7 @@ var _ = Describe("Registry", func() {
 			Expect(registry.Array()).To(ContainElement(item2))
 		})
 
-		It("should concurrent updateArrayLocked call return cached array", func() {
+		It("should return the cached array on a subsequent updateArrayLocked call", func() {
 			// Add an item to the registry
 			registry.Store(testKeys[0], testKeys[0])
 			registry.values.Store(nil)
@@ -129,7 +129,7 @@ var _ = Describe("Registry", func() {
 			Expect(registry.values.Load()).NotTo(BeNil())
 			Expect(*registry.values.Load()).To(Equal(arr))
 
-			// Concurrent call, assumeing guarded by mutex
+			// A subsequent call returns the cached snapshot.
 			arr, reconstructed = registry.updateArrayLocked()
 			Expect(reconstructed).To(BeFalse())
 			Expect(len(arr)).To(Equal(1))
