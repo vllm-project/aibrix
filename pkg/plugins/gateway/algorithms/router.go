@@ -389,6 +389,16 @@ func (m *multiStrategyRouter) setTargetPortIfNeeded(ctx *types.RoutingContext, r
 	}
 }
 
+// PostRouteUpdate lets m satisfy types.PostRouteUpdater itself, so a caller that bypasses
+// Route() for a target pod it already picked by other means (e.g. the gateway's
+// single-ready-pod fast path in selectTargetPod) can still fan the update out to every
+// wrapped strategy that needs it (e.g. session-affinity's Redis pin), the same way Route
+// does via runPostRouteUpdates for the pods it scores itself.
+func (m *multiStrategyRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) error {
+	m.runPostRouteUpdates(ctx, readyPodList, targetPod)
+	return nil
+}
+
 func (m *multiStrategyRouter) runPostRouteUpdates(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) {
 	for _, item := range m.config.Items {
 		scorer := m.scorers[item.Name]
