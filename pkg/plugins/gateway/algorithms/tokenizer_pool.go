@@ -270,8 +270,8 @@ func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) to
 		return entry.tokenizer
 	}
 
-	// Check pool size limit
-	if len(p.tokenizers) >= p.config.MaxTokenizersPerPool {
+	// Replacing an unhealthy tokenizer does not need another pool slot.
+	if _, exists := p.tokenizers[model]; !exists && len(p.tokenizers) >= p.config.MaxTokenizersPerPool {
 		p.mu.Unlock()
 		klog.Warningf("TokenizerPool reached max size %d, using default tokenizer", p.config.MaxTokenizersPerPool)
 		return p.config.DefaultTokenizer
@@ -315,6 +315,9 @@ func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) to
 		if !remoteTok.IsHealthy(ctx) {
 			klog.Warningf("Created tokenizer for model %s is not healthy", model)
 			p.incTokenizerCreationFailures()
+			if closer, ok := tok.(interface{ Close() error }); ok {
+				_ = closer.Close()
+			}
 			return p.config.DefaultTokenizer
 		}
 	}
@@ -332,6 +335,21 @@ func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) to
 			_ = closer.Close()
 		}
 		return entry.tokenizer
+	}
+
+	// Another model may have filled the last slot during the health check.
+	previous, exists := p.tokenizers[model]
+	if !exists && len(p.tokenizers) >= p.config.MaxTokenizersPerPool {
+		if closer, ok := tok.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+		klog.Warningf("TokenizerPool reached max size %d, using default tokenizer", p.config.MaxTokenizersPerPool)
+		return p.config.DefaultTokenizer
+	}
+	if exists {
+		if closer, ok := previous.tokenizer.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
 	}
 
 	// Add to pool
