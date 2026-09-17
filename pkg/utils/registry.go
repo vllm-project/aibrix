@@ -55,7 +55,11 @@ func NewRegistryWithArrayProvider[V any, A comparable](provider func([]V) A) *Cu
 func (reg *Registry[V]) Delete(key string) {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
+	reg.deleteLocked(key)
+}
 
+// deleteLocked deletes a value while the caller holds reg.mu.
+func (reg *Registry[V]) deleteLocked(key string) {
 	if reg.registry == nil {
 		return
 	}
@@ -68,10 +72,13 @@ func (reg *Registry[V]) Delete(key string) {
 }
 
 func (reg *CustomizedRegistry[V, A]) Delete(key string) {
-	reg.Registry.Delete(key)
-	// Invalidate after the registry is updated, so a concurrent Array() can not
-	// publish a snapshot that misses this update.
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+
+	// Invalidate first while holding the lock, so a cache miss waits until the
+	// embedded registry update is complete.
 	reg.values.Store(nil)
+	reg.Registry.deleteLocked(key)
 }
 
 func (reg *Registry[V]) Load(key string) (value V, ok bool) {
@@ -85,7 +92,11 @@ func (reg *Registry[V]) Load(key string) (value V, ok bool) {
 func (reg *Registry[V]) Store(key string, value V) {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
+	reg.storeLocked(key, value)
+}
 
+// storeLocked stores a value while the caller holds reg.mu.
+func (reg *Registry[V]) storeLocked(key string, value V) {
 	if reg.registry == nil {
 		reg.registry = make(map[string]V, 1)
 	}
@@ -105,10 +116,13 @@ func (reg *Registry[V]) Store(key string, value V) {
 }
 
 func (reg *CustomizedRegistry[V, A]) Store(key string, value V) {
-	reg.Registry.Store(key, value)
-	// Invalidate after the registry is updated, so a concurrent Array() can not
-	// publish a snapshot that misses this update.
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+
+	// Invalidate first while holding the lock, so a cache miss waits until the
+	// embedded registry update is complete.
 	reg.values.Store(nil)
+	reg.Registry.storeLocked(key, value)
 }
 
 func (reg *Registry[V]) Array() (arr []V) {
