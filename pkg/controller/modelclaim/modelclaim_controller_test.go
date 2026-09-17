@@ -679,6 +679,46 @@ func TestReconcilePlacementPrefersRuntimeSnapshot(t *testing.T) {
 	assert.Equal(t, "claim-uid", runtime.activateCalls[0].ClaimRef.UID)
 }
 
+func TestReconcilePlacementRequiresHBM(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	required := int64(500)
+	pm.Spec.RequiredHBMBytesPerGPU = &required
+	cached := warmPod("cached", "b300-pool-a", true, corev1.PodRunning)
+	cached.Status.PodIP = "10.0.0.1"
+	free := warmPod("free", "b300-pool-a", true, corev1.PodRunning)
+	free.Status.PodIP = testPeerIP
+	r, runtime := newReconciler(t, pm, cached, free)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		"10.0.0.1": {
+			Accelerators:    []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: 499}},
+			CachedArtifacts: []string{pm.Spec.ArtifactURL},
+		},
+		testPeerIP: {
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: 500}},
+		},
+	}
+
+	reconcileOnce(t, r, pm.Name)
+	require.Len(t, runtime.activateCalls, 1)
+	assert.Equal(t, "free", getModel(t, r, pm.Name).Status.Instances[0].Pod)
+}
+
+func TestReconcilePlacementWaitsForConfirmedHBM(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	required := int64(500)
+	pm.Spec.RequiredHBMBytesPerGPU = &required
+	r, runtime := newReconciler(t, pm, warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning))
+
+	reconcileOnce(t, r, pm.Name)
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Empty(t, got.Status.Instances)
+	condition := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, condition)
+	assert.Equal(t, "NoMatchingPods", condition.Reason)
+	assert.Contains(t, condition.Message, "confirmed free HBM")
+}
+
 // TestReconcileReadinessGate verifies the controller does not make a model
 // routable until its engine reports ready: while the engine is booting the
 // instance stays Activating, the warm-pod annotation holds the non-routable marker
