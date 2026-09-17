@@ -704,11 +704,10 @@ func TestAppendLoadBalanceBlendAffinityRatio(t *testing.T) {
 			wantOK: true,
 		},
 		{
-			name:   "bare session-affinity uses 5:4 and skips least-request",
-			algStr: "session-affinity",
-			wantBlended: fmt.Sprintf("%s:%d,%s:%d",
-				RouterSessionAffinity, autoBlendSessionAffinityWeight, RouterLoadBalance, autoBlendSessionAffinityLoadBalanceWeight),
-			wantOK: true,
+			name:        "bare session-affinity gets no auto-blend (binary scoring always wins the blend anyway)",
+			algStr:      "session-affinity",
+			wantBlended: "",
+			wantOK:      false,
 		},
 		{
 			name:        "other single strategy still gets the flat 1:1 blend plus least-request",
@@ -866,26 +865,21 @@ func TestSelectPrefixCacheBlendExcludesLeastRequest(t *testing.T) {
 	}, multi.config.Items)
 }
 
-func TestSelectSessionAffinityBlendUsesAffinityRatio(t *testing.T) {
+func TestSelectSessionAffinityGetsNoAutoBlend(t *testing.T) {
 	withAutoBlendWeights(t, 1, 1)
 	rm := NewRouterManager()
+	sessionAffinity := &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityMost}}
 	rm.RegisterProvider(RouterSessionAffinity, func(_ *types.RoutingContext) (types.Router, error) {
-		return &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityMost}}, nil
+		return sessionAffinity, nil
 	})
 	registerBlendScorers(rm)
 
 	ctx := types.NewRoutingContext(context.Background(), RouterSessionAffinity, testModelName, "hello", "req-blend-session-affinity", "")
 	router, err := rm.Select(ctx)
 	assert.NoError(t, err)
-	multi, isMulti := router.(*multiStrategyRouter)
-	assert.True(t, isMulti)
-	assert.Contains(t, multi.scorers, string(RouterSessionAffinity))
-	assert.Contains(t, multi.scorers, string(RouterLoadBalance))
-	assert.NotContains(t, multi.scorers, string(RouterLeastRequest), "least-request would cancel the 5:4 session-affinity lean against load-balance")
-	assert.Equal(t, []RouterItem{
-		{Name: string(RouterSessionAffinity), Coefficient: autoBlendSessionAffinityWeight},
-		{Name: string(RouterLoadBalance), Coefficient: autoBlendSessionAffinityLoadBalanceWeight},
-	}, multi.config.Items)
+	_, isMulti := router.(*multiStrategyRouter)
+	assert.False(t, isMulti, "a bare session-affinity request must run its own Route()/ScoreAll() unblended: its binary scoring means any load-balance weight below its own would never change the outcome, so blending it in would be dead weight at best")
+	assert.Same(t, sessionAffinity, router)
 }
 
 func TestLookupReturnsSessionAffinitySingleton(t *testing.T) {

@@ -229,17 +229,21 @@ Auto-blended capacity awareness
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 This auto-blend is **enabled by default** — no opt-in is required. Every strategy above, except
-the exclusive ones (``pd``, ``slo``/``slo-*``) and an explicit standalone ``load-balance``
-selection, silently gets ``load-balance``'s capacity-aware scoring blended in behind the scenes —
-and ``least-request`` too, when the selected strategy doesn't already route by request count, to
-keep multi-port/data-parallel pod routing working under the blend. The caller never sees this:
-``ctx.Algorithm``, response headers, and ``Validate()`` all still reflect exactly the strategy
-that was requested. This keeps any single strategy from steering traffic at an already-hot pod
-even outside the load-imbalance gate described above. Both blend weights default to ``1`` (see
+the exclusive ones (``pd``, ``slo``/``slo-*``), an explicit standalone ``load-balance``
+selection, and a bare ``session-affinity`` selection, silently gets ``load-balance``'s
+capacity-aware scoring blended in behind the scenes — and ``least-request`` too, when the
+selected strategy doesn't already route by request count, to keep multi-port/data-parallel pod
+routing working under the blend. The caller never sees this: ``ctx.Algorithm``, response
+headers, and ``Validate()`` all still reflect exactly the strategy that was requested. This
+keeps any single strategy from steering traffic at an already-hot pod even outside the
+load-imbalance gate described above. Both blend weights default to ``1`` (see
 ``pkg/plugins/gateway/ENV_VARS.md``); set ``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT=0`` to
-disable it. Bare ``prefix-cache`` and ``session-affinity`` requests instead use a 5:4 (1.25:1)
-lean toward affinity over ``load-balance`` and do not receive ``least-request``, so stickiness
-or cache locality wins an exact-tie disagreement.
+disable it. A bare ``prefix-cache`` request instead uses a 5:4 (1.25:1) lean toward cache
+affinity over ``load-balance`` and does not receive ``least-request``, so cache locality wins an
+exact-tie disagreement. ``session-affinity`` gets no auto-blend at all: its scoring is binary
+(the resolved pod vs. everything else), so any load-balance weight small enough to still lose an
+exact tie could never override the pin either — blending it in would be dead weight, not a
+capacity safety net — so it keeps running its own ``Route()``/``ScoreAll()`` unblended.
 
 To override the strategy for a single request, pass the ``routing-strategy`` header with any of the values above:
 

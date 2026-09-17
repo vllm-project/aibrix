@@ -98,17 +98,20 @@ AIBrix ships with a set of built-in algorithms, each optimized for different wor
 
 **Auto-blended capacity awareness**
 
-Every strategy above, except the exclusive ones (``pd``, ``slo``/``slo-*``) and an explicit
-standalone ``load-balance`` selection, silently gets ``load-balance``'s capacity-aware scoring
-blended in behind the scenes — and ``least-request`` too, when the selected strategy doesn't
-already route by request count, to keep multi-port/data-parallel pod routing working under the
-blend. The caller never sees this: ``ctx.Algorithm``, response headers, and ``Validate()`` all
-still reflect exactly the strategy that was requested. This keeps any single strategy from
-steering traffic at an already-hot pod even outside the load-imbalance gate described above. Set
+Every strategy above, except the exclusive ones (``pd``, ``slo``/``slo-*``), an explicit
+standalone ``load-balance`` selection, and a bare ``session-affinity`` selection, silently gets
+``load-balance``'s capacity-aware scoring blended in behind the scenes — and ``least-request``
+too, when the selected strategy doesn't already route by request count, to keep
+multi-port/data-parallel pod routing working under the blend. The caller never sees this:
+``ctx.Algorithm``, response headers, and ``Validate()`` all still reflect exactly the strategy
+that was requested. This keeps any single strategy from steering traffic at an already-hot pod
+even outside the load-imbalance gate described above. Set
 ``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT=0`` to disable it (see
-``pkg/plugins/gateway/ENV_VARS.md``). Bare ``prefix-cache`` and ``session-affinity`` requests
-use a 5:4 (1.25:1) lean toward affinity over ``load-balance`` instead of the flat weight-1
-append, and do not receive ``least-request``.
+``pkg/plugins/gateway/ENV_VARS.md``). A bare ``prefix-cache`` request uses a 5:4 (1.25:1) lean
+toward cache affinity over ``load-balance`` instead of the flat weight-1 append, and does not
+receive ``least-request``. ``session-affinity`` gets no auto-blend at all: its scoring is binary
+(the resolved pod vs. everything else), so a smaller load-balance weight could never change the
+outcome anyway — it keeps running its own ``Route()``/``ScoreAll()`` unblended.
 
 
 How to Extend Routing Algorithms

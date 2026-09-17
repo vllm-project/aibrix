@@ -283,24 +283,39 @@ func (r *sessionAffinityRouter) storeSessionKeyLocal(sessionKey, addr string, co
 	if r.redisClient == nil || !validSessionKey(sessionKey) {
 		return
 	}
-	if existing, ok := r.sessionKeyPods.Load(sessionKey); ok {
+	for {
+		existing, ok := r.sessionKeyPods.Load(sessionKey)
+		if !ok {
+			newItem := sessionKeyCacheItem{addr: addr, confirmed: confirmed, storedAt: time.Now()}
+			if _, loaded := r.sessionKeyPods.LoadOrStore(sessionKey, newItem); !loaded {
+				return
+			}
+			continue
+		}
 		item, ok := existing.(sessionKeyCacheItem)
 		if !ok {
-			r.sessionKeyPods.Store(sessionKey, sessionKeyCacheItem{addr: addr, confirmed: confirmed, storedAt: time.Now()})
-			return
+			newItem := sessionKeyCacheItem{addr: addr, confirmed: confirmed, storedAt: time.Now()}
+			if r.sessionKeyPods.CompareAndSwap(sessionKey, existing, newItem) {
+				return
+			}
+			continue
 		}
 		if item.addr == addr {
-			item.storedAt = time.Now()
+			updated := item
+			updated.storedAt = time.Now()
 			if confirmed {
-				item.confirmed = true
+				updated.confirmed = true
 			}
-			r.sessionKeyPods.Store(sessionKey, item)
+			if r.sessionKeyPods.CompareAndSwap(sessionKey, existing, updated) {
+				return
+			}
+			continue
+		}
+		newItem := sessionKeyCacheItem{addr: addr, confirmed: confirmed, storedAt: time.Now()}
+		if r.sessionKeyPods.CompareAndSwap(sessionKey, existing, newItem) {
 			return
 		}
-		r.sessionKeyPods.Store(sessionKey, sessionKeyCacheItem{addr: addr, confirmed: confirmed, storedAt: time.Now()})
-		return
 	}
-	r.sessionKeyPods.Store(sessionKey, sessionKeyCacheItem{addr: addr, confirmed: confirmed, storedAt: time.Now()})
 }
 
 // rememberSessionKey commits sessionKey -> addr locally (when Redis is

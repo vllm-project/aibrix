@@ -179,15 +179,6 @@ var (
 	autoBlendPrefixCacheLoadBalanceWeight = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT", 4)
 )
 
-// autoBlendSessionAffinityWeight/autoBlendSessionAffinityLoadBalanceWeight are the same 5:4
-// lean for a bare "session-affinity" request: stickiness should win an exact-tie disagreement
-// with load-balance rather than falling to the alphabetical pod-name pick, without being
-// heavy enough to keep pinning a session on a pod once load-balance clearly disagrees.
-var (
-	autoBlendSessionAffinityWeight            = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_SESSION_AFFINITY_WEIGHT", 5)
-	autoBlendSessionAffinityLoadBalanceWeight = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_SESSION_AFFINITY_LOAD_BALANCE_WEIGHT", 4)
-)
-
 // maxCachedAlgorithmStrings bounds how many distinct algorithm-string keys
 // RouterManager.multiRouterCache and unblendableLogged will retain. Both maps are keyed by the
 // client-controlled routing-strategy string — which may embed an arbitrary weight coefficient
@@ -228,17 +219,25 @@ func mentionedAlgorithmNames(algStr string) map[string]bool {
 // keep steering traffic at an already-hot pod. least-request is appended alongside it (unless
 // already present) purely so multi-port/data-parallel pod routing keeps working: the
 // multi-strategy router's port selection only engages when "least-request" is one of the
-// configured scorers (see setTargetPortIfNeeded) — except when prefix-cache or session-affinity
-// is one of the caller's strategies. prefix-cache already accounts for pod load via the
-// gateway's ApplyLoadImbalanceGate and its own stddev-based candidate filtering
-// (getTargetPodFromMatchedPodsFromCounts). session-affinity's stickiness is the caller's chosen
-// signal. In both cases, also blending in least-request as a full scoring participant would
-// double-count "current load" against the affinity signal (load-balance and least-request are
-// both direct functions of the same running-request metric, so they aren't independent votes)
-// and would cancel the modest 5:4 affinity lean on an exact-tie disagreement. For these
-// strategies, only load-balance is blended in.
+// configured scorers (see setTargetPortIfNeeded) — except when prefix-cache is one of the
+// caller's strategies: prefix-cache already accounts for pod load via the gateway's
+// ApplyLoadImbalanceGate and its own stddev-based candidate filtering
+// (getTargetPodFromMatchedPodsFromCounts), so also blending in least-request as a full scoring
+// participant would double-count "current load" against prefix-cache's own cache-affinity
+// signal (load-balance and least-request are both direct functions of the same running-request
+// metric, so they aren't independent votes) and can override cache locality far more readily
+// than intended. For prefix-cache, only load-balance is blended in.
 //
-// One tradeoff of that exception: a prefix-cache or session-affinity request against
+// A bare "session-affinity" request gets no auto-blend at all (see the early return below):
+// unlike prefix-cache's graded cache-hit score, session-affinity's ScoreAll is binary (1 for
+// the resolved pod, 0 for everything else), so any load-balance weight strictly below the
+// session-affinity weight can never flip the outcome — the blend would either always be
+// overridden by the pin (dead weight) or, at high enough weight, silently defeat the pin
+// caller code explicitly asked for. Neither is a useful default, so session-affinity keeps
+// running its own Route()/ScoreAll() unblended, the same way load-balance and the exclusive
+// strategies do.
+//
+// One tradeoff of the prefix-cache exception: a prefix-cache request against
 // multi-port/data-parallel pods won't get setTargetPortIfNeeded's port selection, since that
 // lookup requires least-request to be one of the configured scorers.
 //
@@ -251,19 +250,22 @@ func mentionedAlgorithmNames(algStr string) map[string]bool {
 //
 // Returns ok=false when there's nothing to add: the blend is disabled, algStr already resolves
 // to an exclusive strategy (pd, slo*) that manages its own pod selection and must not be
-// blended with anything else, or algStr is already the standalone "load-balance" strategy
-// (which must keep running its own Route(), not a blend).
+// blended with anything else, or algStr is already the standalone "load-balance" or
+// "session-affinity" strategy (both of which must keep running their own Route(), not a blend).
 func appendLoadBalanceBlend(algStr string, cfg *MultiRouterConfig) (string, bool) {
 	if autoBlendLoadBalanceWeight <= 0 {
 		return "", false
 	}
 
-	if len(cfg.Items) == 1 && (isExclusiveStrategyName(cfg.Items[0].Name) || cfg.Items[0].Name == string(RouterLoadBalance)) {
+	if len(cfg.Items) == 1 && (isExclusiveStrategyName(cfg.Items[0].Name) ||
+		cfg.Items[0].Name == string(RouterLoadBalance) ||
+		cfg.Items[0].Name == string(RouterSessionAffinity)) {
 		// Exclusive strategies (pd, slo*) manage their own pod selection and must not be
 		// blended. An explicit, standalone "load-balance" selection is also left alone: it
 		// already runs load-balance's own Route() (pending-time minimization + KV-cache
 		// tie-break), so blending in least-request here would silently replace that with
-		// generic weighted soft-scoring instead.
+		// generic weighted soft-scoring instead. A standalone "session-affinity" selection is
+		// left alone too, for the binary-scoring reason in the function doc above.
 		return "", false
 	}
 
@@ -283,22 +285,17 @@ func appendLoadBalanceBlend(algStr string, cfg *MultiRouterConfig) (string, bool
 		}
 	}
 
-	// A bare "prefix-cache" or "session-affinity" request (no explicit weight, nothing else
-	// blended in) gets the dedicated affinity/load-balance ratio instead of the flat
-	// autoBlendLoadBalanceWeight append: with only one item, the caller's own coefficient
-	// carries no information before blending, so rewriting it here doesn't discard anything
-	// the caller expressed.
+	// A bare "prefix-cache" request (no explicit weight, nothing else blended in) gets the
+	// dedicated prefix-cache/load-balance ratio instead of the flat autoBlendLoadBalanceWeight
+	// append: with only one item, the caller's own coefficient carries no information before
+	// blending, so rewriting it here doesn't discard anything the caller expressed.
 	prefixCacheOnly := len(cfg.Items) == 1 && includesPrefixCache
-	sessionAffinityOnly := len(cfg.Items) == 1 && includesSessionAffinity
 
 	blended := algStr
 	if !mentioned[string(RouterLoadBalance)] {
-		switch {
-		case prefixCacheOnly:
+		if prefixCacheOnly {
 			blended = fmt.Sprintf("%s:%d,%s:%d", RouterPrefixCache, autoBlendPrefixCacheWeight, RouterLoadBalance, autoBlendPrefixCacheLoadBalanceWeight)
-		case sessionAffinityOnly:
-			blended = fmt.Sprintf("%s:%d,%s:%d", RouterSessionAffinity, autoBlendSessionAffinityWeight, RouterLoadBalance, autoBlendSessionAffinityLoadBalanceWeight)
-		default:
+		} else {
 			blended += fmt.Sprintf(",%s:%d", RouterLoadBalance, autoBlendLoadBalanceWeight)
 		}
 	}
@@ -828,8 +825,8 @@ func (rm *RouterManager) Lookup(algorithm types.RoutingAlgorithm) (types.Router,
 	rm.routerMu.RLock()
 	provider, ok := rm.routerFactory[algorithm]
 	rm.routerMu.RUnlock()
-	if !ok {
-		return nil, fmt.Errorf("unsupported router strategy: %s", algorithm)
+	if !ok || provider == nil {
+		return nil, fmt.Errorf("unsupported or uninitialized router strategy: %s", algorithm)
 	}
 	return provider(algorithm.NewContext(context.Background(), "", "", "lookup", ""))
 }
