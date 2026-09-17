@@ -841,6 +841,46 @@ func newRedisAsyncJobStore(client redis.Cmdable) *redisAsyncJobStore {
 	}
 }
 
+// newAsyncJobRegistryForClient picks the registry a Server should use. Without
+// Redis (tests and standalone local development), records live in this process
+// only. Production gateways use the Redis implementation so every replica sees
+// the same records.
+func newAsyncJobRegistryForClient(client *redis.Client, pods podResolver) AsyncJobRegistry {
+	if client == nil {
+		return newMemoryAsyncJobRegistry(pods)
+	}
+	return newRedisAsyncJobRegistry(asyncJobStoreClient(client), pods)
+}
+
+// asyncJobStoreClient derives the client the store uses from the gateway's
+// shared one, with go-redis' own retry loop switched off.
+//
+// go-redis retries a failed command three times internally by default, which
+// this package cannot see: retryAsyncJobStoreOp would then be counting logical
+// operations while the wire carried up to twelve attempts, and the attempt
+// budget would mean nothing. The rest of the gateway keeps the shared client's
+// defaults - only this store owns a retry policy of its own.
+//
+// MaxRetries is -1 rather than 0 because go-redis reads 0 as "use the default".
+func asyncJobStoreClient(client *redis.Client) *redis.Client {
+	options := *client.Options()
+	options.MaxRetries = -1
+	options.ContextTimeoutEnabled = true
+	return redis.NewClient(&options)
+}
+
+// asyncJobRegistry returns the Server's registry, building it on first use. The
+// lazy path exists for Servers assembled as struct literals (tests, and any
+// caller that does not go through NewServerWithOptions).
+func (s *Server) asyncJobRegistry() AsyncJobRegistry {
+	s.asyncJobsOnce.Do(func() {
+		if s.asyncJobs == nil {
+			s.asyncJobs = newAsyncJobRegistryForClient(s.redisClient, s.cache)
+		}
+	})
+	return s.asyncJobs
+}
+
 func (s *redisAsyncJobStore) put(ctx context.Context, record AsyncJobRecord) error {
 	if err := record.validate(); err != nil {
 		return err

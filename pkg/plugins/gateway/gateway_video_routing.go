@@ -16,277 +16,65 @@ limitations under the License.
 
 package gateway
 
+// vLLM-Omni's Videos API (/v1/videos) is asynchronous: a create returns a job id
+// and the generated file then lives on the local disk of the one pod that
+// produced it, so every follow-up has to land on that same pod. The gateway
+// therefore hands the client an opaque, owner-scoped public job id and keeps the
+// (public id -> pod identity, backend job id) mapping in the async job registry
+// (see async_job_registry.go). The backend's own id is never exposed: it is a
+// bare, guessable handle with no ownership attached, and the gateway rewrites it
+// into the request path -- and back out of the response body -- on every hop.
+//
+// The gateway deliberately stays out of the job's business: it does not poll the
+// backend, does not track status transitions, and is not an HTTP client for the
+// Videos API. It resolves, pins, rewrites ids, and nothing else.
+
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
-	"github.com/redis/go-redis/v9"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-// defaultVideoJobTTL is used when the create response omits expires_at. Pinning
-// also forgets the mapping as soon as the owning pod is gone; this TTL only
-// covers a job that is never polled or deleted.
-const defaultVideoJobTTL = 7 * 24 * time.Hour
-
-// videoJobAffinityLabel is the routing-strategy header value for a request
-// already pinned to a video job's pod. It is not a registered
-// types.RoutingAlgorithm and never goes through the algorithm registry.
+// videoJobAffinityLabel is the routing-strategy header value used to pin a
+// resolved video job follow-up. It is not a real routing algorithm: the pod is
+// already decided by the registry, and this only tells Envoy to honour the
+// target-pod header instead of re-routing.
 const videoJobAffinityLabel = "video-job-affinity"
 
-// videoJobRedisKeyPrefix namespaces video-job pod mappings in the shared Redis
-// keyspace.
-const videoJobRedisKeyPrefix = "aibrix:gateway:video_job:"
-
-func videoJobRedisKey(videoID string) string {
-	return videoJobRedisKeyPrefix + videoID
-}
-
-const (
-	// videoJobCacheSyncInterval bounds how stale this replica's local cache can
-	// be vs Redis. A still-valid local hit skips the Redis fallback, so without
-	// this a forget on another replica (DELETE, pod-gone) would stay invisible
-	// until the local entry's own TTL — which can be days.
-	videoJobCacheSyncInterval = 60 * time.Second
-	// videoJobCacheSyncBatchSize bounds how many keys share one MGET round-trip.
-	videoJobCacheSyncBatchSize = 200
-)
-
-// startVideoJobCacheSync periodically reconciles this replica's local
-// videoJobCache against Redis: missing keys are evicted, changed values are
-// refreshed. It only walks IDs already cached locally. A whole-batch Redis
-// error leaves the local cache untouched (a failed read is not a miss). Stops
-// when stopCh is closed.
-func (s *Server) startVideoJobCacheSync(stopCh <-chan struct{}) {
-	if s.redisClient == nil {
-		return
-	}
-	ticker := time.NewTicker(videoJobCacheSyncInterval)
-	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				s.syncVideoJobCacheFromRedis()
-			case <-stopCh:
-				ticker.Stop()
-				return
-			}
-		}
-	}()
-}
-
-func (s *Server) syncVideoJobCacheFromRedis() {
-	var videoIDs []string
-	s.videoJobCache.Range(func(key, _ any) bool {
-		if id, ok := key.(string); ok {
-			videoIDs = append(videoIDs, id)
-		}
-		return true
-	})
-	if len(videoIDs) == 0 {
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), videoJobCacheSyncInterval)
-	defer cancel()
-
-	for batchStart := 0; batchStart < len(videoIDs); batchStart += videoJobCacheSyncBatchSize {
-		idChunk := videoIDs[batchStart:min(batchStart+videoJobCacheSyncBatchSize, len(videoIDs))]
-
-		keys := make([]string, len(idChunk))
-		for i, id := range idChunk {
-			keys[i] = videoJobRedisKey(id)
-		}
-		vals, err := s.redisClient.MGet(ctx, keys...).Result()
-		if err != nil {
-			klog.V(4).ErrorS(err, "failed to refresh video job cache from redis", "batchStart", batchStart, "batchLen", len(idChunk))
-			continue
-		}
-
-		for i, id := range idChunk {
-			raw, ok := vals[i].(string)
-			if !ok {
-				// Nil or unexpected type: either Redis genuinely no longer vouches
-				// for this mapping, or this replica's own write to it is still
-				// pending/failed -- handleVideoJobCacheSyncMiss tells those apart.
-				s.handleVideoJobCacheSyncMiss(ctx, id)
-				continue
-			}
-			var entry videoJobCacheEntry
-			if err := sonic.UnmarshalString(raw, &entry); err != nil {
-				klog.V(4).ErrorS(err, "failed to unmarshal video job entry during cache sync", "videoID", id)
-				continue
-			}
-			s.videoJobCache.Store(id, videoJobCacheItem{entry: entry, confirmed: true})
-		}
-	}
-}
-
-// handleVideoJobCacheSyncMiss reacts to videoID being absent from Redis during
-// a sync pass. A previously confirmed entry (this replica successfully wrote
-// or read it from Redis at some point) is evicted: Redis no longer vouches
-// for it, most likely a DELETE or a forgotten pod on another replica. An
-// entry that was never confirmed means this replica's own write to Redis is
-// still pending or failed outright -- a nil read says nothing about whether
-// that mapping is still valid, so it's retried here instead of being dropped
-// as the only surviving copy (see the confirmed field on videoJobCacheItem).
-func (s *Server) handleVideoJobCacheSyncMiss(ctx context.Context, videoID string) {
-	cached, found := s.videoJobCache.Load(videoID)
-	if !found {
-		return
-	}
-	item, ok := cached.(videoJobCacheItem)
-	if !ok || item.confirmed || !time.Now().Before(item.entry.ExpiresAt) {
-		s.videoJobCache.Delete(videoID)
-		return
-	}
-	if s.persistVideoJobToRedis(ctx, videoID, item.entry, time.Until(item.entry.ExpiresAt)) {
-		s.videoJobCache.Store(videoID, videoJobCacheItem{entry: item.entry, confirmed: true})
-	}
-}
-
-// videoJobCacheEntry is the video_id -> owning-pod mapping. The generated
-// video lives on that pod's local disk, so follow-up GET/DELETE must return
-// there. JSON tags are the Redis value shared across gateway replicas.
-type videoJobCacheEntry struct {
-	PodName      string    `json:"pod_name"`
-	PodNamespace string    `json:"pod_namespace"`
-	Model        string    `json:"model"`
-	ExpiresAt    time.Time `json:"expires_at"`
-}
-
-// videoJobCacheItem is what's actually stored in Server.videoJobCache.
-// confirmed is local-only bookkeeping (never marshaled to Redis) recording
-// whether entry is known to exist in Redis. See handleVideoJobCacheSyncMiss
-// for why that distinction matters.
-type videoJobCacheItem struct {
-	entry     videoJobCacheEntry
-	confirmed bool
-}
-
-// persistVideoJobToRedis write-throughs entry to Redis under videoID's key
-// and reports whether Redis now has it. A false return (no redisClient, a
-// marshal error, or a Set error -- both logged here) means the caller's local
-// copy is this replica's only copy, and a later Redis miss for videoID must
-// not be read as proof the mapping was deleted elsewhere.
-func (s *Server) persistVideoJobToRedis(ctx context.Context, videoID string, entry videoJobCacheEntry, ttl time.Duration) bool {
-	if s.redisClient == nil {
-		return false
-	}
-	payload, err := sonic.Marshal(entry)
-	if err != nil {
-		klog.ErrorS(err, "failed to marshal video job entry for redis", "videoID", videoID)
-		return false
-	}
-	if err := s.redisClient.Set(ctx, videoJobRedisKey(videoID), string(payload), ttl).Err(); err != nil {
-		klog.ErrorS(err, "failed to persist video job pod to redis", "videoID", videoID)
-		return false
-	}
-	return true
-}
-
-// rememberVideoJobPod stores videoID's owning pod locally and, when Redis is
-// configured, write-through with the same TTL. ttl is expires_at when the
-// backend reported one, otherwise defaultVideoJobTTL.
-func (s *Server) rememberVideoJobPod(ctx context.Context, videoID, podName, podNamespace, model string, ttl time.Duration) {
-	if videoID == "" || podName == "" {
-		return
-	}
-	if ttl <= 0 {
-		ttl = defaultVideoJobTTL
-	}
-	entry := videoJobCacheEntry{
-		PodName:      podName,
-		PodNamespace: podNamespace,
-		Model:        model,
-		ExpiresAt:    time.Now().Add(ttl),
-	}
-
-	// Write-through to Redis before the local Store below: syncVideoJobCacheFromRedis
-	// walks locally-cached IDs and evicts unconfirmed entries when this fails, so
-	// storing locally first would open a window where a concurrent sync tick sees
-	// this videoID still missing from Redis and evicts/retries prematurely.
-	confirmed := s.persistVideoJobToRedis(ctx, videoID, entry, ttl)
-	s.videoJobCache.Store(videoID, videoJobCacheItem{entry: entry, confirmed: confirmed})
-}
-
-// lookupVideoJobPod returns the pod that owns videoID, or ok=false if the
-// mapping is unknown or expired. Expired local entries are evicted on read.
-// A local miss falls back to Redis (cross-replica) and warms the local cache.
-func (s *Server) lookupVideoJobPod(ctx context.Context, videoID string) (podName, podNamespace, model string, ok bool) {
-	if cached, found := s.videoJobCache.Load(videoID); found {
-		item, itemOK := cached.(videoJobCacheItem)
-		if !itemOK {
-			s.videoJobCache.Delete(videoID)
-		} else if time.Now().Before(item.entry.ExpiresAt) {
-			return item.entry.PodName, item.entry.PodNamespace, item.entry.Model, true
-		} else {
-			s.videoJobCache.Delete(videoID)
-		}
-	}
-
-	if s.redisClient == nil {
-		return "", "", "", false
-	}
-
-	val, err := s.redisClient.Get(ctx, videoJobRedisKey(videoID)).Result()
-	if err != nil {
-		if !errors.Is(err, redis.Nil) {
-			klog.ErrorS(err, "failed to look up video job pod in redis", "videoID", videoID)
-		}
-		return "", "", "", false
-	}
-	var entry videoJobCacheEntry
-	if err := sonic.UnmarshalString(val, &entry); err != nil {
-		klog.ErrorS(err, "failed to unmarshal video job entry from redis", "videoID", videoID)
-		return "", "", "", false
-	}
-	if time.Now().After(entry.ExpiresAt) {
-		// Redis EX should already have reaped this; don't resurrect on clock skew.
-		return "", "", "", false
-	}
-
-	s.videoJobCache.Store(videoID, videoJobCacheItem{entry: entry, confirmed: true})
-	return entry.PodName, entry.PodNamespace, entry.Model, true
-}
-
-// forgetVideoJobPod drops videoID from the local cache and Redis (pod gone, or
-// a DELETE that already succeeded).
-func (s *Server) forgetVideoJobPod(ctx context.Context, videoID string) {
-	s.videoJobCache.Delete(videoID)
-	if s.redisClient == nil {
-		return
-	}
-	if err := s.redisClient.Del(ctx, videoJobRedisKey(videoID)).Err(); err != nil {
-		klog.ErrorS(err, "failed to delete video job pod from redis", "videoID", videoID)
-	}
+// canonicalVideoPath removes only the query string. The Videos API deliberately
+// does not accept trailing-slash aliases: accepting them in response rewriting
+// but not multipart parsing made POST /v1/videos/ appear supported while it
+// actually failed before routing.
+func canonicalVideoPath(requestPath string) string {
+	return pathWithoutQuery(requestPath)
 }
 
 // extractVideoIDFromPath returns the {id} of /v1/videos/{id} or
 // /v1/videos/{id}/content. Bare /v1/videos and /v1/videos/sync have no id to pin.
+// Post-migration this id is the public job id, minted by aibrix.
 func extractVideoIDFromPath(requestPath string) (videoID string, ok bool) {
 	const prefix = PathVideos + "/"
-	requestPath = pathWithoutQuery(requestPath)
+	requestPath = canonicalVideoPath(requestPath)
+	if strings.HasSuffix(requestPath, "/") {
+		return "", false
+	}
 	if !strings.HasPrefix(requestPath, prefix) {
 		return "", false
 	}
@@ -300,167 +88,250 @@ func extractVideoIDFromPath(requestPath string) (videoID string, ok bool) {
 	return rest, true
 }
 
-// videoNotFoundResponse builds the 404 returned when a video_id is unknown,
-// expired, or its owning pod is confirmed gone (not found in cache, or
-// terminating). This is terminal: the mapping is forgotten before this is
-// returned, since the client has no reason to retry the same video_id.
-func videoNotFoundResponse(videoID string) *extProcPb.ProcessingResponse {
+// rewriteVideoPathID swaps the public job id in requestPath for the backend's
+// own id, which is the only identifier the engine recognizes. Everything else is
+// preserved verbatim: the /content suffix decides whether the response is JSON
+// or a video stream, and the query string carries backend options the gateway
+// does not interpret.
+func rewriteVideoPathID(requestPath, backendJobID string) (string, bool) {
+	if backendJobID == "" {
+		return "", false
+	}
+	if _, ok := extractVideoIDFromPath(requestPath); !ok {
+		return "", false
+	}
+
+	const prefix = PathVideos + "/"
+	path, query, hasQuery := strings.Cut(requestPath, "?")
+	rest := strings.TrimPrefix(path, prefix)
+	suffix := ""
+	if idx := strings.IndexByte(rest, '/'); idx >= 0 {
+		suffix = rest[idx:]
+	}
+
+	rewritten := prefix + backendJobID + suffix
+	if hasQuery {
+		rewritten += "?" + query
+	}
+	return rewritten, true
+}
+
+// isVideoListRequest reports whether requestPath is the public catalog request,
+// GET /v1/videos. The registry knows every job the caller owns, across models;
+// its OpenAI-compatible cursor parameters are parsed separately.
+func isVideoListRequest(requestPath, method string) bool {
+	return method == http.MethodGet && canonicalVideoPath(requestPath) == PathVideos
+}
+
+func isUnsupportedVideoTrailingSlash(requestPath string) bool {
+	path := pathWithoutQuery(requestPath)
+	return path != "/" && strings.HasPrefix(path, PathVideos+"/") && strings.HasSuffix(path, "/")
+}
+
+func parseVideoListOptions(requestPath string) (AsyncJobListOptions, error) {
+	_, rawQuery, hasQuery := strings.Cut(requestPath, "?")
+	options := AsyncJobListOptions{Limit: defaultAsyncJobListLimit, Order: "desc"}
+	if !hasQuery || rawQuery == "" {
+		return options, nil
+	}
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return AsyncJobListOptions{}, fmt.Errorf("invalid video list query: %w", err)
+	}
+	for key := range values {
+		if key != "after" && key != "limit" && key != "order" {
+			return AsyncJobListOptions{}, fmt.Errorf("unsupported video list query parameter %q", key)
+		}
+		if len(values[key]) != 1 {
+			return AsyncJobListOptions{}, fmt.Errorf("video list query parameter %q must be supplied once", key)
+		}
+	}
+	options.After = values.Get("after")
+	if rawLimit, ok := values["limit"]; ok {
+		limit, err := strconv.Atoi(rawLimit[0])
+		if err != nil {
+			return AsyncJobListOptions{}, fmt.Errorf("video list limit must be an integer")
+		}
+		options.Limit = limit
+	}
+	if rawOrder, ok := values["order"]; ok {
+		options.Order = rawOrder[0]
+	}
+	return normalizeAsyncJobListOptions(options)
+}
+
+// asyncJobOwnerFromRoutingContext derives the job scope from the only principal
+// the gateway actually has: the user request header, carried on the routing
+// context. Requests without one share a single scope rather than being granted a
+// view over everyone else's jobs.
+func asyncJobOwnerFromRoutingContext(routingCtx *types.RoutingContext) string {
+	if routingCtx == nil || routingCtx.User == nil {
+		return asyncJobOwnerShared
+	}
+	return asyncJobOwnerFromUserName(*routingCtx.User)
+}
+
+// videoJobResponseNeedsBuffering reports whether a response body must be held
+// and mutated. The finite JSON create, status, and delete responses can carry a
+// job id that must be translated before it reaches the client. A /content
+// download is a video stream that must keep flowing through Envoy untouched.
+//
+// The deployed configuration puts these endpoints on a route whose ext_proc
+// response body mode is Buffered (config/gateway/gateway-plugin), so the body
+// normally arrives as one message with EndOfStream set. This predicate, and the
+// accumulation in handleVideoJobResponseBody, also cover the streamed shape: the
+// mode is a property of the route the request matched, and the rewriting must not
+// depend on which one that was.
+func videoJobResponseNeedsBuffering(method, requestPath string) bool {
+	path := canonicalVideoPath(requestPath)
+	switch method {
+	case http.MethodPost:
+		return path == PathVideos
+	case http.MethodGet:
+		videoID, ok := extractVideoIDFromPath(path)
+		return ok && path == PathVideos+"/"+videoID
+	case http.MethodDelete:
+		videoID, ok := extractVideoIDFromPath(path)
+		return ok && path == PathVideos+"/"+videoID
+	default:
+		return false
+	}
+}
+
+// videoNotFoundResponse builds the 404 returned when a public job id is unknown,
+// expired, owned by somebody else, or pinned to a pod that is confirmed gone.
+// All of those are deliberately indistinguishable: a distinct "exists but not
+// yours" answer would turn the 404 into an id oracle.
+func videoNotFoundResponse(publicJobID string) *extProcPb.ProcessingResponse {
 	return buildErrorResponse(envoyTypePb.StatusCode_NotFound,
-		fmt.Sprintf("video %s not found", videoID), ErrorCodeVideoNotFound, "",
+		fmt.Sprintf("video %s not found", publicJobID), ErrorCodeVideoNotFound, "",
 		HeaderErrorVideoNotFound, "true")
 }
 
-// videoJobPodUnavailableResponse builds the 503 returned when a video_id's
-// owning pod is only transiently unavailable (NotReady, or no routable
-// address yet) rather than confirmed gone. Unlike videoNotFoundResponse, the
-// mapping is left in place so a retry can still land on the same pod once it
-// recovers -- the generated video lives on that pod's local disk, so pinning
-// elsewhere is not an option.
-func videoJobPodUnavailableResponse(videoID string) *extProcPb.ProcessingResponse {
+// videoJobPodUnavailableResponse builds the 503 returned when the pinned pod is
+// only transiently unavailable (NotReady, or no routable address yet) rather
+// than confirmed gone. The record is left in place: the generated video is on
+// that pod's local disk, so pinning elsewhere is not an option.
+func videoJobPodUnavailableResponse(publicJobID string) *extProcPb.ProcessingResponse {
 	return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
-		fmt.Sprintf("video %s's pod is temporarily unavailable, please retry", videoID),
+		fmt.Sprintf("video %s's pod is temporarily unavailable, please retry", publicJobID),
 		ErrorCodeVideoJobPodUnavailable, "",
 		HeaderErrorVideoJobPodUnavailable, "true")
 }
 
-// parseVideoListRequest reports whether requestPath is the bare /v1/videos
-// list path (not a {id} sub-resource) and the value of its model query
-// parameter, which may be empty.
-func parseVideoListRequest(requestPath string) (model string, isListPath bool) {
-	path, query, _ := strings.Cut(requestPath, "?")
-	if path != PathVideos {
-		return "", false
+// videoJobStoreUnavailableResponse builds the 503 for a job store that stayed
+// unreachable across the registry's bounded retries. This must not collapse into
+// a 404: the job most likely still exists, and telling the client otherwise
+// would make it abandon a job it is still paying for.
+func videoJobStoreUnavailableResponse(publicJobID string) *extProcPb.ProcessingResponse {
+	return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
+		fmt.Sprintf("video %s could not be resolved right now, please retry", publicJobID),
+		ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true")
+}
+
+// videoJobErrorResponse maps a registry error onto the HTTP answer the client
+// gets: absent or dead means terminal 404, transient means retryable 503.
+func videoJobErrorResponse(publicJobID string, err error) *extProcPb.ProcessingResponse {
+	switch {
+	case errors.Is(err, errAsyncJobNotFound):
+		return videoNotFoundResponse(publicJobID)
+	case errors.Is(err, errAsyncJobTargetUnavailable):
+		return videoJobPodUnavailableResponse(publicJobID)
+	case errors.Is(err, errAsyncJobStoreUnavailable):
+		return videoJobStoreUnavailableResponse(publicJobID)
+	default:
+		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+			fmt.Sprintf("video %s could not be resolved", publicJobID), "", "",
+			HeaderErrorRouting, "true")
 	}
-	values, err := url.ParseQuery(query)
+}
+
+// videoJobRegistrationFailedResponse is the 503 for a create whose record could
+// not be persisted. It carries no id at all: the public id was never durable and
+// the backend id must not become the client's handle on the job.
+func videoJobRegistrationFailedResponse() *extProcPb.ProcessingResponse {
+	return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
+		"video job could not be registered, please retry",
+		ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true")
+}
+
+// videoJobCleanupFailedResponse is the 503 returned when the backend deleted the
+// job but its record could not be removed. Reporting success would leave a
+// public id that still resolves to a job the client believes is gone.
+func videoJobCleanupFailedResponse(publicJobID string) *extProcPb.ProcessingResponse {
+	return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
+		fmt.Sprintf("video %s was deleted but its record could not be cleaned up, please retry", publicJobID),
+		ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true")
+}
+
+// videoListItem is the public shape of a catalog entry. It carries the opaque id
+// and the model only -- never the backend id, never where the job runs.
+type videoListItem struct {
+	ID        string `json:"id"`
+	Object    string `json:"object"`
+	Model     string `json:"model,omitempty"`
+	CreatedAt int64  `json:"created_at"`
+	ExpiresAt int64  `json:"expires_at"`
+}
+
+// videoListResponse is the OpenAI-shaped cursor envelope for one owner's live
+// jobs. It intentionally contains no backend id or routing target.
+type videoListResponse struct {
+	Object  string          `json:"object"`
+	Data    []videoListItem `json:"data"`
+	FirstID *string         `json:"first_id"`
+	HasMore bool            `json:"has_more"`
+	LastID  *string         `json:"last_id"`
+}
+
+// handleVideoListHeaders answers GET /v1/videos from the registry. It is an
+// ImmediateResponse because there is no backend to ask: the catalog is aibrix's
+// own record of what the caller owns, deliberately without live status
+// enrichment, which would mean fanning out HTTP calls to every pinned pod.
+func (s *Server) handleVideoListHeaders(ctx context.Context, requestID, owner string, options AsyncJobListOptions) *extProcPb.ProcessingResponse {
+	page, err := s.asyncJobRegistry().List(ctx, owner, asyncJobTypeVideo, options)
 	if err != nil {
-		return "", true
-	}
-	return values.Get("model"), true
-}
-
-// videoListModelRequiredResponse is the 400 for GET /v1/videos without model.
-// A standalone vLLM-Omni server has one implicit model; this gateway does not.
-func videoListModelRequiredResponse() *extProcPb.ProcessingResponse {
-	return buildErrorResponse(envoyTypePb.StatusCode_BadRequest,
-		"'model' query parameter is required to list video jobs", "", "model",
-		HeaderErrorRequestBodyProcessing, "true")
-}
-
-// videoListFanoutTimeout bounds how long GET /v1/videos waits on the slowest
-// pod before merging whatever succeeded. Total failure is a 503, not an empty list.
-const videoListFanoutTimeout = 5 * time.Second
-
-// videoListFanoutMaxConcurrency caps parallel pod fetches so a large replica
-// set cannot open unbounded outbound connections from the gateway plugin.
-const videoListFanoutMaxConcurrency = 16
-
-// videoListFanoutMaxBodyBytes caps a single pod's list response. A malformed
-// or malicious backend must not be able to OOM the gateway via io.ReadAll.
-const videoListFanoutMaxBodyBytes = 1 << 20 // 1 MiB
-
-// videoListFanoutClient is reused across requests (connection pooling) for the
-// GET /v1/videos fan-out below; it makes no other outbound calls.
-var videoListFanoutClient = &http.Client{Timeout: videoListFanoutTimeout}
-
-// podAddress is the routable ip:port for model on pod (ModelClaim port, then
-// the model.aibrix.ai/port label). SetTargetPod/TargetAddress are one-shot per
-// request, so the list fan-out cannot reuse them per pod.
-func podAddress(requestID, model string, pod *v1.Pod) string {
-	if port, ok := utils.ModelClaimPortForPod(pod, model); ok {
-		if port > 0 {
-			return net.JoinHostPort(pod.Status.PodIP, strconv.Itoa(port))
+		if errors.Is(err, errAsyncJobNotFound) || errors.Is(err, errAsyncJobInvalidRecord) {
+			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest,
+				"invalid video list cursor or parameters", "", "", HeaderErrorRequestBodyProcessing, "true")
 		}
-		return ""
-	}
-	return net.JoinHostPort(pod.Status.PodIP, strconv.FormatInt(utils.GetModelPortForPod(requestID, pod), 10))
-}
-
-// handleVideoListHeaders serves GET /v1/videos by fanning out to every
-// routable pod for model and merging their job lists. List has no owning
-// pod — each replica only knows jobs on its own disk — so the plugin acts as
-// the HTTP client and returns an ImmediateResponse instead of pinning via
-// Envoy. Individual pod failures are skipped; if every routable pod fails
-// (or none are routable), this returns 503 so an outage is not an empty list.
-func (s *Server) handleVideoListHeaders(requestID, model string) *extProcPb.ProcessingResponse {
-	podsArr, errResp := s.validateModelAvailability(requestID, model)
-	if errResp != nil {
-		return errResp
-	}
-	pods := utils.FilterRoutablePods(podsArr.All())
-	if len(pods) == 0 {
-		klog.ErrorS(nil, "video list fan-out has no routable pods", "requestID", requestID, "model", model)
+		klog.ErrorS(err, "failed to list async video jobs", "requestID", requestID, "owner", owner)
 		return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
-			fmt.Sprintf("no ready pod available to list video jobs for model %s", model),
-			ErrorCodeServiceUnavailable, "", HeaderErrorNoModelBackends, "true")
+			"video jobs could not be listed right now, please retry",
+			ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true")
 	}
 
-	type podResult struct {
-		podName string
-		data    []byte
-		err     error
-	}
-	results := make([]podResult, len(pods))
-
-	fanoutCtx, cancel := context.WithTimeout(context.Background(), videoListFanoutTimeout)
-	defer cancel()
-
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, videoListFanoutMaxConcurrency)
-	for i, pod := range pods {
-		results[i].podName = pod.Name
-		addr := podAddress(requestID, model, pod)
-		if addr == "" {
-			results[i].err = fmt.Errorf("pod %s has no routable address", pod.Name)
-			continue
-		}
-		wg.Add(1)
-		go func(i int, addr string) {
-			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					results[i].err = fmt.Errorf("panic fetching video list from pod: %v", r)
-					klog.ErrorS(nil, "panic recovered in video list fan-out goroutine", "requestID", requestID, "model", model, "pod", results[i].podName, "panic", r)
-				}
-			}()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-fanoutCtx.Done():
-				results[i].err = fanoutCtx.Err()
-				return
-			}
-			data, err := fetchPodVideoList(fanoutCtx, addr)
-			results[i].data = data
-			results[i].err = err
-		}(i, addr)
-	}
-	wg.Wait()
-
-	merged := make([]json.RawMessage, 0, len(pods))
-	failed := 0
-	for _, r := range results {
-		if r.err != nil {
-			failed++
-			klog.V(2).ErrorS(r.err, "video list fan-out to pod failed, skipping", "requestID", requestID, "model", model, "pod", r.podName)
-			continue
-		}
-		merged = append(merged, extractVideoListItems(r.data)...)
+	items := make([]videoListItem, 0, len(page.Records))
+	for _, record := range page.Records {
+		items = append(items, videoListItem{
+			ID:        record.PublicJobID,
+			Object:    "video",
+			Model:     record.Model,
+			CreatedAt: record.CreatedAt.Unix(),
+			ExpiresAt: record.ExpiresAt.Unix(),
+		})
 	}
 
-	if failed == len(pods) {
-		klog.ErrorS(nil, "video list fan-out failed for every pod", "requestID", requestID, "model", model, "pods", len(pods))
-		return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
-			fmt.Sprintf("failed to list video jobs from any pod for model %s", model),
-			ErrorCodeServiceUnavailable, "", HeaderErrorNoModelBackends, "true")
+	var firstID, lastID *string
+	if len(items) > 0 {
+		firstID = &items[0].ID
+		lastID = &items[len(items)-1].ID
 	}
-
-	respBody, err := sonic.Marshal(map[string]any{"object": "list", "data": merged})
+	respBody, err := sonic.Marshal(videoListResponse{
+		Object:  "list",
+		Data:    items,
+		FirstID: firstID,
+		HasMore: page.HasMore,
+		LastID:  lastID,
+	})
 	if err != nil {
-		klog.ErrorS(err, "failed to marshal merged video list", "requestID", requestID, "model", model)
-		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError, "failed to marshal merged video list", "", "", HeaderErrorResponseUnknown, "true")
+		klog.ErrorS(err, "failed to marshal video job list", "requestID", requestID, "owner", owner)
+		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+			"failed to marshal video job list", "", "", HeaderErrorResponseUnknown, "true")
 	}
 
-	klog.InfoS("video list fan-out complete", "requestID", requestID, "model", model, "pods", len(pods), "failed", failed, "merged", len(merged))
+	klog.InfoS("video job list served from registry", "requestID", requestID, "owner", owner,
+		"jobs", len(items), "hasMore", page.HasMore, "order", options.Order)
 
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_ImmediateResponse{
@@ -475,163 +346,86 @@ func (s *Server) handleVideoListHeaders(requestID, model string) *extProcPb.Proc
 	}
 }
 
-// fetchPodVideoList GETs /v1/videos on addr (the pod, not Envoy). No model
-// query is sent: a single vLLM-Omni server has one implicit model.
-func fetchPodVideoList(ctx context.Context, addr string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+PathVideos, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := videoListFanoutClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
+// pinAsyncVideoJob resolves publicJobID for its owner, rewrites the path to the
+// backend id, applies RPS, and returns the header mutations that pin the request
+// to the recorded pod. On error, RPS is rolled back if it was incremented and
+// AddRequestCount is not called. Shared by the RequestHeaders and RequestBody
+// pin paths.
+func (s *Server) pinAsyncVideoJob(ctx context.Context, routingCtx *types.RoutingContext, requestID, requestPath, publicJobID string) (headers []*configPb.HeaderValueOption, term int64, errResp *extProcPb.ProcessingResponse) {
+	owner := asyncJobOwnerFromRoutingContext(routingCtx)
+	record, pod, err := s.asyncJobRegistry().Get(ctx, owner, publicJobID)
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, videoListFanoutMaxBodyBytes+1))
+	// Attribute the model as soon as it is known, including on the error paths
+	// below: gateway.go takes st.model from this same routing context, and an
+	// empty model there skips emitMetricsCounterHelper(GatewayRequestModelFailTotal),
+	// which would make dead-pod and store-outage failures invisible in
+	// gateway_request_fail metrics even though the client did get an error.
+	if record.Model != "" {
+		routingCtx.Model = record.Model
+	}
 	if err != nil {
-		return nil, err
+		klog.ErrorS(err, "failed to resolve async video job", "requestID", requestID, "publicJobID", publicJobID, "owner", owner)
+		return nil, term, videoJobErrorResponse(publicJobID, err)
 	}
-	if int64(len(body)) > videoListFanoutMaxBodyBytes {
-		return nil, fmt.Errorf("video list response exceeds %d bytes", videoListFanoutMaxBodyBytes)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
-	}
-	return body, nil
-}
 
-// extractVideoListItems returns job objects from a pod's list body: an
-// OpenAI {"data": [...]} envelope or a bare array. Other shapes yield nil so
-// one malformed pod does not fail the merge.
-func extractVideoListItems(body []byte) []json.RawMessage {
-	data := gjson.GetBytes(body, "data")
-	if !data.Exists() {
-		data = gjson.ParseBytes(body)
-	}
-	if !data.IsArray() {
-		return nil
-	}
-	items := data.Array()
-	out := make([]json.RawMessage, len(items))
-	for i, item := range items {
-		out[i] = json.RawMessage(item.Raw)
-	}
-	return out
-}
-
-// pinVideoJobSubResource looks up videoID's pod, applies RPS, and returns
-// header mutations that pin the request via ORIGINAL_DST. On error, RPS is
-// rolled back if it was incremented; AddRequestCount is not called. Used from
-// both the RequestBody and RequestHeaders pin paths.
-func (s *Server) pinVideoJobSubResource(ctx context.Context, routingCtx *types.RoutingContext, requestID, requestPath, videoID string) (headers []*configPb.HeaderValueOption, model string, term int64, errResp *extProcPb.ProcessingResponse) {
-	var podName, podNamespace string
-	var ok bool
-	podName, podNamespace, model, ok = s.lookupVideoJobPod(ctx, videoID)
+	rewrittenPath, ok := rewriteVideoPathID(requestPath, record.BackendJobID)
 	if !ok {
-		klog.ErrorS(nil, "unknown or expired video job", "requestID", requestID, "videoID", videoID)
-		return nil, "", term, videoNotFoundResponse(videoID)
+		klog.ErrorS(nil, "resolved video job path cannot be rewritten", "requestID", requestID, "publicJobID", publicJobID, "requestPath", requestPath)
+		return nil, term, videoNotFoundResponse(publicJobID)
 	}
-
-	// Set as soon as the model is known (even on the error returns below) so
-	// gateway.go's st.model, taken from this same routingCtx, isn't left empty --
-	// an empty model there skips emitMetricsCounterHelper(GatewayRequestModelFailTotal),
-	// which would otherwise make stale/rescheduled-pod failures invisible to
-	// gateway_request_fail metrics.
-	routingCtx.Model = model
-
-	pod, err := s.cache.GetPod(podName, podNamespace)
-	if err != nil || pod == nil {
-		// Not in the informer cache at all: as confirmed-gone as this gateway can
-		// observe. Forget the mapping so a later create can reuse videoID's slot
-		// (Redis keys are namespaced by videoID, not by pod).
-		s.forgetVideoJobPod(ctx, videoID)
-		klog.ErrorS(err, "video job's pod is no longer available", "requestID", requestID, "videoID", videoID, "podName", podName, "podNamespace", podNamespace)
-		return nil, model, term, videoNotFoundResponse(videoID)
-	}
-	if utils.IsPodTerminating(pod) {
-		// Has a DeletionTimestamp: won't come back under this name. Terminal,
-		// same as the cache-miss case above.
-		s.forgetVideoJobPod(ctx, videoID)
-		klog.ErrorS(nil, "video job's pod is terminating", "requestID", requestID, "videoID", videoID, "podName", podName, "podNamespace", podNamespace)
-		return nil, model, term, videoNotFoundResponse(videoID)
-	}
-	if !utils.IsPodReady(pod) {
-		// Pod exists and isn't being torn down -- a readiness flap, restart, or
-		// startup probe still pending. Keep the mapping: the video's own disk is
-		// still on this pod, and IsPodReady may well flip back on the next poll.
-		klog.InfoS("video job's pod is temporarily not ready, keeping mapping for retry", "requestID", requestID, "videoID", videoID, "podName", podName, "podNamespace", podNamespace)
-		return nil, model, term, videoJobPodUnavailableResponse(videoID)
-	}
+	routingCtx.AsyncJobBackendID = record.BackendJobID
 
 	routingCtx.SetTargetPod(pod)
 	targetPodIP := routingCtx.TargetAddress()
 	if targetPodIP == "" {
-		// Ready but not yet routable (e.g. IP not propagated to this cache entry):
-		// same reasoning as the NotReady branch above, keep the mapping.
-		klog.InfoS("video job's pod has no routable address yet, keeping mapping for retry", "requestID", requestID, "videoID", videoID, "podName", podName)
-		return nil, model, term, videoJobPodUnavailableResponse(videoID)
+		// Ready but not yet routable (e.g. the IP has not propagated to this
+		// cache entry). Same reasoning as a NotReady pod: keep the record.
+		klog.InfoS("video job's pod has no routable address yet, keeping record for retry", "requestID", requestID, "publicJobID", publicJobID, "podName", pod.Name)
+		return nil, term, videoJobPodUnavailableResponse(publicJobID)
 	}
 
 	applyConfigProfile(routingCtx, []*v1.Pod{pod})
 
-	if errRes := s.enforceModelRPS(ctx, model, routingCtx); errRes != nil {
-		return nil, model, term, errRes
+	if errRes := s.enforceModelRPS(ctx, record.Model, routingCtx); errRes != nil {
+		return nil, term, errRes
 	}
 	needsRollback := true
 	defer func() {
 		if needsRollback {
-			s.decrModelRPS(ctx, model, routingCtx)
+			s.decrModelRPS(ctx, record.Model, routingCtx)
 		}
 	}()
 
-	headers = buildEnvoyProxyHeaders(make([]*configPb.HeaderValueOption, 0, 3),
+	headers = buildEnvoyProxyHeaders(make([]*configPb.HeaderValueOption, 0, 4),
 		HeaderRoutingStrategy, videoJobAffinityLabel,
 		HeaderTargetPod, targetPodIP,
+		pathKey, rewrittenPath,
 		"X-Request-Id", routingCtx.RequestID)
 
-	klog.InfoS("request_start", "request_id", requestID, "request_path", requestPath, "model", model,
-		"routing_strategy", videoJobAffinityLabel, "target_pod", podName, "target_pod_ip", targetPodIP)
+	klog.InfoS("request_start", "request_id", requestID, "request_path", rewrittenPath, "model", record.Model,
+		"routing_strategy", videoJobAffinityLabel, "target_pod", pod.Name, "target_pod_ip", targetPodIP)
 
 	needsRollback = false
 	routingCtx.RequestEndTime = time.Now()
-	term = s.cache.AddRequestCount(routingCtx, requestID, model)
+	term = s.cache.AddRequestCount(routingCtx, requestID, record.Model)
 
-	return headers, model, term, nil
+	return headers, term, nil
 }
 
-// maybeForgetVideoJobAfterDelete drops the mapping after a DELETE 2xx or 404.
-// 5xx keeps it so the client can retry the same sticky route. Called from
-// HandleResponseHeaders once upstream status is known, not at pin time.
-func (s *Server) maybeForgetVideoJobAfterDelete(ctx context.Context, routerCtx *types.RoutingContext, statusCode int) {
-	if routerCtx == nil || routerCtx.ReqHeaders[methodKey] != http.MethodDelete {
-		return
-	}
-	if (statusCode < 200 || statusCode >= 300) && statusCode != http.StatusNotFound {
-		return
-	}
-	videoID, ok := extractVideoIDFromPath(routerCtx.ReqPath)
-	if !ok {
-		return
-	}
-	s.forgetVideoJobPod(ctx, videoID)
-	klog.InfoS("video job pod mapping evicted on delete", "requestID", routerCtx.RequestID, "videoID", videoID, "status", statusCode)
-}
-
-// handleVideoJobSubResource pins a video_id follow-up at the RequestBody
+// handleVideoJobSubResource pins a public job id follow-up at the RequestBody
 // phase. Bodyless GET/DELETE never reach here; those are pinned in
 // handleVideoJobSubResourceHeaders.
-func (s *Server) handleVideoJobSubResource(ctx context.Context, routingCtx *types.RoutingContext, requestID, requestPath, videoID string, reqBody []byte) (*extProcPb.ProcessingResponse, string, bool, int64) {
+func (s *Server) handleVideoJobSubResource(ctx context.Context, routingCtx *types.RoutingContext, requestID, requestPath, publicJobID string, reqBody []byte) (*extProcPb.ProcessingResponse, string, bool, int64) {
 	routingCtx.ReqBody = reqBody
 
-	headers, model, term, errResp := s.pinVideoJobSubResource(ctx, routingCtx, requestID, requestPath, videoID)
+	headers, term, errResp := s.pinAsyncVideoJob(ctx, routingCtx, requestID, requestPath, publicJobID)
 	if errResp != nil {
-		return errResp, model, false, term
+		return errResp, routingCtx.Model, false, term
 	}
 
 	headers = buildEnvoyProxyHeaders(headers, "content-length", strconv.Itoa(len(routingCtx.ReqBody)))
 
-	return &extProcPb.ProcessingResponse{
+	resp := &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_RequestBody{
 			RequestBody: &extProcPb.BodyResponse{
 				Response: &extProcPb.CommonResponse{
@@ -646,65 +440,214 @@ func (s *Server) handleVideoJobSubResource(ctx context.Context, routingCtx *type
 				},
 			},
 		},
-	}, model, false, term
+	}
+	return resp, routingCtx.Model, false, term
 }
 
 // handleVideoJobSubResourceHeaders pins a bodyless GET/DELETE at RequestHeaders.
-// ext_proc BUFFERED mode never sends RequestBody when there is no body, so
-// without this the routing-strategy/target-pod headers would never be set.
-// Only called when EndOfStream is true; otherwise the body-phase pin runs.
-func (s *Server) handleVideoJobSubResourceHeaders(ctx context.Context, routingCtx *types.RoutingContext, requestID, requestPath, videoID string) (*extProcPb.ProcessingResponse, int64) {
-	headers, _, term, errResp := s.pinVideoJobSubResource(ctx, routingCtx, requestID, requestPath, videoID)
+// ext_proc never sends a RequestBody message when there is no body, so without
+// this the routing-strategy, target-pod and rewritten :path headers would never
+// be set. Only called when EndOfStream is true; otherwise the body-phase pin runs.
+func (s *Server) handleVideoJobSubResourceHeaders(ctx context.Context, routingCtx *types.RoutingContext, requestID, requestPath, publicJobID string) (*extProcPb.ProcessingResponse, int64) {
+	headers, term, errResp := s.pinAsyncVideoJob(ctx, routingCtx, requestID, requestPath, publicJobID)
 	if errResp != nil {
 		return errResp, term
 	}
 
-	return &extProcPb.ProcessingResponse{
+	resp := &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_RequestHeaders{
 			RequestHeaders: &extProcPb.HeadersResponse{
 				Response: &extProcPb.CommonResponse{
 					HeaderMutation: &extProcPb.HeaderMutation{
 						SetHeaders: headers,
 					},
+					// The rewritten :path must be re-evaluated by Envoy, along
+					// with the routing-strategy header match.
 					ClearRouteCache: true,
 				},
 			},
 		},
-	}, term
+	}
+	return resp, term
 }
 
-// recordVideoJobPodFromResponse buffers a POST /v1/videos response and, at
-// EndOfStream, records the owning pod from the JSON id. Uses the same
-// requestBuffers map as processLanguageResponse; a given requestID is only
-// one of those paths.
-func (s *Server) recordVideoJobPodFromResponse(ctx context.Context, requestID string, routerCtx *types.RoutingContext, b *extProcPb.ProcessingRequest_ResponseBody) {
+// handleVideoJobResponseBody buffers and rewrites the two Videos API responses
+// that carry a job id. It reports handled=false for everything else -- including
+// /content -- so those bodies stay on the untouched streaming path.
+//
+// The returned bool pair is (complete, handled): complete drives the caller's
+// request-trace finalization, handled says whether this function owns the response.
+func (s *Server) handleVideoJobResponseBody(ctx context.Context, requestID string, routerCtx *types.RoutingContext, b *extProcPb.ProcessingRequest_ResponseBody) (*extProcPb.ProcessingResponse, bool, bool) {
+	if routerCtx == nil {
+		return nil, false, false
+	}
+	method := routerCtx.ReqHeaders[methodKey]
+	if !videoJobResponseNeedsBuffering(method, routerCtx.ReqPath) {
+		return nil, false, false
+	}
+
+	// Same requestBuffers map as processLanguageResponse; a given requestID only
+	// ever takes one of those paths.
 	buf, _ := requestBuffers.LoadOrStore(requestID, &bytes.Buffer{})
 	buffer := buf.(*bytes.Buffer)
 	buffer.Write(b.ResponseBody.GetBody())
 
 	if !b.ResponseBody.EndOfStream {
-		return
+		// Hold this chunk back. The id can only be rewritten once the whole JSON
+		// body is in hand, and forwarding a partial body would put the backend id
+		// on the wire. Envoy emits the accumulated, rewritten body at EndOfStream.
+		return videoJobBodyResponse(nil), false, true
 	}
 	requestBuffers.Delete(requestID)
-
-	pod := routerCtx.TargetPod()
-	if pod == nil {
-		return
-	}
-
 	body := buffer.Bytes()
-	videoID := gjson.GetBytes(body, "id").String()
-	if videoID == "" {
-		return
+
+	if method == http.MethodPost {
+		return s.registerVideoJobFromCreateResponse(ctx, requestID, routerCtx, body)
+	}
+	return videoJobBodyResponse(rewriteVideoJobStatusID(requestID, routerCtx, body)), true, true
+}
+
+// registerVideoJobFromCreateResponse durably records the job the backend just
+// created and replaces its id with the public one. There is no successful create
+// without a record: the public id is the client's only handle on the job, and it
+// has to survive a gateway restart or a different replica taking the next poll.
+func (s *Server) registerVideoJobFromCreateResponse(ctx context.Context, requestID string, routerCtx *types.RoutingContext, body []byte) (*extProcPb.ProcessingResponse, bool, bool) {
+	pod := routerCtx.TargetPod()
+	backendJobID := gjson.GetBytes(body, "id").String()
+	if pod == nil || backendJobID == "" {
+		// Nothing to pin: an error body, a non-JSON body, or a create that never
+		// reached a pod. Forward it verbatim so the backend's own answer -- error
+		// message included -- reaches the client unmangled.
+		return videoJobBodyResponse(body), true, true
 	}
 
-	ttl := defaultVideoJobTTL
-	if expiresAt := gjson.GetBytes(body, "expires_at"); expiresAt.Exists() {
-		if d := time.Until(time.Unix(expiresAt.Int(), 0)); d > 0 {
-			ttl = d
+	var expiresAt time.Time
+	if raw := gjson.GetBytes(body, "expires_at"); raw.Type == gjson.Number {
+		// A zero time is the registry's "no expiry supplied" sentinel, whereas
+		// Unix epoch is an explicitly supplied, already-expired backend value.
+		// Preserve that distinction so the registry can reject the latter instead
+		// of silently applying its default TTL.
+		expiresAt = time.Unix(raw.Int(), 0)
+	}
+
+	owner := asyncJobOwnerFromRoutingContext(routerCtx)
+	record, err := s.asyncJobRegistry().Register(ctx, AsyncJobRegistration{
+		JobType:      asyncJobTypeVideo,
+		Owner:        owner,
+		Model:        routerCtx.Model,
+		BackendJobID: backendJobID,
+		Pod:          pod,
+		ExpiresAt:    expiresAt,
+	})
+	if err != nil {
+		// The job exists on the pod but is unreachable through aibrix and stays
+		// orphaned until it expires there. That is the price of never handing out
+		// the backend id: with no record, a public id would resolve to nothing,
+		// and the backend id is not a handle the gateway is willing to expose.
+		klog.ErrorS(err, "failed to register async video job", "requestID", requestID, "owner", owner, "podName", pod.Name)
+		return videoJobRegistrationFailedResponse(), true, true
+	}
+
+	rewritten, err := sjson.SetBytes(body, "id", record.PublicJobID)
+	if err != nil {
+		// The record would name a job the client can never learn the id of; drop
+		// it rather than leave an unreachable entry occupying the owner's catalog.
+		if delErr := s.asyncJobRegistry().Delete(ctx, owner, record.PublicJobID); delErr != nil {
+			klog.ErrorS(delErr, "failed to drop unreachable async video job record", "requestID", requestID, "publicJobID", record.PublicJobID)
 		}
+		klog.ErrorS(err, "failed to rewrite video job id in create response", "requestID", requestID, "publicJobID", record.PublicJobID)
+		return videoJobRegistrationFailedResponse(), true, true
 	}
 
-	s.rememberVideoJobPod(ctx, videoID, pod.Name, pod.Namespace, routerCtx.Model, ttl)
-	klog.InfoS("video job pod recorded", "requestID", requestID, "videoID", videoID, "podName", pod.Name, "ttl", ttl)
+	klog.InfoS("async video job registered", "requestID", requestID, "publicJobID", record.PublicJobID,
+		"owner", owner, "podName", pod.Name, "podNamespace", pod.Namespace, "expiresAt", record.ExpiresAt)
+
+	return videoJobBodyResponse(rewritten), true, true
+}
+
+// rewriteVideoJobStatusID translates the backend id in a status body back to the
+// public one. The public id comes from routerCtx.ReqPath, which still holds the
+// path the client sent: the backend-id rewrite happened in the header mutation
+// handed to Envoy, not on the routing context.
+func rewriteVideoJobStatusID(requestID string, routerCtx *types.RoutingContext, body []byte) []byte {
+	publicJobID, ok := extractVideoIDFromPath(routerCtx.ReqPath)
+	if !ok || !gjson.GetBytes(body, "id").Exists() {
+		// An error body or a shape without an id: nothing to translate, and
+		// rewriting anything else here would corrupt the backend's answer.
+		return body
+	}
+	rewritten, err := sjson.SetBytes(body, "id", publicJobID)
+	if err != nil {
+		klog.ErrorS(err, "failed to rewrite video job id in status response", "requestID", requestID, "publicJobID", publicJobID)
+		return body
+	}
+	return rewritten
+}
+
+// rewriteVideoJobErrorBody removes the backend-private ID from a non-2xx
+// upstream body after a follow-up request has been pinned. Error responses do
+// not reach handleVideoJobResponseBody, and backend IDs commonly appear in
+// error.message rather than a top-level id field, so replace the exact known
+// backend ID before the generic error normalizer forwards the body. Create
+// failures are intentionally not covered: before POST /v1/videos succeeds no
+// public ID or registry record exists, so there is no safe ID to substitute.
+func rewriteVideoJobErrorBody(routerCtx *types.RoutingContext, body []byte) []byte {
+	if routerCtx == nil || routerCtx.AsyncJobBackendID == "" {
+		return body
+	}
+	publicJobID, ok := extractVideoIDFromPath(routerCtx.ReqPath)
+	if !ok || publicJobID == routerCtx.AsyncJobBackendID {
+		return body
+	}
+	return bytes.ReplaceAll(body, []byte(routerCtx.AsyncJobBackendID), []byte(publicJobID))
+}
+
+// videoJobBodyResponse wraps a (possibly empty) body into a ResponseBody
+// mutation. An empty body suppresses a chunk that is still being accumulated.
+func videoJobBodyResponse(body []byte) *extProcPb.ProcessingResponse {
+	return &extProcPb.ProcessingResponse{
+		Response: &extProcPb.ProcessingResponse_ResponseBody{
+			ResponseBody: &extProcPb.BodyResponse{
+				Response: &extProcPb.CommonResponse{
+					BodyMutation: &extProcPb.BodyMutation{
+						Mutation: &extProcPb.BodyMutation_Body{
+							Body: body,
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// maybeDeleteVideoJobAfterDelete removes the record once the backend has
+// confirmed the job is gone (2xx) or was never there (404). A 5xx leaves it
+// alone: the job may still exist on that pod and the client needs the same
+// sticky route to try again. Called from HandleResponseHeaders, where the
+// upstream status is known -- not at pin time.
+//
+// A non-nil return replaces the client's response: the backend delete succeeded
+// but the record outlived it, so the client is told to retry and finish the
+// cleanup instead of being handed a success over a public id that still resolves.
+func (s *Server) maybeDeleteVideoJobAfterDelete(ctx context.Context, routerCtx *types.RoutingContext, statusCode int) *extProcPb.ProcessingResponse {
+	if routerCtx == nil || routerCtx.ReqHeaders[methodKey] != http.MethodDelete {
+		return nil
+	}
+	if (statusCode < 200 || statusCode >= 300) && statusCode != http.StatusNotFound {
+		return nil
+	}
+	publicJobID, ok := extractVideoIDFromPath(routerCtx.ReqPath)
+	if !ok {
+		return nil
+	}
+
+	owner := asyncJobOwnerFromRoutingContext(routerCtx)
+	if err := s.asyncJobRegistry().Delete(ctx, owner, publicJobID); err != nil {
+		klog.ErrorS(err, "failed to delete async video job record after backend delete",
+			"requestID", routerCtx.RequestID, "publicJobID", publicJobID, "owner", owner, "status", statusCode)
+		return videoJobCleanupFailedResponse(publicJobID)
+	}
+
+	klog.InfoS("async video job record deleted", "requestID", routerCtx.RequestID, "publicJobID", publicJobID, "owner", owner, "status", statusCode)
+	return nil
 }

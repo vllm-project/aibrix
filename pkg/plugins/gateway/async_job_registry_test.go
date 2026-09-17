@@ -1332,6 +1332,7 @@ func TestAsyncJobRegistry_RegisterRejectsElapsedBackendExpiry(t *testing.T) {
 type countingRedisServer struct {
 	listener net.Listener
 	reply    string
+	blockGET chan struct{}
 
 	mu     sync.Mutex
 	counts map[string]int
@@ -1345,6 +1346,14 @@ func newCountingRedisServer(t *testing.T, reply string) *countingRedisServer {
 	server := &countingRedisServer{listener: listener, reply: reply, counts: map[string]int{}}
 	go server.serve()
 	t.Cleanup(func() { _ = listener.Close() })
+	return server
+}
+
+func newBlockingRedisServer(t *testing.T) *countingRedisServer {
+	t.Helper()
+	server := newCountingRedisServer(t, "OK")
+	server.blockGET = make(chan struct{})
+	t.Cleanup(func() { close(server.blockGET) })
 	return server
 }
 
@@ -1381,6 +1390,10 @@ func (s *countingRedisServer) handle(conn net.Conn) {
 		s.mu.Lock()
 		s.counts[name]++
 		s.mu.Unlock()
+		if name == "GET" && s.blockGET != nil {
+			<-s.blockGET
+			return
+		}
 		// HELLO is the client's handshake, not a command this test is about. It is
 		// refused the way a RESP2-only server does, which sends go-redis down its
 		// plain AUTH/SELECT path instead of failing the connection.
@@ -1427,4 +1440,57 @@ func readRESPCommand(reader *bufio.Reader) ([]string, error) {
 		command = append(command, string(payload[:size]))
 	}
 	return command, nil
+}
+
+// TestAsyncJobStoreClient_DisablesGoRedisInternalRetries proves the three-attempt
+// budget is the whole budget. go-redis retries three times on its own by default,
+// which would turn this package's three attempts into twelve round trips and
+// leave the one-second deadline to do the bounding on its own.
+func TestAsyncJobStoreClient_DisablesGoRedisInternalRetries(t *testing.T) {
+	server := newCountingRedisServer(t, "LOADING Redis is loading the dataset in memory")
+
+	client := redis.NewClient(&redis.Options{Addr: server.addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	store := newRedisAsyncJobStore(asyncJobStoreClient(client))
+	_, err := store.get(context.Background(), asyncJobOwnerShared, "job-1")
+	assert.ErrorIs(t, err, errAsyncJobStoreUnavailable)
+
+	assert.Equal(t, asyncJobStoreMaxAttempts, server.count("GET"),
+		"a transient failure must cost exactly the policy's attempts, retries included")
+}
+
+func TestAsyncJobStoreClient_BoundsBlockedNetworkReadByContext(t *testing.T) {
+	server := newBlockingRedisServer(t)
+	client := redis.NewClient(&redis.Options{Addr: server.addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	derived := asyncJobStoreClient(client)
+	t.Cleanup(func() { _ = derived.Close() })
+	store := newRedisAsyncJobStore(derived)
+	store.retry = asyncJobRetryPolicy{maxAttempts: 1, baseBackoff: time.Millisecond, deadline: 80 * time.Millisecond}
+
+	started := time.Now()
+	_, err := store.get(context.Background(), asyncJobOwnerShared, "job-1")
+	elapsed := time.Since(started)
+
+	assert.ErrorIs(t, err, errAsyncJobStoreUnavailable)
+	assert.Less(t, elapsed, 2*store.retry.deadline, "the operation deadline must interrupt a blocked Redis read")
+	assert.Equal(t, 1, server.count("GET"))
+}
+
+// TestAsyncJobStoreClient_KeepsConnectionSettings keeps the derived client from
+// quietly dropping the address or the credentials of the client it came from.
+func TestAsyncJobStoreClient_KeepsConnectionSettings(t *testing.T) {
+	client := redis.NewClient(&redis.Options{Addr: "10.0.0.9:6379", Password: "s3cret", DB: 3})
+	t.Cleanup(func() { _ = client.Close() })
+
+	derived := asyncJobStoreClient(client)
+	t.Cleanup(func() { _ = derived.Close() })
+
+	assert.Equal(t, "10.0.0.9:6379", derived.Options().Addr)
+	assert.Equal(t, "s3cret", derived.Options().Password)
+	assert.Equal(t, 3, derived.Options().DB)
+	assert.Equal(t, 0, derived.Options().MaxRetries, "go-redis normalizes a disabled retry loop to zero retries")
+	assert.True(t, derived.Options().ContextTimeoutEnabled)
 }

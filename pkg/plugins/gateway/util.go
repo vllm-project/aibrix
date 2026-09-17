@@ -603,8 +603,8 @@ func isMultipartRequest(contentType string) bool {
 //
 // requestPath is used to skip the "stream" field for vLLM-Omni's Videos API
 // (PathVideos, PathVideosSync): video creation is an async job -- HandleResponseBody
-// relies on stream being false there to reach recordVideoJobPodFromResponse, so a
-// stray stream=true field (e.g. from an SDK reusing a generic multipart helper across
+// relies on stream being false there to reach handleVideoJobResponseBody, so a stray
+// stream=true field (e.g. from an SDK reusing a generic multipart helper across
 // audio/video calls) must not be allowed to route the response down the SSE branch
 // instead.
 // nolint:nakedret

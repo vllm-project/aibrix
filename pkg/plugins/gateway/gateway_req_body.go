@@ -50,11 +50,11 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 	defer span.End()
 
 	// Async video job follow-ups (GET status/content, DELETE) carry their routing
-	// key -- video_id -- in the path, not the (often empty) body. The generated
-	// video only exists on the pod that created it, so this bypasses the normal
-	// model-based routing below and pins directly back to that pod.
-	if videoID, isSubResource := extractVideoIDFromPath(requestPath); isSubResource {
-		return s.handleVideoJobSubResource(ctx, routingCtx, requestID, requestPath, videoID, body.RequestBody.GetBody())
+	// key -- the public job id -- in the path, not the (often empty) body. The
+	// generated video only exists on the pod that created it, so this bypasses the
+	// normal model-based routing below and pins directly back to that pod.
+	if publicJobID, isSubResource := extractVideoIDFromPath(requestPath); isSubResource {
+		return s.handleVideoJobSubResource(ctx, routingCtx, requestID, requestPath, publicJobID, body.RequestBody.GetBody())
 	}
 
 	var model, message string
@@ -123,13 +123,13 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 
 	// The async video job (POST /v1/videos) must always be pinned to the pod that
 	// creates it: the generated video lives on that pod's local disk, and
-	// recordVideoJobPodFromResponse (called from HandleResponseBody) records
-	// routingCtx's target pod so follow-up GET/DELETE calls can be routed back to
-	// it. RouterNotSet delegates routing to the HTTPRoute/k8s Service below and
-	// never calls SetTargetPod, which would leave that pod mapping unrecorded and
-	// block recordVideoJobPodFromResponse's TargetPod() call until the request's
-	// context is done. Force a real algorithm here regardless of the client's
-	// routing-strategy header (or lack of one).
+	// registerVideoJobFromCreateResponse (called from HandleResponseBody) records
+	// routingCtx's target pod identity so follow-up GET/DELETE calls can be routed
+	// back to it. RouterNotSet delegates routing to the HTTPRoute/k8s Service
+	// below and never calls SetTargetPod, which would leave the job unregisterable
+	// and block that TargetPod() call until the request's context is done. Force a
+	// real algorithm here regardless of the client's routing-strategy header (or
+	// lack of one).
 	if routingAlgorithm == routing.RouterNotSet && pathWithoutQuery(requestPath) == PathVideos {
 		routingAlgorithm = routing.RouterLeastRequest
 		routingCtx.Algorithm = routingAlgorithm
@@ -220,7 +220,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 	routingCtx.RequestEndTime = time.Now()
 	term = s.cache.AddRequestCount(routingCtx, requestID, model)
 
-	return &extProcPb.ProcessingResponse{
+	resp := &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_RequestBody{
 			RequestBody: &extProcPb.BodyResponse{
 				Response: &extProcPb.CommonResponse{
@@ -235,7 +235,14 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 				},
 			},
 		},
-	}, model, stream, term
+	}
+
+	// No ModeOverride is sent: the response body mode this create needs (Buffered,
+	// so the backend job id can be replaced before anything reaches the client)
+	// comes from the Videos route's EnvoyExtensionPolicy. Envoy Gateway v1.2.8
+	// never sets ext_proc's allow_mode_override, so a per-request override here
+	// would be silently ignored and would only read as if it did something.
+	return resp, model, stream, term
 }
 
 func buildRoutingErrorResponse(

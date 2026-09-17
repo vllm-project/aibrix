@@ -18,6 +18,7 @@ package gateway
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -570,4 +571,63 @@ func TestHandleRequestHeadersPreservesMockPDFailureHeader(t *testing.T) {
 	)
 
 	assert.Equal(t, "prefill", routingCtx.ReqHeaders[HeaderMockPDFailure])
+}
+
+// TestHandleRequestHeaders_VideoListIsScopedToTheRequestUser walks the whole
+// entry point for the job catalog: the owner scope is derived from the `user`
+// header, and one caller's jobs must be invisible to another. A bearer token is
+// not an identity here -- an authenticated request with no `user` header shares
+// one scope with every other such request, which is why the two cases below can
+// never see each other's jobs.
+func TestHandleRequestHeaders_VideoListIsScopedToTheRequestUser(t *testing.T) {
+	s, _, registry := newTestVideoJobServer(t)
+	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
+	alice := registerTestVideoJob(t, registry, asyncJobOwnerFromUserName("alice"), "wan2.1-vace-1.3b", "video_gen_alice", pod)
+	shared := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_anon", pod)
+
+	listRequest := func(username string) *extProcPb.ProcessingRequest {
+		headers := []*configPb.HeaderValue{
+			{Key: pathKey, RawValue: []byte(PathVideos)},
+			{Key: methodKey, RawValue: []byte(http.MethodGet)},
+		}
+		if username != "" {
+			headers = append(headers, &configPb.HeaderValue{Key: userKey, RawValue: []byte(username)})
+		}
+		return &extProcPb.ProcessingRequest{
+			Request: &extProcPb.ProcessingRequest_RequestHeaders{
+				RequestHeaders: &extProcPb.HttpHeaders{
+					Headers:     &configPb.HeaderMap{Headers: headers},
+					EndOfStream: true,
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name       string
+		username   string
+		wantID     string
+		unwantedID string
+	}{
+		{"named user sees only their own jobs", "alice", alice.PublicJobID, shared.PublicJobID},
+		{"anonymous caller sees only the shared scope", "", shared.PublicJobID, alice.PublicJobID},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, _, _, _, _ := s.HandleRequestHeaders(
+				context.Background(), "req-list", trace.SpanFromContext(context.Background()), listRequest(tt.username),
+			)
+
+			immediate := resp.GetImmediateResponse()
+			if immediate == nil {
+				t.Fatal("GET /v1/videos must be answered by the gateway, not routed to a backend")
+			}
+			assert.Equal(t, envoyTypePb.StatusCode_OK, immediate.GetStatus().GetCode())
+			body := string(immediate.GetBody())
+			assert.Contains(t, body, tt.wantID)
+			assert.NotContains(t, body, tt.unwantedID)
+			assert.NotContains(t, body, "video_gen_", "backend ids must never leave the gateway")
+		})
+	}
 }

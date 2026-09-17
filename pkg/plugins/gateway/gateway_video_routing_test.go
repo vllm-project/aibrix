@@ -17,24 +17,17 @@ limitations under the License.
 package gateway
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
-	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	miniredis "github.com/alicebob/miniredis/v2"
-	"github.com/bytedance/sonic"
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -42,19 +35,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 
-	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils"
 )
-
-func newTestVideoJobRedisServer(t *testing.T) (*Server, *miniredis.Miniredis) {
-	t.Helper()
-	mr := miniredis.RunT(t)
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { _ = client.Close() })
-	return &Server{redisClient: client}, mr
-}
 
 func TestExtractVideoIDFromPath(t *testing.T) {
 	tests := []struct {
@@ -69,7 +53,7 @@ func TestExtractVideoIDFromPath(t *testing.T) {
 		{"content download", "/v1/videos/video_gen_abc123/content", "video_gen_abc123", true},
 		{"status poll with query", "/v1/videos/video_gen_abc123?foo=bar", "video_gen_abc123", true},
 		{"content download with variant query", "/v1/videos/video_gen_abc123/content?variant=mp4", "video_gen_abc123", true},
-		{"trailing slash with empty id", "/v1/videos/", "", false},
+		{"trailing slash is not a valid job path", "/v1/videos/", "", false},
 		{"unrelated path", "/v1/chat/completions", "", false},
 		{"unrelated path sharing prefix", "/v1/videosomethingelse", "", false},
 		{"nested sub-path beyond content still extracts leading id", "/v1/videos/video_gen_abc123/content/extra", "video_gen_abc123", true},
@@ -83,67 +67,116 @@ func TestExtractVideoIDFromPath(t *testing.T) {
 	}
 }
 
-func TestVideoJobRedisKey(t *testing.T) {
-	assert.Equal(t, "aibrix:gateway:video_job:video-1", videoJobRedisKey("video-1"))
+// TestRewriteVideoPathID pins the one rewrite the gateway performs on a video
+// follow-up: the public job id in the path becomes the backend's own id. Only
+// that segment may change -- the /content suffix decides whether the response is
+// JSON or a video stream, and the query string carries backend options the
+// gateway does not understand.
+func TestRewriteVideoPathID(t *testing.T) {
+	tests := []struct {
+		name      string
+		path      string
+		backendID string
+		want      string
+		wantOK    bool
+	}{
+		{"status path", "/v1/videos/aibrixjob-abc", "video_gen_1", "/v1/videos/video_gen_1", true},
+		{"content path keeps its suffix", "/v1/videos/aibrixjob-abc/content", "video_gen_1", "/v1/videos/video_gen_1/content", true},
+		{"query string is preserved", "/v1/videos/aibrixjob-abc?foo=bar", "video_gen_1", "/v1/videos/video_gen_1?foo=bar", true},
+		{"content query string is preserved", "/v1/videos/aibrixjob-abc/content?variant=mp4", "video_gen_1", "/v1/videos/video_gen_1/content?variant=mp4", true},
+		{"deeper sub-path is preserved", "/v1/videos/aibrixjob-abc/content/extra", "video_gen_1", "/v1/videos/video_gen_1/content/extra", true},
+		{"trailing slash is refused", "/v1/videos/aibrixjob-abc/", "video_gen_1", "", false},
+		{"list path has no id to rewrite", "/v1/videos", "video_gen_1", "", false},
+		{"sync path has no id to rewrite", "/v1/videos/sync", "video_gen_1", "", false},
+		{"empty backend id is refused", "/v1/videos/aibrixjob-abc", "", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := rewriteVideoPathID(tt.path, tt.backendID)
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
 
-// TestServer_VideoJobPodTracking exercises the local-cache-only path (redisClient
-// is nil, matching standalone/local dev mode) -- every redis-touching branch in
-// rememberVideoJobPod/lookupVideoJobPod/forgetVideoJobPod short-circuits on that
-// nil check. Redis-backed cross-replica behavior itself is covered separately by
-// the TestSyncVideoJobCacheFromRedis_* tests below, which use a real (miniredis)
-// client.
-func TestServer_VideoJobPodTracking(t *testing.T) {
-	s := &Server{}
-	ctx := context.Background()
+// TestAsyncJobOwnerFromRoutingContext covers scope derivation from the only
+// identity the gateway actually has: the user request header. A request without
+// one is shared scope, never a wildcard over other users' jobs.
+func TestAsyncJobOwnerFromRoutingContext(t *testing.T) {
+	assert.Equal(t, asyncJobOwnerShared, asyncJobOwnerFromRoutingContext(nil))
 
-	// Unknown id.
-	_, _, _, ok := s.lookupVideoJobPod(ctx, "missing")
-	assert.False(t, ok)
+	anonymous := types.NewRoutingContext(context.Background(), "", "", "", "req-1", "")
+	assert.Equal(t, asyncJobOwnerShared, asyncJobOwnerFromRoutingContext(anonymous))
 
-	// Set then get.
-	s.rememberVideoJobPod(ctx, "video-1", "pod-a", "ns-a", "wan2.1-vace-1.3b", time.Hour)
-	podName, podNamespace, model, ok := s.lookupVideoJobPod(ctx, "video-1")
-	assert.True(t, ok)
-	assert.Equal(t, "pod-a", podName)
-	assert.Equal(t, "ns-a", podNamespace)
-	assert.Equal(t, "wan2.1-vace-1.3b", model)
-
-	// Non-positive TTL falls back to the default rather than being treated as
-	// "already expired".
-	s.rememberVideoJobPod(ctx, "video-2", "pod-b", "ns-b", "m", 0)
-	_, _, _, ok = s.lookupVideoJobPod(ctx, "video-2")
-	assert.True(t, ok)
-
-	// Expired entries are evicted on read. rememberVideoJobPod itself can't produce
-	// an already-expired entry (it coerces ttl<=0 to the default, per the video-2
-	// case above), so store one directly to exercise the expiry path.
-	s.videoJobCache.Store("video-3", videoJobCacheItem{entry: videoJobCacheEntry{
-		PodName: "pod-c", PodNamespace: "ns-c", Model: "m",
-		ExpiresAt: time.Now().Add(-time.Second),
-	}})
-	_, _, _, ok = s.lookupVideoJobPod(ctx, "video-3")
-	assert.False(t, ok)
-	_, found := s.videoJobCache.Load("video-3")
-	assert.False(t, found, "expired entry should have been evicted on read")
-
-	// Explicit forget.
-	s.forgetVideoJobPod(ctx, "video-1")
-	_, _, _, ok = s.lookupVideoJobPod(ctx, "video-1")
-	assert.False(t, ok)
-
-	// Empty videoID/podName are no-ops, not stored.
-	s.rememberVideoJobPod(ctx, "", "pod-x", "ns-x", "m", time.Hour)
-	s.rememberVideoJobPod(ctx, "video-4", "", "ns-x", "m", time.Hour)
-	_, _, _, ok = s.lookupVideoJobPod(ctx, "")
-	assert.False(t, ok)
-	_, _, _, ok = s.lookupVideoJobPod(ctx, "video-4")
-	assert.False(t, ok)
+	named := types.NewRoutingContext(context.Background(), "", "", "", "req-2", "alice")
+	assert.Equal(t, "scope:user:alice", asyncJobOwnerFromRoutingContext(named))
 }
 
+// TestIsVideoListRequest verifies the public catalog is answered only for its
+// exact, non-trailing-slash path. The query parameters are pagination controls,
+// not a model selector.
+func TestIsVideoListRequest(t *testing.T) {
+	assert.True(t, isVideoListRequest(PathVideos, http.MethodGet))
+	assert.True(t, isVideoListRequest(PathVideos+"?limit=20", http.MethodGet))
+	assert.False(t, isVideoListRequest(PathVideos+"/", http.MethodGet))
+	assert.False(t, isVideoListRequest(PathVideos+"/?limit=20", http.MethodGet))
+	assert.False(t, isVideoListRequest(PathVideos, http.MethodPost))
+	assert.False(t, isVideoListRequest(PathVideosSync, http.MethodGet))
+	assert.False(t, isVideoListRequest(PathVideos+"/aibrixjob-abc", http.MethodGet))
+	assert.False(t, isVideoListRequest(PathChatCompletions, http.MethodGet))
+}
+
+func TestParseVideoListOptions(t *testing.T) {
+	tests := []struct {
+		path    string
+		want    AsyncJobListOptions
+		wantErr bool
+	}{
+		{PathVideos, AsyncJobListOptions{Limit: 20, Order: "desc"}, false},
+		{PathVideos + "?limit=100&order=asc&after=aibrixjob-cursor", AsyncJobListOptions{After: "aibrixjob-cursor", Limit: 100, Order: "asc"}, false},
+		{PathVideos + "?limit=0", AsyncJobListOptions{}, true},
+		{PathVideos + "?limit=101", AsyncJobListOptions{}, true},
+		{PathVideos + "?order=newest", AsyncJobListOptions{}, true},
+		{PathVideos + "?model=wan2.1", AsyncJobListOptions{}, true},
+		{PathVideos + "?limit=1&limit=2", AsyncJobListOptions{}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got, err := parseVideoListOptions(tt.path)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestVideoJobResponseNeedsBuffering fixes which responses the gateway is
+// allowed to hold and mutate. Create, status, and delete can carry an id;
+// /content is a video stream that must keep flowing through Envoy untouched.
+func TestVideoJobResponseNeedsBuffering(t *testing.T) {
+	assert.True(t, videoJobResponseNeedsBuffering(http.MethodPost, PathVideos))
+	assert.False(t, videoJobResponseNeedsBuffering(http.MethodPost, PathVideos+"/"))
+	assert.True(t, videoJobResponseNeedsBuffering(http.MethodGet, PathVideos+"/aibrixjob-abc"))
+	assert.True(t, videoJobResponseNeedsBuffering(http.MethodGet, PathVideos+"/aibrixjob-abc?foo=bar"))
+	assert.False(t, videoJobResponseNeedsBuffering(http.MethodGet, PathVideos+"/aibrixjob-abc/"))
+	assert.False(t, videoJobResponseNeedsBuffering(http.MethodGet, PathVideos+"/aibrixjob-abc/content"))
+	assert.False(t, videoJobResponseNeedsBuffering(http.MethodGet, PathVideos+"/aibrixjob-abc/content/"))
+	assert.False(t, videoJobResponseNeedsBuffering(http.MethodGet, PathVideos))
+	assert.True(t, videoJobResponseNeedsBuffering(http.MethodDelete, PathVideos+"/aibrixjob-abc"))
+	assert.False(t, videoJobResponseNeedsBuffering(http.MethodDelete, PathVideos+"/aibrixjob-abc/"))
+	assert.False(t, videoJobResponseNeedsBuffering(http.MethodPost, PathVideosSync))
+	assert.False(t, videoJobResponseNeedsBuffering(http.MethodPost, PathChatCompletions))
+}
+
+// readyPod builds a routable pod. The UID matters as much as the name here:
+// async job records pin a pod identity, and a pod recreated under the same name
+// must not be mistaken for the one that holds the job's output.
 func readyPod(name, namespace, ip string) *v1.Pod {
 	return &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, UID: k8stypes.UID("uid-" + namespace + "-" + name)},
 		Status: v1.PodStatus{
 			PodIP:      ip,
 			Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
@@ -151,161 +184,389 @@ func readyPod(name, namespace, ip string) *v1.Pod {
 	}
 }
 
-// TestHandleVideoJobSubResourceHeaders_PinsKnownJob covers the fix for the bug
-// where a GET/DELETE video sub-resource request with no body never got pinned
-// to its owning pod: Envoy's ext_proc filter (request_body_mode: BUFFERED)
-// never sends a RequestBody message for a bodyless request, so pinning must
-// happen at RequestHeaders instead of (only) RequestBody.
-func TestHandleVideoJobSubResourceHeaders_PinsKnownJob(t *testing.T) {
+// newTestVideoJobServer wires a Server to an in-memory-store registry so the
+// Video layer is exercised against the real registry code (scope checks, UID
+// verification, expiry) without a Redis dependency.
+func newTestVideoJobServer(t *testing.T) (*Server, *MockCache, *memoryAsyncJobRegistry) {
+	t.Helper()
 	mockCache := new(MockCache)
-	s := &Server{cache: mockCache}
+	registry := newMemoryAsyncJobRegistry(mockCache)
+	return &Server{cache: mockCache, asyncJobs: registry}, mockCache, registry
+}
+
+func registerTestVideoJob(t *testing.T, registry AsyncJobRegistry, owner, model, backendJobID string, pod *v1.Pod) AsyncJobRecord {
+	t.Helper()
+	record, err := registry.Register(context.Background(), AsyncJobRegistration{
+		JobType:      asyncJobTypeVideo,
+		Owner:        owner,
+		Model:        model,
+		BackendJobID: backendJobID,
+		Pod:          pod,
+	})
+	require.NoError(t, err)
+	return record
+}
+
+func videoJobRecordCount(t *testing.T, registry AsyncJobRegistry, owner string) int {
+	t.Helper()
+	records, err := listTestAsyncJobs(context.Background(), registry, owner, asyncJobTypeVideo)
+	require.NoError(t, err)
+	return len(records)
+}
+
+// failingAsyncJobStore forces the store errors the Video layer has to translate
+// into HTTP status codes, without needing a genuinely broken Redis.
+type failingAsyncJobStore struct {
+	asyncJobStore
+	putErr    error
+	deleteErr error
+}
+
+func (f *failingAsyncJobStore) put(ctx context.Context, record AsyncJobRecord) error {
+	if f.putErr != nil {
+		return f.putErr
+	}
+	return f.asyncJobStore.put(ctx, record)
+}
+
+func (f *failingAsyncJobStore) delete(ctx context.Context, owner, publicJobID string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	return f.asyncJobStore.delete(ctx, owner, publicJobID)
+}
+
+// TestHandleVideoJobSubResourceHeaders_PinsAndRewritesPath covers the whole
+// point of the registry: an opaque public id sent by the client is resolved to
+// the pod that owns the job, and the path is rewritten to the backend's own id
+// so the engine still recognizes it. Bodyless GET/DELETE must be pinned here,
+// at RequestHeaders, because ext_proc never sends a RequestBody message for a
+// request with no body.
+func TestHandleVideoJobSubResourceHeaders_PinsAndRewritesPath(t *testing.T) {
+	s, mockCache, registry := newTestVideoJobServer(t)
 	ctx := context.Background()
 
-	s.rememberVideoJobPod(ctx, "video-1", "pod-a", "ns-a", "wan2.1-vace-1.3b", time.Hour)
-
 	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc", pod)
+
 	mockCache.On("GetPod", "pod-a", "ns-a").Return(pod, nil)
 	mockCache.On("AddRequestCount", mock.Anything, "req-1", "wan2.1-vace-1.3b").Return(int64(7))
 
 	routingCtx := types.NewRoutingContext(ctx, "", "", "", "req-1", "")
-	routingCtx.ReqHeaders = map[string]string{methodKey: "GET"}
+	routingCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+	requestPath := PathVideos + "/" + record.PublicJobID + "?variant=mp4"
+	routingCtx.ReqPath = requestPath
 
-	resp, term := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, "req-1", "/v1/videos/video-1", "video-1")
+	resp, term := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, "req-1", requestPath, record.PublicJobID)
 
 	require.NotNil(t, resp.GetRequestHeaders())
 	assert.Nil(t, resp.GetImmediateResponse())
 	assert.EqualValues(t, 7, term)
 
 	headersResp := resp.GetRequestHeaders().GetResponse()
-	assert.True(t, headersResp.GetClearRouteCache(), "must clear route cache so Envoy re-evaluates the routing-strategy header match")
+	assert.True(t, headersResp.GetClearRouteCache(), "must clear route cache so Envoy re-evaluates both the rewritten path and the routing-strategy header match")
 
 	set := headersResp.GetHeaderMutation().GetSetHeaders()
 	assertHeaderRawValue(t, set, HeaderRoutingStrategy, videoJobAffinityLabel)
 	assertHeaderRawValue(t, set, HeaderTargetPod, "10.0.0.5:8000")
+	assertHeaderRawValue(t, set, pathKey, PathVideos+"/video_gen_abc?variant=mp4")
+	assert.Equal(t, "wan2.1-vace-1.3b", routingCtx.Model)
 
 	mockCache.AssertExpectations(t)
 }
 
-// TestHandleVideoJobSubResourceHeaders_UnknownVideoReturns404 verifies an
-// unknown/expired video_id still gets a proper 404 (not a hang or a bare
-// route-not-found from Envoy) when resolved at the headers phase.
-func TestHandleVideoJobSubResourceHeaders_UnknownVideoReturns404(t *testing.T) {
-	s := &Server{cache: new(MockCache)}
+// TestHandleVideoJobSubResourceHeaders_ContentPathStaysStreaming asserts a
+// /content download is pinned and rewritten like any other follow-up but is not
+// switched to a buffered response: the body is a video file, not JSON.
+func TestHandleVideoJobSubResourceHeaders_ContentPathStaysStreaming(t *testing.T) {
+	s, mockCache, registry := newTestVideoJobServer(t)
 	ctx := context.Background()
-	routingCtx := types.NewRoutingContext(ctx, "", "", "", "req-1", "")
-	routingCtx.ReqHeaders = map[string]string{methodKey: "GET"}
 
-	resp, term := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, "req-1", "/v1/videos/does-not-exist", "does-not-exist")
+	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1", "video_gen_abc", pod)
+
+	mockCache.On("GetPod", "pod-a", "ns-a").Return(pod, nil)
+	mockCache.On("AddRequestCount", mock.Anything, "req-1", "wan2.1").Return(int64(1))
+
+	routingCtx := types.NewRoutingContext(ctx, "", "", "", "req-1", "")
+	routingCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+	requestPath := PathVideos + "/" + record.PublicJobID + "/content"
+	routingCtx.ReqPath = requestPath
+
+	resp, _ := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, "req-1", requestPath, record.PublicJobID)
+
+	require.NotNil(t, resp.GetRequestHeaders())
+	assertHeaderRawValue(t, resp.GetRequestHeaders().GetResponse().GetHeaderMutation().GetSetHeaders(), pathKey, PathVideos+"/video_gen_abc/content")
+	assert.Nil(t, resp.GetModeOverride(), "/content is routed to the streaming policy; nothing here may ask for buffering")
+
+	mockCache.AssertExpectations(t)
+}
+
+// TestHandleVideoJobSubResourceHeaders_SendsNoModeOverride: the response body
+// mode comes from the route's EnvoyExtensionPolicy (see
+// TestGatewayPluginManifest_VideoJSONResponsesAreBuffered), not from the plugin.
+// Envoy Gateway v1.2.8 leaves ext_proc's allow_mode_override off, so an override
+// sent here would be ignored - and asserting one would only look like buffering
+// was arranged when nothing had been.
+func TestHandleVideoJobSubResourceHeaders_SendsNoModeOverride(t *testing.T) {
+	s, mockCache, registry := newTestVideoJobServer(t)
+	ctx := context.Background()
+
+	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1", "video_gen_abc", pod)
+
+	mockCache.On("GetPod", "pod-a", "ns-a").Return(pod, nil)
+	mockCache.On("AddRequestCount", mock.Anything, "req-1", "wan2.1").Return(int64(1))
+
+	routingCtx := types.NewRoutingContext(ctx, "", "", "", "req-1", "")
+	routingCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+	requestPath := PathVideos + "/" + record.PublicJobID
+	routingCtx.ReqPath = requestPath
+
+	resp, _ := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, "req-1", requestPath, record.PublicJobID)
+
+	require.NotNil(t, resp.GetRequestHeaders())
+	assert.Nil(t, resp.GetModeOverride(), "the response body mode is configured per route, not overridden per request")
+
+	mockCache.AssertExpectations(t)
+}
+
+// TestHandleVideoJobSubResourceHeaders_UnknownPublicIDReturns404 verifies an
+// unknown or expired public id gets a proper 404 rather than a hang or a bare
+// route-not-found from Envoy.
+func TestHandleVideoJobSubResourceHeaders_UnknownPublicIDReturns404(t *testing.T) {
+	s, _, _ := newTestVideoJobServer(t)
+	ctx := context.Background()
+
+	routingCtx := types.NewRoutingContext(ctx, "", "", "", "req-1", "")
+	routingCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+	requestPath := PathVideos + "/aibrixjob-does-not-exist"
+	routingCtx.ReqPath = requestPath
+
+	resp, term := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, "req-1", requestPath, "aibrixjob-does-not-exist")
 
 	require.NotNil(t, resp.GetImmediateResponse())
 	assert.Equal(t, envoyTypePb.StatusCode_NotFound, resp.GetImmediateResponse().GetStatus().GetCode())
 	assert.EqualValues(t, 0, term)
 }
 
-// TestHandleVideoJobSubResourceHeaders_PodUnavailableSetsModelForMetrics covers
-// the case where the video_id is known but its owning pod is no longer
-// available (stale/rescheduled pod). Before the fix, routingCtx.Model was only
-// set on the success path, so gateway.go's st.model (taken from this same
-// routingCtx) stayed empty and the caller's if st.model == "" check silently
-// skipped emitMetricsCounterHelper(GatewayRequestModelFailTotal, ...),
-// undercounting this failure mode in gateway_request_fail metrics even though
-// the client still correctly got a 404.
-func TestHandleVideoJobSubResourceHeaders_PodUnavailableSetsModelForMetrics(t *testing.T) {
-	mockCache := new(MockCache)
-	s := &Server{cache: mockCache}
+// TestHandleVideoJobSubResourceHeaders_ForeignOwnerReturns404 is the scope
+// isolation guarantee: another user's public id must be indistinguishable from
+// one that never existed, so a 404 cannot be used to probe for valid ids.
+func TestHandleVideoJobSubResourceHeaders_ForeignOwnerReturns404(t *testing.T) {
+	s, mockCache, registry := newTestVideoJobServer(t)
 	ctx := context.Background()
 
-	s.rememberVideoJobPod(ctx, "video-1", "pod-a", "ns-a", "wan2.1-vace-1.3b", time.Hour)
+	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
+	record := registerTestVideoJob(t, registry, "scope:user:alice", "wan2.1", "video_gen_abc", pod)
+
+	// bob, not alice.
+	routingCtx := types.NewRoutingContext(ctx, "", "", "", "req-1", "bob")
+	routingCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+	requestPath := PathVideos + "/" + record.PublicJobID
+	routingCtx.ReqPath = requestPath
+
+	resp, _ := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, "req-1", requestPath, record.PublicJobID)
+
+	require.NotNil(t, resp.GetImmediateResponse())
+	assert.Equal(t, envoyTypePb.StatusCode_NotFound, resp.GetImmediateResponse().GetStatus().GetCode())
+	assert.Equal(t, 1, videoJobRecordCount(t, registry, "scope:user:alice"), "a foreign read must not touch the owner's record")
+
+	mockCache.AssertNotCalled(t, "GetPod", mock.Anything, mock.Anything)
+}
+
+// TestHandleVideoJobSubResourceHeaders_SharedScopeIsNotAWildcard makes sure the
+// fallback scope used by unauthenticated requests cannot read a named user's
+// jobs.
+func TestHandleVideoJobSubResourceHeaders_SharedScopeIsNotAWildcard(t *testing.T) {
+	s, _, registry := newTestVideoJobServer(t)
+	ctx := context.Background()
+
+	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
+	record := registerTestVideoJob(t, registry, "scope:user:alice", "wan2.1", "video_gen_abc", pod)
+
+	routingCtx := types.NewRoutingContext(ctx, "", "", "", "req-1", "")
+	routingCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+	requestPath := PathVideos + "/" + record.PublicJobID
+	routingCtx.ReqPath = requestPath
+
+	resp, _ := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, "req-1", requestPath, record.PublicJobID)
+
+	require.NotNil(t, resp.GetImmediateResponse())
+	assert.Equal(t, envoyTypePb.StatusCode_NotFound, resp.GetImmediateResponse().GetStatus().GetCode())
+}
+
+// TestHandleVideoJobSubResourceHeaders_ReplacedPodUIDReturns404 covers the
+// reason the record stores a pod UID at all: a pod recreated under the same
+// name is a different pod with an empty disk, so the job it used to hold is
+// gone and the record must go with it.
+func TestHandleVideoJobSubResourceHeaders_ReplacedPodUIDReturns404(t *testing.T) {
+	s, mockCache, registry := newTestVideoJobServer(t)
+	ctx := context.Background()
+
+	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1", "video_gen_abc", pod)
+
+	replacement := readyPod("pod-a", "ns-a", "10.0.0.9")
+	replacement.UID = k8stypes.UID("uid-recreated")
+	mockCache.On("GetPod", "pod-a", "ns-a").Return(replacement, nil)
+
+	routingCtx := types.NewRoutingContext(ctx, "", "", "", "req-1", "")
+	routingCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+	requestPath := PathVideos + "/" + record.PublicJobID
+	routingCtx.ReqPath = requestPath
+
+	resp, _ := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, "req-1", requestPath, record.PublicJobID)
+
+	require.NotNil(t, resp.GetImmediateResponse())
+	assert.Equal(t, envoyTypePb.StatusCode_NotFound, resp.GetImmediateResponse().GetStatus().GetCode())
+	assert.Equal(t, 0, videoJobRecordCount(t, registry, asyncJobOwnerShared), "a record pinned to a replaced pod is dead and must be dropped")
+	assert.Equal(t, "wan2.1", routingCtx.Model, "the model must be attributed even on the failure path so the fail-metric is not silently dropped")
+
+	mockCache.AssertExpectations(t)
+}
+
+// TestHandleVideoJobSubResourceHeaders_MissingPodReturns404AndDeletesRecord
+// covers a pod that is not in the informer cache at all: as confirmed-gone as
+// this gateway can observe.
+func TestHandleVideoJobSubResourceHeaders_MissingPodReturns404AndDeletesRecord(t *testing.T) {
+	s, mockCache, registry := newTestVideoJobServer(t)
+	ctx := context.Background()
+
+	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1", "video_gen_abc", pod)
+
 	mockCache.On("GetPod", "pod-a", "ns-a").Return((*v1.Pod)(nil), errors.New("pod not found"))
 
 	routingCtx := types.NewRoutingContext(ctx, "", "", "", "req-1", "")
-	routingCtx.ReqHeaders = map[string]string{methodKey: "GET"}
+	routingCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+	requestPath := PathVideos + "/" + record.PublicJobID
+	routingCtx.ReqPath = requestPath
 
-	resp, term := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, "req-1", "/v1/videos/video-1", "video-1")
+	resp, _ := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, "req-1", requestPath, record.PublicJobID)
 
 	require.NotNil(t, resp.GetImmediateResponse())
 	assert.Equal(t, envoyTypePb.StatusCode_NotFound, resp.GetImmediateResponse().GetStatus().GetCode())
-	assert.EqualValues(t, 0, term)
-	assert.Equal(t, "wan2.1-vace-1.3b", routingCtx.Model, "model must be attributed on routingCtx even when the pod lookup fails, so the fail-metric isn't silently dropped")
+	assert.Equal(t, 0, videoJobRecordCount(t, registry, asyncJobOwnerShared))
+	assert.Equal(t, "wan2.1", routingCtx.Model)
 
 	mockCache.AssertExpectations(t)
 }
 
-// TestHandleVideoJobSubResourceHeaders_NotReadyPodReturns503AndKeepsMapping
-// covers a transiently unavailable pod (readiness flap, restart, startup
-// probe still pending): before the fix this was indistinguishable from a
-// confirmed-gone pod, evicted the mapping, and returned a permanent-looking
-// 404. It must now return a retryable 503 and leave the mapping intact so a
-// follow-up poll can still land on the same pod once it recovers.
-func TestHandleVideoJobSubResourceHeaders_NotReadyPodReturns503AndKeepsMapping(t *testing.T) {
-	mockCache := new(MockCache)
-	s := &Server{cache: mockCache}
+// TestHandleVideoJobSubResourceHeaders_TerminatingPodReturns404AndDeletesRecord
+// covers a pod confirmed going away (DeletionTimestamp set): it will not come
+// back under this name, so the outcome is terminal like the cache miss above.
+func TestHandleVideoJobSubResourceHeaders_TerminatingPodReturns404AndDeletesRecord(t *testing.T) {
+	s, mockCache, registry := newTestVideoJobServer(t)
 	ctx := context.Background()
 
-	s.rememberVideoJobPod(ctx, "video-1", "pod-a", "ns-a", "wan2.1-vace-1.3b", time.Hour)
+	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1", "video_gen_abc", pod)
 
-	notReadyPod := readyPod("pod-a", "ns-a", "10.0.0.5")
-	notReadyPod.Status.Conditions = nil
-	mockCache.On("GetPod", "pod-a", "ns-a").Return(notReadyPod, nil)
+	terminating := readyPod("pod-a", "ns-a", "10.0.0.5")
+	now := metav1.Now()
+	terminating.DeletionTimestamp = &now
+	mockCache.On("GetPod", "pod-a", "ns-a").Return(terminating, nil)
 
 	routingCtx := types.NewRoutingContext(ctx, "", "", "", "req-1", "")
-	routingCtx.ReqHeaders = map[string]string{methodKey: "GET"}
+	routingCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+	requestPath := PathVideos + "/" + record.PublicJobID
+	routingCtx.ReqPath = requestPath
 
-	resp, term := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, "req-1", "/v1/videos/video-1", "video-1")
+	resp, _ := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, "req-1", requestPath, record.PublicJobID)
+
+	require.NotNil(t, resp.GetImmediateResponse())
+	assert.Equal(t, envoyTypePb.StatusCode_NotFound, resp.GetImmediateResponse().GetStatus().GetCode())
+	assert.Equal(t, 0, videoJobRecordCount(t, registry, asyncJobOwnerShared))
+
+	mockCache.AssertExpectations(t)
+}
+
+// TestHandleVideoJobSubResourceHeaders_NotReadyPodReturns503AndKeepsRecord
+// covers a transiently unavailable pod (readiness flap, restart, startup probe
+// still pending). The generated video lives on that pod's disk, so the record
+// must survive for a retry instead of collapsing into a permanent-looking 404.
+func TestHandleVideoJobSubResourceHeaders_NotReadyPodReturns503AndKeepsRecord(t *testing.T) {
+	s, mockCache, registry := newTestVideoJobServer(t)
+	ctx := context.Background()
+
+	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc", pod)
+
+	notReady := readyPod("pod-a", "ns-a", "10.0.0.5")
+	notReady.Status.Conditions = nil
+	mockCache.On("GetPod", "pod-a", "ns-a").Return(notReady, nil)
+
+	routingCtx := types.NewRoutingContext(ctx, "", "", "", "req-1", "")
+	routingCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+	requestPath := PathVideos + "/" + record.PublicJobID
+	routingCtx.ReqPath = requestPath
+
+	resp, term := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, "req-1", requestPath, record.PublicJobID)
 
 	require.NotNil(t, resp.GetImmediateResponse())
 	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, resp.GetImmediateResponse().GetStatus().GetCode())
 	assert.EqualValues(t, 0, term)
-
-	_, _, _, ok := s.lookupVideoJobPod(ctx, "video-1")
-	assert.True(t, ok, "mapping must survive a transient NotReady pod so a retry can still resolve it")
+	assert.Equal(t, 1, videoJobRecordCount(t, registry, asyncJobOwnerShared), "record must survive a transient NotReady pod so a retry can still resolve it")
+	assert.Equal(t, "wan2.1-vace-1.3b", routingCtx.Model)
 
 	mockCache.AssertExpectations(t)
 }
 
-// TestHandleVideoJobSubResourceHeaders_TerminatingPodReturns404AndForgetsMapping
-// covers a pod that is confirmed going away (DeletionTimestamp set): unlike
-// the NotReady case, this pod will not come back under this name, so the
-// mapping is forgotten and the client gets the terminal 404.
-func TestHandleVideoJobSubResourceHeaders_TerminatingPodReturns404AndForgetsMapping(t *testing.T) {
+// TestHandleVideoJobSubResourceHeaders_StoreUnavailableReturns503 asserts an
+// exhausted-retry Redis failure surfaces as a retryable 503, not as a 404 that
+// would tell the client its job is gone.
+func TestHandleVideoJobSubResourceHeaders_StoreUnavailableReturns503(t *testing.T) {
 	mockCache := new(MockCache)
-	s := &Server{cache: mockCache}
+	store := &failingAsyncJobStore{asyncJobStore: newInMemoryAsyncJobStore()}
+	s := &Server{cache: mockCache, asyncJobs: newTestAsyncJobRegistryWithStore(store, mockCache)}
 	ctx := context.Background()
 
-	s.rememberVideoJobPod(ctx, "video-1", "pod-a", "ns-a", "wan2.1-vace-1.3b", time.Hour)
-
-	terminatingPod := readyPod("pod-a", "ns-a", "10.0.0.5")
-	now := metav1.Now()
-	terminatingPod.DeletionTimestamp = &now
-	mockCache.On("GetPod", "pod-a", "ns-a").Return(terminatingPod, nil)
+	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
+	record := registerTestVideoJob(t, s.asyncJobs, asyncJobOwnerShared, "wan2.1", "video_gen_abc", pod)
+	store.asyncJobStore = &storeUnavailableAsyncJobStore{}
 
 	routingCtx := types.NewRoutingContext(ctx, "", "", "", "req-1", "")
-	routingCtx.ReqHeaders = map[string]string{methodKey: "GET"}
+	routingCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+	requestPath := PathVideos + "/" + record.PublicJobID
+	routingCtx.ReqPath = requestPath
 
-	resp, term := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, "req-1", "/v1/videos/video-1", "video-1")
+	resp, _ := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, "req-1", requestPath, record.PublicJobID)
 
 	require.NotNil(t, resp.GetImmediateResponse())
-	assert.Equal(t, envoyTypePb.StatusCode_NotFound, resp.GetImmediateResponse().GetStatus().GetCode())
-	assert.EqualValues(t, 0, term)
-
-	_, _, _, ok := s.lookupVideoJobPod(ctx, "video-1")
-	assert.False(t, ok, "mapping must be forgotten once the pod is confirmed terminating")
-
-	mockCache.AssertExpectations(t)
+	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, resp.GetImmediateResponse().GetStatus().GetCode())
 }
 
-// TestHandleRequestHeaders_VideoStatusPoll_Bodyless reproduces the reported
-// gateway bug end-to-end through the real entry point: a GET status-poll
-// request with EndOfStream=true (Envoy's signal that no body follows) must be
-// pinned to its owning pod during header processing, since HandleRequestBody
-// will never be invoked for it.
+// storeUnavailableAsyncJobStore reports every read as an exhausted transient
+// failure, the shape a Redis outage takes once the retry budget is spent.
+type storeUnavailableAsyncJobStore struct{}
+
+func (storeUnavailableAsyncJobStore) put(context.Context, AsyncJobRecord) error {
+	return fmt.Errorf("%w: put", errAsyncJobStoreUnavailable)
+}
+
+func (storeUnavailableAsyncJobStore) get(context.Context, string, string) (AsyncJobRecord, error) {
+	return AsyncJobRecord{}, fmt.Errorf("%w: get", errAsyncJobStoreUnavailable)
+}
+
+func (storeUnavailableAsyncJobStore) list(context.Context, string, string) ([]AsyncJobRecord, error) {
+	return nil, fmt.Errorf("%w: list", errAsyncJobStoreUnavailable)
+}
+
+func (storeUnavailableAsyncJobStore) delete(context.Context, string, string) error {
+	return fmt.Errorf("%w: delete", errAsyncJobStoreUnavailable)
+}
+
+// TestHandleRequestHeaders_VideoStatusPoll_Bodyless drives the bodyless pin
+// through the real entry point: EndOfStream=true is Envoy's signal that no body
+// follows, so HandleRequestBody will never run for this request.
 func TestHandleRequestHeaders_VideoStatusPoll_Bodyless(t *testing.T) {
-	mockCache := new(MockCache)
-	s := &Server{cache: mockCache}
+	s, mockCache, registry := newTestVideoJobServer(t)
 	ctx := context.Background()
 
-	s.rememberVideoJobPod(ctx, "video-1", "pod-a", "ns-a", "wan2.1-vace-1.3b", time.Hour)
 	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc", pod)
+
 	mockCache.On("GetPod", "pod-a", "ns-a").Return(pod, nil)
 	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "wan2.1-vace-1.3b").Return(int64(1))
 
@@ -313,8 +574,8 @@ func TestHandleRequestHeaders_VideoStatusPoll_Bodyless(t *testing.T) {
 		Request: &extProcPb.ProcessingRequest_RequestHeaders{
 			RequestHeaders: &extProcPb.HttpHeaders{
 				Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
-					{Key: pathKey, RawValue: []byte("/v1/videos/video-1")},
-					{Key: methodKey, RawValue: []byte("GET")},
+					{Key: pathKey, RawValue: []byte(PathVideos + "/" + record.PublicJobID)},
+					{Key: methodKey, RawValue: []byte(http.MethodGet)},
 				}},
 				EndOfStream: true,
 			},
@@ -329,27 +590,28 @@ func TestHandleRequestHeaders_VideoStatusPoll_Bodyless(t *testing.T) {
 	set := resp.GetRequestHeaders().GetResponse().GetHeaderMutation().GetSetHeaders()
 	assertHeaderRawValue(t, set, HeaderRoutingStrategy, videoJobAffinityLabel)
 	assertHeaderRawValue(t, set, HeaderTargetPod, "10.0.0.5:8000")
+	assertHeaderRawValue(t, set, pathKey, PathVideos+"/video_gen_abc")
 	assert.Equal(t, "wan2.1-vace-1.3b", routingCtx.Model)
 
 	mockCache.AssertExpectations(t)
 }
 
-// TestHandleRequestHeaders_VideoStatusPoll_WithBody ensures the new
-// EndOfStream-gated header-phase pinning doesn't fire when a body IS coming
-// (EndOfStream false): that case is left to HandleRequestBody, unchanged, so
-// this must NOT pin at headers time or set routing headers.
+// TestHandleRequestHeaders_VideoStatusPoll_WithBody ensures the EndOfStream-gated
+// header-phase pin does not fire when a body IS coming: that case belongs to
+// HandleRequestBody.
 func TestHandleRequestHeaders_VideoStatusPoll_WithBody(t *testing.T) {
-	mockCache := new(MockCache)
-	s := &Server{cache: mockCache}
+	s, mockCache, registry := newTestVideoJobServer(t)
 	ctx := context.Background()
-	s.rememberVideoJobPod(ctx, "video-1", "pod-a", "ns-a", "wan2.1-vace-1.3b", time.Hour)
+
+	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1", "video_gen_abc", pod)
 
 	req := &extProcPb.ProcessingRequest{
 		Request: &extProcPb.ProcessingRequest_RequestHeaders{
 			RequestHeaders: &extProcPb.HttpHeaders{
 				Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
-					{Key: pathKey, RawValue: []byte("/v1/videos/video-1")},
-					{Key: methodKey, RawValue: []byte("DELETE")},
+					{Key: pathKey, RawValue: []byte(PathVideos + "/" + record.PublicJobID)},
+					{Key: methodKey, RawValue: []byte(http.MethodDelete)},
 				}},
 				EndOfStream: false,
 			},
@@ -365,6 +627,7 @@ func TestHandleRequestHeaders_VideoStatusPoll_WithBody(t *testing.T) {
 	for _, h := range set {
 		assert.NotEqual(t, HeaderRoutingStrategy, h.GetHeader().GetKey(), "pinning must be deferred to the body phase when a body is coming")
 		assert.NotEqual(t, HeaderTargetPod, h.GetHeader().GetKey())
+		assert.NotEqual(t, pathKey, h.GetHeader().GetKey())
 	}
 	assert.Equal(t, "", routingCtx.Model)
 
@@ -382,350 +645,476 @@ func assertHeaderRawValue(t *testing.T, headers []*configPb.HeaderValueOption, k
 	t.Errorf("header %q not found in %v", key, headers)
 }
 
-// TestSyncVideoJobCacheFromRedis_RefreshesChangedEntry covers the case this sync
-// exists for: a different replica updated (or re-created) the Redis mapping --
-// here simulated by writing a different pod directly to Redis -- and this
-// replica's stale local copy must pick up the change without waiting for its
-// own (possibly days-long) local ExpiresAt.
-func TestSyncVideoJobCacheFromRedis_RefreshesChangedEntry(t *testing.T) {
-	s, _ := newTestVideoJobRedisServer(t)
+// TestHandleVideoListHeaders_ReturnsOwnerScopedPublicCatalog replaces the old
+// per-model HTTP fan-out: the catalog now comes from the registry, so it is
+// scoped to the caller, contains only public ids, and never exposes where the
+// job is running.
+func TestHandleVideoListHeaders_ReturnsOwnerScopedPublicCatalog(t *testing.T) {
+	s, _, registry := newTestVideoJobServer(t)
 	ctx := context.Background()
 
-	s.rememberVideoJobPod(ctx, "video-1", "pod-old", "ns-a", "m", time.Hour)
+	mine := registerTestVideoJob(t, registry, "scope:user:alice", "wan2.1", "video_gen_mine", readyPod("pod-a", "ns-a", "10.0.0.5"))
+	theirs := registerTestVideoJob(t, registry, "scope:user:bob", "wan2.1", "video_gen_theirs", readyPod("pod-b", "ns-a", "10.0.0.6"))
 
-	fresh := videoJobCacheEntry{PodName: "pod-new", PodNamespace: "ns-b", Model: "m", ExpiresAt: time.Now().Add(time.Hour)}
-	payload, err := sonic.Marshal(fresh)
+	resp := s.handleVideoListHeaders(ctx, "req-1", "scope:user:alice", AsyncJobListOptions{Limit: defaultAsyncJobListLimit, Order: "desc"})
+
+	require.NotNil(t, resp.GetImmediateResponse())
+	assert.Equal(t, envoyTypePb.StatusCode_OK, resp.GetImmediateResponse().GetStatus().GetCode())
+
+	body := resp.GetImmediateResponse().GetBody()
+	assert.Equal(t, "list", gjson.Get(body, "object").String())
+	data := gjson.Get(body, "data").Array()
+	require.Len(t, data, 1, "the catalog is scoped to its owner")
+	assert.Equal(t, mine.PublicJobID, data[0].Get("id").String())
+	assert.Equal(t, "wan2.1", data[0].Get("model").String())
+	assert.Equal(t, mine.PublicJobID, gjson.Get(body, "first_id").String())
+	assert.Equal(t, mine.PublicJobID, gjson.Get(body, "last_id").String())
+	assert.False(t, gjson.Get(body, "has_more").Bool())
+
+	assert.NotContains(t, body, "video_gen_mine", "backend job ids must never reach the client")
+	assert.NotContains(t, body, theirs.PublicJobID)
+	assert.NotContains(t, body, "pod-a", "routing-target details must never reach the client")
+	assert.NotContains(t, body, "ns-a")
+}
+
+func TestAsyncJobRegistry_ListPageUsesOpenAICursors(t *testing.T) {
+	_, _, registry := newTestVideoJobServer(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	registry.now = func() time.Time { return now }
+
+	jobs := make([]AsyncJobRecord, 0, 3)
+	for _, backendID := range []string{"video-1", "video-2", "video-3"} {
+		jobs = append(jobs, registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1", backendID, readyPod("pod-a", "ns-a", "10.0.0.5")))
+		now = now.Add(time.Microsecond)
+	}
+
+	first, err := registry.List(ctx, asyncJobOwnerShared, asyncJobTypeVideo, AsyncJobListOptions{Limit: 2, Order: "desc"})
 	require.NoError(t, err)
-	require.NoError(t, s.redisClient.Set(ctx, videoJobRedisKey("video-1"), string(payload), time.Hour).Err())
+	require.Len(t, first.Records, 2)
+	assert.True(t, first.HasMore)
+	assert.Equal(t, jobs[2].PublicJobID, first.Records[0].PublicJobID)
+	assert.Equal(t, jobs[1].PublicJobID, first.Records[1].PublicJobID)
 
-	s.syncVideoJobCacheFromRedis()
+	second, err := registry.List(ctx, asyncJobOwnerShared, asyncJobTypeVideo, AsyncJobListOptions{After: first.Records[1].PublicJobID, Limit: 2, Order: "desc"})
+	require.NoError(t, err)
+	require.Len(t, second.Records, 1)
+	assert.False(t, second.HasMore)
+	assert.Equal(t, jobs[0].PublicJobID, second.Records[0].PublicJobID)
 
-	podName, podNamespace, _, ok := s.lookupVideoJobPod(ctx, "video-1")
-	require.True(t, ok)
-	assert.Equal(t, "pod-new", podName)
-	assert.Equal(t, "ns-b", podNamespace)
+	ascending, err := registry.List(ctx, asyncJobOwnerShared, asyncJobTypeVideo, AsyncJobListOptions{Limit: 3, Order: "asc"})
+	require.NoError(t, err)
+	require.Len(t, ascending.Records, 3)
+	assert.Equal(t, jobs[0].PublicJobID, ascending.Records[0].PublicJobID)
+	assert.Equal(t, jobs[2].PublicJobID, ascending.Records[2].PublicJobID)
 }
 
-// TestSyncVideoJobCacheFromRedis_EvictsRedisMiss covers the DELETE/pod-gone
-// cross-replica case directly: another replica's forgetVideoJobPod removed the
-// Redis key, and this replica's local (not-yet-expired) copy must be evicted on
-// the next sync rather than continuing to serve/pin against it. The entry is
-// stored confirmed:true -- this replica previously verified it in Redis (e.g.
-// via an earlier sync or lookup), so a later miss is trustworthy evidence of a
-// genuine deletion, not an unwritten local-only entry (see the "never
-// confirmed" self-heal case in TestSyncVideoJobCacheFromRedis_SelfHealsUnconfirmedEntry).
-func TestSyncVideoJobCacheFromRedis_EvictsRedisMiss(t *testing.T) {
-	s, _ := newTestVideoJobRedisServer(t)
+// TestHandleVideoListHeaders_StoreUnavailableReturns503 asserts the catalog
+// reports a Redis outage as retryable rather than as an empty list, which a
+// client would read as "all my jobs are gone".
+func TestHandleVideoListHeaders_StoreUnavailableReturns503(t *testing.T) {
+	mockCache := new(MockCache)
+	s := &Server{cache: mockCache, asyncJobs: newTestAsyncJobRegistryWithStore(storeUnavailableAsyncJobStore{}, mockCache)}
 
-	s.videoJobCache.Store("video-2", videoJobCacheItem{
-		entry: videoJobCacheEntry{
-			PodName: "pod-a", PodNamespace: "ns-a", Model: "m", ExpiresAt: time.Now().Add(time.Hour),
-		},
-		confirmed: true,
-	})
+	resp := s.handleVideoListHeaders(context.Background(), "req-1", asyncJobOwnerShared, AsyncJobListOptions{Limit: defaultAsyncJobListLimit, Order: "desc"})
 
-	s.syncVideoJobCacheFromRedis()
-
-	_, found := s.videoJobCache.Load("video-2")
-	assert.False(t, found, "confirmed local entry must be evicted once Redis no longer has it")
+	require.NotNil(t, resp.GetImmediateResponse())
+	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, resp.GetImmediateResponse().GetStatus().GetCode())
 }
 
-// TestSyncVideoJobCacheFromRedis_SelfHealsUnconfirmedEntry covers the case
-// where this replica's own write-through to Redis failed (rememberVideoJobPod
-// logs the error but still stores locally, fail-open) or was still in flight
-// when a sync tick ran. Before this fix, the next sync's Redis miss for that
-// videoID was indistinguishable from "another replica deleted it" and evicted
-// the only surviving copy of the mapping -- causing follow-up GET/DELETE on
-// this replica to 404 a job that was still live on its pod. An unconfirmed
-// entry must instead be retried into Redis and kept.
-func TestSyncVideoJobCacheFromRedis_SelfHealsUnconfirmedEntry(t *testing.T) {
-	s, mr := newTestVideoJobRedisServer(t)
-
-	// Simulate rememberVideoJobPod's Redis write having failed: stored locally,
-	// never confirmed in Redis, and (since the write never landed) absent there.
-	entry := videoJobCacheEntry{PodName: "pod-a", PodNamespace: "ns-a", Model: "m", ExpiresAt: time.Now().Add(time.Hour)}
-	s.videoJobCache.Store("video-4", videoJobCacheItem{entry: entry, confirmed: false})
-	_, err := mr.Get(videoJobRedisKey("video-4"))
-	require.Error(t, err, "precondition: redis must not already have this key")
-
-	s.syncVideoJobCacheFromRedis()
-
-	cached, found := s.videoJobCache.Load("video-4")
-	require.True(t, found, "unconfirmed entry must survive a redis miss, not be treated as an authoritative deletion")
-	item := cached.(videoJobCacheItem)
-	assert.Equal(t, "pod-a", item.entry.PodName)
-	assert.True(t, item.confirmed, "sync must retry the write and mark the entry confirmed once it lands")
-
-	raw, err := mr.Get(videoJobRedisKey("video-4"))
-	require.NoError(t, err, "sync must have persisted the unconfirmed entry to redis")
-	assert.Contains(t, raw, "pod-a")
-}
-
-// TestSyncVideoJobCacheFromRedis_EvictsExpiredUnconfirmedEntry ensures the
-// self-heal path in TestSyncVideoJobCacheFromRedis_SelfHealsUnconfirmedEntry
-// doesn't retry forever: once an unconfirmed entry's own TTL has passed, sync
-// must evict it like any other expired entry rather than keep re-attempting
-// the Redis write.
-func TestSyncVideoJobCacheFromRedis_EvictsExpiredUnconfirmedEntry(t *testing.T) {
-	s, _ := newTestVideoJobRedisServer(t)
-
-	entry := videoJobCacheEntry{PodName: "pod-a", PodNamespace: "ns-a", Model: "m", ExpiresAt: time.Now().Add(-time.Second)}
-	s.videoJobCache.Store("video-5", videoJobCacheItem{entry: entry, confirmed: false})
-
-	s.syncVideoJobCacheFromRedis()
-
-	_, found := s.videoJobCache.Load("video-5")
-	assert.False(t, found, "expired entry must not be retried indefinitely")
-}
-
-// TestSyncVideoJobCacheFromRedis_LeavesLocalCacheUntouchedOnRedisError ensures a
-// Redis outage during the periodic sync doesn't get misread as "every key is
-// missing": that would wipe every replica's local cache (and, if it also
-// deleted from Redis, cascade into deleting jobs cluster-wide) over a transient
-// connectivity blip rather than a real forget/delete.
-func TestSyncVideoJobCacheFromRedis_LeavesLocalCacheUntouchedOnRedisError(t *testing.T) {
-	s, mr := newTestVideoJobRedisServer(t)
+// TestHandleRequestHeaders_VideoList_NoModelRequired covers the removal of the
+// model query requirement: the registry knows the caller's jobs across models,
+// so a bare GET /v1/videos is answered directly.
+func TestHandleRequestHeaders_VideoList_NoModelRequired(t *testing.T) {
+	s, _, registry := newTestVideoJobServer(t)
 	ctx := context.Background()
 
-	s.rememberVideoJobPod(ctx, "video-3", "pod-a", "ns-a", "m", time.Hour)
-	mr.Close()
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1", "video_gen_abc", readyPod("pod-a", "ns-a", "10.0.0.5"))
 
-	s.syncVideoJobCacheFromRedis()
-
-	cached, found := s.videoJobCache.Load("video-3")
-	require.True(t, found, "local entry must survive a whole-batch redis error")
-	assert.Equal(t, "pod-a", cached.(videoJobCacheItem).entry.PodName)
-}
-
-func TestParseVideoListRequest(t *testing.T) {
-	tests := []struct {
-		name       string
-		path       string
-		wantModel  string
-		wantIsList bool
-	}{
-		{"list with model", "/v1/videos?model=wan2.1", "wan2.1", true},
-		{"list without model", "/v1/videos", "", true},
-		{"list with empty model param", "/v1/videos?model=", "", true},
-		{"list with other params first", "/v1/videos?foo=bar&model=wan2.1", "wan2.1", true},
-		{"sub-resource path is not the list", "/v1/videos/video-1", "", false},
-		{"sync path is not the list", "/v1/videos/sync", "", false},
-		{"unrelated path", "/v1/chat/completions", "", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			model, isList := parseVideoListRequest(tt.path)
-			assert.Equal(t, tt.wantIsList, isList)
-			assert.Equal(t, tt.wantModel, model)
-		})
-	}
-}
-
-func podWithPortLabel(name, ip string, port int) *v1.Pod {
-	return &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   name,
-			Labels: map[string]string{constants.ModelLabelPort: strconv.Itoa(port)},
-		},
-		Status: v1.PodStatus{
-			PodIP:      ip,
-			Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
-		},
-	}
-}
-
-func TestPodAddress(t *testing.T) {
-	pod := podWithPortLabel("pod-a", "10.0.0.5", 9000)
-	assert.Equal(t, "10.0.0.5:9000", podAddress("req-1", "some-model", pod))
-}
-
-func TestExtractVideoListItems(t *testing.T) {
-	tests := []struct {
-		name string
-		body string
-		want int
-	}{
-		{"openai-style envelope", `{"object":"list","data":[{"id":"v1"},{"id":"v2"}]}`, 2},
-		{"bare top-level array", `[{"id":"v1"}]`, 1},
-		{"empty envelope", `{"object":"list","data":[]}`, 0},
-		{"malformed body", `not json`, 0},
-		{"unrelated shape", `{"status":"ok"}`, 0},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			items := extractVideoListItems([]byte(tt.body))
-			assert.Len(t, items, tt.want)
-		})
-	}
-}
-
-// videoListPod starts an httptest server standing in for a single vLLM-Omni
-// pod's own GET /v1/videos endpoint, and returns a *v1.Pod whose
-// model.aibrix.ai/port label points podAddress at that server.
-func videoListPod(t *testing.T, name string, handler http.HandlerFunc) *v1.Pod {
-	t.Helper()
-	srv := httptest.NewServer(handler)
-	t.Cleanup(srv.Close)
-	_, portStr, err := net.SplitHostPort(srv.Listener.Addr().String())
-	require.NoError(t, err)
-	var port int
-	_, err = fmt.Sscanf(portStr, "%d", &port)
-	require.NoError(t, err)
-	return podWithPortLabel(name, "127.0.0.1", port)
-}
-
-// TestHandleVideoListHeaders_FanOutMergesAcrossPods is the core coverage for
-// the fan-out design: GET /v1/videos?model=X has no video_id to pin on and no
-// single owning pod (each pod only knows about jobs it created locally), so
-// the gateway itself queries every ready pod for the model and merges their
-// individual lists into one response -- this verifies that merge actually
-// happens across more than one pod, and that a slow/erroring pod doesn't
-// block or fail the whole request.
-func TestHandleVideoListHeaders_FanOutMergesAcrossPods(t *testing.T) {
-	podA := videoListPod(t, "pod-a", func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, PathVideos, r.URL.Path)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"video-a1"},{"id":"video-a2"}]}`))
-	})
-	podB := videoListPod(t, "pod-b", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"video-b1"}]}`))
-	})
-	podErr := videoListPod(t, "pod-err", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	})
-
-	mockCache := new(MockCache)
-	mockCache.On("HasModel", "wan2.1").Return(true)
-	mockCache.On("ListPodsByModel", "wan2.1").Return(types.PodList(&utils.PodArray{Pods: []*v1.Pod{podA, podB, podErr}}), nil)
-
-	s := &Server{cache: mockCache}
-	resp := s.handleVideoListHeaders("req-1", "wan2.1")
-
-	imm := resp.GetImmediateResponse()
-	require.NotNil(t, imm)
-	assert.Equal(t, envoyTypePb.StatusCode_OK, imm.GetStatus().GetCode())
-
-	ids := gjson.GetBytes([]byte(imm.GetBody()), "data.#.id").Array()
-	gotIDs := make([]string, len(ids))
-	for i, id := range ids {
-		gotIDs[i] = id.String()
-	}
-	assert.ElementsMatch(t, []string{"video-a1", "video-a2", "video-b1"}, gotIDs,
-		"merged list must include every successful pod's jobs and skip the erroring one, not fail the whole request")
-
-	mockCache.AssertExpectations(t)
-}
-
-func TestHandleVideoListHeaders_AllPodsFailReturnsServiceUnavailable(t *testing.T) {
-	podA := videoListPod(t, "pod-a", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	})
-	podB := videoListPod(t, "pod-b", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	})
-
-	mockCache := new(MockCache)
-	mockCache.On("HasModel", "wan2.1").Return(true)
-	mockCache.On("ListPodsByModel", "wan2.1").Return(types.PodList(&utils.PodArray{Pods: []*v1.Pod{podA, podB}}), nil)
-
-	s := &Server{cache: mockCache}
-	resp := s.handleVideoListHeaders("req-1", "wan2.1")
-
-	imm := resp.GetImmediateResponse()
-	require.NotNil(t, imm)
-	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, imm.GetStatus().GetCode(),
-		"total fan-out failure must not look like an empty job list")
-
-	mockCache.AssertExpectations(t)
-}
-
-func TestHandleVideoListHeaders_SuccessfulEmptyListIsOK(t *testing.T) {
-	podA := videoListPod(t, "pod-a", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"object":"list","data":[]}`))
-	})
-
-	mockCache := new(MockCache)
-	mockCache.On("HasModel", "wan2.1").Return(true)
-	mockCache.On("ListPodsByModel", "wan2.1").Return(types.PodList(&utils.PodArray{Pods: []*v1.Pod{podA}}), nil)
-
-	s := &Server{cache: mockCache}
-	resp := s.handleVideoListHeaders("req-1", "wan2.1")
-
-	imm := resp.GetImmediateResponse()
-	require.NotNil(t, imm)
-	assert.Equal(t, envoyTypePb.StatusCode_OK, imm.GetStatus().GetCode())
-	assert.Equal(t, 0, len(gjson.GetBytes([]byte(imm.GetBody()), "data").Array()))
-
-	mockCache.AssertExpectations(t)
-}
-
-func TestHandleVideoListHeaders_SkipsNonRoutablePods(t *testing.T) {
-	podReady := videoListPod(t, "pod-ready", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"video-ready"}]}`))
-	})
-	podNotReady := videoListPod(t, "pod-not-ready", func(w http.ResponseWriter, r *http.Request) {
-		t.Error("non-routable pod must not be contacted")
-		w.WriteHeader(http.StatusInternalServerError)
-	})
-	podNotReady.Status.Conditions = nil
-
-	mockCache := new(MockCache)
-	mockCache.On("HasModel", "wan2.1").Return(true)
-	mockCache.On("ListPodsByModel", "wan2.1").Return(types.PodList(&utils.PodArray{Pods: []*v1.Pod{podReady, podNotReady}}), nil)
-
-	s := &Server{cache: mockCache}
-	resp := s.handleVideoListHeaders("req-1", "wan2.1")
-
-	imm := resp.GetImmediateResponse()
-	require.NotNil(t, imm)
-	assert.Equal(t, envoyTypePb.StatusCode_OK, imm.GetStatus().GetCode())
-	ids := gjson.GetBytes([]byte(imm.GetBody()), "data.#.id").Array()
-	require.Len(t, ids, 1)
-	assert.Equal(t, "video-ready", ids[0].String())
-
-	mockCache.AssertExpectations(t)
-}
-
-func TestHandleVideoListHeaders_UnknownModelReturnsError(t *testing.T) {
-	mockCache := new(MockCache)
-	mockCache.On("HasModel", "does-not-exist").Return(false)
-
-	s := &Server{cache: mockCache}
-	resp := s.handleVideoListHeaders("req-1", "does-not-exist")
-
-	imm := resp.GetImmediateResponse()
-	require.NotNil(t, imm)
-	assert.Equal(t, envoyTypePb.StatusCode_BadRequest, imm.GetStatus().GetCode())
-}
-
-// TestHandleRequestHeaders_VideoList_RequiresModel covers the real entry
-// point: GET /v1/videos with no `model` query parameter must 400 rather than
-// silently routing nowhere (the bug this endpoint had before the fan-out was
-// added -- see extractVideoIDFromPath, which never matched the bare list path).
-func TestHandleRequestHeaders_VideoList_RequiresModel(t *testing.T) {
-	s := &Server{cache: new(MockCache)}
 	req := &extProcPb.ProcessingRequest{
 		Request: &extProcPb.ProcessingRequest_RequestHeaders{
 			RequestHeaders: &extProcPb.HttpHeaders{
 				Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
-					{Key: pathKey, RawValue: []byte("/v1/videos")},
-					{Key: methodKey, RawValue: []byte("GET")},
+					{Key: pathKey, RawValue: []byte(PathVideos)},
+					{Key: methodKey, RawValue: []byte(http.MethodGet)},
 				}},
 				EndOfStream: true,
 			},
 		},
 	}
 
-	ctx := context.Background()
-	rootSpan := trace.SpanFromContext(ctx)
-	resp, _, _, _, _ := s.HandleRequestHeaders(ctx, "req-1", rootSpan, req)
+	resp, _, _, _, _ := s.HandleRequestHeaders(ctx, "req-1", trace.SpanFromContext(ctx), req)
 
-	imm := resp.GetImmediateResponse()
-	require.NotNil(t, imm)
-	assert.Equal(t, envoyTypePb.StatusCode_BadRequest, imm.GetStatus().GetCode())
+	require.NotNil(t, resp.GetImmediateResponse())
+	assert.Equal(t, envoyTypePb.StatusCode_OK, resp.GetImmediateResponse().GetStatus().GetCode())
+	assert.Contains(t, resp.GetImmediateResponse().GetBody(), record.PublicJobID)
+}
+
+func TestHandleRequestHeaders_VideoListValidationDoesNotExposeInternalError(t *testing.T) {
+	s, _, _ := newTestVideoJobServer(t)
+	ctx := context.Background()
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestHeaders{
+			RequestHeaders: &extProcPb.HttpHeaders{
+				Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
+					{Key: pathKey, RawValue: []byte(PathVideos + "?limit=0")},
+					{Key: methodKey, RawValue: []byte(http.MethodGet)},
+				}},
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, _, _, _, _ := s.HandleRequestHeaders(ctx, "req-invalid-video-list", trace.SpanFromContext(ctx), req)
+
+	require.NotNil(t, resp.GetImmediateResponse())
+	assert.Equal(t, envoyTypePb.StatusCode_BadRequest, resp.GetImmediateResponse().GetStatus().GetCode())
+	body := string(resp.GetImmediateResponse().GetBody())
+	assert.Contains(t, body, "list limit must be between 1 and 100")
+	assert.NotContains(t, body, errAsyncJobInvalidRecord.Error())
+}
+
+func TestHandleRequestHeaders_RejectsVideoTrailingSlash(t *testing.T) {
+	s, _, _ := newTestVideoJobServer(t)
+	ctx := context.Background()
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestHeaders{
+			RequestHeaders: &extProcPb.HttpHeaders{
+				Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
+					{Key: pathKey, RawValue: []byte(PathVideos + "/")},
+					{Key: methodKey, RawValue: []byte(http.MethodPost)},
+				}},
+			},
+		},
+	}
+
+	resp, _, _, _, _ := s.HandleRequestHeaders(ctx, "req-video-trailing-slash", trace.SpanFromContext(ctx), req)
+	require.NotNil(t, resp.GetImmediateResponse())
+	assert.Equal(t, envoyTypePb.StatusCode_NotFound, resp.GetImmediateResponse().GetStatus().GetCode())
+}
+
+// TestHandleVideoJobResponseBody_RegistersCreateAndRewritesID is the create
+// contract: the backend id is recorded against the pod that produced it and
+// replaced in the response by the opaque public id, so the client never learns
+// the backend id in the first place.
+func TestHandleVideoJobResponseBody_RegistersCreateAndRewritesID(t *testing.T) {
+	s, _, registry := newTestVideoJobServer(t)
+	ctx := context.Background()
+	requestID := "req-create-1"
+	t.Cleanup(func() { requestBuffers.Delete(requestID) })
+
+	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
+	routerCtx := types.NewRoutingContext(ctx, "", "wan2.1", "", requestID, "alice")
+	routerCtx.ReqPath = PathVideos
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodPost}
+	routerCtx.SetTargetPod(pod)
+
+	full := `{"id":"video_gen_abc","status":"queued","model":"wan2.1"}`
+	mid := len(full) / 2
+
+	resp, complete, handled := s.handleVideoJobResponseBody(ctx, requestID, routerCtx, &extProcPb.ProcessingRequest_ResponseBody{
+		ResponseBody: &extProcPb.HttpBody{Body: []byte(full[:mid])},
+	})
+	require.True(t, handled)
+	assert.False(t, complete)
+	assert.Empty(t, resp.GetResponseBody().GetResponse().GetBodyMutation().GetBody(), "a partial chunk must be held back, not forwarded with a backend id in it")
+	assert.Equal(t, 0, videoJobRecordCount(t, registry, "scope:user:alice"), "nothing is registered until the whole body has arrived")
+
+	resp, complete, handled = s.handleVideoJobResponseBody(ctx, requestID, routerCtx, &extProcPb.ProcessingRequest_ResponseBody{
+		ResponseBody: &extProcPb.HttpBody{Body: []byte(full[mid:]), EndOfStream: true},
+	})
+	require.True(t, handled)
+	assert.True(t, complete)
+
+	out := string(resp.GetResponseBody().GetResponse().GetBodyMutation().GetBody())
+	assert.NotContains(t, out, "video_gen_abc", "the backend id must not survive into the client's response")
+	publicID := gjson.Get(out, "id").String()
+	assert.True(t, strings.HasPrefix(publicID, asyncJobPublicIDPrefix), "public ids are minted by aibrix, not taken from the backend: %q", publicID)
+	assert.Equal(t, "queued", gjson.Get(out, "status").String(), "the rest of the create response must pass through unchanged")
+
+	records, err := listTestAsyncJobs(ctx, registry, "scope:user:alice", asyncJobTypeVideo)
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, publicID, records[0].PublicJobID)
+	assert.Equal(t, "video_gen_abc", records[0].BackendJobID)
+	assert.Equal(t, asyncJobTargetKindPod, records[0].RoutingTarget.Kind)
+	assert.Equal(t, "pod-a", records[0].RoutingTarget.Pod.Name)
+	assert.Equal(t, "ns-a", records[0].RoutingTarget.Pod.Namespace)
+	assert.EqualValues(t, pod.UID, records[0].RoutingTarget.Pod.UID)
+	assert.False(t, HasRequestBuffers(requestID), "the buffer must be released once the body is complete")
+}
+
+// TestHandleVideoJobResponseBody_AppliesBackendExpiry checks the backend's own
+// expires_at wins over the default TTL, so aibrix never advertises a job for
+// longer than the pod will keep it.
+func TestHandleVideoJobResponseBody_AppliesBackendExpiry(t *testing.T) {
+	s, _, registry := newTestVideoJobServer(t)
+	ctx := context.Background()
+	requestID := "req-create-expiry"
+	t.Cleanup(func() { requestBuffers.Delete(requestID) })
+
+	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
+	routerCtx := types.NewRoutingContext(ctx, "", "wan2.1", "", requestID, "")
+	routerCtx.ReqPath = PathVideos
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodPost}
+	routerCtx.SetTargetPod(pod)
+
+	expires := time.Now().Add(2 * time.Hour).Unix()
+	body := fmt.Sprintf(`{"id":"video_gen_abc","expires_at":%d}`, expires)
+
+	_, _, handled := s.handleVideoJobResponseBody(ctx, requestID, routerCtx, &extProcPb.ProcessingRequest_ResponseBody{
+		ResponseBody: &extProcPb.HttpBody{Body: []byte(body), EndOfStream: true},
+	})
+	require.True(t, handled)
+
+	records, err := listTestAsyncJobs(ctx, registry, asyncJobOwnerShared, asyncJobTypeVideo)
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, expires, records[0].ExpiresAt.Unix())
+}
+
+// TestHandleVideoJobResponseBody_RejectsElapsedBackendExpiry makes the
+// create-response bridge preserve a supplied expiry even when it is invalid.
+// Zero is an explicit Unix epoch, not the registry's absent-expiry sentinel.
+func TestHandleVideoJobResponseBody_RejectsElapsedBackendExpiry(t *testing.T) {
+	for _, expires := range []int64{0, time.Now().Add(-time.Hour).Unix()} {
+		t.Run(fmt.Sprintf("expires_at_%d", expires), func(t *testing.T) {
+			s, _, registry := newTestVideoJobServer(t)
+			ctx := context.Background()
+			requestID := fmt.Sprintf("req-create-expired-%d", expires)
+			t.Cleanup(func() { requestBuffers.Delete(requestID) })
+
+			routerCtx := types.NewRoutingContext(ctx, "", "wan2.1", "", requestID, "")
+			routerCtx.ReqPath = PathVideos
+			routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodPost}
+			routerCtx.SetTargetPod(readyPod("pod-a", "ns-a", "10.0.0.5"))
+
+			body := fmt.Sprintf(`{"id":"video_gen_abc","expires_at":%d}`, expires)
+			resp, complete, handled := s.handleVideoJobResponseBody(ctx, requestID, routerCtx, &extProcPb.ProcessingRequest_ResponseBody{
+				ResponseBody: &extProcPb.HttpBody{Body: []byte(body), EndOfStream: true},
+			})
+
+			require.True(t, handled)
+			assert.True(t, complete)
+			require.NotNil(t, resp.GetImmediateResponse())
+			assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, resp.GetImmediateResponse().GetStatus().GetCode())
+			assert.NotContains(t, resp.GetImmediateResponse().GetBody(), "video_gen_abc")
+			assert.Empty(t, videoJobRecordCount(t, registry, asyncJobOwnerShared), "an elapsed backend expiry must not fall back to the default TTL")
+		})
+	}
+}
+
+// TestHandleVideoJobResponseBody_ForwardsBodyWithoutIDUntouched keeps error and
+// non-JSON create responses intact: there is nothing to register and nothing to
+// rewrite, and corrupting them would hide the backend's own error from the client.
+func TestHandleVideoJobResponseBody_ForwardsBodyWithoutIDUntouched(t *testing.T) {
+	s, _, registry := newTestVideoJobServer(t)
+	ctx := context.Background()
+	requestID := "req-create-err"
+	t.Cleanup(func() { requestBuffers.Delete(requestID) })
+
+	routerCtx := types.NewRoutingContext(ctx, "", "wan2.1", "", requestID, "")
+	routerCtx.ReqPath = PathVideos
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodPost}
+	routerCtx.SetTargetPod(readyPod("pod-a", "ns-a", "10.0.0.5"))
+
+	body := `{"error":{"message":"prompt too long","type":"invalid_request_error"}}`
+	resp, complete, handled := s.handleVideoJobResponseBody(ctx, requestID, routerCtx, &extProcPb.ProcessingRequest_ResponseBody{
+		ResponseBody: &extProcPb.HttpBody{Body: []byte(body), EndOfStream: true},
+	})
+
+	require.True(t, handled)
+	assert.True(t, complete)
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.Equal(t, body, string(resp.GetResponseBody().GetResponse().GetBodyMutation().GetBody()))
+	assert.Equal(t, 0, videoJobRecordCount(t, registry, asyncJobOwnerShared))
+}
+
+func TestRewriteVideoJobErrorBody_CreateFailureWithoutPublicIDIsUnchanged(t *testing.T) {
+	routerCtx := types.NewRoutingContext(context.Background(), "", "wan2.1", "", "req-create-error", "")
+	routerCtx.ReqPath = PathVideos
+	// Even if a future caller records the backend ID early, the create path has
+	// no public ID that can safely replace it.
+	routerCtx.AsyncJobBackendID = "video_gen_abc"
+	body := []byte(`{"error":{"message":"Video video_gen_abc failed"}}`)
+
+	assert.Equal(t, body, rewriteVideoJobErrorBody(routerCtx, body))
+}
+
+// TestHandleVideoJobResponseBody_RegistrationFailureReturns503 covers the rule
+// that there is no create success without a durable record: if the registry
+// write cannot complete, the client gets a retryable 503 and -- crucially --
+// not the backend id it would otherwise have to keep polling with.
+func TestHandleVideoJobResponseBody_RegistrationFailureReturns503(t *testing.T) {
+	mockCache := new(MockCache)
+	store := &failingAsyncJobStore{
+		asyncJobStore: newInMemoryAsyncJobStore(),
+		putErr:        fmt.Errorf("%w: register", errAsyncJobStoreUnavailable),
+	}
+	s := &Server{cache: mockCache, asyncJobs: newTestAsyncJobRegistryWithStore(store, mockCache)}
+	ctx := context.Background()
+	requestID := "req-create-fail"
+	t.Cleanup(func() { requestBuffers.Delete(requestID) })
+
+	routerCtx := types.NewRoutingContext(ctx, "", "wan2.1", "", requestID, "")
+	routerCtx.ReqPath = PathVideos
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodPost}
+	routerCtx.SetTargetPod(readyPod("pod-a", "ns-a", "10.0.0.5"))
+
+	resp, complete, handled := s.handleVideoJobResponseBody(ctx, requestID, routerCtx, &extProcPb.ProcessingRequest_ResponseBody{
+		ResponseBody: &extProcPb.HttpBody{Body: []byte(`{"id":"video_gen_abc","status":"queued"}`), EndOfStream: true},
+	})
+
+	require.True(t, handled)
+	assert.True(t, complete)
+	require.NotNil(t, resp.GetImmediateResponse())
+	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, resp.GetImmediateResponse().GetStatus().GetCode())
+	assert.NotContains(t, resp.GetImmediateResponse().GetBody(), "video_gen_abc", "a failed registration must not leak the backend id the client could not otherwise use")
+	assert.False(t, HasRequestBuffers(requestID))
+}
+
+// TestHandleVideoJobResponseBody_StatusRewritesIDBackToPublic closes the loop:
+// the status body the backend produced names its own id, which has to become the
+// public id again before the client sees it.
+func TestHandleVideoJobResponseBody_StatusRewritesIDBackToPublic(t *testing.T) {
+	s, _, registry := newTestVideoJobServer(t)
+	ctx := context.Background()
+	requestID := "req-status-1"
+	t.Cleanup(func() { requestBuffers.Delete(requestID) })
+
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1", "video_gen_abc", readyPod("pod-a", "ns-a", "10.0.0.5"))
+
+	routerCtx := types.NewRoutingContext(ctx, "", "wan2.1", "", requestID, "")
+	routerCtx.ReqPath = PathVideos + "/" + record.PublicJobID
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+
+	resp, complete, handled := s.handleVideoJobResponseBody(ctx, requestID, routerCtx, &extProcPb.ProcessingRequest_ResponseBody{
+		ResponseBody: &extProcPb.HttpBody{Body: []byte(`{"id":"video_gen_abc","status":"completed","progress":100}`), EndOfStream: true},
+	})
+
+	require.True(t, handled)
+	assert.True(t, complete)
+	out := string(resp.GetResponseBody().GetResponse().GetBodyMutation().GetBody())
+	assert.Equal(t, record.PublicJobID, gjson.Get(out, "id").String())
+	assert.NotContains(t, out, "video_gen_abc")
+	assert.Equal(t, "completed", gjson.Get(out, "status").String())
+	assert.EqualValues(t, 100, gjson.Get(out, "progress").Int())
+}
+
+func TestUnsupportedVideoTrailingSlash(t *testing.T) {
+	for _, path := range []string{
+		PathVideos + "/",
+		PathVideos + "/aibrixjob-public/",
+		PathVideos + "/aibrixjob-public/content/",
+	} {
+		assert.True(t, isUnsupportedVideoTrailingSlash(path), path)
+	}
+	assert.False(t, isUnsupportedVideoTrailingSlash(PathVideos))
+	assert.False(t, isUnsupportedVideoTrailingSlash(PathVideos+"/aibrixjob-public/content"))
+}
+
+// TestHandleVideoJobResponseBody_ContentIsNotBuffered guarantees a video
+// download is never held in gateway memory or rewritten: it keeps streaming
+// through Envoy exactly as it arrived.
+func TestHandleVideoJobResponseBody_ContentIsNotBuffered(t *testing.T) {
+	s, _, _ := newTestVideoJobServer(t)
+	ctx := context.Background()
+	requestID := "req-content-1"
+
+	routerCtx := types.NewRoutingContext(ctx, "", "wan2.1", "", requestID, "")
+	routerCtx.ReqPath = PathVideos + "/aibrixjob-abc/content"
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+
+	resp, complete, handled := s.handleVideoJobResponseBody(ctx, requestID, routerCtx, &extProcPb.ProcessingRequest_ResponseBody{
+		ResponseBody: &extProcPb.HttpBody{Body: []byte{0x00, 0x01, 0x02}},
+	})
+
+	assert.False(t, handled, "binary content must not enter the buffer-and-mutate path")
+	assert.Nil(t, resp)
+	assert.False(t, complete)
+	assert.False(t, HasRequestBuffers(requestID))
+}
+
+// TestMaybeDeleteVideoJobAfterDelete_DeletesOnBackendSuccessAndNotFound checks
+// registry cleanup follows the backend: 2xx means it is gone, 404 means it was
+// already gone, and both make the record garbage.
+func TestMaybeDeleteVideoJobAfterDelete_DeletesOnBackendSuccessAndNotFound(t *testing.T) {
+	for _, statusCode := range []int{http.StatusOK, http.StatusNoContent, http.StatusNotFound} {
+		t.Run(fmt.Sprintf("status_%d", statusCode), func(t *testing.T) {
+			s, _, registry := newTestVideoJobServer(t)
+			ctx := context.Background()
+
+			record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1", "video_gen_abc", readyPod("pod-a", "ns-a", "10.0.0.5"))
+
+			routerCtx := types.NewRoutingContext(ctx, "", "wan2.1", "", "req-1", "")
+			routerCtx.ReqPath = PathVideos + "/" + record.PublicJobID
+			routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodDelete}
+
+			resp := s.maybeDeleteVideoJobAfterDelete(ctx, routerCtx, statusCode)
+
+			assert.Nil(t, resp)
+			assert.Equal(t, 0, videoJobRecordCount(t, registry, asyncJobOwnerShared))
+		})
+	}
+}
+
+// TestMaybeDeleteVideoJobAfterDelete_KeepsRecordOnBackendFailure leaves the
+// record in place when the backend could not delete: the job may still exist on
+// that pod, and the client needs the same sticky route to try again.
+func TestMaybeDeleteVideoJobAfterDelete_KeepsRecordOnBackendFailure(t *testing.T) {
+	s, _, registry := newTestVideoJobServer(t)
+	ctx := context.Background()
+
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1", "video_gen_abc", readyPod("pod-a", "ns-a", "10.0.0.5"))
+
+	routerCtx := types.NewRoutingContext(ctx, "", "wan2.1", "", "req-1", "")
+	routerCtx.ReqPath = PathVideos + "/" + record.PublicJobID
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodDelete}
+
+	resp := s.maybeDeleteVideoJobAfterDelete(ctx, routerCtx, http.StatusInternalServerError)
+
+	assert.Nil(t, resp)
+	assert.Equal(t, 1, videoJobRecordCount(t, registry, asyncJobOwnerShared))
+}
+
+// TestMaybeDeleteVideoJobAfterDelete_IgnoresNonDeleteMethods makes sure a status
+// poll that happens to return 404 cannot delete a live record.
+func TestMaybeDeleteVideoJobAfterDelete_IgnoresNonDeleteMethods(t *testing.T) {
+	s, _, registry := newTestVideoJobServer(t)
+	ctx := context.Background()
+
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1", "video_gen_abc", readyPod("pod-a", "ns-a", "10.0.0.5"))
+
+	routerCtx := types.NewRoutingContext(ctx, "", "wan2.1", "", "req-1", "")
+	routerCtx.ReqPath = PathVideos + "/" + record.PublicJobID
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+
+	assert.Nil(t, s.maybeDeleteVideoJobAfterDelete(ctx, routerCtx, http.StatusNotFound))
+	assert.Equal(t, 1, videoJobRecordCount(t, registry, asyncJobOwnerShared))
+}
+
+// TestMaybeDeleteVideoJobAfterDelete_Returns503WhenCleanupFails covers the one
+// case where the gateway overrides a successful backend delete: the record
+// outlived its job, so the client is told to retry and finish the cleanup rather
+// than being handed a 200 over a stale entry.
+func TestMaybeDeleteVideoJobAfterDelete_Returns503WhenCleanupFails(t *testing.T) {
+	mockCache := new(MockCache)
+	store := &failingAsyncJobStore{asyncJobStore: newInMemoryAsyncJobStore()}
+	s := &Server{cache: mockCache, asyncJobs: newTestAsyncJobRegistryWithStore(store, mockCache)}
+	ctx := context.Background()
+
+	record := registerTestVideoJob(t, s.asyncJobs, asyncJobOwnerShared, "wan2.1", "video_gen_abc", readyPod("pod-a", "ns-a", "10.0.0.5"))
+	store.deleteErr = fmt.Errorf("%w: delete", errAsyncJobStoreUnavailable)
+
+	routerCtx := types.NewRoutingContext(ctx, "", "wan2.1", "", "req-1", "")
+	routerCtx.ReqPath = PathVideos + "/" + record.PublicJobID
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodDelete}
+
+	resp := s.maybeDeleteVideoJobAfterDelete(ctx, routerCtx, http.StatusNoContent)
+
+	require.NotNil(t, resp)
+	require.NotNil(t, resp.GetImmediateResponse())
+	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, resp.GetImmediateResponse().GetStatus().GetCode())
 }
 
 func TestIsMultipartFormPath(t *testing.T) {
@@ -735,140 +1124,4 @@ func TestIsMultipartFormPath(t *testing.T) {
 	assert.True(t, isMultipartFormPath(PathAudioTranscriptions))
 	assert.False(t, isMultipartFormPath(PathVideos+"/video-1"))
 	assert.False(t, isMultipartFormPath(PathChatCompletions))
-}
-
-func TestRecordVideoJobPodFromResponse_BuffersUntilEnd(t *testing.T) {
-	s := &Server{}
-	ctx := context.Background()
-	requestID := "req-record-1"
-	t.Cleanup(func() { requestBuffers.Delete(requestID) })
-
-	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
-	routerCtx := types.NewRoutingContext(ctx, "", "wan2.1", "", requestID, "")
-	routerCtx.ReqPath = PathVideos
-	routerCtx.SetTargetPod(pod)
-
-	expires := time.Now().Add(time.Hour).Unix()
-	full := fmt.Sprintf(`{"id":"video-1","expires_at":%d}`, expires)
-	mid := len(full) / 2
-
-	s.recordVideoJobPodFromResponse(ctx, requestID, routerCtx, &extProcPb.ProcessingRequest_ResponseBody{
-		ResponseBody: &extProcPb.HttpBody{Body: []byte(full[:mid])},
-	})
-	_, _, _, ok := s.lookupVideoJobPod(ctx, "video-1")
-	assert.False(t, ok, "must not record until EndOfStream")
-
-	s.recordVideoJobPodFromResponse(ctx, requestID, routerCtx, &extProcPb.ProcessingRequest_ResponseBody{
-		ResponseBody: &extProcPb.HttpBody{Body: []byte(full[mid:]), EndOfStream: true},
-	})
-	podName, ns, model, ok := s.lookupVideoJobPod(ctx, "video-1")
-	require.True(t, ok)
-	assert.Equal(t, "pod-a", podName)
-	assert.Equal(t, "ns-a", ns)
-	assert.Equal(t, "wan2.1", model)
-}
-
-func TestHandleResponseBody_RecordsVideoJobWithQueryOnPath(t *testing.T) {
-	s := &Server{}
-	ctx := context.Background()
-	requestID := "req-record-query"
-	t.Cleanup(func() { requestBuffers.Delete(requestID) })
-
-	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
-	routerCtx := types.NewRoutingContext(ctx, "", "wan2.1", "", requestID, "")
-	routerCtx.ReqPath = PathVideos + "?foo=bar"
-	routerCtx.RequestTime = time.Now()
-	routerCtx.SetTargetPod(pod)
-
-	req := &extProcPb.ProcessingRequest{
-		Request: &extProcPb.ProcessingRequest_ResponseBody{
-			ResponseBody: &extProcPb.HttpBody{
-				Body:        []byte(`{"id":"video-query-1"}`),
-				EndOfStream: true,
-			},
-		},
-	}
-	_, complete, _ := s.HandleResponseBody(ctx, routerCtx, requestID, req, utils.User{}, 0, "wan2.1", false, false)
-	assert.True(t, complete)
-
-	podName, _, _, ok := s.lookupVideoJobPod(ctx, "video-query-1")
-	require.True(t, ok, "POST /v1/videos?… must still record the owning pod")
-	assert.Equal(t, "pod-a", podName)
-}
-
-func TestHandleVideoJobSubResourceHeaders_DeleteKeepsMappingUntilResponse(t *testing.T) {
-	mockCache := new(MockCache)
-	s := &Server{cache: mockCache}
-	ctx := context.Background()
-
-	s.rememberVideoJobPod(ctx, "video-1", "pod-a", "ns-a", "wan2.1-vace-1.3b", time.Hour)
-	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
-	mockCache.On("GetPod", "pod-a", "ns-a").Return(pod, nil)
-	mockCache.On("AddRequestCount", mock.Anything, "req-1", "wan2.1-vace-1.3b").Return(int64(1))
-
-	routingCtx := types.NewRoutingContext(ctx, "", "", "", "req-1", "")
-	routingCtx.ReqPath = "/v1/videos/video-1"
-	routingCtx.ReqHeaders = map[string]string{methodKey: http.MethodDelete}
-
-	resp, _ := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, "req-1", "/v1/videos/video-1", "video-1")
-	require.NotNil(t, resp.GetRequestHeaders())
-	_, _, _, ok := s.lookupVideoJobPod(ctx, "video-1")
-	assert.True(t, ok, "DELETE must not evict the mapping until the backend responds")
-
-	headerReq := &extProcPb.ProcessingRequest{
-		Request: &extProcPb.ProcessingRequest_ResponseHeaders{
-			ResponseHeaders: &extProcPb.HttpHeaders{
-				Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
-					{Key: ":status", RawValue: []byte("500")},
-				}},
-			},
-		},
-	}
-	_, isErr, code := s.HandleResponseHeaders(ctx, routingCtx, "req-1", "wan2.1-vace-1.3b", headerReq)
-	assert.True(t, isErr)
-	assert.Equal(t, 500, code)
-	_, _, _, ok = s.lookupVideoJobPod(ctx, "video-1")
-	assert.True(t, ok, "5xx delete must leave the mapping so the client can retry")
-
-	headerReq = &extProcPb.ProcessingRequest{
-		Request: &extProcPb.ProcessingRequest_ResponseHeaders{
-			ResponseHeaders: &extProcPb.HttpHeaders{
-				Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
-					{Key: ":status", RawValue: []byte("204")},
-				}},
-			},
-		},
-	}
-	_, isErr, _ = s.HandleResponseHeaders(ctx, routingCtx, "req-1", "wan2.1-vace-1.3b", headerReq)
-	assert.False(t, isErr)
-	_, _, _, ok = s.lookupVideoJobPod(ctx, "video-1")
-	assert.False(t, ok, "2xx delete must evict the mapping")
-
-	mockCache.AssertExpectations(t)
-}
-
-func TestMaybeForgetVideoJobAfterDelete_EvictsOn404(t *testing.T) {
-	s := &Server{}
-	ctx := context.Background()
-	s.rememberVideoJobPod(ctx, "video-1", "pod-a", "ns-a", "m", time.Hour)
-
-	routingCtx := types.NewRoutingContext(ctx, "", "m", "", "req-1", "")
-	routingCtx.ReqPath = "/v1/videos/video-1?unused=1"
-	routingCtx.ReqHeaders = map[string]string{methodKey: http.MethodDelete}
-
-	s.maybeForgetVideoJobAfterDelete(ctx, routingCtx, http.StatusNotFound)
-	_, _, _, ok := s.lookupVideoJobPod(ctx, "video-1")
-	assert.False(t, ok)
-}
-
-func TestFetchPodVideoList_RejectsOversizedBody(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(bytes.Repeat([]byte("a"), videoListFanoutMaxBodyBytes+1))
-	}))
-	t.Cleanup(srv.Close)
-
-	_, err := fetchPodVideoList(context.Background(), strings.TrimPrefix(srv.URL, "http://"))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "exceeds")
 }

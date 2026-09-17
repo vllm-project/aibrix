@@ -19,6 +19,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -887,9 +888,9 @@ func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
 // regression where POST /v1/videos submitted without a routing-strategy header (the
 // out-of-the-box default, and what the async example in docs/source/features/vllm-omni.rst
 // uses) fell into the RouterNotSet branch, which never calls SetTargetPod. That left
-// recordVideoJobPodFromResponse's routerCtx.TargetPod() call (see gateway_video_routing.go)
-// blocking until the request's context was done, and the video_id -> pod mapping never
-// recorded -- breaking all follow-up GET/DELETE calls for that job.
+// registerVideoJobFromCreateResponse's routerCtx.TargetPod() call (see
+// gateway_video_routing.go) blocking until the request's context was done, and the job
+// never registered -- breaking all follow-up GET/DELETE calls for that job.
 func TestHandleRequestBody_AsyncVideoJobWithoutRoutingStrategyGetsPinned(t *testing.T) {
 	cache.InitForTest()
 	routingalgorithms.Init()
@@ -952,6 +953,76 @@ func TestHandleRequestBody_AsyncVideoJobWithoutRoutingStrategyGetsPinned(t *test
 		}
 	}
 	assert.True(t, foundTargetPod, "HeaderTargetPod must be set so envoy pins the request to the recorded pod")
+}
+
+// TestHandleRequestBody_AsyncVideoJobSendsNoModeOverride: the create response has
+// to be held whole so its backend id can be replaced, but that is arranged by the
+// Videos route's EnvoyExtensionPolicy (response body Buffered). Envoy Gateway
+// v1.2.8 never enables ext_proc's allow_mode_override, so an override sent from
+// here would be dropped on the floor - and would read as if buffering had been
+// taken care of.
+func TestHandleRequestBody_AsyncVideoJobSendsNoModeOverride(t *testing.T) {
+	cache.InitForTest()
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	pod := readyPod("pod-a", "ns-a", "1.2.3.4")
+	mockCache.On("HasModel", "wan2.1").Return(true)
+	mockCache.On("ListPodsByModel", "wan2.1").Return(&utils.PodArray{Pods: []*v1.Pod{pod}}, nil)
+	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "wan2.1").Return(int64(1))
+	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+	server := &Server{cache: mockCache}
+
+	body, contentType := buildMultipartForm(t, map[string]string{"model": "wan2.1", "prompt": "a cat"})
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{Body: body},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathVideos
+	routingCtx.ReqHeaders[contentTypeKey] = contentType
+	routingCtx.ReqHeaders[methodKey] = http.MethodPost
+
+	resp, _, _, _ := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	assert.Nil(t, resp.GetModeOverride())
+}
+
+// TestHandleRequestBody_LanguageRequestKeepsConfiguredResponseMode: a chat
+// completion's response mode is the shared route's Streamed, and nothing in the
+// request path may override it - buffering an SSE stream would hold every chunk
+// back until the stream ended.
+func TestHandleRequestBody_LanguageRequestKeepsConfiguredResponseMode(t *testing.T) {
+	cache.InitForTest()
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	pod := readyPod("pod-a", "ns-a", "1.2.3.4")
+	mockCache.On("HasModel", "llama").Return(true)
+	mockCache.On("ListPodsByModel", "llama").Return(&utils.PodArray{Pods: []*v1.Pod{pod}}, nil)
+	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "llama").Return(int64(1))
+	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+	server := &Server{cache: mockCache}
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{Body: []byte(`{"model":"llama","messages":[{"role":"user","content":"hi"}]}`)},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathChatCompletions
+	routingCtx.ReqHeaders[methodKey] = http.MethodPost
+
+	resp, _, _, _ := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	assert.Nil(t, resp.GetModeOverride())
 }
 
 // registerTestRouter registers the shared TestRouterAlgorithm mock router so a
