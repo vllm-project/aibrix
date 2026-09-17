@@ -584,13 +584,16 @@ func rewriteVideoJobStatusID(requestID string, routerCtx *types.RoutingContext, 
 	return rewritten
 }
 
-// rewriteVideoJobErrorBody removes the backend-private ID from a non-2xx
-// upstream body after a follow-up request has been pinned. Error responses do
-// not reach handleVideoJobResponseBody, and backend IDs commonly appear in
-// error.message rather than a top-level id field, so replace the exact known
-// backend ID before the generic error normalizer forwards the body. Create
-// failures are intentionally not covered: before POST /v1/videos succeeds no
-// public ID or registry record exists, so there is no safe ID to substitute.
+// rewriteVideoJobErrorBody removes the backend-private ID from the known fields
+// of an OpenAI-style non-2xx JSON body after a follow-up request has been pinned.
+// Restricting the rewrite to top-level id, error.message and error.param avoids
+// corrupting unrelated trace ids or extension fields that merely contain the
+// backend id as a substring. Non-JSON bodies are left untouched rather than
+// subjected to an unsafe text replacement.
+//
+// Create failures are intentionally not covered: before POST /v1/videos
+// succeeds no public ID or registry record exists, so there is no safe ID to
+// substitute.
 func rewriteVideoJobErrorBody(routerCtx *types.RoutingContext, body []byte) []byte {
 	if routerCtx == nil || routerCtx.AsyncJobBackendID == "" {
 		return body
@@ -599,7 +602,43 @@ func rewriteVideoJobErrorBody(routerCtx *types.RoutingContext, body []byte) []by
 	if !ok || publicJobID == routerCtx.AsyncJobBackendID {
 		return body
 	}
-	return bytes.ReplaceAll(body, []byte(routerCtx.AsyncJobBackendID), []byte(publicJobID))
+	if !gjson.ValidBytes(body) {
+		return body
+	}
+
+	backendJobID := routerCtx.AsyncJobBackendID
+	rewritten := body
+	fields := []struct {
+		path             string
+		replaceSubstring bool
+	}{
+		{path: "id"},
+		{path: "error.message", replaceSubstring: true},
+		{path: "error.param"},
+	}
+	for _, field := range fields {
+		value := gjson.GetBytes(rewritten, field.path)
+		if !value.Exists() || value.Type != gjson.String {
+			continue
+		}
+		fieldValue := value.String()
+		if field.replaceSubstring {
+			fieldValue = strings.ReplaceAll(fieldValue, backendJobID, publicJobID)
+		} else if fieldValue == backendJobID {
+			fieldValue = publicJobID
+		} else {
+			continue
+		}
+		if fieldValue == value.String() {
+			continue
+		}
+		var err error
+		rewritten, err = sjson.SetBytes(rewritten, field.path, fieldValue)
+		if err != nil {
+			return body
+		}
+	}
+	return rewritten
 }
 
 // videoJobBodyResponse wraps a (possibly empty) body into a ResponseBody

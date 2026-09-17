@@ -90,6 +90,9 @@ type xdsRoute struct {
 	Name                 string                     `json:"name"`
 	Match                xdsRouteMatch              `json:"match"`
 	TypedPerFilterConfig map[string]json.RawMessage `json:"typedPerFilterConfig"`
+	Route                struct {
+		Cluster string `json:"cluster"`
+	} `json:"route"`
 }
 
 type generatedXDS struct {
@@ -245,6 +248,22 @@ func TestGeneratedXDS_VideoJSONResponsesAreBufferedInBothPhases(t *testing.T) {
 			assert.Equal(t, "BUFFERED", filter.TypedConfig.ProcessingMode.RequestBodyMode, "path %s (pinned=%v)", path, pinned)
 		}
 	}
+}
+
+// TestGeneratedXDS_VideoCreateRematchesToOriginalDestination complements the
+// RequestHeaders unit test: once that response injects routing-strategy and
+// clears Envoy's route cache, the generated route table must send the create to
+// the ORIGINAL_DST cluster instead of back through its initial HTTPRoute.
+func TestGeneratedXDS_VideoCreateRematchesToOriginalDestination(t *testing.T) {
+	xds := loadGeneratedXDS(t)
+
+	initial, _ := xds.resolve(t, PathVideos, false)
+	rematched, filter := xds.resolve(t, PathVideos, true)
+
+	assert.Contains(t, initial.Name, "httproute/", "the client request should enter through the Videos HTTPRoute")
+	assert.Equal(t, "original_route_videos", rematched.Name)
+	assert.Equal(t, "original_destination_cluster", rematched.Route.Cluster)
+	assert.Contains(t, filter.Name, "gateway-plugins-videos-extension-policy")
 }
 
 // TestGeneratedXDS_VideoStreamingPathsStayStreamed is the other half: the two

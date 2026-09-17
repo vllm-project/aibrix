@@ -33,7 +33,10 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-const asyncVideoPublicIDPrefix = "aibrixjob-"
+const (
+	asyncVideoPublicIDPrefix = "aibrixjob-"
+	asyncVideoRequestTimeout = 30 * time.Second
+)
 
 type videoE2EResponse struct {
 	ID      string `json:"id"`
@@ -52,7 +55,9 @@ type videoE2EListResponse struct {
 
 func doVideoE2ERequest(t *testing.T, method, path, user, contentType string, body io.Reader) (*http.Response, []byte) {
 	t.Helper()
-	req, err := http.NewRequestWithContext(context.Background(), method, gatewayURL+path, body)
+	ctx, cancel := context.WithTimeout(context.Background(), asyncVideoRequestTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, method, gatewayURL+path, body)
 	require.NoError(t, err)
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	if user != "" {
@@ -94,6 +99,11 @@ func TestAsyncVideoLifecycle(t *testing.T) {
 	require.NoError(t, writer.WriteField("prompt", "A small robot waves at the camera"))
 	require.NoError(t, writer.Close())
 
+	// Deliberately omit routing-strategy. The gateway must inject its default at
+	// RequestHeaders, rematch onto ORIGINAL_DST, and send the create to the same
+	// pod whose identity it records for every follow-up request below. The mock
+	// model has multiple replicas, so comparing MockPod across phases exercises
+	// the pin rather than relying on a single-pod deployment.
 	resp, payload := doVideoE2ERequest(t, http.MethodPost, "/v1/videos", owner, writer.FormDataContentType(), &createBody)
 	require.Equal(t, http.StatusOK, resp.StatusCode, string(payload))
 	var created videoE2EResponse

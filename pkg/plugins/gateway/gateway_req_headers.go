@@ -18,6 +18,7 @@ package gateway
 
 import (
 	"context"
+	"net/http"
 	"strings"
 
 	"go.opentelemetry.io/otel"
@@ -30,6 +31,7 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
+	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -42,6 +44,19 @@ const (
 	authorizationKey = "authorization"
 	contentTypeKey   = "content-type"
 )
+
+// videoCreateRematchHeaders prepares the headers-phase route rematch for an
+// asynchronous create whose real routing strategy and target pod can only be
+// selected after its multipart body has been decoded.
+func videoCreateRematchHeaders(reqHeaders map[string]string, requestPath string, endOfStream bool) []*configPb.HeaderValueOption {
+	if endOfStream ||
+		!strings.EqualFold(reqHeaders[methodKey], http.MethodPost) ||
+		pathWithoutQuery(requestPath) != PathVideos ||
+		strings.TrimSpace(reqHeaders[HeaderRoutingStrategy]) != "" {
+		return nil
+	}
+	return buildEnvoyProxyHeaders(nil, HeaderRoutingStrategy, string(routing.RouterLeastRequest))
+}
 
 func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, rootSpan trace.Span, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, *types.RoutingContext, int64) {
 	var username, requestPath string
@@ -169,7 +184,14 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 		}
 	}
 
-	headers := []*configPb.HeaderValueOption{}
+	headers := videoCreateRematchHeaders(reqHeaders, requestPath, h.RequestHeaders.EndOfStream)
+	// The initial /v1/videos route is selected before ext_proc sees the request.
+	// When the client supplies no routing strategy, stamp a temporary valid value
+	// while the headers-phase ClearRouteCache below can still rematch the request
+	// onto the Videos ORIGINAL_DST route. Do not put this synthetic value in
+	// routingCtx.ReqHeaders: HandleRequestBody must still resolve the real strategy
+	// from the model profile or environment before it selects the concrete pod and
+	// overwrites this header together with target-pod.
 	headers = append(headers, &configPb.HeaderValueOption{
 		Header: &configPb.HeaderValue{
 			Key:      HeaderWentIntoReqHeaders,

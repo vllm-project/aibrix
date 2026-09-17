@@ -214,8 +214,10 @@ type AsyncJobRegistration struct {
 }
 
 // AsyncJobListOptions describes one cursor page of an owner's jobs. After is
-// the last public id from the previous page; Order is "asc" or "desc" by
-// creation time. Limit is validated by the caller or the store before use.
+// the last public id from the previous page and must still be present in the
+// owner's catalog; a deleted or expired cursor is invalid, and the caller must
+// restart from the first page. Order is "asc" or "desc" by creation time. Limit
+// is validated by the caller or the store before use.
 type AsyncJobListOptions struct {
 	After string
 	Limit int
@@ -262,8 +264,10 @@ type asyncJobPageStore interface {
 	listPage(ctx context.Context, owner, jobType string, options AsyncJobListOptions) (AsyncJobListPage, error)
 }
 
-// podResolver is the slice of the pod cache the registry needs. cache.Cache
-// satisfies it.
+// podResolver is the slice of the informer-backed pod cache the registry needs;
+// it never calls the Kubernetes API directly. cache.Cache satisfies it, and its
+// error means the pod key is absent from the cache rather than a transient API
+// transport failure.
 type podResolver interface {
 	GetPod(podName string, podNamespace string) (*v1.Pod, error)
 }
@@ -353,35 +357,35 @@ var (
 )
 
 func (r *memoryAsyncJobRegistry) Register(ctx context.Context, reg AsyncJobRegistration) (AsyncJobRecord, error) {
-	return r.asyncJobRegistryCore.register(ctx, reg)
+	return r.register(ctx, reg)
 }
 
 func (r *memoryAsyncJobRegistry) Get(ctx context.Context, owner, publicJobID string) (AsyncJobRecord, *v1.Pod, error) {
-	return r.asyncJobRegistryCore.get(ctx, owner, publicJobID)
+	return r.get(ctx, owner, publicJobID)
 }
 
 func (r *memoryAsyncJobRegistry) List(ctx context.Context, owner, jobType string, options AsyncJobListOptions) (AsyncJobListPage, error) {
-	return r.asyncJobRegistryCore.list(ctx, owner, jobType, options)
+	return r.list(ctx, owner, jobType, options)
 }
 
 func (r *memoryAsyncJobRegistry) Delete(ctx context.Context, owner, publicJobID string) error {
-	return r.asyncJobRegistryCore.delete(ctx, owner, publicJobID)
+	return r.delete(ctx, owner, publicJobID)
 }
 
 func (r *redisAsyncJobRegistry) Register(ctx context.Context, reg AsyncJobRegistration) (AsyncJobRecord, error) {
-	return r.asyncJobRegistryCore.register(ctx, reg)
+	return r.register(ctx, reg)
 }
 
 func (r *redisAsyncJobRegistry) Get(ctx context.Context, owner, publicJobID string) (AsyncJobRecord, *v1.Pod, error) {
-	return r.asyncJobRegistryCore.get(ctx, owner, publicJobID)
+	return r.get(ctx, owner, publicJobID)
 }
 
 func (r *redisAsyncJobRegistry) List(ctx context.Context, owner, jobType string, options AsyncJobListOptions) (AsyncJobListPage, error) {
-	return r.asyncJobRegistryCore.list(ctx, owner, jobType, options)
+	return r.list(ctx, owner, jobType, options)
 }
 
 func (r *redisAsyncJobRegistry) Delete(ctx context.Context, owner, publicJobID string) error {
-	return r.asyncJobRegistryCore.delete(ctx, owner, publicJobID)
+	return r.delete(ctx, owner, publicJobID)
 }
 
 // Register durably records a job the backend has already accepted, and returns

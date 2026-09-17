@@ -27,6 +27,7 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace"
 
 	routingalgorithms "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
@@ -573,6 +574,40 @@ func TestHandleRequestHeadersPreservesMockPDFailureHeader(t *testing.T) {
 	assert.Equal(t, "prefill", routingCtx.ReqHeaders[HeaderMockPDFailure])
 }
 
+// TestHandleRequestHeaders_VideoCreateWithoutRoutingStrategyForcesRematch
+// guards the two-phase create route. Envoy chooses the initial Videos route
+// before ext_proc runs; the plugin must add a routing strategy while clearing
+// that cached route so the request rematches onto original_route_videos. The
+// concrete target-pod is selected later, after the multipart body is decoded.
+func TestHandleRequestHeaders_VideoCreateWithoutRoutingStrategyForcesRematch(t *testing.T) {
+	server := &Server{}
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestHeaders{
+			RequestHeaders: &extProcPb.HttpHeaders{
+				Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
+					{Key: pathKey, RawValue: []byte(PathVideos)},
+					{Key: methodKey, RawValue: []byte(http.MethodPost)},
+				}},
+				EndOfStream: false,
+			},
+		},
+	}
+
+	resp, _, _, routingCtx, _ := server.HandleRequestHeaders(
+		context.Background(), "req-video-create", trace.SpanFromContext(context.Background()), req,
+	)
+
+	common := resp.GetRequestHeaders().GetResponse()
+	require.NotNil(t, common)
+	assert.True(t, common.GetClearRouteCache(), "the injected strategy must trigger an Envoy route rematch")
+	assertHeaderRawValue(t, common.GetHeaderMutation().GetSetHeaders(), HeaderRoutingStrategy, string(routingalgorithms.RouterLeastRequest))
+	assert.Empty(t, routingCtx.ReqHeaders[HeaderRoutingStrategy],
+		"the temporary rematch marker must not override a model profile or environment strategy in RequestBody")
+	for _, header := range common.GetHeaderMutation().GetSetHeaders() {
+		assert.NotEqual(t, HeaderTargetPod, header.GetHeader().GetKey(), "the target pod is not known until the request body is decoded")
+	}
+}
+
 // TestHandleRequestHeaders_VideoListIsScopedToTheRequestUser walks the whole
 // entry point for the job catalog: the owner scope is derived from the `user`
 // header, and one caller's jobs must be invisible to another. A bearer token is
@@ -624,10 +659,37 @@ func TestHandleRequestHeaders_VideoListIsScopedToTheRequestUser(t *testing.T) {
 				t.Fatal("GET /v1/videos must be answered by the gateway, not routed to a backend")
 			}
 			assert.Equal(t, envoyTypePb.StatusCode_OK, immediate.GetStatus().GetCode())
-			body := string(immediate.GetBody())
+			body := immediate.GetBody()
 			assert.Contains(t, body, tt.wantID)
 			assert.NotContains(t, body, tt.unwantedID)
 			assert.NotContains(t, body, "video_gen_", "backend ids must never leave the gateway")
 		})
 	}
+}
+
+func TestHandleRequestHeaders_VideoListDeletedCursorReturns400(t *testing.T) {
+	s, _, registry := newTestVideoJobServer(t)
+	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
+	cursor := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1", "video_gen_cursor", pod)
+	require.NoError(t, registry.Delete(context.Background(), asyncJobOwnerShared, cursor.PublicJobID))
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestHeaders{
+			RequestHeaders: &extProcPb.HttpHeaders{
+				Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
+					{Key: pathKey, RawValue: []byte(PathVideos + "?after=" + cursor.PublicJobID)},
+					{Key: methodKey, RawValue: []byte(http.MethodGet)},
+				}},
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, _, _, _, _ := s.HandleRequestHeaders(
+		context.Background(), "req-deleted-cursor", trace.SpanFromContext(context.Background()), req,
+	)
+	immediate := resp.GetImmediateResponse()
+	require.NotNil(t, immediate)
+	assert.Equal(t, envoyTypePb.StatusCode_BadRequest, immediate.GetStatus().GetCode())
+	assert.Contains(t, immediate.GetBody(), "invalid video list cursor or parameters")
 }

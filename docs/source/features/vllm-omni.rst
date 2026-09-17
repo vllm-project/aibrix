@@ -218,6 +218,12 @@ The raw response (before extracting ``.id``) looks like this — note that ``id`
 
 **List your jobs** instead of polling one by ID. This is the gateway's own catalog for your scope, so no ``model`` parameter is needed. It follows the OpenAI Videos cursor shape: ``limit`` is 1--100 (default 20), ``order`` is ``asc`` or ``desc`` (default ``desc``), and ``after`` is the ``last_id`` from the previous page:
 
+The ``after`` value is a live catalog cursor: the referenced job must still
+exist in the same owner scope. If that job is deleted or expires before the next
+page is requested, the gateway returns ``400 invalid video list cursor or
+parameters``. Restart the listing without ``after``; a public job ID intentionally
+contains no creation timestamp from which the deleted position could be recovered.
+
 .. code-block:: bash
 
     curl -s -H "user: alice" "$BASE/v1/videos?limit=20&order=desc" | jq .
@@ -265,7 +271,7 @@ Endpoint Reference
      - Create an async video generation job. Returns a public job ID immediately, registered against the pod that created it. If the job cannot be registered, the call fails with ``503`` and no ID is handed out.
    * - ``/v1/videos``
      - GET
-     - List your own jobs from the gateway's registry. Supports OpenAI-style ``after``, ``limit`` (1--100), and ``order`` (``asc``/``desc``); never calls a backend.
+     - List your own jobs from the gateway's registry. Supports OpenAI-style ``after``, ``limit`` (1--100), and ``order`` (``asc``/``desc``); never calls a backend. A deleted or expired ``after`` cursor returns 400, and the client must restart from the first page.
    * - ``/v1/videos/sync``
      - POST
      - Create a job and block until it completes; returns the video bytes directly. Not registered — there is no follow-up call to route.

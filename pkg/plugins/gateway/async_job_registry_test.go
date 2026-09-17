@@ -468,6 +468,28 @@ func TestRedisAsyncJobStore_ListPageUsesBoundedCursorRange(t *testing.T) {
 	assert.False(t, second.HasMore)
 }
 
+func TestAsyncJobStore_ListPageRejectsDeletedCursor(t *testing.T) {
+	for _, fixture := range asyncJobStoreFixtures(t) {
+		t.Run(fixture.name, func(t *testing.T) {
+			ctx := context.Background()
+			require.NoError(t, fixture.store.put(ctx, testAsyncJobRecord(fixture.clock, asyncJobOwnerShared, "job-1", "backend-1")))
+			fixture.advance(time.Microsecond)
+			require.NoError(t, fixture.store.put(ctx, testAsyncJobRecord(fixture.clock, asyncJobOwnerShared, "job-cursor", "backend-cursor")))
+
+			require.NoError(t, fixture.store.delete(ctx, asyncJobOwnerShared, "job-cursor"))
+			pageStore, ok := fixture.store.(asyncJobPageStore)
+			require.True(t, ok)
+			_, err := pageStore.listPage(ctx, asyncJobOwnerShared, asyncJobTypeVideo, AsyncJobListOptions{
+				After: "job-cursor",
+				Limit: 1,
+				Order: "desc",
+			})
+			assert.ErrorIs(t, err, errAsyncJobNotFound,
+				"a deleted cursor has lost its sort position; callers must restart from the first page")
+		})
+	}
+}
+
 // asyncJobConcurrentInsertHook inserts a newer record immediately before the
 // command that reads the page. With the old ZREVRANK + ZREVRANGE sequence this
 // happened between those two commands and shifted the cursor's rank. The list

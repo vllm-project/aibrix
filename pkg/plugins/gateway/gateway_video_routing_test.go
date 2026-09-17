@@ -769,7 +769,7 @@ func TestHandleRequestHeaders_VideoListValidationDoesNotExposeInternalError(t *t
 
 	require.NotNil(t, resp.GetImmediateResponse())
 	assert.Equal(t, envoyTypePb.StatusCode_BadRequest, resp.GetImmediateResponse().GetStatus().GetCode())
-	body := string(resp.GetImmediateResponse().GetBody())
+	body := resp.GetImmediateResponse().GetBody()
 	assert.Contains(t, body, "list limit must be between 1 and 100")
 	assert.NotContains(t, body, errAsyncJobInvalidRecord.Error())
 }
@@ -939,6 +939,33 @@ func TestRewriteVideoJobErrorBody_CreateFailureWithoutPublicIDIsUnchanged(t *tes
 	body := []byte(`{"error":{"message":"Video video_gen_abc failed"}}`)
 
 	assert.Equal(t, body, rewriteVideoJobErrorBody(routerCtx, body))
+}
+
+func TestRewriteVideoJobErrorBody_RewritesOnlyKnownJSONFields(t *testing.T) {
+	routerCtx := types.NewRoutingContext(context.Background(), "", "wan2.1", "", "req-status-error", "")
+	routerCtx.ReqPath = PathVideos + "/aibrixjob-public"
+	routerCtx.AsyncJobBackendID = "video_gen_abc"
+	body := []byte(`{
+		"id":"video_gen_abc",
+		"error":{
+			"message":"Video video_gen_abc was not found",
+			"param":"video_gen_abc",
+			"details":{"id":"video_gen_abc"}
+		},
+		"trace_id":"trace-video_gen_abc",
+		"extension":"video_gen_abc"
+	}`)
+
+	rewritten := rewriteVideoJobErrorBody(routerCtx, body)
+	assert.Equal(t, "aibrixjob-public", gjson.GetBytes(rewritten, "id").String())
+	assert.Equal(t, "Video aibrixjob-public was not found", gjson.GetBytes(rewritten, "error.message").String())
+	assert.Equal(t, "aibrixjob-public", gjson.GetBytes(rewritten, "error.param").String())
+	assert.Equal(t, "video_gen_abc", gjson.GetBytes(rewritten, "error.details.id").String())
+	assert.Equal(t, "trace-video_gen_abc", gjson.GetBytes(rewritten, "trace_id").String())
+	assert.Equal(t, "video_gen_abc", gjson.GetBytes(rewritten, "extension").String())
+
+	plainText := []byte("Video video_gen_abc was not found")
+	assert.Equal(t, plainText, rewriteVideoJobErrorBody(routerCtx, plainText))
 }
 
 // TestHandleVideoJobResponseBody_RegistrationFailureReturns503 covers the rule
