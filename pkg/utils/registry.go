@@ -78,7 +78,7 @@ func (reg *CustomizedRegistry[V, A]) Delete(key string) {
 	// Invalidate first while holding the lock, so a cache miss waits until the
 	// embedded registry update is complete.
 	reg.values.Store(nil)
-	reg.Registry.deleteLocked(key)
+	reg.deleteLocked(key)
 }
 
 func (reg *Registry[V]) Load(key string) (value V, ok bool) {
@@ -122,7 +122,7 @@ func (reg *CustomizedRegistry[V, A]) Store(key string, value V) {
 	// Invalidate first while holding the lock, so a cache miss waits until the
 	// embedded registry update is complete.
 	reg.values.Store(nil)
-	reg.Registry.storeLocked(key, value)
+	reg.storeLocked(key, value)
 }
 
 func (reg *Registry[V]) Array() (arr []V) {
