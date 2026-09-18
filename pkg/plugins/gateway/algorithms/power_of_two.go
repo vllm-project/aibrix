@@ -17,436 +17,116 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"context"
 	"fmt"
 	"math/rand"
-	"strconv"
-	"sync"
-	"time"
 
-	"github.com/redis/go-redis/v9"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-type po2RequestCountAddedKeyStruct struct{}
-type po2RequestCountDoneKeyStruct struct{}
+const RouterPowerOfTwo types.RoutingAlgorithm = "power-of-two"
 
-var po2RequestCountAddedKey = po2RequestCountAddedKeyStruct{}
-var po2RequestCountDoneKey = po2RequestCountDoneKeyStruct{}
-
-/*
-redis key design:
-
-po2_req_count:<modelName>:<podName>_<port>:timestamp -> realtime running request
-*/
-
-const (
-	RouterPowerOfTwo      types.RoutingAlgorithm = "power-of-two"
-	redisKeyPrefix                               = "po2_req_count"
-	defaultRedisKeyExpiry                        = 5 * time.Minute
-	defaultKeyRotationSec                        = 3600 // 1 hour, key rotation interval
-	// if po2 router is not used for a long time, the request tracker will stop counting after 600 seconds to reduce redis pressure and latency
-	defaultTrackerTimeout = 5 * time.Minute // 5 minutes, request tracker timeout
-	// defaultRedisOpTimeout is the timeout for the detached Redis counter operations
-	// (Incr/Decr/Expire). These are single-key operations that normally complete in well
-	// under a millisecond; the timeout only guards against a stalled or unreachable Redis
-	// so cleanup goroutines do not leak.
-	defaultRedisOpTimeout = 2 * time.Second
-)
-
-func RegisterPowerOfTwoRouter(redisClient *redis.Client) {
-	Register(RouterPowerOfTwo, func() (types.Router, error) {
-		if redisClient == nil {
-			return nil, fmt.Errorf("power-of-two router requires redis configuration")
-		}
-		return NewPowerOfTwoRouterWithRedis(redisClient)
-	})
+func init() {
+	Register(RouterPowerOfTwo, NewPowerOfTwoRouter)
 }
 
+// PowerOfTwoRouter implements the power of two choices algorithm: it samples two distinct
+// ready pods at random and routes to the one with fewer running requests.
+//
+// The router keeps no counters of its own. The running-request count of a pod is the one
+// the cache maintains for every routed request (see Cache.GetPodsRunningRequests): the
+// gateway increments it when a request is dispatched and decrements it when the request
+// completes, whichever router chose the pod. When Redis is configured the count is
+// aggregated across gateway replicas; otherwise it is this gateway's own count.
 type PowerOfTwoRouter struct {
-	redisClient    *redis.Client
-	keyRotationSec int64 // Time interval in seconds for key rotation, default 3600 (1 hour)
-
-	// lastRoutingTime is the timestamp of the last routing of a model. Used to avoid unnecessary redis request
-	lastRoutingTime       map[string]time.Time
-	lastRoutingTimeMu     sync.RWMutex // Protects lastRoutingTime map from concurrent access
-	requestTrackerTimeout time.Duration
+	cache cache.Cache
 }
 
-// NewPowerOfTwoRouterWithRedis creates a new Power of Two router with the given Redis client.
-// This is useful for testing or when you want to provide a custom Redis configuration.
-// Returns error if cache registration fails, as the router cannot function correctly without it.
-func NewPowerOfTwoRouterWithRedis(redisClient *redis.Client, keyRotationSec ...int64) (*PowerOfTwoRouter, error) {
-	if len(keyRotationSec) == 0 {
-		keyRotationSec = []int64{defaultKeyRotationSec}
-	}
-	if keyRotationSec[0] <= 0 {
-		keyRotationSec[0] = defaultKeyRotationSec
-	}
-	router := &PowerOfTwoRouter{
-		redisClient:           redisClient,
-		keyRotationSec:        keyRotationSec[0],
-		requestTrackerTimeout: defaultTrackerTimeout,
-		lastRoutingTime:       make(map[string]time.Time),
-	}
+// NewPowerOfTwoRouter creates a Power of Two router backed by the global cache.
+func NewPowerOfTwoRouter() (types.Router, error) {
 	c, err := cache.Get()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get cache for RequestTracker registration: %w", err)
+		return nil, err
 	}
-	// Register request tracker to cache
-	// This is critical: without registration, DoneRequestCount will never be called,
-	// causing Redis counters to only increment and never decrement (resource leak)
-	c.RegisterRequestTracker(router)
-	return router, nil
+	return NewPowerOfTwoRouterWithCache(c), nil
 }
 
-// podServerKey represents a pod with specific port
-type podServerKey struct {
-	pod  *v1.Pod
-	port int
-}
-
-func (k podServerKey) String() string {
-	if k.port == 0 {
-		return k.pod.Name
-	}
-	return fmt.Sprintf("%s_%d", k.pod.Name, k.port)
+// NewPowerOfTwoRouterWithCache creates a Power of Two router that reads load from the given cache.
+func NewPowerOfTwoRouterWithCache(c cache.Cache) *PowerOfTwoRouter {
+	return &PowerOfTwoRouter{cache: c}
 }
 
 // Route implements [types.Router] using power of two choices algorithm.
-// It randomly selects two candidates and routes to the one with fewer running requests.
+// It randomly selects two pods and routes to the one with fewer running requests. For a
+// data-parallel pod that serves several ports, the request goes to the port with the fewest
+// running requests.
 func (p *PowerOfTwoRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	readyPods := readyPodList.All()
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no ready pods available")
 	}
 
-	// Build list of all pod-port combinations
-	candidates := p.buildCandidates(readyPods, readyPodList.ListPortsForPod())
-	if len(candidates) == 0 {
-		return "", fmt.Errorf("no valid candidates found")
-	}
-
-	// Select target using power of two choices
-	var target podServerKey
-	if len(candidates) == 1 {
-		// Only one candidate, use it directly
-		target = candidates[0]
-	} else {
-		// Randomly pick two candidates
-		idx1 := rand.Intn(len(candidates))
-		idx2 := rand.Intn(len(candidates))
-		// Ensure different candidates
-		for idx2 == idx1 && len(candidates) > 1 {
-			idx2 = rand.Intn(len(candidates))
+	target := readyPods[0]
+	if len(readyPods) > 1 {
+		// Two distinct pods, uniformly: draw the second from the remaining n-1 slots.
+		idx1 := rand.Intn(len(readyPods))
+		idx2 := rand.Intn(len(readyPods) - 1)
+		if idx2 >= idx1 {
+			idx2++
 		}
+		pod1, pod2 := readyPods[idx1], readyPods[idx2]
 
-		candidate1 := candidates[idx1]
-		candidate2 := candidates[idx2]
-
-		// Get request counts for both candidates using batch query (MGET)
-		counts := p.getRequestCounts(ctx.Context, ctx.Model, []podServerKey{candidate1, candidate2}, ctx.RequestTime)
-		count1 := counts[0]
-		count2 := counts[1]
-
+		count1, count2 := p.getRequestCounts(pod1, pod2)
 		klog.V(4).InfoS("power_of_two_selection",
 			"request_id", ctx.RequestID,
-			"request_time", ctx.RequestTime.Unix(),
-			"candidate1", candidate1.String(),
+			"candidate1", pod1.Name,
 			"count1", count1,
-			"candidate2", candidate2.String(),
+			"candidate2", pod2.Name,
 			"count2", count2)
 
 		// Choose the one with fewer requests
 		if count1 <= count2 {
-			target = candidate1
+			target = pod1
 		} else {
-			target = candidate2
+			target = pod2
 		}
 	}
 
+	targetPort := selectTargetPortForPodWithLeastRequestCount(p.cache, target, readyPodList.ListPortsForPod())
 	klog.V(4).InfoS("power_of_two_route",
 		"request_id", ctx.RequestID,
-		"target_pod", target.pod.Name,
-		"target_port", target.port)
+		"target_pod", target.Name,
+		"target_port", targetPort)
 
-	// Set target pod and port
-	ctx.SetTargetPod(target.pod)
-	if target.port != 0 {
-		ctx.SetTargetPort(target.port)
+	ctx.SetTargetPod(target)
+	if targetPort != 0 {
+		ctx.SetTargetPort(targetPort)
 	}
-
-	// call immediate after setting target pod to avoid other Route call pick up the same pod
-	p.lastRoutingTimeMu.Lock()
-	p.lastRoutingTime[ctx.Model] = time.Now()
-	p.lastRoutingTimeMu.Unlock()
-	p.AddRequestCount(ctx, ctx.RequestID, ctx.Model)
 	return ctx.TargetAddress(), nil
 }
 
-// buildCandidates creates list of pod-port combinations
-func (p *PowerOfTwoRouter) buildCandidates(pods []*v1.Pod, portsMap map[string][]int) []podServerKey {
-	var candidates []podServerKey
-
-	for _, pod := range pods {
-		ports, hasMultiplePorts := portsMap[pod.Name]
-		if hasMultiplePorts && len(ports) > 0 {
-			// Multi-port pod: create candidate for each port
-			for _, port := range ports {
-				candidates = append(candidates, podServerKey{
-					pod:  pod,
-					port: port,
-				})
-			}
-		} else {
-			// Single-port pod: use default port
-			candidates = append(candidates, podServerKey{
-				pod:  pod,
-				port: 0, // Will use default port via GetModelPortForPod
-			})
-		}
-	}
-
-	return candidates
-}
-
-// getRequestCount retrieves the current request count from Redis for a single server
-func (p *PowerOfTwoRouter) getRequestCount(ctx context.Context, modelName string, server podServerKey, requestTime time.Time) int64 {
-	counts := p.getRequestCounts(ctx, modelName, []podServerKey{server}, requestTime)
-	if len(counts) > 0 {
-		return counts[0]
-	}
-	return 0
-}
-
-// getRequestCounts retrieves request counts from Redis for multiple servers using MGET.
-// Returns a slice of counts with the same length and order as the input servers.
-// This is more efficient than multiple GET calls as it only requires one network roundtrip.
-func (p *PowerOfTwoRouter) getRequestCounts(ctx context.Context, modelName string, servers []podServerKey, requestTime time.Time) []int64 {
-	if len(servers) == 0 {
-		return []int64{}
-	}
-
-	// Build all keys
-	keys := make([]string, len(servers))
-	for i, server := range servers {
-		keys[i] = p.buildRedisKey(modelName, server, requestTime)
-	}
-
-	// Use MGET to fetch all values in one roundtrip
-	vals, err := p.redisClient.MGet(ctx, keys...).Result()
+// getRequestCounts returns the live running-request count of both pods from a single cache
+// read. A pod without a count, or a failed read, counts as 0: routing falls back to a random
+// choice between the two pods rather than failing the request.
+func (p *PowerOfTwoRouter) getRequestCounts(pod1, pod2 *v1.Pod) (count1, count2 int64) {
+	counts, err := p.cache.GetPodsRunningRequests([]*v1.Pod{pod1, pod2})
 	if err != nil {
-		klog.V(4).ErrorS(err, "failed to batch get request counts from redis",
-			"key_count", len(keys),
-			"servers", len(servers))
-		// Return zeros on error
-		return make([]int64, len(servers))
+		klog.V(4).ErrorS(err, "failed to get running requests, treating candidates as idle",
+			"candidate1", pod1.Name, "candidate2", pod2.Name)
+		return 0, 0
 	}
-
-	// Convert results to int64 slice
-	counts := make([]int64, len(servers))
-	for i, val := range vals {
-		if val == nil {
-			// Key doesn't exist, use 0
-			counts[i] = 0
-			continue
-		}
-
-		// Try to convert to int64
-		switch v := val.(type) {
-		case string:
-			// Redis returns strings for integer values
-			if intVal, err := strconv.ParseInt(v, 10, 64); err == nil {
-				counts[i] = intVal
-			} else {
-				klog.V(4).ErrorS(err, "failed to parse redis value as int64",
-					"key", keys[i],
-					"value", v,
-					"pod", servers[i].pod.Name,
-					"port", servers[i].port)
-				counts[i] = 0
-			}
-		case int64:
-			counts[i] = v
-		default:
-			klog.V(4).InfoS("unexpected redis value type",
-				"key", keys[i],
-				"type", fmt.Sprintf("%T", v),
-				"pod", servers[i].pod.Name,
-				"port", servers[i].port)
-			counts[i] = 0
-		}
-	}
-
-	return counts
-}
-
-// buildRedisKey constructs the redis key for a pod-port combination.
-// The timestamp is modulo keyRotationSec to rotate keys periodically (default: every hour).
-// This prevents stale counts from accumulating over time.
-func (p *PowerOfTwoRouter) buildRedisKey(modelName string, server podServerKey, requestTime time.Time) string {
-	timestamp := requestTime.Unix()
-	// Rotate key every keyRotationSec seconds (default 3600s = 1 hour)
-	rotatedTimestamp := timestamp - (timestamp % p.keyRotationSec)
-	return fmt.Sprintf("%s:%s:%s:%d", redisKeyPrefix, modelName, server.String(), rotatedTimestamp)
-}
-
-// getRequestCountRedisKey returns the redis key for current request
-func (p *PowerOfTwoRouter) getRequestCountRedisKey(ctx *types.RoutingContext) string {
-	port := ctx.TargetPort()
-	serverKey := podServerKey{
-		pod:  ctx.TargetPod(),
-		port: port,
-	}
-	return p.buildRedisKey(ctx.Model, serverKey, ctx.RequestTime)
-}
-
-// AddRequestCount implements [cache.RequestTracker].
-func (p *PowerOfTwoRouter) AddRequestCount(ctx *types.RoutingContext, requestID string, modelName string) (traceTerm int64) {
-	// Defensive check: ctx can be nil when request is cancelled before routing completes
-	if ctx == nil {
-		return 0
-	}
-
-	// Check whether routing is done and target pod is set
-	if !ctx.HasRouted() {
-		return 0
-	}
-
-	// Skip counting if this model hasn't been routed by this router recently
-	// This avoids counting requests that are handled by other routers (e.g., prefix-cache)
-	p.lastRoutingTimeMu.RLock()
-	lastModelRoutingTime, ok := p.lastRoutingTime[ctx.Model]
-	p.lastRoutingTimeMu.RUnlock()
-
-	if ok {
-		// If it's been too long since last routing, skip counting
-		if time.Since(lastModelRoutingTime) > p.requestTrackerTimeout {
-			return 0
-		}
-	} else {
-		// No routing history for this model, skip counting
-		return 0
-	}
-
-	// Check whether it is called the first time
-	added := ctx.Value(po2RequestCountAddedKey)
-	if added != nil {
-		return 0
-	}
-
-	key := p.getRequestCountRedisKey(ctx)
-
-	// Increment the request count in Redis.
-	// IMPORTANT: Use a detached background context rather than ctx.Context. Routing has
-	// already completed (HasRouted() is true) and the request was dispatched to a pod, so
-	// it must be counted. If we used ctx.Context and it were cancelled (client disconnect,
-	// timeout), Incr would fail and DoneRequestCount would later be unable to balance it.
-	// Detaching keeps Incr/Decr symmetric.
-	redisCtx, cancel := context.WithTimeout(context.Background(), defaultRedisOpTimeout)
-	defer cancel()
-
-	newCount, err := p.redisClient.Incr(redisCtx, key).Result()
-	if err != nil {
-		klog.ErrorS(err, "failed to increment request count",
-			"request_id", requestID,
-			"key", key)
-		return 0
-	}
-
-	// Mark as added only after Incr succeeds, so a failed Incr does not cause
-	// DoneRequestCount to issue an unbalanced Decr.
-	ctx.Context = context.WithValue(ctx.Context, po2RequestCountAddedKey, true)
-
-	// Set expiry on the key to prevent memory leak. Reuse the same detached context so the
-	// TTL is always set even if the originating request context was cancelled.
-	if err := p.redisClient.Expire(redisCtx, key, defaultRedisKeyExpiry).Err(); err != nil {
-		klog.ErrorS(err, "failed to set expiry on request count key",
-			"request_id", requestID,
-			"key", key)
-		// Continue anyway - the counter is incremented, we just might have a memory leak
-	}
-
-	klog.V(4).InfoS("power_of_two_add_request",
-		"request_id", requestID,
-		"key", key,
-		"new_count", newCount)
-
-	// Use current count as trace term
-	return newCount
-}
-
-// DoneRequestCount implements [cache.RequestTracker].
-func (p *PowerOfTwoRouter) DoneRequestCount(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64) {
-	// Defensive check: ctx can be nil when request is cancelled before routing completes
-	if ctx == nil {
-		return
-	}
-
-	// Check whether target pod is set
-	if !ctx.HasRouted() {
-		return
-	}
-
-	// avoid decreasing if AddRequestCount is not called
-	added := ctx.Value(po2RequestCountAddedKey)
-	if added == nil {
-		return
-	}
-
-	// avoid duplicate decrement
-	done := ctx.Value(po2RequestCountDoneKey)
-	if done != nil {
-		return
-	}
-	ctx.Context = context.WithValue(ctx.Context, po2RequestCountDoneKey, true)
-
-	key := p.getRequestCountRedisKey(ctx)
-
-	// Decrement the request count in Redis
-	// IMPORTANT: Use background context instead of ctx.Context because the request context
-	// may be cancelled (client disconnect, timeout, etc.), which would cause the Redis Decr
-	// to fail immediately. This would leave the counter incremented without decrementing,
-	// causing a permanent counter leak and skewed routing decisions.
-	// We use a short timeout to ensure the operation completes even if the request is cancelled.
-	redisCtx, cancel := context.WithTimeout(context.Background(), defaultRedisOpTimeout)
-	defer cancel()
-
-	newCount, err := p.redisClient.Decr(redisCtx, key).Result()
-	if err != nil {
-		klog.ErrorS(err, "failed to decrement request count",
-			"request_id", requestID,
-			"key", key)
-		return
-	}
-
-	klog.V(4).InfoS("power_of_two_done_request",
-		"request_id", requestID,
-		"key", key,
-		"new_count", newCount)
-}
-
-// DoneRequestTrace implements [cache.RequestTracker].
-func (p *PowerOfTwoRouter) DoneRequestTrace(ctx *types.RoutingContext, requestID string, modelName string, inputTokens int64, outputTokens int64, traceTerm int64) {
-	// Defensive check: ctx can be nil when request is cancelled before routing completes
-	if ctx == nil {
-		return
-	}
-
-	// For power of two router, we only track request count, not detailed trace
-	// Just call DoneRequestCount
-	p.DoneRequestCount(ctx, requestID, modelName, traceTerm)
+	return counts[utils.GeneratePodKey(pod1.Namespace, pod1.Name)], counts[utils.GeneratePodKey(pod2.Namespace, pod2.Name)]
 }
 
 // SubscribedMetrics implements [types.Router].
 func (p *PowerOfTwoRouter) SubscribedMetrics() []string {
-	// Power of two router doesn't rely on pod metrics, uses Redis instead
-	return []string{}
+	// The per-port count of a data-parallel pod is read from the realtime running-requests metric.
+	return []string{metrics.RealtimeNumRequestsRunning}
 }
 
 var _ types.Router = (*PowerOfTwoRouter)(nil)
-var _ cache.RequestTracker = (*PowerOfTwoRouter)(nil)
