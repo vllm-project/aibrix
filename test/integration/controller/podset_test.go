@@ -30,6 +30,7 @@ import (
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	aibrixconst "github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
+	controllerutils "github.com/vllm-project/aibrix/test/utils/controller"
 	"github.com/vllm-project/aibrix/test/utils/validation"
 	"github.com/vllm-project/aibrix/test/utils/wrapper"
 )
@@ -44,20 +45,12 @@ var _ = ginkgo.Describe("PodSet controller test", func() {
 	}
 
 	ginkgo.BeforeEach(func() {
-		ns = &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				GenerateName: "test-podset-",
-			},
-		}
-		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
-		// Ensure namespace is fully created
-		gomega.Eventually(func() error {
-			return k8sClient.Get(ctx, client.ObjectKeyFromObject(ns), ns)
-		}, time.Second*3).Should(gomega.Succeed())
+		ns = nil
+		ns = controllerutils.CreateNamespace(ctx, k8sClient, "test-podset-", 3*time.Second)
 	})
 
 	ginkgo.AfterEach(func() {
-		gomega.Expect(k8sClient.Delete(ctx, ns)).To(gomega.Succeed())
+		controllerutils.DeleteNamespace(ctx, k8sClient, ns)
 	})
 
 	// testValidatingCase defines a test case with initial setup and a series of updates

@@ -25,6 +25,7 @@ import (
 	"github.com/onsi/gomega"
 
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	webhookutils "github.com/vllm-project/aibrix/test/utils/webhook"
 	"github.com/vllm-project/aibrix/test/utils/wrapper"
 )
 
@@ -32,14 +33,12 @@ var _ = ginkgo.Describe("RoleSet spec admission", func() {
 	var ns *corev1.Namespace
 
 	ginkgo.BeforeEach(func() {
-		ns = &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{GenerateName: "roleset-validation-"},
-		}
-		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
+		ns = nil
+		ns = webhookutils.CreateNamespace(ctx, k8sClient, "roleset-validation-")
 	})
 
 	ginkgo.AfterEach(func() {
-		gomega.Expect(k8sClient.Delete(ctx, ns)).To(gomega.Succeed())
+		webhookutils.DeleteNamespace(ctx, k8sClient, ns)
 	})
 
 	type invalidRolesCase struct {
