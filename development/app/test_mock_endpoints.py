@@ -646,3 +646,43 @@ def test_legacy_omni_image_and_audio_shapes_remain_available(monkeypatch):
     assert image_response.get_json()["choices"][0]["message"]["content"][0]["type"] == "image_url"
     assert audio_response.status_code == 200
     assert audio_response.get_json()["choices"][0]["message"]["audio"]["format"] == "wav"
+
+
+def test_abort_request_records_the_rid_of_the_aborted_decode_leg(monkeypatch):
+    module = load_mock_module(monkeypatch, contract="sglang-http", role="decode")
+    client = module.app.test_client()
+    rid = "req-abort-0123456789abcdef"
+
+    response = client.post(
+        "/abort_request",
+        data=json.dumps({"rid": rid}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "ok", "rid": rid}
+    records = query_records(client, rid)
+    assert len(records) == 1
+    record = records[0]
+    assert record["path"] == "/abort_request"
+    assert record["role"] == "decode"
+    assert record["parsed_json"] == {"rid": rid}
+    assert record["outcome"] == "success"
+    assert record["status_code"] == 200
+
+
+def test_abort_request_without_rid_is_rejected(monkeypatch):
+    module = load_mock_module(monkeypatch, contract="sglang-http", role="decode")
+    client = module.app.test_client()
+
+    response = client.post(
+        "/abort_request",
+        data=json.dumps({"abort_all": False}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    records = client.get("/debug/requests").get_json()
+    assert records[-1]["path"] == "/abort_request"
+    assert records[-1]["outcome"] == "rejected"
+    assert records[-1]["request_id"] is None
