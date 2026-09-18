@@ -52,14 +52,16 @@ import (
 )
 
 const (
-	modelRouterGatewayNamespace     = "aibrix-system"
-	modelRouterGatewayName          = "aibrix-eg"
-	modelRouterControllerDeployment = "controller-manager"
-	modelRouterBackendPort          = int32(8000)
-	modelRouterPollInterval         = time.Second
-	modelRouterPollTimeout          = 2 * time.Minute
-	modelRouterCleanupTimeout       = time.Minute
-	modelRouterKeepOnFailureEnv     = "AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE"
+	modelRouterGatewayNamespace        = "aibrix-system"
+	modelRouterGatewayName             = "aibrix-eg"
+	modelRouterControllerNamespaceEnv  = "AIBRIX_ROLESET_CONTROLLER_NAMESPACE"
+	modelRouterControllerDeploymentEnv = "AIBRIX_ROLESET_CONTROLLER_DEPLOYMENT"
+	modelRouterControllerDeployment    = "controller-manager"
+	modelRouterBackendPort             = int32(8000)
+	modelRouterPollInterval            = time.Second
+	modelRouterPollTimeout             = 2 * time.Minute
+	modelRouterCleanupTimeout          = time.Minute
+	modelRouterKeepOnFailureEnv        = "AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE"
 )
 
 type modelRouterHarness struct {
@@ -542,9 +544,11 @@ func sendModelRouteRequest(
 
 func (h *modelRouterHarness) restartController(t *testing.T, ctx context.Context) {
 	t.Helper()
-	deployments := h.kubeClient.AppsV1().Deployments(modelRouterGatewayNamespace)
-	podsClient := h.kubeClient.CoreV1().Pods(modelRouterGatewayNamespace)
-	deployment, err := deployments.Get(ctx, modelRouterControllerDeployment, metav1.GetOptions{})
+	controllerNamespace := modelRouterEnvOrDefault(modelRouterControllerNamespaceEnv, modelRouterGatewayNamespace)
+	controllerDeployment := modelRouterEnvOrDefault(modelRouterControllerDeploymentEnv, modelRouterControllerDeployment)
+	deployments := h.kubeClient.AppsV1().Deployments(controllerNamespace)
+	podsClient := h.kubeClient.CoreV1().Pods(controllerNamespace)
+	deployment, err := deployments.Get(ctx, controllerDeployment, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get controller deployment: %v", err)
 	}
@@ -569,7 +573,7 @@ func (h *modelRouterHarness) restartController(t *testing.T, ctx context.Context
 
 	err = wait.PollUntilContextTimeout(ctx, modelRouterPollInterval, modelRouterPollTimeout, true,
 		func(ctx context.Context) (bool, error) {
-			current, err := deployments.Get(ctx, modelRouterControllerDeployment, metav1.GetOptions{})
+			current, err := deployments.Get(ctx, controllerDeployment, metav1.GetOptions{})
 			if err != nil {
 				if isModelRouterRetryableAPIError(err) {
 					return false, nil
@@ -672,6 +676,13 @@ func isModelRouterRetryableAPIError(err error) bool {
 		utilnet.IsConnectionRefused(err)
 }
 
+func modelRouterEnvOrDefault(name, defaultValue string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
 func (h *modelRouterHarness) logDiagnostics(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -711,8 +722,10 @@ func (h *modelRouterHarness) logDiagnostics(t *testing.T) {
 		t.Logf("ReferenceGrants in %s: %+v", h.namespace, grants.Items)
 	}
 
-	controller, err := h.kubeClient.AppsV1().Deployments(modelRouterGatewayNamespace).
-		Get(ctx, modelRouterControllerDeployment, metav1.GetOptions{})
+	controllerNamespace := modelRouterEnvOrDefault(modelRouterControllerNamespaceEnv, modelRouterGatewayNamespace)
+	controllerDeployment := modelRouterEnvOrDefault(modelRouterControllerDeploymentEnv, modelRouterControllerDeployment)
+	controller, err := h.kubeClient.AppsV1().Deployments(controllerNamespace).
+		Get(ctx, controllerDeployment, metav1.GetOptions{})
 	if err != nil {
 		return
 	}
@@ -720,13 +733,13 @@ func (h *modelRouterHarness) logDiagnostics(t *testing.T) {
 	if err != nil {
 		return
 	}
-	pods, err := h.kubeClient.CoreV1().Pods(modelRouterGatewayNamespace).
+	pods, err := h.kubeClient.CoreV1().Pods(controllerNamespace).
 		List(ctx, metav1.ListOptions{LabelSelector: selector.String()})
 	if err != nil {
 		return
 	}
 	for i := range pods.Items {
-		logs, err := h.kubeClient.CoreV1().Pods(modelRouterGatewayNamespace).
+		logs, err := h.kubeClient.CoreV1().Pods(controllerNamespace).
 			GetLogs(pods.Items[i].Name, &corev1.PodLogOptions{
 				Container: "manager",
 				TailLines: ptr.To[int64](200),
