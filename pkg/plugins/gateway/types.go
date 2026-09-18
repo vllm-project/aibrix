@@ -32,6 +32,10 @@ const (
 	HeaderErrorRequestBodyProcessing = "x-error-request-body-processing"
 	HeaderErrorResponseUnmarshal     = "x-error-response-unmarshal"
 	HeaderErrorResponseUnknown       = "x-error-response-unknown"
+	// HeaderErrorPDPrefill marks a response the gateway generated because the
+	// prefill leg of a PD request failed, so the failure is distinguishable
+	// from a 5xx the decode pod produced itself.
+	HeaderErrorPDPrefill = "x-error-pd-prefill"
 
 	// Model & Deployment Headers
 	HeaderErrorNoModelInRequest = "x-error-no-model-in-request"
