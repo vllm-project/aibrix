@@ -317,6 +317,16 @@ func TestPDRouter_RouteRecordsAsyncPrefillFailureWithoutSuccess(t *testing.T) {
 	assert.Eventually(t, func() bool {
 		return testutil.ToFloat64(failCounter.WithLabelValues("", "test-model", "http_error", "500")) == 1.0
 	}, time.Second, 10*time.Millisecond)
+
+	// A failed prefill leg also fires a best-effort abort at the decode pod,
+	// from a goroutine that outlives Route and emits a counter sample of its
+	// own. Join it before returning, or it races the deferred cleanup above
+	// restoring the test counter hook.
+	select {
+	case <-ctx.PDLeg().AbortDone():
+	case <-time.After(30 * time.Second):
+		t.Fatal("the decode abort goroutine did not finish")
+	}
 }
 
 func listenerPort(t *testing.T, l net.Listener) string {
