@@ -382,12 +382,15 @@ func (c *Store) worker(jobs <-chan *Pod) {
 
 			for metricName, metricValue := range result.ModelMetrics {
 				sanitizeMetricValueLabels(pod, metricValue)
-				parts := strings.SplitN(metricName, "/", 2)
-				if len(parts) != 2 {
+				// Model names may contain "/" (HuggingFace-style ids), so this
+				// must split on the last "/" like parseModelMetricKey, not the
+				// first: strings.SplitN(metricName, "/", 2) previously cut a
+				// slash-bearing model name in half and left metric holding
+				// part of the model name instead (review on #2735).
+				model, metric := parseModelMetricKey(metricName)
+				if model == "" {
 					continue
 				}
-				model := parts[0]
-				metric := parts[1]
 
 				model = resolveMetricModelName(pod, model)
 
@@ -399,8 +402,16 @@ func (c *Store) worker(jobs <-chan *Pod) {
 				metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, pod.Pod, metric, metricValue, metricValue.GetLabelValues())
 
 				if metric == metrics.EngineSleepState && c.kvEventManager != nil {
-					podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
-					c.kvEventManager.CheckSleepStateBackstop(ctx, podKey, model, podLoraID(pod), metricValue.GetSimpleValue())
+					// The prefix router and the KV-event subscription both key
+					// on the pod-metadata model name (constants.ModelNameFromMetadata),
+					// not the Prometheus-reported model_name label resolved
+					// above: those can differ (HF path vs model.aibrix.ai/name),
+					// and RemovePrefix silently no-ops on a (modelName, loraID)
+					// it never subscribed under (review on #2735).
+					if podModelName, ok := constants.ModelNameFromMetadata(pod.Labels, pod.Annotations); ok {
+						podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+						c.kvEventManager.CheckSleepStateBackstop(ctx, podKey, podModelName, podLoraID(pod), metricValue.GetSimpleValue())
+					}
 				}
 			}
 			// Update pod metrics using typed results

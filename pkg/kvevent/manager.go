@@ -362,21 +362,45 @@ func sleepStateAwakeKey(podKey, modelName string) string {
 // first observation after restart reads as a transition and purges once,
 // rather than leaving stale entries forever because no transition is ever
 // observed.
+//
+// The tracked state only latches to asleep once RemovePrefix actually runs
+// and succeeds. This deliberately does not go through PurgePodPrefixCache:
+// that helper swallows a temporary indexer-not-ready error as nil for the
+// AllBlocksCleared event handler, which has nothing to retry with. This
+// caller does have a next observation to retry with, and needs to tell
+// "purged" apart from "swallowed", or latching on either would mark the
+// transition handled when nothing was purged, and no later asleep
+// observation would ever retry it (review on #2735).
 func (m *Manager) CheckSleepStateBackstop(ctx context.Context, podKey, modelName string, loraID int64, awake float64) {
 	key := sleepStateAwakeKey(podKey, modelName)
 	isAwake := awake != 0
-	wasAwake, hadPrior := m.sleepStateAwake.Swap(key, isAwake)
-	if !hadPrior {
-		wasAwake = true
-	}
-	if isAwake || !wasAwake {
+
+	if isAwake {
+		m.sleepStateAwake.Store(key, true)
 		return
 	}
 
-	if err := m.PurgePodPrefixCache(ctx, modelName, loraID, podKey); err != nil {
+	wasAwake, hadPrior := m.sleepStateAwake.Load(key)
+	if hadPrior && !wasAwake {
+		// Already latched asleep by an earlier successful purge.
+		return
+	}
+
+	syncIndexer, err := m.syncProvider.GetSyncIndexer(ctx)
+	if err != nil {
+		if !IsTemporaryError(err) {
+			klog.Errorf("Sleep-state backstop failed to get sync indexer for pod %s, model %s: %v", podKey, modelName, err)
+		}
+		// Do not latch asleep either way: leave the tracked state as it was
+		// (unset, or awake from the last successful write) so the next
+		// asleep observation retries instead of being silently dropped.
+		return
+	}
+	if err := syncIndexer.RemovePrefix(ctx, modelName, loraID, podKey); err != nil {
 		klog.Errorf("Sleep-state backstop failed to purge prefix cache for pod %s, model %s: %v", podKey, modelName, err)
 		return
 	}
+	m.sleepStateAwake.Store(key, false)
 	klog.V(4).Infof("Sleep-state backstop purged prefix entries for pod %s, model %s", podKey, modelName)
 }
 

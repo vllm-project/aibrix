@@ -402,6 +402,18 @@ func (ef *EngineMetricsFetcher) parseModelMetricsFromFamily(allMetrics map[strin
 		if err != nil || modelName == "" {
 			continue
 		}
+		// A family that reports several instances per model_name,
+		// distinguished only by a label (e.g. vllm:engine_sleep_state's
+		// sleep_state), must be narrowed here too: aggregateModelMetric's
+		// gauge folding keeps whichever instance the scrape lists last,
+		// which is scrape-order dependent and defeats the label filter for
+		// every caller of this model-scoped path (review on #2735).
+		if metric.RequiredLabelKey != "" {
+			labelValue, labelErr := GetLabelValueForKey(familyMetric, metric.RequiredLabelKey)
+			if labelErr != nil || labelValue != metric.RequiredLabelValue {
+				continue
+			}
+		}
 
 		value, err := ef.parseMetricInstance(familyMetric, metricFamily, metric, rawMetricName)
 		if err != nil {
