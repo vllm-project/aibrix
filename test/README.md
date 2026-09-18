@@ -10,7 +10,7 @@ test/
 │   ├── framework/           # Shared live-cluster test infrastructure
 │   ├── gateway/             # Gateway API, routing, and PD tests
 │   └── controller/          # Controller-owned lifecycle tests
-├── integration/           # Integration tests using Ginkgo framework  
+├── integration/           # Integration tests using Ginkgo framework
 ├── regression/           # Performance regression tests for releases
 ├── utils/               # Shared test utilities and helpers
 ├── run-e2e-tests.sh    # E2E test runner script
@@ -35,7 +35,7 @@ Unit tests are located alongside source code (`*_test.go` files), not in current
 # Run all unit tests with coverage
 make test
 
-# Run tests for specific package  
+# Run tests for specific package
 go test ./pkg/controller/...
 ```
 
@@ -83,7 +83,7 @@ For CI pipelines that need full cluster setup and teardown:
 # Full CI setup - creates Kind cluster and installs AIBrix
 KIND_E2E=true INSTALL_AIBRIX=true make test-e2e
 
-or 
+or
 
 ./test/run-e2e-tests.sh
 ```
@@ -98,6 +98,23 @@ or
 - `AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE=true` - Preserves installed e2e resources after a failed local run
 - `SKIP_KUBECTL_INSTALL=true` - Skip kubectl installation (default: true)
 - `SKIP_KIND_INSTALL=true` - Skip Kind installation (default: true)
+
+#### ModelRouter Controller E2E
+
+The ModelRouter package runs as part of the default `controller` and `all`
+suites. It creates an isolated namespace and validates Deployment and
+ModelAdapter discovery, generated HTTPRoute and ReferenceGrant resources, a
+request through the gateway to a mock backend, shared ReferenceGrant cleanup,
+and controller restart behavior.
+
+To run only this package against an installed test cluster:
+
+```bash
+go test -p 1 ./test/e2e/controller/modelrouter/... -v -count=1
+```
+
+The package uses the existing `AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE` setting
+to retain its namespace and routing resources for diagnostics after a failure.
 
 #### StormService Controller E2E
 
