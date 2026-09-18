@@ -29,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -432,7 +433,9 @@ func (h *modelRouterHarness) waitForGatewayRequest(
 	model, podName string,
 ) framework.MockRequestRecord {
 	t.Helper()
-	requestID := framework.NewRequestID("modelrouter-e2e")
+	// Envoy preserves valid UUID request IDs but replaces prefixed/non-UUID values.
+	// Use a canonical UUID so the same value reaches the isolated mock recorder.
+	requestID := uuid.New().String()
 	body, err := json.Marshal(map[string]interface{}{
 		"model": model,
 		"messages": []map[string]string{{
