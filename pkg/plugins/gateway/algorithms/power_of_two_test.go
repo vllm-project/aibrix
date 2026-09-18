@@ -99,6 +99,8 @@ type po2FakeCache struct {
 	// from the result, as for a pod the cache does not know.
 	running    map[string]int64
 	runningErr error
+	// nilCounts makes GetPodsRunningRequests answer (nil, nil), as a custom or mock cache might.
+	nilCounts bool
 	// portRunning is the per-port realtime metric of data-parallel pods, by "<pod>/<port>".
 	portRunning map[string]float64
 
@@ -113,6 +115,9 @@ func (c *po2FakeCache) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64,
 	c.batches = append(c.batches, names)
 	if c.runningErr != nil {
 		return nil, c.runningErr
+	}
+	if c.nilCounts {
+		return nil, nil
 	}
 	counts := make(map[string]int64, len(pods))
 	for _, pod := range pods {
@@ -235,14 +240,25 @@ func TestPowerOfTwoRouter_NeverPicksTheBusiestPodAmongMany(t *testing.T) {
 }
 
 // A cache that cannot report counts degrades load awareness, not availability.
-func TestPowerOfTwoRouter_CacheErrorStillRoutes(t *testing.T) {
-	router := NewPowerOfTwoRouterWithCache(&po2FakeCache{runningErr: fmt.Errorf("redis unavailable")})
-	ctx := newPo2Ctx("req-cache-error")
+func TestPowerOfTwoRouter_CacheFailureStillRoutes(t *testing.T) {
+	tests := []struct {
+		name string
+		fake *po2FakeCache
+	}{
+		{name: "cache error", fake: &po2FakeCache{runningErr: fmt.Errorf("redis unavailable")}},
+		{name: "nil counts without an error", fake: &po2FakeCache{nilCounts: true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router := NewPowerOfTwoRouterWithCache(tt.fake)
+			ctx := newPo2Ctx("req-cache-failure")
 
-	addr, err := router.Route(ctx, newPo2PodList(po2TestPods("pod1", "pod2"), nil))
+			addr, err := router.Route(ctx, newPo2PodList(po2TestPods("pod1", "pod2"), nil))
 
-	require.NoError(t, err, "routing must fail open when counts are unavailable")
-	assert.Contains(t, []string{"10.0.0.1:8000", "10.0.0.2:8000"}, addr)
+			require.NoError(t, err, "routing must fail open when counts are unavailable")
+			assert.Contains(t, []string{"10.0.0.1:8000", "10.0.0.2:8000"}, addr)
+		})
+	}
 }
 
 // The pod is chosen on its running-request total, and only then is a port chosen within it,
@@ -435,9 +451,14 @@ func TestPowerOfTwoRouter_TwoPodsStayWithinOneOfEachOther(t *testing.T) {
 	assert.Equal(t, int64(requests/2), g.running("pod2"))
 }
 
-// The same, across the ports of one data-parallel pod: with nothing completing, requests
-// spread evenly over its ports. This is checked on where requests were routed rather than on
-// the per-port metric values, so it holds however the cache derives them.
+// With nothing completing, requests alternate over the ports of one data-parallel pod. This
+// characterizes what the cache reports per port today; it is not proof of true per-port load
+// accounting. addPodStats writes the pod's total running requests into the routed port's
+// metric slot, so the port just used always looks strictly busier than its sibling and the next
+// request takes the other one. A real per-port counter would behave the same here, but if the two
+// slots ever held the same value, port choice would fall back to a random tie-break and the
+// after-every-request check below would flake. Choosing a port from per-port numbers is what
+// TestPowerOfTwoRouter_ChoosesLeastLoadedPortOfTheChosenPod checks.
 func TestPowerOfTwoRouter_RequestsSpreadEvenlyOverPorts(t *testing.T) {
 	g := newPo2Gateway(t, po2TestPods("pod1"), map[string][]int{"pod1": {8000, 8001}})
 	const requests = 40

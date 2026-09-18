@@ -113,13 +113,26 @@ func scanKeys(ctx context.Context, pattern string) ([]string, error) {
 	return keys, iter.Err()
 }
 
-// podCounterPattern matches the running-request hash of every pod (not the gateway set).
-const podCounterPattern = runningRequestsPrefix + ":*/*"
+// podCounterKeys returns the running-request hash of each of pods, named as the gateway names it
+// (which includes the pod's namespace). These counters are shared with every test that sends
+// traffic through the gateway, so the tests here only ever read or delete the hashes of the pods
+// serving their own model, never all of them.
+func podCounterKeys(ctx context.Context, pods []string) ([]string, error) {
+	var keys []string
+	for _, pod := range pods {
+		podKeys, err := scanKeys(ctx, fmt.Sprintf("%s:*/%s", runningRequestsPrefix, pod))
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, podKeys...)
+	}
+	return keys, nil
+}
 
-// runningRequestCounts returns, for every pod's running-request hash, each gateway
+// runningRequestCounts returns, for the running-request hash of each of pods, each gateway
 // instance's count for that pod.
-func runningRequestCounts(ctx context.Context) (map[string]map[string]int64, error) {
-	keys, err := scanKeys(ctx, podCounterPattern)
+func runningRequestCounts(ctx context.Context, pods []string) (map[string]map[string]int64, error) {
+	keys, err := podCounterKeys(ctx, pods)
 	if err != nil {
 		return nil, err
 	}
@@ -155,14 +168,56 @@ func runningRequestCounts(ctx context.Context) (map[string]map[string]int64, err
 	return counts, nil
 }
 
-func deleteRunningRequestCounters(t *testing.T) {
+// awaitDrained polls until every running-request count of pods is zero, or timeout passes, and
+// returns the last counts it read and whether they had drained. A negative count is as much a bug
+// as a positive one (a decrement with no matching increment), so only zero counts as drained.
+func awaitDrained(
+	ctx context.Context, pods []string, timeout time.Duration,
+) (counts map[string]map[string]int64, drained bool, err error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		counts, err := runningRequestCounts(ctx, pods)
+		if err != nil {
+			return nil, false, err
+		}
+		if allZero(counts) {
+			return counts, true, nil
+		}
+		if time.Now().After(deadline) {
+			return counts, false, nil
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+func deleteRunningRequestCounters(t *testing.T, pods []string) {
 	t.Helper()
 	ctx := context.Background()
-	keys, err := scanKeys(ctx, podCounterPattern)
+	keys, err := podCounterKeys(ctx, pods)
 	require.NoError(t, err)
 	if len(keys) > 0 {
 		require.NoError(t, redisClient.Del(ctx, keys...).Err())
 	}
+}
+
+// discoverModelPods returns the sorted names of the pods serving the test model, found with
+// random routing so power-of-two's own behavior is not involved. Those requests are still
+// counted like any others, which also leaves each pod's running-request hash in place.
+func discoverModelPods(t *testing.T) []string {
+	t.Helper()
+	discovered := make(map[string]struct{})
+	for i := 0; i < 30; i++ {
+		if pod := getTargetPodFromChatCompletion(t, fmt.Sprintf("Pod discovery request %d", i), "random"); pod != "" {
+			discovered[pod] = struct{}{}
+		}
+	}
+	pods := make([]string, 0, len(discovered))
+	for pod := range discovered {
+		pods = append(pods, pod)
+	}
+	sort.Strings(pods)
+	require.GreaterOrEqual(t, len(pods), 2, "need at least two pods to compare, found %v", pods)
+	return pods
 }
 
 // impersonateLiveGateway registers instanceID as a live gateway instance, by heartbeating it
@@ -227,20 +282,7 @@ func TestPowerOfTwoRoutingAvoidsBusyPod(t *testing.T) {
 	requirePowerOfTwoRedis(t)
 	ctx := context.Background()
 
-	// Find the model's pods with random routing. It is counted like any other request, so it
-	// also leaves the pods' running-request hashes in place for the busy pod's to be found.
-	discovered := make(map[string]struct{})
-	for i := 0; i < 30; i++ {
-		if pod := getTargetPodFromChatCompletion(t, fmt.Sprintf("Pod discovery request %d", i), "random"); pod != "" {
-			discovered[pod] = struct{}{}
-		}
-	}
-	pods := make([]string, 0, len(discovered))
-	for pod := range discovered {
-		pods = append(pods, pod)
-	}
-	sort.Strings(pods)
-	require.GreaterOrEqual(t, len(pods), 2, "need at least two pods to compare, found %v", pods)
+	pods := discoverModelPods(t)
 	busy := pods[0]
 	t.Logf("pods: %v, marking %s as busy", pods, busy)
 
@@ -281,10 +323,18 @@ func TestPowerOfTwoRoutingDrainsCounters(t *testing.T) {
 	requirePowerOfTwoRedis(t)
 	ctx := context.Background()
 
-	// Start from an empty slate so what is left afterwards is this test's own traffic. Nothing
-	// is in flight between tests, and the suite runs its packages serially. A gateway reads a
-	// missing hash as "not counted yet" and falls back to its own count, so this is safe.
-	deleteRunningRequestCounters(t)
+	pods := discoverModelPods(t)
+
+	// Let discovery's own decrements land first, so they cannot hit the hashes recreated below.
+	_, _, err := awaitDrained(ctx, pods, 5*time.Second)
+	require.NoError(t, err)
+
+	// Start from an empty slate so what is left afterwards is this test's own traffic. Only this
+	// model's pods are cleared: tests that use other models (replica inflight and RPS limits) run on
+	// other pods, so this holds whether or not packages run serially, and nothing else in this
+	// package runs alongside. A gateway reads a missing hash as "not counted yet" and falls back to
+	// its own count, so clearing is safe.
+	deleteRunningRequestCounters(t, pods)
 
 	for i := 0; i < 15; i++ {
 		_, err := powerOfTwoChat(fmt.Sprintf("drain sequential request %d", i))
@@ -322,26 +372,16 @@ func TestPowerOfTwoRoutingDrainsCounters(t *testing.T) {
 	// presence shows the gateway really counted this test's traffic; otherwise "all zero"
 	// would prove nothing.
 	require.Eventually(t, func() bool {
-		counts, err := runningRequestCounts(ctx)
+		counts, err := runningRequestCounts(ctx, pods)
 		return err == nil && len(counts) > 0
 	}, 5*time.Second, 100*time.Millisecond,
-		"no %s hash exists after the traffic: the gateway is not counting requests", podCounterPattern)
+		"no running-request hash exists for pods %v after the traffic: the gateway is not counting requests", pods)
 
-	// Completion is reported after the response, so allow a moment for the last decrements. A
-	// negative count is as much a bug as a positive one (a decrement with no matching increment).
-	deadline := time.Now().Add(po2DrainTimeout)
-	for {
-		counts, err := runningRequestCounts(ctx)
-		require.NoError(t, err)
-		if allZero(counts) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("counts did not drain to zero within %s, so requests were counted but not uncounted (or the "+
-				"reverse): %v", po2DrainTimeout, counts)
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
+	// Completion is reported after the response, so allow a moment for the last decrements.
+	counts, drained, err := awaitDrained(ctx, pods, po2DrainTimeout)
+	require.NoError(t, err)
+	require.True(t, drained, "counts did not drain to zero within %s, so requests were counted but not uncounted "+
+		"(or the reverse): %v", po2DrainTimeout, counts)
 }
 
 func allZero(counts map[string]map[string]int64) bool {

@@ -62,9 +62,13 @@ func NewPowerOfTwoRouterWithCache(c cache.Cache) *PowerOfTwoRouter {
 }
 
 // Route implements [types.Router] using power of two choices algorithm.
-// It randomly selects two pods and routes to the one with fewer running requests. For a
-// data-parallel pod that serves several ports, the request goes to the port with the fewest
-// running requests.
+// It randomly selects two pods and routes to the one with fewer running requests.
+//
+// A data-parallel pod serves several ports, and the port is then chosen the way least-request
+// chooses it: the one with the lowest per-port realtime running-requests metric. The cache keeps
+// no true per-port count -- that metric slot holds the pod's total running requests as of the
+// last request that started or finished on the port -- so this is only approximately
+// load-aware. The choice of pod above does not depend on it.
 func (p *PowerOfTwoRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	readyPods := readyPodList.All()
 	if len(readyPods) == 0 {
@@ -89,7 +93,8 @@ func (p *PowerOfTwoRouter) Route(ctx *types.RoutingContext, readyPodList types.P
 			"candidate2", pod2.Name,
 			"count2", count2)
 
-		// Choose the one with fewer requests
+		// Choose the one with fewer requests. A tie keeps pod1, which is a uniform sample of the
+		// ready pods, so ties (including every pod being idle) spread over all of them.
 		if count1 <= count2 {
 			target = pod1
 		} else {
@@ -111,11 +116,12 @@ func (p *PowerOfTwoRouter) Route(ctx *types.RoutingContext, readyPodList types.P
 }
 
 // getRequestCounts returns the live running-request count of both pods from a single cache
-// read. A pod without a count, or a failed read, counts as 0: routing falls back to a random
-// choice between the two pods rather than failing the request.
+// read. A pod without a count, or a failed read, counts as 0, so the comparison ties and Route
+// keeps the first sampled pod. That pod is itself a uniform sample of the ready pods, so the
+// request still lands on a random ready pod rather than failing.
 func (p *PowerOfTwoRouter) getRequestCounts(pod1, pod2 *v1.Pod) (count1, count2 int64) {
 	counts, err := p.cache.GetPodsRunningRequests([]*v1.Pod{pod1, pod2})
-	if err != nil {
+	if err != nil || counts == nil {
 		klog.V(4).ErrorS(err, "failed to get running requests, treating candidates as idle",
 			"candidate1", pod1.Name, "candidate2", pod2.Name)
 		return 0, 0
@@ -125,7 +131,7 @@ func (p *PowerOfTwoRouter) getRequestCounts(pod1, pod2 *v1.Pod) (count1, count2 
 
 // SubscribedMetrics implements [types.Router].
 func (p *PowerOfTwoRouter) SubscribedMetrics() []string {
-	// The per-port count of a data-parallel pod is read from the realtime running-requests metric.
+	// The port of a data-parallel pod is chosen from the per-port realtime running-requests metric.
 	return []string{metrics.RealtimeNumRequestsRunning}
 }
 
