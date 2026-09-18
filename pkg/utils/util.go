@@ -120,6 +120,35 @@ func LoadEnvInt(key string, defaultValue int) int {
 	return defaultValue
 }
 
+// LoadEnvNonNegativeInt loads an int environment variable that accepts 0 as a
+// meaningful value, falling back to defaultValue when the variable is unset,
+// empty, negative or unparseable.
+//
+// It exists because LoadEnvInt cannot express an explicit 0: that helper treats
+// every value <= 0 as invalid and silently falls back to its default. For some
+// knobs 0 is a documented value in its own right - the off switch of the PD
+// decode abort (AIBRIX_DECODE_ABORT_TIMEOUT) and the single-attempt setting of
+// its retry (AIBRIX_DECODE_ABORT_RETRY_DELAY) - and an operator facing a
+// misbehaving component must be able to switch it off from the environment
+// without a new build. A negative or unparseable value is still refused, as
+// there it means a typo rather than an intent.
+//
+// LoadEnvInt keeps its positive-only behaviour: its other callers rely on it.
+func LoadEnvNonNegativeInt(key string, defaultValue int) int {
+	value := os.Getenv(key)
+	if value != "" {
+		intValue, err := strconv.Atoi(value)
+		if err != nil || intValue < 0 {
+			klog.Warningf("invalid %s: %s, falling back to default: %d", key, value, defaultValue)
+		} else {
+			klog.Infof("set %s: %d", key, intValue)
+			return intValue
+		}
+	}
+	klog.Infof("set %s: %d, using default value", key, defaultValue)
+	return defaultValue
+}
+
 func LoadEnvFloat(key string, defaultValue float64) float64 {
 	valueStr := os.Getenv(key)
 	if valueStr != "" {
