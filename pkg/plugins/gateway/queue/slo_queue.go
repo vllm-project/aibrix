@@ -366,10 +366,12 @@ func (q *SLOQueue) expandDequeueCandidatesLocked(limit int) {
 }
 
 func (q *SLOQueue) featuresKey(features types.RequestFeatures) string {
-	for i := range features {
-		features[i] = math.Round(math.Log2(features[i]))
+	buf := make(types.RequestFeatures, len(features))
+	copy(buf, features)
+	for i := range buf {
+		buf[i] = math.Round(math.Log2(buf[i]))
 	}
-	return fmt.Sprint(features)
+	return fmt.Sprint(buf)
 }
 
 func (q *SLOQueue) rank(currentTime time.Time, req *types.RoutingContext, profile *cache.ModelGPUProfile) (rank float64, err error) {
