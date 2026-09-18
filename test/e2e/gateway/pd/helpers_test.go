@@ -39,6 +39,7 @@ var (
 	waitForPDLegOutcome                   = framework.WaitForPDLegOutcome
 	waitForPDLegOutcomeOnPods             = framework.WaitForPDLegOutcomeOnPods
 	queryMockRequests                     = framework.QueryMockRequests
+	queryAllMockRequests                  = framework.QueryAllMockRequests
 )
 
 type MockRequestRecord = framework.MockRequestRecord
