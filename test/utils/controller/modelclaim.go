@@ -28,6 +28,7 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -140,14 +141,24 @@ func (f *ModelClaimFixture) GetClaim(g gomega.Gomega, claim *modelapi.ModelClaim
 // TriggerReconcile updates a claim annotation to trigger reconciliation.
 func (f *ModelClaimFixture) TriggerReconcile(claim *modelapi.ModelClaim) {
 	ginkgo.GinkgoHelper()
-	latest := &modelapi.ModelClaim{}
-	gomega.Expect(f.client.Get(f.ctx, client.ObjectKeyFromObject(claim), latest)).To(gomega.Succeed())
-	patch := client.MergeFrom(latest.DeepCopy())
-	if latest.Annotations == nil {
-		latest.Annotations = map[string]string{}
-	}
-	latest.Annotations["test.aibrix.ai/reconcile"] = fmt.Sprintf("%d", time.Now().UnixNano())
-	gomega.Expect(f.client.Patch(f.ctx, latest, patch)).To(gomega.Succeed())
+	gomega.Eventually(func() error {
+		latest := &modelapi.ModelClaim{}
+		if err := f.client.Get(f.ctx, client.ObjectKeyFromObject(claim), latest); err != nil {
+			return err
+		}
+		patch := client.MergeFrom(latest.DeepCopy())
+		if latest.Annotations == nil {
+			latest.Annotations = map[string]string{}
+		}
+		latest.Annotations["test.aibrix.ai/reconcile"] = fmt.Sprintf("%d", time.Now().UnixNano())
+		if err := f.client.Patch(f.ctx, latest, patch); err != nil {
+			if apierrors.IsConflict(err) {
+				return err
+			}
+			return gomega.StopTrying("patch ModelClaim reconcile annotation").Wrap(err)
+		}
+		return nil
+	}, f.timeout, f.interval).Should(gomega.Succeed())
 }
 
 // ExpectRoute checks the pod routing annotation for a claim's port and state.
@@ -161,8 +172,21 @@ func (f *ModelClaimFixture) ExpectRoute(
 	pod := &corev1.Pod{}
 	g.Expect(f.client.Get(f.ctx, types.NamespacedName{Namespace: namespace, Name: podName}, pod)).To(gomega.Succeed())
 	annotation := pod.Annotations[constants.ModelClaimPodAnnotationPrefix+claimName]
-	g.Expect(annotation).To(gomega.ContainSubstring(fmt.Sprintf(`"port":%d`, port)))
-	g.Expect(annotation).To(gomega.ContainSubstring(fmt.Sprintf(`"state":%q`, state)))
+	route, err := decodeModelClaimRouteAnnotation(annotation)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(route.Port).To(gomega.Equal(port))
+	g.Expect(route.State).To(gomega.Equal(state))
+}
+
+type modelClaimRouteAnnotation struct {
+	Port  int32  `json:"port"`
+	State string `json:"state"`
+}
+
+func decodeModelClaimRouteAnnotation(annotation string) (modelClaimRouteAnnotation, error) {
+	route := modelClaimRouteAnnotation{}
+	err := json.Unmarshal([]byte(annotation), &route)
+	return route, err
 }
 
 // ExpectEvent waits for an event matching the claim UID, type, and reason.
