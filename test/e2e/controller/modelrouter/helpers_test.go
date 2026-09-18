@@ -433,13 +433,14 @@ func (h *modelRouterHarness) waitForGatewayRequest(
 	model, podName string,
 ) framework.MockRequestRecord {
 	t.Helper()
-	// Envoy preserves valid UUID request IDs but replaces prefixed/non-UUID values.
-	// Use a canonical UUID so the same value reaches the isolated mock recorder.
+	// Envoy replaces external request IDs. Put the same unique marker in the
+	// request body so the isolated backend record can still be correlated, then
+	// separately assert that Envoy supplied a non-empty recorder request ID.
 	requestID := uuid.New().String()
 	body, err := json.Marshal(map[string]interface{}{
 		"model": model,
 		"messages": []map[string]string{{
-			"role": "user", "content": "modelrouter e2e reachability check",
+			"role": "user", "content": "modelrouter e2e reachability check " + requestID,
 		}},
 		"max_tokens": 1,
 	})
@@ -460,12 +461,15 @@ func (h *modelRouterHarness) waitForGatewayRequest(
 	var matched framework.MockRequestRecord
 	err = wait.PollUntilContextTimeout(ctx, modelRouterPollInterval, modelRouterPollTimeout, true,
 		func(ctx context.Context) (bool, error) {
-			records, err := framework.QueryMockRequests(ctx, h.kubeClient, h.namespace, podName, requestID)
+			records, err := queryAllMockRequests(ctx, h.kubeClient, h.namespace, podName)
 			if err != nil {
 				return false, nil
 			}
 			for _, record := range records {
-				if record.RequestID == requestID && record.Outcome == "success" {
+				if record.Path == "/v1/chat/completions" &&
+					record.Outcome == "success" &&
+					record.StatusCode == http.StatusOK &&
+					bytes.Contains(record.ParsedJSON, []byte(requestID)) {
 					matched = record
 					return true, nil
 				}
@@ -473,9 +477,31 @@ func (h *modelRouterHarness) waitForGatewayRequest(
 			return false, nil
 		})
 	if err != nil {
-		t.Fatalf("mock pod %s did not record successful request %s: %v", podName, requestID, err)
+		t.Fatalf("mock pod %s did not record successful request marker %s: %v", podName, requestID, err)
+	}
+	if matched.RequestID == "" {
+		t.Fatalf("mock pod %s recorded request marker %s without a request ID", podName, requestID)
 	}
 	return matched
+}
+
+func queryAllMockRequests(
+	ctx context.Context,
+	client kubernetes.Interface,
+	namespace, podName string,
+) ([]framework.MockRequestRecord, error) {
+	body, err := client.CoreV1().RESTClient().Get().
+		Namespace(namespace).
+		Resource("pods").
+		Name(podName).
+		SubResource("proxy").
+		Suffix("debug/requests").
+		Do(ctx).
+		Raw()
+	if err != nil {
+		return nil, fmt.Errorf("query all mock requests for pod %q: %w", podName, err)
+	}
+	return framework.DecodeMockRequestRecords(body)
 }
 
 func sendModelRouteRequest(
