@@ -18,6 +18,9 @@ package e2e
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -27,6 +30,8 @@ import (
 	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
+
+	framework "github.com/vllm-project/aibrix/test/e2e/framework"
 )
 
 // TestModelRouterLifecycle validates the live resource and request path without
@@ -173,4 +178,28 @@ func TestHTTPRouteReady(t *testing.T) {
 			assert.Equal(t, test.want, httpRouteReady(route))
 		})
 	}
+}
+
+func TestSendModelRouteRequest(t *testing.T) {
+	var gotModel, gotStrategy, gotRequestID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotModel = r.Header.Get("model")
+		gotStrategy = r.Header.Get("routing-strategy")
+		gotRequestID = r.Header.Get("x-request-id")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(server.Close)
+
+	result, err := sendModelRouteRequest(
+		context.Background(),
+		framework.Config{GatewayURL: server.URL, APIKey: "test-key"},
+		"test-model",
+		"request-1",
+		[]byte(`{"model":"test-model"}`),
+	)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, result.StatusCode)
+	assert.Equal(t, "test-model", gotModel)
+	assert.Empty(t, gotStrategy)
+	assert.Equal(t, "request-1", gotRequestID)
 }

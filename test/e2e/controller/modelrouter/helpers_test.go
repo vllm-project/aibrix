@@ -17,9 +17,12 @@ limitations under the License.
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -444,7 +447,7 @@ func (h *modelRouterHarness) waitForGatewayRequest(
 	var lastErr error
 	err = wait.PollUntilContextTimeout(ctx, 2*time.Second, modelRouterPollTimeout, true,
 		func(ctx context.Context) (bool, error) {
-			_, lastErr = framework.SendPDRequest(ctx, h.config, "", requestID, body)
+			_, lastErr = sendModelRouteRequest(ctx, h.config, model, requestID, body)
 			return lastErr == nil, nil
 		})
 	if err != nil {
@@ -470,6 +473,42 @@ func (h *modelRouterHarness) waitForGatewayRequest(
 		t.Fatalf("mock pod %s did not record successful request %s: %v", podName, requestID, err)
 	}
 	return matched
+}
+
+func sendModelRouteRequest(
+	ctx context.Context,
+	config framework.Config,
+	model, requestID string,
+	body []byte,
+) (framework.PDRequestResult, error) {
+	result := framework.PDRequestResult{RequestID: requestID}
+	url := strings.TrimRight(config.GatewayURL, "/") + "/v1/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return result, err
+	}
+	req.Header.Set("Authorization", "Bearer "+config.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("model", model)
+	req.Header.Set("x-request-id", requestID)
+
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return result, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	result.StatusCode = resp.StatusCode
+	result.Headers = resp.Header.Clone()
+	result.Body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		return result, err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return result, fmt.Errorf("model route request failed with status %d: %s",
+			resp.StatusCode, strings.TrimSpace(string(result.Body)))
+	}
+	return result, nil
 }
 
 func (h *modelRouterHarness) restartController(t *testing.T, ctx context.Context) {
@@ -612,8 +651,24 @@ func (h *modelRouterHarness) logDiagnostics(t *testing.T) {
 	if deployments, err := h.kubeClient.AppsV1().Deployments(h.namespace).List(ctx, metav1.ListOptions{}); err == nil {
 		t.Logf("ModelRouter E2E deployments in %s: %+v", h.namespace, deployments.Items)
 	}
+	if services, err := h.kubeClient.CoreV1().Services(h.namespace).List(ctx, metav1.ListOptions{}); err == nil {
+		t.Logf("ModelRouter E2E services in %s: %+v", h.namespace, services.Items)
+	}
+	if slices, err := h.kubeClient.DiscoveryV1().EndpointSlices(h.namespace).List(ctx, metav1.ListOptions{}); err == nil {
+		t.Logf("ModelRouter E2E endpoint slices in %s: %+v", h.namespace, slices.Items)
+	}
 	if pods, err := h.kubeClient.CoreV1().Pods(h.namespace).List(ctx, metav1.ListOptions{}); err == nil {
 		t.Logf("ModelRouter E2E pods in %s: %+v", h.namespace, pods.Items)
+		for i := range pods.Items {
+			logs, logErr := h.kubeClient.CoreV1().Pods(h.namespace).
+				GetLogs(pods.Items[i].Name, &corev1.PodLogOptions{Container: "llm-engine", TailLines: ptr.To[int64](100)}).
+				DoRaw(ctx)
+			if logErr != nil {
+				t.Logf("failed to get backend logs from %s: %v", pods.Items[i].Name, logErr)
+			} else {
+				t.Logf("backend logs from %s:\n%s", pods.Items[i].Name, logs)
+			}
+		}
 	}
 	if events, err := h.kubeClient.CoreV1().Events(h.namespace).List(ctx, metav1.ListOptions{}); err == nil {
 		t.Logf("ModelRouter E2E events in %s: %+v", h.namespace, events.Items)
