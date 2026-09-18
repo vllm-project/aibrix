@@ -48,6 +48,9 @@ const (
 	// prefill leg of a PD request fails
 	GatewayPDDecodeAbortTotal = "gateway_pd_decode_abort_total"
 
+	// counter to track client-facing fail-fast actions taken on a PD prefill failure
+	GatewayPDPrefillFailureTotal = "gateway_pd_prefill_failure_total"
+
 	// counter to track #prefill & #decode pods selected by pd
 	PDSelectedPrefillPodTotal = "pd_selected_prefill_pod_total"
 	PDSelectedDecodePodTotal  = "pd_selected_decode_pod_total"
@@ -127,6 +130,14 @@ var (
 				Raw: Counter,
 			},
 			Description: "Total number of decode-leg aborts attempted by the gateway after a PD prefill failure, by prefill failure class and abort result",
+		},
+		GatewayPDPrefillFailureTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total number of PD prefill failures the gateway acted on for the client, by prefill failure class and the stage the decode leg had reached",
 		},
 		PDTokenLoadActiveTokens: {
 			MetricScope:  PodMetricScope,
