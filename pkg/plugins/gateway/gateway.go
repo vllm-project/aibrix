@@ -522,6 +522,10 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		}
 
 	case *extProcPb.ProcessingRequest_ResponseHeaders:
+		// The decode pod has started answering: from here on a late PD prefill
+		// failure must not abort it, and must not fail a stream the client is
+		// already being served on.
+		st.routerCtx.MarkDecodeResponded()
 		resp, st.isRespError, st.respErrorCode = s.HandleResponseHeaders(st.ctx, st.routerCtx, st.requestID, st.model, req)
 		st.lastRespHeaders = resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders()
 		if st.isRespError {
@@ -531,6 +535,10 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		st.metricLabel = gatewayRespHeaders
 
 	case *extProcPb.ProcessingRequest_ResponseBody:
+		// Also marked here, not only on response headers: a filter chain
+		// configured without the response-header callback delivers body chunks
+		// as the first sign of life from the decode pod.
+		st.routerCtx.MarkDecodeResponded()
 		// Stop collecting on the first response body chunk.
 		if st.firstRespSpan != nil {
 			st.firstRespSpan.End()

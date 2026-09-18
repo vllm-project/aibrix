@@ -161,6 +161,30 @@ Scoring formula: `score = (fairnessWeight * normFairness + utilizationWeight * n
 | `AIBRIX_PREFILL_SCORE_POLICY` | string | `"prefix_cache"` | Strategy for selecting the prefill pod. Options: `prefix_cache`, `least_request`. |
 | `AIBRIX_DECODE_SCORE_POLICY` | string | `"load_balancing"` | Strategy for selecting the decode pod. Options: `load_balancing`, `least_request`. |
 
+### PD Prefill Fail-Fast (`algorithms/pd/abort.go`)
+
+When the prefill leg of a PD request fails, the decode pod is left waiting for a
+KV transfer that will never arrive until its own bootstrap timeout expires
+(300s in SGLang), holding its pre-allocated KV pages. The gateway injects its own
+request id (`rid`) into both legs, so on a prefill failure it can post
+`{"rid": ...}` to the decode pod's `/abort_request` and release those pages
+immediately. The abort is best-effort and asynchronous: nothing waits on it, and
+it is skipped once the decode pod has started answering the client.
+
+The abort is sent twice, because the first attempt can overtake the decode
+request itself on the pod (the engine answers `200` either way, so the gateway
+cannot tell a matched abort from a dropped one). Repeating an abort the engine
+already applied, or never matched, is a no-op on both sides.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `AIBRIX_DECODE_ABORT_TIMEOUT` | int (seconds) | `3` | Per-attempt timeout of the `/abort_request` call to the decode pod. `0` disables decode aborts entirely; the prefill failure is still recorded, logged and reported to the client. |
+| `AIBRIX_DECODE_ABORT_RETRY_DELAY` | int (seconds) | `2` | Delay before the second abort attempt. `0` sends a single attempt. |
+
+Metrics: `gateway_pd_decode_abort_total{prefill_failure_class, result}`, where
+`result` is one of `ok`, `error`, `skipped_streaming`, `skipped_disabled`,
+`skipped_no_rid`, `skipped_no_target`.
+
 ### Decode Load Balancer Scorer (`algorithms/pd/decode_scorer.go`)
 
 Scoring formula: `score = (wRun × normRunning + wThroughput × normInvThroughput) / normFreeGPU`

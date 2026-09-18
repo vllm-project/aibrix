@@ -44,6 +44,10 @@ const (
 	// gauge to track #outstanding prefill requests
 	GatewayPrefillOutstandingRequests = "gateway_prefill_outstanding_requests"
 
+	// counter to track the decode-leg aborts the gateway fires when the
+	// prefill leg of a PD request fails
+	GatewayPDDecodeAbortTotal = "gateway_pd_decode_abort_total"
+
 	// counter to track #prefill & #decode pods selected by pd
 	PDSelectedPrefillPodTotal = "pd_selected_prefill_pod_total"
 	PDSelectedDecodePodTotal  = "pd_selected_decode_pod_total"
@@ -115,6 +119,14 @@ var (
 				Raw: Gauge,
 			},
 			Description: "Total number of outstanding prefill requests received by the gateway",
+		},
+		GatewayPDDecodeAbortTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total number of decode-leg aborts attempted by the gateway after a PD prefill failure, by prefill failure class and abort result",
 		},
 		PDTokenLoadActiveTokens: {
 			MetricScope:  PodMetricScope,

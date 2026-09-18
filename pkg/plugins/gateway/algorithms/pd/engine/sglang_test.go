@@ -38,7 +38,7 @@ func testPod() *v1.Pod {
 
 func TestPrepareSGLangRequestBodies_ToolsByteIdentity(t *testing.T) {
 	original := []byte(toolRequestBody)
-	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345)
+	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345, "test-rid-0000000000000000")
 	require.NoError(t, err)
 
 	// Extract the tools array from each body and compare byte-for-byte.
@@ -59,7 +59,7 @@ func TestPrepareSGLangRequestBodies_ToolsByteIdentity(t *testing.T) {
 
 func TestPrepareSGLangRequestBodies_BootstrapFields(t *testing.T) {
 	original := []byte(toolRequestBody)
-	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345)
+	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345, "test-rid-0000000000000000")
 	require.NoError(t, err)
 
 	// Bootstrap fields must be present and equal in both bodies.
@@ -72,7 +72,7 @@ func TestPrepareSGLangRequestBodies_BootstrapFields(t *testing.T) {
 
 func TestPrepareSGLangRequestBodies_BootstrapOverwritesClientValue(t *testing.T) {
 	original := []byte(`{"model":"m","messages":[],"bootstrap_host":"client-value","bootstrap_port":1111,"bootstrap_room":2222}`)
-	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 99999)
+	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 99999, "test-rid-0000000000000000")
 	require.NoError(t, err)
 
 	assert.Equal(t, "10.0.0.1", gjson.GetBytes(decodeBody, "bootstrap_host").String())
@@ -84,7 +84,7 @@ func TestPrepareSGLangRequestBodies_BootstrapOverwritesClientValue(t *testing.T)
 
 func TestPrepareSGLangRequestBodies_DecodeRetainsGenerationParams(t *testing.T) {
 	original := []byte(toolRequestBody)
-	_, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345)
+	_, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345, "test-rid-0000000000000000")
 	require.NoError(t, err)
 
 	// Decode body should retain the client's generation parameters.
@@ -96,7 +96,7 @@ func TestPrepareSGLangRequestBodies_DecodeRetainsGenerationParams(t *testing.T) 
 
 func TestPrepareSGLangRequestBodies_PrefillControlFields(t *testing.T) {
 	original := []byte(toolRequestBody)
-	prefillBody, _, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345)
+	prefillBody, _, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345, "test-rid-0000000000000000")
 	require.NoError(t, err)
 
 	assert.Equal(t, int64(1), gjson.GetBytes(prefillBody, "max_tokens").Int())
@@ -108,7 +108,7 @@ func TestPrepareSGLangRequestBodies_PrefillControlFields(t *testing.T) {
 
 func TestPrepareSGLangRequestBodies_MissingOptionalFields(t *testing.T) {
 	original := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
-	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345)
+	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345, "test-rid-0000000000000000")
 	require.NoError(t, err)
 
 	// Should still set prefill control fields even if they were absent.
@@ -124,13 +124,13 @@ func TestPrepareSGLangRequestBodies_MissingOptionalFields(t *testing.T) {
 }
 
 func TestPrepareSGLangRequestBodies_InvalidJSON(t *testing.T) {
-	_, _, err := prepareSGLangRequestBodies([]byte(`{not json`), "10.0.0.1", 8998, 12345)
+	_, _, err := prepareSGLangRequestBodies([]byte(`{not json`), "10.0.0.1", 8998, 12345, "test-rid-0000000000000000")
 	assert.Error(t, err)
 }
 
 func TestPrepareSGLangRequestBodies_NonObjectJSON(t *testing.T) {
 	// A JSON array is valid JSON but not an object.
-	_, _, err := prepareSGLangRequestBodies([]byte(`[1,2,3]`), "10.0.0.1", 8998, 12345)
+	_, _, err := prepareSGLangRequestBodies([]byte(`[1,2,3]`), "10.0.0.1", 8998, 12345, "test-rid-0000000000000000")
 	assert.Error(t, err)
 }
 
@@ -145,7 +145,7 @@ func TestPrepareSGLangRequestBodies_LargeRequestBody(t *testing.T) {
 	}
 	large += `],"max_tokens":512}`
 
-	prefillBody, decodeBody, err := prepareSGLangRequestBodies([]byte(large), "10.0.0.1", 8998, 12345)
+	prefillBody, decodeBody, err := prepareSGLangRequestBodies([]byte(large), "10.0.0.1", 8998, 12345, "test-rid-0000000000000000")
 	require.NoError(t, err)
 
 	// Verify messages are byte-identical.
@@ -155,7 +155,7 @@ func TestPrepareSGLangRequestBodies_LargeRequestBody(t *testing.T) {
 
 func TestPrepareSGLangRequestBodies_SameRoomInBothBodies(t *testing.T) {
 	original := []byte(toolRequestBody)
-	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 77777)
+	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 77777, "test-rid-0000000000000000")
 	require.NoError(t, err)
 
 	prefillRoom := gjson.GetBytes(prefillBody, "bootstrap_room").Int()
@@ -215,7 +215,7 @@ func TestPrepareSGLangRequestBodies_SHA256Stability_100Iterations(t *testing.T) 
 	var firstPrefillHash, firstDecodeHash string
 
 	for i := 0; i < 100; i++ {
-		prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345)
+		prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345, "test-rid-0000000000000000")
 		require.NoError(t, err)
 
 		// Hash only the non-bootstrap, non-control fields to check stability.
@@ -318,7 +318,7 @@ func TestPrepareSGLangRequestBodies_DuplicateNonControlledKeyAllowed(t *testing.
 	// Duplicate keys that are NOT controlled by the gateway should not cause rejection.
 	// (This is valid JSON per RFC 8259, though unusual.)
 	original := []byte(`{"model":"m","messages":[],"extra":"a","extra":"b"}`)
-	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345)
+	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345, "test-rid-0000000000000000")
 	require.NoError(t, err)
 
 	// Bootstrap fields must still be set correctly.
