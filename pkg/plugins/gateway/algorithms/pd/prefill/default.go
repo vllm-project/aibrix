@@ -144,25 +144,37 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 		prefillStartTime := routingCtx.PrefillStartTime
 		prefillPodName := prefillPod.Name
 		prefillPodIP := prefillPod.Status.PodIP
+		model := routingCtx.Model
 		asyncCtx := &types.RoutingContext{
 			Context:     context.WithoutCancel(routingCtx.Context),
 			RequestID:   requestID,
-			Model:       routingCtx.Model,
+			Model:       model,
 			Engine:      routingCtx.Engine,
 			RequestTime: requestTime,
 			ReqHeaders:  maps.Clone(routingCtx.ReqHeaders),
 		}
+		// Captured before the goroutine starts, and used instead of
+		// routingCtx from inside it: this goroutine regularly outlives the
+		// client stream, and RoutingContext is pooled, so reporting through it
+		// could land on whichever request has since taken the object. The leg
+		// is per-incarnation and inert once its request is done.
+		leg := routingCtx.PDLeg()
 		go func() {
 			incPrefillOutstanding()
 			defer decPrefillOutstanding()
 			defer e.prefillDone(requestID)
 
 			if _, err := e.executeHTTP(apiURL, asyncCtx, payload); err != nil {
+				// The prefill leg is fire-and-forget, so nobody is waiting on
+				// this error: record it on the leg (and abort the decode leg
+				// that will never receive its KV) before it is only logged.
+				failure := pd.OnPrefillLegFailed(e.httpClient, leg, requestID, model, err)
 				klog.ErrorS(err, "prefill_request_failed",
 					"request_id", requestID,
 					"llm_engine", llmEngine,
 					"prefill_pod", prefillPodName,
 					"prefill_pod_ip", prefillPodIP,
+					"prefill_failure_class", failure.ClassOrEmpty(),
 					"elapsed", time.Since(requestTime))
 				return
 			}
@@ -230,13 +242,17 @@ func (e *DefaultExecutor) handleSync(
 // decoded: merge functions read the fields they need with gjson so that
 // large integers (e.g. TRT-LLM disagg_request_id) and nested key order are
 // preserved exactly.
+//
+// Failures are returned as the typed errors of package pd (PrefillSetupError,
+// PrefillHTTPError, PrefillBodyError) or as a wrapped transport error, so that
+// pd.OnPrefillLegFailed can classify them without parsing error strings.
 func (e *DefaultExecutor) executeHTTP(url string, routingCtx *types.RoutingContext, payload []byte) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(routingCtx.Context, time.Duration(e.requestTimeout)*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payload))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create http prefill request: %w", err)
+		return nil, &pd.PrefillSetupError{Err: fmt.Errorf("failed to create http prefill request: %w", err)}
 	}
 
 	// ReqHeaders is populated from Envoy and includes HTTP/2 pseudo-headers
@@ -273,11 +289,14 @@ func (e *DefaultExecutor) executeHTTP(url string, routingCtx *types.RoutingConte
 		status, code := metrics.HttpFailureStatusCode(ctx, nil, resp)
 		metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": status, "status_code": code})
-		return nil, fmt.Errorf("http prefill request failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, &pd.PrefillHTTPError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 
 	if err := pd.ValidateJSONObject(body, "prefill response"); err != nil {
-		return nil, err
+		// A 200 with an unparseable body still completed the KV transfer, so
+		// this is kept distinct from a transport failure: the decode leg must
+		// not be aborted for it.
+		return nil, &pd.PrefillBodyError{Err: err}
 	}
 
 	return body, nil

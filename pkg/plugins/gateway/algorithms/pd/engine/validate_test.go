@@ -26,7 +26,8 @@ import (
 )
 
 func TestControlledFields(t *testing.T) {
-	assert.Equal(t, []string{"bootstrap_host", "bootstrap_port", "bootstrap_room"}, (&SGLangHandler{}).ControlledFields())
+	assert.Equal(t, []string{"bootstrap_host", "bootstrap_port", "bootstrap_room", "rid"}, (&SGLangHandler{}).ControlledFields(),
+		"the gateway owns the engine-visible rid of an SGLang PD request, so a client body may not repeat it")
 	assert.Equal(t, []string{"disaggregated_params", "prompt", "prompt_token_ids"}, (&TRTLLMHandler{}).ControlledFields())
 	assert.Equal(t, []string{"disagg_prefill_resp", "kv_transfer_params"}, (&VLLMHandler{}).ControlledFields(),
 		"vLLM controls the union of every registered KV transfer agent's fields")

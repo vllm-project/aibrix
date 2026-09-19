@@ -153,6 +153,13 @@ type RoutingContext struct {
 	statsUpdated int32           // Use to flag if in-memory realtime statistics has been updated for the request.
 	traceAdded   int32           // Use to flag if trace has been added to cache
 
+	// pdLeg holds the prefill/decode leg state of the current incarnation of
+	// this request. It is a separate heap object, replaced wholesale on reset,
+	// because the async prefill leg outlives the client stream and must not
+	// report onto whichever request next takes this pooled object. See
+	// PDLegState.
+	pdLeg atomic.Pointer[PDLegState]
+
 	// Fields for unit tests
 	debugDelay time.Duration
 }
@@ -440,6 +447,9 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.predictor = nil
 	r.statsUpdated = statusInitial
 	r.traceAdded = statusInitial
+	// A fresh leg per incarnation: any prefill goroutine still holding the
+	// previous one can then only mutate an object nothing reads any more.
+	r.pdLeg.Store(newPDLegState())
 }
 
 func (r *RoutingContext) debugWait() {

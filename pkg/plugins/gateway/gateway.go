@@ -111,6 +111,12 @@ func HasRequestBuffers(requestID string) bool {
 	return requestPresent || streamPresent
 }
 
+// recvResult is one (message, error) pair produced by a stream's srv.Recv().
+type recvResult struct {
+	req *extProcPb.ProcessingRequest
+	err error
+}
+
 type processState struct {
 	ctx              context.Context
 	requestID        string
@@ -127,11 +133,21 @@ type processState struct {
 	isGatewayRspDone bool
 	completed        bool
 	trackedModel     string
-	requestDone      sync.Once
-	rootSpan         trace.Span // main span
-	inferenceSpan    trace.Span // routing completion to final response body
-	firstRespSpan    trace.Span // routing completion to first response body chunk
-	toLastRespSpan   trace.Span // first response body chunk to stream completion
+	// recvCh carries the result of the srv.Recv() this stream already has in
+	// flight. It is kept across processOnce calls because a call can return
+	// without consuming its message (PD fail-fast), and ext_proc requires that
+	// exactly one Recv be outstanding on a stream at a time.
+	recvCh chan recvResult
+	// prefillFailFastDone records that the PD prefill-failure wakeup has been
+	// looked at. The wakeup is a closed channel, which stays ready forever, so
+	// the loop must stop selecting on it once it has decided what to do -
+	// otherwise a failure it deliberately ignored (bad_response) would spin.
+	prefillFailFastDone bool
+	requestDone         sync.Once
+	rootSpan            trace.Span // main span
+	inferenceSpan       trace.Span // routing completion to final response body
+	firstRespSpan       trace.Span // routing completion to first response body chunk
+	toLastRespSpan      trace.Span // first response body chunk to stream completion
 }
 
 var podName = os.Getenv("POD_NAME")
@@ -373,26 +389,58 @@ func (s *Server) processOnce(srv extProcPb.ExternalProcessor_ProcessServer, st *
 	// cancellation arrives while the stream is idle. Envoy keeps ext_proc
 	// streams open indefinitely between requests, so a bare srv.Recv() would
 	// block GracefulStop() forever on rollout.
-	type recvResult struct {
-		req *extProcPb.ProcessingRequest
-		err error
+	//
+	// The channel outlives the call: a PD fail-fast that decides not to end the
+	// stream returns without consuming the message, and the next iteration must
+	// wait on the same in-flight Recv rather than start a second one.
+	if st.recvCh == nil {
+		ch := make(chan recvResult, 1)
+		st.recvCh = ch
+		go func() {
+			req, err := srv.Recv()
+			ch <- recvResult{req, err}
+		}()
 	}
-	ch := make(chan recvResult, 1)
-	go func() {
-		req, err := srv.Recv()
-		ch <- recvResult{req, err}
-	}()
+
+	// Arm the PD prefill-failure wakeup only once the routing context exists -
+	// it is assigned while handling RequestHeaders, and the prefill goroutine
+	// that records the failure is only started later, from RequestBody - and
+	// only until the failure has been acted on. PrefillFailed() is nil-safe and
+	// a nil channel blocks forever, so a non-PD stream selects on exactly the
+	// two cases it had before. A failure recorded before this point is not
+	// missed either: it closes the channel, and a receive on an already-closed
+	// channel is ready immediately.
+	var prefillFailed <-chan struct{}
+	if !st.prefillFailFastDone {
+		prefillFailed = st.routerCtx.PrefillFailed()
+	}
 
 	// ctx.Done() is intentionally omitted here: gRPC unblocks Recv when the
 	// stream context is cancelled, so handleRecvError handles that path.
 	// preRecvCheck covers the case where ctx is already done before we spawn.
 	var req *extProcPb.ProcessingRequest
 	select {
-	case r := <-ch:
+	case r := <-st.recvCh:
+		st.recvCh = nil
 		if r.err != nil {
 			return s.handleRecvError(st, r.err)
 		}
 		req = r.req
+	case <-prefillFailed:
+		st.prefillFailFastDone = true
+		// A message that has already arrived wins the tie: Envoy is waiting on
+		// a reply for it, and it may be the decode leg's response headers,
+		// which change which half of the fail-fast handling applies.
+		select {
+		case r := <-st.recvCh:
+			st.recvCh = nil
+			if r.err != nil {
+				return s.handleRecvError(st, r.err)
+			}
+			req = r.req
+		default:
+			return s.handlePrefillFailFast(srv, st)
+		}
 	case <-s.shutdownCh:
 		if st.model != "" {
 			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "aibrix_gateway_server_shutdown", "503", st.routerCtx)
@@ -522,6 +570,10 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		}
 
 	case *extProcPb.ProcessingRequest_ResponseHeaders:
+		// The decode pod has started answering: from here on a late PD prefill
+		// failure must not abort it, and must not fail a stream the client is
+		// already being served on.
+		st.routerCtx.MarkDecodeResponded()
 		resp, st.isRespError, st.respErrorCode = s.HandleResponseHeaders(st.ctx, st.routerCtx, st.requestID, st.model, req)
 		st.lastRespHeaders = resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders()
 		if st.isRespError {
@@ -531,6 +583,10 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		st.metricLabel = gatewayRespHeaders
 
 	case *extProcPb.ProcessingRequest_ResponseBody:
+		// Also marked here, not only on response headers: a filter chain
+		// configured without the response-header callback delivers body chunks
+		// as the first sign of life from the decode pod.
+		st.routerCtx.MarkDecodeResponded()
 		// Stop collecting on the first response body chunk.
 		if st.firstRespSpan != nil {
 			st.firstRespSpan.End()

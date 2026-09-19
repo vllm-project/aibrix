@@ -96,18 +96,39 @@ func QueryMockRequests(
 	client kubernetes.Interface,
 	namespace, podName, requestID string,
 ) ([]MockRequestRecord, error) {
+	return queryMockRequests(ctx, client, namespace, podName, requestID, true)
+}
+
+// QueryAllMockRequests reads every request record the mock pod still holds.
+// Records the gateway did not tag with a request ID - the PD decode abort,
+// which the engine matches on its own rid - are only reachable this way.
+func QueryAllMockRequests(
+	ctx context.Context,
+	client kubernetes.Interface,
+	namespace, podName string,
+) ([]MockRequestRecord, error) {
+	return queryMockRequests(ctx, client, namespace, podName, "", false)
+}
+
+func queryMockRequests(
+	ctx context.Context,
+	client kubernetes.Interface,
+	namespace, podName, requestID string,
+	filterByRequestID bool,
+) ([]MockRequestRecord, error) {
 	if client == nil {
 		return nil, fmt.Errorf("kubernetes client is nil")
 	}
-	body, err := client.CoreV1().RESTClient().Get().
+	request := client.CoreV1().RESTClient().Get().
 		Namespace(namespace).
 		Resource("pods").
 		Name(podName).
 		SubResource("proxy").
-		Suffix("debug/requests").
-		Param("request_id", requestID).
-		Do(ctx).
-		Raw()
+		Suffix("debug/requests")
+	if filterByRequestID {
+		request = request.Param("request_id", requestID)
+	}
+	body, err := request.Do(ctx).Raw()
 	if err != nil {
 		return nil, fmt.Errorf(
 			"query mock requests for pod %q request ID %q: %w",
