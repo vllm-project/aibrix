@@ -55,4 +55,25 @@ var _ = Describe("ModelGPUProfile", func() {
 		Entry("should find value near the start of a large index", []float64{8, 128}, []int{1, 0}, false),
 		Entry("should return error for negative feature", []float64{-1.0, 128}, nil, true),
 	)
+
+	It("should return an error instead of panicking when indexes are shorter than features", func() {
+		shortProfile := ModelGPUProfile{Indexes: [][]float64{{2, 3, 4}}}
+		signatures, err := shortProfile.GetSignature(8, 128)
+		Expect(err).To(HaveOccurred())
+		Expect(signatures).To(BeNil())
+	})
+
+	It("should return an error instead of panicking when indexes are missing", func() {
+		profileWithoutIndexes := ModelGPUProfile{}
+		signatures, err := profileWithoutIndexes.GetSignature(8, 128)
+		Expect(err).To(HaveOccurred())
+		Expect(signatures).To(BeNil())
+	})
+
+	It("should return an error when indexes are longer than features", func() {
+		longProfile := ModelGPUProfile{Indexes: [][]float64{{2, 3, 4}, {7, 8, 9}, {2, 3}}}
+		signatures, err := longProfile.GetSignature(8, 128)
+		Expect(err).To(HaveOccurred())
+		Expect(signatures).To(BeNil())
+	})
 })
