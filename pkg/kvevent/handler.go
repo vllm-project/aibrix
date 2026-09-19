@@ -141,18 +141,9 @@ func (h *eventHandler) handleAllBlocksCleared(ctx context.Context, event *kvcach
 	//
 	// Note: events alone are not a complete fix (vLLM only flushes queued KV
 	// events from inside a scheduler step, so an idle/sleeping engine may never
-	// emit this, and ZMQ delivery is lossy). A metric-driven reconcile backstop
-	// is tracked separately in #2287.
-	syncIndexer, err := h.manager.syncProvider.GetSyncIndexer(ctx)
-	if err != nil {
-		if IsTemporaryError(err) {
-			klog.V(4).Infof("Temporary error getting sync indexer: %v", err)
-			return nil // Don't fail on temporary errors
-		}
-		return fmt.Errorf("failed to get sync indexer: %w", err)
-	}
-
-	if err := syncIndexer.RemovePrefix(ctx, h.modelName, h.loraID, h.podKey); err != nil {
+	// emit this, and ZMQ delivery is lossy). PurgePodPrefixCache is also called
+	// from the metric-driven backstop in pkg/cache for exactly that gap.
+	if err := h.manager.PurgePodPrefixCache(ctx, h.modelName, h.loraID, h.podKey); err != nil {
 		klog.Errorf("Failed to process AllBlocksCleared event for pod %s: %v", h.podKey, err)
 		return err
 	}

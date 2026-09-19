@@ -85,6 +85,14 @@ type Metric struct {
 	EngineMetricsNameMapping map[string]string // Optional: Mapping from engine type to raw metric name.
 	Description              string
 	MetricScope              MetricScope
+	// RequiredLabelKey and RequiredLabelValue select one instance out of a raw
+	// family that reports several under the same metric name, distinguished
+	// only by a label (e.g. vllm:engine_sleep_state, one gauge per
+	// sleep_state value). Optional: only applicable to raw Gauge/Counter
+	// metrics. Without it, parseMetricFromFamily keeps using the family's
+	// first instance, unchanged for every metric that does not set this.
+	RequiredLabelKey   string
+	RequiredLabelValue string
 }
 
 // MetricValue is the interface for all metric values.

@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,6 +42,11 @@ type Manager struct {
 
 	// Subscriber management
 	subscribers utils.SyncMap[string, *kvcache.ZMQClient]
+
+	// sleepStateAwake is the last observed engine_sleep_state "awake" reading
+	// per (pod, model), keyed by sleepStateAwakeKey. Backs
+	// CheckSleepStateBackstop's edge trigger.
+	sleepStateAwake utils.SyncMap[string, bool]
 
 	// Configuration
 	enabled bool
@@ -310,6 +316,106 @@ func (m *Manager) subscribeToPod(ctx context.Context, podKey string, podInfo *Po
 	return nil
 }
 
+// PurgePodPrefixCache removes podKey's cached prefix entries for
+// (modelName, loraID) from the sync indexer. It is the shared call both the
+// AllBlocksCleared event handler and the metric-driven backstop use, so a pod
+// that wiped its KV cache stops being preferred by the prefix router whether
+// aibrix learned that from a ZMQ event or from the engine's own sleep-state
+// metric (see issue #2287: events alone can be dropped or never emitted by an
+// idle engine). A temporary sync-indexer error is swallowed, matching how the
+// event path already treats one.
+func (m *Manager) PurgePodPrefixCache(ctx context.Context, modelName string, loraID int64, podKey string) error {
+	syncIndexer, err := m.syncProvider.GetSyncIndexer(ctx)
+	if err != nil {
+		if IsTemporaryError(err) {
+			klog.V(4).Infof("Temporary error getting sync indexer: %v", err)
+			return nil
+		}
+		return fmt.Errorf("failed to get sync indexer: %w", err)
+	}
+	return syncIndexer.RemovePrefix(ctx, modelName, loraID, podKey)
+}
+
+// sleepStateAwakeKey builds the CheckSleepStateBackstop tracker key. A pod
+// serving several models is tracked per model, since RemovePrefix itself is
+// scoped to one (modelName, loraID, podKey).
+func sleepStateAwakeKey(podKey, modelName string) string {
+	return podKey + "|" + modelName
+}
+
+// CheckSleepStateBackstop purges podKey's cached prefix entries for
+// (modelName, loraID) on an awake-to-asleep transition of the engine's own
+// sleep-state metric, backstopping the AllBlocksCleared event handler: an
+// idle engine may never flush queued KV events (vLLM only does so from
+// inside a scheduler step), and ZMQ delivery is lossy. See issue #2287.
+// Callers pass awake as the engine_sleep_state{sleep_state="awake"} gauge
+// value: nonzero means awake, zero means asleep at some level.
+//
+// Edge triggered, not level triggered: RemovePrefix takes the prefix
+// router's write lock and is O(P) in cached prefixes for the model, so
+// purging on every refresh tick a sleeping pod is observed would hold that
+// lock once per refresh interval for as long as it stays asleep. The
+// transition is the only interesting event.
+//
+// A (pod, model) pair not seen before is seeded as having been awake, so a
+// gateway restart while a pod is already asleep still self-corrects: the
+// first observation after restart reads as a transition and purges once,
+// rather than leaving stale entries forever because no transition is ever
+// observed.
+//
+// The tracked state only latches to asleep once RemovePrefix actually runs
+// and succeeds. This deliberately does not go through PurgePodPrefixCache:
+// that helper swallows a temporary indexer-not-ready error as nil for the
+// AllBlocksCleared event handler, which has nothing to retry with. This
+// caller does have a next observation to retry with, and needs to tell
+// "purged" apart from "swallowed", or latching on either would mark the
+// transition handled when nothing was purged, and no later asleep
+// observation would ever retry it (review on #2735).
+func (m *Manager) CheckSleepStateBackstop(ctx context.Context, podKey, modelName string, loraID int64, awake float64) {
+	key := sleepStateAwakeKey(podKey, modelName)
+	isAwake := awake != 0
+
+	if isAwake {
+		m.sleepStateAwake.Store(key, true)
+		return
+	}
+
+	wasAwake, hadPrior := m.sleepStateAwake.Load(key)
+	if hadPrior && !wasAwake {
+		// Already latched asleep by an earlier successful purge.
+		return
+	}
+
+	syncIndexer, err := m.syncProvider.GetSyncIndexer(ctx)
+	if err != nil {
+		if !IsTemporaryError(err) {
+			klog.Errorf("Sleep-state backstop failed to get sync indexer for pod %s, model %s: %v", podKey, modelName, err)
+		}
+		// Do not latch asleep either way: leave the tracked state as it was
+		// (unset, or awake from the last successful write) so the next
+		// asleep observation retries instead of being silently dropped.
+		return
+	}
+	if err := syncIndexer.RemovePrefix(ctx, modelName, loraID, podKey); err != nil {
+		klog.Errorf("Sleep-state backstop failed to purge prefix cache for pod %s, model %s: %v", podKey, modelName, err)
+		return
+	}
+	m.sleepStateAwake.Store(key, false)
+	klog.V(4).Infof("Sleep-state backstop purged prefix entries for pod %s, model %s", podKey, modelName)
+}
+
+// forgetSleepState drops the tracked sleep state for podKey, called when the
+// pod is unsubscribed so a future re-add of the same pod key is seeded as
+// awake again instead of replaying whatever state it last held.
+func (m *Manager) forgetSleepState(podKey string) {
+	prefix := podKey + "|"
+	for _, key := range m.sleepStateAwake.Keys() {
+		if strings.HasPrefix(key, prefix) {
+			m.sleepStateAwake.Delete(key)
+		}
+	}
+}
+
 func (m *Manager) unsubscribeFromPod(podKey string) {
 	client, exists := m.subscribers.LoadAndDelete(podKey)
 	if !exists {
@@ -317,6 +423,7 @@ func (m *Manager) unsubscribeFromPod(podKey string) {
 	}
 
 	client.Stop()
+	m.forgetSleepState(podKey)
 	klog.Infof("Unsubscribed from KV events for pod %s", podKey)
 }
 
