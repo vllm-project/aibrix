@@ -116,6 +116,29 @@ go test -p 1 ./test/e2e/controller/modelrouter/... -v -count=1
 The package uses the existing `AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE` setting
 to retain its namespace and routing resources for diagnostics after a failure.
 
+#### RayClusterFleet Controller E2E
+
+The RayCluster package runs as part of the default `controller` and `all`
+suites. It validates the Fleet to ReplicaSet to RayCluster ownership chain,
+KubeRay head readiness and status aggregation, scaling and scale-down ordering,
+controller restart convergence, pause/resume behavior, and foreground cleanup.
+The tests use the lightweight `aibrix/inplace-e2e:v1` head image with the real
+KubeRay operator and do not require GPUs, model weights, or a Ray runtime.
+
+To run only this package against an installed test cluster:
+
+```bash
+go test -p 1 ./test/e2e/controller/raycluster/... -v -count=1
+```
+
+When running the package outside the standard `INSTALL_AIBRIX=true` flow,
+ensure that the KubeRay CRDs/operator and `aibrix/inplace-e2e:v1` are available
+to cluster nodes. The KubeRay operator must enable
+`RayClusterStatusConditions=true` so readiness assertions can observe
+`RayClusterProvisioned` and `HeadPodReady`. Set
+`AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE=true` to retain the isolated test
+namespace and its resources for diagnostics after a failure.
+
 #### StormService Controller E2E
 
 The StormService controller package contains three lifecycle tests that run as
