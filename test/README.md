@@ -139,6 +139,26 @@ to cluster nodes. The KubeRay operator must enable
 `AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE=true` to retain the isolated test
 namespace and its resources for diagnostics after a failure.
 
+#### PodSet Controller E2E
+
+The PodSet package runs as part of the default `controller` and `all` suites.
+It validates creation and status, scale-up, drain-aware scale-down and
+cancellation, timeout-based deletion, recovery after manual Pod deletion, and
+owned-resource cleanup. The tests use the lightweight
+`aibrix/inplace-e2e:v1` image that the standard controller-suite installation
+builds and loads.
+
+To run only this package against an installed test cluster:
+
+```bash
+go test -p 1 ./test/e2e/controller/podset/... -v -count=1
+```
+
+When running the package outside the standard `INSTALL_AIBRIX=true` flow,
+ensure that `aibrix/inplace-e2e:v1` is available to cluster nodes. Set
+`AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE=true` to retain the isolated test
+namespace and its resources for diagnostics after a failure.
+
 #### StormService Controller E2E
 
 The StormService controller package contains three lifecycle tests that run as
