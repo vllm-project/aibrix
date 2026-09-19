@@ -32,13 +32,11 @@ type RayClusterFleetSpec struct {
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty" protobuf:"varint,1,opt,name=replicas"`
 
-	// Label selector for pods. Existing ReplicaSets whose pods are
-	// selected by this will be the ones affected by this deployment.
-	// It must match the pod template's labels.
+	// Selector identifies the RayClusters managed by this fleet.
+	// It must be non-empty and match the RayCluster template's labels.
 	Selector *metav1.LabelSelector `json:"selector" protobuf:"bytes,2,opt,name=selector"`
 
-	// Template describes the pods that will be created.
-	// The only allowed template.spec.restartPolicy value is "Always".
+	// Template describes the RayClusters that will be created.
 	Template RayClusterTemplateSpec `json:"template" protobuf:"bytes,3,opt,name=template"`
 
 	// The deployment strategy to use to replace existing pods with new ones.
