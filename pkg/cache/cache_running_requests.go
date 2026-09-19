@@ -30,9 +30,8 @@ import (
 
 const (
 	// runningRequestsKeyPrefix namespaces the real-time cross-gateway running-request
-	// counters in Redis -- distinct from PowerOfTwoRouter's po2_req_count keys
-	// (pkg/plugins/gateway/algorithms/power_of_two.go) and the per-gateway-instance
-	// keys in cache_gateway_snapshot.go, which this counter does not use or replace.
+	// counters in Redis -- distinct from the per-gateway-instance keys in
+	// cache_gateway_snapshot.go, which this counter does not use or replace.
 	runningRequestsKeyPrefix = "aibrix:rrq"
 	// runningRequestsGatewaysKey is a single sorted set recording the last heartbeat
 	// timestamp (ms) of every gateway instance that has this counter active. It is
@@ -680,9 +679,8 @@ func (c *Store) readPodRunningRequests(namespace, name string) (count int64, ok 
 
 // readPodsRunningRequests batch-reads the live cross-gateway running-request count
 // for every pod in pods with a single pipelined round trip (the live-gateways set
-// plus one HGetAll per pod), mirroring PowerOfTwoRouter.getRequestCounts's MGET
-// batching -- so scoring N candidate pods for one routing decision costs one Redis
-// round trip, not N. See readPodRunningRequests for the per-pod summing/liveness
+// plus one HGetAll per pod) -- so scoring N candidate pods for one routing decision
+// costs one Redis round trip, not N. See readPodRunningRequests for the per-pod summing/liveness
 // semantics. nil entries in pods are skipped (pod identity is required to build a
 // key). The returned map is keyed by utils.GeneratePodKey(pod.Namespace, pod.Name)
 // and only contains pods with a live hash; callers fall back to the local atomic
