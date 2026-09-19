@@ -25,12 +25,13 @@ import (
 // ModelClaimStatusApplyConfiguration represents a declarative configuration of the ModelClaimStatus type for use
 // with apply.
 type ModelClaimStatusApplyConfiguration struct {
-	Phase           *v1alpha1.ModelClaimPhase              `json:"phase,omitempty"`
-	Candidates      *int32                                 `json:"candidates,omitempty"`
-	ReadyReplicas   *int32                                 `json:"readyReplicas,omitempty"`
-	DesiredReplicas *int32                                 `json:"desiredReplicas,omitempty"`
-	Instances       []ModelClaimInstanceApplyConfiguration `json:"instances,omitempty"`
-	Conditions      []v1.ConditionApplyConfiguration       `json:"conditions,omitempty"`
+	Phase             *v1alpha1.ModelClaimPhase                      `json:"phase,omitempty"`
+	Candidates        *int32                                         `json:"candidates,omitempty"`
+	ReadyReplicas     *int32                                         `json:"readyReplicas,omitempty"`
+	DesiredReplicas   *int32                                         `json:"desiredReplicas,omitempty"`
+	Instances         []ModelClaimInstanceApplyConfiguration         `json:"instances,omitempty"`
+	ObservedFootprint *ModelClaimObservedFootprintApplyConfiguration `json:"observedFootprint,omitempty"`
+	Conditions        []v1.ConditionApplyConfiguration               `json:"conditions,omitempty"`
 }
 
 // ModelClaimStatusApplyConfiguration constructs a declarative configuration of the ModelClaimStatus type for use with
@@ -81,6 +82,14 @@ func (b *ModelClaimStatusApplyConfiguration) WithInstances(values ...*ModelClaim
 		}
 		b.Instances = append(b.Instances, *values[i])
 	}
+	return b
+}
+
+// WithObservedFootprint sets the ObservedFootprint field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ObservedFootprint field is set to the value of the last call.
+func (b *ModelClaimStatusApplyConfiguration) WithObservedFootprint(value *ModelClaimObservedFootprintApplyConfiguration) *ModelClaimStatusApplyConfiguration {
+	b.ObservedFootprint = value
 	return b
 }
 

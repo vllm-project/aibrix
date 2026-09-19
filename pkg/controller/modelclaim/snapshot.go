@@ -100,6 +100,16 @@ type PodPlacementState struct {
 	HBMFreeBytes   int64
 	KVUsedBytes    int64
 	ModelCount     int
+	// MaxFootprintBytes is the largest non-KV GPU footprint observed among the
+	// engines already on this pod: weights, CUDA graphs and allocator
+	// retention. It stands in for an incoming model whose own footprint has
+	// never been measured. Zero means no engine here reported one.
+	MaxFootprintBytes int64
+	// FloorBytes is the KV this pod's pool guarantees every model. Placement
+	// reserves it so a model only lands where it can receive that guarantee,
+	// and so placement sizes KV the same way the pool KV planner does. Zero
+	// when the pool declares no reclaim policy.
+	FloorBytes int64
 }
 
 func placementStateFromSnapshot(snapshot *RuntimeSnapshot, artifactURL string, parallelism int64) PodPlacementState {
@@ -128,6 +138,13 @@ func placementStateFromSnapshot(snapshot *RuntimeSnapshot, artifactURL string, p
 	}
 	for _, model := range snapshot.Models {
 		state.KVUsedBytes += model.KVUsedBytes
+		// Whatever an engine holds beyond its KV pages is its fixed cost:
+		// weights, captured CUDA graphs and allocator retention. Measuring it
+		// beats estimating from artifact size, because most of the gap is
+		// allocator retention that does not scale with the weights.
+		if footprint := model.HBMPeakBytes - model.KVUsedBytes; footprint > state.MaxFootprintBytes {
+			state.MaxFootprintBytes = footprint
+		}
 	}
 	return state
 }

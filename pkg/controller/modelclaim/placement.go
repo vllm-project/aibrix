@@ -17,6 +17,7 @@ limitations under the License.
 package modelclaim
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -75,6 +76,26 @@ type LocalityProvider interface {
 	Cost(model, nodeName string) float64
 }
 
+// errInsufficientCapacity separates "every warm pod is too full" from "no warm
+// pod matched at all". An operator needs to tell those apart: the first clears
+// on its own once load drops, the second needs the pool itself changed.
+var errInsufficientCapacity = errors.New("no warm pod has room for the model")
+
+// podFits reports whether a pod can host a model that needs footprintBytes of
+// non-KV GPU memory, plus the KV floor its pool guarantees every model.
+//
+// Missing information always admits. This check exists to stop placements that
+// are known to fail, never to block one it cannot judge: an unmeasured model,
+// an unreachable sidecar or a runtime without NVML all behave exactly as they
+// did before it existed.
+func podFits(state PodPlacementState, footprintBytes int64) bool {
+	need := footprintBytes + state.FloorBytes
+	if !state.MemoryKnown || need <= 0 {
+		return true
+	}
+	return state.HBMFreeBytes >= need
+}
+
 // uniformLocality is the default: every node looks equally cheap, so locality
 // never tips the decision and placement falls back to load + name ordering.
 type uniformLocality struct{}
@@ -90,7 +111,7 @@ func (uniformLocality) Cost(model, nodeName string) float64 { return 0 }
 // A nil provider is treated as uniform (load-only), preserving the existing
 // deterministic fallback when runtime observations are unavailable.
 func selectPodForActivation(candidates []corev1.Pod, alreadyOn map[string]bool, load map[string]int, model string, locality LocalityProvider) (*corev1.Pod, error) {
-	return selectPodForActivationWithState(candidates, alreadyOn, load, model, locality, nil)
+	return selectPodForActivationWithState(candidates, alreadyOn, load, model, locality, nil, 0)
 }
 
 // selectPodForActivationWithState first prefers a pod that already has the
@@ -104,6 +125,7 @@ func selectPodForActivationWithState(
 	model string,
 	locality LocalityProvider,
 	states map[string]PodPlacementState,
+	footprintBytes int64,
 ) (*corev1.Pod, error) {
 	if locality == nil {
 		locality = uniformLocality{}
@@ -112,12 +134,21 @@ func selectPodForActivationWithState(
 	var bestState PodPlacementState
 	var bestLoc float64
 	var bestLoad int
+	tooFull := 0
 	for i := range candidates {
 		pod := &candidates[i]
 		if alreadyOn[pod.Name] {
 			continue
 		}
 		state := states[pod.Name]
+		// Admission is a filter around the ranking, not part of it. Ranking says
+		// which pod is preferable; this says which are usable at all. They have
+		// to stay separate, because the ranking puts artifact locality first and
+		// would otherwise pick a cached-but-full pod over an empty one.
+		if !podFits(state, footprintBytes) {
+			tooFull++
+			continue
+		}
 		loc := locality.Cost(model, pod.Spec.NodeName)
 		l := load[pod.Name]
 		if best == nil || placementStateLess(state, bestState) ||
@@ -126,6 +157,9 @@ func selectPodForActivationWithState(
 		}
 	}
 	if best == nil {
+		if tooFull > 0 {
+			return nil, fmt.Errorf("%w: %d candidate pod(s) lack GPU memory", errInsufficientCapacity, tooFull)
+		}
 		return nil, fmt.Errorf("no available candidate warm pod for model")
 	}
 	return best, nil

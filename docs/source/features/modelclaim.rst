@@ -471,8 +471,11 @@ Runtime metrics include:
 * ``aibrix:modelclaim_kv_total_bytes{model}``;
 * ``aibrix:modelclaim_hbm_peak_bytes{model}``.
 
-HBM attribution is best effort and is used for observation and placement
-ranking. It is not a hard admission or reservation signal.
+HBM attribution is best effort. It drives placement ranking, and placement
+also refuses a Pod whose free HBM cannot hold the model together with the
+pool's guaranteed KV floor. It is not a reservation: nothing holds the memory
+between the check and the engine starting, and a Pod whose runtime reports no
+HBM reading is admitted rather than refused.
 
 Troubleshooting
 ---------------
@@ -481,6 +484,17 @@ Claim remains ``Scheduling`` with zero candidates
    Confirm that the Pod is Running, has a Pod IP, matches ``podSelector``, and
    has ``pool.aibrix.ai/enabled: "true"``. For vLLM, confirm that TP times PP
    exactly matches the Pod-visible GPU count.
+
+Claim remains ``Scheduling`` with reason ``InsufficientCapacity``
+   Candidate Pods exist, but none reports enough free HBM for the model plus
+   the pool's guaranteed KV floor. ``status.observedFootprint`` is the size
+   being reserved, measured from a ready engine and recorded together with the
+   artifact it was measured against. It is used only while that artifact still
+   matches ``spec.artifactURL``; after the claim is repointed at other weights,
+   or when the model has never run, the largest engine in the pool stands in
+   for it. Compare either against ``aibrix:modelclaim_hbm_peak_bytes`` on the
+   candidates. The claim retries on its own once an engine exits or a Pod joins
+   the pool.
 
 Claim remains ``Activating``
    Inspect the runtime snapshot and engine logs. Weight download, CUDA graph
