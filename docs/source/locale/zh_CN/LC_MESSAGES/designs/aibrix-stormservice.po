@@ -1,0 +1,1371 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/designs/aibrix-stormservice.rst:5
+msgid "AIBrix StormService"
+msgstr "AIBrix StormService"
+
+#: ../../source/designs/aibrix-stormservice.rst:7
+msgid ""
+"**StormService** is a specialized component designed to manage and "
+"orchestrate the lifecycle of inference containers in Prefill/Decode "
+"disaggregated architectures. Additionally, it can be utilized to oversee "
+"various deployment modes, such as Tensor Parallelism (TP), Pipeline "
+"Parallelism (PP), and even single GPU model deployments."
+msgstr ""
+"**StormService** 用于在 Prefill/Decode 分离架构中管理并编排推理容器生命周期。"
+"也可用于监督多种部署模式，例如张量并行（TP）、流水线并行（PP），以及单 GPU 模型部署。"
+
+#: ../../source/designs/aibrix-stormservice.rst:10
+msgid "Three-layer Architecture"
+msgstr "三层架构"
+
+#: ../../source/designs/aibrix-stormservice.rst:12
+msgid ""
+"StormService is implemented using several Custom Resource Definitions "
+"(CRDs) following a three-layer architecture. An illustration of this "
+"architecture is shown below:"
+msgstr "StormService 通过多个自定义资源定义（CRD）实现三层架构。示意图如下："
+
+#: ../../source/designs/aibrix-stormservice.rst:14
+msgid "AIBrix StormService Architecture"
+msgstr "AIBrix StormService 架构"
+
+#: ../../source/designs/aibrix-stormservice.rst:19
+msgid ""
+"**StormService**: This is the top-level CRD that wraps the entire "
+"service. It defines the specification of a service unit and tracks its "
+"status, including the number of replicas (i.e., RoleSet), a unified "
+"template for RoleSets, update strategy, and other configurations. For the"
+" detailed definition, see the `stormservice_types.go`_ file."
+msgstr ""
+"**StormService** ：封装整个服务的顶层 CRD。它定义服务单元规格并跟踪状态，包括副本数（即 RoleSet）、统一的 RoleSet "
+"模板、更新策略及其他配置。详细定义见 `stormservice_types.go`_ 。"
+
+#: ../../source/designs/aibrix-stormservice.rst:23
+msgid ""
+"**RoleSet**: A RoleSet represents a collection of roles, where each role "
+"can serve a specific function (e.g., Prefill or Decode). For more "
+"information, see the `roleset_types.go`_ file."
+msgstr ""
+"**RoleSet** ：一组角色的集合，每个角色可承担特定功能（如 Prefill 或 Decode）。更多信息见 `roleset_types.go`_ "
+"。"
+
+#: ../../source/designs/aibrix-stormservice.rst:27
+msgid ""
+"**Pods**: Each role within a RoleSet contains multiple Pods, which are "
+"the actual containers executing the inference tasks."
+msgstr "**Pods** ：RoleSet 中每个角色包含多个 Pod，即实际执行推理任务的容器。"
+
+#: ../../source/designs/aibrix-stormservice.rst:29
+msgid ""
+"Following this layered design, updates to the spec propagate from the "
+"StormService to its RoleSets, and then to the individual roles. The "
+"reconciler at the StormService level synchronizes the status of RoleSets "
+"with the StormService spec (primarily the `Replicas` field), while the "
+"reconciler at the RoleSet level synchronizes the status of individual "
+"roles with the RoleSet spec."
+msgstr ""
+"按该分层设计，spec 更新从 StormService 传播到其 RoleSet，再传播到各个角色。"
+"StormService 层的 reconciler 将 RoleSet 状态与 StormService spec 同步（主要是 `Replicas` 字段），"
+"RoleSet 层的 reconciler 将各角色状态与 RoleSet spec 同步。"
+
+#: ../../source/designs/aibrix-stormservice.rst:31
+msgid ""
+"StormService supports two operational modes at its level: **Rolling "
+"Update** and **Inplace Update**. At the RoleSet level, three update modes"
+" are supported: **Parallel**, **Sequential**, and **Interleaved**. These "
+"are explained in detail below."
+msgstr ""
+"StormService 层支持两种运行模式：**滚动更新（Rolling Update）** 和 **原地更新（Inplace Update）** "
+"。RoleSet 层支持三种更新模式：**Parallel** 、**Sequential** 和 **Interleaved** 。下文详细说明。"
+
+#: ../../source/designs/aibrix-stormservice.rst:35
+msgid "Deployment Mode"
+msgstr "部署模式"
+
+#: ../../source/designs/aibrix-stormservice.rst:37
+msgid ""
+"Stormservice supports two deployment modes: **Replica Mode** and **Pooled"
+" Mode**."
+msgstr "StormService 支持两种部署模式：**Replica Mode** 和 **Pooled Mode** 。"
+
+#: ../../source/designs/aibrix-stormservice.rst:40
+msgid ""
+"These two modes are mutually exclusive. The mode is declared through the "
+"`stormservice.spec.mode` field, which accepts `Replica` or `Pooled`."
+msgstr "这两种模式互斥。通过 `stormservice.spec.mode` 声明，取值为 `Replica` 或 `Pooled` 。"
+
+#: ../../source/designs/aibrix-stormservice.rst:41
+msgid ""
+"`spec.mode` is optional and is not defaulted. When it is omitted the mode"
+" is inferred for backward compatibility from "
+"`stormservice.spec.replicas`: replica mode when `replicas > 1`, otherwise"
+" pooled mode."
+msgstr ""
+"`spec.mode` 可选且无默认值。省略时为保持向后兼容，根据 `stormservice.spec.replicas` 推断："
+"`replicas > 1` 为 replica mode，否则为 pooled mode。"
+
+#: ../../source/designs/aibrix-stormservice.rst:42
+msgid ""
+"When `spec.mode` is set to `Pooled`, `spec.replicas` must stay at `1`; "
+"roles are scaled through `spec.template.spec.roles[].replicas`."
+msgstr ""
+"当 `spec.mode` 为 `Pooled` 时，`spec.replicas` 必须为 `1` ；角色通过 `spec.template.spec.roles[].replicas` "
+"扩缩。"
+
+#: ../../source/designs/aibrix-stormservice.rst:43
+msgid ""
+"A declared `spec.mode` drives the update path: `Replica` uses the rolling"
+" update path and `Pooled` uses the in-place update path, even when "
+"`spec.updateStrategy.type` holds the (possibly CRD-defaulted) "
+"`RollingUpdate` value. Declaring `mode: Replica` together with "
+"`updateStrategy.type: InPlaceUpdate` is rejected by the webhook. When "
+"`spec.mode` is omitted, `spec.updateStrategy.type` keeps selecting the "
+"update path as before."
+msgstr ""
+"已声明的 `spec.mode` 决定更新路径：`Replica` 走滚动更新，`Pooled` 走原地更新，即使 `spec.updateStrategy.type` "
+"为（可能由 CRD 默认的）`RollingUpdate` 。同时声明 `mode: Replica` 与 `updateStrategy.type: "
+"InPlaceUpdate` 会被 webhook 拒绝。省略 `spec.mode` 时，仍由 `spec.updateStrategy.type` "
+"选择更新路径。"
+
+#: ../../source/designs/aibrix-stormservice.rst:44
+msgid ""
+"A declared `spec.mode` is also the source of truth for PodAutoscaler "
+"role-level scaling. The `autoscaling.aibrix.ai/storm-service-mode` "
+"annotation is deprecated and only honored when the target StormService "
+"does not declare `spec.mode`."
+msgstr ""
+"已声明的 `spec.mode` 也是 PodAutoscaler 角色级扩缩容的权威来源。"
+"`autoscaling.aibrix.ai/storm-service-mode` 注解已弃用，仅在目标 StormService 未声明 `spec.mode` 时生效。"
+
+#: ../../source/designs/aibrix-stormservice.rst:48
+msgid "Replica Mode"
+msgstr "Replica Mode"
+
+#: ../../source/designs/aibrix-stormservice.rst:50
+msgid ""
+"**Replica Mode** treats each `RoleSet` as an independent replica of the "
+"service. If you already know P/D ratio, you can directly configure the "
+"RoleSet and replicate it."
+msgstr ""
+"**Replica Mode** 将每个 `RoleSet` 视为服务的独立副本。"
+"若已确定 P/D 比例，可直接配置 RoleSet 并复制。"
+
+#: ../../source/designs/aibrix-stormservice.rst:52
+#: ../../source/designs/aibrix-stormservice.rst:63
+msgid "**Characteristics**"
+msgstr "**特点**"
+
+#: ../../source/designs/aibrix-stormservice.rst:54
+msgid ""
+"**Independent Replicas**: Each `RoleSet` operates independently, and "
+"changes to one `RoleSet` do not directly affect others."
+msgstr "**独立副本** ：每个 `RoleSet` 独立运行，对一个 `RoleSet` 的变更不会直接影响其他副本。"
+
+#: ../../source/designs/aibrix-stormservice.rst:55
+msgid ""
+"**Scaling at RoleSet Level**: Scaling operations are performed by adding "
+"or removing entire `RoleSet` instances."
+msgstr "**RoleSet 级扩缩** ：通过增加或删除整个 `RoleSet` 实例进行扩缩。"
+
+#: ../../source/designs/aibrix-stormservice.rst:59
+msgid "Pooled Mode"
+msgstr "Pooled Mode"
+
+#: ../../source/designs/aibrix-stormservice.rst:61
+msgid ""
+"**Pooled Mode** views each role within a `RoleSet` as part of a shared "
+"pool. In this mode, each role is supposed to be independently scalable. "
+"It is designed to handle scenarios where different roles have different "
+"scaling needs."
+msgstr ""
+"**Pooled Mode** 将 `RoleSet` 中每个角色视为共享池的一部分。该模式下各角色应可独立扩缩，"
+"用于不同角色有不同扩缩需求的场景。"
+
+#: ../../source/designs/aibrix-stormservice.rst:65
+msgid "**Resource Pool**: Prefill or Decode instance form a shared pool."
+msgstr "**资源池** ：Prefill 或 Decode 实例组成共享池。"
+
+#: ../../source/designs/aibrix-stormservice.rst:66
+msgid ""
+"**Independent Role Scaling**: Each role can be scaled independently based"
+" on its specific load and requirements."
+msgstr "**角色独立扩缩** ：每个角色可按其负载与需求独立扩缩。"
+
+#: ../../source/designs/aibrix-stormservice.rst:70
+msgid "Drain Before Controller-Managed Deletion"
+msgstr "控制器删除前的 Drain"
+
+#: ../../source/designs/aibrix-stormservice.rst:72
+msgid ""
+"RoleSet can mark Pods as draining before controller-managed deletion. "
+"This is useful for scale-in and recreate rollouts where the gateway "
+"should stop sending new requests to a Pod before the Pod is deleted."
+msgstr ""
+"RoleSet 可在控制器管理的删除前将 Pod 标记为 draining。"
+"适用于缩容与重建滚动：网关应在 Pod 删除前停止向其发送新请求。"
+
+#: ../../source/designs/aibrix-stormservice.rst:76
+msgid ""
+"Configure drain per role through ``spec.template.spec.roles[].drain`` on "
+"a StormService, or ``spec.roles[].drain`` when managing a RoleSet "
+"directly:"
+msgstr ""
+"通过 StormService 的 ``spec.template.spec.roles[].drain`` 按角色配置 drain；直接管理 "
+"RoleSet 时使用 ``spec.roles[].drain`` ："
+
+#: ../../source/designs/aibrix-stormservice.rst:90
+msgid ""
+"``timeoutSeconds`` is optional and must be non-negative. When it is "
+"omitted or set to ``0``, the controller keeps the previous behavior and "
+"deletes selected Pods immediately."
+msgstr ""
+"``timeoutSeconds`` 可选且必须非负。省略或设为 ``0`` 时，控制器保持原有行为，立即删除所选 Pod。"
+
+#: ../../source/designs/aibrix-stormservice.rst:94
+msgid ""
+"When ``timeoutSeconds`` is greater than ``0``, the RoleSet controller "
+"handles a selected Pod in two phases:"
+msgstr "当 ``timeoutSeconds`` 大于 ``0`` 时，RoleSet 控制器分两阶段处理所选 Pod："
+
+#: ../../source/designs/aibrix-stormservice.rst:97
+msgid ""
+"Patch the Pod with drain annotations and requeue until the timeout "
+"expires."
+msgstr "为 Pod 打上 drain 注解，并重新入队直到超时。"
+
+#: ../../source/designs/aibrix-stormservice.rst:98
+msgid "Delete the Pod after the configured timeout has elapsed."
+msgstr "超时后删除该 Pod。"
+
+#: ../../source/designs/aibrix-stormservice.rst:100
+msgid "The controller writes the following annotations:"
+msgstr "控制器写入以下注解："
+
+#: ../../source/designs/aibrix-stormservice.rst:102
+msgid "Drain annotations"
+msgstr "Drain 注解"
+
+#: ../../source/designs/aibrix-stormservice.rst:106
+msgid "Annotation"
+msgstr "注解"
+
+#: ../../source/designs/aibrix-stormservice.rst:107
+msgid "Purpose"
+msgstr "用途"
+
+#: ../../source/designs/aibrix-stormservice.rst:108
+msgid "``aibrix.ai/draining=true``"
+msgstr "``aibrix.ai/draining=true``"
+
+#: ../../source/designs/aibrix-stormservice.rst:109
+msgid ""
+"Marks the Pod as draining. Gateway ready-pod filtering excludes Pods with"
+" this value."
+msgstr "将 Pod 标记为 draining。网关就绪 Pod 过滤会排除带该值的 Pod。"
+
+#: ../../source/designs/aibrix-stormservice.rst:111
+msgid "``aibrix.ai/drain-start-time``"
+msgstr "``aibrix.ai/drain-start-time``"
+
+#: ../../source/designs/aibrix-stormservice.rst:112
+msgid "RFC3339 UTC timestamp used by the controller to calculate timeout expiry."
+msgstr "RFC3339 UTC 时间戳，控制器用其计算超时到期。"
+
+#: ../../source/designs/aibrix-stormservice.rst:114
+msgid "``aibrix.ai/drain-reason``"
+msgstr "``aibrix.ai/drain-reason``"
+
+#: ../../source/designs/aibrix-stormservice.rst:115
+msgid "Diagnostic reason, such as ``scale-in`` or ``rollout``."
+msgstr "诊断原因，例如 ``scale-in`` 或 ``rollout`` 。"
+
+#: ../../source/designs/aibrix-stormservice.rst:116
+msgid "``aibrix.ai/drain-target-action=delete``"
+msgstr "``aibrix.ai/drain-target-action=delete``"
+
+#: ../../source/designs/aibrix-stormservice.rst:117
+msgid ""
+"Confirms the controller intends to delete this Pod after drain. If this "
+"value is missing or unexpected, the controller resets the drain state "
+"instead of deleting immediately."
+msgstr ""
+"确认控制器打算在 drain 后删除该 Pod。若该值缺失或异常，控制器会重置 drain 状态，而不是立即删除。"
+
+#: ../../source/designs/aibrix-stormservice.rst:121
+msgid ""
+"The controller emits ``PodDrainStarted`` when drain begins, "
+"``PodDrainCompleted`` when the Pod is deleted after the timeout, and "
+"``PodDrainStateInvalid`` when it repairs malformed drain state. It does "
+"not emit an event while simply waiting for the timeout; waiting is logged"
+" at verbose level only."
+msgstr ""
+"drain 开始时控制器发出 ``PodDrainStarted`` ，超时后删除 Pod 时发出 ``PodDrainCompleted`` "
+"，修复异常 drain 状态时发出 ``PodDrainStateInvalid`` 。仅等待超时不会发事件；等待只在 verbose 级别记录日志。"
+
+#: ../../source/designs/aibrix-stormservice.rst:127
+msgid ""
+"For roles using ``podGroupSize > 1``, the RoleSet controller propagates "
+"the role drain configuration to the internal PodSet so grouped Pods "
+"follow the same drain-before-delete behavior."
+msgstr ""
+"对使用 ``podGroupSize > 1`` 的角色，RoleSet 控制器将角色 drain 配置传播到内部 PodSet，"
+"使成组 Pod 遵循相同的删除前 drain 行为。"
+
+#: ../../source/designs/aibrix-stormservice.rst:133
+msgid "Topology Policy"
+msgstr "拓扑策略"
+
+#: ../../source/designs/aibrix-stormservice.rst:135
+msgid ""
+"StormService supports ``spec.template.spec.topologyPolicy`` to request "
+"Pod co-location through Kubernetes pod affinity. The same field is "
+"available on ``RoleSet.spec.topologyPolicy`` when managing RoleSets "
+"directly."
+msgstr ""
+"StormService 支持 ``spec.template.spec.topologyPolicy`` ，通过 Kubernetes pod "
+"affinity 请求 Pod 共置。直接管理 RoleSet 时，同一字段位于 ``RoleSet.spec.topologyPolicy`` "
+"。"
+
+#: ../../source/designs/aibrix-stormservice.rst:139
+msgid ""
+"This is useful when roles have topology-sensitive data paths, such as "
+"keeping Prefill and Decode Pods in the same host or zone to reduce cross-"
+"domain traffic. The controller injects the generated affinity into "
+"directly managed Pods and into PodSet templates for roles that use "
+"``podGroupSize > 1``."
+msgstr ""
+"适用于角色有拓扑敏感数据路径的场景，例如将 Prefill 与 Decode Pod 放在同一主机或可用区，以减少跨域流量。"
+"控制器将生成的 affinity 注入直接管理的 Pod，以及对 ``podGroupSize > 1`` 的角色注入 PodSet 模板。"
+
+#: ../../source/designs/aibrix-stormservice.rst:144
+msgid ""
+"Assume a StormService has two RoleSets, and each RoleSet has two roles: "
+"``prefill`` and ``decode``."
+msgstr "假设一个 StormService 有两个 RoleSet，每个 RoleSet 有两个角色：``prefill`` 和 ``decode`` 。"
+
+#: ../../source/designs/aibrix-stormservice.rst:197
+msgid "``scope`` controls which Pods the injected affinity matches:"
+msgstr "``scope`` 控制注入的 affinity 匹配哪些 Pod："
+
+#: ../../source/designs/aibrix-stormservice.rst:199
+msgid "Topology policy scope"
+msgstr "拓扑策略作用域"
+
+#: ../../source/designs/aibrix-stormservice.rst:203
+msgid "Scope"
+msgstr "作用域"
+
+#: ../../source/designs/aibrix-stormservice.rst:204
+msgid "Co-location behavior"
+msgstr "共置行为"
+
+#: ../../source/designs/aibrix-stormservice.rst:205
+msgid "Common use case"
+msgstr "常见用例"
+
+#: ../../source/designs/aibrix-stormservice.rst:206
+msgid "``StormService``"
+msgstr "``StormService``"
+
+#: ../../source/designs/aibrix-stormservice.rst:207
+msgid "All Pods in the StormService share the same topology value."
+msgstr "StormService 中所有 Pod 共享同一拓扑值。"
+
+#: ../../source/designs/aibrix-stormservice.rst:208
+msgid "Keep a small service replica inside one host or zone."
+msgstr "将小型服务副本保持在同一主机或可用区。"
+
+#: ../../source/designs/aibrix-stormservice.rst:209
+msgid "``RoleSet``"
+msgstr "``RoleSet``"
+
+#: ../../source/designs/aibrix-stormservice.rst:210
+msgid ""
+"All Pods in each RoleSet share a topology value. Different RoleSets may "
+"land in different topology domains."
+msgstr "每个 RoleSet 内的所有 Pod 共享同一拓扑值。不同 RoleSet 可落在不同拓扑域。"
+
+#: ../../source/designs/aibrix-stormservice.rst:212
+msgid "Keep each Prefill/Decode replica pair together."
+msgstr "将每对 Prefill/Decode 副本放在一起。"
+
+#: ../../source/designs/aibrix-stormservice.rst:213
+msgid "``Role``"
+msgstr "``Role``"
+
+#: ../../source/designs/aibrix-stormservice.rst:214
+msgid "Pods with the same role share a topology value across RoleSets."
+msgstr "相同角色的 Pod 跨 RoleSet 共享同一拓扑值。"
+
+#: ../../source/designs/aibrix-stormservice.rst:215
+msgid "Keep role-specific pools, such as all Prefill Pods, together."
+msgstr "将角色专用池（如所有 Prefill Pod）放在一起。"
+
+#: ../../source/designs/aibrix-stormservice.rst:217
+msgid ""
+"``key`` selects the Kubernetes node label used as the topology domain. "
+"Common values are ``kubernetes.io/hostname`` for node-level co-location "
+"and ``topology.kubernetes.io/zone`` for zone-level co-location."
+msgstr ""
+"``key`` 选择用作拓扑域的 Kubernetes 节点标签。"
+"常见值：``kubernetes.io/hostname`` 表示节点级共置，``topology.kubernetes.io/zone`` 表示可用区级共置。"
+
+#: ../../source/designs/aibrix-stormservice.rst:221
+msgid ""
+"You can also use an internal resource-pool label as the topology key. For"
+" example, label nodes by business pool:"
+msgstr "也可使用内部资源池标签作为拓扑 key。例如按业务池给节点打标签："
+
+#: ../../source/designs/aibrix-stormservice.rst:230
+msgid "Then use that label key in the topology policy:"
+msgstr "然后在拓扑策略中使用该标签 key："
+
+#: ../../source/designs/aibrix-stormservice.rst:242
+msgid ""
+"With this policy, Pods inside each RoleSet prefer to schedule into the "
+"same business resource pool, such as ``latency-pool`` or ``throughput-"
+"pool``."
+msgstr ""
+"使用该策略时，每个 RoleSet 内的 Pod 优先调度到同一业务资源池，例如 ``latency-pool`` 或 ``throughput-pool`` "
+"。"
+
+#: ../../source/designs/aibrix-stormservice.rst:245
+msgid "``mode`` selects scheduling strength:"
+msgstr "``mode`` 选择调度强度："
+
+#: ../../source/designs/aibrix-stormservice.rst:247
+msgid ""
+"``Preferred`` adds a strong pod affinity preference and is the default. "
+"Pods can still schedule in another topology domain when the preferred "
+"domain does not have enough resources."
+msgstr ""
+"``Preferred`` 添加较强的 pod affinity 偏好，且为默认值。"
+"首选拓扑域资源不足时，Pod 仍可调度到其他拓扑域。"
+
+#: ../../source/designs/aibrix-stormservice.rst:250
+msgid ""
+"``Required`` adds hard pod affinity. Pods can remain ``Pending`` when no "
+"node in the selected topology domain can satisfy the request."
+msgstr "``Required`` 添加硬性 pod affinity。所选拓扑域中没有节点能满足请求时，Pod 会保持 ``Pending`` 。"
+
+#: ../../source/designs/aibrix-stormservice.rst:254
+msgid "Example"
+msgstr "示例"
+
+#: ../../source/designs/aibrix-stormservice.rst:256
+msgid ""
+"The following policy prefers to place all Pods inside each RoleSet "
+"replica on the same node:"
+msgstr "以下策略优先将每个 RoleSet 副本内的所有 Pod 放到同一节点："
+
+#: ../../source/designs/aibrix-stormservice.rst:294
+msgid ""
+"Before using a custom topology key, label the nodes with that key. For "
+"example:"
+msgstr "使用自定义拓扑 key 前，先用该 key 给节点打标签。例如："
+
+#: ../../source/designs/aibrix-stormservice.rst:301
+msgid "Apply one of the topology policy samples and inspect Pod placement:"
+msgstr "应用某个拓扑策略示例并检查 Pod 放置："
+
+#: ../../source/designs/aibrix-stormservice.rst:308
+msgid ""
+"Topology policy updates affect only newly created or replaced Pods "
+"because Kubernetes Pod affinity is immutable after Pod creation. Existing"
+" Pods and PodSet templates pick up the new affinity after replacement or "
+"recreation."
+msgstr ""
+"拓扑策略更新只影响新创建或被替换的 Pod，因为 Kubernetes Pod affinity 在创建后不可变。"
+"现有 Pod 和 PodSet 模板在替换或重建后才会采用新的 affinity。"
+
+#: ../../source/designs/aibrix-stormservice.rst:312
+msgid "See the complete `topology policy samples`_ in the AIBrix repository."
+msgstr "完整示例见 AIBrix 仓库中的 `topology policy samples`_ 。"
+
+#: ../../source/designs/aibrix-stormservice.rst:318
+msgid "Gang Scheduling Strategies"
+msgstr "Gang 调度策略"
+
+#: ../../source/designs/aibrix-stormservice.rst:320
+msgid ""
+"StormService supports PodGroup-based gang scheduling through "
+"``spec.template.spec.schedulingStrategy``. This is the StormService entry"
+" point for configuring all Pods in each generated RoleSet as one gang-"
+"scheduled group."
+msgstr ""
+"StormService 通过 ``spec.template.spec.schedulingStrategy`` 支持基于 PodGroup 的 gang 调度。"
+"这是将每个生成的 RoleSet 中所有 Pod 配置为一个 gang 调度组的 StormService 入口。"
+
+#: ../../source/designs/aibrix-stormservice.rst:324
+msgid ""
+"Gang scheduling is useful for PD-disaggregated serving and other multi-"
+"role inference workloads where starting only part of the service replica "
+"is not useful. For example, a Prefill/Decode replica may need enough "
+"Prefill Pods and enough Decode Pods to be admitted together before it can"
+" serve traffic."
+msgstr ""
+"Gang 调度适用于 PD 分离服务及其他多角色推理负载：只启动服务副本的一部分没有意义。"
+"例如，Prefill/Decode 副本可能需要足够的 Prefill Pod 和 Decode Pod 一起被准入后才能对外服务。"
+
+#: ../../source/designs/aibrix-stormservice.rst:329
+msgid ""
+"``schedulingStrategy`` currently accepts one of the following scheduler-"
+"specific strategies:"
+msgstr "``schedulingStrategy`` 当前可接受以下调度器特定策略之一："
+
+#: ../../source/designs/aibrix-stormservice.rst:332
+msgid "Gang scheduling strategies"
+msgstr "Gang 调度策略"
+
+#: ../../source/designs/aibrix-stormservice.rst:336
+msgid "Strategy field"
+msgstr "策略字段"
+
+#: ../../source/designs/aibrix-stormservice.rst:337
+msgid "PodGroup API"
+msgstr "PodGroup API"
+
+#: ../../source/designs/aibrix-stormservice.rst:338
+msgid "Main fields"
+msgstr "主要字段"
+
+#: ../../source/designs/aibrix-stormservice.rst:339
+msgid "``volcanoSchedulingStrategy``"
+msgstr "``volcanoSchedulingStrategy``"
+
+#: ../../source/designs/aibrix-stormservice.rst:340
+msgid "Volcano ``PodGroup``"
+msgstr "Volcano ``PodGroup``"
+
+#: ../../source/designs/aibrix-stormservice.rst:341
+msgid ""
+"``minMember``, ``minTaskMember``, ``queue``, ``priorityClassName``, "
+"``minResources``"
+msgstr ""
+"``minMember`` 、``minTaskMember`` 、``queue`` 、``priorityClassName`` 、``minResources``"
+
+#: ../../source/designs/aibrix-stormservice.rst:343
+msgid "``godelSchedulingStrategy``"
+msgstr "``godelSchedulingStrategy``"
+
+#: ../../source/designs/aibrix-stormservice.rst:344
+msgid "Godel ``PodGroup``"
+msgstr "Godel ``PodGroup``"
+
+#: ../../source/designs/aibrix-stormservice.rst:345
+msgid ""
+"``minMember``, ``priorityClassName``, ``scheduleTimeoutSeconds``, "
+"``application``, ``affinity``"
+msgstr ""
+"``minMember`` 、``priorityClassName`` 、``scheduleTimeoutSeconds`` 、``application`` "
+"、``affinity``"
+
+#: ../../source/designs/aibrix-stormservice.rst:347
+msgid "``coschedulingSchedulingStrategy``"
+msgstr "``coschedulingSchedulingStrategy``"
+
+#: ../../source/designs/aibrix-stormservice.rst:348
+msgid "Kubernetes scheduler-plugins ``PodGroup``"
+msgstr "Kubernetes scheduler-plugins ``PodGroup``"
+
+#: ../../source/designs/aibrix-stormservice.rst:349
+msgid "``minMember``, ``minResources``, ``scheduleTimeoutSeconds``"
+msgstr "``minMember`` 、``minResources`` 、``scheduleTimeoutSeconds``"
+
+#: ../../source/designs/aibrix-stormservice.rst:351
+msgid ""
+"When the scheduling strategy is set on the StormService template, the "
+"StormService controller copies it to each managed RoleSet. The RoleSet "
+"controller creates one scheduler-specific ``PodGroup`` for the RoleSet "
+"and attaches generated Pods or PodSets to that PodGroup. For Volcano, the"
+" controller also marks each role with the Volcano task name ``volcano.sh"
+"/task-spec=<role name>``. ``minTaskMember`` keys therefore match "
+"StormService role names."
+msgstr ""
+"调度策略设置在 StormService 模板上时，StormService 控制器会将其复制到每个托管 RoleSet。RoleSet 控制器为该 "
+"RoleSet 创建一个调度器特定的 ``PodGroup`` ，并将生成的 Pod 或 PodSet 挂到该 PodGroup。对 Volcano，控制器还会用 "
+"Volcano 任务名 ``volcano.sh/task-spec=<role name>`` 标记每个角色。因此 ``minTaskMember`` "
+"的 key 与 StormService 角色名一致。"
+
+#: ../../source/designs/aibrix-stormservice.rst:359
+msgid ""
+"The rest of this section focuses on Volcano because it supports both "
+"group-level ``minMember`` and role-level ``minTaskMember`` from the "
+"StormService entry point."
+msgstr ""
+"本节其余部分聚焦 Volcano，因为它从 StormService 入口同时支持组级 ``minMember`` 和角色级 ``minTaskMember`` "
+"。"
+
+#: ../../source/designs/aibrix-stormservice.rst:363
+msgid ""
+"For single-Pod role replicas, the RoleSet can create Pods directly. For "
+"multi-node inference, set ``podGroupSize > 1`` on a role. Each role "
+"replica then becomes one PodSet, and the PodSet creates the multiple Pods"
+" that form that replica. A RoleSet-level scheduling strategy still "
+"creates one PodGroup for the whole RoleSet, so Volcano admits the Prefill"
+" and Decode PodSets together."
+msgstr ""
+"对单 Pod 角色副本，RoleSet 可直接创建 Pod。对多节点推理，在角色上设置 ``podGroupSize > 1`` 。每个角色副本随后成为一个 "
+"PodSet，由 PodSet 创建组成该副本的多个 Pod。RoleSet 级调度策略仍为整个 RoleSet 创建一个 PodGroup，因此 "
+"Volcano 会一起准入 Prefill 和 Decode PodSet。"
+
+#: ../../source/designs/aibrix-stormservice.rst:401
+msgid "Group-level ``minMember``"
+msgstr "组级 ``minMember``"
+
+#: ../../source/designs/aibrix-stormservice.rst:403
+msgid ""
+"``minMember`` is the minimum total number of Pods that must be "
+"schedulable for the Volcano PodGroup. If fewer than ``minMember`` Pods "
+"can be admitted, Volcano keeps the gang pending instead of starting only "
+"a partial RoleSet."
+msgstr ""
+"``minMember`` 是 Volcano PodGroup 必须可调度的最少 Pod 总数。若可准入的 Pod 少于 ``minMember`` "
+"，Volcano 会让 gang 保持 pending，而不是只启动部分 RoleSet。"
+
+#: ../../source/designs/aibrix-stormservice.rst:407
+msgid ""
+"The following multi-node shape shows how ``minMember`` applies when role "
+"replicas are expanded into PodSets. The YAML after the diagram uses the "
+"same shape: two Prefill replicas and three Decode replicas, each with "
+"``podGroupSize: 2``."
+msgstr ""
+"以下多节点形态说明角色副本展开为 PodSet 时 ``minMember`` 如何生效。图后 YAML 使用同一形态：两个 Prefill 副本和三个 "
+"Decode 副本，每个 ``podGroupSize: 2`` 。"
+
+#: ../../source/designs/aibrix-stormservice.rst:499
+msgid "Role-level ``minTaskMember``"
+msgstr "角色级 ``minTaskMember``"
+
+#: ../../source/designs/aibrix-stormservice.rst:501
+msgid ""
+"``minTaskMember`` adds per-task minimums inside the same Volcano "
+"PodGroup. In a StormService-created RoleSet, each role becomes a Volcano "
+"task, so the map keys are role names such as ``prefill`` and ``decode``."
+msgstr ""
+"``minTaskMember`` 在同一 Volcano PodGroup 内增加每任务最小值。在 StormService 创建的 RoleSet "
+"中，每个角色成为一个 Volcano 任务，因此 map key 为角色名，如 ``prefill`` 和 ``decode`` 。"
+
+#: ../../source/designs/aibrix-stormservice.rst:505
+msgid ""
+"The following multi-node shape shows how ``minTaskMember`` applies to the"
+" Pods inside each role's PodSet. The YAML after the diagram keeps the "
+"same multi-node shape and requires all Pods from the two Prefill PodSets "
+"and at least one Decode PodSet worth of Pods before the PodGroup is "
+"considered ready for task-level admission."
+msgstr ""
+"以下多节点形态说明 ``minTaskMember`` 如何作用于每个角色 PodSet 内的 Pod。"
+"图后 YAML 保持同一多节点形态：任务级准入要求两个 Prefill PodSet 的全部 Pod，以及至少一个 Decode PodSet 的 Pod。"
+
+#: ../../source/designs/aibrix-stormservice.rst:604
+msgid ""
+"``minTaskMember`` counts Pods, not logical role replicas. If a role uses "
+"``podGroupSize`` greater than 1 for multi-pod replicas, translate replica"
+" minimums into Pod counts yourself. For example, if each Prefill replica "
+"has two Pods and the desired minimum is two Prefill replicas, set "
+"``minTaskMember.prefill`` to ``4``."
+msgstr ""
+"``minTaskMember`` 统计的是 Pod 数，不是逻辑角色副本数。若角色使用大于 1 的 ``podGroupSize`` 做多 Pod "
+"副本，需自行将副本最小值换算为 Pod 数。例如每个 Prefill 副本有两个 Pod，最少需要两个 Prefill 副本时，将 ``minTaskMember.prefill`` "
+"设为 ``4`` 。"
+
+#: ../../source/designs/aibrix-stormservice.rst:611
+msgid "RoleSet-level and per-role scheduling"
+msgstr "RoleSet 级与按角色调度"
+
+#: ../../source/designs/aibrix-stormservice.rst:613
+msgid ""
+"Set ``spec.template.spec.schedulingStrategy`` on StormService when the "
+"whole generated RoleSet should share one PodGroup. This is the common "
+"setting for PD-disaggregated serving, because Prefill and Decode Pods are"
+" admitted as one service replica."
+msgstr ""
+"当整个生成的 RoleSet 应共享一个 PodGroup 时，在 StormService 上设置 ``spec.template.spec.schedulingStrategy`` "
+"。这是 PD 分离服务的常见设置，因为 Prefill 和 Decode Pod 作为同一服务副本被准入。"
+
+#: ../../source/designs/aibrix-stormservice.rst:618
+msgid ""
+"Set ``spec.template.spec.roles[].schedulingStrategy`` only when a "
+"specific role needs its own scheduling strategy. For roles that use "
+"``podGroupSize > 1``, the controller creates PodSet resources for the "
+"role, and a role-level scheduling strategy applies to those PodSets "
+"instead of the whole RoleSet. Do not set "
+"``spec.template.spec.schedulingStrategy`` together with any "
+"``spec.template.spec.roles[].schedulingStrategy`` entry; RoleSet-level "
+"and role-level scheduling strategies are mutually exclusive."
+msgstr ""
+"仅当特定角色需要自己的调度策略时，设置 ``spec.template.spec.roles[].schedulingStrategy`` 。对使用 "
+"``podGroupSize > 1`` 的角色，控制器会为该角色创建 PodSet 资源，角色级调度策略作用于这些 PodSet 而非整个 RoleSet。不要同时设置 "
+"``spec.template.spec.schedulingStrategy`` 与任何 ``spec.template.spec.roles[].schedulingStrategy`` "
+"；RoleSet 级与角色级调度策略互斥。"
+
+#: ../../source/designs/aibrix-stormservice.rst:627
+msgid "Scheduler and limitations"
+msgstr "调度器与限制"
+
+#: ../../source/designs/aibrix-stormservice.rst:629
+msgid ""
+"Set each Pod template's ``schedulerName`` to the scheduler that should "
+"consume the selected PodGroup. The Volcano examples set ``schedulerName: "
+"volcano`` explicitly so the scheduling intent is visible in the "
+"StormService manifest. AIBrix also defaults generated Pods and PodSet "
+"Pods to the Volcano scheduler when it attaches them to a Volcano "
+"PodGroup, but keeping the field explicit makes the configuration easier "
+"to review and debug. For Godel or Coscheduling, use the scheduler name "
+"installed in your cluster."
+msgstr ""
+"将每个 Pod 模板的 ``schedulerName`` 设为应消费所选 PodGroup 的调度器。Volcano 示例显式设置 ``schedulerName: "
+"volcano`` ，以便在 StormService 清单中看到调度意图。当把生成的 Pod 和 PodSet Pod 挂到 Volcano "
+"PodGroup 时，AIBrix 也会默认使用 Volcano 调度器，但显式写出该字段更便于审查和调试。对 Godel 或 Coscheduling，使用集群中已安装的调度器名称。"
+
+#: ../../source/designs/aibrix-stormservice.rst:637
+msgid ""
+"``minTaskMember`` is not the same as Volcano ``subGroupPolicy``. AIBrix "
+"exposes Volcano ``minTaskMember`` as a simple per-task Pod-count minimum;"
+" it does not expose ``subGroupPolicy`` through the StormService API. If a"
+" workload needs subgroup semantics beyond per-role Pod counts, that "
+"behavior is outside the current StormService API."
+msgstr ""
+"``minTaskMember`` 与 Volcano ``subGroupPolicy`` 不同。AIBrix 将 Volcano ``minTaskMember`` "
+"暴露为简单的每任务 Pod 数下限；不通过 StormService API 暴露 ``subGroupPolicy`` 。若工作负载需要超出按角色 "
+"Pod 计数的子组语义，该行为不在当前 StormService API 范围内。"
+
+#: ../../source/designs/aibrix-stormservice.rst:643
+msgid ""
+"When using ``minTaskMember``, keep ``minMember`` greater than or equal to"
+" the sum of all ``minTaskMember`` values. If ``minMember`` is lower than "
+"that sum, the StormService and RoleSet webhooks reject the object as "
+"invalid because Volcano would otherwise ignore ``minTaskMember``. If "
+"validation is bypassed, AIBrix reports the same issue through the "
+"``GangSchedulingError`` condition."
+msgstr ""
+"使用 ``minTaskMember`` 时，``minMember`` 必须大于或等于所有 ``minTaskMember`` 值之和。若 ``minMember`` "
+"小于该和，StormService 和 RoleSet webhook 会拒绝该对象，因为否则 Volcano 会忽略 ``minTaskMember`` "
+"。若绕过校验，AIBrix 会通过 ``GangSchedulingError`` 条件报告同一问题。"
+
+#: ../../source/designs/aibrix-stormservice.rst:651
+msgid "Historical-Node Replacement Scheduling"
+msgstr "历史节点替换调度"
+
+#: ../../source/designs/aibrix-stormservice.rst:653
+msgid ""
+"RoleSet historical-node scheduling lets replacement Pods prefer nodes "
+"that previously ran the same role workload. It is useful for inference "
+"workloads where node locality can preserve useful warm state, such as "
+"downloaded model files, runtime caches, or KV cache artifacts."
+msgstr ""
+"RoleSet 历史节点调度让替换 Pod 优先选择曾运行同一角色负载的节点。"
+"适用于节点局部性可保留有用热状态的推理负载，例如已下载的模型文件、运行时缓存或 KVCache 产物。"
+
+#: ../../source/designs/aibrix-stormservice.rst:658
+msgid ""
+"Enable the policy on a role with "
+"``spec.roles[].updateStrategy.replacementScheduling.historicalNode``. The"
+" same field can be used through "
+"``StormService.spec.template.spec.roles[]`` because StormService "
+"templates carry RoleSet role specs."
+msgstr ""
+"通过 ``spec.roles[].updateStrategy.replacementScheduling.historicalNode`` 在角色上启用该策略。"
+"同一字段也可通过 ``StormService.spec.template.spec.roles[]`` 使用，因为 StormService 模板携带 RoleSet 角色规格。"
+
+#: ../../source/designs/aibrix-stormservice.rst:673
+msgid ""
+"``mode: Preferred`` injects a preferred ``kubernetes.io/hostname`` node "
+"affinity into replacement Pods. The preference is soft: Kubernetes can "
+"still place the Pod on another node when the historical node is "
+"unavailable or lacks capacity."
+msgstr ""
+"``mode: Preferred`` 向替换 Pod 注入首选 ``kubernetes.io/hostname`` 节点亲和性。"
+"该偏好是软约束：历史节点不可用或容量不足时，Kubernetes 仍可将 Pod 放到其他节点。"
+
+#: ../../source/designs/aibrix-stormservice.rst:678
+msgid ""
+"The controller records historical node bindings in the RoleSet annotation"
+" ``orchestration.aibrix.ai/historical-node-bindings``. Because the "
+"history is persisted on the RoleSet, replacement scheduling can continue "
+"to use remembered nodes after the controller restarts."
+msgstr ""
+"控制器将历史节点绑定记录在 RoleSet 注解 ``orchestration.aibrix.ai/historical-node-bindings`` 中。"
+"历史持久化在 RoleSet 上，因此控制器重启后替换调度仍可使用记住的节点。"
+
+#: ../../source/designs/aibrix-stormservice.rst:683
+msgid ""
+"Stateful and stateless roles use different history scopes because they "
+"have different identity semantics:"
+msgstr "有状态与无状态角色使用不同的历史作用域，因为身份语义不同："
+
+#: ../../source/designs/aibrix-stormservice.rst:690
+msgid "Role type"
+msgstr "角色类型"
+
+#: ../../source/designs/aibrix-stormservice.rst:691
+msgid "History scope"
+msgstr "历史作用域"
+
+#: ../../source/designs/aibrix-stormservice.rst:692
+msgid "Reason"
+msgstr "原因"
+
+#: ../../source/designs/aibrix-stormservice.rst:693
+msgid "Stateful"
+msgstr "有状态"
+
+#: ../../source/designs/aibrix-stormservice.rst:694
+msgid "Replica slot, for example ``worker/0 -> node-a``"
+msgstr "副本槽位，例如 ``worker/0 -> node-a``"
+
+#: ../../source/designs/aibrix-stormservice.rst:695
+msgid ""
+"A stateful slot remains the same logical replica after its Pod is deleted"
+" and recreated, so the controller can safely bind history to the slot."
+msgstr "有状态槽位在 Pod 删除并重建后仍是同一逻辑副本，因此控制器可安全将历史绑定到该槽位。"
+
+#: ../../source/designs/aibrix-stormservice.rst:698
+msgid "Stateless"
+msgstr "无状态"
+
+#: ../../source/designs/aibrix-stormservice.rst:699
+msgid "Role-level recent-node list, for example ``worker -> [node-a, node-b]``"
+msgstr "角色级近期节点列表，例如 ``worker -> [node-a, node-b]``"
+
+#: ../../source/designs/aibrix-stormservice.rst:700
+msgid ""
+"Stateless Pods do not have stable per-replica identity, so a replacement "
+"Pod cannot safely inherit one exact old Pod's slot binding."
+msgstr "无状态 Pod 没有稳定的每副本身份，因此替换 Pod 不能安全继承某个旧 Pod 的槽位绑定。"
+
+#: ../../source/designs/aibrix-stormservice.rst:703
+msgid ""
+"For stateless roles, the controller injects the remembered node list as "
+"one preferred affinity term. The Kubernetes scheduler chooses among those"
+" nodes with normal scheduling scoring; the RoleSet controller does not "
+"choose one node from the list, and multiple replacement Pods can still "
+"land on the same historical node when that node is the scheduler's best "
+"fit."
+msgstr ""
+"对无状态角色，控制器将记住的节点列表注入为一个首选亲和性项。"
+"Kubernetes 调度器按正常调度打分在这些节点中选择；RoleSet 控制器不会从列表中指定单个节点。"
+"当某历史节点是调度器的最佳匹配时，多个替换 Pod 仍可能落到同一节点。"
+
+#: ../../source/designs/aibrix-stormservice.rst:709
+msgid ""
+"The policy applies when the RoleSet controller creates replacement Pods "
+"during recreate-style rollouts. For stateful roles, empty-slot creation "
+"can also reuse an existing slot binding. Stateless scale-up is not "
+"replacement and does not use historical-node affinity because the new Pod"
+" adds capacity instead of replacing a remembered logical replica."
+msgstr ""
+"该策略在 RoleSet 控制器于重建式滚动中创建替换 Pod 时生效。"
+"对有状态角色，空槽创建也可复用已有槽位绑定。"
+"无状态扩容不是替换，不使用历史节点亲和性，因为新 Pod 是增加容量，而不是替换被记住的逻辑副本。"
+
+#: ../../source/designs/aibrix-stormservice.rst:715
+msgid ""
+"Historical-node scheduling only adds preferred node affinity. The "
+"controller skips injection when the Pod template already defines required"
+" node affinity, when the RoleSet has a required topology policy using "
+"``kubernetes.io/hostname``, or when the role uses ``podGroupSize`` "
+"greater than 1. When injection is skipped, the controller logs the "
+"reason."
+msgstr ""
+"历史节点调度只添加首选节点亲和性。以下情况控制器跳过注入："
+"Pod 模板已定义 required 节点亲和性、RoleSet 有使用 ``kubernetes.io/hostname`` 的 required 拓扑策略、"
+"或角色的 ``podGroupSize`` 大于 1。跳过时控制器会记录原因。"
+
+#: ../../source/designs/aibrix-stormservice.rst:721
+msgid ""
+"See ``samples/orchestration/stormservice-historical-node-"
+"scheduling.yaml`` for stateful and stateless examples with inline "
+"comments."
+msgstr ""
+"有状态与无状态示例（含行内注释）见 ``samples/orchestration/stormservice-historical-node-scheduling.yaml`` "
+"。"
+
+#: ../../source/designs/aibrix-stormservice.rst:727
+msgid "Update Strategy"
+msgstr "更新策略"
+
+#: ../../source/designs/aibrix-stormservice.rst:729
+msgid ""
+"StormService supports multiple strategies to update the managed RoleSets."
+" These strategies are designed to handle different operational modes and "
+"ensure service availability during the update process. Below is a "
+"detailed explanation of each strategy:"
+msgstr ""
+"StormService 支持多种策略来更新所管理的 RoleSet。"
+"这些策略面向不同运行模式，并在更新过程中保证服务可用性。下文详细说明每种策略："
+
+#: ../../source/designs/aibrix-stormservice.rst:732
+msgid "Rolling Update"
+msgstr "滚动更新"
+
+#: ../../source/designs/aibrix-stormservice.rst:734
+msgid ""
+"**Designed for replica mode**, the rolling update strategy gradually "
+"replaces old RoleSets with new ones. This approach ensures that the "
+"service remains available throughout the update process by respecting the"
+" `MaxUnavailable` and `MaxSurge` settings."
+msgstr ""
+"**面向 replica mode** ，滚动更新策略逐步用新 RoleSet 替换旧 RoleSet。通过遵守 `MaxUnavailable` "
+"和 `MaxSurge` 设置，保证更新过程中服务可用。"
+
+#: ../../source/designs/aibrix-stormservice.rst:736
+#: ../../source/designs/aibrix-stormservice.rst:775
+msgid "**How it Works**"
+msgstr "**工作方式**"
+
+#: ../../source/designs/aibrix-stormservice.rst:738
+msgid ""
+"**Initial State**: At the start, all RoleSets are running the old "
+"revision."
+msgstr "**初始状态** ：开始时所有 RoleSet 运行旧 revision。"
+
+#: ../../source/designs/aibrix-stormservice.rst:739
+msgid ""
+"**Create New RoleSets**: The controller creates new RoleSets with the "
+"updated revision, ensuring that the total number of RoleSets (old + new) "
+"does not exceed the sum of the desired replicas and `MaxSurge`."
+msgstr ""
+"**创建新 RoleSet** ：控制器用更新后的 revision 创建新 RoleSet，确保 RoleSet 总数（旧 + 新）不超过期望副本数与 "
+"`MaxSurge` 之和。"
+
+#: ../../source/designs/aibrix-stormservice.rst:740
+msgid ""
+"**Delete Old RoleSets**: Once the new RoleSets are ready, the controller "
+"starts deleting old RoleSets. It ensures that the number of unavailable "
+"RoleSets does not exceed `MaxUnavailable` at any time."
+msgstr ""
+"**删除旧 RoleSet** ：新 RoleSet 就绪后，控制器开始删除旧 RoleSet。任何时刻不可用 RoleSet 数都不超过 `MaxUnavailable` "
+"。"
+
+#: ../../source/designs/aibrix-stormservice.rst:741
+msgid ""
+"**Repeat**: Steps 2 and 3 are repeated until all old RoleSets are "
+"replaced by new ones."
+msgstr "**重复** ：重复步骤 2 和 3，直到所有旧 RoleSet 被新 RoleSet 替换。"
+
+#: ../../source/designs/aibrix-stormservice.rst:743
+msgid "**Configuration Parameters**"
+msgstr "**配置参数**"
+
+#: ../../source/designs/aibrix-stormservice.rst:745
+msgid ""
+"**MaxUnavailable**: This parameter defines the maximum number of RoleSets"
+" that can be unavailable during the update process. It ensures that a "
+"minimum number of RoleSets are always available to serve requests."
+msgstr "**MaxUnavailable** ：更新过程中最多允许多少 RoleSet 不可用。保证始终有最少数量的 RoleSet 可服务请求。"
+
+#: ../../source/designs/aibrix-stormservice.rst:746
+msgid ""
+"**MaxSurge**: This parameter defines the maximum number of RoleSets that "
+"can be created above the desired number of replicas during the update "
+"process. It allows the controller to create additional RoleSets "
+"temporarily to speed up the update."
+msgstr "**MaxSurge** ：更新过程中允许超出期望副本数额外创建的 RoleSet 上限。控制器可临时创建额外 RoleSet 以加快更新。"
+
+#: ../../source/designs/aibrix-stormservice.rst:748
+msgid "**Example**"
+msgstr "**示例**"
+
+#: ../../source/designs/aibrix-stormservice.rst:750
+msgid ""
+"Suppose we have a `StormService` with 3 replicas, `MaxUnavailable` set to"
+" 1, and `MaxSurge` set to 1. The rolling update process might look like "
+"this:"
+msgstr ""
+"假设 `StormService` 有 3 个副本，`MaxUnavailable` 为 1，`MaxSurge` 为 1。滚动更新过程可能如下："
+
+#: ../../source/designs/aibrix-stormservice.rst:768
+msgid "InPlace Update"
+msgstr "原地更新"
+
+#: ../../source/designs/aibrix-stormservice.rst:770
+msgid ""
+"**Designed for pooled mode**, the StormService ``InPlaceUpdate`` strategy"
+" updates the existing RoleSets instead of deleting and recreating them. "
+"This is an outer update layer: preserving a RoleSet does not, by itself, "
+"preserve the Pods owned by that RoleSet."
+msgstr ""
+"**面向 pooled mode** ，StormService ``InPlaceUpdate`` 策略更新现有 RoleSet，而不是删除后重建。这是外层更新：保留 "
+"RoleSet 本身并不等于保留该 RoleSet 拥有的 Pod。"
+
+#: ../../source/designs/aibrix-stormservice.rst:777
+msgid ""
+"The StormService controller identifies RoleSets that do not use the "
+"latest StormService revision."
+msgstr "StormService 控制器识别未使用最新 StormService revision 的 RoleSet。"
+
+#: ../../source/designs/aibrix-stormservice.rst:779
+msgid ""
+"With ``StormService.spec.updateStrategy.type: InPlaceUpdate``, the "
+"controller updates those RoleSet objects in place."
+msgstr ""
+"当 ``StormService.spec.updateStrategy.type: InPlaceUpdate`` 时，控制器原地更新这些 RoleSet 对象。"
+
+#: ../../source/designs/aibrix-stormservice.rst:781
+msgid ""
+"Each RoleSet then updates its roles. The role-level strategy determines "
+"whether Pods are patched or replaced."
+msgstr "随后每个 RoleSet 更新其角色。角色级策略决定对 Pod 做 patch 还是替换。"
+
+#: ../../source/designs/aibrix-stormservice.rst:784
+msgid "**Advantages**"
+msgstr "**优点**"
+
+#: ../../source/designs/aibrix-stormservice.rst:786
+msgid ""
+"**Stable RoleSets**: No replacement RoleSets are created during the "
+"update."
+msgstr "**RoleSet 稳定** ：更新期间不创建替换 RoleSet。"
+
+#: ../../source/designs/aibrix-stormservice.rst:787
+msgid ""
+"**Fast propagation**: The latest template is applied directly to the "
+"existing RoleSets."
+msgstr "**传播快** ：最新模板直接应用到现有 RoleSet。"
+
+#: ../../source/designs/aibrix-stormservice.rst:789
+msgid ""
+"**No extra RoleSet capacity**: The outer update does not require surge "
+"RoleSets."
+msgstr "**无需额外 RoleSet 容量** ：外层更新不需要 surge RoleSet。"
+
+#: ../../source/designs/aibrix-stormservice.rst:802
+msgid "StormService and role update strategies"
+msgstr "StormService 与角色更新策略"
+
+#: ../../source/designs/aibrix-stormservice.rst:804
+msgid ""
+"StormService and role in-place strategies operate at different layers. To"
+" update a Pod image through a StormService while preserving the Pod name "
+"and UID, configure both layers."
+msgstr ""
+"StormService 与角色原地策略作用于不同层。"
+"要通过 StormService 更新 Pod 镜像并保留 Pod 名称和 UID，需同时配置这两层。"
+
+#: ../../source/designs/aibrix-stormservice.rst:808
+msgid "Update strategy comparison"
+msgstr "更新策略对比"
+
+#: ../../source/designs/aibrix-stormservice.rst:812
+msgid "Strategy"
+msgstr "策略"
+
+#: ../../source/designs/aibrix-stormservice.rst:813
+msgid "Target"
+msgstr "作用对象"
+
+#: ../../source/designs/aibrix-stormservice.rst:814
+msgid "Identity behavior"
+msgstr "身份行为"
+
+#: ../../source/designs/aibrix-stormservice.rst:815
+msgid "Configuration path"
+msgstr "配置路径"
+
+#: ../../source/designs/aibrix-stormservice.rst:816
+msgid "StormService ``InPlaceUpdate``"
+msgstr "StormService ``InPlaceUpdate``"
+
+#: ../../source/designs/aibrix-stormservice.rst:817
+msgid "RoleSet"
+msgstr "RoleSet"
+
+#: ../../source/designs/aibrix-stormservice.rst:818
+msgid "Preserves RoleSet identity; does not guarantee Pod identity"
+msgstr "保留 RoleSet 身份；不保证 Pod 身份"
+
+#: ../../source/designs/aibrix-stormservice.rst:819
+msgid "``StormService.spec.updateStrategy.type``"
+msgstr "``StormService.spec.updateStrategy.type``"
+
+#: ../../source/designs/aibrix-stormservice.rst:820
+msgid "Role ``InPlaceIfPossible``"
+msgstr "角色 ``InPlaceIfPossible``"
+
+#: ../../source/designs/aibrix-stormservice.rst:821
+#: ../../source/designs/aibrix-stormservice.rst:826
+msgid "Pod"
+msgstr "Pod"
+
+#: ../../source/designs/aibrix-stormservice.rst:822
+msgid "Preserves Pod name and UID for eligible image-only updates"
+msgstr "对符合条件的仅镜像更新保留 Pod 名称和 UID"
+
+#: ../../source/designs/aibrix-stormservice.rst:823
+#: ../../source/designs/aibrix-stormservice.rst:828
+msgid ""
+"``RoleSet.spec.roles[].updateStrategy.type`` or "
+"``StormService.spec.template.spec.roles[].updateStrategy.type``"
+msgstr ""
+"``RoleSet.spec.roles[].updateStrategy.type`` 或 "
+"``StormService.spec.template.spec.roles[].updateStrategy.type``"
+
+#: ../../source/designs/aibrix-stormservice.rst:825
+msgid "Role ``Recreate``"
+msgstr "角色 ``Recreate``"
+
+#: ../../source/designs/aibrix-stormservice.rst:827
+msgid "Replaces Pods during a role update; this is the default"
+msgstr "角色更新时替换 Pod；这是默认行为"
+
+#: ../../source/designs/aibrix-stormservice.rst:831
+msgid ""
+"For a StormService-managed rollout, configure the outer strategy on the "
+"StormService and the Pod strategy on each role:"
+msgstr "对 StormService 管理的滚动，在 StormService 上配置外层策略，在每个角色上配置 Pod 策略："
+
+#: ../../source/designs/aibrix-stormservice.rst:846
+msgid ""
+"When managing a RoleSet directly, only the role-level strategy is "
+"required:"
+msgstr "直接管理 RoleSet 时，只需角色级策略："
+
+#: ../../source/designs/aibrix-stormservice.rst:856
+msgid ""
+"See the complete `StormService sample`_ and `RoleSet sample`_ in the "
+"AIBrix repository."
+msgstr "完整示例见 AIBrix 仓库中的 `StormService sample`_ 和 `RoleSet sample`_ 。"
+
+#: ../../source/designs/aibrix-stormservice.rst:863
+msgid "Pod in-place update eligibility"
+msgstr "Pod 原地更新适用条件"
+
+#: ../../source/designs/aibrix-stormservice.rst:865
+msgid ""
+"``InPlaceIfPossible`` updates existing Pods only when container images "
+"are the only fields changed in the Pod template. The controller patches "
+"the requested images, waits for the runtime container image IDs and "
+"readiness to reflect the new images, and then completes the role "
+"revision. ``maxUnavailable`` limits how many role Pods can be unavailable"
+" while the images restart; ``maxSurge`` still controls any replacement "
+"Pods required by a fallback."
+msgstr ""
+"``InPlaceIfPossible`` 仅在 Pod 模板中只有容器镜像字段变更时更新现有 Pod。"
+"控制器 patch 请求的镜像，等待运行时容器镜像 ID 与就绪状态反映新镜像，然后完成角色 revision。"
+"镜像重启期间 ``maxUnavailable`` 限制不可用的角色 Pod 数量；``maxSurge`` 仍控制回退时所需的替换 Pod。"
+
+#: ../../source/designs/aibrix-stormservice.rst:872
+msgid ""
+"Changes to commands, arguments, environment variables, resources, "
+"volumes, or other Pod template fields are not eligible. The controller "
+"emits a normal ``InPlaceFallback`` event and recreates the affected Pods "
+"instead of blocking the rollout. Roles with ``podGroupSize > 1`` are "
+"managed through PodSet and also fall back to recreation. Omitting the "
+"role strategy selects the default ``Recreate`` behavior."
+msgstr ""
+"变更 command、参数、环境变量、资源、卷或其他 Pod 模板字段则不适用。"
+"控制器发出普通 ``InPlaceFallback`` 事件并重建受影响 Pod，而不是阻塞滚动。"
+"``podGroupSize > 1`` 的角色通过 PodSet 管理，同样回退到重建。"
+"省略角色策略则选择默认 ``Recreate`` 行为。"
+
+#: ../../source/designs/aibrix-stormservice.rst:880
+msgid "Trigger and observe an image update"
+msgstr "触发并观察镜像更新"
+
+#: ../../source/designs/aibrix-stormservice.rst:882
+msgid "Apply the StormService sample and record the original Pod UID:"
+msgstr "应用 StormService 示例并记录原始 Pod UID："
+
+#: ../../source/designs/aibrix-stormservice.rst:891
+msgid "Patch only the image field to trigger an eligible in-place update:"
+msgstr "仅 patch 镜像字段以触发符合条件的原地更新："
+
+#: ../../source/designs/aibrix-stormservice.rst:900
+msgid ""
+"Watch the image and compare the UID with the value recorded before the "
+"update:"
+msgstr "观察镜像，并将 UID 与更新前记录的值比较："
+
+#: ../../source/designs/aibrix-stormservice.rst:907
+msgid ""
+"While an update is in progress, the controller can set the Pod readiness "
+"condition ``stormservice.orchestration.aibrix.ai/in-place-update-ready`` "
+"and the annotation ``stormservice.orchestration.aibrix.ai/in-place-"
+"update-pending-reason``. Inspect them with ``kubectl describe pod <pod-"
+"name>``. If the controller falls back to recreation, inspect the reason "
+"on the RoleSet event:"
+msgstr ""
+"更新进行中时，控制器可设置 Pod 就绪条件 ``stormservice.orchestration.aibrix.ai/in-place-update-ready`` "
+"和注解 ``stormservice.orchestration.aibrix.ai/in-place-update-pending-reason`` "
+"。用 ``kubectl describe pod <pod-name>`` 查看。若控制器回退到重建，在 RoleSet 事件中查看原因："
+
+#: ../../source/designs/aibrix-stormservice.rst:920
+msgid "Rolling Strategy"
+msgstr "滚动策略"
+
+#: ../../source/designs/aibrix-stormservice.rst:922
+msgid ""
+"StormService supports multiple rolling strategies to update roles within "
+"RoleSets. These strategies offer different ways to manage updates while "
+"maintaining service stability."
+msgstr ""
+"StormService 支持多种滚动策略来更新 RoleSet 内的角色。"
+"这些策略以不同方式管理更新，同时保持服务稳定。"
+
+#: ../../source/designs/aibrix-stormservice.rst:924
+msgid "**Sequential**: Roles are updated one at a time, in sequence."
+msgstr "**Sequential** ：按顺序一次更新一个角色。"
+
+#: ../../source/designs/aibrix-stormservice.rst:926
+msgid "**Parallel**: All roles are updated simultaneously."
+msgstr "**Parallel** ：所有角色同时更新。"
+
+#: ../../source/designs/aibrix-stormservice.rst:928
+msgid ""
+"**Interleaved**: Roles are updated in an interleaved manner.  This "
+"strategy partitions the update process for every Role into distinct "
+"steps. Each update step is coordinated across all roles to progress "
+"synchronously. In each operational cycle, the controller determines a "
+"global progress state based on the least-advanced role. It instructs "
+"roles that have not reached the current step to proceed with their "
+"updates, while skipping those that have."
+msgstr ""
+"**Interleaved** ：以交错方式更新角色。该策略将每个角色的更新过程划分为若干步骤。每个更新步骤在所有角色间协同，同步推进。每个操作周期中，控制器根据进度最慢的角色确定全局进度状态，指示尚未到达当前步骤的角色继续更新，并跳过已经到达的角色。"
+
+#: ../../source/designs/aibrix-stormservice.rst:931
+msgid "Stateful vs Stateless"
+msgstr "有状态与无状态"
+
+#: ../../source/designs/aibrix-stormservice.rst:933
+msgid ""
+"This is determined by the `Stateful` field in both StormService and "
+"RoleSet specs. It defines whether the RoleSet uses a `StatefulRoleSyncer`"
+" or a `StatelessRoleSyncer`, which leads to different behaviors."
+msgstr ""
+"由 StormService 和 RoleSet spec 中的 `Stateful` 字段决定。它定义 RoleSet 使用 `StatefulRoleSyncer` "
+"还是 `StatelessRoleSyncer` ，从而产生不同行为。"
+
+#: ../../source/designs/aibrix-stormservice.rst:935
+msgid ""
+"**Stateful**: `StatefulRoleSyncer` treats each Pod as a unique, non-"
+"interchangeable entity, assigning a stable and unique index to each Pod. "
+"There are exactly *n* slots for *n* replicas, and updates are performed "
+"slot-by-slot in a controlled manner."
+msgstr ""
+"**有状态** ：`StatefulRoleSyncer` 将每个 Pod 视为唯一、不可互换的实体，为每个 Pod 分配稳定唯一的索引。*n* "
+"个副本对应恰好 *n* 个槽位，更新按槽位受控进行。"
+
+#: ../../source/designs/aibrix-stormservice.rst:937
+msgid ""
+"**Stateless**: `StatelessRoleSyncer` treats all Pods as identical "
+"replicas. Any Pod can be replaced without affecting the overall "
+"application. Pods are managed as a collective pool, and scaling actions "
+"simply add or randomly remove Pods. Updates are performed at the pool "
+"level rather than targeting specific Pods."
+msgstr ""
+"**无状态** ：`StatelessRoleSyncer` 将所有 Pod 视为相同副本。替换任一 Pod 不影响整体应用。Pod 作为集合池管理，扩缩只是增加或随机移除 "
+"Pod。更新在池级别进行，而不是针对特定 Pod。"
+
+#: ../../source/designs/aibrix-stormservice.rst:940
+msgid "Autoscaling"
+msgstr "自动扩缩容"
+
+#: ../../source/designs/aibrix-stormservice.rst:942
+msgid ""
+"**Replica Mode**: StormService enables the `/scale` subresource on its "
+"CRD. The scale unit is `RoleSet`. It involves extending the StormService "
+"status with a dynamic label selector and implementing the controller "
+"logic to ensure this selector is correctly populated, thereby allowing "
+"external autoscalers to manage StormService replicas effectively."
+msgstr ""
+"**Replica Mode** ：StormService 在其 CRD 上启用 `/scale` 子资源。扩缩单元是 `RoleSet` 。需要在 "
+"StormService status 中扩展动态标签选择器，并由控制器逻辑正确填充该选择器，以便外部自动扩缩容器有效管理 StormService "
+"副本。"
+
+#: ../../source/designs/aibrix-stormservice.rst:943
+msgid ""
+"**Pooled Mode**: In pooled mode, each role in the RoleSet is supposed to "
+"be independently scalable."
+msgstr "**Pooled Mode** ：在 pooled mode 中，RoleSet 内每个角色应可独立扩缩。"
+
+#: ../../source/designs/aibrix-stormservice.rst:946
+msgid ""
+"Pooled mode autoscaling (independent scaling of each role) is not yet "
+"supported. See Issue `#1260 <https://github.com/vllm-"
+"project/aibrix/issues/1260>`_ for more details. As an alternative, you "
+"can adjust replicas of each role in the RoleSet spec."
+msgstr ""
+"Pooled mode 自动扩缩容（各角色独立扩缩）尚未支持。详见 Issue `#1260 <https://github.com/vllm-project/aibrix/issues/1260>`_ "
+"。作为替代，可在 RoleSet spec 中调整各角色的 replicas。"
+
+#: ../../source/designs/aibrix-stormservice.rst:951
+msgid "ControllerRevision"
+msgstr "ControllerRevision"
+
+#: ../../source/designs/aibrix-stormservice.rst:953
+msgid ""
+"In the Kubernetes ecosystem, `ControllerRevision` is a crucial resource "
+"object used to record the version information of controllers (such as "
+"Deployments, StatefulSets, etc.). In the AIBrix project, the "
+"`ControllerRevision` mechanism is employed to track the version changes "
+"of `StormService`, providing strong support for version management, "
+"rollback operations, and system state traceability."
+msgstr ""
+"在 Kubernetes 生态中，`ControllerRevision` 是记录控制器（如 Deployment、StatefulSet 等）版本信息的关键资源。"
+"AIBrix 使用 `ControllerRevision` 机制跟踪 `StormService` 的版本变更，为版本管理、回滚和系统状态追溯提供支持。"
+
+#: ../../source/designs/aibrix-stormservice.rst:955
+msgid ""
+"**Version Recording**: `ControllerRevision` stores the configuration "
+"information of a specific version of `StormService`, primarily the `spec`"
+" section. Whenever the configuration of `StormService` changes, the "
+"system creates a new `ControllerRevision` object and stores the changed "
+"configuration in a serialized form within this object. In this way, the "
+"system can clearly record the configuration states of `StormService` at "
+"different time points."
+msgstr ""
+"**版本记录** ：`ControllerRevision` 存储特定版本 `StormService` 的配置信息，主要是 `spec` 部分。每当 "
+"`StormService` 配置变更，系统会创建新的 `ControllerRevision` 对象，并以序列化形式保存变更后的配置。这样系统可以清晰记录 "
+"`StormService` 在不同时间点的配置状态。"
+
+#: ../../source/designs/aibrix-stormservice.rst:956
+msgid ""
+"**Version Rollback**: When it is necessary to restore `StormService` to a"
+" previous configuration state, a rollback operation can be performed "
+"based on the historical configuration information saved in "
+"`ControllerRevision`. By specifying the version number of the target "
+"`ControllerRevision`, the system can restore the configuration of "
+"`StormService` to the state corresponding to that version."
+msgstr ""
+"**版本回滚** ：需要将 `StormService` 恢复到先前配置状态时，可基于 `ControllerRevision` 中保存的历史配置执行回滚。指定目标 "
+"`ControllerRevision` 的版本号后，系统可将 `StormService` 配置恢复到该版本对应状态。"
+
+#: ../../source/designs/aibrix-stormservice.rst:957
+msgid ""
+"**Historical Traceability**: `ControllerRevision` provides system "
+"operation and development personnel with the ability to trace historical "
+"configurations. By viewing different versions of `ControllerRevision` "
+"objects, one can understand the change history of the `StormService` "
+"configuration, which is helpful for issue troubleshooting and system "
+"auditing."
+msgstr ""
+"**历史追溯** ：`ControllerRevision` 为运维和开发人员提供追溯历史配置的能力。查看不同版本的 `ControllerRevision` "
+"对象，可了解 `StormService` 配置变更历史，有助于问题排查和系统审计。"
+
+#: ../../source/designs/aibrix-stormservice.rst:968
+msgid ":doc:`../features/pd-disaggregation`"
+msgstr ":doc:`../features/pd-disaggregation`"
+
+#: ../../source/designs/aibrix-stormservice.rst:969
+msgid "Prefill/decode disaggregation built on StormService."
+msgstr "基于 StormService 的 Prefill/Decode 分离。"

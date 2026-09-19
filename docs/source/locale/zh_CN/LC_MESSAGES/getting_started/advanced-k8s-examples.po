@@ -1,0 +1,91 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 19:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/getting_started/advanced-k8s-examples.rst:5
+msgid "Advanced Kubernetes Examples"
+msgstr "高级 Kubernetes 示例"
+
+#: ../../source/getting_started/advanced-k8s-examples.rst:8
+msgid "Introduction"
+msgstr "简介"
+
+#: ../../source/getting_started/advanced-k8s-examples.rst:9
+msgid ""
+"This documentation demonstrates advanced deployment patterns with AIBrix "
+"on Kubernetes, featuring persistent model caching and optimized resource "
+"configuration."
+msgstr ""
+"本文展示在 Kubernetes 上使用 AIBrix 的高级部署模式，包括持久化模型缓存和优化的资源配置。"
+
+#: ../../source/getting_started/advanced-k8s-examples.rst:12
+msgid "Persistent Volume Claim Optimization"
+msgstr "PersistentVolumeClaim 优化"
+
+#: ../../source/getting_started/advanced-k8s-examples.rst:13
+msgid ""
+"The following example shows how to: - Create isolated namespace with "
+"security policies - Deploy vLLM model with PVC for HuggingFace cache - "
+"Configure liveness/readiness probes - Set up monitoring annotations"
+msgstr ""
+"以下示例展示如何： - 创建带安全策略的隔离命名空间 - 使用 PVC 部署带 HuggingFace 缓存的 "
+"vLLM 模型 - 配置存活/就绪探针 - 设置监控注解"
+
+#: ../../source/getting_started/advanced-k8s-examples.rst:164
+msgid "Key Features"
+msgstr "主要特性"
+
+#: ../../source/getting_started/advanced-k8s-examples.rst:165
+msgid ""
+"**PVC Caching** - 30Gi persistent storage for HuggingFace models at "
+"`/root/.cache/huggingface`"
+msgstr ""
+"**PVC 缓存** - 在 `/root/.cache/huggingface` 为 HuggingFace 模型提供 30Gi 持久存储"
+
+#: ../../source/getting_started/advanced-k8s-examples.rst:166
+msgid "**Resource Limits** - Explicit GPU/CPU/Memory allocations"
+msgstr "**资源限制** - 显式分配 GPU/CPU/内存"
+
+#: ../../source/getting_started/advanced-k8s-examples.rst:167
+msgid "**Health Monitoring** - Multi-stage probes with failure thresholds"
+msgstr "**健康监控** - 带失败阈值的多阶段探针"
+
+#: ../../source/getting_started/advanced-k8s-examples.rst:168
+msgid "**Metrics Integration** - Prometheus annotations for service discovery"
+msgstr "**指标集成** - 用于服务发现的 Prometheus 注解"
+
+#: ../../source/getting_started/advanced-k8s-examples.rst:171
+msgid "Usage Notes"
+msgstr "使用说明"
+
+#: ../../source/getting_started/advanced-k8s-examples.rst:172
+msgid "Model name labels must match across Deployment/Service"
+msgstr "Deployment/Service 中的模型名称标签必须一致"
+
+#: ../../source/getting_started/advanced-k8s-examples.rst:173
+msgid "PVC storage class should match cluster configuration"
+msgstr "PVC 的 storage class 应与集群配置匹配"
+
+#: ../../source/getting_started/advanced-k8s-examples.rst:174
+msgid "Adjust `max-model-len` according to actual model requirements"
+msgstr "根据实际模型需求调整 `max-model-len`"
+
+#: ../../source/getting_started/advanced-k8s-examples.rst:175
+msgid "Probe delays accommodate model loading time (30s initial delay)"
+msgstr "探针延迟需覆盖模型加载时间（初始延迟 30s）"

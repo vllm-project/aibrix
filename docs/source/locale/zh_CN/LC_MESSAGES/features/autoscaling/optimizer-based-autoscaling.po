@@ -1,0 +1,588 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 19:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:5
+msgid "Optimizer-based Autoscaler"
+msgstr "基于优化器的自动扩缩容器"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:8
+msgid "Overview"
+msgstr "概述"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:10
+msgid ""
+"Metric-based autoscalers react: they wait for a metric such as queue "
+"depth to cross a threshold, then add replicas. The optimizer-based "
+"autoscaler plans instead. It combines an offline benchmark of how each "
+"GPU type performs on a model with a latency or throughput SLO, watches "
+"the actual mix of request sizes arriving at the gateway, and computes how"
+" many replicas are needed to serve that mix within the SLO at the lowest "
+"cost. The result is handed to a ``PodAutoscaler`` as a metric, so the "
+"final scaling action still goes through the same controller as every "
+"other strategy."
+msgstr ""
+"基于指标的自动扩缩容器是被动的：等待队列深度等指标越过阈值后再增加副本。基于优化器的自动扩缩容器则是规划式的。它结合各 GPU 类型在某模型上的离线基准、延迟或吞吐 "
+"SLO，观察到达网关的实际请求大小分布，计算在 SLO 内以最低成本服务该分布所需的副本数。结果作为指标交给 ``PodAutoscaler`` "
+"，因此最终扩缩动作仍经过与其他策略相同的控制器。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:17
+msgid ""
+"Because it reasons about GPU capacity rather than a single utilisation "
+"number, it is also the mechanism behind :doc:`../heterogeneous-gpu`, "
+"where several GPU types serve one model and the optimizer decides how "
+"many of each to run."
+msgstr ""
+"因为它基于 GPU 容量而非单一利用率数字进行推理，也是 :doc:`../heterogeneous-gpu` "
+"背后的机制：多种 GPU 类型服务同一模型，由优化器决定每种运行多少。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:22
+msgid "How it works"
+msgstr "工作原理"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:34
+msgid ""
+"**Request tracing.** With ``AIBRIX_GPU_OPTIMIZER_TRACING_FLAG=true`` on "
+"the gateway plugin, every request's token statistics are recorded in "
+"Redis, giving the optimizer the live distribution of input and output "
+"lengths per model."
+msgstr ""
+"**请求追踪。** 在网关插件上设置 ``AIBRIX_GPU_OPTIMIZER_TRACING_FLAG=true`` 后，"
+"每个请求的 token 统计会记录到 Redis，为优化器提供每个模型的输入和输出长度实时分布。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:37
+msgid ""
+"**Profiles.** ``aibrix_benchmark`` measures a deployment on one GPU type "
+"across input and output length patterns. ``aibrix_gen_profile`` turns "
+"that benchmark into a capacity profile for a chosen SLO and GPU cost and "
+"stores it in Redis under the model's name. One profile per GPU type."
+msgstr ""
+"**画像。** ``aibrix_benchmark`` 在一种 GPU 类型上、跨输入和输出长度模式测量 deployment。"
+"``aibrix_gen_profile`` 将该基准转换为所选 SLO 和 GPU 成本下的容量画像，"
+"并以模型名称存入 Redis。每种 GPU 类型一份画像。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:41
+msgid ""
+"**Optimization.** The GPU optimizer (``aibrix-gpu-optimizer`` in "
+"``aibrix-system``) watches ``Deployment`` objects that carry the "
+"``model.aibrix.ai/name`` label, loads the profiles for that model, and "
+"solves for the replica count per deployment that covers the observed "
+"request mix within the SLO at minimum cost."
+msgstr ""
+"**优化。** GPU optimizer（``aibrix-system`` 中的 ``aibrix-gpu-optimizer`` ）监视带有 "
+"``model.aibrix.ai/name`` 标签的 ``Deployment`` 对象，加载该模型的画像，求解每个 deployment "
+"在 SLO 内以最低成本覆盖观测请求分布所需的副本数。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:45
+msgid ""
+"**Scaling.** The recommendation is exposed as the Prometheus metric "
+"``vllm:deployment_replicas`` at ``/metrics/<namespace>/<deployment>``. A "
+"``PodAutoscaler`` with an ``external`` metric source consumes it."
+msgstr ""
+"**扩缩。** 建议以 Prometheus 指标 ``vllm:deployment_replicas`` 暴露在 ``/metrics/<namespace>/<deployment>`` "
+"。带 ``external`` 指标源的 ``PodAutoscaler`` 消费该指标。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:50
+msgid "Prerequisites"
+msgstr "前置条件"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:52
+msgid ""
+"The GPU optimizer is part of the default AIBrix install "
+"(``config/default`` includes ``config/gpu-optimizer``). Confirm it is "
+"running: ``kubectl get deploy -n aibrix-system aibrix-gpu-optimizer``."
+msgstr ""
+"GPU optimizer 包含在默认 AIBrix 安装中（``config/default`` 包含 ``config/gpu-optimizer`` "
+"）。确认其正在运行：``kubectl get deploy -n aibrix-system aibrix-gpu-optimizer`` 。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:55
+msgid ""
+"Request tracing is **off** by default. Enable it by redeploying the "
+"gateway plugin with the experimental overlay, or by adding the "
+"environment variable yourself:"
+msgstr "请求追踪默认**关闭** 。可通过实验 overlay 重新部署网关插件，或自行添加环境变量来启用："
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:64
+msgid ""
+"The ``aibrix`` Python package on the machine where you run the benchmark:"
+" ``pip3 install aibrix``. The profiling tools additionally need "
+"``tiktoken`` and ``transformers``."
+msgstr ""
+"在运行基准的机器上安装 ``aibrix`` Python 包：``pip3 install aibrix`` 。画像工具还需要 ``tiktoken`` "
+"和 ``transformers`` 。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:67
+msgid ""
+"Access to the AIBrix Redis instance from that machine (a ``port-forward``"
+" is enough)."
+msgstr "从该机器访问 AIBrix Redis 实例（``port-forward`` 即可）。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:70
+msgid "Step 1: Benchmark the deployment"
+msgstr "步骤 1：对 deployment 做基准测试"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:72
+msgid ""
+"For each type of GPU, run ``aibrix_benchmark``. See `benchmark.sh "
+"<https://github.com/vllm-"
+"project/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/benchmark.sh>`_"
+" for more options."
+msgstr ""
+"对每种 GPU，运行 ``aibrix_benchmark`` 。更多选项见 `benchmark.sh <https://github.com/vllm-project/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/benchmark.sh>`_ "
+"。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:81
+msgid "Step 2: Decide the SLO and generate the profile"
+msgstr "步骤 2：确定 SLO 并生成画像"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:83
+msgid ""
+"Run ``aibrix_gen_profile -h`` for help. The first argument is the profile"
+" name; the samples use ``<model>-<gpu>`` so that one model can have one "
+"profile per GPU type."
+msgstr ""
+"运行 ``aibrix_gen_profile -h`` 查看帮助。第一个参数是画像名称；示例使用 ``<model>-<gpu>`` ，以便一个模型每种 "
+"GPU 类型有一份画像。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:92
+msgid ""
+"Now the GPU Optimizer is ready to work. Once it has enough trace data it "
+"reloads the profiles on its own; to force a reload right away:"
+msgstr "此时 GPU Optimizer 已可工作。一旦有足够的追踪数据，它会自行重新加载画像；若要立即强制重新加载："
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:101
+msgid "Step 3: Deploy the PodAutoscaler"
+msgstr "步骤 3：部署 PodAutoscaler"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:103
+msgid ""
+"It is simply a matter of applying the podautoscaler yaml file. The GPU "
+"optimizer exposes custom metrics which can be used by podautoscalers to "
+"make scaling decisions as explained above. One important thing you should"
+" note is that the deployment name and the name in scaleTargetRef in "
+"PodAutoscaler must be the same. That's how AIBrix PodAutoscaler refers to"
+" the right deployment."
+msgstr ""
+"只需应用 podautoscaler yaml 文件。如上所述，GPU optimizer 暴露自定义指标，"
+"供 PodAutoscaler 做扩缩决策。需要注意：deployment 名称必须与 PodAutoscaler 中 "
+"scaleTargetRef 的名称相同。AIBrix PodAutoscaler 据此关联到正确的 deployment。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:105
+msgid "All the sample files can be found in the following directory."
+msgstr "所有示例文件位于以下目录。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:112
+msgid "Example Optimizer-based KPA yaml config"
+msgstr "基于优化器的 KPA yaml 配置示例"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:117
+msgid ""
+"The part that makes this an optimizer-driven autoscaler is the "
+"``metricsSources`` entry: the controller requests "
+"``<protocolType>://<endpoint>/<path>`` and reads ``targetMetric`` from "
+"the response by its literal Prometheus name, so ``path`` must be the "
+"optimizer's per-deployment route ``/metrics/<namespace>/<deployment>`` "
+"and ``targetMetric`` stays ``vllm:deployment_replicas``. ``minReplicas`` "
+"and ``maxReplicas`` bound what the optimizer may request. The "
+"``autoscaling.aibrix.ai/scale-down-cooldown-window: 0s`` annotation "
+"removes the default five minute scale-down cooldown so replicas can "
+"follow the recommendation down without delay; :doc:`metric-based-"
+"autoscaling` lists the rest of that annotation family."
+msgstr ""
+"使其成为优化器驱动自动扩缩容器的关键是 ``metricsSources`` 条目：控制器请求 ``<protocolType>://<endpoint>/<path>`` "
+"，并按字面 Prometheus 名称从响应中读取 ``targetMetric`` ，因此 ``path`` 必须是优化器按 deployment "
+"划分的路由 ``/metrics/<namespace>/<deployment>`` ，且 ``targetMetric`` 保持为 ``vllm:deployment_replicas`` "
+"。``minReplicas`` 和 ``maxReplicas`` 限制优化器可请求的范围。注解 ``autoscaling.aibrix.ai/scale-down-cooldown-window: "
+"0s`` 会去掉默认的五分钟缩容冷却，使副本可立即跟随建议向下调整；该注解族的其余项见 :doc:`metric-based-autoscaling` "
+"。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:127
+msgid "Verify"
+msgstr "验证"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:129
+msgid ""
+"The optimizer-based autoscaler decides the number of GPUs based on the "
+"offline GPU capacity profiling. It proactively calculates the overall "
+"capacity needed for serving requests under SLO and ensures that the GPU "
+"capacity is fully used but not overloaded. The GPU optimizer's output is "
+"exposed as custom metrics. The following shows how these custom metrics "
+"can be checked."
+msgstr ""
+"基于优化器的自动扩缩容器根据离线 GPU 容量画像决定 GPU 数量。"
+"它主动计算在 SLO 下服务请求所需的总体容量，并确保 GPU 容量被充分利用但不超载。"
+"GPU optimizer 的输出作为自定义指标暴露。以下说明如何检查这些自定义指标。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:140
+msgid ""
+"You should observe that the number of workload pods changes in response "
+"to the requests sent to the gateway."
+msgstr "应能观察到工作负载 pod 数量随发往网关的请求而变化。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:144
+msgid "GPU optimizer logs"
+msgstr "GPU optimizer 日志"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:146
+msgid ""
+"Gpu optimizer is an individual component that plays the role of "
+"collecting metrics from each pod. You can check its logs in this way. "
+"``kubectl logs <aibrix-gpu-optimizer-podname> -n aibrix-system -f``"
+msgstr ""
+"GPU optimizer 是独立组件，负责从每个 pod 采集指标。可用如下方式查看其日志。"
+"``kubectl logs <aibrix-gpu-optimizer-podname> -n aibrix-system -f``"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:152
+msgid ""
+"In the above logs, the GPU optimizer returns the number of GPUs "
+"suggested, which is 2 in this example."
+msgstr "在上述日志中，GPU optimizer 返回建议的 GPU 数量，本例中为 2。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:155
+msgid "Configuration reference"
+msgstr "配置参考"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:157
+msgid ""
+"**GPU optimizer deployment** (``aibrix-gpu-optimizer``, ``aibrix-"
+"system``). It runs ``python -m aibrix.gpu_optimizer.app`` and listens on "
+"port ``8080``."
+msgstr ""
+"**GPU optimizer deployment** （``aibrix-gpu-optimizer`` ，``aibrix-system`` "
+"）。运行 ``python -m aibrix.gpu_optimizer.app`` ，监听端口 ``8080`` 。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:164
+msgid "Environment variable"
+msgstr "环境变量"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:165
+msgid "Default"
+msgstr "默认值"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:166
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:187
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:209
+msgid "Meaning"
+msgstr "含义"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:167
+msgid "``REDIS_HOST``"
+msgstr "``REDIS_HOST``"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:168
+msgid ""
+"``localhost`` (the manifest sets ``aibrix-redis-master.aibrix-"
+"system.svc.cluster.local``)"
+msgstr "``localhost`` （清单中设置为 ``aibrix-redis-master.aibrix-system.svc.cluster.local`` ）"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:169
+msgid "Redis that holds request traces and profiles."
+msgstr "保存请求追踪和画像的 Redis。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:170
+msgid "``REDIS_PORT``"
+msgstr "``REDIS_PORT``"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:171
+msgid "``6379``"
+msgstr "``6379``"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:172
+msgid "Redis port."
+msgstr "Redis 端口。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:173
+msgid "``REDIS_PASSWORD``"
+msgstr "``REDIS_PASSWORD``"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:174
+msgid "*(unset)*"
+msgstr "*(未设置)*"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:175
+msgid "Redis password, if any."
+msgstr "Redis 密码（如有）。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:177
+msgid ""
+"**Gateway plugin**: ``AIBRIX_GPU_OPTIMIZER_TRACING_FLAG`` (default "
+"``false``) turns request tracing on."
+msgstr "**网关插件** ：``AIBRIX_GPU_OPTIMIZER_TRACING_FLAG`` （默认 ``false`` ）用于开启请求追踪。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:180
+msgid "**Deployment labels** read by the optimizer:"
+msgstr "**Deployment 标签** （优化器读取）："
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:186
+msgid "Label"
+msgstr "标签"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:188
+msgid "``model.aibrix.ai/name``"
+msgstr "``model.aibrix.ai/name``"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:189
+msgid ""
+"Required. Deployments without it are ignored, and the value must match "
+"the ``model`` query parameter used when the profile was stored."
+msgstr ""
+"必填。没有该标签的 Deployment 会被忽略，且取值必须与存储画像时使用的 ``model`` 查询参数一致。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:191
+msgid "``model.aibrix.ai/min_replicas``"
+msgstr "``model.aibrix.ai/min_replicas``"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:192
+msgid ""
+"Replicas to keep when there is no traffic at all. Defaults to ``0``. "
+"Ignored while requests are flowing. Keep at least one deployment per "
+"model at ``\"1\"`` so a ready pod always exists."
+msgstr ""
+"完全没有流量时保留的副本数。默认为 ``0`` 。有请求流入时忽略。每个模型至少将一个 deployment 保持为 ``\"1\"`` ，以便始终存在就绪 "
+"pod。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:196
+msgid ""
+"**PodAutoscaler**: use ``scalingStrategy: KPA`` and an ``external`` "
+"metric source whose ``endpoint`` is ``aibrix-gpu-optimizer.aibrix-"
+"system.svc.cluster.local:8080``, ``path`` is "
+"``/metrics/<namespace>/<deployment>`` and ``targetMetric`` is "
+"``vllm:deployment_replicas``. Set ``minReplicas`` to ``0`` when the "
+"optimizer should be free to turn a deployment off; a higher value "
+"overrides the recommendation. See :doc:`autoscaling` for the remaining "
+"fields."
+msgstr ""
+"**PodAutoscaler** ：使用 ``scalingStrategy: KPA`` 以及 ``external`` 指标源，其 ``endpoint`` "
+"为 ``aibrix-gpu-optimizer.aibrix-system.svc.cluster.local:8080`` ，``path`` "
+"为 ``/metrics/<namespace>/<deployment>`` ，``targetMetric`` 为 ``vllm:deployment_replicas`` "
+"。若希望优化器可以关闭某个 deployment，将 ``minReplicas`` 设为 ``0`` ；更高的值会覆盖建议。其余字段见 :doc:`autoscaling` "
+"。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:202
+msgid "**aibrix_gen_profile**"
+msgstr "**aibrix_gen_profile**"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:208
+msgid "Argument"
+msgstr "参数"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:210
+msgid "``deployment`` (positional)"
+msgstr "``deployment`` （位置参数）"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:211
+msgid "Profile name. Use the deployment name of the GPU type being profiled."
+msgstr "画像名称。使用正在画像的 GPU 类型对应的 deployment 名称。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:212
+msgid "``--benchmark``"
+msgstr "``--benchmark``"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:213
+msgid "Benchmark result file produced by ``aibrix_benchmark``."
+msgstr "``aibrix_benchmark`` 生成的基准结果文件。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:214
+msgid "``--tput``, ``--tt``"
+msgstr "``--tput`` 、``--tt``"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:215
+msgid "Throughput SLO targets: requests per second, and tokens per second."
+msgstr "吞吐 SLO 目标：每秒请求数，以及每秒 token 数。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:216
+msgid "``--e2e``, ``--ttft``, ``--tpat``, ``--tpot``"
+msgstr "``--e2e`` 、``--ttft`` 、``--tpat`` 、``--tpot``"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:217
+msgid ""
+"Latency SLO targets in seconds: end-to-end, time to first token, time per"
+" all tokens, time per output token. Set whichever ones your SLO is "
+"defined on."
+msgstr ""
+"延迟 SLO 目标（秒）：端到端、首 token 时间、全部 token 时间、每个输出 token 时间。"
+"按你的 SLO 定义设置相应项。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:219
+msgid "``--percentile``"
+msgstr "``--percentile``"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:220
+msgid ""
+"``0`` (mean, default), ``50``, ``90`` or ``99``. Which percentile of the "
+"benchmark the SLO is checked against."
+msgstr "``0`` （均值，默认）、``50`` 、``90`` 或 ``99`` 。SLO 对照基准的哪个百分位进行检查。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:222
+msgid "``--cost``"
+msgstr "``--cost``"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:223
+msgid ""
+"Relative cost of this GPU type, default ``1.0``. The optimizer minimises "
+"total cost, so only the ratio between GPU types matters."
+msgstr "该 GPU 类型的相对成本，默认 ``1.0`` 。优化器最小化总成本，因此只有 GPU 类型之间的比例有意义。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:225
+msgid "``-o``"
+msgstr "``-o``"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:226
+msgid ""
+"Output. A file path, or "
+"``redis://[user:password@]host:port[/db]?model=<model>`` to store the "
+"profile where the optimizer reads it."
+msgstr ""
+"输出。文件路径，或 ``redis://[user:password@]host:port[/db]?model=<model>`` "
+"以将画像存到优化器读取的位置。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:228
+msgid "``-v``"
+msgstr "``-v``"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:229
+msgid "Print details of the generated profile."
+msgstr "打印生成画像的详细信息。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:231
+msgid "**HTTP endpoints** on the optimizer:"
+msgstr "优化器上的 **HTTP 端点** ："
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:237
+msgid "Endpoint"
+msgstr "端点"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:238
+msgid "Purpose"
+msgstr "用途"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:239
+#, python-brace-format
+msgid "``GET /metrics/{namespace}/{deployment}``"
+msgstr "``GET /metrics/{namespace}/{deployment}``"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:240
+msgid ""
+"Prometheus metrics for one deployment, including "
+"``vllm:deployment_replicas``."
+msgstr "单个 deployment 的 Prometheus 指标，包括 ``vllm:deployment_replicas`` 。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:241
+#, python-brace-format
+msgid "``GET /update_profile/{model}``"
+msgstr "``GET /update_profile/{model}``"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:242
+msgid "Reload profiles for a model from Redis."
+msgstr "从 Redis 重新加载某模型的画像。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:243
+#, python-brace-format
+msgid "``POST`` / ``DELETE /monitor/{namespace}/{deployment}``"
+msgstr "``POST`` / ``DELETE /monitor/{namespace}/{deployment}``"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:244
+msgid ""
+"Start or stop monitoring a deployment by hand. Normally unnecessary: the "
+"optimizer discovers labelled deployments itself."
+msgstr "手动开始或停止监视某个 deployment。通常不必：优化器会自行发现带标签的 deployment。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:246
+#, python-brace-format
+msgid "``PUT /scale/{namespace}/{deployment}``"
+msgstr "``PUT /scale/{namespace}/{deployment}``"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:247
+msgid "Force a replica count for a monitored deployment."
+msgstr "强制设置被监视 deployment 的副本数。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:248
+#, python-brace-format
+msgid "``GET /dash/{model}``"
+msgstr "``GET /dash/{model}``"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:249
+msgid "Dashboard visualising the observed workload pattern for a model."
+msgstr "可视化某模型观测工作负载模式的仪表盘。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:252
+msgid "Preliminary experiments with different autoscalers"
+msgstr "不同自动扩缩容器的初步实验"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:254
+msgid ""
+"Here we show the preliminary experiment results to show how different "
+"autoscaling mechanisms and configurations for autoscalers affect "
+"performance(latency) and cost (compute cost)."
+msgstr ""
+"以下初步实验结果展示不同自动扩缩机制及其配置如何影响性能（延迟）和成本（计算成本）。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:256
+msgid "Set up"
+msgstr "实验设置"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:257
+msgid "Model: Deepseek 7B chatbot model"
+msgstr "模型：Deepseek 7B chatbot 模型"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:258
+msgid "GPU type: V100"
+msgstr "GPU 类型：V100"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:259
+msgid "Max number of GPU: 8"
+msgstr "最大 GPU 数：8"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:260
+msgid "HPA, KPA, and APA use metrics as the scaling metrics: 70."
+msgstr "HPA、KPA 和 APA 使用的扩缩指标：70。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:261
+msgid "Optimizer-based KPA SLO: E2E P99 100s"
+msgstr "基于优化器的 KPA SLO：E2E P99 100s"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:262
+msgid "Workload"
+msgstr "工作负载"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:263
+msgid ""
+"The overall RPS trend starts with low RPS and goes up relatively fast "
+"until T=500 to evaluate how different autoscaler and config reacts to the"
+" rapid load increase. After that, it goes down to low RPS quickly to "
+"evaluate scaling down behavior and goes up again slowly."
+msgstr ""
+"整体 RPS 趋势从低 RPS 开始，到 T=500 较快上升，以评估不同自动扩缩容器及配置对负载快速增加的反应。"
+"之后迅速降到低 RPS 以评估缩容行为，然后再缓慢上升。"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:264
+msgid "Average RPS trend: 0.5 RPS -> 2 RPS -> 4 RPS -> 5 RPS -> 1 RPS -> 3 RPS"
+msgstr "平均 RPS 趋势：0.5 RPS -> 2 RPS -> 4 RPS -> 5 RPS -> 1 RPS -> 3 RPS"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:268
+msgid "Experiments Results"
+msgstr "实验结果"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:270
+msgid "gpu_cache_usage_perc: 70"
+msgstr "gpu_cache_usage_perc: 70"
+
+#: ../../source/features/autoscaling/optimizer-based-autoscaling.rst:272
+msgid "result"
+msgstr "结果"

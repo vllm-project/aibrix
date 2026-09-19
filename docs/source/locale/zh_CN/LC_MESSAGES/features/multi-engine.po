@@ -1,0 +1,960 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/features/multi-engine.rst:5
+msgid "Multi-Engine Support"
+msgstr "多引擎支持"
+
+#: ../../source/features/multi-engine.rst:7
+msgid ""
+"The AIBrix system now supports **multi-engine scheduling**, allowing "
+"developers to deploy and serve multiple engines (e.g., different LLMs or "
+"engine backends) under a single AIBrix instance. This enables flexible "
+"routing of incoming requests to different engines based on model name, "
+"scheduling policies, or performance characteristics."
+msgstr ""
+"AIBrix 现已支持 **多引擎调度** ，可在同一个 AIBrix 实例下部署并服务多个引擎（例如不同 LLM 或引擎后端）。从而能按模型名、调度策略或性能特征，将入站请求灵活路由到不同引擎。"
+
+#: ../../source/features/multi-engine.rst:10
+msgid "Key Features"
+msgstr "主要特性"
+
+#: ../../source/features/multi-engine.rst:12
+msgid ""
+"Support other engines beyond vLLM (e.g., SGLang, xLLM, TRT-LLM) in a "
+"single deployment."
+msgstr "在同一部署中支持 vLLM 以外的引擎（例如 SGLang、xLLM、TRT-LLM）。"
+
+#: ../../source/features/multi-engine.rst:13
+msgid ""
+"Configure engine by adding `model.aibrix.ai/engine` as label in the "
+"deployment YAML file."
+msgstr "在 deployment YAML 中添加 `model.aibrix.ai/engine` 标签以配置引擎。"
+
+#: ../../source/features/multi-engine.rst:14
+msgid "Support for interpreting metrics from different engine types."
+msgstr "支持解析不同类型引擎的指标。"
+
+#: ../../source/features/multi-engine.rst:17
+msgid "Motivation"
+msgstr "动机"
+
+#: ../../source/features/multi-engine.rst:19
+msgid ""
+"Prior to this feature, AIBrix supports vLLM only while serving models. "
+"This limited flexibility in experimenting with or comparing different "
+"engines within the same workload or benchmarking scenario."
+msgstr ""
+"在此功能之前，AIBrix 服务模型时仅支持 vLLM。这限制了在同一工作负载或基准测试"
+"场景中试验或比较不同引擎的灵活性。"
+
+#: ../../source/features/multi-engine.rst:21
+msgid "With multi-engine support, AIBrix enables:"
+msgstr "有了多引擎支持，AIBrix 可以："
+
+#: ../../source/features/multi-engine.rst:23
+msgid ""
+"**Side-by-side comparisons** of latency, throughput, and behavior across "
+"engines."
+msgstr "**并排比较** 不同引擎的延迟、吞吐和行为。"
+
+#: ../../source/features/multi-engine.rst:24
+msgid ""
+"**Deployment flexibility**, supporting model sharding or migration "
+"strategies."
+msgstr "**部署灵活性** ，支持模型分片或迁移策略。"
+
+#: ../../source/features/multi-engine.rst:25
+msgid "**Metrics Adaptation** to interpret metrics from different engine types."
+msgstr "**指标适配** ，以解析不同类型引擎的指标。"
+
+#: ../../source/features/multi-engine.rst:28
+msgid "System Overview"
+msgstr "系统概览"
+
+#: ../../source/features/multi-engine.rst:30
+msgid ""
+"Incoming requests will use the deployment label to determine correct ways"
+" of interpreting metrics retrieved from Prometheus API, which are later "
+"used by the `Router` to delegate execution. To configure a specific "
+"engine, apply the following labels in the deployment YAML file:"
+msgstr ""
+"入站请求会使用 deployment 标签，决定如何正确解析从 Prometheus API 获取的指标，"
+"随后由 `Router` 用于委派执行。要配置特定引擎，请在 deployment YAML 中应用以下"
+"标签："
+
+#: ../../source/features/multi-engine.rst:40
+msgid ""
+"AIBrix will use the `model.aibrix.ai/engine` label to determine which "
+"engine to use for the deployment and search for correct format of metrics"
+" to retrieve from all metrics read from Prometheus."
+msgstr ""
+"AIBrix 会使用 `model.aibrix.ai/engine` 标签确定该 deployment 使用的引擎，并在"
+"从 Prometheus 读取的全部指标中查找正确格式以获取指标。"
+
+#: ../../source/features/multi-engine.rst:42
+msgid "Supported engine label values: ``vllm``, ``sglang``, ``xllm``, ``trtllm``."
+msgstr "支持的引擎标签值：``vllm`` 、``sglang`` 、``xllm`` 、``trtllm`` 。"
+
+#: ../../source/features/multi-engine.rst:45
+msgid "How it works"
+msgstr "工作原理"
+
+#: ../../source/features/multi-engine.rst:47
+msgid ""
+"The AIBrix cache watches pods that carry ``model.aibrix.ai/name`` and "
+"reads ``model.aibrix.ai/engine`` from the same pod. Every metric AIBrix "
+"uses internally has one abstract name (for example "
+"``num_requests_waiting``) and a per-engine mapping to the name the engine"
+" actually exports. The mapping lives in `pkg/metrics/metrics.go "
+"<https://github.com/vllm-"
+"project/aibrix/blob/main/pkg/metrics/metrics.go>`_ and is reproduced in "
+"the table below."
+msgstr ""
+"AIBrix cache 会监视带有 ``model.aibrix.ai/name`` 的 Pod，并从同一 Pod 读取 ``model.aibrix.ai/engine`` "
+"。AIBrix 内部使用的每个指标都有一个抽象名称（例如 ``num_requests_waiting`` ），以及按引擎映射到该引擎实际导出的名称。映射位于 "
+"`pkg/metrics/metrics.go <https://github.com/vllm-project/aibrix/blob/main/pkg/metrics/metrics.go>`_ "
+"，并在下表中复现。"
+
+#: ../../source/features/multi-engine.rst:53
+msgid ""
+"Metrics are scraped from each pod on the port given by ``model.aibrix.ai"
+"/metric-port``, or port ``8000`` when the label is absent, at "
+"``/metrics`` (``/prometheus/metrics`` for ``trtllm``). Requests are "
+"forwarded to ``model.aibrix.ai/port``."
+msgstr ""
+"指标从每个 Pod 上由 ``model.aibrix.ai/metric-port`` 指定的端口抓取；若无该标签则使用端口 ``8000`` "
+"，路径为 ``/metrics`` （``trtllm`` 为 ``/prometheus/metrics`` ）。请求转发到 ``model.aibrix.ai/port`` "
+"。"
+
+#: ../../source/features/multi-engine.rst:56
+msgid ""
+"Routing policies ask for abstract names. When the engine has no mapping "
+"for a metric a policy needs, most policies (``least-request``, ``least-"
+"kv-cache``, ``least-latency``, ``least-busy-time``, ``least-gpu-cache``, "
+"``least-util``, ``throughput``) fall back to a random pod for that "
+"request. The SLO family (``slo-least-load``, ``slo-pack-load``, ``slo-"
+"least-load-pulling``) returns an error instead, which surfaces to the "
+"client as HTTP 503."
+msgstr ""
+"路由策略按抽象名称请求指标。当引擎没有策略所需指标的映射时，大多数策略（``least-request`` 、``least-kv-cache`` "
+"、``least-latency`` 、``least-busy-time`` 、``least-gpu-cache`` 、``least-util`` "
+"、``throughput`` ）会对该请求回退到随机 Pod。SLO 系列（``slo-least-load`` 、``slo-pack-load`` "
+"、``slo-least-load-pulling`` ）则返回错误，对客户端表现为 HTTP 503。"
+
+#: ../../source/features/multi-engine.rst:63
+msgid ""
+"The optional :doc:`runtime` sidecar is a separate mechanism: it re-"
+"exports engine metrics in a standardized shape on its own port. The "
+"engine label works without it."
+msgstr ""
+"可选的 :doc:`runtime` sidecar 是另一套机制：它在自己的端口上以标准化形态重新"
+"导出引擎指标。引擎标签不依赖它也能工作。"
+
+#: ../../source/features/multi-engine.rst:67
+msgid "Configuration reference"
+msgstr "配置参考"
+
+#: ../../source/features/multi-engine.rst:69
+msgid ""
+"Everything is configured with pod labels. Set them on the pod template of"
+" the ``Deployment`` (or of the ``StormService`` role) rather than on the "
+"workload object itself."
+msgstr ""
+"全部通过 Pod 标签配置。请把它们设在 ``Deployment`` （或 ``StormService`` 角色）的 Pod 模板上，而不是工作负载对象本身。"
+
+#: ../../source/features/multi-engine.rst:76
+msgid "Label"
+msgstr "标签"
+
+#: ../../source/features/multi-engine.rst:77
+msgid "Default"
+msgstr "默认值"
+
+#: ../../source/features/multi-engine.rst:78
+msgid "Meaning"
+msgstr "含义"
+
+#: ../../source/features/multi-engine.rst:79
+msgid "``model.aibrix.ai/name``"
+msgstr "``model.aibrix.ai/name``"
+
+#: ../../source/features/multi-engine.rst:80
+msgid "required"
+msgstr "必需"
+
+#: ../../source/features/multi-engine.rst:81
+msgid "Model name used in requests and for pod discovery."
+msgstr "请求中使用以及用于 Pod 发现的模型名。"
+
+#: ../../source/features/multi-engine.rst:82
+msgid "``model.aibrix.ai/engine``"
+msgstr "``model.aibrix.ai/engine``"
+
+#: ../../source/features/multi-engine.rst:83
+msgid "``vllm``"
+msgstr "``vllm``"
+
+#: ../../source/features/multi-engine.rst:84
+msgid ""
+"Engine type. One of ``vllm``, ``sglang``, ``xllm``, ``trtllm``. Selects "
+"the metric mapping."
+msgstr "引擎类型。取值为 ``vllm`` 、``sglang`` 、``xllm`` 、``trtllm`` 之一。用于选择指标映射。"
+
+#: ../../source/features/multi-engine.rst:86
+msgid "``model.aibrix.ai/port``"
+msgstr "``model.aibrix.ai/port``"
+
+#: ../../source/features/multi-engine.rst:87
+#: ../../source/features/multi-engine.rst:90
+msgid "``8000``"
+msgstr "``8000``"
+
+#: ../../source/features/multi-engine.rst:88
+msgid "Port the engine serves requests on."
+msgstr "引擎提供请求服务的端口。"
+
+#: ../../source/features/multi-engine.rst:89
+msgid "``model.aibrix.ai/metric-port``"
+msgstr "``model.aibrix.ai/metric-port``"
+
+#: ../../source/features/multi-engine.rst:91
+msgid ""
+"Port the engine exposes ``/metrics`` on, if different from the serving "
+"port."
+msgstr "引擎暴露 ``/metrics`` 的端口（若与服务端口不同）。"
+
+#: ../../source/features/multi-engine.rst:94
+msgid "Supported Metrics"
+msgstr "支持的指标"
+
+#: ../../source/features/multi-engine.rst:96
+msgid ""
+"We only support limited number of metrics from different engines and we "
+"will continuously add more metrics. For routing algorithms implemented "
+"through `routing policy API <https://github.com/vllm-"
+"project/aibrix/tree/main/pkg/plugins/gateway/algorithms>`_, make sure you"
+" use metrics that is supported by your target engine. Most existing "
+"AIBrix routing policies fall back to the default (i.e., random) policy if"
+" they fail to fetch a target metric; see *How it works* above for the "
+"exceptions."
+msgstr ""
+"目前仅支持各引擎的有限指标，后续会持续增加。对于通过 `routing policy API "
+"<https://github.com/vllm-project/aibrix/tree/main/pkg/plugins/gateway"
+"/algorithms>`_ 实现的路由算法，请确保使用目标引擎支持的指标。大多数现有 "
+"AIBrix 路由策略在获取目标指标失败时会回退到默认（即随机）策略；例外情况见上文"
+" *工作原理*。"
+
+#: ../../source/features/multi-engine.rst:102
+msgid "AIBrix metric"
+msgstr "AIBrix 指标"
+
+#: ../../source/features/multi-engine.rst:103
+msgid "vLLM"
+msgstr "vLLM"
+
+#: ../../source/features/multi-engine.rst:104
+msgid "SGLang"
+msgstr "SGLang"
+
+#: ../../source/features/multi-engine.rst:105
+msgid "xLLM"
+msgstr "xLLM"
+
+#: ../../source/features/multi-engine.rst:106
+msgid "TRT-LLM"
+msgstr "TRT-LLM"
+
+#: ../../source/features/multi-engine.rst:107
+msgid "``num_requests_running``"
+msgstr "``num_requests_running``"
+
+#: ../../source/features/multi-engine.rst:108
+msgid "``vllm:num_requests_running``"
+msgstr "``vllm:num_requests_running``"
+
+#: ../../source/features/multi-engine.rst:109
+msgid "``sglang:num_running_reqs``"
+msgstr "``sglang:num_running_reqs``"
+
+#: ../../source/features/multi-engine.rst:110
+#: ../../source/features/multi-engine.rst:111
+#: ../../source/features/multi-engine.rst:115
+#: ../../source/features/multi-engine.rst:116
+#: ../../source/features/multi-engine.rst:120
+#: ../../source/features/multi-engine.rst:121
+#: ../../source/features/multi-engine.rst:124
+#: ../../source/features/multi-engine.rst:125
+#: ../../source/features/multi-engine.rst:126
+#: ../../source/features/multi-engine.rst:129
+#: ../../source/features/multi-engine.rst:130
+#: ../../source/features/multi-engine.rst:131
+#: ../../source/features/multi-engine.rst:134
+#: ../../source/features/multi-engine.rst:135
+#: ../../source/features/multi-engine.rst:136
+#: ../../source/features/multi-engine.rst:140
+#: ../../source/features/multi-engine.rst:143
+#: ../../source/features/multi-engine.rst:145
+#: ../../source/features/multi-engine.rst:146
+#: ../../source/features/multi-engine.rst:148
+#: ../../source/features/multi-engine.rst:150
+#: ../../source/features/multi-engine.rst:151
+#: ../../source/features/multi-engine.rst:155
+#: ../../source/features/multi-engine.rst:159
+#: ../../source/features/multi-engine.rst:160
+#: ../../source/features/multi-engine.rst:164
+#: ../../source/features/multi-engine.rst:165
+#: ../../source/features/multi-engine.rst:166
+#: ../../source/features/multi-engine.rst:168
+#: ../../source/features/multi-engine.rst:170
+#: ../../source/features/multi-engine.rst:171
+#: ../../source/features/multi-engine.rst:174
+#: ../../source/features/multi-engine.rst:175
+#: ../../source/features/multi-engine.rst:176
+#: ../../source/features/multi-engine.rst:179
+#: ../../source/features/multi-engine.rst:180
+#: ../../source/features/multi-engine.rst:181
+#: ../../source/features/multi-engine.rst:184
+#: ../../source/features/multi-engine.rst:185
+#: ../../source/features/multi-engine.rst:186
+#: ../../source/features/multi-engine.rst:189
+#: ../../source/features/multi-engine.rst:190
+#: ../../source/features/multi-engine.rst:191
+#: ../../source/features/multi-engine.rst:194
+#: ../../source/features/multi-engine.rst:195
+#: ../../source/features/multi-engine.rst:196
+#: ../../source/features/multi-engine.rst:199
+#: ../../source/features/multi-engine.rst:200
+#: ../../source/features/multi-engine.rst:201
+#: ../../source/features/multi-engine.rst:204
+#: ../../source/features/multi-engine.rst:205
+#: ../../source/features/multi-engine.rst:206
+#: ../../source/features/multi-engine.rst:209
+#: ../../source/features/multi-engine.rst:210
+#: ../../source/features/multi-engine.rst:211
+#: ../../source/features/multi-engine.rst:215
+#: ../../source/features/multi-engine.rst:220
+#: ../../source/features/multi-engine.rst:225
+#: ../../source/features/multi-engine.rst:229
+#: ../../source/features/multi-engine.rst:230
+#: ../../source/features/multi-engine.rst:231
+#: ../../source/features/multi-engine.rst:234
+#: ../../source/features/multi-engine.rst:235
+#: ../../source/features/multi-engine.rst:236
+#: ../../source/features/multi-engine.rst:239
+#: ../../source/features/multi-engine.rst:240
+#: ../../source/features/multi-engine.rst:241
+#: ../../source/features/multi-engine.rst:246
+#: ../../source/features/multi-engine.rst:248
+#: ../../source/features/multi-engine.rst:249
+#: ../../source/features/multi-engine.rst:251
+#: ../../source/features/multi-engine.rst:254
+#: ../../source/features/multi-engine.rst:255
+#: ../../source/features/multi-engine.rst:256
+#: ../../source/features/multi-engine.rst:263
+#: ../../source/features/multi-engine.rst:264
+#: ../../source/features/multi-engine.rst:265
+#: ../../source/features/multi-engine.rst:269
+#: ../../source/features/multi-engine.rst:270
+#: ../../source/features/multi-engine.rst:271
+#: ../../source/features/multi-engine.rst:274
+#: ../../source/features/multi-engine.rst:275
+#: ../../source/features/multi-engine.rst:276
+#: ../../source/features/multi-engine.rst:279
+#: ../../source/features/multi-engine.rst:280
+#: ../../source/features/multi-engine.rst:281
+#: ../../source/features/multi-engine.rst:284
+#: ../../source/features/multi-engine.rst:285
+#: ../../source/features/multi-engine.rst:286
+#: ../../source/features/multi-engine.rst:289
+#: ../../source/features/multi-engine.rst:290
+#: ../../source/features/multi-engine.rst:291
+#: ../../source/features/multi-engine.rst:294
+#: ../../source/features/multi-engine.rst:295
+#: ../../source/features/multi-engine.rst:296
+#: ../../source/features/multi-engine.rst:299
+#: ../../source/features/multi-engine.rst:300
+#: ../../source/features/multi-engine.rst:301
+#: ../../source/features/multi-engine.rst:304
+#: ../../source/features/multi-engine.rst:305
+#: ../../source/features/multi-engine.rst:306
+#: ../../source/features/multi-engine.rst:309
+#: ../../source/features/multi-engine.rst:310
+#: ../../source/features/multi-engine.rst:311
+#: ../../source/features/multi-engine.rst:314
+#: ../../source/features/multi-engine.rst:315
+#: ../../source/features/multi-engine.rst:316
+#: ../../source/features/multi-engine.rst:319
+#: ../../source/features/multi-engine.rst:320
+#: ../../source/features/multi-engine.rst:321
+#: ../../source/features/multi-engine.rst:325
+#: ../../source/features/multi-engine.rst:326
+#: ../../source/features/multi-engine.rst:329
+#: ../../source/features/multi-engine.rst:330
+#: ../../source/features/multi-engine.rst:331
+#: ../../source/features/multi-engine.rst:334
+#: ../../source/features/multi-engine.rst:335
+#: ../../source/features/multi-engine.rst:336
+#: ../../source/features/multi-engine.rst:339
+#: ../../source/features/multi-engine.rst:340
+#: ../../source/features/multi-engine.rst:341
+msgid "N/A"
+msgstr "N/A"
+
+#: ../../source/features/multi-engine.rst:112
+msgid "``num_requests_waiting``"
+msgstr "``num_requests_waiting``"
+
+#: ../../source/features/multi-engine.rst:113
+msgid "``vllm:num_requests_waiting``"
+msgstr "``vllm:num_requests_waiting``"
+
+#: ../../source/features/multi-engine.rst:114
+msgid "``sglang:num_queue_reqs``"
+msgstr "``sglang:num_queue_reqs``"
+
+#: ../../source/features/multi-engine.rst:117
+msgid "``num_requests_swapped``"
+msgstr "``num_requests_swapped``"
+
+#: ../../source/features/multi-engine.rst:118
+msgid "``vllm:num_requests_swapped``"
+msgstr "``vllm:num_requests_swapped``"
+
+#: ../../source/features/multi-engine.rst:119
+msgid "``sglang:num_retracted_reqs``"
+msgstr "``sglang:num_retracted_reqs``"
+
+#: ../../source/features/multi-engine.rst:122
+msgid "``engine_sleep_state``"
+msgstr "``engine_sleep_state``"
+
+#: ../../source/features/multi-engine.rst:123
+msgid "``vllm:engine_sleep_state``"
+msgstr "``vllm:engine_sleep_state``"
+
+#: ../../source/features/multi-engine.rst:127
+msgid "``http_requests_total``"
+msgstr "``http_requests_total``"
+
+#: ../../source/features/multi-engine.rst:128
+msgid "``vllm:http_requests_total``"
+msgstr "``vllm:http_requests_total``"
+
+#: ../../source/features/multi-engine.rst:132
+msgid "``num_preemptions_total``"
+msgstr "``num_preemptions_total``"
+
+#: ../../source/features/multi-engine.rst:133
+msgid "``vllm:num_preemptions_total``"
+msgstr "``vllm:num_preemptions_total``"
+
+#: ../../source/features/multi-engine.rst:137
+msgid "``request_success_total``"
+msgstr "``request_success_total``"
+
+#: ../../source/features/multi-engine.rst:138
+msgid "``vllm:num_requests_success_total``"
+msgstr "``vllm:num_requests_success_total``"
+
+#: ../../source/features/multi-engine.rst:139
+msgid "``sglang:num_requests_total``"
+msgstr "``sglang:num_requests_total``"
+
+#: ../../source/features/multi-engine.rst:141
+msgid "``trtllm_request_success_total``"
+msgstr "``trtllm_request_success_total``"
+
+#: ../../source/features/multi-engine.rst:142
+msgid "``num_prefill_prealloc_queue_reqs``"
+msgstr "``num_prefill_prealloc_queue_reqs``"
+
+#: ../../source/features/multi-engine.rst:144
+msgid "``sglang:num_prefill_prealloc_queue_reqs``"
+msgstr "``sglang:num_prefill_prealloc_queue_reqs``"
+
+#: ../../source/features/multi-engine.rst:147
+msgid "``num_decode_prealloc_queue_reqs``"
+msgstr "``num_decode_prealloc_queue_reqs``"
+
+#: ../../source/features/multi-engine.rst:149
+msgid "``sglang:num_decode_prealloc_queue_reqs``"
+msgstr "``sglang:num_decode_prealloc_queue_reqs``"
+
+#: ../../source/features/multi-engine.rst:152
+msgid "``e2e_request_latency_seconds``"
+msgstr "``e2e_request_latency_seconds``"
+
+#: ../../source/features/multi-engine.rst:153
+msgid "``vllm:e2e_request_latency_seconds``"
+msgstr "``vllm:e2e_request_latency_seconds``"
+
+#: ../../source/features/multi-engine.rst:154
+msgid "``sglang:e2e_request_latency_seconds``"
+msgstr "``sglang:e2e_request_latency_seconds``"
+
+#: ../../source/features/multi-engine.rst:156
+msgid "``trtllm_e2e_request_latency_seconds``"
+msgstr "``trtllm_e2e_request_latency_seconds``"
+
+#: ../../source/features/multi-engine.rst:157
+msgid "``request_queue_time_seconds``"
+msgstr "``request_queue_time_seconds``"
+
+#: ../../source/features/multi-engine.rst:158
+msgid "``vllm:request_queue_time_seconds``"
+msgstr "``vllm:request_queue_time_seconds``"
+
+#: ../../source/features/multi-engine.rst:161
+msgid "``trtllm_request_queue_time_seconds``"
+msgstr "``trtllm_request_queue_time_seconds``"
+
+#: ../../source/features/multi-engine.rst:162
+msgid "``request_inference_time_seconds``"
+msgstr "``request_inference_time_seconds``"
+
+#: ../../source/features/multi-engine.rst:163
+msgid "``vllm:request_inference_time_seconds``"
+msgstr "``vllm:request_inference_time_seconds``"
+
+#: ../../source/features/multi-engine.rst:167
+msgid "``per_stage_req_latency_seconds``"
+msgstr "``per_stage_req_latency_seconds``"
+
+#: ../../source/features/multi-engine.rst:169
+msgid "``sglang:per_stage_req_latency_seconds``"
+msgstr "``sglang:per_stage_req_latency_seconds``"
+
+#: ../../source/features/multi-engine.rst:172
+#: ../../source/features/multi-engine.rst:173
+msgid "``http_request_duration_seconds``"
+msgstr "``http_request_duration_seconds``"
+
+#: ../../source/features/multi-engine.rst:177
+#: ../../source/features/multi-engine.rst:178
+msgid "``http_request_duration_highr_seconds``"
+msgstr "``http_request_duration_highr_seconds``"
+
+#: ../../source/features/multi-engine.rst:182
+msgid "``prompt_tokens_total``"
+msgstr "``prompt_tokens_total``"
+
+#: ../../source/features/multi-engine.rst:183
+msgid "``vllm:prompt_tokens_total``"
+msgstr "``vllm:prompt_tokens_total``"
+
+#: ../../source/features/multi-engine.rst:187
+msgid "``request_prompt_tokens``"
+msgstr "``request_prompt_tokens``"
+
+#: ../../source/features/multi-engine.rst:188
+msgid "``vllm:request_prompt_tokens``"
+msgstr "``vllm:request_prompt_tokens``"
+
+#: ../../source/features/multi-engine.rst:192
+msgid "``generation_tokens_total``"
+msgstr "``generation_tokens_total``"
+
+#: ../../source/features/multi-engine.rst:193
+msgid "``vllm:generation_tokens_total``"
+msgstr "``vllm:generation_tokens_total``"
+
+#: ../../source/features/multi-engine.rst:197
+msgid "``request_generation_tokens``"
+msgstr "``request_generation_tokens``"
+
+#: ../../source/features/multi-engine.rst:198
+msgid "``vllm:request_generation_tokens``"
+msgstr "``vllm:request_generation_tokens``"
+
+#: ../../source/features/multi-engine.rst:202
+msgid "``request_max_num_generation_tokens``"
+msgstr "``request_max_num_generation_tokens``"
+
+#: ../../source/features/multi-engine.rst:203
+msgid "``vllm:request_max_num_generation_tokens``"
+msgstr "``vllm:request_max_num_generation_tokens``"
+
+#: ../../source/features/multi-engine.rst:207
+msgid "``iteration_tokens_total``"
+msgstr "``iteration_tokens_total``"
+
+#: ../../source/features/multi-engine.rst:208
+msgid "``vllm:iteration_tokens_total``"
+msgstr "``vllm:iteration_tokens_total``"
+
+#: ../../source/features/multi-engine.rst:212
+msgid "``time_to_first_token_seconds``"
+msgstr "``time_to_first_token_seconds``"
+
+#: ../../source/features/multi-engine.rst:213
+msgid "``vllm:time_to_first_token_seconds``"
+msgstr "``vllm:time_to_first_token_seconds``"
+
+#: ../../source/features/multi-engine.rst:214
+msgid "``sglang:time_to_first_token_seconds``"
+msgstr "``sglang:time_to_first_token_seconds``"
+
+#: ../../source/features/multi-engine.rst:216
+msgid "``trtllm_time_to_first_token_seconds``"
+msgstr "``trtllm_time_to_first_token_seconds``"
+
+#: ../../source/features/multi-engine.rst:217
+msgid "``time_per_output_token_seconds``"
+msgstr "``time_per_output_token_seconds``"
+
+#: ../../source/features/multi-engine.rst:218
+msgid "``vllm:time_per_output_token_seconds``"
+msgstr "``vllm:time_per_output_token_seconds``"
+
+#: ../../source/features/multi-engine.rst:219
+#: ../../source/features/multi-engine.rst:224
+msgid "``sglang:inter_token_latency_seconds``"
+msgstr "``sglang:inter_token_latency_seconds``"
+
+#: ../../source/features/multi-engine.rst:221
+#: ../../source/features/multi-engine.rst:226
+msgid "``trtllm_time_per_output_token_seconds``"
+msgstr "``trtllm_time_per_output_token_seconds``"
+
+#: ../../source/features/multi-engine.rst:222
+msgid "``inter_token_latency_seconds``"
+msgstr "``inter_token_latency_seconds``"
+
+#: ../../source/features/multi-engine.rst:223
+msgid "``vllm:inter_token_latency_seconds``"
+msgstr "``vllm:inter_token_latency_seconds``"
+
+#: ../../source/features/multi-engine.rst:227
+msgid "``request_decode_time_seconds``"
+msgstr "``request_decode_time_seconds``"
+
+#: ../../source/features/multi-engine.rst:228
+msgid "``vllm:request_decode_time_seconds``"
+msgstr "``vllm:request_decode_time_seconds``"
+
+#: ../../source/features/multi-engine.rst:232
+msgid "``request_prefill_time_seconds``"
+msgstr "``request_prefill_time_seconds``"
+
+#: ../../source/features/multi-engine.rst:233
+msgid "``vllm:request_prefill_time_seconds``"
+msgstr "``vllm:request_prefill_time_seconds``"
+
+#: ../../source/features/multi-engine.rst:237
+msgid "``request_time_per_output_token_seconds``"
+msgstr "``request_time_per_output_token_seconds``"
+
+#: ../../source/features/multi-engine.rst:238
+msgid "``vllm:request_time_per_output_token_seconds``"
+msgstr "``vllm:request_time_per_output_token_seconds``"
+
+#: ../../source/features/multi-engine.rst:242
+msgid "``gpu_cache_usage_perc``"
+msgstr "``gpu_cache_usage_perc``"
+
+#: ../../source/features/multi-engine.rst:243
+msgid "``vllm:gpu_cache_usage_perc``"
+msgstr "``vllm:gpu_cache_usage_perc``"
+
+#: ../../source/features/multi-engine.rst:244
+#: ../../source/features/multi-engine.rst:259
+msgid "``sglang:token_usage``"
+msgstr "``sglang:token_usage``"
+
+#: ../../source/features/multi-engine.rst:245
+#: ../../source/features/multi-engine.rst:260
+msgid "``kv_cache_utilization``"
+msgstr "``kv_cache_utilization``"
+
+#: ../../source/features/multi-engine.rst:247
+#: ../../source/features/multi-engine.rst:250
+msgid "``engine_utilization``"
+msgstr "``engine_utilization``"
+
+#: ../../source/features/multi-engine.rst:252
+msgid "``cpu_cache_usage_perc``"
+msgstr "``cpu_cache_usage_perc``"
+
+#: ../../source/features/multi-engine.rst:253
+msgid "``vllm:cpu_cache_usage_perc``"
+msgstr "``vllm:cpu_cache_usage_perc``"
+
+#: ../../source/features/multi-engine.rst:257
+msgid "``kv_cache_usage_perc``"
+msgstr "``kv_cache_usage_perc``"
+
+#: ../../source/features/multi-engine.rst:258
+msgid "``vllm:kv_cache_usage_perc``"
+msgstr "``vllm:kv_cache_usage_perc``"
+
+#: ../../source/features/multi-engine.rst:261
+msgid "``trtllm_kv_cache_utilization``"
+msgstr "``trtllm_kv_cache_utilization``"
+
+#: ../../source/features/multi-engine.rst:262
+msgid "``kv_cache_hit_rate``"
+msgstr "``kv_cache_hit_rate``"
+
+#: ../../source/features/multi-engine.rst:266
+msgid "``trtllm_kv_cache_hit_rate``"
+msgstr "``trtllm_kv_cache_hit_rate``"
+
+#: ../../source/features/multi-engine.rst:267
+msgid "``prefix_cache_queries_total``"
+msgstr "``prefix_cache_queries_total``"
+
+#: ../../source/features/multi-engine.rst:268
+msgid "``vllm:prefix_cache_queries_total``"
+msgstr "``vllm:prefix_cache_queries_total``"
+
+#: ../../source/features/multi-engine.rst:272
+msgid "``prefix_cache_hits_total``"
+msgstr "``prefix_cache_hits_total``"
+
+#: ../../source/features/multi-engine.rst:273
+msgid "``vllm:prefix_cache_hits_total``"
+msgstr "``vllm:prefix_cache_hits_total``"
+
+#: ../../source/features/multi-engine.rst:277
+msgid "``external_prefix_cache_queries_total``"
+msgstr "``external_prefix_cache_queries_total``"
+
+#: ../../source/features/multi-engine.rst:278
+msgid "``vllm:external_prefix_cache_queries_total``"
+msgstr "``vllm:external_prefix_cache_queries_total``"
+
+#: ../../source/features/multi-engine.rst:282
+msgid "``external_prefix_cache_hits_total``"
+msgstr "``external_prefix_cache_hits_total``"
+
+#: ../../source/features/multi-engine.rst:283
+msgid "``vllm:external_prefix_cache_hits_total``"
+msgstr "``vllm:external_prefix_cache_hits_total``"
+
+#: ../../source/features/multi-engine.rst:287
+msgid "``nixl_xfer_time_seconds``"
+msgstr "``nixl_xfer_time_seconds``"
+
+#: ../../source/features/multi-engine.rst:288
+msgid "``vllm:nixl_xfer_time_seconds``"
+msgstr "``vllm:nixl_xfer_time_seconds``"
+
+#: ../../source/features/multi-engine.rst:292
+msgid "``nixl_post_time_seconds``"
+msgstr "``nixl_post_time_seconds``"
+
+#: ../../source/features/multi-engine.rst:293
+msgid "``vllm:nixl_post_time_seconds``"
+msgstr "``vllm:nixl_post_time_seconds``"
+
+#: ../../source/features/multi-engine.rst:297
+msgid "``nixl_bytes_transferred``"
+msgstr "``nixl_bytes_transferred``"
+
+#: ../../source/features/multi-engine.rst:298
+msgid "``vllm:nixl_bytes_transferred``"
+msgstr "``vllm:nixl_bytes_transferred``"
+
+#: ../../source/features/multi-engine.rst:302
+msgid "``nixl_num_descriptors``"
+msgstr "``nixl_num_descriptors``"
+
+#: ../../source/features/multi-engine.rst:303
+msgid "``vllm:nixl_num_descriptors``"
+msgstr "``vllm:nixl_num_descriptors``"
+
+#: ../../source/features/multi-engine.rst:307
+msgid "``nixl_num_failed_transfers_total``"
+msgstr "``nixl_num_failed_transfers_total``"
+
+#: ../../source/features/multi-engine.rst:308
+msgid "``vllm:nixl_num_failed_transfers``"
+msgstr "``vllm:nixl_num_failed_transfers``"
+
+#: ../../source/features/multi-engine.rst:312
+msgid "``nixl_num_failed_notifications_total``"
+msgstr "``nixl_num_failed_notifications_total``"
+
+#: ../../source/features/multi-engine.rst:313
+msgid "``vllm:nixl_num_failed_notifications``"
+msgstr "``vllm:nixl_num_failed_notifications``"
+
+#: ../../source/features/multi-engine.rst:317
+msgid "``avg_prompt_throughput_toks_per_s``"
+msgstr "``avg_prompt_throughput_toks_per_s``"
+
+#: ../../source/features/multi-engine.rst:318
+msgid "``vllm:avg_prompt_throughput_toks_per_s``"
+msgstr "``vllm:avg_prompt_throughput_toks_per_s``"
+
+#: ../../source/features/multi-engine.rst:322
+msgid "``avg_generation_throughput_toks_per_s``"
+msgstr "``avg_generation_throughput_toks_per_s``"
+
+#: ../../source/features/multi-engine.rst:323
+msgid "``vllm:avg_generation_throughput_toks_per_s``"
+msgstr "``vllm:avg_generation_throughput_toks_per_s``"
+
+#: ../../source/features/multi-engine.rst:324
+msgid "``sglang:gen_throughput``"
+msgstr "``sglang:gen_throughput``"
+
+#: ../../source/features/multi-engine.rst:327
+msgid "``max_lora``"
+msgstr "``max_lora``"
+
+#: ../../source/features/multi-engine.rst:328
+#: ../../source/features/multi-engine.rst:333
+#: ../../source/features/multi-engine.rst:338
+msgid "``vllm:lora_requests_info``"
+msgstr "``vllm:lora_requests_info``"
+
+#: ../../source/features/multi-engine.rst:332
+msgid "``running_lora_adapters``"
+msgstr "``running_lora_adapters``"
+
+#: ../../source/features/multi-engine.rst:337
+msgid "``waiting_lora_adapters``"
+msgstr "``waiting_lora_adapters``"
+
+#: ../../source/features/multi-engine.rst:343
+msgid ""
+"The SGLang entries for ``gpu_cache_usage_perc`` and "
+"``kv_cache_usage_perc`` map to ``sglang:token_usage`` [1]_."
+msgstr ""
+"SGLang 的 ``gpu_cache_usage_perc`` 和 ``kv_cache_usage_perc`` 映射到 "
+"``sglang:token_usage`` [1]_。"
+
+#: ../../source/features/multi-engine.rst:345
+msgid ""
+"`https://github.com/sgl-project/sglang/issues/5979 <https://github.com"
+"/sgl-project/sglang/issues/5979>`_"
+msgstr ""
+"`https://github.com/sgl-project/sglang/issues/5979 <https://github.com"
+"/sgl-project/sglang/issues/5979>`_"
+
+#: ../../source/features/multi-engine.rst:348
+msgid "TRT-LLM Quickstart"
+msgstr "TRT-LLM 快速开始"
+
+#: ../../source/features/multi-engine.rst:350
+msgid ""
+"To use TRT-LLM as the inference engine, set the ``model.aibrix.ai/engine:"
+" trtllm`` label on your deployment. TRT-LLM must be configured to expose "
+"performance metrics by enabling ``return_perf_metrics: true``, "
+"``enable_iter_perf_stats: true``, and ``enable_iter_req_stats: true`` in "
+"its server config."
+msgstr ""
+"要将 TRT-LLM 用作推理引擎，请在 deployment 上设置 ``model.aibrix.ai/engine: trtllm`` 标签。TRT-LLM "
+"必须在其 server config 中启用 ``return_perf_metrics: true`` 、``enable_iter_perf_stats: "
+"true`` 和 ``enable_iter_req_stats: true`` ，以暴露性能指标。"
+
+#: ../../source/features/multi-engine.rst:352
+msgid "Sample configurations are available at:"
+msgstr "示例配置见："
+
+#: ../../source/features/multi-engine.rst:354
+msgid ""
+"`samples/quickstart/tensorrt/tensor-rt.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/quickstart/tensorrt/tensor-rt.yaml>`_ — "
+"standard single-instance deployment"
+msgstr ""
+"`samples/quickstart/tensorrt/tensor-rt.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/quickstart/tensorrt/tensor-rt.yaml>`_ — "
+"标准单实例部署"
+
+#: ../../source/features/multi-engine.rst:355
+msgid ""
+"`samples/quickstart/tensorrt/tensor-rt-pd.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/quickstart/tensorrt/tensor-rt-pd.yaml>`_"
+" — prefill/decode disaggregated deployment using StormService"
+msgstr ""
+"`samples/quickstart/tensorrt/tensor-rt-pd.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/quickstart/tensorrt/tensor-rt-pd.yaml>`_"
+" — 使用 StormService 的 Prefill/Decode 分离部署"
+
+#: ../../source/features/multi-engine.rst:357
+msgid "Example deployment label configuration for TRT-LLM:"
+msgstr "TRT-LLM 的 deployment 标签配置示例："
+
+#: ../../source/features/multi-engine.rst:367
+msgid "TRT-LLM Limitations"
+msgstr "TRT-LLM 限制"
+
+#: ../../source/features/multi-engine.rst:369
+msgid ""
+"**No queue-depth metrics**: TRT-LLM does not expose "
+"``num_requests_running`` or ``num_requests_waiting``. Routing policies "
+"that rely on queue depth (e.g., least-request) will fall back to random "
+"routing."
+msgstr ""
+"**无队列深度指标** ：TRT-LLM 不暴露 ``num_requests_running`` 或 ``num_requests_waiting`` "
+"。依赖队列深度的路由策略（例如 least-request）会回退到随机路由。"
+
+#: ../../source/features/multi-engine.rst:370
+msgid ""
+"**Metrics require explicit config**: Performance metrics are only emitted"
+" when ``return_perf_metrics: true``, ``enable_iter_perf_stats: true``, "
+"and ``enable_iter_req_stats: true`` are set in the TRT-LLM server "
+"configuration."
+msgstr ""
+"**指标需要显式配置** ：仅当 TRT-LLM server 配置中设置 ``return_perf_metrics: true`` 、``enable_iter_perf_stats: "
+"true`` 和 ``enable_iter_req_stats: true`` 时才会发出性能指标。"
+
+#: ../../source/features/multi-engine.rst:373
+msgid "Adding New Engines"
+msgstr "添加新引擎"
+
+#: ../../source/features/multi-engine.rst:375
+msgid "To support a new engine or metrics type:"
+msgstr "要支持新引擎或指标类型："
+
+#: ../../source/features/multi-engine.rst:377
+msgid ""
+"Adding engine type to metrics name mapping at "
+"`aibrix/pkg/metrics/metrics.go`."
+msgstr "在 `aibrix/pkg/metrics/metrics.go` 中添加引擎类型到指标名的映射。"
+
+#: ../../source/features/multi-engine.rst:378
+msgid ""
+"Adding engine name to `model.aibrix.ai/engine` label in the deployment "
+"YAML file."
+msgstr "在 deployment YAML 的 `model.aibrix.ai/engine` 标签中添加引擎名。"
+
+#: ../../source/features/multi-engine.rst:380
+msgid "For more details, see the `cache_metrics.go` and `metrics.go` in:"
+msgstr "更多细节见以下路径中的 `cache_metrics.go` 和 `metrics.go` ："
+
+#: ../../source/features/multi-engine.rst:382
+msgid ""
+"`aibrix/pkg/cache/cache_metrics.go <https://github.com/vllm-"
+"project/aibrix/blob/main/pkg/cache/cache_metrics.go>`_"
+msgstr ""
+"`aibrix/pkg/cache/cache_metrics.go <https://github.com/vllm-"
+"project/aibrix/blob/main/pkg/cache/cache_metrics.go>`_"
+
+#: ../../source/features/multi-engine.rst:383
+msgid ""
+"`aibrix/pkg/metrics/metrics.go <https://github.com/vllm-"
+"project/aibrix/blob/main/pkg/metrics/metrics.go>`_"
+msgstr ""
+"`aibrix/pkg/metrics/metrics.go <https://github.com/vllm-"
+"project/aibrix/blob/main/pkg/metrics/metrics.go>`_"

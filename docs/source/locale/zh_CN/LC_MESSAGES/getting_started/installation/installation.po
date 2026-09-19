@@ -1,0 +1,223 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 19:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/getting_started/installation/installation.rst:122
+msgid "Getting Started"
+msgstr "快速开始"
+
+#: ../../source/getting_started/installation/installation.rst:5
+msgid "Installation"
+msgstr "安装"
+
+#: ../../source/getting_started/installation/installation.rst:7
+msgid ""
+"This guide describes how to install AIBrix manifests in different "
+"platforms."
+msgstr "本指南说明如何在不同平台安装 AIBrix 清单。"
+
+#: ../../source/getting_started/installation/installation.rst:9
+msgid ""
+"Currently, AIBrix installation does rely on other cloud specific "
+"features. It's fully compatible with vanilla Kubernetes."
+msgstr ""
+"目前，AIBrix 安装并不依赖其他云平台特定功能，与原生 Kubernetes 完全兼容。"
+
+#: ../../source/getting_started/installation/installation.rst:12
+msgid "Install AIBrix on Cloud Kubernetes Clusters"
+msgstr "在云上的 Kubernetes 集群安装 AIBrix"
+
+#: ../../source/getting_started/installation/installation.rst:15
+msgid ""
+"AIBrix requires `Envoy Gateway <https://gateway.envoyproxy.io/>`_ for "
+"request routing."
+msgstr ""
+"AIBrix 需要 `Envoy Gateway <https://gateway.envoyproxy.io/>`_ 来做请求路由。"
+
+#: ../../source/getting_started/installation/installation.rst:17
+msgid ""
+"`KubeRay <https://github.com/ray-project/kuberay>`_ is **optional** and "
+"only required if you plan to use Ray as your distributed inference "
+"runtime (RayClusterFleet, RayClusterReplicaSet)."
+msgstr ""
+"`KubeRay <https://github.com/ray-project/kuberay>`_ 是 **可选** 的，仅在计划使用 "
+"Ray 作为分布式推理运行时（RayClusterFleet、RayClusterReplicaSet）时才需要。"
+
+#: ../../source/getting_started/installation/installation.rst:19
+msgid ""
+"AIBrix can run without KubeRay - use StormService for both single-node "
+"and multi-node inference workloads. The distributed inference controller "
+"will be automatically skipped if KubeRay CRDs are not detected."
+msgstr ""
+"没有 KubeRay 也可以运行 AIBrix：单节点和多节点推理工作负载都可使用 StormService。"
+"若未检测到 KubeRay CRD，分布式推理控制器会自动跳过。"
+
+#: ../../source/getting_started/installation/installation.rst:23
+msgid "Stable Version"
+msgstr "稳定版"
+
+#: ../../source/getting_started/installation/installation.rst:36
+msgid "Stable Version Using Helm"
+msgstr "使用 Helm 安装稳定版"
+
+#: ../../source/getting_started/installation/installation.rst:39
+msgid "Prerequisites"
+msgstr "前置条件"
+
+#: ../../source/getting_started/installation/installation.rst:41
+msgid "**Envoy Gateway**"
+msgstr "**Envoy Gateway**"
+
+#: ../../source/getting_started/installation/installation.rst:51
+msgid ""
+"If you are experiencing network issues with `docker.io`, you can install "
+"the helm chart from the code repo "
+"https://github.com/envoyproxy/gateway/tree/main/charts/gateway-helm "
+"instead."
+msgstr ""
+"如果访问 `docker.io` 遇到网络问题，可以从代码仓库 "
+"https://github.com/envoyproxy/gateway/tree/main/charts/gateway-helm "
+"安装 Helm chart。"
+
+#: ../../source/getting_started/installation/installation.rst:53
+msgid "**KubeRay operator (Optional)**"
+msgstr "**KubeRay operator（可选）**"
+
+#: ../../source/getting_started/installation/installation.rst:56
+msgid ""
+"Skip this step if you don't need Ray-based distributed inference. AIBrix "
+"will work without KubeRay for StormService-based workloads."
+msgstr ""
+"如果不需要基于 Ray 的分布式推理，可跳过此步。基于 StormService 的工作负载无需 "
+"KubeRay 即可运行 AIBrix。"
+
+#: ../../source/getting_started/installation/installation.rst:76
+msgid "Install AIBrix with Helm"
+msgstr "使用 Helm 安装 AIBrix"
+
+#: ../../source/getting_started/installation/installation.rst:87
+msgid "Upgrade AIBrix with Helm"
+msgstr "使用 Helm 升级 AIBrix"
+
+#: ../../source/getting_started/installation/installation.rst:95
+msgid "Uninstall AIBrix with Helm"
+msgstr "使用 Helm 卸载 AIBrix"
+
+#: ../../source/getting_started/installation/installation.rst:105
+msgid "Nightly Version"
+msgstr "Nightly 版本"
+
+#: ../../source/getting_started/installation/installation.rst:120
+msgid "Install AIBrix in testing Environments"
+msgstr "在测试环境中安装 AIBrix"
+
+#: ../../source/getting_started/installation/installation.rst:135
+msgid "Install Individual AIBrix Components"
+msgstr "安装单个 AIBrix 组件"
+
+#: ../../source/getting_started/installation/installation.rst:139
+msgid "Autoscaler"
+msgstr "Autoscaler"
+
+#: ../../source/getting_started/installation/installation.rst:147
+msgid "Distributed Inference (Ray-based)"
+msgstr "分布式推理（基于 Ray）"
+
+#: ../../source/getting_started/installation/installation.rst:150
+msgid "This requires KubeRay operator to be installed first."
+msgstr "这需要先安装 KubeRay operator。"
+
+#: ../../source/getting_started/installation/installation.rst:158
+msgid "Model Adapter(Lora)"
+msgstr "Model Adapter（LoRA）"
+
+#: ../../source/getting_started/installation/installation.rst:165
+msgid "KV Cache"
+msgstr "KV Cache"
+
+#: ../../source/getting_started/installation/installation.rst:173
+msgid "Disabling Controllers"
+msgstr "禁用控制器"
+
+#: ../../source/getting_started/installation/installation.rst:175
+msgid ""
+"If you install AIBrix with all controllers enabled by default but don't "
+"have KubeRay installed, the distributed inference controller will be "
+"automatically skipped with a log message."
+msgstr ""
+"如果按默认启用全部控制器安装 AIBrix，但未安装 KubeRay，分布式推理控制器会自动跳过，"
+"并输出一条日志。"
+
+#: ../../source/getting_started/installation/installation.rst:177
+msgid ""
+"To explicitly disable specific controllers, use the ``--controllers`` "
+"flag:"
+msgstr "要显式禁用特定控制器，使用 ``--controllers`` 标志："
+
+#: ../../source/getting_started/installation/installation.rst:187
+msgid "Available controllers:"
+msgstr "可用控制器："
+
+#: ../../source/getting_started/installation/installation.rst:189
+msgid "``pod-autoscaler-controller``: HPA/KPA-style autoscaling"
+msgstr "``pod-autoscaler-controller`` ：HPA/KPA 风格的自动扩缩容"
+
+#: ../../source/getting_started/installation/installation.rst:190
+msgid ""
+"``distributed-inference-controller``: Ray-based distributed inference "
+"(requires KubeRay)"
+msgstr "``distributed-inference-controller`` ：基于 Ray 的分布式推理（需要 KubeRay）"
+
+#: ../../source/getting_started/installation/installation.rst:191
+msgid "``model-adapter-controller``: LoRA adapter management"
+msgstr "``model-adapter-controller`` ：LoRA adapter 管理"
+
+#: ../../source/getting_started/installation/installation.rst:192
+msgid ""
+"``kv-cache-controller``: Distributed KV cache server orchestration with "
+"consistent hashing"
+msgstr "``kv-cache-controller`` ：带一致性哈希的分布式 KV cache 服务编排"
+
+#: ../../source/getting_started/installation/installation.rst:193
+msgid ""
+"``stormservice-controller``: Multi-node orchestration with P/D and AFD "
+"support"
+msgstr "``stormservice-controller`` ：支持 P/D 和 AFD 的多节点编排"
+
+#: ../../source/getting_started/installation/installation.rst:195
+msgid "What's next?"
+msgstr "下一步"
+
+#: ../../source/getting_started/installation/installation.rst:198
+msgid ":doc:`../quickstart`: deploy your first model"
+msgstr ":doc:`../quickstart` ：部署第一个模型"
+
+#: ../../source/getting_started/installation/installation.rst:199
+msgid ""
+":doc:`../../production/model-deployment`: production model deployment "
+"guidance"
+msgstr ":doc:`../../production/model-deployment` ：生产环境模型部署指南"
+
+#: ../../source/getting_started/installation/installation.rst:200
+msgid ":doc:`../../production/gateway`: production gateway configuration"
+msgstr ":doc:`../../production/gateway` ：生产环境网关配置"
+
+#: ../../source/getting_started/installation/installation.rst:201
+msgid ":doc:`../../production/observability`: metrics, dashboards, and telemetry"
+msgstr ":doc:`../../production/observability` ：指标、仪表盘和遥测"

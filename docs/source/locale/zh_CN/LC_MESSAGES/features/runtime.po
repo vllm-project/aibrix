@@ -1,0 +1,980 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/features/runtime.rst:5
+msgid "AI Engine Runtime"
+msgstr "AI Engine Runtime"
+
+#: ../../source/features/runtime.rst:8
+msgid "Overview"
+msgstr "概述"
+
+#: ../../source/features/runtime.rst:10
+msgid ""
+"The AI Engine Runtime is a small HTTP service that runs next to the "
+"inference engine, usually as a sidecar container in the same pod. It "
+"gives the AIBrix control plane one stable API for things that otherwise "
+"differ from engine to engine:"
+msgstr ""
+"AI Engine Runtime 是一个小型 HTTP 服务，与推理引擎一起运行，通常作为同一 Pod "
+"中的 sidecar 容器。它为 AIBrix 控制面提供统一 API，用于处理各引擎之间原本不一致的能力："
+
+#: ../../source/features/runtime.rst:14
+msgid ""
+"**Metric standardization**: it scrapes the engine's ``/metrics`` and re-"
+"exports them on its own port with a consistent naming, so the autoscaler "
+"and the gateway can read one shape."
+msgstr "**指标标准化** ：抓取引擎的 ``/metrics`` ，并在自身端口上以统一命名重新导出，以便自动扩缩容器和网关读取同一格式。"
+
+#: ../../source/features/runtime.rst:16
+msgid ""
+"**Model and adapter management**: it downloads model weights from "
+"HuggingFace, S3 or TOS and loads or unloads LoRA adapters on the engine. "
+"The :doc:`lora-dynamic-loading` controller calls these endpoints."
+msgstr ""
+"**模型与适配器管理** ：从 Hugging Face、S3 或 TOS 下载模型权重，并在引擎上加载或卸载 LoRA 适配器。:doc:`lora-dynamic-loading` "
+"控制器会调用这些接口。"
+
+#: ../../source/features/runtime.rst:19
+msgid ""
+"**Runtime model lifecycle**: an experimental set of endpoints used by "
+":doc:`modelclaim` to start, sleep, wake and deactivate engine processes "
+"in a shared pod."
+msgstr "**Runtime 模型生命周期** ：一组实验性接口，供 :doc:`modelclaim` 在共享 Pod 中启动、休眠、唤醒和停用引擎进程。"
+
+#: ../../source/features/runtime.rst:22
+msgid ""
+"The runtime does not proxy inference traffic: Envoy forwards requests "
+"straight to the engine container. The only contact the gateway has with "
+"the runtime is the wake call it makes for a sleeping ModelClaim engine. "
+"Most deployments do not need the runtime. Install it when you use dynamic"
+" LoRA loading or ModelClaim."
+msgstr ""
+"Runtime 不代理推理流量：Envoy 将请求直接转发到引擎容器。网关与 runtime 的唯一交互，"
+"是对处于休眠状态的 ModelClaim 引擎发起唤醒调用。大多数部署不需要 runtime。"
+"仅在使用动态 LoRA 加载或 ModelClaim 时安装。"
+
+#: ../../source/features/runtime.rst:28
+msgid "How it works"
+msgstr "工作原理"
+
+#: ../../source/features/runtime.rst:41
+msgid ""
+"The runtime listens on port ``8080`` and reaches the engine through "
+"``INFERENCE_ENGINE_ENDPOINT`` (``http://localhost:8000`` by default)."
+msgstr ""
+"Runtime 监听 ``8080`` 端口，并通过 ``INFERENCE_ENGINE_ENDPOINT`` （默认 ``http://localhost:8000`` "
+"）访问引擎。"
+
+#: ../../source/features/runtime.rst:43
+msgid ""
+"The controller manager flag ``--enable-runtime-sidecar`` only affects the"
+" ModelAdapter (LoRA) controller. With it on, that controller uses the "
+"runtime API on ``8080`` when a container named ``aibrix-runtime`` is "
+"present and the engine's own API on ``8000`` otherwise; with it off (the "
+"default) it always calls the engine. The ModelClaim controller and the "
+"gateway's wake path always use the runtime on ``8080``, regardless of the"
+" flag."
+msgstr ""
+"控制器管理器标志 ``--enable-runtime-sidecar`` 仅影响 ModelAdapter（LoRA）控制器。"
+"开启后，若存在名为 ``aibrix-runtime`` 的容器，该控制器使用 ``8080`` 上的 runtime "
+"API，否则使用引擎自身 ``8000`` 上的 API；关闭时（默认）始终调用引擎。"
+"ModelClaim 控制器和网关的唤醒路径始终使用 ``8080`` 上的 runtime，与该标志无关。"
+
+#: ../../source/features/runtime.rst:48
+msgid ""
+"Metrics are collected on each scrape: the runtime fetches the engine's "
+"metrics page, applies the standardization rules for ``INFERENCE_ENGINE`` "
+"and serves the result. Rule sets for ``sglang`` and ``trtllm`` exist in "
+"the code, but the runtime only starts with ``INFERENCE_ENGINE=vllm``: the"
+" engine client it initialises at startup rejects every other value."
+msgstr ""
+"每次抓取都会收集指标：runtime 拉取引擎的指标页，按 ``INFERENCE_ENGINE`` 应用标准化规则"
+"并提供结果。代码中存在 ``sglang`` 和 ``trtllm`` 的规则集，但 runtime 仅在 "
+"``INFERENCE_ENGINE=vllm`` 时启动：启动时初始化的引擎客户端会拒绝其他所有值。"
+
+#: ../../source/features/runtime.rst:53
+msgid ""
+"The model management API (``/v1/lora_adapter/*``, ``/v1/models``) is "
+"implemented for vLLM 0.6.1 and later. Other engines are not supported by "
+"those endpoints yet."
+msgstr ""
+"模型管理 API（``/v1/lora_adapter/*`` 、``/v1/models`` ）面向 vLLM 0.6.1 及更高版本实现。其他引擎暂不支持这些接口。"
+
+#: ../../source/features/runtime.rst:57
+msgid "Installation"
+msgstr "安装"
+
+#: ../../source/features/runtime.rst:59
+msgid ""
+"AIBrix Runtime can be injected into your workloads automatically using "
+"webhook-based sidecar injection (recommended) or manually added to your "
+"deployment manifests."
+msgstr ""
+"可使用基于 webhook 的 sidecar 注入（推荐）自动将 AIBrix Runtime 注入工作负载，"
+"或手动添加到部署清单。"
+
+#: ../../source/features/runtime.rst:62
+msgid "Automatic Sidecar Injection (Recommended)"
+msgstr "自动 Sidecar 注入（推荐）"
+
+#: ../../source/features/runtime.rst:64
+msgid ""
+"The easiest way to enable the runtime is through automatic sidecar "
+"injection. Simply add an annotation to your Deployment or StormService:"
+msgstr ""
+"启用 runtime 最简单的方式是自动 sidecar 注入。只需在 Deployment 或 StormService "
+"上添加注解："
+
+#: ../../source/features/runtime.rst:82
+msgid ""
+"The webhook will automatically inject the ``aibrix-runtime`` sidecar "
+"container into your pods."
+msgstr "Webhook 会自动将 ``aibrix-runtime`` sidecar 容器注入 Pod。"
+
+#: ../../source/features/runtime.rst:84
+msgid "What gets injected, so you know what to expect in the pod spec:"
+msgstr "注入内容如下，便于了解 Pod spec 中会出现什么："
+
+#: ../../source/features/runtime.rst:86
+msgid ""
+"a container named ``aibrix-runtime`` running ``aibrix_runtime --port "
+"8080`` from image ``aibrix/runtime:v0.5.0`` unless overridden by the "
+"image annotation below;"
+msgstr ""
+"名为 ``aibrix-runtime`` 的容器，运行 ``aibrix_runtime --port 8080`` ，镜像为 ``aibrix/runtime:v0.5.0`` "
+"，除非被下方的镜像注解覆盖；"
+
+#: ../../source/features/runtime.rst:88
+msgid ""
+"``INFERENCE_ENGINE`` taken from the ``model.aibrix.ai/engine`` annotation"
+" on the workload when set, otherwise inferred from the engine container's"
+" image name (``vllm``, ``sglang``, ``tgi``, ``triton``, ``llamacpp``, "
+"else ``unknown``), and "
+"``INFERENCE_ENGINE_ENDPOINT=http://localhost:8000``. Only ``vllm`` yields"
+" a runtime that starts, so inject it only into vLLM workloads;"
+msgstr ""
+"``INFERENCE_ENGINE`` 取自工作负载上的 ``model.aibrix.ai/engine`` 注解（若已设置），否则从引擎容器镜像名推断（``vllm`` "
+"、``sglang`` 、``tgi`` 、``triton`` 、``llamacpp`` ，否则为 ``unknown`` ），以及 ``INFERENCE_ENGINE_ENDPOINT=http://localhost:8000`` "
+"。只有 ``vllm`` 能让 runtime 成功启动，因此仅注入到 vLLM 工作负载；"
+
+#: ../../source/features/runtime.rst:93
+msgid ""
+"a container port named ``metrics`` on ``8080``, a liveness probe on "
+"``/healthz`` and a readiness probe on ``/ready``;"
+msgstr "名为 ``metrics`` 的容器端口 ``8080`` ，存活探针 ``/healthz`` ，就绪探针 ``/ready`` ；"
+
+#: ../../source/features/runtime.rst:95
+msgid ""
+"a volume ``adapter-storage`` mounted at ``/tmp/aibrix/adapters`` for "
+"downloaded adapters;"
+msgstr "卷 ``adapter-storage`` ，挂载到 ``/tmp/aibrix/adapters`` ，用于已下载的适配器；"
+
+#: ../../source/features/runtime.rst:96
+msgid ""
+"resource requests of ``100m`` CPU and ``256Mi`` memory, limits of "
+"``500m`` and ``512Mi``."
+msgstr "资源请求为 ``100m`` CPU 和 ``256Mi`` 内存，限制为 ``500m`` 和 ``512Mi`` 。"
+
+#: ../../source/features/runtime.rst:98
+msgid ""
+"The webhook is registered for ``Deployment`` and ``StormService`` objects"
+" with ``failurePolicy: Ignore``, so a webhook outage never blocks "
+"workload creation; it only means the sidecar is not added."
+msgstr ""
+"Webhook 注册在 ``Deployment`` 和 ``StormService`` 对象上，``failurePolicy: Ignore`` "
+"，因此 webhook 故障不会阻止工作负载创建，只是不会添加 sidecar。"
+
+#: ../../source/features/runtime.rst:102
+msgid "**For StormService**"
+msgstr "**StormService**"
+
+#: ../../source/features/runtime.rst:104
+msgid "Sidecar injection also works with StormService custom resources:"
+msgstr "Sidecar 注入同样适用于 StormService 自定义资源："
+
+#: ../../source/features/runtime.rst:126
+msgid "The runtime sidecar will be injected into each role's pod template."
+msgstr "Runtime sidecar 会注入到每个角色的 Pod 模板中。"
+
+#: ../../source/features/runtime.rst:128
+msgid "**Customize Runtime Image**"
+msgstr "**自定义 Runtime 镜像**"
+
+#: ../../source/features/runtime.rst:130
+msgid "You can specify a custom runtime image using an annotation:"
+msgstr "可通过注解指定自定义 runtime 镜像："
+
+#: ../../source/features/runtime.rst:144
+msgid "**Enable Global Runtime Flag**"
+msgstr "**启用全局 Runtime 标志**"
+
+#: ../../source/features/runtime.rst:146
+msgid ""
+"To enable the controller to use the runtime sidecar API, set the global "
+"flag when starting the controller manager:"
+msgstr "要让控制器使用 runtime sidecar API，在启动控制器管理器时设置全局标志："
+
+#: ../../source/features/runtime.rst:153
+msgid "The runtime detection logic works as follows:"
+msgstr "Runtime 检测逻辑如下："
+
+#: ../../source/features/runtime.rst:155
+msgid ""
+"**EnableRuntimeSidecar = false**: Controller always uses direct engine "
+"API (port 8000), even if sidecar is injected"
+msgstr "**EnableRuntimeSidecar = false** ：控制器始终使用引擎直连 API（端口 8000），即使已注入 sidecar"
+
+#: ../../source/features/runtime.rst:156
+msgid ""
+"**EnableRuntimeSidecar = true**: Controller detects if pod has ``aibrix-"
+"runtime`` container:"
+msgstr "**EnableRuntimeSidecar = true** ：控制器检测 Pod 是否有 ``aibrix-runtime`` 容器："
+
+#: ../../source/features/runtime.rst:158
+msgid "Sidecar present → Uses runtime API (port 8080)"
+msgstr "存在 sidecar → 使用 runtime API（端口 8080）"
+
+#: ../../source/features/runtime.rst:159
+msgid "Sidecar absent → Fallback to direct engine API (port 8000)"
+msgstr "不存在 sidecar → 回退到引擎直连 API（端口 8000）"
+
+#: ../../source/features/runtime.rst:161
+msgid ""
+"This design ensures functionality works with or without the runtime "
+"sidecar, providing maximum flexibility."
+msgstr "该设计确保有无 runtime sidecar 都能工作，提供最大灵活性。"
+
+#: ../../source/features/runtime.rst:164
+msgid "Manual Sidecar Installation"
+msgstr "手动安装 Sidecar"
+
+#: ../../source/features/runtime.rst:166
+msgid ""
+"If you prefer manual control, you can add the runtime sidecar directly to"
+" your deployment YAML:"
+msgstr "如需手动控制，可将 runtime sidecar 直接添加到部署 YAML："
+
+#: ../../source/features/runtime.rst:199
+msgid "Standalone Installation"
+msgstr "独立安装"
+
+#: ../../source/features/runtime.rst:201
+msgid ""
+"If you like to use the runtime for other cases outside of Kubernetes, you"
+" can install it by the following command."
+msgstr "若要在 Kubernetes 之外使用 runtime，可执行以下命令安装。"
+
+#: ../../source/features/runtime.rst:205
+msgid "``python3 -m pip install aibrix``"
+msgstr "``python3 -m pip install aibrix``"
+
+#: ../../source/features/runtime.rst:207
+msgid "If you want to use nightly version, you can install from code."
+msgstr "若要使用 nightly 版本，可从源码安装。"
+
+#: ../../source/features/runtime.rst:209
+msgid "``cd $AIBRIX_HOME/python/aibrix && python3 -m pip install -e .``"
+msgstr "``cd $AIBRIX_HOME/python/aibrix && python3 -m pip install -e .``"
+
+#: ../../source/features/runtime.rst:213
+msgid "Metric Standardization"
+msgstr "指标标准化"
+
+#: ../../source/features/runtime.rst:215
+msgid ""
+"Different inference engines will expose different metrics, and AI Runtime"
+" will standardize them."
+msgstr "不同推理引擎会暴露不同指标，AI Runtime 会将其标准化。"
+
+#: ../../source/features/runtime.rst:217
+msgid ""
+"Define the information related to the inference engine side in the "
+"container environment variables. For example, if ``vLLM`` provides "
+"metrics services on ``http://localhost:8000/metrics``, launch the AI "
+"Runtime Server by the following command:"
+msgstr ""
+"在容器环境变量中定义推理引擎相关信息。例如，若 ``vLLM`` 在 "
+"``http://localhost:8000/metrics`` 提供指标服务，可用以下命令启动 AI Runtime Server："
+
+#: ../../source/features/runtime.rst:224
+msgid ""
+"The runtime serves the result on ``http://localhost:8080/metrics``. Every"
+" metric the engine exposes is passed through unchanged, and for the "
+"metrics that have a standardization rule the runtime additionally emits a"
+" copy under an engine-neutral ``aibrix:`` name. The SGLang and TRT-LLM "
+"columns below describe rule sets present in the code; they cannot be "
+"selected today because the runtime only starts with "
+"``INFERENCE_ENGINE=vllm``."
+msgstr ""
+"Runtime 在 ``http://localhost:8080/metrics`` 提供结果。引擎暴露的每条指标都会原样透传；"
+"对有标准化规则的指标，runtime 还会额外以引擎无关的 ``aibrix:`` 名称输出一份副本。"
+"下表中 SGLang 和 TRT-LLM 列描述的是代码中已有的规则集；目前无法选用，因为 runtime 仅在 "
+"``INFERENCE_ENGINE=vllm`` 时启动。"
+
+#: ../../source/features/runtime.rst:234
+msgid "Standard name"
+msgstr "标准名称"
+
+#: ../../source/features/runtime.rst:235
+msgid "vLLM source"
+msgstr "vLLM 来源"
+
+#: ../../source/features/runtime.rst:236
+msgid "SGLang source"
+msgstr "SGLang 来源"
+
+#: ../../source/features/runtime.rst:237
+msgid "TRT-LLM source"
+msgstr "TRT-LLM 来源"
+
+#: ../../source/features/runtime.rst:238
+msgid "``aibrix:queue_size``"
+msgstr "``aibrix:queue_size``"
+
+#: ../../source/features/runtime.rst:239
+msgid "``vllm:num_requests_waiting``"
+msgstr "``vllm:num_requests_waiting``"
+
+#: ../../source/features/runtime.rst:240
+msgid "``sglang:num_queue_reqs``"
+msgstr "``sglang:num_queue_reqs``"
+
+#: ../../source/features/runtime.rst:241 ../../source/features/runtime.rst:244
+#: ../../source/features/runtime.rst:245 ../../source/features/runtime.rst:248
+#: ../../source/features/runtime.rst:251 ../../source/features/runtime.rst:253
+#: ../../source/features/runtime.rst:257 ../../source/features/runtime.rst:261
+#: ../../source/features/runtime.rst:263 ../../source/features/runtime.rst:265
+#: ../../source/features/runtime.rst:280 ../../source/features/runtime.rst:283
+#: ../../source/features/runtime.rst:285 ../../source/features/runtime.rst:287
+#: ../../source/features/runtime.rst:288
+msgid "N/A"
+msgstr "N/A"
+
+#: ../../source/features/runtime.rst:242
+msgid "``aibrix:gpu_cache_usage_perc``"
+msgstr "``aibrix:gpu_cache_usage_perc``"
+
+#: ../../source/features/runtime.rst:243
+msgid "``vllm:gpu_cache_usage_perc``"
+msgstr "``vllm:gpu_cache_usage_perc``"
+
+#: ../../source/features/runtime.rst:246
+msgid "``aibrix:kv_cache_usage_perc``"
+msgstr "``aibrix:kv_cache_usage_perc``"
+
+#: ../../source/features/runtime.rst:247
+msgid "``vllm:kv_cache_usage_perc``"
+msgstr "``vllm:kv_cache_usage_perc``"
+
+#: ../../source/features/runtime.rst:249
+msgid "``kv_cache_utilization``"
+msgstr "``kv_cache_utilization``"
+
+#: ../../source/features/runtime.rst:250
+msgid "``aibrix:token_usage``"
+msgstr "``aibrix:token_usage``"
+
+#: ../../source/features/runtime.rst:252
+msgid "``sglang:token_usage``"
+msgstr "``sglang:token_usage``"
+
+#: ../../source/features/runtime.rst:254
+msgid "``aibrix:prompt_tokens_total``"
+msgstr "``aibrix:prompt_tokens_total``"
+
+#: ../../source/features/runtime.rst:255
+msgid "``vllm:prompt_tokens_total``"
+msgstr "``vllm:prompt_tokens_total``"
+
+#: ../../source/features/runtime.rst:256
+msgid "``sglang:prompt_tokens_total``"
+msgstr "``sglang:prompt_tokens_total``"
+
+#: ../../source/features/runtime.rst:258
+msgid "``aibrix:generation_tokens_total``"
+msgstr "``aibrix:generation_tokens_total``"
+
+#: ../../source/features/runtime.rst:259
+msgid "``vllm:generation_tokens_total``"
+msgstr "``vllm:generation_tokens_total``"
+
+#: ../../source/features/runtime.rst:260
+msgid "``sglang:generation_tokens_total``"
+msgstr "``sglang:generation_tokens_total``"
+
+#: ../../source/features/runtime.rst:262
+msgid "``aibrix:generation_throughput``"
+msgstr "``aibrix:generation_throughput``"
+
+#: ../../source/features/runtime.rst:264
+msgid "``sglang:gen_throughput``"
+msgstr "``sglang:gen_throughput``"
+
+#: ../../source/features/runtime.rst:266
+msgid "``aibrix:time_to_first_token_seconds``"
+msgstr "``aibrix:time_to_first_token_seconds``"
+
+#: ../../source/features/runtime.rst:267
+msgid "``vllm:time_to_first_token_seconds``"
+msgstr "``vllm:time_to_first_token_seconds``"
+
+#: ../../source/features/runtime.rst:268
+msgid "``sglang:time_to_first_token_seconds``"
+msgstr "``sglang:time_to_first_token_seconds``"
+
+#: ../../source/features/runtime.rst:269
+msgid "``time_to_first_token_seconds``"
+msgstr "``time_to_first_token_seconds``"
+
+#: ../../source/features/runtime.rst:270
+msgid "``aibrix:time_per_output_token_seconds``"
+msgstr "``aibrix:time_per_output_token_seconds``"
+
+#: ../../source/features/runtime.rst:271
+msgid "``vllm:time_per_output_token_seconds``"
+msgstr "``vllm:time_per_output_token_seconds``"
+
+#: ../../source/features/runtime.rst:272
+msgid "``sglang:time_per_output_token_seconds``"
+msgstr "``sglang:time_per_output_token_seconds``"
+
+#: ../../source/features/runtime.rst:273
+msgid "``time_per_output_token_seconds``"
+msgstr "``time_per_output_token_seconds``"
+
+#: ../../source/features/runtime.rst:274
+msgid "``aibrix:e2e_request_latency_seconds``"
+msgstr "``aibrix:e2e_request_latency_seconds``"
+
+#: ../../source/features/runtime.rst:275
+msgid "``vllm:e2e_request_latency_seconds``"
+msgstr "``vllm:e2e_request_latency_seconds``"
+
+#: ../../source/features/runtime.rst:276
+msgid "``sglang:e2e_request_latency_seconds``"
+msgstr "``sglang:e2e_request_latency_seconds``"
+
+#: ../../source/features/runtime.rst:277
+msgid "``e2e_request_latency_seconds``"
+msgstr "``e2e_request_latency_seconds``"
+
+#: ../../source/features/runtime.rst:278
+msgid "``aibrix:request_success_total``"
+msgstr "``aibrix:request_success_total``"
+
+#: ../../source/features/runtime.rst:279
+msgid "``vllm:request_success_total``"
+msgstr "``vllm:request_success_total``"
+
+#: ../../source/features/runtime.rst:281
+msgid "``request_success_total``"
+msgstr "``request_success_total``"
+
+#: ../../source/features/runtime.rst:282
+msgid "``aibrix:cache_hit_rate``"
+msgstr "``aibrix:cache_hit_rate``"
+
+#: ../../source/features/runtime.rst:284
+msgid "``sglang:cache_hit_rate``"
+msgstr "``sglang:cache_hit_rate``"
+
+#: ../../source/features/runtime.rst:286
+msgid "``aibrix:kv_cache_hit_rate``"
+msgstr "``aibrix:kv_cache_hit_rate``"
+
+#: ../../source/features/runtime.rst:289
+msgid "``kv_cache_hit_rate``"
+msgstr "``kv_cache_hit_rate``"
+
+#: ../../source/features/runtime.rst:291
+msgid ""
+"Set ``METRICS_RAW_PASSTHROUGH_MODE=1`` (or "
+"``METRICS_ENABLE_TRANSFORMATION=0``) to skip the copies and serve the "
+"engine's metrics exactly as they are. If a rule fails on a scrape, the "
+"runtime logs the error and falls back to raw passthrough for that scrape "
+"rather than dropping metrics. A sample of the vLLM output as served by "
+"the runtime:"
+msgstr ""
+"设置 ``METRICS_RAW_PASSTHROUGH_MODE=1`` （或 ``METRICS_ENABLE_TRANSFORMATION=0`` "
+"）可跳过副本，完全按引擎原始指标提供。若某次抓取时规则失败，runtime 会记录错误，并在该次抓取回退到原始透传，而不是丢弃指标。以下是 runtime "
+"提供的 vLLM 输出示例："
+
+#: ../../source/features/runtime.rst:358
+msgid ""
+"The sample above was captured before the ``aibrix:`` names were "
+"introduced and shows only the pass-through metrics. Current versions also"
+" emit the standardized copies listed in the table."
+msgstr ""
+"上述示例采集于引入 ``aibrix:`` 名称之前，仅展示透传指标。当前版本还会输出表中列出的标准化副本。"
+
+#: ../../source/features/runtime.rst:364
+msgid "Model Downloading"
+msgstr "模型下载"
+
+#: ../../source/features/runtime.rst:366
+msgid ""
+"The AI Engine Runtime supports downloading models from multiple remote "
+"sources, including HuggingFace, S3, and TOS. This is extremely useful "
+"when the control plane needs to interact with the pod to dynamically load"
+" new models."
+msgstr ""
+"AI Engine Runtime 支持从多个远程源下载模型，包括 Hugging Face、S3 和 TOS。"
+"当控制面需要与 Pod 交互以动态加载新模型时，这非常有用。"
+
+#: ../../source/features/runtime.rst:371
+msgid "Download From HuggingFace"
+msgstr "从 Hugging Face 下载"
+
+#: ../../source/features/runtime.rst:372
+msgid ""
+"First Define the necessary environment variables for the HuggingFace "
+"model."
+msgstr "首先为 Hugging Face 模型定义必要的环境变量。"
+
+#: ../../source/features/runtime.rst:383
+msgid "Then use AI Engine Runtime to download the model from HuggingFace:"
+msgstr "然后使用 AI Engine Runtime 从 Hugging Face 下载模型："
+
+#: ../../source/features/runtime.rst:393
+msgid "Download From S3"
+msgstr "从 S3 下载"
+
+#: ../../source/features/runtime.rst:394
+msgid "First Define the necessary environment variables for the S3 model."
+msgstr "首先为 S3 模型定义必要的环境变量。"
+
+#: ../../source/features/runtime.rst:408
+msgid "Then use AI Runtime to download the model from AWS S3:"
+msgstr "然后使用 AI Runtime 从 AWS S3 下载模型："
+
+#: ../../source/features/runtime.rst:418
+msgid "Download From TOS"
+msgstr "从 TOS 下载"
+
+#: ../../source/features/runtime.rst:419
+msgid "First Define the necessary environment variables for the TOS model."
+msgstr "首先为 TOS 模型定义必要的环境变量。"
+
+#: ../../source/features/runtime.rst:433
+msgid "Then use AI Runtime to download the model from TOS:"
+msgstr "然后使用 AI Runtime 从 TOS 下载模型："
+
+#: ../../source/features/runtime.rst:443
+msgid "Model Configuration API"
+msgstr "模型配置 API"
+
+#: ../../source/features/runtime.rst:446
+msgid ""
+"this needs the engine to starts with `--enable-lora` and env `export "
+"VLLM_ALLOW_RUNTIME_LORA_UPDATING=true` enabled. You can check "
+"`Dynamically serving LoRA Adapters "
+"<https://docs.vllm.ai/en/latest/features/lora.html#dynamically-serving-"
+"lora-adapters>`_ for more details."
+msgstr ""
+"这需要引擎以 `--enable-lora` 启动，并启用环境变量 `export VLLM_ALLOW_RUNTIME_LORA_UPDATING=true` "
+"。更多细节见 `Dynamically serving LoRA Adapters <https://docs.vllm.ai/en/latest/features/lora.html#dynamically-serving-lora-adapters>`_ "
+"。"
+
+#: ../../source/features/runtime.rst:450
+msgid ""
+"Let's assume you already have a base model and runtime deployed and you "
+"want to load a LoRA adapter to it."
+msgstr "假设你已部署基础模型和 runtime，并希望向其加载 LoRA 适配器。"
+
+#: ../../source/features/runtime.rst:558
+msgid "Configuration reference"
+msgstr "配置参考"
+
+#: ../../source/features/runtime.rst:560
+msgid ""
+"**Command line.** ``aibrix_runtime`` accepts ``--host`` (default "
+"``0.0.0.0``), ``--port`` (default ``8080``) and ``--enable-fastapi-docs``"
+" to serve the OpenAPI schema and Swagger UI."
+msgstr ""
+"**命令行。** ``aibrix_runtime`` 接受 ``--host`` （默认 ``0.0.0.0`` ）、``--port`` （默认 "
+"``8080`` ）以及 ``--enable-fastapi-docs`` （用于提供 OpenAPI schema 和 Swagger UI）。"
+
+#: ../../source/features/runtime.rst:563
+msgid "**Environment variables**"
+msgstr "**环境变量**"
+
+#: ../../source/features/runtime.rst:569
+msgid "Variable"
+msgstr "变量"
+
+#: ../../source/features/runtime.rst:570
+msgid "Default"
+msgstr "默认值"
+
+#: ../../source/features/runtime.rst:571 ../../source/features/runtime.rst:630
+msgid "Meaning"
+msgstr "含义"
+
+#: ../../source/features/runtime.rst:572
+msgid "``INFERENCE_ENGINE``"
+msgstr "``INFERENCE_ENGINE``"
+
+#: ../../source/features/runtime.rst:573
+msgid "``vllm``"
+msgstr "``vllm``"
+
+#: ../../source/features/runtime.rst:574
+msgid ""
+"Engine type. Must be ``vllm``; the runtime fails to start with any other "
+"value."
+msgstr "引擎类型。必须为 ``vllm`` ；其他值会导致 runtime 启动失败。"
+
+#: ../../source/features/runtime.rst:575
+msgid "``INFERENCE_ENGINE_VERSION``"
+msgstr "``INFERENCE_ENGINE_VERSION``"
+
+#: ../../source/features/runtime.rst:576
+msgid "``0.6.1``"
+msgstr "``0.6.1``"
+
+#: ../../source/features/runtime.rst:577
+msgid ""
+"Engine version. For vLLM, versions from ``0.6.1`` enable the LoRA "
+"endpoints."
+msgstr "引擎版本。对于 vLLM，``0.6.1`` 起启用 LoRA 接口。"
+
+#: ../../source/features/runtime.rst:578
+msgid "``INFERENCE_ENGINE_ENDPOINT``"
+msgstr "``INFERENCE_ENGINE_ENDPOINT``"
+
+#: ../../source/features/runtime.rst:579
+msgid "``http://localhost:8000``"
+msgstr "``http://localhost:8000``"
+
+#: ../../source/features/runtime.rst:580
+msgid "Base URL of the engine."
+msgstr "引擎的基础 URL。"
+
+#: ../../source/features/runtime.rst:581
+msgid "``METRIC_SCRAPE_PATH``"
+msgstr "``METRIC_SCRAPE_PATH``"
+
+#: ../../source/features/runtime.rst:582
+msgid "``/metrics``"
+msgstr "``/metrics``"
+
+#: ../../source/features/runtime.rst:583
+msgid "Path scraped on the engine."
+msgstr "在引擎上抓取的路径。"
+
+#: ../../source/features/runtime.rst:584
+msgid "``METRICS_ENABLE_TRANSFORMATION``"
+msgstr "``METRICS_ENABLE_TRANSFORMATION``"
+
+#: ../../source/features/runtime.rst:585 ../../source/features/runtime.rst:609
+msgid "``1``"
+msgstr "``1``"
+
+#: ../../source/features/runtime.rst:586
+msgid "Apply standardization rules. ``0`` forces raw passthrough."
+msgstr "应用标准化规则。``0`` 强制原始透传。"
+
+#: ../../source/features/runtime.rst:587
+msgid "``METRICS_RAW_PASSTHROUGH_MODE``"
+msgstr "``METRICS_RAW_PASSTHROUGH_MODE``"
+
+#: ../../source/features/runtime.rst:588 ../../source/features/runtime.rst:606
+msgid "``0``"
+msgstr "``0``"
+
+#: ../../source/features/runtime.rst:589
+msgid "Serve the engine's metrics unchanged."
+msgstr "原样提供引擎指标。"
+
+#: ../../source/features/runtime.rst:590
+msgid "``PROMETHEUS_MULTIPROC_DIR``"
+msgstr "``PROMETHEUS_MULTIPROC_DIR``"
+
+#: ../../source/features/runtime.rst:591
+msgid "``/tmp/aibrix/metrics/``"
+msgstr "``/tmp/aibrix/metrics/``"
+
+#: ../../source/features/runtime.rst:592
+msgid "Scratch directory for the Prometheus client."
+msgstr "Prometheus 客户端的临时目录。"
+
+#: ../../source/features/runtime.rst:593
+msgid "``DOWNLOADER_LOCAL_DIR``"
+msgstr "``DOWNLOADER_LOCAL_DIR``"
+
+#: ../../source/features/runtime.rst:594
+msgid "``/tmp/aibrix/models/``"
+msgstr "``/tmp/aibrix/models/``"
+
+#: ../../source/features/runtime.rst:595
+msgid "Where models are downloaded when a request does not name a directory."
+msgstr "请求未指定目录时，模型的下载位置。"
+
+#: ../../source/features/runtime.rst:596
+msgid "``DOWNLOADER_NUM_THREADS``"
+msgstr "``DOWNLOADER_NUM_THREADS``"
+
+#: ../../source/features/runtime.rst:597
+msgid "``32``"
+msgstr "``32``"
+
+#: ../../source/features/runtime.rst:598
+msgid "Parallel download threads."
+msgstr "并行下载线程数。"
+
+#: ../../source/features/runtime.rst:599
+msgid "``DOWNLOADER_ALLOW_FILE_SUFFIX``"
+msgstr "``DOWNLOADER_ALLOW_FILE_SUFFIX``"
+
+#: ../../source/features/runtime.rst:600
+msgid "*(all files)*"
+msgstr "*（所有文件）*"
+
+#: ../../source/features/runtime.rst:601
+msgid "Comma-separated suffixes to fetch, for example ``json, safetensors``."
+msgstr "要获取的后缀，逗号分隔，例如 ``json, safetensors`` 。"
+
+#: ../../source/features/runtime.rst:602
+msgid "``DOWNLOADER_PART_THRESHOLD`` / ``DOWNLOADER_PART_CHUNKSIZE``"
+msgstr "``DOWNLOADER_PART_THRESHOLD`` / ``DOWNLOADER_PART_CHUNKSIZE``"
+
+#: ../../source/features/runtime.rst:603
+msgid "``67108864``"
+msgstr "``67108864``"
+
+#: ../../source/features/runtime.rst:604
+msgid "Size in bytes above which a file is fetched in parts, and the part size."
+msgstr "超过该字节数的文件按分片获取，以及分片大小。"
+
+#: ../../source/features/runtime.rst:605
+msgid "``DOWNLOADER_FORCE_DOWNLOAD``"
+msgstr "``DOWNLOADER_FORCE_DOWNLOAD``"
+
+#: ../../source/features/runtime.rst:607
+msgid "Re-download even if the files already exist locally."
+msgstr "即使本地已存在文件也重新下载。"
+
+#: ../../source/features/runtime.rst:608
+msgid "``DOWNLOADER_CHECK_FILE_EXIST``"
+msgstr "``DOWNLOADER_CHECK_FILE_EXIST``"
+
+#: ../../source/features/runtime.rst:610
+msgid "Skip files that already exist locally."
+msgstr "跳过本地已存在的文件。"
+
+#: ../../source/features/runtime.rst:611
+msgid "``HF_TOKEN``, ``HF_ENDPOINT``, ``HF_REVISION``"
+msgstr "``HF_TOKEN`` 、``HF_ENDPOINT`` 、``HF_REVISION``"
+
+#: ../../source/features/runtime.rst:612 ../../source/features/runtime.rst:615
+#: ../../source/features/runtime.rst:619
+msgid "*(unset)*"
+msgstr "*（未设置）*"
+
+#: ../../source/features/runtime.rst:613
+msgid "HuggingFace credentials, mirror endpoint and revision."
+msgstr "Hugging Face 凭证、镜像端点和修订版本。"
+
+#: ../../source/features/runtime.rst:614
+msgid ""
+"``AWS_ACCESS_KEY_ID``, ``AWS_SECRET_ACCESS_KEY``, ``AWS_ENDPOINT_URL``, "
+"``AWS_REGION``"
+msgstr ""
+"``AWS_ACCESS_KEY_ID`` 、``AWS_SECRET_ACCESS_KEY`` 、``AWS_ENDPOINT_URL`` 、``AWS_REGION``"
+
+#: ../../source/features/runtime.rst:616
+msgid ""
+"S3 credentials and endpoint. ``DOWNLOADER_S3_MAX_IO_QUEUE`` (``100``) and"
+" ``DOWNLOADER_S3_IO_CHUNKSIZE`` (``16777216``) tune the transfer."
+msgstr ""
+"S3 凭证和端点。``DOWNLOADER_S3_MAX_IO_QUEUE`` （``100`` ）和 ``DOWNLOADER_S3_IO_CHUNKSIZE`` "
+"（``16777216`` ）用于调节传输。"
+
+#: ../../source/features/runtime.rst:618
+msgid "``TOS_ACCESS_KEY``, ``TOS_SECRET_KEY``, ``TOS_ENDPOINT``, ``TOS_REGION``"
+msgstr "``TOS_ACCESS_KEY`` 、``TOS_SECRET_KEY`` 、``TOS_ENDPOINT`` 、``TOS_REGION``"
+
+#: ../../source/features/runtime.rst:620
+msgid ""
+"TOS credentials and endpoint. ``DOWNLOADER_TOS_VERSION`` (``v2``) selects"
+" the client API and ``TOS_ENABLE_CRC`` enables checksums."
+msgstr ""
+"TOS 凭证和端点。``DOWNLOADER_TOS_VERSION`` （``v2`` ）选择客户端 API，``TOS_ENABLE_CRC`` "
+"启用校验和。"
+
+#: ../../source/features/runtime.rst:623
+msgid "**Annotations and flags**"
+msgstr "**注解与标志**"
+
+#: ../../source/features/runtime.rst:629
+msgid "Setting"
+msgstr "设置"
+
+#: ../../source/features/runtime.rst:631
+msgid "``model.aibrix.ai/sidecar-injection: \"true\"`` (annotation)"
+msgstr "``model.aibrix.ai/sidecar-injection: \"true\"`` （注解）"
+
+#: ../../source/features/runtime.rst:632
+msgid ""
+"Ask the webhook to inject the runtime into a ``Deployment`` or "
+"``StormService``."
+msgstr "请求 webhook 将 runtime 注入 ``Deployment`` 或 ``StormService`` 。"
+
+#: ../../source/features/runtime.rst:633
+msgid "``model.aibrix.ai/sidecar-runtime-image`` (annotation)"
+msgstr "``model.aibrix.ai/sidecar-runtime-image`` （注解）"
+
+#: ../../source/features/runtime.rst:634
+msgid "Runtime image to inject instead of the default."
+msgstr "要注入的 runtime 镜像，替代默认值。"
+
+#: ../../source/features/runtime.rst:635
+msgid "``--enable-runtime-sidecar`` (controller manager flag, default ``false``)"
+msgstr "``--enable-runtime-sidecar`` （控制器管理器标志，默认 ``false`` ）"
+
+#: ../../source/features/runtime.rst:636
+msgid ""
+"Let controllers use the runtime API when the ``aibrix-runtime`` container"
+" is present."
+msgstr "当存在 ``aibrix-runtime`` 容器时，允许控制器使用 runtime API。"
+
+#: ../../source/features/runtime.rst:639
+msgid "HTTP API reference"
+msgstr "HTTP API 参考"
+
+#: ../../source/features/runtime.rst:641
+msgid "All endpoints are served on the runtime port (``8080`` by default)."
+msgstr "所有接口均在 runtime 端口上提供（默认 ``8080`` ）。"
+
+#: ../../source/features/runtime.rst:647
+msgid "Endpoint"
+msgstr "接口"
+
+#: ../../source/features/runtime.rst:648
+msgid "Description"
+msgstr "说明"
+
+#: ../../source/features/runtime.rst:649
+msgid "``GET /healthz``"
+msgstr "``GET /healthz``"
+
+#: ../../source/features/runtime.rst:650
+msgid "Liveness. Always ``200`` once the process is up."
+msgstr "存活检查。进程启动后始终返回 ``200`` 。"
+
+#: ../../source/features/runtime.rst:651
+msgid "``GET /ready``"
+msgstr "``GET /ready``"
+
+#: ../../source/features/runtime.rst:652
+msgid "Readiness. Used as the pod readiness probe when injected."
+msgstr "就绪检查。注入时用作 Pod 就绪探针。"
+
+#: ../../source/features/runtime.rst:653
+msgid "``GET /metrics``"
+msgstr "``GET /metrics``"
+
+#: ../../source/features/runtime.rst:654
+msgid "Standardized engine metrics in Prometheus format."
+msgstr "Prometheus 格式的标准化引擎指标。"
+
+#: ../../source/features/runtime.rst:655
+msgid "``POST /v1/lora_adapter/load``"
+msgstr "``POST /v1/lora_adapter/load``"
+
+#: ../../source/features/runtime.rst:656
+#, python-brace-format
+msgid ""
+"Body ``{\"lora_name\": ..., \"lora_path\": ...}``. Loads an adapter on "
+"the engine. ``lora_path`` is passed to the engine unchanged, so it must "
+"be a path the engine can open. A second body form, ``{\"lora_name\": ...,"
+" \"artifact_url\": ...}``, makes the runtime download the artifact first;"
+" this is what the ModelAdapter controller sends."
+msgstr ""
+"请求体 ``{\"lora_name\": ..., \"lora_path\": ...}`` 。在引擎上加载适配器。``lora_path`` "
+"原样传给引擎，因此必须是引擎能打开的路径。第二种请求体形式 ``{\"lora_name\": ..., \"artifact_url\": ...}`` "
+"会先由 runtime 下载产物；这是 ModelAdapter 控制器发送的格式。"
+
+#: ../../source/features/runtime.rst:660
+msgid "``POST /v1/lora_adapter/unload``"
+msgstr "``POST /v1/lora_adapter/unload``"
+
+#: ../../source/features/runtime.rst:661
+#, python-brace-format
+msgid "Body ``{\"lora_name\": ...}``."
+msgstr "请求体 ``{\"lora_name\": ...}`` 。"
+
+#: ../../source/features/runtime.rst:662
+msgid "``GET /v1/models``"
+msgstr "``GET /v1/models``"
+
+#: ../../source/features/runtime.rst:663
+msgid "Models currently served by the engine, proxied from the engine."
+msgstr "引擎当前服务的模型，从引擎代理而来。"
+
+#: ../../source/features/runtime.rst:664
+msgid "``POST /v1/model/download``"
+msgstr "``POST /v1/model/download``"
+
+#: ../../source/features/runtime.rst:665
+#, python-brace-format
+msgid ""
+"Body ``{\"model_uri\": ..., \"local_dir\": ..., \"model_name\": ..., "
+"\"download_extra_config\": {...}}``. Only ``model_uri`` is required."
+msgstr ""
+"请求体 ``{\"model_uri\": ..., \"local_dir\": ..., \"model_name\": ..., \"download_extra_config\": "
+"{...}}`` 。仅 ``model_uri`` 为必填。"
+
+#: ../../source/features/runtime.rst:667
+msgid "``GET /v1/model/list``"
+msgstr "``GET /v1/model/list``"
+
+#: ../../source/features/runtime.rst:668
+#, python-brace-format
+msgid ""
+"Lists models present in a local directory. Takes an optional JSON body "
+"``{\"local_dir\": ...}`` (a body, not a query parameter, even though the "
+"method is GET); without it the runtime's default download directory is "
+"listed."
+msgstr ""
+"列出本地目录中的模型。接受可选 JSON 请求体 ``{\"local_dir\": ...}`` （尽管方法是 GET，这是请求体而非查询参数）；未提供时列出 "
+"runtime 的默认下载目录。"
+
+#: ../../source/features/runtime.rst:671
+msgid "``/v1/runtime/models/*`` and ``GET /v1/runtime/snapshot``"
+msgstr "``/v1/runtime/models/*`` 和 ``GET /v1/runtime/snapshot``"
+
+#: ../../source/features/runtime.rst:672
+msgid ""
+"Experimental engine lifecycle endpoints (``activate``, ``deactivate``, "
+"``sleep``, ``wake``, ``kv-limit``) used by :doc:`modelclaim`. Not "
+"intended for direct use."
+msgstr ""
+"实验性引擎生命周期接口（``activate`` 、``deactivate`` 、``sleep`` 、``wake`` 、``kv-limit`` "
+"），供 :doc:`modelclaim` 使用。不打算直接调用。"
+
+#: ../../source/features/runtime.rst:677
+msgid ":doc:`../designs/aibrix-engine-runtime`"
+msgstr ":doc:`../designs/aibrix-engine-runtime`"
+
+#: ../../source/features/runtime.rst:678
+msgid "Internal design of the AI Runtime sidecar."
+msgstr "AI Runtime sidecar 的内部设计。"
