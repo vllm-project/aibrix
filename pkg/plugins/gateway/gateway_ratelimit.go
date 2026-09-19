@@ -141,6 +141,22 @@ func (s *Server) enforceModelRPS(ctx context.Context, model string, routingCtx *
 	return nil
 }
 
+func (s *Server) enforceModelRPSForPolicy(ctx context.Context, model string, routingCtx *types.RoutingContext) (bool, *extProcPb.ProcessingResponse) {
+	if !s.rateLimitingEnabled {
+		return false, nil
+	}
+	if errRes := s.enforceModelRPS(ctx, model, routingCtx); errRes != nil {
+		return false, errRes
+	}
+	return true, nil
+}
+
+func (s *Server) rollbackModelRPSForPolicy(ctx context.Context, model string, routingCtx *types.RoutingContext, needsRollback bool) {
+	if needsRollback {
+		s.decrModelRPS(ctx, model, routingCtx)
+	}
+}
+
 // decrModelRPS decrements the per-model RPS counter by 1. Call this when a routing
 // failure occurs after enforceModelRPS has already incremented the counter, so that
 // requests which never reached the backend do not consume quota.

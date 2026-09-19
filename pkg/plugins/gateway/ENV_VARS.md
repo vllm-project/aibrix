@@ -10,8 +10,27 @@ Variables of type `duration` are parsed with Go's [`time.ParseDuration`](https:/
 
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|
+| `AIBRIX_DISABLE_RATE_LIMITING` | bool | `false` | Disable AIBrix gateway user RPM/TPM and model RPS enforcement. Does not disable Redis, API-key authentication, routing, or `requestsInflight`; restart every gateway plugin replica after changing it. | [cmd/plugins/main.go](../../../cmd/plugins/main.go), [gateway.go](gateway.go) |
 | `POD_NAME` | string | `""` | Kubernetes pod name. Used for logging and metric label tagging. | [gateway.go](gateway.go), [util.go](util.go) |
 | `ROUTING_ALGORITHM` | string | _(none)_ | Default routing algorithm when no per-request override is set. | [types.go](types.go), [util.go](util.go) |
+
+When `AIBRIX_DISABLE_RATE_LIMITING=true`, the gateway does not look up the AIBrix `user`
+header, enforce or account for user RPM/TPM, enforce model `requestsPerSecond` or
+`requestsPerSecondPerReplica`, or add its rate-limit response headers. The original request
+header and body continue upstream unchanged. API-key authentication and per-replica
+`requestsInflight` admission remain active.
+
+In disabled mode, the `user` header does not provide identity to user-aware routing algorithms,
+but it still defines the ownership scope for asynchronous video jobs. Named callers cannot list,
+read, or delete another caller's jobs; callers without the header share the anonymous scope. The
+gateway's static bearer token authenticates access to the gateway, not the header value. A trusted
+upstream proxy must set or overwrite `user` after authenticating the caller when video-job
+isolation is required.
+
+The setting is read once at startup. Roll it out to every gateway plugin replica and restart
+them together; mixed values produce mixed enforcement. Redis remains required wherever the
+deployment and other routing or synchronization features require it. If customer quotas are
+still required, enforce them in another trusted component before enabling this setting.
 
 ---
 

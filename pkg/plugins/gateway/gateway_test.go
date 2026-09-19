@@ -571,7 +571,7 @@ func Test_selectTargetPod(t *testing.T) {
 			tt.mockSetup(mockRouter, routingAlgo)
 			routing.Init()
 
-			server := &Server{}
+			server := &Server{rateLimitingEnabled: true}
 			routeCtx := types.NewRoutingContext(context.Background(), routingAlgo, "test-model", "test-message", "test-request", "test-user")
 
 			// Call selectTargetPod and check the result
@@ -612,7 +612,7 @@ func Test_selectTargetPod_PDEngineValidation(t *testing.T) {
 		})
 		routing.Init()
 
-		server := &Server{}
+		server := &Server{rateLimitingEnabled: true}
 		routeCtx := types.NewRoutingContext(context.Background(), routing.RouterPD, "test-model", "msg", "req-engine", "user")
 		pods := &utils.PodArray{Pods: []*v1.Pod{
 			ready("prefill-1", "10.0.0.1", "vllm"),
@@ -634,7 +634,7 @@ func Test_selectTargetPod_PDEngineValidation(t *testing.T) {
 		routing.Init()
 		mockRouter.On("Route", mock.Anything, mock.Anything).Return("10.0.0.2:8000", nil)
 
-		server := &Server{}
+		server := &Server{rateLimitingEnabled: true}
 		routeCtx := types.NewRoutingContext(context.Background(), routing.RouterPD, "test-model", "msg", "req-engine-ok", "user")
 		pods := &utils.PodArray{Pods: []*v1.Pod{
 			ready("prefill-1", "10.0.0.1", "vllm"),
@@ -670,7 +670,7 @@ func Test_selectTargetPod_SessionAffinitySurvivesSingleReadyPodFastPath(t *testi
 	}
 
 	podA := readyPod("pod-a", "10.0.0.1")
-	server := &Server{}
+	server := &Server{rateLimitingEnabled: true}
 
 	// First request: only one ready pod, so selectTargetPod takes the fast path.
 	routeCtx1 := types.NewRoutingContext(context.Background(), routing.RouterSessionAffinity, "test-model", "hello", "req-1", "user")
@@ -828,7 +828,8 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 
 			// Create test server with mock client
 			s := &Server{
-				gatewayClient: mockGW,
+				rateLimitingEnabled: true,
+				gatewayClient:       mockGW,
 			}
 
 			// Run test
@@ -851,7 +852,7 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 }
 
 func TestValidateHTTPRouteStatus_StandaloneModeSkipsValidation(t *testing.T) {
-	s := &Server{gatewayClient: nil}
+	s := &Server{rateLimitingEnabled: true, gatewayClient: nil}
 	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "any-model"))
 }
 
@@ -881,8 +882,9 @@ func TestValidateHTTPRouteStatus_CachesResult(t *testing.T) {
 	mockHTTP.On("Get", mock.Anything, "cached-model-router", mock.Anything).Return(route, nil).Once()
 
 	s := &Server{
-		gatewayClient:     mockGW,
-		httprouteCacheTTL: 30 * time.Second,
+		rateLimitingEnabled: true,
+		gatewayClient:       mockGW,
+		httprouteCacheTTL:   30 * time.Second,
 	}
 
 	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "cached-model"))
@@ -919,8 +921,9 @@ func TestValidateHTTPRouteStatus_CacheExpiry(t *testing.T) {
 	mockHTTP.On("Get", mock.Anything, "expire-model-router", mock.Anything).Return(route, nil).Twice()
 
 	s := &Server{
-		gatewayClient:     mockGW,
-		httprouteCacheTTL: 1 * time.Millisecond,
+		rateLimitingEnabled: true,
+		gatewayClient:       mockGW,
+		httprouteCacheTTL:   1 * time.Millisecond,
 	}
 
 	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "expire-model"))
@@ -965,8 +968,9 @@ func TestValidateHTTPRouteStatus_ContextErrorNotCached(t *testing.T) {
 				Return(route, nil).Once()
 
 			s := &Server{
-				gatewayClient:     mockGW,
-				httprouteCacheTTL: 30 * time.Second,
+				rateLimitingEnabled: true,
+				gatewayClient:       mockGW,
+				httprouteCacheTTL:   30 * time.Second,
 			}
 
 			assert.ErrorIs(t, s.validateHTTPRouteStatus(context.Background(), "ctx-err-model"), ctxErr)
@@ -1008,9 +1012,10 @@ func TestValidateHTTPRouteStatus_TransientRouteErrorExpires(t *testing.T) {
 		Return(route, nil).Once()
 
 	s := &Server{
-		gatewayClient:     mockGW,
-		httprouteCacheTTL: 30 * time.Second,
-		httprouteErrorTTL: time.Millisecond,
+		rateLimitingEnabled: true,
+		gatewayClient:       mockGW,
+		httprouteCacheTTL:   30 * time.Second,
+		httprouteErrorTTL:   time.Millisecond,
 	}
 
 	assert.Error(t, s.validateHTTPRouteStatus(context.Background(), "transient-route"))
@@ -1048,7 +1053,7 @@ func TestValidateHTTPRouteStatus_UnresolvedRouteErrorExpires(t *testing.T) {
 	mockHTTP.On("Get", mock.Anything, "unresolved-route-router", mock.Anything).Return(invalidRoute, nil).Once()
 	mockHTTP.On("Get", mock.Anything, "unresolved-route-router", mock.Anything).Return(validRoute, nil).Once()
 
-	s := &Server{gatewayClient: mockGW, httprouteCacheTTL: time.Second, httprouteErrorTTL: time.Millisecond}
+	s := &Server{rateLimitingEnabled: true, gatewayClient: mockGW, httprouteCacheTTL: time.Second, httprouteErrorTTL: time.Millisecond}
 	assert.Error(t, s.validateHTTPRouteStatus(context.Background(), "unresolved-route"))
 	time.Sleep(5 * time.Millisecond)
 	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "unresolved-route"))
@@ -1081,7 +1086,7 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 		mockGWV1.On("HTTPRoutes", "aibrix-system").Return(mockHTTP)
 		mockHTTP.On("Get", mock.Anything, "m-router", mock.Anything).Return((*gatewayv1.HTTPRoute)(nil), errors.New("httproute boom"))
 
-		s := &Server{gatewayClient: mockGW}
+		s := &Server{rateLimitingEnabled: true, gatewayClient: mockGW}
 		out := s.responseErrorProcessing(context.Background(), nil, baseResp, 401, "m", "rid", "Incorrect API key provided")
 		ir := out.GetImmediateResponse()
 		if assert.NotNil(t, ir) {
@@ -1103,7 +1108,7 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 
 	t.Run("explicit routing skips httproute on error path", func(t *testing.T) {
 		mockGW := &MockGatewayClient{}
-		s := &Server{gatewayClient: mockGW}
+		s := &Server{rateLimitingEnabled: true, gatewayClient: mockGW}
 		rctx := types.NewRoutingContext(context.Background(), routing.RouterLeastRequest, "m", "", "rid", "")
 		out := s.responseErrorProcessingWithHeaders(context.Background(), rctx, nil, 404, "m", "rid", `{"detail":"Not Found"}`)
 		ir := out.GetImmediateResponse()
@@ -1117,7 +1122,7 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 	})
 
 	t.Run("503 maps to service_unavailable", func(t *testing.T) {
-		s := &Server{gatewayClient: nil}
+		s := &Server{rateLimitingEnabled: true, gatewayClient: nil}
 		out := s.responseErrorProcessing(context.Background(), nil, baseResp, 503, "m", "rid", "server shutdown")
 		ir := out.GetImmediateResponse()
 		if assert.NotNil(t, ir) {
@@ -1131,7 +1136,7 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 	})
 
 	t.Run("500 keeps code null", func(t *testing.T) {
-		s := &Server{gatewayClient: nil}
+		s := &Server{rateLimitingEnabled: true, gatewayClient: nil}
 		out := s.responseErrorProcessing(context.Background(), nil, baseResp, 500, "m", "rid", "internal error")
 		ir := out.GetImmediateResponse()
 		if assert.NotNil(t, ir) {
@@ -1146,7 +1151,7 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 	})
 
 	t.Run("400 with nested upstream error body is not double-wrapped (#2578)", func(t *testing.T) {
-		s := &Server{gatewayClient: nil}
+		s := &Server{rateLimitingEnabled: true, gatewayClient: nil}
 		body := `{"error": {"message": "top_p must be in (0, 1], got 2.0.", "type": "BadRequestError", "param": "top_p", "code": 400}}`
 		// Provide an explicit-routing ctx so validateHTTPRouteStatus is skipped.
 		rctx := types.NewRoutingContext(context.Background(), routing.RouterLeastRequest, "m", "", "rid", "")
@@ -1166,7 +1171,7 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 	})
 
 	t.Run("400 with non-error body falls back to string wrap", func(t *testing.T) {
-		s := &Server{gatewayClient: nil}
+		s := &Server{rateLimitingEnabled: true, gatewayClient: nil}
 		rctx := types.NewRoutingContext(context.Background(), routing.RouterLeastRequest, "m", "", "rid", "")
 		out := s.responseErrorProcessingWithHeaders(context.Background(), rctx, nil, 400, "m", "rid", "plain text failure")
 		ir := out.GetImmediateResponse()
@@ -1184,7 +1189,7 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 	// must stay 401 and the string code is preserved verbatim in the body. Regression guard
 	// for the unified status-precedence rule.
 	t.Run("401 header status wins over semantic string body code", func(t *testing.T) {
-		s := &Server{gatewayClient: nil}
+		s := &Server{rateLimitingEnabled: true, gatewayClient: nil}
 		rctx := types.NewRoutingContext(context.Background(), routing.RouterLeastRequest, "m", "", "rid", "")
 		body := `{"error": {"message": "invalid api key", "type": "authentication_error", "param": null, "code": "invalid_api_key"}}`
 		out := s.responseErrorProcessingWithHeaders(context.Background(), rctx, nil, 401, "m", "rid", body)
@@ -1238,7 +1243,7 @@ func Test_getMetricErr(t *testing.T) {
 }
 
 func TestHandleProcessingRequest_RequestHeaders_SetsRoutingContext(t *testing.T) {
-	s := &Server{}
+	s := &Server{rateLimitingEnabled: true}
 	st := &processState{
 		ctx:       context.Background(),
 		requestID: "test-req-id",
@@ -1271,7 +1276,8 @@ func TestHandleProcessingRequest_NoResponseGenerated_ReturnsInternalErrorAndClea
 	mc.On("DoneRequestCount", (*types.RoutingContext)(nil), "rid", "m", int64(0)).Return()
 
 	s := &Server{
-		cache: mc,
+		rateLimitingEnabled: true,
+		cache:               mc,
 	}
 	st := &processState{
 		ctx:       context.Background(),
@@ -1295,7 +1301,7 @@ func TestHandleProcessingRequest_NoResponseGenerated_ReturnsInternalErrorAndClea
 }
 
 func TestHandleProcessingRequest_ResponseBody_ErrorFromPreviousStage_UsesErrorProcessor(t *testing.T) {
-	s := &Server{} // standalone mode; validateHTTPRouteStatus is skipped in error processor
+	s := &Server{rateLimitingEnabled: true} // standalone mode; validateHTTPRouteStatus is skipped in error processor
 
 	st := &processState{
 		ctx:           context.Background(),
@@ -1377,7 +1383,7 @@ func TestHandleProcessingRequest_Non200ResponseHeadersThenErrorBody(t *testing.T
 		},
 	}
 	testCache := cache.NewWithPodsForTest([]*v1.Pod{testPod}, "test-model")
-	s := &Server{cache: testCache}
+	s := &Server{rateLimitingEnabled: true, cache: testCache}
 
 	requestID := "req-2578"
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
@@ -1457,7 +1463,8 @@ func TestHandleProcessingRequest_ResponseBody_SuccessMarksCompletionAndEmitsSucc
 	}
 	testCache := cache.NewWithPodsForTest([]*v1.Pod{testPod}, "test-model")
 	s := &Server{
-		cache: testCache,
+		rateLimitingEnabled: true,
+		cache:               testCache,
 	}
 
 	requestID := "test-req-id"
@@ -1499,7 +1506,7 @@ func TestHandleProcessingRequest_RequestBody_ModelNotFound(t *testing.T) {
 	mc := &MockCache{}
 	mc.On("HasModel", "no-such-model").Return(false)
 
-	s := &Server{cache: mc}
+	s := &Server{rateLimitingEnabled: true, cache: mc}
 
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "", "", "req-rb-1", "")
 	routerCtx.ReqPath = PathChatCompletions
@@ -1535,7 +1542,7 @@ func TestHandleProcessingRequest_RequestBody_ModelNotFound(t *testing.T) {
 // TestHandleProcessingRequest_ResponseHeaders_200 covers the ResponseHeaders switch case
 // when the upstream returns 200 OK. No error is raised and isRespError stays false.
 func TestHandleProcessingRequest_ResponseHeaders_200(t *testing.T) {
-	s := &Server{} // no cache needed — DoneRequestCount is only called on non-200
+	s := &Server{rateLimitingEnabled: true} // no cache needed — DoneRequestCount is only called on non-200
 
 	st := &processState{
 		ctx:       context.Background(),
@@ -1572,8 +1579,9 @@ func TestHandleProcessingRequest_ResponseHeaders_NonOK(t *testing.T) {
 	mc.On("DoneRequestCount", (*types.RoutingContext)(nil), "req-rh-401", "m", int64(0)).Return()
 
 	s := &Server{
-		cache:         mc,
-		gatewayClient: nil, // standalone — validateHTTPRouteStatus skipped
+		rateLimitingEnabled: true,
+		cache:               mc,
+		gatewayClient:       nil, // standalone — validateHTTPRouteStatus skipped
 	}
 
 	st := &processState{
@@ -1614,7 +1622,7 @@ func TestHandleProcessingRequest_ResponseHeaders_NonOK(t *testing.T) {
 // but completed stays false and the success metric is not emitted yet.
 func TestHandleProcessingRequest_ResponseBody_NotYetCompleted(t *testing.T) {
 	// No cache interaction expected: DoneRequestTrace is only called when complete transitions to true.
-	s := &Server{}
+	s := &Server{rateLimitingEnabled: true}
 
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", "req-rb-partial", "")
 	routerCtx.ReqPath = PathChatCompletions
@@ -1675,6 +1683,7 @@ func (m *mockProcessServer) RecvMsg(interface{}) error    { return nil }
 // newProcessTestServer creates a minimal Server for Process tests.
 func newProcessTestServer(shutdownCh <-chan struct{}, c *MockCache) *Server {
 	return &Server{
+		rateLimitingEnabled: true,
 		shutdownCh:          shutdownCh,
 		cache:               c,
 		requestCountTracker: map[string]int{},

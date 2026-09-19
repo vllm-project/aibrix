@@ -44,7 +44,8 @@ func Test_HandleResponseHeaders(t *testing.T) {
 	// completion and RoutingContext cleanup.
 	mockCache := &MockCache{Cache: cache.NewForTest()}
 	server := &Server{
-		cache: mockCache,
+		rateLimitingEnabled: true,
+		cache:               mockCache,
 	}
 
 	// Helper to create a minimal valid RoutingContext for tests

@@ -1577,7 +1577,7 @@ func TestApplyConfigProfile_AutoProfileRoutingConfigHints(t *testing.T) {
 	ctx.ReqBody = []byte(`{"max_tokens":128}`)
 	ctx.ReqHeaders = map[string]string{}
 
-	applyConfigProfile(ctx, pods)
+	applyConfigProfile(ctx, pods, true)
 
 	assert.NotNil(t, ctx.ConfigProfile)
 	assert.Equal(t, "pd", ctx.ConfigProfile.RoutingStrategy)
@@ -1649,7 +1649,7 @@ func TestApplyConfigProfile_AutoProfileRoutingConfigHintFallbacks(t *testing.T) 
 			ctx.ReqBody = tt.reqBody
 			ctx.ReqHeaders = tt.reqHeaders
 
-			applyConfigProfile(ctx, pods)
+			applyConfigProfile(ctx, pods, true)
 
 			assert.NotNil(t, ctx.ConfigProfile)
 			assert.Equal(t, tt.wantStrategy, ctx.ConfigProfile.RoutingStrategy)
@@ -1709,7 +1709,7 @@ func TestApplyConfigProfile_BuildsFeaturesOnlyForAutoSelection(t *testing.T) {
 			ctx.ReqBody = []byte(`{`)
 			ctx.Message = "prompt"
 
-			applyConfigProfile(ctx, pods)
+			applyConfigProfile(ctx, pods, true)
 
 			assert.NotNil(t, ctx.ConfigProfile)
 			assert.Equal(t, tt.wantStrategy, ctx.ConfigProfile.RoutingStrategy)

@@ -291,7 +291,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 		complete = true
 
 		// Count token per user.
-		if user.Name != "" {
+		if s.rateLimitingEnabled && user.Name != "" {
 			tpm, err := s.ratelimiter.Incr(routerCtx, fmt.Sprintf("%v_TPM_CURRENT", user.Name), usage.TotalTokens)
 			if err != nil {
 				return generateErrorResponse(

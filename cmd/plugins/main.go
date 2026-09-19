@@ -52,7 +52,18 @@ import (
 const (
 	defaultGRPCMaxMessageSizeBytes = 4 * 1024 * 1024
 	envGRPCMaxMessageSizeBytes     = "AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES"
+	envDisableRateLimiting         = "AIBRIX_DISABLE_RATE_LIMITING"
 )
+
+func gatewayServerOptionsFromEnv() gateway.ServerOptions {
+	return gateway.ServerOptions{
+		DisableRateLimiting: utils.LoadEnvBool(envDisableRateLimiting, false),
+	}
+}
+
+func logGatewayRateLimitingMode(options gateway.ServerOptions) {
+	klog.InfoS("gateway rate limiting configured", "enabled", !options.DisableRateLimiting)
+}
 
 var (
 	grpcAddr        string
@@ -163,7 +174,9 @@ func main() {
 		klog.Fatalf("failed to listen: %v", err)
 	}
 
-	gatewayServer := gateway.NewServer(redisClient, k8sClient, gatewayK8sClient)
+	gatewayOptions := gatewayServerOptionsFromEnv()
+	logGatewayRateLimitingMode(gatewayOptions)
+	gatewayServer := gateway.NewServerWithOptions(redisClient, k8sClient, gatewayK8sClient, gatewayOptions)
 
 	stateSyncEnabled := utils.LoadEnvBool("AIBRIX_STATESYNC_ENABLED", false)
 	var syncManager *statesync.RedisSync

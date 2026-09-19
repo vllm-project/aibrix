@@ -362,7 +362,8 @@ func Test_handleRequestHeaders(t *testing.T) {
 
 			// Create server with mock cache
 			server := &Server{
-				redisClient: redisClient,
+				rateLimitingEnabled: true,
+				redisClient:         redisClient,
 			}
 
 			// Create request for the test case
@@ -426,7 +427,7 @@ func TestHandleRequestHeaders_PrefersRootSpanTraceIDOverTraceparent(t *testing.T
 		},
 	}
 
-	server := &Server{}
+	server := &Server{rateLimitingEnabled: true}
 	requestID := rootSpan.SpanContext().TraceID().String()
 	_, _, _, routingCtx, _ := server.HandleRequestHeaders(ctx, requestID, rootSpan, req)
 
@@ -440,6 +441,7 @@ func TestHandleRequestHeaders_PrefersRootSpanTraceIDOverTraceparent(t *testing.T
 func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 	t.Run("valid bearer token is accepted and preserved for upstream", func(t *testing.T) {
 		server := &Server{
+			rateLimitingEnabled: true,
 			apiKeyAuth: &apiKeyAuthConfig{
 				token: "secret-1",
 			},
@@ -470,6 +472,7 @@ func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 
 	t.Run("missing bearer token is rejected", func(t *testing.T) {
 		server := &Server{
+			rateLimitingEnabled: true,
 			apiKeyAuth: &apiKeyAuthConfig{
 				token: "secret-1",
 			},
@@ -498,6 +501,7 @@ func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 
 	t.Run("non-bearer authorization header is rejected", func(t *testing.T) {
 		server := &Server{
+			rateLimitingEnabled: true,
 			apiKeyAuth: &apiKeyAuthConfig{
 				token: "secret-1",
 			},
@@ -526,6 +530,7 @@ func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 
 	t.Run("wrong bearer token is rejected", func(t *testing.T) {
 		server := &Server{
+			rateLimitingEnabled: true,
 			apiKeyAuth: &apiKeyAuthConfig{
 				token: "secret-1",
 			},
@@ -555,7 +560,7 @@ func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 }
 
 func TestHandleRequestHeadersPreservesMockPDFailureHeader(t *testing.T) {
-	server := &Server{}
+	server := &Server{rateLimitingEnabled: true}
 	req := &extProcPb.ProcessingRequest{
 		Request: &extProcPb.ProcessingRequest_RequestHeaders{
 			RequestHeaders: &extProcPb.HttpHeaders{
@@ -580,7 +585,7 @@ func TestHandleRequestHeadersPreservesMockPDFailureHeader(t *testing.T) {
 // that cached route so the request rematches onto original_route_videos. The
 // concrete target-pod is selected later, after the multipart body is decoded.
 func TestHandleRequestHeaders_VideoCreateWithoutRoutingStrategyForcesRematch(t *testing.T) {
-	server := &Server{}
+	server := &Server{rateLimitingEnabled: true}
 	req := &extProcPb.ProcessingRequest{
 		Request: &extProcPb.ProcessingRequest_RequestHeaders{
 			RequestHeaders: &extProcPb.HttpHeaders{

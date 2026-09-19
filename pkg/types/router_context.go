@@ -115,6 +115,10 @@ type RoutingContext struct {
 	ReqBody          []byte
 	ReqPath          string
 	ReqConfigProfile string
+	// AsyncJobOwner is the gateway-derived ownership scope for asynchronous
+	// jobs. It is separate from User because job access control must retain the
+	// request identity even when user-aware rate limiting and routing are disabled.
+	AsyncJobOwner string
 	// AsyncJobBackendID is the backend-private identifier used for a pinned
 	// asynchronous job request. It is retained only for the lifetime of this
 	// routing context so gateway error processing can replace it with the public
@@ -434,6 +438,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.ReqPath = ""
 	r.ReqConfigProfile = ""
 	r.ReqBody = []byte{}
+	r.AsyncJobOwner = ""
 	r.AsyncJobBackendID = ""
 	r.PrefillStartTime = time.Time{}
 	r.PrefillEndTime = time.Time{}

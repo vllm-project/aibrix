@@ -39,6 +39,13 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
+func (s *Server) requestValidationUser(user utils.User) utils.User {
+	if !s.rateLimitingEnabled {
+		return utils.User{}
+	}
+	return user
+}
+
 func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.RoutingContext, requestID string, req *extProcPb.ProcessingRequest, user utils.User) (*extProcPb.ProcessingResponse, string, bool, int64) {
 	var term int64 // Identify the trace window
 
@@ -73,7 +80,9 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		message = "" // Audio/video requests don't have a text message for token counting
 	} else {
 		// Use existing JSON validation for other endpoints
-		model, message, stream, errRes = validateRequestBody(requestID, requestPath, body.RequestBody.GetBody(), user)
+		model, message, stream, errRes = validateRequestBody(
+			requestID, requestPath, body.RequestBody.GetBody(), s.requestValidationUser(user),
+		)
 		if errRes != nil {
 			return errRes, model, stream, term
 		}
@@ -103,7 +112,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 	}
 
 	// Resolve model config profile from annotation and apply overrides
-	applyConfigProfile(routingCtx, podsArr.All())
+	applyConfigProfile(routingCtx, podsArr.All(), s.rateLimitingEnabled)
 
 	// Derive and validate routing strategy (headers -> profile -> env); return 400 on invalid
 	if strategy, enabled := deriveRoutingStrategyFromContext(routingCtx); enabled {
@@ -145,14 +154,12 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		headers = buildEnvoyProxyHeaders(headers, ":path", rewritePath)
 	}
 
-	if errRes = s.enforceModelRPS(ctx, model, routingCtx); errRes != nil {
+	needsRollback, errRes := s.enforceModelRPSForPolicy(ctx, model, routingCtx)
+	if errRes != nil {
 		return errRes, model, stream, term
 	}
-	needsRollback := true
 	defer func() {
-		if needsRollback {
-			s.decrModelRPS(ctx, model, routingCtx)
-		}
+		s.rollbackModelRPSForPolicy(ctx, model, routingCtx, needsRollback)
 	}()
 
 	if routingAlgorithm == routing.RouterNotSet {

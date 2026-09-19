@@ -695,8 +695,9 @@ func Test_handleRequestBody(t *testing.T) {
 
 			// Create server with mock cache
 			server := &Server{
-				cache:         mockCache,
-				gatewayClient: mockGW,
+				rateLimitingEnabled: true,
+				cache:               mockCache,
+				gatewayClient:       mockGW,
 			}
 
 			// Create request for the test case
@@ -749,7 +750,7 @@ func TestValidateModelAvailabilityReturnsRetryableResponseForSleepingModelClaim(
 	}}
 	mockCache.On("HasModel", "qwen").Return(false)
 	wakeRequester := &recordingModelWakeRequester{}
-	server := &Server{cache: mockCache, wakeRequester: wakeRequester}
+	server := &Server{rateLimitingEnabled: true, cache: mockCache, wakeRequester: wakeRequester}
 
 	pods, response := server.validateModelAvailability("request-1", "qwen")
 
@@ -777,7 +778,7 @@ func TestValidateModelAvailabilityDoesNotWakeNonSleepingModelClaim(t *testing.T)
 			}}
 			mockCache.On("HasModel", "qwen").Return(false)
 			wakeRequester := &recordingModelWakeRequester{}
-			server := &Server{cache: mockCache, wakeRequester: wakeRequester}
+			server := &Server{rateLimitingEnabled: true, cache: mockCache, wakeRequester: wakeRequester}
 
 			_, response := server.validateModelAvailability("request-1", "qwen")
 
@@ -855,6 +856,7 @@ func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
 	mockRouter.On("Route", mock.Anything, mock.Anything).Return("", errors.New("route selection failed")).Once()
 
 	server := &Server{
+		rateLimitingEnabled: true,
 		cache:               mockCache,
 		modelRateLimiter:    mockModelRL,
 		gatewayClient:       nil, // not used for explicit routing strategy path
@@ -911,7 +913,7 @@ func TestHandleRequestBody_AsyncVideoJobWithoutRoutingStrategyGetsPinned(t *test
 	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
 		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
 
-	server := &Server{cache: mockCache}
+	server := &Server{rateLimitingEnabled: true, cache: mockCache}
 
 	body, contentType := buildMultipartForm(t, map[string]string{"model": "wan2.1", "prompt": "a cat"})
 	req := &extProcPb.ProcessingRequest{
@@ -973,7 +975,7 @@ func TestHandleRequestBody_AsyncVideoJobSendsNoModeOverride(t *testing.T) {
 	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
 		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
 
-	server := &Server{cache: mockCache}
+	server := &Server{cache: mockCache, rateLimitingEnabled: true}
 
 	body, contentType := buildMultipartForm(t, map[string]string{"model": "wan2.1", "prompt": "a cat"})
 	req := &extProcPb.ProcessingRequest{
@@ -1008,7 +1010,7 @@ func TestHandleRequestBody_LanguageRequestKeepsConfiguredResponseMode(t *testing
 	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
 		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
 
-	server := &Server{cache: mockCache}
+	server := &Server{cache: mockCache, rateLimitingEnabled: true}
 
 	req := &extProcPb.ProcessingRequest{
 		Request: &extProcPb.ProcessingRequest_RequestBody{
@@ -1137,7 +1139,7 @@ func TestHandleRequestBody_LockedRoutingStrategy(t *testing.T) {
 				mockRouter.On("Route", mock.Anything, mock.Anything).Return("1.2.3.4:8000", nil).Once()
 			}
 
-			server := &Server{cache: mockCache}
+			server := &Server{rateLimitingEnabled: true, cache: mockCache}
 
 			req := &extProcPb.ProcessingRequest{
 				Request: &extProcPb.ProcessingRequest_RequestBody{

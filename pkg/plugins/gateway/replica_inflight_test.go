@@ -80,7 +80,7 @@ func podWithReplicaLimits(name string, rps float64, inflight int64) *v1.Pod {
 func TestApplyConfigProfile_ReplicaInflight(t *testing.T) {
 	t.Run("inflight only", func(t *testing.T) {
 		routingCtx := &types.RoutingContext{}
-		applyConfigProfile(routingCtx, []*v1.Pod{podWithReplicaInflight("a", 4)})
+		applyConfigProfile(routingCtx, []*v1.Pod{podWithReplicaInflight("a", 4)}, true)
 		assert.Equal(t, int64(4), routingCtx.ConfigProfile.RequestsInflight)
 		assert.Equal(t, int64(0), routingCtx.ConfigProfile.RequestsPerSecond)
 		// Regression: without a forced routing strategy, HandleRequestBody resolves
@@ -96,7 +96,7 @@ func TestApplyConfigProfile_ReplicaInflight(t *testing.T) {
 		// inflight to make the RPS ceiling reachable would silently delete the
 		// concurrency cap the user configured.
 		routingCtx := &types.RoutingContext{}
-		applyConfigProfile(routingCtx, []*v1.Pod{podWithReplicaLimits("a", 5, 3)})
+		applyConfigProfile(routingCtx, []*v1.Pod{podWithReplicaLimits("a", 5, 3)}, true)
 		assert.Equal(t, int64(3), routingCtx.ConfigProfile.RequestsInflight)
 		assert.Equal(t, int64(5), routingCtx.ConfigProfile.RequestsPerSecond)
 		assert.Equal(t, string(routing.RouterLeastRequest), routingCtx.ConfigProfile.RoutingStrategy)
@@ -104,14 +104,14 @@ func TestApplyConfigProfile_ReplicaInflight(t *testing.T) {
 
 	t.Run("inflight at or above replica rps is kept", func(t *testing.T) {
 		routingCtx := &types.RoutingContext{}
-		applyConfigProfile(routingCtx, []*v1.Pod{podWithReplicaLimits("a", 5, 8)})
+		applyConfigProfile(routingCtx, []*v1.Pod{podWithReplicaLimits("a", 5, 8)}, true)
 		assert.Equal(t, int64(8), routingCtx.ConfigProfile.RequestsInflight)
 		assert.Equal(t, int64(5), routingCtx.ConfigProfile.RequestsPerSecond)
 	})
 
 	t.Run("fractional replica rps does not affect inflight of 1", func(t *testing.T) {
 		routingCtx := &types.RoutingContext{}
-		applyConfigProfile(routingCtx, []*v1.Pod{podWithReplicaLimits("a", 0.5, 1)})
+		applyConfigProfile(routingCtx, []*v1.Pod{podWithReplicaLimits("a", 0.5, 1)}, true)
 		assert.Equal(t, int64(1), routingCtx.ConfigProfile.RequestsInflight)
 		assert.Equal(t, int64(1), routingCtx.ConfigProfile.RequestsPerSecond)
 		assert.Equal(t, int64(2), routingCtx.ConfigProfile.RateWindowSeconds)
@@ -131,12 +131,12 @@ func TestWarnIfReplicaInflightBelowRPS(t *testing.T) {
 
 func TestEnforceReplicaInflight_AdmitThenReject(t *testing.T) {
 	mockCache := &MockCache{}
-	s := &Server{cache: mockCache}
+	s := &Server{rateLimitingEnabled: true, cache: mockCache}
 	pod := podWithReplicaInflight("a", 1)
 
 	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(true, nil).Once()
 	routingCtx := types.NewRoutingContext(context.Background(), "", "m", "", "r1", "")
-	applyConfigProfile(routingCtx, []*v1.Pod{pod})
+	applyConfigProfile(routingCtx, []*v1.Pod{pod}, true)
 	routingCtx.SetTargetPod(pod)
 	assert.Nil(t, s.enforceReplicaInflight(context.Background(), "m", routingCtx))
 	assert.True(t, routingCtx.ReplicaInflightAdmitted,
@@ -144,7 +144,7 @@ func TestEnforceReplicaInflight_AdmitThenReject(t *testing.T) {
 
 	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, nil).Once()
 	routingCtx2 := types.NewRoutingContext(context.Background(), "", "m", "", "r2", "")
-	applyConfigProfile(routingCtx2, []*v1.Pod{pod})
+	applyConfigProfile(routingCtx2, []*v1.Pod{pod}, true)
 	routingCtx2.SetTargetPod(pod)
 	resp := s.enforceReplicaInflight(context.Background(), "m", routingCtx2)
 	require.NotNil(t, resp)
@@ -159,32 +159,32 @@ func TestEnforceReplicaInflight_AdmitThenReject(t *testing.T) {
 
 func TestEnforceReplicaInflight_TwoPodsIndependent(t *testing.T) {
 	mockCache := &MockCache{}
-	s := &Server{cache: mockCache}
+	s := &Server{rateLimitingEnabled: true, cache: mockCache}
 	podA := podWithReplicaInflight("a", 1)
 	podB := podWithReplicaInflight("b", 1)
 	pods := []*v1.Pod{podA, podB}
 
 	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(true, nil).Once()
 	ctxA := types.NewRoutingContext(context.Background(), "", "m", "", "r1", "")
-	applyConfigProfile(ctxA, pods)
+	applyConfigProfile(ctxA, pods, true)
 	ctxA.SetTargetPod(podA)
 	assert.Nil(t, s.enforceReplicaInflight(context.Background(), "m", ctxA))
 
 	mockCache.On("AdmitPodRunningRequest", "b", "ns", int64(1)).Return(true, nil).Once()
 	ctxB := types.NewRoutingContext(context.Background(), "", "m", "", "r2", "")
-	applyConfigProfile(ctxB, pods)
+	applyConfigProfile(ctxB, pods, true)
 	ctxB.SetTargetPod(podB)
 	assert.Nil(t, s.enforceReplicaInflight(context.Background(), "m", ctxB))
 
 	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, nil).Once()
 	ctxA2 := types.NewRoutingContext(context.Background(), "", "m", "", "r3", "")
-	applyConfigProfile(ctxA2, pods)
+	applyConfigProfile(ctxA2, pods, true)
 	ctxA2.SetTargetPod(podA)
 	assert.NotNil(t, s.enforceReplicaInflight(context.Background(), "m", ctxA2))
 
 	mockCache.On("AdmitPodRunningRequest", "b", "ns", int64(1)).Return(false, nil).Once()
 	ctxB2 := types.NewRoutingContext(context.Background(), "", "m", "", "r4", "")
-	applyConfigProfile(ctxB2, pods)
+	applyConfigProfile(ctxB2, pods, true)
 	ctxB2.SetTargetPod(podB)
 	assert.NotNil(t, s.enforceReplicaInflight(context.Background(), "m", ctxB2))
 	mockCache.AssertExpectations(t)
@@ -197,10 +197,10 @@ func TestEnforceReplicaInflight_TwoPodsIndependent(t *testing.T) {
 func TestEnforceReplicaInflight_MetricLookupErrorFailsOpen(t *testing.T) {
 	mockCache := &MockCache{}
 	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, assert.AnError)
-	s := &Server{cache: mockCache}
+	s := &Server{rateLimitingEnabled: true, cache: mockCache}
 	pod := podWithReplicaInflight("a", 1)
 	routingCtx := types.NewRoutingContext(context.Background(), "", "m", "", "r1", "")
-	applyConfigProfile(routingCtx, []*v1.Pod{pod})
+	applyConfigProfile(routingCtx, []*v1.Pod{pod}, true)
 	routingCtx.SetTargetPod(pod)
 
 	assert.Nil(t, s.enforceReplicaInflight(context.Background(), "m", routingCtx))
@@ -214,7 +214,7 @@ func TestFilterSaturatedReplicaInflight(t *testing.T) {
 	podB := podWithReplicaInflight("b", 1)
 	mockCache.On("GetPodsRunningRequests", []*v1.Pod{podA, podB}).
 		Return(map[string]int64{"ns/a": 1, "ns/b": 0}, nil)
-	s := &Server{cache: mockCache}
+	s := &Server{rateLimitingEnabled: true, cache: mockCache}
 
 	kept := s.filterSaturatedReplicaInflight([]*v1.Pod{podA, podB}, 1)
 	require.Len(t, kept, 1)
@@ -230,10 +230,10 @@ func Test_selectTargetPod_ReplicaInflightSaturated(t *testing.T) {
 	pod := podWithReplicaInflight("a", 1)
 	mockCache.On("GetPodsRunningRequests", []*v1.Pod{pod}).
 		Return(map[string]int64{"ns/a": 1}, nil)
-	s := &Server{cache: mockCache}
+	s := &Server{rateLimitingEnabled: true, cache: mockCache}
 
 	routingCtx := types.NewRoutingContext(context.Background(), routing.RouterLeastRequest, "m", "", "r1", "")
-	applyConfigProfile(routingCtx, []*v1.Pod{pod})
+	applyConfigProfile(routingCtx, []*v1.Pod{pod}, true)
 	require.Equal(t, int64(1), routingCtx.ConfigProfile.RequestsInflight)
 
 	_, err := s.selectTargetPod(context.Background(), routingCtx, &utils.PodArray{Pods: []*v1.Pod{pod}}, "")
@@ -263,8 +263,9 @@ func TestHandleRequestBody_ReplicaInflightAdmitThenReject(t *testing.T) {
 	mockCache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{"ns/a": 1}, nil).Once()
 
 	s := &Server{
-		cache:            mockCache,
-		modelRateLimiter: ratelimiter.NewNoopRateLimiter(),
+		rateLimitingEnabled: true,
+		cache:               mockCache,
+		modelRateLimiter:    ratelimiter.NewNoopRateLimiter(),
 	}
 
 	req := &extProcPb.ProcessingRequest{
@@ -309,8 +310,9 @@ func TestHandleRequestBody_ReplicaInflightNotConsumedOnRoutingFailure(t *testing
 	mockRouter.On("Route", mock.Anything, mock.Anything).Return("", errors.New("route selection failed")).Once()
 
 	s := &Server{
-		cache:            mockCache,
-		modelRateLimiter: ratelimiter.NewNoopRateLimiter(),
+		rateLimitingEnabled: true,
+		cache:               mockCache,
+		modelRateLimiter:    ratelimiter.NewNoopRateLimiter(),
 	}
 
 	req := &extProcPb.ProcessingRequest{
@@ -352,8 +354,9 @@ func TestHandleRequestBody_ReplicaInflightCoexistsWithReplicaRPS(t *testing.T) {
 		Return(&metrics.SimpleMetricValue{Value: 0}, nil)
 
 	s := &Server{
-		cache:            mockCache,
-		modelRateLimiter: ratelimiter.NewRedisAccountRateLimiter("aibrix_model_test", client, time.Second),
+		rateLimitingEnabled: true,
+		cache:               mockCache,
+		modelRateLimiter:    ratelimiter.NewRedisAccountRateLimiter("aibrix_model_test", client, time.Second),
 	}
 
 	req := &extProcPb.ProcessingRequest{

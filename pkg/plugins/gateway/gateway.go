@@ -77,6 +77,7 @@ type Server struct {
 	redisClient         *redis.Client
 	ratelimiter         ratelimiter.RateLimiter
 	modelRateLimiter    ratelimiter.RateLimiter
+	rateLimitingEnabled bool
 	apiKeyAuth          *apiKeyAuthConfig
 	client              kubernetes.Interface
 	gatewayClient       gatewayapi.Interface
@@ -242,8 +243,9 @@ func httpRouteCacheTTL() time.Duration {
 
 // ServerOptions configures optional dependencies for a Server.
 type ServerOptions struct {
-	Cache         cache.Cache
-	RouterManager *routing.RouterManager
+	Cache               cache.Cache
+	RouterManager       *routing.RouterManager
+	DisableRateLimiting bool
 	// InFlightObserver receives test/diagnostic lifecycle deltas (+1/-1). The
 	// callback must be non-blocking and non-panicking because it runs on the
 	// request processing path and is not recovered by Gateway.
@@ -268,7 +270,8 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 	}
 	var r ratelimiter.RateLimiter
 	var mr ratelimiter.RateLimiter
-	if redisClient != nil {
+	rateLimitingEnabled := !options.DisableRateLimiting
+	if redisClient != nil && rateLimitingEnabled {
 		r = ratelimiter.NewRedisAccountRateLimiter("aibrix", redisClient, 1*time.Minute)
 		mr = ratelimiter.NewRedisAccountRateLimiter("aibrix_model", redisClient, 1*time.Second)
 	} else {
@@ -292,6 +295,7 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		redisClient:         redisClient,
 		ratelimiter:         r,
 		modelRateLimiter:    mr,
+		rateLimitingEnabled: rateLimitingEnabled,
 		apiKeyAuth:          loadAPIKeyAuthConfig(),
 		client:              client,
 		gatewayClient:       gatewayClient,
