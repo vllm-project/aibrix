@@ -20,6 +20,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +30,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -1450,4 +1453,93 @@ func TestRequestEndHelper_SkipsTTFTForNonStreaming(t *testing.T) {
 	for _, name := range counterCalls {
 		assert.NotEqual(t, metrics.GatewayTTFTBucketTotal, name)
 	}
+}
+
+// TestHandleResponseBody_VideoCreateRegistersAndRewritesID drives the create
+// path through the real entry point, since only HandleResponseBody decides
+// whether a response body is a video job response at all.
+func TestHandleResponseBody_VideoCreateRegistersAndRewritesID(t *testing.T) {
+	s, mockCache, registry := newTestVideoJobServer(t)
+	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
+
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "wan2.1-vace-1.3b", "", "req-create", "")
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodPost}
+	routerCtx.ReqPath = PathVideos
+	routerCtx.SetTargetPod(pod)
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"id":"video_gen_abc","status":"queued"}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, _, _ := s.HandleResponseBody(context.Background(), routerCtx, "req-create", req, utils.User{}, 0, "wan2.1-vace-1.3b", false, false)
+
+	body := resp.GetResponseBody().GetResponse().GetBodyMutation().GetBody()
+	publicJobID := gjson.GetBytes(body, "id").String()
+	assert.True(t, strings.HasPrefix(publicJobID, asyncJobPublicIDPrefix), "client must never see the backend id: %s", publicJobID)
+	assert.Equal(t, "queued", gjson.GetBytes(body, "status").String())
+
+	record, err := listTestAsyncJobs(context.Background(), registry, asyncJobOwnerShared, asyncJobTypeVideo)
+	require.NoError(t, err)
+	require.Len(t, record, 1)
+	assert.Equal(t, publicJobID, record[0].PublicJobID)
+	assert.Equal(t, "video_gen_abc", record[0].BackendJobID)
+	mockCache.AssertExpectations(t)
+}
+
+// TestHandleResponseBody_VideoStatusRewritesIDBackToPublic: the backend answers
+// a status poll with its own id, which the client has never seen and cannot use.
+func TestHandleResponseBody_VideoStatusRewritesIDBackToPublic(t *testing.T) {
+	s, _, registry := newTestVideoJobServer(t)
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
+		readyPod("pod-a", "ns-a", "10.0.0.5"))
+
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "wan2.1-vace-1.3b", "", "req-status", "")
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+	routerCtx.ReqPath = PathVideos + "/" + record.PublicJobID
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"id":"video_gen_abc","status":"completed"}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, _, _ := s.HandleResponseBody(context.Background(), routerCtx, "req-status", req, utils.User{}, 0, "wan2.1-vace-1.3b", false, false)
+
+	body := resp.GetResponseBody().GetResponse().GetBodyMutation().GetBody()
+	assert.Equal(t, record.PublicJobID, gjson.GetBytes(body, "id").String())
+	assert.Equal(t, "completed", gjson.GetBytes(body, "status").String())
+}
+
+// TestHandleResponseBody_VideoContentStaysStreaming guards the one video
+// response that must never be buffered: the video file itself.
+func TestHandleResponseBody_VideoContentStaysStreaming(t *testing.T) {
+	s, _, registry := newTestVideoJobServer(t)
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
+		readyPod("pod-a", "ns-a", "10.0.0.5"))
+
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "wan2.1-vace-1.3b", "", "req-content", "")
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+	routerCtx.ReqPath = PathVideos + "/" + record.PublicJobID + "/content"
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte{0x00, 0x00, 0x00, 0x18},
+				EndOfStream: false,
+			},
+		},
+	}
+
+	resp, _, _ := s.HandleResponseBody(context.Background(), routerCtx, "req-content", req, utils.User{}, 0, "wan2.1-vace-1.3b", false, false)
+
+	assert.Nil(t, resp.GetResponseBody().GetResponse().GetBodyMutation())
+	assert.False(t, HasRequestBuffers("req-content"))
 }
