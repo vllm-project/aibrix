@@ -544,6 +544,14 @@ func initProfileCache(store *Store, stopCh <-chan struct{}, forTesting bool) {
 		return
 	}
 	// Skip initialization below during testing
+	if store.redisClient == nil {
+		// Deployment profiles are stored in Redis by the GPU optimizer.
+		// Without Redis (e.g. gateway-plugin standalone mode) there is
+		// nothing to sync, so skip the refresh loop instead of crashing
+		// on the first tick in updateDeploymentProfiles.
+		klog.Warning("Redis client is nil, skipping deployment profile cache updates")
+		return
+	}
 	ticker := time.NewTicker(defaultModelGPUProfileRefreshInterval)
 	go func() {
 		for {
