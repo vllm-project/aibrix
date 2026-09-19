@@ -40,6 +40,25 @@ class TestLocalStorage:
             assert storage.base_path == Path(tmp_dir)
             assert storage.base_path.exists()
 
+    def test_write_retries_when_destination_is_temporarily_locked(self, monkeypatch, tmp_path):
+        storage = LocalStorage(base_path=str(tmp_path))
+        target = tmp_path / "object"
+        attempts = 0
+        real_replace = os.replace
+
+        def replace_with_transient_lock(source, destination):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise PermissionError("destination is temporarily locked")
+            return real_replace(source, destination)
+
+        monkeypatch.setattr(os, "replace", replace_with_transient_lock)
+        storage._write_file(target, storage._wrap_data("content"))
+
+        assert target.read_text() == "content"
+        assert attempts == 2
+
     @pytest.mark.asyncio
     async def test_environment_variable_override(self):
         """Test that STORAGE_LOCAL_PATH environment variable is respected."""
