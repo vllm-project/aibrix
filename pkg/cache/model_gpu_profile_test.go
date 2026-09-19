@@ -69,4 +69,11 @@ var _ = Describe("ModelGPUProfile", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(signatures).To(BeNil())
 	})
+
+	It("should return an error when indexes are longer than features", func() {
+		longProfile := ModelGPUProfile{Indexes: [][]float64{{2, 3, 4}, {7, 8, 9}, {2, 3}}}
+		signatures, err := longProfile.GetSignature(8, 128)
+		Expect(err).To(HaveOccurred())
+		Expect(signatures).To(BeNil())
+	})
 })
