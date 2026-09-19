@@ -19,9 +19,16 @@ package routingalgorithms
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
+	"net"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/types"
 
@@ -246,4 +253,363 @@ func TestSessionAffinityRejectsOversizedOpaqueKey(t *testing.T) {
 	pod := newPod("pod-a", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
 	ctx := types.NewRoutingContext(context.Background(), "test", "model1", "", "", "")
 	assert.Nil(t, rendezvousPod(ctx, []*v1.Pod{pod}, string(make([]byte, maxSessionKeyLen+1))))
+}
+
+func newTestSessionAffinityRedis(t testing.TB) (*sessionAffinityRouter, *miniredis.Miniredis) {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	return &sessionAffinityRouter{redisClient: client}, mr
+}
+
+func waitSessionKeyInRedis(t *testing.T, mr *miniredis.Miniredis, cacheKey, wantAddr string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		got, err := mr.Get(sessionAffinityRedisKey(cacheKey))
+		return err == nil && got == wantAddr
+	}, 2*time.Second, 10*time.Millisecond)
+}
+
+func sessionAffinityRoute(t *testing.T, router *sessionAffinityRouter, sessionKey string, pods []*v1.Pod) string {
+	t.Helper()
+	ctx := types.NewRoutingContext(context.Background(), "test", "model1", "", "", "")
+	ctx.ReqHeaders = map[string]string{constants.HeaderSessionKey: sessionKey}
+	addr, err := router.Route(ctx, newMockPodList(pods, nil))
+	require.NoError(t, err)
+	return addr
+}
+
+func TestSessionAffinityRedisPinIsHonoredByAnotherReplica(t *testing.T) {
+	routerA, mr := newTestSessionAffinityRedis(t)
+	pods := []*v1.Pod{
+		newPod("pod-a", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+		newPod("pod-b", "10.0.0.2", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+	}
+	const sessionKey = "agent-run-shared"
+
+	addr := sessionAffinityRoute(t, routerA, sessionKey, pods)
+	waitSessionKeyInRedis(t, mr, sessionCacheKey("model1", sessionKey), addr)
+
+	routerB := &sessionAffinityRouter{redisClient: routerA.redisClient}
+	assert.Equal(t, addr, sessionAffinityRoute(t, routerB, sessionKey, pods))
+	cached, ok := routerB.loadCachedAddr(sessionCacheKey("model1", sessionKey))
+	assert.True(t, ok)
+	assert.Equal(t, addr, cached)
+}
+
+func TestSessionAffinityRedisCacheHitSurvivesPodSetChange(t *testing.T) {
+	router, mr := newTestSessionAffinityRedis(t)
+	podA := newPod("pod-a", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	podB := newPod("pod-b", "10.0.0.2", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	podC := newPod("pod-c", "10.0.0.3", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	ctx := types.NewRoutingContext(context.Background(), "test", "model1", "", "", "")
+
+	sessionKey, original, afterScale := sessionKeyWhoseRendezvousMoves(t, ctx, []*v1.Pod{podA, podB}, podC)
+	addr := sessionAffinityRoute(t, router, sessionKey, []*v1.Pod{podA, podB})
+	assert.Equal(t, original, addr)
+	waitSessionKeyInRedis(t, mr, sessionCacheKey("model1", sessionKey), addr)
+
+	assert.Equal(t, original, sessionAffinityRoute(t, router, sessionKey, []*v1.Pod{podA, podB, podC}),
+		"local pin must survive a pod-set change that would move rendezvous to %s", afterScale)
+}
+
+// TestSessionAffinityScopesCacheKeyByModel is a regression test for two models sharing one
+// Redis instance (or a caller re-using the same x-aibrix-session-key value across models):
+// before cache keys were scoped to ctx.Model, both models' pinnings raced to overwrite the
+// same Redis entry, so neither model's session ever stabilized.
+func TestSessionAffinityScopesCacheKeyByModel(t *testing.T) {
+	router, mr := newTestSessionAffinityRedis(t)
+	const sessionKey = "shared-session-key"
+	modelAPod := newPod("model-a-pod", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	modelBPod := newPod("model-b-pod", "10.0.0.2", true, map[string]string{"model.aibrix.ai/port": "8000"})
+
+	routeFor := func(model string, pods []*v1.Pod) string {
+		ctx := types.NewRoutingContext(context.Background(), "test", model, "", "", "")
+		ctx.ReqHeaders = map[string]string{constants.HeaderSessionKey: sessionKey}
+		addr, err := router.Route(ctx, newMockPodList(pods, nil))
+		require.NoError(t, err)
+		return addr
+	}
+
+	addrA := routeFor("model-a", []*v1.Pod{modelAPod})
+	assert.Equal(t, "10.0.0.1:8000", addrA)
+	waitSessionKeyInRedis(t, mr, sessionCacheKey("model-a", sessionKey), addrA)
+
+	addrB := routeFor("model-b", []*v1.Pod{modelBPod})
+	assert.Equal(t, "10.0.0.2:8000", addrB)
+	waitSessionKeyInRedis(t, mr, sessionCacheKey("model-b", sessionKey), addrB)
+
+	got, err := mr.Get(sessionAffinityRedisKey(sessionCacheKey("model-a", sessionKey)))
+	require.NoError(t, err)
+	assert.Equal(t, addrA, got, "model-b routing must not overwrite model-a's Redis entry for the same caller session key")
+
+	assert.Equal(t, addrA, routeFor("model-a", []*v1.Pod{modelAPod}), "model-a session must still resolve to its own pinned pod")
+}
+
+// TestSessionAffinityLocalCacheHasHardCapacityBound is a regression test for the
+// sessionKeyPods size cap: since x-aibrix-session-key is entirely caller-controlled, a client
+// cycling through high-cardinality session keys must not be able to grow the local cache (and
+// the periodic Redis sync work that scans it) without bound.
+func TestSessionAffinityLocalCacheHasHardCapacityBound(t *testing.T) {
+	router, _ := newTestSessionAffinityRedis(t)
+
+	const limit = 5
+	original := maxSessionKeyPodsEntries
+	maxSessionKeyPodsEntries = limit
+	t.Cleanup(func() { maxSessionKeyPodsEntries = original })
+
+	pod := newPod("pod-a", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	for i := 0; i < limit*20; i++ {
+		sessionAffinityRoute(t, router, fmt.Sprintf("high-cardinality-%d", i), []*v1.Pod{pod})
+	}
+
+	size := 0
+	router.sessionKeyPods.Range(func(_, _ any) bool {
+		size++
+		return true
+	})
+	assert.LessOrEqual(t, size, limit, "local session-key cache must not grow past the configured limit")
+	assert.LessOrEqual(t, atomic.LoadInt64(&router.sessionKeyPodsSize), int64(limit))
+}
+
+func TestSessionAffinityNoRedisDoesNotPinLocally(t *testing.T) {
+	router := &sessionAffinityRouter{}
+	podA := newPod("pod-a", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	podB := newPod("pod-b", "10.0.0.2", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	podC := newPod("pod-c", "10.0.0.3", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	ctx := types.NewRoutingContext(context.Background(), "test", "model1", "", "", "")
+
+	sessionKey, original, afterScale := sessionKeyWhoseRendezvousMoves(t, ctx, []*v1.Pod{podA, podB}, podC)
+	assert.Equal(t, original, sessionAffinityRoute(t, router, sessionKey, []*v1.Pod{podA, podB}))
+	_, cached := router.sessionKeyPods.Load(sessionKey)
+	assert.False(t, cached, "without Redis the local map must stay empty so replicas keep agreeing via rendezvous")
+	assert.Equal(t, afterScale, sessionAffinityRoute(t, router, sessionKey, []*v1.Pod{podA, podB, podC}))
+}
+
+func sessionKeyWhoseRendezvousMoves(t *testing.T, ctx *types.RoutingContext, original []*v1.Pod, extra *v1.Pod) (sessionKey, beforeAddr, afterAddr string) {
+	t.Helper()
+	scaled := append(append([]*v1.Pod{}, original...), extra)
+	for i := 0; i < 256; i++ {
+		key := fmt.Sprintf("move-%d", i)
+		before := rendezvousPod(ctx, original, key)
+		after := rendezvousPod(ctx, scaled, key)
+		require.NotNil(t, before)
+		require.NotNil(t, after)
+		beforeAddr = net.JoinHostPort(before.Status.PodIP, "8000")
+		afterAddr = net.JoinHostPort(after.Status.PodIP, "8000")
+		if beforeAddr != afterAddr {
+			return key, beforeAddr, afterAddr
+		}
+	}
+	t.Fatal("could not find a session key whose rendezvous winner moves when a pod is added")
+	return "", "", ""
+}
+
+func TestSyncSessionKeyPodsFromRedis_SelfHealsUnconfirmedEntry(t *testing.T) {
+	router, mr := newTestSessionAffinityRedis(t)
+	const sessionKey = "unconfirmed-pin"
+	const addr = "10.0.0.1:8000"
+	router.sessionKeyPods.Store(sessionKey, sessionKeyCacheItem{addr: addr, confirmed: false, storedAt: time.Now()})
+	_, err := mr.Get(sessionAffinityRedisKey(sessionKey))
+	require.Error(t, err, "precondition: redis must not already have this key")
+
+	router.syncSessionKeyPodsFromRedis()
+
+	cached, ok := router.loadCachedAddr(sessionKey)
+	require.True(t, ok, "unconfirmed entry must survive a redis miss, not be treated as an authoritative deletion")
+	assert.Equal(t, addr, cached)
+	item, _ := router.sessionKeyPods.Load(sessionKey)
+	assert.True(t, item.(sessionKeyCacheItem).confirmed, "sync must retry the write and mark the entry confirmed once it lands")
+	got, err := mr.Get(sessionAffinityRedisKey(sessionKey))
+	require.NoError(t, err)
+	assert.Equal(t, addr, got)
+}
+
+func TestSyncSessionKeyPodsFromRedis_EvictsConfirmedMiss(t *testing.T) {
+	router, _ := newTestSessionAffinityRedis(t)
+	const sessionKey = "confirmed-gone"
+	router.sessionKeyPods.Store(sessionKey, sessionKeyCacheItem{addr: "10.0.0.1:8000", confirmed: true, storedAt: time.Now()})
+
+	router.syncSessionKeyPodsFromRedis()
+
+	_, found := router.sessionKeyPods.Load(sessionKey)
+	assert.False(t, found, "confirmed local entry must be evicted once Redis no longer has it")
+}
+
+func TestSyncSessionKeyPodsFromRedis_RefreshesChangedEntry(t *testing.T) {
+	router, mr := newTestSessionAffinityRedis(t)
+	const sessionKey = "re-pinned"
+	router.sessionKeyPods.Store(sessionKey, sessionKeyCacheItem{addr: "10.0.0.1:8000", confirmed: true, storedAt: time.Now()})
+	require.NoError(t, mr.Set(sessionAffinityRedisKey(sessionKey), "10.0.0.2:8000"))
+
+	router.syncSessionKeyPodsFromRedis()
+
+	cached, ok := router.loadCachedAddr(sessionKey)
+	require.True(t, ok)
+	assert.Equal(t, "10.0.0.2:8000", cached)
+	item, _ := router.sessionKeyPods.Load(sessionKey)
+	assert.True(t, item.(sessionKeyCacheItem).confirmed)
+}
+
+func TestSyncSessionKeyPodsFromRedis_EvictsIdleEntry(t *testing.T) {
+	router, mr := newTestSessionAffinityRedis(t)
+	const sessionKey = "idle-pin"
+	router.sessionKeyPods.Store(sessionKey, sessionKeyCacheItem{
+		addr:      "10.0.0.1:8000",
+		confirmed: true,
+		storedAt:  time.Now().Add(-sessionAffinityTTL - time.Second),
+	})
+	require.NoError(t, mr.Set(sessionAffinityRedisKey(sessionKey), "10.0.0.1:8000"))
+
+	router.syncSessionKeyPodsFromRedis()
+
+	_, found := router.sessionKeyPods.Load(sessionKey)
+	assert.False(t, found, "idle local entry must be dropped even if Redis still has it")
+}
+
+func TestSyncSessionKeyPodsFromRedis_EvictsIdleUnconfirmedEntry(t *testing.T) {
+	router, _ := newTestSessionAffinityRedis(t)
+	const sessionKey = "idle-unconfirmed"
+	router.sessionKeyPods.Store(sessionKey, sessionKeyCacheItem{
+		addr:      "10.0.0.1:8000",
+		confirmed: false,
+		storedAt:  time.Now().Add(-sessionAffinityTTL - time.Second),
+	})
+
+	router.syncSessionKeyPodsFromRedis()
+
+	_, found := router.sessionKeyPods.Load(sessionKey)
+	assert.False(t, found, "expired unconfirmed entry must not be retried indefinitely")
+}
+
+func TestSyncSessionKeyPodsFromRedis_LeavesLocalCacheUntouchedOnRedisError(t *testing.T) {
+	router, mr := newTestSessionAffinityRedis(t)
+	const sessionKey = "outage-pin"
+	router.sessionKeyPods.Store(sessionKey, sessionKeyCacheItem{addr: "10.0.0.1:8000", confirmed: true, storedAt: time.Now()})
+	require.NoError(t, mr.Set(sessionAffinityRedisKey(sessionKey), "10.0.0.1:8000"))
+	mr.Close()
+
+	router.syncSessionKeyPodsFromRedis()
+
+	cached, ok := router.loadCachedAddr(sessionKey)
+	require.True(t, ok, "local entry must survive a whole-batch redis error")
+	assert.Equal(t, "10.0.0.1:8000", cached)
+}
+
+func TestSessionAffinityOversizedKeyIsNotPinned(t *testing.T) {
+	router, mr := newTestSessionAffinityRedis(t)
+	pod := newPod("pod-a", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	oversized := string(make([]byte, maxSessionKeyLen+1))
+
+	ctx := types.NewRoutingContext(context.Background(), "test", "model1", "", "", "")
+	ctx.ReqHeaders = map[string]string{constants.HeaderSessionKey: oversized}
+	_, err := router.Route(ctx, newMockPodList([]*v1.Pod{pod}, nil))
+	require.NoError(t, err)
+	_, cached := router.sessionKeyPods.Load(oversized)
+	assert.False(t, cached)
+	_, redisErr := mr.Get(sessionAffinityRedisKey(oversized))
+	assert.Error(t, redisErr)
+
+	ctx2 := types.NewRoutingContext(context.Background(), "test", "model1", "", "", "")
+	ctx2.ReqHeaders = map[string]string{constants.HeaderSessionKey: oversized}
+	require.NoError(t, router.PostRouteUpdate(ctx2, newMockPodList([]*v1.Pod{pod}, nil), pod))
+	_, cached = router.sessionKeyPods.Load(oversized)
+	assert.False(t, cached, "PostRouteUpdate (auto-blend commit path) must honor maxSessionKeyLen")
+	_, redisErr = mr.Get(sessionAffinityRedisKey(oversized))
+	assert.Error(t, redisErr)
+}
+
+func TestSessionAffinityPostRouteUpdateNilHeaders(t *testing.T) {
+	router := &sessionAffinityRouter{}
+	pod := newPod("pod-a", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	ctx := types.NewRoutingContext(context.Background(), "test", "m1", "", "req", "")
+	ctx.ReqHeaders = nil
+	assert.NoError(t, router.PostRouteUpdate(ctx, newMockPodList([]*v1.Pod{pod}, nil), pod))
+}
+
+func TestSessionAffinityStartNilRedisIsNoop(t *testing.T) {
+	router := &sessionAffinityRouter{}
+	router.Start(make(chan struct{}), nil)
+	assert.Nil(t, router.redisClient)
+}
+
+func TestSessionAffinityStartWiresClient(t *testing.T) {
+	router, _ := newTestSessionAffinityRedis(t)
+	client := router.redisClient
+	router.redisClient = nil
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	router.Start(stop, client)
+	assert.Same(t, client, router.redisClient)
+	router.Start(stop, &redis.Client{})
+	assert.Same(t, client, router.redisClient, "Start is idempotent")
+}
+
+// BenchmarkSessionAffinityRouterConcurrent hammers one router instance from many goroutines at
+// once -- Route and PostRouteUpdate (the two paths that write into sessionKeyPods and Redis),
+// running concurrently with the background Redis sync loop that also walks sessionKeyPods --
+// while mixing a small pool of "hot" session keys (repeated pins/refreshes, exercising the CAS
+// loops in storeSessionKeyLocal and markSessionKeyConfirmed) with unique, ever-growing keys
+// (exercising the capacity-bound new-key path added for the sessionKeyPodsSize cap) across a
+// few different models (exercising sessionCacheKey's model scoping). It exists to catch data
+// races in that concurrent bookkeeping, not to produce a stable throughput number:
+//
+//	go test ./pkg/plugins/gateway/algorithms/ -run '^$' -bench BenchmarkSessionAffinityRouterConcurrent -race
+//
+// A clean run (no "WARNING: DATA RACE" output, no fatal errors) is the pass condition.
+func BenchmarkSessionAffinityRouterConcurrent(b *testing.B) {
+	router, _ := newTestSessionAffinityRedis(b)
+
+	pods := make([]*v1.Pod, 8)
+	for i := range pods {
+		pods[i] = newPod(fmt.Sprintf("pod-%d", i), fmt.Sprintf("10.0.0.%d", i+1), true, map[string]string{"model.aibrix.ai/port": "8000"})
+	}
+	podList := newMockPodList(pods, nil)
+
+	stop := make(chan struct{})
+	b.Cleanup(func() { close(stop) })
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				router.syncSessionKeyPodsFromRedis()
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}()
+
+	var errCount int64
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			i++
+			var sessionKey string
+			if i%3 == 0 {
+				sessionKey = fmt.Sprintf("hot-%d", i%16)
+			} else {
+				sessionKey = fmt.Sprintf("unique-%d-%d", i, time.Now().UnixNano())
+			}
+			model := fmt.Sprintf("model-%d", i%3)
+
+			ctx := types.NewRoutingContext(context.Background(), "test", model, "", "", "")
+			ctx.ReqHeaders = map[string]string{constants.HeaderSessionKey: sessionKey}
+			if _, err := router.Route(ctx, podList); err != nil {
+				atomic.AddInt64(&errCount, 1)
+			}
+
+			ctx2 := types.NewRoutingContext(context.Background(), "test", model, "", "", "")
+			ctx2.ReqHeaders = map[string]string{constants.HeaderSessionKey: sessionKey}
+			if err := router.PostRouteUpdate(ctx2, podList, pods[i%len(pods)]); err != nil {
+				atomic.AddInt64(&errCount, 1)
+			}
+		}
+	})
+
+	if n := atomic.LoadInt64(&errCount); n > 0 {
+		b.Fatalf("%d unexpected errors from Route/PostRouteUpdate under concurrent load", n)
+	}
 }

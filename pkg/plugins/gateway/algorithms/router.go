@@ -228,9 +228,18 @@ func mentionedAlgorithmNames(algStr string) map[string]bool {
 // metric, so they aren't independent votes) and can override cache locality far more readily
 // than intended. For prefix-cache, only load-balance is blended in.
 //
-// One tradeoff of that exception: a prefix-cache request against multi-port/data-parallel pods
-// won't get setTargetPortIfNeeded's port selection, since that lookup requires least-request to
-// be one of the configured scorers.
+// A bare "session-affinity" request gets no auto-blend at all (see the early return below):
+// unlike prefix-cache's graded cache-hit score, session-affinity's ScoreAll is binary (1 for
+// the resolved pod, 0 for everything else), so any load-balance weight strictly below the
+// session-affinity weight can never flip the outcome — the blend would either always be
+// overridden by the pin (dead weight) or, at high enough weight, silently defeat the pin
+// caller code explicitly asked for. Neither is a useful default, so session-affinity keeps
+// running its own Route()/ScoreAll() unblended, the same way load-balance and the exclusive
+// strategies do.
+//
+// One tradeoff of the prefix-cache exception: a prefix-cache request against
+// multi-port/data-parallel pods won't get setTargetPortIfNeeded's port selection, since that
+// lookup requires least-request to be one of the configured scorers.
 //
 // cfg is algStr's own already-parsed config, passed in by the caller (Select) so algStr isn't
 // parsed twice per request.
@@ -241,19 +250,22 @@ func mentionedAlgorithmNames(algStr string) map[string]bool {
 //
 // Returns ok=false when there's nothing to add: the blend is disabled, algStr already resolves
 // to an exclusive strategy (pd, slo*) that manages its own pod selection and must not be
-// blended with anything else, or algStr is already the standalone "load-balance" strategy
-// (which must keep running its own Route(), not a blend).
+// blended with anything else, or algStr is already the standalone "load-balance" or
+// "session-affinity" strategy (both of which must keep running their own Route(), not a blend).
 func appendLoadBalanceBlend(algStr string, cfg *MultiRouterConfig) (string, bool) {
 	if autoBlendLoadBalanceWeight <= 0 {
 		return "", false
 	}
 
-	if len(cfg.Items) == 1 && (isExclusiveStrategyName(cfg.Items[0].Name) || cfg.Items[0].Name == string(RouterLoadBalance)) {
+	if len(cfg.Items) == 1 && (isExclusiveStrategyName(cfg.Items[0].Name) ||
+		cfg.Items[0].Name == string(RouterLoadBalance) ||
+		cfg.Items[0].Name == string(RouterSessionAffinity)) {
 		// Exclusive strategies (pd, slo*) manage their own pod selection and must not be
 		// blended. An explicit, standalone "load-balance" selection is also left alone: it
 		// already runs load-balance's own Route() (pending-time minimization + KV-cache
 		// tie-break), so blending in least-request here would silently replace that with
-		// generic weighted soft-scoring instead.
+		// generic weighted soft-scoring instead. A standalone "session-affinity" selection is
+		// left alone too, for the binary-scoring reason in the function doc above.
 		return "", false
 	}
 
@@ -263,10 +275,13 @@ func appendLoadBalanceBlend(algStr string, cfg *MultiRouterConfig) (string, bool
 	mentioned := mentionedAlgorithmNames(algStr)
 
 	includesPrefixCache := false
+	includesSessionAffinity := false
 	for _, item := range cfg.Items {
-		if item.Name == string(RouterPrefixCache) {
+		switch item.Name {
+		case string(RouterPrefixCache):
 			includesPrefixCache = true
-			break
+		case string(RouterSessionAffinity):
+			includesSessionAffinity = true
 		}
 	}
 
@@ -284,7 +299,7 @@ func appendLoadBalanceBlend(algStr string, cfg *MultiRouterConfig) (string, bool
 			blended += fmt.Sprintf(",%s:%d", RouterLoadBalance, autoBlendLoadBalanceWeight)
 		}
 	}
-	if !includesPrefixCache && !mentioned[string(RouterLeastRequest)] && autoBlendLeastRequestWeight > 0 {
+	if !includesPrefixCache && !includesSessionAffinity && !mentioned[string(RouterLeastRequest)] && autoBlendLeastRequestWeight > 0 {
 		blended += fmt.Sprintf(",%s:%d", RouterLeastRequest, autoBlendLeastRequestWeight)
 	}
 	if blended == algStr {
@@ -372,6 +387,16 @@ func (m *multiStrategyRouter) setTargetPortIfNeeded(ctx *types.RoutingContext, r
 	if port := selectTargetPortForPodWithLeastRequestCount(leastRequest.cache, targetPod, readyPodList.ListPortsForPod()); port != 0 {
 		ctx.SetTargetPort(port)
 	}
+}
+
+// PostRouteUpdate lets m satisfy types.PostRouteUpdater itself, so a caller that bypasses
+// Route() for a target pod it already picked by other means (e.g. the gateway's
+// single-ready-pod fast path in selectTargetPod) can still fan the update out to every
+// wrapped strategy that needs it (e.g. session-affinity's Redis pin), the same way Route
+// does via runPostRouteUpdates for the pods it scores itself.
+func (m *multiStrategyRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) error {
+	m.runPostRouteUpdates(ctx, readyPodList, targetPod)
+	return nil
 }
 
 func (m *multiStrategyRouter) runPostRouteUpdates(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) {
@@ -795,6 +820,28 @@ func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error)
 }
 func Select(ctx *types.RoutingContext) (types.Router, error) {
 	return defaultRM.Select(ctx)
+}
+
+// Lookup returns algorithm's constructed singleton router, as registered via
+// Register/RegisterProvider and built by Init. It exists for callers (like
+// the gateway server) that need the concrete instance directly -- for
+// example to start a router's own background maintenance loop -- rather than
+// going through Select's per-request algorithm resolution and blending. The
+// probe context mirrors Validate's: providers built via Register ignore it
+// entirely, since they already constructed their singleton at Init time, but
+// it's supplied anyway so a ctx-dependent provider (e.g. SLO's) never sees a
+// nil pointer.
+func (rm *RouterManager) Lookup(algorithm types.RoutingAlgorithm) (types.Router, error) {
+	rm.routerMu.RLock()
+	provider, ok := rm.routerFactory[algorithm]
+	rm.routerMu.RUnlock()
+	if !ok || provider == nil {
+		return nil, fmt.Errorf("unsupported or uninitialized router strategy: %s", algorithm)
+	}
+	return provider(algorithm.NewContext(context.Background(), "", "", "lookup", ""))
+}
+func Lookup(algorithm types.RoutingAlgorithm) (types.Router, error) {
+	return defaultRM.Lookup(algorithm)
 }
 
 // tryAutoBlend attempts to construct the silent load-balance composite for algStr. origCfg is

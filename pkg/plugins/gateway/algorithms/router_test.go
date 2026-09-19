@@ -687,6 +687,59 @@ func withAutoBlendWeights(t *testing.T, loadBalance, leastRequest int) {
 	})
 }
 
+func TestAppendLoadBalanceBlendAffinityRatio(t *testing.T) {
+	withAutoBlendWeights(t, 1, 1)
+
+	tests := []struct {
+		name        string
+		algStr      string
+		wantBlended string
+		wantOK      bool
+	}{
+		{
+			name:   "bare prefix-cache uses 5:4 and skips least-request",
+			algStr: "prefix-cache",
+			wantBlended: fmt.Sprintf("%s:%d,%s:%d",
+				RouterPrefixCache, autoBlendPrefixCacheWeight, RouterLoadBalance, autoBlendPrefixCacheLoadBalanceWeight),
+			wantOK: true,
+		},
+		{
+			name:        "bare session-affinity gets no auto-blend (binary scoring always wins the blend anyway)",
+			algStr:      "session-affinity",
+			wantBlended: "",
+			wantOK:      false,
+		},
+		{
+			name:        "other single strategy still gets the flat 1:1 blend plus least-request",
+			algStr:      "least-latency",
+			wantBlended: "least-latency,load-balance:1,least-request:1",
+			wantOK:      true,
+		},
+		{
+			name:        "explicit session-affinity mix keeps caller weights and only appends load-balance",
+			algStr:      "session-affinity:10,throughput:1",
+			wantBlended: "session-affinity:10,throughput:1,load-balance:1",
+			wantOK:      true,
+		},
+		{
+			name:        "explicit load-balance:0 is not rewritten to the affinity ratio",
+			algStr:      "session-affinity,load-balance:0",
+			wantBlended: "",
+			wantOK:      false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := ParseMultiRouterConfig(tc.algStr)
+			assert.NoError(t, err)
+			blended, ok := appendLoadBalanceBlend(tc.algStr, cfg)
+			assert.Equal(t, tc.wantOK, ok)
+			assert.Equal(t, tc.wantBlended, blended)
+		})
+	}
+}
+
 func registerBlendScorers(rm *RouterManager) {
 	rm.RegisterProvider(RouterLoadBalance, func(_ *types.RoutingContext) (types.Router, error) {
 		return &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityLeast}}, nil
@@ -806,6 +859,41 @@ func TestSelectPrefixCacheBlendExcludesLeastRequest(t *testing.T) {
 	assert.Contains(t, multi.scorers, string(RouterPrefixCache))
 	assert.Contains(t, multi.scorers, string(RouterLoadBalance))
 	assert.NotContains(t, multi.scorers, string(RouterLeastRequest), "prefix-cache already accounts for load via ApplyLoadImbalanceGate and its own stddev filtering, so least-request must not also dilute its cache-affinity signal")
+	assert.Equal(t, []RouterItem{
+		{Name: string(RouterPrefixCache), Coefficient: autoBlendPrefixCacheWeight},
+		{Name: string(RouterLoadBalance), Coefficient: autoBlendPrefixCacheLoadBalanceWeight},
+	}, multi.config.Items)
+}
+
+func TestSelectSessionAffinityGetsNoAutoBlend(t *testing.T) {
+	withAutoBlendWeights(t, 1, 1)
+	rm := NewRouterManager()
+	sessionAffinity := &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityMost}}
+	rm.RegisterProvider(RouterSessionAffinity, func(_ *types.RoutingContext) (types.Router, error) {
+		return sessionAffinity, nil
+	})
+	registerBlendScorers(rm)
+
+	ctx := types.NewRoutingContext(context.Background(), RouterSessionAffinity, testModelName, "hello", "req-blend-session-affinity", "")
+	router, err := rm.Select(ctx)
+	assert.NoError(t, err)
+	_, isMulti := router.(*multiStrategyRouter)
+	assert.False(t, isMulti, "a bare session-affinity request must run its own Route()/ScoreAll() unblended: its binary scoring means any load-balance weight below its own would never change the outcome, so blending it in would be dead weight at best")
+	assert.Same(t, sessionAffinity, router)
+}
+
+func TestLookupReturnsSessionAffinitySingleton(t *testing.T) {
+	rm := NewRouterManager()
+	rm.Register(RouterSessionAffinity, NewSessionAffinityRouter)
+	rm.Init()
+
+	a, err := rm.Lookup(RouterSessionAffinity)
+	assert.NoError(t, err)
+	b, err := rm.Lookup(RouterSessionAffinity)
+	assert.NoError(t, err)
+	assert.Same(t, a, b)
+	_, ok := a.(RedisBackedRouter)
+	assert.True(t, ok)
 }
 
 func TestSelectNonPrefixCacheBlendStillIncludesLeastRequest(t *testing.T) {
