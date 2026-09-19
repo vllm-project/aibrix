@@ -152,7 +152,7 @@ func TestSelectPodForActivationWithStatePrefersLiveRuntimeState(t *testing.T) {
 	}
 
 	got, err := selectPodForActivationWithState(
-		candidates, map[string]bool{}, map[string]int{}, "m", uniformLocality{}, states,
+		candidates, map[string]bool{}, map[string]int{}, "m", uniformLocality{}, states, 0,
 	)
 	require.NoError(t, err)
 	assert.Equal(t, "hot", got.Name, "cached artifact wins before live memory tie-breakers")
@@ -178,7 +178,7 @@ func TestSelectPodForActivationWithStateRanksMemoryAndKV(t *testing.T) {
 	}
 
 	got, err := selectPodForActivationWithState(
-		candidates, map[string]bool{}, map[string]int{}, "m", uniformLocality{}, states,
+		candidates, map[string]bool{}, map[string]int{}, "m", uniformLocality{}, states, 0,
 	)
 	require.NoError(t, err)
 	assert.Equal(t, "free", got.Name, "higher free HBM wins before KV/model-count tie-breakers")
@@ -193,9 +193,28 @@ func TestSelectPodForActivationWithStateFallsBackForUnknownSnapshots(t *testing.
 		"m",
 		uniformLocality{},
 		map[string]PodPlacementState{},
+		0,
 	)
 	require.NoError(t, err)
 	assert.Equal(t, "idle", got.Name)
+}
+
+func TestSelectPodForActivationWithStateRequiresHBM(t *testing.T) {
+	candidates := []corev1.Pod{namedPod("cached"), namedPod("unknown"), namedPod("free")}
+	states := map[string]PodPlacementState{
+		"cached": {ArtifactCached: true, MemoryKnown: true, HBMFreeBytes: 99},
+		"free":   {MemoryKnown: true, HBMFreeBytes: 100},
+	}
+	got, err := selectPodForActivationWithState(
+		candidates, nil, nil, "m", uniformLocality{}, states, 100,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "free", got.Name)
+
+	_, err = selectPodForActivationWithState(
+		candidates, nil, nil, "m", uniformLocality{}, states, 101,
+	)
+	require.ErrorContains(t, err, "confirmed free HBM")
 }
 
 func TestUniformLocality_AlwaysZero(t *testing.T) {

@@ -235,6 +235,12 @@ The supported spec fields are:
      - Yes
      - Model artifact location, such as ``huggingface://``, ``s3://``, or
        ``gcs://``.
+   * - ``requiredHBMBytesPerGPU``
+     - No
+     - Minimum free GPU memory in bytes on each device before activation.
+       Include model weights, engine overhead, and serving headroom. When set,
+       Pods without a memory observation or enough free HBM are skipped.
+       When omitted, placement uses its existing best-effort ranking.
    * - ``engine``
      - No
      - ``vllm`` or ``sglang``. Defaults to ``vllm``. SGLang requires a

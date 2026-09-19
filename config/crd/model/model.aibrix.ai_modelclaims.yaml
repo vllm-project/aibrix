@@ -96,6 +96,10 @@ spec:
                 maximum: 1
                 minimum: 1
                 type: integer
+              requiredHBMBytesPerGPU:
+                format: int64
+                minimum: 1
+                type: integer
             required:
             - artifactURL
             - podSelector
