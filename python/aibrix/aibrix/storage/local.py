@@ -169,7 +169,7 @@ class LocalStorage(BaseStorage2):
                     f.flush()
                     os.fsync(f.fileno())
             else:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
                     f.write(str(reader))
                     f.flush()
                     os.fsync(f.fileno())
