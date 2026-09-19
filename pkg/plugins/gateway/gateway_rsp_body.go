@@ -279,11 +279,11 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 			if processingRes != nil {
 				return processingRes, complete, usage
 			}
-		} else if pathWithoutQuery(routerCtx.ReqPath) == PathVideos {
-			// Exact match only: excludes /v1/videos/sync (no follow-up calls to pin)
-			// and /v1/videos/{id} sub-resource responses (already routed by
-			// handleVideoJobSubResource, nothing new to record).
-			s.recordVideoJobPodFromResponse(ctx, requestID, routerCtx, b)
+		} else if videoResp, videoComplete, handled := s.handleVideoJobResponseBody(ctx, requestID, routerCtx, b); handled {
+			// Video create/status responses carry ids the client must never see, so
+			// they are held and rewritten instead of forwarded as-is. /content and
+			// /v1/videos/sync are not handled here: they keep streaming untouched.
+			return videoResp, videoComplete, usage
 		}
 	}
 

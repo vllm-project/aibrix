@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"testing"
 	"time"
 
@@ -1326,6 +1327,40 @@ func TestHandleProcessingRequest_ResponseBody_ErrorFromPreviousStage_UsesErrorPr
 	}
 	// metricLabel should be set for response body processing
 	assert.Equal(t, gatewayRespBody, st.metricLabel)
+}
+
+func TestHandleProcessingRequest_ResponseBody_ErrorRewritesPinnedVideoBackendID(t *testing.T) {
+	s := &Server{} // explicit routing skips HTTPRoute validation in the error processor
+	publicID := "aibrixjob-public"
+	backendID := "video-abc"
+	routerCtx := types.NewRoutingContext(context.Background(), routing.RouterRandom, "video-model", "", "rid-video-error", "")
+	routerCtx.ReqPath = PathVideos + "/" + publicID
+	routerCtx.AsyncJobBackendID = backendID
+
+	st := &processState{
+		ctx:           context.Background(),
+		routerCtx:     routerCtx,
+		requestID:     "rid-video-error",
+		model:         "video-model",
+		isRespError:   true,
+		respErrorCode: http.StatusNotFound,
+	}
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"error":{"message":"Video video-abc not found","param":"video-abc","code":404}}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, err := s.handleProcessingRequest(st, req)
+	require.NoError(t, err)
+	imm := resp.GetImmediateResponse()
+	require.NotNil(t, imm)
+	assert.Equal(t, envoyTypePb.StatusCode_NotFound, imm.GetStatus().GetCode())
+	assert.Contains(t, imm.GetBody(), publicID)
+	assert.NotContains(t, imm.GetBody(), backendID)
 }
 
 // TestHandleProcessingRequest_Non200ResponseHeadersThenErrorBody is the end-to-end

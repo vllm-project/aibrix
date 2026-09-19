@@ -1808,9 +1808,8 @@ func TestDeriveRoutingStrategyFromContext(t *testing.T) {
 // client (or an SDK reusing a generic multipart helper across audio/video
 // calls) sending stream=true on the async, never-streamed Videos API. If that
 // field were honored, HandleResponseBody would take the SSE branch instead of
-// calling recordVideoJobPodFromResponse, and the video_id->pod mapping would
-// never be recorded -- breaking follow-up GET/DELETE calls with a spurious
-// "video not found".
+// calling handleVideoJobResponseBody, and the job would never be registered --
+// breaking follow-up GET/DELETE calls with a spurious "video not found".
 func TestParseMultipartFormData_IgnoresStreamForVideoPaths(t *testing.T) {
 	tests := []struct {
 		name       string

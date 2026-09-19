@@ -90,11 +90,14 @@ type Server struct {
 	httprouteCacheTTL   time.Duration
 	httprouteErrorTTL   time.Duration
 	httprouteSFGroup    singleflight.Group
-	// videoJobCache maps a vLLM-Omni async video_id to the pod that owns it (see
-	// gateway_video_routing.go). Local in-memory cache, warmed from and
-	// write-through to redisClient (when configured) so any gateway replica can
-	// resolve a video_id created by a different replica.
-	videoJobCache sync.Map
+	// asyncJobs resolves the public job ids handed out for asynchronous APIs
+	// (currently vLLM-Omni's Videos API) back to the pod that owns the job. It
+	// reads and writes its store directly on every operation: there is no
+	// per-replica job cache, so any replica can answer a follow-up for a job
+	// another replica created, with no reconciliation window. Built lazily by
+	// asyncJobRegistry() when not injected.
+	asyncJobs     AsyncJobRegistry
+	asyncJobsOnce sync.Once
 	// Broadcast channel for server-initiated shutdown
 	shutdownCh   <-chan struct{}
 	shutdown     chan struct{}
@@ -283,7 +286,7 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		shutdownCh:          shutdown,
 		shutdown:            shutdown,
 	}
-	s.startVideoJobCacheSync(shutdown)
+	s.asyncJobs = newAsyncJobRegistryForClient(redisClient, c)
 	if sar, err := routerManager.Lookup(routing.RouterSessionAffinity); err == nil {
 		if rb, ok := sar.(routing.RedisBackedRouter); ok {
 			rb.Start(shutdown, redisClient)
@@ -542,6 +545,7 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		}
 		if st.isRespError {
 			body := string(req.Request.(*extProcPb.ProcessingRequest_ResponseBody).ResponseBody.GetBody())
+			body = string(rewriteVideoJobErrorBody(st.routerCtx, []byte(body)))
 			resp = s.responseErrorProcessingWithHeaders(st.ctx, st.routerCtx, st.lastRespHeaders, st.respErrorCode, st.model, st.requestID, body)
 		} else {
 			var usage TokenUsage
