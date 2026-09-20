@@ -812,8 +812,19 @@ def _recorded_completion(path):
                 if fault.delay_ms:
                     time.sleep(fault.delay_ms / 1000.0)
 
-                if fault.injected_status_code is not None:
-                    message = f"mock failure injected for role {role}"
+                should_fail_attempt = (
+                    fault.injected_status_code is not None
+                    and fault.fail_attempts > 0
+                    and request_recorder.count(request_id=request_id) <= fault.fail_attempts
+                )
+                if fault.injected_status_code is not None and (
+                    fault.fail_attempts == 0 or should_fail_attempt
+                ):
+                    message = (
+                        f"mock failure injected for role {role}"
+                        if role
+                        else "mock failure injected for backend"
+                    )
                     if contract == "sglang-http" and role == "prefill":
                         _mark_sglang_prefill_failure(
                             request_id,

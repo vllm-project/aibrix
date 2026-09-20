@@ -10,6 +10,13 @@ patches:
     kind: Deployment
     name: aibrix-gateway-plugins
     namespace: aibrix-system
+- path: gateway/backend-route-failure-patch.yaml
+  target:
+    group: gateway.envoyproxy.io
+    version: v1alpha1
+    kind: EnvoyPatchPolicy
+    name: epp
+    namespace: aibrix-system
 - path: metadata/dry-run-patch.yaml
   target:
     kind: Deployment

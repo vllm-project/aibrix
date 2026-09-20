@@ -435,6 +435,14 @@ def test_fault_header_for_other_role_does_not_fail(role, fail_value):
     assert result.metadata == {}
 
 
+def test_backend_fault_header_matches_non_pd_backend():
+    result = parse_fault_headers({"x-aibrix-mock-fail": "backend"}, "")
+
+    assert result.injected_status_code == 500
+    assert result.fail_attempts == 0
+    assert result.validation_status_code == 200
+
+
 @pytest.mark.parametrize("fail_value", ["", "worker", "PREFILL", "true", None])
 def test_invalid_fail_header_is_ignored(fail_value):
     result = parse_fault_headers({"x-aibrix-mock-fail": fail_value}, "prefill")
@@ -504,6 +512,32 @@ def test_fault_parse_result_is_immutable_and_parser_does_not_mutate_headers():
     assert isinstance(result.metadata, dict)
     with pytest.raises(AttributeError):
         result.delay_ms = 30
+
+
+@pytest.mark.parametrize("value,expected", [("1", 1), ("2", 2)])
+def test_fault_header_limits_failures_to_the_first_attempts(value, expected):
+    result = parse_fault_headers(
+        {
+            "x-aibrix-mock-fail": "prefill",
+            "x-aibrix-mock-fail-attempts": value,
+        },
+        "prefill",
+    )
+
+    assert result.injected_status_code == 500
+    assert result.fail_attempts == expected
+    assert result.validation_status_code == 200
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "1.5", "", None, True])
+def test_invalid_fail_attempts_header_returns_bad_request_metadata(value):
+    result = parse_fault_headers(
+        {"x-aibrix-mock-fail-attempts": value}, "prefill"
+    )
+
+    assert result.validation_status_code == 400
+    assert result.fail_attempts == 0
+    assert result.metadata["error"] == "invalid x-aibrix-mock-fail-attempts"
 
 
 @pytest.mark.parametrize(

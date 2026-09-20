@@ -1,0 +1,8 @@
+- op: replace
+  path: /spec/jsonPatches/0/operation/value/route/timeout
+  value: 1s
+- op: add
+  path: /spec/jsonPatches/0/operation/value/route/retry_policy
+  value:
+    retry_on: 5xx,connect-failure,reset
+    num_retries: 1
