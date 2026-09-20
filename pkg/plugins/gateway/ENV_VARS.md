@@ -18,7 +18,9 @@ When `AIBRIX_DISABLE_RATE_LIMITING=true`, the gateway skips AIBrix user lookup, 
 `user` header as routing identity, and does not write user or model quota counters. The header
 is still forwarded unchanged. Keep Redis configured when session affinity, asynchronous jobs,
 state synchronization, or other gateway features require it. The per-replica
-`requestsInflight` guard remains active.
+`requestsInflight` guard remains active. Because routing user identity remains empty, asynchronous
+video jobs use the shared ownership scope; the unauthenticated `user` header does not isolate jobs
+between callers in this mode.
 
 ---
 

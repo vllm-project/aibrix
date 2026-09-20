@@ -139,7 +139,9 @@ but it forwards the header unchanged.
 
 The setting does not disable the per-replica ``requestsInflight`` guard or disconnect Redis.
 Keep Redis configured when session affinity, asynchronous jobs, state synchronization, or other
-gateway features require it.
+gateway features require it. Because disabled mode leaves routing user identity empty,
+asynchronous video jobs use the shared ownership scope. The unauthenticated ``user`` header
+does not isolate one caller's video jobs from another caller's jobs in this mode.
 
 Configuring Buffer Limits, Connections, and QPS
 ------------------------------------------------

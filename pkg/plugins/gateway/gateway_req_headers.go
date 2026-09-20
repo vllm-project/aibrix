@@ -60,10 +60,7 @@ func videoCreateRematchHeaders(reqHeaders map[string]string, requestPath string,
 
 func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, rootSpan trace.Span, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, *types.RoutingContext, int64) {
 	var username, requestPath string
-	var user utils.User
 	var rpm, term int64
-	var err error
-	var errRes *extProcPb.ProcessingResponse
 	var routingCtx *types.RoutingContext
 	var reqConfigProfile string
 
@@ -123,26 +120,9 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 		}
 	}
 
-	if !s.disableRateLimiting && username != "" {
-		user.Name = username
-	}
-	if !s.disableRateLimiting && username != "" && s.redisClient != nil {
-		user, err = utils.GetUser(ctx, utils.User{Name: username}, s.redisClient)
-		if err != nil {
-			klog.ErrorS(err, "unable to process user info", "requestID", requestID, "username", username)
-			return generateErrorResponse(
-				envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: HeaderErrorUser, RawValue: []byte("true"),
-				}}},
-				err.Error(), "", ""), utils.User{}, rpm, routingCtx, term
-		}
-
-		rpm, errRes, err = s.checkLimits(ctx, user)
-		if errRes != nil {
-			klog.ErrorS(err, "error on checking limits", "requestID", requestID, "username", username)
-			return errRes, utils.User{}, rpm, routingCtx, term
-		}
+	user, rpm, userErrRes := s.resolveUserForRequest(ctx, requestID, username)
+	if userErrRes != nil {
+		return userErrRes, utils.User{}, rpm, routingCtx, term
 	}
 
 	routingCtx = types.NewRoutingContext(ctx, "", "", "", requestID, user.Name)
@@ -228,4 +208,34 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 			},
 		},
 	}, user, rpm, routingCtx, term
+}
+
+// resolveUserForRequest resolves user quota state only when rate limiting is enabled.
+func (s *Server) resolveUserForRequest(ctx context.Context, requestID, username string) (utils.User, int64, *extProcPb.ProcessingResponse) {
+	if s.disableRateLimiting || username == "" {
+		return utils.User{}, 0, nil
+	}
+
+	user := utils.User{Name: username}
+	if s.redisClient == nil {
+		return user, 0, nil
+	}
+
+	user, err := utils.GetUser(ctx, user, s.redisClient)
+	if err != nil {
+		klog.ErrorS(err, "unable to process user info", "requestID", requestID, "username", username)
+		return utils.User{}, 0, generateErrorResponse(
+			envoyTypePb.StatusCode_InternalServerError,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: HeaderErrorUser, RawValue: []byte("true"),
+			}}},
+			err.Error(), "", "")
+	}
+
+	rpm, errRes, err := s.checkLimits(ctx, user)
+	if errRes != nil {
+		klog.ErrorS(err, "error on checking limits", "requestID", requestID, "username", username)
+		return utils.User{}, rpm, errRes
+	}
+	return user, rpm, nil
 }
