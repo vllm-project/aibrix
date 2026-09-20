@@ -95,8 +95,10 @@ func selectPodForActivation(candidates []corev1.Pod, alreadyOn map[string]bool, 
 
 // selectPodForActivationWithState first prefers a pod that already has the
 // artifact locally, then live GPU/KV observations, and finally the Phase-1
-// locality/load/name rank. Missing runtime state is safe: it simply falls back
-// to the existing deterministic placement behavior.
+// locality/load/name rank. When requiredHBMBytesPerGPU is positive, pods with
+// unknown free HBM or less than the required capacity are excluded. Otherwise,
+// missing runtime state falls back to the existing deterministic placement
+// behavior.
 func selectPodForActivationWithState(
 	candidates []corev1.Pod,
 	alreadyOn map[string]bool,

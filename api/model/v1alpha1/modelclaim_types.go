@@ -45,9 +45,11 @@ type ModelClaimSpec struct {
 	// +kubebuilder:validation:Required
 	ArtifactURL string `json:"artifactURL,omitempty"`
 
-	// RequiredHBMBytesPerGPU is the minimum free GPU memory required on each
-	// device before activating this model. Include weights, engine overhead,
-	// and serving headroom. When omitted, placement does not enforce capacity.
+	// RequiredHBMBytesPerGPU is the minimum free GPU memory required before
+	// activating this model. For TP * PP = 1, placement uses the device with the
+	// most free HBM. For TP * PP > 1, every device in the group must meet the
+	// requirement. Include weights, engine overhead, and serving headroom. When
+	// omitted, placement does not enforce capacity.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	RequiredHBMBytesPerGPU *int64 `json:"requiredHBMBytesPerGPU,omitempty"`
