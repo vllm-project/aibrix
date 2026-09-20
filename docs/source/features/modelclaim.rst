@@ -237,10 +237,11 @@ The supported spec fields are:
        ``gcs://``.
    * - ``requiredHBMBytesPerGPU``
      - No
-     - Minimum free GPU memory in bytes on each device before activation.
-       Include model weights, engine overhead, and serving headroom. When set,
-       Pods without a memory observation or enough free HBM are skipped.
-       When omitted, placement uses its existing best-effort ranking.
+     - Free HBM required per GPU before activation. For a single-GPU model,
+       any one device in the Pod may satisfy the requirement; for a TP/PP
+       model, every device in the group must satisfy it. Allow for model
+       weights, engine overhead, and serving headroom. When omitted, free HBM
+       affects placement order but does not exclude a Pod.
    * - ``engine``
      - No
      - ``vllm`` or ``sglang``. Defaults to ``vllm``. SGLang requires a
@@ -477,8 +478,11 @@ Runtime metrics include:
 * ``aibrix:modelclaim_kv_total_bytes{model}``;
 * ``aibrix:modelclaim_hbm_peak_bytes{model}``.
 
-HBM attribution is best effort and is used for observation and placement
-ranking. It is not a hard admission or reservation signal.
+HBM measurements are best effort and normally influence only placement order.
+When ``requiredHBMBytesPerGPU`` is set, Pods without a recent measurement or
+enough free HBM are excluded from placement. This check does not reserve
+memory, so available capacity may change before activation begins, particularly
+when multiple claims are activated at the same time.
 
 Troubleshooting
 ---------------
@@ -487,6 +491,14 @@ Claim remains ``Scheduling`` with zero candidates
    Confirm that the Pod is Running, has a Pod IP, matches ``podSelector``, and
    has ``pool.aibrix.ai/enabled: "true"``. For vLLM, confirm that TP times PP
    exactly matches the Pod-visible GPU count.
+
+Claim remains ``Pending`` with candidates but ``NoMatchingPods``
+   When ``requiredHBMBytesPerGPU`` is set, a nonzero ``status.candidates`` does
+   not guarantee that a Pod has enough free HBM. Check the warning event and
+   runtime snapshots. A single-GPU model needs one qualifying device; a TP/PP
+   model needs enough free HBM on every device in its group. A missing HBM
+   measurement also makes a Pod ineligible. Free capacity, wait for an updated
+   snapshot, or reduce the requirement if the model can run safely with less.
 
 Claim remains ``Activating``
    Inspect the runtime snapshot and engine logs. Weight download, CUDA graph
