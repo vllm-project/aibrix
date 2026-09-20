@@ -333,7 +333,7 @@ func (c *Store) DoneRequestCount(ctx *types.RoutingContext, requestID string, mo
 		tracker.DoneRequestCount(ctx, requestID, modelName, traceTerm)
 	}
 	if ctx == nil || ctx.CanDoneStats() {
-		c.donePodStats(ctx, requestID, modelName)
+		c.donePodStats(ctx, requestID, modelName, 0)
 	}
 
 	meta, ok := c.metaModels.Load(modelName)
@@ -363,7 +363,7 @@ func (c *Store) DoneRequestTrace(ctx *types.RoutingContext, requestID string, mo
 	}
 
 	if ctx == nil || ctx.CanDoneStats() {
-		c.donePodStats(ctx, requestID, modelName)
+		c.donePodStats(ctx, requestID, modelName, outputTokens)
 	}
 
 	meta, ok := c.metaModels.Load(modelName)

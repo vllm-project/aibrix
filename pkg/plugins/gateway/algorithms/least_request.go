@@ -135,7 +135,9 @@ func selectTargetPodWithLeastRequestCountFromCounts(podRequestCount map[string]i
 	targetPods := []string{}
 
 	minCount := math.MaxInt32
-	klog.V(4).InfoS("selectTargetPodWithLeastRequestCount", "podRequestCount", podRequestCount)
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("selectTargetPodWithLeastRequestCount", "podRequestCount", podRequestCount)
+	}
 	for podname, totalReq := range podRequestCount {
 		if totalReq < minCount {
 			minCount = totalReq
@@ -164,7 +166,9 @@ func selectTargetPodAndPortWithLeastRequestCount(cache cache.Cache, readyPods []
 		return nil, 0
 	}
 
-	klog.V(4).InfoS("selectTargetPodAndPortWithLeastRequestCount", "podRequestCount", podRequestCount)
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("selectTargetPodAndPortWithLeastRequestCount", "podRequestCount", podRequestCount)
+	}
 	for servername, totalReq := range podRequestCount {
 		if totalReq < minCount {
 			minCount = totalReq

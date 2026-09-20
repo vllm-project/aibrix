@@ -83,7 +83,7 @@ multi-strategy soft-scoring (`ScoreAll`) for strategies blended alongside `load-
 silently blended into other strategies to compensate.
 
 When `load-balance` is the (sole, non-blended) strategy that routes the request and multiple
-pods tie on the lowest pending-time score, `Route()` breaks the tie using least combined
+pods tie on the lowest effective-load score, `Route()` breaks the tie using least combined
 GPU+CPU KV-cache usage (falling back to a random pick if cache metrics are unavailable for the
 tied pods) — the same secondary-signal pattern the Prefix Cache router uses to break ties in
 prefix-match percentage via request count.
@@ -92,6 +92,9 @@ prefix-match percentage via request count.
 |---|---|---|---|---|
 | `AIBRIX_LOAD_BALANCE_IMBALANCE_FACTOR` | float64 | `2.0` | Gate multiplier for 3+ pods: gate fires when `max_req > factor × (mean_req + 1)`. Ignored for 2-pod clusters (the relative check never holds there). | [algorithms/load_balance.go](algorithms/load_balance.go) |
 | `AIBRIX_LOAD_BALANCE_IMBALANCE_MIN_GAP` | int | `8` | Minimum absolute gap (`max_req − min_req`) required to trigger the load-imbalance gate. For 2 pods this is the sole trigger; for 3+ pods it is required alongside the factor check. | [algorithms/load_balance.go](algorithms/load_balance.go) |
+| `AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT` | float64 | `0` | Weight λ of engine-queued requests (`num_requests_waiting`) added to the running count in the score: `(running + λ·queued) / capacity × …`. The default `0` scores on running requests only, since the gateway's running count already includes requests queued inside the engine; raise it only if you want queued work to count extra. Non-positive values fall back to the default. | [algorithms/load_balance.go](algorithms/load_balance.go) |
+| `AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA` | float64 | `2.0` | Strength α of the KV-pressure penalty: the score is multiplied by `1 + α·(1 − kv_free)²`. Non-positive values fall back to the default. | [algorithms/load_balance.go](algorithms/load_balance.go) |
+| `AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE` | float64 | `0.10` | Free-KV-cache fraction below which a pod is excluded from `load-balance` (score `+Inf`). If every pod is below it, the pod with the most KV headroom is chosen instead of failing the request. Non-positive values fall back to the default. | [algorithms/load_balance.go](algorithms/load_balance.go) |
 
 ---
 

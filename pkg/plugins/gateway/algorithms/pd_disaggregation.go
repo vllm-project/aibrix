@@ -887,9 +887,11 @@ func (r *pdRouter) scorePreparedPrefillPods(routingCtx *types.RoutingContext, pr
 		rolesetName := pod.Labels[PDRoleSetIdentifier]
 		reqCnt := float64(podRequestCount[pod.Name])
 		if reqCnt > meanRequestCount+float64(standardDeviationFactor)*stdDevRequestCount {
-			klog.V(4).InfoS("prefill pod request count is higher than mean request count, skipping",
-				"request_id", routingCtx.RequestID, "pod_name", pod.Name,
-				"req_cnt", reqCnt, "mean_req_cnt", meanRequestCount, "std_dev_req_cnt", stdDevRequestCount)
+			if klog.V(4).Enabled() {
+				klog.V(4).InfoS("prefill pod request count is higher than mean request count, skipping",
+					"request_id", routingCtx.RequestID, "pod_name", pod.Name,
+					"req_cnt", reqCnt, "mean_req_cnt", meanRequestCount, "std_dev_req_cnt", stdDevRequestCount)
+			}
 			continue
 		}
 
@@ -1083,9 +1085,11 @@ func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 	for roleset, prefillScore := range prefillScores {
 		decodePick, ok := decodeRun.PerRoleset[roleset]
 		if !ok {
-			klog.V(4).InfoS("final_score_skip_roleset",
-				"request_id", routingCtx.RequestID, "roleset", roleset,
-				"prefill_pod", prefillScore.Pod.Name, "reason", "no_decode_score_for_roleset")
+			if klog.V(4).Enabled() {
+				klog.V(4).InfoS("final_score_skip_roleset",
+					"request_id", routingCtx.RequestID, "roleset", roleset,
+					"prefill_pod", prefillScore.Pod.Name, "reason", "no_decode_score_for_roleset")
+			}
 			continue
 		}
 

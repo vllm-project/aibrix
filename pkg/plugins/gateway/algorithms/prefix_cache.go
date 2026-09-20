@@ -426,7 +426,9 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	podRequestCount := getRequestCounts(p.cache, readyPods)
 
 	matchedPods, prefixHashes = p.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
-	klog.V(4).InfoS("prefix_hashes", "request_id", ctx.RequestID, "prefix_hashes", prefixHashes)
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("prefix_hashes", "request_id", ctx.RequestID, "prefix_hashes", prefixHashes)
+	}
 
 	if len(matchedPods) > 0 {
 		targetPod = getTargetPodFromMatchedPodsFromCounts(podRequestCount, readyPods, matchedPods)
@@ -806,12 +808,14 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	}
 	matchedPods, prefixHashes = k.syncIndexer.MatchPrefix(modelName, loraID, tokens, readyPodsMap)
 
-	klog.V(4).InfoS("prefix cache matching completed",
-		"model", modelName,
-		"lora_id", loraID,
-		"matched_pods", len(matchedPods),
-		"prefix_hashes", len(prefixHashes),
-		"ready_pods", readyPodList.Len())
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("prefix cache matching completed",
+			"model", modelName,
+			"lora_id", loraID,
+			"matched_pods", len(matchedPods),
+			"prefix_hashes", len(prefixHashes),
+			"ready_pods", readyPodList.Len())
+	}
 
 	if len(matchedPods) > 0 {
 		targetPod = getTargetPodFromMatchedPodsWithKeys(k.cache, readyPods, matchedPods)

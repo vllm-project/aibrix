@@ -42,6 +42,15 @@ var (
 	podRunningRequestImbalanceMinGap = utils.LoadEnvInt("AIBRIX_LOAD_BALANCE_IMBALANCE_MIN_GAP", 8)
 )
 
+// Score knobs, see loadBalanceScore. The defaults are the "V1" formula: running requests only
+// (queued weight 0, since the gateway's running count already includes requests queued inside the
+// engine), a quadratic KV-pressure penalty of strength 2, and a hard guardrail at 10% free KV.
+var (
+	loadBalanceQueuedWeight    = utils.LoadEnvFloat("AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT", 0.0)
+	loadBalanceKVPressureAlpha = utils.LoadEnvFloat("AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA", 2.0)
+	loadBalanceKVCriticalFree  = utils.LoadEnvFloat("AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE", 0.10)
+)
+
 var (
 	loadImbalanceEvents     *prometheus.CounterVec
 	loadImbalanceEventsOnce sync.Once
@@ -110,10 +119,14 @@ func NewLoadBalanceRouterWithCache(c cache.Cache) (types.Router, error) {
 	return &loadBalanceRouter{cache: c}, nil
 }
 
-// ScoreAll returns pending_time = request_count / capacity for each pod.
-// Lower pending_time means the pod has more headroom to accept this request.
+// ScoreAll returns the effective load of each pod (see loadBalanceScore):
 //
-// Uses GetPodsRunningRequests (the live cross-gateway count), not
+//	(running + λ·queued) / EWMA(output tokens/sec) × (1 + α·(1−kvFree)²)
+//
+// Lower means the pod has more headroom for this request. A pod below the critical free-KV
+// fraction scores +Inf so it is passed over until it recovers.
+//
+// Running requests come from GetPodsRunningRequests (the live cross-gateway count), not
 // GetMetricValueByPod(RealtimeNumRequestsRunning): that metric slot is a periodically
 // synced cache and, between scrape ticks, only reflects this gateway's local view.
 func (r *loadBalanceRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
@@ -122,29 +135,61 @@ func (r *loadBalanceRouter) ScoreAll(ctx *types.RoutingContext, readyPodList typ
 	scored := make([]bool, len(pods))
 
 	counts, err := r.cache.GetPodsRunningRequests(pods)
+	capacities := r.capacities(pods)
 	for i, pod := range pods {
-		reqCount := 0.0
+		running := 0.0
 		if err == nil && counts != nil {
-			reqCount = float64(counts[utils.GeneratePodKey(pod.Namespace, pod.Name)])
+			running = float64(counts[utils.GeneratePodKey(pod.Namespace, pod.Name)])
 		}
-		scores[i] = reqCount / r.capacityOf(pod)
+		load := running
+		if loadBalanceQueuedWeight > 0 {
+			queued := GetPodModelMetricsSimpleValue(r.cache, pod.Name, pod.Namespace, ctx.Model, metrics.NumRequestsWaiting)
+			load += loadBalanceQueuedWeight * queued
+		}
+		kvFree := r.kvFreeFraction(ctx, pod)
+		scores[i] = loadBalanceScore(load, capacities[i], kvFree)
 		scored[i] = true
-	}
 
-	klog.V(4).InfoS("load_balance_scores",
-		"request_id", ctx.RequestID,
-		"model", ctx.Model,
-		"pod_count", len(pods))
+		if klog.V(4).Enabled() {
+			klog.V(4).InfoS("load_balance_score",
+				"request_id", ctx.RequestID,
+				"pod", pod.Name,
+				"running_requests", running,
+				"capacity", capacities[i],
+				"kv_free", kvFree,
+				"score", formatLoadBalanceScore(scores[i]))
+		}
+	}
 
 	return scores, scored, nil
 }
 
-// Polarity indicates lower pending_time is better.
+// loadBalanceScore is the effective load of a replica: the work already committed to it, divided by
+// how fast it drains work, inflated as its KV cache fills. capacity is in tokens/sec and kvFree in
+// [0, 1]. Below loadBalanceKVCriticalFree the replica is unusable and the score is +Inf.
+func loadBalanceScore(load, capacity, kvFree float64) float64 {
+	if kvFree < loadBalanceKVCriticalFree {
+		return math.Inf(1)
+	}
+	kvUsed := 1 - kvFree
+	return load / capacity * (1 + loadBalanceKVPressureAlpha*kvUsed*kvUsed)
+}
+
+// formatLoadBalanceScore makes a score safe for klog's JSON formatter, which cannot
+// encode +Inf (the KV-guardrail score).
+func formatLoadBalanceScore(score float64) any {
+	if math.IsInf(score, 0) || math.IsNaN(score) {
+		return strconv.FormatFloat(score, 'g', -1, 64)
+	}
+	return score
+}
+
+// Polarity indicates lower effective load is better.
 func (r *loadBalanceRouter) Polarity() types.Polarity {
 	return types.PolarityLeast
 }
 
-// Route selects the pod with minimum pending_time. Ties are broken using least combined
+// Route selects the pod with minimum effective load. Ties are broken using least combined
 // GPU+CPU KV-cache usage (falling back to random when cache metrics are unavailable), the
 // same way prefix-cache breaks ties in prefix-match percentage using request count.
 //
@@ -164,7 +209,7 @@ func (r *loadBalanceRouter) Route(ctx *types.RoutingContext, readyPodList types.
 		return "", err
 	}
 
-	minScore := math.MaxFloat64
+	minScore := math.Inf(1)
 	var candidates []*v1.Pod
 	for i, pod := range pods {
 		s := scores[i]
@@ -177,7 +222,10 @@ func (r *loadBalanceRouter) Route(ctx *types.RoutingContext, readyPodList types.
 	}
 
 	if len(candidates) == 0 {
-		return "", ErrorNoAvailablePod
+		// Every pod is past the KV guardrail (+Inf). Refusing to route would turn cluster-wide
+		// KV pressure into an outage, so fall back to the tie-break below over all pods, which
+		// picks the one with the most KV headroom.
+		candidates = pods
 	}
 
 	// Reuse the least-kv-cache strategy's own scorer to break the tie, rather than a
@@ -187,24 +235,62 @@ func (r *loadBalanceRouter) Route(ctx *types.RoutingContext, readyPodList types.
 		return "", err
 	}
 
-	klog.V(4).InfoS("load_balance_selected",
-		"request_id", ctx.RequestID,
-		"target_pod", targetPod.Name,
-		"pending_time", minScore)
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("load_balance_selected",
+			"request_id", ctx.RequestID,
+			"target_pod", targetPod.Name,
+			"score", formatLoadBalanceScore(minScore))
+	}
 
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil
 }
 
-// capacityOf returns the throughput capacity of a pod.
-// Uses observed drain rate from cache when available; falls back to 1.0 (uniform).
-func (r *loadBalanceRouter) capacityOf(pod *v1.Pod) float64 {
-	if v, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeRunningRequestsDrainRate1m); err == nil && v != nil {
-		if dr := v.GetSimpleValue(); dr > 0 {
-			return dr
+// capacities returns each pod's capacity, the observed output tokens/sec (see
+// RealtimeOutputTokenRateEWMA). The gateway learns relative hardware speed from this rather than
+// from pod labels, so a mixed B40/A100/H20 pool needs no configuration.
+//
+// A pod with no positive estimate yet (just started, or no completed output tokens in the last
+// window) is given the mean of the pods that have one, so it competes as an average replica. A
+// fixed fallback such as 1.0 would be off by the tokens/sec scale (thousands) against measured pods
+// and shut the new pod out of the traffic it needs to be measured. With no estimate anywhere every
+// pod gets 1.0, which makes the score plain load × KV penalty.
+func (r *loadBalanceRouter) capacities(pods []*v1.Pod) []float64 {
+	caps := make([]float64, len(pods))
+	sum, known := 0.0, 0
+	for i, pod := range pods {
+		v, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeOutputTokenRateEWMA)
+		if err != nil || v == nil {
+			continue
+		}
+		if rate := v.GetSimpleValue(); rate > 0 {
+			caps[i] = rate
+			sum += rate
+			known++
 		}
 	}
-	return 1.0
+
+	fallback := 1.0
+	if known > 0 {
+		fallback = sum / float64(known)
+	}
+	for i := range caps {
+		if caps[i] == 0 {
+			caps[i] = fallback
+		}
+	}
+	return caps
+}
+
+// kvFreeFraction returns the pod's free KV-cache fraction in [0, 1]. A pod whose engine does not
+// report KV usage is treated as fully free: no penalty and no guardrail, rather than penalizing
+// engines that simply lack the metric.
+func (r *loadBalanceRouter) kvFreeFraction(ctx *types.RoutingContext, pod *v1.Pod) float64 {
+	v, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.KVCacheUsagePerc)
+	if err != nil || v == nil {
+		return 1.0
+	}
+	return math.Min(1, math.Max(0, 1-v.GetSimpleValue()))
 }
 
 // ApplyLoadImbalanceGate narrows readyPods to the least-loaded subset when running-request load
