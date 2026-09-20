@@ -24,6 +24,8 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/types"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type fakeOutputPredictor struct {
@@ -40,6 +42,39 @@ func newTestRequest(requestID string, predictor types.OutputPredictor) *types.Ro
 	req := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("test"), "test-model", "hello world", requestID, "")
 	req.SetOutputPredictor(predictor)
 	return req
+}
+
+type fakePodList struct{ deployments []string }
+
+func (p fakePodList) Len() int                          { return 0 }
+func (p fakePodList) All() []*corev1.Pod                { return nil }
+func (p fakePodList) Indexes() []string                 { return p.deployments }
+func (p fakePodList) ListByIndex(string) []*corev1.Pod  { return nil }
+func (p fakePodList) ListPortsForPod() map[string][]int { return nil }
+
+type fakeRouter struct{}
+
+func (fakeRouter) Route(ctx *types.RoutingContext, _ types.PodList) (string, error) {
+	ctx.SetTargetPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "fake-target", Namespace: "default"}})
+	return "10.0.0.1:8000", nil
+}
+
+func newRankedTestRequest(requestID string, predictedOutput int, age time.Duration) *types.RoutingContext {
+	req := newTestRequest(requestID, &fakeOutputPredictor{reply: predictedOutput})
+	req.RequestTime = time.Now().Add(-age)
+	return req
+}
+
+func newTestSLOQueue(model string, requests map[string]*types.RoutingContext) *SLOQueue {
+	provider := func(*types.RoutingContext) (types.Router, error) { return fakeRouter{}, nil }
+	q, err := NewSLOQueue(provider, model)
+	Expect(err).NotTo(HaveOccurred())
+	for key, req := range requests {
+		sub := NewSimpleQueue[*types.RoutingContext](4)
+		Expect(sub.Enqueue(req, time.Now())).To(Succeed())
+		q.subs.Store(key, sub)
+	}
+	return q
 }
 
 var _ = Describe("SLOQueue", func() {
@@ -230,4 +265,71 @@ var _ = Describe("SLOQueue", func() {
 		Expect(q.higherRank(5.0, 3.0)).To(Equal(2.0))
 	})
 
+})
+
+var _ = Describe("SLOQueue Peek failure isolation", func() {
+	const model = "test-model"
+
+	BeforeEach(func() {
+		st := cache.InitForTest()
+		// Hand-built profiles store indexes in log2 space: output buckets split at 1 and 8 tokens.
+		indexes := [][]float64{{0, 3}, {0}}
+		goodProfile := &cache.ModelGPUProfile{
+			Deployment: "dep-good",
+			Indexes:    indexes,
+			E2E:        [][]float64{{1.0}, {5.0}},
+			SLOs:       cache.ModelSLOs{E2E: 5.0},
+		}
+		badProfile := &cache.ModelGPUProfile{
+			Deployment: "dep-bad",
+			Indexes:    indexes,
+			E2E:        [][]float64{{1.0}},
+			SLOs:       cache.ModelSLOs{E2E: 5.0},
+		}
+		noSLOProfile := &cache.ModelGPUProfile{
+			Deployment: "dep-noslo",
+			Indexes:    indexes,
+			E2E:        [][]float64{{1.0}, {5.0}},
+		}
+		st.UpdateModelProfile(cache.ModelGPUProfileKey(model, "dep-good"), goodProfile, true)
+		st.UpdateModelProfile(cache.ModelGPUProfileKey(model, "dep-bad"), badProfile, true)
+		st.UpdateModelProfile(cache.ModelGPUProfileKey(model, "dep-noslo"), noSLOProfile, true)
+	})
+
+	It("should keep SLO ranking when a single (request, profile) rank fails", func() {
+		q := newTestSLOQueue(model, map[string]*types.RoutingContext{
+			"early": newRankedTestRequest("req-early", 2, time.Second),
+			"late":  newRankedTestRequest("req-late", 16, 0),
+		})
+
+		picked, err := q.Peek(time.Now(), fakePodList{deployments: []string{"dep-good", "dep-bad"}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(picked).NotTo(BeNil())
+		Expect(picked.RequestID).To(Equal("req-late"))
+	})
+
+	It("should fall back to FIFO when no profile provides ranking for any request", func() {
+		q := newTestSLOQueue(model, map[string]*types.RoutingContext{
+			"early": newRankedTestRequest("req-early", 2, time.Second),
+			"late":  newRankedTestRequest("req-late", 16, 0),
+		})
+
+		picked, err := q.Peek(time.Now(), fakePodList{deployments: []string{"dep-noslo"}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(picked).NotTo(BeNil())
+		Expect(picked.RequestID).To(Equal("req-early"))
+	})
+
+	It("should keep serving ranked candidates when multiple (request, profile) pairs fail", func() {
+		q := newTestSLOQueue(model, map[string]*types.RoutingContext{
+			"waiting": newRankedTestRequest("req-waiting", 2, 2500*time.Millisecond),
+			"urgent":  newRankedTestRequest("req-urgent", 16, 500*time.Millisecond),
+			"new":     newRankedTestRequest("req-new", 64, 0),
+		})
+
+		picked, err := q.Peek(time.Now(), fakePodList{deployments: []string{"dep-good", "dep-bad"}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(picked).NotTo(BeNil())
+		Expect(picked.RequestID).To(Equal("req-urgent"))
+	})
 })
