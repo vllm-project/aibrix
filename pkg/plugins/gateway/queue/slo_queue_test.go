@@ -320,6 +320,22 @@ var _ = Describe("SLOQueue Peek failure isolation", func() {
 		Expect(picked.RequestID).To(Equal("req-early"))
 	})
 
+	It("should drop only the candidate that no profile can rank", func() {
+		q := newTestSLOQueue(model, map[string]*types.RoutingContext{
+			// dep-bad only has E2E data for the first output bucket, so this request
+			// cannot be ranked on any profile and its candidate must be dropped.
+			"unrankable": newRankedTestRequest("req-unrankable", 16, 7*time.Second),
+			// Same deployment, first bucket: rankable, and it arrives after the
+			// unrankable FIFO head.
+			"rankable": newRankedTestRequest("req-rankable", 1, 6*time.Second),
+		})
+
+		picked, err := q.Peek(time.Now(), fakePodList{deployments: []string{"dep-bad"}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(picked).NotTo(BeNil())
+		Expect(picked.RequestID).To(Equal("req-rankable"))
+	})
+
 	It("should keep serving ranked candidates when multiple (request, profile) pairs fail", func() {
 		q := newTestSLOQueue(model, map[string]*types.RoutingContext{
 			"waiting": newRankedTestRequest("req-waiting", 2, 2500*time.Millisecond),
