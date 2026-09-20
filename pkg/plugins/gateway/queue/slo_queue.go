@@ -227,7 +227,9 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 		if len(candidate.Profiles) == 0 {
 			// No available profiles, skip this subqueue.
 			klog.Warningf("SLOQueue failed to get SLO info for request %s in all profiles, fallback to FIFO queue.", r.RequestID)
-			// Remove the empty candidate from the ranked list.
+			// Remove the empty candidate from the ranked list and drop its
+			// routing context so the underlying slot does not retain it.
+			candidate.RoutingContext = nil
 			q.dequeueCandidates = q.dequeueCandidates[:idx]
 			return fbRet
 		}
