@@ -484,7 +484,9 @@ func TestModelAdapterAllPodsRemoved(t *testing.T) {
 
 	assert.True(t, adapter.Status.ReadyReplicas > 0, "adapter should have recovered with ready replicas")
 	validateAllPodsAreReady(t, k8sClient, 3, baseModelPodLabelSelector("llama2-7b"))
-	validateInference(t, adapterName)
+	// The Deployment recreates pods independently of the gateway's view of the adapter,
+	// so poll the endpoint instead of asserting it is servable on the first attempt.
+	waitForInference(t, adapterName)
 }
 
 // TestModelAdapterNoReadyPodsCondition guards the Scheduled condition surfaced by
