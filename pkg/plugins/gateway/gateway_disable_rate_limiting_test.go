@@ -81,6 +81,28 @@ func TestHandleRequestHeadersRateLimitingDisabledSeparatesAsyncJobOwner(t *testi
 	assert.NotContains(t, resp.GetRequestHeaders().GetResponse().GetHeaderMutation().GetRemoveHeaders(), userKey)
 }
 
+func TestHandleRequestHeadersRateLimitingDisabledLeavesAsyncJobOwnerUnsetWithoutUserHeader(t *testing.T) {
+	server := &Server{rateLimitingEnabled: false}
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestHeaders{
+			RequestHeaders: &extProcPb.HttpHeaders{
+				Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
+					{Key: pathKey, RawValue: []byte(PathChatCompletions)},
+				}},
+			},
+		},
+	}
+
+	resp, _, _, routingCtx, _ := server.HandleRequestHeaders(
+		context.Background(), "request-1", trace.SpanFromContext(context.Background()), req,
+	)
+
+	require.NotNil(t, resp.GetRequestHeaders())
+	require.NotNil(t, routingCtx)
+	assert.Empty(t, routingCtx.AsyncJobOwner)
+	assert.Equal(t, asyncJobOwnerShared, asyncJobOwnerFromRoutingContext(routingCtx))
+}
+
 func TestHandleRequestBodyRateLimitingDisabledSkipsModelRPSAndPreservesBody(t *testing.T) {
 	for _, tt := range []struct {
 		name        string

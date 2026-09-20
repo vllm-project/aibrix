@@ -149,7 +149,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 	// Async-job ownership is an access boundary, not a rate-limit or routing
 	// identity. Preserve it independently so disabled mode cannot merge named
 	// users into the shared job scope or feed user-aware routers.
-	routingCtx.AsyncJobOwner = asyncJobOwnerFromUserName(username)
+	setAsyncJobOwnerFromUserName(routingCtx, username)
 	routingCtx.ReqPath = requestPath
 	routingCtx.ReqHeaders = reqHeaders
 	routingCtx.ReqConfigProfile = reqConfigProfile
@@ -232,4 +232,10 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 			},
 		},
 	}, user, rpm, routingCtx, term
+}
+
+func setAsyncJobOwnerFromUserName(routingCtx *types.RoutingContext, username string) {
+	if username != "" {
+		routingCtx.AsyncJobOwner = asyncJobOwnerFromUserName(username)
+	}
 }
