@@ -110,6 +110,12 @@ _mock_capacity_inflight = 0
 _mock_capacity_max_inflight = 0
 _mock_capacity_requests = 0
 
+# Async video jobs deliberately live in one mock process only. The gateway E2E
+# suite runs several mock replicas, so status/content/delete requests succeed
+# only when AsyncJobRegistry pins them back to the pod that accepted the create.
+_mock_video_jobs_lock = threading.Lock()
+_mock_video_jobs = {}
+
 # Extract the api_key argument and prepare for authentication
 api_key = None
 for api_key_arg in ("--api_key", "--api-key"):
@@ -2106,42 +2112,44 @@ def video_generations():
 def vllm_omni_videos():
     """
     Simulates the vLLM-Omni /v1/videos endpoint (Wan2.2).
-    Accepts multipart/form-data. Returns synchronous response with base64 MP4.
-    Supports text-to-video and image-to-video (input_reference).
+    Accepts multipart/form-data and creates a pod-local asynchronous job.
     """
     try:
+        model = request.form.get("model", MODEL_NAME)
         prompt = request.form.get("prompt")
-        width = request.form.get("width", "832")
-        height = request.form.get("height", "480")
-        num_frames = request.form.get("num_frames", "33")
-        fps = request.form.get("fps", "16")
-        seed = request.form.get("seed")
-        negative_prompt = request.form.get("negative_prompt")
-        input_reference = request.files.get("input_reference")
 
         if not prompt:
             return create_error_response(
                 "'prompt' is a required parameter", param="prompt"
             )
 
-        # Simulate processing time
-        time.sleep(0.3)
-
-        # Mock base64 MP4 (minimal ftyp box)
-        mock_mp4 = base64.b64encode(
+        created_at = int(time.time())
+        expires_at = created_at + 3600
+        video_id = "video_" + uuid.uuid4().hex
+        video_content = (
             b"\x00\x00\x00\x1c"  # box size
             b"ftypisom"  # major brand
             b"\x00\x00\x02\x00"  # minor version
             b"isomiso2mp41"  # compatible brands
-        ).decode()
+            + POD_NAME.encode()
+        )
 
-        response = {
-            "data": [{
-                "b64_json": mock_mp4,
-                "revised_prompt": prompt[:100],
-            }]
+        job = {
+            "id": video_id,
+            "object": "video",
+            "model": model,
+            "status": "completed",
+            "created_at": created_at,
+            "expires_at": expires_at,
+            "mock_pod": POD_NAME,
+            "content": video_content,
         }
-        return jsonify(response), 200
+        with _mock_video_jobs_lock:
+            _mock_video_jobs[video_id] = job
+
+        return jsonify(
+            {key: value for key, value in job.items() if key != "content"}
+        ), 200
 
     except Exception as e:
         logger.error(f"Error in vLLM-Omni videos endpoint: {e}")
@@ -2150,6 +2158,53 @@ def vllm_omni_videos():
             error_type="api_error",
             status_code=500,
         )
+
+
+def _mock_video_job(video_id):
+    with _mock_video_jobs_lock:
+        return _mock_video_jobs.get(video_id)
+
+
+@app.route("/v1/videos/<video_id>", methods=["GET"])
+@auth_required
+def vllm_omni_video_status(video_id):
+    job = _mock_video_job(video_id)
+    if job is None:
+        return create_error_response(
+            f"Video {video_id} not found",
+            code="video_not_found",
+            status_code=404,
+        )
+    return jsonify(
+        {key: value for key, value in job.items() if key != "content"}
+    ), 200
+
+
+@app.route("/v1/videos/<video_id>/content", methods=["GET"])
+@auth_required
+def vllm_omni_video_content(video_id):
+    job = _mock_video_job(video_id)
+    if job is None:
+        return create_error_response(
+            f"Video {video_id} not found",
+            code="video_not_found",
+            status_code=404,
+        )
+    return Response(job["content"], status=200, mimetype="video/mp4")
+
+
+@app.route("/v1/videos/<video_id>", methods=["DELETE"])
+@auth_required
+def vllm_omni_video_delete(video_id):
+    with _mock_video_jobs_lock:
+        job = _mock_video_jobs.pop(video_id, None)
+    if job is None:
+        return create_error_response(
+            f"Video {video_id} not found",
+            code="video_not_found",
+            status_code=404,
+        )
+    return jsonify({"id": video_id, "object": "video.deleted", "deleted": True}), 200
 
 
 @app.route("/v1/rerank", methods=["POST"])

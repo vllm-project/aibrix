@@ -58,6 +58,7 @@ type fakeCache struct {
 	metricValues   map[string]metrics.MetricValue
 	metricReads    map[string]int
 	inFlightEvents []int
+	doneTraceUsage map[string][2]int64
 }
 
 var _ cache.Cache = (*fakeCache)(nil)
@@ -189,9 +190,17 @@ func (c *fakeCache) DoneRequestCount(_ *types.RoutingContext, requestID, model s
 	defer c.mu.Unlock()
 	c.events = append(c.events, requestEvent{"done", requestID, model, term})
 }
-func (c *fakeCache) DoneRequestTrace(_ *types.RoutingContext, requestID, model string, _, _, term int64) {
+func (c *fakeCache) DoneRequestTrace(
+	_ *types.RoutingContext,
+	requestID, model string,
+	promptTokens, completionTokens, term int64,
+) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.doneTraceUsage == nil {
+		c.doneTraceUsage = map[string][2]int64{}
+	}
+	c.doneTraceUsage[requestID] = [2]int64{promptTokens, completionTokens}
 	c.events = append(c.events, requestEvent{"done-trace", requestID, model, term})
 }
 func (c *fakeCache) eventsSnapshot() []requestEvent {

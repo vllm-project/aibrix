@@ -18,7 +18,6 @@ package controller
 
 import (
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -39,6 +38,7 @@ import (
 	modelapi "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/controller/modeladapter"
+	controllerutils "github.com/vllm-project/aibrix/test/utils/controller"
 	"github.com/vllm-project/aibrix/test/utils/wrapper"
 )
 
@@ -51,40 +51,37 @@ const (
 // modelAdapterEngineIP is a non-loopback local IPv4. EndpointSlice rejects
 // loopback addresses, so the mock inference engine must listen on a real
 // local address that we also stamp onto Pod.Status.PodIP.
-var modelAdapterEngineIP = localNonLoopbackIPv4()
+var modelAdapterEngineIP string
 
 var _ = ginkgo.Describe("ModelAdapter controller test", func() {
 	var ns *corev1.Namespace
 
 	ginkgo.BeforeEach(func() {
-		ns = &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				GenerateName: "test-modeladapter-",
-			},
+		ns = nil
+		ns = controllerutils.CreateNamespace(ctx, k8sClient, "test-modeladapter-", 3*time.Second)
+		if modelAdapterEngineIP == "" {
+			modelAdapterEngineIP = controllerutils.FindBindableNonLoopbackIPv4(modelAdapterEnginePort)
 		}
-		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
-		gomega.Eventually(func() error {
-			return k8sClient.Get(ctx, client.ObjectKeyFromObject(ns), ns)
-		}, time.Second*3).Should(gomega.Succeed())
 	})
 
 	ginkgo.AfterEach(func() {
-		// Delete adapters first so finalizers/owned objects are cleaned before the namespace goes terminating.
-		adapters := &modelapi.ModelAdapterList{}
-		gomega.Expect(k8sClient.List(ctx, adapters, client.InNamespace(ns.Name))).To(gomega.Succeed())
-		for i := range adapters.Items {
-			_ = k8sClient.Delete(ctx, &adapters.Items[i])
-		}
-		gomega.Eventually(func() int {
-			latest := &modelapi.ModelAdapterList{}
-			if err := k8sClient.List(ctx, latest, client.InNamespace(ns.Name)); err != nil {
-				return -1
+		if ns != nil {
+			// Delete adapters first so finalizers/owned objects are cleaned before the namespace goes terminating.
+			adapters := &modelapi.ModelAdapterList{}
+			gomega.Expect(k8sClient.List(ctx, adapters, client.InNamespace(ns.Name))).To(gomega.Succeed())
+			for i := range adapters.Items {
+				_ = k8sClient.Delete(ctx, &adapters.Items[i])
 			}
-			return len(latest.Items)
-		}, modelAdapterTimeout, modelAdapterInterval).Should(gomega.Equal(0))
+			gomega.Eventually(func() int {
+				latest := &modelapi.ModelAdapterList{}
+				if err := k8sClient.List(ctx, latest, client.InNamespace(ns.Name)); err != nil {
+					return -1
+				}
+				return len(latest.Items)
+			}, modelAdapterTimeout, modelAdapterInterval).Should(gomega.Equal(0))
+		}
 
-		err := k8sClient.Delete(ctx, ns)
-		gomega.Expect(client.IgnoreNotFound(err)).To(gomega.Succeed())
+		controllerutils.DeleteNamespace(ctx, k8sClient, ns)
 	})
 
 	ginkgo.Context("Service and EndpointSlice lifecycle", func() {
@@ -440,44 +437,6 @@ func newModelAdapterLoadHandler(adapterName string, failLoadPosts int) http.Hand
 	}
 }
 
-func localNonLoopbackIPv4() string {
-	// Prefer an address already assigned to the host that EndpointSlice will accept
-	// and that we can bind the mock engine to.
-	candidates := []string{}
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return ""
-	}
-	for _, iface := range ifaces {
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, addr := range addrs {
-			var ip net.IP
-			switch v := addr.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
-			}
-			if ip == nil || ip.IsLoopback() || ip.To4() == nil {
-				continue
-			}
-			candidates = append(candidates, ip.String())
-		}
-	}
-	for _, candidate := range candidates {
-		ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", candidate, modelAdapterEnginePort))
-		if err != nil {
-			continue
-		}
-		_ = ln.Close()
-		return candidate
-	}
-	return ""
-}
-
 type modelAdapterMockEngine struct {
 	server  *httptest.Server
 	mu      sync.Mutex
@@ -507,38 +466,11 @@ func (m *modelAdapterMockEngine) Close() {
 	}
 }
 
-var modelAdapterListenMu sync.Mutex
-
 func startModelAdapterMockEngine(handler http.HandlerFunc) *modelAdapterMockEngine {
 	ginkgo.GinkgoHelper()
-	modelAdapterListenMu.Lock()
-	defer modelAdapterListenMu.Unlock()
-
-	gomega.Expect(modelAdapterEngineIP).NotTo(
-		gomega.BeEmpty(),
-		"need a non-loopback local IPv4 for EndpointSlice-compatible mock engine",
-	)
-
 	mock := &modelAdapterMockEngine{handler: handler}
-	addr := fmt.Sprintf("%s:%d", modelAdapterEngineIP, modelAdapterEnginePort)
-	ts := httptest.NewUnstartedServer(mock)
-	_ = ts.Listener.Close()
-
-	var l net.Listener
-	var err error
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		l, err = net.Listen("tcp", addr)
-		if err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			gomega.Expect(err).NotTo(gomega.HaveOccurred(), "listen on mock engine address")
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	ts.Listener = l
-	ts.Start()
-	mock.server = ts
+	mock.server = controllerutils.StartFixedPortHTTPServer(
+		modelAdapterEngineIP, modelAdapterEnginePort, mock, 5*time.Second, 50*time.Millisecond,
+	)
 	return mock
 }

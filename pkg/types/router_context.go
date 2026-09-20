@@ -115,6 +115,11 @@ type RoutingContext struct {
 	ReqBody          []byte
 	ReqPath          string
 	ReqConfigProfile string
+	// AsyncJobBackendID is the backend-private identifier used for a pinned
+	// asynchronous job request. It is retained only for the lifetime of this
+	// routing context so gateway error processing can replace it with the public
+	// ID in an upstream error body.
+	AsyncJobBackendID string
 
 	PrefillStartTime time.Time // Time when prefill request is started.
 	PrefillEndTime   time.Time // Time consumed during prefill.
@@ -429,6 +434,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.ReqPath = ""
 	r.ReqConfigProfile = ""
 	r.ReqBody = []byte{}
+	r.AsyncJobBackendID = ""
 	r.PrefillStartTime = time.Time{}
 	r.PrefillEndTime = time.Time{}
 	r.FirstTokenTime = time.Time{}

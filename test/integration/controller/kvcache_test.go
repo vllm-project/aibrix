@@ -34,6 +34,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/controller/kvcache"
 	"github.com/vllm-project/aibrix/pkg/controller/kvcache/backends"
+	controllerutils "github.com/vllm-project/aibrix/test/utils/controller"
 )
 
 const (
@@ -118,24 +119,12 @@ var _ = ginkgo.Describe("KVCache controller test", func() {
 	var ns *corev1.Namespace
 
 	ginkgo.BeforeEach(func() {
-		ns = &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				GenerateName: "test-kvcache-",
-			},
-		}
-		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
-		gomega.Eventually(func() error {
-			return k8sClient.Get(ctx, client.ObjectKeyFromObject(ns), ns)
-		}, time.Second*3).Should(gomega.Succeed())
+		ns = nil
+		ns = controllerutils.CreateNamespace(ctx, k8sClient, "test-kvcache-", 3*time.Second)
 	})
 
 	ginkgo.AfterEach(func() {
-		// Tolerate NotFound so a failure in BeforeEach surfaces as itself rather
-		// than being masked by a cleanup error.
-		err := k8sClient.Delete(ctx, ns)
-		if err != nil && !apierrors.IsNotFound(err) {
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		}
+		controllerutils.DeleteNamespace(ctx, k8sClient, ns)
 	})
 
 	// expectControllerOwnedBy asserts obj carries exactly one owner reference and

@@ -18,13 +18,21 @@ package webhook
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	admissionv1 "k8s.io/api/admission/v1"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 )
@@ -139,6 +147,97 @@ func TestStormServiceValidateUpdate_ModeUpdateStrategy(t *testing.T) {
 
 	_, err := validator.ValidateUpdate(context.Background(), oldSS, newSS)
 	require.Error(t, err)
+}
+
+func scaleAdmissionRequest(t *testing.T, name, namespace string, replicas int32, raw []byte) admission.Request {
+	t.Helper()
+	if raw == nil {
+		scale := &autoscalingv1.Scale{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+			Spec:       autoscalingv1.ScaleSpec{Replicas: replicas},
+		}
+		var err error
+		raw, err = json.Marshal(scale)
+		require.NoError(t, err)
+	}
+	return admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			Name:      name,
+			Namespace: namespace,
+			Object:    runtime.RawExtension{Raw: raw},
+		},
+	}
+}
+
+func TestStormServiceScaleValidator_Handle(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
+
+	pooled := &orchestrationv1alpha1.StormService{
+		ObjectMeta: metav1.ObjectMeta{Name: "pooled", Namespace: "default"},
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Mode:     orchestrationv1alpha1.StormServicePooledMode,
+			Replicas: ptr.To[int32](1),
+		},
+	}
+	replica := &orchestrationv1alpha1.StormService{
+		ObjectMeta: metav1.ObjectMeta{Name: "replica", Namespace: "default"},
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Mode:     orchestrationv1alpha1.StormServiceReplicaMode,
+			Replicas: ptr.To[int32](1),
+		},
+	}
+	inferred := &orchestrationv1alpha1.StormService{
+		ObjectMeta: metav1.ObjectMeta{Name: "inferred", Namespace: "default"},
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Replicas: ptr.To[int32](1),
+		},
+	}
+	reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pooled, replica, inferred).Build()
+	validator := &StormServiceScaleValidator{Reader: reader}
+
+	tests := map[string]struct {
+		name        string
+		replicas    int32
+		raw         []byte
+		wantAllowed bool
+		wantDenied  string
+		wantCode    int32
+	}{
+		"declared pooled mode rejects scale above 1": {
+			name: "pooled", replicas: 3, wantAllowed: false, wantDenied: "Pooled",
+		},
+		"declared pooled mode allows scale to 1": {
+			name: "pooled", replicas: 1, wantAllowed: true,
+		},
+		"declared replica mode allows scale above 1": {
+			name: "replica", replicas: 5, wantAllowed: true,
+		},
+		"omitted mode allows scale above 1": {
+			name: "inferred", replicas: 3, wantAllowed: true,
+		},
+		"malformed scale object is rejected": {
+			name: "pooled", raw: []byte("not-json"), wantAllowed: false, wantCode: http.StatusBadRequest,
+		},
+		"missing stormservice returns 404": {
+			name: "missing", replicas: 2, wantAllowed: false, wantCode: http.StatusNotFound,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			resp := validator.Handle(context.Background(), scaleAdmissionRequest(t, tc.name, "default", tc.replicas, tc.raw))
+			assert.Equal(t, tc.wantAllowed, resp.Allowed)
+			if tc.wantDenied != "" {
+				require.NotNil(t, resp.Result)
+				assert.Contains(t, resp.Result.Message, tc.wantDenied)
+			}
+			if tc.wantCode != 0 {
+				require.NotNil(t, resp.Result)
+				assert.Equal(t, tc.wantCode, resp.Result.Code)
+			}
+		})
+	}
 }
 
 func TestStormServiceValidateUpdate_ModeReplicas(t *testing.T) {

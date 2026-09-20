@@ -31,6 +31,7 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
+	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -43,6 +44,19 @@ const (
 	authorizationKey = "authorization"
 	contentTypeKey   = "content-type"
 )
+
+// videoCreateRematchHeaders prepares the headers-phase route rematch for an
+// asynchronous create whose real routing strategy and target pod can only be
+// selected after its multipart body has been decoded.
+func videoCreateRematchHeaders(reqHeaders map[string]string, requestPath string, endOfStream bool) []*configPb.HeaderValueOption {
+	if endOfStream ||
+		!strings.EqualFold(reqHeaders[methodKey], http.MethodPost) ||
+		pathWithoutQuery(requestPath) != PathVideos ||
+		strings.TrimSpace(reqHeaders[HeaderRoutingStrategy]) != "" {
+		return nil
+	}
+	return buildEnvoyProxyHeaders(nil, HeaderRoutingStrategy, string(routing.RouterLeastRequest))
+}
 
 func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, rootSpan trace.Span, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, *types.RoutingContext, int64) {
 	var username, requestPath string
@@ -136,31 +150,48 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 	routingCtx.ReqHeaders = reqHeaders
 	routingCtx.ReqConfigProfile = reqConfigProfile
 
+	// Do not create a second, subtly different Videos API under a trailing-slash
+	// alias. In particular POST /v1/videos/ must not reach response rewriting
+	// after having missed multipart parsing and create pinning.
+	if isUnsupportedVideoTrailingSlash(requestPath) {
+		return buildErrorResponse(
+			envoyTypePb.StatusCode_NotFound,
+			"video paths do not support a trailing slash",
+			"", "", HeaderErrorRequestBodyProcessing, "true"), user, rpm, routingCtx, term
+	}
+
 	// Async video job follow-ups (GET status/content, DELETE) carry their routing
-	// key -- video_id -- in the path, not the (often empty/absent) body. Envoy's
-	// ext_proc filter only invokes RequestBody processing when the request
+	// key -- the public job id -- in the path, not the (often empty/absent) body.
+	// Envoy's ext_proc filter only invokes RequestBody processing when the request
 	// actually has a body, so a bodyless request must be pinned here, at
 	// RequestHeaders, or it never gets pinned at all (see
 	// handleVideoJobSubResourceHeaders for the full explanation). When a body IS
 	// coming (EndOfStream false), HandleRequestBody's existing handling covers it.
 	if h.RequestHeaders.EndOfStream {
-		if videoID, isSubResource := extractVideoIDFromPath(requestPath); isSubResource {
-			resp, videoTerm := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, requestID, requestPath, videoID)
+		if publicJobID, isSubResource := extractVideoIDFromPath(requestPath); isSubResource {
+			resp, videoTerm := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, requestID, requestPath, publicJobID)
 			return resp, user, rpm, routingCtx, videoTerm
 		}
-		// GET /v1/videos (list, no video_id) is fanned out across all of a
-		// model's pods and answered directly here -- see handleVideoListHeaders
-		// for why this can't be a normal single-pod routing decision.
-		if model, isListPath := parseVideoListRequest(requestPath); isListPath && reqHeaders[methodKey] == http.MethodGet {
-			if model == "" {
-				return videoListModelRequiredResponse(), user, rpm, routingCtx, term
+		// GET /v1/videos is the caller's own job catalog, which only the gateway's
+		// registry knows -- there is no backend to route it to.
+		if isVideoListRequest(requestPath, reqHeaders[methodKey]) {
+			options, err := parseVideoListOptions(requestPath)
+			if err != nil {
+				return buildErrorResponse(envoyTypePb.StatusCode_BadRequest,
+					err.Error(), "", "", HeaderErrorRequestBodyProcessing, "true"), user, rpm, routingCtx, term
 			}
-			routingCtx.Model = model
-			return s.handleVideoListHeaders(requestID, model), user, rpm, routingCtx, term
+			return s.handleVideoListHeaders(ctx, requestID, asyncJobOwnerFromRoutingContext(routingCtx), options), user, rpm, routingCtx, term
 		}
 	}
 
-	headers := []*configPb.HeaderValueOption{}
+	headers := videoCreateRematchHeaders(reqHeaders, requestPath, h.RequestHeaders.EndOfStream)
+	// The initial /v1/videos route is selected before ext_proc sees the request.
+	// When the client supplies no routing strategy, stamp a temporary valid value
+	// while the headers-phase ClearRouteCache below can still rematch the request
+	// onto the Videos ORIGINAL_DST route. Do not put this synthetic value in
+	// routingCtx.ReqHeaders: HandleRequestBody must still resolve the real strategy
+	// from the model profile or environment before it selects the concrete pod and
+	// overwrites this header together with target-pod.
 	headers = append(headers, &configPb.HeaderValueOption{
 		Header: &configPb.HeaderValue{
 			Key:      HeaderWentIntoReqHeaders,

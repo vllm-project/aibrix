@@ -205,4 +205,29 @@ var _ = Describe("SLOQueue", func() {
 		Expect(err).To(MatchError(cache.ErrorSLOFailureRequest))
 		Expect(address).To(BeEmpty())
 	})
+
+	It("should group requests into the same key when features fall in the same log2 bucket", func() {
+		q := &SLOQueue{}
+
+		f1 := types.RequestFeatures{100, 100}
+		b1 := q.featuresKey(f1)
+		Expect(f1).To(Equal(types.RequestFeatures{100, 100}))
+
+		f2 := types.RequestFeatures{120, 120}
+		b2 := q.featuresKey(f2)
+		Expect(f2).To(Equal(types.RequestFeatures{120, 120}))
+
+		f3 := types.RequestFeatures{1000, 1000}
+		b3 := q.featuresKey(f3)
+		Expect(f3).To(Equal(types.RequestFeatures{1000, 1000}))
+
+		Expect(b1).To(Equal(b2))
+		Expect(b1).NotTo(Equal(b3))
+	})
+
+	It("should return the difference between two ranks", func() {
+		q := &SLOQueue{}
+		Expect(q.higherRank(5.0, 3.0)).To(Equal(2.0))
+	})
+
 })

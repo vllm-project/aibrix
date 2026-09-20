@@ -103,11 +103,6 @@ func main() {
 		}()
 	}
 
-	// register additional routing algorithms that need dependences
-	if redisClient != nil {
-		routing.RegisterPowerOfTwoRouter(redisClient)
-	}
-
 	// stopCh is closed either on normal return (via defer) or proactively in
 	// the signal handler before calling os.Exit. sync.Once guards against a
 	// double-close panic.

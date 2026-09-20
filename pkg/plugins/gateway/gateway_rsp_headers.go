@@ -73,10 +73,23 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, routerCtx *types.Rou
 				isProcessingError = true
 				processingErrorCode = code
 			}
-			s.maybeForgetVideoJobAfterDelete(ctx, routerCtx, code)
+			// A DELETE that the backend honored (or that found nothing to delete) is
+			// the point at which the registry record becomes garbage. Failing to
+			// remove it is reported to the client so the DELETE can be retried.
+			if delResp := s.maybeDeleteVideoJobAfterDelete(ctx, routerCtx, code); delResp != nil {
+				return delResp, isProcessingError, processingErrorCode
+			}
 			headers = buildEnvoyProxyHeaders(headers, headerValue.Key, string(headerValue.RawValue))
 			break
 		}
+	}
+
+	// HandleResponseBody rewrites the job id inside video create/status/delete bodies, so
+	// the upstream content-length no longer describes what Envoy will send. Envoy
+	// would otherwise truncate the body or wait for bytes that never arrive.
+	var removeHeaders []string
+	if routerCtx != nil && videoJobResponseNeedsBuffering(routerCtx.ReqHeaders[methodKey], routerCtx.ReqPath) {
+		removeHeaders = []string{"content-length"}
 	}
 
 	return &extProcPb.ProcessingResponse{
@@ -84,7 +97,8 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, routerCtx *types.Rou
 			ResponseHeaders: &extProcPb.HeadersResponse{
 				Response: &extProcPb.CommonResponse{
 					HeaderMutation: &extProcPb.HeaderMutation{
-						SetHeaders: headers,
+						SetHeaders:    headers,
+						RemoveHeaders: removeHeaders,
 					},
 					ClearRouteCache: true,
 				},

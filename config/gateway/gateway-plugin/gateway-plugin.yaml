@@ -211,9 +211,6 @@ spec:
             value: /v1/video/generations
         - path:
             type: PathPrefix
-            value: /v1/videos
-        - path:
-            type: PathPrefix
             value: /tokenize
       backendRefs:
         - name: aibrix-gateway-plugins
@@ -229,6 +226,107 @@ spec:
     group: gateway.networking.k8s.io
     kind: HTTPRoute
     name: aibrix-reserved-router
+  extProc:
+    - backendRefs:
+        - name: aibrix-gateway-plugins
+          port: 50052
+      processingMode:
+        request:
+          body: Buffered
+        # Response bodies stay streamed here: SSE completions have to be forwarded
+        # as their chunks arrive. The Videos API's finite JSON responses need the
+        # opposite and are routed separately, below.
+        response:
+          body: Streamed
+      messageTimeout: 600s
+---
+# The Videos API is split off the shared reserved-router because its create and
+# status responses are the only ones the gateway rewrites: the backend job id in
+# them is replaced by the opaque public id, which is only safe if ext_proc holds
+# the whole response until the record is durably registered.
+#
+# Buffered response bodies are what makes that hold real. Envoy's ext_proc stops
+# the response at its headers until the buffered body has been processed, so an
+# upstream 201 cannot reach the client before registration succeeded -- which is
+# what lets a failed registration still answer 503. Envoy Gateway v1.2.8 has no
+# allowModeOverride field, so a per-request ModeOverride from the plugin would be
+# ignored (ext_proc's allow_mode_override stays off): the mode has to come from
+# configuration, and therefore from a route of its own.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: reserved-router-videos
+  namespace: system
+spec:
+  parentRefs:
+    - name: aibrix-eg
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/videos
+      backendRefs:
+        - name: aibrix-gateway-plugins
+          port: 50052
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: gateway-plugins-videos-extension-policy
+  namespace: system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: aibrix-reserved-router-videos
+  extProc:
+    - backendRefs:
+        - name: aibrix-gateway-plugins
+          port: 50052
+      processingMode:
+        request:
+          body: Buffered
+        response:
+          body: Buffered
+      messageTimeout: 600s
+---
+# The two Videos endpoints whose bodies must never be buffered: a
+# /v1/videos/{id}/content download is the rendered video itself, and
+# /v1/videos/sync returns its result inline. Neither carries a job id to rewrite.
+#
+# Envoy Gateway v1.2.8 ranks route matches Exact > RegularExpression > PathPrefix
+# (internal/gatewayapi/sort.go), so both of these win over the PathPrefix
+# /v1/videos route above and keep their streaming response mode.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: reserved-router-videos-streaming
+  namespace: system
+spec:
+  parentRefs:
+    - name: aibrix-eg
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: /v1/videos/sync
+        - path:
+            type: RegularExpression
+            value: /v1/videos/[^/]+/content
+      backendRefs:
+        - name: aibrix-gateway-plugins
+          port: 50052
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: gateway-plugins-videos-streaming-extension-policy
+  namespace: system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: aibrix-reserved-router-videos-streaming
   extProc:
     - backendRefs:
         - name: aibrix-gateway-plugins
