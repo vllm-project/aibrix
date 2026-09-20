@@ -26,7 +26,6 @@ import (
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
-	"github.com/redis/go-redis/v9"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	gatewayplugin "github.com/vllm-project/aibrix/pkg/plugins/gateway"
@@ -323,7 +322,6 @@ type gatewayFixture struct {
 	server        *gatewayplugin.Server
 	cache         *fakeCache
 	prefixIndexer *prefixcacheindexer.PrefixHashTable
-	routerManager *routingalgorithms.RouterManager
 	stream        *fakeProcessStream
 	requestID     string
 }
@@ -343,16 +341,6 @@ func newGatewayFixtureWithRequest(pods []*corev1.Pod, strategy, profile, externa
 func newGatewayFixtureWithRequestBody(
 	pods []*corev1.Pod, strategy, profile, externalFilter string, body []byte,
 ) *gatewayFixture {
-	return newGatewayFixtureWithPolicy(pods, strategy, profile, externalFilter, body, nil, false)
-}
-
-func newGatewayFixtureWithPolicy(
-	pods []*corev1.Pod,
-	strategy, profile, externalFilter string,
-	body []byte,
-	redisClient *redis.Client,
-	disableRateLimiting bool,
-) *gatewayFixture {
 	c := newFakeCache(pods)
 	requestID := fmt.Sprintf("%032x", fixtureSequence.Add(1))
 	prefixIndexer := prefixcacheindexer.NewPrefixHashTable()
@@ -360,13 +348,11 @@ func newGatewayFixtureWithPolicy(
 	// Both dependencies stay local so cases cannot observe process-global
 	// routing/cache registries or shared prefix state.
 	routerManager := routingalgorithms.NewRouterManagerWithCacheAndPrefixIndexer(c, prefixIndexer)
-	f.routerManager = routerManager
 	f.server = gatewayplugin.NewServerWithOptions(
-		redisClient, nil, nil,
+		nil, nil, nil,
 		gatewayplugin.ServerOptions{
-			Cache:               c,
-			RouterManager:       routerManager,
-			DisableRateLimiting: disableRateLimiting,
+			Cache:         c,
+			RouterManager: routerManager,
 			InFlightObserver: func(delta int) {
 				c.mu.Lock()
 				defer c.mu.Unlock()

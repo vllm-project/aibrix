@@ -582,7 +582,7 @@ func TestBuildErrorResponseWithBody(t *testing.T) {
 }
 
 func TestHandleResponseBody_NonStreamWithUsage(t *testing.T) {
-	server := &Server{rateLimitingEnabled: true}
+	server := &Server{}
 
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", "test-req-id", "")
 	routerCtx.ReqPath = PathChatCompletions
@@ -606,7 +606,7 @@ func TestHandleResponseBody_NonStreamWithUsage(t *testing.T) {
 }
 
 func TestHandleResponseBody_NilRoutingContext(t *testing.T) {
-	server := &Server{rateLimitingEnabled: true}
+	server := &Server{}
 	req := &extProcPb.ProcessingRequest{
 		Request: &extProcPb.ProcessingRequest_ResponseBody{
 			ResponseBody: &extProcPb.HttpBody{EndOfStream: true},
@@ -648,7 +648,7 @@ func TestHandleResponseBody_PDPrefillTimingMetricsRequirePrefillEndTime(t *testi
 			)
 			defer cleanup()
 
-			server := &Server{rateLimitingEnabled: true}
+			server := &Server{}
 			requestTime := time.Now().Add(-200 * time.Millisecond)
 			prefillStartTime := requestTime.Add(20 * time.Millisecond)
 			routerCtx := types.NewRoutingContext(context.Background(), "pd", "test-model", "", "test-req-id", "")
@@ -695,7 +695,7 @@ func TestHandleResponseBody_PDStreamingDecodeTimeAndTPOT(t *testing.T) {
 	)
 	defer cleanupTPOT()
 
-	server := &Server{rateLimitingEnabled: true}
+	server := &Server{}
 	requestTime := time.Now().Add(-250 * time.Millisecond)
 	prefillStartTime := requestTime.Add(20 * time.Millisecond)
 	prefillEndTime := prefillStartTime.Add(30 * time.Millisecond)
@@ -738,8 +738,7 @@ func TestHandleResponseBody_WithUserAndTPM(t *testing.T) {
 	mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(15)).Return(int64(100), nil)
 
 	server := &Server{
-		rateLimitingEnabled: true,
-		ratelimiter:         mockRL,
+		ratelimiter: mockRL,
 	}
 
 	requestID := "test-req-tpm-" + time.Now().Format("150405.000")
@@ -785,7 +784,7 @@ func TestHandleResponseBody_WithUserAndTPM(t *testing.T) {
 }
 
 func TestHandleResponseBody_NonLanguageRequest(t *testing.T) {
-	server := &Server{rateLimitingEnabled: true}
+	server := &Server{}
 
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", "test-req-id", "")
 	routerCtx.ReqPath = "/v1/images/generations"
@@ -809,7 +808,7 @@ func TestHandleResponseBody_NonLanguageRequest(t *testing.T) {
 }
 
 func TestHandleResponseBody_EndOfStreamNoTokens(t *testing.T) {
-	server := &Server{rateLimitingEnabled: true}
+	server := &Server{}
 
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", "test-req-id", "")
 	routerCtx.ReqPath = PathChatCompletions
@@ -835,8 +834,7 @@ func TestHandleResponseBody_TPMIncrError(t *testing.T) {
 	mockRL := &mockRateLimiter{}
 	mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(15)).Return(int64(0), errors.New("mock error"))
 	server := &Server{
-		rateLimitingEnabled: true,
-		ratelimiter:         mockRL,
+		ratelimiter: mockRL,
 	}
 
 	requestID := "test-req-tpm-err-" + time.Now().Format("150405.000")
@@ -874,7 +872,7 @@ func TestHandleResponseBody_TPMIncrError(t *testing.T) {
 }
 
 func TestHandleResponseBody_LanguagePartialResponse(t *testing.T) {
-	server := &Server{rateLimitingEnabled: true}
+	server := &Server{}
 
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "m", "", "rid-partial", "")
 	routerCtx.ReqPath = PathChatCompletions
@@ -898,7 +896,7 @@ func TestHandleResponseBody_LanguagePartialResponse(t *testing.T) {
 
 func TestHandleResponseBody_DoesNotFinalizeTrace(t *testing.T) {
 	mockCache := &MockCache{}
-	server := &Server{rateLimitingEnabled: true, cache: mockCache}
+	server := &Server{cache: mockCache}
 
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "m", "", "rid", "")
 	routerCtx.ReqPath = PathChatCompletions
@@ -921,7 +919,7 @@ func TestHandleResponseBody_DoesNotFinalizeTrace(t *testing.T) {
 
 func TestHandleResponseBody_DoesNotFinalizeOrReleaseRoutingContext(t *testing.T) {
 	mockCache := &MockCache{}
-	server := &Server{rateLimitingEnabled: true, cache: mockCache}
+	server := &Server{cache: mockCache}
 
 	routerCtx := types.NewRoutingContext(
 		context.Background(), "random", "m", "", "request-a", "",
@@ -990,7 +988,7 @@ func TestFinishRequest_FinalizesExactlyOnceAfterContextCorruption(t *testing.T) 
 			args.Get(0).(*types.RoutingContext).RequestID
 	}).Return().Once()
 
-	server := &Server{rateLimitingEnabled: true, cache: mc}
+	server := &Server{cache: mc}
 
 	server.finishRequestTrace(st, TokenUsage{
 		PromptTokens:     10,
@@ -1063,7 +1061,7 @@ func TestHandleResponseBody_SSEParsing(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			server := &Server{rateLimitingEnabled: true}
+			server := &Server{}
 
 			routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", "test-req-id", "")
 			routerCtx.ReqPath = PathChatCompletions
@@ -1136,7 +1134,7 @@ func TestHandleResponseBody_SSEChunkSplitAcrossCallbacks(t *testing.T) {
 			requestID := "test-req-id-" + tt.name + "-" + time.Now().Format("150405.000000")
 			t.Cleanup(func() { streamBuffers.Delete(requestID) })
 
-			server := &Server{rateLimitingEnabled: true}
+			server := &Server{}
 
 			routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
 			routerCtx.ReqPath = PathChatCompletions
@@ -1187,7 +1185,7 @@ func TestHandleResponseBody_SSEEmptyEOSChunkAfterBufferedTail(t *testing.T) {
 	requestID := "test-req-id-empty-eos-" + time.Now().Format("150405.000000")
 	t.Cleanup(func() { streamBuffers.Delete(requestID) })
 
-	server := &Server{rateLimitingEnabled: true}
+	server := &Server{}
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
 	routerCtx.ReqPath = PathChatCompletions
 	routerCtx.RequestTime = time.Now()
@@ -1227,7 +1225,7 @@ func TestHandleResponseBody_SSEChunkSplitThreeWays(t *testing.T) {
 	requestID := "test-req-id-three-way-" + time.Now().Format("150405.000000")
 	t.Cleanup(func() { streamBuffers.Delete(requestID) })
 
-	server := &Server{rateLimitingEnabled: true}
+	server := &Server{}
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
 	routerCtx.ReqPath = PathChatCompletions
 	routerCtx.RequestTime = time.Now()
@@ -1274,7 +1272,7 @@ func TestHandleResponseBody_SSECarriageReturnSplitAcrossCallbacks(t *testing.T) 
 	requestID := "test-req-id-crlf-split-" + time.Now().Format("150405.000000")
 	t.Cleanup(func() { streamBuffers.Delete(requestID) })
 
-	server := &Server{rateLimitingEnabled: true}
+	server := &Server{}
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
 	routerCtx.ReqPath = PathChatCompletions
 	routerCtx.RequestTime = time.Now()
@@ -1316,7 +1314,7 @@ func TestHandleResponseBody_SSELineExceedsBufferLimit(t *testing.T) {
 	requestID := "test-req-id-oversized-line-" + time.Now().Format("150405.000000")
 	t.Cleanup(func() { streamBuffers.Delete(requestID) })
 
-	server := &Server{rateLimitingEnabled: true}
+	server := &Server{}
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
 	routerCtx.ReqPath = PathChatCompletions
 	routerCtx.RequestTime = time.Now()
@@ -1375,7 +1373,7 @@ func TestRequestEndHelper_EmitsTokenUsageMetrics(t *testing.T) {
 		}{name: name, value: value, extra: extra})
 	}
 
-	server := &Server{rateLimitingEnabled: true}
+	server := &Server{}
 	routerCtx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(""), "test-model", "", "req-1", "")
 	arrival := time.Now()
 
@@ -1418,7 +1416,7 @@ func TestRequestEndHelper_EmitsTTFTForStreaming(t *testing.T) {
 		}{name: name, extra: extra})
 	}
 
-	server := &Server{rateLimitingEnabled: true}
+	server := &Server{}
 	routerCtx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(""), "test-model", "", "req-1", "")
 	routerCtx.Stream = true
 	routerCtx.RequestTime = time.Now().Add(-500 * time.Millisecond)
@@ -1446,7 +1444,7 @@ func TestRequestEndHelper_SkipsTTFTForNonStreaming(t *testing.T) {
 		counterCalls = append(counterCalls, name)
 	}
 
-	server := &Server{rateLimitingEnabled: true}
+	server := &Server{}
 	routerCtx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(""), "test-model", "", "req-1", "")
 	arrival := time.Now()
 

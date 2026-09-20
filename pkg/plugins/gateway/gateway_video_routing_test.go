@@ -38,7 +38,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
-	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
@@ -112,10 +111,6 @@ func TestAsyncJobOwnerFromRoutingContext(t *testing.T) {
 
 	named := types.NewRoutingContext(context.Background(), "", "", "", "req-2", "alice")
 	assert.Equal(t, "scope:user:alice", asyncJobOwnerFromRoutingContext(named))
-
-	ownerOnly := types.NewRoutingContext(context.Background(), "", "", "", "req-3", "")
-	ownerOnly.AsyncJobOwner = asyncJobOwnerFromUserName("bob")
-	assert.Equal(t, "scope:user:bob", asyncJobOwnerFromRoutingContext(ownerOnly))
 }
 
 // TestIsVideoListRequest verifies the public catalog is answered only for its
@@ -190,19 +185,14 @@ func readyPod(name, namespace, ip string) *v1.Pod {
 	}
 }
 
-// newTestVideoJobServer wires a rate-limited Server to an in-memory-store
-// registry so the Video layer is exercised against the real registry code
-// (scope checks, UID verification, expiry) without a Redis dependency. Tests
-// for the disabled policy construct their Server explicitly instead.
+// newTestVideoJobServer wires a Server to an in-memory-store registry so the
+// Video layer is exercised against the real registry code (scope checks, UID
+// verification, expiry) without a Redis dependency.
 func newTestVideoJobServer(t *testing.T) (*Server, *MockCache, *memoryAsyncJobRegistry) {
 	t.Helper()
 	mockCache := new(MockCache)
 	registry := newMemoryAsyncJobRegistry(mockCache)
-	return &Server{
-		cache:               mockCache,
-		asyncJobs:           registry,
-		rateLimitingEnabled: true,
-	}, mockCache, registry
+	return &Server{cache: mockCache, asyncJobs: registry}, mockCache, registry
 }
 
 func registerTestVideoJob(t *testing.T, registry AsyncJobRegistry, owner, model, backendJobID string, pod *v1.Pod) AsyncJobRecord {
@@ -284,63 +274,6 @@ func TestHandleVideoJobSubResourceHeaders_PinsAndRewritesPath(t *testing.T) {
 	assert.Equal(t, "wan2.1-vace-1.3b", routingCtx.Model)
 
 	mockCache.AssertExpectations(t)
-}
-
-// TestHandleVideoJobSubResourceHeaders_EnabledModeEnforcesModelRPS keeps the
-// pre-existing default contract explicit for both bodyless video follow-up
-// methods. The second request exceeds the profile limit and its rejected
-// increment must be refunded immediately.
-func TestHandleVideoJobSubResourceHeaders_EnabledModeEnforcesModelRPS(t *testing.T) {
-	for _, method := range []string{http.MethodGet, http.MethodDelete} {
-		t.Run(method, func(t *testing.T) {
-			s, mockCache, registry := newTestVideoJobServer(t)
-			modelLimiter := new(mockRateLimiter)
-			s.modelRateLimiter = modelLimiter
-
-			pod := readyPod("pod-a", "ns-a", "10.0.0.5")
-			pod.Annotations = map[string]string{
-				constants.ModelAnnoConfig: `{"defaultProfile":"rps","profiles":{"rps":{"requestsPerSecond":1}}}`,
-			}
-			const model = "wan2.1"
-			record := registerTestVideoJob(t, registry, asyncJobOwnerShared, model, "video_gen_abc", pod)
-
-			mockCache.On("GetPod", "pod-a", "ns-a").Return(pod, nil).Twice()
-			mockCache.On("AddRequestCount", mock.Anything, "req-1", model).Return(int64(1)).Once()
-			modelLimiter.On("Incr", mock.Anything, modelRPSKey(model), int64(1)).Return(int64(1), nil).Once()
-			modelLimiter.On("Incr", mock.Anything, modelRPSKey(model), int64(1)).Return(int64(2), nil).Once()
-			modelLimiter.On("Incr", mock.Anything, modelRPSKey(model), int64(-1)).Return(int64(1), nil).Once()
-
-			requestPath := PathVideos + "/" + record.PublicJobID
-			firstCtx := types.NewRoutingContext(context.Background(), "", "", "", "req-1", "")
-			firstCtx.ReqHeaders = map[string]string{methodKey: method}
-			firstCtx.ReqPath = requestPath
-			firstResp, firstTerm := s.handleVideoJobSubResourceHeaders(
-				context.Background(), firstCtx, "req-1", requestPath, record.PublicJobID,
-			)
-
-			require.NotNil(t, firstResp.GetRequestHeaders())
-			assert.Nil(t, firstResp.GetImmediateResponse())
-			assert.EqualValues(t, 1, firstTerm)
-			require.NotNil(t, firstCtx.ConfigProfile)
-			assert.Equal(t, int64(1), firstCtx.ConfigProfile.RequestsPerSecond)
-
-			secondCtx := types.NewRoutingContext(context.Background(), "", "", "", "req-2", "")
-			secondCtx.ReqHeaders = map[string]string{methodKey: method}
-			secondCtx.ReqPath = requestPath
-			secondResp, secondTerm := s.handleVideoJobSubResourceHeaders(
-				context.Background(), secondCtx, "req-2", requestPath, record.PublicJobID,
-			)
-
-			require.NotNil(t, secondResp.GetImmediateResponse())
-			assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, secondResp.GetImmediateResponse().GetStatus().GetCode())
-			assert.Zero(t, secondTerm)
-			require.NotNil(t, secondCtx.ConfigProfile)
-			assert.Equal(t, int64(1), secondCtx.ConfigProfile.RequestsPerSecond)
-
-			mockCache.AssertExpectations(t)
-			modelLimiter.AssertExpectations(t)
-		})
-	}
 }
 
 // TestHandleVideoJobSubResource_PinsAndClearsRouteCache covers the RequestBody

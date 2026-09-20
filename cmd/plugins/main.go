@@ -55,16 +55,6 @@ const (
 	envDisableRateLimiting         = "AIBRIX_DISABLE_RATE_LIMITING"
 )
 
-func gatewayServerOptionsFromEnv() gateway.ServerOptions {
-	return gateway.ServerOptions{
-		DisableRateLimiting: utils.LoadEnvBool(envDisableRateLimiting, false),
-	}
-}
-
-func logGatewayRateLimitingMode(options gateway.ServerOptions) {
-	klog.InfoS("gateway rate limiting configured", "enabled", !options.DisableRateLimiting)
-}
-
 var (
 	grpcAddr        string
 	httpAddr        string
@@ -174,9 +164,9 @@ func main() {
 		klog.Fatalf("failed to listen: %v", err)
 	}
 
-	gatewayOptions := gatewayServerOptionsFromEnv()
-	logGatewayRateLimitingMode(gatewayOptions)
-	gatewayServer := gateway.NewServerWithOptions(redisClient, k8sClient, gatewayK8sClient, gatewayOptions)
+	gatewayServer := gateway.NewServerWithOptions(redisClient, k8sClient, gatewayK8sClient, gateway.ServerOptions{
+		DisableRateLimiting: utils.LoadEnvBool(envDisableRateLimiting, false),
+	})
 
 	stateSyncEnabled := utils.LoadEnvBool("AIBRIX_STATESYNC_ENABLED", false)
 	var syncManager *statesync.RedisSync

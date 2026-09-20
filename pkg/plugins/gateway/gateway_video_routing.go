@@ -160,17 +160,12 @@ func parseVideoListOptions(requestPath string) (AsyncJobListOptions, error) {
 	return normalizeAsyncJobListOptions(options)
 }
 
-// asyncJobOwnerFromRoutingContext returns the access-control scope derived by
-// request-header processing. The User fallback preserves compatibility for
-// callers and tests that construct routing contexts directly.
+// asyncJobOwnerFromRoutingContext derives the job scope from the only principal
+// the gateway actually has: the user request header, carried on the routing
+// context. Requests without one share a single scope rather than being granted a
+// view over everyone else's jobs.
 func asyncJobOwnerFromRoutingContext(routingCtx *types.RoutingContext) string {
-	if routingCtx == nil {
-		return asyncJobOwnerShared
-	}
-	if routingCtx.AsyncJobOwner != "" {
-		return routingCtx.AsyncJobOwner
-	}
-	if routingCtx.User == nil {
+	if routingCtx == nil || routingCtx.User == nil {
 		return asyncJobOwnerShared
 	}
 	return asyncJobOwnerFromUserName(*routingCtx.User)
@@ -389,14 +384,16 @@ func (s *Server) pinAsyncVideoJob(ctx context.Context, routingCtx *types.Routing
 		return nil, term, videoJobPodUnavailableResponse(publicJobID)
 	}
 
-	applyConfigProfile(routingCtx, []*v1.Pod{pod}, s.rateLimitingEnabled)
+	applyConfigProfile(routingCtx, []*v1.Pod{pod})
 
-	needsRollback, errRes := s.enforceModelRPSForPolicy(ctx, record.Model, routingCtx)
-	if errRes != nil {
+	if errRes := s.enforceModelRPS(ctx, record.Model, routingCtx); errRes != nil {
 		return nil, term, errRes
 	}
+	needsRollback := true
 	defer func() {
-		s.rollbackModelRPSForPolicy(ctx, record.Model, routingCtx, needsRollback)
+		if needsRollback {
+			s.decrModelRPS(ctx, record.Model, routingCtx)
+		}
 	}()
 
 	headers = buildEnvoyProxyHeaders(make([]*configPb.HeaderValueOption, 0, 4),

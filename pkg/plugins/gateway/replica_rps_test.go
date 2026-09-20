@@ -70,7 +70,7 @@ func TestApplyConfigProfile_FractionalModelReplicaRPS(t *testing.T) {
 	pods := []*v1.Pod{podWithReplicaRPS("a", 0.18)}
 	routingCtx := &types.RoutingContext{}
 
-	applyConfigProfile(routingCtx, pods, true)
+	applyConfigProfile(routingCtx, pods)
 
 	assert.Equal(t, int64(1), routingCtx.ConfigProfile.RequestsPerSecond)
 	assert.Equal(t, int64(6), routingCtx.ConfigProfile.RateWindowSeconds)
@@ -82,7 +82,7 @@ func TestApplyConfigProfile_IntegerModelReplicaRPSUnchanged(t *testing.T) {
 	pods := []*v1.Pod{podWithReplicaRPS("a", 5), podWithReplicaRPS("b", 5)}
 	routingCtx := &types.RoutingContext{}
 
-	applyConfigProfile(routingCtx, pods, true)
+	applyConfigProfile(routingCtx, pods)
 
 	assert.Equal(t, int64(10), routingCtx.ConfigProfile.RequestsPerSecond)
 	assert.Equal(t, int64(1), routingCtx.ConfigProfile.RateWindowSeconds)
@@ -100,11 +100,11 @@ func TestModelReplicaRPS_Half_AllowsOneRequestEveryTwoSeconds(t *testing.T) {
 
 	pods := []*v1.Pod{podWithReplicaRPS("a", 0.5)}
 	routingCtx := &types.RoutingContext{}
-	applyConfigProfile(routingCtx, pods, true)
+	applyConfigProfile(routingCtx, pods)
 	require.Equal(t, int64(1), routingCtx.ConfigProfile.RequestsPerSecond)
 	require.Equal(t, int64(2), routingCtx.ConfigProfile.RateWindowSeconds)
 
-	s := &Server{rateLimitingEnabled: true, modelRateLimiter: ratelimiter.NewRedisAccountRateLimiter("aibrix_model_test", client, time.Second)}
+	s := &Server{modelRateLimiter: ratelimiter.NewRedisAccountRateLimiter("aibrix_model_test", client, time.Second)}
 	ctx := context.Background()
 	const model = "half-rps-model"
 

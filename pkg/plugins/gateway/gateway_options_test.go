@@ -17,12 +17,9 @@ limitations under the License.
 package gateway
 
 import (
-	"reflect"
 	"testing"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/vllm-project/aibrix/pkg/cache"
-	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
 )
 
 func TestNewServerWithOptionsUsesInjectedCache(t *testing.T) {
@@ -45,45 +42,6 @@ func TestNewServerInitializesGlobalRouterManager(t *testing.T) {
 		t.Fatal("NewServer() must retain the initialized global router manager")
 	}
 	assertProductionStrategiesRegistered(t, server)
-}
-
-func TestNewServerWithOptionsConfiguresRateLimitingPolicy(t *testing.T) {
-	redisClient := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
-	t.Cleanup(func() { _ = redisClient.Close() })
-
-	for _, tt := range []struct {
-		name        string
-		client      *redis.Client
-		disable     bool
-		wantNoop    bool
-		wantEnabled bool
-	}{
-		{name: "redis present and enabled by default", client: redisClient, wantEnabled: true},
-		{name: "redis present and disabled", client: redisClient, disable: true, wantNoop: true},
-		{name: "redis absent and enabled by default", wantNoop: true, wantEnabled: true},
-		{name: "redis absent and disabled", disable: true, wantNoop: true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			server := NewServerWithOptions(tt.client, nil, nil, ServerOptions{
-				Cache:               &MockCache{},
-				DisableRateLimiting: tt.disable,
-			})
-			t.Cleanup(server.Shutdown)
-
-			if got := server.rateLimitingEnabled; got != tt.wantEnabled {
-				t.Fatalf("rateLimitingEnabled = %t, want %t", got, tt.wantEnabled)
-			}
-			if server.redisClient != tt.client {
-				t.Fatalf("redisClient = %p, want supplied client %p", server.redisClient, tt.client)
-			}
-			noopType := reflect.TypeOf(ratelimiter.NewNoopRateLimiter())
-			userNoop := reflect.TypeOf(server.ratelimiter) == noopType
-			modelNoop := reflect.TypeOf(server.modelRateLimiter) == noopType
-			if userNoop != tt.wantNoop || modelNoop != tt.wantNoop {
-				t.Fatalf("no-op limiter selection = (%t, %t), want (%t, %t)", userNoop, modelNoop, tt.wantNoop, tt.wantNoop)
-			}
-		})
-	}
 }
 
 func assertProductionStrategiesRegistered(t *testing.T, server *Server) {

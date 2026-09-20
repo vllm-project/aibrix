@@ -76,7 +76,6 @@ var _ = Describe("RouterContext", func() {
 		Expect(rctx.getError()).ToNot(BeNil())    // No blocking
 
 		rctx.BaseModel = "stale-base"
-		rctx.AsyncJobOwner = "scope:user:stale"
 		rctx.Delete()
 		ctx2 := context.Background()
 		rctx2 := NewRoutingContext(ctx2, "algorithm2", "model2", "message2", "r2", "")
@@ -86,7 +85,6 @@ var _ = Describe("RouterContext", func() {
 		Expect(rctx.RequestID).To(Equal("r2"))
 		Expect(rctx2.Model).To(Equal("model2"))
 		Expect(rctx2.BaseModel).To(Equal(""))
-		Expect(rctx2.AsyncJobOwner).To(Equal(""))
 		Expect(rctx2.Message).To(Equal("message2"))
 		Expect(rctx.predictor).To(BeNil())
 		shouldBlock(func() { rctx.TargetPod() }, 100*time.Millisecond)

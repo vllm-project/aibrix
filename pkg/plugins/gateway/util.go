@@ -778,7 +778,7 @@ func rpsToLimitWindow(rps float64) (limit int64, windowSeconds int64) {
 //     loosening the concurrency cap the user set would defeat its purpose. Unlike
 //     RequestsPerSecond, neither requestsPerSecondPerReplica nor requestsInflight has an
 //     env-var form: both are configured directly in the profile.
-func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod, rateLimitingEnabled bool) {
+func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 	if routingCtx == nil {
 		return
 	}
@@ -810,13 +810,11 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod, rateLi
 	if profile != nil {
 		cp.RoutingStrategy = profile.RoutingStrategy
 		cp.RoutingConfig = profile.RoutingConfig
-		if rateLimitingEnabled {
-			cp.RequestsPerSecond = profile.RequestsPerSecond
-		}
+		cp.RequestsPerSecond = profile.RequestsPerSecond
 	}
 	routingCtx.ConfigProfile = cp
 
-	if rateLimitingEnabled && replicaRPS > 0 {
+	if replicaRPS > 0 {
 		replicas := int64(utils.CountRoutablePods(pods))
 		limit, windowSeconds := rpsToLimitWindow(replicaRPS * float64(replicas))
 		routingCtx.ConfigProfile.RequestsPerSecond = limit
@@ -827,9 +825,7 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod, rateLi
 	}
 
 	if inflight > 0 {
-		if rateLimitingEnabled {
-			warnIfReplicaInflightBelowRPS(routingCtx, inflight, replicaRPS)
-		}
+		warnIfReplicaInflightBelowRPS(routingCtx, inflight, replicaRPS)
 		routingCtx.ConfigProfile.RequestsInflight = inflight
 		routingCtx.ConfigProfile.RoutingStrategy = string(routing.RouterLeastRequest)
 		klog.V(4).InfoS("applied requestsInflight to config profile", "requestID", routingCtx.RequestID, "model", routingCtx.Model, "requestsInflight", inflight)

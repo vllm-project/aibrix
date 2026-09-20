@@ -37,7 +37,7 @@ func TestCheckRPM(t *testing.T) {
 		rl := &mockRateLimiter{}
 		rl.On("Get", mock.Anything, "alice_RPM_CURRENT").Return(int64(0), errors.New("redis down")).Once()
 
-		s := &Server{rateLimitingEnabled: true, ratelimiter: rl}
+		s := &Server{ratelimiter: rl}
 		code, err := s.checkRPM(context.Background(), "alice", 10)
 
 		assert.Equal(t, envoyTypePb.StatusCode_InternalServerError, code)
@@ -50,7 +50,7 @@ func TestCheckRPM(t *testing.T) {
 		rl := &mockRateLimiter{}
 		rl.On("Get", mock.Anything, "alice_RPM_CURRENT").Return(int64(10), nil).Once()
 
-		s := &Server{rateLimitingEnabled: true, ratelimiter: rl}
+		s := &Server{ratelimiter: rl}
 		code, err := s.checkRPM(context.Background(), "alice", 10)
 
 		assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, code)
@@ -63,7 +63,7 @@ func TestCheckRPM(t *testing.T) {
 		rl := &mockRateLimiter{}
 		rl.On("Get", mock.Anything, "alice_RPM_CURRENT").Return(int64(9), nil).Once()
 
-		s := &Server{rateLimitingEnabled: true, ratelimiter: rl}
+		s := &Server{ratelimiter: rl}
 		code, err := s.checkRPM(context.Background(), "alice", 10)
 
 		assert.Equal(t, envoyTypePb.StatusCode_OK, code)
@@ -77,7 +77,7 @@ func TestIncrRPM(t *testing.T) {
 		rl := &mockRateLimiter{}
 		rl.On("Incr", mock.Anything, "alice_RPM_CURRENT", int64(1)).Return(int64(0), errors.New("redis down")).Once()
 
-		s := &Server{rateLimitingEnabled: true, ratelimiter: rl}
+		s := &Server{ratelimiter: rl}
 		rpm, code, err := s.incrRPM(context.Background(), "alice")
 
 		assert.Equal(t, int64(0), rpm)
@@ -91,7 +91,7 @@ func TestIncrRPM(t *testing.T) {
 		rl := &mockRateLimiter{}
 		rl.On("Incr", mock.Anything, "alice_RPM_CURRENT", int64(1)).Return(int64(7), nil).Once()
 
-		s := &Server{rateLimitingEnabled: true, ratelimiter: rl}
+		s := &Server{ratelimiter: rl}
 		rpm, code, err := s.incrRPM(context.Background(), "alice")
 
 		assert.Equal(t, int64(7), rpm)
@@ -106,7 +106,7 @@ func TestCheckTPM(t *testing.T) {
 		rl := &mockRateLimiter{}
 		rl.On("Get", mock.Anything, "alice_TPM_CURRENT").Return(int64(0), errors.New("redis down")).Once()
 
-		s := &Server{rateLimitingEnabled: true, ratelimiter: rl}
+		s := &Server{ratelimiter: rl}
 		code, err := s.checkTPM(context.Background(), "alice", 100)
 
 		assert.Equal(t, envoyTypePb.StatusCode_InternalServerError, code)
@@ -119,7 +119,7 @@ func TestCheckTPM(t *testing.T) {
 		rl := &mockRateLimiter{}
 		rl.On("Get", mock.Anything, "alice_TPM_CURRENT").Return(int64(100), nil).Once()
 
-		s := &Server{rateLimitingEnabled: true, ratelimiter: rl}
+		s := &Server{ratelimiter: rl}
 		code, err := s.checkTPM(context.Background(), "alice", 100)
 
 		assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, code)
@@ -132,7 +132,7 @@ func TestCheckTPM(t *testing.T) {
 		rl := &mockRateLimiter{}
 		rl.On("Get", mock.Anything, "alice_TPM_CURRENT").Return(int64(99), nil).Once()
 
-		s := &Server{rateLimitingEnabled: true, ratelimiter: rl}
+		s := &Server{ratelimiter: rl}
 		code, err := s.checkTPM(context.Background(), "alice", 100)
 
 		assert.Equal(t, envoyTypePb.StatusCode_OK, code)
@@ -144,7 +144,7 @@ func TestCheckTPM(t *testing.T) {
 func TestEnforceModelRPS(t *testing.T) {
 	t.Run("nil config profile skips check", func(t *testing.T) {
 		rl := &mockRateLimiter{}
-		s := &Server{rateLimitingEnabled: true, modelRateLimiter: rl}
+		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{}
 
 		resp := s.enforceModelRPS(context.Background(), "llama", rc)
@@ -154,7 +154,7 @@ func TestEnforceModelRPS(t *testing.T) {
 
 	t.Run("non-positive rps skips check", func(t *testing.T) {
 		rl := &mockRateLimiter{}
-		s := &Server{rateLimitingEnabled: true, modelRateLimiter: rl}
+		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 0}}
 
 		resp := s.enforceModelRPS(context.Background(), "llama", rc)
@@ -164,7 +164,7 @@ func TestEnforceModelRPS(t *testing.T) {
 
 	t.Run("negative rps skips check", func(t *testing.T) {
 		rl := &mockRateLimiter{}
-		s := &Server{rateLimitingEnabled: true, modelRateLimiter: rl}
+		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: -1}}
 
 		resp := s.enforceModelRPS(context.Background(), "llama", rc)
@@ -176,7 +176,7 @@ func TestEnforceModelRPS(t *testing.T) {
 		rl := &mockRateLimiter{}
 		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(0), errors.New("redis down")).Once()
 
-		s := &Server{rateLimitingEnabled: true, modelRateLimiter: rl}
+		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
 
 		resp := s.enforceModelRPS(context.Background(), "llama", rc)
@@ -202,7 +202,7 @@ func TestEnforceModelRPS(t *testing.T) {
 		// TestHandleRequestBody in gateway_req_body_test.go for the end-to-end case).
 		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(-1)).Return(int64(2), nil).Once()
 
-		s := &Server{rateLimitingEnabled: true, modelRateLimiter: rl}
+		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
 
 		resp := s.enforceModelRPS(context.Background(), "llama", rc)
@@ -225,7 +225,7 @@ func TestEnforceModelRPS(t *testing.T) {
 		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(3), nil).Once()
 		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(-1)).Return(int64(0), errors.New("redis down")).Once()
 
-		s := &Server{rateLimitingEnabled: true, modelRateLimiter: rl}
+		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
 
 		resp := s.enforceModelRPS(context.Background(), "llama", rc)
@@ -241,7 +241,7 @@ func TestEnforceModelRPS(t *testing.T) {
 		rl := &mockRateLimiter{}
 		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(2), nil).Once()
 
-		s := &Server{rateLimitingEnabled: true, modelRateLimiter: rl}
+		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
 
 		resp := s.enforceModelRPS(context.Background(), "llama", rc)
@@ -260,7 +260,7 @@ func TestEnforceModelRPS_RejectDoesNotPostponeNextWindow(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
-	s := &Server{rateLimitingEnabled: true, modelRateLimiter: ratelimiter.NewRedisAccountRateLimiter("aibrix_model_test", client, time.Second)}
+	s := &Server{modelRateLimiter: ratelimiter.NewRedisAccountRateLimiter("aibrix_model_test", client, time.Second)}
 	rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 1, RateWindowSeconds: 2}}
 
 	require.Nil(t, s.enforceModelRPS(context.Background(), "m", rc), "first request should be admitted")
@@ -279,7 +279,7 @@ func TestEnforceModelRPS_RejectDoesNotPostponeNextWindow(t *testing.T) {
 func TestDecrModelRPS(t *testing.T) {
 	t.Run("nil config profile skips decrement", func(t *testing.T) {
 		rl := &mockRateLimiter{}
-		s := &Server{rateLimitingEnabled: true, modelRateLimiter: rl}
+		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{}
 
 		s.decrModelRPS(context.Background(), "llama", rc)
@@ -288,7 +288,7 @@ func TestDecrModelRPS(t *testing.T) {
 
 	t.Run("non-positive rps skips decrement", func(t *testing.T) {
 		rl := &mockRateLimiter{}
-		s := &Server{rateLimitingEnabled: true, modelRateLimiter: rl}
+		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 0}}
 
 		s.decrModelRPS(context.Background(), "llama", rc)
@@ -299,7 +299,7 @@ func TestDecrModelRPS(t *testing.T) {
 		rl := &mockRateLimiter{}
 		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(-1)).Return(int64(0), nil).Once()
 
-		s := &Server{rateLimitingEnabled: true, modelRateLimiter: rl}
+		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
 
 		s.decrModelRPS(context.Background(), "llama", rc)
@@ -310,7 +310,7 @@ func TestDecrModelRPS(t *testing.T) {
 		rl := &mockRateLimiter{}
 		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(-1)).Return(int64(0), errors.New("redis down")).Once()
 
-		s := &Server{rateLimitingEnabled: true, modelRateLimiter: rl}
+		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
 
 		s.decrModelRPS(context.Background(), "llama", rc)

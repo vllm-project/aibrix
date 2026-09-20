@@ -125,9 +125,10 @@ requests** and increase CPU if Redis becomes a latency bottleneck (monitor ``red
 Disabling Gateway Rate Limiting
 --------------------------------
 
-Set ``AIBRIX_DISABLE_RATE_LIMITING=true`` on the gateway plugin to disable the
-AIBrix-owned user RPM/TPM and model RPS quota paths. The setting defaults to ``false``, so
-omitting it preserves the existing behavior.
+Set ``AIBRIX_DISABLE_RATE_LIMITING=true`` on the gateway plugin to disable AIBrix user
+RPM/TPM and model RPS quota enforcement. The setting defaults to ``false``. When disabled,
+the gateway skips AIBrix user lookup and does not use the ``user`` header as routing identity,
+but it forwards the header unchanged.
 
 .. code-block:: yaml
 
@@ -136,26 +137,9 @@ omitting it preserves the existing behavior.
         envs:
           AIBRIX_DISABLE_RATE_LIMITING: "true"
 
-Disabled mode skips AIBrix user-record lookup, RPM admission, TPM accounting,
-``requestsPerSecond`` and ``requestsPerSecondPerReplica`` enforcement, and AIBrix-generated
-rate-limit response headers. It does not strip the incoming ``user`` header or rebuild the
-request body before forwarding it.
-
-The ``user`` header no longer supplies identity to user-aware routing algorithms in disabled
-mode. It still defines the ownership scope for asynchronous video jobs so one named caller
-cannot list, read, or delete another caller's jobs; requests without the header share the
-anonymous scope. The gateway's static bearer-token check authenticates access to the gateway,
-not the value of this header. A trusted upstream proxy must therefore set or overwrite
-``user`` after authenticating the caller when video-job isolation is required.
-
-This setting does not disable Redis, routing, model discovery, cross-replica synchronization,
-API-key authentication, or the per-replica ``requestsInflight`` concurrency guard. Keep Redis
-configured whenever those deployment features require it. If customer authentication,
-rate limits, or quotas are still required, another trusted component must enforce them.
-
-The gateway reads the setting only at startup. Restart every gateway plugin replica after a
-change and use the same value throughout the deployment. A mixed rollout produces mixed quota
-enforcement until all replicas have restarted.
+The setting does not disable the per-replica ``requestsInflight`` guard or disconnect Redis.
+Keep Redis configured when session affinity, asynchronous jobs, state synchronization, or other
+gateway features require it.
 
 Configuring Buffer Limits, Connections, and QPS
 ------------------------------------------------

@@ -123,10 +123,10 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 		}
 	}
 
-	if s.rateLimitingEnabled {
+	if !s.disableRateLimiting && username != "" {
 		user.Name = username
 	}
-	if user.Name != "" && s.redisClient != nil {
+	if !s.disableRateLimiting && username != "" && s.redisClient != nil {
 		user, err = utils.GetUser(ctx, utils.User{Name: username}, s.redisClient)
 		if err != nil {
 			klog.ErrorS(err, "unable to process user info", "requestID", requestID, "username", username)
@@ -146,10 +146,6 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 	}
 
 	routingCtx = types.NewRoutingContext(ctx, "", "", "", requestID, user.Name)
-	// Async-job ownership is an access boundary, not a rate-limit or routing
-	// identity. Preserve it independently so disabled mode cannot merge named
-	// users into the shared job scope or feed user-aware routers.
-	setAsyncJobOwnerFromUserName(routingCtx, username)
 	routingCtx.ReqPath = requestPath
 	routingCtx.ReqHeaders = reqHeaders
 	routingCtx.ReqConfigProfile = reqConfigProfile
@@ -232,10 +228,4 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 			},
 		},
 	}, user, rpm, routingCtx, term
-}
-
-func setAsyncJobOwnerFromUserName(routingCtx *types.RoutingContext, username string) {
-	if username != "" {
-		routingCtx.AsyncJobOwner = asyncJobOwnerFromUserName(username)
-	}
 }

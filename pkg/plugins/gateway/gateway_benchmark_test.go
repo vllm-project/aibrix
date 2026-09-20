@@ -68,7 +68,7 @@ func newBenchmarkServer(b *testing.B, requestBody string, routingAlgo types.Rout
 	}
 	mockHTTP.On("Get", mock.Anything, "test-model-router", mock.Anything).Return(route, nil)
 
-	server := &Server{rateLimitingEnabled: true, cache: mockCache, gatewayClient: mockGW}
+	server := &Server{cache: mockCache, gatewayClient: mockGW}
 
 	req := &extProcPb.ProcessingRequest{
 		Request: &extProcPb.ProcessingRequest_RequestBody{
@@ -275,7 +275,7 @@ func BenchmarkHandleRequestBody_WithRoutingStrategy_ChatCompletions_32k(b *testi
 	}
 
 	stubCache := &benchStubCache{Cache: cache.NewForTest(), pods: podList}
-	server := &Server{rateLimitingEnabled: true, cache: stubCache}
+	server := &Server{cache: stubCache}
 	req := &extProcPb.ProcessingRequest{
 		Request: &extProcPb.ProcessingRequest_RequestBody{
 			RequestBody: &extProcPb.HttpBody{Body: []byte(requestBody)},
@@ -335,7 +335,7 @@ func BenchmarkHandleRequestBody_WithRoutingStrategy_Completions_32k(b *testing.B
 	}
 
 	stubCache := &benchStubCache{Cache: cache.NewForTest(), pods: podList}
-	server := &Server{rateLimitingEnabled: true, cache: stubCache}
+	server := &Server{cache: stubCache}
 	req := &extProcPb.ProcessingRequest{
 		Request: &extProcPb.ProcessingRequest_RequestBody{
 			RequestBody: &extProcPb.HttpBody{Body: []byte(requestBody)},
