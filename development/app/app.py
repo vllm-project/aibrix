@@ -944,6 +944,48 @@ def _recorded_completion(path):
     return decorator
 
 
+@app.route("/abort_request", methods=["POST"])
+def abort_request():
+    """Mock of the SGLang /abort_request endpoint.
+
+    The gateway calls it on the decode pod when the prefill leg of a PD request
+    failed, so that the decode leg stops waiting for a KV transfer that will
+    never arrive. The abort is matched by "rid" alone - the engine carries no
+    bootstrap room on this path - and the rid is recorded under its own entry so
+    e2e tests can assert which request was aborted.
+    """
+    raw_body = request.get_data(cache=True)
+    payload = request.get_json(silent=True)
+    rid = payload.get("rid") if isinstance(payload, dict) else None
+    _, role, engine = _mock_pd_config()
+
+    handle = request_recorder.start(
+        path="/abort_request",
+        headers=_recorder_headers(request.headers),
+        raw_body=raw_body,
+        parsed_json=payload,
+        pod=POD_NAME,
+        engine=engine,
+        role=role,
+        request_id=rid,
+    )
+
+    if not rid:
+        # An empty rid would prefix-match every live request on a real engine.
+        request_recorder.finish(
+            handle, outcome="rejected", status_code=400, error="rid is required"
+        )
+        return make_response(
+            create_error_response("'rid' is required", param="rid", status_code=400)
+        )
+
+    response = {"status": "ok", "rid": rid}
+    request_recorder.finish(
+        handle, outcome="success", status_code=200, response=response
+    )
+    return jsonify(response), 200
+
+
 @app.route("/debug/requests", methods=["GET"])
 def debug_requests():
     return jsonify(request_recorder.query(request_id=request.args.get("request_id")))

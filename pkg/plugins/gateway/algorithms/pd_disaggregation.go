@@ -431,6 +431,14 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		}
 		ctx.RespHeaders[HeaderPrefillTargetPod] = prefillPod.Name
 		ctx.RespHeaders[HeaderPrefillTargetPodIP] = prefillPod.Status.PodIP
+		// Record where the decode leg is going before the prefill leg is
+		// fired. For an async engine that leg runs in its own goroutine and
+		// can fail before SetTargetPod below has even run, and it must be able
+		// to aim an /abort_request at the decode pod that is waiting for a KV
+		// transfer that will never arrive. PodAddress yields exactly the
+		// address Route returns to Envoy, so the abort lands on the HTTP
+		// server actually serving the decode leg.
+		ctx.SetDecodeTarget(ctx.PodAddress(decodePod), decodePod.Name)
 		// The prefill registration was made by Select; the executor's
 		// RemovePrefillRequest (sync/async) is the matching decrement.
 		err = r.doPrefillRequest(ctx, prefillPod, ctx.Engine)

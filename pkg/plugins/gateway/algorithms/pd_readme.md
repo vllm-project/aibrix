@@ -335,6 +335,7 @@ Gateway modifies ReqBody:
   bootstrap_host = prefill_pod_ip
   bootstrap_port = pod annotation / default 8998
   bootstrap_room = random int63
+  rid            = <gateway request id>-<16 hex nonce>   (identical on both legs)
 
 Gateway ──POST (async goroutine)──────────────────────────────────────────────────► Prefill Pod
          (no wait; prefill/decode coordinate via bootstrap protocol)
@@ -346,6 +347,15 @@ For SGLang, `Route()` returning a decode pod means the gateway has dispatched
 the asynchronous prefill worker, not that the prefill HTTP request has already
 completed. Prefill success/failure metrics are emitted by the async worker after
 the prefill HTTP request returns.
+
+`rid` is the engine-visible request id of the attempt. SGLang reads it from the
+request body (the `X-Request-Id` header is ignored) and its `/abort_request`
+endpoint matches live requests by rid alone, so injecting the same gateway-owned
+rid into both legs is what makes the decode leg cancellable. The rid always ends
+with a fixed-width nonce so that no gateway rid can be a proper prefix of
+another - SGLang aborts by rid prefix - and so that a client retrying with the
+same request id (or the same traceparent) still gets a distinct rid per attempt.
+See [PD Prefill Fail-Fast](#pd-prefill-fail-fast).
 
 ### TensorRT-LLM
 
@@ -370,6 +380,48 @@ TRT-LLM uses a Snowflake-style `disagg_request_id` (63-bit) to correlate prefill
 ```
 
 Machine ID is set via `AIBRIX_TRT_MACHINE_ID` (must be in `[0, 1024)`).
+
+---
+
+## PD Prefill Fail-Fast
+
+Only the asynchronous engines (SGLang) can fail their prefill leg after `Route()`
+has already returned a decode pod. Without fail-fast the client waits for the
+decode leg to give up on a KV transfer that will never arrive - 300s in SGLang -
+and the decode pod holds its pre-allocated KV pages for that whole window.
+
+```
+Prefill leg fails (async worker)
+   │
+   ├─► record failure on the RoutingContext's PD leg state (first failure wins)
+   │
+   ├─► POST /abort_request {"rid": ...} to the decode pod   (goroutine, twice)
+   │
+   └─► wake the ext_proc stream ──► 5xx ImmediateResponse to the client
+                                    header x-error-pd-prefill: true
+```
+
+Failure classes, as reported in the metrics and in the client error message:
+
+| Class | Meaning | Terminal |
+|-------|---------|----------|
+| `request_setup` | The prefill HTTP request could not be built or the body could not be prepared | yes |
+| `timeout` | `AIBRIX_PREFILL_REQUEST_TIMEOUT` elapsed | yes |
+| `canceled` | The client or the gateway canceled the prefill request | yes |
+| `transport` | Connection refused, reset, DNS failure, ... | yes |
+| `http_status` | The prefill engine answered a non-2xx status | yes |
+| `bad_response` | The prefill engine answered 2xx with a body the gateway could not parse | no |
+
+`bad_response` is not terminal: the prefill leg did run, so the decode leg is
+left alone and the client keeps whatever the decode leg produces.
+
+The client status code is the prefill engine's own status for `http_status`, and
+`503` for every other terminal class, since those have no upstream status. The
+response body is an OpenAI-shaped error carrying the class and a truncated
+upstream message, and it is sent even while the gateway is still waiting for the
+decode leg's response headers. Once the decode leg has started answering the
+client, the failure is only recorded and logged: the response is already on the
+wire, and the decode leg evidently did not need the prefill leg's output.
 
 ---
 
@@ -480,7 +532,7 @@ When a combined pod is selected, `prefillPod` is `nil` (no prefill HTTP call) an
 | `AIBRIX_PREFILL_SCORE_POLICY` | `prefix_cache` | Prefill pod scoring: `prefix_cache` or `least_request`. Any other value logs a warning and falls back to `prefix_cache`. |
 | `AIBRIX_DECODE_SCORE_POLICY` | `load_balancing` | Decode pod scoring for `finalPDScore`: `load_balancing` or `least_request`. Any other value logs a warning and falls back to `load_balancing`. |
 | `AIBRIX_KV_CONNECTOR_TYPE` | `shfs` | KV transfer backend: `shfs` (GPU/SHFS), `nixl` (Neuron/NIXL), or `mooncake` (Mooncake) |
-| `AIBRIX_PREFILL_REQUEST_TIMEOUT` | `30` | Prefill HTTP request timeout in seconds |
+| `AIBRIX_PREFILL_REQUEST_TIMEOUT` | `30` | Prefill HTTP request timeout in seconds. Exceeding it is a terminal `timeout` prefill failure. |
 | `AIBRIX_PROMPT_LENGTH_BUCKETING` | `false` | Enable prompt-length-based pod bucketing |
 
 ### Prefill Load Balancing
@@ -498,6 +550,13 @@ When a combined pod is selected, `prefillPod` is `nil` (no prefill HTTP call) an
 | `AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD` | `16.0` | Min `(max − min)` running request count spread to trigger decode imbalance routing |
 | `AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD` | `2048.0` | Min `(max − min)` token throughput spread (tok/s) to trigger throughput-based routing |
 | `AIBRIX_DECODE_SCORE_RATIO_THRESHOLD` | `1.5` | `max_drain_score / min_drain_score` ratio threshold to trigger drain-rate routing |
+
+### PD Prefill Fail-Fast
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AIBRIX_DECODE_ABORT_TIMEOUT` | `3` | Per-attempt timeout in seconds of the `/abort_request` call to the decode pod. `0` disables decode aborts; the client is still failed fast |
+| `AIBRIX_DECODE_ABORT_RETRY_DELAY` | `2` | Delay in seconds before the second abort attempt. `0` sends a single attempt |
 
 ### TensorRT-LLM
 
@@ -531,6 +590,8 @@ SGLang uses a bootstrap mechanism for prefill/decode coordination. The port is r
 | `GatewayPrefillRequestSuccessTotal` | Prefill HTTP succeeded. For SGLang, this is emitted asynchronously after the background prefill request completes, not when `Route()` returns. |
 | `PDSelectedPrefillPodTotal` | Prefill pod selected (per pod label) |
 | `PDSelectedDecodePodTotal` | Decode pod selected (per pod label) |
+| `gateway_pd_prefill_failure_total{class,stage}` | A terminal prefill failure reached the client-facing handler. `stage` is `before_response` (the client was failed fast) or `after_response` (the decode leg had already started answering) |
+| `gateway_pd_decode_abort_total{prefill_failure_class,result}` | One decode abort attempt. `result` is `ok`, `error`, `skipped_streaming`, `skipped_disabled`, `skipped_no_rid` or `skipped_no_target` |
 
 ---
 
@@ -540,6 +601,7 @@ SGLang uses a bootstrap mechanism for prefill/decode coordination. The port is r
 |--------|-------|
 | `prefill-target-pod` | Name of the selected prefill pod |
 | `prefill-target-pod-ip` | IP of the selected prefill pod |
+| `x-error-pd-prefill` | `true`, on the error response the gateway generates when the PD prefill leg failed |
 
 ---
 

@@ -93,6 +93,22 @@ def parse_fault_headers(headers, role):
                 metadata=FrozenDict(error="invalid x-aibrix-mock-delay-ms"),
             )
 
+    # x-aibrix-mock-delay-role scopes the delay to one PD leg. Without it the
+    # delay applies to whichever leg receives the request, which is both of them
+    # for a disaggregated request: the gateway forwards client headers to the
+    # prefill and the decode pod alike.
+    if "x-aibrix-mock-delay-role" in normalized_headers:
+        delay_role = normalized_headers["x-aibrix-mock-delay-role"]
+        if delay_role not in _ROLES:
+            return FaultParseResult(
+                delay_ms=0,
+                injected_status_code=None,
+                validation_status_code=400,
+                metadata=FrozenDict(error="invalid x-aibrix-mock-delay-role"),
+            )
+        if delay_role != role:
+            delay_ms = 0
+
     fail_value = normalized_headers.get("x-aibrix-mock-fail")
     injected_status_code = 500 if fail_value in _ROLES and fail_value == role else None
     return FaultParseResult(
