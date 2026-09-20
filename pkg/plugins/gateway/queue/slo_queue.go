@@ -154,8 +154,6 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 	if availableProfiles == 0 {
 		klog.Warningf("SLOQueue found no profile available for model %s, fallback to FIFO queue", q.modelName)
 	}
-	// Clear error
-	err = nil
 
 	// Refill candidates
 	q.dequeueCandidates = q.dequeueCandidates[:0]
@@ -218,7 +216,6 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 				rank, rankErr = q.rank(currentTime, r, profile)
 			}
 			if rankErr != nil {
-				err = rankErr
 				klog.Warningf("SLOQueue failed to get SLO info for request %s with profile %s: %v, skip.", r.RequestID, profile.Deployment, rankErr)
 				continue
 			}
@@ -230,6 +227,10 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 		if len(candidate.Profiles) == 0 {
 			// No available profiles, skip this subqueue.
 			klog.Warningf("SLOQueue failed to get SLO info for request %s in all profiles, fallback to FIFO queue.", r.RequestID)
+			// Remove the empty candidate from the ranked list and drop its
+			// routing context so the underlying slot does not retain it.
+			candidate.RoutingContext = nil
+			q.dequeueCandidates = q.dequeueCandidates[:idx]
 			return fbRet
 		}
 		// Sort by rank ascendingly, so the first one contains lowest rank.
@@ -238,10 +239,6 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 		})
 		return true
 	})
-	if err != nil {
-		// Apply fallback decision by just keep the first one.
-		q.dequeueCandidates = q.dequeueCandidates[:1]
-	}
 
 	if len(q.dequeueCandidates) == 0 {
 		return nil, types.ErrQueueEmpty
