@@ -113,6 +113,7 @@ func selectPodForActivationWithState(
 	var bestState PodPlacementState
 	var bestLoc float64
 	var bestLoad int
+	var skippedForHBM bool
 	for i := range candidates {
 		pod := &candidates[i]
 		if alreadyOn[pod.Name] {
@@ -120,6 +121,7 @@ func selectPodForActivationWithState(
 		}
 		state := states[pod.Name]
 		if requiredHBMBytesPerGPU > 0 && (!state.MemoryKnown || state.HBMFreeBytes < requiredHBMBytesPerGPU) {
+			skippedForHBM = true
 			continue
 		}
 		loc := locality.Cost(model, pod.Spec.NodeName)
@@ -130,7 +132,7 @@ func selectPodForActivationWithState(
 		}
 	}
 	if best == nil {
-		if requiredHBMBytesPerGPU > 0 {
+		if skippedForHBM {
 			return nil, fmt.Errorf("no candidate warm pod has confirmed free HBM of at least %d bytes per GPU", requiredHBMBytesPerGPU)
 		}
 		return nil, fmt.Errorf("no available candidate warm pod for model")

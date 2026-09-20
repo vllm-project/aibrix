@@ -217,6 +217,29 @@ func TestSelectPodForActivationWithStateRequiresHBM(t *testing.T) {
 	require.ErrorContains(t, err, "confirmed free HBM")
 }
 
+func TestSelectPodForActivationWithStateNoCapacityWithoutHBMSkip(t *testing.T) {
+	tests := []struct {
+		name       string
+		candidates []corev1.Pod
+		alreadyOn  map[string]bool
+	}{
+		{name: "no candidates"},
+		{
+			name:       "all candidates already host model",
+			candidates: []corev1.Pod{namedPod("host")},
+			alreadyOn:  map[string]bool{"host": true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := selectPodForActivationWithState(
+				tt.candidates, tt.alreadyOn, nil, "m", uniformLocality{}, nil, 100,
+			)
+			require.EqualError(t, err, "no available candidate warm pod for model")
+		})
+	}
+}
+
 func TestUniformLocality_AlwaysZero(t *testing.T) {
 	assert.Zero(t, uniformLocality{}.Cost("m", "any-node"))
 }
