@@ -395,7 +395,7 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL, parallelism)
 	requiredHBMBytesPerGPU := int64(0)
 	if pm.Spec.RequiredHBMBytesPerGPU != nil {
-		requiredHBMBytesPerGPU = *pm.Spec.RequiredHBMBytesPerGPU
+		requiredHBMBytesPerGPU = pm.Spec.RequiredHBMBytesPerGPU.Value()
 	}
 
 	for desiredReplicas(pm) > int32(len(pm.Status.Instances)) {

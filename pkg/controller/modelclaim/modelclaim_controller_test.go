@@ -681,8 +681,9 @@ func TestReconcilePlacementPrefersRuntimeSnapshot(t *testing.T) {
 
 func TestReconcilePlacementRequiresHBM(t *testing.T) {
 	pm := withFinalizer(sampleModelClaim())
-	required := int64(500)
+	required := resource.MustParse("40Gi")
 	pm.Spec.RequiredHBMBytesPerGPU = &required
+	requiredBytes := required.Value()
 	cached := warmPod("cached", "b300-pool-a", true, corev1.PodRunning)
 	cached.Status.PodIP = "10.0.0.1"
 	free := warmPod("free", "b300-pool-a", true, corev1.PodRunning)
@@ -690,11 +691,11 @@ func TestReconcilePlacementRequiresHBM(t *testing.T) {
 	r, runtime := newReconciler(t, pm, cached, free)
 	runtime.snapshots = map[string]*RuntimeSnapshot{
 		"10.0.0.1": {
-			Accelerators:    []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: 499}},
+			Accelerators:    []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: requiredBytes - 1}},
 			CachedArtifacts: []string{pm.Spec.ArtifactURL},
 		},
 		testPeerIP: {
-			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: 500}},
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: requiredBytes}},
 		},
 	}
 
@@ -705,7 +706,7 @@ func TestReconcilePlacementRequiresHBM(t *testing.T) {
 
 func TestReconcilePlacementWaitsForConfirmedHBM(t *testing.T) {
 	pm := withFinalizer(sampleModelClaim())
-	required := int64(500)
+	required := resource.MustParse("40Gi")
 	pm.Spec.RequiredHBMBytesPerGPU = &required
 	r, runtime := newReconciler(t, pm, warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning))
 

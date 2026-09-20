@@ -265,8 +265,8 @@ func (in *ModelClaimSpec) DeepCopyInto(out *ModelClaimSpec) {
 	}
 	if in.RequiredHBMBytesPerGPU != nil {
 		in, out := &in.RequiredHBMBytesPerGPU, &out.RequiredHBMBytesPerGPU
-		*out = new(int64)
-		**out = **in
+		x := (*in).DeepCopy()
+		*out = &x
 	}
 	if in.Replicas != nil {
 		in, out := &in.Replicas, &out.Replicas

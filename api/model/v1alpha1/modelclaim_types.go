@@ -16,7 +16,10 @@ limitations under the License.
 
 package v1alpha1
 
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+import (
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
@@ -51,8 +54,8 @@ type ModelClaimSpec struct {
 	// requirement. Include weights, engine overhead, and serving headroom. When
 	// omitted, placement does not enforce capacity.
 	// +optional
-	// +kubebuilder:validation:Minimum=1
-	RequiredHBMBytesPerGPU *int64 `json:"requiredHBMBytesPerGPU,omitempty"`
+	// +kubebuilder:validation:XValidation:rule="quantity(string(self)).isGreaterThan(quantity('0'))",message="must be greater than zero"
+	RequiredHBMBytesPerGPU *resource.Quantity `json:"requiredHBMBytesPerGPU,omitempty"`
 
 	// Engine is the inference engine used to serve this model.
 	// +optional

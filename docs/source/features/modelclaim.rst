@@ -237,11 +237,12 @@ The supported spec fields are:
        ``gcs://``.
    * - ``requiredHBMBytesPerGPU``
      - No
-     - Free HBM required per GPU before activation. For a single-GPU model,
-       any one device in the Pod may satisfy the requirement; for a TP/PP
-       model, every device in the group must satisfy it. Allow for model
-       weights, engine overhead, and serving headroom. When omitted, free HBM
-       affects placement order but does not exclude a Pod.
+     - Free HBM required per GPU before activation, expressed as a Kubernetes
+       quantity such as ``40Gi``. For a single-GPU model, any one device in the
+       Pod may satisfy the requirement; for a TP/PP model, every device in the
+       group must satisfy it. Allow for model weights, engine overhead, and
+       serving headroom. When omitted, free HBM affects placement order but
+       does not exclude a Pod.
    * - ``engine``
      - No
      - ``vllm`` or ``sglang``. Defaults to ``vllm``. SGLang requires a

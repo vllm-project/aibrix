@@ -18,6 +18,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	resource "k8s.io/apimachinery/pkg/api/resource"
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
@@ -27,7 +28,7 @@ type ModelClaimSpecApplyConfiguration struct {
 	ModelName              *string                                   `json:"modelName,omitempty"`
 	PodSelector            *v1.LabelSelectorApplyConfiguration       `json:"podSelector,omitempty"`
 	ArtifactURL            *string                                   `json:"artifactURL,omitempty"`
-	RequiredHBMBytesPerGPU *int64                                    `json:"requiredHBMBytesPerGPU,omitempty"`
+	RequiredHBMBytesPerGPU *resource.Quantity                        `json:"requiredHBMBytesPerGPU,omitempty"`
 	Engine                 *string                                   `json:"engine,omitempty"`
 	Replicas               *int32                                    `json:"replicas,omitempty"`
 	EngineConfig           *ModelClaimEngineConfigApplyConfiguration `json:"engineConfig,omitempty"`
@@ -66,7 +67,7 @@ func (b *ModelClaimSpecApplyConfiguration) WithArtifactURL(value string) *ModelC
 // WithRequiredHBMBytesPerGPU sets the RequiredHBMBytesPerGPU field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the RequiredHBMBytesPerGPU field is set to the value of the last call.
-func (b *ModelClaimSpecApplyConfiguration) WithRequiredHBMBytesPerGPU(value int64) *ModelClaimSpecApplyConfiguration {
+func (b *ModelClaimSpecApplyConfiguration) WithRequiredHBMBytesPerGPU(value resource.Quantity) *ModelClaimSpecApplyConfiguration {
 	b.RequiredHBMBytesPerGPU = &value
 	return b
 }

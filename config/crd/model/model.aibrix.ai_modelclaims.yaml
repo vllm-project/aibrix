@@ -97,9 +97,14 @@ spec:
                 minimum: 1
                 type: integer
               requiredHBMBytesPerGPU:
-                format: int64
-                minimum: 1
-                type: integer
+                anyOf:
+                - type: integer
+                - type: string
+                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                x-kubernetes-int-or-string: true
+                x-kubernetes-validations:
+                - message: must be greater than zero
+                  rule: quantity(string(self)).isGreaterThan(quantity('0'))
             required:
             - artifactURL
             - podSelector
