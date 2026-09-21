@@ -51,8 +51,11 @@ type ResolvedConfigProfile struct {
 	// It takes precedence over the routing-strategy request header, the profile
 	// RoutingStrategy and the ROUTING_ALGORITHM environment variable.
 	LockedRoutingStrategy string
-	RoutingStrategy       string
-	RoutingConfig         json.RawMessage
+	// DisableRequestRoutingOverrides ignores application-supplied routing-strategy,
+	// config-profile and external-filter controls for this model.
+	DisableRequestRoutingOverrides bool
+	RoutingStrategy                string
+	RoutingConfig                  json.RawMessage
 	// RequestsPerSecond is the per-model request-rate limit enforced by enforceModelRPS,
 	// resolved from the profile's requestsPerSecond or from its requestsPerSecondPerReplica
 	// (which takes precedence and scales it by the model's current routable replica count).

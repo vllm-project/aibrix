@@ -758,7 +758,9 @@ func rpsToLimitWindow(rps float64) (limit int64, windowSeconds int64) {
 // (model.aibrix.ai/config) and applies the selected profile plus the model-wide
 // locked routing strategy onto routingCtx.ConfigProfile.
 //   - The profile is selected by the config-profile header, falling back to
-//     defaultProfile (or "default") in the JSON.
+//     defaultProfile (or "default") in the JSON. When request routing overrides
+//     are disabled model-wide, the request header is ignored and the default
+//     profile is authoritative.
 //   - config-profile: auto evaluates request-local hints in profile routingConfig
 //     and resolves to a concrete profile before routing strategy derivation.
 //   - lockedRoutingStrategy (top-level) is applied even when no profile resolves, so a
@@ -787,7 +789,7 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 	if strings.EqualFold(strings.TrimSpace(reqConfigProfile), "auto") {
 		features = buildConfigProfileRequestFeatures(routingCtx)
 	}
-	profile, profileName, locked := configprofiles.ResolveConfigForRequest(pods, reqConfigProfile, features)
+	profile, profileName, locked, disableRequestOverrides := configprofiles.ResolveConfigPolicyForRequest(pods, reqConfigProfile, features)
 
 	var replicaRPS float64
 	var inflight int64
@@ -795,18 +797,24 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 		replicaRPS = profile.RequestsPerSecondPerReplica
 		inflight = profile.RequestsInflight
 	}
-	if profile == nil && locked == "" && replicaRPS <= 0 && inflight <= 0 {
+	if profile == nil && locked == "" && !disableRequestOverrides && replicaRPS <= 0 && inflight <= 0 {
 		return
 	}
 
-	if strings.EqualFold(strings.TrimSpace(reqConfigProfile), "auto") && profileName != "" {
+	if disableRequestOverrides {
+		routingCtx.ReqConfigProfile = profileName
+		delete(routingCtx.RespHeaders, HeaderAIBrixConfigProfile)
+	} else if strings.EqualFold(strings.TrimSpace(reqConfigProfile), "auto") && profileName != "" {
 		routingCtx.ReqConfigProfile = profileName
 		if routingCtx.RespHeaders == nil {
 			routingCtx.RespHeaders = make(map[string]string)
 		}
 		routingCtx.RespHeaders[HeaderAIBrixConfigProfile] = profileName
 	}
-	cp := &types.ResolvedConfigProfile{LockedRoutingStrategy: locked}
+	cp := &types.ResolvedConfigProfile{
+		LockedRoutingStrategy:          locked,
+		DisableRequestRoutingOverrides: disableRequestOverrides,
+	}
 	if profile != nil {
 		cp.RoutingStrategy = profile.RoutingStrategy
 		cp.RoutingConfig = profile.RoutingConfig
@@ -899,6 +907,12 @@ func deriveRoutingStrategyFromContext(routingCtx *types.RoutingContext) (string,
 	if cp := routingCtx.ConfigProfile; cp != nil {
 		if s := strings.TrimSpace(cp.LockedRoutingStrategy); s != "" {
 			return s, true
+		}
+		if cp.DisableRequestRoutingOverrides {
+			if s := strings.TrimSpace(cp.RoutingStrategy); s != "" {
+				return s, true
+			}
+			return defaultRoutingStrategy, defaultRoutingStrategyEnabled
 		}
 	}
 	// Check request headers (case-insensitive key match)

@@ -266,6 +266,45 @@ func TestResolveConfigForRequestAutoFallbacks(t *testing.T) {
 	}
 }
 
+func TestResolveConfigForRequestDisabledOverridesUseDefaultProfile(t *testing.T) {
+	configJSON := `{
+		"disableRequestRoutingOverrides":true,
+		"defaultProfile":"default",
+		"profiles":{
+			"default":{"routingStrategy":"least-request","routingConfig":{"marker":"default"}},
+			"batch":{"routingStrategy":"throughput","routingConfig":{"promptTokensGte":1,"marker":"batch"}}
+		}
+	}`
+	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{constants.ModelAnnoConfig: configJSON}}}
+
+	for _, headerProfile := range []string{"batch", "auto"} {
+		t.Run(headerProfile, func(t *testing.T) {
+			profile, name, locked, overridesDisabled := ResolveConfigPolicyForRequest(
+				[]*v1.Pod{pod}, headerProfile, RequestFeatures{PromptTokens: intPtr(100)},
+			)
+
+			if profile == nil {
+				t.Fatal("ResolveConfigForRequest() profile = nil")
+			}
+			if profile.RoutingStrategy != "least-request" {
+				t.Errorf("ResolveConfigForRequest().RoutingStrategy = %s, want least-request", profile.RoutingStrategy)
+			}
+			if !strings.Contains(string(profile.RoutingConfig), `"marker":"default"`) {
+				t.Errorf("ResolveConfigForRequest().RoutingConfig = %s, want default profile config", profile.RoutingConfig)
+			}
+			if name != "default" {
+				t.Errorf("ResolveConfigForRequest() name = %q, want default", name)
+			}
+			if locked != "" {
+				t.Errorf("ResolveConfigForRequest() locked = %q, want empty", locked)
+			}
+			if !overridesDisabled {
+				t.Error("ResolveConfigForRequest() overridesDisabled = false, want true")
+			}
+		})
+	}
+}
+
 func TestGetProfile(t *testing.T) {
 	json := `{"defaultProfile":"pd","profiles":{"default":{"routingStrategy":"random","routingConfig":{"promptLenBucketMinLength":0,"promptLenBucketMaxLength":4096}},"pd":{"routingStrategy":"pd","routingConfig":{"promptLenBucketMinLength":0,"promptLenBucketMaxLength":2048}}}}`
 

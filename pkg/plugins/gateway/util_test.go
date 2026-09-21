@@ -1723,6 +1723,44 @@ func TestApplyConfigProfile_BuildsFeaturesOnlyForAutoSelection(t *testing.T) {
 	}
 }
 
+func TestApplyConfigProfile_DisabledRequestOverridesUseDefaultProfile(t *testing.T) {
+	profileJSON := `{
+		"disableRequestRoutingOverrides":true,
+		"defaultProfile":"default",
+		"profiles":{
+			"default":{"routingStrategy":"least-request","routingConfig":{"marker":"default"}},
+			"batch":{"routingStrategy":"throughput","routingConfig":{"promptTokensGte":1,"marker":"batch"}}
+		}
+	}`
+	pods := []*v1.Pod{{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "pod-a",
+			Annotations: map[string]string{constants.ModelAnnoConfig: profileJSON},
+		},
+	}}
+
+	for _, reqConfigProfile := range []string{"batch", autoConfigProfile} {
+		t.Run(reqConfigProfile, func(t *testing.T) {
+			ctx := types.NewRoutingContext(context.Background(), "", "", "", "request-1", "")
+			ctx.ReqConfigProfile = reqConfigProfile
+			ctx.Message = "prompt"
+			ctx.ReqHeaders = map[string]string{
+				HeaderRoutingStrategy: "throughput",
+				HeaderExternalFilter:  "environment=batch",
+			}
+
+			applyConfigProfile(ctx, pods)
+
+			require.NotNil(t, ctx.ConfigProfile)
+			assert.True(t, ctx.ConfigProfile.DisableRequestRoutingOverrides)
+			assert.Equal(t, "least-request", ctx.ConfigProfile.RoutingStrategy)
+			assert.Contains(t, string(ctx.ConfigProfile.RoutingConfig), `"marker":"default"`)
+			assert.Equal(t, "default", ctx.ReqConfigProfile)
+			assert.NotContains(t, ctx.RespHeaders, HeaderAIBrixConfigProfile)
+		})
+	}
+}
+
 func TestMaxTokensFromRequestBody(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1760,6 +1798,16 @@ func TestDeriveRoutingStrategyFromContext(t *testing.T) {
 		ReqHeaders: map[string]string{HeaderRoutingStrategy: "throughput"},
 	}
 
+	// A model-wide request-override lock ignores the client header and uses the
+	// authoritative default profile even when no strategy lock is configured.
+	disabledOverridesCtx := &types.RoutingContext{
+		ConfigProfile: &types.ResolvedConfigProfile{
+			DisableRequestRoutingOverrides: true,
+			RoutingStrategy:                "least-request",
+		},
+		ReqHeaders: map[string]string{HeaderRoutingStrategy: "throughput"},
+	}
+
 	// Header wins over profile strategy.
 	headerCtx := &types.RoutingContext{
 		ConfigProfile: &types.ResolvedConfigProfile{RoutingStrategy: "random"},
@@ -1788,6 +1836,7 @@ func TestDeriveRoutingStrategyFromContext(t *testing.T) {
 		wantOK bool
 	}{
 		{"locked strategy wins over header and profile", lockedCtx, "pd", true},
+		{"disabled request overrides use profile strategy", disabledOverridesCtx, "least-request", true},
 		{"header wins over profile strategy", headerCtx, "throughput", true},
 		{"profile strategy used when header absent", profileCtx, "least-request", true},
 		{"case-insensitive header key", headerCaseCtx, "pd", true},

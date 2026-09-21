@@ -163,6 +163,9 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		klog.InfoS("request_start", "request_id", requestID, "request_path", requestPath, "model", model, "stream", stream)
 	} else {
 		externalFilter := routingCtx.ReqHeaders[HeaderExternalFilter]
+		if routingCtx.ConfigProfile != nil && routingCtx.ConfigProfile.DisableRequestRoutingOverrides {
+			externalFilter = ""
+		}
 		targetPodIP, err := s.selectTargetPod(ctx, routingCtx, podsArr, externalFilter)
 		if targetPodIP == "" || err != nil {
 			var invalidReqErr *engine.InvalidRequestError
