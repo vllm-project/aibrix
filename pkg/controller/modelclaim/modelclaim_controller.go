@@ -549,7 +549,7 @@ func (r *ModelClaimReconciler) makeRoomOnPod(
 	engines := append(append([]engineOnPod(nil), ledger.engines...), newcomer)
 	// Every byte the plan moves has to move, because the room this model was
 	// admitted against is made out of the neighbours' limits.
-	limits, err := r.arrangeCard(ctx, pm, pod, ledger, engines, 0)
+	limits, err := r.arrangeCard(ctx, pod, ledger, engines, 0)
 	if err != nil {
 		return 0, err
 	}
@@ -597,7 +597,7 @@ func (r *ModelClaimReconciler) rebalanceDeclaredCards(ctx context.Context, candi
 			continue
 		}
 		if _, err := r.arrangeCard(
-			ctx, pod, pod, ledger, ledger.engines,
+			ctx, pod, ledger, ledger.engines,
 			minimumKVLimitChangeBytes(ledger.usableBytes),
 		); err != nil {
 			klog.V(4).InfoS("could not arrange a card", "pod", klog.KObj(pod), "err", err)
@@ -618,7 +618,6 @@ func (r *ModelClaimReconciler) rebalanceDeclaredCards(ctx context.Context, candi
 // without being carried out, so a card that has barely drifted is left alone.
 func (r *ModelClaimReconciler) arrangeCard(
 	ctx context.Context,
-	about client.Object,
 	pod *corev1.Pod,
 	ledger podLedger,
 	engines []engineOnPod,
@@ -632,10 +631,13 @@ func (r *ModelClaimReconciler) arrangeCard(
 		return limits, nil
 	}
 
+	held := make(map[string]*modelv1alpha1.ModelClaim, len(limits))
 	for _, limit := range limits {
-		if err := r.recordKVLimit(ctx, pod.Namespace, limit.claimName, pod.Name, limit.limitBytes); err != nil {
+		claim, err := r.recordKVLimit(ctx, pod.Namespace, limit.claimName, pod.Name, limit.limitBytes)
+		if err != nil {
 			return nil, fmt.Errorf("record %s at %s: %w", limit.claimName, gibibytes(limit.limitBytes), err)
 		}
+		held[limit.claimName] = claim
 	}
 
 	written := writeOrder(limits)
@@ -667,22 +669,37 @@ func (r *ModelClaimReconciler) arrangeCard(
 	if err := kvLimitsInForce(snapshot, written); err != nil {
 		return nil, err
 	}
-	r.Recorder.Eventf(about, corev1.EventTypeNormal, "KVLimitSet",
-		"%d of the %d engine(s) on pod %s were held to a new share of the card",
-		len(written), len(limits), pod.Name)
+	// Say so on each claim whose engine was moved. A limit written by the
+	// arrangement of a card is a limit its owner did not ask for, and looking
+	// at the claim is the first thing anyone does when a model's KV changes
+	// under it.
+	for _, limit := range written {
+		claim := held[limit.claimName]
+		if claim == nil {
+			continue
+		}
+		r.Recorder.Eventf(claim, corev1.EventTypeNormal, "KVLimitSet",
+			"model %s on pod %s: KV limit set to %s, from %s, dividing the card between %d engine(s)",
+			limit.modelName, pod.Name, gibibytes(limit.limitBytes), gibibytes(limit.fromBytes),
+			len(limits))
+	}
 	return limits, nil
 }
 
 // recordKVLimit writes the limit an instance is to run under into its own
-// claim's status, which is where every loop that holds an engine reads it.
+// claim's status, which is where every loop that holds an engine reads it, and
+// returns the claim so an Event can be raised on it afterwards.
+//
+// A claim with no instance on this pod is the model being placed: its record
+// is written with the rest of its instance, once the card has been arranged.
 func (r *ModelClaimReconciler) recordKVLimit(
 	ctx context.Context,
 	namespace, claimName, podName string,
 	limitBytes int64,
-) error {
+) (*modelv1alpha1.ModelClaim, error) {
 	claim := &modelv1alpha1.ModelClaim{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: claimName}, claim); err != nil {
-		return err
+		return nil, err
 	}
 	changed := false
 	for i := range claim.Status.Instances {
@@ -693,9 +710,12 @@ func (r *ModelClaimReconciler) recordKVLimit(
 		}
 	}
 	if !changed {
-		return nil
+		return claim, nil
 	}
-	return r.Status().Update(ctx, claim)
+	if err := r.Status().Update(ctx, claim); err != nil {
+		return nil, err
+	}
+	return claim, nil
 }
 
 // freshSnapshots reads every candidate's runtime directly, going around the

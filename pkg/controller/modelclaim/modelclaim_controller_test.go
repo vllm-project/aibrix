@@ -1542,6 +1542,32 @@ func TestReconcileShrinksTheNeighbourToMakeRoomForANewModel(t *testing.T) {
 	require.NoError(t, r.Get(context.Background(),
 		types.NamespacedName{Namespace: testNamespace, Name: "neighbour"}, held))
 	assert.Equal(t, int64(200), held.Status.Instances[0].KVLimitBytes)
+
+	// The neighbour did not ask to be shrunk, so its own claim has to say it
+	// was, rather than only the pod it happens to run on.
+	said := ""
+	for _, event := range recordedEvents(t, r) {
+		if strings.Contains(event, "KVLimitSet") && strings.Contains(event, "neighbour") {
+			said = event
+		}
+	}
+	assert.NotEmpty(t, said, "the neighbour's claim records no KVLimitSet event")
+}
+
+// recordedEvents drains the fake recorder and returns what it was given.
+func recordedEvents(t *testing.T, r *ModelClaimReconciler) []string {
+	t.Helper()
+	recorder, ok := r.Recorder.(*record.FakeRecorder)
+	require.True(t, ok)
+	var seen []string
+	for {
+		select {
+		case event := <-recorder.Events:
+			seen = append(seen, event)
+		default:
+			return seen
+		}
+	}
 }
 
 func TestReconcileWillNotPlaceWhenTheNeighbourDoesNotTakeItsLimit(t *testing.T) {
