@@ -474,6 +474,22 @@ func TestLoadBalanceScoreAll_MissingKVMetricIsNotPenalized(t *testing.T) {
 	assert.InDelta(t, 2.0, scores[0], 1e-9)
 }
 
+// A NaN KV usage reading must be treated like a missing one. Left as NaN it would slip past the
+// guardrail (NaN < critical is false) and produce a NaN score.
+func TestLoadBalanceScoreAll_NaNKVMetricIsNotPenalized(t *testing.T) {
+	pods := []*v1.Pod{makeLBPod("p1", "1.1.1.1")}
+	m := lbPodMetrics(6, 3, 0)
+	m[metrics.KVCacheUsagePerc] = &metrics.SimpleMetricValue{Value: math.NaN()}
+	c := cache.NewWithPodsMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{"p1": m})
+	r := &loadBalanceRouter{cache: c}
+	ctx := types.NewRoutingContext(context.Background(), RouterLoadBalance, "m1", "input", "req1", "")
+
+	assert.Equal(t, 1.0, r.kvFreeFraction(ctx, pods[0]))
+	scores, _, err := r.ScoreAll(ctx, podsFromCache(c))
+	assert.NoError(t, err)
+	assert.InDelta(t, 2.0, scores[0], 1e-9)
+}
+
 // A pod with no capacity estimate yet must compete as an average replica. With a flat 1.0
 // fallback it would score in the thousands against tokens/sec-scale peers and never be picked, so
 // it would never get the traffic needed to be measured.

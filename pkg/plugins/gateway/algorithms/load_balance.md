@@ -89,7 +89,7 @@ gateway: DoneRequestTrace(outputTokens) ──► Pod.completedOutputTokens   (m
 |---|---|
 | Pod has no token-rate estimate yet (new pod, or no usage reported) | Scored at the **mean** estimate of the pods that have one, so it competes as an average replica. A fixed fallback such as `1.0` would be off by the tokens/sec scale (thousands) and lock the pod out of the traffic it needs to be measured. |
 | No pod has an estimate | Every pod gets capacity `1.0`; the score reduces to `running × KV penalty`. |
-| Engine reports no KV usage | Treated as fully free: no penalty and no guardrail. |
+| Engine reports no KV usage, or `NaN` | Treated as fully free: no penalty and no guardrail. |
 | `kvFree < kvCritical` | Score `+Inf`; the pod is skipped until it recovers. Exactly at the threshold is still usable. |
 | **Every** pod is below `kvCritical` | The request is **not** failed. Routing falls back to the tie-break over all pods, which picks the one with the least KV usage. |
 | Pod is idle (`running = 0`) | Score `0` regardless of capacity, so idle pods are preferred. |
