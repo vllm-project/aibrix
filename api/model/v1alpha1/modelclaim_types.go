@@ -65,6 +65,46 @@ type ModelClaimSpec struct {
 	// CLI flags to their values, e.g. {"--max-model-len": "2048"}.
 	// +optional
 	EngineConfig *ModelClaimEngineConfig `json:"engineConfig,omitempty"`
+
+	// PerGPU declares what one instance of this model costs on a single GPU.
+	// Placement uses it to keep a card from being promised more memory than it
+	// has, so a model is not started where it cannot fit.
+	//
+	// A claim that omits it is placed as before, without that check. A card
+	// carrying an instance of such a claim cannot be accounted for, so claims
+	// that do declare their cost are not placed onto it. Declare it on every
+	// claim in a pool, or on none.
+	// +optional
+	PerGPU *ModelClaimPerGPU `json:"perGPU,omitempty"`
+}
+
+// ModelClaimPerGPU is what one instance of a model costs on one GPU.
+//
+// Both figures describe a single device rather than the whole model, because a
+// card is what an instance has to fit on. With tensor or pipeline parallelism
+// they describe the heaviest device: tensor parallelism makes the question
+// moot, since every rank holds the same slice, while pipeline stages are not
+// equal and one of them costs more than the rest. Declaring more than an
+// instance needs wastes room and is safe; declaring less is not.
+type ModelClaimPerGPU struct {
+	// MaximumFootprintBytes is the largest non-KV GPU memory one instance holds
+	// on a device: weights, captured CUDA graphs, activation workspaces and
+	// allocator retention. It cannot be derived from the artifact size, because
+	// most of the gap between the two is allocator retention that does not
+	// scale with the weights, so it has to come from a run of this model with
+	// these engine arguments.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Minimum=1
+	MaximumFootprintBytes int64 `json:"maximumFootprintBytes"`
+
+	// KVFloorBytes is the KV cache one instance must keep on a device to serve
+	// at all: enough for one request of the engine's maximum model length at
+	// this model's bytes per token, rounded up to the KV allocator's page
+	// granularity. Placement holds this much for the instance for as long as it
+	// is awake.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Minimum=1
+	KVFloorBytes int64 `json:"kvFloorBytes"`
 }
 
 // ModelClaimEngineConfig describes engine-specific startup options.
