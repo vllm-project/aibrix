@@ -246,6 +246,13 @@ The supported spec fields are:
      - No
      - Engine CLI flags mapped to string values. Use an empty string for a
        boolean flag.
+   * - ``perGPU.maximumFootprintBytes``
+     - No
+     - The largest non-KV GPU memory one instance holds on a device: weights,
+       captured CUDA graphs, activation workspaces and allocator retention.
+   * - ``perGPU.kvFloorBytes``
+     - No
+     - The KV cache one instance must keep on a device to serve at all.
 
 For example:
 
@@ -259,6 +266,39 @@ For example:
 Do not set ``--gpu-memory-utilization``. kvcached owns elastic KV-cache
 allocation, and the ModelClaim path rejects that flag. Data parallelism is not
 supported; ``--data-parallel-size`` must remain 1.
+
+Declare what a model costs on a card
+------------------------------------
+
+``perGPU`` tells placement what one instance of this model takes off a GPU.
+Both figures describe a single device rather than the whole model, because a
+card is what an instance has to fit on. Under tensor or pipeline parallelism,
+declare the heaviest device: tensor parallel ranks hold the same slice, while
+pipeline stages do not.
+
+The control plane does not profile a model to find these numbers. Most of an
+engine's non-KV memory is allocator retention that does not scale with the
+weights, so the artifact size does not predict it. Take
+``maximumFootprintBytes`` from a run of this model with these engine arguments,
+and ``kvFloorBytes`` from one request of the engine's maximum model length at
+this model's bytes per token, rounded up to the KV allocator's page
+granularity. Declaring more than an instance needs wastes room and is safe;
+declaring less is not.
+
+With both declared, a claim is placed only on a Pod whose card can be shown to
+have room: the size of the card, less the maximum footprint and KV floor of
+every instance already recorded on it. A Pod that cannot be accounted for is
+not used, which covers a runtime that did not answer, a card the runtime could
+not measure, and a Pod carrying an instance of a claim that declares nothing.
+
+This is a reservation in the control plane's account and not in the hardware.
+Nothing yet stops an engine already on the card from growing its KV cache into
+the space held for another instance.
+
+A claim that omits ``perGPU`` is placed exactly as before, without the check.
+Declare it on every claim in a pool, or on none: a single undeclared instance
+leaves that card unaccountable, and claims that do declare are then placed
+elsewhere.
 
 Configure TP and PP pools
 -------------------------
@@ -472,7 +512,9 @@ Runtime metrics include:
 * ``aibrix:modelclaim_hbm_peak_bytes{model}``.
 
 HBM attribution is best effort and is used for observation and placement
-ranking. It is not a hard admission or reservation signal.
+ranking. It is not a hard admission or reservation signal: admission works from
+the cost a claim declares and the size the runtime measures for a card, never
+from attributed usage or from free memory, which moves with traffic.
 
 Troubleshooting
 ---------------
@@ -481,6 +523,14 @@ Claim remains ``Scheduling`` with zero candidates
    Confirm that the Pod is Running, has a Pod IP, matches ``podSelector``, and
    has ``pool.aibrix.ai/enabled: "true"``. For vLLM, confirm that TP times PP
    exactly matches the Pod-visible GPU count.
+
+Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
+   Candidates exist, but no card can be shown to have room for
+   ``perGPU.maximumFootprintBytes`` plus ``perGPU.kvFloorBytes``. The message
+   names the roomiest Pod that still could not hold the model, which is the
+   smallest gap to close. A Pod is also turned away when its runtime did not
+   answer, when one of its cards could not be measured, or when a claim without
+   ``perGPU`` already runs on it.
 
 Claim remains ``Activating``
    Inspect the runtime snapshot and engine logs. Weight download, CUDA graph
