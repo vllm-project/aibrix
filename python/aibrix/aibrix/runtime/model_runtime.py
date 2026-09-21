@@ -65,6 +65,12 @@ _nvml_lock = threading.Lock()
 HBM_USABLE_UNKNOWN = -1
 _hbm_usable_by_device: Dict[str, int] = {}
 
+# What a snapshot reports for an engine's KV figures while its kvcached segment
+# does not exist yet, which an engine that is still starting has in common with
+# one that never built a segment at all. Zero would read as a measured zero, and
+# a control plane deciding on it would treat a card as emptier than it is.
+KV_UNKNOWN = -1
+
 
 @dataclass
 class ModelInstance:
@@ -1595,7 +1601,11 @@ class ModelRuntime:
         models = []
         for inst in instances:
             segment = read_kv_segment(inst.ipc_name)
-            total, used, prealloc = segment if segment else (0, 0, 0)
+            if segment is None:
+                kv_used = kv_capacity = KV_UNKNOWN
+            else:
+                total, used, prealloc = segment
+                kv_used, kv_capacity = used + prealloc, total
             alive = self._instance_alive(inst)
             activity = (
                 engine_request_activity(inst) if alive else EngineRequestActivity()
@@ -1613,8 +1623,8 @@ class ModelRuntime:
                     "restart_count": inst.restart_count,
                     "last_error": inst.last_error,
                     "last_transition": inst.last_transition,
-                    "kv_used_bytes": used + prealloc,
-                    "kv_capacity_bytes": total,
+                    "kv_used_bytes": kv_used,
+                    "kv_capacity_bytes": kv_capacity,
                     "hbm_peak_bytes": engine_hbm_peak_bytes(inst, process_hbm),
                     "request_metrics_observed": activity.observed,
                     "requests_running": activity.requests_running,
