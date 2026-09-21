@@ -73,7 +73,12 @@ func postPDChat(
 	})
 	require.NoError(t, err)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, gatewayURL+"/v1/chat/completions", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		gatewayURL+"/v1/chat/completions",
+		bytes.NewReader(payload),
+	)
 	require.NoError(t, err)
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
@@ -85,7 +90,9 @@ func postPDChat(
 
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	return gatewayResponse{status: resp.StatusCode, header: resp.Header, body: body}
@@ -193,8 +200,14 @@ func TestPDPrefillRequestConnectionFailureIsPropagatedBeforeEnvoyRouting(t *test
 	client, _ := initializeClient(ctx, t)
 	prefillPod, decodePod := selectPDRoleSetPods(t, ctx, client)
 
-	framework.UpdatePodLabels(t, ctx, client, e2eConfig.Namespace, prefillPod.Name, map[string]string{pdFaultLabel: pdFaultLabelValue})
-	framework.UpdatePodLabels(t, ctx, client, e2eConfig.Namespace, decodePod.Name, map[string]string{pdFaultLabel: pdFaultLabelValue})
+	framework.UpdatePodLabels(
+		t, ctx, client, e2eConfig.Namespace, prefillPod.Name,
+		map[string]string{pdFaultLabel: pdFaultLabelValue},
+	)
+	framework.UpdatePodLabels(
+		t, ctx, client, e2eConfig.Namespace, decodePod.Name,
+		map[string]string{pdFaultLabel: pdFaultLabelValue},
+	)
 
 	// First wait until the gateway sees the selector while the selected prefill
 	// pod is still healthy. This avoids mistaking a stale pod cache for a
@@ -208,7 +221,10 @@ func TestPDPrefillRequestConnectionFailureIsPropagatedBeforeEnvoyRouting(t *test
 			response.header.Get("target-pod") == decodePod.Name
 	}, 30*time.Second, 100*time.Millisecond, "gateway did not observe the selected PD role set")
 
-	framework.UpdatePodLabels(t, ctx, client, e2eConfig.Namespace, prefillPod.Name, map[string]string{"model.aibrix.ai/port": "1"})
+	framework.UpdatePodLabels(
+		t, ctx, client, e2eConfig.Namespace, prefillPod.Name,
+		map[string]string{"model.aibrix.ai/port": "1"},
+	)
 	var response gatewayResponse
 	var requestID string
 	require.Eventually(t, func() bool {

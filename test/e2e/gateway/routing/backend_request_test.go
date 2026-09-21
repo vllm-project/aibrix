@@ -45,7 +45,8 @@ const (
 )
 
 var ordinaryRequestBody = []byte(
-	`{"model":"llama2-7b","messages":[{"role":"user","content":"gateway ordinary backend e2e"}],"max_tokens":9,"stream":false}`,
+	`{"model":"llama2-7b","messages":[{"role":"user",` +
+		`"content":"gateway ordinary backend e2e"}],"max_tokens":9,"stream":false}`,
 )
 
 type routedGatewayResponse struct {
@@ -83,7 +84,9 @@ func postOrdinaryChat(
 
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	return routedGatewayResponse{status: resp.StatusCode, header: resp.Header, body: body}
