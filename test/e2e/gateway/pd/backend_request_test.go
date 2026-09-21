@@ -100,7 +100,7 @@ func headerValue(headers map[string]string, key string) string {
 	return ""
 }
 
-func decodedRecordBody(t *testing.T, record framework.BackendRequestRecord) map[string]any {
+func decodedRecordBody(t *testing.T, record framework.MockRequestRecord) map[string]any {
 	t.Helper()
 	raw, err := base64.StdEncoding.DecodeString(record.RawBodyBase64)
 	require.NoError(t, err)
@@ -132,11 +132,11 @@ func TestPDBackendRequestsMatchGatewayTransformationsAndTargets(t *testing.T) {
 	require.NotEmpty(t, decodePod)
 	require.NotEqual(t, prefillPod, decodePod)
 
-	prefillRecords, err := framework.WaitForBackendRequestRecords(
+	prefillRecords, err := framework.WaitForMockRequestCount(
 		ctx, client, e2eConfig.Namespace, prefillPod, requestID, 1, backendRecorderTimeout,
 	)
 	require.NoError(t, err)
-	decodeRecords, err := framework.WaitForBackendRequestRecords(
+	decodeRecords, err := framework.WaitForMockRequestCount(
 		ctx, client, e2eConfig.Namespace, decodePod, requestID, 1, backendRecorderTimeout,
 	)
 	require.NoError(t, err)
@@ -171,13 +171,14 @@ func TestPDDecodeBackendTimeoutIsPropagated(t *testing.T) {
 	requestID := newRecorderRequestID()
 
 	response := postPDChat(t, ctx, requestID, map[string]string{
-		"x-aibrix-mock-delay-ms": "2000",
+		"x-aibrix-mock-delay-ms":         "2000",
+		"x-envoy-upstream-rq-timeout-ms": "1000",
 	})
 	require.Equal(t, http.StatusGatewayTimeout, response.status, "body=%s", response.body)
 	decodePod := response.header.Get("target-pod")
 	require.NotEmpty(t, decodePod)
 
-	records, err := framework.WaitForBackendRequestRecords(
+	records, err := framework.WaitForMockRequestCount(
 		ctx, client, e2eConfig.Namespace, decodePod, requestID, 1, 3*time.Second,
 	)
 	require.NoError(t, err)
@@ -186,14 +187,14 @@ func TestPDDecodeBackendTimeoutIsPropagated(t *testing.T) {
 		"the decode backend finishes after Envoy's one-second route timeout")
 }
 
-func TestPDPrefillConnectionFailureIsPropagated(t *testing.T) {
+func TestPDPrefillRequestConnectionFailureIsPropagatedBeforeEnvoyRouting(t *testing.T) {
 	ctx := context.Background()
 	waitForPDDisaggregationRouting(t, modelNameVLLM)
 	client, _ := initializeClient(ctx, t)
 	prefillPod, decodePod := selectPDRoleSetPods(t, ctx, client)
 
-	setPodLabels(t, ctx, client, prefillPod.Name, map[string]string{pdFaultLabel: pdFaultLabelValue})
-	setPodLabels(t, ctx, client, decodePod.Name, map[string]string{pdFaultLabel: pdFaultLabelValue})
+	framework.UpdatePodLabels(t, ctx, client, e2eConfig.Namespace, prefillPod.Name, map[string]string{pdFaultLabel: pdFaultLabelValue})
+	framework.UpdatePodLabels(t, ctx, client, e2eConfig.Namespace, decodePod.Name, map[string]string{pdFaultLabel: pdFaultLabelValue})
 
 	// First wait until the gateway sees the selector while the selected prefill
 	// pod is still healthy. This avoids mistaking a stale pod cache for a
@@ -207,16 +208,29 @@ func TestPDPrefillConnectionFailureIsPropagated(t *testing.T) {
 			response.header.Get("target-pod") == decodePod.Name
 	}, 30*time.Second, 100*time.Millisecond, "gateway did not observe the selected PD role set")
 
-	setPodLabels(t, ctx, client, prefillPod.Name, map[string]string{"model.aibrix.ai/port": "1"})
-	requestID := newRecorderRequestID()
+	framework.UpdatePodLabels(t, ctx, client, e2eConfig.Namespace, prefillPod.Name, map[string]string{"model.aibrix.ai/port": "1"})
 	var response gatewayResponse
+	var requestID string
 	require.Eventually(t, func() bool {
-		response = postPDChat(t, ctx, requestID, map[string]string{
+		candidateID := newRecorderRequestID()
+		candidate := postPDChat(t, ctx, candidateID, map[string]string{
 			"external-filter": pdFaultLabel + "=" + pdFaultLabelValue,
 		})
-		return response.status == http.StatusServiceUnavailable &&
-			strings.Contains(string(response.body), "error on selecting target pod")
+		if candidate.status != http.StatusServiceUnavailable ||
+			candidate.header.Get("prefill-target-pod") != prefillPod.Name ||
+			!strings.Contains(string(candidate.body), "error on selecting target pod") {
+			return false
+		}
+		response, requestID = candidate, candidateID
+		return true
 	}, 30*time.Second, 100*time.Millisecond, "gateway did not propagate the prefill connection failure")
+
+	assert.Equal(t, prefillPod.Name, response.header.Get("prefill-target-pod"))
+	assert.Empty(t, response.header.Get("target-pod"),
+		"the decode target must not be exposed when the prefill request fails before Envoy routing")
+	records, err := framework.QueryMockRequests(ctx, client, e2eConfig.Namespace, prefillPod.Name, requestID)
+	require.NoError(t, err)
+	assert.Empty(t, records, "a refused prefill connection must not reach the backend recorder")
 }
 
 func selectPDRoleSetPods(t *testing.T, ctx context.Context, client *kubernetes.Clientset) (corev1.Pod, corev1.Pod) {
@@ -251,34 +265,4 @@ func selectPDRoleSetPods(t *testing.T, ctx context.Context, client *kubernetes.C
 	}
 	t.Fatalf("no complete PD roleset found for model %s", modelNameVLLM)
 	return corev1.Pod{}, corev1.Pod{}
-}
-
-func setPodLabels(t *testing.T, ctx context.Context, client *kubernetes.Clientset, podName string, updates map[string]string) {
-	t.Helper()
-	pod, err := client.CoreV1().Pods(e2eConfig.Namespace).Get(ctx, podName, metav1.GetOptions{})
-	require.NoError(t, err)
-	previous := make(map[string]string, len(updates))
-	for key, value := range updates {
-		previous[key] = pod.Labels[key]
-		pod.Labels[key] = value
-	}
-	_, err = client.CoreV1().Pods(e2eConfig.Namespace).Update(ctx, pod, metav1.UpdateOptions{})
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		current, getErr := client.CoreV1().Pods(e2eConfig.Namespace).Get(context.Background(), podName, metav1.GetOptions{})
-		if getErr != nil {
-			t.Errorf("restore labels for pod %s: %v", podName, getErr)
-			return
-		}
-		for key, value := range previous {
-			if value == "" {
-				delete(current.Labels, key)
-			} else {
-				current.Labels[key] = value
-			}
-		}
-		if _, updateErr := client.CoreV1().Pods(e2eConfig.Namespace).Update(context.Background(), current, metav1.UpdateOptions{}); updateErr != nil {
-			t.Errorf("restore labels for pod %s: %v", podName, updateErr)
-		}
-	})
 }

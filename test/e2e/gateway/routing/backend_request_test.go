@@ -109,7 +109,7 @@ func TestOrdinaryBackendReceivesGatewayBodyHeadersAndTarget(t *testing.T) {
 	require.NotEmpty(t, targetPod)
 	require.NotEmpty(t, response.header.Get("target-pod-ip"))
 
-	records, err := framework.WaitForBackendRequestRecords(
+	records, err := framework.WaitForMockRequestCount(
 		ctx,
 		client,
 		e2eConfig.Namespace,
@@ -140,12 +140,14 @@ func TestOrdinaryBackendRetriesFirstFailureThenSucceeds(t *testing.T) {
 	response := postOrdinaryChat(t, ctx, requestID, map[string]string{
 		"x-aibrix-mock-fail":          "backend",
 		"x-aibrix-mock-fail-attempts": "1",
+		"x-envoy-retry-on":            "5xx",
+		"x-envoy-max-retries":         "1",
 	})
 	require.Equal(t, http.StatusOK, response.status, "body=%s", response.body)
 	targetPod := response.header.Get("target-pod")
 	require.NotEmpty(t, targetPod)
 
-	records, err := framework.WaitForBackendRequestRecords(
+	records, err := framework.WaitForMockRequestCount(
 		ctx,
 		client,
 		e2eConfig.Namespace,
@@ -171,7 +173,9 @@ func TestOrdinaryBackendErrorBodyIsPropagatedAfterRetries(t *testing.T) {
 	requestID := newRoutingRecorderRequestID()
 
 	response := postOrdinaryChat(t, ctx, requestID, map[string]string{
-		"x-aibrix-mock-fail": "backend",
+		"x-aibrix-mock-fail":  "backend",
+		"x-envoy-retry-on":    "5xx",
+		"x-envoy-max-retries": "1",
 	})
 	require.Equal(t, http.StatusInternalServerError, response.status, "body=%s", response.body)
 	assert.Contains(t, string(response.body), "mock failure injected for backend")
@@ -179,7 +183,7 @@ func TestOrdinaryBackendErrorBodyIsPropagatedAfterRetries(t *testing.T) {
 	targetPod := response.header.Get("target-pod")
 	require.NotEmpty(t, targetPod)
 
-	records, err := framework.WaitForBackendRequestRecords(
+	records, err := framework.WaitForMockRequestCount(
 		ctx,
 		client,
 		e2eConfig.Namespace,
@@ -201,13 +205,14 @@ func TestOrdinaryBackendTimeoutIsPropagated(t *testing.T) {
 	requestID := newRoutingRecorderRequestID()
 
 	response := postOrdinaryChat(t, ctx, requestID, map[string]string{
-		"x-aibrix-mock-delay-ms": "2000",
+		"x-aibrix-mock-delay-ms":         "2000",
+		"x-envoy-upstream-rq-timeout-ms": "1000",
 	})
 	require.Equal(t, http.StatusGatewayTimeout, response.status, "body=%s", response.body)
 	targetPod := response.header.Get("target-pod")
 	require.NotEmpty(t, targetPod)
 
-	records, err := framework.WaitForBackendRequestRecords(
+	records, err := framework.WaitForMockRequestCount(
 		ctx,
 		client,
 		e2eConfig.Namespace,
@@ -227,7 +232,7 @@ func TestOrdinaryBackendConnectionFailureIsPropagated(t *testing.T) {
 	client, _ := framework.InitializeClient(ctx, t)
 	pod := selectOrdinaryBackendPod(t, ctx, client)
 
-	updateOrdinaryPodLabels(t, ctx, client, pod.Name, map[string]string{
+	framework.UpdatePodLabels(t, ctx, client, e2eConfig.Namespace, pod.Name, map[string]string{
 		routingFaultLabel: routingFaultValue,
 	})
 
@@ -240,7 +245,7 @@ func TestOrdinaryBackendConnectionFailureIsPropagated(t *testing.T) {
 		return response.status == http.StatusOK && response.header.Get("target-pod") == pod.Name
 	}, 30*time.Second, 100*time.Millisecond, "gateway did not observe the selected ordinary backend")
 
-	updateOrdinaryPodLabels(t, ctx, client, pod.Name, map[string]string{
+	framework.UpdatePodLabels(t, ctx, client, e2eConfig.Namespace, pod.Name, map[string]string{
 		"model.aibrix.ai/port": "1",
 	})
 	var response routedGatewayResponse
@@ -260,7 +265,7 @@ func TestOrdinaryBackendConnectionFailureIsPropagated(t *testing.T) {
 	assert.Equal(t, pod.Name, response.header.Get("target-pod"))
 	assert.True(t, strings.HasSuffix(response.header.Get("target-pod-ip"), ":1"),
 		"target address should contain the deliberately closed port: %s", response.header.Get("target-pod-ip"))
-	records, err := framework.BackendRequestRecords(ctx, client, e2eConfig.Namespace, pod.Name, requestID)
+	records, err := framework.QueryMockRequests(ctx, client, e2eConfig.Namespace, pod.Name, requestID)
 	require.NoError(t, err)
 	assert.Empty(t, records, "a refused connection must not reach the backend recorder")
 }
@@ -273,43 +278,4 @@ func selectOrdinaryBackendPod(t *testing.T, ctx context.Context, client *kuberne
 	require.NoError(t, err)
 	require.NotEmpty(t, pods.Items, "no ordinary mock backend found")
 	return pods.Items[0]
-}
-
-func updateOrdinaryPodLabels(
-	t *testing.T,
-	ctx context.Context,
-	client *kubernetes.Clientset,
-	podName string,
-	updates map[string]string,
-) {
-	t.Helper()
-	pod, err := client.CoreV1().Pods(e2eConfig.Namespace).Get(ctx, podName, metav1.GetOptions{})
-	require.NoError(t, err)
-	previous := make(map[string]string, len(updates))
-	for key, value := range updates {
-		previous[key] = pod.Labels[key]
-		pod.Labels[key] = value
-	}
-	_, err = client.CoreV1().Pods(e2eConfig.Namespace).Update(ctx, pod, metav1.UpdateOptions{})
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		current, getErr := client.CoreV1().Pods(e2eConfig.Namespace).Get(context.Background(), podName, metav1.GetOptions{})
-		if getErr != nil {
-			t.Errorf("restore labels for pod %s: %v", podName, getErr)
-			return
-		}
-		for key, value := range previous {
-			if value == "" {
-				delete(current.Labels, key)
-			} else {
-				current.Labels[key] = value
-			}
-		}
-		if _, updateErr := client.CoreV1().Pods(e2eConfig.Namespace).Update(
-			context.Background(), current, metav1.UpdateOptions{},
-		); updateErr != nil {
-			t.Errorf("restore labels for pod %s: %v", podName, updateErr)
-		}
-	})
 }

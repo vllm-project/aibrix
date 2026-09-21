@@ -381,6 +381,34 @@ def test_request_scoped_fail_attempts_only_rejects_the_first_attempt(monkeypatch
     ]
 
 
+def test_fail_attempts_without_request_id_does_not_share_attempt_budget(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+    headers = {
+        "Content-Type": "application/json",
+        "X-Aibrix-Mock-Fail": "backend",
+        "X-Aibrix-Mock-Fail-Attempts": "1",
+    }
+    raw_body = json.dumps(
+        {
+            "model": "m",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 1,
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    responses = [
+        client.post("/v1/chat/completions", data=raw_body, headers=headers)
+        for _ in range(2)
+    ]
+
+    assert [response.status_code for response in responses] == [500, 500]
+    records = client.get("/debug/requests").get_json()
+    assert [record["request_id"] for record in records] == [None, None]
+    assert [record["outcome"] for record in records] == ["failed", "failed"]
+
+
 def test_non_pd_backend_fault_is_request_scoped_and_recorded(monkeypatch):
     module = load_mock_module(monkeypatch)
     client = module.app.test_client()

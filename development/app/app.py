@@ -815,7 +815,11 @@ def _recorded_completion(path):
                 should_fail_attempt = (
                     fault.injected_status_code is not None
                     and fault.fail_attempts > 0
-                    and request_recorder.count(request_id=request_id) <= fault.fail_attempts
+                    and (
+                        not request_id
+                        or request_recorder.count(request_id=request_id)
+                        <= fault.fail_attempts
+                    )
                 )
                 if fault.injected_status_code is not None and (
                     fault.fail_attempts == 0 or should_fail_attempt
