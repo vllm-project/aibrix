@@ -87,6 +87,11 @@ type ModelClaimReconciler struct {
 	// request-counter deltas needed for conservative KV allocation. It is not a
 	// desired-state store; runtime snapshots remain authoritative after restart.
 	PoolPolicy *poolPolicyManager
+	// APIReader reads ModelClaims straight from the API server for the GPU
+	// memory account, where an instance recorded moments ago and not yet in the
+	// informer would read as free memory. Falls back to the cached client when
+	// unset, which is how the unit tests run.
+	APIReader client.Reader
 }
 
 // Add creates a new ModelClaim controller and registers it with the Manager.
@@ -101,6 +106,7 @@ func Add(mgr manager.Manager, _ config.RuntimeConfig) error {
 		SnapshotCache: newRuntimeSnapshotCache(
 			defaultRuntimeSnapshotTTL, time.Now,
 		),
+		APIReader: mgr.GetAPIReader(),
 	}
 
 	err := ctrl.NewControllerManagedBy(mgr).
