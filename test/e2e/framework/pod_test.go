@@ -43,7 +43,7 @@ func TestUpdatePodLabelsRetriesConflictsAndRestoresValues(t *testing.T) {
 		},
 	})
 	var failNextUpdate atomic.Bool
-	client.Fake.PrependReactor("update", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+	client.PrependReactor("update", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
 		if !failNextUpdate.Swap(false) {
 			return false, nil, nil
 		}
