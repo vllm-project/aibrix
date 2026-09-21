@@ -235,8 +235,8 @@ func TestAdmissibleCandidatesKeepsOnlyPodsThatCanShowRoom(t *testing.T) {
 		gpuPod("roomy"), gpuPod("full"), gpuPod("unreadable"), namedPod("cpu-only"),
 	}
 	ledgers := map[string]podLedger{
-		"roomy":      {judgeable: true, usableBytes: 1000, owedBytes: 100},
-		"full":       {judgeable: true, usableBytes: 1000, owedBytes: 900},
+		"roomy":      {judgeable: true, usableBytes: 1000, owedBytes: 100, heldBytes: 100},
+		"full":       {judgeable: true, usableBytes: 1000, owedBytes: 900, heldBytes: 900},
 		"unreadable": {blocked: "its runtime did not answer"},
 	}
 
@@ -246,10 +246,31 @@ func TestAdmissibleCandidatesKeepsOnlyPodsThatCanShowRoom(t *testing.T) {
 	assert.Equal(t, "roomy", admissible[0].Name)
 	assert.Equal(t, "cpu-only", admissible[1].Name)
 	require.Len(t, refusals, 2)
-	assert.Equal(t, "full can offer at most 0.0 GiB", refusals[0].reason)
+	assert.Equal(t,
+		"full can offer at most 0.0 GiB, even with every engine on it at its floor",
+		refusals[0].reason)
 	assert.True(t, refusals[0].known)
 	assert.Equal(t, "unreadable could not be judged: its runtime did not answer", refusals[1].reason)
 	assert.False(t, refusals[1].known)
+}
+
+func TestAdmissibleCandidatesTurnsAwayACardWhoseRoomIsHeld(t *testing.T) {
+	candidates := []corev1.Pod{gpuPod("held")}
+	// The card could hold the model once its engines give their pages back,
+	// and they have not.
+	ledgers := map[string]podLedger{
+		"held": {judgeable: true, usableBytes: 1000, owedBytes: 100, heldBytes: 800},
+	}
+
+	admissible, refusals := admissibleCandidates(candidates, ledgers, 500)
+
+	assert.Empty(t, admissible)
+	require.Len(t, refusals, 1)
+	assert.Equal(t,
+		"held has 0.0 GiB free, with the rest held by the engines already on it",
+		refusals[0].reason)
+	assert.True(t, refusals[0].known)
+	assert.Equal(t, int64(200), refusals[0].roomBytes)
 }
 
 func TestRankingPrefersTheCardWithTheMostRoomNotTheMostFreeMemory(t *testing.T) {
