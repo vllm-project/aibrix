@@ -161,7 +161,8 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 	// Define fallback handler to handle cases like:
 	// 1. No available profiles.
 	// 2. Profile does not provide SLO info.
-	// Fallback handler emulate a FIFO queue by comparing arrival time
+	// Fallback handler emulates a FIFO queue by comparing arrival time.
+	// The fallback candidate is only used when no candidate can be ranked.
 	fallbackHandler := func(key string, subReq *types.RoutingContext) bool {
 		if len(q.dequeueCandidates) == 0 {
 			q.validateDequeueCandidatesLocked(1)
@@ -170,7 +171,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 			// Skip this subqueue
 			return true
 		}
-		// Update ealiest candidate
+		// Update earliest candidate
 		q.dequeueCandidates[0].RoutingContext = subReq
 		q.dequeueCandidates[0].SubKey = key
 		return true
@@ -225,8 +226,10 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 		}
 		// Fallback case 2: Profile does not provide SLO info.
 		if len(candidate.Profiles) == 0 {
-			// No available profiles, skip this subqueue.
-			klog.Warningf("SLOQueue failed to get SLO info for request %s in all profiles, fallback to FIFO queue.", r.RequestID)
+			// The request cannot be ranked on any available profile. Exclude
+			// it from this round's ranking; it stays queued and is retried on
+			// later peeks.
+			klog.Warningf("SLOQueue failed to get SLO info for request %s in all profiles, excluding it from this round's ranking.", r.RequestID)
 			// Remove the empty candidate from the ranked list and drop its
 			// routing context so the underlying slot does not retain it.
 			candidate.RoutingContext = nil
@@ -261,7 +264,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 		}
 	})
 
-	// Start from ealiest
+	// Start from earliest
 	q.debugCandidates(fmt.Sprintf("%s candidates", q.modelName), dequeueCandidates)
 	for _, candidate := range dequeueCandidates {
 		var lastErr error
