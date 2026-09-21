@@ -31,6 +31,31 @@ Set ``replicaCount`` and container resources in your ``values.yaml`` override:
             cpu: "16"
             memory: 32Gi
 
+Gateway Plugin Kubernetes API Throttling
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Configure the gateway plugin's API server request rate using container arguments
+in ``config/gateway/gateway-plugin/gateway-plugin.yaml``:
+
+.. code-block:: yaml
+
+    containers:
+      - name: gateway-plugin
+        args:
+          - --kube-api-qps=5
+          - --kube-api-burst=10
+
+``--kube-api-qps`` defaults to ``rest.DefaultQPS`` (5 requests per second), and
+``--kube-api-burst`` defaults to ``rest.DefaultBurst`` (10 requests). Both must be
+greater than zero; QPS must also be finite and remain positive when represented
+as a float32. Invalid values cause the plugin to exit during startup.
+
+The plugin applies these values to its shared Kubernetes REST configuration
+before creating the core Kubernetes and Gateway API clients. Each client uses
+the same settings with its own rate limiter; this is not a combined request
+budget. This configuration is also used when initializing the plugin's Kubernetes
+caches. These flags control API server traffic, not inference request QPS.
+
 Envoy Proxy
 ~~~~~~~~~~~
 
