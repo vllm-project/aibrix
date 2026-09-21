@@ -1280,3 +1280,22 @@ def test_engine_ready_connection_refused(monkeypatch):
 
     monkeypatch.setattr(httpx, "get", boom)
     assert engine_ready(29000) is False, "still-booting engine reads as not ready"
+
+
+def test_snapshot_reports_unknown_kv_before_the_segment_exists(monkeypatch, tmp_path):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setenv("AIBRIX_WEIGHT_CACHE_DIR", str(tmp_path))
+    agent = make_agent()
+    agent.activate(
+        model_name="qwen",
+        artifact_url="hf://Qwen/Qwen3-0.6B",
+        claim_ref={"namespace": "default", "name": "qwen", "uid": "claim-uid"},
+    )
+    monkeypatch.setattr(runtime_module, "gpu_memory_observation", lambda: ([], {}))
+    monkeypatch.setattr(runtime_module, "read_kv_segment", lambda ipc_name: None)
+
+    observed = agent.snapshot()["models"][0]
+
+    assert observed["kv_used_bytes"] == runtime_module.KV_UNKNOWN
+    assert observed["kv_capacity_bytes"] == runtime_module.KV_UNKNOWN

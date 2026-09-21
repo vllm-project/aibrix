@@ -168,14 +168,20 @@ type RuntimeSnapshotModel struct {
 	Phase       string         `json:"phase"`
 	// Alive is process liveness, separate from readiness: a booting engine is
 	// alive but not routable, while a restarting or terminal engine is not.
-	Alive           bool       `json:"alive"`
-	Ready           bool       `json:"ready"`
-	RestartCount    int        `json:"restart_count"`
-	LastError       string     `json:"last_error,omitempty"`
-	LastTransition  *time.Time `json:"last_transition,omitempty"`
-	KVUsedBytes     int64      `json:"kv_used_bytes"`
-	KVCapacityBytes int64      `json:"kv_capacity_bytes"`
-	HBMPeakBytes    int64      `json:"hbm_peak_bytes"`
+	Alive          bool       `json:"alive"`
+	Ready          bool       `json:"ready"`
+	RestartCount   int        `json:"restart_count"`
+	LastError      string     `json:"last_error,omitempty"`
+	LastTransition *time.Time `json:"last_transition,omitempty"`
+	// KVUsedBytes is the KV memory this engine has mapped, its pages in use and
+	// the ones it holds in reserve together. KVCapacityBytes is the limit its
+	// KV allocator currently holds, which is what the engine obeys and not
+	// necessarily what the controller last asked for. Both are negative while
+	// the engine has no KV allocator to read, which a starting engine and one
+	// that never built a segment have in common.
+	KVUsedBytes     int64 `json:"kv_used_bytes"`
+	KVCapacityBytes int64 `json:"kv_capacity_bytes"`
+	HBMPeakBytes    int64 `json:"hbm_peak_bytes"`
 	// RequestMetricsObserved distinguishes a zero metric from an unavailable
 	// scrape. Pool policy must not infer idleness unless the completion counter
 	// is also present.
