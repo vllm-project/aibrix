@@ -1,0 +1,20 @@
+apiVersion: model.aibrix.ai/v1alpha1
+kind: ModelWarmup
+metadata:
+  name: runtime-image-warmup
+  namespace: default
+spec:
+  targets:
+  - nodeSelector:
+      matchLabels:
+        resource-pool.aibrix.ai/name: latency-pool
+  imagePreload:
+    images:
+    - image: busybox:1.36
+      command: ["sh", "-c", "exit 0"]
+      imagePullPolicy: IfNotPresent
+  policies:
+    parallelism: 8
+    globalTimeoutSeconds: 1800
+    retryLimit: 2
+    ttlSecondsAfterFinished: 3600

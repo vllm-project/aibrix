@@ -102,6 +102,7 @@ Documentation
    features/heterogeneous-gpu.rst
    features/runtime.rst
    features/modelclaim.rst
+   features/model-warmup.rst
 
 .. toctree::
    :maxdepth: 1
