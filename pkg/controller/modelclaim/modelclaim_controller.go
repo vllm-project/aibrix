@@ -434,6 +434,20 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 			return nil
 		}
 
+		// Record the instance before the engine exists. The record is what the
+		// account reads, so writing it first is what stops a second claim from
+		// being placed against the same memory while this engine loads. It also
+		// carries the KV limit the engine will be held to, which is the floor
+		// the claim declared.
+		pm.Status.Instances = append(pm.Status.Instances, modelv1alpha1.ModelClaimInstance{
+			Pod:          pod.Name,
+			Phase:        modelv1alpha1.ModelClaimActivating,
+			KVLimitBytes: kvFloorBytes(pm),
+		})
+		if err := r.Status().Update(ctx, pm); err != nil {
+			return fmt.Errorf("reserve %s on %s: %w", servedModelName(pm), pod.Name, err)
+		}
+
 		resp, aerr := r.Runtime.Activate(ctx, pod.Status.PodIP, DefaultRuntimePort, &ActivateRequest{
 			ModelName:    servedModelName(pm),
 			ArtifactURL:  pm.Spec.ArtifactURL,
@@ -448,8 +462,17 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 		})
 		if aerr != nil {
 			recordActivation(pm.Namespace, servedModelName(pm), false)
+			// The engine did not start, so give the card back. The record was
+			// written first to guard against a crash between these two steps,
+			// where it would be all that remained; a failure we can see is
+			// undone here, and the caller's status update persists the shorter
+			// list. Left in place it would hold the card for good, because
+			// nothing can tell an engine that never started from one that is
+			// still booting.
+			pm.Status.Instances = pm.Status.Instances[:len(pm.Status.Instances)-1]
 			return aerr
 		}
+		pm.Status.Instances[len(pm.Status.Instances)-1].Port = resp.Port
 
 		// The engine is spawned but not yet serveable (boot/compile). Keep the
 		// model NOT routable — stamp the non-routable marker (port 0), record the
@@ -460,11 +483,6 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 			return err
 		}
 
-		pm.Status.Instances = append(pm.Status.Instances, modelv1alpha1.ModelClaimInstance{
-			Pod:   pod.Name,
-			Port:  resp.Port,
-			Phase: modelv1alpha1.ModelClaimActivating,
-		})
 		// Say so on the condition as well as in the Event. Being turned away
 		// is an ordinary step now rather than a dead end, so a refusal that has
 		// since been resolved must not be left standing as the claim's answer
@@ -543,24 +561,23 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(ctx context.Context, pm *
 			observedPort = observed.Port
 		}
 
-		desiredPhase := modelv1alpha1.ModelClaimActivating
-		routingPort := int32(0)
-		switch {
-		case inst.Phase == modelv1alpha1.ModelClaimFailed:
-			desiredPhase = modelv1alpha1.ModelClaimFailed
-		case observed != nil && observed.Phase == runtimePhaseFailed:
-			desiredPhase = modelv1alpha1.ModelClaimFailed
-		case observed != nil && observed.Phase == runtimePhaseSleeping:
-			desiredPhase = modelv1alpha1.ModelClaimSleeping
-		case observed != nil && observed.Ready && observedPort > 0:
-			desiredPhase = modelv1alpha1.ModelClaimActive
-			routingPort = observedPort
-		}
-
 		pod := &corev1.Pod{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: pm.Namespace, Name: inst.Pod}, pod); err != nil {
 			continue
 		}
+
+		// An engine on a GPU becomes routable only once it holds the KV limit
+		// this instance records. Until then it runs under its allocator's own
+		// default, which is most of the card, and traffic would let it grow
+		// that far.
+		serving := observed != nil && observed.Ready && observedPort > 0
+		limitInForce := kvLimitInForce(pod, inst, observed)
+
+		desiredPhase, routingPort := desiredInstanceState(inst, observed, observedPort, serving, limitInForce)
+		if serving && !limitInForce {
+			r.writeKVLimit(ctx, pm, inst, pod, ip, snapshot, observed)
+		}
+
 		if err := r.annotateWarmPodWithState(
 			ctx, pm, pod, routingPort, routingStateForPhase(desiredPhase),
 		); err != nil {
@@ -656,6 +673,86 @@ func (r *ModelClaimReconciler) annotateWarmPodWithState(
 	}
 	pod.Annotations[key] = value
 	return r.Patch(ctx, pod, patch)
+}
+
+// desiredInstanceState is how one instance should be routed, given what the
+// runtime just reported about it. An engine is routable only once it is ready,
+// has a port, and is held to the KV limit its instance records.
+func desiredInstanceState(
+	inst *modelv1alpha1.ModelClaimInstance,
+	observed *RuntimeSnapshotModel,
+	observedPort int32,
+	serving bool,
+	limitInForce bool,
+) (modelv1alpha1.ModelClaimPhase, int32) {
+	switch {
+	case inst.Phase == modelv1alpha1.ModelClaimFailed:
+		return modelv1alpha1.ModelClaimFailed, 0
+	case observed != nil && observed.Phase == runtimePhaseFailed:
+		return modelv1alpha1.ModelClaimFailed, 0
+	case observed != nil && observed.Phase == runtimePhaseSleeping:
+		return modelv1alpha1.ModelClaimSleeping, 0
+	case serving && (limitInForce || inst.Phase == modelv1alpha1.ModelClaimActive):
+		// The gate is on becoming routable, not on staying so. An engine that
+		// restarted and put its default limit back keeps its route while the
+		// limit is written again.
+		return modelv1alpha1.ModelClaimActive, observedPort
+	}
+	return modelv1alpha1.ModelClaimActivating, 0
+}
+
+// kvLimitInForce reports whether the engine is already held to the limit this
+// instance records. There is nothing to hold it to when the claim declares no
+// per-GPU cost, and no card to hold it on when Kubernetes gave the pod no GPU.
+func kvLimitInForce(pod *corev1.Pod, inst *modelv1alpha1.ModelClaimInstance, observed *RuntimeSnapshotModel) bool {
+	if inst.KVLimitBytes <= 0 || podGPUCount(*pod) == 0 {
+		return true
+	}
+	return observed != nil && observed.KVCapacityBytes == inst.KVLimitBytes
+}
+
+// writeKVLimit asks the runtime to hold this engine to the limit the instance
+// records.
+//
+// The runtime runs each operation ID once, and an engine that restarts needs
+// the same value written again, so the ID carries the moment the snapshot was
+// taken as well as the value itself.
+//
+// A reported success is not proof. The CLI the runtime drives exits zero when
+// the segment does not exist, so the only evidence that a limit is in force is
+// reading it back from a later snapshot, which is what the caller does.
+func (r *ModelClaimReconciler) writeKVLimit(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	inst *modelv1alpha1.ModelClaimInstance,
+	pod *corev1.Pod,
+	podIP string,
+	snapshot *RuntimeSnapshot,
+	observed *RuntimeSnapshotModel,
+) {
+	// A write into a segment that does not exist is lost without a word, and
+	// the engine overwrites the segment when it builds one anyway.
+	if observed == nil || observed.KVCapacityBytes < 0 {
+		return
+	}
+	served := servedModelName(pm)
+	operationID := fmt.Sprintf("kv-limit/%s/%s/%s/%d/%d",
+		pm.Namespace, pm.Name, pod.UID, inst.KVLimitBytes, snapshot.ObservedAt.UnixNano())
+	if _, err := r.Runtime.SetKVLimit(ctx, podIP, DefaultRuntimePort, &SetKVLimitRequest{
+		ModelName:   served,
+		LimitBytes:  inst.KVLimitBytes,
+		OperationID: operationID,
+	}); err != nil {
+		klog.ErrorS(err, "could not hold an engine to its KV limit",
+			"model", pm.Name, "pod", inst.Pod, "limit", inst.KVLimitBytes)
+		r.Recorder.Eventf(pm, corev1.EventTypeWarning, "KVLimitFailed",
+			"model %s on pod %s: KV limit %s could not be set: %v",
+			served, inst.Pod, gibibytes(inst.KVLimitBytes), err)
+		return
+	}
+	r.Recorder.Eventf(pm, corev1.EventTypeNormal, "KVLimitSet",
+		"model %s on pod %s: KV limit set to %s, from %s",
+		served, inst.Pod, gibibytes(inst.KVLimitBytes), gibibytes(observed.KVCapacityBytes))
 }
 
 func routingStateForPhase(phase modelv1alpha1.ModelClaimPhase) string {
