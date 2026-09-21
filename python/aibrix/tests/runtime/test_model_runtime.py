@@ -81,7 +81,17 @@ def test_gpu_memory_snapshots_serializes_nvml_lifecycle(monkeypatch):
 
     assert (
         snapshots
-        == [[{"id": "GPU-0", "hbm_total_bytes": 100, "hbm_free_bytes": 50}]] * 4
+        == [
+            [
+                {
+                    "id": "GPU-0",
+                    "hbm_total_bytes": 100,
+                    "hbm_free_bytes": 50,
+                    "hbm_usable_bytes": -1,
+                }
+            ]
+        ]
+        * 4
     )
     assert init_calls == 4
     assert shutdown_calls == 4
@@ -114,13 +124,108 @@ def test_gpu_memory_observation_reports_process_memory_by_gpu(monkeypatch):
     accelerators, process_hbm = runtime_module.gpu_memory_observation()
 
     assert accelerators == [
-        {"id": "GPU-0", "hbm_total_bytes": 1000, "hbm_free_bytes": 700},
-        {"id": "GPU-1", "hbm_total_bytes": 1000, "hbm_free_bytes": 600},
+        {
+            "id": "GPU-0",
+            "hbm_total_bytes": 1000,
+            "hbm_free_bytes": 700,
+            "hbm_usable_bytes": -1,
+        },
+        {
+            "id": "GPU-1",
+            "hbm_total_bytes": 1000,
+            "hbm_free_bytes": 600,
+            "hbm_usable_bytes": -1,
+        },
     ]
     assert process_hbm == {
         101: {"GPU-0": 111, "GPU-1": 222},
         202: {"GPU-1": 333},
     }
+
+
+def _nvml_with_v2(memory_info, count=1):
+    """A pynvml stand-in whose v2 memory query is the only place the driver's
+    own reservation shows up."""
+    return SimpleNamespace(
+        nvmlInit=lambda: None,
+        nvmlShutdown=lambda: None,
+        nvmlDeviceGetCount=lambda: count,
+        nvmlDeviceGetHandleByIndex=lambda index: index,
+        nvmlDeviceGetMemoryInfo=memory_info,
+        nvmlDeviceGetUUID=lambda handle: f"GPU-{handle}",
+        nvmlMemory_v2=2,
+    )
+
+
+def test_usable_memory_is_the_total_less_the_driver_reservation(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_hbm_usable_by_device", {})
+
+    def memory_info(handle, version=None):
+        if version is None:
+            return SimpleNamespace(total=1000, free=400)
+        return SimpleNamespace(total=1000, free=400, reserved=40)
+
+    monkeypatch.setitem(sys.modules, "pynvml", _nvml_with_v2(memory_info))
+
+    accelerators, _ = runtime_module.gpu_memory_observation()
+
+    assert accelerators == [
+        {
+            "id": "GPU-0",
+            "hbm_total_bytes": 1000,
+            "hbm_free_bytes": 400,
+            "hbm_usable_bytes": 960,
+        }
+    ]
+
+
+def test_usable_memory_is_measured_once_per_card(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_hbm_usable_by_device", {})
+    v2_calls = 0
+
+    def memory_info(handle, version=None):
+        nonlocal v2_calls
+        if version is None:
+            return SimpleNamespace(total=1000, free=400)
+        v2_calls += 1
+        return SimpleNamespace(total=1000, free=400, reserved=40)
+
+    monkeypatch.setitem(sys.modules, "pynvml", _nvml_with_v2(memory_info))
+
+    first, _ = runtime_module.gpu_memory_observation()
+    second, _ = runtime_module.gpu_memory_observation()
+
+    assert v2_calls == 1
+    assert first[0]["hbm_usable_bytes"] == 960
+    assert second[0]["hbm_usable_bytes"] == 960
+
+
+def test_a_card_that_could_not_be_measured_is_tried_again(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_hbm_usable_by_device", {})
+    attempts = 0
+
+    def memory_info(handle, version=None):
+        nonlocal attempts
+        if version is None:
+            return SimpleNamespace(total=1000, free=400)
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("the driver is not ready yet")
+        return SimpleNamespace(total=1000, free=400, reserved=40)
+
+    monkeypatch.setitem(sys.modules, "pynvml", _nvml_with_v2(memory_info))
+
+    failed, _ = runtime_module.gpu_memory_observation()
+    recovered, _ = runtime_module.gpu_memory_observation()
+
+    assert failed[0]["hbm_usable_bytes"] == runtime_module.HBM_USABLE_UNKNOWN
+    assert recovered[0]["hbm_usable_bytes"] == 960
 
 
 class _RecordingKVController:
