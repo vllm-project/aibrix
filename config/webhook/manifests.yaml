@@ -70,6 +70,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /mutate-model-aibrix-ai-v1alpha1-modelwarmup
+  failurePolicy: Fail
+  name: mmodelwarmup.kb.io
+  rules:
+  - apiGroups:
+    - model.aibrix.ai
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - modelwarmups
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /mutate-autoscaling-aibrix-ai-v1alpha1-podautoscaler
   failurePolicy: Ignore
   name: mpodautoscaler-v1alpha1.kb.io
@@ -169,6 +189,26 @@ webhooks:
     - UPDATE
     resources:
     - modeladapters
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-model-aibrix-ai-v1alpha1-modelwarmup
+  failurePolicy: Fail
+  name: vmodelwarmup.kb.io
+  rules:
+  - apiGroups:
+    - model.aibrix.ai
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - modelwarmups
   sideEffects: None
 - admissionReviewVersions:
   - v1

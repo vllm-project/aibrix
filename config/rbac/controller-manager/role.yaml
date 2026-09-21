@@ -117,6 +117,14 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - pods
   verbs:
   - create
@@ -197,6 +205,7 @@ rules:
   resources:
   - modeladapters
   - modelclaims
+  - modelwarmups
   verbs:
   - create
   - delete
@@ -217,10 +226,23 @@ rules:
   resources:
   - modeladapters/status
   - modelclaims/status
+  - modelwarmups/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - orchestration.aibrix.ai
   resources:

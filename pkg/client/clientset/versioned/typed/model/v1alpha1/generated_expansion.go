@@ -20,3 +20,5 @@ package v1alpha1
 type ModelAdapterExpansion interface{}
 
 type ModelClaimExpansion interface{}
+
+type ModelWarmupExpansion interface{}
