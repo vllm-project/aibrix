@@ -296,9 +296,26 @@ Pod running an engine that no recorded instance answers for. That last one
 matters because free memory is no longer consulted: an engine nobody claimed
 used to be visible as memory in use, and now it has to be refused deliberately.
 
-This is a reservation in the control plane's account and not in the hardware.
-Nothing yet stops an engine already on the card from growing its KV cache into
-the space held for another instance.
+The account on its own would not stop an engine already on the card from
+growing its KV cache into the space held for another instance, so the
+controller also holds each engine to a limit. An instance records the limit it
+runs under in ``status.instances[].kvLimitBytes``, and for now that limit is
+the KV floor its claim declared. Once the engine is ready, the controller
+writes the limit through the runtime and leaves the model non-routable until a
+later snapshot shows the engine's KV allocator holding it. A model therefore
+takes traffic only under the limit it was placed against.
+
+Two Events report the write:
+
+.. code-block:: bash
+
+   kubectl get events --field-selector reason=KVLimitSet
+   kubectl get events --field-selector reason=KVLimitFailed
+
+Every engine on a declared Pod runs at its floor for now. Distributing the room
+that is left is the job of a later change, and the automatic pool policy below
+does not do it here: it stands down on a Pod where a claim holds the limit,
+because two writers on one KV allocator would only overwrite each other.
 
 ``perGPU`` is required, and a claim without it is rejected at ``kubectl
 apply``. Nothing could be put there in its place: what an engine holds beyond
@@ -458,6 +475,10 @@ bounded inflight requests and completion deltas. A configured limit is a
 kvcached capacity ceiling, not an immediate physical HBM allocation and not an
 OOM guarantee.
 
+The policy leaves a Pod alone when an instance recorded on it already runs
+under a KV limit of its own, which is the case for every claim that declares
+``perGPU``. Use this annotation on pools whose claims declare no per-GPU cost.
+
 The JSON parser rejects unknown fields. An invalid policy is disabled and
 reported with an ``InvalidPoolPolicy`` Event:
 
@@ -553,6 +574,14 @@ Claim remains ``Activating``
    initialization, or engine compilation may take time. The controller
    intentionally keeps the route at port 0 until ``/health`` succeeds.
 
+Claim remains ``Activating`` after ``/health`` succeeds
+   With ``perGPU`` declared, the engine also has to report the KV limit it was
+   given before it becomes routable. kvcached applies a new limit at its next
+   allocation, so a short wait here is expected. A ``KVLimitFailed`` Event
+   names the error. A snapshot whose ``kv_capacity_bytes`` is negative means
+   the engine has not built its KV segment yet, and there is nothing to write
+   into.
+
 Activation rejects ``--gpu-memory-utilization``
    Remove the flag. The kvcached framework replaces the engine's fixed
    KV-memory fraction in this deployment path.
@@ -561,7 +590,8 @@ Policy does not change KV limits
    Automatic policy requires exactly one visible accelerator, valid request
    metrics with matching model labels, and at least one observed active model.
    It does not shrink when observations are incomplete or protected KV usage
-   exceeds the configured capacity.
+   exceeds the configured capacity. It also stands down entirely on a Pod where
+   an instance records its own KV limit.
 
 Model never enters automatic sleep
    Automatic idle sleep currently applies only to vLLM. Check that request
