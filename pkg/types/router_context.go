@@ -51,8 +51,9 @@ type ResolvedConfigProfile struct {
 	// It takes precedence over the routing-strategy request header, the profile
 	// RoutingStrategy and the ROUTING_ALGORITHM environment variable.
 	LockedRoutingStrategy string
-	// AuthoritativeRoutingPolicy ignores application-supplied routing controls and
-	// omits routing diagnostics from the client response for this model.
+	// AuthoritativeRoutingPolicy records that routing diagnostics must be omitted
+	// from the client response. Client routing inputs are cleared before the
+	// resolved profile is stored here.
 	AuthoritativeRoutingPolicy bool
 	RoutingStrategy            string
 	RoutingConfig              json.RawMessage

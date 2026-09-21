@@ -1747,6 +1747,7 @@ func TestApplyConfigProfile_AuthoritativePolicyUsesDefaultProfile(t *testing.T) 
 			ctx.ReqHeaders = map[string]string{
 				HeaderRoutingStrategy: "throughput",
 				HeaderExternalFilter:  "environment=batch",
+				"x-test-header":       "preserved",
 			}
 
 			applyConfigProfile(ctx, pods)
@@ -1755,7 +1756,10 @@ func TestApplyConfigProfile_AuthoritativePolicyUsesDefaultProfile(t *testing.T) 
 			assert.True(t, ctx.ConfigProfile.AuthoritativeRoutingPolicy)
 			assert.Equal(t, "least-request", ctx.ConfigProfile.RoutingStrategy)
 			assert.Contains(t, string(ctx.ConfigProfile.RoutingConfig), `"marker":"default"`)
-			assert.Equal(t, "default", ctx.ReqConfigProfile)
+			assert.Empty(t, ctx.ReqConfigProfile)
+			assert.NotContains(t, ctx.ReqHeaders, HeaderRoutingStrategy)
+			assert.NotContains(t, ctx.ReqHeaders, HeaderExternalFilter)
+			assert.Equal(t, "preserved", ctx.ReqHeaders["x-test-header"])
 			assert.NotContains(t, ctx.RespHeaders, HeaderAIBrixConfigProfile)
 		})
 	}
@@ -1798,16 +1802,6 @@ func TestDeriveRoutingStrategyFromContext(t *testing.T) {
 		ReqHeaders: map[string]string{HeaderRoutingStrategy: "throughput"},
 	}
 
-	// A model-wide authoritative policy ignores the client header and uses the
-	// authoritative default profile even when no strategy lock is configured.
-	authoritativePolicyCtx := &types.RoutingContext{
-		ConfigProfile: &types.ResolvedConfigProfile{
-			AuthoritativeRoutingPolicy: true,
-			RoutingStrategy:            "least-request",
-		},
-		ReqHeaders: map[string]string{HeaderRoutingStrategy: "throughput"},
-	}
-
 	// Header wins over profile strategy.
 	headerCtx := &types.RoutingContext{
 		ConfigProfile: &types.ResolvedConfigProfile{RoutingStrategy: "random"},
@@ -1836,7 +1830,6 @@ func TestDeriveRoutingStrategyFromContext(t *testing.T) {
 		wantOK bool
 	}{
 		{"locked strategy wins over header and profile", lockedCtx, "pd", true},
-		{"authoritative policy uses profile strategy", authoritativePolicyCtx, "least-request", true},
 		{"header wins over profile strategy", headerCtx, "throughput", true},
 		{"profile strategy used when header absent", profileCtx, "least-request", true},
 		{"case-insensitive header key", headerCaseCtx, "pd", true},

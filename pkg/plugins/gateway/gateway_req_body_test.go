@@ -1141,6 +1141,15 @@ func TestHandleRequestBody_LockedRoutingStrategy(t *testing.T) {
 			wantStatus:     envoyTypePb.StatusCode_OK,
 		},
 		{
+			name:           "authoritative policy preserves locked strategy precedence",
+			profileJSON:    `{"authoritativeRoutingPolicy":true,"lockedRoutingStrategy":"test-router","defaultProfile":"default","profiles":{"default":{"routingStrategy":"least-request"},"batch":{"routingStrategy":"random"}}}`,
+			headerValue:    "least-request",
+			configProfile:  "batch",
+			externalFilter: "environment=batch",
+			wantStrategy:   "test-router",
+			wantStatus:     envoyTypePb.StatusCode_OK,
+		},
+		{
 			name:           "external filter still applies when request overrides are enabled",
 			profileJSON:    `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"}}}`,
 			headerValue:    "test-router",

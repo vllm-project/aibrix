@@ -639,10 +639,11 @@ locks the strategy: the remaining per-profile knobs (``requestsPerSecond``,
         }
 
 For platform-managed models whose routing policy must be authoritative, also set
-``authoritativeRoutingPolicy``. The gateway then ignores the request's
-``routing-strategy``, ``config-profile`` (including ``auto``), and
-``external-filter`` headers. It uses ``defaultProfile``, preserves the routing
-headers that the gateway itself generates after selecting a pod, and omits
+``authoritativeRoutingPolicy``. The gateway then treats the request as if it did
+not contain the client routing controls ``routing-strategy``, ``config-profile``
+(including ``auto``), and ``external-filter``. It uses ``defaultProfile``,
+preserves the routing headers that the gateway itself generates after selecting
+a pod, and omits
 ``routing-strategy``, ``target-pod``, ``target-pod-ip``, and
 ``x-aibrix-config-profile`` from the client response:
 
@@ -664,6 +665,12 @@ headers that the gateway itself generates after selecting a pod, and omits
             }
           }
         }
+
+``authoritativeRoutingPolicy`` and ``lockedRoutingStrategy`` have separate
+responsibilities. The authoritative policy removes client routing input;
+``lockedRoutingStrategy`` pins the algorithm against both the resolved default
+profile and ``ROUTING_ALGORITHM``. Setting the authoritative policy does not
+change the existing locked-strategy precedence.
 
 **Selecting a profile at request time**
 
@@ -702,7 +709,7 @@ These request-time choices are ignored when
    * - ``lockedRoutingStrategy``
      - Pins a single routing strategy model-wide. When set, it takes precedence over the ``routing-strategy`` header, the per-profile ``routingStrategy`` and the ``ROUTING_ALGORITHM`` env. The remaining per-profile knobs (``requestsPerSecond``, ``routingConfig``) are still applied normally.
    * - ``authoritativeRoutingPolicy``
-     - When ``true``, ignores application-supplied ``routing-strategy``, ``config-profile`` and ``external-filter`` headers. The gateway resolves ``defaultProfile``, retains its internally generated routing headers, and omits routing diagnostic headers from the client response. Defaults to ``false`` for backward compatibility.
+     - When ``true``, treats application-supplied ``routing-strategy``, ``config-profile`` and ``external-filter`` headers as absent. The gateway resolves ``defaultProfile``, retains its internally generated routing headers, and omits routing diagnostic headers from the client response. Defaults to ``false`` for backward compatibility.
    * - ``defaultProfile``
      - Profile name used when no ``config-profile`` header is sent. Falls back to ``"default"`` when omitted.
    * - ``profiles``
@@ -731,11 +738,17 @@ the gateway's existing prompt text extraction and local token estimation.
 ``maxTokens*`` reads ``max_tokens`` first, then ``max_completion_tokens`` when
 ``max_tokens`` is absent.
 
+When ``authoritativeRoutingPolicy`` is ``true``, the gateway clears the three
+client routing inputs before it resolves the profile and routing strategy. The
+normal priority below then applies unchanged: request profile selection uses
+``defaultProfile``, the request strategy is absent, and
+``lockedRoutingStrategy`` keeps its existing meaning.
+
 **Routing strategy priority** (highest to lowest):
 
 1. ``lockedRoutingStrategy`` pinned model-wide in the config — always wins when set, even over the ``routing-strategy`` header.
-2. ``routing-strategy`` request header, unless ``authoritativeRoutingPolicy`` is ``true``.
-3. ``routingStrategy`` from the resolved profile. The resolved profile comes from ``defaultProfile`` when request overrides are disabled; otherwise it comes from the concrete ``config-profile`` header, ``config-profile: auto`` routingConfig hints, or ``defaultProfile``.
+2. ``routing-strategy`` request header.
+3. ``routingStrategy`` from the resolved profile. The resolved profile comes from the concrete ``config-profile`` header, ``config-profile: auto`` routingConfig hints, or ``defaultProfile``.
 4. ``ROUTING_ALGORITHM`` environment variable on the gateway plugin.
 
 **Backward compatibility**: ``authoritativeRoutingPolicy`` defaults to ``false``. If a pod has no ``model.aibrix.ai/config`` annotation, the gateway falls back to the ``routing-strategy`` request header and then the ``ROUTING_ALGORITHM`` env (steps 2 and 4 above). No migration is required for existing deployments.

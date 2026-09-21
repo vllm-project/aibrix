@@ -266,7 +266,7 @@ func TestResolveConfigForRequestAutoFallbacks(t *testing.T) {
 	}
 }
 
-func TestResolveConfigForRequestAuthoritativePolicyUsesDefaultProfile(t *testing.T) {
+func TestResolveConfigForRequestDoesNotApplyAuthoritativePolicy(t *testing.T) {
 	configJSON := `{
 		"authoritativeRoutingPolicy":true,
 		"defaultProfile":"default",
@@ -277,31 +277,29 @@ func TestResolveConfigForRequestAuthoritativePolicyUsesDefaultProfile(t *testing
 	}`
 	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{constants.ModelAnnoConfig: configJSON}}}
 
-	for _, headerProfile := range []string{"batch", "auto"} {
-		t.Run(headerProfile, func(t *testing.T) {
-			profile, name, locked, authoritativePolicy := ResolveConfigPolicyForRequest(
-				[]*v1.Pod{pod}, headerProfile, RequestFeatures{PromptTokens: intPtr(100)},
-			)
+	cfg := ResolveModelConfig([]*v1.Pod{pod})
+	if cfg == nil {
+		t.Fatal("ResolveModelConfig() = nil")
+	}
+	if !cfg.AuthoritativeRoutingPolicy {
+		t.Fatal("ResolveModelConfig().AuthoritativeRoutingPolicy = false, want true")
+	}
 
-			if profile == nil {
-				t.Fatal("ResolveConfigForRequest() profile = nil")
-			}
-			if profile.RoutingStrategy != "least-request" {
-				t.Errorf("ResolveConfigForRequest().RoutingStrategy = %s, want least-request", profile.RoutingStrategy)
-			}
-			if !strings.Contains(string(profile.RoutingConfig), `"marker":"default"`) {
-				t.Errorf("ResolveConfigForRequest().RoutingConfig = %s, want default profile config", profile.RoutingConfig)
-			}
-			if name != "default" {
-				t.Errorf("ResolveConfigForRequest() name = %q, want default", name)
-			}
-			if locked != "" {
-				t.Errorf("ResolveConfigForRequest() locked = %q, want empty", locked)
-			}
-			if !authoritativePolicy {
-				t.Error("ResolveConfigPolicyForRequest() authoritativePolicy = false, want true")
-			}
-		})
+	profile, name, locked := ResolveConfigForRequest([]*v1.Pod{pod}, "batch", RequestFeatures{PromptTokens: intPtr(100)})
+	if profile == nil {
+		t.Fatal("ResolveForRequest() profile = nil")
+	}
+	if profile.RoutingStrategy != "throughput" {
+		t.Errorf("ResolveForRequest().RoutingStrategy = %s, want throughput", profile.RoutingStrategy)
+	}
+	if !strings.Contains(string(profile.RoutingConfig), `"marker":"batch"`) {
+		t.Errorf("ResolveForRequest().RoutingConfig = %s, want batch profile config", profile.RoutingConfig)
+	}
+	if name != "batch" {
+		t.Errorf("ResolveForRequest() name = %q, want batch", name)
+	}
+	if locked != "" {
+		t.Errorf("ResolveForRequest() locked = %q, want empty", locked)
 	}
 }
 
