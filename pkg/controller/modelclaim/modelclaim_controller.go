@@ -400,18 +400,35 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 	}
 	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL, parallelism)
 
+	// A claim that declares what it costs is only placed where the card's
+	// account can show the room. One that declares nothing is placed as before.
+	admissible, refusals := candidates, []podRefusal(nil)
+	needBytes := minimumReserveBytes(pm)
+	if needBytes > 0 {
+		ledgers := r.collectPodLedgers(ctx, pm.Namespace, candidates, placementStates)
+		admissible, refusals = admissibleCandidates(candidates, ledgers, needBytes)
+	}
+
 	for desiredReplicas(pm) > int32(len(pm.Status.Instances)) {
 		pod, selectErr := selectPodForActivationWithState(
-			candidates, instancePods(pm), load, servedModelName(pm), r.Locality, placementStates,
+			admissible, instancePods(pm), load, servedModelName(pm), r.Locality, placementStates,
 		)
 		if selectErr != nil {
 			// No available warm pod right now; remain Pending and retry on requeue.
-			r.Recorder.Event(pm, corev1.EventTypeWarning, "NoMatchingPods", selectErr.Error())
+			message := selectErr.Error()
+			// Blame the cards only when they are the reason. With a pod still
+			// admissible, this model is simply already on all of them, and an
+			// operator sent to look at GPU memory would be looking in the wrong
+			// place.
+			if len(admissible) == 0 && len(refusals) > 0 {
+				message = summarizeRefusals(refusals, needBytes)
+			}
+			r.Recorder.Event(pm, corev1.EventTypeWarning, "NoMatchingPods", message)
 			meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
 				Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
 				Status:  metav1.ConditionFalse,
 				Reason:  "NoMatchingPods",
-				Message: selectErr.Error(),
+				Message: message,
 			})
 			return nil
 		}

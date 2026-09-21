@@ -1126,3 +1126,88 @@ func TestReconcileDeletionDeactivates(t *testing.T) {
 		types.NamespacedName{Namespace: testNamespace, Name: pm.Name}, got)
 	assert.True(t, err != nil || !controllerutil.ContainsFinalizer(got, ModelClaimFinalizer))
 }
+
+// claimWithCost is the sample claim plus a declared per-GPU cost.
+func claimWithCost(footprint, floor int64) *modelv1alpha1.ModelClaim {
+	pm := withFinalizer(sampleModelClaim())
+	pm.Spec.PerGPU = &modelv1alpha1.ModelClaimPerGPU{
+		MaximumFootprintBytes: footprint,
+		KVFloorBytes:          floor,
+	}
+	return pm
+}
+
+// sizedWarmPod is a warm pod with one card the runtime could measure.
+func sizedWarmPod(name, ip string, usableBytes int64) (*corev1.Pod, *RuntimeSnapshot) {
+	pod := warmPodWithGPUs(name, "b300-pool-a", 1)
+	pod.Status.PodIP = ip
+	return pod, &RuntimeSnapshot{
+		Accelerators: []RuntimeAcceleratorSnapshot{
+			{ID: "GPU-0", HBMFreeBytes: usableBytes, HBMUsableBytes: usableBytes},
+		},
+	}
+}
+
+func TestReconcileRefusesACardWithoutRoomForTheDeclaredCost(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Empty(t, got.Status.Instances)
+	cond := meta.FindStatusCondition(got.Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, "NoMatchingPods", cond.Reason)
+	assert.Contains(t, cond.Message, "warm-1 can offer at most")
+}
+
+func TestReconcilePlacesOnTheCardThatCanHoldTheDeclaredCost(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	full, fullSnapshot := sizedWarmPod("warm-full", "10.0.0.1", 1000)
+	roomy, roomySnapshot := sizedWarmPod("warm-roomy", "10.0.0.2", 2000)
+	neighbour := claimOnPod("neighbour", full.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	r, runtime := newReconciler(t, pm, full, roomy, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		full.Status.PodIP:  fullSnapshot,
+		roomy.Status.PodIP: roomySnapshot,
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-roomy", got.Status.Instances[0].Pod)
+}
+
+func TestReconcileWillNotPlaceOnACardItCannotMeasure(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
+	r, runtime := newReconciler(t, pm, pod)
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	cond := meta.FindStatusCondition(getModel(t, r, pm.Name).Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Contains(t, cond.Message, "could not be judged")
+}
+
+func TestReconcilePlacesAClaimThatDeclaresNoCostAsBefore(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
+	r, runtime := newReconciler(t, pm, pod)
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+	assert.Equal(t, "warm-1", getModel(t, r, pm.Name).Status.Instances[0].Pod)
+}

@@ -93,6 +93,94 @@ func selectPodForActivation(candidates []corev1.Pod, alreadyOn map[string]bool, 
 	return selectPodForActivationWithState(candidates, alreadyOn, load, model, locality, nil)
 }
 
+// podRefusal is one candidate the account turned away, and the sentence an
+// operator can act on.
+type podRefusal struct {
+	pod string
+	// roomBytes is what the card can still offer, and known says whether that
+	// could be worked out at all.
+	roomBytes int64
+	known     bool
+	reason    string
+}
+
+// admissibleCandidates keeps the pods whose account can show room for one more
+// instance of this claim, and says why each of the others was turned away.
+//
+// A pod Kubernetes gave no GPU is not judged on GPU memory: the warm-pool
+// contract puts the cards in the pod spec, and a pod without them is what the
+// mock runtimes in tests run on. Every other pod has to show its room, so a
+// card nobody could account for is turned away rather than admitted: the
+// memory such an account cannot see is memory it would hand out twice.
+func admissibleCandidates(
+	candidates []corev1.Pod,
+	ledgers map[string]podLedger,
+	needBytes int64,
+) ([]corev1.Pod, []podRefusal) {
+	admissible := make([]corev1.Pod, 0, len(candidates))
+	var refusals []podRefusal
+	for i := range candidates {
+		pod := candidates[i]
+		if podGPUCount(pod) == 0 {
+			admissible = append(admissible, pod)
+			continue
+		}
+		ledger := ledgers[pod.Name]
+		switch {
+		case !ledger.judgeable:
+			refusals = append(refusals, podRefusal{
+				pod:    pod.Name,
+				reason: fmt.Sprintf("%s could not be judged: %s", pod.Name, ledger.blocked),
+			})
+		case ledger.maximumRoomBytes() < needBytes:
+			room := ledger.maximumRoomBytes()
+			refusals = append(refusals, podRefusal{
+				pod:       pod.Name,
+				roomBytes: room,
+				known:     true,
+				reason: fmt.Sprintf("%s can offer at most %s",
+					pod.Name, gibibytes(room)),
+			})
+		default:
+			admissible = append(admissible, pod)
+		}
+	}
+	return admissible, refusals
+}
+
+// summarizeRefusals states in one line how far the pool is from holding this
+// model. It names the roomiest pod that still could not hold it, because that
+// is the smallest gap and the one worth acting on, and counts the rest rather
+// than listing a line per pod.
+func summarizeRefusals(refusals []podRefusal, needBytes int64) string {
+	message := fmt.Sprintf("no warm pod can hold this model, which needs %s on a card",
+		gibibytes(needBytes))
+	if len(refusals) == 0 {
+		return message
+	}
+	roomiest := 0
+	for i, refusal := range refusals {
+		if !refusals[roomiest].known && refusal.known {
+			roomiest = i
+			continue
+		}
+		if refusal.known && refusals[roomiest].known && refusal.roomBytes > refusals[roomiest].roomBytes {
+			roomiest = i
+		}
+	}
+	message += ": " + refusals[roomiest].reason
+	if len(refusals) > 1 {
+		message += fmt.Sprintf("; %d other pod(s) were turned away as well", len(refusals)-1)
+	}
+	return message
+}
+
+// gibibytes renders a byte count the way an operator reads a GPU: one decimal
+// place, since a tenth of a gibibyte is about as fine as these decisions get.
+func gibibytes(bytes int64) string {
+	return fmt.Sprintf("%.1f GiB", float64(bytes)/float64(1<<30))
+}
+
 // selectPodForActivationWithState first prefers a pod that already has the
 // artifact locally, then live GPU/KV observations, and finally the Phase-1
 // locality/load/name rank. Missing runtime state is safe: it simply falls back
