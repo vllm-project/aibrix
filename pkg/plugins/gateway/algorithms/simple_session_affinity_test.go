@@ -718,6 +718,31 @@ func TestSessionAffinityPostRouteUpdateDoesNotOverwriteExistingPin(t *testing.T)
 	assert.Equal(t, "10.0.0.1:8000", got, "PostRouteUpdate must not overwrite an existing pin")
 }
 
+// TestSessionAffinityPostRouteUpdateSlidesTTL covers the steady state of the post-route
+// paths: the claim write keeps failing against this replica's own pin, so the read-back must
+// also slide the TTL, or an actively used session expires on the idle clock.
+func TestSessionAffinityPostRouteUpdateSlidesTTL(t *testing.T) {
+	routerA, mr := newTestSessionAffinityRedis(t)
+	routerB := &sessionAffinityRouter{redisClient: routerA.redisClient}
+	const sessionKey = "post-route-ttl"
+	cacheKey := sessionCacheKey("model1", sessionKey)
+
+	podA := newPod("pod-a", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	require.True(t, routerA.persistSessionKeyToRedis(cacheKey, "10.0.0.1:8000", writeClaim))
+
+	// Let the pin age halfway to expiry, then run one request through the post-route path.
+	mr.FastForward(sessionAffinityTTL / 2)
+
+	ctx := types.NewRoutingContext(context.Background(), "test", "model1", "", "", "")
+	ctx.ReqHeaders = map[string]string{constants.HeaderSessionKey: sessionKey}
+	require.NoError(t, routerB.PostRouteUpdate(ctx, newMockPodList([]*v1.Pod{podA}, nil), podA))
+
+	require.Eventually(t, func() bool {
+		return mr.TTL(sessionAffinityRedisKey(cacheKey)) > 3*sessionAffinityTTL/4
+	}, 2*time.Second, 10*time.Millisecond,
+		"an actively used pin must not age out on the idle clock")
+}
+
 // TestSessionAffinityResolveReportsPersistIntent pins the write intent resolveSessionPod reports
 // for each case, since Route/PostRouteUpdate use it to decide between the atomic claim write and
 // the unconditional write (the gated refresh and repin CAS build on this distinction next).

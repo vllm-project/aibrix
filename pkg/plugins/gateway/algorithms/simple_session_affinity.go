@@ -326,11 +326,13 @@ func (r *sessionAffinityRouter) persistSessionKeyToRedis(cacheKey, addr string, 
 
 // reconcileLostClaim converges this replica after its claim for cacheKey lost to another
 // writer. The value now in Redis is the winner: when it equals addr, an earlier in-flight
-// claim by this replica landed after all, so the local entry is simply confirmed; otherwise
-// the unconfirmed losing entry is replaced with the winner. The replacement only applies
-// while the local entry is still that exact losing pick -- a newer local state, such as a
-// fresh rendezvous pick after a pod-set change, is left alone. A failed read leaves the entry
-// as is; the sync pass or this key's next Redis read converges it then.
+// claim by this replica landed after all, so the local entry is confirmed and the TTL is
+// slid forward (the post-route commit paths re-claim their own pin on every request, and
+// without the slide an actively used session would expire on the idle clock); otherwise the
+// unconfirmed losing entry is replaced with the winner. The replacement only applies while
+// the local entry is still that exact losing pick -- a newer local state, such as a fresh
+// rendezvous pick after a pod-set change, is left alone. A failed read leaves the entry as
+// is; the sync pass or this key's next Redis read converges it then.
 func (r *sessionAffinityRouter) reconcileLostClaim(cacheKey, addr string) {
 	ctx, cancel := context.WithTimeout(context.Background(), sessionKeyRedisReadTimeout)
 	defer cancel()
@@ -342,7 +344,13 @@ func (r *sessionAffinityRouter) reconcileLostClaim(cacheKey, addr string) {
 		return
 	}
 	if winner == addr {
+		// Confirm the entry and slide the TTL. An EXPIRE cannot overwrite a newer repin
+		// the way a SET could; the gated Lua refresh in the TODO is what makes this
+		// compare-and-extend atomic later.
 		r.markSessionKeyConfirmed(cacheKey, addr)
+		if err := r.redisClient.Expire(ctx, sessionAffinityRedisKey(cacheKey), sessionAffinityTTL).Err(); err != nil {
+			klog.V(4).ErrorS(err, "failed to extend the session key pinning TTL", "cache_key", cacheKey)
+		}
 		return
 	}
 	for {
