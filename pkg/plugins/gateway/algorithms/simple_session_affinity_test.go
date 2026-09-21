@@ -613,3 +613,73 @@ func BenchmarkSessionAffinityRouterConcurrent(b *testing.B) {
 		b.Fatalf("%d unexpected errors from Route/PostRouteUpdate under concurrent load", n)
 	}
 }
+
+// TestSessionAffinityClaimDoesNotOverwriteExistingPin is a regression test for the
+// initial-claim race described in the #2742 review: two replicas that both miss Redis and
+// resolve different pods for the same session must not overwrite each other's pin. With a
+// plain SET the second replica's claim silently replaced the first one.
+func TestSessionAffinityClaimDoesNotOverwriteExistingPin(t *testing.T) {
+	routerA, mr := newTestSessionAffinityRedis(t)
+	routerB := &sessionAffinityRouter{redisClient: routerA.redisClient}
+	const sessionKey = "claim-race"
+	cacheKey := sessionCacheKey("model1", sessionKey)
+
+	require.True(t, routerA.persistSessionKeyToRedis(cacheKey, "10.0.0.1:8000", writeClaim))
+	routerB.persistSessionKeyToRedis(cacheKey, "10.0.0.2:8000", writeClaim)
+
+	got, err := mr.Get(sessionAffinityRedisKey(cacheKey))
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.1:8000", got,
+		"a second replica must not overwrite a pin that is already claimed")
+}
+
+// TestSessionAffinitySyncRetryDoesNotClobberAnotherReplicasPin covers the same race on the
+// sync-pass retry path: an unconfirmed local entry whose write never landed must not replace
+// a pin that another replica owns by the time the retry runs.
+func TestSessionAffinitySyncRetryDoesNotClobberAnotherReplicasPin(t *testing.T) {
+	routerA, mr := newTestSessionAffinityRedis(t)
+	routerB := &sessionAffinityRouter{redisClient: routerA.redisClient}
+	const sessionKey = "sync-retry-race"
+	cacheKey := sessionCacheKey("model1", sessionKey)
+
+	require.True(t, routerA.persistSessionKeyToRedis(cacheKey, "10.0.0.1:8000", writeClaim))
+	routerB.storeSessionKeyLocal(cacheKey, "10.0.0.2:8000", false)
+	routerB.handleSessionKeyCacheSyncMiss(cacheKey)
+
+	got, err := mr.Get(sessionAffinityRedisKey(cacheKey))
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.1:8000", got,
+		"the sync retry must not overwrite a pin that another replica owns")
+}
+
+// TestSessionAffinityResolveReportsPersistIntent pins the write intent resolveSessionPod reports
+// for each case, since Route/PostRouteUpdate use it to decide between the atomic claim write and
+// the unconditional write (the gated refresh and repin CAS build on this distinction next).
+func TestSessionAffinityResolveReportsPersistIntent(t *testing.T) {
+	ctx := types.NewRoutingContext(context.Background(), "test", "model1", "", "", "")
+	ctx.ReqHeaders = map[string]string{constants.HeaderSessionKey: "write-intent"}
+	cacheKey := sessionCacheKey("model1", "write-intent")
+
+	podA := newPod("pod-a", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	podB := newPod("pod-b", "10.0.0.2", true, map[string]string{"model.aibrix.ai/port": "8000"})
+
+	router, mr := newTestSessionAffinityRedis(t)
+
+	// Nothing pinned anywhere: the rendezvous pick creates a new pinning.
+	_, _, via, mode := router.resolveSessionPod(ctx, []*v1.Pod{podA, podB})
+	require.Equal(t, "rendezvous", via)
+	assert.Equal(t, writeClaim, mode)
+
+	// Redis already pins a ready pod: the resolve re-affirms it.
+	require.NoError(t, mr.Set(sessionAffinityRedisKey(cacheKey), "10.0.0.1:8000"))
+	_, _, via, mode = router.resolveSessionPod(ctx, []*v1.Pod{podA, podB})
+	require.Equal(t, "session-key-redis", via)
+	assert.Equal(t, writeRefresh, mode)
+
+	// Redis pins a pod that is gone from this replica's ready view: the rendezvous pick replaces it.
+	fresh := &sessionAffinityRouter{redisClient: router.redisClient}
+	require.NoError(t, mr.Set(sessionAffinityRedisKey(cacheKey), "10.0.0.9:8000"))
+	_, _, via, mode = fresh.resolveSessionPod(ctx, []*v1.Pod{podA, podB})
+	require.Equal(t, "rendezvous", via)
+	assert.Equal(t, writeRepin, mode)
+}

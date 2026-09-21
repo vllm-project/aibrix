@@ -265,33 +265,54 @@ func (r *sessionAffinityRouter) handleSessionKeyCacheSyncMiss(cacheKey string) {
 		r.forgetSessionKey(cacheKey)
 		return
 	}
-	r.persistSessionKeyToRedis(cacheKey, item.addr)
+	r.persistSessionKeyToRedis(cacheKey, item.addr, writeClaim)
 }
+
+// sessionAffinityWrite describes what the caller knows about any existing Redis value for the
+// key it is about to persist. Only writeClaim changes the write today (SET NX); the other
+// modes carry the caller's intent for the gating and compare-and-swap that land in the follow-ups
+// described below.
+type sessionAffinityWrite int
+
+const (
+	writeClaim sessionAffinityWrite = iota
+	writeRefresh
+	writeRepin
+)
 
 // persistSessionKeyToRedis write-throughs cacheKey -> addr with a sliding
 // TTL: every call, including a refresh of an unchanged pinning, pushes the
 // idle-expiry another sessionAffinityTTL out. Intended to be called via `go`
 // at the routing call sites so a slow/unavailable Redis never adds latency to
 // the request path; a failed write just means this replica's local cache is,
-// for now, the only copy of this pinning. Returns whether Redis now has it.
+// for now, the only copy of this pinning. Returns whether Redis now has it (for writeClaim:
+// whether this replica's claim won).
 //
-// TODO(session-affinity): the plain SET below is shared, unconditionally, by three cases with
-// different concurrency-safety needs -- initial claim, TTL-only refresh, and failover repin.
-// Two replicas racing an initial claim from different ready-pod views can each pick a different
-// winner and stomp each other's SET; a delayed, in-flight refresh for an old address can also
-// land after a newer repin's SET and silently revert it, since plain SET has no "only if the
-// current value is still X" check. Give each case its own primitive: SET NX EX for the initial
-// claim (reading back the actual winner on a lost race), an EXPIRE-only touch for a refresh
-// gated on the stored value still matching addr, and a compare-and-swap (Lua script, since Redis
-// has no native SET-if-equals) for oldAddr -> newAddr repins. Needs a test with two router
-// instances, divergent pod views, and deliberately reordered writes covering both races.
+// TODO(session-affinity): claims now use SET NX EX, but plain SET is still shared by TTL-only
+// refreshes and failover repins, which need different primitives: a refresh must touch the TTL
+// only while the stored value still matches addr, or a delayed refresh can revert a newer
+// repin; a repin needs a compare-and-swap (Lua script, since Redis has no native
+// SET-if-equals) for oldAddr -> newAddr. A lost claim should also read back the winner so the
+// loser converges immediately instead of on the next sync pass.
 // See https://github.com/vllm-project/aibrix/pull/2742#discussion_r4037407790.
-func (r *sessionAffinityRouter) persistSessionKeyToRedis(cacheKey, addr string) bool {
+func (r *sessionAffinityRouter) persistSessionKeyToRedis(cacheKey, addr string, mode sessionAffinityWrite) bool {
 	if r.redisClient == nil {
 		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), sessionKeyRedisWriteTimeout)
 	defer cancel()
+	if mode == writeClaim {
+		claimed, err := r.redisClient.SetNX(ctx, sessionAffinityRedisKey(cacheKey), addr, sessionAffinityTTL).Result()
+		if err != nil {
+			klog.V(4).ErrorS(err, "failed to persist session key pinning to redis", "cache_key", cacheKey)
+			return false
+		}
+		if !claimed {
+			return false
+		}
+		r.markSessionKeyConfirmed(cacheKey, addr)
+		return true
+	}
 	if err := r.redisClient.Set(ctx, sessionAffinityRedisKey(cacheKey), addr, sessionAffinityTTL).Err(); err != nil {
 		klog.V(4).ErrorS(err, "failed to persist session key pinning to redis", "cache_key", cacheKey)
 		return false
@@ -385,13 +406,13 @@ func (r *sessionAffinityRouter) storeSessionKeyLocal(cacheKey, addr string, conf
 // rememberSessionKey commits sessionKey -> addr locally (when Redis is
 // configured) and write-throughs to Redis in the background, under a cache
 // key scoped to ctx's model (see sessionCacheKey).
-func (r *sessionAffinityRouter) rememberSessionKey(ctx *types.RoutingContext, sessionKey, addr string) {
+func (r *sessionAffinityRouter) rememberSessionKey(ctx *types.RoutingContext, sessionKey, addr string, mode sessionAffinityWrite) {
 	if r.redisClient == nil || !validSessionKey(sessionKey) {
 		return
 	}
 	cacheKey := sessionCacheKey(ctx.Model, sessionKey)
 	r.storeSessionKeyLocal(cacheKey, addr, false)
-	go r.persistSessionKeyToRedis(cacheKey, addr)
+	go r.persistSessionKeyToRedis(cacheKey, addr, mode)
 }
 
 func (r *sessionAffinityRouter) loadCachedAddr(cacheKey string) (string, bool) {
@@ -430,7 +451,8 @@ func (r *sessionAffinityRouter) readSessionKeyFromRedis(ctx *types.RoutingContex
 // resolveSessionPod finds the pod this request's session should be pinned
 // to, checking in order: an exact address match on the session-ID header, a
 // cached or Redis-backed session-key pinning, and rendezvous hashing on the
-// session key. via reports which of those resolved it, for logging only.
+// session key. via reports which of those resolved it, for logging only; mode is the write
+// intent for persisting the pick (see sessionAffinityWrite).
 //
 // The local cache and Redis lookups are scoped to ctx.Model (see
 // sessionCacheKey) so two models sharing a session-key value, or a Redis
@@ -443,19 +465,19 @@ func (r *sessionAffinityRouter) readSessionKeyFromRedis(ctx *types.RoutingContex
 // to this pod as the final decision is the caller's job: Route commits
 // immediately, while ScoreAll must not, since a blended competitor could
 // still win (see PostRouteUpdate).
-func (r *sessionAffinityRouter) resolveSessionPod(ctx *types.RoutingContext, pods []*v1.Pod) (pod *v1.Pod, sessionKey string, via string) {
+func (r *sessionAffinityRouter) resolveSessionPod(ctx *types.RoutingContext, pods []*v1.Pod) (pod *v1.Pod, sessionKey string, via string, mode sessionAffinityWrite) {
 	if sessionID := ctx.ReqHeaders[constants.HeaderSessionID]; sessionID != "" {
 		decoded, err := base64.StdEncoding.DecodeString(sessionID)
 		if err != nil {
 			klog.V(4).ErrorS(err, "Invalid session ID format", "request_id", ctx.RequestID)
 		} else if p := findReadyPodByAddr(ctx, pods, string(decoded)); p != nil {
-			return p, "", "session-id"
+			return p, "", "session-id", writeClaim
 		}
 	}
 
 	sessionKey = ctx.ReqHeaders[constants.HeaderSessionKey]
 	if !validSessionKey(sessionKey) {
-		return nil, "", ""
+		return nil, "", "", writeClaim
 	}
 	cacheKey := sessionCacheKey(ctx.Model, sessionKey)
 
@@ -463,7 +485,7 @@ func (r *sessionAffinityRouter) resolveSessionPod(ctx *types.RoutingContext, pod
 	if addr, ok := r.loadCachedAddr(cacheKey); ok {
 		cachedAddr = addr
 		if p := findReadyPodByAddr(ctx, pods, cachedAddr); p != nil {
-			return p, sessionKey, "session-key-cache"
+			return p, sessionKey, "session-key-cache", writeRefresh
 		}
 		r.forgetSessionKey(cacheKey)
 	}
@@ -472,14 +494,23 @@ func (r *sessionAffinityRouter) resolveSessionPod(ctx *types.RoutingContext, pod
 	// pinning made by another gateway replica is still honored. Skipped
 	// when Redis agrees with the just-invalidated local cache, since that
 	// pod is already known to be unready.
+	staleAddr := cachedAddr
 	if redisAddr, ok := r.readSessionKeyFromRedis(ctx, cacheKey); ok && redisAddr != cachedAddr {
 		if p := findReadyPodByAddr(ctx, pods, redisAddr); p != nil {
 			r.storeSessionKeyLocal(cacheKey, redisAddr, true)
-			return p, sessionKey, "session-key-redis"
+			return p, sessionKey, "session-key-redis", writeRefresh
 		}
+		staleAddr = redisAddr
 	}
 
-	return rendezvousPod(ctx, pods, sessionKey), sessionKey, "rendezvous"
+	// A rendezvous pick either creates a brand-new pinning, or replaces one whose recorded pod
+	// is not routable from this replica's ready view -- only the former may use the
+	// non-destructive claim write.
+	mode = writeClaim
+	if staleAddr != "" {
+		mode = writeRepin
+	}
+	return rendezvousPod(ctx, pods, sessionKey), sessionKey, "rendezvous", mode
 }
 
 // Route implements session affinity by attempting to route requests to the same pod
@@ -490,10 +521,11 @@ func (r *sessionAffinityRouter) Route(ctx *types.RoutingContext, readyPodList ty
 
 	var pod *v1.Pod
 	var sessionKey, via string
+	var mode sessionAffinityWrite
 	if ctx.ReqHeaders == nil {
 		klog.V(4).InfoS("No request or headers, skipping session affinity", "request_id", ctx.RequestID)
 	} else {
-		pod, sessionKey, via = r.resolveSessionPod(ctx, pods)
+		pod, sessionKey, via, mode = r.resolveSessionPod(ctx, pods)
 	}
 
 	if pod == nil {
@@ -508,7 +540,7 @@ func (r *sessionAffinityRouter) Route(ctx *types.RoutingContext, readyPodList ty
 	ctx.SetTargetPod(pod)
 	r.setSessionHeader(ctx, addr)
 	if sessionKey != "" {
-		r.rememberSessionKey(ctx, sessionKey, addr)
+		r.rememberSessionKey(ctx, sessionKey, addr, mode)
 	}
 	klog.V(4).InfoS("Session affinity resolved", "request_id", ctx.RequestID, "addr", addr, "via", via)
 	return ctx.TargetAddress(), nil
@@ -613,7 +645,7 @@ func (r *sessionAffinityRouter) ScoreAll(ctx *types.RoutingContext, readyPodList
 		return
 	}
 
-	if pod, _, _ := r.resolveSessionPod(ctx, pods); pod != nil {
+	if pod, _, _, _ := r.resolveSessionPod(ctx, pods); pod != nil {
 		for i, p := range pods {
 			if p == pod {
 				scores[i] = 1
@@ -642,7 +674,10 @@ func (r *sessionAffinityRouter) PostRouteUpdate(ctx *types.RoutingContext, ready
 		return nil
 	}
 	if sessionKey := ctx.ReqHeaders[constants.HeaderSessionKey]; validSessionKey(sessionKey) {
-		r.rememberSessionKey(ctx, sessionKey, addr)
+		// This path only knows the final blended target, not whether Redis already holds a
+		// pinning for the key: it keeps the unconditional write for now (the read-then-CAS
+		// upsert for this path is part of the follow-up described on persistSessionKeyToRedis).
+		r.rememberSessionKey(ctx, sessionKey, addr, writeRefresh)
 	}
 	return nil
 }
