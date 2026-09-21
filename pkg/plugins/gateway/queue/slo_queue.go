@@ -226,9 +226,9 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 		}
 		// Fallback case 2: Profile does not provide SLO info.
 		if len(candidate.Profiles) == 0 {
-			// The request cannot be ranked on any available profile. Exclude
-			// it from this round's ranking; it stays queued and is retried on
-			// later peeks.
+			// The request cannot be ranked on any available profile, so it is
+			// excluded from this round's ranking. It is served this round only
+			// if it is the FIFO fallback and nothing else ranked.
 			klog.Warningf("SLOQueue failed to get SLO info for request %s in all profiles, excluding it from this round's ranking.", r.RequestID)
 			// Remove the empty candidate from the ranked list and drop its
 			// routing context so the underlying slot does not retain it.
