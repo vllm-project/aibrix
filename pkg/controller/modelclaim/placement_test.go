@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
@@ -216,4 +217,65 @@ func TestPruneDeadInstances(t *testing.T) {
 	// No candidates at all: every instance is stale.
 	pruneDeadInstances(pm, nil)
 	assert.Empty(t, pm.Status.Instances)
+}
+
+func gpuPod(name string) corev1.Pod {
+	pod := namedPod(name)
+	pod.Spec.Containers = []corev1.Container{{
+		Name: "aibrix-runtime",
+		Resources: corev1.ResourceRequirements{Limits: corev1.ResourceList{
+			corev1.ResourceName("nvidia.com/gpu"): *resource.NewQuantity(1, resource.DecimalSI),
+		}},
+	}}
+	return pod
+}
+
+func TestAdmissibleCandidatesKeepsOnlyPodsThatCanShowRoom(t *testing.T) {
+	candidates := []corev1.Pod{
+		gpuPod("roomy"), gpuPod("full"), gpuPod("unreadable"), namedPod("cpu-only"),
+	}
+	ledgers := map[string]podLedger{
+		"roomy":      {judgeable: true, usableBytes: 1000, owedBytes: 100},
+		"full":       {judgeable: true, usableBytes: 1000, owedBytes: 900},
+		"unreadable": {blocked: "its runtime did not answer"},
+	}
+
+	admissible, refusals := admissibleCandidates(candidates, ledgers, 500)
+
+	require.Len(t, admissible, 2)
+	assert.Equal(t, "roomy", admissible[0].Name)
+	assert.Equal(t, "cpu-only", admissible[1].Name)
+	require.Len(t, refusals, 2)
+	assert.Equal(t, "full can offer at most 0.0 GiB", refusals[0].reason)
+	assert.True(t, refusals[0].known)
+	assert.Equal(t, "unreadable could not be judged: its runtime did not answer", refusals[1].reason)
+	assert.False(t, refusals[1].known)
+}
+
+func TestSummarizeRefusalsNamesTheRoomiestPodThatStillCannotHold(t *testing.T) {
+	refusals := []podRefusal{
+		{pod: "tight", roomBytes: 1 << 30, known: true, reason: "tight can offer at most 1.0 GiB"},
+		{pod: "roomier", roomBytes: 3 << 30, known: true, reason: "roomier can offer at most 3.0 GiB"},
+		{pod: "unreadable", reason: "unreadable could not be judged: its runtime did not answer"},
+	}
+
+	message := summarizeRefusals(refusals, 4<<30)
+
+	assert.Equal(t,
+		"no warm pod can hold this model, which needs 4.0 GiB on a card: "+
+			"roomier can offer at most 3.0 GiB; 2 other pod(s) were turned away as well",
+		message)
+}
+
+func TestSummarizeRefusalsFallsBackToAPodItCouldNotJudge(t *testing.T) {
+	refusals := []podRefusal{
+		{pod: "unreadable", reason: "unreadable could not be judged: its cards could not be measured"},
+	}
+
+	message := summarizeRefusals(refusals, 2<<30)
+
+	assert.Equal(t,
+		"no warm pod can hold this model, which needs 2.0 GiB on a card: "+
+			"unreadable could not be judged: its cards could not be measured",
+		message)
 }
