@@ -171,6 +171,18 @@ type ModelClaimInstance struct {
 	// Phase is the per-instance lifecycle phase.
 	// +optional
 	Phase ModelClaimPhase `json:"phase,omitempty"`
+
+	// KVLimitBytes is the KV cache limit this instance's engine is meant to run
+	// under: the most KV memory it may map on each of its GPUs. The controller
+	// records it when it places the instance, before the engine starts, and
+	// then writes it to the engine.
+	//
+	// It is a record of intent. The engine obeys the limit held in its own KV
+	// allocator, and the two differ until a write lands, or after an engine
+	// restart puts the allocator's default back. It is unset for a claim that
+	// declares no per-GPU cost, where nothing decides a limit.
+	// +optional
+	KVLimitBytes int64 `json:"kvLimitBytes,omitempty"`
 }
 
 // ModelClaimStatus defines the observed state of ModelClaim.
