@@ -79,11 +79,19 @@ func (l podLedger) withHole(reason string) podLedger {
 // writes, so the account survives a controller restart and charges an instance
 // from the moment it is recorded rather than from the moment its engine gets
 // around to allocating.
+//
+// Status alone is not enough to judge a card. It says what this controller
+// committed, and the snapshot says what is actually running. An engine in the
+// snapshot that answers to no recorded instance is memory nobody is accounting
+// for, so the card is refused rather than offered. Free memory used to cover
+// that case by accident; nothing here reads free memory, so the check has to
+// be deliberate.
 func (r *ModelClaimReconciler) collectPodLedgers(
 	ctx context.Context,
 	namespace string,
 	candidates []corev1.Pod,
 	states map[string]PodPlacementState,
+	snapshots map[string]*RuntimeSnapshot,
 ) map[string]podLedger {
 	ledgers := make(map[string]podLedger, len(candidates))
 	for i := range candidates {
@@ -115,10 +123,22 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 		return ledgers
 	}
 
+	// Every engine a recorded instance answers to, so the ones left over can be
+	// found afterwards.
+	accounted := make(map[string]map[string]struct{}, len(ledgers))
 	for i := range claims.Items {
 		claim := &claims.Items[i]
 		reserve := minimumReserveBytes(claim)
+		served := servedModelName(claim)
 		for _, instance := range claim.Status.Instances {
+			if _, tracked := ledgers[instance.Pod]; tracked {
+				if engine := snapshotModelForClaim(snapshots[instance.Pod], claim, served); engine != nil {
+					if _, seen := accounted[instance.Pod]; !seen {
+						accounted[instance.Pod] = map[string]struct{}{}
+					}
+					accounted[instance.Pod][snapshotActivityKey(*engine)] = struct{}{}
+				}
+			}
 			// A failed instance has exhausted its restarts and its engine is
 			// gone, so its memory is back with the card. Charging for it would
 			// take a slice of GPU out of circulation for as long as the claim
@@ -139,6 +159,27 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 			}
 			ledger.owedBytes += reserve
 			ledgers[instance.Pod] = ledger
+		}
+	}
+
+	// An engine nobody claimed is memory nobody can account for. Offering that
+	// card would hand the same memory out twice, so the card is refused until
+	// the engine is either claimed or gone.
+	for name, ledger := range ledgers {
+		snapshot := snapshots[name]
+		if snapshot == nil {
+			continue
+		}
+		for _, engine := range snapshot.Models {
+			if !engine.Alive {
+				continue
+			}
+			if _, known := accounted[name][snapshotActivityKey(engine)]; known {
+				continue
+			}
+			ledgers[name] = ledger.withHole(fmt.Sprintf(
+				"the engine serving %s there answers to no claim", engine.ModelName))
+			break
 		}
 	}
 	return ledgers

@@ -60,11 +60,66 @@ func sizedPodStates(pod string, usableBytes int64) map[string]PodPlacementState 
 
 func ledgerFor(t *testing.T, pod *corev1.Pod, states map[string]PodPlacementState, claims ...client.Object) podLedger {
 	t.Helper()
+	return ledgerWithEngines(t, pod, states, nil, claims...)
+}
+
+// ledgerWithEngines is ledgerFor for a card that is running something.
+func ledgerWithEngines(
+	t *testing.T,
+	pod *corev1.Pod,
+	states map[string]PodPlacementState,
+	engines []RuntimeSnapshotModel,
+	claims ...client.Object,
+) podLedger {
+	t.Helper()
 	r, _ := newReconciler(t, append(claims, pod)...)
-	ledgers := r.collectPodLedgers(context.Background(), testNamespace, []corev1.Pod{*pod}, states)
+	snapshots := map[string]*RuntimeSnapshot{pod.Name: {Models: engines}}
+	ledgers := r.collectPodLedgers(
+		context.Background(), testNamespace, []corev1.Pod{*pod}, states, snapshots)
 	ledger, found := ledgers[pod.Name]
 	require.True(t, found)
 	return ledger
+}
+
+// liveEngine is an engine a runtime reports as running.
+func liveEngine(model string) RuntimeSnapshotModel {
+	return RuntimeSnapshotModel{
+		ModelName: model, Port: 9001, Phase: "active", Alive: true, Ready: true,
+	}
+}
+
+func TestLedgerHasAHoleWhenAnEngineAnswersToNoClaim(t *testing.T) {
+	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
+
+	ledger := ledgerWithEngines(t, pod, sizedPodStates(pod.Name, 1000),
+		[]RuntimeSnapshotModel{liveEngine("stranger")},
+		claimOnPod("declared", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100))
+
+	assert.False(t, ledger.judgeable)
+	assert.Equal(t, "the engine serving stranger there answers to no claim", ledger.blocked)
+}
+
+func TestLedgerAcceptsACardWhoseEnginesAllAnswerToAClaim(t *testing.T) {
+	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
+
+	ledger := ledgerWithEngines(t, pod, sizedPodStates(pod.Name, 1000),
+		[]RuntimeSnapshotModel{liveEngine("declared")},
+		claimOnPod("declared", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100))
+
+	assert.True(t, ledger.judgeable)
+	assert.Equal(t, int64(600), ledger.maximumRoomBytes())
+}
+
+func TestLedgerIgnoresAnEngineThatIsNoLongerAlive(t *testing.T) {
+	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
+	gone := liveEngine("stranger")
+	gone.Alive = false
+
+	ledger := ledgerWithEngines(t, pod, sizedPodStates(pod.Name, 1000),
+		[]RuntimeSnapshotModel{gone},
+		claimOnPod("declared", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100))
+
+	assert.True(t, ledger.judgeable)
 }
 
 func TestLedgerChargesEveryInstanceButFailedOnes(t *testing.T) {

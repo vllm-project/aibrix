@@ -181,6 +181,26 @@ func gibibytes(bytes int64) string {
 	return fmt.Sprintf("%.1f GiB", float64(bytes)/float64(1<<30))
 }
 
+// rankByRoom carries the account's answer into the placement state, so two
+// pods that both passed the gate are ordered by the figure the gate used. A
+// card nobody could account for is left without a room, and ranks behind every
+// card that has one.
+//
+// The direction is unchanged: the roomiest card still wins, as the freest card
+// used to. Packing onto the tightest card that still fits is a different
+// decision and is not taken here.
+func rankByRoom(states map[string]PodPlacementState, ledgers map[string]podLedger) {
+	for name, ledger := range ledgers {
+		if !ledger.judgeable {
+			continue
+		}
+		state := states[name]
+		state.RoomBytes = ledger.maximumRoomBytes()
+		state.RoomKnown = true
+		states[name] = state
+	}
+}
+
 // selectPodForActivationWithState first prefers a pod that already has the
 // artifact locally, then live GPU/KV observations, and finally the Phase-1
 // locality/load/name rank. Missing runtime state is safe: it simply falls back
@@ -231,6 +251,12 @@ func placementStateLess(a, b PodPlacementState) bool {
 	}
 	if a.MemoryKnown != b.MemoryKnown {
 		return a.MemoryKnown
+	}
+	if a.RoomKnown != b.RoomKnown {
+		return a.RoomKnown
+	}
+	if a.RoomKnown && a.RoomBytes != b.RoomBytes {
+		return a.RoomBytes > b.RoomBytes
 	}
 	if a.MemoryKnown && a.HBMFreeBytes != b.HBMFreeBytes {
 		return a.HBMFreeBytes > b.HBMFreeBytes

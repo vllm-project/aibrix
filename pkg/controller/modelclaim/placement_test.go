@@ -252,6 +252,41 @@ func TestAdmissibleCandidatesKeepsOnlyPodsThatCanShowRoom(t *testing.T) {
 	assert.False(t, refusals[1].known)
 }
 
+func TestRankingPrefersTheCardWithTheMostRoomNotTheMostFreeMemory(t *testing.T) {
+	// The tight card has more free memory right now, because the roomy card's
+	// engine has mapped KV it is entitled to. Free memory is not room.
+	states := map[string]PodPlacementState{
+		"roomy": {SnapshotKnown: true, MemoryKnown: true, HBMFreeBytes: 100},
+		"tight": {SnapshotKnown: true, MemoryKnown: true, HBMFreeBytes: 900},
+	}
+	ledgers := map[string]podLedger{
+		"roomy": {judgeable: true, usableBytes: 1000, owedBytes: 100},
+		"tight": {judgeable: true, usableBytes: 1000, owedBytes: 800},
+	}
+
+	rankByRoom(states, ledgers)
+
+	assert.True(t, placementStateLess(states["roomy"], states["tight"]),
+		"the card with 900 of room should rank ahead of the one with 200")
+	assert.False(t, placementStateLess(states["tight"], states["roomy"]))
+}
+
+func TestRankingPutsACardWithoutAnAccountLast(t *testing.T) {
+	states := map[string]PodPlacementState{
+		"judged":  {SnapshotKnown: true, MemoryKnown: true},
+		"unknown": {SnapshotKnown: true, MemoryKnown: true},
+	}
+	ledgers := map[string]podLedger{
+		"judged":  {judgeable: true, usableBytes: 1000, owedBytes: 900},
+		"unknown": {blocked: "its runtime did not answer"},
+	}
+
+	rankByRoom(states, ledgers)
+
+	assert.True(t, placementStateLess(states["judged"], states["unknown"]))
+	assert.False(t, placementStateLess(states["unknown"], states["judged"]))
+}
+
 func TestSummarizeRefusalsNamesTheRoomiestPodThatStillCannotHold(t *testing.T) {
 	refusals := []podRefusal{
 		{pod: "tight", roomBytes: 1 << 30, known: true, reason: "tight can offer at most 1.0 GiB"},
