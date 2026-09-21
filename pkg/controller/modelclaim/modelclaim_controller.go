@@ -398,14 +398,15 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 	if err != nil {
 		return fmt.Errorf("invalid engineConfig parallelism: %w", err)
 	}
-	placementStates, snapshots := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL, parallelism)
+	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL, parallelism)
 
 	// A claim that declares what it costs is only placed where the card's
 	// account can show the room. One that declares nothing is placed as before.
 	admissible, refusals := candidates, []podRefusal(nil)
+	ledgers := map[string]podLedger(nil)
 	needBytes := minimumReserveBytes(pm)
 	if needBytes > 0 {
-		ledgers := r.collectPodLedgers(ctx, pm.Namespace, candidates, placementStates, snapshots)
+		ledgers = r.collectPodLedgers(ctx, pm.Namespace, candidates, r.freshSnapshots(ctx, candidates))
 		admissible, refusals = admissibleCandidates(candidates, ledgers, needBytes)
 		rankByRoom(placementStates, ledgers)
 	}
@@ -500,20 +501,38 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 	return nil
 }
 
-// collectPlacementStates summarises each candidate for ranking, and hands back
-// the snapshots it read. The account needs the engine list as well as the
-// summary: a card is judged by what is running on it, not only by what this
-// controller wrote down.
+// freshSnapshots reads every candidate's runtime directly, going around the
+// snapshot cache. Ranking can work from a reading a few seconds old, and an
+// account cannot: what an engine holds moves with traffic, and a model admitted
+// against memory another engine has since mapped is how a card ends up
+// oversubscribed. A pod whose runtime did not answer is simply absent.
+func (r *ModelClaimReconciler) freshSnapshots(
+	ctx context.Context,
+	candidates []corev1.Pod,
+) map[string]*RuntimeSnapshot {
+	snapshots := make(map[string]*RuntimeSnapshot, len(candidates))
+	for i := range candidates {
+		pod := &candidates[i]
+		snapshot, err := r.Runtime.Snapshot(ctx, pod.Status.PodIP, DefaultRuntimePort)
+		if err != nil || snapshot == nil {
+			klog.V(4).InfoS("placement could not read a runtime",
+				"pod", klog.KObj(pod), "err", err)
+			continue
+		}
+		snapshots[pod.Name] = snapshot
+	}
+	return snapshots
+}
+
 func (r *ModelClaimReconciler) collectPlacementStates(
 	ctx context.Context,
 	candidates []corev1.Pod,
 	artifactURL string,
 	parallelism int64,
-) (map[string]PodPlacementState, map[string]*RuntimeSnapshot) {
+) map[string]PodPlacementState {
 	states := make(map[string]PodPlacementState, len(candidates))
-	snapshots := make(map[string]*RuntimeSnapshot, len(candidates))
 	if r.SnapshotCache == nil {
-		return states, snapshots
+		return states
 	}
 	for i := range candidates {
 		pod := &candidates[i]
@@ -526,9 +545,8 @@ func (r *ModelClaimReconciler) collectPlacementStates(
 		}
 		state := placementStateFromSnapshot(snapshot, artifactURL, parallelism)
 		states[pod.Name] = state
-		snapshots[pod.Name] = snapshot
 	}
-	return states, snapshots
+	return states
 }
 
 // reconcileInstanceHealth reconciles routing from fresh runtime snapshot data.

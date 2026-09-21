@@ -166,10 +166,10 @@ func (f *fakeRuntime) Snapshot(_ context.Context, podIP string, _ int) (*Runtime
 			Phase:     model.Phase,
 			Alive:     model.Phase != "failed",
 			Ready:     ready,
-			// This fake starts engines and does not model a KV allocator. A
+			// This fake starts engines, and does not model a KV allocator. A
 			// test that wants one seeds the model in f.snapshots instead.
-			KVUsedBytes:     -1,
-			KVCapacityBytes: -1,
+			KVUsedBytes:     kvLimitUnknown,
+			KVCapacityBytes: kvLimitUnknown,
 		})
 	}
 	return result, nil
@@ -1257,6 +1257,27 @@ func TestReconcileStopsSayingNoCardWillTakeItOnceOneDoes(t *testing.T) {
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
 	assert.Equal(t, "Placed", cond.Reason)
 	assert.Contains(t, cond.Message, roomy.Name)
+}
+
+func TestReconcileRefusesACardWhoseRoomIsHeldByTheEnginesOnIt(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	// The card could hold this model once the neighbour is back at its floor,
+	// and the neighbour has mapped 500.
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 500, 600)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Empty(t, got.Status.Instances)
+	cond := meta.FindStatusCondition(got.Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Contains(t, cond.Message, "held by the engines already on it")
 }
 
 func TestReconcileRefusesACardRunningAnEngineNoClaimAnswersFor(t *testing.T) {

@@ -138,7 +138,19 @@ func admissibleCandidates(
 				pod:       pod.Name,
 				roomBytes: room,
 				known:     true,
-				reason: fmt.Sprintf("%s can offer at most %s",
+				reason: fmt.Sprintf("%s can offer at most %s, even with every engine on it at its floor",
+					pod.Name, gibibytes(room)),
+			})
+		case ledger.heldRoomBytes() < needBytes:
+			// The card could hold this model, and does not today. Lowering a KV
+			// limit does not evict a page, so the engines there have to give
+			// the memory back themselves before this pod can be tried again.
+			room := ledger.heldRoomBytes()
+			refusals = append(refusals, podRefusal{
+				pod:       pod.Name,
+				roomBytes: room,
+				known:     true,
+				reason: fmt.Sprintf("%s has %s free, with the rest held by the engines already on it",
 					pod.Name, gibibytes(room)),
 			})
 		default:
