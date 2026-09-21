@@ -1168,6 +1168,37 @@ func TestReconcileRefusesACardWithoutRoomForTheDeclaredCost(t *testing.T) {
 	assert.Contains(t, cond.Message, "warm-1 can offer at most")
 }
 
+func TestReconcileStopsSayingNoCardWillTakeItOnceOneDoes(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	small, smallSnapshot := sizedWarmPod("warm-small", "10.0.0.1", 500)
+	roomy, roomySnapshot := sizedWarmPod("warm-roomy", "10.0.0.2", 2000)
+	r, runtime := newReconciler(t, pm, small)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		small.Status.PodIP: smallSnapshot,
+		roomy.Status.PodIP: roomySnapshot,
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	cond := meta.FindStatusCondition(getModel(t, r, pm.Name).Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+
+	// A card with room joins the pool. The earlier refusal must not be left
+	// standing as the claim's answer about finding one.
+	require.NoError(t, r.Create(context.Background(), roomy))
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+	cond = meta.FindStatusCondition(getModel(t, r, pm.Name).Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+	assert.Equal(t, "Placed", cond.Reason)
+	assert.Contains(t, cond.Message, roomy.Name)
+}
+
 func TestReconcilePlacesOnTheCardThatCanHoldTheDeclaredCost(t *testing.T) {
 	pm := claimWithCost(700, 100)
 	full, fullSnapshot := sizedWarmPod("warm-full", "10.0.0.1", 1000)

@@ -464,6 +464,16 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 			Port:  resp.Port,
 			Phase: modelv1alpha1.ModelClaimActivating,
 		})
+		// Say so on the condition as well as in the Event. Being turned away
+		// is an ordinary step now rather than a dead end, so a refusal that has
+		// since been resolved must not be left standing as the claim's answer
+		// to whether it found a card.
+		meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+			Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
+			Status:  metav1.ConditionTrue,
+			Reason:  "Placed",
+			Message: fmt.Sprintf("placed on pod %s", pod.Name),
+		})
 		load[pod.Name]++
 		r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Activating",
 			"model %s engine starting on pod %s:%d", servedModelName(pm), pod.Name, resp.Port)
