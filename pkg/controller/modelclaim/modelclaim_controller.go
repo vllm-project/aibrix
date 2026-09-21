@@ -406,7 +406,8 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 	ledgers := map[string]podLedger(nil)
 	needBytes := minimumReserveBytes(pm)
 	if needBytes > 0 {
-		ledgers = r.collectPodLedgers(ctx, pm.Namespace, candidates, r.freshSnapshots(ctx, candidates))
+		snapshots := r.freshSnapshots(ctx, candidates)
+		ledgers = r.collectPodLedgers(ctx, pm.Namespace, candidates, snapshots)
 		admissible, refusals = admissibleCandidates(candidates, ledgers, needBytes)
 		rankByRoom(placementStates, ledgers)
 	}
@@ -435,15 +436,36 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 			return nil
 		}
 
+		// Divide the card between the engines on it and this one, and hold
+		// every engine already there to its new share before this engine has a
+		// chance to start. Until that is done and confirmed, the room this
+		// model was admitted against is still the neighbours' to take.
+		kvLimitBytes := kvFloorBytes(pm)
+		if needBytes > 0 && podGPUCount(*pod) > 0 {
+			share, roomErr := r.makeRoomOnPod(ctx, pm, pod, ledgers[pod.Name])
+			if roomErr != nil {
+				message := fmt.Sprintf("%s could not be held to its share of %s: %v",
+					servedModelName(pm), pod.Name, roomErr)
+				r.Recorder.Event(pm, corev1.EventTypeWarning, "KVLimitFailed", message)
+				meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+					Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
+					Status:  metav1.ConditionFalse,
+					Reason:  "KVLimitFailed",
+					Message: message,
+				})
+				return nil
+			}
+			kvLimitBytes = share
+		}
+
 		// Record the instance before the engine exists. The record is what the
 		// account reads, so writing it first is what stops a second claim from
 		// being placed against the same memory while this engine loads. It also
-		// carries the KV limit the engine will be held to, which is the floor
-		// the claim declared.
+		// carries the KV limit the engine will be held to.
 		pm.Status.Instances = append(pm.Status.Instances, modelv1alpha1.ModelClaimInstance{
 			Pod:          pod.Name,
 			Phase:        modelv1alpha1.ModelClaimActivating,
-			KVLimitBytes: kvFloorBytes(pm),
+			KVLimitBytes: kvLimitBytes,
 		})
 		if err := r.Status().Update(ctx, pm); err != nil {
 			return fmt.Errorf("reserve %s on %s: %w", servedModelName(pm), pod.Name, err)
@@ -499,6 +521,102 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 			"model %s engine starting on pod %s:%d", servedModelName(pm), pod.Name, resp.Port)
 	}
 	return nil
+}
+
+// makeRoomOnPod divides a card between the engines on it and the one about to
+// join them, and returns the newcomer's share.
+//
+// The work is done in an order that never leaves two engines entitled to the
+// same byte. Every neighbour's new limit is recorded first, so a controller
+// that stops here leaves records the health loops will act on rather than
+// limits nobody remembers. The limits are then written, shrinking before
+// growing. Finally a fresh reading has to agree, because a write that reached
+// no segment is reported as a success either way.
+//
+// Returning an error means this model is not placed on this card this round.
+// The neighbours keep the smaller limits, which costs them room until the next
+// pass plans the card again, and costs correctness nothing.
+func (r *ModelClaimReconciler) makeRoomOnPod(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	pod *corev1.Pod,
+	ledger podLedger,
+) (int64, error) {
+	newcomer := engineOnPod{
+		claimName:       pm.Name,
+		modelName:       servedModelName(pm),
+		footprintBytes:  footprintBytes(pm),
+		kvFloorBytes:    kvFloorBytes(pm),
+		kvCapacityBytes: kvLimitUnknown,
+	}
+	limits, err := planKVLimits(ledger.usableBytes, append(ledger.engines, newcomer))
+	if err != nil {
+		return 0, err
+	}
+
+	share := int64(0)
+	for _, limit := range limits {
+		if limit.claimName == pm.Name {
+			share = limit.limitBytes
+			continue
+		}
+		if err := r.recordKVLimit(ctx, pm.Namespace, limit.claimName, pod.Name, limit.limitBytes); err != nil {
+			return 0, fmt.Errorf("record %s at %s: %w", limit.claimName, gibibytes(limit.limitBytes), err)
+		}
+	}
+
+	written := writeOrder(limits)
+	for _, limit := range written {
+		operationID := fmt.Sprintf("kv-plan/%s/%s/%s/%d",
+			pm.Namespace, pod.UID, limit.claimName, limit.limitBytes)
+		if _, err := r.Runtime.SetKVLimit(ctx, pod.Status.PodIP, DefaultRuntimePort, &SetKVLimitRequest{
+			ModelName:   limit.modelName,
+			LimitBytes:  limit.limitBytes,
+			OperationID: operationID,
+		}); err != nil {
+			return 0, fmt.Errorf("set %s to %s: %w", limit.modelName, gibibytes(limit.limitBytes), err)
+		}
+	}
+	if len(written) == 0 {
+		return share, nil
+	}
+
+	snapshot, err := r.Runtime.Snapshot(ctx, pod.Status.PodIP, DefaultRuntimePort)
+	if err != nil {
+		return 0, fmt.Errorf("read back the limits on %s: %w", pod.Name, err)
+	}
+	if err := kvLimitsInForce(snapshot, written); err != nil {
+		return 0, err
+	}
+	r.Recorder.Eventf(pm, corev1.EventTypeNormal, "KVLimitSet",
+		"%d engine(s) on pod %s held to their share, leaving %s for model %s",
+		len(written), pod.Name, gibibytes(share), servedModelName(pm))
+	return share, nil
+}
+
+// recordKVLimit writes the limit an instance is to run under into its own
+// claim's status, which is where every loop that holds an engine reads it.
+func (r *ModelClaimReconciler) recordKVLimit(
+	ctx context.Context,
+	namespace, claimName, podName string,
+	limitBytes int64,
+) error {
+	claim := &modelv1alpha1.ModelClaim{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: claimName}, claim); err != nil {
+		return err
+	}
+	changed := false
+	for i := range claim.Status.Instances {
+		instance := &claim.Status.Instances[i]
+		if instance.Pod == podName && instance.KVLimitBytes != limitBytes {
+			instance.KVLimitBytes = limitBytes
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return r.Status().Update(ctx, claim)
 }
 
 // freshSnapshots reads every candidate's runtime directly, going around the

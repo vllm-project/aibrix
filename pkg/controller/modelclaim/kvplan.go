@@ -96,3 +96,62 @@ func planKVLimits(usableBytes int64, engines []engineOnPod) ([]plannedKVLimit, e
 	}
 	return limits, nil
 }
+
+// writeOrder puts the limits that shrink an engine before the ones that grow
+// one, so no two engines are entitled to the same byte in between. Within each
+// group the claim order is kept, which keeps a run reproducible.
+//
+// A limit with nothing to write is left out: an engine already at its planned
+// limit needs no write, and an engine with no KV segment has nothing to write
+// into. The second case is not a gap in the arithmetic. An engine without a
+// segment has mapped nothing, and it stays off the routing annotation until its
+// limit is in force, so it has neither the memory nor the traffic to grow.
+func writeOrder(limits []plannedKVLimit) []plannedKVLimit {
+	writable := make([]plannedKVLimit, 0, len(limits))
+	for _, limit := range limits {
+		if limit.fromBytes < 0 || limit.fromBytes == limit.limitBytes {
+			continue
+		}
+		writable = append(writable, limit)
+	}
+	sort.SliceStable(writable, func(i, j int) bool {
+		return writable[i].shrinks() && !writable[j].shrinks()
+	})
+	return writable
+}
+
+// shrinks says whether writing this limit takes memory away from an engine.
+func (l plannedKVLimit) shrinks() bool {
+	return l.fromBytes >= 0 && l.limitBytes < l.fromBytes
+}
+
+// kvLimitsInForce reports the first limit a snapshot does not confirm.
+//
+// Two things have to be true of every engine that was written. Its segment has
+// to hold the new limit, since a write that reached no segment is reported as a
+// success either way. And it must not already have mapped more than the new
+// limit allows, because a limit does not evict what is mapped, and the room it
+// was supposed to free would not be there.
+func kvLimitsInForce(snapshot *RuntimeSnapshot, written []plannedKVLimit) error {
+	for _, limit := range written {
+		var engine *RuntimeSnapshotModel
+		for i := range snapshot.models() {
+			if snapshot.Models[i].ModelName == limit.modelName {
+				engine = &snapshot.Models[i]
+				break
+			}
+		}
+		if engine == nil {
+			return fmt.Errorf("%s is no longer on this card", limit.modelName)
+		}
+		if engine.KVCapacityBytes != limit.limitBytes {
+			return fmt.Errorf("%s did not take a KV limit of %s",
+				limit.modelName, gibibytes(limit.limitBytes))
+		}
+		if engine.KVUsedBytes > limit.limitBytes {
+			return fmt.Errorf("%s holds %s, past the %s it was given",
+				limit.modelName, gibibytes(engine.KVUsedBytes), gibibytes(limit.limitBytes))
+		}
+	}
+	return nil
+}

@@ -70,6 +70,13 @@ type fakeRuntime struct {
 	snapshots map[string]*RuntimeSnapshot
 	// nilSnapshots lets defensive-path tests model an invalid client response.
 	nilSnapshots map[string]bool
+	// deafToKVLimits makes SetKVLimit report success without the segment
+	// changing, which is what writing into a segment that is not there looks
+	// like from the controller's side.
+	deafToKVLimits bool
+	// onKVLimit runs after a limit is written, so a test can model an engine
+	// that grew between the plan and the reading that confirms it.
+	onKVLimit func()
 }
 
 func (f *fakeRuntime) Activate(_ context.Context, _ string, _ int, req *ActivateRequest) (*ActivateResponse, error) {
@@ -103,6 +110,20 @@ func (f *fakeRuntime) Deactivate(_ context.Context, _ string, _ int, req *Deacti
 
 func (f *fakeRuntime) SetKVLimit(_ context.Context, _ string, _ int, req *SetKVLimitRequest) (*RuntimeOperationResponse, error) {
 	f.kvLimitCalls = append(f.kvLimitCalls, *req)
+	// A limit is written into the engine's segment, and a snapshot reads that
+	// same segment back, so a seeded engine reports the new limit afterwards.
+	if !f.deafToKVLimits {
+		for _, snapshot := range f.snapshots {
+			for i := range snapshot.Models {
+				if snapshot.Models[i].ModelName == req.ModelName {
+					snapshot.Models[i].KVCapacityBytes = req.LimitBytes
+				}
+			}
+		}
+	}
+	if f.onKVLimit != nil {
+		f.onKVLimit()
+	}
 	return &RuntimeOperationResponse{
 		Status: "success", ModelName: req.ModelName, OperationID: req.OperationID, Applied: true, Phase: "active",
 	}, nil
@@ -320,6 +341,10 @@ func TestReconcilePoolPoliciesAppliesDeploymentKVFirstPolicy(t *testing.T) {
 	runtime.kvLimitCalls = nil
 	now = now.Add(DefaultRequeueDuration)
 	runtime.snapshots[pod.Status.PodIP].ObservedAt = now
+	// Both engines restarted and put their own limits back, so the same plan
+	// has to be written again.
+	runtime.snapshots[pod.Status.PodIP].Models[0].KVCapacityBytes = 200
+	runtime.snapshots[pod.Status.PodIP].Models[1].KVCapacityBytes = 800
 
 	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
 
@@ -1360,6 +1385,77 @@ func readyEngine(kvCapacityBytes int64) RuntimeSnapshotModel {
 	}
 }
 
+func TestReconcileShrinksTheNeighbourToMakeRoomForANewModel(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].KVLimitBytes = 600
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	// The card holds two footprints of 300 and two floors of 100, leaving 200
+	// to share evenly.
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, "neighbour", runtime.kvLimitCalls[0].ModelName)
+	assert.Equal(t, int64(200), runtime.kvLimitCalls[0].LimitBytes)
+
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, int64(200), got.Status.Instances[0].KVLimitBytes)
+	require.Len(t, runtime.activateCalls, 1)
+
+	held := &modelv1alpha1.ModelClaim{}
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{Namespace: testNamespace, Name: "neighbour"}, held))
+	assert.Equal(t, int64(200), held.Status.Instances[0].KVLimitBytes)
+}
+
+func TestReconcileWillNotPlaceWhenTheNeighbourDoesNotTakeItsLimit(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	runtime.deafToKVLimits = true
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Empty(t, got.Status.Instances)
+	cond := meta.FindStatusCondition(got.Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, "KVLimitFailed", cond.Reason)
+	assert.Contains(t, cond.Message, "did not take a KV limit")
+}
+
+func TestReconcileWillNotPlaceWhenANeighbourHasOutgrownItsNewLimit(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	// The account was built when the neighbour held 100, and by the time the
+	// limit is read back it has mapped 250.
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	runtime.onKVLimit = func() { snapshot.Models[0].KVUsedBytes = 250 }
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Empty(t, got.Status.Instances)
+	cond := meta.FindStatusCondition(got.Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Contains(t, cond.Message, "past the")
+}
+
 func TestReconcileHoldsAnEngineToItsLimitBeforeRouting(t *testing.T) {
 	pm := claimWithCost(700, 100)
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
@@ -1370,20 +1466,22 @@ func TestReconcileHoldsAnEngineToItsLimitBeforeRouting(t *testing.T) {
 
 	got := getModel(t, r, pm.Name)
 	require.Len(t, got.Status.Instances, 1)
-	assert.Equal(t, int64(100), got.Status.Instances[0].KVLimitBytes)
+	// Alone on a card of 1000, the model keeps its floor of 100 and the 200
+	// left over once its footprint is paid for.
+	assert.Equal(t, int64(300), got.Status.Instances[0].KVLimitBytes)
 
 	// The engine comes up under its allocator's own limit.
 	snapshot.Models = []RuntimeSnapshotModel{readyEngine(5000)}
 	reconcileOnce(t, r, pm.Name)
 
 	require.Len(t, runtime.kvLimitCalls, 1)
-	assert.Equal(t, int64(100), runtime.kvLimitCalls[0].LimitBytes)
+	assert.Equal(t, int64(300), runtime.kvLimitCalls[0].LimitBytes)
 	got = getModel(t, r, pm.Name)
 	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
 	assert.Equal(t, int32(0), got.Status.ReadyReplicas)
 
 	// The write lands, and the engine is routable on the next pass.
-	snapshot.Models[0].KVCapacityBytes = 100
+	snapshot.Models[0].KVCapacityBytes = 300
 	reconcileOnce(t, r, pm.Name)
 
 	got = getModel(t, r, pm.Name)
@@ -1397,7 +1495,7 @@ func TestReconcileKeepsAnActiveEngineRoutableWhileItsLimitIsWrittenAgain(t *test
 		Pod:          "warm-1",
 		Port:         9001,
 		Phase:        modelv1alpha1.ModelClaimActive,
-		KVLimitBytes: 100,
+		KVLimitBytes: 300,
 	}}
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
 	// The engine restarted and its allocator put the whole pool back.
@@ -1408,7 +1506,7 @@ func TestReconcileKeepsAnActiveEngineRoutableWhileItsLimitIsWrittenAgain(t *test
 	reconcileOnce(t, r, pm.Name)
 
 	require.Len(t, runtime.kvLimitCalls, 1)
-	assert.Equal(t, int64(100), runtime.kvLimitCalls[0].LimitBytes)
+	assert.Equal(t, int64(300), runtime.kvLimitCalls[0].LimitBytes)
 	got := getModel(t, r, pm.Name)
 	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Instances[0].Phase)
 }
