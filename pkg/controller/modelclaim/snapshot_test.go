@@ -104,3 +104,47 @@ func TestPlacementStateFromSnapshot(t *testing.T) {
 	assert.Equal(t, int64(35), groupState.KVUsedBytes)
 	assert.Equal(t, 2, groupState.ModelCount)
 }
+
+func TestPlacementStateSizesAPodByItsSmallestCard(t *testing.T) {
+	snapshot := &RuntimeSnapshot{
+		Accelerators: []RuntimeAcceleratorSnapshot{
+			{ID: "GPU-0", HBMFreeBytes: 800, HBMUsableBytes: 1000},
+			{ID: "GPU-1", HBMFreeBytes: 300, HBMUsableBytes: 900},
+		},
+	}
+
+	state := placementStateFromSnapshot(snapshot, "hf://Org/M1", 2)
+
+	assert.True(t, state.HBMUsableKnown)
+	assert.Equal(t, int64(900), state.HBMUsableBytes)
+}
+
+func TestPlacementStateLeavesAPodUnsizedWhenACardCannotBeMeasured(t *testing.T) {
+	unmeasured := &RuntimeSnapshot{
+		Accelerators: []RuntimeAcceleratorSnapshot{
+			{ID: "GPU-0", HBMFreeBytes: 800, HBMUsableBytes: 1000},
+			{ID: "GPU-1", HBMFreeBytes: 300, HBMUsableBytes: -1},
+		},
+	}
+	cardless := &RuntimeSnapshot{}
+
+	unmeasuredState := placementStateFromSnapshot(unmeasured, "hf://Org/M1", 2)
+	cardlessState := placementStateFromSnapshot(cardless, "hf://Org/M1", 1)
+
+	assert.False(t, unmeasuredState.HBMUsableKnown)
+	assert.Equal(t, int64(0), unmeasuredState.HBMUsableBytes)
+	assert.False(t, cardlessState.HBMUsableKnown)
+}
+
+func TestPlacementStateLeavesAPodUnsizedWhenCardCountMissesParallelism(t *testing.T) {
+	snapshot := &RuntimeSnapshot{
+		Accelerators: []RuntimeAcceleratorSnapshot{
+			{ID: "GPU-0", HBMFreeBytes: 800, HBMUsableBytes: 1000},
+		},
+	}
+
+	state := placementStateFromSnapshot(snapshot, "hf://Org/M1", 2)
+
+	assert.False(t, state.MemoryKnown)
+	assert.False(t, state.HBMUsableKnown)
+}
