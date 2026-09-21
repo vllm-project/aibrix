@@ -17,11 +17,13 @@ limitations under the License.
 
 package v1alpha1
 
+import "k8s.io/apimachinery/pkg/api/resource"
+
 // ModelClaimPerGPUApplyConfiguration represents a declarative configuration of the ModelClaimPerGPU type for use
 // with apply.
 type ModelClaimPerGPUApplyConfiguration struct {
-	MaximumFootprintBytes *int64 `json:"maximumFootprintBytes,omitempty"`
-	KVFloorBytes          *int64 `json:"kvFloorBytes,omitempty"`
+	MaximumFootprint *resource.Quantity `json:"maximumFootprint,omitempty"`
+	KVFloor          *resource.Quantity `json:"kvFloor,omitempty"`
 }
 
 // ModelClaimPerGPUApplyConfiguration constructs a declarative configuration of the ModelClaimPerGPU type for use with
@@ -30,18 +32,18 @@ func ModelClaimPerGPU() *ModelClaimPerGPUApplyConfiguration {
 	return &ModelClaimPerGPUApplyConfiguration{}
 }
 
-// WithMaximumFootprintBytes sets the MaximumFootprintBytes field in the declarative configuration to the given value
+// WithMaximumFootprint sets the MaximumFootprint field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the MaximumFootprintBytes field is set to the value of the last call.
-func (b *ModelClaimPerGPUApplyConfiguration) WithMaximumFootprintBytes(value int64) *ModelClaimPerGPUApplyConfiguration {
-	b.MaximumFootprintBytes = &value
+// If called multiple times, the MaximumFootprint field is set to the value of the last call.
+func (b *ModelClaimPerGPUApplyConfiguration) WithMaximumFootprint(value resource.Quantity) *ModelClaimPerGPUApplyConfiguration {
+	b.MaximumFootprint = &value
 	return b
 }
 
-// WithKVFloorBytes sets the KVFloorBytes field in the declarative configuration to the given value
+// WithKVFloor sets the KVFloor field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the KVFloorBytes field is set to the value of the last call.
-func (b *ModelClaimPerGPUApplyConfiguration) WithKVFloorBytes(value int64) *ModelClaimPerGPUApplyConfiguration {
-	b.KVFloorBytes = &value
+// If called multiple times, the KVFloor field is set to the value of the last call.
+func (b *ModelClaimPerGPUApplyConfiguration) WithKVFloor(value resource.Quantity) *ModelClaimPerGPUApplyConfiguration {
+	b.KVFloor = &value
 	return b
 }

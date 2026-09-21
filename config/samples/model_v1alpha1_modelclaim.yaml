@@ -25,5 +25,5 @@ spec:
   # the artifact. Declaring more than an instance needs wastes room and is
   # safe, declaring less is not.
   perGPU:
-    maximumFootprintBytes: 21474836480  # 20 GiB of weights and engine overhead
-    kvFloorBytes: 2147483648            # 2 GiB, enough to serve one long request
+    maximumFootprint: 20Gi   # weights, CUDA graphs and allocator retention
+    kvFloor: 2Gi             # enough to serve one request of the maximum length

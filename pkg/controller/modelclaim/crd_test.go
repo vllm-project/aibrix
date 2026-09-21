@@ -59,7 +59,7 @@ func TestTheCRDRefusesAClaimThatDeclaresNoPerGPUCost(t *testing.T) {
 
 		perGPU, found := spec.Properties["perGPU"]
 		require.True(t, found, path)
-		require.Contains(t, perGPU.Required, "maximumFootprintBytes", path)
-		require.Contains(t, perGPU.Required, "kvFloorBytes", path)
+		require.Contains(t, perGPU.Required, "maximumFootprint", path)
+		require.Contains(t, perGPU.Required, "kvFloor", path)
 	}
 }
