@@ -289,7 +289,10 @@ With both declared, a claim is placed only on a Pod whose card can be shown to
 have room: the size of the card, less the maximum footprint and KV floor of
 every instance already recorded on it. A Pod that cannot be accounted for is
 not used, which covers a runtime that did not answer, a card the runtime could
-not measure, and a Pod carrying an instance of a claim that declares nothing.
+not measure, a Pod carrying an instance of a claim that declares nothing, and a
+Pod running an engine that no recorded instance answers for. That last one
+matters because free memory is no longer consulted: an engine nobody claimed
+used to be visible as memory in use, and now it has to be refused deliberately.
 
 This is a reservation in the control plane's account and not in the hardware.
 Nothing yet stops an engine already on the card from growing its KV cache into
@@ -305,6 +308,11 @@ admission.
 A claim stored before this became required still decodes, and its missing
 declaration still reads as missing. The card it runs on is left unaccountable
 until the claim is replaced.
+
+Sleeping does not free a seat. An instance that is asleep keeps its place in
+the account, at the full footprint and floor its claim declared, because the
+assignment has to survive the sleep for a wake to find its engine again. Sleep
+can give KV back to the models beside it. It cannot make room for a new claim.
 
 Configure TP and PP pools
 -------------------------
@@ -517,10 +525,10 @@ Runtime metrics include:
 * ``aibrix:modelclaim_kv_total_bytes{model}``;
 * ``aibrix:modelclaim_hbm_peak_bytes{model}``.
 
-HBM attribution is best effort and is used for observation and placement
-ranking. It is not a hard admission or reservation signal: admission works from
-the cost a claim declares and the size the runtime measures for a card, never
-from attributed usage or from free memory, which moves with traffic.
+HBM attribution is best effort and is used for observation. It is not an
+admission or a ranking signal: admission works from the cost a claim declares
+and the size the runtime measures for a card, and ranking orders the admitted
+Pods by the same account, never by free memory, which moves with traffic.
 
 Troubleshooting
 ---------------

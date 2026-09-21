@@ -398,15 +398,16 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 	if err != nil {
 		return fmt.Errorf("invalid engineConfig parallelism: %w", err)
 	}
-	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL, parallelism)
+	placementStates, snapshots := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL, parallelism)
 
 	// A claim that declares what it costs is only placed where the card's
 	// account can show the room. One that declares nothing is placed as before.
 	admissible, refusals := candidates, []podRefusal(nil)
 	needBytes := minimumReserveBytes(pm)
 	if needBytes > 0 {
-		ledgers := r.collectPodLedgers(ctx, pm.Namespace, candidates, placementStates)
+		ledgers := r.collectPodLedgers(ctx, pm.Namespace, candidates, placementStates, snapshots)
 		admissible, refusals = admissibleCandidates(candidates, ledgers, needBytes)
+		rankByRoom(placementStates, ledgers)
 	}
 
 	for desiredReplicas(pm) > int32(len(pm.Status.Instances)) {
@@ -481,15 +482,20 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 	return nil
 }
 
+// collectPlacementStates summarises each candidate for ranking, and hands back
+// the snapshots it read. The account needs the engine list as well as the
+// summary: a card is judged by what is running on it, not only by what this
+// controller wrote down.
 func (r *ModelClaimReconciler) collectPlacementStates(
 	ctx context.Context,
 	candidates []corev1.Pod,
 	artifactURL string,
 	parallelism int64,
-) map[string]PodPlacementState {
+) (map[string]PodPlacementState, map[string]*RuntimeSnapshot) {
 	states := make(map[string]PodPlacementState, len(candidates))
+	snapshots := make(map[string]*RuntimeSnapshot, len(candidates))
 	if r.SnapshotCache == nil {
-		return states
+		return states, snapshots
 	}
 	for i := range candidates {
 		pod := &candidates[i]
@@ -502,8 +508,9 @@ func (r *ModelClaimReconciler) collectPlacementStates(
 		}
 		state := placementStateFromSnapshot(snapshot, artifactURL, parallelism)
 		states[pod.Name] = state
+		snapshots[pod.Name] = snapshot
 	}
-	return states
+	return states, snapshots
 }
 
 // reconcileInstanceHealth reconciles routing from fresh runtime snapshot data.

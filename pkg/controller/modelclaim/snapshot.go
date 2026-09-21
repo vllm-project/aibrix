@@ -107,6 +107,12 @@ type PodPlacementState struct {
 	// decision rather than ours.
 	HBMUsableBytes int64
 	HBMUsableKnown bool
+	// RoomBytes is what the account worked out this card can still offer, and
+	// RoomKnown says whether it could be worked out at all. Ranking uses it in
+	// preference to free memory: free memory moves with traffic, so ordering
+	// two admitted pods by it would contradict the gate they just passed.
+	RoomBytes int64
+	RoomKnown bool
 }
 
 func placementStateFromSnapshot(snapshot *RuntimeSnapshot, artifactURL string, parallelism int64) PodPlacementState {

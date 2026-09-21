@@ -1199,6 +1199,29 @@ func TestReconcileStopsSayingNoCardWillTakeItOnceOneDoes(t *testing.T) {
 	assert.Contains(t, cond.Message, roomy.Name)
 }
 
+func TestReconcileRefusesACardRunningAnEngineNoClaimAnswersFor(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	// The card has room on paper. It is also running an engine that no
+	// recorded instance answers for, so nobody knows what that engine holds.
+	snapshot.Models = []RuntimeSnapshotModel{{
+		ModelName: "stranger", Port: 9001, Phase: "active", Alive: true, Ready: true,
+	}}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Empty(t, got.Status.Instances)
+	cond := meta.FindStatusCondition(got.Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Contains(t, cond.Message, "answers to no claim")
+}
+
 func TestReconcilePlacesOnTheCardThatCanHoldTheDeclaredCost(t *testing.T) {
 	pm := claimWithCost(700, 100)
 	full, fullSnapshot := sizedWarmPod("warm-full", "10.0.0.1", 1000)
