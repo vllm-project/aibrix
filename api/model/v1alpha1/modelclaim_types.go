@@ -68,14 +68,22 @@ type ModelClaimSpec struct {
 
 	// PerGPU declares what one instance of this model costs on a single GPU.
 	// Placement uses it to keep a card from being promised more memory than it
-	// has, so a model is not started where it cannot fit.
+	// has, and to divide the card between the models on it, so a model is
+	// neither started where it cannot fit nor left at its floor while the card
+	// has room to spare.
 	//
-	// A claim that omits it is placed as before, without that check. A card
-	// carrying an instance of such a claim cannot be accounted for, so claims
-	// that do declare their cost are not placed onto it. Declare it on every
-	// claim in a pool, or on none.
-	// +optional
-	PerGPU *ModelClaimPerGPU `json:"perGPU,omitempty"`
+	// It is required. There is no figure the control plane could put here in
+	// its place: what an engine holds beyond its weights does not follow from
+	// the artifact, so a claim that does not say is a card that cannot be
+	// accounted for, and one such claim makes its whole card unusable to every
+	// other. Asking for it at admission is a clearer answer than discovering
+	// it at placement.
+	//
+	// It stays a pointer because a claim stored before this became required
+	// still decodes, and a missing declaration has to read as missing rather
+	// than as a cost of zero.
+	// +kubebuilder:validation:Required
+	PerGPU *ModelClaimPerGPU `json:"perGPU"`
 }
 
 // ModelClaimPerGPU is what one instance of a model costs on one GPU.

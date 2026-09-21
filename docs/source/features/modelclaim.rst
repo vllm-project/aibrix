@@ -247,11 +247,11 @@ The supported spec fields are:
      - Engine CLI flags mapped to string values. Use an empty string for a
        boolean flag.
    * - ``perGPU.maximumFootprintBytes``
-     - No
+     - Yes
      - The largest non-KV GPU memory one instance holds on a device: weights,
        captured CUDA graphs, activation workspaces and allocator retention.
    * - ``perGPU.kvFloorBytes``
-     - No
+     - Yes
      - The KV cache one instance must keep on a device to serve at all.
 
 For example:
@@ -295,10 +295,16 @@ This is a reservation in the control plane's account and not in the hardware.
 Nothing yet stops an engine already on the card from growing its KV cache into
 the space held for another instance.
 
-A claim that omits ``perGPU`` is placed exactly as before, without the check.
-Declare it on every claim in a pool, or on none: a single undeclared instance
-leaves that card unaccountable, and claims that do declare are then placed
-elsewhere.
+``perGPU`` is required, and a claim without it is rejected at ``kubectl
+apply``. Nothing could be put there in its place: what an engine holds beyond
+its weights does not follow from the artifact, so a claim that does not say is
+a card nobody can account for. One such claim makes its whole card unusable to
+every other model, which is a worse way to find out than an error at
+admission.
+
+A claim stored before this became required still decodes, and its missing
+declaration still reads as missing. The card it runs on is left unaccountable
+until the claim is replaced.
 
 Configure TP and PP pools
 -------------------------
@@ -529,8 +535,8 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    ``perGPU.maximumFootprintBytes`` plus ``perGPU.kvFloorBytes``. The message
    names the roomiest Pod that still could not hold the model, which is the
    smallest gap to close. A Pod is also turned away when its runtime did not
-   answer, when one of its cards could not be measured, or when a claim without
-   ``perGPU`` already runs on it.
+   answer, when one of its cards could not be measured, or when a claim
+   predating the ``perGPU`` requirement still runs on it.
 
 Claim remains ``Activating``
    Inspect the runtime snapshot and engine logs. Weight download, CUDA graph

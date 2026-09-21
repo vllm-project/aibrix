@@ -20,3 +20,10 @@ spec:
   artifactURL: huggingface://Qwen/Qwen2-7B-Instruct
   engine: vllm
   replicas: 1
+  # What one instance of this model costs on one card. Both figures come from
+  # a run of this model with these engine arguments; nothing derives them from
+  # the artifact. Declaring more than an instance needs wastes room and is
+  # safe, declaring less is not.
+  perGPU:
+    maximumFootprintBytes: 21474836480  # 20 GiB of weights and engine overhead
+    kvFloorBytes: 2147483648            # 2 GiB, enough to serve one long request

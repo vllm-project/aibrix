@@ -11,6 +11,10 @@ spec:
   artifactURL: huggingface://Qwen/Qwen3-0.6B
   engine: vllm
   replicas: 1
+  # Measured on the card this pool runs, not derived from the artifact.
+  perGPU:
+    maximumFootprintBytes: 6442450944  # 6 GiB
+    kvFloorBytes: 1073741824           # 1 GiB
   engineConfig:
     args:
       --max-model-len: "2048"
@@ -28,6 +32,9 @@ spec:
   artifactURL: huggingface://Qwen/Qwen2.5-0.5B-Instruct
   engine: vllm
   replicas: 1
+  perGPU:
+    maximumFootprintBytes: 6442450944  # 6 GiB
+    kvFloorBytes: 1073741824           # 1 GiB
   engineConfig:
     args:
       --max-model-len: "2048"
