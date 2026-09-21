@@ -1058,6 +1058,7 @@ func configProfilePods(anno string) []*v1.Pod {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        "pod-a",
 				Namespace:   "default",
+				Labels:      map[string]string{"environment": "online"},
 				Annotations: map[string]string{constants.ModelAnnoConfig: anno},
 			},
 			Status: v1.PodStatus{
@@ -1069,6 +1070,7 @@ func configProfilePods(anno string) []*v1.Pod {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        "pod-b",
 				Namespace:   "default",
+				Labels:      map[string]string{"environment": "online"},
 				Annotations: map[string]string{constants.ModelAnnoConfig: anno},
 			},
 			Status: v1.PodStatus{
@@ -1085,11 +1087,13 @@ func configProfilePods(anno string) []*v1.Pod {
 // still wins over the profile when no lock is set.
 func TestHandleRequestBody_LockedRoutingStrategy(t *testing.T) {
 	tests := []struct {
-		name         string
-		profileJSON  string
-		headerValue  string
-		wantStrategy string // expected routing-strategy response header; empty when routing is expected to fail
-		wantStatus   envoyTypePb.StatusCode
+		name           string
+		profileJSON    string
+		headerValue    string
+		configProfile  string
+		externalFilter string
+		wantStrategy   string // expected routing-strategy response header; empty when routing is expected to fail
+		wantStatus     envoyTypePb.StatusCode
 	}{
 		{
 			name:         "locked strategy wins over header",
@@ -1117,6 +1121,48 @@ func TestHandleRequestBody_LockedRoutingStrategy(t *testing.T) {
 			headerValue:  string(TestRouterAlgorithm),
 			wantStrategy: "test-router",
 			wantStatus:   envoyTypePb.StatusCode_OK,
+		},
+		{
+			name:           "authoritative policy ignores named profile and external filter",
+			profileJSON:    `{"authoritativeRoutingPolicy":true,"defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"},"batch":{"routingStrategy":"least-request"}}}`,
+			headerValue:    "least-request",
+			configProfile:  "batch",
+			externalFilter: "environment=batch",
+			wantStrategy:   "test-router",
+			wantStatus:     envoyTypePb.StatusCode_OK,
+		},
+		{
+			name:           "authoritative policy ignores auto profile and external filter",
+			profileJSON:    `{"authoritativeRoutingPolicy":true,"defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"},"batch":{"routingStrategy":"least-request","routingConfig":{"promptTokensGte":1}}}}`,
+			headerValue:    "least-request",
+			configProfile:  "auto",
+			externalFilter: "environment=batch",
+			wantStrategy:   "test-router",
+			wantStatus:     envoyTypePb.StatusCode_OK,
+		},
+		{
+			name:           "authoritative policy preserves locked strategy precedence",
+			profileJSON:    `{"authoritativeRoutingPolicy":true,"lockedRoutingStrategy":"test-router","defaultProfile":"default","profiles":{"default":{"routingStrategy":"least-request"},"batch":{"routingStrategy":"random"}}}`,
+			headerValue:    "least-request",
+			configProfile:  "batch",
+			externalFilter: "environment=batch",
+			wantStrategy:   "test-router",
+			wantStatus:     envoyTypePb.StatusCode_OK,
+		},
+		{
+			name:           "external filter still applies when request overrides are enabled",
+			profileJSON:    `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"}}}`,
+			headerValue:    "test-router",
+			externalFilter: "environment=batch",
+			wantStatus:     envoyTypePb.StatusCode_ServiceUnavailable,
+		},
+		{
+			name:           "matching external filter is preserved when request overrides are enabled",
+			profileJSON:    `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"}}}`,
+			headerValue:    "test-router",
+			externalFilter: "environment=online",
+			wantStrategy:   "test-router",
+			wantStatus:     envoyTypePb.StatusCode_OK,
 		},
 	}
 
@@ -1150,6 +1196,8 @@ func TestHandleRequestBody_LockedRoutingStrategy(t *testing.T) {
 			routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
 			routingCtx.ReqPath = PathChatCompletions
 			routingCtx.ReqHeaders[HeaderRoutingStrategy] = tt.headerValue
+			routingCtx.ReqHeaders[HeaderExternalFilter] = tt.externalFilter
+			routingCtx.ReqConfigProfile = tt.configProfile
 
 			resp, _, _, term := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
 

@@ -1723,6 +1723,48 @@ func TestApplyConfigProfile_BuildsFeaturesOnlyForAutoSelection(t *testing.T) {
 	}
 }
 
+func TestApplyConfigProfile_AuthoritativePolicyUsesDefaultProfile(t *testing.T) {
+	profileJSON := `{
+		"authoritativeRoutingPolicy":true,
+		"defaultProfile":"default",
+		"profiles":{
+			"default":{"routingStrategy":"least-request","routingConfig":{"marker":"default"}},
+			"batch":{"routingStrategy":"throughput","routingConfig":{"promptTokensGte":1,"marker":"batch"}}
+		}
+	}`
+	pods := []*v1.Pod{{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "pod-a",
+			Annotations: map[string]string{constants.ModelAnnoConfig: profileJSON},
+		},
+	}}
+
+	for _, reqConfigProfile := range []string{"batch", autoConfigProfile} {
+		t.Run(reqConfigProfile, func(t *testing.T) {
+			ctx := types.NewRoutingContext(context.Background(), "", "", "", "request-1", "")
+			ctx.ReqConfigProfile = reqConfigProfile
+			ctx.Message = "prompt"
+			ctx.ReqHeaders = map[string]string{
+				HeaderRoutingStrategy: "throughput",
+				HeaderExternalFilter:  "environment=batch",
+				"x-test-header":       "preserved",
+			}
+
+			applyConfigProfile(ctx, pods)
+
+			require.NotNil(t, ctx.ConfigProfile)
+			assert.True(t, ctx.ConfigProfile.AuthoritativeRoutingPolicy)
+			assert.Equal(t, "least-request", ctx.ConfigProfile.RoutingStrategy)
+			assert.Contains(t, string(ctx.ConfigProfile.RoutingConfig), `"marker":"default"`)
+			assert.Empty(t, ctx.ReqConfigProfile)
+			assert.NotContains(t, ctx.ReqHeaders, HeaderRoutingStrategy)
+			assert.NotContains(t, ctx.ReqHeaders, HeaderExternalFilter)
+			assert.Equal(t, "preserved", ctx.ReqHeaders["x-test-header"])
+			assert.NotContains(t, ctx.RespHeaders, HeaderAIBrixConfigProfile)
+		})
+	}
+}
+
 func TestMaxTokensFromRequestBody(t *testing.T) {
 	tests := []struct {
 		name string

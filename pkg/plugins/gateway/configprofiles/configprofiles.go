@@ -75,9 +75,14 @@ type ModelConfigProfiles struct {
 	// LockedRoutingStrategy, when set, pins the routing strategy model-wide.
 	// It takes precedence over the routing-strategy request header, the per-profile
 	// routingStrategy and the ROUTING_ALGORITHM environment variable.
-	LockedRoutingStrategy string                        `json:"lockedRoutingStrategy,omitempty"`
-	DefaultProfile        string                        `json:"defaultProfile"`
-	Profiles              map[string]ModelConfigProfile `json:"profiles"`
+	LockedRoutingStrategy string `json:"lockedRoutingStrategy,omitempty"`
+	// AuthoritativeRoutingPolicy makes model configuration authoritative for
+	// request routing. When true, the gateway ignores application-supplied routing
+	// controls and omits routing diagnostics from the client response while
+	// preserving its internally generated routing headers.
+	AuthoritativeRoutingPolicy bool                          `json:"authoritativeRoutingPolicy,omitempty"`
+	DefaultProfile             string                        `json:"defaultProfile"`
+	Profiles                   map[string]ModelConfigProfile `json:"profiles"`
 }
 
 // GetProfile returns the profile for the given name, or the default profile.
@@ -274,33 +279,49 @@ func ResolveConfig(pods []*v1.Pod, headerProfile string) (*ModelConfigProfile, s
 	return profile, locked
 }
 
+// ResolveModelConfig returns the model config from the first pod carrying a
+// valid model.aibrix.ai/config annotation. It returns nil when no pod has a
+// valid config.
+func ResolveModelConfig(pods []*v1.Pod) *ModelConfigProfiles {
+	for _, pod := range pods {
+		if cfg := parseConfigFromPod(pod); cfg != nil {
+			return cfg
+		}
+	}
+	return nil
+}
+
 // ResolveConfigForRequest resolves the model config from the first pod carrying a
 // model.aibrix.ai/config annotation. If headerProfile is "auto", request-local
 // hints in each profile's routingConfig are evaluated and the returned
 // profileName is the concrete profile selected for this request.
 func ResolveConfigForRequest(pods []*v1.Pod, headerProfile string, features RequestFeatures) (*ModelConfigProfile, string, string) {
-	for _, pod := range pods {
-		cfg := parseConfigFromPod(pod)
-		if cfg == nil {
-			continue
-		}
-		profileName := strings.TrimSpace(headerProfile)
-		if strings.EqualFold(profileName, "auto") {
-			selectedName := cfg.ResolveAutoProfileName(features)
-			if profile := cfg.GetProfileExact(selectedName); profile != nil {
-				return profile, selectedName, cfg.LockedRoutingStrategy
-			}
-			fallbackName := cfg.DefaultProfileOrName()
-			klog.Warningf("auto profile selection referenced missing profile %q; falling back to %q", selectedName, fallbackName)
-			return cfg.GetProfileExact(fallbackName), fallbackName, cfg.LockedRoutingStrategy
-		}
-		if profile := cfg.GetProfileExact(profileName); profile != nil {
-			return profile, profileName, cfg.LockedRoutingStrategy
-		}
-		fallbackName := cfg.DefaultProfileOrName()
-		return cfg.GetProfileExact(fallbackName), fallbackName, cfg.LockedRoutingStrategy
+	return ResolveModelConfig(pods).ResolveForRequest(headerProfile, features)
+}
+
+// ResolveForRequest selects a profile from c for one request. An empty profile
+// name selects defaultProfile (or "default"). The authoritative routing policy
+// is enforced by the caller clearing client routing inputs before calling this
+// method; profile resolution itself retains the standard selection semantics.
+func (c *ModelConfigProfiles) ResolveForRequest(headerProfile string, features RequestFeatures) (*ModelConfigProfile, string, string) {
+	if c == nil {
+		return nil, "", ""
 	}
-	return nil, "", ""
+	profileName := strings.TrimSpace(headerProfile)
+	if strings.EqualFold(profileName, "auto") {
+		selectedName := c.ResolveAutoProfileName(features)
+		if profile := c.GetProfileExact(selectedName); profile != nil {
+			return profile, selectedName, c.LockedRoutingStrategy
+		}
+		fallbackName := c.DefaultProfileOrName()
+		klog.Warningf("auto profile selection referenced missing profile %q; falling back to %q", selectedName, fallbackName)
+		return c.GetProfileExact(fallbackName), fallbackName, c.LockedRoutingStrategy
+	}
+	if profile := c.GetProfileExact(profileName); profile != nil {
+		return profile, profileName, c.LockedRoutingStrategy
+	}
+	fallbackName := c.DefaultProfileOrName()
+	return c.GetProfileExact(fallbackName), fallbackName, c.LockedRoutingStrategy
 }
 
 // parseConfigFromPod parses the model config from a single pod annotation.

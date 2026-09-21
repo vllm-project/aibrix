@@ -266,6 +266,43 @@ func TestResolveConfigForRequestAutoFallbacks(t *testing.T) {
 	}
 }
 
+func TestResolveConfigForRequestDoesNotApplyAuthoritativePolicy(t *testing.T) {
+	configJSON := `{
+		"authoritativeRoutingPolicy":true,
+		"defaultProfile":"default",
+		"profiles":{
+			"default":{"routingStrategy":"least-request","routingConfig":{"marker":"default"}},
+			"batch":{"routingStrategy":"throughput","routingConfig":{"promptTokensGte":1,"marker":"batch"}}
+		}
+	}`
+	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{constants.ModelAnnoConfig: configJSON}}}
+
+	cfg := ResolveModelConfig([]*v1.Pod{pod})
+	if cfg == nil {
+		t.Fatal("ResolveModelConfig() = nil")
+	}
+	if !cfg.AuthoritativeRoutingPolicy {
+		t.Fatal("ResolveModelConfig().AuthoritativeRoutingPolicy = false, want true")
+	}
+
+	profile, name, locked := ResolveConfigForRequest([]*v1.Pod{pod}, "batch", RequestFeatures{PromptTokens: intPtr(100)})
+	if profile == nil {
+		t.Fatal("ResolveForRequest() profile = nil")
+	}
+	if profile.RoutingStrategy != "throughput" {
+		t.Errorf("ResolveForRequest().RoutingStrategy = %s, want throughput", profile.RoutingStrategy)
+	}
+	if !strings.Contains(string(profile.RoutingConfig), `"marker":"batch"`) {
+		t.Errorf("ResolveForRequest().RoutingConfig = %s, want batch profile config", profile.RoutingConfig)
+	}
+	if name != "batch" {
+		t.Errorf("ResolveForRequest() name = %q, want batch", name)
+	}
+	if locked != "" {
+		t.Errorf("ResolveForRequest() locked = %q, want empty", locked)
+	}
+}
+
 func TestGetProfile(t *testing.T) {
 	json := `{"defaultProfile":"pd","profiles":{"default":{"routingStrategy":"random","routingConfig":{"promptLenBucketMinLength":0,"promptLenBucketMaxLength":4096}},"pd":{"routingStrategy":"pd","routingConfig":{"promptLenBucketMinLength":0,"promptLenBucketMaxLength":2048}}}}`
 
