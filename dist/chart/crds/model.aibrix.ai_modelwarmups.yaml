@@ -1,0 +1,235 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.1
+  name: modelwarmups.model.aibrix.ai
+spec:
+  group: model.aibrix.ai
+  names:
+    kind: ModelWarmup
+    listKind: ModelWarmupList
+    plural: modelwarmups
+    shortNames:
+    - mw
+    singular: modelwarmup
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.desiredNodes
+      name: Desired
+      type: integer
+    - jsonPath: .status.succeededNodes
+      name: Succeeded
+      type: integer
+    - jsonPath: .status.failedNodes
+      name: Failed
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            type: string
+          kind:
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              imagePreload:
+                properties:
+                  images:
+                    items:
+                      properties:
+                        args:
+                          items:
+                            type: string
+                          type: array
+                        command:
+                          items:
+                            type: string
+                          minItems: 1
+                          type: array
+                        image:
+                          type: string
+                        imagePullPolicy:
+                          type: string
+                      required:
+                      - command
+                      - image
+                      type: object
+                    minItems: 1
+                    type: array
+                  pullSecrets:
+                    items:
+                      properties:
+                        name:
+                          default: ""
+                          type: string
+                      type: object
+                      x-kubernetes-map-type: atomic
+                    type: array
+                required:
+                - images
+                type: object
+              policies:
+                properties:
+                  globalTimeoutSeconds:
+                    format: int64
+                    type: integer
+                  parallelism:
+                    format: int32
+                    type: integer
+                  retryLimit:
+                    format: int32
+                    type: integer
+                  ttlSecondsAfterFinished:
+                    format: int32
+                    type: integer
+                type: object
+              targets:
+                items:
+                  properties:
+                    nodeSelector:
+                      properties:
+                        matchExpressions:
+                          items:
+                            properties:
+                              key:
+                                type: string
+                              operator:
+                                type: string
+                              values:
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                            required:
+                            - key
+                            - operator
+                            type: object
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        matchLabels:
+                          additionalProperties:
+                            type: string
+                          type: object
+                      type: object
+                      x-kubernetes-map-type: atomic
+                    nodes:
+                      properties:
+                        names:
+                          items:
+                            type: string
+                          minItems: 1
+                          type: array
+                      required:
+                      - names
+                      type: object
+                  type: object
+                minItems: 1
+                type: array
+            required:
+            - imagePreload
+            - targets
+            type: object
+          status:
+            properties:
+              activeNodes:
+                format: int32
+                type: integer
+              completionTime:
+                format: date-time
+                type: string
+              conditions:
+                items:
+                  properties:
+                    lastTransitionTime:
+                      format: date-time
+                      type: string
+                    message:
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              desiredNodes:
+                format: int32
+                type: integer
+              failedNodes:
+                format: int32
+                type: integer
+              observedRevision:
+                type: string
+              phase:
+                type: string
+              startTime:
+                format: date-time
+                type: string
+              succeededNodes:
+                format: int32
+                type: integer
+              targets:
+                items:
+                  properties:
+                    jobName:
+                      type: string
+                    lastTransitionTime:
+                      format: date-time
+                      type: string
+                    message:
+                      type: string
+                    nodeName:
+                      type: string
+                    phase:
+                      type: string
+                    reason:
+                      type: string
+                    revision:
+                      type: string
+                    sources:
+                      items:
+                        type: string
+                      type: array
+                  required:
+                  - nodeName
+                  type: object
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
