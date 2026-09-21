@@ -446,7 +446,16 @@ Enable automatic KV and sleep policy
 ------------------------------------
 
 Policy is optional and is configured as one strict JSON annotation on the warm
-pool Deployment. It does not add fields to ModelClaim:
+pool Deployment. It does not add fields to ModelClaim.
+
+.. note::
+
+   ``reclaim`` is superseded by ``spec.perGPU`` and will be removed. Its
+   ``capacityBytes`` is a figure an operator types in, unrelated to what the
+   card actually holds, so a pool configured this way can be both wrong and
+   confident. A claim declares ``perGPU`` instead, which has its card measured
+   and divided, and the policy stands down on those Pods. ``lifecycle`` is not
+   affected.
 
 .. code-block:: bash
 
@@ -477,7 +486,8 @@ OOM guarantee.
 
 The policy leaves a Pod alone when an instance recorded on it already runs
 under a KV limit of its own, which is the case for every claim that declares
-``perGPU``. Use this annotation on pools whose claims declare no per-GPU cost.
+``perGPU``, which every claim now does. Until ``reclaim`` is removed, this
+annotation reaches only claims stored before that requirement.
 
 The JSON parser rejects unknown fields. An invalid policy is disabled and
 reported with an ``InvalidPoolPolicy`` Event:
