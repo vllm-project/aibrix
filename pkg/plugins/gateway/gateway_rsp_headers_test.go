@@ -145,6 +145,24 @@ func Test_HandleResponseHeaders(t *testing.T) {
 			},
 		},
 		{
+			name: "authoritative routing policy hides routing diagnostics",
+			routingCtx: func() *types.RoutingContext {
+				ctx := createRoutingCtx(true, map[string]string{HeaderAIBrixConfigProfile: "default"})
+				ctx.ConfigProfile = &types.ResolvedConfigProfile{AuthoritativeRoutingPolicy: true}
+				return ctx
+			}(),
+			responseStatus: "200",
+			expected: testResponse{
+				processingErrorCode: 0,
+				isProcessingError:   false,
+				headers: []*configPb.HeaderValueOption{
+					{Header: &configPb.HeaderValue{Key: HeaderWentIntoReqHeaders, RawValue: []byte("true")}},
+					{Header: &configPb.HeaderValue{Key: HeaderRequestID, RawValue: []byte("test-req-id")}},
+					{Header: &configPb.HeaderValue{Key: ":status", RawValue: []byte("200")}},
+				},
+			},
+		},
+		{
 			name:           "response headers include pseudo-header (should be skipped)",
 			routingCtx:     createRoutingCtx(false, map[string]string{":path": "/ignored", "X-Real": "ok"}),
 			responseStatus: "200",

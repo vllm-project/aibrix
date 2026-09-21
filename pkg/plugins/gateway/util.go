@@ -789,7 +789,7 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 	if strings.EqualFold(strings.TrimSpace(reqConfigProfile), "auto") {
 		features = buildConfigProfileRequestFeatures(routingCtx)
 	}
-	profile, profileName, locked, disableRequestOverrides := configprofiles.ResolveConfigPolicyForRequest(pods, reqConfigProfile, features)
+	profile, profileName, locked, authoritativeRoutingPolicy := configprofiles.ResolveConfigPolicyForRequest(pods, reqConfigProfile, features)
 
 	var replicaRPS float64
 	var inflight int64
@@ -797,11 +797,11 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 		replicaRPS = profile.RequestsPerSecondPerReplica
 		inflight = profile.RequestsInflight
 	}
-	if profile == nil && locked == "" && !disableRequestOverrides && replicaRPS <= 0 && inflight <= 0 {
+	if profile == nil && locked == "" && !authoritativeRoutingPolicy && replicaRPS <= 0 && inflight <= 0 {
 		return
 	}
 
-	if disableRequestOverrides {
+	if authoritativeRoutingPolicy {
 		routingCtx.ReqConfigProfile = profileName
 		delete(routingCtx.RespHeaders, HeaderAIBrixConfigProfile)
 	} else if strings.EqualFold(strings.TrimSpace(reqConfigProfile), "auto") && profileName != "" {
@@ -812,8 +812,8 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 		routingCtx.RespHeaders[HeaderAIBrixConfigProfile] = profileName
 	}
 	cp := &types.ResolvedConfigProfile{
-		LockedRoutingStrategy:          locked,
-		DisableRequestRoutingOverrides: disableRequestOverrides,
+		LockedRoutingStrategy:      locked,
+		AuthoritativeRoutingPolicy: authoritativeRoutingPolicy,
 	}
 	if profile != nil {
 		cp.RoutingStrategy = profile.RoutingStrategy
@@ -908,7 +908,7 @@ func deriveRoutingStrategyFromContext(routingCtx *types.RoutingContext) (string,
 		if s := strings.TrimSpace(cp.LockedRoutingStrategy); s != "" {
 			return s, true
 		}
-		if cp.DisableRequestRoutingOverrides {
+		if cp.AuthoritativeRoutingPolicy {
 			if s := strings.TrimSpace(cp.RoutingStrategy); s != "" {
 				return s, true
 			}

@@ -76,13 +76,13 @@ type ModelConfigProfiles struct {
 	// It takes precedence over the routing-strategy request header, the per-profile
 	// routingStrategy and the ROUTING_ALGORITHM environment variable.
 	LockedRoutingStrategy string `json:"lockedRoutingStrategy,omitempty"`
-	// DisableRequestRoutingOverrides makes model configuration authoritative for
-	// request routing. When true, the gateway ignores the routing-strategy,
-	// config-profile and external-filter request headers while preserving its
-	// internally generated routing headers.
-	DisableRequestRoutingOverrides bool                          `json:"disableRequestRoutingOverrides,omitempty"`
-	DefaultProfile                 string                        `json:"defaultProfile"`
-	Profiles                       map[string]ModelConfigProfile `json:"profiles"`
+	// AuthoritativeRoutingPolicy makes model configuration authoritative for
+	// request routing. When true, the gateway ignores application-supplied routing
+	// controls and omits routing diagnostics from the client response while
+	// preserving its internally generated routing headers.
+	AuthoritativeRoutingPolicy bool                          `json:"authoritativeRoutingPolicy,omitempty"`
+	DefaultProfile             string                        `json:"defaultProfile"`
+	Profiles                   map[string]ModelConfigProfile `json:"profiles"`
 }
 
 // GetProfile returns the profile for the given name, or the default profile.
@@ -289,8 +289,8 @@ func ResolveConfigForRequest(pods []*v1.Pod, headerProfile string, features Requ
 }
 
 // ResolveConfigPolicyForRequest resolves the same model configuration as
-// ResolveConfigForRequest and also reports whether request routing overrides are
-// disabled model-wide.
+// ResolveConfigForRequest and also reports whether the model-wide routing policy
+// is authoritative.
 func ResolveConfigPolicyForRequest(pods []*v1.Pod, headerProfile string, features RequestFeatures) (*ModelConfigProfile, string, string, bool) {
 	for _, pod := range pods {
 		cfg := parseConfigFromPod(pod)
@@ -298,23 +298,23 @@ func ResolveConfigPolicyForRequest(pods []*v1.Pod, headerProfile string, feature
 			continue
 		}
 		profileName := strings.TrimSpace(headerProfile)
-		if cfg.DisableRequestRoutingOverrides {
+		if cfg.AuthoritativeRoutingPolicy {
 			profileName = ""
 		}
 		if strings.EqualFold(profileName, "auto") {
 			selectedName := cfg.ResolveAutoProfileName(features)
 			if profile := cfg.GetProfileExact(selectedName); profile != nil {
-				return profile, selectedName, cfg.LockedRoutingStrategy, cfg.DisableRequestRoutingOverrides
+				return profile, selectedName, cfg.LockedRoutingStrategy, cfg.AuthoritativeRoutingPolicy
 			}
 			fallbackName := cfg.DefaultProfileOrName()
 			klog.Warningf("auto profile selection referenced missing profile %q; falling back to %q", selectedName, fallbackName)
-			return cfg.GetProfileExact(fallbackName), fallbackName, cfg.LockedRoutingStrategy, cfg.DisableRequestRoutingOverrides
+			return cfg.GetProfileExact(fallbackName), fallbackName, cfg.LockedRoutingStrategy, cfg.AuthoritativeRoutingPolicy
 		}
 		if profile := cfg.GetProfileExact(profileName); profile != nil {
-			return profile, profileName, cfg.LockedRoutingStrategy, cfg.DisableRequestRoutingOverrides
+			return profile, profileName, cfg.LockedRoutingStrategy, cfg.AuthoritativeRoutingPolicy
 		}
 		fallbackName := cfg.DefaultProfileOrName()
-		return cfg.GetProfileExact(fallbackName), fallbackName, cfg.LockedRoutingStrategy, cfg.DisableRequestRoutingOverrides
+		return cfg.GetProfileExact(fallbackName), fallbackName, cfg.LockedRoutingStrategy, cfg.AuthoritativeRoutingPolicy
 	}
 	return nil, "", "", false
 }

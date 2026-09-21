@@ -266,9 +266,9 @@ func TestResolveConfigForRequestAutoFallbacks(t *testing.T) {
 	}
 }
 
-func TestResolveConfigForRequestDisabledOverridesUseDefaultProfile(t *testing.T) {
+func TestResolveConfigForRequestAuthoritativePolicyUsesDefaultProfile(t *testing.T) {
 	configJSON := `{
-		"disableRequestRoutingOverrides":true,
+		"authoritativeRoutingPolicy":true,
 		"defaultProfile":"default",
 		"profiles":{
 			"default":{"routingStrategy":"least-request","routingConfig":{"marker":"default"}},
@@ -279,7 +279,7 @@ func TestResolveConfigForRequestDisabledOverridesUseDefaultProfile(t *testing.T)
 
 	for _, headerProfile := range []string{"batch", "auto"} {
 		t.Run(headerProfile, func(t *testing.T) {
-			profile, name, locked, overridesDisabled := ResolveConfigPolicyForRequest(
+			profile, name, locked, authoritativePolicy := ResolveConfigPolicyForRequest(
 				[]*v1.Pod{pod}, headerProfile, RequestFeatures{PromptTokens: intPtr(100)},
 			)
 
@@ -298,8 +298,8 @@ func TestResolveConfigForRequestDisabledOverridesUseDefaultProfile(t *testing.T)
 			if locked != "" {
 				t.Errorf("ResolveConfigForRequest() locked = %q, want empty", locked)
 			}
-			if !overridesDisabled {
-				t.Error("ResolveConfigForRequest() overridesDisabled = false, want true")
+			if !authoritativePolicy {
+				t.Error("ResolveConfigPolicyForRequest() authoritativePolicy = false, want true")
 			}
 		})
 	}

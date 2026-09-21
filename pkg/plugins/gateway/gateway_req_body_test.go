@@ -1123,8 +1123,8 @@ func TestHandleRequestBody_LockedRoutingStrategy(t *testing.T) {
 			wantStatus:   envoyTypePb.StatusCode_OK,
 		},
 		{
-			name:           "disabled request overrides ignore named profile and external filter",
-			profileJSON:    `{"disableRequestRoutingOverrides":true,"defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"},"batch":{"routingStrategy":"least-request"}}}`,
+			name:           "authoritative policy ignores named profile and external filter",
+			profileJSON:    `{"authoritativeRoutingPolicy":true,"defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"},"batch":{"routingStrategy":"least-request"}}}`,
 			headerValue:    "least-request",
 			configProfile:  "batch",
 			externalFilter: "environment=batch",
@@ -1132,8 +1132,8 @@ func TestHandleRequestBody_LockedRoutingStrategy(t *testing.T) {
 			wantStatus:     envoyTypePb.StatusCode_OK,
 		},
 		{
-			name:           "disabled request overrides ignore auto profile and external filter",
-			profileJSON:    `{"disableRequestRoutingOverrides":true,"defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"},"batch":{"routingStrategy":"least-request","routingConfig":{"promptTokensGte":1}}}}`,
+			name:           "authoritative policy ignores auto profile and external filter",
+			profileJSON:    `{"authoritativeRoutingPolicy":true,"defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"},"batch":{"routingStrategy":"least-request","routingConfig":{"promptTokensGte":1}}}}`,
 			headerValue:    "least-request",
 			configProfile:  "auto",
 			externalFilter: "environment=batch",

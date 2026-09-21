@@ -1723,9 +1723,9 @@ func TestApplyConfigProfile_BuildsFeaturesOnlyForAutoSelection(t *testing.T) {
 	}
 }
 
-func TestApplyConfigProfile_DisabledRequestOverridesUseDefaultProfile(t *testing.T) {
+func TestApplyConfigProfile_AuthoritativePolicyUsesDefaultProfile(t *testing.T) {
 	profileJSON := `{
-		"disableRequestRoutingOverrides":true,
+		"authoritativeRoutingPolicy":true,
 		"defaultProfile":"default",
 		"profiles":{
 			"default":{"routingStrategy":"least-request","routingConfig":{"marker":"default"}},
@@ -1752,7 +1752,7 @@ func TestApplyConfigProfile_DisabledRequestOverridesUseDefaultProfile(t *testing
 			applyConfigProfile(ctx, pods)
 
 			require.NotNil(t, ctx.ConfigProfile)
-			assert.True(t, ctx.ConfigProfile.DisableRequestRoutingOverrides)
+			assert.True(t, ctx.ConfigProfile.AuthoritativeRoutingPolicy)
 			assert.Equal(t, "least-request", ctx.ConfigProfile.RoutingStrategy)
 			assert.Contains(t, string(ctx.ConfigProfile.RoutingConfig), `"marker":"default"`)
 			assert.Equal(t, "default", ctx.ReqConfigProfile)
@@ -1798,12 +1798,12 @@ func TestDeriveRoutingStrategyFromContext(t *testing.T) {
 		ReqHeaders: map[string]string{HeaderRoutingStrategy: "throughput"},
 	}
 
-	// A model-wide request-override lock ignores the client header and uses the
+	// A model-wide authoritative policy ignores the client header and uses the
 	// authoritative default profile even when no strategy lock is configured.
-	disabledOverridesCtx := &types.RoutingContext{
+	authoritativePolicyCtx := &types.RoutingContext{
 		ConfigProfile: &types.ResolvedConfigProfile{
-			DisableRequestRoutingOverrides: true,
-			RoutingStrategy:                "least-request",
+			AuthoritativeRoutingPolicy: true,
+			RoutingStrategy:            "least-request",
 		},
 		ReqHeaders: map[string]string{HeaderRoutingStrategy: "throughput"},
 	}
@@ -1836,7 +1836,7 @@ func TestDeriveRoutingStrategyFromContext(t *testing.T) {
 		wantOK bool
 	}{
 		{"locked strategy wins over header and profile", lockedCtx, "pd", true},
-		{"disabled request overrides use profile strategy", disabledOverridesCtx, "least-request", true},
+		{"authoritative policy uses profile strategy", authoritativePolicyCtx, "least-request", true},
 		{"header wins over profile strategy", headerCtx, "throughput", true},
 		{"profile strategy used when header absent", profileCtx, "least-request", true},
 		{"case-insensitive header key", headerCaseCtx, "pd", true},

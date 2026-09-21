@@ -39,7 +39,8 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, routerCtx *types.Rou
 
 	headers := []*configPb.HeaderValueOption{}
 	headers = buildEnvoyProxyHeaders(headers, HeaderWentIntoReqHeaders, "true", HeaderRequestID, requestID)
-	if routerCtx != nil && routerCtx.HasRouted() {
+	suppressRoutingDiagnostics := routerCtx != nil && routerCtx.ConfigProfile != nil && routerCtx.ConfigProfile.AuthoritativeRoutingPolicy
+	if routerCtx != nil && routerCtx.HasRouted() && !suppressRoutingDiagnostics {
 		headers = buildEnvoyProxyHeaders(headers,
 			HeaderRoutingStrategy, string(routerCtx.Algorithm),
 			HeaderTargetPod, routerCtx.TargetPod().Name,
@@ -48,6 +49,9 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, routerCtx *types.Rou
 
 	if routerCtx != nil && routerCtx.RespHeaders != nil {
 		for key, value := range routerCtx.RespHeaders {
+			if suppressRoutingDiagnostics && isRoutingDiagnosticHeader(key) {
+				continue
+			}
 			// skip HTTP/2 pseudo-header fields (such as :status, :path, etc.) to avoid protocol errors.
 			if strings.HasPrefix(key, ":") {
 				continue
@@ -105,4 +109,13 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, routerCtx *types.Rou
 			},
 		},
 	}, isProcessingError, processingErrorCode
+}
+
+func isRoutingDiagnosticHeader(key string) bool {
+	switch strings.ToLower(key) {
+	case HeaderRoutingStrategy, HeaderTargetPod, HeaderTargetPodIP, HeaderAIBrixConfigProfile:
+		return true
+	default:
+		return false
+	}
 }
