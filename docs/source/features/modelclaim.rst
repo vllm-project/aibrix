@@ -246,13 +246,15 @@ The supported spec fields are:
      - No
      - Engine CLI flags mapped to string values. Use an empty string for a
        boolean flag.
-   * - ``perGPU.maximumFootprintBytes``
+   * - ``perGPU.maximumFootprint``
      - Yes
-     - The largest non-KV GPU memory one instance holds on a device: weights,
-       captured CUDA graphs, activation workspaces and allocator retention.
-   * - ``perGPU.kvFloorBytes``
+     - A quantity, such as ``30Gi``. The largest non-KV GPU memory one
+       instance holds on a device: weights, captured CUDA graphs, activation
+       workspaces and allocator retention.
+   * - ``perGPU.kvFloor``
      - Yes
-     - The KV cache one instance must keep on a device to serve at all.
+     - A quantity, such as ``10Gi``. The KV cache one instance must keep on a
+       device to serve at all.
 
 For example:
 
@@ -279,10 +281,10 @@ pipeline stages do not.
 The control plane does not profile a model to find these numbers. Most of an
 engine's non-KV memory is allocator retention that does not scale with the
 weights, so the artifact size does not predict it. Take
-``maximumFootprintBytes`` from a run of this model with these engine arguments,
-and ``kvFloorBytes`` from one request of the engine's maximum model length at
-this model's bytes per token, rounded up to the KV allocator's page
-granularity. Declaring more than an instance needs wastes room and is safe;
+``maximumFootprint`` from a run of this model with these engine arguments, and
+``kvFloor`` from one request of the engine's maximum model length at this
+model's bytes per token, rounded up to the KV allocator's page granularity.
+Both are quantities, so write ``30Gi`` rather than a count of bytes. Declaring more than an instance needs wastes room and is safe;
 declaring less is not.
 
 With both declared, a claim is placed only on a Pod whose card can be shown to
@@ -540,7 +542,7 @@ Claim remains ``Scheduling`` with zero candidates
 
 Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    Candidates exist, but no card can be shown to have room for
-   ``perGPU.maximumFootprintBytes`` plus ``perGPU.kvFloorBytes``. The message
+   ``perGPU.maximumFootprint`` plus ``perGPU.kvFloor``. The message
    names the roomiest Pod that still could not hold the model, which is the
    smallest gap to close. A Pod is also turned away when its runtime did not
    answer, when one of its cards could not be measured, or when a claim

@@ -1131,8 +1131,8 @@ func TestReconcileDeletionDeactivates(t *testing.T) {
 func claimWithCost(footprint, floor int64) *modelv1alpha1.ModelClaim {
 	pm := withFinalizer(sampleModelClaim())
 	pm.Spec.PerGPU = &modelv1alpha1.ModelClaimPerGPU{
-		MaximumFootprintBytes: footprint,
-		KVFloorBytes:          floor,
+		MaximumFootprint: *resource.NewQuantity(footprint, resource.BinarySI),
+		KVFloor:          *resource.NewQuantity(floor, resource.BinarySI),
 	}
 	return pm
 }

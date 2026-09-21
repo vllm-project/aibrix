@@ -16,7 +16,10 @@ limitations under the License.
 
 package v1alpha1
 
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+import (
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
@@ -95,24 +98,26 @@ type ModelClaimSpec struct {
 // equal and one of them costs more than the rest. Declaring more than an
 // instance needs wastes room and is safe; declaring less is not.
 type ModelClaimPerGPU struct {
-	// MaximumFootprintBytes is the largest non-KV GPU memory one instance holds
-	// on a device: weights, captured CUDA graphs, activation workspaces and
+	// MaximumFootprint is the largest non-KV GPU memory one instance holds on a
+	// device: weights, captured CUDA graphs, activation workspaces and
 	// allocator retention. It cannot be derived from the artifact size, because
 	// most of the gap between the two is allocator retention that does not
 	// scale with the weights, so it has to come from a run of this model with
 	// these engine arguments.
+	//
+	// A quantity, so it reads as `30Gi` rather than as a count of bytes nobody
+	// can check by eye. A value that is not positive is treated as no
+	// declaration at all, which leaves the card it runs on unaccountable.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Minimum=1
-	MaximumFootprintBytes int64 `json:"maximumFootprintBytes"`
+	MaximumFootprint resource.Quantity `json:"maximumFootprint"`
 
-	// KVFloorBytes is the KV cache one instance must keep on a device to serve
-	// at all: enough for one request of the engine's maximum model length at
-	// this model's bytes per token, rounded up to the KV allocator's page
+	// KVFloor is the KV cache one instance must keep on a device to serve at
+	// all: enough for one request of the engine's maximum model length at this
+	// model's bytes per token, rounded up to the KV allocator's page
 	// granularity. Placement holds this much for the instance for as long as it
-	// is awake.
+	// is awake, asleep included.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Minimum=1
-	KVFloorBytes int64 `json:"kvFloorBytes"`
+	KVFloor resource.Quantity `json:"kvFloor"`
 }
 
 // ModelClaimEngineConfig describes engine-specific startup options.

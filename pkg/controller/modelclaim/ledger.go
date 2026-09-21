@@ -36,7 +36,14 @@ func minimumReserveBytes(pm *modelv1alpha1.ModelClaim) int64 {
 	if pm == nil || pm.Spec.PerGPU == nil {
 		return 0
 	}
-	return pm.Spec.PerGPU.MaximumFootprintBytes + pm.Spec.PerGPU.KVFloorBytes
+	footprint, floor := pm.Spec.PerGPU.MaximumFootprint.Value(), pm.Spec.PerGPU.KVFloor.Value()
+	// A quantity carries no schema minimum, so a figure that is not positive is
+	// caught here instead. It is read as no declaration rather than as a model
+	// that costs nothing, which is what a zero would otherwise say.
+	if footprint <= 0 || floor <= 0 {
+		return 0
+	}
+	return footprint + floor
 }
 
 // podLedger is one card's account: how much it can hold, and how much of it the
