@@ -10,8 +10,17 @@ Variables of type `duration` are parsed with Go's [`time.ParseDuration`](https:/
 
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|
+| `AIBRIX_DISABLE_RATE_LIMITING` | bool | `false` | Disable AIBrix user RPM/TPM and model RPS quota enforcement. Redis and `requestsInflight` remain active. | [cmd/plugins/main.go](../../../cmd/plugins/main.go), [gateway.go](gateway.go) |
 | `POD_NAME` | string | `""` | Kubernetes pod name. Used for logging and metric label tagging. | [gateway.go](gateway.go), [util.go](util.go) |
 | `ROUTING_ALGORITHM` | string | _(none)_ | Default routing algorithm when no per-request override is set. | [types.go](types.go), [util.go](util.go) |
+
+When `AIBRIX_DISABLE_RATE_LIMITING=true`, the gateway skips AIBrix user lookup, ignores the
+`user` header as routing identity, and does not write user or model quota counters. The header
+is still forwarded unchanged. Keep Redis configured when session affinity, asynchronous jobs,
+state synchronization, or other gateway features require it. The per-replica
+`requestsInflight` guard remains active. Because routing user identity remains empty, asynchronous
+video jobs use the shared ownership scope; the unauthenticated `user` header does not isolate jobs
+between callers in this mode.
 
 ---
 

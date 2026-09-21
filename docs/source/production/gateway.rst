@@ -122,6 +122,27 @@ requests** and increase CPU if Redis becomes a latency bottleneck (monitor ``red
     ``metadata.redis`` block from your override — the chart will not deploy its own Redis when
     a custom host is provided.
 
+Disabling Gateway Rate Limiting
+--------------------------------
+
+Set ``AIBRIX_DISABLE_RATE_LIMITING=true`` on the gateway plugin to disable AIBrix user
+RPM/TPM and model RPS quota enforcement. The setting defaults to ``false``. When disabled,
+the gateway skips AIBrix user lookup and does not use the ``user`` header as routing identity,
+but it forwards the header unchanged.
+
+.. code-block:: yaml
+
+    gatewayPlugin:
+      container:
+        envs:
+          AIBRIX_DISABLE_RATE_LIMITING: "true"
+
+The setting does not disable the per-replica ``requestsInflight`` guard or disconnect Redis.
+Keep Redis configured when session affinity, asynchronous jobs, state synchronization, or other
+gateway features require it. Because disabled mode leaves routing user identity empty,
+asynchronous video jobs use the shared ownership scope. The unauthenticated ``user`` header
+does not isolate one caller's video jobs from another caller's jobs in this mode.
+
 Configuring Buffer Limits, Connections, and QPS
 ------------------------------------------------
 
