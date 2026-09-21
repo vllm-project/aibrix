@@ -100,6 +100,13 @@ type PodPlacementState struct {
 	HBMFreeBytes   int64
 	KVUsedBytes    int64
 	ModelCount     int
+	// HBMUsableBytes is how much of this pod's GPU memory can ever hold an
+	// engine, and HBMUsableKnown separates a card with nothing left from a card
+	// nobody could measure. A pod with several cards is described by its
+	// smallest, since which card an engine lands on is the device plugin's
+	// decision rather than ours.
+	HBMUsableBytes int64
+	HBMUsableKnown bool
 }
 
 func placementStateFromSnapshot(snapshot *RuntimeSnapshot, artifactURL string, parallelism int64) PodPlacementState {
@@ -126,8 +133,35 @@ func placementStateFromSnapshot(snapshot *RuntimeSnapshot, artifactURL string, p
 			state.MemoryKnown = true
 		}
 	}
+	state.HBMUsableBytes, state.HBMUsableKnown = hbmUsableBytes(snapshot)
 	for _, model := range snapshot.Models {
 		state.KVUsedBytes += model.KVUsedBytes
 	}
 	return state
+}
+
+// hbmUsableBytes is how much of a pod's GPU memory can ever hold an engine,
+// taken from what the runtime measured rather than derived here. A pod with
+// several cards is described by its smallest one, because which card an engine
+// lands on is decided by the device plugin and not by placement. In a
+// topology-homogeneous pool every card is the same size and the choice costs
+// nothing.
+//
+// One card the runtime could not measure leaves the whole pod unsized. Taking
+// the cards it could read and ignoring the rest would describe a pod that does
+// not exist.
+func hbmUsableBytes(snapshot *RuntimeSnapshot) (int64, bool) {
+	if snapshot == nil || len(snapshot.Accelerators) == 0 {
+		return 0, false
+	}
+	smallest := int64(0)
+	for i, accelerator := range snapshot.Accelerators {
+		if accelerator.HBMUsableBytes <= 0 {
+			return 0, false
+		}
+		if i == 0 || accelerator.HBMUsableBytes < smallest {
+			smallest = accelerator.HBMUsableBytes
+		}
+	}
+	return smallest, true
 }
