@@ -112,6 +112,7 @@ spec:
                 type: integer
             required:
             - artifactURL
+            - perGPU
             - podSelector
             type: object
           status:
