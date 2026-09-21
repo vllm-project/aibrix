@@ -58,6 +58,13 @@ logger = logging.getLogger(__name__)
 # concurrently, so init/query/shutdown must be one uninterrupted operation.
 _nvml_lock = threading.Lock()
 
+# What a card can ever hold, kept per device for the life of this process. The
+# figure belongs to the card and its driver rather than to the load, so reading
+# it again would return the same number. Only a successful reading is kept, so
+# a card that could not be sized yet is tried again on the next snapshot.
+HBM_USABLE_UNKNOWN = -1
+_hbm_usable_by_device: Dict[str, int] = {}
+
 
 @dataclass
 class ModelInstance:
@@ -257,6 +264,48 @@ def _nvml_compute_processes(pynvml, handle):
     return []
 
 
+def _hbm_usable_bytes(pynvml, handle, device_id: str) -> int:
+    """Memory an engine can take on this card: the total less what the driver
+    and firmware keep for themselves.
+
+    NVML's v2 memory query reports that reservation as a field of its own, and
+    it does not move with traffic, so the answer is the same whether the card
+    is idle or busy. Free memory plus per-process usage was considered and
+    rejected: the two readings are not taken at once, so memory released
+    between them is counted twice, and usage NVML does not attribute to a
+    process is missed. That figure can land on either side of the truth, and a
+    card reported larger than it is lets the control plane place a model that
+    does not fit.
+
+    Callers hold ``_nvml_lock``, which is also what keeps the cache below to
+    one writer.
+    """
+    cached = _hbm_usable_by_device.get(device_id)
+    if cached is not None:
+        return cached
+    version = getattr(pynvml, "nvmlMemory_v2", None)
+    if version is None:
+        return HBM_USABLE_UNKNOWN
+    try:
+        info = pynvml.nvmlDeviceGetMemoryInfo(handle, version=version)
+        total, reserved = int(info.total), int(info.reserved)
+    except Exception as exc:
+        logger.debug("v2 memory query failed for %s: %s", device_id, exc)
+        return HBM_USABLE_UNKNOWN
+    if reserved < 0 or reserved >= total:
+        return HBM_USABLE_UNKNOWN
+    usable = total - reserved
+    _hbm_usable_by_device[device_id] = usable
+    logger.info(
+        "card %s holds %d bytes for engines: %d total less %d the driver reserves",
+        device_id,
+        usable,
+        total,
+        reserved,
+    )
+    return usable
+
+
 def gpu_memory_observation() -> tuple[
     List[Dict[str, object]], Dict[int, Dict[str, int]]
 ]:
@@ -292,6 +341,9 @@ def gpu_memory_observation() -> tuple[
                         "id": device_id,
                         "hbm_total_bytes": int(info.total),
                         "hbm_free_bytes": int(info.free),
+                        "hbm_usable_bytes": _hbm_usable_bytes(
+                            pynvml, handle, device_id
+                        ),
                     }
                 )
                 for process in _nvml_compute_processes(pynvml, handle):
