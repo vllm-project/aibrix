@@ -288,34 +288,60 @@ Both are quantities, so write ``30Gi`` rather than a count of bytes. Declaring m
 declaring less is not.
 
 With both declared, a claim is placed only on a Pod whose card can be shown to
-have room: the size of the card, less the maximum footprint and KV floor of
-every instance already recorded on it. A Pod that cannot be accounted for is
-not used, which covers a runtime that did not answer, a card the runtime could
-not measure, a Pod carrying an instance of a claim that declares nothing, and a
-Pod running an engine that no recorded instance answers for. That last one
-matters because free memory is no longer consulted: an engine nobody claimed
-used to be visible as memory in use, and now it has to be refused deliberately.
+have room for it, on two counts.
 
-The account on its own would not stop an engine already on the card from
-growing its KV cache into the space held for another instance, so the
-controller also holds each engine to a limit. An instance records the limit it
-runs under in ``status.instances[].kvLimitBytes``, and for now that limit is
-the KV floor its claim declared. Once the engine is ready, the controller
-writes the limit through the runtime and leaves the model non-routable until a
-later snapshot shows the engine's KV allocator holding it. A model therefore
-takes traffic only under the limit it was placed against.
+The first is what the card could ever offer: its size, less the maximum
+footprint and KV floor of every instance already recorded on it. A model that
+needs more than this cannot be placed here however long it waits.
 
-Two Events report the write:
+The second is what the card can offer today: its size, less each instance's
+footprint and whichever is larger of its declared floor and the KV its engine
+has actually mapped. Lowering a KV limit evicts nothing, so pages an engine
+already holds are not room anyone else can be given. A Pod refused on this
+count could take the model once its engines release those pages.
+
+A Pod that cannot be accounted for is not used at all. That covers a runtime
+that did not answer, a card the runtime could not measure, a Pod carrying an
+instance of a claim that declares nothing, and a Pod running an engine that
+no recorded instance answers for.
+
+Every card in a declared pool is divided as a whole
+---------------------------------------------------
+
+An account alone would not stop an engine from growing its KV cache into the
+space held for another instance, so each engine is also held to a limit, which
+its instance records in ``status.instances[].kvLimitBytes``.
+
+The limits on one card are worked out together. Each engine keeps what it
+already holds, its declared floor or the KV it has mapped, and the room left
+over is shared out by demand, using the same weight the pool policy below uses.
+Every footprint, every engine's held KV, and every share together come to
+exactly what the card can hold, so an engine growing into its new limit cannot
+grow into another engine's memory.
+
+The plan is carried out in an order that never leaves two engines entitled to
+the same byte. Each new limit is recorded on its own claim first, the limits
+are written next, shrinking before growing, and a fresh reading then has to
+agree. That last step is not a formality: the CLI the runtime drives exits zero
+when there is no segment to write into, so reading the limit back is the only
+evidence there is. A model stays non-routable until its own limit is in force,
+and a card that could not be arranged is not used this round.
+
+A card is planned again on every round, at most once however many claims sit on
+it, so a share follows demand instead of staying as it was when the model
+landed. A card that has barely drifted is left alone. The threshold is the
+larger of half a gibibyte and a hundredth of the card, because a KV allocator
+hands out whole bundles of pages and a smaller change moves no memory at all.
+
+Watch the arrangement through its Events:
 
 .. code-block:: bash
 
    kubectl get events --field-selector reason=KVLimitSet
    kubectl get events --field-selector reason=KVLimitFailed
 
-Every engine on a declared Pod runs at its floor for now. Distributing the room
-that is left is the job of a later change, and the automatic pool policy below
-does not do it here: it stands down on a Pod where a claim holds the limit,
-because two writers on one KV allocator would only overwrite each other.
+The automatic pool policy below stands down on these Pods. Two writers on one
+KV allocator would only overwrite each other.
 
 ``perGPU`` is required, and a claim without it is rejected at ``kubectl
 apply``. Nothing could be put there in its place: what an engine holds beyond
@@ -575,9 +601,12 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    Candidates exist, but no card can be shown to have room for
    ``perGPU.maximumFootprint`` plus ``perGPU.kvFloor``. The message
    names the roomiest Pod that still could not hold the model, which is the
-   smallest gap to close. A Pod is also turned away when its runtime did not
-   answer, when one of its cards could not be measured, or when a claim
-   predating the ``perGPU`` requirement still runs on it.
+   smallest gap to close, and says which count it failed: a card that could
+   never hold the model, or one whose room is held by the engines already on
+   it. A Pod is also turned away when its runtime did not answer, when one of
+   its cards could not be measured, when a claim predating the ``perGPU``
+   requirement still runs on it, or when an engine there belongs to no claim on
+   it.
 
 Claim remains ``Activating``
    Inspect the runtime snapshot and engine logs. Weight download, CUDA graph
@@ -591,6 +620,13 @@ Claim remains ``Activating`` after ``/health`` succeeds
    names the error. A snapshot whose ``kv_capacity_bytes`` is negative means
    the engine has not built its KV segment yet, and there is nothing to write
    into.
+
+Claim is refused with ``KVLimitFailed`` during placement
+   The card had room, and the engines on it could not be held to their new
+   shares. The message names the engine: one that did not take its limit has
+   no segment to write into, and one holding more than its new limit grew
+   between the plan and the reading that confirms it. The claim waits and the
+   card is planned again on the next attempt.
 
 Activation rejects ``--gpu-memory-utilization``
    Remove the flag. The kvcached framework replaces the engine's fixed
