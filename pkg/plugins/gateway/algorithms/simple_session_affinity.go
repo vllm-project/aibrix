@@ -294,27 +294,28 @@ const (
 //
 // A Lua script (rather than GET followed by SET/EXPIRE) is used because the gate has
 // to hold against concurrent writers: between two commands another replica could
-// repin the session, which is exactly the race a plain SET loses. EVAL works on any
-// Redis with scripting (2.6+), matching the pattern used for the rate-limiter window
-// (see incrAndExpireScript).
+// repin the session, which is exactly the race a plain SET loses. redis.NewScript
+// keeps the hot path from re-sending the script body: once the server has it cached,
+// refreshes go by EVALSHA and only fall back to EVAL on NOSCRIPT, as the gateway's
+// async-job scripts do (see asyncJobRegisterScript).
 //
 // KEYS[1] = the pinning key
 // ARGV[1] = the address this replica is refreshing
 // ARGV[2] = the pinning TTL in milliseconds
 // Returns 0 when the stored value belongs to another writer (nothing written), 1 when
 // the matching value's TTL was extended, 2 when the pin was re-attached.
-const sessionKeyRefreshScript = `
+var sessionKeyRefreshScript = redis.NewScript(`
 local current = redis.call('GET', KEYS[1])
 if not current then
-  redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+  redis.call('SET', KEYS[1], ARGV[1], 'PX', tonumber(ARGV[2]))
   return 2
 end
 if current == ARGV[1] then
-  redis.call('PEXPIRE', KEYS[1], ARGV[2])
+  redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[2]))
   return 1
 end
 return 0
-`
+`)
 
 // sessionKeyRefreshScript outcome codes.
 const (
@@ -358,7 +359,7 @@ func (r *sessionAffinityRouter) persistSessionKeyToRedis(cacheKey, addr string, 
 		return true
 	}
 	if mode == writeRefresh {
-		outcome, err := r.redisClient.Eval(ctx, sessionKeyRefreshScript,
+		outcome, err := sessionKeyRefreshScript.Run(ctx, r.redisClient,
 			[]string{sessionAffinityRedisKey(cacheKey)}, addr, sessionAffinityTTL.Milliseconds()).Int()
 		if err != nil {
 			klog.V(4).ErrorS(err, "failed to persist session key pinning to redis", "cache_key", cacheKey)
