@@ -163,8 +163,3 @@ class RequestRecorder:
                 if request_id is None or record["request_id"] == request_id
             ]
         return records
-
-    def count(self, *, request_id):
-        """Return the retained attempt count for one request identifier."""
-        with self._lock:
-            return sum(record["request_id"] == request_id for record in self._records)

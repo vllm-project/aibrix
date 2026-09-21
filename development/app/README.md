@@ -149,10 +149,9 @@ curl -sS -i -X POST http://127.0.0.1:8000/v1/chat/completions \
 ```
 
 Matching `fail` requests return HTTP 500 and invalid delay values return HTTP
-400. Add `x-aibrix-mock-fail-attempts: 1` to fail only the first attempt for
-that request ID, which is useful for deterministic retry tests. Both outcomes
-are recorded. Use `x-aibrix-mock-fail: backend` for a non-PD mock deployment;
-`prefill` and `decode` remain role-specific. The delay limit is 30 seconds.
+400. Both outcomes are recorded. Use `x-aibrix-mock-fail: backend` for a non-PD
+mock deployment; `prefill` and `decode` remain role-specific. The delay limit
+is 30 seconds.
 
 `x-aibrix-mock-delay-ms` alone applies to whichever leg receives the request,
 which for a disaggregated request is both of them: the gateway forwards client

@@ -58,7 +58,6 @@ class FaultParseResult(NamedTuple):
 
     delay_ms: int
     injected_status_code: int | None
-    fail_attempts: int
     validation_status_code: int
     metadata: FrozenDict
 
@@ -74,7 +73,6 @@ def parse_fault_headers(headers, role):
         return FaultParseResult(
             delay_ms=0,
             injected_status_code=None,
-            fail_attempts=0,
             validation_status_code=400,
             metadata=FrozenDict(error="invalid x-aibrix-mock-delay-ms"),
         )
@@ -85,7 +83,6 @@ def parse_fault_headers(headers, role):
             return FaultParseResult(
                 delay_ms=0,
                 injected_status_code=None,
-                fail_attempts=0,
                 validation_status_code=400,
                 metadata=FrozenDict(error="invalid x-aibrix-mock-delay-ms"),
             )
@@ -93,7 +90,6 @@ def parse_fault_headers(headers, role):
             return FaultParseResult(
                 delay_ms=0,
                 injected_status_code=None,
-                fail_attempts=0,
                 validation_status_code=400,
                 metadata=FrozenDict(error="invalid x-aibrix-mock-delay-ms"),
             )
@@ -108,7 +104,6 @@ def parse_fault_headers(headers, role):
             return FaultParseResult(
                 delay_ms=0,
                 injected_status_code=None,
-                fail_attempts=0,
                 validation_status_code=400,
                 metadata=FrozenDict(error="invalid x-aibrix-mock-delay-role"),
             )
@@ -120,31 +115,10 @@ def parse_fault_headers(headers, role):
         fail_value in _ROLES and fail_value == role
     ) or (fail_value == BACKEND and not role)
     injected_status_code = 500 if fail_matches else None
-    fail_attempts_value = normalized_headers.get("x-aibrix-mock-fail-attempts")
-    if fail_attempts_value is None:
-        fail_attempts = 0
-    else:
-        try:
-            fail_attempts = int(fail_attempts_value)
-        except (TypeError, ValueError):
-            fail_attempts = -1
-        if (
-            isinstance(fail_attempts_value, bool)
-            or str(fail_attempts_value) != str(fail_attempts)
-            or fail_attempts < 1
-        ):
-            return FaultParseResult(
-                delay_ms=delay_ms,
-                injected_status_code=None,
-                fail_attempts=0,
-                validation_status_code=400,
-                metadata=FrozenDict(error="invalid x-aibrix-mock-fail-attempts"),
-            )
 
     return FaultParseResult(
         delay_ms=delay_ms,
         injected_status_code=injected_status_code,
-        fail_attempts=fail_attempts,
         validation_status_code=200,
         metadata=FrozenDict(),
     )

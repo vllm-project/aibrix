@@ -355,60 +355,6 @@ def test_malformed_legacy_json_returns_bad_request_and_finalizes_rejected_record
     assert record["error"]
 
 
-def test_request_scoped_fail_attempts_only_rejects_the_first_attempt(monkeypatch):
-    module = load_mock_module(monkeypatch, contract="vllm-aibrix-shfs", role="prefill")
-    client = module.app.test_client()
-    headers = {
-        "X-Aibrix-Mock-Fail": "prefill",
-        "X-Aibrix-Mock-Fail-Attempts": "1",
-    }
-    payload = {
-        "model": "m",
-        "prompt": "hello",
-        "max_tokens": 1,
-        "kv_transfer_params": {"do_remote_decode": True},
-    }
-
-    first = post_json(client, "/v1/completions", payload, request_id="retry-once", **headers)
-    second = post_json(client, "/v1/completions", payload, request_id="retry-once", **headers)
-
-    assert first.status_code == 500
-    assert second.status_code == 200
-    records = query_records(client, "retry-once")
-    assert [(record["outcome"], record["status_code"]) for record in records] == [
-        ("failed", 500),
-        ("success", 200),
-    ]
-
-
-def test_fail_attempts_without_request_id_does_not_share_attempt_budget(monkeypatch):
-    module = load_mock_module(monkeypatch)
-    client = module.app.test_client()
-    headers = {
-        "Content-Type": "application/json",
-        "X-Aibrix-Mock-Fail": "backend",
-        "X-Aibrix-Mock-Fail-Attempts": "1",
-    }
-    raw_body = json.dumps(
-        {
-            "model": "m",
-            "messages": [{"role": "user", "content": "hello"}],
-            "max_tokens": 1,
-        },
-        separators=(",", ":"),
-    ).encode("utf-8")
-
-    responses = [
-        client.post("/v1/chat/completions", data=raw_body, headers=headers)
-        for _ in range(2)
-    ]
-
-    assert [response.status_code for response in responses] == [500, 500]
-    records = client.get("/debug/requests").get_json()
-    assert [record["request_id"] for record in records] == [None, None]
-    assert [record["outcome"] for record in records] == ["failed", "failed"]
-
-
 def test_non_pd_backend_fault_is_request_scoped_and_recorded(monkeypatch):
     module = load_mock_module(monkeypatch)
     client = module.app.test_client()

@@ -812,18 +812,7 @@ def _recorded_completion(path):
                 if fault.delay_ms:
                     time.sleep(fault.delay_ms / 1000.0)
 
-                should_fail_attempt = (
-                    fault.injected_status_code is not None
-                    and fault.fail_attempts > 0
-                    and (
-                        not request_id
-                        or request_recorder.count(request_id=request_id)
-                        <= fault.fail_attempts
-                    )
-                )
-                if fault.injected_status_code is not None and (
-                    fault.fail_attempts == 0 or should_fail_attempt
-                ):
+                if fault.injected_status_code is not None:
                     message = (
                         f"mock failure injected for role {role}"
                         if role

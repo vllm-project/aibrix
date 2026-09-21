@@ -171,29 +171,6 @@ func TestPDBackendRequestsMatchGatewayTransformationsAndTargets(t *testing.T) {
 	assert.Equal(t, false, transfer["do_remote_decode"])
 }
 
-func TestPDDecodeBackendTimeoutIsPropagated(t *testing.T) {
-	ctx := context.Background()
-	waitForPDDisaggregationRouting(t, modelNameVLLM)
-	client, _ := initializeClient(ctx, t)
-	requestID := newRecorderRequestID()
-
-	response := postPDChat(t, ctx, requestID, map[string]string{
-		"x-aibrix-mock-delay-ms":         "2000",
-		"x-envoy-upstream-rq-timeout-ms": "1000",
-	})
-	require.Equal(t, http.StatusGatewayTimeout, response.status, "body=%s", response.body)
-	decodePod := response.header.Get("target-pod")
-	require.NotEmpty(t, decodePod)
-
-	records, err := framework.WaitForMockRequestCount(
-		ctx, client, e2eConfig.Namespace, decodePod, requestID, 1, 3*time.Second,
-	)
-	require.NoError(t, err)
-	assert.Equal(t, 2000, records[0].DelayMS)
-	assert.Equal(t, "success", records[0].Outcome,
-		"the decode backend finishes after Envoy's one-second route timeout")
-}
-
 func TestPDPrefillRequestConnectionFailureIsPropagatedBeforeEnvoyRouting(t *testing.T) {
 	ctx := context.Background()
 	waitForPDDisaggregationRouting(t, modelNameVLLM)

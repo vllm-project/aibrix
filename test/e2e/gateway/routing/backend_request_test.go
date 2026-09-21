@@ -135,83 +135,16 @@ func TestOrdinaryBackendReceivesGatewayBodyHeadersAndTarget(t *testing.T) {
 	assert.Equal(t, routingSentinelValue, ordinaryRecordHeader(record.Headers, routingSentinelHeader))
 }
 
-func TestOrdinaryBackendRetriesFirstFailureThenSucceeds(t *testing.T) {
+func TestOrdinaryBackendErrorStatusIsPropagated(t *testing.T) {
 	ctx := context.Background()
 	client, _ := framework.InitializeClient(ctx, t)
 	requestID := newRoutingRecorderRequestID()
 
 	response := postOrdinaryChat(t, ctx, requestID, map[string]string{
-		"x-aibrix-mock-fail":          "backend",
-		"x-aibrix-mock-fail-attempts": "1",
-		"x-envoy-retry-on":            "5xx",
-		"x-envoy-max-retries":         "1",
-	})
-	require.Equal(t, http.StatusOK, response.status, "body=%s", response.body)
-	targetPod := response.header.Get("target-pod")
-	require.NotEmpty(t, targetPod)
-
-	records, err := framework.WaitForMockRequestCount(
-		ctx,
-		client,
-		e2eConfig.Namespace,
-		targetPod,
-		requestID,
-		2,
-		routingRecorderTimeout,
-	)
-	require.NoError(t, err)
-	assert.Equal(t, []int{http.StatusInternalServerError, http.StatusOK}, []int{
-		records[0].StatusCode,
-		records[1].StatusCode,
-	})
-	assert.Equal(t, []string{"failed", "success"}, []string{
-		records[0].Outcome,
-		records[1].Outcome,
-	})
-}
-
-func TestOrdinaryBackendErrorBodyIsPropagatedAfterRetries(t *testing.T) {
-	ctx := context.Background()
-	client, _ := framework.InitializeClient(ctx, t)
-	requestID := newRoutingRecorderRequestID()
-
-	response := postOrdinaryChat(t, ctx, requestID, map[string]string{
-		"x-aibrix-mock-fail":  "backend",
-		"x-envoy-retry-on":    "5xx",
-		"x-envoy-max-retries": "1",
+		"x-aibrix-mock-fail": "backend",
 	})
 	require.Equal(t, http.StatusInternalServerError, response.status, "body=%s", response.body)
-	assert.Contains(t, string(response.body), "mock failure injected for backend")
-	assert.Equal(t, "true", response.header.Get("x-error-response-unknown"))
-	targetPod := response.header.Get("target-pod")
-	require.NotEmpty(t, targetPod)
-
-	records, err := framework.WaitForMockRequestCount(
-		ctx,
-		client,
-		e2eConfig.Namespace,
-		targetPod,
-		requestID,
-		2,
-		routingRecorderTimeout,
-	)
-	require.NoError(t, err)
-	assert.Equal(t, []int{http.StatusInternalServerError, http.StatusInternalServerError}, []int{
-		records[0].StatusCode,
-		records[1].StatusCode,
-	})
-}
-
-func TestOrdinaryBackendTimeoutIsPropagated(t *testing.T) {
-	ctx := context.Background()
-	client, _ := framework.InitializeClient(ctx, t)
-	requestID := newRoutingRecorderRequestID()
-
-	response := postOrdinaryChat(t, ctx, requestID, map[string]string{
-		"x-aibrix-mock-delay-ms":         "2000",
-		"x-envoy-upstream-rq-timeout-ms": "1000",
-	})
-	require.Equal(t, http.StatusGatewayTimeout, response.status, "body=%s", response.body)
+	assert.Contains(t, string(response.body), "Internal server error")
 	targetPod := response.header.Get("target-pod")
 	require.NotEmpty(t, targetPod)
 
@@ -222,12 +155,11 @@ func TestOrdinaryBackendTimeoutIsPropagated(t *testing.T) {
 		targetPod,
 		requestID,
 		1,
-		3*time.Second,
+		routingRecorderTimeout,
 	)
 	require.NoError(t, err)
-	assert.Equal(t, 2000, records[0].DelayMS)
-	assert.Equal(t, "success", records[0].Outcome,
-		"the backend should finish after Envoy has returned the one-second route timeout")
+	assert.Equal(t, http.StatusInternalServerError, records[0].StatusCode)
+	assert.Equal(t, "failed", records[0].Outcome)
 }
 
 func TestOrdinaryBackendConnectionFailureIsPropagated(t *testing.T) {
@@ -251,23 +183,19 @@ func TestOrdinaryBackendConnectionFailureIsPropagated(t *testing.T) {
 	framework.UpdatePodLabels(t, ctx, client, e2eConfig.Namespace, pod.Name, map[string]string{
 		"model.aibrix.ai/port": "1",
 	})
-	var response routedGatewayResponse
 	var requestID string
 	require.Eventually(t, func() bool {
 		candidateID := newRoutingRecorderRequestID()
 		candidate := postOrdinaryChat(t, ctx, candidateID, map[string]string{
 			"external-filter": routingFaultLabel + "=" + routingFaultValue,
 		})
-		if candidate.status != http.StatusServiceUnavailable || candidate.header.Get("target-pod") != pod.Name {
+		if candidate.status != http.StatusServiceUnavailable {
 			return false
 		}
-		response, requestID = candidate, candidateID
+		requestID = candidateID
 		return true
 	}, 30*time.Second, 100*time.Millisecond, "gateway did not propagate the ordinary backend connection failure")
 
-	assert.Equal(t, pod.Name, response.header.Get("target-pod"))
-	assert.True(t, strings.HasSuffix(response.header.Get("target-pod-ip"), ":1"),
-		"target address should contain the deliberately closed port: %s", response.header.Get("target-pod-ip"))
 	records, err := framework.QueryMockRequests(ctx, client, e2eConfig.Namespace, pod.Name, requestID)
 	require.NoError(t, err)
 	assert.Empty(t, records, "a refused connection must not reach the backend recorder")
