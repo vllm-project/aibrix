@@ -549,7 +549,7 @@ func (r *ModelClaimReconciler) makeRoomOnPod(
 	engines := append(append([]engineOnPod(nil), ledger.engines...), newcomer)
 	// Every byte the plan moves has to move, because the room this model was
 	// admitted against is made out of the neighbours' limits.
-	limits, err := r.arrangeCard(ctx, pm, pod, ledger.usableBytes, engines, 0)
+	limits, err := r.arrangeCard(ctx, pm, pod, ledger, engines, 0)
 	if err != nil {
 		return 0, err
 	}
@@ -597,7 +597,7 @@ func (r *ModelClaimReconciler) rebalanceDeclaredCards(ctx context.Context, candi
 			continue
 		}
 		if _, err := r.arrangeCard(
-			ctx, pod, pod, ledger.usableBytes, ledger.engines,
+			ctx, pod, pod, ledger, ledger.engines,
 			minimumKVLimitChangeBytes(ledger.usableBytes),
 		); err != nil {
 			klog.V(4).InfoS("could not arrange a card", "pod", klog.KObj(pod), "err", err)
@@ -620,11 +620,11 @@ func (r *ModelClaimReconciler) arrangeCard(
 	ctx context.Context,
 	about client.Object,
 	pod *corev1.Pod,
-	usableBytes int64,
+	ledger podLedger,
 	engines []engineOnPod,
 	minimumChangeBytes int64,
 ) ([]plannedKVLimit, error) {
-	limits, err := planKVLimits(usableBytes, engines)
+	limits, err := planKVLimits(ledger.usableBytes, engines)
 	if err != nil {
 		return nil, err
 	}
@@ -640,8 +640,14 @@ func (r *ModelClaimReconciler) arrangeCard(
 
 	written := writeOrder(limits)
 	for _, limit := range written {
-		operationID := fmt.Sprintf("kv-plan/%s/%s/%s/%d",
-			pod.Namespace, pod.UID, limit.claimName, limit.limitBytes)
+		// The moment the card was read is part of the operation, not only the
+		// value. The runtime runs each operation once, and an engine that
+		// restarted needs the same value written again: without the moment,
+		// that second write is taken for the first one and never reaches the
+		// segment, leaving the card stuck a round behind for good.
+		operationID := fmt.Sprintf("kv-plan/%s/%s/%s/%d/%d",
+			pod.Namespace, pod.UID, limit.claimName, limit.limitBytes,
+			ledger.observedAt.UnixNano())
 		if _, err := r.Runtime.SetKVLimit(ctx, pod.Status.PodIP, DefaultRuntimePort, &SetKVLimitRequest{
 			ModelName:   limit.modelName,
 			LimitBytes:  limit.limitBytes,

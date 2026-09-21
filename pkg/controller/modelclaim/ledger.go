@@ -19,6 +19,7 @@ package modelclaim
 import (
 	"context"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -127,6 +128,10 @@ type podLedger struct {
 	usableBytes int64
 	owedBytes   int64
 	heldBytes   int64
+	// observedAt is when the snapshot this account was built from was taken. A
+	// limit written from it carries the same moment, which is what tells the
+	// runtime one attempt from the next.
+	observedAt time.Time
 	// engines are the instances recorded on this card, each with what its claim
 	// declared and what its engine currently holds.
 	engines []engineOnPod
@@ -188,7 +193,11 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 		case !measured:
 			ledgers[pod.Name] = podLedger{blocked: "its cards could not be measured"}
 		default:
-			ledgers[pod.Name] = podLedger{judgeable: true, usableBytes: usableBytes}
+			ledgers[pod.Name] = podLedger{
+				judgeable:   true,
+				usableBytes: usableBytes,
+				observedAt:  snapshots[pod.Name].ObservedAt,
+			}
 		}
 	}
 

@@ -19,6 +19,7 @@ package modelclaim
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -1448,6 +1449,59 @@ func TestReconcileLeavesLessToShareWhenAnEngineGrows(t *testing.T) {
 	// the 4 GiB floor the second keeps, leaves 6 GiB to share evenly.
 	assert.Equal(t, int64(33)<<30, limits["first"])
 	assert.Equal(t, int64(7)<<30, limits["second"])
+}
+
+// planWrites are the limits an arrangement wrote, as opposed to the ones the
+// health loop wrote to hold one engine to its record.
+func planWrites(calls []SetKVLimitRequest) []SetKVLimitRequest {
+	var written []SetKVLimitRequest
+	for _, call := range calls {
+		if strings.HasPrefix(call.OperationID, "kv-plan/") {
+			written = append(written, call)
+		}
+	}
+	return written
+}
+
+func TestReconcileArrangesACardAgainAfterANeighbourRestarts(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	mine := withFinalizer(claimOnPod("mine", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	mine.Status.Instances[0].KVLimitBytes = 20 << 30
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30)
+	neighbour.Status.Instances[0].KVLimitBytes = 20 << 30
+	snapshot.Models = []RuntimeSnapshotModel{
+		engineHolding("mine", 2<<30, 20<<30),
+		// The neighbour restarted and put its allocator's own limit back. Its
+		// own claim is not the one reconciling, so only the arrangement of the
+		// card can pull it down again.
+		engineHolding("neighbour", 2<<30, 10<<30),
+	}
+	now := time.Unix(1_700_000_000, 0)
+	snapshot.ObservedAt = now
+	r, runtime := newReconciler(t, mine, neighbour, pod)
+	r.PoolPolicy = newPoolPolicyManager(func() time.Time { return now })
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, "mine")
+	first := planWrites(runtime.kvLimitCalls)
+	require.Len(t, first, 1)
+	assert.Equal(t, "neighbour", first[0].ModelName)
+	assert.Equal(t, int64(20)<<30, first[0].LimitBytes)
+
+	// It restarts again. The plan has not changed, so only the moment it was
+	// planned from tells the runtime this is a second attempt rather than the
+	// first one repeated.
+	snapshot.Models[1].KVCapacityBytes = 10 << 30
+	now = now.Add(DefaultRequeueDuration)
+	snapshot.ObservedAt = now
+	runtime.kvLimitCalls = nil
+
+	reconcileOnce(t, r, "mine")
+
+	second := planWrites(runtime.kvLimitCalls)
+	require.Len(t, second, 1)
+	assert.Equal(t, first[0].LimitBytes, second[0].LimitBytes)
+	assert.NotEqual(t, first[0].OperationID, second[0].OperationID)
 }
 
 func TestBeginCardArrangesACardOnlyOncePerRound(t *testing.T) {
