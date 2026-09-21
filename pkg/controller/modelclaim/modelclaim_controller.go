@@ -232,6 +232,10 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// claim status is persisted so a policy failure cannot block activation
 	// or route-health convergence for this claim.
 	r.reconcilePoolPolicies(ctx, candidates)
+	// Cards whose engines all declare their cost are arranged by the same
+	// planner placement uses, so their spare KV follows demand rather than
+	// waiting for the next model to land.
+	r.rebalanceDeclaredCards(ctx, candidates)
 	return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, nil
 }
 
@@ -526,13 +530,6 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 // makeRoomOnPod divides a card between the engines on it and the one about to
 // join them, and returns the newcomer's share.
 //
-// The work is done in an order that never leaves two engines entitled to the
-// same byte. Every neighbour's new limit is recorded first, so a controller
-// that stops here leaves records the health loops will act on rather than
-// limits nobody remembers. The limits are then written, shrinking before
-// growing. Finally a fresh reading has to agree, because a write that reached
-// no segment is reported as a success either way.
-//
 // Returning an error means this model is not placed on this card this round.
 // The neighbours keep the smaller limits, which costs them room until the next
 // pass plans the card again, and costs correctness nothing.
@@ -549,49 +546,125 @@ func (r *ModelClaimReconciler) makeRoomOnPod(
 		kvFloorBytes:    kvFloorBytes(pm),
 		kvCapacityBytes: kvLimitUnknown,
 	}
-	limits, err := planKVLimits(ledger.usableBytes, append(ledger.engines, newcomer))
+	engines := append(append([]engineOnPod(nil), ledger.engines...), newcomer)
+	// Every byte the plan moves has to move, because the room this model was
+	// admitted against is made out of the neighbours' limits.
+	limits, err := r.arrangeCard(ctx, pm, pod, ledger.usableBytes, engines, 0)
 	if err != nil {
 		return 0, err
 	}
-
-	share := int64(0)
 	for _, limit := range limits {
 		if limit.claimName == pm.Name {
-			share = limit.limitBytes
+			return limit.limitBytes, nil
+		}
+	}
+	return 0, fmt.Errorf("%s was left out of the plan for %s", pm.Name, pod.Name)
+}
+
+// rebalanceDeclaredCards arranges the cards in this pool whose engines all
+// declare what they cost.
+//
+// Placement divides a card when a model lands on it, and what the engines on
+// that card are doing changes afterwards. Without this, the share an engine was
+// given at placement is the share it keeps until another model is placed beside
+// it, and the room freed when a neighbour goes away is never handed to anyone.
+//
+// A card nobody could account for is left alone, which is any card carrying a
+// claim that declares nothing. Those pools are the annotation policy's to
+// arrange.
+func (r *ModelClaimReconciler) rebalanceDeclaredCards(ctx context.Context, candidates []corev1.Pod) {
+	manager := r.poolPolicyManager()
+	due := make([]corev1.Pod, 0, len(candidates))
+	for i := range candidates {
+		pod := &candidates[i]
+		if podGPUCount(*pod) == 0 || pod.Status.PodIP == "" {
 			continue
 		}
-		if err := r.recordKVLimit(ctx, pm.Namespace, limit.claimName, pod.Name, limit.limitBytes); err != nil {
-			return 0, fmt.Errorf("record %s at %s: %w", limit.claimName, gibibytes(limit.limitBytes), err)
+		if !manager.beginCard(types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}) {
+			continue
+		}
+		due = append(due, *pod)
+	}
+	if len(due) == 0 {
+		return
+	}
+
+	ledgers := r.collectPodLedgers(ctx, due[0].Namespace, due, r.freshSnapshots(ctx, due))
+	for i := range due {
+		pod := &due[i]
+		ledger := ledgers[pod.Name]
+		if !ledger.judgeable || len(ledger.engines) == 0 {
+			continue
+		}
+		if _, err := r.arrangeCard(
+			ctx, pod, pod, ledger.usableBytes, ledger.engines,
+			minimumKVLimitChangeBytes(ledger.usableBytes),
+		); err != nil {
+			klog.V(4).InfoS("could not arrange a card", "pod", klog.KObj(pod), "err", err)
+		}
+	}
+}
+
+// arrangeCard plans one card and carries the plan out, returning the plan.
+//
+// The work is done in an order that never leaves two engines entitled to the
+// same byte. Every new limit is recorded on its own claim first, so a
+// controller that stops here leaves records the health loops will act on rather
+// than limits nobody remembers. The limits are written next, shrinking before
+// growing. Finally a fresh reading has to agree, because a write that reached
+// no segment is reported as a success either way.
+//
+// A plan that moves less than minimumChangeBytes on every engine is returned
+// without being carried out, so a card that has barely drifted is left alone.
+func (r *ModelClaimReconciler) arrangeCard(
+	ctx context.Context,
+	about client.Object,
+	pod *corev1.Pod,
+	usableBytes int64,
+	engines []engineOnPod,
+	minimumChangeBytes int64,
+) ([]plannedKVLimit, error) {
+	limits, err := planKVLimits(usableBytes, engines)
+	if err != nil {
+		return nil, err
+	}
+	if minimumChangeBytes > 0 && !worthWriting(limits, minimumChangeBytes) {
+		return limits, nil
+	}
+
+	for _, limit := range limits {
+		if err := r.recordKVLimit(ctx, pod.Namespace, limit.claimName, pod.Name, limit.limitBytes); err != nil {
+			return nil, fmt.Errorf("record %s at %s: %w", limit.claimName, gibibytes(limit.limitBytes), err)
 		}
 	}
 
 	written := writeOrder(limits)
 	for _, limit := range written {
 		operationID := fmt.Sprintf("kv-plan/%s/%s/%s/%d",
-			pm.Namespace, pod.UID, limit.claimName, limit.limitBytes)
+			pod.Namespace, pod.UID, limit.claimName, limit.limitBytes)
 		if _, err := r.Runtime.SetKVLimit(ctx, pod.Status.PodIP, DefaultRuntimePort, &SetKVLimitRequest{
 			ModelName:   limit.modelName,
 			LimitBytes:  limit.limitBytes,
 			OperationID: operationID,
 		}); err != nil {
-			return 0, fmt.Errorf("set %s to %s: %w", limit.modelName, gibibytes(limit.limitBytes), err)
+			return nil, fmt.Errorf("set %s to %s: %w", limit.modelName, gibibytes(limit.limitBytes), err)
 		}
 	}
 	if len(written) == 0 {
-		return share, nil
+		return limits, nil
 	}
 
 	snapshot, err := r.Runtime.Snapshot(ctx, pod.Status.PodIP, DefaultRuntimePort)
 	if err != nil {
-		return 0, fmt.Errorf("read back the limits on %s: %w", pod.Name, err)
+		return nil, fmt.Errorf("read back the limits on %s: %w", pod.Name, err)
 	}
 	if err := kvLimitsInForce(snapshot, written); err != nil {
-		return 0, err
+		return nil, err
 	}
-	r.Recorder.Eventf(pm, corev1.EventTypeNormal, "KVLimitSet",
-		"%d engine(s) on pod %s held to their share, leaving %s for model %s",
-		len(written), pod.Name, gibibytes(share), servedModelName(pm))
-	return share, nil
+	r.Recorder.Eventf(about, corev1.EventTypeNormal, "KVLimitSet",
+		"%d of the %d engine(s) on pod %s were held to a new share of the card",
+		len(written), len(limits), pod.Name)
+	return limits, nil
 }
 
 // recordKVLimit writes the limit an instance is to run under into its own

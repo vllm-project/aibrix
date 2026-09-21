@@ -1385,6 +1385,83 @@ func readyEngine(kvCapacityBytes int64) RuntimeSnapshotModel {
 	}
 }
 
+// aCardAndOneEngineOnIt is a realistically sized card carrying one claim whose
+// engine is already held to limitBytes and has mapped usedBytes.
+func aCardAndOneEngineOnIt(t *testing.T, limitBytes, usedBytes int64) (*ModelClaimReconciler, *fakeRuntime, *corev1.Pod) {
+	t.Helper()
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	solo := withFinalizer(claimOnPod("solo", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	solo.Status.Instances[0].Port = 9001
+	solo.Status.Instances[0].KVLimitBytes = limitBytes
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("solo", usedBytes, limitBytes)}
+	r, runtime := newReconciler(t, solo, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	return r, runtime, pod
+}
+
+func TestReconcileGivesACardsSpareRoomToTheEngineOnIt(t *testing.T) {
+	r, runtime, _ := aCardAndOneEngineOnIt(t, 10<<30, 4<<30)
+
+	reconcileOnce(t, r, "solo")
+
+	// 80 GiB less a 20 GiB footprint leaves 60 GiB, all of it this engine's.
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, int64(60)<<30, runtime.kvLimitCalls[0].LimitBytes)
+	got := getModel(t, r, "solo")
+	assert.Equal(t, int64(60)<<30, got.Status.Instances[0].KVLimitBytes)
+}
+
+func TestReconcileLeavesACardAloneWhenItHasBarelyDrifted(t *testing.T) {
+	// A hundred mebibytes short of its share, well inside one page bundle.
+	current := int64(60)<<30 - 100<<20
+	r, runtime, _ := aCardAndOneEngineOnIt(t, current, 4<<30)
+
+	reconcileOnce(t, r, "solo")
+
+	assert.Empty(t, runtime.kvLimitCalls)
+	got := getModel(t, r, "solo")
+	assert.Equal(t, current, got.Status.Instances[0].KVLimitBytes)
+}
+
+func TestReconcileLeavesLessToShareWhenAnEngineGrows(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	first := withFinalizer(claimOnPod("first", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	first.Status.Instances[0].KVLimitBytes = 20 << 30
+	second := claimOnPod("second", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30)
+	second.Status.Instances[0].KVLimitBytes = 20 << 30
+	// The first engine has mapped 30 GiB, well past its 4 GiB floor, so the
+	// 36 GiB the card has spare is no longer split evenly.
+	snapshot.Models = []RuntimeSnapshotModel{
+		engineHolding("first", 30<<30, 20<<30),
+		engineHolding("second", 2<<30, 20<<30),
+	}
+	r, runtime := newReconciler(t, first, second, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, "first")
+
+	limits := map[string]int64{}
+	for _, call := range runtime.kvLimitCalls {
+		limits[call.ModelName] = call.LimitBytes
+	}
+	// 80 GiB less two 20 GiB footprints, less the 30 GiB the first holds and
+	// the 4 GiB floor the second keeps, leaves 6 GiB to share evenly.
+	assert.Equal(t, int64(33)<<30, limits["first"])
+	assert.Equal(t, int64(7)<<30, limits["second"])
+}
+
+func TestBeginCardArrangesACardOnlyOncePerRound(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	manager := newPoolPolicyManager(func() time.Time { return now })
+	pod := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+
+	assert.True(t, manager.beginCard(pod))
+	assert.False(t, manager.beginCard(pod))
+
+	now = now.Add(DefaultRequeueDuration)
+	assert.True(t, manager.beginCard(pod))
+}
+
 func TestReconcileShrinksTheNeighbourToMakeRoomForANewModel(t *testing.T) {
 	pm := claimWithCost(300, 100)
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
