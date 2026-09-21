@@ -22,6 +22,7 @@ _CONTRACTS = frozenset(
     )
 )
 _ROLES = frozenset((PREFILL, DECODE))
+BACKEND = "backend"
 MAX_FAULT_DELAY_MS = 30_000
 
 
@@ -110,7 +111,11 @@ def parse_fault_headers(headers, role):
             delay_ms = 0
 
     fail_value = normalized_headers.get("x-aibrix-mock-fail")
-    injected_status_code = 500 if fail_value in _ROLES and fail_value == role else None
+    fail_matches = (
+        fail_value in _ROLES and fail_value == role
+    ) or (fail_value == BACKEND and not role)
+    injected_status_code = 500 if fail_matches else None
+
     return FaultParseResult(
         delay_ms=delay_ms,
         injected_status_code=injected_status_code,

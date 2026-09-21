@@ -32,18 +32,20 @@ import (
 
 // MockRequestRecord is a JSON-compatible request record returned by the mock app.
 type MockRequestRecord struct {
-	Sequence      int             `json:"sequence"`
-	RequestID     string          `json:"request_id"`
-	Path          string          `json:"path"`
-	RawBodyBase64 string          `json:"raw_body_base64"`
-	ParsedJSON    json.RawMessage `json:"parsed_json"`
-	Pod           string          `json:"pod"`
-	Engine        string          `json:"engine"`
-	Role          string          `json:"role"`
-	Outcome       string          `json:"outcome"`
-	StatusCode    int             `json:"status_code"`
-	Error         string          `json:"error"`
-	Response      json.RawMessage `json:"response"`
+	Sequence      int               `json:"sequence"`
+	RequestID     string            `json:"request_id"`
+	Path          string            `json:"path"`
+	Headers       map[string]string `json:"headers"`
+	RawBodyBase64 string            `json:"raw_body_base64"`
+	ParsedJSON    json.RawMessage   `json:"parsed_json"`
+	Pod           string            `json:"pod"`
+	Engine        string            `json:"engine"`
+	Role          string            `json:"role"`
+	Outcome       string            `json:"outcome"`
+	StatusCode    int               `json:"status_code"`
+	Error         string            `json:"error"`
+	Response      json.RawMessage   `json:"response"`
+	DelayMS       int               `json:"delay_ms"`
 }
 
 // DecodeMockRequestRecords decodes and orders records returned by the mock app.
@@ -108,6 +110,46 @@ func QueryAllMockRequests(
 	namespace, podName string,
 ) ([]MockRequestRecord, error) {
 	return queryMockRequests(ctx, client, namespace, podName, "", false)
+}
+
+// WaitForMockRequestCount waits for exactly expected completed recorder entries
+// for one request ID. A backend can finish after the gateway has returned, so
+// callers should wait for the recorder rather than race the backend response.
+func WaitForMockRequestCount(
+	ctx context.Context,
+	client kubernetes.Interface,
+	namespace, podName, requestID string,
+	expected int,
+	timeout time.Duration,
+) ([]MockRequestRecord, error) {
+	var records []MockRequestRecord
+	var lastErr error
+	err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, timeout, true,
+		func(ctx context.Context) (bool, error) {
+			records, lastErr = QueryMockRequests(ctx, client, namespace, podName, requestID)
+			if lastErr != nil || len(records) != expected {
+				return false, nil
+			}
+			for _, record := range records {
+				if record.Outcome == "" {
+					return false, nil
+				}
+			}
+			return true, nil
+		})
+	if err != nil {
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, fmt.Errorf(
+			"wait for %d mock request records for request ID %q on pod %q: %w",
+			expected,
+			requestID,
+			podName,
+			err,
+		)
+	}
+	return records, nil
 }
 
 func queryMockRequests(
