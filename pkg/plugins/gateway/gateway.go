@@ -77,6 +77,7 @@ type Server struct {
 	redisClient         *redis.Client
 	ratelimiter         ratelimiter.RateLimiter
 	modelRateLimiter    ratelimiter.RateLimiter
+	disableRateLimiting bool
 	apiKeyAuth          *apiKeyAuthConfig
 	client              kubernetes.Interface
 	gatewayClient       gatewayapi.Interface
@@ -244,6 +245,9 @@ func httpRouteCacheTTL() time.Duration {
 type ServerOptions struct {
 	Cache         cache.Cache
 	RouterManager *routing.RouterManager
+	// DisableRateLimiting disables AIBrix user and model quota enforcement while
+	// leaving Redis available to other gateway features.
+	DisableRateLimiting bool
 	// InFlightObserver receives test/diagnostic lifecycle deltas (+1/-1). The
 	// callback must be non-blocking and non-panicking because it runs on the
 	// request processing path and is not recovered by Gateway.
@@ -268,7 +272,7 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 	}
 	var r ratelimiter.RateLimiter
 	var mr ratelimiter.RateLimiter
-	if redisClient != nil {
+	if redisClient != nil && !options.DisableRateLimiting {
 		r = ratelimiter.NewRedisAccountRateLimiter("aibrix", redisClient, 1*time.Minute)
 		mr = ratelimiter.NewRedisAccountRateLimiter("aibrix_model", redisClient, 1*time.Second)
 	} else {
@@ -292,6 +296,7 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		redisClient:         redisClient,
 		ratelimiter:         r,
 		modelRateLimiter:    mr,
+		disableRateLimiting: options.DisableRateLimiting,
 		apiKeyAuth:          loadAPIKeyAuthConfig(),
 		client:              client,
 		gatewayClient:       gatewayClient,
@@ -314,7 +319,15 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 	return s
 }
 
-func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
+func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) (err error) {
+	// Process is also reachable without the server's stream interceptor, so it
+	// recovers panics on its own as well.
+	defer func() {
+		if r := recover(); r != nil {
+			err = recoverStreamPanic(r, ProcessFullMethod)
+		}
+	}()
+
 	rootSpan := trace.SpanFromContext(srv.Context())
 	requestID := uuid.New().String()
 	if rootSpan.SpanContext().HasTraceID() {

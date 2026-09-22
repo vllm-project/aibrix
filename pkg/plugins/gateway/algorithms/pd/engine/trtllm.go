@@ -158,7 +158,7 @@ func (h *TRTLLMHandler) MergePrefillResponse(
 	}
 	e := pd.NewJSONEditor(routingCtx.ReqBody).SetRaw("disaggregated_params", params)
 	if pti := gjson.GetBytes(prefillResponse, "prompt_token_ids"); pti.IsArray() {
-		switch routingCtx.ReqPath {
+		switch utils.PathWithoutQuery(routingCtx.ReqPath) {
 		case "/v1/completions":
 			e.SetRaw("prompt", []byte(pti.Raw))
 		case "/v1/chat/completions":

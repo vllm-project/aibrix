@@ -170,6 +170,28 @@ func Test_ValidateRequestBody(t *testing.T) {
 			statusCode:  envoyTypePb.StatusCode_OK,
 		},
 		{
+			// HTTP/2 :path carries the query string (RFC 7540); before validateRequestBody
+			// stripped it here, this fell through to the "unknown request path" default and
+			// returned 501 instead of being parsed as a chat completion.
+			message:     "/v1/chat/completions?beta=true query string does not break path matching",
+			requestPath: "/v1/chat/completions?beta=true",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}]}`),
+			model:       "llama2-7b",
+			messages:    "this is system say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			// validateChatRequest's TPM guard compares requestPath against PathChatCompletions
+			// exactly (see the "NOT OK" case above), so a 400 here also confirms
+			// validateRequestBody passes the query-stripped path down to it, not the raw
+			// "/v1/chat/completions?beta=true".
+			message:     "/v1/chat/completions?beta=true stream_options.include_usage == false with user.TPM >= 1 is NOT OK",
+			user:        utils.User{Tpm: 1},
+			requestPath: "/v1/chat/completions?beta=true",
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": false}, "messages": [{"role": "system", "content": "this is system"}]}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
 			message:     "/tokenize prompt form",
 			requestPath: "/tokenize",
 			requestBody: []byte(`{"model": "llama2-7b", "prompt": "say this is test"}`),
@@ -217,6 +239,21 @@ func Test_ValidateRequestBody(t *testing.T) {
 			user:        utils.User{Tpm: 1},
 			requestPath: "/v1/messages",
 			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": true}, "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}]}`),
+			stream:      true,
+			model:       "llama2-7b",
+			messages:    "this is system say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			// HTTP/2 :path carries the query string (RFC 7540), so /v1/messages?beta=true must
+			// still match PathMessages, not fall through to the "unknown request path" default
+			// case. stream_options.include_usage is deliberately false with Tpm: 1: that
+			// combination is a 400 on /v1/chat/completions (see the case above), so passing here
+			// also confirms the query string didn't make this get treated as chat completions.
+			message:     "/v1/messages?beta=true query string does not break path matching",
+			user:        utils.User{Tpm: 1},
+			requestPath: "/v1/messages?beta=true",
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": false}, "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}]}`),
 			stream:      true,
 			model:       "llama2-7b",
 			messages:    "this is system say this is test",
@@ -1719,6 +1756,48 @@ func TestApplyConfigProfile_BuildsFeaturesOnlyForAutoSelection(t *testing.T) {
 			} else {
 				assert.NotContains(t, ctx.RespHeaders, HeaderAIBrixConfigProfile)
 			}
+		})
+	}
+}
+
+func TestApplyConfigProfile_AuthoritativePolicyUsesDefaultProfile(t *testing.T) {
+	profileJSON := `{
+		"authoritativeRoutingPolicy":true,
+		"defaultProfile":"default",
+		"profiles":{
+			"default":{"routingStrategy":"least-request","routingConfig":{"marker":"default"}},
+			"batch":{"routingStrategy":"throughput","routingConfig":{"promptTokensGte":1,"marker":"batch"}}
+		}
+	}`
+	pods := []*v1.Pod{{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "pod-a",
+			Annotations: map[string]string{constants.ModelAnnoConfig: profileJSON},
+		},
+	}}
+
+	for _, reqConfigProfile := range []string{"batch", autoConfigProfile} {
+		t.Run(reqConfigProfile, func(t *testing.T) {
+			ctx := types.NewRoutingContext(context.Background(), "", "", "", "request-1", "")
+			ctx.ReqConfigProfile = reqConfigProfile
+			ctx.Message = "prompt"
+			ctx.ReqHeaders = map[string]string{
+				HeaderRoutingStrategy: "throughput",
+				HeaderExternalFilter:  "environment=batch",
+				"x-test-header":       "preserved",
+			}
+
+			applyConfigProfile(ctx, pods)
+
+			require.NotNil(t, ctx.ConfigProfile)
+			assert.True(t, ctx.ConfigProfile.AuthoritativeRoutingPolicy)
+			assert.Equal(t, "least-request", ctx.ConfigProfile.RoutingStrategy)
+			assert.Contains(t, string(ctx.ConfigProfile.RoutingConfig), `"marker":"default"`)
+			assert.Empty(t, ctx.ReqConfigProfile)
+			assert.NotContains(t, ctx.ReqHeaders, HeaderRoutingStrategy)
+			assert.NotContains(t, ctx.ReqHeaders, HeaderExternalFilter)
+			assert.Equal(t, "preserved", ctx.ReqHeaders["x-test-header"])
+			assert.NotContains(t, ctx.RespHeaders, HeaderAIBrixConfigProfile)
 		})
 	}
 }

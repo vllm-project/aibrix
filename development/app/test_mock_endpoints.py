@@ -355,6 +355,31 @@ def test_malformed_legacy_json_returns_bad_request_and_finalizes_rejected_record
     assert record["error"]
 
 
+def test_non_pd_backend_fault_is_request_scoped_and_recorded(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+    payload = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 1,
+    }
+
+    response = post_json(
+        client,
+        "/v1/chat/completions",
+        payload,
+        request_id="backend-failure",
+        **{"X-Aibrix-Mock-Fail": "backend"},
+    )
+
+    assert response.status_code == 500
+    assert response.get_json()["error"]["message"] == "mock failure injected for backend"
+    record = query_records(client, "backend-failure")[0]
+    assert record["role"] == ""
+    assert record["outcome"] == "failed"
+    assert record["status_code"] == 500
+
+
 @pytest.mark.parametrize(
     "path,payload,ordinary_field,finish_reason",
     [

@@ -22,7 +22,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,6 +39,7 @@ const recorderFixture = `[
     "sequence": 2,
     "request_id": "request-1",
     "path": "/v1/chat/completions",
+    "headers": {"x-request-id": "request-1"},
     "raw_body_base64": "eyJtb2RlbCI6Im1vZGVsIn0=",
     "parsed_json": {"model": "model", "prompt": "hello"},
     "pod": "decode-pod",
@@ -45,7 +48,8 @@ const recorderFixture = `[
     "outcome": "success",
     "status_code": 200,
     "error": "",
-    "response": {"id": "decode-response"}
+    "response": {"id": "decode-response"},
+    "delay_ms": 25
   },
   {
     "sequence": 1,
@@ -74,6 +78,8 @@ func TestDecodeMockRequestRecords(t *testing.T) {
 	require.Equal(t, "decode", records[1].Role)
 	require.JSONEq(t, `{"model":"model","prompt":"hello"}`, string(records[0].ParsedJSON))
 	require.JSONEq(t, `{"id":"decode-response"}`, string(records[1].Response))
+	require.Equal(t, "request-1", records[1].Headers["x-request-id"])
+	require.Equal(t, 25, records[1].DelayMS)
 }
 
 func TestClassifyPDRecordsTreatsEmptyOutcomeAsPending(t *testing.T) {
@@ -187,6 +193,37 @@ func TestQueryMockRequestsRejectsNilClient(t *testing.T) {
 
 	require.Error(t, err)
 	require.ErrorContains(t, err, "kubernetes client is nil")
+}
+
+func TestWaitForMockRequestCountWaitsForCompletedRecord(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		outcome := ""
+		if requests.Add(1) > 1 {
+			outcome = "success"
+		}
+		_, _ = fmt.Fprintf(w, `[{"sequence":1,"request_id":"request-1","outcome":%q,"status_code":200}]`, outcome)
+	}))
+	defer server.Close()
+
+	client, err := kubernetes.NewForConfig(&rest.Config{
+		Host:    server.URL,
+		APIPath: "/api",
+		ContentConfig: rest.ContentConfig{
+			GroupVersion:         &schema.GroupVersion{Group: "", Version: "v1"},
+			NegotiatedSerializer: scheme.Codecs,
+		},
+	})
+	require.NoError(t, err)
+
+	records, err := WaitForMockRequestCount(
+		context.Background(), client, "test", "mock-pod", "request-1", 1, time.Second,
+	)
+
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	require.Equal(t, "success", records[0].Outcome)
+	require.GreaterOrEqual(t, requests.Load(), int32(2))
 }
 
 func TestWaitForSuccessfulPDLegsReturnsOneLegPerPod(t *testing.T) {

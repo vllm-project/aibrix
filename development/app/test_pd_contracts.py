@@ -435,6 +435,13 @@ def test_fault_header_for_other_role_does_not_fail(role, fail_value):
     assert result.metadata == {}
 
 
+def test_backend_fault_header_matches_non_pd_backend():
+    result = parse_fault_headers({"x-aibrix-mock-fail": "backend"}, "")
+
+    assert result.injected_status_code == 500
+    assert result.validation_status_code == 200
+
+
 @pytest.mark.parametrize("fail_value", ["", "worker", "PREFILL", "true", None])
 def test_invalid_fail_header_is_ignored(fail_value):
     result = parse_fault_headers({"x-aibrix-mock-fail": fail_value}, "prefill")

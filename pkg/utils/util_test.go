@@ -176,3 +176,22 @@ func TestLoadEnvNonNegativeInt(t *testing.T) {
 		assert.Equal(t, defaultValue, LoadEnvInt(key, defaultValue))
 	})
 }
+
+func TestPathWithoutQuery(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "empty", path: "", want: ""},
+		{name: "no query string", path: "/v1/chat/completions", want: "/v1/chat/completions"},
+		{name: "query string is stripped", path: "/v1/chat/completions?beta=true", want: "/v1/chat/completions"},
+		{name: "query string after nested path segments", path: "/v1/videos/abc/content?download=1", want: "/v1/videos/abc/content"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, PathWithoutQuery(tc.path))
+		})
+	}
+}

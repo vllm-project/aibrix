@@ -172,9 +172,10 @@ func parseResponsesInput(requestID string, input json.RawMessage) (string, *extP
 // The per-path parsing is delegated to dedicated validate* helpers to keep this dispatcher simple.
 // nolint:nakedret
 func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
-	switch requestPath {
+	path := pathWithoutQuery(requestPath)
+	switch path {
 	case PathChatCompletions, PathMessages:
-		model, message, stream, errRes = validateChatRequest(requestID, requestPath, requestBody, user)
+		model, message, stream, errRes = validateChatRequest(requestID, path, requestBody, user)
 	case PathResponses:
 		model, message, stream, errRes = validateResponsesRequest(requestID, requestBody)
 	case PathCompletions:
@@ -524,8 +525,7 @@ func validateTokenizeRequest(requestID string, requestBody []byte) (model, messa
 // :path includes both path and query (RFC 7540), so exact/prefix matchers must
 // cut on '?' before comparing.
 func pathWithoutQuery(requestPath string) string {
-	path, _, _ := strings.Cut(requestPath, "?")
-	return path
+	return utils.PathWithoutQuery(requestPath)
 }
 
 // isMultipartFormPath returns true if requestPath is an endpoint whose request
@@ -761,6 +761,9 @@ func rpsToLimitWindow(rps float64) (limit int64, windowSeconds int64) {
 //     defaultProfile (or "default") in the JSON.
 //   - config-profile: auto evaluates request-local hints in profile routingConfig
 //     and resolves to a concrete profile before routing strategy derivation.
+//   - authoritativeRoutingPolicy clears the client routing controls before profile
+//     resolution, so the existing default-profile and routing-precedence behavior
+//     applies as if the client had not sent those headers.
 //   - lockedRoutingStrategy (top-level) is applied even when no profile resolves, so a
 //     model-wide lock cannot be bypassed by selecting a profile or sending a header.
 //   - The profile's requestsPerSecondPerReplica, if set, always takes precedence over the
@@ -782,12 +785,22 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 	if routingCtx == nil {
 		return
 	}
+	cfg := configprofiles.ResolveModelConfig(pods)
+	if cfg == nil {
+		return
+	}
+	if cfg.AuthoritativeRoutingPolicy {
+		routingCtx.ReqConfigProfile = ""
+		delete(routingCtx.ReqHeaders, HeaderRoutingStrategy)
+		delete(routingCtx.ReqHeaders, HeaderExternalFilter)
+	}
+
 	reqConfigProfile := routingCtx.ReqConfigProfile
 	var features configprofiles.RequestFeatures
 	if strings.EqualFold(strings.TrimSpace(reqConfigProfile), "auto") {
 		features = buildConfigProfileRequestFeatures(routingCtx)
 	}
-	profile, profileName, locked := configprofiles.ResolveConfigForRequest(pods, reqConfigProfile, features)
+	profile, profileName, locked := cfg.ResolveForRequest(reqConfigProfile, features)
 
 	var replicaRPS float64
 	var inflight int64
@@ -795,7 +808,7 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 		replicaRPS = profile.RequestsPerSecondPerReplica
 		inflight = profile.RequestsInflight
 	}
-	if profile == nil && locked == "" && replicaRPS <= 0 && inflight <= 0 {
+	if profile == nil && locked == "" && !cfg.AuthoritativeRoutingPolicy && replicaRPS <= 0 && inflight <= 0 {
 		return
 	}
 
@@ -806,7 +819,10 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 		}
 		routingCtx.RespHeaders[HeaderAIBrixConfigProfile] = profileName
 	}
-	cp := &types.ResolvedConfigProfile{LockedRoutingStrategy: locked}
+	cp := &types.ResolvedConfigProfile{
+		LockedRoutingStrategy:      locked,
+		AuthoritativeRoutingPolicy: cfg.AuthoritativeRoutingPolicy,
+	}
 	if profile != nil {
 		cp.RoutingStrategy = profile.RoutingStrategy
 		cp.RoutingConfig = profile.RoutingConfig
