@@ -17,6 +17,7 @@ limitations under the License.
 package queue
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -153,5 +154,30 @@ var _ = Describe("SLOQueue FIFO fallback metrics", func() {
 		Expect(dequeued).To(BeIdenticalTo(picked))
 
 		Expect(capture.labelValues(metrics.GatewayQueueFIFOFallbackTotal, "reason")).To(BeEmpty())
+	})
+
+	It("should label a fallback from the entry, not from a recycled routing context", func() {
+		q := newTestSLOQueue(model, map[string]*types.RoutingContext{
+			"single": newRankedTestRequest("req-recycled", 2, 0),
+		})
+
+		picked, err := q.Peek(time.Now(), fakePodList{deployments: []string{"dep-missing"}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(picked).NotTo(BeNil())
+
+		// Replay what requestPool does between two requests while the entry is still
+		// queued: the context is reset for a different request.
+		types.RecycleRoutingContextForTest(picked.RoutingContext, context.Background(),
+			types.RoutingAlgorithm("test"), "recycled-model", "hello world", "req-recycled-next", "")
+
+		capture, stop := startCounterCapture()
+		defer stop()
+
+		dequeued, err := q.Dequeue(time.Now())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(dequeued).To(BeIdenticalTo(picked))
+
+		Expect(capture.labelValues(metrics.GatewayQueueFIFOFallbackTotal, "reason")).To(Equal([]string{"no_profile"}))
+		Expect(capture.labelValues(metrics.GatewayQueueFIFOFallbackTotal, "model")).To(Equal([]string{model}))
 	})
 })

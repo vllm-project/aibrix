@@ -59,7 +59,7 @@ type candidateProfiles struct {
 }
 
 type candidateRouterRequest struct {
-	*types.RoutingContext
+	*types.QueueEntry
 	SubKey   string
 	Profiles []*candidateProfiles
 }
@@ -90,7 +90,7 @@ type SLOQueue struct {
 	cache          cache.Cache
 
 	modelName string
-	subs      utils.SyncMap[string, types.RouterQueue[*types.RoutingContext]]
+	subs      utils.SyncMap[string, types.RouterQueue[*types.QueueEntry]]
 	// features  utils.SyncMap[string, types.RequestFeatures]
 	subpool sync.Pool
 
@@ -115,12 +115,13 @@ func NewSLOQueue(provider types.RouterProviderFunc, modelName string) (router *S
 		cache:          c,
 		modelName:      modelName,
 	}
-	router.subpool.New = func() any { return NewSimpleQueue[*types.RoutingContext](initialSubQueueSize) }
+	router.subpool.New = func() any { return NewSimpleQueue[*types.QueueEntry](initialSubQueueSize) }
 	router.expandDequeueCandidatesLocked(initialTotalSubQueues)
 	return router, nil
 }
 
-func (q *SLOQueue) Enqueue(ctx *types.RoutingContext, currentTime time.Time) error {
+func (q *SLOQueue) Enqueue(entry *types.QueueEntry, currentTime time.Time) error {
+	ctx := entry.RoutingContext
 	// Set output predictor first
 	predictor, err := q.cache.GetOutputPredictor(ctx.Model)
 	if err != nil {
@@ -128,7 +129,7 @@ func (q *SLOQueue) Enqueue(ctx *types.RoutingContext, currentTime time.Time) err
 	}
 	ctx.SetOutputPredictor(predictor)
 
-	newQueue := q.subpool.Get().(types.RouterQueue[*types.RoutingContext])
+	newQueue := q.subpool.Get().(types.RouterQueue[*types.QueueEntry])
 	features, err := ctx.Features()
 	if err != nil {
 		return err
@@ -141,12 +142,12 @@ func (q *SLOQueue) Enqueue(ctx *types.RoutingContext, currentTime time.Time) err
 	}
 
 	// SimpleQueue.Enqueue() returns nil always.
-	sub.Enqueue(ctx, currentTime) // nolint: errcheck
+	sub.Enqueue(entry, currentTime) // nolint: errcheck
 	q.debugSub(fmt.Sprintf("%s request enqueued, request=%s", ctx.Model, ctx.RequestID))
 	return nil
 }
 
-func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.RoutingContext, error) {
+func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.QueueEntry, error) {
 	// Most implementation goes here.
 	var err error
 
@@ -176,7 +177,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 	// 2. Profile does not provide SLO info.
 	// Fallback handler emulates a FIFO queue by comparing arrival time.
 	// The fallback candidate is only used when no candidate can be ranked.
-	fallbackHandler := func(key string, subReq *types.RoutingContext) bool {
+	fallbackHandler := func(key string, subReq *types.QueueEntry) bool {
 		if len(q.dequeueCandidates) == 0 {
 			q.validateDequeueCandidatesLocked(1)
 			q.dequeueCandidates = q.dequeueCandidates[:1]
@@ -185,11 +186,11 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 			return true
 		}
 		// Update earliest candidate
-		q.dequeueCandidates[0].RoutingContext = subReq
+		q.dequeueCandidates[0].QueueEntry = subReq
 		q.dequeueCandidates[0].SubKey = key
 		return true
 	}
-	q.subs.Range(func(key string, sub types.RouterQueue[*types.RoutingContext]) bool {
+	q.subs.Range(func(key string, sub types.RouterQueue[*types.QueueEntry]) bool {
 		r, peekErr := sub.Peek(currentTime, pods)
 		if peekErr == types.ErrQueueEmpty {
 			return true
@@ -212,7 +213,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 		q.dequeueCandidates = q.dequeueCandidates[:idx+1]
 		// Reset values
 		candidate := q.dequeueCandidates[idx]
-		candidate.RoutingContext = r
+		candidate.QueueEntry = r
 		candidate.SubKey = key
 		candidate.resetProfiles()
 		// Use a relaxer SLO
@@ -225,9 +226,9 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 			}
 			// Calculate rank
 			if queueOverallSLO {
-				rank, rankErr = q.queueRank(currentTime, r, sub, profile)
+				rank, rankErr = q.queueRank(currentTime, r.RoutingContext, sub, profile)
 			} else {
-				rank, rankErr = q.rank(currentTime, r, profile)
+				rank, rankErr = q.rank(currentTime, r.RoutingContext, profile)
 			}
 			if rankErr != nil {
 				klog.Warningf("SLOQueue failed to get SLO info for request %s with profile %s: %v, skip.", r.RequestID, profile.Deployment, rankErr)
@@ -244,8 +245,8 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 			// if it is the FIFO fallback and nothing else ranked.
 			klog.Warningf("SLOQueue failed to get SLO info for request %s in all profiles, excluding it from this round's ranking.", r.RequestID)
 			// Remove the empty candidate from the ranked list and drop its
-			// routing context so the underlying slot does not retain it.
-			candidate.RoutingContext = nil
+			// queue entry so the underlying slot does not retain it.
+			candidate.QueueEntry = nil
 			q.dequeueCandidates = q.dequeueCandidates[:idx]
 			return fbRet
 		}
@@ -267,7 +268,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 		} else {
 			q.lastCandidateFallbackReason = queueFallbackReasonNoSLOInfo
 		}
-		return q.dequeueCandidates[0].RoutingContext, nil
+		return q.dequeueCandidates[0].QueueEntry, nil
 	}
 
 	// Exclude fallback candidate
@@ -306,19 +307,19 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 		}
 		if candidate.HasRouted() {
 			q.lastCandidateSubKey = candidate.SubKey
-			return candidate.RoutingContext, nil
+			return candidate.QueueEntry, nil
 		} else if lastErr != cache.ErrorLoadCapacityReached {
 			// We have route dicision concluded as SLO violation. Track the conclusion.
 			q.lastCandidateSubKey = candidate.SubKey
 			q.lastCandidateError = lastErr
-			return candidate.RoutingContext, nil
+			return candidate.QueueEntry, nil
 		} // temporary errors are ignored
 	}
 
 	return nil, nil
 }
 
-func (q *SLOQueue) Dequeue(ts time.Time) (*types.RoutingContext, error) {
+func (q *SLOQueue) Dequeue(ts time.Time) (*types.QueueEntry, error) {
 	if len(q.lastCandidateSubKey) == 0 {
 		return nil, fmt.Errorf("call SLOQueue.Peek first")
 	}
@@ -334,22 +335,25 @@ func (q *SLOQueue) Dequeue(ts time.Time) (*types.RoutingContext, error) {
 		return nil, fmt.Errorf("subqueue %s not found", subkey)
 	}
 	defer q.debugSub(fmt.Sprintf("%s request dequeued from sub %s,", q.modelName, subkey))
-	ctx, err := sub.Dequeue(ts)
-	if err != nil || ctx == nil {
+	entry, err := sub.Dequeue(ts)
+	if err != nil || entry == nil {
 		q.lastCandidateFallbackReason = ""
-		return ctx, err
+		return entry, err
 	}
 	if q.lastCandidateFallbackReason != "" {
-		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayQueueFIFOFallbackTotal,
+		// Label from the entry's frozen metadata, not from its routing context: the
+		// requester may already have been unblocked and its context recycled.
+		metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: entry.Model, BaseModel: entry.BaseModel},
+			nil, metrics.GatewayQueueFIFOFallbackTotal,
 			&metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"reason": q.lastCandidateFallbackReason})
 	}
 	q.lastCandidateFallbackReason = ""
-	return ctx, err
+	return entry, err
 }
 
 func (q *SLOQueue) Len() (total int) {
-	q.subs.Range(func(_ string, sub types.RouterQueue[*types.RoutingContext]) bool {
+	q.subs.Range(func(_ string, sub types.RouterQueue[*types.QueueEntry]) bool {
 		total += sub.Len()
 		return true
 	})
@@ -420,7 +424,7 @@ func (q *SLOQueue) rank(currentTime time.Time, req *types.RoutingContext, profil
 	return req.Elapsed(currentTime).Seconds() + expected - target, nil
 }
 
-func (q *SLOQueue) queueRank(currentTime time.Time, headReq *types.RoutingContext, sub types.RouterQueue[*types.RoutingContext], profile *cache.ModelGPUProfile) (rank float64, err error) {
+func (q *SLOQueue) queueRank(currentTime time.Time, headReq *types.RoutingContext, sub types.RouterQueue[*types.QueueEntry], profile *cache.ModelGPUProfile) (rank float64, err error) {
 	signature, headServingTime, target, err := q.rankImpl(currentTime, headReq, profile)
 	if err != nil {
 		return 0.0, err
@@ -514,7 +518,7 @@ func (q *SLOQueue) debugSub(msg string) {
 	}
 
 	var logMsg strings.Builder
-	q.subs.Range(func(key string, sub types.RouterQueue[*types.RoutingContext]) bool {
+	q.subs.Range(func(key string, sub types.RouterQueue[*types.QueueEntry]) bool {
 		logMsg.WriteString(key)
 		logMsg.WriteRune('(')
 		logMsg.WriteString(strconv.Itoa(sub.Len()))

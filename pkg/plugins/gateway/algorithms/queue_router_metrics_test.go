@@ -36,17 +36,17 @@ import (
 // fakeRouterQueue is a minimal types.RouterQueue used to drive queueRouter.
 type fakeRouterQueue struct {
 	mu    sync.Mutex
-	items []*types.RoutingContext
+	items []*types.QueueEntry
 }
 
-func (q *fakeRouterQueue) Enqueue(ctx *types.RoutingContext, _ time.Time) error {
+func (q *fakeRouterQueue) Enqueue(entry *types.QueueEntry, _ time.Time) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	q.items = append(q.items, ctx)
+	q.items = append(q.items, entry)
 	return nil
 }
 
-func (q *fakeRouterQueue) Peek(_ time.Time, _ types.PodList) (*types.RoutingContext, error) {
+func (q *fakeRouterQueue) Peek(_ time.Time, _ types.PodList) (*types.QueueEntry, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if len(q.items) == 0 {
@@ -55,15 +55,15 @@ func (q *fakeRouterQueue) Peek(_ time.Time, _ types.PodList) (*types.RoutingCont
 	return q.items[0], nil
 }
 
-func (q *fakeRouterQueue) Dequeue(_ time.Time) (*types.RoutingContext, error) {
+func (q *fakeRouterQueue) Dequeue(_ time.Time) (*types.QueueEntry, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if len(q.items) == 0 {
 		return nil, types.ErrQueueEmpty
 	}
-	ctx := q.items[0]
+	entry := q.items[0]
 	q.items = q.items[1:]
-	return ctx, nil
+	return entry, nil
 }
 
 func (q *fakeRouterQueue) Len() int {
@@ -180,6 +180,18 @@ func waitForEmissions(t *testing.T, get func() []metricEmission, want int) []met
 		got = get()
 	}
 	return got
+}
+
+// waitForSignal fails the test if sig is not closed within the same 5s budget
+// waitForEmissions uses, so a serve goroutine that never gets there reports a clean
+// failure instead of hanging the test binary.
+func waitForSignal(t *testing.T, sig <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-sig:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
 }
 
 var queueWaitBucketPattern = regexp.MustCompile(`^\d+(-\d+)?ms(\+)?$`)
@@ -343,6 +355,7 @@ func TestQueuePendingGaugeSamplesAreSerialized(t *testing.T) {
 
 	router := &queueRouter{queue: &scriptedLenQueue{}}
 	ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("slo"), "test-model", "hello world", "req-serialized", "")
+	entry := types.NewQueueEntry(ctx, time.Now())
 
 	const workers = 16
 	var wg sync.WaitGroup
@@ -350,7 +363,7 @@ func TestQueuePendingGaugeSamplesAreSerialized(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			router.updateQueuePendingMetric(ctx)
+			router.updateQueuePendingMetric(entry)
 		}()
 	}
 	wg.Wait()
@@ -374,7 +387,7 @@ type failingOnceDequeueQueue struct {
 	dequeues int
 }
 
-func (q *failingOnceDequeueQueue) Dequeue(ts time.Time) (*types.RoutingContext, error) {
+func (q *failingOnceDequeueQueue) Dequeue(ts time.Time) (*types.QueueEntry, error) {
 	q.mu.Lock()
 	q.dequeues++
 	attempt := q.dequeues
@@ -423,5 +436,159 @@ func TestQueueRouterDoesNotCountFailedDequeues(t *testing.T) {
 	}
 	if waits := capture.countersFor(metrics.GatewayQueueWaitTimeBucketTotal); len(waits) != 1 {
 		t.Fatalf("expected 1 wait bucket emission, got %d", len(waits))
+	}
+}
+
+// gatedDequeueQueue holds the serve goroutine between routing an entry and dequeuing
+// it, so a test can recycle the entry's routing context inside that window. The
+// started channel fires once serve has reached Dequeue, i.e. after the router has
+// already handled the entry.
+type gatedDequeueQueue struct {
+	fakeRouterQueue
+	gate    chan struct{}
+	started chan struct{}
+	once    sync.Once
+}
+
+func newGatedDequeueQueue() *gatedDequeueQueue {
+	return &gatedDequeueQueue{
+		gate:    make(chan struct{}),
+		started: make(chan struct{}),
+	}
+}
+
+func (q *gatedDequeueQueue) Dequeue(ts time.Time) (*types.QueueEntry, error) {
+	q.once.Do(func() { close(q.started) })
+	<-q.gate
+	return q.fakeRouterQueue.Dequeue(ts)
+}
+
+// silentBackendRouter leaves the request blocked: it neither sets a target pod nor
+// sets an error, so only a cancellation can unblock the requester while serve is
+// held at Dequeue.
+type silentBackendRouter struct{}
+
+func (silentBackendRouter) Route(_ *types.RoutingContext, _ types.PodList) (string, error) {
+	return "", nil
+}
+
+// TestQueueDepartureMetricsSurviveContextRecycle pins the regression reported in
+// review: serve may still be between routing an entry and dequeuing it when the
+// requester it just unblocked finishes, returns its context to the pool and the next
+// request resets that same object. The departure metrics must be attributed to the
+// entry that left the queue, not to whichever request the context was recycled for.
+func TestQueueDepartureMetricsSurviveContextRecycle(t *testing.T) {
+	cache.InitForTest()
+	capture := startMetricCapture()
+	defer capture.restore()
+
+	queue := newGatedDequeueQueue()
+	router, err := NewQueueRouter(fakeBackendRouter{}, queue)
+	if err != nil {
+		t.Fatalf("NewQueueRouter() error = %v", err)
+	}
+
+	ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("slo"), "original-model", "hello world", "req-recycled", "")
+	pods := newMockPodList([]*v1.Pod{newQueueTestPod()}, nil)
+
+	routeDone := make(chan error, 1)
+	go func() {
+		_, err := router.Route(ctx, pods)
+		routeDone <- err
+	}()
+
+	// Wait for serve to route the entry (which unblocks Route) and reach Dequeue.
+	waitForSignal(t, queue.started, "serve to reach Dequeue")
+	if err := <-routeDone; err != nil {
+		t.Fatalf("Route() error = %v", err)
+	}
+
+	// Replay what requestPool does between two requests: the same object is reset for
+	// a different request while the entry is still queued.
+	types.RecycleRoutingContextForTest(ctx, context.Background(), types.RoutingAlgorithm("slo"), "recycled-model", "hello world", "req-recycled-next", "")
+
+	close(queue.gate)
+
+	outcomes := waitForEmissions(t, func() []metricEmission {
+		return capture.countersFor(metrics.GatewayQueueOutcomeTotal)
+	}, 1)
+	if len(outcomes) != 1 {
+		t.Fatalf("expected 1 outcome emission, got %d", len(outcomes))
+	}
+	if got := labelValue(outcomes[0], "model"); got != "original-model" {
+		t.Fatalf("outcome model label = %q, want %q", got, "original-model")
+	}
+	if got := labelValue(outcomes[0], "outcome"); got != "routed" {
+		t.Fatalf("outcome label = %q, want %q", got, "routed")
+	}
+
+	waits := waitForEmissions(t, func() []metricEmission {
+		return capture.countersFor(metrics.GatewayQueueWaitTimeBucketTotal)
+	}, 1)
+	if len(waits) != 1 {
+		t.Fatalf("expected 1 wait bucket emission, got %d", len(waits))
+	}
+	if got := labelValue(waits[0], "model"); got != "original-model" {
+		t.Fatalf("wait bucket model label = %q, want %q", got, "original-model")
+	}
+
+	pending := waitForEmissions(t, func() []metricEmission {
+		return capture.gaugesFor(metrics.GatewayQueuePendingRequests)
+	}, 2)
+	if len(pending) != 2 {
+		t.Fatalf("expected 2 pending gauge emissions, got %d", len(pending))
+	}
+	for _, e := range pending {
+		if got := labelValue(e, "model"); got != "original-model" {
+			t.Fatalf("pending gauge model label = %q, want %q", got, "original-model")
+		}
+	}
+}
+
+// TestQueueDepartureMetricsSurviveCancellationRecycle covers the wider window the
+// review called out: a cancellation can unblock the requester - and let it recycle
+// its context - even though the entry it left behind is still queued and has not
+// reached the departure emission yet.
+func TestQueueDepartureMetricsSurviveCancellationRecycle(t *testing.T) {
+	cache.InitForTest()
+	capture := startMetricCapture()
+	defer capture.restore()
+
+	queue := newGatedDequeueQueue()
+	router, err := NewQueueRouter(silentBackendRouter{}, queue)
+	if err != nil {
+		t.Fatalf("NewQueueRouter() error = %v", err)
+	}
+
+	requestCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx := types.NewRoutingContext(requestCtx, types.RoutingAlgorithm("slo"), "original-model", "hello world", "req-canceled", "")
+	pods := newMockPodList([]*v1.Pod{newQueueTestPod()}, nil)
+
+	routeDone := make(chan error, 1)
+	go func() {
+		_, err := router.Route(ctx, pods)
+		routeDone <- err
+	}()
+
+	// The backend never sets a target pod, so only the cancellation unblocks Route.
+	waitForSignal(t, queue.started, "serve to reach Dequeue")
+	cancel()
+	if err := <-routeDone; err == nil {
+		t.Fatal("Route() error = nil, want a cancellation error")
+	}
+
+	types.RecycleRoutingContextForTest(ctx, context.Background(), types.RoutingAlgorithm("slo"), "recycled-model", "hello world", "req-canceled-next", "")
+
+	close(queue.gate)
+
+	outcomes := waitForEmissions(t, func() []metricEmission {
+		return capture.countersFor(metrics.GatewayQueueOutcomeTotal)
+	}, 1)
+	if len(outcomes) != 1 {
+		t.Fatalf("expected 1 outcome emission, got %d", len(outcomes))
+	}
+	if got := labelValue(outcomes[0], "model"); got != "original-model" {
+		t.Fatalf("outcome model label = %q, want %q", got, "original-model")
 	}
 }
