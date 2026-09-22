@@ -288,9 +288,10 @@ const (
 //   - key missing: addr is re-attached with a fresh TTL, so an active session cannot
 //     lose its cross-replica affinity right at the expiry boundary. Nothing can be
 //     overwritten: the attach only runs on a missing key.
-//   - value != addr: nothing is written. A refresh that was in flight while another
-//     replica repinned the session must not revert that newer pinning; the caller
-//     converges on the stored value instead (see reconcileStaleRefresh).
+//   - value != addr: nothing is written, and the stored value is returned to the caller.
+//     A refresh that was in flight while another replica repinned the session must not
+//     revert that newer pinning; the caller converges on the returned value instead (see
+//     reconcileStaleRefresh).
 //
 // A Lua script (rather than GET followed by SET/EXPIRE) is used because the gate has
 // to hold against concurrent writers: between two commands another replica could
@@ -302,19 +303,21 @@ const (
 // KEYS[1] = the pinning key
 // ARGV[1] = the address this replica is refreshing
 // ARGV[2] = the pinning TTL in milliseconds
-// Returns 0 when the stored value belongs to another writer (nothing written), 1 when
-// the matching value's TTL was extended, 2 when the pin was re-attached.
+// Returns {2} when the pin was re-attached, {1} when the matching value's TTL was
+// extended, and {0, stored-value} when the stored value belongs to another writer
+// (nothing written). The carried value is the one that rejected the refresh, so the
+// caller converges on it without a second read.
 var sessionKeyRefreshScript = redis.NewScript(`
 local current = redis.call('GET', KEYS[1])
 if not current then
   redis.call('SET', KEYS[1], ARGV[1], 'PX', tonumber(ARGV[2]))
-  return 2
+  return {2}
 end
 if current == ARGV[1] then
   redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[2]))
-  return 1
+  return {1}
 end
-return 0
+return {0, current}
 `)
 
 // sessionKeyRefreshScript outcome codes.
@@ -323,6 +326,30 @@ const (
 	sessionKeyRefreshExtended   = 1
 	sessionKeyRefreshReattached = 2
 )
+
+// sessionKeyRefreshReply parses the gated refresh script's reply: the outcome code, and
+// for a mismatched refresh the stored value that rejected it. ok is false for any reply
+// the script cannot emit.
+func sessionKeyRefreshReply(reply []interface{}) (outcome int64, winner string, ok bool) {
+	if len(reply) == 0 {
+		return 0, "", false
+	}
+	outcome, ok = reply[0].(int64)
+	if !ok {
+		return 0, "", false
+	}
+	if outcome != sessionKeyRefreshMismatched {
+		return outcome, "", true
+	}
+	if len(reply) < 2 {
+		return 0, "", false
+	}
+	winner, ok = reply[1].(string)
+	if !ok || winner == "" {
+		return 0, "", false
+	}
+	return outcome, winner, true
+}
 
 // persistSessionKeyToRedis write-throughs cacheKey -> addr with a sliding
 // TTL: every call, including a refresh of an unchanged pinning, pushes the
@@ -359,22 +386,33 @@ func (r *sessionAffinityRouter) persistSessionKeyToRedis(cacheKey, addr string, 
 		return true
 	}
 	if mode == writeRefresh {
-		outcome, err := sessionKeyRefreshScript.Run(ctx, r.redisClient,
-			[]string{sessionAffinityRedisKey(cacheKey)}, addr, sessionAffinityTTL.Milliseconds()).Int()
+		reply, err := sessionKeyRefreshScript.Run(ctx, r.redisClient,
+			[]string{sessionAffinityRedisKey(cacheKey)}, addr, sessionAffinityTTL.Milliseconds()).Slice()
 		if err != nil {
 			klog.V(4).ErrorS(err, "failed to persist session key pinning to redis", "cache_key", cacheKey)
 			return false
 		}
-		if outcome == sessionKeyRefreshMismatched {
-			// Another writer (a repin, or a fresh claim after this pin expired) owns the key
-			// now: converge on the stored value instead of reverting it.
-			r.reconcileStaleRefresh(cacheKey, addr)
+		outcome, winner, ok := sessionKeyRefreshReply(reply)
+		if !ok {
+			klog.V(4).ErrorS(fmt.Errorf("unexpected session key refresh script reply %v", reply), "failed to persist session key pinning to redis", "cache_key", cacheKey)
 			return false
 		}
-		// sessionKeyRefreshExtended or sessionKeyRefreshReattached: Redis vouches for addr
-		// either way.
-		r.markSessionKeyConfirmed(cacheKey, addr)
-		return true
+		switch outcome {
+		case sessionKeyRefreshMismatched:
+			// Another writer (a repin, or a fresh claim after this pin expired) owns the key
+			// now: converge on the value the script sampled instead of reverting it.
+			r.reconcileStaleRefresh(cacheKey, addr, winner)
+			return false
+		case sessionKeyRefreshExtended, sessionKeyRefreshReattached:
+			// Redis vouches for addr either way.
+			r.markSessionKeyConfirmed(cacheKey, addr)
+			return true
+		default:
+			// Only 0/1/2 come out of the script; anything else fails closed instead of
+			// confirming an address Redis may not vouch for.
+			klog.V(4).ErrorS(fmt.Errorf("unexpected session key refresh outcome %d", outcome), "failed to persist session key pinning to redis", "cache_key", cacheKey)
+			return false
+		}
 	}
 	// writeRepin: still an unconditional write until the compare-and-swap lands.
 	if err := r.redisClient.Set(ctx, sessionAffinityRedisKey(cacheKey), addr, sessionAffinityTTL).Err(); err != nil {
@@ -435,28 +473,13 @@ func (r *sessionAffinityRouter) reconcileLostClaim(cacheKey, addr string) {
 
 // reconcileStaleRefresh converges this replica after a gated refresh found that Redis no
 // longer holds the address it was refreshing: another writer repinned the session (or the
-// pin expired and was re-claimed) while the refresh was in flight. The value now in Redis
-// is the winner, so the local entry adopts it -- even when that entry was confirmed, since
-// the refresh just established that Redis no longer vouches for it. The replacement only
-// applies while the local entry is still the exact address the caller refreshed; a newer
-// local state is left for its own write to settle. A failed read leaves the entry as is;
-// the sync pass or this key's next Redis read converges it then.
-func (r *sessionAffinityRouter) reconcileStaleRefresh(cacheKey, addr string) {
-	ctx, cancel := context.WithTimeout(context.Background(), sessionKeyRedisReadTimeout)
-	defer cancel()
-	winner, err := r.redisClient.Get(ctx, sessionAffinityRedisKey(cacheKey)).Result()
-	if err != nil {
-		if !errors.Is(err, redis.Nil) {
-			klog.V(4).ErrorS(err, "failed to read back the session key pinning after a rejected refresh", "cache_key", cacheKey)
-		}
-		return
-	}
-	if winner == addr {
-		// The value moved back to addr after the script sampled it (a re-claim racing
-		// this refresh): the pin is this replica's own again.
-		r.markSessionKeyConfirmed(cacheKey, addr)
-		return
-	}
+// pin expired and was re-claimed) while the refresh was in flight. winner is the value the
+// script sampled in the same atomic step that rejected the refresh, so it is always an
+// address other than addr; the local entry adopts it -- even when that entry was confirmed,
+// since the refresh just established that Redis no longer vouches for it. The replacement
+// only applies while the local entry is still the exact address the caller refreshed; a
+// newer local state is left for its own write to settle.
+func (r *sessionAffinityRouter) reconcileStaleRefresh(cacheKey, addr, winner string) {
 	for {
 		cached, ok := r.sessionKeyPods.Load(cacheKey)
 		if !ok {

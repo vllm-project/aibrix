@@ -782,7 +782,8 @@ func TestSessionAffinityResolveReportsPersistIntent(t *testing.T) {
 	require.Equal(t, "session-key-cache", via)
 	assert.Equal(t, writeClaim, mode)
 
-	// A confirmed local hit is the one case where a plain TTL refresh is safe.
+	// A confirmed local hit persists as a refresh; the gated Lua script is what keeps
+	// that write safe now.
 	localWinner := &sessionAffinityRouter{redisClient: router.redisClient}
 	localWinner.storeSessionKeyLocal(cacheKey, "10.0.0.1:8000", true)
 	_, _, via, mode = localWinner.resolveSessionPod(ctx, []*v1.Pod{podA, podB})
@@ -859,4 +860,44 @@ func TestSessionAffinityRefreshExtendsMatchingPin(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "10.0.0.1:8000", got)
 	assert.Equal(t, sessionAffinityTTL, mr.TTL(key), "a matching refresh slides the TTL back out")
+}
+
+// TestSessionAffinityRefreshScriptReply locks the gated refresh script's reply contract:
+// {2} on a re-attach, {1} on an extended match, and {0, stored-value} on a mismatch, so
+// the caller can converge on the value that rejected the refresh without a second read.
+func TestSessionAffinityRefreshScriptReply(t *testing.T) {
+	router, mr := newTestSessionAffinityRedis(t)
+	cacheKey := sessionCacheKey("model1", "refresh-script-reply")
+	key := sessionAffinityRedisKey(cacheKey)
+	run := func() []interface{} {
+		reply, err := sessionKeyRefreshScript.Run(context.Background(), router.redisClient,
+			[]string{key}, "10.0.0.1:8000", sessionAffinityTTL.Milliseconds()).Slice()
+		require.NoError(t, err)
+		return reply
+	}
+
+	// Missing key: re-attach with the full TTL.
+	reply := run()
+	require.Len(t, reply, 1)
+	assert.EqualValues(t, sessionKeyRefreshReattached, reply[0])
+	got, err := mr.Get(key)
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.1:8000", got)
+
+	// Matching value: extend the TTL.
+	mr.FastForward(sessionAffinityTTL / 2)
+	reply = run()
+	require.Len(t, reply, 1)
+	assert.EqualValues(t, sessionKeyRefreshExtended, reply[0])
+	assert.Equal(t, sessionAffinityTTL, mr.TTL(key), "an extension slides the TTL back out")
+
+	// Different writer: nothing is written, and its value is carried back.
+	require.NoError(t, mr.Set(key, "10.0.0.9:8000"))
+	reply = run()
+	require.Len(t, reply, 2)
+	assert.EqualValues(t, sessionKeyRefreshMismatched, reply[0])
+	assert.Equal(t, "10.0.0.9:8000", reply[1])
+	got, err = mr.Get(key)
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.9:8000", got, "a mismatched refresh must write nothing")
 }
