@@ -38,7 +38,6 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/utils/integer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 )
@@ -252,23 +251,6 @@ func Patch(ctx context.Context, cli client.Client, obj client.Object, patch clie
 			}
 		}
 		return nil
-	})
-}
-
-// RemoveFinalizer removes only the requested finalizer from the latest object.
-// Fetching on every retry prevents a stale object from restoring finalizers
-// that Kubernetes garbage collection removed concurrently.
-func RemoveFinalizer(ctx context.Context, cli client.Client, obj client.Object, finalizer string) error {
-	key := client.ObjectKeyFromObject(obj)
-	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		if err := cli.Get(ctx, key, obj); err != nil {
-			return client.IgnoreNotFound(err)
-		}
-		if !controllerutil.ContainsFinalizer(obj, finalizer) {
-			return nil
-		}
-		controllerutil.RemoveFinalizer(obj, finalizer)
-		return client.IgnoreNotFound(cli.Update(ctx, obj))
 	})
 }
 

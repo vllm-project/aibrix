@@ -56,7 +56,7 @@ func TestModelWarmupPreloadsImageForPullNeverPod(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	env := newTestEnvironment(t, ctx)
-	node := env.readyRunnableNodes(t, ctx, 1)[0]
+	node := env.readyWarmupNodes(t, ctx, 1)[0]
 
 	warmup := env.createWarmup(t, ctx, "preload", []modelapi.ModelWarmupTarget{{
 		Nodes: &modelapi.ModelWarmupNodesTarget{Names: []string{node.Name}},
@@ -70,7 +70,7 @@ func TestModelWarmupDeduplicatesNodeNameAndSelector(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	env := newTestEnvironment(t, ctx)
-	node := env.readyRunnableNodes(t, ctx, 1)[0]
+	node := env.readyWarmupNodes(t, ctx, 1)[0]
 	env.setNodeLabel(t, ctx, node.Name, "deduplicate")
 
 	warmup := env.createWarmup(t, ctx, "deduplicate", []modelapi.ModelWarmupTarget{
@@ -86,7 +86,7 @@ func TestModelWarmupCreatesJobForNewSelectorMatch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	env := newTestEnvironment(t, ctx)
-	nodes := env.readyRunnableNodes(t, ctx, 2)
+	nodes := env.readyWarmupNodes(t, ctx, 2)
 	env.setNodeLabel(t, ctx, nodes[0].Name, "expand")
 
 	warmup := env.createWarmup(t, ctx, "expand", []modelapi.ModelWarmupTarget{{
@@ -104,7 +104,7 @@ func TestModelWarmupReportsFailedJobWithoutMutatingExistingWorkload(t *testing.T
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	env := newTestEnvironment(t, ctx)
-	node := env.readyRunnableNodes(t, ctx, 1)[0]
+	node := env.readyWarmupNodes(t, ctx, 1)[0]
 
 	workload := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "existing-workload", Namespace: env.namespace},
@@ -240,7 +240,7 @@ func newTestEnvironment(t *testing.T, ctx context.Context) *testEnvironment {
 	return &testEnvironment{kube: kube, apiClient: apiClient, namespace: namespace}
 }
 
-func (e *testEnvironment) readyRunnableNodes(
+func (e *testEnvironment) readyWarmupNodes(
 	t *testing.T,
 	ctx context.Context,
 	count int,
@@ -252,32 +252,48 @@ func (e *testEnvironment) readyRunnableNodes(
 	}
 	ready := make([]corev1.Node, 0, count)
 	for _, node := range nodes.Items {
-		if nodeIsRunnable(node) {
+		if nodeCanRunWarmup(node) {
 			ready = append(ready, node)
 		}
 	}
 	if len(ready) < count {
-		t.Fatalf("requires %d Ready runnable Kubernetes nodes, found %d", count, len(ready))
+		t.Fatalf("requires %d Ready Kubernetes nodes capable of warmup, found %d", count, len(ready))
 	}
 	return ready[:count]
 }
 
-func nodeIsRunnable(node corev1.Node) bool {
+func nodeCanRunWarmup(node corev1.Node) bool {
 	if node.Spec.Unschedulable || node.Status.NodeInfo.KubeletVersion == "" ||
 		node.Status.NodeInfo.ContainerRuntimeVersion == "" {
 		return false
 	}
-	for _, taint := range node.Spec.Taints {
-		if taint.Effect == corev1.TaintEffectNoSchedule || taint.Effect == corev1.TaintEffectNoExecute {
-			return false
-		}
-	}
+	// Warmup Jobs tolerate all taints, so a Ready tainted node is a valid target.
 	for _, condition := range node.Status.Conditions {
 		if condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue {
 			return true
 		}
 	}
 	return false
+}
+
+func TestNodeCanRunWarmupAllowsTaintedNode(t *testing.T) {
+	node := corev1.Node{
+		Spec: corev1.NodeSpec{Taints: []corev1.Taint{{
+			Key: "node-role.kubernetes.io/control-plane", Effect: corev1.TaintEffectNoSchedule,
+		}}},
+		Status: corev1.NodeStatus{
+			NodeInfo: corev1.NodeSystemInfo{
+				KubeletVersion: "v1.31.0", ContainerRuntimeVersion: "containerd://1.7.0",
+			},
+			Conditions: []corev1.NodeCondition{{
+				Type: corev1.NodeReady, Status: corev1.ConditionTrue,
+			}},
+		},
+	}
+
+	if !nodeCanRunWarmup(node) {
+		t.Fatal("expected a Ready tainted node to be eligible for an all-taints-tolerating warmup Job")
+	}
 }
 
 func (e *testEnvironment) setNodeLabel(
