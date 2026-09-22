@@ -111,7 +111,7 @@ func (r *StormServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if stormService.DeletionTimestamp != nil {
 		if done, err := r.finalize(ctx, stormService); err != nil {
 			klog.Errorf("stormservice %s/%s finalize failed: %v", stormService.Namespace, stormService.Name, err)
-			return ctrl.Result{}, err
+			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
 		} else if !done {
 			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, nil
 		}
@@ -119,7 +119,7 @@ func (r *StormServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	} else if !controllerutil.ContainsFinalizer(stormService, StormServiceFinalizer) {
 		if err := utils.Patch(ctx, r.Client, stormService, patch.AddFinalizerPatch(stormService, StormServiceFinalizer)); err != nil {
 			klog.Errorf("add finalizer failed: %v, stormService %s", err, req.String())
-			return ctrl.Result{}, err
+			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
 		}
 	}
 
