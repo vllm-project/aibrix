@@ -34,7 +34,6 @@ import (
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
 	utils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
-	"github.com/vllm-project/aibrix/pkg/controller/util/patch"
 )
 
 func (r *StormServiceReconciler) sync(ctx context.Context, stormService *orchestrationv1alpha1.StormService, currentRevision *apps.ControllerRevision, updateRevision *apps.ControllerRevision, collisionCount int32) (time.Duration, error) {
@@ -441,7 +440,7 @@ func (r *StormServiceReconciler) finalize(ctx context.Context, stormService *orc
 	}
 	// remove finalizer
 	if controllerutil.ContainsFinalizer(stormService, StormServiceFinalizer) {
-		if err := utils.Patch(ctx, r.Client, stormService, patch.RemoveFinalizerPatch(stormService, StormServiceFinalizer)); err != nil {
+		if err := utils.RemoveFinalizer(ctx, r.Client, stormService, StormServiceFinalizer); err != nil {
 			return false, err
 		}
 	}
