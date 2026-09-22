@@ -32,7 +32,7 @@ Set ``replicaCount`` and container resources in your ``values.yaml`` override:
             memory: 32Gi
 
 Gateway Plugin Kubernetes API Throttling
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Configure the gateway plugin's API server request rate using container arguments
 in ``config/gateway/gateway-plugin/gateway-plugin.yaml``:
