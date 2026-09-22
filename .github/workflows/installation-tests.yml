@@ -339,7 +339,7 @@ jobs:
   delete-artifacts:
     name: Delete image artifacts
     needs: [build-images, installation-test]
-    if: ${{ always() && !cancelled() }}
+    if: ${{ always() }}
     runs-on: ubuntu-latest  
     timeout-minutes: 10
     steps:   
