@@ -211,6 +211,10 @@ func main() {
 	grpcMaxMessageSize := utils.LoadEnvInt(envGRPCMaxMessageSizeBytes, defaultGRPCMaxMessageSizeBytes)
 	opts = append(opts, grpc.MaxRecvMsgSize(grpcMaxMessageSize))
 
+	// One panicking request must not take the process down with the requests in
+	// flight on it, so recover in the stream interceptor and fail only that stream.
+	opts = append(opts, grpc.StreamInterceptor(gateway.StreamPanicRecoveryInterceptor()))
+
 	s := grpc.NewServer(opts...)
 
 	extProcPb.RegisterExternalProcessorServer(s, gatewayServer)

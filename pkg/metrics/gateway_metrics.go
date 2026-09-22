@@ -21,6 +21,10 @@ const (
 	GatewayInFlight      = "gateway_in_flight_requests"
 	GatewayModelInFlight = "gateway_model_in_flight_requests"
 
+	// counter to track panics recovered on the request path instead of letting
+	// one defective request end the process
+	GatewayRequestPanicTotal = "gateway_request_panic_total"
+
 	// Count of streamed responses where first token delay > 1s
 	GatewayFirstTokenDelayOver1sTotal = "gateway_first_token_delay_over_1s_total"
 
@@ -79,6 +83,14 @@ var (
 				Raw: Counter,
 			},
 			Description: "Total number of requests received by the gateway",
+		},
+		GatewayRequestPanicTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Requests the gateway plugin recovered from a panic on the request path",
 		},
 
 		GatewayRequestModelSuccessTotal: {

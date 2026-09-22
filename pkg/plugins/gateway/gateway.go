@@ -319,7 +319,15 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 	return s
 }
 
-func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
+func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) (err error) {
+	// Process is also reachable without the server's stream interceptor, so it
+	// recovers panics on its own as well.
+	defer func() {
+		if r := recover(); r != nil {
+			err = recoverStreamPanic(r, ProcessFullMethod)
+		}
+	}()
+
 	rootSpan := trace.SpanFromContext(srv.Context())
 	requestID := uuid.New().String()
 	if rootSpan.SpanContext().HasTraceID() {
