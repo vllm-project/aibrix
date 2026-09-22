@@ -212,6 +212,9 @@ spec:
         - path:
             type: PathPrefix
             value: /tokenize
+        - path:
+            type: PathPrefix
+            value: /pooling
       backendRefs:
         - name: aibrix-gateway-plugins
           port: 50052
