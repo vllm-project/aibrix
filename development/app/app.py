@@ -2330,6 +2330,70 @@ def tokenize():
         )
 
 
+@app.route("/pooling", methods=["POST"])
+@auth_required
+def pooling():
+    """
+    Simulates the vLLM pooling endpoint (embed/classify/score models served
+    with --task embed/classify/score). Input may be a string, a list of
+    strings, or pre-tokenized token ids; the response carries model and usage
+    like the embeddings endpoint, so the gateway meters it on the language
+    response path.
+    """
+    try:
+        data = request.json or {}
+        model = data.get("model")
+        input_data = data.get("input")
+
+        if not model:
+            return create_error_response("'model' is a required parameter", param="model")
+        if input_data is None:
+            return create_error_response("'input' is a required parameter", param="input")
+
+        # Normalize input to a list for uniform processing, mirroring vLLM:
+        # a bare string is one input, a list is many, and a list of ints is a
+        # single pre-tokenized input.
+        if isinstance(input_data, str) or (
+            isinstance(input_data, list) and input_data and all(isinstance(i, int) for i in input_data)
+        ):
+            inputs = [input_data]
+        else:
+            inputs = input_data
+
+        data_out = []
+        total_tokens = 0
+        for idx, item in enumerate(inputs):
+            if isinstance(item, str):
+                total_tokens += get_token_count(item)
+            elif isinstance(item, list):
+                # Pre-tokenized token ids
+                total_tokens += len(item)
+            else:
+                return create_error_response(
+                    "'input' must be a string, an array of strings, or an array of token ids",
+                    param="input",
+                )
+            # A fixed 8-dim vector stands in for the pooled output.
+            data_out.append({"index": idx, "object": "pooling", "data": [0.1] * 8})
+
+        response = {
+            "object": "list",
+            "data": data_out,
+            "model": model,
+            "usage": {"prompt_tokens": total_tokens, "total_tokens": total_tokens},
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in pooling endpoint: {e}")
+        return create_error_response(
+            "The server had an error while processing your request. Sorry about that!",
+            error_type="api_error",
+            status_code=500
+        )
+
+
 @app.route("/detokenize", methods=["POST"])
 @auth_required
 def detokenize():
