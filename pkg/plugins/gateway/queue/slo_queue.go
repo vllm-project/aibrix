@@ -323,9 +323,16 @@ func (q *SLOQueue) Dequeue(ts time.Time) (*types.RoutingContext, error) {
 		return nil, fmt.Errorf("call SLOQueue.Peek first")
 	}
 	subkey := q.lastCandidateSubKey
-	sub, _ := q.subs.Load(subkey)
+	sub, ok := q.subs.Load(subkey)
 	q.lastCandidateSubKey = ""
 	q.lastCandidateError = nil
+	if !ok {
+		// Peek selected this subqueue, so this only trips if a subqueue can be
+		// removed between Peek and Dequeue; fail closed instead of calling
+		// Dequeue on the nil interface.
+		q.lastCandidateFallbackReason = ""
+		return nil, fmt.Errorf("subqueue %s not found", subkey)
+	}
 	defer q.debugSub(fmt.Sprintf("%s request dequeued from sub %s,", q.modelName, subkey))
 	ctx, err := sub.Dequeue(ts)
 	if err != nil || ctx == nil {

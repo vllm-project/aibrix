@@ -232,6 +232,20 @@ var _ = Describe("SLOQueue", func() {
 		Expect(req).To(BeNil())
 	})
 
+	It("should fail closed when the peeked subqueue is gone", func() {
+		q := &SLOQueue{lastCandidateSubKey: "missing-sub"}
+
+		req, err := q.Dequeue(time.Now())
+		Expect(err).To(MatchError("subqueue missing-sub not found"))
+		Expect(req).To(BeNil())
+
+		// The failed dequeue still consumes the Peek state, so the next call goes
+		// back to the Peek-first guard.
+		req, err = q.Dequeue(time.Now())
+		Expect(err).To(MatchError("call SLOQueue.Peek first"))
+		Expect(req).To(BeNil())
+	})
+
 	It("should return the SLO routing error recorded by Peek", func() {
 		q := &SLOQueue{lastCandidateError: cache.ErrorSLOFailureRequest}
 		req := newTestRequest("req-1", predictor)

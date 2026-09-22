@@ -86,11 +86,13 @@ func (r *queueRouter) Route(ctx *types.RoutingContext, pods types.PodList) (stri
 	r.cache.AddRequestCount(ctx, ctx.RequestID, ctx.Model)
 
 	now := time.Now()
+	// Stamp the residency start before the request becomes visible to the serve
+	// goroutine: it can pick the request up as soon as it is enqueued, and the wait
+	// metric it emits on the way out reads this back.
+	ctx.QueueStartTime = now
 	if err := r.queue.Enqueue(ctx, now); err != nil {
 		return "", err
 	}
-	// The queue residency metric reads this back when the request leaves the queue.
-	ctx.QueueStartTime = now
 	emitQueuePendingMetric(ctx, r.queue.Len())
 
 	r.tryRoute(pods) // Simply trigger a possible dequeue
