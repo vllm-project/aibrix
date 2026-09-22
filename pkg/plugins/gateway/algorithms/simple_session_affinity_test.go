@@ -782,10 +782,122 @@ func TestSessionAffinityResolveReportsPersistIntent(t *testing.T) {
 	require.Equal(t, "session-key-cache", via)
 	assert.Equal(t, writeClaim, mode)
 
-	// A confirmed local hit is the one case where a plain TTL refresh is safe.
+	// A confirmed local hit persists as a refresh; the gated Lua script is what keeps
+	// that write safe now.
 	localWinner := &sessionAffinityRouter{redisClient: router.redisClient}
 	localWinner.storeSessionKeyLocal(cacheKey, "10.0.0.1:8000", true)
 	_, _, via, mode = localWinner.resolveSessionPod(ctx, []*v1.Pod{podA, podB})
 	require.Equal(t, "session-key-cache", via)
 	assert.Equal(t, writeRefresh, mode)
+}
+
+// TestSessionAffinityRefreshDoesNotRevertNewerRepin is a regression test for the second race
+// in the #2742 review: a TTL refresh for an old address that lands after another replica has
+// repinned the session must not write the old address back. It must also leave a value it
+// does not own alone -- neither its value nor its TTL -- and converge this replica on the
+// newer pin instead of keeping the stale one.
+func TestSessionAffinityRefreshDoesNotRevertNewerRepin(t *testing.T) {
+	router, mr := newTestSessionAffinityRedis(t)
+	cacheKey := sessionCacheKey("model1", "refresh-repin-race")
+	key := sessionAffinityRedisKey(cacheKey)
+
+	// This replica carries the session on pod-a and would slide its pin...
+	require.True(t, router.persistSessionKeyToRedis(cacheKey, "10.0.0.1:8000", writeClaim))
+	router.storeSessionKeyLocal(cacheKey, "10.0.0.1:8000", true)
+
+	// ...but another replica repinned the session to pod-b while the refresh was in flight.
+	require.NoError(t, mr.Set(key, "10.0.0.2:8000"))
+	mr.SetTTL(key, 30*time.Minute)
+
+	assert.False(t, router.persistSessionKeyToRedis(cacheKey, "10.0.0.1:8000", writeRefresh),
+		"a refresh that no longer matches the stored value must report that Redis was not written")
+
+	got, err := mr.Get(key)
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.2:8000", got, "a delayed refresh must not revert a newer repin")
+	assert.Equal(t, 30*time.Minute, mr.TTL(key),
+		"a refresh that lost the race must not extend the newer pin TTL")
+
+	cached, confirmed, ok := router.loadCachedAddr(cacheKey)
+	require.True(t, ok)
+	assert.True(t, confirmed)
+	assert.Equal(t, "10.0.0.2:8000", cached, "the stale replica must adopt the newer pin")
+}
+
+// TestSessionAffinityRefreshReattachesLostPin covers the idle-expiry edge of a refresh: when
+// the pin expired (or was evicted) while the session stayed active, the refresh re-attaches
+// it with a fresh TTL instead of leaving the session unpinned until some later request
+// re-claims it. Nothing is overwritten: the attach only happens on a missing key.
+func TestSessionAffinityRefreshReattachesLostPin(t *testing.T) {
+	router, mr := newTestSessionAffinityRedis(t)
+	cacheKey := sessionCacheKey("model1", "refresh-reattach")
+	key := sessionAffinityRedisKey(cacheKey)
+
+	require.True(t, router.persistSessionKeyToRedis(cacheKey, "10.0.0.1:8000", writeClaim))
+	mr.FastForward(sessionAffinityTTL + time.Minute)
+
+	assert.True(t, router.persistSessionKeyToRedis(cacheKey, "10.0.0.1:8000", writeRefresh),
+		"a refresh of an expired pin must re-attach it")
+	got, err := mr.Get(key)
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.1:8000", got)
+	assert.Equal(t, sessionAffinityTTL, mr.TTL(key), "the re-attached pin gets the full TTL")
+}
+
+// TestSessionAffinityRefreshExtendsMatchingPin keeps the sliding-expiry contract from
+// regressing under the gated refresh: while the stored value still matches, the TTL is
+// pushed back out on every refresh.
+func TestSessionAffinityRefreshExtendsMatchingPin(t *testing.T) {
+	router, mr := newTestSessionAffinityRedis(t)
+	cacheKey := sessionCacheKey("model1", "refresh-extend")
+	key := sessionAffinityRedisKey(cacheKey)
+
+	require.True(t, router.persistSessionKeyToRedis(cacheKey, "10.0.0.1:8000", writeClaim))
+	mr.FastForward(sessionAffinityTTL / 2)
+
+	assert.True(t, router.persistSessionKeyToRedis(cacheKey, "10.0.0.1:8000", writeRefresh))
+	got, err := mr.Get(key)
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.1:8000", got)
+	assert.Equal(t, sessionAffinityTTL, mr.TTL(key), "a matching refresh slides the TTL back out")
+}
+
+// TestSessionAffinityRefreshScriptReply locks the gated refresh script's reply contract:
+// {2} on a re-attach, {1} on an extended match, and {0, stored-value} on a mismatch, so
+// the caller can converge on the value that rejected the refresh without a second read.
+func TestSessionAffinityRefreshScriptReply(t *testing.T) {
+	router, mr := newTestSessionAffinityRedis(t)
+	cacheKey := sessionCacheKey("model1", "refresh-script-reply")
+	key := sessionAffinityRedisKey(cacheKey)
+	run := func() []interface{} {
+		reply, err := sessionKeyRefreshScript.Run(context.Background(), router.redisClient,
+			[]string{key}, "10.0.0.1:8000", sessionAffinityTTL.Milliseconds()).Slice()
+		require.NoError(t, err)
+		return reply
+	}
+
+	// Missing key: re-attach with the full TTL.
+	reply := run()
+	require.Len(t, reply, 1)
+	assert.EqualValues(t, sessionKeyRefreshReattached, reply[0])
+	got, err := mr.Get(key)
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.1:8000", got)
+
+	// Matching value: extend the TTL.
+	mr.FastForward(sessionAffinityTTL / 2)
+	reply = run()
+	require.Len(t, reply, 1)
+	assert.EqualValues(t, sessionKeyRefreshExtended, reply[0])
+	assert.Equal(t, sessionAffinityTTL, mr.TTL(key), "an extension slides the TTL back out")
+
+	// Different writer: nothing is written, and its value is carried back.
+	require.NoError(t, mr.Set(key, "10.0.0.9:8000"))
+	reply = run()
+	require.Len(t, reply, 2)
+	assert.EqualValues(t, sessionKeyRefreshMismatched, reply[0])
+	assert.Equal(t, "10.0.0.9:8000", reply[1])
+	got, err = mr.Get(key)
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.9:8000", got, "a mismatched refresh must write nothing")
 }
