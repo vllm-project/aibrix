@@ -11,9 +11,16 @@ on:
     paths:
       - 'python/aibrix/**'
       - '.github/workflows/python-aibrix-tests.yml'
+
+# Cancel superseded pull-request runs so the newest push starts first.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
