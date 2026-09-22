@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
@@ -39,6 +40,13 @@ const (
 	monogenousGPURoutingOnly bool = monogenousGPURouting && false
 	initialTotalSubQueues    int  = 8  // Expect no more than 8 subqueues
 	initialSubQueueSize      int  = 64 // Support maximum 128 pending request per sub-queue within one expansion.
+
+	// Reason label values for gateway_queue_fifo_fallback_total. The FIFO fallback
+	// candidate serves a dequeue when no request could be ranked against any profile:
+	// either no profile is available for the deployment at all, or the available
+	// profiles carry no SLO information.
+	queueFallbackReasonNoProfile = "no_profile"
+	queueFallbackReasonNoSLOInfo = "no_slo_info"
 )
 
 var (
@@ -89,6 +97,10 @@ type SLOQueue struct {
 	dequeueCandidates   []*candidateRouterRequest
 	lastCandidateSubKey string // Clear in Dequeue()
 	lastCandidateError  error  // Clear in Dequeue()
+	// lastCandidateFallbackReason records why the candidate the last Peek returned
+	// was the FIFO fallback instead of a ranked candidate; empty when a ranked
+	// candidate was picked. Reported by Dequeue; clear in Dequeue().
+	lastCandidateFallbackReason string
 }
 
 func NewSLOQueue(provider types.RouterProviderFunc, modelName string) (router *SLOQueue, err error) {
@@ -157,6 +169,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 
 	// Refill candidates
 	q.dequeueCandidates = q.dequeueCandidates[:0]
+	q.lastCandidateFallbackReason = ""
 	q.debugSub(fmt.Sprintf("peeking %s requests for %v", q.modelName, deployments))
 	// Define fallback handler to handle cases like:
 	// 1. No available profiles.
@@ -246,8 +259,14 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 	if len(q.dequeueCandidates) == 0 {
 		return nil, types.ErrQueueEmpty
 	} else if len(q.dequeueCandidates) == 1 {
-		// Only candidate
+		// Only candidate: the FIFO fallback, returned only when no candidate could be
+		// ranked against any profile.
 		q.lastCandidateSubKey = q.dequeueCandidates[0].SubKey
+		if availableProfiles == 0 {
+			q.lastCandidateFallbackReason = queueFallbackReasonNoProfile
+		} else {
+			q.lastCandidateFallbackReason = queueFallbackReasonNoSLOInfo
+		}
 		return q.dequeueCandidates[0].RoutingContext, nil
 	}
 
@@ -308,7 +327,18 @@ func (q *SLOQueue) Dequeue(ts time.Time) (*types.RoutingContext, error) {
 	q.lastCandidateSubKey = ""
 	q.lastCandidateError = nil
 	defer q.debugSub(fmt.Sprintf("%s request dequeued from sub %s,", q.modelName, subkey))
-	return sub.Dequeue(ts)
+	ctx, err := sub.Dequeue(ts)
+	if err != nil || ctx == nil {
+		q.lastCandidateFallbackReason = ""
+		return ctx, err
+	}
+	if q.lastCandidateFallbackReason != "" {
+		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayQueueFIFOFallbackTotal,
+			&metrics.SimpleMetricValue{Value: 1.0},
+			map[string]string{"reason": q.lastCandidateFallbackReason})
+	}
+	q.lastCandidateFallbackReason = ""
+	return ctx, err
 }
 
 func (q *SLOQueue) Len() (total int) {

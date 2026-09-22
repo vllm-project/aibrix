@@ -114,6 +114,7 @@ type RoutingContext struct {
 	PendingLoad    float64    // Normalized pending load of request, available after AddRequestCount call. See cache.PendingLoadProvider
 	TraceTerm      int64      // Trace term identifier, available after AddRequestCount call.
 	RoutedTime     time.Time  // Time consumed during routing.
+	QueueStartTime time.Time  // Time when the request was enqueued in a routing queue, if any.
 
 	ReqHeaders       map[string]string
 	ReqBody          []byte
@@ -442,6 +443,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.PrefillStartTime = time.Time{}
 	r.PrefillEndTime = time.Time{}
 	r.FirstTokenTime = time.Time{}
+	r.QueueStartTime = time.Time{}
 	// RoutedTime will not be reset, it must before ReqeustTime at this time.
 
 	r.Span = nil

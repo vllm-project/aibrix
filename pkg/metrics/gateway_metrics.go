@@ -68,6 +68,14 @@ const (
 	GatewayTPOTBucketTotal           = "gateway_tpot_bucket_total"
 	GatewayDecodeTimeBucketTotal     = "gateway_decode_time_bucket_total"
 	GatewayTotalTimeBucketTotal      = "gateway_total_time_bucket_total"
+
+	// Queue observability: how long requests wait in the gateway's SLO queue before
+	// dispatch, how deep the queue is, and how requests leave it. Signals stay
+	// low-cardinality on purpose: model, adapter, and the gateway pod only.
+	GatewayQueueWaitTimeBucketTotal = "gateway_queue_wait_time_bucket_total"
+	GatewayQueuePendingRequests     = "gateway_queue_pending_requests"
+	GatewayQueueOutcomeTotal        = "gateway_queue_outcome_total"
+	GatewayQueueFIFOFallbackTotal   = "gateway_queue_fifo_fallback_total"
 )
 
 var (
@@ -280,6 +288,30 @@ var (
 			MetricSource: PodRawMetrics,
 			MetricType:   MetricType{Raw: Counter},
 			Description:  "Requests counted by total time bucket",
+		},
+		GatewayQueueWaitTimeBucketTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Requests counted by time spent waiting in the gateway SLO queue before dispatch",
+		},
+		GatewayQueuePendingRequests: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Gauge},
+			Description:  "Current number of requests waiting in the gateway SLO queue for the model",
+		},
+		GatewayQueueOutcomeTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Requests leaving the gateway SLO queue, by routing outcome",
+		},
+		GatewayQueueFIFOFallbackTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Requests the gateway SLO queue dispatched FIFO because no profile or SLO information was available",
 		},
 	}
 )

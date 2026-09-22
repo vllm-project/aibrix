@@ -17,10 +17,12 @@ limitations under the License.
 package routingalgorithms
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"k8s.io/klog/v2"
 )
@@ -82,9 +84,14 @@ func (r *queueRouter) Route(ctx *types.RoutingContext, pods types.PodList) (stri
 	// Ensure the request being counted even the request might not be counted.
 	// Noted, AddRequestCount should implement the idempotence for trace count.
 	r.cache.AddRequestCount(ctx, ctx.RequestID, ctx.Model)
-	if err := r.queue.Enqueue(ctx, time.Now()); err != nil {
+
+	now := time.Now()
+	if err := r.queue.Enqueue(ctx, now); err != nil {
 		return "", err
 	}
+	// The queue residency metric reads this back when the request leaves the queue.
+	ctx.QueueStartTime = now
+	emitQueuePendingMetric(ctx, r.queue.Len())
 
 	r.tryRoute(pods) // Simply trigger a possible dequeue
 
@@ -140,6 +147,7 @@ func (r *queueRouter) serve() {
 				// Noted, AddRequestCount should implement the idempotence.
 				r.cache.AddRequestCount(ctx, ctx.RequestID, ctx.Model)
 			}
+			emitQueueOutcomeMetrics(ctx, err)
 			// req.SetTargetPod() should have called in Route()
 			dequeued, err := r.queue.Dequeue(time.Now())
 			if err != nil {
@@ -147,6 +155,82 @@ func (r *queueRouter) serve() {
 			} else if dequeued != ctx {
 				klog.Error("unexpected request dequeued")
 			}
+			emitQueuePendingMetric(ctx, r.queue.Len())
 		}
 	}
+}
+
+// Outcome label values for gateway_queue_outcome_total. slo_failure and
+// capacity_reached are the two conclusions the SLO queue reaches when it rejects a
+// request early; error covers everything else, such as a router selection failure.
+const (
+	queueOutcomeRouted          = "routed"
+	queueOutcomeSLOFailure      = "slo_failure"
+	queueOutcomeCapacityReached = "capacity_reached"
+	queueOutcomeError           = "error"
+)
+
+// queueWaitBucketLabel buckets how long a request waited in the queue. Queue waits run
+// past the request-path duration buckets (a request can sit in the queue for tens of
+// seconds), so the bounds are coarser than durationBucketLabel's.
+func queueWaitBucketLabel(d time.Duration) string {
+	return msBucketLabel(d.Milliseconds(), []int64{10, 50, 100, 500, 1000, 5000, 10000, 30000, 60000})
+}
+
+// msBucketLabel renders ms into the house "low-highms" bucket labels. It mirrors the
+// helper of the same name in the gateway package, which owns the label format; here the
+// bounds are supplied by each caller.
+func msBucketLabel(ms int64, bounds []int64) string {
+	if ms < 0 {
+		ms = 0
+	}
+	low := int64(0)
+	for _, b := range bounds {
+		if ms < b {
+			return fmt.Sprintf("%d-%dms", low, b)
+		}
+		low = b
+	}
+	return fmt.Sprintf("%dms+", low)
+}
+
+// queueOutcomeLabel classifies how a request left the queue.
+func queueOutcomeLabel(err error) string {
+	switch {
+	case err == nil:
+		return queueOutcomeRouted
+	case errors.Is(err, cache.ErrorSLOFailureRequest):
+		return queueOutcomeSLOFailure
+	case errors.Is(err, cache.ErrorLoadCapacityReached):
+		return queueOutcomeCapacityReached
+	default:
+		return queueOutcomeError
+	}
+}
+
+// emitQueueOutcomeMetrics records how a request left the queue and how long it waited
+// before that. Both signals are emitted with the queue's low-cardinality labels (model,
+// adapter, gateway pod): the queue is a per-model resource, and the pod a request lands
+// on is already covered by the request-path metrics.
+func emitQueueOutcomeMetrics(ctx *types.RoutingContext, routeErr error) {
+	start := ctx.QueueStartTime
+	if start.IsZero() {
+		// A context that was never stamped (for example one enqueued by an older queue
+		// implementation) falls back to its arrival time.
+		start = ctx.RequestTime
+	}
+	metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayQueueWaitTimeBucketTotal,
+		&metrics.SimpleMetricValue{Value: 1.0},
+		map[string]string{"bucket": queueWaitBucketLabel(time.Since(start))})
+	metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayQueueOutcomeTotal,
+		&metrics.SimpleMetricValue{Value: 1.0},
+		map[string]string{"outcome": queueOutcomeLabel(routeErr)})
+}
+
+// emitQueuePendingMetric reports the queue's current depth for the model. It is set (not
+// incremented) so a request path that errors between enqueue and dequeue cannot drift
+// the gauge.
+func emitQueuePendingMetric(ctx *types.RoutingContext, pending int) {
+	metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayQueuePendingRequests,
+		&metrics.SimpleMetricValue{Value: float64(pending)}, nil)
 }
