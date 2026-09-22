@@ -172,9 +172,10 @@ func parseResponsesInput(requestID string, input json.RawMessage) (string, *extP
 // The per-path parsing is delegated to dedicated validate* helpers to keep this dispatcher simple.
 // nolint:nakedret
 func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
-	switch requestPath {
+	path := pathWithoutQuery(requestPath)
+	switch path {
 	case PathChatCompletions, PathMessages:
-		model, message, stream, errRes = validateChatRequest(requestID, requestPath, requestBody, user)
+		model, message, stream, errRes = validateChatRequest(requestID, path, requestBody, user)
 	case PathResponses:
 		model, message, stream, errRes = validateResponsesRequest(requestID, requestBody)
 	case PathCompletions:
@@ -524,8 +525,7 @@ func validateTokenizeRequest(requestID string, requestBody []byte) (model, messa
 // :path includes both path and query (RFC 7540), so exact/prefix matchers must
 // cut on '?' before comparing.
 func pathWithoutQuery(requestPath string) string {
-	path, _, _ := strings.Cut(requestPath, "?")
-	return path
+	return utils.PathWithoutQuery(requestPath)
 }
 
 // isMultipartFormPath returns true if requestPath is an endpoint whose request

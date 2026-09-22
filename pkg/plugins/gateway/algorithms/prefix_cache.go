@@ -776,7 +776,7 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 
 	// Tokenize the input based on endpoint type
 	var tokens []byte
-	if ctx.ReqPath == "/v1/chat/completions" {
+	if utils.PathWithoutQuery(ctx.ReqPath) == "/v1/chat/completions" {
 		tokens = k.tokenizeChatRequest(ctx, tokenizerToUse)
 	}
 
