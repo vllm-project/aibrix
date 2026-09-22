@@ -19,6 +19,7 @@ package modelwarmup
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,7 +153,9 @@ func TestUpdateStatusPreservesJobFailureDiagnostics(t *testing.T) {
 			OwnerReferences: []metav1.OwnerReference{{UID: warmup.UID}}},
 		Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{NodeName: "node-a"}}},
 		Status: batchv1.JobStatus{Failed: 1, Conditions: []batchv1.JobCondition{{
-			Type: batchv1.JobFailed, Reason: "BackoffLimitExceeded", Message: "image pull failed",
+			Type:   batchv1.JobFailed,
+			Status: corev1.ConditionTrue,
+			Reason: "BackoffLimitExceeded", Message: "image pull failed",
 		}}},
 	}
 	scheme := runtime.NewScheme()
@@ -273,6 +276,20 @@ func TestJobTemplateOwnerReferenceAndDeterministicName(t *testing.T) {
 	require.Empty(t, job.Spec.Template.Spec.Containers[0].Resources.Requests)
 }
 
+func TestJobNamePreservesNodeAndRevisionSuffix(t *testing.T) {
+	warmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{
+		Name: strings.Repeat("a", 63), Namespace: "default",
+	}}
+	revision := "123456789abc"
+	first := (&ModelWarmupReconciler{}).jobFor(warmup, "node-a", revision)
+	second := (&ModelWarmupReconciler{}).jobFor(warmup, "node-b", revision)
+
+	require.LessOrEqual(t, len(first.Name), 63)
+	require.True(t, strings.HasSuffix(first.Name, "-"+shortHash("node-a")+"-"+revision))
+	require.True(t, strings.HasSuffix(second.Name, "-"+shortHash("node-b")+"-"+revision))
+	require.NotEqual(t, first.Name, second.Name)
+}
+
 func TestCleanupStaleJobsDeletesRunningAndKeepsCompleted(t *testing.T) {
 	warmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{Name: "warmup", Namespace: "default"}}
 	running := &batchv1.Job{
@@ -283,17 +300,81 @@ func TestCleanupStaleJobsDeletesRunningAndKeepsCompleted(t *testing.T) {
 	completed := running.DeepCopy()
 	completed.Name = "completed"
 	completed.Status.Succeeded = 1
+	completed.Status.Conditions = []batchv1.JobCondition{{
+		Type: batchv1.JobComplete, Status: corev1.ConditionTrue,
+	}}
+	retrying := running.DeepCopy()
+	retrying.Name = "retrying"
+	retrying.Status.Failed = 1
 	scheme := runtime.NewScheme()
 	require.NoError(t, batchv1.AddToScheme(scheme))
 	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(running, completed).Build()}
+		WithObjects(running, completed, retrying).Build()}
 	targets := map[string][]string{"node-b": {"target[0]"}}
 	require.NoError(t, r.cleanupStaleJobs(context.Background(), warmup, "new", targets))
 	require.Error(t, r.Get(context.Background(), client.ObjectKeyFromObject(running), &batchv1.Job{}))
 	require.NoError(t, r.Get(context.Background(), client.ObjectKeyFromObject(completed), &batchv1.Job{}))
+	require.Error(t, r.Get(context.Background(), client.ObjectKeyFromObject(retrying), &batchv1.Job{}))
 	err := r.Get(context.Background(), client.ObjectKeyFromObject(running), &batchv1.Job{})
 	require.Error(t, err)
 	require.True(t, apierrors.IsNotFound(err))
+}
+
+func TestRetryingJobRemainsActiveUntilTerminalFailure(t *testing.T) {
+	warmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{
+		Name: "warmup", Namespace: "default", UID: "warmup-uid",
+	}}
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "retrying", Namespace: "default",
+			Labels:          map[string]string{WarmupLabelKey: warmup.Name, RevisionLabelKey: "rev"},
+			OwnerReferences: []metav1.OwnerReference{{UID: warmup.UID}},
+		},
+		Spec: batchv1.JobSpec{
+			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{NodeName: "node-a"}},
+		},
+		Status: batchv1.JobStatus{Failed: 1},
+	}
+	scheme := runtime.NewScheme()
+	require.NoError(t, modelv1alpha1.AddToScheme(scheme))
+	require.NoError(t, batchv1.AddToScheme(scheme))
+	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(warmup).WithObjects(warmup, job).Build()}
+
+	active, err := r.activeJobs(context.Background(), warmup, "rev")
+	require.NoError(t, err)
+	require.Equal(t, int32(1), active)
+	_, err = r.updateStatus(
+		context.Background(),
+		warmup,
+		"rev",
+		map[string][]string{"node-a": {"target[0]"}},
+		nil,
+		"",
+		"",
+	)
+	require.NoError(t, err)
+	require.Equal(t, modelv1alpha1.ModelWarmupRunning, warmup.Status.Phase)
+	require.Equal(t, modelv1alpha1.ModelWarmupTargetRunning, warmup.Status.Targets[0].Phase)
+}
+
+func TestUpdateStatusWaitsWhenSelectorResolvesNoTargets(t *testing.T) {
+	warmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{
+		Name: "warmup", Namespace: "default", UID: "warmup-uid",
+	}}
+	scheme := runtime.NewScheme()
+	require.NoError(t, modelv1alpha1.AddToScheme(scheme))
+	require.NoError(t, batchv1.AddToScheme(scheme))
+	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(warmup).WithObjects(warmup).Build()}
+
+	_, err := r.updateStatus(context.Background(), warmup, "rev", nil, nil, "", "")
+	require.NoError(t, err)
+	require.Equal(t, modelv1alpha1.ModelWarmupPending, warmup.Status.Phase)
+	require.Nil(t, warmup.Status.CompletionTime)
+	progressing := mustCondition(warmup.Status.Conditions, "Progressing")
+	require.Equal(t, metav1.ConditionTrue, progressing.Status)
+	require.Equal(t, "NoTargetsResolved", progressing.Reason)
 }
 
 func TestUpdateStatusPreservesAndUpdatesTargetTransitionTime(t *testing.T) {
@@ -321,8 +402,10 @@ func TestUpdateStatusPreservesAndUpdatesTargetTransitionTime(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "job", Namespace: "default",
 			Labels:          map[string]string{WarmupLabelKey: warmup.Name, RevisionLabelKey: "rev"},
 			OwnerReferences: []metav1.OwnerReference{{UID: warmup.UID}}},
-		Spec:   batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{NodeName: "node-a"}}},
-		Status: batchv1.JobStatus{Succeeded: 1},
+		Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{NodeName: "node-a"}}},
+		Status: batchv1.JobStatus{Succeeded: 1, Conditions: []batchv1.JobCondition{{
+			Type: batchv1.JobComplete, Status: corev1.ConditionTrue,
+		}}},
 	}
 	require.NoError(t, r.Create(context.Background(), job))
 	_, err = r.updateStatus(context.Background(), warmup, "rev", targets, nil, "", "")
