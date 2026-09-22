@@ -401,6 +401,9 @@ func (r *sessionAffinityRouter) observeSessionKeyAddr(cacheKey string) string {
 	if addr, confirmed, ok := r.loadCachedAddr(cacheKey); ok && confirmed {
 		return addr
 	}
+	if r.redisClient == nil {
+		return ""
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), sessionKeyRedisReadTimeout)
 	defer cancel()
 	val, err := r.redisClient.Get(ctx, sessionAffinityRedisKey(cacheKey)).Result()
@@ -417,6 +420,9 @@ func (r *sessionAffinityRouter) observeSessionKeyAddr(cacheKey string) string {
 // reconciles the local cache with whichever address the script reports as the stored value:
 // addr on a successful attach/swap, or a different concurrent winner that was left in place.
 func (r *sessionAffinityRouter) repinSessionKeyInRedis(cacheKey, oldAddr, addr string) {
+	if r.redisClient == nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), sessionKeyRedisWriteTimeout)
 	defer cancel()
 	ttlMs := strconv.FormatInt(sessionAffinityTTL.Milliseconds(), 10)
@@ -808,14 +814,15 @@ func (r *sessionAffinityRouter) PostRouteUpdate(ctx *types.RoutingContext, ready
 // have been routed here by an unrelated decision, such as the gateway's single-remaining-
 // candidate fast path after a load-imbalance gate excluded the pinned pod -- so, unlike
 // rememberSessionKey's claim write, it cannot assume no pinning exists yet. It observes the
-// current pinning first and repins atomically (see repinSessionKeyInRedis) when that
-// observation differs from addr, so a genuine existing pin moves onto addr instead of losing a
-// doomed SET NX and leaving Redis pointed at a pod this request never used. When the
-// observation already matches addr, or found nothing to preserve, the plain claim write already
-// handles both cases correctly.
+// current pinning first and repins atomically (see repinSessionKeyInRedis) when there's a
+// pinning to preserve, so a genuine existing pin -- including one that already matches addr --
+// moves through the same CAS instead of losing a doomed SET NX and leaving Redis pointed at a
+// pod this request never used. sessionKeyRepinScript already refreshes the TTL and reconfirms
+// the local cache when the stored value equals addr, so that case doesn't need a separate branch.
+// When the observation found nothing to preserve, the plain claim write handles it.
 func (r *sessionAffinityRouter) commitFinalTarget(cacheKey, addr string) {
 	oldAddr := r.observeSessionKeyAddr(cacheKey)
-	if oldAddr == "" || oldAddr == addr {
+	if oldAddr == "" {
 		r.persistSessionKeyToRedis(cacheKey, addr, writeClaim)
 		return
 	}
