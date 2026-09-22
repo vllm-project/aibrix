@@ -70,8 +70,8 @@ func newTestSLOQueue(model string, requests map[string]*types.RoutingContext) *S
 	q, err := NewSLOQueue(provider, model)
 	Expect(err).NotTo(HaveOccurred())
 	for key, req := range requests {
-		sub := NewSimpleQueue[*types.RoutingContext](4)
-		Expect(sub.Enqueue(req, time.Now())).To(Succeed())
+		sub := NewSimpleQueue[*types.QueueEntry](4)
+		Expect(sub.Enqueue(types.NewQueueEntry(req, time.Now()), time.Now())).To(Succeed())
 		q.subs.Store(key, sub)
 	}
 	return q
@@ -109,9 +109,9 @@ var _ = Describe("SLOQueue", func() {
 
 	It("should return ErrorSLOFailureRequest when the profile reports zero throughput", func() {
 		q := &SLOQueue{}
-		sub := NewSimpleQueue[*types.RoutingContext](4)
+		sub := NewSimpleQueue[*types.QueueEntry](4)
 		req := newTestRequest("req-1", predictor)
-		Expect(sub.Enqueue(req, time.Now())).To(Succeed())
+		Expect(sub.Enqueue(types.NewQueueEntry(req, time.Now()), time.Now())).To(Succeed())
 		rank, err := q.queueRank(time.Now(), req, sub, zeroTputProfile)
 		Expect(err).To(MatchError(cache.ErrorSLOFailureRequest))
 		Expect(rank).To(BeZero())
@@ -119,13 +119,13 @@ var _ = Describe("SLOQueue", func() {
 
 	It("should return a finite rank when the profile reports non-zero throughput", func() {
 		q := &SLOQueue{}
-		sub := NewSimpleQueue[*types.RoutingContext](4)
+		sub := NewSimpleQueue[*types.QueueEntry](4)
 
 		req := newTestRequest("req-1", predictor)
-		Expect(sub.Enqueue(req, time.Now())).To(Succeed())
+		Expect(sub.Enqueue(types.NewQueueEntry(req, time.Now()), time.Now())).To(Succeed())
 
 		req1 := newTestRequest("req-2", predictor)
-		Expect(sub.Enqueue(req1, time.Now())).To(Succeed())
+		Expect(sub.Enqueue(types.NewQueueEntry(req1, time.Now()), time.Now())).To(Succeed())
 		rank1, err := q.queueRank(req.RequestTime, req, sub, nonZeroTputProfile)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(rank1).To(BeNumerically("~", -3.9, 0.01))
@@ -228,6 +228,20 @@ var _ = Describe("SLOQueue", func() {
 		q := &SLOQueue{}
 
 		req, err := q.Dequeue(time.Now())
+		Expect(err).To(MatchError("call SLOQueue.Peek first"))
+		Expect(req).To(BeNil())
+	})
+
+	It("should fail closed when the peeked subqueue is gone", func() {
+		q := &SLOQueue{lastCandidateSubKey: "missing-sub"}
+
+		req, err := q.Dequeue(time.Now())
+		Expect(err).To(MatchError("subqueue missing-sub not found"))
+		Expect(req).To(BeNil())
+
+		// The failed dequeue still consumes the Peek state, so the next call goes
+		// back to the Peek-first guard.
+		req, err = q.Dequeue(time.Now())
 		Expect(err).To(MatchError("call SLOQueue.Peek first"))
 		Expect(req).To(BeNil())
 	})
