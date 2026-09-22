@@ -226,6 +226,24 @@ var _ = Describe("ModelWarmup controller", func() {
 		}, timeout, interval).Should(Succeed())
 	})
 
+	It("waits with a clear status when a selector resolves no nodes", func() {
+		ns := newModelWarmupNamespace("empty-selector")
+		warmup := controllerutils.NewModelWarmup(ns.Name, "empty-selector", "unused")
+		warmup.Spec.Targets = []modelapi.ModelWarmupTarget{{
+			NodeSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+				"pool": "not-present",
+			}},
+		}}
+		Expect(k8sClient.Create(ctx, warmup)).To(Succeed())
+		Eventually(func(g Gomega) {
+			latest := getModelWarmup(g, warmup)
+			g.Expect(latest.Status.Phase).To(Equal(modelapi.ModelWarmupPending))
+			g.Expect(latest.Status.DesiredNodes).To(BeZero())
+			g.Expect(condition(latest, "Progressing").Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(condition(latest, "Progressing").Reason).To(Equal("NoTargetsResolved"))
+		}, timeout, interval).Should(Succeed())
+	})
+
 	It("sets the owner reference used to garbage-collect Jobs", func() {
 		ns := newModelWarmupNamespace("gc")
 		node := newModelWarmupNode("gc", nil)
@@ -273,6 +291,9 @@ func getModelWarmup(g Gomega, warmup *modelapi.ModelWarmup) *modelapi.ModelWarmu
 func setJobSucceeded(job batchv1.Job) {
 	Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(&job), &job)).To(Succeed())
 	job.Status.Succeeded = 1
+	job.Status.Conditions = []batchv1.JobCondition{{
+		Type: batchv1.JobComplete, Status: corev1.ConditionTrue,
+	}}
 	Expect(k8sClient.Status().Update(ctx, &job)).To(Succeed())
 }
 

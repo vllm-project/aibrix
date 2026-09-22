@@ -30,7 +30,8 @@ const (
 )
 
 type ModelWarmupSpec struct {
-	// Targets is the union of explicit nodes and selector-discovered nodes.
+	// Targets declares explicit node names and label selectors. The controller
+	// resolves and deduplicates their union.
 	// +kubebuilder:validation:MinItems=1
 	Targets []ModelWarmupTarget `json:"targets"`
 

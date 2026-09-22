@@ -169,7 +169,7 @@ func (r *ModelWarmupReconciler) activeJobs(
 	}
 	var active int32
 	for _, job := range jobs.Items {
-		if job.Status.Succeeded == 0 && job.Status.Failed == 0 {
+		if job.DeletionTimestamp == nil && !isJobComplete(&job) && !isJobFailed(&job) {
 			active++
 		}
 	}
@@ -190,7 +190,7 @@ func (r *ModelWarmupReconciler) cleanupStaleJobs(
 	}
 	for i := range jobs.Items {
 		job := &jobs.Items[i]
-		if job.Status.Succeeded > 0 || job.Status.Failed > 0 {
+		if isJobComplete(job) || isJobFailed(job) {
 			continue
 		}
 		_, targetExists := targets[job.Spec.Template.Spec.NodeName]
@@ -312,10 +312,7 @@ func (r *ModelWarmupReconciler) jobFor(w *modelv1alpha1.ModelWarmup, node, revis
 			},
 		})
 	}
-	name := fmt.Sprintf("%s-%s-%s", w.Name, shortHash(node), revision)
-	if len(name) > 63 {
-		name = name[:63]
-	}
+	name := modelWarmupJobName(w.Name, node, revision)
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -406,11 +403,11 @@ func (r *ModelWarmupReconciler) updateStatus(
 		if job, ok := byNode[node]; ok {
 			item.JobName = job.Name
 			switch {
-			case job.Status.Succeeded > 0:
+			case isJobComplete(&job):
 				item.Phase = modelv1alpha1.ModelWarmupTargetSucceeded
 				item.Message = "warmup job completed successfully"
 				succeeded++
-			case job.Status.Failed > 0:
+			case isJobFailed(&job):
 				item.Phase = modelv1alpha1.ModelWarmupTargetFailed
 				item.Reason, item.Message = jobFailureDetails(&job)
 				failed++
@@ -459,12 +456,23 @@ func (r *ModelWarmupReconciler) updateStatus(
 		w.Status.Phase = modelv1alpha1.ModelWarmupDegraded
 		setCompletionTime(w)
 		setCondition(w, "Degraded", metav1.ConditionTrue, "NodeFailed", "one or more warmup jobs failed")
-	} else if w.Status.DesiredNodes > 0 && succeeded == w.Status.DesiredNodes {
+	} else if w.Status.DesiredNodes == 0 {
+		w.Status.Phase = modelv1alpha1.ModelWarmupPending
+		w.Status.CompletionTime = nil
+		setCondition(
+			w,
+			"Progressing",
+			metav1.ConditionTrue,
+			"NoTargetsResolved",
+			"waiting for target nodes to match the configured selectors",
+		)
+	} else if succeeded == w.Status.DesiredNodes {
 		w.Status.Phase = modelv1alpha1.ModelWarmupSucceeded
 		setCompletionTime(w)
 		setCondition(w, "Ready", metav1.ConditionTrue, "ImagePreloadSucceeded", "all target jobs succeeded")
 	} else {
 		w.Status.Phase = modelv1alpha1.ModelWarmupRunning
+		w.Status.CompletionTime = nil
 		setCondition(w, "Progressing", metav1.ConditionTrue, "JobsRunning", "waiting for warmup jobs")
 	}
 	if err := r.Status().Update(ctx, w); err != nil {
@@ -498,9 +506,26 @@ func isTerminalPhase(phase modelv1alpha1.ModelWarmupPhase) bool {
 		phase == modelv1alpha1.ModelWarmupDegraded || phase == modelv1alpha1.ModelWarmupFailed
 }
 
+func isJobComplete(job *batchv1.Job) bool {
+	return hasJobCondition(job, batchv1.JobComplete)
+}
+
+func isJobFailed(job *batchv1.Job) bool {
+	return hasJobCondition(job, batchv1.JobFailed)
+}
+
+func hasJobCondition(job *batchv1.Job, conditionType batchv1.JobConditionType) bool {
+	for _, condition := range job.Status.Conditions {
+		if condition.Type == conditionType && condition.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
 func jobFailureDetails(job *batchv1.Job) (string, string) {
 	for _, condition := range job.Status.Conditions {
-		if condition.Type == batchv1.JobFailed {
+		if condition.Type == batchv1.JobFailed && condition.Status == corev1.ConditionTrue {
 			reason := condition.Reason
 			if reason == "" {
 				reason = "JobFailed"
@@ -513,6 +538,16 @@ func jobFailureDetails(job *batchv1.Job) (string, string) {
 		}
 	}
 	return "JobFailed", "warmup job failed"
+}
+
+func modelWarmupJobName(warmupName, node, revision string) string {
+	suffix := fmt.Sprintf("-%s-%s", shortHash(node), revision)
+	prefix := warmupName
+	if len(prefix)+len(suffix) > 63 {
+		prefix = prefix[:63-len(suffix)]
+		prefix = strings.TrimRight(prefix, "-.")
+	}
+	return prefix + suffix
 }
 
 func preserveTargetTransition(item *modelv1alpha1.ModelWarmupTargetStatus, previous *metav1.Time,
