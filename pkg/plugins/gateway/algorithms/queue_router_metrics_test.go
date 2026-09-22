@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"regexp"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -303,5 +304,124 @@ func TestQueueRouterEmitsQueueMetricsByOutcome(t *testing.T) {
 				t.Fatalf("pending gauge values = [%v %v], want [1 0]", pending[0].value, pending[1].value)
 			}
 		})
+	}
+}
+
+// scriptedLenQueue reports a strictly increasing depth on every Len() call so tests
+// can check the order in which samples are published.
+type scriptedLenQueue struct {
+	fakeRouterQueue
+	calls atomic.Int64
+}
+
+func (q *scriptedLenQueue) Len() int {
+	return int(q.calls.Add(1))
+}
+
+// TestQueuePendingGaugeSamplesAreSerialized pins the contract that sampling the depth
+// and publishing it is one atomic pair. The publication hook holds the first sample
+// briefly, which gives an unserialized pair time to overtake it: a later sample then
+// lands first and the earlier one is published last, so the order stops increasing.
+func TestQueuePendingGaugeSamplesAreSerialized(t *testing.T) {
+	cache.InitForTest()
+
+	var mu sync.Mutex
+	var published []float64
+	original := metrics.SetGaugeMetricFnForTest
+	metrics.SetGaugeMetricFnForTest = func(name string, _ string, value float64, _ []string, _ ...string) {
+		if name != metrics.GatewayQueuePendingRequests {
+			return
+		}
+		if value == 1 {
+			time.Sleep(20 * time.Millisecond)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		published = append(published, value)
+	}
+	defer func() { metrics.SetGaugeMetricFnForTest = original }()
+
+	router := &queueRouter{queue: &scriptedLenQueue{}}
+	ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("slo"), "test-model", "hello world", "req-serialized", "")
+
+	const workers = 16
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			router.updateQueuePendingMetric(ctx)
+		}()
+	}
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(published) != workers {
+		t.Fatalf("published %d samples, want %d", len(published), workers)
+	}
+	for i := 1; i < len(published); i++ {
+		if published[i] <= published[i-1] {
+			t.Fatalf("depth samples were published out of order: %v then %v", published[i-1], published[i])
+		}
+	}
+}
+
+// failingOnceDequeueQueue fails the first Dequeue, leaving the request enqueued the way
+// the queue's fail-closed "subqueue not found" path does, and succeeds afterwards.
+type failingOnceDequeueQueue struct {
+	fakeRouterQueue
+	dequeues int
+}
+
+func (q *failingOnceDequeueQueue) Dequeue(ts time.Time) (*types.RoutingContext, error) {
+	q.mu.Lock()
+	q.dequeues++
+	attempt := q.dequeues
+	q.mu.Unlock()
+	if attempt == 1 {
+		return nil, errors.New("subqueue not found")
+	}
+	return q.fakeRouterQueue.Dequeue(ts)
+}
+
+// TestQueueRouterDoesNotCountFailedDequeues pins the departure metrics to successful
+// dequeues: when Dequeue fails the request stays queued, the next Peek routes the same
+// context again, and only its eventual successful dequeue may count as a departure.
+func TestQueueRouterDoesNotCountFailedDequeues(t *testing.T) {
+	cache.InitForTest()
+	capture := startMetricCapture()
+	defer capture.restore()
+
+	backendErr := errors.New("backend selection failed")
+	router, err := NewQueueRouter(fakeBackendRouter{err: backendErr}, &failingOnceDequeueQueue{})
+	if err != nil {
+		t.Fatalf("NewQueueRouter() error = %v", err)
+	}
+
+	ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("slo"), "test-model", "hello world", "req-failed-dequeue", "")
+	pods := newMockPodList([]*v1.Pod{newQueueTestPod()}, nil)
+
+	if _, err := router.Route(ctx, pods); !errors.Is(err, backendErr) {
+		t.Fatalf("Route() error = %v, want %v", err, backendErr)
+	}
+
+	// Three gauge reports: the enqueue, the failed dequeue, and the successful retry.
+	pending := waitForEmissions(t, func() []metricEmission {
+		return capture.gaugesFor(metrics.GatewayQueuePendingRequests)
+	}, 3)
+	if len(pending) != 3 {
+		t.Fatalf("expected 3 pending gauge emissions, got %d", len(pending))
+	}
+
+	outcomes := capture.countersFor(metrics.GatewayQueueOutcomeTotal)
+	if len(outcomes) != 1 {
+		t.Fatalf("expected 1 outcome emission, got %d", len(outcomes))
+	}
+	if got := labelValue(outcomes[0], "outcome"); got != "error" {
+		t.Fatalf("outcome label = %q, want %q", got, "error")
+	}
+	if waits := capture.countersFor(metrics.GatewayQueueWaitTimeBucketTotal); len(waits) != 1 {
+		t.Fatalf("expected 1 wait bucket emission, got %d", len(waits))
 	}
 }

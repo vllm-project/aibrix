@@ -19,6 +19,7 @@ package routingalgorithms
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
@@ -51,6 +52,11 @@ type queueRouter struct {
 	queue          types.RouterQueue[*types.RoutingContext]
 	cache          cache.Cache
 	chRouteTrigger chan types.PodList
+	// pendingMu serializes sampling the queue depth and publishing it. Both the
+	// request path (after Enqueue) and serve (after Dequeue) report the gauge; without
+	// it a sample taken before a drain can be published after the drain's own, leaving
+	// the gauge stuck at the stale depth.
+	pendingMu sync.Mutex
 }
 
 func NewQueueRouter(backend types.Router, queue types.RouterQueue[*types.RoutingContext]) (types.QueueRouter, error) {
@@ -93,7 +99,7 @@ func (r *queueRouter) Route(ctx *types.RoutingContext, pods types.PodList) (stri
 	if err := r.queue.Enqueue(ctx, now); err != nil {
 		return "", err
 	}
-	emitQueuePendingMetric(ctx, r.queue.Len())
+	r.updateQueuePendingMetric(ctx)
 
 	r.tryRoute(pods) // Simply trigger a possible dequeue
 
@@ -140,24 +146,28 @@ func (r *queueRouter) serve() {
 				break
 			}
 
-			_, err = r.router.Route(ctx, pods)
-			if err != nil {
+			_, routeErr := r.router.Route(ctx, pods)
+			if routeErr != nil {
 				// Necessary if Router has not set the error. No harm to set twice.
-				ctx.SetError(err)
+				ctx.SetError(routeErr)
 			} else {
 				// Add request count here to make real-time metrics update and read serial.
 				// Noted, AddRequestCount should implement the idempotence.
 				r.cache.AddRequestCount(ctx, ctx.RequestID, ctx.Model)
 			}
-			emitQueueOutcomeMetrics(ctx, err)
 			// req.SetTargetPod() should have called in Route()
-			dequeued, err := r.queue.Dequeue(time.Now())
-			if err != nil {
-				klog.Errorf("error on dequeue request queue: %v", err)
+			dequeued, dequeueErr := r.queue.Dequeue(time.Now())
+			if dequeueErr != nil {
+				klog.Errorf("error on dequeue request queue: %v", dequeueErr)
 			} else if dequeued != ctx {
 				klog.Error("unexpected request dequeued")
+			} else {
+				// Report the departure only once the request actually left the queue: a
+				// failed Dequeue leaves it enqueued, so the next Peek would route the same
+				// context again and emitting here would count that departure twice.
+				emitQueueOutcomeMetrics(ctx, routeErr)
 			}
-			emitQueuePendingMetric(ctx, r.queue.Len())
+			r.updateQueuePendingMetric(ctx)
 		}
 	}
 }
@@ -235,4 +245,13 @@ func emitQueueOutcomeMetrics(ctx *types.RoutingContext, routeErr error) {
 func emitQueuePendingMetric(ctx *types.RoutingContext, pending int) {
 	metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayQueuePendingRequests,
 		&metrics.SimpleMetricValue{Value: float64(pending)}, nil)
+}
+
+// updateQueuePendingMetric samples the queue depth and publishes it as one serialized
+// sample+set pair, so a staler sample cannot overwrite a fresher one when the request
+// path and serve report concurrently.
+func (r *queueRouter) updateQueuePendingMetric(ctx *types.RoutingContext) {
+	r.pendingMu.Lock()
+	defer r.pendingMu.Unlock()
+	emitQueuePendingMetric(ctx, r.queue.Len())
 }
