@@ -780,7 +780,9 @@ func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error)
 		// headers, Validate(), and error messages all still reflect the original strategy
 		// name.
 		blended, ok := appendLoadBalanceBlend(algStr, cfg)
-		klog.V(4).Infof("routing select: algStr=%q autoBlendLoadBalanceWeight=%d autoBlendLeastRequestWeight=%d blend_ok=%v blended=%q", algStr, autoBlendLoadBalanceWeight, autoBlendLeastRequestWeight, ok, blended)
+		if klog.V(4).Enabled() {
+			klog.V(4).Infof("routing select: algStr=%q autoBlendLoadBalanceWeight=%d autoBlendLeastRequestWeight=%d blend_ok=%v blended=%q", algStr, autoBlendLoadBalanceWeight, autoBlendLeastRequestWeight, ok, blended)
+		}
 		if ok {
 			if router, blendedOK := rm.tryAutoBlend(ctx, algStr, cfg, blended); blendedOK {
 				return router, nil

@@ -384,7 +384,13 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string, modelNa
 	}
 }
 
-func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string, modelName string) {
+// donePodStats releases the pod-level stats taken by addPodStats. outputTokens is the request's
+// generated-token count when usage is known (DoneRequestTrace) and 0 otherwise (DoneRequestCount);
+// it feeds the pod's completed-output-token counter, the basis of the load-balance capacity signal.
+func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string, modelName string, outputTokens int64) {
+	if outputTokens < 0 {
+		outputTokens = 0 // the counter is monotonic; a bogus usage value must not run it backwards
+	}
 	podStats, ok := c.takePodStats(ctx, modelName, requestID)
 	if !ok {
 		if ctx != nil {
@@ -434,6 +440,7 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string, modelN
 	if snap != nil {
 		decrementClamped(&snap.runningRequests, metaPod.Name, requestID)
 		atomic.AddInt64(&snap.completedRequests, 1)
+		atomic.AddInt64(&snap.completedOutputTokens, outputTokens)
 		if podStats.pendingLoad != 0.0 && c.pendingLoadProvider != nil {
 			snap.pendingLoadUtilization.Add(-podStats.pendingLoad)
 		}
@@ -452,6 +459,7 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string, modelN
 	// some other bug slips an extra decrement past the lock above.
 	requests := decrementClamped(&metaPod.runningRequests, metaPod.Name, requestID)
 	atomic.AddInt64(&metaPod.completedRequests, 1)
+	atomic.AddInt64(&metaPod.completedOutputTokens, outputTokens)
 	metricName := metrics.RealtimeNumRequestsRunning
 	if port > 0 {
 		metricName = metricName + "/" + strconv.Itoa(port)

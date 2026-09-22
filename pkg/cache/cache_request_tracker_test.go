@@ -975,3 +975,70 @@ func TestConcurrentDoneOfRetriedRequestDoesNotLeakPodStats(t *testing.T) {
 	assert.Equal(t, clampedBefore, atomic.LoadInt64(&clampedRunningRequestDecrements),
 		"no extra decrement should have been clamped away")
 }
+
+// Output tokens reported at completion feed the pod's completed-output-token counter, the
+// basis of the load-balance capacity signal. Completions without usage add nothing, and a bogus
+// negative count must not run the monotonic counter backwards.
+func TestDonePodStatsAccumulatesOutputTokens(t *testing.T) {
+	const (
+		modelName = "test-model"
+		namespace = "default"
+		podName   = "decode-0"
+	)
+
+	cache := NewForTest()
+	pod := requestTrackerTestPod(podName, namespace, modelName, "10.0.0.1")
+	cache.addPod(pod)
+	metaPod, ok := cache.metaPods.Load(namespace + "/" + podName)
+	assert.True(t, ok)
+
+	finish := func(requestID string, done func(ctx *types.RoutingContext, traceTerm int64)) {
+		ctx := types.NewRoutingContext(context.Background(), "least-request", modelName, "", requestID, "")
+		ctx.SetTargetPod(pod)
+		traceTerm := cache.AddRequestCount(ctx, requestID, modelName)
+		done(ctx, traceTerm)
+	}
+
+	finish("with-usage", func(ctx *types.RoutingContext, term int64) {
+		cache.DoneRequestTrace(ctx, "with-usage", modelName, 10, 20, term)
+	})
+	assert.Equal(t, int64(20), atomic.LoadInt64(&metaPod.completedOutputTokens))
+
+	finish("without-usage", func(ctx *types.RoutingContext, term int64) {
+		cache.DoneRequestCount(ctx, "without-usage", modelName, term)
+	})
+	assert.Equal(t, int64(20), atomic.LoadInt64(&metaPod.completedOutputTokens))
+	assert.Equal(t, int64(2), atomic.LoadInt64(&metaPod.completedRequests))
+
+	finish("bogus-usage", func(ctx *types.RoutingContext, term int64) {
+		cache.DoneRequestTrace(ctx, "bogus-usage", modelName, 10, -5, term)
+	})
+	assert.Equal(t, int64(20), atomic.LoadInt64(&metaPod.completedOutputTokens))
+}
+
+// A brief delete/re-add of the same pod (same IP, within the grace period) must carry the
+// completed-output-token counter over, exactly like completedRequests; a bare re-add after the
+// pod was never deleted must not reset it either.
+func TestPodFlapPreservesCompletedOutputTokens(t *testing.T) {
+	const (
+		modelName = "test-model"
+		namespace = "default"
+		podName   = "decode-0"
+	)
+
+	cache := NewForTest()
+	pod := requestTrackerTestPod(podName, namespace, modelName, "10.0.0.1")
+	cache.addPod(pod)
+	metaPod, ok := cache.metaPods.Load(namespace + "/" + podName)
+	assert.True(t, ok)
+	atomic.StoreInt64(&metaPod.completedRequests, 3)
+	atomic.StoreInt64(&metaPod.completedOutputTokens, 450)
+
+	cache.deletePod(pod)
+	cache.addPod(requestTrackerTestPod(podName, namespace, modelName, "10.0.0.1"))
+
+	resumed, ok := cache.metaPods.Load(namespace + "/" + podName)
+	assert.True(t, ok)
+	assert.Equal(t, int64(3), atomic.LoadInt64(&resumed.completedRequests))
+	assert.Equal(t, int64(450), atomic.LoadInt64(&resumed.completedOutputTokens))
+}

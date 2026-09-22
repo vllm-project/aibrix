@@ -73,7 +73,7 @@ func newFakeCache(pods []*corev1.Pod) *fakeCache {
 		}
 		values[pod.Name+"/"+metrics.RealtimeNumRequestsRunning] = &metrics.SimpleMetricValue{Value: base}
 		values[pod.Name+"/"+metrics.KVCacheUsagePerc] = &metrics.SimpleMetricValue{Value: base}
-		values[pod.Name+"/"+metrics.RealtimeRunningRequestsDrainRate1m] = &metrics.SimpleMetricValue{Value: 1 / base}
+		values[pod.Name+"/"+metrics.RealtimeOutputTokenRateEWMA] = &metrics.SimpleMetricValue{Value: 1 / base}
 		values[pod.Name+"/"+metrics.RequestQueueTimeSeconds] = &metrics.SimpleMetricValue{Value: base}
 		values[pod.Name+"/"+metrics.AvgPromptToksPerReq] = &metrics.SimpleMetricValue{Value: 10}
 		values[pod.Name+"/"+metrics.AvgGenerationToksPerReq] = &metrics.SimpleMetricValue{Value: 10}

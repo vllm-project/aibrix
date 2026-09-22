@@ -17,9 +17,11 @@ package cache
 import (
 	"encoding/base64"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -943,4 +945,75 @@ func newReadyMetricsPod(name, uid string) *Pod {
 		},
 		Models: utils.NewRegistry[string](),
 	}
+}
+
+// seedCompletedOutputTokensHistory plants a rate-window baseline so calculateRate1m has a
+// snapshot far enough in the past (it discards windows shorter than 10s) without sleeping.
+func seedCompletedOutputTokensHistory(t *testing.T, pod *Pod, baseline float64, age time.Duration) {
+	t.Helper()
+	key := pod.Name + "//completed_output_tokens"
+	rateCalculator.mu.Lock()
+	rateCalculator.history[key] = []MetricSnapshot{{Value: baseline, Timestamp: time.Now().Add(-age)}}
+	rateCalculator.mu.Unlock()
+	t.Cleanup(func() {
+		rateCalculator.mu.Lock()
+		delete(rateCalculator.history, key)
+		rateCalculator.mu.Unlock()
+	})
+}
+
+func TestUpdateRealtimeOutputTokenRateEWMA(t *testing.T) {
+	c := &Store{}
+	pod := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "ewma-pod", Namespace: "default"}}}
+	seedCompletedOutputTokensHistory(t, pod, 0, 30*time.Second)
+
+	// 3000 tokens over the 30s window = 100 tokens/s. The first sample seeds the EWMA as is.
+	atomic.StoreInt64(&pod.completedOutputTokens, 3000)
+	c.updateRealtimeOutputTokenRateEWMA(pod)
+	v, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA)
+	require.True(t, ok)
+	require.InDelta(t, 100, v.GetSimpleValue(), 1)
+
+	// A higher window rate (~200 tokens/s) moves the estimate only part of the way toward it.
+	atomic.StoreInt64(&pod.completedOutputTokens, 6000)
+	c.updateRealtimeOutputTokenRateEWMA(pod)
+	v, ok = pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA)
+	require.True(t, ok)
+	alpha := 1 - math.Exp(-podMetricRefreshInterval.Seconds()/outputTokenRateEWMATau.Seconds())
+	want := alpha*200 + (1-alpha)*100
+	require.InDelta(t, want, v.GetSimpleValue(), 2)
+	require.Greater(t, v.GetSimpleValue(), 100.0)
+	require.Less(t, v.GetSimpleValue(), 200.0)
+}
+
+// A window with no completed output tokens says nothing about capacity, so the previous
+// estimate must survive instead of decaying to zero.
+func TestUpdateRealtimeOutputTokenRateEWMA_IdleKeepsPreviousEstimate(t *testing.T) {
+	c := &Store{}
+	pod := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "idle-ewma-pod", Namespace: "default"}}}
+	seedCompletedOutputTokensHistory(t, pod, 500, 30*time.Second)
+	atomic.StoreInt64(&pod.completedOutputTokens, 500) // no new tokens in the window
+	require.NoError(t, c.updatePodRecord(pod, "", metrics.RealtimeOutputTokenRateEWMA, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: 123}))
+
+	c.updateRealtimeOutputTokenRateEWMA(pod)
+
+	v, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA)
+	require.True(t, ok)
+	require.Equal(t, 123.0, v.GetSimpleValue())
+}
+
+func TestUpdateRealtimeOutputTokenRateEWMA_NoHistoryStoresNothing(t *testing.T) {
+	c := &Store{}
+	pod := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "cold-ewma-pod", Namespace: "default"}}}
+	t.Cleanup(func() {
+		rateCalculator.mu.Lock()
+		delete(rateCalculator.history, pod.Name+"//completed_output_tokens")
+		rateCalculator.mu.Unlock()
+	})
+	atomic.StoreInt64(&pod.completedOutputTokens, 1000)
+
+	c.updateRealtimeOutputTokenRateEWMA(pod)
+
+	_, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA)
+	require.False(t, ok, "a single sample has no window, so no capacity estimate yet")
 }
