@@ -119,7 +119,7 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if roleSet.DeletionTimestamp != nil {
 		if done, err := r.finalize(ctx, roleSet); err != nil {
 			klog.Errorf("Reconciling RoleSet %s finalize error %v", req.String(), err)
-			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
+			return ctrl.Result{}, err
 		} else if !done {
 			klog.Infof("Reconciling RoleSet %s finalize not done yet, reconcile after %v seconds", req.String(), DefaultRequeueAfter)
 			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, nil
@@ -129,7 +129,7 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		// add finalizer if not exist
 		if err := orchestrationctrl.Patch(ctx, r.Client, roleSet, patch.AddFinalizerPatch(roleSet, RoleSetFinalizer)); err != nil {
 			klog.Errorf("Adding RoleSet %s finalizer error %v", req.String(), err)
-			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
+			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
 	}
@@ -160,11 +160,11 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	status, err := r.calculateStatus(ctx, roleSet, managedErrors, podGroupSyncErr)
 	if err != nil {
 		klog.Infof("roleset %s/%s calculate status error %v", roleSet.Namespace, roleSet.Name, err)
-		return ctrl.Result{RequeueAfter: 1 * time.Minute}, err
+		return ctrl.Result{}, err
 	}
 	if apiequality.Semantic.DeepEqual(&roleSet.Status, status) {
 		if inProgress, err := hasInPlaceUpdateInProgress(ctx, r.Client, roleSet.Namespace, roleSet.Name); err != nil {
-			return ctrl.Result{RequeueAfter: DefaultRetryDelay}, err
+			return ctrl.Result{}, err
 		} else if inProgress {
 			klog.Infof("roleset %s/%s has in-place update in progress, reconcile after %v seconds", roleSet.Namespace, roleSet.Name, DefaultRetryDelay)
 			return ctrl.Result{RequeueAfter: DefaultRetryDelay}, nil
@@ -186,10 +186,10 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	roleSet.Status = *status
 	if err := orchestrationctrl.UpdateStatus(ctx, r.Scheme, r.Client, roleSet); err != nil {
 		klog.Infof("roleset %s/%s update status error %v", roleSet.Namespace, roleSet.Name, err)
-		return ctrl.Result{RequeueAfter: 1 * time.Minute}, err
+		return ctrl.Result{}, err
 	}
 	if inProgress, err := hasInPlaceUpdateInProgress(ctx, r.Client, roleSet.Namespace, roleSet.Name); err != nil {
-		return ctrl.Result{RequeueAfter: DefaultRetryDelay}, err
+		return ctrl.Result{}, err
 	} else if inProgress {
 		klog.Infof("roleset %s/%s has in-place update in progress, reconcile after %v seconds", roleSet.Namespace, roleSet.Name, DefaultRetryDelay)
 		return ctrl.Result{RequeueAfter: DefaultRetryDelay}, nil
