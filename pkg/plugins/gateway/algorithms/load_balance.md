@@ -42,7 +42,7 @@ Here throughput only sets the denominator, and load comes from the committed wor
 |---|---|---|---|
 | `λ` | Weight of engine-queued requests | `0` | `AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT` |
 | `α` | KV-pressure penalty strength | `2.0` | `AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA` |
-| `kvCritical` | Free-KV fraction below which a pod is excluded | `0.10` | `AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE` |
+| `kvCritical` | Free-KV fraction below which a pod scores `+Inf` from `load-balance` (excluded when `load-balance` routes alone; only strongly penalized in a blend — see "Interaction with the rest of the gateway" below) | `0.10` | `AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE` |
 
 `λ` defaults to `0` because the gateway's running count already includes requests that are
 queued inside the engine; adding `num_requests_waiting` on top would count them twice. Values
@@ -90,8 +90,8 @@ gateway: DoneRequestTrace(outputTokens) ──► Pod.completedOutputTokens   (m
 | Pod has no token-rate estimate yet (new pod, or no usage reported) | Scored at the **mean** estimate of the pods that have one, so it competes as an average replica. A fixed fallback such as `1.0` would be off by the tokens/sec scale (thousands) and lock the pod out of the traffic it needs to be measured. |
 | No pod has an estimate | Every pod gets capacity `1.0`; the score reduces to `running × KV penalty`. |
 | Engine reports no KV usage, or `NaN` | Treated as fully free: no penalty and no guardrail. |
-| `kvFree < kvCritical` | Score `+Inf`; the pod is skipped until it recovers. Exactly at the threshold is still usable. |
-| **Every** pod is below `kvCritical` | The request is **not** failed. Routing falls back to the tie-break over all pods, which picks the one with the least KV usage. |
+| `kvFree < kvCritical` | Score `+Inf` from `load-balance`. When `load-balance` routes alone this skips the pod entirely until it recovers. When `load-balance` is blended with other strategies (the default — see below), it is only a strong penalty, not a guaranteed exclusion. |
+| **Every** pod is below `kvCritical` | The request is **not** failed. Routing falls back to the tie-break over all pods, which picks the one with the least KV usage. This fallback is specific to `load-balance` routing alone; see below for the blended case. |
 | Pod is idle (`running = 0`) | Score `0` regardless of capacity, so idle pods are preferred. |
 | Several pods share the lowest score | Ties are broken by least combined GPU+CPU KV-cache usage (`least-kv-cache` scorer), falling back to random. |
 
@@ -102,12 +102,30 @@ as full rather than producing a negative free fraction.
 
 - **Load-imbalance gate.** The gateway applies `ApplyLoadImbalanceGate` once, ahead of whichever
   strategy routes the request, so `Route` receives an already-narrowed pod list. If that narrowed
-  set is entirely KV-critical, the all-critical fallback above applies.
-- **Multi-strategy blending.** `ScoreAll` returns `+Inf` for excluded pods. The aggregator ignores
-  non-finite scores when normalizing, so such a pod gets `0` from `load-balance` (the worst
-  score). In a blend this is a strong penalty, not a hard exclusion: another strategy with enough
-  weight (for example a prefix-cache hit) can still select the pod. The hard guarantee holds when
-  `load-balance` routes alone.
+  set is entirely KV-critical, the all-critical fallback above applies. **TODO / known
+  limitation:** the gate compares raw running-request count, with no notion of a pod's capacity —
+  a replica that's simply faster than its peers is expected to carry more concurrent requests
+  without being more loaded (the same capacity signal `load-balance`'s own score uses above), but
+  this gate can still flag it as a hotspot and exclude it before `load-balance`'s own
+  capacity-aware score ever gets to run. See `getTargetPodListOnLoadImbalance` in
+  [load_balance.go](load_balance.go).
+- **Multi-strategy blending: the guardrail is soft here, not hard.** `kvCritical` is a hard
+  exclusion only when `load-balance` routes alone. In a blend, `ScoreAll` still returns `+Inf` for
+  a critical pod, but `multiStrategyRouter.normalizeScoresArray` treats a non-finite score the
+  same as "not scored" and assigns it `0` — the worst possible score from `load-balance`, not an
+  exclusion from routing. If another blended strategy scores that same pod highly enough, it can
+  still be selected.
+
+  Concretely: `load-balance` is blended in behind other strategies by default (see
+  `AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT`), so the blended path, not the standalone one, is
+  what most requests actually take. With the default `prefix-cache:5,load-balance:4` blend, a
+  KV-critical pod that has the best prefix-cache score still gets `5/9` of the combined weight
+  versus `4/9` for a healthy pod that only wins on `load-balance`, so the critical pod wins the
+  route. `kvCritical` should therefore be read as "how hard `load-balance` argues against routing
+  to this pod," not as a safety limit that blocks it from being chosen — it does not, on its own,
+  prevent a KV-critical pod from receiving more traffic. Something that must never route to a
+  KV-critical pod needs a filter ahead of scoring (comparable to `ApplyLoadImbalanceGate`), which
+  does not currently exist for KV pressure.
 - **PD disaggregation.** The PD router's decode path keeps its own request drain-rate scoring
   (`RealtimeRunningRequestsDrainRate1m`) and is unchanged.
 

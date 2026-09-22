@@ -37,6 +37,13 @@ var RouterLoadBalance types.RoutingAlgorithm = "load-balance"
 // max > factor*(mean+1). Used only for 3+ pods; two pods skip this check
 // because factor=2 reduces to max > max+2, which never holds.
 // podRunningRequestImbalanceMinGap is the minimum absolute gap required to trigger.
+//
+// TODO: this compares raw running-request counts, not capacity-normalized load. In a
+// heterogeneous pool a replica that is simply faster than its peers is expected to carry more
+// concurrent requests without being more loaded (the same capacity signal loadBalanceScore
+// uses), but this gate has no notion of capacity and can flag such a replica as a hotspot and
+// exclude it from routing before any strategy's capacity-aware scoring gets a chance to run.
+// Move this to compare capacity-normalized load instead of raw counts.
 var (
 	podRunningRequestImbalanceFactor = utils.LoadEnvFloat("AIBRIX_LOAD_BALANCE_IMBALANCE_FACTOR", 2.0)
 	podRunningRequestImbalanceMinGap = utils.LoadEnvInt("AIBRIX_LOAD_BALANCE_IMBALANCE_MIN_GAP", 8)
@@ -44,7 +51,9 @@ var (
 
 // Score knobs, see loadBalanceScore. The defaults are the "V1" formula: running requests only
 // (queued weight 0, since the gateway's running count already includes requests queued inside the
-// engine), a quadratic KV-pressure penalty of strength 2, and a hard guardrail at 10% free KV.
+// engine), a quadratic KV-pressure penalty of strength 2, and a guardrail at 10% free KV that is
+// hard only when load-balance routes alone — in a multi-strategy blend it is a strong penalty,
+// not an exclusion (see the "Interaction with the rest of the gateway" section of load_balance.md).
 var (
 	loadBalanceQueuedWeight    = utils.LoadEnvFloat("AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT", 0.0)
 	loadBalanceKVPressureAlpha = utils.LoadEnvFloat("AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA", 2.0)
@@ -167,6 +176,13 @@ func (r *loadBalanceRouter) ScoreAll(ctx *types.RoutingContext, readyPodList typ
 // loadBalanceScore is the effective load of a replica: the work already committed to it, divided by
 // how fast it drains work, inflated as its KV cache fills. capacity is in tokens/sec and kvFree in
 // [0, 1]. Below loadBalanceKVCriticalFree the replica is unusable and the score is +Inf.
+//
+// That +Inf only guarantees exclusion when load-balance is the router actually selecting the pod
+// (loadBalanceRouter.Route). When load-balance is one voice in a multi-strategy blend (its default
+// mode — see appendLoadBalanceBlend), multiStrategyRouter.normalizeScoresArray treats +Inf the same
+// as "not scored" and maps it to a plain 0 for load-balance's weighted component: a strong penalty,
+// not an exclusion. Another blended strategy that scores the same pod highly (e.g. a prefix-cache
+// hit) can still win the route for it.
 func loadBalanceScore(load, capacity, kvFree float64) float64 {
 	if kvFree < loadBalanceKVCriticalFree {
 		return math.Inf(1)
@@ -358,6 +374,15 @@ func ApplyLoadImbalanceGate(ctx *types.RoutingContext, c cache.Cache, readyPods 
 // times a typical pod's load) — silently permitting severe, worsening imbalance. Two pods skip
 // the factor check: with the default factor of 2, max > 2*(mean+1) reduces to max > max+2 and
 // never fires, which would disable hotspot protection on the common 2-replica deployment.
+//
+// TODO: "load" here is raw running-request count, with no notion of each pod's capacity. In a
+// heterogeneous pool this conflates "carrying a lot of work" with "overloaded": a pod that is
+// simply faster than its peers is expected to carry more concurrent requests without being more
+// loaded (see loadBalanceScore's capacity normalization), but this gate can still flag it as a
+// hotspot and exclude it from every strategy's candidate set before any strategy's
+// capacity-aware scoring gets a chance to run. Move this to compare capacity-normalized load
+// (running/capacity, rescaled to the pool's mean capacity so the existing factor/min-gap
+// thresholds keep their current "requests" units and defaults) instead of raw counts.
 func getTargetPodListOnLoadImbalance(podRequestCount map[string]int, readyPods []*v1.Pod) (targetPodList []*v1.Pod, minValue, maxValue int, imbalanced bool) {
 	n := len(podRequestCount)
 	if n == 0 {
