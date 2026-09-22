@@ -33,15 +33,14 @@ import (
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 )
 
-type notFoundPatchClient struct {
+type notFoundUpdateClient struct {
 	client.Client
 }
 
-func (c *notFoundPatchClient) Patch(
+func (c *notFoundUpdateClient) Update(
 	_ context.Context,
 	obj client.Object,
-	_ client.Patch,
-	_ ...client.PatchOption,
+	_ ...client.UpdateOption,
 ) error {
 	return apierrors.NewNotFound(schema.GroupResource{
 		Group:    orchestrationv1alpha1.GroupVersion.Group,
@@ -53,14 +52,14 @@ func TestFinalizeTreatsRoleSetNotFoundAsComplete(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
-	baseClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	reconciler := &RoleSetReconciler{
-		Client:        &notFoundPatchClient{Client: baseClient},
-		DynamicClient: dynamicfake.NewSimpleDynamicClient(runtime.NewScheme()),
-	}
 	roleSet := &orchestrationv1alpha1.RoleSet{ObjectMeta: metav1.ObjectMeta{
 		Name: "deleted", Namespace: "default", Finalizers: []string{RoleSetFinalizer},
 	}}
+	baseClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(roleSet.DeepCopy()).Build()
+	reconciler := &RoleSetReconciler{
+		Client:        &notFoundUpdateClient{Client: baseClient},
+		DynamicClient: dynamicfake.NewSimpleDynamicClient(runtime.NewScheme()),
+	}
 
 	done, err := reconciler.finalize(context.Background(), roleSet)
 	require.NoError(t, err)

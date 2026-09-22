@@ -36,7 +36,6 @@ import (
 	controllerdrain "github.com/vllm-project/aibrix/pkg/controller/drain"
 	ctrlutil "github.com/vllm-project/aibrix/pkg/controller/util"
 	utils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
-	"github.com/vllm-project/aibrix/pkg/controller/util/patch"
 )
 
 func (r *RoleSetReconciler) syncPodGroup(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, spec *orchestrationv1alpha1.RoleSetSpec) error {
@@ -301,10 +300,7 @@ func (r *RoleSetReconciler) finalize(ctx context.Context, roleSet *orchestration
 
 	// 3. remove finalizer
 	if controllerutil.ContainsFinalizer(roleSet, RoleSetFinalizer) {
-		if err := utils.Patch(ctx, r.Client, roleSet, patch.RemoveFinalizerPatch(roleSet, RoleSetFinalizer)); err != nil {
-			if apierrors.IsNotFound(err) {
-				return true, nil
-			}
+		if err := utils.RemoveFinalizer(ctx, r.Client, roleSet, RoleSetFinalizer); err != nil {
 			klog.Warningf("Failed to remove finalizer for roleSet %s/%s: %v", roleSet.Namespace, roleSet.Name, err)
 			return false, err
 		}
