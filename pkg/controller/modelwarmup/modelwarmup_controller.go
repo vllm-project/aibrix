@@ -93,7 +93,7 @@ func Add(mgr manager.Manager, _ config.RuntimeConfig) error {
 //+kubebuilder:rbac:groups=model.aibrix.ai,resources=modelwarmups/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
-//+kubebuilder:rbac:groups=core,resources=namespaces,verbs=get
+//+kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 
 func nodeMembershipChanged() predicate.Predicate {
 	return predicate.Funcs{
