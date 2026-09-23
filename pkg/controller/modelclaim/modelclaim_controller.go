@@ -427,15 +427,20 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 			admissible, instancePods(pm), load, servedModelName(pm), r.Locality, placementStates,
 		)
 		if selectErr != nil {
-			// No available warm pod right now; remain Pending and retry on requeue.
+			// No available warm pod right now; remain Pending and retry on
+			// requeue. The refusal is raised as an Event only when it changes,
+			// as InvalidPerGPU is. The claim is tried again on every pass, and
+			// the same refusal each time is not news; the condition always
+			// carries the current one.
 			message := noPlacementMessage(selectErr, admissible, refusals, perGPU.minimumReserveBytes())
-			r.Recorder.Event(pm, corev1.EventTypeWarning, "NoMatchingPods", message)
-			meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+			if meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
 				Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
 				Status:  metav1.ConditionFalse,
 				Reason:  "NoMatchingPods",
 				Message: message,
-			})
+			}) {
+				r.Recorder.Event(pm, corev1.EventTypeWarning, "NoMatchingPods", message)
+			}
 			return nil
 		}
 

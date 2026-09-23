@@ -633,7 +633,9 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    that is promised to, or held by, the instances on it. A Pod is also turned
    away when its runtime did not answer, when one of its cards could not be
    measured, when a claim on it declares no usable ``perGPU``, or when an
-   engine there belongs to no claim on it.
+   engine there belongs to no claim on it. The claim is tried again on every
+   pass, and the ``NoMatchingPods`` Event is raised only when the refusal
+   changes. The ``Scheduled`` condition always carries the current one.
 
 Claim remains ``Pending`` with ``InvalidPerGPU``
    ``perGPU`` is missing, or one of its figures is not positive, and the

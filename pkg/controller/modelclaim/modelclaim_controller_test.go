@@ -1300,6 +1300,32 @@ func TestReconcileStopsSayingNoCardWillTakeItOnceOneDoes(t *testing.T) {
 	assert.Contains(t, cond.Message, roomy.Name)
 }
 
+func TestReconcileRaisesNoMatchingPodsOnlyWhenTheRefusalChanges(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	// Tried on three passes, and turned away the same way on each.
+	reconcileOnce(t, r, pm.Name)
+	reconcileOnce(t, r, pm.Name)
+	reconcileOnce(t, r, pm.Name)
+
+	refusals := 0
+	for _, event := range drainEvents(t, r) {
+		if strings.Contains(event, "NoMatchingPods") {
+			refusals++
+		}
+	}
+	assert.Equal(t, 1, refusals, "the same refusal three times over is one Event")
+	got := getModel(t, r, pm.Name)
+	cond := meta.FindStatusCondition(got.Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, "NoMatchingPods", cond.Reason)
+}
+
 func TestReconcileRefusesACardWhoseRoomIsHeldByTheEnginesOnIt(t *testing.T) {
 	pm := claimWithCost(300, 100)
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
