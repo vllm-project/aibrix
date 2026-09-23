@@ -78,6 +78,7 @@ type Server struct {
 	ratelimiter         ratelimiter.RateLimiter
 	modelRateLimiter    ratelimiter.RateLimiter
 	disableRateLimiting bool
+	priorityTier        bool
 	apiKeyAuth          *apiKeyAuthConfig
 	client              kubernetes.Interface
 	gatewayClient       gatewayapi.Interface
@@ -248,6 +249,11 @@ type ServerOptions struct {
 	// DisableRateLimiting disables AIBrix user and model quota enforcement while
 	// leaving Redis available to other gateway features.
 	DisableRateLimiting bool
+	// PriorityTier forwards the tier a request declares through the
+	// x-aibrix-priority-tier header as the priority on the upstream vLLM
+	// request. Off by default: requests are forwarded unchanged unless a
+	// deployment opts in. See gateway_req_priority.go.
+	PriorityTier bool
 	// InFlightObserver receives test/diagnostic lifecycle deltas (+1/-1). The
 	// callback must be non-blocking and non-panicking because it runs on the
 	// request processing path and is not recovered by Gateway.
@@ -297,6 +303,7 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		ratelimiter:         r,
 		modelRateLimiter:    mr,
 		disableRateLimiting: options.DisableRateLimiting,
+		priorityTier:        options.PriorityTier,
 		apiKeyAuth:          loadAPIKeyAuthConfig(),
 		client:              client,
 		gatewayClient:       gatewayClient,

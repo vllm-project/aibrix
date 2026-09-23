@@ -55,6 +55,7 @@ const (
 	defaultGRPCMaxMessageSizeBytes = 4 * 1024 * 1024
 	envGRPCMaxMessageSizeBytes     = "AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES"
 	envDisableRateLimiting         = "AIBRIX_DISABLE_RATE_LIMITING"
+	envPriorityTierEnabled         = "AIBRIX_PRIORITY_TIER_ENABLED"
 )
 
 var (
@@ -213,6 +214,7 @@ func main() {
 
 	gatewayServer := gateway.NewServerWithOptions(redisClient, k8sClient, gatewayK8sClient, gateway.ServerOptions{
 		DisableRateLimiting: utils.LoadEnvBool(envDisableRateLimiting, false),
+		PriorityTier:        utils.LoadEnvBool(envPriorityTierEnabled, false),
 	})
 
 	stateSyncEnabled := utils.LoadEnvBool("AIBRIX_STATESYNC_ENABLED", false)

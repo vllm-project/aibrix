@@ -85,6 +85,8 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 			reqHeaders[contentTypeKey] = string(n.RawValue)
 		case HeaderRoutingStrategy:
 			reqHeaders[HeaderRoutingStrategy] = string(n.RawValue)
+		case HeaderPriorityTier:
+			reqHeaders[HeaderPriorityTier] = strings.TrimSpace(string(n.RawValue))
 		case HeaderConfigProfile:
 			reqConfigProfile = strings.TrimSpace(string(n.RawValue))
 		case constants.HeaderSessionID:

@@ -437,6 +437,31 @@ func TestHandleRequestHeaders_PrefersRootSpanTraceIDOverTraceparent(t *testing.T
 	}
 }
 
+// TestHandleRequestHeaders_PriorityTierIsTrimmed pins where the tier value is
+// normalized: the tier lookup only lowercases, so the whitespace a caller pads
+// the header with has to be gone by the time the value reaches the routing
+// context.
+func TestHandleRequestHeaders_PriorityTierIsTrimmed(t *testing.T) {
+	server := &Server{}
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestHeaders{
+			RequestHeaders: &extProcPb.HttpHeaders{
+				Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
+					{Key: pathKey, RawValue: []byte(PathChatCompletions)},
+					{Key: HeaderPriorityTier, RawValue: []byte("  Background  ")},
+				}},
+			},
+		},
+	}
+
+	rootSpan := trace.SpanFromContext(context.TODO())
+	resp, _, _, routingCtx, _ := server.HandleRequestHeaders(context.Background(), "test-request-id", rootSpan, req)
+
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.Equal(t, "Background", routingCtx.ReqHeaders[HeaderPriorityTier])
+}
+
 func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 	t.Run("valid bearer token is accepted and preserved for upstream", func(t *testing.T) {
 		server := &Server{

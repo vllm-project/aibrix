@@ -318,6 +318,57 @@ See the `Kubernetes label selector reference <https://kubernetes.io/docs/concept
     5. ``external-filter`` is optional. When omitted, no extra filtering is applied.
 
 
+Request Priority Tier
+---------------------
+
+Some workloads are not latency-sensitive. A nightly batch job, for example, is usually fine with
+answering after the interactive traffic of the same model has been served. The gateway can relay
+that intent to the backend engine: when ``AIBRIX_PRIORITY_TIER_ENABLED=true``, a request that
+declares its tier with the ``x-aibrix-priority-tier`` header gets the matching ``priority`` value set in
+its backend request body.
+
+The gateway relies on the engine's own scheduler rather than queuing requests itself. On vLLM, that
+requires the deployment to run with a priority-aware scheduler such as
+``--scheduling-policy=priority``, which serves smaller ``priority`` values first. The mapping is
+therefore built to only de-prioritize: a tier never makes a request jump ahead of another one, so
+enabling the feature cannot delay interactive traffic on a shared endpoint.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 25 45
+
+   * - ``x-aibrix-priority-tier``
+     - ``priority``
+     - Notes
+   * - ``batch``
+     - ``100``
+     - Below the engine default of ``0``, so batch work yields to interactive requests.
+   * - ``background``
+     - ``1000``
+     - Yields to both interactive and ``batch`` work.
+   * - _(other or missing)_
+     - _(unchanged)_
+     - Unmapped tiers, and requests without the header, are forwarded untouched.
+
+The feature is off by default and the header is ignored entirely while it is off. Requests that
+already carry a ``priority`` in their body keep the value the caller set, which makes an explicit
+per-request choice possible even for a tier the table maps. Tier names are matched
+case-insensitively. A request that the gateway does not map is forwarded byte for byte, so callers
+that send something else in this header see no change in behavior.
+
+.. code-block:: bash
+
+   curl -v http://${ENDPOINT}/v1/chat/completions \
+      -H "Content-Type: application/json" \
+      -H "x-aibrix-priority-tier: batch" \
+      -d '{
+            "model": "deepseek-r1-distill-llama-8b",
+            "messages": [{"role": "user", "content": "Say this is a test!"}]
+          }'
+
+The supported tier names are fixed in this release. Per-tier values a deployment can tune, and
+giving latency-sensitive tiers an explicit head start, are candidates for a follow-up.
+
 Headers Reference
 -----------------
 
@@ -375,6 +426,9 @@ Target and General Headers
    * - ``prefill-target-pod-ip``
      - Response
      - IP address of the prefill pod selected by ``pd`` routing.
+   * - ``x-aibrix-priority-tier``
+     - Request
+     - Declares the priority tier of the request, for example ``batch`` or ``background``. When ``AIBRIX_PRIORITY_TIER_ENABLED=true``, the gateway maps the tier to the ``priority`` field of the backend request; see `Request Priority Tier`_.
 
 Routing and Error Debugging Headers
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
