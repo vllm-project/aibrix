@@ -26,7 +26,8 @@ import (
 // with apply.
 type ModelWarmupTargetStatusApplyConfiguration struct {
 	NodeName           *string                          `json:"nodeName,omitempty"`
-	Sources            []string                         `json:"sources,omitempty"`
+	Source             *string                          `json:"source,omitempty"`
+	SourceCount        *int32                           `json:"sourceCount,omitempty"`
 	Revision           *string                          `json:"revision,omitempty"`
 	JobName            *string                          `json:"jobName,omitempty"`
 	Phase              *v1alpha1.ModelWarmupTargetPhase `json:"phase,omitempty"`
@@ -49,13 +50,19 @@ func (b *ModelWarmupTargetStatusApplyConfiguration) WithNodeName(value string) *
 	return b
 }
 
-// WithSources adds the given value to the Sources field in the declarative configuration
-// and returns the receiver, so that objects can be build by chaining "With" function invocations.
-// If called multiple times, values provided by each call will be appended to the Sources field.
-func (b *ModelWarmupTargetStatusApplyConfiguration) WithSources(values ...string) *ModelWarmupTargetStatusApplyConfiguration {
-	for i := range values {
-		b.Sources = append(b.Sources, values[i])
-	}
+// WithSource sets the Source field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Source field is set to the value of the last call.
+func (b *ModelWarmupTargetStatusApplyConfiguration) WithSource(value string) *ModelWarmupTargetStatusApplyConfiguration {
+	b.Source = &value
+	return b
+}
+
+// WithSourceCount sets the SourceCount field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the SourceCount field is set to the value of the last call.
+func (b *ModelWarmupTargetStatusApplyConfiguration) WithSourceCount(value int32) *ModelWarmupTargetStatusApplyConfiguration {
+	b.SourceCount = &value
 	return b
 }
 

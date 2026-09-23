@@ -17,9 +17,14 @@ limitations under the License.
 
 package v1alpha1
 
+import (
+	v1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+)
+
 // ModelWarmupSpecApplyConfiguration represents a declarative configuration of the ModelWarmupSpec type for use
 // with apply.
 type ModelWarmupSpecApplyConfiguration struct {
+	Mode         *v1alpha1.ModelWarmupMode                  `json:"mode,omitempty"`
 	Targets      []ModelWarmupTargetApplyConfiguration      `json:"targets,omitempty"`
 	ImagePreload *ModelWarmupImagePreloadApplyConfiguration `json:"imagePreload,omitempty"`
 	Policies     *ModelWarmupPoliciesApplyConfiguration     `json:"policies,omitempty"`
@@ -29,6 +34,14 @@ type ModelWarmupSpecApplyConfiguration struct {
 // apply.
 func ModelWarmupSpec() *ModelWarmupSpecApplyConfiguration {
 	return &ModelWarmupSpecApplyConfiguration{}
+}
+
+// WithMode sets the Mode field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Mode field is set to the value of the last call.
+func (b *ModelWarmupSpecApplyConfiguration) WithMode(value v1alpha1.ModelWarmupMode) *ModelWarmupSpecApplyConfiguration {
+	b.Mode = &value
+	return b
 }
 
 // WithTargets adds the given value to the Targets field in the declarative configuration

@@ -80,9 +80,11 @@ spec:
                 required:
                 - images
                 type: object
+              mode:
+                type: string
               policies:
                 properties:
-                  globalTimeoutSeconds:
+                  jobTimeoutSeconds:
                     format: int64
                     type: integer
                   parallelism:
@@ -193,6 +195,9 @@ spec:
                 type: integer
               observedRevision:
                 type: string
+              omittedTargetDetails:
+                format: int32
+                type: integer
               phase:
                 type: string
               startTime:
@@ -210,19 +215,22 @@ spec:
                       format: date-time
                       type: string
                     message:
+                      maxLength: 1024
                       type: string
                     nodeName:
                       type: string
                     phase:
                       type: string
                     reason:
+                      maxLength: 1024
                       type: string
                     revision:
                       type: string
-                    sources:
-                      items:
-                        type: string
-                      type: array
+                    source:
+                      type: string
+                    sourceCount:
+                      format: int32
+                      type: integer
                   required:
                   - nodeName
                   type: object

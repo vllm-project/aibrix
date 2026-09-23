@@ -23,13 +23,26 @@ import (
 
 const (
 	DefaultModelWarmupParallelism             int32 = 8
-	DefaultModelWarmupGlobalTimeoutSeconds    int64 = 1800
+	DefaultModelWarmupJobTimeoutSeconds       int64 = 1800
 	DefaultModelWarmupRetryLimit              int32 = 2
 	DefaultModelWarmupTTLSecondsAfterFinished int32 = 3600
 	MaxModelWarmupTargets                           = 1000
+	MaxModelWarmupTargetDetails                     = 256
+	MaxModelWarmupDiagnosticLength                  = 1024
+)
+
+type ModelWarmupMode string
+
+const (
+	ModelWarmupModeOnce ModelWarmupMode = "Once"
 )
 
 type ModelWarmupSpec struct {
+	// Mode controls the warmup lifecycle. Omission means Once. Continuous is
+	// reserved for a future API revision.
+	// +optional
+	Mode ModelWarmupMode `json:"mode,omitempty"`
+
 	// Targets declares explicit node names and label selectors. The controller
 	// resolves and deduplicates their union.
 	// +kubebuilder:validation:MinItems=1
@@ -82,7 +95,7 @@ type ModelWarmupPolicies struct {
 	// +optional
 	Parallelism *int32 `json:"parallelism,omitempty"`
 	// +optional
-	GlobalTimeoutSeconds *int64 `json:"globalTimeoutSeconds,omitempty"`
+	JobTimeoutSeconds *int64 `json:"jobTimeoutSeconds,omitempty"`
 	// +optional
 	RetryLimit *int32 `json:"retryLimit,omitempty"`
 	// +optional
@@ -111,7 +124,9 @@ const (
 type ModelWarmupTargetStatus struct {
 	NodeName string `json:"nodeName"`
 	// +optional
-	Sources []string `json:"sources,omitempty"`
+	Source string `json:"source,omitempty"`
+	// +optional
+	SourceCount int32 `json:"sourceCount,omitempty"`
 	// +optional
 	Revision string `json:"revision,omitempty"`
 	// +optional
@@ -119,8 +134,10 @@ type ModelWarmupTargetStatus struct {
 	// +optional
 	Phase ModelWarmupTargetPhase `json:"phase,omitempty"`
 	// +optional
+	// +kubebuilder:validation:MaxLength=1024
 	Reason string `json:"reason,omitempty"`
 	// +optional
+	// +kubebuilder:validation:MaxLength=1024
 	Message string `json:"message,omitempty"`
 	// +optional
 	LastTransitionTime *metav1.Time `json:"lastTransitionTime,omitempty"`
@@ -139,6 +156,10 @@ type ModelWarmupStatus struct {
 	SucceededNodes int32 `json:"succeededNodes,omitempty"`
 	// +optional
 	FailedNodes int32 `json:"failedNodes,omitempty"`
+	// OmittedTargetDetails is the number of pending or failed target details
+	// omitted to keep the status object bounded.
+	// +optional
+	OmittedTargetDetails int32 `json:"omittedTargetDetails,omitempty"`
 	// +optional
 	StartTime *metav1.Time `json:"startTime,omitempty"`
 	// +optional

@@ -21,7 +21,7 @@ package v1alpha1
 // with apply.
 type ModelWarmupPoliciesApplyConfiguration struct {
 	Parallelism             *int32 `json:"parallelism,omitempty"`
-	GlobalTimeoutSeconds    *int64 `json:"globalTimeoutSeconds,omitempty"`
+	JobTimeoutSeconds       *int64 `json:"jobTimeoutSeconds,omitempty"`
 	RetryLimit              *int32 `json:"retryLimit,omitempty"`
 	TTLSecondsAfterFinished *int32 `json:"ttlSecondsAfterFinished,omitempty"`
 }
@@ -40,11 +40,11 @@ func (b *ModelWarmupPoliciesApplyConfiguration) WithParallelism(value int32) *Mo
 	return b
 }
 
-// WithGlobalTimeoutSeconds sets the GlobalTimeoutSeconds field in the declarative configuration to the given value
+// WithJobTimeoutSeconds sets the JobTimeoutSeconds field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the GlobalTimeoutSeconds field is set to the value of the last call.
-func (b *ModelWarmupPoliciesApplyConfiguration) WithGlobalTimeoutSeconds(value int64) *ModelWarmupPoliciesApplyConfiguration {
-	b.GlobalTimeoutSeconds = &value
+// If called multiple times, the JobTimeoutSeconds field is set to the value of the last call.
+func (b *ModelWarmupPoliciesApplyConfiguration) WithJobTimeoutSeconds(value int64) *ModelWarmupPoliciesApplyConfiguration {
+	b.JobTimeoutSeconds = &value
 	return b
 }
 

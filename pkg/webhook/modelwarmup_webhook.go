@@ -21,9 +21,9 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -36,38 +36,8 @@ type ModelWarmupWebhook struct{}
 func SetupModelWarmupWebhook(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(&modelapi.ModelWarmup{}).
-		WithDefaulter(&ModelWarmupWebhook{}).
 		WithValidator(&ModelWarmupWebhook{}).
 		Complete()
-}
-
-//+kubebuilder:webhook:path=/mutate-model-aibrix-ai-v1alpha1-modelwarmup,mutating=true,failurePolicy=fail,sideEffects=None,groups=model.aibrix.ai,resources=modelwarmups,verbs=create;update,versions=v1alpha1,name=mmodelwarmup.kb.io,admissionReviewVersions=v1
-
-var _ webhook.CustomDefaulter = &ModelWarmupWebhook{}
-
-func (w *ModelWarmupWebhook) Default(_ context.Context, obj runtime.Object) error {
-	warmup := obj.(*modelapi.ModelWarmup)
-	if warmup.Spec.Policies == nil {
-		warmup.Spec.Policies = &modelapi.ModelWarmupPolicies{}
-	}
-	if warmup.Spec.Policies.Parallelism == nil {
-		warmup.Spec.Policies.Parallelism = ptr.To(modelapi.DefaultModelWarmupParallelism)
-	}
-	if warmup.Spec.Policies.GlobalTimeoutSeconds == nil {
-		warmup.Spec.Policies.GlobalTimeoutSeconds = ptr.To(modelapi.DefaultModelWarmupGlobalTimeoutSeconds)
-	}
-	if warmup.Spec.Policies.RetryLimit == nil {
-		warmup.Spec.Policies.RetryLimit = ptr.To(modelapi.DefaultModelWarmupRetryLimit)
-	}
-	if warmup.Spec.Policies.TTLSecondsAfterFinished == nil {
-		warmup.Spec.Policies.TTLSecondsAfterFinished = ptr.To(modelapi.DefaultModelWarmupTTLSecondsAfterFinished)
-	}
-	for i := range warmup.Spec.ImagePreload.Images {
-		if warmup.Spec.ImagePreload.Images[i].ImagePullPolicy == "" {
-			warmup.Spec.ImagePreload.Images[i].ImagePullPolicy = corev1.PullIfNotPresent
-		}
-	}
-	return nil
 }
 
 //+kubebuilder:webhook:path=/validate-model-aibrix-ai-v1alpha1-modelwarmup,mutating=false,failurePolicy=fail,sideEffects=None,groups=model.aibrix.ai,resources=modelwarmups,verbs=create;update,versions=v1alpha1,name=vmodelwarmup.kb.io,admissionReviewVersions=v1
@@ -78,8 +48,13 @@ func (w *ModelWarmupWebhook) ValidateCreate(_ context.Context, obj runtime.Objec
 	return nil, validateModelWarmup(obj.(*modelapi.ModelWarmup))
 }
 
-func (w *ModelWarmupWebhook) ValidateUpdate(_ context.Context, _, newObj runtime.Object) (admission.Warnings, error) {
-	return nil, validateModelWarmup(newObj.(*modelapi.ModelWarmup))
+func (w *ModelWarmupWebhook) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+	oldWarmup := oldObj.(*modelapi.ModelWarmup)
+	newWarmup := newObj.(*modelapi.ModelWarmup)
+	if !equality.Semantic.DeepEqual(oldWarmup.Spec, newWarmup.Spec) {
+		return nil, field.Forbidden(field.NewPath("spec"), "ModelWarmup spec is immutable")
+	}
+	return nil, validateModelWarmup(newWarmup)
 }
 
 func (w *ModelWarmupWebhook) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
@@ -89,6 +64,11 @@ func (w *ModelWarmupWebhook) ValidateDelete(_ context.Context, _ runtime.Object)
 func validateModelWarmup(warmup *modelapi.ModelWarmup) error {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
+	if warmup.Spec.Mode != "" && warmup.Spec.Mode != modelapi.ModelWarmupModeOnce {
+		allErrs = append(allErrs, field.NotSupported(
+			specPath.Child("mode"), warmup.Spec.Mode, []string{string(modelapi.ModelWarmupModeOnce)},
+		))
+	}
 	explicitNodes := map[string]struct{}{}
 	if len(warmup.Spec.Targets) == 0 {
 		allErrs = append(allErrs, field.Required(specPath.Child("targets"), "at least one target is required"))
@@ -131,7 +111,7 @@ func validateModelWarmup(warmup *modelapi.ModelWarmup) error {
 			allErrs = append(allErrs, field.Required(path.Child("command"), "a safe command is required"))
 		}
 		switch image.ImagePullPolicy {
-		case corev1.PullAlways, corev1.PullIfNotPresent, corev1.PullNever:
+		case "", corev1.PullAlways, corev1.PullIfNotPresent, corev1.PullNever:
 		default:
 			supportedPolicies := []string{
 				string(corev1.PullAlways), string(corev1.PullIfNotPresent), string(corev1.PullNever),
@@ -154,8 +134,8 @@ func validateModelWarmup(warmup *modelapi.ModelWarmup) error {
 		if policies.Parallelism != nil && *policies.Parallelism <= 0 {
 			allErrs = append(allErrs, positivePolicyError("parallelism", *policies.Parallelism))
 		}
-		if policies.GlobalTimeoutSeconds != nil && *policies.GlobalTimeoutSeconds <= 0 {
-			allErrs = append(allErrs, positivePolicyError("globalTimeoutSeconds", *policies.GlobalTimeoutSeconds))
+		if policies.JobTimeoutSeconds != nil && *policies.JobTimeoutSeconds <= 0 {
+			allErrs = append(allErrs, positivePolicyError("jobTimeoutSeconds", *policies.JobTimeoutSeconds))
 		}
 		if policies.RetryLimit != nil && *policies.RetryLimit <= 0 {
 			allErrs = append(allErrs, positivePolicyError("retryLimit", *policies.RetryLimit))

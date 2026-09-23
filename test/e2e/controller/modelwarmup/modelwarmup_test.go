@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	modelapi "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	modelwarmup "github.com/vllm-project/aibrix/pkg/controller/modelwarmup"
 )
 
 const (
@@ -78,11 +79,10 @@ func TestModelWarmupDeduplicatesNodeNameAndSelector(t *testing.T) {
 		{NodeSelector: selectorFor("deduplicate")},
 	})
 	env.waitForWarmupSucceeded(t, ctx, warmup, 1)
-	env.waitForTargetSources(t, ctx, warmup, 1, 2)
 	env.waitForSucceededJobsAndPods(t, ctx, warmup.Name, []string{node.Name})
 }
 
-func TestModelWarmupCreatesJobForNewSelectorMatch(t *testing.T) {
+func TestModelWarmupOnceIgnoresSelectorMatchAfterSuccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	env := newTestEnvironment(t, ctx)
@@ -96,8 +96,8 @@ func TestModelWarmupCreatesJobForNewSelectorMatch(t *testing.T) {
 	env.waitForSucceededJobsAndPods(t, ctx, warmup.Name, []string{nodes[0].Name})
 
 	env.setNodeLabel(t, ctx, nodes[1].Name, "expand")
-	env.waitForWarmupSucceeded(t, ctx, warmup, 2)
-	env.waitForSucceededJobsAndPods(t, ctx, warmup.Name, []string{nodes[0].Name, nodes[1].Name})
+	env.waitForWarmupSucceeded(t, ctx, warmup, 1)
+	env.waitForSucceededJobsAndPods(t, ctx, warmup.Name, []string{nodes[0].Name})
 }
 
 func TestModelWarmupReportsFailedJobWithoutMutatingExistingWorkload(t *testing.T) {
@@ -218,7 +218,9 @@ func newTestEnvironment(t *testing.T, ctx context.Context) *testEnvironment {
 	}
 	namespace := fmt.Sprintf("modelwarmup-e2e-%d", time.Now().UnixNano())
 	if _, err := kube.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: namespace, Labels: map[string]string{
+			modelwarmup.ResourcePoolLabelKey: "e2e",
+		}},
 	}, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -259,6 +261,9 @@ func (e *testEnvironment) readyWarmupNodes(
 	if len(ready) < count {
 		t.Fatalf("requires %d Ready Kubernetes nodes capable of warmup, found %d", count, len(ready))
 	}
+	for i := range ready[:count] {
+		e.setNodeAuthorizationLabels(t, ctx, ready[i].Name)
+	}
 	return ready[:count]
 }
 
@@ -267,7 +272,16 @@ func nodeCanRunWarmup(node corev1.Node) bool {
 		node.Status.NodeInfo.ContainerRuntimeVersion == "" {
 		return false
 	}
-	// Warmup Jobs tolerate all taints, so a Ready tainted node is a valid target.
+	for key := range node.Labels {
+		if key == "node-role.kubernetes.io/control-plane" || key == "node-role.kubernetes.io/master" {
+			return false
+		}
+	}
+	for _, taint := range node.Spec.Taints {
+		if taint.Effect == corev1.TaintEffectNoSchedule || taint.Effect == corev1.TaintEffectNoExecute {
+			return false
+		}
+	}
 	for _, condition := range node.Status.Conditions {
 		if condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue {
 			return true
@@ -276,8 +290,9 @@ func nodeCanRunWarmup(node corev1.Node) bool {
 	return false
 }
 
-func TestNodeCanRunWarmupAllowsTaintedNode(t *testing.T) {
+func TestNodeCanRunWarmupRejectsControlPlaneNode(t *testing.T) {
 	node := corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"node-role.kubernetes.io/control-plane": ""}},
 		Spec: corev1.NodeSpec{Taints: []corev1.Taint{{
 			Key: "node-role.kubernetes.io/control-plane", Effect: corev1.TaintEffectNoSchedule,
 		}}},
@@ -291,9 +306,44 @@ func TestNodeCanRunWarmupAllowsTaintedNode(t *testing.T) {
 		},
 	}
 
-	if !nodeCanRunWarmup(node) {
-		t.Fatal("expected a Ready tainted node to be eligible for an all-taints-tolerating warmup Job")
+	if nodeCanRunWarmup(node) {
+		t.Fatal("expected a control-plane node to be ineligible for warmup")
 	}
+}
+
+func (e *testEnvironment) setNodeAuthorizationLabels(t *testing.T, ctx context.Context, nodeName string) {
+	t.Helper()
+	node, err := e.kube.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.Labels == nil {
+		node.Labels = map[string]string{}
+	}
+	oldPool, hadPool := node.Labels[modelwarmup.ResourcePoolLabelKey]
+	oldEnabled, hadEnabled := node.Labels[modelwarmup.WarmupEnabledLabelKey]
+	node.Labels[modelwarmup.ResourcePoolLabelKey] = "e2e"
+	node.Labels[modelwarmup.WarmupEnabledLabelKey] = modelwarmup.WarmupEnabledLabelValue
+	if _, err := e.kube.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		latest, err := e.kube.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+		if err != nil {
+			return
+		}
+		if hadPool {
+			latest.Labels[modelwarmup.ResourcePoolLabelKey] = oldPool
+		} else {
+			delete(latest.Labels, modelwarmup.ResourcePoolLabelKey)
+		}
+		if hadEnabled {
+			latest.Labels[modelwarmup.WarmupEnabledLabelKey] = oldEnabled
+		} else {
+			delete(latest.Labels, modelwarmup.WarmupEnabledLabelKey)
+		}
+		_, _ = e.kube.CoreV1().Nodes().Update(context.Background(), latest, metav1.UpdateOptions{})
+	})
 }
 
 func (e *testEnvironment) setNodeLabel(
@@ -416,33 +466,6 @@ func (e *testEnvironment) waitForWarmupSucceeded(
 	}
 }
 
-func (e *testEnvironment) waitForTargetSources(
-	t *testing.T,
-	ctx context.Context,
-	warmup *modelapi.ModelWarmup,
-	targets int,
-	sources int,
-) {
-	t.Helper()
-	err := wait.PollUntilContextTimeout(
-		ctx,
-		time.Second,
-		time.Minute,
-		true,
-		func(ctx context.Context) (bool, error) {
-			latest := &modelapi.ModelWarmup{}
-			if err := e.apiClient.Get(ctx, client.ObjectKeyFromObject(warmup), latest); err != nil {
-				return false, err
-			}
-			return len(latest.Status.Targets) == targets &&
-				len(latest.Status.Targets[0].Sources) == sources, nil
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
 func (e *testEnvironment) waitForSucceededJobsAndPods(
 	t *testing.T,
 	ctx context.Context,
@@ -471,7 +494,7 @@ func (e *testEnvironment) waitForSucceededJobsAndPods(
 				if err != nil || !succeeded {
 					return false, err
 				}
-				seen[job.Spec.Template.Spec.NodeName] = true
+				seen[job.Annotations[modelwarmup.TargetNodeAnnotationKey]] = true
 			}
 			for _, nodeName := range nodeNames {
 				if !seen[nodeName] {
@@ -671,7 +694,7 @@ func TestModelWarmupWebhookRejectsInvalidSpecs(t *testing.T) {
 	}
 }
 
-func TestModelWarmupWebhookDefaultsPersistedValues(t *testing.T) {
+func TestModelWarmupWebhookPreservesOmittedDefaults(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	env := newTestEnvironment(t, ctx)
@@ -693,22 +716,10 @@ func TestModelWarmupWebhookDefaultsPersistedValues(t *testing.T) {
 	if err := env.apiClient.Get(ctx, client.ObjectKeyFromObject(warmup), latest); err != nil {
 		t.Fatal(err)
 	}
-	if latest.Spec.Policies == nil {
-		t.Fatal("webhook did not persist policy defaults")
+	if latest.Spec.Policies != nil {
+		t.Fatalf("expected omitted policies to remain absent: %+v", latest.Spec.Policies)
 	}
-	policies := latest.Spec.Policies
-	invalidDefaults := policies.Parallelism == nil ||
-		*policies.Parallelism != modelapi.DefaultModelWarmupParallelism ||
-		policies.GlobalTimeoutSeconds == nil ||
-		*policies.GlobalTimeoutSeconds != modelapi.DefaultModelWarmupGlobalTimeoutSeconds ||
-		policies.RetryLimit == nil ||
-		*policies.RetryLimit != modelapi.DefaultModelWarmupRetryLimit ||
-		policies.TTLSecondsAfterFinished == nil ||
-		*policies.TTLSecondsAfterFinished != modelapi.DefaultModelWarmupTTLSecondsAfterFinished
-	if invalidDefaults {
-		t.Fatalf("unexpected persisted policy defaults: %+v", policies)
-	}
-	if latest.Spec.ImagePreload.Images[0].ImagePullPolicy != corev1.PullIfNotPresent {
+	if latest.Spec.ImagePreload.Images[0].ImagePullPolicy != "" {
 		t.Fatalf("unexpected persisted image pull policy: %q", latest.Spec.ImagePreload.Images[0].ImagePullPolicy)
 	}
 }

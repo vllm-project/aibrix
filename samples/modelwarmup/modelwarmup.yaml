@@ -4,6 +4,7 @@ metadata:
   name: runtime-image-warmup
   namespace: default
 spec:
+  mode: Once
   targets:
   - nodeSelector:
       matchLabels:
@@ -15,6 +16,6 @@ spec:
       imagePullPolicy: IfNotPresent
   policies:
     parallelism: 8
-    globalTimeoutSeconds: 1800
+    jobTimeoutSeconds: 1800
     retryLimit: 2
     ttlSecondsAfterFinished: 3600
