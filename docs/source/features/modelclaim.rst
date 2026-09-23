@@ -267,7 +267,7 @@ ModelClaim uses a deliberately simple fixed-topology rule for vLLM:
 
 .. code-block:: text
 
-   tensor-parallel-size * pipeline-parallel-size
+   tensor-parallel-size * pipeline-parallel-size * prefill-context-parallel-size
      == GPUs visible to the warm runtime Pod
 
 For a TP=2 model, create a separate pool whose Pods each request two GPUs, then
@@ -279,11 +279,12 @@ use:
      args:
        --tensor-parallel-size: "2"
        --pipeline-parallel-size: "1"
+       --prefill-context-parallel-size: "1"
 
 Do not use one four-GPU pool to mix TP=1, TP=2, and TP=4 claims. Create one
 topology-homogeneous pool per shape. Automatic request-driven KV policy and
 idle sleep are currently limited to single-GPU runtime Pods, even though the
-fixed TP/PP activation path is supported.
+fixed TP/PP/PCP activation path is supported.
 
 Inspect actual runtime state
 ----------------------------
@@ -480,7 +481,7 @@ Troubleshooting
 Claim remains ``Scheduling`` with zero candidates
    Confirm that the Pod is Running, has a Pod IP, matches ``podSelector``, and
    has ``pool.aibrix.ai/enabled: "true"``. For vLLM, confirm that TP times PP
-   exactly matches the Pod-visible GPU count.
+   times PCP exactly matches the Pod-visible GPU count.
 
 Claim remains ``Activating``
    Inspect the runtime snapshot and engine logs. Weight download, CUDA graph

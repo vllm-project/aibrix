@@ -30,7 +30,7 @@ const nvidiaGPUResourceName corev1.ResourceName = "nvidia.com/gpu"
 
 // vllmParallelism returns the fixed GPU group size required by a vLLM engine.
 // ModelClaim deliberately keeps these engine options in engineConfig.args; the
-// pool Pod's GPU limit is the resource contract and must match TP * PP.
+// pool Pod's GPU limit is the resource contract and must match TP * PP * PCP.
 func vllmParallelism(config *modelv1alpha1.ModelClaimEngineConfig) (int64, error) {
 	args := map[string]string{}
 	if config != nil && config.Args != nil {
@@ -47,6 +47,15 @@ func vllmParallelism(config *modelv1alpha1.ModelClaimEngineConfig) (int64, error
 	if err != nil {
 		return 0, err
 	}
+	prefillContext, err := positiveEngineArg(args, "--prefill-context-parallel-size")
+	if err != nil {
+		return 0, err
+	}
+	// DCP reuses ranks from the TP/PCP topology, so validate it without
+	// including it in the fixed GPU group size.
+	if _, err := positiveEngineArg(args, "--decode-context-parallel-size"); err != nil {
+		return 0, err
+	}
 	data, err := positiveEngineArg(args, "--data-parallel-size")
 	if err != nil {
 		return 0, err
@@ -57,7 +66,11 @@ func vllmParallelism(config *modelv1alpha1.ModelClaimEngineConfig) (int64, error
 	if tensor > math.MaxInt64/pipeline {
 		return 0, fmt.Errorf("tensor and pipeline parallelism product overflows int64")
 	}
-	return tensor * pipeline, nil
+	parallelism := tensor * pipeline
+	if parallelism > math.MaxInt64/prefillContext {
+		return 0, fmt.Errorf("tensor, pipeline, and prefill context parallelism product overflows int64")
+	}
+	return parallelism * prefillContext, nil
 }
 
 func positiveEngineArg(args map[string]string, name string) (int64, error) {
@@ -102,7 +115,7 @@ func podGPUCount(pod corev1.Pod) int64 {
 
 // podSupportsVLLMParallelism accepts legacy/mock Pods without GPU resources so
 // existing CPU-only controller tests remain valid. Real warm pools declare a
-// GPU limit and must exactly match the requested TP * PP topology.
+// GPU limit and must exactly match the requested TP * PP * PCP topology.
 func podSupportsVLLMParallelism(pod corev1.Pod, parallelism int64) bool {
 	gpuCount := podGPUCount(pod)
 	return gpuCount == 0 || gpuCount == parallelism

@@ -363,7 +363,7 @@ def test_engine_config_args_are_structured():
     ) == {"--max-model-len": "2048", "--enforce-eager": ""}
 
 
-def test_vllm_parallelism_defaults_and_combines_tp_pp():
+def test_vllm_parallelism_defaults_and_combines_tp_pp_pcp():
     from aibrix.runtime.model_runtime import vllm_parallelism
 
     assert vllm_parallelism(None, None) == 1
@@ -374,6 +374,20 @@ def test_vllm_parallelism_defaults_and_combines_tp_pp():
         )
         == 4
     )
+    assert (
+        vllm_parallelism(
+            {
+                "args": {
+                    "--tensor-parallel-size": "2",
+                    "--pipeline-parallel-size": "2",
+                    "--prefill-context-parallel-size": "2",
+                    "--decode-context-parallel-size": "4",
+                }
+            },
+            None,
+        )
+        == 8
+    )
 
 
 @pytest.mark.parametrize(
@@ -381,6 +395,8 @@ def test_vllm_parallelism_defaults_and_combines_tp_pp():
     [
         {"--tensor-parallel-size": "0"},
         {"--pipeline-parallel-size": "not-a-number"},
+        {"--prefill-context-parallel-size": "0"},
+        {"--decode-context-parallel-size": "not-a-number"},
         {"--data-parallel-size": "2"},
     ],
 )
