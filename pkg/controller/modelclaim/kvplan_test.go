@@ -144,31 +144,6 @@ func TestPlanKVLimitsIsTheSameWhateverOrderTheEnginesArriveIn(t *testing.T) {
 	assert.Equal(t, first, second)
 }
 
-func TestMinimumKVLimitChangeBytesRisesWithTheCard(t *testing.T) {
-	// Small cards use the page-bundle floor.
-	assert.Equal(t, int64(512)<<20, minimumKVLimitChangeBytes(16<<30))
-	// A large card asks for more before it is worth rearranging.
-	assert.Equal(t, int64(80<<30)/100, minimumKVLimitChangeBytes(80<<30))
-}
-
-func TestWorthWritingIgnoresADriftSmallerThanTheThreshold(t *testing.T) {
-	limits := []plannedKVLimit{
-		{claimName: "a", limitBytes: 10 << 30, fromBytes: 10<<30 - 1<<20},
-		{claimName: "b", limitBytes: 20 << 30, fromBytes: 20<<30 + 1<<20},
-	}
-
-	assert.False(t, worthWriting(limits, 512<<20))
-	assert.True(t, worthWriting(limits, 1<<20))
-}
-
-func TestWorthWritingIgnoresAnEngineWithNoSegmentToWriteInto(t *testing.T) {
-	limits := []plannedKVLimit{
-		{claimName: "booting", limitBytes: 40 << 30, fromBytes: kvLimitUnknown},
-	}
-
-	assert.False(t, worthWriting(limits, 512<<20))
-}
-
 func TestWriteOrderShrinksBeforeItGrows(t *testing.T) {
 	limits := []plannedKVLimit{
 		{claimName: "grows", limitBytes: 40, fromBytes: 10},

@@ -232,10 +232,6 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// claim status is persisted so a policy failure cannot block activation
 	// or route-health convergence for this claim.
 	r.reconcilePoolPolicies(ctx, candidates)
-	// Cards whose engines all declare their cost are arranged by the same
-	// planner placement uses, so their spare KV follows demand rather than
-	// waiting for the next model to land.
-	r.rebalanceDeclaredCards(ctx, candidates)
 	return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, nil
 }
 
@@ -547,9 +543,7 @@ func (r *ModelClaimReconciler) makeRoomOnPod(
 		kvCapacityBytes: kvLimitUnknown,
 	}
 	engines := append(append([]engineOnPod(nil), ledger.engines...), newcomer)
-	// Every byte the plan moves has to move, because the room this model was
-	// admitted against is made out of the neighbours' limits.
-	limits, err := r.arrangeCard(ctx, pod, ledger, engines, 0)
+	limits, err := r.arrangeCard(ctx, pod, ledger, engines)
 	if err != nil {
 		return 0, err
 	}
@@ -561,50 +555,6 @@ func (r *ModelClaimReconciler) makeRoomOnPod(
 	return 0, fmt.Errorf("%s was left out of the plan for %s", pm.Name, pod.Name)
 }
 
-// rebalanceDeclaredCards arranges the cards in this pool whose engines all
-// declare what they cost.
-//
-// Placement divides a card when a model lands on it, and what the engines on
-// that card are doing changes afterwards. Without this, the share an engine was
-// given at placement is the share it keeps until another model is placed beside
-// it, and the room freed when a neighbour goes away is never handed to anyone.
-//
-// A card nobody could account for is left alone, which is any card carrying a
-// claim that declares nothing. Those pools are the annotation policy's to
-// arrange.
-func (r *ModelClaimReconciler) rebalanceDeclaredCards(ctx context.Context, candidates []corev1.Pod) {
-	manager := r.poolPolicyManager()
-	due := make([]corev1.Pod, 0, len(candidates))
-	for i := range candidates {
-		pod := &candidates[i]
-		if podGPUCount(*pod) == 0 || pod.Status.PodIP == "" {
-			continue
-		}
-		if !manager.beginCard(types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}) {
-			continue
-		}
-		due = append(due, *pod)
-	}
-	if len(due) == 0 {
-		return
-	}
-
-	ledgers := r.collectPodLedgers(ctx, due[0].Namespace, due, r.freshSnapshots(ctx, due))
-	for i := range due {
-		pod := &due[i]
-		ledger := ledgers[pod.Name]
-		if !ledger.judgeable || len(ledger.engines) == 0 {
-			continue
-		}
-		if _, err := r.arrangeCard(
-			ctx, pod, ledger, ledger.engines,
-			minimumKVLimitChangeBytes(ledger.usableBytes),
-		); err != nil {
-			klog.V(4).InfoS("could not arrange a card", "pod", klog.KObj(pod), "err", err)
-		}
-	}
-}
-
 // arrangeCard plans one card and carries the plan out, returning the plan.
 //
 // The work is done in an order that never leaves two engines entitled to the
@@ -613,24 +563,16 @@ func (r *ModelClaimReconciler) rebalanceDeclaredCards(ctx context.Context, candi
 // than limits nobody remembers. The limits are written next, shrinking before
 // growing. Finally a fresh reading has to agree, because a write that reached
 // no segment is reported as a success either way.
-//
-// A plan that moves less than minimumChangeBytes on every engine is returned
-// without being carried out, so a card that has barely drifted is left alone.
 func (r *ModelClaimReconciler) arrangeCard(
 	ctx context.Context,
 	pod *corev1.Pod,
 	ledger podLedger,
 	engines []engineOnPod,
-	minimumChangeBytes int64,
 ) ([]plannedKVLimit, error) {
 	limits, err := planKVLimits(ledger.usableBytes, engines)
 	if err != nil {
 		return nil, err
 	}
-	if minimumChangeBytes > 0 && !worthWriting(limits, minimumChangeBytes) {
-		return limits, nil
-	}
-
 	held := make(map[string]*modelv1alpha1.ModelClaim, len(limits))
 	for _, limit := range limits {
 		claim, err := r.recordKVLimit(ctx, pod.Namespace, limit.claimName, pod.Name, limit.limitBytes)

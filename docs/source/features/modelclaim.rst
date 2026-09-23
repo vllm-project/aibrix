@@ -327,12 +327,6 @@ when there is no segment to write into, so reading the limit back is the only
 evidence there is. A model stays non-routable until its own limit is in force,
 and a card that could not be arranged is not used this round.
 
-A card is planned again on every round, at most once however many claims sit on
-it, so a share follows demand instead of staying as it was when the model
-landed. A card that has barely drifted is left alone. The threshold is the
-larger of half a gibibyte and a hundredth of the card, because a KV allocator
-hands out whole bundles of pages and a smaller change moves no memory at all.
-
 Watch the arrangement through its Events:
 
 .. code-block:: bash
