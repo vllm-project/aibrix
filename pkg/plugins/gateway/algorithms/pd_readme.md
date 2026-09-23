@@ -387,9 +387,16 @@ Machine ID is set via `AIBRIX_TRT_MACHINE_ID` (must be in `[0, 1024)`). Assign d
 #### Generation-first (parallel)
 
 Set `AIBRIX_TRT_SCHEDULE_STYLE=generation_first` **on the gateway plugin**, not on
-CTX/GEN workers. The setting is fixed when the PD router is constructed; unknown
-values reject router initialization. It does not affect other engines or combined
-pods. No automatic fallback or retry occurs after either leg has been dispatched.
+CTX/GEN workers. The setting is fixed when the PD router is constructed; an
+unknown value is logged and leaves the router on `context_first`. It does not
+affect other engines or combined pods. No automatic fallback or retry occurs after
+either leg has been dispatched.
+
+Worker prerequisite: the CTX and GEN workers must run TRT-LLM's **Python** KV-cache
+transceiver — `cache_transceiver_config: {backend: DEFAULT|NIXL,
+transceiver_runtime: PYTHON}`. Only that transceiver implements the
+generation-first metadata: the C++ one answers `/server_info` with an empty
+`disaggregated_params`, and the router then fails every request before dispatch.
 
 ```
 Gateway selects CTX + GEN
@@ -429,6 +436,11 @@ The expected HTTP response follows TRT-LLM's `1.3.0rc8` OpenAI server schema:
 ```json
 {"disaggregated_params":{"ctx_info_endpoint":"tcp://<CTX-address>:<port>","ctx_dp_rank":0}}
 ```
+
+`ctx_info_endpoint` is a string in the Python transceiver's response. A
+single-element array is accepted as an equivalent encoding; an array holding more
+than one endpoint is refused, because the gateway cannot tell which of them belongs
+to the rank it selected.
 
 `encoded_opaque_state` is also propagated when present. Only these fields are copied
 from `/server_info`: other keys are ignored so worker metadata can never overwrite

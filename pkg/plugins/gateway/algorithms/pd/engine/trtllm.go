@@ -172,6 +172,11 @@ func prepareTRTGenerationFirst(body []byte, info TRTServerInfo, id int64) ([]byt
 	ctxParams, err := pd.NewJSONEditor([]byte(`{}`)).
 		Set("request_type", "context_only").
 		Set("disagg_request_id", id).
+		// schedule_style goes inside disaggregated_params on both legs. The CTX
+		// worker only looks for it there: it reads the request's
+		// py_disaggregated_params to decide whether a context-only request has to
+		// wait for the transceiver before being scheduled. A top-level copy would
+		// be ignored by the server and is only what the upstream proxy emits.
 		Set("schedule_style", trtGenerationFirstSchedule).Result()
 	if err != nil {
 		return nil, nil, err

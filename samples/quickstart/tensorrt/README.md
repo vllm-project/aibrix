@@ -20,6 +20,20 @@ place that can reach the pod network:
 curl --fail "http://${CTX_POD_IP}:8101/server_info"
 ```
 
+Generation-first requires TRT-LLM's Python KV-cache transceiver on both roles, which
+is what `tensor-rt-pd.yaml` sets:
+
+```yaml
+cache_transceiver_config:
+  backend: DEFAULT   # or NIXL; the Python runtime supports only these two
+  transceiver_runtime: PYTHON
+```
+
+With the default C++ transceiver the endpoint answers
+`{"disaggregated_params":{}}`, because only the Python transceiver reports the
+generation-first metadata. The gateway then fails every request before dispatch, so
+check this output before enabling the mode.
+
 For generation-first the response must include:
 
 ```json
@@ -31,7 +45,10 @@ For generation-first the response must include:
 }
 ```
 
-`encoded_opaque_state` is also propagated when present. GEN must be able to reach
+`ctx_info_endpoint` is a string (`tcp://host:port`) in the Python transceiver's
+response; a single-element array is accepted as an equivalent encoding, while an
+array with several endpoints is refused. `encoded_opaque_state` is also propagated
+when present. GEN must be able to reach
 the advertised coordination endpoint and the worker's KV-transfer transport.
 Do not substitute the HTTP port for the advertised coordination port.
 
@@ -55,7 +72,7 @@ kubectl rollout status deployment/aibrix-gateway-plugins -n aibrix-system
 
 Use a gateway image built from a revision containing this feature. Adjust the
 Deployment name and namespace if your installation uses different names.
-Unknown schedule values fail PD router initialization.
+An unrecognized schedule value is logged and the gateway stays on context-first.
 
 The gateway initializes a metadata cache, then loads selected CTX workers lazily
 before dispatch. Cache entries live for one minute; lookups have a three-second

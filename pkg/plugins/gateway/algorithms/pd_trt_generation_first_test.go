@@ -98,7 +98,9 @@ func TestTRTGenerationFirstRouteOverlapsPrefillAndDecode(t *testing.T) {
 				if stream {
 					response = "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: [DONE]\n\n"
 				}
+				var decodeCalls atomic.Int32
 				dSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+					decodeCalls.Add(1)
 					b, _ := io.ReadAll(req.Body)
 					decodeBody <- b
 					_, _ = io.WriteString(w, response)
@@ -157,6 +159,10 @@ func TestTRTGenerationFirstRouteOverlapsPrefillAndDecode(t *testing.T) {
 				active, _ = r.tokenLoadTracker.GetLoad(p.Name)
 				assert.Zero(t, active)
 				assert.EqualValues(t, 1, infoCalls.Load())
+				// The router dispatched exactly one request: the context leg. The
+				// generation leg above was this test's own Envoy emulation, so a
+				// second call here would mean the router posted it a second time.
+				assert.EqualValues(t, 1, decodeCalls.Load(), "the router must not POST the decode leg itself")
 			})
 		}
 	}
@@ -188,8 +194,16 @@ func TestTRTGenerationFirstMissingMetadataFailsBeforeDispatch(t *testing.T) {
 	assert.Zero(t, kv)
 }
 
-func TestPDRouterRejectsInvalidTRTScheduleStyle(t *testing.T) {
+// An unrecognized AIBRIX_TRT_SCHEDULE_STYLE degrades to context_first with an
+// error log, following the other env-driven knobs. Construction must not fail:
+// the router manager would then register a nil provider for "pd" and every pd
+// request would hit a recovered panic instead of a working context-first route.
+func TestPDRouterFallsBackOnInvalidTRTScheduleStyle(t *testing.T) {
 	t.Setenv("AIBRIX_TRT_SCHEDULE_STYLE", "typo")
-	_, err := NewPDRouterWithCacheAndPrefixIndexer(cache.NewForTest(), nil)
-	require.ErrorContains(t, err, "AIBRIX_TRT_SCHEDULE_STYLE")
+	r, err := NewPDRouterWithCacheAndPrefixIndexer(cache.NewForTest(), nil)
+	require.NoError(t, err)
+	router, ok := r.(*pdRouter)
+	require.True(t, ok)
+	require.NotNil(t, router.trtHandler)
+	assert.False(t, router.trtHandler.IsAsync(), "a typo must leave the default context-first dispatch")
 }

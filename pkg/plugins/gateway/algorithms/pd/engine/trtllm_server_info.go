@@ -194,21 +194,61 @@ func (c *TRTServerInfoCache) fetch(ctx context.Context, url string) (TRTServerIn
 	// A pointer distinguishes missing/null rank from the valid rank zero.
 	var response struct {
 		Params *struct {
-			ContextInfoEndpoint string `json:"ctx_info_endpoint"`
-			ContextDPRank       *int   `json:"ctx_dp_rank"`
-			EncodedOpaqueState  string `json:"encoded_opaque_state"`
+			ContextInfoEndpoint json.RawMessage `json:"ctx_info_endpoint"`
+			ContextDPRank       *int            `json:"ctx_dp_rank"`
+			EncodedOpaqueState  string          `json:"encoded_opaque_state"`
 		} `json:"disaggregated_params"`
 	}
 	if err := json.Unmarshal(body, &response); err != nil {
 		return TRTServerInfo{}, fmt.Errorf("decode TRT server_info: %w", err)
 	}
 	if response.Params == nil || response.Params.ContextDPRank == nil {
-		return TRTServerInfo{}, fmt.Errorf("TRT server_info is missing disaggregated_params.ctx_dp_rank")
+		// A worker whose KV-cache transceiver is the C++ one reports an empty
+		// disaggregated_params: only the Python transceiver implements the
+		// generation-first metadata. Name that likely cause, because the raw
+		// symptom (a missing rank) does not point at the worker's config.
+		return TRTServerInfo{}, fmt.Errorf("TRT server_info is missing disaggregated_params.ctx_dp_rank; " +
+			"generation_first requires the worker's Python KV-cache transceiver " +
+			"(cache_transceiver_config.transceiver_runtime: PYTHON, backend DEFAULT or NIXL)")
+	}
+	endpoint, err := decodeTRTEndpoint(response.Params.ContextInfoEndpoint)
+	if err != nil {
+		return TRTServerInfo{}, err
 	}
 	info := TRTServerInfo{
-		ContextInfoEndpoint: response.Params.ContextInfoEndpoint,
+		ContextInfoEndpoint: endpoint,
 		ContextDPRank:       *response.Params.ContextDPRank,
 		EncodedOpaqueState:  response.Params.EncodedOpaqueState,
 	}
 	return info, info.validate()
+}
+
+// decodeTRTEndpoint reads ctx_info_endpoint from /server_info. The Python
+// transceiver returns it as a single "tcp://ip:port" string, and that is the
+// form handled first. A one-element array is accepted too, because the engine's
+// own DisaggregatedParams dataclass declares the same logical field as a list
+// of endpoints. A longer array is rejected rather than guessed at: the element
+// belonging to the rank the gateway selected cannot be identified here, and
+// picking the wrong one would hand generation a peer it cannot use.
+func decodeTRTEndpoint(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", nil
+	}
+	var endpoint string
+	if err := json.Unmarshal(raw, &endpoint); err == nil {
+		return endpoint, nil
+	}
+	var endpoints []string
+	if err := json.Unmarshal(raw, &endpoints); err != nil {
+		return "", fmt.Errorf("TRT server_info ctx_info_endpoint is neither a string nor an array of strings")
+	}
+	switch len(endpoints) {
+	case 1:
+		return endpoints[0], nil
+	case 0:
+		return "", nil
+	default:
+		return "", fmt.Errorf("TRT server_info returned %d ctx_info_endpoint values; "+
+			"a rank-affine single endpoint is required, so this worker needs one endpoint per rank", len(endpoints))
+	}
 }
