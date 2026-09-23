@@ -21,12 +21,16 @@ import (
 	"sort"
 )
 
-// kvExtraWeight is how large a share of a card's spare KV one engine is owed. It is
-// the weight the pool policy already uses, so an engine's share does not change
-// with which loop is doing the arithmetic. The constant one keeps an idle
-// engine in the division rather than starving it at its floor.
-func kvExtraWeight(inFlightRequests, completionDelta int64) int64 {
-	return 1 + boundedActivity(inFlightRequests) + boundedActivity(completionDelta)
+// kvExtraWeight is how much of a card's spare KV one engine is given relative
+// to the others: one, plus its requests in flight, capped at four as the pool
+// policy caps them. The constant one keeps an idle engine in the division
+// rather than starving it at its floor.
+//
+// Completions are not counted. The pool policy counts them as the change in a
+// counter between its own rounds, and reading that change here would take it
+// from the idle-sleep decision that depends on it.
+func kvExtraWeight(inFlightRequests int64) int64 {
+	return 1 + boundedActivity(inFlightRequests)
 }
 
 // plannedKVLimit is the limit one engine should be held to, and the limit it is
@@ -68,7 +72,7 @@ func planKVLimits(hbmUsableBytes int64, engines []engineOnPod) ([]plannedKVLimit
 			return nil, fmt.Errorf("%s declares no per-GPU cost", engine.claimName)
 		}
 		kvUnassignedBytes -= engine.heldBytes()
-		kvExtraWeights[i] = kvExtraWeight(engine.inFlightRequests, engine.completionDelta)
+		kvExtraWeights[i] = kvExtraWeight(engine.inFlightRequests)
 		totalKVExtraWeight += kvExtraWeights[i]
 	}
 	if kvUnassignedBytes < 0 {
