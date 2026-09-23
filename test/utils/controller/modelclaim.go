@@ -29,6 +29,7 @@ import (
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -99,6 +100,13 @@ func (f *ModelClaimFixture) CreateClaim(
 			PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{constants.ModelPoolLabelName: pool}},
 			ArtifactURL: "huggingface://integration/" + name,
 			Engine:      "vllm",
+			// Every claim has to declare its per-GPU cost to be placed. The
+			// fixture's warm pods expose no GPU, so no card is accounted for and
+			// any positive figures will do.
+			PerGPU: &modelapi.ModelClaimPerGPU{
+				MaximumFootprint: resource.MustParse("1Gi"),
+				KVFloor:          resource.MustParse("1Gi"),
+			},
 		},
 	}
 	if engineArgs != nil {
