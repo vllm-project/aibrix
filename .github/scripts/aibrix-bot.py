@@ -79,7 +79,9 @@ AREA_RULES = (
     ("area/testing", (r"\be2e\b", r"end[- ]to[- ]end", r"kind cluster")),
 )
 
-PR_PREFIXES = ("[bug]", "[ci]", "[docs]", "[api]", "[cli]", "[misc]")
+# Mirrors the prefixes documented in .github/PULL_REQUEST_TEMPLATE.md. [Feat] is
+# accepted as well because it is already used widely across the repository.
+PR_PREFIXES = ("[bug]", "[ci]", "[docs]", "[api]", "[cli]", "[feat]", "[misc]")
 PLACEHOLDER_RE = re.compile(r"\[(?:Please provide\b|Insert issue number(?:\(s\))?)", re.I)
 
 
@@ -195,7 +197,7 @@ def validate_issue(title: str, body: str) -> list[str]:
 def validate_pr(title: str, body: str) -> list[str]:
     errors = []
     if not title.strip().lower().startswith(PR_PREFIXES):
-        errors.append("PR title must start with one of: [Bug], [CI], [Docs], [API], [CLI], [Misc].")
+        errors.append("PR title must start with one of: [Bug], [CI], [Docs], [API], [CLI], [Feat], [Misc].")
     if not body.strip():
         return errors + ["PR description is empty."]
     if PLACEHOLDER_RE.search(body):
@@ -357,6 +359,10 @@ def self_test() -> None:
     assert validate_pr(
         "[Bug] Fix gateway",
         "## Pull Request Description\nFix gateway behavior.\n\n## Related Issues\nResolves: #123",
+    ) == []
+    assert validate_pr(
+        "[Feat] Add gateway routing policy",
+        "## Pull Request Description\nAdd gateway routing policy.\n\n## Related Issues\nN/A",
     ) == []
     assert validate_pr(
         "Fix gateway",
