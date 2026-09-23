@@ -160,6 +160,18 @@ func admissibleCandidates(
 	return admissible, refusals
 }
 
+// withoutPod returns pods less the one named, leaving the slice it was given
+// untouched.
+func withoutPod(pods []corev1.Pod, name string) []corev1.Pod {
+	kept := make([]corev1.Pod, 0, len(pods))
+	for i := range pods {
+		if pods[i].Name != name {
+			kept = append(kept, pods[i])
+		}
+	}
+	return kept
+}
+
 // summarizeRefusals states in one line how far the pool is from holding this
 // model. It names the roomiest pod that still could not hold it, because that
 // is the smallest gap and the one worth acting on, and counts the rest rather
