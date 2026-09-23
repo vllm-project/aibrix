@@ -137,9 +137,16 @@ Requirements and limitations:
   (the version in the TensorRT quickstart). Confirm compatibility before using
   other versions. P/D must use matching model, tokenizer and chat template;
   this mode cannot wait for CTX's returned ``prompt_token_ids``.
+* Both workers must run TRT-LLM's **Python** KV-cache transceiver
+  (``cache_transceiver_config: {backend: DEFAULT|NIXL, transceiver_runtime: PYTHON}``).
+  Only it implements the generation-first metadata: a worker with the default C++
+  transceiver answers ``/server_info`` with an empty ``disaggregated_params`` and
+  is unusable for this mode.
 * Each CTX worker must return a nonempty string ``ctx_info_endpoint`` and an
   explicit nonnegative integer ``ctx_dp_rank`` inside ``disaggregated_params``
   from ``/server_info``. GEN must be able to reach the advertised endpoint.
+  A single-element array is accepted for ``ctx_info_endpoint``; an array with
+  several endpoints is refused, because no rank-affine choice can be made.
   Besides these, only ``encoded_opaque_state`` is copied: other keys are ignored
   so worker metadata cannot overwrite the gateway-owned ``request_type``, IDs or
   ``schedule_style``. A new handshake field must be added to the handler.
@@ -166,8 +173,8 @@ before expanding to multi-rank deployments. See
 alone do not establish GPU or multi-DP compatibility.
 
 Set ``AIBRIX_TRT_SCHEDULE_STYLE=context_first`` and restart the gateway to roll
-back. Other engines and combined-pod routing are unaffected. Unknown values fail
-PD router initialization.
+back. Other engines and combined-pod routing are unaffected. An unrecognized value
+is logged and leaves the router on ``context_first``.
 
 
 Step 1 — Label Your Pods

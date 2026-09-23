@@ -133,6 +133,54 @@ func TestTRTServerInfoCacheCoalescesMisses(t *testing.T) {
 	assert.EqualValues(t, 1, calls.Load(), "canceling one waiter must not poison other lookups")
 }
 
+func TestTRTServerInfoEndpointShapes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body    string
+		want    string
+		wantErr string
+	}{
+		"string is the Python transceiver form": {
+			body: `{"disaggregated_params":{"ctx_dp_rank":3,"ctx_info_endpoint":"tcp://10.0.0.1:5555"}}`,
+			want: "tcp://10.0.0.1:5555",
+		},
+		"single element array is tolerated": {
+			body: `{"disaggregated_params":{"ctx_dp_rank":3,"ctx_info_endpoint":["tcp://10.0.0.1:5555"]}}`,
+			want: "tcp://10.0.0.1:5555",
+		},
+		"ambiguous rank-affine endpoint list is refused": {
+			body:    `{"disaggregated_params":{"ctx_dp_rank":3,"ctx_info_endpoint":["tcp://a:1","tcp://b:2"]}}`,
+			wantErr: "2 ctx_info_endpoint values",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			info, err := NewTRTServerInfoCache(srv.Client()).Get(context.Background(), trtInfoPod(t, srv))
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, info.ContextInfoEndpoint)
+			assert.Equal(t, 3, info.ContextDPRank)
+		})
+	}
+}
+
+// A worker running the C++ KV-cache transceiver reports an empty
+// disaggregated_params; the error has to point at the worker configuration,
+// because "missing rank" alone does not.
+func TestTRTServerInfoMissingRankNamesTransceiverRequirement(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"disaggregated_params":{}}`))
+	}))
+	defer srv.Close()
+	_, err := NewTRTServerInfoCache(srv.Client()).Get(context.Background(), trtInfoPod(t, srv))
+	require.ErrorContains(t, err, "transceiver_runtime: PYTHON")
+}
+
 func TestTRTServerInfoValidationAndRetry(t *testing.T) {
 	for name, body := range map[string]string{
 		"invalid JSON":        `not json`,
@@ -143,7 +191,11 @@ func TestTRTServerInfoValidationAndRetry(t *testing.T) {
 		"negative rank":       `{"disaggregated_params":{"ctx_info_endpoint":"tcp://host:1","ctx_dp_rank":-1}}`,
 		"fractional rank":     `{"disaggregated_params":{"ctx_info_endpoint":"tcp://host:1","ctx_dp_rank":1.5}}`,
 		"missing endpoint":    `{"disaggregated_params":{"ctx_dp_rank":0}}`,
-		"wrong endpoint type": `{"disaggregated_params":{"ctx_dp_rank":0,"ctx_info_endpoint":["x"]}}`,
+		"endpoint object":     `{"disaggregated_params":{"ctx_dp_rank":0,"ctx_info_endpoint":{"host":"h"}}}`,
+		"endpoint number":     `{"disaggregated_params":{"ctx_dp_rank":0,"ctx_info_endpoint":7}}`,
+		"empty endpoint list": `{"disaggregated_params":{"ctx_dp_rank":0,"ctx_info_endpoint":[]}}`,
+		"two endpoints":       `{"disaggregated_params":{"ctx_dp_rank":0,"ctx_info_endpoint":["tcp://a:1","tcp://b:2"]}}`,
+		"non string list":     `{"disaggregated_params":{"ctx_dp_rank":0,"ctx_info_endpoint":[1,2]}}`,
 		"oversized":           strings.Repeat(" ", trtServerInfoMaxBytes+1),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -197,8 +249,12 @@ func TestTRTServerInfoCacheBoundsAndWorkerIsolation(t *testing.T) {
 		servers[i] = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = fmt.Fprintf(w, `{"disaggregated_params":{"ctx_info_endpoint":"tcp://worker-%d:123","ctx_dp_rank":%d}}`, rank, rank)
 		}))
-		defer servers[i].Close()
 	}
+	defer func() {
+		for _, srv := range servers {
+			srv.Close()
+		}
+	}()
 	for i, srv := range servers {
 		pod := trtInfoPod(t, srv)
 		pod.UID = k8stypes.UID(fmt.Sprint(i))

@@ -301,7 +301,17 @@ func NewPDRouterWithCacheAndPrefixIndexer(c cache.Cache, sharedPrefixTable *pref
 		utils.LoadEnv("AIBRIX_TRT_SCHEDULE_STYLE", engine.TRTContextFirst),
 		engine.NewTRTServerInfoCache(httpClient))
 	if err != nil {
-		return nil, err
+		// Same policy as the other env-driven knobs above: an unrecognized value
+		// is reported and the safe default wins. Returning the error here would
+		// make the router manager register a nil provider for "pd", which then
+		// panics (recovered, so a 5xx) on every pd request.
+		klog.ErrorS(err, "pd_router invalid AIBRIX_TRT_SCHEDULE_STYLE, using context_first",
+			"value", utils.LoadEnv("AIBRIX_TRT_SCHEDULE_STYLE", ""),
+			"valid", []string{engine.TRTContextFirst, engine.TRTGenerationFirst})
+		trtHandler, err = engine.NewTRTLLMHandler(engine.TRTContextFirst, nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	r := &pdRouter{
