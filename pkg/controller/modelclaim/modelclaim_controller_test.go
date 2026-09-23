@@ -1054,6 +1054,12 @@ func TestReconcileNoCandidatesStaysPending(t *testing.T) {
 	got := getModel(t, r, pm.Name)
 	assert.Equal(t, modelv1alpha1.ModelClaimPending, got.Status.Phase)
 	assert.Equal(t, int32(0), got.Status.ReadyReplicas)
+	// The claim declares its cost, and still nobody is told to look at GPU
+	// memory: no pod matched at all.
+	cond := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, "NoMatchingPods", cond.Reason)
+	assert.NotContains(t, cond.Message, "GiB")
 }
 
 // TestReconcileIdempotent verifies an already-satisfied model is not

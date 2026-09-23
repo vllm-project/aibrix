@@ -427,14 +427,7 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 		)
 		if selectErr != nil {
 			// No available warm pod right now; remain Pending and retry on requeue.
-			message := selectErr.Error()
-			// Blame the cards only when they are the reason. With a pod still
-			// admissible, this model is simply already on all of them, and an
-			// operator sent to look at GPU memory would be looking in the wrong
-			// place.
-			if len(admissible) == 0 && len(refusals) > 0 {
-				message = summarizeRefusals(refusals, perGPU.minimumReserveBytes())
-			}
+			message := noPlacementMessage(selectErr, admissible, refusals, perGPU.minimumReserveBytes())
 			r.Recorder.Event(pm, corev1.EventTypeWarning, "NoMatchingPods", message)
 			meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
 				Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
