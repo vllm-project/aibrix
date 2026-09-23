@@ -26,11 +26,19 @@ import (
 // policy caps them. The constant one keeps an idle engine in the division
 // rather than starving it at its floor.
 //
+// A sleeping engine weighs nothing. It serves no request, so it keeps only what
+// it holds, which after a sleep is normally its floor, and the rest goes to the
+// engines that are awake. It gets its part back when the card is divided after
+// it wakes.
+//
 // Completions are not counted. The pool policy counts them as the change in a
 // counter between its own rounds, and reading that change here would take it
 // from the idle-sleep decision that depends on it.
-func kvExtraWeight(inFlightRequests int64) int64 {
-	return 1 + boundedActivity(inFlightRequests)
+func kvExtraWeight(engine engineOnPod) int64 {
+	if engine.asleep {
+		return 0
+	}
+	return 1 + boundedActivity(engine.inFlightRequests)
 }
 
 // plannedKVLimit is the limit one engine should be held to, and the limit it is
@@ -60,7 +68,9 @@ func (l plannedKVLimit) lowersRecord() bool {
 // weight. The result therefore spends the card exactly: every footprint, every
 // engine's held KV, and every share together come to what the card can hold, so
 // an engine that grows into its new limit cannot grow into another engine's
-// memory.
+// memory. The one exception is a card whose engines are all asleep. Nothing
+// weighs anything there, so the room left over stays unassigned until an engine
+// wakes and the card is divided again.
 //
 // The newcomer in a placement is one of these engines, with nothing mapped and
 // no limit in force. Planning it alongside the engines already there is what
@@ -81,7 +91,7 @@ func planKVLimits(hbmUsableBytes int64, engines []engineOnPod) ([]plannedKVLimit
 			return nil, fmt.Errorf("%s declares no per-GPU cost", engine.claimName)
 		}
 		kvUnassignedBytes -= engine.heldBytes()
-		kvExtraWeights[i] = kvExtraWeight(engine.inFlightRequests)
+		kvExtraWeights[i] = kvExtraWeight(engine)
 		totalKVExtraWeight += kvExtraWeights[i]
 	}
 	if kvUnassignedBytes < 0 {
@@ -92,7 +102,10 @@ func planKVLimits(hbmUsableBytes int64, engines []engineOnPod) ([]plannedKVLimit
 	limits := make([]plannedKVLimit, len(ordered))
 	totalKVExtraBytes := int64(0)
 	for i, engine := range ordered {
-		kvExtraBytes := kvUnassignedBytes * kvExtraWeights[i] / totalKVExtraWeight
+		kvExtraBytes := int64(0)
+		if totalKVExtraWeight > 0 {
+			kvExtraBytes = kvUnassignedBytes * kvExtraWeights[i] / totalKVExtraWeight
+		}
 		totalKVExtraBytes += kvExtraBytes
 		limits[i] = plannedKVLimit{
 			claimName:       engine.claimName,
@@ -102,11 +115,18 @@ func planKVLimits(hbmUsableBytes int64, engines []engineOnPod) ([]plannedKVLimit
 			kvRecordedBytes: engine.kvRecordedBytes,
 		}
 	}
-	// Integer division leaves a few bytes over. Hand them out in a fixed order
-	// so two runs of the same arithmetic agree, and a limit does not move by a
-	// byte on every pass.
-	for i := int64(0); i < kvUnassignedBytes-totalKVExtraBytes; i++ {
-		limits[i%int64(len(limits))].kvLimitBytes++
+	if totalKVExtraWeight == 0 {
+		return limits, nil
+	}
+	// Integer division leaves a few bytes over. Hand them out in a fixed order,
+	// among the engines that weigh anything, so two runs of the same arithmetic
+	// agree and a limit does not move by a byte on every pass.
+	for i, left := 0, kvUnassignedBytes-totalKVExtraBytes; left > 0; i = (i + 1) % len(limits) {
+		if kvExtraWeights[i] == 0 {
+			continue
+		}
+		limits[i].kvLimitBytes++
+		left--
 	}
 	return limits, nil
 }

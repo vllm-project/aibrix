@@ -363,6 +363,11 @@ Every footprint, every engine's held KV, and every share together come to
 exactly what the card can hold, so an engine growing into its new limit cannot
 grow into another engine's memory.
 
+An engine that is asleep weighs nothing. It keeps only what it holds, which
+after a sleep is normally its floor, and the rest goes to the engines that are
+awake. When every engine on a card is asleep, the room left over stays
+unassigned until one of them wakes.
+
 The plan is carried out in an order that never leaves two engines entitled to
 the same byte. The limits that shrink an engine are written first, and a fresh
 reading has to confirm them before any engine grows. A lower limit evicts

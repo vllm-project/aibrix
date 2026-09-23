@@ -128,6 +128,53 @@ func TestPlanKVLimitsHandsOutTheRoundingRemainder(t *testing.T) {
 	assert.Equal(t, int64(233), limits[1].kvLimitBytes)
 }
 
+func TestPlanKVLimitsKeepsASleepingEngineAtWhatItHolds(t *testing.T) {
+	asleep := plannedEngine("asleep", 200, 100, 0)
+	asleep.asleep = true
+	engines := []engineOnPod{plannedEngine("awake", 200, 100, 0), asleep}
+
+	limits, err := planKVLimits(1000, engines)
+
+	require.NoError(t, err)
+	require.Len(t, limits, 2)
+	// The 400 left once both footprints and both floors are paid for goes to
+	// the engine that is awake.
+	assert.Equal(t, "asleep", limits[0].claimName)
+	assert.Equal(t, int64(100), limits[0].kvLimitBytes)
+	assert.Equal(t, int64(500), limits[1].kvLimitBytes)
+	assert.Equal(t, int64(1000), spentBytes(engines, limits))
+}
+
+func TestPlanKVLimitsGivesNoRoundingRemainderToASleepingEngine(t *testing.T) {
+	asleep := plannedEngine("a", 200, 100, 0)
+	asleep.asleep = true
+	engines := []engineOnPod{asleep, plannedEngine("b", 100, 100, 0), plannedEngine("c", 100, 100, 0)}
+
+	// 1001 less 400 of footprints and 300 of floors leaves 301, which does not
+	// split evenly between the two engines awake.
+	limits, err := planKVLimits(1001, engines)
+
+	require.NoError(t, err)
+	assert.Equal(t, int64(100), limits[0].kvLimitBytes)
+	assert.Equal(t, int64(251), limits[1].kvLimitBytes)
+	assert.Equal(t, int64(250), limits[2].kvLimitBytes)
+	assert.Equal(t, int64(1001), spentBytes(engines, limits))
+}
+
+func TestPlanKVLimitsLeavesTheSpareWhenEveryEngineIsAsleep(t *testing.T) {
+	first := plannedEngine("first", 200, 100, 0)
+	first.asleep = true
+	second := plannedEngine("second", 200, 100, 150)
+	second.asleep = true
+
+	limits, err := planKVLimits(1000, []engineOnPod{first, second})
+
+	require.NoError(t, err)
+	require.Len(t, limits, 2)
+	assert.Equal(t, int64(100), limits[0].kvLimitBytes)
+	assert.Equal(t, int64(150), limits[1].kvLimitBytes, "an engine never goes below what it holds")
+}
+
 func TestPlanKVLimitsIsTheSameWhateverOrderTheEnginesArriveIn(t *testing.T) {
 	forwards := []engineOnPod{
 		plannedEngine("a", 200, 100, 0),

@@ -129,6 +129,9 @@ type engineOnPod struct {
 	// inFlightRequests is the demand an engine's part of the spare KV is
 	// weighed by: its running and waiting requests.
 	inFlightRequests int64
+	// asleep is whether the runtime reports the engine sleeping. A sleeping
+	// engine serves nothing, so it is given no part of the spare KV.
+	asleep bool
 }
 
 // kvHeldBytes is the KV an engine keeps whatever else happens on the card: the
@@ -299,6 +302,7 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 				engine.snapshotKey = snapshotActivityKey(*model)
 				engine.kvCapacityBytes = model.KVCapacityBytes
 				engine.inFlightRequests = max(model.RequestsRunning, 0) + max(model.RequestsWaiting, 0)
+				engine.asleep = model.Phase == runtimePhaseSleeping
 				// A negative figure means there is no KV segment to read, and
 				// an engine without one has mapped nothing.
 				engine.kvUsedBytes = max(model.KVUsedBytes, 0)

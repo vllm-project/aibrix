@@ -125,6 +125,33 @@ func TestReconcileGivesTheBusierEngineMoreOfTheCard(t *testing.T) {
 	assert.Equal(t, int64(4)<<30+spare*5/6+1, getModel(t, r, "busy").Status.Instances[0].KVLimitBytes)
 }
 
+func TestReconcileHoldsASleepingEngineToWhatItHolds(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	awake := withFinalizer(claimOnPod("awake", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	awake.Status.Instances[0].Port = 9001
+	awake.Status.Instances[0].KVLimitBytes = 20 << 30
+	asleep := claimOnPod("asleep", pod.Name, modelv1alpha1.ModelClaimSleeping, 20<<30, 4<<30)
+	asleep.Status.Instances[0].KVLimitBytes = 20 << 30
+	sleeping := engineHolding("asleep", 0, 20<<30)
+	sleeping.Phase = runtimePhaseSleeping
+	sleeping.Ready = false
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("awake", 4<<30, 20<<30), sleeping}
+	r, runtime := newReconciler(t, awake, asleep, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, "awake")
+
+	// The sleeping engine serves nothing, so it keeps only its 4 GiB floor, and
+	// all 32 GiB the card has spare go to the engine that is awake.
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, "asleep", runtime.kvLimitCalls[0].ModelName)
+	assert.Equal(t, int64(4)<<30, runtime.kvLimitCalls[0].LimitBytes)
+	assert.Equal(t, "awake", runtime.kvLimitCalls[1].ModelName)
+	assert.Equal(t, int64(36)<<30, runtime.kvLimitCalls[1].LimitBytes)
+	assert.Equal(t, int64(4)<<30, getModel(t, r, "asleep").Status.Instances[0].KVLimitBytes)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, "awake").Status.Instances[0].Phase)
+}
+
 func TestReconcileDividesACardOnlyOncePerRound(t *testing.T) {
 	r, runtime, pod := aCardAndOneEngineOnIt(t, 10<<30, 4<<30)
 	now := time.Unix(1_700_000_000, 0)
