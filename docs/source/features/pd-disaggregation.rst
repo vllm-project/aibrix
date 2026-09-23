@@ -292,6 +292,13 @@ Configure the range in the pod's ``routingConfig``:
    * - ``decodeScorePolicy``
      - How to score decode pods. ``load_balancing`` (default), ``least_request``, or ``conductor``.
 
+The same ``routingConfig`` object also carries the prefill/decode routing thresholds of a
+profile's requests: ``prefillRequestTimeout``, the ``pd.spreads`` spread thresholds, the
+``pd.decodeLBWeights`` weights, the ``pd.tokenLoad`` charge knobs, ``pd.hybridCacheLoadFactor``,
+``pd.minMatchPct`` and the ``pd.abort`` timeout and retry delay. Each one overrides the matching
+gateway environment variable for that profile only; unset fields keep the environment default.
+See the Config Profiles section of `Gateway Plugins <gateway-plugins.html>`_ for the full list.
+
 .. note::
     Bucketing only takes effect when ``AIBRIX_PROMPT_LENGTH_BUCKETING=true`` is set on the gateway plugin.
 

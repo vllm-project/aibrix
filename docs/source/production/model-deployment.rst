@@ -99,6 +99,13 @@ Clients select a profile with the ``config-profile`` request header:
 
 If no header is set, the ``defaultProfile`` is used.
 
+Profiles can also carry per-request routing thresholds in ``routingConfig``: the
+load-balance gate and score, the prefix-cache standard-deviation factor, the preble cost-model
+knobs, the VTC score weights, the auto-blend weights and the prefill/decode thresholds. An
+unset field keeps the gateway's environment default, so a profile only changes what it
+explicitly sets. See the Config Profiles section of `Gateway Plugins
+<../features/gateway-plugins.html>`_ for the full list.
+
 
 Capping Model Throughput (RPS Limiting)
 -----------------------------------------
