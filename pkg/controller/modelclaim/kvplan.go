@@ -134,6 +134,20 @@ func writeOrder(limits []plannedKVLimit) []plannedKVLimit {
 	return writable
 }
 
+// shrinksAndGrows splits the limits that need writing into the ones that take
+// memory away from an engine and the ones that give it more, each in write
+// order. The two are written as separate steps, with a reading in between.
+func shrinksAndGrows(limits []plannedKVLimit) (shrinks, grows []plannedKVLimit) {
+	for _, limit := range writeOrder(limits) {
+		if limit.shrinks() {
+			shrinks = append(shrinks, limit)
+			continue
+		}
+		grows = append(grows, limit)
+	}
+	return shrinks, grows
+}
+
 // shrinks says whether writing this limit takes memory away from an engine.
 func (l plannedKVLimit) shrinks() bool {
 	return l.kvCapacityBytes >= 0 && l.kvLimitBytes < l.kvCapacityBytes

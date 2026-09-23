@@ -157,3 +157,19 @@ func TestWriteOrderShrinksBeforeItGrows(t *testing.T) {
 	assert.Equal(t, "shrinks", written[0].claimName)
 	assert.Equal(t, "grows", written[1].claimName)
 }
+
+func TestShrinksAndGrowsSplitsTheWritesIntoTwoSteps(t *testing.T) {
+	limits := []plannedKVLimit{
+		{claimName: "grows", kvLimitBytes: 40, kvCapacityBytes: 10},
+		{claimName: "unchanged", kvLimitBytes: 20, kvCapacityBytes: 20},
+		{claimName: "shrinks", kvLimitBytes: 5, kvCapacityBytes: 30},
+		{claimName: "booting", kvLimitBytes: 15, kvCapacityBytes: kvLimitUnknown},
+	}
+
+	shrinks, grows := shrinksAndGrows(limits)
+
+	require.Len(t, shrinks, 1)
+	assert.Equal(t, "shrinks", shrinks[0].claimName)
+	require.Len(t, grows, 1)
+	assert.Equal(t, "grows", grows[0].claimName)
+}

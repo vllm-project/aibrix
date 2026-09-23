@@ -704,14 +704,18 @@ func (r *ModelClaimReconciler) makeRoomOnPod(
 // arrangeCard plans one card and carries the plan out, returning the plan.
 //
 // The work is done in an order that never leaves two engines entitled to the
-// same byte. The limits are written first, shrinking before growing. A fresh
-// reading then has to agree, because a write that reached no segment is
+// same byte. The limits that shrink an engine are written first, and a fresh
+// reading has to confirm them before any engine grows. A lower limit evicts
+// nothing, so the room a shrink makes is not there until the engine is seen
+// inside its new limit. The limits that grow an engine are written next and
+// read back in the same way, because a write that reached no segment is
 // reported as a success either way. Only then is each new limit recorded on its
-// own claim, the ones that go down first. A division whose write or reading
-// fails therefore changes no record: an engine it already shrank sits below its
-// record, which is safe and keeps its route, and an engine it already grew is
-// above its record, so the health loop pulls it back. One whose recording fails
-// part way leaves records that come to no more than the card.
+// own claim, the ones that go down first.
+//
+// A division whose write or reading fails therefore changes no record. An
+// engine it already shrank sits below its record, which is safe and keeps its
+// route. One whose recording fails part way leaves records that come to no
+// more than the card.
 func (r *ModelClaimReconciler) arrangeCard(
 	ctx context.Context,
 	pod *corev1.Pod,
@@ -723,30 +727,11 @@ func (r *ModelClaimReconciler) arrangeCard(
 		return nil, err
 	}
 
-	written := writeOrder(limits)
-	for _, limit := range written {
-		// The moment the card was read is part of the operation, not only the
-		// value. The runtime runs each operation once, and an engine that
-		// restarted needs the same value written again: without the moment,
-		// that second write is taken for the first one and never reaches the
-		// segment, leaving the card stuck a round behind for good.
-		operationID := fmt.Sprintf("kv-plan/%s/%s/%s/%d/%d",
-			pod.Namespace, pod.UID, limit.claimName, limit.kvLimitBytes,
-			ledger.observedAt.UnixNano())
-		if _, err := r.Runtime.SetKVLimit(ctx, pod.Status.PodIP, DefaultRuntimePort, &SetKVLimitRequest{
-			ModelName:   limit.modelName,
-			LimitBytes:  limit.kvLimitBytes,
-			OperationID: operationID,
-		}); err != nil {
-			return nil, fmt.Errorf("set %s to %s: %w", limit.modelName, gibibytes(limit.kvLimitBytes), err)
-		}
-	}
-	if len(written) > 0 {
-		snapshot, err := r.Runtime.Snapshot(ctx, pod.Status.PodIP, DefaultRuntimePort)
-		if err != nil {
-			return nil, fmt.Errorf("read back the limits on %s: %w", pod.Name, err)
-		}
-		if err := confirmKVLimits(snapshot, written); err != nil {
+	shrinks, grows := shrinksAndGrows(limits)
+	var written []plannedKVLimit
+	for _, step := range [][]plannedKVLimit{shrinks, grows} {
+		written = append(written, step...)
+		if err := r.writeAndConfirmKVLimits(ctx, pod, ledger, step); err != nil {
 			return nil, err
 		}
 	}
@@ -785,6 +770,41 @@ func (r *ModelClaimReconciler) arrangeCard(
 			len(limits))
 	}
 	return limits, nil
+}
+
+// writeAndConfirmKVLimits writes one step of a card's division and reads the
+// card back to confirm it. A step with nothing to write reads nothing.
+func (r *ModelClaimReconciler) writeAndConfirmKVLimits(
+	ctx context.Context,
+	pod *corev1.Pod,
+	ledger podLedger,
+	limits []plannedKVLimit,
+) error {
+	if len(limits) == 0 {
+		return nil
+	}
+	for _, limit := range limits {
+		// The moment the card was read is part of the operation, not only the
+		// value. The runtime runs each operation once, and an engine that
+		// restarted needs the same value written again: without the moment,
+		// that second write is taken for the first one and never reaches the
+		// segment, leaving the card stuck a round behind for good.
+		operationID := fmt.Sprintf("kv-plan/%s/%s/%s/%d/%d",
+			pod.Namespace, pod.UID, limit.claimName, limit.kvLimitBytes,
+			ledger.observedAt.UnixNano())
+		if _, err := r.Runtime.SetKVLimit(ctx, pod.Status.PodIP, DefaultRuntimePort, &SetKVLimitRequest{
+			ModelName:   limit.modelName,
+			LimitBytes:  limit.kvLimitBytes,
+			OperationID: operationID,
+		}); err != nil {
+			return fmt.Errorf("set %s to %s: %w", limit.modelName, gibibytes(limit.kvLimitBytes), err)
+		}
+	}
+	snapshot, err := r.Runtime.Snapshot(ctx, pod.Status.PodIP, DefaultRuntimePort)
+	if err != nil {
+		return fmt.Errorf("read back the limits on %s: %w", pod.Name, err)
+	}
+	return confirmKVLimits(snapshot, limits)
 }
 
 // recordKVLimit writes the limit an instance is to run under into its own

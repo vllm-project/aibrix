@@ -1755,6 +1755,70 @@ func TestArrangeCardGivesARetryItsOwnOperation(t *testing.T) {
 	assert.NotEqual(t, runtime.kvLimitCalls[0].OperationID, runtime.kvLimitCalls[1].OperationID)
 }
 
+// aShrinkAndAGrow is a card of 1000 whose division takes memory from "a" and
+// gives it to "b": "a" is idle and holds 400, "b" is busy and holds 100.
+func aShrinkAndAGrow(t *testing.T) (*ModelClaimReconciler, *fakeRuntime, *corev1.Pod, *RuntimeSnapshot) {
+	t.Helper()
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	a := claimOnPod("a", pod.Name, modelv1alpha1.ModelClaimActive, 200, 100)
+	a.Status.Instances[0].KVLimitBytes = 400
+	b := claimOnPod("b", pod.Name, modelv1alpha1.ModelClaimActive, 200, 100)
+	b.Status.Instances[0].KVLimitBytes = 100
+	busy := engineHolding("b", 100, 100)
+	busy.RequestsRunning = 4
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("a", 100, 400), busy}
+	r, runtime := newReconciler(t, a, b, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	return r, runtime, pod, snapshot
+}
+
+// divideOnce plans the card from what its runtime reports now and carries the
+// plan out.
+func divideOnce(t *testing.T, r *ModelClaimReconciler, pod *corev1.Pod, snapshot *RuntimeSnapshot) error {
+	t.Helper()
+	ledgers := r.collectPodLedgers(context.Background(), testNamespace,
+		[]corev1.Pod{*pod}, map[string]*RuntimeSnapshot{pod.Name: snapshot})
+	ledger := ledgers[pod.Name]
+	require.True(t, ledger.judgeable)
+	_, err := r.arrangeCard(context.Background(), pod, ledger, ledger.engines)
+	return err
+}
+
+func TestArrangeCardGrowsAnEngineOnlyAfterAReadingConfirmsTheShrink(t *testing.T) {
+	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+	// The reading count at each write says what the controller had seen by then.
+	var readingsAtWrite []int
+	runtime.onKVLimit = func() { readingsAtWrite = append(readingsAtWrite, runtime.snapshotCalls) }
+
+	require.NoError(t, divideOnce(t, r, pod, snapshot))
+
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, "a", runtime.kvLimitCalls[0].ModelName)
+	assert.Equal(t, int64(167), runtime.kvLimitCalls[0].LimitBytes)
+	assert.Equal(t, "b", runtime.kvLimitCalls[1].ModelName)
+	assert.Equal(t, int64(433), runtime.kvLimitCalls[1].LimitBytes)
+	assert.Equal(t, readingsAtWrite[0]+1, readingsAtWrite[1],
+		"the grow should follow a reading taken after the shrink")
+}
+
+func TestArrangeCardGrowsNothingWhenAShrinkIsNotConfirmed(t *testing.T) {
+	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+	// "a" maps more between the plan and its new limit, which evicts nothing,
+	// so the room its shrink was to make is not there.
+	runtime.onKVLimit = func() { snapshot.Models[0].KVUsedBytes = 300 }
+
+	err := divideOnce(t, r, pod, snapshot)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "past the")
+	require.Len(t, runtime.kvLimitCalls, 1, "no engine may grow into room that was not given back")
+	assert.Equal(t, "a", runtime.kvLimitCalls[0].ModelName)
+	for name, want := range map[string]int64{"a": 400, "b": 100} {
+		got := getModel(t, r, name)
+		assert.Equal(t, want, got.Status.Instances[0].KVLimitBytes, "the record of %s should not move", name)
+	}
+}
+
 func TestReconcileShrinksTheNeighbourToMakeRoomForANewModel(t *testing.T) {
 	pm := claimWithCost(300, 100)
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
