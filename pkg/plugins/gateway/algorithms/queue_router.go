@@ -19,6 +19,7 @@ package routingalgorithms
 import (
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -135,47 +136,167 @@ func (r *queueRouter) serve() {
 	for {
 		pods := <-r.chRouteTrigger
 
-		for {
-			entry, err := r.queue.Peek(time.Now(), pods)
-			if err != nil && err != types.ErrQueueEmpty {
-				klog.Errorf("error on peek request queue: %v", err)
-				break
-			} else if entry == nil {
-				// Nothing to route, this happens if the queue is not empty, but no pod is available to be routed.
-				// A pod can be unavailable if:
-				// 1. The pod is not ready.
-				// 2. The pod has reached its max capacity.
-				break
-			}
-
-			ctx := entry.RoutingContext
-			_, routeErr := r.router.Route(ctx, pods)
-			if routeErr != nil {
-				// Necessary if Router has not set the error. No harm to set twice.
-				ctx.SetError(routeErr)
-			} else {
-				// Add request count here to make real-time metrics update and read serial.
-				// Noted, AddRequestCount should implement the idempotence.
-				r.cache.AddRequestCount(ctx, ctx.RequestID, ctx.Model)
-			}
-			// req.SetTargetPod() should have called in Route()
-			dequeued, dequeueErr := r.queue.Dequeue(time.Now())
-			if dequeueErr != nil {
-				klog.Errorf("error on dequeue request queue: %v", dequeueErr)
-			} else if dequeued != entry {
-				klog.Error("unexpected request dequeued")
-			} else {
-				// Report the departure only once the request actually left the queue: a
-				// failed Dequeue leaves it enqueued, so the next Peek would route the same
-				// entry again and emitting here would count that departure twice. The
-				// emission reads the entry's frozen metadata: the requester may already
-				// have been unblocked, and its context recycled, by the time the router
-				// above set the target pod.
-				emitQueueOutcomeMetrics(entry, routeErr)
-			}
-			r.updateQueuePendingMetric(entry)
+		// Drain until there is nothing routable, or until a recovered panic left the
+		// queue at a position this loop must not advance from. routeNext routes one
+		// candidate and reports whether the loop may pick the next one right away.
+		for r.routeNext(pods) {
 		}
 	}
+}
+
+// Steps of routeNext, named so a recovered panic reports the stage it hit. The recovery
+// stage covers a panic raised while a recovered one is handled.
+const (
+	routeStepPeek     = "peek"
+	routeStepRoute    = "route"
+	routeStepDequeue  = "dequeue"
+	routeStepRecovery = "recovery"
+)
+
+// errRouteRecovered is what the request behind a recovered panic reports. It names no
+// internal detail: the panic value and its stack stay in the log.
+var errRouteRecovered = errors.New("gateway routing recovered from an internal error")
+
+// routeNext routes at most one queued request: peek, hand the entry to the backend
+// router, then dequeue it. It reports whether the drain loop may pick the next candidate
+// right away; false means there is nothing routable now, or that a recovered panic left
+// the queue in a state this loop must not advance from.
+//
+// Every step runs inside this function so that a panic cannot end the serve goroutine.
+// Backend routing only signals that goroutine through chRouteTrigger, so a panic raised
+// while peeking, routing or dequeuing would otherwise end the gateway process and leave
+// every queued request waiting for a target pod that never comes.
+func (r *queueRouter) routeNext(pods types.PodList) (advance bool) {
+	var (
+		entry *types.QueueEntry
+		err   error
+	)
+	step := routeStepPeek
+	defer func() {
+		if v := recover(); v != nil {
+			advance = r.recoverCandidate(v, entry, step)
+		}
+	}()
+
+	entry, err = r.queue.Peek(time.Now(), pods)
+	if err != nil && err != types.ErrQueueEmpty {
+		klog.Errorf("error on peek request queue: %v", err)
+		return false
+	} else if entry == nil {
+		// Nothing to route, this happens if the queue is not empty, but no pod is available to be routed.
+		// A pod can be unavailable if:
+		// 1. The pod is not ready.
+		// 2. The pod has reached its max capacity.
+		return false
+	}
+
+	step = routeStepRoute
+	ctx := entry.RoutingContext
+	_, routeErr := r.router.Route(ctx, pods)
+	if routeErr != nil {
+		// Necessary if Router has not set the error. No harm to set twice.
+		ctx.SetError(routeErr)
+	} else {
+		// Add request count here to make real-time metrics update and read serial.
+		// Noted, AddRequestCount should implement the idempotence.
+		r.cache.AddRequestCount(ctx, ctx.RequestID, ctx.Model)
+	}
+
+	step = routeStepDequeue
+	// req.SetTargetPod() should have called in Route()
+	dequeued, dequeueErr := r.queue.Dequeue(time.Now())
+	if dequeueErr != nil {
+		klog.Errorf("error on dequeue request queue: %v", dequeueErr)
+	} else if dequeued != entry {
+		klog.Error("unexpected request dequeued")
+	} else {
+		// Report the departure only once the request actually left the queue: a
+		// failed Dequeue leaves it enqueued, so the next Peek would route the same
+		// entry again and emitting here would count that departure twice. The
+		// emission reads the entry's frozen metadata: the requester may already
+		// have been unblocked, and its context recycled, by the time the router
+		// above set the target pod.
+		emitQueueOutcomeMetrics(entry, routeErr)
+	}
+	r.updateQueuePendingMetric(entry)
+	return true
+}
+
+// recoverCandidate handles a panic recovered from one step of routeNext. It reports the
+// panic, fails the request that was being routed so its waiter returns instead of waiting
+// for a pod the queue can no longer hand it, and, when the queue is at a position the loop
+// can move on from, drops the candidate that raised it. It reports whether the drain loop
+// may pick the next candidate right away.
+//
+// Every action below calls back into the queue or the metrics pipeline, which is the code
+// that raised the first panic, so all of them run under one recover here: a second panic
+// must not take the serve goroutine down either.
+func (r *queueRouter) recoverCandidate(v any, entry *types.QueueEntry, step string) (advance bool) {
+	defer func() {
+		if nested := recover(); nested != nil {
+			reportRoutePanic(nested, entry, routeStepRecovery)
+		}
+	}()
+
+	reportRoutePanic(v, entry, step)
+	if entry == nil {
+		// The panic hit before a candidate was picked: there is no request to fail and
+		// nothing was left behind, so the loop waits for the next trigger.
+		return false
+	}
+	// The queue is pluggable, and an entry it hands back may carry no routing context:
+	// failing the request is best effort, and a nil dereference here would only add a
+	// second panic to the recovery path.
+	if entry.RoutingContext != nil {
+		entry.SetError(errRouteRecovered)
+	}
+
+	switch step {
+	case routeStepRoute:
+		// Dequeue has not run yet, so the entry is still the queue head: drop it, or the
+		// next iteration hands it to the router again and hits the same panic. Its
+		// departure is reported like any other failed route.
+		dropped, err := r.queue.Dequeue(time.Now())
+		if err != nil {
+			klog.Errorf("error on dequeue request queue after a recovered panic: %v", err)
+			return false
+		}
+		if dropped != entry {
+			// A different entry came back: the queue no longer matches what the loop
+			// peeked, so draining stops rather than routing the rest from a position
+			// the queue disagrees with. The departure stays unreported, because the
+			// candidate did not verifiably leave the queue.
+			klog.Error("unexpected request dequeued after a recovered panic")
+			r.updateQueuePendingMetric(entry)
+			return false
+		}
+		emitQueueOutcomeMetrics(entry, errRouteRecovered)
+		r.updateQueuePendingMetric(entry)
+		return true
+	case routeStepDequeue:
+		// A panic inside Dequeue leaves the queue at an unknown position, so draining
+		// stops. The depth is sampled again to keep the gauge in step with what is left.
+		r.updateQueuePendingMetric(entry)
+	}
+	return false
+}
+
+// reportRoutePanic logs a panic recovered in the serve loop together with its stack, and
+// counts it. The stack is the payload of the log; the panic value never reaches the
+// failing request, which only gets a generic internal error.
+func reportRoutePanic(v any, entry *types.QueueEntry, step string) {
+	requestID := "(no request)"
+	if entry != nil && entry.RoutingContext != nil {
+		requestID = entry.RequestID
+	}
+	klog.Errorf("gateway queue router recovered from a panic on %s during %s: %v\n%s", requestID, step, v, debug.Stack())
+	metrics.EmitMetricToPrometheus(
+		nil,
+		nil,
+		metrics.GatewayRequestPanicTotal,
+		&metrics.SimpleMetricValue{Value: 1},
+		map[string]string{"pod_name": metrics.GatewayPodName()},
+	)
 }
 
 // Outcome label values for gateway_queue_outcome_total. slo_failure and
