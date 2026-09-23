@@ -1604,6 +1604,69 @@ func TestRecordKVLimitTriesAgainAfterAConflict(t *testing.T) {
 	assert.Equal(t, int64(200), stored.Status.Instances[0].KVLimitBytes)
 }
 
+// activatingWithoutEngine is a claim whose instance was recorded on a card
+// that was divided for it, and whose engine the runtime never started: the
+// controller stopped between the two, or a failed start was never taken back
+// from the record.
+func activatingWithoutEngine(t *testing.T) (*ModelClaimReconciler, *fakeRuntime, *modelv1alpha1.ModelClaim, *corev1.Pod) {
+	t.Helper()
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{
+		{Pod: pod.Name, Phase: modelv1alpha1.ModelClaimActivating, KVLimitBytes: 600},
+	}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	return r, runtime, pm, pod
+}
+
+func TestReconcileStartsAgainAnActivatingInstanceWithNoEngine(t *testing.T) {
+	r, runtime, pm, _ := activatingWithoutEngine(t)
+
+	reconcileOnce(t, r, pm.Name)
+
+	// Placement does not run again, since the claim has its instance, so this
+	// is the only thing that would ever start the engine the card holds room
+	// for.
+	require.Len(t, runtime.activateCalls, 1)
+	assert.Equal(t, servedModelName(pm), runtime.activateCalls[0].ModelName)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
+	assert.NotZero(t, got.Status.Instances[0].Port)
+	assert.Equal(t, int64(600), got.Status.Instances[0].KVLimitBytes)
+}
+
+func TestReconcileGivesTheCardBackWhenAnEngineCannotBeStartedAgain(t *testing.T) {
+	r, runtime, pm, _ := activatingWithoutEngine(t)
+	runtime.failActivate = true
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+	got := getModel(t, r, pm.Name)
+	assert.Empty(t, got.Status.Instances, "an instance with no engine and no way to start one must not keep its room")
+	failed := false
+	for _, event := range drainEvents(t, r) {
+		if strings.Contains(event, "ActivateFailed") && strings.Contains(event, "had no engine") {
+			failed = true
+		}
+	}
+	assert.True(t, failed, "dropping the instance should be reported")
+}
+
+func TestReconcileStartsNoEngineWhenTheRuntimeCannotBeRead(t *testing.T) {
+	r, runtime, pm, pod := activatingWithoutEngine(t)
+	// A runtime that cannot be read says nothing about the engine.
+	runtime.nilSnapshots = map[string]bool{pod.Status.PodIP: true}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+}
+
 func TestReconcileTriesTheNextPodWhenACardCannotBeDivided(t *testing.T) {
 	pm := claimWithCost(20<<30, 4<<30)
 	// warm-1 is the roomier card and is tried first, but the engine on it will

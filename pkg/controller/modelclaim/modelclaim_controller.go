@@ -478,18 +478,7 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 			return fmt.Errorf("reserve %s on %s: %w", servedModelName(pm), pod.Name, err)
 		}
 
-		resp, aerr := r.Runtime.Activate(ctx, pod.Status.PodIP, DefaultRuntimePort, &ActivateRequest{
-			ModelName:    servedModelName(pm),
-			ArtifactURL:  pm.Spec.ArtifactURL,
-			Engine:       pm.Spec.Engine,
-			IPCName:      ipcNameFor(pm),
-			EngineConfig: pm.Spec.EngineConfig,
-			ClaimRef: &ModelClaimRef{
-				Namespace: pm.Namespace,
-				Name:      pm.Name,
-				UID:       string(pm.UID),
-			},
-		})
+		resp, aerr := r.Runtime.Activate(ctx, pod.Status.PodIP, DefaultRuntimePort, activateRequest(pm))
 		if aerr != nil {
 			recordActivation(pm.Namespace, servedModelName(pm), false)
 			// The engine did not start, so give the card back. The record was
@@ -528,6 +517,22 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 			"model %s engine starting on pod %s:%d", servedModelName(pm), pod.Name, resp.Port)
 	}
 	return nil
+}
+
+// activateRequest is what the runtime is asked to start for a claim.
+func activateRequest(pm *modelv1alpha1.ModelClaim) *ActivateRequest {
+	return &ActivateRequest{
+		ModelName:    servedModelName(pm),
+		ArtifactURL:  pm.Spec.ArtifactURL,
+		Engine:       pm.Spec.Engine,
+		IPCName:      ipcNameFor(pm),
+		EngineConfig: pm.Spec.EngineConfig,
+		ClaimRef: &ModelClaimRef{
+			Namespace: pm.Namespace,
+			Name:      pm.Name,
+			UID:       string(pm.UID),
+		},
+	}
 }
 
 // makeRoomOnPod divides a card between the engines on it and the one about to
@@ -739,6 +744,7 @@ func (r *ModelClaimReconciler) collectPlacementStates(
 // than guessing that a live engine has disappeared.
 func (r *ModelClaimReconciler) reconcileInstanceHealth(ctx context.Context, pm *modelv1alpha1.ModelClaim) {
 	served := servedModelName(pm)
+	dropped := map[string]bool{}
 	for i := range pm.Status.Instances {
 		inst := &pm.Status.Instances[i]
 		if inst.Phase != modelv1alpha1.ModelClaimActivating &&
@@ -757,6 +763,12 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(ctx context.Context, pm *
 			continue
 		}
 		observed := snapshotModelForClaim(snapshot, pm, served)
+
+		if engineMissing(inst, snapshot, observed) {
+			dropped[inst.Pod] = !r.startMissingEngine(ctx, pm, inst, ip)
+			continue
+		}
+
 		observedPort := inst.Port
 		if observed != nil {
 			observedPort = observed.Port
@@ -836,6 +848,61 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(ctx context.Context, pm *
 			}
 		}
 	}
+	r.dropInstances(ctx, pm, dropped)
+}
+
+// engineMissing reports whether an activating instance has no engine behind
+// it, going by a runtime that answered.
+//
+// An instance is recorded before its engine is started, so that the account
+// charges it from the start. If the controller stopped between the two, or a
+// failed start was never taken back from the record, the runtime knows no
+// engine for the instance. Nothing else would start one, since the claim has
+// its instance and placement does not run again, while the account goes on
+// charging the card for it.
+func engineMissing(inst *modelv1alpha1.ModelClaimInstance, snapshot *RuntimeSnapshot, observed *RuntimeSnapshotModel) bool {
+	return inst.Phase == modelv1alpha1.ModelClaimActivating && snapshot != nil && observed == nil
+}
+
+// startMissingEngine asks the runtime to start the engine an activating
+// instance should have, and reports whether it did. The runtime starts a model
+// once and returns the running one after that, so asking again is safe.
+func (r *ModelClaimReconciler) startMissingEngine(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	inst *modelv1alpha1.ModelClaimInstance,
+	podIP string,
+) bool {
+	served := servedModelName(pm)
+	resp, err := r.Runtime.Activate(ctx, podIP, DefaultRuntimePort, activateRequest(pm))
+	if err != nil {
+		recordActivation(pm.Namespace, served, false)
+		r.Recorder.Eventf(pm, corev1.EventTypeWarning, "ActivateFailed",
+			"model %s had no engine on pod %s, and starting one failed: %v", served, inst.Pod, err)
+		return false
+	}
+	inst.Port = resp.Port
+	r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Activating",
+		"model %s had no engine on pod %s; engine starting again on port %d", served, inst.Pod, resp.Port)
+	return true
+}
+
+// dropInstances removes the instances on the given pods from a claim, and
+// takes their routing annotations back, which gives their cards back.
+//
+// The caller's status update persists the shorter list, and the next pass
+// places the claim again. Should that update be lost, the next pass finds the
+// same instance with no engine and tries again.
+func (r *ModelClaimReconciler) dropInstances(ctx context.Context, pm *modelv1alpha1.ModelClaim, dropped map[string]bool) {
+	kept := pm.Status.Instances[:0]
+	for _, inst := range pm.Status.Instances {
+		if dropped[inst.Pod] {
+			r.deannotateWarmPod(ctx, pm.Namespace, inst.Pod, pm.Name)
+			continue
+		}
+		kept = append(kept, inst)
+	}
+	pm.Status.Instances = kept
 }
 
 // snapshotModelForClaim resolves runtime state by ClaimRef UID when the
