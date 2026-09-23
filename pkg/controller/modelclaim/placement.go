@@ -115,7 +115,7 @@ type podRefusal struct {
 func admissibleCandidates(
 	candidates []corev1.Pod,
 	ledgers map[string]podLedger,
-	needBytes int64,
+	minimumReserveBytes int64,
 ) ([]corev1.Pod, []podRefusal) {
 	admissible := make([]corev1.Pod, 0, len(candidates))
 	var refusals []podRefusal
@@ -132,7 +132,7 @@ func admissibleCandidates(
 				pod:    pod.Name,
 				reason: fmt.Sprintf("%s could not be judged: %s", pod.Name, ledger.blocked),
 			})
-		case ledger.maximumRoomBytes() < needBytes:
+		case ledger.maximumRoomBytes() < minimumReserveBytes:
 			room := ledger.maximumRoomBytes()
 			refusals = append(refusals, podRefusal{
 				pod:       pod.Name,
@@ -141,7 +141,7 @@ func admissibleCandidates(
 				reason: fmt.Sprintf("%s can offer at most %s, even with every engine on it at its floor",
 					pod.Name, gibibytes(room)),
 			})
-		case ledger.heldRoomBytes() < needBytes:
+		case ledger.heldRoomBytes() < minimumReserveBytes:
 			// The card could hold this model, and does not today. Lowering a KV
 			// limit does not evict a page, so the engines there have to give
 			// the memory back themselves before this pod can be tried again.
@@ -164,9 +164,9 @@ func admissibleCandidates(
 // model. It names the roomiest pod that still could not hold it, because that
 // is the smallest gap and the one worth acting on, and counts the rest rather
 // than listing a line per pod.
-func summarizeRefusals(refusals []podRefusal, needBytes int64) string {
+func summarizeRefusals(refusals []podRefusal, minimumReserveBytes int64) string {
 	message := fmt.Sprintf("no warm pod can hold this model, which needs %s on a card",
-		gibibytes(needBytes))
+		gibibytes(minimumReserveBytes))
 	if len(refusals) == 0 {
 		return message
 	}
@@ -207,8 +207,8 @@ func rankByRoom(states map[string]PodPlacementState, ledgers map[string]podLedge
 			continue
 		}
 		state := states[name]
-		state.RoomBytes = ledger.maximumRoomBytes()
-		state.RoomKnown = true
+		state.MaximumRoomBytes = ledger.maximumRoomBytes()
+		state.MaximumRoomKnown = true
 		states[name] = state
 	}
 }
@@ -264,11 +264,11 @@ func placementStateLess(a, b PodPlacementState) bool {
 	if a.MemoryKnown != b.MemoryKnown {
 		return a.MemoryKnown
 	}
-	if a.RoomKnown != b.RoomKnown {
-		return a.RoomKnown
+	if a.MaximumRoomKnown != b.MaximumRoomKnown {
+		return a.MaximumRoomKnown
 	}
-	if a.RoomKnown && a.RoomBytes != b.RoomBytes {
-		return a.RoomBytes > b.RoomBytes
+	if a.MaximumRoomKnown && a.MaximumRoomBytes != b.MaximumRoomBytes {
+		return a.MaximumRoomBytes > b.MaximumRoomBytes
 	}
 	if a.MemoryKnown && a.HBMFreeBytes != b.HBMFreeBytes {
 		return a.HBMFreeBytes > b.HBMFreeBytes
