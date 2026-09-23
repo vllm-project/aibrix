@@ -246,13 +246,17 @@ The supported spec fields are:
      - No
      - Engine CLI flags mapped to string values. Use an empty string for a
        boolean flag.
+   * - ``perGPU``
+     - No
+     - What one instance costs on a GPU. A claim without it is accepted, and
+       is not placed until it declares one.
    * - ``perGPU.maximumFootprint``
-     - Yes
+     - Yes, in ``perGPU``
      - A quantity, such as ``30Gi``. The largest non-KV GPU memory one
        instance holds on a device: weights, captured CUDA graphs, activation
        workspaces and allocator retention.
    * - ``perGPU.kvFloor``
-     - Yes
+     - Yes, in ``perGPU``
      - A quantity, such as ``10Gi``. The KV cache one instance must keep on a
        device to serve at all.
 
@@ -342,22 +346,28 @@ Watch the arrangement through its Events:
 The automatic pool policy below stands down on these Pods. Two writers on one
 KV allocator would only overwrite each other.
 
-``perGPU`` is required, and a claim without it is rejected at ``kubectl
-apply``. Nothing could be put there in its place: what an engine holds beyond
-its weights does not follow from the artifact, so a claim that does not say is
-a card nobody can account for. One such claim makes its whole card unusable to
-every other model, which is a worse way to find out than an error at
-admission.
+A claim without ``perGPU`` is not placed. Nothing could be put there in its
+place: what an engine holds beyond its weights does not follow from the
+artifact, so a claim that does not say is a card nobody can account for. One
+such claim would make its whole card unusable to every other model. The claim
+stays ``Pending``, and its ``Scheduled`` condition reads ``InvalidPerGPU``.
+
+The schema leaves ``perGPU`` optional, and the controller refuses the claim
+instead. A claim stored before the field existed has to stay valid. Were the
+field required, such a claim would fail validation on its next update. On an
+API server without CRD validation ratcheting, its finalizer could then not be
+removed, so the claim could not be deleted either. A ``perGPU`` that is given
+has to carry both figures, and an apply without one of them is rejected.
 
 Both figures have to be positive. A quantity carries no schema minimum, so a
 ``0`` is caught by the controller instead: the claim is not placed, and its
 ``Scheduled`` condition reads ``InvalidPerGPU`` and names the figure. A zero
 is never read as a model that takes no room.
 
-A claim stored before this became required still decodes, and its missing
-declaration still reads as missing. It is not placed again, for the same
-reason. An engine it already runs keeps running and keeps its route, but the
-card under it is left unaccountable until the claim declares its cost.
+A claim stored before the field existed decodes with its declaration missing,
+and it is not placed again, for the same reason. An engine it already runs
+keeps running and keeps its route, but the card under it is left
+unaccountable until the claim declares its cost.
 
 Sleeping does not free a seat. An instance that is asleep keeps its place in
 the account, at the full footprint and floor its claim declared, because the
@@ -516,9 +526,10 @@ kvcached capacity ceiling, not an immediate physical HBM allocation and not an
 OOM guarantee.
 
 The policy leaves a Pod alone when an instance recorded on it already runs
-under a KV limit of its own, which is the case for every claim that declares
-``perGPU``, which every claim now does. Until ``reclaim`` is removed, this
-annotation reaches only claims stored before that requirement.
+under a KV limit of its own. That is the case for every instance placed with a
+``perGPU`` declaration, and a claim without one is not placed. Until
+``reclaim`` is removed, this annotation reaches only instances placed before
+``perGPU`` existed.
 
 The JSON parser rejects unknown fields. An invalid policy is disabled and
 reported with an ``InvalidPoolPolicy`` Event:
