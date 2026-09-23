@@ -140,6 +140,9 @@ Requirements and limitations:
 * Each CTX worker must return a nonempty string ``ctx_info_endpoint`` and an
   explicit nonnegative integer ``ctx_dp_rank`` inside ``disaggregated_params``
   from ``/server_info``. GEN must be able to reach the advertised endpoint.
+  Besides these, only ``encoded_opaque_state`` is copied: other keys are ignored
+  so worker metadata cannot overwrite the gateway-owned ``request_type``, IDs or
+  ``schedule_style``. A new handshake field must be added to the handler.
 * ``ctx_dp_rank`` is attention **data-parallel** rank, not tensor-parallel rank
   or Pod index. Nonzero ranks are preserved. An HTTP front-end that internally
   balances across multiple ranks without worker/rank affinity is not supported;
