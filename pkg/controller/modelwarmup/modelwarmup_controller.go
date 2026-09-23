@@ -525,7 +525,14 @@ func (r *ModelWarmupReconciler) updateStatus(
 		details = append(details, item)
 		failed++
 	}
-	sort.Slice(details, func(i, j int) bool { return details[i].NodeName < details[j].NodeName })
+	sort.Slice(details, func(i, j int) bool {
+		leftPriority := targetDetailPriority(details[i].Phase)
+		rightPriority := targetDetailPriority(details[j].Phase)
+		if leftPriority != rightPriority {
+			return leftPriority < rightPriority
+		}
+		return details[i].NodeName < details[j].NodeName
+	})
 	omitted := 0
 	if len(details) > modelv1alpha1.MaxModelWarmupTargetDetails {
 		omitted = len(details) - modelv1alpha1.MaxModelWarmupTargetDetails
@@ -598,6 +605,17 @@ func boundedDiagnostic(message string) string {
 		return message
 	}
 	return message[:modelv1alpha1.MaxModelWarmupDiagnosticLength]
+}
+
+func targetDetailPriority(phase modelv1alpha1.ModelWarmupTargetPhase) int {
+	switch phase {
+	case modelv1alpha1.ModelWarmupTargetFailed:
+		return 0
+	case modelv1alpha1.ModelWarmupTargetRunning:
+		return 1
+	default:
+		return 2
+	}
 }
 
 func isTerminalPhase(phase modelv1alpha1.ModelWarmupPhase) bool {
