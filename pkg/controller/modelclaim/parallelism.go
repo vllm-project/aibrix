@@ -100,6 +100,24 @@ func podGPUCount(pod corev1.Pod) int64 {
 	return count
 }
 
+// podHasGPUs reports whether a pod has cards the account has to cover. The
+// device plugin's nvidia.com/gpu request is one way to tell. The runtime
+// reporting accelerators is the other, and it covers a pod given its GPUs some
+// other way, such as a dynamic resource claim. A pod with neither is taken for
+// one without a GPU, like the CPU pools the tests run on.
+func podHasGPUs(pod corev1.Pod, reportedAccelerators int) bool {
+	return podGPUCount(pod) > 0 || reportedAccelerators > 0
+}
+
+// reportedAccelerators is how many cards a runtime reading describes, and zero
+// when there is no reading.
+func reportedAccelerators(snapshot *RuntimeSnapshot) int {
+	if snapshot == nil {
+		return 0
+	}
+	return len(snapshot.Accelerators)
+}
+
 // podSupportsVLLMParallelism accepts legacy/mock Pods without GPU resources so
 // existing CPU-only controller tests remain valid. Real warm pools declare a
 // GPU limit and must exactly match the requested TP * PP topology.

@@ -129,6 +129,9 @@ type podLedger struct {
 	hbmUsableBytes           int64
 	totalMinimumReserveBytes int64
 	totalHeldBytes           int64
+	// accelerators is how many cards the runtime reported, which is what
+	// makes a pod that requests no nvidia.com/gpu still a pod with cards.
+	accelerators int
 	// observedAt is when the snapshot this account was built from was taken. A
 	// limit written from it carries the same moment, which is what tells the
 	// runtime one attempt from the next.
@@ -188,16 +191,18 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 	for i := range candidates {
 		pod := &candidates[i]
 		hbmUsableBytes, measured := snapshots[pod.Name].hbmUsableBytes()
+		accelerators := reportedAccelerators(snapshots[pod.Name])
 		switch {
 		case snapshots[pod.Name] == nil:
 			ledgers[pod.Name] = podLedger{blocked: "its runtime did not answer"}
 		case !measured:
-			ledgers[pod.Name] = podLedger{blocked: "its cards could not be measured"}
+			ledgers[pod.Name] = podLedger{blocked: "its cards could not be measured", accelerators: accelerators}
 		default:
 			ledgers[pod.Name] = podLedger{
 				judgeable:      true,
 				hbmUsableBytes: hbmUsableBytes,
 				observedAt:     snapshots[pod.Name].ObservedAt,
+				accelerators:   accelerators,
 			}
 		}
 	}
