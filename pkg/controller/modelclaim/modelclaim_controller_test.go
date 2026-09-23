@@ -750,19 +750,22 @@ func TestReconcilePlacementPrefersRuntimeSnapshot(t *testing.T) {
 	hot := warmPod("hot", "b300-pool-a", true, corev1.PodRunning)
 	hot.Status.PodIP = testPeerIP
 	r, runtime := newReconciler(t, pm, cold, hot)
+	// Both runtimes report a card, so both pods go through the account although
+	// neither requests nvidia.com/gpu, and both cards can hold the claim.
 	runtime.snapshots = map[string]*RuntimeSnapshot{
 		"10.0.0.1": {
-			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: 900}},
-			Models:       []RuntimeSnapshotModel{{ModelName: "other", KVUsedBytes: 1}},
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: 900, HBMUsableBytes: 80 << 30}},
 		},
 		testPeerIP: {
-			Accelerators:    []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: 100}},
+			Accelerators:    []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: 100, HBMUsableBytes: 80 << 30}},
 			CachedArtifacts: []string{pm.Spec.ArtifactURL},
 		},
 	}
 
 	reconcileOnce(t, r, pm.Name)
 
+	// The pod that already has the artifact wins, although the other one has
+	// more free memory.
 	require.Len(t, runtime.activateCalls, 1)
 	assert.Equal(t, "hot", getModel(t, r, pm.Name).Status.Instances[0].Pod)
 	require.NotNil(t, runtime.activateCalls[0].ClaimRef)
@@ -1665,6 +1668,58 @@ func TestReconcileStartsNoEngineWhenTheRuntimeCannotBeRead(t *testing.T) {
 	assert.Empty(t, runtime.activateCalls)
 	got := getModel(t, r, pm.Name)
 	require.Len(t, got.Status.Instances, 1)
+}
+
+// podWithUnrequestedGPU is a warm pod that asks for no nvidia.com/gpu, while
+// its runtime reports a card, as with a GPU given by a dynamic resource claim.
+func podWithUnrequestedGPU(hbmUsableBytes int64) (*corev1.Pod, *RuntimeSnapshot) {
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Status.PodIP = "10.0.0.1"
+	return pod, &RuntimeSnapshot{
+		Accelerators: []RuntimeAcceleratorSnapshot{
+			{ID: "GPU-0", HBMFreeBytes: hbmUsableBytes, HBMUsableBytes: hbmUsableBytes},
+		},
+	}
+}
+
+func TestReconcileAccountsForACardTheRuntimeReportsWithoutAGPURequest(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := podWithUnrequestedGPU(300)
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	// The card is too small for the model. Taken for a pod with no GPU, it
+	// would have been used without an account.
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	cond := meta.FindStatusCondition(got.Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, "NoMatchingPods", cond.Reason)
+	assert.Contains(t, cond.Message, "can offer at most")
+}
+
+func TestReconcileHoldsAnEngineToItsLimitOnAPodWithoutAGPURequest(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := podWithUnrequestedGPU(1000)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{
+		{Pod: pod.Name, Phase: modelv1alpha1.ModelClaimActivating, Port: 9001, KVLimitBytes: 600},
+	}
+	// Ready, and still under its allocator's own limit.
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(900)}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, int64(600), runtime.kvLimitCalls[0].LimitBytes)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase,
+		"an engine above its limit must not be routed")
 }
 
 func TestReconcileTriesTheNextPodWhenACardCannotBeDivided(t *testing.T) {

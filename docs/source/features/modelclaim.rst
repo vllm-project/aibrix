@@ -312,6 +312,12 @@ that did not answer, a card the runtime could not measure, a Pod carrying an
 instance of a claim that declares nothing, and a Pod running an engine that
 no recorded instance answers for.
 
+A Pod goes through the account when its containers request
+``nvidia.com/gpu``, or when its runtime reports accelerators. The second
+covers GPUs given to a Pod some other way, such as a dynamic resource claim.
+A Pod with neither is taken for one without a GPU, and nothing is accounted
+for on it.
+
 Every card in a declared pool is divided as a whole
 ---------------------------------------------------
 

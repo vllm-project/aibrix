@@ -121,11 +121,13 @@ func admissibleCandidates(
 	var refusals []podRefusal
 	for i := range candidates {
 		pod := candidates[i]
-		if podGPUCount(pod) == 0 {
+		ledger := ledgers[pod.Name]
+		// A pod without cards has nothing to account for. A pod whose runtime
+		// reports cards has them, whatever its containers request.
+		if !podHasGPUs(pod, ledger.accelerators) {
 			admissible = append(admissible, pod)
 			continue
 		}
-		ledger := ledgers[pod.Name]
 		switch {
 		case !ledger.judgeable:
 			refusals = append(refusals, podRefusal{

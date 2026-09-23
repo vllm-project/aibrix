@@ -444,7 +444,7 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 		// chance to start. Until that is done and confirmed, the room this
 		// model was admitted against is still the neighbours' to take.
 		kvLimitBytes := perGPU.kvFloorBytes
-		if podGPUCount(*pod) > 0 {
+		if podHasGPUs(*pod, ledgers[pod.Name].accelerators) {
 			planned, roomErr := r.makeRoomOnPod(ctx, pm, perGPU, pod, ledgers[pod.Name])
 			if roomErr != nil {
 				// The card had room for this model and could not be divided to
@@ -785,8 +785,9 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(ctx context.Context, pm *
 		// that far. It stays routable only while it is held to no more than
 		// that record.
 		serving := observed != nil && observed.Ready && observedPort > 0
-		limitInForce := kvLimitInForce(pod, inst, observed)
-		limitWithinRecord := kvLimitWithinRecord(pod, inst, observed)
+		accelerators := reportedAccelerators(snapshot)
+		limitInForce := kvLimitInForce(pod, accelerators, inst, observed)
+		limitWithinRecord := kvLimitWithinRecord(pod, accelerators, inst, observed)
 
 		desiredPhase, routingPort := desiredInstanceState(
 			inst, observed, observedPort, serving, limitInForce, limitWithinRecord)
@@ -995,9 +996,14 @@ func desiredInstanceState(
 
 // kvLimitInForce reports whether the engine is already held to the limit this
 // instance records. There is nothing to hold it to when the claim declares no
-// per-GPU cost, and no card to hold it on when Kubernetes gave the pod no GPU.
-func kvLimitInForce(pod *corev1.Pod, inst *modelv1alpha1.ModelClaimInstance, observed *RuntimeSnapshotModel) bool {
-	if inst.KVLimitBytes <= 0 || podGPUCount(*pod) == 0 {
+// per-GPU cost, and no card to hold it on when the pod has no GPU.
+func kvLimitInForce(
+	pod *corev1.Pod,
+	accelerators int,
+	inst *modelv1alpha1.ModelClaimInstance,
+	observed *RuntimeSnapshotModel,
+) bool {
+	if inst.KVLimitBytes <= 0 || !podHasGPUs(*pod, accelerators) {
 		return true
 	}
 	return observed != nil && observed.KVCapacityBytes == inst.KVLimitBytes
@@ -1006,8 +1012,13 @@ func kvLimitInForce(pod *corev1.Pod, inst *modelv1alpha1.ModelClaimInstance, obs
 // kvLimitWithinRecord reports whether the engine is held to no more than the
 // limit this instance records, which is what keeps a serving engine routable.
 // An engine whose segment cannot be read is not known to be held to anything.
-func kvLimitWithinRecord(pod *corev1.Pod, inst *modelv1alpha1.ModelClaimInstance, observed *RuntimeSnapshotModel) bool {
-	if inst.KVLimitBytes <= 0 || podGPUCount(*pod) == 0 {
+func kvLimitWithinRecord(
+	pod *corev1.Pod,
+	accelerators int,
+	inst *modelv1alpha1.ModelClaimInstance,
+	observed *RuntimeSnapshotModel,
+) bool {
+	if inst.KVLimitBytes <= 0 || !podHasGPUs(*pod, accelerators) {
 		return true
 	}
 	return observed != nil && observed.KVCapacityBytes >= 0 && observed.KVCapacityBytes <= inst.KVLimitBytes
