@@ -7,7 +7,7 @@ In PD disaggregation, inference is split across two specialized pod roles:
 - **Prefill pod** — processes the prompt (context), builds the KV-cache, then transfers it.
 - **Decode pod** — generates tokens using the KV-cache transferred from the prefill pod.
 
-The router is responsible for selecting one prefill pod and one decode pod per request, executing the prefill HTTP request synchronously (vLLM/TRT-LLM) or asynchronously (SGLang), and routing the decode request to the selected decode pod.
+The router is responsible for selecting one prefill pod and one decode pod per request, executing the prefill HTTP request synchronously (vLLM/TRT-LLM context-first) or asynchronously (SGLang/TRT-LLM generation-first), and routing the decode request through Envoy to the selected decode pod.
 
 ---
 
@@ -45,7 +45,8 @@ Route(ctx, readyPodList)
      │        doPrefillRequest(ctx, prefillPod, engine)
      │              ├─ SGLang   → async goroutine (bootstrap handshake; Route does not wait for completion)
      │              ├─ vLLM     → sync, extract kv_transfer_params from response
-     │              └─ TRT-LLM  → sync, extract disaggregated_params from response
+     │              └─ TRT-LLM  → context_first: sync, merge response params
+     │                            generation_first: prepare both bodies, async prefill
      │
      └─► ctx.SetTargetPod(decodePod)
          return decodePod address
@@ -359,6 +360,8 @@ See [PD Prefill Fail-Fast](#pd-prefill-fail-fast).
 
 ### TensorRT-LLM
 
+`AIBRIX_TRT_SCHEDULE_STYLE=context_first` (default) preserves the sequential flow:
+
 ```
 Gateway adds disaggregated_params to prefill request:
   { request_type: "context_only", disagg_request_id: <snowflake_id> }
@@ -379,13 +382,83 @@ TRT-LLM uses a Snowflake-style `disagg_request_id` (63-bit) to correlate prefill
 [41-bit timestamp ms since 2023-01-01] [10-bit machine_id] [12-bit counter]
 ```
 
-Machine ID is set via `AIBRIX_TRT_MACHINE_ID` (must be in `[0, 1024)`).
+Machine ID is set via `AIBRIX_TRT_MACHINE_ID` (must be in `[0, 1024)`). Assign different machine IDs to gateway processes sharing the same TRT workers.
+
+#### Generation-first (parallel)
+
+Set `AIBRIX_TRT_SCHEDULE_STYLE=generation_first` **on the gateway plugin**, not on
+CTX/GEN workers. The setting is fixed when the PD router is constructed; unknown
+values reject router initialization. It does not affect other engines or combined
+pods. No automatic fallback or retry occurs after either leg has been dispatched.
+
+```
+Gateway selects CTX + GEN
+  ├─ GET CTX /server_info (cached)
+  ├─ prepare both bodies with the same integer disagg_request_id
+  ├─ goroutine: POST context_only, schedule_style=1, stream=false, max_tokens=1
+  └─ return GEN address and generation_only body to Envoy immediately
+       disagg_request_id = ctx_request_id = shared ID
+       ctx_info_endpoint, ctx_dp_rank, optional encoded_opaque_state = CTX metadata
+       schedule_style = 1 (TRT-LLM GENERATION_FIRST wire enum)
+       original prompt/messages, sampling settings and stream mode preserved
+
+CTX <── engine-managed coordination / KV transfer ──> GEN
+Envoy <──────────────────── response / SSE ────────── GEN
+```
+
+There is no second Go-issued decode POST. GEN can initialize while CTX is still
+working; it cannot generate without the required KV. The CTX response is not merged
+back into the already-dispatched GEN request. Both endpoints must therefore use
+matching model/tokenizer/chat-template configuration, since GEN cannot reuse
+`prompt_token_ids` from the CTX HTTP response in this mode.
+
+**Worker discovery and cache:** each router owns a cache created at initialization.
+It loads a selected CTX worker lazily before either inference leg is dispatched,
+so newly discovered/autoscaled pods work without restarting the gateway. Concurrent
+misses for the same incarnation share one lookup. Lookup timeout is 3 seconds,
+response size is limited to 1 MiB, and redirects are rejected. Entries expire after
+1 minute; at most 1024 are retained. Pod UID, IP/port and container IDs/restart counts
+identify an incarnation, preventing reuse across observed restarts or replacements.
+Expired entries are pruned on subsequent loads. A restart not yet reflected in the
+pod snapshot can still race a request; this fails normally rather than replaying
+inference. A missing/invalid `/server_info` fails routing before dispatch; failed
+lookups are not cached.
+
+The expected HTTP response follows TRT-LLM's `1.3.0rc8` OpenAI server schema:
+
+```json
+{"disaggregated_params":{"ctx_info_endpoint":"tcp://<CTX-address>:<port>","ctx_dp_rank":0}}
+```
+
+`encoded_opaque_state` is also propagated when present. The endpoint must be reachable
+from GEN. `ctx_dp_rank` must be explicitly present and nonnegative; it is **attention
+DP rank**, not TP rank, replica index, or Pod number. Rank zero is valid but is never
+substituted for missing data. Metadata is taken from the exact selected Pod. A
+front-end that distributes requests across multiple DP ranks without stable
+worker/rank affinity is not supported by this Pod-level cache: expose rank-affine
+workers or retain `context_first`. Validate nonzero-rank deployments against the
+actual engine before enabling this mode.
+
+**Failure handling:** the CTX HTTP call retains client cancellation and the existing
+prefill timeout. Failure wakes the gateway through the per-incarnation PD leg state,
+never through a recycled RoutingContext. TRT-LLM has no SGLang `rid`/`/abort_request`
+contract; the gateway instead fails/resets the Envoy stream, relying on TRT-LLM's
+HTTP-disconnect cancellation. Keep Envoy `failure_mode_allow=false`. TRT's SSE headers
+can precede KV arrival, so a terminal CTX failure after response headers resets the
+stream rather than being ignored. This can also truncate an already-generating
+response; it never attempts to rewrite headers already sent to the client.
+
+Start validation with text-only 1P1D using the sample under
+`samples/quickstart/tensorrt/`. Unit tests use mock workers; actual GPU KV transfer,
+DP affinity, stream-reset propagation and latency gains require engine/Envoy
+integration testing. Set the environment variable back to `context_first` and
+restart the gateway to roll back.
 
 ---
 
 ## PD Prefill Fail-Fast
 
-Only the asynchronous engines (SGLang) can fail their prefill leg after `Route()`
+Only asynchronous modes (SGLang and TRT generation-first) can fail their prefill leg after `Route()`
 has already returned a decode pod. Without fail-fast the client waits for the
 decode leg to give up on a KV transfer that will never arrive - 300s in SGLang -
 and the decode pod holds its pre-allocated KV pages for that whole window.
@@ -395,7 +468,8 @@ Prefill leg fails (async worker)
    │
    ├─► record failure on the RoutingContext's PD leg state (first failure wins)
    │
-   ├─► POST /abort_request {"rid": ...} to the decode pod   (goroutine, twice)
+   ├─► SGLang: POST /abort_request {"rid": ...} to decode   (goroutine, twice)
+   │   TRT: no abort POST; reset Envoy upstream on failure
    │
    └─► wake the ext_proc stream ──► 5xx ImmediateResponse to the client
                                     header x-error-pd-prefill: true
@@ -419,9 +493,10 @@ The client status code is the prefill engine's own status for `http_status`, and
 `503` for every other terminal class, since those have no upstream status. The
 response body is an OpenAI-shaped error carrying the class and a truncated
 upstream message, and it is sent even while the gateway is still waiting for the
-decode leg's response headers. Once the decode leg has started answering the
-client, the failure is only recorded and logged: the response is already on the
-wire, and the decode leg evidently did not need the prefill leg's output.
+decode leg's response headers. For SGLang, once the decode leg has started answering the client, the failure is
+only recorded and logged. TRT generation-first instead resets the stream even
+after headers, because TRT can send SSE headers before KV is available; it does not
+attempt to replace the already-started response.
 
 ---
 
@@ -562,7 +637,8 @@ When a combined pod is selected, `prefillPod` is `nil` (no prefill HTTP call) an
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AIBRIX_TRT_MACHINE_ID` | `0` | 10-bit machine ID used in Snowflake disagg request ID generation (range: `[0, 1024)`) |
+| `AIBRIX_TRT_MACHINE_ID` | `0` | 10-bit machine ID used in Snowflake disagg request ID generation (range: `[0, 1024)`); distinct per gateway process sharing TRT workers |
+| `AIBRIX_TRT_SCHEDULE_STYLE` | `context_first` | TRT-only dispatch mode: `context_first` (sequential) or `generation_first` (parallel). Read at router initialization; unknown values are errors |
 
 ### Inherited from Prefix Cache Router
 
@@ -587,7 +663,7 @@ SGLang uses a bootstrap mechanism for prefill/decode coordination. The port is r
 | Metric | When |
 |--------|------|
 | `GatewayPrefillRequestFailTotal` | Engine validation fail, pod filter fail, prefill HTTP error |
-| `GatewayPrefillRequestSuccessTotal` | Prefill HTTP succeeded. For SGLang, this is emitted asynchronously after the background prefill request completes, not when `Route()` returns. |
+| `GatewayPrefillRequestSuccessTotal` | Prefill HTTP succeeded. For SGLang and TRT generation-first, emitted asynchronously after the background prefill request completes, not when `Route()` returns. |
 | `PDSelectedPrefillPodTotal` | Prefill pod selected (per pod label) |
 | `PDSelectedDecodePodTotal` | Decode pod selected (per pod label) |
 | `gateway_pd_prefill_failure_total{class,stage}` | A terminal prefill failure reached the client-facing handler. `stage` is `before_response` (the client was failed fast) or `after_response` (the decode leg had already started answering) |
@@ -639,6 +715,8 @@ NewPDRouter()
   │     (other)         → log warning, same as load_balancing
   ├─ create HTTP client with connection pool
   │     MaxIdleConns=100, MaxIdleConnsPerHost=10, IdleConnTimeout=90s
+  ├─ TRT handler from AIBRIX_TRT_SCHEDULE_STYLE (immutable, router-scoped)
+  │     owns a lazily populated /server_info cache for generation_first
   ├─ NewPrefillRequestTracker()
   ├─ NewPendingDecodeTracker()
   └─ startPrefixUpdater()                 // background goroutine

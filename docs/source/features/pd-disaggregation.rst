@@ -107,9 +107,64 @@ Supported Engines
      - Requires ``model.aibrix.ai/sglang-bootstrap-port`` annotation (default: ``8998``).
    * - TensorRT-LLM
      - ``trtllm``
-     - Uses NIXL KV transfer backend (``AIBRIX_KV_CONNECTOR_TYPE=nixl``).
+     - Supports ``context_first`` (default) and opt-in ``generation_first`` dispatch. KV transfer is configured on the TRT-LLM workers.
 
 Set the engine on each pod with the ``model.aibrix.ai/engine`` label.
+
+
+TensorRT-LLM Parallel Scheduling
+--------------------------------
+
+By default the gateway waits for the context (prefill) response before forwarding
+the generation (decode) request. To allow both legs to run concurrently, set this
+on the **gateway plugin** Deployment and restart its pods:
+
+.. code-block:: yaml
+
+    env:
+      - name: AIBRIX_TRT_SCHEDULE_STYLE
+        value: "generation_first"
+
+The gateway obtains the selected CTX worker's ``/server_info``, prepares a shared
+``disagg_request_id`` and ``schedule_style=1`` on both legs, sends CTX in a goroutine,
+and immediately lets Envoy forward GEN. GEN receives ``ctx_info_endpoint`` and
+``ctx_dp_rank`` from that CTX worker. The KV transfer stays between the engines;
+the gateway neither transfers KV nor sends a duplicate GEN HTTP request.
+
+Requirements and limitations:
+
+* Use workers implementing the TRT-LLM ``1.3.0rc8`` OpenAI disaggregation protocol
+  (the version in the TensorRT quickstart). Confirm compatibility before using
+  other versions. P/D must use matching model, tokenizer and chat template;
+  this mode cannot wait for CTX's returned ``prompt_token_ids``.
+* Each CTX worker must return a nonempty string ``ctx_info_endpoint`` and an
+  explicit nonnegative integer ``ctx_dp_rank`` inside ``disaggregated_params``
+  from ``/server_info``. GEN must be able to reach the advertised endpoint.
+* ``ctx_dp_rank`` is attention **data-parallel** rank, not tensor-parallel rank
+  or Pod index. Nonzero ranks are preserved. An HTTP front-end that internally
+  balances across multiple ranks without worker/rank affinity is not supported;
+  use rank-affine endpoints or retain ``context_first``.
+* Metadata is loaded lazily for selected workers, with concurrent misses
+  coalesced, a 3-second lookup timeout, a 1-minute TTL and a 1024-entry bound.
+  Pod UID, address and container identity/restart count distinguish incarnations.
+  Missing or invalid metadata fails routing before either inference request is
+  sent; it is not silently replaced with rank zero or a different schedule.
+* Keep Envoy ``failure_mode_allow=false``. CTX failures fail/reset the upstream
+  stream, allowing TRT-LLM's HTTP-disconnect handling to cancel GEN. Since SSE
+  headers may precede KV arrival, a terminal CTX failure after headers resets the
+  stream, even if some output has already arrived, rather than rewriting the
+  response. No SGLang ``/abort_request`` call is made.
+* Assign different ``AIBRIX_TRT_MACHINE_ID`` values to gateway processes sharing
+  TRT workers, as with context-first routing.
+
+Begin with text-only 1P1D and verify real KV transfer, cancellation and latency
+before expanding to multi-rank deployments. See
+``samples/quickstart/tensorrt/README.md`` for smoke tests. Mock-worker unit tests
+alone do not establish GPU or multi-DP compatibility.
+
+Set ``AIBRIX_TRT_SCHEDULE_STYLE=context_first`` and restart the gateway to roll
+back. Other engines and combined-pod routing are unaffected. Unknown values fail
+PD router initialization.
 
 
 Step 1 — Label Your Pods
@@ -696,7 +751,7 @@ These are set on the **gateway plugin** deployment.
      - Default scoring policy for selecting decode pods. ``load_balancing``, ``least_request``, or ``conductor``.
    * - ``AIBRIX_KV_CONNECTOR_TYPE``
      - ``shfs``
-     - KV transfer backend. ``shfs`` for GPU (SHFS/KVCacheManager), ``nixl`` for Neuron (TensorRT-LLM).
+     - vLLM KV transfer adapter. ``shfs`` for GPU (SHFS/KVCacheManager), ``nixl`` for Neuron. TRT-LLM transfer backends are configured on the workers.
    * - ``AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD``
      - ``16``
      - Minimum request-count spread between prefill pods before load-imbalance routing kicks in.
@@ -717,7 +772,10 @@ These are set on the **gateway plugin** deployment.
      - Weight applied to the normalized inverse-throughput term in the ``load_balancing`` decode score numerator.
    * - ``AIBRIX_TRT_MACHINE_ID``
      - ``0``
-     - 10-bit machine ID used in Snowflake-style ``disagg_request_id`` generation for TensorRT-LLM (valid range: ``[0, 1024)``).
+     - 10-bit machine ID used in Snowflake-style ``disagg_request_id`` generation for TensorRT-LLM (valid range: ``[0, 1024)``). Must differ between gateway processes sharing TRT workers.
+   * - ``AIBRIX_TRT_SCHEDULE_STYLE``
+     - ``context_first``
+     - TRT-LLM dispatch mode: ``context_first`` or ``generation_first``. Set on the gateway plugin; read at PD router initialization.
 
 .. seealso::
 
