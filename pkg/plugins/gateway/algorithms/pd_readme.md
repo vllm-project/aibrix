@@ -430,8 +430,11 @@ The expected HTTP response follows TRT-LLM's `1.3.0rc8` OpenAI server schema:
 {"disaggregated_params":{"ctx_info_endpoint":"tcp://<CTX-address>:<port>","ctx_dp_rank":0}}
 ```
 
-`encoded_opaque_state` is also propagated when present. The endpoint must be reachable
-from GEN. `ctx_dp_rank` must be explicitly present and nonnegative; it is **attention
+`encoded_opaque_state` is also propagated when present. Only these fields are copied
+from `/server_info`: other keys are ignored so worker metadata can never overwrite
+the gateway-owned `request_type`, IDs or `schedule_style`. A field the handshake
+requires but this allowlist does not carry must be added to the handler explicitly.
+The endpoint must be reachable from GEN. `ctx_dp_rank` must be explicitly present and nonnegative; it is **attention
 DP rank**, not TP rank, replica index, or Pod number. Rank zero is valid but is never
 substituted for missing data. Metadata is taken from the exact selected Pod. A
 front-end that distributes requests across multiple DP ranks without stable
