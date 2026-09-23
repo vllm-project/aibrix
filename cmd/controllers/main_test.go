@@ -40,3 +40,18 @@ func TestRegisterSchemasIncludesModelClaimAPI(t *testing.T) {
 	})
 	require.NoError(t, err)
 }
+
+func TestRegisterSchemasIncludesModelWarmupAPI(t *testing.T) {
+	previous := features.EnabledControllers
+	features.EnabledControllers = map[string]bool{
+		features.ModelWarmupController: true,
+	}
+	t.Cleanup(func() { features.EnabledControllers = previous })
+
+	testScheme := runtime.NewScheme()
+	require.NoError(t, RegisterSchemas(testScheme))
+	_, err := testScheme.New(schema.GroupVersionKind{
+		Group: modelv1alpha1.GroupVersion.Group, Version: modelv1alpha1.GroupVersion.Version, Kind: "ModelWarmup",
+	})
+	require.NoError(t, err)
+}

@@ -42,10 +42,16 @@ import (
 )
 
 const (
-	keepOnFailureEnv  = "AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE"
-	testSelectorLabel = "e2e.aibrix.ai/modelwarmup"
-	warmupNameLabel   = "model.aibrix.ai/warmup"
-	testImage         = "aibrix/vllm-mock:nightly"
+	keepOnFailureEnv        = "AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE"
+	controllerNamespaceEnv  = "AIBRIX_ROLESET_CONTROLLER_NAMESPACE"
+	controllerDeploymentEnv = "AIBRIX_ROLESET_CONTROLLER_DEPLOYMENT"
+	controllerNamespace     = "aibrix-system"
+	controllerDeployment    = "aibrix-controller-manager"
+	testSelectorLabel       = "e2e.aibrix.ai/modelwarmup"
+	warmupNameLabel         = "model.aibrix.ai/warmup"
+	testImage               = "aibrix/vllm-mock:nightly"
+	controllerLogTailLines  = int64(300)
+	diagnosticsTimeout      = 30 * time.Second
 )
 
 type testEnvironment struct {
@@ -566,7 +572,7 @@ func (e *testEnvironment) waitForFailedJobsAndPods(
 
 func (e *testEnvironment) dumpWarmupDiagnostics(t *testing.T, warmupName string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), diagnosticsTimeout)
 	defer cancel()
 
 	warmup := &modelapi.ModelWarmup{}
@@ -581,6 +587,52 @@ func (e *testEnvironment) dumpWarmupDiagnostics(t *testing.T, warmupName string)
 	t.Logf("ModelWarmup diagnostics: jobs=%s err=%v", diagnosticJSON(jobs), jobsErr)
 	t.Logf("ModelWarmup diagnostics: pods=%s err=%v", diagnosticJSON(pods), podsErr)
 	t.Logf("ModelWarmup diagnostics: events=%s err=%v", diagnosticJSON(events), eventsErr)
+	e.dumpControllerDiagnostics(t, ctx)
+}
+
+func (e *testEnvironment) dumpControllerDiagnostics(t *testing.T, ctx context.Context) {
+	t.Helper()
+	namespace := envOrDefault(controllerNamespaceEnv, controllerNamespace)
+	deploymentName := envOrDefault(controllerDeploymentEnv, controllerDeployment)
+	deployment, err := e.kube.AppsV1().Deployments(namespace).Get(ctx, deploymentName, metav1.GetOptions{})
+	if err != nil {
+		t.Logf("ModelWarmup diagnostics: get controller Deployment %s/%s: %v", namespace, deploymentName, err)
+		return
+	}
+	t.Logf("ModelWarmup diagnostics: controller deployment=%s", diagnosticJSON(deployment))
+
+	selector, err := metav1.LabelSelectorAsSelector(deployment.Spec.Selector)
+	if err != nil {
+		t.Logf("ModelWarmup diagnostics: build controller selector for %s/%s: %v", namespace, deploymentName, err)
+		return
+	}
+	controllerPods, err := e.kube.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: selector.String(),
+	})
+	if err != nil {
+		t.Logf("ModelWarmup diagnostics: list controller Pods for %s/%s: %v", namespace, deploymentName, err)
+		return
+	}
+	t.Logf("ModelWarmup diagnostics: controller pods=%s", diagnosticJSON(controllerPods))
+	for i := range controllerPods.Items {
+		pod := &controllerPods.Items[i]
+		logs, err := e.kube.CoreV1().Pods(namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
+			Container: "manager",
+			TailLines: ptr.To(controllerLogTailLines),
+		}).DoRaw(ctx)
+		if err != nil {
+			t.Logf("ModelWarmup diagnostics: get controller logs from %s/%s: %v", namespace, pod.Name, err)
+			continue
+		}
+		t.Logf("ModelWarmup diagnostics: controller logs from %s/%s:\n%s", namespace, pod.Name, logs)
+	}
+}
+
+func envOrDefault(name, defaultValue string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return defaultValue
 }
 
 func diagnosticJSON(value interface{}) string {
