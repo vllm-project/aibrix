@@ -50,19 +50,11 @@ var _ = ginkgo.Describe("ModelWarmup admission", func() {
 		}}
 	}
 
-	ginkgo.It("defaults policies and image pull policy", func() {
+	ginkgo.It("preserves omitted policies and image pull policy", func() {
 		valid := newWarmup("defaults")
 		gomega.Expect(k8sClient.Create(ctx, valid)).To(gomega.Succeed())
-		gomega.Expect(valid.Spec.Policies).NotTo(gomega.BeNil())
-		gomega.Expect(*valid.Spec.Policies.Parallelism).To(gomega.Equal(modelapi.DefaultModelWarmupParallelism))
-		gomega.Expect(*valid.Spec.Policies.GlobalTimeoutSeconds).To(
-			gomega.Equal(modelapi.DefaultModelWarmupGlobalTimeoutSeconds),
-		)
-		gomega.Expect(*valid.Spec.Policies.RetryLimit).To(gomega.Equal(modelapi.DefaultModelWarmupRetryLimit))
-		gomega.Expect(*valid.Spec.Policies.TTLSecondsAfterFinished).To(
-			gomega.Equal(modelapi.DefaultModelWarmupTTLSecondsAfterFinished),
-		)
-		gomega.Expect(valid.Spec.ImagePreload.Images[0].ImagePullPolicy).To(gomega.Equal(corev1.PullIfNotPresent))
+		gomega.Expect(valid.Spec.Policies).To(gomega.BeNil())
+		gomega.Expect(valid.Spec.ImagePreload.Images[0].ImagePullPolicy).To(gomega.BeEmpty())
 	})
 
 	ginkgo.DescribeTable("rejects invalid specifications", func(mutate func(*modelapi.ModelWarmup)) {
@@ -86,8 +78,8 @@ var _ = ginkgo.Describe("ModelWarmup admission", func() {
 		ginkgo.Entry("zero parallelism", func(w *modelapi.ModelWarmup) {
 			w.Spec.Policies = &modelapi.ModelWarmupPolicies{Parallelism: ptr.To[int32](0)}
 		}),
-		ginkgo.Entry("negative global timeout", func(w *modelapi.ModelWarmup) {
-			w.Spec.Policies = &modelapi.ModelWarmupPolicies{GlobalTimeoutSeconds: ptr.To[int64](-1)}
+		ginkgo.Entry("negative job timeout", func(w *modelapi.ModelWarmup) {
+			w.Spec.Policies = &modelapi.ModelWarmupPolicies{JobTimeoutSeconds: ptr.To[int64](-1)}
 		}),
 		ginkgo.Entry("zero retry limit", func(w *modelapi.ModelWarmup) {
 			w.Spec.Policies = &modelapi.ModelWarmupPolicies{RetryLimit: ptr.To[int32](0)}
@@ -112,11 +104,11 @@ var _ = ginkgo.Describe("ModelWarmup admission", func() {
 		gomega.Expect(k8sClient.Status().Update(ctx, latest)).To(gomega.Succeed())
 	})
 
-	ginkgo.It("accepts a valid revision-changing update", func() {
-		warmup := newWarmup("valid-update")
+	ginkgo.It("rejects every spec update", func() {
+		warmup := newWarmup("immutable-update")
 		gomega.Expect(k8sClient.Create(ctx, warmup)).To(gomega.Succeed())
 		warmup.Spec.ImagePreload.Images[0].Args = []string{"-c", "exit 0"}
 		warmup.Spec.ImagePreload.Images[0].ImagePullPolicy = corev1.PullAlways
-		gomega.Expect(k8sClient.Update(ctx, warmup)).To(gomega.Succeed())
+		gomega.Expect(k8sClient.Update(ctx, warmup)).To(gomega.HaveOccurred())
 	})
 })

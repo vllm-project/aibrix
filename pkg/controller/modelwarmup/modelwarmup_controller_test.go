@@ -18,6 +18,7 @@ package modelwarmup
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -33,6 +34,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 )
@@ -53,12 +55,15 @@ func TestJobForBuildsSafeNodePinnedTemplate(t *testing.T) {
 		},
 	}
 	job := (&ModelWarmupReconciler{}).jobFor(warmup, "gpu-node-a", "revision")
-	require.Equal(t, "gpu-node-a", job.Spec.Template.Spec.NodeName)
+	require.Empty(t, job.Spec.Template.Spec.NodeName)
+	require.Equal(t, "gpu-node-a", job.Annotations[TargetNodeAnnotationKey])
+	require.Equal(t, []string{"gpu-node-a"}, job.Spec.Template.Spec.Affinity.NodeAffinity.
+		RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms[0].MatchFields[0].Values)
 	require.EqualValues(t, 3, *job.Spec.BackoffLimit)
 	require.EqualValues(t, 60, *job.Spec.TTLSecondsAfterFinished)
+	require.EqualValues(t, modelv1alpha1.DefaultModelWarmupJobTimeoutSeconds, *job.Spec.ActiveDeadlineSeconds)
 	require.False(t, *job.Spec.Template.Spec.AutomountServiceAccountToken)
-	require.Len(t, job.Spec.Template.Spec.Tolerations, 1)
-	require.Equal(t, corev1.TolerationOpExists, job.Spec.Template.Spec.Tolerations[0].Operator)
+	require.Empty(t, job.Spec.Template.Spec.Tolerations)
 	require.Len(t, job.Spec.Template.Spec.Containers, 1)
 	container := job.Spec.Template.Spec.Containers[0]
 	require.Equal(t, corev1.PullNever, container.ImagePullPolicy)
@@ -85,7 +90,7 @@ func TestRevisionExcludesTargetMembershipAndIncludesTemplateInput(t *testing.T) 
 
 func TestSetConditionKeepsConditionsMutuallyExclusive(t *testing.T) {
 	warmup := &modelv1alpha1.ModelWarmup{}
-	setCondition(warmup, "Ready", metav1.ConditionTrue, "Ready", "done")
+	setCondition(warmup, "Complete", metav1.ConditionTrue, "Complete", "done")
 	setCondition(warmup, "Degraded", metav1.ConditionTrue, "Failed", "failed")
 
 	require.Len(t, warmup.Status.Conditions, 3)
@@ -99,48 +104,18 @@ func TestSetConditionKeepsConditionsMutuallyExclusive(t *testing.T) {
 	}
 }
 
-func TestUpdateStatusUsesGlobalStartTimeForPendingTimeout(t *testing.T) {
-	start := metav1.NewTime(time.Now().Add(-2 * time.Minute))
-	warmup := &modelv1alpha1.ModelWarmup{
-		ObjectMeta: metav1.ObjectMeta{Name: "warmup", Namespace: "default", UID: "warmup-uid"},
-		Spec: modelv1alpha1.ModelWarmupSpec{
-			Targets: []modelv1alpha1.ModelWarmupTarget{{
-				Nodes: &modelv1alpha1.ModelWarmupNodesTarget{Names: []string{"node-a"}},
-			}},
-			Policies: &modelv1alpha1.ModelWarmupPolicies{GlobalTimeoutSeconds: ptr.To[int64](60)},
-		},
-		Status: modelv1alpha1.ModelWarmupStatus{StartTime: &start},
+func TestEffectiveWarmupPoliciesUsesControllerDefaultsAndOverrides(t *testing.T) {
+	warmup := &modelv1alpha1.ModelWarmup{}
+	effective := effectiveWarmupPolicies(warmup)
+	require.Equal(t, modelv1alpha1.DefaultModelWarmupParallelism, effective.parallelism)
+	require.Equal(t, modelv1alpha1.DefaultModelWarmupJobTimeoutSeconds, effective.jobTimeoutSeconds)
+
+	warmup.Spec.Policies = &modelv1alpha1.ModelWarmupPolicies{
+		Parallelism: ptr.To[int32](2), JobTimeoutSeconds: ptr.To[int64](61),
 	}
-	scheme := runtime.NewScheme()
-	require.NoError(t, modelv1alpha1.AddToScheme(scheme))
-	require.NoError(t, batchv1.AddToScheme(scheme))
-	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
-		WithStatusSubresource(warmup).WithObjects(warmup).Build()}
-	targets := map[string][]string{"node-a": {"target[0]"}}
-	_, err := r.updateStatus(context.Background(), warmup, "rev", targets, nil, "", "")
-	require.NoError(t, err)
-	require.Equal(t, modelv1alpha1.ModelWarmupTargetFailed, warmup.Status.Targets[0].Phase)
-	require.Equal(t, "Timeout", warmup.Status.Targets[0].Reason)
-	require.Contains(t, warmup.Status.Targets[0].Message, "global timeout")
-}
-
-func TestRemainingGlobalTimeoutUsesWorkflowStartTime(t *testing.T) {
-	now := time.Now()
-	start := metav1.NewTime(now.Add(-40 * time.Second))
-	warmup := &modelv1alpha1.ModelWarmup{
-		Spec: modelv1alpha1.ModelWarmupSpec{Policies: &modelv1alpha1.ModelWarmupPolicies{
-			GlobalTimeoutSeconds: ptr.To[int64](60),
-		}},
-		Status: modelv1alpha1.ModelWarmupStatus{StartTime: &start},
-	}
-
-	remaining, timedOut := remainingGlobalTimeout(warmup, now)
-	require.False(t, timedOut)
-	require.Equal(t, int64(20), remaining)
-
-	remaining, timedOut = remainingGlobalTimeout(warmup, now.Add(21*time.Second))
-	require.True(t, timedOut)
-	require.Zero(t, remaining)
+	effective = effectiveWarmupPolicies(warmup)
+	require.Equal(t, int32(2), effective.parallelism)
+	require.Equal(t, int64(61), effective.jobTimeoutSeconds)
 }
 
 func TestUpdateStatusPreservesJobFailureDiagnostics(t *testing.T) {
@@ -174,14 +149,20 @@ func TestResolveTargetsDeduplicatesAndPreservesStableSources(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 	nodes := []client.Object{
-		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a", Labels: map[string]string{"pool": "warm"}}},
-		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-b", Labels: map[string]string{"pool": "warm"}}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tenant", Labels: map[string]string{ResourcePoolLabelKey: "warm"}}},
+		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a", Labels: map[string]string{
+			"pool": "warm", ResourcePoolLabelKey: "warm", WarmupEnabledLabelKey: WarmupEnabledLabelValue,
+		}}},
+		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-b", Labels: map[string]string{
+			"pool": "warm", ResourcePoolLabelKey: "warm", WarmupEnabledLabelKey: WarmupEnabledLabelValue,
+		}}},
 	}
 	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(nodes...).Build()}
-	warmup := &modelv1alpha1.ModelWarmup{Spec: modelv1alpha1.ModelWarmupSpec{Targets: []modelv1alpha1.ModelWarmupTarget{
-		{Nodes: &modelv1alpha1.ModelWarmupNodesTarget{Names: []string{"node-b", "node-a"}}},
-		{NodeSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"pool": "warm"}}},
-	}}}
+	warmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant"},
+		Spec: modelv1alpha1.ModelWarmupSpec{Targets: []modelv1alpha1.ModelWarmupTarget{
+			{Nodes: &modelv1alpha1.ModelWarmupNodesTarget{Names: []string{"node-b", "node-a"}}},
+			{NodeSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"pool": "warm"}}},
+		}}}
 	targets, missing, err := r.resolveTargets(context.Background(), warmup)
 	require.NoError(t, err)
 	require.Empty(t, missing)
@@ -192,14 +173,40 @@ func TestResolveTargetsDeduplicatesAndPreservesStableSources(t *testing.T) {
 func TestResolveTargetsReportsMissingExplicitNode(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
-	warmup := &modelv1alpha1.ModelWarmup{Spec: modelv1alpha1.ModelWarmupSpec{Targets: []modelv1alpha1.ModelWarmupTarget{{
-		Nodes: &modelv1alpha1.ModelWarmupNodesTarget{Names: []string{"missing-node"}},
-	}}}}
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tenant", Labels: map[string]string{
+		ResourcePoolLabelKey: "warm",
+	}}}
+	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(namespace).Build()}
+	warmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant"},
+		Spec: modelv1alpha1.ModelWarmupSpec{Targets: []modelv1alpha1.ModelWarmupTarget{{
+			Nodes: &modelv1alpha1.ModelWarmupNodesTarget{Names: []string{"missing-node"}},
+		}}}}
 	targets, missing, err := r.resolveTargets(context.Background(), warmup)
 	require.NoError(t, err)
 	require.Empty(t, targets)
 	require.Equal(t, "NodeNotFound", missing["missing-node"])
+}
+
+func TestResolveTargetsRejectsUnauthorizedNodes(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tenant", Labels: map[string]string{
+		ResourcePoolLabelKey: "pool-a",
+	}}}
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-b", Labels: map[string]string{
+		ResourcePoolLabelKey: "pool-b", WarmupEnabledLabelKey: WarmupEnabledLabelValue,
+	}}}
+	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(namespace, node).Build()}
+	warmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant"},
+		Spec: modelv1alpha1.ModelWarmupSpec{Targets: []modelv1alpha1.ModelWarmupTarget{{
+			Nodes: &modelv1alpha1.ModelWarmupNodesTarget{Names: []string{"node-b"}},
+		}}}}
+
+	targets, missing, err := r.resolveTargets(context.Background(), warmup)
+	require.NoError(t, err)
+	require.Empty(t, targets)
+	require.Equal(t, "NodeNotAuthorized", missing["node-b"])
 }
 
 func TestTargetLimitIncludesMissingNodes(t *testing.T) {
@@ -211,14 +218,14 @@ func TestTargetLimitIncludesMissingNodes(t *testing.T) {
 	require.False(t, withinTargetLimit(targets, map[string]string{"missing": "NodeNotFound"}))
 }
 
-func TestRevisionChangesForEveryTemplateInput(t *testing.T) {
+func TestRevisionChangesOnlyForImageWorkloadInputs(t *testing.T) {
 	base := &modelv1alpha1.ModelWarmup{Spec: modelv1alpha1.ModelWarmupSpec{
 		ImagePreload: modelv1alpha1.ModelWarmupImagePreload{
 			Images: []modelv1alpha1.ModelWarmupImage{{Image: "busybox", Command: []string{"true"},
 				ImagePullPolicy: corev1.PullIfNotPresent}},
 		},
 		Policies: &modelv1alpha1.ModelWarmupPolicies{Parallelism: ptr.To[int32](1),
-			GlobalTimeoutSeconds: ptr.To[int64](60), RetryLimit: ptr.To[int32](1), TTLSecondsAfterFinished: ptr.To[int32](60)},
+			JobTimeoutSeconds: ptr.To[int64](60), RetryLimit: ptr.To[int32](1), TTLSecondsAfterFinished: ptr.To[int32](60)},
 	}}
 	baseRevision := revisionFor(base)
 	variants := map[string]func(*modelv1alpha1.ModelWarmup){
@@ -231,10 +238,6 @@ func TestRevisionChangesForEveryTemplateInput(t *testing.T) {
 		"secret": func(w *modelv1alpha1.ModelWarmup) {
 			w.Spec.ImagePreload.PullSecrets = []corev1.LocalObjectReference{{Name: "registry"}}
 		},
-		"parallelism": func(w *modelv1alpha1.ModelWarmup) { *w.Spec.Policies.Parallelism = 2 },
-		"timeout":     func(w *modelv1alpha1.ModelWarmup) { *w.Spec.Policies.GlobalTimeoutSeconds = 61 },
-		"retry":       func(w *modelv1alpha1.ModelWarmup) { *w.Spec.Policies.RetryLimit = 2 },
-		"ttl":         func(w *modelv1alpha1.ModelWarmup) { *w.Spec.Policies.TTLSecondsAfterFinished = 61 },
 	}
 	for name, mutate := range variants {
 		t.Run(name, func(t *testing.T) {
@@ -251,6 +254,9 @@ func TestRevisionChangesForEveryTemplateInput(t *testing.T) {
 		Nodes: &modelv1alpha1.ModelWarmupNodesTarget{Names: []string{"node-a"}},
 	}}
 	require.Equal(t, baseRevision, revisionFor(withMembership))
+	withPolicyChange := base.DeepCopy()
+	*withPolicyChange.Spec.Policies.JobTimeoutSeconds = 61
+	require.Equal(t, baseRevision, revisionFor(withPolicyChange))
 }
 
 func TestJobTemplateOwnerReferenceAndDeterministicName(t *testing.T) {
@@ -270,7 +276,7 @@ func TestJobTemplateOwnerReferenceAndDeterministicName(t *testing.T) {
 	require.Len(t, job.OwnerReferences, 1)
 	require.True(t, *job.OwnerReferences[0].Controller)
 	require.Equal(t, warmup.UID, job.OwnerReferences[0].UID)
-	require.Equal(t, modelv1alpha1.DefaultModelWarmupGlobalTimeoutSeconds, *job.Spec.ActiveDeadlineSeconds)
+	require.Equal(t, modelv1alpha1.DefaultModelWarmupJobTimeoutSeconds, *job.Spec.ActiveDeadlineSeconds)
 	require.Nil(t, job.Spec.Template.Spec.SecurityContext)
 	require.Empty(t, job.Spec.Template.Spec.Volumes)
 	require.Empty(t, job.Spec.Template.Spec.Containers[0].Resources.Requests)
@@ -394,10 +400,8 @@ func TestUpdateStatusPreservesAndUpdatesTargetTransitionTime(t *testing.T) {
 	_, err = r.updateStatus(context.Background(), warmup, "rev", targets, nil, "", "")
 	require.NoError(t, err)
 	require.Equal(t, first, *warmup.Status.Targets[0].LastTransitionTime)
-	require.Equal(t, metav1.ConditionFalse, mustCondition(warmup.Status.Conditions, "Ready").Status)
+	require.Equal(t, metav1.ConditionFalse, mustCondition(warmup.Status.Conditions, "Complete").Status)
 	require.Equal(t, metav1.ConditionTrue, mustCondition(warmup.Status.Conditions, "Progressing").Status)
-	warmup.Status.Targets[0].LastTransitionTime = ptr.To(metav1.NewTime(time.Now().Add(-time.Minute)))
-	oldTransition := *warmup.Status.Targets[0].LastTransitionTime
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{Name: "job", Namespace: "default",
 			Labels:          map[string]string{WarmupLabelKey: warmup.Name, RevisionLabelKey: "rev"},
@@ -410,8 +414,93 @@ func TestUpdateStatusPreservesAndUpdatesTargetTransitionTime(t *testing.T) {
 	require.NoError(t, r.Create(context.Background(), job))
 	_, err = r.updateStatus(context.Background(), warmup, "rev", targets, nil, "", "")
 	require.NoError(t, err)
-	require.NotEqual(t, oldTransition, *warmup.Status.Targets[0].LastTransitionTime)
-	require.Equal(t, metav1.ConditionTrue, mustCondition(warmup.Status.Conditions, "Ready").Status)
+	require.Empty(t, warmup.Status.Targets)
+	require.Equal(t, metav1.ConditionTrue, mustCondition(warmup.Status.Conditions, "Complete").Status)
+}
+
+func TestUpdateStatusBoundsDetailsAndSerializedSize(t *testing.T) {
+	warmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{
+		Name: "warmup", Namespace: "default", UID: "warmup-uid",
+	}}
+	scheme := runtime.NewScheme()
+	require.NoError(t, modelv1alpha1.AddToScheme(scheme))
+	require.NoError(t, batchv1.AddToScheme(scheme))
+	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(warmup).WithObjects(warmup).Build()}
+	missing := make(map[string]string, modelv1alpha1.MaxModelWarmupTargets)
+	for i := 0; i < modelv1alpha1.MaxModelWarmupTargets; i++ {
+		missing[fmt.Sprintf("node-%04d", i)] = "NodeNotFound"
+	}
+
+	_, err := r.updateStatus(context.Background(), warmup, "rev", nil, missing, "", "")
+	require.NoError(t, err)
+	require.Len(t, warmup.Status.Targets, modelv1alpha1.MaxModelWarmupTargetDetails)
+	require.EqualValues(t, modelv1alpha1.MaxModelWarmupTargets-modelv1alpha1.MaxModelWarmupTargetDetails,
+		warmup.Status.OmittedTargetDetails)
+	encoded, err := json.Marshal(warmup)
+	require.NoError(t, err)
+	require.Less(t, len(encoded), 512*1024)
+
+	worstCase := warmup.DeepCopy()
+	for i := range worstCase.Status.Targets {
+		worstCase.Status.Targets[i].NodeName = fmt.Sprintf("%s-%03d", strings.Repeat("n", 249), i)
+		worstCase.Status.Targets[i].JobName = strings.Repeat("j", 63)
+		worstCase.Status.Targets[i].Reason = strings.Repeat("r", modelv1alpha1.MaxModelWarmupDiagnosticLength)
+		worstCase.Status.Targets[i].Message = strings.Repeat("m", modelv1alpha1.MaxModelWarmupDiagnosticLength)
+	}
+	encoded, err = json.Marshal(worstCase)
+	require.NoError(t, err)
+	require.Less(t, len(encoded), 1024*1024)
+}
+
+func TestTerminalOnceReturnsBeforeResolvingTargets(t *testing.T) {
+	warmup := validWarmupForControllerTest("tenant", "warmup")
+	warmup.Status.Phase = modelv1alpha1.ModelWarmupSucceeded
+	scheme := runtime.NewScheme()
+	require.NoError(t, modelv1alpha1.AddToScheme(scheme))
+	require.NoError(t, batchv1.AddToScheme(scheme))
+	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(warmup).WithObjects(warmup).Build(), Scheme: scheme}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+	require.NoError(t, err)
+	require.Zero(t, result)
+	var jobs batchv1.JobList
+	require.NoError(t, r.List(context.Background(), &jobs))
+	require.Empty(t, jobs.Items)
+}
+
+func TestNodeEventsEnqueueOnlyActiveWarmupsAndIgnoreHeartbeats(t *testing.T) {
+	active := validWarmupForControllerTest("tenant", "active")
+	terminal := validWarmupForControllerTest("tenant", "terminal")
+	terminal.Status.Phase = modelv1alpha1.ModelWarmupSucceeded
+	scheme := runtime.NewScheme()
+	require.NoError(t, modelv1alpha1.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(active, terminal).Build()
+
+	requests := enqueueActiveModelWarmups(c)(context.Background(), &corev1.Node{})
+	require.Equal(t, []ctrl.Request{{NamespacedName: client.ObjectKeyFromObject(active)}}, requests)
+
+	predicate := nodeMembershipChanged()
+	oldNode := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a", Labels: map[string]string{"pool": "a"}}}
+	heartbeat := oldNode.DeepCopy()
+	heartbeat.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}
+	require.False(t, predicate.Update(event.UpdateEvent{ObjectOld: oldNode, ObjectNew: heartbeat}))
+	labelUpdate := oldNode.DeepCopy()
+	labelUpdate.Labels["pool"] = "b"
+	require.True(t, predicate.Update(event.UpdateEvent{ObjectOld: oldNode, ObjectNew: labelUpdate}))
+}
+
+func validWarmupForControllerTest(namespace, name string) *modelv1alpha1.ModelWarmup {
+	return &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: modelv1alpha1.ModelWarmupSpec{
+			Targets: []modelv1alpha1.ModelWarmupTarget{{
+				Nodes: &modelv1alpha1.ModelWarmupNodesTarget{Names: []string{"node-a"}},
+			}},
+			ImagePreload: modelv1alpha1.ModelWarmupImagePreload{Images: []modelv1alpha1.ModelWarmupImage{{
+				Image: "busybox:1.36", Command: []string{"true"},
+			}}},
+		}}
 }
 
 func mustCondition(conditions []metav1.Condition, typ string) metav1.Condition {

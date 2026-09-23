@@ -26,16 +26,17 @@ import (
 // ModelWarmupStatusApplyConfiguration represents a declarative configuration of the ModelWarmupStatus type for use
 // with apply.
 type ModelWarmupStatusApplyConfiguration struct {
-	Phase            *v1alpha1.ModelWarmupPhase                  `json:"phase,omitempty"`
-	ObservedRevision *string                                     `json:"observedRevision,omitempty"`
-	DesiredNodes     *int32                                      `json:"desiredNodes,omitempty"`
-	ActiveNodes      *int32                                      `json:"activeNodes,omitempty"`
-	SucceededNodes   *int32                                      `json:"succeededNodes,omitempty"`
-	FailedNodes      *int32                                      `json:"failedNodes,omitempty"`
-	StartTime        *v1.Time                                    `json:"startTime,omitempty"`
-	CompletionTime   *v1.Time                                    `json:"completionTime,omitempty"`
-	Targets          []ModelWarmupTargetStatusApplyConfiguration `json:"targets,omitempty"`
-	Conditions       []metav1.ConditionApplyConfiguration        `json:"conditions,omitempty"`
+	Phase                *v1alpha1.ModelWarmupPhase                  `json:"phase,omitempty"`
+	ObservedRevision     *string                                     `json:"observedRevision,omitempty"`
+	DesiredNodes         *int32                                      `json:"desiredNodes,omitempty"`
+	ActiveNodes          *int32                                      `json:"activeNodes,omitempty"`
+	SucceededNodes       *int32                                      `json:"succeededNodes,omitempty"`
+	FailedNodes          *int32                                      `json:"failedNodes,omitempty"`
+	OmittedTargetDetails *int32                                      `json:"omittedTargetDetails,omitempty"`
+	StartTime            *v1.Time                                    `json:"startTime,omitempty"`
+	CompletionTime       *v1.Time                                    `json:"completionTime,omitempty"`
+	Targets              []ModelWarmupTargetStatusApplyConfiguration `json:"targets,omitempty"`
+	Conditions           []metav1.ConditionApplyConfiguration        `json:"conditions,omitempty"`
 }
 
 // ModelWarmupStatusApplyConfiguration constructs a declarative configuration of the ModelWarmupStatus type for use with
@@ -89,6 +90,14 @@ func (b *ModelWarmupStatusApplyConfiguration) WithSucceededNodes(value int32) *M
 // If called multiple times, the FailedNodes field is set to the value of the last call.
 func (b *ModelWarmupStatusApplyConfiguration) WithFailedNodes(value int32) *ModelWarmupStatusApplyConfiguration {
 	b.FailedNodes = &value
+	return b
+}
+
+// WithOmittedTargetDetails sets the OmittedTargetDetails field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the OmittedTargetDetails field is set to the value of the last call.
+func (b *ModelWarmupStatusApplyConfiguration) WithOmittedTargetDetails(value int32) *ModelWarmupStatusApplyConfiguration {
+	b.OmittedTargetDetails = &value
 	return b
 }
 

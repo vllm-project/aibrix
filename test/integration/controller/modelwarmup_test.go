@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	modelapi "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	modelwarmup "github.com/vllm-project/aibrix/pkg/controller/modelwarmup"
 	controllerutils "github.com/vllm-project/aibrix/test/utils/controller"
 )
 
@@ -47,7 +48,7 @@ var _ = Describe("ModelWarmup controller", func() {
 		warmup.Spec.ImagePreload.Images[0].Command = []string{"sh"}
 		warmup.Spec.ImagePreload.Images[0].Args = []string{"-c", "exit 0"}
 		warmup.Spec.Policies = &modelapi.ModelWarmupPolicies{
-			Parallelism: ptr.To[int32](1), GlobalTimeoutSeconds: ptr.To[int64](31),
+			Parallelism: ptr.To[int32](1), JobTimeoutSeconds: ptr.To[int64](31),
 			RetryLimit: ptr.To[int32](3), TTLSecondsAfterFinished: ptr.To[int32](41),
 		}
 		Expect(k8sClient.Create(ctx, warmup)).To(Succeed())
@@ -60,14 +61,17 @@ var _ = Describe("ModelWarmup controller", func() {
 			g.Expect(job.OwnerReferences).To(HaveLen(1))
 			g.Expect(job.OwnerReferences[0].UID).To(Equal(warmup.UID))
 		}, timeout, interval).Should(Succeed())
-		Expect(job.Spec.Template.Spec.NodeName).To(Equal(node.Name))
+		Expect(job.Spec.Template.Spec.NodeName).To(BeEmpty())
+		Expect(controllerutils.ModelWarmupJobNode(&job)).To(Equal(node.Name))
+		Expect(job.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.
+			NodeSelectorTerms[0].MatchFields[0].Values).To(Equal([]string{node.Name}))
 		Expect(job.Spec.BackoffLimit).To(Equal(ptr.To[int32](3)))
 		Expect(job.Spec.ActiveDeadlineSeconds).To(Equal(ptr.To[int64](31)))
 		Expect(job.Spec.TTLSecondsAfterFinished).To(Equal(ptr.To[int32](41)))
 		Expect(job.Spec.Template.Spec.RestartPolicy).To(Equal(corev1.RestartPolicyNever))
 		Expect(job.Spec.Template.Spec.AutomountServiceAccountToken).To(Equal(ptr.To(false)))
 		Expect(job.Spec.Template.Spec.ImagePullSecrets).To(Equal(warmup.Spec.ImagePreload.PullSecrets))
-		Expect(job.Spec.Template.Spec.Tolerations).To(ConsistOf(corev1.Toleration{Operator: corev1.TolerationOpExists}))
+		Expect(job.Spec.Template.Spec.Tolerations).To(BeEmpty())
 		Expect(job.Spec.Template.Spec.Volumes).To(BeEmpty())
 		Expect(job.Spec.Template.Spec.Containers).To(HaveLen(1))
 		Expect(job.Spec.Template.Spec.Containers[0].SecurityContext.AllowPrivilegeEscalation).To(Equal(ptr.To(false)))
@@ -79,14 +83,15 @@ var _ = Describe("ModelWarmup controller", func() {
 			g.Expect(latest.Status.Phase).To(Equal(modelapi.ModelWarmupRunning))
 			g.Expect(latest.Status.DesiredNodes).To(Equal(int32(1)))
 			g.Expect(latest.Status.ActiveNodes).To(Equal(int32(1)))
-			g.Expect(latest.Status.Targets[0].Sources).To(ConsistOf("target[0]", "target[1]"))
+			g.Expect(latest.Status.Targets[0].Source).To(Equal("target[0]"))
+			g.Expect(latest.Status.Targets[0].SourceCount).To(Equal(int32(2)))
 			g.Expect(condition(latest, "Progressing").Status).To(Equal(metav1.ConditionTrue))
-			g.Expect(condition(latest, "Ready").Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(condition(latest, "Complete").Status).To(Equal(metav1.ConditionFalse))
 			g.Expect(condition(latest, "Degraded").Status).To(Equal(metav1.ConditionFalse))
 		}, timeout, interval).Should(Succeed())
 	})
 
-	It("adds a newly matching selector node without recreating a successful Job", func() {
+	It("does not reopen a terminal Once warmup for a newly matching node", func() {
 		ns := newModelWarmupNamespace("selector")
 		firstNode := newModelWarmupNode("selector-a", map[string]string{"pool": "selector"})
 		warmup := controllerutils.NewModelWarmup(ns.Name, "selector", firstNode.Name)
@@ -104,7 +109,7 @@ var _ = Describe("ModelWarmup controller", func() {
 		Eventually(func(g Gomega) {
 			latest := getModelWarmup(g, warmup)
 			g.Expect(latest.Status.Phase).To(Equal(modelapi.ModelWarmupSucceeded))
-			g.Expect(condition(latest, "Ready").Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(condition(latest, "Complete").Status).To(Equal(metav1.ConditionTrue))
 			g.Expect(condition(latest, "Progressing").Status).To(Equal(metav1.ConditionFalse))
 			g.Expect(condition(latest, "Degraded").Status).To(Equal(metav1.ConditionFalse))
 		}, timeout, interval).Should(Succeed())
@@ -112,12 +117,55 @@ var _ = Describe("ModelWarmup controller", func() {
 		_ = newModelWarmupNode("selector-b", map[string]string{"pool": "selector"})
 		Eventually(func(g Gomega) {
 			jobs := controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, warmup.Name)
-			g.Expect(jobs).To(HaveLen(2))
+			g.Expect(jobs).To(HaveLen(1))
 			for _, job := range jobs {
-				if job.Spec.Template.Spec.NodeName == firstNode.Name {
+				if controllerutils.ModelWarmupJobNode(&job) == firstNode.Name {
 					g.Expect(job.Name).To(Equal(oldJob.Name))
 				}
 			}
+		}, timeout, interval).Should(Succeed())
+	})
+
+	It("adds a newly matching node while Once is still running", func() {
+		ns := newModelWarmupNamespace("active-selector")
+		firstNode := newModelWarmupNode("active-selector-a", map[string]string{"pool": "active-selector"})
+		warmup := controllerutils.NewModelWarmup(ns.Name, "active-selector", firstNode.Name)
+		warmup.Spec.Targets = []modelapi.ModelWarmupTarget{{
+			NodeSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"pool": "active-selector"}},
+		}}
+		warmup.Spec.Policies.Parallelism = ptr.To[int32](2)
+		Expect(k8sClient.Create(ctx, warmup)).To(Succeed())
+		Eventually(func(g Gomega) {
+			jobs := controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, warmup.Name)
+			g.Expect(jobs).To(HaveLen(1))
+		}, timeout, interval).Should(Succeed())
+
+		secondNode := newModelWarmupNode("active-selector-b", map[string]string{"pool": "active-selector"})
+		Eventually(func(g Gomega) {
+			jobs := controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, warmup.Name)
+			g.Expect(jobs).To(HaveLen(2))
+			nodes := []string{controllerutils.ModelWarmupJobNode(&jobs[0]), controllerutils.ModelWarmupJobNode(&jobs[1])}
+			g.Expect(nodes).To(ConsistOf(firstNode.Name, secondNode.Name))
+		}, timeout, interval).Should(Succeed())
+	})
+
+	It("rejects a node outside the namespace resource pool", func() {
+		ns := newModelWarmupNamespace("unauthorized")
+		node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "modelwarmup-unauthorized", Labels: map[string]string{
+			modelwarmup.ResourcePoolLabelKey:  "other",
+			modelwarmup.WarmupEnabledLabelKey: modelwarmup.WarmupEnabledLabelValue,
+		}}}
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, node) })
+		warmup := controllerutils.NewModelWarmup(ns.Name, "unauthorized", node.Name)
+		Expect(k8sClient.Create(ctx, warmup)).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			latest := getModelWarmup(g, warmup)
+			g.Expect(latest.Status.Phase).To(Equal(modelapi.ModelWarmupFailed))
+			g.Expect(latest.Status.Targets).To(HaveLen(1))
+			g.Expect(latest.Status.Targets[0].Reason).To(Equal("NodeNotAuthorized"))
+			g.Expect(controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, warmup.Name)).To(BeEmpty())
 		}, timeout, interval).Should(Succeed())
 	})
 
@@ -137,7 +185,7 @@ var _ = Describe("ModelWarmup controller", func() {
 			g.Expect(jobs).To(HaveLen(2))
 		}, timeout, interval).Should(Succeed())
 		for _, job := range jobs {
-			if job.Spec.Template.Spec.NodeName == successNode.Name {
+			if controllerutils.ModelWarmupJobNode(&job) == successNode.Name {
 				setJobSucceeded(job)
 			} else {
 				setJobFailed(job, "image pull failed")
@@ -164,60 +212,15 @@ var _ = Describe("ModelWarmup controller", func() {
 		}, timeout, interval).Should(Succeed())
 	})
 
-	It("replaces a running revision and removes a stale target Job", func() {
-		ns := newModelWarmupNamespace("revision")
-		firstNode := newModelWarmupNode("revision-a", nil)
-		secondNode := newModelWarmupNode("revision-b", nil)
-		warmup := controllerutils.NewModelWarmup(ns.Name, "revision", firstNode.Name)
-		warmup.Spec.Targets = []modelapi.ModelWarmupTarget{{
-			Nodes: &modelapi.ModelWarmupNodesTarget{Names: []string{firstNode.Name, secondNode.Name}},
-		}}
-		warmup.Spec.Policies.Parallelism = ptr.To[int32](2)
-		Expect(k8sClient.Create(ctx, warmup)).To(Succeed())
-		var oldJobs []batchv1.Job
-		Eventually(func(g Gomega) {
-			oldJobs = controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, warmup.Name)
-			g.Expect(oldJobs).To(HaveLen(2))
-		}, timeout, interval).Should(Succeed())
-		oldByNode := map[string]string{}
-		for _, job := range oldJobs {
-			oldByNode[job.Spec.Template.Spec.NodeName] = job.Name
-		}
-		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(warmup), warmup)).To(Succeed())
-		warmup.Spec.ImagePreload.Images[0].Command = []string{"sh", "-c", "exit 1"}
-		Expect(k8sClient.Update(ctx, warmup)).To(Succeed())
-		Eventually(func(g Gomega) {
-			allJobs := controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, warmup.Name)
-			jobs := nonDeletingJobs(allJobs)
-			g.Expect(jobs).To(HaveLen(2))
-			for _, job := range jobs {
-				g.Expect(job.Name).NotTo(Equal(oldByNode[job.Spec.Template.Spec.NodeName]))
-			}
-			for _, oldJob := range oldJobs {
-				g.Expect(jobByName(allJobs, oldJob.Name).DeletionTimestamp).NotTo(BeNil())
-			}
-		}, timeout, interval).Should(Succeed())
-
-		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(warmup), warmup)).To(Succeed())
-		warmup.Spec.Targets[0].Nodes.Names = []string{firstNode.Name}
-		Expect(k8sClient.Update(ctx, warmup)).To(Succeed())
-		Eventually(func(g Gomega) {
-			allJobs := controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, warmup.Name)
-			jobs := nonDeletingJobs(allJobs)
-			g.Expect(jobs).To(HaveLen(1))
-			g.Expect(jobs[0].Spec.Template.Spec.NodeName).To(Equal(firstNode.Name))
-		}, timeout, interval).Should(Succeed())
-	})
-
-	It("reports missing nodes and carries global timeout and retry settings", func() {
+	It("reports missing nodes and carries per-Job timeout and retry settings", func() {
 		ns := newModelWarmupNamespace("missing")
 		warmup := controllerutils.NewModelWarmup(ns.Name, "missing", "node-not-present")
-		warmup.Spec.Policies.GlobalTimeoutSeconds = ptr.To[int64](1)
+		warmup.Spec.Policies.JobTimeoutSeconds = ptr.To[int64](1)
 		warmup.Spec.Policies.RetryLimit = ptr.To[int32](4)
 		Expect(k8sClient.Create(ctx, warmup)).To(Succeed())
 		Eventually(func(g Gomega) {
 			latest := getModelWarmup(g, warmup)
-			g.Expect(latest.Status.Phase).To(Equal(modelapi.ModelWarmupDegraded))
+			g.Expect(latest.Status.Phase).To(Equal(modelapi.ModelWarmupFailed))
 			g.Expect(latest.Status.DesiredNodes).To(Equal(int32(1)))
 			g.Expect(latest.Status.FailedNodes).To(Equal(int32(1)))
 			g.Expect(latest.Status.Targets[0].Reason).To(Equal("NodeNotFound"))
@@ -269,13 +272,21 @@ var _ = Describe("ModelWarmup controller", func() {
 })
 
 func newModelWarmupNamespace(prefix string) *corev1.Namespace {
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "modelwarmup-" + prefix + "-"}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		GenerateName: "modelwarmup-" + prefix + "-",
+		Labels:       map[string]string{modelwarmup.ResourcePoolLabelKey: "integration"},
+	}}
 	Expect(k8sClient.Create(ctx, ns)).To(Succeed())
 	DeferCleanup(func() { _ = k8sClient.Delete(ctx, ns) })
 	return ns
 }
 
 func newModelWarmupNode(name string, labels map[string]string) *corev1.Node {
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	labels[modelwarmup.ResourcePoolLabelKey] = "integration"
+	labels[modelwarmup.WarmupEnabledLabelKey] = modelwarmup.WarmupEnabledLabelValue
 	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "modelwarmup-" + name, Labels: labels}}
 	Expect(k8sClient.Create(ctx, node)).To(Succeed())
 	DeferCleanup(func() { _ = k8sClient.Delete(ctx, node) })

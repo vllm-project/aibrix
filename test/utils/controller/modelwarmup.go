@@ -38,9 +38,13 @@ func NewModelWarmup(namespace, name, node string) *modelapi.ModelWarmup {
 		ImagePreload: modelapi.ModelWarmupImagePreload{Images: []modelapi.ModelWarmupImage{{
 			Image: "busybox:1.36", Command: []string{"sh", "-c", "exit 0"}, ImagePullPolicy: corev1.PullIfNotPresent,
 		}}},
-		Policies: &modelapi.ModelWarmupPolicies{Parallelism: ptr.To[int32](1), GlobalTimeoutSeconds: ptr.To[int64](60),
+		Policies: &modelapi.ModelWarmupPolicies{Parallelism: ptr.To[int32](1), JobTimeoutSeconds: ptr.To[int64](60),
 			RetryLimit: ptr.To[int32](1), TTLSecondsAfterFinished: ptr.To[int32](60)},
 	}}
+}
+
+func ModelWarmupJobNode(job *batchv1.Job) string {
+	return job.Annotations[modelwarmup.TargetNodeAnnotationKey]
 }
 
 func ListModelWarmupJobs(g gomega.Gomega, ctx context.Context, c client.Client, namespace, name string) []batchv1.Job {
