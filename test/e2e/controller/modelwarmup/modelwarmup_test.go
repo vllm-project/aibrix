@@ -18,6 +18,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -44,13 +45,17 @@ const (
 	keepOnFailureEnv  = "AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE"
 	testSelectorLabel = "e2e.aibrix.ai/modelwarmup"
 	warmupNameLabel   = "model.aibrix.ai/warmup"
-	testImage         = "busybox:1.36"
+	testImage         = "aibrix/vllm-mock:nightly"
 )
 
 type testEnvironment struct {
 	kube      kubernetes.Interface
 	apiClient client.Client
 	namespace string
+}
+
+func successfulWarmupCommand() []string {
+	return []string{"python", "-c", "raise SystemExit(0)"}
 }
 
 func TestModelWarmupPreloadsImageForPullNeverPod(t *testing.T) {
@@ -114,7 +119,8 @@ func TestModelWarmupReportsFailedJobWithoutMutatingExistingWorkload(t *testing.T
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "existing-workload"}},
 				Spec: corev1.PodSpec{Containers: []corev1.Container{{
-					Name: "workload", Image: testImage, Command: []string{"sh", "-c", "sleep 300"},
+					Name: "workload", Image: testImage,
+					Command: []string{"python", "-c", "import time; time.sleep(300)"},
 				}}},
 			},
 		},
@@ -129,7 +135,7 @@ func TestModelWarmupReportsFailedJobWithoutMutatingExistingWorkload(t *testing.T
 
 	warmup := env.createWarmupWithImage(t, ctx, "failure", []modelapi.ModelWarmupTarget{{
 		Nodes: &modelapi.ModelWarmupNodesTarget{Names: []string{node.Name}},
-	}}, []string{"sh", "-c", "exit 1"}, ptr.To[int32](1))
+	}}, []string{"python", "-c", "raise SystemExit(1)"}, ptr.To[int32](1))
 	env.waitForFailedJobsAndPods(t, ctx, warmup.Name, []string{node.Name})
 
 	err = wait.PollUntilContextTimeout(ctx, time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
@@ -137,7 +143,7 @@ func TestModelWarmupReportsFailedJobWithoutMutatingExistingWorkload(t *testing.T
 		if err := env.apiClient.Get(ctx, client.ObjectKeyFromObject(warmup), latest); err != nil {
 			return false, err
 		}
-		if latest.Status.Phase != modelapi.ModelWarmupDegraded || len(latest.Status.Targets) != 1 {
+		if latest.Status.Phase != modelapi.ModelWarmupFailed || len(latest.Status.Targets) != 1 {
 			return false, nil
 		}
 		target := latest.Status.Targets[0]
@@ -165,6 +171,7 @@ func TestModelWarmupReportsFailedJobWithoutMutatingExistingWorkload(t *testing.T
 		return false, nil
 	})
 	if err != nil {
+		env.dumpWarmupDiagnostics(t, warmup.Name)
 		t.Fatal(err)
 	}
 
@@ -400,7 +407,7 @@ func (e *testEnvironment) createWarmup(
 			Targets: targets,
 			ImagePreload: modelapi.ModelWarmupImagePreload{Images: []modelapi.ModelWarmupImage{{
 				Image:           testImage,
-				Command:         []string{"sh", "-c", "exit 0"},
+				Command:         successfulWarmupCommand(),
 				ImagePullPolicy: corev1.PullIfNotPresent,
 			}}},
 		},
@@ -462,6 +469,7 @@ func (e *testEnvironment) waitForWarmupSucceeded(
 		},
 	)
 	if err != nil {
+		e.dumpWarmupDiagnostics(t, warmup.Name)
 		t.Fatal(err)
 	}
 }
@@ -505,6 +513,7 @@ func (e *testEnvironment) waitForSucceededJobsAndPods(
 		},
 	)
 	if err != nil {
+		e.dumpWarmupDiagnostics(t, warmupName)
 		t.Fatal(err)
 	}
 }
@@ -550,8 +559,36 @@ func (e *testEnvironment) waitForFailedJobsAndPods(
 		return true, nil
 	})
 	if err != nil {
+		e.dumpWarmupDiagnostics(t, warmupName)
 		t.Fatal(err)
 	}
+}
+
+func (e *testEnvironment) dumpWarmupDiagnostics(t *testing.T, warmupName string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	warmup := &modelapi.ModelWarmup{}
+	warmupErr := e.apiClient.Get(ctx, client.ObjectKey{Namespace: e.namespace, Name: warmupName}, warmup)
+	jobs, jobsErr := e.kube.BatchV1().Jobs(e.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: warmupNameLabel + "=" + warmupName,
+	})
+	pods, podsErr := e.kube.CoreV1().Pods(e.namespace).List(ctx, metav1.ListOptions{})
+	events, eventsErr := e.kube.CoreV1().Events(e.namespace).List(ctx, metav1.ListOptions{})
+
+	t.Logf("ModelWarmup diagnostics: warmup=%s err=%v", diagnosticJSON(warmup), warmupErr)
+	t.Logf("ModelWarmup diagnostics: jobs=%s err=%v", diagnosticJSON(jobs), jobsErr)
+	t.Logf("ModelWarmup diagnostics: pods=%s err=%v", diagnosticJSON(pods), podsErr)
+	t.Logf("ModelWarmup diagnostics: events=%s err=%v", diagnosticJSON(events), eventsErr)
+}
+
+func diagnosticJSON(value interface{}) string {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("<marshal error: %v>", err)
+	}
+	return string(data)
 }
 
 func (e *testEnvironment) jobPodSucceeded(ctx context.Context, job batchv1.Job) (bool, error) {
@@ -588,7 +625,7 @@ func (e *testEnvironment) verifyPullNeverPod(
 				Name:            "verify",
 				Image:           testImage,
 				ImagePullPolicy: corev1.PullNever,
-				Command:         []string{"sh", "-c", "exit 0"},
+				Command:         successfulWarmupCommand(),
 			}},
 		},
 	}
@@ -657,7 +694,7 @@ func TestModelWarmupWebhookRejectsInvalidSpecs(t *testing.T) {
 					Nodes: &modelapi.ModelWarmupNodesTarget{Names: []string{"worker-0"}},
 				}},
 				ImagePreload: modelapi.ModelWarmupImagePreload{Images: []modelapi.ModelWarmupImage{{
-					Image: testImage, Command: []string{"sh", "-c", "exit 0"},
+					Image: testImage, Command: successfulWarmupCommand(),
 				}}},
 			},
 		}
@@ -705,7 +742,7 @@ func TestModelWarmupWebhookPreservesOmittedDefaults(t *testing.T) {
 				Nodes: &modelapi.ModelWarmupNodesTarget{Names: []string{"worker-0"}},
 			}},
 			ImagePreload: modelapi.ModelWarmupImagePreload{Images: []modelapi.ModelWarmupImage{{
-				Image: testImage, Command: []string{"sh", "-c", "exit 0"},
+				Image: testImage, Command: successfulWarmupCommand(),
 			}}},
 		},
 	}
