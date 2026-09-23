@@ -827,6 +827,7 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 		cp.RoutingStrategy = profile.RoutingStrategy
 		cp.RoutingConfig = profile.RoutingConfig
 		cp.RequestsPerSecond = profile.RequestsPerSecond
+		cp.TTFTThresholdS = profile.TTFTThresholdS
 	}
 	routingCtx.ConfigProfile = cp
 

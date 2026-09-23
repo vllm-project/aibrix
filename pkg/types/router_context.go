@@ -69,6 +69,10 @@ type ResolvedConfigProfile struct {
 	// RequestsInflight is the maximum number of concurrent (in-flight) requests allowed on
 	// a single replica, enforced per pod rather than as an aggregate. Zero means unset.
 	RequestsInflight int64
+	// TTFTThresholdS is the per-model time-to-first-token threshold in seconds, resolved
+	// from the profile's ttftThresholdS. Zero means unset, in which case the response-body
+	// path keeps using the process-wide AIBRIX_TTFT_THRESHOLD_S default.
+	TTFTThresholdS int64
 }
 
 // RoutingAlgorithm defines the routing algorithms

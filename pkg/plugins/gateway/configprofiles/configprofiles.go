@@ -53,6 +53,10 @@ type ModelConfigProfile struct {
 	// single replica. Unlike RequestsPerSecond this is enforced per pod, not as an
 	// aggregate, so it needs no replica-count scaling.
 	RequestsInflight int64 `json:"requestsInflight,omitempty"`
+	// TTFTThresholdS overrides AIBRIX_TTFT_THRESHOLD_S for requests routed with this
+	// profile: the time-to-first-token threshold, in seconds, above which the gateway
+	// classifies the first token as delayed. Zero or unset keeps the env default.
+	TTFTThresholdS int64 `json:"ttftThresholdS,omitempty"`
 }
 
 // autoProfileRoutingConfig holds request-local profile selection hints embedded
