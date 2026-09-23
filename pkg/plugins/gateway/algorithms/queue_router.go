@@ -246,7 +246,12 @@ func (r *queueRouter) recoverCandidate(v any, entry *types.QueueEntry, step stri
 		// nothing was left behind, so the loop waits for the next trigger.
 		return false
 	}
-	entry.SetError(errRouteRecovered)
+	// The queue is pluggable, and an entry it hands back may carry no routing context:
+	// failing the request is best effort, and a nil dereference here would only add a
+	// second panic to the recovery path.
+	if entry.RoutingContext != nil {
+		entry.SetError(errRouteRecovered)
+	}
 
 	switch step {
 	case routeStepRoute:
@@ -259,10 +264,15 @@ func (r *queueRouter) recoverCandidate(v any, entry *types.QueueEntry, step stri
 			return false
 		}
 		if dropped != entry {
+			// A different entry came back: the queue no longer matches what the loop
+			// peeked, so draining stops rather than routing the rest from a position
+			// the queue disagrees with. The departure stays unreported, because the
+			// candidate did not verifiably leave the queue.
 			klog.Error("unexpected request dequeued after a recovered panic")
-		} else {
-			emitQueueOutcomeMetrics(entry, errRouteRecovered)
+			r.updateQueuePendingMetric(entry)
+			return false
 		}
+		emitQueueOutcomeMetrics(entry, errRouteRecovered)
 		r.updateQueuePendingMetric(entry)
 		return true
 	case routeStepDequeue:

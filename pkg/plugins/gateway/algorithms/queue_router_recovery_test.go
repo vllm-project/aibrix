@@ -39,13 +39,14 @@ var errTestDequeueFailed = errors.New("dequeue failed")
 // Dequeue, or fail a Dequeue, so the serve loop's recovery is exercised without a full SLO
 // queue setup.
 type panicRecoveryQueue struct {
-	mu            sync.Mutex
-	entries       []*types.QueueEntry
-	peeks         int
-	dequeues      int
-	peekPanics    bool
-	dequeuePanics bool
-	dequeueErrors bool
+	mu              sync.Mutex
+	entries         []*types.QueueEntry
+	peeks           int
+	dequeues        int
+	peekPanics      bool
+	dequeuePanics   bool
+	dequeueErrors   bool
+	dequeueMismatch bool
 }
 
 func (q *panicRecoveryQueue) Enqueue(entry *types.QueueEntry, _ time.Time) error {
@@ -77,6 +78,11 @@ func (q *panicRecoveryQueue) Dequeue(_ time.Time) (*types.QueueEntry, error) {
 	}
 	if q.dequeueErrors {
 		return nil, errTestDequeueFailed
+	}
+	if q.dequeueMismatch {
+		// A drifted queue hands back an entry the loop never peeked, and leaves the
+		// candidate where it is.
+		return &types.QueueEntry{EnqueuedAt: time.Now()}, nil
 	}
 	if len(q.entries) == 0 {
 		return nil, types.ErrQueueEmpty
@@ -300,6 +306,76 @@ func TestServeStopsDrainingWhenTheCandidateCannotBeDropped(t *testing.T) {
 				"a departure that did not happen is not reported")
 		})
 	}
+}
+
+// TestServeStopsDrainingWhenTheQueueHandsBackAnotherEntry covers a Dequeue that returns an
+// entry other than the candidate the loop peeked: the queue no longer matches what the
+// loop acted on, so draining stops, the candidate stays queued, and its departure is not
+// reported as one that verifiably happened.
+func TestServeStopsDrainingWhenTheQueueHandsBackAnotherEntry(t *testing.T) {
+	capture := startMetricCapture()
+	defer capture.restore()
+
+	testQueue := &panicRecoveryQueue{dequeueMismatch: true}
+	poisoned := newRecoveryTestEntry("req-poisoned")
+	require.NoError(t, testQueue.Enqueue(poisoned, time.Now()))
+
+	backend := &panicRecoveryRouter{panicRequestID: "req-poisoned"}
+	router := newRecoveryTestRouter(testQueue, backend)
+	go router.serve()
+	router.chRouteTrigger <- nil
+
+	panics := waitForEmissions(t, func() []metricEmission {
+		return capture.countersFor(metrics.GatewayRequestPanicTotal)
+	}, 1)
+	require.Len(t, panics, 1)
+
+	time.Sleep(50 * time.Millisecond)
+	peeks, dequeues := testQueue.counts()
+	assert.Equal(t, 1, peeks, "draining stops when the queue disagrees with the peeked candidate")
+	assert.Equal(t, 1, dequeues, "the mismatched dequeue is not retried")
+	assert.Equal(t, 1, testQueue.Len(), "the candidate stays queued")
+	assert.True(t, poisoned.HasError())
+	assert.Empty(t, capture.countersFor(metrics.GatewayQueueOutcomeTotal),
+		"the candidate did not verifiably leave the queue, so no departure is reported")
+
+	pending := waitForEmissions(t, func() []metricEmission {
+		return capture.gaugesFor(metrics.GatewayQueuePendingRequests)
+	}, 1)
+	require.Len(t, pending, 1)
+	assert.Equal(t, 1.0, pending[0].value, "the depth is sampled again for the stopped drain")
+}
+
+// TestServeRecoversPanicOnAnEntryWithoutRoutingContext covers the guard around failing the
+// request: a queue may hand back an entry that carries no routing context, and failing it
+// must not raise a second panic while the first one is being handled.
+func TestServeRecoversPanicOnAnEntryWithoutRoutingContext(t *testing.T) {
+	capture := startMetricCapture()
+	defer capture.restore()
+
+	testQueue := &panicRecoveryQueue{}
+	entry := &types.QueueEntry{EnqueuedAt: time.Now()}
+	require.NoError(t, testQueue.Enqueue(entry, time.Now()))
+
+	// The stub router reads the context it is handed, so an entry without one raises the
+	// panic this test recovers from.
+	router := newRecoveryTestRouter(testQueue, &panicRecoveryRouter{})
+	go router.serve()
+	router.chRouteTrigger <- nil
+
+	panics := waitForEmissions(t, func() []metricEmission {
+		return capture.countersFor(metrics.GatewayRequestPanicTotal)
+	}, 1)
+	require.Len(t, panics, 1)
+
+	// Give a nested panic time to show up before pinning that there was none.
+	time.Sleep(50 * time.Millisecond)
+	assert.Len(t, capture.countersFor(metrics.GatewayRequestPanicTotal), 1,
+		"the recovery must not raise a panic of its own")
+
+	_, dequeues := testQueue.counts()
+	assert.Equal(t, 1, dequeues)
+	assert.Equal(t, 0, testQueue.Len(), "the entry is dropped like any other recovered candidate")
 }
 
 func TestServeRoutesRequestsWithoutPanic(t *testing.T) {
