@@ -40,7 +40,6 @@ type poolPolicyManager struct {
 	mu        sync.Mutex
 	now       func() time.Time
 	lastRun   map[types.NamespacedName]time.Time
-	lastCard  map[types.NamespacedName]time.Time
 	activity  map[string]poolActivityRecord
 	config    map[types.NamespacedName]poolConfigRecord
 	lastSweep time.Time
@@ -73,7 +72,6 @@ func newPoolPolicyManager(now func() time.Time) *poolPolicyManager {
 	return &poolPolicyManager{
 		now:      now,
 		lastRun:  make(map[types.NamespacedName]time.Time),
-		lastCard: make(map[types.NamespacedName]time.Time),
 		activity: make(map[string]poolActivityRecord),
 		config:   make(map[types.NamespacedName]poolConfigRecord),
 	}
@@ -132,20 +130,6 @@ func (m *poolPolicyManager) sweepActivityLocked(now time.Time) {
 			delete(m.activity, key)
 		}
 	}
-}
-
-// beginCard rate limits how often one card is arranged. Every claim on a pod
-// reconciles on its own schedule, and each of them sees the same card, so
-// without this the card would be planned once per claim per round.
-func (m *poolPolicyManager) beginCard(pod types.NamespacedName) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	now := m.now()
-	if last, found := m.lastCard[pod]; found && now.Sub(last) < DefaultRequeueDuration {
-		return false
-	}
-	m.lastCard[pod] = now
-	return true
 }
 
 func (m *poolPolicyManager) observe(
