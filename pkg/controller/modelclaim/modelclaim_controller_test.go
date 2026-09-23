@@ -1619,7 +1619,7 @@ func TestReconcileHoldsAnEngineToItsLimitBeforeRouting(t *testing.T) {
 	assert.Equal(t, int32(1), got.Status.ReadyReplicas)
 }
 
-func TestReconcileKeepsAnActiveEngineRoutableWhileItsLimitIsWrittenAgain(t *testing.T) {
+func TestReconcileDeroutesAnEngineHeldToMoreThanItsRecord(t *testing.T) {
 	pm := claimWithCost(700, 100)
 	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
 		Pod:          "warm-1",
@@ -1628,7 +1628,8 @@ func TestReconcileKeepsAnActiveEngineRoutableWhileItsLimitIsWrittenAgain(t *test
 		KVLimitBytes: 300,
 	}}
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
-	// The engine restarted and its allocator put the whole pool back.
+	// The engine restarted and its allocator put the whole pool back, so it
+	// could grow into memory the card holds for its neighbours.
 	snapshot.Models = []RuntimeSnapshotModel{readyEngine(5000)}
 	r, runtime := newReconciler(t, pm, pod)
 	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
@@ -1638,7 +1639,68 @@ func TestReconcileKeepsAnActiveEngineRoutableWhileItsLimitIsWrittenAgain(t *test
 	require.Len(t, runtime.kvLimitCalls, 1)
 	assert.Equal(t, int64(300), runtime.kvLimitCalls[0].LimitBytes)
 	got := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
+	assert.Equal(t, int32(0), got.Status.ReadyReplicas)
+	said := false
+	for _, event := range drainEvents(t, r) {
+		if strings.Contains(event, "KVLimitNotHeld") {
+			said = true
+		}
+	}
+	assert.True(t, said, "the event should blame the limit, not the engine")
+
+	// The write lands, and the route comes back on the next pass.
+	reconcileOnce(t, r, pm.Name)
+
+	got = getModel(t, r, pm.Name)
 	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Instances[0].Phase)
+}
+
+func TestReconcileKeepsAnEngineRoutableWhileALargerLimitIsPending(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod:          "warm-1",
+		Port:         9001,
+		Phase:        modelv1alpha1.ModelClaimActive,
+		KVLimitBytes: 300,
+	}}
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	// Held to less than its record: a larger share was recorded for it and has
+	// not been written yet.
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(200)}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	// Growing it is the card's division to do, in its own order.
+	assert.Empty(t, runtime.kvLimitCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Instances[0].Phase)
+}
+
+func TestReconcileGrowsANewEngineToItsRecordBeforeRouting(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+	require.Equal(t, int64(300), getModel(t, r, pm.Name).Status.Instances[0].KVLimitBytes)
+
+	// The engine comes up under an allocator default smaller than the room it
+	// was given. That room was made for it when the card was divided, so it is
+	// raised to its record before it takes any traffic.
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(200)}
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, int64(300), runtime.kvLimitCalls[0].LimitBytes)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, getModel(t, r, pm.Name).Status.Instances[0].Phase)
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, pm.Name).Status.Instances[0].Phase)
 }
 
 func TestReconcileWritesNoLimitIntoAnEngineWithoutASegment(t *testing.T) {

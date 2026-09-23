@@ -759,12 +759,22 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(ctx context.Context, pm *
 		// An engine on a GPU becomes routable only once it holds the KV limit
 		// this instance records. Until then it runs under its allocator's own
 		// default, which is most of the card, and traffic would let it grow
-		// that far.
+		// that far. It stays routable only while it is held to no more than
+		// that record.
 		serving := observed != nil && observed.Ready && observedPort > 0
 		limitInForce := kvLimitInForce(pod, inst, observed)
+		limitWithinRecord := kvLimitWithinRecord(pod, inst, observed)
 
-		desiredPhase, routingPort := desiredInstanceState(inst, observed, observedPort, serving, limitInForce)
-		if serving && !limitInForce {
+		desiredPhase, routingPort := desiredInstanceState(
+			inst, observed, observedPort, serving, limitInForce, limitWithinRecord)
+		// Pull an engine down to its record whenever it is held to more. Raise
+		// it to its record only before it has been routed: an instance is
+		// recorded after its card was divided to make the room, so that room is
+		// its own. A larger record for an engine already serving comes from a
+		// division that has not been carried out yet, and growing the engine
+		// here, outside that division's order, could hand it memory a
+		// neighbour has not given back.
+		if serving && !limitInForce && (!limitWithinRecord || inst.Phase != modelv1alpha1.ModelClaimActive) {
 			r.writeKVLimit(ctx, pm, inst, pod, ip, snapshot, observed)
 		}
 
@@ -801,7 +811,15 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(ctx context.Context, pm *
 			r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Sleeping",
 				"model %s is sleeping on pod %s and marked non-routable", served, inst.Pod)
 		case modelv1alpha1.ModelClaimActivating:
-			if previousPhase != modelv1alpha1.ModelClaimActivating {
+			switch {
+			case previousPhase == modelv1alpha1.ModelClaimActive && serving:
+				// Still serving, so it is the limit and not the engine that went
+				// wrong. Saying "no longer ready" would send an operator to look at
+				// a healthy process.
+				r.Recorder.Eventf(pm, corev1.EventTypeWarning, "KVLimitNotHeld",
+					"model %s on pod %s is held to more KV than its limit of %s; marked non-routable until the limit is written again",
+					served, inst.Pod, gibibytes(inst.KVLimitBytes))
+			case previousPhase != modelv1alpha1.ModelClaimActivating:
 				r.Recorder.Eventf(pm, corev1.EventTypeWarning, "Unhealthy",
 					"model %s no longer ready on pod %s; marked non-routable", served, inst.Pod)
 			}
@@ -867,13 +885,15 @@ func (r *ModelClaimReconciler) annotateWarmPodWithState(
 
 // desiredInstanceState is how one instance should be routed, given what the
 // runtime just reported about it. An engine is routable only once it is ready,
-// has a port, and is held to the KV limit its instance records.
+// has a port, and is held to the KV limit its instance records, and it stays
+// routable only while it is held to no more than that.
 func desiredInstanceState(
 	inst *modelv1alpha1.ModelClaimInstance,
 	observed *RuntimeSnapshotModel,
 	observedPort int32,
 	serving bool,
 	limitInForce bool,
+	limitWithinRecord bool,
 ) (modelv1alpha1.ModelClaimPhase, int32) {
 	switch {
 	case inst.Phase == modelv1alpha1.ModelClaimFailed:
@@ -882,10 +902,14 @@ func desiredInstanceState(
 		return modelv1alpha1.ModelClaimFailed, 0
 	case observed != nil && observed.Phase == runtimePhaseSleeping:
 		return modelv1alpha1.ModelClaimSleeping, 0
-	case serving && (limitInForce || inst.Phase == modelv1alpha1.ModelClaimActive):
-		// The gate is on becoming routable, not on staying so. An engine that
-		// restarted and put its default limit back keeps its route while the
-		// limit is written again.
+	case serving && limitInForce:
+		return modelv1alpha1.ModelClaimActive, observedPort
+	case serving && inst.Phase == modelv1alpha1.ModelClaimActive && limitWithinRecord:
+		// An engine already serving keeps its route while a larger limit
+		// recorded for it has not been written: it is held to less than it was
+		// given, not more. Held to more than its record, as when a restart puts
+		// its allocator's default back, it loses the route until the record is
+		// written again.
 		return modelv1alpha1.ModelClaimActive, observedPort
 	}
 	return modelv1alpha1.ModelClaimActivating, 0
@@ -899,6 +923,16 @@ func kvLimitInForce(pod *corev1.Pod, inst *modelv1alpha1.ModelClaimInstance, obs
 		return true
 	}
 	return observed != nil && observed.KVCapacityBytes == inst.KVLimitBytes
+}
+
+// kvLimitWithinRecord reports whether the engine is held to no more than the
+// limit this instance records, which is what keeps a serving engine routable.
+// An engine whose segment cannot be read is not known to be held to anything.
+func kvLimitWithinRecord(pod *corev1.Pod, inst *modelv1alpha1.ModelClaimInstance, observed *RuntimeSnapshotModel) bool {
+	if inst.KVLimitBytes <= 0 || podGPUCount(*pod) == 0 {
+		return true
+	}
+	return observed != nil && observed.KVCapacityBytes >= 0 && observed.KVCapacityBytes <= inst.KVLimitBytes
 }
 
 // writeKVLimit asks the runtime to hold this engine to the limit the instance
