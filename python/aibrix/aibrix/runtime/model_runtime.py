@@ -743,9 +743,7 @@ def vllm_parallelism(
         )
     tensor = _positive_engine_arg(args, "--tensor-parallel-size")
     pipeline = _positive_engine_arg(args, "--pipeline-parallel-size")
-    prefill_context = _positive_engine_arg(
-        args, "--prefill-context-parallel-size"
-    )
+    prefill_context = _positive_engine_arg(args, "--prefill-context-parallel-size")
     # DCP reuses ranks from the TP/PCP topology and does not increase GPU count.
     _positive_engine_arg(args, "--decode-context-parallel-size")
     data = _positive_engine_arg(args, "--data-parallel-size")
