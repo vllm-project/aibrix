@@ -453,6 +453,31 @@ func TestUpdateStatusBoundsDetailsAndSerializedSize(t *testing.T) {
 	require.Less(t, len(encoded), 1024*1024)
 }
 
+func TestUpdateStatusRetainsFailedDetailsBeforePendingWhenTruncated(t *testing.T) {
+	warmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{
+		Name: "warmup", Namespace: "default", UID: "warmup-uid",
+	}}
+	scheme := runtime.NewScheme()
+	require.NoError(t, modelv1alpha1.AddToScheme(scheme))
+	require.NoError(t, batchv1.AddToScheme(scheme))
+	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(warmup).WithObjects(warmup).Build()}
+	targets := make(map[string][]string, modelv1alpha1.MaxModelWarmupTargetDetails)
+	for i := 0; i < modelv1alpha1.MaxModelWarmupTargetDetails; i++ {
+		targets[fmt.Sprintf("node-%04d", i)] = []string{"target[0]"}
+	}
+
+	_, err := r.updateStatus(context.Background(), warmup, "rev", targets,
+		map[string]string{"zzz-failed": "NodeNotFound"}, "", "")
+	require.NoError(t, err)
+	require.EqualValues(t, modelv1alpha1.MaxModelWarmupTargetDetails+1, warmup.Status.DesiredNodes)
+	require.Equal(t, int32(1), warmup.Status.FailedNodes)
+	require.Equal(t, int32(1), warmup.Status.OmittedTargetDetails)
+	require.Len(t, warmup.Status.Targets, modelv1alpha1.MaxModelWarmupTargetDetails)
+	require.Equal(t, "zzz-failed", warmup.Status.Targets[0].NodeName)
+	require.Equal(t, modelv1alpha1.ModelWarmupTargetFailed, warmup.Status.Targets[0].Phase)
+}
+
 func TestTerminalOnceReturnsBeforeResolvingTargets(t *testing.T) {
 	warmup := validWarmupForControllerTest("tenant", "warmup")
 	warmup.Status.Phase = modelv1alpha1.ModelWarmupSucceeded
