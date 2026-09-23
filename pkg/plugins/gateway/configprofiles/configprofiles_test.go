@@ -411,6 +411,21 @@ func TestParseModelConfigWithRoutingConfig(t *testing.T) {
 	}
 }
 
+func TestParseModelConfigWithTTFTThreshold(t *testing.T) {
+	jsonStr := `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"least-request","ttftThresholdS":3}}}`
+	cfg, err := ParseModelConfig(jsonStr)
+	if err != nil {
+		t.Fatalf("ParseModelConfig() err=%v", err)
+	}
+	profile := cfg.GetProfile("default")
+	if profile == nil {
+		t.Fatal("GetProfile(default) = nil")
+	}
+	if profile.TTFTThresholdS != 3 {
+		t.Errorf("TTFTThresholdS = %d, want 3", profile.TTFTThresholdS)
+	}
+}
+
 func TestParseModelConfigWithoutRoutingConfig(t *testing.T) {
 	// Profiles without routingConfig still work
 	jsonStr := `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"pd"}}}`

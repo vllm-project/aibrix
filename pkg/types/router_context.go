@@ -57,6 +57,11 @@ type ResolvedConfigProfile struct {
 	AuthoritativeRoutingPolicy bool
 	RoutingStrategy            string
 	RoutingConfig              json.RawMessage
+	// Routing is RoutingConfig in its typed form, parsed once when this profile
+	// is resolved. Nil when the profile sets no routingConfig or it does not
+	// parse; routingalgorithms.ResolveRoutingOverrides turns it into the
+	// request's concrete overrides.
+	Routing *RoutingConfig
 	// RequestsPerSecond is the per-model request-rate limit enforced by enforceModelRPS,
 	// resolved from the profile's requestsPerSecond or from its requestsPerSecondPerReplica
 	// (which takes precedence and scales it by the model's current routable replica count).
@@ -69,6 +74,10 @@ type ResolvedConfigProfile struct {
 	// RequestsInflight is the maximum number of concurrent (in-flight) requests allowed on
 	// a single replica, enforced per pod rather than as an aggregate. Zero means unset.
 	RequestsInflight int64
+	// TTFTThresholdS is the per-model time-to-first-token threshold in seconds, resolved
+	// from the profile's ttftThresholdS. Zero means unset, in which case the response-body
+	// path keeps using the process-wide AIBRIX_TTFT_THRESHOLD_S default.
+	TTFTThresholdS int64
 }
 
 // RoutingAlgorithm defines the routing algorithms
@@ -157,10 +166,19 @@ type RoutingContext struct {
 	targetPod    atomic.Pointer[v1.Pod]
 	targetPort   atomic.Int32
 	lastError    atomic.Pointer[error]
-	tokens       []int           // Cache of tokenized prompts
-	predictor    OutputPredictor // OutputPredictor gained from cache
-	statsUpdated int32           // Use to flag if in-memory realtime statistics has been updated for the request.
-	traceAdded   int32           // Use to flag if trace has been added to cache
+
+	// routingOverrides holds the resolved routing overrides of this request's
+	// model config profile. The gateway's routing entry resolves them once per
+	// request so every strategy on the routing path reads the same validated
+	// values. Nil when the profile sets none, and reads then fall back to the
+	// process defaults. Written on the request goroutine before routing starts
+	// and read by that same goroutine, so no atomic is needed here (the PD leg
+	// keeps one for the async prefill and abort paths).
+	routingOverrides *RoutingOverrides
+	tokens           []int           // Cache of tokenized prompts
+	predictor        OutputPredictor // OutputPredictor gained from cache
+	statsUpdated     int32           // Use to flag if in-memory realtime statistics has been updated for the request.
+	traceAdded       int32           // Use to flag if trace has been added to cache
 
 	// pdLeg holds the prefill/decode leg state of the current incarnation of
 	// this request. It is a separate heap object, replaced wholesale on reset,
@@ -447,6 +465,11 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.Span = nil
 	r.RespHeaders = map[string]string{}
 	r.ConfigProfile = nil
+	// The profile is gone, so the overrides derived from it must go too: a
+	// pooled context handed to the next request would otherwise steer models
+	// the new profile never configured (ResolveRoutingOverrides sets them once
+	// per request, and a request without a profile leaves them unset).
+	r.ClearRoutingOverrides()
 	r.ReplicaInflightAdmitted = false
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)

@@ -1543,3 +1543,21 @@ func TestHandleResponseBody_VideoContentStaysStreaming(t *testing.T) {
 	assert.Nil(t, resp.GetResponseBody().GetResponse().GetBodyMutation())
 	assert.False(t, HasRequestBuffers("req-content"))
 }
+
+func TestEffectiveTTFTThreshold(t *testing.T) {
+	if got := effectiveTTFTThreshold(nil); got != ttftThreshold {
+		t.Errorf("effectiveTTFTThreshold(nil) = %v, want env default %v", got, ttftThreshold)
+	}
+	rc := &types.RoutingContext{}
+	if got := effectiveTTFTThreshold(rc); got != ttftThreshold {
+		t.Errorf("effectiveTTFTThreshold(no profile) = %v, want env default %v", got, ttftThreshold)
+	}
+	rc.ConfigProfile = &types.ResolvedConfigProfile{TTFTThresholdS: 2}
+	if got := effectiveTTFTThreshold(rc); got != 2*time.Second {
+		t.Errorf("effectiveTTFTThreshold(profile=2s) = %v, want 2s", got)
+	}
+	rc.ConfigProfile.TTFTThresholdS = 0
+	if got := effectiveTTFTThreshold(rc); got != ttftThreshold {
+		t.Errorf("effectiveTTFTThreshold(profile=0) = %v, want env default %v", got, ttftThreshold)
+	}
+}

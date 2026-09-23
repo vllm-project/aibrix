@@ -62,7 +62,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -91,56 +90,42 @@ const (
 	sglangAbortRequestPath = "/abort_request"
 )
 
-// AIBRIX_DECODE_ABORT_TIMEOUT: seconds allowed for the /abort_request call to
-// the decode pod after a prefill failure. Set to 0 to disable decode aborts
-// altogether (the failure is still recorded and logged). Held atomically
-// because in-flight abort goroutines read it concurrently with any override.
-var decodeAbortTimeoutSeconds = func() *atomic.Int64 {
-	seconds := &atomic.Int64{}
-	seconds.Store(int64(loadDecodeAbortTimeoutSeconds()))
-	return seconds
-}()
+// decodeAbortTimeoutFor is the per-attempt deadline of this request's abort
+// POST; a non-positive value disables decode aborts. The value is the request's
+// resolved PD overrides, which carry the AIBRIX_DECODE_ABORT_TIMEOUT default
+// when its profile sets none. The leg, not the routing context, is the source:
+// an abort outlives the request that started it.
+func decodeAbortTimeoutFor(leg *types.PDLegState) time.Duration {
+	return leg.PDOverrides().Abort.Timeout
+}
 
-// loadDecodeAbortTimeoutSeconds reads AIBRIX_DECODE_ABORT_TIMEOUT.
+// loadDecodeAbortTimeoutSeconds reads AIBRIX_DECODE_ABORT_TIMEOUT, the process
+// default for the deadline of the /abort_request call the gateway posts to the
+// decode pod after a prefill failure (see types.PDOverrides for the knob).
 //
 // utils.LoadEnvNonNegativeInt, not utils.LoadEnvInt: the latter treats every
 // value <= 0 as invalid and falls back to its default, which would make the
 // documented "0 disables decode aborts" unreachable from the environment.
-// Split out of the initialiser above so a test can exercise the env -> value
-// path after init has already run.
 func loadDecodeAbortTimeoutSeconds() int {
 	return utils.LoadEnvNonNegativeInt("AIBRIX_DECODE_ABORT_TIMEOUT", defaultDecodeAbortTimeout)
 }
 
-// decodeAbortTimeout is the per-attempt deadline of the abort POST; a
-// non-positive value disables decode aborts.
-func decodeAbortTimeout() time.Duration {
-	return time.Duration(decodeAbortTimeoutSeconds.Load()) * time.Second
+// decodeAbortRetryDelayFor is the wait between the two abort attempts of this
+// request; a non-positive value means a single attempt. See
+// decodeAbortTimeoutFor for why the leg is the source.
+func decodeAbortRetryDelayFor(leg *types.PDLegState) time.Duration {
+	return leg.PDOverrides().Abort.RetryDelay
 }
 
-// AIBRIX_DECODE_ABORT_RETRY_DELAY: seconds to wait before repeating the abort
-// once, to cover the case where the first attempt arrived at the decode pod
-// before the decode request itself (see the race described at the top of this
-// file). Set to 0 to send a single attempt. Held as a duration in an atomic so
-// the value can be overridden while abort goroutines are in flight.
-var decodeAbortRetryDelayNanos = func() *atomic.Int64 {
-	delay := &atomic.Int64{}
-	delay.Store(loadDecodeAbortRetryDelayNanos())
-	return delay
-}()
-
-// loadDecodeAbortRetryDelayNanos reads AIBRIX_DECODE_ABORT_RETRY_DELAY into
-// nanoseconds. Same reason as above for utils.LoadEnvNonNegativeInt: 0 is the
-// documented "send a single attempt" setting, not an invalid value.
+// loadDecodeAbortRetryDelayNanos reads AIBRIX_DECODE_ABORT_RETRY_DELAY, the
+// process default for the wait before repeating the abort once, to cover the
+// case where the first attempt arrived at the decode pod before the decode
+// request itself (see the race described at the top of this file). Same reason
+// as above for utils.LoadEnvNonNegativeInt: 0 is the documented "send a single
+// attempt" setting, not an invalid value.
 func loadDecodeAbortRetryDelayNanos() int64 {
 	seconds := utils.LoadEnvNonNegativeInt("AIBRIX_DECODE_ABORT_RETRY_DELAY", defaultDecodeAbortRetryDelay)
 	return int64(time.Duration(seconds) * time.Second)
-}
-
-// decodeAbortRetryDelay is the wait between the two abort attempts; a
-// non-positive value means a single attempt.
-func decodeAbortRetryDelay() time.Duration {
-	return time.Duration(decodeAbortRetryDelayNanos.Load())
 }
 
 // Prefill failure classes. Low cardinality: they are used as a log field and
@@ -400,7 +385,7 @@ func OnPrefillLegFailed(client *http.Client, leg *types.PDLegState, requestID, m
 		// nothing the abort endpoint could match.
 		logAbort(0, abortResultSkippedNoRID, 0, nil)
 		return failure
-	case decodeAbortTimeout() <= 0:
+	case decodeAbortTimeoutFor(leg) <= 0:
 		logAbort(0, abortResultSkippedDisabled, 0, nil)
 		return failure
 	case decodeAddr == "":
@@ -414,8 +399,8 @@ func OnPrefillLegFailed(client *http.Client, leg *types.PDLegState, requestID, m
 		return failure
 	}
 
-	timeout := decodeAbortTimeout()
-	retryDelay := decodeAbortRetryDelay()
+	timeout := decodeAbortTimeoutFor(leg)
+	retryDelay := decodeAbortRetryDelayFor(leg)
 	// Taken before the goroutine starts, like everything else it needs: the
 	// leg is per-incarnation and stays valid, the routing context does not.
 	abortCtx := leg.AbortContext()

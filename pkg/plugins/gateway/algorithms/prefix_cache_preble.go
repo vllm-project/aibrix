@@ -200,7 +200,10 @@ func calculateAttnQuadV100(numTokens int, seqLen *int) float64 {
 	return attnQuad / 1000.0
 }
 
-func (h *SlidingWindowHistogram) getPrefillCost(node *prefixcacheindexer.TreeNode) float64 {
+// getPrefillCost estimates the prefill time of one prefix-cache node under the
+// GPU model this request assumes. gpu is the environment default unless the
+// request's model config profile overrides it.
+func (h *SlidingWindowHistogram) getPrefillCost(node *prefixcacheindexer.TreeNode, gpu string) float64 {
 	missRate := 1.0
 	if h.promptTokens[node] > 0 {
 		missRate = 1.0 - (float64(h.hitTokens[node]) / float64(h.promptTokens[node]))
@@ -208,24 +211,24 @@ func (h *SlidingWindowHistogram) getPrefillCost(node *prefixcacheindexer.TreeNod
 	numTokens := node.NumTokens()
 	contextLength := node.ContextLength()
 	baseTime := 0.0
-	switch targetGPU {
+	switch gpu {
 	case "A6000":
 		baseTime = mistral7BA6000LinearTime(numTokens) + mistral7BA6000AttentionTime(1, contextLength, numTokens)
 	case "V100":
 		baseTime = mistral7BV100LinearTime(numTokens) + mistral7BV100AttentionTime(1, contextLength, numTokens)
 	default:
-		klog.Warningf("Unknown target GPU: %s. Assume V100 as default", targetGPU)
+		klog.Warningf("Unknown target GPU: %s. Assume V100 as default", gpu)
 		baseTime = mistral7BV100LinearTime(numTokens) + mistral7BV100AttentionTime(1, contextLength, numTokens)
 	}
 
 	attnQuad := 0.0
-	switch targetGPU {
+	switch gpu {
 	case "A6000":
 		attnQuad = calculateAttnQuadA6000(numTokens, nil)
 	case "V100":
 		attnQuad = calculateAttnQuadV100(numTokens, nil)
 	default:
-		klog.Warningf("Unknown target GPU: %s. Assume V100 as default", targetGPU)
+		klog.Warningf("Unknown target GPU: %s. Assume V100 as default", gpu)
 		attnQuad = calculateAttnQuadV100(numTokens, nil)
 	}
 	prefillTime := (baseTime + attnQuad) / 0.9
@@ -349,9 +352,9 @@ func (h *SlidingWindowHistogram) getSimplePrefillCost(node *prefixcacheindexer.T
 	return missRate * float64(h.nodeToCount[node]) * prefillTime
 }
 
-func (h *SlidingWindowHistogram) getNodeCost(node *prefixcacheindexer.TreeNode, podName string) float64 {
+func (h *SlidingWindowHistogram) getNodeCost(node *prefixcacheindexer.TreeNode, podName string, gpu string) float64 {
 	// prefillCost := h.getSimplePrefillCost(node)
-	prefillCost := h.getPrefillCost(node)
+	prefillCost := h.getPrefillCost(node, gpu)
 	// Get median time per token for the pod
 	timePerToken := 0.15 // default value
 	if times, ok := h.avgTimePerTokenPerPod[podName]; ok && len(times) > 0 {
@@ -363,7 +366,10 @@ func (h *SlidingWindowHistogram) getNodeCost(node *prefixcacheindexer.TreeNode, 
 	return prefillCost + decodeCost
 }
 
-func (h *SlidingWindowHistogram) getCurrentAllocationCostPerPod() map[string]float64 {
+// getCurrentAllocationCostPerPod estimates the current allocation cost of every
+// pod. gpu is the GPU model the cost estimator assumes, as passed to
+// getPrefillCost.
+func (h *SlidingWindowHistogram) getCurrentAllocationCostPerPod(gpu string) map[string]float64 {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
@@ -372,7 +378,7 @@ func (h *SlidingWindowHistogram) getCurrentAllocationCostPerPod() map[string]flo
 		// Iterate through all models and their pods for this node
 		for _, modelPods := range node.GetModelToPods() {
 			for podName := range modelPods {
-				costs[podName] += h.getNodeCost(node, podName)
+				costs[podName] += h.getNodeCost(node, podName, gpu)
 			}
 		}
 	}
@@ -552,7 +558,8 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 
 	if targetPod == nil {
 		klog.InfoS("Do cost model based routing", "requestID", ctx.RequestID, "matchRatio", matchRatio*100, "matchedPodsCount", len(matchedPods))
-		podCosts := p.histogram.getCurrentAllocationCostPerPod()
+		gpu := ctx.RoutingOverrides().Preble.TargetGPU
+		podCosts := p.histogram.getCurrentAllocationCostPerPod(gpu)
 		minCost := math.MaxFloat64
 		for _, pod := range readyPods {
 			cost := podCosts[pod.Name]
@@ -607,7 +614,8 @@ func (p *prefixCacheAndLoadRouter) PostRouteUpdate(ctx *types.RoutingContext, re
 		currentNode = currentNode.GetParent()
 	}
 
-	p.histogram.update(time.Now(), node, node, targetPod.Name, decodingLength)
+	decodeLen := ctx.RoutingOverrides().Preble.DecodingLength
+	p.histogram.update(time.Now(), node, node, targetPod.Name, decodeLen)
 	return nil
 }
 
@@ -688,7 +696,8 @@ func (p *prefixCacheAndLoadRouter) ScoreAll(ctx *types.RoutingContext, readyPodL
 	}
 
 	// Cost model based routing
-	podCosts := p.histogram.getCurrentAllocationCostPerPod()
+	gpu := ctx.RoutingOverrides().Preble.TargetGPU
+	podCosts := p.histogram.getCurrentAllocationCostPerPod(gpu)
 	for i, pod := range readyPods {
 		cost := podCosts[pod.Name]
 		scores[i] = cost

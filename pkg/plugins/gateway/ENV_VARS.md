@@ -30,6 +30,8 @@ between callers in this mode.
 |---|---|---|---|---|
 | `AIBRIX_TTFT_THRESHOLD_S` | int (seconds) | `1` | Time-to-first-token threshold in seconds. Requests exceeding this are flagged in response processing. | [gateway_rsp_body.go](gateway_rsp_body.go) |
 
+`AIBRIX_TTFT_THRESHOLD_S` can also be set per model with the top-level `ttftThresholdS` profile field; see [Model Config Profile Overrides](#model-config-profile-overrides).
+
 ---
 
 ## Redis Sync (`statesync/`)
@@ -64,6 +66,8 @@ These configure the pool of remote tokenizer connections used when `AIBRIX_PREFI
 | `AIBRIX_TOKENIZER_TTL` | duration | `300s` | TTL for cached tokenizer connections in the pool. |
 | `AIBRIX_MAX_TOKENIZERS_PER_POOL` | int | `100` | Maximum number of tokenizer connections in the pool. |
 | `AIBRIX_TOKENIZER_REQUEST_TIMEOUT` | duration | `5s` | Timeout for individual remote tokenizer requests. |
+
+`AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR` can also be set per request by the model config profile (`routingConfig.prefixCache.standardDeviationFactor`); see [Model Config Profile Overrides](#model-config-profile-overrides).
 
 ---
 
@@ -104,6 +108,8 @@ prefix-match percentage via request count.
 | `AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA` | float64 | `2.0` | Strength α of the KV-pressure penalty: the score is multiplied by `1 + α·(1 − kv_free)²`. Non-positive values fall back to the default. | [algorithms/load_balance.go](algorithms/load_balance.go) |
 | `AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE` | float64 | `0.10` | Free-KV-cache fraction below which a pod scores `+Inf` from `load-balance`. When `load-balance` is the sole routing strategy this excludes the pod outright (falling back to the pod with the most KV headroom if every pod is below the threshold, instead of failing the request). When `load-balance` is blended with other strategies (the default for most requests — see "Router Selection / Auto-Blend" below), a `+Inf` score is only a strong penalty, not an exclusion: another strategy can still select the pod. Non-positive values fall back to the default. | [algorithms/load_balance.go](algorithms/load_balance.go) |
 
+The five `AIBRIX_LOAD_BALANCE_*` gate and score variables can also be set per request by the model config profile (`routingConfig.loadBalance.*`); see [Model Config Profile Overrides](#model-config-profile-overrides).
+
 ---
 
 ## Router Selection / Auto-Blend (`algorithms/router.go`)
@@ -129,6 +135,8 @@ disagreement without masking real load imbalance.
 | `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT` | int | `5` | Primary weight used when auto-blending a bare `prefix-cache` request. With the matching load-balance weight this is a 5:4 (1.25:1) lean toward cache affinity. | [algorithms/router.go](algorithms/router.go) |
 | `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT` | int | `4` | `load-balance` weight paired with `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT` for a bare `prefix-cache` request. | [algorithms/router.go](algorithms/router.go) |
 
+The four `AIBRIX_ROUTING_AUTO_BLEND_*` weights can also be set per request by the model config profile (`routingConfig.autoBlend.*`); see [Model Config Profile Overrides](#model-config-profile-overrides).
+
 ---
 
 ## Preble (Prefix Cache with Histogram) Router (`algorithms/prefix_cache_preble.go`)
@@ -139,6 +147,8 @@ disagreement without masking real load imbalance.
 | `AIBRIX_ROUTER_PREBLE_DECODING_LENGTH` | int | `45` | Expected decode sequence length used for cache allocation decisions. |
 | `AIBRIX_ROUTER_PREBLE_SLIDING_WINDOW_PERIOD` | int (minutes) | `3` | Sliding window length in minutes for histogram metrics collection. |
 | `AIBRIX_ROUTER_PREBLE_EVICTION_LOOP_INTERVAL` | int (ms) | `1000` | Interval in milliseconds between cache eviction loop executions. |
+
+`AIBRIX_ROUTER_PREBLE_TARGET_GPU` and `AIBRIX_ROUTER_PREBLE_DECODING_LENGTH` can also be set per request by the model config profile (`routingConfig.preble.*`). The window and eviction variables stay environment-only; see [Model Config Profile Overrides](#model-config-profile-overrides).
 
 ---
 
@@ -165,6 +175,8 @@ Scoring formula: `score = (fairnessWeight * normFairness + utilizationWeight * n
 | `AIBRIX_ROUTER_VTC_BASIC_FAIRNESS_WEIGHT` | float64 | `1.0` | Weight of the fairness component in the routing score. |
 | `AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT` | float64 | `1.0` | Weight of the utilization component in the routing score. |
 
+`AIBRIX_ROUTER_VTC_BASIC_MAX_POD_LOAD`, `AIBRIX_ROUTER_VTC_BASIC_FAIRNESS_WEIGHT` and `AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT` can also be set per request by the model config profile (`routingConfig.vtc.*`). The token tracker variables stay environment-only; see [Model Config Profile Overrides](#model-config-profile-overrides).
+
 ---
 
 ## PD (Prefill-Decode) Disaggregation Router (`algorithms/pd_disaggregation.go`)
@@ -180,6 +192,8 @@ Scoring formula: `score = (fairnessWeight * normFairness + utilizationWeight * n
 | `AIBRIX_KV_CONNECTOR_TYPE` | string | `"shfs"` | KV cache transfer backend. Options: `shfs` (GPU shared memory), `nixl` (Neuron). |
 | `AIBRIX_PREFILL_SCORE_POLICY` | string | `"prefix_cache"` | Strategy for selecting the prefill pod. Options: `prefix_cache`, `least_request`. |
 | `AIBRIX_DECODE_SCORE_POLICY` | string | `"load_balancing"` | Strategy for selecting the decode pod. Options: `load_balancing`, `least_request`. |
+
+The prefill/decode routing thresholds (`AIBRIX_PREFILL_*`, `AIBRIX_DECODE_*`, `AIBRIX_TOKEN_LOAD_*`, `AIBRIX_HYBRID_CACHE_LOAD_FACTOR`, `AIBRIX_MIN_MATCH_PCT`, `AIBRIX_PROMPT_LENGTH_BUCKETING`) can also be set per request by the model config profile (`routingConfig.pd.*` and `routingConfig.promptLengthBucketing`); see [Model Config Profile Overrides](#model-config-profile-overrides).
 
 ### PD Prefill Fail-Fast (`algorithms/pd/abort.go`)
 
@@ -224,6 +238,70 @@ Scoring formula: `score = (wRun × normRunning + wThroughput × normInvThroughpu
 | Variable | Type | Default | Description |
 |---|---|---|---|
 | `AIBRIX_TRT_MACHINE_ID` | int64 | `0` | 10-bit machine ID (0–1023) used in Snowflake-style disaggregation request ID generation: `[timestamp:41b][machineID:10b][counter:12b]`. Panics on init if out of range. |
+
+---
+
+## Model Config Profile Overrides
+
+A model's `model.aibrix.ai/config` annotation can carry per-profile routing knobs
+(`routingConfig`) that override the matching variable above for that profile's requests only.
+An unset knob keeps the environment default, and a value the variable would reject (a negative
+factor, a percentage outside its range, an unknown GPU name) is ignored, so a profile can only
+narrow or sharpen routing behavior. The values are resolved once per request and applied to that
+request alone; a request whose profile sets none behaves exactly as before. The user-facing
+description and examples live in the Config Profiles section of the gateway plugin guide
+([docs/source/features/gateway-plugins.rst](../../../docs/source/features/gateway-plugins.rst)).
+
+| Variable | Profile field | Notes |
+|---|---|---|
+| `AIBRIX_TTFT_THRESHOLD_S` | `ttftThresholdS` | Top-level profile field, not inside `routingConfig`. `0` counts as unset and keeps the environment default, so a profile can only change the threshold to another positive value, never to `0`. |
+| `AIBRIX_PROMPT_LENGTH_BUCKETING` | `routingConfig.promptLengthBucketing` | Turns bucketing on or off for the profile's requests. |
+| `AIBRIX_DECODE_ABORT_TIMEOUT` | `routingConfig.pd.decodeAbortTimeout` | `0` sends the abort without waiting. |
+| `AIBRIX_DECODE_ABORT_RETRY_DELAY` | `routingConfig.pd.decodeAbortRetryDelay` | `0` repeats the abort immediately. |
+| `AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD` | `routingConfig.pd.prefillLoadImbalanceMinSpread` | |
+| `AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD` | `routingConfig.pd.decodeLoadImbalanceMinSpread` | |
+| `AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD` | `routingConfig.pd.decodeThroughputImbalanceMinSpread` | |
+| `AIBRIX_DECODE_SCORE_RATIO_THRESHOLD` | `routingConfig.pd.decodeScoreRatioThreshold` | |
+| `AIBRIX_DECODE_LB_WEIGHT_RUNNING` | `routingConfig.pd.decodeLBWeightRunning` | |
+| `AIBRIX_DECODE_LB_WEIGHT_THROUGHPUT` | `routingConfig.pd.decodeLBWeightThroughput` | |
+| `AIBRIX_TOKEN_LOAD_KV_WEIGHT` | `routingConfig.pd.tokenLoadKVWeight` | |
+| `AIBRIX_TOKEN_LOAD_REQUEST_COST` | `routingConfig.pd.tokenLoadRequestCost` | |
+| `AIBRIX_TOKEN_LOAD_TTL_SECONDS` | `routingConfig.pd.tokenLoadTTLSeconds` | `0` disables the sweep for the profile's requests. |
+| `AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS` | `routingConfig.pd.tokenLoadSessionTTLSeconds` | `0` disables the session delta. |
+| `AIBRIX_HYBRID_CACHE_LOAD_FACTOR` | `routingConfig.pd.hybridCacheLoadFactor` | Accepted range 0 to 1. |
+| `AIBRIX_MIN_MATCH_PCT` | `routingConfig.pd.minMatchPct` | Accepted range 0 to 100; `0` disables the minimum-match clamp. |
+| `AIBRIX_PREFILL_REQUEST_TIMEOUT` | `routingConfig.pd.prefillRequestTimeout` | Seconds. |
+| `AIBRIX_LOAD_BALANCE_IMBALANCE_FACTOR` | `routingConfig.loadBalance.imbalanceFactor` | |
+| `AIBRIX_LOAD_BALANCE_IMBALANCE_MIN_GAP` | `routingConfig.loadBalance.imbalanceMinGap` | |
+| `AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT` | `routingConfig.loadBalance.queuedWeight` | `0` is the V1 formula, running requests only. |
+| `AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA` | `routingConfig.loadBalance.kvPressureAlpha` | `0` drops the penalty. |
+| `AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE` | `routingConfig.loadBalance.kvCriticalFree` | Accepted range 0 to 1; `0` disables the guardrail. |
+| `AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR` | `routingConfig.prefixCache.standardDeviationFactor` | Also read by the PD prefill candidacy filter. |
+| `AIBRIX_ROUTER_PREBLE_TARGET_GPU` | `routingConfig.preble.targetGPU` | Known values `A6000` and `V100`; anything else is ignored. |
+| `AIBRIX_ROUTER_PREBLE_DECODING_LENGTH` | `routingConfig.preble.decodingLength` | |
+| `AIBRIX_ROUTER_VTC_BASIC_MAX_POD_LOAD` | `routingConfig.vtc.maxPodLoad` | |
+| `AIBRIX_ROUTER_VTC_BASIC_FAIRNESS_WEIGHT` | `routingConfig.vtc.fairnessWeight` | `0` drops the fairness term. |
+| `AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT` | `routingConfig.vtc.utilizationWeight` | `0` drops the utilization term. |
+| `AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT` | `routingConfig.autoBlend.loadBalanceWeight` | `0` disables the auto-blend for the profile's requests. |
+| `AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT` | `routingConfig.autoBlend.leastRequestWeight` | |
+| `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT` | `routingConfig.autoBlend.prefixCacheWeight` | `0` is rejected; it would drop the caller's own strategy from the blend. |
+| `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT` | `routingConfig.autoBlend.prefixCacheLoadBalanceWeight` | `0` leaves those requests with prefix-cache scoring alone. |
+
+### Environment-only routing variables
+
+These configure process-wide state shared by every model of one gateway process, so a profile
+cannot override them without corrupting that state:
+
+- `AIBRIX_ROUTER_PREBLE_SLIDING_WINDOW_PERIOD` and `AIBRIX_ROUTER_PREBLE_EVICTION_LOOP_INTERVAL`: the preble histogram window and its eviction loop are process-wide timers.
+- `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_WINDOW_SIZE`, `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_TIME_UNIT`, `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MIN_TOKENS` and `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MAX_TOKENS`: the VTC token tracker is constructed once with its window and token floors.
+- `AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT` and `AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT`: these configure the same shared tracker. The per-request VTC knobs are `vtc.maxPodLoad`, `vtc.fairnessWeight` and `vtc.utilizationWeight`.
+- `AIBRIX_SESSION_AFFINITY_MAX_LOCAL_KEYS`: bounds the gateway-local session pin cache.
+- `AIBRIX_ROUTER_MAX_CACHED_ALGORITHM_STRINGS`: bounds the process-wide routing string cache.
+- `AIBRIX_TOKEN_LOAD_MAX_SESSIONS`: bounds the (model, session) table of the token-load tracker. The PD router builds the tracker once and the gateway shares it across models, so the cap is process-wide.
+
+Variables without a `routingConfig` field (tokenizer endpoints, Redis and statesync settings, the
+rate limiting switches, `AIBRIX_KV_CONNECTOR_TYPE`) stay environment-only as deployment-level
+settings.
 
 ---
 

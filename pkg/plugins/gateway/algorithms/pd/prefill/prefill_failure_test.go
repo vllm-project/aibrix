@@ -72,7 +72,7 @@ func failFastCtx(requestID, body, decodeAddr string) *types.RoutingContext {
 }
 
 func failFastExecutor() *DefaultExecutor {
-	return NewDefaultExecutor(&http.Client{}, pd.NewPrefillRequestTracker(), 5,
+	return NewDefaultExecutor(&http.Client{}, pd.NewPrefillRequestTracker(),
 		WithTokenLoadTracker(pd.NewTokenLoadTracker())).(*DefaultExecutor)
 }
 

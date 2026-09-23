@@ -114,6 +114,14 @@ type PDLegState struct {
 	// itself: the routing context it could read it from is pooled.
 	decodeTarget atomic.Pointer[pdDecodeTarget]
 
+	// pdOverrides are the PD routing overrides the request's model config
+	// profile resolved to. They are resolved on the request path and read from
+	// the leg rather than the routing context for the same reason as
+	// decodeTarget: the async prefill goroutine, and the decode abort it can
+	// start, outlive the client stream and must not read a routing context that
+	// may have been recycled.
+	pdOverrides atomic.Pointer[PDOverrides]
+
 	// abortMu guards the two fields below. The abort context is built by the
 	// goroutine that sends the abort and cancelled by the goroutine that owns
 	// the client stream, so the two race; both critical sections are a single
@@ -333,6 +341,27 @@ func (l *PDLegState) DecodeTarget() (addr string, podName string) {
 	return "", ""
 }
 
+// SetPDOverrides records the request's PD routing overrides. A nil argument is
+// a no-op and the read sites keep the process defaults.
+func (l *PDLegState) SetPDOverrides(o *PDOverrides) {
+	if l == nil || o == nil {
+		return
+	}
+	l.pdOverrides.Store(o)
+}
+
+// PDOverrides returns the request's PD routing overrides, or the process
+// defaults when none were recorded. The returned struct is read-only and never
+// nil.
+func (l *PDLegState) PDOverrides() *PDOverrides {
+	if l != nil {
+		if o := l.pdOverrides.Load(); o != nil {
+			return o
+		}
+	}
+	return DefaultPDOverrides()
+}
+
 // PDLeg returns the PD leg state of this incarnation of the request, or nil
 // when there is none. Callers that outlive the client stream - the async
 // prefill goroutine above all - must capture this pointer before they are
@@ -396,6 +425,24 @@ func (r *RoutingContext) SetDecodeTarget(addr, podName string) {
 // DecodeTarget returns where the decode leg of this request was sent.
 func (r *RoutingContext) DecodeTarget() (addr string, podName string) {
 	return r.PDLeg().DecodeTarget()
+}
+
+// SetPDOverrides records the PD routing overrides of this incarnation of the
+// request on its PD leg, where the async prefill and abort paths read them.
+func (r *RoutingContext) SetPDOverrides(o *PDOverrides) {
+	if r == nil {
+		return
+	}
+	r.PDLeg().SetPDOverrides(o)
+}
+
+// PDOverrides returns the PD routing overrides of this incarnation of the
+// request, or the process defaults when it has none.
+func (r *RoutingContext) PDOverrides() *PDOverrides {
+	if r == nil {
+		return DefaultPDOverrides()
+	}
+	return r.PDLeg().PDOverrides()
 }
 
 // PodAddress returns the host:port the gateway would forward this request to if

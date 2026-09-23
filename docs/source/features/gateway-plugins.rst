@@ -727,8 +727,10 @@ These request-time choices are ignored when
      - The routing algorithm for this profile (e.g. ``least-latency``, ``prefix-cache``, ``pd``). See the Routing Strategies section above for the full list.
    * - ``requestsPerSecond``
      - Model-level RPS cap for this profile. Requests that exceed the limit are rejected with HTTP 429. Omit or set to ``0`` for no limit. See `Production Model Deployments <../production/model-deployment.html>`_ for details.
+   * - ``ttftThresholdS``
+     - Time-to-first-token threshold in seconds for this profile's responses, overriding ``AIBRIX_TTFT_THRESHOLD_S``. A first token arriving above this value is classified as delayed in the gateway's first-token-delay metric. Omit it or set ``0`` to keep the process-wide default; ``0`` counts as unset, so a profile cannot set the threshold to zero, only to another positive value. This affects response classification only, not routing.
    * - ``routingConfig``
-     - Algorithm-specific settings as a nested JSON object. ``config-profile: auto`` also reads request-local selection hints from this object. Currently supported auto-selection hints are ``promptTokensGte``, ``promptTokensLt``, ``maxTokensGte`` and ``maxTokensLt``. Existing strategy-specific fields, such as ``promptLenBucketMinLength`` for ``pd``, remain available. See `Prefill-Decode Disaggregation <pd-disaggregation.html>`_ for details.
+     - Algorithm-specific settings as a nested JSON object. ``config-profile: auto`` also reads request-local selection hints from this object. Currently supported auto-selection hints are ``promptTokensGte``, ``promptTokensLt``, ``maxTokensGte`` and ``maxTokensLt``. Existing strategy-specific fields, such as ``promptLenBucketMinLength`` for ``pd``, remain available. It also carries per-request routing knobs that override the matching gateway environment variables for this profile's requests only; see Per-request routing knobs below. See `Prefill-Decode Disaggregation <pd-disaggregation.html>`_ for details.
 
 When ``config-profile: auto`` is used, the gateway evaluates the supported
 request-local hints inside each profile's ``routingConfig``. A profile matches
@@ -752,6 +754,128 @@ normal priority below then applies unchanged: request profile selection uses
 4. ``ROUTING_ALGORITHM`` environment variable on the gateway plugin.
 
 **Backward compatibility**: ``authoritativeRoutingPolicy`` defaults to ``false``. If a pod has no ``model.aibrix.ai/config`` annotation, the gateway falls back to the ``routing-strategy`` request header and then the ``ROUTING_ALGORITHM`` env (steps 2 and 4 above). No migration is required for existing deployments.
+
+
+**Per-request routing knobs in** ``routingConfig``
+
+Besides the auto-selection hints above, ``routingConfig`` carries routing thresholds that
+override the gateway's process-wide environment variables for this profile's requests only.
+An unset knob keeps the environment default, and a value the matching environment variable
+would reject (a negative factor, a percentage outside its range, an unknown GPU name) is
+ignored, so a profile can only narrow or sharpen routing behavior. Requests to the same model
+can therefore be routed with different thresholds by selecting different profiles.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 26 40
+
+   * - Field
+     - Overrides
+     - Description
+   * - ``promptLengthBucketing``
+     - ``AIBRIX_PROMPT_LENGTH_BUCKETING``
+     - Turn prompt-length bucketing on or off for this profile's requests.
+   * - ``pd.decodeAbortTimeout``
+     - ``AIBRIX_DECODE_ABORT_TIMEOUT``
+     - Seconds the gateway waits for the decode pod to accept the abort POST after a prefill failure. ``0`` sends the abort without waiting.
+   * - ``pd.decodeAbortRetryDelay``
+     - ``AIBRIX_DECODE_ABORT_RETRY_DELAY``
+     - Seconds between the two abort attempts. ``0`` repeats the abort immediately.
+   * - ``pd.prefillLoadImbalanceMinSpread``
+     - ``AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD``
+     - Minimum prefill running-request spread (max minus min) that triggers prefill load-imbalance routing.
+   * - ``pd.decodeLoadImbalanceMinSpread``
+     - ``AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD``
+     - Minimum decode running-request spread that triggers decode load-imbalance routing.
+   * - ``pd.decodeThroughputImbalanceMinSpread``
+     - ``AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD``
+     - Minimum decode token-throughput spread (tokens/s) that triggers throughput-imbalance routing.
+   * - ``pd.decodeScoreRatioThreshold``
+     - ``AIBRIX_DECODE_SCORE_RATIO_THRESHOLD``
+     - Max/min drain-rate score ratio above which the slowest decode pod is excluded.
+   * - ``pd.decodeLBWeightRunning``
+     - ``AIBRIX_DECODE_LB_WEIGHT_RUNNING``
+     - Weight of the running-request term in the decode load-balancing score.
+   * - ``pd.decodeLBWeightThroughput``
+     - ``AIBRIX_DECODE_LB_WEIGHT_THROUGHPUT``
+     - Weight of the token-throughput term in the decode load-balancing score.
+   * - ``pd.tokenLoadKVWeight``
+     - ``AIBRIX_TOKEN_LOAD_KV_WEIGHT``
+     - Weight of resident KV tokens in the token-load charge.
+   * - ``pd.tokenLoadRequestCost``
+     - ``AIBRIX_TOKEN_LOAD_REQUEST_COST``
+     - Fixed per-request cost, in tokens, of the token-load charge.
+   * - ``pd.tokenLoadTTLSeconds``
+     - ``AIBRIX_TOKEN_LOAD_TTL_SECONDS``
+     - How long a charge may stay outstanding. ``0`` disables the sweep for this profile's requests.
+   * - ``pd.tokenLoadSessionTTLSeconds``
+     - ``AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS``
+     - How long the last prompt size of a session is kept. ``0`` disables the session delta.
+   * - ``pd.hybridCacheLoadFactor``
+     - ``AIBRIX_HYBRID_CACHE_LOAD_FACTOR``
+     - How much a full prefix match discounts a pod's token load in the hybrid-cache-load prefill policy (0 to 1).
+   * - ``pd.minMatchPct``
+     - ``AIBRIX_MIN_MATCH_PCT``
+     - Prefix-match percentage below which a match is treated as no match (0 to 100).
+   * - ``pd.prefillRequestTimeout``
+     - ``AIBRIX_PREFILL_REQUEST_TIMEOUT``
+     - HTTP timeout in seconds for the prefill pod call.
+   * - ``loadBalance.imbalanceFactor``
+     - ``AIBRIX_LOAD_BALANCE_IMBALANCE_FACTOR``
+     - Load-imbalance gate multiplier for pools of three or more replicas.
+   * - ``loadBalance.imbalanceMinGap``
+     - ``AIBRIX_LOAD_BALANCE_IMBALANCE_MIN_GAP``
+     - Minimum running-request gap required to trigger the load-imbalance gate.
+   * - ``loadBalance.queuedWeight``
+     - ``AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT``
+     - Weight of engine-queued requests added to the load-balance score. ``0`` is the running-requests-only formula.
+   * - ``loadBalance.kvPressureAlpha``
+     - ``AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA``
+     - Strength of the KV-pressure penalty in the load-balance score. ``0`` drops the penalty.
+   * - ``loadBalance.kvCriticalFree``
+     - ``AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE``
+     - Free-KV-cache fraction below which a replica scores ``+Inf`` in the load-balance score.
+   * - ``prefixCache.standardDeviationFactor``
+     - ``AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``
+     - How many standard deviations above the mean replica request count a prefix-match candidate may sit. Also read by the PD prefill candidacy filter.
+   * - ``preble.targetGPU``
+     - ``AIBRIX_ROUTER_PREBLE_TARGET_GPU``
+     - GPU the prefix-cache-preble cost model assumes. Known values: ``A6000``, ``V100``.
+   * - ``preble.decodingLength``
+     - ``AIBRIX_ROUTER_PREBLE_DECODING_LENGTH``
+     - Assumed number of decoding tokens per request in the preble cost model.
+   * - ``vtc.maxPodLoad``
+     - ``AIBRIX_ROUTER_VTC_BASIC_MAX_POD_LOAD``
+     - Running-request count at which the VTC utilization score saturates.
+   * - ``vtc.fairnessWeight``
+     - ``AIBRIX_ROUTER_VTC_BASIC_FAIRNESS_WEIGHT``
+     - Weight of the fairness term in the VTC score. ``0`` drops the term.
+   * - ``vtc.utilizationWeight``
+     - ``AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT``
+     - Weight of the utilization term in the VTC score. ``0`` drops the term.
+   * - ``autoBlend.loadBalanceWeight``
+     - ``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT``
+     - Weight of the load-balance scorer blended behind every non-exclusive strategy. ``0`` disables the auto-blend for this profile's requests.
+   * - ``autoBlend.leastRequestWeight``
+     - ``AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT``
+     - Weight of the least-request scorer the auto-blend adds for multi-port pods.
+   * - ``autoBlend.prefixCacheWeight``
+     - ``AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT``
+     - Prefix-cache weight of the dedicated prefix-cache/load-balance ratio a bare ``prefix-cache`` request gets. ``0`` is rejected.
+   * - ``autoBlend.prefixCacheLoadBalanceWeight``
+     - ``AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT``
+     - Load-balance weight of that ratio. ``0`` leaves those requests with prefix-cache scoring alone.
+
+Knobs that configure process-wide state stay environment-only and have no profile field: the
+preble histogram window and eviction loop (``AIBRIX_ROUTER_PREBLE_SLIDING_WINDOW_PERIOD``,
+``AIBRIX_ROUTER_PREBLE_EVICTION_LOOP_INTERVAL``), the VTC token tracker
+(``AIBRIX_ROUTER_VTC_TOKEN_TRACKER_WINDOW_SIZE``, ``..._TIME_UNIT``, ``..._MIN_TOKENS``,
+``..._MAX_TOKENS``) and the tracker's token weights (``AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT``,
+``AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT``), the session-affinity local cache capacity
+(``AIBRIX_SESSION_AFFINITY_MAX_LOCAL_KEYS``), the router string cache bound
+(``AIBRIX_ROUTER_MAX_CACHED_ALGORITHM_STRINGS``), and the session-table cap of the token-load
+tracker (``AIBRIX_TOKEN_LOAD_MAX_SESSIONS``). All models of one gateway process share that
+state, so a per-request value could not be applied without corrupting it.
 
 .. _prometheus-api-access:
 

@@ -60,12 +60,6 @@ func TestGetTargetPodFromMatchedPods(t *testing.T) {
 		return testCache, pods
 	}
 
-	// Save original value and restore
-	originalStdDevFactor := standardDeviationFactor
-	defer func() {
-		standardDeviationFactor = originalStdDevFactor
-	}()
-
 	tests := []struct {
 		name         string
 		podMetrics   map[string]int // pod name -> request count
@@ -167,10 +161,8 @@ func TestGetTargetPodFromMatchedPods(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			standardDeviationFactor = tt.stdDevFactor
-
 			testCache, pods := createTestSetup(tt.podMetrics)
-			result := getTargetPodFromMatchedPods(testCache, pods, tt.matchedPods)
+			result := getTargetPodFromMatchedPods(testCache, pods, tt.matchedPods, tt.stdDevFactor)
 
 			if tt.expectedNil {
 				assert.Nil(t, result, tt.description)
@@ -474,12 +466,6 @@ func TestPrefixMatchingStandardDeviationEdgeCases(t *testing.T) {
 		return testCache, pods
 	}
 
-	// Save original value and restore
-	originalStdDevFactor := standardDeviationFactor
-	defer func() {
-		standardDeviationFactor = originalStdDevFactor
-	}()
-
 	tests := []struct {
 		name         string
 		podMetrics   map[string]int // pod name -> request count
@@ -574,10 +560,8 @@ func TestPrefixMatchingStandardDeviationEdgeCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			standardDeviationFactor = tt.stdDevFactor
-
 			testCache, pods := createTestSetup(tt.podMetrics)
-			result := getTargetPodFromMatchedPods(testCache, pods, tt.matchedPods)
+			result := getTargetPodFromMatchedPods(testCache, pods, tt.matchedPods, tt.stdDevFactor)
 
 			if tt.expectedNil {
 				assert.Nil(t, result, tt.description)
@@ -660,13 +644,6 @@ func TestKVSyncPodKeyHandlingEdgeCases(t *testing.T) {
 		},
 	}
 
-	// Save original value and restore
-	originalStdDevFactor := standardDeviationFactor
-	defer func() {
-		standardDeviationFactor = originalStdDevFactor
-	}()
-	standardDeviationFactor = 2 // Use generous factor for these tests
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create pods with specified namespaces
@@ -704,7 +681,8 @@ func TestKVSyncPodKeyHandlingEdgeCases(t *testing.T) {
 			testCache := cache.NewWithPodsMetricsForTest(pods, "test-model", metricsMap)
 
 			// Test KV sync function
-			result := getTargetPodFromMatchedPodsWithKeys(testCache, pods, tt.matchedPods)
+			// A generous factor keeps every matched pod a candidate here.
+			result := getTargetPodFromMatchedPodsWithKeys(testCache, pods, tt.matchedPods, 2)
 
 			if tt.expectedNil {
 				assert.Nil(t, result, tt.description)
@@ -816,7 +794,7 @@ func TestGetTargetPodListOnLoadImbalance(t *testing.T) {
 				})
 			}
 
-			result, _, _, imbalanced := getTargetPodListOnLoadImbalance(tt.requestCounts, pods)
+			result, _, _, imbalanced := getTargetPodListOnLoadImbalance(tt.requestCounts, pods, podRunningRequestImbalanceFactor, podRunningRequestImbalanceMinGap)
 			assert.Equal(t, tt.expectImbalance, imbalanced)
 			if tt.expectImbalance {
 				assert.NotEmpty(t, result)
