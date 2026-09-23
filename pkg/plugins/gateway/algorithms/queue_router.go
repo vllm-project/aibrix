@@ -137,11 +137,9 @@ func (r *queueRouter) serve() {
 		pods := <-r.chRouteTrigger
 
 		// Drain until there is nothing routable, or until a recovered panic left the
-		// queue at a position this loop must not advance from.
-		for {
-			if !r.routeNext(pods) {
-				break
-			}
+		// queue at a position this loop must not advance from. routeNext routes one
+		// candidate and reports whether the loop may pick the next one right away.
+		for r.routeNext(pods) {
 		}
 	}
 }
