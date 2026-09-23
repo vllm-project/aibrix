@@ -478,9 +478,10 @@ func (s tokenLoadScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
 		// No ledger to read; every pod ties and the caller's tie-break applies.
 		return 0
 	}
-	score := s.tracker.GetPriorityWithKVWeight(pod.Name, s.kvWeight)
+	podKey := PodKey(pod)
+	score := s.tracker.GetPriorityWithKVWeight(podKey, s.kvWeight)
 	if klog.V(4).Enabled() {
-		active, kv := s.tracker.GetLoad(pod.Name)
+		active, kv := s.tracker.GetLoad(podKey)
 		klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
 			"policy", PrefillScorePolicyTokenLoad,
 			"score", score, "active_tokens", active, "kv_tokens", kv,
@@ -646,7 +647,7 @@ func (s *hybridCacheLoadScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64
 	discount := 1 - r*r*s.cfg.Factor
 	load := 0.0
 	if s.tracker != nil {
-		load = s.tracker.GetPriorityWithKVWeight(pod.Name, s.kvWeight)
+		load = s.tracker.GetPriorityWithKVWeight(PodKey(pod), s.kvWeight)
 	}
 	score := discount
 	if load >= 1 {

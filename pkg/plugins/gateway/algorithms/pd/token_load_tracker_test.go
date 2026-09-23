@@ -536,7 +536,7 @@ func TestTokenLoadTracker_JanitorReleasesStaleCharges(t *testing.T) {
 	klog.Flush()
 	assert.Contains(t, logs.String(), "force-releasing stale charge")
 	assert.Contains(t, logs.String(), "request_id=stale")
-	assert.Contains(t, logs.String(), "pod_name=pod-a")
+	assert.Contains(t, logs.String(), "pod=pod-a")
 
 	// A sweep after the normal release of "fresh" finds nothing.
 	tr.ReleaseAll("fresh")
@@ -597,10 +597,11 @@ func TestTokenLoadTracker_JanitorDisabledWithZeroTTL(t *testing.T) {
 	assertLoad(t, tr, "pod-a", 1000, 1000)
 }
 
-// tokenLoadSeriesPublished reports whether the default registry currently
-// exports a series of metricName for pod.
-func tokenLoadSeriesPublished(t *testing.T, metricName, pod string) bool {
+// tokenLoadSeries returns the value of the series of metricName published
+// for the pod key pod, and whether the default registry exports one.
+func tokenLoadSeries(t *testing.T, metricName, pod string) (float64, bool) {
 	t.Helper()
+	want := tokenLoadGaugeLabelValues(pod)
 	families, err := prometheus.DefaultGatherer.Gather()
 	require.NoError(t, err)
 	for _, family := range families {
@@ -608,14 +609,24 @@ func tokenLoadSeriesPublished(t *testing.T, metricName, pod string) bool {
 			continue
 		}
 		for _, m := range family.GetMetric() {
+			labels := map[string]string{}
 			for _, label := range m.GetLabel() {
-				if label.GetName() == "pod_name" && label.GetValue() == pod {
-					return true
-				}
+				labels[label.GetName()] = label.GetValue()
+			}
+			if len(labels) == 2 && labels["namespace"] == want[0] && labels["pod_name"] == want[1] {
+				return m.GetGauge().GetValue(), true
 			}
 		}
 	}
-	return false
+	return 0, false
+}
+
+// tokenLoadSeriesPublished reports whether the default registry currently
+// exports a series of metricName for the pod key pod.
+func tokenLoadSeriesPublished(t *testing.T, metricName, pod string) bool {
+	t.Helper()
+	_, ok := tokenLoadSeries(t, metricName, pod)
+	return ok
 }
 
 func assertPodTracked(t *testing.T, tr *TokenLoadTracker, pod string, want bool) {
@@ -670,6 +681,49 @@ func TestTokenLoadTracker_JanitorPrunesIdlePods(t *testing.T) {
 	assert.Equal(t, 0, tr.pruneIdle())
 	assert.Equal(t, 1, tr.pruneIdle())
 	assertPodTracked(t, tr, "prune-b", false)
+}
+
+// TestTokenLoadTracker_SameNameInTwoNamespaces: pods are keyed by
+// namespace/name, so same-named pods in two namespaces keep separate counters
+// and separate gauge series, labelled with the namespace and the bare pod
+// name, and pruning one leaves the other in place.
+func TestTokenLoadTracker_SameNameInTwoNamespaces(t *testing.T) {
+	tr, _ := newTestTokenLoadTracker(t, testTokenLoadConfig())
+	const podA, podB = "ns-a/same-prefill", "ns-b/same-prefill"
+
+	tr.AcquirePrefill("req-a", podA, 1000)
+	assertLoad(t, tr, podA, 1000, 1000)
+	assertLoad(t, tr, podB, 0, 0)
+	assert.Equal(t, float64(0), tr.GetPriority(podB))
+
+	tr.AcquirePrefill("req-b", podB, 10)
+	assertLoad(t, tr, podA, 1000, 1000)
+	assertLoad(t, tr, podB, 10, 10)
+	for pod, want := range map[string]float64{podA: 1000, podB: 10} {
+		for _, metricName := range []string{metrics.PDTokenLoadActiveTokens, metrics.PDTokenLoadKVTokens} {
+			got, ok := tokenLoadSeries(t, metricName, pod)
+			require.Truef(t, ok, "%s series for %s", metricName, pod)
+			assert.Equalf(t, want, got, "%s series for %s", metricName, pod)
+		}
+	}
+
+	// Only ns-a's pod goes idle; two sweeps prune it and keep ns-b's.
+	tr.ReleaseAll("req-a")
+	assert.Equal(t, 0, tr.pruneIdle())
+	assert.Equal(t, 1, tr.pruneIdle())
+	assertPodTracked(t, tr, podA, false)
+	assertPodTracked(t, tr, podB, true)
+	assertLoad(t, tr, podB, 10, 10)
+
+	tr.ReleaseAll("req-b")
+	assert.Equal(t, 0, tr.pruneIdle())
+	assert.Equal(t, 1, tr.pruneIdle())
+	assertPodTracked(t, tr, podB, false)
+}
+
+func TestTokenLoadGaugeLabelValues(t *testing.T) {
+	assert.Equal(t, []string{"default", "prefill-0"}, tokenLoadGaugeLabelValues("default/prefill-0"))
+	assert.Equal(t, []string{"", "prefill-0"}, tokenLoadGaugeLabelValues("prefill-0"))
 }
 
 func TestTokenLoadTracker_JanitorPrunesAfterForceRelease(t *testing.T) {

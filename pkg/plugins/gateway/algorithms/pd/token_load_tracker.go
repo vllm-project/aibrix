@@ -128,6 +128,11 @@ func loadSessionTTL() time.Duration {
 // router has assigned to each prefill pod. It is the state behind the
 // token_load prefill score policy.
 //
+// Pods are identified by their pod key, "namespace/name" as built by PodKey.
+// One tracker serves every model the router routes, so a bare pod name is not
+// enough: two deployments in different namespaces may name their prefill pods
+// identically, and must not see each other's load.
+//
 // Two counters are kept per pod:
 //
 //   - active tokens: prompts the pod is computing right now;
@@ -136,7 +141,7 @@ func loadSessionTTL() time.Duration {
 //
 // The lifecycle of a prefill request is
 //
-//  1. AcquirePrefill(requestID, pod, cost): both counters += cost. The router
+//  1. AcquirePrefill(requestID, podKey, cost): both counters += cost. The router
 //     calls this under the same lock as the pod selection, so concurrent
 //     selections see each other's charges.
 //  2. ReleaseTokens(requestID): active -= cost, when the prefill HTTP call
@@ -154,8 +159,8 @@ func loadSessionTTL() time.Duration {
 //
 // All methods are safe for concurrent use. Reads do not allocate.
 type TokenLoadTracker struct {
-	activeTokens sync.Map // map[string]*podCounter, pod name → tokens
-	kvTokens     sync.Map // map[string]*podCounter, pod name → tokens
+	activeTokens sync.Map // map[string]*podCounter, pod key → tokens
+	kvTokens     sync.Map // map[string]*podCounter, pod key → tokens
 	entries      sync.Map // map[string]*tokenLoadEntry, request ID → charge
 	// sessions remembers the last prompt size per (model, session) so a
 	// multi-turn continuation is charged only for what the engine computes.
@@ -185,7 +190,7 @@ type TokenLoadTracker struct {
 // tokenLoadEntry records one AcquirePrefill so the releases subtract exactly
 // what was charged.
 type tokenLoadEntry struct {
-	pod        string
+	podKey     string
 	cost       float64
 	acquiredAt time.Time
 	// ttl bounds this charge's age before the janitor force-releases it; 0
@@ -216,7 +221,18 @@ type podCounter struct {
 func (c *podCounter) load() float64 { return math.Float64frombits(c.bits.Load()) }
 
 // tokenLoadGaugeLabels is the label set of the per-pod gauges.
-var tokenLoadGaugeLabels = []string{"pod_name"}
+var tokenLoadGaugeLabels = []string{"namespace", "pod_name"}
+
+// tokenLoadGaugeLabelValues returns the gauge label values for podKey: its
+// namespace and bare pod name. A key without a namespace is published with an
+// empty namespace label.
+func tokenLoadGaugeLabelValues(podKey string) []string {
+	namespace, name, ok := strings.Cut(podKey, "/")
+	if !ok {
+		return []string{"", podKey}
+	}
+	return []string{namespace, name}
+}
 
 // tokenLoadSession is the last prompt seen for one (model, session).
 type tokenLoadSession struct {
@@ -397,31 +413,31 @@ func sessionKey(model, sessionID string) string {
 }
 
 // AcquirePrefill charges cost to both the active and the resident-KV counter
-// of pod and records the charge under requestID for later release, with the
-// tracker's configured TTL. Request IDs are unique per request, so a second
-// AcquirePrefill for the same requestID is a caller bug; it is tolerated by
-// releasing whatever the earlier charge still holds before the new one
-// replaces it, with a warning.
-func (t *TokenLoadTracker) AcquirePrefill(requestID, pod string, cost float64) {
-	t.AcquirePrefillWithTTL(requestID, pod, cost, t.cfg.TTL)
+// of the pod identified by podKey (see PodKey) and records the charge under
+// requestID for later release, with the tracker's configured TTL. Request IDs
+// are unique per request, so a second AcquirePrefill for the same requestID is
+// a caller bug; it is tolerated by releasing whatever the earlier charge still
+// holds before the new one replaces it, with a warning.
+func (t *TokenLoadTracker) AcquirePrefill(requestID, podKey string, cost float64) {
+	t.AcquirePrefillWithTTL(requestID, podKey, cost, t.cfg.TTL)
 }
 
 // AcquirePrefillWithTTL is AcquirePrefill with an explicit expiry for this
 // charge, used when the request's model config profile overrides
 // AIBRIX_TOKEN_LOAD_TTL_SECONDS. A ttl of 0 means the janitor never sweeps the
 // charge; the normal releases still drop it.
-func (t *TokenLoadTracker) AcquirePrefillWithTTL(requestID, pod string, cost float64, ttl time.Duration) {
-	entry := &tokenLoadEntry{pod: pod, cost: cost, acquiredAt: t.now(), ttl: ttl}
+func (t *TokenLoadTracker) AcquirePrefillWithTTL(requestID, podKey string, cost float64, ttl time.Duration) {
+	entry := &tokenLoadEntry{podKey: podKey, cost: cost, acquiredAt: t.now(), ttl: ttl}
 	if prev, loaded := t.entries.Swap(requestID, entry); loaded {
 		old := prev.(*tokenLoadEntry)
-		klog.Warningf("token_load_tracker re-acquire for request_id=%s: releasing earlier charge pod_name=%s cost=%g before charging pod_name=%s cost=%g",
-			requestID, old.pod, old.cost, pod, cost)
+		klog.Warningf("token_load_tracker re-acquire for request_id=%s: releasing earlier charge pod=%s cost=%g before charging pod=%s cost=%g",
+			requestID, old.podKey, old.cost, podKey, cost)
 		t.releaseTokens(requestID, old)
 		t.releaseKV(requestID, old)
 	}
-	t.addActive(pod, cost)
-	t.addKV(pod, cost)
-	klog.V(4).InfoS("token_load_acquired", "request_id", requestID, "pod_name", pod, "cost", cost)
+	t.addActive(podKey, cost)
+	t.addKV(podKey, cost)
+	klog.V(4).InfoS("token_load_acquired", "request_id", requestID, "pod", podKey, "cost", cost)
 }
 
 // ReleaseTokens subtracts requestID's charge from its pod's active counter.
@@ -449,8 +465,8 @@ func (t *TokenLoadTracker) releaseTokens(requestID string, entry *tokenLoadEntry
 	if !entry.tokensReleased.CompareAndSwap(false, true) {
 		return
 	}
-	t.addActive(entry.pod, -entry.cost)
-	klog.V(4).InfoS("token_load_tokens_released", "request_id", requestID, "pod_name", entry.pod, "cost", entry.cost)
+	t.addActive(entry.podKey, -entry.cost)
+	klog.V(4).InfoS("token_load_tokens_released", "request_id", requestID, "pod", entry.podKey, "cost", entry.cost)
 	t.forgetIfReleased(requestID, entry)
 }
 
@@ -459,8 +475,8 @@ func (t *TokenLoadTracker) releaseKV(requestID string, entry *tokenLoadEntry) {
 	if !entry.kvReleased.CompareAndSwap(false, true) {
 		return
 	}
-	t.addKV(entry.pod, -entry.cost)
-	klog.V(4).InfoS("token_load_kv_released", "request_id", requestID, "pod_name", entry.pod, "cost", entry.cost)
+	t.addKV(entry.podKey, -entry.cost)
+	klog.V(4).InfoS("token_load_kv_released", "request_id", requestID, "pod", entry.podKey, "cost", entry.cost)
 	t.forgetIfReleased(requestID, entry)
 }
 
@@ -483,23 +499,24 @@ func (t *TokenLoadTracker) ReleaseAll(requestID string) {
 	t.ReleaseKVCache(requestID)
 }
 
-// GetLoad returns pod's current active and resident-KV token counters.
-// Unknown pods report 0, 0.
-func (t *TokenLoadTracker) GetLoad(pod string) (activeTokens, kvTokens float64) {
-	return loadFloat(&t.activeTokens, pod), loadFloat(&t.kvTokens, pod)
+// GetLoad returns the current active and resident-KV token counters of the
+// pod identified by podKey. Unknown pods report 0, 0.
+func (t *TokenLoadTracker) GetLoad(podKey string) (activeTokens, kvTokens float64) {
+	return loadFloat(&t.activeTokens, podKey), loadFloat(&t.kvTokens, podKey)
 }
 
-// GetPriority returns pod's token-load priority, lower is better:
+// GetPriority returns the token-load priority of the pod identified by
+// podKey, lower is better:
 //
 //	active_tokens + kv_weight * kv_tokens
-func (t *TokenLoadTracker) GetPriority(pod string) float64 {
-	return t.GetPriorityWithKVWeight(pod, t.cfg.KVWeight)
+func (t *TokenLoadTracker) GetPriority(podKey string) float64 {
+	return t.GetPriorityWithKVWeight(podKey, t.cfg.KVWeight)
 }
 
 // GetPriorityWithKVWeight is GetPriority with an explicit KV weight, used when
 // the request's model config profile overrides AIBRIX_TOKEN_LOAD_KV_WEIGHT.
-func (t *TokenLoadTracker) GetPriorityWithKVWeight(pod string, kvWeight float64) float64 {
-	active, kv := t.GetLoad(pod)
+func (t *TokenLoadTracker) GetPriorityWithKVWeight(podKey string, kvWeight float64) float64 {
+	active, kv := t.GetLoad(podKey)
 	return active + kvWeight*kv
 }
 
@@ -510,22 +527,22 @@ func (t *TokenLoadTracker) now() time.Time {
 	return t.clock()
 }
 
-func (t *TokenLoadTracker) addActive(pod string, delta float64) {
-	t.addCounter(&t.activeTokens, metrics.PDTokenLoadActiveTokens, pod, delta)
+func (t *TokenLoadTracker) addActive(podKey string, delta float64) {
+	t.addCounter(&t.activeTokens, metrics.PDTokenLoadActiveTokens, podKey, delta)
 }
 
-func (t *TokenLoadTracker) addKV(pod string, delta float64) {
-	t.addCounter(&t.kvTokens, metrics.PDTokenLoadKVTokens, pod, delta)
+func (t *TokenLoadTracker) addKV(podKey string, delta float64) {
+	t.addCounter(&t.kvTokens, metrics.PDTokenLoadKVTokens, podKey, delta)
 }
 
-// addCounter adds delta to pod's counter in m and publishes the result as the
+// addCounter adds delta to podKey's counter in m and publishes the result as the
 // gauge metricName. The shared lock only excludes the janitor's pruning;
 // writers still run concurrently with each other.
-func (t *TokenLoadTracker) addCounter(m *sync.Map, metricName, pod string, delta float64) {
+func (t *TokenLoadTracker) addCounter(m *sync.Map, metricName, podKey string, delta float64) {
 	t.countersMu.RLock()
 	defer t.countersMu.RUnlock()
-	value := addFloat(m, pod, delta)
-	metrics.SetGaugeMetric(metricName, metrics.GetMetricHelp(metricName), value, tokenLoadGaugeLabels, pod)
+	value := addFloat(m, podKey, delta)
+	metrics.SetGaugeMetric(metricName, metrics.GetMetricHelp(metricName), value, tokenLoadGaugeLabels, tokenLoadGaugeLabelValues(podKey)...)
 }
 
 // startJanitor runs sweepExpired and pruneIdle every interval until Close is
@@ -585,8 +602,8 @@ func (t *TokenLoadTracker) sweepExpired() int {
 			return true
 		}
 		requestID := key.(string)
-		klog.Warningf("token_load_tracker force-releasing stale charge: request_id=%s pod_name=%s cost=%g age_seconds=%.0f ttl_seconds=%.0f",
-			requestID, entry.pod, entry.cost, age.Seconds(), entry.ttl.Seconds())
+		klog.Warningf("token_load_tracker force-releasing stale charge: request_id=%s pod=%s cost=%g age_seconds=%.0f ttl_seconds=%.0f",
+			requestID, entry.podKey, entry.cost, age.Seconds(), entry.ttl.Seconds())
 		// Release this entry, not whatever is under requestID now: the flags
 		// make a concurrent normal release harmless, and a re-acquire that
 		// replaced the entry in the meantime must keep its own charge.
@@ -627,10 +644,11 @@ func (t *TokenLoadTracker) pruneIdle() int {
 		}
 		t.activeTokens.Delete(pod)
 		t.kvTokens.Delete(pod)
-		metrics.DeleteGaugeMetric(metrics.PDTokenLoadActiveTokens, tokenLoadGaugeLabels, pod)
-		metrics.DeleteGaugeMetric(metrics.PDTokenLoadKVTokens, tokenLoadGaugeLabels, pod)
+		labelValues := tokenLoadGaugeLabelValues(pod)
+		metrics.DeleteGaugeMetric(metrics.PDTokenLoadActiveTokens, tokenLoadGaugeLabels, labelValues...)
+		metrics.DeleteGaugeMetric(metrics.PDTokenLoadKVTokens, tokenLoadGaugeLabels, labelValues...)
 		pruned++
-		klog.V(4).InfoS("token_load_pod_pruned", "pod_name", pod)
+		klog.V(4).InfoS("token_load_pod_pruned", "pod", pod)
 	}
 	return pruned
 }

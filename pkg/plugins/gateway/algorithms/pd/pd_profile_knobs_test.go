@@ -116,8 +116,8 @@ func TestTokenLoadScorersUseProfileKnobs(t *testing.T) {
 	probePDDefaults(t)
 
 	tracker, _ := newTestTokenLoadTracker(t, TokenLoadConfig{KVWeight: 0.5})
-	tracker.AcquirePrefill("charge", "prefill-1", 1000) // active 1000, resident KV 1000
-	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-1"}}
+	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-1", Namespace: "default"}}
+	tracker.AcquirePrefill("charge", PodKey(pod), 1000) // active 1000, resident KV 1000
 
 	t.Run("token_load kv weight", func(t *testing.T) {
 		scorer, err := NewTokenLoadPrefillPolicy(tracker).Prepare(knobsContext(t, nil), nil, nil)

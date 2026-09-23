@@ -589,10 +589,12 @@ func TestScorePrefillPods(t *testing.T) {
 	}
 }
 
-// addRequests seeds the tracker with n in-flight requests for podName.
+// addRequests seeds the tracker with n in-flight requests for the
+// namespace-less test pod podName.
 func addRequests(tracker *pd.PrefillRequestTracker, podName string, n int) {
+	podKey := utils.GeneratePodKey("", podName)
 	for i := 0; i < n; i++ {
-		tracker.AddPrefillRequest(podName+"-req-"+strconv.Itoa(i), podName)
+		tracker.AddPrefillRequest(podName+"-req-"+strconv.Itoa(i), podKey)
 	}
 }
 
@@ -1155,7 +1157,7 @@ func TestDoPrefillRequest(t *testing.T) {
 			routingCtx := createRoutingCtx()
 			router := createRouter(prefillPods, tt.podMetrics)
 
-			router.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, prefillPods[0].Name)
+			router.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, utils.GeneratePodKey(prefillPods[0].Namespace, prefillPods[0].Name))
 			err := router.doPrefillRequest(routingCtx, prefillPods[0], tt.llmEngine)
 			if tt.expectError {
 				assert.Error(t, err)
@@ -1611,7 +1613,7 @@ func TestVLLMIntegrationWithTestServer(t *testing.T) {
 	}
 	router.prefillExecutor = prefill.NewDefaultExecutor(vllmClient, vllmTracker)
 
-	vllmTracker.AddPrefillRequest(routingCtx.RequestID, prefillPods[0].Name)
+	vllmTracker.AddPrefillRequest(routingCtx.RequestID, utils.GeneratePodKey(prefillPods[0].Namespace, prefillPods[0].Name))
 	err := router.doPrefillRequest(routingCtx, prefillPods[0], VLLMEngine)
 	assert.NoError(t, err)
 
@@ -1743,7 +1745,7 @@ func TestTensorRTIntegrationWithTestServer(t *testing.T) {
 	}
 	router.prefillExecutor = prefill.NewDefaultExecutor(trtClient, trtTracker)
 
-	trtTracker.AddPrefillRequest(routingCtx.RequestID, prefillPods[0].Name)
+	trtTracker.AddPrefillRequest(routingCtx.RequestID, utils.GeneratePodKey(prefillPods[0].Namespace, prefillPods[0].Name))
 	err := router.doPrefillRequest(routingCtx, prefillPods[0], TensorRTLLM)
 	assert.NoError(t, err)
 
@@ -2813,7 +2815,7 @@ func TestFilterPrefillDecodePods_CombinedFallbackBucketing(t *testing.T) {
 	assert.Nil(t, prefill)
 	assert.NotNil(t, decode)
 	assert.Equal(t, "combined-1", decode.Name)
-	assert.Equal(t, 0, r.prefillRequestTracker.GetPrefillRequestCountsForPod("prefill-ok"))
+	assert.Equal(t, 0, r.prefillRequestTracker.GetPrefillRequestCountsForPod(utils.GeneratePodKey(prefillOK.Namespace, prefillOK.Name)))
 }
 
 func TestFilterPrefillDecodePods_BucketDecodeDownFallbackToCombined(t *testing.T) {

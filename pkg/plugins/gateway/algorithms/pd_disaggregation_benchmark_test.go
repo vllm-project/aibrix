@@ -35,6 +35,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
@@ -80,7 +81,7 @@ func BenchmarkScorePrefillPods(b *testing.B) {
 					router.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, pod.Name)
 				}
 				for req := 0; req < (i%4)+1; req++ {
-					router.prefillRequestTracker.AddPrefillRequest(fmt.Sprintf("%s-%d", pod.Name, req), pod.Name)
+					router.prefillRequestTracker.AddPrefillRequest(fmt.Sprintf("%s-%d", pod.Name, req), utils.GeneratePodKey(pod.Namespace, pod.Name))
 				}
 			}
 
@@ -186,7 +187,7 @@ func BenchmarkDoPrefillRequest(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				ctx.RequestID = fmt.Sprintf("bench-prefill-%s-%d", engine, i)
 				ctx.RequestTime = time.Now()
-				router.prefillRequestTracker.AddPrefillRequest(ctx.RequestID, prefillPod.Name)
+				router.prefillRequestTracker.AddPrefillRequest(ctx.RequestID, utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name))
 				if err := router.doPrefillRequest(ctx, prefillPod, engine); err != nil {
 					b.Fatalf("doPrefillRequest failed: %v", err)
 				}
