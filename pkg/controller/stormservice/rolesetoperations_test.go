@@ -23,7 +23,9 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -183,84 +185,176 @@ func TestCreateRoleSetNilTemplate(t *testing.T) {
 	assert.Contains(t, err.Error(), "bad stormService template: nil")
 }
 
+// stormServiceFor builds a StormService with an explicit UID: metav1.IsControlledBy
+// compares owner UIDs, so two objects left with the zero UID would look related.
+func stormServiceFor(name, namespace string, selector map[string]string) *orchestrationv1alpha1.StormService {
+	return &orchestrationv1alpha1.StormService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			UID:       types.UID(namespace + "/" + name),
+		},
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: selector},
+		},
+	}
+}
+
+// roleSetOwnedBy mirrors renderRoleSet: the controller stamps every RoleSet it
+// creates with a controller reference to its StormService.
+func roleSetOwnedBy(name string, owner *orchestrationv1alpha1.StormService, labels map[string]string) *orchestrationv1alpha1.RoleSet {
+	roleSet := orphanRoleSet(name, owner.Namespace, labels)
+	roleSet.OwnerReferences = []metav1.OwnerReference{
+		*metav1.NewControllerRef(owner, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.StormServiceKind)),
+	}
+	return roleSet
+}
+
+func orphanRoleSet(name, namespace string, labels map[string]string) *orchestrationv1alpha1.RoleSet {
+	return &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    labels,
+		},
+	}
+}
+
 func TestGetRoleSetList(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = orchestrationv1alpha1.AddToScheme(scheme)
 
+	appLabels := map[string]string{"app": "test"}
+	// Two StormServices that would both match a RoleSet carrying appLabels: one in
+	// another namespace, one alongside in the same namespace.
+	owner := stormServiceFor("test-storm", "default", appLabels)
+	sameNamespacePeer := stormServiceFor("other-storm", "default", appLabels)
+	otherNamespacePeer := stormServiceFor("test-storm", "other-ns", appLabels)
+
+	noSelector := stormServiceFor("no-selector", "default", nil)
+	noSelector.Spec.Selector = nil
+
+	badSelector := stormServiceFor("bad-selector", "default", nil)
+	badSelector.Spec.Selector = &metav1.LabelSelector{
+		MatchExpressions: []metav1.LabelSelectorRequirement{
+			{Key: "app", Operator: "InvalidOperator", Values: []string{"test"}},
+		},
+	}
+
 	tests := []struct {
-		name        string
-		selector    *metav1.LabelSelector
-		setupFunc   func(*fake.ClientBuilder)
-		expectError bool
-		expectedLen int
+		name         string
+		stormService *orchestrationv1alpha1.StormService
+		roleSets     []*orchestrationv1alpha1.RoleSet
+		expectError  bool
+		expectedLen  int
 	}{
 		{
-			name:        "nil selector",
-			selector:    nil,
-			expectError: true,
-			expectedLen: 0,
+			name:         "nil selector",
+			stormService: noSelector,
+			expectError:  true,
 		},
 		{
-			name: "invalid selector",
-			selector: &metav1.LabelSelector{
-				MatchExpressions: []metav1.LabelSelectorRequirement{
-					{
-						Key:      "app",
-						Operator: "InvalidOperator",
-						Values:   []string{"test"},
-					},
-				},
-			},
-			expectError: true,
-			expectedLen: 0,
+			name:         "invalid selector",
+			stormService: badSelector,
+			expectError:  true,
 		},
 		{
-			name: "valid selector",
-			selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app": "test",
-				},
+			name:         "owned roleset is returned",
+			stormService: owner,
+			roleSets:     []*orchestrationv1alpha1.RoleSet{roleSetOwnedBy("test-roleset", owner, appLabels)},
+			expectedLen:  1,
+		},
+		{
+			// RoleSets are namespaced and selector labels are only unique within a
+			// namespace, so a matching RoleSet next door belongs to someone else.
+			name:         "matching labels in another namespace are excluded",
+			stormService: otherNamespacePeer,
+			roleSets:     []*orchestrationv1alpha1.RoleSet{roleSetOwnedBy("test-roleset", owner, appLabels)},
+			expectedLen:  0,
+		},
+		{
+			// Overlapping selectors within one namespace must not let one
+			// StormService count, update or delete another's RoleSets.
+			name:         "matching labels owned by another stormservice are excluded",
+			stormService: sameNamespacePeer,
+			roleSets:     []*orchestrationv1alpha1.RoleSet{roleSetOwnedBy("test-roleset", owner, appLabels)},
+			expectedLen:  0,
+		},
+		{
+			// A RoleSet without a controller reference was not created by this
+			// controller; acting on it would adopt state nobody claimed.
+			name:         "matching labels without an owner are excluded",
+			stormService: owner,
+			roleSets:     []*orchestrationv1alpha1.RoleSet{orphanRoleSet("test-roleset", "default", appLabels)},
+			expectedLen:  0,
+		},
+		{
+			name:         "only owned rolesets are returned when several match",
+			stormService: owner,
+			roleSets: []*orchestrationv1alpha1.RoleSet{
+				roleSetOwnedBy("owned-a", owner, appLabels),
+				roleSetOwnedBy("owned-b", owner, appLabels),
+				roleSetOwnedBy("foreign", sameNamespacePeer, appLabels),
+				orphanRoleSet("orphan", "default", appLabels),
 			},
-			setupFunc: func(builder *fake.ClientBuilder) {
-				roleSet := &orchestrationv1alpha1.RoleSet{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-roleset",
-						Namespace: "default",
-						Labels: map[string]string{
-							"app": "test",
-						},
-					},
-				}
-				builder.WithObjects(roleSet)
-			},
-			expectError: false,
-			expectedLen: 1,
+			expectedLen: 2,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			clientBuilder := fake.NewClientBuilder().WithScheme(scheme)
-
-			if tt.setupFunc != nil {
-				tt.setupFunc(clientBuilder)
+			for _, rs := range tt.roleSets {
+				clientBuilder = clientBuilder.WithObjects(rs)
 			}
 
-			testClient := clientBuilder.Build()
-			reconciler := &StormServiceReconciler{
-				Client: testClient,
-			}
+			reconciler := &StormServiceReconciler{Client: clientBuilder.Build()}
 
-			roleSets, err := reconciler.getRoleSetList(context.TODO(), tt.selector)
+			roleSets, err := reconciler.getRoleSetList(context.TODO(), tt.stormService)
 			if tt.expectError {
 				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				assert.NotNil(t, roleSets)
-				assert.Equal(t, tt.expectedLen, len(roleSets))
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expectedLen, len(roleSets))
+			for _, rs := range roleSets {
+				assert.Equal(t, tt.stormService.Namespace, rs.Namespace)
+				assert.True(t, metav1.IsControlledBy(rs, tt.stormService))
 			}
 		})
 	}
+}
+
+// TestGetRoleSetListRestrictsTheListToTheNamespace pins the namespace scoping on
+// the List call itself. The ownership filter alone would hide a foreign RoleSet
+// from the caller, but the controller would still page every matching RoleSet in
+// the cluster into memory, and the scoping is what keeps one namespace's objects
+// out of another namespace's reconcile entirely.
+func TestGetRoleSetListRestrictsTheListToTheNamespace(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = orchestrationv1alpha1.AddToScheme(scheme)
+
+	appLabels := map[string]string{"app": "test"}
+	stormService := stormServiceFor("test-storm", "team-b", appLabels)
+
+	var listedNamespaces []string
+	tracking := interceptor.NewClient(
+		fake.NewClientBuilder().WithScheme(scheme).Build(),
+		interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				options := &client.ListOptions{}
+				options.ApplyOptions(opts)
+				listedNamespaces = append(listedNamespaces, options.Namespace)
+				return c.List(ctx, list, opts...)
+			},
+		},
+	)
+
+	reconciler := &StormServiceReconciler{Client: tracking}
+	_, err := reconciler.getRoleSetList(context.TODO(), stormService)
+
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"team-b"}, listedNamespaces, "the RoleSet lookup must be scoped to the StormService namespace")
 }
 
 func TestDeleteRoleSetSuccess(t *testing.T) {

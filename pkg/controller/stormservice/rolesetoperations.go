@@ -34,24 +34,43 @@ import (
 	utils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
 )
 
-func (r *StormServiceReconciler) getRoleSetList(ctx context.Context, selector *metav1.LabelSelector) ([]*orchestrationv1alpha1.RoleSet, error) {
-	if selector == nil {
+// getRoleSetList returns the RoleSets owned by stormService.
+//
+// The lookup is restricted to the StormService namespace and then narrowed to
+// RoleSets this StormService controls. A label selector alone is not an
+// ownership claim: RoleSets are namespaced and two StormServices may carry
+// overlapping selectors, so listing by selector only would let one StormService
+// count, update, and - through finalize - delete RoleSets belonging to another.
+func (r *StormServiceReconciler) getRoleSetList(ctx context.Context, stormService *orchestrationv1alpha1.StormService) ([]*orchestrationv1alpha1.RoleSet, error) {
+	if stormService == nil {
+		return nil, fmt.Errorf("stormService can not be nil")
+	}
+	if stormService.Spec.Selector == nil {
 		return nil, fmt.Errorf("selector can not be nil")
 	}
-	roleSetSelector, err := metav1.LabelSelectorAsSelector(selector)
+	roleSetSelector, err := metav1.LabelSelectorAsSelector(stormService.Spec.Selector)
 	if err != nil {
 		return nil, fmt.Errorf("bad selector format: %v", err)
 	}
 	roleSetList := &orchestrationv1alpha1.RoleSetList{}
-	err = r.List(ctx, roleSetList, client.MatchingLabelsSelector{Selector: roleSetSelector})
+	err = r.List(ctx, roleSetList, client.InNamespace(stormService.Namespace), client.MatchingLabelsSelector{Selector: roleSetSelector})
 	if err != nil {
-		klog.Errorf("failed to list roleSets")
+		klog.Errorf("failed to list roleSets for stormservice %s/%s: %v", stormService.Namespace, stormService.Name, err)
 		return nil, err
 	}
 
 	var result []*orchestrationv1alpha1.RoleSet
 	for i := range roleSetList.Items {
-		result = append(result, &roleSetList.Items[i])
+		roleSet := &roleSetList.Items[i]
+		if !metav1.IsControlledBy(roleSet, stormService) {
+			// Selector matches but the RoleSet is controlled by someone else (or by
+			// nobody). Log it so a stale or hand-made RoleSet is visible rather than
+			// silently acted upon.
+			klog.V(4).Infof("stormservice %s/%s skips roleSet %s: not controlled by it",
+				stormService.Namespace, stormService.Name, roleSet.Name)
+			continue
+		}
+		result = append(result, roleSet)
 	}
 	return result, nil
 }

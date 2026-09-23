@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -494,6 +496,12 @@ func pooledRoleSet(name, revision string, terminating bool) *orchestrationv1alph
 				constants.StormServiceNameLabelKey:     "pooled-storm",
 				constants.StormServiceRevisionLabelKey: revision,
 			},
+			// renderRoleSet stamps a controller reference on every RoleSet it
+			// creates, and the lookup only returns RoleSets the StormService owns.
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(newPooledStormServiceWithSurge(2),
+					orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.StormServiceKind)),
+			},
 		},
 	}
 	if terminating {
@@ -670,5 +678,58 @@ func TestScalingNilReplicasResolvesToDefault(t *testing.T) {
 	}
 	if len(roleSetList.Items) != 1 {
 		t.Fatalf("expected 1 roleSet for an omitted spec.replicas, got %d", len(roleSetList.Items))
+	}
+}
+
+// TestFinalizeOnlyDeletesOwnedRoleSets covers deletion of a StormService whose
+// selector labels are also used by a StormService in another namespace. finalize
+// deletes every RoleSet the lookup returns, so a cluster-wide lookup would delete
+// the other namespace's running RoleSets and, because that namespace's controller
+// recreates them, would never observe an empty list and never drop its finalizer.
+func TestFinalizeOnlyDeletesOwnedRoleSets(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = orchestrationv1alpha1.AddToScheme(scheme)
+
+	appLabels := map[string]string{"app": "shared-label"}
+	victim := stormServiceFor("svc-a", "team-a", appLabels)
+	foreignRoleSet := roleSetOwnedBy("svc-a-roleset", victim, appLabels)
+
+	deleting := stormServiceFor("svc-b", "team-b", appLabels)
+	deleting.Finalizers = []string{StormServiceFinalizer}
+	deleting.DeletionTimestamp = ptr.To(metav1.Now())
+	ownRoleSet := roleSetOwnedBy("svc-b-roleset", deleting, appLabels)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(deleting, victim, foreignRoleSet, ownRoleSet).
+		Build()
+
+	r := &StormServiceReconciler{Client: fakeClient}
+
+	// First pass: the StormService still owns a RoleSet, so finalize deletes it and
+	// reports that it is not done yet.
+	done, err := r.finalize(context.TODO(), deleting)
+	assert.NoError(t, err)
+	assert.False(t, done)
+
+	remaining := &orchestrationv1alpha1.RoleSetList{}
+	assert.NoError(t, fakeClient.List(context.TODO(), remaining))
+	assert.Len(t, remaining.Items, 1)
+	assert.Equal(t, "svc-a-roleset", remaining.Items[0].Name)
+	assert.Equal(t, "team-a", remaining.Items[0].Namespace)
+
+	// Second pass: nothing owned is left, so the finalizer is removed and the
+	// foreign RoleSet is still untouched.
+	done, err = r.finalize(context.TODO(), deleting)
+	assert.NoError(t, err)
+	assert.True(t, done)
+
+	assert.NoError(t, fakeClient.List(context.TODO(), remaining))
+	assert.Len(t, remaining.Items, 1)
+	assert.Equal(t, "svc-a-roleset", remaining.Items[0].Name)
+
+	updated := &orchestrationv1alpha1.StormService{}
+	if err := fakeClient.Get(context.TODO(), client.ObjectKey{Namespace: "team-b", Name: "svc-b"}, updated); err == nil {
+		assert.NotContains(t, updated.Finalizers, StormServiceFinalizer)
 	}
 }
