@@ -301,17 +301,25 @@ func TestReconcileTriesAFailedDivisionAgainOnlyByTheRound(t *testing.T) {
 	// The write reaches no segment, so the reading that should confirm it does
 	// not, and the division fails.
 	runtime.deafToKVLimits = true
+	tries := func() int {
+		tries := 0
+		for _, call := range runtime.kvLimitCalls {
+			if call.LimitBytes == int64(60)<<30 {
+				tries++
+			}
+		}
+		return tries
+	}
 
 	reconcileOnce(t, r, "stays")
-	require.Len(t, runtime.kvLimitCalls, 1)
+	require.Equal(t, 1, tries())
 	reconcileOnce(t, r, "stays")
-	assert.Len(t, runtime.kvLimitCalls, 1, "a failed division waits for the round rather than every pass")
+	assert.Equal(t, 1, tries(), "a failed division waits for the round rather than every pass")
 
 	*clock = clock.Add(DefaultRequeueDuration)
 	runtime.deafToKVLimits = false
 	reconcileOnce(t, r, "stays")
-	require.Len(t, runtime.kvLimitCalls, 2)
-	assert.Equal(t, int64(60)<<30, runtime.kvLimitCalls[1].LimitBytes)
+	require.Equal(t, 2, tries())
 }
 
 func TestReconcileDividesACardAgainAtOnceWhenAnEngineWakes(t *testing.T) {
@@ -390,4 +398,45 @@ func TestReconcileDividesACardOnceWhenAModelIsPlacedOnIt(t *testing.T) {
 	// takes the new model for a change to divide the card for again.
 	require.Len(t, runtime.kvLimitCalls, 1)
 	assert.Equal(t, int64(200), runtime.kvLimitCalls[0].LimitBytes)
+}
+
+func TestReconcileReadsEachRuntimeOnceAPass(t *testing.T) {
+	// The engine already holds its share, so nothing is written.
+	r, runtime, _ := aCardAndOneEngineOnIt(t, 60<<30, 4<<30)
+
+	reconcileOnce(t, r, "solo")
+
+	require.Empty(t, runtime.kvLimitCalls)
+	assert.Equal(t, 1, runtime.snapshotCalls,
+		"the health check and the division should share one reading of the runtime")
+}
+
+func TestReconcileReadsARuntimeAgainOnlyAfterChangingIt(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].KVLimitBytes = 600
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	// One reading for the account and the ranking, one to confirm the
+	// neighbour's shrink, and one after the engine was started, which the
+	// health check needs to see the new engine at all.
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, 3, runtime.snapshotCalls)
+	assert.Len(t, runtime.activateCalls, 1, "a reading from before the start would show no engine")
+}
+
+func TestReconcileDoesNotReadACardWithNothingOnIt(t *testing.T) {
+	r, runtime, _ := aCardAndOneEngineOnIt(t, 60<<30, 4<<30)
+	empty, emptySnapshot := sizedWarmPod("warm-2", "10.0.0.2", 80<<30)
+	require.NoError(t, r.Create(context.Background(), empty))
+	runtime.snapshots[empty.Status.PodIP] = emptySnapshot
+
+	reconcileOnce(t, r, "solo")
+
+	assert.Equal(t, 1, runtime.snapshotCalls, "a card with no instance has nothing to divide")
 }

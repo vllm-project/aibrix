@@ -197,7 +197,11 @@ func (r *ModelClaimReconciler) divisions() *cardDivisionState {
 // rather than staying what it was when the last model landed. A card nobody
 // could account for is left alone, which includes a card running an engine
 // whose claim declares nothing.
-func (r *ModelClaimReconciler) divideCards(ctx context.Context, candidates []corev1.Pod) {
+func (r *ModelClaimReconciler) divideCards(
+	ctx context.Context,
+	candidates []corev1.Pod,
+	readings *runtimeReadings,
+) {
 	if len(candidates) == 0 {
 		return
 	}
@@ -212,7 +216,13 @@ func (r *ModelClaimReconciler) divideCards(ctx context.Context, candidates []cor
 	changed := make(map[string]bool, len(candidates))
 	for i := range candidates {
 		pod := &candidates[i]
-		divide, engineChange := divisions.due(cardOf(pod), cardComposition(claims, pod.Name))
+		composition := cardComposition(claims, pod.Name)
+		if composition == "" {
+			// Nothing is recorded on this card, so there is nothing to divide,
+			// and no reason to read its runtime.
+			continue
+		}
+		divide, engineChange := divisions.due(cardOf(pod), composition)
 		if divide {
 			due = append(due, *pod)
 			changed[pod.Name] = engineChange
@@ -222,7 +232,7 @@ func (r *ModelClaimReconciler) divideCards(ctx context.Context, candidates []cor
 		return
 	}
 
-	ledgers := podLedgersFrom(claims, nil, due, r.freshSnapshots(ctx, due))
+	ledgers := podLedgersFrom(claims, nil, due, readings.ofPods(ctx, due))
 	for i := range due {
 		pod := &due[i]
 		ledger := ledgers[pod.Name]
@@ -233,7 +243,7 @@ func (r *ModelClaimReconciler) divideCards(ctx context.Context, candidates []cor
 		if changed[pod.Name] {
 			why = compositionDivision
 		}
-		if _, err := r.arrangeCard(ctx, pod, ledger, ledger.engines, why); err != nil {
+		if _, err := r.arrangeCard(ctx, pod, ledger, ledger.engines, why, readings); err != nil {
 			klog.V(2).InfoS("could not divide a card", "pod", klog.KObj(pod),
 				"enginesChanged", changed[pod.Name], "err", err)
 		}

@@ -279,10 +279,7 @@ func newReconciler(t *testing.T, objs ...client.Object) (*ModelClaimReconciler, 
 		Recorder:   record.NewFakeRecorder(32),
 		Runtime:    runtime,
 		PoolPolicy: newPoolPolicyManager(time.Now),
-		SnapshotCache: newRuntimeSnapshotCache(
-			defaultRuntimeSnapshotTTL, time.Now,
-		),
-		Divisions: newCardDivisionState(time.Now),
+		Divisions:  newCardDivisionState(time.Now),
 	}, runtime
 }
 
@@ -339,7 +336,7 @@ func TestReconcilePoolPoliciesAppliesDeploymentKVFirstPolicy(t *testing.T) {
 		},
 	}
 
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 
 	require.Len(t, runtime.kvLimitCalls, 2)
 	limits := map[string]int64{}
@@ -364,7 +361,7 @@ func TestReconcilePoolPoliciesAppliesDeploymentKVFirstPolicy(t *testing.T) {
 	runtime.snapshots[pod.Status.PodIP].Models[0].KVCapacityBytes = 200
 	runtime.snapshots[pod.Status.PodIP].Models[1].KVCapacityBytes = 800
 
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 
 	require.Len(t, runtime.kvLimitCalls, 2)
 	for _, call := range runtime.kvLimitCalls {
@@ -423,7 +420,7 @@ func TestReconcilePoolPoliciesStandDownWhereAClaimHoldsTheLimit(t *testing.T) {
 		},
 	}
 
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 
 	assert.Empty(t, runtime.kvLimitCalls)
 }
@@ -455,7 +452,7 @@ func TestReconcilePoolPoliciesSkipsNilRuntimeSnapshot(t *testing.T) {
 	r, runtime := newReconciler(t, deployment, replicaSet, pod)
 	runtime.nilSnapshots = map[string]bool{pod.Status.PodIP: true}
 
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 
 	assert.Empty(t, runtime.kvLimitCalls)
 	assert.Empty(t, runtime.sleepCalls)
@@ -505,8 +502,8 @@ func TestReconcilePoolPoliciesWarnsOnceForUnchangedInvalidPolicy(t *testing.T) {
 	deployment, replicaSet, pod := warmPoolObjects(`{"reclaim":{"capacityBytes":0}}`)
 	r, runtime := newReconciler(t, deployment, replicaSet, pod)
 
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 
 	events := drainEvents(t, r)
 	require.Len(t, events, 1)
@@ -531,12 +528,12 @@ func TestReconcilePoolPoliciesEmitsRecoveryOnceCorrected(t *testing.T) {
 		},
 	}
 
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 
 	deployment.Annotations[constants.ModelPoolPolicyAnnotationKey] = `{"reclaim":{"capacityBytes":1000}}`
 	require.NoError(t, r.Update(context.Background(), deployment))
 
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 
 	events := drainEvents(t, r)
 	require.Len(t, events, 2)
@@ -550,7 +547,7 @@ func TestReconcilePoolPoliciesStaysQuietForValidPolicy(t *testing.T) {
 	deployment, replicaSet, pod := warmPoolObjects(`{"reclaim":{"capacityBytes":1000}}`)
 	r, _ := newReconciler(t, deployment, replicaSet, pod)
 
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 
 	assert.Empty(t, drainEvents(t, r))
 }
@@ -582,11 +579,11 @@ func TestReconcilePoolPoliciesSleepsIdleSingleReplica(t *testing.T) {
 	}
 
 	// A first observation establishes a conservative idle baseline.
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 	require.Empty(t, runtime.sleepCalls)
 
 	now = now.Add(61 * time.Second)
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 
 	require.Len(t, runtime.sleepCalls, 1)
 	assert.Equal(t, "qwen2-7b", runtime.sleepCalls[0].ModelName)
@@ -633,14 +630,14 @@ func TestReconcilePoolPoliciesUsesRuntimeTransitionAsWakeGrace(t *testing.T) {
 		},
 	}
 
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 	now = now.Add(120 * time.Second)
 	lastTransition = now.Add(-30 * time.Second)
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 	assert.Empty(t, runtime.sleepCalls, "a recent wake transition must start a fresh idle window")
 
 	now = now.Add(31 * time.Second)
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 	assert.Len(t, runtime.sleepCalls, 1)
 }
 
@@ -1737,7 +1734,7 @@ func TestArrangeCardGivesARetryItsOwnOperation(t *testing.T) {
 			[]corev1.Pod{*pod}, map[string]*RuntimeSnapshot{pod.Name: snapshot})
 		ledger := ledgers[pod.Name]
 		require.True(t, ledger.judgeable)
-		_, err := r.arrangeCard(context.Background(), pod, ledger, ledger.engines, placementDivision)
+		_, err := r.arrangeCard(context.Background(), pod, ledger, ledger.engines, placementDivision, nil)
 		require.NoError(t, err)
 	}
 
@@ -1781,7 +1778,7 @@ func divideOnce(t *testing.T, r *ModelClaimReconciler, pod *corev1.Pod, snapshot
 		[]corev1.Pod{*pod}, map[string]*RuntimeSnapshot{pod.Name: snapshot})
 	ledger := ledgers[pod.Name]
 	require.True(t, ledger.judgeable)
-	_, err := r.arrangeCard(context.Background(), pod, ledger, ledger.engines, placementDivision)
+	_, err := r.arrangeCard(context.Background(), pod, ledger, ledger.engines, placementDivision, nil)
 	return err
 }
 
@@ -2003,8 +2000,7 @@ func TestReconcileMarksAClaimPlacedWhenItsRouteCannotBeWritten(t *testing.T) {
 	runtime := &fakeRuntime{snapshots: map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}}
 	r := &ModelClaimReconciler{
 		Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(32), Runtime: runtime,
-		PoolPolicy:    newPoolPolicyManager(time.Now),
-		SnapshotCache: newRuntimeSnapshotCache(defaultRuntimeSnapshotTTL, time.Now),
+		PoolPolicy: newPoolPolicyManager(time.Now),
 	}
 
 	reconcileOnce(t, r, pm.Name)
@@ -2036,8 +2032,7 @@ func TestReconcileDoesNotTakeAConflictOnTheRecordForAFailedStart(t *testing.T) {
 	runtime := &fakeRuntime{snapshots: map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}}
 	r := &ModelClaimReconciler{
 		Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(32), Runtime: runtime,
-		PoolPolicy:    newPoolPolicyManager(time.Now),
-		SnapshotCache: newRuntimeSnapshotCache(defaultRuntimeSnapshotTTL, time.Now),
+		PoolPolicy: newPoolPolicyManager(time.Now),
 	}
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{
@@ -2084,8 +2079,7 @@ func TestReconcileRecordsNoMoreThanTheCardWhenARecordCannotBeWritten(t *testing.
 	runtime := &fakeRuntime{snapshots: map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}}
 	r := &ModelClaimReconciler{
 		Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(32), Runtime: runtime,
-		PoolPolicy:    newPoolPolicyManager(time.Now),
-		SnapshotCache: newRuntimeSnapshotCache(defaultRuntimeSnapshotTTL, time.Now),
+		PoolPolicy: newPoolPolicyManager(time.Now),
 	}
 
 	reconcileOnce(t, r, newcomer.Name)
@@ -2747,8 +2741,7 @@ func TestReconcileOrdersTheRecordsByTheRecordsAndNotByTheLimitsInForce(t *testin
 	runtime := &fakeRuntime{snapshots: map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}}
 	r := &ModelClaimReconciler{
 		Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(32), Runtime: runtime,
-		PoolPolicy:    newPoolPolicyManager(time.Now),
-		SnapshotCache: newRuntimeSnapshotCache(defaultRuntimeSnapshotTTL, time.Now),
+		PoolPolicy: newPoolPolicyManager(time.Now),
 	}
 
 	reconcileOnce(t, r, newcomer.Name)

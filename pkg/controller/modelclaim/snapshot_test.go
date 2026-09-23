@@ -17,67 +17,77 @@ limitations under the License.
 package modelclaim
 
 import (
+	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"k8s.io/apimachinery/pkg/types"
+	corev1 "k8s.io/api/core/v1"
 )
 
-func TestRuntimeSnapshotCacheUsesFreshEntry(t *testing.T) {
-	now := time.Date(2026, time.July, 13, 12, 0, 0, 0, time.UTC)
-	cache := newRuntimeSnapshotCache(5*time.Second, func() time.Time { return now })
-	key := types.NamespacedName{Namespace: "default", Name: "warm-1"}
-	calls := 0
-	fetch := func() (*RuntimeSnapshot, error) {
-		calls++
-		return &RuntimeSnapshot{CachedArtifacts: []string{"hf://Org/M1"}}, nil
-	}
-
-	first, ok := cache.Get(key, types.UID("pod-uid"), fetch)
-	require.True(t, ok)
-	assert.Equal(t, []string{"hf://Org/M1"}, first.CachedArtifacts)
-	second, ok := cache.Get(key, types.UID("pod-uid"), fetch)
-	require.True(t, ok)
-	assert.Equal(t, first, second)
-	assert.Equal(t, 1, calls)
+// countingRuntime answers snapshots for one pod and counts how often it is
+// asked.
+type countingRuntime struct {
+	fakeRuntime
+	reads int
+	err   error
 }
 
-func TestRuntimeSnapshotCacheDropsExpiredEntryAfterRefreshFailure(t *testing.T) {
-	now := time.Date(2026, time.July, 13, 12, 0, 0, 0, time.UTC)
-	cache := newRuntimeSnapshotCache(5*time.Second, func() time.Time { return now })
-	key := types.NamespacedName{Namespace: "default", Name: "warm-1"}
-
-	_, ok := cache.Get(key, types.UID("pod-uid"), func() (*RuntimeSnapshot, error) {
-		return &RuntimeSnapshot{}, nil
-	})
-	require.True(t, ok)
-	now = now.Add(6 * time.Second)
-
-	snapshot, ok := cache.Get(key, types.UID("pod-uid"), func() (*RuntimeSnapshot, error) {
-		return nil, errors.New("runtime unavailable")
-	})
-	assert.False(t, ok)
-	assert.Nil(t, snapshot)
+func (c *countingRuntime) Snapshot(_ context.Context, _ string, _ int) (*RuntimeSnapshot, error) {
+	c.reads++
+	if c.err != nil {
+		return nil, c.err
+	}
+	return &RuntimeSnapshot{Models: []RuntimeSnapshotModel{{ModelName: "m"}}}, nil
 }
 
-func TestRuntimeSnapshotCacheRefreshesWhenPodIsRecreated(t *testing.T) {
-	now := time.Date(2026, time.July, 13, 12, 0, 0, 0, time.UTC)
-	cache := newRuntimeSnapshotCache(time.Hour, func() time.Time { return now })
-	key := types.NamespacedName{Namespace: "default", Name: "warm-1"}
-	calls := 0
-	fetch := func() (*RuntimeSnapshot, error) {
-		calls++
-		return &RuntimeSnapshot{}, nil
-	}
+func TestRuntimeReadingsReadEachRuntimeOnce(t *testing.T) {
+	runtime := &countingRuntime{}
+	readings := newRuntimeReadings(runtime)
+	pod := warmPod("warm-1", "pool", true, corev1.PodRunning)
 
-	_, ok := cache.Get(key, types.UID("old-pod"), fetch)
-	require.True(t, ok)
-	_, ok = cache.Get(key, types.UID("new-pod"), fetch)
-	require.True(t, ok)
-	assert.Equal(t, 2, calls)
+	first, err := readings.of(context.Background(), pod)
+	require.NoError(t, err)
+	second, err := readings.of(context.Background(), pod)
+	require.NoError(t, err)
+
+	assert.Same(t, first, second)
+	assert.Equal(t, 1, runtime.reads)
+}
+
+func TestRuntimeReadingsDoNotAskARuntimeThatFailedAgain(t *testing.T) {
+	runtime := &countingRuntime{err: errors.New("connection refused")}
+	readings := newRuntimeReadings(runtime)
+	pod := warmPod("warm-1", "pool", true, corev1.PodRunning)
+
+	_, first := readings.of(context.Background(), pod)
+	_, second := readings.of(context.Background(), pod)
+
+	require.Error(t, first)
+	require.Error(t, second)
+	assert.Equal(t, 1, runtime.reads)
+	assert.Empty(t, readings.ofPods(context.Background(), []corev1.Pod{*pod}))
+}
+
+func TestRuntimeReadingsReadAgainOnlyWhatWasChanged(t *testing.T) {
+	runtime := &countingRuntime{}
+	readings := newRuntimeReadings(runtime)
+	pod := warmPod("warm-1", "pool", true, corev1.PodRunning)
+	_, err := readings.of(context.Background(), pod)
+	require.NoError(t, err)
+
+	confirmed := &RuntimeSnapshot{}
+	readings.replace(pod, confirmed)
+	got, err := readings.of(context.Background(), pod)
+	require.NoError(t, err)
+	assert.Same(t, confirmed, got)
+	assert.Equal(t, 1, runtime.reads)
+
+	readings.forget(pod.Name)
+	_, err = readings.of(context.Background(), pod)
+	require.NoError(t, err)
+	assert.Equal(t, 2, runtime.reads)
 }
 
 func TestPlacementStateFromSnapshot(t *testing.T) {

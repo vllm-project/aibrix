@@ -212,10 +212,9 @@ func (l podLedger) withHole(reason string) podLedger {
 
 // collectPodLedgers builds one account per candidate pod.
 //
-// The snapshots must be fresh rather than cached. Ranking can work from a
-// reading a few seconds old, but an account cannot: what an engine holds moves
-// with traffic, and admitting a model against memory another engine has since
-// mapped is how a card ends up oversubscribed.
+// The snapshots must be this pass's readings, never older ones. What an engine
+// holds moves with traffic, and admitting a model against memory another engine
+// has since mapped is how a card ends up oversubscribed.
 //
 // What a card owes comes from ModelClaim status, which only this controller
 // writes, so the account charges an instance from the moment it is recorded

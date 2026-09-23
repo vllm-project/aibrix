@@ -17,78 +17,77 @@ limitations under the License.
 package modelclaim
 
 import (
-	"sync"
-	"time"
+	"context"
 
-	"k8s.io/apimachinery/pkg/types"
+	corev1 "k8s.io/api/core/v1"
 )
 
-const defaultRuntimeSnapshotTTL = 5 * time.Second
-
-type cachedRuntimeSnapshot struct {
-	podUID    types.UID
-	fetchedAt time.Time
-	snapshot  *RuntimeSnapshot
+// runtimeReadings is what each pod's runtime reported during one pass of the
+// reconciler. Every step of a pass reads a runtime through it: the account,
+// the ranking, the health check, the pool policy and the division of a card.
+// So a runtime is read once a pass, and the steps agree on what they saw.
+//
+// A step that changes a runtime replaces its reading with the one it took to
+// confirm the change, or forgets the reading, so the next step to ask reads the
+// runtime again. No step acts on a reading it knows is out of date.
+//
+// A reading lives for one pass. Nothing carries over between passes, so an
+// account is never built from what a runtime said before this pass began.
+type runtimeReadings struct {
+	runtime RuntimeClient
+	byPod   map[string]runtimeReading
 }
 
-// runtimeSnapshotCache bounds controller-to-runtime observation traffic. It is
-// deliberately process-local: a restart simply repopulates it from sidecars.
-type runtimeSnapshotCache struct {
-	mu      sync.Mutex
-	ttl     time.Duration
-	now     func() time.Time
-	entries map[types.NamespacedName]cachedRuntimeSnapshot
+type runtimeReading struct {
+	snapshot *RuntimeSnapshot
+	err      error
 }
 
-func newRuntimeSnapshotCache(ttl time.Duration, now func() time.Time) *runtimeSnapshotCache {
-	if ttl <= 0 {
-		ttl = defaultRuntimeSnapshotTTL
-	}
-	if now == nil {
-		now = time.Now
-	}
-	return &runtimeSnapshotCache{
-		ttl:     ttl,
-		now:     now,
-		entries: make(map[types.NamespacedName]cachedRuntimeSnapshot),
-	}
+func newRuntimeReadings(runtime RuntimeClient) *runtimeReadings {
+	return &runtimeReadings{runtime: runtime, byPod: map[string]runtimeReading{}}
 }
 
-// Get returns a fresh snapshot for a pod. An expired snapshot is never used if
-// refresh fails, preventing the scheduler from making a decision on stale HBM.
-func (c *runtimeSnapshotCache) Get(
-	key types.NamespacedName,
-	podUID types.UID,
-	refresh func() (*RuntimeSnapshot, error),
-) (*RuntimeSnapshot, bool) {
-	now := c.now()
-	c.mu.Lock()
-	entry, found := c.entries[key]
-	if found && entry.podUID == podUID && now.Sub(entry.fetchedAt) < c.ttl {
-		c.mu.Unlock()
-		return entry.snapshot, true
+// of returns this pass's reading of a pod's runtime, and reads the runtime the
+// first time it is asked for. A runtime that did not answer is not asked again
+// in the same pass.
+func (rr *runtimeReadings) of(ctx context.Context, pod *corev1.Pod) (*RuntimeSnapshot, error) {
+	if reading, found := rr.byPod[pod.Name]; found {
+		return reading.snapshot, reading.err
 	}
-	c.mu.Unlock()
+	snapshot, err := rr.runtime.Snapshot(ctx, pod.Status.PodIP, DefaultRuntimePort)
+	rr.byPod[pod.Name] = runtimeReading{snapshot: snapshot, err: err}
+	return snapshot, err
+}
 
-	snapshot, err := refresh()
-	if err != nil || snapshot == nil {
-		c.mu.Lock()
-		entry, found = c.entries[key]
-		if found && entry.podUID == podUID && now.Sub(entry.fetchedAt) >= c.ttl {
-			delete(c.entries, key)
+// ofPods returns the readings of several pods by pod name. A pod whose runtime
+// did not answer is simply absent.
+func (rr *runtimeReadings) ofPods(ctx context.Context, pods []corev1.Pod) map[string]*RuntimeSnapshot {
+	snapshots := make(map[string]*RuntimeSnapshot, len(pods))
+	for i := range pods {
+		snapshot, err := rr.of(ctx, &pods[i])
+		if err != nil || snapshot == nil {
+			continue
 		}
-		c.mu.Unlock()
-		return nil, false
+		snapshots[pods[i].Name] = snapshot
 	}
+	return snapshots
+}
 
-	c.mu.Lock()
-	c.entries[key] = cachedRuntimeSnapshot{
-		podUID:    podUID,
-		fetchedAt: now,
-		snapshot:  snapshot,
+// replace puts in the reading a step took after changing a runtime.
+func (rr *runtimeReadings) replace(pod *corev1.Pod, snapshot *RuntimeSnapshot) {
+	if rr == nil {
+		return
 	}
-	c.mu.Unlock()
-	return snapshot, true
+	rr.byPod[pod.Name] = runtimeReading{snapshot: snapshot}
+}
+
+// forget drops a pod's reading after a step changed its runtime without
+// reading it back.
+func (rr *runtimeReadings) forget(podName string) {
+	if rr == nil {
+		return
+	}
+	delete(rr.byPod, podName)
 }
 
 // PodPlacementState is the scheduling-relevant summary of one warm pod. It is
