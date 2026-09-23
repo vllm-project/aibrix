@@ -161,6 +161,12 @@ type RoutingContext struct {
 	targetPod    atomic.Pointer[v1.Pod]
 	targetPort   atomic.Int32
 	lastError    atomic.Pointer[error]
+
+	// routingKnobs holds the non-PD routing overrides of this request's model
+	// config profile (see RoutingKnobs). The gateway's routing entry resolves
+	// them once per request so every strategy on the routing path reads the
+	// same validated values. Nil when the profile sets none.
+	routingKnobs atomic.Pointer[RoutingKnobs]
 	tokens       []int           // Cache of tokenized prompts
 	predictor    OutputPredictor // OutputPredictor gained from cache
 	statsUpdated int32           // Use to flag if in-memory realtime statistics has been updated for the request.
@@ -451,6 +457,11 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.Span = nil
 	r.RespHeaders = map[string]string{}
 	r.ConfigProfile = nil
+	// The profile is gone, so the knobs derived from it must go too: a pooled
+	// context handed to the next request would otherwise steer models the new
+	// profile never configured (ResolveRoutingKnobs sets them once per request,
+	// and a request without a profile leaves them unset). See SetRoutingKnobs.
+	r.routingKnobs.Store(nil)
 	r.ReplicaInflightAdmitted = false
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)

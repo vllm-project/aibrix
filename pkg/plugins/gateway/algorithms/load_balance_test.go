@@ -406,7 +406,7 @@ func TestLoadBalanceScore(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := loadBalanceScore(tt.load, tt.capacity, tt.kvFree)
+			got := loadBalanceScore(tt.load, tt.capacity, tt.kvFree, loadBalanceKVPressureAlpha, loadBalanceKVCriticalFree)
 			if math.IsInf(tt.want, 1) {
 				assert.True(t, math.IsInf(got, 1), "got %v", got)
 				return

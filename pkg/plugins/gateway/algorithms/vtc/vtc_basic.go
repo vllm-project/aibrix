@@ -91,6 +91,12 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 		return ctx.TargetAddress(), nil
 	}
 
+	// The profile may retune the VTC score for its own requests; the package
+	// defaults are the environment-derived values.
+	maxPodLoad := ctx.RoutingKnobs().VTCMaxPodLoadOrDefault(maxPodLoad)
+	fairnessWeight := ctx.RoutingKnobs().VTCFairnessWeightOrDefault(fairnessWeight)
+	utilizationWeight := ctx.RoutingKnobs().VTCUtilizationWeightOrDefault(utilizationWeight)
+
 	inputTokens := r.tokenEstimator.EstimateInputTokens(ctx.Message)
 	outputTokens := r.tokenEstimator.EstimateOutputTokens(ctx.Message)
 
@@ -228,6 +234,12 @@ func (r *BasicVTCRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.
 	if user == nil {
 		return scores, scored, fmt.Errorf("VTC routing not possible: user is nil")
 	}
+
+	// The profile may retune the VTC score for its own requests; the package
+	// defaults are the environment-derived values.
+	maxPodLoad := ctx.RoutingKnobs().VTCMaxPodLoadOrDefault(maxPodLoad)
+	fairnessWeight := ctx.RoutingKnobs().VTCFairnessWeightOrDefault(fairnessWeight)
+	utilizationWeight := ctx.RoutingKnobs().VTCUtilizationWeightOrDefault(utilizationWeight)
 
 	userTokens, err := r.tokenTracker.GetTokenCount(ctx.Context, *user)
 	if err != nil {

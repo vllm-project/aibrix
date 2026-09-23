@@ -1062,13 +1062,16 @@ func (r *pdRouter) scorePreparedPrefillPods(routingCtx *types.RoutingContext, pr
 	}
 	meanRequestCount := mean(requestCounts)
 	stdDevRequestCount := standardDeviation(requestCounts)
+	// The prefill candidacy filter shares AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR with
+	// the prefix-cache strategies; the request profile may sharpen it per request.
+	sigma := routingCtx.RoutingKnobs().PrefixCacheStandardDeviationFactorOrDefault(standardDeviationFactor)
 
 	prefillScores := map[string]*Scores{}
 	maxPrefillScore := float64(1)
 	for _, pod := range prefillPods {
 		rolesetName := pod.Labels[PDRoleSetIdentifier]
 		reqCnt := float64(podRequestCount[pod.Name])
-		if reqCnt > meanRequestCount+float64(standardDeviationFactor)*stdDevRequestCount {
+		if reqCnt > meanRequestCount+float64(sigma)*stdDevRequestCount {
 			if klog.V(4).Enabled() {
 				klog.V(4).InfoS("prefill pod request count is higher than mean request count, skipping",
 					"request_id", routingCtx.RequestID, "pod_name", pod.Name,

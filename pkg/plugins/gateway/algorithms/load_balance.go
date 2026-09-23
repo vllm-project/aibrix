@@ -145,18 +145,26 @@ func (r *loadBalanceRouter) ScoreAll(ctx *types.RoutingContext, readyPodList typ
 
 	counts, err := r.cache.GetPodsRunningRequests(pods)
 	capacities := r.capacities(pods)
+
+	// The profile may sharpen the score for its own requests; the package
+	// defaults are the environment-derived values.
+	knobs := ctx.RoutingKnobs()
+	queuedWeight := knobs.LoadBalanceQueuedWeightOrDefault(loadBalanceQueuedWeight)
+	kvPressureAlpha := knobs.LoadBalanceKVPressureAlphaOrDefault(loadBalanceKVPressureAlpha)
+	kvCriticalFree := knobs.LoadBalanceKVCriticalFreeOrDefault(loadBalanceKVCriticalFree)
+
 	for i, pod := range pods {
 		running := 0.0
 		if err == nil && counts != nil {
 			running = float64(counts[utils.GeneratePodKey(pod.Namespace, pod.Name)])
 		}
 		load := running
-		if loadBalanceQueuedWeight > 0 {
+		if queuedWeight > 0 {
 			queued := GetPodModelMetricsSimpleValue(r.cache, pod.Name, pod.Namespace, ctx.Model, metrics.NumRequestsWaiting)
-			load += loadBalanceQueuedWeight * queued
+			load += queuedWeight * queued
 		}
 		kvFree := r.kvFreeFraction(ctx, pod)
-		scores[i] = loadBalanceScore(load, capacities[i], kvFree)
+		scores[i] = loadBalanceScore(load, capacities[i], kvFree, kvPressureAlpha, kvCriticalFree)
 		scored[i] = true
 
 		if klog.V(4).Enabled() {
@@ -175,7 +183,9 @@ func (r *loadBalanceRouter) ScoreAll(ctx *types.RoutingContext, readyPodList typ
 
 // loadBalanceScore is the effective load of a replica: the work already committed to it, divided by
 // how fast it drains work, inflated as its KV cache fills. capacity is in tokens/sec and kvFree in
-// [0, 1]. Below loadBalanceKVCriticalFree the replica is unusable and the score is +Inf.
+// [0, 1]. Below the critical free-KV fraction the replica is unusable and the score is +Inf.
+// The penalty strength and that fraction are the environment defaults unless the request's
+// model config profile overrides them (see types.RoutingKnobs).
 //
 // That +Inf only guarantees exclusion when load-balance is the router actually selecting the pod
 // (loadBalanceRouter.Route). When load-balance is one voice in a multi-strategy blend (its default
@@ -183,12 +193,12 @@ func (r *loadBalanceRouter) ScoreAll(ctx *types.RoutingContext, readyPodList typ
 // as "not scored" and maps it to a plain 0 for load-balance's weighted component: a strong penalty,
 // not an exclusion. Another blended strategy that scores the same pod highly (e.g. a prefix-cache
 // hit) can still win the route for it.
-func loadBalanceScore(load, capacity, kvFree float64) float64 {
-	if kvFree < loadBalanceKVCriticalFree {
+func loadBalanceScore(load, capacity, kvFree, kvPressureAlpha, kvCriticalFree float64) float64 {
+	if kvFree < kvCriticalFree {
 		return math.Inf(1)
 	}
 	kvUsed := 1 - kvFree
-	return load / capacity * (1 + loadBalanceKVPressureAlpha*kvUsed*kvUsed)
+	return load / capacity * (1 + kvPressureAlpha*kvUsed*kvUsed)
 }
 
 // formatLoadBalanceScore makes a score safe for klog's JSON formatter, which cannot
@@ -330,8 +340,14 @@ func ApplyLoadImbalanceGate(ctx *types.RoutingContext, c cache.Cache, readyPods 
 		return readyPods
 	}
 
+	// The profile may tune the gate for its own requests; the package defaults
+	// are the environment-derived values.
+	knobs := ctx.RoutingKnobs()
+	imbalanceFactor := knobs.LoadBalanceImbalanceFactorOrDefault(podRunningRequestImbalanceFactor)
+	imbalanceMinGap := knobs.LoadBalanceImbalanceMinGapOrDefault(podRunningRequestImbalanceMinGap)
+
 	podRequestCount := getRequestCounts(c, readyPods)
-	leastPods, minValue, maxValue, imbalanced := getTargetPodListOnLoadImbalance(podRequestCount, readyPods)
+	leastPods, minValue, maxValue, imbalanced := getTargetPodListOnLoadImbalance(podRequestCount, readyPods, imbalanceFactor, imbalanceMinGap)
 	if !imbalanced {
 		return readyPods
 	}
@@ -383,7 +399,7 @@ func ApplyLoadImbalanceGate(ctx *types.RoutingContext, c cache.Cache, readyPods 
 // capacity-aware scoring gets a chance to run. Move this to compare capacity-normalized load
 // (running/capacity, rescaled to the pool's mean capacity so the existing factor/min-gap
 // thresholds keep their current "requests" units and defaults) instead of raw counts.
-func getTargetPodListOnLoadImbalance(podRequestCount map[string]int, readyPods []*v1.Pod) (targetPodList []*v1.Pod, minValue, maxValue int, imbalanced bool) {
+func getTargetPodListOnLoadImbalance(podRequestCount map[string]int, readyPods []*v1.Pod, imbalanceFactor float64, imbalanceMinGap int) (targetPodList []*v1.Pod, minValue, maxValue int, imbalanced bool) {
 	n := len(podRequestCount)
 	if n == 0 {
 		return nil, 0, 0, false
@@ -401,12 +417,12 @@ func getTargetPodListOnLoadImbalance(podRequestCount map[string]int, readyPods [
 		}
 	}
 
-	if maxValue-minValue < podRunningRequestImbalanceMinGap {
+	if maxValue-minValue < imbalanceMinGap {
 		return nil, minValue, maxValue, false
 	}
 	if n > 2 {
 		meanOfOthers := float64(sum-maxValue) / float64(n-1)
-		if float64(maxValue) <= podRunningRequestImbalanceFactor*(meanOfOthers+1) {
+		if float64(maxValue) <= imbalanceFactor*(meanOfOthers+1) {
 			return nil, minValue, maxValue, false
 		}
 	}

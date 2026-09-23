@@ -49,6 +49,12 @@ var (
 // DefaultRouterManager returns the production process-wide router manager.
 func DefaultRouterManager() *RouterManager { return defaultRM }
 
+// maxWeightCoefficient is the largest weight coefficient a routing string may
+// carry. The auto-blend weight parser enforces the same bound, so a
+// profile-provided weight above it cannot produce a blend string the router
+// then refuses to parse.
+const maxWeightCoefficient = 1000000
+
 // RouterItem represents a single routing algorithm and its weight coefficient for multi-router config.
 type RouterItem struct {
 	Name        string
@@ -101,7 +107,7 @@ func ParseMultiRouterConfig(routerStr string) (*MultiRouterConfig, error) {
 			if err != nil {
 				return nil, fmt.Errorf("invalid weight coefficient in: %s (must be an integer)", part)
 			}
-			if parsedCoef < 0 || parsedCoef > 1000000 {
+			if parsedCoef < 0 || parsedCoef > maxWeightCoefficient {
 				return nil, fmt.Errorf("weight coefficient out of bounds [0, 1000000] in: %s", part)
 			}
 			coefInt = parsedCoef
@@ -179,6 +185,30 @@ var (
 	autoBlendPrefixCacheLoadBalanceWeight = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT", 4)
 )
 
+// autoBlendWeights carries the effective auto-blend weights of one request: the
+// environment defaults above with the model config profile's overrides applied.
+type autoBlendWeights struct {
+	loadBalance            int
+	leastRequest           int
+	prefixCache            int
+	prefixCacheLoadBalance int
+}
+
+// effectiveAutoBlendWeights resolves the auto-blend weights of this request. It
+// runs before appendLoadBalanceBlend builds the blend string, which is also the
+// multiRouterCache key, so requests whose profile carries different weights end
+// up on different - and separately weight-configured - composite routers. A nil
+// routingCtx leaves every weight at its environment default.
+func effectiveAutoBlendWeights(routingCtx *types.RoutingContext) autoBlendWeights {
+	knobs := routingCtx.RoutingKnobs()
+	return autoBlendWeights{
+		loadBalance:            knobs.AutoBlendLoadBalanceWeightOrDefault(autoBlendLoadBalanceWeight),
+		leastRequest:           knobs.AutoBlendLeastRequestWeightOrDefault(autoBlendLeastRequestWeight),
+		prefixCache:            knobs.AutoBlendPrefixCacheWeightOrDefault(autoBlendPrefixCacheWeight),
+		prefixCacheLoadBalance: knobs.AutoBlendPrefixCacheLoadBalanceWeightOrDefault(autoBlendPrefixCacheLoadBalanceWeight),
+	}
+}
+
 // maxCachedAlgorithmStrings bounds how many distinct algorithm-string keys
 // RouterManager.multiRouterCache and unblendableLogged will retain. Both maps are keyed by the
 // client-controlled routing-strategy string — which may embed an arbitrary weight coefficient
@@ -252,8 +282,11 @@ func mentionedAlgorithmNames(algStr string) map[string]bool {
 // to an exclusive strategy (pd, slo*) that manages its own pod selection and must not be
 // blended with anything else, or algStr is already the standalone "load-balance" or
 // "session-affinity" strategy (both of which must keep running their own Route(), not a blend).
-func appendLoadBalanceBlend(algStr string, cfg *MultiRouterConfig) (string, bool) {
-	if autoBlendLoadBalanceWeight <= 0 {
+//
+// weights holds the effective weights of this request (see effectiveAutoBlendWeights): the
+// environment defaults, or the values the request's model config profile set.
+func appendLoadBalanceBlend(algStr string, cfg *MultiRouterConfig, weights autoBlendWeights) (string, bool) {
+	if weights.loadBalance <= 0 {
 		return "", false
 	}
 
@@ -294,13 +327,13 @@ func appendLoadBalanceBlend(algStr string, cfg *MultiRouterConfig) (string, bool
 	blended := algStr
 	if !mentioned[string(RouterLoadBalance)] {
 		if prefixCacheOnly {
-			blended = fmt.Sprintf("%s:%d,%s:%d", RouterPrefixCache, autoBlendPrefixCacheWeight, RouterLoadBalance, autoBlendPrefixCacheLoadBalanceWeight)
+			blended = fmt.Sprintf("%s:%d,%s:%d", RouterPrefixCache, weights.prefixCache, RouterLoadBalance, weights.prefixCacheLoadBalance)
 		} else {
-			blended += fmt.Sprintf(",%s:%d", RouterLoadBalance, autoBlendLoadBalanceWeight)
+			blended += fmt.Sprintf(",%s:%d", RouterLoadBalance, weights.loadBalance)
 		}
 	}
-	if !includesPrefixCache && !includesSessionAffinity && !mentioned[string(RouterLeastRequest)] && autoBlendLeastRequestWeight > 0 {
-		blended += fmt.Sprintf(",%s:%d", RouterLeastRequest, autoBlendLeastRequestWeight)
+	if !includesPrefixCache && !includesSessionAffinity && !mentioned[string(RouterLeastRequest)] && weights.leastRequest > 0 {
+		blended += fmt.Sprintf(",%s:%d", RouterLeastRequest, weights.leastRequest)
 	}
 	if blended == algStr {
 		return "", false
@@ -779,9 +812,11 @@ func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error)
 		// for. The caller never sees this: ctx.Algorithm/algStr below is untouched, so
 		// headers, Validate(), and error messages all still reflect the original strategy
 		// name.
-		blended, ok := appendLoadBalanceBlend(algStr, cfg)
+		weights := effectiveAutoBlendWeights(ctx)
+		blended, ok := appendLoadBalanceBlend(algStr, cfg, weights)
 		if klog.V(4).Enabled() {
-			klog.V(4).Infof("routing select: algStr=%q autoBlendLoadBalanceWeight=%d autoBlendLeastRequestWeight=%d blend_ok=%v blended=%q", algStr, autoBlendLoadBalanceWeight, autoBlendLeastRequestWeight, ok, blended)
+			klog.V(4).Infof("routing select: algStr=%q autoBlendLoadBalanceWeight=%d autoBlendLeastRequestWeight=%d autoBlendPrefixCacheWeight=%d autoBlendPrefixCacheLoadBalanceWeight=%d blend_ok=%v blended=%q",
+				algStr, weights.loadBalance, weights.leastRequest, weights.prefixCache, weights.prefixCacheLoadBalance, ok, blended)
 		}
 		if ok {
 			if router, blendedOK := rm.tryAutoBlend(ctx, algStr, cfg, blended); blendedOK {

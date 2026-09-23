@@ -431,7 +431,10 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	}
 
 	if len(matchedPods) > 0 {
-		targetPod = getTargetPodFromMatchedPodsFromCounts(podRequestCount, readyPods, matchedPods)
+		// The profile may sharpen the standard-deviation cutoff for its own
+		// requests; the package default is the environment-derived value.
+		sigma := ctx.RoutingKnobs().PrefixCacheStandardDeviationFactorOrDefault(standardDeviationFactor)
+		targetPod = getTargetPodFromMatchedPodsFromCounts(podRequestCount, readyPods, matchedPods, sigma)
 		if targetPod != nil {
 			selection = selectionPrefixMatch
 		}
@@ -818,7 +821,10 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	}
 
 	if len(matchedPods) > 0 {
-		targetPod = getTargetPodFromMatchedPodsWithKeys(k.cache, readyPods, matchedPods)
+		// The profile may sharpen the standard-deviation cutoff for its own
+		// requests; the package default is the environment-derived value.
+		sigma := ctx.RoutingKnobs().PrefixCacheStandardDeviationFactorOrDefault(standardDeviationFactor)
+		targetPod = getTargetPodFromMatchedPodsWithKeys(k.cache, readyPods, matchedPods, sigma)
 		if targetPod != nil {
 			selection = selectionPrefixMatch
 			klog.InfoS("prefix_cache_matched_pods",
@@ -881,8 +887,10 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	return ctx.TargetAddress(), nil
 }
 
-// getTargetPodFromMatchedPodsWithKeys is similar to getTargetPodFromMatchedPods but uses pod keys
-func getTargetPodFromMatchedPodsWithKeys(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
+// getTargetPodFromMatchedPodsWithKeys is similar to getTargetPodFromMatchedPods but uses pod keys.
+// stdDevFactor is how many standard deviations above the mean replica request count a candidate
+// may sit before it is skipped: the environment default, or the request profile's override.
+func getTargetPodFromMatchedPodsWithKeys(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int, stdDevFactor int) *v1.Pod {
 	var targetPodKey string
 	requestCount := []float64{}
 
@@ -919,7 +927,7 @@ func getTargetPodFromMatchedPodsWithKeys(cache cache.Cache, readyPods []*v1.Pod,
 	// select targetpod with highest %prefixmatch and request_count within stddev
 	for _, podkey := range podkeys {
 		reqCnt := float64(podRequestCount[podkey])
-		if reqCnt <= meanRequestCount+float64(standardDeviationFactor)*stdDevRequestCount {
+		if reqCnt <= meanRequestCount+float64(stdDevFactor)*stdDevRequestCount {
 			targetPodKey = podkey
 			break
 		}
@@ -928,11 +936,11 @@ func getTargetPodFromMatchedPodsWithKeys(cache cache.Cache, readyPods []*v1.Pod,
 	return podKeyToPod[targetPodKey]
 }
 
-func getTargetPodFromMatchedPods(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
-	return getTargetPodFromMatchedPodsFromCounts(getRequestCounts(cache, readyPods), readyPods, matchedPods)
+func getTargetPodFromMatchedPods(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int, stdDevFactor int) *v1.Pod {
+	return getTargetPodFromMatchedPodsFromCounts(getRequestCounts(cache, readyPods), readyPods, matchedPods, stdDevFactor)
 }
 
-func getTargetPodFromMatchedPodsFromCounts(podRequestCount map[string]int, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
+func getTargetPodFromMatchedPodsFromCounts(podRequestCount map[string]int, readyPods []*v1.Pod, matchedPods map[string]int, stdDevFactor int) *v1.Pod {
 	var targetPodName string
 	requestCount := make([]float64, 0, len(podRequestCount))
 
@@ -961,7 +969,7 @@ func getTargetPodFromMatchedPodsFromCounts(podRequestCount map[string]int, ready
 	// select targetpod with highest %prefixmatch and request_count within stddev
 	for _, podname := range podnames {
 		reqCnt := float64(podRequestCount[podname])
-		if reqCnt <= meanRequestCount+float64(standardDeviationFactor)*stdDevRequestCount {
+		if reqCnt <= meanRequestCount+float64(stdDevFactor)*stdDevRequestCount {
 			targetPodName = podname
 			break
 		}

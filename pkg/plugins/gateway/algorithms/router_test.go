@@ -733,7 +733,7 @@ func TestAppendLoadBalanceBlendAffinityRatio(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := ParseMultiRouterConfig(tc.algStr)
 			assert.NoError(t, err)
-			blended, ok := appendLoadBalanceBlend(tc.algStr, cfg)
+			blended, ok := appendLoadBalanceBlend(tc.algStr, cfg, effectiveAutoBlendWeights(nil))
 			assert.Equal(t, tc.wantOK, ok)
 			assert.Equal(t, tc.wantBlended, blended)
 		})
