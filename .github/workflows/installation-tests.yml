@@ -31,10 +31,16 @@ on:
       - 'go.mod'
       - 'go.sum'
 
+# Cancel superseded pull-request runs so the newest push starts first.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   mock-app-auth-test:
     name: Mock app auth test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Check out code
         uses: actions/checkout@v6
@@ -55,6 +61,7 @@ jobs:
   build-images:
     name: Build image (${{ matrix.image }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       matrix:
         include:
@@ -105,6 +112,7 @@ jobs:
     name: Installation E2E Tests
     needs: [build-images]
     runs-on: ubuntu-latest
+    timeout-minutes: 75
     steps:
       - name: Check out code
         uses: actions/checkout@v6
@@ -331,8 +339,9 @@ jobs:
   delete-artifacts:
     name: Delete image artifacts
     needs: [build-images, installation-test]
-    if: ${{ always() && !cancelled() }}
+    if: ${{ always() }}
     runs-on: ubuntu-latest  
+    timeout-minutes: 10
     steps:   
       - uses: geekyeggo/delete-artifact@v5
         with:
