@@ -391,8 +391,16 @@ of half a gibibyte and a hundredth of the card. A KV allocator hands out whole
 bundles of pages, so a smaller change moves no memory at all. These divisions
 are logged rather than raised as Events, since a busy card has one every round.
 
-Placement raises an Event on each claim whose limit it moves, and so does the
-health loop when it writes a limit back:
+A card whose engines change is divided on the next pass, without waiting for
+its round. That covers a model removed or failed, an engine that sleeps or
+wakes, and a declaration that changes. A model being placed divides its card
+itself, as above. Every move is carried out, however small. This is also how
+the room comes back when an engine cannot be started after its card was divided
+for it. The controller keeps what each card was divided for in memory only.
+After a restart it notes each card as it finds it, and the round divides it.
+
+Placement and a division after the engines change raise an Event on each claim
+whose limit they move, and so does the health loop when it writes a limit back:
 
 .. code-block:: bash
 

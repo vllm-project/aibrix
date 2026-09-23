@@ -225,6 +225,10 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			if uerr := r.Status().Update(ctx, pm); uerr != nil {
 				return requeueOnConflict(uerr)
 			}
+			// A card divided for an engine that then did not start has lost that
+			// engine again. Divide it now, so its neighbours get back the room
+			// they gave up for it.
+			r.divideCards(ctx, candidates)
 			return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, nil
 		}
 	case desiredReplicas(pm) < int32(len(pm.Status.Instances)):
@@ -444,7 +448,8 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 	}
 	load := r.computePodLoad(ctx, pm.Namespace)
 	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL, parallelism)
-	ledgers := r.collectPodLedgers(ctx, pm.Namespace, candidates, r.freshSnapshots(ctx, candidates))
+	claims, listErr := r.listClaimsForAccount(ctx, pm.Namespace)
+	ledgers := podLedgersFrom(claims, listErr, candidates, r.freshSnapshots(ctx, candidates))
 	admissible, refusals := admissibleCandidates(candidates, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(pm))
 	rankByRoom(placementStates, ledgers)
 
@@ -513,6 +518,10 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 				continue
 			}
 			kvLimitBytes = planned
+			// The card is now divided for this engine too, so the next pass must
+			// not take its arrival for a change to divide the card for again.
+			r.divisions().divided(cardOf(pod), cardComposition(claims, pod.Name,
+				compositionEntry(pm, modelv1alpha1.ModelClaimActivating)))
 		}
 
 		// Record the instance before the engine exists. The record is what the

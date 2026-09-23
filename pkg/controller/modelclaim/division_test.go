@@ -17,12 +17,15 @@ limitations under the License.
 package modelclaim
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
@@ -33,25 +36,32 @@ func TestCardDivisionStateDividesACardOncePerRound(t *testing.T) {
 	divisions := newCardDivisionState(func() time.Time { return now })
 	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
 	other := types.NamespacedName{Namespace: testNamespace, Name: "warm-2"}
+	due := func(card types.NamespacedName) bool {
+		divide, _ := divisions.due(card, "unchanged")
+		return divide
+	}
 
-	assert.True(t, divisions.due(card))
-	assert.False(t, divisions.due(card))
-	assert.True(t, divisions.due(other), "each card has a round of its own")
+	assert.True(t, due(card))
+	assert.False(t, due(card))
+	assert.True(t, due(other), "each card has a round of its own")
 
 	now = now.Add(DefaultRequeueDuration)
-	assert.True(t, divisions.due(card))
+	assert.True(t, due(card))
 }
 
 func TestCardDivisionStateForgetsCardsLongGone(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	divisions := newCardDivisionState(func() time.Time { return now })
 	gone := types.NamespacedName{Namespace: testNamespace, Name: "deleted"}
-	require.True(t, divisions.due(gone))
+	divide, _ := divisions.due(gone, "a")
+	require.True(t, divide)
 
 	now = now.Add(30 * DefaultRequeueDuration)
-	divisions.due(types.NamespacedName{Namespace: testNamespace, Name: "warm-1"})
+	divisions.due(types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, "b")
 
 	_, remembered := divisions.lastRound[gone]
+	assert.False(t, remembered)
+	_, remembered = divisions.compositions[gone]
 	assert.False(t, remembered)
 }
 
@@ -170,4 +180,214 @@ func TestReconcileDividesACardOnlyOncePerRound(t *testing.T) {
 	reconcileOnce(t, r, "solo")
 	require.Len(t, runtime.kvLimitCalls, 2)
 	assert.Equal(t, int64(60)<<30, runtime.kvLimitCalls[1].LimitBytes)
+}
+
+func TestCardDivisionStateDividesACardWhoseEnginesChangedAtOnce(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	divisions := newCardDivisionState(func() time.Time { return now })
+	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+
+	divide, changed := divisions.due(card, "a")
+	assert.True(t, divide, "a card seen for the first time is divided by the round")
+	assert.False(t, changed, "a card seen for the first time is not taken as changed")
+
+	divide, _ = divisions.due(card, "a")
+	assert.False(t, divide)
+
+	divide, changed = divisions.due(card, "a,b")
+	assert.True(t, divide, "a card whose engines changed does not wait for the round")
+	assert.True(t, changed)
+
+	divide, _ = divisions.due(card, "a,b")
+	assert.False(t, divide, "what the card was divided for is remembered")
+}
+
+func TestCardDivisionStateCountsAPlacementAsTheCardsDivision(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	divisions := newCardDivisionState(func() time.Time { return now })
+	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+
+	divisions.divided(card, "a,b")
+
+	divide, _ := divisions.due(card, "a,b")
+	assert.False(t, divide)
+	divide, changed := divisions.due(card, "a")
+	assert.True(t, divide)
+	assert.True(t, changed)
+}
+
+func TestCardCompositionDescribesTheEnginesOnOneCard(t *testing.T) {
+	first := claimOnPod("first", "warm-1", modelv1alpha1.ModelClaimActive, 20<<30, 4<<30)
+	second := claimOnPod("second", "warm-1", modelv1alpha1.ModelClaimSleeping, 20<<30, 4<<30)
+	elsewhere := claimOnPod("elsewhere", "warm-2", modelv1alpha1.ModelClaimActive, 20<<30, 4<<30)
+	claims := &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*second, *elsewhere, *first}}
+	reordered := &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*first, *second}}
+
+	composition := cardComposition(claims, "warm-1")
+
+	assert.Equal(t, composition, cardComposition(reordered, "warm-1"), "order does not matter")
+	assert.NotContains(t, composition, "elsewhere")
+	assert.Contains(t, composition, "second/asleep")
+
+	second.Status.Instances[0].Phase = modelv1alpha1.ModelClaimActive
+	assert.NotEqual(t, composition, cardComposition(
+		&modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*first, *second}}, "warm-1"),
+		"a wake changes the card")
+
+	second.Spec.PerGPU.KVFloor = *resource.NewQuantity(8<<30, resource.BinarySI)
+	second.Status.Instances[0].Phase = modelv1alpha1.ModelClaimSleeping
+	assert.NotEqual(t, composition, cardComposition(
+		&modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*first, *second}}, "warm-1"),
+		"a new declaration changes the card")
+}
+
+// twoEnginesSharingACard is an 80 GiB card divided evenly between two idle
+// claims, "stays" and "leaves", each held to 20 GiB with its 4 GiB floor
+// mapped. The clock the divisions read is the one returned.
+func twoEnginesSharingACard(t *testing.T) (*ModelClaimReconciler, *fakeRuntime, *corev1.Pod, *time.Time) {
+	t.Helper()
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	stays := withFinalizer(claimOnPod("stays", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	stays.Status.Instances[0].Port = 9001
+	stays.Status.Instances[0].KVLimitBytes = 20 << 30
+	leaves := claimOnPod("leaves", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30)
+	leaves.Status.Instances[0].KVLimitBytes = 20 << 30
+	snapshot.Models = []RuntimeSnapshotModel{
+		engineHolding("stays", 4<<30, 20<<30),
+		engineHolding("leaves", 4<<30, 20<<30),
+	}
+	r, runtime := newReconciler(t, stays, leaves, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	now := time.Unix(1_700_000_000, 0)
+	r.Divisions = newCardDivisionState(func() time.Time { return now })
+	return r, runtime, pod, &now
+}
+
+// leave deletes the claim "leaves" and stops its engine.
+func leave(t *testing.T, r *ModelClaimReconciler, runtime *fakeRuntime, pod *corev1.Pod) {
+	t.Helper()
+	require.NoError(t, r.Delete(context.Background(), getModel(t, r, "leaves")))
+	snapshot := runtime.snapshots[pod.Status.PodIP]
+	snapshot.Models = snapshot.Models[:1]
+}
+
+func TestReconcileDividesACardAgainAtOnceWhenAnEngineLeaves(t *testing.T) {
+	r, runtime, pod, _ := twoEnginesSharingACard(t)
+	reconcileOnce(t, r, "stays")
+	require.Empty(t, runtime.kvLimitCalls, "an even split needs no write")
+
+	leave(t, r, runtime, pod)
+	reconcileOnce(t, r, "stays")
+
+	// Within the same round, the engine left gets the whole card less its own
+	// footprint, and its claim is told.
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, "stays", runtime.kvLimitCalls[0].ModelName)
+	assert.Equal(t, int64(60)<<30, runtime.kvLimitCalls[0].LimitBytes)
+	assert.Equal(t, int64(60)<<30, getModel(t, r, "stays").Status.Instances[0].KVLimitBytes)
+	told := false
+	for _, event := range recordedEvents(t, r) {
+		if strings.Contains(event, "KVLimitSet") && strings.Contains(event, "stays") {
+			told = true
+		}
+	}
+	assert.True(t, told, "a division after the engines change is raised on the claims it moves")
+}
+
+func TestReconcileTriesAFailedDivisionAgainOnlyByTheRound(t *testing.T) {
+	r, runtime, pod, clock := twoEnginesSharingACard(t)
+	reconcileOnce(t, r, "stays")
+	leave(t, r, runtime, pod)
+	// The write reaches no segment, so the reading that should confirm it does
+	// not, and the division fails.
+	runtime.deafToKVLimits = true
+
+	reconcileOnce(t, r, "stays")
+	require.Len(t, runtime.kvLimitCalls, 1)
+	reconcileOnce(t, r, "stays")
+	assert.Len(t, runtime.kvLimitCalls, 1, "a failed division waits for the round rather than every pass")
+
+	*clock = clock.Add(DefaultRequeueDuration)
+	runtime.deafToKVLimits = false
+	reconcileOnce(t, r, "stays")
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, int64(60)<<30, runtime.kvLimitCalls[1].LimitBytes)
+}
+
+func TestReconcileDividesACardAgainAtOnceWhenAnEngineWakes(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	awake := withFinalizer(claimOnPod("awake", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	awake.Status.Instances[0].Port = 9001
+	awake.Status.Instances[0].KVLimitBytes = 20 << 30
+	asleep := claimOnPod("asleep", pod.Name, modelv1alpha1.ModelClaimSleeping, 20<<30, 4<<30)
+	asleep.Status.Instances[0].KVLimitBytes = 20 << 30
+	sleeping := engineHolding("asleep", 0, 20<<30)
+	sleeping.Phase = runtimePhaseSleeping
+	sleeping.Ready = false
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("awake", 4<<30, 20<<30), sleeping}
+	r, runtime := newReconciler(t, awake, asleep, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	now := time.Unix(1_700_000_000, 0)
+	r.Divisions = newCardDivisionState(func() time.Time { return now })
+	reconcileOnce(t, r, "awake")
+	require.Len(t, runtime.kvLimitCalls, 2)
+
+	// The engine wakes, and its own claim's health loop marks it active.
+	snapshot.Models[1].Phase = runtimePhaseActive
+	snapshot.Models[1].Ready = true
+	woken := getModel(t, r, "asleep")
+	woken.Status.Instances[0].Phase = modelv1alpha1.ModelClaimActive
+	require.NoError(t, r.Status().Update(context.Background(), woken))
+	runtime.kvLimitCalls = nil
+	reconcileOnce(t, r, "awake")
+
+	// Within the same round, the 32 GiB spare is shared between the two again.
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, "awake", runtime.kvLimitCalls[0].ModelName)
+	assert.Equal(t, int64(20)<<30, runtime.kvLimitCalls[0].LimitBytes)
+	assert.Equal(t, "asleep", runtime.kvLimitCalls[1].ModelName)
+	assert.Equal(t, int64(20)<<30, runtime.kvLimitCalls[1].LimitBytes)
+}
+
+func TestReconcileGivesTheRoomBackWhenTheEnginePlacedCannotStart(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].KVLimitBytes = 600
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	runtime.failActivate = true
+
+	reconcileOnce(t, r, pm.Name)
+
+	// The card was divided to make room for the model, and its engine then did
+	// not start. The card is divided again in the same pass, and the neighbour,
+	// alone on it, gets the whole card less its footprint.
+	require.Len(t, runtime.activateCalls, 1)
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, int64(200), runtime.kvLimitCalls[0].LimitBytes)
+	assert.Equal(t, int64(700), runtime.kvLimitCalls[1].LimitBytes)
+	assert.Equal(t, int64(700), getModel(t, r, "neighbour").Status.Instances[0].KVLimitBytes)
+	assert.Empty(t, getModel(t, r, pm.Name).Status.Instances)
+}
+
+func TestReconcileDividesACardOnceWhenAModelIsPlacedOnIt(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].KVLimitBytes = 600
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	now := time.Unix(1_700_000_000, 0)
+	r.Divisions = newCardDivisionState(func() time.Time { return now })
+
+	reconcileOnce(t, r, pm.Name)
+	reconcileOnce(t, r, pm.Name)
+
+	// Placement divided the card for the engines now on it, so neither pass
+	// takes the new model for a change to divide the card for again.
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, int64(200), runtime.kvLimitCalls[0].LimitBytes)
 }

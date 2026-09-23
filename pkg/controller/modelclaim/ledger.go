@@ -227,6 +227,40 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 	candidates []corev1.Pod,
 	snapshots map[string]*RuntimeSnapshot,
 ) map[string]podLedger {
+	claims, err := r.listClaimsForAccount(ctx, namespace)
+	return podLedgersFrom(claims, err, candidates, snapshots)
+}
+
+// listClaimsForAccount lists the claims in a namespace for the GPU memory
+// account.
+//
+// Deliberately not the cached client. An instance recorded moments ago may
+// not have reached the informer yet, and an instance missing from the account
+// is memory a second claim would be told is free.
+func (r *ModelClaimReconciler) listClaimsForAccount(
+	ctx context.Context,
+	namespace string,
+) (*modelv1alpha1.ModelClaimList, error) {
+	reader := client.Reader(r.Client)
+	if r.APIReader != nil {
+		reader = r.APIReader
+	}
+	claims := &modelv1alpha1.ModelClaimList{}
+	if err := reader.List(ctx, claims, client.InNamespace(namespace)); err != nil {
+		klog.ErrorS(err, "list model claims for the GPU memory account", "namespace", namespace)
+		return nil, err
+	}
+	return claims, nil
+}
+
+// podLedgersFrom builds one account per candidate pod from a listing of the
+// claims, or marks every account as a hole when the listing failed.
+func podLedgersFrom(
+	claims *modelv1alpha1.ModelClaimList,
+	listErr error,
+	candidates []corev1.Pod,
+	snapshots map[string]*RuntimeSnapshot,
+) map[string]podLedger {
 	ledgers := make(map[string]podLedger, len(candidates))
 	for i := range candidates {
 		pod := &candidates[i]
@@ -247,16 +281,7 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 		}
 	}
 
-	// Deliberately not the cached client. An instance recorded moments ago may
-	// not have reached the informer yet, and an instance missing from the
-	// account is memory a second claim would be told is free.
-	reader := client.Reader(r.Client)
-	if r.APIReader != nil {
-		reader = r.APIReader
-	}
-	claims := &modelv1alpha1.ModelClaimList{}
-	if err := reader.List(ctx, claims, client.InNamespace(namespace)); err != nil {
-		klog.ErrorS(err, "collect pod ledgers: list model claims", "namespace", namespace)
+	if listErr != nil {
 		// Without the claims, nothing says what is recorded on a pod, and so
 		// nothing says whether it has a card. Every pod is turned away, and
 		// the claims are the reason. A card that this reading did not show

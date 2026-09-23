@@ -18,12 +18,17 @@ package modelclaim
 
 import (
 	"context"
+	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
+
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 )
 
 // division says why a card is being divided, which decides how small a move is
@@ -41,6 +46,13 @@ type division struct {
 // is told.
 var placementDivision = division{announce: true}
 
+// compositionDivision divides a card whose engines changed since it was last
+// divided: an instance removed or failed, an engine asleep or awake, or a
+// declaration changed. A model being placed divides its card itself. The plan
+// the card was last divided by was made for other engines, so every move is
+// carried out, and each moved engine's claim is told.
+var compositionDivision = division{announce: true}
+
 // loadDivision follows the load on a card. It runs every round, so a move too
 // small to shift memory is skipped, and the moves are logged rather than
 // raised on the claims.
@@ -48,13 +60,15 @@ func loadDivision(hbmUsableBytes int64) division {
 	return division{minimumChangeBytes: minimumKVLimitChangeBytes(hbmUsableBytes)}
 }
 
-// cardDivisionState remembers when each card was last divided to follow its
-// load. It is controller-local: after a restart every card is simply due.
+// cardDivisionState remembers, for each card, when it was last divided and
+// which engines it was divided for. It is controller-local: after a restart
+// every card is seen for the first time.
 type cardDivisionState struct {
-	mu         sync.Mutex
-	now        func() time.Time
-	lastRound  map[types.NamespacedName]time.Time
-	lastPruned time.Time
+	mu           sync.Mutex
+	now          func() time.Time
+	lastRound    map[types.NamespacedName]time.Time
+	compositions map[types.NamespacedName]string
+	lastPruned   time.Time
 }
 
 func newCardDivisionState(now func() time.Time) *cardDivisionState {
@@ -62,30 +76,55 @@ func newCardDivisionState(now func() time.Time) *cardDivisionState {
 		now = time.Now
 	}
 	return &cardDivisionState{
-		now:       now,
-		lastRound: make(map[types.NamespacedName]time.Time),
+		now:          now,
+		lastRound:    make(map[types.NamespacedName]time.Time),
+		compositions: make(map[types.NamespacedName]string),
 	}
 }
 
-// due reports whether a card may be divided to follow its load now, and if so
-// counts this as the card's division for the round. Every claim on a card
-// reconciles on its own schedule and each of them sees the same card, so
-// without this the card would be divided once per claim per round.
-func (s *cardDivisionState) due(card types.NamespacedName) bool {
+// due reports whether a card is to be divided now, and whether that is because
+// its engines changed since it was last divided.
+//
+// A card whose engines changed is due at once. Any other card is due once a
+// round: every claim on a card reconciles on its own schedule and each of them
+// sees the same card, so without the round the card would be divided once per
+// claim. Either way, the engines are remembered whether or not the division
+// then succeeds, so a card that cannot be divided is tried again by the round
+// rather than on every pass.
+//
+// A card seen for the first time, as every card is after a restart, is not
+// taken as changed. Its engines are noted, and the round divides it.
+func (s *cardDivisionState) due(card types.NamespacedName, composition string) (divide, changed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
 	s.pruneLocked(now)
+	previous, known := s.compositions[card]
+	s.compositions[card] = composition
+	if known && previous != composition {
+		s.lastRound[card] = now
+		return true, true
+	}
 	if last, found := s.lastRound[card]; found && now.Sub(last) < DefaultRequeueDuration {
-		return false
+		return false, false
 	}
 	s.lastRound[card] = now
-	return true
+	return true, false
+}
+
+// divided records a division made outside the rounds, which is what placement
+// does, so the next pass does not take the new engine for a change, and the
+// card's round starts again.
+func (s *cardDivisionState) divided(card types.NamespacedName, composition string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.compositions[card] = composition
+	s.lastRound[card] = s.now()
 }
 
 // pruneLocked forgets cards not divided for a long while, which is what a
 // deleted pod leaves behind. Forgetting a card that is still there costs
-// nothing: a card with no entry is simply due.
+// nothing: it is simply seen for the first time again.
 func (s *cardDivisionState) pruneLocked(now time.Time) {
 	const horizon = 30 * DefaultRequeueDuration
 	if now.Sub(s.lastPruned) < horizon {
@@ -95,8 +134,52 @@ func (s *cardDivisionState) pruneLocked(now time.Time) {
 	for card, last := range s.lastRound {
 		if now.Sub(last) >= horizon {
 			delete(s.lastRound, card)
+			delete(s.compositions, card)
 		}
 	}
+}
+
+// cardOf is the key a pod's card is remembered by.
+func cardOf(pod *corev1.Pod) types.NamespacedName {
+	return types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}
+}
+
+// cardComposition describes the instances recorded on one card in the terms a
+// division depends on: whose they are, whether each is awake, asleep or
+// failed, and what its claim declared. Two passes that describe a card the same
+// way would divide it for the same engines. Extra entries describe instances
+// about to be recorded, which is how placement describes the card it divided.
+func cardComposition(claims *modelv1alpha1.ModelClaimList, podName string, extra ...string) string {
+	entries := append([]string(nil), extra...)
+	if claims != nil {
+		for i := range claims.Items {
+			claim := &claims.Items[i]
+			for _, instance := range claim.Status.Instances {
+				if instance.Pod == podName {
+					entries = append(entries, compositionEntry(claim, instance.Phase))
+				}
+			}
+		}
+	}
+	sort.Strings(entries)
+	return strings.Join(entries, ",")
+}
+
+// compositionEntry describes one instance for cardComposition.
+func compositionEntry(claim *modelv1alpha1.ModelClaim, phase modelv1alpha1.ModelClaimPhase) string {
+	state := "awake"
+	switch phase {
+	case modelv1alpha1.ModelClaimSleeping:
+		state = "asleep"
+	case modelv1alpha1.ModelClaimFailed:
+		state = "failed"
+	}
+	declared := "undeclared"
+	if claim.Spec.PerGPU != nil {
+		declared = fmt.Sprintf("%d+%d",
+			claim.Spec.PerGPU.MaximumFootprint.Value(), claim.Spec.PerGPU.KVFloor.Value())
+	}
+	return claim.Name + "/" + state + "/" + declared
 }
 
 func (r *ModelClaimReconciler) divisions() *cardDivisionState {
@@ -109,32 +192,50 @@ func (r *ModelClaimReconciler) divisions() *cardDivisionState {
 }
 
 // divideCards divides again the cards in this claim's pool whose engines all
-// declare what they cost, so that each engine's share follows its load rather
-// than staying what it was when the last model landed. A card nobody could
-// account for is left alone, which includes a card running an engine whose
-// claim declares nothing.
+// declare what they cost. A card whose engines changed is divided at once, and
+// any other card once a round, so that each engine's share follows its load
+// rather than staying what it was when the last model landed. A card nobody
+// could account for is left alone, which includes a card running an engine
+// whose claim declares nothing.
 func (r *ModelClaimReconciler) divideCards(ctx context.Context, candidates []corev1.Pod) {
+	if len(candidates) == 0 {
+		return
+	}
+	// The same listing says what is on each card and what each card owes, so
+	// the engines a card is divided for are the ones it is remembered by.
+	claims, err := r.listClaimsForAccount(ctx, candidates[0].Namespace)
+	if err != nil {
+		return
+	}
 	divisions := r.divisions()
 	due := make([]corev1.Pod, 0, len(candidates))
+	changed := make(map[string]bool, len(candidates))
 	for i := range candidates {
-		card := types.NamespacedName{Namespace: candidates[i].Namespace, Name: candidates[i].Name}
-		if divisions.due(card) {
-			due = append(due, candidates[i])
+		pod := &candidates[i]
+		divide, engineChange := divisions.due(cardOf(pod), cardComposition(claims, pod.Name))
+		if divide {
+			due = append(due, *pod)
+			changed[pod.Name] = engineChange
 		}
 	}
 	if len(due) == 0 {
 		return
 	}
 
-	ledgers := r.collectPodLedgers(ctx, due[0].Namespace, due, r.freshSnapshots(ctx, due))
+	ledgers := podLedgersFrom(claims, nil, due, r.freshSnapshots(ctx, due))
 	for i := range due {
 		pod := &due[i]
 		ledger := ledgers[pod.Name]
 		if !ledger.judgeable || len(ledger.engines) == 0 || !podHasGPUs(*pod, ledger.accelerators) {
 			continue
 		}
-		if _, err := r.arrangeCard(ctx, pod, ledger, ledger.engines, loadDivision(ledger.hbmUsableBytes)); err != nil {
-			klog.V(2).InfoS("could not divide a card to follow its load", "pod", klog.KObj(pod), "err", err)
+		why := loadDivision(ledger.hbmUsableBytes)
+		if changed[pod.Name] {
+			why = compositionDivision
+		}
+		if _, err := r.arrangeCard(ctx, pod, ledger, ledger.engines, why); err != nil {
+			klog.V(2).InfoS("could not divide a card", "pod", klog.KObj(pod),
+				"enginesChanged", changed[pod.Name], "err", err)
 		}
 	}
 }
