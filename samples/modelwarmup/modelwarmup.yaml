@@ -1,3 +1,7 @@
+# Prerequisites:
+# kubectl label namespace default resource-pool.aibrix.ai/name=latency-pool
+# kubectl label node <node> resource-pool.aibrix.ai/name=latency-pool \
+#   model.aibrix.ai/warmup-enabled=true
 apiVersion: model.aibrix.ai/v1alpha1
 kind: ModelWarmup
 metadata:

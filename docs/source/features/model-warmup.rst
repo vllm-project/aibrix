@@ -40,6 +40,10 @@ avoid host access, and do not receive a catch-all toleration. ``parallelism``
 limits simultaneously active Jobs, and ``jobTimeoutSeconds`` applies in full
 after each Job is created.
 
+ModelWarmup does not infer tolerations from the target Node. A Node with a
+``NoSchedule`` or ``NoExecute`` taint remains subject to the cluster's normal
+scheduling policy; v1 does not inject a toleration that bypasses that boundary.
+
 Labels and annotations
 ----------------------
 
@@ -79,6 +83,23 @@ Every image entry requires a safe command that exits successfully after the
 image is pulled. ``imagePullPolicy`` accepts ``Always``, ``IfNotPresent`` and
 ``Never``; it defaults to ``IfNotPresent``. Use digest references when a
 reproducible cache result is required.
+
+The command is image-specific. The BusyBox sample uses ``sh`` only because
+BusyBox contains it. For the official ``vllm/vllm-openai`` image, its existing
+CLI provides a non-serving recipe that prints help and exits without loading a
+model:
+
+.. code-block:: yaml
+
+   imagePreload:
+     images:
+     - image: vllm/vllm-openai:<version-or-digest>
+       command: ["vllm", "serve"]
+       args: ["--help=all"]
+
+Verify the command and zero exit status against the exact image tag or digest;
+other engines and custom distroless images may expose different binaries. See
+the `vLLM CLI guide <https://docs.vllm.ai/en/latest/cli/>`_.
 
 ``status.phase`` is ``Pending``, ``Running``, ``Succeeded``, ``Failed`` or
 ``Degraded``. Aggregate counts cover every target. Bounded details are retained
