@@ -89,11 +89,38 @@ func GetDisaggRequestID(machineID int64) int64 {
 	return globalID%(trtMaxInt64-TRTMinGlobalID) + TRTMinGlobalID
 }
 
-// TRTLLMHandler implements EngineHandler for TensorRT-LLM.
-type TRTLLMHandler struct{}
+const (
+	TRTContextFirst    = "context_first"
+	TRTGenerationFirst = "generation_first"
+	// TRT-LLM's DisaggScheduleStyle is an IntEnum on the HTTP wire.
+	trtGenerationFirstSchedule = 1
+)
+
+// TRTLLMHandler implements EngineHandler for TensorRT-LLM. Configuration is
+// immutable and router-scoped; the zero value retains context-first behavior.
+type TRTLLMHandler struct {
+	generationFirst bool
+	serverInfo      TRTServerInfoProvider
+}
+
+// NewTRTLLMHandler validates the configured schedule before any request is sent.
+// The registry's default handler is never mutated by a router's configuration.
+func NewTRTLLMHandler(scheduleStyle string, serverInfo TRTServerInfoProvider) (*TRTLLMHandler, error) {
+	switch scheduleStyle {
+	case "", TRTContextFirst:
+		return &TRTLLMHandler{}, nil
+	case TRTGenerationFirst:
+		if serverInfo == nil {
+			return nil, fmt.Errorf("TRT generation_first requires a server_info provider")
+		}
+		return &TRTLLMHandler{generationFirst: true, serverInfo: serverInfo}, nil
+	default:
+		return nil, fmt.Errorf("invalid AIBRIX_TRT_SCHEDULE_STYLE=%q: expected context_first or generation_first", scheduleStyle)
+	}
+}
 
 func (h *TRTLLMHandler) Name() string  { return pd.EngineTRTLLM }
-func (h *TRTLLMHandler) IsAsync() bool { return false }
+func (h *TRTLLMHandler) IsAsync() bool { return h.generationFirst }
 
 // trtControlledFields are the top-level keys AugmentPrefillRequest and
 // MergePrefillResponse write: disaggregated_params on both bodies, and
@@ -108,14 +135,67 @@ func (h *TRTLLMHandler) ControlledFields() []string { return trtControlledFields
 // single top-level edit. The ID is written as an integer literal, so it never
 // goes through float64 and keeps full int64 precision.
 func (h *TRTLLMHandler) AugmentPrefillRequest(
-	_ *types.RoutingContext,
-	_ *v1.Pod,
+	routingCtx *types.RoutingContext,
+	pod *v1.Pod,
 	body []byte,
 ) ([]byte, error) {
+	if h.generationFirst {
+		info, err := h.serverInfo.Get(routingCtx.Context, pod)
+		if err != nil {
+			return nil, fmt.Errorf("prepare TRT generation_first: %w", err)
+		}
+		prefillBody, decodeBody, err := prepareTRTGenerationFirst(body, info, GetDisaggRequestID(trtMachineID))
+		if err != nil {
+			return nil, err
+		}
+		// Commit only after both bodies are ready, before either leg can run.
+		routingCtx.ReqBody = decodeBody
+		return prefillBody, nil
+	}
 	params := fmt.Sprintf(`{"request_type":"context_only","disagg_request_id":%d}`, GetDisaggRequestID(trtMachineID))
 	return pd.NewJSONEditor(body).
 		SetRaw("disaggregated_params", []byte(params)).
 		Result()
+}
+
+// prepareTRTGenerationFirst constructs independent bodies with one shared ID.
+// Only the small gateway-owned params objects are serialized; prompt/messages/
+// tools retain their original bytes on both legs. The worker metadata is
+// allowlisted so it cannot overwrite request_type, IDs, or scheduling policy.
+func prepareTRTGenerationFirst(body []byte, info TRTServerInfo, id int64) ([]byte, []byte, error) {
+	if err := info.validate(); err != nil {
+		return nil, nil, err
+	}
+	if err := pd.ValidateJSONObject(body, "TRT request body"); err != nil {
+		return nil, nil, err
+	}
+	ctxParams, err := pd.NewJSONEditor([]byte(`{}`)).
+		Set("request_type", "context_only").
+		Set("disagg_request_id", id).
+		Set("schedule_style", trtGenerationFirstSchedule).Result()
+	if err != nil {
+		return nil, nil, err
+	}
+	gen := pd.NewJSONEditor([]byte(`{}`)).
+		Set("request_type", "generation_only").
+		Set("disagg_request_id", id).
+		Set("ctx_request_id", id).
+		Set("schedule_style", trtGenerationFirstSchedule).
+		Set("ctx_info_endpoint", info.ContextInfoEndpoint).
+		Set("ctx_dp_rank", info.ContextDPRank)
+	if info.EncodedOpaqueState != "" {
+		gen.Set("encoded_opaque_state", info.EncodedOpaqueState)
+	}
+	genParams, err := gen.Result()
+	if err != nil {
+		return nil, nil, err
+	}
+	prefillBody, err := pd.NewJSONEditor(body).SetRaw("disaggregated_params", ctxParams).Result()
+	if err != nil {
+		return nil, nil, err
+	}
+	decodeBody, err := pd.NewJSONEditor(body).SetRaw("disaggregated_params", genParams).Result()
+	return prefillBody, decodeBody, err
 }
 
 // MergePrefillResponse injects TensorRT-LLM disaggregated_params from the
@@ -134,6 +214,11 @@ func (h *TRTLLMHandler) MergePrefillResponse(
 	prefillResponse []byte,
 	prefillPod *v1.Pod,
 ) error {
+	if h.generationFirst {
+		// Envoy may already be using the decode body. This mode does not
+		// consume CTX response metadata or its prompt_token_ids.
+		return nil
+	}
 	if err := pd.ValidateJSONObject(routingCtx.ReqBody, "original request body"); err != nil {
 		return err
 	}
