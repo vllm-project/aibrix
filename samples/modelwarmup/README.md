@@ -28,3 +28,20 @@ The spec is immutable. A ``Once`` warmup accepts matching nodes only until it
 reaches a terminal phase; create a new resource for later scale-out nodes.
 `Succeeded` is an observation at completion time, not a durable pin: kubelet
 image garbage collection can evict the image later.
+
+The BusyBox command in the sample is only a smoke-test recipe. For the official
+`vllm/vllm-openai` image, use the image's existing CLI to print help and exit
+without loading a model or starting the server:
+
+```yaml
+imagePreload:
+  images:
+  - image: vllm/vllm-openai:<version-or-digest>
+    command: ["vllm", "serve"]
+    args: ["--help=all"]
+```
+
+Verify the command and its zero exit status against the exact image tag or
+digest before creating a `ModelWarmup`; other engines and custom distroless
+images may expose different binaries. See the
+[vLLM CLI guide](https://docs.vllm.ai/en/latest/cli/).

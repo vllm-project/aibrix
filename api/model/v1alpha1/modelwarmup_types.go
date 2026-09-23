@@ -80,7 +80,8 @@ type ModelWarmupImagePreload struct {
 type ModelWarmupImage struct {
 	Image string `json:"image"`
 
-	// Command must exit safely after the image is pulled.
+	// Command must name an executable present in the image and exit zero
+	// without starting the inference server. There is no portable default.
 	// +kubebuilder:validation:MinItems=1
 	Command []string `json:"command"`
 
