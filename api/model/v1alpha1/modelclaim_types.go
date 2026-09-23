@@ -75,22 +75,23 @@ type ModelClaimSpec struct {
 	// neither started where it cannot fit nor left at its floor while the card
 	// has room to spare.
 	//
-	// It is required. There is no figure the control plane could put here in
-	// its place: what an engine holds beyond its weights does not follow from
-	// the artifact, so a claim that does not say is a card that cannot be
-	// accounted for, and one such claim makes its whole card unusable to every
-	// other. Asking for it at admission is a clearer answer than discovering
-	// it at placement.
+	// A claim without it is not placed. There is no figure the control plane
+	// could put here in its place: what an engine holds beyond its weights does
+	// not follow from the artifact, so a claim that does not say is a card that
+	// cannot be accounted for, and one such claim makes its whole card unusable
+	// to every other.
 	//
 	// Both figures have to be positive. A claim whose declaration is missing or
 	// not positive is not placed, and its Scheduled condition says which figure
 	// is wrong.
 	//
-	// It stays a pointer because a claim stored before this became required
-	// still decodes, and a missing declaration has to read as missing rather
-	// than as a cost of zero.
-	// +kubebuilder:validation:Required
-	PerGPU *ModelClaimPerGPU `json:"perGPU"`
+	// The schema leaves it optional, and the controller refuses the claim
+	// instead. A claim stored before this field existed has to stay valid. A
+	// required field would fail such a claim on its next update. Without CRD
+	// validation ratcheting, its finalizer could then never be removed. A
+	// missing declaration reads as missing rather than as a cost of zero.
+	// +optional
+	PerGPU *ModelClaimPerGPU `json:"perGPU,omitempty"`
 }
 
 // ModelClaimPerGPU is what one instance of a model costs on one GPU.

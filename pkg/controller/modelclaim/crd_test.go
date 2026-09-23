@@ -47,15 +47,16 @@ func modelClaimSpecSchema(t *testing.T, path string) apiextensionsv1.JSONSchemaP
 	return spec
 }
 
-// TestTheCRDRefusesAClaimThatDeclaresNoPerGPUCost pins the admission rule down
-// where a cluster will enforce it. A card carrying one claim that declares
-// nothing cannot be accounted for, and is then unusable to every other model on
-// it, so the declaration is worth refusing an apply over rather than finding
-// out at placement.
-func TestTheCRDRefusesAClaimThatDeclaresNoPerGPUCost(t *testing.T) {
+// TestTheCRDLeavesPerGPUOptionalButNotHalfDeclared pins the schema down where a
+// cluster will enforce it. perGPU itself stays optional, so a claim stored
+// before it existed stays valid, and can still be updated and deleted. The
+// controller is what refuses to place a claim without it. A declaration that is
+// there has to carry both figures, since half of one is a mistake an apply can
+// catch.
+func TestTheCRDLeavesPerGPUOptionalButNotHalfDeclared(t *testing.T) {
 	for _, path := range crdPaths {
 		spec := modelClaimSpecSchema(t, path)
-		require.Contains(t, spec.Required, "perGPU", path)
+		require.NotContains(t, spec.Required, "perGPU", path)
 
 		perGPU, found := spec.Properties["perGPU"]
 		require.True(t, found, path)

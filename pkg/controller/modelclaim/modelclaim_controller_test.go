@@ -1726,9 +1726,9 @@ func TestReconcileWritesNoLimitIntoAnEngineWithoutASegment(t *testing.T) {
 }
 
 func TestReconcileStillRoutesAnInstanceWhoseClaimDeclaresNoCost(t *testing.T) {
-	// A claim stored before the declaration was required can already have an
-	// engine running. The claim is not placed again, but the engine it has
-	// keeps its route, and there is no limit to hold it to.
+	// A claim stored before the declaration existed can already have an engine
+	// running. The claim is not placed again, but the engine it has keeps its
+	// route, and there is no limit to hold it to.
 	pm := withFinalizer(sampleModelClaim())
 	pm.Spec.PerGPU = nil
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)

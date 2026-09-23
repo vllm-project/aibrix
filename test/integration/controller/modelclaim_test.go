@@ -188,6 +188,34 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 		gomega.Expect(fixture.Runtime().ActivateCallCount()).To(gomega.Equal(0))
 	})
 
+	ginkgo.It("accepts a claim that declares no per-GPU cost and does not place it", func() {
+		_ = fixture.CreateWarmPod(ns.Name, "warm-undeclared", "pool-a")
+		claim := &modelapi.ModelClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "claim-undeclared", Namespace: ns.Name},
+			Spec: modelapi.ModelClaimSpec{
+				PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{constants.ModelPoolLabelName: "pool-a"}},
+				ArtifactURL: "huggingface://integration/claim-undeclared",
+				Engine:      "vllm",
+			},
+		}
+		// The schema leaves perGPU optional, so the API server takes the claim,
+		// and the controller is what keeps it off every card.
+		gomega.Expect(k8sClient.Create(ctx, claim)).To(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := fixture.GetClaim(g, claim)
+			g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimPending))
+			g.Expect(latest.Status.Instances).To(gomega.BeEmpty())
+			scheduled := meta.FindStatusCondition(latest.Status.Conditions, string(modelapi.ModelClaimConditionTypeScheduled))
+			g.Expect(scheduled).NotTo(gomega.BeNil())
+			g.Expect(scheduled.Status).To(gomega.Equal(metav1.ConditionFalse))
+			g.Expect(scheduled.Reason).To(gomega.Equal("InvalidPerGPU"))
+			g.Expect(scheduled.Message).To(gomega.ContainSubstring("spec.perGPU is missing"))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+		fixture.ExpectEvent(claim, corev1.EventTypeWarning, "InvalidPerGPU")
+		gomega.Expect(fixture.Runtime().ActivateCallCount()).To(gomega.Equal(0))
+	})
+
 	ginkgo.It("records activation failure and retries to Active", func() {
 		fixture.Runtime().SetDefaultState("active", true)
 		fixture.Runtime().FailNextActivations(1)
