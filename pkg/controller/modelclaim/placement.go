@@ -160,6 +160,19 @@ func admissibleCandidates(
 	return admissible, refusals
 }
 
+// noPlacementMessage says why no pod was chosen for a claim.
+//
+// The cards are blamed only when they are the reason. With no candidate at all
+// the selector is what to look at, and with a pod still admissible the model is
+// already on every pod it could use; an operator sent to look at GPU memory in
+// either case would be looking in the wrong place.
+func noPlacementMessage(selectErr error, admissible []corev1.Pod, refusals []podRefusal, minimumReserveBytes int64) string {
+	if len(admissible) == 0 && len(refusals) > 0 {
+		return summarizeRefusals(refusals, minimumReserveBytes)
+	}
+	return selectErr.Error()
+}
+
 // withoutPod returns pods less the one named, leaving the slice it was given
 // untouched.
 func withoutPod(pods []corev1.Pod, name string) []corev1.Pod {

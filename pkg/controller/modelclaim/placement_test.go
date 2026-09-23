@@ -17,6 +17,7 @@ limitations under the License.
 package modelclaim
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -334,4 +335,21 @@ func TestSummarizeRefusalsFallsBackToAPodItCouldNotJudge(t *testing.T) {
 		"no warm pod can hold this model, which needs 2.0 GiB on a card: "+
 			"unreadable could not be judged: its cards could not be measured",
 		message)
+}
+
+func TestNoPlacementMessageBlamesTheCardsOnlyWhenTheyAreTheReason(t *testing.T) {
+	generic := errors.New("no available candidate warm pod for model")
+	tooSmall := []podRefusal{{pod: "warm-1", roomBytes: 10 << 30, known: true,
+		reason: "warm-1 can offer at most 10.0 GiB"}}
+	onIt := []corev1.Pod{{ObjectMeta: metav1.ObjectMeta{Name: "warm-2"}}}
+
+	// No candidate at all: the selector is the thing to look at.
+	assert.Equal(t, generic.Error(), noPlacementMessage(generic, nil, nil, 40<<30))
+	// A pod is still admissible, so the model is already on every pod it could
+	// use, even though another pod was turned away for room.
+	assert.Equal(t, generic.Error(), noPlacementMessage(generic, onIt, tooSmall, 40<<30))
+	// Every candidate was turned away, so say which card came closest.
+	message := noPlacementMessage(generic, nil, tooSmall, 40<<30)
+	assert.Contains(t, message, "needs 40.0 GiB")
+	assert.Contains(t, message, "warm-1 can offer at most 10.0 GiB")
 }
