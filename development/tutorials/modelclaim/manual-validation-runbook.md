@@ -270,6 +270,9 @@ spec:
       pool.aibrix.ai/name: b300-pool-a
   artifactURL: huggingface://Qwen/Qwen3-0.6B
   engine: vllm
+  perGPU:
+    maximumFootprint: 6Gi
+    kvFloor: 1Gi
   replicas: 2
 YAML
 then
@@ -290,6 +293,9 @@ spec:
       pool.aibrix.ai/name: b300-pool-a
   artifactURL: huggingface://Qwen/Qwen3-0.6B
   engine: vllm
+  perGPU:
+    maximumFootprint: 6Gi
+    kvFloor: 1Gi
   engineConfig:
     args:
       --gpu-memory-utilization: "0.45"
@@ -317,6 +323,9 @@ spec:
       pool.aibrix.ai/name: b300-pool-a
   artifactURL: huggingface://Qwen/Qwen3-0.6B
   engine: vllm
+  perGPU:
+    maximumFootprint: 6Gi
+    kvFloor: 1Gi
   engineConfig:
     args:
       --tensor-parallel-size: "2"
