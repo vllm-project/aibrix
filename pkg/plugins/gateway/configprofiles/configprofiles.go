@@ -29,6 +29,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/types"
 )
 
 const (
@@ -361,4 +362,21 @@ func ParseModelConfig(jsonStr string) (*ModelConfigProfiles, error) {
 		return nil, fmt.Errorf("model config has no profiles")
 	}
 	return &cfg, nil
+}
+
+// ParseRoutingConfig parses a profile's routingConfig into its typed form. It
+// returns nil when the raw config is empty or unparsable, which leaves every
+// knob at its process default; a value the matching AIBRIX_* variable would
+// reject is dropped later, when the routing algorithm package resolves the
+// request's overrides (routingalgorithms.ResolveRoutingOverrides).
+func ParseRoutingConfig(raw json.RawMessage) *types.RoutingConfig {
+	if len(raw) == 0 {
+		return nil
+	}
+	var cfg types.RoutingConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		klog.ErrorS(err, "failed to unmarshal routingConfig, using process defaults", "rawConfig", string(raw))
+		return nil
+	}
+	return &cfg
 }

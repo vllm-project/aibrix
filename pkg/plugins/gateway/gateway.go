@@ -708,9 +708,10 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	readyPods := utils.FilterRoutablePods(pods.All())
 
 	// Resolve the model config profile's routing knobs once per request: the
-	// load-imbalance gate below and every strategy on the routing path read them
-	// from the routing context (see routingalgorithms.ResolveRoutingKnobs).
-	routing.ResolveRoutingKnobs(routeCtx)
+	// load-imbalance gate below and every strategy on the routing path read the
+	// same values from the routing context (see
+	// routingalgorithms.ResolveRoutingOverrides).
+	routing.ResolveRoutingOverrides(routeCtx)
 
 	if routeCtx.Span != nil {
 		routeCtx.Span.SetAttributes(

@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Aibrix Team.
+Copyright 2026 The Aibrix Team.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,175 +17,232 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"encoding/json"
-	"math"
+	"fmt"
+	"sync"
+	"time"
 
-	"github.com/bytedance/sonic"
 	"k8s.io/klog/v2"
 
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/vtc"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
-// routingProfileConfig holds the non-PD routing knobs a model config profile
-// may set under routingConfig. Each group mirrors a family of AIBRIX_*
-// variables the matching strategy reads: types.RoutingKnobs documents the
-// mapping knob by knob. A knob the profile leaves unset, or sets to a value the
-// matching environment variable would reject, keeps the environment default, so
-// a profile can only narrow or sharpen routing behaviour, never silently drop a
-// threshold.
+// This file owns the routing knob defaults and the single place where a model
+// config profile's routingConfig turns into the request's resolved overrides:
 //
-// Knobs that configure process-wide state - the Preble eviction loop and
-// histogram window, the VTC token tracker's window, time unit, token weights
-// and min/max floors, and the session-affinity local cache capacity - have no
-// group here on purpose: all models of a gateway process share that state, so a
-// profiled value could not be applied per request without corrupting it. Those
-// keep their environment-only semantics.
-type routingProfileConfig struct {
-	LoadBalance *loadBalanceProfileConfig `json:"loadBalance,omitempty"`
-	PrefixCache *prefixCacheProfileConfig `json:"prefixCache,omitempty"`
-	Preble      *prebleProfileConfig      `json:"preble,omitempty"`
-	VTC         *vtcProfileConfig         `json:"vtc,omitempty"`
-	AutoBlend   *autoBlendProfileConfig   `json:"autoBlend,omitempty"`
+//  1. configprofiles parses the profile's routingConfig once per request into
+//     types.RoutingConfig, whose pointer fields keep "unset" visible.
+//  2. ResolveRoutingOverrides applies it to a copy of the process defaults and
+//     validates every value against the rule the matching AIBRIX_* variable
+//     enforces. A value the environment would reject is dropped with a
+//     warning, so a profile can sharpen a knob but never set one the
+//     environment could not have.
+//  3. Read sites use the concrete values with no default plumbing of their
+//     own, for example:
+//
+//	queuedWeight := ctx.RoutingOverrides().LoadBalance.QueuedWeight
+//
+// A request whose profile sets no applicable value carries no overrides, and
+// its reads land on the process default table installed below.
+
+func init() {
+	types.SetDefaultRoutingOverrides(processRoutingOverrides())
 }
 
-// loadBalanceProfileConfig mirrors the load-balance gate and score knobs.
-type loadBalanceProfileConfig struct {
-	ImbalanceFactor *float64 `json:"imbalanceFactor,omitempty"`
-	ImbalanceMinGap *int     `json:"imbalanceMinGap,omitempty"`
-	QueuedWeight    *float64 `json:"queuedWeight,omitempty"`
-	KVPressureAlpha *float64 `json:"kvPressureAlpha,omitempty"`
-	KVCriticalFree  *float64 `json:"kvCriticalFree,omitempty"`
+// processRoutingOverrides assembles the process defaults from the AIBRIX_*
+// variables: the values every read site falls back to for a request whose
+// profile sets no knob of that family.
+//
+// The pd and vtc packages own the knobs only they read, so they expose their
+// environment defaults (pd.EnvOverrides, vtc.EnvOverrides); the rest are the
+// package variables of the matching strategy.
+func processRoutingOverrides() *types.RoutingOverrides {
+	pdDefaults := pd.EnvOverrides()
+	pdDefaults.Spreads = types.PDSpreadOverrides{
+		PrefillLoadImbalanceMinSpread:      aibrixPrefillLoadImbalanceMinSpread,
+		DecodeLoadImbalanceMinSpread:       aibrixDecodeLoadImbalanceMinSpread,
+		DecodeThroughputImbalanceMinSpread: aibrixDecodeThroughputImbalanceMinSpread,
+		DecodeScoreRatioThreshold:          aibrixDecodeScoreRatioThreshold,
+	}
+	pdDefaults.PromptLengthBucketing = aibrixPromptLengthBucketing
+	pdDefaults.PrefillRequestTimeout = time.Duration(prefillRequestTimeout) * time.Second
+
+	return &types.RoutingOverrides{
+		LoadBalance: types.LoadBalanceOverrides{
+			ImbalanceFactor: podRunningRequestImbalanceFactor,
+			ImbalanceMinGap: podRunningRequestImbalanceMinGap,
+			QueuedWeight:    loadBalanceQueuedWeight,
+			KVPressureAlpha: loadBalanceKVPressureAlpha,
+			KVCriticalFree:  loadBalanceKVCriticalFree,
+		},
+		PrefixCache: types.PrefixCacheOverrides{
+			StandardDeviationFactor: standardDeviationFactor,
+		},
+		Preble: types.PrebleOverrides{
+			TargetGPU:      targetGPU,
+			DecodingLength: decodingLength,
+		},
+		VTC: vtc.EnvOverrides(),
+		AutoBlend: types.AutoBlendOverrides{
+			LoadBalanceWeight:            autoBlendLoadBalanceWeight,
+			LeastRequestWeight:           autoBlendLeastRequestWeight,
+			PrefixCacheWeight:            autoBlendPrefixCacheWeight,
+			PrefixCacheLoadBalanceWeight: autoBlendPrefixCacheLoadBalanceWeight,
+		},
+		PD: pdDefaults,
+	}
 }
 
-// prefixCacheProfileConfig mirrors AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR.
-type prefixCacheProfileConfig struct {
-	StandardDeviationFactor *int `json:"standardDeviationFactor,omitempty"`
+// ResolveRoutingOverrides turns this request's model config profile into its
+// resolved routing overrides and parks them on the routing context, so every
+// strategy and gate on the routing path reads the same values with a single
+// resolve per request. It is a no-op when the profile sets no applicable knob:
+// the read sites then read the process defaults directly.
+func ResolveRoutingOverrides(routingCtx *types.RoutingContext) {
+	if routingCtx == nil {
+		return
+	}
+	var cfg *types.RoutingConfig
+	if profile := routingCtx.ConfigProfile; profile != nil {
+		cfg = profile.Routing
+	}
+	routingCtx.SetRoutingOverrides(resolveRoutingOverrides(cfg))
 }
 
-// prebleProfileConfig mirrors the prefix-cache-preble cost-model knobs that are
-// read per request.
-type prebleProfileConfig struct {
-	TargetGPU      *string `json:"targetGPU,omitempty"`
-	DecodingLength *int    `json:"decodingLength,omitempty"`
-}
-
-// vtcProfileConfig mirrors the vtc-basic score knobs that are read per request.
-type vtcProfileConfig struct {
-	MaxPodLoad        *float64 `json:"maxPodLoad,omitempty"`
-	FairnessWeight    *float64 `json:"fairnessWeight,omitempty"`
-	UtilizationWeight *float64 `json:"utilizationWeight,omitempty"`
-}
-
-// autoBlendProfileConfig mirrors the AIBRIX_ROUTING_AUTO_BLEND_* weights.
-type autoBlendProfileConfig struct {
-	LoadBalanceWeight            *int `json:"loadBalanceWeight,omitempty"`
-	LeastRequestWeight           *int `json:"leastRequestWeight,omitempty"`
-	PrefixCacheWeight            *int `json:"prefixCacheWeight,omitempty"`
-	PrefixCacheLoadBalanceWeight *int `json:"prefixCacheLoadBalanceWeight,omitempty"`
-}
-
-// parseRoutingProfileConfig parses the non-PD routing knobs out of the generic
-// RoutingConfig. It returns nil when raw is empty or unparsable, which keeps
-// every knob at its environment default.
-func parseRoutingProfileConfig(raw json.RawMessage) *routingProfileConfig {
-	if len(raw) == 0 {
+// resolveRoutingOverrides applies a profile's routingConfig to a copy of the
+// process defaults. It returns nil when the profile sets no applicable value,
+// including the case where every value it sets was rejected, so a request
+// without effective overrides reads the defaults directly.
+func resolveRoutingOverrides(cfg *types.RoutingConfig) *types.RoutingOverrides {
+	if cfg == nil {
 		return nil
 	}
-	var cfg routingProfileConfig
-	if err := sonic.Unmarshal(raw, &cfg); err != nil {
-		klog.ErrorS(err, "failed to unmarshal routing profile config, using environment defaults", "rawConfig", string(raw))
+	ov := *types.DefaultRoutingOverrides()
+	applied := false
+	set := func(didApply bool) {
+		if didApply {
+			applied = true
+		}
+	}
+
+	if lb := cfg.LoadBalance; lb != nil {
+		set(apply(&ov.LoadBalance.ImbalanceFactor, "loadBalance.imbalanceFactor", lb.ImbalanceFactor, positive[float64]))
+		set(apply(&ov.LoadBalance.ImbalanceMinGap, "loadBalance.imbalanceMinGap", lb.ImbalanceMinGap, positive[int]))
+		set(apply(&ov.LoadBalance.QueuedWeight, "loadBalance.queuedWeight", lb.QueuedWeight, nonNegative[float64]))
+		set(apply(&ov.LoadBalance.KVPressureAlpha, "loadBalance.kvPressureAlpha", lb.KVPressureAlpha, nonNegative[float64]))
+		set(apply(&ov.LoadBalance.KVCriticalFree, "loadBalance.kvCriticalFree", lb.KVCriticalFree, inRange(0.0, 1.0)))
+	}
+	if pc := cfg.PrefixCache; pc != nil {
+		set(apply(&ov.PrefixCache.StandardDeviationFactor, "prefixCache.standardDeviationFactor", pc.StandardDeviationFactor, positive[int]))
+	}
+	if pb := cfg.Preble; pb != nil {
+		set(apply(&ov.Preble.TargetGPU, "preble.targetGPU", pb.TargetGPU, knownPrebleGPU))
+		set(apply(&ov.Preble.DecodingLength, "preble.decodingLength", pb.DecodingLength, positive[int]))
+	}
+	if v := cfg.VTC; v != nil {
+		set(apply(&ov.VTC.MaxPodLoad, "vtc.maxPodLoad", v.MaxPodLoad, positive[float64]))
+		set(apply(&ov.VTC.FairnessWeight, "vtc.fairnessWeight", v.FairnessWeight, nonNegative[float64]))
+		set(apply(&ov.VTC.UtilizationWeight, "vtc.utilizationWeight", v.UtilizationWeight, nonNegative[float64]))
+	}
+	if ab := cfg.AutoBlend; ab != nil {
+		set(apply(&ov.AutoBlend.LoadBalanceWeight, "autoBlend.loadBalanceWeight", ab.LoadBalanceWeight, inRange(0, maxWeightCoefficient)))
+		set(apply(&ov.AutoBlend.LeastRequestWeight, "autoBlend.leastRequestWeight", ab.LeastRequestWeight, inRange(0, maxWeightCoefficient)))
+		set(apply(&ov.AutoBlend.PrefixCacheWeight, "autoBlend.prefixCacheWeight", ab.PrefixCacheWeight, inRange(1, maxWeightCoefficient)))
+		set(apply(&ov.AutoBlend.PrefixCacheLoadBalanceWeight, "autoBlend.prefixCacheLoadBalanceWeight", ab.PrefixCacheLoadBalanceWeight, inRange(0, maxWeightCoefficient)))
+	}
+	set(applyAny(&ov.PD.PromptLengthBucketing, cfg.PromptLengthBucketing))
+	if p := cfg.PD; p != nil {
+		set(applySeconds(&ov.PD.Abort.Timeout, "pd.decodeAbortTimeout", p.DecodeAbortTimeout, nonNegative[int]))
+		set(applySeconds(&ov.PD.Abort.RetryDelay, "pd.decodeAbortRetryDelay", p.DecodeAbortRetryDelay, nonNegative[int]))
+		set(applySeconds(&ov.PD.PrefillRequestTimeout, "pd.prefillRequestTimeout", p.PrefillRequestTimeout, positive[int]))
+		set(apply(&ov.PD.Spreads.PrefillLoadImbalanceMinSpread, "pd.prefillLoadImbalanceMinSpread", p.PrefillLoadImbalanceMinSpread, positive[int32]))
+		set(apply(&ov.PD.Spreads.DecodeLoadImbalanceMinSpread, "pd.decodeLoadImbalanceMinSpread", p.DecodeLoadImbalanceMinSpread, positive[float64]))
+		set(apply(&ov.PD.Spreads.DecodeThroughputImbalanceMinSpread, "pd.decodeThroughputImbalanceMinSpread", p.DecodeThroughputImbalanceMinSpread, positive[float64]))
+		set(apply(&ov.PD.Spreads.DecodeScoreRatioThreshold, "pd.decodeScoreRatioThreshold", p.DecodeScoreRatioThreshold, positive[float64]))
+		set(apply(&ov.PD.DecodeLB.WeightRunning, "pd.decodeLBWeightRunning", p.DecodeLBWeightRunning, positive[float64]))
+		set(apply(&ov.PD.DecodeLB.WeightThroughput, "pd.decodeLBWeightThroughput", p.DecodeLBWeightThroughput, positive[float64]))
+		set(apply(&ov.PD.HybridCacheLoadFactor, "pd.hybridCacheLoadFactor", p.HybridCacheLoadFactor, inRange(0.0, 1.0)))
+		set(apply(&ov.PD.MinMatchPct, "pd.minMatchPct", p.MinMatchPct, inRange(0.0, 100.0)))
+		set(apply(&ov.PD.TokenLoad.KVWeight, "pd.tokenLoadKVWeight", p.TokenLoadKVWeight, positive[float64]))
+		set(apply(&ov.PD.TokenLoad.RequestCost, "pd.tokenLoadRequestCost", p.TokenLoadRequestCost, positive[float64]))
+		set(applySeconds(&ov.PD.TokenLoad.TTL, "pd.tokenLoadTTLSeconds", p.TokenLoadTTLSeconds, nonNegative[int]))
+		set(applySeconds(&ov.PD.TokenLoad.SessionTTL, "pd.tokenLoadSessionTTLSeconds", p.TokenLoadSessionTTLSeconds, nonNegative[int]))
+	}
+
+	if !applied {
 		return nil
 	}
-	return &cfg
+	return &ov
 }
 
-// nonNegativeFloat returns v when it is zero or positive and nil otherwise. Use
-// it for weights and strengths whose zero setting is documented, such as the
-// load-balance queued weight (0 is the V1 formula) and the KV-pressure alpha
-// (0 drops the penalty).
-func nonNegativeFloat(v *float64) *float64 {
-	if v == nil || *v < 0 || math.IsNaN(*v) {
-		return nil
-	}
-	return v
-}
-
-// intInRange returns v when it lies within [lo, hi] and nil otherwise. Use it
-// for the auto-blend weights, whose range mirrors the coefficient bounds
-// ParseMultiRouterConfig enforces on a routing string: a weight outside them
-// would produce a blend string the router then refuses to parse.
-func intInRange(v *int, lo, hi int) *int {
-	if v == nil || *v < lo || *v > hi {
-		return nil
-	}
-	return v
-}
-
-// prebleTargetGPU returns v when it names a GPU the preble cost model knows and
-// nil otherwise. An unknown name would otherwise make every scored request log
-// a warning and silently assume V100.
-func prebleTargetGPU(v *string) *string {
+// apply copies *v into *dst when v is set and passes ok, and returns whether it
+// did. A value the environment would reject is dropped with a warning instead
+// of landing on the routing path.
+func apply[T any](dst *T, knob string, v *T, ok func(T) bool) bool {
 	if v == nil {
-		return nil
+		return false
 	}
-	switch *v {
-	case "A6000", "V100":
-		return v
+	if !ok(*v) {
+		warnDroppedKnob(knob, *v)
+		return false
 	}
-	return nil
+	*dst = *v
+	return true
 }
 
-// runtimeKnobs converts a parsed profile into the per-request non-PD routing
-// overrides. It returns nil when the profile sets no such knob at all, so a
-// request without one pays a single nil check on the routing path. Values are
-// validated here, at the profile boundary, instead of at every read site.
-func (c *routingProfileConfig) runtimeKnobs() *types.RoutingKnobs {
-	if c == nil || (c.LoadBalance == nil && c.PrefixCache == nil && c.Preble == nil && c.VTC == nil && c.AutoBlend == nil) {
-		return nil
+// applyAny is apply for knobs with no invalid value, such as the booleans.
+func applyAny[T any](dst *T, v *T) bool {
+	if v == nil {
+		return false
 	}
-	knobs := &types.RoutingKnobs{}
-	if lb := c.LoadBalance; lb != nil {
-		knobs.LoadBalanceImbalanceFactor = positiveFloat(lb.ImbalanceFactor)
-		knobs.LoadBalanceImbalanceMinGap = positiveInt(lb.ImbalanceMinGap)
-		knobs.LoadBalanceQueuedWeight = nonNegativeFloat(lb.QueuedWeight)
-		knobs.LoadBalanceKVPressureAlpha = nonNegativeFloat(lb.KVPressureAlpha)
-		knobs.LoadBalanceKVCriticalFree = floatInRange(lb.KVCriticalFree, 0, 1)
-	}
-	if pc := c.PrefixCache; pc != nil {
-		knobs.PrefixCacheStandardDeviationFactor = positiveInt(pc.StandardDeviationFactor)
-	}
-	if pb := c.Preble; pb != nil {
-		knobs.PrebleTargetGPU = prebleTargetGPU(pb.TargetGPU)
-		knobs.PrebleDecodingLength = positiveInt(pb.DecodingLength)
-	}
-	if v := c.VTC; v != nil {
-		knobs.VTCMaxPodLoad = positiveFloat(v.MaxPodLoad)
-		knobs.VTCFairnessWeight = nonNegativeFloat(v.FairnessWeight)
-		knobs.VTCUtilizationWeight = nonNegativeFloat(v.UtilizationWeight)
-	}
-	if ab := c.AutoBlend; ab != nil {
-		knobs.AutoBlendLoadBalanceWeight = intInRange(ab.LoadBalanceWeight, 0, maxWeightCoefficient)
-		knobs.AutoBlendLeastRequestWeight = intInRange(ab.LeastRequestWeight, 0, maxWeightCoefficient)
-		knobs.AutoBlendPrefixCacheWeight = intInRange(ab.PrefixCacheWeight, 1, maxWeightCoefficient)
-		knobs.AutoBlendPrefixCacheLoadBalanceWeight = intInRange(ab.PrefixCacheLoadBalanceWeight, 0, maxWeightCoefficient)
-	}
-	return knobs
+	*dst = *v
+	return true
 }
 
-// effectiveRoutingKnobs returns the non-PD routing overrides of this request's
-// model config profile, or nil when the profile sets none.
-func effectiveRoutingKnobs(routingCtx *types.RoutingContext) *types.RoutingKnobs {
-	if routingCtx == nil || routingCtx.ConfigProfile == nil || len(routingCtx.ConfigProfile.RoutingConfig) == 0 {
-		return nil
+// applySeconds is apply for a knob expressed in seconds, which the resolved
+// overrides carry as a duration.
+func applySeconds(dst *time.Duration, knob string, v *int, ok func(int) bool) bool {
+	if v == nil {
+		return false
 	}
-	return parseRoutingProfileConfig(routingCtx.ConfigProfile.RoutingConfig).runtimeKnobs()
+	if !ok(*v) {
+		warnDroppedKnob(knob, *v)
+		return false
+	}
+	*dst = time.Duration(*v) * time.Second
+	return true
 }
 
-// ResolveRoutingKnobs parses this request's non-PD routing overrides from its
-// model config profile and parks them on the routing context, so the strategies
-// and gates on the routing path read the same validated values with a single
-// parse per request. It is a no-op when the profile sets none, and the read
-// sites fall back to their environment defaults in that case.
-func ResolveRoutingKnobs(routingCtx *types.RoutingContext) {
-	routingCtx.SetRoutingKnobs(effectiveRoutingKnobs(routingCtx))
+// The predicates mirror the environment loaders: utils.LoadEnvInt and
+// utils.LoadEnvFloat reject non-positive values, so a profile value they would
+// reject must not reach the routing path either. NaN fails every comparison
+// and is rejected the same way.
+func positive[T int | int32 | float64](v T) bool { return v > 0 }
+func nonNegative[T int | float64](v T) bool      { return v >= 0 }
+func inRange[T int | float64](lo, hi T) func(T) bool {
+	return func(v T) bool { return v >= lo && v <= hi }
+}
+
+// knownPrebleGPU accepts the GPU names the preble cost model knows. An unknown
+// name would otherwise make every scored request log a warning and silently
+// assume V100.
+func knownPrebleGPU(v string) bool {
+	return v == "A6000" || v == "V100"
+}
+
+// droppedKnobWarnings deduplicates the validation warnings: the resolver runs
+// once per request, so a repeated profile value would otherwise repeat the same
+// line for every request of the model. Keys come from model config values,
+// which the deployment sets, not from clients.
+var droppedKnobWarnings sync.Map
+
+// warnDroppedKnob reports a profile value the matching AIBRIX_* variable would
+// reject, once per distinct value.
+func warnDroppedKnob(knob string, value any) {
+	key := fmt.Sprintf("%s=%v", knob, value)
+	if _, loaded := droppedKnobWarnings.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	klog.Warningf("ignoring invalid routingConfig value for %s (%v): the matching AIBRIX_* variable rejects it, so the process default stays in effect", knob, value)
 }

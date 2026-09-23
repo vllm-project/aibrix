@@ -190,7 +190,7 @@ type tokenLoadEntry struct {
 	acquiredAt time.Time
 	// ttl bounds this charge's age before the janitor force-releases it; 0
 	// means it is never swept. It is per entry because a request whose model
-	// config profile sets routingConfig.pd.tokenLoad.ttlSeconds carries its
+	// config profile sets routingConfig.pd.tokenLoadTTLSeconds carries its
 	// own expiry.
 	ttl time.Duration
 	// tokensReleased and kvReleased each flip once, when the matching release

@@ -19,6 +19,7 @@ package prefill
 import (
 	"context"
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
@@ -27,15 +28,32 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
-func TestEffectiveRequestTimeoutFromProfile(t *testing.T) {
-	exec := NewDefaultExecutor(&http.Client{}, pd.NewPrefillRequestTracker(), 30).(*DefaultExecutor)
-	assert.Equal(t, 30*time.Second, exec.effectiveRequestTimeout(&types.RoutingContext{}),
-		"a request without a leg keeps the env default")
+// TestMain installs the process defaults a request without overrides falls
+// back to: the environment-derived PD knobs, plus the prefill request timeout
+// the routing algorithm package adds when it assembles the table at startup.
+func TestMain(m *testing.M) {
+	defaults := pd.EnvOverrides()
+	defaults.PrefillRequestTimeout = 30 * time.Second
+	types.SetDefaultPDOverrides(&defaults)
+	os.Exit(m.Run())
+}
 
-	timeoutSeconds := 90
+func TestEffectiveRequestTimeoutFromProfile(t *testing.T) {
+	restore := types.DefaultPDOverrides()
+	defaults := *restore
+	defaults.PrefillRequestTimeout = 30 * time.Second
+	types.SetDefaultPDOverrides(&defaults)
+	t.Cleanup(func() { types.SetDefaultPDOverrides(restore) })
+
+	exec := NewDefaultExecutor(&http.Client{}, pd.NewPrefillRequestTracker()).(*DefaultExecutor)
+	assert.Equal(t, 30*time.Second, exec.effectiveRequestTimeout(&types.RoutingContext{}),
+		"a request without a leg keeps the process default")
+
 	ctx := types.NewRoutingContext(context.Background(), "pd", "m", "msg", "req-timeout", "user")
 	defer ctx.Delete()
-	ctx.SetPDKnobs(&types.PDRuntimeKnobs{PrefillRequestTimeoutSeconds: &timeoutSeconds})
+	overrides := *types.DefaultPDOverrides()
+	overrides.PrefillRequestTimeout = 90 * time.Second
+	ctx.SetPDOverrides(&overrides)
 	assert.Equal(t, 90*time.Second, exec.effectiveRequestTimeout(ctx))
 
 	plain := types.NewRoutingContext(context.Background(), "pd", "m", "msg", "req-plain", "user")

@@ -254,21 +254,20 @@ description and examples live in the Config Profiles section of the gateway plug
 
 | Variable | Profile field | Notes |
 |---|---|---|
-| `AIBRIX_TTFT_THRESHOLD_S` | `ttftThresholdS` | Top-level profile field, not inside `routingConfig`. `0` or unset keeps the environment default. |
+| `AIBRIX_TTFT_THRESHOLD_S` | `ttftThresholdS` | Top-level profile field, not inside `routingConfig`. `0` counts as unset and keeps the environment default, so a profile can only change the threshold to another positive value, never to `0`. |
 | `AIBRIX_PROMPT_LENGTH_BUCKETING` | `routingConfig.promptLengthBucketing` | Turns bucketing on or off for the profile's requests. |
-| `AIBRIX_DECODE_ABORT_TIMEOUT` | `routingConfig.pd.abort.timeout` | `0` sends the abort without waiting. |
-| `AIBRIX_DECODE_ABORT_RETRY_DELAY` | `routingConfig.pd.abort.retryDelay` | `0` repeats the abort immediately. |
-| `AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD` | `routingConfig.pd.spreads.prefillLoadImbalanceMinSpread` | |
-| `AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD` | `routingConfig.pd.spreads.decodeLoadImbalanceMinSpread` | |
-| `AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD` | `routingConfig.pd.spreads.decodeThroughputImbalanceMinSpread` | |
-| `AIBRIX_DECODE_SCORE_RATIO_THRESHOLD` | `routingConfig.pd.spreads.decodeScoreRatioThreshold` | |
-| `AIBRIX_DECODE_LB_WEIGHT_RUNNING` | `routingConfig.pd.decodeLBWeights.running` | |
-| `AIBRIX_DECODE_LB_WEIGHT_THROUGHPUT` | `routingConfig.pd.decodeLBWeights.throughput` | |
-| `AIBRIX_TOKEN_LOAD_KV_WEIGHT` | `routingConfig.pd.tokenLoad.kvWeight` | |
-| `AIBRIX_TOKEN_LOAD_REQUEST_COST` | `routingConfig.pd.tokenLoad.requestCost` | |
-| `AIBRIX_TOKEN_LOAD_TTL_SECONDS` | `routingConfig.pd.tokenLoad.ttlSeconds` | `0` disables the sweep for the profile's requests. |
-| `AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS` | `routingConfig.pd.tokenLoad.sessionTTLSeconds` | `0` disables the session delta. |
-| `AIBRIX_TOKEN_LOAD_MAX_SESSIONS` | `routingConfig.pd.tokenLoad.maxSessions` | |
+| `AIBRIX_DECODE_ABORT_TIMEOUT` | `routingConfig.pd.decodeAbortTimeout` | `0` sends the abort without waiting. |
+| `AIBRIX_DECODE_ABORT_RETRY_DELAY` | `routingConfig.pd.decodeAbortRetryDelay` | `0` repeats the abort immediately. |
+| `AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD` | `routingConfig.pd.prefillLoadImbalanceMinSpread` | |
+| `AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD` | `routingConfig.pd.decodeLoadImbalanceMinSpread` | |
+| `AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD` | `routingConfig.pd.decodeThroughputImbalanceMinSpread` | |
+| `AIBRIX_DECODE_SCORE_RATIO_THRESHOLD` | `routingConfig.pd.decodeScoreRatioThreshold` | |
+| `AIBRIX_DECODE_LB_WEIGHT_RUNNING` | `routingConfig.pd.decodeLBWeightRunning` | |
+| `AIBRIX_DECODE_LB_WEIGHT_THROUGHPUT` | `routingConfig.pd.decodeLBWeightThroughput` | |
+| `AIBRIX_TOKEN_LOAD_KV_WEIGHT` | `routingConfig.pd.tokenLoadKVWeight` | |
+| `AIBRIX_TOKEN_LOAD_REQUEST_COST` | `routingConfig.pd.tokenLoadRequestCost` | |
+| `AIBRIX_TOKEN_LOAD_TTL_SECONDS` | `routingConfig.pd.tokenLoadTTLSeconds` | `0` disables the sweep for the profile's requests. |
+| `AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS` | `routingConfig.pd.tokenLoadSessionTTLSeconds` | `0` disables the session delta. |
 | `AIBRIX_HYBRID_CACHE_LOAD_FACTOR` | `routingConfig.pd.hybridCacheLoadFactor` | Accepted range 0 to 1. |
 | `AIBRIX_MIN_MATCH_PCT` | `routingConfig.pd.minMatchPct` | Accepted range 0 to 100; `0` disables the minimum-match clamp. |
 | `AIBRIX_PREFILL_REQUEST_TIMEOUT` | `routingConfig.pd.prefillRequestTimeout` | Seconds. |
@@ -298,6 +297,7 @@ cannot override them without corrupting that state:
 - `AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT` and `AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT`: these configure the same shared tracker. The per-request VTC knobs are `vtc.maxPodLoad`, `vtc.fairnessWeight` and `vtc.utilizationWeight`.
 - `AIBRIX_SESSION_AFFINITY_MAX_LOCAL_KEYS`: bounds the gateway-local session pin cache.
 - `AIBRIX_ROUTER_MAX_CACHED_ALGORITHM_STRINGS`: bounds the process-wide routing string cache.
+- `AIBRIX_TOKEN_LOAD_MAX_SESSIONS`: bounds the (model, session) table of the token-load tracker. The PD router builds the tracker once and the gateway shares it across models, so the cap is process-wide.
 
 Variables without a `routingConfig` field (tokenizer endpoints, Redis and statesync settings, the
 rate limiting switches, `AIBRIX_KV_CONNECTOR_TYPE`) stay environment-only as deployment-level

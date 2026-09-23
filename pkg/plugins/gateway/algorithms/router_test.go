@@ -676,15 +676,23 @@ func TestMultiStrategyRouterRoute_SelectsLeastLoadedPortForMultiPortPod(t *testi
 	assert.Equal(t, 8001, ctx.TargetPort())
 }
 
+// withAutoBlendWeights pins the auto-blend weights of the process default
+// table for one test. The read sites resolve the weights through the request's
+// routing overrides, so the default table, not the package variables, is the
+// lever. The prefix-cache ratio keeps the environment values the tests assert
+// against through the package variables.
 func withAutoBlendWeights(t *testing.T, loadBalance, leastRequest int) {
 	t.Helper()
-	oldLB, oldLR := autoBlendLoadBalanceWeight, autoBlendLeastRequestWeight
-	autoBlendLoadBalanceWeight = loadBalance
-	autoBlendLeastRequestWeight = leastRequest
-	t.Cleanup(func() {
-		autoBlendLoadBalanceWeight = oldLB
-		autoBlendLeastRequestWeight = oldLR
-	})
+	restore := types.DefaultRoutingOverrides()
+	next := *restore
+	next.AutoBlend = types.AutoBlendOverrides{
+		LoadBalanceWeight:            loadBalance,
+		LeastRequestWeight:           leastRequest,
+		PrefixCacheWeight:            autoBlendPrefixCacheWeight,
+		PrefixCacheLoadBalanceWeight: autoBlendPrefixCacheLoadBalanceWeight,
+	}
+	types.SetDefaultRoutingOverrides(&next)
+	t.Cleanup(func() { types.SetDefaultRoutingOverrides(restore) })
 }
 
 func TestAppendLoadBalanceBlendAffinityRatio(t *testing.T) {

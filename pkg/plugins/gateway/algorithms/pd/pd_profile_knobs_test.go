@@ -18,6 +18,7 @@ package pd
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -30,36 +31,67 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func ptrOf[T any](v T) *T { return &v }
+// TestMain installs the process defaults a request without overrides falls
+// back to: the environment-derived PD knobs, exactly what the routing algorithm
+// package installs at process startup.
+func TestMain(m *testing.M) {
+	defaults := EnvOverrides()
+	types.SetDefaultPDOverrides(&defaults)
+	os.Exit(m.Run())
+}
 
-// knobsContext returns a request whose PD leg carries the given profile
-// knobs, the way the PD router parks them on the request path. A nil knobs
-// argument models a request with no profile overrides.
-func knobsContext(t *testing.T, knobs *types.PDRuntimeKnobs) *types.RoutingContext {
+// This file covers the PD read sites of the per-request overrides: each one
+// reads the request's resolved PD overrides, parked on its PD leg by the PD
+// router, and falls back to the process default table when the request carries
+// none.
+
+// probePDDefaults installs a known process default table for one test, so
+// "kept the process default" is asserted against fixed values instead of
+// whatever the environment of the test run configures.
+func probePDDefaults(t *testing.T) {
+	t.Helper()
+	restore := types.DefaultPDOverrides()
+	probe := *restore
+	probe.Abort = types.PDAbortOverrides{Timeout: 3 * time.Second, RetryDelay: 2 * time.Second}
+	probe.DecodeLB = types.PDDecodeLBOverrides{WeightRunning: 1.0, WeightThroughput: 1.0}
+	probe.HybridCacheLoadFactor = 0.5
+	probe.MinMatchPct = 0
+	probe.TokenLoad = types.PDTokenLoadOverrides{KVWeight: 0.5, RequestCost: 100, TTL: time.Hour, SessionTTL: time.Hour}
+	types.SetDefaultPDOverrides(&probe)
+	t.Cleanup(func() { types.SetDefaultPDOverrides(restore) })
+}
+
+// knobsContext returns a request carrying the given resolved PD overrides, the
+// way the PD router parks them on the request path. A nil overrides argument
+// models a request with none, whose reads fall back to the process defaults.
+func knobsContext(t *testing.T, overrides *types.PDOverrides) *types.RoutingContext {
 	t.Helper()
 	ctx := types.NewRoutingContext(context.Background(), "pd", "model", "message", "req-knobs", "user")
 	t.Cleanup(ctx.Delete)
-	ctx.SetPDKnobs(knobs)
+	ctx.SetPDOverrides(overrides)
 	return ctx
 }
 
 func TestDecodeAbortKnobsFromProfile(t *testing.T) {
-	// Without knobs the request keeps the environment default, and a nil leg
-	// is safe: the abort may run for a request that never had one.
-	assert.Equal(t, decodeAbortTimeout(), decodeAbortTimeoutFor(knobsContext(t, nil).PDLeg()))
-	assert.Equal(t, decodeAbortRetryDelay(), decodeAbortRetryDelayFor(knobsContext(t, nil).PDLeg()))
-	assert.Equal(t, decodeAbortTimeout(), decodeAbortTimeoutFor(nil))
-	assert.Equal(t, decodeAbortRetryDelay(), decodeAbortRetryDelayFor(nil))
+	probePDDefaults(t)
 
-	leg := knobsContext(t, &types.PDRuntimeKnobs{
-		DecodeAbortTimeoutSeconds:    ptrOf(0),
-		DecodeAbortRetryDelaySeconds: ptrOf(7),
-	}).PDLeg()
+	// Without overrides the request keeps the process default, and a nil leg
+	// is safe: the abort may run for a request that never had one.
+	assert.Equal(t, 3*time.Second, decodeAbortTimeoutFor(knobsContext(t, nil).PDLeg()))
+	assert.Equal(t, 2*time.Second, decodeAbortRetryDelayFor(knobsContext(t, nil).PDLeg()))
+	assert.Equal(t, 3*time.Second, decodeAbortTimeoutFor(nil))
+	assert.Equal(t, 2*time.Second, decodeAbortRetryDelayFor(nil))
+
+	overrides := *types.DefaultPDOverrides()
+	overrides.Abort = types.PDAbortOverrides{Timeout: 0, RetryDelay: 7 * time.Second}
+	leg := knobsContext(t, &overrides).PDLeg()
 	assert.Equal(t, time.Duration(0), decodeAbortTimeoutFor(leg), "0 disables decode aborts for the request")
 	assert.Equal(t, 7*time.Second, decodeAbortRetryDelayFor(leg), "0 would mean a single attempt; 7 is passed through")
 }
 
 func TestLoadBalancingDecodeWeightsFromProfile(t *testing.T) {
+	probePDDefaults(t)
+
 	policy := LoadBalancingDecodePolicy{}
 	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "decode-1"}}
 	input := DecodePodInput{
@@ -71,15 +103,18 @@ func TestLoadBalancingDecodeWeightsFromProfile(t *testing.T) {
 		MaxFreeGPUUsage: 100,
 	}
 
-	wantEnv := (decodeLBWeightRunningReq*0.5 + decodeLBWeightThroughput*0.9) / 0.5
-	assert.InDelta(t, wantEnv, policy.ScoreDecodePod(knobsContext(t, nil), pod, input), 1e-9, "env weights")
+	wantDefault := (1.0*0.5 + 1.0*0.9) / 0.5
+	assert.InDelta(t, wantDefault, policy.ScoreDecodePod(knobsContext(t, nil), pod, input), 1e-9, "process default weights")
 
-	knobs := &types.PDRuntimeKnobs{DecodeLBWeightRunning: ptrOf(3.0), DecodeLBWeightThroughput: ptrOf(1.0)}
+	overrides := *types.DefaultPDOverrides()
+	overrides.DecodeLB = types.PDDecodeLBOverrides{WeightRunning: 3.0, WeightThroughput: 1.0}
 	wantProfile := (3.0*0.5 + 1.0*0.9) / 0.5
-	assert.InDelta(t, wantProfile, policy.ScoreDecodePod(knobsContext(t, knobs), pod, input), 1e-9, "profile weights")
+	assert.InDelta(t, wantProfile, policy.ScoreDecodePod(knobsContext(t, &overrides), pod, input), 1e-9, "profile weights")
 }
 
 func TestTokenLoadScorersUseProfileKnobs(t *testing.T) {
+	probePDDefaults(t)
+
 	tracker, _ := newTestTokenLoadTracker(t, TokenLoadConfig{KVWeight: 0.5})
 	tracker.AcquirePrefill("charge", "prefill-1", 1000) // active 1000, resident KV 1000
 	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-1"}}
@@ -87,23 +122,23 @@ func TestTokenLoadScorersUseProfileKnobs(t *testing.T) {
 	t.Run("token_load kv weight", func(t *testing.T) {
 		scorer, err := NewTokenLoadPrefillPolicy(tracker).Prepare(knobsContext(t, nil), nil, nil)
 		require.NoError(t, err)
-		assert.Equal(t, 1000+0.5*1000, scorer.ScorePod(pod, 0, 0), "env weight")
+		assert.Equal(t, 1000+0.5*1000, scorer.ScorePod(pod, 0, 0), "process default weight")
 
-		scorer, err = NewTokenLoadPrefillPolicy(tracker).Prepare(
-			knobsContext(t, &types.PDRuntimeKnobs{TokenLoadKVWeight: ptrOf(2.0)}), nil, nil)
+		overrides := *types.DefaultPDOverrides()
+		overrides.TokenLoad.KVWeight = 2.0
+		scorer, err = NewTokenLoadPrefillPolicy(tracker).Prepare(knobsContext(t, &overrides), nil, nil)
 		require.NoError(t, err)
 		assert.Equal(t, 1000+2.0*1000, scorer.ScorePod(pod, 0, 0), "profile weight")
 	})
 
 	t.Run("hybrid_cache_load factor, min match and kv weight", func(t *testing.T) {
 		policy := NewHybridCacheLoadPrefillPolicy(tokenizer.NewCharacterTokenizer(),
-			prefixcacheindexer.NewPrefixHashTable(), tracker, HybridCacheLoadConfig{Factor: 0.5, MinMatchPct: 10})
-		knobs := &types.PDRuntimeKnobs{
-			HybridCacheLoadFactor: ptrOf(1.0),
-			MinMatchPct:           ptrOf(0.0),
-			TokenLoadKVWeight:     ptrOf(2.0),
-		}
-		scorer, err := policy.Prepare(knobsContext(t, knobs), nil, map[string]struct{}{"prefill-1": {}})
+			prefixcacheindexer.NewPrefixHashTable(), tracker)
+		overrides := *types.DefaultPDOverrides()
+		overrides.HybridCacheLoadFactor = 1.0
+		overrides.MinMatchPct = 0.0
+		overrides.TokenLoad.KVWeight = 2.0
+		scorer, err := policy.Prepare(knobsContext(t, &overrides), nil, map[string]struct{}{"prefill-1": {}})
 		require.NoError(t, err)
 		hybrid, ok := scorer.(*hybridCacheLoadScorer)
 		require.True(t, ok)
@@ -114,13 +149,20 @@ func TestTokenLoadScorersUseProfileKnobs(t *testing.T) {
 	})
 
 	t.Run("prefix_cache min match", func(t *testing.T) {
-		policy := NewPrefixCachePrefillPolicyWithConfig(tokenizer.NewCharacterTokenizer(),
-			prefixcacheindexer.NewPrefixHashTable(), PrefixCacheConfig{MinMatchPct: 10})
-		scorer, err := policy.Prepare(knobsContext(t, &types.PDRuntimeKnobs{MinMatchPct: ptrOf(0.0)}), nil, nil)
+		policy := NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), prefixcacheindexer.NewPrefixHashTable())
+		scorer, err := policy.Prepare(knobsContext(t, nil), nil, nil)
 		require.NoError(t, err)
 		prefix, ok := scorer.(*prefixCacheScorer)
 		require.True(t, ok)
-		assert.Equal(t, 0.0, prefix.minMatchPct)
+		assert.Equal(t, 0.0, prefix.minMatchPct, "the process default keeps every match")
+
+		overrides := *types.DefaultPDOverrides()
+		overrides.MinMatchPct = 30
+		scorer, err = policy.Prepare(knobsContext(t, &overrides), nil, nil)
+		require.NoError(t, err)
+		prefix, ok = scorer.(*prefixCacheScorer)
+		require.True(t, ok)
+		assert.Equal(t, 30.0, prefix.minMatchPct, "the profile raises the threshold for its request")
 	})
 }
 

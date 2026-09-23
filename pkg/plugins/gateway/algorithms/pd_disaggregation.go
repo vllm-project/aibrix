@@ -17,7 +17,6 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -27,7 +26,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bytedance/sonic"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
@@ -127,188 +125,10 @@ func init() {
 	engine.SetConnectorTypeFunc(func() string { return aibrixKVConnectorType })
 }
 
-// pdAlgorithmConfig holds PD-specific algorithm configuration parsed from RoutingConfig.
-type pdAlgorithmConfig struct {
-	PromptLenBucketMinLength int    `json:"promptLenBucketMinLength"`
-	PromptLenBucketMaxLength int    `json:"promptLenBucketMaxLength"`
-	Combined                 bool   `json:"combined"`
-	PrefillScorePolicy       string `json:"prefillScorePolicy,omitempty"`
-	DecodeScorePolicy        string `json:"decodeScorePolicy,omitempty"`
-	// PromptLengthBucketing overrides AIBRIX_PROMPT_LENGTH_BUCKETING for
-	// requests routed with this profile. Flat rather than under PD so it sits
-	// next to the promptLenBucket* fields it interacts with.
-	PromptLengthBucketing *bool `json:"promptLengthBucketing,omitempty"`
-	// PD carries the remaining per-request PD routing knobs.
-	PD *pdProfileConfig `json:"pd,omitempty"`
-}
-
-// pdProfileConfig groups the PD routing knobs a profile may set under
-// routingConfig.pd. Each knob mirrors an AIBRIX_* variable the PD path reads;
-// types.PDRuntimeKnobs documents the mapping. A knob the profile leaves unset,
-// or sets to a value the matching environment variable would reject, keeps the
-// environment default, so a profile can only narrow or sharpen routing
-// behaviour, never silently drop a threshold.
-type pdProfileConfig struct {
-	Abort                 *pdAbortProfileConfig           `json:"abort,omitempty"`
-	Spreads               *pdSpreadsProfileConfig         `json:"spreads,omitempty"`
-	TokenLoad             *pdTokenLoadProfileConfig       `json:"tokenLoad,omitempty"`
-	DecodeLBWeights       *pdDecodeLBWeightsProfileConfig `json:"decodeLBWeights,omitempty"`
-	HybridCacheLoadFactor *float64                        `json:"hybridCacheLoadFactor,omitempty"`
-	MinMatchPct           *float64                        `json:"minMatchPct,omitempty"`
-	PrefillRequestTimeout *int                            `json:"prefillRequestTimeout,omitempty"`
-}
-
-// pdAbortProfileConfig mirrors AIBRIX_DECODE_ABORT_TIMEOUT and
-// AIBRIX_DECODE_ABORT_RETRY_DELAY. Zero is a meaningful value for both: it
-// disables decode aborts, and it reduces the abort to a single attempt.
-type pdAbortProfileConfig struct {
-	Timeout    *int `json:"timeout,omitempty"`
-	RetryDelay *int `json:"retryDelay,omitempty"`
-}
-
-// pdSpreadsProfileConfig mirrors the four load-imbalance thresholds of the
-// prefill and decode fast paths.
-type pdSpreadsProfileConfig struct {
-	PrefillLoadImbalanceMinSpread      *int32   `json:"prefillLoadImbalanceMinSpread,omitempty"`
-	DecodeLoadImbalanceMinSpread       *float64 `json:"decodeLoadImbalanceMinSpread,omitempty"`
-	DecodeThroughputImbalanceMinSpread *float64 `json:"decodeThroughputImbalanceMinSpread,omitempty"`
-	DecodeScoreRatioThreshold          *float64 `json:"decodeScoreRatioThreshold,omitempty"`
-}
-
-// pdTokenLoadProfileConfig mirrors the AIBRIX_TOKEN_LOAD_* knobs. Zero is
-// meaningful for both TTLs: it disables, respectively, the sweep of the
-// request's charge and the session-delta rule.
-type pdTokenLoadProfileConfig struct {
-	KVWeight          *float64 `json:"kvWeight,omitempty"`
-	RequestCost       *float64 `json:"requestCost,omitempty"`
-	TTLSeconds        *int     `json:"ttlSeconds,omitempty"`
-	SessionTTLSeconds *int     `json:"sessionTTLSeconds,omitempty"`
-	MaxSessions       *int     `json:"maxSessions,omitempty"`
-}
-
-// pdDecodeLBWeightsProfileConfig mirrors AIBRIX_DECODE_LB_WEIGHT_RUNNING and
-// AIBRIX_DECODE_LB_WEIGHT_THROUGHPUT.
-type pdDecodeLBWeightsProfileConfig struct {
-	Running    *float64 `json:"running,omitempty"`
-	Throughput *float64 `json:"throughput,omitempty"`
-}
-
-// parsePDAlgorithmConfig parses PD-specific config from the generic RoutingConfig.
-// Returns defaults (min=0, max=MaxInt32, combined=false) if raw is nil or empty.
-func parsePDAlgorithmConfig(raw json.RawMessage) *pdAlgorithmConfig {
-	cfg := &pdAlgorithmConfig{
-		PromptLenBucketMaxLength: math.MaxInt32,
-	}
-	if len(raw) == 0 {
-		return cfg
-	}
-	if err := sonic.Unmarshal(raw, cfg); err != nil {
-		klog.ErrorS(err, "failed to unmarshal PD algorithm config, using default values", "rawConfig", string(raw))
-		return &pdAlgorithmConfig{PromptLenBucketMaxLength: math.MaxInt32}
-	}
-	if cfg.PromptLenBucketMinLength < 0 {
-		cfg.PromptLenBucketMinLength = 0
-	}
-	if cfg.PromptLenBucketMaxLength == 0 {
-		cfg.PromptLenBucketMaxLength = math.MaxInt32
-	}
-	return cfg
-}
-
-// positiveFloat returns v when it is a positive number and nil otherwise,
-// matching the rule of the environment loader the knob overrides: a value the
-// environment would reject must not reach the routing path through a profile.
-func positiveFloat(v *float64) *float64 {
-	if v == nil || *v <= 0 || math.IsNaN(*v) {
-		return nil
-	}
-	return v
-}
-
-// floatInRange returns v when it lies within [lo, hi] and nil otherwise. NaN
-// fails every comparison and is dropped as well.
-func floatInRange(v *float64, lo, hi float64) *float64 {
-	if v == nil || math.IsNaN(*v) || *v < lo || *v > hi {
-		return nil
-	}
-	return v
-}
-
-// positiveInt returns v when it is a positive integer and nil otherwise.
-func positiveInt(v *int) *int {
-	if v == nil || *v <= 0 {
-		return nil
-	}
-	return v
-}
-
-// nonNegativeInt returns v when it is zero or positive and nil otherwise. Use
-// it for knobs whose zero setting is documented, such as the abort deadline
-// (0 disables the abort) and the token-load TTLs (0 disables the sweep).
-func nonNegativeInt(v *int) *int {
-	if v == nil || *v < 0 {
-		return nil
-	}
-	return v
-}
-
-// runtimeKnobs converts a parsed profile into the per-request PD overrides.
-// It returns nil when the profile sets no PD knob at all, so a request without
-// one pays a single nil check on the routing path. Values are validated here,
-// at the profile boundary, instead of at every read site.
-func (c *pdAlgorithmConfig) runtimeKnobs() *types.PDRuntimeKnobs {
-	if c == nil || (c.PD == nil && c.PromptLengthBucketing == nil) {
-		return nil
-	}
-	knobs := &types.PDRuntimeKnobs{PromptLengthBucketing: c.PromptLengthBucketing}
-	p := c.PD
-	if p == nil {
-		return knobs
-	}
-	if a := p.Abort; a != nil {
-		knobs.DecodeAbortTimeoutSeconds = nonNegativeInt(a.Timeout)
-		knobs.DecodeAbortRetryDelaySeconds = nonNegativeInt(a.RetryDelay)
-	}
-	if sp := p.Spreads; sp != nil {
-		if v := sp.PrefillLoadImbalanceMinSpread; v != nil && *v > 0 {
-			knobs.PrefillLoadImbalanceMinSpread = v
-		}
-		knobs.DecodeLoadImbalanceMinSpread = positiveFloat(sp.DecodeLoadImbalanceMinSpread)
-		knobs.DecodeThroughputImbalanceMinSpread = positiveFloat(sp.DecodeThroughputImbalanceMinSpread)
-		knobs.DecodeScoreRatioThreshold = positiveFloat(sp.DecodeScoreRatioThreshold)
-	}
-	if w := p.DecodeLBWeights; w != nil {
-		knobs.DecodeLBWeightRunning = positiveFloat(w.Running)
-		knobs.DecodeLBWeightThroughput = positiveFloat(w.Throughput)
-	}
-	knobs.HybridCacheLoadFactor = floatInRange(p.HybridCacheLoadFactor, 0, 1)
-	knobs.MinMatchPct = floatInRange(p.MinMatchPct, 0, 100)
-	knobs.PrefillRequestTimeoutSeconds = positiveInt(p.PrefillRequestTimeout)
-	if tl := p.TokenLoad; tl != nil {
-		knobs.TokenLoadKVWeight = positiveFloat(tl.KVWeight)
-		knobs.TokenLoadRequestCost = positiveFloat(tl.RequestCost)
-		knobs.TokenLoadTTLSeconds = nonNegativeInt(tl.TTLSeconds)
-		knobs.TokenLoadSessionTTLSeconds = nonNegativeInt(tl.SessionTTLSeconds)
-		knobs.TokenLoadMaxSessions = positiveInt(tl.MaxSessions)
-	}
-	return knobs
-}
-
-// effectivePDKnobs returns the PD routing overrides of this request's model
-// config profile, or nil when the profile sets none. Route parks the result on
-// the request's PD leg so the parts of the PD path that outlive the routing
-// context read the same values.
-func effectivePDKnobs(routingCtx *types.RoutingContext) *types.PDRuntimeKnobs {
-	if routingCtx == nil || routingCtx.ConfigProfile == nil || len(routingCtx.ConfigProfile.RoutingConfig) == 0 {
-		return nil
-	}
-	return parsePDAlgorithmConfig(routingCtx.ConfigProfile.RoutingConfig).runtimeKnobs()
-}
-
 // effectivePromptLengthBucketing reports whether prompt-length bucketing is on
 // for this request, honouring the profile override when one is set.
 func effectivePromptLengthBucketing(routingCtx *types.RoutingContext) bool {
-	return routingCtx.PDKnobs().PromptLengthBucketingOrDefault(aibrixPromptLengthBucketing)
+	return routingCtx.PDOverrides().PromptLengthBucketing
 }
 
 // effectiveScorePolicies returns prefill/decode scoring policies for this request.
@@ -320,10 +140,10 @@ func effectivePromptLengthBucketing(routingCtx *types.RoutingContext) bool {
 func (r *pdRouter) effectiveScorePolicies(routingCtx *types.RoutingContext) (pd.PrefillScorePolicy, pd.DecodeScorePolicy, error) {
 	prefill := r.prefillPolicy
 	decode := r.decodePolicy
-	if routingCtx.ConfigProfile == nil || len(routingCtx.ConfigProfile.RoutingConfig) == 0 {
+	if routingCtx.ConfigProfile == nil || routingCtx.ConfigProfile.Routing == nil {
 		return prefill, decode, nil
 	}
-	cfg := parsePDAlgorithmConfig(routingCtx.ConfigProfile.RoutingConfig)
+	cfg := routingCtx.ConfigProfile.Routing
 	if s := strings.TrimSpace(cfg.PrefillScorePolicy); s != "" {
 		switch s {
 		case pd.PrefillScorePolicyLeastRequest:
@@ -399,7 +219,7 @@ type pdRouter struct {
 }
 
 func newPrefixCachePrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashTable) pd.PrefillScorePolicy {
-	return pd.NewPrefixCachePrefillPolicyWithConfig(newTokenizer(), sharedPrefixTable, pd.DefaultPrefixCacheConfig())
+	return pd.NewPrefixCachePrefillPolicy(newTokenizer(), sharedPrefixTable)
 }
 
 func newConductorPrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashTable, metricCache cache.MetricCache) pd.PrefillScorePolicy {
@@ -407,7 +227,7 @@ func newConductorPrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashT
 }
 
 func newHybridCacheLoadPrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashTable, tracker *pd.TokenLoadTracker) pd.PrefillScorePolicy {
-	return pd.NewHybridCacheLoadPrefillPolicy(newTokenizer(), sharedPrefixTable, tracker, pd.DefaultHybridCacheLoadConfig())
+	return pd.NewHybridCacheLoadPrefillPolicy(newTokenizer(), sharedPrefixTable, tracker)
 }
 
 func NewPDRouter() (types.Router, error) {
@@ -489,7 +309,7 @@ func NewPDRouterWithCacheAndPrefixIndexer(c cache.Cache, sharedPrefixTable *pref
 		selectionCounts:       make(map[string]int64),
 	}
 	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
-	r.prefillExecutor = prefill.NewDefaultExecutor(httpClient, r.prefillRequestTracker, prefillRequestTimeout,
+	r.prefillExecutor = prefill.NewDefaultExecutor(httpClient, r.prefillRequestTracker,
 		prefill.WithTokenLoadTracker(tokenLoadTracker))
 	// Request completion is only observable through the cache's request
 	// tracker callbacks; that is where the resident-KV charge is released.
@@ -532,24 +352,24 @@ func (r *pdRouter) chargeTokenLoad(routingCtx *types.RoutingContext, pod *v1.Pod
 	if r.tokenLoadTracker == nil || !pd.UsesTokenLoad(policy) {
 		return
 	}
-	knobs := routingCtx.PDKnobs()
-	cfg := r.tokenLoadTracker.Config()
-	sessionTTL := knobs.TokenLoadSessionTTLOrDefault(cfg.SessionTTL)
-	ttl := knobs.TokenLoadTTLOrDefault(cfg.TTL)
+	overrides := routingCtx.PDOverrides()
+	// MaxSessions caps the tracker's shared session table, so it is not a
+	// per-request knob and stays environment-only (see types.PDOverrides).
+	maxSessions := r.tokenLoadTracker.Config().MaxSessions
 
 	promptTokens := pd.EstimatePromptTokens(routingCtx.ReqBody)
 	sessionID := routingCtx.ReqHeaders[constants.HeaderSessionKey]
 	matchPct := pd.PrefixMatchPercent(scorer, pod.Name)
 	newTokens, source := r.tokenLoadTracker.NewTokensWithSessionLimits(routingCtx.Model, sessionID, promptTokens, matchPct,
-		sessionTTL, knobs.TokenLoadMaxSessionsOrDefault(cfg.MaxSessions))
-	cost := r.tokenLoadTracker.PrefillCostWithRequestCost(newTokens, knobs.TokenLoadRequestCostOrDefault(cfg.RequestCost))
+		overrides.TokenLoad.SessionTTL, maxSessions)
+	cost := r.tokenLoadTracker.PrefillCostWithRequestCost(newTokens, overrides.TokenLoad.RequestCost)
 	if klog.V(4).Enabled() {
 		klog.V(4).InfoS("pd_router token_load charge",
 			"request_id", routingCtx.RequestID, "pod_name", pod.Name, "policy", policy.Name(),
 			"prompt_tokens", promptTokens, "new_tokens", newTokens, "source", source,
 			"prefix_match_percent", matchPct, "cost", cost)
 	}
-	r.tokenLoadTracker.AcquirePrefillWithTTL(routingCtx.RequestID, pod.Name, cost, ttl)
+	r.tokenLoadTracker.AcquirePrefillWithTTL(routingCtx.RequestID, pod.Name, cost, overrides.TokenLoad.TTL)
 }
 
 // releaseTokenLoad drops whatever the request still holds on the token-load
@@ -562,11 +382,13 @@ func (r *pdRouter) releaseTokenLoad(requestID string) {
 }
 
 func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
-	// Resolve the profile's PD overrides once, before anything can read them:
-	// selection reads them directly, and the async prefill leg (including the
-	// decode abort it may start) reads them off the leg after this request's
-	// routing context has been recycled.
-	ctx.SetPDKnobs(effectivePDKnobs(ctx))
+	// Park the request's resolved PD overrides on its leg before anything can
+	// read them: selection reads them through the routing context, and the
+	// async prefill leg, including the decode abort it may start, reads them
+	// off the leg after this request's routing context has been recycled. The
+	// values were resolved once for the request (ResolveRoutingOverrides).
+	pdOverrides := ctx.RoutingOverrides().PD
+	ctx.SetPDOverrides(&pdOverrides)
 
 	readyPods := readyPodList.All()
 
@@ -676,8 +498,8 @@ type Scores struct {
 //     selectMu; steps 1-3a and the policy Prepare step (tokenization, prefix
 //     matching) run before the lock is taken. Route owns the matching removals.
 func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, *v1.Pod, error) {
-	knobs := routingCtx.PDKnobs()
-	bucketing := knobs.PromptLengthBucketingOrDefault(aibrixPromptLengthBucketing)
+	pdOverrides := routingCtx.PDOverrides()
+	bucketing := pdOverrides.PromptLengthBucketing
 
 	var promptLength int
 	if bucketing {
@@ -740,7 +562,7 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	// check for prefill and decode imbalance
 	targetPod, isImbalanced := r.loadImbalanceSelectPrefillPod(prefillPods,
 		r.prefillRequestTracker.GetPrefillRequestCountsForPods(prefillPods),
-		knobs.PrefillLoadImbalanceMinSpreadOrDefault(aibrixPrefillLoadImbalanceMinSpread))
+		pdOverrides.Spreads.PrefillLoadImbalanceMinSpread)
 	if isImbalanced && targetPod != nil {
 		prefillPods = []*v1.Pod{targetPod}
 		decodePods = utils.FilterPodsByLabel(decodePods, PDRoleSetIdentifier, targetPod.Labels[PDRoleSetIdentifier])
@@ -871,10 +693,10 @@ func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequest
 // prefillPods to the selected pod's roleset. KV cache headroom uses KVCacheUsagePerc
 // (missing metric is treated as 0% usage = 100% free).
 func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filteredDecodePods []*v1.Pod) (*v1.Pod, float64, float64, float64, map[string]float64, map[string]float64, map[string]float64) {
-	knobs := ctx.PDKnobs()
-	loadMinSpread := knobs.DecodeLoadImbalanceMinSpreadOrDefault(aibrixDecodeLoadImbalanceMinSpread)
-	throughputMinSpread := knobs.DecodeThroughputImbalanceMinSpreadOrDefault(aibrixDecodeThroughputImbalanceMinSpread)
-	scoreRatioThreshold := knobs.DecodeScoreRatioThresholdOrDefault(aibrixDecodeScoreRatioThreshold)
+	spreads := ctx.PDOverrides().Spreads
+	loadMinSpread := spreads.DecodeLoadImbalanceMinSpread
+	throughputMinSpread := spreads.DecodeThroughputImbalanceMinSpread
+	scoreRatioThreshold := spreads.DecodeScoreRatioThreshold
 
 	podRequestCounts := make(map[string]float64)
 	podThroughputs := make(map[string]float64)
@@ -1063,8 +885,8 @@ func (r *pdRouter) scorePreparedPrefillPods(routingCtx *types.RoutingContext, pr
 	meanRequestCount := mean(requestCounts)
 	stdDevRequestCount := standardDeviation(requestCounts)
 	// The prefill candidacy filter shares AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR with
-	// the prefix-cache strategies; the request profile may sharpen it per request.
-	sigma := routingCtx.RoutingKnobs().PrefixCacheStandardDeviationFactorOrDefault(standardDeviationFactor)
+	// the prefix-cache strategies; the request's resolved overrides carry it.
+	sigma := routingCtx.RoutingOverrides().PrefixCache.StandardDeviationFactor
 
 	prefillScores := map[string]*Scores{}
 	maxPrefillScore := float64(1)
@@ -1377,8 +1199,7 @@ func (r *pdRouter) isPodSuitableForPromptLength(routingCtx *types.RoutingContext
 		// Pods without model.aibrix.ai/config are not bucket-scoped; treat as any length.
 		return true
 	}
-	pdCfg := parsePDAlgorithmConfig(profile.RoutingConfig)
-	minLength, maxLength := pdCfg.PromptLenBucketMinLength, pdCfg.PromptLenBucketMaxLength
+	minLength, maxLength := promptLenBucketBounds(configprofiles.ParseRoutingConfig(profile.RoutingConfig))
 
 	if minLength > maxLength {
 		return false
@@ -1533,8 +1354,26 @@ func isCombinedPod(routingCtx *types.RoutingContext, pod *v1.Pod) bool {
 	if profile == nil {
 		return false
 	}
-	pdCfg := parsePDAlgorithmConfig(profile.RoutingConfig)
-	return pdCfg.Combined
+	cfg := configprofiles.ParseRoutingConfig(profile.RoutingConfig)
+	return cfg != nil && cfg.Combined != nil && *cfg.Combined
+}
+
+// promptLenBucketBounds returns the prompt-length range a pod's profile
+// declares, with the whole range as the default: a pod that declares none is
+// not bucket-scoped. A negative minimum or a non-positive maximum falls back to
+// its default, mirroring the pod-side tolerance of a partially filled range.
+func promptLenBucketBounds(cfg *types.RoutingConfig) (int, int) {
+	minLength, maxLength := 0, math.MaxInt32
+	if cfg == nil {
+		return minLength, maxLength
+	}
+	if v := cfg.PromptLenBucketMinLength; v != nil && *v > 0 {
+		minLength = *v
+	}
+	if v := cfg.PromptLenBucketMaxLength; v != nil && *v > 0 {
+		maxLength = *v
+	}
+	return minLength, maxLength
 }
 
 // decodePodMetricsReady reports whether RealtimeNumRequestsRunning is available for pod.

@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Aibrix Team.
+Copyright 2026 The Aibrix Team.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,249 +16,195 @@ limitations under the License.
 
 package types
 
-// RoutingKnobs carries the routing knobs a model config profile sets for one
-// request outside the prefill/decode (PD) path. It is the per-request
-// counterpart of the AIBRIX_* variables those strategies read: the environment
-// stays the default, and a profile that sets a knob overrides it for its own
-// requests only.
+import (
+	"sync"
+	"sync/atomic"
+)
+
+// RoutingOverrides carries one request's resolved routing knobs: the process
+// defaults with the model config profile's overrides applied. Every field is a
+// concrete value, so a read site uses it directly:
 //
-// Every field is a pointer so that "unset" is distinguishable from a knob
-// whose meaningful value is zero, and every accessor is nil-receiver-safe, so a
-// read site can apply an override without a nil check of its own:
+//	factor := routingCtx.RoutingOverrides().LoadBalance.ImbalanceFactor
 //
-//	factor := routingCtx.RoutingKnobs().LoadBalanceImbalanceFactorOrDefault(envFactor)
+// The values are resolved once per request at the profile boundary
+// (routingalgorithms.ResolveRoutingOverrides): a profile value the matching
+// AIBRIX_* variable would reject is dropped there, with a log, and the
+// environment default is kept. A profile can therefore only narrow or sharpen
+// routing behaviour, never silently drop a threshold. A request whose profile
+// sets nothing reads the process defaults registered by the routing algorithm
+// package through SetDefaultRoutingOverrides.
 //
-// A nil *RoutingKnobs, or a nil field, means the read site keeps the default it
-// passed, which is the value the gateway read from the environment. The knobs
-// are resolved from the profile's routingConfig once per request by
-// algorithms.ResolveRoutingKnobs and parked on the RoutingContext, because a
-// single request may consult several strategies - a multi-strategy blend, the
-// load-imbalance gate, the PD prefill scoring - that must agree on the values.
-//
-// Knobs that configure process-wide state instead of a routing decision - the
-// Preble eviction loop and histogram window, the VTC token tracker's window,
-// time unit, token weights and min/max floors, and the session-affinity local
-// cache capacity - are deliberately not part of this struct: all models of a
-// gateway process share that state, so profiled values could not be applied
-// per request without corrupting it. Those keep their environment-only
-// semantics.
-type RoutingKnobs struct {
-	// LoadBalanceImbalanceFactor overrides AIBRIX_LOAD_BALANCE_IMBALANCE_FACTOR:
-	// the factor of the mean over which the load-imbalance gate flags the
-	// busiest replica as a hotspot. Used for pools of three or more replicas.
-	LoadBalanceImbalanceFactor *float64
-	// LoadBalanceImbalanceMinGap overrides
-	// AIBRIX_LOAD_BALANCE_IMBALANCE_MIN_GAP: the minimum absolute gap between
-	// the busiest and the least busy replica required to trigger the gate.
-	LoadBalanceImbalanceMinGap *int
-	// LoadBalanceQueuedWeight overrides AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT: the
-	// weight of queued requests in the load-balance score. 0 is the V1
-	// formula, running requests only.
-	LoadBalanceQueuedWeight *float64
-	// LoadBalanceKVPressureAlpha overrides
-	// AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA: the strength of the quadratic
-	// KV-pressure penalty of the load-balance score. 0 drops the penalty.
-	LoadBalanceKVPressureAlpha *float64
-	// LoadBalanceKVCriticalFree overrides
-	// AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE: the free-KV fraction below which a
-	// replica scores +Inf in the load-balance score. 0 disables the guardrail.
-	LoadBalanceKVCriticalFree *float64
-	// PrefixCacheStandardDeviationFactor overrides
-	// AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR: how many standard
-	// deviations above the mean replica request count a prefix-match candidate
-	// may sit before it is skipped. Read by prefix-cache and by the PD prefill
-	// scorer.
-	PrefixCacheStandardDeviationFactor *int
-	// PrebleTargetGPU overrides AIBRIX_ROUTER_PREBLE_TARGET_GPU: the GPU the
-	// prefix-cache-preble cost model assumes for its replicas. "A6000" and
-	// "V100" are the known values.
-	PrebleTargetGPU *string
-	// PrebleDecodingLength overrides AIBRIX_ROUTER_PREBLE_DECODING_LENGTH: the
-	// assumed number of decoding tokens per request of the preble cost model.
-	PrebleDecodingLength *int
-	// VTCMaxPodLoad overrides AIBRIX_ROUTER_VTC_BASIC_MAX_POD_LOAD: the
-	// running-request count at which the VTC utilization score saturates.
-	VTCMaxPodLoad *float64
-	// VTCFairnessWeight overrides AIBRIX_ROUTER_VTC_BASIC_FAIRNESS_WEIGHT: the
-	// weight of the fairness term in the VTC score. 0 drops the term.
-	VTCFairnessWeight *float64
-	// VTCUtilizationWeight overrides
-	// AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT: the weight of the
-	// utilization term in the VTC score. 0 drops the term.
-	VTCUtilizationWeight *float64
-	// AutoBlendLoadBalanceWeight overrides
-	// AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT: the weight of the
-	// load-balance scorer the gateway silently blends behind every
-	// non-exclusive strategy. 0 disables the auto-blend for the request.
-	AutoBlendLoadBalanceWeight *int
-	// AutoBlendLeastRequestWeight overrides
-	// AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT: the weight of the
-	// least-request scorer the auto-blend adds for multi-port pods. 0
-	// disables that addition.
-	AutoBlendLeastRequestWeight *int
-	// AutoBlendPrefixCacheWeight overrides
-	// AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT: the prefix-cache weight of
-	// the dedicated prefix-cache/load-balance ratio a bare "prefix-cache"
-	// request gets. 0 is rejected: it would drop the caller's own strategy
-	// from the blend.
-	AutoBlendPrefixCacheWeight *int
-	// AutoBlendPrefixCacheLoadBalanceWeight overrides
-	// AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT: the
-	// load-balance weight of that ratio. 0 is accepted and leaves those
-	// requests with prefix-cache scoring alone.
-	AutoBlendPrefixCacheLoadBalanceWeight *int
+// Knobs that configure process-wide state instead of a routing decision have no
+// field here on purpose, because all models of a gateway process share that
+// state and a per-request value could not be applied without corrupting it:
+// the Preble eviction loop and histogram window, the VTC token tracker's
+// window, time unit, token weights and min/max floors, the session-affinity
+// local cache capacity and the token-load session table cap. Those keep their
+// environment-only semantics.
+type RoutingOverrides struct {
+	LoadBalance LoadBalanceOverrides
+	PrefixCache PrefixCacheOverrides
+	Preble      PrebleOverrides
+	VTC         VTCOverrides
+	AutoBlend   AutoBlendOverrides
+	PD          PDOverrides
 }
 
-// LoadBalanceImbalanceFactorOrDefault returns the profile's imbalance factor,
-// or def when the request sets none.
-func (k *RoutingKnobs) LoadBalanceImbalanceFactorOrDefault(def float64) float64 {
-	if k == nil || k.LoadBalanceImbalanceFactor == nil {
-		return def
+// LoadBalanceOverrides mirrors the AIBRIX_LOAD_BALANCE_* knobs of the
+// load-balance score and its imbalance gate.
+type LoadBalanceOverrides struct {
+	// ImbalanceFactor overrides AIBRIX_LOAD_BALANCE_IMBALANCE_FACTOR: the factor
+	// of the mean over which the gate flags the busiest replica as a hotspot.
+	// Used for pools of three or more replicas.
+	ImbalanceFactor float64
+	// ImbalanceMinGap overrides AIBRIX_LOAD_BALANCE_IMBALANCE_MIN_GAP: the
+	// minimum absolute gap between the busiest and the least busy replica
+	// required to trigger the gate.
+	ImbalanceMinGap int
+	// QueuedWeight overrides AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT: the weight of
+	// queued requests in the score. 0 is the V1 formula, running requests only.
+	QueuedWeight float64
+	// KVPressureAlpha overrides AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA: the
+	// strength of the quadratic KV-pressure penalty. 0 drops the penalty.
+	KVPressureAlpha float64
+	// KVCriticalFree overrides AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE: the
+	// free-KV fraction below which a replica scores +Inf. 0 disables the
+	// guardrail.
+	KVCriticalFree float64
+}
+
+// PrefixCacheOverrides mirrors AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR.
+type PrefixCacheOverrides struct {
+	// StandardDeviationFactor is how many standard deviations above the mean
+	// replica request count a prefix-match candidate may sit before it is
+	// skipped. Read by prefix-cache and by the PD prefill scorer.
+	StandardDeviationFactor int
+}
+
+// PrebleOverrides mirrors the prefix-cache-preble cost-model knobs that are
+// read per request.
+type PrebleOverrides struct {
+	// TargetGPU overrides AIBRIX_ROUTER_PREBLE_TARGET_GPU: the GPU the cost
+	// model assumes for its replicas. "A6000" and "V100" are the known values.
+	TargetGPU string
+	// DecodingLength overrides AIBRIX_ROUTER_PREBLE_DECODING_LENGTH: the assumed
+	// number of decoding tokens per request of the cost model.
+	DecodingLength int
+}
+
+// VTCOverrides mirrors the vtc-basic score knobs read per request.
+type VTCOverrides struct {
+	// MaxPodLoad overrides AIBRIX_ROUTER_VTC_BASIC_MAX_POD_LOAD: the
+	// running-request count at which the utilization score saturates.
+	MaxPodLoad float64
+	// FairnessWeight overrides AIBRIX_ROUTER_VTC_BASIC_FAIRNESS_WEIGHT: the
+	// weight of the fairness term. 0 drops the term.
+	FairnessWeight float64
+	// UtilizationWeight overrides AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT:
+	// the weight of the utilization term. 0 drops the term.
+	UtilizationWeight float64
+}
+
+// AutoBlendOverrides mirrors the AIBRIX_ROUTING_AUTO_BLEND_* weights of the
+// load-balance scorer the gateway silently blends behind every non-exclusive
+// strategy.
+type AutoBlendOverrides struct {
+	// LoadBalanceWeight is the weight of the auto-blended load-balance scorer.
+	// 0 disables the auto-blend for the request.
+	LoadBalanceWeight int
+	// LeastRequestWeight is the weight of the least-request scorer the
+	// auto-blend adds for multi-port pods. 0 disables that addition.
+	LeastRequestWeight int
+	// PrefixCacheWeight is the prefix-cache weight of the dedicated
+	// prefix-cache/load-balance ratio a bare "prefix-cache" request gets.
+	PrefixCacheWeight int
+	// PrefixCacheLoadBalanceWeight is the load-balance weight of that ratio.
+	// 0 leaves those requests with prefix-cache scoring alone.
+	PrefixCacheLoadBalanceWeight int
+}
+
+var (
+	defaultRoutingOverrides atomic.Pointer[RoutingOverrides]
+	// defaultOverridesMu serializes the two installers, which run at package
+	// startup: the routing algorithm package installs the whole table, and
+	// SetDefaultPDOverrides fills only the PD part for callers that have no
+	// opinion on the rest.
+	defaultOverridesMu sync.Mutex
+)
+
+// SetDefaultRoutingOverrides installs the process-wide defaults of the routing
+// knobs. The routing algorithm package assembles them from the AIBRIX_*
+// variables at startup, so a read site on a request without a model config
+// profile gets the environment values without a per-request copy.
+func SetDefaultRoutingOverrides(o *RoutingOverrides) {
+	if o == nil {
+		o = &RoutingOverrides{}
 	}
-	return *k.LoadBalanceImbalanceFactor
+	defaultOverridesMu.Lock()
+	defer defaultOverridesMu.Unlock()
+	defaultRoutingOverrides.Store(o)
 }
 
-// LoadBalanceImbalanceMinGapOrDefault returns the profile's imbalance min gap,
-// or def when the request sets none.
-func (k *RoutingKnobs) LoadBalanceImbalanceMinGapOrDefault(def int) int {
-	if k == nil || k.LoadBalanceImbalanceMinGap == nil {
-		return def
+// SetDefaultPDOverrides installs the process-wide PD defaults, keeping the
+// routing defaults that are already installed. It exists so a caller that only
+// owns PD knobs (the pd package and its tests) can fill its half of the table
+// without copying the rest.
+func SetDefaultPDOverrides(o *PDOverrides) {
+	defaultOverridesMu.Lock()
+	defer defaultOverridesMu.Unlock()
+	next := &RoutingOverrides{}
+	if cur := defaultRoutingOverrides.Load(); cur != nil {
+		*next = *cur
 	}
-	return *k.LoadBalanceImbalanceMinGap
-}
-
-// LoadBalanceQueuedWeightOrDefault returns the profile's queued-request weight,
-// or def when the request sets none.
-func (k *RoutingKnobs) LoadBalanceQueuedWeightOrDefault(def float64) float64 {
-	if k == nil || k.LoadBalanceQueuedWeight == nil {
-		return def
+	if o != nil {
+		next.PD = *o
 	}
-	return *k.LoadBalanceQueuedWeight
+	defaultRoutingOverrides.Store(next)
 }
 
-// LoadBalanceKVPressureAlphaOrDefault returns the profile's KV-pressure
-// penalty strength, or def when the request sets none.
-func (k *RoutingKnobs) LoadBalanceKVPressureAlphaOrDefault(def float64) float64 {
-	if k == nil || k.LoadBalanceKVPressureAlpha == nil {
-		return def
+// DefaultRoutingOverrides returns the process defaults installed by
+// SetDefaultRoutingOverrides. It never returns nil.
+func DefaultRoutingOverrides() *RoutingOverrides {
+	if o := defaultRoutingOverrides.Load(); o != nil {
+		return o
 	}
-	return *k.LoadBalanceKVPressureAlpha
+	return &RoutingOverrides{}
 }
 
-// LoadBalanceKVCriticalFreeOrDefault returns the profile's critical free-KV
-// fraction, or def when the request sets none.
-func (k *RoutingKnobs) LoadBalanceKVCriticalFreeOrDefault(def float64) float64 {
-	if k == nil || k.LoadBalanceKVCriticalFree == nil {
-		return def
-	}
-	return *k.LoadBalanceKVCriticalFree
+// DefaultPDOverrides returns the PD half of the process defaults, which is what
+// a PD read site falls back to when the request carries no resolved overrides.
+// The returned struct is read-only and never nil.
+func DefaultPDOverrides() *PDOverrides {
+	return &DefaultRoutingOverrides().PD
 }
 
-// PrefixCacheStandardDeviationFactorOrDefault returns the profile's
-// standard-deviation factor, or def when the request sets none.
-func (k *RoutingKnobs) PrefixCacheStandardDeviationFactorOrDefault(def int) int {
-	if k == nil || k.PrefixCacheStandardDeviationFactor == nil {
-		return def
-	}
-	return *k.PrefixCacheStandardDeviationFactor
-}
-
-// PrebleTargetGPUOrDefault returns the profile's preble target GPU, or def when
-// the request sets none.
-func (k *RoutingKnobs) PrebleTargetGPUOrDefault(def string) string {
-	if k == nil || k.PrebleTargetGPU == nil {
-		return def
-	}
-	return *k.PrebleTargetGPU
-}
-
-// PrebleDecodingLengthOrDefault returns the profile's assumed decoding length,
-// or def when the request sets none.
-func (k *RoutingKnobs) PrebleDecodingLengthOrDefault(def int) int {
-	if k == nil || k.PrebleDecodingLength == nil {
-		return def
-	}
-	return *k.PrebleDecodingLength
-}
-
-// VTCMaxPodLoadOrDefault returns the profile's VTC saturation load, or def when
-// the request sets none.
-func (k *RoutingKnobs) VTCMaxPodLoadOrDefault(def float64) float64 {
-	if k == nil || k.VTCMaxPodLoad == nil {
-		return def
-	}
-	return *k.VTCMaxPodLoad
-}
-
-// VTCFairnessWeightOrDefault returns the profile's VTC fairness weight, or def
-// when the request sets none.
-func (k *RoutingKnobs) VTCFairnessWeightOrDefault(def float64) float64 {
-	if k == nil || k.VTCFairnessWeight == nil {
-		return def
-	}
-	return *k.VTCFairnessWeight
-}
-
-// VTCUtilizationWeightOrDefault returns the profile's VTC utilization weight,
-// or def when the request sets none.
-func (k *RoutingKnobs) VTCUtilizationWeightOrDefault(def float64) float64 {
-	if k == nil || k.VTCUtilizationWeight == nil {
-		return def
-	}
-	return *k.VTCUtilizationWeight
-}
-
-// AutoBlendLoadBalanceWeightOrDefault returns the profile's auto-blend
-// load-balance weight, or def when the request sets none.
-func (k *RoutingKnobs) AutoBlendLoadBalanceWeightOrDefault(def int) int {
-	if k == nil || k.AutoBlendLoadBalanceWeight == nil {
-		return def
-	}
-	return *k.AutoBlendLoadBalanceWeight
-}
-
-// AutoBlendLeastRequestWeightOrDefault returns the profile's auto-blend
-// least-request weight, or def when the request sets none.
-func (k *RoutingKnobs) AutoBlendLeastRequestWeightOrDefault(def int) int {
-	if k == nil || k.AutoBlendLeastRequestWeight == nil {
-		return def
-	}
-	return *k.AutoBlendLeastRequestWeight
-}
-
-// AutoBlendPrefixCacheWeightOrDefault returns the profile's prefix-cache weight
-// of the prefix-cache/load-balance ratio, or def when the request sets none.
-func (k *RoutingKnobs) AutoBlendPrefixCacheWeightOrDefault(def int) int {
-	if k == nil || k.AutoBlendPrefixCacheWeight == nil {
-		return def
-	}
-	return *k.AutoBlendPrefixCacheWeight
-}
-
-// AutoBlendPrefixCacheLoadBalanceWeightOrDefault returns the profile's
-// load-balance weight of the prefix-cache/load-balance ratio, or def when the
-// request sets none.
-func (k *RoutingKnobs) AutoBlendPrefixCacheLoadBalanceWeightOrDefault(def int) int {
-	if k == nil || k.AutoBlendPrefixCacheLoadBalanceWeight == nil {
-		return def
-	}
-	return *k.AutoBlendPrefixCacheLoadBalanceWeight
-}
-
-// SetRoutingKnobs records the request's non-PD routing overrides. A nil knobs
-// argument is a no-op: the read sites fall back to their environment defaults.
-func (r *RoutingContext) SetRoutingKnobs(knobs *RoutingKnobs) {
-	if r == nil || knobs == nil {
+// SetRoutingOverrides records the request's resolved routing overrides. A nil
+// value means the request carries no profile overrides, and reads then fall
+// back to the process defaults.
+func (r *RoutingContext) SetRoutingOverrides(o *RoutingOverrides) {
+	if r == nil {
 		return
 	}
-	r.routingKnobs.Store(knobs)
+	r.routingOverrides = o
 }
 
-// RoutingKnobs returns the request's non-PD routing overrides, or nil when the
-// profile sets none.
-func (r *RoutingContext) RoutingKnobs() *RoutingKnobs {
-	if r == nil {
-		return nil
+// RoutingOverrides returns the request's resolved routing overrides, or the
+// process defaults when the request carries none. The returned struct is
+// read-only and never nil.
+func (r *RoutingContext) RoutingOverrides() *RoutingOverrides {
+	if r == nil || r.routingOverrides == nil {
+		return DefaultRoutingOverrides()
 	}
-	return r.routingKnobs.Load()
+	return r.routingOverrides
+}
+
+// ClearRoutingOverrides drops the request's resolved overrides, restoring the
+// process defaults. Reset calls it so a pooled context cannot steer the next
+// request with the previous one's profile.
+func (r *RoutingContext) ClearRoutingOverrides() {
+	if r == nil {
+		return
+	}
+	r.routingOverrides = nil
 }

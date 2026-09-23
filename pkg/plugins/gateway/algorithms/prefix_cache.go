@@ -431,9 +431,9 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	}
 
 	if len(matchedPods) > 0 {
-		// The profile may sharpen the standard-deviation cutoff for its own
-		// requests; the package default is the environment-derived value.
-		sigma := ctx.RoutingKnobs().PrefixCacheStandardDeviationFactorOrDefault(standardDeviationFactor)
+		// The request's resolved overrides carry the profile's value on top of
+		// the process default (see ResolveRoutingOverrides).
+		sigma := ctx.RoutingOverrides().PrefixCache.StandardDeviationFactor
 		targetPod = getTargetPodFromMatchedPodsFromCounts(podRequestCount, readyPods, matchedPods, sigma)
 		if targetPod != nil {
 			selection = selectionPrefixMatch
@@ -821,9 +821,9 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	}
 
 	if len(matchedPods) > 0 {
-		// The profile may sharpen the standard-deviation cutoff for its own
-		// requests; the package default is the environment-derived value.
-		sigma := ctx.RoutingKnobs().PrefixCacheStandardDeviationFactorOrDefault(standardDeviationFactor)
+		// The request's resolved overrides carry the profile's value on top of
+		// the process default (see ResolveRoutingOverrides).
+		sigma := ctx.RoutingOverrides().PrefixCache.StandardDeviationFactor
 		targetPod = getTargetPodFromMatchedPodsWithKeys(k.cache, readyPods, matchedPods, sigma)
 		if targetPod != nil {
 			selection = selectionPrefixMatch

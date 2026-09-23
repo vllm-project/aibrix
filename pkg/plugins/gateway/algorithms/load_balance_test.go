@@ -518,9 +518,11 @@ func TestLoadBalanceRoute_UnmeasuredPodGetsMeanCapacity(t *testing.T) {
 }
 
 func TestLoadBalanceScoreAll_QueuedRequestsWeighted(t *testing.T) {
-	orig := loadBalanceQueuedWeight
-	loadBalanceQueuedWeight = 0.5
-	t.Cleanup(func() { loadBalanceQueuedWeight = orig })
+	restore := types.DefaultRoutingOverrides()
+	next := *restore
+	next.LoadBalance.QueuedWeight = 0.5
+	types.SetDefaultRoutingOverrides(&next)
+	t.Cleanup(func() { types.SetDefaultRoutingOverrides(restore) })
 
 	pods := []*v1.Pod{makeLBPod("p1", "1.1.1.1")}
 	pm := lbPodMetrics(4, 2, 0)

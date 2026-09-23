@@ -200,12 +200,12 @@ type autoBlendWeights struct {
 // up on different - and separately weight-configured - composite routers. A nil
 // routingCtx leaves every weight at its environment default.
 func effectiveAutoBlendWeights(routingCtx *types.RoutingContext) autoBlendWeights {
-	knobs := routingCtx.RoutingKnobs()
+	weights := routingCtx.RoutingOverrides().AutoBlend
 	return autoBlendWeights{
-		loadBalance:            knobs.AutoBlendLoadBalanceWeightOrDefault(autoBlendLoadBalanceWeight),
-		leastRequest:           knobs.AutoBlendLeastRequestWeightOrDefault(autoBlendLeastRequestWeight),
-		prefixCache:            knobs.AutoBlendPrefixCacheWeightOrDefault(autoBlendPrefixCacheWeight),
-		prefixCacheLoadBalance: knobs.AutoBlendPrefixCacheLoadBalanceWeightOrDefault(autoBlendPrefixCacheLoadBalanceWeight),
+		loadBalance:            weights.LoadBalanceWeight,
+		leastRequest:           weights.LeastRequestWeight,
+		prefixCache:            weights.PrefixCacheWeight,
+		prefixCacheLoadBalance: weights.PrefixCacheLoadBalanceWeight,
 	}
 }
 

@@ -114,12 +114,13 @@ type PDLegState struct {
 	// itself: the routing context it could read it from is pooled.
 	decodeTarget atomic.Pointer[pdDecodeTarget]
 
-	// pdKnobs are the PD routing overrides the request's model config profile
-	// sets. They are resolved on the request path and read from the leg rather
-	// than the routing context for the same reason as decodeTarget: the async
-	// prefill goroutine, and the decode abort it can start, outlive the client
-	// stream and must not read a routing context that may have been recycled.
-	pdKnobs atomic.Pointer[PDRuntimeKnobs]
+	// pdOverrides are the PD routing overrides the request's model config
+	// profile resolved to. They are resolved on the request path and read from
+	// the leg rather than the routing context for the same reason as
+	// decodeTarget: the async prefill goroutine, and the decode abort it can
+	// start, outlive the client stream and must not read a routing context that
+	// may have been recycled.
+	pdOverrides atomic.Pointer[PDOverrides]
 
 	// abortMu guards the two fields below. The abort context is built by the
 	// goroutine that sends the abort and cancelled by the goroutine that owns
@@ -340,21 +341,25 @@ func (l *PDLegState) DecodeTarget() (addr string, podName string) {
 	return "", ""
 }
 
-// SetPDKnobs records the request's PD routing overrides. A nil knobs argument
-// is a no-op: the read sites fall back to their environment defaults.
-func (l *PDLegState) SetPDKnobs(knobs *PDRuntimeKnobs) {
-	if l == nil || knobs == nil {
+// SetPDOverrides records the request's PD routing overrides. A nil argument is
+// a no-op and the read sites keep the process defaults.
+func (l *PDLegState) SetPDOverrides(o *PDOverrides) {
+	if l == nil || o == nil {
 		return
 	}
-	l.pdKnobs.Store(knobs)
+	l.pdOverrides.Store(o)
 }
 
-// PDKnobs returns the request's PD routing overrides, or nil when it has none.
-func (l *PDLegState) PDKnobs() *PDRuntimeKnobs {
-	if l == nil {
-		return nil
+// PDOverrides returns the request's PD routing overrides, or the process
+// defaults when none were recorded. The returned struct is read-only and never
+// nil.
+func (l *PDLegState) PDOverrides() *PDOverrides {
+	if l != nil {
+		if o := l.pdOverrides.Load(); o != nil {
+			return o
+		}
 	}
-	return l.pdKnobs.Load()
+	return DefaultPDOverrides()
 }
 
 // PDLeg returns the PD leg state of this incarnation of the request, or nil
@@ -422,22 +427,22 @@ func (r *RoutingContext) DecodeTarget() (addr string, podName string) {
 	return r.PDLeg().DecodeTarget()
 }
 
-// SetPDKnobs records the PD routing overrides of this incarnation of the
-// request.
-func (r *RoutingContext) SetPDKnobs(knobs *PDRuntimeKnobs) {
+// SetPDOverrides records the PD routing overrides of this incarnation of the
+// request on its PD leg, where the async prefill and abort paths read them.
+func (r *RoutingContext) SetPDOverrides(o *PDOverrides) {
 	if r == nil {
 		return
 	}
-	r.PDLeg().SetPDKnobs(knobs)
+	r.PDLeg().SetPDOverrides(o)
 }
 
-// PDKnobs returns the PD routing overrides of this incarnation of the request,
-// or nil when it has none.
-func (r *RoutingContext) PDKnobs() *PDRuntimeKnobs {
+// PDOverrides returns the PD routing overrides of this incarnation of the
+// request, or the process defaults when it has none.
+func (r *RoutingContext) PDOverrides() *PDOverrides {
 	if r == nil {
-		return nil
+		return DefaultPDOverrides()
 	}
-	return r.PDLeg().PDKnobs()
+	return r.PDLeg().PDOverrides()
 }
 
 // PodAddress returns the host:port the gateway would forward this request to if

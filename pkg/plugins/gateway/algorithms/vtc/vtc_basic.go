@@ -91,11 +91,12 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 		return ctx.TargetAddress(), nil
 	}
 
-	// The profile may retune the VTC score for its own requests; the package
-	// defaults are the environment-derived values.
-	maxPodLoad := ctx.RoutingKnobs().VTCMaxPodLoadOrDefault(maxPodLoad)
-	fairnessWeight := ctx.RoutingKnobs().VTCFairnessWeightOrDefault(fairnessWeight)
-	utilizationWeight := ctx.RoutingKnobs().VTCUtilizationWeightOrDefault(utilizationWeight)
+	// The request's resolved overrides carry the profile's values on top of
+	// the process defaults (see routingalgorithms.ResolveRoutingOverrides).
+	vtcWeights := ctx.RoutingOverrides().VTC
+	maxPodLoad := vtcWeights.MaxPodLoad
+	fairnessWeight := vtcWeights.FairnessWeight
+	utilizationWeight := vtcWeights.UtilizationWeight
 
 	inputTokens := r.tokenEstimator.EstimateInputTokens(ctx.Message)
 	outputTokens := r.tokenEstimator.EstimateOutputTokens(ctx.Message)
@@ -235,11 +236,12 @@ func (r *BasicVTCRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.
 		return scores, scored, fmt.Errorf("VTC routing not possible: user is nil")
 	}
 
-	// The profile may retune the VTC score for its own requests; the package
-	// defaults are the environment-derived values.
-	maxPodLoad := ctx.RoutingKnobs().VTCMaxPodLoadOrDefault(maxPodLoad)
-	fairnessWeight := ctx.RoutingKnobs().VTCFairnessWeightOrDefault(fairnessWeight)
-	utilizationWeight := ctx.RoutingKnobs().VTCUtilizationWeightOrDefault(utilizationWeight)
+	// The request's resolved overrides carry the profile's values on top of
+	// the process defaults (see routingalgorithms.ResolveRoutingOverrides).
+	vtcWeights := ctx.RoutingOverrides().VTC
+	maxPodLoad := vtcWeights.MaxPodLoad
+	fairnessWeight := vtcWeights.FairnessWeight
+	utilizationWeight := vtcWeights.UtilizationWeight
 
 	userTokens, err := r.tokenTracker.GetTokenCount(ctx.Context, *user)
 	if err != nil {

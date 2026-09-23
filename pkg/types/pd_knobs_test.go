@@ -24,53 +24,40 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestPDLegKnobsRoundTrip(t *testing.T) {
-	ctx := NewRoutingContext(context.Background(), "pd", "model", "message", "req-knobs", "user")
-	assert.Nil(t, ctx.PDKnobs(), "a fresh incarnation has no overrides")
+func TestPDOverridesRoundTrip(t *testing.T) {
+	installDefaultOverrides(t, &RoutingOverrides{PD: PDOverrides{MinMatchPct: 10}})
 
-	knobs := &PDRuntimeKnobs{DecodeAbortTimeoutSeconds: intPtr(0), PromptLengthBucketing: boolPtr(true)}
-	ctx.SetPDKnobs(knobs)
-	assert.Same(t, knobs, ctx.PDKnobs())
+	ctx := NewRoutingContext(context.Background(), "pd", "model", "message", "req-overrides", "user")
+	assert.Equal(t, 10.0, ctx.PDOverrides().MinMatchPct, "a request without a profile reads the process defaults")
+
+	overrides := &PDOverrides{MinMatchPct: 42, Abort: PDAbortOverrides{Timeout: 3 * time.Second}}
+	ctx.SetPDOverrides(overrides)
+	assert.Same(t, overrides, ctx.PDOverrides())
 	ctx.Delete()
 
 	next := NewRoutingContext(context.Background(), "pd", "model", "message", "req-next", "user")
 	defer next.Delete()
-	assert.Nil(t, next.PDKnobs(), "reset installs a fresh leg, so knobs never leak between requests")
+	assert.Equal(t, 10.0, next.PDOverrides().MinMatchPct, "reset installs a fresh leg, so overrides never leak between requests")
 
 	var leg *PDLegState
-	assert.Nil(t, leg.PDKnobs())
-	leg.SetPDKnobs(knobs) // nil receiver: must not panic
+	assert.Equal(t, 10.0, leg.PDOverrides().MinMatchPct, "a nil leg reads the process defaults")
+	leg.SetPDOverrides(overrides) // nil receiver: must not panic
 
 	var nilCtx *RoutingContext
-	assert.Nil(t, nilCtx.PDKnobs())
-	nilCtx.SetPDKnobs(knobs) // nil receiver: must not panic
+	assert.Equal(t, 10.0, nilCtx.PDOverrides().MinMatchPct)
+	nilCtx.SetPDOverrides(overrides) // nil receiver: must not panic
 }
 
-func TestPDRuntimeKnobsAccessorsFallBack(t *testing.T) {
-	var nilKnobs *PDRuntimeKnobs
-	assert.Equal(t, 7*time.Second, nilKnobs.DecodeAbortTimeoutOrDefault(7*time.Second))
-	assert.Equal(t, 8*time.Second, nilKnobs.DecodeAbortRetryDelayOrDefault(8*time.Second))
-	assert.Equal(t, 9*time.Second, nilKnobs.PrefillRequestTimeoutOrDefault(9*time.Second))
-	assert.Equal(t, 10*time.Second, nilKnobs.TokenLoadTTLOrDefault(10*time.Second))
-	assert.Equal(t, 11*time.Second, nilKnobs.TokenLoadSessionTTLOrDefault(11*time.Second))
-	assert.Equal(t, int32(16), nilKnobs.PrefillLoadImbalanceMinSpreadOrDefault(16))
-	assert.Equal(t, 1.5, nilKnobs.DecodeLoadImbalanceMinSpreadOrDefault(1.5))
-	assert.Equal(t, 2.5, nilKnobs.DecodeThroughputImbalanceMinSpreadOrDefault(2.5))
-	assert.Equal(t, 3.5, nilKnobs.DecodeScoreRatioThresholdOrDefault(3.5))
-	assert.True(t, nilKnobs.PromptLengthBucketingOrDefault(true))
-	assert.Equal(t, 4.5, nilKnobs.DecodeLBWeightRunningOrDefault(4.5))
-	assert.Equal(t, 5.5, nilKnobs.DecodeLBWeightThroughputOrDefault(5.5))
-	assert.Equal(t, 6.5, nilKnobs.HybridCacheLoadFactorOrDefault(6.5))
-	assert.Equal(t, 7.5, nilKnobs.MinMatchPctOrDefault(7.5))
-	assert.Equal(t, 8.5, nilKnobs.TokenLoadKVWeightOrDefault(8.5))
-	assert.Equal(t, 9.5, nilKnobs.TokenLoadRequestCostOrDefault(9.5))
-	assert.Equal(t, 12, nilKnobs.TokenLoadMaxSessionsOrDefault(12))
+func TestPDOverridesAreScopedToOneIncarnation(t *testing.T) {
+	installDefaultOverrides(t, &RoutingOverrides{})
 
-	empty := &PDRuntimeKnobs{}
-	assert.Equal(t, 1.0, empty.DecodeLBWeightRunningOrDefault(1.0))
-	assert.False(t, empty.PromptLengthBucketingOrDefault(false))
-	assert.Equal(t, int32(3), empty.PrefillLoadImbalanceMinSpreadOrDefault(3))
+	ctx := NewRoutingContext(context.Background(), "pd", "model", "message", "req-scope", "user")
+	ctx.SetPDOverrides(&PDOverrides{MinMatchPct: 25})
+	assert.Equal(t, 25.0, ctx.PDOverrides().MinMatchPct)
+
+	leg := ctx.PDLeg()
+	ctx.Delete()
+	// The leg outlives the pooled context: the async prefill and abort paths
+	// read the incarnation's values off it after the context is recycled.
+	assert.Equal(t, 25.0, leg.PDOverrides().MinMatchPct)
 }
-
-func intPtr(v int) *int    { return &v }
-func boolPtr(v bool) *bool { return &v }

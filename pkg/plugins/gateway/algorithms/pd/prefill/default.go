@@ -59,10 +59,9 @@ func decPrefillOutstanding() {
 // the prefill-request tracker so that prefill logic can be tested in isolation
 // from the routing/scoring concerns in pdRouter.
 type DefaultExecutor struct {
-	httpClient     *http.Client
-	tracker        *pd.PrefillRequestTracker
-	tokenLoad      *pd.TokenLoadTracker // optional; nil when no policy charges it
-	requestTimeout int                  // seconds
+	httpClient *http.Client
+	tracker    *pd.PrefillRequestTracker
+	tokenLoad  *pd.TokenLoadTracker // optional; nil when no policy charges it
 }
 
 // ExecutorOption customizes a DefaultExecutor.
@@ -76,20 +75,19 @@ func WithTokenLoadTracker(tokenLoad *pd.TokenLoadTracker) ExecutorOption {
 	return func(e *DefaultExecutor) { e.tokenLoad = tokenLoad }
 }
 
-// effectiveRequestTimeout returns the deadline of this request's prefill
-// call: the model config profile override when the request sets one, else the
-// executor default read from AIBRIX_PREFILL_REQUEST_TIMEOUT.
+// effectiveRequestTimeout returns the deadline of this request's prefill call:
+// its resolved PD overrides, which carry the AIBRIX_PREFILL_REQUEST_TIMEOUT
+// default when its profile sets none.
 func (e *DefaultExecutor) effectiveRequestTimeout(routingCtx *types.RoutingContext) time.Duration {
-	return routingCtx.PDKnobs().PrefillRequestTimeoutOrDefault(time.Duration(e.requestTimeout) * time.Second)
+	return routingCtx.PDOverrides().PrefillRequestTimeout
 }
 
-// NewDefaultExecutor constructs a DefaultExecutor.
-// httpClient and tracker are shared with the router; requestTimeout is in seconds.
-func NewDefaultExecutor(httpClient *http.Client, tracker *pd.PrefillRequestTracker, requestTimeout int, opts ...ExecutorOption) PrefillExecutor {
+// NewDefaultExecutor constructs a DefaultExecutor. httpClient and tracker are
+// shared with the router.
+func NewDefaultExecutor(httpClient *http.Client, tracker *pd.PrefillRequestTracker, opts ...ExecutorOption) PrefillExecutor {
 	e := &DefaultExecutor{
-		httpClient:     httpClient,
-		tracker:        tracker,
-		requestTimeout: requestTimeout,
+		httpClient: httpClient,
+		tracker:    tracker,
 	}
 	for _, opt := range opts {
 		opt(e)

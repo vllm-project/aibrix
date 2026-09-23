@@ -66,7 +66,8 @@ const (
 //
 // Configurable via AIBRIX_DECODE_LB_WEIGHT_RUNNING and
 // AIBRIX_DECODE_LB_WEIGHT_THROUGHPUT, or per request through the model config
-// profile knob routingConfig.pd.decodeLBWeights. Default equal weighting
+// profile knobs routingConfig.pd.decodeLBWeightRunning and
+// routingConfig.pd.decodeLBWeightThroughput. Default equal weighting
 // (1.0 / 1.0) preserves historical behaviour.
 var (
 	decodeLBWeightRunningReq   = utils.LoadEnvFloat("AIBRIX_DECODE_LB_WEIGHT_RUNNING", 1.0)
@@ -144,9 +145,9 @@ func (LoadBalancingDecodePolicy) Describe() string {
 }
 
 func (LoadBalancingDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext, pod *v1.Pod, in DecodePodInput) float64 {
-	knobs := routingCtx.PDKnobs()
-	weightRunning := knobs.DecodeLBWeightRunningOrDefault(decodeLBWeightRunningReq)
-	weightThroughput := knobs.DecodeLBWeightThroughputOrDefault(decodeLBWeightThroughput)
+	weights := routingCtx.PDOverrides().DecodeLB
+	weightRunning := weights.WeightRunning
+	weightThroughput := weights.WeightThroughput
 
 	normalizedRunningReqs := in.RunningReqs / in.MaxRequestCount
 	normalizedThroughput := 1 - in.Throughput/in.MaxThroughput

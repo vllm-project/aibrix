@@ -558,7 +558,7 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 
 	if targetPod == nil {
 		klog.InfoS("Do cost model based routing", "requestID", ctx.RequestID, "matchRatio", matchRatio*100, "matchedPodsCount", len(matchedPods))
-		gpu := ctx.RoutingKnobs().PrebleTargetGPUOrDefault(targetGPU)
+		gpu := ctx.RoutingOverrides().Preble.TargetGPU
 		podCosts := p.histogram.getCurrentAllocationCostPerPod(gpu)
 		minCost := math.MaxFloat64
 		for _, pod := range readyPods {
@@ -614,7 +614,7 @@ func (p *prefixCacheAndLoadRouter) PostRouteUpdate(ctx *types.RoutingContext, re
 		currentNode = currentNode.GetParent()
 	}
 
-	decodeLen := ctx.RoutingKnobs().PrebleDecodingLengthOrDefault(decodingLength)
+	decodeLen := ctx.RoutingOverrides().Preble.DecodingLength
 	p.histogram.update(time.Now(), node, node, targetPod.Name, decodeLen)
 	return nil
 }
@@ -696,7 +696,7 @@ func (p *prefixCacheAndLoadRouter) ScoreAll(ctx *types.RoutingContext, readyPodL
 	}
 
 	// Cost model based routing
-	gpu := ctx.RoutingKnobs().PrebleTargetGPUOrDefault(targetGPU)
+	gpu := ctx.RoutingOverrides().Preble.TargetGPU
 	podCosts := p.histogram.getCurrentAllocationCostPerPod(gpu)
 	for i, pod := range readyPods {
 		cost := podCosts[pod.Name]

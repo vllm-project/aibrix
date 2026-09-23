@@ -18,6 +18,7 @@ package vtc
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -27,6 +28,14 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
+
+// TestMain installs the VTC half of the process default table, the way the
+// routing algorithm package does at startup, so a request without a profile
+// reads the environment-derived knobs instead of zeros.
+func TestMain(m *testing.M) {
+	types.SetDefaultRoutingOverrides(&types.RoutingOverrides{VTC: EnvOverrides()})
+	os.Exit(m.Run())
+}
 
 // TestVTCBasicProfileKnobsRetuneTheScore checks that the profile knobs of one request
 // retune the VTC score for that request only: the same router and pods prefer the
@@ -52,6 +61,14 @@ func TestVTCBasicProfileKnobsRetuneTheScore(t *testing.T) {
 	router := newRouter(c)
 	require.NoError(t, router.tokenTracker.UpdateTokenCount(context.Background(), "user1", 0, 0))
 
+	// The process default table carries the environment values; the read sites
+	// resolve the request's overrides on top of it.
+	restore := types.DefaultRoutingOverrides()
+	next := *restore
+	next.VTC = types.VTCOverrides{MaxPodLoad: maxPodLoad, FairnessWeight: fairnessWeight, UtilizationWeight: utilizationWeight}
+	types.SetDefaultRoutingOverrides(&next)
+	t.Cleanup(func() { types.SetDefaultRoutingOverrides(restore) })
+
 	// Environment defaults: fairness index 0 plus a light utilization term make the
 	// loaded first replica win (about 0.02 against 1.0).
 	plain := types.NewRoutingContext(context.Background(), "vtc-basic", "model1", "test message", "req-plain", "user1")
@@ -60,11 +77,14 @@ func TestVTCBasicProfileKnobsRetuneTheScore(t *testing.T) {
 	assert.Equal(t, "192.168.1.1:8000", addr)
 
 	// The profile drops the fairness term and saturates utilization at one request,
-	// so the idle second replica wins (about 0.0 against 1.0).
-	maxPodLoad := 1.0
-	fairnessWeight := 0.0
+	// so the idle second replica wins (about 0.0 against 1.0). The utilization
+	// weight it does not set keeps the process default.
 	profiled := types.NewRoutingContext(context.Background(), "vtc-basic", "model1", "test message", "req-profiled", "user1")
-	profiled.SetRoutingKnobs(&types.RoutingKnobs{VTCMaxPodLoad: &maxPodLoad, VTCFairnessWeight: &fairnessWeight})
+	profiled.SetRoutingOverrides(&types.RoutingOverrides{VTC: types.VTCOverrides{
+		MaxPodLoad:        1.0,
+		FairnessWeight:    0.0,
+		UtilizationWeight: utilizationWeight,
+	}})
 	addr, err = router.Route(profiled, podList)
 	require.NoError(t, err)
 	assert.Equal(t, "192.168.1.2:8000", addr)

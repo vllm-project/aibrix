@@ -23,54 +23,55 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestRoutingKnobsRoundTrip(t *testing.T) {
-	ctx := NewRoutingContext(context.Background(), "load-balance", "model", "message", "req-knobs", "user")
-	assert.Nil(t, ctx.RoutingKnobs(), "a fresh incarnation has no overrides")
+// installDefaultOverrides points the process default table at defaults for the
+// duration of one test and restores an empty table afterwards.
+func installDefaultOverrides(t *testing.T, defaults *RoutingOverrides) {
+	t.Helper()
+	SetDefaultRoutingOverrides(defaults)
+	t.Cleanup(func() { SetDefaultRoutingOverrides(&RoutingOverrides{}) })
+}
 
-	knobs := &RoutingKnobs{
-		LoadBalanceQueuedWeight: float64Ptr(0),
-		PrebleTargetGPU:         stringPtr("A6000"),
-	}
-	ctx.SetRoutingKnobs(knobs)
-	assert.Same(t, knobs, ctx.RoutingKnobs())
+func TestRoutingOverridesRoundTrip(t *testing.T) {
+	process := &RoutingOverrides{LoadBalance: LoadBalanceOverrides{QueuedWeight: 0.5}}
+	installDefaultOverrides(t, process)
+
+	ctx := NewRoutingContext(context.Background(), "load-balance", "model", "message", "req-overrides", "user")
+	assert.Same(t, process, ctx.RoutingOverrides(), "a request without a profile reads the process defaults")
+
+	overrides := &RoutingOverrides{LoadBalance: LoadBalanceOverrides{QueuedWeight: 0}}
+	ctx.SetRoutingOverrides(overrides)
+	assert.Same(t, overrides, ctx.RoutingOverrides())
 	ctx.Delete()
 
 	next := NewRoutingContext(context.Background(), "load-balance", "model", "message", "req-next", "user")
 	defer next.Delete()
-	assert.Nil(t, next.RoutingKnobs(), "reset installs a fresh incarnation, so knobs never leak between requests")
+	assert.Same(t, process, next.RoutingOverrides(), "reset installs a fresh incarnation, so overrides never leak between requests")
 
 	var unset *RoutingContext
-	unset.SetRoutingKnobs(knobs) // nil receiver: must not panic
-	assert.Nil(t, unset.RoutingKnobs())
+	unset.SetRoutingOverrides(overrides) // nil receiver: must not panic
+	assert.Same(t, process, unset.RoutingOverrides())
+	unset.ClearRoutingOverrides() // nil receiver: must not panic
 }
 
-func TestRoutingKnobsAccessorsFallBack(t *testing.T) {
-	var nilKnobs *RoutingKnobs
-	assert.Equal(t, 1.5, nilKnobs.LoadBalanceImbalanceFactorOrDefault(1.5))
-	assert.Equal(t, 2, nilKnobs.LoadBalanceImbalanceMinGapOrDefault(2))
-	assert.Equal(t, 3.5, nilKnobs.LoadBalanceQueuedWeightOrDefault(3.5))
-	assert.Equal(t, 4.5, nilKnobs.LoadBalanceKVPressureAlphaOrDefault(4.5))
-	assert.Equal(t, 5.5, nilKnobs.LoadBalanceKVCriticalFreeOrDefault(5.5))
-	assert.Equal(t, 6, nilKnobs.PrefixCacheStandardDeviationFactorOrDefault(6))
-	assert.Equal(t, "V100", nilKnobs.PrebleTargetGPUOrDefault("V100"))
-	assert.Equal(t, 7, nilKnobs.PrebleDecodingLengthOrDefault(7))
-	assert.Equal(t, 8.5, nilKnobs.VTCMaxPodLoadOrDefault(8.5))
-	assert.Equal(t, 9.5, nilKnobs.VTCFairnessWeightOrDefault(9.5))
-	assert.Equal(t, 10.5, nilKnobs.VTCUtilizationWeightOrDefault(10.5))
-	assert.Equal(t, 11, nilKnobs.AutoBlendLoadBalanceWeightOrDefault(11))
-	assert.Equal(t, 12, nilKnobs.AutoBlendLeastRequestWeightOrDefault(12))
-	assert.Equal(t, 13, nilKnobs.AutoBlendPrefixCacheWeightOrDefault(13))
-	assert.Equal(t, 14, nilKnobs.AutoBlendPrefixCacheLoadBalanceWeightOrDefault(14))
+func TestDefaultPDOverridesSharesTheRoutingTable(t *testing.T) {
+	installDefaultOverrides(t, &RoutingOverrides{})
+	SetDefaultPDOverrides(&PDOverrides{MinMatchPct: 42})
+	assert.Equal(t, 42.0, DefaultPDOverrides().MinMatchPct)
+	assert.Equal(t, 42.0, DefaultRoutingOverrides().PD.MinMatchPct, "the PD defaults are one field of the table, not a second copy")
 
-	empty := &RoutingKnobs{}
-	assert.Equal(t, 1.5, empty.LoadBalanceImbalanceFactorOrDefault(1.5))
-	assert.Equal(t, 2, empty.LoadBalanceImbalanceMinGapOrDefault(2))
-	assert.Equal(t, 3.5, empty.LoadBalanceQueuedWeightOrDefault(3.5))
-	assert.Equal(t, 4, empty.PrefixCacheStandardDeviationFactorOrDefault(4))
-	assert.Equal(t, 5, empty.PrebleDecodingLengthOrDefault(5))
-	assert.Equal(t, "A6000", empty.PrebleTargetGPUOrDefault("A6000"))
-	assert.Equal(t, 6, empty.AutoBlendLeastRequestWeightOrDefault(6))
+	SetDefaultPDOverrides(&PDOverrides{MinMatchPct: 7})
+	assert.Equal(t, 7.0, DefaultPDOverrides().MinMatchPct)
+
+	// Installing the whole table replaces the PD half as well: the routing
+	// algorithm package passes both halves in one call.
+	SetDefaultRoutingOverrides(&RoutingOverrides{})
+	assert.Equal(t, 0.0, DefaultPDOverrides().MinMatchPct)
 }
 
-func float64Ptr(v float64) *float64 { return &v }
-func stringPtr(v string) *string    { return &v }
+func TestDefaultRoutingOverridesNeverReturnsNil(t *testing.T) {
+	installed := DefaultRoutingOverrides()
+	SetDefaultRoutingOverrides(nil)
+	assert.NotNil(t, DefaultRoutingOverrides())
+	assert.NotNil(t, DefaultPDOverrides())
+	SetDefaultRoutingOverrides(installed)
+}

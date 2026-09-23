@@ -42,7 +42,7 @@ func TestExecuteHTTPSkipsEnvoyPseudoHeaders(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	exec := NewDefaultExecutor(srv.Client(), pd.NewPrefillRequestTracker(), 5).(*DefaultExecutor)
+	exec := NewDefaultExecutor(srv.Client(), pd.NewPrefillRequestTracker()).(*DefaultExecutor)
 	got, err := exec.executeHTTP(srv.URL, &types.RoutingContext{
 		Context:   context.Background(),
 		RequestID: "req-1",

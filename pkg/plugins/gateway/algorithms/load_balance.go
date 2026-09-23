@@ -146,12 +146,12 @@ func (r *loadBalanceRouter) ScoreAll(ctx *types.RoutingContext, readyPodList typ
 	counts, err := r.cache.GetPodsRunningRequests(pods)
 	capacities := r.capacities(pods)
 
-	// The profile may sharpen the score for its own requests; the package
-	// defaults are the environment-derived values.
-	knobs := ctx.RoutingKnobs()
-	queuedWeight := knobs.LoadBalanceQueuedWeightOrDefault(loadBalanceQueuedWeight)
-	kvPressureAlpha := knobs.LoadBalanceKVPressureAlphaOrDefault(loadBalanceKVPressureAlpha)
-	kvCriticalFree := knobs.LoadBalanceKVCriticalFreeOrDefault(loadBalanceKVCriticalFree)
+	// The request's resolved overrides carry the profile's values on top of
+	// the process defaults (see ResolveRoutingOverrides).
+	lb := ctx.RoutingOverrides().LoadBalance
+	queuedWeight := lb.QueuedWeight
+	kvPressureAlpha := lb.KVPressureAlpha
+	kvCriticalFree := lb.KVCriticalFree
 
 	for i, pod := range pods {
 		running := 0.0
@@ -185,7 +185,7 @@ func (r *loadBalanceRouter) ScoreAll(ctx *types.RoutingContext, readyPodList typ
 // how fast it drains work, inflated as its KV cache fills. capacity is in tokens/sec and kvFree in
 // [0, 1]. Below the critical free-KV fraction the replica is unusable and the score is +Inf.
 // The penalty strength and that fraction are the environment defaults unless the request's
-// model config profile overrides them (see types.RoutingKnobs).
+// model config profile overrides them (see types.RoutingOverrides).
 //
 // That +Inf only guarantees exclusion when load-balance is the router actually selecting the pod
 // (loadBalanceRouter.Route). When load-balance is one voice in a multi-strategy blend (its default
@@ -340,11 +340,11 @@ func ApplyLoadImbalanceGate(ctx *types.RoutingContext, c cache.Cache, readyPods 
 		return readyPods
 	}
 
-	// The profile may tune the gate for its own requests; the package defaults
-	// are the environment-derived values.
-	knobs := ctx.RoutingKnobs()
-	imbalanceFactor := knobs.LoadBalanceImbalanceFactorOrDefault(podRunningRequestImbalanceFactor)
-	imbalanceMinGap := knobs.LoadBalanceImbalanceMinGapOrDefault(podRunningRequestImbalanceMinGap)
+	// The request's resolved overrides carry the profile's values on top of
+	// the process defaults (see ResolveRoutingOverrides).
+	lb := ctx.RoutingOverrides().LoadBalance
+	imbalanceFactor := lb.ImbalanceFactor
+	imbalanceMinGap := lb.ImbalanceMinGap
 
 	podRequestCount := getRequestCounts(c, readyPods)
 	leastPods, minValue, maxValue, imbalanced := getTargetPodListOnLoadImbalance(podRequestCount, readyPods, imbalanceFactor, imbalanceMinGap)
