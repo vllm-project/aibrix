@@ -453,16 +453,20 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 		if podGPUCount(*pod) > 0 {
 			planned, roomErr := r.makeRoomOnPod(ctx, pm, perGPU, pod, ledgers[pod.Name])
 			if roomErr != nil {
-				message := fmt.Sprintf("%s could not be held to its share of %s: %v",
-					servedModelName(pm), pod.Name, roomErr)
-				r.Recorder.Event(pm, corev1.EventTypeWarning, "KVLimitFailed", message)
-				meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
-					Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
-					Status:  metav1.ConditionFalse,
-					Reason:  "KVLimitFailed",
-					Message: message,
+				// The card had room for this model and could not be divided to
+				// make it, most often because an engine on it did not take its new
+				// limit. That says nothing about the other cards, so try the next
+				// one rather than give up on the claim for this round.
+				r.Recorder.Event(pm, corev1.EventTypeWarning, "KVLimitFailed", fmt.Sprintf(
+					"%s could not be held to its share of %s: %v", servedModelName(pm), pod.Name, roomErr))
+				refusals = append(refusals, podRefusal{
+					pod:       pod.Name,
+					roomBytes: ledgers[pod.Name].maximumRoomBytes(),
+					known:     true,
+					reason:    fmt.Sprintf("%s has room, but its card could not be divided: %v", pod.Name, roomErr),
 				})
-				return nil
+				admissible = withoutPod(admissible, pod.Name)
+				continue
 			}
 			kvLimitBytes = planned
 		}

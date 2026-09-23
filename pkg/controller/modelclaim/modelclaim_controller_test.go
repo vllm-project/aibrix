@@ -1529,8 +1529,39 @@ func TestReconcileWillNotPlaceWhenTheNeighbourDoesNotTakeItsLimit(t *testing.T) 
 	cond := meta.FindStatusCondition(got.Status.Conditions,
 		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
 	require.NotNil(t, cond)
-	assert.Equal(t, "KVLimitFailed", cond.Reason)
+	assert.Equal(t, "NoMatchingPods", cond.Reason)
+	assert.Contains(t, cond.Message, "could not be divided")
 	assert.Contains(t, cond.Message, "did not take a KV limit")
+}
+
+func TestReconcileTriesTheNextPodWhenACardCannotBeDivided(t *testing.T) {
+	pm := claimWithCost(20<<30, 4<<30)
+	// warm-1 is the roomier card and is tried first, but the engine on it will
+	// not take the smaller limit that would make the room.
+	roomy, roomySnapshot := sizedWarmPod("warm-1", "10.0.0.1", 90<<30)
+	neighbour := claimOnPod("neighbour", roomy.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30)
+	roomySnapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 2<<30, 76<<30)}
+	other, otherSnapshot := sizedWarmPod("warm-2", "10.0.0.2", 60<<30)
+	r, runtime := newReconciler(t, pm, neighbour, roomy, other)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		roomy.Status.PodIP: roomySnapshot,
+		other.Status.PodIP: otherSnapshot,
+	}
+	runtime.deafToKVLimits = true
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-2", got.Status.Instances[0].Pod)
+	failed := false
+	for _, event := range drainEvents(t, r) {
+		if strings.Contains(event, "KVLimitFailed") && strings.Contains(event, "warm-1") {
+			failed = true
+		}
+	}
+	assert.True(t, failed, "the card that could not be divided should still be reported")
 }
 
 func TestReconcileWillNotPlaceWhenANeighbourHasOutgrownItsNewLimit(t *testing.T) {
