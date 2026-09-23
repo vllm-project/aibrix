@@ -136,6 +136,7 @@ func TestLedgerHasAHoleWhenAnInstanceDeclaresNoCost(t *testing.T) {
 	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
 	undeclared := sampleModelClaim()
 	undeclared.Name = "legacy"
+	undeclared.Spec.PerGPU = nil
 	undeclared.Status.Instances = []modelv1alpha1.ModelClaimInstance{
 		{Pod: pod.Name, Phase: modelv1alpha1.ModelClaimActive},
 	}
@@ -146,7 +147,7 @@ func TestLedgerHasAHoleWhenAnInstanceDeclaresNoCost(t *testing.T) {
 	)
 
 	assert.False(t, ledger.judgeable)
-	assert.Equal(t, "legacy runs there and declares no per-GPU cost", ledger.blocked)
+	assert.Equal(t, "legacy runs there, and spec.perGPU is missing", ledger.blocked)
 	assert.Equal(t, int64(400), ledger.owedBytes)
 }
 
@@ -223,4 +224,54 @@ func TestLedgerIgnoresAnEngineThatIsNoLongerAlive(t *testing.T) {
 	)
 
 	assert.True(t, ledger.judgeable)
+}
+
+func TestLedgerHasAHoleWhenAnInstanceDeclaresAZeroFloor(t *testing.T) {
+	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
+
+	ledger := ledgerFor(t, pod, sizedPodSnapshots(pod.Name, 1000),
+		claimOnPod("declared", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100),
+		claimOnPod("zero", pod.Name, modelv1alpha1.ModelClaimActive, 300, 0),
+	)
+
+	// The zero was meant as a number, not as "this model takes no room", and
+	// the engine behind it is on the card either way.
+	assert.False(t, ledger.judgeable)
+	assert.Equal(t, "zero runs there, and spec.perGPU.kvFloor is 0, which is not positive", ledger.blocked)
+	assert.Equal(t, int64(400), ledger.owedBytes)
+}
+
+func TestPerGPUBytesOfSaysWhatIsWrongWithADeclaration(t *testing.T) {
+	declaring := func(footprint, floor string) *modelv1alpha1.ModelClaim {
+		pm := sampleModelClaim()
+		pm.Spec.PerGPU = &modelv1alpha1.ModelClaimPerGPU{
+			MaximumFootprint: resource.MustParse(footprint),
+			KVFloor:          resource.MustParse(floor),
+		}
+		return pm
+	}
+	missing := sampleModelClaim()
+	missing.Spec.PerGPU = nil
+
+	for name, tc := range map[string]struct {
+		claim *modelv1alpha1.ModelClaim
+		want  string
+	}{
+		"missing":         {missing, "spec.perGPU is missing"},
+		"zero footprint":  {declaring("0", "10Gi"), "spec.perGPU.maximumFootprint is 0, which is not positive"},
+		"negative floor":  {declaring("30Gi", "-1Gi"), "spec.perGPU.kvFloor is -1Gi, which is not positive"},
+		"zero both, once": {declaring("0", "0"), "spec.perGPU.maximumFootprint is 0, which is not positive"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := perGPUBytesOf(tc.claim)
+			require.Error(t, err)
+			assert.Equal(t, tc.want, err.Error())
+		})
+	}
+
+	perGPU, err := perGPUBytesOf(declaring("30Gi", "10Gi"))
+	require.NoError(t, err)
+	assert.Equal(t, int64(30)<<30, perGPU.maximumFootprintBytes)
+	assert.Equal(t, int64(10)<<30, perGPU.kvFloorBytes)
+	assert.Equal(t, int64(40)<<30, perGPU.minimumReserveBytes())
 }

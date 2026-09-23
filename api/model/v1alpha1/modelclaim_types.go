@@ -82,6 +82,10 @@ type ModelClaimSpec struct {
 	// other. Asking for it at admission is a clearer answer than discovering
 	// it at placement.
 	//
+	// Both figures have to be positive. A claim whose declaration is missing or
+	// not positive is not placed, and its Scheduled condition says which figure
+	// is wrong.
+	//
 	// It stays a pointer because a claim stored before this became required
 	// still decodes, and a missing declaration has to read as missing rather
 	// than as a cost of zero.
@@ -106,8 +110,7 @@ type ModelClaimPerGPU struct {
 	// these engine arguments.
 	//
 	// A quantity, so it reads as `30Gi` rather than as a count of bytes nobody
-	// can check by eye. A value that is not positive is treated as no
-	// declaration at all, which leaves the card it runs on unaccountable.
+	// can check by eye.
 	// +kubebuilder:validation:Required
 	MaximumFootprint resource.Quantity `json:"maximumFootprint"`
 

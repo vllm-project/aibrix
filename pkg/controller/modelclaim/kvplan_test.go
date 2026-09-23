@@ -28,8 +28,7 @@ func plannedEngine(name string, footprint, floor, used int64) engineOnPod {
 	return engineOnPod{
 		claimName:       name,
 		modelName:       name,
-		footprintBytes:  footprint,
-		kvFloorBytes:    floor,
+		perGPUBytes:     perGPUBytes{maximumFootprintBytes: footprint, kvFloorBytes: floor},
 		kvUsedBytes:     used,
 		kvCapacityBytes: kvLimitUnknown,
 	}
@@ -40,7 +39,7 @@ func plannedEngine(name string, footprint, floor, used int64) engineOnPod {
 func spentBytes(engines []engineOnPod, limits []plannedKVLimit) int64 {
 	spent := int64(0)
 	for _, engine := range engines {
-		spent += engine.footprintBytes
+		spent += engine.maximumFootprintBytes
 	}
 	for _, limit := range limits {
 		spent += limit.limitBytes

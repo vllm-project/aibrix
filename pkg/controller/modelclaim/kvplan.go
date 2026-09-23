@@ -64,10 +64,10 @@ func planKVLimits(usableBytes int64, engines []engineOnPod) ([]plannedKVLimit, e
 	weights := make([]int64, len(ordered))
 	totalWeight := int64(0)
 	for i, engine := range ordered {
-		if engine.footprintBytes <= 0 || engine.kvFloorBytes <= 0 {
+		if engine.maximumFootprintBytes <= 0 || engine.kvFloorBytes <= 0 {
 			return nil, fmt.Errorf("%s declares no per-GPU cost", engine.claimName)
 		}
-		unassignedBytes -= engine.footprintBytes + engine.kvHeldBytes()
+		unassignedBytes -= engine.maximumFootprintBytes + engine.kvHeldBytes()
 		weights[i] = kvWeight(engine.inFlightRequests, engine.completionDelta)
 		totalWeight += weights[i]
 	}

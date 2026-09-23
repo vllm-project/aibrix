@@ -344,9 +344,15 @@ a card nobody can account for. One such claim makes its whole card unusable to
 every other model, which is a worse way to find out than an error at
 admission.
 
+Both figures have to be positive. A quantity carries no schema minimum, so a
+``0`` is caught by the controller instead: the claim is not placed, and its
+``Scheduled`` condition reads ``InvalidPerGPU`` and names the figure. A zero
+is never read as a model that takes no room.
+
 A claim stored before this became required still decodes, and its missing
-declaration still reads as missing. The card it runs on is left unaccountable
-until the claim is replaced.
+declaration still reads as missing. It is not placed again, for the same
+reason. An engine it already runs keeps running and keeps its route, but the
+card under it is left unaccountable until the claim declares its cost.
 
 Sleeping does not free a seat. An instance that is asleep keeps its place in
 the account, at the full footprint and floor its claim declared, because the
