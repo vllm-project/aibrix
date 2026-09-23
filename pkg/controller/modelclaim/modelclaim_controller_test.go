@@ -1540,6 +1540,31 @@ func TestReconcileWillNotPlaceWhenTheNeighbourDoesNotTakeItsLimit(t *testing.T) 
 	assert.Contains(t, cond.Message, "did not take a KV limit")
 }
 
+func TestReconcileLeavesTheRecordsAloneWhenACardCannotBeDivided(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].KVLimitBytes = 600
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	// The write reaches no segment, so the reading that should confirm it does
+	// not, and the card is not divided.
+	runtime.deafToKVLimits = true
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Empty(t, runtime.activateCalls)
+	// The neighbour keeps the limit it was given, not the smaller one it was
+	// never confirmed to hold. Recorded, the smaller one would be enforced by
+	// the health loop for a model that was never placed.
+	held := &modelv1alpha1.ModelClaim{}
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{Namespace: testNamespace, Name: "neighbour"}, held))
+	assert.Equal(t, int64(600), held.Status.Instances[0].KVLimitBytes)
+}
+
 func TestReconcileTriesTheNextPodWhenACardCannotBeDivided(t *testing.T) {
 	pm := claimWithCost(20<<30, 4<<30)
 	// warm-1 is the roomier card and is tried first, but the engine on it will

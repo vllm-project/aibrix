@@ -564,11 +564,13 @@ func (r *ModelClaimReconciler) makeRoomOnPod(
 // arrangeCard plans one card and carries the plan out, returning the plan.
 //
 // The work is done in an order that never leaves two engines entitled to the
-// same byte. Every new limit is recorded on its own claim first, so a
-// controller that stops here leaves records the health loops will act on rather
-// than limits nobody remembers. The limits are written next, shrinking before
-// growing. Finally a fresh reading has to agree, because a write that reached
-// no segment is reported as a success either way.
+// same byte, and that leaves every record as it was when a step fails. The
+// limits are written first, shrinking before growing. A fresh reading then has
+// to agree, because a write that reached no segment is reported as a success
+// either way. Only then is each new limit recorded on its own claim. A division
+// that stops part way therefore changes no record: an engine it already shrank
+// sits below its record, which is safe and keeps its route, and an engine it
+// already grew is above its record, so the health loop pulls it back.
 func (r *ModelClaimReconciler) arrangeCard(
 	ctx context.Context,
 	pod *corev1.Pod,
@@ -578,14 +580,6 @@ func (r *ModelClaimReconciler) arrangeCard(
 	limits, err := planKVLimits(ledger.hbmUsableBytes, engines)
 	if err != nil {
 		return nil, err
-	}
-	held := make(map[string]*modelv1alpha1.ModelClaim, len(limits))
-	for _, limit := range limits {
-		claim, err := r.recordKVLimit(ctx, pod.Namespace, limit.claimName, pod.Name, limit.kvLimitBytes)
-		if err != nil {
-			return nil, fmt.Errorf("record %s at %s: %w", limit.claimName, gibibytes(limit.kvLimitBytes), err)
-		}
-		held[limit.claimName] = claim
 	}
 
 	written := writeOrder(limits)
@@ -606,16 +600,25 @@ func (r *ModelClaimReconciler) arrangeCard(
 			return nil, fmt.Errorf("set %s to %s: %w", limit.modelName, gibibytes(limit.kvLimitBytes), err)
 		}
 	}
-	if len(written) == 0 {
-		return limits, nil
+	if len(written) > 0 {
+		snapshot, err := r.Runtime.Snapshot(ctx, pod.Status.PodIP, DefaultRuntimePort)
+		if err != nil {
+			return nil, fmt.Errorf("read back the limits on %s: %w", pod.Name, err)
+		}
+		if err := confirmKVLimits(snapshot, written); err != nil {
+			return nil, err
+		}
 	}
 
-	snapshot, err := r.Runtime.Snapshot(ctx, pod.Status.PodIP, DefaultRuntimePort)
-	if err != nil {
-		return nil, fmt.Errorf("read back the limits on %s: %w", pod.Name, err)
-	}
-	if err := confirmKVLimits(snapshot, written); err != nil {
-		return nil, err
+	// Every limit is recorded, not only the written ones. An engine that has
+	// no KV segment yet is held to its record once it builds one.
+	held := make(map[string]*modelv1alpha1.ModelClaim, len(limits))
+	for _, limit := range limits {
+		claim, err := r.recordKVLimit(ctx, pod.Namespace, limit.claimName, pod.Name, limit.kvLimitBytes)
+		if err != nil {
+			return nil, fmt.Errorf("record %s at %s: %w", limit.claimName, gibibytes(limit.kvLimitBytes), err)
+		}
+		held[limit.claimName] = claim
 	}
 	// Say so on each claim whose engine was moved. A limit written by the
 	// arrangement of a card is a limit its owner did not ask for, and looking
