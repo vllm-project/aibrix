@@ -95,10 +95,9 @@ type engineOnPod struct {
 	// kvCapacityBytes is the limit written in the engine's segment now, and is
 	// negative when there is no segment to read it from.
 	kvCapacityBytes int64
-	// inFlightRequests and completionDelta are the demand signals a share is
-	// weighted by, taken from the same runtime figures the pool policy uses.
+	// inFlightRequests is the demand an engine's part of the spare KV is
+	// weighed by: its running and waiting requests.
 	inFlightRequests int64
-	completionDelta  int64
 }
 
 // kvHeldBytes is the KV an engine keeps whatever else happens on the card: the
