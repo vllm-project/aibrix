@@ -110,6 +110,19 @@ func (s *Server) handlePrefillFailFast(srv extProcPb.ExternalProcessor_ProcessSe
 		"prefill_error", truncatePrefillMessage(failure.Message))
 
 	if stage == prefillFailFastStageAfter {
+		if st.routerCtx.Engine == pd.EngineTRTLLM {
+			// TRT generation-first can send SSE response headers before KV
+			// arrives. Headers are not proof that decode is making progress.
+			// We cannot replace a response already on the wire, but closing
+			// ext_proc fails/resets the upstream stream (failure_mode_allow
+			// must remain false). TRT cancels its promise on disconnect.
+			// Conservatively reset even if some tokens have already arrived:
+			// a terminal CTX failure must not leave an unbounded GEN waiter.
+			s.emitPrefillFailFastCounters(st, statusCode)
+			s.finishRequestCount(st)
+			return status.Errorf(codes.Aborted, "TRT prefill leg failed after decode headers (%s): %s",
+				failure.Class, truncatePrefillMessage(failure.Message))
+		}
 		// The decode pod is already writing to the client, so the response is
 		// past the point where ext_proc can replace it: an ImmediateResponse
 		// now would reset a stream the client is already reading, and the

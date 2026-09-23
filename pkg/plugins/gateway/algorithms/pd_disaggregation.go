@@ -194,6 +194,7 @@ type pdRouter struct {
 	selectionCounts       map[string]int64
 	podSelector           selector.PodSelector
 	prefillExecutor       prefill.PrefillExecutor
+	trtHandler            *engine.TRTLLMHandler
 
 	// tokenLoadTracker is the token-weighted prefill ledger read by the
 	// token_load policy. It is charged in filterPrefillDecodePods for requests
@@ -296,7 +297,15 @@ func NewPDRouterWithCacheAndPrefixIndexer(c cache.Cache, sharedPrefixTable *pref
 		Transport: otelhttp.NewTransport(transport),
 	}
 
+	trtHandler, err := engine.NewTRTLLMHandler(
+		utils.LoadEnv("AIBRIX_TRT_SCHEDULE_STYLE", engine.TRTContextFirst),
+		engine.NewTRTServerInfoCache(httpClient))
+	if err != nil {
+		return nil, err
+	}
+
 	r := &pdRouter{
+		trtHandler:            trtHandler,
 		cache:                 c,
 		prefillPolicy:         policy,
 		decodePolicy:          decodePol,
@@ -310,7 +319,7 @@ func NewPDRouterWithCacheAndPrefixIndexer(c cache.Cache, sharedPrefixTable *pref
 	}
 	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
 	r.prefillExecutor = prefill.NewDefaultExecutor(httpClient, r.prefillRequestTracker,
-		prefill.WithTokenLoadTracker(tokenLoadTracker))
+		prefill.WithTokenLoadTracker(tokenLoadTracker), prefill.WithEngineHandler(trtHandler))
 	// Request completion is only observable through the cache's request
 	// tracker callbacks; that is where the resident-KV charge is released.
 	c.RegisterRequestTracker(r)
@@ -381,6 +390,15 @@ func (r *pdRouter) releaseTokenLoad(requestID string) {
 	r.tokenLoadTracker.ReleaseAll(requestID)
 }
 
+// engineHandler keeps validation and metrics consistent with the executor's
+// router-local scheduling mode. Other engines still use the shared registry.
+func (r *pdRouter) engineHandler(name string) engine.EngineHandler {
+	if name == TensorRTLLM && r.trtHandler != nil {
+		return r.trtHandler
+	}
+	return engine.Resolve(name)
+}
+
 func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	// Park the request's resolved PD overrides on its leg before anything can
 	// read them: selection reads them through the routing context, and the
@@ -398,7 +416,8 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 	// occurrence, so a duplicate would let the client's value override the
 	// gateway's). A malformed request must not pollute selection counters or
 	// the prefix cache. ctx.Engine is already set by selectTargetPod.
-	if err := engine.ValidateRequest(ctx.ReqBody, engine.Resolve(ctx.Engine)); err != nil {
+	handler := r.engineHandler(ctx.Engine)
+	if err := engine.ValidateRequest(ctx.ReqBody, handler); err != nil {
 		return "", err
 	}
 
@@ -443,7 +462,7 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 			klog.ErrorS(err, pdRoutePrefillRequestError, "request_id", ctx.RequestID)
 			return "", fmt.Errorf("prefill request failed for request %s: %w", ctx.RequestID, err)
 		}
-		if !engine.Resolve(ctx.Engine).IsAsync() {
+		if !handler.IsAsync() {
 			metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestSuccessTotal, &metrics.SimpleMetricValue{Value: 1.0},
 				map[string]string{"status": pdRoutePrefillRequestSuccess, "status_code": "200"})
 		}
