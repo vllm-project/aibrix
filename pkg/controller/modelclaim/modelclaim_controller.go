@@ -451,7 +451,7 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 		// model was admitted against is still the neighbours' to take.
 		kvLimitBytes := perGPU.kvFloorBytes
 		if podGPUCount(*pod) > 0 {
-			share, roomErr := r.makeRoomOnPod(ctx, pm, perGPU, pod, ledgers[pod.Name])
+			planned, roomErr := r.makeRoomOnPod(ctx, pm, perGPU, pod, ledgers[pod.Name])
 			if roomErr != nil {
 				message := fmt.Sprintf("%s could not be held to its share of %s: %v",
 					servedModelName(pm), pod.Name, roomErr)
@@ -464,7 +464,7 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 				})
 				return nil
 			}
-			kvLimitBytes = share
+			kvLimitBytes = planned
 		}
 
 		// Record the instance before the engine exists. The record is what the
@@ -533,11 +533,11 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 }
 
 // makeRoomOnPod divides a card between the engines on it and the one about to
-// join them, and returns the newcomer's share.
+// join them, and returns the KV limit the newcomer is to run under.
 //
 // Returning an error means this model is not placed on this card this round.
-// The neighbours keep the smaller limits, which costs them room until the next
-// pass plans the card again, and costs correctness nothing.
+// The neighbours may keep smaller limits, which costs them room until the card
+// is divided again, and costs correctness nothing.
 func (r *ModelClaimReconciler) makeRoomOnPod(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
@@ -558,7 +558,7 @@ func (r *ModelClaimReconciler) makeRoomOnPod(
 	}
 	for _, limit := range limits {
 		if limit.claimName == pm.Name {
-			return limit.limitBytes, nil
+			return limit.kvLimitBytes, nil
 		}
 	}
 	return 0, fmt.Errorf("%s was left out of the plan for %s", pm.Name, pod.Name)
@@ -578,15 +578,15 @@ func (r *ModelClaimReconciler) arrangeCard(
 	ledger podLedger,
 	engines []engineOnPod,
 ) ([]plannedKVLimit, error) {
-	limits, err := planKVLimits(ledger.usableBytes, engines)
+	limits, err := planKVLimits(ledger.hbmUsableBytes, engines)
 	if err != nil {
 		return nil, err
 	}
 	held := make(map[string]*modelv1alpha1.ModelClaim, len(limits))
 	for _, limit := range limits {
-		claim, err := r.recordKVLimit(ctx, pod.Namespace, limit.claimName, pod.Name, limit.limitBytes)
+		claim, err := r.recordKVLimit(ctx, pod.Namespace, limit.claimName, pod.Name, limit.kvLimitBytes)
 		if err != nil {
-			return nil, fmt.Errorf("record %s at %s: %w", limit.claimName, gibibytes(limit.limitBytes), err)
+			return nil, fmt.Errorf("record %s at %s: %w", limit.claimName, gibibytes(limit.kvLimitBytes), err)
 		}
 		held[limit.claimName] = claim
 	}
@@ -599,14 +599,14 @@ func (r *ModelClaimReconciler) arrangeCard(
 		// that second write is taken for the first one and never reaches the
 		// segment, leaving the card stuck a round behind for good.
 		operationID := fmt.Sprintf("kv-plan/%s/%s/%s/%d/%d",
-			pod.Namespace, pod.UID, limit.claimName, limit.limitBytes,
+			pod.Namespace, pod.UID, limit.claimName, limit.kvLimitBytes,
 			ledger.observedAt.UnixNano())
 		if _, err := r.Runtime.SetKVLimit(ctx, pod.Status.PodIP, DefaultRuntimePort, &SetKVLimitRequest{
 			ModelName:   limit.modelName,
-			LimitBytes:  limit.limitBytes,
+			LimitBytes:  limit.kvLimitBytes,
 			OperationID: operationID,
 		}); err != nil {
-			return nil, fmt.Errorf("set %s to %s: %w", limit.modelName, gibibytes(limit.limitBytes), err)
+			return nil, fmt.Errorf("set %s to %s: %w", limit.modelName, gibibytes(limit.kvLimitBytes), err)
 		}
 	}
 	if len(written) == 0 {
@@ -617,7 +617,7 @@ func (r *ModelClaimReconciler) arrangeCard(
 	if err != nil {
 		return nil, fmt.Errorf("read back the limits on %s: %w", pod.Name, err)
 	}
-	if err := kvLimitsInForce(snapshot, written); err != nil {
+	if err := confirmKVLimits(snapshot, written); err != nil {
 		return nil, err
 	}
 	// Say so on each claim whose engine was moved. A limit written by the
@@ -631,7 +631,7 @@ func (r *ModelClaimReconciler) arrangeCard(
 		}
 		r.Recorder.Eventf(claim, corev1.EventTypeNormal, "KVLimitSet",
 			"model %s on pod %s: KV limit set to %s, from %s, dividing the card between %d engine(s)",
-			limit.modelName, pod.Name, gibibytes(limit.limitBytes), gibibytes(limit.fromBytes),
+			limit.modelName, pod.Name, gibibytes(limit.kvLimitBytes), gibibytes(limit.kvCapacityBytes),
 			len(limits))
 	}
 	return limits, nil
@@ -646,7 +646,7 @@ func (r *ModelClaimReconciler) arrangeCard(
 func (r *ModelClaimReconciler) recordKVLimit(
 	ctx context.Context,
 	namespace, claimName, podName string,
-	limitBytes int64,
+	kvLimitBytes int64,
 ) (*modelv1alpha1.ModelClaim, error) {
 	claim := &modelv1alpha1.ModelClaim{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: claimName}, claim); err != nil {
@@ -655,8 +655,8 @@ func (r *ModelClaimReconciler) recordKVLimit(
 	changed := false
 	for i := range claim.Status.Instances {
 		instance := &claim.Status.Instances[i]
-		if instance.Pod == podName && instance.KVLimitBytes != limitBytes {
-			instance.KVLimitBytes = limitBytes
+		if instance.Pod == podName && instance.KVLimitBytes != kvLimitBytes {
+			instance.KVLimitBytes = kvLimitBytes
 			changed = true
 		}
 	}

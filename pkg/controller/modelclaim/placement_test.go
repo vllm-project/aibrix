@@ -235,8 +235,8 @@ func TestAdmissibleCandidatesKeepsOnlyPodsThatCanShowRoom(t *testing.T) {
 		gpuPod("roomy"), gpuPod("full"), gpuPod("unreadable"), namedPod("cpu-only"),
 	}
 	ledgers := map[string]podLedger{
-		"roomy":      {judgeable: true, usableBytes: 1000, owedBytes: 100, heldBytes: 100},
-		"full":       {judgeable: true, usableBytes: 1000, owedBytes: 900, heldBytes: 900},
+		"roomy":      {judgeable: true, hbmUsableBytes: 1000, totalMinimumReserveBytes: 100, totalHeldBytes: 100},
+		"full":       {judgeable: true, hbmUsableBytes: 1000, totalMinimumReserveBytes: 900, totalHeldBytes: 900},
 		"unreadable": {blocked: "its runtime did not answer"},
 	}
 
@@ -259,7 +259,7 @@ func TestAdmissibleCandidatesTurnsAwayACardWhoseRoomIsHeld(t *testing.T) {
 	// The card could hold the model once its engines give their pages back,
 	// and they have not.
 	ledgers := map[string]podLedger{
-		"held": {judgeable: true, usableBytes: 1000, owedBytes: 100, heldBytes: 800},
+		"held": {judgeable: true, hbmUsableBytes: 1000, totalMinimumReserveBytes: 100, totalHeldBytes: 800},
 	}
 
 	admissible, refusals := admissibleCandidates(candidates, ledgers, 500)
@@ -281,8 +281,8 @@ func TestRankingPrefersTheCardWithTheMostRoomNotTheMostFreeMemory(t *testing.T) 
 		"tight": {SnapshotKnown: true, MemoryKnown: true, HBMFreeBytes: 900},
 	}
 	ledgers := map[string]podLedger{
-		"roomy": {judgeable: true, usableBytes: 1000, owedBytes: 100},
-		"tight": {judgeable: true, usableBytes: 1000, owedBytes: 800},
+		"roomy": {judgeable: true, hbmUsableBytes: 1000, totalMinimumReserveBytes: 100},
+		"tight": {judgeable: true, hbmUsableBytes: 1000, totalMinimumReserveBytes: 800},
 	}
 
 	rankByRoom(states, ledgers)
@@ -298,7 +298,7 @@ func TestRankingPutsACardWithoutAnAccountLast(t *testing.T) {
 		"unknown": {SnapshotKnown: true, MemoryKnown: true},
 	}
 	ledgers := map[string]podLedger{
-		"judged":  {judgeable: true, usableBytes: 1000, owedBytes: 900},
+		"judged":  {judgeable: true, hbmUsableBytes: 1000, totalMinimumReserveBytes: 900},
 		"unknown": {blocked: "its runtime did not answer"},
 	}
 

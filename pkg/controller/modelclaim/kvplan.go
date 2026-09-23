@@ -21,24 +21,24 @@ import (
 	"sort"
 )
 
-// kvWeight is how large a share of a card's spare KV one engine is owed. It is
+// kvExtraWeight is how large a share of a card's spare KV one engine is owed. It is
 // the weight the pool policy already uses, so an engine's share does not change
 // with which loop is doing the arithmetic. The constant one keeps an idle
 // engine in the division rather than starving it at its floor.
-func kvWeight(inFlightRequests, completionDelta int64) int64 {
+func kvExtraWeight(inFlightRequests, completionDelta int64) int64 {
 	return 1 + boundedActivity(inFlightRequests) + boundedActivity(completionDelta)
 }
 
 // plannedKVLimit is the limit one engine should be held to, and the limit it is
 // held to now.
 type plannedKVLimit struct {
-	claimName  string
-	modelName  string
-	limitBytes int64
-	// fromBytes is what the engine's segment says now, and is negative when
+	claimName    string
+	modelName    string
+	kvLimitBytes int64
+	// kvCapacityBytes is what the engine's segment says now, and is negative when
 	// there is no segment yet. An engine whose limit is already the planned one
 	// needs no write.
-	fromBytes int64
+	kvCapacityBytes int64
 }
 
 // planKVLimits divides a card among the engines on it.
@@ -52,7 +52,7 @@ type plannedKVLimit struct {
 // The newcomer in a placement is one of these engines, with nothing mapped and
 // no limit in force. Planning it alongside the engines already there is what
 // makes the room it was promised its own.
-func planKVLimits(usableBytes int64, engines []engineOnPod) ([]plannedKVLimit, error) {
+func planKVLimits(hbmUsableBytes int64, engines []engineOnPod) ([]plannedKVLimit, error) {
 	if len(engines) == 0 {
 		return nil, nil
 	}
@@ -60,39 +60,39 @@ func planKVLimits(usableBytes int64, engines []engineOnPod) ([]plannedKVLimit, e
 	copy(ordered, engines)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].claimName < ordered[j].claimName })
 
-	unassignedBytes := usableBytes
-	weights := make([]int64, len(ordered))
-	totalWeight := int64(0)
+	kvUnassignedBytes := hbmUsableBytes
+	kvExtraWeights := make([]int64, len(ordered))
+	totalKVExtraWeight := int64(0)
 	for i, engine := range ordered {
 		if engine.maximumFootprintBytes <= 0 || engine.kvFloorBytes <= 0 {
 			return nil, fmt.Errorf("%s declares no per-GPU cost", engine.claimName)
 		}
-		unassignedBytes -= engine.maximumFootprintBytes + engine.kvHeldBytes()
-		weights[i] = kvWeight(engine.inFlightRequests, engine.completionDelta)
-		totalWeight += weights[i]
+		kvUnassignedBytes -= engine.heldBytes()
+		kvExtraWeights[i] = kvExtraWeight(engine.inFlightRequests, engine.completionDelta)
+		totalKVExtraWeight += kvExtraWeights[i]
 	}
-	if unassignedBytes < 0 {
+	if kvUnassignedBytes < 0 {
 		return nil, fmt.Errorf("the engines on this card hold %s more than it has",
-			gibibytes(-unassignedBytes))
+			gibibytes(-kvUnassignedBytes))
 	}
 
 	limits := make([]plannedKVLimit, len(ordered))
-	grantedBytes := int64(0)
+	totalKVExtraBytes := int64(0)
 	for i, engine := range ordered {
-		extraBytes := unassignedBytes * weights[i] / totalWeight
-		grantedBytes += extraBytes
+		kvExtraBytes := kvUnassignedBytes * kvExtraWeights[i] / totalKVExtraWeight
+		totalKVExtraBytes += kvExtraBytes
 		limits[i] = plannedKVLimit{
-			claimName:  engine.claimName,
-			modelName:  engine.modelName,
-			limitBytes: engine.kvHeldBytes() + extraBytes,
-			fromBytes:  engine.kvCapacityBytes,
+			claimName:       engine.claimName,
+			modelName:       engine.modelName,
+			kvLimitBytes:    engine.kvHeldBytes() + kvExtraBytes,
+			kvCapacityBytes: engine.kvCapacityBytes,
 		}
 	}
 	// Integer division leaves a few bytes over. Hand them out in a fixed order
 	// so two runs of the same arithmetic agree, and a limit does not move by a
 	// byte on every pass.
-	for i := int64(0); i < unassignedBytes-grantedBytes; i++ {
-		limits[i%int64(len(limits))].limitBytes++
+	for i := int64(0); i < kvUnassignedBytes-totalKVExtraBytes; i++ {
+		limits[i%int64(len(limits))].kvLimitBytes++
 	}
 	return limits, nil
 }
@@ -109,7 +109,7 @@ func planKVLimits(usableBytes int64, engines []engineOnPod) ([]plannedKVLimit, e
 func writeOrder(limits []plannedKVLimit) []plannedKVLimit {
 	writable := make([]plannedKVLimit, 0, len(limits))
 	for _, limit := range limits {
-		if limit.fromBytes < 0 || limit.fromBytes == limit.limitBytes {
+		if limit.kvCapacityBytes < 0 || limit.kvCapacityBytes == limit.kvLimitBytes {
 			continue
 		}
 		writable = append(writable, limit)
@@ -122,17 +122,17 @@ func writeOrder(limits []plannedKVLimit) []plannedKVLimit {
 
 // shrinks says whether writing this limit takes memory away from an engine.
 func (l plannedKVLimit) shrinks() bool {
-	return l.fromBytes >= 0 && l.limitBytes < l.fromBytes
+	return l.kvCapacityBytes >= 0 && l.kvLimitBytes < l.kvCapacityBytes
 }
 
-// kvLimitsInForce reports the first limit a snapshot does not confirm.
+// confirmKVLimits reports the first limit a snapshot does not confirm.
 //
 // Two things have to be true of every engine that was written. Its segment has
 // to hold the new limit, since a write that reached no segment is reported as a
 // success either way. And it must not already have mapped more than the new
 // limit allows, because a limit does not evict what is mapped, and the room it
 // was supposed to free would not be there.
-func kvLimitsInForce(snapshot *RuntimeSnapshot, written []plannedKVLimit) error {
+func confirmKVLimits(snapshot *RuntimeSnapshot, written []plannedKVLimit) error {
 	for _, limit := range written {
 		var engine *RuntimeSnapshotModel
 		for i := range snapshot.models() {
@@ -144,13 +144,13 @@ func kvLimitsInForce(snapshot *RuntimeSnapshot, written []plannedKVLimit) error 
 		if engine == nil {
 			return fmt.Errorf("%s is no longer on this card", limit.modelName)
 		}
-		if engine.KVCapacityBytes != limit.limitBytes {
+		if engine.KVCapacityBytes != limit.kvLimitBytes {
 			return fmt.Errorf("%s did not take a KV limit of %s",
-				limit.modelName, gibibytes(limit.limitBytes))
+				limit.modelName, gibibytes(limit.kvLimitBytes))
 		}
-		if engine.KVUsedBytes > limit.limitBytes {
+		if engine.KVUsedBytes > limit.kvLimitBytes {
 			return fmt.Errorf("%s holds %s, past the %s it was given",
-				limit.modelName, gibibytes(engine.KVUsedBytes), gibibytes(limit.limitBytes))
+				limit.modelName, gibibytes(engine.KVUsedBytes), gibibytes(limit.kvLimitBytes))
 		}
 	}
 	return nil

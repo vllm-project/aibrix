@@ -112,6 +112,12 @@ func (e engineOnPod) kvHeldBytes() int64 {
 	return e.kvFloorBytes
 }
 
+// heldBytes is what one instance occupies on a card now and will not give
+// back: its maximum footprint and the KV it holds.
+func (e engineOnPod) heldBytes() int64 {
+	return e.maximumFootprintBytes + e.kvHeldBytes()
+}
+
 // podLedger is one card's account: how much it can hold, and how much of it the
 // instances already recorded there were promised.
 //
@@ -119,11 +125,11 @@ func (e engineOnPod) kvHeldBytes() int64 {
 // one. An account with a hole never admits a placement: the memory it cannot
 // see is memory it would otherwise hand out twice.
 type podLedger struct {
-	judgeable   bool
-	blocked     string
-	usableBytes int64
-	owedBytes   int64
-	heldBytes   int64
+	judgeable                bool
+	blocked                  string
+	hbmUsableBytes           int64
+	totalMinimumReserveBytes int64
+	totalHeldBytes           int64
 	// observedAt is when the snapshot this account was built from was taken. A
 	// limit written from it carries the same moment, which is what tells the
 	// runtime one attempt from the next.
@@ -139,7 +145,7 @@ type podLedger struct {
 // floor, so a model that needs more than this cannot be placed here by waiting.
 // It is negative when the card is already promised more than it has.
 func (l podLedger) maximumRoomBytes() int64 {
-	return l.usableBytes - l.owedBytes
+	return l.hbmUsableBytes - l.totalMinimumReserveBytes
 }
 
 // heldRoomBytes is what this card can offer another instance now, without
@@ -148,7 +154,7 @@ func (l podLedger) maximumRoomBytes() int64 {
 // needs more than this cannot be placed here today even though the card may be
 // able to hold it later.
 func (l podLedger) heldRoomBytes() int64 {
-	return l.usableBytes - l.heldBytes
+	return l.hbmUsableBytes - l.totalHeldBytes
 }
 
 // withHole marks an account that cannot be trusted, keeping the first cause
@@ -182,7 +188,7 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 	ledgers := make(map[string]podLedger, len(candidates))
 	for i := range candidates {
 		pod := &candidates[i]
-		usableBytes, measured := snapshots[pod.Name].hbmUsableBytes()
+		hbmUsableBytes, measured := snapshots[pod.Name].hbmUsableBytes()
 		switch {
 		case snapshots[pod.Name] == nil:
 			ledgers[pod.Name] = podLedger{blocked: "its runtime did not answer"}
@@ -190,9 +196,9 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 			ledgers[pod.Name] = podLedger{blocked: "its cards could not be measured"}
 		default:
 			ledgers[pod.Name] = podLedger{
-				judgeable:   true,
-				usableBytes: usableBytes,
-				observedAt:  snapshots[pod.Name].ObservedAt,
+				judgeable:      true,
+				hbmUsableBytes: hbmUsableBytes,
+				observedAt:     snapshots[pod.Name].ObservedAt,
 			}
 		}
 	}
@@ -258,8 +264,8 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 			if perGPUErr != nil {
 				ledger = ledger.withHole(fmt.Sprintf("%s runs there, and %v", claim.Name, perGPUErr))
 			}
-			ledger.owedBytes += engine.minimumReserveBytes()
-			ledger.heldBytes += engine.maximumFootprintBytes + engine.kvHeldBytes()
+			ledger.totalMinimumReserveBytes += engine.minimumReserveBytes()
+			ledger.totalHeldBytes += engine.heldBytes()
 			ledger.engines = append(ledger.engines, engine)
 			ledgers[instance.Pod] = ledger
 		}

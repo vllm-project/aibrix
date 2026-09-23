@@ -1229,12 +1229,12 @@ func claimWithCost(footprint, floor int64) *modelv1alpha1.ModelClaim {
 }
 
 // sizedWarmPod is a warm pod with one card the runtime could measure.
-func sizedWarmPod(name, ip string, usableBytes int64) (*corev1.Pod, *RuntimeSnapshot) {
+func sizedWarmPod(name, ip string, hbmUsableBytes int64) (*corev1.Pod, *RuntimeSnapshot) {
 	pod := warmPodWithGPUs(name, "b300-pool-a", 1)
 	pod.Status.PodIP = ip
 	return pod, &RuntimeSnapshot{
 		Accelerators: []RuntimeAcceleratorSnapshot{
-			{ID: "GPU-0", HBMFreeBytes: usableBytes, HBMUsableBytes: usableBytes},
+			{ID: "GPU-0", HBMFreeBytes: hbmUsableBytes, HBMUsableBytes: hbmUsableBytes},
 		},
 	}
 }

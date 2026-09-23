@@ -42,7 +42,7 @@ func spentBytes(engines []engineOnPod, limits []plannedKVLimit) int64 {
 		spent += engine.maximumFootprintBytes
 	}
 	for _, limit := range limits {
-		spent += limit.limitBytes
+		spent += limit.kvLimitBytes
 	}
 	return spent
 }
@@ -57,9 +57,9 @@ func TestPlanKVLimitsSpendsTheWholeCard(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Len(t, limits, 2)
-	assert.Equal(t, int64(375), limits[0].limitBytes)
+	assert.Equal(t, int64(375), limits[0].kvLimitBytes)
 	assert.Equal(t, "grown", limits[0].claimName)
-	assert.Equal(t, int64(225), limits[1].limitBytes)
+	assert.Equal(t, int64(225), limits[1].kvLimitBytes)
 	assert.Equal(t, int64(1000), spentBytes(engines, limits))
 }
 
@@ -73,7 +73,7 @@ func TestPlanKVLimitsGivesTheBusierEngineTheLargerShare(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, limits, 2)
 	assert.Equal(t, "busy", limits[0].claimName)
-	assert.Greater(t, limits[0].limitBytes, limits[1].limitBytes)
+	assert.Greater(t, limits[0].kvLimitBytes, limits[1].kvLimitBytes)
 	assert.Equal(t, int64(1000), spentBytes(engines, limits))
 }
 
@@ -88,8 +88,8 @@ func TestPlanKVLimitsNeverGoesBelowWhatAnEngineHolds(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Len(t, limits, 2)
-	assert.Equal(t, int64(600), limits[0].limitBytes)
-	assert.Equal(t, int64(100), limits[1].limitBytes)
+	assert.Equal(t, int64(600), limits[0].kvLimitBytes)
+	assert.Equal(t, int64(100), limits[1].kvLimitBytes)
 }
 
 func TestPlanKVLimitsRefusesACardTheEnginesHaveOutgrown(t *testing.T) {
@@ -124,8 +124,8 @@ func TestPlanKVLimitsHandsOutTheRoundingRemainder(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, int64(1000), spentBytes(engines, limits))
-	assert.Equal(t, int64(367), limits[0].limitBytes)
-	assert.Equal(t, int64(233), limits[1].limitBytes)
+	assert.Equal(t, int64(367), limits[0].kvLimitBytes)
+	assert.Equal(t, int64(233), limits[1].kvLimitBytes)
 }
 
 func TestPlanKVLimitsIsTheSameWhateverOrderTheEnginesArriveIn(t *testing.T) {
@@ -145,10 +145,10 @@ func TestPlanKVLimitsIsTheSameWhateverOrderTheEnginesArriveIn(t *testing.T) {
 
 func TestWriteOrderShrinksBeforeItGrows(t *testing.T) {
 	limits := []plannedKVLimit{
-		{claimName: "grows", limitBytes: 40, fromBytes: 10},
-		{claimName: "unchanged", limitBytes: 20, fromBytes: 20},
-		{claimName: "shrinks", limitBytes: 5, fromBytes: 30},
-		{claimName: "booting", limitBytes: 15, fromBytes: kvLimitUnknown},
+		{claimName: "grows", kvLimitBytes: 40, kvCapacityBytes: 10},
+		{claimName: "unchanged", kvLimitBytes: 20, kvCapacityBytes: 20},
+		{claimName: "shrinks", kvLimitBytes: 5, kvCapacityBytes: 30},
+		{claimName: "booting", kvLimitBytes: 15, kvCapacityBytes: kvLimitUnknown},
 	}
 
 	written := writeOrder(limits)

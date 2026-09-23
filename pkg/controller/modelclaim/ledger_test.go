@@ -55,10 +55,10 @@ func claimOnPod(name, pod string, phase modelv1alpha1.ModelClaimPhase, footprint
 
 // sizedPodSnapshots is what one measurable card reports, with the engines
 // given running on it.
-func sizedPodSnapshots(pod string, usableBytes int64, models ...RuntimeSnapshotModel) map[string]*RuntimeSnapshot {
+func sizedPodSnapshots(pod string, hbmUsableBytes int64, models ...RuntimeSnapshotModel) map[string]*RuntimeSnapshot {
 	return map[string]*RuntimeSnapshot{
 		pod: {
-			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMUsableBytes: usableBytes}},
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMUsableBytes: hbmUsableBytes}},
 			Models:       models,
 		},
 	}
@@ -96,7 +96,7 @@ func TestLedgerChargesEveryInstanceButFailedOnes(t *testing.T) {
 	)
 
 	assert.True(t, ledger.judgeable)
-	assert.Equal(t, int64(650), ledger.owedBytes)
+	assert.Equal(t, int64(650), ledger.totalMinimumReserveBytes)
 	assert.Equal(t, int64(350), ledger.maximumRoomBytes())
 }
 
@@ -107,7 +107,7 @@ func TestLedgerIgnoresInstancesOnOtherPods(t *testing.T) {
 	)
 
 	assert.True(t, ledger.judgeable)
-	assert.Equal(t, int64(0), ledger.owedBytes)
+	assert.Equal(t, int64(0), ledger.totalMinimumReserveBytes)
 	assert.Equal(t, int64(1000), ledger.maximumRoomBytes())
 }
 
@@ -148,7 +148,7 @@ func TestLedgerHasAHoleWhenAnInstanceDeclaresNoCost(t *testing.T) {
 
 	assert.False(t, ledger.judgeable)
 	assert.Equal(t, "legacy runs there, and spec.perGPU is missing", ledger.blocked)
-	assert.Equal(t, int64(400), ledger.owedBytes)
+	assert.Equal(t, int64(400), ledger.totalMinimumReserveBytes)
 }
 
 func TestLedgerHoldsWhatEachEngineHasMapped(t *testing.T) {
@@ -238,7 +238,7 @@ func TestLedgerHasAHoleWhenAnInstanceDeclaresAZeroFloor(t *testing.T) {
 	// the engine behind it is on the card either way.
 	assert.False(t, ledger.judgeable)
 	assert.Equal(t, "zero runs there, and spec.perGPU.kvFloor is 0, which is not positive", ledger.blocked)
-	assert.Equal(t, int64(400), ledger.owedBytes)
+	assert.Equal(t, int64(400), ledger.totalMinimumReserveBytes)
 }
 
 func TestPerGPUBytesOfSaysWhatIsWrongWithADeclaration(t *testing.T) {
