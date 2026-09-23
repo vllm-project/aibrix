@@ -194,7 +194,8 @@ func (p *prefixCachePrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ [
 		return nil, err
 	}
 	matchedPods, hashes := p.prefixCacheIndexer.MatchPrefix(tokens, routingCtx.Model, readyPodsMap)
-	return &prefixCacheScorer{matchedPods: matchedPods, hashes: hashes, minMatchPct: p.cfg.MinMatchPct}, nil
+	minMatchPct := routingCtx.PDKnobs().MinMatchPctOrDefault(p.cfg.MinMatchPct)
+	return &prefixCacheScorer{matchedPods: matchedPods, hashes: hashes, minMatchPct: minMatchPct}, nil
 }
 
 func (p *prefixCachePrefillPolicy) Name() string { return PrefillScorePolicyPrefixCache }
@@ -452,9 +453,23 @@ func NewTokenLoadPrefillPolicy(tracker *TokenLoadTracker) PrefillScorePolicy {
 	return &tokenLoadPrefillPolicy{tracker: tracker}
 }
 
-// Prepare returns a tokenLoadScorer; no tokenization or cache lookup is performed.
-func (p *tokenLoadPrefillPolicy) Prepare(_ *types.RoutingContext, _ []*v1.Pod, _ map[string]struct{}) (PrefillScorer, error) {
-	return tokenLoadScorer{tracker: p.tracker}, nil
+// tokenLoadKVWeightFor returns the KV weight the request's profile sets for the
+// token-load ledger, or the tracker's environment-derived default. The scoring
+// policies and the router's charge both resolve it through here, so what the
+// score sees and what the ledger books can never disagree.
+func tokenLoadKVWeightFor(routingCtx *types.RoutingContext, tracker *TokenLoadTracker) float64 {
+	weight := 0.0
+	if tracker != nil {
+		weight = tracker.Config().KVWeight
+	}
+	return routingCtx.PDKnobs().TokenLoadKVWeightOrDefault(weight)
+}
+
+// Prepare returns a tokenLoadScorer; no tokenization or cache lookup is
+// performed. The KV weight is resolved here, so a profile override applies to
+// the score and, through the router's charge, to the ledger it reads.
+func (p *tokenLoadPrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ []*v1.Pod, _ map[string]struct{}) (PrefillScorer, error) {
+	return tokenLoadScorer{tracker: p.tracker, kvWeight: tokenLoadKVWeightFor(routingCtx, p.tracker)}, nil
 }
 
 func (p *tokenLoadPrefillPolicy) Name() string { return PrefillScorePolicyTokenLoad }
@@ -475,6 +490,8 @@ func UsesTokenLoad(policy PrefillScorePolicy) bool {
 // tokenLoadScorer is the request-scoped scorer produced by tokenLoadPrefillPolicy.
 type tokenLoadScorer struct {
 	tracker *TokenLoadTracker
+	// kvWeight is the request's effective KV weight; see tokenLoadKVWeightFor.
+	kvWeight float64
 }
 
 // PrefixHashes returns nil because this policy does not use the prefix cache.
@@ -485,7 +502,7 @@ func (s tokenLoadScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
 		// No ledger to read; every pod ties and the caller's tie-break applies.
 		return 0
 	}
-	score := s.tracker.GetPriority(pod.Name)
+	score := s.tracker.GetPriorityWithKVWeight(pod.Name, s.kvWeight)
 	if klog.V(4).Enabled() {
 		active, kv := s.tracker.GetLoad(pod.Name)
 		klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
@@ -611,9 +628,14 @@ func (p *hybridCacheLoadPrefillPolicy) Prepare(routingCtx *types.RoutingContext,
 		return nil, err
 	}
 	matchedPods, hashes := p.prefixCacheIndexer.MatchPrefix(tokens, routingCtx.Model, readyPodsMap)
+	knobs := routingCtx.PDKnobs()
 	return &hybridCacheLoadScorer{
-		tracker:     p.tracker,
-		cfg:         p.cfg,
+		tracker: p.tracker,
+		cfg: HybridCacheLoadConfig{
+			Factor:      knobs.HybridCacheLoadFactorOrDefault(p.cfg.Factor),
+			MinMatchPct: knobs.MinMatchPctOrDefault(p.cfg.MinMatchPct),
+		},
+		kvWeight:    tokenLoadKVWeightFor(routingCtx, p.tracker),
 		matchedPods: matchedPods,
 		hashes:      hashes,
 	}, nil
@@ -624,8 +646,12 @@ func (p *hybridCacheLoadPrefillPolicy) Name() string { return PrefillScorePolicy
 // hybridCacheLoadScorer is the request-scoped scorer produced by
 // hybridCacheLoadPrefillPolicy.
 type hybridCacheLoadScorer struct {
-	tracker     *TokenLoadTracker
+	tracker *TokenLoadTracker
+	// cfg and kvWeight are the request's effective values, resolved in Prepare:
+	// a model config profile may set the discount factor, the minimum match
+	// and the KV weight per request.
 	cfg         HybridCacheLoadConfig
+	kvWeight    float64
 	matchedPods map[string]int
 	hashes      []uint64
 }
@@ -644,7 +670,7 @@ func (s *hybridCacheLoadScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64
 	discount := 1 - r*r*s.cfg.Factor
 	load := 0.0
 	if s.tracker != nil {
-		load = s.tracker.GetPriority(pod.Name)
+		load = s.tracker.GetPriorityWithKVWeight(pod.Name, s.kvWeight)
 	}
 	score := discount
 	if load >= 1 {

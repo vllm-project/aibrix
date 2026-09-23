@@ -134,6 +134,63 @@ type pdAlgorithmConfig struct {
 	Combined                 bool   `json:"combined"`
 	PrefillScorePolicy       string `json:"prefillScorePolicy,omitempty"`
 	DecodeScorePolicy        string `json:"decodeScorePolicy,omitempty"`
+	// PromptLengthBucketing overrides AIBRIX_PROMPT_LENGTH_BUCKETING for
+	// requests routed with this profile. Flat rather than under PD so it sits
+	// next to the promptLenBucket* fields it interacts with.
+	PromptLengthBucketing *bool `json:"promptLengthBucketing,omitempty"`
+	// PD carries the remaining per-request PD routing knobs.
+	PD *pdProfileConfig `json:"pd,omitempty"`
+}
+
+// pdProfileConfig groups the PD routing knobs a profile may set under
+// routingConfig.pd. Each knob mirrors an AIBRIX_* variable the PD path reads;
+// types.PDRuntimeKnobs documents the mapping. A knob the profile leaves unset,
+// or sets to a value the matching environment variable would reject, keeps the
+// environment default, so a profile can only narrow or sharpen routing
+// behaviour, never silently drop a threshold.
+type pdProfileConfig struct {
+	Abort                 *pdAbortProfileConfig           `json:"abort,omitempty"`
+	Spreads               *pdSpreadsProfileConfig         `json:"spreads,omitempty"`
+	TokenLoad             *pdTokenLoadProfileConfig       `json:"tokenLoad,omitempty"`
+	DecodeLBWeights       *pdDecodeLBWeightsProfileConfig `json:"decodeLBWeights,omitempty"`
+	HybridCacheLoadFactor *float64                        `json:"hybridCacheLoadFactor,omitempty"`
+	MinMatchPct           *float64                        `json:"minMatchPct,omitempty"`
+	PrefillRequestTimeout *int                            `json:"prefillRequestTimeout,omitempty"`
+}
+
+// pdAbortProfileConfig mirrors AIBRIX_DECODE_ABORT_TIMEOUT and
+// AIBRIX_DECODE_ABORT_RETRY_DELAY. Zero is a meaningful value for both: it
+// disables decode aborts, and it reduces the abort to a single attempt.
+type pdAbortProfileConfig struct {
+	Timeout    *int `json:"timeout,omitempty"`
+	RetryDelay *int `json:"retryDelay,omitempty"`
+}
+
+// pdSpreadsProfileConfig mirrors the four load-imbalance thresholds of the
+// prefill and decode fast paths.
+type pdSpreadsProfileConfig struct {
+	PrefillLoadImbalanceMinSpread      *int32   `json:"prefillLoadImbalanceMinSpread,omitempty"`
+	DecodeLoadImbalanceMinSpread       *float64 `json:"decodeLoadImbalanceMinSpread,omitempty"`
+	DecodeThroughputImbalanceMinSpread *float64 `json:"decodeThroughputImbalanceMinSpread,omitempty"`
+	DecodeScoreRatioThreshold          *float64 `json:"decodeScoreRatioThreshold,omitempty"`
+}
+
+// pdTokenLoadProfileConfig mirrors the AIBRIX_TOKEN_LOAD_* knobs. Zero is
+// meaningful for both TTLs: it disables, respectively, the sweep of the
+// request's charge and the session-delta rule.
+type pdTokenLoadProfileConfig struct {
+	KVWeight          *float64 `json:"kvWeight,omitempty"`
+	RequestCost       *float64 `json:"requestCost,omitempty"`
+	TTLSeconds        *int     `json:"ttlSeconds,omitempty"`
+	SessionTTLSeconds *int     `json:"sessionTTLSeconds,omitempty"`
+	MaxSessions       *int     `json:"maxSessions,omitempty"`
+}
+
+// pdDecodeLBWeightsProfileConfig mirrors AIBRIX_DECODE_LB_WEIGHT_RUNNING and
+// AIBRIX_DECODE_LB_WEIGHT_THROUGHPUT.
+type pdDecodeLBWeightsProfileConfig struct {
+	Running    *float64 `json:"running,omitempty"`
+	Throughput *float64 `json:"throughput,omitempty"`
 }
 
 // parsePDAlgorithmConfig parses PD-specific config from the generic RoutingConfig.
@@ -156,6 +213,102 @@ func parsePDAlgorithmConfig(raw json.RawMessage) *pdAlgorithmConfig {
 		cfg.PromptLenBucketMaxLength = math.MaxInt32
 	}
 	return cfg
+}
+
+// positiveFloat returns v when it is a positive number and nil otherwise,
+// matching the rule of the environment loader the knob overrides: a value the
+// environment would reject must not reach the routing path through a profile.
+func positiveFloat(v *float64) *float64 {
+	if v == nil || *v <= 0 || math.IsNaN(*v) {
+		return nil
+	}
+	return v
+}
+
+// floatInRange returns v when it lies within [lo, hi] and nil otherwise. NaN
+// fails every comparison and is dropped as well.
+func floatInRange(v *float64, lo, hi float64) *float64 {
+	if v == nil || math.IsNaN(*v) || *v < lo || *v > hi {
+		return nil
+	}
+	return v
+}
+
+// positiveInt returns v when it is a positive integer and nil otherwise.
+func positiveInt(v *int) *int {
+	if v == nil || *v <= 0 {
+		return nil
+	}
+	return v
+}
+
+// nonNegativeInt returns v when it is zero or positive and nil otherwise. Use
+// it for knobs whose zero setting is documented, such as the abort deadline
+// (0 disables the abort) and the token-load TTLs (0 disables the sweep).
+func nonNegativeInt(v *int) *int {
+	if v == nil || *v < 0 {
+		return nil
+	}
+	return v
+}
+
+// runtimeKnobs converts a parsed profile into the per-request PD overrides.
+// It returns nil when the profile sets no PD knob at all, so a request without
+// one pays a single nil check on the routing path. Values are validated here,
+// at the profile boundary, instead of at every read site.
+func (c *pdAlgorithmConfig) runtimeKnobs() *types.PDRuntimeKnobs {
+	if c == nil || (c.PD == nil && c.PromptLengthBucketing == nil) {
+		return nil
+	}
+	knobs := &types.PDRuntimeKnobs{PromptLengthBucketing: c.PromptLengthBucketing}
+	p := c.PD
+	if p == nil {
+		return knobs
+	}
+	if a := p.Abort; a != nil {
+		knobs.DecodeAbortTimeoutSeconds = nonNegativeInt(a.Timeout)
+		knobs.DecodeAbortRetryDelaySeconds = nonNegativeInt(a.RetryDelay)
+	}
+	if sp := p.Spreads; sp != nil {
+		if v := sp.PrefillLoadImbalanceMinSpread; v != nil && *v > 0 {
+			knobs.PrefillLoadImbalanceMinSpread = v
+		}
+		knobs.DecodeLoadImbalanceMinSpread = positiveFloat(sp.DecodeLoadImbalanceMinSpread)
+		knobs.DecodeThroughputImbalanceMinSpread = positiveFloat(sp.DecodeThroughputImbalanceMinSpread)
+		knobs.DecodeScoreRatioThreshold = positiveFloat(sp.DecodeScoreRatioThreshold)
+	}
+	if w := p.DecodeLBWeights; w != nil {
+		knobs.DecodeLBWeightRunning = positiveFloat(w.Running)
+		knobs.DecodeLBWeightThroughput = positiveFloat(w.Throughput)
+	}
+	knobs.HybridCacheLoadFactor = floatInRange(p.HybridCacheLoadFactor, 0, 1)
+	knobs.MinMatchPct = floatInRange(p.MinMatchPct, 0, 100)
+	knobs.PrefillRequestTimeoutSeconds = positiveInt(p.PrefillRequestTimeout)
+	if tl := p.TokenLoad; tl != nil {
+		knobs.TokenLoadKVWeight = positiveFloat(tl.KVWeight)
+		knobs.TokenLoadRequestCost = positiveFloat(tl.RequestCost)
+		knobs.TokenLoadTTLSeconds = nonNegativeInt(tl.TTLSeconds)
+		knobs.TokenLoadSessionTTLSeconds = nonNegativeInt(tl.SessionTTLSeconds)
+		knobs.TokenLoadMaxSessions = positiveInt(tl.MaxSessions)
+	}
+	return knobs
+}
+
+// effectivePDKnobs returns the PD routing overrides of this request's model
+// config profile, or nil when the profile sets none. Route parks the result on
+// the request's PD leg so the parts of the PD path that outlive the routing
+// context read the same values.
+func effectivePDKnobs(routingCtx *types.RoutingContext) *types.PDRuntimeKnobs {
+	if routingCtx == nil || routingCtx.ConfigProfile == nil || len(routingCtx.ConfigProfile.RoutingConfig) == 0 {
+		return nil
+	}
+	return parsePDAlgorithmConfig(routingCtx.ConfigProfile.RoutingConfig).runtimeKnobs()
+}
+
+// effectivePromptLengthBucketing reports whether prompt-length bucketing is on
+// for this request, honouring the profile override when one is set.
+func effectivePromptLengthBucketing(routingCtx *types.RoutingContext) bool {
+	return routingCtx.PDKnobs().PromptLengthBucketingOrDefault(aibrixPromptLengthBucketing)
 }
 
 // effectiveScorePolicies returns prefill/decode scoring policies for this request.
@@ -314,8 +467,12 @@ func NewPDRouterWithCacheAndPrefixIndexer(c cache.Cache, sharedPrefixTable *pref
 		MaxIdleConnsPerHost: 10,
 		IdleConnTimeout:     90 * time.Second,
 	}
+	// Deliberately no client-level Timeout: every call carries its own
+	// deadline, which is AIBRIX_PREFILL_REQUEST_TIMEOUT unless the request's
+	// profile overrides it (see DefaultExecutor.effectiveRequestTimeout), and a
+	// timeout fixed here would silently cap a larger profile value. The decode
+	// abort sets its own deadline the same way.
 	httpClient := &http.Client{
-		Timeout:   time.Duration(prefillRequestTimeout) * time.Second,
 		Transport: otelhttp.NewTransport(transport),
 	}
 
@@ -375,18 +532,24 @@ func (r *pdRouter) chargeTokenLoad(routingCtx *types.RoutingContext, pod *v1.Pod
 	if r.tokenLoadTracker == nil || !pd.UsesTokenLoad(policy) {
 		return
 	}
+	knobs := routingCtx.PDKnobs()
+	cfg := r.tokenLoadTracker.Config()
+	sessionTTL := knobs.TokenLoadSessionTTLOrDefault(cfg.SessionTTL)
+	ttl := knobs.TokenLoadTTLOrDefault(cfg.TTL)
+
 	promptTokens := pd.EstimatePromptTokens(routingCtx.ReqBody)
 	sessionID := routingCtx.ReqHeaders[constants.HeaderSessionKey]
 	matchPct := pd.PrefixMatchPercent(scorer, pod.Name)
-	newTokens, source := r.tokenLoadTracker.NewTokens(routingCtx.Model, sessionID, promptTokens, matchPct)
-	cost := r.tokenLoadTracker.PrefillCost(newTokens)
+	newTokens, source := r.tokenLoadTracker.NewTokensWithSessionLimits(routingCtx.Model, sessionID, promptTokens, matchPct,
+		sessionTTL, knobs.TokenLoadMaxSessionsOrDefault(cfg.MaxSessions))
+	cost := r.tokenLoadTracker.PrefillCostWithRequestCost(newTokens, knobs.TokenLoadRequestCostOrDefault(cfg.RequestCost))
 	if klog.V(4).Enabled() {
 		klog.V(4).InfoS("pd_router token_load charge",
 			"request_id", routingCtx.RequestID, "pod_name", pod.Name, "policy", policy.Name(),
 			"prompt_tokens", promptTokens, "new_tokens", newTokens, "source", source,
 			"prefix_match_percent", matchPct, "cost", cost)
 	}
-	r.tokenLoadTracker.AcquirePrefill(routingCtx.RequestID, pod.Name, cost)
+	r.tokenLoadTracker.AcquirePrefillWithTTL(routingCtx.RequestID, pod.Name, cost, ttl)
 }
 
 // releaseTokenLoad drops whatever the request still holds on the token-load
@@ -399,6 +562,12 @@ func (r *pdRouter) releaseTokenLoad(requestID string) {
 }
 
 func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
+	// Resolve the profile's PD overrides once, before anything can read them:
+	// selection reads them directly, and the async prefill leg (including the
+	// decode abort it may start) reads them off the leg after this request's
+	// routing context has been recycled.
+	ctx.SetPDKnobs(effectivePDKnobs(ctx))
+
 	readyPods := readyPodList.All()
 
 	// Validate the request body before any pod selection or prefix-index
@@ -479,7 +648,7 @@ type Scores struct {
 //  2. Pod availability check — errors immediately when no prefill or decode pods exist
 //     and no combined pod is available to cover the gap.
 //
-//  3. Bucketing path (AIBRIX_PROMPT_LENGTH_BUCKETING only) —
+//  3. Bucketing path (prompt-length bucketing only) —
 //     a. No bucket match: prompt length falls outside every declared range.
 //     - Combined pods available → pick a random combined pod (no prefill HTTP call).
 //     - No combined pods → error; do not route to the wrong storm.
@@ -507,14 +676,17 @@ type Scores struct {
 //     selectMu; steps 1-3a and the policy Prepare step (tokenization, prefix
 //     matching) run before the lock is taken. Route owns the matching removals.
 func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, *v1.Pod, error) {
+	knobs := routingCtx.PDKnobs()
+	bucketing := knobs.PromptLengthBucketingOrDefault(aibrixPromptLengthBucketing)
+
 	var promptLength int
-	if aibrixPromptLengthBucketing {
+	if bucketing {
 		promptLength, _ = routingCtx.PromptLength()
 		klog.V(4).InfoS("prompt length based filtering enabled", "request_id", routingCtx.RequestID, "prompt_length", promptLength)
 	}
 
 	prefillPods, decodePods, promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods, combinedPods := r.collectAndBucketPods(routingCtx, readyPods, promptLength)
-	combinedAvailable := aibrixPromptLengthBucketing && len(combinedPods) > 0
+	combinedAvailable := bucketing && len(combinedPods) > 0
 	if len(prefillPods) == 0 && !combinedAvailable {
 		return nil, nil, fmt.Errorf("prefill pods are not ready: prefill=%d, decode=%d", len(prefillPods), len(decodePods))
 	}
@@ -522,7 +694,7 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 		return nil, nil, fmt.Errorf("decode pods are not ready: prefill=%d, decode=%d", len(prefillPods), len(decodePods))
 	}
 
-	if aibrixPromptLengthBucketing {
+	if bucketing {
 		if len(promptLengthBucketingPrefillPods) == 0 || len(promptLengthBucketingDecodePods) == 0 {
 			// No bucket matches the request's prompt length.
 			if combinedAvailable {
@@ -553,7 +725,7 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	r.selectMu.Lock()
 	defer r.selectMu.Unlock()
 
-	if aibrixPromptLengthBucketing {
+	if bucketing {
 		// Bucket match exists; check if load imbalance favours a combined pod instead.
 		if r.shouldPickCombined(routingCtx, promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods, combinedPods) {
 			combinedPod := r.scoreCombinedPods(routingCtx, combinedPods)
@@ -566,7 +738,9 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	}
 
 	// check for prefill and decode imbalance
-	targetPod, isImbalanced := r.loadImbalanceSelectPrefillPod(prefillPods, r.prefillRequestTracker.GetPrefillRequestCountsForPods(prefillPods))
+	targetPod, isImbalanced := r.loadImbalanceSelectPrefillPod(prefillPods,
+		r.prefillRequestTracker.GetPrefillRequestCountsForPods(prefillPods),
+		knobs.PrefillLoadImbalanceMinSpreadOrDefault(aibrixPrefillLoadImbalanceMinSpread))
 	if isImbalanced && targetPod != nil {
 		prefillPods = []*v1.Pod{targetPod}
 		decodePods = utils.FilterPodsByLabel(decodePods, PDRoleSetIdentifier, targetPod.Labels[PDRoleSetIdentifier])
@@ -618,12 +792,14 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 // not influence the result.
 //
 // Returns one pod tied for the minimum count and imbalance=true when
-// max(count) − min(count) > aibrixPrefillLoadImbalanceMinSpread (strictly greater than).
-// Otherwise returns nil, false. An empty podRequestCount map always returns nil, false.
+// max(count) − min(count) > minSpread (strictly greater than). Otherwise returns
+// nil, false. minSpread is AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD unless the
+// request's profile overrides it. An empty podRequestCount map always returns
+// nil, false.
 //
 // The caller (filterPrefillDecodePods) narrows decodePods to the selected pod's roleset
 // so that prefill and decode remain aligned to the same roleset pair after this step.
-func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequestCount map[string]int32) (*v1.Pod, bool) {
+func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequestCount map[string]int32, minSpread int32) (*v1.Pod, bool) {
 	var imbalance bool
 	var targetPod *v1.Pod
 	targetPods := []string{}
@@ -648,7 +824,7 @@ func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequest
 		}
 	}
 
-	if maxValue-minValue > aibrixPrefillLoadImbalanceMinSpread && len(targetPods) > 0 {
+	if maxValue-minValue > minSpread && len(targetPods) > 0 {
 		targetPod, _ = utils.FilterPodByName(targetPods[rand.IntN(len(targetPods))], readyPods)
 		imbalance = true
 		if targetPod != nil && klog.V(4).Enabled() {
@@ -672,18 +848,19 @@ func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequest
 //     effective count = running + PendingDecodeTracker pending count for that pod.
 //     Pending counts come from concurrent Route calls that have registered
 //     AddPendingDecode but not yet returned. If max − min effective count is at least
-//     aibrixDecodeLoadImbalanceMinSpread, return the least-loaded metric-bearing pod.
+//     loadMinSpread (AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD unless the profile
+//     overrides it), return the least-loaded metric-bearing pod.
 //     Pods without a running-request metric are excluded from the spread (their pending
 //     count is still stored in podRequestCounts for scoring) so freshly restarted pods
 //     are not treated as idle and given a thundering herd.
 //
 //  2. Throughput spread: among pods that report AvgGenerationThroughputToksPerS (per model),
-//     if max − min throughput exceeds aibrixDecodeThroughputImbalanceMinSpread, return the
+//     if max − min throughput exceeds throughputMinSpread, return the
 //     lowest-throughput pod. Pods missing the metric are excluded from this check.
 //
 //  3. Drain-rate scoring: if every pod has a positive RealtimeRunningRequestsDrainRate1m,
 //     score each pod as effectiveRequestCount / drainRate. If maxScore/minScore exceeds
-//     aibrixDecodeScoreRatioThreshold, return the pod with the lowest score. Skipped when
+//     scoreRatioThreshold, return the pod with the lowest score. Skipped when
 //     any drain rate is missing or non-positive.
 //
 // Returns nil when none of the checks fire; the caller falls through to scoreDecodePods with
@@ -694,6 +871,11 @@ func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequest
 // prefillPods to the selected pod's roleset. KV cache headroom uses KVCacheUsagePerc
 // (missing metric is treated as 0% usage = 100% free).
 func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filteredDecodePods []*v1.Pod) (*v1.Pod, float64, float64, float64, map[string]float64, map[string]float64, map[string]float64) {
+	knobs := ctx.PDKnobs()
+	loadMinSpread := knobs.DecodeLoadImbalanceMinSpreadOrDefault(aibrixDecodeLoadImbalanceMinSpread)
+	throughputMinSpread := knobs.DecodeThroughputImbalanceMinSpreadOrDefault(aibrixDecodeThroughputImbalanceMinSpread)
+	scoreRatioThreshold := knobs.DecodeScoreRatioThresholdOrDefault(aibrixDecodeScoreRatioThreshold)
+
 	podRequestCounts := make(map[string]float64)
 	podThroughputs := make(map[string]float64)
 	podFreeGpuUsage := make(map[string]float64)
@@ -757,14 +939,14 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 		maxFreeGPUUsage = math.Max(maxFreeGPUUsage, podFreeGpuUsage[pod.Name])
 	}
 
-	if minRequestPod != nil && maxObservedRequestCount-minObservedRequestCount >= aibrixDecodeLoadImbalanceMinSpread {
+	if minRequestPod != nil && maxObservedRequestCount-minObservedRequestCount >= loadMinSpread {
 		klog.V(4).InfoS("request imbalance at decode pods", "request_id", ctx.RequestID,
 			"min_request_count", minObservedRequestCount, "max_request_count", maxObservedRequestCount,
 			"free_gpu_percent", podFreeGpuUsage[minRequestPod.Name], "decode_pod", minRequestPod.Name)
 		return minRequestPod, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage
 	}
 
-	if minThroughputPod != nil && maxObservedThroughput-minObservedThroughput > aibrixDecodeThroughputImbalanceMinSpread {
+	if minThroughputPod != nil && maxObservedThroughput-minObservedThroughput > throughputMinSpread {
 		klog.V(4).InfoS("throughput imbalance at decode pods", "request_id", ctx.RequestID,
 			"min_request_count", minObservedRequestCount, "max_request_count", maxObservedRequestCount,
 			"min_throughput", minObservedThroughput, "max_throughput", maxObservedThroughput,
@@ -791,7 +973,7 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 		maxScore = math.Max(maxScore, score)
 	}
 
-	if drainRatesAvailable && minScore > 0 && maxScore/minScore > aibrixDecodeScoreRatioThreshold {
+	if drainRatesAvailable && minScore > 0 && maxScore/minScore > scoreRatioThreshold {
 		klog.V(4).InfoS("drain rate imbalance at decode pods", "request_id", ctx.RequestID,
 			"min_score", minScore, "max_score", maxScore,
 			"ratio", maxScore/minScore, "decode_pod", minScorePod.Name)
@@ -1223,7 +1405,7 @@ func (r *pdRouter) isPodSuitableForPromptLength(routingCtx *types.RoutingContext
 // Returns (prefillPods, decodePods, promptLengthBucketingPrefillPods,
 // promptLengthBucketingDecodePods, combinedPods).
 func (r *pdRouter) collectAndBucketPods(routingCtx *types.RoutingContext, readyPods []*v1.Pod, promptLength int) ([]*v1.Pod, []*v1.Pod, []*v1.Pod, []*v1.Pod, []*v1.Pod) {
-	bucketingEnabled := aibrixPromptLengthBucketing
+	bucketingEnabled := effectivePromptLengthBucketing(routingCtx)
 
 	var combinedPods []*v1.Pod
 	if bucketingEnabled {

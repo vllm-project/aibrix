@@ -188,6 +188,11 @@ type tokenLoadEntry struct {
 	pod        string
 	cost       float64
 	acquiredAt time.Time
+	// ttl bounds this charge's age before the janitor force-releases it; 0
+	// means it is never swept. It is per entry because a request whose model
+	// config profile sets routingConfig.pd.tokenLoad.ttlSeconds carries its
+	// own expiry.
+	ttl time.Duration
 	// tokensReleased and kvReleased each flip once, when the matching release
 	// runs, so neither a repeated release nor the janitor subtracts a part of
 	// the charge twice. The entry leaves the ledger once both are set.
@@ -269,10 +274,17 @@ func (t *TokenLoadTracker) Config() TokenLoadConfig { return t.cfg }
 // PrefillCost returns the load charged for a prefill of promptTokens tokens:
 // the fixed per-request cost plus the prompt length.
 func (t *TokenLoadTracker) PrefillCost(promptTokens int) float64 {
+	return t.PrefillCostWithRequestCost(promptTokens, t.cfg.RequestCost)
+}
+
+// PrefillCostWithRequestCost is PrefillCost with an explicit per-request cost,
+// used when the request's model config profile overrides
+// AIBRIX_TOKEN_LOAD_REQUEST_COST.
+func (t *TokenLoadTracker) PrefillCostWithRequestCost(promptTokens int, requestCost float64) float64 {
 	if promptTokens < 0 {
 		promptTokens = 0
 	}
-	return t.cfg.RequestCost + float64(promptTokens)
+	return requestCost + float64(promptTokens)
 }
 
 // EstimatePromptTokens estimates the prompt length of a request from its body
@@ -311,11 +323,20 @@ const (
 //
 // The result is never negative or larger than promptTokens.
 func (t *TokenLoadTracker) NewTokens(model, sessionID string, promptTokens, matchPct int) (int, string) {
+	return t.NewTokensWithSessionLimits(model, sessionID, promptTokens, matchPct, t.cfg.SessionTTL, t.cfg.MaxSessions)
+}
+
+// NewTokensWithSessionLimits is NewTokens with explicit session limits, used
+// when the request's model config profile overrides
+// AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS or AIBRIX_TOKEN_LOAD_MAX_SESSIONS. A
+// sessionTTL of 0 disables the session-delta rule for the request, and a
+// non-positive maxSessions falls back to the tracker's cap.
+func (t *TokenLoadTracker) NewTokensWithSessionLimits(model, sessionID string, promptTokens, matchPct int, sessionTTL time.Duration, maxSessions int) (int, string) {
 	if promptTokens < 0 {
 		promptTokens = 0
 	}
-	if sessionID != "" && len(sessionID) <= maxTokenLoadSessionIDLen && t.cfg.SessionTTL > 0 {
-		if last, seen := t.recordSessionPrompt(model, sessionID, promptTokens); seen && promptTokens > last {
+	if sessionID != "" && len(sessionID) <= maxTokenLoadSessionIDLen && sessionTTL > 0 {
+		if last, seen := t.recordSessionPrompt(model, sessionID, promptTokens, maxSessions); seen && promptTokens > last {
 			return promptTokens - last, NewTokensSourceSession
 		}
 	}
@@ -332,16 +353,19 @@ func (t *TokenLoadTracker) NewTokens(model, sessionID string, promptTokens, matc
 // session) and returns the previous value and whether there was one. A new
 // session is admitted only while fewer than MaxSessions are live; otherwise
 // nothing is recorded and the caller charges by the other rules.
-func (t *TokenLoadTracker) recordSessionPrompt(model, sessionID string, promptTokens int) (int, bool) {
+func (t *TokenLoadTracker) recordSessionPrompt(model, sessionID string, promptTokens, maxSessions int) (int, bool) {
+	if maxSessions <= 0 {
+		maxSessions = t.cfg.MaxSessions
+	}
 	now := t.now()
 	key := sessionKey(model, sessionID)
 	for {
 		v, loaded := t.sessions.Load(key)
 		if !loaded {
-			if t.sessionCount.Add(1) > int64(t.cfg.MaxSessions) {
+			if t.sessionCount.Add(1) > int64(maxSessions) {
 				t.sessionCount.Add(-1)
 				if t.sessionsFull.CompareAndSwap(false, true) {
-					klog.Warningf("token_load_tracker session table is full (max_sessions=%d): new sessions are charged without a session delta until the janitor sweeps idle ones", t.cfg.MaxSessions)
+					klog.Warningf("token_load_tracker session table is full (max_sessions=%d): new sessions are charged without a session delta until the janitor sweeps idle ones", maxSessions)
 				}
 				return 0, false
 			}
@@ -373,12 +397,21 @@ func sessionKey(model, sessionID string) string {
 }
 
 // AcquirePrefill charges cost to both the active and the resident-KV counter
-// of pod and records the charge under requestID for later release. Request
-// IDs are unique per request, so a second AcquirePrefill for the same
-// requestID is a caller bug; it is tolerated by releasing whatever the
-// earlier charge still holds before the new one replaces it, with a warning.
+// of pod and records the charge under requestID for later release, with the
+// tracker's configured TTL. Request IDs are unique per request, so a second
+// AcquirePrefill for the same requestID is a caller bug; it is tolerated by
+// releasing whatever the earlier charge still holds before the new one
+// replaces it, with a warning.
 func (t *TokenLoadTracker) AcquirePrefill(requestID, pod string, cost float64) {
-	entry := &tokenLoadEntry{pod: pod, cost: cost, acquiredAt: t.now()}
+	t.AcquirePrefillWithTTL(requestID, pod, cost, t.cfg.TTL)
+}
+
+// AcquirePrefillWithTTL is AcquirePrefill with an explicit expiry for this
+// charge, used when the request's model config profile overrides
+// AIBRIX_TOKEN_LOAD_TTL_SECONDS. A ttl of 0 means the janitor never sweeps the
+// charge; the normal releases still drop it.
+func (t *TokenLoadTracker) AcquirePrefillWithTTL(requestID, pod string, cost float64, ttl time.Duration) {
+	entry := &tokenLoadEntry{pod: pod, cost: cost, acquiredAt: t.now(), ttl: ttl}
 	if prev, loaded := t.entries.Swap(requestID, entry); loaded {
 		old := prev.(*tokenLoadEntry)
 		klog.Warningf("token_load_tracker re-acquire for request_id=%s: releasing earlier charge pod_name=%s cost=%g before charging pod_name=%s cost=%g",
@@ -460,8 +493,14 @@ func (t *TokenLoadTracker) GetLoad(pod string) (activeTokens, kvTokens float64) 
 //
 //	active_tokens + kv_weight * kv_tokens
 func (t *TokenLoadTracker) GetPriority(pod string) float64 {
+	return t.GetPriorityWithKVWeight(pod, t.cfg.KVWeight)
+}
+
+// GetPriorityWithKVWeight is GetPriority with an explicit KV weight, used when
+// the request's model config profile overrides AIBRIX_TOKEN_LOAD_KV_WEIGHT.
+func (t *TokenLoadTracker) GetPriorityWithKVWeight(pod string, kvWeight float64) float64 {
 	active, kv := t.GetLoad(pod)
-	return active + t.cfg.KVWeight*kv
+	return active + kvWeight*kv
 }
 
 func (t *TokenLoadTracker) now() time.Time {
@@ -509,9 +548,11 @@ func (t *TokenLoadTracker) startJanitor(interval time.Duration) {
 	}()
 }
 
-// sweepExpired force-releases every charge older than TTL and forgets every
-// session idle for longer than SessionTTL. It returns how many charges it
-// released. Each part is a no-op when its TTL is not positive.
+// sweepExpired force-releases every charge older than its own TTL and forgets
+// every session idle for longer than SessionTTL. It returns how many charges
+// it released. Each part is a no-op when its TTL is not positive; a charge's
+// TTL is AIBRIX_TOKEN_LOAD_TTL_SECONDS unless the request's model config
+// profile overrode it.
 func (t *TokenLoadTracker) sweepExpired() int {
 	now := t.now()
 	if t.cfg.SessionTTL > 0 {
@@ -531,19 +572,21 @@ func (t *TokenLoadTracker) sweepExpired() int {
 			return true
 		})
 	}
-	if t.cfg.TTL <= 0 {
-		return 0
-	}
 	released := 0
 	t.entries.Range(func(key, val any) bool {
 		entry := val.(*tokenLoadEntry)
+		// The TTL is per entry: a request whose profile sets ttlSeconds ages
+		// out on its own schedule, and 0 means this charge is never swept.
+		if entry.ttl <= 0 {
+			return true
+		}
 		age := now.Sub(entry.acquiredAt)
-		if age <= t.cfg.TTL {
+		if age <= entry.ttl {
 			return true
 		}
 		requestID := key.(string)
 		klog.Warningf("token_load_tracker force-releasing stale charge: request_id=%s pod_name=%s cost=%g age_seconds=%.0f ttl_seconds=%.0f",
-			requestID, entry.pod, entry.cost, age.Seconds(), t.cfg.TTL.Seconds())
+			requestID, entry.pod, entry.cost, age.Seconds(), entry.ttl.Seconds())
 		// Release this entry, not whatever is under requestID now: the flags
 		// make a concurrent normal release harmless, and a re-acquire that
 		// replaced the entry in the meantime must keep its own charge.

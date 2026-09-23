@@ -118,6 +118,13 @@ func decodeAbortTimeout() time.Duration {
 	return time.Duration(decodeAbortTimeoutSeconds.Load()) * time.Second
 }
 
+// decodeAbortTimeoutFor is decodeAbortTimeout for one request, honouring the
+// override the request's model config profile sets. The leg, not the routing
+// context, is the source: an abort outlives the request that started it.
+func decodeAbortTimeoutFor(leg *types.PDLegState) time.Duration {
+	return leg.PDKnobs().DecodeAbortTimeoutOrDefault(decodeAbortTimeout())
+}
+
 // AIBRIX_DECODE_ABORT_RETRY_DELAY: seconds to wait before repeating the abort
 // once, to cover the case where the first attempt arrived at the decode pod
 // before the decode request itself (see the race described at the top of this
@@ -141,6 +148,13 @@ func loadDecodeAbortRetryDelayNanos() int64 {
 // non-positive value means a single attempt.
 func decodeAbortRetryDelay() time.Duration {
 	return time.Duration(decodeAbortRetryDelayNanos.Load())
+}
+
+// decodeAbortRetryDelayFor is decodeAbortRetryDelay for one request, honouring
+// the override the request's model config profile sets. See
+// decodeAbortTimeoutFor for why the leg is the source.
+func decodeAbortRetryDelayFor(leg *types.PDLegState) time.Duration {
+	return leg.PDKnobs().DecodeAbortRetryDelayOrDefault(decodeAbortRetryDelay())
 }
 
 // Prefill failure classes. Low cardinality: they are used as a log field and
@@ -400,7 +414,7 @@ func OnPrefillLegFailed(client *http.Client, leg *types.PDLegState, requestID, m
 		// nothing the abort endpoint could match.
 		logAbort(0, abortResultSkippedNoRID, 0, nil)
 		return failure
-	case decodeAbortTimeout() <= 0:
+	case decodeAbortTimeoutFor(leg) <= 0:
 		logAbort(0, abortResultSkippedDisabled, 0, nil)
 		return failure
 	case decodeAddr == "":
@@ -414,8 +428,8 @@ func OnPrefillLegFailed(client *http.Client, leg *types.PDLegState, requestID, m
 		return failure
 	}
 
-	timeout := decodeAbortTimeout()
-	retryDelay := decodeAbortRetryDelay()
+	timeout := decodeAbortTimeoutFor(leg)
+	retryDelay := decodeAbortRetryDelayFor(leg)
 	// Taken before the goroutine starts, like everything else it needs: the
 	// leg is per-incarnation and stays valid, the routing context does not.
 	abortCtx := leg.AbortContext()

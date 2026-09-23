@@ -76,6 +76,13 @@ func WithTokenLoadTracker(tokenLoad *pd.TokenLoadTracker) ExecutorOption {
 	return func(e *DefaultExecutor) { e.tokenLoad = tokenLoad }
 }
 
+// effectiveRequestTimeout returns the deadline of this request's prefill
+// call: the model config profile override when the request sets one, else the
+// executor default read from AIBRIX_PREFILL_REQUEST_TIMEOUT.
+func (e *DefaultExecutor) effectiveRequestTimeout(routingCtx *types.RoutingContext) time.Duration {
+	return routingCtx.PDLeg().PDKnobs().PrefillRequestTimeoutOrDefault(time.Duration(e.requestTimeout) * time.Second)
+}
+
 // NewDefaultExecutor constructs a DefaultExecutor.
 // httpClient and tracker are shared with the router; requestTimeout is in seconds.
 func NewDefaultExecutor(httpClient *http.Client, tracker *pd.PrefillRequestTracker, requestTimeout int, opts ...ExecutorOption) PrefillExecutor {
@@ -136,6 +143,10 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 
 	routingCtx.PrefillStartTime = time.Now()
 
+	// Resolved before the async split: the goroutine must use the same deadline
+	// as the sync path, and it must not read the pooled routing context.
+	prefillTimeout := e.effectiveRequestTimeout(routingCtx)
+
 	if handler.IsAsync() {
 		// SGLang uses a bootstrap handshake to coordinate KV transfer out-of-band;
 		// fire asynchronously and return immediately.
@@ -164,7 +175,7 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 			defer decPrefillOutstanding()
 			defer e.prefillDone(requestID)
 
-			if _, err := e.executeHTTP(apiURL, asyncCtx, payload); err != nil {
+			if _, err := e.executeHTTP(apiURL, asyncCtx, payload, prefillTimeout); err != nil {
 				// The prefill leg is fire-and-forget, so nobody is waiting on
 				// this error: record it on the leg (and abort the decode leg
 				// that will never receive its KV) before it is only logged.
@@ -210,7 +221,7 @@ func (e *DefaultExecutor) handleSync(
 	defer decPrefillOutstanding()
 	defer e.prefillDone(routingCtx.RequestID)
 
-	prefillResponse, err := e.executeHTTP(apiURL, routingCtx, payload)
+	prefillResponse, err := e.executeHTTP(apiURL, routingCtx, payload, e.effectiveRequestTimeout(routingCtx))
 	if err != nil {
 		klog.ErrorS(err, "prefill_request_failed",
 			"request_id", routingCtx.RequestID,
@@ -246,8 +257,8 @@ func (e *DefaultExecutor) handleSync(
 // Failures are returned as the typed errors of package pd (PrefillSetupError,
 // PrefillHTTPError, PrefillBodyError) or as a wrapped transport error, so that
 // pd.OnPrefillLegFailed can classify them without parsing error strings.
-func (e *DefaultExecutor) executeHTTP(url string, routingCtx *types.RoutingContext, payload []byte) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(routingCtx.Context, time.Duration(e.requestTimeout)*time.Second)
+func (e *DefaultExecutor) executeHTTP(url string, routingCtx *types.RoutingContext, payload []byte, timeout time.Duration) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(routingCtx.Context, timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payload))

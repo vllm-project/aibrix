@@ -64,8 +64,10 @@ const (
 //
 //	score = (wRun*normRunningReqs + wThru*normInverseThroughput) / normFreeGPU
 //
-// Configurable via AIBRIX_DECODE_LB_WEIGHT_RUNNING and AIBRIX_DECODE_LB_WEIGHT_THROUGHPUT.
-// Default equal weighting (1.0 / 1.0) preserves historical behaviour.
+// Configurable via AIBRIX_DECODE_LB_WEIGHT_RUNNING and
+// AIBRIX_DECODE_LB_WEIGHT_THROUGHPUT, or per request through the model config
+// profile knob routingConfig.pd.decodeLBWeights. Default equal weighting
+// (1.0 / 1.0) preserves historical behaviour.
 var (
 	decodeLBWeightRunningReq   = utils.LoadEnvFloat("AIBRIX_DECODE_LB_WEIGHT_RUNNING", 1.0)
 	decodeLBWeightThroughput   = utils.LoadEnvFloat("AIBRIX_DECODE_LB_WEIGHT_THROUGHPUT", 1.0)
@@ -142,17 +144,21 @@ func (LoadBalancingDecodePolicy) Describe() string {
 }
 
 func (LoadBalancingDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext, pod *v1.Pod, in DecodePodInput) float64 {
+	knobs := routingCtx.PDKnobs()
+	weightRunning := knobs.DecodeLBWeightRunningOrDefault(decodeLBWeightRunningReq)
+	weightThroughput := knobs.DecodeLBWeightThroughputOrDefault(decodeLBWeightThroughput)
+
 	normalizedRunningReqs := in.RunningReqs / in.MaxRequestCount
 	normalizedThroughput := 1 - in.Throughput/in.MaxThroughput
 	normalizedFreeGPUPercent := in.FreeGPUPercent / in.MaxFreeGPUUsage
 
-	numer := decodeLBWeightRunningReq*normalizedRunningReqs + decodeLBWeightThroughput*normalizedThroughput
+	numer := weightRunning*normalizedRunningReqs + weightThroughput*normalizedThroughput
 	decodeScore := numer / normalizedFreeGPUPercent
 
 	if klog.V(4).Enabled() {
 		klog.V(4).InfoS("decode_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
 			"policy", DecodePolicyLoadBalancing, "decode_score", decodeScore,
-			"score", fmt.Sprintf("(%g*%f + %g*%f) / %f", decodeLBWeightRunningReq, normalizedRunningReqs, decodeLBWeightThroughput, normalizedThroughput, normalizedFreeGPUPercent),
+			"score", fmt.Sprintf("(%g*%f + %g*%f) / %f", weightRunning, normalizedRunningReqs, weightThroughput, normalizedThroughput, normalizedFreeGPUPercent),
 			"running_reqs", in.RunningReqs, "max_running_reqs", in.MaxRequestCount,
 			"throughput", in.Throughput, "max_throughput", in.MaxThroughput,
 			"free_gpu", in.FreeGPUPercent, "max_free_gpu_usage", in.MaxFreeGPUUsage)

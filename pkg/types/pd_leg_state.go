@@ -114,6 +114,13 @@ type PDLegState struct {
 	// itself: the routing context it could read it from is pooled.
 	decodeTarget atomic.Pointer[pdDecodeTarget]
 
+	// pdKnobs are the PD routing overrides the request's model config profile
+	// sets. They are resolved on the request path and read from the leg rather
+	// than the routing context for the same reason as decodeTarget: the async
+	// prefill goroutine, and the decode abort it can start, outlive the client
+	// stream and must not read a routing context that may have been recycled.
+	pdKnobs atomic.Pointer[PDRuntimeKnobs]
+
 	// abortMu guards the two fields below. The abort context is built by the
 	// goroutine that sends the abort and cancelled by the goroutine that owns
 	// the client stream, so the two race; both critical sections are a single
@@ -333,6 +340,23 @@ func (l *PDLegState) DecodeTarget() (addr string, podName string) {
 	return "", ""
 }
 
+// SetPDKnobs records the request's PD routing overrides. A nil knobs argument
+// is a no-op: the read sites fall back to their environment defaults.
+func (l *PDLegState) SetPDKnobs(knobs *PDRuntimeKnobs) {
+	if l == nil || knobs == nil {
+		return
+	}
+	l.pdKnobs.Store(knobs)
+}
+
+// PDKnobs returns the request's PD routing overrides, or nil when it has none.
+func (l *PDLegState) PDKnobs() *PDRuntimeKnobs {
+	if l == nil {
+		return nil
+	}
+	return l.pdKnobs.Load()
+}
+
 // PDLeg returns the PD leg state of this incarnation of the request, or nil
 // when there is none. Callers that outlive the client stream - the async
 // prefill goroutine above all - must capture this pointer before they are
@@ -396,6 +420,18 @@ func (r *RoutingContext) SetDecodeTarget(addr, podName string) {
 // DecodeTarget returns where the decode leg of this request was sent.
 func (r *RoutingContext) DecodeTarget() (addr string, podName string) {
 	return r.PDLeg().DecodeTarget()
+}
+
+// SetPDKnobs records the PD routing overrides of this incarnation of the
+// request.
+func (r *RoutingContext) SetPDKnobs(knobs *PDRuntimeKnobs) {
+	r.PDLeg().SetPDKnobs(knobs)
+}
+
+// PDKnobs returns the PD routing overrides of this incarnation of the request,
+// or nil when it has none.
+func (r *RoutingContext) PDKnobs() *PDRuntimeKnobs {
+	return r.PDLeg().PDKnobs()
 }
 
 // PodAddress returns the host:port the gateway would forward this request to if

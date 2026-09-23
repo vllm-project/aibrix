@@ -2083,7 +2083,7 @@ func TestLoadImbalanceSelectPrefillPod(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			targetPod, imbalance := r.loadImbalanceSelectPrefillPod(tt.readyPods, tt.podRequestCount)
+			targetPod, imbalance := r.loadImbalanceSelectPrefillPod(tt.readyPods, tt.podRequestCount, aibrixPrefillLoadImbalanceMinSpread)
 
 			assert.Equal(t, tt.expectImbalance, imbalance, "imbalance detection should match expected")
 
