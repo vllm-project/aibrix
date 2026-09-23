@@ -138,8 +138,8 @@ func admissibleCandidates(
 				pod:       pod.Name,
 				roomBytes: room,
 				known:     true,
-				reason: fmt.Sprintf("%s can offer at most %s, even with every engine on it at its floor",
-					pod.Name, gibibytes(room)),
+				reason: fmt.Sprintf("%s can offer at most %s, even with every engine on it at its floor (%s)",
+					pod.Name, gibibytes(room), cardAccount(ledger, ledger.totalMinimumReserveBytes, "promised to")),
 			})
 		case ledger.heldRoomBytes() < minimumReserveBytes:
 			// The card could hold this model, and does not today. Lowering a KV
@@ -150,14 +150,22 @@ func admissibleCandidates(
 				pod:       pod.Name,
 				roomBytes: room,
 				known:     true,
-				reason: fmt.Sprintf("%s has %s free, with the rest held by the engines already on it",
-					pod.Name, gibibytes(room)),
+				reason: fmt.Sprintf("%s has %s free, with the rest held by the engines already on it (%s)",
+					pod.Name, gibibytes(room), cardAccount(ledger, ledger.totalHeldBytes, "held by")),
 			})
 		default:
 			admissible = append(admissible, pod)
 		}
 	}
 	return admissible, refusals
+}
+
+// cardAccount is the part of a refusal an operator can check against the card
+// itself: how much it holds, and how much of that the instances on it take.
+// Without it the ledger is real in the controller and invisible in kubectl.
+func cardAccount(ledger podLedger, takenBytes int64, taken string) string {
+	return fmt.Sprintf("the card holds %s, and %s of it is %s %d instance(s)",
+		gibibytes(ledger.hbmUsableBytes), gibibytes(takenBytes), taken, len(ledger.engines))
 }
 
 // noPlacementMessage says why no pod was chosen for a claim.

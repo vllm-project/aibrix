@@ -236,19 +236,22 @@ func TestAdmissibleCandidatesKeepsOnlyPodsThatCanShowRoom(t *testing.T) {
 		gpuPod("roomy"), gpuPod("full"), gpuPod("unreadable"), namedPod("cpu-only"),
 	}
 	ledgers := map[string]podLedger{
-		"roomy":      {judgeable: true, hbmUsableBytes: 1000, totalMinimumReserveBytes: 100, totalHeldBytes: 100},
-		"full":       {judgeable: true, hbmUsableBytes: 1000, totalMinimumReserveBytes: 900, totalHeldBytes: 900},
+		"roomy": {judgeable: true, hbmUsableBytes: 95 << 30, totalMinimumReserveBytes: 40 << 30,
+			totalHeldBytes: 40 << 30, engines: make([]engineOnPod, 1)},
+		"full": {judgeable: true, hbmUsableBytes: 95 << 30, totalMinimumReserveBytes: 80 << 30,
+			totalHeldBytes: 80 << 30, engines: make([]engineOnPod, 2)},
 		"unreadable": {blocked: "its runtime did not answer"},
 	}
 
-	admissible, refusals := admissibleCandidates(candidates, ledgers, 500)
+	admissible, refusals := admissibleCandidates(candidates, ledgers, 40<<30)
 
 	require.Len(t, admissible, 2)
 	assert.Equal(t, "roomy", admissible[0].Name)
 	assert.Equal(t, "cpu-only", admissible[1].Name)
 	require.Len(t, refusals, 2)
 	assert.Equal(t,
-		"full can offer at most 0.0 GiB, even with every engine on it at its floor",
+		"full can offer at most 15.0 GiB, even with every engine on it at its floor "+
+			"(the card holds 95.0 GiB, and 80.0 GiB of it is promised to 2 instance(s))",
 		refusals[0].reason)
 	assert.True(t, refusals[0].known)
 	assert.Equal(t, "unreadable could not be judged: its runtime did not answer", refusals[1].reason)
@@ -260,18 +263,20 @@ func TestAdmissibleCandidatesTurnsAwayACardWhoseRoomIsHeld(t *testing.T) {
 	// The card could hold the model once its engines give their pages back,
 	// and they have not.
 	ledgers := map[string]podLedger{
-		"held": {judgeable: true, hbmUsableBytes: 1000, totalMinimumReserveBytes: 100, totalHeldBytes: 800},
+		"held": {judgeable: true, hbmUsableBytes: 95 << 30, totalMinimumReserveBytes: 40 << 30,
+			totalHeldBytes: 70 << 30, engines: make([]engineOnPod, 1)},
 	}
 
-	admissible, refusals := admissibleCandidates(candidates, ledgers, 500)
+	admissible, refusals := admissibleCandidates(candidates, ledgers, 40<<30)
 
 	assert.Empty(t, admissible)
 	require.Len(t, refusals, 1)
 	assert.Equal(t,
-		"held has 0.0 GiB free, with the rest held by the engines already on it",
+		"held has 25.0 GiB free, with the rest held by the engines already on it "+
+			"(the card holds 95.0 GiB, and 70.0 GiB of it is held by 1 instance(s))",
 		refusals[0].reason)
 	assert.True(t, refusals[0].known)
-	assert.Equal(t, int64(200), refusals[0].roomBytes)
+	assert.Equal(t, int64(25)<<30, refusals[0].roomBytes)
 }
 
 func TestRankingPrefersTheCardWithTheMostRoomNotTheMostFreeMemory(t *testing.T) {
