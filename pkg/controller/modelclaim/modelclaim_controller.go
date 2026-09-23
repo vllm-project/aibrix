@@ -89,6 +89,9 @@ type ModelClaimReconciler struct {
 	// request-counter deltas needed for conservative KV allocation. It is not a
 	// desired-state store; runtime snapshots remain authoritative after restart.
 	PoolPolicy *poolPolicyManager
+	// Divisions remembers when each card was last divided to follow its load,
+	// so that a card is divided once per round however many claims sit on it.
+	Divisions *cardDivisionState
 	// APIReader reads ModelClaims straight from the API server for the GPU
 	// memory account, where an instance recorded moments ago and not yet in the
 	// informer would read as free memory. Falls back to the cached client when
@@ -108,6 +111,7 @@ func Add(mgr manager.Manager, _ config.RuntimeConfig) error {
 		SnapshotCache: newRuntimeSnapshotCache(
 			defaultRuntimeSnapshotTTL, time.Now,
 		),
+		Divisions: newCardDivisionState(time.Now),
 		APIReader: mgr.GetAPIReader(),
 	}
 
@@ -246,6 +250,11 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// claim status is persisted so a policy failure cannot block activation
 	// or route-health convergence for this claim.
 	r.reconcilePoolPolicies(ctx, candidates)
+	// Cards whose engines all declare what they cost are divided again by the
+	// planner placement uses, so each share follows load rather than staying
+	// what it was when the last model landed. It runs last, after anything this
+	// pass changed on the cards.
+	r.divideCards(ctx, candidates)
 	return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, nil
 }
 
@@ -689,7 +698,7 @@ func (r *ModelClaimReconciler) makeRoomOnPod(
 		kvCapacityBytes: kvLimitUnknown,
 	}
 	engines := append(append([]engineOnPod(nil), ledger.engines...), newcomer)
-	limits, err := r.arrangeCard(ctx, pod, ledger, engines)
+	limits, err := r.arrangeCard(ctx, pod, ledger, engines, placementDivision)
 	if err != nil {
 		return 0, err
 	}
@@ -721,10 +730,14 @@ func (r *ModelClaimReconciler) arrangeCard(
 	pod *corev1.Pod,
 	ledger podLedger,
 	engines []engineOnPod,
+	why division,
 ) ([]plannedKVLimit, error) {
 	limits, err := planKVLimits(ledger.hbmUsableBytes, engines)
 	if err != nil {
 		return nil, err
+	}
+	if why.minimumChangeBytes > 0 && !worthWriting(limits, why.minimumChangeBytes) {
+		return limits, nil
 	}
 
 	shrinks, grows := shrinksAndGrows(limits)
@@ -754,6 +767,13 @@ func (r *ModelClaimReconciler) arrangeCard(
 			}
 			held[limit.claimName] = claim
 		}
+	}
+	if !why.announce {
+		if len(written) > 0 {
+			klog.V(2).InfoS("divided a card again", "pod", klog.KObj(pod),
+				"engines", len(limits), "moved", len(written))
+		}
+		return limits, nil
 	}
 	// Say so on each claim whose engine was moved. A limit written by the
 	// arrangement of a card is a limit its owner did not ask for, and looking

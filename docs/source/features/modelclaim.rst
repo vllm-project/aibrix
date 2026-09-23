@@ -379,7 +379,15 @@ limit is in force, and stays routable only while it is held to no more than
 that limit. A card that could not be arranged is skipped, and the next Pod in
 line is tried.
 
-Watch the arrangement through its Events:
+A card is also divided again every round, so that each share follows the load
+on its engine. It is divided at most once a round, however many claims sit on
+it. A card that has barely drifted is left alone: the threshold is the larger
+of half a gibibyte and a hundredth of the card. A KV allocator hands out whole
+bundles of pages, so a smaller change moves no memory at all. These divisions
+are logged rather than raised as Events, since a busy card has one every round.
+
+Placement raises an Event on each claim whose limit it moves, and so does the
+health loop when it writes a limit back:
 
 .. code-block:: bash
 

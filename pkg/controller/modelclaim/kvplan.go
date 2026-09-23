@@ -111,6 +111,49 @@ func planKVLimits(hbmUsableBytes int64, engines []engineOnPod) ([]plannedKVLimit
 	return limits, nil
 }
 
+// minimumKVLimitChangeBytes is how far a card has to have drifted from its plan
+// before dividing it again to follow load is worth the writes.
+//
+// Two things set the size. A KV allocator hands out whole bundles of pages, and
+// a bundle is the page size times the layer count times the number of buffers
+// per layer, which came to 112 MiB for a small model and about 504 MiB for a
+// 126-layer one on the cards this was measured on. A change smaller than a
+// bundle moves no memory at all. And a card divided again on every pass spends
+// its time writing limits rather than serving, so the threshold also rises with
+// the card.
+//
+// Placement does not use this. The room it admitted a model against has to be
+// made exactly, and a byte skipped there is a byte two engines both own.
+func minimumKVLimitChangeBytes(hbmUsableBytes int64) int64 {
+	const perBundleBytes = int64(512) << 20
+	if perCard := hbmUsableBytes / 100; perCard > perBundleBytes {
+		return perCard
+	}
+	return perBundleBytes
+}
+
+// worthWriting reports whether any engine's limit has drifted far enough from
+// the plan to be worth the write.
+//
+// It is all or nothing. Carrying out half a plan would leave one engine shrunk
+// and the engine that was to take the memory still at its old limit, or worse,
+// one engine grown into memory another was to give back.
+func worthWriting(limits []plannedKVLimit, minimumChangeBytes int64) bool {
+	for _, limit := range limits {
+		if limit.kvCapacityBytes < 0 {
+			continue
+		}
+		change := limit.kvLimitBytes - limit.kvCapacityBytes
+		if change < 0 {
+			change = -change
+		}
+		if change >= minimumChangeBytes {
+			return true
+		}
+	}
+	return false
+}
+
 // writeOrder puts the limits that shrink an engine before the ones that grow
 // one, so no two engines are entitled to the same byte in between. Within each
 // group the claim order is kept, which keeps a run reproducible.
