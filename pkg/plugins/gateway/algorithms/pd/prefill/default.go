@@ -80,7 +80,7 @@ func WithTokenLoadTracker(tokenLoad *pd.TokenLoadTracker) ExecutorOption {
 // call: the model config profile override when the request sets one, else the
 // executor default read from AIBRIX_PREFILL_REQUEST_TIMEOUT.
 func (e *DefaultExecutor) effectiveRequestTimeout(routingCtx *types.RoutingContext) time.Duration {
-	return routingCtx.PDLeg().PDKnobs().PrefillRequestTimeoutOrDefault(time.Duration(e.requestTimeout) * time.Second)
+	return routingCtx.PDKnobs().PrefillRequestTimeoutOrDefault(time.Duration(e.requestTimeout) * time.Second)
 }
 
 // NewDefaultExecutor constructs a DefaultExecutor.

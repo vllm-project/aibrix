@@ -425,12 +425,18 @@ func (r *RoutingContext) DecodeTarget() (addr string, podName string) {
 // SetPDKnobs records the PD routing overrides of this incarnation of the
 // request.
 func (r *RoutingContext) SetPDKnobs(knobs *PDRuntimeKnobs) {
+	if r == nil {
+		return
+	}
 	r.PDLeg().SetPDKnobs(knobs)
 }
 
 // PDKnobs returns the PD routing overrides of this incarnation of the request,
 // or nil when it has none.
 func (r *RoutingContext) PDKnobs() *PDRuntimeKnobs {
+	if r == nil {
+		return nil
+	}
 	return r.PDLeg().PDKnobs()
 }
 

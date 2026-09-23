@@ -40,6 +40,10 @@ func TestPDLegKnobsRoundTrip(t *testing.T) {
 	var leg *PDLegState
 	assert.Nil(t, leg.PDKnobs())
 	leg.SetPDKnobs(knobs) // nil receiver: must not panic
+
+	var nilCtx *RoutingContext
+	assert.Nil(t, nilCtx.PDKnobs())
+	nilCtx.SetPDKnobs(knobs) // nil receiver: must not panic
 }
 
 func TestPDRuntimeKnobsAccessorsFallBack(t *testing.T) {
