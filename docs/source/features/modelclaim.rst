@@ -276,7 +276,9 @@ Declare what a model costs on a card
 Both figures describe a single device rather than the whole model, because a
 card is what an instance has to fit on. Under tensor or pipeline parallelism,
 declare the heaviest device: tensor parallel ranks hold the same slice, while
-pipeline stages do not.
+pipeline stages do not. A Pod with several cards is judged by its smallest
+one, because which card an engine lands on is the device plugin's choice
+rather than placement's.
 
 The control plane does not profile a model to find these numbers. Most of an
 engine's non-KV memory is allocator retention that does not scale with the
@@ -284,8 +286,9 @@ weights, so the artifact size does not predict it. Take
 ``maximumFootprint`` from a run of this model with these engine arguments, and
 ``kvFloor`` from one request of the engine's maximum model length at this
 model's bytes per token, rounded up to the KV allocator's page granularity.
-Both are quantities, so write ``30Gi`` rather than a count of bytes. Declaring more than an instance needs wastes room and is safe;
-declaring less is not.
+Both are quantities, so write ``30Gi`` rather than a count of bytes.
+Declaring more than an instance needs wastes room and is safe; declaring less
+is not.
 
 With both declared, a claim is placed only on a Pod whose card can be shown to
 have room for it, on two counts.
@@ -314,7 +317,8 @@ its instance records in ``status.instances[].kvLimitBytes``.
 
 The limits on one card are worked out together. Each engine keeps what it
 already holds, its declared floor or the KV it has mapped, and the room left
-over is shared out by demand, using the same weight the pool policy below uses.
+over is shared out by demand: each engine's part is weighted by its requests in
+flight, capped at four as the pool policy below caps them.
 Every footprint, every engine's held KV, and every share together come to
 exactly what the card can hold, so an engine growing into its new limit cannot
 grow into another engine's memory.
@@ -325,7 +329,8 @@ are written next, shrinking before growing, and a fresh reading then has to
 agree. That last step is not a formality: the CLI the runtime drives exits zero
 when there is no segment to write into, so reading the limit back is the only
 evidence there is. A model stays non-routable until its own limit is in force,
-and a card that could not be arranged is not used this round.
+and stays routable only while it is held to no more than that limit. A card
+that could not be arranged is skipped, and the next Pod in line is tried.
 
 Watch the arrangement through its Events:
 
@@ -585,9 +590,11 @@ Runtime metrics include:
 * ``aibrix:modelclaim_hbm_peak_bytes{model}``.
 
 HBM attribution is best effort and is used for observation. It is not an
-admission or a ranking signal: admission works from the cost a claim declares
-and the size the runtime measures for a card, and ranking orders the admitted
-Pods by the same account, never by free memory, which moves with traffic.
+admission signal: admission works from the cost a claim declares and the size
+the runtime measures for a card. Ranking puts a Pod that already has the
+artifact first, then orders the admitted Pods by the room their account shows.
+Free memory only breaks a tie between two cards whose account shows the same
+room, because it moves with traffic.
 
 Troubleshooting
 ---------------
@@ -603,10 +610,17 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    names the roomiest Pod that still could not hold the model, which is the
    smallest gap to close, and says which count it failed: a card that could
    never hold the model, or one whose room is held by the engines already on
-   it. A Pod is also turned away when its runtime did not answer, when one of
-   its cards could not be measured, when a claim predating the ``perGPU``
-   requirement still runs on it, or when an engine there belongs to no claim on
-   it.
+   it. It also shows that card's account: how much it holds, and how much of
+   that is promised to, or held by, the instances on it. A Pod is also turned
+   away when its runtime did not answer, when one of its cards could not be
+   measured, when a claim on it declares no usable ``perGPU``, or when an
+   engine there belongs to no claim on it.
+
+Claim remains ``Pending`` with ``InvalidPerGPU``
+   ``perGPU`` is missing, or one of its figures is not positive, and the
+   message names which. The claim is not placed anywhere until it declares
+   its cost, because a card carrying it could not be accounted for. It is
+   placed on the next pass after the claim is fixed.
 
 Claim remains ``Activating``
    Inspect the runtime snapshot and engine logs. Weight download, CUDA graph
@@ -621,12 +635,20 @@ Claim remains ``Activating`` after ``/health`` succeeds
    the engine has not built its KV segment yet, and there is nothing to write
    into.
 
-Claim is refused with ``KVLimitFailed`` during placement
-   The card had room, and the engines on it could not be held to their new
-   shares. The message names the engine: one that did not take its limit has
-   no segment to write into, and one holding more than its new limit grew
-   between the plan and the reading that confirms it. The claim waits and the
-   card is planned again on the next attempt.
+``KVLimitFailed`` Events during placement
+   A card had room, and the engines on it could not be held to their new
+   shares. The Event names the engine: one that did not take its limit has no
+   segment to write into, and one holding more than its new limit grew between
+   the plan and the reading that confirms it. The claim moves on to the next
+   Pod. If none is left it stays ``Pending``, and its ``NoMatchingPods``
+   message names the card that had room and could not be divided.
+
+A routable model becomes non-routable with ``KVLimitNotHeld``
+   Its engine is held to more KV than its limit, most often because it
+   restarted and its allocator put its own default back. It could grow into
+   memory the card holds for its neighbours, so the route is withdrawn while
+   the controller writes the limit again, and returns once the engine reports
+   it.
 
 Activation rejects ``--gpu-memory-utilization``
    Remove the flag. The kvcached framework replaces the engine's fixed

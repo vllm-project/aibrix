@@ -248,8 +248,10 @@ func rankByRoom(states map[string]PodPlacementState, ledgers map[string]podLedge
 
 // selectPodForActivationWithState first prefers a pod that already has the
 // artifact locally, then live GPU/KV observations, and finally the Phase-1
-// locality/load/name rank. Missing runtime state is safe: it simply falls back
-// to the existing deterministic placement behavior.
+// locality/load/name rank. It only ranks. For a claim with a declared cost,
+// admissibleCandidates has already turned away every pod whose card could not
+// be judged or has no room, so a pod here without runtime state is one without
+// a GPU, and it falls back to the deterministic rank.
 func selectPodForActivationWithState(
 	candidates []corev1.Pod,
 	alreadyOn map[string]bool,
