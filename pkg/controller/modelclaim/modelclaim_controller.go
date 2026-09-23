@@ -35,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -643,27 +644,41 @@ func (r *ModelClaimReconciler) arrangeCard(
 //
 // A claim with no instance on this pod is the model being placed: its record
 // is written with the rest of its instance, once the card has been arranged.
+//
+// The claim is read from the API server rather than the cache, and the write
+// is tried again on a conflict. The claim's own reconcile may have written its
+// status moments before, and a copy from a cache that has not caught up would
+// only fail the division on a conflict, leaving the card to the next pass.
 func (r *ModelClaimReconciler) recordKVLimit(
 	ctx context.Context,
 	namespace, claimName, podName string,
 	kvLimitBytes int64,
 ) (*modelv1alpha1.ModelClaim, error) {
-	claim := &modelv1alpha1.ModelClaim{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: claimName}, claim); err != nil {
-		return nil, err
+	reader := client.Reader(r.Client)
+	if r.APIReader != nil {
+		reader = r.APIReader
 	}
-	changed := false
-	for i := range claim.Status.Instances {
-		instance := &claim.Status.Instances[i]
-		if instance.Pod == podName && instance.KVLimitBytes != kvLimitBytes {
-			instance.KVLimitBytes = kvLimitBytes
-			changed = true
+	var claim *modelv1alpha1.ModelClaim
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		fresh := &modelv1alpha1.ModelClaim{}
+		if err := reader.Get(ctx, types.NamespacedName{Namespace: namespace, Name: claimName}, fresh); err != nil {
+			return err
 		}
-	}
-	if !changed {
-		return claim, nil
-	}
-	if err := r.Status().Update(ctx, claim); err != nil {
+		claim = fresh
+		changed := false
+		for i := range fresh.Status.Instances {
+			instance := &fresh.Status.Instances[i]
+			if instance.Pod == podName && instance.KVLimitBytes != kvLimitBytes {
+				instance.KVLimitBytes = kvLimitBytes
+				changed = true
+			}
+		}
+		if !changed {
+			return nil
+		}
+		return r.Status().Update(ctx, fresh)
+	})
+	if err != nil {
 		return nil, err
 	}
 	return claim, nil

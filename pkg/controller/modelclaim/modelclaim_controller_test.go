@@ -38,6 +38,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
@@ -1563,6 +1564,44 @@ func TestReconcileLeavesTheRecordsAloneWhenACardCannotBeDivided(t *testing.T) {
 	require.NoError(t, r.Get(context.Background(),
 		types.NamespacedName{Namespace: testNamespace, Name: "neighbour"}, held))
 	assert.Equal(t, int64(600), held.Status.Instances[0].KVLimitBytes)
+}
+
+func TestRecordKVLimitTriesAgainAfterAConflict(t *testing.T) {
+	pod, _ := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].KVLimitBytes = 600
+	scheme := testScheme(t)
+	// The neighbour's own reconcile wrote its status just before, so the
+	// first write of the new limit loses the race.
+	conflicts, updates := 1, 0
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(neighbour, pod).
+		WithStatusSubresource(&modelv1alpha1.ModelClaim{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, obj client.Object,
+				opts ...client.SubResourceUpdateOption) error {
+				updates++
+				if conflicts > 0 {
+					conflicts--
+					return apierrors.NewConflict(schema.GroupResource{Group: "model.aibrix.ai", Resource: "modelclaims"},
+						obj.GetName(), fmt.Errorf("the object has been modified"))
+				}
+				return cl.SubResource(sub).Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	r := &ModelClaimReconciler{Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(32), Runtime: &fakeRuntime{}}
+
+	claim, err := r.recordKVLimit(context.Background(), testNamespace, "neighbour", pod.Name, 200)
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, updates, "a conflict should be tried again, from a fresh read")
+	assert.Equal(t, int64(200), claim.Status.Instances[0].KVLimitBytes)
+	stored := &modelv1alpha1.ModelClaim{}
+	require.NoError(t, c.Get(context.Background(),
+		types.NamespacedName{Namespace: testNamespace, Name: "neighbour"}, stored))
+	assert.Equal(t, int64(200), stored.Status.Instances[0].KVLimitBytes)
 }
 
 func TestReconcileTriesTheNextPodWhenACardCannotBeDivided(t *testing.T) {
