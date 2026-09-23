@@ -244,6 +244,11 @@ func sampleModelClaim() *modelv1alpha1.ModelClaim {
 			EngineConfig: &modelv1alpha1.ModelClaimEngineConfig{
 				Args: map[string]string{"--max-model-len": "2048"},
 			},
+			// Every claim has to say what it costs to be placed at all.
+			PerGPU: &modelv1alpha1.ModelClaimPerGPU{
+				MaximumFootprint: resource.MustParse("30Gi"),
+				KVFloor:          resource.MustParse("10Gi"),
+			},
 		},
 	}
 }
@@ -1362,15 +1367,48 @@ func TestReconcileWillNotPlaceOnACardItCannotMeasure(t *testing.T) {
 	assert.Contains(t, cond.Message, "could not be judged")
 }
 
-func TestReconcilePlacesAClaimThatDeclaresNoCostAsBefore(t *testing.T) {
+func TestReconcileDoesNotPlaceAClaimThatDeclaresNoCost(t *testing.T) {
 	pm := withFinalizer(sampleModelClaim())
+	pm.Spec.PerGPU = nil
 	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
 	r, runtime := newReconciler(t, pm, pod)
 
 	reconcileOnce(t, r, pm.Name)
+	reconcileOnce(t, r, pm.Name)
 
-	require.Len(t, runtime.activateCalls, 1)
-	assert.Equal(t, "warm-1", getModel(t, r, pm.Name).Status.Instances[0].Pod)
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Empty(t, got.Status.Instances)
+	cond := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, "InvalidPerGPU", cond.Reason)
+	assert.Contains(t, cond.Message, "spec.perGPU is missing")
+
+	// Said once, not again on every pass while nothing changes.
+	said := 0
+	for _, event := range drainEvents(t, r) {
+		if strings.Contains(event, "InvalidPerGPU") {
+			said++
+		}
+	}
+	assert.Equal(t, 1, said)
+}
+
+func TestReconcileDoesNotPlaceAClaimThatDeclaresAZeroFloor(t *testing.T) {
+	pm := claimWithCost(30<<30, 0)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	cond := meta.FindStatusCondition(getModel(t, r, pm.Name).Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, "InvalidPerGPU", cond.Reason)
+	assert.Contains(t, cond.Message, "spec.perGPU.kvFloor is 0, which is not positive")
 }
 
 // readyEngine is what a runtime reports for an engine that is serving, with
@@ -1588,15 +1626,23 @@ func TestReconcileWritesNoLimitIntoAnEngineWithoutASegment(t *testing.T) {
 	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
 }
 
-func TestReconcileRoutesAClaimWithoutADeclaredCostAndSetsNoLimit(t *testing.T) {
+func TestReconcileStillRoutesAnInstanceWhoseClaimDeclaresNoCost(t *testing.T) {
+	// A claim stored before the declaration was required can already have an
+	// engine running. The claim is not placed again, but the engine it has
+	// keeps its route, and there is no limit to hold it to.
 	pm := withFinalizer(sampleModelClaim())
+	pm.Spec.PerGPU = nil
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{
+		{Pod: pod.Name, Phase: modelv1alpha1.ModelClaimActivating},
+	}
 	snapshot.Models = []RuntimeSnapshotModel{readyEngine(5000)}
 	r, runtime := newReconciler(t, pm, pod)
 	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
 
 	reconcileOnce(t, r, pm.Name)
 
+	assert.Empty(t, runtime.activateCalls)
 	assert.Empty(t, runtime.kvLimitCalls)
 	got := getModel(t, r, pm.Name)
 	require.Len(t, got.Status.Instances, 1)

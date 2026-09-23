@@ -139,7 +139,7 @@ func placementStateFromSnapshot(snapshot *RuntimeSnapshot, artifactURL string, p
 			state.MemoryKnown = true
 		}
 	}
-	state.HBMUsableBytes, state.HBMUsableKnown = hbmUsableBytes(snapshot)
+	state.HBMUsableBytes, state.HBMUsableKnown = snapshot.hbmUsableBytes()
 	for _, model := range snapshot.Models {
 		// An engine with no KV allocator to read reports a negative figure. It
 		// has mapped nothing, so it adds nothing here.
@@ -161,12 +161,12 @@ func placementStateFromSnapshot(snapshot *RuntimeSnapshot, artifactURL string, p
 // One card the runtime could not measure leaves the whole pod unsized. Taking
 // the cards it could read and ignoring the rest would describe a pod that does
 // not exist.
-func hbmUsableBytes(snapshot *RuntimeSnapshot) (int64, bool) {
-	if snapshot == nil || len(snapshot.Accelerators) == 0 {
+func (s *RuntimeSnapshot) hbmUsableBytes() (int64, bool) {
+	if s == nil || len(s.Accelerators) == 0 {
 		return 0, false
 	}
 	smallest := int64(0)
-	for i, accelerator := range snapshot.Accelerators {
+	for i, accelerator := range s.Accelerators {
 		if accelerator.HBMUsableBytes <= 0 {
 			return 0, false
 		}

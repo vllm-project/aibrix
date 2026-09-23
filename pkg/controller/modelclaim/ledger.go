@@ -18,6 +18,7 @@ package modelclaim
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -28,47 +29,44 @@ import (
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 )
 
-// minimumReserveBytes is what one instance of a claim takes off a card and does
-// not give back while it is awake: the maximum footprint it declared plus its
-// KV floor. An engine's KV can be squeezed towards that floor but never past
-// it, so this is a lower bound on what the instance occupies rather than an
-// estimate of it. It is zero for a claim that declares nothing.
-func minimumReserveBytes(pm *modelv1alpha1.ModelClaim) int64 {
-	if pm == nil || pm.Spec.PerGPU == nil {
-		return 0
-	}
-	footprint, floor := pm.Spec.PerGPU.MaximumFootprint.Value(), pm.Spec.PerGPU.KVFloor.Value()
-	// A quantity carries no schema minimum, so a figure that is not positive is
-	// caught here instead. It is read as no declaration rather than as a model
-	// that costs nothing, which is what a zero would otherwise say.
-	if footprint <= 0 || floor <= 0 {
-		return 0
-	}
-	return footprint + floor
+// perGPUBytes is a claim's spec.perGPU in bytes: what one instance costs on
+// each GPU it runs on.
+type perGPUBytes struct {
+	maximumFootprintBytes int64
+	kvFloorBytes          int64
 }
 
-// kvFloorBytes is the KV cache a claim declared one instance must keep on a
-// card, and zero for a claim that declares nothing.
-func kvFloorBytes(pm *modelv1alpha1.ModelClaim) int64 {
-	if pm == nil || pm.Spec.PerGPU == nil {
-		return 0
-	}
-	if floor := pm.Spec.PerGPU.KVFloor.Value(); floor > 0 {
-		return floor
-	}
-	return 0
+// minimumReserveBytes is what one instance takes off a card and does not give
+// back while it is awake: its maximum footprint plus its KV floor. An engine's
+// KV can be squeezed towards that floor but never past it, so this is a lower
+// bound on what the instance occupies rather than an estimate of it.
+func (p perGPUBytes) minimumReserveBytes() int64 {
+	return p.maximumFootprintBytes + p.kvFloorBytes
 }
 
-// footprintBytes is the non-KV memory a claim declared one instance holds on a
-// card, and zero for a claim that declares nothing.
-func footprintBytes(pm *modelv1alpha1.ModelClaim) int64 {
+// perGPUBytesOf reads what a claim declared one instance costs on a GPU, and
+// says what is wrong with the declaration when it cannot be used.
+//
+// A quantity carries no schema minimum, so a figure that is not positive is
+// caught here. It is refused rather than read as a model that costs nothing,
+// which is what a zero would otherwise say.
+func perGPUBytesOf(pm *modelv1alpha1.ModelClaim) (perGPUBytes, error) {
 	if pm == nil || pm.Spec.PerGPU == nil {
-		return 0
+		return perGPUBytes{}, errors.New("spec.perGPU is missing")
 	}
-	if footprint := pm.Spec.PerGPU.MaximumFootprint.Value(); footprint > 0 {
-		return footprint
+	declared := pm.Spec.PerGPU
+	if declared.MaximumFootprint.Value() <= 0 {
+		return perGPUBytes{}, fmt.Errorf("spec.perGPU.maximumFootprint is %s, which is not positive",
+			declared.MaximumFootprint.String())
 	}
-	return 0
+	if declared.KVFloor.Value() <= 0 {
+		return perGPUBytes{}, fmt.Errorf("spec.perGPU.kvFloor is %s, which is not positive",
+			declared.KVFloor.String())
+	}
+	return perGPUBytes{
+		maximumFootprintBytes: declared.MaximumFootprint.Value(),
+		kvFloorBytes:          declared.KVFloor.Value(),
+	}, nil
 }
 
 // kvLimitUnknown stands for an engine whose KV segment could not be read, which
@@ -88,10 +86,8 @@ type engineOnPod struct {
 	// snapshotKey identifies the engine in a runtime snapshot, and is empty
 	// while no engine has been seen.
 	snapshotKey string
-	// footprintBytes and kvFloorBytes are the two figures the claim declared
-	// for one card.
-	footprintBytes int64
-	kvFloorBytes   int64
+	// perGPUBytes is what the claim declared one instance costs on a card.
+	perGPUBytes
 	// kvUsedBytes is the KV this engine has mapped: its pages in use and the
 	// ones it holds in reserve. An engine with no KV segment has mapped
 	// nothing, so this is zero rather than unknown.
@@ -186,7 +182,7 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 	ledgers := make(map[string]podLedger, len(candidates))
 	for i := range candidates {
 		pod := &candidates[i]
-		usableBytes, measured := hbmUsableBytes(snapshots[pod.Name])
+		usableBytes, measured := snapshots[pod.Name].hbmUsableBytes()
 		switch {
 		case snapshots[pod.Name] == nil:
 			ledgers[pod.Name] = podLedger{blocked: "its runtime did not answer"}
@@ -226,11 +222,11 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 			if !tracked {
 				continue
 			}
+			perGPU, perGPUErr := perGPUBytesOf(claim)
 			engine := engineOnPod{
 				claimName:       claim.Name,
 				modelName:       served,
-				footprintBytes:  footprintBytes(claim),
-				kvFloorBytes:    kvFloorBytes(claim),
+				perGPUBytes:     perGPU,
 				kvCapacityBytes: kvLimitUnknown,
 			}
 			if model := snapshotModelForClaim(snapshots[instance.Pod], claim, served); model != nil {
@@ -256,12 +252,14 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 			if instance.Phase == modelv1alpha1.ModelClaimFailed && engine.snapshotKey == "" {
 				continue
 			}
-			if claim.Spec.PerGPU == nil {
-				ledger = ledger.withHole(fmt.Sprintf(
-					"%s runs there and declares no per-GPU cost", claim.Name))
+			// A claim whose declaration cannot be used is charged nothing, so its
+			// card cannot be judged either. A zero written by mistake would
+			// otherwise read as an engine that takes up no room.
+			if perGPUErr != nil {
+				ledger = ledger.withHole(fmt.Sprintf("%s runs there, and %v", claim.Name, perGPUErr))
 			}
-			ledger.owedBytes += engine.footprintBytes + engine.kvFloorBytes
-			ledger.heldBytes += engine.footprintBytes + engine.kvHeldBytes()
+			ledger.owedBytes += engine.minimumReserveBytes()
+			ledger.heldBytes += engine.maximumFootprintBytes + engine.kvHeldBytes()
 			ledger.engines = append(ledger.engines, engine)
 			ledgers[instance.Pod] = ledger
 		}

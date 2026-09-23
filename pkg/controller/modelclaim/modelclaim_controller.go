@@ -400,17 +400,26 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 	}
 	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL, parallelism)
 
-	// A claim that declares what it costs is only placed where the card's
-	// account can show the room. One that declares nothing is placed as before.
-	admissible, refusals := candidates, []podRefusal(nil)
-	ledgers := map[string]podLedger(nil)
-	needBytes := minimumReserveBytes(pm)
-	if needBytes > 0 {
-		snapshots := r.freshSnapshots(ctx, candidates)
-		ledgers = r.collectPodLedgers(ctx, pm.Namespace, candidates, snapshots)
-		admissible, refusals = admissibleCandidates(candidates, ledgers, needBytes)
-		rankByRoom(placementStates, ledgers)
+	// A claim is only placed where a card's account shows the room for it, so
+	// a claim that does not say what it costs is not placed anywhere. Placed
+	// without a cost, it would leave its card unaccountable to every claim
+	// after it.
+	perGPU, err := perGPUBytesOf(pm)
+	if err != nil {
+		message := fmt.Sprintf("%s is not placed: %v", servedModelName(pm), err)
+		if meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+			Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
+			Status:  metav1.ConditionFalse,
+			Reason:  "InvalidPerGPU",
+			Message: message,
+		}) {
+			r.Recorder.Event(pm, corev1.EventTypeWarning, "InvalidPerGPU", message)
+		}
+		return nil
 	}
+	ledgers := r.collectPodLedgers(ctx, pm.Namespace, candidates, r.freshSnapshots(ctx, candidates))
+	admissible, refusals := admissibleCandidates(candidates, ledgers, perGPU.minimumReserveBytes())
+	rankByRoom(placementStates, ledgers)
 
 	for desiredReplicas(pm) > int32(len(pm.Status.Instances)) {
 		pod, selectErr := selectPodForActivationWithState(
@@ -424,7 +433,7 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 			// operator sent to look at GPU memory would be looking in the wrong
 			// place.
 			if len(admissible) == 0 && len(refusals) > 0 {
-				message = summarizeRefusals(refusals, needBytes)
+				message = summarizeRefusals(refusals, perGPU.minimumReserveBytes())
 			}
 			r.Recorder.Event(pm, corev1.EventTypeWarning, "NoMatchingPods", message)
 			meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
@@ -440,9 +449,9 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 		// every engine already there to its new share before this engine has a
 		// chance to start. Until that is done and confirmed, the room this
 		// model was admitted against is still the neighbours' to take.
-		kvLimitBytes := kvFloorBytes(pm)
-		if needBytes > 0 && podGPUCount(*pod) > 0 {
-			share, roomErr := r.makeRoomOnPod(ctx, pm, pod, ledgers[pod.Name])
+		kvLimitBytes := perGPU.kvFloorBytes
+		if podGPUCount(*pod) > 0 {
+			share, roomErr := r.makeRoomOnPod(ctx, pm, perGPU, pod, ledgers[pod.Name])
 			if roomErr != nil {
 				message := fmt.Sprintf("%s could not be held to its share of %s: %v",
 					servedModelName(pm), pod.Name, roomErr)
@@ -532,14 +541,14 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 func (r *ModelClaimReconciler) makeRoomOnPod(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
+	perGPU perGPUBytes,
 	pod *corev1.Pod,
 	ledger podLedger,
 ) (int64, error) {
 	newcomer := engineOnPod{
 		claimName:       pm.Name,
 		modelName:       servedModelName(pm),
-		footprintBytes:  footprintBytes(pm),
-		kvFloorBytes:    kvFloorBytes(pm),
+		perGPUBytes:     perGPU,
 		kvCapacityBytes: kvLimitUnknown,
 	}
 	engines := append(append([]engineOnPod(nil), ledger.engines...), newcomer)
