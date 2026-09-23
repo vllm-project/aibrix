@@ -64,7 +64,7 @@ func stormServiceScalingMode(pa *autoscalingv1alpha1.PodAutoscaler, ss *orchestr
 	if pa.Annotations[AutoscalingStormServiceModeAnnotationKey] == "replica" {
 		return orchestrationv1alpha1.StormServiceReplicaMode
 	}
-	return orchestrationv1alpha1.StormServicePooledMode
+	return ss.Spec.ResolvedMode()
 }
 
 // WorkloadScale provides scaling operations for different workload types.

@@ -38,6 +38,7 @@ import (
 func TestStormServiceScalingMode(t *testing.T) {
 	tests := map[string]struct {
 		specMode   orchestrationv1alpha1.StormServiceMode
+		replicas   *int32
 		annotation string
 		want       orchestrationv1alpha1.StormServiceMode
 	}{
@@ -49,6 +50,18 @@ func TestStormServiceScalingMode(t *testing.T) {
 		"no mode and no annotation defaults to pool":     {want: orchestrationv1alpha1.StormServicePooledMode},
 		"no mode with unknown annotation stays pooled":   {annotation: "bogus", want: orchestrationv1alpha1.StormServicePooledMode},
 		"declared pooled mode with no annotation pooled": {specMode: orchestrationv1alpha1.StormServicePooledMode, want: orchestrationv1alpha1.StormServicePooledMode},
+
+		// spec.mode is optional, so an undeclared mode falls back to the same
+		// inference the stormservice controller applies (StormServiceSpec.ResolvedMode):
+		// replicas > 1 can only be replica mode, while replicas <= 1 stays pooled
+		// because a single RoleSet cannot tell the two modes apart.
+		"no mode with replicas above one infers replica mode": {replicas: ptr.To(int32(3)), want: orchestrationv1alpha1.StormServiceReplicaMode},
+		"no mode with single replica stays pooled":            {replicas: ptr.To(int32(1)), want: orchestrationv1alpha1.StormServicePooledMode},
+		"no mode with zero replicas stays pooled":             {replicas: ptr.To(int32(0)), want: orchestrationv1alpha1.StormServicePooledMode},
+		// Inference must not outrank the two explicit signals.
+		"declared pooled mode wins over replicas above one":    {specMode: orchestrationv1alpha1.StormServicePooledMode, replicas: ptr.To(int32(3)), want: orchestrationv1alpha1.StormServicePooledMode},
+		"replica annotation wins over single replica":          {replicas: ptr.To(int32(1)), annotation: "replica", want: orchestrationv1alpha1.StormServiceReplicaMode},
+		"pool annotation does not suppress replicas inference": {replicas: ptr.To(int32(3)), annotation: "pool", want: orchestrationv1alpha1.StormServiceReplicaMode},
 	}
 
 	for name, tc := range tests {
@@ -58,7 +71,7 @@ func TestStormServiceScalingMode(t *testing.T) {
 				pa.Annotations = map[string]string{AutoscalingStormServiceModeAnnotationKey: tc.annotation}
 			}
 			ss := &orchestrationv1alpha1.StormService{
-				Spec: orchestrationv1alpha1.StormServiceSpec{Mode: tc.specMode},
+				Spec: orchestrationv1alpha1.StormServiceSpec{Mode: tc.specMode, Replicas: tc.replicas},
 			}
 			assert.Equal(t, tc.want, stormServiceScalingMode(pa, ss))
 		})
@@ -335,6 +348,114 @@ func TestGetCurrentReplicasReplicaModeNilReplicas(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Equal(t, int32(1), currentReplicas)
+}
+
+// inferredReplicaModeStormService builds a legacy StormService that omits
+// spec.mode and declares replicas > 1: three RoleSets of two decode replicas
+// each. status.roleStatuses carries the aggregate (6) so the assertions can tell
+// which field the autoscaler actually read.
+func inferredReplicaModeStormService() *orchestrationv1alpha1.StormService {
+	return &orchestrationv1alpha1.StormService{
+		ObjectMeta: v1.ObjectMeta{Namespace: "default", Name: "test-storm"},
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Replicas: ptr.To(int32(3)),
+			Template: orchestrationv1alpha1.RoleSetTemplateSpec{
+				Spec: &orchestrationv1alpha1.RoleSetSpec{
+					Roles: []orchestrationv1alpha1.RoleSpec{
+						{Name: "prefill", Replicas: ptr.To(int32(1))},
+						{Name: "decode", Replicas: ptr.To(int32(2))},
+					},
+				},
+			},
+		},
+		Status: orchestrationv1alpha1.StormServiceStatus{
+			RoleStatuses: []orchestrationv1alpha1.RoleStatus{
+				{Name: "prefill", Replicas: 3},
+				{Name: "decode", Replicas: 6},
+			},
+		},
+	}
+}
+
+// inferredReplicaModePodAutoscaler targets a single role and deliberately omits
+// the deprecated storm-service-mode annotation, which is how the samples and the
+// docs tell users to configure role-level autoscaling since the annotation was
+// deprecated in favour of spec.mode.
+func inferredReplicaModePodAutoscaler() *autoscalingv1alpha1.PodAutoscaler {
+	return &autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: v1.ObjectMeta{Namespace: "default", Name: "decode-pa"},
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{
+				APIVersion: "orchestration.aibrix.ai/v1alpha1",
+				Kind:       "StormService",
+				Name:       "test-storm",
+			},
+			SubTargetSelector: &autoscalingv1alpha1.SubTargetSelector{RoleName: "decode"},
+		},
+	}
+}
+
+// TestGetCurrentReplicasInferredReplicaMode covers a StormService that omits
+// spec.mode while declaring replicas > 1. The autoscaler must resolve replica
+// mode and report spec.replicas. Reporting the role status instead returns the
+// count aggregated over every RoleSet, which is a different quantity from the
+// one the autoscaler writes back.
+func TestGetCurrentReplicasInferredReplicaMode(t *testing.T) {
+	scale := &unstructured.Unstructured{}
+	scale.SetAPIVersion("orchestration.aibrix.ai/v1alpha1")
+	scale.SetKind("StormService")
+
+	pa := inferredReplicaModePodAutoscaler()
+	ss := inferredReplicaModeStormService()
+
+	scheme := runtime.NewScheme()
+	_ = autoscalingv1alpha1.AddToScheme(scheme)
+	_ = orchestrationv1alpha1.AddToScheme(scheme)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pa, ss).Build()
+
+	currentReplicas, err := NewWorkloadScale(fakeClient, nil).GetCurrentReplicasFromScale(context.TODO(), pa, scale)
+
+	assert.NoError(t, err)
+	assert.Equal(t, int32(3), currentReplicas, "expected spec.replicas, not the role status aggregated across RoleSets")
+}
+
+// TestSetDesiredReplicasInferredReplicaMode is the write-side counterpart: the
+// autoscaler must scale spec.replicas and leave the role replicas in the
+// template untouched. The template is copied into every RoleSet, so writing the
+// desired count there multiplies it by the number of RoleSets.
+func TestSetDesiredReplicasInferredReplicaMode(t *testing.T) {
+	pa := inferredReplicaModePodAutoscaler()
+	ss := inferredReplicaModeStormService()
+
+	scheme := runtime.NewScheme()
+	_ = autoscalingv1alpha1.AddToScheme(scheme)
+	_ = orchestrationv1alpha1.AddToScheme(scheme)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pa, ss).Build()
+
+	err := NewWorkloadScale(fakeClient, nil).SetDesiredReplicas(context.TODO(), pa, 5)
+	assert.NoError(t, err)
+
+	updated := &orchestrationv1alpha1.StormService{}
+	assert.NoError(t, fakeClient.Get(context.TODO(),
+		client.ObjectKey{Namespace: "default", Name: "test-storm"}, updated))
+
+	assert.NotNil(t, updated.Spec.Replicas)
+	assert.Equal(t, int32(5), *updated.Spec.Replicas, "replica mode scales the StormService through spec.replicas")
+
+	decode := roleByName(t, updated, "decode")
+	assert.NotNil(t, decode.Replicas)
+	assert.Equal(t, int32(2), *decode.Replicas, "role replicas in the template must stay untouched")
+}
+
+func roleByName(t *testing.T, ss *orchestrationv1alpha1.StormService, name string) orchestrationv1alpha1.RoleSpec {
+	t.Helper()
+	for _, role := range ss.Spec.Template.Spec.Roles {
+		if role.Name == name {
+			return role
+		}
+	}
+	t.Fatalf("role %q not found", name)
+	return orchestrationv1alpha1.RoleSpec{}
 }
 
 func TestGetPodSelectorFromScale(t *testing.T) {
