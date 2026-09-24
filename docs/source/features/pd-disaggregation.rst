@@ -314,17 +314,18 @@ Adaptive Bucket Serving
 ``AIBRIX_BUCKET_SERVE=true`` adds an adaptive plan on top of bucketing, which must also be on. Plain
 bucketing keeps every roleset whose declared range covers the request as a candidate and lets the
 scoring decide among them. With adaptive bucket serving, the gateway keeps a per-model picture of
-the prompt lengths it routes and splits a range that several rolesets declare in common into one
-band per roleset, cutting at quantiles of the observed traffic instead of at hand-written
-boundaries.
+the prompt lengths it routes and splits a range that several rolesets still need into one band per
+roleset, sized so each roleset carries the model's traffic in proportion to its prefill replica
+count, and cuts at quantiles of the observed traffic instead of at hand-written boundaries.
 
 ``AIBRIX_BUCKET_SERVE_MODE`` picks what those cut points balance: ``throughput`` (default) places
 them at prompt-token quantiles, so every band carries the same prompt work, while ``rps`` places
 them at request-count quantiles, so every band receives the same number of requests.
 
 The plan is advisory. It narrows the rolesets a request may reach only when the banded roleset
-still has both prefill and decode candidates after the load-imbalance fast paths; otherwise the
-request routes exactly as it would without the plan. With the feature off, routing is unchanged.
+still has both prefill and decode candidates after the load-imbalance fast paths; wherever the plan
+holds no band, or the banded roleset has no candidate left, the request routes exactly as it would
+without the plan. With the feature off, the planner records and publishes nothing.
 
 
 Conductor Scoring Policy

@@ -65,13 +65,10 @@ const (
 	PDTokenLoadKVTokens     = "pd_token_load_kv_tokens"
 
 	// counters and a gauge of the adaptive bucket-serve plan of the pd prefill
-	// routing: the requests and prompt tokens each prompt-length band carried,
-	// the affinity cut points the planner added and removed, and the current
-	// upper bound of every band
+	// routing: the requests and prompt tokens each banded roleset carried, and
+	// the current upper bound of the band it holds
 	PDBucketServeBandTotal         = "pd_bucket_serve_band_total"
 	PDBucketServePromptTokensTotal = "pd_bucket_serve_prompt_tokens_total"
-	PDBucketServeSplitTotal        = "pd_bucket_serve_split_total"
-	PDBucketServeMergeTotal        = "pd_bucket_serve_merge_total"
 	PDBucketServeBandMax           = "pd_bucket_serve_band_max"
 
 	// Duration bucket counters for timing breakdowns
@@ -191,7 +188,7 @@ var (
 			MetricType: MetricType{
 				Raw: Counter,
 			},
-			Description: "Requests the pd router placed in an adaptive bucket-serve band",
+			Description: "Requests the pd router banded to a roleset by the adaptive bucket-serve plan",
 		},
 		PDBucketServePromptTokensTotal: {
 			MetricScope:  PodMetricScope,
@@ -199,23 +196,7 @@ var (
 			MetricType: MetricType{
 				Raw: Counter,
 			},
-			Description: "Prompt tokens the pd router placed in an adaptive bucket-serve band",
-		},
-		PDBucketServeSplitTotal: {
-			MetricScope:  PodMetricScope,
-			MetricSource: PodRawMetrics,
-			MetricType: MetricType{
-				Raw: Counter,
-			},
-			Description: "Affinity cut points the bucket-serve planner added to the pd prefill routing",
-		},
-		PDBucketServeMergeTotal: {
-			MetricScope:  PodMetricScope,
-			MetricSource: PodRawMetrics,
-			MetricType: MetricType{
-				Raw: Counter,
-			},
-			Description: "Affinity cut points the bucket-serve planner removed from the pd prefill routing",
+			Description: "Prompt tokens the pd router banded to a roleset by the adaptive bucket-serve plan",
 		},
 		PDBucketServeBandMax: {
 			MetricScope:  PodMetricScope,
@@ -223,7 +204,7 @@ var (
 			MetricType: MetricType{
 				Raw: Gauge,
 			},
-			Description: "Current upper prompt-length bound of an adaptive bucket-serve band",
+			Description: "Current upper prompt-length bound of the adaptive bucket-serve band of a roleset",
 		},
 		GatewayInFlight: {
 			MetricScope:  PodMetricScope,

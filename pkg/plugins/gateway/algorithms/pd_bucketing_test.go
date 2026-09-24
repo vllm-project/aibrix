@@ -205,17 +205,17 @@ func makePodWithRequestRateMetrics(name, namespace, modelName string, waitingReq
 	}}
 	var drainResult model.Value = vec
 	return &v1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: namespace,
-				Labels:    map[string]string{constants.ModelLabelName: modelName},
-			},
-		}, map[string]metrics.MetricValue{
-			metrics.NumRequestsWaiting:          &metrics.SimpleMetricValue{Value: waitingReqs},
-			metrics.NumPrefillPreallocQueueReqs: &metrics.SimpleMetricValue{Value: 0},
-			metrics.NumDecodePreallocQueueReqs:  &metrics.SimpleMetricValue{Value: 0},
-			metrics.DrainRate1m:                 &metrics.PrometheusMetricValue{Result: &drainResult},
-		}
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    map[string]string{constants.ModelLabelName: modelName},
+		},
+	}, map[string]metrics.MetricValue{
+		metrics.NumRequestsWaiting:          &metrics.SimpleMetricValue{Value: waitingReqs},
+		metrics.NumPrefillPreallocQueueReqs: &metrics.SimpleMetricValue{Value: 0},
+		metrics.NumDecodePreallocQueueReqs:  &metrics.SimpleMetricValue{Value: 0},
+		metrics.DrainRate1m:                 &metrics.PrometheusMetricValue{Result: &drainResult},
+	}
 }
 
 func TestShouldPickCombined_PrefillHighLoadCombinedLow(t *testing.T) {
@@ -510,7 +510,7 @@ func bucketServeRouter() *pdRouter {
 		pendingDecodeTracker:  pd.NewPendingDecodeTracker(),
 		httpClient:            &http.Client{},
 		selectionCounts:       map[string]int64{},
-		bucketServe:           pd.NewBucketServeTracker(pd.DefaultBucketServeConfig()),
+		bucketServe:           pd.NewBucketServeTracker(),
 	}
 }
 
@@ -529,32 +529,47 @@ func bucketServeFleet(maxLength int) []*v1.Pod {
 
 // seedBucketServeCounts records one request per length between the two message
 // lengths, so the planner request-count cut lands halfway between them.
-func seedBucketServeCounts(t *testing.T, r *pdRouter, model string, from, to int) {
+func seedBucketServeCounts(t *testing.T, r *pdRouter, mode pd.BucketMode, model string, from, to int) {
 	t.Helper()
 	now := time.Now()
 	for length := from; length <= to; length++ {
-		r.bucketServe.Observe(model, length, now)
+		r.bucketServe.Band(model, mode, length, now, nil)
 	}
 }
 
-// capturePlanCounters records the pd_bucket_serve_* counter emissions of one
-// test, keyed by metric name.
-func capturePlanCounters(t *testing.T) func() map[string][]map[string]string {
+// planMetrics is the pd_bucket_serve_* emission of one test: every call, in
+// order, keyed by metric name.
+type planMetrics struct {
+	counters map[string][]map[string]string
+	gauges   map[string][]map[string]string
+}
+
+// capturePlanMetrics records the pd_bucket_serve_* counter and gauge emissions
+// of one test.
+func capturePlanMetrics(t *testing.T) func() planMetrics {
 	t.Helper()
-	original := metrics.IncrementCounterMetricFnForTest
-	calls := map[string][]map[string]string{}
-	metrics.IncrementCounterMetricFnForTest = func(name, help string, value float64, labelNames []string, labelValues ...string) {
-		if !strings.HasPrefix(name, "pd_bucket_serve_") {
-			return
+	originalCounter := metrics.IncrementCounterMetricFnForTest
+	originalGauge := metrics.SetGaugeMetricFnForTest
+	calls := planMetrics{counters: map[string][]map[string]string{}, gauges: map[string][]map[string]string{}}
+	record := func(dst map[string][]map[string]string) func(string, string, float64, []string, ...string) {
+		return func(name, _ string, _ float64, labelNames []string, labelValues ...string) {
+			if !strings.HasPrefix(name, "pd_bucket_serve_") {
+				return
+			}
+			labels := make(map[string]string, len(labelNames))
+			for i, labelName := range labelNames {
+				labels[labelName] = labelValues[i]
+			}
+			dst[name] = append(dst[name], labels)
 		}
-		labels := make(map[string]string, len(labelNames))
-		for i, labelName := range labelNames {
-			labels[labelName] = labelValues[i]
-		}
-		calls[name] = append(calls[name], labels)
 	}
-	t.Cleanup(func() { metrics.IncrementCounterMetricFnForTest = original })
-	return func() map[string][]map[string]string { return calls }
+	metrics.IncrementCounterMetricFnForTest = record(calls.counters)
+	metrics.SetGaugeMetricFnForTest = record(calls.gauges)
+	t.Cleanup(func() {
+		metrics.IncrementCounterMetricFnForTest = originalCounter
+		metrics.SetGaugeMetricFnForTest = originalGauge
+	})
+	return func() planMetrics { return calls }
 }
 
 // bucketServeRequestLengths returns one short and one long message, with their
@@ -579,9 +594,9 @@ func TestFilterPrefillDecodePods_BucketServeBandPicksTheRoleset(t *testing.T) {
 
 	r := bucketServeRouter()
 	shortCtx, longCtx, shortLength, longLength := bucketServeRequestLengths(t, "band-model")
-	seedBucketServeCounts(t, r, "band-model", shortLength, longLength)
+	seedBucketServeCounts(t, r, pd.BucketModeRPS, "band-model", shortLength, longLength)
 	pods := bucketServeFleet(2 * longLength)
-	counters := capturePlanCounters(t)
+	metricsSeen := capturePlanMetrics(t)
 
 	// Both rolesets declare the same range, so the plan splits it: the shorter
 	// half is banded to rs-a, the longer half to rs-b. Without the plan both
@@ -596,14 +611,22 @@ func TestFilterPrefillDecodePods_BucketServeBandPicksTheRoleset(t *testing.T) {
 	assert.Equal(t, "prefill-b", p.Name)
 	assert.Equal(t, "decode-b", d.Name)
 
-	// Each request reports the band that carried it, and the first plan
-	// reports the cut points it introduced.
-	var bands []string
-	for _, labels := range counters()[metrics.PDBucketServeBandTotal] {
-		bands = append(bands, labels["band"])
+	// Each request reports the roleset its band picked, so the counters join
+	// the pods that received the band.
+	var banded []string
+	for _, labels := range metricsSeen().counters[metrics.PDBucketServeBandTotal] {
+		banded = append(banded, labels["roleset"])
 	}
-	assert.Equal(t, []string{"0", "1"}, bands)
-	assert.NotEmpty(t, counters()[metrics.PDBucketServeSplitTotal])
+	assert.Equal(t, []string{"rs-a", "rs-b"}, banded)
+	assert.NotEmpty(t, metricsSeen().counters[metrics.PDBucketServePromptTokensTotal],
+		"the banded prompt tokens are counted per roleset")
+
+	// The plan publishes one upper bound per banded roleset.
+	var bounded []string
+	for _, labels := range metricsSeen().gauges[metrics.PDBucketServeBandMax] {
+		bounded = append(bounded, labels["roleset"])
+	}
+	assert.ElementsMatch(t, []string{"rs-a", "rs-b"}, bounded)
 }
 
 func TestFilterPrefillDecodePods_BucketServeBandLosesToLoadImbalance(t *testing.T) {
@@ -612,9 +635,9 @@ func TestFilterPrefillDecodePods_BucketServeBandLosesToLoadImbalance(t *testing.
 
 	r := bucketServeRouter()
 	_, longCtx, shortLength, longLength := bucketServeRequestLengths(t, "band-model")
-	seedBucketServeCounts(t, r, "band-model", shortLength, longLength)
+	seedBucketServeCounts(t, r, pd.BucketModeRPS, "band-model", shortLength, longLength)
 	pods := bucketServeFleet(2 * longLength)
-	counters := capturePlanCounters(t)
+	metricsSeen := capturePlanMetrics(t)
 
 	// The long half is banded to rs-b, but rs-b is the loaded roleset: the
 	// prefill fast path narrows to the idle rs-a first, so the band cannot pull
@@ -627,7 +650,7 @@ func TestFilterPrefillDecodePods_BucketServeBandLosesToLoadImbalance(t *testing.
 	require.NoError(t, err)
 	assert.Equal(t, "prefill-a", p.Name)
 	assert.Equal(t, "decode-a", d.Name)
-	assert.Empty(t, counters()[metrics.PDBucketServeBandTotal])
+	assert.Empty(t, metricsSeen().counters[metrics.PDBucketServeBandTotal])
 }
 
 func TestFilterPrefillDecodePods_BucketServeOffKeepsThePlannerIdle(t *testing.T) {
@@ -636,12 +659,13 @@ func TestFilterPrefillDecodePods_BucketServeOffKeepsThePlannerIdle(t *testing.T)
 
 	r := bucketServeRouter()
 	shortCtx, _, shortLength, longLength := bucketServeRequestLengths(t, "band-model")
-	seedBucketServeCounts(t, r, "band-model", shortLength, longLength)
-	counters := capturePlanCounters(t)
+	seedBucketServeCounts(t, r, pd.BucketModeRPS, "band-model", shortLength, longLength)
+	metricsSeen := capturePlanMetrics(t)
 
 	p, d, err := r.filterPrefillDecodePods(shortCtx, bucketServeFleet(2*longLength))
 	require.NoError(t, err)
 	require.NotNil(t, p)
 	require.NotNil(t, d)
-	assert.Empty(t, counters(), "with the switch off the planner records nothing and publishes nothing")
+	assert.Empty(t, metricsSeen().counters, "with the switch off the planner records nothing")
+	assert.Empty(t, metricsSeen().gauges, "with the switch off the planner publishes nothing")
 }

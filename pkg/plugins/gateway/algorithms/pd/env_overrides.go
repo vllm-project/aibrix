@@ -37,7 +37,7 @@ import (
 func EnvOverrides() types.PDOverrides {
 	tokenLoad := DefaultTokenLoadConfig()
 	hybrid := DefaultHybridCacheLoadConfig()
-	bucketServe := EnvBucketServeConfig()
+	bucketServe, bucketServeMode := EnvBucketServe()
 	return types.PDOverrides{
 		Abort: types.PDAbortOverrides{
 			Timeout:    time.Duration(loadDecodeAbortTimeoutSeconds()) * time.Second,
@@ -55,26 +55,26 @@ func EnvOverrides() types.PDOverrides {
 		},
 		HybridCacheLoadFactor: hybrid.Factor,
 		MinMatchPct:           hybrid.MinMatchPct,
-		BucketServe:           bucketServe.Enabled,
-		BucketServeMode:       string(bucketServe.Mode),
+		BucketServe:           bucketServe,
+		BucketServeMode:       string(bucketServeMode),
 	}
 }
 
-// EnvBucketServeConfig returns the bucket-serve tracker configuration the
-// environment selects: AIBRIX_BUCKET_SERVE turns the adaptive plan on and
-// AIBRIX_BUCKET_SERVE_MODE picks what its cut points balance. The gateway
-// builds its tracker with this configuration, and a config profile may then
-// switch the plan, or select another mode, for the models it routes. An
-// unknown mode name is refused with a warning and the default stays in place,
-// the way the other environment loaders treat a value they would not accept.
-func EnvBucketServeConfig() BucketServeConfig {
-	cfg := DefaultBucketServeConfig()
-	cfg.Enabled = utils.LoadEnvBool("AIBRIX_BUCKET_SERVE", cfg.Enabled)
-	name := utils.LoadEnv("AIBRIX_BUCKET_SERVE_MODE", string(cfg.Mode))
-	if mode, ok := ParseBucketMode(name); ok {
-		cfg.Mode = mode
+// EnvBucketServe returns the bucket-serve knobs the environment selects:
+// AIBRIX_BUCKET_SERVE turns the adaptive plan on and
+// AIBRIX_BUCKET_SERVE_MODE picks what its cut points balance. A config
+// profile may then switch the plan, or select another mode, for the models it
+// routes. An unknown mode name is refused with a warning and the default stays
+// in place, the way the other environment loaders treat a value they would not
+// accept.
+func EnvBucketServe() (bool, BucketMode) {
+	enabled := utils.LoadEnvBool("AIBRIX_BUCKET_SERVE", false)
+	mode := BucketModeThroughput
+	name := utils.LoadEnv("AIBRIX_BUCKET_SERVE_MODE", string(mode))
+	if parsed, ok := ParseBucketMode(name); ok {
+		mode = parsed
 	} else {
-		klog.Warningf("invalid AIBRIX_BUCKET_SERVE_MODE: %s, falling back to default: %s", name, cfg.Mode)
+		klog.Warningf("invalid AIBRIX_BUCKET_SERVE_MODE: %s, falling back to default: %s", name, mode)
 	}
-	return cfg
+	return enabled, mode
 }
