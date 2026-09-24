@@ -99,6 +99,23 @@ func TestPoolingResponseIsForwardedVerbatim(t *testing.T) {
 	assert.NotContains(t, resp, "error", "engine body must survive the response path untouched")
 }
 
+// TestPoolingChatForm covers vLLM's chat pooling form: PoolingChatRequest carries
+// "messages" instead of "input". The gateway routes on "model" either way, and the
+// routing message comes from the messages, like tokenize's chat form.
+func TestPoolingChatForm(t *testing.T) {
+	status, payload := postPooling(t, `{"model": "`+modelName+`", "messages": [{"role": "user", "content": "Say this is a test"}]}`)
+
+	require.Equal(t, http.StatusOK, status, "chat-form pooling should be routed, got: %s", payload)
+
+	var resp struct {
+		Data  []struct{} `json:"data"`
+		Model string     `json:"model"`
+	}
+	require.NoError(t, json.Unmarshal(payload, &resp))
+	assert.NotEmpty(t, resp.Data, "data should not be empty")
+	assert.Equal(t, modelName, resp.Model, "engine should echo the model")
+}
+
 // TestPoolingMissingModel checks the one field the gateway itself requires. It
 // has to reject the body rather than forward it, because the model is what the
 // router selects a pod with.

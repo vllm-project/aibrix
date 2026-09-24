@@ -2344,21 +2344,47 @@ def pooling():
         data = request.json or {}
         model = data.get("model")
         input_data = data.get("input")
+        messages = data.get("messages")
 
         if not model:
             return create_error_response("'model' is a required parameter", param="model")
-        if input_data is None:
-            return create_error_response("'input' is a required parameter", param="input")
+        if input_data is None and messages is None:
+            return create_error_response(
+                "'input' is a required parameter", param="input"
+            )
 
-        # Normalize input to a list for uniform processing, mirroring vLLM:
-        # a bare string is one input, a list is many, and a list of ints is a
-        # single pre-tokenized input.
-        if isinstance(input_data, str) or (
-            isinstance(input_data, list) and input_data and all(isinstance(i, int) for i in input_data)
-        ):
-            inputs = [input_data]
+        # Chat form: vLLM's PoolingChatRequest carries messages instead of input.
+        if input_data is None:
+            def _msg_text(msg):
+                c = msg.get("content", "")
+                if isinstance(c, str):
+                    return c
+                if isinstance(c, list):
+                    return " ".join(
+                        b.get("text", "") for b in c if b.get("type") == "text"
+                    )
+                return ""
+
+            inputs = [" ".join(_msg_text(m) for m in messages)]
         else:
-            inputs = input_data
+            # Reject shapes the loop below cannot handle before normalizing: a dict
+            # would iterate its keys and an int/float/bool would raise TypeError,
+            # both turning a client error into a 500.
+            if not isinstance(input_data, (str, list)):
+                return create_error_response(
+                    "'input' must be a string, an array of strings, or an array of token ids",
+                    param="input",
+                )
+
+            # Normalize input to a list for uniform processing, mirroring vLLM:
+            # a bare string is one input, a list is many, and a list of ints is a
+            # single pre-tokenized input.
+            if isinstance(input_data, str) or (
+                isinstance(input_data, list) and input_data and all(isinstance(i, int) for i in input_data)
+            ):
+                inputs = [input_data]
+            else:
+                inputs = input_data
 
         data_out = []
         total_tokens = 0

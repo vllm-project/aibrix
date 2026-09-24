@@ -395,6 +395,7 @@ curl http://localhost:8000/v1/chat/completions \
 - `/v1/unload_lora_adapter` - Unload a LoRA adapter
 - `/tokenize` - Tokenize text
 - `/detokenize` - Detokenize tokens
+- `/pooling` - Pooling models (embed/classify/score; string, array, or pre-tokenized input)
 - `/load` - Server load metrics
 - `/version` - Version info
 - `/metrics` - Prometheus metrics

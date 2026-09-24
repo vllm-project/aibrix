@@ -244,6 +244,22 @@ func Test_ValidateRequestBody(t *testing.T) {
 			statusCode:  envoyTypePb.StatusCode_OK,
 		},
 		{
+			message:     "/pooling messages form (chat pooling) routes on the messages",
+			requestPath: "/pooling",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "user", "content": "say this is test"}]}`),
+			model:       "llama2-7b",
+			messages:    "say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/pooling input takes precedence over messages, like vLLM's union order",
+			requestPath: "/pooling",
+			requestBody: []byte(`{"model": "llama2-7b", "input": "say this is test", "messages": [{"role": "user", "content": "ignored"}]}`),
+			model:       "llama2-7b",
+			messages:    "say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
 			message:     "/pooling stream false is accepted",
 			requestPath: "/pooling",
 			requestBody: []byte(`{"model": "llama2-7b", "input": "say this is test", "stream": false}`),

@@ -84,24 +84,16 @@ type contentItem struct {
 	Content json.RawMessage `json:"content"`
 }
 
-// tokenizeReqMinimal captures the fields needed to route a vLLM /tokenize request: the
-// completion form carries "prompt", the chat form "messages". Prompt stays raw JSON so a
-// wrongly-typed prompt reaches the engine's validator instead of failing this unmarshal.
-type tokenizeReqMinimal struct {
+// engineNativeReqMinimal captures the fields needed to route a vLLM engine-native
+// request (/tokenize, /pooling): the completion form carries "prompt" or "input",
+// the chat form "messages". Prompt and input stay raw JSON so a wrongly-typed value
+// reaches the engine's validator instead of failing this unmarshal.
+type engineNativeReqMinimal struct {
 	Model    string          `json:"model"`
 	Prompt   json.RawMessage `json:"prompt"`
+	Input    json.RawMessage `json:"input"`
 	Messages []contentItem   `json:"messages"`
-}
-
-// poolingReqMinimal captures the fields needed to route a vLLM /pooling request. Input
-// stays raw JSON because vLLM accepts a string, an array of strings, or a pre-tokenized
-// array of token ids; a wrongly-typed input must reach the engine's validator, which names
-// the offending field, instead of collapsing into a generic gateway 400. Stream is raw for
-// the same strict stream=false check as embeddings: pooling never streams.
-type poolingReqMinimal struct {
-	Model  string          `json:"model"`
-	Input  json.RawMessage `json:"input"`
-	Stream json.RawMessage `json:"stream"`
+	Stream   json.RawMessage `json:"stream"`
 }
 
 // embeddingReqMinimal captures the embedding fields needed for validation in a
@@ -509,38 +501,32 @@ func validateRerankRequest(requestID string, requestBody []byte) (model, message
 // and the rest of the schema is left to the engine. Nothing is metered: no tokens are generated.
 // nolint:nakedret
 func validateTokenizeRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
-	var req tokenizeReqMinimal
-	if err := sonic.Unmarshal(requestBody, &req); err != nil {
-		klog.ErrorS(err, "error to unmarshal tokenize object", "requestID", requestID, "requestBody", string(requestBody))
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
-		return
-	}
-
-	if req.Model == "" {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
-		return
-	}
-	model = req.Model
-
-	// Best-effort: a body with neither field still reaches the engine, which owns the error.
-	// parseChatMessages already unquotes JSON strings, so prompt goes through as one item.
-	switch {
-	case len(req.Prompt) > 0 && string(req.Prompt) != jsonNull:
-		message, errRes = parseChatMessages(requestID, []contentItem{{Content: req.Prompt}})
-	case len(req.Messages) > 0:
-		message, errRes = parseChatMessages(requestID, req.Messages)
-	}
-	return
+	return validateEngineNativeRequest(requestID, "tokenize", false, requestBody)
 }
 
 // validatePoolingRequest parses and validates a vLLM /pooling request body. Only "model"
 // is required - the one field the gateway routes on - and the rest of the schema is left
-// to the engine.
+// to the engine. Stream is rejected when present and true, as for embeddings: pooling
+// never streams, and a stream=true body would otherwise be forwarded just to fail in the
+// engine with a less specific error.
 // nolint:nakedret
 func validatePoolingRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
-	var req poolingReqMinimal
+	return validateEngineNativeRequest(requestID, "pooling", true, requestBody)
+}
+
+// validateEngineNativeRequest is the shared validator for vLLM engine-native paths
+// (/tokenize, /pooling), whose request bodies are a union of a completion form
+// ("prompt" for tokenize, "input" for pooling) and a chat form ("messages").
+// Only "model" is required - the one field the gateway routes on; a body without
+// any input field still reaches the engine, which owns that error. The routing
+// message is best-effort: parseChatMessages unquotes a JSON string and writes any
+// other JSON value (array, token ids) as raw bytes, so the whole input value becomes
+// one content item rather than being expanded into several.
+// nolint:nakedret
+func validateEngineNativeRequest(requestID, endpoint string, rejectStream bool, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	var req engineNativeReqMinimal
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
-		klog.ErrorS(err, "error to unmarshal pooling object", "requestID", requestID, "requestBody", string(requestBody))
+		klog.ErrorS(err, "error to unmarshal "+endpoint+" object", "requestID", requestID, "requestBody", string(requestBody))
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -551,17 +537,23 @@ func validatePoolingRequest(requestID string, requestBody []byte) (model, messag
 	}
 	model = req.Model
 
-	// Best-effort routing key: a body without input still reaches the engine, which
-	// owns the error. parseChatMessages already unquotes JSON strings, so a string
-	// input goes through as one item and an array as several.
-	if len(req.Input) > 0 && string(req.Input) != jsonNull {
+	// Best-effort routing key, in vLLM's own precedence order: the completion
+	// form's raw field (prompt/input) first, then the chat form's messages.
+	switch {
+	case len(req.Prompt) > 0 && string(req.Prompt) != jsonNull:
+		message, errRes = parseChatMessages(requestID, []contentItem{{Content: req.Prompt}})
+	case len(req.Input) > 0 && string(req.Input) != jsonNull:
 		message, errRes = parseChatMessages(requestID, []contentItem{{Content: req.Input}})
-		if errRes != nil {
-			return
-		}
+	case len(req.Messages) > 0:
+		message, errRes = parseChatMessages(requestID, req.Messages)
+	}
+	if errRes != nil {
+		return
 	}
 
-	if len(req.Stream) > 0 {
+	// Non-streaming engine paths reject stream at the edge, like embeddings;
+	// tokenize has no stream field, and a stray one is left to the engine.
+	if rejectStream && len(req.Stream) > 0 {
 		var streamBool bool
 		if err := sonic.Unmarshal(req.Stream, &streamBool); err != nil || streamBool {
 			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for pooling", "", "stream", HeaderErrorRequestBodyProcessing, "true")
