@@ -23,8 +23,13 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 )
@@ -34,9 +39,9 @@ func TestPlacementBackoffWaitsLongerAfterEachRefusal(t *testing.T) {
 	backoff := newPlacementBackoff(func() time.Time { return now })
 	claim := types.NamespacedName{Namespace: testNamespace, Name: "qwen"}
 
-	assert.Equal(t, DefaultRequeueDuration, backoff.refused(claim))
-	assert.Equal(t, 2*DefaultRequeueDuration, backoff.refused(claim))
-	assert.Equal(t, 4*DefaultRequeueDuration, backoff.refused(claim))
+	assert.Equal(t, DefaultRequeueDuration, backoff.refused(claim, 1, nil))
+	assert.Equal(t, 2*DefaultRequeueDuration, backoff.refused(claim, 1, nil))
+	assert.Equal(t, 4*DefaultRequeueDuration, backoff.refused(claim, 1, nil))
 }
 
 func TestPlacementBackoffStopsDoublingAtItsCeiling(t *testing.T) {
@@ -46,7 +51,7 @@ func TestPlacementBackoffStopsDoublingAtItsCeiling(t *testing.T) {
 
 	wait := time.Duration(0)
 	for i := 0; i < 40; i++ {
-		wait = backoff.refused(claim)
+		wait = backoff.refused(claim, 1, nil)
 	}
 
 	assert.Equal(t, maximumPlacementBackoff, wait)
@@ -57,17 +62,17 @@ func TestPlacementBackoffHoldsAClaimUntilItsTurn(t *testing.T) {
 	backoff := newPlacementBackoff(func() time.Time { return now })
 	claim := types.NamespacedName{Namespace: testNamespace, Name: "qwen"}
 
-	due, left := backoff.due(claim)
+	due, left := backoff.due(claim, 1, nil)
 	assert.True(t, due)
 	assert.Zero(t, left)
 
-	backoff.refused(claim)
-	due, left = backoff.due(claim)
+	backoff.refused(claim, 1, nil)
+	due, left = backoff.due(claim, 1, nil)
 	assert.False(t, due)
 	assert.Equal(t, DefaultRequeueDuration, left)
 
 	now = now.Add(DefaultRequeueDuration)
-	due, _ = backoff.due(claim)
+	due, _ = backoff.due(claim, 1, nil)
 	assert.True(t, due)
 }
 
@@ -76,13 +81,13 @@ func TestPlacementBackoffStartsOverOnceAClaimIsPlaced(t *testing.T) {
 	backoff := newPlacementBackoff(func() time.Time { return now })
 	claim := types.NamespacedName{Namespace: testNamespace, Name: "qwen"}
 
-	backoff.refused(claim)
-	backoff.refused(claim)
+	backoff.refused(claim, 1, nil)
+	backoff.refused(claim, 1, nil)
 	backoff.placed(claim)
 
-	due, _ := backoff.due(claim)
+	due, _ := backoff.due(claim, 1, nil)
 	assert.True(t, due)
-	assert.Equal(t, DefaultRequeueDuration, backoff.refused(claim))
+	assert.Equal(t, DefaultRequeueDuration, backoff.refused(claim, 1, nil))
 }
 
 // reconcileFor reconciles a claim once and returns how soon it asked to be
@@ -181,4 +186,164 @@ func TestReconcileChecksAPartlyPlacedClaimEveryRound(t *testing.T) {
 	// every round, so the claim does not sleep through the wait.
 	now = now.Add(DefaultRequeueDuration / 2)
 	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name))
+}
+
+func TestPlacementBackoffStartsOverWhenRoomMayHaveAppeared(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	claim := types.NamespacedName{Namespace: testNamespace, Name: "qwen"}
+	// Three instances, one of whose claim declares nothing.
+	before := roomSignature{"warm-1/u1": {instances: 3, undeclared: 1, promisedBytes: 800}}
+	cases := []struct {
+		name       string
+		generation int64
+		room       roomSignature
+		due        bool
+	}{
+		{"the pool as it was", 1, before, false},
+		{"more promised on a card", 1, roomSignature{"warm-1/u1": {instances: 3, undeclared: 1, promisedBytes: 900}}, false},
+		{"a pod gone", 1, roomSignature{}, false},
+		{"an instance gone", 1, roomSignature{"warm-1/u1": {instances: 2, undeclared: 1, promisedBytes: 400}}, true},
+		{"less promised on a card", 1, roomSignature{"warm-1/u1": {instances: 3, undeclared: 1, promisedBytes: 700}}, true},
+		{"a hole closed", 1, roomSignature{"warm-1/u1": {instances: 3, promisedBytes: 1200}}, true},
+		{"a pod joined", 1, roomSignature{"warm-1/u1": {instances: 3, undeclared: 1, promisedBytes: 800}, "warm-2/u2": {}}, true},
+		{"the claim's own spec changed", 2, before, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			backoff := newPlacementBackoff(func() time.Time { return now })
+			backoff.refused(claim, 1, before)
+			backoff.refused(claim, 1, before)
+
+			due, _ := backoff.due(claim, c.generation, c.room)
+
+			assert.Equal(t, c.due, due)
+			if c.due {
+				assert.Equal(t, DefaultRequeueDuration, backoff.refused(claim, c.generation, c.room),
+					"a claim woken by possible room starts over from the shortest wait")
+			}
+		})
+	}
+}
+
+func TestRoomSignatureCountsWhatEachCandidateCarries(t *testing.T) {
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.UID = "uid-1"
+	empty := warmPod("warm-2", "b300-pool-a", true, corev1.PodRunning)
+	empty.UID = "uid-2"
+	declared := claimOnPod("declared", "warm-1", modelv1alpha1.ModelClaimActive, 300, 100)
+	failed := claimOnPod("failed", "warm-1", modelv1alpha1.ModelClaimFailed, 300, 100)
+	legacy := claimOnPod("legacy", "warm-1", modelv1alpha1.ModelClaimActive, 300, 100)
+	legacy.Spec.PerGPU = nil
+	elsewhere := claimOnPod("elsewhere", "warm-9", modelv1alpha1.ModelClaimActive, 300, 100)
+	claims := &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*declared, *failed, *legacy, *elsewhere}}
+
+	room := roomSignatureOf([]corev1.Pod{*pod, *empty}, claims)
+
+	assert.Equal(t, roomSignature{
+		"warm-1/uid-1": {instances: 2, undeclared: 1, promisedBytes: 400},
+		"warm-2/uid-2": {},
+	}, room)
+	assert.Nil(t, roomSignatureOf([]corev1.Pod{*pod}, nil), "with no listing there is nothing to compare")
+}
+
+func TestFreesRoomPassesTheChangesThatCanFreeACard(t *testing.T) {
+	base := claimOnPod("neighbour", "warm-1", modelv1alpha1.ModelClaimActive, 300, 100)
+	cases := []struct {
+		name   string
+		change func(*modelv1alpha1.ModelClaim)
+		frees  bool
+	}{
+		{"an instance removed", func(c *modelv1alpha1.ModelClaim) { c.Status.Instances = nil }, true},
+		{"an instance failed", func(c *modelv1alpha1.ModelClaim) {
+			c.Status.Instances[0].Phase = modelv1alpha1.ModelClaimFailed
+		}, true},
+		{"a smaller declaration", func(c *modelv1alpha1.ModelClaim) {
+			c.Spec.PerGPU.KVFloor = *resource.NewQuantity(50, resource.BinarySI)
+		}, true},
+		{"a larger declaration", func(c *modelv1alpha1.ModelClaim) {
+			c.Spec.PerGPU.KVFloor = *resource.NewQuantity(500, resource.BinarySI)
+		}, false},
+		{"an instance added", func(c *modelv1alpha1.ModelClaim) {
+			c.Status.Instances = append(c.Status.Instances, modelv1alpha1.ModelClaimInstance{Pod: "warm-2"})
+		}, false},
+		{"a condition written", func(c *modelv1alpha1.ModelClaim) {
+			c.Status.Conditions = append(c.Status.Conditions, metav1.Condition{Type: "Ready"})
+		}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			after := base.DeepCopy()
+			c.change(after)
+			assert.Equal(t, c.frees, freesRoom(base, after))
+		})
+	}
+
+	undeclared := base.DeepCopy()
+	undeclared.Spec.PerGPU = nil
+	assert.True(t, freesRoom(undeclared, base), "a claim that comes to declare its cost closes a hole")
+	assert.False(t, freesRoom(base, undeclared), "a claim that stops declaring opens one")
+
+	watched := roomMayHaveFreed()
+	assert.True(t, watched.Delete(event.DeleteEvent{Object: base}), "a deleted claim frees its cards")
+	assert.False(t, watched.Create(event.CreateEvent{Object: base}))
+}
+
+func TestEnqueueWaitingClaimsWakesOnlyTheClaimsThatWait(t *testing.T) {
+	leaving := claimOnPod("leaving", "warm-1", modelv1alpha1.ModelClaimActive, 300, 100)
+	waiting := claimWithCost(300, 100)
+	placed := claimOnPod("placed", "warm-2", modelv1alpha1.ModelClaimActive, 300, 100)
+	r, _ := newReconciler(t, leaving, waiting, placed)
+
+	requests := enqueueWaitingClaims(r.Client)(context.Background(), leaving)
+
+	assert.Equal(t, []reconcile.Request{{NamespacedName: types.NamespacedName{
+		Namespace: testNamespace, Name: waiting.Name,
+	}}}, requests)
+}
+
+func TestReconcileTriesAWaitingClaimAgainWhenANeighbourLeaves(t *testing.T) {
+	r, runtime, pm, _ := aClaimWaitingForRoom(t)
+	reconcileOnce(t, r, pm.Name)
+	require.Empty(t, runtime.activateCalls)
+
+	// The neighbour goes, and so does its engine. The clock has not moved, so
+	// only the room it freed can explain another try.
+	require.NoError(t, r.Delete(context.Background(), getModel(t, r, "neighbour")))
+	runtime.snapshots["10.0.0.1"].Models = nil
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1, "the room the neighbour freed is tried at once")
+}
+
+func TestReconcileTriesAWaitingClaimAgainWhenItsOwnSpecChanges(t *testing.T) {
+	r, runtime, pm, _ := aClaimWaitingForRoom(t)
+	reconcileOnce(t, r, pm.Name)
+	require.Empty(t, runtime.activateCalls)
+
+	// The claim now declares a smaller footprint, and fits beside its
+	// neighbour. The fake client does not count generations, so the test does.
+	claim := getModel(t, r, pm.Name)
+	claim.Spec.PerGPU.MaximumFootprint = *resource.NewQuantity(300, resource.BinarySI)
+	claim.Generation++
+	require.NoError(t, r.Update(context.Background(), claim))
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+}
+
+func TestReconcileKeepsAClaimWaitingWhenOnlyMoreIsPromised(t *testing.T) {
+	r, _, pm, _ := aClaimWaitingForRoom(t)
+	claim := types.NamespacedName{Namespace: testNamespace, Name: pm.Name}
+	reconcileOnce(t, r, pm.Name)
+	require.Equal(t, 1, r.Backoff.attempts[claim].refusals)
+
+	// Another model is recorded on the card, which only takes room away.
+	other := claimOnPod("other", "warm-1", modelv1alpha1.ModelClaimActivating, 100, 100)
+	recorded := other.Status
+	require.NoError(t, r.Create(context.Background(), other))
+	other.Status = recorded
+	require.NoError(t, r.Status().Update(context.Background(), other))
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Equal(t, 1, r.Backoff.attempts[claim].refusals, "the claim was not tried again early")
 }
