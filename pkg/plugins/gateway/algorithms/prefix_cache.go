@@ -17,6 +17,7 @@ limitations under the License.
 package routingalgorithms
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -410,7 +411,7 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 
 	// Use helper method to get the appropriate tokenizer
 	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
-	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.PrefixText())
 	if err != nil {
 		recordRoutingError(ctx.Model, "tokenize_failed", false)
 		return "", err
@@ -489,7 +490,7 @@ func (p prefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodLi
 	}
 
 	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
-	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.PrefixText())
 	if err != nil {
 		return err
 	}
@@ -523,7 +524,7 @@ func (k *kvSyncPrefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, rea
 	if tokenizerToUse == nil {
 		return fmt.Errorf("TokenizerPool not initialized for KV sync router")
 	}
-	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.PrefixText())
 	if err != nil {
 		return err
 	}
@@ -555,7 +556,7 @@ func (p prefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList type
 	}
 
 	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
-	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.PrefixText())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -599,7 +600,7 @@ func (k *kvSyncPrefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodLi
 		return nil, nil, fmt.Errorf("TokenizerPool not initialized for KV sync router")
 	}
 
-	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.PrefixText())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -638,8 +639,9 @@ func (p *prefixCacheRouter) Cleanup() error {
 }
 
 // buildTokenizeInputFromChatRequest converts ChatCompletionRequest to TokenizeInput
-// preserving multimodal content and vLLM-specific parameters
-func buildTokenizeInputFromChatRequest(chatReq *types.ChatCompletionRequest) (*tokenizer.TokenizeInput, error) {
+// preserving multimodal content and vLLM-specific parameters. tools is the raw "tools"
+// array of the request, forwarded so the chat template renders the tool definitions.
+func buildTokenizeInputFromChatRequest(chatReq *types.ChatCompletionRequest, tools json.RawMessage) (*tokenizer.TokenizeInput, error) {
 	if len(chatReq.Messages) == 0 {
 		return nil, fmt.Errorf("no messages in chat completion request")
 	}
@@ -691,7 +693,28 @@ func buildTokenizeInputFromChatRequest(chatReq *types.ChatCompletionRequest) (*t
 		AddSpecialTokens:    addSpecialTokens,
 		AddGenerationPrompt: addGenerationPrompt,
 		ReturnTokenStrings:  returnTokenStrings,
+		Tools:               tools,
 	}, nil
+}
+
+// rawChatTools returns the "tools" array of a chat request body exactly as sent, or nil
+// when the field is absent, null or not an array. The raw bytes are forwarded instead of
+// re-encoding the parsed request, which would drop fields the OpenAI types do not model.
+func rawChatTools(body []byte) json.RawMessage {
+	if !bytes.Contains(body, []byte(`"tools"`)) {
+		return nil
+	}
+	var req struct {
+		Tools json.RawMessage `json:"tools"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil
+	}
+	tools := bytes.TrimSpace(req.Tools)
+	if len(tools) == 0 || tools[0] != '[' {
+		return nil
+	}
+	return tools
 }
 
 // tokenizeChatRequest attempts to tokenize a chat completion request using chat template.
@@ -722,7 +745,7 @@ func (k *kvSyncPrefixCacheRouter) tokenizeChatRequest(ctx *types.RoutingContext,
 	}
 
 	// Build TokenizeInput from request
-	input, err := buildTokenizeInputFromChatRequest(&chatReq)
+	input, err := buildTokenizeInputFromChatRequest(&chatReq, rawChatTools(ctx.ReqBody))
 	if err != nil {
 		klog.V(4).InfoS("failed to build tokenize input, falling back to text",
 			"request_id", ctx.RequestID,
@@ -744,6 +767,7 @@ func (k *kvSyncPrefixCacheRouter) tokenizeChatRequest(ctx *types.RoutingContext,
 	klog.V(4).InfoS("tokenized using chat template",
 		"request_id", ctx.RequestID,
 		"message_count", len(input.Messages),
+		"tools_included", len(input.Tools) > 0,
 		"token_count", len(result.Tokens),
 		"add_generation_prompt", input.AddGenerationPrompt,
 		"add_special_tokens", input.AddSpecialTokens)
@@ -788,7 +812,7 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	// Fallback to text tokenization if chat tokenization wasn't used or failed
 	if tokens == nil {
 		var err error
-		tokens, err = tokenizerToUse.TokenizeInputText(ctx.Message)
+		tokens, err = tokenizerToUse.TokenizeInputText(ctx.PrefixText())
 		if err != nil {
 			recordRoutingError(modelName, "tokenize_failed", true)
 			return "", err

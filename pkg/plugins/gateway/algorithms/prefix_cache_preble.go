@@ -487,7 +487,7 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 		klog.InfoS("Request processing", "requestID", ctx.RequestID, "updatePodSet", p.numPods)
 	}
 
-	tokens, err := utils.TokenizeInputText(ctx.Message)
+	tokens, err := utils.TokenizeInputText(ctx.PrefixText())
 	if err != nil {
 		klog.Errorf("requestID: %s, Tokenization failed: %v", ctx.RequestID, err)
 		return "", err
@@ -602,7 +602,7 @@ func (p *prefixCacheAndLoadRouter) PostRouteUpdate(ctx *types.RoutingContext, re
 		p.podsMu.Unlock()
 	}
 
-	tokens, err := utils.TokenizeInputText(ctx.Message)
+	tokens, err := utils.TokenizeInputText(ctx.PrefixText())
 	if err != nil {
 		return err
 	}
@@ -639,7 +639,7 @@ func (p *prefixCacheAndLoadRouter) ScoreAll(ctx *types.RoutingContext, readyPodL
 		p.podsMu.Unlock()
 	}
 
-	tokens, err := utils.TokenizeInputText(ctx.Message)
+	tokens, err := utils.TokenizeInputText(ctx.PrefixText())
 	if err != nil {
 		return nil, nil, err
 	}

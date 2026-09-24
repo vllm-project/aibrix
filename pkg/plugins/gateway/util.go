@@ -65,6 +65,9 @@ type chatReqMinimal struct {
 		IncludeUsage bool `json:"include_usage"`
 	} `json:"stream_options"`
 	Messages []contentItem `json:"messages"`
+	// Tools is kept raw; it is only canonicalized into the prefix-match text
+	// (see prefixMatchText) and never validated here.
+	Tools json.RawMessage `json:"tools"`
 }
 
 // responsesReqMinimal captures the fields needed to route and validate an OpenAI
@@ -170,12 +173,15 @@ func parseResponsesInput(requestID string, input json.RawMessage) (string, *extP
 
 // validateRequestBody validates input by unmarshaling request body into respective openai-golang struct based on requestpath.
 // The per-path parsing is delegated to dedicated validate* helpers to keep this dispatcher simple.
+//
+// prefixText is the text prefix-matching policies should hash when it differs from
+// message (see RoutingContext.PrefixMatchText); it is empty otherwise.
 // nolint:nakedret
-func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
+func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message, prefixText string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	path := pathWithoutQuery(requestPath)
 	switch path {
 	case PathChatCompletions, PathMessages:
-		model, message, stream, errRes = validateChatRequest(requestID, path, requestBody, user)
+		model, message, prefixText, stream, errRes = validateChatRequest(requestID, path, requestBody, user)
 	case PathResponses:
 		model, message, stream, errRes = validateResponsesRequest(requestID, requestBody)
 	case PathCompletions:
@@ -207,7 +213,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 
 // validateChatRequest parses and validates a chat completions (or Anthropic-style messages) request body.
 // nolint:nakedret
-func validateChatRequest(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
+func validateChatRequest(requestID, requestPath string, requestBody []byte, user utils.User) (model, message, prefixText string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	// Single-pass minimal unmarshal: avoids the openai SDK's reflection-heavy
 	// apijson decoder and gjson parsing, and eliminates the previous redundant
 	// map[string]json.RawMessage unmarshal used only for stream-field detection.
@@ -221,6 +227,7 @@ func validateChatRequest(requestID, requestPath string, requestBody []byte, user
 	if message, errRes = parseChatMessages(requestID, req.Messages); errRes != nil {
 		return
 	}
+	prefixText = prefixMatchText(requestID, req.Tools, message)
 	if req.Stream != nil {
 		stream = *req.Stream
 		// stream_options.include_usage is an OpenAI-specific field; Anthropic-style
