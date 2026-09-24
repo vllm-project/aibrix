@@ -294,20 +294,41 @@ models:
 	assert.Equal(t, "decode-0", pods[2].Status.PodIP)
 }
 
-func TestStaticProviderPrefillWorkersOnly(t *testing.T) {
-	config := `
+func TestStaticProviderShorthandRequiresBothSides(t *testing.T) {
+	tests := []struct {
+		name   string
+		config string
+	}{
+		{
+			name: "prefill workers only",
+			config: `
 models:
   - name: "test-model"
     prefill_workers:
       - "prefill-0:8000"
-`
-	path := writeTestConfig(t, config)
-	p := NewStaticProvider(path)
-	pods, err := watchCollect(t, p)
-	require.NoError(t, err)
-	require.Len(t, pods, 1)
-	assert.Equal(t, "prefill", pods[0].Labels["role-name"])
-	assert.Equal(t, "default", pods[0].Labels["roleset-name"])
+`,
+		},
+		{
+			name: "decode workers only",
+			config: `
+models:
+  - name: "test-model"
+    decode_workers:
+      - "decode-0:8000"
+`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTestConfig(t, tt.config)
+			p := NewStaticProvider(path)
+			stopCh := make(chan struct{})
+			defer close(stopCh)
+			err := p.Watch(func(_ WatchEvent) {}, stopCh)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "prefill_workers and decode_workers must both")
+		})
+	}
 }
 
 func TestStaticProviderAliasConflicts(t *testing.T) {
@@ -354,6 +375,20 @@ models:
 `,
 			wantErr: "mutually exclusive",
 		},
+		{
+			name: "workers with rolesets",
+			config: `
+models:
+  - name: "test-model"
+    workers:
+      - "vllm-0:8000"
+    rolesets:
+      - name: default
+        prefill:
+          - "prefill-0:8000"
+`,
+			wantErr: "mutually exclusive",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -364,6 +399,7 @@ models:
 			err := p.Watch(func(_ WatchEvent) {}, stopCh)
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Contains(t, err.Error(), "test-model")
 		})
 	}
 }
@@ -382,7 +418,7 @@ models:
     workers:
       - "vllm-0:8000"
 `,
-			wantErr: "model name is required",
+			wantErr: "name is required",
 		},
 		{
 			name: "model has no backends",
@@ -390,6 +426,16 @@ models:
 models:
   - name: "test-model"
     engine: vllm
+`,
+			wantErr: "at least one of",
+		},
+		{
+			name: "roleset has no addresses",
+			config: `
+models:
+  - name: "test-model"
+    rolesets:
+      - name: default
 `,
 			wantErr: "at least one of",
 		},
@@ -405,4 +451,29 @@ models:
 			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
+}
+
+func TestStaticProviderMixedSpellings(t *testing.T) {
+	config := `
+models:
+  - name: "model-a"
+    workers:
+      - "a-0:8000"
+  - name: "model-b"
+    prefill_workers:
+      - "b-prefill-0:8000"
+    decode_workers:
+      - "b-decode-0:8000"
+`
+	path := writeTestConfig(t, config)
+	p := NewStaticProvider(path)
+	pods, err := watchCollect(t, p)
+	require.NoError(t, err)
+	require.Len(t, pods, 3)
+	assert.Equal(t, "model-a", pods[0].Labels[constants.ModelLabelName])
+	assert.Empty(t, pods[0].Labels["roleset-name"])
+	assert.Equal(t, "model-b", pods[1].Labels[constants.ModelLabelName])
+	assert.Equal(t, "default", pods[1].Labels["roleset-name"])
+	assert.Equal(t, "model-b", pods[2].Labels[constants.ModelLabelName])
+	assert.Equal(t, "default", pods[2].Labels["roleset-name"])
 }

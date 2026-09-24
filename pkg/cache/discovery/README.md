@@ -71,7 +71,7 @@ models:
           - "decode-0:8000"
 ```
 
-The older `endpoints` and `rolesets` spellings keep working: `workers` is an alias of `endpoints`. Per model, the non-disaggregated form (`endpoints`/`workers`) and the disaggregated form (`rolesets`/`prefill_workers` + `decode_workers`) are mutually exclusive.
+`workers` is the preferred spelling of `endpoints`; both keep working. `rolesets` stays the way to name a group or declare more than one. Per model, the non-disaggregated form (`endpoints`/`workers`) and the disaggregated form (`rolesets`/`prefill_workers` + `decode_workers`) are mutually exclusive.
 
 ### KubernetesProvider (`kubernetes.go`)
 

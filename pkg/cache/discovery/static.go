@@ -81,11 +81,12 @@ type StaticConfig struct {
 // endpoints/rolesets pair. The TRT-LLM style workers, prefill_workers and
 // decode_workers keys are aliases for what endpoints and rolesets express;
 // role labels stay an implementation detail of the provider. A model has to
-// name itself and declare at least one backend, and the spellings that cannot
-// be reconciled are rejected here.
-func (m StaticModelConfig) resolve() ([]string, []RoleSetConfig, error) {
-	if m.Name == "" {
-		return nil, nil, fmt.Errorf("model name is required")
+// name itself, declare at least one backend, and list both sides of the
+// prefill_workers/decode_workers shorthand. The spellings that cannot be
+// reconciled are rejected here.
+func (m StaticModelConfig) resolve(index int) ([]string, []RoleSetConfig, error) {
+	if strings.TrimSpace(m.Name) == "" {
+		return nil, nil, fmt.Errorf("models[%d]: name is required", index)
 	}
 	if len(m.Endpoints) > 0 && len(m.Workers) > 0 {
 		return nil, nil, fmt.Errorf(
@@ -117,7 +118,22 @@ func (m StaticModelConfig) resolve() ([]string, []RoleSetConfig, error) {
 			"model %q: endpoints/workers and rolesets/prefill_workers/decode_workers are mutually exclusive",
 			m.Name)
 	}
-	if len(endpoints) == 0 && len(roleSets) == 0 {
+	if workerRoles && (len(m.PrefillWorkers) == 0 || len(m.DecodeWorkers) == 0) {
+		// The shorthand copies the TRT-LLM shape, which lists both sides. A
+		// one-sided group can never be paired, so reject it here instead of
+		// loading a config that PD routing will never select.
+		return nil, nil, fmt.Errorf(
+			"model %q: prefill_workers and decode_workers must both list at least one worker",
+			m.Name)
+	}
+	// Count addresses after normalization so a named roleset without any
+	// worker fails exactly like an engine-only model. The rolesets form
+	// still accepts a partial group so an existing file keeps loading.
+	addresses := len(endpoints)
+	for _, rs := range roleSets {
+		addresses += len(rs.Prefill) + len(rs.Decode)
+	}
+	if addresses == 0 {
 		return nil, nil, fmt.Errorf(
 			"model %q: at least one of endpoints, workers, rolesets, or prefill_workers/decode_workers is required",
 			m.Name)
@@ -171,8 +187,8 @@ func (p *StaticProvider) load() ([]any, error) {
 	var pods []any
 	idx := 0
 
-	for _, model := range config.Models {
-		endpoints, roleSets, err := model.resolve()
+	for i, model := range config.Models {
+		endpoints, roleSets, err := model.resolve(i)
 		if err != nil {
 			return nil, err
 		}

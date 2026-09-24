@@ -97,6 +97,9 @@ prefill/decode disaggregation testing:
        decode_workers:
          - "127.0.0.1:8200"
 
+The shorthand labels the group ``default``. Use ``rolesets`` when a custom
+name or more than one group is needed.
+
 Run local mode
 --------------
 
