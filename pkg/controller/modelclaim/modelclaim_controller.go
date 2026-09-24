@@ -1001,8 +1001,7 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 		// that far. It stays routable only while it is held to no more than
 		// that record.
 		serving := observed != nil && observed.Ready && observedPort > 0
-		limitInForce := kvLimitInForce(inst, observed)
-		limitWithinRecord := kvLimitWithinRecord(inst, observed)
+		limitInForce, limitWithinRecord := r.judgeKVLimit(ctx, pm, inst, observed, serving)
 
 		desiredPhase, routingPort := desiredInstanceState(
 			inst, observed, observedPort, serving, limitInForce, limitWithinRecord)
@@ -1066,6 +1065,56 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 		}
 	}
 	r.dropInstances(ctx, pm, dropped)
+}
+
+// judgeKVLimit says whether an engine is held to the limit its instance
+// records, and whether it is held to no more than that.
+//
+// A limit not in force is about to be written, or the engine taken off its
+// route. The record may have just been changed by a division in another
+// claim's pass, before the cache caught up. Acting on a stale record would pull
+// an engine back from a share it was just given, or grow it into one it just
+// gave up. So in that case the record is read fresh first, and the instance
+// takes it.
+func (r *ModelClaimReconciler) judgeKVLimit(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	inst *modelv1alpha1.ModelClaimInstance,
+	observed *RuntimeSnapshotModel,
+	serving bool,
+) (inForce, withinRecord bool) {
+	inForce = kvLimitInForce(inst, observed)
+	if serving && !inForce {
+		if fresh, found := r.freshKVLimitRecord(ctx, pm, inst.Pod); found && fresh != inst.KVLimitBytes {
+			inst.KVLimitBytes = fresh
+			inForce = kvLimitInForce(inst, observed)
+		}
+	}
+	return inForce, kvLimitWithinRecord(inst, observed)
+}
+
+// freshKVLimitRecord reads the limit a claim's instance on a pod records
+// straight from the API server, around the cache.
+func (r *ModelClaimReconciler) freshKVLimitRecord(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	pod string,
+) (int64, bool) {
+	reader := client.Reader(r.Client)
+	if r.APIReader != nil {
+		reader = r.APIReader
+	}
+	fresh := &modelv1alpha1.ModelClaim{}
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(pm), fresh); err != nil {
+		klog.V(4).InfoS("could not read a claim's record fresh", "model", pm.Name, "err", err)
+		return 0, false
+	}
+	for _, instance := range fresh.Status.Instances {
+		if instance.Pod == pod {
+			return instance.KVLimitBytes, true
+		}
+	}
+	return 0, false
 }
 
 // engineMissing reports whether an activating instance has no engine behind

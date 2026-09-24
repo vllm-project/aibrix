@@ -27,6 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 )
@@ -217,6 +218,35 @@ func TestReconcileKeepsAnEngineRoutedWhenItsGrowIsNotConfirmed(t *testing.T) {
 	drainEvents(t, r)
 	reconcileOnce(t, r, "busy")
 
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, "busy").Status.Instances[0].Phase)
+	for _, event := range drainEvents(t, r) {
+		assert.NotContains(t, event, "KVLimitNotHeld")
+	}
+}
+
+// The cache can lag a record that a division in another claim's pass has just
+// written. The health loop reads the record fresh before it acts on a limit
+// that is not in force, so an engine that was just grown is not pulled back.
+func TestReconcileReadsARecordFreshBeforeActingOnIt(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	cached := withFinalizer(claimOnPod("busy", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	cached.Status.Instances[0].Port = 9001
+	cached.Status.Instances[0].KVLimitBytes = 10 << 30
+	// A division has grown the engine and recorded 30 GiB; the cache still
+	// shows the 10 GiB before it.
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("busy", 4<<30, 30<<30)}
+	r, runtime := newReconciler(t, cached, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	fresh := cached.DeepCopy()
+	fresh.Status.Instances[0].KVLimitBytes = 30 << 30
+	r.APIReader = fake.NewClientBuilder().WithScheme(r.Scheme).WithObjects(fresh, pod).
+		WithStatusSubresource(&modelv1alpha1.ModelClaim{}).Build()
+
+	reconcileOnce(t, r, "busy")
+
+	for _, call := range runtime.kvLimitCalls {
+		assert.NotEqual(t, int64(10)<<30, call.LimitBytes, "the engine must not be pulled back to a stale record")
+	}
 	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, "busy").Status.Instances[0].Phase)
 	for _, event := range drainEvents(t, r) {
 		assert.NotContains(t, event, "KVLimitNotHeld")
