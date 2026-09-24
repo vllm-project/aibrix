@@ -25,6 +25,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/utils/ptr"
@@ -52,7 +53,14 @@ func TestModelClaimNotPlacedYetIsRetryable(t *testing.T) {
 	_, aibrixClient := initializeClient(ctx, t)
 	claims := aibrixClient.ModelV1alpha1().ModelClaims(lifecycleNamespace)
 
+	// A claim left by an earlier run keeps its name until its finalizer is
+	// gone, so it is deleted and waited for before this one is made.
 	_ = claims.Delete(ctx, unplacedClaim, metav1.DeleteOptions{})
+	require.NoError(t, wait.PollUntilContextTimeout(ctx, time.Second, 60*time.Second, true,
+		func(ctx context.Context) (bool, error) {
+			_, err := claims.Get(ctx, unplacedClaim, metav1.GetOptions{})
+			return apierrors.IsNotFound(err), nil
+		}), "a leftover %s was not deleted", unplacedClaim)
 	_, err := claims.Create(ctx, &modelv1alpha1.ModelClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: unplacedClaim, Namespace: lifecycleNamespace},
 		Spec: modelv1alpha1.ModelClaimSpec{
