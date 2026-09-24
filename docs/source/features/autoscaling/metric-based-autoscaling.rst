@@ -326,7 +326,7 @@ Use the ``subTargetSelector`` field to target a specific role within a StormServ
 **Key features:**
 
 - Each role has its own PodAutoscaler with independent metrics and scaling policies
-- Works with StormService in pooled mode (``replicas=1``)
+- Works with StormService in pooled mode (``spec.mode: Pooled``)
 - Supports different scaling strategies (HPA, KPA, APA) per role
 - Allows different min/max replicas and scaling behaviors per role
 
@@ -337,7 +337,7 @@ Use the ``subTargetSelector`` field to target a specific role within a StormServ
 
 **When to use:**
 
-- **Pooled mode**: StormService with ``replicas=1`` where roles need independent scaling
+- **Pooled mode**: StormService declaring ``spec.mode: Pooled`` where roles need independent scaling
 - **Different workload patterns**: Prefill and decode have different resource needs and traffic patterns
 - **Independent metrics**: Each role has its own metrics (e.g., queue length, batch utilization)
 
