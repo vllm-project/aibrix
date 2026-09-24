@@ -754,10 +754,10 @@ func TestReconcilePlacementPrefersRuntimeSnapshot(t *testing.T) {
 	// neither requests nvidia.com/gpu, and both cards can hold the claim.
 	runtime.snapshots = map[string]*RuntimeSnapshot{
 		"10.0.0.1": {
-			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: 900, HBMUsableBytes: 80 << 30}},
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMTotalBytes: 80 << 30, HBMFreeBytes: 900, HBMUsableBytes: 80 << 30}},
 		},
 		testPeerIP: {
-			Accelerators:    []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: 100, HBMUsableBytes: 80 << 30}},
+			Accelerators:    []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMTotalBytes: 80 << 30, HBMFreeBytes: 100, HBMUsableBytes: 80 << 30}},
 			CachedArtifacts: []string{pm.Spec.ArtifactURL},
 		},
 	}
@@ -1698,12 +1698,13 @@ func TestReconcileStartsNoEngineWhenTheRuntimeCannotBeRead(t *testing.T) {
 
 // podWithUnrequestedGPU is a warm pod that asks for no nvidia.com/gpu, while
 // its runtime reports a card, as with a GPU given by a dynamic resource claim.
+// Like any card the runtime has read, it comes with its total memory.
 func podWithUnrequestedGPU(hbmUsableBytes int64) (*corev1.Pod, *RuntimeSnapshot) {
 	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
 	pod.Status.PodIP = "10.0.0.1"
 	return pod, &RuntimeSnapshot{
 		Accelerators: []RuntimeAcceleratorSnapshot{
-			{ID: "GPU-0", HBMFreeBytes: hbmUsableBytes, HBMUsableBytes: hbmUsableBytes},
+			{ID: "GPU-0", HBMTotalBytes: hbmUsableBytes, HBMFreeBytes: hbmUsableBytes, HBMUsableBytes: hbmUsableBytes},
 		},
 	}
 }
@@ -1746,6 +1747,37 @@ func TestReconcileHoldsAnEngineToItsLimitOnAPodWithoutAGPURequest(t *testing.T) 
 	require.Len(t, got.Status.Instances, 1)
 	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase,
 		"an engine above its limit must not be routed")
+}
+
+// The runtime's mock mode reports one card with no memory at all, so that the
+// single-GPU pool policy runs on the CPU pools of the end-to-end tests. That is
+// no card to account for: the claim is placed as on a pod without a GPU, and
+// its engine is routed once it is ready.
+func TestReconcilePlacesAndRoutesOnAPodWhoseRuntimeReportsAnUnsizedCard(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Status.PodIP = "10.0.0.1"
+	snapshot := &RuntimeSnapshot{
+		Accelerators: []RuntimeAcceleratorSnapshot{{ID: "mock-gpu-0"}},
+	}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+	assert.Empty(t, runtime.kvLimitCalls, "a card with no size is not divided")
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, pod.Name, got.Status.Instances[0].Pod)
+
+	// The engine is ready. Like the mock's, it has no KV allocator to read.
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(-1)}
+	reconcileOnce(t, r, pm.Name)
+
+	got = getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Instances[0].Phase)
 }
 
 func TestReconcileTriesTheNextPodWhenACardCannotBeDivided(t *testing.T) {
