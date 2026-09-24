@@ -19,7 +19,6 @@ package types
 import (
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 // RoutingOverrides carries one request's resolved routing knobs: the process
@@ -36,26 +35,25 @@ import (
 // sets nothing reads the process defaults registered by the routing algorithm
 // package through SetDefaultRoutingOverrides.
 //
-// Knobs that configure process-wide state rather than a single routing decision
-// keep a field here too, but their read sites scope that state instead of
-// applying the value per request: a profile that sets one gets its own instance
-// (its own VTC token tracker, its own Preble histogram and eviction schedule)
-// or its own share of a process-wide budget (the session-affinity local cache
-// and the routing string caches). The instance or share is keyed by the
-// resolved value, so profiles that agree share one, and a request whose profile
-// sets none reads the process-wide default instance exactly as before. Scoped
-// state therefore costs nothing until a profile asks for it. The token-load
-// session cap is the exception: it is an admission limit the tracker already
-// takes per call, so it needs no scoping at all.
+// Knobs that configure state shared by every model of one gateway process keep
+// a field here only when the read site can scope that state to the profile: a
+// profile that sets one gets its own instance of it, keyed by the resolved
+// values, so profiles that agree share one and a request whose profile sets
+// none reads the process-wide default instance exactly as before. That is how
+// the VTC token tracker's window, time unit, token weights and token floors are
+// carried. Knobs whose state cannot be scoped this way have no field here on
+// purpose, because all models of a process share that state and a per-request
+// value could not be applied without splitting or resizing it: the preble
+// histogram window and eviction loop, the session-affinity local cache
+// capacity, the routing string cache bound and the token-load session table
+// cap. Those keep their environment-only semantics.
 type RoutingOverrides struct {
-	LoadBalance     LoadBalanceOverrides
-	PrefixCache     PrefixCacheOverrides
-	Preble          PrebleOverrides
-	VTC             VTCOverrides
-	AutoBlend       AutoBlendOverrides
-	SessionAffinity SessionAffinityOverrides
-	Router          RouterOverrides
-	PD              PDOverrides
+	LoadBalance LoadBalanceOverrides
+	PrefixCache PrefixCacheOverrides
+	Preble      PrebleOverrides
+	VTC         VTCOverrides
+	AutoBlend   AutoBlendOverrides
+	PD          PDOverrides
 }
 
 // LoadBalanceOverrides mirrors the AIBRIX_LOAD_BALANCE_* knobs of the
@@ -98,13 +96,6 @@ type PrebleOverrides struct {
 	// DecodingLength overrides AIBRIX_ROUTER_PREBLE_DECODING_LENGTH: the assumed
 	// number of decoding tokens per request of the cost model.
 	DecodingLength int
-	// SlidingWindowPeriod overrides AIBRIX_ROUTER_PREBLE_SLIDING_WINDOW_PERIOD:
-	// how far back the preble histogram of this profile's requests reaches.
-	SlidingWindowPeriod time.Duration
-	// EvictionLoopInterval overrides
-	// AIBRIX_ROUTER_PREBLE_EVICTION_LOOP_INTERVAL: how often the eviction loop
-	// prunes that histogram.
-	EvictionLoopInterval time.Duration
 }
 
 // VTCOverrides mirrors the vtc-basic score knobs read per request.
@@ -144,22 +135,6 @@ type VTCTokenTrackerOverrides struct {
 	// window holds too little activity to derive them from.
 	MinTokens float64
 	MaxTokens float64
-}
-
-// SessionAffinityOverrides mirrors AIBRIX_SESSION_AFFINITY_MAX_LOCAL_KEYS.
-type SessionAffinityOverrides struct {
-	// MaxLocalKeys is how many distinct cache keys this profile's requests may
-	// hold in the gateway-local session pin cache, within the process-wide
-	// ceiling the environment sets.
-	MaxLocalKeys int
-}
-
-// RouterOverrides mirrors AIBRIX_ROUTER_MAX_CACHED_ALGORITHM_STRINGS.
-type RouterOverrides struct {
-	// MaxCachedAlgorithmStrings is how many distinct routing strings this
-	// profile's requests may keep in the caches that memoize them, within the
-	// process-wide ceiling the environment sets.
-	MaxCachedAlgorithmStrings int
 }
 
 // AutoBlendOverrides mirrors the AIBRIX_ROUTING_AUTO_BLEND_* weights of the

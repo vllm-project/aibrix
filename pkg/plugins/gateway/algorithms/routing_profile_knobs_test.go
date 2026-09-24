@@ -168,9 +168,8 @@ func TestResolveRoutingOverridesFromRoutingConfig(t *testing.T) {
 			},
 		},
 		{
-			name: "state-scoped gates, caps and token weights",
-			routingConfig: `{"vtc":{"inputTokenWeight":3,"outputTokenWeight":4,"tokenTrackerWindowSize":7,"tokenTrackerTimeUnit":"seconds","tokenTrackerMinTokens":250,"tokenTrackerMaxTokens":9000},
-				"sessionAffinity":{"maxLocalKeys":64},"router":{"maxCachedAlgorithmStrings":32},"pd":{"tokenLoadMaxSessions":128}}`,
+			name:          "scoped token tracker knobs and token weights",
+			routingConfig: `{"vtc":{"inputTokenWeight":3,"outputTokenWeight":4,"tokenTrackerWindowSize":7,"tokenTrackerTimeUnit":"seconds","tokenTrackerMinTokens":250,"tokenTrackerMaxTokens":9000}}`,
 			check: func(t *testing.T, ov *types.RoutingOverrides) {
 				assert.Equal(t, 3.0, ov.VTC.InputTokenWeight)
 				assert.Equal(t, 4.0, ov.VTC.OutputTokenWeight)
@@ -178,9 +177,6 @@ func TestResolveRoutingOverridesFromRoutingConfig(t *testing.T) {
 				assert.Equal(t, "seconds", ov.VTC.TokenTracker.TimeUnit)
 				assert.Equal(t, 250.0, ov.VTC.TokenTracker.MinTokens)
 				assert.Equal(t, 9000.0, ov.VTC.TokenTracker.MaxTokens)
-				assert.Equal(t, 64, ov.SessionAffinity.MaxLocalKeys)
-				assert.Equal(t, 32, ov.Router.MaxCachedAlgorithmStrings)
-				assert.Equal(t, 128, ov.PD.TokenLoad.MaxSessions)
 			},
 		},
 		{
@@ -223,13 +219,11 @@ func TestResolveRoutingOverridesFromRoutingConfig(t *testing.T) {
 				"vtc":{"maxPodLoad":0,"fairnessWeight":-1,"utilizationWeight":-1,
 					"inputTokenWeight":0,"outputTokenWeight":-1,"tokenTrackerWindowSize":0,"tokenTrackerTimeUnit":"fortnights",
 					"tokenTrackerMinTokens":-1,"tokenTrackerMaxTokens":0},
-				"sessionAffinity":{"maxLocalKeys":0},"router":{"maxCachedAlgorithmStrings":-2},
 				"autoBlend":{"loadBalanceWeight":-1,"leastRequestWeight":-1,"prefixCacheWeight":0,"prefixCacheLoadBalanceWeight":-1},
 				"pd":{"decodeAbortTimeout":-1,"decodeAbortRetryDelay":-1,"prefillRequestTimeout":0,"prefillLoadImbalanceMinSpread":0,
 					"decodeLoadImbalanceMinSpread":-1,"decodeThroughputImbalanceMinSpread":0,"decodeScoreRatioThreshold":-1,
 					"decodeLBWeightRunning":0,"decodeLBWeightThroughput":-1,"hybridCacheLoadFactor":1.5,"minMatchPct":101,
-					"tokenLoadKVWeight":0,"tokenLoadRequestCost":-1,"tokenLoadTTLSeconds":-1,"tokenLoadSessionTTLSeconds":-1,
-					"tokenLoadMaxSessions":0}}`,
+					"tokenLoadKVWeight":0,"tokenLoadRequestCost":-1,"tokenLoadTTLSeconds":-1,"tokenLoadSessionTTLSeconds":-1}}`,
 			wantNil: true,
 			check: func(t *testing.T, ov *types.RoutingOverrides) {
 				assert.Nil(t, ov, "a profile whose every value is rejected parks no overrides at all")

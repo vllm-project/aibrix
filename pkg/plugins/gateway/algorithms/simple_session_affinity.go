@@ -88,20 +88,6 @@ const (
 // stickiness) instead of a local hit.
 var maxSessionKeyPodsEntries = utils.LoadEnvInt("AIBRIX_SESSION_AFFINITY_MAX_LOCAL_KEYS", 100_000)
 
-// sessionAffinityLocalKeyLimit returns the cap on new local cache keys this
-// request's profile claims: its resolved value, never above the environment
-// ceiling that bounds the cache process-wide, so a profile takes a share of the
-// existing budget instead of raising it. A non-positive value falls back to the
-// ceiling, which is what a request without a profile reads (see
-// maxSessionKeyPodsEntries).
-func sessionAffinityLocalKeyLimit(ctx *types.RoutingContext) int {
-	limit := ctx.RoutingOverrides().SessionAffinity.MaxLocalKeys
-	if limit <= 0 || limit > maxSessionKeyPodsEntries {
-		return maxSessionKeyPodsEntries
-	}
-	return limit
-}
-
 func sessionAffinityRedisKey(cacheKey string) string {
 	return sessionAffinityRedisKeyPrefix + cacheKey
 }
@@ -256,9 +242,7 @@ func (r *sessionAffinityRouter) syncSessionKeyPodsFromRedis() {
 				r.handleSessionKeyCacheSyncMiss(k)
 				continue
 			}
-			// The sync pass serves the whole cache, not one request, so it
-			// refills under the process-wide ceiling.
-			r.storeSessionKeyLocal(k, raw, true, maxSessionKeyPodsEntries)
+			r.storeSessionKeyLocal(k, raw, true)
 		}
 	}
 }
@@ -546,23 +530,22 @@ func (r *sessionAffinityRouter) forgetSessionKey(cacheKey string) {
 // storeSessionKeyLocal mirrors cacheKey -> addr into the local cache. A
 // no-op when Redis isn't configured (the cache is a Redis read-through, not
 // a pin of its own), or when cacheKey is new and the cache is already at
-// limit, the cap on new keys this request claims (see
-// sessionAffinityLocalKeyLimit). Same-addr stores refresh
+// maxSessionKeyPodsEntries (see its doc comment). Same-addr stores refresh
 // storedAt and only raise confirmed, so a TTL-refresh does not un-confirm a
 // pin whose Redis write already landed. cacheKey is assumed already bounded
 // by validSessionKey on its caller-provided portion (see sessionCacheKey)
 // -- rechecking the composite length here would wrongly reject a valid
 // session key once the model prefix pushes the composite past
 // maxSessionKeyLen.
-func (r *sessionAffinityRouter) storeSessionKeyLocal(cacheKey, addr string, confirmed bool, limit int) {
+func (r *sessionAffinityRouter) storeSessionKeyLocal(cacheKey, addr string, confirmed bool) {
 	if r.redisClient == nil {
 		return
 	}
 	for {
 		existing, ok := r.sessionKeyPods.Load(cacheKey)
 		if !ok {
-			if atomic.LoadInt64(&r.sessionKeyPodsSize) >= int64(limit) {
-				klog.V(4).InfoS("session-affinity local cache at capacity, not caching new key locally", "limit", limit)
+			if atomic.LoadInt64(&r.sessionKeyPodsSize) >= int64(maxSessionKeyPodsEntries) {
+				klog.V(4).InfoS("session-affinity local cache at capacity, not caching new key locally", "limit", maxSessionKeyPodsEntries)
 				return
 			}
 			newItem := sessionKeyCacheItem{addr: addr, confirmed: confirmed, storedAt: time.Now()}
@@ -606,7 +589,7 @@ func (r *sessionAffinityRouter) rememberSessionKey(ctx *types.RoutingContext, se
 		return
 	}
 	cacheKey := sessionCacheKey(ctx.Model, sessionKey)
-	r.storeSessionKeyLocal(cacheKey, addr, false, sessionAffinityLocalKeyLimit(ctx))
+	r.storeSessionKeyLocal(cacheKey, addr, false)
 	go r.persistSessionKeyToRedis(cacheKey, addr, mode)
 }
 
@@ -702,7 +685,7 @@ func (r *sessionAffinityRouter) resolveSessionPod(ctx *types.RoutingContext, pod
 	staleAddr := cachedAddr
 	if redisAddr, ok := r.readSessionKeyFromRedis(ctx, cacheKey); ok && redisAddr != cachedAddr {
 		if p := findReadyPodByAddr(ctx, pods, redisAddr); p != nil {
-			r.storeSessionKeyLocal(cacheKey, redisAddr, true, sessionAffinityLocalKeyLimit(ctx))
+			r.storeSessionKeyLocal(cacheKey, redisAddr, true)
 			return p, sessionKey, "session-key-redis", writeRefresh
 		}
 		staleAddr = redisAddr

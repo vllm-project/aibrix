@@ -28,10 +28,9 @@ import (
 // package folds them into the process default table at startup, and this
 // package's tests install them the same way.
 //
-// MaxSessions is part of the table even though it caps the tracker's shared
-// session table: a profile value bounds only the additions its own request's
-// admission makes, never the table's size for anyone else, so it is carried
-// per request like the other knobs (see types.PDTokenLoadOverrides).
+// AIBRIX_TOKEN_LOAD_MAX_SESSIONS has no counterpart here on purpose: it caps the
+// shared session table of the token-load tracker, which every model of a
+// gateway process shares, so it is not a per-request knob.
 func EnvOverrides() types.PDOverrides {
 	tokenLoad := DefaultTokenLoadConfig()
 	hybrid := DefaultHybridCacheLoadConfig()
@@ -49,7 +48,6 @@ func EnvOverrides() types.PDOverrides {
 			RequestCost: tokenLoad.RequestCost,
 			TTL:         tokenLoad.TTL,
 			SessionTTL:  tokenLoad.SessionTTL,
-			MaxSessions: tokenLoad.MaxSessions,
 		},
 		HybridCacheLoadFactor: hybrid.Factor,
 		MinMatchPct:           hybrid.MinMatchPct,

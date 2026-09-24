@@ -373,50 +373,6 @@ func TestSessionAffinityLocalCacheHasHardCapacityBound(t *testing.T) {
 	assert.LessOrEqual(t, atomic.LoadInt64(&router.sessionKeyPodsSize), int64(limit))
 }
 
-// TestSessionAffinityProfileLimitBoundsItsOwnClaims checks that a model config
-// profile's maxLocalKeys is the cap its own requests use when they add entries,
-// while the environment value stays the process-wide ceiling for requests
-// without a profile.
-func TestSessionAffinityProfileLimitBoundsItsOwnClaims(t *testing.T) {
-	router, _ := newTestSessionAffinityRedis(t)
-	require.GreaterOrEqual(t, maxSessionKeyPodsEntries, 3, "the environment ceiling must leave room for the profile's share")
-
-	pod := newPod("pod-a", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
-	route := func(sessionKey string, limit int) {
-		t.Helper()
-		ctx := types.NewRoutingContext(context.Background(), "test", "model1", "", "", "")
-		ctx.ReqHeaders = map[string]string{constants.HeaderSessionKey: sessionKey}
-		if limit > 0 {
-			overrides := *types.DefaultRoutingOverrides()
-			overrides.SessionAffinity.MaxLocalKeys = limit
-			ctx.SetRoutingOverrides(&overrides)
-		}
-		addr, err := router.Route(ctx, newMockPodList([]*v1.Pod{pod}, nil))
-		require.NoError(t, err)
-		require.NotEmpty(t, addr)
-	}
-	cacheSize := func() int {
-		size := 0
-		router.sessionKeyPods.Range(func(_, _ any) bool {
-			size++
-			return true
-		})
-		return size
-	}
-
-	for i := 0; i < 12; i++ {
-		route(fmt.Sprintf("profiled-%d", i), 3)
-	}
-	assert.LessOrEqual(t, cacheSize(), 3, "a profile claims at most its own maxLocalKeys entries")
-	assert.LessOrEqual(t, atomic.LoadInt64(&router.sessionKeyPodsSize), int64(3))
-
-	// The profile's share is not a process-wide cap: a request without a
-	// profile still stores up to the environment ceiling.
-	before := cacheSize()
-	route("unprofiled", 0)
-	assert.Greater(t, cacheSize(), before, "a request without a profile is not bound by another profile's share")
-}
-
 func TestSessionAffinityNoRedisDoesNotPinLocally(t *testing.T) {
 	router := &sessionAffinityRouter{}
 	podA := newPod("pod-a", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
@@ -688,7 +644,7 @@ func TestSessionAffinitySyncRetryDoesNotClobberAnotherReplicasPin(t *testing.T) 
 	cacheKey := sessionCacheKey("model1", sessionKey)
 
 	require.True(t, routerA.persistSessionKeyToRedis(cacheKey, "10.0.0.1:8000", writeClaim))
-	routerB.storeSessionKeyLocal(cacheKey, "10.0.0.2:8000", false, maxSessionKeyPodsEntries)
+	routerB.storeSessionKeyLocal(cacheKey, "10.0.0.2:8000", false)
 	routerB.handleSessionKeyCacheSyncMiss(cacheKey)
 
 	got, err := mr.Get(sessionAffinityRedisKey(cacheKey))
@@ -719,7 +675,7 @@ func TestSessionAffinityRouteConvergesLostClaimToWinner(t *testing.T) {
 	require.True(t, routerA.persistSessionKeyToRedis(cacheKey, "10.0.0.1:8000", writeClaim))
 
 	// Replica B holds an unconfirmed local pin for pod-b: its own claim never landed.
-	routerB.storeSessionKeyLocal(cacheKey, "10.0.0.2:8000", false, maxSessionKeyPodsEntries)
+	routerB.storeSessionKeyLocal(cacheKey, "10.0.0.2:8000", false)
 	assert.Equal(t, "10.0.0.2:8000", sessionAffinityRoute(t, routerB, sessionKey, pods),
 		"the in-flight request itself still follows this replica's local pick")
 
@@ -821,7 +777,7 @@ func TestSessionAffinityResolveReportsPersistIntent(t *testing.T) {
 	// A local hit whose Redis write is not known to have landed is still a claim: persisting
 	// it must not use the unconditional write.
 	localLoser := &sessionAffinityRouter{redisClient: router.redisClient}
-	localLoser.storeSessionKeyLocal(cacheKey, "10.0.0.1:8000", false, maxSessionKeyPodsEntries)
+	localLoser.storeSessionKeyLocal(cacheKey, "10.0.0.1:8000", false)
 	_, _, via, mode = localLoser.resolveSessionPod(ctx, []*v1.Pod{podA, podB})
 	require.Equal(t, "session-key-cache", via)
 	assert.Equal(t, writeClaim, mode)
@@ -829,7 +785,7 @@ func TestSessionAffinityResolveReportsPersistIntent(t *testing.T) {
 	// A confirmed local hit persists as a refresh; the gated Lua script is what keeps
 	// that write safe now.
 	localWinner := &sessionAffinityRouter{redisClient: router.redisClient}
-	localWinner.storeSessionKeyLocal(cacheKey, "10.0.0.1:8000", true, maxSessionKeyPodsEntries)
+	localWinner.storeSessionKeyLocal(cacheKey, "10.0.0.1:8000", true)
 	_, _, via, mode = localWinner.resolveSessionPod(ctx, []*v1.Pod{podA, podB})
 	require.Equal(t, "session-key-cache", via)
 	assert.Equal(t, writeRefresh, mode)
@@ -847,7 +803,7 @@ func TestSessionAffinityRefreshDoesNotRevertNewerRepin(t *testing.T) {
 
 	// This replica carries the session on pod-a and would slide its pin...
 	require.True(t, router.persistSessionKeyToRedis(cacheKey, "10.0.0.1:8000", writeClaim))
-	router.storeSessionKeyLocal(cacheKey, "10.0.0.1:8000", true, maxSessionKeyPodsEntries)
+	router.storeSessionKeyLocal(cacheKey, "10.0.0.1:8000", true)
 
 	// ...but another replica repinned the session to pod-b while the refresh was in flight.
 	require.NoError(t, mr.Set(key, "10.0.0.2:8000"))

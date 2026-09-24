@@ -18,13 +18,16 @@ package vtc
 
 import (
 	"context"
+	"math"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
@@ -73,12 +76,16 @@ func TestTrackerForKeepsTheProcessTrackerForDefaultKnobs(t *testing.T) {
 
 	plain := types.NewRoutingContext(context.Background(), RouterVTCBasic, "model1", "message", "req-plain", "user1")
 	t.Cleanup(plain.Delete)
-	assert.Same(t, router.tokenTracker, router.trackerFor(plain), "a request without a profile shares the process-wide tracker")
+	tracker, knobs := router.trackerFor(plain)
+	assert.Same(t, router.tokenTracker, tracker, "a request without a profile shares the process-wide tracker")
+	assert.Equal(t, EnvTokenTrackerKnobs(), knobs, "and the process-wide tracker's floors come with it")
 
 	// A profile that only retunes the per-request score knobs still resolves
 	// all six tracker knobs to the process defaults.
 	scored := scopedCtx(t, EnvTokenTrackerKnobs(), inputTokenWeight, outputTokenWeight)
-	assert.Same(t, router.tokenTracker, router.trackerFor(scored))
+	tracker, knobs = router.trackerFor(scored)
+	assert.Same(t, router.tokenTracker, tracker)
+	assert.Equal(t, EnvTokenTrackerKnobs(), knobs)
 }
 
 // TestTrackerForScopesTheTrackerToTheResolvedKnobs checks that a profile that
@@ -99,11 +106,12 @@ func TestTrackerForScopesTheTrackerToTheResolvedKnobs(t *testing.T) {
 	second := scopedCtx(t, knobs, 3.0, 4.0)
 	otherWeight := scopedCtx(t, knobs, 5.0, 4.0)
 
-	firstTracker := router.trackerFor(first)
-	secondTracker := router.trackerFor(second)
-	otherTracker := router.trackerFor(otherWeight)
+	firstTracker, firstKnobs := router.trackerFor(first)
+	secondTracker, _ := router.trackerFor(second)
+	otherTracker, _ := router.trackerFor(otherWeight)
 
 	assert.NotSame(t, router.tokenTracker, firstTracker, "a profile that changes the window gets its own tracker")
+	assert.Equal(t, knobs, firstKnobs, "the scoped tracker comes with the scope's floors")
 	assert.Same(t, firstTracker, secondTracker, "profiles that resolve the same knobs share one tracker")
 	assert.NotSame(t, firstTracker, otherTracker, "a different weight resolves a different tracker")
 
@@ -155,7 +163,7 @@ func TestTrackerForConcurrentRequestsShareOneTrackerPerScope(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			trackers[i] = router.trackerFor(ctx)
+			trackers[i], _ = router.trackerFor(ctx)
 		}(i)
 	}
 	wg.Wait()
@@ -179,7 +187,7 @@ func TestTrackerScopeLimitFallsBackToTheProcessTracker(t *testing.T) {
 	for i := 1; i <= maxTrackerScopes; i++ {
 		knobs := base
 		knobs.WindowSize = base.WindowSize + 100 + i
-		tracker := router.trackerFor(scopedCtx(t, knobs, inputTokenWeight, outputTokenWeight))
+		tracker, _ := router.trackerFor(scopedCtx(t, knobs, inputTokenWeight, outputTokenWeight))
 		require.NotSame(t, router.tokenTracker, tracker, "scope %d must get its own tracker", i)
 		seen[tracker] = struct{}{}
 	}
@@ -187,13 +195,30 @@ func TestTrackerScopeLimitFallsBackToTheProcessTracker(t *testing.T) {
 
 	knobs := base
 	knobs.WindowSize = base.WindowSize + 1000
+	// Ask for a floor far above the shared tracker's, so scoring with the
+	// profile's floors instead of the tracker's would move the metric below.
+	knobs.MinTokens = base.MaxTokens + 1000
 	overflow := scopedCtx(t, knobs, inputTokenWeight, outputTokenWeight)
-	assert.Same(t, router.tokenTracker, router.trackerFor(overflow),
-		"beyond the limit a request keeps the process-wide tracker")
+	tracker, trackerKnobs := router.trackerFor(overflow)
+	assert.Same(t, router.tokenTracker, tracker, "beyond the limit a request keeps the process-wide tracker")
+	assert.Equal(t, base, trackerKnobs, "and it keeps that tracker's floors with it")
 
-	addr, err := router.Route(overflow, NewSimplePodList(createTestPodsForMetrics(2)))
+	testGauge, cleanup := metrics.SetupMetricsForTest(metrics.VTCBucketSizeActive, []string{"pod", "model"})
+	defer cleanup()
+
+	pods := createTestPodsForMetrics(2)
+	addr, err := router.Route(overflow, NewSimplePodList(pods))
 	require.NoError(t, err)
 	assert.NotEmpty(t, addr, "the fallback keeps the request routable on the environment values")
+
+	// The shared tracker reports its own floors, so the bucket size must come
+	// from them: the profile's floor is far above them, and using it would
+	// score the request against a floor the tracker does not have.
+	wantBucket := math.Max(base.MinTokens, (base.MinTokens+base.MaxTokens)/2)
+	for _, pod := range pods {
+		assert.Equal(t, wantBucket, testutil.ToFloat64(testGauge.WithLabelValues(pod.Name, "model1")),
+			"the fallback must be scored with the shared tracker's floors")
+	}
 }
 
 // TestWithWindowSizeDoesNotLeakIntoTheProcessDefault guards the change that let

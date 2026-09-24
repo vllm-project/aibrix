@@ -1014,59 +1014,6 @@ func TestGetOrCreateMultiStrategyRouterCapsCacheSize(t *testing.T) {
 	assert.LessOrEqual(t, cacheSize, 2, "multiRouterCache must stay bounded by maxCachedAlgorithmStrings regardless of how many distinct client-supplied strings are seen")
 }
 
-// TestAlgorithmStringCacheLimitIsAMinOfProfileAndEnvironment checks the cap the
-// two routing-string caches keep: a profile claims its own value, but never more
-// than the environment ceiling.
-func TestAlgorithmStringCacheLimitIsAMinOfProfileAndEnvironment(t *testing.T) {
-	oldMax := maxCachedAlgorithmStrings
-	maxCachedAlgorithmStrings = 10
-	t.Cleanup(func() { maxCachedAlgorithmStrings = oldMax })
-
-	plain := types.NewRoutingContext(context.Background(), "s", testModelName, "hello", "req-plain", "")
-	assert.Equal(t, 10, algorithmStringCacheLimit(plain), "a request without a profile claims the process-wide ceiling")
-
-	overrides := *types.DefaultRoutingOverrides()
-	overrides.Router.MaxCachedAlgorithmStrings = 3
-	profiled := types.NewRoutingContext(context.Background(), "s", testModelName, "hello", "req-profiled", "")
-	profiled.SetRoutingOverrides(&overrides)
-	assert.Equal(t, 3, algorithmStringCacheLimit(profiled), "the profile claims its own share")
-
-	overrides.Router.MaxCachedAlgorithmStrings = 100
-	raised := types.NewRoutingContext(context.Background(), "s", testModelName, "hello", "req-raised", "")
-	raised.SetRoutingOverrides(&overrides)
-	assert.Equal(t, 10, algorithmStringCacheLimit(raised), "a profile can claim a smaller share, never raise the ceiling")
-}
-
-// TestGetOrCreateMultiStrategyRouterFollowsProfileCap checks the cap at the
-// cache itself: a profile that claims one cached string must stop caching after
-// the first one, however many distinct strings its requests use.
-func TestGetOrCreateMultiStrategyRouterFollowsProfileCap(t *testing.T) {
-	rm := NewRouterManager()
-	for _, name := range []string{"prof-s1", "prof-s2"} {
-		rm.RegisterProvider(types.RoutingAlgorithm(name), func(_ *types.RoutingContext) (types.Router, error) {
-			return &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityMost}}, nil
-		})
-	}
-
-	overrides := *types.DefaultRoutingOverrides()
-	overrides.Router.MaxCachedAlgorithmStrings = 1
-
-	for i := 0; i < 5; i++ {
-		algStr := fmt.Sprintf("prof-s1:%d,prof-s2:1", i+1)
-		cfg, err := ParseMultiRouterConfig(algStr)
-		assert.NoError(t, err)
-		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algStr), testModelName, "hello", fmt.Sprintf("req-prof-cap-%d", i), "")
-		ctx.SetRoutingOverrides(&overrides)
-		_, err = rm.getOrCreateMultiStrategyRouter(algStr, cfg, ctx)
-		assert.NoError(t, err)
-	}
-
-	rm.routerMu.RLock()
-	cacheSize := len(rm.multiRouterCache)
-	rm.routerMu.RUnlock()
-	assert.LessOrEqual(t, cacheSize, 1, "a profile's maxCachedAlgorithmStrings bounds the strings its own requests cache")
-}
-
 func TestSelectCachesMultiStrategyRouter(t *testing.T) {
 	rm := NewRouterManager()
 	providerCalls := 0

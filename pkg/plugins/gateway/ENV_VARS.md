@@ -292,27 +292,25 @@ description and examples live in the Config Profiles section of the gateway plug
 | `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_TIME_UNIT` | `routingConfig.vtc.tokenTrackerTimeUnit` | Bucket size of that window: `minutes`, `seconds` or `milliseconds`. An unknown name is ignored instead of being normalized. |
 | `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MIN_TOKENS` | `routingConfig.vtc.tokenTrackerMinTokens` | Floor the profile's tracker reports while its window holds little activity. |
 | `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MAX_TOKENS` | `routingConfig.vtc.tokenTrackerMaxTokens` | Ceiling the profile's tracker reports while its window holds little activity. |
-| `AIBRIX_SESSION_AFFINITY_MAX_LOCAL_KEYS` | `routingConfig.sessionAffinity.maxLocalKeys` | How many distinct cache keys the profile's requests may add to the gateway-local session pin cache. The environment value stays the process-wide ceiling, so a profile claims a share of it. |
-| `AIBRIX_ROUTER_MAX_CACHED_ALGORITHM_STRINGS` | `routingConfig.router.maxCachedAlgorithmStrings` | How many routing strings the profile's requests may add to the routing string caches. The environment value stays the process-wide ceiling. |
-| `AIBRIX_TOKEN_LOAD_MAX_SESSIONS` | `routingConfig.pd.tokenLoadMaxSessions` | How many sessions the profile's own admission may add to the shared session table. The tracker's cap stays the process-wide ceiling. |
 
 ### Scoped state behind the profile overrides
 
-Most of the variables above are read per request. The ones that configure state normally shared
-by every model of a gateway process are scoped instead: a profile that overrides one of them
-does not retune the shared state, the gateway gives that profile its own instance, keyed by the
-resolved values. Profiles that agree share one instance, a profile that sets none keeps the
-shared instance exactly as before, and the number of instances is bounded (16 token trackers per
-process; a profile past the bound keeps the shared instance rather than failing its requests).
+The VTC token tracker is constructed once from its window, time unit, token floors and the two
+token weights, so a profile that overrides any of the six gets a tracker of its own instead of
+retuning the shared one: trackers are keyed by the resolved values, so profiles that agree share
+one, a profile that sets none keeps the shared tracker exactly as before, and the number of
+trackers is bounded (16 per process; a profile past the bound keeps the shared tracker rather
+than failing its requests).
 
-For the two caps that bound process-wide caches, `sessionAffinity.maxLocalKeys` and
-`router.maxCachedAlgorithmStrings`, the profile value is a share of the environment cap and
-never raises it. The share is compared against the number of entries the whole process holds, so
-another profile's entries can consume it first.
+### Environment-only routing variables
 
-`AIBRIX_ROUTER_PREBLE_SLIDING_WINDOW_PERIOD` and `AIBRIX_ROUTER_PREBLE_EVICTION_LOOP_INTERVAL`
-are the remaining environment-only routing variables here: the preble histogram window and its
-eviction loop are process-wide timers, and scoping those needs a design of its own.
+These configure state shared by every model of one gateway process, so a profile cannot override
+them without splitting or resizing that state for everyone:
+
+- `AIBRIX_ROUTER_PREBLE_SLIDING_WINDOW_PERIOD` and `AIBRIX_ROUTER_PREBLE_EVICTION_LOOP_INTERVAL`: the preble histogram window and its eviction loop are process-wide timers; scoping those needs a design of its own.
+- `AIBRIX_SESSION_AFFINITY_MAX_LOCAL_KEYS`: bounds the gateway-local session pin cache, whose entries are shared facts about a model and a session.
+- `AIBRIX_ROUTER_MAX_CACHED_ALGORITHM_STRINGS`: bounds the process-wide routing string caches.
+- `AIBRIX_TOKEN_LOAD_MAX_SESSIONS`: bounds the (model, session) table of the token-load tracker, which the gateway shares across models.
 
 Variables without a `routingConfig` field (tokenizer endpoints, Redis and statesync settings, the
 rate limiting switches, `AIBRIX_KV_CONNECTOR_TYPE`) stay environment-only as deployment-level

@@ -883,15 +883,6 @@ can therefore be routed with different thresholds by selecting different profile
    * - ``vtc.tokenTrackerMaxTokens``
      - ``AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MAX_TOKENS``
      - Ceiling the profile's tracker reports while its window holds little activity.
-   * - ``sessionAffinity.maxLocalKeys``
-     - ``AIBRIX_SESSION_AFFINITY_MAX_LOCAL_KEYS``
-     - How many distinct cache keys this profile's requests may add to the gateway-local session pin cache. The environment value stays the process-wide ceiling, so the profile claims a share of it.
-   * - ``router.maxCachedAlgorithmStrings``
-     - ``AIBRIX_ROUTER_MAX_CACHED_ALGORITHM_STRINGS``
-     - How many routing strings this profile's requests may add to the routing string caches. The environment value stays the process-wide ceiling.
-   * - ``pd.tokenLoadMaxSessions``
-     - ``AIBRIX_TOKEN_LOAD_MAX_SESSIONS``
-     - How many sessions this profile's own admission may add to the shared session table. The tracker's cap stays the process-wide ceiling.
 
 Some knobs configure state normally shared by the whole gateway process. A profile that sets one
 of them does not retune the shared state: the gateway scopes an instance to the resolved values,
@@ -899,14 +890,14 @@ so profiles that agree share one and a profile that sets none keeps the shared i
 as before. This is how ``vtc.inputTokenWeight``, ``vtc.outputTokenWeight``,
 ``vtc.tokenTrackerWindowSize``, ``vtc.tokenTrackerTimeUnit``, ``vtc.tokenTrackerMinTokens`` and
 ``vtc.tokenTrackerMaxTokens`` scope the VTC token tracker (at most 16 trackers per process; a
-profile past the bound keeps the shared tracker) and how ``pd.tokenLoadMaxSessions`` bounds the
-sessions one request's admission adds to the shared session table. For the two cache caps,
-``sessionAffinity.maxLocalKeys`` and ``router.maxCachedAlgorithmStrings``, the profile value is a
-share of the process-wide environment cap and never raises it.
+profile past the bound keeps the shared tracker).
 
-The preble histogram window and eviction loop (``AIBRIX_ROUTER_PREBLE_SLIDING_WINDOW_PERIOD``,
-``AIBRIX_ROUTER_PREBLE_EVICTION_LOOP_INTERVAL``) stay environment-only for now: scoping those
-timers needs a design of its own.
+Knobs that bound state shared by every model of a process stay environment-only and have no
+profile field: the preble histogram window and eviction loop
+(``AIBRIX_ROUTER_PREBLE_SLIDING_WINDOW_PERIOD``, ``AIBRIX_ROUTER_PREBLE_EVICTION_LOOP_INTERVAL``),
+the session-affinity local cache capacity (``AIBRIX_SESSION_AFFINITY_MAX_LOCAL_KEYS``), the
+routing string cache bound (``AIBRIX_ROUTER_MAX_CACHED_ALGORITHM_STRINGS``) and the token-load
+session table cap (``AIBRIX_TOKEN_LOAD_MAX_SESSIONS``).
 
 .. _prometheus-api-access:
 

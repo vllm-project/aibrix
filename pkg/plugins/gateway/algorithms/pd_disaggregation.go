@@ -353,15 +353,9 @@ func (r *pdRouter) chargeTokenLoad(routingCtx *types.RoutingContext, pod *v1.Pod
 		return
 	}
 	overrides := routingCtx.PDOverrides()
-	// MaxSessions is an admission limit taken per call, so the request's
-	// profile can bound only the additions its own admission makes. The
-	// tracker's own cap stays the process-wide ceiling: a profile claims a
-	// smaller share of the session table, it never grows it past the
-	// environment (see types.PDTokenLoadOverrides).
+	// MaxSessions caps the tracker's shared session table, so it is not a
+	// per-request knob and stays environment-only (see types.PDOverrides).
 	maxSessions := r.tokenLoadTracker.Config().MaxSessions
-	if limit := overrides.TokenLoad.MaxSessions; limit > 0 && limit < maxSessions {
-		maxSessions = limit
-	}
 
 	promptTokens := pd.EstimatePromptTokens(routingCtx.ReqBody)
 	sessionID := routingCtx.ReqHeaders[constants.HeaderSessionKey]
