@@ -490,6 +490,14 @@ func bucketServeSegments(m *bucketServeModel, groups []BucketGroup) []bucketServ
 		if g.Name == "" || g.Min < 0 || g.Max < g.Min {
 			continue
 		}
+		// The bounds below hold g.Max+1, so an upper bound at the top of int
+		// must move down one: on a 32-bit build math.MaxInt32 is both the
+		// open-range sentinel an unconfigured pod passes and the top of int,
+		// and adding one to it would wrap to the bottom and scramble the
+		// bounds. Shortening an open range by one token is not observable.
+		if g.Max == math.MaxInt {
+			g.Max = math.MaxInt - 1
+		}
 		valid = append(valid, g)
 	}
 	if len(valid) == 0 {

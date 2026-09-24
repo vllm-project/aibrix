@@ -17,6 +17,7 @@ limitations under the License.
 package pd
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -141,6 +142,30 @@ func TestBucketServeMaxBandsCapKeepsIntervalsWhole(t *testing.T) {
 	assert.Empty(t, plan.Bands[0].Group)
 	_, ok := plan.GroupFor(1000)
 	assert.False(t, ok)
+}
+
+func TestBucketServeMaxLengthGroupDoesNotOverflow(t *testing.T) {
+	// An open range carries math.MaxInt32 in production, which is math.MaxInt on
+	// a 32-bit build. The plan adds one to a group's upper bound while it builds
+	// its segment bounds, so a bound left at the top of int would wrap there.
+	groups := []BucketGroup{
+		{Name: "a", Min: 0, Max: math.MaxInt},
+		{Name: "b", Min: 0, Max: math.MaxInt},
+	}
+	tracker := NewBucketServeTracker(testBucketServeConfig(BucketModeRPS))
+	observeCount(tracker, "m", 1000, 100, bucketServeTestNow)
+
+	plan := tracker.Plan("m", bucketServeTestNow, groups)
+
+	require.NotEmpty(t, plan.Bands)
+	last := plan.Bands[len(plan.Bands)-1]
+	assert.LessOrEqual(t, last.Max, math.MaxInt-1, "an upper bound that takes +1 must stay below the top of int")
+	for i := 0; i+1 < len(plan.Bands); i++ {
+		assert.Equal(t, plan.Bands[i].Max+1, plan.Bands[i+1].Min, "the bands partition the range without gaps")
+	}
+	group, ok := plan.GroupFor(1000)
+	require.True(t, ok)
+	assert.Contains(t, []string{"a", "b"}, group)
 }
 
 func TestBucketServePlanRefreshAndCutEvents(t *testing.T) {
