@@ -35,13 +35,18 @@ import (
 // sets nothing reads the process defaults registered by the routing algorithm
 // package through SetDefaultRoutingOverrides.
 //
-// Knobs that configure process-wide state instead of a routing decision have no
-// field here on purpose, because all models of a gateway process share that
-// state and a per-request value could not be applied without corrupting it:
-// the Preble eviction loop and histogram window, the VTC token tracker's
-// window, time unit, token weights and min/max floors, the session-affinity
-// local cache capacity and the token-load session table cap. Those keep their
-// environment-only semantics.
+// Knobs that configure state shared by every model of one gateway process keep
+// a field here only when the read site can scope that state to the profile: a
+// profile that sets one gets its own instance of it, keyed by the resolved
+// values, so profiles that agree share one and a request whose profile sets
+// none reads the process-wide default instance exactly as before. That is how
+// the VTC token tracker's window, time unit, token weights and token floors are
+// carried. Knobs whose state cannot be scoped this way have no field here on
+// purpose, because all models of a process share that state and a per-request
+// value could not be applied without splitting or resizing it: the preble
+// histogram window and eviction loop, the session-affinity local cache
+// capacity, the routing string cache bound and the token-load session table
+// cap. Those keep their environment-only semantics.
 type RoutingOverrides struct {
 	LoadBalance LoadBalanceOverrides
 	PrefixCache PrefixCacheOverrides
@@ -104,6 +109,32 @@ type VTCOverrides struct {
 	// UtilizationWeight overrides AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT:
 	// the weight of the utilization term. 0 drops the term.
 	UtilizationWeight float64
+	// InputTokenWeight and OutputTokenWeight override
+	// AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT and
+	// AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT: the weights the token
+	// tracker applies to a request's input and output tokens.
+	InputTokenWeight  float64
+	OutputTokenWeight float64
+	// TokenTracker holds the sliding window and the token floors of the
+	// tracker. A request whose profile leaves all of them at their defaults
+	// shares the process-wide tracker; any other request gets one of its own,
+	// so its window and weights never mix with another model's.
+	TokenTracker VTCTokenTrackerOverrides
+}
+
+// VTCTokenTrackerOverrides mirrors the AIBRIX_ROUTER_VTC_TOKEN_TRACKER_* knobs
+// together with the two token weights the tracker applies, since all six are
+// baked into the tracker instance rather than read per request.
+type VTCTokenTrackerOverrides struct {
+	// WindowSize is how many TimeUnit-sized buckets the sliding window spans.
+	WindowSize int
+	// TimeUnit is the duration of one bucket: "minutes", "seconds" or
+	// "milliseconds".
+	TimeUnit string
+	// MinTokens and MaxTokens are the floors the tracker reports while the
+	// window holds too little activity to derive them from.
+	MinTokens float64
+	MaxTokens float64
 }
 
 // AutoBlendOverrides mirrors the AIBRIX_ROUTING_AUTO_BLEND_* weights of the

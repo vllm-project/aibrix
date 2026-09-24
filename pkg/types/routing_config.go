@@ -90,6 +90,22 @@ type VTCProfileConfig struct {
 	MaxPodLoad        *float64 `json:"maxPodLoad,omitempty"`
 	FairnessWeight    *float64 `json:"fairnessWeight,omitempty"`
 	UtilizationWeight *float64 `json:"utilizationWeight,omitempty"`
+	// InputTokenWeight and OutputTokenWeight override
+	// AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT and
+	// AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT: the weights the token
+	// tracker applies to a request's input and output tokens.
+	InputTokenWeight  *float64 `json:"inputTokenWeight,omitempty"`
+	OutputTokenWeight *float64 `json:"outputTokenWeight,omitempty"`
+	// TokenTrackerWindowSize, TokenTrackerTimeUnit, TokenTrackerMinTokens and
+	// TokenTrackerMaxTokens override AIBRIX_ROUTER_VTC_TOKEN_TRACKER_*: the
+	// sliding window the token counts are bucketed in and the floors the
+	// tracker reports while the window holds little activity. Profiles that
+	// set any of the four get their own tracker, weights included, so one
+	// model's window and weights never mix with another's.
+	TokenTrackerWindowSize *int     `json:"tokenTrackerWindowSize,omitempty"`
+	TokenTrackerTimeUnit   *string  `json:"tokenTrackerTimeUnit,omitempty"`
+	TokenTrackerMinTokens  *float64 `json:"tokenTrackerMinTokens,omitempty"`
+	TokenTrackerMaxTokens  *float64 `json:"tokenTrackerMaxTokens,omitempty"`
 }
 
 // AutoBlendProfileConfig mirrors the AIBRIX_ROUTING_AUTO_BLEND_* weights.
@@ -105,10 +121,6 @@ type AutoBlendProfileConfig struct {
 // types.PDOverrides documents the mapping. A knob the profile leaves unset, or
 // sets to a value the matching environment variable would reject, keeps the
 // environment default.
-//
-// AIBRIX_TOKEN_LOAD_MAX_SESSIONS has no field here on purpose: it gates the
-// shared session table of the token-load tracker, so a per-request cap would
-// not be a real per-model limit. It stays environment-only.
 type PDProfileConfig struct {
 	// DecodeAbortTimeout and DecodeAbortRetryDelay override
 	// AIBRIX_DECODE_ABORT_TIMEOUT and AIBRIX_DECODE_ABORT_RETRY_DELAY. Zero is

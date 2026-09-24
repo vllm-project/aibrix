@@ -919,17 +919,39 @@ can therefore be routed with different thresholds by selecting different profile
    * - ``autoBlend.prefixCacheLoadBalanceWeight``
      - ``AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT``
      - Load-balance weight of that ratio. ``0`` leaves those requests with prefix-cache scoring alone.
+   * - ``vtc.inputTokenWeight``
+     - ``AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT``
+     - Weight of a request's input tokens in the VTC token tracker. Also scopes the tracker: the profile's requests get one of their own.
+   * - ``vtc.outputTokenWeight``
+     - ``AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT``
+     - Weight of a request's output tokens in that tracker.
+   * - ``vtc.tokenTrackerWindowSize``
+     - ``AIBRIX_ROUTER_VTC_TOKEN_TRACKER_WINDOW_SIZE``
+     - Sliding window of the profile's tracker, in ``vtc.tokenTrackerTimeUnit`` units.
+   * - ``vtc.tokenTrackerTimeUnit``
+     - ``AIBRIX_ROUTER_VTC_TOKEN_TRACKER_TIME_UNIT``
+     - Bucket size of that window: ``minutes``, ``seconds`` or ``milliseconds``. An unknown name is ignored.
+   * - ``vtc.tokenTrackerMinTokens``
+     - ``AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MIN_TOKENS``
+     - Floor the profile's tracker reports while its window holds little activity.
+   * - ``vtc.tokenTrackerMaxTokens``
+     - ``AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MAX_TOKENS``
+     - Ceiling the profile's tracker reports while its window holds little activity.
 
-Knobs that configure process-wide state stay environment-only and have no profile field: the
-preble histogram window and eviction loop (``AIBRIX_ROUTER_PREBLE_SLIDING_WINDOW_PERIOD``,
-``AIBRIX_ROUTER_PREBLE_EVICTION_LOOP_INTERVAL``), the VTC token tracker
-(``AIBRIX_ROUTER_VTC_TOKEN_TRACKER_WINDOW_SIZE``, ``..._TIME_UNIT``, ``..._MIN_TOKENS``,
-``..._MAX_TOKENS``) and the tracker's token weights (``AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT``,
-``AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT``), the session-affinity local cache capacity
-(``AIBRIX_SESSION_AFFINITY_MAX_LOCAL_KEYS``), the router string cache bound
-(``AIBRIX_ROUTER_MAX_CACHED_ALGORITHM_STRINGS``), and the session-table cap of the token-load
-tracker (``AIBRIX_TOKEN_LOAD_MAX_SESSIONS``). All models of one gateway process share that
-state, so a per-request value could not be applied without corrupting it.
+Some knobs configure state normally shared by the whole gateway process. A profile that sets one
+of them does not retune the shared state: the gateway scopes an instance to the resolved values,
+so profiles that agree share one and a profile that sets none keeps the shared instance exactly
+as before. This is how ``vtc.inputTokenWeight``, ``vtc.outputTokenWeight``,
+``vtc.tokenTrackerWindowSize``, ``vtc.tokenTrackerTimeUnit``, ``vtc.tokenTrackerMinTokens`` and
+``vtc.tokenTrackerMaxTokens`` scope the VTC token tracker (at most 16 trackers per process; a
+profile past the bound keeps the shared tracker).
+
+Knobs that bound state shared by every model of a process stay environment-only and have no
+profile field: the preble histogram window and eviction loop
+(``AIBRIX_ROUTER_PREBLE_SLIDING_WINDOW_PERIOD``, ``AIBRIX_ROUTER_PREBLE_EVICTION_LOOP_INTERVAL``),
+the session-affinity local cache capacity (``AIBRIX_SESSION_AFFINITY_MAX_LOCAL_KEYS``), the
+routing string cache bound (``AIBRIX_ROUTER_MAX_CACHED_ALGORITHM_STRINGS``) and the token-load
+session table cap (``AIBRIX_TOKEN_LOAD_MAX_SESSIONS``).
 
 .. _prometheus-api-access:
 

@@ -144,6 +144,12 @@ func resolveRoutingOverrides(cfg *types.RoutingConfig) *types.RoutingOverrides {
 		set(apply(&ov.VTC.MaxPodLoad, "vtc.maxPodLoad", v.MaxPodLoad, positive[float64]))
 		set(apply(&ov.VTC.FairnessWeight, "vtc.fairnessWeight", v.FairnessWeight, nonNegative[float64]))
 		set(apply(&ov.VTC.UtilizationWeight, "vtc.utilizationWeight", v.UtilizationWeight, nonNegative[float64]))
+		set(apply(&ov.VTC.InputTokenWeight, "vtc.inputTokenWeight", v.InputTokenWeight, positive[float64]))
+		set(apply(&ov.VTC.OutputTokenWeight, "vtc.outputTokenWeight", v.OutputTokenWeight, positive[float64]))
+		set(apply(&ov.VTC.TokenTracker.WindowSize, "vtc.tokenTrackerWindowSize", v.TokenTrackerWindowSize, positive[int]))
+		set(apply(&ov.VTC.TokenTracker.TimeUnit, "vtc.tokenTrackerTimeUnit", v.TokenTrackerTimeUnit, knownVTCTimeUnit))
+		set(apply(&ov.VTC.TokenTracker.MinTokens, "vtc.tokenTrackerMinTokens", v.TokenTrackerMinTokens, positive[float64]))
+		set(apply(&ov.VTC.TokenTracker.MaxTokens, "vtc.tokenTrackerMaxTokens", v.TokenTrackerMaxTokens, positive[float64]))
 	}
 	if ab := cfg.AutoBlend; ab != nil {
 		set(apply(&ov.AutoBlend.LoadBalanceWeight, "autoBlend.loadBalanceWeight", ab.LoadBalanceWeight, inRange(0, maxWeightCoefficient)))
@@ -212,6 +218,13 @@ func applySeconds(dst *time.Duration, knob string, v *int, ok func(int) bool) bo
 	}
 	*dst = time.Duration(*v) * time.Second
 	return true
+}
+
+// knownVTCTimeUnit accepts the bucket sizes the VTC token tracker knows. An
+// unknown name would otherwise be normalized to minutes behind the profile's
+// back, which is not what a profile that misspelled "seconds" asked for.
+func knownVTCTimeUnit(v string) bool {
+	return vtc.TimeUnitName(v) == v
 }
 
 // The predicates mirror the environment loaders: utils.LoadEnvInt and

@@ -22,13 +22,17 @@ import "github.com/vllm-project/aibrix/pkg/types"
 // configures. The routing algorithm package folds them into the process default
 // table at startup.
 //
-// The token tracker's window, time unit and token floors are absent on purpose:
-// they configure one tracker per gateway process rather than a routing
-// decision, so they stay environment-only.
+// The token tracker's window, time unit, token floors and the two token weights
+// are part of the table because a profile may override them: they are baked
+// into a tracker instance rather than read per request, so a profile that sets
+// any of them gets a tracker of its own (see TokenTrackerFor).
 func EnvOverrides() types.VTCOverrides {
 	return types.VTCOverrides{
 		MaxPodLoad:        maxPodLoad,
 		FairnessWeight:    fairnessWeight,
 		UtilizationWeight: utilizationWeight,
+		InputTokenWeight:  inputTokenWeight,
+		OutputTokenWeight: outputTokenWeight,
+		TokenTracker:      EnvTokenTrackerKnobs(),
 	}
 }

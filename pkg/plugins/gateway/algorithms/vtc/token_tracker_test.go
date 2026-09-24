@@ -19,6 +19,7 @@ package vtc
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -697,4 +698,16 @@ func TestTokenTrackerWindowSizeThroughConstructor(t *testing.T) {
 	assert.Equal(t, expectedWindowSize, windowSize, "Window size should be initialized with the default value of 5 minutes")
 
 	assert.Equal(t, Minutes, bucketUnit, "Bucket unit should be initialized with the default value of Minutes")
+}
+
+// TestWindowSizeOverflowSaturates verifies that an extremely large configured
+// window saturates instead of wrapping around into a negative duration.
+func TestWindowSizeOverflowSaturates(t *testing.T) {
+	config := DefaultVTCConfig()
+	hugeBuckets := int(math.MaxInt64/int64(time.Millisecond)) + 1
+	tracker := NewInMemorySlidingWindowTokenTracker(&config,
+		WithWindowSize(hugeBuckets), WithTimeUnit(Milliseconds))
+
+	vtcTracker := tracker.(*InMemorySlidingWindowTokenTracker)
+	assert.Equal(t, time.Duration(math.MaxInt64), vtcTracker.windowSize)
 }
