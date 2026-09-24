@@ -148,8 +148,10 @@ const (
 	// is the OOM / crashed-scheduler / bootstrap-timeout case.
 	PrefillFailureHTTPStatus = "http_status"
 	// PrefillFailureBadResponse: HTTP 200 with a body the gateway cannot
-	// parse. The KV transfer itself completed, so this one does NOT abort the
-	// decode leg.
+	// parse. For SGLang this means the KV transfer itself completed, so it does
+	// NOT abort the decode leg; for an out-of-band handshake (TRT-LLM
+	// generation-first) it is treated as terminal instead (see
+	// PrefillFailureIsTerminalFor).
 	PrefillFailureBadResponse = "bad_response"
 )
 
@@ -176,8 +178,10 @@ func (e *PrefillHTTPError) Error() string {
 }
 
 // PrefillBodyError is returned when the prefill pod answered 200 but the body
-// could not be parsed. Kept distinct from a transport failure because the KV
-// transfer did complete: the decode leg must not be aborted.
+// could not be parsed. For engines whose KV handshake is the HTTP body (SGLang)
+// the transfer did complete, so the decode leg must not be aborted; engines with
+// an out-of-band handshake classify this as terminal via
+// PrefillFailureIsTerminalFor.
 type PrefillBodyError struct {
 	Err error
 }
@@ -244,11 +248,28 @@ func classifyPrefillFailure(err error) (string, int) {
 // never arrive, which is exactly when the client must be told the request
 // failed instead of being left to wait out the bootstrap timeout.
 //
-// Everything except PrefillFailureBadResponse qualifies: a 200 with an
-// unparseable body still completed the KV transfer, and aborting then would
-// kill a healthy request.
+// Everything except PrefillFailureBadResponse qualifies: for engines whose KV
+// handshake completes inside the prefill HTTP body (SGLang), a 200 with an
+// unparseable body still means the KV transfer completed, and aborting then
+// would kill a healthy request. Engines whose KV transfer is out of band use
+// PrefillFailureIsTerminalFor instead.
 func PrefillFailureIsTerminal(class string) bool {
-	return class != "" && class != PrefillFailureBadResponse
+	return PrefillFailureIsTerminalFor(class, false)
+}
+
+// PrefillFailureIsTerminalFor is PrefillFailureIsTerminal under an engine's
+// async dispatch policy. resetAfterHeaders is true for engines whose decode leg
+// can answer before the KV cache arrives (TRT-LLM generation-first).
+//
+// For those engines PrefillFailureBadResponse is terminal too: KV moves over the
+// transceiver, not in the context HTTP body, so a 200 the gateway cannot parse
+// leaves it unable to tell whether context processing succeeded while generation
+// keeps waiting for KV it may never get.
+func PrefillFailureIsTerminalFor(class string, resetAfterHeaders bool) bool {
+	if class == PrefillFailureBadResponse {
+		return resetAfterHeaders
+	}
+	return class != ""
 }
 
 // RecordPrefillFailure classifies err and records it on the PD leg state as the

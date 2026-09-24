@@ -37,6 +37,7 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -131,7 +132,7 @@ func TestAsyncPrefillFailureRecordsFailureAndAbortsDecodeLeg(t *testing.T) {
 	prefillPod := failFastPod(t, "prefill-1", strings.TrimPrefix(prefillSrv.URL, "http://"))
 
 	// The async leg is fire-and-forget: Execute returns before it finishes.
-	require.NoError(t, exec.Execute(ctx, prefillPod, sglangEngine, LogContext{}))
+	require.NoError(t, exec.Execute(ctx, prefillPod, engine.Resolve(sglangEngine), LogContext{}))
 
 	body := sink.wait(t, 5*time.Second)
 	assert.Equal(t, ctx.PDRequestID(), gjson.Get(body, "rid").String(),
@@ -172,7 +173,7 @@ func TestAsyncPrefillBadResponseDoesNotAbortDecodeLeg(t *testing.T) {
 	ctx := failFastCtx("req-badbody", `{"messages":[{"role":"user","content":"hi"}]}`, strings.TrimPrefix(decodeSrv.URL, "http://"))
 	prefillPod := failFastPod(t, "prefill-1", strings.TrimPrefix(prefillSrv.URL, "http://"))
 
-	require.NoError(t, exec.Execute(ctx, prefillPod, sglangEngine, LogContext{}))
+	require.NoError(t, exec.Execute(ctx, prefillPod, engine.Resolve(sglangEngine), LogContext{}))
 
 	assert.Eventually(t, func() bool { return ctx.PrefillFailure() != nil }, 2*time.Second, 10*time.Millisecond)
 	assert.Equal(t, pd.PrefillFailureBadResponse, ctx.PrefillFailure().Class)
@@ -192,7 +193,7 @@ func TestAsyncPrefillTransportFailureIsTerminal(t *testing.T) {
 	exec := failFastExecutor()
 	ctx := failFastCtx("req-dead", `{"messages":[{"role":"user","content":"hi"}]}`, strings.TrimPrefix(decodeSrv.URL, "http://"))
 
-	require.NoError(t, exec.Execute(ctx, failFastPod(t, "prefill-1", deadAddr), sglangEngine, LogContext{}))
+	require.NoError(t, exec.Execute(ctx, failFastPod(t, "prefill-1", deadAddr), engine.Resolve(sglangEngine), LogContext{}))
 
 	assert.Eventually(t, func() bool { return ctx.PrefillFailure() != nil }, 5*time.Second, 10*time.Millisecond)
 	assert.Equal(t, pd.PrefillFailureTransport, ctx.PrefillFailure().Class)
@@ -239,7 +240,7 @@ func TestPrefillGoroutineFailureAfterContextReuseDoesNotTouchNewRequest(t *testi
 	ctx1 := failFastCtx("req-old", `{"messages":[{"role":"user","content":"hi"}],"stream":true}`, strings.TrimPrefix(decodeSrv.URL, "http://"))
 	prefillPod := failFastPod(t, "prefill-1", strings.TrimPrefix(prefillSrv.URL, "http://"))
 
-	require.NoError(t, exec.Execute(ctx1, prefillPod, sglangEngine, LogContext{}))
+	require.NoError(t, exec.Execute(ctx1, prefillPod, engine.Resolve(sglangEngine), LogContext{}))
 
 	select {
 	case <-arrived:

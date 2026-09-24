@@ -107,9 +107,55 @@ Supported Engines
      - Requires ``model.aibrix.ai/sglang-bootstrap-port`` annotation (default: ``8998``).
    * - TensorRT-LLM
      - ``trtllm``
-     - Uses NIXL KV transfer backend (``AIBRIX_KV_CONNECTOR_TYPE=nixl``).
+     - Supports ``context_first`` (default) and opt-in ``generation_first`` dispatch. KV transfer is configured on the TRT-LLM workers.
 
 Set the engine on each pod with the ``model.aibrix.ai/engine`` label.
+
+
+TensorRT-LLM Parallel Scheduling
+--------------------------------
+
+By default the gateway waits for the context (prefill) response before forwarding
+the generation (decode) request. To run both legs concurrently, set
+``AIBRIX_TRT_SCHEDULE_STYLE=generation_first`` on the **gateway plugin**
+Deployment and restart its pods:
+
+.. code-block:: yaml
+
+    env:
+      - name: AIBRIX_TRT_SCHEDULE_STYLE
+        value: "generation_first"
+
+Prerequisites:
+
+* Workers implementing the TRT-LLM ``1.3.0rc8`` OpenAI disaggregation protocol
+  (the version in the TensorRT quickstart). P/D must use matching model, tokenizer
+  and chat template, because this mode cannot wait for CTX's returned
+  ``prompt_token_ids``.
+* Both roles must run TRT-LLM's **Python** KV-cache transceiver
+  (``cache_transceiver_config: {backend: DEFAULT|NIXL, transceiver_runtime: PYTHON}``).
+  Only it reports the generation-first metadata; a worker with the default C++
+  transceiver answers ``/server_info`` with an empty ``disaggregated_params``. The
+  quickstart's ``tensor-rt-pd.yaml`` ships with this line commented out for
+  context-first, so uncomment it on both roles before enabling the mode.
+* Keep Envoy ``failure_mode_allow=false`` so context failures reset the upstream
+  stream and the engine cancels the generation leg.
+* Assign different ``AIBRIX_TRT_MACHINE_ID`` values to gateway processes sharing
+  TRT workers, as with context-first routing.
+
+The gateway loads the selected CTX worker's ``/server_info`` lazily (3-second
+lookup timeout, 1-minute TTL), prepares a shared ``disagg_request_id`` and
+``schedule_style=1`` on both legs, sends CTX in a goroutine, and immediately lets
+Envoy forward GEN. The KV transfer stays between the engines; the gateway neither
+transfers KV nor sends a duplicate GEN HTTP request. Missing or invalid metadata
+fails routing before either inference request is sent. See
+``pkg/plugins/gateway/algorithms/pd_readme.md`` for the request sequence and
+failure handling.
+
+Begin with text-only 1P1D; ``samples/quickstart/tensorrt/README.md`` carries the
+smoke test. Set ``AIBRIX_TRT_SCHEDULE_STYLE=context_first`` and restart the gateway
+to roll back. Other engines and combined-pod routing are unaffected, and an
+unrecognized value is logged and leaves the router on ``context_first``.
 
 
 Step 1 — Label Your Pods
@@ -696,7 +742,7 @@ These are set on the **gateway plugin** deployment.
      - Default scoring policy for selecting decode pods. ``load_balancing``, ``least_request``, or ``conductor``.
    * - ``AIBRIX_KV_CONNECTOR_TYPE``
      - ``shfs``
-     - KV transfer backend. ``shfs`` for GPU (SHFS/KVCacheManager), ``nixl`` for Neuron (TensorRT-LLM).
+     - vLLM KV transfer adapter. ``shfs`` for GPU (SHFS/KVCacheManager), ``nixl`` for Neuron. TRT-LLM transfer backends are configured on the workers.
    * - ``AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD``
      - ``16``
      - Minimum request-count spread between prefill pods before load-imbalance routing kicks in.
@@ -717,7 +763,10 @@ These are set on the **gateway plugin** deployment.
      - Weight applied to the normalized inverse-throughput term in the ``load_balancing`` decode score numerator.
    * - ``AIBRIX_TRT_MACHINE_ID``
      - ``0``
-     - 10-bit machine ID used in Snowflake-style ``disagg_request_id`` generation for TensorRT-LLM (valid range: ``[0, 1024)``).
+     - 10-bit machine ID used in Snowflake-style ``disagg_request_id`` generation for TensorRT-LLM (valid range: ``[0, 1024)``). Must differ between gateway processes sharing TRT workers.
+   * - ``AIBRIX_TRT_SCHEDULE_STYLE``
+     - ``context_first``
+     - TRT-LLM dispatch mode: ``context_first`` or ``generation_first``. Set on the gateway plugin; read at PD router initialization. ``generation_first`` requires the Python KV-cache transceiver on both worker roles. An unrecognized value is logged and falls back to ``context_first``.
 
 .. seealso::
 
