@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
@@ -121,7 +122,7 @@ func TestHybridCacheLoadPrefillPolicy_IdlePodsFollowThePrefix(t *testing.T) {
 func TestHybridCacheLoadPrefillPolicy_LoadOutweighsPrefix(t *testing.T) {
 	f := newHybridTestFixture(t, hybridTestConfig, "idle", "hot")
 	f.seedPrefix(t, "hot", 100)
-	f.tracker.AcquirePrefill("long", "hot", 8000) // priority 8000 + 0.5 × 8000
+	f.tracker.AcquirePrefill("long", utils.GeneratePodKey(testNamespace, "hot"), 8000) // priority 8000 + 0.5 × 8000
 
 	scorer := f.prepare(t)
 	assert.Equal(t, float64(1), scorer.ScorePod(f.pods[0], 0, 0))
@@ -129,7 +130,7 @@ func TestHybridCacheLoadPrefillPolicy_LoadOutweighsPrefix(t *testing.T) {
 
 	// Barely loaded (below one token) still counts as idle.
 	f.tracker.ReleaseAll("long")
-	f.tracker.AcquirePrefill("tiny", "hot", 0.5)
+	f.tracker.AcquirePrefill("tiny", utils.GeneratePodKey(testNamespace, "hot"), 0.5)
 	assert.Equal(t, 0.5, scorer.ScorePod(f.pods[1], 1, 1))
 }
 

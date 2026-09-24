@@ -20,6 +20,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -29,11 +30,15 @@ import (
 // are already heavily loaded, and by the load-imbalance detector to select the
 // least-loaded pod when the spread exceeds AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD.
 //
+// Pods are identified by their pod key, "namespace/name" (see utils.GeneratePodKey): the
+// tracker is shared by every model the router serves, and pods in different
+// namespaces may share a name.
+//
 // All methods are safe for concurrent use.
 type PrefillRequestTracker struct {
-	// podRequestCounts maps pod name → active prefill request count.
+	// podRequestCounts maps pod key → active prefill request count.
 	podRequestCounts sync.Map // map[string]*atomic.Int32
-	// requestToPod maps request ID → pod name for O(1) cleanup in RemovePrefillRequest.
+	// requestToPod maps request ID → pod key for O(1) cleanup in RemovePrefillRequest.
 	requestToPod sync.Map // map[string]string
 }
 
@@ -42,21 +47,22 @@ func NewPrefillRequestTracker() *PrefillRequestTracker {
 	return &PrefillRequestTracker{}
 }
 
-// AddPrefillRequest records that requestID has been assigned to podName and
-// increments that pod's active-request counter. Called by the pod selector as
-// soon as the prefill pod is chosen, under the same lock as the selection, so
-// concurrent routing sees in-flight assignments. Must be paired with
-// RemovePrefillRequest when prefill completes or the assignment is abandoned.
-func (t *PrefillRequestTracker) AddPrefillRequest(requestID, podName string) {
-	countInterface, _ := t.podRequestCounts.LoadOrStore(podName, &atomic.Int32{})
+// AddPrefillRequest records that requestID has been assigned to the pod
+// identified by podKey (see utils.GeneratePodKey) and increments that pod's active-request
+// counter. Called by the pod selector as soon as the prefill pod is chosen,
+// under the same lock as the selection, so concurrent routing sees in-flight
+// assignments. Must be paired with RemovePrefillRequest when prefill
+// completes or the assignment is abandoned.
+func (t *PrefillRequestTracker) AddPrefillRequest(requestID, podKey string) {
+	countInterface, _ := t.podRequestCounts.LoadOrStore(podKey, &atomic.Int32{})
 	count := countInterface.(*atomic.Int32)
 
 	newCount := count.Add(1)
-	t.requestToPod.Store(requestID, podName)
+	t.requestToPod.Store(requestID, podKey)
 
 	klog.V(4).InfoS("prefill_request_added",
 		"request_id", requestID,
-		"pod_name", podName,
+		"pod", podKey,
 		"new_count", newCount)
 }
 
@@ -65,16 +71,16 @@ func (t *PrefillRequestTracker) AddPrefillRequest(requestID, podName string) {
 // if requestID was never added (e.g. the tracker was bypassed). The counter is
 // clamped to zero if it would otherwise go negative.
 func (t *PrefillRequestTracker) RemovePrefillRequest(requestID string) {
-	podNameInterface, exists := t.requestToPod.LoadAndDelete(requestID)
+	podKeyInterface, exists := t.requestToPod.LoadAndDelete(requestID)
 	if !exists {
 		klog.V(4).InfoS("prefill_request_not_found_for_removal", "request_id", requestID)
 		return
 	}
 
-	podName := podNameInterface.(string)
-	countInterface, exists := t.podRequestCounts.Load(podName)
+	podKey := podKeyInterface.(string)
+	countInterface, exists := t.podRequestCounts.Load(podKey)
 	if !exists {
-		klog.V(4).InfoS("pod_counter_not_found", "pod_name", podName, "request_id", requestID)
+		klog.V(4).InfoS("pod_counter_not_found", "pod", podKey, "request_id", requestID)
 		return
 	}
 
@@ -97,17 +103,20 @@ func (t *PrefillRequestTracker) RemovePrefillRequest(requestID string) {
 
 	klog.V(4).InfoS("prefill_request_removed",
 		"request_id", requestID,
-		"pod_name", podName,
+		"pod", podKey,
 		"new_count", newCount)
 }
 
 // GetPrefillRequestCountsForPods returns a map of pod name → active prefill
 // request count for each pod in pods. Pods with no recorded requests are
-// included with a count of 0.
+// included with a count of 0. Counts are looked up by pod key; the result stays
+// keyed by pod name, consistent with the router's other per-request score maps.
+// One model name deployed in two namespaces can still put two same-named pods
+// in one candidate list; that predates pod keys and is not addressed here.
 func (t *PrefillRequestTracker) GetPrefillRequestCountsForPods(pods []*v1.Pod) map[string]int32 {
 	counts := make(map[string]int32)
 	for _, pod := range pods {
-		countInterface, exists := t.podRequestCounts.Load(pod.Name)
+		countInterface, exists := t.podRequestCounts.Load(utils.GeneratePodKey(pod.Namespace, pod.Name))
 		if !exists {
 			counts[pod.Name] = 0
 		} else {
@@ -118,9 +127,10 @@ func (t *PrefillRequestTracker) GetPrefillRequestCountsForPods(pods []*v1.Pod) m
 }
 
 // GetPrefillRequestCountsForPod returns the current active prefill request
-// count for podname, or 0 if no requests have been recorded for that pod.
-func (t *PrefillRequestTracker) GetPrefillRequestCountsForPod(podname string) int {
-	countInterface, exists := t.podRequestCounts.Load(podname)
+// count for the pod identified by podKey, or 0 if no requests have been
+// recorded for that pod.
+func (t *PrefillRequestTracker) GetPrefillRequestCountsForPod(podKey string) int {
+	countInterface, exists := t.podRequestCounts.Load(podKey)
 	if !exists {
 		return 0
 	}
@@ -134,12 +144,15 @@ func (t *PrefillRequestTracker) GetPrefillRequestCountsForPod(podname string) in
 // preventing concurrent requests from all being routed to the same decode pod
 // during the prefill phase when the metric is still stale.
 //
+// Pods are identified by their pod key, "namespace/name" (see utils.GeneratePodKey), for
+// the same reason as in PrefillRequestTracker.
+//
 // All methods are safe for concurrent use, including nil receivers (the tracker
 // is optional and may be nil when disabled).
 type PendingDecodeTracker struct {
-	// podRequestCounts maps pod name → pending decode request count.
+	// podRequestCounts maps pod key → pending decode request count.
 	podRequestCounts sync.Map // map[string]*atomic.Int32
-	// requestToPod maps request ID → pod name for O(1) cleanup in RemovePendingDecode.
+	// requestToPod maps request ID → pod key for O(1) cleanup in RemovePendingDecode.
 	requestToPod sync.Map // map[string]string
 }
 
@@ -148,18 +161,19 @@ func NewPendingDecodeTracker() *PendingDecodeTracker {
 	return &PendingDecodeTracker{}
 }
 
-// AddPendingDecode records that requestID has been assigned to podName and
-// increments that pod's pending-decode counter. Called by the pod selector as
-// soon as the decode pod is chosen, under the same lock as the selection.
-// RemovePendingDecode is deferred in Route.
-func (t *PendingDecodeTracker) AddPendingDecode(requestID, podName string) {
+// AddPendingDecode records that requestID has been assigned to the pod
+// identified by podKey (see utils.GeneratePodKey) and increments that pod's pending-decode
+// counter. Called by the pod selector as soon as the decode pod is chosen,
+// under the same lock as the selection. RemovePendingDecode is deferred in
+// Route.
+func (t *PendingDecodeTracker) AddPendingDecode(requestID, podKey string) {
 	if t == nil {
 		return
 	}
-	countInterface, _ := t.podRequestCounts.LoadOrStore(podName, &atomic.Int32{})
+	countInterface, _ := t.podRequestCounts.LoadOrStore(podKey, &atomic.Int32{})
 	count := countInterface.(*atomic.Int32)
 	count.Add(1)
-	t.requestToPod.Store(requestID, podName)
+	t.requestToPod.Store(requestID, podKey)
 }
 
 // RemovePendingDecode decrements the pending-decode counter for the pod
@@ -170,12 +184,12 @@ func (t *PendingDecodeTracker) RemovePendingDecode(requestID string) {
 	if t == nil {
 		return
 	}
-	podNameInterface, exists := t.requestToPod.LoadAndDelete(requestID)
+	podKeyInterface, exists := t.requestToPod.LoadAndDelete(requestID)
 	if !exists {
 		return
 	}
-	podName := podNameInterface.(string)
-	countInterface, exists := t.podRequestCounts.Load(podName)
+	podKey := podKeyInterface.(string)
+	countInterface, exists := t.podRequestCounts.Load(podKey)
 	if !exists {
 		return
 	}
@@ -196,13 +210,13 @@ func (t *PendingDecodeTracker) RemovePendingDecode(requestID string) {
 }
 
 // GetPendingDecodeCount returns the current pending-decode request count for
-// podName as a float64 (for direct addition to metric values). Returns 0 for
-// unknown pods or when the receiver is nil.
-func (t *PendingDecodeTracker) GetPendingDecodeCount(podName string) float64 {
+// the pod identified by podKey as a float64 (for direct addition to metric
+// values). Returns 0 for unknown pods or when the receiver is nil.
+func (t *PendingDecodeTracker) GetPendingDecodeCount(podKey string) float64 {
 	if t == nil {
 		return 0
 	}
-	countInterface, exists := t.podRequestCounts.Load(podName)
+	countInterface, exists := t.podRequestCounts.Load(podKey)
 	if !exists {
 		return 0
 	}

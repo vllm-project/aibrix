@@ -113,7 +113,7 @@ func waitForActiveTokens(t *testing.T, tracker *pd.TokenLoadTracker, pods []*v1.
 	for {
 		total := 0.0
 		for _, pod := range pods {
-			active, _ := tracker.GetLoad(pod.Name)
+			active, _ := tracker.GetLoad(utils.GeneratePodKey(pod.Namespace, pod.Name))
 			total += active
 		}
 		if total == want {
@@ -165,13 +165,13 @@ func TestPDRouter_TokenLoadSpreadsByPromptCost(t *testing.T) {
 	// short prompts share the other one. (The routing contexts are still owned
 	// by the parked Route calls, so the ledger is what is inspected here.)
 	longPod, shortPod := prefillPods[0].Name, prefillPods[1].Name
-	if active, _ := tokenLoad.GetLoad(longPod); active != longBytes/4 {
+	if active, _ := tokenLoad.GetLoad(burstPodKey(longPod)); active != longBytes/4 {
 		longPod, shortPod = shortPod, longPod
 	}
-	active, kv := tokenLoad.GetLoad(longPod)
+	active, kv := tokenLoad.GetLoad(burstPodKey(longPod))
 	assert.Equal(t, float64(longBytes/4), active)
 	assert.Equal(t, float64(longBytes/4), kv)
-	active, kv = tokenLoad.GetLoad(shortPod)
+	active, kv = tokenLoad.GetLoad(burstPodKey(shortPod))
 	assert.Equal(t, float64(2*shortBytes/4), active)
 	assert.Equal(t, float64(2*shortBytes/4), kv)
 
@@ -185,24 +185,24 @@ func TestPDRouter_TokenLoadSpreadsByPromptCost(t *testing.T) {
 		assert.Equalf(t, shortPod, ctx.RespHeaders[HeaderPrefillTargetPod], "%s must avoid the pod holding the long prompt", ctx.RequestID)
 	}
 	for _, pod := range prefillPods {
-		active, kv := tokenLoad.GetLoad(pod.Name)
+		active, kv := tokenLoad.GetLoad(utils.GeneratePodKey(pod.Namespace, pod.Name))
 		assert.Equalf(t, float64(0), active, "%s active tokens after prefill returned", pod.Name)
 		assert.Greaterf(t, kv, float64(0), "%s kv tokens must stay resident until completion", pod.Name)
 	}
-	assert.Equal(t, float64(0.5*longBytes/4), tokenLoad.GetPriority(longPod), "only weighted KV is left")
+	assert.Equal(t, float64(0.5*longBytes/4), tokenLoad.GetPriority(burstPodKey(longPod)), "only weighted KV is left")
 
 	// Request completion via the cache.RequestTracker callbacks clears the
 	// KV charge; unknown request IDs and a nil context are harmless.
 	r.DoneRequestCount(nil, "long", longCtx.Model, 0)
 	r.DoneRequestTrace(nil, "short-0", longCtx.Model, 0, 0, 0)
 	r.DoneRequestCount(nil, "never-routed", longCtx.Model, 0)
-	_, kv = tokenLoad.GetLoad(longPod)
+	_, kv = tokenLoad.GetLoad(burstPodKey(longPod))
 	assert.Equal(t, float64(0), kv)
-	_, kv = tokenLoad.GetLoad(shortPod)
+	_, kv = tokenLoad.GetLoad(burstPodKey(shortPod))
 	assert.Equal(t, float64(shortBytes/4), kv, "short-1 has not completed yet")
 
 	r.DoneRequestCount(nil, "short-1", longCtx.Model, 0)
-	_, kv = tokenLoad.GetLoad(shortPod)
+	_, kv = tokenLoad.GetLoad(burstPodKey(shortPod))
 	assert.Equal(t, float64(0), kv)
 	assert.Equal(t, int64(0), r.AddRequestCount(longCtx, "long", longCtx.Model))
 }
@@ -228,10 +228,10 @@ func TestPDRouter_TokenLoadReleasedOnPrefillFailure(t *testing.T) {
 	_, err := r.Route(tokenLoadRequest(t, "doomed", 4000), podList)
 	require.Error(t, err)
 
-	active, kv := tokenLoad.GetLoad(prefillPod.Name)
+	active, kv := tokenLoad.GetLoad(utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name))
 	assert.Equal(t, float64(0), active)
 	assert.Equal(t, float64(0), kv)
-	assert.Equal(t, 0, r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name))
+	assert.Equal(t, 0, r.prefillRequestTracker.GetPrefillRequestCountsForPod(utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name)))
 }
 
 // TestPDRouter_TokenLoadChargedOnlyForTokenLoadPolicy checks that the tracker
@@ -250,7 +250,7 @@ func TestPDRouter_TokenLoadChargedOnlyForTokenLoadPolicy(t *testing.T) {
 
 	_, _, err := r.filterPrefillDecodePods(tokenLoadRequest(t, "least-request", 4000), readyPods)
 	require.NoError(t, err)
-	active, kv := tokenLoad.GetLoad(prefillPod.Name)
+	active, kv := tokenLoad.GetLoad(utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name))
 	assert.Equal(t, float64(0), active, "least_request must not charge the token-load tracker")
 	assert.Equal(t, float64(0), kv)
 
@@ -265,7 +265,7 @@ func TestPDRouter_TokenLoadChargedOnlyForTokenLoadPolicy(t *testing.T) {
 
 	_, _, err = r.filterPrefillDecodePods(ctx, readyPods)
 	require.NoError(t, err)
-	active, kv = tokenLoad.GetLoad(prefillPod.Name)
+	active, kv = tokenLoad.GetLoad(utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name))
 	assert.Equal(t, float64(1000), active, "token_load selected through routingConfig charges the tracker")
 	assert.Equal(t, float64(1000), kv)
 }
