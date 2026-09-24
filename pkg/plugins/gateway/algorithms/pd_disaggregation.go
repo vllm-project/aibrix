@@ -369,7 +369,7 @@ func (r *pdRouter) chargeTokenLoad(routingCtx *types.RoutingContext, pod *v1.Pod
 			"prompt_tokens", promptTokens, "new_tokens", newTokens, "source", source,
 			"prefix_match_percent", matchPct, "cost", cost)
 	}
-	r.tokenLoadTracker.AcquirePrefillWithTTL(routingCtx.RequestID, pd.PodKey(pod), cost, overrides.TokenLoad.TTL)
+	r.tokenLoadTracker.AcquirePrefillWithTTL(routingCtx.RequestID, utils.GeneratePodKey(pod.Namespace, pod.Name), cost, overrides.TokenLoad.TTL)
 }
 
 // releaseTokenLoad drops whatever the request still holds on the token-load
@@ -525,7 +525,7 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 					"requestId", routingCtx.RequestID, "promptLength", promptLength, "combinedPods", len(combinedPods),
 					"bucketPrefillPods", len(promptLengthBucketingPrefillPods), "bucketDecodePods", len(promptLengthBucketingDecodePods))
 				combinedPod := combinedPods[rand.IntN(len(combinedPods))]
-				r.pendingDecodeTracker.AddPendingDecode(routingCtx.RequestID, pd.PodKey(combinedPod))
+				r.pendingDecodeTracker.AddPendingDecode(routingCtx.RequestID, utils.GeneratePodKey(combinedPod.Namespace, combinedPod.Name))
 				return nil, combinedPod, nil
 			}
 			// Do not fall back to unfiltered PD pods: each pod group (storm) is sized for a
@@ -553,7 +553,7 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 			combinedPod := r.scoreCombinedPods(routingCtx, combinedPods)
 			if combinedPod != nil {
 				klog.InfoS("load imbalance detected, selecting combined pod", "requestId", routingCtx.RequestID, "selectedCombinedPod", combinedPod.Name)
-				r.pendingDecodeTracker.AddPendingDecode(routingCtx.RequestID, pd.PodKey(combinedPod))
+				r.pendingDecodeTracker.AddPendingDecode(routingCtx.RequestID, utils.GeneratePodKey(combinedPod.Namespace, combinedPod.Name))
 				return nil, combinedPod, nil
 			}
 		}
@@ -596,8 +596,8 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	}
 
 	// Register while still holding selectMu so the next selection counts this one.
-	r.pendingDecodeTracker.AddPendingDecode(routingCtx.RequestID, pd.PodKey(selectedDecode))
-	r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, pd.PodKey(selectedPrefill))
+	r.pendingDecodeTracker.AddPendingDecode(routingCtx.RequestID, utils.GeneratePodKey(selectedDecode.Namespace, selectedDecode.Name))
+	r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, utils.GeneratePodKey(selectedPrefill.Namespace, selectedPrefill.Name))
 	r.chargeTokenLoad(routingCtx, selectedPrefill, prefillPol, prefillScorer)
 	return selectedPrefill, selectedDecode, nil
 }
@@ -721,7 +721,7 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 	runningReqCounts, runningErr := r.cache.GetPodsRunningRequests(filteredDecodePods)
 
 	for _, pod := range filteredDecodePods {
-		podKey := pd.PodKey(pod)
+		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 		requestCount := r.pendingDecodeTracker.GetPendingDecodeCount(podKey)
 		if runningErr != nil {
 			podRequestCounts[pod.Name] = requestCount
@@ -983,7 +983,7 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 			// Cold-start: assign a neutral score (1.0 = idle warm pod) plus gateway-tracked
 			// pending requests so the roleset competes fairly instead of being excluded entirely.
 			// Once the pod's first request completes and metrics arrive, it transitions to full scoring.
-			pending := float64(r.pendingDecodeTracker.GetPendingDecodeCount(pd.PodKey(pod)))
+			pending := float64(r.pendingDecodeTracker.GetPendingDecodeCount(utils.GeneratePodKey(pod.Namespace, pod.Name)))
 			coldScore := 1.0 + pending
 			if verbose {
 				scoredPods = append(scoredPods, fmt.Sprintf("%s:score=%.4f,roleset=%s(cold)", pod.Name, coldScore, rolesetName))

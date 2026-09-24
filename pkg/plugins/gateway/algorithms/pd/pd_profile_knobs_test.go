@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
@@ -117,7 +118,7 @@ func TestTokenLoadScorersUseProfileKnobs(t *testing.T) {
 
 	tracker, _ := newTestTokenLoadTracker(t, TokenLoadConfig{KVWeight: 0.5})
 	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-1", Namespace: "default"}}
-	tracker.AcquirePrefill("charge", PodKey(pod), 1000) // active 1000, resident KV 1000
+	tracker.AcquirePrefill("charge", utils.GeneratePodKey(pod.Namespace, pod.Name), 1000) // active 1000, resident KV 1000
 
 	t.Run("token_load kv weight", func(t *testing.T) {
 		scorer, err := NewTokenLoadPrefillPolicy(tracker).Prepare(knobsContext(t, nil), nil, nil)

@@ -126,7 +126,7 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 		"prefill_url", apiURL,
 		"prefill_score_policy", logCtx.PrefillScorePolicy,
 		"decode_score_policy", logCtx.DecodeScorePolicy,
-		"outstanding_prefill_requests", e.tracker.GetPrefillRequestCountsForPod(pd.PodKey(prefillPod)),
+		"outstanding_prefill_requests", e.tracker.GetPrefillRequestCountsForPod(utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name)),
 	}
 	klog.InfoS("prefill_request_start", fields...)
 	// Copy and drop the last two fields (outstanding count) before passing to the
@@ -152,7 +152,7 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 		requestTime := routingCtx.RequestTime
 		prefillStartTime := routingCtx.PrefillStartTime
 		prefillPodName := prefillPod.Name
-		prefillPodKey := pd.PodKey(prefillPod)
+		prefillPodKey := utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name)
 		prefillPodIP := prefillPod.Status.PodIP
 		model := routingCtx.Model
 		asyncCtx := &types.RoutingContext{
@@ -241,7 +241,7 @@ func (e *DefaultExecutor) handleSync(
 	fields = append(fields,
 		"routing_time_taken", routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime),
 		"prefill_time_taken", routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime),
-		"outstanding_prefill_requests", e.tracker.GetPrefillRequestCountsForPod(pd.PodKey(prefillPod))-1)
+		"outstanding_prefill_requests", e.tracker.GetPrefillRequestCountsForPod(utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name))-1)
 	klog.InfoS("prefill_request_end", fields...)
 	return nil
 }

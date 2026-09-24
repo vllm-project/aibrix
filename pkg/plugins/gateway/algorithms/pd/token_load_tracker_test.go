@@ -724,6 +724,8 @@ func TestTokenLoadTracker_SameNameInTwoNamespaces(t *testing.T) {
 func TestTokenLoadGaugeLabelValues(t *testing.T) {
 	assert.Equal(t, []string{"default", "prefill-0"}, tokenLoadGaugeLabelValues("default/prefill-0"))
 	assert.Equal(t, []string{"", "prefill-0"}, tokenLoadGaugeLabelValues("prefill-0"))
+	// Not a "namespace/name" key: the whole key is kept as the pod name.
+	assert.Equal(t, []string{"", "a/b/c"}, tokenLoadGaugeLabelValues("a/b/c"))
 }
 
 func TestTokenLoadTracker_JanitorPrunesAfterForceRelease(t *testing.T) {

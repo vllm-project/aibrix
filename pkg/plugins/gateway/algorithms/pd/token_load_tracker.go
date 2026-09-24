@@ -128,7 +128,7 @@ func loadSessionTTL() time.Duration {
 // router has assigned to each prefill pod. It is the state behind the
 // token_load prefill score policy.
 //
-// Pods are identified by their pod key, "namespace/name" as built by PodKey.
+// Pods are identified by their pod key, "namespace/name" as built by utils.GeneratePodKey.
 // One tracker serves every model the router routes, so a bare pod name is not
 // enough: two deployments in different namespaces may name their prefill pods
 // identically, and must not see each other's load.
@@ -224,10 +224,10 @@ func (c *podCounter) load() float64 { return math.Float64frombits(c.bits.Load())
 var tokenLoadGaugeLabels = []string{"namespace", "pod_name"}
 
 // tokenLoadGaugeLabelValues returns the gauge label values for podKey: its
-// namespace and bare pod name. A key without a namespace is published with an
-// empty namespace label.
+// namespace and bare pod name. A key that is not "namespace/name" is published
+// whole as the pod name with an empty namespace label.
 func tokenLoadGaugeLabelValues(podKey string) []string {
-	namespace, name, ok := strings.Cut(podKey, "/")
+	namespace, name, ok := utils.ParsePodKey(podKey)
 	if !ok {
 		return []string{"", podKey}
 	}
@@ -413,7 +413,7 @@ func sessionKey(model, sessionID string) string {
 }
 
 // AcquirePrefill charges cost to both the active and the resident-KV counter
-// of the pod identified by podKey (see PodKey) and records the charge under
+// of the pod identified by podKey (see utils.GeneratePodKey) and records the charge under
 // requestID for later release, with the tracker's configured TTL. Request IDs
 // are unique per request, so a second AcquirePrefill for the same requestID is
 // a caller bug; it is tolerated by releasing whatever the earlier charge still

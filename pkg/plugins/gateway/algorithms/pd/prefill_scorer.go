@@ -39,6 +39,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
@@ -478,7 +479,7 @@ func (s tokenLoadScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
 		// No ledger to read; every pod ties and the caller's tie-break applies.
 		return 0
 	}
-	podKey := PodKey(pod)
+	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 	score := s.tracker.GetPriorityWithKVWeight(podKey, s.kvWeight)
 	if klog.V(4).Enabled() {
 		active, kv := s.tracker.GetLoad(podKey)
@@ -647,7 +648,7 @@ func (s *hybridCacheLoadScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64
 	discount := 1 - r*r*s.cfg.Factor
 	load := 0.0
 	if s.tracker != nil {
-		load = s.tracker.GetPriorityWithKVWeight(PodKey(pod), s.kvWeight)
+		load = s.tracker.GetPriorityWithKVWeight(utils.GeneratePodKey(pod.Namespace, pod.Name), s.kvWeight)
 	}
 	score := discount
 	if load >= 1 {

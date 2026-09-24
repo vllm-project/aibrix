@@ -20,23 +20,17 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
-
-// PodKey returns the key the PD router's per-pod load state is kept under,
-// "namespace/name". It is byte-identical to utils.GeneratePodKey but avoids
-// fmt, since the router computes it for every candidate pod under selectMu.
-func PodKey(pod *v1.Pod) string {
-	return pod.Namespace + "/" + pod.Name
-}
 
 // PrefillRequestTracker tracks the number of active prefill requests per pod.
 // It is used by the prefill scorer to avoid routing new requests to pods that
 // are already heavily loaded, and by the load-imbalance detector to select the
 // least-loaded pod when the spread exceeds AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD.
 //
-// Pods are identified by their pod key, "namespace/name" (see PodKey): the
+// Pods are identified by their pod key, "namespace/name" (see utils.GeneratePodKey): the
 // tracker is shared by every model the router serves, and pods in different
 // namespaces may share a name.
 //
@@ -54,7 +48,7 @@ func NewPrefillRequestTracker() *PrefillRequestTracker {
 }
 
 // AddPrefillRequest records that requestID has been assigned to the pod
-// identified by podKey (see PodKey) and increments that pod's active-request
+// identified by podKey (see utils.GeneratePodKey) and increments that pod's active-request
 // counter. Called by the pod selector as soon as the prefill pod is chosen,
 // under the same lock as the selection, so concurrent routing sees in-flight
 // assignments. Must be paired with RemovePrefillRequest when prefill
@@ -122,7 +116,7 @@ func (t *PrefillRequestTracker) RemovePrefillRequest(requestID string) {
 func (t *PrefillRequestTracker) GetPrefillRequestCountsForPods(pods []*v1.Pod) map[string]int32 {
 	counts := make(map[string]int32)
 	for _, pod := range pods {
-		countInterface, exists := t.podRequestCounts.Load(PodKey(pod))
+		countInterface, exists := t.podRequestCounts.Load(utils.GeneratePodKey(pod.Namespace, pod.Name))
 		if !exists {
 			counts[pod.Name] = 0
 		} else {
@@ -150,7 +144,7 @@ func (t *PrefillRequestTracker) GetPrefillRequestCountsForPod(podKey string) int
 // preventing concurrent requests from all being routed to the same decode pod
 // during the prefill phase when the metric is still stale.
 //
-// Pods are identified by their pod key, "namespace/name" (see PodKey), for
+// Pods are identified by their pod key, "namespace/name" (see utils.GeneratePodKey), for
 // the same reason as in PrefillRequestTracker.
 //
 // All methods are safe for concurrent use, including nil receivers (the tracker
@@ -168,7 +162,7 @@ func NewPendingDecodeTracker() *PendingDecodeTracker {
 }
 
 // AddPendingDecode records that requestID has been assigned to the pod
-// identified by podKey (see PodKey) and increments that pod's pending-decode
+// identified by podKey (see utils.GeneratePodKey) and increments that pod's pending-decode
 // counter. Called by the pod selector as soon as the decode pod is chosen,
 // under the same lock as the selection. RemovePendingDecode is deferred in
 // Route.

@@ -51,13 +51,3 @@ func TestRequestTrackers_SameNameInTwoNamespaces(t *testing.T) {
 	pending.RemovePendingDecode("req-1")
 	assert.Equal(t, float64(0), pending.GetPendingDecodeCount(keyA))
 }
-
-func TestPodKeyMatchesGeneratePodKey(t *testing.T) {
-	for _, pod := range []*v1.Pod{
-		{ObjectMeta: metav1.ObjectMeta{Name: "prefill-0", Namespace: "team-a"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "prefill-0"}},
-		{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"}},
-	} {
-		assert.Equal(t, utils.GeneratePodKey(pod.Namespace, pod.Name), PodKey(pod))
-	}
-}
