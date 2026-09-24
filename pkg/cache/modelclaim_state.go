@@ -33,9 +33,10 @@ type modelClaimBinding struct {
 	state  string
 }
 
-// modelClaimRecord is what the gateway knows of one ModelClaim object: its
-// phase, and why it does not serve yet.
+// modelClaimRecord is what the gateway knows of one ModelClaim object: the
+// name it serves, its phase, and why it does not serve yet.
 type modelClaimRecord struct {
+	model  string
 	phase  string
 	reason string
 }
@@ -48,10 +49,8 @@ type modelClaimRecord struct {
 type modelClaimState struct {
 	mu       sync.RWMutex
 	bindings map[string]map[string]modelClaimBinding
-	// claims holds each claim by the name it serves, keyed by namespace/name,
-	// and served maps each claim back to that name.
-	claims map[string]map[string]modelClaimRecord
-	served map[string]string
+	// claims holds each ModelClaim object by namespace/name.
+	claims map[string]modelClaimRecord
 }
 
 func (s *modelClaimState) set(podKey, model string, port int, state string) {
@@ -91,58 +90,38 @@ func (s *modelClaimState) get(model string) []modelClaimBinding {
 	return out
 }
 
-// setClaim records a claim under the name it serves, and forgets the name it
-// served before.
-func (s *modelClaimState) setClaim(key, model string, record modelClaimRecord) {
+// setClaim records a claim, in place of what was known of it before. A claim
+// that now serves another name no longer answers for the old one.
+func (s *modelClaimState) setClaim(key string, record modelClaimRecord) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.clearClaimLocked(key)
 	if s.claims == nil {
-		s.claims = make(map[string]map[string]modelClaimRecord)
-		s.served = make(map[string]string)
+		s.claims = make(map[string]modelClaimRecord)
 	}
-	byKey := s.claims[model]
-	if byKey == nil {
-		byKey = make(map[string]modelClaimRecord)
-		s.claims[model] = byKey
-	}
-	byKey[key] = record
-	s.served[key] = model
+	s.claims[key] = record
 }
 
 func (s *modelClaimState) clearClaim(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.clearClaimLocked(key)
-}
-
-func (s *modelClaimState) clearClaimLocked(key string) {
-	model, found := s.served[key]
-	if !found {
-		return
-	}
-	delete(s.served, key)
-	delete(s.claims[model], key)
-	if len(s.claims[model]) == 0 {
-		delete(s.claims, model)
-	}
+	delete(s.claims, key)
 }
 
 // claim returns the record of the first claim, by namespace and name, that
-// serves a model.
+// serves a model. It walks every claim. It is asked only about a model that no
+// pod advertises.
 func (s *modelClaimState) claim(model string) (modelClaimRecord, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	byKey := s.claims[model]
-	if len(byKey) == 0 {
-		return modelClaimRecord{}, false
+	var first string
+	var record modelClaimRecord
+	found := false
+	for key, candidate := range s.claims {
+		if candidate.model == model && (!found || key < first) {
+			first, record, found = key, candidate, true
+		}
 	}
-	keys := make([]string, 0, len(byKey))
-	for key := range byKey {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return byKey[keys[0]], true
+	return record, found
 }
 
 // ModelClaimBinding returns one deterministic advertisement for a served
@@ -167,7 +146,8 @@ func (c *Store) setModelClaim(claim *modelv1alpha1.ModelClaim) {
 		c.modelClaims.clearClaim(key)
 		return
 	}
-	c.modelClaims.setClaim(key, modelClaimServedName(claim), modelClaimRecord{
+	c.modelClaims.setClaim(key, modelClaimRecord{
+		model:  modelClaimServedName(claim),
 		phase:  string(claim.Status.Phase),
 		reason: modelClaimReason(claim),
 	})
