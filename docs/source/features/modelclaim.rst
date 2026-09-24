@@ -427,8 +427,9 @@ requests can continue to receive 503. The controller restores the real port
 only after the runtime reports the engine active and ready.
 
 An activating model also returns 503 with ``Retry-After``. So does a claim
-that is not placed yet. Its message gives the reason from the claim's
-``Scheduled`` condition, such as ``NoMatchingPods``. A terminally failed model
+that is not placed yet. Its message gives the controller's reason: from the
+claim's ``Scheduled`` condition while it waits, such as ``NoMatchingPods``, or
+from its ``Ready`` condition once it has failed. A terminally failed model
 returns 503 without ``Retry-After``. A model that no ModelClaim serves returns
 400.
 

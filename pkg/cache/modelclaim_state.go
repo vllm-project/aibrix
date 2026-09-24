@@ -187,7 +187,8 @@ func (c *Store) ModelClaimStatus(modelName string) (string, string, bool) {
 }
 
 // modelClaimServedName is the name clients address a claim's model by, as the
-// controller advertises it: its modelName, or else the claim's own name.
+// controller advertises it: its modelName, or else the claim's own name. It has
+// to agree with servedModelName in the ModelClaim controller.
 func modelClaimServedName(claim *modelv1alpha1.ModelClaim) string {
 	if claim.Spec.ModelName != nil && *claim.Spec.ModelName != "" {
 		return *claim.Spec.ModelName
@@ -196,19 +197,21 @@ func modelClaimServedName(claim *modelv1alpha1.ModelClaim) string {
 }
 
 // modelClaimReason is why a claim does not serve yet, in the controller's own
-// word: the reason on its Scheduled condition while that is False, or else the
-// one on its Ready condition while that is False.
+// word. A claim that waits for a card says why on its Scheduled condition, and
+// one that failed says why on its Ready condition. Only the condition its phase
+// is about is read, since the other can be stale: the controller leaves
+// Scheduled False from an earlier refusal after the claim moves on.
 func modelClaimReason(claim *modelv1alpha1.ModelClaim) string {
-	for _, conditionType := range []modelv1alpha1.ModelClaimConditionType{
-		modelv1alpha1.ModelClaimConditionTypeScheduled,
-		modelv1alpha1.ModelClaimConditionReady,
-	} {
-		condition := meta.FindStatusCondition(claim.Status.Conditions, string(conditionType))
-		if condition != nil && condition.Status == metav1.ConditionFalse {
-			return condition.Reason
-		}
+	conditionType := modelv1alpha1.ModelClaimConditionReady
+	switch claim.Status.Phase {
+	case "", modelv1alpha1.ModelClaimPending, modelv1alpha1.ModelClaimScheduling:
+		conditionType = modelv1alpha1.ModelClaimConditionTypeScheduled
 	}
-	return ""
+	condition := meta.FindStatusCondition(claim.Status.Conditions, string(conditionType))
+	if condition == nil || condition.Status != metav1.ConditionFalse {
+		return ""
+	}
+	return condition.Reason
 }
 
 var _ ModelClaimBindingProvider = (*Store)(nil)

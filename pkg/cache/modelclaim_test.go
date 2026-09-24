@@ -224,13 +224,13 @@ func TestModelClaimStatusFollowsUpdatesAndDeletion(t *testing.T) {
 	pending := pendingModelClaim("default", "qwen-claim", "qwen")
 	handleDiscoveryObject(c, discovery.EventAdd, pending, nil)
 
-	// Placement failed: the claim is Scheduled, and not Ready.
+	// Activation failed. As the controller writes it, Scheduled stays False
+	// from the earlier refusal, and Ready says why the claim failed.
 	failed := pending.DeepCopy()
 	failed.Status.Phase = modelv1alpha1.ModelClaimFailed
-	failed.Status.Conditions = []metav1.Condition{
-		{Type: string(modelv1alpha1.ModelClaimConditionTypeScheduled), Status: metav1.ConditionTrue, Reason: "Placed"},
-		{Type: string(modelv1alpha1.ModelClaimConditionReady), Status: metav1.ConditionFalse, Reason: "ActivateFailed"},
-	}
+	failed.Status.Conditions = append(failed.Status.Conditions, metav1.Condition{
+		Type: string(modelv1alpha1.ModelClaimConditionReady), Status: metav1.ConditionFalse, Reason: "ActivateFailed",
+	})
 	handleDiscoveryObject(c, discovery.EventUpdate, failed, pending)
 	phase, reason, found := c.ModelClaimStatus("qwen")
 	require.True(t, found)
