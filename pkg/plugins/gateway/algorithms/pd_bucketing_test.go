@@ -25,10 +25,12 @@ import (
 
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
@@ -36,56 +38,71 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// --- parsePDAlgorithmConfig ---
-
-func TestParsePDAlgorithmConfig_Nil(t *testing.T) {
-	cfg := parsePDAlgorithmConfig(nil)
-	assert.Equal(t, 0, cfg.PromptLenBucketMinLength)
-	assert.Equal(t, math.MaxInt32, cfg.PromptLenBucketMaxLength)
-	assert.False(t, cfg.Combined)
+// withPromptLengthBucketing installs the process default of
+// AIBRIX_PROMPT_LENGTH_BUCKETING for one test. The PD read sites read the
+// request's resolved overrides, which fall back to the process default table.
+func withPromptLengthBucketing(t *testing.T, enabled bool) {
+	t.Helper()
+	restore := types.DefaultRoutingOverrides()
+	next := *restore
+	next.PD.PromptLengthBucketing = enabled
+	types.SetDefaultRoutingOverrides(&next)
+	t.Cleanup(func() { types.SetDefaultRoutingOverrides(restore) })
 }
 
-func TestParsePDAlgorithmConfig_Empty(t *testing.T) {
-	cfg := parsePDAlgorithmConfig(json.RawMessage(`{}`))
-	assert.Equal(t, 0, cfg.PromptLenBucketMinLength)
-	assert.Equal(t, math.MaxInt32, cfg.PromptLenBucketMaxLength)
-	assert.False(t, cfg.Combined)
+// parseRoutingConfig parses a profile's routingConfig the way the gateway does,
+// through configprofiles.ParseRoutingConfig.
+func parseRoutingConfig(t *testing.T, raw string) *types.RoutingConfig {
+	t.Helper()
+	cfg := configprofiles.ParseRoutingConfig(json.RawMessage(raw))
+	require.NotNil(t, cfg, "a well-formed routingConfig parses")
+	return cfg
 }
 
-func TestParsePDAlgorithmConfig_AllFields(t *testing.T) {
-	raw := json.RawMessage(`{"promptLenBucketMinLength":10,"promptLenBucketMaxLength":100,"combined":true}`)
-	cfg := parsePDAlgorithmConfig(raw)
-	assert.Equal(t, 10, cfg.PromptLenBucketMinLength)
-	assert.Equal(t, 100, cfg.PromptLenBucketMaxLength)
-	assert.True(t, cfg.Combined)
+// --- promptLenBucketBounds ---
+
+func TestPromptLenBucketBounds_Nil(t *testing.T) {
+	minLength, maxLength := promptLenBucketBounds(nil)
+	assert.Equal(t, 0, minLength)
+	assert.Equal(t, math.MaxInt32, maxLength)
 }
 
-func TestParsePDAlgorithmConfig_ZeroMaxBecomesMaxInt32(t *testing.T) {
-	// When promptLenBucketMaxLength is 0 (unset in JSON), it should default to MaxInt32.
-	raw := json.RawMessage(`{"promptLenBucketMinLength":5}`)
-	cfg := parsePDAlgorithmConfig(raw)
-	assert.Equal(t, 5, cfg.PromptLenBucketMinLength)
-	assert.Equal(t, math.MaxInt32, cfg.PromptLenBucketMaxLength)
+func TestPromptLenBucketBounds_Empty(t *testing.T) {
+	minLength, maxLength := promptLenBucketBounds(parseRoutingConfig(t, `{}`))
+	assert.Equal(t, 0, minLength)
+	assert.Equal(t, math.MaxInt32, maxLength)
 }
 
-func TestParsePDAlgorithmConfig_NegativeMinClampedToZero(t *testing.T) {
-	raw := json.RawMessage(`{"promptLenBucketMinLength":-10,"promptLenBucketMaxLength":50}`)
-	cfg := parsePDAlgorithmConfig(raw)
-	assert.Equal(t, 0, cfg.PromptLenBucketMinLength)
-	assert.Equal(t, 50, cfg.PromptLenBucketMaxLength)
+func TestPromptLenBucketBounds_AllFields(t *testing.T) {
+	minLength, maxLength := promptLenBucketBounds(parseRoutingConfig(t,
+		`{"promptLenBucketMinLength":10,"promptLenBucketMaxLength":100,"combined":true}`))
+	assert.Equal(t, 10, minLength)
+	assert.Equal(t, 100, maxLength)
 }
 
-func TestParsePDAlgorithmConfig_InvalidJSON(t *testing.T) {
-	raw := json.RawMessage(`not valid json`)
-	cfg := parsePDAlgorithmConfig(raw)
-	// Fallback to defaults on parse error.
-	assert.Equal(t, 0, cfg.PromptLenBucketMinLength)
-	assert.Equal(t, math.MaxInt32, cfg.PromptLenBucketMaxLength)
+func TestPromptLenBucketBounds_ZeroMaxKeepsTheRangeOpenEnded(t *testing.T) {
+	minLength, maxLength := promptLenBucketBounds(parseRoutingConfig(t, `{"promptLenBucketMinLength":5}`))
+	assert.Equal(t, 5, minLength)
+	assert.Equal(t, math.MaxInt32, maxLength)
 }
 
-func TestParsePDAlgorithmConfig_ScorePolicies(t *testing.T) {
-	raw := json.RawMessage(`{"prefillScorePolicy":"least_request","decodeScorePolicy":"load_balancing"}`)
-	cfg := parsePDAlgorithmConfig(raw)
+func TestPromptLenBucketBounds_NegativeMinFallsBackToZero(t *testing.T) {
+	minLength, maxLength := promptLenBucketBounds(parseRoutingConfig(t,
+		`{"promptLenBucketMinLength":-10,"promptLenBucketMaxLength":50}`))
+	assert.Equal(t, 0, minLength)
+	assert.Equal(t, 50, maxLength)
+}
+
+func TestPromptLenBucketBounds_InvalidJSON(t *testing.T) {
+	assert.Nil(t, configprofiles.ParseRoutingConfig(json.RawMessage(`not valid json`)),
+		"an unparsable routingConfig has no bucket range")
+	minLength, maxLength := promptLenBucketBounds(nil)
+	assert.Equal(t, 0, minLength)
+	assert.Equal(t, math.MaxInt32, maxLength)
+}
+
+func TestParseRoutingConfig_ScorePolicies(t *testing.T) {
+	cfg := parseRoutingConfig(t, `{"prefillScorePolicy":"least_request","decodeScorePolicy":"load_balancing"}`)
 	assert.Equal(t, "least_request", cfg.PrefillScorePolicy)
 	assert.Equal(t, "load_balancing", cfg.DecodeScorePolicy)
 }
@@ -369,9 +386,7 @@ func TestFilterPrefillDecodePods_BucketingSelectsMatchingRoleset(t *testing.T) {
 	// is routed to the roleset whose bucket covers the actual prompt length.
 	// We use one wide-range bucket [0, 99999] and one unreachable bucket [100000, 200000]
 	// so the short test prompt definitely hits the wide bucket regardless of tokenizer.
-	old := aibrixPromptLengthBucketing
-	aibrixPromptLengthBucketing = true
-	defer func() { aibrixPromptLengthBucketing = old }()
+	withPromptLengthBucketing(t, true)
 
 	r := pdRouter{
 		cache:                 cache.NewForTest(),
@@ -402,9 +417,7 @@ func TestFilterPrefillDecodePods_BucketingSelectsMatchingRoleset(t *testing.T) {
 }
 
 func TestFilterPrefillDecodePods_BucketingDisabledIgnoresAnnotations(t *testing.T) {
-	old := aibrixPromptLengthBucketing
-	aibrixPromptLengthBucketing = false
-	defer func() { aibrixPromptLengthBucketing = old }()
+	withPromptLengthBucketing(t, false)
 
 	r := pdRouter{
 		cache:                 cache.NewForTest(),
@@ -434,9 +447,7 @@ func TestFilterPrefillDecodePods_MultipleBucketsCombinedFallback(t *testing.T) {
 	// any short test prompt falls outside both buckets and routes to combined.
 	// Using [99999, 199999] ensures no realistic test message hits either bucket
 	// regardless of tokenizer (tiktoken or character-based).
-	old := aibrixPromptLengthBucketing
-	aibrixPromptLengthBucketing = true
-	defer func() { aibrixPromptLengthBucketing = old }()
+	withPromptLengthBucketing(t, true)
 
 	r := pdRouter{
 		cache:                 cache.NewForTest(),

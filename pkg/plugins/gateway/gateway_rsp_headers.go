@@ -39,7 +39,8 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, routerCtx *types.Rou
 
 	headers := []*configPb.HeaderValueOption{}
 	headers = buildEnvoyProxyHeaders(headers, HeaderWentIntoReqHeaders, "true", HeaderRequestID, requestID)
-	if routerCtx != nil && routerCtx.HasRouted() {
+	suppressRoutingDiagnostics := routerCtx != nil && routerCtx.ConfigProfile != nil && routerCtx.ConfigProfile.AuthoritativeRoutingPolicy
+	if routerCtx != nil && routerCtx.HasRouted() && !suppressRoutingDiagnostics {
 		headers = buildEnvoyProxyHeaders(headers,
 			HeaderRoutingStrategy, string(routerCtx.Algorithm),
 			HeaderTargetPod, routerCtx.TargetPod().Name,
@@ -48,6 +49,9 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, routerCtx *types.Rou
 
 	if routerCtx != nil && routerCtx.RespHeaders != nil {
 		for key, value := range routerCtx.RespHeaders {
+			if suppressRoutingDiagnostics && isRoutingDiagnosticHeader(key) {
+				continue
+			}
 			// skip HTTP/2 pseudo-header fields (such as :status, :path, etc.) to avoid protocol errors.
 			if strings.HasPrefix(key, ":") {
 				continue
@@ -69,13 +73,27 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, routerCtx *types.Rou
 				processingErrorCode = 500
 				break
 			}
-			if code != 200 {
+			if code < 200 || code >= 300 {
 				isProcessingError = true
 				processingErrorCode = code
+			}
+			// A DELETE that the backend honored (or that found nothing to delete) is
+			// the point at which the registry record becomes garbage. Failing to
+			// remove it is reported to the client so the DELETE can be retried.
+			if delResp := s.maybeDeleteVideoJobAfterDelete(ctx, routerCtx, code); delResp != nil {
+				return delResp, isProcessingError, processingErrorCode
 			}
 			headers = buildEnvoyProxyHeaders(headers, headerValue.Key, string(headerValue.RawValue))
 			break
 		}
+	}
+
+	// HandleResponseBody rewrites the job id inside video create/status/delete bodies, so
+	// the upstream content-length no longer describes what Envoy will send. Envoy
+	// would otherwise truncate the body or wait for bytes that never arrive.
+	var removeHeaders []string
+	if routerCtx != nil && videoJobResponseNeedsBuffering(routerCtx.ReqHeaders[methodKey], routerCtx.ReqPath) {
+		removeHeaders = []string{"content-length"}
 	}
 
 	return &extProcPb.ProcessingResponse{
@@ -83,11 +101,21 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, routerCtx *types.Rou
 			ResponseHeaders: &extProcPb.HeadersResponse{
 				Response: &extProcPb.CommonResponse{
 					HeaderMutation: &extProcPb.HeaderMutation{
-						SetHeaders: headers,
+						SetHeaders:    headers,
+						RemoveHeaders: removeHeaders,
 					},
 					ClearRouteCache: true,
 				},
 			},
 		},
 	}, isProcessingError, processingErrorCode
+}
+
+func isRoutingDiagnosticHeader(key string) bool {
+	switch strings.ToLower(key) {
+	case HeaderRoutingStrategy, HeaderTargetPod, HeaderTargetPodIP, HeaderAIBrixConfigProfile:
+		return true
+	default:
+		return false
+	}
 }

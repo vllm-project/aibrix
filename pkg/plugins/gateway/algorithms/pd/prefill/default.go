@@ -25,9 +25,9 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
-	"github.com/bytedance/sonic"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
@@ -37,11 +37,7 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// trtllmEngine is kept local to avoid importing routingalgorithms (circular).
-const (
-	trtllmEngine                = "trtllm"
-	prefillRequestSuccessStatus = "pd-prefill-request-success"
-)
+const prefillRequestSuccessStatus = "pd-prefill-request-success"
 
 func incPrefillOutstanding() {
 	metrics.IncGaugeMetric(
@@ -65,10 +61,9 @@ func decPrefillOutstanding() {
 // the prefill-request tracker so that prefill logic can be tested in isolation
 // from the routing/scoring concerns in pdRouter.
 type DefaultExecutor struct {
-	httpClient     *http.Client
-	tracker        *pd.PrefillRequestTracker
-	tokenLoad      *pd.TokenLoadTracker // optional; nil when no policy charges it
-	requestTimeout int                  // seconds
+	httpClient *http.Client
+	tracker    *pd.PrefillRequestTracker
+	tokenLoad  *pd.TokenLoadTracker // optional; nil when no policy charges it
 }
 
 // ExecutorOption customizes a DefaultExecutor.
@@ -82,13 +77,19 @@ func WithTokenLoadTracker(tokenLoad *pd.TokenLoadTracker) ExecutorOption {
 	return func(e *DefaultExecutor) { e.tokenLoad = tokenLoad }
 }
 
-// NewDefaultExecutor constructs a DefaultExecutor.
-// httpClient and tracker are shared with the router; requestTimeout is in seconds.
-func NewDefaultExecutor(httpClient *http.Client, tracker *pd.PrefillRequestTracker, requestTimeout int, opts ...ExecutorOption) PrefillExecutor {
+// effectiveRequestTimeout returns the deadline of this request's prefill call:
+// its resolved PD overrides, which carry the AIBRIX_PREFILL_REQUEST_TIMEOUT
+// default when its profile sets none.
+func (e *DefaultExecutor) effectiveRequestTimeout(routingCtx *types.RoutingContext) time.Duration {
+	return routingCtx.PDOverrides().PrefillRequestTimeout
+}
+
+// NewDefaultExecutor constructs a DefaultExecutor. httpClient and tracker are
+// shared with the router.
+func NewDefaultExecutor(httpClient *http.Client, tracker *pd.PrefillRequestTracker, opts ...ExecutorOption) PrefillExecutor {
 	e := &DefaultExecutor{
-		httpClient:     httpClient,
-		tracker:        tracker,
-		requestTimeout: requestTimeout,
+		httpClient: httpClient,
+		tracker:    tracker,
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -115,7 +116,7 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 	}
 
 	address := net.JoinHostPort(prefillPod.Status.PodIP,
-		strconv.FormatInt(utils.GetModelPortForPod(routingCtx.RequestID, prefillPod), 10))
+		strconv.Itoa(int(utils.GetModelPortForPod(routingCtx.RequestID, prefillPod))))
 	apiURL := "http://" + address + routingCtx.ReqPath
 
 	fields := []interface{}{
@@ -141,6 +142,10 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 
 	routingCtx.PrefillStartTime = time.Now()
 
+	// Resolved before the async split: the goroutine must use the same deadline
+	// as the sync path, and it must not read the pooled routing context.
+	prefillTimeout := e.effectiveRequestTimeout(routingCtx)
+
 	if handler.IsAsync() {
 		// SGLang uses a bootstrap handshake to coordinate KV transfer out-of-band;
 		// fire asynchronously and return immediately.
@@ -149,25 +154,37 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 		prefillStartTime := routingCtx.PrefillStartTime
 		prefillPodName := prefillPod.Name
 		prefillPodIP := prefillPod.Status.PodIP
+		model := routingCtx.Model
 		asyncCtx := &types.RoutingContext{
 			Context:     context.WithoutCancel(routingCtx.Context),
 			RequestID:   requestID,
-			Model:       routingCtx.Model,
+			Model:       model,
 			Engine:      routingCtx.Engine,
 			RequestTime: requestTime,
 			ReqHeaders:  maps.Clone(routingCtx.ReqHeaders),
 		}
+		// Captured before the goroutine starts, and used instead of
+		// routingCtx from inside it: this goroutine regularly outlives the
+		// client stream, and RoutingContext is pooled, so reporting through it
+		// could land on whichever request has since taken the object. The leg
+		// is per-incarnation and inert once its request is done.
+		leg := routingCtx.PDLeg()
 		go func() {
 			incPrefillOutstanding()
 			defer decPrefillOutstanding()
 			defer e.prefillDone(requestID)
 
-			if _, err := e.executeHTTP(apiURL, asyncCtx, payload); err != nil {
+			if _, err := e.executeHTTP(apiURL, asyncCtx, payload, prefillTimeout); err != nil {
+				// The prefill leg is fire-and-forget, so nobody is waiting on
+				// this error: record it on the leg (and abort the decode leg
+				// that will never receive its KV) before it is only logged.
+				failure := pd.OnPrefillLegFailed(e.httpClient, leg, requestID, model, err)
 				klog.ErrorS(err, "prefill_request_failed",
 					"request_id", requestID,
 					"llm_engine", llmEngine,
 					"prefill_pod", prefillPodName,
 					"prefill_pod_ip", prefillPodIP,
+					"prefill_failure_class", failure.ClassOrEmpty(),
 					"elapsed", time.Since(requestTime))
 				return
 			}
@@ -196,14 +213,14 @@ func (e *DefaultExecutor) handleSync(
 	llmEngine, apiURL string,
 	payload []byte,
 	fields []interface{},
-	mergeFn func(*types.RoutingContext, map[string]any, *v1.Pod) error,
+	mergeFn func(*types.RoutingContext, []byte, *v1.Pod) error,
 	errorContext string,
 ) error {
 	incPrefillOutstanding()
 	defer decPrefillOutstanding()
 	defer e.prefillDone(routingCtx.RequestID)
 
-	responseData, err := e.executeHTTP(apiURL, routingCtx, payload)
+	prefillResponse, err := e.executeHTTP(apiURL, routingCtx, payload, e.effectiveRequestTimeout(routingCtx))
 	if err != nil {
 		klog.ErrorS(err, "prefill_request_failed",
 			"request_id", routingCtx.RequestID,
@@ -215,7 +232,7 @@ func (e *DefaultExecutor) handleSync(
 	}
 
 	if mergeFn != nil {
-		if err := mergeFn(routingCtx, responseData, prefillPod); err != nil {
+		if err := mergeFn(routingCtx, prefillResponse, prefillPod); err != nil {
 			return fmt.Errorf("failed to update routing context with %s for request %s: %w", errorContext, routingCtx.RequestID, err)
 		}
 	}
@@ -229,20 +246,34 @@ func (e *DefaultExecutor) handleSync(
 	return nil
 }
 
-// executeHTTP posts payload to url and returns the parsed JSON response body.
-// Non-200 responses and transport errors are both recorded to Prometheus.
-// TRT-LLM responses are parsed with UseInt64=true to prevent float64 precision
-// loss on large integer fields such as disagg_request_id.
-func (e *DefaultExecutor) executeHTTP(url string, routingCtx *types.RoutingContext, payload []byte) (map[string]any, error) {
-	ctx, cancel := context.WithTimeout(routingCtx.Context, time.Duration(e.requestTimeout)*time.Second)
+// executeHTTP posts payload to url and returns the raw JSON response body,
+// which is guaranteed to be a JSON object. Non-200 responses and transport
+// errors are both recorded to Prometheus. The body is deliberately not
+// decoded: merge functions read the fields they need with gjson so that
+// large integers (e.g. TRT-LLM disagg_request_id) and nested key order are
+// preserved exactly.
+//
+// Failures are returned as the typed errors of package pd (PrefillSetupError,
+// PrefillHTTPError, PrefillBodyError) or as a wrapped transport error, so that
+// pd.OnPrefillLegFailed can classify them without parsing error strings.
+func (e *DefaultExecutor) executeHTTP(url string, routingCtx *types.RoutingContext, payload []byte, timeout time.Duration) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(routingCtx.Context, timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payload))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create http prefill request: %w", err)
+		return nil, &pd.PrefillSetupError{Err: fmt.Errorf("failed to create http prefill request: %w", err)}
 	}
 
+	// ReqHeaders is populated from Envoy and includes HTTP/2 pseudo-headers
+	// such as ":method". net/http rejects those names on the outbound HTTP/1
+	// prefill call (invalid header field name), which fails every PD route
+	// before the prefill pod is contacted. Combined routing never makes this
+	// call, so only the prefill/decode path would 503.
 	for key, value := range routingCtx.ReqHeaders {
+		if !forwardablePrefillHeader(key) {
+			continue
+		}
 		req.Header.Set(key, value)
 	}
 	req.Header.Set("content-type", "application/json")
@@ -268,21 +299,22 @@ func (e *DefaultExecutor) executeHTTP(url string, routingCtx *types.RoutingConte
 		status, code := metrics.HttpFailureStatusCode(ctx, nil, resp)
 		metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": status, "status_code": code})
-		return nil, fmt.Errorf("http prefill request failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, &pd.PrefillHTTPError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 
-	// TRT-LLM prefill responses contain large integer IDs in disaggregated_params;
-	// use UseInt64 to avoid float64 precision loss during unmarshal.
-	var responseData map[string]any
-	var errUnmarshal error
-	if routingCtx.Engine == trtllmEngine {
-		errUnmarshal = pd.SonicJSONInt64.Unmarshal(body, &responseData)
-	} else {
-		errUnmarshal = sonic.Unmarshal(body, &responseData)
-	}
-	if errUnmarshal != nil {
-		return nil, fmt.Errorf("failed to unmarshal prefill response: %w", errUnmarshal)
+	if err := pd.ValidateJSONObject(body, "prefill response"); err != nil {
+		// A 200 with an unparseable body still completed the KV transfer, so
+		// this is kept distinct from a transport failure: the decode leg must
+		// not be aborted for it.
+		return nil, &pd.PrefillBodyError{Err: err}
 	}
 
-	return responseData, nil
+	return body, nil
+}
+
+// forwardablePrefillHeader reports whether key can be copied onto the
+// outbound prefill HTTP request. Envoy :pseudo-headers are not valid HTTP/1
+// field names and must be dropped.
+func forwardablePrefillHeader(key string) bool {
+	return key != "" && !strings.HasPrefix(key, ":")
 }

@@ -59,7 +59,7 @@ spec:
             memory: 64Mi
         env:
           - name: AIBRIX_GATEWAY_TIMEOUT_SECONDS
-            value: "120"
+            value: "600"
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10
 ---

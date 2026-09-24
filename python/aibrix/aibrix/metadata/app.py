@@ -26,6 +26,7 @@ from kubernetes import client as k8s_client
 from kubernetes import config
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
+from aibrix import envs
 from aibrix.batch import BatchDriver
 from aibrix.batch.client import (
     EndpointSource,
@@ -274,7 +275,11 @@ def build_app(args: argparse.Namespace, params={}):
             # Local debug
             config.load_kube_config()
 
-    app.state.httpx_client_wrapper = HTTPXClientWrapper()
+    app.state.httpx_client_wrapper = HTTPXClientWrapper(
+        timeout=envs.CORE_HTTPX_ASYNC_CLIENT_TIMEOUT_SECOND,
+        telemetry_enabled=args.httpx_telemetry,
+        telemetry_interval_seconds=args.httpx_telemetry_interval_seconds,
+    )
 
     # Normalize HTTPException responses to OpenAI's top-level
     # ``{"error": {message, type, param, code}}`` shape so that the
@@ -444,10 +449,28 @@ def nullable_str(val: str):
     return val
 
 
-def main():
+def build_app_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=f"Run {settings.PROJECT_NAME}")
     parser.add_argument("--host", type=nullable_str, default=None, help="host name")
     parser.add_argument("--port", type=int, default=8090, help="port number")
+    parser.add_argument(
+        "--httpx-telemetry",
+        action=argparse.BooleanOptionalAction,
+        default=envs.CORE_HTTPX_ASYNC_CLIENT_TELEMETRY_ENABLED,
+        help=(
+            "Enable HTTPX client telemetry logging. Defaults to "
+            "AIBRIX_HTTPX_CLIENT_TELEMETRY_ENABLED."
+        ),
+    )
+    parser.add_argument(
+        "--httpx-telemetry-interval-seconds",
+        type=float,
+        default=envs.CORE_HTTPX_ASYNC_CLIENT_TELEMETRY_INTERVAL_SECONDS,
+        help=(
+            "Telemetry summary interval for the shared metadata HTTPX client. "
+            "Defaults to AIBRIX_HTTPX_CLIENT_TELEMETRY_INTERVAL_SECONDS."
+        ),
+    )
     parser.add_argument(
         "--enable-fastapi-docs",
         action="store_true",
@@ -495,6 +518,23 @@ def main():
             "deployment with a redis metastore for crash-safe long-running batches."
         ),
     )
+    return parser
+
+
+def build_app_args(**overrides: Any) -> argparse.Namespace:
+    """Build a metadata-service CLI namespace with parser-backed defaults.
+
+    Tests can override only the fields they care about while staying aligned
+    with the authoritative parser when new CLI flags are added.
+    """
+    args = build_app_arg_parser().parse_args([])
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return args
+
+
+def main():
+    parser = build_app_arg_parser()
     args = parser.parse_args()
 
     if args.disable_file_api and not args.disable_batch_api:

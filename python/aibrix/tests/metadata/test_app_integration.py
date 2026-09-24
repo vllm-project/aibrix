@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import argparse
 import os
 from unittest.mock import patch
 
@@ -23,21 +22,21 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 
 from aibrix.batch.state import JobStore
-from aibrix.metadata.app import build_app
+from aibrix.metadata.app import build_app, build_app_args
 from aibrix.metadata.setting import settings
 from aibrix.storage import StorageType
 
 
 def _args(**overrides):
     defaults = {
-        "enable_fastapi_docs": False,
+        "httpx_telemetry": False,
         "enable_k8s_support": True,
         "disable_batch_api": True,
         "disable_file_api": True,
         "dry_run": False,
     }
     defaults.update(overrides)
-    return argparse.Namespace(**defaults)
+    return build_app_args(**defaults)
 
 
 @pytest.fixture(autouse=True)
@@ -88,6 +87,19 @@ def test_build_app_without_batch(_mock_k8s_config_loading):
 
     assert hasattr(app.state, "httpx_client_wrapper")
     assert not hasattr(app.state, "batch_driver")
+
+
+def test_build_app_wires_httpx_telemetry_settings(_mock_k8s_config_loading):
+    args = _args(
+        enable_k8s_support=False,
+        httpx_telemetry=True,
+        httpx_telemetry_interval_seconds=12.5,
+    )
+
+    app = build_app(args)
+
+    assert app.state.httpx_client_wrapper._telemetry_enabled is True
+    assert app.state.httpx_client_wrapper._telemetry_interval_seconds == 12.5
 
 
 def test_build_app_batch_no_global_inference_endpoint(

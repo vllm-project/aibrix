@@ -33,7 +33,6 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
-	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -225,7 +224,46 @@ func newTokenizer() tokenizer.Tokenizer {
 	return tokenizer.NewCharacterTokenizer()
 }
 
+// loadTokenizerPoolConfigFromEnv builds the remote tokenizer pool configuration
+// from the AIBRIX_TOKENIZER_* environment variables.
+//
+// The duration defaults are time.Duration values on purpose: utils.LoadEnvDuration
+// parses the environment value with time.ParseDuration and already returns a
+// time.Duration, so scaling its result by time.Second again would multiply any
+// user-supplied value by 1e9. Only KV Event Sync constants are defined in
+// pkg/constants, the rest are read by name here.
+func loadTokenizerPoolConfigFromEnv() TokenizerPoolConfig {
+	return TokenizerPoolConfig{
+		EnableVLLMRemote:     true, // We're using it, so enable it
+		EndpointTemplate:     utils.LoadEnv("AIBRIX_VLLM_TOKENIZER_ENDPOINT_TEMPLATE", "http://%s:8000"),
+		HealthCheckPeriod:    utils.LoadEnvDuration("AIBRIX_TOKENIZER_HEALTH_CHECK_PERIOD", 30*time.Second),
+		TokenizerTTL:         utils.LoadEnvDuration("AIBRIX_TOKENIZER_TTL", 300*time.Second),
+		MaxTokenizersPerPool: utils.LoadEnvInt("AIBRIX_MAX_TOKENIZERS_PER_POOL", 100),
+		DefaultTokenizer:     nil, // Set by the caller
+		Timeout:              utils.LoadEnvDuration("AIBRIX_TOKENIZER_REQUEST_TIMEOUT", 5*time.Second),
+		ModelServiceMap:      make(map[string]string),
+	}
+}
+
 func NewPrefixCacheRouter() (types.Router, error) {
+	c, err := cache.Get()
+	if err != nil {
+		return nil, err
+	}
+	return NewPrefixCacheRouterWithOptions(c, prefixcacheindexer.GetSharedPrefixHashTable())
+}
+
+// NewPrefixCacheRouterWithCache constructs the prefix-cache router with an
+// explicit cache while preserving tokenizer and indexer behavior.
+func NewPrefixCacheRouterWithCache(c cache.Cache) (types.Router, error) {
+	return NewPrefixCacheRouterWithOptions(c, nil)
+}
+
+// NewPrefixCacheRouterWithOptions constructs a prefix-cache router with an
+// explicit cache and optional per-instance prefix table. A nil indexer creates
+// a new private table; the production constructor passes the shared table
+// explicitly.
+func NewPrefixCacheRouterWithOptions(c cache.Cache, indexer *prefixcacheindexer.PrefixHashTable) (types.Router, error) {
 	// Initialize prefix cache metrics if enabled
 	if err := initializePrefixCacheMetrics(); err != nil {
 		klog.Errorf("Failed to initialize prefix cache metrics: %v", err)
@@ -256,27 +294,10 @@ func NewPrefixCacheRouter() (types.Router, error) {
 		useRemoteTokenizer = true
 	}
 
-	// Get cache instance (this is existing code)
-	c, err := cache.Get()
-	if err != nil {
-		klog.Error("fail to get cache store in prefix cache router")
-		return nil, err
-	}
-
 	// Configure TokenizerPool if remote tokenizer is needed
 	if useRemoteTokenizer {
 		// Load pool configuration from environment
-		// Only KV Event Sync constants are defined in pkg/constants
-		poolConfig := TokenizerPoolConfig{
-			EnableVLLMRemote:     true, // We're using it, so enable it
-			EndpointTemplate:     utils.LoadEnv("AIBRIX_VLLM_TOKENIZER_ENDPOINT_TEMPLATE", "http://%s:8000"),
-			HealthCheckPeriod:    utils.LoadEnvDuration("AIBRIX_TOKENIZER_HEALTH_CHECK_PERIOD", 30) * time.Second,
-			TokenizerTTL:         utils.LoadEnvDuration("AIBRIX_TOKENIZER_TTL", 300) * time.Second,
-			MaxTokenizersPerPool: utils.LoadEnvInt("AIBRIX_MAX_TOKENIZERS_PER_POOL", 100),
-			DefaultTokenizer:     nil, // Will be set below
-			Timeout:              utils.LoadEnvDuration("AIBRIX_TOKENIZER_REQUEST_TIMEOUT", 5) * time.Second,
-			ModelServiceMap:      make(map[string]string),
-		}
+		poolConfig := loadTokenizerPoolConfigFromEnv()
 
 		// Create default tokenizer based on configured type
 		var defaultTokenizer = newTokenizer()
@@ -304,10 +325,13 @@ func NewPrefixCacheRouter() (types.Router, error) {
 		"matched_pods_running_requests_standard_deviation_factor", standardDeviationFactor)
 
 	// Create main router with local indexer
+	if indexer == nil {
+		indexer = prefixcacheindexer.NewPrefixHashTable()
+	}
 	router := prefixCacheRouter{
 		cache:              c,
 		tokenizer:          tokenizerObj,
-		prefixCacheIndexer: prefixcacheindexer.GetSharedPrefixHashTable(),
+		prefixCacheIndexer: indexer,
 		// Only assign tokenizerPool if it's not nil to avoid interface nil issues
 	}
 
@@ -402,10 +426,15 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	podRequestCount := getRequestCounts(p.cache, readyPods)
 
 	matchedPods, prefixHashes = p.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
-	klog.V(4).InfoS("prefix_hashes", "request_id", ctx.RequestID, "prefix_hashes", prefixHashes)
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("prefix_hashes", "request_id", ctx.RequestID, "prefix_hashes", prefixHashes)
+	}
 
 	if len(matchedPods) > 0 {
-		targetPod = getTargetPodFromMatchedPodsFromCounts(podRequestCount, readyPods, matchedPods)
+		// The request's resolved overrides carry the profile's value on top of
+		// the process default (see ResolveRoutingOverrides).
+		sigma := ctx.RoutingOverrides().PrefixCache.StandardDeviationFactor
+		targetPod = getTargetPodFromMatchedPodsFromCounts(podRequestCount, readyPods, matchedPods, sigma)
 		if targetPod != nil {
 			selection = selectionPrefixMatch
 		}
@@ -752,7 +781,7 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 
 	// Tokenize the input based on endpoint type
 	var tokens []byte
-	if ctx.ReqPath == "/v1/chat/completions" {
+	if utils.PathWithoutQuery(ctx.ReqPath) == "/v1/chat/completions" {
 		tokens = k.tokenizeChatRequest(ctx, tokenizerToUse)
 	}
 
@@ -782,15 +811,20 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	}
 	matchedPods, prefixHashes = k.syncIndexer.MatchPrefix(modelName, loraID, tokens, readyPodsMap)
 
-	klog.V(4).InfoS("prefix cache matching completed",
-		"model", modelName,
-		"lora_id", loraID,
-		"matched_pods", len(matchedPods),
-		"prefix_hashes", len(prefixHashes),
-		"ready_pods", readyPodList.Len())
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("prefix cache matching completed",
+			"model", modelName,
+			"lora_id", loraID,
+			"matched_pods", len(matchedPods),
+			"prefix_hashes", len(prefixHashes),
+			"ready_pods", readyPodList.Len())
+	}
 
 	if len(matchedPods) > 0 {
-		targetPod = getTargetPodFromMatchedPodsWithKeys(k.cache, readyPods, matchedPods)
+		// The request's resolved overrides carry the profile's value on top of
+		// the process default (see ResolveRoutingOverrides).
+		sigma := ctx.RoutingOverrides().PrefixCache.StandardDeviationFactor
+		targetPod = getTargetPodFromMatchedPodsWithKeys(k.cache, readyPods, matchedPods, sigma)
 		if targetPod != nil {
 			selection = selectionPrefixMatch
 			klog.InfoS("prefix_cache_matched_pods",
@@ -853,8 +887,10 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	return ctx.TargetAddress(), nil
 }
 
-// getTargetPodFromMatchedPodsWithKeys is similar to getTargetPodFromMatchedPods but uses pod keys
-func getTargetPodFromMatchedPodsWithKeys(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
+// getTargetPodFromMatchedPodsWithKeys is similar to getTargetPodFromMatchedPods but uses pod keys.
+// stdDevFactor is how many standard deviations above the mean replica request count a candidate
+// may sit before it is skipped: the environment default, or the request profile's override.
+func getTargetPodFromMatchedPodsWithKeys(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int, stdDevFactor int) *v1.Pod {
 	var targetPodKey string
 	requestCount := []float64{}
 
@@ -891,7 +927,7 @@ func getTargetPodFromMatchedPodsWithKeys(cache cache.Cache, readyPods []*v1.Pod,
 	// select targetpod with highest %prefixmatch and request_count within stddev
 	for _, podkey := range podkeys {
 		reqCnt := float64(podRequestCount[podkey])
-		if reqCnt <= meanRequestCount+float64(standardDeviationFactor)*stdDevRequestCount {
+		if reqCnt <= meanRequestCount+float64(stdDevFactor)*stdDevRequestCount {
 			targetPodKey = podkey
 			break
 		}
@@ -900,11 +936,11 @@ func getTargetPodFromMatchedPodsWithKeys(cache cache.Cache, readyPods []*v1.Pod,
 	return podKeyToPod[targetPodKey]
 }
 
-func getTargetPodFromMatchedPods(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
-	return getTargetPodFromMatchedPodsFromCounts(getRequestCounts(cache, readyPods), readyPods, matchedPods)
+func getTargetPodFromMatchedPods(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int, stdDevFactor int) *v1.Pod {
+	return getTargetPodFromMatchedPodsFromCounts(getRequestCounts(cache, readyPods), readyPods, matchedPods, stdDevFactor)
 }
 
-func getTargetPodFromMatchedPodsFromCounts(podRequestCount map[string]int, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
+func getTargetPodFromMatchedPodsFromCounts(podRequestCount map[string]int, readyPods []*v1.Pod, matchedPods map[string]int, stdDevFactor int) *v1.Pod {
 	var targetPodName string
 	requestCount := make([]float64, 0, len(podRequestCount))
 
@@ -933,7 +969,7 @@ func getTargetPodFromMatchedPodsFromCounts(podRequestCount map[string]int, ready
 	// select targetpod with highest %prefixmatch and request_count within stddev
 	for _, podname := range podnames {
 		reqCnt := float64(podRequestCount[podname])
-		if reqCnt <= meanRequestCount+float64(standardDeviationFactor)*stdDevRequestCount {
+		if reqCnt <= meanRequestCount+float64(stdDevFactor)*stdDevRequestCount {
 			targetPodName = podname
 			break
 		}
@@ -942,16 +978,21 @@ func getTargetPodFromMatchedPodsFromCounts(podRequestCount map[string]int, ready
 	return targetPod
 }
 
-// getRequestCountsWithKeys returns running request count for each pod using pod keys
+// getRequestCountsWithKeys returns the live cross-gateway running request count for
+// each pod, keyed by pod key. Uses GetPodsRunningRequests (one Redis round trip for
+// the whole list), not GetMetricValueByPod(RealtimeNumRequestsRunning), which is a
+// periodically synced cache that, between scrape ticks, only reflects this gateway's
+// local view.
 func getRequestCountsWithKeys(cache cache.Cache, readyPods []*v1.Pod) map[string]int {
+	counts, err := cache.GetPodsRunningRequests(readyPods)
 	podRequestCount := map[string]int{}
 	for _, pod := range readyPods {
 		podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
-		runningReq, err := cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning)
-		if err != nil {
-			runningReq = &metrics.SimpleMetricValue{Value: 0}
+		if err == nil && counts != nil {
+			podRequestCount[podKey] = int(counts[podKey])
+		} else {
+			podRequestCount[podKey] = 0
 		}
-		podRequestCount[podKey] = int(runningReq.GetSimpleValue())
 	}
 	return podRequestCount
 }

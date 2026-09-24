@@ -67,14 +67,14 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 
 // updateRoutingContextWithKVTransferParams delegates to the vLLM engine handler's
 // MergePrefillResponse so existing tests can call this method directly.
-func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.RoutingContext, responseData map[string]any, prefillPod *v1.Pod) error {
-	return engine.Resolve(VLLMEngine).MergePrefillResponse(routingCtx, responseData, prefillPod)
+func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.RoutingContext, prefillResponse []byte, prefillPod *v1.Pod) error {
+	return engine.Resolve(VLLMEngine).MergePrefillResponse(routingCtx, prefillResponse, prefillPod)
 }
 
 // updateRoutingContextWithTRTDisaggParams delegates to the TRT-LLM engine handler's
 // MergePrefillResponse so existing tests can call this method directly.
-func (r *pdRouter) updateRoutingContextWithTRTDisaggParams(routingCtx *types.RoutingContext, responseData map[string]any, prefillPod *v1.Pod) error {
-	return engine.Resolve(TensorRTLLM).MergePrefillResponse(routingCtx, responseData, prefillPod)
+func (r *pdRouter) updateRoutingContextWithTRTDisaggParams(routingCtx *types.RoutingContext, prefillResponse []byte, prefillPod *v1.Pod) error {
+	return engine.Resolve(TensorRTLLM).MergePrefillResponse(routingCtx, prefillResponse, prefillPod)
 }
 
 // selectKvConnectorType resolves the KV connector type from a pod label value,

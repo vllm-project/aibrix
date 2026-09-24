@@ -17,20 +17,21 @@ limitations under the License.
 package utils
 
 import (
-	"runtime"
-	"slices"
-	"strconv"
 	"sync"
-	"testing"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var (
 	testKeys = []string{"key1", "key2", "key3"}
 )
+
+func testPod(name string) *v1.Pod {
+	return &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}}
+}
 
 var _ = Describe("Registry", func() {
 	Context("Registry", func() {
@@ -117,23 +118,82 @@ var _ = Describe("Registry", func() {
 			Expect(registry.Array()).To(ContainElement(item2))
 		})
 
-		It("should concurrent updateArrayLocked call return cached array", func() {
+		It("should return the cached array on a subsequent updateArrayLocked call", func() {
 			// Add an item to the registry
 			registry.Store(testKeys[0], testKeys[0])
-			registry.values, registry.valid = nil, false
+			registry.values.Store(nil)
 
 			arr, reconstructed := registry.updateArrayLocked()
 			Expect(reconstructed).To(BeTrue())
 			Expect(len(arr)).To(Equal(1))
-			Expect(registry.values).To(Equal(arr))
-			Expect(registry.valid).To(BeTrue())
+			Expect(registry.values.Load()).NotTo(BeNil())
+			Expect(*registry.values.Load()).To(Equal(arr))
 
-			// Concurrent call, assumeing guarded by mutex
+			// A subsequent call returns the cached snapshot.
 			arr, reconstructed = registry.updateArrayLocked()
 			Expect(reconstructed).To(BeFalse())
 			Expect(len(arr)).To(Equal(1))
-			Expect(registry.values).To(Equal(arr))
-			Expect(registry.valid).To(BeTrue())
+			Expect(registry.values.Load()).NotTo(BeNil())
+			Expect(*registry.values.Load()).To(Equal(arr))
+		})
+
+		It("should keep the array returned by Array() unchanged after later updates", func() {
+			item, item2, item3 := testKeys[0], testKeys[1], testKeys[2]
+			registry.Store(item, item)
+			registry.Store(item2, item2)
+
+			// Take a snapshot, then invalidate the cache and rebuild it
+			snapshot := registry.Array()
+			Expect(snapshot).To(ConsistOf(item, item2))
+
+			registry.Delete(item)
+			registry.Store(item3, item3)
+			Expect(registry.Array()).To(ConsistOf(item2, item3))
+
+			// The snapshot handed out earlier must not be rewritten
+			Expect(snapshot).To(ConsistOf(item, item2))
+		})
+
+		It("should keep Array() and Len() consistent while registry is updated concurrently", func() {
+			// Store the keys first, so Array()/Len() take the cached path. The
+			// writer below only re-stores existing keys, the registry therefore
+			// holds exactly len(testKeys) elements during the whole test.
+			for _, item := range testKeys {
+				registry.Store(item, item)
+			}
+			Expect(registry.Array()).To(HaveLen(len(testKeys)))
+
+			const reads = 50000
+			started, stopped := make(chan struct{}), make(chan struct{})
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer GinkgoRecover()
+				defer wg.Done()
+				close(started)
+				for i := 0; ; i++ {
+					select {
+					case <-stopped:
+						return
+					default:
+					}
+					item := testKeys[i%len(testKeys)]
+					registry.Store(item, item)
+				}
+			}()
+			<-started
+
+			corrupted := 0
+			for i := 0; i < reads; i++ {
+				if len(registry.Array()) != len(testKeys) || registry.Len() != len(testKeys) {
+					corrupted++
+				}
+			}
+			close(stopped)
+			wg.Wait()
+
+			Expect(corrupted).To(Equal(0))
+			Expect(registry.Array()).To(ConsistOf(testKeys[0], testKeys[1], testKeys[2]))
 		})
 	})
 
@@ -231,121 +291,73 @@ var _ = Describe("Registry", func() {
 			Expect(len(registry.Array().Pods)).To(Equal(1))
 			Expect(registry.Array().Pods).To(ContainElement(item))
 		})
+
+		It("should keep the array returned by customized Array() unchanged after later updates", func() {
+			// Name the pods, so the entries of a snapshot can be told apart
+			key, item := testKeys[0], testPod(testKeys[0])
+			key2, item2 := testKeys[1], testPod(testKeys[1])
+			registry.Store(key, item)
+			registry.Store(key2, item2)
+
+			// Take a snapshot, then invalidate the cache and rebuild it
+			snapshot := registry.Array()
+			Expect(snapshot.Pods).To(ConsistOf(item, item2))
+
+			key3, item3 := testKeys[2], testPod(testKeys[2])
+			registry.Delete(key)
+			registry.Store(key3, item3)
+			Expect(registry.Array().Pods).To(ConsistOf(item2, item3))
+
+			// The snapshot handed out earlier must not be rewritten
+			Expect(snapshot.Pods).To(ConsistOf(item, item2))
+		})
+
+		It("should keep customized Array() consistent while registry is updated concurrently", func() {
+			// Store the keys first, so Array() takes the cached path. The writer
+			// below only re-stores existing keys, the registry therefore holds
+			// exactly len(testKeys) elements during the whole test.
+			for _, key := range testKeys {
+				registry.Store(key, &v1.Pod{})
+			}
+			Expect(registry.Array().Len()).To(Equal(len(testKeys)))
+
+			const reads = 50000
+			started, stopped := make(chan struct{}), make(chan struct{})
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer GinkgoRecover()
+				defer wg.Done()
+				close(started)
+				for i := 0; ; i++ {
+					select {
+					case <-stopped:
+						return
+					default:
+					}
+					registry.Store(testKeys[i%len(testKeys)], &v1.Pod{})
+				}
+			}()
+			<-started
+
+			corrupted := 0
+			for i := 0; i < reads; i++ {
+				arr := registry.Array()
+				if arr == nil || arr.Len() != len(testKeys) {
+					corrupted++
+					continue
+				}
+				for _, pod := range arr.All() {
+					if pod == nil {
+						corrupted++
+					}
+				}
+			}
+			close(stopped)
+			wg.Wait()
+
+			Expect(corrupted).To(Equal(0))
+			Expect(registry.Array().Len()).To(Equal(len(testKeys)))
+		})
 	})
 })
-
-// Returned snapshots remain usable while discovery replaces or removes entries.
-func TestRegistrySnapshotStability(t *testing.T) {
-	registry := NewRegistry[string]()
-	testRegistrySnapshotStability(t, registry.Store, registry.Delete, registry.Array)
-}
-
-func TestCustomizedRegistrySnapshotStability(t *testing.T) {
-	registry := NewRegistryWithArrayProvider(func(values []string) *registryStringSnapshot {
-		return &registryStringSnapshot{values: values}
-	})
-	testRegistrySnapshotStability(t, registry.Store, registry.Delete, func() []string {
-		return registry.Array().values
-	})
-	cached := registry.Array()
-	if registry.Array() != cached {
-		t.Fatal("unchanged registry must reuse its customized snapshot")
-	}
-	registry.Delete("missing")
-	if registry.Array() != cached {
-		t.Fatal("deleting an absent key must preserve the cached snapshot")
-	}
-}
-
-type registryStringSnapshot struct {
-	values []string
-}
-
-func testRegistrySnapshotStability(t *testing.T, store func(string, string), remove func(string), array func() []string) {
-	t.Helper()
-	store("worker", "old")
-	original := array()
-	store("worker", "replacement")
-	if current := array(); !slices.Equal(current, []string{"replacement"}) {
-		t.Fatalf("replacement snapshot = %v", current)
-	}
-	if !slices.Equal(original, []string{"old"}) {
-		t.Errorf("replacing an entry changed the previous snapshot: %v", original)
-	}
-
-	store("second", "second")
-	beforeDelete := array()
-	expected := slices.Clone(beforeDelete)
-	remove("worker")
-	if current := array(); !slices.Equal(current, []string{"second"}) {
-		t.Fatalf("deletion snapshot = %v", current)
-	}
-	if !slices.Equal(beforeDelete, expected) {
-		t.Errorf("deleting an entry changed the previous snapshot: got %v, want %v", beforeDelete, expected)
-	}
-
-	beforeAdd := array()
-	store("third", "third")
-	_ = array()
-	if !slices.Equal(beforeAdd, []string{"second"}) {
-		t.Errorf("adding an entry changed the previous snapshot: %v", beforeAdd)
-	}
-}
-
-func TestRegistryConcurrentSnapshots(t *testing.T) {
-	t.Run("base", func(t *testing.T) {
-		registry := NewRegistry[string]()
-		testRegistryConcurrentSnapshots(t, registry.Store, registry.Delete, registry.Len, registry.Array)
-	})
-	t.Run("customized", func(t *testing.T) {
-		registry := NewRegistryWithArrayProvider(func(values []string) *registryStringSnapshot {
-			return &registryStringSnapshot{values: values}
-		})
-		testRegistryConcurrentSnapshots(t, registry.Store, registry.Delete, registry.Len, func() []string {
-			return registry.Array().values
-		})
-	})
-}
-
-func testRegistryConcurrentSnapshots(t *testing.T, store func(string, string), remove func(string), length func() int, array func() []string) {
-	t.Helper()
-	const iterations = 256
-	const keys = 8
-	start := make(chan struct{})
-	var workers sync.WaitGroup
-	workers.Add(4)
-	go func() {
-		defer workers.Done()
-		<-start
-		for i := range iterations {
-			key := strconv.Itoa(i % keys)
-			store(key, strconv.Itoa(i))
-			if i%3 == 0 {
-				remove(key)
-			}
-			_ = array()
-			runtime.Gosched()
-		}
-	}()
-	for range 3 {
-		go func() {
-			defer workers.Done()
-			<-start
-			for range iterations {
-				current := array()
-				expected := slices.Clone(current)
-				runtime.Gosched()
-				if !slices.Equal(current, expected) {
-					t.Errorf("published snapshot changed during concurrent updates: got %v, want %v", current, expected)
-					return
-				}
-				if n := length(); n < 0 || n > keys {
-					t.Errorf("registry length outside possible key count: %d", n)
-					return
-				}
-			}
-		}()
-	}
-	close(start)
-	workers.Wait()
-}

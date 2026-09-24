@@ -739,3 +739,99 @@ func BenchmarkTimeNowOptimization(b *testing.B) {
 		}
 	})
 }
+
+// TestLoadTokenizerPoolConfigFromEnv covers the AIBRIX_TOKENIZER_* durations.
+//
+// utils.LoadEnvDuration already returns a time.Duration, so the values it hands
+// back must not be scaled by time.Second again. Doing so overflows int64 for any
+// realistic setting (30s becomes a negative duration, which silently disables the
+// health checker in NewTokenizerPool), while still producing the correct value on
+// the default path - so only a case that sets the variables explicitly catches it.
+func TestLoadTokenizerPoolConfigFromEnv(t *testing.T) {
+	const (
+		healthCheckEnv = "AIBRIX_TOKENIZER_HEALTH_CHECK_PERIOD"
+		ttlEnv         = "AIBRIX_TOKENIZER_TTL"
+		timeoutEnv     = "AIBRIX_TOKENIZER_REQUEST_TIMEOUT"
+	)
+
+	tests := []struct {
+		name            string
+		healthCheck     string
+		ttl             string
+		timeout         string
+		wantHealthCheck time.Duration
+		wantTTL         time.Duration
+		wantTimeout     time.Duration
+	}{
+		{
+			name:            "unset falls back to defaults",
+			wantHealthCheck: 30 * time.Second,
+			wantTTL:         300 * time.Second,
+			wantTimeout:     5 * time.Second,
+		},
+		{
+			name:            "documented defaults set explicitly",
+			healthCheck:     "30s",
+			ttl:             "300s",
+			timeout:         "5s",
+			wantHealthCheck: 30 * time.Second,
+			wantTTL:         300 * time.Second,
+			wantTimeout:     5 * time.Second,
+		},
+		{
+			name:            "custom durations are honored",
+			healthCheck:     "45s",
+			ttl:             "10m",
+			timeout:         "2500ms",
+			wantHealthCheck: 45 * time.Second,
+			wantTTL:         10 * time.Minute,
+			wantTimeout:     2500 * time.Millisecond,
+		},
+		{
+			name:            "unparsable values fall back to defaults",
+			healthCheck:     "not-a-duration",
+			ttl:             "300", // missing unit, rejected by time.ParseDuration
+			timeout:         "-",
+			wantHealthCheck: 30 * time.Second,
+			wantTTL:         300 * time.Second,
+			wantTimeout:     5 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Always set all three so the case is independent of the ambient
+			// environment; an empty value is treated as unset by LoadEnvDuration.
+			t.Setenv(healthCheckEnv, tt.healthCheck)
+			t.Setenv(ttlEnv, tt.ttl)
+			t.Setenv(timeoutEnv, tt.timeout)
+
+			cfg := loadTokenizerPoolConfigFromEnv()
+
+			assert.Equal(t, tt.wantHealthCheck, cfg.HealthCheckPeriod, "HealthCheckPeriod")
+			assert.Equal(t, tt.wantTTL, cfg.TokenizerTTL, "TokenizerTTL")
+			assert.Equal(t, tt.wantTimeout, cfg.Timeout, "Timeout")
+
+			// NewTokenizerPool only starts the health checker (which is also what
+			// evicts stale tokenizers) when HealthCheckPeriod is positive.
+			assert.Positive(t, cfg.HealthCheckPeriod, "HealthCheckPeriod must stay positive")
+			assert.Positive(t, cfg.TokenizerTTL, "TokenizerTTL must stay positive")
+			assert.Positive(t, cfg.Timeout, "Timeout must stay positive")
+		})
+	}
+}
+
+// TestLoadTokenizerPoolConfigFromEnvNonDurationDefaults pins the remaining
+// defaults documented in pkg/plugins/gateway/ENV_VARS.md.
+func TestLoadTokenizerPoolConfigFromEnvNonDurationDefaults(t *testing.T) {
+	t.Setenv("AIBRIX_VLLM_TOKENIZER_ENDPOINT_TEMPLATE", "")
+	t.Setenv("AIBRIX_MAX_TOKENIZERS_PER_POOL", "")
+
+	cfg := loadTokenizerPoolConfigFromEnv()
+
+	assert.True(t, cfg.EnableVLLMRemote)
+	assert.Equal(t, "http://%s:8000", cfg.EndpointTemplate)
+	assert.Equal(t, 100, cfg.MaxTokenizersPerPool)
+	assert.Nil(t, cfg.DefaultTokenizer)
+	assert.NotNil(t, cfg.ModelServiceMap)
+}

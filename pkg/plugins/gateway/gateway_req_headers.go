@@ -18,6 +18,7 @@ package gateway
 
 import (
 	"context"
+	"net/http"
 	"strings"
 
 	"go.opentelemetry.io/otel"
@@ -30,6 +31,7 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
+	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -38,16 +40,27 @@ import (
 const (
 	userKey          = "user"
 	pathKey          = ":path"
+	methodKey        = ":method"
 	authorizationKey = "authorization"
 	contentTypeKey   = "content-type"
 )
 
-func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, rootSpan trace.Span, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, *types.RoutingContext) {
+// videoCreateRematchHeaders prepares the headers-phase route rematch for an
+// asynchronous create whose real routing strategy and target pod can only be
+// selected after its multipart body has been decoded.
+func videoCreateRematchHeaders(reqHeaders map[string]string, requestPath string, endOfStream bool) []*configPb.HeaderValueOption {
+	if endOfStream ||
+		!strings.EqualFold(reqHeaders[methodKey], http.MethodPost) ||
+		pathWithoutQuery(requestPath) != PathVideos ||
+		strings.TrimSpace(reqHeaders[HeaderRoutingStrategy]) != "" {
+		return nil
+	}
+	return buildEnvoyProxyHeaders(nil, HeaderRoutingStrategy, string(routing.RouterLeastRequest))
+}
+
+func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, rootSpan trace.Span, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, *types.RoutingContext, int64) {
 	var username, requestPath string
-	var user utils.User
-	var rpm int64
-	var err error
-	var errRes *extProcPb.ProcessingResponse
+	var rpm, term int64
 	var routingCtx *types.RoutingContext
 	var reqConfigProfile string
 
@@ -62,6 +75,8 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 			username = string(n.RawValue)
 		case pathKey:
 			requestPath = string(n.RawValue)
+		case methodKey:
+			reqHeaders[n.Key] = string(n.RawValue)
 		case authorizationKey:
 			reqHeaders[n.Key] = string(n.RawValue)
 		case HeaderExternalFilter:
@@ -70,12 +85,14 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 			reqHeaders[contentTypeKey] = string(n.RawValue)
 		case HeaderRoutingStrategy:
 			reqHeaders[HeaderRoutingStrategy] = string(n.RawValue)
+		case HeaderPriorityTier:
+			reqHeaders[HeaderPriorityTier] = strings.TrimSpace(string(n.RawValue))
 		case HeaderConfigProfile:
 			reqConfigProfile = strings.TrimSpace(string(n.RawValue))
 		case constants.HeaderSessionID:
 			reqHeaders[constants.HeaderSessionID] = string(n.RawValue)
-		case constants.HeaderSessionKey:
-			reqHeaders[constants.HeaderSessionKey] = string(n.RawValue)
+		case constants.HeaderSessionKey, HeaderMockPDFailure:
+			reqHeaders[strings.ToLower(n.Key)] = string(n.RawValue)
 		case HeaderTraceParent: // Preserve the trace context for requests initiated by the gateway plugin. like PD
 			reqHeaders[HeaderTraceParent] = string(n.RawValue)
 			if !rootSpan.SpanContext().HasTraceID() { // prefers rootSpan traceID over traceparent
@@ -101,30 +118,13 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 				"Incorrect API key provided",
 				ErrorCodeInvalidAPIKey,
 				"api_key",
-			), utils.User{}, rpm, nil
+			), utils.User{}, rpm, nil, term
 		}
 	}
 
-	if username != "" {
-		user.Name = username
-	}
-	if username != "" && s.redisClient != nil {
-		user, err = utils.GetUser(ctx, utils.User{Name: username}, s.redisClient)
-		if err != nil {
-			klog.ErrorS(err, "unable to process user info", "requestID", requestID, "username", username)
-			return generateErrorResponse(
-				envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: HeaderErrorUser, RawValue: []byte("true"),
-				}}},
-				err.Error(), "", ""), utils.User{}, rpm, routingCtx
-		}
-
-		rpm, errRes, err = s.checkLimits(ctx, user)
-		if errRes != nil {
-			klog.ErrorS(err, "error on checking limits", "requestID", requestID, "username", username)
-			return errRes, utils.User{}, rpm, routingCtx
-		}
+	user, rpm, userErrRes := s.resolveUserForRequest(ctx, requestID, username)
+	if userErrRes != nil {
+		return userErrRes, utils.User{}, rpm, routingCtx, term
 	}
 
 	routingCtx = types.NewRoutingContext(ctx, "", "", "", requestID, user.Name)
@@ -132,7 +132,48 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 	routingCtx.ReqHeaders = reqHeaders
 	routingCtx.ReqConfigProfile = reqConfigProfile
 
-	headers := []*configPb.HeaderValueOption{}
+	// Do not create a second, subtly different Videos API under a trailing-slash
+	// alias. In particular POST /v1/videos/ must not reach response rewriting
+	// after having missed multipart parsing and create pinning.
+	if isUnsupportedVideoTrailingSlash(requestPath) {
+		return buildErrorResponse(
+			envoyTypePb.StatusCode_NotFound,
+			"video paths do not support a trailing slash",
+			"", "", HeaderErrorRequestBodyProcessing, "true"), user, rpm, routingCtx, term
+	}
+
+	// Async video job follow-ups (GET status/content, DELETE) carry their routing
+	// key -- the public job id -- in the path, not the (often empty/absent) body.
+	// Envoy's ext_proc filter only invokes RequestBody processing when the request
+	// actually has a body, so a bodyless request must be pinned here, at
+	// RequestHeaders, or it never gets pinned at all (see
+	// handleVideoJobSubResourceHeaders for the full explanation). When a body IS
+	// coming (EndOfStream false), HandleRequestBody's existing handling covers it.
+	if h.RequestHeaders.EndOfStream {
+		if publicJobID, isSubResource := extractVideoIDFromPath(requestPath); isSubResource {
+			resp, videoTerm := s.handleVideoJobSubResourceHeaders(ctx, routingCtx, requestID, requestPath, publicJobID)
+			return resp, user, rpm, routingCtx, videoTerm
+		}
+		// GET /v1/videos is the caller's own job catalog, which only the gateway's
+		// registry knows -- there is no backend to route it to.
+		if isVideoListRequest(requestPath, reqHeaders[methodKey]) {
+			options, err := parseVideoListOptions(requestPath)
+			if err != nil {
+				return buildErrorResponse(envoyTypePb.StatusCode_BadRequest,
+					err.Error(), "", "", HeaderErrorRequestBodyProcessing, "true"), user, rpm, routingCtx, term
+			}
+			return s.handleVideoListHeaders(ctx, requestID, asyncJobOwnerFromRoutingContext(routingCtx), options), user, rpm, routingCtx, term
+		}
+	}
+
+	headers := videoCreateRematchHeaders(reqHeaders, requestPath, h.RequestHeaders.EndOfStream)
+	// The initial /v1/videos route is selected before ext_proc sees the request.
+	// When the client supplies no routing strategy, stamp a temporary valid value
+	// while the headers-phase ClearRouteCache below can still rematch the request
+	// onto the Videos ORIGINAL_DST route. Do not put this synthetic value in
+	// routingCtx.ReqHeaders: HandleRequestBody must still resolve the real strategy
+	// from the model profile or environment before it selects the concrete pod and
+	// overwrites this header together with target-pod.
 	headers = append(headers, &configPb.HeaderValueOption{
 		Header: &configPb.HeaderValue{
 			Key:      HeaderWentIntoReqHeaders,
@@ -168,5 +209,35 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 				},
 			},
 		},
-	}, user, rpm, routingCtx
+	}, user, rpm, routingCtx, term
+}
+
+// resolveUserForRequest resolves user quota state only when rate limiting is enabled.
+func (s *Server) resolveUserForRequest(ctx context.Context, requestID, username string) (utils.User, int64, *extProcPb.ProcessingResponse) {
+	if s.disableRateLimiting || username == "" {
+		return utils.User{}, 0, nil
+	}
+
+	user := utils.User{Name: username}
+	if s.redisClient == nil {
+		return user, 0, nil
+	}
+
+	user, err := utils.GetUser(ctx, user, s.redisClient)
+	if err != nil {
+		klog.ErrorS(err, "unable to process user info", "requestID", requestID, "username", username)
+		return utils.User{}, 0, generateErrorResponse(
+			envoyTypePb.StatusCode_InternalServerError,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: HeaderErrorUser, RawValue: []byte("true"),
+			}}},
+			err.Error(), "", "")
+	}
+
+	rpm, errRes, err := s.checkLimits(ctx, user)
+	if errRes != nil {
+		klog.ErrorS(err, "error on checking limits", "requestID", requestID, "username", username)
+		return utils.User{}, rpm, errRes
+	}
+	return user, rpm, nil
 }

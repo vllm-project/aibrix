@@ -17,40 +17,66 @@ limitations under the License.
 package engine
 
 import (
+	"fmt"
+
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
 )
 
 // EngineHandler encapsulates engine-specific behaviour for PD-disaggregated
-// prefill: how to augment the outbound prefill request body and how to merge
+// prefill: how to derive the outbound prefill request body and how to merge
 // the prefill response back into the decode request body.
+//
+// Both methods operate on raw JSON bytes and must only add, replace or delete
+// top-level keys (or keys inside the small gateway-owned objects such as
+// kv_transfer_params / disaggregated_params). They must never round-trip the
+// body through map[string]any: that re-serialises nested objects (messages,
+// tools, …) in random key order, which changes prompt_token_ids between the
+// prefill and decode requests and across repeated requests, defeating
+// KV-cache prefix reuse.
 type EngineHandler interface {
 	// Name returns the engine identifier (e.g. "vllm", "sglang", "trtllm").
 	Name() string
 	// IsAsync returns true when the engine's prefill handshake is
 	// self-coordinating and should be fired in a goroutine (e.g. SGLang).
 	IsAsync() bool
-	// AugmentPrefillRequest adds engine-specific fields to completionRequest
-	// before it is POSTed to the prefill pod.
-	AugmentPrefillRequest(routingCtx *types.RoutingContext, pod *v1.Pod, completionRequest map[string]any) error
-	// MergePrefillResponse injects engine-specific data from the prefill
+	// AugmentPrefillRequest returns the prefill request body derived from
+	// body, which is the client request already validated as a JSON object.
+	// The common prefill constraints (max_tokens=1, stream=false, …) are
+	// applied by the caller afterwards. Handlers that must also change the
+	// decode body (e.g. SGLang bootstrap fields) update routingCtx.ReqBody;
+	// on error routingCtx.ReqBody must be left unchanged.
+	AugmentPrefillRequest(routingCtx *types.RoutingContext, pod *v1.Pod, body []byte) ([]byte, error)
+	// MergePrefillResponse injects engine-specific data from the raw prefill
 	// response into routingCtx.ReqBody before the decode pod receives it.
-	MergePrefillResponse(routingCtx *types.RoutingContext, responseData map[string]any, pod *v1.Pod) error
+	MergePrefillResponse(routingCtx *types.RoutingContext, prefillResponse []byte, pod *v1.Pod) error
+	// ControlledFields returns the top-level keys, in addition to
+	// pd.CommonControlledFields, that AugmentPrefillRequest or
+	// MergePrefillResponse may write. ValidateRequest rejects client bodies
+	// that contain any of them more than once.
+	ControlledFields() []string
 }
 
-// RawPrefillPayloadPreparer is an optional interface implemented by engines
-// that need to preserve the exact byte ordering of the original request body
-// (e.g. SGLang, where non-deterministic map key ordering would change
-// prompt_token_ids and degrade KV cache hit rates). When the handler
-// implements this interface, prefill.PreparePayload uses it instead of the
-// unmarshal → mutate → marshal path, which avoids re-serializing nested
-// fields such as tool schemas.
-type RawPrefillPayloadPreparer interface {
-	// PreparePrefillPayload returns the prefill request body and side-effects
-	// routingCtx.ReqBody with the decode request body. Both bodies must
-	// preserve all untouched fields from the original request at the byte
-	// level. On error, routingCtx.ReqBody must not be modified.
-	PreparePrefillPayload(routingCtx *types.RoutingContext, pod *v1.Pod) (prefillBody []byte, err error)
+// ValidateRequest checks that body is a JSON object that does not repeat any
+// gateway-controlled top-level key (pd.CommonControlledFields plus
+// h.ControlledFields()). It returns *InvalidRequestError so the gateway can
+// map the failure to HTTP 400. Route() calls it for every engine before pod
+// selection, so a malformed request can neither pollute selection state nor
+// reach a prefill pod.
+func ValidateRequest(body []byte, h EngineHandler) error {
+	return validateRequestBody(body, h.ControlledFields(), "request body")
+}
+
+func validateRequestBody(body []byte, extraControlledFields []string, what string) error {
+	if err := pd.ValidateJSONObject(body, what); err != nil {
+		return &InvalidRequestError{Message: err.Error()}
+	}
+	controlled := append(append([]string(nil), pd.CommonControlledFields...), extraControlledFields...)
+	if key, dup := pd.FindDuplicateTopLevelKey(body, controlled); dup {
+		return &InvalidRequestError{Message: fmt.Sprintf("duplicate top-level key %q in %s", key, what)}
+	}
+	return nil
 }
 
 // InvalidRequestError represents a client-side error (malformed request body)

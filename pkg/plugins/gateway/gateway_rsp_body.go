@@ -50,6 +50,16 @@ var (
 	ttftThreshold = time.Duration(utils.LoadEnvInt("AIBRIX_TTFT_THRESHOLD_S", defaultTTFTThreshold)) * time.Second
 )
 
+// effectiveTTFTThreshold returns the first-token delay threshold for this request:
+// the model config profile's ttftThresholdS when set, otherwise the process-wide
+// AIBRIX_TTFT_THRESHOLD_S default.
+func effectiveTTFTThreshold(routingCtx *types.RoutingContext) time.Duration {
+	if routingCtx != nil && routingCtx.ConfigProfile != nil && routingCtx.ConfigProfile.TTFTThresholdS > 0 {
+		return time.Duration(routingCtx.ConfigProfile.TTFTThresholdS) * time.Second
+	}
+	return ttftThreshold
+}
+
 type OpenAIResponse struct {
 	Model string `json:"model"`
 	// Usage carries token accounting. The Chat Completions/Completions APIs report
@@ -279,6 +289,11 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 			if processingRes != nil {
 				return processingRes, complete, usage
 			}
+		} else if videoResp, videoComplete, handled := s.handleVideoJobResponseBody(ctx, requestID, routerCtx, b); handled {
+			// Video create/status responses carry ids the client must never see, so
+			// they are held and rewritten instead of forwarded as-is. /content and
+			// /v1/videos/sync are not handled here: they keep streaming untouched.
+			return videoResp, videoComplete, usage
 		}
 	}
 
@@ -333,8 +348,12 @@ func isLanguageRequest(requestPath string) bool {
 	nonLanguagePrefixes := []string{
 		PathImagesGenerations,
 		PathVideoGenerations,
+		// Prefix match: also covers /v1/videos/sync and the GET/DELETE sub-resources
+		// (/v1/videos/{id}, /v1/videos/{id}/content).
+		PathVideos,
 		PathAudioTranscriptions,
 		PathAudioTranslations,
+		PathTokenize,
 	}
 	for _, prefix := range nonLanguagePrefixes {
 		if strings.HasPrefix(requestPath, prefix) {
@@ -609,7 +628,7 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 				tpot := time.Duration(decodeTime.Nanoseconds() / completionTokens)
 				metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTPOTBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(tpot)})
 			}
-			if ttft > ttftThreshold {
+			if ttft > effectiveTTFTThreshold(routingCtx) {
 				metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayFirstTokenDelayOver1sTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{
 					"request_id": requestID,
 					"p_bucket":   pBucket, "c_bucket": cBucket,

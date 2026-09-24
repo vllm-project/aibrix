@@ -46,6 +46,9 @@ func TestTokenLoadPrefillPolicy_ScoresFromTracker(t *testing.T) {
 	tracker.ReleaseTokens("short-1")
 
 	ctx := types.NewRoutingContext(context.Background(), "pd", testModelName, testMessage, "req-1", "")
+	// The scorer reads the request's resolved KV weight, which mirrors the
+	// tracker's own configuration.
+	ctx.SetPDOverrides(&types.PDOverrides{TokenLoad: types.PDTokenLoadOverrides{KVWeight: 0.5}})
 	scorer, err := policy.Prepare(ctx, []*v1.Pod{podA, podB}, map[string]struct{}{podA.Name: {}, podB.Name: {}})
 	require.NoError(t, err)
 	assert.Nil(t, scorer.PrefixHashes(), "token_load does not use the prefix cache")

@@ -21,7 +21,7 @@ or job-progress dependency.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import ceil, floor
+from math import ceil, floor, ldexp
 from time import monotonic
 from typing import Any, Optional, Protocol, runtime_checkable
 
@@ -67,6 +67,9 @@ class FixedConcurrencyController:
 
     def limit(self) -> int:
         return self._limit
+
+    def set_max_limit(self, max_limit: int) -> None:
+        self._limit = max(int(max_limit), 1)
 
     def admission_delay_seconds(self) -> float:
         return 0.0
@@ -171,6 +174,17 @@ class LLMAdaptiveConcurrencyController:
 
     def limit(self) -> int:
         return self._limit
+
+    def set_max_limit(self, max_limit: int) -> None:
+        next_max_limit = max(int(max_limit), self._settings.min_limit)
+        if next_max_limit == self._max_limit:
+            return
+        self._max_limit = next_max_limit
+        self._limit = min(self._limit, self._max_limit)
+        self._healthy = 0
+        self._overload_samples = 0
+        self._overload_errors = 0
+        self._overload_window_size = 0
 
     def admission_delay_seconds(self) -> float:
         if self._backoff_error_count < self._settings.failure_backoff_after:
@@ -331,10 +345,13 @@ class LLMAdaptiveConcurrencyController:
         if self._backoff_error_count < self._settings.failure_backoff_after:
             return
         exponent = self._backoff_error_count - self._settings.failure_backoff_after
-        delay = min(
-            self._settings.failure_backoff_base_seconds * (2**exponent),
-            self._settings.failure_backoff_max_seconds,
-        )
+        # Scale the float directly: constructing 2**exponent can overflow its
+        # conversion to float before the configured cap is applied.
+        try:
+            delay = ldexp(self._settings.failure_backoff_base_seconds, exponent)
+        except OverflowError:
+            delay = self._settings.failure_backoff_max_seconds
+        delay = min(delay, self._settings.failure_backoff_max_seconds)
         self._backoff_until = max(self._backoff_until, monotonic() + delay)
 
 

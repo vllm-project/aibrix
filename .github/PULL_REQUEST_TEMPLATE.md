@@ -21,6 +21,7 @@ Resolves: #[Insert issue number(s)]
     <li><code>[Docs]</code>: Updates or additions to documentation</li>
     <li><code>[API]</code>: Modifications to aibrix's API or interface</li>
     <li><code>[CLI]</code>: Changes or additions to the Command Line Interface</li>
+    <li><code>[Feat]</code>: New functionality</li>
     <li><code>[Misc]</code>: For changes not covered above (use sparingly)</li>
 </ul>
 <p><em>Note: For changes spanning multiple categories, use multiple prefixes in order of importance.</em></p>

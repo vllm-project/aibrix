@@ -101,6 +101,9 @@ func (pf *ModelGPUProfile) GetSignature(features ...float64) ([]int, error) {
 		return nil, fmt.Errorf("missing values on getting profile signature")
 	}
 	indexes := pf.Indexes
+	if len(indexes) != len(features) {
+		return nil, fmt.Errorf("profile index size mismatch, got %d, expected %d", len(indexes), len(features))
+	}
 
 	formalizedVals := make([]float64, len(features))
 	for i, val := range features {

@@ -17,7 +17,9 @@ limitations under the License.
 package gateway
 
 import (
+	"bytes"
 	"context"
+	"mime/multipart"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +29,7 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -34,6 +37,19 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// buildMultipartForm encodes fields as a multipart/form-data body and returns
+// the body along with the Content-Type header (including boundary).
+func buildMultipartForm(t *testing.T, fields map[string]string) (body []byte, contentType string) {
+	t.Helper()
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	for k, v := range fields {
+		require.NoError(t, w.WriteField(k, v))
+	}
+	require.NoError(t, w.Close())
+	return buf.Bytes(), w.FormDataContentType()
+}
 
 func int64Ptr(v int64) *int64 {
 	return &v
@@ -154,10 +170,90 @@ func Test_ValidateRequestBody(t *testing.T) {
 			statusCode:  envoyTypePb.StatusCode_OK,
 		},
 		{
+			// HTTP/2 :path carries the query string (RFC 7540); before validateRequestBody
+			// stripped it here, this fell through to the "unknown request path" default and
+			// returned 501 instead of being parsed as a chat completion.
+			message:     "/v1/chat/completions?beta=true query string does not break path matching",
+			requestPath: "/v1/chat/completions?beta=true",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}]}`),
+			model:       "llama2-7b",
+			messages:    "this is system say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			// validateChatRequest's TPM guard compares requestPath against PathChatCompletions
+			// exactly (see the "NOT OK" case above), so a 400 here also confirms
+			// validateRequestBody passes the query-stripped path down to it, not the raw
+			// "/v1/chat/completions?beta=true".
+			message:     "/v1/chat/completions?beta=true stream_options.include_usage == false with user.TPM >= 1 is NOT OK",
+			user:        utils.User{Tpm: 1},
+			requestPath: "/v1/chat/completions?beta=true",
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": false}, "messages": [{"role": "system", "content": "this is system"}]}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/tokenize prompt form",
+			requestPath: "/tokenize",
+			requestBody: []byte(`{"model": "llama2-7b", "prompt": "say this is test"}`),
+			model:       "llama2-7b",
+			messages:    "say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/tokenize messages form applies no chat template at the gateway",
+			requestPath: "/tokenize",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}], "add_generation_prompt": true}`),
+			model:       "llama2-7b",
+			messages:    "this is system say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/tokenize with neither prompt nor messages is left to the engine",
+			requestPath: "/tokenize",
+			requestBody: []byte(`{"model": "llama2-7b"}`),
+			model:       "llama2-7b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/tokenize non-string prompt is forwarded, not rejected",
+			requestPath: "/tokenize",
+			requestBody: []byte(`{"model": "llama2-7b", "prompt": [1, 2, 3]}`),
+			model:       "llama2-7b",
+			messages:    "[1, 2, 3]",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/tokenize missing model",
+			requestPath: "/tokenize",
+			requestBody: []byte(`{"prompt": "say this is test"}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/tokenize invalid json",
+			requestPath: "/tokenize",
+			requestBody: []byte(`{"model": "llama2-7b", "prompt":`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
 			message:     "/v1/messages valid request body (same as chat completions)",
 			user:        utils.User{Tpm: 1},
 			requestPath: "/v1/messages",
 			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": true}, "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}]}`),
+			stream:      true,
+			model:       "llama2-7b",
+			messages:    "this is system say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			// HTTP/2 :path carries the query string (RFC 7540), so /v1/messages?beta=true must
+			// still match PathMessages, not fall through to the "unknown request path" default
+			// case. stream_options.include_usage is deliberately false with Tpm: 1: that
+			// combination is a 400 on /v1/chat/completions (see the case above), so passing here
+			// also confirms the query string didn't make this get treated as chat completions.
+			message:     "/v1/messages?beta=true query string does not break path matching",
+			user:        utils.User{Tpm: 1},
+			requestPath: "/v1/messages?beta=true",
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": false}, "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}]}`),
 			stream:      true,
 			model:       "llama2-7b",
 			messages:    "this is system say this is test",
@@ -1664,6 +1760,48 @@ func TestApplyConfigProfile_BuildsFeaturesOnlyForAutoSelection(t *testing.T) {
 	}
 }
 
+func TestApplyConfigProfile_AuthoritativePolicyUsesDefaultProfile(t *testing.T) {
+	profileJSON := `{
+		"authoritativeRoutingPolicy":true,
+		"defaultProfile":"default",
+		"profiles":{
+			"default":{"routingStrategy":"least-request","routingConfig":{"marker":"default"}},
+			"batch":{"routingStrategy":"throughput","routingConfig":{"promptTokensGte":1,"marker":"batch"}}
+		}
+	}`
+	pods := []*v1.Pod{{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "pod-a",
+			Annotations: map[string]string{constants.ModelAnnoConfig: profileJSON},
+		},
+	}}
+
+	for _, reqConfigProfile := range []string{"batch", autoConfigProfile} {
+		t.Run(reqConfigProfile, func(t *testing.T) {
+			ctx := types.NewRoutingContext(context.Background(), "", "", "", "request-1", "")
+			ctx.ReqConfigProfile = reqConfigProfile
+			ctx.Message = "prompt"
+			ctx.ReqHeaders = map[string]string{
+				HeaderRoutingStrategy: "throughput",
+				HeaderExternalFilter:  "environment=batch",
+				"x-test-header":       "preserved",
+			}
+
+			applyConfigProfile(ctx, pods)
+
+			require.NotNil(t, ctx.ConfigProfile)
+			assert.True(t, ctx.ConfigProfile.AuthoritativeRoutingPolicy)
+			assert.Equal(t, "least-request", ctx.ConfigProfile.RoutingStrategy)
+			assert.Contains(t, string(ctx.ConfigProfile.RoutingConfig), `"marker":"default"`)
+			assert.Empty(t, ctx.ReqConfigProfile)
+			assert.NotContains(t, ctx.ReqHeaders, HeaderRoutingStrategy)
+			assert.NotContains(t, ctx.ReqHeaders, HeaderExternalFilter)
+			assert.Equal(t, "preserved", ctx.ReqHeaders["x-test-header"])
+			assert.NotContains(t, ctx.RespHeaders, HeaderAIBrixConfigProfile)
+		})
+	}
+}
+
 func TestMaxTokensFromRequestBody(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1741,6 +1879,40 @@ func TestDeriveRoutingStrategyFromContext(t *testing.T) {
 			got, ok := deriveRoutingStrategyFromContext(tt.ctx)
 			assert.Equal(t, tt.want, got)
 			assert.Equal(t, tt.wantOK, ok)
+		})
+	}
+}
+
+// TestParseMultipartFormData_IgnoresStreamForVideoPaths guards against a
+// client (or an SDK reusing a generic multipart helper across audio/video
+// calls) sending stream=true on the async, never-streamed Videos API. If that
+// field were honored, HandleResponseBody would take the SSE branch instead of
+// calling handleVideoJobResponseBody, and the job would never be registered --
+// breaking follow-up GET/DELETE calls with a spurious "video not found".
+func TestParseMultipartFormData_IgnoresStreamForVideoPaths(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		wantStream bool
+	}{
+		{"videos create ignores stream field", PathVideos, false},
+		{"videos sync create ignores stream field", PathVideosSync, false},
+		{"videos create with query string still ignores stream field", PathVideos + "?foo=bar", false},
+		{"audio transcription honors stream field", PathAudioTranscriptions, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, contentType := buildMultipartForm(t, map[string]string{
+				"model":  "test-model",
+				"stream": "true",
+			})
+
+			model, stream, errRes := parseMultipartFormData("req-1", tt.path, contentType, body)
+
+			assert.Nil(t, errRes)
+			assert.Equal(t, "test-model", model)
+			assert.Equal(t, tt.wantStream, stream)
 		})
 	}
 }

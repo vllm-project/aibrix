@@ -53,9 +53,33 @@ type ResolvedConfigProfile struct {
 	// It takes precedence over the routing-strategy request header, the profile
 	// RoutingStrategy and the ROUTING_ALGORITHM environment variable.
 	LockedRoutingStrategy string
-	RoutingStrategy       string
-	RoutingConfig         json.RawMessage
-	RequestsPerSecond     int64
+	// AuthoritativeRoutingPolicy records that routing diagnostics must be omitted
+	// from the client response. Client routing inputs are cleared before the
+	// resolved profile is stored here.
+	AuthoritativeRoutingPolicy bool
+	RoutingStrategy            string
+	RoutingConfig              json.RawMessage
+	// Routing is RoutingConfig in its typed form, parsed once when this profile
+	// is resolved. Nil when the profile sets no routingConfig or it does not
+	// parse; routingalgorithms.ResolveRoutingOverrides turns it into the
+	// request's concrete overrides.
+	Routing *RoutingConfig
+	// RequestsPerSecond is the per-model request-rate limit enforced by enforceModelRPS,
+	// resolved from the profile's requestsPerSecond or from its requestsPerSecondPerReplica
+	// (which takes precedence and scales it by the model's current routable replica count).
+	// Zero means unset/unlimited.
+	RequestsPerSecond int64
+	// RateWindowSeconds is the window size, in seconds, that RequestsPerSecond is enforced
+	// over. Defaults to a 1s window (0 or 1 both mean "1s") when unset; set above 1 for
+	// sub-1 RPS values expressed as "1 request every N seconds".
+	RateWindowSeconds int64
+	// RequestsInflight is the maximum number of concurrent (in-flight) requests allowed on
+	// a single replica, enforced per pod rather than as an aggregate. Zero means unset.
+	RequestsInflight int64
+	// TTFTThresholdS is the per-model time-to-first-token threshold in seconds, resolved
+	// from the profile's ttftThresholdS. Zero means unset, in which case the response-body
+	// path keeps using the process-wide AIBRIX_TTFT_THRESHOLD_S default.
+	TTFTThresholdS int64
 }
 
 // RoutingAlgorithm defines the routing algorithms
@@ -106,6 +130,11 @@ type RoutingContext struct {
 	ReqBody          []byte
 	ReqPath          string
 	ReqConfigProfile string
+	// AsyncJobBackendID is the backend-private identifier used for a pinned
+	// asynchronous job request. It is retained only for the lifetime of this
+	// routing context so gateway error processing can replace it with the public
+	// ID in an upstream error body.
+	AsyncJobBackendID string
 
 	PrefillStartTime time.Time // Time when prefill request is started.
 	PrefillEndTime   time.Time // Time consumed during prefill.
@@ -127,14 +156,38 @@ type RoutingContext struct {
 	// based on config-profile header. Nil when no config is present.
 	ConfigProfile *ResolvedConfigProfile
 
+	// ReplicaInflightAdmitted is true once the gateway's replica-inflight admission check
+	// (enforceReplicaInflight, backed by cache.Store.AdmitPodRunningRequest) has atomically
+	// admitted this request AND, in doing so, already applied this gateway's own +1 to the
+	// target pod's cross-gateway running-requests counter. Consumers that also increment
+	// that counter (addPodStats) must check this first and skip their own increment, or the
+	// pod's count would be inflated by an extra, never-decremented +1 for this request.
+	ReplicaInflightAdmitted bool
+
 	targetPodSet chan struct{}
 	targetPod    atomic.Pointer[v1.Pod]
 	targetPort   atomic.Int32
 	lastError    atomic.Pointer[error]
-	tokens       []int           // Cache of tokenized prompts
-	predictor    OutputPredictor // OutputPredictor gained from cache
-	statsUpdated int32           // Use to flag if in-memory realtime statistics has been updated for the request.
-	traceAdded   int32           // Use to flag if trace has been added to cache
+
+	// routingOverrides holds the resolved routing overrides of this request's
+	// model config profile. The gateway's routing entry resolves them once per
+	// request so every strategy on the routing path reads the same validated
+	// values. Nil when the profile sets none, and reads then fall back to the
+	// process defaults. Written on the request goroutine before routing starts
+	// and read by that same goroutine, so no atomic is needed here (the PD leg
+	// keeps one for the async prefill and abort paths).
+	routingOverrides *RoutingOverrides
+	tokens           []int           // Cache of tokenized prompts
+	predictor        OutputPredictor // OutputPredictor gained from cache
+	statsUpdated     int32           // Use to flag if in-memory realtime statistics has been updated for the request.
+	traceAdded       int32           // Use to flag if trace has been added to cache
+
+	// pdLeg holds the prefill/decode leg state of the current incarnation of
+	// this request. It is a separate heap object, replaced wholesale on reset,
+	// because the async prefill leg outlives the client stream and must not
+	// report onto whichever request next takes this pooled object. See
+	// PDLegState.
+	pdLeg atomic.Pointer[PDLegState]
 
 	// Fields for unit tests
 	debugDelay time.Duration
@@ -158,8 +211,8 @@ func NewRoutingContext(ctx context.Context, algorithms RoutingAlgorithm, model, 
 	return request
 }
 
-// SetOutputPreditor enables RoutingContext to use existing OutputPredictor to predict output length.
-func (r *RoutingContext) SetOutputPreditor(predictor OutputPredictor) (old OutputPredictor) {
+// SetOutputPredictor enables RoutingContext to use existing OutputPredictor to predict output length.
+func (r *RoutingContext) SetOutputPredictor(predictor OutputPredictor) (old OutputPredictor) {
 	old = r.predictor
 	r.predictor = predictor
 	return
@@ -405,6 +458,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.ReqPath = ""
 	r.ReqConfigProfile = ""
 	r.ReqBody = []byte{}
+	r.AsyncJobBackendID = ""
 	r.PrefillStartTime = time.Time{}
 	r.PrefillEndTime = time.Time{}
 	r.FirstTokenTime = time.Time{}
@@ -413,6 +467,12 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.Span = nil
 	r.RespHeaders = map[string]string{}
 	r.ConfigProfile = nil
+	// The profile is gone, so the overrides derived from it must go too: a
+	// pooled context handed to the next request would otherwise steer models
+	// the new profile never configured (ResolveRoutingOverrides sets them once
+	// per request, and a request without a profile leaves them unset).
+	r.ClearRoutingOverrides()
+	r.ReplicaInflightAdmitted = false
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)
 	r.targetPort.Store(0)
@@ -422,6 +482,17 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.predictor = nil
 	r.statsUpdated = statusInitial
 	r.traceAdded = statusInitial
+	// A fresh leg per incarnation: any prefill goroutine still holding the
+	// previous one can then only mutate an object nothing reads any more.
+	//
+	// The retired leg is deliberately not cancelled here. Its decode abort is
+	// exactly the work that has to outlive the client stream, and this object
+	// can be handed to a new request microseconds after that stream ended, so
+	// cancelling on reuse would routinely kill the abort that fail-fast exists
+	// to send. It stops on its own: both the abort POST and the retry delay
+	// are bounded, and the goroutine releases the leg's abort context when it
+	// exits (PDLegState.FinishDecodeAbort).
+	r.pdLeg.Store(newPDLegState())
 }
 
 func (r *RoutingContext) debugWait() {

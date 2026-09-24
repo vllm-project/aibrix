@@ -125,9 +125,68 @@ spec:
                 regex: .*
         route:  
           cluster: original_destination_cluster
-          timeout: 120s  # Increase route timeout
+          timeout: 600s
         typed_per_filter_config:
           "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-extension-policy/extproc/0":
+            "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig"
+            "config": {}
+  # Pinning re-routes: the plugin answers RequestHeaders with routing-strategy +
+  # target-pod and clears the route cache, so every pinned request re-matches here
+  # instead of on its path route. The route selected at that point is the one the
+  # response phase uses, so it has to enable the same ext_proc filter the request
+  # phase ran on -- a request decoded by the Videos filter whose response is
+  # encoded by the shared one would arrive at the plugin as a second, contextless
+  # stream, and would lose the Videos response body mode with it. These two
+  # mirror the Videos HTTPRoutes; original_route below keeps everything else.
+  #
+  # Both are added at index 0 after original_route, so they are evaluated before
+  # it, and the streaming one before the JSON one: /v1/videos/sync also matches
+  # the JSON pattern's single-segment form.
+  - type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
+    name: "aibrix-system/aibrix-eg/http"
+    operation:
+      op: add
+      path: "/virtual_hosts/0/routes/0"
+      value:
+        name: original_route_videos
+        match:
+          # Create, status and delete: the finite JSON bodies whose job id is
+          # rewritten. Videos deliberately has no trailing-slash aliases.
+          safe_regex:
+            regex: "^/v1/videos(/[^/]+)?$"
+          headers:
+          - name: "routing-strategy"
+            string_match:
+              safe_regex:
+                regex: .*
+        route:
+          cluster: original_destination_cluster
+          timeout: 600s
+        typed_per_filter_config:
+          "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-videos-extension-policy/extproc/0":
+            "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig"
+            "config": {}
+  - type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
+    name: "aibrix-system/aibrix-eg/http"
+    operation:
+      op: add
+      path: "/virtual_hosts/0/routes/0"
+      value:
+        name: original_route_videos_streaming
+        match:
+          # The two endpoints that stream bytes back: never buffered.
+          safe_regex:
+            regex: "^/v1/videos/sync$|^/v1/videos/[^/]+/content$"
+          headers:
+          - name: "routing-strategy"
+            string_match:
+              safe_regex:
+                regex: .*
+        route:
+          cluster: original_destination_cluster
+          timeout: 600s
+        typed_per_filter_config:
+          "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-videos-streaming-extension-policy/extproc/0":
             "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig"
             "config": {}
   - type: "type.googleapis.com/envoy.config.cluster.v3.Cluster"
@@ -150,5 +209,3 @@ spec:
       op: add
       path: /default_filter_chain/filters/0/typed_config/preserve_external_request_id
       value: false
-
-  

@@ -72,8 +72,11 @@ var modelPaths = []string{
 	"/v1/classify",
 	"/generate",
 	"/generatevideo",
+	"/v1/video",
+	"/v1/videos",
 	"/v1/audio/transcriptions",
 	"/v1/audio/translations",
+	"/tokenize",
 }
 
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
@@ -304,7 +307,7 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 						},
 					},
 					Timeouts: &gatewayv1.HTTPRouteTimeouts{
-						Request: ptr.To(gatewayv1.Duration(fmt.Sprintf("%ds", utils.LoadEnvInt("AIBRIX_GATEWAY_TIMEOUT_SECONDS", 120)))),
+						Request: ptr.To(gatewayv1.Duration(fmt.Sprintf("%ds", utils.LoadEnvInt("AIBRIX_GATEWAY_TIMEOUT_SECONDS", 600)))),
 					},
 				},
 			},

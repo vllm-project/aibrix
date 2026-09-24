@@ -88,6 +88,9 @@ const (
 	RealtimeNumRequestsRunning         = "realtime_num_requests_running"
 	RealtimeNormalizedPendings         = "realtime_normalized_pendings"
 	RealtimeRunningRequestsDrainRate1m = "realtime_running_requests_drain_rate_1m"
+	// RealtimeOutputTokenRateEWMA is the smoothed rate, in tokens/sec, at which a pod completes
+	// output tokens (pod-scoped, gateway-tracked). It is the capacity signal of the load-balance router.
+	RealtimeOutputTokenRateEWMA = "realtime_output_token_rate_ewma"
 
 	// ModelReplicas tracks ready engine pods backing a model (1 per routable pod).
 	ModelReplicas = "model_replicas"

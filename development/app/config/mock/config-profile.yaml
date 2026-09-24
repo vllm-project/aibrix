@@ -18,6 +18,7 @@ spec:
       labels:
         adapter.model.aibrix.ai/enabled: "true"
         model.aibrix.ai/name: "qwen3-8b"
+        model.aibrix.ai/port: "8000"
         app: "mock-qwen3-8b"
       annotations:
         model.aibrix.ai/config: |

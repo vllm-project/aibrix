@@ -18,6 +18,8 @@ package main
 
 import (
 	"flag"
+	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -27,6 +29,7 @@ import (
 	"syscall"
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc/filters"
 	_ "go.uber.org/automaxprocs"
 	"google.golang.org/grpc"
 	"k8s.io/client-go/kubernetes"
@@ -51,6 +54,8 @@ import (
 const (
 	defaultGRPCMaxMessageSizeBytes = 4 * 1024 * 1024
 	envGRPCMaxMessageSizeBytes     = "AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES"
+	envDisableRateLimiting         = "AIBRIX_DISABLE_RATE_LIMITING"
+	envPriorityTierEnabled         = "AIBRIX_PRIORITY_TIER_ENABLED"
 )
 
 var (
@@ -62,7 +67,47 @@ var (
 	etcdConfig      string
 )
 
+type kubeAPIOptions struct {
+	qps   float64
+	burst int
+}
+
+func (o *kubeAPIOptions) addFlags(fs *flag.FlagSet) {
+	fs.Float64Var(
+		&o.qps,
+		"kube-api-qps",
+		float64(rest.DefaultQPS),
+		"Maximum QPS for the core Kubernetes and Gateway API clients; must be greater than zero.",
+	)
+	fs.IntVar(
+		&o.burst,
+		"kube-api-burst",
+		rest.DefaultBurst,
+		"Maximum burst for the core Kubernetes and Gateway API clients; must be greater than zero.",
+	)
+}
+
+func (o kubeAPIOptions) validate() error {
+	// Validate the effective float32 value used by rest.Config as well, so that
+	// conversion cannot turn a positive QPS into zero or infinity.
+	qps := float32(o.qps)
+	if !(qps > 0) || math.IsInf(float64(qps), 0) {
+		return fmt.Errorf("--kube-api-qps must be finite and greater than zero as a float32, got %v", o.qps)
+	}
+	if o.burst <= 0 {
+		return fmt.Errorf("--kube-api-burst must be greater than zero, got %d", o.burst)
+	}
+	return nil
+}
+
+func (o kubeAPIOptions) applyTo(config *rest.Config) {
+	config.QPS = float32(o.qps)
+	config.Burst = o.burst
+}
+
 func main() {
+	var kubeAPI kubeAPIOptions
+	kubeAPI.addFlags(flag.CommandLine)
 	flag.StringVar(&grpcAddr, "grpc-bind-address", ":50052", "The address the gRPC server binds to.")
 	flag.StringVar(&httpAddr, "http-bind-address", "", "The address the HTTP server binds to (metrics, /v1/models).")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "", "[Deprecated] Use --http-bind-address instead.")
@@ -74,6 +119,9 @@ func main() {
 	klog.InitFlags(flag.CommandLine)
 	defer klog.Flush()
 	flag.Parse()
+	if err := kubeAPI.validate(); err != nil {
+		klog.Fatal(err)
+	}
 
 	// Resolve HTTP bind address: prefer --http-bind-address, fall back to deprecated --metrics-bind-address
 	if httpAddr == "" {
@@ -103,11 +151,6 @@ func main() {
 				klog.Warningf("Error closing Redis client: %v", err)
 			}
 		}()
-	}
-
-	// register additional routing algorithms that need dependences
-	if redisClient != nil {
-		routing.RegisterPowerOfTwoRouter(redisClient)
 	}
 
 	// stopCh is closed either on normal return (via defer) or proactively in
@@ -153,6 +196,8 @@ func main() {
 			klog.Fatalf("Error building kubeconfig: %v", err)
 		}
 
+		kubeAPI.applyTo(config)
+
 		k8sClient, err = kubernetes.NewForConfig(config)
 		if err != nil {
 			klog.Fatalf("Error creating kubernetes client: %v", err)
@@ -181,7 +226,10 @@ func main() {
 		klog.Fatalf("failed to listen: %v", err)
 	}
 
-	gatewayServer := gateway.NewServer(redisClient, k8sClient, gatewayK8sClient)
+	gatewayServer := gateway.NewServerWithOptions(redisClient, k8sClient, gatewayK8sClient, gateway.ServerOptions{
+		DisableRateLimiting: utils.LoadEnvBool(envDisableRateLimiting, false),
+		PriorityTier:        utils.LoadEnvBool(envPriorityTierEnabled, false),
+	})
 
 	stateSyncEnabled := utils.LoadEnvBool("AIBRIX_STATESYNC_ENABLED", false)
 	var syncManager *statesync.RedisSync
@@ -214,11 +262,21 @@ func main() {
 		if err != nil || telApp == nil {
 			klog.Fatalf("Failed to initialize OpenTelemetry: %v", err)
 		}
-		opts = append(opts, grpc.StatsHandler(otelgrpc.NewServerHandler()))
+		opts = append(opts, grpc.StatsHandler(
+			otelgrpc.NewServerHandler(
+				otelgrpc.WithFilter(
+					filters.Not(filters.HealthCheck()),
+				),
+			),
+		))
 	}
 
 	grpcMaxMessageSize := utils.LoadEnvInt(envGRPCMaxMessageSizeBytes, defaultGRPCMaxMessageSizeBytes)
 	opts = append(opts, grpc.MaxRecvMsgSize(grpcMaxMessageSize))
+
+	// One panicking request must not take the process down with the requests in
+	// flight on it, so recover in the stream interceptor and fail only that stream.
+	opts = append(opts, grpc.StreamInterceptor(gateway.StreamPanicRecoveryInterceptor()))
 
 	s := grpc.NewServer(opts...)
 

@@ -1,0 +1,120 @@
+# vLLM NIXL PD (Prefill-Decode) disaggregation mock StormService for e2e tests.
+#
+# A separate 2x1P1D topology keeps NIXL connector selection isolated from the
+# SHFS vLLM topology while preserving the same mock service conventions.
+#
+# Apply alongside components.yaml (provides mocked-app-sa and RBAC).
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: mock-llama2-7b-pd-vllm-nixl
+  namespace: default
+  labels:
+    model.aibrix.ai/name: "llama2-7b-vllm-nixl"
+    model.aibrix.ai/port: "8000"
+spec:
+  replicas: 2
+  updateStrategy:
+    type: InPlaceUpdate
+  stateful: true
+  selector:
+    matchLabels:
+      app: "mock-llama2-7b-pd-vllm-nixl"
+  template:
+    metadata:
+      labels:
+        app: "mock-llama2-7b-pd-vllm-nixl"
+      annotations:
+        model.aibrix.ai/config: |
+          {
+            "defaultProfile": "pd",
+            "profiles": {
+              "pd": {
+                "routingStrategy": "pd"
+              }
+            }
+          }
+    spec:
+      roles:
+        - name: prefill
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                app: "mock-llama2-7b-pd-vllm-nixl"
+                app.kubernetes.io/name: "mock-llama2-7b-pd-vllm-nixl"
+                model.aibrix.ai/name: "llama2-7b-vllm-nixl"
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
+                model.aibrix.ai/kv-connector-type: nixl
+                adapter.model.aibrix.ai/enabled: "true"
+            spec:
+              serviceAccountName: mocked-app-sa
+              containers:
+                - name: llm-engine
+                  image: aibrix/vllm-mock:nightly
+                  ports:
+                    - containerPort: 8000
+                  env:
+                    - name: MOCK_PD_CONTRACT
+                      value: vllm-aibrix-nixl
+                    - name: MOCK_PD_ROLE
+                      value: prefill
+                    - name: DEPLOYMENT_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.labels['app']
+                    - name: POD_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.name
+                    - name: POD_NAMESPACE
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.namespace
+                    - name: MY_POD_IP
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP
+        - name: decode
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                app: "mock-llama2-7b-pd-vllm-nixl"
+                app.kubernetes.io/name: "mock-llama2-7b-pd-vllm-nixl"
+                model.aibrix.ai/name: "llama2-7b-vllm-nixl"
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
+                model.aibrix.ai/kv-connector-type: nixl
+                adapter.model.aibrix.ai/enabled: "true"
+            spec:
+              serviceAccountName: mocked-app-sa
+              containers:
+                - name: llm-engine
+                  image: aibrix/vllm-mock:nightly
+                  ports:
+                    - containerPort: 8000
+                  env:
+                    - name: MOCK_PD_CONTRACT
+                      value: vllm-aibrix-nixl
+                    - name: MOCK_PD_ROLE
+                      value: decode
+                    - name: DEPLOYMENT_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.labels['app']
+                    - name: POD_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.name
+                    - name: POD_NAMESPACE
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.namespace
+                    - name: MY_POD_IP
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP

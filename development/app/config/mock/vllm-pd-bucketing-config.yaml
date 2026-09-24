@@ -38,6 +38,8 @@ spec:
           template:
             metadata:
               labels:
+                app: "mock-llama2-pd-bkt-sht"
+                app.kubernetes.io/name: "mock-llama2-pd-bkt-sht"
                 model.aibrix.ai/name: "llama2-7b-vllm-bucket"
                 model.aibrix.ai/port: "8000"
                 model.aibrix.ai/engine: vllm
@@ -86,6 +88,8 @@ spec:
           template:
             metadata:
               labels:
+                app: "mock-llama2-pd-bkt-sht"
+                app.kubernetes.io/name: "mock-llama2-pd-bkt-sht"
                 model.aibrix.ai/name: "llama2-7b-vllm-bucket"
                 model.aibrix.ai/port: "8000"
                 model.aibrix.ai/engine: vllm
@@ -157,6 +161,8 @@ spec:
           template:
             metadata:
               labels:
+                app: "mock-llama2-pd-bkt-med"
+                app.kubernetes.io/name: "mock-llama2-pd-bkt-med"
                 model.aibrix.ai/name: "llama2-7b-vllm-bucket"
                 model.aibrix.ai/port: "8000"
                 model.aibrix.ai/engine: vllm
@@ -205,6 +211,8 @@ spec:
           template:
             metadata:
               labels:
+                app: "mock-llama2-pd-bkt-med"
+                app.kubernetes.io/name: "mock-llama2-pd-bkt-med"
                 model.aibrix.ai/name: "llama2-7b-vllm-bucket"
                 model.aibrix.ai/port: "8000"
                 model.aibrix.ai/engine: vllm
@@ -276,6 +284,8 @@ spec:
           template:
             metadata:
               labels:
+                app: "mock-llama2-pd-bkt-comb"
+                app.kubernetes.io/name: "mock-llama2-pd-bkt-comb"
                 model.aibrix.ai/name: "llama2-7b-vllm-bucket"
                 model.aibrix.ai/port: "8000"
                 model.aibrix.ai/engine: vllm

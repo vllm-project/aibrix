@@ -161,7 +161,7 @@ General load balancing
 * ``least-kv-cache``: routes to the pod with the smallest KV cache occupancy (least VRAM used).
 * ``least-gpu-cache``: routes to the pod with the lowest GPU cache utilization.
 * ``least-utilization``: routes to the pod with the lowest overall utilization score.
-* ``load-balance``: capacity-aware weighted least-request routing. Scores each pod as ``running_requests / drain_rate`` (pending time), where ``drain_rate`` is the observed request completion rate. Selects the pod with the lowest pending time, breaking ties using least combined GPU+CPU KV-cache usage (falling back to a random pick if cache metrics are unavailable for the tied pods). Falls back to uniform capacity (``drain_rate = 1``) when metrics are unavailable. Its load-imbalance gate, which restricts candidates to the least-loaded pods when load is severely skewed, is applied centrally by the gateway ahead of whichever strategy actually routes each request — not just when ``load-balance`` itself is selected (see ``pkg/plugins/gateway/ENV_VARS.md``).
+* ``load-balance``: capacity-aware weighted least-request routing. Scores each pod as ``(running_requests + λ·queued_requests) / EWMA(output_tokens_per_second) × (1 + α·(1 − kv_free)²)`` and selects the pod with the lowest score. The token rate is the gateway-observed rate at which the pod completes output tokens (so faster hardware is learned dynamically and receives proportionally more traffic), and ``kv_free`` is the pod's free KV-cache fraction. ``λ`` defaults to ``0`` (the running count already includes requests queued in the engine) and ``α`` to ``2``. A pod with less than 10% free KV cache scores ``+Inf`` and is skipped; if every pod is below that threshold the request still routes, to the pod with the most KV headroom. The three knobs are ``AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT``, ``AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA`` and ``AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE``. A pod whose engine reports no KV-cache usage, or reports ``NaN``, is treated as fully free (no penalty and no guardrail). Ties are broken using least combined GPU+CPU KV-cache usage (falling back to a random pick if cache metrics are unavailable for the tied pods). A pod with no token-rate estimate yet is scored at the mean estimate of the others (uniform capacity when none has one). See ``pkg/plugins/gateway/algorithms/load_balance.md``. Its load-imbalance gate, which restricts candidates to the least-loaded pods when load is severely skewed, is applied centrally by the gateway ahead of whichever strategy actually routes each request — not just when ``load-balance`` itself is selected (see ``pkg/plugins/gateway/ENV_VARS.md``).
 * ``throughput``: routes to the pod that has processed the fewest total weighted tokens, favoring underloaded pods.
 * ``power-of-two``: applies power-of-two-choices — randomly samples two pods and selects the better one.
 
@@ -187,7 +187,7 @@ SLO-aware
 Specialized
 ^^^^^^^^^^^
 
-* ``pd``: prefill-decode disaggregation routing. Splits processing between dedicated prefill pods and decode pods for optimized end-to-end latency.
+* ``pd``: prefill-decode disaggregation routing. Splits processing between dedicated prefill pods and decode pods for optimized end-to-end latency. See :doc:`pd-disaggregation` for the full guide.
 
   .. code-block:: bash
 
@@ -200,7 +200,7 @@ Specialized
           "temperature": 0.7
       }'
 
-* ``session-affinity``: sticky session routing. Encodes the target pod's address (``IP:Port``) as a base64 value in the ``x-session-id`` response header. Subsequent requests that include this header are routed to the same pod. If that pod is no longer available, the gateway transparently fails over to a new pod and issues a fresh session ID.
+* ``session-affinity``: sticky session routing. Encodes the target pod's address (``IP:Port``) as a base64 value in the ``x-session-id`` response header. Subsequent requests that include this header are routed to the same pod. If that pod is no longer available, the gateway transparently fails over to a new pod and issues a fresh session ID. See :doc:`agentic-routing` for the full guide.
 
   How it works:
 
@@ -212,7 +212,7 @@ Specialized
   .. note::
       ``x-session-id`` encodes only network location. It is not a security token and must not be used for authentication or authorization.
 
-      Callers can instead send a stable, opaque ``x-aibrix-session-key`` value. The gateway consistently maps that value to a ready pod without exposing a backend address. The key is only used when ``routing-strategy`` is ``session-affinity`` and must not be used for authentication or authorization.
+      Callers can instead send a stable, opaque ``x-aibrix-session-key`` value of their own choosing, usable from the very first request with no need to wait for a response first. This matters for agentic workflows that fan out concurrent sub-requests -- parallel tool calls, sub-agent turns -- before any one of them has produced an ``x-session-id`` to reuse.
 
   .. code-block:: bash
 
@@ -229,15 +229,21 @@ Auto-blended capacity awareness
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 This auto-blend is **enabled by default** — no opt-in is required. Every strategy above, except
-the exclusive ones (``pd``, ``slo``/``slo-*``) and an explicit standalone ``load-balance``
-selection, silently gets ``load-balance``'s capacity-aware scoring blended in behind the scenes —
-and ``least-request`` too, when the selected strategy doesn't already route by request count, to
-keep multi-port/data-parallel pod routing working under the blend. The caller never sees this:
-``ctx.Algorithm``, response headers, and ``Validate()`` all still reflect exactly the strategy
-that was requested. This keeps any single strategy from steering traffic at an already-hot pod
-even outside the load-imbalance gate described above. Both blend weights default to ``1`` (see
+the exclusive ones (``pd``, ``slo``/``slo-*``), an explicit standalone ``load-balance``
+selection, and a bare ``session-affinity`` selection, silently gets ``load-balance``'s
+capacity-aware scoring blended in behind the scenes — and ``least-request`` too, when the
+selected strategy doesn't already route by request count, to keep multi-port/data-parallel pod
+routing working under the blend. The caller never sees this: ``ctx.Algorithm``, response
+headers, and ``Validate()`` all still reflect exactly the strategy that was requested. This
+keeps any single strategy from steering traffic at an already-hot pod even outside the
+load-imbalance gate described above. Both blend weights default to ``1`` (see
 ``pkg/plugins/gateway/ENV_VARS.md``); set ``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT=0`` to
-disable it.
+disable it. A bare ``prefix-cache`` request instead uses a 5:4 (1.25:1) lean toward cache
+affinity over ``load-balance`` and does not receive ``least-request``, so cache locality wins an
+exact-tie disagreement. ``session-affinity`` gets no auto-blend at all: its scoring is binary
+(the resolved pod vs. everything else), so any load-balance weight small enough to still lose an
+exact tie could never override the pin either — blending it in would be dead weight, not a
+capacity safety net — so it keeps running its own ``Route()``/``ScoreAll()`` unblended.
 
 To override the strategy for a single request, pass the ``routing-strategy`` header with any of the values above:
 
@@ -312,6 +318,57 @@ See the `Kubernetes label selector reference <https://kubernetes.io/docs/concept
     5. ``external-filter`` is optional. When omitted, no extra filtering is applied.
 
 
+Request Priority Tier
+---------------------
+
+Some workloads are not latency-sensitive. A nightly batch job, for example, is usually fine with
+answering after the interactive traffic of the same model has been served. The gateway can relay
+that intent to the backend engine: when ``AIBRIX_PRIORITY_TIER_ENABLED=true``, a request that
+declares its tier with the ``x-aibrix-priority-tier`` header gets the matching ``priority`` value set in
+its backend request body.
+
+The gateway relies on the engine's own scheduler rather than queuing requests itself. On vLLM, that
+requires the deployment to run with a priority-aware scheduler such as
+``--scheduling-policy=priority``, which serves smaller ``priority`` values first. The mapping is
+therefore built to only de-prioritize: a tier never makes a request jump ahead of another one, so
+enabling the feature cannot delay interactive traffic on a shared endpoint.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 25 45
+
+   * - ``x-aibrix-priority-tier``
+     - ``priority``
+     - Notes
+   * - ``batch``
+     - ``100``
+     - Below the engine default of ``0``, so batch work yields to interactive requests.
+   * - ``background``
+     - ``1000``
+     - Yields to both interactive and ``batch`` work.
+   * - _(other or missing)_
+     - _(unchanged)_
+     - Unmapped tiers, and requests without the header, are forwarded untouched.
+
+The feature is off by default and the header is ignored entirely while it is off. Requests that
+already carry a ``priority`` in their body keep the value the caller set, which makes an explicit
+per-request choice possible even for a tier the table maps. Tier names are matched
+case-insensitively. A request that the gateway does not map is forwarded byte for byte, so callers
+that send something else in this header see no change in behavior.
+
+.. code-block:: bash
+
+   curl -v http://${ENDPOINT}/v1/chat/completions \
+      -H "Content-Type: application/json" \
+      -H "x-aibrix-priority-tier: batch" \
+      -d '{
+            "model": "deepseek-r1-distill-llama-8b",
+            "messages": [{"role": "user", "content": "Say this is a test!"}]
+          }'
+
+The supported tier names are fixed in this release. Per-tier values a deployment can tune, and
+giving latency-sensitive tiers an explicit head start, are candidates for a follow-up.
+
 Headers Reference
 -----------------
 
@@ -369,6 +426,9 @@ Target and General Headers
    * - ``prefill-target-pod-ip``
      - Response
      - IP address of the prefill pod selected by ``pd`` routing.
+   * - ``x-aibrix-priority-tier``
+     - Request
+     - Declares the priority tier of the request, for example ``batch`` or ``background``. When ``AIBRIX_PRIORITY_TIER_ENABLED=true``, the gateway maps the tier to the ``priority`` field of the backend request; see `Request Priority Tier`_.
 
 Routing and Error Debugging Headers
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -632,12 +692,49 @@ locks the strategy: the remaining per-profile knobs (``requestsPerSecond``,
           }
         }
 
+For platform-managed models whose routing policy must be authoritative, also set
+``authoritativeRoutingPolicy``. The gateway then treats the request as if it did
+not contain the client routing controls ``routing-strategy``, ``config-profile``
+(including ``auto``), and ``external-filter``. It uses ``defaultProfile``,
+preserves the routing headers that the gateway itself generates after selecting
+a pod, and omits
+``routing-strategy``, ``target-pod``, ``target-pod-ip``, and
+``x-aibrix-config-profile`` from the client response:
+
+.. code-block:: yaml
+
+    annotations:
+      model.aibrix.ai/config: |
+        {
+          "lockedRoutingStrategy": "pd",
+          "authoritativeRoutingPolicy": true,
+          "defaultProfile": "default",
+          "profiles": {
+            "default": {
+              "routingStrategy": "pd",
+              "routingConfig": {
+                "prefillScorePolicy": "prefix_cache",
+                "decodeScorePolicy": "load_balancing"
+              }
+            }
+          }
+        }
+
+``authoritativeRoutingPolicy`` and ``lockedRoutingStrategy`` have separate
+responsibilities. The authoritative policy removes client routing input;
+``lockedRoutingStrategy`` pins the algorithm against both the resolved default
+profile and ``ROUTING_ALGORITHM``. Setting the authoritative policy does not
+change the existing locked-strategy precedence.
+
 **Selecting a profile at request time**
 
 Two request headers drive the config at request time:
 
 * ``config-profile`` selects a named profile; when absent, ``defaultProfile`` (or ``"default"``) is used. ``config-profile: auto`` asks the gateway to select a concrete profile from request-local hints in each profile's ``routingConfig``.
 * ``routing-strategy`` overrides the selected profile's ``routingStrategy``, unless ``lockedRoutingStrategy`` is set (see Routing strategy priority below).
+
+These request-time choices are ignored when
+``authoritativeRoutingPolicy`` is ``true``.
 
 .. code-block:: bash
 
@@ -665,6 +762,8 @@ Two request headers drive the config at request time:
      - Description
    * - ``lockedRoutingStrategy``
      - Pins a single routing strategy model-wide. When set, it takes precedence over the ``routing-strategy`` header, the per-profile ``routingStrategy`` and the ``ROUTING_ALGORITHM`` env. The remaining per-profile knobs (``requestsPerSecond``, ``routingConfig``) are still applied normally.
+   * - ``authoritativeRoutingPolicy``
+     - When ``true``, treats application-supplied ``routing-strategy``, ``config-profile`` and ``external-filter`` headers as absent. The gateway resolves ``defaultProfile``, retains its internally generated routing headers, and omits routing diagnostic headers from the client response. Defaults to ``false`` for backward compatibility.
    * - ``defaultProfile``
      - Profile name used when no ``config-profile`` header is sent. Falls back to ``"default"`` when omitted.
    * - ``profiles``
@@ -682,8 +781,10 @@ Two request headers drive the config at request time:
      - The routing algorithm for this profile (e.g. ``least-latency``, ``prefix-cache``, ``pd``). See the Routing Strategies section above for the full list.
    * - ``requestsPerSecond``
      - Model-level RPS cap for this profile. Requests that exceed the limit are rejected with HTTP 429. Omit or set to ``0`` for no limit. See `Production Model Deployments <../production/model-deployment.html>`_ for details.
+   * - ``ttftThresholdS``
+     - Time-to-first-token threshold in seconds for this profile's responses, overriding ``AIBRIX_TTFT_THRESHOLD_S``. A first token arriving above this value is classified as delayed in the gateway's first-token-delay metric. Omit it or set ``0`` to keep the process-wide default; ``0`` counts as unset, so a profile cannot set the threshold to zero, only to another positive value. This affects response classification only, not routing.
    * - ``routingConfig``
-     - Algorithm-specific settings as a nested JSON object. ``config-profile: auto`` also reads request-local selection hints from this object. Currently supported auto-selection hints are ``promptTokensGte``, ``promptTokensLt``, ``maxTokensGte`` and ``maxTokensLt``. Existing strategy-specific fields, such as ``promptLenBucketMinLength`` for ``pd``, remain available. See `Prefill-Decode Disaggregation <pd-disaggregation.html>`_ for details.
+     - Algorithm-specific settings as a nested JSON object. ``config-profile: auto`` also reads request-local selection hints from this object. Currently supported auto-selection hints are ``promptTokensGte``, ``promptTokensLt``, ``maxTokensGte`` and ``maxTokensLt``. Existing strategy-specific fields, such as ``promptLenBucketMinLength`` for ``pd``, remain available. It also carries per-request routing knobs that override the matching gateway environment variables for this profile's requests only; see Per-request routing knobs below. See `Prefill-Decode Disaggregation <pd-disaggregation.html>`_ for details.
 
 When ``config-profile: auto`` is used, the gateway evaluates the supported
 request-local hints inside each profile's ``routingConfig``. A profile matches
@@ -693,6 +794,12 @@ the gateway's existing prompt text extraction and local token estimation.
 ``maxTokens*`` reads ``max_tokens`` first, then ``max_completion_tokens`` when
 ``max_tokens`` is absent.
 
+When ``authoritativeRoutingPolicy`` is ``true``, the gateway clears the three
+client routing inputs before it resolves the profile and routing strategy. The
+normal priority below then applies unchanged: request profile selection uses
+``defaultProfile``, the request strategy is absent, and
+``lockedRoutingStrategy`` keeps its existing meaning.
+
 **Routing strategy priority** (highest to lowest):
 
 1. ``lockedRoutingStrategy`` pinned model-wide in the config — always wins when set, even over the ``routing-strategy`` header.
@@ -700,7 +807,151 @@ the gateway's existing prompt text extraction and local token estimation.
 3. ``routingStrategy`` from the resolved profile. The resolved profile comes from the concrete ``config-profile`` header, ``config-profile: auto`` routingConfig hints, or ``defaultProfile``.
 4. ``ROUTING_ALGORITHM`` environment variable on the gateway plugin.
 
-**Backward compatibility**: if a pod has no ``model.aibrix.ai/config`` annotation, the gateway falls back to the ``routing-strategy`` request header and then the ``ROUTING_ALGORITHM`` env (steps 2 and 4 above). No migration is required for existing deployments.
+**Backward compatibility**: ``authoritativeRoutingPolicy`` defaults to ``false``. If a pod has no ``model.aibrix.ai/config`` annotation, the gateway falls back to the ``routing-strategy`` request header and then the ``ROUTING_ALGORITHM`` env (steps 2 and 4 above). No migration is required for existing deployments.
+
+
+**Per-request routing knobs in** ``routingConfig``
+
+Besides the auto-selection hints above, ``routingConfig`` carries routing thresholds that
+override the gateway's process-wide environment variables for this profile's requests only.
+An unset knob keeps the environment default, and a value the matching environment variable
+would reject (a negative factor, a percentage outside its range, an unknown GPU name) is
+ignored, so a profile can only narrow or sharpen routing behavior. Requests to the same model
+can therefore be routed with different thresholds by selecting different profiles.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 26 40
+
+   * - Field
+     - Overrides
+     - Description
+   * - ``promptLengthBucketing``
+     - ``AIBRIX_PROMPT_LENGTH_BUCKETING``
+     - Turn prompt-length bucketing on or off for this profile's requests.
+   * - ``pd.decodeAbortTimeout``
+     - ``AIBRIX_DECODE_ABORT_TIMEOUT``
+     - Seconds the gateway waits for the decode pod to accept the abort POST after a prefill failure. ``0`` sends the abort without waiting.
+   * - ``pd.decodeAbortRetryDelay``
+     - ``AIBRIX_DECODE_ABORT_RETRY_DELAY``
+     - Seconds between the two abort attempts. ``0`` repeats the abort immediately.
+   * - ``pd.prefillLoadImbalanceMinSpread``
+     - ``AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD``
+     - Minimum prefill running-request spread (max minus min) that triggers prefill load-imbalance routing.
+   * - ``pd.decodeLoadImbalanceMinSpread``
+     - ``AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD``
+     - Minimum decode running-request spread that triggers decode load-imbalance routing.
+   * - ``pd.decodeThroughputImbalanceMinSpread``
+     - ``AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD``
+     - Minimum decode token-throughput spread (tokens/s) that triggers throughput-imbalance routing.
+   * - ``pd.decodeScoreRatioThreshold``
+     - ``AIBRIX_DECODE_SCORE_RATIO_THRESHOLD``
+     - Max/min drain-rate score ratio above which the slowest decode pod is excluded.
+   * - ``pd.decodeLBWeightRunning``
+     - ``AIBRIX_DECODE_LB_WEIGHT_RUNNING``
+     - Weight of the running-request term in the decode load-balancing score.
+   * - ``pd.decodeLBWeightThroughput``
+     - ``AIBRIX_DECODE_LB_WEIGHT_THROUGHPUT``
+     - Weight of the token-throughput term in the decode load-balancing score.
+   * - ``pd.tokenLoadKVWeight``
+     - ``AIBRIX_TOKEN_LOAD_KV_WEIGHT``
+     - Weight of resident KV tokens in the token-load charge.
+   * - ``pd.tokenLoadRequestCost``
+     - ``AIBRIX_TOKEN_LOAD_REQUEST_COST``
+     - Fixed per-request cost, in tokens, of the token-load charge.
+   * - ``pd.tokenLoadTTLSeconds``
+     - ``AIBRIX_TOKEN_LOAD_TTL_SECONDS``
+     - How long a charge may stay outstanding. ``0`` disables the sweep for this profile's requests.
+   * - ``pd.tokenLoadSessionTTLSeconds``
+     - ``AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS``
+     - How long the last prompt size of a session is kept. ``0`` disables the session delta.
+   * - ``pd.hybridCacheLoadFactor``
+     - ``AIBRIX_HYBRID_CACHE_LOAD_FACTOR``
+     - How much a full prefix match discounts a pod's token load in the hybrid-cache-load prefill policy (0 to 1).
+   * - ``pd.minMatchPct``
+     - ``AIBRIX_MIN_MATCH_PCT``
+     - Prefix-match percentage below which a match is treated as no match (0 to 100).
+   * - ``pd.prefillRequestTimeout``
+     - ``AIBRIX_PREFILL_REQUEST_TIMEOUT``
+     - HTTP timeout in seconds for the prefill pod call.
+   * - ``loadBalance.imbalanceFactor``
+     - ``AIBRIX_LOAD_BALANCE_IMBALANCE_FACTOR``
+     - Load-imbalance gate multiplier for pools of three or more replicas.
+   * - ``loadBalance.imbalanceMinGap``
+     - ``AIBRIX_LOAD_BALANCE_IMBALANCE_MIN_GAP``
+     - Minimum running-request gap required to trigger the load-imbalance gate.
+   * - ``loadBalance.queuedWeight``
+     - ``AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT``
+     - Weight of engine-queued requests added to the load-balance score. ``0`` is the running-requests-only formula.
+   * - ``loadBalance.kvPressureAlpha``
+     - ``AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA``
+     - Strength of the KV-pressure penalty in the load-balance score. ``0`` drops the penalty.
+   * - ``loadBalance.kvCriticalFree``
+     - ``AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE``
+     - Free-KV-cache fraction below which a replica scores ``+Inf`` in the load-balance score.
+   * - ``prefixCache.standardDeviationFactor``
+     - ``AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``
+     - How many standard deviations above the mean replica request count a prefix-match candidate may sit. Also read by the PD prefill candidacy filter.
+   * - ``preble.targetGPU``
+     - ``AIBRIX_ROUTER_PREBLE_TARGET_GPU``
+     - GPU the prefix-cache-preble cost model assumes. Known values: ``A6000``, ``V100``.
+   * - ``preble.decodingLength``
+     - ``AIBRIX_ROUTER_PREBLE_DECODING_LENGTH``
+     - Assumed number of decoding tokens per request in the preble cost model.
+   * - ``vtc.maxPodLoad``
+     - ``AIBRIX_ROUTER_VTC_BASIC_MAX_POD_LOAD``
+     - Running-request count at which the VTC utilization score saturates.
+   * - ``vtc.fairnessWeight``
+     - ``AIBRIX_ROUTER_VTC_BASIC_FAIRNESS_WEIGHT``
+     - Weight of the fairness term in the VTC score. ``0`` drops the term.
+   * - ``vtc.utilizationWeight``
+     - ``AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT``
+     - Weight of the utilization term in the VTC score. ``0`` drops the term.
+   * - ``autoBlend.loadBalanceWeight``
+     - ``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT``
+     - Weight of the load-balance scorer blended behind every non-exclusive strategy. ``0`` disables the auto-blend for this profile's requests.
+   * - ``autoBlend.leastRequestWeight``
+     - ``AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT``
+     - Weight of the least-request scorer the auto-blend adds for multi-port pods.
+   * - ``autoBlend.prefixCacheWeight``
+     - ``AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT``
+     - Prefix-cache weight of the dedicated prefix-cache/load-balance ratio a bare ``prefix-cache`` request gets. ``0`` is rejected.
+   * - ``autoBlend.prefixCacheLoadBalanceWeight``
+     - ``AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT``
+     - Load-balance weight of that ratio. ``0`` leaves those requests with prefix-cache scoring alone.
+   * - ``vtc.inputTokenWeight``
+     - ``AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT``
+     - Weight of a request's input tokens in the VTC token tracker. Also scopes the tracker: the profile's requests get one of their own.
+   * - ``vtc.outputTokenWeight``
+     - ``AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT``
+     - Weight of a request's output tokens in that tracker.
+   * - ``vtc.tokenTrackerWindowSize``
+     - ``AIBRIX_ROUTER_VTC_TOKEN_TRACKER_WINDOW_SIZE``
+     - Sliding window of the profile's tracker, in ``vtc.tokenTrackerTimeUnit`` units.
+   * - ``vtc.tokenTrackerTimeUnit``
+     - ``AIBRIX_ROUTER_VTC_TOKEN_TRACKER_TIME_UNIT``
+     - Bucket size of that window: ``minutes``, ``seconds`` or ``milliseconds``. An unknown name is ignored.
+   * - ``vtc.tokenTrackerMinTokens``
+     - ``AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MIN_TOKENS``
+     - Floor the profile's tracker reports while its window holds little activity.
+   * - ``vtc.tokenTrackerMaxTokens``
+     - ``AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MAX_TOKENS``
+     - Ceiling the profile's tracker reports while its window holds little activity.
+
+Some knobs configure state normally shared by the whole gateway process. A profile that sets one
+of them does not retune the shared state: the gateway scopes an instance to the resolved values,
+so profiles that agree share one and a profile that sets none keeps the shared instance exactly
+as before. This is how ``vtc.inputTokenWeight``, ``vtc.outputTokenWeight``,
+``vtc.tokenTrackerWindowSize``, ``vtc.tokenTrackerTimeUnit``, ``vtc.tokenTrackerMinTokens`` and
+``vtc.tokenTrackerMaxTokens`` scope the VTC token tracker (at most 16 trackers per process; a
+profile past the bound keeps the shared tracker).
+
+Knobs that bound state shared by every model of a process stay environment-only and have no
+profile field: the preble histogram window and eviction loop
+(``AIBRIX_ROUTER_PREBLE_SLIDING_WINDOW_PERIOD``, ``AIBRIX_ROUTER_PREBLE_EVICTION_LOOP_INTERVAL``),
+the session-affinity local cache capacity (``AIBRIX_SESSION_AFFINITY_MAX_LOCAL_KEYS``), the
+routing string cache bound (``AIBRIX_ROUTER_MAX_CACHED_ALGORITHM_STRINGS``) and the token-load
+session table cap (``AIBRIX_TOKEN_LOAD_MAX_SESSIONS``).
 
 .. _prometheus-api-access:
 

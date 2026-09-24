@@ -1,0 +1,50 @@
+name: AIBrix Bot
+
+on:
+  issues:
+    types: [opened, edited]
+  # Use the trusted base-branch workflow so a PR cannot replace the bot script
+  # before it receives a token with write permissions.
+  pull_request_target:
+    types: [opened, edited, synchronize]
+
+# Cancel superseded bot runs for the same issue or pull request.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Apply PR labels from changed paths
+        if: github.event_name == 'pull_request_target'
+        continue-on-error: true
+        uses: actions/labeler@v6
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          configuration-path: .github/labeler.yml
+          sync-labels: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Run AIBrix bot
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 .github/scripts/aibrix-bot.py "$GITHUB_EVENT_PATH"

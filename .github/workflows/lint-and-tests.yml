@@ -11,6 +11,9 @@ on:
       - 'test/**'
       - 'cmd/**'
       - 'api/**'
+      - 'config/crd/**'
+      - 'dist/chart/crds/**'
+      - 'hack/verify-crd-sync.sh'
       - 'go.mod'
       - 'go.sum'
       - 'Makefile'
@@ -24,15 +27,24 @@ on:
       - 'test/**'
       - 'cmd/**'
       - 'api/**'
+      - 'config/crd/**'
+      - 'dist/chart/crds/**'
+      - 'hack/verify-crd-sync.sh'
       - 'go.mod'
       - 'go.sum'
       - 'Makefile'
       - '.golangci.yml'
 
+# Cancel superseded pull-request runs so the newest push starts first.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
     name: Go Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Check out code
         uses: actions/checkout@v6
@@ -46,6 +58,7 @@ jobs:
   verify:
     name: Verify Generated Code
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Check out code
         uses: actions/checkout@v6
@@ -63,6 +76,7 @@ jobs:
   unit-test:
     name: Go Unit Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       packages: write
       contents: read
@@ -104,6 +118,7 @@ jobs:
   race-test:
     name: Go Race Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Check out code
         uses: actions/checkout@v6
@@ -119,6 +134,7 @@ jobs:
   integration-test:
     name: Go Integration Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Check out code
         uses: actions/checkout@v6
@@ -135,6 +151,7 @@ jobs:
   check-coverage:
     name: Go Coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: unit-test
     permissions:
       packages: write

@@ -10,7 +10,7 @@ test/
 │   ├── framework/           # Shared live-cluster test infrastructure
 │   ├── gateway/             # Gateway API, routing, and PD tests
 │   └── controller/          # Controller-owned lifecycle tests
-├── integration/           # Integration tests using Ginkgo framework  
+├── integration/           # Integration tests using Ginkgo framework
 ├── regression/           # Performance regression tests for releases
 ├── utils/               # Shared test utilities and helpers
 ├── run-e2e-tests.sh    # E2E test runner script
@@ -35,7 +35,7 @@ Unit tests are located alongside source code (`*_test.go` files), not in current
 # Run all unit tests with coverage
 make test
 
-# Run tests for specific package  
+# Run tests for specific package
 go test ./pkg/controller/...
 ```
 
@@ -83,7 +83,7 @@ For CI pipelines that need full cluster setup and teardown:
 # Full CI setup - creates Kind cluster and installs AIBrix
 KIND_E2E=true INSTALL_AIBRIX=true make test-e2e
 
-or 
+or
 
 ./test/run-e2e-tests.sh
 ```
@@ -91,13 +91,101 @@ or
 **Environment Variables:**
 - `KIND_E2E=true` - Creates Kind cluster with proper configuration
 - `INSTALL_AIBRIX=true` - Builds images, installs dependencies, and deploys AIBrix
-- `AIBRIX_ROLESET_INPLACE_E2E=true` - Runs RoleSet in-place update e2e tests and builds/loads their local test images when `INSTALL_AIBRIX=true`
+- `AIBRIX_ROLESET_INPLACE_E2E=true` - Runs the additional RoleSet in-place update e2e tests; `INSTALL_AIBRIX=true` builds the shared v1/v2 images whenever the `all` or `controller` suite is selected
 - `AIBRIX_ROLESET_INPLACE_E2E_KEEP_ON_FAILURE=true` - Preserves RoleSet in-place e2e resources for debugging failed runs
 - `AIBRIX_E2E_SUITE=all|gateway|controller|gateway-pd` - Selects the e2e suite; defaults to `all`
 - `AIBRIX_E2E_GATEWAY_URL`, `AIBRIX_E2E_NAMESPACE`, `AIBRIX_E2E_API_KEY`, `AIBRIX_E2E_GATEWAY_NAMESPACE` - Override live-cluster e2e endpoints and namespaces
 - `AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE=true` - Preserves installed e2e resources after a failed local run
 - `SKIP_KUBECTL_INSTALL=true` - Skip kubectl installation (default: true)
 - `SKIP_KIND_INSTALL=true` - Skip Kind installation (default: true)
+
+#### ModelRouter Controller E2E
+
+The ModelRouter package runs as part of the default `controller` and `all`
+suites. It creates an isolated namespace and validates Deployment and
+ModelAdapter discovery, generated HTTPRoute and ReferenceGrant resources, a
+request through the gateway to a mock backend, shared ReferenceGrant cleanup,
+and controller restart behavior.
+
+To run only this package against an installed test cluster:
+
+```bash
+go test -p 1 ./test/e2e/controller/modelrouter/... -v -count=1
+```
+
+The package uses the existing `AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE` setting
+to retain its namespace and routing resources for diagnostics after a failure.
+
+#### RayClusterFleet Controller E2E
+
+The RayCluster package runs as part of the default `controller` and `all`
+suites. It validates the Fleet to ReplicaSet to RayCluster ownership chain,
+KubeRay head readiness and status aggregation, scaling and scale-down ordering,
+controller restart convergence, pause/resume behavior, and foreground cleanup.
+The tests use the lightweight `aibrix/inplace-e2e:v1` head image with the real
+KubeRay operator and do not require GPUs, model weights, or a Ray runtime.
+
+To run only this package against an installed test cluster:
+
+```bash
+go test -p 1 ./test/e2e/controller/raycluster/... -v -count=1
+```
+
+When running the package outside the standard `INSTALL_AIBRIX=true` flow,
+ensure that the KubeRay CRDs/operator and `aibrix/inplace-e2e:v1` are available
+to cluster nodes. The KubeRay operator must enable
+`RayClusterStatusConditions=true` so readiness assertions can observe
+`RayClusterProvisioned` and `HeadPodReady`. Set
+`AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE=true` to retain the isolated test
+namespace and its resources for diagnostics after a failure.
+
+#### PodSet Controller E2E
+
+The PodSet package runs as part of the default `controller` and `all` suites.
+It validates creation and status, scale-up, drain-aware scale-down and
+cancellation, timeout-based deletion, recovery after manual Pod deletion, and
+owned-resource cleanup. The tests use the lightweight
+`aibrix/inplace-e2e:v1` image that the standard controller-suite installation
+builds and loads.
+
+To run only this package against an installed test cluster:
+
+```bash
+go test -p 1 ./test/e2e/controller/podset/... -v -count=1
+```
+
+When running the package outside the standard `INSTALL_AIBRIX=true` flow,
+ensure that `aibrix/inplace-e2e:v1` is available to cluster nodes. Set
+`AIBRIX_E2E_KEEP_RESOURCES_ON_FAILURE=true` to retain the isolated test
+namespace and its resources for diagnostics after a failure.
+
+#### StormService Controller E2E
+
+The StormService controller package contains three lifecycle tests that run as
+part of the default controller suite: Replica-mode creation and scaling,
+pause/resume with in-place and fallback updates, and progress-deadline failure
+and recovery. The installation E2E job builds and loads
+`aibrix/inplace-e2e:v1` and `aibrix/inplace-e2e:v2`, which these tests require.
+
+Volcano gang scheduling is opt-in because it requires a cluster with the
+Volcano scheduler and `scheduling.volcano.sh/v1beta1` PodGroup CRD installed.
+With `KUBECONFIG` pointing at a prepared cluster and the StormService, RoleSet,
+and PodSet controllers running, execute only that test with:
+
+```bash
+make test-e2e-stormservice-volcano
+```
+
+Set `AIBRIX_STORMSERVICE_E2E_KEEP_ON_FAILURE=true` to retain StormService,
+RoleSet, PodSet, Pod, ControllerRevision, Service, and PodGroup resources after
+a failure for inspection.
+
+The CI-tested scheduler pair is Kubernetes 1.31.0 with Volcano 1.11.2. AIBrix
+currently compiles against `volcano.sh/apis` v1.11.2 and validates the
+`minMember` and `minTaskMember` PodGroup fields. Volcano 1.14 and newer add the
+different `subGroupPolicy` model used by newer RBG tests; that model is outside
+this suite. Any Volcano upgrade must review the Go API module, installed CRD
+schema, and Volcano's Kubernetes compatibility matrix together.
 
 ### Performance Regression Testing
 

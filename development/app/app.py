@@ -1,4 +1,4 @@
-from flask import Flask, request, Response, jsonify
+from flask import Flask, request, Response, jsonify, make_response, g
 from flask_httpauth import HTTPTokenAuth
 from functools import wraps
 from werkzeug import serving
@@ -17,6 +17,10 @@ import os
 import uuid
 import json
 from typing import Optional
+
+from mock_recorder import RequestRecorder
+from pd_contracts import add_prompt_token_ids, parse_fault_headers, validate_or_build
+from sglang_handoff import InMemorySGLangHandoffStore, KubernetesSGLangHandoffStore
 
 
 def _load_metrics_overrides():
@@ -105,6 +109,12 @@ _mock_capacity_lock = threading.Lock()
 _mock_capacity_inflight = 0
 _mock_capacity_max_inflight = 0
 _mock_capacity_requests = 0
+
+# Async video jobs deliberately live in one mock process only. The gateway E2E
+# suite runs several mock replicas, so status/content/delete requests succeed
+# only when AsyncJobRegistry pins them back to the pod that accepted the create.
+_mock_video_jobs_lock = threading.Lock()
+_mock_video_jobs = {}
 
 # Extract the api_key argument and prepare for authentication
 api_key = None
@@ -439,7 +449,7 @@ def _mock_trtllm_prefill_disaggregated_params(data: dict) -> dict:
         "request_type": "context_only",  # gateway overrides this to generation_only for decode
         "disagg_request_id": disagg_request_id,
         "first_gen_tokens": [random.randint(100, 32000)],
-        "opaque_state": base64.b64encode(bytes(random.randint(8, 32))).decode(),
+        "encoded_opaque_state": base64.b64encode(bytes(random.randint(8, 32))).decode(),
     }
 
 
@@ -572,6 +582,418 @@ def disable_endpoint_logs():
 app = Flask(__name__)
 disable_endpoint_logs()
 
+request_recorder = RequestRecorder()
+sglang_handoff_store = (
+    InMemorySGLangHandoffStore() if STANDALONE_MODE else None
+)
+_sglang_store_lock = threading.Lock()
+
+
+def _mock_pd_config():
+    contract = os.getenv("MOCK_PD_CONTRACT", "")
+    role = os.getenv("MOCK_PD_ROLE", "")
+    engine = os.getenv("LLM_ENGINE")
+    if not engine:
+        engine = (
+            "vllm"
+            if contract.startswith("vllm-")
+            else "sglang"
+            if contract == "sglang-http"
+            else "trtllm"
+            if contract == "trtllm-openai"
+            else "vllm"
+        )
+    return contract, role, engine
+
+
+def _get_sglang_handoff_store():
+    global sglang_handoff_store
+    if sglang_handoff_store is None:
+        with _sglang_store_lock:
+            if sglang_handoff_store is None:
+                sglang_handoff_store = KubernetesSGLangHandoffStore(
+                    client.CoreV1Api(), NAMESPACE
+                )
+    return sglang_handoff_store
+
+
+def _mark_sglang_prefill_failure(request_id, payload, error):
+    if not request_id or not isinstance(payload, dict):
+        return False
+    room = payload.get("bootstrap_room")
+    if room is None:
+        return False
+    try:
+        _get_sglang_handoff_store().mark_failure(request_id, room, error)
+        return True
+    except Exception:
+        logger.warning("Unable to persist SGLang prefill failure", exc_info=True)
+        return False
+
+
+def _find_sglang_prefill_failure(request_id, payload):
+    if not request_id or not isinstance(payload, dict):
+        return None
+    room = payload.get("bootstrap_room")
+    if room is None:
+        return None
+    try:
+        return _get_sglang_handoff_store().get_failure(request_id, room)
+    except Exception:
+        logger.warning("Unable to read SGLang prefill failure", exc_info=True)
+        return None
+
+
+def _json_response_body(response):
+    if response.is_streamed:
+        return None
+    return response.get_json(silent=True)
+
+
+def _stream_response_metadata(path, payload):
+    return {
+        "object": "chat.completion.chunk" if "chat" in path else "text_completion",
+        "model": payload.get("model") if isinstance(payload, dict) else None,
+        "stream": True,
+    }
+
+
+def _safe_merge_contract_response(response, contract_result, path, payload):
+    """Merge only PD fields into a normal completion response.
+
+    A contract result may contain a complete backend body as well as explicit
+    patches. Request fields are never copied wholesale into the client-facing
+    response, and ordinary OpenAI fields remain authoritative.
+    """
+    if response.status_code >= 400:
+        return response
+
+    if response.is_streamed:
+        return response
+
+    body = response.get_json(silent=True)
+    if not isinstance(body, dict):
+        return response
+
+    contract_body = contract_result.get("body")
+    if isinstance(contract_body, dict):
+        for key in ("kv_transfer_params", "disagg_prefill_resp"):
+            if key in contract_body:
+                body[key] = contract_body[key]
+        if "opaque" in contract_body:
+            body["opaque"] = contract_body["opaque"]
+
+    protected_response_keys = {"choices", "message", "finish_reason"}
+    for key, value in contract_result.get("response_patch", {}).items():
+        if key not in protected_response_keys:
+            body[key] = value
+
+    choices = body.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        protected_choice_keys = {"message", "finish_reason"}
+        for key, value in contract_result.get("choice_patch", {}).items():
+            if key not in protected_choice_keys:
+                choices[0][key] = value
+
+    response.set_data(json.dumps(body, ensure_ascii=False).encode("utf-8"))
+    response.content_type = "application/json"
+    return response
+
+
+def _completion_record_error(response_body):
+    if isinstance(response_body, dict):
+        error = response_body.get("error")
+        if isinstance(error, dict):
+            return error.get("message")
+    return None
+
+
+def _recorder_headers(headers):
+    sensitive_headers = {
+        "authorization",
+        "cookie",
+        "proxy-authorization",
+        "x-api-key",
+    }
+    return {
+        key: "<redacted>" if str(key).lower() in sensitive_headers else value
+        for key, value in headers.items()
+    }
+
+
+def _finalize_completion_record(
+    handle,
+    response,
+    *,
+    path,
+    payload,
+    delay_ms,
+    forced_outcome=None,
+    forced_error=None,
+):
+    status_code = response.status_code
+    response_body = (
+        _stream_response_metadata(path, payload)
+        if response.is_streamed
+        else _json_response_body(response)
+    )
+    if forced_outcome is not None:
+        outcome = forced_outcome
+    elif 400 <= status_code < 500:
+        outcome = "rejected"
+    elif status_code >= 500:
+        outcome = "failed"
+    else:
+        outcome = "success"
+    error = forced_error or _completion_record_error(response_body)
+    try:
+        request_recorder.finish(
+            handle,
+            outcome=outcome,
+            status_code=status_code,
+            response=response_body,
+            error=error,
+            delay_ms=delay_ms,
+        )
+    except Exception:
+        logger.warning(
+            "Unable to finalize mock request recorder entry; preserving HTTP response",
+            exc_info=True,
+        )
+
+
+def _recorded_completion(path):
+    def decorator(func):
+        def _start_record(raw_body, payload, contract, role, engine, request_id):
+            handle = request_recorder.start(
+                path=path,
+                headers=_recorder_headers(request.headers),
+                raw_body=raw_body,
+                parsed_json=payload,
+                pod=POD_NAME,
+                engine=engine,
+                role=role,
+                request_id=request_id,
+            )
+            g._aibrix_completion_handle = handle
+            g._aibrix_completion_payload = payload
+            g._aibrix_completion_delay_ms = 0
+            return handle
+
+        def _after_auth(*args, **kwargs):
+            raw_body = g._aibrix_completion_raw_body
+            contract, role, engine = _mock_pd_config()
+            request_id = request.headers.get("X-Request-ID")
+
+            try:
+                payload = request.json
+            except Exception as exc:
+                _start_record(raw_body, None, contract, role, engine, request_id)
+                return make_response(
+                    create_error_response(
+                        "The server had an error while processing your request. Sorry about that!",
+                        error_type="api_error",
+                        status_code=400,
+                    )
+                )
+
+            handle = _start_record(raw_body, payload, contract, role, engine, request_id)
+            try:
+                fault = parse_fault_headers(request.headers, role)
+                g._aibrix_completion_delay_ms = fault.delay_ms
+                if fault.validation_status_code != 200:
+                    return make_response(
+                        create_error_response(
+                            fault.metadata["error"],
+                            status_code=fault.validation_status_code,
+                        )
+                    )
+
+                if fault.delay_ms:
+                    time.sleep(fault.delay_ms / 1000.0)
+
+                if fault.injected_status_code is not None:
+                    message = (
+                        f"mock failure injected for role {role}"
+                        if role
+                        else "mock failure injected for backend"
+                    )
+                    if contract == "sglang-http" and role == "prefill":
+                        _mark_sglang_prefill_failure(
+                            request_id,
+                            payload,
+                            f"prefill handoff failed: {message}",
+                        )
+                    return make_response(
+                        create_error_response(
+                            message,
+                            error_type="api_error",
+                            status_code=fault.injected_status_code,
+                        )
+                    )
+
+                if contract == "sglang-http" and role == "decode":
+                    prefill_failure = None
+                    if request.headers.get("X-Aibrix-Mock-Fail") == "prefill":
+                        room = payload.get("bootstrap_room") if isinstance(payload, dict) else None
+                        if not request_id or room is None:
+                            prefill_failure = "prefill handoff state unavailable"
+                        else:
+                            deadline = time.monotonic() + 5.0
+                            while time.monotonic() < deadline:
+                                prefill_failure = _find_sglang_prefill_failure(
+                                    request_id, payload
+                                )
+                                if prefill_failure:
+                                    break
+                                time.sleep(0.25)
+                            if not prefill_failure:
+                                prefill_failure = "prefill handoff state unavailable"
+                    if prefill_failure:
+                        return make_response(
+                            create_error_response(
+                                prefill_failure,
+                                error_type="api_error",
+                                status_code=500,
+                            )
+                        )
+
+                contract_result = None
+                if contract:
+                    request_result = validate_or_build(
+                        contract,
+                        role,
+                        payload,
+                        request_id=request_id,
+                    )
+                    if request_result["status_code"] != 200:
+                        return make_response(
+                            (
+                                jsonify(request_result["body"]),
+                                request_result["status_code"],
+                            )
+                        )
+                    contract_result = request_result
+
+                response = make_response(func(*args, **kwargs))
+                if contract_result is not None:
+                    if contract == "trtllm-openai" and role == "prefill":
+                        response_body = _json_response_body(response)
+                        usage = response_body.get("usage", {}) if isinstance(response_body, dict) else {}
+                        contract_result = add_prompt_token_ids(
+                            contract_result,
+                            usage.get("prompt_tokens"),
+                        )
+                    response = _safe_merge_contract_response(
+                        response,
+                        contract_result,
+                        path,
+                        payload,
+                    )
+                return response
+            except Exception as exc:
+                logger.exception("Error in recorded completion endpoint")
+                return make_response(
+                    create_error_response(
+                        "The server had an error while processing your request. Sorry about that!",
+                        error_type="api_error",
+                        status_code=500,
+                    )
+                )
+
+        # Applying auth_required here keeps authentication in one place while
+        # letting the outer recorder capture the request before auth runs.
+        authenticated_handler = auth_required(_after_auth)
+
+        @wraps(func)
+        def wrapped(*args, **kwargs):
+            raw_body = request.get_data(cache=True)
+            g._aibrix_completion_raw_body = raw_body
+            g._aibrix_completion_handle = None
+            g._aibrix_completion_payload = None
+            g._aibrix_completion_delay_ms = 0
+            contract, role, engine = _mock_pd_config()
+            request_id = request.headers.get("X-Request-ID")
+
+            try:
+                response = make_response(authenticated_handler(*args, **kwargs))
+            except Exception as exc:
+                logger.exception("Error in recorded completion authentication")
+                if g._aibrix_completion_handle is None:
+                    _start_record(raw_body, None, contract, role, engine, request_id)
+                response = make_response(
+                    create_error_response(
+                        "The server had an error while processing your request. Sorry about that!",
+                        error_type="api_error",
+                        status_code=500,
+                    )
+                )
+
+            if g._aibrix_completion_handle is None:
+                # auth_required returned its normal 401/403 response before
+                # body parsing, fault handling, or contract validation.
+                _start_record(raw_body, None, contract, role, engine, request_id)
+
+            _finalize_completion_record(
+                g._aibrix_completion_handle,
+                response,
+                path=path,
+                payload=g._aibrix_completion_payload,
+                delay_ms=g._aibrix_completion_delay_ms,
+            )
+            return response
+
+        return wrapped
+
+    return decorator
+
+
+@app.route("/abort_request", methods=["POST"])
+def abort_request():
+    """Mock of the SGLang /abort_request endpoint.
+
+    The gateway calls it on the decode pod when the prefill leg of a PD request
+    failed, so that the decode leg stops waiting for a KV transfer that will
+    never arrive. The abort is matched by "rid" alone - the engine carries no
+    bootstrap room on this path - and the rid is recorded under its own entry so
+    e2e tests can assert which request was aborted.
+    """
+    raw_body = request.get_data(cache=True)
+    payload = request.get_json(silent=True)
+    rid = payload.get("rid") if isinstance(payload, dict) else None
+    _, role, engine = _mock_pd_config()
+
+    handle = request_recorder.start(
+        path="/abort_request",
+        headers=_recorder_headers(request.headers),
+        raw_body=raw_body,
+        parsed_json=payload,
+        pod=POD_NAME,
+        engine=engine,
+        role=role,
+        request_id=rid,
+    )
+
+    if not rid:
+        # An empty rid would prefix-match every live request on a real engine.
+        request_recorder.finish(
+            handle, outcome="rejected", status_code=400, error="rid is required"
+        )
+        return make_response(
+            create_error_response("'rid' is required", param="rid", status_code=400)
+        )
+
+    response = {"status": "ok", "rid": rid}
+    request_recorder.finish(
+        handle, outcome="success", status_code=200, response=response
+    )
+    return jsonify(response), 200
+
+
+@app.route("/debug/requests", methods=["GET"])
+def debug_requests():
+    return jsonify(request_recorder.query(request_id=request.args.get("request_id")))
+
 
 # =============================================================================
 # HEALTH & UTILITY ENDPOINTS
@@ -679,7 +1101,7 @@ def unload_lora_adapter():
 # =============================================================================
 
 @app.route("/v1/completions", methods=["POST"])
-@auth_required
+@_recorded_completion("/v1/completions")
 def completion():
     try:
         prompt = request.json.get("prompt")
@@ -824,7 +1246,8 @@ def completion():
             if metrics is not None:
                 response["metrics"] = metrics
 
-            _apply_pd_prefill_fields(response, request.json, input_tokens)
+            if os.getenv("MOCK_PD_CONTRACT") != "trtllm-openai":
+                _apply_pd_prefill_fields(response, request.json, input_tokens)
 
             _log_mock_exchange("/v1/completions", request.json, response)
             return jsonify(response), 200
@@ -841,7 +1264,7 @@ def completion():
 
 
 @app.route("/v1/chat/completions", methods=["POST"])
-@auth_required
+@_recorded_completion("/v1/chat/completions")
 def chat_completions():
     try:
         messages = request.json.get("messages")
@@ -1087,7 +1510,8 @@ def chat_completions():
             if metrics is not None:
                 response["metrics"] = metrics
 
-            _apply_pd_prefill_fields(response, request.json, input_tokens)
+            if os.getenv("MOCK_PD_CONTRACT") != "trtllm-openai":
+                _apply_pd_prefill_fields(response, request.json, input_tokens)
 
             _log_mock_exchange("/v1/chat/completions", request.json, response)
             return jsonify(response), 200
@@ -1692,42 +2116,44 @@ def video_generations():
 def vllm_omni_videos():
     """
     Simulates the vLLM-Omni /v1/videos endpoint (Wan2.2).
-    Accepts multipart/form-data. Returns synchronous response with base64 MP4.
-    Supports text-to-video and image-to-video (input_reference).
+    Accepts multipart/form-data and creates a pod-local asynchronous job.
     """
     try:
+        model = request.form.get("model", MODEL_NAME)
         prompt = request.form.get("prompt")
-        width = request.form.get("width", "832")
-        height = request.form.get("height", "480")
-        num_frames = request.form.get("num_frames", "33")
-        fps = request.form.get("fps", "16")
-        seed = request.form.get("seed")
-        negative_prompt = request.form.get("negative_prompt")
-        input_reference = request.files.get("input_reference")
 
         if not prompt:
             return create_error_response(
                 "'prompt' is a required parameter", param="prompt"
             )
 
-        # Simulate processing time
-        time.sleep(0.3)
-
-        # Mock base64 MP4 (minimal ftyp box)
-        mock_mp4 = base64.b64encode(
+        created_at = int(time.time())
+        expires_at = created_at + 3600
+        video_id = "video_" + uuid.uuid4().hex
+        video_content = (
             b"\x00\x00\x00\x1c"  # box size
             b"ftypisom"  # major brand
             b"\x00\x00\x02\x00"  # minor version
             b"isomiso2mp41"  # compatible brands
-        ).decode()
+            + POD_NAME.encode()
+        )
 
-        response = {
-            "data": [{
-                "b64_json": mock_mp4,
-                "revised_prompt": prompt[:100],
-            }]
+        job = {
+            "id": video_id,
+            "object": "video",
+            "model": model,
+            "status": "completed",
+            "created_at": created_at,
+            "expires_at": expires_at,
+            "mock_pod": POD_NAME,
+            "content": video_content,
         }
-        return jsonify(response), 200
+        with _mock_video_jobs_lock:
+            _mock_video_jobs[video_id] = job
+
+        return jsonify(
+            {key: value for key, value in job.items() if key != "content"}
+        ), 200
 
     except Exception as e:
         logger.error(f"Error in vLLM-Omni videos endpoint: {e}")
@@ -1736,6 +2162,53 @@ def vllm_omni_videos():
             error_type="api_error",
             status_code=500,
         )
+
+
+def _mock_video_job(video_id):
+    with _mock_video_jobs_lock:
+        return _mock_video_jobs.get(video_id)
+
+
+@app.route("/v1/videos/<video_id>", methods=["GET"])
+@auth_required
+def vllm_omni_video_status(video_id):
+    job = _mock_video_job(video_id)
+    if job is None:
+        return create_error_response(
+            f"Video {video_id} not found",
+            code="video_not_found",
+            status_code=404,
+        )
+    return jsonify(
+        {key: value for key, value in job.items() if key != "content"}
+    ), 200
+
+
+@app.route("/v1/videos/<video_id>/content", methods=["GET"])
+@auth_required
+def vllm_omni_video_content(video_id):
+    job = _mock_video_job(video_id)
+    if job is None:
+        return create_error_response(
+            f"Video {video_id} not found",
+            code="video_not_found",
+            status_code=404,
+        )
+    return Response(job["content"], status=200, mimetype="video/mp4")
+
+
+@app.route("/v1/videos/<video_id>", methods=["DELETE"])
+@auth_required
+def vllm_omni_video_delete(video_id):
+    with _mock_video_jobs_lock:
+        job = _mock_video_jobs.pop(video_id, None)
+    if job is None:
+        return create_error_response(
+            f"Video {video_id} not found",
+            code="video_not_found",
+            status_code=404,
+        )
+    return jsonify({"id": video_id, "object": "video.deleted", "deleted": True}), 200
 
 
 @app.route("/v1/rerank", methods=["POST"])

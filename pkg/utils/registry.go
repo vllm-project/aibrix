@@ -18,29 +18,31 @@ package utils
 
 import (
 	"sync"
+	"sync/atomic"
 )
 
 // Registry is a generic hash set focus on storing values with string keys.
-// Array output is optimized by offering a cached read-only snapshot.
-// Mutations invalidate the cache without modifying previously returned slices.
+// Array output is optimized by offering a cached copy.
+// The cached copy is published as an immutable snapshot, so readers can load it
+// without the lock: a snapshot is never modified once published, writers always
+// replace it with a new one.
 type Registry[V any] struct {
 	registry map[string]V
-	values   []V  // Pods cache for quick iteration
-	valid    bool // If value valid?
+	values   atomic.Pointer[[]V] // Pods cache for quick iteration, nil if invalid
 	mu       sync.RWMutex
 }
 
 // CustomizedRegistry extends Registry to provide a customized array provider.
 type CustomizedRegistry[V any, A comparable] struct {
 	Registry[V]
-	values         A // Pods cache for quick iteration
+	values         atomic.Pointer[A] // Pods cache for quick iteration, nil if invalid
 	valuesProvider func([]V) A
 }
 
 func NewRegistry[V any]() *Registry[V] {
-	return &Registry[V]{
-		valid: true,
-	}
+	reg := &Registry[V]{}
+	reg.values.Store(&[]V{})
+	return reg
 }
 
 func NewRegistryWithArrayProvider[V any, A comparable](provider func([]V) A) *CustomizedRegistry[V, A] {
@@ -53,28 +55,30 @@ func NewRegistryWithArrayProvider[V any, A comparable](provider func([]V) A) *Cu
 func (reg *Registry[V]) Delete(key string) {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
-
 	reg.deleteLocked(key)
 }
 
-func (reg *Registry[V]) deleteLocked(key string) bool {
-	if _, exists := reg.registry[key]; !exists {
-		return false
+// deleteLocked deletes a value while the caller holds reg.mu.
+func (reg *Registry[V]) deleteLocked(key string) {
+	if reg.registry == nil {
+		return
 	}
+
 	delete(reg.registry, key)
-	reg.values, reg.valid = nil, false
-	return true
+	// Check stale
+	if arr := reg.values.Load(); arr != nil && len(*arr) != len(reg.registry) {
+		reg.values.Store(nil) // invalidate and wait regenerate
+	}
 }
 
 func (reg *CustomizedRegistry[V, A]) Delete(key string) {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
 
-	if !reg.deleteLocked(key) {
-		return
-	}
-	var nilVal A
-	reg.values = nilVal
+	// Invalidate first while holding the lock, so a cache miss waits until the
+	// embedded registry update is complete.
+	reg.values.Store(nil)
+	reg.deleteLocked(key)
 }
 
 func (reg *Registry[V]) Load(key string) (value V, ok bool) {
@@ -88,25 +92,36 @@ func (reg *Registry[V]) Load(key string) (value V, ok bool) {
 func (reg *Registry[V]) Store(key string, value V) {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
-
 	reg.storeLocked(key, value)
 }
 
+// storeLocked stores a value while the caller holds reg.mu.
 func (reg *Registry[V]) storeLocked(key string, value V) {
 	if reg.registry == nil {
 		reg.registry = make(map[string]V, 1)
 	}
 
+	_, exist := reg.registry[key]
 	reg.registry[key] = value
-	reg.values, reg.valid = nil, false
+	if arr := reg.values.Load(); arr != nil && !exist {
+		// Copy on write, the published snapshot is never appended in place
+		updated := make([]V, 0, len(*arr)+1)
+		updated = append(updated, *arr...)
+		updated = append(updated, value)
+		reg.values.Store(&updated)
+	} else {
+		// clear and wait regenerate
+		reg.values.Store(nil)
+	}
 }
 
 func (reg *CustomizedRegistry[V, A]) Store(key string, value V) {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
 
-	var nilVal A
-	reg.values = nilVal
+	// Invalidate first while holding the lock, so a cache miss waits until the
+	// embedded registry update is complete.
+	reg.values.Store(nil)
 	reg.storeLocked(key, value)
 }
 
@@ -115,11 +130,8 @@ func (reg *Registry[V]) Array() (arr []V) {
 		return nil
 	}
 
-	reg.mu.RLock()
-	arr, valid := reg.values, reg.valid
-	reg.mu.RUnlock()
-	if valid {
-		return arr
+	if cached := reg.values.Load(); cached != nil {
+		return *cached
 	}
 
 	reg.mu.Lock()
@@ -135,11 +147,8 @@ func (reg *CustomizedRegistry[V, A]) Array() (arr A) {
 		return
 	}
 
-	reg.mu.RLock()
-	ret := reg.values
-	reg.mu.RUnlock()
-	if ret != arr { // ret != nil value
-		return ret
+	if cached := reg.values.Load(); cached != nil {
+		return *cached
 	}
 
 	reg.mu.Lock()
@@ -152,6 +161,10 @@ func (reg *CustomizedRegistry[V, A]) Array() (arr A) {
 func (reg *Registry[V]) Len() int {
 	if reg == nil {
 		return 0
+	}
+
+	if cached := reg.values.Load(); cached != nil {
+		return len(*cached)
 	}
 
 	reg.mu.RLock()
@@ -169,26 +182,34 @@ func (reg *CustomizedRegistry[V, A]) Len() int {
 }
 
 func (reg *Registry[V]) updateArrayLocked() ([]V, bool) {
-	reconstructed := false
-	if !reg.valid {
-		// A previous snapshot can still be in use by a routing request.
-		// Always allocate a new backing array when rebuilding the cache.
-		reg.values = make([]V, 0, len(reg.registry))
-		for _, value := range reg.registry {
-			reg.values = append(reg.values, value)
-		}
-		reconstructed = true
-		reg.valid = true
+	if cached := reg.values.Load(); cached != nil {
+		return *cached, false
+	}
+	if reg.registry == nil {
+		return nil, false
 	}
 
-	return reg.values, reconstructed
+	// Size the snapshot exactly, so no caller can write into it by appending
+	arr := make([]V, 0, len(reg.registry))
+	for _, pod := range reg.registry {
+		arr = append(arr, pod)
+	}
+	reg.values.Store(&arr)
+
+	return arr, true
 }
 
 func (reg *CustomizedRegistry[V, A]) updateArrayLocked() (val A) {
 	values, reconstructed := reg.Registry.updateArrayLocked()
+	cached := reg.values.Load()
 	// Unlike slice: nil can be treated as empty []V, we always create empty A even values is nil
-	if reconstructed || reg.values == val { // reg.values == nil val
-		reg.values = reg.valuesProvider(values)
+	if !reconstructed && cached != nil {
+		return *cached
 	}
-	return reg.values
+
+	// Return the local copy: a concurrent Store may invalidate the cache right
+	// after it is published, that must not turn into a nil array here.
+	val = reg.valuesProvider(values)
+	reg.values.Store(&val)
+	return val
 }

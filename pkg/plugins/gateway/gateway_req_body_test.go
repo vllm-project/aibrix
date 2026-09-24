@@ -19,6 +19,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -75,7 +76,7 @@ func Test_handleRequestBody(t *testing.T) {
 	// Define test cases for different routing and error scenarios
 	tests := []testCase{
 		{
-			name:        "no routing strategy - should only set model header",
+			name:        "no routing strategy - should set model and content-length headers",
 			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
 			user: utils.User{
 				Name: "test-user",
@@ -104,7 +105,10 @@ func Test_handleRequestBody(t *testing.T) {
 			},
 			expected: testResponse{
 				statusCode: envoyTypePb.StatusCode_OK,
-				headers:    []*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{Key: HeaderModel, RawValue: []byte("test-model")}}},
+				headers: []*configPb.HeaderValueOption{
+					{Header: &configPb.HeaderValue{Key: HeaderModel, RawValue: []byte("test-model")}},
+					{Header: &configPb.HeaderValue{Key: "content-length", RawValue: []byte("74")}},
+				},
 				model:      "test-model",
 				stream:     false,
 				term:       1,
@@ -883,6 +887,147 @@ func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
 	mockModelRL.AssertExpectations(t)
 }
 
+// TestHandleRequestBody_AsyncVideoJobWithoutRoutingStrategyGetsPinned guards against a
+// regression where POST /v1/videos submitted without a routing-strategy header (the
+// out-of-the-box default, and what the async example in docs/source/features/vllm-omni.rst
+// uses) fell into the RouterNotSet branch, which never calls SetTargetPod. That left
+// registerVideoJobFromCreateResponse's routerCtx.TargetPod() call (see
+// gateway_video_routing.go) blocking until the request's context was done, and the job
+// never registered -- breaking all follow-up GET/DELETE calls for that job.
+func TestHandleRequestBody_AsyncVideoJobWithoutRoutingStrategyGetsPinned(t *testing.T) {
+	cache.InitForTest()
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: "ns-a"},
+		Status: v1.PodStatus{
+			PodIP:      "1.2.3.4",
+			Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+		},
+	}
+	podList := &utils.PodArray{Pods: []*v1.Pod{pod}}
+
+	mockCache.On("HasModel", "wan2.1").Return(true)
+	mockCache.On("ListPodsByModel", "wan2.1").Return(podList, nil)
+	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "wan2.1").Return(int64(1))
+	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+	server := &Server{cache: mockCache}
+
+	body, contentType := buildMultipartForm(t, map[string]string{"model": "wan2.1", "prompt": "a cat"})
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{Body: body},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathVideos
+	routingCtx.ReqHeaders[contentTypeKey] = contentType
+	// Deliberately no routing-strategy header: this is the RouterNotSet default.
+
+	resp, model, stream, term := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	require.NotNil(t, resp)
+	require.Nil(t, resp.GetImmediateResponse(), "async video job submission must not be rejected")
+	assert.Equal(t, "wan2.1", model)
+	assert.False(t, stream)
+	assert.Equal(t, int64(1), term)
+	assert.Equal(t, routingalgorithms.RouterLeastRequest, routingCtx.Algorithm,
+		"POST /v1/videos must not stay on RouterNotSet's HTTPRoute passthrough")
+
+	// TargetPod() must already be set -- it must not need to wait on ctx.Done() to unblock.
+	done := make(chan *v1.Pod, 1)
+	go func() { done <- routingCtx.TargetPod() }()
+	select {
+	case targetPod := <-done:
+		require.NotNil(t, targetPod)
+		assert.Equal(t, "pod-a", targetPod.Name)
+	case <-time.After(time.Second):
+		t.Fatal("TargetPod() blocked: the async video job was never pinned to a pod")
+	}
+
+	foundTargetPod := false
+	for _, h := range resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders() {
+		if h.Header.Key == HeaderTargetPod {
+			foundTargetPod = true
+		}
+	}
+	assert.True(t, foundTargetPod, "HeaderTargetPod must be set so envoy pins the request to the recorded pod")
+}
+
+// TestHandleRequestBody_AsyncVideoJobSendsNoModeOverride: the create response has
+// to be held whole so its backend id can be replaced, but that is arranged by the
+// Videos route's EnvoyExtensionPolicy (response body Buffered). Envoy Gateway
+// v1.2.8 never enables ext_proc's allow_mode_override, so an override sent from
+// here would be dropped on the floor - and would read as if buffering had been
+// taken care of.
+func TestHandleRequestBody_AsyncVideoJobSendsNoModeOverride(t *testing.T) {
+	cache.InitForTest()
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	pod := readyPod("pod-a", "ns-a", "1.2.3.4")
+	mockCache.On("HasModel", "wan2.1").Return(true)
+	mockCache.On("ListPodsByModel", "wan2.1").Return(&utils.PodArray{Pods: []*v1.Pod{pod}}, nil)
+	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "wan2.1").Return(int64(1))
+	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+	server := &Server{cache: mockCache}
+
+	body, contentType := buildMultipartForm(t, map[string]string{"model": "wan2.1", "prompt": "a cat"})
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{Body: body},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathVideos
+	routingCtx.ReqHeaders[contentTypeKey] = contentType
+	routingCtx.ReqHeaders[methodKey] = http.MethodPost
+
+	resp, _, _, _ := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	assert.Nil(t, resp.GetModeOverride())
+}
+
+// TestHandleRequestBody_LanguageRequestKeepsConfiguredResponseMode: a chat
+// completion's response mode is the shared route's Streamed, and nothing in the
+// request path may override it - buffering an SSE stream would hold every chunk
+// back until the stream ended.
+func TestHandleRequestBody_LanguageRequestKeepsConfiguredResponseMode(t *testing.T) {
+	cache.InitForTest()
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	pod := readyPod("pod-a", "ns-a", "1.2.3.4")
+	mockCache.On("HasModel", "llama").Return(true)
+	mockCache.On("ListPodsByModel", "llama").Return(&utils.PodArray{Pods: []*v1.Pod{pod}}, nil)
+	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "llama").Return(int64(1))
+	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+	server := &Server{cache: mockCache}
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{Body: []byte(`{"model":"llama","messages":[{"role":"user","content":"hi"}]}`)},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathChatCompletions
+	routingCtx.ReqHeaders[methodKey] = http.MethodPost
+
+	resp, _, _, _ := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	assert.Nil(t, resp.GetModeOverride())
+}
+
 // registerTestRouter registers the shared TestRouterAlgorithm mock router so a
 // request can be routed with it. Idempotent across tests.
 func registerTestRouter(mockRouter *mockRouter) {
@@ -916,6 +1061,7 @@ func configProfilePods(anno string) []*v1.Pod {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        "pod-a",
 				Namespace:   "default",
+				Labels:      map[string]string{"environment": "online"},
 				Annotations: map[string]string{constants.ModelAnnoConfig: anno},
 			},
 			Status: v1.PodStatus{
@@ -927,6 +1073,7 @@ func configProfilePods(anno string) []*v1.Pod {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        "pod-b",
 				Namespace:   "default",
+				Labels:      map[string]string{"environment": "online"},
 				Annotations: map[string]string{constants.ModelAnnoConfig: anno},
 			},
 			Status: v1.PodStatus{
@@ -943,11 +1090,13 @@ func configProfilePods(anno string) []*v1.Pod {
 // still wins over the profile when no lock is set.
 func TestHandleRequestBody_LockedRoutingStrategy(t *testing.T) {
 	tests := []struct {
-		name         string
-		profileJSON  string
-		headerValue  string
-		wantStrategy string // expected routing-strategy response header; empty when routing is expected to fail
-		wantStatus   envoyTypePb.StatusCode
+		name           string
+		profileJSON    string
+		headerValue    string
+		configProfile  string
+		externalFilter string
+		wantStrategy   string // expected routing-strategy response header; empty when routing is expected to fail
+		wantStatus     envoyTypePb.StatusCode
 	}{
 		{
 			name:         "locked strategy wins over header",
@@ -975,6 +1124,48 @@ func TestHandleRequestBody_LockedRoutingStrategy(t *testing.T) {
 			headerValue:  string(TestRouterAlgorithm),
 			wantStrategy: "test-router",
 			wantStatus:   envoyTypePb.StatusCode_OK,
+		},
+		{
+			name:           "authoritative policy ignores named profile and external filter",
+			profileJSON:    `{"authoritativeRoutingPolicy":true,"defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"},"batch":{"routingStrategy":"least-request"}}}`,
+			headerValue:    "least-request",
+			configProfile:  "batch",
+			externalFilter: "environment=batch",
+			wantStrategy:   "test-router",
+			wantStatus:     envoyTypePb.StatusCode_OK,
+		},
+		{
+			name:           "authoritative policy ignores auto profile and external filter",
+			profileJSON:    `{"authoritativeRoutingPolicy":true,"defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"},"batch":{"routingStrategy":"least-request","routingConfig":{"promptTokensGte":1}}}}`,
+			headerValue:    "least-request",
+			configProfile:  "auto",
+			externalFilter: "environment=batch",
+			wantStrategy:   "test-router",
+			wantStatus:     envoyTypePb.StatusCode_OK,
+		},
+		{
+			name:           "authoritative policy preserves locked strategy precedence",
+			profileJSON:    `{"authoritativeRoutingPolicy":true,"lockedRoutingStrategy":"test-router","defaultProfile":"default","profiles":{"default":{"routingStrategy":"least-request"},"batch":{"routingStrategy":"random"}}}`,
+			headerValue:    "least-request",
+			configProfile:  "batch",
+			externalFilter: "environment=batch",
+			wantStrategy:   "test-router",
+			wantStatus:     envoyTypePb.StatusCode_OK,
+		},
+		{
+			name:           "external filter still applies when request overrides are enabled",
+			profileJSON:    `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"}}}`,
+			headerValue:    "test-router",
+			externalFilter: "environment=batch",
+			wantStatus:     envoyTypePb.StatusCode_ServiceUnavailable,
+		},
+		{
+			name:           "matching external filter is preserved when request overrides are enabled",
+			profileJSON:    `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"}}}`,
+			headerValue:    "test-router",
+			externalFilter: "environment=online",
+			wantStrategy:   "test-router",
+			wantStatus:     envoyTypePb.StatusCode_OK,
 		},
 	}
 
@@ -1008,6 +1199,8 @@ func TestHandleRequestBody_LockedRoutingStrategy(t *testing.T) {
 			routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
 			routingCtx.ReqPath = PathChatCompletions
 			routingCtx.ReqHeaders[HeaderRoutingStrategy] = tt.headerValue
+			routingCtx.ReqHeaders[HeaderExternalFilter] = tt.externalFilter
+			routingCtx.ReqConfigProfile = tt.configProfile
 
 			resp, _, _, term := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
 

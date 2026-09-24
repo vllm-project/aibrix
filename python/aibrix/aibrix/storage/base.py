@@ -17,11 +17,16 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from io import BytesIO, StringIO
-from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
+from typing import AsyncIterator, Awaitable, BinaryIO, Callable, Optional, TextIO, Union
 
 from aibrix.storage.reader import Reader
 from aibrix.storage.types import StorageListOrdering, StorageType
 from aibrix.storage.utils import ObjectMetadata
+
+# Internal multipart part flag: only parts carrying this marker may source their
+# bytes from a caller-provided local callback instead of remote staged storage.
+LOCAL_PART_PROVIDER_MARKER = "__aibrix_local_part__"
+LOCAL_PART_PROVIDER_MARKER_VALUE = 1
 
 
 @dataclass
@@ -582,60 +587,18 @@ class BaseStorage(ABC):
         key: str,
         upload_id: str,
         parts: list[dict[str, Union[str, int]]],
-    ) -> None:
-        """Default implementation for completing multipart upload.
-
-        Downloads all part objects, aggregates them locally, and uploads the final object.
-        Suitable for S3/TOS backends that don't have native multipart support for small files.
-
-        Args:
-            key: Object key/path
-            upload_id: Upload ID from create_multipart_upload
-            parts: List of parts with 'part_number' and 'etag' keys
-        """
-        try:
-            # Get upload metadata
-            metadata_data = await self.get_object(self._multipart_upload_key(upload_id))
-            upload_metadata = eval(
-                metadata_data.decode("utf-8")
-            )  # Simple parsing for dict
-        except Exception:
-            # Use _native_complete_multipart_upload if metadata object doesn't exist
-            if self.is_native_multipart_supported():
-                return await self._native_complete_multipart_upload(
-                    key, upload_id, parts
-                )
-            raise ValueError(f"Upload ID {upload_id} not found or corrupted")
-
-        content_type = upload_metadata.get("content_type")
-        metadata = upload_metadata.get("metadata", {})
-
-        # Sort parts by part number
-        sorted_parts = sorted(parts, key=lambda p: p["part_number"])
-
-        # Download and aggregate all parts locally
-        aggregated_data = BytesIO()
-
-        for part in sorted_parts:
-            part_number = part["part_number"]
-            try:
-                part_data = await self.get_object(
-                    self._multipart_upload_part_key(upload_id, int(part_number))
-                )
-                aggregated_data.write(part_data)
-            except Exception:
-                # Clean up and raise error
-                await self.abort_multipart_upload(key, upload_id)
-                raise ValueError(
-                    f"Failed to retrieve part {part_number} for upload {upload_id}"
-                )
-
-        # Upload the final aggregated object
-        aggregated_data.seek(0)
-        await self.put_object(key, aggregated_data, content_type, metadata)
-
-        # Clean up multipart upload objects
-        await self.abort_multipart_upload(key, upload_id)
+        *,
+        tolerate_part_get_error: bool = False,
+        local_part_provider: Callable[
+            [dict[str, Union[str, int]]], Awaitable[bytes | str | None]
+        ]
+        | None = None,
+    ) -> list[dict[str, Union[str, int]]]:
+        _ = (key, upload_id, parts, tolerate_part_get_error, local_part_provider)
+        raise NotImplementedError(
+            "BaseStorage.complete_multipart_upload() must not be called; "
+            "use BaseStorage2-backed storage implementations instead."
+        )
 
     async def abort_multipart_upload(
         self,

@@ -43,6 +43,11 @@ func NewLeastKvCacheRouter() (types.Router, error) {
 	return newLeastKvCacheRouter(c), nil
 }
 
+// NewLeastKvCacheRouterWithCache constructs least-kv-cache with an explicit cache.
+func NewLeastKvCacheRouterWithCache(c cache.Cache) (types.Router, error) {
+	return newLeastKvCacheRouter(c), nil
+}
+
 // newLeastKvCacheRouter builds a leastKvCacheRouter around an existing cache handle, for
 // callers that already hold one (e.g. load_balance.go reusing it purely as a types.PodScorer
 // tie-breaker) rather than fetching their own via cache.Get(). Keeping construction here means
@@ -80,7 +85,9 @@ func (r leastKvCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList typ
 		}
 		scores[i] = gpuCache.GetSimpleValue() + cpuCacheUsage(r.cache, pod, ctx.Model)
 		scored[i] = true
-		klog.V(4).Infof("pod: %v, podIP: %v, total cache: %v", pod.Name, pod.Status.PodIP, scores[i])
+		if klog.V(4).Enabled() {
+			klog.V(4).Infof("pod: %v, podIP: %v, total cache: %v", pod.Name, pod.Status.PodIP, scores[i])
+		}
 	}
 
 	return scores, scored, nil

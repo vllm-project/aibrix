@@ -49,6 +49,8 @@ spec:
           template:
             metadata:
               labels:
+                app: "mock-llama2-7b-pd-sglang"
+                app.kubernetes.io/name: "mock-llama2-7b-pd-sglang"
                 model.aibrix.ai/name: "llama2-7b-sglang"
                 model.aibrix.ai/port: "8000"
                 model.aibrix.ai/engine: sglang
@@ -67,6 +69,10 @@ spec:
                   env:
                     - name: LLM_ENGINE
                       value: sglang
+                    - name: MOCK_PD_CONTRACT
+                      value: sglang-http
+                    - name: MOCK_PD_ROLE
+                      value: prefill
                     - name: DEPLOYMENT_NAME
                       valueFrom:
                         fieldRef:
@@ -89,6 +95,8 @@ spec:
           template:
             metadata:
               labels:
+                app: "mock-llama2-7b-pd-sglang"
+                app.kubernetes.io/name: "mock-llama2-7b-pd-sglang"
                 model.aibrix.ai/name: "llama2-7b-sglang"
                 model.aibrix.ai/port: "8000"
                 model.aibrix.ai/engine: sglang
@@ -103,6 +111,10 @@ spec:
                   env:
                     - name: LLM_ENGINE
                       value: sglang
+                    - name: MOCK_PD_CONTRACT
+                      value: sglang-http
+                    - name: MOCK_PD_ROLE
+                      value: decode
                     - name: DEPLOYMENT_NAME
                       valueFrom:
                         fieldRef:
