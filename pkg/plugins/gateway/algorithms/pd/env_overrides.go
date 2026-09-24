@@ -20,11 +20,14 @@ import (
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
+	"k8s.io/klog/v2"
 )
 
 // EnvOverrides returns the PD routing knob defaults the environment configures:
 // the decode abort timings, the decode load-balancing weights, the token-load
-// ledger knobs and the hybrid prefix-cache thresholds. The routing algorithm
+// ledger knobs, the hybrid prefix-cache thresholds and the bucket-serve
+// switch and mode. The routing algorithm
 // package folds them into the process default table at startup, and this
 // package's tests install them the same way.
 //
@@ -34,6 +37,7 @@ import (
 func EnvOverrides() types.PDOverrides {
 	tokenLoad := DefaultTokenLoadConfig()
 	hybrid := DefaultHybridCacheLoadConfig()
+	bucketServe := EnvBucketServeConfig()
 	return types.PDOverrides{
 		Abort: types.PDAbortOverrides{
 			Timeout:    time.Duration(loadDecodeAbortTimeoutSeconds()) * time.Second,
@@ -51,5 +55,26 @@ func EnvOverrides() types.PDOverrides {
 		},
 		HybridCacheLoadFactor: hybrid.Factor,
 		MinMatchPct:           hybrid.MinMatchPct,
+		BucketServe:           bucketServe.Enabled,
+		BucketServeMode:       string(bucketServe.Mode),
 	}
+}
+
+// EnvBucketServeConfig returns the bucket-serve tracker configuration the
+// environment selects: AIBRIX_BUCKET_SERVE turns the adaptive plan on and
+// AIBRIX_BUCKET_SERVE_MODE picks what its cut points balance. The gateway
+// builds its tracker with this configuration, and a config profile may then
+// switch the plan, or select another mode, for the models it routes. An
+// unknown mode name is refused with a warning and the default stays in place,
+// the way the other environment loaders treat a value they would not accept.
+func EnvBucketServeConfig() BucketServeConfig {
+	cfg := DefaultBucketServeConfig()
+	cfg.Enabled = utils.LoadEnvBool("AIBRIX_BUCKET_SERVE", cfg.Enabled)
+	name := utils.LoadEnv("AIBRIX_BUCKET_SERVE_MODE", string(cfg.Mode))
+	if mode, ok := ParseBucketMode(name); ok {
+		cfg.Mode = mode
+	} else {
+		klog.Warningf("invalid AIBRIX_BUCKET_SERVE_MODE: %s, falling back to default: %s", name, cfg.Mode)
+	}
+	return cfg
 }

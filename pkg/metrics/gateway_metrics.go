@@ -64,6 +64,16 @@ const (
 	PDTokenLoadActiveTokens = "pd_token_load_active_tokens"
 	PDTokenLoadKVTokens     = "pd_token_load_kv_tokens"
 
+	// counters and a gauge of the adaptive bucket-serve plan of the pd prefill
+	// routing: the requests and prompt tokens each prompt-length band carried,
+	// the affinity cut points the planner added and removed, and the current
+	// upper bound of every band
+	PDBucketServeBandTotal         = "pd_bucket_serve_band_total"
+	PDBucketServePromptTokensTotal = "pd_bucket_serve_prompt_tokens_total"
+	PDBucketServeSplitTotal        = "pd_bucket_serve_split_total"
+	PDBucketServeMergeTotal        = "pd_bucket_serve_merge_total"
+	PDBucketServeBandMax           = "pd_bucket_serve_band_max"
+
 	// Duration bucket counters for timing breakdowns
 	GatewayRoutingTimeBucketTotal    = "gateway_routing_time_bucket_total"
 	GatewayPrefillTimeBucketTotal    = "gateway_prefill_time_bucket_total"
@@ -174,6 +184,46 @@ var (
 				Raw: Gauge,
 			},
 			Description: "Estimated prompt tokens whose KV cache is still resident on a prefill pod, as charged by the pd router",
+		},
+		PDBucketServeBandTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Requests the pd router placed in an adaptive bucket-serve band",
+		},
+		PDBucketServePromptTokensTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Prompt tokens the pd router placed in an adaptive bucket-serve band",
+		},
+		PDBucketServeSplitTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Affinity cut points the bucket-serve planner added to the pd prefill routing",
+		},
+		PDBucketServeMergeTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Affinity cut points the bucket-serve planner removed from the pd prefill routing",
+		},
+		PDBucketServeBandMax: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			Description: "Current upper prompt-length bound of an adaptive bucket-serve band",
 		},
 		GatewayInFlight: {
 			MetricScope:  PodMetricScope,
