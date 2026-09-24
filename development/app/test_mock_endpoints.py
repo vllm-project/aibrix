@@ -711,3 +711,67 @@ def test_abort_request_without_rid_is_rejected(monkeypatch):
     assert records[-1]["path"] == "/abort_request"
     assert records[-1]["outcome"] == "rejected"
     assert records[-1]["request_id"] is None
+
+
+def test_pooling_rejects_non_string_non_list_input(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    # A dict would iterate its keys and an int would raise TypeError; both are
+    # client errors and must surface as 400, not fall into the 500 handler.
+    for bad_input in ({"text": "hello"}, 42, 3.14, True):
+        response = post_json(
+            client,
+            "/pooling",
+            {"model": "m", "input": bad_input},
+            request_id=f"pooling-bad-{type(bad_input).__name__}",
+        )
+        assert response.status_code == 400, bad_input
+        assert response.get_json()["error"]["param"] == "input"
+
+
+def test_pooling_accepts_all_supported_input_shapes(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    shapes = [
+        ("string", "hello world"),
+        ("array of strings", ["hello", "world"]),
+        ("pre-tokenized ids", [100, 101, 102]),
+        ("pre-tokenized id lists", [[100, 101], [102, 103]]),
+    ]
+    for name, input_value in shapes:
+        response = post_json(
+            client,
+            "/pooling",
+            {"model": "m", "input": input_value},
+            request_id=f"pooling-{name}",
+        )
+        assert response.status_code == 200, (name, response.get_json())
+        body = response.get_json()
+        assert body["model"] == "m"
+        assert body["usage"]["prompt_tokens"] > 0
+        assert all(item["object"] == "pooling" for item in body["data"])
+
+
+def test_pooling_chat_form_uses_messages(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    response = post_json(
+        client,
+        "/pooling",
+        {
+            "model": "m",
+            "messages": [
+                {"role": "system", "content": "you are an embedder"},
+                {"role": "user", "content": "hello world"},
+            ],
+        },
+        request_id="pooling-chat",
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert len(body["data"]) == 1
+    assert body["usage"]["prompt_tokens"] > 0
