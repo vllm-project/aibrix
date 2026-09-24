@@ -204,18 +204,20 @@ func makePodWithRequestRateMetrics(name, namespace, modelName string, waitingReq
 		Value:  model.SampleValue(drainRate),
 	}}
 	var drainResult model.Value = vec
-	return &v1.Pod{
+	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 			Labels:    map[string]string{constants.ModelLabelName: modelName},
 		},
-	}, map[string]metrics.MetricValue{
+	}
+	values := map[string]metrics.MetricValue{
 		metrics.NumRequestsWaiting:          &metrics.SimpleMetricValue{Value: waitingReqs},
 		metrics.NumPrefillPreallocQueueReqs: &metrics.SimpleMetricValue{Value: 0},
 		metrics.NumDecodePreallocQueueReqs:  &metrics.SimpleMetricValue{Value: 0},
 		metrics.DrainRate1m:                 &metrics.PrometheusMetricValue{Result: &drainResult},
 	}
+	return pod, values
 }
 
 func TestShouldPickCombined_PrefillHighLoadCombinedLow(t *testing.T) {
