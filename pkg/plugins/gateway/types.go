@@ -63,6 +63,10 @@ const (
 	HeaderExternalFilter      = "external-filter"
 	HeaderConfigProfile       = "config-profile"
 	HeaderAIBrixConfigProfile = "x-aibrix-config-profile"
+	// HeaderPriorityTier declares the priority tier of the request (for
+	// example batch or background) so the gateway can map it to the upstream
+	// vLLM request priority. See gateway_req_priority.go.
+	HeaderPriorityTier = "x-aibrix-priority-tier"
 	// HeaderSessionID aliases the shared session-affinity header used by request parsing and routing.
 	HeaderSessionID = constants.HeaderSessionID
 	// HeaderSessionKey aliases the shared opaque session-key header.

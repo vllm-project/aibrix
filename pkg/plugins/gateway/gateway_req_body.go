@@ -135,6 +135,13 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		routingCtx.Algorithm = routingAlgorithm
 	}
 
+	// The tier the caller declared is mapped onto the body that is forwarded
+	// upstream. This runs before a pod is chosen because the PD router builds the
+	// prefill leg out of the routing context while it routes (see
+	// pd/prefill.PreparePayload): both legs of a PD request have to carry the
+	// same priority, so the rewrite cannot wait for the routing decision.
+	s.applyPriorityTier(routingCtx)
+
 	// Pre-allocate for the routing path (4 headers: strategy, target-pod, content-length, X-Request-Id).
 	headers := make([]*configPb.HeaderValueOption, 0, 4)
 
@@ -159,7 +166,14 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		if err := s.validateHTTPRouteStatus(ctx, model); err != nil {
 			return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, err.Error(), ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, stream, term
 		}
-		headers = buildEnvoyProxyHeaders(headers, HeaderModel, model)
+		// The response replaces the upstream body with routingCtx.ReqBody, and
+		// routing as well as the priority mapping above may have changed its
+		// size. Envoy validates the upstream request against this header, so it
+		// always describes the body that is actually forwarded rather than the
+		// one that arrived.
+		headers = buildEnvoyProxyHeaders(headers,
+			HeaderModel, model,
+			"content-length", strconv.Itoa(len(routingCtx.ReqBody)))
 		klog.InfoS("request_start", "request_id", requestID, "request_path", requestPath, "model", model, "stream", stream)
 	} else {
 		externalFilter := routingCtx.ReqHeaders[HeaderExternalFilter]

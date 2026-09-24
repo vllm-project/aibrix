@@ -13,6 +13,17 @@ Variables of type `duration` are parsed with Go's [`time.ParseDuration`](https:/
 | `AIBRIX_DISABLE_RATE_LIMITING` | bool | `false` | Disable AIBrix user RPM/TPM and model RPS quota enforcement. Redis and `requestsInflight` remain active. | [cmd/plugins/main.go](../../../cmd/plugins/main.go), [gateway.go](gateway.go) |
 | `POD_NAME` | string | `""` | Kubernetes pod name. Used for logging and metric label tagging. | [gateway.go](gateway.go), [util.go](util.go) |
 | `ROUTING_ALGORITHM` | string | _(none)_ | Default routing algorithm when no per-request override is set. | [types.go](types.go), [util.go](util.go) |
+| `AIBRIX_PRIORITY_TIER_ENABLED` | bool | `false` | Forward the priority tier declared by the `x-aibrix-priority-tier` request header as the upstream vLLM request priority. | [cmd/plugins/main.go](../../../cmd/plugins/main.go), [gateway_req_priority.go](gateway_req_priority.go) |
+
+When `AIBRIX_PRIORITY_TIER_ENABLED=true`, the gateway maps the `x-aibrix-priority-tier`
+request header to the `priority` field of the backend request body: `batch` becomes `100` and
+`background` becomes `1000`. The engine serves smaller values first, so the mapping only
+de-prioritizes a request and never pulls one ahead of another; the values sit below the engine
+default of `0`. Requests without the header, or with a tier outside the table, are forwarded
+unchanged, and a `priority` the caller already set in the body is kept. Tier names are matched
+case-insensitively. The deployment has to run a priority-aware vLLM scheduler
+(`--scheduling-policy=priority`). With the default `false`, the header is ignored and request
+bodies are forwarded byte for byte.
 
 When `AIBRIX_DISABLE_RATE_LIMITING=true`, the gateway skips AIBrix user lookup, ignores the
 `user` header as routing identity, and does not write user or model quota counters. The header
