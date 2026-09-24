@@ -17,7 +17,9 @@ limitations under the License.
 
 package v1alpha1
 
-import "k8s.io/apimachinery/pkg/api/resource"
+import (
+	resource "k8s.io/apimachinery/pkg/api/resource"
+)
 
 // ModelClaimPerGPUApplyConfiguration represents a declarative configuration of the ModelClaimPerGPU type for use
 // with apply.
