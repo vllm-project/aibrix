@@ -79,12 +79,12 @@ this:
 
    models:
      - name: Qwen/Qwen2.5-1.5B-Instruct
-       endpoints:
+       workers:
          - "127.0.0.1:8000"
 
 The request model name must match the configured model name.
 
-The same file can also describe prefill and decode role sets for
+The same file can also describe prefill and decode workers for
 prefill/decode disaggregation testing:
 
 .. code-block:: yaml
@@ -92,12 +92,10 @@ prefill/decode disaggregation testing:
    models:
      - name: Qwen/Qwen2.5-72B
        engine: vllm
-       rolesets:
-         - name: qwen-pd
-           prefill:
-             - "127.0.0.1:8100"
-           decode:
-             - "127.0.0.1:8200"
+       prefill_workers:
+         - "127.0.0.1:8100"
+       decode_workers:
+         - "127.0.0.1:8200"
 
 Run local mode
 --------------
