@@ -80,12 +80,25 @@ func (s *Server) handlePrefillFailFast(srv extProcPb.ExternalProcessor_ProcessSe
 		return nil
 	}
 
-	if !pd.PrefillFailureIsTerminal(failure.Class) {
-		// bad_response: the prefill pod answered 200 and the KV transfer
-		// completed, the gateway just could not parse the reply. The decode leg
-		// is healthy and is not aborted either (see pd.OnPrefillLegFailed), so
-		// the client must not be failed.
+	if !pd.PrefillFailureIsTerminalFor(failure.Class, st.routerCtx.ResetAfterHeaders()) {
+		// bad_response for an engine whose KV handshake lives in the HTTP body
+		// (SGLang): the prefill pod answered 200 and the KV transfer completed,
+		// the gateway just could not parse the reply. The decode leg is healthy
+		// and is not aborted either (see pd.OnPrefillLegFailed), so the client
+		// must not be failed. TRT-LLM generation-first is the opposite case and
+		// is terminal - see PrefillFailureIsTerminalFor.
 		klog.V(4).InfoS("pd_prefill_fail_fast_ignored", "request_id", st.requestID,
+			"rid", st.routerCtx.PDRequestID(), "class", failure.Class)
+		return nil
+	}
+
+	if st.completed {
+		// The decode response already completed and its success sample was
+		// emitted. Failing now would count the same request twice and, if Envoy
+		// has not finished flushing, reset a response the client already
+		// received in full. The case this path exists for is a stream that is
+		// still generating, not a finished one.
+		klog.V(4).InfoS("pd_prefill_fail_fast_ignored_completed", "request_id", st.requestID,
 			"rid", st.routerCtx.PDRequestID(), "class", failure.Class)
 		return nil
 	}
@@ -110,17 +123,17 @@ func (s *Server) handlePrefillFailFast(srv extProcPb.ExternalProcessor_ProcessSe
 		"prefill_error", truncatePrefillMessage(failure.Message))
 
 	if stage == prefillFailFastStageAfter {
-		if st.routerCtx.Engine == pd.EngineTRTLLM {
-			// TRT generation-first can send SSE response headers before KV
-			// arrives. Headers are not proof that decode is making progress.
+		if st.routerCtx.ResetAfterHeaders() {
+			// The engine's decode leg can send SSE response headers before KV
+			// arrives, so headers are not proof that decode is making progress.
 			// We cannot replace a response already on the wire, but closing
 			// ext_proc fails/resets the upstream stream (failure_mode_allow
-			// must remain false). TRT cancels its promise on disconnect.
-			// Conservatively reset even if some tokens have already arrived:
-			// a terminal CTX failure must not leave an unbounded GEN waiter.
+			// must remain false), which the engine turns into a cancellation.
+			// Conservatively reset even if some tokens have already arrived: a
+			// terminal CTX failure must not leave an unbounded GEN waiter.
 			s.emitPrefillFailFastCounters(st, statusCode)
 			s.finishRequestCount(st)
-			return status.Errorf(codes.Aborted, "TRT prefill leg failed after decode headers (%s): %s",
+			return status.Errorf(codes.Aborted, "prefill leg failed after decode headers (%s): %s",
 				failure.Class, truncatePrefillMessage(failure.Message))
 		}
 		// The decode pod is already writing to the client, so the response is

@@ -41,14 +41,16 @@ func (fixedTRTServerInfo) Get(context.Context, *v1.Pod) (engine.TRTServerInfo, e
 	return engine.TRTServerInfo{ContextInfoEndpoint: "tcp://ctx:5555", ContextDPRank: 1}, nil
 }
 
-func trtAsyncExecutor(t *testing.T) *DefaultExecutor {
+func trtAsyncExecutor(t *testing.T) (*DefaultExecutor, engine.EngineHandler) {
 	t.Helper()
 	h, err := engine.NewTRTLLMHandler(engine.TRTGenerationFirst, fixedTRTServerInfo{})
 	require.NoError(t, err)
 	// The prefill deadline now comes from the request's resolved PD overrides;
-	// TestMain installs the 30s process default these subtests inherit.
+	// TestMain installs the 30s process default these subtests inherit. The
+	// handler is returned so each Execute call passes the same one the router
+	// would have resolved.
 	return NewDefaultExecutor(&http.Client{}, pd.NewPrefillRequestTracker(),
-		WithEngineHandler(h), WithTokenLoadTracker(pd.NewTokenLoadTrackerWithConfig(pd.TokenLoadConfig{TTL: 0}))).(*DefaultExecutor)
+		WithTokenLoadTracker(pd.NewTokenLoadTrackerWithConfig(pd.TokenLoadConfig{TTL: 0}))).(*DefaultExecutor), h
 }
 
 func TestTRTAsyncPrefillFailures(t *testing.T) {
@@ -79,7 +81,7 @@ func TestTRTAsyncPrefillFailures(t *testing.T) {
 				aborts.Add(1)
 			}))
 			defer decodeSrv.Close()
-			exec := trtAsyncExecutor(t)
+			exec, handler := trtAsyncExecutor(t)
 			ctx := failFastCtx("trt-failure", `{"messages":[{"role":"user","content":"hi"}],"stream":true}`, strings.TrimPrefix(decodeSrv.URL, "http://"))
 			defer ctx.Delete()
 			parent, cancel := context.WithCancel(context.Background())
@@ -96,7 +98,7 @@ func TestTRTAsyncPrefillFailures(t *testing.T) {
 			ctx.SetPDRequestID("not-a-trt-abort-id")
 			exec.tracker.AddPrefillRequest(ctx.RequestID, pod.Name)
 			exec.tokenLoad.AcquirePrefill(ctx.RequestID, pod.Name, 100)
-			require.NoError(t, exec.Execute(ctx, pod, pd.EngineTRTLLM, LogContext{}))
+			require.NoError(t, exec.Execute(ctx, pod, handler, LogContext{}))
 			if class == pd.PrefillFailureCanceled {
 				select {
 				case <-started:
@@ -146,12 +148,12 @@ func TestTRTAsyncFailureAfterContextReuse(t *testing.T) {
 	}))
 	defer srv.Close()
 	defer unblock()
-	exec := trtAsyncExecutor(t)
+	exec, handler := trtAsyncExecutor(t)
 	ctx := failFastCtx("old-trt-request", `{"prompt":"hi"}`, "127.0.0.1:1")
 	ctx.Engine = pd.EngineTRTLLM
 	pod := failFastPod(t, "ctx", strings.TrimPrefix(srv.URL, "http://"))
 	exec.tracker.AddPrefillRequest(ctx.RequestID, pod.Name)
-	require.NoError(t, exec.Execute(ctx, pod, pd.EngineTRTLLM, LogContext{}))
+	require.NoError(t, exec.Execute(ctx, pod, handler, LogContext{}))
 	select {
 	case <-started:
 	case <-time.After(5 * time.Second):

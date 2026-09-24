@@ -34,6 +34,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
@@ -167,27 +168,28 @@ func BenchmarkScoreDecodePods(b *testing.B) {
 func BenchmarkDoPrefillRequest(b *testing.B) {
 	suppressKlogForBenchmark(b)
 
-	for _, engine := range []string{VLLMEngine, TensorRTLLM} {
-		b.Run(engine, func(b *testing.B) {
-			server, port := newPDBenchmarkServer(b, engine)
+	for _, engineName := range []string{VLLMEngine, TensorRTLLM} {
+		b.Run(engineName, func(b *testing.B) {
+			server, port := newPDBenchmarkServer(b, engineName)
 			defer server.Close()
 
 			router := &pdRouter{
 				prefillRequestTracker: pd.NewPrefillRequestTracker(),
 				httpClient:            server.Client(),
 			}
-			prefillPod := benchmarkPDPods(engine, "prefill", 1, 1)[0]
+			prefillPod := benchmarkPDPods(engineName, "prefill", 1, 1)[0]
 			prefillPod.Labels[constants.ModelLabelPort] = strconv.Itoa(port)
 
-			ctx := benchmarkPrefillRoutingContext(engine, 0)
+			ctx := benchmarkPrefillRoutingContext(engineName, 0)
+			handler := engine.Resolve(engineName)
 
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				ctx.RequestID = fmt.Sprintf("bench-prefill-%s-%d", engine, i)
+				ctx.RequestID = fmt.Sprintf("bench-prefill-%s-%d", engineName, i)
 				ctx.RequestTime = time.Now()
 				router.prefillRequestTracker.AddPrefillRequest(ctx.RequestID, prefillPod.Name)
-				if err := router.doPrefillRequest(ctx, prefillPod, engine); err != nil {
+				if err := router.doPrefillRequest(ctx, prefillPod, handler); err != nil {
 					b.Fatalf("doPrefillRequest failed: %v", err)
 				}
 			}

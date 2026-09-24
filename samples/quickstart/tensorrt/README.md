@@ -20,8 +20,10 @@ place that can reach the pod network:
 curl --fail "http://${CTX_POD_IP}:8101/server_info"
 ```
 
-Generation-first requires TRT-LLM's Python KV-cache transceiver on both roles, which
-is what `tensor-rt-pd.yaml` sets:
+Generation-first requires TRT-LLM's Python KV-cache transceiver on both roles. The
+sample ships that line commented out, because context-first runs the default C++
+transceiver and does not need it. Uncomment it in **both** the `prefill` and
+`decode` role configs and re-apply the manifest before enabling the mode:
 
 ```yaml
 cache_transceiver_config:
@@ -45,12 +47,11 @@ For generation-first the response must include:
 }
 ```
 
-`ctx_info_endpoint` is a string (`tcp://host:port`) in the Python transceiver's
-response; a single-element array is accepted as an equivalent encoding, while an
-array with several endpoints is refused. `encoded_opaque_state` is also propagated
-when present. GEN must be able to reach
-the advertised coordination endpoint and the worker's KV-transfer transport.
-Do not substitute the HTTP port for the advertised coordination port.
+`ctx_info_endpoint` is a single string (`tcp://host:port`) in the Python
+transceiver's response. `encoded_opaque_state` is also propagated when present.
+GEN must be able to reach the advertised coordination endpoint and the worker's
+KV-transfer transport. Do not substitute the HTTP port for the advertised
+coordination port.
 
 `ctx_dp_rank` is attention data-parallel rank, not TP rank or Pod number. The
 single-instance example normally uses rank zero. For multiple workers the gateway
@@ -74,15 +75,15 @@ Use a gateway image built from a revision containing this feature. Adjust the
 Deployment name and namespace if your installation uses different names.
 An unrecognized schedule value is logged and the gateway stays on context-first.
 
-The gateway initializes a metadata cache, then loads selected CTX workers lazily
-before dispatch. Cache entries live for one minute; lookups have a three-second
-timeout. Observed Pod/container replacement or restart uses a new cache key.
-Invalid or unavailable metadata fails the request before either inference leg is
-sent. There is no silent fallback or automatic replay of a dispatched request.
-
 As with context-first, configure a **distinct** `AIBRIX_TRT_MACHINE_ID` in
 `[0, 1024)` for each gateway process sharing TRT workers. Do not set one identical
 machine ID on all replicas of a multi-replica gateway Deployment.
+
+The gateway loads the selected CTX worker's `/server_info` before dispatch, so
+invalid or unavailable metadata fails the request before either inference leg is
+sent, with no silent fallback or automatic replay. See
+`docs/source/features/pd-disaggregation.rst` for the lookup cache and the full
+prerequisite list.
 
 Keep Envoy's `failure_mode_allow=false` and confirm upstream disconnects reach the
 engine. A terminal CTX failure closes the request; after SSE headers it resets the
@@ -122,8 +123,12 @@ Repeat for `/v1/completions` with a string `prompt`. In a disposable test deploy
 3. Cancel a long request and verify both workers release request/KV resources.
 4. Interrupt CTX while GEN waits for KV. Verify a prompt error or stream reset,
    including when GEN has already sent SSE headers, and that GEN releases resources.
-5. Restart a CTX container and scale workers; verify fresh metadata is used.
-6. Compare TTFT, end-to-end latency, throughput and KV memory against
+5. Confirm on `1.3.0rc8` that a `max_tokens=1, stream=false` context request is
+   released when prefill finishes, not when generation ends, and size
+   `AIBRIX_PREFILL_REQUEST_TIMEOUT` for that. A context response held open until
+   generation completes would make that timeout cancel a live generation leg.
+6. Restart a CTX container and scale workers; verify fresh metadata is used.
+7. Compare TTFT, end-to-end latency, throughput and KV memory against
    context-first with identical prompts and concurrency. Parallel dispatch is not
    a guarantee of lower latency for every workload.
 

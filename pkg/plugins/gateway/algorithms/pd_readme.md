@@ -42,7 +42,7 @@ Route(ctx, readyPodList)
      │
      ├─► [prefillPod != nil]
      │        AddPrefillRequest()
-     │        doPrefillRequest(ctx, prefillPod, engine)
+     │        doPrefillRequest(ctx, prefillPod, handler)
      │              ├─ SGLang   → async goroutine (bootstrap handshake; Route does not wait for completion)
      │              ├─ vLLM     → sync, extract kv_transfer_params from response
      │              └─ TRT-LLM  → context_first: sync, merge response params
@@ -392,11 +392,9 @@ unknown value is logged and leaves the router on `context_first`. It does not
 affect other engines or combined pods. No automatic fallback or retry occurs after
 either leg has been dispatched.
 
-Worker prerequisite: the CTX and GEN workers must run TRT-LLM's **Python** KV-cache
-transceiver — `cache_transceiver_config: {backend: DEFAULT|NIXL,
-transceiver_runtime: PYTHON}`. Only that transceiver implements the
-generation-first metadata: the C++ one answers `/server_info` with an empty
-`disaggregated_params`, and the router then fails every request before dispatch.
+Prerequisites (TRT-LLM `1.3.0rc8`, the Python KV-cache transceiver on both roles,
+matching model/tokenizer/chat-template) are listed in
+`docs/source/features/pd-disaggregation.rst`.
 
 ```
 Gateway selects CTX + GEN
@@ -419,17 +417,13 @@ back into the already-dispatched GEN request. Both endpoints must therefore use
 matching model/tokenizer/chat-template configuration, since GEN cannot reuse
 `prompt_token_ids` from the CTX HTTP response in this mode.
 
-**Worker discovery and cache:** each router owns a cache created at initialization.
-It loads a selected CTX worker lazily before either inference leg is dispatched,
-so newly discovered/autoscaled pods work without restarting the gateway. Concurrent
-misses for the same incarnation share one lookup. Lookup timeout is 3 seconds,
-response size is limited to 1 MiB, and redirects are rejected. Entries expire after
-1 minute; at most 1024 are retained. Pod UID, IP/port and container IDs/restart counts
-identify an incarnation, preventing reuse across observed restarts or replacements.
-Expired entries are pruned on subsequent loads. A restart not yet reflected in the
-pod snapshot can still race a request; this fails normally rather than replaying
-inference. A missing/invalid `/server_info` fails routing before dispatch; failed
-lookups are not cached.
+**Worker discovery:** each router loads the selected CTX worker's `/server_info`
+lazily before either leg is dispatched, so newly discovered or autoscaled pods work
+without a gateway restart. Concurrent misses for one incarnation are coalesced;
+lookups have a 3-second timeout and a 1-minute TTL, and responses are capped at
+1 MiB. Pod UID, address and restart count identify an incarnation. A missing or
+invalid `/server_info` fails routing before dispatch, and failed lookups are not
+cached.
 
 The expected HTTP response follows TRT-LLM's `1.3.0rc8` OpenAI server schema:
 
@@ -437,10 +431,8 @@ The expected HTTP response follows TRT-LLM's `1.3.0rc8` OpenAI server schema:
 {"disaggregated_params":{"ctx_info_endpoint":"tcp://<CTX-address>:<port>","ctx_dp_rank":0}}
 ```
 
-`ctx_info_endpoint` is a string in the Python transceiver's response. A
-single-element array is accepted as an equivalent encoding; an array holding more
-than one endpoint is refused, because the gateway cannot tell which of them belongs
-to the rank it selected.
+`ctx_info_endpoint` must be a single string, which is what the Python transceiver
+returns; any other JSON shape fails the lookup.
 
 `encoded_opaque_state` is also propagated when present. Only these fields are copied
 from `/server_info`: other keys are ignored so worker metadata can never overwrite
@@ -464,10 +456,8 @@ stream rather than being ignored. This can also truncate an already-generating
 response; it never attempts to rewrite headers already sent to the client.
 
 Start validation with text-only 1P1D using the sample under
-`samples/quickstart/tensorrt/`. Unit tests use mock workers; actual GPU KV transfer,
-DP affinity, stream-reset propagation and latency gains require engine/Envoy
-integration testing. Set the environment variable back to `context_first` and
-restart the gateway to roll back.
+`samples/quickstart/tensorrt/`; its README carries the smoke test and the rollback
+command.
 
 ---
 
@@ -499,10 +489,14 @@ Failure classes, as reported in the metrics and in the client error message:
 | `canceled` | The client or the gateway canceled the prefill request | yes |
 | `transport` | Connection refused, reset, DNS failure, ... | yes |
 | `http_status` | The prefill engine answered a non-2xx status | yes |
-| `bad_response` | The prefill engine answered 2xx with a body the gateway could not parse | no |
+| `bad_response` | The prefill engine answered 2xx with a body the gateway could not parse | engine-dependent |
 
-`bad_response` is not terminal: the prefill leg did run, so the decode leg is
-left alone and the client keeps whatever the decode leg produces.
+`bad_response` is terminal only for engines whose KV transfer is out of band
+(TRT generation-first): there the HTTP body is not the KV handshake, so an
+unparseable 2xx leaves the gateway unable to tell whether context processing
+succeeded. For SGLang, whose handshake completes in the body, it is not terminal:
+the prefill leg did run, so the decode leg is left alone and the client keeps
+whatever the decode leg produces.
 
 The client status code is the prefill engine's own status for `http_status`, and
 `503` for every other terminal class, since those have no upstream status. The
@@ -653,7 +647,7 @@ When a combined pod is selected, `prefillPod` is `nil` (no prefill HTTP call) an
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AIBRIX_TRT_MACHINE_ID` | `0` | 10-bit machine ID used in Snowflake disagg request ID generation (range: `[0, 1024)`); distinct per gateway process sharing TRT workers |
-| `AIBRIX_TRT_SCHEDULE_STYLE` | `context_first` | TRT-only dispatch mode: `context_first` (sequential) or `generation_first` (parallel). Read at router initialization; unknown values are errors |
+| `AIBRIX_TRT_SCHEDULE_STYLE` | `context_first` | TRT-only dispatch mode: `context_first` (sequential) or `generation_first` (parallel). Read at router initialization; unknown values are logged and fall back to `context_first` |
 
 ### Inherited from Prefix Cache Router
 

@@ -62,7 +62,6 @@ type DefaultExecutor struct {
 	httpClient *http.Client
 	tracker    *pd.PrefillRequestTracker
 	tokenLoad  *pd.TokenLoadTracker // optional; nil when no policy charges it
-	handler    engine.EngineHandler // optional immutable router-scoped override
 }
 
 // ExecutorOption customizes a DefaultExecutor.
@@ -74,13 +73,6 @@ type ExecutorOption func(*DefaultExecutor)
 // HTTP call returns, on both the sync and the async path.
 func WithTokenLoadTracker(tokenLoad *pd.TokenLoadTracker) ExecutorOption {
 	return func(e *DefaultExecutor) { e.tokenLoad = tokenLoad }
-}
-
-// WithEngineHandler overrides one engine for this executor without changing the
-// process-wide registry. The router must use the same handler for validation and
-// sync/async success accounting.
-func WithEngineHandler(handler engine.EngineHandler) ExecutorOption {
-	return func(e *DefaultExecutor) { e.handler = handler }
 }
 
 // effectiveRequestTimeout returns the deadline of this request's prefill call:
@@ -113,12 +105,11 @@ func (e *DefaultExecutor) prefillDone(requestID string) {
 	}
 }
 
-// Execute implements PrefillExecutor.
-func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *v1.Pod, llmEngine string, logCtx LogContext) error {
-	handler := engine.Resolve(llmEngine)
-	if e.handler != nil && e.handler.Name() == llmEngine {
-		handler = e.handler
-	}
+// Execute implements PrefillExecutor. handler is the one the router already
+// resolved for this request, so validation and dispatch cannot drift onto
+// different handlers for the same engine.
+func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *v1.Pod, handler engine.EngineHandler, logCtx LogContext) error {
+	llmEngine := handler.Name()
 	payload, err := PreparePayload(routingCtx, prefillPod, llmEngine, handler)
 	if err != nil {
 		return fmt.Errorf("failed to prepare prefill payload for request %s: %w", routingCtx.RequestID, err)
@@ -157,8 +148,11 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 	prefillTimeout := e.effectiveRequestTimeout(routingCtx)
 
 	if handler.IsAsync() {
-		// SGLang and TRT generation-first coordinate KV transfer out-of-band;
-		// return without waiting so Envoy can dispatch the decode leg.
+		// The engine coordinates KV transfer out-of-band; return without waiting
+		// so Envoy can dispatch the decode leg. How much of the shared contract
+		// this mode opts into (client cancellation, a native decode abort, reset
+		// after headers) comes from the handler, not from its name.
+		policy := engine.AsyncDispatchPolicyFor(handler)
 		requestID := routingCtx.RequestID
 		requestTime := routingCtx.RequestTime
 		prefillStartTime := routingCtx.PrefillStartTime
@@ -166,10 +160,9 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 		prefillPodIP := prefillPod.Status.PodIP
 		model := routingCtx.Model
 		asyncContext := context.WithoutCancel(routingCtx.Context)
-		if llmEngine == pd.EngineTRTLLM {
-			// TRT-LLM aborts an inference promise on HTTP disconnect. Keep the
-			// request's cancellation/deadline, but never the pooled context
-			// object itself. Preserve SGLang's existing detached behavior.
+		if policy.KeepClientCancel {
+			// Keep the request's cancellation/deadline, but never the pooled
+			// context object itself: the goroutine outlives the stream.
 			asyncContext = routingCtx.Context
 		}
 		asyncCtx := &types.RoutingContext{
@@ -196,14 +189,14 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 				// this error: record it on the leg (and abort the decode leg
 				// that will never receive its KV) before it is only logged.
 				var failure *types.PrefillFailure
-				if llmEngine == pd.EngineTRTLLM {
-					// /abort_request and rid are SGLang-specific. Notify the
-					// gateway to fail/reset the Envoy stream instead; TRT-LLM
-					// cancels the generation promise on upstream disconnect.
+				if policy.AbortDecode {
+					// SGLang owns a native abort endpoint (/abort_request with the
+					// shared rid); everything else relies on the gateway failing
+					// the Envoy stream, which TRT-LLM turns into a promise cancel.
+					failure = pd.OnPrefillLegFailed(e.httpClient, leg, requestID, model, err)
+				} else {
 					failure = pd.RecordPrefillFailure(leg, err)
 					leg.FinishDecodeAbort()
-				} else {
-					failure = pd.OnPrefillLegFailed(e.httpClient, leg, requestID, model, err)
 				}
 				klog.ErrorS(err, "prefill_request_failed",
 					"request_id", requestID,
@@ -329,9 +322,10 @@ func (e *DefaultExecutor) executeHTTP(url string, routingCtx *types.RoutingConte
 	}
 
 	if err := pd.ValidateJSONObject(body, "prefill response"); err != nil {
-		// A 200 with an unparseable body still completed the KV transfer, so
-		// this is kept distinct from a transport failure: the decode leg must
-		// not be aborted for it.
+		// A 200 with an unparseable body is its own class: for engines whose KV
+		// handshake is the HTTP body (SGLang) the transfer completed, while for
+		// an out-of-band handshake (TRT-LLM generation-first) it is terminal and
+		// resets the stream. See pd.PrefillFailureIsTerminalFor.
 		return nil, &pd.PrefillBodyError{Err: err}
 	}
 

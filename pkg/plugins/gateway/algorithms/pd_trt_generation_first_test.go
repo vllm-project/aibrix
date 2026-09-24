@@ -38,7 +38,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
-	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/prefill"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
@@ -59,9 +58,9 @@ func newTRTGenerationFirstRouter(t *testing.T, client *http.Client) *pdRouter {
 	r, _ := newTokenLoadTestRouter(t, client)
 	h, err := engine.NewTRTLLMHandler(engine.TRTGenerationFirst, engine.NewTRTServerInfoCache(client))
 	require.NoError(t, err)
+	// Route resolves this handler and passes it to the executor, so the router
+	// field is the only place the mode lives.
 	r.trtHandler = h
-	r.prefillExecutor = prefill.NewDefaultExecutor(client, r.prefillRequestTracker,
-		prefill.WithTokenLoadTracker(r.tokenLoadTracker), prefill.WithEngineHandler(h))
 	return r
 }
 
@@ -206,4 +205,6 @@ func TestPDRouterFallsBackOnInvalidTRTScheduleStyle(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, router.trtHandler)
 	assert.False(t, router.trtHandler.IsAsync(), "a typo must leave the default context-first dispatch")
+	policy := engine.AsyncDispatchPolicyFor(router.trtHandler)
+	assert.Equal(t, engine.DefaultAsyncDispatchPolicy, policy, "context-first must not opt into generation-first dispatch behavior")
 }

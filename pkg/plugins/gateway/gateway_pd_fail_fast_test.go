@@ -355,7 +355,8 @@ func TestTRTPrefillFailureResetsStream(t *testing.T) {
 			srv := newBlockingProcessServer(ctx)
 			st := newFailFastState(ctx)
 			defer st.routerCtx.Delete()
-			st.routerCtx.Engine = pd.EngineTRTLLM
+			// The router sets this from the handler's async dispatch policy.
+			st.routerCtx.SetResetAfterHeaders(true)
 			st.stream = true
 			if afterHeaders {
 				st.routerCtx.MarkDecodeResponded()
@@ -381,18 +382,21 @@ func TestTRTPrefillFailureResetsStream(t *testing.T) {
 	}
 }
 
-func TestTRTBadPrefillResponseDoesNotResetStream(t *testing.T) {
+// TRT generation-first's KV transfer is out of band, so a 200 the gateway
+// cannot parse does not prove the context succeeded and must reset generation.
+func TestTRTBadPrefillResponseResetsStream(t *testing.T) {
 	s, _ := newFailFastServer(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	st := newFailFastState(ctx)
 	defer st.routerCtx.Delete()
-	st.routerCtx.Engine = pd.EngineTRTLLM
+	st.routerCtx.SetResetAfterHeaders(true)
 	st.routerCtx.MarkDecodeResponded()
 	st.routerCtx.SetPrefillFailure(&types.PrefillFailure{Class: pd.PrefillFailureBadResponse})
 	srv := newBlockingProcessServer(ctx)
-	require.NoError(t, s.handlePrefillFailFast(srv, st))
-	assert.Empty(t, srv.sentResponses())
+	err := s.handlePrefillFailFast(srv, st)
+	assert.Equal(t, codes.Aborted, status.Code(err))
+	assert.Empty(t, srv.sentResponses(), "headers already sent to the client cannot be replaced")
 }
 
 // TestRecvGoroutineDoesNotLeak checks that the Recv goroutine the loop starts -
