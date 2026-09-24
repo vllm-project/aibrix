@@ -796,14 +796,20 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    that engines free by giving back mapped KV sends no such signal, so the
    claim finds it on its next try, a minute later at most.
 
+   Two limits follow from waiting this way. A claim that has waited long
+   tries less often than one that has just arrived, so room that appears
+   without a signal usually goes to the newer claim. And a wake has every
+   waiting claim in the namespace read every candidate runtime once.
+
 Claim remains ``Pending`` with ``TooLargeForAnyCard``
    Every candidate card was measured, and each is smaller than
    ``perGPU.maximumFootprint`` plus ``perGPU.kvFloor`` with nothing else on
    it, so no card in the pool can ever hold the model. The message says what
    the model needs and what the largest card holds. Declare less if the
    figures overstate the model, or give it a pool with larger cards. The claim
-   keeps backing off, and a pod joining the pool or a smaller declaration
-   wakes it at once. While any card cannot be measured, the claim reads
+   keeps backing off, and a pod joining the pool or a change to its own spec
+   wakes it at once. Room freed on a card does not, since no card is large
+   enough. While any card cannot be measured, the claim reads
    ``NoMatchingPods`` instead, since that card might hold it.
 
 Claim remains ``Pending`` with ``InvalidPerGPU``

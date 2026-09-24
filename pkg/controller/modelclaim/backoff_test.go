@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -411,4 +412,74 @@ func TestReconcileDoesNotCallAClaimTooLargeWhenAnEmptyCardCouldHoldIt(t *testing
 
 	assert.Equal(t, "NoMatchingPods", scheduled(t, r, pm.Name).Reason,
 		"the card holds the model once its neighbour goes")
+}
+
+// The account is built from the claims as the API server has them, and the
+// room a claim was refused on is remembered the same way. A cache a moment
+// behind would otherwise miss an instance recorded just before, and its
+// leaving would not wake the claim.
+func TestReconcileRemembersTheRoomAClaimWasRefusedOnAsTheAPIServerHasIt(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].KVLimitBytes = 600
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
+	// The cache has not seen the neighbour yet; the API server has.
+	r, runtime := newReconciler(t, pm, pod)
+	r.APIReader = fake.NewClientBuilder().WithScheme(r.Scheme).WithObjects(pm.DeepCopy(), pod.DeepCopy(), neighbour).
+		WithStatusSubresource(&modelv1alpha1.ModelClaim{}).Build()
+	now := time.Unix(1_700_000_000, 0)
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	require.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name))
+
+	// The neighbour leaves. Seen through the cache, the card carries nothing,
+	// which is less than it carried when the claim was refused.
+	key := types.NamespacedName{Namespace: pm.Namespace, Name: pm.Name}
+	due, _ := r.Backoff.due(key, pm.Generation, roomSignatureOf([]corev1.Pod{*pod}, &modelv1alpha1.ModelClaimList{}))
+	assert.True(t, due, "the claim is woken by the neighbour leaving")
+}
+
+// A claim no card could ever hold is helped only by a pod joining the pool, or
+// by its own spec changing. Room freed on a card too small for it changes
+// nothing, so it does not wake the claim.
+func TestPlacementBackoffWakesATooLargeClaimOnlyForANewPod(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	backoff := newPlacementBackoff(func() time.Time { return now })
+	claim := types.NamespacedName{Namespace: testNamespace, Name: "huge"}
+	before := roomSignature{"warm-1/u1": {instances: 2, promisedBytes: 800}}
+	backoff.refusedAsTooLarge(claim, 1, before)
+
+	due, _ := backoff.due(claim, 1, roomSignature{"warm-1/u1": {instances: 1, promisedBytes: 400}})
+	assert.False(t, due, "a neighbour leaving does not make a card large enough")
+	due, _ = backoff.due(claim, 1, roomSignature{"warm-1/u1": before["warm-1/u1"], "warm-2/u2": {}})
+	assert.True(t, due, "a pod joining may bring a larger card")
+}
+
+// A claim's wait is forgotten once nothing is left for it to wait for: when it
+// has all its instances, or when it is gone.
+func TestReconcileForgetsTheWaitOfAClaimThatNoLongerWaits(t *testing.T) {
+	r, _, pm, _ := aClaimWaitingForRoom(t)
+	key := types.NamespacedName{Namespace: pm.Namespace, Name: pm.Name}
+	require.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name))
+	require.Contains(t, r.Backoff.attempts, key)
+
+	// Its instance was recorded some other way.
+	placed := getModel(t, r, pm.Name)
+	placed.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: "warm-1", Phase: modelv1alpha1.ModelClaimActivating}}
+	require.NoError(t, r.Status().Update(context.Background(), placed))
+	reconcileFor(t, r, pm.Name)
+	assert.NotContains(t, r.Backoff.attempts, key)
+
+	// Refused again, and then deleted by someone else.
+	r2, _, pm2, _ := aClaimWaitingForRoom(t)
+	key2 := types.NamespacedName{Namespace: pm2.Namespace, Name: pm2.Name}
+	require.Equal(t, DefaultRequeueDuration, reconcileFor(t, r2, pm2.Name))
+	gone := getModel(t, r2, pm2.Name)
+	gone.Finalizers = nil
+	require.NoError(t, r2.Update(context.Background(), gone))
+	require.NoError(t, r2.Delete(context.Background(), gone))
+	reconcileFor(t, r2, pm2.Name)
+	assert.NotContains(t, r2.Backoff.attempts, key2)
 }

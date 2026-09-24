@@ -158,6 +158,11 @@ func Add(mgr manager.Manager, _ config.RuntimeConfig) error {
 func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	pm := &modelv1alpha1.ModelClaim{}
 	if err := r.Get(ctx, req.NamespacedName, pm); err != nil {
+		if apierrors.IsNotFound(err) {
+			// Deleted without this controller seeing it go, as when someone
+			// else removed its finalizer. Nothing is left to wait for.
+			r.backoff().placed(req.NamespacedName)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
@@ -256,6 +261,12 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	case desiredReplicas(pm) < int32(len(pm.Status.Instances)):
 		r.scaleDown(ctx, pm, desiredReplicas(pm), readings)
+		r.backoff().placed(req.NamespacedName)
+	default:
+		// Nothing is left to place, so there is no wait to keep. An instance
+		// recorded some other way, or a placement whose last step failed,
+		// would otherwise leave the claim's refusals behind for good.
+		r.backoff().placed(req.NamespacedName)
 	}
 
 	// Reconcile instance routability against live engine readiness (promote
@@ -548,7 +559,19 @@ func (r *ModelClaimReconciler) ensureActivated(
 			}
 			// It still waits with backoff: a larger pod may join, or the
 			// claim's declaration may shrink, and either wakes it.
-			return backoff.refused(claim, pm.Generation, room), nil
+			// The account was built from the claims as the API server has
+			// them, so the room the claim was refused on is remembered as that
+			// listing describes it. A cache a moment behind could miss an
+			// instance recorded just before, whose leaving would then wake
+			// nobody.
+			refusedOn := room
+			if listErr == nil {
+				refusedOn = roomSignatureOf(candidates, claims)
+			}
+			if reason == "TooLargeForAnyCard" {
+				return backoff.refusedAsTooLarge(claim, pm.Generation, refusedOn), nil
+			}
+			return backoff.refused(claim, pm.Generation, refusedOn), nil
 		}
 
 		// Divide the card between the engines on it and this one, and hold
