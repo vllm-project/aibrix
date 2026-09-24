@@ -92,6 +92,14 @@ type PDLegState struct {
 	// not abort it: the KV transfer already landed and the pod is generating.
 	decodeResponded atomic.Bool
 
+	// resetAfterHeaders marks engines whose decode leg can send response headers
+	// before the KV cache is available (TRT-LLM generation-first). For those, a
+	// terminal prefill failure must reset the stream even after the decode pod
+	// has started responding, because headers are not proof of progress. It is
+	// set by the PD router from the handler's async dispatch policy, so the
+	// gateway never has to infer the mode from the engine name.
+	resetAfterHeaders atomic.Bool
+
 	// prefillFailure records the first terminal failure of the prefill leg.
 	// The async prefill leg is fire-and-forget, so this is the only channel
 	// through which the request-processing goroutine can learn that the decode
@@ -278,6 +286,24 @@ func (l *PDLegState) DecodeResponded() bool {
 	return l.decodeResponded.Load()
 }
 
+// SetResetAfterHeaders records whether a terminal prefill failure must reset the
+// decode stream even once the decode pod has started responding.
+func (l *PDLegState) SetResetAfterHeaders(reset bool) {
+	if l == nil {
+		return
+	}
+	l.resetAfterHeaders.Store(reset)
+}
+
+// ResetAfterHeaders reports whether a terminal prefill failure observed after
+// the decode pod started responding must reset the stream.
+func (l *PDLegState) ResetAfterHeaders() bool {
+	if l == nil {
+		return false
+	}
+	return l.resetAfterHeaders.Load()
+}
+
 // SetPrefillFailure records the terminal failure of the prefill leg and reports
 // whether this call was the one that recorded it. Only the first failure is
 // kept, and the winner of the CAS - and only the winner - closes PrefillFailed(),
@@ -396,6 +422,25 @@ func (r *RoutingContext) MarkDecodeResponded() {
 // DecodeResponded reports whether the decode pod has started responding.
 func (r *RoutingContext) DecodeResponded() bool {
 	return r.PDLeg().DecodeResponded()
+}
+
+// SetResetAfterHeaders records whether a terminal prefill failure must reset the
+// decode stream even after the decode pod started responding (see
+// PDLegState.SetResetAfterHeaders).
+func (r *RoutingContext) SetResetAfterHeaders(reset bool) {
+	if r == nil {
+		return
+	}
+	r.PDLeg().SetResetAfterHeaders(reset)
+}
+
+// ResetAfterHeaders reports whether an after-response prefill failure must reset
+// the decode stream for this request's engine.
+func (r *RoutingContext) ResetAfterHeaders() bool {
+	if r == nil {
+		return false
+	}
+	return r.PDLeg().ResetAfterHeaders()
 }
 
 // SetPrefillFailure records the terminal failure of the prefill leg on the

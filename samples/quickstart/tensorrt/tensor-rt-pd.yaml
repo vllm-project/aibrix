@@ -55,12 +55,17 @@ spec:
                         event_buffer_max_size: 1024
                       cache_transceiver_config:
                         backend: DEFAULT
-                        # Required for generation-first PD routing: only the Python
-                        # transceiver reports ctx_info_endpoint/ctx_dp_rank from
-                        # /server_info, and the C++ transceiver would answer with an
-                        # empty disaggregated_params. The Python runtime supports the
-                        # DEFAULT and NIXL backends only.
-                        transceiver_runtime: PYTHON
+                        # Generation-first PD routing additionally requires the Python
+                        # transceiver on both roles. It is not needed by context-first,
+                        # so it stays commented out here and is uncommented as part
+                        # of the generation-first setup in README.md:
+                        #
+                        #   transceiver_runtime: PYTHON
+                        #
+                        # Only the Python transceiver reports ctx_info_endpoint and
+                        # ctx_dp_rank from /server_info; the default C++ transceiver
+                        # answers with an empty disaggregated_params. The Python
+                        # runtime supports the DEFAULT and NIXL backends only.
                       enable_iter_perf_stats: true
                       return_perf_metrics: true
                       CFGEOF
@@ -137,9 +142,10 @@ spec:
                         event_buffer_max_size: 1024
                       cache_transceiver_config:
                         backend: DEFAULT
-                        # Generation-first needs the Python transceiver on both
-                        # sides of the handshake; see the note in the prefill role.
-                        transceiver_runtime: PYTHON
+                        # See the prefill role: uncomment this together with the
+                        # context worker's transceiver_runtime when enabling the
+                        # generation-first mode.
+                        #   transceiver_runtime: PYTHON
                       enable_iter_perf_stats: true
                       return_perf_metrics: true
                       CFGEOF

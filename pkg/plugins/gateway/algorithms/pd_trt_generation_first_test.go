@@ -38,7 +38,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
-	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/prefill"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
@@ -59,9 +58,9 @@ func newTRTGenerationFirstRouter(t *testing.T, client *http.Client) *pdRouter {
 	r, _ := newTokenLoadTestRouter(t, client)
 	h, err := engine.NewTRTLLMHandler(engine.TRTGenerationFirst, engine.NewTRTServerInfoCache(client))
 	require.NoError(t, err)
+	// Route resolves this handler and passes it to the executor, so the router
+	// field is the only place the mode lives.
 	r.trtHandler = h
-	r.prefillExecutor = prefill.NewDefaultExecutor(client, r.prefillRequestTracker,
-		prefill.WithTokenLoadTracker(r.tokenLoadTracker), prefill.WithEngineHandler(h))
 	return r
 }
 
@@ -121,9 +120,9 @@ func TestTRTGenerationFirstRouteOverlapsPrefillAndDecode(t *testing.T) {
 				addr, err := r.Route(ctx, &utils.PodArray{Pods: []*v1.Pod{p, d}})
 				require.NoError(t, err, "Route must not wait for the blocked prefill response")
 				assert.Equal(t, strings.TrimPrefix(dSrv.URL, "http://"), addr)
-				assert.EqualValues(t, 1, r.prefillRequestTracker.GetPrefillRequestCountsForPod(p.Name))
+				assert.EqualValues(t, 1, r.prefillRequestTracker.GetPrefillRequestCountsForPod(utils.GeneratePodKey(p.Namespace, p.Name)))
 				assert.Equal(t, 0.0, testutil.ToFloat64(counter.WithLabelValues("", ctx.Model, pdRoutePrefillRequestSuccess, "200")))
-				active, _ := r.tokenLoadTracker.GetLoad(p.Name)
+				active, _ := r.tokenLoadTracker.GetLoad(utils.GeneratePodKey(p.Namespace, p.Name))
 				assert.Greater(t, active, 0.0)
 				select {
 				case b := <-prefillBody:
@@ -153,10 +152,12 @@ func TestTRTGenerationFirstRouteOverlapsPrefillAndDecode(t *testing.T) {
 				assert.Equal(t, "37", gjson.GetBytes(b, "max_tokens").Raw)
 				assert.Equal(t, stream, gjson.GetBytes(b, "stream").Bool())
 				unblock()
-				require.Eventually(t, func() bool { return r.prefillRequestTracker.GetPrefillRequestCountsForPod(p.Name) == 0 }, 5*time.Second, time.Millisecond)
+				require.Eventually(t, func() bool {
+					return r.prefillRequestTracker.GetPrefillRequestCountsForPod(utils.GeneratePodKey(p.Namespace, p.Name)) == 0
+				}, 5*time.Second, time.Millisecond)
 				assert.Equal(t, forwarded, ctx.ReqBody, "late prefill response must not overwrite the decode request")
 				assert.Equal(t, 1.0, testutil.ToFloat64(counter.WithLabelValues("", ctx.Model, pdRoutePrefillRequestSuccess, "200")))
-				active, _ = r.tokenLoadTracker.GetLoad(p.Name)
+				active, _ = r.tokenLoadTracker.GetLoad(utils.GeneratePodKey(p.Namespace, p.Name))
 				assert.Zero(t, active)
 				assert.EqualValues(t, 1, infoCalls.Load())
 				// The router dispatched exactly one request: the context leg. The
@@ -187,9 +188,9 @@ func TestTRTGenerationFirstMissingMetadataFailsBeforeDispatch(t *testing.T) {
 	require.ErrorContains(t, err, "ctx_dp_rank")
 	assert.Zero(t, posts.Load())
 	assert.Equal(t, original, string(ctx.ReqBody))
-	assert.Zero(t, r.prefillRequestTracker.GetPrefillRequestCountsForPod(p.Name))
+	assert.Zero(t, r.prefillRequestTracker.GetPrefillRequestCountsForPod(utils.GeneratePodKey(p.Namespace, p.Name)))
 	assert.Zero(t, r.pendingDecodeTracker.GetPendingDecodeCount(d.Name))
-	active, kv := r.tokenLoadTracker.GetLoad(p.Name)
+	active, kv := r.tokenLoadTracker.GetLoad(utils.GeneratePodKey(p.Namespace, p.Name))
 	assert.Zero(t, active)
 	assert.Zero(t, kv)
 }
@@ -206,4 +207,6 @@ func TestPDRouterFallsBackOnInvalidTRTScheduleStyle(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, router.trtHandler)
 	assert.False(t, router.trtHandler.IsAsync(), "a typo must leave the default context-first dispatch")
+	policy := engine.AsyncDispatchPolicyFor(router.trtHandler)
+	assert.Equal(t, engine.DefaultAsyncDispatchPolicy, policy, "context-first must not opt into generation-first dispatch behavior")
 }

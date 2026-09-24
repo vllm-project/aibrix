@@ -32,6 +32,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -41,14 +42,16 @@ func (fixedTRTServerInfo) Get(context.Context, *v1.Pod) (engine.TRTServerInfo, e
 	return engine.TRTServerInfo{ContextInfoEndpoint: "tcp://ctx:5555", ContextDPRank: 1}, nil
 }
 
-func trtAsyncExecutor(t *testing.T) *DefaultExecutor {
+func trtAsyncExecutor(t *testing.T) (*DefaultExecutor, engine.EngineHandler) {
 	t.Helper()
 	h, err := engine.NewTRTLLMHandler(engine.TRTGenerationFirst, fixedTRTServerInfo{})
 	require.NoError(t, err)
 	// The prefill deadline now comes from the request's resolved PD overrides;
-	// TestMain installs the 30s process default these subtests inherit.
+	// TestMain installs the 30s process default these subtests inherit. The
+	// handler is returned so each Execute call passes the same one the router
+	// would have resolved.
 	return NewDefaultExecutor(&http.Client{}, pd.NewPrefillRequestTracker(),
-		WithEngineHandler(h), WithTokenLoadTracker(pd.NewTokenLoadTrackerWithConfig(pd.TokenLoadConfig{TTL: 0}))).(*DefaultExecutor)
+		WithTokenLoadTracker(pd.NewTokenLoadTrackerWithConfig(pd.TokenLoadConfig{TTL: 0}))).(*DefaultExecutor), h
 }
 
 func TestTRTAsyncPrefillFailures(t *testing.T) {
@@ -79,7 +82,7 @@ func TestTRTAsyncPrefillFailures(t *testing.T) {
 				aborts.Add(1)
 			}))
 			defer decodeSrv.Close()
-			exec := trtAsyncExecutor(t)
+			exec, handler := trtAsyncExecutor(t)
 			ctx := failFastCtx("trt-failure", `{"messages":[{"role":"user","content":"hi"}],"stream":true}`, strings.TrimPrefix(decodeSrv.URL, "http://"))
 			defer ctx.Delete()
 			parent, cancel := context.WithCancel(context.Background())
@@ -94,9 +97,10 @@ func TestTRTAsyncPrefillFailures(t *testing.T) {
 			}
 			// Even an unrelated rid must never trigger SGLang's abort endpoint.
 			ctx.SetPDRequestID("not-a-trt-abort-id")
-			exec.tracker.AddPrefillRequest(ctx.RequestID, pod.Name)
-			exec.tokenLoad.AcquirePrefill(ctx.RequestID, pod.Name, 100)
-			require.NoError(t, exec.Execute(ctx, pod, pd.EngineTRTLLM, LogContext{}))
+			podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+			exec.tracker.AddPrefillRequest(ctx.RequestID, podKey)
+			exec.tokenLoad.AcquirePrefill(ctx.RequestID, podKey, 100)
+			require.NoError(t, exec.Execute(ctx, pod, handler, LogContext{}))
 			if class == pd.PrefillFailureCanceled {
 				select {
 				case <-started:
@@ -116,9 +120,9 @@ func TestTRTAsyncPrefillFailures(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("failure handling did not finish")
 			}
-			require.Eventually(t, func() bool { return exec.tracker.GetPrefillRequestCountsForPod(pod.Name) == 0 }, 5*time.Second, time.Millisecond)
+			require.Eventually(t, func() bool { return exec.tracker.GetPrefillRequestCountsForPod(podKey) == 0 }, 5*time.Second, time.Millisecond)
 			assert.Zero(t, aborts.Load())
-			active, _ := exec.tokenLoad.GetLoad(pod.Name)
+			active, _ := exec.tokenLoad.GetLoad(podKey)
 			assert.Zero(t, active)
 			if class == pd.PrefillFailureCanceled || class == pd.PrefillFailureTimeout {
 				select {
@@ -146,12 +150,13 @@ func TestTRTAsyncFailureAfterContextReuse(t *testing.T) {
 	}))
 	defer srv.Close()
 	defer unblock()
-	exec := trtAsyncExecutor(t)
+	exec, handler := trtAsyncExecutor(t)
 	ctx := failFastCtx("old-trt-request", `{"prompt":"hi"}`, "127.0.0.1:1")
 	ctx.Engine = pd.EngineTRTLLM
 	pod := failFastPod(t, "ctx", strings.TrimPrefix(srv.URL, "http://"))
-	exec.tracker.AddPrefillRequest(ctx.RequestID, pod.Name)
-	require.NoError(t, exec.Execute(ctx, pod, pd.EngineTRTLLM, LogContext{}))
+	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+	exec.tracker.AddPrefillRequest(ctx.RequestID, podKey)
+	require.NoError(t, exec.Execute(ctx, pod, handler, LogContext{}))
 	select {
 	case <-started:
 	case <-time.After(5 * time.Second):
@@ -167,7 +172,7 @@ func TestTRTAsyncFailureAfterContextReuse(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("old leg did not record failure")
 	}
-	require.Eventually(t, func() bool { return exec.tracker.GetPrefillRequestCountsForPod(pod.Name) == 0 }, 5*time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return exec.tracker.GetPrefillRequestCountsForPod(podKey) == 0 }, 5*time.Second, time.Millisecond)
 	assert.Nil(t, reused.PrefillFailure())
 	assert.Equal(t, `{"prompt":"new"}`, string(reused.ReqBody))
 	select {

@@ -122,6 +122,18 @@ func NewTRTLLMHandler(scheduleStyle string, serverInfo TRTServerInfoProvider) (*
 func (h *TRTLLMHandler) Name() string  { return pd.EngineTRTLLM }
 func (h *TRTLLMHandler) IsAsync() bool { return h.generationFirst }
 
+// AsyncDispatch returns the generation-first dispatch contract; context-first
+// keeps the default one and never dispatches a detached prefill leg. TRT-LLM
+// generation-first keeps the client's cancellation (the engine aborts its
+// promise on disconnect), has no native decode abort, and resets the decode
+// stream on a terminal prefill failure even after response headers.
+func (h *TRTLLMHandler) AsyncDispatch() AsyncDispatchPolicy {
+	if !h.generationFirst {
+		return DefaultAsyncDispatchPolicy
+	}
+	return AsyncDispatchPolicy{KeepClientCancel: true, AbortDecode: false, ResetAfterHeaders: true}
+}
+
 // trtControlledFields are the top-level keys AugmentPrefillRequest and
 // MergePrefillResponse write: disaggregated_params on both bodies, and
 // prompt / prompt_token_ids on the decode body when the prefill response

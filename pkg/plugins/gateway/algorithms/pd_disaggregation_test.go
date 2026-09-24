@@ -1158,7 +1158,7 @@ func TestDoPrefillRequest(t *testing.T) {
 			router := createRouter(prefillPods, tt.podMetrics)
 
 			router.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, utils.GeneratePodKey(prefillPods[0].Namespace, prefillPods[0].Name))
-			err := router.doPrefillRequest(routingCtx, prefillPods[0], tt.llmEngine)
+			err := router.doPrefillRequest(routingCtx, prefillPods[0], engine.Resolve(tt.llmEngine))
 			if tt.expectError {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errorMsg)
@@ -1614,7 +1614,7 @@ func TestVLLMIntegrationWithTestServer(t *testing.T) {
 	router.prefillExecutor = prefill.NewDefaultExecutor(vllmClient, vllmTracker)
 
 	vllmTracker.AddPrefillRequest(routingCtx.RequestID, utils.GeneratePodKey(prefillPods[0].Namespace, prefillPods[0].Name))
-	err := router.doPrefillRequest(routingCtx, prefillPods[0], VLLMEngine)
+	err := router.doPrefillRequest(routingCtx, prefillPods[0], engine.Resolve(VLLMEngine))
 	assert.NoError(t, err)
 
 	// Verify that routing context was updated with KV transfer params from test server
@@ -1746,7 +1746,7 @@ func TestTensorRTIntegrationWithTestServer(t *testing.T) {
 	router.prefillExecutor = prefill.NewDefaultExecutor(trtClient, trtTracker)
 
 	trtTracker.AddPrefillRequest(routingCtx.RequestID, utils.GeneratePodKey(prefillPods[0].Namespace, prefillPods[0].Name))
-	err := router.doPrefillRequest(routingCtx, prefillPods[0], TensorRTLLM)
+	err := router.doPrefillRequest(routingCtx, prefillPods[0], engine.Resolve(TensorRTLLM))
 	assert.NoError(t, err)
 
 	// Verify routing context was updated with disaggregated_params from test server

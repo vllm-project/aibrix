@@ -34,10 +34,9 @@ import (
 )
 
 const (
-	trtServerInfoTTL        = time.Minute
-	trtServerInfoTimeout    = 3 * time.Second
-	trtServerInfoMaxEntries = 1024
-	trtServerInfoMaxBytes   = 1 << 20
+	trtServerInfoTTL      = time.Minute
+	trtServerInfoTimeout  = 3 * time.Second
+	trtServerInfoMaxBytes = 1 << 20
 )
 
 // TRTServerInfo is the worker-scoped metadata used to bootstrap a generation
@@ -68,9 +67,10 @@ type trtServerInfoEntry struct {
 }
 
 // TRTServerInfoCache loads workers lazily, since pods need not exist when the
-// router is constructed. Entries expire and are bounded; no background worker
-// or informer lifecycle is required. Concurrent misses for one incarnation are
-// coalesced, and a canceled waiter cannot cancel another request's lookup.
+// router is constructed. Entries expire one at a time on lookup and refresh;
+// no background worker or informer lifecycle is required. Concurrent misses for
+// one incarnation are coalesced, and a canceled waiter cannot cancel another
+// request's lookup.
 type TRTServerInfoCache struct {
 	client  *http.Client
 	mu      sync.Mutex
@@ -102,14 +102,17 @@ func (c *TRTServerInfoCache) Get(ctx context.Context, pod *v1.Pod) (TRTServerInf
 		return TRTServerInfo{}, fmt.Errorf("TRT server_info requires a context pod IP")
 	}
 	addr := net.JoinHostPort(pod.Status.PodIP, strconv.Itoa(int(utils.GetModelPortForPod("", pod))))
-	// UID prevents Pod-name/IP reuse; container identity catches in-place
-	// restarts that retain both UID and IP but change the coordination endpoint.
+	// UID prevents Pod-name/IP reuse. The restart count catches in-place
+	// restarts that retain both UID and IP. ContainerID is deliberately not part
+	// of the key: UID, address and restart count already change when the engine
+	// is replaced, while a container ID also changes when an unrelated sidecar
+	// restarts and would then force a needless refetch.
 	var key strings.Builder
 	key.WriteString(string(pod.UID))
 	key.WriteString("/")
 	key.WriteString(addr)
 	for _, status := range pod.Status.ContainerStatuses {
-		fmt.Fprintf(&key, "/%s:%s:%d", status.Name, status.ContainerID, status.RestartCount)
+		fmt.Fprintf(&key, "/%s:%d", status.Name, status.RestartCount)
 	}
 	if info, ok := c.lookup(key.String()); ok {
 		return info, nil
@@ -153,22 +156,7 @@ func (c *TRTServerInfoCache) lookup(key string) (TRTServerInfo, bool) {
 func (c *TRTServerInfoCache) store(key string, info TRTServerInfo) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	now := c.now()
-	var oldestKey string
-	var oldest time.Time
-	for k, entry := range c.entries {
-		if !now.Before(entry.expires) {
-			delete(c.entries, k)
-			continue
-		}
-		if oldest.IsZero() || entry.expires.Before(oldest) {
-			oldestKey, oldest = k, entry.expires
-		}
-	}
-	if len(c.entries) >= trtServerInfoMaxEntries {
-		delete(c.entries, oldestKey)
-	}
-	c.entries[key] = trtServerInfoEntry{info: info, expires: now.Add(trtServerInfoTTL)}
+	c.entries[key] = trtServerInfoEntry{info: info, expires: c.now().Add(trtServerInfoTTL)}
 }
 
 func (c *TRTServerInfoCache) fetch(ctx context.Context, url string) (TRTServerInfo, error) {
@@ -180,7 +168,7 @@ func (c *TRTServerInfoCache) fetch(ctx context.Context, url string) (TRTServerIn
 	if err != nil {
 		return TRTServerInfo{}, fmt.Errorf("fetch TRT server_info: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return TRTServerInfo{}, fmt.Errorf("TRT server_info returned HTTP %d", resp.StatusCode)
 	}
@@ -191,12 +179,16 @@ func (c *TRTServerInfoCache) fetch(ctx context.Context, url string) (TRTServerIn
 	if len(body) > trtServerInfoMaxBytes {
 		return TRTServerInfo{}, fmt.Errorf("TRT server_info exceeds %d bytes", trtServerInfoMaxBytes)
 	}
-	// A pointer distinguishes missing/null rank from the valid rank zero.
+	// A pointer distinguishes missing/null rank from the valid rank zero. A
+	// non-string ctx_info_endpoint makes the whole decode fail, which is the
+	// intended fail-closed behavior: the Python transceiver reports a single
+	// "tcp://ip:port" string, and any other shape is a worker this gateway does
+	// not understand.
 	var response struct {
 		Params *struct {
-			ContextInfoEndpoint json.RawMessage `json:"ctx_info_endpoint"`
-			ContextDPRank       *int            `json:"ctx_dp_rank"`
-			EncodedOpaqueState  string          `json:"encoded_opaque_state"`
+			ContextInfoEndpoint string `json:"ctx_info_endpoint"`
+			ContextDPRank       *int   `json:"ctx_dp_rank"`
+			EncodedOpaqueState  string `json:"encoded_opaque_state"`
 		} `json:"disaggregated_params"`
 	}
 	if err := json.Unmarshal(body, &response); err != nil {
@@ -211,44 +203,10 @@ func (c *TRTServerInfoCache) fetch(ctx context.Context, url string) (TRTServerIn
 			"generation_first requires the worker's Python KV-cache transceiver " +
 			"(cache_transceiver_config.transceiver_runtime: PYTHON, backend DEFAULT or NIXL)")
 	}
-	endpoint, err := decodeTRTEndpoint(response.Params.ContextInfoEndpoint)
-	if err != nil {
-		return TRTServerInfo{}, err
-	}
 	info := TRTServerInfo{
-		ContextInfoEndpoint: endpoint,
+		ContextInfoEndpoint: response.Params.ContextInfoEndpoint,
 		ContextDPRank:       *response.Params.ContextDPRank,
 		EncodedOpaqueState:  response.Params.EncodedOpaqueState,
 	}
 	return info, info.validate()
-}
-
-// decodeTRTEndpoint reads ctx_info_endpoint from /server_info. The Python
-// transceiver returns it as a single "tcp://ip:port" string, and that is the
-// form handled first. A one-element array is accepted too, because the engine's
-// own DisaggregatedParams dataclass declares the same logical field as a list
-// of endpoints. A longer array is rejected rather than guessed at: the element
-// belonging to the rank the gateway selected cannot be identified here, and
-// picking the wrong one would hand generation a peer it cannot use.
-func decodeTRTEndpoint(raw json.RawMessage) (string, error) {
-	if len(raw) == 0 || string(raw) == "null" {
-		return "", nil
-	}
-	var endpoint string
-	if err := json.Unmarshal(raw, &endpoint); err == nil {
-		return endpoint, nil
-	}
-	var endpoints []string
-	if err := json.Unmarshal(raw, &endpoints); err != nil {
-		return "", fmt.Errorf("TRT server_info ctx_info_endpoint is neither a string nor an array of strings")
-	}
-	switch len(endpoints) {
-	case 1:
-		return endpoints[0], nil
-	case 0:
-		return "", nil
-	default:
-		return "", fmt.Errorf("TRT server_info returned %d ctx_info_endpoint values; "+
-			"a rank-affine single endpoint is required, so this worker needs one endpoint per rank", len(endpoints))
-	}
 }

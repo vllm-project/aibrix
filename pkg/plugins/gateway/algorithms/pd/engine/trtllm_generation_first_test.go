@@ -54,6 +54,30 @@ func TestTRTScheduleStyle(t *testing.T) {
 	assert.False(t, Resolve(pd.EngineTRTLLM).IsAsync(), "a router-local mode must not mutate the registry")
 }
 
+// TestAsyncDispatchPolicies pins the per-handler dispatch contract that replaced
+// the name-based special cases: generation-first opts into keeping the client's
+// cancellation and resetting the decode stream after headers, SGLang keeps the
+// default (detach and abort natively), and context-first opts into neither.
+func TestAsyncDispatchPolicies(t *testing.T) {
+	genFirst, err := NewTRTLLMHandler(TRTGenerationFirst, trtInfoProviderFunc(func(context.Context, *v1.Pod) (TRTServerInfo, error) {
+		return TRTServerInfo{}, nil
+	}))
+	require.NoError(t, err)
+	assert.Equal(t,
+		AsyncDispatchPolicy{KeepClientCancel: true, AbortDecode: false, ResetAfterHeaders: true},
+		AsyncDispatchPolicyFor(genFirst))
+
+	ctxFirst, err := NewTRTLLMHandler(TRTContextFirst, nil)
+	require.NoError(t, err)
+	assert.Equal(t, DefaultAsyncDispatchPolicy, AsyncDispatchPolicyFor(ctxFirst))
+
+	// SGLang does not implement the optional interface: it keeps today's
+	// detached prefill and native /abort_request decode abort.
+	sglang := Resolve("sglang")
+	require.True(t, sglang.IsAsync())
+	assert.Equal(t, AsyncDispatchPolicy{AbortDecode: true}, AsyncDispatchPolicyFor(sglang))
+}
+
 func TestPrepareTRTGenerationFirstPreservesBodiesAndIDs(t *testing.T) {
 	info := TRTServerInfo{ContextInfoEndpoint: "tcp://ctx:5555", ContextDPRank: 7, EncodedOpaqueState: "opaque"}
 	for name, body := range map[string]string{

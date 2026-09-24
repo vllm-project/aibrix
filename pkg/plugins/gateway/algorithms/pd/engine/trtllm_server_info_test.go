@@ -75,16 +75,28 @@ func TestTRTServerInfoCacheLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 2, calls.Load())
 
-	pod.Status.ContainerStatuses = []v1.ContainerStatus{{Name: "engine", ContainerID: "container-2", RestartCount: 1}}
+	// The container identity enters the key once. A later restart count change
+	// invalidates it; a container-ID-only change (an unrelated sidecar restart)
+	// must not.
+	pod.Status.ContainerStatuses = []v1.ContainerStatus{{Name: "engine", ContainerID: "container-1", RestartCount: 0}}
 	_, err = cache.Get(context.Background(), pod)
 	require.NoError(t, err)
 	assert.EqualValues(t, 3, calls.Load())
 
+	pod.Status.ContainerStatuses = []v1.ContainerStatus{{Name: "engine", ContainerID: "container-2", RestartCount: 0}}
+	_, err = cache.Get(context.Background(), pod)
+	require.NoError(t, err)
+	assert.EqualValues(t, 3, calls.Load(), "a container-ID change without a restart must not refetch")
+
+	pod.Status.ContainerStatuses = []v1.ContainerStatus{{Name: "engine", ContainerID: "container-2", RestartCount: 1}}
+	_, err = cache.Get(context.Background(), pod)
+	require.NoError(t, err)
+	assert.EqualValues(t, 4, calls.Load(), "an engine restart must refetch")
+
 	now = now.Add(trtServerInfoTTL)
 	_, err = cache.Get(context.Background(), pod)
 	require.NoError(t, err)
-	assert.EqualValues(t, 4, calls.Load())
-	assert.Len(t, cache.entries, 1, "refresh prunes expired incarnations")
+	assert.EqualValues(t, 5, calls.Load(), "an expired entry is refetched")
 }
 
 func TestTRTServerInfoCacheCoalescesMisses(t *testing.T) {
@@ -143,13 +155,13 @@ func TestTRTServerInfoEndpointShapes(t *testing.T) {
 			body: `{"disaggregated_params":{"ctx_dp_rank":3,"ctx_info_endpoint":"tcp://10.0.0.1:5555"}}`,
 			want: "tcp://10.0.0.1:5555",
 		},
-		"single element array is tolerated": {
-			body: `{"disaggregated_params":{"ctx_dp_rank":3,"ctx_info_endpoint":["tcp://10.0.0.1:5555"]}}`,
-			want: "tcp://10.0.0.1:5555",
+		"single element array is refused like any other non-string": {
+			body:    `{"disaggregated_params":{"ctx_dp_rank":3,"ctx_info_endpoint":["tcp://10.0.0.1:5555"]}}`,
+			wantErr: "cannot unmarshal array",
 		},
-		"ambiguous rank-affine endpoint list is refused": {
+		"multiple endpoints are refused": {
 			body:    `{"disaggregated_params":{"ctx_dp_rank":3,"ctx_info_endpoint":["tcp://a:1","tcp://b:2"]}}`,
-			wantErr: "2 ctx_info_endpoint values",
+			wantErr: "cannot unmarshal array",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -183,20 +195,22 @@ func TestTRTServerInfoMissingRankNamesTransceiverRequirement(t *testing.T) {
 
 func TestTRTServerInfoValidationAndRetry(t *testing.T) {
 	for name, body := range map[string]string{
-		"invalid JSON":        `not json`,
-		"array":               `[]`,
-		"missing params":      `{}`,
-		"missing rank":        `{"disaggregated_params":{"ctx_info_endpoint":"tcp://host:1"}}`,
-		"null rank":           `{"disaggregated_params":{"ctx_info_endpoint":"tcp://host:1","ctx_dp_rank":null}}`,
-		"negative rank":       `{"disaggregated_params":{"ctx_info_endpoint":"tcp://host:1","ctx_dp_rank":-1}}`,
-		"fractional rank":     `{"disaggregated_params":{"ctx_info_endpoint":"tcp://host:1","ctx_dp_rank":1.5}}`,
-		"missing endpoint":    `{"disaggregated_params":{"ctx_dp_rank":0}}`,
-		"endpoint object":     `{"disaggregated_params":{"ctx_dp_rank":0,"ctx_info_endpoint":{"host":"h"}}}`,
-		"endpoint number":     `{"disaggregated_params":{"ctx_dp_rank":0,"ctx_info_endpoint":7}}`,
-		"empty endpoint list": `{"disaggregated_params":{"ctx_dp_rank":0,"ctx_info_endpoint":[]}}`,
-		"two endpoints":       `{"disaggregated_params":{"ctx_dp_rank":0,"ctx_info_endpoint":["tcp://a:1","tcp://b:2"]}}`,
-		"non string list":     `{"disaggregated_params":{"ctx_dp_rank":0,"ctx_info_endpoint":[1,2]}}`,
-		"oversized":           strings.Repeat(" ", trtServerInfoMaxBytes+1),
+		"invalid JSON":         `not json`,
+		"array":                `[]`,
+		"missing params":       `{}`,
+		"missing rank":         `{"disaggregated_params":{"ctx_info_endpoint":"tcp://host:1"}}`,
+		"null rank":            `{"disaggregated_params":{"ctx_info_endpoint":"tcp://host:1","ctx_dp_rank":null}}`,
+		"negative rank":        `{"disaggregated_params":{"ctx_info_endpoint":"tcp://host:1","ctx_dp_rank":-1}}`,
+		"fractional rank":      `{"disaggregated_params":{"ctx_info_endpoint":"tcp://host:1","ctx_dp_rank":1.5}}`,
+		"missing endpoint":     `{"disaggregated_params":{"ctx_dp_rank":0}}`,
+		"null endpoint":        `{"disaggregated_params":{"ctx_dp_rank":0,"ctx_info_endpoint":null}}`,
+		"endpoint object":      `{"disaggregated_params":{"ctx_dp_rank":0,"ctx_info_endpoint":{"host":"h"}}}`,
+		"endpoint number":      `{"disaggregated_params":{"ctx_dp_rank":0,"ctx_info_endpoint":7}}`,
+		"empty endpoint list":  `{"disaggregated_params":{"ctx_dp_rank":0,"ctx_info_endpoint":[]}}`,
+		"single endpoint list": `{"disaggregated_params":{"ctx_dp_rank":0,"ctx_info_endpoint":["tcp://a:1"]}}`,
+		"two endpoints":        `{"disaggregated_params":{"ctx_dp_rank":0,"ctx_info_endpoint":["tcp://a:1","tcp://b:2"]}}`,
+		"non string list":      `{"disaggregated_params":{"ctx_dp_rank":0,"ctx_info_endpoint":[1,2]}}`,
+		"oversized":            strings.Repeat(" ", trtServerInfoMaxBytes+1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			var calls atomic.Int32
@@ -236,12 +250,8 @@ func TestTRTServerInfoHTTPFailures(t *testing.T) {
 	}
 }
 
-func TestTRTServerInfoCacheBoundsAndWorkerIsolation(t *testing.T) {
+func TestTRTServerInfoCacheWorkerIsolation(t *testing.T) {
 	cache := NewTRTServerInfoCache(nil)
-	for i := 0; i < trtServerInfoMaxEntries+5; i++ {
-		cache.store(fmt.Sprint(i), TRTServerInfo{ContextDPRank: i})
-	}
-	assert.Len(t, cache.entries, trtServerInfoMaxEntries)
 
 	servers := make([]*httptest.Server, 2)
 	for i := range servers {
