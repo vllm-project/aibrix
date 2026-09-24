@@ -2876,6 +2876,30 @@ func TestReconcileKeepsAnEngineOffTheRouteWhileItsLimitDoesNotReadBack(t *testin
 	assert.Equal(t, int32(0), got.Status.ReadyReplicas)
 }
 
+func TestReconcileLooksAgainSoonWhileAnEngineComesUp(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod:          "warm-1",
+		Phase:        modelv1alpha1.ModelClaimActivating,
+		KVLimitBytes: 300,
+	}}
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	booting := readyEngine(-1)
+	booting.Phase = "booting"
+	booting.Ready = false
+	snapshot.Models = []RuntimeSnapshotModel{booting}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	assert.Equal(t, ActivatingRequeueDuration, reconcileFor(t, r, pm.Name))
+
+	// Ready and held to its limit, the engine is routed, and the claim goes
+	// back to the usual pace.
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(300)}
+	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name))
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, pm.Name).Status.Instances[0].Phase)
+}
+
 // An engine whose segment cannot be read is not known to be held to anything,
 // so it does not keep its route.
 func TestReconcileDeroutesAnEngineWhoseLimitCannotBeRead(t *testing.T) {

@@ -543,7 +543,8 @@ ModelClaim status summarizes the lifecycle:
      - The claim is new or the controller is selecting a compatible Pod.
    * - ``Loading`` / ``Activating``
      - The runtime is downloading or starting the engine. It remains
-       non-routable with port 0.
+       non-routable with port 0. The controller looks at it every 2 seconds,
+       so it takes traffic within about 2 seconds of being ready.
    * - ``Active``
      - The runtime reports the engine alive and ready; the gateway has a real
        per-engine port.
@@ -893,11 +894,12 @@ Claim remains ``Activating``
 
 Claim remains ``Activating`` after ``/health`` succeeds
    With ``perGPU`` declared, the engine also has to report the KV limit it was
-   given before it becomes routable. The controller writes the limit and reads
-   it back in the same pass, so this should not outlast the pass that finds the
-   engine ready. A ``KVLimitFailed`` Event names the error. A snapshot whose
-   ``kv_capacity_bytes`` is negative means the engine has not built its KV
-   segment yet, and there is nothing to write into.
+   given before it becomes routable. The controller looks at an activating
+   instance every 2 seconds. It writes the limit and reads it back in the same
+   pass, so this should last about 2 seconds at most. A ``KVLimitFailed`` Event
+   names the error. A snapshot whose ``kv_capacity_bytes`` is negative means
+   the engine has not built its KV segment yet, and there is nothing to write
+   into.
 
 ``KVLimitFailed`` Events during placement
    A card had room, and the engines on it could not be held to their new
