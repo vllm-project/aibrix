@@ -2558,6 +2558,8 @@ func TestReconcileHoldsAnEngineToItsLimitOnAPodWithoutAGPURequest(t *testing.T) 
 	snapshot.Models = []RuntimeSnapshotModel{readyEngine(900)}
 	r, runtime := newReconciler(t, pm, pod)
 	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	// The write does not take, so the engine still reads as held to more.
+	runtime.deafToKVLimits = true
 
 	reconcileOnce(t, r, pm.Name)
 
@@ -2672,6 +2674,8 @@ func TestReconcileHoldsAnEngineToItsLimitWhenItsCardCouldNotBeReadThisTime(t *te
 	snapshot.Models = []RuntimeSnapshotModel{readyEngine(900)}
 	r, runtime := newReconciler(t, pm, pod)
 	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	// The write does not take, so the engine still reads as held to more.
+	runtime.deafToKVLimits = true
 
 	reconcileOnce(t, r, pm.Name)
 
@@ -2836,23 +2840,40 @@ func TestReconcileHoldsAnEngineToItsLimitBeforeRouting(t *testing.T) {
 	// left over once its footprint is paid for.
 	assert.Equal(t, int64(300), got.Status.Instances[0].KVLimitBytes)
 
-	// The engine comes up under its allocator's own limit.
+	// The engine comes up under its allocator's own limit. The limit is
+	// written and read back in force before the engine is routed, all in the
+	// same pass.
 	snapshot.Models = []RuntimeSnapshotModel{readyEngine(5000)}
 	reconcileOnce(t, r, pm.Name)
 
 	require.Len(t, runtime.kvLimitCalls, 1)
 	assert.Equal(t, int64(300), runtime.kvLimitCalls[0].LimitBytes)
-	got = getModel(t, r, pm.Name)
-	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
-	assert.Equal(t, int32(0), got.Status.ReadyReplicas)
-
-	// The write lands, and the engine is routable on the next pass.
-	snapshot.Models[0].KVCapacityBytes = 300
-	reconcileOnce(t, r, pm.Name)
-
+	assert.Equal(t, int64(300), snapshot.Models[0].KVCapacityBytes)
 	got = getModel(t, r, pm.Name)
 	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Instances[0].Phase)
 	assert.Equal(t, int32(1), got.Status.ReadyReplicas)
+}
+
+func TestReconcileKeepsAnEngineOffTheRouteWhileItsLimitDoesNotReadBack(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod:          "warm-1",
+		Phase:        modelv1alpha1.ModelClaimActivating,
+		KVLimitBytes: 300,
+	}}
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(5000)}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	runtime.deafToKVLimits = true
+
+	reconcileOnce(t, r, pm.Name)
+
+	// The write was accepted, but the engine still reads as held to more.
+	require.Len(t, runtime.kvLimitCalls, 1)
+	got := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
+	assert.Equal(t, int32(0), got.Status.ReadyReplicas)
 }
 
 // An engine whose segment cannot be read is not known to be held to anything,
@@ -3050,16 +3071,13 @@ func TestReconcileGrowsANewEngineToItsRecordBeforeRouting(t *testing.T) {
 
 	// The engine comes up under an allocator default smaller than the room it
 	// was given. That room was made for it when the card was divided, so it is
-	// raised to its record before it takes any traffic.
+	// raised to its record, and read back, before it takes any traffic.
 	snapshot.Models = []RuntimeSnapshotModel{readyEngine(200)}
 	reconcileOnce(t, r, pm.Name)
 
 	require.Len(t, runtime.kvLimitCalls, 1)
 	assert.Equal(t, int64(300), runtime.kvLimitCalls[0].LimitBytes)
-	assert.Equal(t, modelv1alpha1.ModelClaimActivating, getModel(t, r, pm.Name).Status.Instances[0].Phase)
-
-	reconcileOnce(t, r, pm.Name)
-
+	assert.Equal(t, int64(300), snapshot.Models[0].KVCapacityBytes)
 	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, pm.Name).Status.Instances[0].Phase)
 }
 

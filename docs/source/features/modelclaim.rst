@@ -402,8 +402,10 @@ A division can fail at each of these steps:
   the threshold.
 
 A model stays non-routable until its own limit is in force, and stays routable
-only while it is held to no more than that limit. A card whose room could not
-be made is skipped, and the next Pod in line is tried.
+only while it is held to no more than that limit. An engine coming up is read
+back as soon as its limit is written, so it takes traffic in the same pass. A
+card whose room could not be made is skipped, and the next Pod in line is
+tried.
 
 A card is also planned again once a round, which is about 10 seconds, however
 many claims sit on it. The round carries the plan out in three cases:
@@ -891,11 +893,11 @@ Claim remains ``Activating``
 
 Claim remains ``Activating`` after ``/health`` succeeds
    With ``perGPU`` declared, the engine also has to report the KV limit it was
-   given before it becomes routable. kvcached applies a new limit at its next
-   allocation, so a short wait here is expected. A ``KVLimitFailed`` Event
-   names the error. A snapshot whose ``kv_capacity_bytes`` is negative means
-   the engine has not built its KV segment yet, and there is nothing to write
-   into.
+   given before it becomes routable. The controller writes the limit and reads
+   it back in the same pass, so this should not outlast the pass that finds the
+   engine ready. A ``KVLimitFailed`` Event names the error. A snapshot whose
+   ``kv_capacity_bytes`` is negative means the engine has not built its KV
+   segment yet, and there is nothing to write into.
 
 ``KVLimitFailed`` Events during placement
    A card had room, and the engines on it could not be held to their new
