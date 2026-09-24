@@ -90,7 +90,11 @@ tlsCA: ca.pem
 ```
 
 The file requires at least one HTTP(S) endpoint. `prefix` defaults to
-`/aibrix/endpoints/`, and `dialTimeout` defaults to `5s`. Unknown fields and
+`/aibrix/endpoints/`, and `dialTimeout` defaults to `5s`. A missing trailing
+slash is added to `prefix` so `/workers` cannot select `/workers-other`;
+root `/` and prefixes with surrounding whitespace are rejected. Username/password
+authentication requires HTTPS; unauthenticated HTTP remains available for local
+development. Unknown fields and
 invalid types are rejected. Credentials belong in the config file, not endpoint
 URLs or CLI arguments. Restrict access to files containing credentials, for
 example with `chmod 600`. Certificate paths are relative to the configuration
@@ -103,14 +107,20 @@ Each key below the prefix represents one worker. Its value is a JSON object:
 | Field | Meaning |
 | --- | --- |
 | `model` | Required model name used for routing. |
-| `address` | Required worker `host:port`; use `[IPv6]:port` for IPv6. Port must be 1–65535. |
+| `address` | Required worker `host:port` with an IP or DNS-1123 hostname (no underscores); use `[IPv6]:port` for IPv6. Port must be 1–65535. |
 | `engine` | Optional engine label, such as `vllm`, `sglang`, or `trtllm`. |
 | `role` | Optional `prefill` or `decode`; requires `roleset`. |
 | `roleset` | Optional P/D pairing group; requires `role`. |
 
 Workers or an external controller own these registrations; the gateway only
-reads and watches them. Register each worker under a stable, unique key.
-Addresses must be reachable from the gateway. The bundled standalone Envoy uses
+reads and watches them. Give the gateway's etcd identity read-only permission
+(`get`/`watch`) on exactly the configured prefix, and give trusted registrars
+write access only to that prefix. A writer can redirect inference requests to
+any registered address: etcd ACLs and network access restrictions define this
+routing trust boundary. Register each worker under a stable, unique key.
+Addresses must be reachable from the gateway. Hostnames use DNS-1123 syntax
+(case-insensitive with an optional trailing dot); underscores are rejected.
+This is stricter than StaticProvider's legacy host parser. The bundled standalone Envoy uses
 `ORIGINAL_DST`, so register numeric IPv4 or IPv6 addresses when using that
 configuration; DNS names require a downstream proxy configured to resolve them.
 
@@ -160,11 +170,19 @@ owner's liveness; the provider does not probe the inference endpoint. Registrati
 without leases remain until explicitly deleted.
 
 At startup the provider lists the prefix and populates the cache before
-`Watch` returns. It starts watching at the snapshot revision plus one, so changes
-between the list and watch are not lost. Disconnects are retried; a compacted
-watch revision triggers a new snapshot and reconciliation, including removal of
-registrations deleted during the outage. Until etcd is reachable again, routing
-uses the last observed registrations.
+`Watch` returns. Readiness means the cache is consistent at that snapshot's
+revision R, not that it has already caught up to the latest etcd revision. The
+watch starts at R+1; changes during initial delivery are applied asynchronously
+without being lost. If that history has already been compacted, background
+reconciliation replaces the snapshot, so the initial cache can temporarily
+contain registrations deleted after R.
+
+Disconnects resume after the last applied revision. Compaction starts a new
+snapshot immediately and reconciles differences, including deleted registrations.
+Failed snapshots and reconnects retry with a one-second delay. Until etcd is
+reachable again, routing uses the last observed registrations. Retry logs report
+a gRPC status code and a fixed failure category (authentication, permission, TLS,
+timeout, transport, or other), without logging raw error payloads or credentials.
 
 An engine-only change updates the existing endpoint. Changing a model, address,
 role, or roleset removes the old routing identity and adds the new one. An invalid

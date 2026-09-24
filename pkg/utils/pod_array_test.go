@@ -112,7 +112,7 @@ var _ = Describe("PodArray", func() {
 		Expect(&podArray.ListByIndex("deployment-1")[0]).To(Equal(&pods[0]))
 	})
 
-	It("Should InListByIndex() reuse pods array for heterogneous deployments", func() {
+	It("Should ListByIndex() preserve pods array for heterogeneous deployments", func() {
 		deployments := []string{"deployment-1", "deployment-2"}
 		pods := []*v1.Pod{
 			getPodWithDeployment(deployments[0]),
@@ -122,8 +122,8 @@ var _ = Describe("PodArray", func() {
 			getPodWithDeployment(deployments[0]),
 		}
 		podArray := &PodArray{Pods: pods}
-		Expect(&podArray.ListByIndex("deployment-1")[0]).To(Equal(&pods[0]))
-		Expect(&podArray.ListByIndex("deployment-2")[0]).To(Equal(&pods[3]))
+		Expect(podArray.ListByIndex("deployment-1")).To(Equal([]*v1.Pod{pods[0], pods[3], pods[4]}))
+		Expect(podArray.ListByIndex("deployment-2")).To(Equal([]*v1.Pod{pods[1], pods[2]}))
 	})
 
 	It("Should perform current PodsByDeployments call correctly", func() {

@@ -21,8 +21,10 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"reflect"
 	"sort"
 	"strconv"
@@ -30,8 +32,11 @@ import (
 	"sync"
 	"time"
 
+	controllerconstants "github.com/vllm-project/aibrix/pkg/controller/constants"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -47,7 +52,7 @@ const (
 // EtcdConfig configures an etcd endpoint registry. Credentials and TLS are optional.
 type EtcdConfig struct {
 	Endpoints []string
-	// Prefix is the key prefix to watch. It defaults to /aibrix/endpoints/.
+	// Prefix defaults to /aibrix/endpoints/. A missing trailing slash is added.
 	Prefix string
 	// DialTimeout also bounds each snapshot request. It defaults to five seconds.
 	DialTimeout time.Duration
@@ -87,21 +92,43 @@ type EtcdProvider struct {
 	started   bool
 }
 
-// NewEtcdProvider validates configuration without opening a connection.
-func NewEtcdProvider(config EtcdConfig) (*EtcdProvider, error) {
+// NormalizeEtcdConfig validates and copies configuration without opening a connection.
+// Both the file loader and provider use this to enforce the same prefix and auth rules.
+func NormalizeEtcdConfig(config EtcdConfig) (EtcdConfig, error) {
 	if len(config.Endpoints) == 0 {
-		return nil, fmt.Errorf("etcd discovery requires at least one etcd endpoint")
+		return EtcdConfig{}, fmt.Errorf("etcd discovery requires at least one etcd endpoint")
+	}
+	if config.Password != "" && config.Username == "" {
+		return EtcdConfig{}, fmt.Errorf("etcd password requires username")
 	}
 	for _, endpoint := range config.Endpoints {
 		if strings.TrimSpace(endpoint) == "" {
-			return nil, fmt.Errorf("etcd discovery endpoints must not be empty")
+			return EtcdConfig{}, fmt.Errorf("etcd discovery endpoints must not be empty")
+		}
+		if config.Username != "" {
+			// Bare host:port addresses use the supplied TLS config. Explicit HTTP URLs
+			// override TLS in the etcd transport and must never carry credentials.
+			encrypted := config.TLS != nil && !strings.Contains(endpoint, "://")
+			if strings.Contains(endpoint, "://") {
+				u, err := url.Parse(endpoint)
+				encrypted = err == nil && u.Scheme == "https"
+			}
+			if !encrypted {
+				return EtcdConfig{}, fmt.Errorf("etcd credentials require encrypted transport (HTTPS or TLS for host:port endpoints)")
+			}
 		}
 	}
 	if config.Prefix == "" {
 		config.Prefix = defaultEtcdPrefix
 	}
+	if strings.TrimSpace(config.Prefix) != config.Prefix || config.Prefix == "/" {
+		return EtcdConfig{}, fmt.Errorf("etcd prefix must be non-root and have no surrounding whitespace")
+	}
+	if !strings.HasSuffix(config.Prefix, "/") {
+		config.Prefix += "/"
+	}
 	if config.DialTimeout < 0 {
-		return nil, fmt.Errorf("etcd discovery dial timeout must be positive")
+		return EtcdConfig{}, fmt.Errorf("etcd discovery dial timeout must be positive")
 	}
 	if config.DialTimeout == 0 {
 		config.DialTimeout = defaultEtcdDialTimeout
@@ -109,6 +136,15 @@ func NewEtcdProvider(config EtcdConfig) (*EtcdProvider, error) {
 	config.Endpoints = append([]string(nil), config.Endpoints...)
 	if config.TLS != nil {
 		config.TLS = config.TLS.Clone()
+	}
+	return config, nil
+}
+
+// NewEtcdProvider validates configuration without opening a connection.
+func NewEtcdProvider(config EtcdConfig) (*EtcdProvider, error) {
+	config, err := NormalizeEtcdConfig(config)
+	if err != nil {
+		return nil, err
 	}
 	return &EtcdProvider{
 		config: config,
@@ -122,7 +158,9 @@ func NewEtcdProvider(config EtcdConfig) (*EtcdProvider, error) {
 func (p *EtcdProvider) Type() string { return "etcd" }
 
 // Watch delivers an atomic initial snapshot and then serially delivers changes.
-// Watching starts at snapshot revision + 1, including changes made during sync.
+// On return, the cache reflects the snapshot revision, not necessarily the latest
+// etcd revision. Changes after that revision (including during initial delivery)
+// and any compaction reconciliation are applied asynchronously in revision order.
 func (p *EtcdProvider) Watch(handler EventHandler, stopCh <-chan struct{}) error {
 	if handler == nil {
 		return fmt.Errorf("etcd discovery requires an event handler")
@@ -239,19 +277,25 @@ func (p *EtcdProvider) run(ctx context.Context, client etcdClient, handler Event
 				return
 			}
 			resync = response.CompactRevision > 0
-			klog.InfoS("Etcd discovery watch interrupted; reconnecting", "compacted", resync)
+			klog.InfoS("Etcd discovery watch interrupted; reconnecting", "compacted", resync,
+				"errorCode", status.Code(response.Err()).String(), "reason", etcdFailureReason(response.Err()))
 		}
 
 		stopWatch()
+		// A known compacted revision cannot be resumed. Reconcile immediately;
+		// only subsequent snapshot failures need the retry delay.
+		retry := !resync
 		for {
-			if !waitEtcdRetry(ctx) {
+			if retry && !waitEtcdRetry(ctx) {
 				return
 			}
+			retry = true
 			if resync {
 				pods, snapshotRevision, err := p.snapshot(ctx, client)
 				if err != nil {
 					// Values, keys, endpoints, and credentials never enter this log.
-					klog.InfoS("Etcd discovery snapshot unavailable; retrying")
+					klog.InfoS("Etcd discovery snapshot unavailable; retrying",
+						"errorCode", status.Code(err).String(), "reason", etcdFailureReason(err))
 					continue
 				}
 				if err := reconcileEtcdPods(ctx, handler, state, pods); err != nil {
@@ -265,6 +309,38 @@ func (p *EtcdProvider) run(ctx context.Context, client etcdClient, handler Event
 			break
 		}
 	}
+}
+
+// etcdFailureReason emits only fixed diagnostic categories. Raw errors may contain
+// endpoint URLs, authentication material, or arbitrary server-provided text.
+func etcdFailureReason(err error) string {
+	if err == nil {
+		return "stream_closed"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	switch status.Code(err) {
+	case codes.Unauthenticated:
+		return "authentication"
+	case codes.PermissionDenied:
+		return "permission"
+	case codes.DeadlineExceeded:
+		return "timeout"
+	case codes.Canceled:
+		return "canceled"
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "tls") || strings.Contains(message, "x509") || strings.Contains(message, "certificate") {
+		return "tls"
+	}
+	if status.Code(err) == codes.Unavailable {
+		return "transport"
+	}
+	return "other"
 }
 
 func waitEtcdRetry(ctx context.Context) bool {
@@ -374,8 +450,8 @@ func etcdEndpointPod(kv *mvccpb.KeyValue) (*v1.Pod, error) {
 	address := net.JoinHostPort(host, strconv.Itoa(port))
 	labels := make(map[string]string)
 	if endpoint.Role != "" {
-		labels["role-name"] = endpoint.Role
-		labels["roleset-name"] = endpoint.RoleSet
+		labels[controllerconstants.RoleNameLabelKey] = endpoint.Role
+		labels[controllerconstants.RoleSetNameLabelKey] = endpoint.RoleSet
 	}
 	pod, err := addressToPod(endpoint.Model, endpoint.Engine, labels, 0, address)
 	if err != nil {

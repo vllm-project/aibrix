@@ -94,10 +94,6 @@ func loadEtcdConfig(path string) (discovery.EtcdConfig, error) {
 	}
 	config.Endpoints = file.Endpoints
 	config.Prefix = file.Prefix
-	if config.Prefix == "" {
-		config.Prefix = "/aibrix/endpoints/"
-	}
-	config.DialTimeout = 5 * time.Second
 	if file.DialTimeout != "" {
 		timeout, err := time.ParseDuration(file.DialTimeout)
 		if err != nil || timeout <= 0 {
@@ -107,11 +103,11 @@ func loadEtcdConfig(path string) (discovery.EtcdConfig, error) {
 	}
 	config.Username = file.Username
 	config.Password = file.Password
-	if file.Password != "" && file.Username == "" {
-		return config, fmt.Errorf("etcd password requires username")
-	}
 	config.TLS, err = loadEtcdTLS(file, path)
-	return config, err
+	if err != nil {
+		return config, err
+	}
+	return discovery.NormalizeEtcdConfig(config)
 }
 
 func loadEtcdTLS(file etcdFileConfig, path string) (*tls.Config, error) {

@@ -56,6 +56,7 @@ func TestEtcdEndpointPodValidation(t *testing.T) {
 		{"URL", EtcdEndpoint{Model: "model", Address: "http://worker:8000"}},
 		{"path", EtcdEndpoint{Model: "model", Address: "worker/path:8000"}},
 		{"credentials", EtcdEndpoint{Model: "model", Address: "secret@worker:8000"}},
+		{"underscore hostname", EtcdEndpoint{Model: "model", Address: "worker_0:8000"}},
 		{"whitespace host", EtcdEndpoint{Model: "model", Address: " worker:8000"}},
 		{"unbracketed IPv6", EtcdEndpoint{Model: "model", Address: "2001:db8::1:8000"}},
 		{"bad role", EtcdEndpoint{Model: "model", Address: "worker:8000", Role: "both", RoleSet: "group"}},
