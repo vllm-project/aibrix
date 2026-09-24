@@ -37,7 +37,11 @@ jobs:
           cd python/aibrix
           python -m pip install --upgrade pip
           pip install -U pip poetry
+          # The installer runs serially: two concurrent updates can race on a
+          # `.dist-info` directory the other one just removed
+          # (python-poetry/poetry#8159).
           poetry config virtualenvs.create false
+          poetry config installer.parallel false
           poetry install --no-root --with dev
       - name: Run Ruff
         run: |
