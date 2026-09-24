@@ -1735,6 +1735,17 @@ func readyEngine(kvCapacityBytes int64) RuntimeSnapshotModel {
 	}
 }
 
+// engineBootingFor is what a runtime reading taken at observedAt reports for
+// an engine that has been alive but not yet ready for the given while.
+func engineBootingFor(observedAt time.Time, booting time.Duration) RuntimeSnapshotModel {
+	started := observedAt.Add(-booting)
+	engine := readyEngine(kvLimitUnknown)
+	engine.Phase = "booting"
+	engine.Ready = false
+	engine.LastTransition = &started
+	return engine
+}
+
 func TestArrangeCardGivesARetryItsOwnOperation(t *testing.T) {
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
 	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30)
@@ -2884,10 +2895,10 @@ func TestReconcileLooksAgainSoonWhileAnEngineComesUp(t *testing.T) {
 		KVLimitBytes: 300,
 	}}
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
-	booting := readyEngine(-1)
-	booting.Phase = "booting"
-	booting.Ready = false
-	snapshot.Models = []RuntimeSnapshotModel{booting}
+	// The runtime's clock reads years before the test runs, so the boot is
+	// timed on that clock and not on the controller's.
+	snapshot.ObservedAt = time.Unix(1_700_000_000, 0)
+	snapshot.Models = []RuntimeSnapshotModel{engineBootingFor(snapshot.ObservedAt, time.Minute)}
 	r, runtime := newReconciler(t, pm, pod)
 	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
 
@@ -2898,6 +2909,70 @@ func TestReconcileLooksAgainSoonWhileAnEngineComesUp(t *testing.T) {
 	snapshot.Models = []RuntimeSnapshotModel{readyEngine(300)}
 	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name))
 	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, pm.Name).Status.Instances[0].Phase)
+}
+
+func TestReconcileKeepsTheUsualPaceWhileNoEngineIsBooting(t *testing.T) {
+	observedAt := time.Unix(1_700_000_000, 0)
+	restarting := engineBootingFor(observedAt, time.Minute)
+	restarting.Phase = "restarting"
+	restarting.Alive = false
+	undated := engineBootingFor(observedAt, time.Minute)
+	undated.LastTransition = nil
+	// A runtime reports a sleeping engine as alive and not ready too.
+	asleep := engineBootingFor(observedAt, time.Minute)
+	asleep.Phase = "sleeping"
+	readyAt := observedAt.Add(-time.Minute)
+	unheld := readyEngine(5000)
+	unheld.LastTransition = &readyAt
+
+	cases := map[string]struct {
+		engine RuntimeSnapshotModel
+		// phase is where the instance stands before and after the pass. It is
+		// Activating unless set.
+		phase modelv1alpha1.ModelClaimPhase
+		// deaf keeps a written limit from reading back.
+		deaf bool
+		// silent is a runtime that gives no reading at all.
+		silent bool
+		// undatedReading is a reading the runtime gives no time for.
+		undatedReading bool
+	}{
+		"booting for the whole window":      {engine: engineBootingFor(observedAt, ActivatingRequeueWindow)},
+		"restarting":                        {engine: restarting},
+		"booting with no start time":        {engine: undated},
+		"ready but not held to its limit":   {engine: unheld, deaf: true},
+		"booting behind a silent runtime":   {engine: engineBootingFor(observedAt, time.Minute), silent: true},
+		"asleep":                            {engine: asleep, phase: modelv1alpha1.ModelClaimSleeping},
+		"booting in a reading with no time": {engine: engineBootingFor(observedAt, time.Minute), undatedReading: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			phase := tc.phase
+			if phase == "" {
+				phase = modelv1alpha1.ModelClaimActivating
+			}
+			pm := claimWithCost(700, 100)
+			pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+				Pod:          "warm-1",
+				Phase:        phase,
+				KVLimitBytes: 300,
+			}}
+			pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+			if !tc.undatedReading {
+				snapshot.ObservedAt = observedAt
+			}
+			snapshot.Models = []RuntimeSnapshotModel{tc.engine}
+			r, runtime := newReconciler(t, pm, pod)
+			runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+			runtime.deafToKVLimits = tc.deaf
+			if tc.silent {
+				runtime.nilSnapshots = map[string]bool{pod.Status.PodIP: true}
+			}
+
+			assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name))
+			assert.Equal(t, phase, getModel(t, r, pm.Name).Status.Instances[0].Phase)
+		})
+	}
 }
 
 // An engine whose segment cannot be read is not known to be held to anything,
