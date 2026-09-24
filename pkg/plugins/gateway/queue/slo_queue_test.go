@@ -274,9 +274,33 @@ var _ = Describe("SLOQueue", func() {
 		Expect(b1).NotTo(Equal(b3))
 	})
 
-	It("should return the difference between two ranks", func() {
+	It("should order candidates by rank, then arrival time, then subqueue key", func() {
+		now := time.Now()
+		newCandidate := func(subKey string, rank float64, requestTime time.Time) *candidateRouterRequest {
+			req := newTestRequest("req-"+subKey, predictor)
+			req.RequestTime = requestTime
+			return &candidateRouterRequest{
+				QueueEntry: types.NewQueueEntry(req, requestTime),
+				SubKey:     subKey,
+				Profiles:   []*candidateProfiles{{Rank: rank, Key: "dep-a"}},
+			}
+		}
+
 		q := &SLOQueue{}
-		Expect(q.higherRank(5.0, 3.0)).To(Equal(2.0))
+		higher := newCandidate("c", 1.0, now)
+		early := newCandidate("a", 0.0, now.Add(-2*time.Second))
+		late := newCandidate("b", 0.0, now.Add(-time.Second))
+		Expect(q.candidateLess(higher, early)).To(BeTrue())
+		Expect(q.candidateLess(early, higher)).To(BeFalse())
+		Expect(q.candidateLess(early, late)).To(BeTrue())
+		Expect(q.candidateLess(late, early)).To(BeFalse())
+
+		// Same rank and same arrival time: the subqueue key keeps the order total.
+		sameTime := now.Add(-3 * time.Second)
+		keyA := newCandidate("a", 0.0, sameTime)
+		keyB := newCandidate("b", 0.0, sameTime)
+		Expect(q.candidateLess(keyA, keyB)).To(BeTrue())
+		Expect(q.candidateLess(keyB, keyA)).To(BeFalse())
 	})
 
 })
