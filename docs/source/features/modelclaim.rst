@@ -436,11 +436,13 @@ has to be changed first, such as one with ``InvalidEngineConfig``, gets no
 without ``Retry-After`` as well. A model that no ModelClaim serves returns
 400.
 
-The gateway learns about a claim that is not placed from the ModelClaim
-object, so its role needs to get, list and watch ModelClaims. If it cannot
-list them when it starts, it says so once in its log, and answers such a claim
-with 400, as a model that does not exist. Access granted later takes effect
-when the gateway restarts.
+The answer for a claim that is not placed comes from the ModelClaim object,
+not from a Pod, so it wakes nothing. If two claims serve one name, the first
+by namespace and name answers. The gateway's role needs to get, list and watch
+ModelClaims. A gateway that has just started answers such a claim with 400
+until its first list of them finishes. If it cannot list them at all, it says
+so once in its log, and keeps answering 400, as for a model that does not
+exist. Access granted later takes effect when the gateway restarts.
 
 Runtime reliability
 -------------------

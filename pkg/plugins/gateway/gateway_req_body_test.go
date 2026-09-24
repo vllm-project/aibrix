@@ -765,6 +765,35 @@ func TestValidateModelAvailabilityReturnsRetryableResponseForSleepingModelClaim(
 	assert.Equal(t, pod.Name, wakeRequester.calls[0].pod.Name)
 }
 
+func TestValidateModelAvailabilityWakesASleepingClaimThatAlsoHasARecord(t *testing.T) {
+	// A sleeping claim's pod advertises it, and the claim object is known too.
+	// The pod's answer wins, since only it can wake the engine.
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "warm-1", Namespace: "default"},
+		Status:     v1.PodStatus{PodIP: "10.0.0.1"},
+	}
+	mockCache := &MockCache{
+		modelClaimBindings: map[string]mockModelClaimBinding{
+			"qwen": {pod: pod, state: constants.ModelClaimRoutingStateSleeping},
+		},
+		modelClaimStatuses: map[string]mockModelClaimStatus{
+			"qwen": {phase: "Sleeping", reason: "EngineSleeping"},
+		},
+	}
+	mockCache.On("HasModel", "qwen").Return(false)
+	wakeRequester := &recordingModelWakeRequester{}
+	server := &Server{cache: mockCache, wakeRequester: wakeRequester}
+
+	_, response := server.validateModelAvailability("request-1", "qwen")
+
+	require.NotNil(t, response)
+	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
+	assert.Equal(t, "10", responseHeader(response, "Retry-After"))
+	require.Len(t, wakeRequester.calls, 1)
+	assert.Equal(t, pod.Name, wakeRequester.calls[0].pod.Name)
+	assert.NotContains(t, response.GetImmediateResponse().GetBody(), "EngineSleeping")
+}
+
 func TestValidateModelAvailabilityDoesNotWakeNonSleepingModelClaim(t *testing.T) {
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "warm-1", Namespace: "default"},
