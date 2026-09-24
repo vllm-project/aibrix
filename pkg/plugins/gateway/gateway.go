@@ -63,6 +63,8 @@ const (
 	gatewayRespHeaders       = "gateway_rsp_headers"
 	gatewayReqBody           = "gateway_req_body"
 	defaultHTTPRouteCacheTTL = 30 * time.Second
+	defaultHTTPRouteErrorTTL = 2 * time.Second
+	httpRouteLookupTimeout   = 5 * time.Second
 	envHTTPRouteCacheTTL     = "AIBRIX_HTTPROUTE_CACHE_TTL"
 )
 
@@ -75,6 +77,8 @@ type Server struct {
 	redisClient         *redis.Client
 	ratelimiter         ratelimiter.RateLimiter
 	modelRateLimiter    ratelimiter.RateLimiter
+	disableRateLimiting bool
+	priorityTier        bool
 	apiKeyAuth          *apiKeyAuthConfig
 	client              kubernetes.Interface
 	gatewayClient       gatewayapi.Interface
@@ -86,12 +90,16 @@ type Server struct {
 	httpServer          *http.Server
 	httprouteCache      sync.Map
 	httprouteCacheTTL   time.Duration
+	httprouteErrorTTL   time.Duration
 	httprouteSFGroup    singleflight.Group
-	// videoJobCache maps a vLLM-Omni async video_id to the pod that owns it (see
-	// gateway_video_routing.go). Local in-memory cache, warmed from and
-	// write-through to redisClient (when configured) so any gateway replica can
-	// resolve a video_id created by a different replica.
-	videoJobCache sync.Map
+	// asyncJobs resolves the public job ids handed out for asynchronous APIs
+	// (currently vLLM-Omni's Videos API) back to the pod that owns the job. It
+	// reads and writes its store directly on every operation: there is no
+	// per-replica job cache, so any replica can answer a follow-up for a job
+	// another replica created, with no reconciliation window. Built lazily by
+	// asyncJobRegistry() when not injected.
+	asyncJobs     AsyncJobRegistry
+	asyncJobsOnce sync.Once
 	// Broadcast channel for server-initiated shutdown
 	shutdownCh   <-chan struct{}
 	shutdown     chan struct{}
@@ -106,6 +114,12 @@ func HasRequestBuffers(requestID string) bool {
 	_, requestPresent := requestBuffers.Load(requestID)
 	_, streamPresent := streamBuffers.Load(requestID)
 	return requestPresent || streamPresent
+}
+
+// recvResult is one (message, error) pair produced by a stream's srv.Recv().
+type recvResult struct {
+	req *extProcPb.ProcessingRequest
+	err error
 }
 
 type processState struct {
@@ -124,11 +138,24 @@ type processState struct {
 	isGatewayRspDone bool
 	completed        bool
 	trackedModel     string
-	requestDone      sync.Once
-	rootSpan         trace.Span // main span
-	inferenceSpan    trace.Span // routing completion to final response body
-	firstRespSpan    trace.Span // routing completion to first response body chunk
-	toLastRespSpan   trace.Span // first response body chunk to stream completion
+	// recvCh carries the result of the srv.Recv() this stream already has in
+	// flight. It is kept across processOnce calls because a call can return
+	// without consuming its message (PD fail-fast), and ext_proc requires that
+	// exactly one Recv be outstanding on a stream at a time.
+	recvCh chan recvResult
+	// prefillFailFastDone records that the PD prefill failure has been handled
+	// - not merely that the wakeup fired. The wakeup is a closed channel,
+	// which stays ready forever, so the loop must stop selecting on it once it
+	// has decided what to do, or a failure it deliberately ignored
+	// (bad_response) would spin. Until then it stays armed, so a wakeup that
+	// loses the tie to a message Envoy is waiting on fires again next time
+	// round.
+	prefillFailFastDone bool
+	requestDone         sync.Once
+	rootSpan            trace.Span // main span
+	inferenceSpan       trace.Span // routing completion to final response body
+	firstRespSpan       trace.Span // routing completion to first response body chunk
+	toLastRespSpan      trace.Span // first response body chunk to stream completion
 }
 
 var podName = os.Getenv("POD_NAME")
@@ -219,6 +246,14 @@ func httpRouteCacheTTL() time.Duration {
 type ServerOptions struct {
 	Cache         cache.Cache
 	RouterManager *routing.RouterManager
+	// DisableRateLimiting disables AIBrix user and model quota enforcement while
+	// leaving Redis available to other gateway features.
+	DisableRateLimiting bool
+	// PriorityTier forwards the tier a request declares through the
+	// x-aibrix-priority-tier header as the priority on the upstream vLLM
+	// request. Off by default: requests are forwarded unchanged unless a
+	// deployment opts in. See gateway_req_priority.go.
+	PriorityTier bool
 	// InFlightObserver receives test/diagnostic lifecycle deltas (+1/-1). The
 	// callback must be non-blocking and non-panicking because it runs on the
 	// request processing path and is not recovered by Gateway.
@@ -243,7 +278,7 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 	}
 	var r ratelimiter.RateLimiter
 	var mr ratelimiter.RateLimiter
-	if redisClient != nil {
+	if redisClient != nil && !options.DisableRateLimiting {
 		r = ratelimiter.NewRedisAccountRateLimiter("aibrix", redisClient, 1*time.Minute)
 		mr = ratelimiter.NewRedisAccountRateLimiter("aibrix_model", redisClient, 1*time.Second)
 	} else {
@@ -267,6 +302,8 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		redisClient:         redisClient,
 		ratelimiter:         r,
 		modelRateLimiter:    mr,
+		disableRateLimiting: options.DisableRateLimiting,
+		priorityTier:        options.PriorityTier,
 		apiKeyAuth:          loadAPIKeyAuthConfig(),
 		client:              client,
 		gatewayClient:       gatewayClient,
@@ -276,14 +313,28 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		inFlightObserver:    options.InFlightObserver,
 		wakeRequester:       newRuntimeModelWakeRequester(nil, defaultModelClaimRuntimePort),
 		httprouteCacheTTL:   httpRouteCacheTTL(),
+		httprouteErrorTTL:   defaultHTTPRouteErrorTTL,
 		shutdownCh:          shutdown,
 		shutdown:            shutdown,
 	}
-	s.startVideoJobCacheSync(shutdown)
+	s.asyncJobs = newAsyncJobRegistryForClient(redisClient, c)
+	if sar, err := routerManager.Lookup(routing.RouterSessionAffinity); err == nil {
+		if rb, ok := sar.(routing.RedisBackedRouter); ok {
+			rb.Start(shutdown, redisClient)
+		}
+	}
 	return s
 }
 
-func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
+func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) (err error) {
+	// Process is also reachable without the server's stream interceptor, so it
+	// recovers panics on its own as well.
+	defer func() {
+		if r := recover(); r != nil {
+			err = recoverStreamPanic(r, ProcessFullMethod)
+		}
+	}()
+
 	rootSpan := trace.SpanFromContext(srv.Context())
 	requestID := uuid.New().String()
 	if rootSpan.SpanContext().HasTraceID() {
@@ -364,26 +415,67 @@ func (s *Server) processOnce(srv extProcPb.ExternalProcessor_ProcessServer, st *
 	// cancellation arrives while the stream is idle. Envoy keeps ext_proc
 	// streams open indefinitely between requests, so a bare srv.Recv() would
 	// block GracefulStop() forever on rollout.
-	type recvResult struct {
-		req *extProcPb.ProcessingRequest
-		err error
+	//
+	// The channel outlives the call: a PD fail-fast that decides not to end the
+	// stream returns without consuming the message, and the next iteration must
+	// wait on the same in-flight Recv rather than start a second one.
+	if st.recvCh == nil {
+		ch := make(chan recvResult, 1)
+		st.recvCh = ch
+		go func() {
+			req, err := srv.Recv()
+			ch <- recvResult{req, err}
+		}()
 	}
-	ch := make(chan recvResult, 1)
-	go func() {
-		req, err := srv.Recv()
-		ch <- recvResult{req, err}
-	}()
+
+	// Arm the PD prefill-failure wakeup only once the routing context exists -
+	// it is assigned while handling RequestHeaders, and the prefill goroutine
+	// that records the failure is only started later, from RequestBody - and
+	// only until the failure has been acted on. PrefillFailed() is nil-safe and
+	// a nil channel blocks forever, so a non-PD stream selects on exactly the
+	// two cases it had before. A failure recorded before this point is not
+	// missed either: it closes the channel, and a receive on an already-closed
+	// channel is ready immediately.
+	var prefillFailed <-chan struct{}
+	if !st.prefillFailFastDone {
+		prefillFailed = st.routerCtx.PrefillFailed()
+	}
 
 	// ctx.Done() is intentionally omitted here: gRPC unblocks Recv when the
 	// stream context is cancelled, so handleRecvError handles that path.
 	// preRecvCheck covers the case where ctx is already done before we spawn.
 	var req *extProcPb.ProcessingRequest
 	select {
-	case r := <-ch:
+	case r := <-st.recvCh:
+		st.recvCh = nil
 		if r.err != nil {
 			return s.handleRecvError(st, r.err)
 		}
 		req = r.req
+	case <-prefillFailed:
+		// A message that has already arrived wins the tie: Envoy is waiting on
+		// a reply for it, and it may be the decode leg's response headers,
+		// which change which half of the fail-fast handling applies.
+		select {
+		case r := <-st.recvCh:
+			st.recvCh = nil
+			if r.err != nil {
+				return s.handleRecvError(st, r.err)
+			}
+			req = r.req
+		default:
+			// Disarmed only here, where the failure is actually handled.
+			// Setting it for the branch above would drop the wakeup on the
+			// floor: the failure would never be acted on, and the stream
+			// would go back to waiting out the decode pod's bootstrap
+			// timeout - the hang this whole path exists to prevent. Losing
+			// the tie costs nothing instead: the wakeup channel is closed,
+			// so the next iteration sees it ready again and fires fail-fast
+			// then, by which time a decode response among those buffered
+			// messages has been recorded and the after_response half applies.
+			st.prefillFailFastDone = true
+			return s.handlePrefillFailFast(srv, st)
+		}
 	case <-s.shutdownCh:
 		if st.model != "" {
 			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "aibrix_gateway_server_shutdown", "503", st.routerCtx)
@@ -513,6 +605,10 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		}
 
 	case *extProcPb.ProcessingRequest_ResponseHeaders:
+		// The decode pod has started answering: from here on a late PD prefill
+		// failure must not abort it, and must not fail a stream the client is
+		// already being served on.
+		st.routerCtx.MarkDecodeResponded()
 		resp, st.isRespError, st.respErrorCode = s.HandleResponseHeaders(st.ctx, st.routerCtx, st.requestID, st.model, req)
 		st.lastRespHeaders = resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders()
 		if st.isRespError {
@@ -522,6 +618,10 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		st.metricLabel = gatewayRespHeaders
 
 	case *extProcPb.ProcessingRequest_ResponseBody:
+		// Also marked here, not only on response headers: a filter chain
+		// configured without the response-header callback delivers body chunks
+		// as the first sign of life from the decode pod.
+		st.routerCtx.MarkDecodeResponded()
 		// Stop collecting on the first response body chunk.
 		if st.firstRespSpan != nil {
 			st.firstRespSpan.End()
@@ -533,6 +633,7 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		}
 		if st.isRespError {
 			body := string(req.Request.(*extProcPb.ProcessingRequest_ResponseBody).ResponseBody.GetBody())
+			body = string(rewriteVideoJobErrorBody(st.routerCtx, []byte(body)))
 			resp = s.responseErrorProcessingWithHeaders(st.ctx, st.routerCtx, st.lastRespHeaders, st.respErrorCode, st.model, st.requestID, body)
 		} else {
 			var usage TokenUsage
@@ -613,6 +714,12 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	}
 	readyPods := utils.FilterRoutablePods(pods.All())
 
+	// Resolve the model config profile's routing knobs once per request: the
+	// load-imbalance gate below and every strategy on the routing path read the
+	// same values from the routing context (see
+	// routingalgorithms.ResolveRoutingOverrides).
+	routing.ResolveRoutingOverrides(routeCtx)
+
 	if routeCtx.Span != nil {
 		routeCtx.Span.SetAttributes(
 			attribute.Int("candidate_pods", pods.Len()),
@@ -630,6 +737,13 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no ready pods for routing")
+	}
+
+	if limit := replicaInflightLimit(routeCtx); limit > 0 {
+		readyPods = s.filterSaturatedReplicaInflight(readyPods, limit)
+		if len(readyPods) == 0 {
+			return "", errReplicaInflightExceeded
+		}
 	}
 
 	// Resolve exclusivity from the caller's raw algorithm string rather than comparing it
@@ -665,6 +779,15 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 
 	if len(readyPods) == 1 && len(utils.GetPortsForPod(readyPods[0])) <= 1 && !isExclusive {
 		routeCtx.SetTargetPod(readyPods[0])
+		// This fast path skips router.Route() entirely, so a router with state to persist
+		// once a target pod is picked (e.g. session-affinity's Redis pin, or a multi-strategy
+		// blend wrapping it) never gets that chance unless we run its post-route hook here too.
+		if updater, ok := router.(types.PostRouteUpdater); ok {
+			podList := &utils.PodArray{Pods: readyPods}
+			if err := updater.PostRouteUpdate(routeCtx, podList, readyPods[0]); err != nil {
+				klog.Warningf("post-route update failed for request %s: %v", routeCtx.RequestID, err)
+			}
+		}
 		return routeCtx.TargetAddress(), nil
 	}
 	utils.CryptoShuffle(readyPods)
@@ -677,8 +800,9 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 }
 
 // validateHTTPRouteStatus checks if httproute object exists and validates its conditions are true.
-// Results are cached with a TTL (default 30s, configurable via AIBRIX_HTTPROUTE_CACHE_TTL) to
-// avoid hammering the Kubernetes API on every request.
+// Successful results are cached with a TTL (default 30s, configurable via
+// AIBRIX_HTTPROUTE_CACHE_TTL). Transient errors use a short TTL so route
+// creation and recovery are observed quickly without hammering the API server.
 func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) error {
 	// Skip validation in standalone mode (no gateway client)
 	if s.gatewayClient == nil {
@@ -706,10 +830,16 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 		}
 
 		name := utils.ModelRouterName(model)
-		httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(defaultAIBrixNamespace).Get(context.Background(), name, metav1.GetOptions{})
+		lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), httpRouteLookupTimeout)
+		defer cancel()
+		httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(defaultAIBrixNamespace).Get(lookupCtx, name, metav1.GetOptions{})
 		if err != nil {
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				s.httprouteCache.Store(model, httpRouteCacheEntry{err: err, expiresAt: time.Now().Add(s.httprouteCacheTTL)})
+				ttl := s.httprouteErrorTTL
+				if ttl <= 0 {
+					ttl = defaultHTTPRouteErrorTTL
+				}
+				s.httprouteCache.Store(model, httpRouteCacheEntry{err: err, expiresAt: time.Now().Add(ttl)})
 			}
 			return nil, err
 		}
@@ -735,7 +865,14 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 		if len(errMsg) > 0 {
 			result = errors.New(strings.Join(errMsg, ", "))
 		}
-		s.httprouteCache.Store(model, httpRouteCacheEntry{err: result, expiresAt: time.Now().Add(s.httprouteCacheTTL)})
+		ttl := s.httprouteCacheTTL
+		if result != nil {
+			ttl = s.httprouteErrorTTL
+			if ttl <= 0 {
+				ttl = defaultHTTPRouteErrorTTL
+			}
+		}
+		s.httprouteCache.Store(model, httpRouteCacheEntry{err: result, expiresAt: time.Now().Add(ttl)})
 		return result, nil
 	})
 

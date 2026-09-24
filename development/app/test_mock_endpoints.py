@@ -355,6 +355,31 @@ def test_malformed_legacy_json_returns_bad_request_and_finalizes_rejected_record
     assert record["error"]
 
 
+def test_non_pd_backend_fault_is_request_scoped_and_recorded(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+    payload = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 1,
+    }
+
+    response = post_json(
+        client,
+        "/v1/chat/completions",
+        payload,
+        request_id="backend-failure",
+        **{"X-Aibrix-Mock-Fail": "backend"},
+    )
+
+    assert response.status_code == 500
+    assert response.get_json()["error"]["message"] == "mock failure injected for backend"
+    record = query_records(client, "backend-failure")[0]
+    assert record["role"] == ""
+    assert record["outcome"] == "failed"
+    assert record["status_code"] == 500
+
+
 @pytest.mark.parametrize(
     "path,payload,ordinary_field,finish_reason",
     [
@@ -646,3 +671,43 @@ def test_legacy_omni_image_and_audio_shapes_remain_available(monkeypatch):
     assert image_response.get_json()["choices"][0]["message"]["content"][0]["type"] == "image_url"
     assert audio_response.status_code == 200
     assert audio_response.get_json()["choices"][0]["message"]["audio"]["format"] == "wav"
+
+
+def test_abort_request_records_the_rid_of_the_aborted_decode_leg(monkeypatch):
+    module = load_mock_module(monkeypatch, contract="sglang-http", role="decode")
+    client = module.app.test_client()
+    rid = "req-abort-0123456789abcdef"
+
+    response = client.post(
+        "/abort_request",
+        data=json.dumps({"rid": rid}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "ok", "rid": rid}
+    records = query_records(client, rid)
+    assert len(records) == 1
+    record = records[0]
+    assert record["path"] == "/abort_request"
+    assert record["role"] == "decode"
+    assert record["parsed_json"] == {"rid": rid}
+    assert record["outcome"] == "success"
+    assert record["status_code"] == 200
+
+
+def test_abort_request_without_rid_is_rejected(monkeypatch):
+    module = load_mock_module(monkeypatch, contract="sglang-http", role="decode")
+    client = module.app.test_client()
+
+    response = client.post(
+        "/abort_request",
+        data=json.dumps({"abort_all": False}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    records = client.get("/debug/requests").get_json()
+    assert records[-1]["path"] == "/abort_request"
+    assert records[-1]["outcome"] == "rejected"
+    assert records[-1]["request_id"] is None

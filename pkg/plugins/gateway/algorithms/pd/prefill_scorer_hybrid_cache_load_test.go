@@ -41,6 +41,7 @@ type hybridTestFixture struct {
 	policy  PrefillScorePolicy
 	table   *prefixcacheindexer.PrefixHashTable
 	tracker *TokenLoadTracker
+	cfg     HybridCacheLoadConfig
 	pods    []*v1.Pod
 	ready   map[string]struct{}
 }
@@ -50,9 +51,10 @@ func newHybridTestFixture(t *testing.T, cfg HybridCacheLoadConfig, podNames ...s
 	f := &hybridTestFixture{
 		table:   prefixcacheindexer.NewPrefixHashTable(),
 		tracker: newTokenLoadTracker(TokenLoadConfig{KVWeight: 0.5}, nil),
+		cfg:     cfg,
 		ready:   map[string]struct{}{},
 	}
-	f.policy = NewHybridCacheLoadPrefillPolicy(tokenizer.NewCharacterTokenizer(), f.table, f.tracker, cfg)
+	f.policy = NewHybridCacheLoadPrefillPolicy(tokenizer.NewCharacterTokenizer(), f.table, f.tracker)
 	for _, name := range podNames {
 		f.pods = append(f.pods, tokenLoadTestPod(name))
 		f.ready[name] = struct{}{}
@@ -71,9 +73,18 @@ func (f *hybridTestFixture) seedPrefix(t *testing.T, pod string, matchPct int) {
 	f.table.AddPrefix(hashes[:len(hashes)*matchPct/100], testModelName, pod)
 }
 
+// prepare resolves the fixture's configuration as the request's overrides, the
+// way the PD router parks a profile's values on the request path. The KV weight
+// matches the tracker's own configuration so the two knobs stay comparable.
 func (f *hybridTestFixture) prepare(t *testing.T) PrefillScorer {
 	t.Helper()
 	ctx := types.NewRoutingContext(context.Background(), "pd", testModelName, hybridTestMessage, "req-1", "")
+	overrides := types.PDOverrides{
+		HybridCacheLoadFactor: f.cfg.Factor,
+		MinMatchPct:           f.cfg.MinMatchPct,
+		TokenLoad:             types.PDTokenLoadOverrides{KVWeight: 0.5},
+	}
+	ctx.SetPDOverrides(&overrides)
 	scorer, err := f.policy.Prepare(ctx, f.pods, f.ready)
 	require.NoError(t, err)
 	return scorer
@@ -157,7 +168,7 @@ func TestClampMinMatch(t *testing.T) {
 
 func TestHybridCacheLoadPrefillPolicy_NilTrackerScoresByPrefixOnly(t *testing.T) {
 	table := prefixcacheindexer.NewPrefixHashTable()
-	policy := NewHybridCacheLoadPrefillPolicy(tokenizer.NewCharacterTokenizer(), table, nil, hybridTestConfig)
+	policy := NewHybridCacheLoadPrefillPolicy(tokenizer.NewCharacterTokenizer(), table, nil)
 	ctx := types.NewRoutingContext(context.Background(), "pd", testModelName, hybridTestMessage, "req-1", "")
 	scorer, err := policy.Prepare(ctx, nil, map[string]struct{}{"pod-a": {}})
 	require.NoError(t, err)

@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -71,7 +72,7 @@ func TestRedisRateLimiter_IncrAndGetCurrentWindow(t *testing.T) {
 
 	ctx := context.Background()
 	key := "userA_RPM_CURRENT"
-	redisKey := typed.genKey(key)
+	redisKey := typed.genKey(key, typed.windowSize)
 	t.Cleanup(func() {
 		_ = client.Del(ctx, redisKey).Err()
 	})
@@ -119,7 +120,7 @@ func TestRedisRateLimiter_ConcurrentIncrements(t *testing.T) {
 
 	ctx := context.Background()
 	key := "burst_MODEL_RPS_CURRENT"
-	redisKey := typed.genKey(key)
+	redisKey := typed.genKey(key, typed.windowSize)
 	t.Cleanup(func() {
 		_ = client.Del(ctx, redisKey).Err()
 	})
@@ -148,4 +149,53 @@ func TestRedisRateLimiter_ConcurrentIncrements(t *testing.T) {
 	got, err := rl.Get(ctx, key)
 	require.NoError(t, err)
 	assert.Equal(t, int64(workers), got, "all concurrent increments should be reflected")
+}
+
+// TestRedisRateLimiter_RejectedIncrementDoesNotExtendTTL guards against a regression where
+// a rejected request (which enforceModelRPS refunds with a matching -1 Incr) or a client
+// retrying after a 429 could keep resetting the window's expiry. incrAndExpire now uses
+// ExpireNX, so only the increment that first creates the key in a window may set its TTL --
+// every later call in the same window, whether it admits, rejects, or refunds, must leave
+// the original deadline untouched. Without that, a long window (enforceModelRPS supports up
+// to an hour for sub-1 rps limits) could be held open indefinitely by retries.
+func TestRedisRateLimiter_RejectedIncrementDoesNotExtendTTL(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	window := 2 * time.Second
+	rl := NewRedisAccountRateLimiter("aibrix_model_test", client, window)
+	typed := rl.(*redisRateLimiter)
+	ctx := context.Background()
+	key := "model_x_MODEL_RPS_CURRENT"
+	redisKey := typed.genKey(key, typed.windowSize)
+
+	// First increment (the admitted request) creates the key and sets its TTL.
+	val, err := rl.Incr(ctx, key, 1)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), val)
+	initialTTL := mr.TTL(redisKey)
+	require.Positive(t, initialTTL)
+
+	mr.FastForward(500 * time.Millisecond)
+
+	// A second increment (a rejected request) followed by its refund (-1, as
+	// enforceModelRPS does on overflow) must not push the expiry back out.
+	val, err = rl.Incr(ctx, key, 1)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), val)
+	val, err = rl.Incr(ctx, key, -1)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), val, "the rejected increment must be fully refunded")
+
+	ttlAfter := mr.TTL(redisKey)
+	assert.Positive(t, ttlAfter, "key must still carry its original TTL, not have lost it")
+	assert.LessOrEqual(t, ttlAfter, initialTTL, "TTL must not be extended by a rejected/refunded increment")
+
+	// The window still expires on its original schedule: once it elapses, a fresh request
+	// starts a brand new window rather than the retries having pinned the old one open.
+	mr.FastForward(window)
+	current, err := rl.Get(ctx, key)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), current, "window must expire on schedule despite the earlier reject/refund")
 }

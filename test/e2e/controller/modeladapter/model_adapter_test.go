@@ -78,7 +78,7 @@ func TestModelAdapter(t *testing.T) {
 	assert.NotEqual(t, newPod, oldPod, "ensure old and new pods are different")
 
 	// run inference for model adapter
-	validateInference(t, loraName)
+	waitForInference(t, loraName)
 }
 
 // TestModelAdapterRetryMechanism tests the retry mechanism with exponential backoff
@@ -484,7 +484,9 @@ func TestModelAdapterAllPodsRemoved(t *testing.T) {
 
 	assert.True(t, adapter.Status.ReadyReplicas > 0, "adapter should have recovered with ready replicas")
 	validateAllPodsAreReady(t, k8sClient, 3, baseModelPodLabelSelector("llama2-7b"))
-	validateInference(t, adapterName)
+	// The Deployment recreates pods independently of the gateway's view of the adapter,
+	// so poll the endpoint instead of asserting it is servable on the first attempt.
+	waitForInference(t, adapterName)
 }
 
 // TestModelAdapterNoReadyPodsCondition guards the Scheduled condition surfaced by
@@ -701,7 +703,7 @@ func TestModelAdapterDeletionCleansUpOwnedResources(t *testing.T) {
 	require.NoError(t, err, "expected ModelAdapter to own an EndpointSlice")
 
 	t.Log("running inference to confirm the adapter is servable before deletion")
-	validateInference(t, adapterName)
+	waitForInference(t, adapterName)
 
 	t.Log("deleting the model adapter")
 	require.NoError(t, v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Delete(context.Background(),
@@ -761,14 +763,21 @@ func createModelAdapterConfig(name, model string) *modelv1alpha1.ModelAdapter {
 
 func validateModelAdapter(t *testing.T, client *v1alpha1.Clientset, name string) *modelv1alpha1.ModelAdapter {
 	var adapter *modelv1alpha1.ModelAdapter
-	assert.NoError(t, wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 30*time.Second, true,
+	err := wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 120*time.Second, true,
 		func(ctx context.Context) (done bool, err error) {
-			adapter, err = client.ModelV1alpha1().ModelAdapters("default").Get(context.Background(), name, v1.GetOptions{})
+			adapter, err = client.ModelV1alpha1().ModelAdapters("default").Get(ctx, name, v1.GetOptions{})
 			if err != nil || adapter.Status.Phase != modelv1alpha1.ModelAdapterRunning {
+				if err != nil {
+					t.Logf("waiting for model adapter %s: %v", name, err)
+				} else {
+					t.Logf("waiting for model adapter %s: phase=%s instances=%v", name, adapter.Status.Phase, adapter.Status.Instances)
+				}
 				return false, nil
 			}
 			return true, nil
-		}))
-	assert.True(t, len(adapter.Status.Instances) > 0, "model adapter scheduled on atleast one pod")
+		})
+	require.NoError(t, err, "model adapter %s did not become Running", name)
+	require.NotNil(t, adapter)
+	require.NotEmpty(t, adapter.Status.Instances, "model adapter scheduled on at least one pod")
 	return adapter
 }

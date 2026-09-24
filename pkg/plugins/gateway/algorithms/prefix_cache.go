@@ -33,7 +33,6 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
-	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -427,10 +426,15 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	podRequestCount := getRequestCounts(p.cache, readyPods)
 
 	matchedPods, prefixHashes = p.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
-	klog.V(4).InfoS("prefix_hashes", "request_id", ctx.RequestID, "prefix_hashes", prefixHashes)
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("prefix_hashes", "request_id", ctx.RequestID, "prefix_hashes", prefixHashes)
+	}
 
 	if len(matchedPods) > 0 {
-		targetPod = getTargetPodFromMatchedPodsFromCounts(podRequestCount, readyPods, matchedPods)
+		// The request's resolved overrides carry the profile's value on top of
+		// the process default (see ResolveRoutingOverrides).
+		sigma := ctx.RoutingOverrides().PrefixCache.StandardDeviationFactor
+		targetPod = getTargetPodFromMatchedPodsFromCounts(podRequestCount, readyPods, matchedPods, sigma)
 		if targetPod != nil {
 			selection = selectionPrefixMatch
 		}
@@ -777,7 +781,7 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 
 	// Tokenize the input based on endpoint type
 	var tokens []byte
-	if ctx.ReqPath == "/v1/chat/completions" {
+	if utils.PathWithoutQuery(ctx.ReqPath) == "/v1/chat/completions" {
 		tokens = k.tokenizeChatRequest(ctx, tokenizerToUse)
 	}
 
@@ -807,15 +811,20 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	}
 	matchedPods, prefixHashes = k.syncIndexer.MatchPrefix(modelName, loraID, tokens, readyPodsMap)
 
-	klog.V(4).InfoS("prefix cache matching completed",
-		"model", modelName,
-		"lora_id", loraID,
-		"matched_pods", len(matchedPods),
-		"prefix_hashes", len(prefixHashes),
-		"ready_pods", readyPodList.Len())
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("prefix cache matching completed",
+			"model", modelName,
+			"lora_id", loraID,
+			"matched_pods", len(matchedPods),
+			"prefix_hashes", len(prefixHashes),
+			"ready_pods", readyPodList.Len())
+	}
 
 	if len(matchedPods) > 0 {
-		targetPod = getTargetPodFromMatchedPodsWithKeys(k.cache, readyPods, matchedPods)
+		// The request's resolved overrides carry the profile's value on top of
+		// the process default (see ResolveRoutingOverrides).
+		sigma := ctx.RoutingOverrides().PrefixCache.StandardDeviationFactor
+		targetPod = getTargetPodFromMatchedPodsWithKeys(k.cache, readyPods, matchedPods, sigma)
 		if targetPod != nil {
 			selection = selectionPrefixMatch
 			klog.InfoS("prefix_cache_matched_pods",
@@ -878,8 +887,10 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	return ctx.TargetAddress(), nil
 }
 
-// getTargetPodFromMatchedPodsWithKeys is similar to getTargetPodFromMatchedPods but uses pod keys
-func getTargetPodFromMatchedPodsWithKeys(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
+// getTargetPodFromMatchedPodsWithKeys is similar to getTargetPodFromMatchedPods but uses pod keys.
+// stdDevFactor is how many standard deviations above the mean replica request count a candidate
+// may sit before it is skipped: the environment default, or the request profile's override.
+func getTargetPodFromMatchedPodsWithKeys(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int, stdDevFactor int) *v1.Pod {
 	var targetPodKey string
 	requestCount := []float64{}
 
@@ -916,7 +927,7 @@ func getTargetPodFromMatchedPodsWithKeys(cache cache.Cache, readyPods []*v1.Pod,
 	// select targetpod with highest %prefixmatch and request_count within stddev
 	for _, podkey := range podkeys {
 		reqCnt := float64(podRequestCount[podkey])
-		if reqCnt <= meanRequestCount+float64(standardDeviationFactor)*stdDevRequestCount {
+		if reqCnt <= meanRequestCount+float64(stdDevFactor)*stdDevRequestCount {
 			targetPodKey = podkey
 			break
 		}
@@ -925,11 +936,11 @@ func getTargetPodFromMatchedPodsWithKeys(cache cache.Cache, readyPods []*v1.Pod,
 	return podKeyToPod[targetPodKey]
 }
 
-func getTargetPodFromMatchedPods(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
-	return getTargetPodFromMatchedPodsFromCounts(getRequestCounts(cache, readyPods), readyPods, matchedPods)
+func getTargetPodFromMatchedPods(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int, stdDevFactor int) *v1.Pod {
+	return getTargetPodFromMatchedPodsFromCounts(getRequestCounts(cache, readyPods), readyPods, matchedPods, stdDevFactor)
 }
 
-func getTargetPodFromMatchedPodsFromCounts(podRequestCount map[string]int, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
+func getTargetPodFromMatchedPodsFromCounts(podRequestCount map[string]int, readyPods []*v1.Pod, matchedPods map[string]int, stdDevFactor int) *v1.Pod {
 	var targetPodName string
 	requestCount := make([]float64, 0, len(podRequestCount))
 
@@ -958,7 +969,7 @@ func getTargetPodFromMatchedPodsFromCounts(podRequestCount map[string]int, ready
 	// select targetpod with highest %prefixmatch and request_count within stddev
 	for _, podname := range podnames {
 		reqCnt := float64(podRequestCount[podname])
-		if reqCnt <= meanRequestCount+float64(standardDeviationFactor)*stdDevRequestCount {
+		if reqCnt <= meanRequestCount+float64(stdDevFactor)*stdDevRequestCount {
 			targetPodName = podname
 			break
 		}
@@ -967,16 +978,21 @@ func getTargetPodFromMatchedPodsFromCounts(podRequestCount map[string]int, ready
 	return targetPod
 }
 
-// getRequestCountsWithKeys returns running request count for each pod using pod keys
+// getRequestCountsWithKeys returns the live cross-gateway running request count for
+// each pod, keyed by pod key. Uses GetPodsRunningRequests (one Redis round trip for
+// the whole list), not GetMetricValueByPod(RealtimeNumRequestsRunning), which is a
+// periodically synced cache that, between scrape ticks, only reflects this gateway's
+// local view.
 func getRequestCountsWithKeys(cache cache.Cache, readyPods []*v1.Pod) map[string]int {
+	counts, err := cache.GetPodsRunningRequests(readyPods)
 	podRequestCount := map[string]int{}
 	for _, pod := range readyPods {
 		podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
-		runningReq, err := cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning)
-		if err != nil {
-			runningReq = &metrics.SimpleMetricValue{Value: 0}
+		if err == nil && counts != nil {
+			podRequestCount[podKey] = int(counts[podKey])
+		} else {
+			podRequestCount[podKey] = 0
 		}
-		podRequestCount[podKey] = int(runningReq.GetSimpleValue())
 	}
 	return podRequestCount
 }

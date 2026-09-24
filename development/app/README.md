@@ -138,10 +138,31 @@ curl -sS -i -X POST http://127.0.0.1:8000/v1/chat/completions \
   -H 'x-request-id: local-delay-1' \
   -H 'x-aibrix-mock-delay-ms: 200' \
   -d '{"model":"llama2-7b","messages":[{"role":"user","content":"wait"}]}'
+
+# Delay only the leg handled by a process with MOCK_PD_ROLE=decode.
+curl -sS -i -X POST http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'x-request-id: local-delay-2' \
+  -H 'x-aibrix-mock-delay-ms: 5000' \
+  -H 'x-aibrix-mock-delay-role: decode' \
+  -d '{"model":"llama2-7b","messages":[{"role":"user","content":"wait"}]}'
 ```
 
 Matching `fail` requests return HTTP 500 and invalid delay values return HTTP
-400. Both outcomes are recorded. The delay limit is 30 seconds.
+400. Both outcomes are recorded. Use `x-aibrix-mock-fail: backend` for a non-PD
+mock deployment; `prefill` and `decode` remain role-specific. The delay limit
+is 30 seconds.
+
+`x-aibrix-mock-delay-ms` alone applies to whichever leg receives the request,
+which for a disaggregated request is both of them: the gateway forwards client
+headers to the prefill and the decode pod alike. `x-aibrix-mock-delay-role`
+(`prefill` or `decode`) restricts the delay to one leg, so a test can hold one
+leg while the other answers immediately. An unknown role returns HTTP 400.
+
+`POST /abort_request` mocks the SGLang endpoint the gateway calls on the decode
+pod when a PD prefill leg failed. It takes `{"rid": "..."}`, answers `200`, and
+records the abort under that rid so a test can assert which request the gateway
+cancelled; a request without a rid is rejected with HTTP 400.
 
 ### PD mock deployment in Kubernetes
 

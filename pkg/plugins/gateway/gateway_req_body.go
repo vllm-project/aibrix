@@ -50,11 +50,11 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 	defer span.End()
 
 	// Async video job follow-ups (GET status/content, DELETE) carry their routing
-	// key -- video_id -- in the path, not the (often empty) body. The generated
-	// video only exists on the pod that created it, so this bypasses the normal
-	// model-based routing below and pins directly back to that pod.
-	if videoID, isSubResource := extractVideoIDFromPath(requestPath); isSubResource {
-		return s.handleVideoJobSubResource(ctx, routingCtx, requestID, requestPath, videoID, body.RequestBody.GetBody())
+	// key -- the public job id -- in the path, not the (often empty) body. The
+	// generated video only exists on the pod that created it, so this bypasses the
+	// normal model-based routing below and pins directly back to that pod.
+	if publicJobID, isSubResource := extractVideoIDFromPath(requestPath); isSubResource {
+		return s.handleVideoJobSubResource(ctx, routingCtx, requestID, requestPath, publicJobID, body.RequestBody.GetBody())
 	}
 
 	var model, message string
@@ -123,17 +123,24 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 
 	// The async video job (POST /v1/videos) must always be pinned to the pod that
 	// creates it: the generated video lives on that pod's local disk, and
-	// recordVideoJobPodFromResponse (called from HandleResponseBody) records
-	// routingCtx's target pod so follow-up GET/DELETE calls can be routed back to
-	// it. RouterNotSet delegates routing to the HTTPRoute/k8s Service below and
-	// never calls SetTargetPod, which would leave that pod mapping unrecorded and
-	// block recordVideoJobPodFromResponse's TargetPod() call until the request's
-	// context is done. Force a real algorithm here regardless of the client's
-	// routing-strategy header (or lack of one).
+	// registerVideoJobFromCreateResponse (called from HandleResponseBody) records
+	// routingCtx's target pod identity so follow-up GET/DELETE calls can be routed
+	// back to it. RouterNotSet delegates routing to the HTTPRoute/k8s Service
+	// below and never calls SetTargetPod, which would leave the job unregisterable
+	// and block that TargetPod() call until the request's context is done. Force a
+	// real algorithm here regardless of the client's routing-strategy header (or
+	// lack of one).
 	if routingAlgorithm == routing.RouterNotSet && pathWithoutQuery(requestPath) == PathVideos {
 		routingAlgorithm = routing.RouterLeastRequest
 		routingCtx.Algorithm = routingAlgorithm
 	}
+
+	// The tier the caller declared is mapped onto the body that is forwarded
+	// upstream. This runs before a pod is chosen because the PD router builds the
+	// prefill leg out of the routing context while it routes (see
+	// pd/prefill.PreparePayload): both legs of a PD request have to carry the
+	// same priority, so the rewrite cannot wait for the routing decision.
+	s.applyPriorityTier(routingCtx)
 
 	// Pre-allocate for the routing path (4 headers: strategy, target-pod, content-length, X-Request-Id).
 	headers := make([]*configPb.HeaderValueOption, 0, 4)
@@ -159,7 +166,14 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		if err := s.validateHTTPRouteStatus(ctx, model); err != nil {
 			return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, err.Error(), ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, stream, term
 		}
-		headers = buildEnvoyProxyHeaders(headers, HeaderModel, model)
+		// The response replaces the upstream body with routingCtx.ReqBody, and
+		// routing as well as the priority mapping above may have changed its
+		// size. Envoy validates the upstream request against this header, so it
+		// always describes the body that is actually forwarded rather than the
+		// one that arrived.
+		headers = buildEnvoyProxyHeaders(headers,
+			HeaderModel, model,
+			"content-length", strconv.Itoa(len(routingCtx.ReqBody)))
 		klog.InfoS("request_start", "request_id", requestID, "request_path", requestPath, "model", model, "stream", stream)
 	} else {
 		externalFilter := routingCtx.ReqHeaders[HeaderExternalFilter]
@@ -170,9 +184,17 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 				return buildRoutingErrorResponse(routingCtx, requestID, envoyTypePb.StatusCode_BadRequest,
 					invalidReqErr.Error(), "", "", HeaderErrorRouting, "true"), model, stream, term
 			}
+			if errors.Is(err, errReplicaInflightExceeded) {
+				limit := replicaInflightLimit(routingCtx)
+				klog.InfoS("replica_inflight_exceeded", "requestID", requestID, "model", model, "limit", limit, "reason", "all_replicas_saturated")
+				return replicaInflightExceededResponse(model, limit), model, stream, term
+			}
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingStrategy", routingAlgorithm, "model", model, "routingDuration", routingCtx.GetRoutingDelay())
 			return buildRoutingErrorResponse(routingCtx, requestID, envoyTypePb.StatusCode_ServiceUnavailable,
 				"error on selecting target pod", ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, stream, term
+		}
+		if errRes = s.enforceReplicaInflight(ctx, model, routingCtx); errRes != nil {
+			return errRes, model, stream, term
 		}
 		headers = buildEnvoyProxyHeaders(headers,
 			HeaderRoutingStrategy, string(routingAlgorithm),
@@ -212,7 +234,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 	routingCtx.RequestEndTime = time.Now()
 	term = s.cache.AddRequestCount(routingCtx, requestID, model)
 
-	return &extProcPb.ProcessingResponse{
+	resp := &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_RequestBody{
 			RequestBody: &extProcPb.BodyResponse{
 				Response: &extProcPb.CommonResponse{
@@ -227,7 +249,14 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 				},
 			},
 		},
-	}, model, stream, term
+	}
+
+	// No ModeOverride is sent: the response body mode this create needs (Buffered,
+	// so the backend job id can be replaced before anything reaches the client)
+	// comes from the Videos route's EnvoyExtensionPolicy. Envoy Gateway v1.2.8
+	// never sets ext_proc's allow_mode_override, so a per-request override here
+	// would be silently ignored and would only read as if it did something.
+	return resp, model, stream, term
 }
 
 func buildRoutingErrorResponse(
@@ -266,7 +295,7 @@ func getEngineBasedPathRewrite(requestPath string, pods []*v1.Pod) string {
 
 	// Only xdit engine needs path rewriting to its native endpoints
 	if engine == EngineXdit {
-		switch requestPath {
+		switch pathWithoutQuery(requestPath) {
 		case PathImagesGenerations:
 			return PathXditGenerate
 		case PathVideoGenerations:
@@ -328,7 +357,13 @@ func modelClaimRetryResponse(model, state string) *extProcPb.ProcessingResponse 
 		ErrorCodeServiceUnavailable, "model")
 }
 
-// Helper to fetch running requests on a pod with safe zero fallback.
+// getRunningRequestsByPod fetches the local metric slot for a pod's running-request
+// count, with a safe zero fallback. This is the periodically synced cache
+// (RealtimeNumRequestsRunning), not a live cross-gateway read -- fine for per-request
+// logging (request_start/request_end sit on the ext_proc Send path, where an extra
+// Redis round trip is not worth paying), but not for a routing or admission decision.
+// Use cache.GetPodRunningRequests (or, for admission, AdmitPodRunningRequest -- see
+// gateway_inflight.go's enforceReplicaInflight) for those.
 func getRunningRequestsByPod(s *Server, podName, namespace string) float64 {
 	mv, err := s.cache.GetMetricValueByPod(podName, namespace, metrics.RealtimeNumRequestsRunning)
 	if err != nil || mv == nil {

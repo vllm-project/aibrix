@@ -18,12 +18,15 @@ package gateway
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/testing/protocmp"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -142,6 +145,24 @@ func Test_HandleResponseHeaders(t *testing.T) {
 			},
 		},
 		{
+			name: "authoritative routing policy hides routing diagnostics",
+			routingCtx: func() *types.RoutingContext {
+				ctx := createRoutingCtx(true, map[string]string{HeaderAIBrixConfigProfile: "default"})
+				ctx.ConfigProfile = &types.ResolvedConfigProfile{AuthoritativeRoutingPolicy: true}
+				return ctx
+			}(),
+			responseStatus: "200",
+			expected: testResponse{
+				processingErrorCode: 0,
+				isProcessingError:   false,
+				headers: []*configPb.HeaderValueOption{
+					{Header: &configPb.HeaderValue{Key: HeaderWentIntoReqHeaders, RawValue: []byte("true")}},
+					{Header: &configPb.HeaderValue{Key: HeaderRequestID, RawValue: []byte("test-req-id")}},
+					{Header: &configPb.HeaderValue{Key: ":status", RawValue: []byte("200")}},
+				},
+			},
+		},
+		{
 			name:           "response headers include pseudo-header (should be skipped)",
 			routingCtx:     createRoutingCtx(false, map[string]string{":path": "/ignored", "X-Real": "ok"}),
 			responseStatus: "200",
@@ -189,6 +210,121 @@ func Test_HandleResponseHeaders(t *testing.T) {
 				t.Fatalf("Headers do not match:\n%s", cmp.Diff(tt.expected.headers, actualHeaders, protocmp.Transform()))
 			}
 			mockCache.AssertNotCalled(t, "DoneRequestCount")
+		})
+	}
+}
+
+// newVideoResponseHeadersRequest builds the ResponseHeaders message Envoy sends
+// with only the pseudo-header the video hooks look at: the status code.
+func newVideoResponseHeadersRequest(status string) *extProcPb.ProcessingRequest {
+	return &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseHeaders{
+			ResponseHeaders: &extProcPb.HttpHeaders{
+				Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
+					{Key: ":status", RawValue: []byte(status)},
+				}},
+			},
+		},
+	}
+}
+
+// videoDeleteRoutingContext mirrors what the request phases leave behind for a
+// DELETE follow-up: ReqPath still holds the client's original path, so it is
+// still the public id -- the backend id only ever appears in the path header
+// mutation handed to Envoy.
+func videoDeleteRoutingContext(t *testing.T, publicJobID string) *types.RoutingContext {
+	t.Helper()
+	routerCtx := types.NewRoutingContext(context.Background(), "", "wan2.1-vace-1.3b", "", "req-del", "")
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodDelete}
+	routerCtx.ReqPath = PathVideos + "/" + publicJobID
+	return routerCtx
+}
+
+// TestHandleResponseHeaders_VideoDeleteRemovesRecord covers the only point in
+// the flow where a record is legitimately dropped on the client's behalf: the
+// backend confirmed the job is gone (2xx), or already did not have it (404).
+func TestHandleResponseHeaders_VideoDeleteRemovesRecord(t *testing.T) {
+	for _, status := range []string{"200", "204", "404"} {
+		t.Run("backend "+status, func(t *testing.T) {
+			s, _, registry := newTestVideoJobServer(t)
+			record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
+				readyPod("pod-a", "ns-a", "10.0.0.5"))
+
+			resp, _, _ := s.HandleResponseHeaders(context.Background(), videoDeleteRoutingContext(t, record.PublicJobID),
+				"req-del", "wan2.1-vace-1.3b", newVideoResponseHeadersRequest(status))
+
+			assert.Nil(t, resp.GetImmediateResponse())
+			assert.Equal(t, 0, videoJobRecordCount(t, registry, asyncJobOwnerShared))
+		})
+	}
+}
+
+// TestHandleResponseHeaders_VideoDeleteKeepsRecordOnBackendFailure keeps a
+// retry possible: the job may well still exist on the pod, and forgetting it
+// here would strand it with no way for the client to address it again.
+func TestHandleResponseHeaders_VideoDeleteKeepsRecordOnBackendFailure(t *testing.T) {
+	s, _, registry := newTestVideoJobServer(t)
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
+		readyPod("pod-a", "ns-a", "10.0.0.5"))
+
+	resp, isErr, code := s.HandleResponseHeaders(context.Background(), videoDeleteRoutingContext(t, record.PublicJobID),
+		"req-del", "wan2.1-vace-1.3b", newVideoResponseHeadersRequest("500"))
+
+	assert.True(t, isErr)
+	assert.Equal(t, 500, code)
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.Equal(t, 1, videoJobRecordCount(t, registry, asyncJobOwnerShared))
+}
+
+// TestHandleResponseHeaders_VideoDeleteCleanupFailureReturns503 tells the truth
+// to the client: the backend deleted the job, but the registry still lists it,
+// so the caller must retry the DELETE to finish the cleanup.
+func TestHandleResponseHeaders_VideoDeleteCleanupFailureReturns503(t *testing.T) {
+	s, _, registry := newTestVideoJobServer(t)
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
+		readyPod("pod-a", "ns-a", "10.0.0.5"))
+	registry.store = &failingAsyncJobStore{asyncJobStore: registry.store, deleteErr: errAsyncJobStoreUnavailable}
+
+	resp, _, _ := s.HandleResponseHeaders(context.Background(), videoDeleteRoutingContext(t, record.PublicJobID),
+		"req-del", "wan2.1-vace-1.3b", newVideoResponseHeadersRequest("204"))
+
+	require.NotNil(t, resp.GetImmediateResponse())
+	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, resp.GetImmediateResponse().GetStatus().GetCode())
+}
+
+// TestHandleResponseHeaders_VideoJSONDropsContentLength: the create/status/delete
+// body gets its id rewritten, so the upstream content-length no longer describes it.
+// Leaving the header would make Envoy truncate or stall the response.
+func TestHandleResponseHeaders_VideoJSONDropsContentLength(t *testing.T) {
+	tests := []struct {
+		name        string
+		method      string
+		path        string
+		wantRemoved bool
+	}{
+		{"create response is rewritten", http.MethodPost, PathVideos, true},
+		{"status response is rewritten", http.MethodGet, PathVideos + "/aibrixjob-abc", true},
+		{"content response streams untouched", http.MethodGet, PathVideos + "/aibrixjob-abc/content", false},
+		{"list response never reaches upstream", http.MethodGet, PathVideos, false},
+		{"delete response is rewritten", http.MethodDelete, PathVideos + "/aibrixjob-abc", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, _, _ := newTestVideoJobServer(t)
+			routerCtx := types.NewRoutingContext(context.Background(), "", "wan2.1-vace-1.3b", "", "req-1", "")
+			routerCtx.ReqHeaders = map[string]string{methodKey: tt.method}
+			routerCtx.ReqPath = tt.path
+
+			resp, _, _ := s.HandleResponseHeaders(context.Background(), routerCtx, "req-1", "wan2.1-vace-1.3b",
+				newVideoResponseHeadersRequest("200"))
+
+			removed := resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetRemoveHeaders()
+			if tt.wantRemoved {
+				assert.Contains(t, removed, "content-length")
+			} else {
+				assert.NotContains(t, removed, "content-length")
+			}
 		})
 	}
 }

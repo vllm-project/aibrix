@@ -116,7 +116,7 @@ func TestPDRouter_ConcurrentBurstSeesPriorSelections(t *testing.T) {
 		selectionCounts:       map[string]int64{},
 	}
 	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
-	r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker, prefillRequestTimeout)
+	r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker)
 
 	ctxs := make([]*types.RoutingContext, requests)
 	errs := make([]error, requests)

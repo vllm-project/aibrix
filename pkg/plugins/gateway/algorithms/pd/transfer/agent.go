@@ -23,23 +23,35 @@ import (
 
 // KVTransferAgent owns connector-specific request and response mutation for one
 // KV transfer backend. Each implementation handles one backend (SHFS, NIXL, Mooncake, …).
+//
+// Both methods work on raw JSON bytes and must only touch top-level keys (or
+// the gateway-owned kv_transfer_params object); see engine.EngineHandler for
+// why a map[string]any round trip is not acceptable here.
 type KVTransferAgent interface {
 	// Type returns the connector identifier (e.g. "shfs", "nixl", "mooncake").
 	Type() string
 
-	// AugmentPrefillRequest mutates completionRequest with any fields the prefill
-	// pod requires before the HTTP request is sent (e.g. kv_transfer_params for SHFS).
+	// AugmentPrefillRequest returns body with any fields the prefill pod
+	// requires before the HTTP request is sent (e.g. kv_transfer_params for
+	// SHFS). body is the client request already validated as a JSON object.
 	AugmentPrefillRequest(
 		routingCtx *types.RoutingContext,
 		prefillPod *v1.Pod,
-		completionRequest map[string]any,
-	) error
+		body []byte,
+	) ([]byte, error)
 
-	// MergePrefillResponse injects connector-specific metadata from the prefill
-	// response into routingCtx.ReqBody before the request is forwarded to the decode pod.
+	// MergePrefillResponse injects connector-specific metadata from the raw
+	// prefill response into routingCtx.ReqBody before the request is forwarded
+	// to the decode pod.
 	MergePrefillResponse(
 		routingCtx *types.RoutingContext,
-		prefillResponse map[string]any,
+		prefillResponse []byte,
 		prefillPod *v1.Pod,
 	) error
+
+	// ControlledFields returns the top-level keys, in addition to
+	// pd.CommonControlledFields, that AugmentPrefillRequest or
+	// MergePrefillResponse may write. Client bodies repeating any of them
+	// are rejected before routing.
+	ControlledFields() []string
 }

@@ -15,9 +15,15 @@ on:
       - '.readthedocs.yaml'
       - '.github/workflows/docs-build.yml'
 
+# Cancel superseded pull-request runs so the newest push starts first.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     name: Sphinx HTML
     steps:
       - name: Check out source repository

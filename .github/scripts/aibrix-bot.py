@@ -79,7 +79,9 @@ AREA_RULES = (
     ("area/testing", (r"\be2e\b", r"end[- ]to[- ]end", r"kind cluster")),
 )
 
-PR_PREFIXES = ("[bug]", "[ci]", "[docs]", "[api]", "[cli]", "[misc]")
+# Mirrors the prefixes documented in .github/PULL_REQUEST_TEMPLATE.md. [Feat] is
+# accepted as well because it is already used widely across the repository.
+PR_PREFIXES = ("[bug]", "[ci]", "[docs]", "[api]", "[cli]", "[feat]", "[misc]")
 PLACEHOLDER_RE = re.compile(r"\[(?:Please provide\b|Insert issue number(?:\(s\))?)", re.I)
 
 
@@ -93,6 +95,28 @@ class IssueClassification:
 def _clean_heading(value: str) -> str:
     value = re.sub(r"[^\w\s]", " ", value, flags=re.UNICODE)
     return re.sub(r"\s+", " ", value).strip().lower()
+
+
+# Populated from the "Area" dropdown added to each Issue Form. Keys are
+# normalized with _clean_heading so punctuation/case in the option text
+# (e.g. "CI/CD") does not have to match the submitted answer byte-for-byte.
+# A submitter who selects one of these takes priority over AREA_RULES below -
+# keyword matching only kicks in as a fallback (no selection, "Not sure", or a
+# pre-Issue-Form issue with no Area section at all).
+AREA_FORM_OPTIONS = {
+    _clean_heading(option): label
+    for option, label in (
+        ("Gateway", "area/gateway"),
+        ("Orchestration (controllers, CRDs)", "area/orchestration"),
+        ("Runtime", "area/runtime"),
+        ("KV Cache", "area/kv-cache"),
+        ("Batch", "area/batch"),
+        ("Website / Docs", "area/website"),
+        ("CI/CD", "area/cicd"),
+        ("Installation (Helm / Kustomize)", "area/installation"),
+        ("Testing (E2E)", "area/testing"),
+    )
+}
 
 
 def _required_headings(form: str) -> set[str]:
@@ -129,8 +153,12 @@ def _keyword_kind(title: str, body: str) -> str:
 def classify_issue(title: str, body: str) -> IssueClassification:
     form = _form_name(title, body)
     kind = FORM_KIND[form] if form else _keyword_kind(title, body)
-    haystack = f"{title}\n{body}".lower()
-    areas = [label for label, patterns in AREA_RULES if any(re.search(pattern, haystack) for pattern in patterns)]
+    selected_area = AREA_FORM_OPTIONS.get(_clean_heading(_sections(body).get("area", "")))
+    if selected_area:
+        areas = [selected_area]
+    else:
+        haystack = f"{title}\n{body}".lower()
+        areas = [label for label, patterns in AREA_RULES if any(re.search(pattern, haystack) for pattern in patterns)]
     return IssueClassification(kind, areas, form)
 
 
@@ -169,7 +197,7 @@ def validate_issue(title: str, body: str) -> list[str]:
 def validate_pr(title: str, body: str) -> list[str]:
     errors = []
     if not title.strip().lower().startswith(PR_PREFIXES):
-        errors.append("PR title must start with one of: [Bug], [CI], [Docs], [API], [CLI], [Misc].")
+        errors.append("PR title must start with one of: [Bug], [CI], [Docs], [API], [CLI], [Feat], [Misc].")
     if not body.strip():
         return errors + ["PR description is empty."]
     if PLACEHOLDER_RE.search(body):
@@ -309,6 +337,21 @@ def self_test() -> None:
     result = classify_issue("Question", "No supported component mentioned")
     assert result.kind == "kind/misc"
     assert result.areas == []
+    # An explicit Area selection wins outright, even when the body's prose
+    # would otherwise match several unrelated AREA_RULES keywords (ci, helm) -
+    # this is the over-broad-matching bug the Area field exists to fix.
+    result = classify_issue(
+        "Weird behavior in prod",
+        "### 🐛 Describe the bug\nSeeing CI failures after a helm upgrade, might be a runtime issue.\n\n### Area\nRuntime",
+    )
+    assert result.areas == ["area/runtime"]
+    # No selection (or "Not sure") falls back to the original keyword
+    # matching unchanged, so pre-Issue-Form issues keep working as before.
+    result = classify_issue(
+        "Weird behavior in prod",
+        "### 🐛 Describe the bug\nSeeing CI failures after a helm upgrade, might be a runtime issue.\n\n### Area\nNot sure",
+    )
+    assert result.areas == ["area/runtime", "area/cicd", "area/installation"]
     assert validate_issue("🐛 AIBrix Bug Report", "### 🐛 Describe the bug\nactual\n\n### Steps to Reproduce\nrepro") == [
         "Expected behavior",
         "Environment",
@@ -316,6 +359,10 @@ def self_test() -> None:
     assert validate_pr(
         "[Bug] Fix gateway",
         "## Pull Request Description\nFix gateway behavior.\n\n## Related Issues\nResolves: #123",
+    ) == []
+    assert validate_pr(
+        "[Feat] Add gateway routing policy",
+        "## Pull Request Description\nAdd gateway routing policy.\n\n## Related Issues\nN/A",
     ) == []
     assert validate_pr(
         "Fix gateway",

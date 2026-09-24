@@ -94,6 +94,23 @@ type Store struct {
 	// Pod related storage
 	metaPods utils.SyncMap[string, *Pod] // pod_namespace/pod_name -> *Pod
 
+	// recentlyDeletedPods holds realtime-counter snapshots for pods just removed
+	// from metaPods, keyed the same way, so a fast re-add of the same pod key
+	// (see deletedPodSnapshot in informers.go) can resume its request-tracking
+	// counters instead of restarting at zero.
+	recentlyDeletedPods utils.SyncMap[string, *deletedPodSnapshot]
+	// nextStatsGeneration issues statsGeneration values for freshly added
+	// cache pods (not resumes). Never reused for the process lifetime so a
+	// stale completion cannot match a later generation of the same pod key.
+	nextStatsGeneration atomic.Int64
+
+	// podStatsMu stripes per-pod-key locks (see podStatsLockFor in cache_trace.go),
+	// synchronizing running-request counter mutations (addPodStats/donePodStats) against
+	// the pod delete/re-add resume cycle (deletePodLocked/addPodLocked in informers.go)
+	// for the same pod identity. A fixed-size stripe -- rather than a lock per pod key --
+	// avoids unbounded growth as distinct pod keys accumulate over the process lifetime.
+	podStatsMu [podStatsLockStripes]sync.Mutex
+
 	// Model related storage
 	metaModels utils.SyncMap[string, *Model] // model_name -> *Model
 	// ModelClaim advertisements include non-routable port-0 states and are kept
@@ -140,6 +157,25 @@ type Store struct {
 
 	// modelReplicaEmitted tracks pods currently exported via model_replicas for stale-series cleanup.
 	modelReplicaEmitted utils.SyncMap[string, modelReplicaState]
+
+	// runningRequestsPendingPrunes is Redis hash key -> gateway IDs that a read
+	// excluded from a live sum. Reads only enqueue; heartbeat hygiene drains this
+	// (see enqueueDeadRunningRequestsPrune / flushPendingRunningRequestsPrunes).
+	runningRequestsPendingPrunes utils.SyncMap[string, []string]
+	// runningRequestsHygieneBusy is true while one coalesced async hygiene pass
+	// (PEXPIRE in-flight hashes + drain pending prunes) is running. Extra heartbeat
+	// ticks skip rather than stacking goroutines.
+	runningRequestsHygieneBusy atomic.Bool
+	// runningRequestsClockOffsetMillis is (Redis server time - this process's local
+	// time), in milliseconds, as of the most recent successful liveness heartbeat.
+	// Every gateway instance stamps its heartbeat and computes liveness cutoffs from
+	// time.Now().UnixMilli()+offset instead of raw time.Now() -- see
+	// writeRunningRequestsLivenessHeartbeat / redisNowMillis -- so that clock skew
+	// between gateway pods' local clocks cannot make one instance look live or dead
+	// to another under the tight runningRequestsLivenessWindow. Zero until the first
+	// heartbeat completes, which just reproduces pre-sync (assume-synced) behavior
+	// for that one tick.
+	runningRequestsClockOffsetMillis atomic.Int64
 }
 
 // Get retrieves the cache instance
@@ -290,6 +326,14 @@ func InitWithPodsMetrics(st *Store, podMetrics map[string]map[string]metrics.Met
 				if err := st.updatePodRecord(metaPod, "", metricName, metrics.PodMetricScope, metric); err != nil {
 					return false
 				}
+				// Keep the local running-requests atomic in sync with any
+				// RealtimeNumRequestsRunning value tests configure here: it's the
+				// source of truth for GetPodRunningRequests/GetPodsRunningRequests
+				// (the cross-gateway aggregate's local fallback), which routing code
+				// reads instead of this metric map -- see cache_running_requests.go.
+				if metricName == metrics.RealtimeNumRequestsRunning {
+					atomic.StoreInt32(&metaPod.runningRequests, int32(metric.GetSimpleValue()))
+				}
 			}
 		}
 		return true
@@ -381,6 +425,13 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 		if opts.RedisClient != nil {
 			klog.Info("Initializing gateway snapshot sync")
 			initGatewaySnapshotSync(store, stopCh)
+		}
+
+		// Initialize the real-time running-requests liveness heartbeat if Redis is
+		// available -- see cache_running_requests.go.
+		if opts.RedisClient != nil {
+			klog.Info("Initializing running-requests liveness heartbeat")
+			initRunningRequestsLiveness(store, stopCh)
 		}
 
 		// Initialize KV event sync if enabled
@@ -493,6 +544,14 @@ func initProfileCache(store *Store, stopCh <-chan struct{}, forTesting bool) {
 		return
 	}
 	// Skip initialization below during testing
+	if store.redisClient == nil {
+		// Deployment profiles are stored in Redis by the GPU optimizer.
+		// Without Redis (e.g. gateway-plugin standalone mode) there is
+		// nothing to sync, so skip the refresh loop instead of crashing
+		// on the first tick in updateDeploymentProfiles.
+		klog.Warning("Redis client is nil, skipping deployment profile cache updates")
+		return
+	}
 	ticker := time.NewTicker(defaultModelGPUProfileRefreshInterval)
 	go func() {
 		for {

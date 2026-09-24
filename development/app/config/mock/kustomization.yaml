@@ -2,6 +2,7 @@ resources:
   - ../templates/deployment
   - components.yaml
   - config-profile.yaml
+  - replica-limits.yaml
   - vllm-pd-config.yaml
   - nixl-pd-config.yaml
   - vllm-pd-bucketing-config.yaml

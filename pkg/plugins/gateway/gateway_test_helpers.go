@@ -91,6 +91,11 @@ func (m *MockCache) AddSubscriber(subscriber metrics.MetricSubscriber) {
 	m.Called(subscriber)
 }
 
+// RegisterRequestTracker is a no-op: the pd router registers itself on the
+// injected cache at construction time and the mock does not fan out request
+// lifecycle callbacks.
+func (m *MockCache) RegisterRequestTracker(tracker cache.RequestTracker) {}
+
 func (m *MockCache) GetMetricValueByPod(namespace string, podName string, metricName string) (metrics.MetricValue, error) {
 	args := m.Called(namespace, podName, metricName)
 	return args.Get(0).(metrics.MetricValue), args.Error(1)
@@ -99,6 +104,51 @@ func (m *MockCache) GetMetricValueByPod(namespace string, podName string, metric
 func (m *MockCache) GetMetricValueByPodModel(namespace string, podName string, model string, metricName string) (metrics.MetricValue, error) {
 	args := m.Called(namespace, podName, model, metricName)
 	return args.Get(0).(metrics.MetricValue), args.Error(1)
+}
+
+// hasExpectation reports whether the test explicitly set up an .On(method, ...)
+// expectation. Used by GetPodRunningRequests/GetPodsRunningRequests below to default
+// to a harmless zero-value response for the many tests that don't care about this
+// value at all (e.g. it's only read for request_start logging) rather than requiring
+// every one of them to stub it -- tests that do care about it configure an
+// expectation as usual and get normal testify behavior.
+func (m *MockCache) hasExpectation(method string) bool {
+	for _, call := range m.ExpectedCalls {
+		if call.Method == method {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *MockCache) GetPodRunningRequests(podName string, podNamespace string) (int64, error) {
+	if !m.hasExpectation("GetPodRunningRequests") {
+		return 0, nil
+	}
+	args := m.Called(podName, podNamespace)
+	return args.Get(0).(int64), args.Error(1)
+}
+
+// AdmitPodRunningRequest defaults to admitting (true, nil) when the test hasn't set up an
+// expectation, mirroring GetPodRunningRequests's harmless-zero-value default -- most tests
+// exercising other behavior don't care about the inflight cap at all.
+func (m *MockCache) AdmitPodRunningRequest(podName string, podNamespace string, limit int64) (bool, error) {
+	if !m.hasExpectation("AdmitPodRunningRequest") {
+		return true, nil
+	}
+	args := m.Called(podName, podNamespace, limit)
+	return args.Bool(0), args.Error(1)
+}
+
+func (m *MockCache) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error) {
+	if !m.hasExpectation("GetPodsRunningRequests") {
+		return nil, nil
+	}
+	args := m.Called(pods)
+	if v := args.Get(0); v != nil {
+		return v.(map[string]int64), args.Error(1)
+	}
+	return nil, args.Error(1)
 }
 
 func (m *MockCache) GetPod(namespace string, podName string) (*v1.Pod, error) {

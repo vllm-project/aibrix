@@ -89,6 +89,26 @@ class TestLocalStorage:
         await local_storage.delete_object(key)
 
     @pytest.mark.asyncio
+    async def test_text_content_round_trips_without_newline_translation(
+        self, local_storage: LocalStorage
+    ):
+        """Text objects must come back byte for byte, newlines included.
+
+        The text branch of _write_file opens the temp file in text mode, so
+        without newline="" Python rewrites every "\\n" to os.linesep and a
+        stored object comes back altered on Windows. This can only fail there:
+        os.linesep is "\\n" on Linux, so the translation is invisible in CI.
+        """
+        key = "test/newlines.txt"
+        content = "first\nsecond\nthird"
+        await local_storage.put_object(key, content)
+        retrieved = await local_storage.get_object(key)
+        assert retrieved == content.encode("utf-8")
+
+        # Cleanup
+        await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
     async def test_file_permissions(self, local_storage: LocalStorage):
         """Test that files are created with appropriate permissions."""
         key = "test/permissions.txt"

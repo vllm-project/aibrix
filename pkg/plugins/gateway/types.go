@@ -32,6 +32,10 @@ const (
 	HeaderErrorRequestBodyProcessing = "x-error-request-body-processing"
 	HeaderErrorResponseUnmarshal     = "x-error-response-unmarshal"
 	HeaderErrorResponseUnknown       = "x-error-response-unknown"
+	// HeaderErrorPDPrefill marks a response the gateway generated because the
+	// prefill leg of a PD request failed, so the failure is distinguishable
+	// from a 5xx the decode pod produced itself.
+	HeaderErrorPDPrefill = "x-error-pd-prefill"
 
 	// Model & Deployment Headers
 	HeaderErrorNoModelInRequest = "x-error-no-model-in-request"
@@ -59,6 +63,10 @@ const (
 	HeaderExternalFilter      = "external-filter"
 	HeaderConfigProfile       = "config-profile"
 	HeaderAIBrixConfigProfile = "x-aibrix-config-profile"
+	// HeaderPriorityTier declares the priority tier of the request (for
+	// example batch or background) so the gateway can map it to the upstream
+	// vLLM request priority. See gateway_req_priority.go.
+	HeaderPriorityTier = "x-aibrix-priority-tier"
 	// HeaderSessionID aliases the shared session-affinity header used by request parsing and routing.
 	HeaderSessionID = constants.HeaderSessionID
 	// HeaderSessionKey aliases the shared opaque session-key header.
@@ -79,6 +87,9 @@ const (
 	HeaderErrorModelRPSExceeded = "x-error-model-rps-exceeded"
 	HeaderErrorIncrModelRPS     = "x-error-incr-model-rps"
 
+	// Per-replica inflight Errors
+	HeaderErrorReplicaInflightExceeded = "x-error-model-replica-inflight-exceeded"
+
 	// Rate Limiting defaults
 	DefaultRPM           = 100
 	DefaultTPMMultiplier = 1000
@@ -94,12 +105,13 @@ const (
 	ErrorTypeOverloaded     = "overloaded_error"
 
 	// OpenAI Error Codes
-	ErrorCodeInvalidAPIKey          = "invalid_api_key"
-	ErrorCodeModelNotFound          = "model_not_found"
-	ErrorCodeRateLimitExceeded      = "rate_limit_exceeded"
-	ErrorCodeServiceUnavailable     = "service_unavailable"
-	ErrorCodeVideoNotFound          = "video_not_found"
-	ErrorCodeVideoJobPodUnavailable = "video_job_pod_unavailable"
+	ErrorCodeInvalidAPIKey           = "invalid_api_key"
+	ErrorCodeModelNotFound           = "model_not_found"
+	ErrorCodeRateLimitExceeded       = "rate_limit_exceeded"
+	ErrorCodeServiceUnavailable      = "service_unavailable"
+	ErrorCodeVideoNotFound           = "video_not_found"
+	ErrorCodeVideoJobPodUnavailable  = "video_job_pod_unavailable"
+	ErrorCodeReplicaInflightExceeded = "replica_inflight_exceeded"
 
 	// Embedding Constraints
 	// https://github.com/openai/openai-go/blob/main/embedding.go#L126
@@ -127,6 +139,8 @@ const (
 	// prefix matching in isLanguageRequest and extractVideoIDFromPath.
 	PathVideos     = "/v1/videos"
 	PathVideosSync = "/v1/videos/sync"
+
+	PathTokenize = "/tokenize"
 
 	// Engine-specific paths (xdit)
 	PathXditGenerate      = "/generate"

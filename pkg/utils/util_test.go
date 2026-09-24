@@ -17,6 +17,7 @@ limitations under the License.
 package utils
 
 import (
+	"os"
 	"slices"
 	"sync"
 	"testing"
@@ -25,6 +26,7 @@ import (
 	"github.com/pkoukk/tiktoken-go"
 	tiktoken_loader "github.com/pkoukk/tiktoken-go-loader"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTokenizeInputText(t *testing.T) {
@@ -130,6 +132,66 @@ func TestLoadEnvDuration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv(key, tt.value)
 			assert.Equal(t, tt.want, LoadEnvDuration(key, def))
+		})
+	}
+}
+
+// TestLoadEnvNonNegativeInt pins the one way this loader differs from
+// LoadEnvInt: an explicit 0 reaches the caller, because for the knobs using it
+// 0 is the documented off switch. Negative and unparseable values still fall
+// back, as there they mean a typo.
+func TestLoadEnvNonNegativeInt(t *testing.T) {
+	const key = "AIBRIX_TEST_NON_NEGATIVE_INT"
+	const defaultValue = 7
+
+	cases := []struct {
+		name     string
+		raw      string
+		set      bool
+		expected int
+	}{
+		{name: "unset", set: false, expected: defaultValue},
+		{name: "empty", raw: "", set: true, expected: defaultValue},
+		{name: "zero", raw: "0", set: true, expected: 0},
+		{name: "positive", raw: "5", set: true, expected: 5},
+		{name: "negative", raw: "-1", set: true, expected: defaultValue},
+		{name: "unparseable", raw: "abc", set: true, expected: defaultValue},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// t.Setenv first either way, so the variable is restored after the
+			// subtest even when the case under test is "unset".
+			t.Setenv(key, tc.raw)
+			if !tc.set {
+				require.NoError(t, os.Unsetenv(key))
+			}
+			assert.Equal(t, tc.expected, LoadEnvNonNegativeInt(key, defaultValue))
+		})
+	}
+
+	// LoadEnvInt keeps rejecting 0: other callers depend on that.
+	t.Run("LoadEnvInt still rejects zero", func(t *testing.T) {
+		t.Setenv(key, "0")
+		assert.Equal(t, defaultValue, LoadEnvInt(key, defaultValue))
+	})
+}
+
+func TestPathWithoutQuery(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "empty", path: "", want: ""},
+		{name: "no query string", path: "/v1/chat/completions", want: "/v1/chat/completions"},
+		{name: "query string is stripped", path: "/v1/chat/completions?beta=true", want: "/v1/chat/completions"},
+		{name: "query string after nested path segments", path: "/v1/videos/abc/content?download=1", want: "/v1/videos/abc/content"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, PathWithoutQuery(tc.path))
 		})
 	}
 }

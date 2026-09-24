@@ -32,6 +32,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/prefill"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/selector"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
@@ -44,11 +45,14 @@ var tokenLoadTestConfig = pd.TokenLoadConfig{KVWeight: 0.5, RequestCost: 0, TTL:
 // newTokenLoadTestRouter builds a pd router on the token_load policy whose
 // prefill calls go through client, mirroring NewPDRouter's wiring of the
 // tracker into the policy and the executor.
-func newTokenLoadTestRouter(client *http.Client) (*pdRouter, *pd.TokenLoadTracker) {
-	return newTokenLoadTestRouterWithConfig(client, tokenLoadTestConfig)
+func newTokenLoadTestRouter(t *testing.T, client *http.Client) (*pdRouter, *pd.TokenLoadTracker) {
+	t.Helper()
+	return newTokenLoadTestRouterWithConfig(t, client, tokenLoadTestConfig)
 }
 
-func newTokenLoadTestRouterWithConfig(client *http.Client, cfg pd.TokenLoadConfig) (*pdRouter, *pd.TokenLoadTracker) {
+func newTokenLoadTestRouterWithConfig(t *testing.T, client *http.Client, cfg pd.TokenLoadConfig) (*pdRouter, *pd.TokenLoadTracker) {
+	t.Helper()
+	installTokenLoadDefaults(t, cfg)
 	tokenLoad := pd.NewTokenLoadTrackerWithConfig(cfg)
 	tracker := pd.NewPrefillRequestTracker()
 	r := &pdRouter{
@@ -63,8 +67,26 @@ func newTokenLoadTestRouterWithConfig(client *http.Client, cfg pd.TokenLoadConfi
 		selectionCounts:       map[string]int64{},
 	}
 	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
-	r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker, prefillRequestTimeout, prefill.WithTokenLoadTracker(tokenLoad))
+	r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker, prefill.WithTokenLoadTracker(tokenLoad))
 	return r, tokenLoad
+}
+
+// installTokenLoadDefaults mirrors a tracker configuration into the PD half of
+// the process default table. In production the environment supplies both; the
+// fixtures of this file configure the tracker directly, so the request-side
+// defaults have to follow it for the charge to match the fixture.
+func installTokenLoadDefaults(t *testing.T, cfg pd.TokenLoadConfig) {
+	t.Helper()
+	restore := types.DefaultRoutingOverrides()
+	next := *restore
+	next.PD.TokenLoad = types.PDTokenLoadOverrides{
+		KVWeight:    cfg.KVWeight,
+		RequestCost: cfg.RequestCost,
+		TTL:         cfg.TTL,
+		SessionTTL:  cfg.SessionTTL,
+	}
+	types.SetDefaultRoutingOverrides(&next)
+	t.Cleanup(func() { types.SetDefaultRoutingOverrides(restore) })
 }
 
 // tokenLoadRequest builds a vLLM chat request whose body is padded to exactly
@@ -122,7 +144,7 @@ func TestPDRouter_TokenLoadSpreadsByPromptCost(t *testing.T) {
 	podList := &utils.PodArray{Pods: append(append([]*v1.Pod{}, prefillPods...), decodePod)}
 
 	gate := make(chan struct{})
-	r, tokenLoad := newTokenLoadTestRouter(&http.Client{Transport: &gatedTransport{gate: gate}})
+	r, tokenLoad := newTokenLoadTestRouter(t, &http.Client{Transport: &gatedTransport{gate: gate}})
 
 	longCtx := tokenLoadRequest(t, "long", longBytes)
 	shortCtxs := []*types.RoutingContext{
@@ -201,7 +223,7 @@ func (failingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 func TestPDRouter_TokenLoadReleasedOnPrefillFailure(t *testing.T) {
 	prefillPod := burstPod("prefill-0", "prefill", "127.0.0.1")
 	podList := &utils.PodArray{Pods: []*v1.Pod{prefillPod, burstPod("decode-0", "decode", "127.0.0.100")}}
-	r, tokenLoad := newTokenLoadTestRouter(&http.Client{Transport: failingTransport{}})
+	r, tokenLoad := newTokenLoadTestRouter(t, &http.Client{Transport: failingTransport{}})
 
 	_, err := r.Route(tokenLoadRequest(t, "doomed", 4000), podList)
 	require.Error(t, err)
@@ -223,7 +245,7 @@ func TestPDRouter_TokenLoadChargedOnlyForTokenLoadPolicy(t *testing.T) {
 
 	gate := make(chan struct{})
 	close(gate) // prefill returns immediately
-	r, tokenLoad := newTokenLoadTestRouter(&http.Client{Transport: &gatedTransport{gate: gate}})
+	r, tokenLoad := newTokenLoadTestRouter(t, &http.Client{Transport: &gatedTransport{gate: gate}})
 	r.prefillPolicy = pd.NewLeastRequestPrefillPolicy()
 
 	_, _, err := r.filterPrefillDecodePods(tokenLoadRequest(t, "least-request", 4000), readyPods)
@@ -235,6 +257,7 @@ func TestPDRouter_TokenLoadChargedOnlyForTokenLoadPolicy(t *testing.T) {
 	ctx := tokenLoadRequest(t, "via-routing-config", 4000)
 	ctx.ConfigProfile = &types.ResolvedConfigProfile{
 		RoutingConfig: json.RawMessage(fmt.Sprintf(`{"prefillScorePolicy":%q}`, pd.PrefillScorePolicyTokenLoad)),
+		Routing:       configprofiles.ParseRoutingConfig(json.RawMessage(fmt.Sprintf(`{"prefillScorePolicy":%q}`, pd.PrefillScorePolicyTokenLoad))),
 	}
 	pre, _, err := r.effectiveScorePolicies(ctx)
 	require.NoError(t, err)

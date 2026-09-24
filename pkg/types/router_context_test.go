@@ -60,7 +60,7 @@ var _ = Describe("RouterContext", func() {
 		predictor := &testOutputPredictor{}
 		ctx := context.Background()
 		rctx := NewRoutingContext(ctx, "algorithm", "model", "message", "r1", "")
-		rctx.SetOutputPreditor(predictor)
+		rctx.SetOutputPredictor(predictor)
 		Expect(rctx.Context).To(BeIdenticalTo(ctx))
 		Expect(rctx.Algorithm).To(Equal(RoutingAlgorithm("algorithm")))
 		Expect(rctx.RequestID).To(Equal("r1"))
@@ -79,19 +79,21 @@ var _ = Describe("RouterContext", func() {
 		rctx.Delete()
 		ctx2 := context.Background()
 		rctx2 := NewRoutingContext(ctx2, "algorithm2", "model2", "message2", "r2", "")
-		Expect(rctx2).To(BeIdenticalTo(rctx)) // routing context reused
+		// sync.Pool makes no identity promise: Get may return the context
+		// Delete just released or a fresh one, and may do so on another P, so
+		// assert the reset on rctx2 rather than that rctx2 is rctx.
 		Expect(rctx2.Context).To(BeIdenticalTo(ctx2))
 		Expect(rctx2.Algorithm).To(Equal(RoutingAlgorithm("algorithm2")))
-		Expect(rctx.RequestID).To(Equal("r2"))
+		Expect(rctx2.RequestID).To(Equal("r2"))
 		Expect(rctx2.Model).To(Equal("model2"))
 		Expect(rctx2.BaseModel).To(Equal(""))
 		Expect(rctx2.Message).To(Equal("message2"))
-		Expect(rctx.predictor).To(BeNil())
-		shouldBlock(func() { rctx.TargetPod() }, 100*time.Millisecond)
-		Expect(rctx.targetPod.Load()).To(BeIdenticalTo(nilPod))
-		Expect(rctx.getError()).To(BeNil()) // No blocking
+		Expect(rctx2.predictor).To(BeNil())
+		shouldBlock(func() { rctx2.TargetPod() }, 100*time.Millisecond)
+		Expect(rctx2.targetPod.Load()).To(BeIdenticalTo(nilPod))
+		Expect(rctx2.getError()).To(BeNil()) // No blocking
 
-		rctx.Delete()
+		rctx2.Delete()
 	})
 
 	It("should MetricModel use the base model for LoRA requests", func() {

@@ -21,6 +21,10 @@ const (
 	GatewayInFlight      = "gateway_in_flight_requests"
 	GatewayModelInFlight = "gateway_model_in_flight_requests"
 
+	// counter to track panics recovered on the request path instead of letting
+	// one defective request end the process
+	GatewayRequestPanicTotal = "gateway_request_panic_total"
+
 	// Count of streamed responses where first token delay > 1s
 	GatewayFirstTokenDelayOver1sTotal = "gateway_first_token_delay_over_1s_total"
 
@@ -44,6 +48,13 @@ const (
 	// gauge to track #outstanding prefill requests
 	GatewayPrefillOutstandingRequests = "gateway_prefill_outstanding_requests"
 
+	// counter to track the decode-leg aborts the gateway fires when the
+	// prefill leg of a PD request fails
+	GatewayPDDecodeAbortTotal = "gateway_pd_decode_abort_total"
+
+	// counter to track client-facing fail-fast actions taken on a PD prefill failure
+	GatewayPDPrefillFailureTotal = "gateway_pd_prefill_failure_total"
+
 	// counter to track #prefill & #decode pods selected by pd
 	PDSelectedPrefillPodTotal = "pd_selected_prefill_pod_total"
 	PDSelectedDecodePodTotal  = "pd_selected_decode_pod_total"
@@ -61,6 +72,14 @@ const (
 	GatewayTPOTBucketTotal           = "gateway_tpot_bucket_total"
 	GatewayDecodeTimeBucketTotal     = "gateway_decode_time_bucket_total"
 	GatewayTotalTimeBucketTotal      = "gateway_total_time_bucket_total"
+
+	// Queue observability: how long requests wait in the gateway's SLO queue before
+	// dispatch, how deep the queue is, and how requests leave it. Signals stay
+	// low-cardinality on purpose: model, adapter, and the gateway pod only.
+	GatewayQueueWaitTimeBucketTotal = "gateway_queue_wait_time_bucket_total"
+	GatewayQueuePendingRequests     = "gateway_queue_pending_requests"
+	GatewayQueueOutcomeTotal        = "gateway_queue_outcome_total"
+	GatewayQueueFIFOFallbackTotal   = "gateway_queue_fifo_fallback_total"
 )
 
 var (
@@ -72,6 +91,14 @@ var (
 				Raw: Counter,
 			},
 			Description: "Total number of requests received by the gateway",
+		},
+		GatewayRequestPanicTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Requests the gateway plugin recovered from a panic on the request path",
 		},
 
 		GatewayRequestModelSuccessTotal: {
@@ -115,6 +142,22 @@ var (
 				Raw: Gauge,
 			},
 			Description: "Total number of outstanding prefill requests received by the gateway",
+		},
+		GatewayPDDecodeAbortTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total number of decode-leg aborts attempted by the gateway after a PD prefill failure, by prefill failure class and abort result",
+		},
+		GatewayPDPrefillFailureTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total number of PD prefill failures the gateway acted on for the client, by prefill failure class and the stage the decode leg had reached",
 		},
 		PDTokenLoadActiveTokens: {
 			MetricScope:  PodMetricScope,
@@ -257,6 +300,30 @@ var (
 			MetricSource: PodRawMetrics,
 			MetricType:   MetricType{Raw: Counter},
 			Description:  "Requests counted by total time bucket",
+		},
+		GatewayQueueWaitTimeBucketTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Requests counted by time spent waiting in the gateway SLO queue before dispatch",
+		},
+		GatewayQueuePendingRequests: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Gauge},
+			Description:  "Current number of requests waiting in the gateway SLO queue for the model",
+		},
+		GatewayQueueOutcomeTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Requests leaving the gateway SLO queue, by routing outcome",
+		},
+		GatewayQueueFIFOFallbackTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Requests the gateway SLO queue dispatched FIFO because no profile or SLO information was available",
 		},
 	}
 )

@@ -18,10 +18,12 @@ package gateway
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"testing"
 	"time"
 
@@ -647,6 +649,54 @@ func Test_selectTargetPod_PDEngineValidation(t *testing.T) {
 	})
 }
 
+// Test_selectTargetPod_SessionAffinitySurvivesSingleReadyPodFastPath is a regression test for
+// the single-ready-pod fast path in selectTargetPod (readyPods == 1, single port, non-exclusive
+// strategy): that path used to return the pod directly without ever calling router.Route(), so
+// a session-affinity request never got its x-aibrix-session-id response header set. A client
+// that started its session while only one pod was ready had nothing to echo back on later
+// requests, so once the deployment scaled out, session affinity broke on exactly the pods that
+// most needed it.
+func Test_selectTargetPod_SessionAffinitySurvivesSingleReadyPodFastPath(t *testing.T) {
+	routing.Init()
+
+	readyPod := func(name, ip string) *v1.Pod {
+		return &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Status: v1.PodStatus{
+				PodIP:      ip,
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		}
+	}
+
+	podA := readyPod("pod-a", "10.0.0.1")
+	server := &Server{}
+
+	// First request: only one ready pod, so selectTargetPod takes the fast path.
+	routeCtx1 := types.NewRoutingContext(context.Background(), routing.RouterSessionAffinity, "test-model", "hello", "req-1", "user")
+	addr1, err := server.selectTargetPod(context.Background(), routeCtx1, &utils.PodArray{Pods: []*v1.Pod{podA}}, "")
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.1:8000", addr1)
+
+	// The fast path must still run session-affinity's post-route hook, so the client gets a
+	// session id to echo back later.
+	sessionID, ok := routeCtx1.RespHeaders[constants.HeaderSessionID]
+	require.True(t, ok, "session-affinity fast path must still set the x-aibrix-session-id response header")
+	decoded, decodeErr := base64.StdEncoding.DecodeString(sessionID)
+	require.NoError(t, decodeErr)
+	assert.Equal(t, addr1, string(decoded))
+
+	// The deployment scales out to a second pod. The client echoes back the session id it was
+	// given, and the session must stay pinned to the original pod even though selectTargetPod
+	// now goes through the normal (non-fast-path) router.Route() call with two ready pods.
+	podB := readyPod("pod-b", "10.0.0.2")
+	routeCtx2 := types.NewRoutingContext(context.Background(), routing.RouterSessionAffinity, "test-model", "hello again", "req-2", "user")
+	routeCtx2.ReqHeaders = map[string]string{constants.HeaderSessionID: sessionID}
+	addr2, err := server.selectTargetPod(context.Background(), routeCtx2, &utils.PodArray{Pods: []*v1.Pod{podA, podB}}, "")
+	require.NoError(t, err)
+	assert.Equal(t, addr1, addr2, "session must remain pinned to the original pod after scale-out")
+}
+
 func TestValidateHTTPRouteStatus(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -929,6 +979,85 @@ func TestValidateHTTPRouteStatus_ContextErrorNotCached(t *testing.T) {
 	}
 }
 
+func TestValidateHTTPRouteStatus_TransientRouteErrorExpires(t *testing.T) {
+	mockGW := &MockGatewayClient{}
+	mockGWV1 := &MockGatewayV1Client{}
+	mockHTTP := &MockHTTPRouteClient{}
+
+	mockGW.On("GatewayV1").Return(mockGWV1).Twice()
+	mockGWV1.On("HTTPRoutes", "aibrix-system").Return(mockHTTP).Twice()
+	mockHTTP.On("Get", mock.Anything, "transient-route-router", mock.Anything).
+		Return((*gatewayv1.HTTPRoute)(nil), errors.New("route is not ready")).Once()
+
+	route := &gatewayv1.HTTPRoute{
+		Status: gatewayv1.HTTPRouteStatus{
+			RouteStatus: gatewayv1.RouteStatus{
+				Parents: []gatewayv1.RouteParentStatus{{
+					Conditions: []metav1.Condition{{
+						Type:   string(gatewayv1.RouteConditionAccepted),
+						Reason: string(gatewayv1.RouteReasonAccepted),
+					}, {
+						Type:   string(gatewayv1.RouteConditionResolvedRefs),
+						Reason: string(gatewayv1.RouteReasonResolvedRefs),
+					}},
+				}},
+			},
+		},
+	}
+	mockHTTP.On("Get", mock.Anything, "transient-route-router", mock.Anything).
+		Return(route, nil).Once()
+
+	s := &Server{
+		gatewayClient:     mockGW,
+		httprouteCacheTTL: 30 * time.Second,
+		httprouteErrorTTL: time.Millisecond,
+	}
+
+	assert.Error(t, s.validateHTTPRouteStatus(context.Background(), "transient-route"))
+	time.Sleep(5 * time.Millisecond)
+	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "transient-route"))
+
+	mockGW.AssertExpectations(t)
+	mockGWV1.AssertExpectations(t)
+	mockHTTP.AssertExpectations(t)
+}
+
+func TestValidateHTTPRouteStatus_UnresolvedRouteErrorExpires(t *testing.T) {
+	mockGW := &MockGatewayClient{}
+	mockGWV1 := &MockGatewayV1Client{}
+	mockHTTP := &MockHTTPRouteClient{}
+	mockGW.On("GatewayV1").Return(mockGWV1).Twice()
+	mockGWV1.On("HTTPRoutes", "aibrix-system").Return(mockHTTP).Twice()
+
+	invalidRoute := &gatewayv1.HTTPRoute{
+		Status: gatewayv1.HTTPRouteStatus{RouteStatus: gatewayv1.RouteStatus{
+			Parents: []gatewayv1.RouteParentStatus{{Conditions: []metav1.Condition{{
+				Type: string(gatewayv1.RouteConditionResolvedRefs), Reason: "BackendNotFound",
+			}}}},
+		}},
+	}
+	validRoute := &gatewayv1.HTTPRoute{
+		Status: gatewayv1.HTTPRouteStatus{RouteStatus: gatewayv1.RouteStatus{
+			Parents: []gatewayv1.RouteParentStatus{{Conditions: []metav1.Condition{{
+				Type: string(gatewayv1.RouteConditionAccepted), Reason: string(gatewayv1.RouteReasonAccepted),
+			}, {
+				Type: string(gatewayv1.RouteConditionResolvedRefs), Reason: string(gatewayv1.RouteReasonResolvedRefs),
+			}}}},
+		}},
+	}
+	mockHTTP.On("Get", mock.Anything, "unresolved-route-router", mock.Anything).Return(invalidRoute, nil).Once()
+	mockHTTP.On("Get", mock.Anything, "unresolved-route-router", mock.Anything).Return(validRoute, nil).Once()
+
+	s := &Server{gatewayClient: mockGW, httprouteCacheTTL: time.Second, httprouteErrorTTL: time.Millisecond}
+	assert.Error(t, s.validateHTTPRouteStatus(context.Background(), "unresolved-route"))
+	time.Sleep(5 * time.Millisecond)
+	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "unresolved-route"))
+
+	mockGW.AssertExpectations(t)
+	mockGWV1.AssertExpectations(t)
+	mockHTTP.AssertExpectations(t)
+}
+
 func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 	baseResp := &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_ResponseHeaders{
@@ -1198,6 +1327,40 @@ func TestHandleProcessingRequest_ResponseBody_ErrorFromPreviousStage_UsesErrorPr
 	}
 	// metricLabel should be set for response body processing
 	assert.Equal(t, gatewayRespBody, st.metricLabel)
+}
+
+func TestHandleProcessingRequest_ResponseBody_ErrorRewritesPinnedVideoBackendID(t *testing.T) {
+	s := &Server{} // explicit routing skips HTTPRoute validation in the error processor
+	publicID := "aibrixjob-public"
+	backendID := "video-abc"
+	routerCtx := types.NewRoutingContext(context.Background(), routing.RouterRandom, "video-model", "", "rid-video-error", "")
+	routerCtx.ReqPath = PathVideos + "/" + publicID
+	routerCtx.AsyncJobBackendID = backendID
+
+	st := &processState{
+		ctx:           context.Background(),
+		routerCtx:     routerCtx,
+		requestID:     "rid-video-error",
+		model:         "video-model",
+		isRespError:   true,
+		respErrorCode: http.StatusNotFound,
+	}
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"error":{"message":"Video video-abc not found","param":"video-abc","code":404}}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, err := s.handleProcessingRequest(st, req)
+	require.NoError(t, err)
+	imm := resp.GetImmediateResponse()
+	require.NotNil(t, imm)
+	assert.Equal(t, envoyTypePb.StatusCode_NotFound, imm.GetStatus().GetCode())
+	assert.Contains(t, imm.GetBody(), publicID)
+	assert.NotContains(t, imm.GetBody(), backendID)
 }
 
 // TestHandleProcessingRequest_Non200ResponseHeadersThenErrorBody is the end-to-end

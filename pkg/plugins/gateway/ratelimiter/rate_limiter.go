@@ -18,6 +18,7 @@ package ratelimiter
 
 import (
 	"context"
+	"time"
 )
 
 // RateLimiter defines an interface for rate limiting operations.
@@ -33,5 +34,7 @@ type RateLimiter interface {
 
 	// Incr increments the rate limit counter for the given key by the specified value.
 	// Returns the updated rate limit counter after the increment and an error if the operation fails.
-	Incr(ctx context.Context, key string, val int64) (int64, error)
+	// window optionally overrides the limiter's default window size (e.g. for sub-1-rps
+	// limits expressed as "1 request every N seconds"); omit it to use the default.
+	Incr(ctx context.Context, key string, val int64, window ...time.Duration) (int64, error)
 }

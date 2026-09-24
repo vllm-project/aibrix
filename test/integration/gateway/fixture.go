@@ -31,6 +31,7 @@ import (
 	gatewayplugin "github.com/vllm-project/aibrix/pkg/plugins/gateway"
 	routingalgorithms "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -57,6 +58,7 @@ type fakeCache struct {
 	metricValues   map[string]metrics.MetricValue
 	metricReads    map[string]int
 	inFlightEvents []int
+	doneTraceUsage map[string][2]int64
 }
 
 var _ cache.Cache = (*fakeCache)(nil)
@@ -71,7 +73,7 @@ func newFakeCache(pods []*corev1.Pod) *fakeCache {
 		}
 		values[pod.Name+"/"+metrics.RealtimeNumRequestsRunning] = &metrics.SimpleMetricValue{Value: base}
 		values[pod.Name+"/"+metrics.KVCacheUsagePerc] = &metrics.SimpleMetricValue{Value: base}
-		values[pod.Name+"/"+metrics.RealtimeRunningRequestsDrainRate1m] = &metrics.SimpleMetricValue{Value: 1 / base}
+		values[pod.Name+"/"+metrics.RealtimeOutputTokenRateEWMA] = &metrics.SimpleMetricValue{Value: 1 / base}
 		values[pod.Name+"/"+metrics.RequestQueueTimeSeconds] = &metrics.SimpleMetricValue{Value: base}
 		values[pod.Name+"/"+metrics.AvgPromptToksPerReq] = &metrics.SimpleMetricValue{Value: 10}
 		values[pod.Name+"/"+metrics.AvgGenerationToksPerReq] = &metrics.SimpleMetricValue{Value: 10}
@@ -125,6 +127,23 @@ func (c *fakeCache) GetMetricValueByPod(pod, _, metric string) (metrics.MetricVa
 func (c *fakeCache) GetMetricValueByPodModel(pod, _, _, metric string) (metrics.MetricValue, error) {
 	return c.metricValue(pod, metric), nil
 }
+func (c *fakeCache) GetPodRunningRequests(podName, podNamespace string) (int64, error) {
+	return int64(c.metricValue(podName, metrics.RealtimeNumRequestsRunning).GetSimpleValue()), nil
+}
+func (c *fakeCache) AdmitPodRunningRequest(podName, podNamespace string, limit int64) (bool, error) {
+	return int64(c.metricValue(podName, metrics.RealtimeNumRequestsRunning).GetSimpleValue()) < limit, nil
+}
+func (c *fakeCache) GetPodsRunningRequests(pods []*corev1.Pod) (map[string]int64, error) {
+	result := make(map[string]int64, len(pods))
+	for _, pod := range pods {
+		if pod == nil {
+			continue
+		}
+		key := utils.GeneratePodKey(pod.Namespace, pod.Name)
+		result[key] = int64(c.metricValue(pod.Name, metrics.RealtimeNumRequestsRunning).GetSimpleValue())
+	}
+	return result, nil
+}
 func (c *fakeCache) metricValue(pod, metric string) metrics.MetricValue {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -171,9 +190,17 @@ func (c *fakeCache) DoneRequestCount(_ *types.RoutingContext, requestID, model s
 	defer c.mu.Unlock()
 	c.events = append(c.events, requestEvent{"done", requestID, model, term})
 }
-func (c *fakeCache) DoneRequestTrace(_ *types.RoutingContext, requestID, model string, _, _, term int64) {
+func (c *fakeCache) DoneRequestTrace(
+	_ *types.RoutingContext,
+	requestID, model string,
+	promptTokens, completionTokens, term int64,
+) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.doneTraceUsage == nil {
+		c.doneTraceUsage = map[string][2]int64{}
+	}
+	c.doneTraceUsage[requestID] = [2]int64{promptTokens, completionTokens}
 	c.events = append(c.events, requestEvent{"done-trace", requestID, model, term})
 }
 func (c *fakeCache) eventsSnapshot() []requestEvent {
@@ -306,6 +333,14 @@ func newGatewayFixture(pods []*corev1.Pod) *gatewayFixture {
 }
 
 func newGatewayFixtureWithRequest(pods []*corev1.Pod, strategy, profile, externalFilter string) *gatewayFixture {
+	return newGatewayFixtureWithRequestBody(pods, strategy, profile, externalFilter, nil)
+}
+
+// newGatewayFixtureWithRequestBody is newGatewayFixtureWithRequest with an
+// explicit client request body; a nil body uses the default chat request.
+func newGatewayFixtureWithRequestBody(
+	pods []*corev1.Pod, strategy, profile, externalFilter string, body []byte,
+) *gatewayFixture {
 	c := newFakeCache(pods)
 	requestID := fmt.Sprintf("%032x", fixtureSequence.Add(1))
 	prefixIndexer := prefixcacheindexer.NewPrefixHashTable()
@@ -327,7 +362,7 @@ func newGatewayFixtureWithRequest(pods []*corev1.Pod, strategy, profile, externa
 	)
 	inputs := []*extProcPb.ProcessingRequest{
 		requestHeadersRequest(requestID, strategy, profile, externalFilter),
-		requestBodyRequest(),
+		requestBodyRequestWithBody(body),
 	}
 	_, valid := routerManager.Validate(strategy)
 	if hasReadyPod(pods) && (valid || profile != "") {
@@ -394,10 +429,17 @@ func requestHeadersRequest(requestID, strategy, profile, externalFilter string) 
 	}
 }
 func requestBodyRequest() *extProcPb.ProcessingRequest {
+	return requestBodyRequestWithBody(nil)
+}
+
+func requestBodyRequestWithBody(body []byte) *extProcPb.ProcessingRequest {
+	if body == nil {
+		body = []byte(`{"model":"llama2-7b","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	}
 	return &extProcPb.ProcessingRequest{
 		Request: &extProcPb.ProcessingRequest_RequestBody{
 			RequestBody: &extProcPb.HttpBody{
-				Body:        []byte(`{"model":"llama2-7b","messages":[{"role":"user","content":"hello"}],"stream":false}`),
+				Body:        body,
 				EndOfStream: true,
 			},
 		},
