@@ -318,7 +318,7 @@ func (s *Server) validateModelAvailability(requestID, model string) (types.PodLi
 				if state == constants.ModelClaimRoutingStateSleeping && s.wakeRequester != nil {
 					s.wakeRequester.RequestWake(pod, model)
 				}
-				return nil, modelClaimRetryResponse(model, state, "")
+				return nil, modelClaimRetryResponse(model, state, "", state != constants.ModelClaimRoutingStateFailed)
 			}
 		}
 		// A claim that no pod advertises yet has not been placed. Its model is
@@ -327,7 +327,8 @@ func (s *Server) validateModelAvailability(requestID, model string) (types.PodLi
 			if phase, reason, found := provider.ModelClaimStatus(model); found {
 				klog.InfoS("ModelClaim is known but not placed", "requestID", requestID, "model", model,
 					"phase", phase, "reason", reason)
-				return nil, modelClaimRetryResponse(model, unplacedModelClaimState(phase), reason)
+				return nil, modelClaimRetryResponse(model, unplacedModelClaimState(phase), reason,
+					!modelClaimMustChange(reason))
 			}
 		}
 		klog.ErrorS(nil, "model doesn't exist in cache, probably wrong model name", "requestID", requestID, "model", model)
@@ -351,8 +352,8 @@ func (s *Server) validateModelAvailability(requestID, model string) (types.PodLi
 
 // modelClaimRetryResponse answers for a model whose ModelClaim cannot serve
 // it now. The reason, when there is one, is the controller's own word for why,
-// such as NoMatchingPods. A claim that failed is not asked to be retried.
-func modelClaimRetryResponse(model, state, reason string) *extProcPb.ProcessingResponse {
+// such as NoMatchingPods. A client is asked to retry only when retry is set.
+func modelClaimRetryResponse(model, state, reason string, retry bool) *extProcPb.ProcessingResponse {
 	headers := []*configPb.HeaderValueOption{
 		{Header: &configPb.HeaderValue{Key: HeaderErrorNoModelBackends, RawValue: []byte(model)}},
 	}
@@ -360,7 +361,7 @@ func modelClaimRetryResponse(model, state, reason string) *extProcPb.ProcessingR
 	if reason != "" {
 		message += fmt.Sprintf(" (%s)", reason)
 	}
-	if state != constants.ModelClaimRoutingStateFailed {
+	if retry {
 		headers = append(headers, &configPb.HeaderValueOption{
 			Header: &configPb.HeaderValue{
 				Key: "Retry-After", RawValue: []byte(strconv.Itoa(modelClaimRetryAfterSeconds)),
@@ -371,6 +372,20 @@ func modelClaimRetryResponse(model, state, reason string) *extProcPb.ProcessingR
 	return generateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, headers,
 		message,
 		ErrorCodeServiceUnavailable, "model")
+}
+
+// modelClaimReasonsThatMustChange are the reasons for which a claim is not
+// placed until the claim itself is changed. Waiting does not help, so a client
+// is not asked to retry. Any other refusal, including a failed activation, the
+// controller tries again by itself.
+var modelClaimReasonsThatMustChange = map[string]struct{}{
+	"InvalidEngineConfig": {},
+	"InvalidPerGPU":       {},
+}
+
+func modelClaimMustChange(reason string) bool {
+	_, found := modelClaimReasonsThatMustChange[reason]
+	return found
 }
 
 // unplacedModelClaimState words the phase of a claim that is not placed the

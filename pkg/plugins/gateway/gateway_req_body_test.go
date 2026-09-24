@@ -813,7 +813,8 @@ func TestValidateModelAvailabilityAsksToRetryForAClaimNotPlacedYet(t *testing.T)
 		"model qwen is pending (NoMatchingPods); retry shortly")
 }
 
-func TestValidateModelAvailabilityDoesNotAskToRetryForAFailedClaim(t *testing.T) {
+func TestValidateModelAvailabilityAsksToRetryAfterAFailedActivation(t *testing.T) {
+	// The controller tries a claim whose activation failed again by itself.
 	mockCache := &MockCache{modelClaimStatuses: map[string]mockModelClaimStatus{
 		"qwen": {phase: "Failed", reason: "ActivateFailed"},
 	}}
@@ -824,8 +825,30 @@ func TestValidateModelAvailabilityDoesNotAskToRetryForAFailedClaim(t *testing.T)
 
 	require.NotNil(t, response)
 	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
-	assert.Empty(t, responseHeader(response, "Retry-After"))
-	assert.Contains(t, response.GetImmediateResponse().GetBody(), "model qwen is failed (ActivateFailed)")
+	assert.Equal(t, "10", responseHeader(response, "Retry-After"))
+	assert.Contains(t, response.GetImmediateResponse().GetBody(), "model qwen is failed (ActivateFailed); retry shortly")
+}
+
+func TestValidateModelAvailabilityDoesNotAskToRetryForAClaimThatMustChange(t *testing.T) {
+	for _, status := range []mockModelClaimStatus{
+		{phase: "Failed", reason: "InvalidEngineConfig"},
+		{phase: "Pending", reason: "InvalidPerGPU"},
+	} {
+		t.Run(status.reason, func(t *testing.T) {
+			mockCache := &MockCache{modelClaimStatuses: map[string]mockModelClaimStatus{"qwen": status}}
+			mockCache.On("HasModel", "qwen").Return(false)
+			server := &Server{cache: mockCache}
+
+			_, response := server.validateModelAvailability("request-1", "qwen")
+
+			require.NotNil(t, response)
+			assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
+			assert.Empty(t, responseHeader(response, "Retry-After"))
+			body := response.GetImmediateResponse().GetBody()
+			assert.Contains(t, body, "("+status.reason+")")
+			assert.NotContains(t, body, "retry shortly")
+		})
+	}
 }
 
 func TestValidateModelAvailabilityStillRejectsAModelNoClaimServes(t *testing.T) {

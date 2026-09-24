@@ -429,9 +429,11 @@ only after the runtime reports the engine active and ready.
 An activating model also returns 503 with ``Retry-After``. So does a claim
 that is not placed yet. Its message gives the controller's reason: from the
 claim's ``Scheduled`` condition while it waits, such as ``NoMatchingPods``, or
-from its ``Ready`` condition once it has failed. A terminally failed model
-returns 503 without ``Retry-After``. A model that no ModelClaim serves returns
-400.
+from its ``Ready`` condition once it has failed. The controller tries such a
+claim again by itself, so the client is asked to retry as well. A claim that
+has to be changed first, such as one with ``InvalidEngineConfig``, gets no
+``Retry-After``. A terminally failed model returns 503 without
+``Retry-After``. A model that no ModelClaim serves returns 400.
 
 The gateway learns about a claim that is not placed from the ModelClaim
 object, so its role needs to get, list and watch ModelClaims. Without that
