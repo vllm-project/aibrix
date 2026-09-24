@@ -34,12 +34,8 @@ import (
 )
 
 const (
-	fifoOnNonSLOViolation    bool = false
-	queueOverallSLO          bool = false
-	monogenousGPURouting     bool = true
-	monogenousGPURoutingOnly bool = monogenousGPURouting && false
-	initialTotalSubQueues    int  = 8  // Expect no more than 8 subqueues
-	initialSubQueueSize      int  = 64 // Support maximum 128 pending request per sub-queue within one expansion.
+	initialTotalSubQueues int = 8  // Expect no more than 8 subqueues
+	initialSubQueueSize   int = 64 // Support maximum 128 pending request per sub-queue within one expansion.
 
 	// Reason label values for gateway_queue_fifo_fallback_total. The FIFO fallback
 	// candidate serves a dequeue when no request could be ranked against any profile:
@@ -85,11 +81,35 @@ func (crr *candidateRouterRequest) nextProfile() *candidateProfiles {
 	return ret
 }
 
+// queueOptions carries the SLOQueue policy switches. Production always runs the
+// shipped values, which NewSLOQueue writes down once; tests set a field directly
+// after construction to pin a branch that production cannot select.
+//
+// Switch matrix:
+//
+//	fifoOnNonSLOViolation: when true, candidates that both rank below zero are
+//	  served in arrival order instead of rank order.
+//	queueOverallSLO: when true, ranking accounts for the requests already queued
+//	  on the head's subqueue (queueRank) instead of ranking the head alone (rank).
+//	monogenousGPURouting: when true, a candidate is routed per deployment
+//	  profile, most relaxing first; when false, it is routed against the whole
+//	  pod set in one call.
+//	monogenousGPURoutingOnly: when true, only the most relaxing profile is
+//	  tried. It is read only inside the monogenousGPURouting branch, so it has
+//	  no effect unless profile routing is on.
+type queueOptions struct {
+	fifoOnNonSLOViolation    bool
+	queueOverallSLO          bool
+	monogenousGPURouting     bool
+	monogenousGPURoutingOnly bool
+}
+
 type SLOQueue struct {
 	routerProvider types.RouterProviderFunc
 	cache          cache.Cache
 
 	modelName string
+	opts      queueOptions
 	subs      utils.SyncMap[string, types.RouterQueue[*types.QueueEntry]]
 	// features  utils.SyncMap[string, types.RequestFeatures]
 	subpool sync.Pool
@@ -103,6 +123,7 @@ type SLOQueue struct {
 	lastCandidateFallbackReason string
 }
 
+// NewSLOQueue creates an SLO queue with the shipped policy switches.
 func NewSLOQueue(provider types.RouterProviderFunc, modelName string) (router *SLOQueue, err error) {
 	// Dedup deployments
 	c, err := cache.Get()
@@ -114,6 +135,13 @@ func NewSLOQueue(provider types.RouterProviderFunc, modelName string) (router *S
 		routerProvider: provider,
 		cache:          c,
 		modelName:      modelName,
+		// The shipped switches; see queueOptions for the matrix.
+		opts: queueOptions{
+			fifoOnNonSLOViolation:    false,
+			queueOverallSLO:          false,
+			monogenousGPURouting:     true,
+			monogenousGPURoutingOnly: false,
+		},
 	}
 	router.subpool.New = func() any { return NewSimpleQueue[*types.QueueEntry](initialSubQueueSize) }
 	router.expandDequeueCandidatesLocked(initialTotalSubQueues)
@@ -225,7 +253,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Queue
 				continue
 			}
 			// Calculate rank
-			if queueOverallSLO {
+			if q.opts.queueOverallSLO {
 				rank, rankErr = q.queueRank(currentTime, r.RoutingContext, sub, profile)
 			} else {
 				rank, rankErr = q.rank(currentTime, r.RoutingContext, profile)
@@ -250,9 +278,11 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Queue
 			q.dequeueCandidates = q.dequeueCandidates[:idx]
 			return fbRet
 		}
-		// Sort by rank ascendingly, so the first one contains lowest rank.
+		// Sort by rank ascendingly, so the first one contains the lowest rank;
+		// that is the most relaxing profile, which the relaxer below tries
+		// first.
 		sort.Slice(candidate.Profiles, func(i, j int) bool {
-			return q.higherRank(candidate.Profiles[i].Rank, candidate.Profiles[j].Rank) < 0
+			return profileLess(candidate.Profiles[i], candidate.Profiles[j])
 		})
 		return true
 	})
@@ -274,31 +304,28 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Queue
 	// Exclude fallback candidate
 	dequeueCandidates := q.dequeueCandidates[1:]
 
-	// Sort by rank
+	// Order candidates so that the one closest to its most relaxing SLO
+	// violation is served first; see candidateLess for the full contract.
 	sort.Slice(dequeueCandidates, func(i, j int) bool {
-		// Keep original order for no slo violation if fifoOnNonSLOViolation enabled.
-		if fifoOnNonSLOViolation && dequeueCandidates[i].Profiles[0].Rank < 0 && dequeueCandidates[j].Profiles[0].Rank < 0 {
-			return dequeueCandidates[i].RequestTime.Before(dequeueCandidates[j].RequestTime)
-		} else {
-			return q.higherRank(dequeueCandidates[i].Profiles[0].Rank, dequeueCandidates[j].Profiles[0].Rank) > 0
-		}
+		return q.candidateLess(dequeueCandidates[i], dequeueCandidates[j])
 	})
 
 	// Start from earliest
 	q.debugCandidates(fmt.Sprintf("%s candidates", q.modelName), dequeueCandidates)
 	for _, candidate := range dequeueCandidates {
 		var lastErr error
-		if monogenousGPURouting {
+		if q.opts.monogenousGPURouting {
 			//nolint:errcheck
 			for i, profile := range candidate.Profiles {
-				// Always route the most relaxing profile (the first) and stop if the profile can lead to SLO violation.
+				// Try profiles from the most relaxing one and stop once a profile
+				// would already be past its SLO: tighter profiles can only rank higher.
 				if i > 0 && profile.Rank > 0 {
 					break
 				}
 				// Try routing.
 				_, lastErr = q.subRoute(candidate.RoutingContext, &utils.PodArray{Pods: pods.ListByIndex(profile.Key)})
-				// If monogenousGPURoutingOnly is enabled, only the most relaxing profile is considered.
-				if monogenousGPURoutingOnly || candidate.HasRouted() {
+				// With monogenousGPURoutingOnly, the most relaxing profile is the only one tried.
+				if q.opts.monogenousGPURoutingOnly || candidate.HasRouted() {
 					break
 				}
 			}
@@ -309,7 +336,9 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Queue
 			q.lastCandidateSubKey = candidate.SubKey
 			return candidate.QueueEntry, nil
 		} else if lastErr != cache.ErrorLoadCapacityReached {
-			// We have route dicision concluded as SLO violation. Track the conclusion.
+			// The route decision is conclusive rather than a temporary capacity
+			// error: record it and hand the candidate back so the request fails
+			// fast instead of being retried on another candidate.
 			q.lastCandidateSubKey = candidate.SubKey
 			q.lastCandidateError = lastErr
 			return candidate.QueueEntry, nil
@@ -437,6 +466,9 @@ func (q *SLOQueue) queueRank(currentTime time.Time, headReq *types.RoutingContex
 		return 0.0, cache.ErrorSLOFailureRequest
 	}
 
+	// sub.Len() counts the head request, whose own serving time is accounted
+	// separately above, so the queue service time uses Len()-1: it covers only
+	// the requests waiting behind the head.
 	queueServiceTime := float64(sub.Len()-1) / throughput
 	// Expecting SLO violation if waited + head serving time + queue serving time(excluding the head) - target > 0.
 	return headReq.Elapsed(currentTime).Seconds() + headServingTime + queueServiceTime - target, nil
@@ -452,6 +484,9 @@ func (q *SLOQueue) rankImpl(currentTime time.Time, req *types.RoutingContext, pr
 		return
 	}
 
+	// A profile is ranked against a single SLO, in priority order: TPOT, TTFT,
+	// TPAT, then E2E. A profile that configures several SLOs is ranked against
+	// the first one in that order.
 	if profile.SLOs.TPOT > 0.0 {
 		expected, target, err = q.rankImplTPOT(currentTime, req, profile, signature)
 	} else if profile.SLOs.TTFT > 0.0 {
@@ -508,8 +543,55 @@ func (q *SLOQueue) rankImplTPOT(_ time.Time, req *types.RoutingContext, profile 
 	return
 }
 
-func (q *SLOQueue) higherRank(rank1 float64, rank2 float64) float64 {
-	return rank1 - rank2
+// profileLess orders a candidate's profiles for the relaxer: rank ascending, so
+// the first profile is the most relaxing one, with the profile key as the
+// tie-break. A NaN rank cannot be compared, so it sorts after every comparable
+// rank, and two NaN ranks tie on the key. Sorting NaN ranks last also keeps the
+// first profile comparable whenever the candidate has one that is, and
+// candidateLess picks on that first profile.
+func profileLess(profileI *candidateProfiles, profileJ *candidateProfiles) bool {
+	nanI, nanJ := math.IsNaN(profileI.Rank), math.IsNaN(profileJ.Rank)
+	if nanI != nanJ {
+		return nanJ
+	}
+	if !nanI && profileI.Rank != profileJ.Rank {
+		return profileI.Rank < profileJ.Rank
+	}
+	return profileI.Key < profileJ.Key
+}
+
+// candidateLess is the total order used to pick the candidate to serve next:
+// the candidate whose most relaxing profile carries the higher rank is served
+// first, because that is the one closest to (or past) its SLO deadline. A NaN
+// rank cannot be compared, so those candidates sort after every comparable
+// one. Comparable candidates with equal ranks fall back to arrival order and
+// then to the subqueue key, so the pick is a pure function of the queued set
+// instead of depending on the order in which subqueues happen to be visited.
+func (q *SLOQueue) candidateLess(a *candidateRouterRequest, b *candidateRouterRequest) bool {
+	rankA, rankB := a.Profiles[0].Rank, b.Profiles[0].Rank
+	nanA, nanB := math.IsNaN(rankA), math.IsNaN(rankB)
+	if nanA != nanB {
+		// A NaN rank is the least urgent: serve those candidates after every
+		// candidate whose rank is known.
+		return nanB
+	}
+	if !nanA {
+		switch {
+		case q.opts.fifoOnNonSLOViolation && rankA < 0 && rankB < 0:
+			// Both candidates still have slack on every profile: service them
+			// in arrival order.
+		case rankA != rankB:
+			// The higher rank is closer to its most relaxing SLO deadline.
+			return rankA > rankB
+		}
+	}
+	// Arrival order, then the subqueue key, keeps the order total: equal ranks
+	// and two NaN ranks both land here, and the subqueue key is unique within
+	// one Peek, so equal keys mean the same candidate.
+	if !a.RequestTime.Equal(b.RequestTime) {
+		return a.RequestTime.Before(b.RequestTime)
+	}
+	return a.SubKey < b.SubKey
 }
 
 func (q *SLOQueue) debugSub(msg string) {
