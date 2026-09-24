@@ -528,6 +528,13 @@ func handleDiscoveryObject(store *Store, evType discovery.EventType, obj, oldObj
 		case discovery.EventDelete:
 			store.deleteModelAdapter(o)
 		}
+	case *modelv1alpha1.ModelClaim:
+		switch evType {
+		case discovery.EventAdd, discovery.EventUpdate:
+			store.setModelClaim(o)
+		case discovery.EventDelete:
+			store.deleteModelClaim(o)
+		}
 	default:
 		klog.Warningf("Discovery event with unknown object type: %T", obj)
 	}

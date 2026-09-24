@@ -70,6 +70,7 @@ func (p *KubernetesProvider) Watch(handler EventHandler, stopCh <-chan struct{})
 
 	podInformer := factory.Core().V1().Pods().Informer()
 	modelInformer := crdFactory.Model().V1alpha1().ModelAdapters().Informer()
+	claimInformer := crdFactory.Model().V1alpha1().ModelClaims().Informer()
 
 	// Wire handler directly into informer callbacks.
 	// Events flow from the start — including during the initial list phase.
@@ -99,12 +100,19 @@ func (p *KubernetesProvider) Watch(handler EventHandler, stopCh <-chan struct{})
 	if err := registerHandlers(modelInformer); err != nil {
 		return err
 	}
+	if err := registerHandlers(claimInformer); err != nil {
+		return err
+	}
 
 	// Start informers and wait for initial list+sync.
 	// During this phase, AddFunc fires for each existing object.
 	factory.Start(stopCh)
 	crdFactory.Start(stopCh)
 
+	// ModelClaims are left out of the wait. They only tell a model that is
+	// claimed but not placed yet from one that nobody serves. A gateway whose
+	// role cannot list them yet should still start, and answer for such a
+	// model as it did before.
 	if !cache.WaitForCacheSync(stopCh, podInformer.HasSynced, modelInformer.HasSynced) {
 		return errors.New("timed out waiting for caches to sync")
 	}

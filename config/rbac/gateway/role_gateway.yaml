@@ -29,6 +29,14 @@ rules:
   - update
   - watch
 - apiGroups:
+  - model.aibrix.ai
+  resources:
+  - modelclaims
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - gateway.networking.k8s.io
   resources:
   - httproutes

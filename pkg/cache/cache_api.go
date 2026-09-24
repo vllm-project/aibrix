@@ -90,6 +90,13 @@ type ModelClaimBindingProvider interface {
 	ModelClaimBinding(modelName string) (pod *v1.Pod, port int, state string, found bool)
 }
 
+// ModelClaimStatusProvider is implemented by caches that watch ModelClaim
+// objects themselves. It lets the gateway tell a model that is claimed but not
+// placed yet, which no pod advertises, from one that no claim serves.
+type ModelClaimStatusProvider interface {
+	ModelClaimStatus(modelName string) (phase, reason string, found bool)
+}
+
 // MetricCache defines operations for metric data caching
 type MetricCache interface {
 	// GetMetricValueByPod returns the last-written metric slot for a pod (scraped engine
