@@ -109,10 +109,22 @@ type InMemorySlidingWindowTokenTracker struct {
 // TokenTrackerOption is a function that configures a token tracker
 type TokenTrackerOption func(*InMemorySlidingWindowTokenTracker)
 
+// windowSizeDuration converts a bucket count and a time unit into a window
+// duration. An extremely large configuration saturates at the maximum
+// duration instead of wrapping the multiplication around into a negative
+// window.
+func windowSizeDuration(buckets int, unit TimeUnit) time.Duration {
+	d := timeUnitDuration[unit]
+	if buckets > 0 && d > 0 && time.Duration(buckets) > time.Duration(math.MaxInt64)/d {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(buckets) * d
+}
+
 // updateWindowSize recalculates the window size based on time unit
 func (t *InMemorySlidingWindowTokenTracker) updateWindowSize() {
 	// Set window size based on configured size and time unit
-	t.windowSize = time.Duration(t.windowBuckets) * timeUnitDuration[t.bucketUnit]
+	t.windowSize = windowSizeDuration(t.windowBuckets, t.bucketUnit)
 }
 
 func WithWindowSize(size int) TokenTrackerOption {
@@ -189,7 +201,7 @@ func NewScopedInMemorySlidingWindowTokenTracker(config *VTCConfig, knobs types.V
 	tracker := &InMemorySlidingWindowTokenTracker{
 		bucketUnit:      unit,
 		windowBuckets:   knobs.WindowSize,
-		windowSize:      time.Duration(knobs.WindowSize) * timeUnitDuration[unit],
+		windowSize:      windowSizeDuration(knobs.WindowSize, unit),
 		userBucketStore: make(map[string]*userBucketData),
 		userTotals:      make(map[string]float64),
 		totalsToUsers:   make(map[float64]map[string]struct{}),

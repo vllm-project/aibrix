@@ -89,11 +89,12 @@ func (r *BasicVTCRouter) trackerFor(routingCtx *types.RoutingContext) TokenTrack
 		return r.tokenTracker
 	}
 	tracker, ok := r.scopes.get(scope, func() TokenTracker {
-		return NewScopedInMemorySlidingWindowTokenTracker(&VTCConfig{
-			Variant:           RouterVTCBasic,
-			InputTokenWeight:  scope.inputWeight,
-			OutputTokenWeight: scope.outputWeight,
-		}, scope.knobs)
+		// Copy the router config so a scoped tracker keeps every field the
+		// router was built with; only the two weights are scoped here.
+		cfg := *r.config
+		cfg.InputTokenWeight = scope.inputWeight
+		cfg.OutputTokenWeight = scope.outputWeight
+		return NewScopedInMemorySlidingWindowTokenTracker(&cfg, scope.knobs)
 	})
 	if !ok {
 		return r.tokenTracker
