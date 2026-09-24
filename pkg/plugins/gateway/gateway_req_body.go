@@ -328,7 +328,7 @@ func (s *Server) validateModelAvailability(requestID, model string) (types.PodLi
 				klog.InfoS("ModelClaim is known but not placed", "requestID", requestID, "model", model,
 					"phase", phase, "reason", reason)
 				return nil, modelClaimRetryResponse(model, unplacedModelClaimState(phase), reason,
-					!modelClaimMustChange(reason))
+					modelClaimRetried(reason))
 			}
 		}
 		klog.ErrorS(nil, "model doesn't exist in cache, probably wrong model name", "requestID", requestID, "model", model)
@@ -374,18 +374,19 @@ func modelClaimRetryResponse(model, state, reason string, retry bool) *extProcPb
 		ErrorCodeServiceUnavailable, "model")
 }
 
-// modelClaimReasonsThatMustChange are the reasons for which a claim is not
-// placed until the claim itself is changed. Waiting does not help, so a client
-// is not asked to retry. Any other refusal, including a failed activation, the
-// controller tries again by itself.
-var modelClaimReasonsThatMustChange = map[string]struct{}{
+// modelClaimReasonsNotRetried are the reasons the controller does not get past
+// by itself: the claim has to be changed first, or its engine failed for good.
+// Waiting does not help, so a client is not asked to retry. The controller
+// tries any other refusal again, including a failed activation.
+var modelClaimReasonsNotRetried = map[string]struct{}{
 	"InvalidEngineConfig": {},
 	"InvalidPerGPU":       {},
+	"EngineFailed":        {},
 }
 
-func modelClaimMustChange(reason string) bool {
-	_, found := modelClaimReasonsThatMustChange[reason]
-	return found
+func modelClaimRetried(reason string) bool {
+	_, notRetried := modelClaimReasonsNotRetried[reason]
+	return !notRetried
 }
 
 // unplacedModelClaimState words the phase of a claim that is not placed the

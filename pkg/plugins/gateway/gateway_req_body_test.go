@@ -829,10 +829,12 @@ func TestValidateModelAvailabilityAsksToRetryAfterAFailedActivation(t *testing.T
 	assert.Contains(t, response.GetImmediateResponse().GetBody(), "model qwen is failed (ActivateFailed); retry shortly")
 }
 
-func TestValidateModelAvailabilityDoesNotAskToRetryForAClaimThatMustChange(t *testing.T) {
+func TestValidateModelAvailabilityDoesNotAskToRetryWhenWaitingDoesNotHelp(t *testing.T) {
 	for _, status := range []mockModelClaimStatus{
 		{phase: "Failed", reason: "InvalidEngineConfig"},
 		{phase: "Pending", reason: "InvalidPerGPU"},
+		// An engine that used up its restarts is not started again by itself.
+		{phase: "Failed", reason: "EngineFailed"},
 	} {
 		t.Run(status.reason, func(t *testing.T) {
 			mockCache := &MockCache{modelClaimStatuses: map[string]mockModelClaimStatus{"qwen": status}}
