@@ -48,6 +48,7 @@ func EnvOverrides() types.PDOverrides {
 			RequestCost: tokenLoad.RequestCost,
 			TTL:         tokenLoad.TTL,
 			SessionTTL:  tokenLoad.SessionTTL,
+			MaxSessions: tokenLoad.MaxSessions,
 		},
 		HybridCacheLoadFactor: hybrid.Factor,
 		MinMatchPct:           hybrid.MinMatchPct,

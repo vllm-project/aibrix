@@ -50,12 +50,16 @@ type RoutingConfig struct {
 	DecodeScorePolicy  string `json:"decodeScorePolicy,omitempty"`
 
 	// LoadBalance, PrefixCache, Preble, VTC and AutoBlend mirror the knob
-	// families of the matching routing strategies.
-	LoadBalance *LoadBalanceProfileConfig `json:"loadBalance,omitempty"`
-	PrefixCache *PrefixCacheProfileConfig `json:"prefixCache,omitempty"`
-	Preble      *PrebleProfileConfig      `json:"preble,omitempty"`
-	VTC         *VTCProfileConfig         `json:"vtc,omitempty"`
-	AutoBlend   *AutoBlendProfileConfig   `json:"autoBlend,omitempty"`
+	// families of the matching routing strategies. SessionAffinity and Router
+	// carry the caps of the gateway-local session pin cache and of the routing
+	// string caches, which partition per profile instead of per request.
+	LoadBalance     *LoadBalanceProfileConfig     `json:"loadBalance,omitempty"`
+	PrefixCache     *PrefixCacheProfileConfig     `json:"prefixCache,omitempty"`
+	Preble          *PrebleProfileConfig          `json:"preble,omitempty"`
+	VTC             *VTCProfileConfig             `json:"vtc,omitempty"`
+	AutoBlend       *AutoBlendProfileConfig       `json:"autoBlend,omitempty"`
+	SessionAffinity *SessionAffinityProfileConfig `json:"sessionAffinity,omitempty"`
+	Router          *RouterProfileConfig          `json:"router,omitempty"`
 
 	// PD carries the prefill/decode knobs in one flat object, so
 	// "routingConfig.pd.decodeAbortTimeout" reads as one knob instead of a
@@ -83,6 +87,14 @@ type PrefixCacheProfileConfig struct {
 type PrebleProfileConfig struct {
 	TargetGPU      *string `json:"targetGPU,omitempty"`
 	DecodingLength *int    `json:"decodingLength,omitempty"`
+	// SlidingWindowPeriodMinutes and EvictionLoopIntervalMilliseconds override
+	// AIBRIX_ROUTER_PREBLE_SLIDING_WINDOW_PERIOD (minutes) and
+	// AIBRIX_ROUTER_PREBLE_EVICTION_LOOP_INTERVAL (milliseconds): the window
+	// of the preble histogram and the cadence of its eviction loop. Profiles
+	// that set either of them get their own histogram and eviction schedule,
+	// so their window never mixes with the process-wide default's.
+	SlidingWindowPeriodMinutes       *int `json:"slidingWindowPeriodMinutes,omitempty"`
+	EvictionLoopIntervalMilliseconds *int `json:"evictionLoopIntervalMilliseconds,omitempty"`
 }
 
 // VTCProfileConfig mirrors the vtc-basic score knobs that are read per request.
@@ -90,6 +102,22 @@ type VTCProfileConfig struct {
 	MaxPodLoad        *float64 `json:"maxPodLoad,omitempty"`
 	FairnessWeight    *float64 `json:"fairnessWeight,omitempty"`
 	UtilizationWeight *float64 `json:"utilizationWeight,omitempty"`
+	// InputTokenWeight and OutputTokenWeight override
+	// AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT and
+	// AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT: the weights the token
+	// tracker applies to a request's input and output tokens.
+	InputTokenWeight  *float64 `json:"inputTokenWeight,omitempty"`
+	OutputTokenWeight *float64 `json:"outputTokenWeight,omitempty"`
+	// TokenTrackerWindowSize, TokenTrackerTimeUnit, TokenTrackerMinTokens and
+	// TokenTrackerMaxTokens override AIBRIX_ROUTER_VTC_TOKEN_TRACKER_*: the
+	// sliding window the token counts are bucketed in and the floors the
+	// tracker reports while the window holds little activity. Profiles that
+	// set any of the four get their own tracker, weights included, so one
+	// model's window and weights never mix with another's.
+	TokenTrackerWindowSize *int     `json:"tokenTrackerWindowSize,omitempty"`
+	TokenTrackerTimeUnit   *string  `json:"tokenTrackerTimeUnit,omitempty"`
+	TokenTrackerMinTokens  *float64 `json:"tokenTrackerMinTokens,omitempty"`
+	TokenTrackerMaxTokens  *float64 `json:"tokenTrackerMaxTokens,omitempty"`
 }
 
 // AutoBlendProfileConfig mirrors the AIBRIX_ROUTING_AUTO_BLEND_* weights.
@@ -100,15 +128,34 @@ type AutoBlendProfileConfig struct {
 	PrefixCacheLoadBalanceWeight *int `json:"prefixCacheLoadBalanceWeight,omitempty"`
 }
 
+// SessionAffinityProfileConfig mirrors AIBRIX_SESSION_AFFINITY_MAX_LOCAL_KEYS.
+type SessionAffinityProfileConfig struct {
+	// MaxLocalKeys overrides AIBRIX_SESSION_AFFINITY_MAX_LOCAL_KEYS: how many
+	// distinct cache keys the profile's requests may hold in the gateway-local
+	// session pin cache. The environment value stays the process-wide ceiling,
+	// so a profile claims a share of that cap rather than raising it.
+	MaxLocalKeys *int `json:"maxLocalKeys,omitempty"`
+}
+
+// RouterProfileConfig mirrors AIBRIX_ROUTER_MAX_CACHED_ALGORITHM_STRINGS.
+type RouterProfileConfig struct {
+	// MaxCachedAlgorithmStrings overrides
+	// AIBRIX_ROUTER_MAX_CACHED_ALGORITHM_STRINGS: how many distinct routing
+	// strings the profile's requests may keep in the caches that memoize them.
+	// The environment value stays the process-wide ceiling.
+	MaxCachedAlgorithmStrings *int `json:"maxCachedAlgorithmStrings,omitempty"`
+}
+
 // PDProfileConfig mirrors the prefill/decode knobs a profile may set under
 // routingConfig.pd. Each field maps to one AIBRIX_* variable the PD path reads;
 // types.PDOverrides documents the mapping. A knob the profile leaves unset, or
 // sets to a value the matching environment variable would reject, keeps the
 // environment default.
 //
-// AIBRIX_TOKEN_LOAD_MAX_SESSIONS has no field here on purpose: it gates the
-// shared session table of the token-load tracker, so a per-request cap would
-// not be a real per-model limit. It stays environment-only.
+// TokenLoadMaxSessions overrides AIBRIX_TOKEN_LOAD_MAX_SESSIONS. The cap is
+// an admission limit rather than a table size: a profile value bounds how many
+// sessions the request's own admission may add to the shared session table,
+// without splitting the table or resizing it for anyone else.
 type PDProfileConfig struct {
 	// DecodeAbortTimeout and DecodeAbortRetryDelay override
 	// AIBRIX_DECODE_ABORT_TIMEOUT and AIBRIX_DECODE_ABORT_RETRY_DELAY. Zero is
@@ -141,4 +188,6 @@ type PDProfileConfig struct {
 	TokenLoadRequestCost       *float64 `json:"tokenLoadRequestCost,omitempty"`
 	TokenLoadTTLSeconds        *int     `json:"tokenLoadTTLSeconds,omitempty"`
 	TokenLoadSessionTTLSeconds *int     `json:"tokenLoadSessionTTLSeconds,omitempty"`
+	// TokenLoadMaxSessions overrides AIBRIX_TOKEN_LOAD_MAX_SESSIONS.
+	TokenLoadMaxSessions *int `json:"tokenLoadMaxSessions,omitempty"`
 }

@@ -120,17 +120,37 @@ func WithTimeUnit(unit TimeUnit) TokenTrackerOption {
 	}
 }
 
+// TimeUnitName canonicalizes a time unit name the environment or a model
+// config profile configures, so that callers carry the name of a unit the
+// tracker has instead of an arbitrary string. An unknown name falls back to
+// minutes, which is what the environment loader has always done.
+func TimeUnitName(name string) string {
+	switch name {
+	case "seconds":
+		return "seconds"
+	case "milliseconds":
+		return "milliseconds"
+	default:
+		return defaultTimeUnit
+	}
+}
+
+// timeUnitFromName maps a canonical time unit name to its TimeUnit.
+func timeUnitFromName(name string) TimeUnit {
+	switch TimeUnitName(name) {
+	case "seconds":
+		return Seconds
+	case "milliseconds":
+		return Milliseconds
+	default:
+		return Minutes
+	}
+}
+
 // TODO: add redis token tracker so that state is shared across plugin instances
 // NewInMemorySlidingWindowTokenTracker creates a new token tracker with configurable options
 func NewInMemorySlidingWindowTokenTracker(config *VTCConfig, opts ...TokenTrackerOption) TokenTracker {
-	defaultUnit := Minutes
-	// Set default time unit from environment variable
-	switch timeUnitStr {
-	case "seconds":
-		defaultUnit = Seconds
-	case "milliseconds":
-		defaultUnit = Milliseconds
-	}
+	defaultUnit := timeUnitFromName(timeUnitStr)
 
 	tracker := &InMemorySlidingWindowTokenTracker{
 		bucketUnit:      defaultUnit,

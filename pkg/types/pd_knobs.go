@@ -96,4 +96,9 @@ type PDTokenLoadOverrides struct {
 	TTL time.Duration
 	// SessionTTL bounds how long a session's last prompt is remembered.
 	SessionTTL time.Duration
+	// MaxSessions is how many sessions an admission may add to the shared
+	// session table before it stops remembering new ones. It is an admission
+	// limit taken per call, so a profile value bounds this request's additions
+	// without splitting or resizing the table for anyone else.
+	MaxSessions int
 }

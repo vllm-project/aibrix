@@ -80,10 +80,18 @@ func processRoutingOverrides() *types.RoutingOverrides {
 			StandardDeviationFactor: standardDeviationFactor,
 		},
 		Preble: types.PrebleOverrides{
-			TargetGPU:      targetGPU,
-			DecodingLength: decodingLength,
+			TargetGPU:            targetGPU,
+			DecodingLength:       decodingLength,
+			SlidingWindowPeriod:  slidingWindowPeriod,
+			EvictionLoopInterval: evictionLoopInterval,
 		},
 		VTC: vtc.EnvOverrides(),
+		SessionAffinity: types.SessionAffinityOverrides{
+			MaxLocalKeys: maxSessionKeyPodsEntries,
+		},
+		Router: types.RouterOverrides{
+			MaxCachedAlgorithmStrings: maxCachedAlgorithmStrings,
+		},
 		AutoBlend: types.AutoBlendOverrides{
 			LoadBalanceWeight:            autoBlendLoadBalanceWeight,
 			LeastRequestWeight:           autoBlendLeastRequestWeight,
@@ -139,11 +147,25 @@ func resolveRoutingOverrides(cfg *types.RoutingConfig) *types.RoutingOverrides {
 	if pb := cfg.Preble; pb != nil {
 		set(apply(&ov.Preble.TargetGPU, "preble.targetGPU", pb.TargetGPU, knownPrebleGPU))
 		set(apply(&ov.Preble.DecodingLength, "preble.decodingLength", pb.DecodingLength, positive[int]))
+		set(applyDuration(&ov.Preble.SlidingWindowPeriod, "preble.slidingWindowPeriodMinutes", pb.SlidingWindowPeriodMinutes, positive[int], time.Minute))
+		set(applyDuration(&ov.Preble.EvictionLoopInterval, "preble.evictionLoopIntervalMilliseconds", pb.EvictionLoopIntervalMilliseconds, positive[int], time.Millisecond))
 	}
 	if v := cfg.VTC; v != nil {
 		set(apply(&ov.VTC.MaxPodLoad, "vtc.maxPodLoad", v.MaxPodLoad, positive[float64]))
 		set(apply(&ov.VTC.FairnessWeight, "vtc.fairnessWeight", v.FairnessWeight, nonNegative[float64]))
 		set(apply(&ov.VTC.UtilizationWeight, "vtc.utilizationWeight", v.UtilizationWeight, nonNegative[float64]))
+		set(apply(&ov.VTC.InputTokenWeight, "vtc.inputTokenWeight", v.InputTokenWeight, positive[float64]))
+		set(apply(&ov.VTC.OutputTokenWeight, "vtc.outputTokenWeight", v.OutputTokenWeight, positive[float64]))
+		set(apply(&ov.VTC.TokenTracker.WindowSize, "vtc.tokenTrackerWindowSize", v.TokenTrackerWindowSize, positive[int]))
+		set(apply(&ov.VTC.TokenTracker.TimeUnit, "vtc.tokenTrackerTimeUnit", v.TokenTrackerTimeUnit, knownVTCTimeUnit))
+		set(apply(&ov.VTC.TokenTracker.MinTokens, "vtc.tokenTrackerMinTokens", v.TokenTrackerMinTokens, positive[float64]))
+		set(apply(&ov.VTC.TokenTracker.MaxTokens, "vtc.tokenTrackerMaxTokens", v.TokenTrackerMaxTokens, positive[float64]))
+	}
+	if sa := cfg.SessionAffinity; sa != nil {
+		set(apply(&ov.SessionAffinity.MaxLocalKeys, "sessionAffinity.maxLocalKeys", sa.MaxLocalKeys, positive[int]))
+	}
+	if rt := cfg.Router; rt != nil {
+		set(apply(&ov.Router.MaxCachedAlgorithmStrings, "router.maxCachedAlgorithmStrings", rt.MaxCachedAlgorithmStrings, positive[int]))
 	}
 	if ab := cfg.AutoBlend; ab != nil {
 		set(apply(&ov.AutoBlend.LoadBalanceWeight, "autoBlend.loadBalanceWeight", ab.LoadBalanceWeight, inRange(0, maxWeightCoefficient)))
@@ -168,6 +190,7 @@ func resolveRoutingOverrides(cfg *types.RoutingConfig) *types.RoutingOverrides {
 		set(apply(&ov.PD.TokenLoad.RequestCost, "pd.tokenLoadRequestCost", p.TokenLoadRequestCost, positive[float64]))
 		set(applySeconds(&ov.PD.TokenLoad.TTL, "pd.tokenLoadTTLSeconds", p.TokenLoadTTLSeconds, nonNegative[int]))
 		set(applySeconds(&ov.PD.TokenLoad.SessionTTL, "pd.tokenLoadSessionTTLSeconds", p.TokenLoadSessionTTLSeconds, nonNegative[int]))
+		set(apply(&ov.PD.TokenLoad.MaxSessions, "pd.tokenLoadMaxSessions", p.TokenLoadMaxSessions, positive[int]))
 	}
 
 	if !applied {
@@ -212,6 +235,27 @@ func applySeconds(dst *time.Duration, knob string, v *int, ok func(int) bool) bo
 	}
 	*dst = time.Duration(*v) * time.Second
 	return true
+}
+
+// applyDuration is apply for a knob the environment expresses as a count of a
+// fixed unit, which the resolved overrides carry as a duration.
+func applyDuration(dst *time.Duration, knob string, v *int, ok func(int) bool, unit time.Duration) bool {
+	if v == nil {
+		return false
+	}
+	if !ok(*v) {
+		warnDroppedKnob(knob, *v)
+		return false
+	}
+	*dst = time.Duration(*v) * unit
+	return true
+}
+
+// knownVTCTimeUnit accepts the bucket sizes the VTC token tracker knows. An
+// unknown name would otherwise be normalized to minutes behind the profile's
+// back, which is not what a profile that misspelled "seconds" asked for.
+func knownVTCTimeUnit(v string) bool {
+	return vtc.TimeUnitName(v) == v
 }
 
 // The predicates mirror the environment loaders: utils.LoadEnvInt and
