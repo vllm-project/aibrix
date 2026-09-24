@@ -436,8 +436,10 @@ has to be changed first, such as one with ``InvalidEngineConfig``, gets no
 ``Retry-After``. A model that no ModelClaim serves returns 400.
 
 The gateway learns about a claim that is not placed from the ModelClaim
-object, so its role needs to get, list and watch ModelClaims. Without that
-access, such a claim is answered with 400, as a model that does not exist.
+object, so its role needs to get, list and watch ModelClaims. If it cannot
+list them when it starts, it says so once in its log, and answers such a claim
+with 400, as a model that does not exist. Access granted later takes effect
+when the gateway restarts.
 
 Runtime reliability
 -------------------

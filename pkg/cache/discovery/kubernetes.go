@@ -17,12 +17,16 @@ limitations under the License.
 package discovery
 
 import (
+	"context"
 	"errors"
+	"time"
 
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
 
 	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
 	v1alpha1scheme "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/scheme"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -34,11 +38,20 @@ import (
 // KubernetesProvider implements Provider using Kubernetes informers.
 type KubernetesProvider struct {
 	config *rest.Config
+	// watchModelClaims adds ModelClaim objects to what is watched.
+	watchModelClaims bool
 }
 
 // NewKubernetesProvider creates a new Kubernetes discovery provider.
 func NewKubernetesProvider(config *rest.Config) *KubernetesProvider {
 	return &KubernetesProvider{config: config}
+}
+
+// WithModelClaims makes the provider watch ModelClaim objects as well. The
+// gateway needs them to answer for a model that is claimed but not placed yet.
+func (p *KubernetesProvider) WithModelClaims() *KubernetesProvider {
+	p.watchModelClaims = true
+	return p
 }
 
 // Type returns the provider type identifier.
@@ -70,7 +83,10 @@ func (p *KubernetesProvider) Watch(handler EventHandler, stopCh <-chan struct{})
 
 	podInformer := factory.Core().V1().Pods().Informer()
 	modelInformer := crdFactory.Model().V1alpha1().ModelAdapters().Informer()
-	claimInformer := crdFactory.Model().V1alpha1().ModelClaims().Informer()
+	var claimInformer cache.SharedIndexInformer
+	if p.watchModelClaims && canListModelClaims(crdClientSet) {
+		claimInformer = crdFactory.Model().V1alpha1().ModelClaims().Informer()
+	}
 
 	// Wire handler directly into informer callbacks.
 	// Events flow from the start — including during the initial list phase.
@@ -100,8 +116,10 @@ func (p *KubernetesProvider) Watch(handler EventHandler, stopCh <-chan struct{})
 	if err := registerHandlers(modelInformer); err != nil {
 		return err
 	}
-	if err := registerHandlers(claimInformer); err != nil {
-		return err
+	if claimInformer != nil {
+		if err := registerHandlers(claimInformer); err != nil {
+			return err
+		}
 	}
 
 	// Start informers and wait for initial list+sync.
@@ -131,6 +149,22 @@ func (p *KubernetesProvider) Watch(handler EventHandler, stopCh <-chan struct{})
 		"pods", len(podInformer.GetStore().List()), "modelAdapters", len(adapters))
 
 	return nil
+}
+
+// canListModelClaims lists ModelClaims once before they are watched. A role
+// that may not list them, or a cluster without the ModelClaim CRD, is logged
+// here once, where an informer would log it every minute for as long as the
+// process runs. Any other error is left to the informer, which retries it.
+func canListModelClaims(client v1alpha1.Interface) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := client.ModelV1alpha1().ModelClaims(metav1.NamespaceAll).List(ctx, metav1.ListOptions{Limit: 1})
+	if apierrors.IsForbidden(err) || apierrors.IsNotFound(err) {
+		klog.InfoS("Not watching ModelClaims: a model that is claimed but not placed yet "+
+			"is answered as one that does not exist", "err", err)
+		return false
+	}
+	return true
 }
 
 var _ Provider = (*KubernetesProvider)(nil)
