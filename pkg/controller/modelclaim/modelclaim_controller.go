@@ -68,8 +68,13 @@ const (
 	ScheduledPodsAnnotationKey = "model.aibrix.ai/scheduled-pods"
 
 	// DefaultRequeueDuration paces periodic reconciliation (placement retries
-	// and readiness checks).
+	// and health checks).
 	DefaultRequeueDuration = 10 * time.Second
+
+	// ActivatingRequeueDuration paces a claim while an engine of it is coming
+	// up, so the engine takes traffic within this long of being ready rather
+	// than a whole period later.
+	ActivatingRequeueDuration = 2 * time.Second
 )
 
 // ModelClaimReconciler reconciles a ModelClaim object.
@@ -329,6 +334,11 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// stay what it was when the last model landed. It runs last, after anything
 	// this pass changed on the cards.
 	r.divideCards(ctx, candidates, readings)
+	// An engine coming up is looked at again soon, so it takes traffic within
+	// a couple of seconds of being ready.
+	if hasActivatingInstance(pm) {
+		requeueAfter = min(requeueAfter, ActivatingRequeueDuration)
+	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
@@ -345,6 +355,16 @@ func (r *ModelClaimReconciler) roomAsCached(
 		return nil
 	}
 	return roomSignatureOf(candidates, cached)
+}
+
+// hasActivatingInstance reports whether an engine of the claim is coming up.
+func hasActivatingInstance(pm *modelv1alpha1.ModelClaim) bool {
+	for _, instance := range pm.Status.Instances {
+		if instance.Phase == modelv1alpha1.ModelClaimActivating {
+			return true
+		}
+	}
+	return false
 }
 
 // requeueOnConflict lets the next reconcile work from the latest API object.
