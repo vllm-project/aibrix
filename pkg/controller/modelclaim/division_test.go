@@ -61,7 +61,7 @@ func TestCardDivisionStateForgetsCardsLongGone(t *testing.T) {
 
 	_, remembered := divisions.lastRound[gone]
 	assert.False(t, remembered)
-	_, remembered = divisions.compositions[gone]
+	_, remembered = divisions.attemptedFor[gone]
 	assert.False(t, remembered)
 }
 
@@ -190,6 +190,7 @@ func TestCardDivisionStateDividesACardWhoseEnginesChangedAtOnce(t *testing.T) {
 	divide, changed := divisions.due(card, "a")
 	assert.True(t, divide, "a card seen for the first time is divided by the round")
 	assert.False(t, changed, "a card seen for the first time is not taken as changed")
+	divisions.divided(card, "a")
 
 	divide, _ = divisions.due(card, "a")
 	assert.False(t, divide)
@@ -197,9 +198,37 @@ func TestCardDivisionStateDividesACardWhoseEnginesChangedAtOnce(t *testing.T) {
 	divide, changed = divisions.due(card, "a,b")
 	assert.True(t, divide, "a card whose engines changed does not wait for the round")
 	assert.True(t, changed)
+	divisions.divided(card, "a,b")
 
 	divide, _ = divisions.due(card, "a,b")
 	assert.False(t, divide, "what the card was divided for is remembered")
+}
+
+func TestCardDivisionStateKeepsAChangePendingUntilTheCardIsDivided(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	divisions := newCardDivisionState(func() time.Time { return now })
+	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+	divisions.divided(card, "a,b")
+
+	divide, changed := divisions.due(card, "a")
+	require.True(t, divide)
+	require.True(t, changed)
+
+	// That division could not be carried out, so nothing records it. The
+	// change is not tried again on every pass, only by the round, and then
+	// still as a change.
+	divide, _ = divisions.due(card, "a")
+	assert.False(t, divide)
+	now = now.Add(DefaultRequeueDuration)
+	divide, changed = divisions.due(card, "a")
+	assert.True(t, divide)
+	assert.True(t, changed, "a change not yet divided for is still a change")
+
+	divisions.divided(card, "a")
+	now = now.Add(DefaultRequeueDuration)
+	divide, changed = divisions.due(card, "a")
+	assert.True(t, divide)
+	assert.False(t, changed, "once divided for, the card is back to its rounds")
 }
 
 func TestCardDivisionStateCountsAPlacementAsTheCardsDivision(t *testing.T) {
@@ -292,6 +321,33 @@ func TestReconcileDividesACardAgainAtOnceWhenAnEngineLeaves(t *testing.T) {
 		}
 	}
 	assert.True(t, told, "a division after the engines change is raised on the claims it moves")
+}
+
+func TestReconcileAnnouncesTheRoomAnEngineLeftOnceItHasExited(t *testing.T) {
+	r, runtime, pod, clock := twoEnginesSharingACard(t)
+	reconcileOnce(t, r, "stays")
+	recordedEvents(t, r)
+
+	// The claim goes, and its engine takes a moment to exit. Until it does,
+	// the card runs an engine no claim answers for, and cannot be divided.
+	require.NoError(t, r.Delete(context.Background(), getModel(t, r, "leaves")))
+	reconcileOnce(t, r, "stays")
+	require.Empty(t, runtime.kvLimitCalls)
+
+	snapshot := runtime.snapshots[pod.Status.PodIP]
+	snapshot.Models = snapshot.Models[:1]
+	*clock = clock.Add(DefaultRequeueDuration)
+	reconcileOnce(t, r, "stays")
+
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, int64(60)<<30, runtime.kvLimitCalls[0].LimitBytes)
+	told := false
+	for _, event := range recordedEvents(t, r) {
+		if strings.Contains(event, "KVLimitSet") && strings.Contains(event, "dividing the card between 1 engine(s)") {
+			told = true
+		}
+	}
+	assert.True(t, told, "room freed by a change of engines is announced, even when the card could only be divided a round later")
 }
 
 func TestReconcileTriesAFailedDivisionAgainOnlyByTheRound(t *testing.T) {

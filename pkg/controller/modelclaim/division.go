@@ -60,14 +60,18 @@ func loadDivision(hbmUsableBytes int64) division {
 	return division{minimumChangeBytes: minimumKVLimitChangeBytes(hbmUsableBytes)}
 }
 
-// cardDivisionState remembers, for each card, when it was last divided and
-// which engines it was divided for. It is controller-local: after a restart
-// every card is seen for the first time.
+// cardDivisionState remembers, for each card, when a division of it was last
+// tried, and which engines it was last divided for. It is controller-local:
+// after a restart every card is seen for the first time.
 type cardDivisionState struct {
-	mu           sync.Mutex
-	now          func() time.Time
-	lastRound    map[types.NamespacedName]time.Time
-	compositions map[types.NamespacedName]string
+	mu        sync.Mutex
+	now       func() time.Time
+	lastRound map[types.NamespacedName]time.Time
+	// dividedFor is what the card was last divided for, and attemptedFor what
+	// a division of it was last tried for. They differ while a change of
+	// engines waits for a division that works.
+	dividedFor   map[types.NamespacedName]string
+	attemptedFor map[types.NamespacedName]string
 	lastPruned   time.Time
 }
 
@@ -78,7 +82,8 @@ func newCardDivisionState(now func() time.Time) *cardDivisionState {
 	return &cardDivisionState{
 		now:          now,
 		lastRound:    make(map[types.NamespacedName]time.Time),
-		compositions: make(map[types.NamespacedName]string),
+		dividedFor:   make(map[types.NamespacedName]string),
+		attemptedFor: make(map[types.NamespacedName]string),
 	}
 }
 
@@ -88,37 +93,41 @@ func newCardDivisionState(now func() time.Time) *cardDivisionState {
 // A card whose engines changed is due at once. Any other card is due once a
 // round: every claim on a card reconciles on its own schedule and each of them
 // sees the same card, so without the round the card would be divided once per
-// claim. Either way, the engines are remembered whether or not the division
-// then succeeds, so a card that cannot be divided is tried again by the round
-// rather than on every pass.
+// claim.
 //
-// A card seen for the first time, as every card is after a restart, is not
-// taken as changed. Its engines are noted, and the round divides it.
+// A change stays a change until a division for it succeeds. A card that
+// cannot be divided yet, as while an engine that left is still exiting, is
+// tried again by the round rather than on every pass, and each try is still
+// made as for a change. A card seen for the first time, as every card is after
+// a restart, is not taken as changed: the round divides it.
 func (s *cardDivisionState) due(card types.NamespacedName, composition string) (divide, changed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
 	s.pruneLocked(now)
-	previous, known := s.compositions[card]
-	s.compositions[card] = composition
-	if known && previous != composition {
+	previous, known := s.dividedFor[card]
+	changed = known && previous != composition
+	if changed && s.attemptedFor[card] != composition {
+		s.attemptedFor[card] = composition
 		s.lastRound[card] = now
 		return true, true
 	}
 	if last, found := s.lastRound[card]; found && now.Sub(last) < DefaultRequeueDuration {
 		return false, false
 	}
+	s.attemptedFor[card] = composition
 	s.lastRound[card] = now
-	return true, false
+	return true, changed
 }
 
-// divided records a division made outside the rounds, which is what placement
-// does, so the next pass does not take the new engine for a change, and the
-// card's round starts again.
+// divided records that a card was divided for these engines: by the round, by
+// a division after its engines changed, or by placement. The next pass then
+// does not take them for a change, and the card's round starts again.
 func (s *cardDivisionState) divided(card types.NamespacedName, composition string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.compositions[card] = composition
+	s.dividedFor[card] = composition
+	s.attemptedFor[card] = composition
 	s.lastRound[card] = s.now()
 }
 
@@ -134,7 +143,8 @@ func (s *cardDivisionState) pruneLocked(now time.Time) {
 	for card, last := range s.lastRound {
 		if now.Sub(last) >= horizon {
 			delete(s.lastRound, card)
-			delete(s.compositions, card)
+			delete(s.dividedFor, card)
+			delete(s.attemptedFor, card)
 		}
 	}
 }
@@ -214,6 +224,7 @@ func (r *ModelClaimReconciler) divideCards(
 	divisions := r.divisions()
 	due := make([]corev1.Pod, 0, len(candidates))
 	changed := make(map[string]bool, len(candidates))
+	compositions := make(map[string]string, len(candidates))
 	for i := range candidates {
 		pod := &candidates[i]
 		composition := cardComposition(claims, pod.Name)
@@ -226,6 +237,7 @@ func (r *ModelClaimReconciler) divideCards(
 		if divide {
 			due = append(due, *pod)
 			changed[pod.Name] = engineChange
+			compositions[pod.Name] = composition
 		}
 	}
 	if len(due) == 0 {
@@ -246,6 +258,8 @@ func (r *ModelClaimReconciler) divideCards(
 		if _, err := r.arrangeCard(ctx, pod, ledger, ledger.engines, why, readings); err != nil {
 			klog.V(2).InfoS("could not divide a card", "pod", klog.KObj(pod),
 				"enginesChanged", changed[pod.Name], "err", err)
+			continue
 		}
+		divisions.divided(cardOf(pod), compositions[pod.Name])
 	}
 }

@@ -396,8 +396,10 @@ its round. That covers a model removed or failed, an engine that sleeps or
 wakes, and a declaration that changes. A model being placed divides its card
 itself, as above. Every move is carried out, however small. This is also how
 the room comes back when an engine cannot be started after its card was divided
-for it. The controller keeps what each card was divided for in memory only.
-After a restart it notes each card as it finds it, and the round divides it.
+for it. A change the card cannot be divided for yet, as while an engine that
+left is still exiting, is tried again by the round, and still as a change. The
+controller keeps what each card was divided for in memory only. After a restart
+it notes each card as it finds it, and the round divides it.
 
 Placement and a division after the engines change raise an Event on each claim
 whose limit they move, and so does the health loop when it writes a limit back:
