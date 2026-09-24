@@ -347,6 +347,7 @@ func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) to
 		return p.config.DefaultTokenizer
 	}
 	if exists {
+		// The existing entry is unhealthy; healthy entries returned above under this same lock.
 		if closer, ok := previous.tokenizer.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		}
