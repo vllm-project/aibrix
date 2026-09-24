@@ -367,3 +367,42 @@ models:
 		})
 	}
 }
+
+func TestStaticProviderRequiredFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  string
+		wantErr string
+	}{
+		{
+			name: "model name is empty",
+			config: `
+models:
+  - name: ""
+    workers:
+      - "vllm-0:8000"
+`,
+			wantErr: "model name is required",
+		},
+		{
+			name: "model has no backends",
+			config: `
+models:
+  - name: "test-model"
+    engine: vllm
+`,
+			wantErr: "at least one of",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTestConfig(t, tt.config)
+			p := NewStaticProvider(path)
+			stopCh := make(chan struct{})
+			defer close(stopCh)
+			err := p.Watch(func(_ WatchEvent) {}, stopCh)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}

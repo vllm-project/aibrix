@@ -80,8 +80,13 @@ type StaticConfig struct {
 // resolve normalizes the supported config spellings into the internal
 // endpoints/rolesets pair. The TRT-LLM style workers, prefill_workers and
 // decode_workers keys are aliases for what endpoints and rolesets express;
-// role labels stay an implementation detail of the provider.
+// role labels stay an implementation detail of the provider. A model has to
+// name itself and declare at least one backend, and the spellings that cannot
+// be reconciled are rejected here.
 func (m StaticModelConfig) resolve() ([]string, []RoleSetConfig, error) {
+	if m.Name == "" {
+		return nil, nil, fmt.Errorf("model name is required")
+	}
 	if len(m.Endpoints) > 0 && len(m.Workers) > 0 {
 		return nil, nil, fmt.Errorf(
 			"model %q: endpoints and workers are aliases, use one of them", m.Name)
@@ -97,7 +102,9 @@ func (m StaticModelConfig) resolve() ([]string, []RoleSetConfig, error) {
 			"model %q: rolesets and prefill_workers/decode_workers are mutually exclusive", m.Name)
 	}
 	roleSets := m.RoleSets
-	if len(roleSets) == 0 && workerRoles {
+	if workerRoles {
+		// The shorthand always describes a single roleset; the check above
+		// already rejected the combination with explicit rolesets.
 		roleSets = []RoleSetConfig{{
 			Name:    defaultRoleSetName,
 			Prefill: m.PrefillWorkers,
@@ -108,6 +115,11 @@ func (m StaticModelConfig) resolve() ([]string, []RoleSetConfig, error) {
 	if len(endpoints) > 0 && len(roleSets) > 0 {
 		return nil, nil, fmt.Errorf(
 			"model %q: endpoints/workers and rolesets/prefill_workers/decode_workers are mutually exclusive",
+			m.Name)
+	}
+	if len(endpoints) == 0 && len(roleSets) == 0 {
+		return nil, nil, fmt.Errorf(
+			"model %q: at least one of endpoints, workers, rolesets, or prefill_workers/decode_workers is required",
 			m.Name)
 	}
 	return endpoints, roleSets, nil
