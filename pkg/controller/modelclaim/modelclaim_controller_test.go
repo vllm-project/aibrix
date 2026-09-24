@@ -2498,14 +2498,14 @@ func TestReconcileAccountsForACardTheRuntimeReportsWithoutAGPURequest(t *testing
 	reconcileOnce(t, r, pm.Name)
 
 	// The card is too small for the model. Taken for a pod with no GPU, it
-	// would have been used without an account.
+	// would have been used without an account. Measured, it is known never
+	// to hold the model.
 	assert.Empty(t, runtime.activateCalls)
 	got := getModel(t, r, pm.Name)
 	cond := meta.FindStatusCondition(got.Status.Conditions,
 		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
 	require.NotNil(t, cond)
-	assert.Equal(t, "NoMatchingPods", cond.Reason)
-	assert.Contains(t, cond.Message, "can offer at most")
+	assert.Equal(t, "TooLargeForAnyCard", cond.Reason)
 }
 
 // A pod given its GPUs by a resource claim requests none, so its request says
