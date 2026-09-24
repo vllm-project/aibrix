@@ -780,9 +780,14 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    exiting. The claims could not be listed. When no Pod could be accounted for,
    the message names one of them and the reason.
 
-   The claim is tried again on every pass, and the ``NoMatchingPods`` Event is
-   raised only when the refusal changes. The ``Scheduled`` condition always
-   carries the current one.
+   The ``NoMatchingPods`` Event is raised only when the refusal changes, and the
+   ``Scheduled`` condition always carries the current one.
+
+   A refused claim backs off. Each refusal in a row doubles the wait before
+   the next try: 10, 20 and 40 seconds, then a minute at most. A model that
+   waits for room therefore does not have every runtime in the pool read for
+   it every 10 seconds. The wait is kept in the controller's memory only, so
+   a restart tries every waiting claim at once.
 
 Claim remains ``Pending`` with ``InvalidPerGPU``
    ``perGPU`` is missing, or one of its figures cannot be used, and the
