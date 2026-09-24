@@ -65,6 +65,9 @@ type placementAttempt struct {
 	// otherwise sit through.
 	generation int64
 	room       roomSignature
+	// tooLarge is whether the claim was refused because no card could ever
+	// hold it. Only a pod joining the pool, or its own spec, can change that.
+	tooLarge bool
 }
 
 // roomSignature is the pool as a waiting claim last saw it: for each candidate
@@ -105,7 +108,7 @@ func (b *placementBackoff) due(claim types.NamespacedName, generation int64, roo
 	if !waiting {
 		return true, 0
 	}
-	if generation != attempt.generation || roomMayHaveAppeared(attempt.room, room) {
+	if generation != attempt.generation || roomMayHaveAppeared(attempt.room, room, attempt.tooLarge) {
 		delete(b.attempts, claim)
 		return true, 0
 	}
@@ -120,12 +123,33 @@ func (b *placementBackoff) due(claim types.NamespacedName, generation int64, roo
 // waits before its next try. The wait doubles with each refusal in a row, up to
 // maximumPlacementBackoff.
 func (b *placementBackoff) refused(claim types.NamespacedName, generation int64, room roomSignature) time.Duration {
+	return b.refuse(claim, generation, room, false)
+}
+
+// refusedAsTooLarge records that no card in the pool could ever hold a claim,
+// even empty. It waits as a refused claim does, but room freed on a card is
+// not a reason to try it again.
+func (b *placementBackoff) refusedAsTooLarge(
+	claim types.NamespacedName,
+	generation int64,
+	room roomSignature,
+) time.Duration {
+	return b.refuse(claim, generation, room, true)
+}
+
+func (b *placementBackoff) refuse(
+	claim types.NamespacedName,
+	generation int64,
+	room roomSignature,
+	tooLarge bool,
+) time.Duration {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	attempt := b.attempts[claim]
 	attempt.refusals++
 	attempt.generation = generation
 	attempt.room = room
+	attempt.tooLarge = tooLarge
 	wait := DefaultRequeueDuration << min(attempt.refusals-1, 16)
 	if wait > maximumPlacementBackoff || wait <= 0 {
 		wait = maximumPlacementBackoff
@@ -153,9 +177,11 @@ func (r *ModelClaimReconciler) backoff() *placementBackoff {
 }
 
 // roomMayHaveAppeared compares the pool with how a waiting claim last saw it.
-// A pod that left frees nothing for anyone, so it does not count. Without both
-// descriptions there is nothing to compare.
-func roomMayHaveAppeared(before, now roomSignature) bool {
+// A pod that left frees nothing for anyone, so it does not count. For a claim
+// no card could ever hold, only a pod that joined counts: room freed on a card
+// too small for it changes nothing. Without both descriptions there is nothing
+// to compare.
+func roomMayHaveAppeared(before, now roomSignature, tooLarge bool) bool {
 	if before == nil || now == nil {
 		return false
 	}
@@ -163,6 +189,9 @@ func roomMayHaveAppeared(before, now roomSignature) bool {
 		was, seen := before[key]
 		if !seen {
 			return true
+		}
+		if tooLarge {
+			continue
 		}
 		if taken.instances < was.instances || taken.undeclared < was.undeclared ||
 			taken.promisedBytes < was.promisedBytes {
