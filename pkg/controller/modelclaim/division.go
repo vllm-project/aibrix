@@ -53,6 +53,11 @@ var placementDivision = division{announce: true}
 // carried out, and each moved engine's claim is told.
 var compositionDivision = division{announce: true}
 
+// stuckDivisionTries is how many divisions of a card may fail in a row before
+// the claims on it are warned. A failure now and then is the race with an
+// engine that is growing, which the next round plans around.
+const stuckDivisionTries = 3
+
 // loadDivision follows the load on a card. It runs every round, so a move too
 // small to shift memory is skipped, and the moves are logged rather than
 // raised on the claims.
@@ -72,7 +77,9 @@ type cardDivisionState struct {
 	// engines waits for a division that works.
 	dividedFor   map[types.NamespacedName]string
 	attemptedFor map[types.NamespacedName]string
-	lastPruned   time.Time
+	// failures counts the divisions of a card that have failed in a row.
+	failures   map[types.NamespacedName]int
+	lastPruned time.Time
 }
 
 func newCardDivisionState(now func() time.Time) *cardDivisionState {
@@ -84,6 +91,7 @@ func newCardDivisionState(now func() time.Time) *cardDivisionState {
 		lastRound:    make(map[types.NamespacedName]time.Time),
 		dividedFor:   make(map[types.NamespacedName]string),
 		attemptedFor: make(map[types.NamespacedName]string),
+		failures:     make(map[types.NamespacedName]int),
 	}
 }
 
@@ -129,6 +137,16 @@ func (s *cardDivisionState) divided(card types.NamespacedName, composition strin
 	s.dividedFor[card] = composition
 	s.attemptedFor[card] = composition
 	s.lastRound[card] = s.now()
+	delete(s.failures, card)
+}
+
+// failedAgain counts one more division of a card that did not work, and
+// returns how many have failed in a row.
+func (s *cardDivisionState) failedAgain(card types.NamespacedName) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failures[card]++
+	return s.failures[card]
 }
 
 // pruneLocked forgets cards not divided for a long while, which is what a
@@ -145,6 +163,7 @@ func (s *cardDivisionState) pruneLocked(now time.Time) {
 			delete(s.lastRound, card)
 			delete(s.dividedFor, card)
 			delete(s.attemptedFor, card)
+			delete(s.failures, card)
 		}
 	}
 }
@@ -258,8 +277,38 @@ func (r *ModelClaimReconciler) divideCards(
 		if _, err := r.arrangeCard(ctx, pod, ledger, ledger.engines, why, readings); err != nil {
 			klog.V(2).InfoS("could not divide a card", "pod", klog.KObj(pod),
 				"enginesChanged", changed[pod.Name], "err", err)
+			if divisions.failedAgain(cardOf(pod)) == stuckDivisionTries {
+				r.warnCardNotDivided(pod, claims, ledger, err)
+			}
 			continue
 		}
 		divisions.divided(cardOf(pod), compositions[pod.Name])
+	}
+}
+
+// warnCardNotDivided tells each claim on a card that the card has kept its
+// last division through several tries in a row. It is said once for each run
+// of failures. A division that fails once is usually the race with an engine
+// that is growing, and the next round plans around it. One that keeps failing
+// points at an engine whose limit does not take, which only the log would show
+// otherwise, since a round raises no events.
+func (r *ModelClaimReconciler) warnCardNotDivided(
+	pod *corev1.Pod,
+	claims *modelv1alpha1.ModelClaimList,
+	ledger podLedger,
+	err error,
+) {
+	onCard := make(map[string]bool, len(ledger.engines))
+	for _, engine := range ledger.engines {
+		onCard[engine.claimName] = true
+	}
+	for i := range claims.Items {
+		claim := &claims.Items[i]
+		if !onCard[claim.Name] {
+			continue
+		}
+		r.Recorder.Eventf(claim, corev1.EventTypeWarning, "KVLimitFailed",
+			"model %s on pod %s: its card could not be divided %d times in a row, and keeps its last division: %v",
+			servedModelName(claim), pod.Name, stuckDivisionTries, err)
 	}
 }

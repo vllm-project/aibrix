@@ -496,3 +496,57 @@ func TestReconcileDoesNotReadACardWithNothingOnIt(t *testing.T) {
 
 	assert.Equal(t, 1, runtime.snapshotCalls, "a card with no instance has nothing to divide")
 }
+
+func TestCardDivisionStateCountsFailuresUntilADivisionWorks(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	divisions := newCardDivisionState(func() time.Time { return now })
+	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+
+	assert.Equal(t, 1, divisions.failedAgain(card))
+	assert.Equal(t, 2, divisions.failedAgain(card))
+	divisions.divided(card, "a")
+	assert.Equal(t, 1, divisions.failedAgain(card), "a division that works starts the count again")
+}
+
+func TestReconcileWarnsOnceWhenACardKeepsFailingToBeDivided(t *testing.T) {
+	r, runtime, pod, clock := twoEnginesSharingACard(t)
+	reconcileOnce(t, r, "stays")
+	recordedEvents(t, r)
+
+	// "stays" gets busy, so each round would move the card, and no write
+	// reaches a segment, so no division is ever confirmed.
+	snapshot := runtime.snapshots[pod.Status.PodIP]
+	snapshot.Models[0].RequestsRunning = 4
+	runtime.deafToKVLimits = true
+	warned := map[string]int{}
+	countWarnings := func() {
+		for _, event := range recordedEvents(t, r) {
+			if !strings.Contains(event, "KVLimitFailed") {
+				continue
+			}
+			for _, name := range []string{"stays", "leaves"} {
+				if strings.Contains(event, "model "+name+" ") {
+					warned[name]++
+				}
+			}
+		}
+	}
+	for try := 1; try <= 4; try++ {
+		*clock = clock.Add(DefaultRequeueDuration)
+		reconcileOnce(t, r, "stays")
+		countWarnings()
+		if try < 3 {
+			assert.Empty(t, warned, "no warning after %d failed division(s)", try)
+		}
+	}
+	assert.Equal(t, map[string]int{"stays": 1, "leaves": 1}, warned,
+		"each claim on the card is warned once, on the third failure in a row")
+
+	// A division that works ends the episode quietly.
+	runtime.deafToKVLimits = false
+	*clock = clock.Add(DefaultRequeueDuration)
+	reconcileOnce(t, r, "stays")
+	countWarnings()
+	assert.Equal(t, map[string]int{"stays": 1, "leaves": 1}, warned)
+	assert.Equal(t, int64(4)<<30+(32<<30)*5/6, getModel(t, r, "stays").Status.Instances[0].KVLimitBytes)
+}

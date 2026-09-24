@@ -399,7 +399,9 @@ the room comes back when an engine cannot be started after its card was divided
 for it. A change the card cannot be divided for yet, as while an engine that
 left is still exiting, is tried again by the round, and still as a change. The
 controller keeps what each card was divided for in memory only. After a restart
-it notes each card as it finds it, and the round divides it.
+it notes each card as it finds it, and the round divides it. A card whose
+division fails three times in a row keeps its last division, and each claim on
+it gets one ``KVLimitFailed`` warning until the card is divided again.
 
 Placement and a division after the engines change raise an Event on each claim
 whose limit they move, and so does the health loop when it writes a limit back:
@@ -783,6 +785,14 @@ Claim remains ``Activating`` after ``/health`` succeeds
    the plan and the reading that confirms it. The claim moves on to the next
    Pod. If none is left it stays ``Pending``, and its ``NoMatchingPods``
    message names the card that had room and could not be divided.
+
+A ``KVLimitFailed`` warning says a card could not be divided three times
+   The card keeps its last division, and every engine on it keeps serving
+   under the limit it has. The message quotes the last failure. An engine
+   that did not take a KV limit points at its runtime or its segment, as
+   above. One that holds more than its new limit is still growing, and the
+   next round plans around it. The warning comes once for each run of
+   failures, and the next division that works ends it.
 
 A routable model becomes non-routable with ``KVLimitNotHeld``
    Its engine is held to more KV than its limit, most often because it
