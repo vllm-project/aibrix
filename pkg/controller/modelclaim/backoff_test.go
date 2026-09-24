@@ -18,6 +18,7 @@ package modelclaim
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -346,4 +347,68 @@ func TestReconcileKeepsAClaimWaitingWhenOnlyMoreIsPromised(t *testing.T) {
 	reconcileOnce(t, r, pm.Name)
 
 	assert.Equal(t, 1, r.Backoff.attempts[claim].refusals, "the claim was not tried again early")
+}
+
+// scheduled is the claim's Scheduled condition, which must be there.
+func scheduled(t *testing.T, r *ModelClaimReconciler, name string) metav1.Condition {
+	t.Helper()
+	for _, condition := range getModel(t, r, name).Status.Conditions {
+		if condition.Type == string(modelv1alpha1.ModelClaimConditionTypeScheduled) {
+			return condition
+		}
+	}
+	require.FailNow(t, "no Scheduled condition")
+	return metav1.Condition{}
+}
+
+func TestReconcileSaysWhenNoCardCouldEverHoldAClaim(t *testing.T) {
+	pm := claimWithCost(50<<30, 10<<30)
+	small, smallSnapshot := sizedWarmPod("warm-1", "10.0.0.1", 40<<30)
+	larger, largerSnapshot := sizedWarmPod("warm-2", "10.0.0.2", 48<<30)
+	r, runtime := newReconciler(t, pm, small, larger)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		small.Status.PodIP:  smallSnapshot,
+		larger.Status.PodIP: largerSnapshot,
+	}
+	claim := types.NamespacedName{Namespace: testNamespace, Name: pm.Name}
+
+	reconcileOnce(t, r, pm.Name)
+
+	condition := scheduled(t, r, pm.Name)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Equal(t, "TooLargeForAnyCard", condition.Reason)
+	assert.Contains(t, condition.Message, "needs 60.0 GiB on a card")
+	assert.Contains(t, condition.Message, "the largest holds 48.0 GiB")
+	told := 0
+	for _, event := range recordedEvents(t, r) {
+		if strings.Contains(event, "TooLargeForAnyCard") {
+			told++
+		}
+	}
+	assert.Equal(t, 1, told)
+	assert.Equal(t, 1, r.Backoff.attempts[claim].refusals, "a claim no card could ever hold still backs off")
+	assert.Empty(t, runtime.activateCalls)
+}
+
+func TestReconcileDoesNotCallAClaimTooLargeWhileACardCannotBeMeasured(t *testing.T) {
+	pm := claimWithCost(50<<30, 10<<30)
+	small, smallSnapshot := sizedWarmPod("warm-1", "10.0.0.1", 40<<30)
+	unanswered, _ := sizedWarmPod("warm-2", "10.0.0.2", 0)
+	r, runtime := newReconciler(t, pm, small, unanswered)
+	runtime.snapshots = map[string]*RuntimeSnapshot{small.Status.PodIP: smallSnapshot}
+	runtime.nilSnapshots = map[string]bool{unanswered.Status.PodIP: true}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Equal(t, "NoMatchingPods", scheduled(t, r, pm.Name).Reason,
+		"a card nobody measured might hold the model")
+}
+
+func TestReconcileDoesNotCallAClaimTooLargeWhenAnEmptyCardCouldHoldIt(t *testing.T) {
+	r, _, pm, _ := aClaimWaitingForRoom(t)
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Equal(t, "NoMatchingPods", scheduled(t, r, pm.Name).Reason,
+		"the card holds the model once its neighbour goes")
 }

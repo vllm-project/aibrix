@@ -522,21 +522,32 @@ func (r *ModelClaimReconciler) ensureActivated(
 			//
 			// A failed instance that cannot be replaced stays as it is, so the
 			// claim stays Failed.
-			message := noPlacementMessage(selectErr, admissible, refusals, perGPU.minimumReserveBytes())
 			reason := "NoMatchingPods"
+			message := noPlacementMessage(selectErr, admissible, refusals, perGPU.minimumReserveBytes())
+			// A model bigger than every card would otherwise read as one that
+			// waits for room, and nobody would learn it can never be placed.
+			if largest, never := tooLargeForEveryCard(candidates, ledgers, perGPU.minimumReserveBytes()); never &&
+				len(admissible) == 0 {
+				reason = "TooLargeForAnyCard"
+				message = fmt.Sprintf("no card in the pool can hold this model, which needs %s on a card; "+
+					"the largest holds %s", gibibytes(perGPU.minimumReserveBytes()), gibibytes(largest))
+			}
+			eventReason := reason
 			if len(failed) > 0 {
 				message = fmt.Sprintf("model %s cannot move from failed pod %s: %s",
 					servedModelName(pm), pm.Status.Instances[failed[0]].Pod, message)
-				reason = "ReschedulePending"
+				eventReason = "ReschedulePending"
 			}
 			if meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
 				Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
 				Status:  metav1.ConditionFalse,
-				Reason:  "NoMatchingPods",
+				Reason:  reason,
 				Message: message,
 			}) {
-				r.Recorder.Event(pm, corev1.EventTypeWarning, reason, message)
+				r.Recorder.Event(pm, corev1.EventTypeWarning, eventReason, message)
 			}
+			// It still waits with backoff: a larger pod may join, or the
+			// claim's declaration may shrink, and either wakes it.
 			return backoff.refused(claim, pm.Generation, room), nil
 		}
 
