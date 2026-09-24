@@ -19,21 +19,24 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"sync/atomic"
 
 	"github.com/bytedance/sonic"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
 )
 
-// envPrefixCacheIncludeTools controls whether the chat request "tools" field is part of
-// the routing message used for prefix matching. Defaults to true.
-const envPrefixCacheIncludeTools = "AIBRIX_PREFIX_CACHE_INCLUDE_TOOLS"
+// prefixCacheIncludeTools is loaded once at startup from AIBRIX_PREFIX_CACHE_INCLUDE_TOOLS.
+// Many chat templates render the tool definitions ahead of the conversation, so the
+// prompt the engine actually caches starts with the tools block. Without tools in the
+// prefix-match text, two requests that share their messages but carry different tools
+// look like a full prefix match. It is atomic only so tests can flip it safely.
+var prefixCacheIncludeTools atomic.Bool
 
-// prefixCacheIncludeTools is read once at startup. Many chat templates render the tool
-// definitions ahead of the conversation, so the prompt the engine actually caches starts
-// with the tools block. Without tools in the routing message, two requests that share
-// their messages but carry different tools look like a full prefix match.
-var prefixCacheIncludeTools = utils.LoadEnvBool(envPrefixCacheIncludeTools, true)
+func init() {
+	prefixCacheIncludeTools.Store(utils.LoadEnvBool(constants.EnvPrefixCacheIncludeTools, true))
+}
 
 // canonicalJSON re-encodes JSON values deterministically: object keys are sorted at every
 // level, output is compact, HTML characters are not escaped (matching the `tojson` filter
@@ -44,26 +47,38 @@ var canonicalJSON = sonic.Config{
 	EscapeHTML:  false,
 }.Froze()
 
-// canonicalToolsText renders the raw "tools" value of a chat request as the text that is
-// prepended to the routing message. It returns "" when tools must not contribute: the
-// feature is disabled, or the field is absent, null or an empty array. The rendering is
-// schema-agnostic, so it works for both OpenAI and Anthropic style tool definitions.
+// prefixMatchText returns the text prefix-matching policies should hash for a chat
+// request: the canonical tools text, a single space, then the messages text. It returns
+// "" when tools do not contribute, in which case the policies use the messages text
+// (RoutingContext.Message) unchanged.
+func prefixMatchText(requestID string, tools json.RawMessage, message string) string {
+	toolsText := canonicalToolsText(requestID, tools)
+	if toolsText == "" {
+		return ""
+	}
+	return toolsText + " " + message
+}
+
+// canonicalToolsText renders the raw "tools" value of a chat request. It returns "" when
+// tools must not contribute: the feature is disabled, or the field is absent, null, an
+// empty array or not an array at all. The rendering is schema-agnostic, so it works for
+// both OpenAI and Anthropic style tool definitions.
 func canonicalToolsText(requestID string, tools json.RawMessage) string {
-	if !prefixCacheIncludeTools {
+	if !prefixCacheIncludeTools.Load() {
 		return ""
 	}
 	raw := bytes.TrimSpace(tools)
-	if len(raw) == 0 || string(raw) == jsonNull {
+	if len(raw) == 0 || raw[0] != '[' {
 		return ""
 	}
 
-	var v interface{}
+	var v []interface{}
 	if err := canonicalJSON.Unmarshal(raw, &v); err != nil {
 		// Never reject a request over its tools: fall back to the bytes as sent.
 		klog.V(4).InfoS("failed to canonicalize tools, using raw bytes", "requestID", requestID, "error", err)
 		return string(raw)
 	}
-	if arr, ok := v.([]interface{}); ok && len(arr) == 0 {
+	if len(v) == 0 {
 		return ""
 	}
 	canonical, err := canonicalJSON.Marshal(v)

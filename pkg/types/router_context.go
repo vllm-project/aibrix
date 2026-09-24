@@ -115,6 +115,13 @@ type RoutingContext struct {
 	TraceTerm      int64      // Trace term identifier, available after AddRequestCount call.
 	RoutedTime     time.Time  // Time consumed during routing.
 
+	// PrefixMatchText, when set, replaces Message as the text prefix-matching policies
+	// hash. The gateway sets it for chat requests whose chat template renders
+	// request-level fields (the tool definitions) ahead of the messages, so that
+	// requests differing only in those fields do not look like a shared prefix.
+	// Prompt-size estimates keep using Message. Read it through PrefixText.
+	PrefixMatchText string
+
 	ReqHeaders       map[string]string
 	ReqBody          []byte
 	ReqPath          string
@@ -207,6 +214,15 @@ func (r *RoutingContext) Delete() {
 // Elapsed returns the elapsed time since the request was created.
 func (r *RoutingContext) Elapsed(currentTime time.Time) time.Duration {
 	return currentTime.Sub(r.RequestTime)
+}
+
+// PrefixText returns the text prefix-matching policies should hash: PrefixMatchText
+// when set, Message otherwise.
+func (r *RoutingContext) PrefixText() string {
+	if r.PrefixMatchText != "" {
+		return r.PrefixMatchText
+	}
+	return r.Message
 }
 
 // PromptTokens returns the tokenized prompt of the request.
@@ -423,6 +439,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.Engine = ""
 	r.Stream = false
 	r.Message = message
+	r.PrefixMatchText = ""
 	r.RequestID = requestID
 	if user != "" {
 		r.User = &user

@@ -262,7 +262,7 @@ func Test_ValidateRequestBody(t *testing.T) {
 	}
 
 	for _, tt := range testCases {
-		model, messages, stream, errRes := validateRequestBody("1", tt.requestPath, tt.requestBody, tt.user)
+		model, messages, _, stream, errRes := validateRequestBody("1", tt.requestPath, tt.requestBody, tt.user)
 
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
@@ -538,7 +538,7 @@ func Test_ValidateRequestBody_Embeddings(t *testing.T) {
 	}
 
 	for _, tt := range testCases {
-		model, messages, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
+		model, messages, _, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
 		t.Log(tt.message)
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
@@ -611,7 +611,7 @@ func Test_ValidateRequestBody_Rerank(t *testing.T) {
 	}
 
 	for _, tt := range testCases {
-		model, messages, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
+		model, messages, _, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
 		t.Log(tt.message)
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
@@ -1363,7 +1363,7 @@ func Test_ValidateRequestBody_Classify(t *testing.T) {
 	}
 
 	for _, tt := range testCases {
-		model, messages, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
+		model, messages, _, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
 		t.Log(tt.message)
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
@@ -1462,7 +1462,7 @@ func Test_ValidateRequestBody_Responses(t *testing.T) {
 	}
 
 	for _, tt := range testCases {
-		model, messages, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
+		model, messages, _, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
 		t.Log(tt.message)
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)

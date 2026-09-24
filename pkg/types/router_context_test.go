@@ -104,6 +104,21 @@ var _ = Describe("RouterContext", func() {
 		Expect(plain.MetricLoraAdapter()).To(Equal(""))
 	})
 
+	It("should PrefixText fall back to Message and reset PrefixMatchText", func() {
+		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1", "")
+		Expect(ctx.PrefixText()).To(Equal("message"))
+
+		ctx.PrefixMatchText = "tools message"
+		Expect(ctx.PrefixText()).To(Equal("tools message"))
+		Expect(ctx.Message).To(Equal("message"))
+
+		// A context reused from the pool must not carry the previous prefix text.
+		ctx.reset(context.Background(), "algorithm", "model", "message2", "r2", "")
+		Expect(ctx.PrefixMatchText).To(BeEmpty())
+		Expect(ctx.PrefixText()).To(Equal("message2"))
+		ctx.Delete()
+	})
+
 	It("should SetTargetPod accept nil", func() {
 		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1", "")
 		ctx.SetTargetPod(nil)

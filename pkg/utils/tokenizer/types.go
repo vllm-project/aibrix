@@ -38,7 +38,8 @@ type TokenizeInput struct {
 	Messages            []ChatMessage // For chat input
 	AddSpecialTokens    bool
 	ReturnTokenStrings  bool
-	AddGenerationPrompt bool // For chat input only
+	AddGenerationPrompt bool            // For chat input only
+	Tools               json.RawMessage // For chat input only: the request's raw "tools" array
 }
 
 // TokenizeResult represents the result of tokenization
@@ -85,7 +86,7 @@ type vllmTokenizeChatRequest struct {
 	ReturnTokenStrs      *bool                  `json:"return_token_strs,omitempty"`
 	ChatTemplate         *string                `json:"chat_template,omitempty"`
 	ChatTemplateKwargs   map[string]interface{} `json:"chat_template_kwargs,omitempty"`
-	Tools                []interface{}          `json:"tools,omitempty"`
+	Tools                json.RawMessage        `json:"tools,omitempty"`
 	MMProcessorKwargs    map[string]interface{} `json:"mm_processor_kwargs,omitempty"`
 }
 

@@ -65,8 +65,8 @@ type chatReqMinimal struct {
 		IncludeUsage bool `json:"include_usage"`
 	} `json:"stream_options"`
 	Messages []contentItem `json:"messages"`
-	// Tools is kept raw; it is only canonicalized into the routing message
-	// (see canonicalToolsText) and never validated here.
+	// Tools is kept raw; it is only canonicalized into the prefix-match text
+	// (see prefixMatchText) and never validated here.
 	Tools json.RawMessage `json:"tools"`
 }
 
@@ -107,10 +107,7 @@ type embeddingReqMinimal struct {
 // parseChatMessages extracts a single concatenated text string from the minimal
 // chat request messages. For simple string content it unquotes the JSON string
 // directly; for array/object content it writes the raw JSON bytes.
-//
-// A non-empty prefix (the canonical tools text of a chat request) is written first,
-// followed by a single space. With an empty prefix the output is the messages alone.
-func parseChatMessages(requestID, prefix string, msgs []contentItem) (string, *extProcPb.ProcessingResponse) {
+func parseChatMessages(requestID string, msgs []contentItem) (string, *extProcPb.ProcessingResponse) {
 	if len(msgs) == 0 {
 		klog.ErrorS(nil, "no messages in the request body", "requestID", requestID)
 		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "no messages in the request body", "", "messages", HeaderErrorRequestBodyProcessing, "true")
@@ -122,14 +119,7 @@ func parseChatMessages(requestID, prefix string, msgs []contentItem) (string, *e
 	for _, m := range msgs {
 		growHint += len(m.Content)
 	}
-	if prefix != "" {
-		growHint += len(prefix) + 1
-	}
 	builder.Grow(growHint)
-	if prefix != "" {
-		builder.WriteString(prefix)
-		builder.WriteByte(' ')
-	}
 	for i, m := range msgs {
 		if i > 0 {
 			builder.WriteByte(' ')
@@ -178,17 +168,20 @@ func parseResponsesInput(requestID string, input json.RawMessage) (string, *extP
 		klog.ErrorS(nil, "empty input array in the request body", "requestID", requestID)
 		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' array cannot be empty", "", "input", HeaderErrorRequestBodyProcessing, "true")
 	}
-	return parseChatMessages(requestID, "", items)
+	return parseChatMessages(requestID, items)
 }
 
 // validateRequestBody validates input by unmarshaling request body into respective openai-golang struct based on requestpath.
 // The per-path parsing is delegated to dedicated validate* helpers to keep this dispatcher simple.
+//
+// prefixText is the text prefix-matching policies should hash when it differs from
+// message (see RoutingContext.PrefixMatchText); it is empty otherwise.
 // nolint:nakedret
-func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
+func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message, prefixText string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	path := pathWithoutQuery(requestPath)
 	switch path {
 	case PathChatCompletions, PathMessages:
-		model, message, stream, errRes = validateChatRequest(requestID, path, requestBody, user)
+		model, message, prefixText, stream, errRes = validateChatRequest(requestID, path, requestBody, user)
 	case PathResponses:
 		model, message, stream, errRes = validateResponsesRequest(requestID, requestBody)
 	case PathCompletions:
@@ -220,7 +213,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 
 // validateChatRequest parses and validates a chat completions (or Anthropic-style messages) request body.
 // nolint:nakedret
-func validateChatRequest(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
+func validateChatRequest(requestID, requestPath string, requestBody []byte, user utils.User) (model, message, prefixText string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	// Single-pass minimal unmarshal: avoids the openai SDK's reflection-heavy
 	// apijson decoder and gjson parsing, and eliminates the previous redundant
 	// map[string]json.RawMessage unmarshal used only for stream-field detection.
@@ -231,12 +224,10 @@ func validateChatRequest(requestID, requestPath string, requestBody []byte, user
 		return
 	}
 	model = req.Model
-	// Chat templates commonly render tools ahead of the messages, so they lead the
-	// routing message too; otherwise requests differing only in tools would share
-	// a prefix they do not share on the engine.
-	if message, errRes = parseChatMessages(requestID, canonicalToolsText(requestID, req.Tools), req.Messages); errRes != nil {
+	if message, errRes = parseChatMessages(requestID, req.Messages); errRes != nil {
 		return
 	}
+	prefixText = prefixMatchText(requestID, req.Tools, message)
 	if req.Stream != nil {
 		stream = *req.Stream
 		// stream_options.include_usage is an OpenAI-specific field; Anthropic-style
@@ -530,9 +521,9 @@ func validateTokenizeRequest(requestID string, requestBody []byte) (model, messa
 	// parseChatMessages already unquotes JSON strings, so prompt goes through as one item.
 	switch {
 	case len(req.Prompt) > 0 && string(req.Prompt) != jsonNull:
-		message, errRes = parseChatMessages(requestID, "", []contentItem{{Content: req.Prompt}})
+		message, errRes = parseChatMessages(requestID, []contentItem{{Content: req.Prompt}})
 	case len(req.Messages) > 0:
-		message, errRes = parseChatMessages(requestID, "", req.Messages)
+		message, errRes = parseChatMessages(requestID, req.Messages)
 	}
 	return
 }

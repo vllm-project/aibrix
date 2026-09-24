@@ -17,6 +17,7 @@ limitations under the License.
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"math/rand"
 	"strconv"
@@ -25,6 +26,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
@@ -34,18 +37,30 @@ import (
 // real env loader, restoring the previous value when the test ends.
 func setIncludeTools(t *testing.T, enabled bool) {
 	t.Helper()
-	t.Setenv(envPrefixCacheIncludeTools, strconv.FormatBool(enabled))
-	previous := prefixCacheIncludeTools
-	prefixCacheIncludeTools = utils.LoadEnvBool(envPrefixCacheIncludeTools, true)
-	require.Equal(t, enabled, prefixCacheIncludeTools)
-	t.Cleanup(func() { prefixCacheIncludeTools = previous })
+	t.Setenv(constants.EnvPrefixCacheIncludeTools, strconv.FormatBool(enabled))
+	previous := prefixCacheIncludeTools.Load()
+	prefixCacheIncludeTools.Store(utils.LoadEnvBool(constants.EnvPrefixCacheIncludeTools, true))
+	require.Equal(t, enabled, prefixCacheIncludeTools.Load())
+	t.Cleanup(func() { prefixCacheIncludeTools.Store(previous) })
 }
 
-func chatRoutingMessage(t *testing.T, body string) string {
+// chatRoutingTexts returns the routing message and the prefix-match text of a chat request.
+func chatRoutingTexts(t *testing.T, path, body string) (message, prefixText string) {
 	t.Helper()
-	_, message, _, errRes := validateRequestBody("test-request-id", PathChatCompletions, []byte(body), utils.User{})
+	_, message, prefixText, _, errRes := validateRequestBody("test-request-id", path, []byte(body), utils.User{})
 	require.Nil(t, errRes, "unexpected error response for body: %s", body)
-	return message
+	return message, prefixText
+}
+
+// chatPrefixText returns the text prefix-matching policies hash for a chat request, as
+// RoutingContext.PrefixText resolves it.
+func chatPrefixText(t *testing.T, body string) string {
+	t.Helper()
+	message, prefixText := chatRoutingTexts(t, PathChatCompletions, body)
+	ctx := types.NewRoutingContext(context.Background(), "", "m", message, "test-request-id", "")
+	defer ctx.Delete()
+	ctx.PrefixMatchText = prefixText
+	return ctx.PrefixText()
 }
 
 const (
@@ -57,7 +72,7 @@ const (
 	toolsTestWeatherCanonical = `[{"function":{"description":"Get the weather","name":"get_weather","parameters":{"properties":{"city":{"type":"string"},"days":{"maximum":1e1,"type":"integer"}},"type":"object"}},"type":"function"}]`
 )
 
-func TestChatRoutingMessage_NoToolsUnchanged(t *testing.T) {
+func TestChatPrefixText_NoToolsUnchanged(t *testing.T) {
 	setIncludeTools(t, true)
 
 	cases := map[string]string{
@@ -66,44 +81,53 @@ func TestChatRoutingMessage_NoToolsUnchanged(t *testing.T) {
 		"empty array":             `{"model":"m",` + toolsTestMessages + `,"tools":[]}`,
 		"empty array whitespace":  `{"model":"m",` + toolsTestMessages + `,"tools":[ ]}`,
 		"empty array before msgs": `{"model":"m","tools":[],` + toolsTestMessages + `}`,
+		"object":                  `{"model":"m",` + toolsTestMessages + `,"tools":{}}`,
+		"string":                  `{"model":"m",` + toolsTestMessages + `,"tools":"x"}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, toolsTestMessagesText, chatRoutingMessage(t, body))
+			message, prefixText := chatRoutingTexts(t, PathChatCompletions, body)
+			assert.Equal(t, toolsTestMessagesText, message)
+			assert.Empty(t, prefixText)
+			assert.Equal(t, toolsTestMessagesText, chatPrefixText(t, body))
 		})
 	}
 }
 
-func TestChatRoutingMessage_ToolsPrecedeMessages(t *testing.T) {
+func TestChatPrefixText_ToolsPrecedeMessages(t *testing.T) {
 	setIncludeTools(t, true)
 
 	body := `{"model":"m",` + toolsTestMessages + `,"tools":` + toolsTestWeather + `}`
-	assert.Equal(t, toolsTestWeatherCanonical+" "+toolsTestMessagesText, chatRoutingMessage(t, body))
+	message, prefixText := chatRoutingTexts(t, PathChatCompletions, body)
+	// The routing message feeds size estimates and stays messages-only.
+	assert.Equal(t, toolsTestMessagesText, message)
+	assert.Equal(t, toolsTestWeatherCanonical+" "+toolsTestMessagesText, prefixText)
+	assert.Equal(t, prefixText, chatPrefixText(t, body))
 
 	// Anthropic-style /v1/messages requests share the chat parser; the rendering does not
 	// depend on the tool schema.
 	anthropic := `{"model":"m",` + toolsTestMessages + `,"tools":[{"name":"get_weather","input_schema":{"type":"object"},"description":"Get the weather"}]}`
-	_, message, _, errRes := validateRequestBody("test-request-id", PathMessages, []byte(anthropic), utils.User{})
-	require.Nil(t, errRes)
-	assert.Equal(t, `[{"description":"Get the weather","input_schema":{"type":"object"},"name":"get_weather"}] `+toolsTestMessagesText, message)
+	message, prefixText = chatRoutingTexts(t, PathMessages, anthropic)
+	assert.Equal(t, toolsTestMessagesText, message)
+	assert.Equal(t, `[{"description":"Get the weather","input_schema":{"type":"object"},"name":"get_weather"}] `+toolsTestMessagesText, prefixText)
 }
 
-func TestChatRoutingMessage_DifferentToolsDiffer(t *testing.T) {
+func TestChatPrefixText_DifferentToolsDiffer(t *testing.T) {
 	setIncludeTools(t, true)
 
 	toolsB := strings.Replace(toolsTestWeather, "Get the weather", "Get the forecast", 1)
 	bodyA := `{"model":"m",` + toolsTestMessages + `,"tools":` + toolsTestWeather + `}`
 	bodyB := `{"model":"m",` + toolsTestMessages + `,"tools":` + toolsB + `}`
-	messageA, messageB := chatRoutingMessage(t, bodyA), chatRoutingMessage(t, bodyB)
-	require.NotEqual(t, messageA, messageB)
+	textA, textB := chatPrefixText(t, bodyA), chatPrefixText(t, bodyB)
+	require.NotEqual(t, textA, textB)
 
-	// The two messages diverge early inside the tools block, so only the few blocks
+	// The two texts diverge early inside the tools block, so only the few blocks
 	// ahead of the differing description match. Without tools they would be identical.
 	tok := tokenizer.NewCharacterTokenizer()
 	indexer := prefixcacheindexer.NewPrefixHashTable()
-	tokensA, err := tok.TokenizeInputText(messageA)
+	tokensA, err := tok.TokenizeInputText(textA)
 	require.NoError(t, err)
-	tokensB, err := tok.TokenizeInputText(messageB)
+	tokensB, err := tok.TokenizeInputText(textB)
 	require.NoError(t, err)
 	indexer.AddPrefix(indexer.GetPrefixHashes(tokensA), "m", "pod-a")
 	matched, _ := indexer.MatchPrefix(tokensB, "m", map[string]struct{}{"pod-a": {}})
@@ -113,13 +137,13 @@ func TestChatRoutingMessage_DifferentToolsDiffer(t *testing.T) {
 	assert.Equal(t, 100, matched["pod-a"], "an identical request must still fully match")
 }
 
-func TestChatRoutingMessage_ToolsHTMLNotEscaped(t *testing.T) {
+func TestChatPrefixText_ToolsHTMLNotEscaped(t *testing.T) {
 	setIncludeTools(t, true)
 
 	body := `{"model":"m",` + toolsTestMessages + `,"tools":[{"type":"function","function":{"name":"f","description":"a < b && c > d"}}]}`
-	message := chatRoutingMessage(t, body)
-	assert.Contains(t, message, `"a < b && c > d"`)
-	assert.NotContains(t, message, "\\u003c", "HTML characters must not be escaped")
+	text := chatPrefixText(t, body)
+	assert.Contains(t, text, `"a < b && c > d"`)
+	assert.NotContains(t, text, "\\u003c", "HTML characters must not be escaped")
 }
 
 // writeShuffledJSON serializes v with object keys in a random order and random
@@ -167,7 +191,7 @@ func writeShuffledJSON(b *strings.Builder, v interface{}, r *rand.Rand) {
 	}
 }
 
-func TestChatRoutingMessage_ToolsKeyOrderIndependent(t *testing.T) {
+func TestChatPrefixText_ToolsKeyOrderIndependent(t *testing.T) {
 	setIncludeTools(t, true)
 
 	const tools = `[
@@ -182,7 +206,7 @@ func TestChatRoutingMessage_ToolsKeyOrderIndependent(t *testing.T) {
 	d.UseNumber()
 	require.NoError(t, d.Decode(&parsed))
 
-	expected := chatRoutingMessage(t, `{"model":"m",`+toolsTestMessages+`,"tools":`+tools+`}`)
+	expected := chatPrefixText(t, `{"model":"m",`+toolsTestMessages+`,"tools":`+tools+`}`)
 	require.True(t, strings.HasSuffix(expected, " "+toolsTestMessagesText))
 
 	r := rand.New(rand.NewSource(1))
@@ -192,16 +216,18 @@ func TestChatRoutingMessage_ToolsKeyOrderIndependent(t *testing.T) {
 		writeShuffledJSON(&b, parsed, r)
 		seen[b.String()] = struct{}{}
 		body := `{"model":"m",` + toolsTestMessages + `,"tools":` + b.String() + `}`
-		require.Equal(t, expected, chatRoutingMessage(t, body), "tools: %s", b.String())
+		require.Equal(t, expected, chatPrefixText(t, body), "tools: %s", b.String())
 	}
 	require.Greater(t, len(seen), 1, "the permutations must actually vary the input")
 }
 
-func TestChatRoutingMessage_ToolsDisabled(t *testing.T) {
+func TestChatPrefixText_ToolsDisabled(t *testing.T) {
 	setIncludeTools(t, false)
 
 	body := `{"model":"m",` + toolsTestMessages + `,"tools":` + toolsTestWeather + `}`
-	assert.Equal(t, toolsTestMessagesText, chatRoutingMessage(t, body))
+	message, prefixText := chatRoutingTexts(t, PathChatCompletions, body)
+	assert.Equal(t, toolsTestMessagesText, message)
+	assert.Empty(t, prefixText)
 	assert.Equal(t, "", canonicalToolsText("test-request-id", json.RawMessage(toolsTestWeather)))
 }
 

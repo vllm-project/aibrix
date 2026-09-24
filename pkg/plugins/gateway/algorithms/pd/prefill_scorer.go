@@ -185,11 +185,11 @@ func NewPrefixCachePrefillPolicyWithConfig(tok tokenizer.Tokenizer, prefixCacheI
 	}
 }
 
-// Prepare tokenizes routingCtx.Message, performs a prefix-cache lookup against
+// Prepare tokenizes routingCtx.PrefixText(), performs a prefix-cache lookup against
 // the ready-pod set, and returns a prefixCacheScorer populated with the match
 // percentages and prefix hashes for the request.
 func (p *prefixCachePrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ []*v1.Pod, readyPodsMap map[string]struct{}) (PrefillScorer, error) {
-	tokens, err := p.tok.TokenizeInputText(routingCtx.Message)
+	tokens, err := p.tok.TokenizeInputText(routingCtx.PrefixText())
 	if err != nil {
 		return nil, err
 	}
@@ -315,11 +315,11 @@ func NewConductorPrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer *pref
 	}
 }
 
-// Prepare tokenizes routingCtx.Message and performs a prefix-cache lookup against the
+// Prepare tokenizes routingCtx.PrefixText() and performs a prefix-cache lookup against the
 // ready-pod set, keeping the input token count so downstream ScorePod can derive
 // matched/unmatched lengths from the per-pod match percentage.
 func (p *conductorPrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ []*v1.Pod, readyPodsMap map[string]struct{}) (PrefillScorer, error) {
-	tokens, err := p.tok.TokenizeInputText(routingCtx.Message)
+	tokens, err := p.tok.TokenizeInputText(routingCtx.PrefixText())
 	if err != nil {
 		return nil, err
 	}
@@ -603,10 +603,10 @@ func NewHybridCacheLoadPrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer
 	}
 }
 
-// Prepare tokenizes routingCtx.Message and looks it up in the prefix cache,
+// Prepare tokenizes routingCtx.PrefixText() and looks it up in the prefix cache,
 // exactly as prefix_cache does; the load side is read at ScorePod time.
 func (p *hybridCacheLoadPrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ []*v1.Pod, readyPodsMap map[string]struct{}) (PrefillScorer, error) {
-	tokens, err := p.tok.TokenizeInputText(routingCtx.Message)
+	tokens, err := p.tok.TokenizeInputText(routingCtx.PrefixText())
 	if err != nil {
 		return nil, err
 	}
