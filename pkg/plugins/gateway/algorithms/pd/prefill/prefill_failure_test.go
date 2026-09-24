@@ -38,6 +38,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -72,7 +73,7 @@ func failFastCtx(requestID, body, decodeAddr string) *types.RoutingContext {
 }
 
 func failFastExecutor() *DefaultExecutor {
-	return NewDefaultExecutor(&http.Client{}, pd.NewPrefillRequestTracker(), 5,
+	return NewDefaultExecutor(&http.Client{}, pd.NewPrefillRequestTracker(),
 		WithTokenLoadTracker(pd.NewTokenLoadTracker())).(*DefaultExecutor)
 }
 
@@ -153,7 +154,7 @@ func TestAsyncPrefillFailureRecordsFailureAndAbortsDecodeLeg(t *testing.T) {
 
 	// The failure path still releases the router's ledgers.
 	assert.Eventually(t, func() bool {
-		return exec.tracker.GetPrefillRequestCountsForPod("prefill-1") == 0
+		return exec.tracker.GetPrefillRequestCountsForPod(utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name)) == 0
 	}, 2*time.Second, 10*time.Millisecond)
 }
 

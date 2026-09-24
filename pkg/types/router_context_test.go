@@ -79,19 +79,21 @@ var _ = Describe("RouterContext", func() {
 		rctx.Delete()
 		ctx2 := context.Background()
 		rctx2 := NewRoutingContext(ctx2, "algorithm2", "model2", "message2", "r2", "")
-		Expect(rctx2).To(BeIdenticalTo(rctx)) // routing context reused
+		// sync.Pool makes no identity promise: Get may return the context
+		// Delete just released or a fresh one, and may do so on another P, so
+		// assert the reset on rctx2 rather than that rctx2 is rctx.
 		Expect(rctx2.Context).To(BeIdenticalTo(ctx2))
 		Expect(rctx2.Algorithm).To(Equal(RoutingAlgorithm("algorithm2")))
-		Expect(rctx.RequestID).To(Equal("r2"))
+		Expect(rctx2.RequestID).To(Equal("r2"))
 		Expect(rctx2.Model).To(Equal("model2"))
 		Expect(rctx2.BaseModel).To(Equal(""))
 		Expect(rctx2.Message).To(Equal("message2"))
-		Expect(rctx.predictor).To(BeNil())
-		shouldBlock(func() { rctx.TargetPod() }, 100*time.Millisecond)
-		Expect(rctx.targetPod.Load()).To(BeIdenticalTo(nilPod))
-		Expect(rctx.getError()).To(BeNil()) // No blocking
+		Expect(rctx2.predictor).To(BeNil())
+		shouldBlock(func() { rctx2.TargetPod() }, 100*time.Millisecond)
+		Expect(rctx2.targetPod.Load()).To(BeIdenticalTo(nilPod))
+		Expect(rctx2.getError()).To(BeNil()) // No blocking
 
-		rctx.Delete()
+		rctx2.Delete()
 	})
 
 	It("should MetricModel use the base model for LoRA requests", func() {
@@ -102,6 +104,21 @@ var _ = Describe("RouterContext", func() {
 		plain := &RoutingContext{Model: "qwen3-8b"}
 		Expect(plain.MetricModel()).To(Equal("qwen3-8b"))
 		Expect(plain.MetricLoraAdapter()).To(Equal(""))
+	})
+
+	It("should PrefixText fall back to Message and reset PrefixMatchText", func() {
+		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1", "")
+		Expect(ctx.PrefixText()).To(Equal("message"))
+
+		ctx.PrefixMatchText = "tools message"
+		Expect(ctx.PrefixText()).To(Equal("tools message"))
+		Expect(ctx.Message).To(Equal("message"))
+
+		// A context reused from the pool must not carry the previous prefix text.
+		ctx.reset(context.Background(), "algorithm", "model", "message2", "r2", "")
+		Expect(ctx.PrefixMatchText).To(BeEmpty())
+		Expect(ctx.PrefixText()).To(Equal("message2"))
+		ctx.Delete()
 	})
 
 	It("should SetTargetPod accept nil", func() {

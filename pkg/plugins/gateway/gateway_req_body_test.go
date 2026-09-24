@@ -76,7 +76,7 @@ func Test_handleRequestBody(t *testing.T) {
 	// Define test cases for different routing and error scenarios
 	tests := []testCase{
 		{
-			name:        "no routing strategy - should only set model header",
+			name:        "no routing strategy - should set model and content-length headers",
 			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
 			user: utils.User{
 				Name: "test-user",
@@ -105,7 +105,10 @@ func Test_handleRequestBody(t *testing.T) {
 			},
 			expected: testResponse{
 				statusCode: envoyTypePb.StatusCode_OK,
-				headers:    []*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{Key: HeaderModel, RawValue: []byte("test-model")}}},
+				headers: []*configPb.HeaderValueOption{
+					{Header: &configPb.HeaderValue{Key: HeaderModel, RawValue: []byte("test-model")}},
+					{Header: &configPb.HeaderValue{Key: "content-length", RawValue: []byte("74")}},
+				},
 				model:      "test-model",
 				stream:     false,
 				term:       1,

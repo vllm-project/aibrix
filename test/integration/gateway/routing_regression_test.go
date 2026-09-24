@@ -278,10 +278,14 @@ func configureStrategyMetrics(c *fakeCache, strategy string) {
 		set("other", metrics.RequestPrefillTimeSeconds, &metrics.HistogramMetricValue{Sum: 4, Count: 1})
 		set("other", metrics.RequestDecodeTimeSeconds, &metrics.HistogramMetricValue{Sum: 4, Count: 1})
 	case "load-balance":
+		// Both pods have KV headroom, so the choice comes from running / token rate:
+		// target 3/3 = 1.0 vs other 12/1 = 12.0.
 		set("target", metrics.RealtimeNumRequestsRunning, &metrics.SimpleMetricValue{Value: 3})
-		set("target", metrics.RealtimeRunningRequestsDrainRate1m, &metrics.SimpleMetricValue{Value: 3})
+		set("target", metrics.RealtimeOutputTokenRateEWMA, &metrics.SimpleMetricValue{Value: 3})
+		set("target", metrics.KVCacheUsagePerc, &metrics.SimpleMetricValue{Value: .2})
 		set("other", metrics.RealtimeNumRequestsRunning, &metrics.SimpleMetricValue{Value: 12})
-		set("other", metrics.RealtimeRunningRequestsDrainRate1m, &metrics.SimpleMetricValue{Value: 1})
+		set("other", metrics.RealtimeOutputTokenRateEWMA, &metrics.SimpleMetricValue{Value: 1})
+		set("other", metrics.KVCacheUsagePerc, &metrics.SimpleMetricValue{Value: .2})
 	case "prefix-cache":
 		set("target", metrics.RealtimeNumRequestsRunning, &metrics.SimpleMetricValue{Value: 4})
 		set("other", metrics.RealtimeNumRequestsRunning, &metrics.SimpleMetricValue{Value: 15})

@@ -292,6 +292,18 @@ Configure the range in the pod's ``routingConfig``:
    * - ``decodeScorePolicy``
      - How to score decode pods. ``load_balancing`` (default), ``least_request``, or ``conductor``.
 
+The same ``routingConfig`` object also carries the prefill/decode routing thresholds of a
+profile's requests, flat under ``pd``: ``prefillRequestTimeout``, the spread thresholds
+(``prefillLoadImbalanceMinSpread``, ``decodeLoadImbalanceMinSpread``,
+``decodeThroughputImbalanceMinSpread``, ``decodeScoreRatioThreshold``), the decode load-balance
+weights (``decodeLBWeightRunning``, ``decodeLBWeightThroughput``), the token-load charge knobs
+(``tokenLoadKVWeight``, ``tokenLoadRequestCost``, ``tokenLoadTTLSeconds``,
+``tokenLoadSessionTTLSeconds``), ``hybridCacheLoadFactor``, ``minMatchPct``, and the abort
+timeout and retry delay (``decodeAbortTimeout``, ``decodeAbortRetryDelay``). Each one overrides
+the matching gateway environment variable for that profile only; unset fields keep the
+environment default. See the Config Profiles section of `Gateway Plugins <gateway-plugins.html>`_
+for the full list.
+
 .. note::
     Bucketing only takes effect when ``AIBRIX_PROMPT_LENGTH_BUCKETING=true`` is set on the gateway plugin.
 
@@ -376,11 +388,13 @@ Each request is charged ``request_cost + new_tokens``, where ``request_cost`` (`
 2. When the prefill HTTP call returns, the ``active_tokens`` part is released; ``kv_tokens`` stays.
 3. When the request completes (or the prefill call fails), the ``kv_tokens`` part is released too.
 
+Pods are tracked by ``namespace/name``, so deployments in different namespaces whose prefill pods share a name keep separate ledgers.
+
 A charge whose release never arrives is force-released after ``AIBRIX_TOKEN_LOAD_TTL_SECONDS`` (default ``3600``) with a warning log, so a leaked entry cannot pin load on a pod indefinitely. Releases are idempotent and the counters never go below zero. The same janitor, which runs once a minute, drops the counters and metric series of any pod that has been at zero load and untouched for a whole minute, so prefill pods that come and go under autoscaling or rollouts do not accumulate on the gateway; the next charge re-creates the pod from zero.
 
 **Metrics**
 
-The gateway exports the two counters per prefill pod as gauges labelled by ``pod_name``:
+The gateway exports the two counters per prefill pod as gauges labelled by ``namespace`` and ``pod_name``:
 
 - ``pd_token_load_active_tokens``
 - ``pd_token_load_kv_tokens``

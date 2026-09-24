@@ -50,6 +50,16 @@ var (
 	ttftThreshold = time.Duration(utils.LoadEnvInt("AIBRIX_TTFT_THRESHOLD_S", defaultTTFTThreshold)) * time.Second
 )
 
+// effectiveTTFTThreshold returns the first-token delay threshold for this request:
+// the model config profile's ttftThresholdS when set, otherwise the process-wide
+// AIBRIX_TTFT_THRESHOLD_S default.
+func effectiveTTFTThreshold(routingCtx *types.RoutingContext) time.Duration {
+	if routingCtx != nil && routingCtx.ConfigProfile != nil && routingCtx.ConfigProfile.TTFTThresholdS > 0 {
+		return time.Duration(routingCtx.ConfigProfile.TTFTThresholdS) * time.Second
+	}
+	return ttftThreshold
+}
+
 type OpenAIResponse struct {
 	Model string `json:"model"`
 	// Usage carries token accounting. The Chat Completions/Completions APIs report
@@ -618,7 +628,7 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 				tpot := time.Duration(decodeTime.Nanoseconds() / completionTokens)
 				metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTPOTBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(tpot)})
 			}
-			if ttft > ttftThreshold {
+			if ttft > effectiveTTFTThreshold(routingCtx) {
 				metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayFirstTokenDelayOver1sTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{
 					"request_id": requestID,
 					"p_bucket":   pBucket, "c_bucket": cBucket,

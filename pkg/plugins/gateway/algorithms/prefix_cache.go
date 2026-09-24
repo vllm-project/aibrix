@@ -17,6 +17,7 @@ limitations under the License.
 package routingalgorithms
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -410,7 +411,7 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 
 	// Use helper method to get the appropriate tokenizer
 	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
-	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.PrefixText())
 	if err != nil {
 		recordRoutingError(ctx.Model, "tokenize_failed", false)
 		return "", err
@@ -426,10 +427,15 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	podRequestCount := getRequestCounts(p.cache, readyPods)
 
 	matchedPods, prefixHashes = p.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
-	klog.V(4).InfoS("prefix_hashes", "request_id", ctx.RequestID, "prefix_hashes", prefixHashes)
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("prefix_hashes", "request_id", ctx.RequestID, "prefix_hashes", prefixHashes)
+	}
 
 	if len(matchedPods) > 0 {
-		targetPod = getTargetPodFromMatchedPodsFromCounts(podRequestCount, readyPods, matchedPods)
+		// The request's resolved overrides carry the profile's value on top of
+		// the process default (see ResolveRoutingOverrides).
+		sigma := ctx.RoutingOverrides().PrefixCache.StandardDeviationFactor
+		targetPod = getTargetPodFromMatchedPodsFromCounts(podRequestCount, readyPods, matchedPods, sigma)
 		if targetPod != nil {
 			selection = selectionPrefixMatch
 		}
@@ -484,7 +490,7 @@ func (p prefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodLi
 	}
 
 	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
-	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.PrefixText())
 	if err != nil {
 		return err
 	}
@@ -518,7 +524,7 @@ func (k *kvSyncPrefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, rea
 	if tokenizerToUse == nil {
 		return fmt.Errorf("TokenizerPool not initialized for KV sync router")
 	}
-	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.PrefixText())
 	if err != nil {
 		return err
 	}
@@ -550,7 +556,7 @@ func (p prefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList type
 	}
 
 	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
-	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.PrefixText())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -594,7 +600,7 @@ func (k *kvSyncPrefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodLi
 		return nil, nil, fmt.Errorf("TokenizerPool not initialized for KV sync router")
 	}
 
-	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.PrefixText())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -633,8 +639,9 @@ func (p *prefixCacheRouter) Cleanup() error {
 }
 
 // buildTokenizeInputFromChatRequest converts ChatCompletionRequest to TokenizeInput
-// preserving multimodal content and vLLM-specific parameters
-func buildTokenizeInputFromChatRequest(chatReq *types.ChatCompletionRequest) (*tokenizer.TokenizeInput, error) {
+// preserving multimodal content and vLLM-specific parameters. tools is the raw "tools"
+// array of the request, forwarded so the chat template renders the tool definitions.
+func buildTokenizeInputFromChatRequest(chatReq *types.ChatCompletionRequest, tools json.RawMessage) (*tokenizer.TokenizeInput, error) {
 	if len(chatReq.Messages) == 0 {
 		return nil, fmt.Errorf("no messages in chat completion request")
 	}
@@ -686,7 +693,28 @@ func buildTokenizeInputFromChatRequest(chatReq *types.ChatCompletionRequest) (*t
 		AddSpecialTokens:    addSpecialTokens,
 		AddGenerationPrompt: addGenerationPrompt,
 		ReturnTokenStrings:  returnTokenStrings,
+		Tools:               tools,
 	}, nil
+}
+
+// rawChatTools returns the "tools" array of a chat request body exactly as sent, or nil
+// when the field is absent, null or not an array. The raw bytes are forwarded instead of
+// re-encoding the parsed request, which would drop fields the OpenAI types do not model.
+func rawChatTools(body []byte) json.RawMessage {
+	if !bytes.Contains(body, []byte(`"tools"`)) {
+		return nil
+	}
+	var req struct {
+		Tools json.RawMessage `json:"tools"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil
+	}
+	tools := bytes.TrimSpace(req.Tools)
+	if len(tools) == 0 || tools[0] != '[' {
+		return nil
+	}
+	return tools
 }
 
 // tokenizeChatRequest attempts to tokenize a chat completion request using chat template.
@@ -717,7 +745,7 @@ func (k *kvSyncPrefixCacheRouter) tokenizeChatRequest(ctx *types.RoutingContext,
 	}
 
 	// Build TokenizeInput from request
-	input, err := buildTokenizeInputFromChatRequest(&chatReq)
+	input, err := buildTokenizeInputFromChatRequest(&chatReq, rawChatTools(ctx.ReqBody))
 	if err != nil {
 		klog.V(4).InfoS("failed to build tokenize input, falling back to text",
 			"request_id", ctx.RequestID,
@@ -739,6 +767,7 @@ func (k *kvSyncPrefixCacheRouter) tokenizeChatRequest(ctx *types.RoutingContext,
 	klog.V(4).InfoS("tokenized using chat template",
 		"request_id", ctx.RequestID,
 		"message_count", len(input.Messages),
+		"tools_included", len(input.Tools) > 0,
 		"token_count", len(result.Tokens),
 		"add_generation_prompt", input.AddGenerationPrompt,
 		"add_special_tokens", input.AddSpecialTokens)
@@ -776,14 +805,14 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 
 	// Tokenize the input based on endpoint type
 	var tokens []byte
-	if ctx.ReqPath == "/v1/chat/completions" {
+	if utils.PathWithoutQuery(ctx.ReqPath) == "/v1/chat/completions" {
 		tokens = k.tokenizeChatRequest(ctx, tokenizerToUse)
 	}
 
 	// Fallback to text tokenization if chat tokenization wasn't used or failed
 	if tokens == nil {
 		var err error
-		tokens, err = tokenizerToUse.TokenizeInputText(ctx.Message)
+		tokens, err = tokenizerToUse.TokenizeInputText(ctx.PrefixText())
 		if err != nil {
 			recordRoutingError(modelName, "tokenize_failed", true)
 			return "", err
@@ -806,15 +835,20 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	}
 	matchedPods, prefixHashes = k.syncIndexer.MatchPrefix(modelName, loraID, tokens, readyPodsMap)
 
-	klog.V(4).InfoS("prefix cache matching completed",
-		"model", modelName,
-		"lora_id", loraID,
-		"matched_pods", len(matchedPods),
-		"prefix_hashes", len(prefixHashes),
-		"ready_pods", readyPodList.Len())
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("prefix cache matching completed",
+			"model", modelName,
+			"lora_id", loraID,
+			"matched_pods", len(matchedPods),
+			"prefix_hashes", len(prefixHashes),
+			"ready_pods", readyPodList.Len())
+	}
 
 	if len(matchedPods) > 0 {
-		targetPod = getTargetPodFromMatchedPodsWithKeys(k.cache, readyPods, matchedPods)
+		// The request's resolved overrides carry the profile's value on top of
+		// the process default (see ResolveRoutingOverrides).
+		sigma := ctx.RoutingOverrides().PrefixCache.StandardDeviationFactor
+		targetPod = getTargetPodFromMatchedPodsWithKeys(k.cache, readyPods, matchedPods, sigma)
 		if targetPod != nil {
 			selection = selectionPrefixMatch
 			klog.InfoS("prefix_cache_matched_pods",
@@ -877,8 +911,10 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	return ctx.TargetAddress(), nil
 }
 
-// getTargetPodFromMatchedPodsWithKeys is similar to getTargetPodFromMatchedPods but uses pod keys
-func getTargetPodFromMatchedPodsWithKeys(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
+// getTargetPodFromMatchedPodsWithKeys is similar to getTargetPodFromMatchedPods but uses pod keys.
+// stdDevFactor is how many standard deviations above the mean replica request count a candidate
+// may sit before it is skipped: the environment default, or the request profile's override.
+func getTargetPodFromMatchedPodsWithKeys(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int, stdDevFactor int) *v1.Pod {
 	var targetPodKey string
 	requestCount := []float64{}
 
@@ -915,7 +951,7 @@ func getTargetPodFromMatchedPodsWithKeys(cache cache.Cache, readyPods []*v1.Pod,
 	// select targetpod with highest %prefixmatch and request_count within stddev
 	for _, podkey := range podkeys {
 		reqCnt := float64(podRequestCount[podkey])
-		if reqCnt <= meanRequestCount+float64(standardDeviationFactor)*stdDevRequestCount {
+		if reqCnt <= meanRequestCount+float64(stdDevFactor)*stdDevRequestCount {
 			targetPodKey = podkey
 			break
 		}
@@ -924,11 +960,11 @@ func getTargetPodFromMatchedPodsWithKeys(cache cache.Cache, readyPods []*v1.Pod,
 	return podKeyToPod[targetPodKey]
 }
 
-func getTargetPodFromMatchedPods(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
-	return getTargetPodFromMatchedPodsFromCounts(getRequestCounts(cache, readyPods), readyPods, matchedPods)
+func getTargetPodFromMatchedPods(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int, stdDevFactor int) *v1.Pod {
+	return getTargetPodFromMatchedPodsFromCounts(getRequestCounts(cache, readyPods), readyPods, matchedPods, stdDevFactor)
 }
 
-func getTargetPodFromMatchedPodsFromCounts(podRequestCount map[string]int, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
+func getTargetPodFromMatchedPodsFromCounts(podRequestCount map[string]int, readyPods []*v1.Pod, matchedPods map[string]int, stdDevFactor int) *v1.Pod {
 	var targetPodName string
 	requestCount := make([]float64, 0, len(podRequestCount))
 
@@ -957,7 +993,7 @@ func getTargetPodFromMatchedPodsFromCounts(podRequestCount map[string]int, ready
 	// select targetpod with highest %prefixmatch and request_count within stddev
 	for _, podname := range podnames {
 		reqCnt := float64(podRequestCount[podname])
-		if reqCnt <= meanRequestCount+float64(standardDeviationFactor)*stdDevRequestCount {
+		if reqCnt <= meanRequestCount+float64(stdDevFactor)*stdDevRequestCount {
 			targetPodName = podname
 			break
 		}

@@ -29,6 +29,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/types"
 )
 
 const (
@@ -53,6 +54,10 @@ type ModelConfigProfile struct {
 	// single replica. Unlike RequestsPerSecond this is enforced per pod, not as an
 	// aggregate, so it needs no replica-count scaling.
 	RequestsInflight int64 `json:"requestsInflight,omitempty"`
+	// TTFTThresholdS overrides AIBRIX_TTFT_THRESHOLD_S for requests routed with this
+	// profile: the time-to-first-token threshold, in seconds, above which the gateway
+	// classifies the first token as delayed. Zero or unset keeps the env default.
+	TTFTThresholdS int64 `json:"ttftThresholdS,omitempty"`
 }
 
 // autoProfileRoutingConfig holds request-local profile selection hints embedded
@@ -357,4 +362,21 @@ func ParseModelConfig(jsonStr string) (*ModelConfigProfiles, error) {
 		return nil, fmt.Errorf("model config has no profiles")
 	}
 	return &cfg, nil
+}
+
+// ParseRoutingConfig parses a profile's routingConfig into its typed form. It
+// returns nil when the raw config is empty or unparsable, which leaves every
+// knob at its process default; a value the matching AIBRIX_* variable would
+// reject is dropped later, when the routing algorithm package resolves the
+// request's overrides (routingalgorithms.ResolveRoutingOverrides).
+func ParseRoutingConfig(raw json.RawMessage) *types.RoutingConfig {
+	if len(raw) == 0 {
+		return nil
+	}
+	var cfg types.RoutingConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		klog.ErrorS(err, "failed to unmarshal routingConfig, using process defaults", "rawConfig", string(raw))
+		return nil
+	}
+	return &cfg
 }

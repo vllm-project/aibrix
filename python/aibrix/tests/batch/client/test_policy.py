@@ -48,11 +48,17 @@ def test_multiple_channels_rotate_in_order_and_wrap_around():
 def test_cursor_survives_the_channel_set_growing_and_shrinking():
     # The docstring promises the cursor tolerates the reachable set changing
     # between calls, because it is taken modulo the length that is live at the
-    # time of the call. Offer a different-sized list on each pick to check that.
-    # Cursor starts at 0: 0 % 3 picks the first and leaves the cursor at 1;
-    # 1 % 2 picks the second and leaves it at 0; 0 % 1 picks the first again.
+    # time of the call. Offer a different-sized list on each pick to check that,
+    # growing the set once before shrinking it so both directions are covered.
+    #
+    # Cursor starts at 0: 0 % 3 picks the first and leaves it at 1; the set
+    # grows to four and 1 % 4 picks the second, leaving it at 2; shrinking to
+    # two, 2 % 2 picks the first and leaves it at 1; shrinking to one, 1 % 1
+    # picks the first again. The growth step is placed where the cursor is
+    # non-zero on purpose -- 0 % anything is 0, which would prove nothing.
     router = RoundRobin()
-    first, second, third = MagicMock(), MagicMock(), MagicMock()
+    first, second, third, fourth = MagicMock(), MagicMock(), MagicMock(), MagicMock()
     assert router.pick(MagicMock(), [first, second, third]) is first
-    assert router.pick(MagicMock(), [first, second]) is second
+    assert router.pick(MagicMock(), [first, second, third, fourth]) is second
+    assert router.pick(MagicMock(), [first, second]) is first
     assert router.pick(MagicMock(), [first]) is first

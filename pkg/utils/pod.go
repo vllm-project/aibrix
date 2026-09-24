@@ -51,8 +51,10 @@ func getDeploymentIdentifier() string {
 }
 
 // GeneratePodKey generates a key in the format "namespace/name" for a given pod.
+// It concatenates rather than using fmt because routers call it for every
+// candidate pod on the request path.
 func GeneratePodKey(podNamespace, podName string) string {
-	return fmt.Sprintf("%s/%s", podNamespace, podName)
+	return podNamespace + "/" + podName
 }
 
 // ParsePodKey parses a key in the format "namespace/podName".

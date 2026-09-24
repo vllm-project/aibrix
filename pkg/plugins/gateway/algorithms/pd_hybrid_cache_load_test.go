@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -45,11 +46,23 @@ var hybridTokenLoadTestConfig = pd.TokenLoadConfig{KVWeight: 0.5, RequestCost: 0
 // newHybridCacheLoadTestRouter is newTokenLoadTestRouter on the
 // hybrid_cache_load policy over a private prefix table. Nothing drains
 // prefixUpdateCh, so the table only ever holds what a test seeds into it.
-func newHybridCacheLoadTestRouter(client *http.Client, cfg pd.HybridCacheLoadConfig) (*pdRouter, *pd.TokenLoadTracker, *prefixcacheindexer.PrefixHashTable) {
-	r, tokenLoad := newTokenLoadTestRouterWithConfig(client, hybridTokenLoadTestConfig)
+// The policy reads the discount factor and the minimum match from the
+// request's resolved overrides, so the fixture installs them as the process
+// defaults for the duration of the test.
+func newHybridCacheLoadTestRouter(t *testing.T, client *http.Client, cfg pd.HybridCacheLoadConfig) (*pdRouter, *pd.TokenLoadTracker, *prefixcacheindexer.PrefixHashTable) {
+	t.Helper()
+	installTokenLoadDefaults(t, hybridTokenLoadTestConfig)
+	restore := types.DefaultRoutingOverrides()
+	next := *restore
+	next.PD.HybridCacheLoadFactor = cfg.Factor
+	next.PD.MinMatchPct = cfg.MinMatchPct
+	types.SetDefaultRoutingOverrides(&next)
+	t.Cleanup(func() { types.SetDefaultRoutingOverrides(restore) })
+
+	r, tokenLoad := newTokenLoadTestRouterWithConfig(t, client, hybridTokenLoadTestConfig)
 	table := prefixcacheindexer.NewPrefixHashTable()
 	r.prefixCacheIndexer = table
-	r.prefillPolicy = pd.NewHybridCacheLoadPrefillPolicy(tokenizer.NewCharacterTokenizer(), table, tokenLoad, cfg)
+	r.prefillPolicy = pd.NewHybridCacheLoadPrefillPolicy(tokenizer.NewCharacterTokenizer(), table, tokenLoad)
 	return r, tokenLoad, table
 }
 
@@ -89,7 +102,7 @@ func TestPDRouter_HybridCacheLoadFollowsPrefixOnIdlePods(t *testing.T) {
 		burstPod("prefill-1", "prefill", "127.0.0.2"),
 	}
 	podList := &utils.PodArray{Pods: append(append([]*v1.Pod{}, prefillPods...), burstPod("decode-0", "decode", "127.0.0.100"))}
-	r, tokenLoad, table := newHybridCacheLoadTestRouter(openGateClient(), pd.HybridCacheLoadConfig{Factor: 0.5})
+	r, tokenLoad, table := newHybridCacheLoadTestRouter(t, openGateClient(), pd.HybridCacheLoadConfig{Factor: 0.5})
 
 	ctx := hybridRequest(t, "warm", 4000, "") // 1000 estimated prompt tokens
 	seedHybridPrefix(t, table, ctx.Model, "prefill-1", 50)
@@ -97,10 +110,10 @@ func TestPDRouter_HybridCacheLoadFollowsPrefixOnIdlePods(t *testing.T) {
 	_, err := r.Route(ctx, podList)
 	require.NoError(t, err)
 	assert.Equal(t, "prefill-1", ctx.RespHeaders[HeaderPrefillTargetPod])
-	active, kv := tokenLoad.GetLoad("prefill-1")
+	active, kv := tokenLoad.GetLoad(burstPodKey("prefill-1"))
 	assert.Equal(t, float64(0), active, "prefill has returned")
 	assert.Equal(t, float64(500), kv, "only the uncached half of the prompt is charged")
-	_, kv = tokenLoad.GetLoad("prefill-0")
+	_, kv = tokenLoad.GetLoad(burstPodKey("prefill-0"))
 	assert.Equal(t, float64(0), kv)
 }
 
@@ -113,16 +126,16 @@ func TestPDRouter_HybridCacheLoadLoadOutweighsPrefix(t *testing.T) {
 		burstPod("prefill-1", "prefill", "127.0.0.2"),
 	}
 	podList := &utils.PodArray{Pods: append(append([]*v1.Pod{}, prefillPods...), burstPod("decode-0", "decode", "127.0.0.100"))}
-	r, tokenLoad, table := newHybridCacheLoadTestRouter(openGateClient(), pd.HybridCacheLoadConfig{Factor: 0.5})
+	r, tokenLoad, table := newHybridCacheLoadTestRouter(t, openGateClient(), pd.HybridCacheLoadConfig{Factor: 0.5})
 
 	ctx := hybridRequest(t, "cold", 4000, "")
 	seedHybridPrefix(t, table, ctx.Model, "prefill-1", 100)
-	tokenLoad.AcquirePrefill("long", "prefill-1", 10000)
+	tokenLoad.AcquirePrefill("long", burstPodKey("prefill-1"), 10000)
 
 	_, err := r.Route(ctx, podList)
 	require.NoError(t, err)
 	assert.Equal(t, "prefill-0", ctx.RespHeaders[HeaderPrefillTargetPod])
-	_, kv := tokenLoad.GetLoad("prefill-0")
+	_, kv := tokenLoad.GetLoad(burstPodKey("prefill-0"))
 	assert.Equal(t, float64(1000), kv)
 }
 
@@ -132,7 +145,7 @@ func TestPDRouter_HybridCacheLoadLoadOutweighsPrefix(t *testing.T) {
 func TestPDRouter_HybridCacheLoadSessionDelta(t *testing.T) {
 	prefillPod := burstPod("prefill-0", "prefill", "127.0.0.1")
 	podList := &utils.PodArray{Pods: []*v1.Pod{prefillPod, burstPod("decode-0", "decode", "127.0.0.100")}}
-	r, tokenLoad, _ := newHybridCacheLoadTestRouter(openGateClient(), pd.HybridCacheLoadConfig{Factor: 0.5})
+	r, tokenLoad, _ := newHybridCacheLoadTestRouter(t, openGateClient(), pd.HybridCacheLoadConfig{Factor: 0.5})
 
 	steps := []struct {
 		requestID string
@@ -150,7 +163,7 @@ func TestPDRouter_HybridCacheLoadSessionDelta(t *testing.T) {
 	for _, step := range steps {
 		_, err := r.Route(hybridRequest(t, step.requestID, step.bodyBytes, step.sessionID), podList)
 		require.NoError(t, err)
-		_, kv := tokenLoad.GetLoad(prefillPod.Name)
+		_, kv := tokenLoad.GetLoad(utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name))
 		assert.Equalf(t, step.wantKV, kv, "%s: %s", step.requestID, step.why)
 	}
 }
@@ -176,7 +189,7 @@ func TestPDRouter_HybridCacheLoadMinMatch(t *testing.T) {
 		{"weak match ignored above the threshold", 60, "", 1000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r, tokenLoad, table := newHybridCacheLoadTestRouter(openGateClient(), pd.HybridCacheLoadConfig{Factor: 0.5, MinMatchPct: tc.minPct})
+			r, tokenLoad, table := newHybridCacheLoadTestRouter(t, openGateClient(), pd.HybridCacheLoadConfig{Factor: 0.5, MinMatchPct: tc.minPct})
 			ctx := hybridRequest(t, "req", 4000, "")
 			seedHybridPrefix(t, table, ctx.Model, "prefill-1", 30)
 
@@ -186,7 +199,7 @@ func TestPDRouter_HybridCacheLoadMinMatch(t *testing.T) {
 			if tc.wantPod != "" {
 				assert.Equal(t, tc.wantPod, selected)
 			}
-			_, kv := tokenLoad.GetLoad(selected)
+			_, kv := tokenLoad.GetLoad(burstPodKey(selected))
 			assert.Equal(t, tc.wantKV, kv)
 		})
 	}
@@ -197,12 +210,13 @@ func TestPDRouter_HybridCacheLoadMinMatch(t *testing.T) {
 func TestPDRouter_HybridCacheLoadViaRoutingConfig(t *testing.T) {
 	prefillPod := burstPod("prefill-0", "prefill", "127.0.0.1")
 	readyPods := []*v1.Pod{prefillPod, burstPod("decode-0", "decode", "127.0.0.100")}
-	r, tokenLoad := newTokenLoadTestRouter(openGateClient())
+	r, tokenLoad := newTokenLoadTestRouter(t, openGateClient())
 	r.prefixCacheIndexer = prefixcacheindexer.NewPrefixHashTable()
 
 	ctx := hybridRequest(t, "via-routing-config", 4000, "")
 	ctx.ConfigProfile = &types.ResolvedConfigProfile{
 		RoutingConfig: json.RawMessage(fmt.Sprintf(`{"prefillScorePolicy":%q}`, pd.PrefillScorePolicyHybridCacheLoad)),
+		Routing:       configprofiles.ParseRoutingConfig(json.RawMessage(fmt.Sprintf(`{"prefillScorePolicy":%q}`, pd.PrefillScorePolicyHybridCacheLoad))),
 	}
 	pre, _, err := r.effectiveScorePolicies(ctx)
 	require.NoError(t, err)
@@ -210,7 +224,7 @@ func TestPDRouter_HybridCacheLoadViaRoutingConfig(t *testing.T) {
 
 	_, _, err = r.filterPrefillDecodePods(ctx, readyPods)
 	require.NoError(t, err)
-	active, kv := tokenLoad.GetLoad(prefillPod.Name)
+	active, kv := tokenLoad.GetLoad(utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name))
 	assert.Equal(t, float64(1000), active)
 	assert.Equal(t, float64(1000), kv)
 }

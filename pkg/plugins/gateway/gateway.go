@@ -78,6 +78,7 @@ type Server struct {
 	ratelimiter         ratelimiter.RateLimiter
 	modelRateLimiter    ratelimiter.RateLimiter
 	disableRateLimiting bool
+	priorityTier        bool
 	apiKeyAuth          *apiKeyAuthConfig
 	client              kubernetes.Interface
 	gatewayClient       gatewayapi.Interface
@@ -248,6 +249,11 @@ type ServerOptions struct {
 	// DisableRateLimiting disables AIBrix user and model quota enforcement while
 	// leaving Redis available to other gateway features.
 	DisableRateLimiting bool
+	// PriorityTier forwards the tier a request declares through the
+	// x-aibrix-priority-tier header as the priority on the upstream vLLM
+	// request. Off by default: requests are forwarded unchanged unless a
+	// deployment opts in. See gateway_req_priority.go.
+	PriorityTier bool
 	// InFlightObserver receives test/diagnostic lifecycle deltas (+1/-1). The
 	// callback must be non-blocking and non-panicking because it runs on the
 	// request processing path and is not recovered by Gateway.
@@ -297,6 +303,7 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		ratelimiter:         r,
 		modelRateLimiter:    mr,
 		disableRateLimiting: options.DisableRateLimiting,
+		priorityTier:        options.PriorityTier,
 		apiKeyAuth:          loadAPIKeyAuthConfig(),
 		client:              client,
 		gatewayClient:       gatewayClient,
@@ -319,7 +326,15 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 	return s
 }
 
-func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
+func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) (err error) {
+	// Process is also reachable without the server's stream interceptor, so it
+	// recovers panics on its own as well.
+	defer func() {
+		if r := recover(); r != nil {
+			err = recoverStreamPanic(r, ProcessFullMethod)
+		}
+	}()
+
 	rootSpan := trace.SpanFromContext(srv.Context())
 	requestID := uuid.New().String()
 	if rootSpan.SpanContext().HasTraceID() {
@@ -698,6 +713,12 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		return "", fmt.Errorf("no pods for routing")
 	}
 	readyPods := utils.FilterRoutablePods(pods.All())
+
+	// Resolve the model config profile's routing knobs once per request: the
+	// load-imbalance gate below and every strategy on the routing path read the
+	// same values from the routing context (see
+	// routingalgorithms.ResolveRoutingOverrides).
+	routing.ResolveRoutingOverrides(routeCtx)
 
 	if routeCtx.Span != nil {
 		routeCtx.Span.SetAttributes(

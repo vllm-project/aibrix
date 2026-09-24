@@ -78,6 +78,12 @@ func burstPod(name, role string, ip string) *v1.Pod {
 	}
 }
 
+// burstPodKey returns the tracker key, utils.GeneratePodKey, of the burstPod
+// named name.
+func burstPodKey(name string) string {
+	return utils.GeneratePodKey("", name)
+}
+
 // TestPDRouter_ConcurrentBurstSeesPriorSelections drives a burst of concurrent
 // Route calls at idle prefill pods with the least_request policy and holds
 // every prefill HTTP call open until the whole burst has been routed.
@@ -116,7 +122,7 @@ func TestPDRouter_ConcurrentBurstSeesPriorSelections(t *testing.T) {
 		selectionCounts:       map[string]int64{},
 	}
 	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
-	r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker, prefillRequestTimeout)
+	r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker)
 
 	ctxs := make([]*types.RoutingContext, requests)
 	errs := make([]error, requests)
@@ -156,7 +162,7 @@ func TestPDRouter_ConcurrentBurstSeesPriorSelections(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	heldCounts := tracker.GetPrefillRequestCountsForPods(prefillPods)
-	heldPending := pending.GetPendingDecodeCount(decodePod.Name)
+	heldPending := pending.GetPendingDecodeCount(utils.GeneratePodKey(decodePod.Namespace, decodePod.Name))
 
 	close(gate)
 	wg.Wait()
@@ -182,5 +188,5 @@ func TestPDRouter_ConcurrentBurstSeesPriorSelections(t *testing.T) {
 	for _, cnt := range tracker.GetPrefillRequestCountsForPods(prefillPods) {
 		assert.Equal(t, int32(0), cnt)
 	}
-	assert.Equal(t, float64(0), pending.GetPendingDecodeCount(decodePod.Name))
+	assert.Equal(t, float64(0), pending.GetPendingDecodeCount(utils.GeneratePodKey(decodePod.Namespace, decodePod.Name)))
 }

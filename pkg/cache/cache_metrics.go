@@ -17,6 +17,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -404,6 +405,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			c.syncRunningRequestsGlobally(pod)
 
 			c.updateRealtimeRunningRequestsDrainRate1m(pod)
+			c.updateRealtimeOutputTokenRateEWMA(pod)
 
 			// Handle Prometheus-based metrics separately (these require PromQL queries)
 			if c.prometheusApi != nil {
@@ -773,8 +775,7 @@ func (c *Store) syncRunningRequestsGlobally(pod *Pod) {
 
 // updateRealtimeRunningRequestsDrainRate1m computes the 1-minute rolling rate at which completed
 // requests are draining on the pod and stores it under RealtimeRunningRequestsDrainRate1m.
-// Computed for all pods since capacityOf (algorithms/load_balance.go) relies on it as a
-// general capacity signal, not just for PD-disaggregation decode pods.
+// Computed for all pods; the PD-disaggregation decode router scores on it.
 func (c *Store) updateRealtimeRunningRequestsDrainRate1m(pod *Pod) {
 	completed := float64(atomic.LoadInt64(&pod.completedRequests))
 	drainRate := c.calculateRate1m(pod, "completed_requests", completed)
@@ -785,6 +786,37 @@ func (c *Store) updateRealtimeRunningRequestsDrainRate1m(pod *Pod) {
 		klog.V(4).InfoS("Updating drain rate metric", "pod", pod.Name,
 			"completed_requests", completed, metrics.RealtimeRunningRequestsDrainRate1m, drainRate)
 	}
+}
+
+// outputTokenRateEWMATau is the time constant of the output-token-rate EWMA: a step change in a
+// pod's throughput is ~63% reflected after this long. The 1-minute windowed rate it smooths moves
+// in discrete steps as its baseline snapshot advances, so this keeps the capacity estimate (and
+// with it the load-balance score) from jumping between scrapes.
+const outputTokenRateEWMATau = 10 * time.Second
+
+// updateRealtimeOutputTokenRateEWMA maintains the pod's observed output-token throughput
+// (tokens/sec: EWMA of the 1-minute completion-token rate) under RealtimeOutputTokenRateEWMA. It is
+// the capacity estimate of the load-balance router (algorithms/load_balance.go). Like the request
+// drain rate, it is gateway-tracked, so it is available for every engine.
+//
+// A window with no completed output tokens (idle pod, or usage not reported) says nothing about how
+// fast the replica is, so the previous estimate is kept instead of decayed toward zero. Decaying
+// would make a briefly idle replica look weak and starve it of the traffic that re-measures it.
+func (c *Store) updateRealtimeOutputTokenRateEWMA(pod *Pod) {
+	completed := float64(atomic.LoadInt64(&pod.completedOutputTokens))
+	rate := c.calculateRate1m(pod, "completed_output_tokens", completed)
+	if rate <= 0 {
+		return
+	}
+
+	ewma := rate
+	if prev, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA); ok {
+		alpha := 1 - math.Exp(-podMetricRefreshInterval.Seconds()/outputTokenRateEWMATau.Seconds())
+		ewma = alpha*rate + (1-alpha)*prev.GetSimpleValue()
+	}
+	_ = c.updatePodRecord(pod, "", metrics.RealtimeOutputTokenRateEWMA, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: ewma})
+	klog.V(4).InfoS("Updating output token rate metric", "pod", pod.Name,
+		"completed_output_tokens", completed, "rate_1m", rate, metrics.RealtimeOutputTokenRateEWMA, ewma)
 }
 
 // updatePodMetricsFromTypedResult processes the typed metrics result and updates pod storage.

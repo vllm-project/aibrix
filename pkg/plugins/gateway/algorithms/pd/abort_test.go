@@ -132,11 +132,15 @@ func abortTestLeg(t *testing.T, requestID, rid, decodeAddr string) *types.PDLegS
 }
 
 // withAbortRetryDelay pins the delay between the two abort attempts for one
-// test (0 = single attempt) and restores the configured value afterwards.
+// test (0 = single attempt), as the process default of the request's PD
+// overrides, and restores the configured value afterwards.
 func withAbortRetryDelay(t *testing.T, delay time.Duration) {
 	t.Helper()
-	restore := decodeAbortRetryDelayNanos.Swap(int64(delay))
-	t.Cleanup(func() { decodeAbortRetryDelayNanos.Store(restore) })
+	restore := types.DefaultPDOverrides()
+	next := *restore
+	next.Abort.RetryDelay = delay
+	types.SetDefaultPDOverrides(&next)
+	t.Cleanup(func() { types.SetDefaultPDOverrides(restore) })
 }
 
 // waitAbortDone joins the fire-and-forget abort goroutine. Without it the
@@ -151,11 +155,15 @@ func waitAbortDone(t *testing.T, leg *types.PDLegState) {
 	}
 }
 
-// withAbortTimeout pins AIBRIX_DECODE_ABORT_TIMEOUT for one test.
+// withAbortTimeout pins AIBRIX_DECODE_ABORT_TIMEOUT for one test, as the
+// process default of the request's PD overrides.
 func withAbortTimeout(t *testing.T, seconds int64) {
 	t.Helper()
-	restore := decodeAbortTimeoutSeconds.Swap(seconds)
-	t.Cleanup(func() { decodeAbortTimeoutSeconds.Store(restore) })
+	restore := types.DefaultPDOverrides()
+	next := *restore
+	next.Abort.Timeout = time.Duration(seconds) * time.Second
+	types.SetDefaultPDOverrides(&next)
+	t.Cleanup(func() { types.SetDefaultPDOverrides(restore) })
 }
 
 // ---------------------------------------------------------------------------

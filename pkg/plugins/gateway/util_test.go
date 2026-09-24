@@ -170,6 +170,28 @@ func Test_ValidateRequestBody(t *testing.T) {
 			statusCode:  envoyTypePb.StatusCode_OK,
 		},
 		{
+			// HTTP/2 :path carries the query string (RFC 7540); before validateRequestBody
+			// stripped it here, this fell through to the "unknown request path" default and
+			// returned 501 instead of being parsed as a chat completion.
+			message:     "/v1/chat/completions?beta=true query string does not break path matching",
+			requestPath: "/v1/chat/completions?beta=true",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}]}`),
+			model:       "llama2-7b",
+			messages:    "this is system say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			// validateChatRequest's TPM guard compares requestPath against PathChatCompletions
+			// exactly (see the "NOT OK" case above), so a 400 here also confirms
+			// validateRequestBody passes the query-stripped path down to it, not the raw
+			// "/v1/chat/completions?beta=true".
+			message:     "/v1/chat/completions?beta=true stream_options.include_usage == false with user.TPM >= 1 is NOT OK",
+			user:        utils.User{Tpm: 1},
+			requestPath: "/v1/chat/completions?beta=true",
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": false}, "messages": [{"role": "system", "content": "this is system"}]}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
 			message:     "/tokenize prompt form",
 			requestPath: "/tokenize",
 			requestBody: []byte(`{"model": "llama2-7b", "prompt": "say this is test"}`),
@@ -222,10 +244,25 @@ func Test_ValidateRequestBody(t *testing.T) {
 			messages:    "this is system say this is test",
 			statusCode:  envoyTypePb.StatusCode_OK,
 		},
+		{
+			// HTTP/2 :path carries the query string (RFC 7540), so /v1/messages?beta=true must
+			// still match PathMessages, not fall through to the "unknown request path" default
+			// case. stream_options.include_usage is deliberately false with Tpm: 1: that
+			// combination is a 400 on /v1/chat/completions (see the case above), so passing here
+			// also confirms the query string didn't make this get treated as chat completions.
+			message:     "/v1/messages?beta=true query string does not break path matching",
+			user:        utils.User{Tpm: 1},
+			requestPath: "/v1/messages?beta=true",
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": false}, "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}]}`),
+			stream:      true,
+			model:       "llama2-7b",
+			messages:    "this is system say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
 	}
 
 	for _, tt := range testCases {
-		model, messages, stream, errRes := validateRequestBody("1", tt.requestPath, tt.requestBody, tt.user)
+		model, messages, _, stream, errRes := validateRequestBody("1", tt.requestPath, tt.requestBody, tt.user)
 
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
@@ -501,7 +538,7 @@ func Test_ValidateRequestBody_Embeddings(t *testing.T) {
 	}
 
 	for _, tt := range testCases {
-		model, messages, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
+		model, messages, _, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
 		t.Log(tt.message)
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
@@ -574,7 +611,7 @@ func Test_ValidateRequestBody_Rerank(t *testing.T) {
 	}
 
 	for _, tt := range testCases {
-		model, messages, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
+		model, messages, _, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
 		t.Log(tt.message)
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
@@ -1326,7 +1363,7 @@ func Test_ValidateRequestBody_Classify(t *testing.T) {
 	}
 
 	for _, tt := range testCases {
-		model, messages, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
+		model, messages, _, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
 		t.Log(tt.message)
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
@@ -1425,7 +1462,7 @@ func Test_ValidateRequestBody_Responses(t *testing.T) {
 	}
 
 	for _, tt := range testCases {
-		model, messages, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
+		model, messages, _, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
 		t.Log(tt.message)
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)

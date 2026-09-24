@@ -130,25 +130,23 @@ Define your vLLM backend addresses:
 # Single backend
 models:
   - name: "Qwen/Qwen3.5-4B"
-    endpoints:
+    workers:
       - "127.0.0.1:8000"
 
 # Multiple backends (gateway routes across them)
 models:
   - name: "Qwen/Qwen2.5-1.5B-Instruct"
-    endpoints:
+    workers:
       - "192.168.1.10:8000"
       - "192.168.1.11:8000"
 
 # P/D disaggregated serving
 models:
   - name: "Qwen/Qwen2.5-72B"
-    rolesets:
-      - name: default
-        prefill:
-          - "192.168.1.10:8000"
-        decode:
-          - "192.168.1.11:8000"
+    prefill_workers:
+      - "192.168.1.10:8000"
+    decode_workers:
+      - "192.168.1.11:8000"
 ```
 
 ### Routing Algorithm

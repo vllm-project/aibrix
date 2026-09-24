@@ -45,6 +45,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/prefill"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/selector"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -108,7 +109,7 @@ func TestPDRouter_Route(t *testing.T) {
 		selectionCounts:       map[string]int64{},
 	}
 	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
-	r.prefillExecutor = prefill.NewDefaultExecutor(testClient, testTracker, prefillRequestTimeout)
+	r.prefillExecutor = prefill.NewDefaultExecutor(testClient, testTracker)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -216,7 +217,7 @@ func TestPDRouter_RouteDoesNotEmitAsyncPrefillSuccessBeforeHTTPCompletes(t *test
 		selectionCounts:       map[string]int64{},
 	}
 	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
-	r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker, prefillRequestTimeout)
+	r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker)
 
 	parentCtx, cancelParent := context.WithCancel(context.Background())
 	defer cancelParent()
@@ -303,7 +304,7 @@ func TestPDRouter_RouteRecordsAsyncPrefillFailureWithoutSuccess(t *testing.T) {
 		selectionCounts:       map[string]int64{},
 	}
 	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
-	r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker, prefillRequestTimeout)
+	r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker)
 
 	ctx := types.NewRoutingContext(context.Background(), RouterPD, "test-model", "test", "async-prefill-fail", "user")
 	ctx.Engine = SGLangEngine
@@ -588,10 +589,12 @@ func TestScorePrefillPods(t *testing.T) {
 	}
 }
 
-// addRequests seeds the tracker with n in-flight requests for podName.
+// addRequests seeds the tracker with n in-flight requests for the
+// namespace-less test pod podName.
 func addRequests(tracker *pd.PrefillRequestTracker, podName string, n int) {
+	podKey := utils.GeneratePodKey("", podName)
 	for i := 0; i < n; i++ {
-		tracker.AddPrefillRequest(podName+"-req-"+strconv.Itoa(i), podName)
+		tracker.AddPrefillRequest(podName+"-req-"+strconv.Itoa(i), podKey)
 	}
 }
 
@@ -954,6 +957,7 @@ func TestEffectiveScorePoliciesFromRoutingConfig(t *testing.T) {
 		RequestID: "req-profile",
 		ConfigProfile: &types.ResolvedConfigProfile{
 			RoutingConfig: json.RawMessage(`{"prefillScorePolicy":"prefix_cache","decodeScorePolicy":"least_request"}`),
+			Routing:       configprofiles.ParseRoutingConfig(json.RawMessage(`{"prefillScorePolicy":"prefix_cache","decodeScorePolicy":"least_request"}`)),
 		},
 	}
 	pre, dec, err := r.effectiveScorePolicies(ctx)
@@ -977,6 +981,7 @@ func TestEffectiveScorePoliciesUnknownDecodeScorePolicy(t *testing.T) {
 		RequestID: "req-bad-decode",
 		ConfigProfile: &types.ResolvedConfigProfile{
 			RoutingConfig: json.RawMessage(`{"decodeScorePolicy":"not_a_real_policy"}`),
+			Routing:       configprofiles.ParseRoutingConfig(json.RawMessage(`{"decodeScorePolicy":"not_a_real_policy"}`)),
 		},
 	}
 	_, _, err := r.effectiveScorePolicies(ctx)
@@ -1032,7 +1037,7 @@ func TestDoPrefillRequest(t *testing.T) {
 			prefillRequestTracker: tracker,
 			httpClient:            client,
 		}
-		r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker, prefillRequestTimeout)
+		r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker)
 		return r
 	}
 
@@ -1152,7 +1157,7 @@ func TestDoPrefillRequest(t *testing.T) {
 			routingCtx := createRoutingCtx()
 			router := createRouter(prefillPods, tt.podMetrics)
 
-			router.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, prefillPods[0].Name)
+			router.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, utils.GeneratePodKey(prefillPods[0].Namespace, prefillPods[0].Name))
 			err := router.doPrefillRequest(routingCtx, prefillPods[0], tt.llmEngine)
 			if tt.expectError {
 				assert.Error(t, err)
@@ -1606,9 +1611,9 @@ func TestVLLMIntegrationWithTestServer(t *testing.T) {
 		prefillRequestTracker: vllmTracker,
 		httpClient:            vllmClient,
 	}
-	router.prefillExecutor = prefill.NewDefaultExecutor(vllmClient, vllmTracker, prefillRequestTimeout)
+	router.prefillExecutor = prefill.NewDefaultExecutor(vllmClient, vllmTracker)
 
-	vllmTracker.AddPrefillRequest(routingCtx.RequestID, prefillPods[0].Name)
+	vllmTracker.AddPrefillRequest(routingCtx.RequestID, utils.GeneratePodKey(prefillPods[0].Namespace, prefillPods[0].Name))
 	err := router.doPrefillRequest(routingCtx, prefillPods[0], VLLMEngine)
 	assert.NoError(t, err)
 
@@ -1738,9 +1743,9 @@ func TestTensorRTIntegrationWithTestServer(t *testing.T) {
 		prefillRequestTracker: trtTracker,
 		httpClient:            trtClient,
 	}
-	router.prefillExecutor = prefill.NewDefaultExecutor(trtClient, trtTracker, prefillRequestTimeout)
+	router.prefillExecutor = prefill.NewDefaultExecutor(trtClient, trtTracker)
 
-	trtTracker.AddPrefillRequest(routingCtx.RequestID, prefillPods[0].Name)
+	trtTracker.AddPrefillRequest(routingCtx.RequestID, utils.GeneratePodKey(prefillPods[0].Namespace, prefillPods[0].Name))
 	err := router.doPrefillRequest(routingCtx, prefillPods[0], TensorRTLLM)
 	assert.NoError(t, err)
 
@@ -2083,7 +2088,7 @@ func TestLoadImbalanceSelectPrefillPod(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			targetPod, imbalance := r.loadImbalanceSelectPrefillPod(tt.readyPods, tt.podRequestCount)
+			targetPod, imbalance := r.loadImbalanceSelectPrefillPod(tt.readyPods, tt.podRequestCount, aibrixPrefillLoadImbalanceMinSpread)
 
 			assert.Equal(t, tt.expectImbalance, imbalance, "imbalance detection should match expected")
 
@@ -2563,9 +2568,7 @@ func TestCollectAndBucketPods(t *testing.T) {
 	annoLong := pdConfigAnnotation(1000, 9999, false) // not suitable for promptLength=11
 
 	t.Run("complete roleset included", func(t *testing.T) {
-		old := aibrixPromptLengthBucketing
-		aibrixPromptLengthBucketing = false
-		defer func() { aibrixPromptLengthBucketing = old }()
+		withPromptLengthBucketing(t, false)
 
 		pods := []*v1.Pod{
 			makePDPod("prefill-1", "rs1", "prefill", nil),
@@ -2581,9 +2584,7 @@ func TestCollectAndBucketPods(t *testing.T) {
 	})
 
 	t.Run("incomplete roleset - only prefill - excluded", func(t *testing.T) {
-		old := aibrixPromptLengthBucketing
-		aibrixPromptLengthBucketing = false
-		defer func() { aibrixPromptLengthBucketing = old }()
+		withPromptLengthBucketing(t, false)
 
 		pods := []*v1.Pod{
 			makePDPod("prefill-only", "rs1", "prefill", nil),
@@ -2594,9 +2595,7 @@ func TestCollectAndBucketPods(t *testing.T) {
 	})
 
 	t.Run("incomplete roleset - only decode - excluded", func(t *testing.T) {
-		old := aibrixPromptLengthBucketing
-		aibrixPromptLengthBucketing = false
-		defer func() { aibrixPromptLengthBucketing = old }()
+		withPromptLengthBucketing(t, false)
 
 		pods := []*v1.Pod{
 			makePDPod("decode-only", "rs1", "decode", nil),
@@ -2607,9 +2606,7 @@ func TestCollectAndBucketPods(t *testing.T) {
 	})
 
 	t.Run("multiple rolesets - complete ones included, incomplete excluded", func(t *testing.T) {
-		old := aibrixPromptLengthBucketing
-		aibrixPromptLengthBucketing = false
-		defer func() { aibrixPromptLengthBucketing = old }()
+		withPromptLengthBucketing(t, false)
 
 		pods := []*v1.Pod{
 			makePDPod("prefill-rs1", "rs1", "prefill", nil),
@@ -2624,9 +2621,7 @@ func TestCollectAndBucketPods(t *testing.T) {
 	})
 
 	t.Run("partial decode replicas still eligible when peer roleset has more decodes", func(t *testing.T) {
-		old := aibrixPromptLengthBucketing
-		aibrixPromptLengthBucketing = false
-		defer func() { aibrixPromptLengthBucketing = old }()
+		withPromptLengthBucketing(t, false)
 
 		pods := []*v1.Pod{
 			pdPodWithReplica("prefill-rs1", "rs1", "prefill", "0", nil),
@@ -2641,9 +2636,7 @@ func TestCollectAndBucketPods(t *testing.T) {
 	})
 
 	t.Run("bucketing: both sides suitable - roleset included in bucketed slices", func(t *testing.T) {
-		old := aibrixPromptLengthBucketing
-		aibrixPromptLengthBucketing = true
-		defer func() { aibrixPromptLengthBucketing = old }()
+		withPromptLengthBucketing(t, true)
 
 		pods := []*v1.Pod{
 			makePDPod("prefill-1", "rs1", "prefill", map[string]string{constants.ModelAnnoConfig: annoShort}),
@@ -2655,9 +2648,7 @@ func TestCollectAndBucketPods(t *testing.T) {
 	})
 
 	t.Run("bucketing: prefill suitable but decode not - roleset excluded from bucketed slices", func(t *testing.T) {
-		old := aibrixPromptLengthBucketing
-		aibrixPromptLengthBucketing = true
-		defer func() { aibrixPromptLengthBucketing = old }()
+		withPromptLengthBucketing(t, true)
 
 		pods := []*v1.Pod{
 			makePDPod("prefill-1", "rs1", "prefill", map[string]string{constants.ModelAnnoConfig: annoShort}),
@@ -2673,9 +2664,7 @@ func TestCollectAndBucketPods(t *testing.T) {
 	})
 
 	t.Run("bucketing: decode suitable but prefill not - roleset excluded from bucketed slices", func(t *testing.T) {
-		old := aibrixPromptLengthBucketing
-		aibrixPromptLengthBucketing = true
-		defer func() { aibrixPromptLengthBucketing = old }()
+		withPromptLengthBucketing(t, true)
 
 		pods := []*v1.Pod{
 			makePDPod("prefill-1", "rs1", "prefill", map[string]string{constants.ModelAnnoConfig: annoLong}),
@@ -2687,9 +2676,7 @@ func TestCollectAndBucketPods(t *testing.T) {
 	})
 
 	t.Run("bucketing: neither side suitable - roleset excluded from bucketed slices", func(t *testing.T) {
-		old := aibrixPromptLengthBucketing
-		aibrixPromptLengthBucketing = true
-		defer func() { aibrixPromptLengthBucketing = old }()
+		withPromptLengthBucketing(t, true)
 
 		pods := []*v1.Pod{
 			makePDPod("prefill-1", "rs1", "prefill", map[string]string{constants.ModelAnnoConfig: annoLong}),
@@ -2701,9 +2688,7 @@ func TestCollectAndBucketPods(t *testing.T) {
 	})
 
 	t.Run("bucketing: multiple rolesets - only fully-suitable roleset enters bucketed slices", func(t *testing.T) {
-		old := aibrixPromptLengthBucketing
-		aibrixPromptLengthBucketing = true
-		defer func() { aibrixPromptLengthBucketing = old }()
+		withPromptLengthBucketing(t, true)
 
 		pods := []*v1.Pod{
 			// rs1: both suitable
@@ -2724,9 +2709,7 @@ func TestCollectAndBucketPods(t *testing.T) {
 	})
 
 	t.Run("bucketing disabled: annotations ignored, bucketed slices always empty", func(t *testing.T) {
-		old := aibrixPromptLengthBucketing
-		aibrixPromptLengthBucketing = false
-		defer func() { aibrixPromptLengthBucketing = old }()
+		withPromptLengthBucketing(t, false)
 
 		pods := []*v1.Pod{
 			makePDPod("prefill-1", "rs1", "prefill", map[string]string{constants.ModelAnnoConfig: annoShort}),
@@ -2740,9 +2723,7 @@ func TestCollectAndBucketPods(t *testing.T) {
 	})
 
 	t.Run("bucketing: combined pods collected", func(t *testing.T) {
-		old := aibrixPromptLengthBucketing
-		aibrixPromptLengthBucketing = true
-		defer func() { aibrixPromptLengthBucketing = old }()
+		withPromptLengthBucketing(t, true)
 
 		annoCombined := pdConfigAnnotation(0, 100, true)
 		pods := []*v1.Pod{
@@ -2755,9 +2736,7 @@ func TestCollectAndBucketPods(t *testing.T) {
 	})
 
 	t.Run("pods missing roleset label are ignored entirely", func(t *testing.T) {
-		old := aibrixPromptLengthBucketing
-		aibrixPromptLengthBucketing = false
-		defer func() { aibrixPromptLengthBucketing = old }()
+		withPromptLengthBucketing(t, false)
 
 		pods := []*v1.Pod{
 			{ObjectMeta: metav1.ObjectMeta{Name: "no-roleset", Labels: map[string]string{PDRoleIdentifier: "prefill"}}},
@@ -2780,7 +2759,7 @@ func pdConfigAnnotation(minLen, maxLen int, combined bool) string {
 }
 
 func TestFilterPrefillDecodePods_SelectCorrectBucketPods(t *testing.T) {
-	aibrixPromptLengthBucketing = true
+	withPromptLengthBucketing(t, true)
 
 	r := pdRouter{
 		cache:                 cache.NewForTest(),
@@ -2810,7 +2789,7 @@ func TestFilterPrefillDecodePods_SelectCorrectBucketPods(t *testing.T) {
 }
 
 func TestFilterPrefillDecodePods_CombinedFallbackBucketing(t *testing.T) {
-	aibrixPromptLengthBucketing = true
+	withPromptLengthBucketing(t, true)
 
 	r := pdRouter{
 		cache:                 cache.NewForTest(),
@@ -2836,13 +2815,11 @@ func TestFilterPrefillDecodePods_CombinedFallbackBucketing(t *testing.T) {
 	assert.Nil(t, prefill)
 	assert.NotNil(t, decode)
 	assert.Equal(t, "combined-1", decode.Name)
-	assert.Equal(t, 0, r.prefillRequestTracker.GetPrefillRequestCountsForPod("prefill-ok"))
+	assert.Equal(t, 0, r.prefillRequestTracker.GetPrefillRequestCountsForPod(utils.GeneratePodKey(prefillOK.Namespace, prefillOK.Name)))
 }
 
 func TestFilterPrefillDecodePods_BucketDecodeDownFallbackToCombined(t *testing.T) {
-	old := aibrixPromptLengthBucketing
-	aibrixPromptLengthBucketing = true
-	defer func() { aibrixPromptLengthBucketing = old }()
+	withPromptLengthBucketing(t, true)
 
 	r := pdRouter{
 		cache:                 cache.NewForTest(),
@@ -2893,9 +2870,7 @@ func TestFilterPrefillDecodePods_BucketDecodeDownFallbackToCombined(t *testing.T
 }
 
 func TestFilterPrefillDecodePods_NoBucketMatchNoCombined(t *testing.T) {
-	old := aibrixPromptLengthBucketing
-	aibrixPromptLengthBucketing = true
-	defer func() { aibrixPromptLengthBucketing = old }()
+	withPromptLengthBucketing(t, true)
 
 	r := pdRouter{
 		cache:                 cache.NewForTest(),
@@ -2920,9 +2895,7 @@ func TestFilterPrefillDecodePods_NoBucketMatchNoCombined(t *testing.T) {
 }
 
 func TestFilterPrefillDecodePods_CombinedPickImbalance(t *testing.T) {
-	old := aibrixPromptLengthBucketing
-	aibrixPromptLengthBucketing = true
-	defer func() { aibrixPromptLengthBucketing = old }()
+	withPromptLengthBucketing(t, true)
 
 	tests := []struct {
 		name           string
@@ -3193,7 +3166,7 @@ func TestRoute_DuplicateNonControlledFieldAcceptedForVLLM(t *testing.T) {
 		selectionCounts:       map[string]int64{},
 	}
 	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
-	r.prefillExecutor = prefill.NewDefaultExecutor(testClient, testTracker, prefillRequestTimeout)
+	r.prefillExecutor = prefill.NewDefaultExecutor(testClient, testTracker)
 
 	readyPods := []*v1.Pod{
 		{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"roleset-name": "test", "role-name": "prefill", constants.ModelLabelPort: prefillPort}, Name: "prefill-1"},

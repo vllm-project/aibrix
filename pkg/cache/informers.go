@@ -408,6 +408,7 @@ func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
 			snap.podIP != "" && snap.podIP == pod.Status.PodIP {
 			c.bufferPod.runningRequests = atomic.LoadInt32(&snap.runningRequests)
 			c.bufferPod.completedRequests = atomic.LoadInt64(&snap.completedRequests)
+			c.bufferPod.completedOutputTokens = atomic.LoadInt64(&snap.completedOutputTokens)
 			c.bufferPod.pendingLoadUtilization.Store(snap.pendingLoadUtilization.Load())
 			c.bufferPod.statsGeneration = snap.statsGeneration
 			resumed = true
@@ -426,6 +427,7 @@ func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
 		// counters just seeded onto it so they don't leak into that pod.
 		c.bufferPod.runningRequests = 0
 		c.bufferPod.completedRequests = 0
+		c.bufferPod.completedOutputTokens = 0
 		c.bufferPod.pendingLoadUtilization.Store(0)
 		c.bufferPod.statsGeneration = 0
 	}
@@ -485,6 +487,7 @@ type deletedPodSnapshot struct {
 	statsGeneration        int64  // Copied from pod at delete; resume copies it onto the new *Pod, fresh add does not.
 	runningRequests        int32  // atomic
 	completedRequests      int64  // atomic
+	completedOutputTokens  int64  // atomic
 	pendingLoadUtilization atomic_ext.Float64
 	deletedAt              time.Time
 }
@@ -513,6 +516,7 @@ func (c *Store) deletePodLocked(podName, podNamespace string) *Pod {
 			completedRequests: atomic.LoadInt64(&metaPod.completedRequests),
 			deletedAt:         time.Now(),
 		}
+		snap.completedOutputTokens = atomic.LoadInt64(&metaPod.completedOutputTokens)
 		snap.pendingLoadUtilization.Store(metaPod.pendingLoadUtilization.Load())
 		c.recentlyDeletedPods.Store(key, snap)
 		c.pruneExpiredDeletedPodSnapshotsLocked()

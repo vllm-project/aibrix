@@ -39,6 +39,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
@@ -142,59 +143,40 @@ type PrefillScorePolicy interface {
 // 10.0 + load for an unmatched pod. Concurrent cold prompts that share only a
 // system prompt or a template header match each other's first blocks by a few
 // percent on whichever pod was inserted first, which makes that pod a
-// deterministic magnet for the rest of the burst. PrefixCacheConfig.MinMatchPct
-// treats matches below the threshold as no match so that such incidental
-// overlap falls through to the load term.
+// deterministic magnet for the rest of the burst. The request's resolved
+// MinMatchPct override treats matches below the threshold as no match so that
+// such incidental overlap falls through to the load term.
 //
 // The policy is stateless: tok and prefixCacheIndexer are read-only handles
 // shared across all requests. Obtain an instance via NewPrefixCachePrefillPolicy.
 type prefixCachePrefillPolicy struct {
 	tok                tokenizer.Tokenizer
 	prefixCacheIndexer *prefixcacheindexer.PrefixHashTable
-	cfg                PrefixCacheConfig
 }
 
-// PrefixCacheConfig tunes the prefix_cache policy.
-type PrefixCacheConfig struct {
-	// MinMatchPct is the prefix-match percentage below which a match is
-	// treated as no match, so a few shared tokens do not attract a request.
-	// 0 keeps every match, which is the historical behaviour.
-	MinMatchPct float64
-}
-
-// DefaultPrefixCacheConfig returns the defaults, overridden by the
-// AIBRIX_MIN_MATCH_PCT (0 to 100) environment variable, the same knob
-// hybrid_cache_load reads.
-func DefaultPrefixCacheConfig() PrefixCacheConfig {
-	return PrefixCacheConfig{MinMatchPct: loadMinMatchPct()}
-}
-
-// NewPrefixCachePrefillPolicy constructs a prefix_cache PrefillScorePolicy with
-// the given tokenizer and shared prefix-hash table and no minimum match.
+// NewPrefixCachePrefillPolicy constructs a prefix_cache PrefillScorePolicy over
+// the given tokenizer and shared prefix-hash table. The minimum match
+// percentage is not a property of the policy: it is the request's resolved
+// MinMatchPct override, so a model config profile can raise it for its own
+// requests without rebuilding the policy.
 func NewPrefixCachePrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer *prefixcacheindexer.PrefixHashTable) PrefillScorePolicy {
-	return NewPrefixCachePrefillPolicyWithConfig(tok, prefixCacheIndexer, PrefixCacheConfig{})
-}
-
-// NewPrefixCachePrefillPolicyWithConfig is NewPrefixCachePrefillPolicy with an
-// explicit PrefixCacheConfig.
-func NewPrefixCachePrefillPolicyWithConfig(tok tokenizer.Tokenizer, prefixCacheIndexer *prefixcacheindexer.PrefixHashTable, cfg PrefixCacheConfig) PrefillScorePolicy {
 	return &prefixCachePrefillPolicy{
 		tok:                tok,
 		prefixCacheIndexer: prefixCacheIndexer,
-		cfg:                cfg,
 	}
 }
 
-// Prepare tokenizes routingCtx.Message, performs a prefix-cache lookup against
+// Prepare tokenizes routingCtx.PrefixText(), performs a prefix-cache lookup against
 // the ready-pod set, and returns a prefixCacheScorer populated with the match
 // percentages and prefix hashes for the request.
 func (p *prefixCachePrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ []*v1.Pod, readyPodsMap map[string]struct{}) (PrefillScorer, error) {
-	tokens, err := p.tok.TokenizeInputText(routingCtx.Message)
+	tokens, err := p.tok.TokenizeInputText(routingCtx.PrefixText())
 	if err != nil {
 		return nil, err
 	}
 	matchedPods, hashes := p.prefixCacheIndexer.MatchPrefix(tokens, routingCtx.Model, readyPodsMap)
-	return &prefixCacheScorer{matchedPods: matchedPods, hashes: hashes, minMatchPct: p.cfg.MinMatchPct}, nil
+	minMatchPct := routingCtx.PDOverrides().MinMatchPct
+	return &prefixCacheScorer{matchedPods: matchedPods, hashes: hashes, minMatchPct: minMatchPct}, nil
 }
 
 func (p *prefixCachePrefillPolicy) Name() string { return PrefillScorePolicyPrefixCache }
@@ -315,11 +297,11 @@ func NewConductorPrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer *pref
 	}
 }
 
-// Prepare tokenizes routingCtx.Message and performs a prefix-cache lookup against the
+// Prepare tokenizes routingCtx.PrefixText() and performs a prefix-cache lookup against the
 // ready-pod set, keeping the input token count so downstream ScorePod can derive
 // matched/unmatched lengths from the per-pod match percentage.
 func (p *conductorPrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ []*v1.Pod, readyPodsMap map[string]struct{}) (PrefillScorer, error) {
-	tokens, err := p.tok.TokenizeInputText(routingCtx.Message)
+	tokens, err := p.tok.TokenizeInputText(routingCtx.PrefixText())
 	if err != nil {
 		return nil, err
 	}
@@ -452,9 +434,19 @@ func NewTokenLoadPrefillPolicy(tracker *TokenLoadTracker) PrefillScorePolicy {
 	return &tokenLoadPrefillPolicy{tracker: tracker}
 }
 
-// Prepare returns a tokenLoadScorer; no tokenization or cache lookup is performed.
-func (p *tokenLoadPrefillPolicy) Prepare(_ *types.RoutingContext, _ []*v1.Pod, _ map[string]struct{}) (PrefillScorer, error) {
-	return tokenLoadScorer{tracker: p.tracker}, nil
+// tokenLoadKVWeightFor returns the KV weight of the request's resolved
+// overrides: the AIBRIX_TOKEN_LOAD_KV_WEIGHT default with the profile's value
+// applied. The scoring policies and the router's charge both resolve it through
+// here, so what the score sees and what the ledger books can never disagree.
+func tokenLoadKVWeightFor(routingCtx *types.RoutingContext) float64 {
+	return routingCtx.PDOverrides().TokenLoad.KVWeight
+}
+
+// Prepare returns a tokenLoadScorer; no tokenization or cache lookup is
+// performed. The KV weight is resolved here, so a profile override applies to
+// the score and, through the router's charge, to the ledger it reads.
+func (p *tokenLoadPrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ []*v1.Pod, _ map[string]struct{}) (PrefillScorer, error) {
+	return tokenLoadScorer{tracker: p.tracker, kvWeight: tokenLoadKVWeightFor(routingCtx)}, nil
 }
 
 func (p *tokenLoadPrefillPolicy) Name() string { return PrefillScorePolicyTokenLoad }
@@ -475,6 +467,8 @@ func UsesTokenLoad(policy PrefillScorePolicy) bool {
 // tokenLoadScorer is the request-scoped scorer produced by tokenLoadPrefillPolicy.
 type tokenLoadScorer struct {
 	tracker *TokenLoadTracker
+	// kvWeight is the request's effective KV weight; see tokenLoadKVWeightFor.
+	kvWeight float64
 }
 
 // PrefixHashes returns nil because this policy does not use the prefix cache.
@@ -485,9 +479,10 @@ func (s tokenLoadScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
 		// No ledger to read; every pod ties and the caller's tie-break applies.
 		return 0
 	}
-	score := s.tracker.GetPriority(pod.Name)
+	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+	score := s.tracker.GetPriorityWithKVWeight(podKey, s.kvWeight)
 	if klog.V(4).Enabled() {
-		active, kv := s.tracker.GetLoad(pod.Name)
+		active, kv := s.tracker.GetLoad(podKey)
 		klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
 			"policy", PrefillScorePolicyTokenLoad,
 			"score", score, "active_tokens", active, "kv_tokens", kv,
@@ -588,32 +583,37 @@ type hybridCacheLoadPrefillPolicy struct {
 	tok                tokenizer.Tokenizer
 	prefixCacheIndexer *prefixcacheindexer.PrefixHashTable
 	tracker            *TokenLoadTracker
-	cfg                HybridCacheLoadConfig
 }
 
 // NewHybridCacheLoadPrefillPolicy constructs a hybrid_cache_load
 // PrefillScorePolicy over the given tokenizer, shared prefix-hash table and
-// token-load tracker.
-func NewHybridCacheLoadPrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer *prefixcacheindexer.PrefixHashTable, tracker *TokenLoadTracker, cfg HybridCacheLoadConfig) PrefillScorePolicy {
+// token-load tracker. The discount factor and the minimum match percentage are
+// not properties of the policy: they are the request's resolved overrides, so a
+// model config profile can retune them without rebuilding the policy.
+func NewHybridCacheLoadPrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer *prefixcacheindexer.PrefixHashTable, tracker *TokenLoadTracker) PrefillScorePolicy {
 	return &hybridCacheLoadPrefillPolicy{
 		tok:                tok,
 		prefixCacheIndexer: prefixCacheIndexer,
 		tracker:            tracker,
-		cfg:                cfg,
 	}
 }
 
-// Prepare tokenizes routingCtx.Message and looks it up in the prefix cache,
+// Prepare tokenizes routingCtx.PrefixText() and looks it up in the prefix cache,
 // exactly as prefix_cache does; the load side is read at ScorePod time.
 func (p *hybridCacheLoadPrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ []*v1.Pod, readyPodsMap map[string]struct{}) (PrefillScorer, error) {
-	tokens, err := p.tok.TokenizeInputText(routingCtx.Message)
+	tokens, err := p.tok.TokenizeInputText(routingCtx.PrefixText())
 	if err != nil {
 		return nil, err
 	}
 	matchedPods, hashes := p.prefixCacheIndexer.MatchPrefix(tokens, routingCtx.Model, readyPodsMap)
+	overrides := routingCtx.PDOverrides()
 	return &hybridCacheLoadScorer{
-		tracker:     p.tracker,
-		cfg:         p.cfg,
+		tracker: p.tracker,
+		cfg: HybridCacheLoadConfig{
+			Factor:      overrides.HybridCacheLoadFactor,
+			MinMatchPct: overrides.MinMatchPct,
+		},
+		kvWeight:    tokenLoadKVWeightFor(routingCtx),
 		matchedPods: matchedPods,
 		hashes:      hashes,
 	}, nil
@@ -624,8 +624,12 @@ func (p *hybridCacheLoadPrefillPolicy) Name() string { return PrefillScorePolicy
 // hybridCacheLoadScorer is the request-scoped scorer produced by
 // hybridCacheLoadPrefillPolicy.
 type hybridCacheLoadScorer struct {
-	tracker     *TokenLoadTracker
+	tracker *TokenLoadTracker
+	// cfg and kvWeight are the request's effective values, resolved in Prepare:
+	// a model config profile may set the discount factor, the minimum match
+	// and the KV weight per request.
 	cfg         HybridCacheLoadConfig
+	kvWeight    float64
 	matchedPods map[string]int
 	hashes      []uint64
 }
@@ -644,7 +648,7 @@ func (s *hybridCacheLoadScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64
 	discount := 1 - r*r*s.cfg.Factor
 	load := 0.0
 	if s.tracker != nil {
-		load = s.tracker.GetPriority(pod.Name)
+		load = s.tracker.GetPriorityWithKVWeight(utils.GeneratePodKey(pod.Namespace, pod.Name), s.kvWeight)
 	}
 	score := discount
 	if load >= 1 {

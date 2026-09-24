@@ -23,6 +23,7 @@ import (
 	mrand "math/rand/v2"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -374,4 +375,12 @@ func HasVolumeMount(mounts []v1.VolumeMount, name, path string) bool {
 		}
 	}
 	return false
+}
+
+// PathWithoutQuery strips the query string from an Envoy/HTTP :path value.
+// HTTP/2 :path includes both path and query (RFC 7540), so exact/prefix
+// matchers on the request path must cut on '?' before comparing.
+func PathWithoutQuery(requestPath string) string {
+	path, _, _ := strings.Cut(requestPath, "?")
+	return path
 }

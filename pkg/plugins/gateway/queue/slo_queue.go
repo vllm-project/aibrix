@@ -27,18 +27,22 @@ import (
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
 )
 
 const (
-	fifoOnNonSLOViolation    bool = false
-	queueOverallSLO          bool = false
-	monogenousGPURouting     bool = true
-	monogenousGPURoutingOnly bool = monogenousGPURouting && false
-	initialTotalSubQueues    int  = 8  // Expect no more than 8 subqueues
-	initialSubQueueSize      int  = 64 // Support maximum 128 pending request per sub-queue within one expansion.
+	initialTotalSubQueues int = 8  // Expect no more than 8 subqueues
+	initialSubQueueSize   int = 64 // Support maximum 128 pending request per sub-queue within one expansion.
+
+	// Reason label values for gateway_queue_fifo_fallback_total. The FIFO fallback
+	// candidate serves a dequeue when no request could be ranked against any profile:
+	// either no profile is available for the deployment at all, or the available
+	// profiles carry no SLO information.
+	queueFallbackReasonNoProfile = "no_profile"
+	queueFallbackReasonNoSLOInfo = "no_slo_info"
 )
 
 var (
@@ -51,7 +55,7 @@ type candidateProfiles struct {
 }
 
 type candidateRouterRequest struct {
-	*types.RoutingContext
+	*types.QueueEntry
 	SubKey   string
 	Profiles []*candidateProfiles
 }
@@ -77,20 +81,49 @@ func (crr *candidateRouterRequest) nextProfile() *candidateProfiles {
 	return ret
 }
 
+// queueOptions carries the SLOQueue policy switches. Production always runs the
+// shipped values, which NewSLOQueue writes down once; tests set a field directly
+// after construction to pin a branch that production cannot select.
+//
+// Switch matrix:
+//
+//	fifoOnNonSLOViolation: when true, candidates that both rank below zero are
+//	  served in arrival order instead of rank order.
+//	queueOverallSLO: when true, ranking accounts for the requests already queued
+//	  on the head's subqueue (queueRank) instead of ranking the head alone (rank).
+//	monogenousGPURouting: when true, a candidate is routed per deployment
+//	  profile, most relaxing first; when false, it is routed against the whole
+//	  pod set in one call.
+//	monogenousGPURoutingOnly: when true, only the most relaxing profile is
+//	  tried. It is read only inside the monogenousGPURouting branch, so it has
+//	  no effect unless profile routing is on.
+type queueOptions struct {
+	fifoOnNonSLOViolation    bool
+	queueOverallSLO          bool
+	monogenousGPURouting     bool
+	monogenousGPURoutingOnly bool
+}
+
 type SLOQueue struct {
 	routerProvider types.RouterProviderFunc
 	cache          cache.Cache
 
 	modelName string
-	subs      utils.SyncMap[string, types.RouterQueue[*types.RoutingContext]]
+	opts      queueOptions
+	subs      utils.SyncMap[string, types.RouterQueue[*types.QueueEntry]]
 	// features  utils.SyncMap[string, types.RequestFeatures]
 	subpool sync.Pool
 
 	dequeueCandidates   []*candidateRouterRequest
 	lastCandidateSubKey string // Clear in Dequeue()
 	lastCandidateError  error  // Clear in Dequeue()
+	// lastCandidateFallbackReason records why the candidate the last Peek returned
+	// was the FIFO fallback instead of a ranked candidate; empty when a ranked
+	// candidate was picked. Reported by Dequeue; clear in Dequeue().
+	lastCandidateFallbackReason string
 }
 
+// NewSLOQueue creates an SLO queue with the shipped policy switches.
 func NewSLOQueue(provider types.RouterProviderFunc, modelName string) (router *SLOQueue, err error) {
 	// Dedup deployments
 	c, err := cache.Get()
@@ -102,13 +135,21 @@ func NewSLOQueue(provider types.RouterProviderFunc, modelName string) (router *S
 		routerProvider: provider,
 		cache:          c,
 		modelName:      modelName,
+		// The shipped switches; see queueOptions for the matrix.
+		opts: queueOptions{
+			fifoOnNonSLOViolation:    false,
+			queueOverallSLO:          false,
+			monogenousGPURouting:     true,
+			monogenousGPURoutingOnly: false,
+		},
 	}
-	router.subpool.New = func() any { return NewSimpleQueue[*types.RoutingContext](initialSubQueueSize) }
+	router.subpool.New = func() any { return NewSimpleQueue[*types.QueueEntry](initialSubQueueSize) }
 	router.expandDequeueCandidatesLocked(initialTotalSubQueues)
 	return router, nil
 }
 
-func (q *SLOQueue) Enqueue(ctx *types.RoutingContext, currentTime time.Time) error {
+func (q *SLOQueue) Enqueue(entry *types.QueueEntry, currentTime time.Time) error {
+	ctx := entry.RoutingContext
 	// Set output predictor first
 	predictor, err := q.cache.GetOutputPredictor(ctx.Model)
 	if err != nil {
@@ -116,7 +157,7 @@ func (q *SLOQueue) Enqueue(ctx *types.RoutingContext, currentTime time.Time) err
 	}
 	ctx.SetOutputPredictor(predictor)
 
-	newQueue := q.subpool.Get().(types.RouterQueue[*types.RoutingContext])
+	newQueue := q.subpool.Get().(types.RouterQueue[*types.QueueEntry])
 	features, err := ctx.Features()
 	if err != nil {
 		return err
@@ -129,12 +170,12 @@ func (q *SLOQueue) Enqueue(ctx *types.RoutingContext, currentTime time.Time) err
 	}
 
 	// SimpleQueue.Enqueue() returns nil always.
-	sub.Enqueue(ctx, currentTime) // nolint: errcheck
+	sub.Enqueue(entry, currentTime) // nolint: errcheck
 	q.debugSub(fmt.Sprintf("%s request enqueued, request=%s", ctx.Model, ctx.RequestID))
 	return nil
 }
 
-func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.RoutingContext, error) {
+func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.QueueEntry, error) {
 	// Most implementation goes here.
 	var err error
 
@@ -157,13 +198,14 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 
 	// Refill candidates
 	q.dequeueCandidates = q.dequeueCandidates[:0]
+	q.lastCandidateFallbackReason = ""
 	q.debugSub(fmt.Sprintf("peeking %s requests for %v", q.modelName, deployments))
 	// Define fallback handler to handle cases like:
 	// 1. No available profiles.
 	// 2. Profile does not provide SLO info.
 	// Fallback handler emulates a FIFO queue by comparing arrival time.
 	// The fallback candidate is only used when no candidate can be ranked.
-	fallbackHandler := func(key string, subReq *types.RoutingContext) bool {
+	fallbackHandler := func(key string, subReq *types.QueueEntry) bool {
 		if len(q.dequeueCandidates) == 0 {
 			q.validateDequeueCandidatesLocked(1)
 			q.dequeueCandidates = q.dequeueCandidates[:1]
@@ -172,11 +214,11 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 			return true
 		}
 		// Update earliest candidate
-		q.dequeueCandidates[0].RoutingContext = subReq
+		q.dequeueCandidates[0].QueueEntry = subReq
 		q.dequeueCandidates[0].SubKey = key
 		return true
 	}
-	q.subs.Range(func(key string, sub types.RouterQueue[*types.RoutingContext]) bool {
+	q.subs.Range(func(key string, sub types.RouterQueue[*types.QueueEntry]) bool {
 		r, peekErr := sub.Peek(currentTime, pods)
 		if peekErr == types.ErrQueueEmpty {
 			return true
@@ -199,7 +241,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 		q.dequeueCandidates = q.dequeueCandidates[:idx+1]
 		// Reset values
 		candidate := q.dequeueCandidates[idx]
-		candidate.RoutingContext = r
+		candidate.QueueEntry = r
 		candidate.SubKey = key
 		candidate.resetProfiles()
 		// Use a relaxer SLO
@@ -211,10 +253,10 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 				continue
 			}
 			// Calculate rank
-			if queueOverallSLO {
-				rank, rankErr = q.queueRank(currentTime, r, sub, profile)
+			if q.opts.queueOverallSLO {
+				rank, rankErr = q.queueRank(currentTime, r.RoutingContext, sub, profile)
 			} else {
-				rank, rankErr = q.rank(currentTime, r, profile)
+				rank, rankErr = q.rank(currentTime, r.RoutingContext, profile)
 			}
 			if rankErr != nil {
 				klog.Warningf("SLOQueue failed to get SLO info for request %s with profile %s: %v, skip.", r.RequestID, profile.Deployment, rankErr)
@@ -231,14 +273,16 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 			// if it is the FIFO fallback and nothing else ranked.
 			klog.Warningf("SLOQueue failed to get SLO info for request %s in all profiles, excluding it from this round's ranking.", r.RequestID)
 			// Remove the empty candidate from the ranked list and drop its
-			// routing context so the underlying slot does not retain it.
-			candidate.RoutingContext = nil
+			// queue entry so the underlying slot does not retain it.
+			candidate.QueueEntry = nil
 			q.dequeueCandidates = q.dequeueCandidates[:idx]
 			return fbRet
 		}
-		// Sort by rank ascendingly, so the first one contains lowest rank.
+		// Sort by rank ascendingly, so the first one contains the lowest rank;
+		// that is the most relaxing profile, which the relaxer below tries
+		// first.
 		sort.Slice(candidate.Profiles, func(i, j int) bool {
-			return q.higherRank(candidate.Profiles[i].Rank, candidate.Profiles[j].Rank) < 0
+			return profileLess(candidate.Profiles[i], candidate.Profiles[j])
 		})
 		return true
 	})
@@ -246,39 +290,42 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 	if len(q.dequeueCandidates) == 0 {
 		return nil, types.ErrQueueEmpty
 	} else if len(q.dequeueCandidates) == 1 {
-		// Only candidate
+		// Only candidate: the FIFO fallback, returned only when no candidate could be
+		// ranked against any profile.
 		q.lastCandidateSubKey = q.dequeueCandidates[0].SubKey
-		return q.dequeueCandidates[0].RoutingContext, nil
+		if availableProfiles == 0 {
+			q.lastCandidateFallbackReason = queueFallbackReasonNoProfile
+		} else {
+			q.lastCandidateFallbackReason = queueFallbackReasonNoSLOInfo
+		}
+		return q.dequeueCandidates[0].QueueEntry, nil
 	}
 
 	// Exclude fallback candidate
 	dequeueCandidates := q.dequeueCandidates[1:]
 
-	// Sort by rank
+	// Order candidates so that the one closest to its most relaxing SLO
+	// violation is served first; see candidateLess for the full contract.
 	sort.Slice(dequeueCandidates, func(i, j int) bool {
-		// Keep original order for no slo violation if fifoOnNonSLOViolation enabled.
-		if fifoOnNonSLOViolation && dequeueCandidates[i].Profiles[0].Rank < 0 && dequeueCandidates[j].Profiles[0].Rank < 0 {
-			return dequeueCandidates[i].RequestTime.Before(dequeueCandidates[j].RequestTime)
-		} else {
-			return q.higherRank(dequeueCandidates[i].Profiles[0].Rank, dequeueCandidates[j].Profiles[0].Rank) > 0
-		}
+		return q.candidateLess(dequeueCandidates[i], dequeueCandidates[j])
 	})
 
 	// Start from earliest
 	q.debugCandidates(fmt.Sprintf("%s candidates", q.modelName), dequeueCandidates)
 	for _, candidate := range dequeueCandidates {
 		var lastErr error
-		if monogenousGPURouting {
+		if q.opts.monogenousGPURouting {
 			//nolint:errcheck
 			for i, profile := range candidate.Profiles {
-				// Always route the most relaxing profile (the first) and stop if the profile can lead to SLO violation.
+				// Try profiles from the most relaxing one and stop once a profile
+				// would already be past its SLO: tighter profiles can only rank higher.
 				if i > 0 && profile.Rank > 0 {
 					break
 				}
 				// Try routing.
 				_, lastErr = q.subRoute(candidate.RoutingContext, &utils.PodArray{Pods: pods.ListByIndex(profile.Key)})
-				// If monogenousGPURoutingOnly is enabled, only the most relaxing profile is considered.
-				if monogenousGPURoutingOnly || candidate.HasRouted() {
+				// With monogenousGPURoutingOnly, the most relaxing profile is the only one tried.
+				if q.opts.monogenousGPURoutingOnly || candidate.HasRouted() {
 					break
 				}
 			}
@@ -287,32 +334,55 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 		}
 		if candidate.HasRouted() {
 			q.lastCandidateSubKey = candidate.SubKey
-			return candidate.RoutingContext, nil
+			return candidate.QueueEntry, nil
 		} else if lastErr != cache.ErrorLoadCapacityReached {
-			// We have route dicision concluded as SLO violation. Track the conclusion.
+			// The route decision is conclusive rather than a temporary capacity
+			// error: record it and hand the candidate back so the request fails
+			// fast instead of being retried on another candidate.
 			q.lastCandidateSubKey = candidate.SubKey
 			q.lastCandidateError = lastErr
-			return candidate.RoutingContext, nil
+			return candidate.QueueEntry, nil
 		} // temporary errors are ignored
 	}
 
 	return nil, nil
 }
 
-func (q *SLOQueue) Dequeue(ts time.Time) (*types.RoutingContext, error) {
+func (q *SLOQueue) Dequeue(ts time.Time) (*types.QueueEntry, error) {
 	if len(q.lastCandidateSubKey) == 0 {
 		return nil, fmt.Errorf("call SLOQueue.Peek first")
 	}
 	subkey := q.lastCandidateSubKey
-	sub, _ := q.subs.Load(subkey)
+	sub, ok := q.subs.Load(subkey)
 	q.lastCandidateSubKey = ""
 	q.lastCandidateError = nil
+	if !ok {
+		// Peek selected this subqueue, so this only trips if a subqueue can be
+		// removed between Peek and Dequeue; fail closed instead of calling
+		// Dequeue on the nil interface.
+		q.lastCandidateFallbackReason = ""
+		return nil, fmt.Errorf("subqueue %s not found", subkey)
+	}
 	defer q.debugSub(fmt.Sprintf("%s request dequeued from sub %s,", q.modelName, subkey))
-	return sub.Dequeue(ts)
+	entry, err := sub.Dequeue(ts)
+	if err != nil || entry == nil {
+		q.lastCandidateFallbackReason = ""
+		return entry, err
+	}
+	if q.lastCandidateFallbackReason != "" {
+		// Label from the entry's frozen metadata, not from its routing context: the
+		// requester may already have been unblocked and its context recycled.
+		metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: entry.Model, BaseModel: entry.BaseModel},
+			nil, metrics.GatewayQueueFIFOFallbackTotal,
+			&metrics.SimpleMetricValue{Value: 1.0},
+			map[string]string{"reason": q.lastCandidateFallbackReason})
+	}
+	q.lastCandidateFallbackReason = ""
+	return entry, err
 }
 
 func (q *SLOQueue) Len() (total int) {
-	q.subs.Range(func(_ string, sub types.RouterQueue[*types.RoutingContext]) bool {
+	q.subs.Range(func(_ string, sub types.RouterQueue[*types.QueueEntry]) bool {
 		total += sub.Len()
 		return true
 	})
@@ -383,7 +453,7 @@ func (q *SLOQueue) rank(currentTime time.Time, req *types.RoutingContext, profil
 	return req.Elapsed(currentTime).Seconds() + expected - target, nil
 }
 
-func (q *SLOQueue) queueRank(currentTime time.Time, headReq *types.RoutingContext, sub types.RouterQueue[*types.RoutingContext], profile *cache.ModelGPUProfile) (rank float64, err error) {
+func (q *SLOQueue) queueRank(currentTime time.Time, headReq *types.RoutingContext, sub types.RouterQueue[*types.QueueEntry], profile *cache.ModelGPUProfile) (rank float64, err error) {
 	signature, headServingTime, target, err := q.rankImpl(currentTime, headReq, profile)
 	if err != nil {
 		return 0.0, err
@@ -396,6 +466,9 @@ func (q *SLOQueue) queueRank(currentTime time.Time, headReq *types.RoutingContex
 		return 0.0, cache.ErrorSLOFailureRequest
 	}
 
+	// sub.Len() counts the head request, whose own serving time is accounted
+	// separately above, so the queue service time uses Len()-1: it covers only
+	// the requests waiting behind the head.
 	queueServiceTime := float64(sub.Len()-1) / throughput
 	// Expecting SLO violation if waited + head serving time + queue serving time(excluding the head) - target > 0.
 	return headReq.Elapsed(currentTime).Seconds() + headServingTime + queueServiceTime - target, nil
@@ -411,6 +484,9 @@ func (q *SLOQueue) rankImpl(currentTime time.Time, req *types.RoutingContext, pr
 		return
 	}
 
+	// A profile is ranked against a single SLO, in priority order: TPOT, TTFT,
+	// TPAT, then E2E. A profile that configures several SLOs is ranked against
+	// the first one in that order.
 	if profile.SLOs.TPOT > 0.0 {
 		expected, target, err = q.rankImplTPOT(currentTime, req, profile, signature)
 	} else if profile.SLOs.TTFT > 0.0 {
@@ -467,8 +543,55 @@ func (q *SLOQueue) rankImplTPOT(_ time.Time, req *types.RoutingContext, profile 
 	return
 }
 
-func (q *SLOQueue) higherRank(rank1 float64, rank2 float64) float64 {
-	return rank1 - rank2
+// profileLess orders a candidate's profiles for the relaxer: rank ascending, so
+// the first profile is the most relaxing one, with the profile key as the
+// tie-break. A NaN rank cannot be compared, so it sorts after every comparable
+// rank, and two NaN ranks tie on the key. Sorting NaN ranks last also keeps the
+// first profile comparable whenever the candidate has one that is, and
+// candidateLess picks on that first profile.
+func profileLess(profileI *candidateProfiles, profileJ *candidateProfiles) bool {
+	nanI, nanJ := math.IsNaN(profileI.Rank), math.IsNaN(profileJ.Rank)
+	if nanI != nanJ {
+		return nanJ
+	}
+	if !nanI && profileI.Rank != profileJ.Rank {
+		return profileI.Rank < profileJ.Rank
+	}
+	return profileI.Key < profileJ.Key
+}
+
+// candidateLess is the total order used to pick the candidate to serve next:
+// the candidate whose most relaxing profile carries the higher rank is served
+// first, because that is the one closest to (or past) its SLO deadline. A NaN
+// rank cannot be compared, so those candidates sort after every comparable
+// one. Comparable candidates with equal ranks fall back to arrival order and
+// then to the subqueue key, so the pick is a pure function of the queued set
+// instead of depending on the order in which subqueues happen to be visited.
+func (q *SLOQueue) candidateLess(a *candidateRouterRequest, b *candidateRouterRequest) bool {
+	rankA, rankB := a.Profiles[0].Rank, b.Profiles[0].Rank
+	nanA, nanB := math.IsNaN(rankA), math.IsNaN(rankB)
+	if nanA != nanB {
+		// A NaN rank is the least urgent: serve those candidates after every
+		// candidate whose rank is known.
+		return nanB
+	}
+	if !nanA {
+		switch {
+		case q.opts.fifoOnNonSLOViolation && rankA < 0 && rankB < 0:
+			// Both candidates still have slack on every profile: service them
+			// in arrival order.
+		case rankA != rankB:
+			// The higher rank is closer to its most relaxing SLO deadline.
+			return rankA > rankB
+		}
+	}
+	// Arrival order, then the subqueue key, keeps the order total: equal ranks
+	// and two NaN ranks both land here, and the subqueue key is unique within
+	// one Peek, so equal keys mean the same candidate.
+	if !a.RequestTime.Equal(b.RequestTime) {
+		return a.RequestTime.Before(b.RequestTime)
+	}
+	return a.SubKey < b.SubKey
 }
 
 func (q *SLOQueue) debugSub(msg string) {
@@ -477,7 +600,7 @@ func (q *SLOQueue) debugSub(msg string) {
 	}
 
 	var logMsg strings.Builder
-	q.subs.Range(func(key string, sub types.RouterQueue[*types.RoutingContext]) bool {
+	q.subs.Range(func(key string, sub types.RouterQueue[*types.QueueEntry]) bool {
 		logMsg.WriteString(key)
 		logMsg.WriteRune('(')
 		logMsg.WriteString(strconv.Itoa(sub.Len()))

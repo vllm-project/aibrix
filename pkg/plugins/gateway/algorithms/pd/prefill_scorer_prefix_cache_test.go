@@ -35,13 +35,13 @@ type prefixCacheTestFixture struct {
 	ready  map[string]struct{}
 }
 
-func newPrefixCacheTestFixture(t *testing.T, cfg PrefixCacheConfig, podNames ...string) *prefixCacheTestFixture {
+func newPrefixCacheTestFixture(t *testing.T, podNames ...string) *prefixCacheTestFixture {
 	t.Helper()
 	f := &prefixCacheTestFixture{
 		table: prefixcacheindexer.NewPrefixHashTable(),
 		ready: map[string]struct{}{},
 	}
-	f.policy = NewPrefixCachePrefillPolicyWithConfig(tokenizer.NewCharacterTokenizer(), f.table, cfg)
+	f.policy = NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), f.table)
 	for _, name := range podNames {
 		f.pods = append(f.pods, tokenLoadTestPod(name))
 		f.ready[name] = struct{}{}
@@ -59,9 +59,14 @@ func (f *prefixCacheTestFixture) seedPrefix(t *testing.T, pod string, matchPct i
 	f.table.AddPrefix(hashes[:len(hashes)*matchPct/100], testModelName, pod)
 }
 
-func (f *prefixCacheTestFixture) prepare(t *testing.T) PrefillScorer {
+// prepare resolves minMatchPct as the request's override, the way the PD router
+// parks a profile's values on the request path; zero keeps the process default.
+func (f *prefixCacheTestFixture) prepare(t *testing.T, minMatchPct float64) PrefillScorer {
 	t.Helper()
 	ctx := types.NewRoutingContext(context.Background(), "pd", testModelName, hybridTestMessage, "req-1", "")
+	if minMatchPct > 0 {
+		ctx.SetPDOverrides(&types.PDOverrides{MinMatchPct: minMatchPct})
+	}
 	scorer, err := f.policy.Prepare(ctx, f.pods, f.ready)
 	require.NoError(t, err)
 	return scorer
@@ -72,10 +77,10 @@ func (f *prefixCacheTestFixture) prepare(t *testing.T) PrefillScorer {
 // otherwise busier pod beats an idle pod with no match, because the cache
 // term spans 10.0 and the load term only 1.0.
 func TestPrefixCachePrefillPolicy_IncidentalMatchOutweighsLoad(t *testing.T) {
-	f := newPrefixCacheTestFixture(t, PrefixCacheConfig{}, "idle", "magnet")
+	f := newPrefixCacheTestFixture(t, "idle", "magnet")
 	f.seedPrefix(t, "magnet", 10)
 
-	scorer := f.prepare(t)
+	scorer := f.prepare(t, 0)
 	assert.NotEmpty(t, scorer.PrefixHashes())
 	idle := scorer.ScorePod(f.pods[0], 0, 4)
 	magnet := scorer.ScorePod(f.pods[1], 4, 4)
@@ -88,11 +93,11 @@ func TestPrefixCachePrefillPolicy_IncidentalMatchOutweighsLoad(t *testing.T) {
 // match is ignored, so the request follows the load; a match at the threshold
 // still counts.
 func TestPrefixCachePrefillPolicy_MinMatchClamp(t *testing.T) {
-	f := newPrefixCacheTestFixture(t, PrefixCacheConfig{MinMatchPct: 30}, "idle", "weak", "strong")
+	f := newPrefixCacheTestFixture(t, "idle", "weak", "strong")
 	f.seedPrefix(t, "weak", 10)
 	f.seedPrefix(t, "strong", 30)
 
-	scorer := f.prepare(t)
+	scorer := f.prepare(t, 30)
 	assert.Equal(t, float64(10), scorer.ScorePod(f.pods[0], 0, 4))
 	assert.Equal(t, float64(10.25), scorer.ScorePod(f.pods[1], 1, 4), "a match below the threshold is no match, so load decides")
 	assert.Equal(t, float64(7.25), scorer.ScorePod(f.pods[2], 1, 4), "a match at the threshold counts: (100 - 30) × 0.1 + 1 / 4")
@@ -104,20 +109,6 @@ func TestPrefixCachePrefillPolicy_DefaultHasNoThreshold(t *testing.T) {
 	f.pods = []*v1.Pod{tokenLoadTestPod("weak")}
 	f.seedPrefix(t, "weak", 10)
 
-	scorer := f.prepare(t)
+	scorer := f.prepare(t, 0)
 	assert.Equal(t, float64(9), scorer.ScorePod(f.pods[0], 0, 1), "the plain constructor keeps every match")
-}
-
-func TestDefaultPrefixCacheConfig(t *testing.T) {
-	t.Setenv("AIBRIX_MIN_MATCH_PCT", "")
-	assert.Equal(t, DefaultMinMatchPct, DefaultPrefixCacheConfig().MinMatchPct)
-
-	t.Setenv("AIBRIX_MIN_MATCH_PCT", "30")
-	assert.Equal(t, float64(30), DefaultPrefixCacheConfig().MinMatchPct)
-	assert.Equal(t, float64(30), DefaultHybridCacheLoadConfig().MinMatchPct, "both policies read the same knob")
-
-	for _, raw := range []string{"-1", "101", "abc"} {
-		t.Setenv("AIBRIX_MIN_MATCH_PCT", raw)
-		assert.Equalf(t, DefaultMinMatchPct, DefaultPrefixCacheConfig().MinMatchPct, "%q is invalid", raw)
-	}
 }
