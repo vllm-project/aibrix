@@ -315,8 +315,9 @@ no recorded instance answers for.
 A Pod goes through the account when its containers request
 ``nvidia.com/gpu``, or when its runtime reports accelerators. The second
 covers GPUs given to a Pod some other way, such as a dynamic resource claim.
-A Pod with neither is taken for one without a GPU, and nothing is accounted
-for on it.
+A card reported with no memory at all does not count. That is the card the
+runtime's mock mode reports on CPU pools. A Pod with neither is taken for one
+without a GPU, and nothing is accounted for on it.
 
 Every card in a declared pool is divided as a whole
 ---------------------------------------------------
