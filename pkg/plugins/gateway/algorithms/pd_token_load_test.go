@@ -29,6 +29,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/prefill"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/selector"
@@ -268,4 +269,56 @@ func TestPDRouter_TokenLoadChargedOnlyForTokenLoadPolicy(t *testing.T) {
 	active, kv = tokenLoad.GetLoad(prefillPod.Name)
 	assert.Equal(t, float64(1000), active, "token_load selected through routingConfig charges the tracker")
 	assert.Equal(t, float64(1000), kv)
+}
+
+// TestPDRouter_TokenLoadSessionCapFollowsProfile checks that a request's profile
+// caps the sessions its own admissions add to the shared session table, and that
+// the tracker's configured cap stays the process-wide ceiling: a profile claims
+// a smaller share of the table, it never grows it past the environment.
+func TestPDRouter_TokenLoadSessionCapFollowsProfile(t *testing.T) {
+	r, tracker := newTokenLoadTestRouterWithConfig(t, nil, pd.TokenLoadConfig{
+		KVWeight: 0.5, RequestCost: 0, TTL: 0, SessionTTL: time.Hour, MaxSessions: 4,
+	})
+	pod := burstPod("prefill-0", "prefill", "127.0.0.1")
+	policy := pd.NewTokenLoadPrefillPolicy(tracker)
+
+	// charge routes one request of the session and returns how many prompt
+	// tokens the tracker charged for it: the session delta when the session was
+	// admitted, the whole prompt otherwise.
+	charge := func(sessionID string, promptTokens, profileCap int) int {
+		t.Helper()
+		ctx := tokenLoadRequest(t, fmt.Sprintf("req-%s-%d-%d", sessionID, promptTokens, profileCap), promptTokens*4)
+		ctx.ReqHeaders = map[string]string{constants.HeaderSessionKey: sessionID}
+		overrides := *types.DefaultRoutingOverrides()
+		overrides.PD.TokenLoad.MaxSessions = profileCap
+		ctx.SetRoutingOverrides(&overrides)
+		// Route parks the resolved PD overrides on the request's leg, and the
+		// charge reads them through the leg.
+		pdOverrides := ctx.RoutingOverrides().PD
+		ctx.SetPDOverrides(&pdOverrides)
+
+		before, _ := tracker.GetLoad(pod.Name)
+		r.chargeTokenLoad(ctx, pod, policy, nil)
+		after, _ := tracker.GetLoad(pod.Name)
+
+		charged := after - before
+		require.Equal(t, float64(int(charged)), charged, "the charge must be a whole number of tokens")
+		return int(charged)
+	}
+
+	// The profile claims one session: its first one is admitted and the next
+	// one is refused even though the tracker would have room for it.
+	assert.Equal(t, 100, charge("s1", 100, 1))
+	assert.Equal(t, 50, charge("s1", 150, 1), "an admitted session charges only the growth of its prompt")
+	assert.Equal(t, 100, charge("s2", 100, 1), "the second session is not admitted under the profile's cap")
+	assert.Equal(t, 150, charge("s2", 150, 1), "a refused session keeps charging the whole prompt")
+
+	// A profile claiming more than the tracker's cap does not raise it: the
+	// fourth session is admitted (the table has room for four), the fifth is not.
+	assert.Equal(t, 100, charge("s3", 100, 100))
+	assert.Equal(t, 100, charge("s4", 100, 100))
+	assert.Equal(t, 100, charge("s5", 100, 100))
+	assert.Equal(t, 300, charge("s5", 400, 100), "the fourth live session still charges its delta")
+	assert.Equal(t, 100, charge("s6", 100, 100))
+	assert.Equal(t, 400, charge("s6", 400, 100), "the tracker's own cap stays the ceiling, so the fifth session is refused")
 }

@@ -216,8 +216,25 @@ func effectiveAutoBlendWeights(routingCtx *types.RoutingContext) autoBlendWeight
 // otherwise evicted except by a full Register/RegisterProvider/Init reset. Without a cap, a
 // client varying that coefficient across requests could grow either map without bound. Once a
 // map is at the cap, additional unique strings simply skip caching/log-dedup for that request
-// rather than growing the map further.
+// rather than growing the map further. The cap is the process-wide ceiling, which this request's
+// profile may claim a smaller share of (see algorithmStringCacheLimit).
 var maxCachedAlgorithmStrings = utils.LoadEnvInt("AIBRIX_ROUTER_MAX_CACHED_ALGORITHM_STRINGS", 4096)
+
+// algorithmStringCacheLimit returns the cap on new entries in the routing-string
+// caches this request's profile claims: its resolved value, never above the
+// environment ceiling that bounds both maps process-wide, so a profile takes a
+// share of the existing budget instead of raising it. A non-positive value
+// falls back to the ceiling, which is what a request without a profile reads.
+// The cap stays approximate in the same way the environment one is: it is
+// compared against the process-wide entry count, so one profile's strings can
+// consume another's share.
+func algorithmStringCacheLimit(ctx *types.RoutingContext) int {
+	limit := ctx.RoutingOverrides().Router.MaxCachedAlgorithmStrings
+	if limit <= 0 || limit > maxCachedAlgorithmStrings {
+		return maxCachedAlgorithmStrings
+	}
+	return limit
+}
 
 // mentionedAlgorithmNames returns the set of algorithm names appearing in algStr, regardless
 // of weight coefficient — including ones explicitly weighted to 0. ParseMultiRouterConfig
@@ -900,11 +917,11 @@ func (rm *RouterManager) tryAutoBlend(ctx *types.RoutingContext, algStr string, 
 
 	blendedCfg, parseErr := ParseMultiRouterConfig(blended)
 	if parseErr != nil || len(blendedCfg.Items) <= 1 {
-		rm.logUnblendableOnce(algStr, "blended config is invalid or collapsed to a single strategy")
+		rm.logUnblendableOnce(algStr, "blended config is invalid or collapsed to a single strategy", algorithmStringCacheLimit(ctx))
 		return nil, false
 	}
 	if !rm.allRegistered(blendedCfg) {
-		rm.logUnblendableOnce(algStr, "one or more blended strategies are not registered")
+		rm.logUnblendableOnce(algStr, "one or more blended strategies are not registered", algorithmStringCacheLimit(ctx))
 		return nil, false
 	}
 
@@ -918,7 +935,7 @@ func (rm *RouterManager) tryAutoBlend(ctx *types.RoutingContext, algStr string, 
 		return nil, false
 	}
 	if !scorerOK {
-		rm.logUnblendableOnce(algStr, "primary strategy does not implement types.PodScorer")
+		rm.logUnblendableOnce(algStr, "primary strategy does not implement types.PodScorer", algorithmStringCacheLimit(ctx))
 		return nil, false
 	}
 
@@ -930,10 +947,10 @@ func (rm *RouterManager) tryAutoBlend(ctx *types.RoutingContext, algStr string, 
 	return multiRouter, true
 }
 
-func (rm *RouterManager) logUnblendableOnce(algStr, reason string) {
+func (rm *RouterManager) logUnblendableOnce(algStr, reason string, limit int) {
 	rm.routerMu.Lock()
 	_, seen := rm.unblendableLogged[algStr]
-	if !seen && len(rm.unblendableLogged) < maxCachedAlgorithmStrings {
+	if !seen && len(rm.unblendableLogged) < limit {
 		rm.unblendableLogged[algStr] = struct{}{}
 	}
 	rm.routerMu.Unlock()
@@ -995,7 +1012,7 @@ func (rm *RouterManager) getOrCreateMultiStrategyRouter(algStr string, cfg *Mult
 	if cached, ok := rm.multiRouterCache[algStr]; ok {
 		return cached, nil
 	}
-	if len(rm.multiRouterCache) < maxCachedAlgorithmStrings {
+	if len(rm.multiRouterCache) < algorithmStringCacheLimit(ctx) {
 		rm.multiRouterCache[algStr] = router
 	}
 	return router, nil

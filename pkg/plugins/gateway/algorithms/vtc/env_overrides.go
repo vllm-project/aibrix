@@ -33,11 +33,6 @@ func EnvOverrides() types.VTCOverrides {
 		UtilizationWeight: utilizationWeight,
 		InputTokenWeight:  inputTokenWeight,
 		OutputTokenWeight: outputTokenWeight,
-		TokenTracker: types.VTCTokenTrackerOverrides{
-			WindowSize: tokenTrackerWindowSize,
-			TimeUnit:   TimeUnitName(timeUnitStr),
-			MinTokens:  tokenTrackerMinTokens,
-			MaxTokens:  tokenTrackerMaxTokens,
-		},
+		TokenTracker:      EnvTokenTrackerKnobs(),
 	}
 }

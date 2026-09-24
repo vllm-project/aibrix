@@ -59,6 +59,46 @@ type BasicVTCRouter struct {
 	tokenTracker   TokenTracker
 	tokenEstimator TokenEstimator
 	config         *VTCConfig
+	// scopes holds the trackers of the profiles that resolved their window or
+	// weights away from the process defaults, bounded by maxTrackerScopes. A
+	// request whose profile leaves them alone shares the process-wide
+	// tokenTracker this router was built with.
+	scopes trackerRegistry
+}
+
+// trackerFor returns the token tracker this request's profile resolves to. A
+// request whose profile leaves the tracker knobs and the two weights at their
+// process defaults gets this router's own tracker, which is the one the
+// environment configured; a request that changes any of them gets the tracker
+// of its scope, so its window, weights and token floors are read from and
+// written to that tracker alone.
+func (r *BasicVTCRouter) trackerFor(routingCtx *types.RoutingContext) TokenTracker {
+	vtcKnobs := routingCtx.RoutingOverrides().VTC
+	defaults := types.DefaultRoutingOverrides().VTC
+	scope := trackerScope{
+		knobs:        vtcKnobs.TokenTracker,
+		inputWeight:  vtcKnobs.InputTokenWeight,
+		outputWeight: vtcKnobs.OutputTokenWeight,
+	}
+	// A request whose profile resolved all six knobs back to the process
+	// defaults shares the process-wide tracker, so a request that overrides
+	// only the per-request VTC knobs still changes nothing here.
+	if scope.knobs == defaults.TokenTracker &&
+		scope.inputWeight == defaults.InputTokenWeight &&
+		scope.outputWeight == defaults.OutputTokenWeight {
+		return r.tokenTracker
+	}
+	tracker, ok := r.scopes.get(scope, func() TokenTracker {
+		return NewScopedInMemorySlidingWindowTokenTracker(&VTCConfig{
+			Variant:           RouterVTCBasic,
+			InputTokenWeight:  scope.inputWeight,
+			OutputTokenWeight: scope.outputWeight,
+		}, scope.knobs)
+	})
+	if !ok {
+		return r.tokenTracker
+	}
+	return tracker
 }
 
 // NewBasicVTCRouter creates a new BasicVTCRouter with the provided token tracker and estimator
@@ -101,7 +141,11 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 	inputTokens := r.tokenEstimator.EstimateInputTokens(ctx.Message)
 	outputTokens := r.tokenEstimator.EstimateOutputTokens(ctx.Message)
 
-	userTokens, err := r.tokenTracker.GetTokenCount(ctx.Context, *user)
+	// The profile may have scoped a tracker to itself; the process-wide one is
+	// used otherwise (see trackerFor).
+	tracker := r.trackerFor(ctx)
+
+	userTokens, err := tracker.GetTokenCount(ctx.Context, *user)
 	if err != nil {
 		klog.ErrorS(err, "failed to get user token count, falling back to zero", "user", *user)
 		userTokens = 0
@@ -122,16 +166,16 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 	// By adapting bucket sizes and normalizing scores, the algorithm remains robust as system load and user activity fluctuate.
 
 	// Get the min and max token counts for adaptive bucket sizing
-	minTokens, err := r.tokenTracker.GetMinTokenCount(ctx.Context)
+	minTokens, err := tracker.GetMinTokenCount(ctx.Context)
 	if err != nil {
 		klog.ErrorS(err, "failed to get minimum token count, using default value")
-		minTokens = tokenTrackerMinTokens // Use the configured default minimum token count
+		minTokens = vtcWeights.TokenTracker.MinTokens // The scope's configured minimum token count
 	}
 
-	maxTokens, err := r.tokenTracker.GetMaxTokenCount(ctx.Context)
+	maxTokens, err := tracker.GetMaxTokenCount(ctx.Context)
 	if err != nil {
 		klog.ErrorS(err, "failed to get maximum token count, using default value")
-		maxTokens = tokenTrackerMaxTokens // Use the configured default maximum token count
+		maxTokens = vtcWeights.TokenTracker.MaxTokens // The scope's configured maximum token count
 	}
 
 	// Calculate scores for each pod
@@ -139,7 +183,7 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 
 		// 1. Dynamically calculate a reasonable "step size" for mapping user tokens onto pod indices, ensuring the mapping is
 		// relevant to the current system load while maintaining a minimum sensitivity
-		adaptiveBucketSize := math.Max(tokenTrackerMinTokens, (minTokens+maxTokens)/2)
+		adaptiveBucketSize := math.Max(vtcWeights.TokenTracker.MinTokens, (minTokens+maxTokens)/2)
 
 		metrics.SetGaugeMetric(
 			metrics.VTCBucketSizeActive,
@@ -215,7 +259,7 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 	}
 
 	if *user != "" {
-		err := r.tokenTracker.UpdateTokenCount(ctx.Context, *user, inputTokens, outputTokens)
+		err := tracker.UpdateTokenCount(ctx.Context, *user, inputTokens, outputTokens)
 		if err != nil {
 			klog.ErrorS(err, "failed to update user token count", "user", *user)
 		}
@@ -243,23 +287,28 @@ func (r *BasicVTCRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.
 	fairnessWeight := vtcWeights.FairnessWeight
 	utilizationWeight := vtcWeights.UtilizationWeight
 
-	userTokens, err := r.tokenTracker.GetTokenCount(ctx.Context, *user)
+	// The profile may have scoped a tracker to itself; the process-wide one is
+	// used otherwise (see trackerFor). ScoreAll never updates it, so scoring a
+	// candidate cannot commit a request the blend may still route elsewhere.
+	tracker := r.trackerFor(ctx)
+
+	userTokens, err := tracker.GetTokenCount(ctx.Context, *user)
 	if err != nil {
 		userTokens = 0
 	}
 
-	minTokens, err := r.tokenTracker.GetMinTokenCount(ctx.Context)
+	minTokens, err := tracker.GetMinTokenCount(ctx.Context)
 	if err != nil {
-		minTokens = tokenTrackerMinTokens
+		minTokens = vtcWeights.TokenTracker.MinTokens
 	}
 
-	maxTokens, err := r.tokenTracker.GetMaxTokenCount(ctx.Context)
+	maxTokens, err := tracker.GetMaxTokenCount(ctx.Context)
 	if err != nil {
-		maxTokens = tokenTrackerMaxTokens
+		maxTokens = vtcWeights.TokenTracker.MaxTokens
 	}
 
 	for i, pod := range readyPods {
-		adaptiveBucketSize := math.Max(tokenTrackerMinTokens, (minTokens+maxTokens)/2)
+		adaptiveBucketSize := math.Max(vtcWeights.TokenTracker.MinTokens, (minTokens+maxTokens)/2)
 		normalizedTokens := math.Min(float64(userTokens)/adaptiveBucketSize, float64(len(readyPods)-1))
 		fairnessScore := math.Abs(float64(i) - normalizedTokens)
 

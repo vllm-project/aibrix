@@ -286,18 +286,33 @@ description and examples live in the Config Profiles section of the gateway plug
 | `AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT` | `routingConfig.autoBlend.leastRequestWeight` | |
 | `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT` | `routingConfig.autoBlend.prefixCacheWeight` | `0` is rejected; it would drop the caller's own strategy from the blend. |
 | `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT` | `routingConfig.autoBlend.prefixCacheLoadBalanceWeight` | `0` leaves those requests with prefix-cache scoring alone. |
+| `AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT` | `routingConfig.vtc.inputTokenWeight` | Also scopes the VTC token tracker: this weight is baked into the tracker, so the profile's requests get one of their own. |
+| `AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT` | `routingConfig.vtc.outputTokenWeight` | Scopes the tracker the same way as the input weight. |
+| `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_WINDOW_SIZE` | `routingConfig.vtc.tokenTrackerWindowSize` | Sliding window of the profile's tracker, in `tokenTrackerTimeUnit` units. |
+| `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_TIME_UNIT` | `routingConfig.vtc.tokenTrackerTimeUnit` | Bucket size of that window: `minutes`, `seconds` or `milliseconds`. An unknown name is ignored instead of being normalized. |
+| `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MIN_TOKENS` | `routingConfig.vtc.tokenTrackerMinTokens` | Floor the profile's tracker reports while its window holds little activity. |
+| `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MAX_TOKENS` | `routingConfig.vtc.tokenTrackerMaxTokens` | Ceiling the profile's tracker reports while its window holds little activity. |
+| `AIBRIX_SESSION_AFFINITY_MAX_LOCAL_KEYS` | `routingConfig.sessionAffinity.maxLocalKeys` | How many distinct cache keys the profile's requests may add to the gateway-local session pin cache. The environment value stays the process-wide ceiling, so a profile claims a share of it. |
+| `AIBRIX_ROUTER_MAX_CACHED_ALGORITHM_STRINGS` | `routingConfig.router.maxCachedAlgorithmStrings` | How many routing strings the profile's requests may add to the routing string caches. The environment value stays the process-wide ceiling. |
+| `AIBRIX_TOKEN_LOAD_MAX_SESSIONS` | `routingConfig.pd.tokenLoadMaxSessions` | How many sessions the profile's own admission may add to the shared session table. The tracker's cap stays the process-wide ceiling. |
 
-### Environment-only routing variables
+### Scoped state behind the profile overrides
 
-These configure process-wide state shared by every model of one gateway process, so a profile
-cannot override them without corrupting that state:
+Most of the variables above are read per request. The ones that configure state normally shared
+by every model of a gateway process are scoped instead: a profile that overrides one of them
+does not retune the shared state, the gateway gives that profile its own instance, keyed by the
+resolved values. Profiles that agree share one instance, a profile that sets none keeps the
+shared instance exactly as before, and the number of instances is bounded (16 token trackers per
+process; a profile past the bound keeps the shared instance rather than failing its requests).
 
-- `AIBRIX_ROUTER_PREBLE_SLIDING_WINDOW_PERIOD` and `AIBRIX_ROUTER_PREBLE_EVICTION_LOOP_INTERVAL`: the preble histogram window and its eviction loop are process-wide timers.
-- `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_WINDOW_SIZE`, `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_TIME_UNIT`, `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MIN_TOKENS` and `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MAX_TOKENS`: the VTC token tracker is constructed once with its window and token floors.
-- `AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT` and `AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT`: these configure the same shared tracker. The per-request VTC knobs are `vtc.maxPodLoad`, `vtc.fairnessWeight` and `vtc.utilizationWeight`.
-- `AIBRIX_SESSION_AFFINITY_MAX_LOCAL_KEYS`: bounds the gateway-local session pin cache.
-- `AIBRIX_ROUTER_MAX_CACHED_ALGORITHM_STRINGS`: bounds the process-wide routing string cache.
-- `AIBRIX_TOKEN_LOAD_MAX_SESSIONS`: bounds the (model, session) table of the token-load tracker. The PD router builds the tracker once and the gateway shares it across models, so the cap is process-wide.
+For the two caps that bound process-wide caches, `sessionAffinity.maxLocalKeys` and
+`router.maxCachedAlgorithmStrings`, the profile value is a share of the environment cap and
+never raises it. The share is compared against the number of entries the whole process holds, so
+another profile's entries can consume it first.
+
+`AIBRIX_ROUTER_PREBLE_SLIDING_WINDOW_PERIOD` and `AIBRIX_ROUTER_PREBLE_EVICTION_LOOP_INTERVAL`
+are the remaining environment-only routing variables here: the preble histogram window and its
+eviction loop are process-wide timers, and scoping those needs a design of its own.
 
 Variables without a `routingConfig` field (tokenizer endpoints, Redis and statesync settings, the
 rate limiting switches, `AIBRIX_KV_CONNECTOR_TYPE`) stay environment-only as deployment-level
