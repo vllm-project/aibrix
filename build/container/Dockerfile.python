@@ -34,7 +34,11 @@ COPY python/aibrix/poetry.lock python/aibrix/pyproject.toml python/aibrix/ /app/
 
 # Install dependencies and build package
 # Exclude profiling group to avoid installing transformers, pandas, matplotlib, etc.
+# The installer runs serially: Poetry uninstalls and reinstalls on every update,
+# and with parallel installs two updates can race on a `.dist-info` directory
+# the other one just removed (python-poetry/poetry#8159).
 RUN poetry config virtualenvs.create false \
+    && poetry config installer.parallel false \
     && poetry install --no-interaction --without profiling --without dev \
     && poetry build -f wheel
 
