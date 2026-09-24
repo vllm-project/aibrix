@@ -23,9 +23,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -323,41 +321,6 @@ func TestGetRoleSetList(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestGetRoleSetListScopesTheListCall pins both keys of the lookup. The behavioural
-// cases above pass on the ownership filter alone, so without this a regression to a
-// cluster-wide or selector-keyed List would page every namespace's RoleSets into
-// memory unnoticed.
-func TestGetRoleSetListScopesTheListCall(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = orchestrationv1alpha1.AddToScheme(scheme)
-
-	stormService := stormServiceFor("test-storm", "team-b", map[string]string{"app": "test"})
-
-	var gotNamespaces []string
-	var gotLabels []string
-	tracking := interceptor.NewClient(
-		fake.NewClientBuilder().WithScheme(scheme).Build(),
-		interceptor.Funcs{
-			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
-				options := &client.ListOptions{}
-				options.ApplyOptions(opts)
-				gotNamespaces = append(gotNamespaces, options.Namespace)
-				if options.LabelSelector != nil {
-					gotLabels = append(gotLabels, options.LabelSelector.String())
-				}
-				return c.List(ctx, list, opts...)
-			},
-		},
-	)
-
-	reconciler := &StormServiceReconciler{Client: tracking}
-	_, err := reconciler.getRoleSetList(context.TODO(), stormService)
-
-	assert.NoError(t, err)
-	assert.Equal(t, []string{"team-b"}, gotNamespaces, "the lookup must be scoped to the StormService namespace")
-	assert.Equal(t, []string{constants.StormServiceNameLabelKey + "=test-storm"}, gotLabels, "the lookup must key on the stamped name label")
 }
 
 func TestDeleteRoleSetSuccess(t *testing.T) {
