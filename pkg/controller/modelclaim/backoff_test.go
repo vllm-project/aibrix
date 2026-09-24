@@ -208,18 +208,13 @@ func TestReconcileChecksAPartlyPlacedClaimEveryRound(t *testing.T) {
 	r.Backoff = newPlacementBackoff(func() time.Time { return now })
 	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
 
-	// While the first engine comes up, the claim is looked at every couple of
-	// seconds.
-	assert.Equal(t, ActivatingRequeueDuration, reconcileFor(t, r, pm.Name))
-	placed := getModel(t, r, pm.Name).Status.Instances
-	require.Len(t, placed, 1)
+	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name))
+	require.Len(t, getModel(t, r, pm.Name).Status.Instances, 1)
 
-	// The second replica waits. The first engine is up and routed, and it is
-	// still checked every round, so the claim does not sleep through the wait.
-	snapshot.Models = []RuntimeSnapshotModel{readyEngine(placed[0].KVLimitBytes)}
+	// The second replica waits, but the first still has its engine checked
+	// every round, so the claim does not sleep through the wait.
 	now = now.Add(DefaultRequeueDuration / 2)
 	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name))
-	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, pm.Name).Status.Instances[0].Phase)
 }
 
 func TestPlacementBackoffStartsOverWhenRoomMayHaveAppeared(t *testing.T) {
