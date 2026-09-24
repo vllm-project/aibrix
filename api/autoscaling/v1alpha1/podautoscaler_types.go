@@ -98,6 +98,13 @@ type PodAutoscalerSpec struct {
 	// +kubebuilder:validation:Maximum=3600
 	PanicWindowSeconds *int64 `json:"panicWindowSeconds,omitempty"`
 
+	// Predictive enables forward-looking recommendations derived from the
+	// observed metric trend. Preview records the projection in status without
+	// changing the replica decision; Auto lets the projection raise the replica
+	// floor. When omitted, predictive scaling is disabled.
+	// +optional
+	Predictive *PredictiveSpec `json:"predictive,omitempty"`
+
 	// ScalingStrategy defines the strategy to use for scaling.
 	// +kubebuilder:validation:Enum={HPA,KPA,APA}
 	ScalingStrategy ScalingStrategyType `json:"scalingStrategy"`
@@ -150,6 +157,34 @@ type SubTargetSelector struct {
 	// RoleName selects a role within StormService or RoleSet
 	// +optional
 	RoleName string `json:"roleName,omitempty"`
+}
+
+// PredictiveMode controls how predictive recommendations are used.
+type PredictiveMode string
+
+const (
+	// PredictiveModePreview records the projection in status only and never
+	// changes the replica decision.
+	PredictiveModePreview PredictiveMode = "Preview"
+
+	// PredictiveModeAuto allows the projection to raise the replica floor while
+	// reactive scaling keeps control of scale-down.
+	PredictiveModeAuto PredictiveMode = "Auto"
+)
+
+// PredictiveSpec configures predictive scaling for a PodAutoscaler.
+type PredictiveSpec struct {
+	// Mode selects how predictions are applied. It defaults to Preview when omitted.
+	// +optional
+	// +kubebuilder:validation:Enum={Preview,Auto}
+	Mode PredictiveMode `json:"mode,omitempty"`
+
+	// HorizonSeconds is how far ahead the observed trend is projected.
+	// If unset, the autoscaler uses its internal default.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=3600
+	HorizonSeconds *int64 `json:"horizonSeconds,omitempty"`
 }
 
 // ScalingStrategyType defines the type for scaling strategies.
@@ -261,6 +296,11 @@ type PodAutoscalerStatus struct {
 	// ScheduledBounds is the observed scheduled replica bounds state.
 	// +optional
 	ScheduledBounds *ScheduledBoundsStatus `json:"scheduledBounds,omitempty"`
+
+	// Predictive is the latest predictive evaluation selected for the replica
+	// decision. It is cleared when spec.predictive is removed.
+	// +optional
+	Predictive *PredictiveStatus `json:"predictive,omitempty"`
 }
 
 // ScheduledBoundsStatus captures the currently effective scheduled replica bounds.
@@ -275,6 +315,29 @@ type ScheduledBoundsStatus struct {
 
 	// EffectiveMaxReplicas is the current effective maximum replica bound.
 	EffectiveMaxReplicas int32 `json:"effectiveMaxReplicas"`
+}
+
+// PredictiveStatus captures the most recent predictive evaluation.
+type PredictiveStatus struct {
+	// Mode is the effective mode used for this evaluation.
+	// +optional
+	Mode PredictiveMode `json:"mode,omitempty"`
+
+	// ObservedValue is the stable metric value the projection started from.
+	// +optional
+	ObservedValue string `json:"observedValue,omitempty"`
+
+	// PredictedValue is the projected metric value at the horizon.
+	// +optional
+	PredictedValue string `json:"predictedValue,omitempty"`
+
+	// PredictedReplicas is the replica count the projection alone asks for.
+	// +optional
+	PredictedReplicas int32 `json:"predictedReplicas,omitempty"`
+
+	// LastUpdated is when the prediction was computed.
+	// +optional
+	LastUpdated *metav1.Time `json:"lastUpdated,omitempty"`
 }
 
 // +kubebuilder:object:root=true
