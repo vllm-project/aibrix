@@ -18,6 +18,7 @@ package modelclaim
 
 import (
 	"fmt"
+	"math"
 	"sort"
 )
 
@@ -31,12 +32,21 @@ import (
 // engines that are awake. It gets its part back when the card is divided after
 // it wakes.
 //
+// A serving engine whose request metrics could not be read weighs as much as
+// the busiest engine counts. A scrape that timed out says nothing about load,
+// and taking the engine for idle would squeeze the one most likely to be too
+// busy to answer.
+//
 // Completions are not counted. The pool policy counts them as the change in a
 // counter between its own rounds, and reading that change here would take it
 // from the idle-sleep decision that depends on it.
 func kvExtraWeight(engine engineOnPod) int64 {
 	if engine.asleep {
 		return 0
+	}
+	if engine.demandUnknown {
+		// Not known to be idle, so weighed as the busiest an engine counts as.
+		return 1 + boundedActivity(math.MaxInt64)
 	}
 	return 1 + boundedActivity(engine.inFlightRequests)
 }

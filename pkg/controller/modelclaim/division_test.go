@@ -135,6 +135,51 @@ func TestReconcileGivesTheBusierEngineMoreOfTheCard(t *testing.T) {
 	assert.Equal(t, int64(4)<<30+spare*5/6+1, getModel(t, r, "busy").Status.Instances[0].KVLimitBytes)
 }
 
+// A scrape of an engine's metrics that timed out says nothing about its load.
+// The engine may be too busy to answer, so it is not squeezed as idle.
+func TestReconcileWeighsAServingEngineWhoseMetricsWereNotReadAsBusy(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	idle := withFinalizer(claimOnPod("idle", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	idle.Status.Instances[0].KVLimitBytes = 20 << 30
+	unread := claimOnPod("unread", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30)
+	unread.Status.Instances[0].KVLimitBytes = 20 << 30
+	unreadEngine := engineHolding("unread", 4<<30, 20<<30)
+	unreadEngine.RequestMetricsObserved = false
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("idle", 4<<30, 20<<30), unreadEngine}
+	r, runtime := newReconciler(t, idle, unread, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, "idle")
+
+	// Weighed as busy as an engine counts, it is given five parts of the 32 GiB
+	// spare to the idle engine's one.
+	spare := int64(32) << 30
+	assert.Equal(t, int64(4)<<30+spare*5/6, getModel(t, r, "unread").Status.Instances[0].KVLimitBytes)
+	assert.Equal(t, int64(4)<<30+spare/6+1, getModel(t, r, "idle").Status.Instances[0].KVLimitBytes)
+}
+
+// The runtime goes on listing an engine it has given up on, dead. Its room is
+// back with the card, so the engine left serving is given all of it.
+func TestReconcileGivesAFailedEnginesRoomBack(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	awake := withFinalizer(claimOnPod("awake", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	awake.Status.Instances[0].KVLimitBytes = 30 << 30
+	failed := claimOnPod("failed", pod.Name, modelv1alpha1.ModelClaimFailed, 20<<30, 4<<30)
+	failed.Status.Instances[0].KVLimitBytes = 30 << 30
+	dead := engineHolding("failed", 10<<30, 30<<30)
+	dead.Phase = runtimePhaseFailed
+	dead.Alive = false
+	dead.Ready = false
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("awake", 4<<30, 30<<30), dead}
+	r, runtime := newReconciler(t, awake, failed, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, "awake")
+
+	// Alone on the card, it is held to the card less its own footprint.
+	assert.Equal(t, int64(60)<<30, getModel(t, r, "awake").Status.Instances[0].KVLimitBytes)
+}
+
 func TestReconcileHoldsASleepingEngineToWhatItHolds(t *testing.T) {
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
 	awake := withFinalizer(claimOnPod("awake", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))

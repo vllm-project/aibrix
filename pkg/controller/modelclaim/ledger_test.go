@@ -69,13 +69,14 @@ func sizedPodSnapshots(pod string, hbmUsableBytes int64, models ...RuntimeSnapsh
 // and holding the given KV.
 func engineHolding(model string, kvUsedBytes, kvCapacityBytes int64) RuntimeSnapshotModel {
 	return RuntimeSnapshotModel{
-		ModelName:       model,
-		Port:            9001,
-		Phase:           "active",
-		Alive:           true,
-		Ready:           true,
-		KVUsedBytes:     kvUsedBytes,
-		KVCapacityBytes: kvCapacityBytes,
+		ModelName:              model,
+		Port:                   9001,
+		Phase:                  "active",
+		Alive:                  true,
+		Ready:                  true,
+		KVUsedBytes:            kvUsedBytes,
+		KVCapacityBytes:        kvCapacityBytes,
+		RequestMetricsObserved: true,
 	}
 }
 

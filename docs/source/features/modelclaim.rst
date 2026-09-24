@@ -358,7 +358,8 @@ The limits on one card are worked out together. Each engine keeps what it
 already holds, its declared floor or the KV it has mapped, and the room left
 over is shared out by demand: each engine's part is weighted by one plus its
 requests in flight, with the requests capped at four as the pool policy below
-caps them.
+caps them. A serving engine whose request metrics could not be read counts as
+the busiest, since a scrape that timed out says nothing about its load.
 Every footprint, every engine's held KV, and every share together come to
 exactly what the card can hold, so an engine growing into its new limit cannot
 grow into another engine's memory.
@@ -366,7 +367,13 @@ grow into another engine's memory.
 An engine that is asleep weighs nothing. It keeps only what it holds, which
 after a sleep is normally its floor, and the rest goes to the engines that are
 awake. When every engine on a card is asleep, the room left over stays
-unassigned until one of them wakes.
+unassigned until one of them wakes. An engine that wakes gets its part back
+when the card is divided on the next pass. Until then it runs under what it
+held asleep.
+
+An engine that has failed for good is gone: the runtime stops it once its
+restarts run out. Its seat and its KV go back to the card, for the engines
+beside it and for the next model placed there.
 
 The plan is carried out in an order that never leaves two engines entitled to
 the same byte. The limits that shrink an engine are written first, and a fresh

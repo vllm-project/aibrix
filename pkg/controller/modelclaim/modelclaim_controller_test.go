@@ -1710,12 +1710,13 @@ func TestReconcileDoesNotPlaceAClaimThatDeclaresAZeroFloor(t *testing.T) {
 // the KV limit its allocator currently holds.
 func readyEngine(kvCapacityBytes int64) RuntimeSnapshotModel {
 	return RuntimeSnapshotModel{
-		ModelName:       "qwen2-7b",
-		Port:            9001,
-		Phase:           "active",
-		Alive:           true,
-		Ready:           true,
-		KVCapacityBytes: kvCapacityBytes,
+		ModelName:              "qwen2-7b",
+		Port:                   9001,
+		Phase:                  "active",
+		Alive:                  true,
+		Ready:                  true,
+		KVCapacityBytes:        kvCapacityBytes,
+		RequestMetricsObserved: true,
 	}
 }
 
