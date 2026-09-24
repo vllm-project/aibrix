@@ -354,7 +354,7 @@ curl http://localhost/v1/chat/completions \
 ### Configuration Files
 
 - `configs/endpoints.yaml` - Define backend endpoints (model name, address)
-- `configs/endpoints-pd.yaml` - P/D disaggregation mode with prefill/decode labels
+- `configs/endpoints-pd.yaml` - P/D disaggregation mode with prefill/decode workers
 - `configs/envoy.yaml` - Envoy config with ext_proc filter for gateway-plugin (configured for Docker service names)
 
 **Note:** The `envoy.yaml` is configured for Docker Compose with service names like `gateway`, `vllm`, `metadata-service`. For local development without Docker, you'll need to either:

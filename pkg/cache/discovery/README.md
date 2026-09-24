@@ -38,7 +38,7 @@ Loads endpoints from a YAML config file. No dynamic updates.
 ```yaml
 models:
   - name: "Qwen/Qwen2.5-1.5B-Instruct"
-    endpoints:
+    workers:
       - "vllm-0:8000"
       - "vllm-1:8000"
 ```
@@ -49,16 +49,29 @@ models:
 models:
   - name: "Qwen/Qwen2.5-72B"
     engine: vllm
+    prefill_workers:
+      - "prefill-0:8000"
+      - "prefill-1:8000"
+    decode_workers:
+      - "decode-0:8000"
+```
+
+`prefill_workers` and `decode_workers` describe a single roleset (named `default`). The PD routing algorithm selects the roleset first and then chooses the best prefill+decode pair within it; a roleset serves traffic only when both sides have at least one worker.
+
+Use `rolesets` when you need multiple rolesets or explicit roleset names:
+
+```yaml
+models:
+  - name: "Qwen/Qwen2.5-72B"
     rolesets:
-      - name: default
+      - name: group-a
         prefill:
           - "prefill-0:8000"
-          - "prefill-1:8000"
         decode:
           - "decode-0:8000"
 ```
 
-The `rolesets` structure expresses the pairing between prefill and decode workers. The PD routing algorithm selects the roleset first and then chooses the best prefill+decode pair within the same roleset. `endpoints` and `rolesets` are mutually exclusive per model.
+`workers` is the preferred spelling of `endpoints`; both keep working. `rolesets` stays the way to name a group or declare more than one. Per model, the non-disaggregated form (`endpoints`/`workers`) and the disaggregated form (`rolesets`/`prefill_workers` + `decode_workers`) are mutually exclusive.
 
 ### KubernetesProvider (`kubernetes.go`)
 
