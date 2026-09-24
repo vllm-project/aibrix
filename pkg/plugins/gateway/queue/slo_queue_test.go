@@ -60,21 +60,12 @@ func (fakeRouter) Route(ctx *types.RoutingContext, _ types.PodList) (string, err
 }
 
 func newRankedTestRequest(requestID string, predictedOutput int, age time.Duration) *types.RoutingContext {
-	req := newTestRequest(requestID, &fakeOutputPredictor{reply: predictedOutput})
-	req.RequestTime = time.Now().Add(-age)
-	return req
+	return rankedRequestAt(requestID, predictedOutput, time.Now(), age)
 }
 
 func newTestSLOQueue(model string, requests map[string]*types.RoutingContext) *SLOQueue {
 	provider := func(*types.RoutingContext) (types.Router, error) { return fakeRouter{}, nil }
-	q, err := NewSLOQueue(provider, model)
-	Expect(err).NotTo(HaveOccurred())
-	for key, req := range requests {
-		sub := NewSimpleQueue[*types.QueueEntry](4)
-		Expect(sub.Enqueue(types.NewQueueEntry(req, time.Now()), time.Now())).To(Succeed())
-		q.subs.Store(key, sub)
-	}
-	return q
+	return newTestSLOQueueWithProvider(model, requests, provider)
 }
 
 var _ = Describe("SLOQueue", func() {
@@ -309,29 +300,27 @@ var _ = Describe("SLOQueue Peek failure isolation", func() {
 	const model = "test-model"
 
 	BeforeEach(func() {
-		st := cache.InitForTest()
 		// Hand-built profiles store indexes in log2 space: output buckets split at 1 and 8 tokens.
 		indexes := [][]float64{{0, 3}, {0}}
-		goodProfile := &cache.ModelGPUProfile{
-			Deployment: "dep-good",
-			Indexes:    indexes,
-			E2E:        [][]float64{{1.0}, {5.0}},
-			SLOs:       cache.ModelSLOs{E2E: 5.0},
-		}
-		badProfile := &cache.ModelGPUProfile{
-			Deployment: "dep-bad",
-			Indexes:    indexes,
-			E2E:        [][]float64{{1.0}},
-			SLOs:       cache.ModelSLOs{E2E: 5.0},
-		}
-		noSLOProfile := &cache.ModelGPUProfile{
-			Deployment: "dep-noslo",
-			Indexes:    indexes,
-			E2E:        [][]float64{{1.0}, {5.0}},
-		}
-		st.UpdateModelProfile(cache.ModelGPUProfileKey(model, "dep-good"), goodProfile, true)
-		st.UpdateModelProfile(cache.ModelGPUProfileKey(model, "dep-bad"), badProfile, true)
-		st.UpdateModelProfile(cache.ModelGPUProfileKey(model, "dep-noslo"), noSLOProfile, true)
+		installProfiles(model,
+			&cache.ModelGPUProfile{
+				Deployment: "dep-good",
+				Indexes:    indexes,
+				E2E:        [][]float64{{1.0}, {5.0}},
+				SLOs:       cache.ModelSLOs{E2E: 5.0},
+			},
+			&cache.ModelGPUProfile{
+				Deployment: "dep-bad",
+				Indexes:    indexes,
+				E2E:        [][]float64{{1.0}},
+				SLOs:       cache.ModelSLOs{E2E: 5.0},
+			},
+			&cache.ModelGPUProfile{
+				Deployment: "dep-noslo",
+				Indexes:    indexes,
+				E2E:        [][]float64{{1.0}, {5.0}},
+			},
+		)
 	})
 
 	It("should keep SLO ranking when a single (request, profile) rank fails", func() {

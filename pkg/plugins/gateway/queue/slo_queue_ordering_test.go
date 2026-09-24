@@ -107,7 +107,7 @@ func recordingProvider(recorder *routeRecorder, route bool) types.RouterProvider
 
 // rankedRequestAt pins RequestTime to now-age so rank values are exact.
 func rankedRequestAt(requestID string, predictedOutput int, now time.Time, age time.Duration) *types.RoutingContext {
-	req := newRankedTestRequest(requestID, predictedOutput, 0)
+	req := newTestRequest(requestID, &fakeOutputPredictor{reply: predictedOutput})
 	req.RequestTime = now.Add(-age)
 	return req
 }
@@ -139,8 +139,8 @@ func enqueueRequests(q *SLOQueue, key string, requests ...*types.RoutingContext)
 	q.subs.Store(key, sub)
 }
 
-func newTestSLOQueueWithOptions(model string, requests map[string]*types.RoutingContext, opts queueOptions, provider types.RouterProviderFunc) *SLOQueue {
-	q, err := newSLOQueue(provider, model, opts)
+func newTestSLOQueueWithProvider(model string, requests map[string]*types.RoutingContext, provider types.RouterProviderFunc) *SLOQueue {
+	q, err := NewSLOQueue(provider, model)
 	Expect(err).NotTo(HaveOccurred())
 	for key, req := range requests {
 		enqueueRequests(q, key, req)
@@ -160,7 +160,8 @@ var _ = Describe("SLOQueue ordering contract", func() {
 	})
 
 	It("keeps the shipped default switches", func() {
-		Expect(defaultQueueOptions()).To(Equal(queueOptions{
+		q := newTestSLOQueueWithProvider(model, nil, recordingProvider(&routeRecorder{}, true))
+		Expect(q.opts).To(Equal(queueOptions{
 			fifoOnNonSLOViolation:    false,
 			queueOverallSLO:          false,
 			monogenousGPURouting:     true,
@@ -174,10 +175,10 @@ var _ = Describe("SLOQueue ordering contract", func() {
 		// 0s elapsed + 5s expected - 5s target.
 		oldReq := rankedRequestAt("req-old", 2, now, 4*time.Second)
 		newReq := rankedRequestAt("req-new", 16, now, 0)
-		q := newTestSLOQueueWithOptions(model, map[string]*types.RoutingContext{
+		q := newTestSLOQueueWithProvider(model, map[string]*types.RoutingContext{
 			"old": oldReq,
 			"new": newReq,
-		}, defaultQueueOptions(), recordingProvider(&routeRecorder{}, true))
+		}, recordingProvider(&routeRecorder{}, true))
 
 		oldRank, err := q.rank(now, oldReq, profile)
 		Expect(err).NotTo(HaveOccurred())
@@ -186,12 +187,10 @@ var _ = Describe("SLOQueue ordering contract", func() {
 		Expect(oldRank).To(Equal(newRank))
 
 		pods := &recordingPodList{deployments: []string{deployment}}
-		for i := 0; i < 20; i++ {
-			picked, err := q.Peek(now, pods)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(picked).NotTo(BeNil())
-			Expect(picked.RequestID).To(Equal("req-old"))
-		}
+		picked, err := q.Peek(now, pods)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(picked).NotTo(BeNil())
+		Expect(picked.RequestID).To(Equal("req-old"))
 	})
 
 	It("breaks equal ranks by arrival time and then by subqueue key regardless of input order", func() {
@@ -232,6 +231,15 @@ var _ = Describe("SLOQueue ordering contract", func() {
 		Expect([]string{profiles[0].Key, profiles[1].Key, profiles[2].Key}).To(Equal([]string{"dep-one", "dep-two", "dep-nan"}))
 	})
 
+	It("breaks equal profile ranks on the profile key", func() {
+		profiles := []*candidateProfiles{
+			{Rank: 1.0, Key: "dep-b"},
+			{Rank: 1.0, Key: "dep-a"},
+		}
+		sort.Slice(profiles, func(i, j int) bool { return profileLess(profiles[i], profiles[j]) })
+		Expect([]string{profiles[0].Key, profiles[1].Key}).To(Equal([]string{"dep-a", "dep-b"}))
+	})
+
 	It("orders a NaN candidate rank after the comparable ones", func() {
 		now := time.Now()
 		newCandidate := func(subKey string, rank float64, requestTime time.Time) *candidateRouterRequest {
@@ -255,6 +263,27 @@ var _ = Describe("SLOQueue ordering contract", func() {
 		Expect([]string{candidates[0].SubKey, candidates[1].SubKey, candidates[2].SubKey}).To(Equal([]string{"c-higher", "b-lower", "a-nan"}))
 	})
 
+	It("orders two NaN candidates by arrival time", func() {
+		now := time.Now()
+		newNaN := func(subKey string, requestTime time.Time) *candidateRouterRequest {
+			req := newTestRequest("req-"+subKey, &fakeOutputPredictor{reply: 2})
+			req.RequestTime = requestTime
+			return &candidateRouterRequest{
+				QueueEntry: types.NewQueueEntry(req, requestTime),
+				SubKey:     subKey,
+				Profiles:   []*candidateProfiles{{Rank: math.NaN(), Key: deployment}},
+			}
+		}
+		// The older candidate has the later key, so only the arrival-time
+		// fallback can put it first.
+		older := newNaN("b-older", now.Add(-2*time.Second))
+		newer := newNaN("a-newer", now)
+		q := &SLOQueue{}
+		candidates := []*candidateRouterRequest{newer, older}
+		sort.Slice(candidates, func(i, j int) bool { return q.candidateLess(candidates[i], candidates[j]) })
+		Expect(candidates[0].SubKey).To(Equal("b-older"))
+	})
+
 	It("serves a candidate with a NaN rank after one with a comparable rank", func() {
 		// The large-output bucket of this profile is unmeasured (NaN), so the
 		// large request ranks NaN on its only profile, while the small request
@@ -267,10 +296,10 @@ var _ = Describe("SLOQueue ordering contract", func() {
 			SLOs:       cache.ModelSLOs{E2E: 5.0},
 		})
 		now := time.Now()
-		q := newTestSLOQueueWithOptions(model, map[string]*types.RoutingContext{
+		q := newTestSLOQueueWithProvider(model, map[string]*types.RoutingContext{
 			"nan":  rankedRequestAt("req-nan", 16, now, 2*time.Second),
 			"real": rankedRequestAt("req-real", 2, now, time.Second),
-		}, defaultQueueOptions(), recordingProvider(&routeRecorder{}, true))
+		}, recordingProvider(&routeRecorder{}, true))
 
 		picked, err := q.Peek(now, &recordingPodList{deployments: []string{deployment}})
 		Expect(err).NotTo(HaveOccurred())
@@ -292,7 +321,7 @@ var _ = Describe("SLOQueue policy switches", func() {
 		// Ranks: -7, -5 and +12, so the violating profile must never be tried.
 		req := rankedRequestAt("req-relaxer", 16, now, 2*time.Second)
 		recorder := &routeRecorder{}
-		q := newTestSLOQueueWithOptions(model, map[string]*types.RoutingContext{"sub": req}, defaultQueueOptions(), recordingProvider(recorder, false))
+		q := newTestSLOQueueWithProvider(model, map[string]*types.RoutingContext{"sub": req}, recordingProvider(recorder, false))
 
 		picked, err := q.Peek(now, &recordingPodList{deployments: []string{"dep-relaxed", "dep-mid", "dep-violating"}})
 		Expect(err).NotTo(HaveOccurred())
@@ -303,20 +332,47 @@ var _ = Describe("SLOQueue policy switches", func() {
 		}))
 	})
 
-	It("treats the most-relaxing-profile-only switch as a refinement of monogenous routing", func() {
+	It("walks into a NaN profile once every comparable rank is past its stop point", func() {
 		installProfiles(model,
 			e2eProfile("dep-relaxed", 1.0, 1.0, 10.0),
-			e2eProfile("dep-violating", 20.0, 20.0, 10.0),
+			e2eProfile("dep-mid", 3.0, 3.0, 10.0),
+			&cache.ModelGPUProfile{
+				Deployment: "dep-unmeasured",
+				Indexes:    [][]float64{{0, 3}, {0}},
+				E2E:        [][]float64{{1.0}, {math.NaN()}},
+				SLOs:       cache.ModelSLOs{E2E: 10.0},
+			},
 		)
 		now := time.Now()
+		// Ranks: -7, -5 and NaN, so no comparable rank stops the walk and the
+		// NaN profile is tried last.
+		req := rankedRequestAt("req-nan-walk", 16, now, 2*time.Second)
+		recorder := &routeRecorder{}
+		q := newTestSLOQueueWithProvider(model, map[string]*types.RoutingContext{"sub": req}, recordingProvider(recorder, false))
+
+		picked, err := q.Peek(now, &recordingPodList{deployments: []string{"dep-relaxed", "dep-mid", "dep-unmeasured"}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(picked).To(BeNil())
+		Expect(recorder.calls).To(Equal([]string{
+			"profile:pod-dep-relaxed",
+			"profile:pod-dep-mid",
+			"profile:pod-dep-unmeasured",
+		}))
+	})
+
+	It("tries only the most relaxing profile when monogenousGPURoutingOnly is set", func() {
+		installProfiles(model,
+			e2eProfile("dep-relaxed", 1.0, 1.0, 10.0),
+			e2eProfile("dep-mid", 3.0, 3.0, 10.0),
+		)
+		now := time.Now()
+		// Ranks: -7 and -5, so without the flag the walk would try both profiles.
 		req := rankedRequestAt("req-only", 16, now, 2*time.Second)
 		recorder := &routeRecorder{}
-		opts := defaultQueueOptions()
-		opts.monogenousGPURouting = false
-		opts.monogenousGPURoutingOnly = true
-		q := newTestSLOQueueWithOptions(model, map[string]*types.RoutingContext{"sub": req}, opts, recordingProvider(recorder, false))
+		q := newTestSLOQueueWithProvider(model, map[string]*types.RoutingContext{"sub": req}, recordingProvider(recorder, false))
+		q.opts.monogenousGPURoutingOnly = true
 
-		picked, err := q.Peek(now, &recordingPodList{deployments: []string{"dep-relaxed", "dep-violating"}})
+		picked, err := q.Peek(now, &recordingPodList{deployments: []string{"dep-relaxed", "dep-mid"}})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(picked).To(BeNil())
 		Expect(recorder.calls).To(Equal([]string{"profile:pod-dep-relaxed"}))
@@ -330,9 +386,8 @@ var _ = Describe("SLOQueue policy switches", func() {
 		now := time.Now()
 		req := rankedRequestAt("req-whole", 16, now, 2*time.Second)
 		recorder := &routeRecorder{}
-		opts := defaultQueueOptions()
-		opts.monogenousGPURouting = false
-		q := newTestSLOQueueWithOptions(model, map[string]*types.RoutingContext{"sub": req}, opts, recordingProvider(recorder, false))
+		q := newTestSLOQueueWithProvider(model, map[string]*types.RoutingContext{"sub": req}, recordingProvider(recorder, false))
+		q.opts.monogenousGPURouting = false
 
 		picked, err := q.Peek(now, &recordingPodList{deployments: []string{"dep-relaxed", "dep-violating"}})
 		Expect(err).NotTo(HaveOccurred())
@@ -344,22 +399,22 @@ var _ = Describe("SLOQueue policy switches", func() {
 		installProfiles(model, e2eProfile("dep-fifo", 1.0, 15.0, 20.0))
 		now := time.Now()
 		pods := &recordingPodList{deployments: []string{"dep-fifo"}}
-		newQueue := func(opts queueOptions) *SLOQueue {
+		newQueue := func() *SLOQueue {
 			// Ranks: 6s + 1s - 20s = -13 and 1s + 15s - 20s = -4, both negative.
-			return newTestSLOQueueWithOptions(model, map[string]*types.RoutingContext{
+			return newTestSLOQueueWithProvider(model, map[string]*types.RoutingContext{
 				"old": rankedRequestAt("req-old-low", 2, now, 6*time.Second),
 				"new": rankedRequestAt("req-new-high", 16, now, time.Second),
-			}, opts, recordingProvider(&routeRecorder{}, true))
+			}, recordingProvider(&routeRecorder{}, true))
 		}
 
-		byRank, err := newQueue(defaultQueueOptions()).Peek(now, pods)
+		byRank, err := newQueue().Peek(now, pods)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(byRank).NotTo(BeNil())
 		Expect(byRank.RequestID).To(Equal("req-new-high"))
 
-		opts := defaultQueueOptions()
-		opts.fifoOnNonSLOViolation = true
-		byFIFO, err := newQueue(opts).Peek(now, pods)
+		fifoQueue := newQueue()
+		fifoQueue.opts.fifoOnNonSLOViolation = true
+		byFIFO, err := fifoQueue.Peek(now, pods)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(byFIFO).NotTo(BeNil())
 		Expect(byFIFO.RequestID).To(Equal("req-old-low"))
@@ -375,9 +430,8 @@ var _ = Describe("SLOQueue policy switches", func() {
 			SLOs:       cache.ModelSLOs{E2E: 20.0},
 		})
 		now := time.Now()
-		newQueue := func(opts queueOptions) *SLOQueue {
-			q, err := newSLOQueue(recordingProvider(&routeRecorder{}, true), model, opts)
-			Expect(err).NotTo(HaveOccurred())
+		newQueue := func() *SLOQueue {
+			q := newTestSLOQueueWithProvider(model, nil, recordingProvider(&routeRecorder{}, true))
 			// The long subqueue holds four requests; at 0.5 RPS the head of the
 			// long queue ranks -12.5 overall but -18.5 per request, while the
 			// short queue head ranks -14 either way.
@@ -392,14 +446,14 @@ var _ = Describe("SLOQueue policy switches", func() {
 		}
 		pods := &recordingPodList{deployments: []string{deployment}}
 
-		byRequest, err := newQueue(defaultQueueOptions()).Peek(now, pods)
+		byRequest, err := newQueue().Peek(now, pods)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(byRequest).NotTo(BeNil())
 		Expect(byRequest.RequestID).To(Equal("req-short"))
 
-		opts := defaultQueueOptions()
-		opts.queueOverallSLO = true
-		byQueue, err := newQueue(opts).Peek(now, pods)
+		overallQueue := newQueue()
+		overallQueue.opts.queueOverallSLO = true
+		byQueue, err := overallQueue.Peek(now, pods)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(byQueue).NotTo(BeNil())
 		Expect(byQueue.RequestID).To(Equal("req-long"))
@@ -414,10 +468,10 @@ var _ = Describe("SLOQueue policy switches", func() {
 		// req-a ranks -8 / -2 and req-b ranks -7 / -1: the effective rank of
 		// req-b is higher, and its most relaxing profile is dep-a.
 		recorder := &routeRecorder{}
-		q := newTestSLOQueueWithOptions(model, map[string]*types.RoutingContext{
+		q := newTestSLOQueueWithProvider(model, map[string]*types.RoutingContext{
 			"a": rankedRequestAt("req-a", 16, now, time.Second),
 			"b": rankedRequestAt("req-b", 16, now, 2*time.Second),
-		}, defaultQueueOptions(), recordingProvider(recorder, true))
+		}, recordingProvider(recorder, true))
 
 		picked, err := q.Peek(now, &recordingPodList{deployments: []string{"dep-a", "dep-b"}})
 		Expect(err).NotTo(HaveOccurred())

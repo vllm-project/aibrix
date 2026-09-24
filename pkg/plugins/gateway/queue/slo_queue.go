@@ -81,6 +81,29 @@ func (crr *candidateRouterRequest) nextProfile() *candidateProfiles {
 	return ret
 }
 
+// queueOptions carries the SLOQueue policy switches. Production always runs the
+// shipped values, which NewSLOQueue writes down once; tests set a field directly
+// after construction to pin a branch that production cannot select.
+//
+// Switch matrix:
+//
+//	fifoOnNonSLOViolation: when true, candidates that both rank below zero are
+//	  served in arrival order instead of rank order.
+//	queueOverallSLO: when true, ranking accounts for the requests already queued
+//	  on the head's subqueue (queueRank) instead of ranking the head alone (rank).
+//	monogenousGPURouting: when true, a candidate is routed per deployment
+//	  profile, most relaxing first; when false, it is routed against the whole
+//	  pod set in one call.
+//	monogenousGPURoutingOnly: when true, only the most relaxing profile is
+//	  tried. It is read only inside the monogenousGPURouting branch, so it has
+//	  no effect unless profile routing is on.
+type queueOptions struct {
+	fifoOnNonSLOViolation    bool
+	queueOverallSLO          bool
+	monogenousGPURouting     bool
+	monogenousGPURoutingOnly bool
+}
+
 type SLOQueue struct {
 	routerProvider types.RouterProviderFunc
 	cache          cache.Cache
@@ -100,15 +123,8 @@ type SLOQueue struct {
 	lastCandidateFallbackReason string
 }
 
-// NewSLOQueue creates an SLO queue with the shipped default policy switches.
+// NewSLOQueue creates an SLO queue with the shipped policy switches.
 func NewSLOQueue(provider types.RouterProviderFunc, modelName string) (router *SLOQueue, err error) {
-	return newSLOQueue(provider, modelName, defaultQueueOptions())
-}
-
-// newSLOQueue creates an SLO queue with explicit policy switches. Tests use it
-// to pin the non-default policies; production code goes through NewSLOQueue so
-// the shipped defaults stay in one place.
-func newSLOQueue(provider types.RouterProviderFunc, modelName string, opts queueOptions) (router *SLOQueue, err error) {
 	// Dedup deployments
 	c, err := cache.Get()
 	if err != nil {
@@ -119,7 +135,13 @@ func newSLOQueue(provider types.RouterProviderFunc, modelName string, opts queue
 		routerProvider: provider,
 		cache:          c,
 		modelName:      modelName,
-		opts:           opts.normalized(),
+		// The shipped switches; see queueOptions for the matrix.
+		opts: queueOptions{
+			fifoOnNonSLOViolation:    false,
+			queueOverallSLO:          false,
+			monogenousGPURouting:     true,
+			monogenousGPURoutingOnly: false,
+		},
 	}
 	router.subpool.New = func() any { return NewSimpleQueue[*types.QueueEntry](initialSubQueueSize) }
 	router.expandDequeueCandidatesLocked(initialTotalSubQueues)
