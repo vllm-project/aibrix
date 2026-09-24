@@ -27,6 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 )
@@ -126,6 +127,20 @@ func (s *cardDivisionState) due(card types.NamespacedName, composition string) (
 	s.attemptedFor[card] = composition
 	s.lastRound[card] = now
 	return true, changed
+}
+
+// mayBeDue answers as due would, without taking the round or noting the
+// attempt. A pass asks it first, from the cache, to learn whether any card is
+// due before it lists the claims around the cache.
+func (s *cardDivisionState) mayBeDue(card types.NamespacedName, composition string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous, known := s.dividedFor[card]
+	if known && previous != composition && s.attemptedFor[card] != composition {
+		return true
+	}
+	last, found := s.lastRound[card]
+	return !found || s.now().Sub(last) >= DefaultRequeueDuration
 }
 
 // divided records that a card was divided for these engines: by the round, by
@@ -234,13 +249,16 @@ func (r *ModelClaimReconciler) divideCards(
 	if len(candidates) == 0 {
 		return
 	}
+	divisions := r.divisions()
+	if !r.anyCardMayBeDue(ctx, candidates, divisions) {
+		return
+	}
 	// The same listing says what is on each card and what each card owes, so
 	// the engines a card is divided for are the ones it is remembered by.
 	claims, err := r.listClaimsForAccount(ctx, candidates[0].Namespace)
 	if err != nil {
 		return
 	}
-	divisions := r.divisions()
 	due := make([]corev1.Pod, 0, len(candidates))
 	changed := make(map[string]bool, len(candidates))
 	compositions := make(map[string]string, len(candidates))
@@ -284,6 +302,28 @@ func (r *ModelClaimReconciler) divideCards(
 		}
 		divisions.divided(cardOf(pod), compositions[pod.Name])
 	}
+}
+
+// anyCardMayBeDue tells from the cache whether any card could be due, which
+// costs no read of the API server. A cache a moment behind can only delay a
+// change by a pass, or cost one listing that finds nothing to do. When the
+// cache cannot be listed, the answer is yes.
+func (r *ModelClaimReconciler) anyCardMayBeDue(
+	ctx context.Context,
+	candidates []corev1.Pod,
+	divisions *cardDivisionState,
+) bool {
+	cached := &modelv1alpha1.ModelClaimList{}
+	if err := r.List(ctx, cached, client.InNamespace(candidates[0].Namespace)); err != nil {
+		return true
+	}
+	for i := range candidates {
+		composition := cardComposition(cached, candidates[i].Name)
+		if composition != "" && divisions.mayBeDue(cardOf(&candidates[i]), composition) {
+			return true
+		}
+	}
+	return false
 }
 
 // warnCardNotDivided tells each claim on a card that the card has kept its

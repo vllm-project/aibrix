@@ -27,6 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
@@ -251,6 +252,39 @@ func TestReconcileReadsARecordFreshBeforeActingOnIt(t *testing.T) {
 	for _, event := range drainEvents(t, r) {
 		assert.NotContains(t, event, "KVLimitNotHeld")
 	}
+}
+
+// countingReader counts the listings a reconciler makes around the cache.
+type countingReader struct {
+	client.Reader
+	lists int
+}
+
+func (c *countingReader) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	c.lists++
+	return c.Reader.List(ctx, list, opts...)
+}
+
+// Whether a card is due is told from the cache. The claims are listed around
+// it only when some card is due, so a pass with nothing to divide costs no
+// read of the API server.
+func TestReconcileListsClaimsFreshOnlyWhenACardIsDue(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	alone := withFinalizer(claimOnPod("alone", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	alone.Status.Instances[0].KVLimitBytes = 60 << 30
+	alone.Status.Instances[0].Port = 9001
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("alone", 4<<30, 60<<30)}
+	r, runtime := newReconciler(t, alone, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	reader := &countingReader{Reader: r.Client}
+	r.APIReader = reader
+
+	reconcileOnce(t, r, "alone")
+	first := reader.lists
+	require.Positive(t, first, "the card's first round lists the claims")
+
+	reconcileOnce(t, r, "alone")
+	assert.Equal(t, first, reader.lists, "nothing is due, so nothing is listed")
 }
 
 func TestReconcileHoldsASleepingEngineToWhatItHolds(t *testing.T) {
