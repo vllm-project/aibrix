@@ -307,6 +307,22 @@ For StormService in pooled mode (``spec.mode: Pooled``), different roles (e.g., 
 
 Use the ``subTargetSelector`` field to target a specific role within a StormService, and declare ``spec.mode`` on the StormService (``Pooled`` to scale the targeted role, ``Replica`` to scale ``spec.replicas``). The autoscaler reads ``spec.mode`` to route role-level scaling; ``replicas=1`` alone cannot distinguish the two modes. The PodAutoscaler annotation ``autoscaling.aibrix.ai/storm-service-mode`` is deprecated and only honored as a compatibility fallback when the target StormService does not declare ``spec.mode``.
 
+.. note::
+
+   Always declare ``spec.mode``. When neither ``spec.mode`` nor the deprecated
+   annotation is set, the autoscaler falls back to the same inference the
+   StormService controller applies: ``spec.replicas > 1`` resolves to replica
+   mode, anything else to pooled mode. That fallback exists for objects created
+   before ``spec.mode`` was introduced and is best-effort rather than a stable
+   scaling mode.
+
+   The inference cannot tell a pooled StormService from a replica-mode one that
+   has been scaled down to a single RoleSet. An inferred replica-mode object
+   that reaches ``spec.replicas: 1`` therefore resolves as pooled on the next
+   reconcile, and a later scale-up writes ``spec.template.spec.roles[].replicas``
+   instead of ``spec.replicas``. Set ``spec.mode: Replica`` if autoscaling has to
+   keep replica semantics across a scale-down to one RoleSet.
+
 **Key features:**
 
 - Each role has its own PodAutoscaler with independent metrics and scaling policies

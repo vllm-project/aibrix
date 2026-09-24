@@ -51,17 +51,25 @@ func TestStormServiceScalingMode(t *testing.T) {
 		"no mode with unknown annotation stays pooled":   {annotation: "bogus", want: orchestrationv1alpha1.StormServicePooledMode},
 		"declared pooled mode with no annotation pooled": {specMode: orchestrationv1alpha1.StormServicePooledMode, want: orchestrationv1alpha1.StormServicePooledMode},
 
-		// spec.mode is optional, so an undeclared mode falls back to the same
-		// inference the stormservice controller applies (StormServiceSpec.ResolvedMode):
-		// replicas > 1 can only be replica mode, while replicas <= 1 stays pooled
-		// because a single RoleSet cannot tell the two modes apart.
+		// With neither explicit signal present, fall back to the inference the
+		// stormservice controller applies (StormServiceSpec.ResolvedMode): replicas
+		// > 1 can only be replica mode, while replicas <= 1 stays pooled because a
+		// single RoleSet cannot tell the two modes apart.
 		"no mode with replicas above one infers replica mode": {replicas: ptr.To(int32(3)), want: orchestrationv1alpha1.StormServiceReplicaMode},
 		"no mode with single replica stays pooled":            {replicas: ptr.To(int32(1)), want: orchestrationv1alpha1.StormServicePooledMode},
 		"no mode with zero replicas stays pooled":             {replicas: ptr.To(int32(0)), want: orchestrationv1alpha1.StormServicePooledMode},
-		// Inference must not outrank the two explicit signals.
-		"declared pooled mode wins over replicas above one":    {specMode: orchestrationv1alpha1.StormServicePooledMode, replicas: ptr.To(int32(3)), want: orchestrationv1alpha1.StormServicePooledMode},
-		"replica annotation wins over single replica":          {replicas: ptr.To(int32(1)), annotation: "replica", want: orchestrationv1alpha1.StormServiceReplicaMode},
-		"pool annotation does not suppress replicas inference": {replicas: ptr.To(int32(3)), annotation: "pool", want: orchestrationv1alpha1.StormServiceReplicaMode},
+		// An inferred replica-mode object that is scaled down to a single RoleSet
+		// resolves as pooled again, here and in the controller alike. spec.mode is
+		// the supported way to keep replica semantics across that boundary.
+		"inferred replica mode flips to pooled once scaled down to one": {replicas: ptr.To(int32(1)), want: orchestrationv1alpha1.StormServicePooledMode},
+		"declared replica mode survives a scale down to one":            {specMode: orchestrationv1alpha1.StormServiceReplicaMode, replicas: ptr.To(int32(1)), want: orchestrationv1alpha1.StormServiceReplicaMode},
+		// Inference must not outrank either explicit signal, and an annotation that
+		// is present but not "replica" keeps the pooled behavior it was set against
+		// instead of falling through to inference.
+		"declared pooled mode wins over replicas above one": {specMode: orchestrationv1alpha1.StormServicePooledMode, replicas: ptr.To(int32(3)), want: orchestrationv1alpha1.StormServicePooledMode},
+		"replica annotation wins over single replica":       {replicas: ptr.To(int32(1)), annotation: "replica", want: orchestrationv1alpha1.StormServiceReplicaMode},
+		"pool annotation suppresses replicas inference":     {replicas: ptr.To(int32(3)), annotation: "pool", want: orchestrationv1alpha1.StormServicePooledMode},
+		"unknown annotation suppresses replicas inference":  {replicas: ptr.To(int32(3)), annotation: "bogus", want: orchestrationv1alpha1.StormServicePooledMode},
 	}
 
 	for name, tc := range tests {
