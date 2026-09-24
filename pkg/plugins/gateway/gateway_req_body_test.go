@@ -796,6 +796,50 @@ func TestValidateModelAvailabilityDoesNotWakeNonSleepingModelClaim(t *testing.T)
 	}
 }
 
+func TestValidateModelAvailabilityAsksToRetryForAClaimNotPlacedYet(t *testing.T) {
+	mockCache := &MockCache{modelClaimStatuses: map[string]mockModelClaimStatus{
+		"qwen": {phase: "Pending", reason: "NoMatchingPods"},
+	}}
+	mockCache.On("HasModel", "qwen").Return(false)
+	server := &Server{cache: mockCache}
+
+	pods, response := server.validateModelAvailability("request-1", "qwen")
+
+	assert.Nil(t, pods)
+	require.NotNil(t, response)
+	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
+	assert.Equal(t, "10", responseHeader(response, "Retry-After"))
+	assert.Contains(t, response.GetImmediateResponse().GetBody(),
+		"model qwen is pending (NoMatchingPods); retry shortly")
+}
+
+func TestValidateModelAvailabilityDoesNotAskToRetryForAFailedClaim(t *testing.T) {
+	mockCache := &MockCache{modelClaimStatuses: map[string]mockModelClaimStatus{
+		"qwen": {phase: "Failed", reason: "ActivateFailed"},
+	}}
+	mockCache.On("HasModel", "qwen").Return(false)
+	server := &Server{cache: mockCache}
+
+	_, response := server.validateModelAvailability("request-1", "qwen")
+
+	require.NotNil(t, response)
+	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
+	assert.Empty(t, responseHeader(response, "Retry-After"))
+	assert.Contains(t, response.GetImmediateResponse().GetBody(), "model qwen is failed (ActivateFailed)")
+}
+
+func TestValidateModelAvailabilityStillRejectsAModelNoClaimServes(t *testing.T) {
+	mockCache := &MockCache{modelClaimStatuses: map[string]mockModelClaimStatus{}}
+	mockCache.On("HasModel", "qwen").Return(false)
+	server := &Server{cache: mockCache}
+
+	_, response := server.validateModelAvailability("request-1", "qwen")
+
+	require.NotNil(t, response)
+	assert.Equal(t, envoyTypePb.StatusCode_BadRequest, response.GetImmediateResponse().GetStatus().GetCode())
+	assert.Contains(t, response.GetImmediateResponse().GetBody(), "model qwen does not exist")
+}
+
 func responseHeader(response *extProcPb.ProcessingResponse, key string) string {
 	for _, option := range response.GetImmediateResponse().GetHeaders().GetSetHeaders() {
 		if option.GetHeader().GetKey() == key {

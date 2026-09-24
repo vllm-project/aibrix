@@ -51,6 +51,7 @@ type MockCache struct {
 	mock.Mock
 	cache.Cache
 	modelClaimBindings map[string]mockModelClaimBinding
+	modelClaimStatuses map[string]mockModelClaimStatus
 }
 
 type mockModelClaimBinding struct {
@@ -59,9 +60,19 @@ type mockModelClaimBinding struct {
 	state string
 }
 
+type mockModelClaimStatus struct {
+	phase  string
+	reason string
+}
+
 func (m *MockCache) ModelClaimBinding(model string) (*v1.Pod, int, string, bool) {
 	binding, found := m.modelClaimBindings[model]
 	return binding.pod, binding.port, binding.state, found
+}
+
+func (m *MockCache) ModelClaimStatus(model string) (string, string, bool) {
+	status, found := m.modelClaimStatuses[model]
+	return status.phase, status.reason, found
 }
 
 func (m *MockCache) HasModel(model string) bool {

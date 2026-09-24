@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -317,7 +318,16 @@ func (s *Server) validateModelAvailability(requestID, model string) (types.PodLi
 				if state == constants.ModelClaimRoutingStateSleeping && s.wakeRequester != nil {
 					s.wakeRequester.RequestWake(pod, model)
 				}
-				return nil, modelClaimRetryResponse(model, state)
+				return nil, modelClaimRetryResponse(model, state, "")
+			}
+		}
+		// A claim that no pod advertises yet has not been placed. Its model is
+		// on the way, so it is not a model that does not exist.
+		if provider, ok := s.cache.(cache.ModelClaimStatusProvider); ok {
+			if phase, reason, found := provider.ModelClaimStatus(model); found {
+				klog.InfoS("ModelClaim is known but not placed", "requestID", requestID, "model", model,
+					"phase", phase, "reason", reason)
+				return nil, modelClaimRetryResponse(model, unplacedModelClaimState(phase), reason)
 			}
 		}
 		klog.ErrorS(nil, "model doesn't exist in cache, probably wrong model name", "requestID", requestID, "model", model)
@@ -339,11 +349,17 @@ func (s *Server) validateModelAvailability(requestID, model string) (types.PodLi
 	return podsArr, nil
 }
 
-func modelClaimRetryResponse(model, state string) *extProcPb.ProcessingResponse {
+// modelClaimRetryResponse answers for a model whose ModelClaim cannot serve
+// it now. The reason, when there is one, is the controller's own word for why,
+// such as NoMatchingPods. A claim that failed is not asked to be retried.
+func modelClaimRetryResponse(model, state, reason string) *extProcPb.ProcessingResponse {
 	headers := []*configPb.HeaderValueOption{
 		{Header: &configPb.HeaderValue{Key: HeaderErrorNoModelBackends, RawValue: []byte(model)}},
 	}
 	message := fmt.Sprintf("model %s is %s", model, state)
+	if reason != "" {
+		message += fmt.Sprintf(" (%s)", reason)
+	}
 	if state != constants.ModelClaimRoutingStateFailed {
 		headers = append(headers, &configPb.HeaderValueOption{
 			Header: &configPb.HeaderValue{
@@ -355,6 +371,16 @@ func modelClaimRetryResponse(model, state string) *extProcPb.ProcessingResponse 
 	return generateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, headers,
 		message,
 		ErrorCodeServiceUnavailable, "model")
+}
+
+// unplacedModelClaimState words the phase of a claim that is not placed the
+// way routing states are worded. A claim the controller has not looked at yet
+// is pending.
+func unplacedModelClaimState(phase string) string {
+	if phase == "" {
+		return "pending"
+	}
+	return strings.ToLower(phase)
 }
 
 // getRunningRequestsByPod fetches the local metric slot for a pod's running-request

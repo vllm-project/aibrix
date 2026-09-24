@@ -426,8 +426,15 @@ The client or an outer gateway must retry. While the engine is waking, later
 requests can continue to receive 503. The controller restores the real port
 only after the runtime reports the engine active and ready.
 
-An activating model also returns 503 with ``Retry-After``. A terminally failed
-model returns 503 without ``Retry-After``.
+An activating model also returns 503 with ``Retry-After``. So does a claim
+that is not placed yet. Its message gives the reason from the claim's
+``Scheduled`` condition, such as ``NoMatchingPods``. A terminally failed model
+returns 503 without ``Retry-After``. A model that no ModelClaim serves returns
+400.
+
+The gateway learns about a claim that is not placed from the ModelClaim
+object, so its role needs to get, list and watch ModelClaims. Without that
+access, such a claim is answered with 400, as a model that does not exist.
 
 Runtime reliability
 -------------------
