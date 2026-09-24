@@ -178,7 +178,7 @@ func isDecodeOnlyMetric(metricName string) bool {
 // calculatePerSecondRate calculates the per-second rate for a given metric
 // Returns the rate in units per second, or -1 if insufficient data
 func (c *Store) calculatePerSecondRate(pod *Pod, modelName, metricName string, currentValue float64) float64 {
-	key := fmt.Sprintf("%s/%s/%s", pod.Name, modelName, metricName)
+	key := perSecondRateKey(pod, modelName, metricName)
 	now := time.Now()
 
 	rateCalculator.mu.Lock()
@@ -233,7 +233,7 @@ func (c *Store) calculatePerSecondRate(pod *Pod, modelName, metricName string, c
 // 1 minute ago; if less than 1 minute of history exists, the oldest available
 // snapshot is used. Returns -1 when insufficient data is available.
 func (c *Store) calculateRate1m(pod *Pod, metricName string, currentValue float64) float64 {
-	key := fmt.Sprintf("%s//%s", pod.Name, metricName)
+	key := rate1mKey(pod, metricName)
 	now := time.Now()
 
 	const (
