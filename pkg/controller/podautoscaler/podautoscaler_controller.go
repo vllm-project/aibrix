@@ -30,6 +30,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -884,7 +885,7 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 	// Pass ScaleTargetRef to handle special cases like RayClusterFleet
 	scaleDecision, err := r.computeScaleDecision(ctx, pa, scaleObj, currentReplicas)
 	if err != nil {
-		setStatus(&pa, currentReplicas, currentReplicas, false, "FailedComputeScale", false, false, err)
+		setStatus(&pa, currentReplicas, currentReplicas, false, "FailedComputeScale", false, false, err, nil)
 		if updateErr := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
@@ -923,7 +924,8 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 
 	// Step 5: Update status
 	setStatus(&pa, currentReplicas, scaleDecision.DesiredReplicas,
-		scaleDecision.ShouldScale, scaleDecision.Reason, scaleDecision.PendingReplicaGuardActive, scaleError == nil, scaleError)
+		scaleDecision.ShouldScale, scaleDecision.Reason, scaleDecision.PendingReplicaGuardActive, scaleError == nil, scaleError,
+		scaleDecision.Predictive)
 
 	if err := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); err != nil {
 		return ctrl.Result{}, err
@@ -1000,7 +1002,8 @@ func setCondition(pa *autoscalingv1alpha1.PodAutoscaler, conditionType string, s
 
 // setStatus recreates the status of the given PA, updating the current and
 // desired replicas, as well as the metric statuses and optionally records a scaling decision
-func setStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas, desiredReplicas int32, rescale bool, reason string, pendingGuardActive bool, success bool, err error) {
+func setStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas, desiredReplicas int32, rescale bool, reason string, pendingGuardActive bool, success bool, err error, predictive *autoscalingv1alpha1.PredictiveStatus) {
+	previousPredictive := pa.Status.Predictive
 	pa.Status = autoscalingv1alpha1.PodAutoscalerStatus{
 		ActualScale:     currentReplicas,
 		DesiredScale:    desiredReplicas,
@@ -1008,6 +1011,7 @@ func setStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas, desiredRe
 		Conditions:      pa.Status.Conditions,
 		ScalingHistory:  pa.Status.ScalingHistory, // preserve existing history
 		ScheduledBounds: scheduledBoundsStatus(pa, time.Now()),
+		Predictive:      keepPredictiveObservationTime(predictive, previousPredictive),
 	}
 
 	scalingActive := desiredReplicas != currentReplicas
@@ -1110,6 +1114,9 @@ type ScaleDecision struct {
 	Reason                    string
 	Algorithm                 string
 	PendingReplicaGuardActive bool
+	// Predictive is the projection evaluated for this decision. It is reported
+	// even when it did not change the decision.
+	Predictive *autoscalingv1alpha1.PredictiveStatus
 }
 
 // getScaleResource retrieves the scale resource for the PodAutoscaler target
@@ -1196,6 +1203,10 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 		return nil, fmt.Errorf("failed to compute metric-based replicas: %w", err)
 	}
 
+	// Carry the predictive evaluation into the status even when it did not
+	// change the decision, so Preview mode is observable.
+	predictive := predictiveStatus(replicaResult.Predictive)
+
 	metricDesiredReplicas := replicaResult.DesiredReplicas
 	metricName := replicaResult.Algorithm
 	if metricName == "" {
@@ -1242,7 +1253,48 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 		Reason:                    reason,
 		Algorithm:                 metricName,
 		PendingReplicaGuardActive: pendingGuardActive,
+		Predictive:                predictive,
 	}, nil
+}
+
+// predictiveStatus converts an autoscaler evaluation into the status shape. It
+// returns nil when no projection was computed for this round.
+func predictiveStatus(evaluation *PredictiveResult) *autoscalingv1alpha1.PredictiveStatus {
+	if evaluation == nil {
+		return nil
+	}
+	return &autoscalingv1alpha1.PredictiveStatus{
+		Mode:              evaluation.Mode,
+		ObservedValue:     formatMetricValue(evaluation.ObservedValue),
+		PredictedValue:    formatMetricValue(evaluation.PredictedValue),
+		PredictedReplicas: evaluation.PredictedReplicas,
+	}
+}
+
+// formatMetricValue renders a metric value with a fixed precision so repeated
+// evaluations of the same series produce the same status.
+func formatMetricValue(value float64) string {
+	return strconv.FormatFloat(value, 'f', 3, 64)
+}
+
+// keepPredictiveObservationTime keeps LastUpdated stable while the projection
+// repeats the same values, so a steady series does not rewrite the status on
+// every resync.
+func keepPredictiveObservationTime(next, previous *autoscalingv1alpha1.PredictiveStatus) *autoscalingv1alpha1.PredictiveStatus {
+	if next == nil {
+		return nil
+	}
+	if previous != nil &&
+		previous.Mode == next.Mode &&
+		previous.ObservedValue == next.ObservedValue &&
+		previous.PredictedValue == next.PredictedValue &&
+		previous.PredictedReplicas == next.PredictedReplicas {
+		next.LastUpdated = previous.LastUpdated
+		return next
+	}
+	now := metav1.NewTime(time.Now())
+	next.LastUpdated = &now
+	return next
 }
 
 // applyScaling applies the scaling decision to the target resource
