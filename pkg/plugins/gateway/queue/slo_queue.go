@@ -258,14 +258,9 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Queue
 		}
 		// Sort by rank ascendingly, so the first one contains the lowest rank;
 		// that is the most relaxing profile, which the relaxer below tries
-		// first. Ties, NaN ranks included, break on the profile key so the order
-		// does not depend on how pod indexes are enumerated.
+		// first.
 		sort.Slice(candidate.Profiles, func(i, j int) bool {
-			profileI, profileJ := candidate.Profiles[i], candidate.Profiles[j]
-			if profileI.Rank != profileJ.Rank && !math.IsNaN(profileI.Rank) && !math.IsNaN(profileJ.Rank) {
-				return profileI.Rank < profileJ.Rank
-			}
-			return profileI.Key < profileJ.Key
+			return profileLess(candidate.Profiles[i], candidate.Profiles[j])
 		})
 		return true
 	})
@@ -526,24 +521,51 @@ func (q *SLOQueue) rankImplTPOT(_ time.Time, req *types.RoutingContext, profile 
 	return
 }
 
+// profileLess orders a candidate's profiles for the relaxer: rank ascending, so
+// the first profile is the most relaxing one, with the profile key as the
+// tie-break. A NaN rank cannot be compared, so it sorts after every comparable
+// rank, and two NaN ranks tie on the key. Sorting NaN ranks last also keeps the
+// first profile comparable whenever the candidate has one that is, and
+// candidateLess picks on that first profile.
+func profileLess(profileI *candidateProfiles, profileJ *candidateProfiles) bool {
+	nanI, nanJ := math.IsNaN(profileI.Rank), math.IsNaN(profileJ.Rank)
+	if nanI != nanJ {
+		return nanJ
+	}
+	if !nanI && profileI.Rank != profileJ.Rank {
+		return profileI.Rank < profileJ.Rank
+	}
+	return profileI.Key < profileJ.Key
+}
+
 // candidateLess is the total order used to pick the candidate to serve next:
 // the candidate whose most relaxing profile carries the higher rank is served
-// first, because that is the one closest to (or past) its SLO deadline. Equal
-// ranks, NaN ranks included, fall back to arrival order and then to the subqueue
-// key, so the pick is a pure function of the queued set instead of depending on
-// the order in which subqueues happen to be visited.
+// first, because that is the one closest to (or past) its SLO deadline. A NaN
+// rank cannot be compared, so those candidates sort after every comparable
+// one. Comparable candidates with equal ranks fall back to arrival order and
+// then to the subqueue key, so the pick is a pure function of the queued set
+// instead of depending on the order in which subqueues happen to be visited.
 func (q *SLOQueue) candidateLess(a *candidateRouterRequest, b *candidateRouterRequest) bool {
 	rankA, rankB := a.Profiles[0].Rank, b.Profiles[0].Rank
-	switch {
-	case q.opts.fifoOnNonSLOViolation && rankA < 0 && rankB < 0:
-		// Both candidates still have slack on every profile: service them in
-		// arrival order.
-	case rankA != rankB && !math.IsNaN(rankA) && !math.IsNaN(rankB):
-		// The higher rank is closer to its most relaxing SLO deadline.
-		return rankA > rankB
+	nanA, nanB := math.IsNaN(rankA), math.IsNaN(rankB)
+	if nanA != nanB {
+		// A NaN rank is the least urgent: serve those candidates after every
+		// candidate whose rank is known.
+		return nanB
 	}
-	// Arrival order, then the subqueue key, keeps the order total: the subqueue
-	// key is unique within one Peek, so equal keys mean the same candidate.
+	if !nanA {
+		switch {
+		case q.opts.fifoOnNonSLOViolation && rankA < 0 && rankB < 0:
+			// Both candidates still have slack on every profile: service them
+			// in arrival order.
+		case rankA != rankB:
+			// The higher rank is closer to its most relaxing SLO deadline.
+			return rankA > rankB
+		}
+	}
+	// Arrival order, then the subqueue key, keeps the order total: equal ranks
+	// and two NaN ranks both land here, and the subqueue key is unique within
+	// one Peek, so equal keys mean the same candidate.
 	if !a.RequestTime.Equal(b.RequestTime) {
 		return a.RequestTime.Before(b.RequestTime)
 	}

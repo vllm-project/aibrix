@@ -17,6 +17,7 @@ limitations under the License.
 package queue
 
 import (
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -219,6 +220,62 @@ var _ = Describe("SLOQueue ordering contract", func() {
 		candidates = []*candidateRouterRequest{keyB, keyA}
 		sort.Slice(candidates, func(i, j int) bool { return q.candidateLess(candidates[i], candidates[j]) })
 		Expect(candidates[0].SubKey).To(Equal("a"))
+	})
+
+	It("orders a NaN profile rank after the comparable ones", func() {
+		profiles := []*candidateProfiles{
+			{Rank: math.NaN(), Key: "dep-nan"},
+			{Rank: 2.0, Key: "dep-two"},
+			{Rank: 1.0, Key: "dep-one"},
+		}
+		sort.Slice(profiles, func(i, j int) bool { return profileLess(profiles[i], profiles[j]) })
+		Expect([]string{profiles[0].Key, profiles[1].Key, profiles[2].Key}).To(Equal([]string{"dep-one", "dep-two", "dep-nan"}))
+	})
+
+	It("orders a NaN candidate rank after the comparable ones", func() {
+		now := time.Now()
+		newCandidate := func(subKey string, rank float64, requestTime time.Time) *candidateRouterRequest {
+			req := newTestRequest("req-"+subKey, &fakeOutputPredictor{reply: 2})
+			req.RequestTime = requestTime
+			return &candidateRouterRequest{
+				QueueEntry: types.NewQueueEntry(req, requestTime),
+				SubKey:     subKey,
+				Profiles:   []*candidateProfiles{{Rank: rank, Key: deployment}},
+			}
+		}
+		// The NaN candidate arrived first, so only the NaN branch can keep it
+		// behind the comparable ones.
+		nan := newCandidate("a-nan", math.NaN(), now.Add(-3*time.Second))
+		lower := newCandidate("b-lower", 1.0, now.Add(-2*time.Second))
+		higher := newCandidate("c-higher", 2.0, now.Add(-time.Second))
+
+		q := &SLOQueue{}
+		candidates := []*candidateRouterRequest{nan, lower, higher}
+		sort.Slice(candidates, func(i, j int) bool { return q.candidateLess(candidates[i], candidates[j]) })
+		Expect([]string{candidates[0].SubKey, candidates[1].SubKey, candidates[2].SubKey}).To(Equal([]string{"c-higher", "b-lower", "a-nan"}))
+	})
+
+	It("serves a candidate with a NaN rank after one with a comparable rank", func() {
+		// The large-output bucket of this profile is unmeasured (NaN), so the
+		// large request ranks NaN on its only profile, while the small request
+		// ranks -3. The NaN candidate is the older one, so the pick only goes to
+		// the comparable one when the NaN branch orders it last.
+		installProfiles(model, &cache.ModelGPUProfile{
+			Deployment: deployment,
+			Indexes:    [][]float64{{0, 3}, {0}},
+			E2E:        [][]float64{{1.0}, {math.NaN()}},
+			SLOs:       cache.ModelSLOs{E2E: 5.0},
+		})
+		now := time.Now()
+		q := newTestSLOQueueWithOptions(model, map[string]*types.RoutingContext{
+			"nan":  rankedRequestAt("req-nan", 16, now, 2*time.Second),
+			"real": rankedRequestAt("req-real", 2, now, time.Second),
+		}, defaultQueueOptions(), recordingProvider(&routeRecorder{}, true))
+
+		picked, err := q.Peek(now, &recordingPodList{deployments: []string{deployment}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(picked).NotTo(BeNil())
+		Expect(picked.RequestID).To(Equal("req-real"))
 	})
 })
 
