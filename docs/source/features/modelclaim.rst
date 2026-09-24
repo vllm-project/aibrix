@@ -789,6 +789,13 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    it every 10 seconds. The wait is kept in the controller's memory only, so
    a restart tries every waiting claim at once.
 
+   A waiting claim does not sit through its wait when room may have appeared.
+   Another claim deleted, scaled down or failed, a declaration that shrinks or
+   becomes usable, a pod joining the pool, or a change to the claim's own
+   spec wakes it at once, and it starts again from the shortest wait. Room
+   that engines free by giving back mapped KV sends no such signal, so the
+   claim finds it on its next try, a minute later at most.
+
 Claim remains ``Pending`` with ``InvalidPerGPU``
    ``perGPU`` is missing, or one of its figures cannot be used, and the
    message names which. The claim is not placed anywhere until it declares

@@ -1514,11 +1514,10 @@ func TestReconcileStopsSayingNoCardWillTakeItOnceOneDoes(t *testing.T) {
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 
-	// A card with room joins the pool, and the claim's wait is up. The earlier
-	// refusal must not be left standing as the claim's answer about finding
-	// one.
+	// A card with room joins the pool, which ends the claim's wait at once.
+	// The earlier refusal must not be left standing as the claim's answer
+	// about finding one.
 	require.NoError(t, r.Create(context.Background(), roomy))
-	now = now.Add(DefaultRequeueDuration)
 	reconcileOnce(t, r, pm.Name)
 
 	require.Len(t, runtime.activateCalls, 1)
