@@ -848,8 +848,8 @@ func TestSessionAffinityResolveRepinDoesNotClobberFresherClaim(t *testing.T) {
 }
 
 // TestSessionAffinityPostRouteUpdateSlidesTTL covers the steady state of the post-route
-// paths: the claim write keeps failing against this replica's own pin, so the read-back must
-// also slide the TTL, or an actively used session expires on the idle clock.
+// paths: each commit finds this replica's own pin and goes through the gated write with
+// old == new, which must slide the TTL, or an actively used session expires on the idle clock.
 func TestSessionAffinityPostRouteUpdateSlidesTTL(t *testing.T) {
 	routerA, mr := newTestSessionAffinityRedis(t)
 	routerB := &sessionAffinityRouter{redisClient: routerA.redisClient}
