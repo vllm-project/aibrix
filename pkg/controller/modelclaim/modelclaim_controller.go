@@ -22,6 +22,7 @@ package modelclaim
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -723,7 +724,13 @@ func (r *ModelClaimReconciler) makeRoomOnPod(
 	}
 	engines := append(append([]engineOnPod(nil), ledger.engines...), newcomer)
 	limits, err := r.arrangeCard(ctx, pod, ledger, engines, placementDivision, readings)
-	if err != nil {
+	var incomplete growthIncompleteError
+	switch {
+	case errors.As(err, &incomplete):
+		// The room is made and the model recorded; the neighbours not yet
+		// grown are below their records, and the round grows them.
+		klog.ErrorS(err, "placed a model, and could not grow every engine beside it", "pod", klog.KObj(pod))
+	case err != nil:
 		return 0, err
 	}
 	for _, limit := range limits {
@@ -734,21 +741,37 @@ func (r *ModelClaimReconciler) makeRoomOnPod(
 	return 0, fmt.Errorf("%s was left out of the plan for %s", pm.Name, pod.Name)
 }
 
+// growthIncompleteError says that a card's room was made and every new limit
+// recorded, but not every engine could be grown into its share. Those engines
+// sit below their records, which is safe and keeps their routes, and the next
+// round grows them.
+type growthIncompleteError struct{ err error }
+
+func (e growthIncompleteError) Error() string {
+	return "not every engine could be grown into its share: " + e.err.Error()
+}
+
+func (e growthIncompleteError) Unwrap() error { return e.err }
+
 // arrangeCard plans one card and carries the plan out, returning the plan.
 //
 // The work is done in an order that never leaves two engines entitled to the
-// same byte. The limits that shrink an engine are written first, and a fresh
-// reading has to confirm them before any engine grows. A lower limit evicts
-// nothing, so the room a shrink makes is not there until the engine is seen
-// inside its new limit. The limits that grow an engine are written next and
-// read back in the same way, because a write that reached no segment is
-// reported as a success either way. Only then is each new limit recorded on its
-// own claim, the ones that go down first.
+// same byte, and never leaves an engine held to more than its record. The
+// limits that shrink an engine are written first, and a fresh reading has to
+// confirm them before anything else happens. A lower limit evicts nothing, so
+// the room a shrink makes is not there until the engine is seen inside its new
+// limit. Every new limit is then recorded on its own claim, the ones that go
+// down first. The limits that grow an engine are written last, and read back in
+// the same way, because a write that reached no segment is reported as a
+// success either way.
 //
-// A division whose write or reading fails therefore changes no record. An
-// engine it already shrank sits below its record, which is safe and keeps its
-// route. One whose recording fails part way leaves records that come to no
-// more than the card.
+// A shrink that fails leaves every record as it was. An engine it already
+// shrank sits below its record, which is safe and keeps its route. A record
+// that cannot be written leaves records that come to no more than the card. A
+// grow that fails comes after the records, so the engines it did not reach sit
+// below their new records, which is safe and keeps their routes. The
+// arrangement is made, and the error says only that some engine is still to
+// grow.
 func (r *ModelClaimReconciler) arrangeCard(
 	ctx context.Context,
 	pod *corev1.Pod,
@@ -766,13 +789,9 @@ func (r *ModelClaimReconciler) arrangeCard(
 	}
 
 	shrinks, grows := shrinksAndGrows(limits)
-	var written []plannedKVLimit
-	for _, step := range [][]plannedKVLimit{shrinks, grows} {
-		written = append(written, step...)
-		if err := r.writeAndConfirmKVLimits(ctx, pod, ledger, step, readings); err != nil {
-			readings.forget(pod.Name)
-			return nil, err
-		}
+	if err := r.writeAndConfirmKVLimits(ctx, pod, ledger, shrinks, readings); err != nil {
+		readings.forget(pod.Name)
+		return nil, err
 	}
 
 	// Every limit is recorded, not only the written ones. An engine that has
@@ -794,12 +813,19 @@ func (r *ModelClaimReconciler) arrangeCard(
 			held[limit.claimName] = claim
 		}
 	}
+
+	var growErr error
+	if err := r.writeAndConfirmKVLimits(ctx, pod, ledger, grows, readings); err != nil {
+		growErr = growthIncompleteError{err: err}
+		grows = nil
+	}
+	written := append(append([]plannedKVLimit(nil), shrinks...), grows...)
 	if !why.announce {
 		if len(written) > 0 {
 			klog.V(2).InfoS("divided a card again", "pod", klog.KObj(pod),
 				"engines", len(limits), "moved", len(written))
 		}
-		return limits, nil
+		return limits, growErr
 	}
 	// Say so on each claim whose engine was moved. A limit written by the
 	// arrangement of a card is a limit its owner did not ask for, and looking
@@ -815,7 +841,7 @@ func (r *ModelClaimReconciler) arrangeCard(
 			limit.modelName, pod.Name, gibibytes(limit.kvLimitBytes), gibibytes(limit.kvCapacityBytes),
 			len(limits))
 	}
-	return limits, nil
+	return limits, growErr
 }
 
 // writeAndConfirmKVLimits writes one step of a card's division and reads the

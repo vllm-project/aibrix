@@ -180,6 +180,49 @@ func TestReconcileGivesAFailedEnginesRoomBack(t *testing.T) {
 	assert.Equal(t, int64(60)<<30, getModel(t, r, "awake").Status.Instances[0].KVLimitBytes)
 }
 
+// A grow is written after every new limit is recorded. So when the reading
+// that should confirm the grow is lost, the engine is already recorded at its
+// new share, and it keeps its route.
+func TestReconcileKeepsAnEngineRoutedWhenItsGrowIsNotConfirmed(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	idle := withFinalizer(claimOnPod("idle", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	idle.Status.Instances[0].KVLimitBytes = 30 << 30
+	idle.Status.Instances[0].Port = 9001
+	busy := withFinalizer(claimOnPod("busy", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	busy.Status.Instances[0].KVLimitBytes = 10 << 30
+	busy.Status.Instances[0].Port = 9001
+	serving := engineHolding("busy", 4<<30, 10<<30)
+	serving.RequestsRunning = 4
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("idle", 4<<30, 30<<30), serving}
+	r, runtime := newReconciler(t, idle, busy, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	writes := 0
+	runtime.onKVLimit = func() {
+		writes++
+		if writes == 2 {
+			// The grow reached the engine, and the reading back is lost.
+			runtime.nilSnapshots = map[string]bool{pod.Status.PodIP: true}
+		}
+	}
+
+	reconcileOnce(t, r, "idle")
+
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, "busy", runtime.kvLimitCalls[1].ModelName)
+	assert.Equal(t, runtime.kvLimitCalls[1].LimitBytes, getModel(t, r, "busy").Status.Instances[0].KVLimitBytes,
+		"the grow is recorded before it is written")
+
+	runtime.nilSnapshots = nil
+	runtime.onKVLimit = nil
+	drainEvents(t, r)
+	reconcileOnce(t, r, "busy")
+
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, "busy").Status.Instances[0].Phase)
+	for _, event := range drainEvents(t, r) {
+		assert.NotContains(t, event, "KVLimitNotHeld")
+	}
+}
+
 func TestReconcileHoldsASleepingEngineToWhatItHolds(t *testing.T) {
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
 	awake := withFinalizer(claimOnPod("awake", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
