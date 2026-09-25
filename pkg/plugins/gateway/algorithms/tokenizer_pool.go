@@ -324,31 +324,32 @@ func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) to
 
 	// Re-acquire lock to update the pool
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	// Double-check: another goroutine might have created it while we were checking health
-	if entry, exists := p.tokenizers[model]; exists && entry.healthStatus {
+	entry, exists := p.tokenizers[model]
+	if exists && entry.healthStatus {
 		// Another goroutine beat us to it, use theirs and discard ours
 		entry.lastUsed = time.Now()
 		// Close the tokenizer we just created since we won't use it
 		if closer, ok := tok.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		}
+		p.mu.Unlock()
 		return entry.tokenizer
 	}
 
 	// Another model may have filled the last slot during the health check.
-	previous, exists := p.tokenizers[model]
 	if !exists && len(p.tokenizers) >= p.config.MaxTokenizersPerPool {
 		if closer, ok := tok.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		}
+		p.mu.Unlock()
 		klog.Warningf("TokenizerPool reached max size %d, using default tokenizer", p.config.MaxTokenizersPerPool)
 		return p.config.DefaultTokenizer
 	}
 	if exists {
 		// The existing entry is unhealthy; healthy entries returned above under this same lock.
-		if closer, ok := previous.tokenizer.(interface{ Close() error }); ok {
+		if closer, ok := entry.tokenizer.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		}
 	}
@@ -365,6 +366,7 @@ func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) to
 
 	p.setActiveTokenizers(float64(len(p.tokenizers)))
 	p.incTokenizerCreationSuccesses()
+	p.mu.Unlock()
 	klog.V(3).Infof("Created vLLM tokenizer for model %s at endpoint %s", model, endpoint)
 
 	return tok
