@@ -452,7 +452,10 @@ The controller reads each runtime's snapshot with a 10 second deadline. A read
 normally takes a fraction of a second. Calls that change state, such as
 starting an engine, wait up to 60 seconds. A Pod whose runtime could not be
 read keeps its routing as it is, and placement ranks it after the Pods that
-could be read.
+could be read. A runtime that does not answer in time is not called again for
+a minute. Calls to it fail at once until then, so one runtime that stopped
+answering does not hold up every claim that uses it. Stopping an engine is
+still sent, since an engine left running would keep its memory.
 
 Observability
 -------------

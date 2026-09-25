@@ -20,9 +20,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
@@ -53,7 +56,15 @@ const (
 	// fraction of a second, and the runtime gives each engine's probes at most
 	// 1.5 s. Calls that change state keep the longer timeout above.
 	runtimeSnapshotTimeout = 10 * time.Second
+
+	// runtimeSilenceWindow is how long a runtime that did not answer in time is
+	// not called again.
+	runtimeSilenceWindow = time.Minute
 )
+
+// errRuntimeSilent is returned, without calling the runtime, for a runtime that
+// did not answer in time within the last runtimeSilenceWindow.
+var errRuntimeSilent = errors.New("did not answer in time recently; not calling it again yet")
 
 // DeactivateMode selects how a model is torn down.
 type DeactivateMode string
@@ -210,18 +221,60 @@ type RuntimeClient interface {
 type httpRuntimeClient struct {
 	httpClient      *http.Client
 	snapshotTimeout time.Duration
+	silence         *runtimeSilence
 }
 
 // NewRuntimeClient returns the default HTTP-backed runtime client.
 func NewRuntimeClient() RuntimeClient {
-	return newHTTPRuntimeClient(runtimeSnapshotTimeout)
+	return newHTTPRuntimeClient(runtimeSnapshotTimeout, runtimeSilenceWindow, time.Now)
 }
 
-func newHTTPRuntimeClient(snapshotTimeout time.Duration) *httpRuntimeClient {
+func newHTTPRuntimeClient(snapshotTimeout, silenceWindow time.Duration, now func() time.Time) *httpRuntimeClient {
 	return &httpRuntimeClient{
 		httpClient:      &http.Client{Timeout: defaultRuntimeHTTPTimeout},
 		snapshotTimeout: snapshotTimeout,
+		silence:         &runtimeSilence{window: silenceWindow, now: now, until: map[string]time.Time{}},
 	}
+}
+
+// runtimeSilence remembers the runtimes that did not answer in time. Every call
+// runs on the controller's only worker, and every claim with an engine on a pod
+// reads that pod's runtime on every pass. Without it, one runtime that stopped
+// answering would hold each of those passes for a whole timeout. A call that
+// fails fast, such as a refused connection or an error status, is not
+// remembered, since trying again costs nothing.
+type runtimeSilence struct {
+	mu     sync.Mutex
+	window time.Duration
+	now    func() time.Time
+	until  map[string]time.Time
+}
+
+// silent reports whether a runtime did not answer in time within the window.
+func (s *runtimeSilence) silent(runtime string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.now().Before(s.until[runtime])
+}
+
+// observe records how a call to a runtime ended. A timeout starts the window
+// again, and anything else ends it. Windows that are over are dropped then, so
+// the runtimes of pods that are gone are not kept.
+func (s *runtimeSilence) observe(runtime string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		delete(s.until, runtime)
+		return
+	}
+	now := s.now()
+	for other, until := range s.until {
+		if !now.Before(until) {
+			delete(s.until, other)
+		}
+	}
+	s.until[runtime] = now.Add(s.window)
 }
 
 func runtimeURL(podIP string, port int, path string) string {
@@ -291,12 +344,25 @@ func (c *httpRuntimeClient) Snapshot(ctx context.Context, podIP string, port int
 	return out, nil
 }
 
+// do sends a request to a runtime, unless that runtime did not answer in time a
+// short while ago. Stopping an engine is sent even then: a claim is deleted or
+// scaled down only once, and an engine left running would keep its memory.
+func (c *httpRuntimeClient) do(req *http.Request) (*http.Response, error) {
+	runtime := req.URL.Host
+	if req.URL.Path != deactivatePath && c.silence.silent(runtime) {
+		return nil, fmt.Errorf("runtime %s %w", runtime, errRuntimeSilent)
+	}
+	resp, err := c.httpClient.Do(req)
+	c.silence.observe(runtime, err)
+	return resp, err
+}
+
 func (c *httpRuntimeClient) getJSON(ctx context.Context, url string, out any) error {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.do(httpReq)
 	if err != nil {
 		return err
 	}
@@ -324,7 +390,7 @@ func (c *httpRuntimeClient) postJSON(ctx context.Context, url string, req any, o
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.do(httpReq)
 	if err != nil {
 		return err
 	}
