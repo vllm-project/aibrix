@@ -48,6 +48,11 @@ const (
 	wakePath       = "/v1/runtime/models/wake"
 
 	defaultRuntimeHTTPTimeout = 60 * time.Second
+
+	// runtimeSnapshotTimeout bounds one snapshot read. A read normally takes a
+	// fraction of a second, and the runtime gives each engine's probes at most
+	// 1.5 s. Calls that change state keep the longer timeout above.
+	runtimeSnapshotTimeout = 10 * time.Second
 )
 
 // DeactivateMode selects how a model is torn down.
@@ -203,13 +208,19 @@ type RuntimeClient interface {
 
 // httpRuntimeClient talks to the runtime sidecar over HTTP.
 type httpRuntimeClient struct {
-	httpClient *http.Client
+	httpClient      *http.Client
+	snapshotTimeout time.Duration
 }
 
 // NewRuntimeClient returns the default HTTP-backed runtime client.
 func NewRuntimeClient() RuntimeClient {
+	return newHTTPRuntimeClient(runtimeSnapshotTimeout)
+}
+
+func newHTTPRuntimeClient(snapshotTimeout time.Duration) *httpRuntimeClient {
 	return &httpRuntimeClient{
-		httpClient: &http.Client{Timeout: defaultRuntimeHTTPTimeout},
+		httpClient:      &http.Client{Timeout: defaultRuntimeHTTPTimeout},
+		snapshotTimeout: snapshotTimeout,
 	}
 }
 
@@ -266,7 +277,13 @@ func (c *httpRuntimeClient) ListModels(ctx context.Context, podIP string, port i
 	return out.Models, nil
 }
 
+// Snapshot reads a runtime under its own deadline. Placement reads every
+// candidate this way, and the health check reads each instance's pod, one after
+// another on the controller's only worker. So a runtime that does not answer
+// must not hold that worker for long.
 func (c *httpRuntimeClient) Snapshot(ctx context.Context, podIP string, port int) (*RuntimeSnapshot, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.snapshotTimeout)
+	defer cancel()
 	out := &RuntimeSnapshot{}
 	if err := c.getJSON(ctx, runtimeURL(podIP, port, snapshotPath), out); err != nil {
 		return nil, err

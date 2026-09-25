@@ -448,6 +448,12 @@ controller removes the stale instance and can activate the claim on another
 compatible Pod. There is no live migration or transparent preservation of
 in-flight requests.
 
+The controller reads each runtime's snapshot with a 10 second deadline. A read
+normally takes a fraction of a second. Calls that change state, such as
+starting an engine, wait up to 60 seconds. A Pod whose runtime could not be
+read keeps its routing as it is, and placement ranks it after the Pods that
+could be read.
+
 Observability
 -------------
 

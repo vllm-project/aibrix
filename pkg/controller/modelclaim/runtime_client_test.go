@@ -23,6 +23,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -69,6 +70,45 @@ func TestHTTPRuntimeActivate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int32(9123), resp.Port)
 	assert.Equal(t, "kvc_m1", resp.IPCName)
+}
+
+// hangingRuntime is a runtime that takes each request and answers none of
+// them until the test ends, as a runtime whose snapshot handler is stuck would.
+// It counts the requests that reach it.
+type hangingRuntime struct {
+	host     string
+	port     int
+	requests atomic.Int32
+}
+
+func newHangingRuntime(t *testing.T) *hangingRuntime {
+	t.Helper()
+	runtime := &hangingRuntime{}
+	released := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		runtime.requests.Add(1)
+		<-released
+	}))
+	t.Cleanup(func() {
+		close(released)
+		srv.Close()
+	})
+	u, _ := url.Parse(srv.URL)
+	runtime.host = u.Hostname()
+	runtime.port, _ = strconv.Atoi(u.Port())
+	return runtime
+}
+
+func TestHTTPRuntimeSnapshotGivesUpOnARuntimeThatDoesNotAnswer(t *testing.T) {
+	runtime := newHangingRuntime(t)
+	c := newHTTPRuntimeClient(100 * time.Millisecond)
+
+	start := time.Now()
+	_, err := c.Snapshot(context.Background(), runtime.host, runtime.port)
+
+	require.Error(t, err)
+	assert.Less(t, time.Since(start), 5*time.Second)
+	assert.Equal(t, runtimeSnapshotTimeout, NewRuntimeClient().(*httpRuntimeClient).snapshotTimeout)
 }
 
 func TestHTTPRuntimeSnapshot(t *testing.T) {
