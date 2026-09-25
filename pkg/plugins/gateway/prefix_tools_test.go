@@ -112,6 +112,39 @@ func TestChatPrefixText_ToolsPrecedeMessages(t *testing.T) {
 	assert.Equal(t, `[{"description":"Get the weather","input_schema":{"type":"object"},"name":"get_weather"}] `+toolsTestMessagesText, prefixText)
 }
 
+func TestRequestPrefixText_IncludesPromptFields(t *testing.T) {
+	setIncludeTools(t, true)
+
+	messages := `{"role":"user","content":"hello"}`
+	systemA := `{"model":"m","system":"You are concise.","messages":[` + messages + `],"tools":[{"type":"function","name":"weather"}]}`
+	systemB := `{"model":"m","system":"You are verbose.","messages":[` + messages + `],"tools":[{"type":"function","name":"weather"}]}`
+	_, messageA, prefixA, _, errA := validateRequestBody("test-request-id", PathMessages, []byte(systemA), utils.User{})
+	_, messageB, prefixB, _, errB := validateRequestBody("test-request-id", PathMessages, []byte(systemB), utils.User{})
+	require.Nil(t, errA)
+	require.Nil(t, errB)
+	assert.Equal(t, messageA, messageB)
+	assert.Equal(t, `"You are concise." [{"name":"weather","type":"function"}] hello`, prefixA)
+	assert.NotEqual(t, prefixA, prefixB)
+
+	instructionsA := `{"model":"m","instructions":"Be brief.","input":"hello","tools":[{"type":"function","name":"weather"}]}`
+	instructionsB := `{"model":"m","instructions":"Be detailed.","input":"hello","tools":[{"type":"function","name":"weather"}]}`
+	_, messageA, prefixA, _, errA = validateRequestBody("test-request-id", PathResponses, []byte(instructionsA), utils.User{})
+	_, messageB, prefixB, _, errB = validateRequestBody("test-request-id", PathResponses, []byte(instructionsB), utils.User{})
+	require.Nil(t, errA)
+	require.Nil(t, errB)
+	assert.Equal(t, messageA, messageB)
+	assert.Equal(t, `"Be brief." [{"name":"weather","type":"function"}] hello`, prefixA)
+	assert.NotEqual(t, prefixA, prefixB)
+
+	toolsA := `{"model":"m","instructions":"Be brief.","input":"hello","tools":[{"type":"function","name":"weather"}]}`
+	toolsB := `{"model":"m","instructions":"Be brief.","input":"hello","tools":[{"type":"function","name":"calendar"}]}`
+	_, _, prefixA, _, errA = validateRequestBody("test-request-id", PathResponses, []byte(toolsA), utils.User{})
+	_, _, prefixB, _, errB = validateRequestBody("test-request-id", PathResponses, []byte(toolsB), utils.User{})
+	require.Nil(t, errA)
+	require.Nil(t, errB)
+	assert.NotEqual(t, prefixA, prefixB)
+}
+
 func TestChatPrefixText_DifferentToolsDiffer(t *testing.T) {
 	setIncludeTools(t, true)
 

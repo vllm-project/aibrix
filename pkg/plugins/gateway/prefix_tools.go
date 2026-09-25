@@ -19,6 +19,7 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"sync/atomic"
 
 	"github.com/bytedance/sonic"
@@ -53,10 +54,40 @@ var canonicalJSON = sonic.Config{
 // (RoutingContext.Message) unchanged.
 func prefixMatchText(requestID string, tools json.RawMessage, message string) string {
 	toolsText := canonicalToolsText(requestID, tools)
-	if toolsText == "" {
+	return combinePrefixText(message, toolsText)
+}
+
+func combinePrefixText(message string, fields ...string) string {
+	parts := make([]string, 0, len(fields)+1)
+	for _, field := range fields {
+		if field != "" {
+			parts = append(parts, field)
+		}
+	}
+	if len(parts) == 0 {
 		return ""
 	}
-	return toolsText + " " + message
+	parts = append(parts, message)
+	return strings.Join(parts, " ")
+}
+
+func canonicalRequestFieldText(requestID string, field json.RawMessage) string {
+	raw := bytes.TrimSpace(field)
+	if len(raw) == 0 || bytes.Equal(raw, []byte(jsonNull)) {
+		return ""
+	}
+
+	var value interface{}
+	if err := canonicalJSON.Unmarshal(raw, &value); err != nil {
+		klog.V(4).InfoS("failed to canonicalize request field, using raw bytes", "requestID", requestID, "error", err)
+		return string(raw)
+	}
+	canonical, err := canonicalJSON.Marshal(value)
+	if err != nil {
+		klog.V(4).InfoS("failed to canonicalize request field, using raw bytes", "requestID", requestID, "error", err)
+		return string(raw)
+	}
+	return string(canonical)
 }
 
 // canonicalToolsText renders the raw "tools" value of a chat request. It returns "" when
