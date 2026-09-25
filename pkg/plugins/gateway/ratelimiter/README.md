@@ -78,3 +78,7 @@ Per-model RPS enforcement is handled in `HandleRequestBody` via `enforceModelRPS
 3. **Success path** — after routing succeeds and request accounting is attached, compensation is disabled, so the pre-charge remains counted.
 
 Using incr-then-check (rather than check-then-increment) means the `INCRBY` is the sole gate. Because Redis processes `INCRBY` atomically, each concurrent caller receives a unique sequential result — eliminating the TOCTOU race that would otherwise allow over-admission during the check→increment window.
+
+### Upgrading from wall-clock bucket keys
+
+The counter key format changed from `{name}:{key}:{timebin}` to `{name}:{key}:{windowMilliseconds}:counter`. Existing bucket keys expire on their own TTL, but the new limiter does not read their counts. A deployment therefore starts a new counter window for each key. During a rolling upgrade, old and new gateway instances count requests separately and may collectively admit more than the configured limit. Deployments that require uninterrupted strict limits should avoid serving rate-limited traffic from both versions at the same time; a cutover to the new version still starts fresh counters.
