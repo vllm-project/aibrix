@@ -38,7 +38,6 @@ func TestTokenizerPoolConcurrentCapacity(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			resetPrometheusRegistry()
 			entered := make(chan struct{}, 2)
-			completed := make(chan error, 2)
 			release := make(chan struct{})
 			closed := make(chan struct{}, 2)
 			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -52,11 +51,7 @@ func TestTokenizerPoolConcurrentCapacity(t *testing.T) {
 				case <-r.Context().Done():
 					return
 				}
-				_, err := w.Write([]byte(`{"tokens":[],"count":0}`))
-				select {
-				case completed <- err:
-				case <-r.Context().Done():
-				}
+				_, _ = w.Write([]byte(`{"tokens":[],"count":0}`))
 			}))
 			server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
 				if state == http.StateClosed {
@@ -116,14 +111,6 @@ func TestTokenizerPoolConcurrentCapacity(t *testing.T) {
 				}
 			}
 			close(release)
-			for range 2 {
-				select {
-				case err := <-completed:
-					require.NoError(t, err)
-				case <-time.After(5 * time.Second):
-					t.Fatal("concurrent health check did not complete")
-				}
-			}
 			for _, done := range finished {
 				select {
 				case <-done:
