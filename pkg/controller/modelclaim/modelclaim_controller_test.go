@@ -2472,6 +2472,7 @@ func TestCallNotDone(t *testing.T) {
 		"a wrapped error status":      {fmt.Errorf("start: %w", &runtimeRefusal{"boom"}), true},
 		"never connected":             {&url.Error{Op: "Post", URL: activatePath, Err: refused}, true},
 		"an address nobody parsed":    {&url.Error{Op: "parse", URL: "http://[", Err: errors.New("missing ']'")}, true},
+		"a runtime left alone":        {fmt.Errorf("runtime 10.0.0.1:8080 %w", errRuntimeSilent), true},
 		"no answer in time":           {&url.Error{Op: "Post", URL: activatePath, Err: context.DeadlineExceeded}, false},
 		"connection dropped":          {&url.Error{Op: "Post", URL: activatePath, Err: io.ErrUnexpectedEOF}, false},
 		"an answer nobody could read": {errors.New("decode runtime response: unexpected end of JSON input"), false},
