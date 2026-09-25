@@ -19,6 +19,7 @@ package modelclaim
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
@@ -70,6 +72,13 @@ type fakeRuntime struct {
 	snapshots map[string]*RuntimeSnapshot
 	// nilSnapshots lets defensive-path tests model an invalid client response.
 	nilSnapshots map[string]bool
+	// deafToKVLimits makes SetKVLimit report success without the segment
+	// changing, which is what writing into a segment that is not there looks
+	// like from the controller's side.
+	deafToKVLimits bool
+	// onKVLimit runs after a limit is written, so a test can model an engine
+	// that grew between the plan and the reading that confirms it.
+	onKVLimit func()
 }
 
 func (f *fakeRuntime) Activate(_ context.Context, _ string, _ int, req *ActivateRequest) (*ActivateResponse, error) {
@@ -103,6 +112,20 @@ func (f *fakeRuntime) Deactivate(_ context.Context, _ string, _ int, req *Deacti
 
 func (f *fakeRuntime) SetKVLimit(_ context.Context, _ string, _ int, req *SetKVLimitRequest) (*RuntimeOperationResponse, error) {
 	f.kvLimitCalls = append(f.kvLimitCalls, *req)
+	// A limit is written into the engine's segment, and a snapshot reads that
+	// same segment back, so a seeded engine reports the new limit afterwards.
+	if !f.deafToKVLimits {
+		for _, snapshot := range f.snapshots {
+			for i := range snapshot.Models {
+				if snapshot.Models[i].ModelName == req.ModelName {
+					snapshot.Models[i].KVCapacityBytes = req.LimitBytes
+				}
+			}
+		}
+	}
+	if f.onKVLimit != nil {
+		f.onKVLimit()
+	}
 	return &RuntimeOperationResponse{
 		Status: "success", ModelName: req.ModelName, OperationID: req.OperationID, Applied: true, Phase: "active",
 	}, nil
@@ -166,6 +189,10 @@ func (f *fakeRuntime) Snapshot(_ context.Context, podIP string, _ int) (*Runtime
 			Phase:     model.Phase,
 			Alive:     model.Phase != "failed",
 			Ready:     ready,
+			// This fake starts engines, and does not model a KV allocator. A
+			// test that wants one seeds the model in f.snapshots instead.
+			KVUsedBytes:     kvLimitUnknown,
+			KVCapacityBytes: kvLimitUnknown,
 		})
 	}
 	return result, nil
@@ -217,6 +244,11 @@ func sampleModelClaim() *modelv1alpha1.ModelClaim {
 			Engine:      "vllm",
 			EngineConfig: &modelv1alpha1.ModelClaimEngineConfig{
 				Args: map[string]string{"--max-model-len": "2048"},
+			},
+			// Every claim has to say what it costs to be placed at all.
+			PerGPU: &modelv1alpha1.ModelClaimPerGPU{
+				MaximumFootprint: resource.MustParse("30Gi"),
+				KVFloor:          resource.MustParse("10Gi"),
 			},
 		},
 	}
@@ -316,6 +348,10 @@ func TestReconcilePoolPoliciesAppliesDeploymentKVFirstPolicy(t *testing.T) {
 	runtime.kvLimitCalls = nil
 	now = now.Add(DefaultRequeueDuration)
 	runtime.snapshots[pod.Status.PodIP].ObservedAt = now
+	// Both engines restarted and put their own limits back, so the same plan
+	// has to be written again.
+	runtime.snapshots[pod.Status.PodIP].Models[0].KVCapacityBytes = 200
+	runtime.snapshots[pod.Status.PodIP].Models[1].KVCapacityBytes = 800
 
 	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
 
@@ -323,6 +359,62 @@ func TestReconcilePoolPoliciesAppliesDeploymentKVFirstPolicy(t *testing.T) {
 	for _, call := range runtime.kvLimitCalls {
 		assert.NotEqual(t, firstOperationIDs[call.ModelName], call.OperationID)
 	}
+}
+
+func TestReconcilePoolPoliciesStandDownWhereAClaimHoldsTheLimit(t *testing.T) {
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "warm-runtime-pool",
+			Namespace: testNamespace,
+			Annotations: map[string]string{
+				constants.ModelPoolPolicyAnnotationKey: `{"reclaim":{"capacityBytes":1000,"guaranteedFloorPercent":20}}`,
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": warmAppLabel}},
+		},
+	}
+	replicaSet := &appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "warm-runtime-pool-rs",
+			Namespace:       testNamespace,
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(deployment, appsv1.SchemeGroupVersion.WithKind("Deployment"))},
+		},
+	}
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Labels["app"] = warmAppLabel
+	pod.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(replicaSet, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))}
+	pm := claimWithCost(700, 100)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod:          pod.Name,
+		Port:         9001,
+		Phase:        modelv1alpha1.ModelClaimActive,
+		KVLimitBytes: 100,
+	}}
+
+	r, runtime := newReconciler(t, deployment, replicaSet, pod, pm)
+	now := time.Unix(1_700_000_000, 0)
+	r.PoolPolicy = newPoolPolicyManager(func() time.Time { return now })
+	requestSuccessTotal := int64(10)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		pod.Status.PodIP: {
+			ObservedAt:   now,
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 500}},
+			Models: []RuntimeSnapshotModel{
+				{
+					ModelName: "qwen2-7b", Phase: "active", Alive: true, Ready: true,
+					KVUsedBytes: 50, KVCapacityBytes: 100,
+					// Busy, so the annotation would otherwise hand this engine
+					// the whole configured capacity.
+					RequestMetricsObserved: true, RequestsRunning: 2, RequestSuccessTotal: &requestSuccessTotal,
+				},
+			},
+		},
+	}
+
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+
+	assert.Empty(t, runtime.kvLimitCalls)
 }
 
 func TestReconcilePoolPoliciesSkipsNilRuntimeSnapshot(t *testing.T) {
@@ -658,19 +750,22 @@ func TestReconcilePlacementPrefersRuntimeSnapshot(t *testing.T) {
 	hot := warmPod("hot", "b300-pool-a", true, corev1.PodRunning)
 	hot.Status.PodIP = testPeerIP
 	r, runtime := newReconciler(t, pm, cold, hot)
+	// Both runtimes report a card, so both pods go through the account although
+	// neither requests nvidia.com/gpu, and both cards can hold the claim.
 	runtime.snapshots = map[string]*RuntimeSnapshot{
 		"10.0.0.1": {
-			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: 900}},
-			Models:       []RuntimeSnapshotModel{{ModelName: "other", KVUsedBytes: 1}},
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMTotalBytes: 80 << 30, HBMFreeBytes: 900, HBMUsableBytes: 80 << 30}},
 		},
 		testPeerIP: {
-			Accelerators:    []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: 100}},
+			Accelerators:    []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMTotalBytes: 80 << 30, HBMFreeBytes: 100, HBMUsableBytes: 80 << 30}},
 			CachedArtifacts: []string{pm.Spec.ArtifactURL},
 		},
 	}
 
 	reconcileOnce(t, r, pm.Name)
 
+	// The pod that already has the artifact wins, although the other one has
+	// more free memory.
 	require.Len(t, runtime.activateCalls, 1)
 	assert.Equal(t, "hot", getModel(t, r, pm.Name).Status.Instances[0].Pod)
 	require.NotNil(t, runtime.activateCalls[0].ClaimRef)
@@ -963,6 +1058,12 @@ func TestReconcileNoCandidatesStaysPending(t *testing.T) {
 	got := getModel(t, r, pm.Name)
 	assert.Equal(t, modelv1alpha1.ModelClaimPending, got.Status.Phase)
 	assert.Equal(t, int32(0), got.Status.ReadyReplicas)
+	// The claim declares its cost, and still nobody is told to look at GPU
+	// memory: no pod matched at all.
+	cond := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, "NoMatchingPods", cond.Reason)
+	assert.NotContains(t, cond.Message, "GiB")
 }
 
 // TestReconcileIdempotent verifies an already-satisfied model is not
@@ -1125,4 +1226,765 @@ func TestReconcileDeletionDeactivates(t *testing.T) {
 	err := r.Get(context.Background(),
 		types.NamespacedName{Namespace: testNamespace, Name: pm.Name}, got)
 	assert.True(t, err != nil || !controllerutil.ContainsFinalizer(got, ModelClaimFinalizer))
+}
+
+// claimWithCost is the sample claim plus a declared per-GPU cost.
+func claimWithCost(footprint, floor int64) *modelv1alpha1.ModelClaim {
+	pm := withFinalizer(sampleModelClaim())
+	pm.Spec.PerGPU = &modelv1alpha1.ModelClaimPerGPU{
+		MaximumFootprint: *resource.NewQuantity(footprint, resource.BinarySI),
+		KVFloor:          *resource.NewQuantity(floor, resource.BinarySI),
+	}
+	return pm
+}
+
+// sizedWarmPod is a warm pod with one card the runtime could measure.
+func sizedWarmPod(name, ip string, hbmUsableBytes int64) (*corev1.Pod, *RuntimeSnapshot) {
+	pod := warmPodWithGPUs(name, "b300-pool-a", 1)
+	pod.Status.PodIP = ip
+	return pod, &RuntimeSnapshot{
+		Accelerators: []RuntimeAcceleratorSnapshot{
+			{ID: "GPU-0", HBMFreeBytes: hbmUsableBytes, HBMUsableBytes: hbmUsableBytes},
+		},
+	}
+}
+
+func TestReconcileRefusesACardWithoutRoomForTheDeclaredCost(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Empty(t, got.Status.Instances)
+	cond := meta.FindStatusCondition(got.Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, "NoMatchingPods", cond.Reason)
+	assert.Contains(t, cond.Message, "warm-1 can offer at most")
+}
+
+func TestReconcileStopsSayingNoCardWillTakeItOnceOneDoes(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	small, smallSnapshot := sizedWarmPod("warm-small", "10.0.0.1", 500)
+	roomy, roomySnapshot := sizedWarmPod("warm-roomy", "10.0.0.2", 2000)
+	r, runtime := newReconciler(t, pm, small)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		small.Status.PodIP: smallSnapshot,
+		roomy.Status.PodIP: roomySnapshot,
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	cond := meta.FindStatusCondition(getModel(t, r, pm.Name).Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+
+	// A card with room joins the pool. The earlier refusal must not be left
+	// standing as the claim's answer about finding one.
+	require.NoError(t, r.Create(context.Background(), roomy))
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+	cond = meta.FindStatusCondition(getModel(t, r, pm.Name).Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+	assert.Equal(t, "Placed", cond.Reason)
+	assert.Contains(t, cond.Message, roomy.Name)
+}
+
+func TestReconcileRaisesNoMatchingPodsOnlyWhenTheRefusalChanges(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	// Tried on three passes, and turned away the same way on each.
+	reconcileOnce(t, r, pm.Name)
+	reconcileOnce(t, r, pm.Name)
+	reconcileOnce(t, r, pm.Name)
+
+	refusals := 0
+	for _, event := range drainEvents(t, r) {
+		if strings.Contains(event, "NoMatchingPods") {
+			refusals++
+		}
+	}
+	assert.Equal(t, 1, refusals, "the same refusal three times over is one Event")
+	got := getModel(t, r, pm.Name)
+	cond := meta.FindStatusCondition(got.Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, "NoMatchingPods", cond.Reason)
+}
+
+func TestReconcileRefusesACardWhoseRoomIsHeldByTheEnginesOnIt(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	// The card could hold this model once the neighbour is back at its floor,
+	// and the neighbour has mapped 500.
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 500, 600)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Empty(t, got.Status.Instances)
+	cond := meta.FindStatusCondition(got.Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Contains(t, cond.Message, "held by the engines already on it")
+}
+
+func TestReconcileRefusesACardRunningAnEngineNoClaimAnswersFor(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	// The card has room on paper. It is also running an engine that no
+	// recorded instance answers for, so nobody knows what that engine holds.
+	snapshot.Models = []RuntimeSnapshotModel{{
+		ModelName: "stranger", Port: 9001, Phase: "active", Alive: true, Ready: true,
+	}}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Empty(t, got.Status.Instances)
+	cond := meta.FindStatusCondition(got.Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Contains(t, cond.Message, "answers to no claim")
+}
+
+func TestReconcilePlacesOnTheCardThatCanHoldTheDeclaredCost(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	full, fullSnapshot := sizedWarmPod("warm-full", "10.0.0.1", 1000)
+	roomy, roomySnapshot := sizedWarmPod("warm-roomy", "10.0.0.2", 2000)
+	neighbour := claimOnPod("neighbour", full.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	r, runtime := newReconciler(t, pm, full, roomy, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		full.Status.PodIP:  fullSnapshot,
+		roomy.Status.PodIP: roomySnapshot,
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-roomy", got.Status.Instances[0].Pod)
+}
+
+func TestReconcileWillNotPlaceOnACardItCannotMeasure(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
+	r, runtime := newReconciler(t, pm, pod)
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	cond := meta.FindStatusCondition(getModel(t, r, pm.Name).Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Contains(t, cond.Message, "could not be judged")
+}
+
+func TestReconcileDoesNotPlaceAClaimThatDeclaresNoCost(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.Spec.PerGPU = nil
+	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
+	r, runtime := newReconciler(t, pm, pod)
+
+	reconcileOnce(t, r, pm.Name)
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Empty(t, got.Status.Instances)
+	cond := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, "InvalidPerGPU", cond.Reason)
+	assert.Contains(t, cond.Message, "spec.perGPU is missing")
+
+	// Said once, not again on every pass while nothing changes.
+	said := 0
+	for _, event := range drainEvents(t, r) {
+		if strings.Contains(event, "InvalidPerGPU") {
+			said++
+		}
+	}
+	assert.Equal(t, 1, said)
+}
+
+func TestReconcileDoesNotPlaceAClaimThatDeclaresAZeroFloor(t *testing.T) {
+	pm := claimWithCost(30<<30, 0)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	cond := meta.FindStatusCondition(getModel(t, r, pm.Name).Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, "InvalidPerGPU", cond.Reason)
+	assert.Contains(t, cond.Message, "spec.perGPU.kvFloor is 0, which is not positive")
+}
+
+// readyEngine is what a runtime reports for an engine that is serving, with
+// the KV limit its allocator currently holds.
+func readyEngine(kvCapacityBytes int64) RuntimeSnapshotModel {
+	return RuntimeSnapshotModel{
+		ModelName:       "qwen2-7b",
+		Port:            9001,
+		Phase:           "active",
+		Alive:           true,
+		Ready:           true,
+		KVCapacityBytes: kvCapacityBytes,
+	}
+}
+
+func TestArrangeCardGivesARetryItsOwnOperation(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30)
+	// The engine runs under its allocator's own limit, well above its share.
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 2<<30, 76<<30)}
+	snapshot.ObservedAt = time.Unix(1_700_000_000, 0)
+	r, runtime := newReconciler(t, neighbour, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	arrange := func() {
+		t.Helper()
+		ledgers := r.collectPodLedgers(context.Background(), testNamespace,
+			[]corev1.Pod{*pod}, map[string]*RuntimeSnapshot{pod.Name: snapshot})
+		ledger := ledgers[pod.Name]
+		require.True(t, ledger.judgeable)
+		_, err := r.arrangeCard(context.Background(), pod, ledger, ledger.engines)
+		require.NoError(t, err)
+	}
+
+	arrange()
+	require.Len(t, runtime.kvLimitCalls, 1)
+
+	// The engine restarts and puts its allocator's limit back. The plan is the
+	// same as before, so only the moment it was planned from tells the runtime
+	// this is a new attempt rather than the first one repeated.
+	snapshot.Models[0].KVCapacityBytes = 76 << 30
+	snapshot.ObservedAt = snapshot.ObservedAt.Add(DefaultRequeueDuration)
+	arrange()
+
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, runtime.kvLimitCalls[0].LimitBytes, runtime.kvLimitCalls[1].LimitBytes)
+	assert.NotEqual(t, runtime.kvLimitCalls[0].OperationID, runtime.kvLimitCalls[1].OperationID)
+}
+
+func TestReconcileShrinksTheNeighbourToMakeRoomForANewModel(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].KVLimitBytes = 600
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	// The card holds two footprints of 300 and two floors of 100, leaving 200
+	// to share evenly.
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, "neighbour", runtime.kvLimitCalls[0].ModelName)
+	assert.Equal(t, int64(200), runtime.kvLimitCalls[0].LimitBytes)
+
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, int64(200), got.Status.Instances[0].KVLimitBytes)
+	require.Len(t, runtime.activateCalls, 1)
+
+	held := &modelv1alpha1.ModelClaim{}
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{Namespace: testNamespace, Name: "neighbour"}, held))
+	assert.Equal(t, int64(200), held.Status.Instances[0].KVLimitBytes)
+
+	// The neighbour did not ask to be shrunk, so its own claim has to say it
+	// was, rather than only the pod it happens to run on.
+	said := ""
+	for _, event := range recordedEvents(t, r) {
+		if strings.Contains(event, "KVLimitSet") && strings.Contains(event, "neighbour") {
+			said = event
+		}
+	}
+	assert.NotEmpty(t, said, "the neighbour's claim records no KVLimitSet event")
+}
+
+// recordedEvents drains the fake recorder and returns what it was given.
+func recordedEvents(t *testing.T, r *ModelClaimReconciler) []string {
+	t.Helper()
+	recorder, ok := r.Recorder.(*record.FakeRecorder)
+	require.True(t, ok)
+	var seen []string
+	for {
+		select {
+		case event := <-recorder.Events:
+			seen = append(seen, event)
+		default:
+			return seen
+		}
+	}
+}
+
+func TestReconcileWillNotPlaceWhenTheNeighbourDoesNotTakeItsLimit(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	runtime.deafToKVLimits = true
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Empty(t, got.Status.Instances)
+	cond := meta.FindStatusCondition(got.Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, "NoMatchingPods", cond.Reason)
+	assert.Contains(t, cond.Message, "could not be divided")
+	assert.Contains(t, cond.Message, "did not take a KV limit")
+}
+
+func TestReconcileLeavesTheRecordsAloneWhenACardCannotBeDivided(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].KVLimitBytes = 600
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	// The write reaches no segment, so the reading that should confirm it does
+	// not, and the card is not divided.
+	runtime.deafToKVLimits = true
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Empty(t, runtime.activateCalls)
+	// The neighbour keeps the limit it was given, not the smaller one it was
+	// never confirmed to hold. Recorded, the smaller one would be enforced by
+	// the health loop for a model that was never placed.
+	held := &modelv1alpha1.ModelClaim{}
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{Namespace: testNamespace, Name: "neighbour"}, held))
+	assert.Equal(t, int64(600), held.Status.Instances[0].KVLimitBytes)
+}
+
+func TestRecordKVLimitTriesAgainAfterAConflict(t *testing.T) {
+	pod, _ := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].KVLimitBytes = 600
+	scheme := testScheme(t)
+	// The neighbour's own reconcile wrote its status just before, so the
+	// first write of the new limit loses the race.
+	conflicts, updates := 1, 0
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(neighbour, pod).
+		WithStatusSubresource(&modelv1alpha1.ModelClaim{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, obj client.Object,
+				opts ...client.SubResourceUpdateOption) error {
+				updates++
+				if conflicts > 0 {
+					conflicts--
+					return apierrors.NewConflict(schema.GroupResource{Group: "model.aibrix.ai", Resource: "modelclaims"},
+						obj.GetName(), fmt.Errorf("the object has been modified"))
+				}
+				return cl.SubResource(sub).Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	r := &ModelClaimReconciler{Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(32), Runtime: &fakeRuntime{}}
+
+	claim, err := r.recordKVLimit(context.Background(), testNamespace, "neighbour", pod.Name, 200)
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, updates, "a conflict should be tried again, from a fresh read")
+	assert.Equal(t, int64(200), claim.Status.Instances[0].KVLimitBytes)
+	stored := &modelv1alpha1.ModelClaim{}
+	require.NoError(t, c.Get(context.Background(),
+		types.NamespacedName{Namespace: testNamespace, Name: "neighbour"}, stored))
+	assert.Equal(t, int64(200), stored.Status.Instances[0].KVLimitBytes)
+}
+
+// activatingWithoutEngine is a claim whose instance was recorded on a card
+// that was divided for it, and whose engine the runtime never started: the
+// controller stopped between the two, or a failed start was never taken back
+// from the record.
+func activatingWithoutEngine(t *testing.T) (*ModelClaimReconciler, *fakeRuntime, *modelv1alpha1.ModelClaim, *corev1.Pod) {
+	t.Helper()
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{
+		{Pod: pod.Name, Phase: modelv1alpha1.ModelClaimActivating, KVLimitBytes: 600},
+	}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	return r, runtime, pm, pod
+}
+
+func TestReconcileStartsAgainAnActivatingInstanceWithNoEngine(t *testing.T) {
+	r, runtime, pm, _ := activatingWithoutEngine(t)
+
+	reconcileOnce(t, r, pm.Name)
+
+	// Placement does not run again, since the claim has its instance, so this
+	// is the only thing that would ever start the engine the card holds room
+	// for.
+	require.Len(t, runtime.activateCalls, 1)
+	assert.Equal(t, servedModelName(pm), runtime.activateCalls[0].ModelName)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
+	assert.NotZero(t, got.Status.Instances[0].Port)
+	assert.Equal(t, int64(600), got.Status.Instances[0].KVLimitBytes)
+}
+
+func TestReconcileGivesTheCardBackWhenAnEngineCannotBeStartedAgain(t *testing.T) {
+	r, runtime, pm, _ := activatingWithoutEngine(t)
+	runtime.failActivate = true
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+	got := getModel(t, r, pm.Name)
+	assert.Empty(t, got.Status.Instances, "an instance with no engine and no way to start one must not keep its room")
+	failed := false
+	for _, event := range drainEvents(t, r) {
+		if strings.Contains(event, "ActivateFailed") && strings.Contains(event, "had no engine") {
+			failed = true
+		}
+	}
+	assert.True(t, failed, "dropping the instance should be reported")
+}
+
+func TestReconcileStartsNoEngineWhenTheRuntimeCannotBeRead(t *testing.T) {
+	r, runtime, pm, pod := activatingWithoutEngine(t)
+	// A runtime that cannot be read says nothing about the engine.
+	runtime.nilSnapshots = map[string]bool{pod.Status.PodIP: true}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+}
+
+// podWithUnrequestedGPU is a warm pod that asks for no nvidia.com/gpu, while
+// its runtime reports a card, as with a GPU given by a dynamic resource claim.
+// Like any card the runtime has read, it comes with its total memory.
+func podWithUnrequestedGPU(hbmUsableBytes int64) (*corev1.Pod, *RuntimeSnapshot) {
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Status.PodIP = "10.0.0.1"
+	return pod, &RuntimeSnapshot{
+		Accelerators: []RuntimeAcceleratorSnapshot{
+			{ID: "GPU-0", HBMTotalBytes: hbmUsableBytes, HBMFreeBytes: hbmUsableBytes, HBMUsableBytes: hbmUsableBytes},
+		},
+	}
+}
+
+func TestReconcileAccountsForACardTheRuntimeReportsWithoutAGPURequest(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := podWithUnrequestedGPU(300)
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	// The card is too small for the model. Taken for a pod with no GPU, it
+	// would have been used without an account.
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	cond := meta.FindStatusCondition(got.Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, "NoMatchingPods", cond.Reason)
+	assert.Contains(t, cond.Message, "can offer at most")
+}
+
+func TestReconcileHoldsAnEngineToItsLimitOnAPodWithoutAGPURequest(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := podWithUnrequestedGPU(1000)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{
+		{Pod: pod.Name, Phase: modelv1alpha1.ModelClaimActivating, Port: 9001, KVLimitBytes: 600},
+	}
+	// Ready, and still under its allocator's own limit.
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(900)}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, int64(600), runtime.kvLimitCalls[0].LimitBytes)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase,
+		"an engine above its limit must not be routed")
+}
+
+// The runtime's mock mode reports one card with no memory at all, so that the
+// single-GPU pool policy runs on the CPU pools of the end-to-end tests. That is
+// no card to account for: the claim is placed as on a pod without a GPU, and
+// its engine is routed once it is ready.
+func TestReconcilePlacesAndRoutesOnAPodWhoseRuntimeReportsAnUnsizedCard(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Status.PodIP = "10.0.0.1"
+	snapshot := &RuntimeSnapshot{
+		Accelerators: []RuntimeAcceleratorSnapshot{{ID: "mock-gpu-0"}},
+	}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+	assert.Empty(t, runtime.kvLimitCalls, "a card with no size is not divided")
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, pod.Name, got.Status.Instances[0].Pod)
+
+	// The engine is ready. Like the mock's, it has no KV allocator to read.
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(-1)}
+	reconcileOnce(t, r, pm.Name)
+
+	got = getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Instances[0].Phase)
+}
+
+func TestReconcileTriesTheNextPodWhenACardCannotBeDivided(t *testing.T) {
+	pm := claimWithCost(20<<30, 4<<30)
+	// warm-1 is the roomier card and is tried first, but the engine on it will
+	// not take the smaller limit that would make the room.
+	roomy, roomySnapshot := sizedWarmPod("warm-1", "10.0.0.1", 90<<30)
+	neighbour := claimOnPod("neighbour", roomy.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30)
+	roomySnapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 2<<30, 76<<30)}
+	other, otherSnapshot := sizedWarmPod("warm-2", "10.0.0.2", 60<<30)
+	r, runtime := newReconciler(t, pm, neighbour, roomy, other)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		roomy.Status.PodIP: roomySnapshot,
+		other.Status.PodIP: otherSnapshot,
+	}
+	runtime.deafToKVLimits = true
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-2", got.Status.Instances[0].Pod)
+	failed := false
+	for _, event := range drainEvents(t, r) {
+		if strings.Contains(event, "KVLimitFailed") && strings.Contains(event, "warm-1") {
+			failed = true
+		}
+	}
+	assert.True(t, failed, "the card that could not be divided should still be reported")
+}
+
+func TestReconcileWillNotPlaceWhenANeighbourHasOutgrownItsNewLimit(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	// The account was built when the neighbour held 100, and by the time the
+	// limit is read back it has mapped 250.
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	runtime.onKVLimit = func() { snapshot.Models[0].KVUsedBytes = 250 }
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Empty(t, got.Status.Instances)
+	cond := meta.FindStatusCondition(got.Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Contains(t, cond.Message, "past the")
+}
+
+func TestReconcileHoldsAnEngineToItsLimitBeforeRouting(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	// Alone on a card of 1000, the model keeps its floor of 100 and the 200
+	// left over once its footprint is paid for.
+	assert.Equal(t, int64(300), got.Status.Instances[0].KVLimitBytes)
+
+	// The engine comes up under its allocator's own limit.
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(5000)}
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, int64(300), runtime.kvLimitCalls[0].LimitBytes)
+	got = getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
+	assert.Equal(t, int32(0), got.Status.ReadyReplicas)
+
+	// The write lands, and the engine is routable on the next pass.
+	snapshot.Models[0].KVCapacityBytes = 300
+	reconcileOnce(t, r, pm.Name)
+
+	got = getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Instances[0].Phase)
+	assert.Equal(t, int32(1), got.Status.ReadyReplicas)
+}
+
+func TestReconcileDeroutesAnEngineHeldToMoreThanItsRecord(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod:          "warm-1",
+		Port:         9001,
+		Phase:        modelv1alpha1.ModelClaimActive,
+		KVLimitBytes: 300,
+	}}
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	// The engine restarted and its allocator put the whole pool back, so it
+	// could grow into memory the card holds for its neighbours.
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(5000)}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, int64(300), runtime.kvLimitCalls[0].LimitBytes)
+	got := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
+	assert.Equal(t, int32(0), got.Status.ReadyReplicas)
+	said := false
+	for _, event := range drainEvents(t, r) {
+		if strings.Contains(event, "KVLimitNotHeld") {
+			said = true
+		}
+	}
+	assert.True(t, said, "the event should blame the limit, not the engine")
+
+	// The write lands, and the route comes back on the next pass.
+	reconcileOnce(t, r, pm.Name)
+
+	got = getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Instances[0].Phase)
+}
+
+func TestReconcileKeepsAnEngineRoutableWhileALargerLimitIsPending(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod:          "warm-1",
+		Port:         9001,
+		Phase:        modelv1alpha1.ModelClaimActive,
+		KVLimitBytes: 300,
+	}}
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	// Held to less than its record: a larger share was recorded for it and has
+	// not been written yet.
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(200)}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	// Growing it is the card's division to do, in its own order.
+	assert.Empty(t, runtime.kvLimitCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Instances[0].Phase)
+}
+
+func TestReconcileGrowsANewEngineToItsRecordBeforeRouting(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+	require.Equal(t, int64(300), getModel(t, r, pm.Name).Status.Instances[0].KVLimitBytes)
+
+	// The engine comes up under an allocator default smaller than the room it
+	// was given. That room was made for it when the card was divided, so it is
+	// raised to its record before it takes any traffic.
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(200)}
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, int64(300), runtime.kvLimitCalls[0].LimitBytes)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, getModel(t, r, pm.Name).Status.Instances[0].Phase)
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, pm.Name).Status.Instances[0].Phase)
+}
+
+func TestReconcileWritesNoLimitIntoAnEngineWithoutASegment(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(-1)}
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.kvLimitCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
+}
+
+func TestReconcileStillRoutesAnInstanceWhoseClaimDeclaresNoCost(t *testing.T) {
+	// A claim stored before the declaration existed can already have an engine
+	// running. The claim is not placed again, but the engine it has keeps its
+	// route, and there is no limit to hold it to.
+	pm := withFinalizer(sampleModelClaim())
+	pm.Spec.PerGPU = nil
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{
+		{Pod: pod.Name, Phase: modelv1alpha1.ModelClaimActivating},
+	}
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(5000)}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	assert.Empty(t, runtime.kvLimitCalls)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Instances[0].Phase)
+	assert.Zero(t, got.Status.Instances[0].KVLimitBytes)
 }

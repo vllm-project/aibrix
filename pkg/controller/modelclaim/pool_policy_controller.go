@@ -298,7 +298,15 @@ func (r *ModelClaimReconciler) reconcilePoolPolicy(
 			decisionTime = manager.now()
 		}
 		activities, observed := manager.observeSnapshot(pod, snapshot)
-		if source.policy.Reclaim != nil && !observed {
+		if source.policy.Reclaim != nil && r.claimHoldsAKVLimitOn(ctx, pod) {
+			// A claim that declares its per-GPU cost has its engines held to a
+			// limit derived from that declaration, and the health loop writes
+			// that limit back whenever it finds another one in force. Two
+			// writers on one segment would only overwrite each other, so the
+			// declaration wins and the annotation stands down for this Pod.
+			recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonClaimHeldLimits)
+			klog.V(4).InfoS("pool KV policy stands down where a claim holds the limit", "pod", klog.KObj(pod))
+		} else if source.policy.Reclaim != nil && !observed {
 			recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonIncompleteMetrics)
 			klog.V(4).InfoS("pool KV policy waits for complete request observations", "pod", klog.KObj(pod))
 		} else if source.policy.Reclaim != nil {
@@ -469,6 +477,28 @@ func (r *ModelClaimReconciler) reconcilePoolIdleSleep(
 			model.ModelName, source.policy.Lifecycle.SleepAfterSeconds, pod.Name,
 		)
 	}
+}
+
+// claimHoldsAKVLimitOn reports whether any instance recorded on this Pod runs
+// under a KV limit its own ClaimReconciler maintains.
+//
+// A listing that fails answers yes. Standing down costs a pool its automatic
+// KV distribution for one round; guessing no would write a limit that the
+// health loop overwrites moments later, and neither engine would settle.
+func (r *ModelClaimReconciler) claimHoldsAKVLimitOn(ctx context.Context, pod *corev1.Pod) bool {
+	claims := &modelv1alpha1.ModelClaimList{}
+	if err := r.List(ctx, claims, client.InNamespace(pod.Namespace)); err != nil {
+		klog.ErrorS(err, "pool KV policy could not list ModelClaims", "pod", klog.KObj(pod))
+		return true
+	}
+	for i := range claims.Items {
+		for _, instance := range claims.Items[i].Status.Instances {
+			if instance.Pod == pod.Name && instance.KVLimitBytes > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func snapshotActivityKey(model RuntimeSnapshotModel) string {

@@ -64,6 +64,24 @@ spec:
                 type: object
               modelName:
                 type: string
+              perGPU:
+                properties:
+                  kvFloor:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  maximumFootprint:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                required:
+                - kvFloor
+                - maximumFootprint
+                type: object
               podSelector:
                 properties:
                   matchExpressions:
@@ -147,6 +165,9 @@ spec:
               instances:
                 items:
                   properties:
+                    kvLimitBytes:
+                      format: int64
+                      type: integer
                     phase:
                       type: string
                     pod:

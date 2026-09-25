@@ -17,11 +17,13 @@ limitations under the License.
 package modelclaim
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
@@ -216,4 +218,143 @@ func TestPruneDeadInstances(t *testing.T) {
 	// No candidates at all: every instance is stale.
 	pruneDeadInstances(pm, nil)
 	assert.Empty(t, pm.Status.Instances)
+}
+
+func gpuPod(name string) corev1.Pod {
+	pod := namedPod(name)
+	pod.Spec.Containers = []corev1.Container{{
+		Name: "aibrix-runtime",
+		Resources: corev1.ResourceRequirements{Limits: corev1.ResourceList{
+			corev1.ResourceName("nvidia.com/gpu"): *resource.NewQuantity(1, resource.DecimalSI),
+		}},
+	}}
+	return pod
+}
+
+func TestAdmissibleCandidatesKeepsOnlyPodsThatCanShowRoom(t *testing.T) {
+	candidates := []corev1.Pod{
+		gpuPod("roomy"), gpuPod("full"), gpuPod("unreadable"), namedPod("cpu-only"),
+	}
+	ledgers := map[string]podLedger{
+		"roomy": {judgeable: true, hbmUsableBytes: 95 << 30, totalMinimumReserveBytes: 40 << 30,
+			totalHeldBytes: 40 << 30, engines: make([]engineOnPod, 1)},
+		"full": {judgeable: true, hbmUsableBytes: 95 << 30, totalMinimumReserveBytes: 80 << 30,
+			totalHeldBytes: 80 << 30, engines: make([]engineOnPod, 2)},
+		"unreadable": {blocked: "its runtime did not answer"},
+	}
+
+	admissible, refusals := admissibleCandidates(candidates, ledgers, 40<<30)
+
+	require.Len(t, admissible, 2)
+	assert.Equal(t, "roomy", admissible[0].Name)
+	assert.Equal(t, "cpu-only", admissible[1].Name)
+	require.Len(t, refusals, 2)
+	assert.Equal(t,
+		"full can offer at most 15.0 GiB, even with every engine on it at its floor "+
+			"(the card holds 95.0 GiB, and 80.0 GiB of it is promised to 2 instance(s))",
+		refusals[0].reason)
+	assert.True(t, refusals[0].known)
+	assert.Equal(t, "unreadable could not be judged: its runtime did not answer", refusals[1].reason)
+	assert.False(t, refusals[1].known)
+}
+
+func TestAdmissibleCandidatesTurnsAwayACardWhoseRoomIsHeld(t *testing.T) {
+	candidates := []corev1.Pod{gpuPod("held")}
+	// The card could hold the model once its engines give their pages back,
+	// and they have not.
+	ledgers := map[string]podLedger{
+		"held": {judgeable: true, hbmUsableBytes: 95 << 30, totalMinimumReserveBytes: 40 << 30,
+			totalHeldBytes: 70 << 30, engines: make([]engineOnPod, 1)},
+	}
+
+	admissible, refusals := admissibleCandidates(candidates, ledgers, 40<<30)
+
+	assert.Empty(t, admissible)
+	require.Len(t, refusals, 1)
+	assert.Equal(t,
+		"held has 25.0 GiB free, with the rest held by the engines already on it "+
+			"(the card holds 95.0 GiB, and 70.0 GiB of it is held by 1 instance(s))",
+		refusals[0].reason)
+	assert.True(t, refusals[0].known)
+	assert.Equal(t, int64(25)<<30, refusals[0].roomBytes)
+}
+
+func TestRankingPrefersTheCardWithTheMostRoomNotTheMostFreeMemory(t *testing.T) {
+	// The tight card has more free memory right now, because the roomy card's
+	// engine has mapped KV it is entitled to. Free memory is not room.
+	states := map[string]PodPlacementState{
+		"roomy": {SnapshotKnown: true, MemoryKnown: true, HBMFreeBytes: 100},
+		"tight": {SnapshotKnown: true, MemoryKnown: true, HBMFreeBytes: 900},
+	}
+	ledgers := map[string]podLedger{
+		"roomy": {judgeable: true, hbmUsableBytes: 1000, totalMinimumReserveBytes: 100},
+		"tight": {judgeable: true, hbmUsableBytes: 1000, totalMinimumReserveBytes: 800},
+	}
+
+	rankByRoom(states, ledgers)
+
+	assert.True(t, placementStateLess(states["roomy"], states["tight"]),
+		"the card with 900 of room should rank ahead of the one with 200")
+	assert.False(t, placementStateLess(states["tight"], states["roomy"]))
+}
+
+func TestRankingPutsACardWithoutAnAccountLast(t *testing.T) {
+	states := map[string]PodPlacementState{
+		"judged":  {SnapshotKnown: true, MemoryKnown: true},
+		"unknown": {SnapshotKnown: true, MemoryKnown: true},
+	}
+	ledgers := map[string]podLedger{
+		"judged":  {judgeable: true, hbmUsableBytes: 1000, totalMinimumReserveBytes: 900},
+		"unknown": {blocked: "its runtime did not answer"},
+	}
+
+	rankByRoom(states, ledgers)
+
+	assert.True(t, placementStateLess(states["judged"], states["unknown"]))
+	assert.False(t, placementStateLess(states["unknown"], states["judged"]))
+}
+
+func TestSummarizeRefusalsNamesTheRoomiestPodThatStillCannotHold(t *testing.T) {
+	refusals := []podRefusal{
+		{pod: "tight", roomBytes: 1 << 30, known: true, reason: "tight can offer at most 1.0 GiB"},
+		{pod: "roomier", roomBytes: 3 << 30, known: true, reason: "roomier can offer at most 3.0 GiB"},
+		{pod: "unreadable", reason: "unreadable could not be judged: its runtime did not answer"},
+	}
+
+	message := summarizeRefusals(refusals, 4<<30)
+
+	assert.Equal(t,
+		"no warm pod can hold this model, which needs 4.0 GiB on a card: "+
+			"roomier can offer at most 3.0 GiB; 2 other pod(s) were turned away as well",
+		message)
+}
+
+func TestSummarizeRefusalsFallsBackToAPodItCouldNotJudge(t *testing.T) {
+	refusals := []podRefusal{
+		{pod: "unreadable", reason: "unreadable could not be judged: its cards could not be measured"},
+	}
+
+	message := summarizeRefusals(refusals, 2<<30)
+
+	assert.Equal(t,
+		"no warm pod can hold this model, which needs 2.0 GiB on a card: "+
+			"unreadable could not be judged: its cards could not be measured",
+		message)
+}
+
+func TestNoPlacementMessageBlamesTheCardsOnlyWhenTheyAreTheReason(t *testing.T) {
+	generic := errors.New("no available candidate warm pod for model")
+	tooSmall := []podRefusal{{pod: "warm-1", roomBytes: 10 << 30, known: true,
+		reason: "warm-1 can offer at most 10.0 GiB"}}
+	onIt := []corev1.Pod{{ObjectMeta: metav1.ObjectMeta{Name: "warm-2"}}}
+
+	// No candidate at all: the selector is the thing to look at.
+	assert.Equal(t, generic.Error(), noPlacementMessage(generic, nil, nil, 40<<30))
+	// A pod is still admissible, so the model is already on every pod it could
+	// use, even though another pod was turned away for room.
+	assert.Equal(t, generic.Error(), noPlacementMessage(generic, onIt, tooSmall, 40<<30))
+	// Every candidate was turned away, so say which card came closest.
+	message := noPlacementMessage(generic, nil, tooSmall, 40<<30)
+	assert.Contains(t, message, "needs 40.0 GiB")
+	assert.Contains(t, message, "warm-1 can offer at most 10.0 GiB")
 }
