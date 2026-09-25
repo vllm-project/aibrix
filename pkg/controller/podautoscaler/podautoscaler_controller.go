@@ -885,15 +885,15 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 	}
 
 	// Step 3: Compute scaling decision with selector
+	// List the target pods once and share the snapshot with the replica
+	// decision and the elastic EP observation below. A failed list keeps the
+	// previous behavior: it counts as a metric failure inside the decision.
+	pods, podsErr := r.getPodsForScale(ctx, &pa, scaleObj)
+
 	// Pass ScaleTargetRef to handle special cases like RayClusterFleet
-	scaleDecision, err := r.computeScaleDecision(ctx, pa, scaleObj, currentReplicas)
+	scaleDecision, err := r.computeScaleDecision(ctx, pa, currentReplicas, pods, podsErr)
 	if err != nil {
-		setStatus(&pa, currentReplicas, currentReplicas, false, "FailedComputeScale", false, false, err)
-		if updateErr := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); updateErr != nil {
-			return ctrl.Result{}, updateErr
-		}
-		r.EventRecorder.Event(&pa, corev1.EventTypeWarning, "FailedComputeScale", err.Error())
-		return ctrl.Result{}, fmt.Errorf("failed to compute scaling decision for %s: %w", scaleReference, err)
+		return r.failScaleDecision(ctx, &pa, paStatusOriginal, currentReplicas, scaleReference, err)
 	}
 	r.monitor.RecordScaleAction(pa.Namespace, pa.Name, scaleDecision.Algorithm, scaleDecision.Reason, scaleDecision.DesiredReplicas)
 
@@ -932,9 +932,8 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 	// Step 6: Record the observed elastic EP scaling state of the scale target.
 	// The observation is informational in this phase and never changes the
 	// replica decision computed above.
-	if observed := r.observeElasticEPScaling(ctx, &pa, scaleObj); observed != nil {
-		pa.Status.ElasticEPScaling = mergeElasticEPScalingStatus(pa.Status.ElasticEPScaling, observed, metav1.Now())
-	}
+	observation := r.observeElasticEPScaling(ctx, pods)
+	pa.Status.ElasticEPScaling = mergeElasticEPScalingObservation(pa.Status.ElasticEPScaling, observation, metav1.NewTime(r.nowTime()))
 
 	if err := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); err != nil {
 		return ctrl.Result{}, err
@@ -1148,12 +1147,31 @@ func (r *PodAutoscalerReconciler) getScaleResource(ctx context.Context, pa *auto
 	return scale, targetGR, nil
 }
 
+// failScaleDecision records a failed scaling decision in the status and
+// returns the reconcile result.
+func (r *PodAutoscalerReconciler) failScaleDecision(
+	ctx context.Context,
+	pa *autoscalingv1alpha1.PodAutoscaler,
+	paStatusOriginal *autoscalingv1alpha1.PodAutoscalerStatus,
+	currentReplicas int32,
+	scaleReference string,
+	err error,
+) (ctrl.Result, error) {
+	setStatus(pa, currentReplicas, currentReplicas, false, "FailedComputeScale", false, false, err)
+	if updateErr := r.updateStatusIfNeeded(ctx, paStatusOriginal, pa); updateErr != nil {
+		return ctrl.Result{}, updateErr
+	}
+	r.EventRecorder.Event(pa, corev1.EventTypeWarning, "FailedComputeScale", err.Error())
+	return ctrl.Result{}, fmt.Errorf("failed to compute scaling decision for %s: %w", scaleReference, err)
+}
+
 // computeScaleDecision determines if scaling is needed and what the target should be
 func (r *PodAutoscalerReconciler) computeScaleDecision(
 	ctx context.Context,
 	pa autoscalingv1alpha1.PodAutoscaler,
-	scaleObj *unstructured.Unstructured,
 	currentReplicas int32,
+	pods []corev1.Pod,
+	podsErr error,
 ) (*ScaleDecision, error) {
 	bounds, err := paschedules.Resolve(&pa, r.nowTime())
 	if err != nil {
@@ -1186,8 +1204,13 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 	// Create scaling context as single source of truth for PA-level configuration
 	scalingContext := r.createScalingContextWithBounds(pa, bounds)
 
-	// Use autoscaler for metric-based scaling with provided selector
-	replicaResult, err := r.computeMetricBasedReplicas(ctx, pa, scalingContext, scaleObj, currentReplicas)
+	// Use autoscaler for metric-based scaling with provided selector. A failed
+	// pod list is a metrics failure, so the hard replica bounds below apply.
+	var replicaResult *ReplicaComputeResult
+	err = podsErr
+	if err == nil {
+		replicaResult, err = r.computeMetricBasedReplicas(ctx, pa, scalingContext, currentReplicas, pods)
+	}
 	if err != nil {
 		if currentReplicas > maxReplicas {
 			return &ScaleDecision{
@@ -1298,18 +1321,15 @@ func (r *PodAutoscalerReconciler) getPodsForScale(
 	return podList.Items, nil
 }
 
-// computeMetricBasedReplicas uses the autoscaler to compute desired replicas based on metrics
+// computeMetricBasedReplicas uses the autoscaler to compute desired replicas
+// based on metrics. The caller passes the target pods listed for the reconcile.
 func (r *PodAutoscalerReconciler) computeMetricBasedReplicas(
 	ctx context.Context,
 	pa autoscalingv1alpha1.PodAutoscaler,
 	scalingContext scalingctx.ScalingContext,
-	scaleObject *unstructured.Unstructured,
 	currentReplicas int32,
+	pods []corev1.Pod,
 ) (*ReplicaComputeResult, error) {
-	pods, err := r.getPodsForScale(ctx, &pa, scaleObject)
-	if err != nil {
-		return nil, err
-	}
 	replicaState := replicaStateFromPods(pods, currentReplicas)
 
 	// Create request for autoscaler with ScalingContext

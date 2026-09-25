@@ -30,11 +30,10 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/klog/v2"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
-	podutils "github.com/vllm-project/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
 // An elastic expert parallel (EP) deployment adds and removes vLLM data
@@ -95,10 +94,6 @@ func newElasticEPProber() *elasticEPProber {
 		client: &http.Client{Timeout: elasticEPProbeTimeout},
 	}
 }
-
-// defaultElasticEPProber is shared by all reconcilers; http.Client is safe for
-// concurrent use.
-var defaultElasticEPProber = newElasticEPProber()
 
 // probe asks one engine for its scaling state. The vLLM endpoint answers 200
 // with {"is_scaling_elastic_ep": bool} while idle. A scaling commit blocks all
@@ -171,23 +166,18 @@ func containerCommandLine(container *corev1.Container) []string {
 	return tokens
 }
 
-// elasticEPEnginePorts returns the engine HTTP ports to probe for the pod. It
-// follows the Aibrix port convention first (the model.aibrix.ai/port label
-// with the data-parallel-size env), then falls back to the container command
-// line and the declared container ports.
-func elasticEPEnginePorts(pod *corev1.Pod, container *corev1.Container) []int32 {
-	if ports := podutils.GetPortsForPod(pod); len(ports) > 0 {
-		probePorts := make([]int32, 0, len(ports))
-		for _, port := range ports {
-			probePorts = append(probePorts, int32(port))
+// elasticEPEnginePort returns the engine HTTP port to probe for the pod. It
+// follows the Aibrix port convention first (the model.aibrix.ai/port label),
+// then falls back to the container command line and the declared container
+// ports. The data parallel ranks share the engine API server, so only the
+// first port of the convention answers the scaling state probe.
+func elasticEPEnginePort(pod *corev1.Pod, container *corev1.Container) (int32, bool) {
+	if value, ok := pod.Labels[constants.ModelLabelPort]; ok {
+		if port, ok := parseElasticEPPort(value); ok {
+			return port, true
 		}
-		return probePorts
 	}
-
-	if port, ok := elasticEPPortFromContainer(container); ok {
-		return []int32{port}
-	}
-	return nil
+	return elasticEPPortFromContainer(container)
 }
 
 // elasticEPPortFromContainer resolves the engine HTTP port from the --port
@@ -235,51 +225,66 @@ func parseElasticEPPort(value string) (int32, bool) {
 type elasticEPProbeTarget struct {
 	podName string
 	ip      string
-	ports   []int32
+	port    int32
 }
 
-// observeElasticEPScaling probes the elastic-EP-enabled engine pods of the
-// scale target and returns the observed scaling state. It returns nil when no
-// engine reported a usable state or when the target has no elastic EP pods, so
-// the previously recorded state is preserved instead of being replaced by a
-// "not scaling" guess.
+// elasticEPScalingState classifies one observation pass over the engine pods.
+type elasticEPScalingState int
+
+const (
+	// elasticEPScalingIncomplete means at least one engine pod did not answer or
+	// could not be probed, so the previous status is kept: a missing answer must
+	// not be read as "not scaling".
+	elasticEPScalingIncomplete elasticEPScalingState = iota
+	// elasticEPScalingAbsent means the scale target runs no engine pod with
+	// elastic EP enabled, so the recorded status no longer describes it.
+	elasticEPScalingAbsent
+	// elasticEPScalingComplete means every engine pod answered and the status
+	// below is a fresh observation.
+	elasticEPScalingComplete
+)
+
+// elasticEPScalingObservation is the outcome of one observation pass.
+type elasticEPScalingObservation struct {
+	state  elasticEPScalingState
+	status *autoscalingv1alpha1.ElasticEPScalingStatus
+}
+
+// observeElasticEPScaling probes the elastic-EP-enabled engine pods among the
+// pods backing the scale target. The engines publish the scaling state on
+// their API server, so readiness is not part of the selection: a scaling
+// commit answers 503 to every request, including the kubelet readiness probe,
+// and those are exactly the pods to observe. The observation is complete only
+// when every engine pod answered.
 func (r *PodAutoscalerReconciler) observeElasticEPScaling(
 	ctx context.Context,
-	pa *autoscalingv1alpha1.PodAutoscaler,
-	scaleObject *unstructured.Unstructured,
-) *autoscalingv1alpha1.ElasticEPScalingStatus {
-	pods, err := r.getPodsForScale(ctx, pa, scaleObject)
-	if err != nil {
-		klog.V(4).InfoS("Skipping elastic EP scaling observation, failed to list target pods",
-			"PodAutoscaler", klog.KObj(pa), "err", err)
-		return nil
-	}
-
+	pods []corev1.Pod,
+) elasticEPScalingObservation {
+	engines := 0
 	targets := make([]elasticEPProbeTarget, 0, len(pods))
 	for i := range pods {
 		pod := &pods[i]
-		if pod.Status.PodIP == "" || !podutils.IsPodReady(pod) {
-			continue
-		}
 		container, enabled := elasticEPEngineContainer(pod)
 		if !enabled {
 			continue
 		}
-		ports := elasticEPEnginePorts(pod, container)
-		if len(ports) == 0 {
-			klog.V(4).InfoS("Skipping elastic EP scaling observation for pod, unable to resolve the engine port",
-				"pod", klog.KObj(pod))
+		engines++
+		port, resolved := elasticEPEnginePort(pod, container)
+		if !resolved || pod.Status.PodIP == "" {
+			klog.V(4).InfoS("Elastic EP engine pod cannot be probed",
+				"pod", klog.KObj(pod), "podIP", pod.Status.PodIP, "portResolved", resolved)
 			continue
 		}
-		targets = append(targets, elasticEPProbeTarget{podName: pod.Name, ip: pod.Status.PodIP, ports: ports})
+		targets = append(targets, elasticEPProbeTarget{podName: pod.Name, ip: pod.Status.PodIP, port: port})
 	}
-	if len(targets) == 0 {
-		return nil
+	if engines == 0 {
+		return elasticEPScalingObservation{state: elasticEPScalingAbsent}
 	}
 
 	prober := r.elasticEPProber
 	if prober == nil {
-		prober = defaultElasticEPProber
+		klog.V(4).InfoS("Skipping elastic EP scaling observation, the reconciler has no prober configured")
+		return elasticEPScalingObservation{state: elasticEPScalingIncomplete}
 	}
 
 	probeCtx, cancel := context.WithTimeout(ctx, elasticEPObservationTimeout)
@@ -293,59 +298,65 @@ func (r *PodAutoscalerReconciler) observeElasticEPScaling(
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			if probeCtx.Err() != nil {
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-probeCtx.Done():
 				return
 			}
 
-			observed[index], scaling[index] = probeElasticEPTarget(probeCtx, prober, targets[index])
+			outcome, probeErr := prober.probe(probeCtx, targets[index].ip, targets[index].port)
+			if outcome == elasticEPProbeUnavailable {
+				klog.V(4).InfoS("Elastic EP scaling probe did not return a state",
+					"pod", targets[index].podName, "port", targets[index].port, "err", probeErr)
+				return
+			}
+			observed[index] = true
+			scaling[index] = outcome == elasticEPProbeScaling
 		}(i)
 	}
 	wg.Wait()
 
-	observedEngines := int32(0)
-	scalingEngines := int32(0)
+	observedEngines := 0
+	scalingEngines := 0
 	for i := range targets {
-		if !observed[i] {
-			continue
+		if observed[i] {
+			observedEngines++
 		}
-		observedEngines++
 		if scaling[i] {
 			scalingEngines++
 		}
 	}
-	if observedEngines == 0 {
-		return nil
+	if observedEngines < engines {
+		return elasticEPScalingObservation{state: elasticEPScalingIncomplete}
 	}
 
-	return &autoscalingv1alpha1.ElasticEPScalingStatus{
-		InProgress:      scalingEngines > 0,
-		ObservedEngines: observedEngines,
-		ScalingEngines:  scalingEngines,
+	return elasticEPScalingObservation{
+		state: elasticEPScalingComplete,
+		status: &autoscalingv1alpha1.ElasticEPScalingStatus{
+			InProgress:      scalingEngines > 0,
+			ObservedEngines: int32(observedEngines),
+			ScalingEngines:  int32(scalingEngines),
+		},
 	}
 }
 
-// probeElasticEPTarget probes the resolved ports of one pod. The pod counts as
-// observed when at least one port answers, and counts as scaling when any
-// answer reports scaling.
-func probeElasticEPTarget(ctx context.Context, prober *elasticEPProber, target elasticEPProbeTarget) (observed bool, scaling bool) {
-	for _, port := range target.ports {
-		outcome, probeErr := prober.probe(ctx, target.ip, port)
-		if outcome == elasticEPProbeUnavailable {
-			klog.V(4).InfoS("Elastic EP scaling probe did not return a state",
-				"pod", target.podName, "port", port, "err", probeErr)
-			if ctx.Err() != nil {
-				return observed, scaling
-			}
-			continue
-		}
-		observed = true
-		if outcome == elasticEPProbeScaling {
-			return observed, true
-		}
+// mergeElasticEPScalingObservation folds one observation pass into the
+// previously recorded status. An absent observation clears the field, an
+// incomplete pass keeps it, and a complete pass merges the fresh counts.
+func mergeElasticEPScalingObservation(
+	previous *autoscalingv1alpha1.ElasticEPScalingStatus,
+	observation elasticEPScalingObservation,
+	now metav1.Time,
+) *autoscalingv1alpha1.ElasticEPScalingStatus {
+	switch observation.state {
+	case elasticEPScalingAbsent:
+		return nil
+	case elasticEPScalingComplete:
+		return mergeElasticEPScalingStatus(previous, observation.status, now)
+	default:
+		return previous
 	}
-	return observed, scaling
 }
 
 // mergeElasticEPScalingStatus folds a fresh observation into the previously

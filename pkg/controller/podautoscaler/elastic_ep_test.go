@@ -22,20 +22,26 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"reflect"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/monitor"
 )
 
 // elasticEPFakeEngine is an HTTP server that answers elastic EP scaling probes.
@@ -189,46 +195,60 @@ func TestElasticEPEngineContainer(t *testing.T) {
 	}
 }
 
-func TestElasticEPEnginePorts(t *testing.T) {
+func TestElasticEPEnginePort(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name      string
 		labels    map[string]string
 		container corev1.Container
-		want      []int32
+		want      int32
+		wantOK    bool
 	}{
 		{
 			name:      "label with data parallel size",
 			labels:    map[string]string{constants.ModelLabelPort: "8000"},
 			container: corev1.Container{Env: []corev1.EnvVar{{Name: "data-parallel-size", Value: "3"}}},
-			want:      []int32{8000, 8001, 8002},
+			want:      8000,
+			wantOK:    true,
 		},
 		{
 			name:      "label without data parallel size",
 			labels:    map[string]string{constants.ModelLabelPort: "8000"},
 			container: corev1.Container{},
-			want:      []int32{8000},
+			want:      8000,
+			wantOK:    true,
 		},
 		{
 			name:      "port argument",
 			container: corev1.Container{Args: []string{"--port", "9000"}},
-			want:      []int32{9000},
+			want:      9000,
+			wantOK:    true,
 		},
 		{
 			name:      "inline port argument",
 			container: corev1.Container{Args: []string{"--port=9001"}},
-			want:      []int32{9001},
+			want:      9001,
+			wantOK:    true,
 		},
 		{
 			name:      "vllm port env",
 			container: corev1.Container{Env: []corev1.EnvVar{{Name: "VLLM_PORT", Value: "9002"}}},
-			want:      []int32{9002},
+			want:      9002,
+			wantOK:    true,
 		},
 		{
 			name:      "container port",
 			container: corev1.Container{Ports: []corev1.ContainerPort{{ContainerPort: 9003, Protocol: corev1.ProtocolTCP}}},
-			want:      []int32{9003},
+			want:      9003,
+			wantOK:    true,
+		},
+		{
+			name:      "label wins over the command line",
+			labels:    map[string]string{constants.ModelLabelPort: "8000"},
+			container: corev1.Container{Args: []string{"--port", "9000"}},
+			want:      8000,
+			wantOK:    true,
 		},
 		{
 			name:      "no port information",
@@ -243,9 +263,9 @@ func TestElasticEPEnginePorts(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Labels: tt.labels},
 				Spec:       corev1.PodSpec{Containers: []corev1.Container{tt.container}},
 			}
-			got := elasticEPEnginePorts(pod, &pod.Spec.Containers[0])
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Fatalf("ports = %v, want %v", got, tt.want)
+			got, ok := elasticEPEnginePort(pod, &pod.Spec.Containers[0])
+			if ok != tt.wantOK || got != tt.want {
+				t.Fatalf("port = (%d, %v), want (%d, %v)", got, ok, tt.want, tt.wantOK)
 			}
 		})
 	}
@@ -328,141 +348,123 @@ func TestElasticEPProber(t *testing.T) {
 	}
 }
 
-func TestProbeElasticEPTarget(t *testing.T) {
-	t.Parallel()
+// Bodies the fake engines answer elastic EP scaling probes with.
+const (
+	elasticEPIdleBody   = `{"is_scaling_elastic_ep": false}`
+	elasticEPBusyBody   = `{"is_scaling_elastic_ep": true}`
+	elasticEPCommitBody = `{"error": "The model is currently scaling. Please try again later."}`
+)
 
-	idleServer, _ := newElasticEPFakeEngine(t, http.StatusOK, `{"is_scaling_elastic_ep": false}`)
-	scalingServer, _ := newElasticEPFakeEngine(t, http.StatusOK, `{"is_scaling_elastic_ep": true}`)
-	prober := newElasticEPProber()
+// elasticEPEnginePod builds a target pod that runs one fake engine answering
+// scaling state probes with the given response.
+func elasticEPEnginePod(t *testing.T, name string, ready bool, statusCode int, body string) (*corev1.Pod, *elasticEPFakeEngine) {
+	t.Helper()
+	server, engine := newElasticEPFakeEngine(t, statusCode, body)
+	pod := elasticEPTestPod(name, "127.0.0.1", ready, elasticEPTestEngineContainer(
+		"--enable-elastic-ep", "--port", strconv.Itoa(int(elasticEPPortOf(t, server)))))
+	return pod, engine
+}
 
-	tests := []struct {
-		name         string
-		ports        []int32
-		wantObserved bool
-		wantScaling  bool
-	}{
-		{
-			name:         "idle port",
-			ports:        []int32{elasticEPPortOf(t, idleServer)},
-			wantObserved: true,
-		},
-		{
-			name:         "scaling port",
-			ports:        []int32{elasticEPPortOf(t, scalingServer)},
-			wantObserved: true,
-			wantScaling:  true,
-		},
-		{
-			name:         "falls through an unreachable port",
-			ports:        []int32{elasticEPFreePort(t), elasticEPPortOf(t, idleServer)},
-			wantObserved: true,
-		},
-		{
-			name:         "scaling port after an idle port",
-			ports:        []int32{elasticEPPortOf(t, idleServer), elasticEPPortOf(t, scalingServer)},
-			wantObserved: true,
-			wantScaling:  true,
-		},
-		{
-			name:  "all ports unreachable",
-			ports: []int32{elasticEPFreePort(t)},
-		},
-	}
+// elasticEPDisabledPod builds a target pod whose engine does not enable
+// elastic EP.
+func elasticEPDisabledPod(t *testing.T, name string) (*corev1.Pod, *elasticEPFakeEngine) {
+	t.Helper()
+	server, engine := newElasticEPFakeEngine(t, http.StatusOK, elasticEPIdleBody)
+	pod := elasticEPTestPod(name, "127.0.0.1", true, elasticEPTestEngineContainer(
+		"--port", strconv.Itoa(int(elasticEPPortOf(t, server)))))
+	return pod, engine
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			target := elasticEPProbeTarget{podName: "pod-a", ip: "127.0.0.1", ports: tt.ports}
-			observed, scaling := probeElasticEPTarget(context.Background(), prober, target)
-			if observed != tt.wantObserved {
-				t.Fatalf("observed = %v, want %v", observed, tt.wantObserved)
-			}
-			if scaling != tt.wantScaling {
-				t.Fatalf("scaling = %v, want %v", scaling, tt.wantScaling)
-			}
-		})
-	}
+// elasticEPUnreachablePod builds an engine pod whose resolved port accepts no
+// connections.
+func elasticEPUnreachablePod(t *testing.T, name string) *corev1.Pod {
+	t.Helper()
+	return elasticEPTestPod(name, "127.0.0.1", true, elasticEPTestEngineContainer(
+		"--enable-elastic-ep", "--port", strconv.Itoa(int(elasticEPFreePort(t)))))
 }
 
 func TestObserveElasticEPScaling(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
+	r := &PodAutoscalerReconciler{elasticEPProber: newElasticEPProber()}
 
-	scalingServer, scalingEngine := newElasticEPFakeEngine(t, http.StatusOK, `{"is_scaling_elastic_ep": true}`)
-	idleServer, idleEngine := newElasticEPFakeEngine(t, http.StatusOK, `{"is_scaling_elastic_ep": false}`)
-	notProbedServer, notProbedEngine := newElasticEPFakeEngine(t, http.StatusOK, `{"is_scaling_elastic_ep": false}`)
+	t.Run("every engine answers", func(t *testing.T) {
+		scalingPod, scalingEngine := elasticEPEnginePod(t, "pod-scaling", true, http.StatusOK, elasticEPBusyBody)
+		idlePod, idleEngine := elasticEPEnginePod(t, "pod-idle", true, http.StatusOK, elasticEPIdleBody)
+		notReadyPod, commitEngine := elasticEPEnginePod(t, "pod-not-ready", false, http.StatusServiceUnavailable, elasticEPCommitBody)
+		plainPod, plainEngine := elasticEPDisabledPod(t, "pod-without-flag")
 
-	podScaling := elasticEPTestPod("pod-scaling", "127.0.0.1", true, elasticEPTestEngineContainer(
-		"--enable-elastic-ep", "--port", strconv.Itoa(int(elasticEPPortOf(t, scalingServer)))))
-	podIdle := elasticEPTestPod("pod-idle", "127.0.0.1", true, elasticEPTestEngineContainer(
-		"--enable-elastic-ep", "--port", strconv.Itoa(int(elasticEPPortOf(t, idleServer)))))
-	podNotReady := elasticEPTestPod("pod-not-ready", "127.0.0.1", false, elasticEPTestEngineContainer(
-		"--enable-elastic-ep", "--port", strconv.Itoa(int(elasticEPPortOf(t, scalingServer)))))
-	podWithoutFlag := elasticEPTestPod("pod-without-flag", "127.0.0.1", true, elasticEPTestEngineContainer(
-		"--port", strconv.Itoa(int(elasticEPPortOf(t, notProbedServer)))))
-	podWithoutPort := elasticEPTestPod("pod-without-port", "127.0.0.1", true, elasticEPTestEngineContainer(
-		"--enable-elastic-ep"))
-
-	sch := runtime.NewScheme()
-	_ = scheme.AddToScheme(sch)
-	_ = corev1.AddToScheme(sch)
-	_ = autoscalingv1alpha1.AddToScheme(sch)
-	cl := fake.NewClientBuilder().WithScheme(sch).
-		WithObjects(podScaling, podIdle, podNotReady, podWithoutFlag, podWithoutPort).
-		Build()
-
-	r := &PodAutoscalerReconciler{
-		Client:              cl,
-		workloadScaleClient: &fakeWorkloadScaleClient{},
-	}
-	pa := &autoscalingv1alpha1.PodAutoscaler{}
-	pa.Namespace = ns
-	scaleObj := buildScaleObject("apps/v1", "Deployment", ns, "foo-deploy")
-
-	observed := r.observeElasticEPScaling(ctx, pa, scaleObj)
-	if observed == nil {
-		t.Fatal("expected an observation")
-	}
-	if !observed.InProgress {
-		t.Fatalf("InProgress = false, want true")
-	}
-	if observed.ObservedEngines != 2 {
-		t.Fatalf("ObservedEngines = %d, want 2", observed.ObservedEngines)
-	}
-	if observed.ScalingEngines != 1 {
-		t.Fatalf("ScalingEngines = %d, want 1", observed.ScalingEngines)
-	}
-	if requests, _, _ := scalingEngine.snapshot(); requests != 1 {
-		t.Fatalf("scaling engine requests = %d, want 1", requests)
-	}
-	if requests, _, _ := idleEngine.snapshot(); requests != 1 {
-		t.Fatalf("idle engine requests = %d, want 1", requests)
-	}
-	if requests, _, _ := notProbedEngine.snapshot(); requests != 0 {
-		t.Fatalf("pod without the elastic EP flag was probed %d times, want 0", requests)
-	}
-
-	t.Run("no engine answers", func(t *testing.T) {
-		deadPod := elasticEPTestPod("pod-dead", "127.0.0.1", true, elasticEPTestEngineContainer(
-			"--enable-elastic-ep", "--port", strconv.Itoa(int(elasticEPFreePort(t)))))
-		deadCl := fake.NewClientBuilder().WithScheme(sch).WithObjects(deadPod).Build()
-		deadReconciler := &PodAutoscalerReconciler{
-			Client:              deadCl,
-			workloadScaleClient: &fakeWorkloadScaleClient{},
+		observation := r.observeElasticEPScaling(ctx, []corev1.Pod{*scalingPod, *idlePod, *notReadyPod, *plainPod})
+		if observation.state != elasticEPScalingComplete {
+			t.Fatalf("state = %v, want complete", observation.state)
 		}
-		if got := deadReconciler.observeElasticEPScaling(ctx, pa, scaleObj); got != nil {
-			t.Fatalf("observation = %+v, want nil", got)
+		status := observation.status
+		if status == nil {
+			t.Fatal("expected an observed status")
+		}
+		if !status.InProgress {
+			t.Fatal("InProgress = false, want true")
+		}
+		if status.ObservedEngines != 3 || status.ScalingEngines != 2 {
+			t.Fatalf("counts = %d/%d, want 3/2", status.ObservedEngines, status.ScalingEngines)
+		}
+		for name, engine := range map[string]*elasticEPFakeEngine{
+			"scaling":   scalingEngine,
+			"idle":      idleEngine,
+			"not ready": commitEngine,
+		} {
+			if requests, _, _ := engine.snapshot(); requests != 1 {
+				t.Fatalf("%s engine requests = %d, want 1", name, requests)
+			}
+		}
+		if requests, _, _ := plainEngine.snapshot(); requests != 0 {
+			t.Fatalf("pod without the elastic EP flag was probed %d times, want 0", requests)
 		}
 	})
 
 	t.Run("no elastic EP pods", func(t *testing.T) {
-		plainCl := fake.NewClientBuilder().WithScheme(sch).WithObjects(podWithoutFlag).Build()
-		plainReconciler := &PodAutoscalerReconciler{
-			Client:              plainCl,
-			workloadScaleClient: &fakeWorkloadScaleClient{},
+		plainPod, _ := elasticEPDisabledPod(t, "pod-without-flag")
+		observation := r.observeElasticEPScaling(ctx, []corev1.Pod{*plainPod})
+		if observation.state != elasticEPScalingAbsent {
+			t.Fatalf("state = %v, want absent", observation.state)
 		}
-		if got := plainReconciler.observeElasticEPScaling(ctx, pa, scaleObj); got != nil {
-			t.Fatalf("observation = %+v, want nil", got)
+		if observation.status != nil {
+			t.Fatalf("status = %+v, want nil", observation.status)
+		}
+	})
+
+	t.Run("engine port cannot be resolved", func(t *testing.T) {
+		pod := elasticEPTestPod("pod-without-port", "127.0.0.1", true, elasticEPTestEngineContainer("--enable-elastic-ep"))
+		observation := r.observeElasticEPScaling(ctx, []corev1.Pod{*pod})
+		if observation.state != elasticEPScalingIncomplete {
+			t.Fatalf("state = %v, want incomplete", observation.state)
+		}
+	})
+
+	t.Run("engine pod has no address yet", func(t *testing.T) {
+		pod := elasticEPTestPod("pod-pending", "", true, elasticEPTestEngineContainer(
+			"--enable-elastic-ep", "--port", "8000"))
+		observation := r.observeElasticEPScaling(ctx, []corev1.Pod{*pod})
+		if observation.state != elasticEPScalingIncomplete {
+			t.Fatalf("state = %v, want incomplete", observation.state)
+		}
+	})
+
+	t.Run("one of two engines does not answer", func(t *testing.T) {
+		idlePod, _ := elasticEPEnginePod(t, "pod-idle", true, http.StatusOK, elasticEPIdleBody)
+		observation := r.observeElasticEPScaling(ctx, []corev1.Pod{*idlePod, *elasticEPUnreachablePod(t, "pod-dead")})
+		if observation.state != elasticEPScalingIncomplete {
+			t.Fatalf("state = %v, want incomplete", observation.state)
+		}
+		if observation.status != nil {
+			t.Fatalf("status = %+v, want nil for a partial pass", observation.status)
+		}
+	})
+
+	t.Run("no engine answers", func(t *testing.T) {
+		observation := r.observeElasticEPScaling(ctx, []corev1.Pod{*elasticEPUnreachablePod(t, "pod-dead")})
+		if observation.state != elasticEPScalingIncomplete {
+			t.Fatalf("state = %v, want incomplete", observation.state)
 		}
 	})
 }
@@ -558,4 +560,148 @@ func TestStatusConstructorsPreserveElasticEPScaling(t *testing.T) {
 			t.Fatalf("ElasticEPScaling was not preserved: %+v", status.ElasticEPScaling)
 		}
 	})
+}
+
+func TestMergeElasticEPScalingObservation(t *testing.T) {
+	t.Parallel()
+
+	now := metav1.NewTime(time.Now())
+	earlier := metav1.NewTime(now.Add(-time.Minute))
+	previous := &autoscalingv1alpha1.ElasticEPScalingStatus{
+		InProgress:         true,
+		ObservedEngines:    2,
+		ScalingEngines:     1,
+		LastTransitionTime: &earlier,
+	}
+	fresh := &autoscalingv1alpha1.ElasticEPScalingStatus{
+		InProgress:      true,
+		ObservedEngines: 2,
+		ScalingEngines:  1,
+	}
+
+	t.Run("absent observation clears the status", func(t *testing.T) {
+		t.Parallel()
+		if merged := mergeElasticEPScalingObservation(previous, elasticEPScalingObservation{state: elasticEPScalingAbsent}, now); merged != nil {
+			t.Fatalf("status = %+v, want nil", merged)
+		}
+		if merged := mergeElasticEPScalingObservation(nil, elasticEPScalingObservation{state: elasticEPScalingAbsent}, now); merged != nil {
+			t.Fatalf("status = %+v, want nil", merged)
+		}
+	})
+
+	t.Run("incomplete observation keeps the previous status", func(t *testing.T) {
+		t.Parallel()
+		merged := mergeElasticEPScalingObservation(previous, elasticEPScalingObservation{state: elasticEPScalingIncomplete}, now)
+		if merged != previous {
+			t.Fatalf("status = %+v, want the previous status", merged)
+		}
+		if merged.LastTransitionTime == nil || !merged.LastTransitionTime.Time.Equal(earlier.Time) {
+			t.Fatalf("LastTransitionTime = %v, want %v", merged.LastTransitionTime, earlier.Time)
+		}
+	})
+
+	t.Run("incomplete observation keeps an empty status empty", func(t *testing.T) {
+		t.Parallel()
+		if merged := mergeElasticEPScalingObservation(nil, elasticEPScalingObservation{state: elasticEPScalingIncomplete}, now); merged != nil {
+			t.Fatalf("status = %+v, want nil", merged)
+		}
+	})
+
+	t.Run("complete observation merges the counts", func(t *testing.T) {
+		t.Parallel()
+		merged := mergeElasticEPScalingObservation(previous, elasticEPScalingObservation{state: elasticEPScalingComplete, status: fresh}, now)
+		if merged == nil {
+			t.Fatal("expected a merged status")
+		}
+		if merged.ObservedEngines != 2 || merged.ScalingEngines != 1 {
+			t.Fatalf("counts = %d/%d, want 2/1", merged.ObservedEngines, merged.ScalingEngines)
+		}
+		if merged.LastTransitionTime == nil || !merged.LastTransitionTime.Time.Equal(earlier.Time) {
+			t.Fatalf("LastTransitionTime = %v, want %v", merged.LastTransitionTime, earlier.Time)
+		}
+	})
+}
+
+func TestReconcileCustomPAWritesElasticEPScaling(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	server, engine := newElasticEPFakeEngine(t, http.StatusServiceUnavailable, elasticEPCommitBody)
+	notReadyPod := elasticEPTestPod("pod-scaling", "127.0.0.1", false, elasticEPTestEngineContainer(
+		"--enable-elastic-ep", "--port", strconv.Itoa(int(elasticEPPortOf(t, server)))))
+
+	sch := runtime.NewScheme()
+	_ = scheme.AddToScheme(sch)
+	_ = corev1.AddToScheme(sch)
+	_ = autoscalingv1alpha1.AddToScheme(sch)
+
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "pa-elastic-ep"},
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{
+				APIVersion: "apps/v1",
+				Kind:       "Deployment",
+				Namespace:  ns,
+				Name:       "test-deployment",
+			},
+			MinReplicas:     ptr.To(int32(1)),
+			MaxReplicas:     10,
+			ScalingStrategy: autoscalingv1alpha1.KPA,
+			MetricsSources: []autoscalingv1alpha1.MetricSource{{
+				MetricSourceType: autoscalingv1alpha1.RESOURCE,
+				TargetMetric:     "cpu",
+				TargetValue:      "50",
+			}},
+		},
+	}
+	scaleTarget := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "apps/v1",
+		"kind":       "Deployment",
+		"metadata": map[string]interface{}{
+			"name":      "test-deployment",
+			"namespace": ns,
+		},
+		"spec": map[string]interface{}{"replicas": int64(1)},
+	}}
+
+	cl := fake.NewClientBuilder().WithScheme(sch).WithObjects(pa, notReadyPod, scaleTarget).WithStatusSubresource(pa).Build()
+
+	mapper := apimeta.NewDefaultRESTMapper([]schema.GroupVersion{{Group: "apps", Version: "v1"}})
+	mapper.Add(schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, apimeta.RESTScopeNamespace)
+
+	r := &PodAutoscalerReconciler{
+		Client:              cl,
+		Scheme:              sch,
+		EventRecorder:       record.NewFakeRecorder(16),
+		Mapper:              mapper,
+		workloadScaleClient: &fakeWorkloadScaleClient{},
+		autoScaler:          &fakeAutoScaler{},
+		monitor:             monitor.New(),
+		elasticEPProber:     newElasticEPProber(),
+	}
+
+	if _, err := r.reconcileCustomPA(ctx, *pa); err != nil {
+		t.Fatalf("reconcileCustomPA returned error: %v", err)
+	}
+
+	stored := &autoscalingv1alpha1.PodAutoscaler{}
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(pa), stored); err != nil {
+		t.Fatalf("get PodAutoscaler: %v", err)
+	}
+	status := stored.Status.ElasticEPScaling
+	if status == nil {
+		t.Fatal("expected status.elasticEPScaling to be written")
+	}
+	if !status.InProgress {
+		t.Fatal("InProgress = false, want true")
+	}
+	if status.ObservedEngines != 1 || status.ScalingEngines != 1 {
+		t.Fatalf("counts = %d/%d, want 1/1", status.ObservedEngines, status.ScalingEngines)
+	}
+	if status.LastTransitionTime == nil {
+		t.Fatal("expected a transition time")
+	}
+	if requests, _, _ := engine.snapshot(); requests != 1 {
+		t.Fatalf("engine requests = %d, want 1", requests)
+	}
 }

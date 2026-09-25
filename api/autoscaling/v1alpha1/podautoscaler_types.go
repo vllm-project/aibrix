@@ -377,12 +377,12 @@ type ElasticEPScalingStatus struct {
 	// ObservedEngines is the number of engine pods that answered the elastic EP
 	// scaling state probe.
 	// +optional
-	ObservedEngines int32 `json:"observedEngines,omitempty"`
+	ObservedEngines int32 `json:"observedEngines"`
 
 	// ScalingEngines is the number of observed engine pods that report an
 	// elastic EP scaling operation in progress.
 	// +optional
-	ScalingEngines int32 `json:"scalingEngines,omitempty"`
+	ScalingEngines int32 `json:"scalingEngines"`
 
 	// LastTransitionTime is the last time InProgress changed.
 	// +optional
