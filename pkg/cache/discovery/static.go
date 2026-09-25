@@ -31,6 +31,11 @@ import (
 
 const standaloneNamespace = "standalone"
 
+// defaultRoleSetName is the roleset name assigned to the shorthand
+// prefill_workers/decode_workers form. The roleset name is the pairing key
+// used by PD routing, and single-roleset deployments use "default".
+const defaultRoleSetName = "default"
+
 // RoleSetConfig defines a group of prefill and decode workers that can be paired together.
 // The PD routing algorithm scores prefill and decode pods within the same roleset
 // to find the optimal pair (e.g., Single node P/D etc).
@@ -50,17 +55,90 @@ type StaticModelConfig struct {
 	// Engine is the inference engine type (e.g., "vllm", "sglang", "trtllm"). Optional.
 	Engine string `json:"engine,omitempty"`
 	// Endpoints lists worker addresses for non-disaggregated serving.
-	// Each entry is a "host:port" string. Mutually exclusive with RoleSets.
+	// Each entry is a "host:port" string. Workers is the preferred spelling;
+	// the two are aliases and must not be combined. Mutually exclusive with
+	// the disaggregated forms below.
 	Endpoints []string `json:"endpoints,omitempty"`
+	// Workers is the TRT-LLM style spelling of Endpoints.
+	Workers []string `json:"workers,omitempty"`
 	// RoleSets defines prefill/decode worker groups for disaggregated serving.
-	// Mutually exclusive with Endpoints.
+	// Mutually exclusive with Endpoints/Workers and with the shorthand below.
 	RoleSets []RoleSetConfig `json:"rolesets,omitempty"`
+	// PrefillWorkers and DecodeWorkers are the TRT-LLM style shorthand for a
+	// single disaggregated roleset, named "default". Use RoleSets for multiple
+	// rolesets or when the roleset name matters.
+	PrefillWorkers []string `json:"prefill_workers,omitempty"`
+	DecodeWorkers  []string `json:"decode_workers,omitempty"`
 }
 
 // StaticConfig represents the complete static endpoints configuration.
 type StaticConfig struct {
 	// Models is the list of models and their workers.
 	Models []StaticModelConfig `json:"models"`
+}
+
+// resolve normalizes the supported config spellings into the internal
+// endpoints/rolesets pair. The TRT-LLM style workers, prefill_workers and
+// decode_workers keys are aliases for what endpoints and rolesets express;
+// role labels stay an implementation detail of the provider. A model has to
+// name itself, declare at least one backend, and list both sides of the
+// prefill_workers/decode_workers shorthand. The spellings that cannot be
+// reconciled are rejected here.
+func (m StaticModelConfig) resolve(index int) ([]string, []RoleSetConfig, error) {
+	if strings.TrimSpace(m.Name) == "" {
+		return nil, nil, fmt.Errorf("models[%d]: name is required", index)
+	}
+	if len(m.Endpoints) > 0 && len(m.Workers) > 0 {
+		return nil, nil, fmt.Errorf(
+			"model %q: endpoints and workers are aliases, use one of them", m.Name)
+	}
+	endpoints := m.Endpoints
+	if len(endpoints) == 0 {
+		endpoints = m.Workers
+	}
+
+	workerRoles := len(m.PrefillWorkers) > 0 || len(m.DecodeWorkers) > 0
+	if len(m.RoleSets) > 0 && workerRoles {
+		return nil, nil, fmt.Errorf(
+			"model %q: rolesets and prefill_workers/decode_workers are mutually exclusive", m.Name)
+	}
+	roleSets := m.RoleSets
+	if workerRoles {
+		// The shorthand always describes a single roleset; the check above
+		// already rejected the combination with explicit rolesets.
+		roleSets = []RoleSetConfig{{
+			Name:    defaultRoleSetName,
+			Prefill: m.PrefillWorkers,
+			Decode:  m.DecodeWorkers,
+		}}
+	}
+
+	if len(endpoints) > 0 && len(roleSets) > 0 {
+		return nil, nil, fmt.Errorf(
+			"model %q: endpoints/workers and rolesets/prefill_workers/decode_workers are mutually exclusive",
+			m.Name)
+	}
+	if workerRoles && (len(m.PrefillWorkers) == 0 || len(m.DecodeWorkers) == 0) {
+		// The shorthand copies the TRT-LLM shape, which lists both sides. A
+		// one-sided group can never be paired, so reject it here instead of
+		// loading a config that PD routing will never select.
+		return nil, nil, fmt.Errorf(
+			"model %q: prefill_workers and decode_workers must both list at least one worker",
+			m.Name)
+	}
+	// Count addresses after normalization so a named roleset without any
+	// worker fails exactly like an engine-only model. The rolesets form
+	// still accepts a partial group so an existing file keeps loading.
+	addresses := len(endpoints)
+	for _, rs := range roleSets {
+		addresses += len(rs.Prefill) + len(rs.Decode)
+	}
+	if addresses == 0 {
+		return nil, nil, fmt.Errorf(
+			"model %q: at least one of endpoints, workers, rolesets, or prefill_workers/decode_workers is required",
+			m.Name)
+	}
+	return endpoints, roleSets, nil
 }
 
 // StaticProvider implements Provider by loading a static YAML configuration file.
@@ -109,14 +187,14 @@ func (p *StaticProvider) load() ([]any, error) {
 	var pods []any
 	idx := 0
 
-	for _, model := range config.Models {
-		if len(model.Endpoints) > 0 && len(model.RoleSets) > 0 {
-			return nil, fmt.Errorf(
-				"model %q: endpoints and rolesets are mutually exclusive", model.Name)
+	for i, model := range config.Models {
+		endpoints, roleSets, err := model.resolve(i)
+		if err != nil {
+			return nil, err
 		}
 
-		// Non-disaggregated: plain endpoints
-		for _, addr := range model.Endpoints {
+		// Non-disaggregated: plain endpoints (or the workers alias)
+		for _, addr := range endpoints {
 			pod, err := addressToPod(model.Name, model.Engine, nil, idx, addr)
 			if err != nil {
 				return nil, fmt.Errorf("model %q endpoint %q: %w", model.Name, addr, err)
@@ -125,8 +203,8 @@ func (p *StaticProvider) load() ([]any, error) {
 			idx++
 		}
 
-		// Disaggregated: rolesets with prefill/decode
-		for _, rs := range model.RoleSets {
+		// Disaggregated: prefill/decode worker groups
+		for _, rs := range roleSets {
 			if rs.Name == "" {
 				return nil, fmt.Errorf("model %q: roleset name is required", model.Name)
 			}

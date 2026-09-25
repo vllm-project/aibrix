@@ -431,8 +431,10 @@ wire, and the decode leg evidently did not need the prefill leg's output.
 
 Tracks active **prefill** request counts per pod using `sync.Map` and `atomic.Int32`. Used by both prefill load-imbalance detection and `scorePrefillPods` (mean/stddev filter).
 
+Both request trackers are shared by every model the router serves, so pods are identified by their pod key, `namespace/name` (`utils.GeneratePodKey(pod.Namespace, pod.Name)`), not by bare pod name.
+
 ```
-AddPrefillRequest(requestID, podName)   // in Route(), after PD pod selection, before prefill HTTP
+AddPrefillRequest(requestID, podKey)    // in Route(), after PD pod selection, before prefill HTTP
 RemovePrefillRequest(requestID)         // on prefill end (executor defer) or Route error
 GetPrefillRequestCountsForPods(pods)    // for scoring
 ```
@@ -442,9 +444,9 @@ GetPrefillRequestCountsForPods(pods)    // for scoring
 Bridges the gap between **decode pod selection** and the actual decode request starting. Without this, concurrent requests could all route to the same decode pod (since `RealtimeNumRequestsRunning` hasn't updated yet).
 
 ```
-AddPendingDecode(requestID, podName)    // in Route(), immediately after pod selection
+AddPendingDecode(requestID, podKey)     // in Route(), immediately after pod selection
 RemovePendingDecode(requestID)          // deferred in Route()
-GetPendingDecodeCount(podName)          // added to running reqs in decode scoring
+GetPendingDecodeCount(podKey)           // added to running reqs in decode scoring
 ```
 
 Timeline:
@@ -454,10 +456,10 @@ Route() called
   ├─ filterPrefillDecodePods() → (prefillPod, decodePod)
   │     └─ [combined path] returns prefillPod=nil
   │
-  ├─ AddPendingDecode(requestID, decodePod)
+  ├─ AddPendingDecode(requestID, decodePodKey)
   ├─ defer RemovePendingDecode(requestID)
   │
-  ├─ [PD path] AddPrefillRequest(requestID, prefillPod)
+  ├─ [PD path] AddPrefillRequest(requestID, prefillPodKey)
   ├─ [PD path] doPrefillRequest()              (may take seconds)
   │     └─ on error: RemovePrefillRequest(requestID) called immediately
   ├─ ctx.SetTargetPod(decodePod)

@@ -42,6 +42,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
@@ -168,11 +169,11 @@ func NewPrefixCachePrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer *pr
 	}
 }
 
-// Prepare tokenizes routingCtx.Message, performs a prefix-cache lookup against
+// Prepare tokenizes routingCtx.PrefixText(), performs a prefix-cache lookup against
 // the ready-pod set, and returns a prefixCacheScorer populated with the match
 // percentages and prefix hashes for the request.
 func (p *prefixCachePrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ []*v1.Pod, readyPodsMap map[string]struct{}) (PrefillScorer, error) {
-	tokens, err := p.tok.TokenizeInputText(routingCtx.Message)
+	tokens, err := p.tok.TokenizeInputText(routingCtx.PrefixText())
 	if err != nil {
 		return nil, err
 	}
@@ -299,11 +300,11 @@ func NewConductorPrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer *pref
 	}
 }
 
-// Prepare tokenizes routingCtx.Message and performs a prefix-cache lookup against the
+// Prepare tokenizes routingCtx.PrefixText() and performs a prefix-cache lookup against the
 // ready-pod set, keeping the input token count so downstream ScorePod can derive
 // matched/unmatched lengths from the per-pod match percentage.
 func (p *conductorPrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ []*v1.Pod, readyPodsMap map[string]struct{}) (PrefillScorer, error) {
-	tokens, err := p.tok.TokenizeInputText(routingCtx.Message)
+	tokens, err := p.tok.TokenizeInputText(routingCtx.PrefixText())
 	if err != nil {
 		return nil, err
 	}
@@ -481,9 +482,10 @@ func (s tokenLoadScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
 		// No ledger to read; every pod ties and the caller's tie-break applies.
 		return 0
 	}
-	score := s.tracker.GetPriorityWithKVWeight(pod.Name, s.kvWeight)
+	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+	score := s.tracker.GetPriorityWithKVWeight(podKey, s.kvWeight)
 	if klog.V(4).Enabled() {
-		active, kv := s.tracker.GetLoad(pod.Name)
+		active, kv := s.tracker.GetLoad(podKey)
 		klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
 			"policy", PrefillScorePolicyTokenLoad,
 			"score", score, "active_tokens", active, "kv_tokens", kv,
@@ -599,10 +601,10 @@ func NewHybridCacheLoadPrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer
 	}
 }
 
-// Prepare tokenizes routingCtx.Message and looks it up in the prefix cache,
+// Prepare tokenizes routingCtx.PrefixText() and looks it up in the prefix cache,
 // exactly as prefix_cache does; the load side is read at ScorePod time.
 func (p *hybridCacheLoadPrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ []*v1.Pod, readyPodsMap map[string]struct{}) (PrefillScorer, error) {
-	tokens, err := p.tok.TokenizeInputText(routingCtx.Message)
+	tokens, err := p.tok.TokenizeInputText(routingCtx.PrefixText())
 	if err != nil {
 		return nil, err
 	}
@@ -649,7 +651,7 @@ func (s *hybridCacheLoadScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64
 	discount := 1 - r*r*s.cfg.Factor
 	load := 0.0
 	if s.tracker != nil {
-		load = s.tracker.GetPriorityWithKVWeight(pod.Name, s.kvWeight)
+		load = s.tracker.GetPriorityWithKVWeight(utils.GeneratePodKey(pod.Namespace, pod.Name), s.kvWeight)
 	}
 	score := discount
 	if load >= 1 {

@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -40,9 +41,9 @@ func TestTokenLoadPrefillPolicy_ScoresFromTracker(t *testing.T) {
 	assert.False(t, UsesTokenLoad(nil))
 
 	podA, podB := tokenLoadTestPod("pod-a"), tokenLoadTestPod("pod-b")
-	tracker.AcquirePrefill("long", podA.Name, 8000)
-	tracker.AcquirePrefill("short-1", podB.Name, 100)
-	tracker.AcquirePrefill("short-2", podB.Name, 100)
+	tracker.AcquirePrefill("long", utils.GeneratePodKey(podA.Namespace, podA.Name), 8000)
+	tracker.AcquirePrefill("short-1", utils.GeneratePodKey(podB.Namespace, podB.Name), 100)
+	tracker.AcquirePrefill("short-2", utils.GeneratePodKey(podB.Namespace, podB.Name), 100)
 	tracker.ReleaseTokens("short-1")
 
 	ctx := types.NewRoutingContext(context.Background(), "pd", testModelName, testMessage, "req-1", "")
@@ -67,4 +68,31 @@ func TestTokenLoadPrefillPolicy_NilTrackerScoresZero(t *testing.T) {
 	scorer, err := policy.Prepare(ctx, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, float64(0), scorer.ScorePod(tokenLoadTestPod("pod-a"), 3, 3))
+}
+
+// TestTokenLoadPrefillPolicy_SameNameInTwoNamespaces: the tracker is shared by
+// every model the router serves, so two prefill pods that share a name in
+// different namespaces must keep separate ledgers.
+func TestTokenLoadPrefillPolicy_SameNameInTwoNamespaces(t *testing.T) {
+	tracker := newTokenLoadTracker(TokenLoadConfig{KVWeight: 0.5, RequestCost: 0}, nil)
+	policy := NewTokenLoadPrefillPolicy(tracker)
+	podA := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-0", Namespace: "team-a"}}
+	podB := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-0", Namespace: "team-b"}}
+
+	tracker.AcquirePrefill("req-a", utils.GeneratePodKey(podA.Namespace, podA.Name), 1000)
+
+	ctx := types.NewRoutingContext(context.Background(), "pd", testModelName, testMessage, "req-1", "")
+	ctx.SetPDOverrides(&types.PDOverrides{TokenLoad: types.PDTokenLoadOverrides{KVWeight: 0.5}})
+	scorer, err := policy.Prepare(ctx, []*v1.Pod{podA, podB}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, float64(1000+0.5*1000), scorer.ScorePod(podA, 1, 1))
+	assert.Equal(t, float64(0), scorer.ScorePod(podB, 0, 1), "a charge on team-a/prefill-0 must not load team-b/prefill-0")
+
+	tracker.AcquirePrefill("req-b", utils.GeneratePodKey(podB.Namespace, podB.Name), 10)
+	assert.Equal(t, float64(1000+0.5*1000), scorer.ScorePod(podA, 1, 1))
+	assert.Equal(t, float64(10+0.5*10), scorer.ScorePod(podB, 1, 1))
+
+	tracker.ReleaseAll("req-a")
+	assert.Equal(t, float64(0), scorer.ScorePod(podA, 0, 1))
+	assert.Equal(t, float64(10+0.5*10), scorer.ScorePod(podB, 1, 1), "releasing team-a's charge leaves team-b's alone")
 }

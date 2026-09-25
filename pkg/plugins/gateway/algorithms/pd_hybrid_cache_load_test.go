@@ -110,10 +110,10 @@ func TestPDRouter_HybridCacheLoadFollowsPrefixOnIdlePods(t *testing.T) {
 	_, err := r.Route(ctx, podList)
 	require.NoError(t, err)
 	assert.Equal(t, "prefill-1", ctx.RespHeaders[HeaderPrefillTargetPod])
-	active, kv := tokenLoad.GetLoad("prefill-1")
+	active, kv := tokenLoad.GetLoad(burstPodKey("prefill-1"))
 	assert.Equal(t, float64(0), active, "prefill has returned")
 	assert.Equal(t, float64(500), kv, "only the uncached half of the prompt is charged")
-	_, kv = tokenLoad.GetLoad("prefill-0")
+	_, kv = tokenLoad.GetLoad(burstPodKey("prefill-0"))
 	assert.Equal(t, float64(0), kv)
 }
 
@@ -130,12 +130,12 @@ func TestPDRouter_HybridCacheLoadLoadOutweighsPrefix(t *testing.T) {
 
 	ctx := hybridRequest(t, "cold", 4000, "")
 	seedHybridPrefix(t, table, ctx.Model, "prefill-1", 100)
-	tokenLoad.AcquirePrefill("long", "prefill-1", 10000)
+	tokenLoad.AcquirePrefill("long", burstPodKey("prefill-1"), 10000)
 
 	_, err := r.Route(ctx, podList)
 	require.NoError(t, err)
 	assert.Equal(t, "prefill-0", ctx.RespHeaders[HeaderPrefillTargetPod])
-	_, kv := tokenLoad.GetLoad("prefill-0")
+	_, kv := tokenLoad.GetLoad(burstPodKey("prefill-0"))
 	assert.Equal(t, float64(1000), kv)
 }
 
@@ -163,7 +163,7 @@ func TestPDRouter_HybridCacheLoadSessionDelta(t *testing.T) {
 	for _, step := range steps {
 		_, err := r.Route(hybridRequest(t, step.requestID, step.bodyBytes, step.sessionID), podList)
 		require.NoError(t, err)
-		_, kv := tokenLoad.GetLoad(prefillPod.Name)
+		_, kv := tokenLoad.GetLoad(utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name))
 		assert.Equalf(t, step.wantKV, kv, "%s: %s", step.requestID, step.why)
 	}
 }
@@ -199,7 +199,7 @@ func TestPDRouter_HybridCacheLoadMinMatch(t *testing.T) {
 			if tc.wantPod != "" {
 				assert.Equal(t, tc.wantPod, selected)
 			}
-			_, kv := tokenLoad.GetLoad(selected)
+			_, kv := tokenLoad.GetLoad(burstPodKey(selected))
 			assert.Equal(t, tc.wantKV, kv)
 		})
 	}
@@ -224,7 +224,7 @@ func TestPDRouter_HybridCacheLoadViaRoutingConfig(t *testing.T) {
 
 	_, _, err = r.filterPrefillDecodePods(ctx, readyPods)
 	require.NoError(t, err)
-	active, kv := tokenLoad.GetLoad(prefillPod.Name)
+	active, kv := tokenLoad.GetLoad(utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name))
 	assert.Equal(t, float64(1000), active)
 	assert.Equal(t, float64(1000), kv)
 }

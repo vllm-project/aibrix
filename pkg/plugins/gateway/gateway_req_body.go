@@ -57,7 +57,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		return s.handleVideoJobSubResource(ctx, routingCtx, requestID, requestPath, publicJobID, body.RequestBody.GetBody())
 	}
 
-	var model, message string
+	var model, message, prefixText string
 	var stream bool
 	var routingAlgorithm types.RoutingAlgorithm
 	var errRes *extProcPb.ProcessingResponse
@@ -73,7 +73,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		message = "" // Audio/video requests don't have a text message for token counting
 	} else {
 		// Use existing JSON validation for other endpoints
-		model, message, stream, errRes = validateRequestBody(requestID, requestPath, body.RequestBody.GetBody(), user)
+		model, message, prefixText, stream, errRes = validateRequestBody(requestID, requestPath, body.RequestBody.GetBody(), user)
 		if errRes != nil {
 			return errRes, model, stream, term
 		}
@@ -81,6 +81,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 
 	routingCtx.Model = model
 	routingCtx.Message = message
+	routingCtx.PrefixMatchText = prefixText
 	routingCtx.Stream = stream
 	routingCtx.ReqBody = body.RequestBody.GetBody()
 	if base, ok := s.cache.ModelBaseModel(model); ok {

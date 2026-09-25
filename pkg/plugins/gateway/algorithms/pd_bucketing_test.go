@@ -35,6 +35,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
@@ -644,9 +645,10 @@ func TestFilterPrefillDecodePods_BucketServeBandLosesToLoadImbalance(t *testing.
 	// The long half is banded to rs-b, but rs-b is the loaded roleset: the
 	// prefill fast path narrows to the idle rs-a first, so the band cannot pull
 	// the request back. The plan is a preference, not a gate, and the request
-	// that was not banded is not counted as one.
+	// that was not banded is not counted as one. The seed registers the load
+	// under the pod key the tracker reads: the fleet pods carry no namespace.
 	for i := 0; i < 3; i++ {
-		r.prefillRequestTracker.AddPrefillRequest("inflight-"+strconv.Itoa(i), "prefill-b")
+		r.prefillRequestTracker.AddPrefillRequest("inflight-"+strconv.Itoa(i), utils.GeneratePodKey("", "prefill-b"))
 	}
 	p, d, err := r.filterPrefillDecodePods(longCtx, pods)
 	require.NoError(t, err)
