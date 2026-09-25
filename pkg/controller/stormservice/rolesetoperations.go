@@ -34,24 +34,43 @@ import (
 	utils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
 )
 
-func (r *StormServiceReconciler) getRoleSetList(ctx context.Context, selector *metav1.LabelSelector) ([]*orchestrationv1alpha1.RoleSet, error) {
-	if selector == nil {
-		return nil, fmt.Errorf("selector can not be nil")
-	}
-	roleSetSelector, err := metav1.LabelSelectorAsSelector(selector)
-	if err != nil {
-		return nil, fmt.Errorf("bad selector format: %v", err)
-	}
+// getRoleSetList returns the RoleSets owned by stormService.
+//
+// Membership is controller identity rather than the user selector: the lookup is
+// restricted to the StormService namespace, keyed on the storm-service-name label
+// that renderRoleSet stamps on every RoleSet, and then narrowed to the RoleSets
+// this StormService controls. That label is already the membership key for the
+// headless Service and for status.scalingTargetSelector.
+//
+// spec.selector is a create-time contract that renderRoleSet enforces, not an
+// ownership claim, and it is a poor membership index. Listing by it pulls in a
+// peer's RoleSets whenever two StormServices in one namespace share a selector,
+// and it hides an owned RoleSet whose labels drifted from scaling, status and
+// finalize, which leaks the RoleSet on delete. It also makes every lookup depend
+// on a field that may be nil, so a deleting StormService could never drop its
+// finalizer.
+func (r *StormServiceReconciler) getRoleSetList(ctx context.Context, stormService *orchestrationv1alpha1.StormService) ([]*orchestrationv1alpha1.RoleSet, error) {
 	roleSetList := &orchestrationv1alpha1.RoleSetList{}
-	err = r.List(ctx, roleSetList, client.MatchingLabelsSelector{Selector: roleSetSelector})
-	if err != nil {
-		klog.Errorf("failed to list roleSets")
-		return nil, err
+	if err := r.List(ctx, roleSetList,
+		client.InNamespace(stormService.Namespace),
+		client.MatchingLabels{constants.StormServiceNameLabelKey: stormService.Name},
+	); err != nil {
+		return nil, fmt.Errorf("failed to list roleSets for stormservice %s/%s: %w", stormService.Namespace, stormService.Name, err)
 	}
 
 	var result []*orchestrationv1alpha1.RoleSet
 	for i := range roleSetList.Items {
-		result = append(result, &roleSetList.Items[i])
+		roleSet := &roleSetList.Items[i]
+		if !metav1.IsControlledBy(roleSet, stormService) {
+			// The name label points here but the RoleSet is controlled by another
+			// object, or by nobody once an ownerReference is stripped. Owns() never
+			// enqueues the StormService for an ownerless RoleSet, so this log is the
+			// only place such a leak surfaces; keep it at info level.
+			klog.InfoS("Skipping RoleSet that is not controlled by this StormService",
+				"stormService", klog.KObj(stormService), "roleSet", klog.KObj(roleSet))
+			continue
+		}
+		result = append(result, roleSet)
 	}
 	return result, nil
 }

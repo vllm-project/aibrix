@@ -139,7 +139,7 @@ func (r *StormServiceReconciler) scaling(ctx context.Context, stormService, curr
 	currentRevision := currentCR.Name
 	updatedRevision := updateCR.Name
 	var scaling bool
-	allRoleSets, err := r.getRoleSetList(ctx, stormService.Spec.Selector)
+	allRoleSets, err := r.getRoleSetList(ctx, stormService)
 	if err != nil {
 		return false, err
 	}
@@ -257,7 +257,7 @@ func (r *StormServiceReconciler) scaling(ctx context.Context, stormService, curr
 
 // Rollout: execute the deployment update logic with per-role revision tracking
 func (r *StormServiceReconciler) rollout(ctx context.Context, stormService, current *orchestrationv1alpha1.StormService, currentCR, updateCR *apps.ControllerRevision) error {
-	allRoleSets, err := r.getRoleSetList(ctx, stormService.Spec.Selector)
+	allRoleSets, err := r.getRoleSetList(ctx, stormService)
 	if err != nil {
 		return err
 	}
@@ -359,7 +359,7 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 		err := r.Client.Status().Update(ctx, stormService)
 		return false, err
 	}
-	allRoleSets, err := r.getRoleSetList(ctx, stormService.Spec.Selector)
+	allRoleSets, err := r.getRoleSetList(ctx, stormService)
 	if err != nil {
 		return false, err
 	}
@@ -428,7 +428,7 @@ func setStormServiceAvailabilityCondition(status *orchestrationv1alpha1.StormSer
 
 func (r *StormServiceReconciler) finalize(ctx context.Context, stormService *orchestrationv1alpha1.StormService) (bool, error) {
 	// check if all rolesets are deleted
-	allRoleSets, err := r.getRoleSetList(ctx, stormService.Spec.Selector)
+	allRoleSets, err := r.getRoleSetList(ctx, stormService)
 	if err != nil {
 		return false, err
 	}

@@ -240,7 +240,7 @@ func applyRevision(stormService *orchestrationv1alpha1.StormService, revision *a
 }
 
 func (r *StormServiceReconciler) truncateHistory(ctx context.Context, stormService *orchestrationv1alpha1.StormService, revisions []*apps.ControllerRevision, current *apps.ControllerRevision, update *apps.ControllerRevision) error {
-	roleSets, err := r.getRoleSetList(ctx, stormService.Spec.Selector)
+	roleSets, err := r.getRoleSetList(ctx, stormService)
 	if err != nil {
 		return err
 	}
