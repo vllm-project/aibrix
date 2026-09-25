@@ -568,6 +568,11 @@ func TestSetInvalidSpecStatusPersistsConditions(t *testing.T) {
 		Success:       true,
 	}}
 	wantScalingHistory := append([]autoscalingv1alpha1.ScalingDecision(nil), pa.Status.ScalingHistory...)
+	pa.Status.ElasticEPScaling = &autoscalingv1alpha1.ElasticEPScalingStatus{
+		InProgress:      true,
+		ObservedEngines: 3,
+		ScalingEngines:  1,
+	}
 	// Simulate an existing PodAutoscaler after a successful reconcile. In this
 	// case every condition updated by setInvalidSpecStatus already exists, so no
 	// append can accidentally hide a shared Conditions backing array.
@@ -624,6 +629,10 @@ func TestSetInvalidSpecStatusPersistsConditions(t *testing.T) {
 		gotDecision.Success != wantDecision.Success ||
 		gotDecision.Error != wantDecision.Error {
 		t.Fatalf("scaling history changed: got %+v, want %+v", latest.Status.ScalingHistory, wantScalingHistory)
+	}
+	if latest.Status.ElasticEPScaling == nil || !latest.Status.ElasticEPScaling.InProgress ||
+		latest.Status.ElasticEPScaling.ObservedEngines != 3 || latest.Status.ElasticEPScaling.ScalingEngines != 1 {
+		t.Fatalf("elastic EP scaling status changed: got %+v", latest.Status.ElasticEPScaling)
 	}
 	if !hasObservedInvalidSpec(latest) {
 		t.Fatal("expected invalid spec to be gated for the observed generation")
