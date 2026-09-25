@@ -25,15 +25,14 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const binSize = 64
-
 type redisRateLimiter struct {
 	client     *redis.Client
 	name       string
 	windowSize time.Duration
 }
 
-// NewRedisAccountRateLimiter is a simple fixed window rate limiter
+// NewRedisAccountRateLimiter is a fixed-window limiter whose window starts with
+// the first write to each counter key.
 func NewRedisAccountRateLimiter(name string, client *redis.Client, windowSize time.Duration) RateLimiter {
 	if windowSize < time.Second {
 		windowSize = time.Second
@@ -74,7 +73,8 @@ func (rrl redisRateLimiter) Incr(ctx context.Context, key string, val int64, win
 }
 
 func (rrl redisRateLimiter) genKey(key string, window time.Duration) string {
-	return fmt.Sprintf("%s:%s:%d", rrl.name, key, time.Now().Unix()/int64(window.Seconds())%binSize)
+	// Keep counters separate from the static limit keys read by GetLimit.
+	return fmt.Sprintf("%s:%s:%d:counter", rrl.name, key, window.Milliseconds())
 }
 
 // incrAndExpireScript applies val to key and sets its TTL only if it doesn't have one yet

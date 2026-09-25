@@ -117,6 +117,7 @@ func TestModelReplicaRPS_Half_AllowsOneRequestEveryTwoSeconds(t *testing.T) {
 		assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, imm.GetStatus().GetCode())
 	}
 
-	time.Sleep(2100 * time.Millisecond)
+	// miniredis TTLs advance only when its clock is fast-forwarded.
+	mr.FastForward(2100 * time.Millisecond)
 	assert.Nil(t, s.enforceModelRPS(ctx, model, routingCtx), "a request after the 2s window elapses should be allowed again")
 }
