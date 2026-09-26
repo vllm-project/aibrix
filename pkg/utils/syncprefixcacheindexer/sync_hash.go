@@ -266,7 +266,15 @@ func (s *SyncPrefixHashTable) ProcessBlockStored(event BlockStored) error {
 		pod  string
 	}, 0)
 
-	// Process blocks with consistent parent hash lookup
+	// ParentBlockHash is the parent of the first block only; each later block
+	// chains from the one before it, matching GetPrefixHashes.
+	parentAibrixHash := s.seed
+	if event.ParentBlockHash != nil {
+		if ph, exists := hashMapping.engineToAibrix[*event.ParentBlockHash]; exists {
+			parentAibrixHash = ph
+		}
+	}
+
 	for i, engineBlockHash := range event.BlockHashes {
 		// Check if already exists (idempotent)
 		if existingHash, exists := hashMapping.engineToAibrix[engineBlockHash]; exists {
@@ -275,20 +283,14 @@ func (s *SyncPrefixHashTable) ProcessBlockStored(event BlockStored) error {
 				hash uint64
 				pod  string
 			}{existingHash, event.SourcePod})
+			parentAibrixHash = existingHash
 			continue
-		}
-
-		// Compute hash with proper parent lookup
-		var parentAibrixHash = s.seed
-		if event.ParentBlockHash != nil {
-			if ph, exists := hashMapping.engineToAibrix[*event.ParentBlockHash]; exists {
-				parentAibrixHash = ph
-			}
 		}
 
 		// Compute AIBrix hash
 		blockTokens := s.getBlockTokens(event, i)
 		aibrixHash := s.computeHash(parentAibrixHash, blockTokens)
+		parentAibrixHash = aibrixHash
 
 		// Store mapping
 		hashMapping.engineToAibrix[engineBlockHash] = aibrixHash

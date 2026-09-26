@@ -272,6 +272,60 @@ func TestProcessBlockStored(t *testing.T) {
 	contextData.mappingMu.RUnlock()
 }
 
+func TestProcessBlockStoredMultiBlockChain(t *testing.T) {
+	bs := NewSyncPrefixHashTable().blockSize
+	tokens := makeTokens(3 * bs)
+	blocks := [][]byte{tokens[:bs], tokens[bs : 2*bs], tokens[2*bs:]}
+	readyPods := map[string]struct{}{testPod1Name: {}}
+
+	tests := []struct {
+		name   string
+		events []BlockStored
+	}{
+		{
+			name: "one event with all blocks",
+			events: []BlockStored{
+				{BlockHashes: []int64{1, 2, 3}, Tokens: blocks},
+			},
+		},
+		{
+			name: "first block already known",
+			events: []BlockStored{
+				{BlockHashes: []int64{1}, Tokens: blocks[:1]},
+				{BlockHashes: []int64{1, 2, 3}, Tokens: blocks},
+			},
+		},
+		{
+			name: "event continuing from a parent block",
+			events: []BlockStored{
+				{BlockHashes: []int64{1}, Tokens: blocks[:1]},
+				{BlockHashes: []int64{2, 3}, ParentBlockHash: func() *int64 { p := int64(1); return &p }(), Tokens: blocks[1:]},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			table := NewSyncPrefixHashTable()
+			defer table.Close()
+
+			for _, ev := range tt.events {
+				ev.ModelName = testModelName
+				ev.LoraID = -1
+				ev.SourcePod = testPod1Name
+				if err := table.ProcessBlockStored(ev); err != nil {
+					t.Fatalf("failed to process block stored: %v", err)
+				}
+			}
+
+			matches, _ := table.MatchPrefix(testModelName, -1, tokens, readyPods)
+			if matches[testPod1Name] != 100 {
+				t.Errorf("expected 100%% match, got %d%%", matches[testPod1Name])
+			}
+		})
+	}
+}
+
 func TestProcessBlockRemoved(t *testing.T) {
 	table := NewSyncPrefixHashTable()
 	defer table.Close()
