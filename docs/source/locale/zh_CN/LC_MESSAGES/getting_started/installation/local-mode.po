@@ -1,0 +1,268 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 19:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/getting_started/installation/local-mode.rst:5
+msgid "Local Mode"
+msgstr "本地模式"
+
+#: ../../source/getting_started/installation/local-mode.rst:7
+msgid ""
+"Local mode runs the AIBrix gateway data path on a single machine without "
+"Kubernetes. It starts Envoy and the AIBrix gateway plugin as local "
+"processes and routes traffic to model servers listed in a static endpoint"
+" file."
+msgstr ""
+"本地模式在单台机器上运行 AIBrix 网关数据路径，不需要 Kubernetes。它将 Envoy 和 "
+"AIBrix 网关插件作为本地进程启动，并把流量路由到静态端点文件中列出的模型服务。"
+
+#: ../../source/getting_started/installation/local-mode.rst:11
+msgid ""
+"Use local mode for gateway routing development, quick OpenAI-compatible "
+"request testing, and debugging routing algorithms. Use a Kubernetes "
+"installation when you need controllers, CRDs, autoscaling, model "
+"downloading, runtime sidecars, or the full batch and metadata stack."
+msgstr ""
+"本地模式适用于网关路由开发、快速测试 OpenAI 兼容请求，以及调试路由算法。"
+"如果需要控制器、CRD、自动扩缩容、模型下载、runtime sidecar，或完整的批处理和元数据栈，"
+"请使用 Kubernetes 安装。"
+
+#: ../../source/getting_started/installation/local-mode.rst:17
+msgid "Architecture"
+msgstr "架构"
+
+#: ../../source/getting_started/installation/local-mode.rst:36
+msgid "Prerequisites"
+msgstr "前置条件"
+
+#: ../../source/getting_started/installation/local-mode.rst:38
+msgid "Install these tools on the local machine:"
+msgstr "在本机安装以下工具："
+
+#: ../../source/getting_started/installation/local-mode.rst:40
+msgid "Go 1.22 or newer"
+msgstr "Go 1.22 或更高版本"
+
+#: ../../source/getting_started/installation/local-mode.rst:41
+msgid "Envoy"
+msgstr "Envoy"
+
+#: ../../source/getting_started/installation/local-mode.rst:42
+msgid "one or more OpenAI-compatible model servers, such as vLLM"
+msgstr "一个或多个 OpenAI 兼容的模型服务，例如 vLLM"
+
+#: ../../source/getting_started/installation/local-mode.rst:44
+msgid "On macOS, Envoy can be installed with Homebrew:"
+msgstr "在 macOS 上可用 Homebrew 安装 Envoy："
+
+#: ../../source/getting_started/installation/local-mode.rst:50
+msgid "On Linux, download an Envoy release binary:"
+msgstr "在 Linux 上下载 Envoy 发行版二进制："
+
+#: ../../source/getting_started/installation/local-mode.rst:59
+msgid "Build the local gateway plugin binary from the repository root:"
+msgstr "在仓库根目录构建本地网关插件二进制："
+
+#: ../../source/getting_started/installation/local-mode.rst:65
+msgid "Start a backend model server. This example uses vLLM:"
+msgstr "启动后端模型服务。本例使用 vLLM："
+
+#: ../../source/getting_started/installation/local-mode.rst:72
+msgid "Configure endpoints"
+msgstr "配置端点"
+
+#: ../../source/getting_started/installation/local-mode.rst:74
+msgid ""
+"Local mode reads model endpoints from "
+"``deployment/local/configs/endpoints.yaml``. A minimal configuration "
+"looks like this:"
+msgstr ""
+"本地模式从 ``deployment/local/configs/endpoints.yaml`` 读取模型端点。最小配置如下："
+
+#: ../../source/getting_started/installation/local-mode.rst:85
+msgid "The request model name must match the configured model name."
+msgstr "请求中的模型名称必须与配置的模型名称一致。"
+
+#: ../../source/getting_started/installation/local-mode.rst:87
+msgid ""
+"The same file can also describe prefill and decode role sets for "
+"prefill/decode disaggregation testing:"
+msgstr "同一文件也可描述 prefill 和 decode 角色集，用于 prefill/decode 分离测试："
+
+#: ../../source/getting_started/installation/local-mode.rst:103
+msgid "Run local mode"
+msgstr "运行本地模式"
+
+#: ../../source/getting_started/installation/local-mode.rst:105
+msgid "On Linux, the helper script starts Envoy and the gateway plugin:"
+msgstr "在 Linux 上，辅助脚本会启动 Envoy 和网关插件："
+
+#: ../../source/getting_started/installation/local-mode.rst:112
+msgid "Send a request through Envoy:"
+msgstr "通过 Envoy 发送请求："
+
+#: ../../source/getting_started/installation/local-mode.rst:123
+msgid "Stop the local processes:"
+msgstr "停止本地进程："
+
+#: ../../source/getting_started/installation/local-mode.rst:129
+msgid ""
+"On macOS, or when you want direct process control, start the processes in"
+" separate terminals from the repository root:"
+msgstr ""
+"在 macOS 上，或希望直接控制进程时，从仓库根目录在不同终端中分别启动进程："
+
+#: ../../source/getting_started/installation/local-mode.rst:145
+msgid "Use a custom endpoint or Envoy config with the helper script:"
+msgstr "使用辅助脚本指定自定义端点或 Envoy 配置："
+
+#: ../../source/getting_started/installation/local-mode.rst:155
+msgid "Routing algorithms"
+msgstr "路由算法"
+
+#: ../../source/getting_started/installation/local-mode.rst:157
+msgid "Set ``ROUTING_ALGORITHM`` before starting local mode:"
+msgstr "启动本地模式前设置 ``ROUTING_ALGORITHM`` ："
+
+#: ../../source/getting_started/installation/local-mode.rst:163
+msgid ""
+"Use local mode with the same gateway routing algorithms that are "
+"supported by the gateway plugin, such as random routing, least-request "
+"routing, prefix-cache-aware routing, and prefill/decode routing. For "
+"production gateway configuration and algorithm behavior, see "
+":ref:`gateway`."
+msgstr ""
+"本地模式可使用网关插件支持的同一套路由算法，例如随机路由、least-request 路由、感知前缀缓存的路由，以及 prefill/decode "
+"路由。生产环境网关配置和算法行为参见 :ref:`gateway` 。"
+
+#: ../../source/getting_started/installation/local-mode.rst:169
+msgid "Ports and logs"
+msgstr "端口与日志"
+
+#: ../../source/getting_started/installation/local-mode.rst:174
+msgid "Component"
+msgstr "组件"
+
+#: ../../source/getting_started/installation/local-mode.rst:175
+msgid "Default"
+msgstr "默认值"
+
+#: ../../source/getting_started/installation/local-mode.rst:176
+msgid "Purpose"
+msgstr "用途"
+
+#: ../../source/getting_started/installation/local-mode.rst:177
+msgid "Envoy HTTP listener"
+msgstr "Envoy HTTP 监听器"
+
+#: ../../source/getting_started/installation/local-mode.rst:178
+msgid "``localhost:10080``"
+msgstr "``localhost:10080``"
+
+#: ../../source/getting_started/installation/local-mode.rst:179
+msgid "OpenAI-compatible request entry point."
+msgstr "OpenAI 兼容请求入口。"
+
+#: ../../source/getting_started/installation/local-mode.rst:180
+msgid "Envoy admin"
+msgstr "Envoy 管理接口"
+
+#: ../../source/getting_started/installation/local-mode.rst:181
+msgid "``localhost:9901``"
+msgstr "``localhost:9901``"
+
+#: ../../source/getting_started/installation/local-mode.rst:182
+msgid "Envoy admin and diagnostics."
+msgstr "Envoy 管理与诊断。"
+
+#: ../../source/getting_started/installation/local-mode.rst:183
+msgid "Gateway plugin metrics"
+msgstr "网关插件指标"
+
+#: ../../source/getting_started/installation/local-mode.rst:184
+msgid "``localhost:8080/metrics``"
+msgstr "``localhost:8080/metrics``"
+
+#: ../../source/getting_started/installation/local-mode.rst:185
+msgid "Gateway plugin metrics endpoint."
+msgstr "网关插件指标端点。"
+
+#: ../../source/getting_started/installation/local-mode.rst:186
+msgid "Health check"
+msgstr "健康检查"
+
+#: ../../source/getting_started/installation/local-mode.rst:187
+msgid "``localhost:10080/healthz``"
+msgstr "``localhost:10080/healthz``"
+
+#: ../../source/getting_started/installation/local-mode.rst:188
+msgid "Local gateway health check."
+msgstr "本地网关健康检查。"
+
+#: ../../source/getting_started/installation/local-mode.rst:190
+msgid "The helper script writes logs under ``deployment/local/logs``:"
+msgstr "辅助脚本将日志写到 ``deployment/local/logs`` ："
+
+#: ../../source/getting_started/installation/local-mode.rst:192
+msgid "``gateway-plugin.log``"
+msgstr "``gateway-plugin.log``"
+
+#: ../../source/getting_started/installation/local-mode.rst:193
+msgid "``envoy.log``"
+msgstr "``envoy.log``"
+
+#: ../../source/getting_started/installation/local-mode.rst:196
+msgid "Troubleshooting"
+msgstr "故障排查"
+
+#: ../../source/getting_started/installation/local-mode.rst:198
+msgid ""
+"``no healthy upstream``: confirm the backend model server is running and "
+"the host and port in ``endpoints.yaml`` are correct."
+msgstr "``no healthy upstream`` ：确认后端模型服务正在运行，且 ``endpoints.yaml`` 中的主机和端口正确。"
+
+#: ../../source/getting_started/installation/local-mode.rst:200
+msgid ""
+"``model not found``: confirm the request ``model`` value exactly matches "
+"the configured model name."
+msgstr "``model not found`` ：确认请求中的 ``model`` 值与配置的模型名称完全一致。"
+
+#: ../../source/getting_started/installation/local-mode.rst:202
+msgid ""
+"Envoy cannot bind a port: stop the previous local mode process or change "
+"the listener ports in the Envoy config."
+msgstr ""
+"Envoy 无法绑定端口：停止之前的本地模式进程，或更改 Envoy 配置中的监听端口。"
+
+#: ../../source/getting_started/installation/local-mode.rst:204
+msgid ""
+"External processing errors: check ``gateway-plugin.log`` first, then "
+"verify Envoy is using ``deployment/local/configs/envoy.yaml``."
+msgstr ""
+"外部处理错误：先查看 ``gateway-plugin.log`` ，再确认 Envoy 使用的是 ``deployment/local/configs/envoy.yaml`` "
+"。"
+
+#: ../../source/getting_started/installation/local-mode.rst:206
+msgid ""
+"Prefix-cache or prefill/decode routing does not behave as expected: "
+"confirm the selected ``ROUTING_ALGORITHM`` and the endpoint or roleset "
+"shape in ``endpoints.yaml``."
+msgstr ""
+"前缀缓存或 prefill/decode 路由行为不符合预期：确认所选 ``ROUTING_ALGORITHM`` ，以及 ``endpoints.yaml`` "
+"中的端点或 roleset 形态。"

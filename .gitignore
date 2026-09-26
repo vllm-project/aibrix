@@ -42,6 +42,7 @@ dist/
 
 # Sphinx documentation
 docs/build/
+docs/source/locale/**/*.mo
 !**/*.template.rst
 
 # benchmark logs, result and figs

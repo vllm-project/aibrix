@@ -1,0 +1,217 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/index.rst:63
+msgid "Getting Started"
+msgstr "快速开始"
+
+#: ../../source/index.rst:74
+msgid "Architecture"
+msgstr "架构"
+
+#: ../../source/index.rst:85
+msgid "Gateway & Routing"
+msgstr "网关与路由"
+
+#: ../../source/index.rst:94
+msgid "Model Serving"
+msgstr "模型服务"
+
+#: ../../source/index.rst:105
+msgid "Scaling & Performance"
+msgstr "扩缩容与性能"
+
+#: ../../source/index.rst:113
+msgid "Batch Inference"
+msgstr "批量推理"
+
+#: ../../source/index.rst:121
+msgid "Benchmark"
+msgstr "基准测试"
+
+#: ../../source/index.rst:128
+msgid "Development"
+msgstr "开发"
+
+#: ../../source/index.rst:135
+msgid "Production Readiness"
+msgstr "生产就绪"
+
+#: ../../source/index.rst:144
+msgid "Community"
+msgstr "社区"
+
+#: ../../source/index.rst:2
+msgid "Welcome to AIBrix"
+msgstr "欢迎使用 AIBrix"
+
+#: ../../source/index.rst:4
+msgid "AIBrix"
+msgstr "AIBrix"
+
+#: ../../source/index.rst:9
+msgid ""
+"AIBrix is an open-source initiative designed to provide essential "
+"building blocks to construct scalable GenAI inference infrastructure. "
+"AIBrix delivers a cloud-native solution optimized for deploying, "
+"managing, and scaling large language model (LLM) inference, tailored "
+"specifically to enterprise needs."
+msgstr ""
+"AIBrix 是一个开源项目，旨在提供构建可扩展 GenAI 推理基础设施所需的核心组件。"
+"它提供面向企业场景的云原生方案，用于部署、管理和扩缩容大语言模型（LLM）推理。"
+
+#: ../../source/index.rst:12
+msgid "Key features:"
+msgstr "主要特性："
+
+#: ../../source/index.rst:14
+msgid ""
+"**LLM Gateway and Routing**: Efficiently manage and direct traffic across"
+" multiple models and replicas."
+msgstr "**LLM 网关与路由** ：在多个模型和副本之间高效管理并转发流量。"
+
+#: ../../source/index.rst:15
+msgid ""
+"**High-Density LoRA Management**: Streamlined support for lightweight, "
+"low-rank adaptations of models."
+msgstr "**高密度 LoRA 管理** ：简化对轻量低秩模型适配（LoRA）的支持。"
+
+#: ../../source/index.rst:16
+msgid ""
+"**Distributed Inference**: Scalable architecture to handle large "
+"workloads across multiple nodes."
+msgstr "**分布式推理** ：可扩展架构，支持跨多节点处理大规模负载。"
+
+#: ../../source/index.rst:17
+msgid ""
+"**LLM App-Tailored Autoscaler**: Dynamically scale inference resources "
+"based on real-time demand."
+msgstr "**面向 LLM 应用的自动扩缩容** ：根据实时需求动态调整推理资源。"
+
+#: ../../source/index.rst:18
+msgid ""
+"**Unified AI Runtime**: A versatile sidecar enabling metric "
+"standardization, model downloading, and management."
+msgstr "**统一 AI Runtime** ：多用途 sidecar，用于指标标准化、模型下载与管理。"
+
+#: ../../source/index.rst:19
+msgid ""
+"**Heterogeneous-GPU Inference**: Cost-effective SLO-driven LLM inference "
+"using heterogeneous GPUs."
+msgstr "**异构 GPU 推理** ：在异构 GPU 上以 SLO 为导向进行高性价比 LLM 推理。"
+
+#: ../../source/index.rst:20
+msgid ""
+"**GPU Hardware Failure Detection**: Proactive detection of GPU hardware "
+"issues."
+msgstr "**GPU 硬件故障检测** ：主动发现 GPU 硬件问题。"
+
+#: ../../source/index.rst:21
+msgid ""
+"**KVCache Offloading and Cross-Engine KV Reuse**: High-Performance "
+"KVCache offloading framework supporting both naive KV offloading and "
+"cross-engine KV reuse."
+msgstr "**KVCache 卸载与跨引擎 KV 复用** ：高性能 KVCache 卸载框架，同时支持基础 KV 卸载和跨引擎 KV 复用。"
+
+#: ../../source/index.rst:22
+msgid ""
+"**Benchmark Tool**: A tool for measuring inference performance and "
+"resource efficiency."
+msgstr "**基准测试工具** ：用于衡量推理性能和资源效率。"
+
+#: ../../source/index.rst:25
+msgid "Where to start"
+msgstr "从哪里开始"
+
+#: ../../source/index.rst:30
+msgid "Beginner"
+msgstr "入门"
+
+#: ../../source/index.rst:33
+msgid "New to AIBrix. Get one model serving."
+msgstr "刚接触 AIBrix。先跑起来一个模型服务。"
+
+#: ../../source/index.rst:35
+msgid ":doc:`getting_started/overview`"
+msgstr ":doc:`getting_started/overview`"
+
+#: ../../source/index.rst:36
+msgid ":doc:`getting_started/quickstart`"
+msgstr ":doc:`getting_started/quickstart`"
+
+#: ../../source/index.rst:37
+msgid ":doc:`getting_started/installation/installation`"
+msgstr ":doc:`getting_started/installation/installation`"
+
+#: ../../source/index.rst:38
+msgid ":doc:`features/gateway-plugins`"
+msgstr ":doc:`features/gateway-plugins`"
+
+#: ../../source/index.rst:40
+msgid "Intermediate"
+msgstr "进阶"
+
+#: ../../source/index.rst:43
+msgid "Serving works. Make it efficient."
+msgstr "服务已经跑起来。接下来把它做得更高效。"
+
+#: ../../source/index.rst:45
+msgid ":doc:`features/autoscaling/autoscaling`"
+msgstr ":doc:`features/autoscaling/autoscaling`"
+
+#: ../../source/index.rst:46
+msgid ":doc:`features/lora-dynamic-loading`"
+msgstr ":doc:`features/lora-dynamic-loading`"
+
+#: ../../source/index.rst:47
+msgid ":doc:`features/kvcache-offloading`"
+msgstr ":doc:`features/kvcache-offloading`"
+
+#: ../../source/index.rst:48
+msgid ":doc:`production/observability`"
+msgstr ":doc:`production/observability`"
+
+#: ../../source/index.rst:50
+msgid "Advanced"
+msgstr "高级"
+
+#: ../../source/index.rst:53
+msgid "Scale, cost, and latency targets."
+msgstr "规模、成本与延迟目标。"
+
+#: ../../source/index.rst:55
+msgid ":doc:`features/pd-disaggregation`"
+msgstr ":doc:`features/pd-disaggregation`"
+
+#: ../../source/index.rst:56
+msgid ":doc:`features/multi-node-inference`"
+msgstr ":doc:`features/multi-node-inference`"
+
+#: ../../source/index.rst:57
+msgid ":doc:`features/heterogeneous-gpu`"
+msgstr ":doc:`features/heterogeneous-gpu`"
+
+#: ../../source/index.rst:58
+msgid ":doc:`production/model-deployment`"
+msgstr ":doc:`production/model-deployment`"
+
+#: ../../source/index.rst:61
+msgid "Documentation"
+msgstr "文档"

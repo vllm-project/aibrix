@@ -1,0 +1,769 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 19:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/features/batch-resource-manager.rst:5
+msgid "Batch Resource Manager for Neoclouds"
+msgstr "面向 Neoclouds 的批处理 Resource Manager"
+
+#: ../../source/features/batch-resource-manager.rst:7
+msgid ""
+"The AIBrix batch Resource Manager lets the Console planner lease cloud "
+"GPU capacity before submitting a batch to the metadata service. This is "
+"useful when you want each batch job to run on provider-managed GPU "
+"machines instead of on the Kubernetes cluster where AIBrix is running."
+msgstr ""
+"AIBrix 批处理 Resource Manager 让 Console planner 在向元数据服务提交批次之前租用云 GPU 容量。"
+"适用于希望每个批作业运行在提供方管理的 GPU 机器上，而非 AIBrix 所在 Kubernetes 集群上的场景。"
+
+#: ../../source/features/batch-resource-manager.rst:12
+msgid "The currently supported cloud providers are:"
+msgstr "当前支持的云提供方为："
+
+#: ../../source/features/batch-resource-manager.rst:14
+msgid ""
+"``runpod`` - creates RunPod pods, injects an SSH public key, and runs "
+"vLLM inside the pod."
+msgstr "``runpod`` - 创建 RunPod pods，注入 SSH 公钥，并在 pod 内运行 vLLM。"
+
+#: ../../source/features/batch-resource-manager.rst:16
+msgid ""
+"``lambdaCloud`` - creates Lambda Cloud GPU instances, SSHes to the VM, "
+"and runs the vLLM serving container with Docker."
+msgstr "``lambdaCloud`` - 创建 Lambda Cloud GPU 实例，SSH 到虚拟机，并用 Docker 运行 vLLM 推理容器。"
+
+#: ../../source/features/batch-resource-manager.rst:21
+msgid ""
+"Automatic RunPod and Lambda Cloud provisioning is available through the "
+"Console Job API, ``/api/v1/jobs``. Direct calls to the metadata service "
+"``/v1/batches`` do not call Resource Manager by themselves. Direct "
+"metadata-service users can still pass a runtime manually in "
+"``extra_body.aibrix.runtime``, but then they own provisioning and "
+"cleanup."
+msgstr ""
+"可通过 Console Job API ``/api/v1/jobs`` 自动调配 RunPod 和 Lambda Cloud。"
+"直接调用元数据服务 ``/v1/batches`` 不会自行调用 Resource Manager。"
+"直接使用元数据服务的用户仍可在 ``extra_body.aibrix.runtime`` 中手动传入 runtime，"
+"但此时由他们自行负责调配和清理。"
+
+#: ../../source/features/batch-resource-manager.rst:29
+msgid "How It Works"
+msgstr "工作原理"
+
+#: ../../source/features/batch-resource-manager.rst:64
+msgid "The planner lifecycle is:"
+msgstr "planner 生命周期为："
+
+#: ../../source/features/batch-resource-manager.rst:66
+msgid "Console receives a job through ``POST /api/v1/jobs``."
+msgstr "Console 通过 ``POST /api/v1/jobs`` 接收作业。"
+
+#: ../../source/features/batch-resource-manager.rst:67
+msgid ""
+"Planner builds a resource request from the selected "
+"``ModelDeploymentTemplate``. Today the Console path requests one replica "
+"with ``accelerator.count`` GPUs."
+msgstr ""
+"Planner 根据所选 ``ModelDeploymentTemplate`` 构建资源请求。目前 Console 路径请求一个副本，GPU "
+"数为 ``accelerator.count`` 。"
+
+#: ../../source/features/batch-resource-manager.rst:70
+msgid ""
+"Resource Manager provisions the cloud resource and stores a "
+"``ProvisionResult``."
+msgstr "Resource Manager 调配云资源并存储 ``ProvisionResult`` 。"
+
+#: ../../source/features/batch-resource-manager.rst:72
+msgid "Planner polls Resource Manager until the provision is ``running``."
+msgstr "Planner 轮询 Resource Manager，直到调配状态为 ``running`` 。"
+
+#: ../../source/features/batch-resource-manager.rst:73
+msgid ""
+"Planner submits the batch to the metadata service with ``aibrix.runtime``"
+" set to ``RunPod`` or ``LambdaCloud``."
+msgstr "Planner 向元数据服务提交批次，并将 ``aibrix.runtime`` 设为 ``RunPod`` 或 ``LambdaCloud`` 。"
+
+#: ../../source/features/batch-resource-manager.rst:75
+msgid ""
+"Metadata Service SSHes into the provisioned machine, starts vLLM, waits "
+"for ``/health``, and dispatches the batch requests."
+msgstr "元数据服务 SSH 到已调配的机器，启动 vLLM，等待 ``/health`` ，然后分发批请求。"
+
+#: ../../source/features/batch-resource-manager.rst:77
+msgid ""
+"When the batch reaches a terminal state, or when the job is cancelled, "
+"Planner calls Resource Manager ``Release``. RunPod pods are deleted and "
+"Lambda Cloud instances are terminated."
+msgstr ""
+"当批次到达终态或作业被取消时，Planner 调用 Resource Manager ``Release`` 。RunPod pods 会被删除，Lambda "
+"Cloud 实例会被终止。"
+
+#: ../../source/features/batch-resource-manager.rst:83
+msgid "Prerequisites"
+msgstr "前置条件"
+
+#: ../../source/features/batch-resource-manager.rst:85
+msgid "Before enabling a cloud provider, make sure you have:"
+msgstr "启用云提供方之前，请确保具备："
+
+#: ../../source/features/batch-resource-manager.rst:87
+msgid ""
+"A running AIBrix metadata service with batch file storage configured. See"
+" :ref:`batch_api`."
+msgstr "正在运行的 AIBrix 元数据服务，且已配置批文件存储。参见 :ref:`batch_api` 。"
+
+#: ../../source/features/batch-resource-manager.rst:89
+msgid ""
+"A running AIBrix Console backend. The Resource Manager path is owned by "
+"the Console planner."
+msgstr "正在运行的 AIBrix Console 后端。Resource Manager 路径由 Console planner 负责。"
+
+#: ../../source/features/batch-resource-manager.rst:91
+msgid ""
+"A private SSH key mounted into the metadata service and exposed through "
+"``AIBRIX_BATCH_SSH_KEY_FILE``."
+msgstr "挂载到元数据服务并通过 ``AIBRIX_BATCH_SSH_KEY_FILE`` 暴露的 SSH 私钥。"
+
+#: ../../source/features/batch-resource-manager.rst:93
+msgid ""
+"The matching public key configured for the selected provider: "
+"``RUNPOD_SSH_PUBLIC_KEY`` for RunPod, or an SSH key name in the Lambda "
+"Cloud account for Lambda Cloud."
+msgstr ""
+"为所选提供方配置匹配的公钥：RunPod 使用 ``RUNPOD_SSH_PUBLIC_KEY`` ，Lambda Cloud 使用 Lambda "
+"Cloud 账户中的 SSH 密钥名。"
+
+#: ../../source/features/batch-resource-manager.rst:96
+msgid ""
+"A ``ModelDeploymentTemplate`` for the model and GPU shape users can "
+"select when creating a job."
+msgstr "用户创建作业时可选择的模型和 GPU 规格对应的 ``ModelDeploymentTemplate`` 。"
+
+#: ../../source/features/batch-resource-manager.rst:99
+msgid "Generate a dedicated key pair for batch resources:"
+msgstr "为批处理资源生成专用密钥对："
+
+#: ../../source/features/batch-resource-manager.rst:106
+msgid ""
+"Mount the private key into the metadata service. For Kubernetes "
+"deployments, create a secret and add a volume/env patch to the metadata "
+"service deployment:"
+msgstr ""
+"将私钥挂载到元数据服务。对 Kubernetes 部署，创建 secret，并向元数据服务 deployment "
+"添加 volume/env patch："
+
+#: ../../source/features/batch-resource-manager.rst:137
+msgid "Configure the Console Backend"
+msgstr "配置 Console 后端"
+
+#: ../../source/features/batch-resource-manager.rst:139
+msgid ""
+"The Console backend selects exactly one Resource Manager provider at "
+"startup. Use ``PROVISIONER=kubernetes`` for the default in-cluster path, "
+"``PROVISIONER=runpod`` for RunPod, or ``PROVISIONER=lambdaCloud`` for "
+"Lambda Cloud."
+msgstr ""
+"Console 后端在启动时恰好选择一个 Resource Manager 提供方。默认集群内路径使用 ``PROVISIONER=kubernetes`` "
+"，RunPod 使用 ``PROVISIONER=runpod`` ，Lambda Cloud 使用 ``PROVISIONER=lambdaCloud`` "
+"。"
+
+#: ../../source/features/batch-resource-manager.rst:146
+msgid ""
+"Provider identifiers are case-sensitive and intentionally differ by "
+"context: ``PROVISIONER`` takes the lowercase/camelCase values ``runpod`` "
+"and ``lambdaCloud``, while the ``aibrix.runtime.target`` field in "
+":ref:`batch_model_deployment_templates` uses the PascalCase values "
+"``RunPod`` and ``LambdaCloud``."
+msgstr ""
+"提供方标识符区分大小写，且按上下文故意不同：``PROVISIONER`` 使用小写/camelCase 取值 ``runpod`` 和 ``lambdaCloud`` "
+"，而 :ref:`batch_model_deployment_templates` 中的 ``aibrix.runtime.target`` "
+"字段使用 PascalCase 取值 ``RunPod`` 和 ``LambdaCloud`` 。"
+
+#: ../../source/features/batch-resource-manager.rst:152
+msgid "Common environment variables:"
+msgstr "通用环境变量："
+
+#: ../../source/features/batch-resource-manager.rst:158
+#: ../../source/features/batch-resource-manager.rst:200
+#: ../../source/features/batch-resource-manager.rst:249
+msgid "Variable"
+msgstr "变量"
+
+#: ../../source/features/batch-resource-manager.rst:159
+msgid "Required?"
+msgstr "是否必填？"
+
+#: ../../source/features/batch-resource-manager.rst:160
+#: ../../source/features/batch-resource-manager.rst:201
+#: ../../source/features/batch-resource-manager.rst:250
+msgid "Description"
+msgstr "说明"
+
+#: ../../source/features/batch-resource-manager.rst:161
+msgid "``PROVISIONER``"
+msgstr "``PROVISIONER``"
+
+#: ../../source/features/batch-resource-manager.rst:162
+#: ../../source/features/batch-resource-manager.rst:165
+msgid "yes"
+msgstr "是"
+
+#: ../../source/features/batch-resource-manager.rst:163
+msgid "``runpod`` or ``lambdaCloud`` for cloud Resource Manager mode."
+msgstr "云 Resource Manager 模式下为 ``runpod`` 或 ``lambdaCloud`` 。"
+
+#: ../../source/features/batch-resource-manager.rst:164
+msgid "``METADATA_SERVICE_URL``"
+msgstr "``METADATA_SERVICE_URL``"
+
+#: ../../source/features/batch-resource-manager.rst:166
+msgid "Metadata service URL used by Console to submit ``/v1/batches``."
+msgstr "Console 提交 ``/v1/batches`` 所用的元数据服务 URL。"
+
+#: ../../source/features/batch-resource-manager.rst:167
+msgid "``STORE_URI``"
+msgstr "``STORE_URI``"
+
+#: ../../source/features/batch-resource-manager.rst:168
+msgid "recommended"
+msgstr "建议"
+
+#: ../../source/features/batch-resource-manager.rst:169
+msgid ""
+"Durable Console store URI. File-backed SQLite is enough for a single "
+"backend; production should use a shared database."
+msgstr "持久的 Console store URI。单后端使用基于文件的 SQLite 即可；生产环境应使用共享数据库。"
+
+#: ../../source/features/batch-resource-manager.rst:171
+msgid "``DEFAULT_BATCH_MODEL_DEPLOYMENT_TEMPLATE``"
+msgstr "``DEFAULT_BATCH_MODEL_DEPLOYMENT_TEMPLATE``"
+
+#: ../../source/features/batch-resource-manager.rst:172
+#: ../../source/features/batch-resource-manager.rst:175
+#: ../../source/features/batch-resource-manager.rst:179
+msgid "optional"
+msgstr "可选"
+
+#: ../../source/features/batch-resource-manager.rst:173
+msgid "Template name used when callers omit ``model_template_name``."
+msgstr "调用方省略 ``model_template_name`` 时使用的模板名称。"
+
+#: ../../source/features/batch-resource-manager.rst:174
+msgid "``PLANNING_POLICY``"
+msgstr "``PLANNING_POLICY``"
+
+#: ../../source/features/batch-resource-manager.rst:176
+msgid ""
+"Defaults to ``simple``. This is the only policy registered for RunPod and"
+" Lambda Cloud today."
+msgstr "默认为 ``simple`` 。目前这是 RunPod 和 Lambda Cloud 唯一注册的策略。"
+
+#: ../../source/features/batch-resource-manager.rst:178
+msgid "``PLANNER_WORKER_COUNT``"
+msgstr "``PLANNER_WORKER_COUNT``"
+
+#: ../../source/features/batch-resource-manager.rst:180
+msgid "Number of planner workers. Defaults to ``10``."
+msgstr "planner worker 数量。默认为 ``10`` 。"
+
+#: ../../source/features/batch-resource-manager.rst:184
+msgid "RunPod"
+msgstr "RunPod"
+
+#: ../../source/features/batch-resource-manager.rst:186
+msgid "Required RunPod configuration:"
+msgstr "必填的 RunPod 配置："
+
+#: ../../source/features/batch-resource-manager.rst:194
+msgid "Optional RunPod configuration:"
+msgstr "可选的 RunPod 配置："
+
+#: ../../source/features/batch-resource-manager.rst:202
+msgid "``RUNPOD_BASE_URL``"
+msgstr "``RUNPOD_BASE_URL``"
+
+#: ../../source/features/batch-resource-manager.rst:203
+msgid "Override the RunPod API root. Defaults to ``https://rest.runpod.io/v1``."
+msgstr "覆盖 RunPod API 根路径。默认为 ``https://rest.runpod.io/v1`` 。"
+
+#: ../../source/features/batch-resource-manager.rst:205
+msgid "``RUNPOD_DATA_CENTERS``"
+msgstr "``RUNPOD_DATA_CENTERS``"
+
+#: ../../source/features/batch-resource-manager.rst:206
+msgid ""
+"Comma-separated RunPod data center IDs. If unset, RunPod can pick any "
+"available data center."
+msgstr "逗号分隔的 RunPod 数据中心 ID。未设置时，RunPod 可选择任意可用数据中心。"
+
+#: ../../source/features/batch-resource-manager.rst:208
+msgid "``RUNPOD_IMAGE``"
+msgstr "``RUNPOD_IMAGE``"
+
+#: ../../source/features/batch-resource-manager.rst:209
+msgid ""
+"Pod image. Defaults to ``vllm/vllm-openai:latest``. The image must be "
+"able to run ``vllm serve`` and allow ``openssh-server`` to be installed "
+"at pod startup."
+msgstr ""
+"Pod 镜像。默认为 ``vllm/vllm-openai:latest`` 。镜像必须能运行 ``vllm serve`` ，并允许在 pod "
+"启动时安装 ``openssh-server`` 。"
+
+#: ../../source/features/batch-resource-manager.rst:212
+msgid "``RUNPOD_CLOUD_TYPE``"
+msgstr "``RUNPOD_CLOUD_TYPE``"
+
+#: ../../source/features/batch-resource-manager.rst:213
+msgid "``SECURE`` or ``COMMUNITY``. Defaults to ``SECURE``."
+msgstr "``SECURE`` 或 ``COMMUNITY`` 。默认为 ``SECURE`` 。"
+
+#: ../../source/features/batch-resource-manager.rst:215
+msgid ""
+"RunPod does not expose a full region, GPU type, or pricing catalog "
+"through the REST API used here. AIBrix therefore passes "
+"``ModelDeploymentTemplate.spec.accelerator.type`` directly as the RunPod "
+"``gpuTypeIds`` value. Use the exact GPU type string accepted by RunPod, "
+"for example ``NVIDIA H100 80GB HBM3``."
+msgstr ""
+"RunPod 未通过此处使用的 REST API 暴露完整的区域、GPU 类型或价格目录。因此 AIBrix 将 ``ModelDeploymentTemplate.spec.accelerator.type`` "
+"直接作为 RunPod ``gpuTypeIds`` 的值传递。请使用 RunPod 接受的精确 GPU 类型字符串，例如 ``NVIDIA H100 "
+"80GB HBM3`` 。"
+
+#: ../../source/features/batch-resource-manager.rst:221
+msgid "RunPod networking:"
+msgstr "RunPod 网络："
+
+#: ../../source/features/batch-resource-manager.rst:223
+msgid "Resource Manager creates one pod per requested replica."
+msgstr "Resource Manager 为每个请求的副本创建一个 pod。"
+
+#: ../../source/features/batch-resource-manager.rst:224
+msgid "The pod starts ``sshd`` and injects ``RUNPOD_SSH_PUBLIC_KEY``."
+msgstr "pod 启动 ``sshd`` 并注入 ``RUNPOD_SSH_PUBLIC_KEY`` 。"
+
+#: ../../source/features/batch-resource-manager.rst:225
+msgid ""
+"Planner passes ``root``, the public IP, SSH port, and ``https://<pod-"
+"id>-8000.proxy.runpod.net`` to the metadata service."
+msgstr ""
+"Planner 将 ``root`` 、公网 IP、SSH 端口和 ``https://<pod-id>-8000.proxy.runpod.net`` "
+"传递给元数据服务。"
+
+#: ../../source/features/batch-resource-manager.rst:227
+msgid ""
+"The RunPod runtime launches ``vllm serve`` over SSH and dispatches "
+"requests through the RunPod HTTP proxy."
+msgstr "RunPod 运行时通过 SSH 启动 ``vllm serve`` ，并通过 RunPod HTTP 代理分发请求。"
+
+#: ../../source/features/batch-resource-manager.rst:232
+msgid "Lambda Cloud"
+msgstr "Lambda Cloud"
+
+#: ../../source/features/batch-resource-manager.rst:234
+msgid ""
+"First add the public key to your Lambda Cloud account and note its key "
+"name. Then configure the Console backend:"
+msgstr "首先将公钥添加到 Lambda Cloud 账户并记下密钥名。然后配置 Console 后端："
+
+#: ../../source/features/batch-resource-manager.rst:243
+msgid "Optional Lambda Cloud configuration:"
+msgstr "可选的 Lambda Cloud 配置："
+
+#: ../../source/features/batch-resource-manager.rst:251
+msgid "``LAMBDA_CLOUD_BASE_URL``"
+msgstr "``LAMBDA_CLOUD_BASE_URL``"
+
+#: ../../source/features/batch-resource-manager.rst:252
+msgid ""
+"Override the Lambda Cloud API root. Defaults to "
+"``https://cloud.lambda.ai/api/v1``."
+msgstr "覆盖 Lambda Cloud API 根路径。默认为 ``https://cloud.lambda.ai/api/v1`` 。"
+
+#: ../../source/features/batch-resource-manager.rst:254
+msgid "``LAMBDA_CLOUD_REGION``"
+msgstr "``LAMBDA_CLOUD_REGION``"
+
+#: ../../source/features/batch-resource-manager.rst:255
+msgid ""
+"Hard default region preference, such as ``us-west-1``. If unset, AIBrix "
+"picks the cheapest matching instance type with current capacity in any "
+"available region."
+msgstr "硬编码的默认区域偏好，例如 ``us-west-1`` 。未设置时，AIBrix 在任意可用区域中选择当前有容量、匹配且最便宜的实例类型。"
+
+#: ../../source/features/batch-resource-manager.rst:258
+msgid "``LAMBDA_CLOUD_SSH_KEYS``"
+msgstr "``LAMBDA_CLOUD_SSH_KEYS``"
+
+#: ../../source/features/batch-resource-manager.rst:259
+msgid ""
+"Comma-separated SSH key names already registered in Lambda Cloud. At "
+"least one key is required."
+msgstr "已在 Lambda Cloud 注册的 SSH 密钥名，逗号分隔。至少需要一个密钥。"
+
+#: ../../source/features/batch-resource-manager.rst:262
+msgid "Lambda Cloud capacity selection:"
+msgstr "Lambda Cloud 容量选择："
+
+#: ../../source/features/batch-resource-manager.rst:264
+msgid "``accelerator.count`` becomes the required GPU count per instance."
+msgstr "``accelerator.count`` 成为每个实例所需的 GPU 数量。"
+
+#: ../../source/features/batch-resource-manager.rst:265
+msgid ""
+"``accelerator.type`` is matched against Lambda Cloud instance type names "
+"and GPU descriptions. Names such as ``H100``, ``NVIDIA H100``, and "
+"``H100-SXM5`` normalize to the same GPU family."
+msgstr ""
+"``accelerator.type`` 与 Lambda Cloud 实例类型名称和 GPU 描述匹配。``H100`` 、``NVIDIA "
+"H100`` 和 ``H100-SXM5`` 这类名称会规范化为同一 GPU 系列。"
+
+#: ../../source/features/batch-resource-manager.rst:268
+msgid ""
+"If ``LAMBDA_CLOUD_REGION`` is set, AIBrix only accepts capacity in that "
+"region. Otherwise it chooses the cheapest matching instance type among "
+"regions with capacity."
+msgstr "若设置了 ``LAMBDA_CLOUD_REGION`` ，AIBrix 只接受该区域的容量。否则在有容量的区域中选择最便宜的匹配实例类型。"
+
+#: ../../source/features/batch-resource-manager.rst:272
+msgid "Lambda Cloud networking:"
+msgstr "Lambda Cloud 网络："
+
+#: ../../source/features/batch-resource-manager.rst:274
+msgid "Resource Manager launches a GPU VM and waits until it is ``active``."
+msgstr "Resource Manager 启动 GPU 虚拟机并等待其变为 ``active`` 。"
+
+#: ../../source/features/batch-resource-manager.rst:275
+msgid ""
+"Planner passes ``ubuntu``, the public IP, SSH port ``22``, and the model "
+"template serving image to the metadata service."
+msgstr "Planner 将 ``ubuntu`` 、公网 IP、SSH 端口 ``22`` 以及模型模板推理镜像传递给元数据服务。"
+
+#: ../../source/features/batch-resource-manager.rst:277
+msgid ""
+"The Lambda Cloud runtime SSHes to the VM, verifies Docker, and runs the "
+"vLLM container with ``sudo docker run --gpus all``."
+msgstr "Lambda Cloud 运行时 SSH 到虚拟机，验证 Docker，并用 ``sudo docker run --gpus all`` 运行 vLLM 容器。"
+
+#: ../../source/features/batch-resource-manager.rst:279
+msgid ""
+"vLLM binds to ``127.0.0.1:8000`` on the VM. The metadata service opens an"
+" SSH local port-forward and dispatches through the tunnel, so the vLLM "
+"endpoint is not exposed publicly."
+msgstr "vLLM 绑定到虚拟机上的 ``127.0.0.1:8000`` 。元数据服务打开 SSH 本地端口转发并通过隧道分发，因此 vLLM 端点不会公网暴露。"
+
+#: ../../source/features/batch-resource-manager.rst:285
+msgid "Create a Model Deployment Template"
+msgstr "创建模型部署模板"
+
+#: ../../source/features/batch-resource-manager.rst:287
+msgid ""
+"The cloud Resource Manager path uses the Console "
+"``ModelDeploymentTemplate`` selected by the batch job. The template "
+"remains provider-agnostic; the active provider is selected by "
+"``PROVISIONER``."
+msgstr ""
+"云 Resource Manager 路径使用批作业所选的 Console ``ModelDeploymentTemplate`` 。模板与提供方无关；活动提供方由 "
+"``PROVISIONER`` 选择。"
+
+#: ../../source/features/batch-resource-manager.rst:291
+msgid "For a new model, create a Console model first:"
+msgstr "对新模型，先创建 Console 模型："
+
+#: ../../source/features/batch-resource-manager.rst:305
+msgid "Then create a deployment template:"
+msgstr "然后创建部署模板："
+
+#: ../../source/features/batch-resource-manager.rst:354
+msgid "Provider-specific notes:"
+msgstr "提供方特定说明："
+
+#: ../../source/features/batch-resource-manager.rst:356
+msgid ""
+"For Lambda Cloud, ``accelerator.type`` should be a GPU family or Lambda "
+"instance-type token, such as ``A10``, ``A100``, or ``H100``."
+msgstr ""
+"对 Lambda Cloud，``accelerator.type`` 应为 GPU 系列或 Lambda 实例类型标记，例如 ``A10`` "
+"、``A100`` 或 ``H100`` 。"
+
+#: ../../source/features/batch-resource-manager.rst:358
+msgid ""
+"For RunPod, set ``accelerator.type`` to the exact RunPod GPU type ID "
+"accepted by the pod API, such as ``NVIDIA H100 80GB HBM3``."
+msgstr ""
+"对 RunPod，将 ``accelerator.type`` 设为 pod API 接受的精确 RunPod GPU 类型 ID，例如 ``NVIDIA "
+"H100 80GB HBM3`` 。"
+
+#: ../../source/features/batch-resource-manager.rst:360
+msgid "For Lambda Cloud, ``engine.image`` is the Docker image run on the VM."
+msgstr "对 Lambda Cloud，``engine.image`` 是在虚拟机上运行的 Docker 镜像。"
+
+#: ../../source/features/batch-resource-manager.rst:361
+msgid ""
+"For RunPod, ``RUNPOD_IMAGE`` controls the pod image. The runtime still "
+"uses template fields such as ``model_source.uri`` and "
+"``engine.serve_args`` when launching ``vllm serve``."
+msgstr ""
+"对 RunPod，``RUNPOD_IMAGE`` 控制 pod 镜像。运行时在启动 ``vllm serve`` 时仍使用 "
+"``model_source.uri`` 和 ``engine.serve_args`` 等模板字段。"
+
+#: ../../source/features/batch-resource-manager.rst:367
+msgid "Submit a Batch Job"
+msgstr "提交批作业"
+
+#: ../../source/features/batch-resource-manager.rst:369
+msgid "Prepare a JSONL input file:"
+msgstr "准备 JSONL 输入文件："
+
+#: ../../source/features/batch-resource-manager.rst:376
+msgid "Upload it through the Console file proxy:"
+msgstr "通过 Console 文件代理上传："
+
+#: ../../source/features/batch-resource-manager.rst:384
+msgid "Create a job:"
+msgstr "创建作业："
+
+#: ../../source/features/batch-resource-manager.rst:400
+msgid "Watch the job and provision state:"
+msgstr "查看作业和调配状态："
+
+#: ../../source/features/batch-resource-manager.rst:407
+msgid "Expected high-level state flow:"
+msgstr "预期的高层状态流："
+
+#: ../../source/features/batch-resource-manager.rst:413
+msgid ""
+"If resource provisioning fails, the job moves to ``resource_failed`` and "
+"``error_message`` contains the provider error. If metadata-service "
+"submission fails after resources are ready, the job moves to "
+"``submit_failed`` and Planner attempts to release the provision."
+msgstr ""
+"若资源调配失败，作业进入 ``resource_failed`` ，``error_message`` 包含提供方错误。若资源就绪后元数据服务提交失败，作业进入 "
+"``submit_failed`` ，Planner 尝试释放调配。"
+
+#: ../../source/features/batch-resource-manager.rst:418
+msgid "Cancel a running job:"
+msgstr "取消正在运行的作业："
+
+#: ../../source/features/batch-resource-manager.rst:426
+msgid ""
+"Planner forwards cancellation to the metadata service if a batch has been"
+" submitted, then releases the cloud provision."
+msgstr "若批次已提交，Planner 将取消转发到元数据服务，然后释放云调配。"
+
+#: ../../source/features/batch-resource-manager.rst:431
+msgid "Read Results"
+msgstr "读取结果"
+
+#: ../../source/features/batch-resource-manager.rst:433
+msgid ""
+"When the job reaches ``completed``, download the output file through the "
+"Console file proxy:"
+msgstr "作业到达 ``completed`` 后，通过 Console 文件代理下载输出文件："
+
+#: ../../source/features/batch-resource-manager.rst:447
+msgid "Troubleshooting"
+msgstr "故障排查"
+
+#: ../../source/features/batch-resource-manager.rst:450
+msgid "``resource manager init: missing credential``"
+msgstr "``resource manager init: missing credential``"
+
+#: ../../source/features/batch-resource-manager.rst:452
+msgid ""
+"The selected provider was enabled without its required environment "
+"variables. Check:"
+msgstr "已启用所选提供方，但缺少其所需环境变量。请检查："
+
+#: ../../source/features/batch-resource-manager.rst:455
+msgid "RunPod: ``RUNPOD_API_KEY`` and ``RUNPOD_SSH_PUBLIC_KEY``."
+msgstr "RunPod：``RUNPOD_API_KEY`` 和 ``RUNPOD_SSH_PUBLIC_KEY`` 。"
+
+#: ../../source/features/batch-resource-manager.rst:456
+msgid "Lambda Cloud: ``LAMBDA_CLOUD_API_KEY`` and ``LAMBDA_CLOUD_SSH_KEYS``."
+msgstr "Lambda Cloud：``LAMBDA_CLOUD_API_KEY`` 和 ``LAMBDA_CLOUD_SSH_KEYS`` 。"
+
+#: ../../source/features/batch-resource-manager.rst:459
+msgid "``resource_failed`` with ``NoGpuType`` on RunPod"
+msgstr "RunPod 上 ``resource_failed`` 且带 ``NoGpuType``"
+
+#: ../../source/features/batch-resource-manager.rst:461
+msgid ""
+"RunPod requires at least one GPU type. Set "
+"``ModelDeploymentTemplate.spec.accelerator.type`` to an exact RunPod GPU "
+"type ID accepted by the pod API."
+msgstr ""
+"RunPod 至少需要一种 GPU 类型。将 ``ModelDeploymentTemplate.spec.accelerator.type`` "
+"设为 pod API 接受的精确 RunPod GPU 类型 ID。"
+
+#: ../../source/features/batch-resource-manager.rst:466
+msgid "``resource_failed`` with ``NoCapacity`` on Lambda Cloud"
+msgstr "Lambda Cloud 上 ``resource_failed`` 且带 ``NoCapacity``"
+
+#: ../../source/features/batch-resource-manager.rst:468
+msgid ""
+"Lambda Cloud had no currently available instance type matching "
+"``accelerator.type``, ``accelerator.count``, and ``LAMBDA_CLOUD_REGION``."
+" Try a different GPU family, lower GPU count, or unset/change the region."
+msgstr ""
+"Lambda Cloud 当前没有匹配 ``accelerator.type`` 、``accelerator.count`` 和 ``LAMBDA_CLOUD_REGION`` "
+"的可用实例类型。尝试不同 GPU 系列、更低 GPU 数量，或取消设置/更改区域。"
+
+#: ../../source/features/batch-resource-manager.rst:473
+msgid "Job is stuck in ``resource_preparing``"
+msgstr "作业卡在 ``resource_preparing``"
+
+#: ../../source/features/batch-resource-manager.rst:475
+msgid ""
+"The provider accepted the launch but AIBrix has not observed a ready "
+"public IP/SSH endpoint yet. Check the provider console, then inspect "
+"Console logs for provider API errors. For RunPod, the provision becomes "
+"ready only when the pod is ``RUNNING`` and has a public IP. For Lambda "
+"Cloud, it becomes ready when the instance is ``active`` and has a public "
+"IP."
+msgstr ""
+"提供方已接受启动，但 AIBrix 尚未观测到就绪的公网 IP/SSH 端点。检查提供方控制台，"
+"然后查看 Console 日志中的提供方 API 错误。对 RunPod，仅当 pod 为 ``RUNNING`` 且有公网 IP "
+"时调配才就绪。对 Lambda Cloud，当实例为 ``active`` 且有公网 IP 时才就绪。"
+
+#: ../../source/features/batch-resource-manager.rst:482
+msgid "Job reaches ``submit_failed`` or vLLM never becomes healthy"
+msgstr "作业到达 ``submit_failed`` 或 vLLM 始终未变为健康"
+
+#: ../../source/features/batch-resource-manager.rst:484
+msgid ""
+"The resource was created, but the metadata service could not launch or "
+"reach vLLM. Check:"
+msgstr "资源已创建，但元数据服务无法启动或访问 vLLM。请检查："
+
+#: ../../source/features/batch-resource-manager.rst:487
+msgid ""
+"``AIBRIX_BATCH_SSH_KEY_FILE`` points to the private key matching the "
+"provider-side public key."
+msgstr "``AIBRIX_BATCH_SSH_KEY_FILE`` 指向与提供方公钥匹配的私钥。"
+
+#: ../../source/features/batch-resource-manager.rst:489
+msgid "The private key file is readable only by the metadata-service process."
+msgstr "私钥文件仅元数据服务进程可读。"
+
+#: ../../source/features/batch-resource-manager.rst:490
+msgid "Lambda Cloud instances allow SSH for the registered key name."
+msgstr "Lambda Cloud 实例允许使用已注册密钥名进行 SSH。"
+
+#: ../../source/features/batch-resource-manager.rst:491
+msgid ""
+"RunPod pod image can install and run ``openssh-server`` and has ``vllm`` "
+"on ``PATH``."
+msgstr "RunPod pod 镜像能安装并运行 ``openssh-server`` ，且 ``PATH`` 上有 ``vllm`` 。"
+
+#: ../../source/features/batch-resource-manager.rst:493
+msgid ""
+"The model can be downloaded from ``model_source.uri``. If it requires "
+"authentication, configure the model source secret before submitting jobs."
+msgstr ""
+"模型可从 ``model_source.uri`` 下载。若需要认证，请在提交作业前配置模型源 secret。"
+
+#: ../../source/features/batch-resource-manager.rst:495
+msgid "Lambda Cloud images can be started with Docker and the NVIDIA runtime."
+msgstr "Lambda Cloud 镜像可用 Docker 和 NVIDIA runtime 启动。"
+
+#: ../../source/features/batch-resource-manager.rst:498
+msgid "Provider resources remain after a failed job"
+msgstr "作业失败后提供方资源仍残留"
+
+#: ../../source/features/batch-resource-manager.rst:500
+#, python-brace-format
+msgid ""
+"Planner releases resources on terminal states and cancellation, but "
+"cleanup is best-effort. If Console or the provider API fails during "
+"cleanup, use the ``provision.raw_json`` field from ``GET "
+"/api/v1/jobs/{id}`` to find the RunPod pod ID or Lambda Cloud instance "
+"IDs, then delete them in the provider console."
+msgstr ""
+"Planner 在终态和取消时释放资源，但清理是尽力而为。若清理期间 Console 或提供方 API 失败，"
+"使用 ``GET /api/v1/jobs/{id}`` 中的 ``provision.raw_json`` 字段查找 RunPod pod ID "
+"或 Lambda Cloud 实例 ID，然后在提供方控制台中删除。"
+
+#: ../../source/features/batch-resource-manager.rst:508
+msgid "Current Limitations"
+msgstr "当前限制"
+
+#: ../../source/features/batch-resource-manager.rst:510
+msgid ""
+"Cloud Resource Manager mode is selected once per Console backend with "
+"``PROVISIONER``. Per-job provider selection is not exposed yet."
+msgstr ""
+"云 Resource Manager 模式通过 ``PROVISIONER`` 为每个 Console 后端选择一次。"
+"尚未暴露按作业选择提供方。"
+
+#: ../../source/features/batch-resource-manager.rst:512
+msgid ""
+"The Console planner path requests one replica per batch job today. "
+"``ResourceGroupSpec`` supports richer groups internally, but the Console "
+"job path currently derives only one group from the selected template."
+msgstr ""
+"目前 Console planner 路径每个批作业请求一个副本。``ResourceGroupSpec`` 内部支持更丰富的组，"
+"但 Console 作业路径目前仅从所选模板派生一个组。"
+
+#: ../../source/features/batch-resource-manager.rst:515
+msgid ""
+"RunPod catalog, pricing, and region discovery return empty results "
+"because the RunPod REST API used by AIBrix does not expose those "
+"catalogs."
+msgstr "RunPod 目录、价格和区域发现返回空结果，因为 AIBrix 使用的 RunPod REST API 未暴露这些目录。"
+
+#: ../../source/features/batch-resource-manager.rst:517
+msgid ""
+"Lambda Cloud catalog data is fetched live from the Lambda Cloud API, but "
+"there is no public Console catalog endpoint for it yet."
+msgstr "Lambda Cloud 目录数据从 Lambda Cloud API 实时获取，但尚无公开的 Console 目录端点。"
+
+#: ../../source/features/batch-resource-manager.rst:519
+msgid ""
+"The cloud runtime path is designed for vLLM-compatible OpenAI HTTP "
+"serving over SSH. Other engines need matching runtime support before they"
+" can be used with RunPod or Lambda Cloud."
+msgstr ""
+"云运行时路径面向通过 SSH 的兼容 vLLM 的 OpenAI HTTP 推理。"
+"其他引擎需要匹配的运行时支持后才能用于 RunPod 或 Lambda Cloud。"
+
+#: ../../source/features/batch-resource-manager.rst:525
+msgid "See Also"
+msgstr "另见"
+
+#: ../../source/features/batch-resource-manager.rst:527
+msgid ":ref:`batch_api` - OpenAI-compatible batch API and file workflow."
+msgstr ":ref:`batch_api` - 兼容 OpenAI 的批处理 API 和文件工作流。"
+
+#: ../../source/features/batch-resource-manager.rst:528
+msgid ":ref:`batch_model_deployment_templates` - model deployment templates."
+msgstr ":ref:`batch_model_deployment_templates` - 模型部署模板。"
+
+#: ../../source/features/batch-resource-manager.rst:529
+msgid ""
+"``apps/console/api/resource_manager`` - Resource Manager provider "
+"implementations."
+msgstr "``apps/console/api/resource_manager`` - Resource Manager 提供方实现。"
+
+#: ../../source/features/batch-resource-manager.rst:531
+msgid ""
+"``python/aibrix/aibrix/batch/job_driver/runtime`` - metadata-service "
+"runtime implementations for Kubernetes, RunPod, and Lambda Cloud."
+msgstr ""
+"``python/aibrix/aibrix/batch/job_driver/runtime`` - Kubernetes、RunPod 和 "
+"Lambda Cloud 的元数据服务运行时实现。"

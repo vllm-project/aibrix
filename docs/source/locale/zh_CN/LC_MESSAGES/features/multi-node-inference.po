@@ -1,0 +1,736 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/features/multi-node-inference.rst:5
+msgid "Multi-Node Inference"
+msgstr "多节点推理"
+
+#: ../../source/features/multi-node-inference.rst:7
+msgid ""
+"Distributed inference splits and processes an LLM across multiple nodes "
+"or devices. This approach is needed for large models that exceed the "
+"memory capacity of a single machine."
+msgstr ""
+"分布式推理将 LLM 拆分到多个节点或设备上处理。当大模型超出单机内存容量时，就需要"
+"这种方式。"
+
+#: ../../source/features/multi-node-inference.rst:10
+msgid "AIBrix provides two orchestration paths for multi-node inference:"
+msgstr "AIBrix 为多节点推理提供两条编排路径："
+
+#: ../../source/features/multi-node-inference.rst:12
+msgid ""
+"Ray-based Orchestration (``RayClusterFleet`` / ``RayClusterReplicaSet``):"
+" Uses KubeRay for intra-application worker placement and coordination, "
+"with Kubernetes managing replica scaling and rollouts."
+msgstr ""
+"基于 Ray 的编排（``RayClusterFleet`` / ``RayClusterReplicaSet`` ）：用 KubeRay 做应用内 "
+"worker 放置与协调，由 Kubernetes 管理副本扩缩容和滚动发布。"
+
+#: ../../source/features/multi-node-inference.rst:13
+msgid ""
+"Native PodSet Orchestration (``StormService``): Kubernetes-native multi-"
+"role and multi-node grouping via ``podGroupSize`` without requiring "
+"KubeRay."
+msgstr ""
+"原生 PodSet 编排（``StormService`` ）：通过 ``podGroupSize`` 做 Kubernetes 原生的多角色、多节点分组，无需 "
+"KubeRay。"
+
+#: ../../source/features/multi-node-inference.rst:18
+msgid "On this page"
+msgstr "本页内容"
+
+#: ../../source/features/multi-node-inference.rst:21
+msgid "Choosing an Orchestration Abstraction"
+msgstr "选择编排抽象"
+
+#: ../../source/features/multi-node-inference.rst:23
+msgid ""
+"Operators can pick the abstraction matching their deployment topology and"
+" infrastructure setup:"
+msgstr "运维人员可按部署拓扑和基础设施选择对应抽象："
+
+#: ../../source/features/multi-node-inference.rst:29
+msgid "Abstraction"
+msgstr "抽象"
+
+#: ../../source/features/multi-node-inference.rst:30
+msgid "Infrastructure Requirement"
+msgstr "基础设施要求"
+
+#: ../../source/features/multi-node-inference.rst:31
+msgid "Best Suited For"
+msgstr "最适合"
+
+#: ../../source/features/multi-node-inference.rst:32
+msgid "RayClusterFleet"
+msgstr "RayClusterFleet"
+
+#: ../../source/features/multi-node-inference.rst:33
+msgid "KubeRay operator installed"
+msgstr "已安装 KubeRay operator"
+
+#: ../../source/features/multi-node-inference.rst:34
+msgid ""
+"Standard multi-node vLLM deployments where Ray handles process placement "
+"and worker coordination."
+msgstr "标准多节点 vLLM 部署，由 Ray 负责进程放置和 worker 协调。"
+
+#: ../../source/features/multi-node-inference.rst:35
+msgid "StormService"
+msgstr "StormService"
+
+#: ../../source/features/multi-node-inference.rst:36
+msgid "Native Kubernetes (no KubeRay required)"
+msgstr "原生 Kubernetes（无需 KubeRay）"
+
+#: ../../source/features/multi-node-inference.rst:37
+msgid ""
+"Prefill-Decode (PD) disaggregated setups, custom multi-role "
+"architectures, or direct engine-native distributed backends (like SGLang "
+"or vLLM with MPI/NCCL and RDMA networking)."
+msgstr ""
+"Prefill/Decode 分离（PD）部署、自定义多角色架构，或引擎原生分布式后端（例如 "
+"SGLang，或带 MPI/NCCL 与 RDMA 网络的 vLLM）。"
+
+#: ../../source/features/multi-node-inference.rst:41
+msgid "KubeRay Orchestration (RayClusterFleet)"
+msgstr "KubeRay 编排（RayClusterFleet）"
+
+#: ../../source/features/multi-node-inference.rst:43
+msgid ""
+"In distributed computing, managing multi-node inference requires "
+"coordination at two layers: fine-grained task execution inside the "
+"cluster, and standard operational management from Kubernetes."
+msgstr ""
+"在分布式计算中，管理多节点推理需要两层协调：集群内细粒度任务执行，以及 "
+"Kubernetes 侧的标准运维管理。"
+
+#: ../../source/features/multi-node-inference.rst:45
+msgid ""
+"Ray handles intra-application task scheduling and worker communication "
+"well, but relies on external systems for cluster lifecycle operations. "
+"Kubernetes excels at container scheduling, autoscaling, and rolling "
+"updates."
+msgstr ""
+"Ray 擅长应用内任务调度和 worker 通信，但集群生命周期操作依赖外部系统。"
+"Kubernetes 擅长容器调度、自动扩缩容和滚动更新。"
+
+#: ../../source/features/multi-node-inference.rst:47
+msgid ""
+"AIBrix combines both: Ray handles internal distributed computation, while"
+" Kubernetes manages replica lifecycle and environment setup."
+msgstr ""
+"AIBrix 将两者结合：Ray 负责内部分布式计算，Kubernetes 管理副本生命周期和环境"
+"配置。"
+
+#: ../../source/features/multi-node-inference.rst:49
+msgid ""
+"Two key APIs manage Ray clusters: ``RayClusterReplicaSet`` and "
+"``RayClusterFleet``. These mirror Kubernetes ``ReplicaSet`` and "
+"``Deployment`` patterns. In most cases, ``RayClusterFleet`` is the "
+"primary resource to configure."
+msgstr ""
+"管理 Ray 集群的两个关键 API 是 ``RayClusterReplicaSet`` 和 ``RayClusterFleet`` 。它们对应 "
+"Kubernetes 的 ``ReplicaSet`` 和 ``Deployment`` 模式。大多数情况下，主要配置 ``RayClusterFleet`` "
+"。"
+
+#: ../../source/features/multi-node-inference.rst:52
+msgid "mix-grain-orchestration"
+msgstr "mix-grain-orchestration"
+
+#: ../../source/features/multi-node-inference.rst:57
+msgid ""
+"Ray Framework Focus: Ray handles intra-application orchestration. Each "
+"application instance corresponds to a single Ray cluster."
+msgstr "Ray 框架职责：Ray 负责应用内编排。每个应用实例对应一个 Ray 集群。"
+
+#: ../../source/features/multi-node-inference.rst:58
+msgid ""
+"Kubernetes Layer: Kubernetes operates at the outer layer, handling Ray "
+"cluster creation, autoscaling, and rolling updates."
+msgstr "Kubernetes 层：Kubernetes 在外层运作，负责 Ray 集群创建、自动扩缩容和滚动更新。"
+
+#: ../../source/features/multi-node-inference.rst:59
+msgid ""
+"Service Encapsulation: Services map to Ray clusters representing "
+"application instances rather than single pods."
+msgstr "服务封装：Service 映射到代表应用实例的 Ray 集群，而不是单个 Pod。"
+
+#: ../../source/features/multi-node-inference.rst:62
+msgid "We already submitted our ideas to the KubeRay community."
+msgstr "我们已将相关想法提交给 KubeRay 社区。"
+
+#: ../../source/features/multi-node-inference.rst:66
+msgid "How it works"
+msgstr "工作原理"
+
+#: ../../source/features/multi-node-inference.rst:85
+msgid "The layers, from the outside in:"
+msgstr "各层由外到内："
+
+#: ../../source/features/multi-node-inference.rst:87
+msgid ""
+"``RayClusterFleet`` carries the rollout semantics of a ``Deployment``: a "
+"rolling update or recreate strategy, revision history, ``paused``, "
+"``minReadySeconds`` and a progress deadline. Every change to "
+"``spec.template`` produces a new ``RayClusterReplicaSet`` and the fleet "
+"shifts replicas between old and new sets according to ``strategy``."
+msgstr ""
+"``RayClusterFleet`` 具备 ``Deployment`` 的发布语义：滚动更新或 recreate 策略、修订历史、``paused`` "
+"、``minReadySeconds`` 以及进度超时。每次更改 ``spec.template`` 都会产生新的 ``RayClusterReplicaSet`` "
+"，fleet 再按 ``strategy`` 在新旧集合之间迁移副本。"
+
+#: ../../source/features/multi-node-inference.rst:91
+msgid ""
+"``RayClusterReplicaSet`` keeps a fixed number of KubeRay ``RayCluster`` "
+"objects running and replaces any that disappear."
+msgstr ""
+"``RayClusterReplicaSet`` 保持固定数量的 KubeRay ``RayCluster`` 对象运行，并替换"
+"任何消失的对象。"
+
+#: ../../source/features/multi-node-inference.rst:93
+msgid ""
+"``RayCluster`` is KubeRay's resource. Its spec comes from "
+"``spec.template.spec`` of the fleet, with only the fleet-name label added"
+" to the head and worker pod templates, so anything KubeRay supports "
+"(``rayVersion``, ``headGroupSpec``, ``workerGroupSpecs``, "
+"``rayStartParams``) is available."
+msgstr ""
+"``RayCluster`` 是 KubeRay 的资源。其 spec 来自 fleet 的 ``spec.template.spec`` ，仅会在 "
+"head 和 worker Pod 模板上添加 fleet-name 标签，因此 KubeRay 支持的内容（``rayVersion`` 、``headGroupSpec`` "
+"、``workerGroupSpecs`` 、``rayStartParams`` ）都可用。"
+
+#: ../../source/features/multi-node-inference.rst:97
+msgid ""
+"The engine runs on the **head pod** with Ray as its distributed executor "
+"(``--distributed-executor-backend ray`` for vLLM). Worker pods only run "
+"``ray start`` and contribute their GPUs to the Ray cluster."
+msgstr ""
+"引擎运行在 **head Pod** 上，以 Ray 作为分布式执行器（vLLM 使用 ``--distributed-executor-backend "
+"ray`` ）。Worker Pod 只运行 ``ray start`` ，并把 GPU 贡献给 Ray 集群。"
+
+#: ../../source/features/multi-node-inference.rst:101
+msgid ""
+"**Readiness.** A Ray cluster counts as ready only when KubeRay reports "
+"both the ``RayClusterProvisioned`` and ``HeadPodReady`` conditions as "
+"``True`` and every desired worker is ready. Those conditions are produced"
+" by KubeRay's ``RayClusterStatusConditions`` feature gate, which the "
+"AIBrix installation instructions enable. Without the gate the fleet can "
+"never report ready replicas."
+msgstr ""
+"**就绪。** 仅当 KubeRay 将 ``RayClusterProvisioned`` 和 ``HeadPodReady`` 条件都报告为 "
+"``True`` ，且每个期望 worker 都就绪时，Ray 集群才计为就绪。这些条件由 KubeRay 的 ``RayClusterStatusConditions`` "
+"feature gate 产生，AIBrix 安装说明会启用它。没有该 gate 时，fleet 永远无法报告就绪副本。"
+
+#: ../../source/features/multi-node-inference.rst:107
+msgid ""
+"**Routing.** The gateway discovers model pods by the "
+"``model.aibrix.ai/name`` label, but it ignores pods labelled ``ray.io"
+"/node-type: worker``. Requests are therefore routed to head pods only. "
+"The fleet controller stamps every pod with ``orchestration.aibrix.ai"
+"/raycluster-fleet-name`` so that metrics and routing state can be mapped "
+"back to the fleet that owns the pod."
+msgstr ""
+"**路由。** 网关通过 ``model.aibrix.ai/name`` 标签发现模型 Pod，但会忽略带 ``ray.io/node-type: "
+"worker`` 的 Pod。因此请求只路由到 head Pod。fleet 控制器会给每个 Pod 打上 ``orchestration.aibrix.ai/raycluster-fleet-name`` "
+"，以便将指标和路由状态映射回拥有该 Pod 的 fleet。"
+
+#: ../../source/features/multi-node-inference.rst:114
+msgid "Prerequisites"
+msgstr "前置条件"
+
+#: ../../source/features/multi-node-inference.rst:116
+msgid ""
+"The KubeRay operator. It is optional for the rest of AIBrix and only "
+"needed for ``RayClusterFleet`` and ``RayClusterReplicaSet``. Install it "
+"with the Helm command in "
+":doc:`../getting_started/installation/installation`; that command pins a "
+"patched operator image and turns on the ``RayClusterStatusConditions`` "
+"feature gate that readiness depends on."
+msgstr ""
+"KubeRay operator。对 AIBrix 其余部分是可选的，仅 ``RayClusterFleet`` 和 "
+"``RayClusterReplicaSet`` 需要。使用 :doc:`../getting_started/installation"
+"/installation` 中的 Helm 命令安装；该命令会固定打过补丁的 operator 镜像，并打开"
+"就绪依赖的 ``RayClusterStatusConditions`` feature gate。"
+
+#: ../../source/features/multi-node-inference.rst:120
+msgid "GPU nodes for the head pod and each worker pod."
+msgstr "head Pod 和每个 worker Pod 所需的 GPU 节点。"
+
+#: ../../source/features/multi-node-inference.rst:121
+msgid ""
+"An engine image that contains Ray. Official vLLM images from v0.6.6 "
+"onward work out of the box; for older versions see `Container Image "
+"Requirements`_ below."
+msgstr ""
+"包含 Ray 的引擎镜像。v0.6.6 及之后的官方 vLLM 镜像开箱即用；更早版本见下文 `Container Image Requirements`_ "
+"。"
+
+#: ../../source/features/multi-node-inference.rst:125
+msgid "Configuration reference"
+msgstr "配置参考"
+
+#: ../../source/features/multi-node-inference.rst:127
+msgid "Both resources live in the ``orchestration.aibrix.ai/v1alpha1`` API group."
+msgstr "这两个资源都位于 ``orchestration.aibrix.ai/v1alpha1`` API 组。"
+
+#: ../../source/features/multi-node-inference.rst:129
+msgid "**RayClusterFleet spec**"
+msgstr "**RayClusterFleet spec**"
+
+#: ../../source/features/multi-node-inference.rst:135
+msgid "Field"
+msgstr "字段"
+
+#: ../../source/features/multi-node-inference.rst:136
+msgid "Type"
+msgstr "类型"
+
+#: ../../source/features/multi-node-inference.rst:137
+msgid "Description"
+msgstr "说明"
+
+#: ../../source/features/multi-node-inference.rst:138
+msgid "``replicas``"
+msgstr "``replicas``"
+
+#: ../../source/features/multi-node-inference.rst:139
+#: ../../source/features/multi-node-inference.rst:153
+#: ../../source/features/multi-node-inference.rst:156
+#: ../../source/features/multi-node-inference.rst:162
+msgid "int32"
+msgstr "int32"
+
+#: ../../source/features/multi-node-inference.rst:140
+msgid "Number of Ray clusters to run. Defaults to 1."
+msgstr "要运行的 Ray 集群数量。默认为 1。"
+
+#: ../../source/features/multi-node-inference.rst:141
+msgid "``selector``"
+msgstr "``selector``"
+
+#: ../../source/features/multi-node-inference.rst:142
+msgid "LabelSelector"
+msgstr "LabelSelector"
+
+#: ../../source/features/multi-node-inference.rst:143
+msgid "Must match the labels in ``template.metadata.labels``. Required."
+msgstr "必须匹配 ``template.metadata.labels`` 中的标签。必需。"
+
+#: ../../source/features/multi-node-inference.rst:144
+msgid "``template``"
+msgstr "``template``"
+
+#: ../../source/features/multi-node-inference.rst:145
+msgid "RayClusterTemplateSpec"
+msgstr "RayClusterTemplateSpec"
+
+#: ../../source/features/multi-node-inference.rst:146
+msgid ""
+"``metadata`` and ``spec`` for each Ray cluster. ``spec`` is a KubeRay "
+"``RayClusterSpec`` and is passed through, with the fleet-name label added"
+" to the pod templates."
+msgstr ""
+"每个 Ray 集群的 ``metadata`` 和 ``spec`` 。``spec`` 是 KubeRay 的 ``RayClusterSpec`` "
+"，会原样透传，并在 Pod 模板上添加 fleet-name 标签。"
+
+#: ../../source/features/multi-node-inference.rst:148
+msgid "``strategy``"
+msgstr "``strategy``"
+
+#: ../../source/features/multi-node-inference.rst:149
+msgid "DeploymentStrategy"
+msgstr "DeploymentStrategy"
+
+#: ../../source/features/multi-node-inference.rst:150
+msgid ""
+"``Recreate`` or ``RollingUpdate`` with ``maxSurge`` and "
+"``maxUnavailable``, same semantics as a ``Deployment``."
+msgstr ""
+"``Recreate`` 或带 ``maxSurge`` 和 ``maxUnavailable`` 的 ``RollingUpdate`` ，语义与 "
+"``Deployment`` 相同。"
+
+#: ../../source/features/multi-node-inference.rst:152
+msgid "``minReadySeconds``"
+msgstr "``minReadySeconds``"
+
+#: ../../source/features/multi-node-inference.rst:154
+msgid "How long a Ray cluster must stay ready before it counts as available."
+msgstr "Ray 集群必须保持就绪多久才计为可用。"
+
+#: ../../source/features/multi-node-inference.rst:155
+msgid "``revisionHistoryLimit``"
+msgstr "``revisionHistoryLimit``"
+
+#: ../../source/features/multi-node-inference.rst:157
+msgid "Number of old ``RayClusterReplicaSet`` objects to keep for rollback."
+msgstr "为回滚保留的旧 ``RayClusterReplicaSet`` 对象数量。"
+
+#: ../../source/features/multi-node-inference.rst:158
+msgid "``paused``"
+msgstr "``paused``"
+
+#: ../../source/features/multi-node-inference.rst:159
+msgid "bool"
+msgstr "bool"
+
+#: ../../source/features/multi-node-inference.rst:160
+msgid "Stop the controller from acting on template changes."
+msgstr "阻止控制器对模板变更采取行动。"
+
+#: ../../source/features/multi-node-inference.rst:161
+msgid "``progressDeadlineSeconds``"
+msgstr "``progressDeadlineSeconds``"
+
+#: ../../source/features/multi-node-inference.rst:163
+msgid ""
+"Seconds after which a stalled rollout is reported as failed in "
+"``status.conditions``."
+msgstr "停滞的发布在多少秒后会在 ``status.conditions`` 中报告为失败。"
+
+#: ../../source/features/multi-node-inference.rst:165
+msgid ""
+"**RayClusterFleet status** reports ``replicas``, ``updatedReplicas``, "
+"``readyReplicas``, ``availableReplicas``, ``unavailableReplicas``, "
+"``observedGeneration``, ``conditions`` and ``scalingTargetSelector``. The"
+" fleet exposes the Kubernetes ``scale`` subresource, so ``kubectl scale "
+"rayclusterfleet <name> --replicas=N`` works, and a :doc:`PodAutoscaler "
+"<autoscaling/autoscaling>` can use ``kind: RayClusterFleet`` as its "
+"``scaleTargetRef``."
+msgstr ""
+"**RayClusterFleet status** 报告 ``replicas`` 、``updatedReplicas`` 、``readyReplicas`` "
+"、``availableReplicas`` 、``unavailableReplicas`` 、``observedGeneration`` "
+"、``conditions`` 和 ``scalingTargetSelector`` 。fleet 暴露 Kubernetes ``scale`` "
+"子资源，因此 ``kubectl scale rayclusterfleet <name> --replicas=N`` 可用，:doc:`PodAutoscaler "
+"<autoscaling/autoscaling>` 也可以把 ``kind: RayClusterFleet`` 用作 ``scaleTargetRef`` "
+"。"
+
+#: ../../source/features/multi-node-inference.rst:171
+msgid ""
+"**RayClusterReplicaSet spec** is the subset a ``ReplicaSet`` would have: "
+"``replicas``, ``selector``, ``template`` and ``minReadySeconds``. You "
+"normally never create one directly."
+msgstr ""
+"**RayClusterReplicaSet spec** 是 ``ReplicaSet`` 会有的子集：``replicas`` 、``selector`` "
+"、``template`` 和 ``minReadySeconds`` 。通常不必直接创建它。"
+
+#: ../../source/features/multi-node-inference.rst:174
+msgid "**Labels and annotations that matter**"
+msgstr "**相关标签和注解**"
+
+#: ../../source/features/multi-node-inference.rst:180
+msgid "Key"
+msgstr "键"
+
+#: ../../source/features/multi-node-inference.rst:181
+msgid "Purpose"
+msgstr "用途"
+
+#: ../../source/features/multi-node-inference.rst:182
+msgid "``model.aibrix.ai/name`` (label)"
+msgstr "``model.aibrix.ai/name`` （标签）"
+
+#: ../../source/features/multi-node-inference.rst:183
+msgid ""
+"Set it on the head and worker pod templates. The gateway discovers the "
+"model's pods through this label. (The ``PodAutoscaler`` uses the fleet's "
+"scale selector instead.)"
+msgstr ""
+"设在 head 和 worker Pod 模板上。网关通过该标签发现模型的 Pod。（``PodAutoscaler`` "
+"改用 fleet 的 scale selector。）"
+
+#: ../../source/features/multi-node-inference.rst:185
+msgid ""
+"``ray.io/overwrite-container-cmd: \"true\"`` (annotation on the Ray "
+"cluster template)"
+msgstr "``ray.io/overwrite-container-cmd: \"true\"`` （Ray 集群模板上的注解）"
+
+#: ../../source/features/multi-node-inference.rst:186
+msgid ""
+"Tells KubeRay to respect the container ``command`` and ``args`` you wrote"
+" instead of generating its own ``ray start`` command. KubeRay still "
+"injects the generated command into the env var "
+"``KUBERAY_GEN_RAY_START_CMD`` so you can run it yourself, which is what "
+"the sample does. The generated variable does not include ``ulimit``, so "
+"set that in your own command."
+msgstr ""
+"告诉 KubeRay 使用你写的容器 ``command`` 和 ``args`` ，而不是生成自己的 ``ray start`` 命令。KubeRay "
+"仍会把生成的命令注入环境变量 ``KUBERAY_GEN_RAY_START_CMD`` ，以便你自行运行，示例就是这样做的。生成的变量不含 ``ulimit`` "
+"，请在自己的命令中设置。"
+
+#: ../../source/features/multi-node-inference.rst:191
+msgid "``ray.io/node-type`` (label, set by KubeRay)"
+msgstr "``ray.io/node-type`` （标签，由 KubeRay 设置）"
+
+#: ../../source/features/multi-node-inference.rst:192
+msgid "``head`` or ``worker``. The gateway skips ``worker`` pods when routing."
+msgstr "``head`` 或 ``worker`` 。网关路由时会跳过 ``worker`` Pod。"
+
+#: ../../source/features/multi-node-inference.rst:193
+msgid ""
+"``orchestration.aibrix.ai/raycluster-fleet-name`` (label, set by the "
+"fleet controller)"
+msgstr "``orchestration.aibrix.ai/raycluster-fleet-name`` （标签，由 fleet 控制器设置）"
+
+#: ../../source/features/multi-node-inference.rst:194
+msgid "Maps a pod back to its fleet. Do not set it yourself."
+msgstr "将 Pod 映射回其 fleet。不要自行设置。"
+
+#: ../../source/features/multi-node-inference.rst:196
+msgid ""
+"**Parallelism sizing.** With the Ray executor, the engine's tensor-"
+"parallel size must equal the number of GPUs in the whole Ray cluster "
+"(head plus workers). The sample below runs ``--tensor-parallel-size 2`` "
+"on a head pod with one GPU and one worker pod with one GPU."
+msgstr ""
+"**并行度规模。** 使用 Ray 执行器时，引擎的 tensor-parallel size 必须等于整个 Ray 集群（head 加 worker）的 "
+"GPU 数量。下面的示例在带 1 块 GPU 的 head Pod 和带 1 块 GPU 的 worker Pod 上运行 ``--tensor-parallel-size "
+"2`` 。"
+
+#: ../../source/features/multi-node-inference.rst:201
+msgid "RayClusterFleet Example"
+msgstr "RayClusterFleet 示例"
+
+#: ../../source/features/multi-node-inference.rst:203
+msgid ""
+"Below is a ``RayClusterFleet`` example deploying a two-node distributed "
+"inference cluster:"
+msgstr "下面是部署两节点分布式推理集群的 ``RayClusterFleet`` 示例："
+
+#: ../../source/features/multi-node-inference.rst:208
+msgid "What the sample is doing, section by section:"
+msgstr "示例各部分在做什么："
+
+#: ../../source/features/multi-node-inference.rst:210
+msgid ""
+"The **head container** raises the file-descriptor limit, installs the Ray"
+" dashboard dependencies, runs the KubeRay-generated ``ray start`` command"
+" in the background, waits until the Ray dashboard on port 8265 answers, "
+"and only then launches ``vllm serve`` with ``--distributed-executor-"
+"backend ray``. Waiting for the dashboard matters: vLLM connects to the "
+"Ray cluster at startup and fails if the head is not up yet."
+msgstr ""
+"**head 容器** 提高文件描述符限制，安装 Ray dashboard 依赖，在后台运行 KubeRay 生成的 ``ray start`` "
+"命令，等到端口 8265 上的 Ray dashboard 响应后，才用 ``--distributed-executor-backend ray`` "
+"启动 ``vllm serve`` 。等待 dashboard 很重要：vLLM 在启动时连接 Ray 集群，如果 head 尚未就绪就会失败。"
+
+#: ../../source/features/multi-node-inference.rst:215
+msgid ""
+"The **worker container** runs the generated ``ray start`` command with "
+"its own pod IP and then blocks with ``tail -f /dev/null``. A ``preStop`` "
+"hook calls ``ray stop`` so the node leaves the cluster cleanly."
+msgstr ""
+"**worker 容器** 用自己的 Pod IP 运行生成的 ``ray start`` 命令，然后用 ``tail -f /dev/null`` "
+"阻塞。``preStop`` hook 会调用 ``ray stop`` ，以便节点干净地离开集群。"
+
+#: ../../source/features/multi-node-inference.rst:218
+msgid ""
+"The **AI Runtime sidecar** on the head pod exposes standardized metrics "
+"on port 8080 and provides the liveness and readiness probes for the pod. "
+"See :doc:`runtime`."
+msgstr ""
+"head Pod 上的 **AI Runtime sidecar** 在端口 8080 暴露标准化指标，并为该 Pod 提供存活和就绪探针。见 "
+":doc:`runtime` 。"
+
+#: ../../source/features/multi-node-inference.rst:220
+msgid ""
+"The **Service** selects pods by ``model.aibrix.ai/name`` and carries the "
+"``prometheus-discovery: \"true\"`` label so metrics are scraped."
+msgstr ""
+"**Service** 按 ``model.aibrix.ai/name`` 选择 Pod，并带有 ``prometheus-"
+"discovery: \"true\"`` 标签以便抓取指标。"
+
+#: ../../source/features/multi-node-inference.rst:222
+msgid ""
+"The **HTTPRoute** attaches the model to the AIBrix gateway by matching "
+"the ``model`` header. This is the same route shape used for single-pod "
+"deployments; see :doc:`../production/gateway`."
+msgstr ""
+"**HTTPRoute** 通过匹配 ``model`` 头把模型挂到 AIBrix 网关。这与单 Pod 部署使用的路由形态相同；见 :doc:`../production/gateway` "
+"。"
+
+#: ../../source/features/multi-node-inference.rst:227
+msgid "Verify the deployment"
+msgstr "验证部署"
+
+#: ../../source/features/multi-node-inference.rst:240
+msgid ""
+"The fleet CRD defines no extra printer columns, so compare the counts "
+"directly:"
+msgstr "fleet CRD 没有定义额外打印列，因此直接比较计数："
+
+#: ../../source/features/multi-node-inference.rst:247
+msgid ""
+"The fleet is healthy when both numbers match. Then send a request through"
+" the gateway exactly as you would for a single-pod model:"
+msgstr "两个数字一致时 fleet 健康。然后像单 Pod 模型一样通过网关发送请求："
+
+#: ../../source/features/multi-node-inference.rst:260
+msgid "Troubleshooting"
+msgstr "故障排查"
+
+#: ../../source/features/multi-node-inference.rst:262
+msgid ""
+"**The fleet never reports ready replicas.** Run ``kubectl describe "
+"raycluster <name>`` and look at ``Status.Conditions``. AIBrix requires "
+"``RayClusterProvisioned`` and ``HeadPodReady`` to be ``True``. If those "
+"conditions are absent entirely, the KubeRay operator was installed "
+"without the ``RayClusterStatusConditions`` feature gate; reinstall it "
+"with the command from the installation guide."
+msgstr ""
+"**fleet 从不报告就绪副本。** 运行 ``kubectl describe raycluster <name>`` 并查看 ``Status.Conditions`` "
+"。AIBrix 要求 ``RayClusterProvisioned`` 和 ``HeadPodReady`` 为 ``True`` 。若这些条件完全不存在，说明安装 "
+"KubeRay operator 时未打开 ``RayClusterStatusConditions`` feature gate；请用安装指南中的命令重新安装。"
+
+#: ../../source/features/multi-node-inference.rst:268
+msgid ""
+"**Head pod restarts, or vLLM exits with a Ray connection error.** The "
+"engine started before the Ray head was up. Keep the dashboard wait loop "
+"from the sample in front of ``vllm serve``. Also confirm ``rayVersion`` "
+"in the template matches the Ray version inside the image; a mismatch "
+"prevents workers from joining."
+msgstr ""
+"**Head Pod 重启，或 vLLM 因 Ray 连接错误退出。** 引擎在 Ray head 就绪前就启动了。"
+"请把示例中的 dashboard 等待循环放在 ``vllm serve`` 之前。同时确认模板中的 "
+"``rayVersion`` 与镜像内的 Ray 版本一致；不匹配会阻止 worker 加入。"
+
+#: ../../source/features/multi-node-inference.rst:273
+msgid ""
+"**Worker pods stay Pending.** Each worker requests a GPU. Check node "
+"capacity with ``kubectl describe node`` and confirm the "
+"``nvidia.com/gpu`` request in ``workerGroupSpecs`` can be satisfied."
+msgstr ""
+"**Worker Pod 一直 Pending。** 每个 worker 都会申请 GPU。用 ``kubectl describe "
+"node`` 检查节点容量，并确认 ``workerGroupSpecs`` 中的 ``nvidia.com/gpu`` 请求"
+"能被满足。"
+
+#: ../../source/features/multi-node-inference.rst:277
+msgid ""
+"**The gateway returns an error for the model although the pods are "
+"Running.** The gateway only routes to head pods that carry "
+"``model.aibrix.ai/name`` and are Ready. Check that the label is on the "
+"head pod template (not only on the fleet) and that the readiness probe on"
+" the runtime sidecar (port 8080, ``/ready``) is passing."
+msgstr ""
+"**Pod 已 Running，但网关对该模型返回错误。** 网关只路由到带 ``model.aibrix.ai/name`` 且 Ready "
+"的 head Pod。确认标签在 head Pod 模板上（不只在 fleet 上），并且 runtime sidecar 的就绪探针（端口 8080，``/ready`` "
+"）通过。"
+
+#: ../../source/features/multi-node-inference.rst:283
+msgid "Native PodSet Orchestration (StormService)"
+msgstr "原生 PodSet 编排（StormService）"
+
+#: ../../source/features/multi-node-inference.rst:285
+msgid ""
+"For deployments that do not run KubeRay, or for disaggregated "
+"architectures requiring explicit role separation (such as separate "
+"Prefill and Decode roles), AIBrix provides native multi-node grouping via"
+" ``StormService``."
+msgstr ""
+"对于不运行 KubeRay 的部署，或需要显式角色分离的分离式架构（例如独立的 Prefill "
+"和 Decode 角色），AIBrix 通过 ``StormService`` 提供原生多节点分组。"
+
+#: ../../source/features/multi-node-inference.rst:287
+msgid ""
+"Using ``podGroupSize`` within a role template, ``StormService`` allocates"
+" multiple synchronized pods for each replica instance and injects "
+"deterministic distributed environment variables (such as "
+"``$POD_GROUP_INDEX`` and ``$PODSET_NAME``). This enables engine-native "
+"Tensor Parallelism (TP) across multiple nodes."
+msgstr ""
+"在角色模板中使用 ``podGroupSize`` 时，``StormService`` 会为每个副本实例分配多个同步 Pod，并注入确定性的分布式环境变量（例如 "
+"``$POD_GROUP_INDEX`` 和 ``$PODSET_NAME`` ）。从而支持跨多节点的引擎原生张量并行（TP）。"
+
+#: ../../source/features/multi-node-inference.rst:289
+msgid "Key capabilities:"
+msgstr "主要能力："
+
+#: ../../source/features/multi-node-inference.rst:291
+msgid ""
+"No external dependencies: Runs directly on Kubernetes without installing "
+"KubeRay."
+msgstr "无外部依赖：直接运行在 Kubernetes 上，无需安装 KubeRay。"
+
+#: ../../source/features/multi-node-inference.rst:292
+msgid ""
+"Multi-Role and Disaggregation support: Allows defining separate roles "
+"(such as routing, prefill, and decode) with distinct resource profiles "
+"and pod group sizes within a single service definition."
+msgstr ""
+"多角色与分离支持：允许在单个服务定义中为不同角色（例如 routing、prefill、decode）"
+"配置不同的资源规格和 Pod 组大小。"
+
+#: ../../source/features/multi-node-inference.rst:293
+#, python-brace-format
+msgid ""
+"Deterministic rank and discovery: Pods within a group discover peers via "
+"predictable headless service DNS entries (such as "
+"``${PODSET_NAME}-0.${STORM_SERVICE_NAME}``)."
+msgstr ""
+"确定性 rank 与发现：组内 Pod 通过可预测的无头 Service DNS 条目发现对端（例如 ``${PODSET_NAME}-0.${STORM_SERVICE_NAME}`` "
+"）。"
+
+#: ../../source/features/multi-node-inference.rst:296
+msgid "StormService Multi-Node TP Sample"
+msgstr "StormService 多节点 TP 示例"
+
+#: ../../source/features/multi-node-inference.rst:298
+msgid ""
+"Below is a complete multi-node Tensor Parallelism example with "
+"Prefill/Decode disaggregation (2-node prefill and 2-node decode with "
+"``podGroupSize: 2`` and ``--nnodes 2 --tp-size 2``):"
+msgstr ""
+"下面是带 Prefill/Decode 分离的完整多节点张量并行示例（2 节点 prefill 和 2 节点 decode，使用 ``podGroupSize: "
+"2`` 和 ``--nnodes 2 --tp-size 2`` ）："
+
+#: ../../source/features/multi-node-inference.rst:305
+msgid "Container Image Requirements"
+msgstr "容器镜像要求"
+
+#: ../../source/features/multi-node-inference.rst:309
+msgid ""
+"Starting from v0.6.6, essential packages to run distributed inference "
+"with the official vLLM container image distribution are included out of "
+"the box. If you use earlier versions, follow the guidance below to build "
+"a compatible image."
+msgstr ""
+"从 v0.6.6 起，官方 vLLM 容器镜像已开箱包含运行分布式推理所需的关键软件包。若使用"
+"更早版本，请按下面的指引构建兼容镜像。"
+
+#: ../../source/features/multi-node-inference.rst:312
+msgid "If you are using an earlier vLLM version, you have two options:"
+msgstr "若使用更早的 vLLM 版本，有两种选择："
+
+#: ../../source/features/multi-node-inference.rst:314
+msgid "Use our built image ``aibrix/vllm-openai:v0.6.1.post2-distributed``."
+msgstr "使用我们构建的镜像 ``aibrix/vllm-openai:v0.6.1.post2-distributed`` 。"
+
+#: ../../source/features/multi-node-inference.rst:315
+msgid "Build your own image following these steps:"
+msgstr "按以下步骤构建自己的镜像："
+
+#: ../../source/features/multi-node-inference.rst:330
+msgid ":doc:`pd-disaggregation`"
+msgstr ":doc:`pd-disaggregation`"
+
+#: ../../source/features/multi-node-inference.rst:331
+msgid "The complete guide to prefill/decode disaggregation with ``StormService``."
+msgstr "使用 ``StormService`` 做 Prefill/Decode 分离的完整指南。"
