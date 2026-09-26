@@ -65,6 +65,78 @@ func TestNewRedisAccountRateLimiter_ClampsWindowToOneSecond(t *testing.T) {
 	assert.Equal(t, time.Second, typed.windowSize)
 }
 
+func TestRedisRateLimiter_WindowStartsWithFirstWrite(t *testing.T) {
+	tests := []struct {
+		name       string
+		key        string
+		counterKey string
+		windowSize time.Duration
+		override   []time.Duration
+		window     time.Duration
+	}{
+		{
+			name:       "model RPS override",
+			key:        "model_MODEL_RPS_CURRENT",
+			counterKey: "test:model_MODEL_RPS_CURRENT:2000:counter",
+			windowSize: time.Second,
+			override:   []time.Duration{2 * time.Second},
+			window:     2 * time.Second,
+		},
+		{
+			name:       "user RPM default",
+			key:        "user_RPM_CURRENT",
+			counterKey: "test:user_RPM_CURRENT:60000:counter",
+			windowSize: time.Minute,
+			window:     time.Minute,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mr := miniredis.RunT(t)
+			client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+			t.Cleanup(func() { _ = client.Close() })
+			ctx := context.Background()
+			rl := NewRedisAccountRateLimiter("test", client, tt.windowSize)
+			counterKey := tt.counterKey
+
+			first, err := rl.Incr(ctx, tt.key, 1, tt.override...)
+			require.NoError(t, err)
+			require.Equal(t, int64(1), first)
+			require.True(t, mr.Exists(counterKey), "counter key must not depend on wall-clock buckets")
+
+			mr.FastForward(tt.window / 2)
+			second, err := rl.Incr(ctx, tt.key, 1, tt.override...)
+			require.NoError(t, err)
+			assert.Equal(t, int64(2), second, "requests within the first-write window share a counter")
+			mr.FastForward(tt.window/2 + time.Millisecond)
+			third, err := rl.Incr(ctx, tt.key, 1, tt.override...)
+			require.NoError(t, err)
+			assert.Equal(t, int64(1), third, "the next request starts a new window")
+		})
+	}
+}
+
+func TestRedisRateLimiter_DifferentWindowSizesUseSeparateCounters(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	rl := NewRedisAccountRateLimiter("aibrix_model_test", client, time.Second)
+	ctx := context.Background()
+	key := "model_MODEL_RPS_CURRENT"
+
+	first, err := rl.Incr(ctx, key, 1)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), first)
+	second, err := rl.Incr(ctx, key, 1, 2*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), second, "a new configured duration starts a separate counter")
+
+	current, err := rl.Get(ctx, key)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), current, "the default-window counter remains available")
+}
+
 func TestRedisRateLimiter_IncrAndGetCurrentWindow(t *testing.T) {
 	client := setupRedisForTest(t)
 	rl := NewRedisAccountRateLimiter("ratelimiter_test", client, time.Second)

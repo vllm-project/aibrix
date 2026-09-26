@@ -36,11 +36,10 @@ import (
 func TestModelRPSLimit(t *testing.T) {
 	msg := "rps limit test message"
 
-	// waitForFreshWindow sleeps until the current 1-second Redis window expires,
-	// ensuring the counter is at zero at the start of each sub-test.
+	// The Redis window starts with the first write, not at a wall-clock second.
+	// Wait a full window after the previous request has completed.
 	waitForFreshWindow := func() {
-		nextWindow := time.Now().Truncate(time.Second).Add(time.Second + 50*time.Millisecond)
-		time.Sleep(time.Until(nextWindow))
+		time.Sleep(time.Second + 100*time.Millisecond)
 	}
 
 	sendRequest := func(profile string) error {
