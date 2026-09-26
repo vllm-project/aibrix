@@ -19,6 +19,7 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"sync/atomic"
 
 	"github.com/bytedance/sonic"
@@ -47,16 +48,82 @@ var canonicalJSON = sonic.Config{
 	EscapeHTML:  false,
 }.Froze()
 
-// prefixMatchText returns the text prefix-matching policies should hash for a chat
-// request: the canonical tools text, a single space, then the messages text. It returns
-// "" when tools do not contribute, in which case the policies use the messages text
-// (RoutingContext.Message) unchanged.
-func prefixMatchText(requestID string, tools json.RawMessage, message string) string {
-	toolsText := canonicalToolsText(requestID, tools)
-	if toolsText == "" {
+func combinePrefixText(message, systemText, toolsText string) string {
+	if systemText == "" && toolsText == "" {
 		return ""
 	}
-	return toolsText + " " + message
+	if systemText == "" {
+		return toolsText + " " + message
+	}
+	if toolsText == "" {
+		return systemText + " " + message
+	}
+	return systemText + " " + toolsText + " " + message
+}
+
+func requestPromptText(requestID string, field json.RawMessage) string {
+	raw := bytes.TrimSpace(field)
+	if len(raw) == 0 || bytes.Equal(raw, []byte(jsonNull)) {
+		return ""
+	}
+
+	if raw[0] == '"' {
+		if len(raw) >= 2 && raw[len(raw)-1] == '"' && bytes.IndexByte(raw[1:len(raw)-1], '\\') == -1 {
+			return string(raw[1 : len(raw)-1])
+		}
+		var text string
+		if err := sonic.Unmarshal(raw, &text); err != nil {
+			klog.V(4).InfoS("failed to decode request prompt text, using raw bytes", "requestID", requestID, "error", err)
+			return string(raw)
+		}
+		return text
+	}
+
+	if raw[0] == '[' {
+		var blocks []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := sonic.Unmarshal(raw, &blocks); err == nil {
+			var builder strings.Builder
+			hasText := false
+			for _, block := range blocks {
+				if block.Type != "text" {
+					return canonicalRequestFieldText(requestID, raw)
+				}
+				if block.Text == "" {
+					continue
+				}
+				if hasText {
+					builder.WriteByte(' ')
+				}
+				builder.WriteString(block.Text)
+				hasText = true
+			}
+			return builder.String()
+		}
+	}
+
+	return canonicalRequestFieldText(requestID, raw)
+}
+
+func canonicalRequestFieldText(requestID string, field json.RawMessage) string {
+	raw := bytes.TrimSpace(field)
+	if len(raw) == 0 || bytes.Equal(raw, []byte(jsonNull)) {
+		return ""
+	}
+
+	var value interface{}
+	if err := canonicalJSON.Unmarshal(raw, &value); err != nil {
+		klog.V(4).InfoS("failed to canonicalize request field, using raw bytes", "requestID", requestID, "error", err)
+		return string(raw)
+	}
+	canonical, err := canonicalJSON.Marshal(value)
+	if err != nil {
+		klog.V(4).InfoS("failed to canonicalize request field, using raw bytes", "requestID", requestID, "error", err)
+		return string(raw)
+	}
+	return string(canonical)
 }
 
 // canonicalToolsText renders the raw "tools" value of a chat request. It returns "" when

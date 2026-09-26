@@ -125,10 +125,9 @@ type RoutingContext struct {
 	RoutedTime     time.Time  // Time consumed during routing.
 
 	// PrefixMatchText, when set, replaces Message as the text prefix-matching policies
-	// hash. The gateway sets it for chat requests whose chat template renders
-	// request-level fields (the tool definitions) ahead of the messages, so that
-	// requests differing only in those fields do not look like a shared prefix.
-	// Prompt-size estimates keep using Message. Read it through PrefixText.
+	// hash. The gateway sets it when request-level system/instructions or tools
+	// contribute to the prompt before the conversation. Prompt-size estimates keep
+	// using Message. Read it through PrefixText.
 	PrefixMatchText string
 
 	ReqHeaders       map[string]string

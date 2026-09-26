@@ -64,9 +64,9 @@ type chatReqMinimal struct {
 	StreamOptions struct {
 		IncludeUsage bool `json:"include_usage"`
 	} `json:"stream_options"`
-	Messages []contentItem `json:"messages"`
-	// Tools is kept raw; it is only canonicalized into the prefix-match text
-	// (see prefixMatchText) and never validated here.
+	Messages []contentItem   `json:"messages"`
+	System   json.RawMessage `json:"system"`
+	// Tools is kept raw and only canonicalized into the prefix-match text.
 	Tools json.RawMessage `json:"tools"`
 }
 
@@ -75,9 +75,11 @@ type chatReqMinimal struct {
 // be either a plain string or an array of input items; it is parsed lazily in
 // parseResponsesInput. Stream uses *bool to distinguish "absent" from "stream: false".
 type responsesReqMinimal struct {
-	Model  string          `json:"model"`
-	Stream *bool           `json:"stream"`
-	Input  json.RawMessage `json:"input"`
+	Model        string          `json:"model"`
+	Stream       *bool           `json:"stream"`
+	Input        json.RawMessage `json:"input"`
+	Instructions json.RawMessage `json:"instructions"`
+	Tools        json.RawMessage `json:"tools"`
 }
 
 // contentItem holds the raw JSON "content" field of a chat message or a Responses API
@@ -183,7 +185,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 	case PathChatCompletions, PathMessages:
 		model, message, prefixText, stream, errRes = validateChatRequest(requestID, path, requestBody, user)
 	case PathResponses:
-		model, message, stream, errRes = validateResponsesRequest(requestID, requestBody)
+		model, message, prefixText, stream, errRes = validateResponsesRequest(requestID, requestBody)
 	case PathCompletions:
 		model, message, stream, errRes = validateCompletionRequest(requestID, requestBody)
 	case PathEmbeddings:
@@ -227,7 +229,11 @@ func validateChatRequest(requestID, requestPath string, requestBody []byte, user
 	if message, errRes = parseChatMessages(requestID, req.Messages); errRes != nil {
 		return
 	}
-	prefixText = prefixMatchText(requestID, req.Tools, message)
+	systemText := ""
+	if requestPath == PathMessages {
+		systemText = requestPromptText(requestID, req.System)
+	}
+	prefixText = combinePrefixText(message, systemText, canonicalToolsText(requestID, req.Tools))
 	if req.Stream != nil {
 		stream = *req.Stream
 		// stream_options.include_usage is an OpenAI-specific field; Anthropic-style
@@ -244,7 +250,7 @@ func validateChatRequest(requestID, requestPath string, requestBody []byte, user
 
 // validateResponsesRequest parses and validates an OpenAI Responses API (/v1/responses) request body.
 // nolint:nakedret
-func validateResponsesRequest(requestID string, requestBody []byte) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
+func validateResponsesRequest(requestID string, requestBody []byte) (model, message, prefixText string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	// OpenAI Responses API. Unlike chat completions, the Responses API always
 	// emits usage in the terminal streaming event, so there is no stream_options
 	// .include_usage requirement to enforce for TPM-limited users.
@@ -263,6 +269,11 @@ func validateResponsesRequest(requestID string, requestBody []byte) (model, mess
 	if message, errRes = parseResponsesInput(requestID, req.Input); errRes != nil {
 		return
 	}
+	prefixText = combinePrefixText(
+		message,
+		requestPromptText(requestID, req.Instructions),
+		canonicalToolsText(requestID, req.Tools),
+	)
 	if req.Stream != nil {
 		stream = *req.Stream
 	}
