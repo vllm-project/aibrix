@@ -19,10 +19,12 @@ package modelclaim
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -69,6 +71,128 @@ func TestHTTPRuntimeActivate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int32(9123), resp.Port)
 	assert.Equal(t, "kvc_m1", resp.IPCName)
+}
+
+// hangingRuntime is a runtime that takes each request and answers none of
+// them until the test ends, as a runtime whose snapshot handler is stuck would.
+// Once answering is set, it answers again. It counts the requests that reach
+// it.
+type hangingRuntime struct {
+	host      string
+	port      int
+	requests  atomic.Int32
+	answering atomic.Bool
+}
+
+func newHangingRuntime(t *testing.T) *hangingRuntime {
+	t.Helper()
+	runtime := &hangingRuntime{}
+	released := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		runtime.requests.Add(1)
+		if runtime.answering.Load() {
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
+		<-released
+	}))
+	t.Cleanup(func() {
+		close(released)
+		srv.Close()
+	})
+	u, _ := url.Parse(srv.URL)
+	runtime.host = u.Hostname()
+	runtime.port, _ = strconv.Atoi(u.Port())
+	return runtime
+}
+
+func TestHTTPRuntimeSnapshotGivesUpOnARuntimeThatDoesNotAnswer(t *testing.T) {
+	runtime := newHangingRuntime(t)
+	c := newHTTPRuntimeClient(100*time.Millisecond, time.Minute, time.Now)
+
+	start := time.Now()
+	_, err := c.Snapshot(context.Background(), runtime.host, runtime.port)
+
+	require.Error(t, err)
+	assert.Less(t, time.Since(start), 5*time.Second)
+	assert.Equal(t, runtimeSnapshotTimeout, NewRuntimeClient().(*httpRuntimeClient).snapshotTimeout)
+}
+
+func TestHTTPRuntimeLeavesARuntimeThatDidNotAnswerAloneForAWhile(t *testing.T) {
+	runtime := newHangingRuntime(t)
+	now := time.Unix(1_700_000_000, 0)
+	c := newHTTPRuntimeClient(100*time.Millisecond, time.Minute, func() time.Time { return now })
+	ctx := context.Background()
+
+	_, err := c.Snapshot(ctx, runtime.host, runtime.port)
+	require.Error(t, err)
+	require.Equal(t, int32(1), runtime.requests.Load())
+
+	// Until the minute is up, every call to it fails at once.
+	start := time.Now()
+	_, err = c.Snapshot(ctx, runtime.host, runtime.port)
+	assert.ErrorIs(t, err, errRuntimeSilent)
+	_, err = c.Activate(ctx, runtime.host, runtime.port, &ActivateRequest{ModelName: "m1"})
+	assert.ErrorIs(t, err, errRuntimeSilent)
+	assert.Less(t, time.Since(start), 50*time.Millisecond)
+	assert.Equal(t, int32(1), runtime.requests.Load())
+
+	// After that it is called again, and once it answers it is called as usual.
+	runtime.answering.Store(true)
+	now = now.Add(time.Minute)
+	_, err = c.Snapshot(ctx, runtime.host, runtime.port)
+	require.NoError(t, err)
+	_, err = c.Snapshot(ctx, runtime.host, runtime.port)
+	require.NoError(t, err)
+	assert.Equal(t, int32(3), runtime.requests.Load())
+}
+
+func TestHTTPRuntimeStillStopsAnEngineOnARuntimeThatDidNotAnswer(t *testing.T) {
+	// A claim is deleted or scaled down only once, so stopping its engine is
+	// tried even on a runtime that did not answer a moment ago.
+	runtime := newHangingRuntime(t)
+	c := newHTTPRuntimeClient(100*time.Millisecond, time.Minute, time.Now)
+	ctx := context.Background()
+	_, err := c.Snapshot(ctx, runtime.host, runtime.port)
+	require.Error(t, err)
+
+	runtime.answering.Store(true)
+	require.NoError(t, c.Deactivate(ctx, runtime.host, runtime.port, &DeactivateRequest{ModelName: "m1"}))
+	assert.Equal(t, int32(2), runtime.requests.Load())
+
+	// It answered, so it is called as usual again.
+	_, err = c.Snapshot(ctx, runtime.host, runtime.port)
+	require.NoError(t, err)
+	assert.Equal(t, int32(3), runtime.requests.Load())
+}
+
+func TestHTTPRuntimeCallsAgainARuntimeThatFailedFast(t *testing.T) {
+	// A runtime that answers with an error, or refuses the connection, costs
+	// nothing to call again, so it is not left alone.
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	port, _ := strconv.Atoi(u.Port())
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	refused := listener.Addr().(*net.TCPAddr)
+	require.NoError(t, listener.Close())
+	c := newHTTPRuntimeClient(100*time.Millisecond, time.Minute, time.Now)
+	ctx := context.Background()
+
+	for range 2 {
+		_, err := c.Snapshot(ctx, u.Hostname(), port)
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, errRuntimeSilent)
+		_, err = c.Snapshot(ctx, refused.IP.String(), refused.Port)
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, errRuntimeSilent)
+	}
+	assert.Equal(t, int32(2), requests.Load())
 }
 
 func TestHTTPRuntimeSnapshot(t *testing.T) {
