@@ -393,10 +393,14 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 		return fmt.Errorf("invalid engineConfig parallelism: %w", err)
 	}
 	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL, parallelism)
+	requiredHBMBytesPerGPU := int64(0)
+	if pm.Spec.RequiredHBMBytesPerGPU != nil {
+		requiredHBMBytesPerGPU = pm.Spec.RequiredHBMBytesPerGPU.Value()
+	}
 
 	for desiredReplicas(pm) > int32(len(pm.Status.Instances)) {
 		pod, selectErr := selectPodForActivationWithState(
-			candidates, instancePods(pm), load, servedModelName(pm), r.Locality, placementStates,
+			candidates, instancePods(pm), load, servedModelName(pm), r.Locality, placementStates, requiredHBMBytesPerGPU,
 		)
 		if selectErr != nil {
 			// No available warm pod right now; remain Pending and retry on requeue.
