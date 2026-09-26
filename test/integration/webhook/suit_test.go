@@ -133,6 +133,8 @@ var _ = BeforeSuite(func() {
 
 	err = apiwebhook.SetupModelAdapterWebhook(mgr)
 	Expect(err).NotTo(HaveOccurred())
+	err = apiwebhook.SetupModelWarmupWebhook(mgr)
+	Expect(err).NotTo(HaveOccurred())
 	err = apiwebhook.SetupKVCacheWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 	err = apiwebhook.SetupStormServiceWebhookWithManager(mgr)

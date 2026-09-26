@@ -69,6 +69,24 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationmodelv1alpha1.ModelClaimSpecApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelClaimStatus"):
 		return &applyconfigurationmodelv1alpha1.ModelClaimStatusApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmup"):
+		return &applyconfigurationmodelv1alpha1.ModelWarmupApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmupImage"):
+		return &applyconfigurationmodelv1alpha1.ModelWarmupImageApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmupImagePreload"):
+		return &applyconfigurationmodelv1alpha1.ModelWarmupImagePreloadApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmupNodesTarget"):
+		return &applyconfigurationmodelv1alpha1.ModelWarmupNodesTargetApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmupPolicies"):
+		return &applyconfigurationmodelv1alpha1.ModelWarmupPoliciesApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmupSpec"):
+		return &applyconfigurationmodelv1alpha1.ModelWarmupSpecApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmupStatus"):
+		return &applyconfigurationmodelv1alpha1.ModelWarmupStatusApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmupTarget"):
+		return &applyconfigurationmodelv1alpha1.ModelWarmupTargetApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmupTargetStatus"):
+		return &applyconfigurationmodelv1alpha1.ModelWarmupTargetStatusApplyConfiguration{}
 
 		// Group=orchestration, Version=v1alpha1
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("Condition"):
