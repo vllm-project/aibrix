@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"net"
 	"strconv"
 	"strings"
 	"sync"
@@ -360,7 +361,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 
 			// Use centralized typed metrics fetcher for better engine abstraction and error handling
 			metricsToFetch := c.getAllAvailableMetrics()
-			endpoint := fmt.Sprintf("%s:%d", pod.Status.PodIP, podMetricPort)
+			endpoint := net.JoinHostPort(pod.Status.PodIP, strconv.Itoa(podMetricPort))
 			engineType := metrics.GetEngineType(*pod.Pod)
 			identifier := pod.Name
 			result, err := c.engineMetricsFetcher.FetchAllTypedMetrics(ctx, endpoint, engineType, identifier, metricsToFetch)
@@ -561,7 +562,7 @@ func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) (queryErr 
 	podMetricPort := getPodMetricPort(pod)
 	for _, metricName := range prometheusMetricNames {
 		queryLabels := map[string]string{
-			"instance": fmt.Sprintf("%s:%d", pod.Status.PodIP, podMetricPort),
+			"instance": net.JoinHostPort(pod.Status.PodIP, strconv.Itoa(podMetricPort)),
 		}
 		metric, ok := metrics.Metrics[metricName]
 		if !ok {

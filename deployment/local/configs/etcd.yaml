@@ -1,0 +1,18 @@
+# AIBrix Gateway etcd discovery configuration.
+# Start the gateway with:
+#   bin/gateway-plugins --standalone --etcd-config=deployment/local/configs/etcd.yaml
+# Register workers under prefix using the schema in pkg/cache/discovery/README.md.
+endpoints:
+  - "http://127.0.0.1:2379"
+prefix: "/aibrix/endpoints/"
+dialTimeout: "5s"
+
+# Keep credentials in this file, not command-line arguments.
+# username: gateway
+# password: "replace-with-your-password"
+
+# For TLS, use https:// endpoints. Paths are relative to this config file,
+# or absolute paths. Omitting tlsCA uses the system trust roots.
+# tlsCA: ca.pem
+# tlsCert: gateway-client.pem
+# tlsKey: gateway-client-key.pem

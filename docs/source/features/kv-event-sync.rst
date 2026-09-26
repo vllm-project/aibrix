@@ -164,7 +164,7 @@ AIBrix uses conditional compilation to manage ZMQ dependencies:
 .. code-block:: bash
 
    # Build with ZMQ support
-   go build -tags="zmq" ./cmd/plugins/main.go
+   go build -tags="zmq" ./cmd/plugins
    
    # Docker build with ZMQ
    make docker-build-gateway-plugins  # Automatically includes ZMQ
