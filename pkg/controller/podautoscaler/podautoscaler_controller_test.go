@@ -1231,6 +1231,87 @@ func TestComputeMetricBasedReplicas_RayClusterFleet_FiltersHeadOnly(t *testing.T
 	}
 }
 
+func TestStabilizeRecommendationHoldsWithinCooldownWindows(t *testing.T) {
+	type step struct {
+		offset         time.Duration
+		recommendation int32
+		current        int32
+		want           int32
+	}
+	tests := []struct {
+		name            string
+		scaleUpWindow   time.Duration
+		scaleDownWindow time.Duration
+		steps           []step
+	}{
+		{
+			name:            "brief dip is held by scale-down window",
+			scaleDownWindow: 5 * time.Minute,
+			steps: []step{
+				{offset: 0, recommendation: 10, current: 10, want: 10},
+				{offset: 30 * time.Second, recommendation: 2, current: 10, want: 10},
+				{offset: 60 * time.Second, recommendation: 10, current: 10, want: 10},
+			},
+		},
+		{
+			name:            "scale down to highest recommendation once window expires",
+			scaleDownWindow: 5 * time.Minute,
+			steps: []step{
+				{offset: 0, recommendation: 10, current: 10, want: 10},
+				{offset: 1 * time.Minute, recommendation: 4, current: 10, want: 10},
+				{offset: 2 * time.Minute, recommendation: 2, current: 10, want: 10},
+				{offset: 5*time.Minute + time.Second, recommendation: 3, current: 10, want: 4},
+			},
+		},
+		{
+			name:          "brief spike is held by scale-up window",
+			scaleUpWindow: 1 * time.Minute,
+			steps: []step{
+				{offset: 0, recommendation: 2, current: 2, want: 2},
+				{offset: 30 * time.Second, recommendation: 10, current: 2, want: 2},
+				{offset: 61 * time.Second, recommendation: 8, current: 2, want: 8},
+			},
+		},
+		{
+			name: "zero windows follow the recommendation",
+			steps: []step{
+				{offset: 0, recommendation: 10, current: 10, want: 10},
+				{offset: 30 * time.Second, recommendation: 2, current: 10, want: 2},
+				{offset: 60 * time.Second, recommendation: 6, current: 2, want: 6},
+			},
+		},
+		{
+			name:            "zero scale-up window scales up immediately",
+			scaleDownWindow: 5 * time.Minute,
+			steps: []step{
+				{offset: 0, recommendation: 2, current: 2, want: 2},
+				{offset: 30 * time.Second, recommendation: 10, current: 2, want: 10},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := mustParseTime(t, "2026-08-03T09:30:00Z")
+			var now time.Time
+			r := &PodAutoscalerReconciler{now: func() time.Time { return now }}
+			pa := validPodAutoscalerForSpec()
+			scalingCtx := scalingctx.NewBaseScalingContext()
+			scalingCtx.ScaleUpCooldownWindow = tt.scaleUpWindow
+			scalingCtx.ScaleDownCooldownWindow = tt.scaleDownWindow
+
+			for i, s := range tt.steps {
+				now = base.Add(s.offset)
+				got := r.stabilizeRecommendation(pa, scalingCtx, s.recommendation, s.current)
+				if got != s.want {
+					t.Fatalf("step %d: stabilizeRecommendation(rec=%d, current=%d)=%d, want %d",
+						i, s.recommendation, s.current, got, s.want)
+				}
+			}
+		})
+	}
+}
+
 // ---- interface assertions (compile-time) ----
 
 var (

@@ -1300,8 +1300,9 @@ func (r *PodAutoscalerReconciler) computeMetricBasedReplicas(
 }
 
 // stabilizeRecommendation applies cooldown window logic to smooth out replica recommendations.
-// It keeps a history of recommendations and returns the max (for scale-up) or min (for scale-down)
-// from the cooldown window, similar to K8s HPA behavior.
+// It keeps a history of recommendations and, like K8s HPA, clamps current replicas between the
+// min recommendation over the scale-up window and the max recommendation over the scale-down
+// window, so a brief spike or dip does not change replicas until it persists for the whole window.
 func (r *PodAutoscalerReconciler) stabilizeRecommendation(
 	pa *autoscalingv1alpha1.PodAutoscaler,
 	scalingContext scalingctx.ScalingContext,
@@ -1323,54 +1324,34 @@ func (r *PodAutoscalerReconciler) stabilizeRecommendation(
 		r.recommendations = make(map[string][]timestampedRecommendation)
 	}
 
-	// Add current recommendation to history
+	// Clean recommendations outside both windows, then add the current one
+	r.cleanOldRecommendations(key, now, scaleUpWindow, scaleDownWindow)
 	r.recommendations[key] = append(r.recommendations[key], timestampedRecommendation{
 		recommendation: recommendation,
 		timestamp:      now,
 	})
 
-	// Determine which window to use based on scaling direction
-	var windowDuration time.Duration
-	var selectMax bool
-
-	if recommendation > current {
-		windowDuration = scaleUpWindow
-		selectMax = true
-	} else if recommendation < current {
-		windowDuration = scaleDownWindow
-		selectMax = false
-	} else {
-		// No change, clean old recommendations and return current
-		r.cleanOldRecommendations(key, now, scaleUpWindow, scaleDownWindow)
-		return current
-	}
-
-	// Clean recommendations outside the window
-	r.cleanOldRecommendations(key, now, scaleUpWindow, scaleDownWindow)
-
-	// Select from recommendations within the window
-	cutoff := now.Add(-windowDuration)
-	var stabilized int32
-	first := true
-
+	// Scale up only to the lowest recommendation seen in the scale-up window and
+	// scale down only to the highest recommendation seen in the scale-down window.
+	upRecommendation := recommendation
+	downRecommendation := recommendation
+	upCutoff := now.Add(-scaleUpWindow)
+	downCutoff := now.Add(-scaleDownWindow)
 	for _, rec := range r.recommendations[key] {
-		if rec.timestamp.After(cutoff) {
-			if first {
-				stabilized = rec.recommendation
-				first = false
-			} else {
-				if selectMax && rec.recommendation > stabilized {
-					stabilized = rec.recommendation
-				} else if !selectMax && rec.recommendation < stabilized {
-					stabilized = rec.recommendation
-				}
-			}
+		if rec.timestamp.After(upCutoff) && rec.recommendation < upRecommendation {
+			upRecommendation = rec.recommendation
+		}
+		if rec.timestamp.After(downCutoff) && rec.recommendation > downRecommendation {
+			downRecommendation = rec.recommendation
 		}
 	}
 
-	if first {
-		// No recommendations within window, use current recommendation
-		stabilized = recommendation
+	stabilized := current
+	if stabilized < upRecommendation {
+		stabilized = upRecommendation
+	}
+	if stabilized > downRecommendation {
+		stabilized = downRecommendation
 	}
 
 	klog.V(4).InfoS("Stabilization applied",
@@ -1378,8 +1359,8 @@ func (r *PodAutoscalerReconciler) stabilizeRecommendation(
 		"recommendation", recommendation,
 		"current", current,
 		"stabilized", stabilized,
-		"windowDuration", windowDuration,
-		"selectMax", selectMax,
+		"scaleUpWindow", scaleUpWindow,
+		"scaleDownWindow", scaleDownWindow,
 		"historyCount", len(r.recommendations[key]))
 
 	return stabilized
