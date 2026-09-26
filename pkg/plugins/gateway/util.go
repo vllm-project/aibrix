@@ -66,8 +66,7 @@ type chatReqMinimal struct {
 	} `json:"stream_options"`
 	Messages []contentItem   `json:"messages"`
 	System   json.RawMessage `json:"system"`
-	// Tools is kept raw; it is only canonicalized into the prefix-match text
-	// (see prefixMatchText) and never validated here.
+	// Tools is kept raw and only canonicalized into the prefix-match text.
 	Tools json.RawMessage `json:"tools"`
 }
 
@@ -230,17 +229,11 @@ func validateChatRequest(requestID, requestPath string, requestBody []byte, user
 	if message, errRes = parseChatMessages(requestID, req.Messages); errRes != nil {
 		return
 	}
-	prefixText = prefixMatchText(requestID, req.Tools, message)
+	systemText := ""
 	if requestPath == PathMessages {
-		systemText := canonicalRequestFieldText(requestID, req.System)
-		if systemText != "" {
-			if prefixText == "" {
-				prefixText = combinePrefixText(message, systemText)
-			} else {
-				prefixText = systemText + " " + prefixText
-			}
-		}
+		systemText = requestPromptText(requestID, req.System)
 	}
+	prefixText = combinePrefixText(message, systemText, canonicalToolsText(requestID, req.Tools))
 	if req.Stream != nil {
 		stream = *req.Stream
 		// stream_options.include_usage is an OpenAI-specific field; Anthropic-style
@@ -278,7 +271,7 @@ func validateResponsesRequest(requestID string, requestBody []byte) (model, mess
 	}
 	prefixText = combinePrefixText(
 		message,
-		canonicalRequestFieldText(requestID, req.Instructions),
+		requestPromptText(requestID, req.Instructions),
 		canonicalToolsText(requestID, req.Tools),
 	)
 	if req.Stream != nil {

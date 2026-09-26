@@ -123,8 +123,37 @@ func TestRequestPrefixText_IncludesPromptFields(t *testing.T) {
 	require.Nil(t, errA)
 	require.Nil(t, errB)
 	assert.Equal(t, messageA, messageB)
-	assert.Equal(t, `"You are concise." [{"name":"weather","type":"function"}] hello`, prefixA)
+	assert.Equal(t, `You are concise. [{"name":"weather","type":"function"}] hello`, prefixA)
 	assert.NotEqual(t, prefixA, prefixB)
+
+	systemArray := `{"model":"m","system":[{"type":"text","text":"You are concise.","cache_control":{"type":"ephemeral"}}],"messages":[` + messages + `],"tools":[{"type":"function","name":"weather"}]}`
+	_, _, arrayPrefix, _, err := validateRequestBody("test-request-id", PathMessages, []byte(systemArray), utils.User{})
+	require.Nil(t, err)
+	assert.Equal(t, prefixA, arrayPrefix)
+
+	tok := tokenizer.NewCharacterTokenizer()
+	systemTokens, tokenErr := tok.TokenizeInputText(prefixA)
+	require.NoError(t, tokenErr)
+	arrayTokens, tokenErr := tok.TokenizeInputText(arrayPrefix)
+	require.NoError(t, tokenErr)
+	verboseTokens, tokenErr := tok.TokenizeInputText(prefixB)
+	require.NoError(t, tokenErr)
+	indexer := prefixcacheindexer.NewPrefixHashTable()
+	indexer.AddPrefix(indexer.GetPrefixHashes(systemTokens), "m", "pod-a")
+	matched, _ := indexer.MatchPrefix(arrayTokens, "m", map[string]struct{}{"pod-a": {}})
+	assert.Equal(t, 100, matched["pod-a"])
+	matched, _ = indexer.MatchPrefix(verboseTokens, "m", map[string]struct{}{"pod-a": {}})
+	assert.Less(t, matched["pod-a"], 100)
+
+	systemBlocks := `{"model":"m","system":[{"type":"text","text":"You are concise."},{"type":"text","text":"Use short answers."}],"messages":[` + messages + `]}`
+	_, _, arrayPrefix, _, err = validateRequestBody("test-request-id", PathMessages, []byte(systemBlocks), utils.User{})
+	require.Nil(t, err)
+	assert.Equal(t, "You are concise. Use short answers. hello", arrayPrefix)
+
+	escapedInstructions := `{"model":"m","instructions":"Be \u003cbrief\u003e.","input":"hello"}`
+	_, _, prefixA, _, err = validateRequestBody("test-request-id", PathResponses, []byte(escapedInstructions), utils.User{})
+	require.Nil(t, err)
+	assert.Equal(t, "Be <brief>. hello", prefixA)
 
 	instructionsA := `{"model":"m","instructions":"Be brief.","input":"hello","tools":[{"type":"function","name":"weather"}]}`
 	instructionsB := `{"model":"m","instructions":"Be detailed.","input":"hello","tools":[{"type":"function","name":"weather"}]}`
@@ -133,7 +162,7 @@ func TestRequestPrefixText_IncludesPromptFields(t *testing.T) {
 	require.Nil(t, errA)
 	require.Nil(t, errB)
 	assert.Equal(t, messageA, messageB)
-	assert.Equal(t, `"Be brief." [{"name":"weather","type":"function"}] hello`, prefixA)
+	assert.Equal(t, `Be brief. [{"name":"weather","type":"function"}] hello`, prefixA)
 	assert.NotEqual(t, prefixA, prefixB)
 
 	toolsA := `{"model":"m","instructions":"Be brief.","input":"hello","tools":[{"type":"function","name":"weather"}]}`
@@ -143,6 +172,47 @@ func TestRequestPrefixText_IncludesPromptFields(t *testing.T) {
 	require.Nil(t, errA)
 	require.Nil(t, errB)
 	assert.NotEqual(t, prefixA, prefixB)
+}
+
+func TestRequestPrefixText_EmptyPromptFields(t *testing.T) {
+	setIncludeTools(t, true)
+
+	messages := `"messages":[{"role":"user","content":"hello"}]`
+	for _, system := range []string{"", `,"system":null`, `,"system":""`, `,"system":[]`, `,"system":[{"type":"text","text":""}]`} {
+		body := `{"model":"m",` + messages + system + `}`
+		_, _, prefixText, _, err := validateRequestBody("test-request-id", PathMessages, []byte(body), utils.User{})
+		require.Nil(t, err)
+		assert.Empty(t, prefixText, "system field %q should use Message as the prefix fallback", system)
+	}
+
+	withTools := `{"model":"m","system":"","messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","name":"weather"}]}`
+	_, _, prefixText, _, err := validateRequestBody("test-request-id", PathMessages, []byte(withTools), utils.User{})
+	require.Nil(t, err)
+	assert.Equal(t, `[{"name":"weather","type":"function"}] hello`, prefixText)
+
+	completions := `{"model":"m",` + messages + `,"system":"ignored"}`
+	_, _, prefixText, _, err = validateRequestBody("test-request-id", PathChatCompletions, []byte(completions), utils.User{})
+	require.Nil(t, err)
+	assert.Empty(t, prefixText, "chat completions must not use Anthropic's top-level system field")
+
+	responses := `{"model":"m","input":"hello"}`
+	_, _, prefixText, _, err = validateRequestBody("test-request-id", PathResponses, []byte(responses), utils.User{})
+	require.Nil(t, err)
+	assert.Empty(t, prefixText, "responses without instructions or tools should use Message as the prefix fallback")
+}
+
+func TestRequestPrefixText_ToolsFlagAppliesToPromptFields(t *testing.T) {
+	setIncludeTools(t, false)
+
+	messages := `{"model":"m","system":"Be concise.","messages":[{"role":"user","content":"hello"}],"tools":[{"name":"weather"}]}`
+	_, _, prefixText, _, err := validateRequestBody("test-request-id", PathMessages, []byte(messages), utils.User{})
+	require.Nil(t, err)
+	assert.Equal(t, "Be concise. hello", prefixText)
+
+	responses := `{"model":"m","instructions":"Be concise.","input":"hello","tools":[{"type":"function","name":"weather"}]}`
+	_, _, prefixText, _, err = validateRequestBody("test-request-id", PathResponses, []byte(responses), utils.User{})
+	require.Nil(t, err)
+	assert.Equal(t, "Be concise. hello", prefixText)
 }
 
 func TestChatPrefixText_DifferentToolsDiffer(t *testing.T) {
