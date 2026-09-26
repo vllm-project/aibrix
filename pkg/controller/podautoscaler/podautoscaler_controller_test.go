@@ -1288,6 +1288,21 @@ func TestStabilizeRecommendationHoldsWithinCooldownWindows(t *testing.T) {
 				{offset: 30 * time.Second, recommendation: 10, current: 2, want: 10},
 			},
 		},
+		{
+			name:            "both windows clamp current replicas",
+			scaleUpWindow:   1 * time.Minute,
+			scaleDownWindow: 5 * time.Minute,
+			steps: []step{
+				{offset: 0, recommendation: 10, current: 10, want: 10},
+				{offset: 30 * time.Second, recommendation: 2, current: 10, want: 10},
+				// The dip to 2 is still in the scale-up window, so the up bound stays at 2.
+				{offset: 60 * time.Second, recommendation: 12, current: 10, want: 10},
+				// The dip has left the scale-up window, so replicas rise to 12.
+				{offset: 91 * time.Second, recommendation: 12, current: 10, want: 12},
+				// The scale-down window still holds the recommendations of 12.
+				{offset: 120 * time.Second, recommendation: 3, current: 12, want: 12},
+			},
+		},
 	}
 
 	for _, tt := range tests {
