@@ -87,13 +87,16 @@ type contentItem struct {
 	Content json.RawMessage `json:"content"`
 }
 
-// tokenizeReqMinimal captures the fields needed to route a vLLM /tokenize request: the
-// completion form carries "prompt", the chat form "messages". Prompt stays raw JSON so a
-// wrongly-typed prompt reaches the engine's validator instead of failing this unmarshal.
-type tokenizeReqMinimal struct {
+// engineNativeReqMinimal captures the fields needed to route a vLLM engine-native
+// request (/tokenize, /pooling): the completion form carries "prompt" or "input",
+// the chat form "messages". Prompt and input stay raw JSON so a wrongly-typed value
+// reaches the engine's validator instead of failing this unmarshal.
+type engineNativeReqMinimal struct {
 	Model    string          `json:"model"`
 	Prompt   json.RawMessage `json:"prompt"`
+	Input    json.RawMessage `json:"input"`
 	Messages []contentItem   `json:"messages"`
+	Stream   json.RawMessage `json:"stream"`
 }
 
 // embeddingReqMinimal captures the embedding fields needed for validation in a
@@ -196,6 +199,8 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		model, message, errRes = validateClassifyRequest(requestID, requestBody)
 	case PathTokenize:
 		model, message, errRes = validateTokenizeRequest(requestID, requestBody)
+	case PathPooling:
+		model, message, errRes = validatePoolingRequest(requestID, requestBody)
 	case PathAudioTranscriptions, PathAudioTranslations:
 		// Audio endpoints require multipart/form-data content-type, not JSON
 		// This case handles the error when JSON is sent to audio endpoints
@@ -504,9 +509,32 @@ func validateRerankRequest(requestID string, requestBody []byte) (model, message
 // and the rest of the schema is left to the engine. Nothing is metered: no tokens are generated.
 // nolint:nakedret
 func validateTokenizeRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
-	var req tokenizeReqMinimal
+	return validateEngineNativeRequest(requestID, "tokenize", false, requestBody)
+}
+
+// validatePoolingRequest parses and validates a vLLM /pooling request body. Only "model"
+// is required - the one field the gateway routes on - and the rest of the schema is left
+// to the engine. Stream is rejected when present and true, as for embeddings: pooling
+// never streams, and a stream=true body would otherwise be forwarded just to fail in the
+// engine with a less specific error.
+// nolint:nakedret
+func validatePoolingRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	return validateEngineNativeRequest(requestID, "pooling", true, requestBody)
+}
+
+// validateEngineNativeRequest is the shared validator for vLLM engine-native paths
+// (/tokenize, /pooling), whose request bodies are a union of a completion form
+// ("prompt" for tokenize, "input" for pooling) and a chat form ("messages").
+// Only "model" is required - the one field the gateway routes on; a body without
+// any input field still reaches the engine, which owns that error. The routing
+// message is best-effort: parseChatMessages unquotes a JSON string and writes any
+// other JSON value (array, token ids) as raw bytes, so the whole input value becomes
+// one content item rather than being expanded into several.
+// nolint:nakedret
+func validateEngineNativeRequest(requestID, endpoint string, rejectStream bool, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	var req engineNativeReqMinimal
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
-		klog.ErrorS(err, "error to unmarshal tokenize object", "requestID", requestID, "requestBody", string(requestBody))
+		klog.ErrorS(err, "error to unmarshal "+endpoint+" object", "requestID", requestID, "requestBody", string(requestBody))
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -517,13 +545,28 @@ func validateTokenizeRequest(requestID string, requestBody []byte) (model, messa
 	}
 	model = req.Model
 
-	// Best-effort: a body with neither field still reaches the engine, which owns the error.
-	// parseChatMessages already unquotes JSON strings, so prompt goes through as one item.
+	// Best-effort routing key, in vLLM's own precedence order: the completion
+	// form's raw field (prompt/input) first, then the chat form's messages.
 	switch {
 	case len(req.Prompt) > 0 && string(req.Prompt) != jsonNull:
 		message, errRes = parseChatMessages(requestID, []contentItem{{Content: req.Prompt}})
+	case len(req.Input) > 0 && string(req.Input) != jsonNull:
+		message, errRes = parseChatMessages(requestID, []contentItem{{Content: req.Input}})
 	case len(req.Messages) > 0:
 		message, errRes = parseChatMessages(requestID, req.Messages)
+	}
+	if errRes != nil {
+		return
+	}
+
+	// Non-streaming engine paths reject stream at the edge, like embeddings;
+	// tokenize has no stream field, and a stray one is left to the engine.
+	if rejectStream && len(req.Stream) > 0 {
+		var streamBool bool
+		if err := sonic.Unmarshal(req.Stream, &streamBool); err != nil || streamBool {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for pooling", "", "stream", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
 	}
 	return
 }

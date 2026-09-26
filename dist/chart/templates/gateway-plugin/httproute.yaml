@@ -40,6 +40,9 @@ spec:
         - path:
             type: PathPrefix
             value: /tokenize
+        - path:
+            type: PathPrefix
+            value: /pooling
       backendRefs:
         - group: ''
           kind: Service
