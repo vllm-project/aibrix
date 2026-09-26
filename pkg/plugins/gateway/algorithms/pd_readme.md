@@ -523,6 +523,32 @@ When a combined pod is selected for load imbalance, `scoreCombinedPods()` picks 
 
 When a combined pod is selected, `prefillPod` is `nil` (no prefill HTTP call) and `decodePod` is the selected combined pod.
 
+### Adaptive Bucket Serving
+
+Enabled by `AIBRIX_BUCKET_SERVE=true`, which requires `AIBRIX_PROMPT_LENGTH_BUCKETING=true` as well: the plan only re-orders the rolesets that bucketing already filtered to.
+
+Plain bucketing keeps every roleset whose range covers the request as a candidate, and the scoring decides among them. Adaptive bucket serving narrows that choice. The gateway keeps a per-model picture of the prompt lengths it routes, charges every roleset the traffic only it can serve, and splits each range that several rolesets still need into one band per roleset, sized so each roleset carries the model's traffic in proportion to its prefill replica count. The cut points sit at quantiles of the observed traffic. The picture is an EWMA with a 30s half-life, a model's plan is recomputed at most once every 5s, and one plan holds at most 16 affinity bands. A shared range needs a meaningful share of the model's traffic before it is split at all, and a range that cannot afford one band per needing roleset splits into as many bands as the budget left allows; an interval that is not split keeps every covering roleset a candidate.
+
+```
+bucketServeBand()   (before selectMu, one call per request)
+    ├─ observe promptLength for the model
+    ├─ groups: one per eligible roleset, with the range its profile declares and its prefill replica count
+    ├─ plan: shared ranges split at mode quantiles in replica proportion, light ones kept whole
+    └─ band for promptLength → banded roleset and band upper bound
+
+filterPrefillDecodePods()
+    ├─ steps 1-5: bucket filtering and the load-imbalance fast paths
+    ├─ banded roleset still has prefill and decode candidates
+    │     → narrow both sides to that roleset (step 6)
+    └─ otherwise keep the load fast paths' choice
+```
+
+`AIBRIX_BUCKET_SERVE_MODE` picks what the cut points balance: `throughput` (default) places them at prompt-token quantiles, so every band carries the same prompt work, while `rps` places them at request-count quantiles, so every band receives the same number of requests. Both are per-model: a profile that selects another mode re-plans only the models it routes.
+
+The plan is advisory. It never widens a choice, only prefers one of the rolesets that already cover the request's length. Wherever the plan holds no band, the scoring considers every covering roleset, and when the banded roleset has no candidate left after the load fast paths, the request routes exactly as it would without the plan. The steady state does narrow the choice, which is the feature, and a stale or wrong plan costs balance, not correctness. With the feature off the planner records and publishes nothing.
+
+Metrics: `pd_bucket_serve_band_total` and `pd_bucket_serve_prompt_tokens_total` count the requests and prompt tokens each banded roleset carried (label `roleset`), so a counter joins the pods that received the band, and the `pd_bucket_serve_band_max` gauge holds the current upper prompt-length bound of the band a roleset holds, deleted when the roleset leaves the plan.
+
 ---
 
 ## Environment Variables
@@ -536,6 +562,8 @@ When a combined pod is selected, `prefillPod` is `nil` (no prefill HTTP call) an
 | `AIBRIX_KV_CONNECTOR_TYPE` | `shfs` | KV transfer backend: `shfs` (GPU/SHFS), `nixl` (Neuron/NIXL), or `mooncake` (Mooncake) |
 | `AIBRIX_PREFILL_REQUEST_TIMEOUT` | `30` | Prefill HTTP request timeout in seconds. Exceeding it is a terminal `timeout` prefill failure. |
 | `AIBRIX_PROMPT_LENGTH_BUCKETING` | `false` | Enable prompt-length-based pod bucketing |
+| `AIBRIX_BUCKET_SERVE` | `false` | Enable adaptive bucket serving on top of prompt-length bucketing |
+| `AIBRIX_BUCKET_SERVE_MODE` | `throughput` | Objective of the adaptive cut points: `throughput` (prompt token mass) or `rps` (request counts) |
 
 ### Prefill Load Balancing
 

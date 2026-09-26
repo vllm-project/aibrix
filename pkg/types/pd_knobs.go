@@ -44,6 +44,12 @@ type PDOverrides struct {
 	// PromptLengthBucketing overrides AIBRIX_PROMPT_LENGTH_BUCKETING for
 	// requests routed with this profile.
 	PromptLengthBucketing bool
+	// BucketServe overrides AIBRIX_BUCKET_SERVE: whether the adaptive
+	// bucket-serve plan re-orders this request's prefill candidates.
+	BucketServe bool
+	// BucketServeMode overrides AIBRIX_BUCKET_SERVE_MODE: what the adaptive
+	// cut points balance, "rps" or "throughput".
+	BucketServeMode string
 	// PrefillRequestTimeout overrides AIBRIX_PREFILL_REQUEST_TIMEOUT: the
 	// deadline of this request's prefill HTTP call.
 	PrefillRequestTimeout time.Duration

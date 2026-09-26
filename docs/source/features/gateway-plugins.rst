@@ -829,6 +829,12 @@ can therefore be routed with different thresholds by selecting different profile
    * - ``promptLengthBucketing``
      - ``AIBRIX_PROMPT_LENGTH_BUCKETING``
      - Turn prompt-length bucketing on or off for this profile's requests.
+   * - ``bucketServe``
+     - ``AIBRIX_BUCKET_SERVE``
+     - Turn adaptive bucket serving on or off for this profile's requests. It only takes effect while prompt-length bucketing is on.
+   * - ``bucketServeMode``
+     - ``AIBRIX_BUCKET_SERVE_MODE``
+     - What the adaptive cut points balance: ``throughput`` (prompt token mass) or ``rps`` (request counts). An unknown value keeps the environment default.
    * - ``pd.decodeAbortTimeout``
      - ``AIBRIX_DECODE_ABORT_TIMEOUT``
      - Seconds the gateway waits for the decode pod to accept the abort POST after a prefill failure. ``0`` sends the abort without waiting.

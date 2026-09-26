@@ -64,6 +64,13 @@ const (
 	PDTokenLoadActiveTokens = "pd_token_load_active_tokens"
 	PDTokenLoadKVTokens     = "pd_token_load_kv_tokens"
 
+	// counters and a gauge of the adaptive bucket-serve plan of the pd prefill
+	// routing: the requests and prompt tokens each banded roleset carried, and
+	// the current upper bound of the band it holds
+	PDBucketServeBandTotal         = "pd_bucket_serve_band_total"
+	PDBucketServePromptTokensTotal = "pd_bucket_serve_prompt_tokens_total"
+	PDBucketServeBandMax           = "pd_bucket_serve_band_max"
+
 	// Duration bucket counters for timing breakdowns
 	GatewayRoutingTimeBucketTotal    = "gateway_routing_time_bucket_total"
 	GatewayPrefillTimeBucketTotal    = "gateway_prefill_time_bucket_total"
@@ -174,6 +181,30 @@ var (
 				Raw: Gauge,
 			},
 			Description: "Estimated prompt tokens whose KV cache is still resident on a prefill pod, as charged by the pd router",
+		},
+		PDBucketServeBandTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Requests the pd router banded to a roleset by the adaptive bucket-serve plan",
+		},
+		PDBucketServePromptTokensTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Prompt tokens the pd router banded to a roleset by the adaptive bucket-serve plan",
+		},
+		PDBucketServeBandMax: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			Description: "Current upper prompt-length bound of the adaptive bucket-serve band of a roleset",
 		},
 		GatewayInFlight: {
 			MetricScope:  PodMetricScope,

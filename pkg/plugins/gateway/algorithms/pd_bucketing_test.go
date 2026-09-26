@@ -21,7 +21,10 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
@@ -32,6 +35,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
@@ -201,18 +205,20 @@ func makePodWithRequestRateMetrics(name, namespace, modelName string, waitingReq
 		Value:  model.SampleValue(drainRate),
 	}}
 	var drainResult model.Value = vec
-	return &v1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: namespace,
-				Labels:    map[string]string{constants.ModelLabelName: modelName},
-			},
-		}, map[string]metrics.MetricValue{
-			metrics.NumRequestsWaiting:          &metrics.SimpleMetricValue{Value: waitingReqs},
-			metrics.NumPrefillPreallocQueueReqs: &metrics.SimpleMetricValue{Value: 0},
-			metrics.NumDecodePreallocQueueReqs:  &metrics.SimpleMetricValue{Value: 0},
-			metrics.DrainRate1m:                 &metrics.PrometheusMetricValue{Result: &drainResult},
-		}
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    map[string]string{constants.ModelLabelName: modelName},
+		},
+	}
+	values := map[string]metrics.MetricValue{
+		metrics.NumRequestsWaiting:          &metrics.SimpleMetricValue{Value: waitingReqs},
+		metrics.NumPrefillPreallocQueueReqs: &metrics.SimpleMetricValue{Value: 0},
+		metrics.NumDecodePreallocQueueReqs:  &metrics.SimpleMetricValue{Value: 0},
+		metrics.DrainRate1m:                 &metrics.PrometheusMetricValue{Result: &drainResult},
+	}
+	return pod, values
 }
 
 func TestShouldPickCombined_PrefillHighLoadCombinedLow(t *testing.T) {
@@ -477,4 +483,193 @@ func TestFilterPrefillDecodePods_MultipleBucketsCombinedFallback(t *testing.T) {
 	assert.Nil(t, p, "combined routing should not set a prefill pod")
 	assert.NotNil(t, d)
 	assert.Equal(t, "combined-1", d.Name)
+}
+
+// --- bucket serve ---
+
+// withBucketServe installs the process defaults of AIBRIX_BUCKET_SERVE and
+// AIBRIX_BUCKET_SERVE_MODE for one test, the way withPromptLengthBucketing
+// installs the bucketing switch. The prefill load-imbalance spread is tightened
+// so the load fast path fires on a handful of tracked requests.
+func withBucketServe(t *testing.T, enabled bool, mode pd.BucketMode) {
+	t.Helper()
+	restore := types.DefaultRoutingOverrides()
+	next := *restore
+	next.PD.BucketServe = enabled
+	next.PD.BucketServeMode = string(mode)
+	next.PD.Spreads.PrefillLoadImbalanceMinSpread = 1
+	types.SetDefaultRoutingOverrides(&next)
+	t.Cleanup(func() { types.SetDefaultRoutingOverrides(restore) })
+}
+
+// bucketServeRouter builds a test router carrying a bucket-serve tracker, the
+// way NewPDRouterWithCacheAndPrefixIndexer builds one.
+func bucketServeRouter() *pdRouter {
+	return &pdRouter{
+		cache:                 cache.NewForTest(),
+		prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), prefixcacheindexer.NewPrefixHashTable()),
+		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+		prefillRequestTracker: pd.NewPrefillRequestTracker(),
+		pendingDecodeTracker:  pd.NewPendingDecodeTracker(),
+		httpClient:            &http.Client{},
+		selectionCounts:       map[string]int64{},
+		bucketServe:           pd.NewBucketServeTracker(),
+	}
+}
+
+// bucketServeFleet returns two rolesets that declare the same prompt-length
+// range, so the planner has a shared range to band: rs-a covers the lower half
+// of it and rs-b the upper half.
+func bucketServeFleet(maxLength int) []*v1.Pod {
+	anno := pdConfigAnnotation(0, maxLength, false)
+	return []*v1.Pod{
+		makePDPod("prefill-a", "rs-a", "prefill", map[string]string{constants.ModelAnnoConfig: anno}),
+		makePDPod("decode-a", "rs-a", "decode", map[string]string{constants.ModelAnnoConfig: anno}),
+		makePDPod("prefill-b", "rs-b", "prefill", map[string]string{constants.ModelAnnoConfig: anno}),
+		makePDPod("decode-b", "rs-b", "decode", map[string]string{constants.ModelAnnoConfig: anno}),
+	}
+}
+
+// seedBucketServeCounts records one request per length between the two message
+// lengths, so the planner request-count cut lands halfway between them.
+func seedBucketServeCounts(t *testing.T, r *pdRouter, mode pd.BucketMode, model string, from, to int) {
+	t.Helper()
+	now := time.Now()
+	for length := from; length <= to; length++ {
+		r.bucketServe.Band(model, mode, length, now, nil)
+	}
+}
+
+// planMetrics is the pd_bucket_serve_* emission of one test: every call, in
+// order, keyed by metric name.
+type planMetrics struct {
+	counters map[string][]map[string]string
+	gauges   map[string][]map[string]string
+}
+
+// capturePlanMetrics records the pd_bucket_serve_* counter and gauge emissions
+// of one test.
+func capturePlanMetrics(t *testing.T) func() planMetrics {
+	t.Helper()
+	originalCounter := metrics.IncrementCounterMetricFnForTest
+	originalGauge := metrics.SetGaugeMetricFnForTest
+	calls := planMetrics{counters: map[string][]map[string]string{}, gauges: map[string][]map[string]string{}}
+	record := func(dst map[string][]map[string]string) func(string, string, float64, []string, ...string) {
+		return func(name, _ string, _ float64, labelNames []string, labelValues ...string) {
+			if !strings.HasPrefix(name, "pd_bucket_serve_") {
+				return
+			}
+			labels := make(map[string]string, len(labelNames))
+			for i, labelName := range labelNames {
+				labels[labelName] = labelValues[i]
+			}
+			dst[name] = append(dst[name], labels)
+		}
+	}
+	metrics.IncrementCounterMetricFnForTest = record(calls.counters)
+	metrics.SetGaugeMetricFnForTest = record(calls.gauges)
+	t.Cleanup(func() {
+		metrics.IncrementCounterMetricFnForTest = originalCounter
+		metrics.SetGaugeMetricFnForTest = originalGauge
+	})
+	return func() planMetrics { return calls }
+}
+
+// bucketServeRequestLengths returns one short and one long message, with their
+// tokenized lengths, so the test does not depend on which tokenizer the
+// environment selects.
+func bucketServeRequestLengths(t *testing.T, model string) (shortCtx, longCtx *types.RoutingContext, shortLength, longLength int) {
+	t.Helper()
+	shortCtx = types.NewRoutingContext(context.Background(), "pd", model, strings.Repeat("s", 1000), "req-band-short", "user")
+	var err error
+	shortLength, err = shortCtx.PromptLength()
+	require.NoError(t, err)
+	longCtx = types.NewRoutingContext(context.Background(), "pd", model, strings.Repeat("l", 3000), "req-band-long", "user")
+	longLength, err = longCtx.PromptLength()
+	require.NoError(t, err)
+	require.Less(t, shortLength, longLength, "the two messages must tokenize to different lengths")
+	return shortCtx, longCtx, shortLength, longLength
+}
+
+func TestFilterPrefillDecodePods_BucketServeBandPicksTheRoleset(t *testing.T) {
+	withPromptLengthBucketing(t, true)
+	withBucketServe(t, true, pd.BucketModeRPS)
+
+	r := bucketServeRouter()
+	shortCtx, longCtx, shortLength, longLength := bucketServeRequestLengths(t, "band-model")
+	seedBucketServeCounts(t, r, pd.BucketModeRPS, "band-model", shortLength, longLength)
+	pods := bucketServeFleet(2 * longLength)
+	metricsSeen := capturePlanMetrics(t)
+
+	// Both rolesets declare the same range, so the plan splits it: the shorter
+	// half is banded to rs-a, the longer half to rs-b. Without the plan both
+	// requests would score against every roleset.
+	p, d, err := r.filterPrefillDecodePods(shortCtx, pods)
+	require.NoError(t, err)
+	assert.Equal(t, "prefill-a", p.Name)
+	assert.Equal(t, "decode-a", d.Name)
+
+	p, d, err = r.filterPrefillDecodePods(longCtx, pods)
+	require.NoError(t, err)
+	assert.Equal(t, "prefill-b", p.Name)
+	assert.Equal(t, "decode-b", d.Name)
+
+	// Each request reports the roleset its band picked, so the counters join
+	// the pods that received the band.
+	var banded []string
+	for _, labels := range metricsSeen().counters[metrics.PDBucketServeBandTotal] {
+		banded = append(banded, labels["roleset"])
+	}
+	assert.Equal(t, []string{"rs-a", "rs-b"}, banded)
+	assert.NotEmpty(t, metricsSeen().counters[metrics.PDBucketServePromptTokensTotal],
+		"the banded prompt tokens are counted per roleset")
+
+	// The plan publishes one upper bound per banded roleset.
+	var bounded []string
+	for _, labels := range metricsSeen().gauges[metrics.PDBucketServeBandMax] {
+		bounded = append(bounded, labels["roleset"])
+	}
+	assert.ElementsMatch(t, []string{"rs-a", "rs-b"}, bounded)
+}
+
+func TestFilterPrefillDecodePods_BucketServeBandLosesToLoadImbalance(t *testing.T) {
+	withPromptLengthBucketing(t, true)
+	withBucketServe(t, true, pd.BucketModeRPS)
+
+	r := bucketServeRouter()
+	_, longCtx, shortLength, longLength := bucketServeRequestLengths(t, "band-model")
+	seedBucketServeCounts(t, r, pd.BucketModeRPS, "band-model", shortLength, longLength)
+	pods := bucketServeFleet(2 * longLength)
+	metricsSeen := capturePlanMetrics(t)
+
+	// The long half is banded to rs-b, but rs-b is the loaded roleset: the
+	// prefill fast path narrows to the idle rs-a first, so the band cannot pull
+	// the request back. The plan is a preference, not a gate, and the request
+	// that was not banded is not counted as one. The seed registers the load
+	// under the pod key the tracker reads: the fleet pods carry no namespace.
+	for i := 0; i < 3; i++ {
+		r.prefillRequestTracker.AddPrefillRequest("inflight-"+strconv.Itoa(i), utils.GeneratePodKey("", "prefill-b"))
+	}
+	p, d, err := r.filterPrefillDecodePods(longCtx, pods)
+	require.NoError(t, err)
+	assert.Equal(t, "prefill-a", p.Name)
+	assert.Equal(t, "decode-a", d.Name)
+	assert.Empty(t, metricsSeen().counters[metrics.PDBucketServeBandTotal])
+}
+
+func TestFilterPrefillDecodePods_BucketServeOffKeepsThePlannerIdle(t *testing.T) {
+	withPromptLengthBucketing(t, true)
+	withBucketServe(t, false, pd.BucketModeRPS)
+
+	r := bucketServeRouter()
+	shortCtx, _, shortLength, longLength := bucketServeRequestLengths(t, "band-model")
+	seedBucketServeCounts(t, r, pd.BucketModeRPS, "band-model", shortLength, longLength)
+	metricsSeen := capturePlanMetrics(t)
+
+	p, d, err := r.filterPrefillDecodePods(shortCtx, bucketServeFleet(2*longLength))
+	require.NoError(t, err)
+	require.NotNil(t, p)
+	require.NotNil(t, d)
+	assert.Empty(t, metricsSeen().counters, "with the switch off the planner records nothing")
+	assert.Empty(t, metricsSeen().gauges, "with the switch off the planner publishes nothing")
 }

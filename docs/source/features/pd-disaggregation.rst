@@ -308,6 +308,26 @@ for the full list.
     Bucketing only takes effect when ``AIBRIX_PROMPT_LENGTH_BUCKETING=true`` is set on the gateway plugin.
 
 
+Adaptive Bucket Serving
+------------------------
+
+``AIBRIX_BUCKET_SERVE=true`` adds an adaptive plan on top of bucketing, which must also be on. Plain
+bucketing keeps every roleset whose declared range covers the request as a candidate and lets the
+scoring decide among them. With adaptive bucket serving, the gateway keeps a per-model picture of
+the prompt lengths it routes and splits a range that several rolesets still need into one band per
+roleset, sized so each roleset carries the model's traffic in proportion to its prefill replica
+count, and cuts at quantiles of the observed traffic instead of at hand-written boundaries.
+
+``AIBRIX_BUCKET_SERVE_MODE`` picks what those cut points balance: ``throughput`` (default) places
+them at prompt-token quantiles, so every band carries the same prompt work, while ``rps`` places
+them at request-count quantiles, so every band receives the same number of requests.
+
+The plan is advisory. It narrows the rolesets a request may reach only when the banded roleset
+still has both prefill and decode candidates after the load-imbalance fast paths; wherever the plan
+holds no band, or the banded roleset has no candidate left, the request routes exactly as it would
+without the plan. With the feature off, the planner records and publishes nothing.
+
+
 Conductor Scoring Policy
 -------------------------
 
@@ -624,6 +644,13 @@ Three ordered checks run against decode pods. The first that fires selects a sin
 
 3. *Drain-rate score* — If all pods report a positive ``drain_rate``, score each pod as ``effective_running_reqs / drain_rate``. If ``max_score / min_score`` exceeds ``AIBRIX_DECODE_SCORE_RATIO_THRESHOLD``, route to the pod with the lowest score (fastest estimated queue drain).
 
+**Step 2b — Adaptive bucket serving (optional)**
+
+When ``AIBRIX_BUCKET_SERVE=true`` and bucketing is on, the gateway prefers the roleset a request
+length is banded to (see `Adaptive Bucket Serving`_). The preference only applies when that roleset
+still has both prefill and decode candidates after steps 1 and 2; otherwise the fast paths' choice
+stands.
+
 **Step 3 — Prefill scoring**
 
 Each prefill pod is scored by the selected policy. Pods with a request count more than ``N`` standard deviations above the mean are skipped (``N = AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``). The lowest-scoring pod per roleset is kept as the roleset's prefill candidate.
@@ -666,6 +693,12 @@ These are set on the **gateway plugin** deployment.
    * - ``AIBRIX_PROMPT_LENGTH_BUCKETING``
      - ``false``
      - Enable prompt-length bucket matching for prefill, decode, and standard inference pods.
+   * - ``AIBRIX_BUCKET_SERVE``
+     - ``false``
+     - Enable adaptive bucket serving on top of prompt-length bucketing.
+   * - ``AIBRIX_BUCKET_SERVE_MODE``
+     - ``throughput``
+     - Objective of the adaptive cut points: ``throughput`` (prompt token mass) or ``rps`` (request counts). An unknown value keeps the default.
    * - ``AIBRIX_PREFILL_REQUEST_TIMEOUT``
      - ``30``
      - Seconds before a prefill request to a prefill pod times out.

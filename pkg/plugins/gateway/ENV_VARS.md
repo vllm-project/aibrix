@@ -201,11 +201,15 @@ Scoring formula: `score = (fairnessWeight * normFairness + utilizationWeight * n
 | `AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD` | float64 | `2048.0` | Minimum (max − min) token-throughput spread (tokens/s) across decode pods to trigger throughput-imbalance routing. |
 | `AIBRIX_DECODE_SCORE_RATIO_THRESHOLD` | float64 | `1.5` | Max/min drain-rate score ratio above which the slowest decode pod is excluded from selection. |
 | `AIBRIX_PROMPT_LENGTH_BUCKETING` | bool | `false` | Route requests to prefill pods whose prompt-length bucket matches the request length. |
+| `AIBRIX_BUCKET_SERVE` | bool | `false` | Adaptive bucket serving: band the prompt-length range that several rolesets declare in common and prefer the roleset a request length is banded to. Requires `AIBRIX_PROMPT_LENGTH_BUCKETING=true`. |
+| `AIBRIX_BUCKET_SERVE_MODE` | string | `"throughput"` | What the adaptive cut points balance: `throughput` (prompt token mass) or `rps` (request counts). An unknown value keeps the default. |
 | `AIBRIX_KV_CONNECTOR_TYPE` | string | `"shfs"` | KV cache transfer backend. Options: `shfs` (GPU shared memory), `nixl` (Neuron). |
 | `AIBRIX_PREFILL_SCORE_POLICY` | string | `"prefix_cache"` | Strategy for selecting the prefill pod. Options: `prefix_cache`, `least_request`. |
 | `AIBRIX_DECODE_SCORE_POLICY` | string | `"load_balancing"` | Strategy for selecting the decode pod. Options: `load_balancing`, `least_request`. |
 
-The prefill/decode routing thresholds (`AIBRIX_PREFILL_*`, `AIBRIX_DECODE_*`, `AIBRIX_TOKEN_LOAD_*`, `AIBRIX_HYBRID_CACHE_LOAD_FACTOR`, `AIBRIX_MIN_MATCH_PCT`, `AIBRIX_PROMPT_LENGTH_BUCKETING`) can also be set per request by the model config profile (`routingConfig.pd.*` and `routingConfig.promptLengthBucketing`); see [Model Config Profile Overrides](#model-config-profile-overrides).
+The prefill/decode routing thresholds (`AIBRIX_PREFILL_*`, `AIBRIX_DECODE_*`, `AIBRIX_TOKEN_LOAD_*`, `AIBRIX_HYBRID_CACHE_LOAD_FACTOR`, `AIBRIX_MIN_MATCH_PCT`, `AIBRIX_PROMPT_LENGTH_BUCKETING`, `AIBRIX_BUCKET_SERVE`,
+`AIBRIX_BUCKET_SERVE_MODE`) can also be set per request by the model config profile
+(`routingConfig.pd.*`, `routingConfig.promptLengthBucketing` and `routingConfig.bucketServe*`); see [Model Config Profile Overrides](#model-config-profile-overrides).
 
 ### PD Prefill Fail-Fast (`algorithms/pd/abort.go`)
 
@@ -268,6 +272,8 @@ description and examples live in the Config Profiles section of the gateway plug
 |---|---|---|
 | `AIBRIX_TTFT_THRESHOLD_S` | `ttftThresholdS` | Top-level profile field, not inside `routingConfig`. `0` counts as unset and keeps the environment default, so a profile can only change the threshold to another positive value, never to `0`. |
 | `AIBRIX_PROMPT_LENGTH_BUCKETING` | `routingConfig.promptLengthBucketing` | Turns bucketing on or off for the profile's requests. |
+| `AIBRIX_BUCKET_SERVE` | `routingConfig.bucketServe` | Turns the adaptive plan on or off for the profile's requests. |
+| `AIBRIX_BUCKET_SERVE_MODE` | `routingConfig.bucketServeMode` | `throughput` or `rps`; a name the planner does not know keeps the environment default. |
 | `AIBRIX_DECODE_ABORT_TIMEOUT` | `routingConfig.pd.decodeAbortTimeout` | `0` sends the abort without waiting. |
 | `AIBRIX_DECODE_ABORT_RETRY_DELAY` | `routingConfig.pd.decodeAbortRetryDelay` | `0` repeats the abort immediately. |
 | `AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD` | `routingConfig.pd.prefillLoadImbalanceMinSpread` | |

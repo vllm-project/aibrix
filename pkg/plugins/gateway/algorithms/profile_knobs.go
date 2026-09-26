@@ -158,6 +158,8 @@ func resolveRoutingOverrides(cfg *types.RoutingConfig) *types.RoutingOverrides {
 		set(apply(&ov.AutoBlend.PrefixCacheLoadBalanceWeight, "autoBlend.prefixCacheLoadBalanceWeight", ab.PrefixCacheLoadBalanceWeight, inRange(0, maxWeightCoefficient)))
 	}
 	set(applyAny(&ov.PD.PromptLengthBucketing, cfg.PromptLengthBucketing))
+	set(applyAny(&ov.PD.BucketServe, cfg.BucketServe))
+	set(apply(&ov.PD.BucketServeMode, "bucketServeMode", cfg.BucketServeMode, knownBucketMode))
 	if p := cfg.PD; p != nil {
 		set(applySeconds(&ov.PD.Abort.Timeout, "pd.decodeAbortTimeout", p.DecodeAbortTimeout, nonNegative[int]))
 		set(applySeconds(&ov.PD.Abort.RetryDelay, "pd.decodeAbortRetryDelay", p.DecodeAbortRetryDelay, nonNegative[int]))
@@ -225,6 +227,15 @@ func applySeconds(dst *time.Duration, knob string, v *int, ok func(int) bool) bo
 // back, which is not what a profile that misspelled "seconds" asked for.
 func knownVTCTimeUnit(v string) bool {
 	return vtc.TimeUnitName(v) == v
+}
+
+// knownBucketMode accepts the two mode names the bucket-serve planner knows.
+// The name picks what the adaptive cut points balance, so a misnamed or
+// differently cased value would otherwise be normalized to the default mode
+// behind the profile's back.
+func knownBucketMode(v string) bool {
+	mode, ok := pd.ParseBucketMode(v)
+	return ok && string(mode) == v
 }
 
 // The predicates mirror the environment loaders: utils.LoadEnvInt and
