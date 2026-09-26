@@ -33,6 +33,17 @@ type BlockStored struct {
 	ModelName string
 	LoraID    int64 // -1 for no adapter
 
+	// Medium is the storage tier the blocks live on: "GPU"/"CPU"/"STORAGE".
+	// Empty when the connected vLLM does not emit it. Used to score pods with
+	// non-GPU prefixes lower during routing (see issue #2285).
+	Medium string
+	// LoraName is the canonical adapter id ("" = base model). Reserved for
+	// per-adapter index isolation; not yet consumed by the index key.
+	LoraName string
+	// GroupIdx is the KV-cache group for hybrid-attention models (-1 when
+	// unspecified). Reserved for per-group index isolation.
+	GroupIdx int64
+
 	// Source pod that stored these blocks
 	SourcePod string
 }
@@ -45,6 +56,12 @@ type BlockRemoved struct {
 	// Context information
 	ModelName string
 	LoraID    int64 // -1 for no adapter
+
+	// Medium is the storage tier the blocks live on ("GPU"/"CPU"/"STORAGE").
+	Medium string
+	// GroupIdx is the KV-cache group for hybrid-attention models (-1 when
+	// unspecified).
+	GroupIdx int64
 
 	// Source pod that removed these blocks (optional)
 	SourcePod string
