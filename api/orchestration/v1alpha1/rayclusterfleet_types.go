@@ -34,6 +34,7 @@ type RayClusterFleetSpec struct {
 
 	// Selector identifies the RayClusters managed by this fleet.
 	// It must be non-empty and match the RayCluster template's labels.
+	// MatchExpressions are unsupported, and the selector is immutable after creation.
 	Selector *metav1.LabelSelector `json:"selector" protobuf:"bytes,2,opt,name=selector"`
 
 	// Template describes the RayClusters that will be created.

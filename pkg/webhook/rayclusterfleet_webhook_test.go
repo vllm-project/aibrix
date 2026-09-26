@@ -67,19 +67,20 @@ func TestRayClusterFleetValidateSelector(t *testing.T) {
 			wantErr:  "spec.selector",
 		},
 		{
-			name: "matching expression",
+			name: "expression-only selector is unsupported",
 			selector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
 				Key: "app", Operator: metav1.LabelSelectorOpIn, Values: []string{"ray", "other"},
 			}}},
-			labels: map[string]string{"app": "ray"},
+			labels:  map[string]string{"app": "ray"},
+			wantErr: "matchExpressions are not supported",
 		},
 		{
-			name: "mismatched expression",
+			name: "selector with labels and expressions is unsupported",
 			selector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
-				Key: "app", Operator: metav1.LabelSelectorOpIn, Values: []string{"other"},
-			}}},
-			labels:  map[string]string{"app": "ray"},
-			wantErr: "selector does not match template labels",
+				Key: "team", Operator: metav1.LabelSelectorOpIn, Values: []string{"inference"},
+			}}, MatchLabels: map[string]string{"app": "ray"}},
+			labels:  map[string]string{"app": "ray", "team": "inference"},
+			wantErr: "matchExpressions are not supported",
 		},
 		{
 			name: "invalid expression",
@@ -119,10 +120,32 @@ func TestRayClusterFleetValidateSelector(t *testing.T) {
 	}
 }
 
+func TestRayClusterFleetSelectorImmutability(t *testing.T) {
+	validator := &RayClusterFleetCustomValidator{}
+	oldFleet := &orchestrationapi.RayClusterFleet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-fleet"},
+		Spec: orchestrationapi.RayClusterFleetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "ray"}},
+			Template: orchestrationapi.RayClusterTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "ray"}},
+			},
+		},
+	}
+	newFleet := oldFleet.DeepCopy()
+	newFleet.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": "new-ray"}}
+	newFleet.Spec.Template.Labels = map[string]string{"app": "new-ray"}
+
+	_, err := validator.ValidateUpdate(context.Background(), oldFleet, newFleet)
+	require.ErrorContains(t, err, "field is immutable")
+	require.True(t, apierrors.IsInvalid(err))
+}
+
 func TestRayClusterFleetValidationObjectTypesAndDeletion(t *testing.T) {
 	validator := &RayClusterFleetCustomValidator{}
 	fleet := &orchestrationapi.RayClusterFleet{}
 	_, err := validator.ValidateCreate(context.Background(), &corev1.Pod{})
+	require.ErrorContains(t, err, "expected a RayClusterFleet object")
+	_, err = validator.ValidateUpdate(context.Background(), &corev1.Pod{}, fleet)
 	require.ErrorContains(t, err, "expected a RayClusterFleet object")
 	_, err = validator.ValidateUpdate(context.Background(), fleet, &corev1.Pod{})
 	require.ErrorContains(t, err, "expected a RayClusterFleet object")

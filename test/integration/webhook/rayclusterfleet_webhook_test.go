@@ -76,7 +76,10 @@ var _ = ginkgo.Describe("RayClusterFleet selector admission", func() {
 		fleet.Spec.Template.Labels[constants.ModelLabelName] = "qwen-coder-7b-instruct-a"
 		err := k8sClient.Create(ctx, fleet)
 		ginkgo.GinkgoWriter.Printf("Create mismatched Fleet: %v\n", err)
-		gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "the API must reject mismatched selector and template labels")
+		gomega.Expect(apierrors.IsInvalid(err)).To(
+			gomega.BeTrue(),
+			"the API must reject mismatched selector and template labels",
+		)
 		gomega.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("selector does not match template labels")))
 	})
 
@@ -85,11 +88,38 @@ var _ = ginkgo.Describe("RayClusterFleet selector admission", func() {
 		fleet.Spec.Template.Labels[constants.ModelLabelName] = "qwen-coder-7b-instruct-a"
 		err := k8sClient.Update(ctx, fleet)
 		ginkgo.GinkgoWriter.Printf("Update mismatched Fleet: %v\n", err)
-		gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue())
+		gomega.Expect(apierrors.IsInvalid(err)).To(
+			gomega.BeTrue(),
+		)
 
 		stored := &orchestrationapi.RayClusterFleet{}
 		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(fleet), stored)).To(gomega.Succeed())
-		gomega.Expect(stored.Spec.Template.Labels).To(gomega.HaveKeyWithValue(constants.ModelLabelName, "qwen-coder-7b-instruct"))
+		gomega.Expect(stored.Spec.Template.Labels).To(
+			gomega.HaveKeyWithValue(constants.ModelLabelName, "qwen-coder-7b-instruct"),
+		)
+	})
+
+	ginkgo.It("rejects a selector change that also matches the updated template", func() {
+		gomega.Expect(k8sClient.Create(ctx, fleet)).To(gomega.Succeed())
+		fleet.Spec.Selector = &metav1.LabelSelector{
+			MatchLabels: map[string]string{constants.ModelLabelName: "qwen-coder-7b-instruct-a"},
+		}
+		fleet.Spec.Template.Labels[constants.ModelLabelName] = "qwen-coder-7b-instruct-a"
+		err := k8sClient.Update(ctx, fleet)
+		ginkgo.GinkgoWriter.Printf("Update selector and matching template labels: %v\n", err)
+		gomega.Expect(apierrors.IsInvalid(err)).To(
+			gomega.BeTrue(),
+		)
+		gomega.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("field is immutable")))
+
+		stored := &orchestrationapi.RayClusterFleet{}
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(fleet), stored)).To(gomega.Succeed())
+		gomega.Expect(stored.Spec.Selector.MatchLabels).To(
+			gomega.HaveKeyWithValue(constants.ModelLabelName, "qwen-coder-7b-instruct"),
+		)
+		gomega.Expect(stored.Spec.Template.Labels).To(
+			gomega.HaveKeyWithValue(constants.ModelLabelName, "qwen-coder-7b-instruct"),
+		)
 	})
 
 	ginkgo.It("accepts matching RayCluster labels when the head Pod has different labels", func() {
@@ -98,7 +128,7 @@ var _ = ginkgo.Describe("RayClusterFleet selector admission", func() {
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	})
 
-	ginkgo.It("accepts a matching expression selector", func() {
+	ginkgo.It("rejects an expression-only selector", func() {
 		fleet.Spec.Selector = &metav1.LabelSelector{
 			MatchExpressions: []metav1.LabelSelectorRequirement{{
 				Key:      constants.ModelLabelName,
@@ -107,7 +137,8 @@ var _ = ginkgo.Describe("RayClusterFleet selector admission", func() {
 			}},
 		}
 		err := k8sClient.Create(ctx, fleet)
-		ginkgo.GinkgoWriter.Printf("Create matching expression selector: %v\n", err)
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		ginkgo.GinkgoWriter.Printf("Create expression-only selector: %v\n", err)
+		gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue())
+		gomega.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("matchExpressions are not supported")))
 	})
 })

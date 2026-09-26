@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -51,6 +52,34 @@ func (v *RayClusterFleetCustomValidator) ValidateCreate(_ context.Context, obj r
 		return nil, fmt.Errorf("expected a RayClusterFleet object but got %T", obj)
 	}
 
+	errs := v.validate(fleet)
+	if len(errs) == 0 {
+		return nil, nil
+	}
+	return nil, apierrors.NewInvalid(orchestrationapi.GroupVersion.WithKind("RayClusterFleet").GroupKind(), fleet.Name, errs)
+}
+
+func (v *RayClusterFleetCustomValidator) ValidateUpdate(_ context.Context, oldObj runtime.Object, newObj runtime.Object) (admission.Warnings, error) {
+	oldFleet, ok := oldObj.(*orchestrationapi.RayClusterFleet)
+	if !ok {
+		return nil, fmt.Errorf("expected a RayClusterFleet object but got %T", oldObj)
+	}
+	newFleet, ok := newObj.(*orchestrationapi.RayClusterFleet)
+	if !ok {
+		return nil, fmt.Errorf("expected a RayClusterFleet object but got %T", newObj)
+	}
+
+	errs := v.validate(newFleet)
+	if !equality.Semantic.DeepEqual(oldFleet.Spec.Selector, newFleet.Spec.Selector) {
+		errs = append(errs, field.Forbidden(field.NewPath("spec", "selector"), "field is immutable"))
+	}
+	if len(errs) == 0 {
+		return nil, nil
+	}
+	return nil, apierrors.NewInvalid(orchestrationapi.GroupVersion.WithKind("RayClusterFleet").GroupKind(), newFleet.Name, errs)
+}
+
+func (v *RayClusterFleetCustomValidator) validate(fleet *orchestrationapi.RayClusterFleet) field.ErrorList {
 	var errs field.ErrorList
 	specPath := field.NewPath("spec")
 	if fleet.Spec.Selector == nil {
@@ -60,21 +89,15 @@ func (v *RayClusterFleetCustomValidator) ValidateCreate(_ context.Context, obj r
 		switch {
 		case err != nil:
 			errs = append(errs, field.Invalid(specPath.Child("selector"), fleet.Spec.Selector, err.Error()))
+		case len(fleet.Spec.Selector.MatchExpressions) > 0:
+			errs = append(errs, field.Invalid(specPath.Child("selector"), fleet.Spec.Selector, "matchExpressions are not supported"))
 		case selector.Empty():
 			errs = append(errs, field.Required(specPath.Child("selector"), "a non-empty selector is required"))
 		case !selector.Matches(labels.Set(fleet.Spec.Template.Labels)):
 			errs = append(errs, field.Invalid(specPath.Child("template", "metadata", "labels"), fleet.Spec.Template.Labels, "selector does not match template labels"))
 		}
 	}
-
-	if len(errs) == 0 {
-		return nil, nil
-	}
-	return nil, apierrors.NewInvalid(orchestrationapi.GroupVersion.WithKind("RayClusterFleet").GroupKind(), fleet.Name, errs)
-}
-
-func (v *RayClusterFleetCustomValidator) ValidateUpdate(ctx context.Context, _ runtime.Object, newObj runtime.Object) (admission.Warnings, error) {
-	return v.ValidateCreate(ctx, newObj)
+	return errs
 }
 
 func (v *RayClusterFleetCustomValidator) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {

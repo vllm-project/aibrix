@@ -140,7 +140,8 @@ Both resources live in the ``orchestration.aibrix.ai/v1alpha1`` API group.
      - Number of Ray clusters to run. Defaults to 1.
    * - ``selector``
      - LabelSelector
-     - Must be non-empty and match the labels in ``template.metadata.labels``. Required.
+     - Must be non-empty and match the labels in ``template.metadata.labels``.
+       ``matchExpressions`` are unsupported, and the selector is immutable after creation.
    * - ``template``
      - RayClusterTemplateSpec
      - ``metadata`` and ``spec`` for each Ray cluster. ``spec`` is a KubeRay ``RayClusterSpec``
