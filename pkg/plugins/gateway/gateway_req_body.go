@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -318,7 +319,17 @@ func (s *Server) validateModelAvailability(requestID, model string) (types.PodLi
 				if state == constants.ModelClaimRoutingStateSleeping && s.wakeRequester != nil {
 					s.wakeRequester.RequestWake(pod, model)
 				}
-				return nil, modelClaimRetryResponse(model, state)
+				return nil, modelClaimRetryResponse(model, state, "", state != constants.ModelClaimRoutingStateFailed)
+			}
+		}
+		// A claim that no pod advertises yet has not been placed. Its model is
+		// on the way, so it is not a model that does not exist.
+		if provider, ok := s.cache.(cache.ModelClaimStatusProvider); ok {
+			if phase, reason, found := provider.ModelClaimStatus(model); found {
+				klog.InfoS("ModelClaim is known but not placed", "requestID", requestID, "model", model,
+					"phase", phase, "reason", reason)
+				return nil, modelClaimRetryResponse(model, unplacedModelClaimState(phase), reason,
+					modelClaimRetried(reason))
 			}
 		}
 		klog.ErrorS(nil, "model doesn't exist in cache, probably wrong model name", "requestID", requestID, "model", model)
@@ -340,12 +351,18 @@ func (s *Server) validateModelAvailability(requestID, model string) (types.PodLi
 	return podsArr, nil
 }
 
-func modelClaimRetryResponse(model, state string) *extProcPb.ProcessingResponse {
+// modelClaimRetryResponse answers for a model whose ModelClaim cannot serve
+// it now. The reason, when there is one, is the controller's own word for why,
+// such as NoMatchingPods. A client is asked to retry only when retry is set.
+func modelClaimRetryResponse(model, state, reason string, retry bool) *extProcPb.ProcessingResponse {
 	headers := []*configPb.HeaderValueOption{
 		{Header: &configPb.HeaderValue{Key: HeaderErrorNoModelBackends, RawValue: []byte(model)}},
 	}
 	message := fmt.Sprintf("model %s is %s", model, state)
-	if state != constants.ModelClaimRoutingStateFailed {
+	if reason != "" {
+		message += fmt.Sprintf(" (%s)", reason)
+	}
+	if retry {
 		headers = append(headers, &configPb.HeaderValueOption{
 			Header: &configPb.HeaderValue{
 				Key: "Retry-After", RawValue: []byte(strconv.Itoa(modelClaimRetryAfterSeconds)),
@@ -356,6 +373,31 @@ func modelClaimRetryResponse(model, state string) *extProcPb.ProcessingResponse 
 	return generateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, headers,
 		message,
 		ErrorCodeServiceUnavailable, "model")
+}
+
+// modelClaimReasonsNotRetried are the reasons the controller does not get past
+// by itself: the claim has to be changed first, or its engine failed for good.
+// Waiting does not help, so a client is not asked to retry. The controller
+// tries any other refusal again, including a failed activation.
+var modelClaimReasonsNotRetried = map[string]struct{}{
+	"InvalidEngineConfig": {},
+	"InvalidPerGPU":       {},
+	"EngineFailed":        {},
+}
+
+func modelClaimRetried(reason string) bool {
+	_, notRetried := modelClaimReasonsNotRetried[reason]
+	return !notRetried
+}
+
+// unplacedModelClaimState words the phase of a claim that is not placed the
+// way routing states are worded. A claim the controller has not looked at yet
+// is pending.
+func unplacedModelClaimState(phase string) string {
+	if phase == "" {
+		return "pending"
+	}
+	return strings.ToLower(phase)
 }
 
 // getRunningRequestsByPod fetches the local metric slot for a pod's running-request

@@ -402,8 +402,14 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 		// Initialize service discovery — all modes go through the Provider interface
 		provider := opts.DiscoveryProvider
 		if provider == nil {
-			// Default: Kubernetes informer-based discovery
-			provider = discovery.NewKubernetesProvider(config)
+			// Default: Kubernetes informer-based discovery. Only the gateway
+			// watches ModelClaims, to answer for a claimed model that no pod
+			// advertises yet.
+			kubernetesProvider := discovery.NewKubernetesProvider(config)
+			if opts.IsGateway {
+				kubernetesProvider.WithModelClaims()
+			}
+			provider = kubernetesProvider
 		}
 		if err := initDiscoveryProvider(store, provider, stopCh); err != nil {
 			klog.Fatalf("Failed to initialize discovery provider: %v", err)
@@ -527,6 +533,13 @@ func handleDiscoveryObject(store *Store, evType discovery.EventType, obj, oldObj
 			store.updateModelAdapter(oldAdapter, o)
 		case discovery.EventDelete:
 			store.deleteModelAdapter(o)
+		}
+	case *modelv1alpha1.ModelClaim:
+		switch evType {
+		case discovery.EventAdd, discovery.EventUpdate:
+			store.setModelClaim(o)
+		case discovery.EventDelete:
+			store.deleteModelClaim(o)
 		}
 	default:
 		klog.Warningf("Discovery event with unknown object type: %T", obj)
