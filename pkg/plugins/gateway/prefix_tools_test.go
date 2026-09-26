@@ -126,7 +126,7 @@ func TestRequestPrefixText_IncludesPromptFields(t *testing.T) {
 	assert.Equal(t, `You are concise. [{"name":"weather","type":"function"}] hello`, prefixA)
 	assert.NotEqual(t, prefixA, prefixB)
 
-	systemArray := `{"model":"m","system":[{"type":"text","text":"You are concise.","cache_control":{"type":"ephemeral"}}],"messages":[` + messages + `],"tools":[{"type":"function","name":"weather"}]}`
+	systemArray := `{"model":"m","system":[{"cache_control":{"type":"ephemeral"},"text":"You are concise.","type":"text"}],"messages":[` + messages + `],"tools":[{"type":"function","name":"weather"}]}`
 	_, _, arrayPrefix, _, err := validateRequestBody("test-request-id", PathMessages, []byte(systemArray), utils.User{})
 	require.Nil(t, err)
 	assert.Equal(t, prefixA, arrayPrefix)
@@ -179,21 +179,23 @@ func TestRequestPrefixText_EmptyPromptFields(t *testing.T) {
 
 	messages := `"messages":[{"role":"user","content":"hello"}]`
 	for _, system := range []string{"", `,"system":null`, `,"system":""`, `,"system":[]`, `,"system":[{"type":"text","text":""}]`} {
-		body := `{"model":"m",` + messages + system + `}`
-		_, _, prefixText, _, err := validateRequestBody("test-request-id", PathMessages, []byte(body), utils.User{})
-		require.Nil(t, err)
-		assert.Empty(t, prefixText, "system field %q should use Message as the prefix fallback", system)
+		t.Run(system, func(t *testing.T) {
+			body := `{"model":"m",` + messages + system + `}`
+			_, _, prefixText, _, err := validateRequestBody("test-request-id", PathMessages, []byte(body), utils.User{})
+			require.Nil(t, err)
+			assert.Empty(t, prefixText, "system field %q should use Message as the prefix fallback", system)
+
+			bodyWithTools := `{"model":"m",` + messages + system + `,"tools":[{"type":"function","name":"weather"}]}`
+			_, _, prefixText, _, err = validateRequestBody("test-request-id", PathMessages, []byte(bodyWithTools), utils.User{})
+			require.Nil(t, err)
+			assert.Equal(t, `[{"name":"weather","type":"function"}] hello`, prefixText)
+		})
 	}
 
-	withTools := `{"model":"m","system":"","messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","name":"weather"}]}`
-	_, _, prefixText, _, err := validateRequestBody("test-request-id", PathMessages, []byte(withTools), utils.User{})
+	completions := `{"model":"m",` + messages + `,"system":"ignored","tools":[{"type":"function","name":"weather"}]}`
+	_, _, prefixText, _, err := validateRequestBody("test-request-id", PathChatCompletions, []byte(completions), utils.User{})
 	require.Nil(t, err)
-	assert.Equal(t, `[{"name":"weather","type":"function"}] hello`, prefixText)
-
-	completions := `{"model":"m",` + messages + `,"system":"ignored"}`
-	_, _, prefixText, _, err = validateRequestBody("test-request-id", PathChatCompletions, []byte(completions), utils.User{})
-	require.Nil(t, err)
-	assert.Empty(t, prefixText, "chat completions must not use Anthropic's top-level system field")
+	assert.Equal(t, `[{"name":"weather","type":"function"}] hello`, prefixText, "chat completions must ignore Anthropic's top-level system field")
 
 	responses := `{"model":"m","input":"hello"}`
 	_, _, prefixText, _, err = validateRequestBody("test-request-id", PathResponses, []byte(responses), utils.User{})
