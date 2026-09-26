@@ -11,7 +11,9 @@ a floor for scale-up. The reactive decision is never replaced, and a projection 
 workload down.
 
 The feature is opt-in through ``spec.predictive``. When the block is absent nothing in this page
-applies.
+applies. Today the block is accepted and validated only: applying it writes no
+``status.predictive`` and changes no replica count. The controller that consumes these fields
+lands in a follow-up.
 
 Modes
 -----
@@ -39,40 +41,6 @@ Modes
        mode: Auto
        horizonSeconds: 120
 
-How the projection is computed
-------------------------------
-
-1. The controller already records one sample per reconcile in the metric history that the trend
-   analysis uses. Predictive scaling fits the samples that fall inside
-   ``observeWindowSeconds``; a sample older than the window, or newer than the evaluation time,
-   is ignored.
-2. A least-squares line is fitted to those samples, with time in seconds against the metric
-   value.
-3. The line is evaluated at the horizon: ``spec.predictive.horizonSeconds``, or 2 minutes when
-   the field is unset.
-4. Two clamps keep the result sane: the projection never drops below zero, and never rises above
-   four times the observed mean, so a single spike cannot ask for an unbounded replica count.
-5. A projection is only produced when the window holds at least three samples that span at least
-   half of ``observeWindowSeconds``. Until then ``status.predictive`` stays empty, which is the
-   normal state right after a ``PodAutoscaler`` is created.
-
-With several ``metricsSources``, every source is projected and the evaluation that asks for the
-most replicas is the one reported and applied.
-
-How ``Auto`` applies the floor
-------------------------------
-
-The projected metric value is turned back into a replica count with the same formula as the
-reactive path of the strategy:
-
-* ``KPA``: ``ceil(projectedValue / targetValue)``
-* ``APA``: ``ceil(currentReplicas * projectedValue / targetValue)``
-
-That count is then used as a floor for the reactive recommendation from the same round. Being a
-floor, the projection can only raise the decision. The floor is capped by the configured
-scale-up rate, and the result still passes through ``minReplicas``, ``maxReplicas``, the active
-``schedules`` entry and the scale-up cooldown window before anything changes on the target.
-
 Status
 ------
 
@@ -89,9 +57,11 @@ Status
    * - ``metric``
      - ``targetMetric`` of the source the evaluation was derived from.
    * - ``observedValue``
-     - Mean value of the samples used by the fit.
+     - Mean of the samples used by the fit, as a decimal string in the same unit as
+       the metric sample and ``targetValue``.
    * - ``predictedValue``
-     - Projected value at the horizon.
+     - Value of the fitted line at ``now + horizonSeconds``, as a decimal string in
+       the same unit as the metric sample and ``targetValue``.
    * - ``predictedReplicas``
      - Replica count the projection alone asks for.
    * - ``reactiveReplicas``
@@ -101,8 +71,7 @@ Status
        cooldown. In ``Auto`` it equals the applied count; in ``Preview`` it shows whether
        ``Auto`` would change the decision.
    * - ``lastUpdated``
-     - When this projection changed. Identical projections keep the previous timestamp, so a
-       steady series does not rewrite the status on every resync.
+     - When the prediction was computed.
 
 The block is removed when ``spec.predictive`` is removed.
 

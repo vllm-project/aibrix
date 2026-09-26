@@ -60,6 +60,22 @@ func TestValidatePodAutoscalerPredictive(t *testing.T) {
 		require.NoError(t, validator.validatePodAutoscaler(pa))
 	})
 
+	t.Run("block without a mode is accepted", func(t *testing.T) {
+		pa := predictivePA(autoscalingv1alpha1.KPA, &autoscalingv1alpha1.PredictiveSpec{})
+		require.NoError(t, validator.validatePodAutoscaler(pa))
+	})
+
+	t.Run("horizon bounds are accepted", func(t *testing.T) {
+		for name, horizon := range map[string]int64{"minimum": 1, "maximum": 3600} {
+			t.Run(name, func(t *testing.T) {
+				pa := predictivePA(autoscalingv1alpha1.KPA, &autoscalingv1alpha1.PredictiveSpec{
+					HorizonSeconds: ptr.To(horizon),
+				})
+				require.NoError(t, validator.validatePodAutoscaler(pa))
+			})
+		}
+	})
+
 	t.Run("hpa strategy is rejected", func(t *testing.T) {
 		pa := predictivePA(autoscalingv1alpha1.HPA, &autoscalingv1alpha1.PredictiveSpec{
 			Mode: autoscalingv1alpha1.PredictiveModePreview,
@@ -80,7 +96,7 @@ func TestValidatePodAutoscalerPredictive(t *testing.T) {
 	})
 
 	t.Run("horizon bounds are enforced", func(t *testing.T) {
-		for name, horizon := range map[string]int64{"zero": 0, "too large": 3601} {
+		for name, horizon := range map[string]int64{"zero": 0, "negative": -1, "too large": 3601} {
 			t.Run(name, func(t *testing.T) {
 				pa := predictivePA(autoscalingv1alpha1.KPA, &autoscalingv1alpha1.PredictiveSpec{
 					HorizonSeconds: ptr.To(horizon),

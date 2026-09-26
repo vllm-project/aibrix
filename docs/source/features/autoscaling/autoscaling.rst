@@ -6,7 +6,7 @@ Autoscaling is crucial for deploying Large Language Model (LLM) services on Kube
 
 AIBrix ships one custom resource for this, ``PodAutoscaler`` in the ``autoscaling.aibrix.ai/v1alpha1``
 API group, and several algorithms behind it. This page explains how the pieces fit together and
-which page to read next. The two child pages hold the full configuration and examples.
+which page to read next. The child pages hold the full configuration and examples.
 
 .. toctree::
    :maxdepth: 1
@@ -124,8 +124,8 @@ PodAutoscaler spec at a glance
      - Time-boxed overrides of ``minReplicas`` and ``maxReplicas`` with ``name``, ``timezone``,
        ``daysOfWeek``, ``startTime`` and ``endTime``.
    * - ``predictive``
-     - ``mode`` (``Preview`` or ``Auto``) and ``horizonSeconds``. Projects the observed metric
-       trend forward and, in ``Auto``, uses the projection as a scale-up floor. See
+     - ``mode`` (``Preview`` or ``Auto``) and ``horizonSeconds``. Accepted and validated now;
+       the projection and the scale-up floor land with the controller follow-up. See
        :doc:`predictive-autoscaling`.
 
 Algorithm tunables that are not part of the spec, such as KPA's scale-down delay or APA's

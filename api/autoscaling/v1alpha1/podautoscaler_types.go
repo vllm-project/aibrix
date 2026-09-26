@@ -180,7 +180,7 @@ type PredictiveSpec struct {
 	Mode PredictiveMode `json:"mode,omitempty"`
 
 	// HorizonSeconds is how far ahead the observed trend is projected.
-	// If unset, the autoscaler uses its internal default.
+	// If unset, the autoscaler uses an internal default of 120 seconds.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=3600
@@ -328,22 +328,24 @@ type PredictiveStatus struct {
 	// +optional
 	Metric string `json:"metric,omitempty"`
 
-	// ObservedValue is the stable metric value the projection started from.
+	// ObservedValue is the mean of the samples used by the fit, as a decimal
+	// string in the same unit as the metric sample and targetValue.
 	// +optional
 	ObservedValue string `json:"observedValue,omitempty"`
 
-	// PredictedValue is the projected metric value at the horizon.
+	// PredictedValue is the fitted line evaluated at now + horizonSeconds,
+	// as a decimal string in the same unit as the metric sample and targetValue.
 	// +optional
 	PredictedValue string `json:"predictedValue,omitempty"`
 
 	// PredictedReplicas is the replica count the projection alone asks for.
 	// +optional
-	PredictedReplicas int32 `json:"predictedReplicas,omitempty"`
+	PredictedReplicas int32 `json:"predictedReplicas"`
 
 	// ReactiveReplicas is the replica count the reactive path selected in this
 	// round, before the predictive floor.
 	// +optional
-	ReactiveReplicas int32 `json:"reactiveReplicas,omitempty"`
+	ReactiveReplicas int32 `json:"reactiveReplicas"`
 
 	// WouldBeReplicas is the replica count this round would apply in Auto mode:
 	// the reactive count raised by the projection where it asks for more, after
@@ -351,7 +353,7 @@ type PredictiveStatus struct {
 	// equals the applied count; in Preview it shows whether Auto would change
 	// the decision.
 	// +optional
-	WouldBeReplicas int32 `json:"wouldBeReplicas,omitempty"`
+	WouldBeReplicas int32 `json:"wouldBeReplicas"`
 
 	// LastUpdated is when the prediction was computed.
 	// +optional
