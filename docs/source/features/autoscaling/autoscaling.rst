@@ -12,6 +12,7 @@ which page to read next. The two child pages hold the full configuration and exa
    :maxdepth: 1
 
    metric-based-autoscaling
+   predictive-autoscaling
    optimizer-based-autoscaling
 
 How it works
@@ -122,6 +123,10 @@ PodAutoscaler spec at a glance
    * - ``schedules[]``
      - Time-boxed overrides of ``minReplicas`` and ``maxReplicas`` with ``name``, ``timezone``,
        ``daysOfWeek``, ``startTime`` and ``endTime``.
+   * - ``predictive``
+     - ``mode`` (``Preview`` or ``Auto``) and ``horizonSeconds``. Projects the observed metric
+       trend forward and, in ``Auto``, uses the projection as a scale-up floor. See
+       :doc:`predictive-autoscaling`.
 
 Algorithm tunables that are not part of the spec, such as KPA's scale-down delay or APA's
 tolerance, are set through annotations on the ``PodAutoscaler``. The full annotation list and
