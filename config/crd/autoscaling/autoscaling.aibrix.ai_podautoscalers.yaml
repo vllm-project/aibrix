@@ -91,6 +91,19 @@ spec:
                 maximum: 3600
                 minimum: 1
                 type: integer
+              predictive:
+                properties:
+                  horizonSeconds:
+                    format: int64
+                    maximum: 3600
+                    minimum: 1
+                    type: integer
+                  mode:
+                    enum:
+                    - Preview
+                    - Auto
+                    type: string
+                type: object
               scaleTargetRef:
                 properties:
                   apiVersion:
@@ -205,6 +218,21 @@ spec:
               lastScaleTime:
                 format: date-time
                 type: string
+              predictive:
+                properties:
+                  lastUpdated:
+                    format: date-time
+                    type: string
+                  mode:
+                    type: string
+                  observedValue:
+                    type: string
+                  predictedReplicas:
+                    format: int32
+                    type: integer
+                  predictedValue:
+                    type: string
+                type: object
               scalingHistory:
                 items:
                   properties:
