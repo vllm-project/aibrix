@@ -45,6 +45,10 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &autoscalingv1alpha1.PodAutoscalerSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("PodAutoscalerStatus"):
 		return &autoscalingv1alpha1.PodAutoscalerStatusApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("PredictiveSpec"):
+		return &autoscalingv1alpha1.PredictiveSpecApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("PredictiveStatus"):
+		return &autoscalingv1alpha1.PredictiveStatusApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ScalingDecision"):
 		return &autoscalingv1alpha1.ScalingDecisionApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ScheduledBoundsStatus"):
