@@ -115,6 +115,26 @@ var _ = ginkgo.Describe("ModelRouter controller test", func() {
 		waitForReferenceGrantDeleted(ns.Name)
 	})
 
+	ginkgo.It("keeps the HTTPRoute while another deployment serves the same model", func() {
+		modelName := uniqueModelName(ns.Name, "shared")
+		first := createModelDeployment(ns.Name, "shared-deploy-l20", modelName, nil)
+		second := createModelDeployment(ns.Name, "shared-deploy-v100", modelName, nil)
+		_ = waitForHTTPRoute(modelName)
+		_ = waitForReferenceGrant(ns.Name)
+
+		gomega.Expect(k8sClient.Delete(ctx, first)).To(gomega.Succeed())
+		gomega.Consistently(func() error {
+			return k8sClient.Get(ctx, client.ObjectKey{
+				Namespace: aibrixSystemNS,
+				Name:      utils.ModelRouterName(modelName),
+			}, &gatewayv1.HTTPRoute{})
+		}, time.Second*2, modelRouterInterval).Should(gomega.Succeed())
+
+		gomega.Expect(k8sClient.Delete(ctx, second)).To(gomega.Succeed())
+		waitForHTTPRouteDeleted(modelName)
+		waitForReferenceGrantDeleted(ns.Name)
+	})
+
 	ginkgo.It("keeps the ReferenceGrant while another model deployment remains in the namespace", func() {
 		firstModel := uniqueModelName(ns.Name, "keep-a")
 		secondModel := uniqueModelName(ns.Name, "keep-b")
