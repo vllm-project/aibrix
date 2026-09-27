@@ -20,7 +20,11 @@ import (
 	"context"
 	"testing"
 
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
@@ -246,5 +250,63 @@ func TestAppendCustomModelRouterPaths(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDeleteHTTPRouteKeepsSharedModelRoute(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := orchestrationv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := gatewayv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := gatewayv1beta1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	const model = "deepseek-coder-7b"
+	labelsFor := func() map[string]string { return map[string]string{constants.ModelLabelName: model} }
+	deploymentFor := func(namespace, name string) *appsv1.Deployment {
+		return &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name, Labels: labelsFor()},
+		}
+	}
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Namespace: aibrixEnvoyGatewayNamespace, Name: "deepseek-coder-7b-router"},
+	}
+
+	m := &ModelRouter{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		route, deploymentFor("team-a", "l20"), deploymentFor("team-b", "v100"),
+	).Build()}
+
+	routeKey := client.ObjectKey{Namespace: aibrixEnvoyGatewayNamespace, Name: "deepseek-coder-7b-router"}
+	exists := func() bool {
+		return m.Get(context.Background(), routeKey, &gatewayv1.HTTPRoute{}) == nil
+	}
+
+	// Deleting one of two workloads serving the model must keep the route.
+	m.deleteRouteFromDeployment(deploymentFor("team-a", "l20"))
+	if err := m.Delete(context.Background(), deploymentFor("team-a", "l20")); err != nil {
+		t.Fatal(err)
+	}
+	m.deleteRouteFromDeployment(deploymentFor("team-a", "l20"))
+	if !exists() {
+		t.Fatal("HTTPRoute deleted while team-b still serves the model")
+	}
+
+	// Deleting the last workload serving the model must delete the route.
+	if err := m.Delete(context.Background(), deploymentFor("team-b", "v100")); err != nil {
+		t.Fatal(err)
+	}
+	m.deleteRouteFromDeployment(deploymentFor("team-b", "v100"))
+	if exists() {
+		t.Fatal("HTTPRoute kept after the last workload serving the model was deleted")
 	}
 }

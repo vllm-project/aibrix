@@ -382,6 +382,18 @@ func (m *ModelRouter) deleteHTTPRoute(namespace string, labels, annotations map[
 	}
 
 	ctx := context.Background()
+
+	// The route is shared by every workload serving this model, so only delete
+	// it when no workload serving the model is left in any namespace. On a
+	// list failure keep the route: an orphaned route is cheaper than an outage.
+	if has, err := m.modelHasRemainingWorkload(ctx, modelName); err != nil {
+		klog.ErrorS(err, "Failed to check remaining workloads, keeping HTTPRoute", "model", modelName)
+		return
+	} else if has {
+		klog.InfoS("keeping HTTPRoute, model still served by remaining workloads", "model", modelName)
+		return
+	}
+
 	httpRoute := gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      utils.ModelRouterName(modelName),
@@ -497,6 +509,88 @@ func (m *ModelRouter) namespaceHasModelWorkload(ctx context.Context, namespace s
 			if _, ok := constants.ModelNameFromMetadata(u.GetLabels(), u.GetAnnotations()); ok {
 				klog.InfoS("found labeled model workload in namespace",
 					"namespace", namespace, "gvk", gvk.String(), "name", u.GetName())
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// modelHasRemainingWorkload reports whether any workload serving the named model
+// is left in any namespace. The HTTPRoute is shared per model across namespaces
+// and workload kinds, so unlike namespaceHasModelWorkload this check is both
+// model-specific and cluster-wide.
+func (m *ModelRouter) modelHasRemainingWorkload(ctx context.Context, modelName string) (bool, error) {
+	match := func(labels, annotations map[string]string) bool {
+		name, ok := constants.ModelNameFromMetadata(labels, annotations)
+		return ok && name == modelName
+	}
+
+	var deploymentList appsv1.DeploymentList
+	if err := m.List(ctx, &deploymentList); err != nil {
+		klog.ErrorS(err, "Failed to list model deployments")
+		return false, err
+	}
+	for i := range deploymentList.Items {
+		deployment := &deploymentList.Items[i]
+		if match(deployment.Labels, deployment.Annotations) {
+			klog.InfoS("found remaining labeled model deployment",
+				"namespace", deployment.Namespace, "deployment", deployment.Name)
+			return true, nil
+		}
+	}
+
+	var adapterList modelv1alpha1.ModelAdapterList
+	if err := m.List(ctx, &adapterList); err != nil {
+		klog.ErrorS(err, "Failed to list model adapters")
+		return false, err
+	}
+	for i := range adapterList.Items {
+		adapter := &adapterList.Items[i]
+		if match(adapter.Labels, adapter.Annotations) {
+			klog.InfoS("found remaining labeled model adapter",
+				"namespace", adapter.Namespace, "modeladapter", adapter.Name)
+			return true, nil
+		}
+	}
+
+	var fleetList orchestrationv1alpha1.RayClusterFleetList
+	if err := m.List(ctx, &fleetList); err != nil {
+		klog.ErrorS(err, "Failed to list ray cluster fleets")
+		return false, err
+	}
+	for i := range fleetList.Items {
+		fleet := &fleetList.Items[i]
+		if match(fleet.Labels, fleet.Annotations) {
+			klog.InfoS("found remaining labeled ray cluster fleet",
+				"namespace", fleet.Namespace, "rayclusterfleet", fleet.Name)
+			return true, nil
+		}
+	}
+
+	// LeaderWorkerSet (and any other optional watched workload) is listed as
+	// unstructured so clusters without the CRD do not delete the route.
+	for _, gvk := range watchedWorkloads {
+		list := &unstructured.UnstructuredList{}
+		list.SetGroupVersionKind(schema.GroupVersionKind{
+			Group:   gvk.Group,
+			Version: gvk.Version,
+			Kind:    gvk.Kind + "List",
+		})
+		if err := m.List(ctx, list); err != nil {
+			if meta.IsNoMatchError(err) {
+				// CRD not installed; treat as "not present", not as "has workload".
+				klog.V(4).InfoS("optional workload CRD not present", "GVK", gvk)
+				continue
+			}
+			klog.ErrorS(err, "Failed to list optional model workloads", "GVK", gvk)
+			return false, err
+		}
+		for i := range list.Items {
+			u := &list.Items[i]
+			if match(u.GetLabels(), u.GetAnnotations()) {
+				klog.InfoS("found remaining labeled model workload",
+					"namespace", u.GetNamespace(), "gvk", gvk.String(), "name", u.GetName())
 				return true, nil
 			}
 		}
