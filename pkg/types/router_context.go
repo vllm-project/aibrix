@@ -184,6 +184,7 @@ type RoutingContext struct {
 	tokens           []int           // Cache of tokenized prompts
 	predictor        OutputPredictor // OutputPredictor gained from cache
 	statsUpdated     int32           // Use to flag if in-memory realtime statistics has been updated for the request.
+	statsAdded       chan struct{}   // Closed once the CanAddStats winner has finished updating the statistics.
 	traceAdded       int32           // Use to flag if trace has been added to cache
 
 	// pdLeg holds the prefill/decode leg state of the current incarnation of
@@ -372,8 +373,24 @@ func (r *RoutingContext) HasError() bool {
 }
 
 // CanAddStats returns true if the first time trying update in-memory realtime statistics.
+// The caller that gets true must call DoneAddStats once the update has finished.
 func (r *RoutingContext) CanAddStats() bool {
 	return atomic.CompareAndSwapInt32(&r.statsUpdated, statusInitial, statusAdded)
+}
+
+// DoneAddStats marks the update started by the CanAddStats winner as finished and
+// releases callers blocked in WaitStatsAdded.
+func (r *RoutingContext) DoneAddStats() {
+	close(r.statsAdded)
+}
+
+// WaitStatsAdded blocks until the CanAddStats winner has called DoneAddStats. CanAddStats
+// only guarantees the update runs once, not that it has finished, so a caller that lost
+// the CAS and must observe the updated statistics (e.g. RealtimeNormalizedPendings)
+// waits here. Only call it after CanAddStats returned false: a winner for the current
+// request then exists and will call DoneAddStats.
+func (r *RoutingContext) WaitStatsAdded() {
+	<-r.statsAdded
 }
 
 func (r *RoutingContext) CanDoneStats() bool {
@@ -495,6 +512,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.tokens = nil
 	r.predictor = nil
 	r.statsUpdated = statusInitial
+	r.statsAdded = make(chan struct{})
 	r.traceAdded = statusInitial
 	// A fresh leg per incarnation: any prefill goroutine still holding the
 	// previous one can then only mutate an object nothing reads any more.

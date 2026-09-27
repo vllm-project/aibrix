@@ -26,6 +26,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1041,4 +1042,99 @@ func TestPodFlapPreservesCompletedOutputTokens(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, int64(3), atomic.LoadInt64(&resumed.completedRequests))
 	assert.Equal(t, int64(450), atomic.LoadInt64(&resumed.completedOutputTokens))
+}
+
+// blockingTestLoadProvider holds GetConsumption until release is closed, so a test can
+// keep the CanAddStats winner inside addPodStats before it publishes the pending load.
+type blockingTestLoadProvider struct {
+	load    float64
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (p *blockingTestLoadProvider) GetUtilization(*types.RoutingContext, *v1.Pod) (float64, error) {
+	return 0, nil
+}
+
+func (p *blockingTestLoadProvider) GetConsumption(*types.RoutingContext, *v1.Pod) (float64, error) {
+	p.entered <- struct{}{}
+	<-p.release
+	return p.load, nil
+}
+
+func (p *blockingTestLoadProvider) Cap() float64 { return 1 }
+
+// TestAddRequestCountLoserWaitsForWinner covers the queue router calling
+// AddRequestCount for the same request from both its serve goroutine and the
+// requester. CanAddStats lets only one of them run addPodStats, but the other
+// must not return before that update has finished: the requester reads
+// RealtimeNormalizedPendings right after Route() returns, and serve routes the
+// next queued request against it. Returning early let the SLO queue spec read a
+// stale pending load and overfill the pod.
+func TestAddRequestCountLoserWaitsForWinner(t *testing.T) {
+	const (
+		modelName   = "test-model"
+		namespace   = "default"
+		podName     = "decode-0"
+		requestID   = "request-concurrent-add"
+		podIP       = "10.0.0.1"
+		pendingLoad = 0.25
+	)
+
+	cache := NewForTest()
+	provider := &blockingTestLoadProvider{
+		load:    pendingLoad,
+		entered: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	cache.pendingLoadProvider = provider
+
+	pod := requestTrackerTestPod(podName, namespace, modelName, podIP)
+	cache.addPod(pod)
+
+	routingCtx := types.NewRoutingContext(context.Background(), "slo", modelName, "", requestID, "")
+	routingCtx.SetTargetPod(pod)
+
+	// The winner takes the CAS and blocks inside addPodStats, before the pending
+	// load is published.
+	winnerDone := make(chan struct{})
+	go func() {
+		defer close(winnerDone)
+		cache.AddRequestCount(routingCtx, requestID, modelName)
+	}()
+	select {
+	case <-provider.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("winning AddRequestCount never reached GetConsumption")
+	}
+
+	loserDone := make(chan struct{})
+	go func() {
+		defer close(loserDone)
+		cache.AddRequestCount(routingCtx, requestID, modelName)
+	}()
+	select {
+	case <-loserDone:
+		t.Fatal("losing AddRequestCount returned before the winner finished updating pod stats")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(provider.release)
+	select {
+	case <-loserDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("losing AddRequestCount did not return after the winner finished")
+	}
+
+	// Once the losing call has returned, the pending load must already include
+	// this request.
+	pending, err := cache.GetMetricValueByPod(podName, namespace, metrics.RealtimeNormalizedPendings)
+	require.NoError(t, err)
+	assert.Equal(t, pendingLoad, pending.GetSimpleValue())
+
+	select {
+	case <-winnerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("winning AddRequestCount did not return")
+	}
 }

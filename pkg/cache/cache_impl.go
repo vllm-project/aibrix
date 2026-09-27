@@ -309,9 +309,16 @@ func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 	// TODO: Implment "wait for trace term" logic if AddRequestCount() is called concurrently.
 	if ctx == nil {
 		return traceTerm
-	} else if !ctx.HasRouted() || !ctx.CanAddStats() {
+	} else if !ctx.HasRouted() {
+		return atomic.LoadInt64(&ctx.TraceTerm)
+	} else if !ctx.CanAddStats() {
+		// Another caller (e.g. the queue router's serve goroutine) won the CAS and may
+		// still be inside addPodStats. Wait for it so that the statistics, including
+		// RealtimeNormalizedPendings, are updated by the time this call returns.
+		ctx.WaitStatsAdded()
 		return atomic.LoadInt64(&ctx.TraceTerm)
 	} else {
+		defer ctx.DoneAddStats()
 		traceTerm = atomic.LoadInt64(&ctx.TraceTerm)
 		c.addPodStats(ctx, requestID, modelName)
 	}
