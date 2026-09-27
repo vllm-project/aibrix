@@ -18,6 +18,7 @@ package podautoscaler
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -38,6 +39,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -244,6 +246,20 @@ func TestElasticEPEnginePort(t *testing.T) {
 			wantOK:    true,
 		},
 		{
+			name: "non-tcp container ports are skipped",
+			container: corev1.Container{Ports: []corev1.ContainerPort{
+				{ContainerPort: 9004, Protocol: corev1.ProtocolSCTP},
+				{ContainerPort: 9005, Protocol: corev1.ProtocolUDP},
+				{ContainerPort: 9003, Protocol: corev1.ProtocolTCP},
+			}},
+			want:   9003,
+			wantOK: true,
+		},
+		{
+			name:      "sctp container port is skipped",
+			container: corev1.Container{Ports: []corev1.ContainerPort{{ContainerPort: 9004, Protocol: corev1.ProtocolSCTP}}},
+		},
+		{
 			name:      "label wins over the command line",
 			labels:    map[string]string{constants.ModelLabelPort: "8000"},
 			container: corev1.Container{Args: []string{"--port", "9000"}},
@@ -303,7 +319,9 @@ func TestElasticEPProber(t *testing.T) {
 		{name: "unsupported endpoint", statusCode: http.StatusNotFound, body: `404 page not found`, want: elasticEPProbeUnavailable},
 		{name: "server error", statusCode: http.StatusInternalServerError, body: `boom`, want: elasticEPProbeUnavailable},
 		{name: "invalid payload", statusCode: http.StatusOK, body: `not-json`, want: elasticEPProbeUnavailable},
-		{name: "empty payload", statusCode: http.StatusOK, body: `{}`, want: elasticEPProbeIdle},
+		{name: "missing scaling field", statusCode: http.StatusOK, body: `{}`, want: elasticEPProbeUnavailable},
+		{name: "null scaling field", statusCode: http.StatusOK, body: `{"is_scaling_elastic_ep": null}`, want: elasticEPProbeUnavailable},
+		{name: "null payload", statusCode: http.StatusOK, body: `null`, want: elasticEPProbeUnavailable},
 		{
 			name:             "request timeout",
 			statusCode:       http.StatusOK,
@@ -703,5 +721,103 @@ func TestReconcileCustomPAWritesElasticEPScaling(t *testing.T) {
 	}
 	if requests, _, _ := engine.snapshot(); requests != 1 {
 		t.Fatalf("engine requests = %d, want 1", requests)
+	}
+}
+
+func TestReconcileCustomPAPreservesElasticEPScalingWhenPodListFails(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	sch := runtime.NewScheme()
+	_ = scheme.AddToScheme(sch)
+	_ = corev1.AddToScheme(sch)
+	_ = autoscalingv1alpha1.AddToScheme(sch)
+
+	transition := metav1.NewTime(time.Date(2026, 9, 27, 6, 0, 0, 0, time.UTC))
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "pa-elastic-ep-list-failure"},
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{
+				APIVersion: "apps/v1",
+				Kind:       "Deployment",
+				Namespace:  ns,
+				Name:       "test-deployment",
+			},
+			MinReplicas:     ptr.To(int32(5)),
+			MaxReplicas:     10,
+			ScalingStrategy: autoscalingv1alpha1.KPA,
+			MetricsSources: []autoscalingv1alpha1.MetricSource{{
+				MetricSourceType: autoscalingv1alpha1.RESOURCE,
+				TargetMetric:     "cpu",
+				TargetValue:      "50",
+			}},
+		},
+		Status: autoscalingv1alpha1.PodAutoscalerStatus{
+			ElasticEPScaling: &autoscalingv1alpha1.ElasticEPScalingStatus{
+				InProgress:         true,
+				ObservedEngines:    1,
+				ScalingEngines:     1,
+				LastTransitionTime: &transition,
+			},
+		},
+	}
+	scaleTarget := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "apps/v1",
+		"kind":       "Deployment",
+		"metadata": map[string]interface{}{
+			"name":      "test-deployment",
+			"namespace": ns,
+		},
+		"spec": map[string]interface{}{"replicas": int64(1)},
+	}}
+
+	// The replica count sits below the hard minimum and the pod list fails, so
+	// the decision falls back to the boundary and the reconcile still reaches
+	// the observation step.
+	cl := fake.NewClientBuilder().
+		WithScheme(sch).
+		WithObjects(pa, scaleTarget).
+		WithStatusSubresource(pa).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, cli client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if _, ok := list.(*corev1.PodList); ok {
+					return fmt.Errorf("simulated pod list failure")
+				}
+				return cli.List(ctx, list, opts...)
+			},
+		}).
+		Build()
+
+	mapper := apimeta.NewDefaultRESTMapper([]schema.GroupVersion{{Group: "apps", Version: "v1"}})
+	mapper.Add(schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, apimeta.RESTScopeNamespace)
+
+	r := &PodAutoscalerReconciler{
+		Client:              cl,
+		Scheme:              sch,
+		EventRecorder:       record.NewFakeRecorder(16),
+		Mapper:              mapper,
+		workloadScaleClient: &fakeWorkloadScaleClient{},
+		autoScaler:          &fakeAutoScaler{},
+		monitor:             monitor.New(),
+		elasticEPProber:     newElasticEPProber(),
+	}
+
+	if _, err := r.reconcileCustomPA(ctx, *pa); err != nil {
+		t.Fatalf("reconcileCustomPA returned error: %v", err)
+	}
+
+	stored := &autoscalingv1alpha1.PodAutoscaler{}
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(pa), stored); err != nil {
+		t.Fatalf("get PodAutoscaler: %v", err)
+	}
+	status := stored.Status.ElasticEPScaling
+	if status == nil {
+		t.Fatal("expected the previous elasticEPScaling status to be preserved when the pod list fails")
+	}
+	if !status.InProgress || status.ObservedEngines != 1 || status.ScalingEngines != 1 {
+		t.Fatalf("elasticEPScaling = %+v, want the previous observation", status)
+	}
+	if status.LastTransitionTime == nil || status.LastTransitionTime.Unix() != transition.Unix() {
+		t.Fatalf("LastTransitionTime = %v, want %v", status.LastTransitionTime, transition)
 	}
 }

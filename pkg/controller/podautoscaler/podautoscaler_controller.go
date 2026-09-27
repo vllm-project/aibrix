@@ -931,9 +931,13 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 
 	// Step 6: Record the observed elastic EP scaling state of the scale target.
 	// The observation is informational in this phase and never changes the
-	// replica decision computed above.
-	observation := r.observeElasticEPScaling(ctx, pods)
-	pa.Status.ElasticEPScaling = mergeElasticEPScalingObservation(pa.Status.ElasticEPScaling, observation, metav1.NewTime(r.nowTime()))
+	// replica decision computed above. A failed pod list leaves no snapshot
+	// to observe, so the previous status is kept: an unusable list must not
+	// be read as "no engine pod enables elastic EP".
+	if podsErr == nil {
+		observation := r.observeElasticEPScaling(ctx, pods)
+		pa.Status.ElasticEPScaling = mergeElasticEPScalingObservation(pa.Status.ElasticEPScaling, observation, metav1.NewTime(r.nowTime()))
+	}
 
 	if err := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); err != nil {
 		return ctrl.Result{}, err

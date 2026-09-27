@@ -98,7 +98,8 @@ func newElasticEPProber() *elasticEPProber {
 // probe asks one engine for its scaling state. The vLLM endpoint answers 200
 // with {"is_scaling_elastic_ep": bool} while idle. A scaling commit blocks all
 // HTTP requests with a 503, so that response also maps to scaling. Anything
-// else is unavailable and must not be read as "not scaling".
+// else, including a 200 response without the boolean field, is unavailable
+// and must not be read as "not scaling".
 func (p *elasticEPProber) probe(ctx context.Context, podIP string, port int32) (elasticEPProbeOutcome, error) {
 	url := fmt.Sprintf("http://%s%s", net.JoinHostPort(podIP, strconv.Itoa(int(port))), elasticEPProbePath)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
@@ -122,12 +123,15 @@ func (p *elasticEPProber) probe(ctx context.Context, podIP string, port int32) (
 	switch resp.StatusCode {
 	case http.StatusOK:
 		var payload struct {
-			IsScalingElasticEP bool `json:"is_scaling_elastic_ep"`
+			IsScalingElasticEP *bool `json:"is_scaling_elastic_ep"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
 			return elasticEPProbeUnavailable, fmt.Errorf("decode scaling state: %w", err)
 		}
-		if payload.IsScalingElasticEP {
+		if payload.IsScalingElasticEP == nil {
+			return elasticEPProbeUnavailable, fmt.Errorf("scaling state response is missing the is_scaling_elastic_ep field")
+		}
+		if *payload.IsScalingElasticEP {
 			return elasticEPProbeScaling, nil
 		}
 		return elasticEPProbeIdle, nil
@@ -204,7 +208,8 @@ func elasticEPPortFromContainer(container *corev1.Container) (int32, bool) {
 		}
 	}
 	for _, port := range container.Ports {
-		if port.Protocol == corev1.ProtocolUDP || port.ContainerPort < 1 || port.ContainerPort > 65535 {
+		if (port.Protocol != "" && port.Protocol != corev1.ProtocolTCP) ||
+			port.ContainerPort < 1 || port.ContainerPort > 65535 {
 			continue
 		}
 		return port.ContainerPort, true
