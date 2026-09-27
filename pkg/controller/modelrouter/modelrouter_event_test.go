@@ -295,6 +295,30 @@ func TestRouteAndReferenceGrantCleanupAfterWorkloadDeletion(t *testing.T) {
 		}
 	})
 
+	t.Run("keeps route when another deployment serves the same model", func(t *testing.T) {
+		remaining := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "llama-deploy-l20",
+				Namespace: "models",
+				Labels:    modelWorkloadLabels("llama-7b", "8000"),
+			},
+		}
+		m := newEventTestRouter(t, remaining)
+		deleted := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "llama-deploy-v100",
+				Namespace: "models",
+				Labels:    modelWorkloadLabels("llama-7b", "8000"),
+			},
+		}
+		m.addRouteFromDeployment(deleted)
+
+		m.deleteRouteFromDeployment(deleted)
+
+		_ = getHTTPRoute(t, m.Client, "llama-7b")
+		_ = getReferenceGrant(t, m.Client, "models")
+	})
+
 	t.Run("keeps grant when another model deployment remains", func(t *testing.T) {
 		remaining := &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{
@@ -635,5 +659,6 @@ func TestDeleteReferenceGrantDoesNotDeleteOnListError(t *testing.T) {
 	}
 	m.deleteRouteFromDeployment(deploy)
 
+	_ = getHTTPRoute(t, m.Client, "llama-7b")
 	_ = getReferenceGrant(t, m.Client, "models")
 }
