@@ -734,6 +734,7 @@ func TestReconcileActiveDemotedWhenUnhealthy(t *testing.T) {
 	r, runtime := newReconciler(t,
 		pm,
 		warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning),
+		warmPod("warm-2", "b300-pool-a", true, corev1.PodRunning),
 	)
 
 	reconcileOnce(t, r, pm.Name)
@@ -745,8 +746,10 @@ func TestReconcileActiveDemotedWhenUnhealthy(t *testing.T) {
 
 	got = getModel(t, r, pm.Name)
 	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-1", got.Status.Instances[0].Pod)
 	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
 	assert.Equal(t, int32(0), got.Status.ReadyReplicas)
+	assert.Len(t, runtime.activateCalls, 1, "a transient restart must not move the claim")
 	pod := &corev1.Pod{}
 	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, pod))
 	assert.Contains(t, pod.Annotations[constants.ModelClaimPodAnnotationPrefix+"qwen2-7b"], `"port":0`,
@@ -859,6 +862,87 @@ func TestReconcileSnapshotTerminalFailureDeroutesAndFailsClaim(t *testing.T) {
 	}, pod))
 	assert.Contains(t, pod.Annotations[constants.ModelClaimPodAnnotationPrefix+pm.Name], `"port":0`)
 	assert.Empty(t, runtime.activateCalls)
+}
+
+func TestReconcileSnapshotTerminalFailureReschedulesClaim(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.UID = types.UID("claim-uid")
+	pm.Status.Phase = modelv1alpha1.ModelClaimActive
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	peerModel := "peer-model"
+	peer := withFinalizer(sampleModelClaim())
+	peer.Name = "peer-claim"
+	peer.UID = types.UID("peer-uid")
+	peer.Spec.ModelName = &peerModel
+	peer.Status.Phase = modelv1alpha1.ModelClaimActive
+	peer.Status.ReadyReplicas = 1
+	peer.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9002, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	failedPod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	failedPod.Annotations = map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + pm.Name:   `{"model":"qwen2-7b","port":9001,"state":"active"}`,
+		constants.ModelClaimPodAnnotationPrefix + peer.Name: `{"model":"peer-model","port":9002,"state":"active"}`,
+	}
+	replacementPod := warmPod("warm-2", "b300-pool-a", true, corev1.PodRunning)
+	replacementPod.Status.PodIP = testPeerIP
+	r, runtime := newReconciler(t, pm, peer, failedPod, replacementPod)
+	runtime.models = map[string]ModelInfo{
+		peerModel: {ModelName: peerModel, Port: 9002, Phase: runtimePhaseActive, Ready: true},
+	}
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		failedPod.Status.PodIP: {Models: []RuntimeSnapshotModel{
+			{
+				ModelName: servedModelName(pm), Port: 9001, Phase: runtimePhaseFailed,
+				Alive: false, Ready: false, LastError: "restart budget exhausted",
+				ClaimRef: &ModelClaimRef{Namespace: pm.Namespace, Name: pm.Name, UID: string(pm.UID)},
+			},
+			{
+				ModelName: peerModel, Port: 9002, Phase: runtimePhaseActive, Alive: true, Ready: true,
+				ClaimRef: &ModelClaimRef{Namespace: peer.Namespace, Name: peer.Name, UID: string(peer.UID)},
+			},
+		}},
+		testPeerIP: {},
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	rescheduled := getModel(t, r, pm.Name)
+	require.Len(t, rescheduled.Status.Instances, 1)
+	assert.Equal(t, "warm-2", rescheduled.Status.Instances[0].Pod)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, rescheduled.Status.Instances[0].Phase)
+	require.Len(t, runtime.activateCalls, 1)
+	require.Len(t, runtime.deactivateCalls, 1)
+	assert.Equal(t, servedModelName(pm), runtime.deactivateCalls[0].ModelName)
+
+	gotFailedPod := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{
+		Namespace: testNamespace, Name: failedPod.Name,
+	}, gotFailedPod))
+	assert.NotContains(t, gotFailedPod.Annotations, constants.ModelClaimPodAnnotationPrefix+pm.Name)
+	assert.Contains(t, gotFailedPod.Annotations, constants.ModelClaimPodAnnotationPrefix+peer.Name)
+	unchangedPeer := getModel(t, r, peer.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, unchangedPeer.Status.Phase)
+	assert.Equal(t, "warm-1", unchangedPeer.Status.Instances[0].Pod)
+
+	gotReplacementPod := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{
+		Namespace: testNamespace, Name: replacementPod.Name,
+	}, gotReplacementPod))
+	assert.Contains(t, gotReplacementPod.Annotations[constants.ModelClaimPodAnnotationPrefix+pm.Name], `"port":0`)
+
+	reconcileOnce(t, r, pm.Name)
+
+	active := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, active.Status.Phase)
+	assert.Equal(t, int32(1), active.Status.ReadyReplicas)
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{
+		Namespace: testNamespace, Name: replacementPod.Name,
+	}, gotReplacementPod))
+	assert.Contains(t, gotReplacementPod.Annotations[constants.ModelClaimPodAnnotationPrefix+pm.Name],
+		fmt.Sprintf(`"port":%d`, active.Status.Instances[0].Port))
 }
 
 func TestSnapshotModelForClaimPrefersMatchingClaimUID(t *testing.T) {
