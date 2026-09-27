@@ -132,3 +132,48 @@ func TestLeastRequest(t *testing.T) {
 		})
 	}
 }
+
+// A pool that mixes a data-parallel (multi-port) pod with a plain single-port
+// pod takes the per-port routing path. The single-port pod must be selectable
+// when it is the least loaded candidate, in the same "pod/port" key format the
+// multi-port pods use.
+func TestLeastRequest_MixedPortPool_SelectsLeastLoadedSinglePortPod(t *testing.T) {
+	model := testModelName
+	podA := newPod("pod-a", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	podA.Spec.Containers = []v1.Container{{Env: []v1.EnvVar{{Name: "data-parallel-size", Value: "2"}}}}
+	podB := newPod("pod-b", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	c := cache.NewWithPodsMetricsForTest(
+		[]*v1.Pod{podA, podB},
+		model,
+		map[string]map[string]metrics.MetricValue{
+			"pod-a": {
+				metrics.RealtimeNumRequestsRunning:           &metrics.SimpleMetricValue{Value: 0},
+				metrics.RealtimeNumRequestsRunning + "/8000": &metrics.SimpleMetricValue{Value: 5},
+				metrics.RealtimeNumRequestsRunning + "/8001": &metrics.SimpleMetricValue{Value: 5},
+			},
+			"pod-b": {
+				metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 0},
+			},
+		})
+	portsMap := map[string][]int{
+		"pod-a": {8000, 8001},
+		"pod-b": {8000},
+	}
+
+	counts := getRequestCountsWithPort(c, []*v1.Pod{podA, podB}, portsMap)
+	assert.Equal(t, map[string]int{"pod-a/8000": 5, "pod-a/8001": 5, "pod-b/8000": 0}, counts)
+
+	targetPod, targetPort := selectTargetPodAndPortWithLeastRequestCount(c, []*v1.Pod{podA, podB}, portsMap)
+	if assert.NotNil(t, targetPod) {
+		assert.Equal(t, "pod-b", targetPod.Name)
+	}
+	assert.Equal(t, 8000, targetPort)
+
+	r := &leastRequestRouter{cache: c}
+	ctx := types.NewRoutingContext(context.Background(), RouterLeastRequest, model, "hello", "req-mixed-port", "")
+	address, err := r.Route(ctx, portWrapper{pods: []*v1.Pod{podA, podB}, ports: portsMap})
+
+	assert.NoError(t, err)
+	assert.Equal(t, "2.2.2.2:8000", address)
+	assert.Equal(t, 8000, ctx.TargetPort())
+}

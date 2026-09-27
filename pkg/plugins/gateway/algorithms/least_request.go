@@ -282,17 +282,19 @@ func getRequestCountsWithPort(c cache.Cache, readyPods []*v1.Pod, portsMap map[s
 		}
 
 		for _, port := range podPorts {
+			// Every entry is keyed "pod/port": selectTargetPodAndPortWithLeastRequestCount
+			// splits the winning key on "/" to recover the pod and the port to dial.
+			keyName := pod.Name + "/" + strconv.Itoa(port)
 			if len(podPorts) == 1 {
 				count := 0
 				if err == nil && liveCounts != nil {
 					count = int(liveCounts[utils.GeneratePodKey(pod.Namespace, pod.Name)])
 				}
-				podRequestCount[pod.Name] = count
+				podRequestCount[keyName] = count
 				continue
 			}
 
 			metricName := metrics.RealtimeNumRequestsRunning + "/" + strconv.Itoa(port)
-			keyName := pod.Name + "/" + strconv.Itoa(port)
 			var count int
 			if val, err := c.GetMetricValueByPod(pod.Name, pod.Namespace, metricName); err == nil && val != nil {
 				count = int(val.GetSimpleValue())
