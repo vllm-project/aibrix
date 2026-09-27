@@ -488,6 +488,10 @@ func (r *ModelClaimReconciler) rescheduleFailedInstances(
 	}
 	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL, parallelism)
 
+	// Snapshot occupied pods before rewriting instances. Recomputing
+	// instancePods() after *inst = replacement would drop the just-left
+	// failed pod and let a later failed instance land back on it.
+	alreadyOn := instancePods(pm)
 	for i := range pm.Status.Instances {
 		inst := &pm.Status.Instances[i]
 		if inst.Phase != modelv1alpha1.ModelClaimFailed {
@@ -495,7 +499,7 @@ func (r *ModelClaimReconciler) rescheduleFailedInstances(
 		}
 		failedPod := inst.Pod
 		pod, selectErr := selectPodForActivationWithState(
-			candidates, instancePods(pm), load, servedModelName(pm), r.Locality, placementStates,
+			candidates, alreadyOn, load, servedModelName(pm), r.Locality, placementStates,
 		)
 		if selectErr != nil {
 			r.Recorder.Eventf(pm, corev1.EventTypeWarning, "ReschedulePending",
@@ -521,6 +525,7 @@ func (r *ModelClaimReconciler) rescheduleFailedInstances(
 			return fmt.Errorf("activate replacement on pod %s: %w", pod.Name, activateErr)
 		}
 		*inst = replacement
+		alreadyOn[pod.Name] = true
 		load[pod.Name]++
 		r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Rescheduled",
 			"model %s moved after terminal engine failure from pod %s to pod %s",

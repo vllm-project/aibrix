@@ -945,6 +945,51 @@ func TestReconcileSnapshotTerminalFailureReschedulesClaim(t *testing.T) {
 		fmt.Sprintf(`"port":%d`, active.Status.Instances[0].Port))
 }
 
+func TestReconcileSnapshotTerminalFailureKeepsFailedPodsExcluded(t *testing.T) {
+	replicas := int32(2)
+	pm := withFinalizer(sampleModelClaim())
+	pm.UID = types.UID("claim-uid")
+	pm.Spec.Replicas = &replicas
+	pm.Status.Phase = modelv1alpha1.ModelClaimActive
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{
+		{Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive},
+		{Pod: "warm-2", Port: 9002, Phase: modelv1alpha1.ModelClaimActive},
+	}
+	failedA := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	failedB := warmPod("warm-2", "b300-pool-a", true, corev1.PodRunning)
+	failedB.Status.PodIP = testPeerIP
+	replacementA := warmPod("warm-3", "b300-pool-a", true, corev1.PodRunning)
+	replacementA.Status.PodIP = "10.0.0.3"
+	replacementB := warmPod("warm-4", "b300-pool-a", true, corev1.PodRunning)
+	replacementB.Status.PodIP = "10.0.0.4"
+	r, runtime := newReconciler(t, pm, failedA, failedB, replacementA, replacementB)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		failedA.Status.PodIP: {Models: []RuntimeSnapshotModel{{
+			ModelName: servedModelName(pm), Port: 9001, Phase: runtimePhaseFailed,
+			Alive: false, Ready: false, LastError: "restart budget exhausted",
+			ClaimRef: &ModelClaimRef{Namespace: pm.Namespace, Name: pm.Name, UID: string(pm.UID)},
+		}}},
+		failedB.Status.PodIP: {Models: []RuntimeSnapshotModel{{
+			ModelName: servedModelName(pm), Port: 9002, Phase: runtimePhaseFailed,
+			Alive: false, Ready: false, LastError: "restart budget exhausted",
+			ClaimRef: &ModelClaimRef{Namespace: pm.Namespace, Name: pm.Name, UID: string(pm.UID)},
+		}}},
+		replacementA.Status.PodIP: {},
+		replacementB.Status.PodIP: {},
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	rescheduled := getModel(t, r, pm.Name)
+	require.Len(t, rescheduled.Status.Instances, 2)
+	gotPods := []string{rescheduled.Status.Instances[0].Pod, rescheduled.Status.Instances[1].Pod}
+	assert.ElementsMatch(t, []string{"warm-3", "warm-4"}, gotPods)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, rescheduled.Status.Instances[0].Phase)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, rescheduled.Status.Instances[1].Phase)
+	require.Len(t, runtime.activateCalls, 2)
+	require.Len(t, runtime.deactivateCalls, 2)
+}
+
 func TestSnapshotModelForClaimPrefersMatchingClaimUID(t *testing.T) {
 	pm := sampleModelClaim()
 	pm.UID = types.UID("claim-uid")
