@@ -1118,6 +1118,7 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 		gomega.Eventually(func(g gomega.Gomega) {
 			latest := &orchestrationapi.RoleSet{}
 			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest)).To(gomega.Succeed())
+			g.Expect(latest.Spec.TopologyPolicy).ToNot(gomega.BeNil())
 			latest.Spec.TopologyPolicy.Mode = orchestrationapi.TopologyPolicyRequired
 			g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
 		}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
