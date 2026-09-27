@@ -336,7 +336,19 @@ func TestRouteAndReferenceGrantCleanupAfterWorkloadDeletion(t *testing.T) {
 			},
 		}
 		m.addRouteFromDeployment(deploy)
+		listCalls := 0
+		m.Client = &listHookClient{
+			Client: m.Client,
+			hook: func(ctx context.Context, base client.Client, list client.ObjectList, opts ...client.ListOption) error {
+				listCalls++
+				return base.List(ctx, list, opts...)
+			},
+		}
 		m.deleteRouteFromDeployment(deploy)
+		wantListCalls := 3 + len(watchedWorkloads)
+		if listCalls != wantListCalls {
+			t.Fatalf("List calls after deleting model with another model remaining = %d, want %d", listCalls, wantListCalls)
+		}
 
 		err := m.Get(context.Background(), client.ObjectKey{
 			Namespace: aibrixEnvoyGatewayNamespace,
