@@ -183,9 +183,12 @@ type RoutingContext struct {
 	routingOverrides *RoutingOverrides
 	tokens           []int           // Cache of tokenized prompts
 	predictor        OutputPredictor // OutputPredictor gained from cache
-	statsUpdated     int32           // Use to flag if in-memory realtime statistics has been updated for the request.
-	statsAdded       chan struct{}   // Closed once the CanAddStats winner has finished updating the statistics.
 	traceAdded       int32           // Use to flag if trace has been added to cache
+
+	// stats tracks the in-memory realtime statistics update of the current
+	// incarnation of this request. Like pdLeg, it is a separate heap object
+	// replaced wholesale on reset. See StatsUpdate.
+	stats atomic.Pointer[StatsUpdate]
 
 	// pdLeg holds the prefill/decode leg state of the current incarnation of
 	// this request. It is a separate heap object, replaced wholesale on reset,
@@ -372,29 +375,63 @@ func (r *RoutingContext) HasError() bool {
 	return pod == nil && r.getError() != nil
 }
 
-// CanAddStats returns true if the first time trying update in-memory realtime statistics.
-// The caller that gets true must call DoneAddStats once the update has finished.
-func (r *RoutingContext) CanAddStats() bool {
-	return atomic.CompareAndSwapInt32(&r.statsUpdated, statusInitial, statusAdded)
-}
-
-// DoneAddStats marks the update started by the CanAddStats winner as finished and
-// releases callers blocked in WaitStatsAdded.
-func (r *RoutingContext) DoneAddStats() {
-	close(r.statsAdded)
-}
-
-// WaitStatsAdded blocks until the CanAddStats winner has called DoneAddStats. CanAddStats
-// only guarantees the update runs once, not that it has finished, so a caller that lost
-// the CAS and must observe the updated statistics (e.g. RealtimeNormalizedPendings)
-// waits here. Only call it after CanAddStats returned false: a winner for the current
-// request then exists and will call DoneAddStats.
-func (r *RoutingContext) WaitStatsAdded() {
-	<-r.statsAdded
+// StatsUpdate returns the statistics update state of the current incarnation of the
+// request. A caller that acts on it across a wait must capture it once and keep using
+// that value, so that a RoutingContext recycled in between cannot redirect it to the
+// next request's state.
+func (r *RoutingContext) StatsUpdate() *StatsUpdate {
+	if s := r.stats.Load(); s != nil {
+		return s
+	}
+	// A RoutingContext built as a struct literal has not been through reset().
+	r.stats.CompareAndSwap(nil, newStatsUpdate())
+	return r.stats.Load()
 }
 
 func (r *RoutingContext) CanDoneStats() bool {
-	return atomic.CompareAndSwapInt32(&r.statsUpdated, statusAdded, statusDone)
+	return r.StatsUpdate().TryDone()
+}
+
+// StatsUpdate tracks the in-memory realtime statistics update of one incarnation of a
+// request. The queue router updates the statistics of a request from two goroutines,
+// and TryAdd lets only one of them run the update. The other waits in WaitAdded until
+// the winner has called DoneAdd, so neither returns before the statistics (e.g.
+// RealtimeNormalizedPendings) include the request.
+//
+// It is a separate object for the same reason as PDLegState: a goroutine can still hold
+// a RoutingContext after it went back to the pool. reset() installs a new StatsUpdate, so
+// a winner that captured the old one can only close that one's channel, never the next
+// request's.
+type StatsUpdate struct {
+	state int32
+	added chan struct{}
+}
+
+func newStatsUpdate() *StatsUpdate {
+	return &StatsUpdate{added: make(chan struct{})}
+}
+
+// TryAdd returns true if the first time trying update in-memory realtime statistics.
+// The caller that gets true must call DoneAdd once the update has finished.
+func (s *StatsUpdate) TryAdd() bool {
+	return atomic.CompareAndSwapInt32(&s.state, statusInitial, statusAdded)
+}
+
+// DoneAdd marks the update started by the TryAdd winner as finished and releases the
+// callers blocked in WaitAdded.
+func (s *StatsUpdate) DoneAdd() {
+	close(s.added)
+}
+
+// WaitAdded blocks until the TryAdd winner has called DoneAdd. Only call it after TryAdd
+// returned false on the same StatsUpdate: a winner then exists and will call DoneAdd.
+func (s *StatsUpdate) WaitAdded() {
+	<-s.added
+}
+
+// TryDone returns true if the first time trying to release statistics added by TryAdd.
+func (s *StatsUpdate) TryDone() bool {
+	return atomic.CompareAndSwapInt32(&s.state, statusAdded, statusDone)
 }
 
 // CanAddTrace returns true if the first time trying add trace to cache.
@@ -511,8 +548,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	// debugDelay will be reset by tests.
 	r.tokens = nil
 	r.predictor = nil
-	r.statsUpdated = statusInitial
-	r.statsAdded = make(chan struct{})
+	r.stats.Store(newStatsUpdate())
 	r.traceAdded = statusInitial
 	// A fresh leg per incarnation: any prefill goroutine still holding the
 	// previous one can then only mutate an object nothing reads any more.

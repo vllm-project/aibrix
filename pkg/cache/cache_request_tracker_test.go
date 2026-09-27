@@ -1045,7 +1045,7 @@ func TestPodFlapPreservesCompletedOutputTokens(t *testing.T) {
 }
 
 // blockingTestLoadProvider holds GetConsumption until release is closed, so a test can
-// keep the CanAddStats winner inside addPodStats before it publishes the pending load.
+// keep the TryAdd winner inside addPodStats before it publishes the pending load.
 type blockingTestLoadProvider struct {
 	load    float64
 	entered chan struct{}
@@ -1066,7 +1066,7 @@ func (p *blockingTestLoadProvider) Cap() float64 { return 1 }
 
 // TestAddRequestCountLoserWaitsForWinner covers the queue router calling
 // AddRequestCount for the same request from both its serve goroutine and the
-// requester. CanAddStats lets only one of them run addPodStats, but the other
+// requester. TryAdd lets only one of them run addPodStats, but the other
 // must not return before that update has finished: the requester reads
 // RealtimeNormalizedPendings right after Route() returns, and serve routes the
 // next queued request against it. Returning early let the SLO queue spec read a
