@@ -29,6 +29,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/algorithm"
 	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/prediction"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -73,6 +74,32 @@ type ReplicaComputeResult struct {
 	Reason                    string
 	Valid                     bool
 	PendingReplicaGuardActive bool
+	// Predictive is the projection evaluated for this round. It is reported
+	// even when it did not change the decision, so Preview mode and the status
+	// subresource can surface it. It is nil when no projection was computed.
+	Predictive *PredictiveResult
+}
+
+// PredictiveResult is the projection evaluated for one round of scaling.
+// This step reports it in the status only: the decision keeps the reactive
+// count, and turning the projection into a replica floor is a follow-up
+// change.
+type PredictiveResult struct {
+	// Mode is the effective predictive mode of the PodAutoscaler.
+	Mode autoscalingv1alpha1.PredictiveMode
+	// MetricName is the metricsSources entry the projection was derived from,
+	// using its targetMetric.
+	MetricName string
+	// ObservedValue is the mean of the samples the fit used.
+	ObservedValue float64
+	// PredictedValue is the fitted level at now + horizon.
+	PredictedValue float64
+	// PredictedReplicas is the replica count the projection alone asks for.
+	PredictedReplicas int32
+	// ComposedReplicas is the reactive recommendation raised by the projection
+	// and lowered by the pending-replica guard, before cooldown and bounds. It
+	// is the count Auto mode would feed into the decision pipeline.
+	ComposedReplicas int32
 }
 
 // DefaultAutoScaler implements the complete scaling pipeline
@@ -149,6 +176,13 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 	var validResults []*ReplicaComputeResult // to record the recommended result calculated in the current round
 	var anyValid bool
 
+	// bestForecast keeps the projection with the largest predicted replica
+	// count among the valid metrics; bestComposed keeps the metric whose
+	// recommendation the projection raises the most, after composition. Both
+	// are reported through the status and do not change the decision here.
+	var bestForecast *PredictiveResult
+	var bestComposed *ReplicaComputeResult
+
 	for _, metricSource := range metricsSources {
 		// Extract per-request configuration
 		metricKey := types.MetricKey{
@@ -180,6 +214,18 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 				"reason", result.Reason,
 				"currentReplicas", request.CurrentReplicas,
 			)
+
+			evaluation := a.projectMetric(request, metricSource, metricKey)
+			if evaluation != nil {
+				if bestForecast == nil || evaluation.PredictedReplicas > bestForecast.PredictedReplicas {
+					bestForecast = evaluation
+				}
+				if composed := max(result.DesiredReplicas, evaluation.PredictedReplicas); bestComposed == nil || composed > bestComposed.DesiredReplicas {
+					winner := *result
+					winner.DesiredReplicas = composed
+					bestComposed = &winner
+				}
+			}
 		}
 	}
 
@@ -211,6 +257,15 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 
 	bestResult = applyPendingReplicaGuard(request, bestResult)
 
+	var predictive *PredictiveResult
+	if bestForecast != nil && bestComposed != nil {
+		// The guard already ran on the reactive winner; run it on the composed
+		// winner as well so the reported count passes through the same
+		// adjustment the applied decision does.
+		bestForecast.ComposedReplicas = applyPendingReplicaGuard(request, bestComposed).DesiredReplicas
+		predictive = bestForecast
+	}
+
 	return &ReplicaComputeResult{
 		DesiredReplicas:           bestResult.DesiredReplicas,
 		Algorithm:                 bestResult.Algorithm,
@@ -220,6 +275,7 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 		Reason:                    bestResult.Reason,
 		Valid:                     true,
 		PendingReplicaGuardActive: bestResult.PendingReplicaGuardActive,
+		Predictive:                predictive,
 	}, nil
 }
 
@@ -303,6 +359,84 @@ func applyPendingReplicaGuard(request ReplicaComputeRequest, result *ReplicaComp
 		Valid:                     true,
 		PendingReplicaGuardActive: true,
 	}
+}
+
+// projectMetric fits the recorded series of one metric source and converts
+// the projected value into the replica count the strategy formula would ask
+// for. It returns nil when predictive scaling is not configured, when the
+// strategy delegates to a native HorizontalPodAutoscaler, when the metric has
+// no positive target value, or when the series cannot produce a trusted fit.
+func (a *DefaultAutoScaler) projectMetric(
+	request ReplicaComputeRequest,
+	metricSource autoscalingv1alpha1.MetricSource,
+	metricKey types.MetricKey,
+) *PredictiveResult {
+	spec := request.PodAutoscaler.Spec.Predictive
+	if spec == nil {
+		return nil
+	}
+	// The HPA strategy delegates the decision to the native HPA resource, so a
+	// projection computed here would have no channel to influence it.
+	if request.PodAutoscaler.Spec.ScalingStrategy == autoscalingv1alpha1.HPA {
+		return nil
+	}
+
+	targetValue, ok := request.ScalingContext.GetTargetValueForMetric(metricSource.TargetMetric)
+	if !ok || targetValue <= 0 {
+		return nil
+	}
+
+	mode := spec.Mode
+	if mode == "" {
+		mode = autoscalingv1alpha1.PredictiveModePreview
+	}
+
+	observeWindow, _ := metricWindowDurations(request.PodAutoscaler)
+	horizon := prediction.DefaultHorizon
+	if spec.HorizonSeconds != nil && *spec.HorizonSeconds > 0 {
+		horizon = time.Duration(*spec.HorizonSeconds) * time.Second
+	}
+
+	response, ok := prediction.Project(
+		a.metricsClient.GetMetricSeries(metricKey),
+		request.Timestamp, observeWindow, horizon)
+	if !ok {
+		return nil
+	}
+
+	evaluation := &PredictiveResult{
+		Mode:              mode,
+		MetricName:        metricSource.TargetMetric,
+		ObservedValue:     response.ObservedValue,
+		PredictedValue:    response.PredictedValue,
+		PredictedReplicas: predictedReplicas(request.PodAutoscaler.Spec.ScalingStrategy, request.CurrentReplicas, response.PredictedValue, targetValue),
+	}
+	klog.V(4).InfoS("Projected metric trend",
+		"PodAutoscaler", klog.KObj(&request.PodAutoscaler),
+		"metric", evaluation.MetricName,
+		"observedValue", response.ObservedValue,
+		"predictedValue", response.PredictedValue,
+		"slope", response.Slope,
+		"samples", response.DataPoints,
+		"predictedReplicas", evaluation.PredictedReplicas)
+
+	return evaluation
+}
+
+// predictedReplicas turns a projected metric value into the replica count the
+// strategy would ask for, mirroring the reactive formula of KPA and APA.
+func predictedReplicas(strategy autoscalingv1alpha1.ScalingStrategyType, currentReplicas int32, value, targetValue float64) int32 {
+	expected := math.Ceil(value / targetValue)
+	if strategy == autoscalingv1alpha1.APA {
+		expected = math.Ceil(float64(currentReplicas) * value / targetValue)
+	}
+	if expected > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if expected < 0 {
+		return 0
+	}
+	return int32(expected)
 }
 
 func computePendingAdjustedReplicas(
