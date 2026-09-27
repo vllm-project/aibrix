@@ -184,6 +184,7 @@ type RoutingContext struct {
 	tokens           []int           // Cache of tokenized prompts
 	predictor        OutputPredictor // OutputPredictor gained from cache
 	statsUpdated     int32           // Use to flag if in-memory realtime statistics has been updated for the request.
+	statsMu          sync.Mutex      // Held by WithStatsUpdate; reused across pool tenants, not reset.
 	traceAdded       int32           // Use to flag if trace has been added to cache
 
 	// pdLeg holds the prefill/decode leg state of the current incarnation of
@@ -374,6 +375,14 @@ func (r *RoutingContext) HasError() bool {
 // CanAddStats returns true if the first time trying update in-memory realtime statistics.
 func (r *RoutingContext) CanAddStats() bool {
 	return atomic.CompareAndSwapInt32(&r.statsUpdated, statusInitial, statusAdded)
+}
+
+// WithStatsUpdate runs fn while holding the request's statistics lock, so a caller that
+// loses CanAddStats inside fn returns only after the winner's update has finished.
+func (r *RoutingContext) WithStatsUpdate(fn func()) {
+	r.statsMu.Lock()
+	defer r.statsMu.Unlock()
+	fn()
 }
 
 func (r *RoutingContext) CanDoneStats() bool {
