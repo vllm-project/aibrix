@@ -305,24 +305,21 @@ func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 		}
 	}
 
-	// Current implementation assumes AddRequestCount() will not be called concurrently.
-	// TODO: Implment "wait for trace term" logic if AddRequestCount() is called concurrently.
 	if ctx == nil {
 		return traceTerm
-	} else if !ctx.HasRouted() {
-		return atomic.LoadInt64(&ctx.TraceTerm)
-	} else if stats := ctx.StatsUpdate(); !stats.TryAdd() {
-		// Another caller (e.g. the queue router's serve goroutine) won the CAS and may
-		// still be inside addPodStats. Wait for it so that the statistics, including
-		// RealtimeNormalizedPendings, are updated by the time this call returns.
-		stats.WaitAdded()
-		return atomic.LoadInt64(&ctx.TraceTerm)
-	} else {
-		defer stats.DoneAdd()
-		traceTerm = atomic.LoadInt64(&ctx.TraceTerm)
-		c.addPodStats(ctx, requestID, modelName)
 	}
-	return traceTerm
+	// The queue router calls AddRequestCount concurrently for the same request. Pod stats
+	// are added once, and a caller that loses CanAddStats waits in WithStatsUpdate until
+	// the winner's addPodStats has returned.
+	ctx.WithStatsUpdate(func() {
+		if ctx.HasRouted() && ctx.CanAddStats() {
+			c.addPodStats(ctx, requestID, modelName)
+		}
+	})
+	// The trace term is not synchronized that way yet: a concurrent caller may read it
+	// before the winner of CanAddTrace stores it.
+	// TODO: Implment "wait for trace term" logic if AddRequestCount() is called concurrently.
+	return atomic.LoadInt64(&ctx.TraceTerm)
 }
 
 // DoneRequestCount completes request tracking

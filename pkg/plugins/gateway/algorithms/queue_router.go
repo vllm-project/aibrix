@@ -113,10 +113,9 @@ func (r *queueRouter) Route(ctx *types.RoutingContext, pods types.PodList) (stri
 
 	// Call AddRequestCount again after routing completes so that pod stats (e.g.
 	// RealtimeNormalizedPendings) are guaranteed to be updated before Route()
-	// returns. The serve() goroutine calls AddRequestCount concurrently. The CAS in
-	// StatsUpdate().TryAdd() lets addPodStats run exactly once regardless of which
-	// caller wins, and the losing caller waits for the winner to finish before
-	// AddRequestCount returns.
+	// returns. The serve() goroutine calls AddRequestCount concurrently; CanAddStats
+	// uses a CAS so addPodStats runs exactly once regardless of which caller wins, and
+	// AddRequestCount returns only after the winner's addPodStats has returned.
 	r.cache.AddRequestCount(ctx, ctx.RequestID, ctx.Model)
 
 	return ctx.TargetAddress(), ctx.GetError()

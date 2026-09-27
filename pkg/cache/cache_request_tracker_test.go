@@ -1045,7 +1045,7 @@ func TestPodFlapPreservesCompletedOutputTokens(t *testing.T) {
 }
 
 // blockingTestLoadProvider holds GetConsumption until release is closed, so a test can
-// keep the TryAdd winner inside addPodStats before it publishes the pending load.
+// keep the CanAddStats winner inside addPodStats before it publishes the pending load.
 type blockingTestLoadProvider struct {
 	load    float64
 	entered chan struct{}
@@ -1064,9 +1064,25 @@ func (p *blockingTestLoadProvider) GetConsumption(*types.RoutingContext, *v1.Pod
 
 func (p *blockingTestLoadProvider) Cap() float64 { return 1 }
 
+// enteredTestTracker reports each AddRequestCount call. Registered trackers run at the
+// start of Store.AddRequestCount, so a test knows a caller has entered it.
+type enteredTestTracker struct {
+	entered chan struct{}
+}
+
+func (t *enteredTestTracker) AddRequestCount(*types.RoutingContext, string, string) int64 {
+	t.entered <- struct{}{}
+	return 0
+}
+
+func (t *enteredTestTracker) DoneRequestCount(*types.RoutingContext, string, string, int64) {}
+
+func (t *enteredTestTracker) DoneRequestTrace(*types.RoutingContext, string, string, int64, int64, int64) {
+}
+
 // TestAddRequestCountLoserWaitsForWinner covers the queue router calling
 // AddRequestCount for the same request from both its serve goroutine and the
-// requester. TryAdd lets only one of them run addPodStats, but the other
+// requester. CanAddStats lets only one of them run addPodStats, but the other
 // must not return before that update has finished: the requester reads
 // RealtimeNormalizedPendings right after Route() returns, and serve routes the
 // next queued request against it. Returning early let the SLO queue spec read a
@@ -1088,12 +1104,23 @@ func TestAddRequestCountLoserWaitsForWinner(t *testing.T) {
 		release: make(chan struct{}),
 	}
 	cache.pendingLoadProvider = provider
+	tracker := &enteredTestTracker{entered: make(chan struct{}, 2)}
+	cache.RegisterRequestTracker(tracker)
 
 	pod := requestTrackerTestPod(podName, namespace, modelName, podIP)
 	cache.addPod(pod)
 
 	routingCtx := types.NewRoutingContext(context.Background(), "slo", modelName, "", requestID, "")
 	routingCtx.SetTargetPod(pod)
+
+	waitFor := func(ch <-chan struct{}, what string) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-time.After(5 * time.Second):
+			t.Fatal(what)
+		}
+	}
 
 	// The winner takes the CAS and blocks inside addPodStats, before the pending
 	// load is published.
@@ -1102,17 +1129,17 @@ func TestAddRequestCountLoserWaitsForWinner(t *testing.T) {
 		defer close(winnerDone)
 		cache.AddRequestCount(routingCtx, requestID, modelName)
 	}()
-	select {
-	case <-provider.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("winning AddRequestCount never reached GetConsumption")
-	}
+	waitFor(tracker.entered, "winning AddRequestCount never started")
+	waitFor(provider.entered, "winning AddRequestCount never reached GetConsumption")
 
+	// The loser has entered AddRequestCount before the winner is released, so a late
+	// schedule cannot make it return only after the release.
 	loserDone := make(chan struct{})
 	go func() {
 		defer close(loserDone)
 		cache.AddRequestCount(routingCtx, requestID, modelName)
 	}()
+	waitFor(tracker.entered, "losing AddRequestCount never started")
 	select {
 	case <-loserDone:
 		t.Fatal("losing AddRequestCount returned before the winner finished updating pod stats")
@@ -1120,11 +1147,7 @@ func TestAddRequestCountLoserWaitsForWinner(t *testing.T) {
 	}
 
 	close(provider.release)
-	select {
-	case <-loserDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("losing AddRequestCount did not return after the winner finished")
-	}
+	waitFor(loserDone, "losing AddRequestCount did not return after the winner finished")
 
 	// Once the losing call has returned, the pending load must already include
 	// this request.
@@ -1132,9 +1155,5 @@ func TestAddRequestCountLoserWaitsForWinner(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, pendingLoad, pending.GetSimpleValue())
 
-	select {
-	case <-winnerDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("winning AddRequestCount did not return")
-	}
+	waitFor(winnerDone, "winning AddRequestCount did not return")
 }
