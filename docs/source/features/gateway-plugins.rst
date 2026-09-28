@@ -187,6 +187,11 @@ SLO-aware
 Specialized
 ^^^^^^^^^^^
 
+* ``external``: delegates post-discovery replica selection to one operator-run
+  HTTP service. It is standalone, never participates in weighted composition or
+  automatic blending, and validates every returned pod and port against the
+  Gateway-filtered candidate set. See :doc:`external-replica-routing`.
+
 * ``pd``: prefill-decode disaggregation routing. Splits processing between dedicated prefill pods and decode pods for optimized end-to-end latency. See :doc:`pd-disaggregation` for the full guide.
 
   .. code-block:: bash
@@ -229,7 +234,7 @@ Auto-blended capacity awareness
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 This auto-blend is **enabled by default** — no opt-in is required. Every strategy above, except
-the exclusive ones (``pd``, ``slo``/``slo-*``), an explicit standalone ``load-balance``
+the exclusive ones (``pd``, ``slo``/``slo-*``), ``external``, an explicit standalone ``load-balance``
 selection, and a bare ``session-affinity`` selection, silently gets ``load-balance``'s
 capacity-aware scoring blended in behind the scenes — and ``least-request`` too, when the
 selected strategy doesn't already route by request count, to keep multi-port/data-parallel pod

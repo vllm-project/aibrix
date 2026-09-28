@@ -1,0 +1,238 @@
+openapi: 3.1.0
+info:
+  title: AIBrix External Replica Selection API
+  version: v1alpha1
+  description: |
+    Terminal replica selection after AIBrix Gateway has discovered and filtered
+    a safe candidate set. Candidate metrics are observational snapshots.
+paths:
+  /v1alpha1/select:
+    post:
+      operationId: selectReplica
+      requestBody:
+        required: true
+        content:
+          application/vnd.aibrix.external-routing+json;version=v1alpha1:
+            schema:
+              $ref: '#/components/schemas/ReplicaSelectionRequest'
+            examples:
+              selectedRequest:
+                value:
+                  apiVersion: routing.aibrix.ai/v1alpha1
+                  kind: ReplicaSelectionRequest
+                  metadata:
+                    requestId: req-123
+                  spec:
+                    model: llama-3
+                    policyMode: Advisory
+                    policyContext:
+                      attributes:
+                        tenantTier: gold
+                    candidates:
+                      - id: default/llama-3-a
+                        ports: [8000]
+                        attributes:
+                          topology.kubernetes.io/zone: cn-east-1a
+                        metrics:
+                          runningRequests: 4
+                          engineUtilization: 0.61
+                          kvCacheUsage: 0.48
+      responses:
+        '200':
+          description: A valid policy decision.
+          content:
+            application/vnd.aibrix.external-routing+json;version=v1alpha1:
+              schema:
+                $ref: '#/components/schemas/ReplicaSelectionResponse'
+              examples:
+                selected:
+                  value:
+                    apiVersion: routing.aibrix.ai/v1alpha1
+                    kind: ReplicaSelectionResponse
+                    metadata:
+                      requestId: req-123
+                      decisionId: decision-456
+                    status:
+                      decision: Selected
+                      target:
+                        id: default/llama-3-a
+                        port: 8000
+                noDecision:
+                  value:
+                    apiVersion: routing.aibrix.ai/v1alpha1
+                    kind: ReplicaSelectionResponse
+                    metadata:
+                      requestId: req-123
+                    status:
+                      decision: NoDecision
+                      reason: NoApplicablePolicy
+                denied:
+                  value:
+                    apiVersion: routing.aibrix.ai/v1alpha1
+                    kind: ReplicaSelectionResponse
+                    metadata:
+                      requestId: req-123
+                      decisionId: decision-789
+                    status:
+                      decision: Denied
+                      reason: CompliancePolicy
+        default:
+          description: Decision-service failure.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+components:
+  schemas:
+    Metadata:
+      type: object
+      additionalProperties: true
+      required: [requestId]
+      properties:
+        requestId:
+          type: string
+          minLength: 1
+          maxLength: 256
+        decisionId:
+          type: string
+          maxLength: 256
+    Attributes:
+      type: object
+      maxProperties: 32
+      propertyNames:
+        pattern: '^[A-Za-z][A-Za-z0-9_./-]{0,127}$'
+      additionalProperties:
+        type: string
+        maxLength: 256
+    CandidateMetrics:
+      type: object
+      additionalProperties: true
+      properties:
+        runningRequests:
+          type: integer
+          minimum: 0
+        engineUtilization:
+          type: number
+          minimum: 0
+          maximum: 1
+        kvCacheUsage:
+          type: number
+          minimum: 0
+          maximum: 1
+    Candidate:
+      type: object
+      additionalProperties: true
+      required: [id, ports]
+      properties:
+        id:
+          type: string
+          maxLength: 256
+          pattern: '^[^/]+/[^/]+$'
+        ports:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: integer
+            minimum: 1
+            maximum: 65535
+        attributes:
+          $ref: '#/components/schemas/Attributes'
+        metrics:
+          $ref: '#/components/schemas/CandidateMetrics'
+    ReplicaSelectionRequest:
+      type: object
+      additionalProperties: true
+      required: [apiVersion, kind, metadata, spec]
+      properties:
+        apiVersion:
+          const: routing.aibrix.ai/v1alpha1
+        kind:
+          const: ReplicaSelectionRequest
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+        spec:
+          type: object
+          additionalProperties: true
+          required: [model, policyMode, candidates]
+          properties:
+            model:
+              type: string
+              minLength: 1
+            policyMode:
+              enum: [Advisory, Authoritative]
+            policyContext:
+              type: object
+              additionalProperties: true
+              properties:
+                attributes:
+                  $ref: '#/components/schemas/Attributes'
+            candidates:
+              type: array
+              minItems: 1
+              items:
+                $ref: '#/components/schemas/Candidate'
+    Target:
+      type: object
+      additionalProperties: true
+      required: [id]
+      properties:
+        id:
+          type: string
+          minLength: 1
+          maxLength: 256
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+    ReplicaSelectionResponse:
+      type: object
+      additionalProperties: true
+      required: [apiVersion, kind, metadata, status]
+      properties:
+        apiVersion:
+          const: routing.aibrix.ai/v1alpha1
+        kind:
+          const: ReplicaSelectionResponse
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+        status:
+          type: object
+          additionalProperties: true
+          required: [decision]
+          properties:
+            decision:
+              enum: [Selected, NoDecision, Denied]
+            target:
+              $ref: '#/components/schemas/Target'
+            reason:
+              type: string
+              maxLength: 256
+          oneOf:
+            - properties:
+                decision:
+                  const: Selected
+              required: [target]
+            - properties:
+                decision:
+                  const: NoDecision
+              not:
+                required: [target]
+            - properties:
+                decision:
+                  const: Denied
+              not:
+                required: [target]
+    ProblemDetails:
+      type: object
+      additionalProperties: true
+      properties:
+        type:
+          type: string
+          format: uri-reference
+        title:
+          type: string
+        status:
+          type: integer
+          minimum: 100
+          maximum: 599

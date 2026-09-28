@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aibrix-gateway-plugins
+  namespace: aibrix-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: gateway-plugin
+        env:
+        - name: AIBRIX_EXTERNAL_ROUTER_ENDPOINT
+          value: http://external-router-e2e.aibrix-system.svc:8080/v1alpha1/select
+        - name: AIBRIX_EXTERNAL_ROUTER_POLICY_MODE
+          value: Authoritative
+        - name: AIBRIX_EXTERNAL_ROUTER_FAILURE_MODE
+          value: FailClosed
+        - name: AIBRIX_EXTERNAL_ROUTER_TIMEOUT
+          value: 200ms
+        - name: AIBRIX_EXTERNAL_ROUTER_CANDIDATE_ATTRIBUTES
+          value: model.aibrix.ai/name
+        - name: AIBRIX_EXTERNAL_ROUTER_CANDIDATE_METRICS
+          value: runningRequests
+

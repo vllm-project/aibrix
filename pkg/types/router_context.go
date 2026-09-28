@@ -181,11 +181,15 @@ type RoutingContext struct {
 	// and read by that same goroutine, so no atomic is needed here (the PD leg
 	// keeps one for the async prefill and abort paths).
 	routingOverrides *RoutingOverrides
-	tokens           []int           // Cache of tokenized prompts
-	predictor        OutputPredictor // OutputPredictor gained from cache
-	statsUpdated     int32           // Use to flag if in-memory realtime statistics has been updated for the request.
-	statsMu          sync.Mutex      // Held by WithStatsUpdate; reused across pool tenants, not reset.
-	traceAdded       int32           // Use to flag if trace has been added to cache
+	// trustedPolicyAttributes contains request policy inputs populated by trusted
+	// in-process producers. External routers must still apply their operator
+	// allowlist before serializing any entry.
+	trustedPolicyAttributes map[string]string
+	tokens                  []int           // Cache of tokenized prompts
+	predictor               OutputPredictor // OutputPredictor gained from cache
+	statsUpdated            int32           // Use to flag if in-memory realtime statistics has been updated for the request.
+	statsMu                 sync.Mutex      // Held by WithStatsUpdate; reused across pool tenants, not reset.
+	traceAdded              int32           // Use to flag if trace has been added to cache
 
 	// pdLeg holds the prefill/decode leg state of the current incarnation of
 	// this request. It is a separate heap object, replaced wholesale on reset,
@@ -241,6 +245,28 @@ func (r *RoutingContext) PrefixText() string {
 		return r.PrefixMatchText
 	}
 	return r.Message
+}
+
+// SetTrustedPolicyAttribute records a policy attribute produced by trusted
+// Gateway code. It is intentionally separate from ReqHeaders so external
+// routing can never treat arbitrary client headers as trusted policy input.
+func (r *RoutingContext) SetTrustedPolicyAttribute(key, value string) {
+	if r.trustedPolicyAttributes == nil {
+		r.trustedPolicyAttributes = make(map[string]string)
+	}
+	r.trustedPolicyAttributes[key] = value
+}
+
+// TrustedPolicyAttributes returns a defensive copy containing only allowlisted
+// names. An empty result is returned when no trusted producer populated a name.
+func (r *RoutingContext) TrustedPolicyAttributes(allowlist []string) map[string]string {
+	attributes := make(map[string]string)
+	for _, key := range allowlist {
+		if value, ok := r.trustedPolicyAttributes[key]; ok {
+			attributes[key] = value
+		}
+	}
+	return attributes
 }
 
 // PromptTokens returns the tokenized prompt of the request.
@@ -495,6 +521,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	// the new profile never configured (ResolveRoutingOverrides sets them once
 	// per request, and a request without a profile leaves them unset).
 	r.ClearRoutingOverrides()
+	clear(r.trustedPolicyAttributes)
 	r.ReplicaInflightAdmitted = false
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)

@@ -6,7 +6,7 @@ Welcome to AIBrix
   :align: center
   :alt: AIBrix
 
-AIBrix is an open-source initiative designed to provide essential building blocks to construct scalable GenAI inference infrastructure. 
+AIBrix is an open-source initiative designed to provide essential building blocks to construct scalable GenAI inference infrastructure.
 AIBrix delivers a cloud-native solution optimized for deploying, managing, and scaling large language model (LLM) inference, tailored specifically to enterprise needs.
 
 Key features:
@@ -87,6 +87,7 @@ Documentation
    :caption: Gateway & Routing
 
    features/gateway-plugins.rst
+   features/external-replica-routing.rst
    features/pd-disaggregation.rst
    features/agentic-routing.rst
    features/semantic-router.rst

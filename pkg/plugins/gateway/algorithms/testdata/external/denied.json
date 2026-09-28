@@ -1,0 +1,7 @@
+{
+  "apiVersion": "routing.aibrix.ai/v1alpha1",
+  "kind": "ReplicaSelectionResponse",
+  "metadata": {"requestId": "req-123", "decisionId": "decision-789"},
+  "status": {"decision": "Denied", "reason": "CompliancePolicy"}
+}
+

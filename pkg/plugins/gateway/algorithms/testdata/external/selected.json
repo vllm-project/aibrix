@@ -1,0 +1,7 @@
+{
+  "apiVersion": "routing.aibrix.ai/v1alpha1",
+  "kind": "ReplicaSelectionResponse",
+  "metadata": {"requestId": "req-123", "decisionId": "decision-456"},
+  "status": {"decision": "Selected", "target": {"id": "default/llama-3-a", "port": 8000}}
+}
+

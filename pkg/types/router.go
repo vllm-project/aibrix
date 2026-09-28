@@ -23,6 +23,13 @@ type Router interface {
 	Route(ctx *RoutingContext, readyPodList PodList) (string, error)
 }
 
+// SingleCandidateBypasser lets a router declare whether Gateway may use its
+// zero-network single-candidate fast path. Routers that do not implement this
+// interface retain the existing bypass behavior.
+type SingleCandidateBypasser interface {
+	BypassSingleCandidate() bool
+}
+
 // QueueRouter defines the interface for routers that contains built-in queue and
 // offers queue status query.
 type QueueRouter interface {

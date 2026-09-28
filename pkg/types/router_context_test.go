@@ -121,6 +121,21 @@ var _ = Describe("RouterContext", func() {
 		ctx.Delete()
 	})
 
+	It("should isolate and reset trusted policy attributes", func() {
+		ctx := NewRoutingContext(context.Background(), "external", "model", "message", "r1", "")
+		ctx.SetTrustedPolicyAttribute("tenantTier", "gold")
+		ctx.SetTrustedPolicyAttribute("internalOnly", "secret")
+
+		attributes := ctx.TrustedPolicyAttributes([]string{"tenantTier", "missing"})
+		Expect(attributes).To(Equal(map[string]string{"tenantTier": "gold"}))
+		attributes["tenantTier"] = "mutated"
+		Expect(ctx.TrustedPolicyAttributes([]string{"tenantTier"})).To(Equal(map[string]string{"tenantTier": "gold"}))
+
+		ctx.reset(context.Background(), "external", "model", "message", "r2", "")
+		Expect(ctx.TrustedPolicyAttributes([]string{"tenantTier", "internalOnly"})).To(BeEmpty())
+		ctx.Delete()
+	})
+
 	It("should SetTargetPod accept nil", func() {
 		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1", "")
 		ctx.SetTargetPod(nil)

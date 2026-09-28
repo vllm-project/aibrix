@@ -77,6 +77,13 @@ if [ -n "$INSTALL_AIBRIX" ]; then
     kind load docker-image aibrix/inplace-e2e:v1 aibrix/inplace-e2e:v2
   fi
 
+  if [ "$AIBRIX_E2E_SUITE" = "all" ] || [ "$AIBRIX_E2E_SUITE" = "gateway" ]; then
+    docker build -t aibrix/external-router-e2e:nightly \
+      -f test/e2e/gateway/routing/testdata/external-router/Dockerfile \
+      test/e2e/gateway/routing/testdata/external-router
+    kind load docker-image aibrix/external-router-e2e:nightly
+  fi
+
   kubectl apply -k config/dependency --server-side
   kubectl apply -k config/test
 
@@ -114,6 +121,10 @@ start_port_forwards() {
   kubectl port-forward svc/llama2-7b 8000:8000 >/dev/null 2>&1 & echo $! >> /tmp/aibrix-port-forwards.pid
   kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 >/dev/null 2>&1 & echo $! >> /tmp/aibrix-port-forwards.pid
   kubectl -n aibrix-system port-forward service/aibrix-redis-master 6379:6379 >/dev/null 2>&1 & echo $! >> /tmp/aibrix-port-forwards.pid
+  if [ "$AIBRIX_E2E_SUITE" = "all" ] || [ "$AIBRIX_E2E_SUITE" = "gateway" ]; then
+    kubectl -n aibrix-system port-forward service/external-router-e2e 18080:8080 >/dev/null 2>&1 & echo $! >> /tmp/aibrix-port-forwards.pid
+    export AIBRIX_E2E_EXTERNAL_ROUTER_ADMIN_URL=http://127.0.0.1:18080
+  fi
 }
 
 # Comprehensive cleanup function that handles both k8s resources and port forwards

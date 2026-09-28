@@ -251,6 +251,18 @@ Choosing a Routing Strategy
 
 If no ``routing-strategy`` header is provided, the gateway defaults to ``random`` routing.
 
+External decision services
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For production ``external`` routing, run at least two decision-service replicas
+behind a stable Kubernetes Service, budget its synchronous latency within the
+Gateway request path, and alert on timeout, fallback, and circuit-open outcomes.
+Use HTTPS or an appropriate cluster NetworkPolicy and store bearer tokens in a
+mounted Secret file. Test Authoritative denial and service unavailability before
+enabling fail-closed traffic. External business-policy state is owned by the
+service; Gateway bulkhead and circuit state is local to each Gateway replica.
+See :doc:`../features/external-replica-routing`.
+
 .. code-block:: bash
 
     # No routing-strategy header — gateway picks a random ready pod

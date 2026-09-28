@@ -291,6 +291,7 @@ func appendLoadBalanceBlend(algStr string, cfg *MultiRouterConfig, weights autoB
 	}
 
 	if len(cfg.Items) == 1 && (isExclusiveStrategyName(cfg.Items[0].Name) ||
+		cfg.Items[0].Name == string(RouterExternal) ||
 		cfg.Items[0].Name == string(RouterLoadBalance) ||
 		cfg.Items[0].Name == string(RouterSessionAffinity)) {
 		// Exclusive strategies (pd, slo*) manage their own pod selection and must not be
@@ -685,6 +686,7 @@ type RouterManager struct {
 	routerDoneInit    context.CancelFunc
 	routerFactory     map[types.RoutingAlgorithm]types.RouterProviderFunc
 	routerConstructor map[types.RoutingAlgorithm]types.RouterProviderRegistrationFunc
+	initErrors        map[types.RoutingAlgorithm]error
 	// multiRouterCache is keyed by (possibly blended) algorithm string; both it and
 	// unblendableLogged below are capped at maxCachedAlgorithmStrings since the key is
 	// client-controlled and neither map is otherwise evicted.
@@ -702,6 +704,7 @@ func NewRouterManager() *RouterManager {
 	rm.routerInited, rm.routerDoneInit = context.WithTimeout(context.Background(), 5*time.Second)
 	rm.routerFactory = make(map[types.RoutingAlgorithm]types.RouterProviderFunc)
 	rm.routerConstructor = make(map[types.RoutingAlgorithm]types.RouterProviderRegistrationFunc)
+	rm.initErrors = make(map[types.RoutingAlgorithm]error)
 	rm.multiRouterCache = make(map[string]*multiStrategyRouter)
 	rm.unblendableLogged = make(map[string]struct{})
 	return rm
@@ -756,6 +759,9 @@ func NewRouterManagerWithCacheAndPrefixIndexer(c cache.Cache, indexer *prefixcac
 	rm.Register(RouterPD, func() (types.Router, error) {
 		return NewPDRouterWithCacheAndPrefixIndexer(c, indexer)
 	})
+	rm.Register(RouterExternal, func() (types.Router, error) {
+		return newExternalRouterWithCacheAndSelector(c, rm.Select)
+	})
 	return rm
 }
 
@@ -773,7 +779,7 @@ func (rm *RouterManager) Validate(algorithms string) (types.RoutingAlgorithm, bo
 	// Validate each strategy in the configuration
 	for _, item := range cfg.Items {
 		provider, ok := rm.routerFactory[types.RoutingAlgorithm(item.Name)]
-		if !ok {
+		if !ok || (types.RoutingAlgorithm(item.Name) == RouterExternal && provider == nil) {
 			return RouterNotSet, false
 		}
 		if len(cfg.Items) > 1 {
@@ -1009,9 +1015,15 @@ func (rm *RouterManager) Register(algorithm types.RoutingAlgorithm, constructor 
 	rm.routerConstructor[algorithm] = func() types.RouterProviderFunc {
 		router, err := constructor()
 		if err != nil {
-			klog.Errorf("Failed to construct router for %s: %v", algorithm, err)
+			rm.initErrors[algorithm] = err
+			if errors.Is(err, ErrExternalRouterDisabled) {
+				klog.V(4).Infof("Optional router %s is disabled", algorithm)
+			} else {
+				klog.Errorf("Failed to construct router for %s: %v", algorithm, err)
+			}
 			return nil
 		}
+		delete(rm.initErrors, algorithm)
 		return func(_ *types.RoutingContext) (types.Router, error) {
 			return router, nil
 		}
@@ -1062,13 +1074,40 @@ func SetFallback(router types.Router, fallback types.RoutingAlgorithm) error {
 func (rm *RouterManager) Init() {
 	rm.routerMu.Lock()
 	defer rm.routerMu.Unlock()
+	rm.initErrors = make(map[types.RoutingAlgorithm]error)
 	for algorithm, constructor := range rm.routerConstructor {
 		rm.routerFactory[algorithm] = constructor()
 		klog.V(4).Infof("Registered router for %s", algorithm)
 	}
+	// External fallback names are process configuration and must resolve during
+	// initialization. Leaving a constructed external router with a missing
+	// fallback would defer an operator error to the request path.
+	if provider := rm.routerFactory[RouterExternal]; provider != nil {
+		router, err := provider(RouterExternal.NewContext(context.Background(), "", "", "init", ""))
+		if err != nil {
+			rm.routerFactory[RouterExternal] = nil
+		} else if configured, ok := router.(interface{ configuredFallback() types.RoutingAlgorithm }); ok {
+			fallback := configured.configuredFallback()
+			if fallback != "" && (fallback == RouterExternal || rm.routerFactory[fallback] == nil) {
+				initErr := fmt.Errorf("fallback %s is not a registered local router", fallback)
+				klog.Errorf("Failed to initialize external router: %v", initErr)
+				rm.initErrors[RouterExternal] = initErr
+				rm.routerFactory[RouterExternal] = nil
+			}
+		}
+	}
 	rm.multiRouterCache = make(map[string]*multiStrategyRouter)
 	rm.unblendableLogged = make(map[string]struct{})
 	rm.routerDoneInit()
+}
+
+// InitializationError reports the most recent constructor failure for a
+// strategy. Disabled optional routers may use a sentinel error that callers
+// explicitly ignore; invalid enabled configuration remains fail-fast.
+func (rm *RouterManager) InitializationError(algorithm types.RoutingAlgorithm) error {
+	rm.routerMu.RLock()
+	defer rm.routerMu.RUnlock()
+	return rm.initErrors[algorithm]
 }
 func Init() {
 	defaultRM.Init()

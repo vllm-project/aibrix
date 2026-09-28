@@ -181,15 +181,8 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		externalFilter := routingCtx.ReqHeaders[HeaderExternalFilter]
 		targetPodIP, err := s.selectTargetPod(ctx, routingCtx, podsArr, externalFilter)
 		if targetPodIP == "" || err != nil {
-			var invalidReqErr *engine.InvalidRequestError
-			if errors.As(err, &invalidReqErr) {
-				return buildRoutingErrorResponse(routingCtx, requestID, envoyTypePb.StatusCode_BadRequest,
-					invalidReqErr.Error(), "", "", HeaderErrorRouting, "true"), model, stream, term
-			}
-			if errors.Is(err, errReplicaInflightExceeded) {
-				limit := replicaInflightLimit(routingCtx)
-				klog.InfoS("replica_inflight_exceeded", "requestID", requestID, "model", model, "limit", limit, "reason", "all_replicas_saturated")
-				return replicaInflightExceededResponse(model, limit), model, stream, term
+			if selectionResponse := buildTargetSelectionErrorResponse(routingCtx, requestID, model, err); selectionResponse != nil {
+				return selectionResponse, model, stream, term
 			}
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingStrategy", routingAlgorithm, "model", model, "routingDuration", routingCtx.GetRoutingDelay())
 			return buildRoutingErrorResponse(routingCtx, requestID, envoyTypePb.StatusCode_ServiceUnavailable,
@@ -259,6 +252,35 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 	// never sets ext_proc's allow_mode_override, so a per-request override here
 	// would be silently ignored and would only read as if it did something.
 	return resp, model, stream, term
+}
+
+func buildTargetSelectionErrorResponse(routingCtx *types.RoutingContext, requestID, model string, err error) *extProcPb.ProcessingResponse {
+	var invalidReqErr *engine.InvalidRequestError
+	if errors.As(err, &invalidReqErr) {
+		return buildRoutingErrorResponse(routingCtx, requestID, envoyTypePb.StatusCode_BadRequest,
+			invalidReqErr.Error(), "", "", HeaderErrorRouting, "true")
+	}
+	if errors.Is(err, errReplicaInflightExceeded) {
+		limit := replicaInflightLimit(routingCtx)
+		klog.InfoS("replica_inflight_exceeded", "requestID", requestID, "model", model, "limit", limit, "reason", "all_replicas_saturated")
+		return replicaInflightExceededResponse(model, limit)
+	}
+	if externalResponse, ok := buildExternalRouterErrorResponse(routingCtx, requestID, err); ok {
+		return externalResponse
+	}
+	return nil
+}
+
+func buildExternalRouterErrorResponse(routingCtx *types.RoutingContext, requestID string, err error) (*extProcPb.ProcessingResponse, bool) {
+	if errors.Is(err, routing.ErrExternalPolicyDenied) {
+		return buildRoutingErrorResponse(routingCtx, requestID, envoyTypePb.StatusCode_Forbidden,
+			"request denied by external routing policy", ErrorCodeExternalPolicyDenied, "", HeaderErrorRouting, "true"), true
+	}
+	if errors.Is(err, routing.ErrExternalRouterUnavailable) {
+		return buildRoutingErrorResponse(routingCtx, requestID, envoyTypePb.StatusCode_ServiceUnavailable,
+			"external routing service unavailable", ErrorCodeExternalRouterUnavailable, "", HeaderErrorRouting, "true"), true
+	}
+	return nil, false
 }
 
 func buildRoutingErrorResponse(

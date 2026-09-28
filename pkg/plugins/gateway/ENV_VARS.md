@@ -151,6 +151,35 @@ The four `AIBRIX_ROUTING_AUTO_BLEND_*` weights can also be set per request by th
 
 ---
 
+## External Replica Router (`algorithms/external*.go`)
+
+The optional `external` strategy sends the already-filtered candidate snapshot to one
+operator-configured HTTP endpoint. An unset endpoint disables the strategy. Invalid enabled
+configuration fails Gateway startup. Candidate metrics and labels are opt-in allowlists; prompts,
+request bodies, credentials, arbitrary client headers, and pod IPs are never sent.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `AIBRIX_EXTERNAL_ROUTER_ENDPOINT` | URL | _(unset)_ | Complete `http` or `https` operation URL. Userinfo and fragments are rejected. |
+| `AIBRIX_EXTERNAL_ROUTER_POLICY_MODE` | enum | _(required)_ | `Advisory` or `Authoritative`. |
+| `AIBRIX_EXTERNAL_ROUTER_FAILURE_MODE` | enum | _(required)_ | `FailOpen` or `FailClosed`; Authoritative requires FailClosed. |
+| `AIBRIX_EXTERNAL_ROUTER_FALLBACK` | string | _(none)_ | Registered non-external local router; required for Advisory and FailOpen. |
+| `AIBRIX_EXTERNAL_ROUTER_TIMEOUT` | duration | `10ms` | Deadline for one decision exchange. |
+| `AIBRIX_EXTERNAL_ROUTER_MAX_INFLIGHT` | int | `256` | Non-blocking per-process bulkhead capacity. |
+| `AIBRIX_EXTERNAL_ROUTER_MAX_REQUEST_BYTES` | bytes | `256KiB` | Maximum encoded request size. Accepts bytes, `KiB`, or `MiB`. |
+| `AIBRIX_EXTERNAL_ROUTER_MAX_RESPONSE_BYTES` | bytes | `64KiB` | Maximum response body size. Accepts bytes, `KiB`, or `MiB`. |
+| `AIBRIX_EXTERNAL_ROUTER_FAILURE_THRESHOLD` | int | `5` | Consecutive attempted-exchange system failures before opening the circuit. |
+| `AIBRIX_EXTERNAL_ROUTER_OPEN_DURATION` | duration | `1s` | Circuit-open duration before one half-open probe. |
+| `AIBRIX_EXTERNAL_ROUTER_AUTH_TOKEN_FILE` | path | _(unset)_ | Optional non-empty bearer token file loaded at startup. |
+| `AIBRIX_EXTERNAL_ROUTER_CANDIDATE_ATTRIBUTES` | CSV | _(empty)_ | Pod-label keys allowed into candidate attributes. |
+| `AIBRIX_EXTERNAL_ROUTER_CANDIDATE_METRICS` | CSV | _(empty)_ | Any of `runningRequests`, `engineUtilization`, `kvCacheUsage`. |
+| `AIBRIX_EXTERNAL_ROUTER_POLICY_ATTRIBUTES` | CSV | _(empty)_ | Trusted RoutingContext policy names eligible for serialization. Raw headers are never copied automatically. |
+
+See the [External Replica Routing guide](../../../docs/source/features/external-replica-routing.rst)
+and the published OpenAPI contract for policy and protocol details.
+
+---
+
 ## Preble (Prefix Cache with Histogram) Router (`algorithms/prefix_cache_preble.go`)
 
 | Variable | Type | Default | Description |
