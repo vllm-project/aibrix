@@ -1192,8 +1192,9 @@ func TestCardDivisionStateStartsARunOfFailuresAgainAfterFiveQuietMinutes(t *test
 	assert.Equal(t, 1, divisions.failedAgain(card))
 }
 
-// A card is forgotten when nothing has asked about it for five minutes. The
-// card that is asked about is there, however long ago its last round was.
+// A card is forgotten when nothing asked about it between two prunes, which
+// lie five minutes apart or more. The card that is asked about is there,
+// however long ago its last round was.
 func TestCardDivisionStateKeepsTheCardThatIsAskedAbout(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	divisions := newCardDivisionState(func() time.Time { return now })
@@ -1205,13 +1206,52 @@ func TestCardDivisionStateKeepsTheCardThatIsAskedAbout(t *testing.T) {
 		divisions.failedAgain(each)
 	}
 
-	now = now.Add(time.Hour)
-	divide, changed := divisions.due(card, "a")
+	// The pod of the second card is deleted, and nothing asks about it again.
+	// A prune runs every five minutes. The first one after that still finds
+	// the card asked about since the prune before. The second one forgets it.
+	for _, step := range []struct {
+		after     time.Duration
+		remembers bool
+	}{
+		{30*DefaultRequeueDuration - time.Nanosecond, true},
+		{time.Nanosecond, true},
+		{30*DefaultRequeueDuration - time.Nanosecond, true},
+		{time.Nanosecond, false},
+	} {
+		now = now.Add(step.after)
+		_, changed := divisions.due(card, "a")
 
-	assert.True(t, divide)
-	assert.False(t, changed)
-	assert.True(t, divisions.noted(card))
-	assert.False(t, divisions.noted(gone))
+		assert.False(t, changed)
+		assert.True(t, divisions.noted(card))
+		assert.Equal(t, step.remembers, divisions.noted(gone), now.Sub(time.Unix(1_700_000_000, 0)))
+	}
+}
+
+// No round runs for five minutes, as while the API server cannot be reached.
+// The next pass asks about one card after the other. The first of them must
+// not make the state forget the rest.
+func TestCardDivisionStateKeepsEveryCardOfAPassAfterAStall(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	divisions := newCardDivisionState(func() time.Time { return now })
+	first := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+	second := types.NamespacedName{Namespace: "another-pool", Name: "warm-2"}
+	for _, each := range []types.NamespacedName{first, second} {
+		divisions.due(each, "a")
+		divisions.leftAlone(each, "a", []string{"busy"})
+		divisions.failedAgain(each)
+		divisions.failedAgain(each)
+	}
+
+	now = now.Add(30 * DefaultRequeueDuration)
+	for _, each := range []types.NamespacedName{first, second} {
+		divide, changed := divisions.due(each, "a")
+
+		assert.True(t, divide, each.Name)
+		assert.False(t, changed, each.Name)
+		assert.True(t, divisions.noted(each), each.Name)
+		assert.Equal(t, []string{"busy"}, divisions.owedBefore(each), each.Name)
+		assert.Equal(t, 3, divisions.failedAgain(each), each.Name)
+	}
 }
 
 // An instance can record no limit while its engine serves: it was placed when

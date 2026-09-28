@@ -111,7 +111,9 @@ type cardDivisionState struct {
 	// undividedFor is why a card was last left undivided, as one that could
 	// not be accounted for.
 	undividedFor map[types.NamespacedName]string
-	lastPruned   time.Time
+	// asked holds the cards that were asked about since the last prune.
+	asked      map[types.NamespacedName]bool
+	lastPruned time.Time
 }
 
 func newCardDivisionState(now func() time.Time) *cardDivisionState {
@@ -127,6 +129,7 @@ func newCardDivisionState(now func() time.Time) *cardDivisionState {
 		lastFailure:  make(map[types.NamespacedName]time.Time),
 		owed:         make(map[types.NamespacedName][]string),
 		undividedFor: make(map[types.NamespacedName]string),
+		asked:        make(map[types.NamespacedName]bool),
 	}
 }
 
@@ -148,7 +151,8 @@ func (s *cardDivisionState) due(card types.NamespacedName, composition string) (
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
-	s.pruneLocked(now, card)
+	s.asked[card] = true
+	s.pruneLocked(now)
 	previous, known := s.dividedFor[card]
 	changed = known && previous != composition
 	if changed && s.attemptedFor[card] != composition {
@@ -260,17 +264,18 @@ func (s *cardDivisionState) failedAgain(card types.NamespacedName) int {
 	return s.failures[card]
 }
 
-// pruneLocked forgets cards not divided for a long while, which is what a
-// deleted pod leaves behind. The card that is asked about is there, so it is
-// kept.
-func (s *cardDivisionState) pruneLocked(now time.Time, asked types.NamespacedName) {
+// pruneLocked forgets the cards that nothing asked about between two prunes,
+// which is what a deleted pod leaves behind. Two prunes lie five minutes apart
+// or more. A card that is there is asked about in every round, so it is kept,
+// however long its last round was in coming.
+func (s *cardDivisionState) pruneLocked(now time.Time) {
 	const horizon = 30 * DefaultRequeueDuration
 	if now.Sub(s.lastPruned) < horizon {
 		return
 	}
 	s.lastPruned = now
-	for card, last := range s.lastRound {
-		if card != asked && now.Sub(last) >= horizon {
+	for card := range s.lastRound {
+		if !s.asked[card] {
 			delete(s.lastRound, card)
 			delete(s.dividedFor, card)
 			delete(s.attemptedFor, card)
@@ -280,6 +285,7 @@ func (s *cardDivisionState) pruneLocked(now time.Time, asked types.NamespacedNam
 			delete(s.undividedFor, card)
 		}
 	}
+	s.asked = make(map[types.NamespacedName]bool)
 }
 
 // cardOf is the key a pod's card is remembered by.
