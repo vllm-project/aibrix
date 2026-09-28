@@ -1285,6 +1285,9 @@ func (r *ModelClaimReconciler) announcePhase(
 			r.Recorder.Eventf(pm, corev1.EventTypeWarning, "KVLimitNotHeld",
 				"model %s on pod %s is held to more KV than its limit of %s; marked non-routable until the limit is written again",
 				served, inst.Pod, gibibytes(inst.KVLimitBytes))
+		case serving:
+			// An engine that woke and waits for its limit is ready. The Event
+			// of the limit says what it waits for.
 		case previousPhase != modelv1alpha1.ModelClaimActivating:
 			r.Recorder.Eventf(pm, corev1.EventTypeWarning, "Unhealthy",
 				"model %s no longer ready on pod %s; marked non-routable", served, inst.Pod)

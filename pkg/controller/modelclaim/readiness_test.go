@@ -475,3 +475,49 @@ func TestReconcileTakesAnEngineOffItsRouteWhenItsSegmentCannotBeRead(t *testing.
 	assert.Empty(t, runtime.kvLimitCalls)
 	assert.Contains(t, routeOf(t, r, "warm-1", pm.Name), `"port":0`)
 }
+
+// An engine that woke and waits for its limit is ready, so it is not called
+// unhealthy. The Event of the limit says what it waits for. An engine that has
+// gone by the read-back is called unhealthy, as before.
+func TestReconcileDoesNotCallAnEngineUnhealthyThatWokeAndWaitsForItsLimit(t *testing.T) {
+	for name, c := range map[string]struct {
+		arrange   func(r *ModelClaimReconciler, runtime *fakeRuntime)
+		failed    string
+		unhealthy int
+	}{
+		"the engine reports another limit": {func(_ *ModelClaimReconciler, runtime *fakeRuntime) {
+			runtime.deafToKVLimits = true
+		}, "KV limit 3.0 GiB was written, and the engine still reports 5.0 GiB", 0},
+		"the write fails": {func(r *ModelClaimReconciler, runtime *fakeRuntime) {
+			r.Runtime = &failingKVLimits{fakeRuntime: runtime, failing: map[int]bool{1: true}}
+		}, "KV limit 3.0 GiB could not be set", 0},
+		"the read-back fails": {func(r *ModelClaimReconciler, runtime *fakeRuntime) {
+			r.Runtime = &failingSnapshots{fakeRuntime: runtime, failing: map[int]bool{2: true}}
+		}, "", 0},
+		"the read-back shows no segment": {func(_ *ModelClaimReconciler, runtime *fakeRuntime) {
+			runtime.onKVLimit = func() { runtime.snapshots["10.0.0.1"].Models[0].KVCapacityBytes = kvLimitUnknown }
+		}, "", 0},
+		"the engine has no segment": {func(_ *ModelClaimReconciler, runtime *fakeRuntime) {
+			runtime.snapshots["10.0.0.1"].Models[0].KVCapacityBytes = kvLimitUnknown
+		}, "", 0},
+		"the read-back shows no engine": {func(_ *ModelClaimReconciler, runtime *fakeRuntime) {
+			runtime.onKVLimit = func() { runtime.snapshots["10.0.0.1"].Models = nil }
+		}, "", 1},
+	} {
+		r, runtime, pm := anEngineHeldToFiveGibibytes(t, modelv1alpha1.ModelClaimSleeping)
+		c.arrange(r, runtime)
+
+		reconcileOnce(t, r, pm.Name)
+
+		events := drainEvents(t, r)
+		if c.failed == "" {
+			assert.Zero(t, eventsNamed(events, "KVLimitFailed"), name)
+		} else {
+			assert.Equal(t, 1, eventsNamed(events, "KVLimitFailed"), name)
+			assert.Equal(t, 1, eventsNamed(events, c.failed), name)
+		}
+		assert.Equal(t, c.unhealthy, eventsNamed(events, "Unhealthy"), name)
+		assert.Equal(t, modelv1alpha1.ModelClaimActivating, getModel(t, r, pm.Name).Status.Instances[0].Phase, name)
+		assert.Contains(t, routeOf(t, r, "warm-1", pm.Name), `"port":0`, name)
+	}
+}
