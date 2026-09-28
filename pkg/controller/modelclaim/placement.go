@@ -112,6 +112,10 @@ type podRefusal struct {
 // mock runtimes in tests run on. Every other pod has to show its room, so a
 // card nobody could account for is turned away rather than admitted: the
 // memory such an account cannot see is memory it would hand out twice.
+//
+// A pod whose runtime did not answer is turned away whatever it requests.
+// Only its runtime could say that it has cards it did not request, so such a
+// pod cannot be told from one without a GPU.
 func admissibleCandidates(
 	candidates []corev1.Pod,
 	ledgers map[string]podLedger,
@@ -124,7 +128,7 @@ func admissibleCandidates(
 		ledger := ledgers[pod.Name]
 		// A pod without cards has nothing to account for. A pod whose runtime
 		// reports cards has them, whatever its containers request.
-		if !podHasGPUs(pod, ledger.accelerators) {
+		if !ledger.unread && !podHasGPUs(pod, ledger.accelerators) {
 			admissible = append(admissible, pod)
 			continue
 		}

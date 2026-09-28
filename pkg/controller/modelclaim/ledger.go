@@ -124,8 +124,11 @@ func (e engineOnPod) heldBytes() int64 {
 // one. An account with a hole never admits a placement: the memory it cannot
 // see is memory it would otherwise hand out twice.
 type podLedger struct {
-	judgeable                bool
-	blocked                  string
+	judgeable bool
+	blocked   string
+	// unread is set when the pod's runtime did not answer, so that nothing is
+	// known about the pod, not even whether it has cards.
+	unread                   bool
 	hbmUsableBytes           int64
 	totalMinimumReserveBytes int64
 	totalHeldBytes           int64
@@ -194,7 +197,7 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 		accelerators := reportedAccelerators(snapshots[pod.Name])
 		switch {
 		case snapshots[pod.Name] == nil:
-			ledgers[pod.Name] = podLedger{blocked: "its runtime did not answer"}
+			ledgers[pod.Name] = podLedger{blocked: "its runtime did not answer", unread: true}
 		case !measured:
 			ledgers[pod.Name] = podLedger{blocked: "its cards could not be measured", accelerators: accelerators}
 		default:

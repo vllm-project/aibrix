@@ -1542,6 +1542,28 @@ func TestReconcileWillNotPlaceOnACardItCannotMeasure(t *testing.T) {
 	assert.Contains(t, cond.Message, "could not be judged")
 }
 
+func TestReconcileWillNotPlaceOnAPodWhoseRuntimeDidNotAnswer(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	// The pod requests no GPU, as one given its cards by a dynamic resource
+	// claim does. Only its runtime could say whether it has cards, and the
+	// runtime did not answer.
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Status.PodIP = "10.0.0.1"
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.nilSnapshots = map[string]bool{pod.Status.PodIP: true}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Empty(t, got.Status.Instances)
+	cond := meta.FindStatusCondition(got.Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Contains(t, cond.Message, "its runtime did not answer")
+}
+
 func TestReconcileDoesNotPlaceAClaimThatDeclaresNoCost(t *testing.T) {
 	pm := withFinalizer(sampleModelClaim())
 	pm.Spec.PerGPU = nil

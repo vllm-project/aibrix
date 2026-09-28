@@ -317,7 +317,9 @@ A Pod goes through the account when its containers request
 covers GPUs given to a Pod some other way, such as a dynamic resource claim.
 A card reported with no memory at all does not count. That is the card the
 runtime's mock mode reports on CPU pools. A Pod with neither is taken for one
-without a GPU, and nothing is accounted for on it.
+without a GPU, and nothing is accounted for on it. A Pod whose runtime did not
+answer is turned away whatever it requests, since only its runtime could say
+that it has cards.
 
 Every card in a declared pool is divided as a whole
 ---------------------------------------------------
