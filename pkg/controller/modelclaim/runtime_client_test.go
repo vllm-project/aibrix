@@ -119,13 +119,58 @@ func TestHTTPRuntimeSnapshot(t *testing.T) {
 	assert.Equal(t, []string{"hf://Org/M1"}, snapshot.CachedArtifacts)
 }
 
-// TestHTTPRuntimeSnapshotReadsWhatTheRuntimeSends decodes the runtime's own
-// JSON, written out here, so that a field renamed on either side fails a test.
+// TestHTTPRuntimeSnapshotReadsEveryFieldTheRuntimeSends decodes a snapshot as
+// the runtime writes it, with a value in every field, so that a name changed
+// in the client fails a test.
+func TestHTTPRuntimeSnapshotReadsEveryFieldTheRuntimeSends(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"observed_at": "2026-09-21T10:00:00.123456Z",
+			"accelerators": [{"id": "GPU-0", "hbm_total_bytes": 1000, "hbm_free_bytes": 700, "hbm_usable_bytes": 950}],
+			"models": [{"model_name": "m1", "artifact_url": "hf://Org/M1",
+				"claim_ref": {"namespace": "default", "name": "claim-1", "uid": "uid-1"}, "port": 9001,
+				"ipc_name": "kvc_m1", "phase": "active", "alive": true, "ready": true, "restart_count": 2,
+				"last_error": "engine exited", "last_transition": "2026-09-21T09:59:58.000001Z",
+				"kv_used_bytes": 300, "kv_capacity_bytes": 600, "hbm_peak_bytes": 456,
+				"request_metrics_observed": true, "requests_running": 3, "requests_waiting": 1,
+				"request_success_total": 12}],
+			"cached_artifacts": ["hf://Org/M1"]}`))
+	}))
+	defer srv.Close()
+	c, host, port := clientForServer(srv)
+
+	snapshot, err := c.Snapshot(context.Background(), host, port)
+
+	require.NoError(t, err)
+	lastTransition := time.Date(2026, time.September, 21, 9, 59, 58, 1000, time.UTC)
+	requestSuccessTotal := int64(12)
+	assert.Equal(t, &RuntimeSnapshot{
+		ObservedAt: time.Date(2026, time.September, 21, 10, 0, 0, 123456000, time.UTC),
+		Accelerators: []RuntimeAcceleratorSnapshot{
+			{ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 700, HBMUsableBytes: 950},
+		},
+		Models: []RuntimeSnapshotModel{{
+			ModelName: "m1", ArtifactURL: "hf://Org/M1",
+			ClaimRef: &ModelClaimRef{Namespace: "default", Name: "claim-1", UID: "uid-1"},
+			Port:     9001, IPCName: "kvc_m1", Phase: "active", Alive: true, Ready: true, RestartCount: 2,
+			LastError: "engine exited", LastTransition: &lastTransition,
+			KVUsedBytes: 300, KVCapacityBytes: 600, HBMPeakBytes: 456,
+			RequestMetricsObserved: true, RequestsRunning: 3, RequestsWaiting: 1,
+			RequestSuccessTotal: &requestSuccessTotal,
+		}},
+		CachedArtifacts: []string{"hf://Org/M1"},
+	}, snapshot)
+}
+
+// TestHTTPRuntimeSnapshotReadsWhatTheRuntimeSends decodes what the runtime
+// sends for an engine that is still booting, and for a card it could not
+// measure.
 func TestHTTPRuntimeSnapshotReadsWhatTheRuntimeSends(t *testing.T) {
 	for name, tc := range map[string]struct {
 		payload        string
 		hbmUsableBytes int64
 		sized          bool
+		engines        int
 	}{
 		"a card the runtime measured": {`{
 			"observed_at": "2026-09-21T10:00:00.123456Z",
@@ -136,15 +181,15 @@ func TestHTTPRuntimeSnapshotReadsWhatTheRuntimeSends(t *testing.T) {
 				"kv_used_bytes": -1, "kv_capacity_bytes": -1, "hbm_peak_bytes": 0,
 				"request_metrics_observed": false, "requests_running": 0, "requests_waiting": 0,
 				"request_success_total": null}],
-			"cached_artifacts": []}`, 950, true},
+			"cached_artifacts": []}`, 950, true, 1},
 		"a card it could not measure": {`{
 			"observed_at": "2026-09-21T10:00:00Z",
 			"accelerators": [{"id": "GPU-0", "hbm_total_bytes": 1000, "hbm_free_bytes": 700, "hbm_usable_bytes": -1}],
-			"models": [], "cached_artifacts": []}`, -1, false},
+			"models": [], "cached_artifacts": []}`, -1, false, 0},
 		"a runtime from before the field": {`{
 			"observed_at": "2026-09-21T10:00:00Z",
 			"accelerators": [{"id": "GPU-0", "hbm_total_bytes": 1000, "hbm_free_bytes": 700}],
-			"models": [], "cached_artifacts": []}`, 0, false},
+			"models": [], "cached_artifacts": []}`, 0, false, 0},
 	} {
 		t.Run(name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -163,6 +208,7 @@ func TestHTTPRuntimeSnapshotReadsWhatTheRuntimeSends(t *testing.T) {
 			if sized {
 				assert.Equal(t, tc.hbmUsableBytes, hbmUsableBytes)
 			}
+			require.Len(t, snapshot.Models, tc.engines)
 			for _, model := range snapshot.Models {
 				assert.Equal(t, int64(-1), model.KVUsedBytes)
 				assert.Equal(t, int64(-1), model.KVCapacityBytes)
