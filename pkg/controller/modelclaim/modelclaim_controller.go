@@ -913,7 +913,8 @@ func (r *ModelClaimReconciler) writeAndConfirmKVLimits(
 // runtime that does not answer would hold the worker once for each engine.
 //
 // It is a best effort, and it is not read back. An engine it does not reach
-// stays below its record, which is safe and keeps its route.
+// stays held to what the shrink wrote, which is less than it was held to
+// before.
 func (r *ModelClaimReconciler) takeBackKVLimits(
 	ctx context.Context,
 	pod *corev1.Pod,

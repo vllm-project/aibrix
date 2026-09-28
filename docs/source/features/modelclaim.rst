@@ -383,15 +383,15 @@ shrink makes is not there until the engine is seen inside its new limit.
 Reading back is not a formality: the CLI the runtime drives exits zero when
 there is no segment to write into, so reading the limit back is the only
 evidence there is. Each new limit is then recorded on its own claim, the ones
-that go down first, and the new instance after them. The limits that grow an
-engine are written last, and read back the same way. A shrink that fails
-changes no record, and the limits it wrote are taken back. A record that
-cannot be written leaves records that come to no more than the card. A grow
-that fails leaves the engine below its new record, where it keeps its route,
-and the round divides the card again to grow it. A model stays non-routable
-until its own limit is in force, and stays routable only while it is held to
-no more than that limit. A card whose room could not be made is skipped, and
-the next Pod in line is tried.
+that go down first. The limits that grow an engine are written next, and read
+back the same way. A model being placed is recorded last, with the limit it is
+to run under. A shrink that fails changes no record, and the limits it wrote
+are taken back. A record that cannot be written leaves records that come to no
+more than the card. A grow that fails leaves the engine below its new record,
+where it keeps its route, and the round divides the card again to grow it. A
+model stays non-routable until its own limit is in force, and stays routable
+only while it is held to no more than that limit. A card whose room could not
+be made is skipped, and the next Pod in line is tried.
 
 A card is also planned again once a round, which is 10 seconds, however many
 claims sit on it. The round carries the plan out in three cases:
@@ -420,8 +420,8 @@ itself, as above. Every move is carried out, however small. This is also how
 the room comes back when an engine cannot be started after its card was divided
 for it. The room an engine leaves goes to the engines beside it. A claim that
 waits for that card can still take it, until those engines have mapped it. A
-change the card cannot be divided for yet, as while an engine that
-left is still exiting, is tried again by the round, and still as a change. The
+change the card cannot be divided for yet, as while an engine that left is
+still exiting, is tried again by the round, and still as a change. The
 controller keeps what each card was divided for in memory only. After a
 restart, the first round of a card divides it whatever its load. When the
 division of a card fails three times in a row, each claim on the card gets a
@@ -813,13 +813,15 @@ Claim remains ``Activating`` after ``/health`` succeeds
    message names the card that had room and could not be divided.
 
 A ``KVLimitFailed`` warning says a card could not be divided several times
-   The card keeps its last division, and every engine on it keeps serving
-   under the limit it has. The message quotes the last failure. An engine
-   that did not take a KV limit points at its runtime or its segment, as
-   above. One that holds more than its new limit is still growing, and the
-   next round plans around it. The warning comes on the third failure in a
-   row, and again every five minutes while the failures last. The next
-   division that works ends it.
+   Every engine on the card keeps serving under the limit it is held to. A
+   division that fails at its shrinks takes them back, and changes no record.
+   One that fails at its grows has made the room and recorded it, and leaves
+   an engine below its record until a round grows it. The message quotes the
+   last failure. An engine that did not take a KV limit points at its runtime
+   or its segment, as above. One that holds more than its new limit is still
+   growing, and the next round plans around it. The warning comes on the
+   third failure in a row, and again every five minutes while the failures
+   last. The next division that works ends it.
 
 A routable model becomes non-routable with ``KVLimitNotHeld``
    Its engine is held to more KV than its limit, most often because it

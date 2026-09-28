@@ -131,7 +131,8 @@ func newCardDivisionState(now func() time.Time) *cardDivisionState {
 // cannot be divided yet, as while an engine that left is still exiting, is
 // tried again by the round rather than on every pass, and each try is still
 // made as for a change. A card seen for the first time, as every card is after
-// a restart, is not taken as changed: the round divides it.
+// a restart, is not taken as changed: its first round divides it, whatever its
+// load.
 func (s *cardDivisionState) due(card types.NamespacedName, composition string) (divide, changed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
