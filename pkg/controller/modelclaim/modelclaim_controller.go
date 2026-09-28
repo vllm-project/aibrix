@@ -253,9 +253,9 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// or route-health convergence for this claim.
 	r.reconcilePoolPolicies(ctx, candidates, readings)
 	// Cards whose engines all declare what they cost are divided again by the
-	// planner placement uses, so each share follows load rather than staying
-	// what it was when the last model landed. It runs last, after anything this
-	// pass changed on the cards.
+	// planner that placement uses. Each share then follows load, and does not
+	// stay what it was when the last model landed. It runs last, after anything
+	// this pass changed on the cards.
 	r.divideCards(ctx, candidates, readings)
 	return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, nil
 }
@@ -451,7 +451,7 @@ func (r *ModelClaimReconciler) ensureActivated(
 	}
 	load := r.computePodLoad(ctx, pm.Namespace)
 	// The account and the ranking are made from the same reading of each
-	// runtime, so two admitted pods are never ordered by numbers that
+	// runtime. So two admitted pods are never ordered by numbers that
 	// contradict the gate they just passed.
 	snapshots := readings.ofPods(ctx, candidates)
 	placementStates := placementStatesFrom(snapshots, candidates, pm.Spec.ArtifactURL, parallelism)
@@ -705,9 +705,10 @@ func activateRequest(pm *modelv1alpha1.ModelClaim) *ActivateRequest {
 // makeRoomOnPod divides a card between the engines on it and the one about to
 // join them, and returns the KV limit the newcomer is to run under.
 //
-// Returning an error means this model is not placed on this card this round.
-// The neighbours may keep smaller limits, which costs them room until the card
-// is divided again, and costs correctness nothing.
+// Returning an error means this model is not placed on this card this round. A
+// division that failed takes its shrinks back as far as the runtime takes them.
+// A neighbour that keeps a smaller limit loses room until the card is divided
+// again, and correctness loses nothing.
 func (r *ModelClaimReconciler) makeRoomOnPod(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
@@ -770,16 +771,16 @@ func (cardLeftAlone) Error() string { return "the card needs no division" }
 // the room a shrink makes is not there until the engine is seen inside its new
 // limit. Every new limit is then recorded on its own claim, the ones that go
 // down first. The limits that grow an engine are written last, and read back in
-// the same way, because a write that reached no segment is reported as a
-// success either way.
+// the same way. A write that reached no segment is reported as a success either
+// way.
 //
-// A shrink that fails leaves every record as it was, and the limits it wrote
-// are taken back. A record that cannot be written leaves records that come to
-// no more than the card. A
-// grow that fails comes after the records, so the engines it did not reach sit
-// below their new records, which is safe and keeps their routes. The
-// arrangement is made, and the error says only that some engine is still to
-// grow.
+// A shrink that fails leaves every record as it was. The limits it wrote are
+// then written back as they were, as far as the runtime takes them. A record
+// that cannot be written leaves records that come to no more than the card, and
+// the shrinks stay in force. A grow that fails comes after the records, so the
+// engines it did not reach sit below their new records, which is safe and keeps
+// their routes. The arrangement is made, and the error says only that some
+// engine is still to grow.
 func (r *ModelClaimReconciler) arrangeCard(
 	ctx context.Context,
 	pod *corev1.Pod,
@@ -859,9 +860,9 @@ func (r *ModelClaimReconciler) arrangeCard(
 
 // writeAndConfirmKVLimits writes one step of a card's division and reads the
 // card back to confirm it. A step with nothing to write reads nothing. The
-// reading taken to confirm the step becomes the pass's reading of the card.
-// It returns the limits it wrote, which is part of the step when a write
-// failed.
+// reading taken to confirm the step becomes the pass's reading of the card. It
+// returns the limits it wrote. When a write failed, these are only a part of
+// the step.
 func (r *ModelClaimReconciler) writeAndConfirmKVLimits(
 	ctx context.Context,
 	pod *corev1.Pod,
@@ -875,9 +876,9 @@ func (r *ModelClaimReconciler) writeAndConfirmKVLimits(
 	for i, limit := range limits {
 		// The moment the card was read is part of the operation, not only the
 		// value. The runtime runs each operation once, and an engine that
-		// restarted needs the same value written again: without the moment,
-		// that second write is taken for the first one and never reaches the
-		// segment, leaving the card stuck a round behind for good.
+		// restarted needs the same value written again. Without the moment,
+		// that second write is taken for the first one, and never reaches the
+		// segment. The card would stay a round behind for good.
 		operationID := fmt.Sprintf("kv-plan/%s/%s/%s/%d/%d",
 			pod.Namespace, pod.UID, limit.claimName, limit.kvLimitBytes,
 			ledger.observedAt.UnixNano())
@@ -905,11 +906,11 @@ func (r *ModelClaimReconciler) writeAndConfirmKVLimits(
 // held to before, and to no more than its record.
 //
 // A shrink that is not confirmed changes no record, and it must not leave an
-// engine held to less than before either. A division that fails is tried
-// again by the next round, so one that kept failing would walk the engines
-// beside the one at fault down, round after round. An engine not routed yet would be shrunk by each
-// division and raised by its own pass in turn, and would never be found
-// holding its record.
+// engine held to less than before either. A division that fails is tried again
+// by the next round. One that kept failing would shrink the engines beside the
+// one at fault again, round after round. An engine not routed yet would be
+// shrunk by each division and raised by its own pass in turn, and would never
+// be found holding its record.
 //
 // The shrinks are the first step of a division, so nothing has grown yet, and
 // raising them again gives no engine room that another was given. Only what

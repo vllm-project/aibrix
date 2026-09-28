@@ -224,8 +224,8 @@ func TestReconcileGivesAnEngineItsShareBackOnceTheCardIsAtRest(t *testing.T) {
 	snapshot.Models[0].RequestsRunning = 0
 	nextRound(t, r, clock, "idle")
 
-	// Left as it was, "idle" would start its own burst on a sixth of the
-	// spare room, with most of the card held by an engine that serves nothing.
+	// Left as it was, "idle" would start its own burst on a sixth of the spare
+	// room. Most of the card would be held by an engine that serves nothing.
 	require.Len(t, runtime.kvLimitCalls, 2)
 	assert.Equal(t, int64(20)<<30, getModel(t, r, "busy").Status.Instances[0].KVLimitBytes)
 	assert.Equal(t, int64(20)<<30, getModel(t, r, "idle").Status.Instances[0].KVLimitBytes)
@@ -469,7 +469,7 @@ func TestReconcileKeepsAModelPlacedWhenANeighbourCouldNotBeGrown(t *testing.T) {
 
 // The cache can lag a record that a division in another claim's pass has just
 // written. The health loop reads the record fresh before it acts on a limit
-// that is not in force, so an engine that was just grown is not pulled back.
+// that is not in force. So an engine that was just grown is not pulled back.
 func TestReconcileReadsARecordFreshBeforeActingOnIt(t *testing.T) {
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
 	cached := withFinalizer(claimOnPod("busy", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
@@ -872,9 +872,9 @@ func TestReconcileReadsARuntimeAgainOnlyAfterChangingIt(t *testing.T) {
 
 	reconcileOnce(t, r, pm.Name)
 
-	// One reading for the account and the ranking, one to confirm the
-	// neighbour's shrink, and one after the engine was started, which the
-	// health check needs to see the new engine at all.
+	// There are three readings. One is for the account and the ranking, and one
+	// confirms the neighbour's shrink. One follows the start of the engine,
+	// since the health check needs it to see the new engine at all.
 	require.Len(t, runtime.kvLimitCalls, 1)
 	assert.Equal(t, 3, runtime.snapshotCalls)
 	assert.Len(t, runtime.activateCalls, 1, "a reading from before the start would show no engine")

@@ -239,9 +239,9 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 // listClaimsForAccount lists the claims in a namespace for the GPU memory
 // account.
 //
-// Deliberately not the cached client. An instance recorded moments ago may
-// not have reached the informer yet, and an instance missing from the account
-// is memory a second claim would be told is free.
+// Deliberately not the cached client. An instance recorded moments ago may not
+// have reached the informer yet. An instance missing from the account is memory
+// that a second claim would be told is free.
 func (r *ModelClaimReconciler) listClaimsForAccount(
 	ctx context.Context,
 	namespace string,

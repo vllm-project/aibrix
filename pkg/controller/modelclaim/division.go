@@ -67,13 +67,14 @@ var compositionDivision = division{announce: true}
 const stuckDivisionTries = 3
 
 // stuckDivisionWarningEvery is how many failed divisions lie between two
-// warnings about the same card, five minutes of rounds. An Event expires, and
-// a card that stays stuck should go on saying so.
+// warnings about the same card. That is five minutes when every round fails. An
+// Event expires, and a card that stays stuck should go on saying so.
 const stuckDivisionWarningEvery = 30
 
 // loadDivision follows the load on a card. It is planned every round, so it is
-// carried out only when the card needs it, a move too small to shift memory is
-// skipped, and the moves are logged rather than raised on the claims.
+// carried out only when the card needs it. A plan in which no limit moves far
+// enough to shift memory is left out as a whole. The moves are logged, and not
+// raised on the claims.
 func loadDivision(hbmUsableBytes int64) division {
 	return division{minimumChangeBytes: minimumKVLimitChangeBytes(hbmUsableBytes), onlyWhenNeeded: true}
 }
@@ -133,15 +134,15 @@ func newCardDivisionState(now func() time.Time) *cardDivisionState {
 // its engines changed since it was last divided.
 //
 // A card whose engines changed is due at once. Any other card is due once a
-// round: every claim on a card reconciles on its own schedule and each of them
-// sees the same card, so without the round the card would be divided once per
+// round. Every claim on a card reconciles on its own schedule, and each of them
+// sees the same card. Without the round, the card would be divided once per
 // claim.
 //
-// A change stays a change until a division for it succeeds. A card that
-// cannot be divided yet, as while an engine that left is still exiting, is
-// tried again by the round rather than on every pass, and each try is still
-// made as for a change. A card seen for the first time, as every card is after
-// a restart, is not taken as changed: its first round divides it, whatever its
+// A change stays a change until a division for it succeeds. A card may not be
+// dividable yet, as while an engine that left is still exiting. It is then
+// tried again by the round, and not on every pass. Each try is still made as
+// for a change. A card seen for the first time, as every card is after a
+// restart, is not taken as changed: its first round divides it, whatever its
 // load.
 func (s *cardDivisionState) due(card types.NamespacedName, composition string) (divide, changed bool) {
 	s.mu.Lock()
@@ -286,11 +287,12 @@ func cardOf(pod *corev1.Pod) types.NamespacedName {
 	return types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}
 }
 
-// cardComposition describes the instances recorded on one card in the terms a
-// division depends on: whose they are, whether each is awake, asleep or
-// failed, and what its claim declared. Two passes that describe a card the same
-// way would divide it for the same engines. Extra entries describe instances
-// about to be recorded, which is how placement describes the card it divided.
+// cardComposition describes the instances recorded on one card in the terms
+// that a division depends on. These are whose they are, whether each is awake,
+// asleep or failed, and what its claim declared. Two passes that describe a
+// card the same way would divide it for the same engines. Extra entries
+// describe instances about to be recorded, which is how placement describes the
+// card it divided.
 func cardComposition(claims *modelv1alpha1.ModelClaimList, podName string, extra ...string) string {
 	entries := append([]string(nil), extra...)
 	if claims != nil {
@@ -335,10 +337,10 @@ func (r *ModelClaimReconciler) divisions() *cardDivisionState {
 
 // divideCards divides again the cards in this claim's pool whose engines all
 // declare what they cost. A card whose engines changed is divided at once. Any
-// other card is planned once a round, and divided when it needs it, so that a
-// share follows its load rather than staying what it was when the last model
-// landed. A card nobody could account for is left alone, which includes a card
-// running an engine whose claim declares nothing.
+// other card is planned once a round, and divided when it needs it. So a share
+// follows its load, and does not stay what it was when the last model landed. A
+// card nobody could account for is left alone, which includes a card running an
+// engine whose claim declares nothing.
 func (r *ModelClaimReconciler) divideCards(
 	ctx context.Context,
 	candidates []corev1.Pod,
@@ -351,8 +353,8 @@ func (r *ModelClaimReconciler) divideCards(
 	if !r.anyCardMayBeDue(ctx, candidates, divisions) {
 		return
 	}
-	// The same listing says what is on each card and what each card owes, so
-	// the engines a card is divided for are the ones it is remembered by.
+	// The same listing says what is on each card and what each card owes. So
+	// the engines that a card is divided for are the ones it is remembered by.
 	claims, err := r.listClaimsForAccount(ctx, candidates[0].Namespace)
 	if err != nil {
 		return
@@ -384,9 +386,9 @@ func (r *ModelClaimReconciler) divideCards(
 	for i := range due {
 		pod := &due[i]
 		// Each card is read when its turn comes, and read again when the pass
-		// has changed a runtime since it read the card. Read with the others
-		// before the first of them is divided, its reading would be as old as
-		// the divisions before it, and its engines may have grown since.
+		// has changed a runtime since it read the card. If it were read with
+		// the others, before the first of them is divided, its reading would be
+		// as old as the divisions before it. Its engines may have grown since.
 		card := due[i : i+1]
 		reading := make(map[string]*RuntimeSnapshot, 1)
 		if snapshot, err := readings.fresh(ctx, pod); err == nil && snapshot != nil {
@@ -455,10 +457,10 @@ func (r *ModelClaimReconciler) anyCardMayBeDue(
 
 // warnCardNotDivided tells each claim on a card that the card could not be
 // divided through several tries in a row. It is said on the third failure of a
-// run, and again every five minutes while the run lasts. A division that fails
-// once is usually the race with an engine that is growing, and the next round
-// plans around it. One that keeps failing points at an engine whose limit does
-// not take, which only the log would show otherwise, since a round raises no
+// run, and again after every thirty more failures. A division that fails once
+// is usually the race with an engine that is growing, and the next round plans
+// around it. One that keeps failing points at an engine whose limit does not
+// take, which only the log would show otherwise, since a round raises no
 // events.
 func (r *ModelClaimReconciler) warnCardNotDivided(
 	pod *corev1.Pod,

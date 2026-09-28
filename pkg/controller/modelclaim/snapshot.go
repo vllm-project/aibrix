@@ -28,12 +28,15 @@ import (
 // So a runtime is read once a pass, and the steps agree on what they saw.
 //
 // A step that changes a runtime replaces its reading with the one it took to
-// confirm the change, or forgets the reading, so the next step to ask reads the
-// runtime again. No step acts on a reading it knows is out of date.
+// confirm the change, or forgets the reading. The next step to ask then reads
+// the runtime again. So no step acts on a reading from before a change to the
+// same runtime.
 //
 // A change takes time, and the engines on the other cards go on serving while
 // it is made. A step that needs a reading no older than the last change of any
-// runtime asks for a fresh one.
+// runtime asks for a fresh one, as the round does. Placement reads its
+// candidates once. Its second card is divided from a reading older than its
+// first start, which is safe, since every shrink is read back.
 //
 // A reading lives for one pass. Nothing carries over between passes, so an
 // account is never built from what a runtime said before this pass began.
@@ -69,7 +72,7 @@ func (rr *runtimeReadings) of(ctx context.Context, pod *corev1.Pod) (*RuntimeSna
 }
 
 // fresh returns a reading of a pod's runtime that is no older than the last
-// change this pass made to any runtime, and reads the runtime again when the
+// change this pass made to any runtime. It reads the runtime again when the
 // reading it has is older. A runtime that did not answer is still not asked
 // again, since each try holds the worker for a whole timeout.
 func (rr *runtimeReadings) fresh(ctx context.Context, pod *corev1.Pod) (*RuntimeSnapshot, error) {

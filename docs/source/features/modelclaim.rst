@@ -367,9 +367,9 @@ grow into another engine's memory.
 An engine that is asleep weighs nothing. It keeps only what it holds, which
 after a sleep is normally its floor, and the rest goes to the engines that are
 awake. When every engine on a card is asleep, the room left over stays
-unassigned until one of them wakes. An engine that wakes gets its part back
-when the card is divided on the next pass. Until then it runs under what it
-held asleep.
+unassigned until one of them wakes. An engine that wakes gets its part back when
+the card is divided on the next pass. Until then, it runs under what it held
+asleep.
 
 An engine that has failed for good is gone: the runtime stops it once its
 restarts run out. Its seat and its KV go back to the card, for the engines
@@ -377,33 +377,47 @@ beside it and for the next model placed there.
 
 The plan is carried out in an order that never leaves two engines entitled to
 the same byte, and never holds an engine to more than its record. The limits
-that shrink an engine are written first, and a fresh reading has to confirm
-them before anything else happens. A lower limit evicts nothing, so the room a
-shrink makes is not there until the engine is seen inside its new limit.
-Reading back is not a formality: the CLI the runtime drives exits zero when
-there is no segment to write into, so reading the limit back is the only
-evidence there is. Each new limit is then recorded on its own claim, the ones
-that go down first. The limits that grow an engine are written next, and read
-back the same way. A model being placed is recorded last, with the limit it is
-to run under. A shrink that fails changes no record, and the limits it wrote
-are taken back. A record that cannot be written leaves records that come to no
-more than the card. A grow that fails leaves the engine below its new record,
-where it keeps its route, and the round divides the card again to grow it. A
-model stays non-routable until its own limit is in force, and stays routable
+that shrink an engine are written first, and a fresh reading has to confirm them
+before anything else happens. A lower limit evicts nothing, so the room a shrink
+makes is not there until the engine is seen inside its new limit. Reading back
+is not a formality. The CLI that the runtime drives exits zero when there is no
+segment to write into. So the limit that is read back is the only evidence there
+is. Each new limit is then recorded on its own claim, the ones that go down
+first. The limits that grow an engine are written next, and read back the same
+way. A model being placed is recorded last, with the limit it is to run under.
+
+A division can fail at each of these steps:
+
+* A shrink that fails changes no record. The controller then writes the old
+  limits back to the engines that the step wrote. This is a best effort. It
+  is not read back, and it stops at the first write that the runtime does not
+  take.
+* A record that cannot be written leaves records that come to no more than the
+  card. The shrinks stay in force, and nothing grows.
+* A grow that fails leaves the engine below its new record, where it keeps its
+  route. A later round grows it, unless it is less than the threshold below
+  its plan.
+
+A model stays non-routable until its own limit is in force, and stays routable
 only while it is held to no more than that limit. A card whose room could not
 be made is skipped, and the next Pod in line is tried.
 
 A card is also planned again once a round, which is 10 seconds, however many
 claims sit on it. The round carries the plan out in three cases:
 
-* The plan gives more to an engine that is short of KV. An engine is short
-  when it has mapped half of the limit it is held to, when it has requests
-  waiting, or when it serves and its load could not be read. An engine that is
-  asleep is never short.
-* Some engine is held to a limit other than the one its instance records.
-  That is what a write that did not take leaves behind.
-* Nothing is in flight on the card, and some engine is held to less than half
-  of its share. That is what a burst on the engine beside it leaves behind.
+* The plan gives more to an engine that is short of KV, and the plan of the
+  round before gave that engine more as well. An engine is short when it has
+  mapped half of the limit it is held to, or when it has requests waiting. An
+  engine that serves, and whose load could not be read, is short as well. An
+  engine that is asleep is never short. One reading is one sample, so an engine
+  that turns short waits for its second round, which is up to 20 seconds.
+* Some engine that has a KV segment is held to a limit other than the one its
+  instance records. That is what a write that did not take leaves behind. An
+  engine whose instance records no limit counts as well.
+* The card is at rest, and some engine is held to less than half of the limit
+  that the plan gives it. A card is at rest when every load on it was read, and
+  nothing is in flight. That is what a burst on the engine beside it leaves
+  behind.
 
 In any other case, the card is left alone. A limit is a ceiling, and the
 requests in flight come and go. Carrying out every plan would cost the writes,
@@ -411,25 +425,31 @@ and would give nothing to an engine that is far from its limit. A card that
 has barely drifted is left alone as well: the threshold is the larger of half a
 gibibyte and a hundredth of the card. A KV allocator hands out whole bundles of
 pages, and a change smaller than a bundle moves no memory at all. These
-divisions are logged rather than raised as Events.
+divisions raise no Event. The controller logs them at verbosity 2.
 
-A card whose engines change is divided on the next pass, without waiting for
-its round. That covers a model removed or failed, an engine that sleeps or
-wakes, and a declaration that changes. A model being placed divides its card
-itself, as above. Every move is carried out, however small. This is also how
-the room comes back when an engine cannot be started after its card was divided
-for it. The room an engine leaves goes to the engines beside it. A claim that
-waits for that card can still take it, until those engines have mapped it. A
-change the card cannot be divided for yet, as while an engine that left is
-still exiting, is tried again by the round, and still as a change. The
-controller keeps what each card was divided for in memory only. After a
-restart, the first round of a card divides it whatever its load. When the
-division of a card fails three times in a row, each claim on the card gets a
-``KVLimitFailed`` warning, and another every five minutes while it lasts. A
-card that cannot be accounted for is left as it is, and the log says why.
+A card whose engines change is divided on the next pass, without waiting for its
+round. That covers a model removed or failed, an engine that sleeps or wakes,
+and a declaration that changes. A model being placed divides its card itself, as
+above. Every move is carried out, however small. This is also how the room comes
+back when an engine cannot be started after its card was divided for it. The
+room an engine leaves goes to the engines beside it. A claim that waits for that
+card can still take it, until those engines have mapped it. Sometimes a card
+cannot be divided for a change yet, as while an engine that left is still
+exiting. The round then tries again, and still as for a change. The controller
+keeps what each card was divided for in memory only. After a restart, the first
+round of a card divides it whatever its load, unless the card has barely
+drifted. If that division fails, every round tries it again until one works.
 
-Placement and a division after the engines change raise an Event on each claim
-whose limit they move, and so does the health loop when it writes a limit back:
+When the division of a card fails three times in a row, each claim on the card
+gets a ``KVLimitFailed`` warning, and another after every thirty more
+failures. That is every five minutes while every round fails. A run of
+failures ends with a division that works, or after five minutes without a
+failure. A card that cannot be accounted for is left as it is, and the log
+says why.
+
+Placement raises an Event on each claim whose limit it moves. So does a division
+after the engines change, and so does the health loop when it writes a limit
+back:
 
 .. code-block:: bash
 
@@ -814,14 +834,16 @@ Claim remains ``Activating`` after ``/health`` succeeds
 
 A ``KVLimitFailed`` warning says a card could not be divided several times
    Every engine on the card keeps serving under the limit it is held to. A
-   division that fails at its shrinks takes them back, and changes no record.
-   One that fails at its grows has made the room and recorded it, and leaves
-   an engine below its record until a round grows it. The message quotes the
-   last failure. An engine that did not take a KV limit points at its runtime
-   or its segment, as above. One that holds more than its new limit is still
-   growing, and the next round plans around it. The warning comes on the
-   third failure in a row, and again every five minutes while the failures
-   last. The next division that works ends it.
+   division that fails at its shrinks changes no record, and the controller
+   tries to write the old limits back. One whose records cannot be written
+   leaves the shrinks in force. One that fails at its grows has made the room
+   and recorded it, and leaves an engine below its record until a round grows
+   it. The message quotes the last failure. An engine that did not take a KV
+   limit points at its runtime or its segment, as above. One that holds more
+   than its new limit is still growing, and the next round plans around it.
+   The warning comes on the third failure in a row, and again after every
+   thirty more. A division that works ends the run, and so do five minutes
+   without a failure.
 
 A routable model becomes non-routable with ``KVLimitNotHeld``
    Its engine is held to more KV than its limit, most often because it

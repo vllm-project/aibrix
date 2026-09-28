@@ -28,7 +28,7 @@ import (
 // rather than starving it at its floor.
 //
 // A sleeping engine weighs nothing. It serves no request, so it keeps only what
-// it holds, which after a sleep is normally its floor, and the rest goes to the
+// it holds, which is normally its floor after a sleep. The rest goes to the
 // engines that are awake. It gets its part back when the card is divided after
 // it wakes.
 //
@@ -129,8 +129,8 @@ func planKVLimits(hbmUsableBytes int64, engines []engineOnPod) ([]plannedKVLimit
 		return limits, nil
 	}
 	// Integer division leaves a few bytes over. Hand them out in a fixed order,
-	// among the engines that weigh anything, so two runs of the same arithmetic
-	// agree and a limit does not move by a byte on every pass.
+	// among the engines that weigh anything. Two runs of the same arithmetic
+	// then agree, and a limit does not move by a byte on every pass.
 	for i, left := 0, kvUnassignedBytes-totalKVExtraBytes; left > 0; i = (i + 1) % len(limits) {
 		if kvExtraWeights[i] == 0 {
 			continue
@@ -144,13 +144,13 @@ func planKVLimits(hbmUsableBytes int64, engines []engineOnPod) ([]plannedKVLimit
 // minimumKVLimitChangeBytes is how far a card has to have drifted from its plan
 // before dividing it again to follow load is worth the writes.
 //
-// Two things set the size. A KV allocator hands out whole bundles of pages, and
-// a bundle is the page size times the layer count times the number of buffers
-// per layer, which came to 112 MiB for a small model and about 504 MiB for a
-// 126-layer one on the cards this was measured on. A change smaller than a
-// bundle moves no memory at all. And a card divided again on every pass spends
-// its time writing limits rather than serving, so the threshold also rises with
-// the card.
+// Two things set the size. A KV allocator hands out whole bundles of pages. A
+// bundle is the page size times the layer count times the number of buffers per
+// layer. On the cards this was measured on, that came to 112 MiB for a small
+// model, and to about 504 MiB for one with 126 layers. A change smaller than a
+// bundle moves no memory at all. A card divided again on every pass also spends
+// its time writing limits rather than serving, so the threshold rises with the
+// card.
 //
 // Placement does not use this. The room it admitted a model against has to be
 // made exactly, and a byte skipped there is a byte two engines both own.
@@ -168,9 +168,9 @@ func minimumKVLimitChangeBytes(hbmUsableBytes int64) int64 {
 //
 // A limit is a ceiling, and an engine maps KV as it needs it. The shares are
 // weighed by the requests in flight, which come and go, so the plan moves with
-// every reading. Carrying it out each time would cost the writes, on every
-// card and in every round, and would give nothing to an engine that is far
-// from its limit. So a round carries the plan out in three cases only.
+// every reading. Carrying it out each time would cost the writes, on every card
+// and in every round. It would give nothing to an engine that is far from its
+// limit. So a round carries the plan out in three cases only.
 //
 // The plan gives more to an engine that is short of KV, and so did the plan of
 // the round before. That is when a share has to follow its load. One reading is
@@ -204,9 +204,9 @@ func needsDividing(
 	return leftUnfinished(engines) || (atRest(engines) && heldToUnderHalf(limits)), owed
 }
 
-// shortOfKV reports whether an engine is short of KV: it has mapped half of
-// the limit it is held to, it has requests waiting, or it serves and its load
-// could not be read.
+// shortOfKV reports whether an engine is short of KV. It is when it has mapped
+// half of the limit it is held to, or when it has requests waiting. An engine
+// that serves, and whose load could not be read, is short as well.
 //
 // Half is where the round starts to act. An engine that has mapped half of its
 // limit may reach the limit before its card's next round, and nothing bounds
@@ -290,9 +290,9 @@ func heldToUnderHalf(limits []plannedKVLimit) bool {
 // worthWriting reports whether any engine's limit has drifted far enough from
 // the plan to be worth the write.
 //
-// It is all or nothing. Carrying out half a plan would leave one engine shrunk
-// and the engine that was to take the memory still at its old limit, or worse,
-// one engine grown into memory another was to give back.
+// It is all or nothing. Carrying out half a plan would leave one engine shrunk,
+// and the engine that was to take the memory still at its old limit. Worse, it
+// could leave one engine grown into memory that another was to give back.
 func worthWriting(limits []plannedKVLimit, minimumChangeBytes int64) bool {
 	for _, limit := range limits {
 		if limit.kvCapacityBytes < 0 {
