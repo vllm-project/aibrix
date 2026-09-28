@@ -68,6 +68,9 @@ type placementAttempt struct {
 	// tooLarge is whether the claim was refused because no card could ever
 	// hold it. Only a pod joining the pool, or its own spec, can change that.
 	tooLarge bool
+	// failedToStart is whether the claim found a card, and its engine could
+	// not be started there. Room appearing does not help it either.
+	failedToStart bool
 }
 
 // roomSignature is the pool as a waiting claim last saw it: for each candidate
@@ -137,6 +140,29 @@ func (b *placementBackoff) refusedAsTooLarge(
 	return b.refuse(claim, generation, room, true)
 }
 
+// failedToStart records that a claim found a card and its engine could not be
+// started there, and returns how long it waits before its next try. It waits
+// as a refused claim does. Each try divides the card for the model and gives
+// the room back, so a claim that tried every round would move its neighbours'
+// limits every round.
+func (b *placementBackoff) failedToStart(claim types.NamespacedName, generation int64) time.Duration {
+	wait := b.refuse(claim, generation, nil, false)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	attempt := b.attempts[claim]
+	attempt.failedToStart = true
+	b.attempts[claim] = attempt
+	return wait
+}
+
+// waitsAfterAFailedStart reports whether a claim waits because its engine
+// could not be started.
+func (b *placementBackoff) waitsAfterAFailedStart(claim types.NamespacedName) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.attempts[claim].failedToStart
+}
+
 func (b *placementBackoff) refuse(
 	claim types.NamespacedName,
 	generation int64,
@@ -150,6 +176,7 @@ func (b *placementBackoff) refuse(
 	attempt.generation = generation
 	attempt.room = room
 	attempt.tooLarge = tooLarge
+	attempt.failedToStart = false
 	wait := DefaultRequeueDuration << min(attempt.refusals-1, 16)
 	if wait > maximumPlacementBackoff || wait <= 0 {
 		wait = maximumPlacementBackoff
@@ -241,11 +268,13 @@ func roomSignatureOf(candidates []corev1.Pod, claims *modelv1alpha1.ModelClaimLi
 	return room
 }
 
-// liveInstances counts the instances of a claim that still take room.
+// liveInstances counts the instances of a claim whose engines take room. An
+// instance is recorded before its engine is started, and has no port until the
+// engine is. When such a record is taken back, no engine has left a card.
 func liveInstances(pm *modelv1alpha1.ModelClaim) int {
 	live := 0
 	for _, instance := range pm.Status.Instances {
-		if instance.Phase != modelv1alpha1.ModelClaimFailed {
+		if instance.Phase != modelv1alpha1.ModelClaimFailed && instance.Port != 0 {
 			live++
 		}
 	}
