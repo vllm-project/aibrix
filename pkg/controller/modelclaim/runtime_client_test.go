@@ -244,31 +244,40 @@ func TestHTTPRuntimeTellsAStartThatWasRefusedFromOneThatMayHaveBeenDone(t *testi
 	for name, tc := range map[string]struct {
 		runtime http.HandlerFunc
 		notDone bool
+		// patience is how long the client waits for an answer.
+		patience time.Duration
 	}{
 		// What the runtime itself sends when it rejects a request, and when
 		// starting the engine failed.
-		"the runtime's own 400":                {answering(http.StatusBadRequest, ownError), true},
-		"the runtime's own 500":                {answering(http.StatusInternalServerError, ownError), true},
-		"a success status with an error in it": {answering(http.StatusOK, ownError), true},
+		"the runtime's own 400":                {answering(http.StatusBadRequest, ownError), true, time.Minute},
+		"the runtime's own 500":                {answering(http.StatusInternalServerError, ownError), true, time.Minute},
+		"a success status with an error in it": {answering(http.StatusOK, ownError), true, time.Minute},
 		// A request that did not pass the API's validation never reached the
 		// runtime.
-		"a 422 from the API": {answering(http.StatusUnprocessableEntity, `{"detail": []}`), true},
+		"a 422 from the API": {answering(http.StatusUnprocessableEntity, `{"detail": []}`), true, time.Minute},
 		// Something between the controller and the runtime gave up waiting.
 		// The runtime may still be starting the engine.
-		"a 504 that is not the runtime's":   {answering(http.StatusGatewayTimeout, "upstream request timeout"), false},
-		"a 502 that is not the runtime's":   {answering(http.StatusBadGateway, "<html>bad gateway</html>"), false},
-		"closed after the request was read": {hijacked(func(conn net.Conn) { _ = conn.Close() }), false},
+		"a 504 that is not the runtime's": {answering(http.StatusGatewayTimeout, "upstream request timeout"), false, time.Minute},
+		"a 502 that is not the runtime's": {answering(http.StatusBadGateway, "<html>bad gateway</html>"), false, time.Minute},
+		"a 502 with a report of its own":  {answering(http.StatusBadGateway, `{"status": "unavailable"}`), false, time.Minute},
+		// What the framework sends for an exception outside the handler, when
+		// the engine may already run.
+		"a 500 that is not the runtime's": {answering(http.StatusInternalServerError, "Internal Server Error"), false, time.Minute},
+		// A status that neither succeeds nor blames the request says nothing
+		// of what the runtime did.
+		"a 202 nobody asked for":            {answering(http.StatusAccepted, `{"status": "accepted"}`), false, time.Minute},
+		"closed after the request was read": {hijacked(func(conn net.Conn) { _ = conn.Close() }), false, time.Minute},
 		"reset after the request was read": {hijacked(func(conn net.Conn) {
 			if tcp, ok := conn.(*net.TCPConn); ok {
 				_ = tcp.SetLinger(0)
 			}
 			_ = conn.Close()
-		}), false},
+		}), false, time.Minute},
 		"no answer in time": {hijacked(func(conn net.Conn) {
 			time.Sleep(time.Second)
 			_ = conn.Close()
-		}), false},
-		"a success status that cannot be read": {answering(http.StatusOK, "<html>ok</html>"), false},
+		}), false, 300 * time.Millisecond},
+		"a success status that cannot be read": {answering(http.StatusOK, "<html>ok</html>"), false, time.Minute},
 	} {
 		t.Run(name, func(t *testing.T) {
 			srv := httptest.NewServer(tc.runtime)
@@ -276,7 +285,9 @@ func TestHTTPRuntimeTellsAStartThatWasRefusedFromOneThatMayHaveBeenDone(t *testi
 			u, _ := url.Parse(srv.URL)
 			port, _ := strconv.Atoi(u.Port())
 			c := NewRuntimeClient().(*httpRuntimeClient)
-			c.httpClient.Timeout = 300 * time.Millisecond
+			// Only the runtime that gives no answer is waited for. An answer
+			// that comes late on a busy machine is still an answer.
+			c.httpClient.Timeout = tc.patience
 
 			_, err := c.Activate(context.Background(), u.Hostname(), port, &ActivateRequest{ModelName: "m1"})
 

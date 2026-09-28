@@ -54,8 +54,8 @@ const (
 )
 
 // runtimeRefusal is an answer that says no: a body in which the runtime
-// reports an error, or a status that says the request was at fault. The
-// runtime did not do what it was asked.
+// reports an error, or a status that says the request was at fault, which is
+// one from 400 to 499. The runtime did not do what it was asked.
 type runtimeRefusal struct {
 	message string
 }
@@ -68,14 +68,16 @@ func (e *runtimeRefusal) Error() string { return e.message }
 // the body is the runtime's own report of an error. A server error with any
 // other body can come from something between the controller and the runtime,
 // such as a proxy that gave up waiting. It says nothing about what the runtime
-// did, so it is no refusal.
+// did, so it is no refusal. Neither is a status below 400 that the runtime
+// does not send for this call.
 func statusError(method, url string, status int, body []byte) error {
 	message := fmt.Sprintf("runtime %s %s returned %d: %s", method, url, status, body)
 	var answer struct {
 		Status string `json:"status"`
 	}
 	reportsAnError := json.Unmarshal(body, &answer) == nil && answer.Status == "error"
-	if status < http.StatusInternalServerError || reportsAnError {
+	atFault := status >= http.StatusBadRequest && status < http.StatusInternalServerError
+	if atFault || reportsAnError {
 		return &runtimeRefusal{message}
 	}
 	return errors.New(message)

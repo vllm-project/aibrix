@@ -2034,7 +2034,7 @@ func TestCallNotDone(t *testing.T) {
 		err     error
 		notDone bool
 	}{
-		"an error status":             {&runtimeRefusal{"runtime POST /x returned 500: boom"}, true},
+		"a refusal":                   {&runtimeRefusal{"runtime POST /x returned 400: boom"}, true},
 		"a wrapped error status":      {fmt.Errorf("start: %w", &runtimeRefusal{"boom"}), true},
 		"never connected":             {&url.Error{Op: "Post", URL: activatePath, Err: refused}, true},
 		"an address nobody parsed":    {&url.Error{Op: "parse", URL: "http://[", Err: errors.New("missing ']'")}, true},
