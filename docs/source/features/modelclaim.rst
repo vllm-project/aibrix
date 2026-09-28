@@ -406,8 +406,9 @@ unaccountable until the claim declares its cost.
 
 Sleeping does not free a seat. An instance that is asleep keeps its place in
 the account, at the full footprint and floor its claim declared, because the
-assignment has to survive the sleep for a wake to find its engine again. So
-sleep does not make room for a new claim.
+assignment has to survive the sleep for a wake to find its engine again. What
+a sleep gives back is the KV the engine had mapped above its floor. A claim
+that was turned away because of that KV can be placed then.
 
 A failed instance does free its seat. The runtime stops an engine once its
 restarts run out, so its memory is back with the card, and the account charges
