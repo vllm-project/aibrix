@@ -350,11 +350,18 @@ func (s *runtimeSilence) silent(runtime string) bool {
 }
 
 // observe records how a call to a runtime ended. A timeout leaves the runtime
-// alone, for twice as long as the timeout before it did, and anything else
-// ends that. A runtime nothing has called for the longest silence since it
-// was last left alone is dropped then, so the runtimes of pods that are gone
-// are not kept, and one that comes back that late starts over.
+// alone, for twice as long as the timeout before it did, up to the longest
+// silence. Any answer ends that, and so does a call that fails fast. A call
+// that its caller gave up says nothing about the runtime, and changes
+// nothing.
+//
+// Each timeout also drops the runtimes whose time alone ended at least the
+// longest silence ago. So the runtimes of pods that are gone are not kept, and
+// a runtime that times out again that late starts over.
 func (s *runtimeSilence) observe(runtime string, err error) {
+	if errors.Is(err, context.Canceled) {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var netErr net.Error
