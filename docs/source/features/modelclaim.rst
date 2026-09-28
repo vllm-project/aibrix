@@ -335,7 +335,7 @@ A pool from before ``perGPU`` is moved over in this order:
 1. Apply the new CRD. An older CRD drops ``perGPU`` from a claim that is
    applied, and ``helm upgrade`` does not replace a CRD.
 2. Rebuild the runtime image from the same revision, and roll the warm pools.
-   A runtime from before this change does not report what a card can hold. No
+   A runtime from before ``perGPU`` does not report what a card can hold. No
    claim is placed on its Pods, and the refusal says that the runtime is older
    than the controller. Engines that already run keep their routes.
 3. Roll the controller. An older controller removes ``perGPU`` from a claim
