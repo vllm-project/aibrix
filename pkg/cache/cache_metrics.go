@@ -218,14 +218,10 @@ func rateHistoryPodPrefix(namespace, podName string) string {
 	return utils.GeneratePodKey(namespace, podName) + "/"
 }
 
-// perSecondRateKey is the history key of calculatePerSecondRate.
-func perSecondRateKey(pod *Pod, modelName, metricName string) string {
+// rateHistoryKey is the history key of a pod's metric series. calculateRate1m passes an
+// empty modelName, since the counters it reads are pod-level.
+func rateHistoryKey(pod *Pod, modelName, metricName string) string {
 	return rateHistoryPodPrefix(pod.Namespace, pod.Name) + modelName + "/" + metricName
-}
-
-// rate1mKey is the history key of calculateRate1m; the model segment is left empty.
-func rate1mKey(pod *Pod, metricName string) string {
-	return rateHistoryPodPrefix(pod.Namespace, pod.Name) + "/" + metricName
 }
 
 // PurgeEntriesForPod removes all history entries of the pod namespace/podName.

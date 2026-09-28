@@ -951,7 +951,7 @@ func newReadyMetricsPod(name, uid string) *Pod {
 // snapshot far enough in the past (it discards windows shorter than 10s) without sleeping.
 func seedCompletedOutputTokensHistory(t *testing.T, pod *Pod, baseline float64, age time.Duration) {
 	t.Helper()
-	key := rate1mKey(pod, "completed_output_tokens")
+	key := rateHistoryKey(pod, "", "completed_output_tokens")
 	rateCalculator.mu.Lock()
 	rateCalculator.history[key] = []MetricSnapshot{{Value: baseline, Timestamp: time.Now().Add(-age)}}
 	rateCalculator.mu.Unlock()
@@ -1007,7 +1007,7 @@ func TestUpdateRealtimeOutputTokenRateEWMA_NoHistoryStoresNothing(t *testing.T) 
 	pod := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "cold-ewma-pod", Namespace: "default"}}}
 	t.Cleanup(func() {
 		rateCalculator.mu.Lock()
-		delete(rateCalculator.history, rate1mKey(pod, "completed_output_tokens"))
+		delete(rateCalculator.history, rateHistoryKey(pod, "", "completed_output_tokens"))
 		rateCalculator.mu.Unlock()
 	})
 	atomic.StoreInt64(&pod.completedOutputTokens, 1000)
@@ -1046,8 +1046,8 @@ func TestCalculatePerSecondRate_SameNameInTwoNamespaces(t *testing.T) {
 
 	rateCalculator.mu.RLock()
 	defer rateCalculator.mu.RUnlock()
-	require.Equal(t, []float64{100000}, snapshotValues(rateCalculator.history[perSecondRateKey(podA, "m", "gen_tokens")]))
-	require.Equal(t, []float64{500}, snapshotValues(rateCalculator.history[perSecondRateKey(podB, "m", "gen_tokens")]))
+	require.Equal(t, []float64{100000}, snapshotValues(rateCalculator.history[rateHistoryKey(podA, "m", "gen_tokens")]))
+	require.Equal(t, []float64{500}, snapshotValues(rateCalculator.history[rateHistoryKey(podB, "m", "gen_tokens")]))
 }
 
 func TestCalculateRate1m_SameNameInTwoNamespaces(t *testing.T) {
@@ -1057,14 +1057,20 @@ func TestCalculateRate1m_SameNameInTwoNamespaces(t *testing.T) {
 	purgeRateHistory(t, podA, podB)
 
 	// Seed a 30s-old baseline for team-a only.
+	seededAt := time.Now().Add(-30 * time.Second)
 	rateCalculator.mu.Lock()
-	rateCalculator.history[rate1mKey(podA, "completed_requests")] = []MetricSnapshot{{Value: 1000, Timestamp: time.Now().Add(-30 * time.Second)}}
+	rateCalculator.history[rateHistoryKey(podA, "", "completed_requests")] = []MetricSnapshot{{Value: 1000, Timestamp: seededAt}}
 	rateCalculator.mu.Unlock()
 
 	// team-b's much smaller counter must not be read as a counter reset of team-a's.
 	require.Equal(t, -1.0, c.calculateRate1m(podB, "completed_requests", 5))
-	// team-a's rate is still computed against its own baseline: 3000 over 30s.
-	require.InDelta(t, 100, c.calculateRate1m(podA, "completed_requests", 4000), 1)
+	// team-a's rate is still computed against its own baseline: 3000 over the time since
+	// the seed. Bracket the elapsed time so a slow run cannot fail the check.
+	before := time.Since(seededAt).Seconds()
+	rate := c.calculateRate1m(podA, "completed_requests", 4000)
+	after := time.Since(seededAt).Seconds()
+	require.GreaterOrEqual(t, rate, 3000/after)
+	require.LessOrEqual(t, rate, 3000/before)
 }
 
 func TestPurgeEntriesForPod_NamespaceScoped(t *testing.T) {
@@ -1083,11 +1089,11 @@ func TestPurgeEntriesForPod_NamespaceScoped(t *testing.T) {
 
 	rateCalculator.mu.RLock()
 	defer rateCalculator.mu.RUnlock()
-	require.NotContains(t, rateCalculator.history, perSecondRateKey(podA, "m", "gen_tokens"))
-	require.NotContains(t, rateCalculator.history, rate1mKey(podA, "completed_requests"))
+	require.NotContains(t, rateCalculator.history, rateHistoryKey(podA, "m", "gen_tokens"))
+	require.NotContains(t, rateCalculator.history, rateHistoryKey(podA, "", "completed_requests"))
 	for _, pod := range []*Pod{podB, podA2} {
-		require.Contains(t, rateCalculator.history, perSecondRateKey(pod, "m", "gen_tokens"))
-		require.Contains(t, rateCalculator.history, rate1mKey(pod, "completed_requests"))
+		require.Contains(t, rateCalculator.history, rateHistoryKey(pod, "m", "gen_tokens"))
+		require.Contains(t, rateCalculator.history, rateHistoryKey(pod, "", "completed_requests"))
 	}
 }
 
