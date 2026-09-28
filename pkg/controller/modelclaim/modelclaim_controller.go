@@ -253,9 +253,9 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			r.divideCardsAsListed(ctx, candidates, readings)
 			// A start that failed is tried again as a refusal is, less and
 			// less often. The pool is remembered as it stands, since a pod
-			// that joins may be able to start the engine. A claim with an
-			// instance left comes back every round, to check that instance's
-			// engine.
+			// that joins or turns ready may be able to start the engine. A
+			// claim with an instance left comes back every round, to check
+			// that instance's engine.
 			wait := r.backoff().failedToStart(req.NamespacedName, pm.Generation,
 				r.roomAsCached(ctx, pm.Namespace, candidates))
 			if len(pm.Status.Instances) > 0 {
@@ -610,7 +610,7 @@ func (r *ModelClaimReconciler) ensureActivated(
 			// the shortest wait. A record that was taken back after a start
 			// that failed shows here as well, though no engine has gone.
 			if roomMayHaveAppeared(room, refusedOn, anyRoom) {
-				backoff.placed(claim)
+				backoff.startOver(claim)
 			}
 			return backoff.refused(claim, pm.Generation, refusedOn), nil
 		}

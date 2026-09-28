@@ -64,7 +64,8 @@ type placementAttempt struct {
 	readyAt  time.Time
 	// generation and room are the claim's spec and the pool as they stood at
 	// the last refusal. A change in either can make room the wait would
-	// otherwise sit through.
+	// otherwise sit through. A pod that any try has seen ready stays ready
+	// in the room, until the claim is placed.
 	generation int64
 	room       roomSignature
 	// tooLarge is whether the claim was refused because no card could ever
@@ -95,6 +96,13 @@ const (
 	// nothing, and neither does a pod that turned ready.
 	aPodThatJoined
 )
+
+// startedOver is the attempt of a claim that starts over. Its refusals are
+// forgotten. What it has seen of the pods is kept, so that a pod wakes it
+// once by turning ready, and not at every turn.
+func (a placementAttempt) startedOver() placementAttempt {
+	return placementAttempt{room: a.room}
+}
 
 // helpedBy says what can help the claim that waits on this attempt.
 func (a placementAttempt) helpedBy() whatHelps {
@@ -148,7 +156,7 @@ func (b *placementBackoff) due(claim types.NamespacedName, generation int64, roo
 		return true, 0
 	}
 	if generation != attempt.generation || roomMayHaveAppeared(attempt.room, room, attempt.helpedBy()) {
-		delete(b.attempts, claim)
+		b.attempts[claim] = attempt.startedOver()
 		return true, 0
 	}
 	if !attempt.written {
@@ -235,7 +243,7 @@ func (b *placementBackoff) refuse(
 	attempt := b.attempts[claim]
 	attempt.refusals++
 	attempt.generation = generation
-	attempt.room = room
+	attempt.room = room.withThePodsSeenReady(attempt.room)
 	attempt.tooLarge = tooLarge
 	attempt.failedToStart = false
 	attempt.written = false
@@ -249,11 +257,22 @@ func (b *placementBackoff) refuse(
 }
 
 // placed forgets a claim's refusals, so a claim that has to wait again starts
-// from the shortest wait. A deleted claim is forgotten the same way.
+// from the shortest wait. What the claim has seen of the pods is forgotten as
+// well. A deleted claim is forgotten the same way.
 func (b *placementBackoff) placed(claim types.NamespacedName) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.attempts, claim)
+}
+
+// startOver forgets the refusals of a claim that goes on waiting, so that it
+// waits from the shortest wait again.
+func (b *placementBackoff) startOver(claim types.NamespacedName) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if attempt, waiting := b.attempts[claim]; waiting {
+		b.attempts[claim] = attempt.startedOver()
+	}
 }
 
 func (r *ModelClaimReconciler) backoff() *placementBackoff {
@@ -271,7 +290,8 @@ func (r *ModelClaimReconciler) backoff() *placementBackoff {
 //
 // A pod that joined counts for every claim. A pod that left frees nothing for
 // anyone, so it does not count. A pod that turned ready has a runtime that
-// answers, which it may not have had when the claim was refused.
+// answers, which it may not have had when the claim was refused. A pod that
+// turned not ready helps nobody.
 //
 // Room on a card counts for a claim that waits for room. An engine that went
 // to sleep keeps its seat, and gives back the KV it had mapped. A claim that
@@ -302,6 +322,20 @@ func roomMayHaveAppeared(before, now roomSignature, helps whatHelps) bool {
 		}
 	}
 	return false
+}
+
+// withThePodsSeenReady returns the room with every pod ready that is ready in
+// it, or was ready in the room before. The room itself is left as it is.
+func (room roomSignature) withThePodsSeenReady(before roomSignature) roomSignature {
+	if room == nil {
+		return nil
+	}
+	seen := make(roomSignature, len(room))
+	for key, taken := range room {
+		taken.ready = taken.ready || before[key].ready
+		seen[key] = taken
+	}
+	return seen
 }
 
 // podKey names a pod in a roomSignature. The UID tells a pod that was
