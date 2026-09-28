@@ -1117,6 +1117,20 @@ func TestPlacementBackoffWakesAClaimThatCouldNotStartForAPodThatAnswers(t *testi
 	}
 }
 
+// A refusal is what the claim waits on from then on. A start that failed
+// before it is forgotten, so the claim no longer reads as one that could not
+// start.
+func TestPlacementBackoffForgetsAFailedStartOnceTheClaimIsRefused(t *testing.T) {
+	backoff := newPlacementBackoff(nil)
+	claim := types.NamespacedName{Namespace: testNamespace, Name: "first"}
+	backoff.failedToStart(claim, 1, nil)
+	require.True(t, backoff.waitsAfterAFailedStart(claim))
+
+	backoff.refused(claim, 1, nil)
+
+	assert.False(t, backoff.waitsAfterAFailedStart(claim))
+}
+
 // A pod is a candidate once it runs and has an address. Its runtime answers
 // later. So the wake that a pod gives by joining can be spent before the pod
 // can be used. The pod wakes the claim again when it turns ready.
@@ -1154,4 +1168,105 @@ func TestReconcileTriesAClaimThatCouldNotStartAgainWhenAPodTurnsReady(t *testing
 	reconcileOnce(t, r, "first")
 
 	assert.Equal(t, []string{pod.Status.PodIP, pod.Status.PodIP, joined.Status.PodIP}, runtime.activatedOn)
+}
+
+// The guard is for a claim that waits for room. A claim no card could ever
+// hold gains nothing from a neighbour that has gone, so it goes on waiting
+// longer.
+func TestReconcileDoesNotStartATooLargeClaimOverWhenThePoolChangedUnderItsTry(t *testing.T) {
+	pm := claimWithCost(1500, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].Port = 9001
+	neighbour.Status.Instances[0].KVLimitBytes = 700
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 700)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	now := time.Unix(1_700_000_000, 0)
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	for _, want := range []time.Duration{10 * time.Second, 20 * time.Second} {
+		require.Equal(t, want, reconcileFor(t, r, pm.Name))
+		now = now.Add(want)
+	}
+	require.Equal(t, "TooLargeForAnyCard", scheduled(t, r, pm.Name).Reason)
+
+	// The cache still lists the neighbour, and the API server does not.
+	r.APIReader = fake.NewClientBuilder().WithScheme(r.Scheme).WithObjects(getModel(t, r, pm.Name), pod.DeepCopy()).
+		WithStatusSubresource(&modelv1alpha1.ModelClaim{}).Build()
+	runtime.snapshots[pod.Status.PodIP].Models = nil
+
+	assert.Equal(t, 40*time.Second, reconcileFor(t, r, pm.Name))
+}
+
+// A pod of the pool starts a pass of every claim in its namespace when it
+// joins and when it changes. A claim that reads Failed is among them: a pod
+// that joins is what it waits for after a start that failed.
+func TestAPodOfThePoolStartsAPassOfEveryClaim(t *testing.T) {
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	filter := modelPoolPodFilter()
+	assert.True(t, filter.Create(event.CreateEvent{Object: pod}))
+	assert.True(t, filter.Update(event.UpdateEvent{ObjectOld: pod, ObjectNew: pod}))
+	stranger := pod.DeepCopy()
+	stranger.Labels = map[string]string{"app": "something-else"}
+	assert.False(t, filter.Create(event.CreateEvent{Object: stranger}))
+	assert.False(t, filter.Update(event.UpdateEvent{ObjectOld: stranger, ObjectNew: stranger}))
+
+	waiting := claimWithCost(300, 100)
+	waiting.Name = "waiting"
+	failed := claimWithCost(300, 100)
+	failed.Name = "failed"
+	failed.Status.Phase = modelv1alpha1.ModelClaimFailed
+	r, _ := newReconciler(t, waiting, failed, pod)
+
+	var started []string
+	for _, request := range enqueueModelClaimsForPod(r.Client)(context.Background(), pod) {
+		started = append(started, request.Name)
+	}
+	assert.ElementsMatch(t, []string{"waiting", "failed"}, started)
+}
+
+// A claim with an engine is looked at every round, whatever its other start
+// waits for. The pass whose start fails says so on the claim. A pass inside
+// the wait tries nothing, and the claim reads as its instances do.
+func TestReconcileChecksAClaimWithAnEngineEveryRoundAfterAStartThatFailed(t *testing.T) {
+	pm := claimWithCost(100, 100)
+	two := int32(2)
+	pm.Spec.Replicas = &two
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive, KVLimitBytes: 900,
+	}}
+	serves, servesSnapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	servesSnapshot.Models = []RuntimeSnapshotModel{engineHolding(pm.Name, 100, 900)}
+	refuses, refusesSnapshot := sizedWarmPod("warm-2", "10.0.0.2", 1000)
+	r, runtime := newReconciler(t, pm, serves, refuses)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		serves.Status.PodIP:  servesSnapshot,
+		refuses.Status.PodIP: refusesSnapshot,
+	}
+	runtime.failActivateOn = map[string]bool{refuses.Status.PodIP: true}
+	now := time.Unix(1_700_000_000, 0)
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+	ready := func() string {
+		condition := meta.FindStatusCondition(getModel(t, r, pm.Name).Status.Conditions,
+			string(modelv1alpha1.ModelClaimConditionReady))
+		require.NotNil(t, condition)
+		return condition.Reason
+	}
+
+	require.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name))
+	require.Len(t, runtime.activateCalls, 1)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, getModel(t, r, pm.Name).Status.Phase)
+	assert.Equal(t, "ActivateFailed", ready())
+
+	now = now.Add(DefaultRequeueDuration / 2)
+	require.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name))
+	require.Len(t, runtime.activateCalls, 1, "a pass inside the wait starts nothing")
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, pm.Name).Status.Phase)
+	assert.NotEqual(t, "ActivateFailed", ready())
+
+	// The second start fails as well. The claim would wait 20 seconds for
+	// its third, and comes back after 10 for the engine it has.
+	now = now.Add(DefaultRequeueDuration / 2)
+	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name))
+	assert.Len(t, runtime.activateCalls, 2)
 }
