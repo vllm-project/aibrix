@@ -177,29 +177,22 @@ func TestReconcileBacksOffAClaimNoCardCanHold(t *testing.T) {
 }
 
 func TestReconcileForgetsTheWaitOnceTheModelIsPlaced(t *testing.T) {
-	pm := claimWithCost(700, 100)
-	small, smallSnapshot := sizedWarmPod("warm-small", "10.0.0.1", 500)
-	roomy, roomySnapshot := sizedWarmPod("warm-roomy", "10.0.0.2", 2000)
-	r, runtime := newReconciler(t, pm, small)
+	r, runtime, pm, pod := aClaimWaitingForHeldRoom(t)
 	now := time.Unix(1_700_000_000, 0)
 	r.Backoff = newPlacementBackoff(func() time.Time { return now })
-	runtime.snapshots = map[string]*RuntimeSnapshot{
-		small.Status.PodIP: smallSnapshot,
-		roomy.Status.PodIP: roomySnapshot,
-	}
 	claim := types.NamespacedName{Namespace: testNamespace, Name: pm.Name}
-
 	reconcileOnce(t, r, pm.Name)
-	_, waiting := r.Backoff.attempts[claim]
-	require.True(t, waiting)
+	require.Contains(t, r.Backoff.attempts, claim)
 
-	require.NoError(t, r.Create(context.Background(), roomy))
+	// The neighbour gives back KV it had mapped. Nothing says so, and the
+	// claim finds the room when its wait is up. Nothing woke it, so only
+	// being placed can have made it forget its wait.
+	runtime.snapshots[pod.Status.PodIP].Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 700)}
 	now = now.Add(DefaultRequeueDuration)
 	reconcileOnce(t, r, pm.Name)
 
 	require.Len(t, runtime.activateCalls, 1)
-	_, waiting = r.Backoff.attempts[claim]
-	assert.False(t, waiting, "a placed claim that waits again starts from the shortest wait")
+	assert.NotContains(t, r.Backoff.attempts, claim, "a placed claim that waits again starts from the shortest wait")
 }
 
 func TestReconcileChecksAPartlyPlacedClaimEveryRound(t *testing.T) {
@@ -468,10 +461,11 @@ func TestReconcileTriesAWaitingClaimAgainWhenItsOwnSpecChanges(t *testing.T) {
 }
 
 func TestReconcileKeepsAClaimWaitingWhenOnlyMoreIsPromised(t *testing.T) {
-	r, _, pm, _ := aClaimWaitingForRoom(t)
+	r, _, pm, clock := aClaimWaitingForRoom(t)
 	claim := types.NamespacedName{Namespace: testNamespace, Name: pm.Name}
 	reconcileOnce(t, r, pm.Name)
 	require.Equal(t, 1, r.Backoff.attempts[claim].refusals)
+	refusedAt := r.Backoff.attempts[claim].readyAt
 
 	// Another model is recorded on the card, which only takes room away.
 	other := claimOnPod("other", "warm-1", modelv1alpha1.ModelClaimActivating, 100, 100)
@@ -479,9 +473,13 @@ func TestReconcileKeepsAClaimWaitingWhenOnlyMoreIsPromised(t *testing.T) {
 	require.NoError(t, r.Create(context.Background(), other))
 	other.Status = recorded
 	require.NoError(t, r.Status().Update(context.Background(), other))
+	*clock = clock.Add(time.Second)
 	reconcileOnce(t, r, pm.Name)
 
-	assert.Equal(t, 1, r.Backoff.attempts[claim].refusals, "the claim was not tried again early")
+	// A try would have been refused, and its wait would run from a second
+	// later.
+	assert.Equal(t, refusedAt, r.Backoff.attempts[claim].readyAt, "the claim was not tried again early")
+	assert.Equal(t, 1, r.Backoff.attempts[claim].refusals)
 }
 
 // scheduled is the claim's Scheduled condition, which must be there.
@@ -513,7 +511,7 @@ func TestReconcileSaysWhenNoCardCouldEverHoldAClaim(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, condition.Status)
 	assert.Equal(t, "TooLargeForAnyCard", condition.Reason)
 	assert.Contains(t, condition.Message, "needs 60.0 GiB on a card")
-	assert.Contains(t, condition.Message, "the largest holds 48.0 GiB")
+	assert.Contains(t, condition.Message, "the best of them offers 48.0 GiB on a card")
 	told := 0
 	for _, event := range recordedEvents(t, r) {
 		if strings.Contains(event, "TooLargeForAnyCard") {
@@ -594,6 +592,82 @@ func TestPlacementBackoffWakesATooLargeClaimOnlyForANewPod(t *testing.T) {
 	assert.True(t, due, "a pod joining may bring a larger card")
 }
 
+// Through Reconcile as well: a claim no card could ever hold is not tried
+// again for room that was freed.
+func TestReconcileDoesNotTryATooLargeClaimAgainForFreedRoom(t *testing.T) {
+	pm := claimWithCost(1500, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].Port = 9001
+	neighbour.Status.Instances[0].KVLimitBytes = 700
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 700)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	now := time.Unix(1_700_000_000, 0)
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	require.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name))
+	require.Equal(t, "TooLargeForAnyCard", scheduled(t, r, pm.Name).Reason)
+	asked := runtime.snapshotCalls
+
+	require.NoError(t, r.Delete(context.Background(), getModel(t, r, "neighbour")))
+	runtime.snapshots[pod.Status.PodIP].Models = nil
+
+	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name))
+	assert.Equal(t, asked, runtime.snapshotCalls, "the card is no larger with its neighbour gone")
+}
+
+// The room a claim remembers is the room of its last refusal. Compared with
+// an older one, a pool that has not changed since would look changed.
+func TestPlacementBackoffRemembersTheRoomOfTheLastRefusal(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	backoff := newPlacementBackoff(func() time.Time { return now })
+	claim := types.NamespacedName{Namespace: testNamespace, Name: "qwen"}
+	crowded := roomSignature{"warm-1/u1": {instances: 2, awake: 2, promisedBytes: 800}}
+	emptier := roomSignature{"warm-1/u1": {instances: 1, awake: 1, promisedBytes: 400}}
+
+	backoff.refused(claim, 1, crowded)
+	backoff.refused(claim, 1, emptier)
+	backoff.statusWritten(claim)
+
+	due, _ := backoff.due(claim, 1, emptier)
+	assert.False(t, due)
+}
+
+func TestTooLargeForEveryCardTakesACardOfExactlyTheSizeForLargeEnough(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	ledgers := podLedgersFrom(&modelv1alpha1.ModelClaimList{}, nil, []corev1.Pod{*pod},
+		map[string]*RuntimeSnapshot{pod.Name: snapshot})
+
+	_, never := tooLargeForEveryCard([]corev1.Pod{*pod}, ledgers, 1000)
+	assert.False(t, never)
+	largest, never := tooLargeForEveryCard([]corev1.Pod{*pod}, ledgers, 1001)
+	assert.True(t, never)
+	assert.Equal(t, int64(1000), largest)
+}
+
+// A pod with several cards is judged by its smallest, since the device plugin
+// decides which card an engine lands on. The refusal says what the pod
+// offers, not what its largest card holds.
+func TestReconcileSaysWhatAPodWithSeveralCardsOffers(t *testing.T) {
+	pm := claimWithCost(50<<30, 10<<30)
+	pm.Spec.EngineConfig = &modelv1alpha1.ModelClaimEngineConfig{Args: map[string]string{"--tensor-parallel-size": "2"}}
+	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 2)
+	pod.Status.PodIP = "10.0.0.1"
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: {
+		Accelerators: []RuntimeAcceleratorSnapshot{
+			{ID: "GPU-0", HBMFreeBytes: 40 << 30, HBMUsableBytes: 40 << 30},
+			{ID: "GPU-1", HBMFreeBytes: 80 << 30, HBMUsableBytes: 80 << 30},
+		},
+	}}
+
+	reconcileOnce(t, r, pm.Name)
+
+	condition := scheduled(t, r, pm.Name)
+	assert.Equal(t, "TooLargeForAnyCard", condition.Reason)
+	assert.Contains(t, condition.Message, "the best of them offers 40.0 GiB on a card")
+}
+
 // A claim's wait is forgotten once nothing is left for it to wait for: when it
 // has all its instances, or when it is gone.
 func TestReconcileForgetsTheWaitOfAClaimThatNoLongerWaits(t *testing.T) {
@@ -619,6 +693,31 @@ func TestReconcileForgetsTheWaitOfAClaimThatNoLongerWaits(t *testing.T) {
 	require.NoError(t, r2.Delete(context.Background(), gone))
 	reconcileFor(t, r2, pm2.Name)
 	assert.NotContains(t, r2.Backoff.attempts, key2)
+
+	// Refused, and then deleted while this controller watches.
+	r3, _, pm3, _ := aClaimWaitingForRoom(t)
+	key3 := types.NamespacedName{Namespace: pm3.Namespace, Name: pm3.Name}
+	reconcileFor(t, r3, pm3.Name)
+	require.Equal(t, DefaultRequeueDuration, reconcileFor(t, r3, pm3.Name))
+	require.Contains(t, r3.Backoff.attempts, key3)
+	require.NoError(t, r3.Delete(context.Background(), getModel(t, r3, pm3.Name)))
+	reconcileFor(t, r3, pm3.Name)
+	assert.NotContains(t, r3.Backoff.attempts, key3)
+
+	// Refused, and then found with more instances than it asks for.
+	r4, _, pm4, _ := aClaimWaitingForRoom(t)
+	key4 := types.NamespacedName{Namespace: pm4.Namespace, Name: pm4.Name}
+	reconcileFor(t, r4, pm4.Name)
+	require.Equal(t, DefaultRequeueDuration, reconcileFor(t, r4, pm4.Name))
+	surplus := getModel(t, r4, pm4.Name)
+	surplus.Status.Instances = []modelv1alpha1.ModelClaimInstance{
+		{Pod: "warm-1", Phase: modelv1alpha1.ModelClaimActivating},
+		{Pod: "warm-1", Phase: modelv1alpha1.ModelClaimActivating},
+	}
+	require.NoError(t, r4.Status().Update(context.Background(), surplus))
+	r4.Backoff.refused(key4, surplus.Generation, nil)
+	reconcileFor(t, r4, pm4.Name)
+	assert.NotContains(t, r4.Backoff.attempts, key4)
 }
 
 // A refusal is what tells a claim why it waits. When it could not be written,
@@ -727,6 +826,29 @@ func TestEnqueueWaitingClaimsLeavesOutAClaimThatFailed(t *testing.T) {
 
 	assert.Empty(t, enqueueWaitingClaims(r.Client)(context.Background(), leaving),
 		"neither the claim that caused the event, nor one that failed, nor one that is going")
+
+	// A claim that waits is not woken by its own change.
+	waiting := claimWithCost(300, 100)
+	waiting.Name = "waiting"
+	require.NoError(t, r.Create(context.Background(), waiting))
+	assert.Empty(t, enqueueWaitingClaims(r.Client)(context.Background(), waiting))
+	assert.Len(t, enqueueWaitingClaims(r.Client)(context.Background(), leaving), 1)
+}
+
+func TestRoomMayHaveFreedPassesOnlyTheUpdatesThatFreeRoom(t *testing.T) {
+	before := claimOnPod("neighbour", "warm-1", modelv1alpha1.ModelClaimActive, 300, 100)
+	before.Status.Instances[0].Port = 9001
+	written := before.DeepCopy()
+	written.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue}}
+	gone := before.DeepCopy()
+	gone.Status.Instances = nil
+	watched := roomMayHaveFreed()
+
+	assert.False(t, watched.Update(event.UpdateEvent{ObjectOld: before, ObjectNew: written}))
+	assert.True(t, watched.Update(event.UpdateEvent{ObjectOld: before, ObjectNew: gone}))
+	assert.False(t, watched.Update(event.UpdateEvent{ObjectOld: before, ObjectNew: &corev1.Pod{}}),
+		"what is no claim frees no card")
+	assert.False(t, watched.Generic(event.GenericEvent{Object: before}))
 }
 
 // wakeLoop stands in for the manager's queue: first in, first out, one entry

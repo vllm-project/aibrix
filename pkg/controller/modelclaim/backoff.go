@@ -145,7 +145,7 @@ func (b *placementBackoff) refused(claim types.NamespacedName, generation int64,
 	return b.refuse(claim, generation, room, false)
 }
 
-// refusedAsTooLarge records that no card in the pool could ever hold a claim,
+// refusedAsTooLarge records that no candidate pod could ever hold a claim,
 // even empty. It waits as a refused claim does, but room freed on a card is
 // not a reason to try it again.
 func (b *placementBackoff) refusedAsTooLarge(
