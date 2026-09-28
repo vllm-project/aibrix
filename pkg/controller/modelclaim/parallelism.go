@@ -119,7 +119,8 @@ func podHasGPUs(pod corev1.Pod, reportedAccelerators int) bool {
 //
 // A reading with no card at all still describes one when an engine on it holds
 // a KV segment. The runtime reports no card when NVML fails, and a segment is
-// only ever built on a card.
+// only ever built on a card. The account adds what the claims say: a pod on
+// which an instance records a KV limit has a card as well.
 func reportedAccelerators(snapshot *RuntimeSnapshot) int {
 	if snapshot == nil {
 		return 0

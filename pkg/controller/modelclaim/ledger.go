@@ -266,6 +266,13 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 			if !tracked {
 				continue
 			}
+			// A limit is recorded only where a card was divided. So a pod on
+			// which an instance records one has a card, whatever this reading
+			// says of it.
+			if instance.KVLimitBytes > 0 && ledger.accelerators == 0 {
+				ledger.accelerators = 1
+				ledgers[instance.Pod] = ledger
+			}
 			perGPU, perGPUErr := perGPUBytesOf(claim)
 			engine := engineOnPod{
 				claimName:       claim.Name,

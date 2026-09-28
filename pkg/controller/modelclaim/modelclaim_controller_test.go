@@ -2134,6 +2134,35 @@ func TestReconcileWillNotPlaceOnAPodWhoseCardCouldNotBeReadThisTime(t *testing.T
 	assert.Contains(t, cond.Message, "its cards could not be measured")
 }
 
+func TestReconcileWillNotPlaceBesideARecordedLimitWhenNothingShowsTheCard(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	// The pod requests no GPU, and this reading of its runtime reports no
+	// card. The neighbour was placed a moment ago and is still loading, so no
+	// engine holds a KV segment either. Its instance records a limit, and a
+	// limit is recorded only where a card was divided. So the pod has a card,
+	// and the card is promised 900 of its 1000.
+	pod, snapshot := podWithUnrequestedGPU(1000)
+	snapshot.Accelerators = nil
+	loading := engineHolding("neighbour", kvLimitUnknown, kvLimitUnknown)
+	loading.Phase = "booting"
+	loading.Ready = false
+	snapshot.Models = []RuntimeSnapshotModel{loading}
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActivating, 300, 100)
+	neighbour.Status.Instances[0].KVLimitBytes = 600
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Empty(t, got.Status.Instances)
+	cond := meta.FindStatusCondition(got.Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Contains(t, cond.Message, "its cards could not be measured")
+}
+
 func TestReconcileHoldsAnEngineToItsLimitWhenItsCardCouldNotBeReadThisTime(t *testing.T) {
 	pm := claimWithCost(300, 100)
 	pod, snapshot := podWithUnrequestedGPU(1000)
