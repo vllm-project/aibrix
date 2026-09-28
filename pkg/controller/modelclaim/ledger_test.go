@@ -480,21 +480,25 @@ func (unlistable) List(context.Context, client.ObjectList, ...client.ListOption)
 func TestLedgerTurnsEveryPodAwayWhenTheClaimsCannotBeListed(t *testing.T) {
 	requesting := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
 	plain := warmPod("warm-2", "b300-pool-a", true, corev1.PodRunning)
-	pods := []corev1.Pod{*requesting, *plain}
+	silent := warmPodWithGPUs("warm-3", "b300-pool-a", 1)
+	pods := []corev1.Pod{*requesting, *plain, *silent}
 	snapshots := map[string]*RuntimeSnapshot{
 		requesting.Name: sizedPodSnapshots(requesting.Name, 1000)[requesting.Name],
 		// This reading shows no card on the pod that requests none.
 		plain.Name: {},
 	}
 
-	r, _ := newReconciler(t, requesting, plain)
+	r, _ := newReconciler(t, requesting, plain, silent)
 	r.APIReader = unlistable{r.Client}
 	ledgers := r.collectPodLedgers(context.Background(), testNamespace, pods, snapshots)
 	admissible, refusals := admissibleCandidates(pods, ledgers, 400)
 
 	assert.Empty(t, admissible)
-	require.Len(t, refusals, 2)
+	require.Len(t, refusals, 3)
 	assert.Contains(t, refusals[0].reason, "warm-1 could not be judged: the claims on it could not be listed")
-	// An account keeps the first thing that is wrong with it.
-	assert.Contains(t, refusals[1].reason, "warm-2 could not be judged")
+	// A pod that shows no card has none to measure. What keeps it out is the
+	// claims, which might record a card on it.
+	assert.Contains(t, refusals[1].reason, "warm-2 could not be judged: the claims on it could not be listed")
+	// A runtime that did not answer stays what is wrong with its pod.
+	assert.Contains(t, refusals[2].reason, "warm-3 could not be judged: its runtime did not answer")
 }

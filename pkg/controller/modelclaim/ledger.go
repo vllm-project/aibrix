@@ -255,8 +255,14 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 	if err := reader.List(ctx, claims, client.InNamespace(namespace)); err != nil {
 		klog.ErrorS(err, "collect pod ledgers: list model claims", "namespace", namespace)
 		// Without the claims, nothing says what is recorded on a pod, and so
-		// nothing says whether it has a card. Every pod is turned away.
+		// nothing says whether it has a card. Every pod is turned away, and
+		// the claims are the reason. A card that this reading did not show
+		// is no reason of its own here: a claim may record one on the pod.
+		// A runtime that did not answer stays the reason for its pod.
 		for name, ledger := range ledgers {
+			if !ledger.unread {
+				ledger.blocked = ""
+			}
 			ledger.unread = true
 			ledgers[name] = ledger.withHole("the claims on it could not be listed")
 		}
