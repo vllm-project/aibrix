@@ -53,9 +53,9 @@ const (
 	defaultRuntimeHTTPTimeout = 60 * time.Second
 )
 
-// runtimeRefusal is an answer that says no: a body in which the runtime
-// reports an error, or a status that says the request was at fault, which is
-// one from 400 to 499. The runtime did not do what it was asked.
+// runtimeRefusal is an answer that says no. It is a body in which the runtime
+// reports an error, or a status that says the request was at fault. Such a
+// status is one from 400 to 499. The runtime did not do what it was asked.
 type runtimeRefusal struct {
 	message string
 }

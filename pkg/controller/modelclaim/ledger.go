@@ -158,8 +158,8 @@ type podLedger struct {
 	judgeable bool
 	blocked   string
 	// unread is set when the pod's runtime did not answer, or the claims could
-	// not be listed, so that nothing is known about the pod, not even whether
-	// it has cards.
+	// not be listed. Nothing is known about the pod then, not even whether it
+	// has cards.
 	unread                   bool
 	hbmUsableBytes           int64
 	totalMinimumReserveBytes int64
