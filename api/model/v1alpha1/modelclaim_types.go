@@ -183,8 +183,9 @@ type ModelClaimInstance struct {
 	//
 	// It is a record of intent. The engine obeys the limit held in its own KV
 	// allocator, and the two differ until a write lands, or after an engine
-	// restart puts the allocator's default back. It is unset for a claim that
-	// declares no per-GPU cost, where nothing decides a limit.
+	// restart puts the allocator's default back. It is unset when no card was
+	// divided for the instance: on a pod without a GPU, and for an instance
+	// placed before its claim declared a per-GPU cost.
 	// +optional
 	KVLimitBytes int64 `json:"kvLimitBytes,omitempty"`
 }

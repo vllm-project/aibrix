@@ -2013,6 +2013,44 @@ func TestReconcileHoldsAnEngineToItsLimitWhenItsCardCouldNotBeReadThisTime(t *te
 		"an engine above its limit must not be routed")
 }
 
+func TestReconcileKeepsAnEngineOffTheRouteWhileNothingShowsItsLimit(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := podWithUnrequestedGPU(1000)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{
+		{Pod: pod.Name, Phase: modelv1alpha1.ModelClaimActivating, Port: 9001, KVLimitBytes: 600},
+	}
+	// This reading reports no card, and the engine's segment cannot be read.
+	// The instance records a limit all the same, so the engine has one to hold.
+	snapshot.Accelerators = nil
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(kvLimitUnknown)}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase,
+		"an engine not known to hold its limit must not be routed")
+}
+
+func TestReconcileRecordsNoLimitOnAPodWithoutACard(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Status.PodIP = "10.0.0.1"
+	r, runtime := newReconciler(t, pm, pod)
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	// No card was divided, so there is no limit to record, and the pool
+	// policy does not stand down on this pod.
+	assert.Zero(t, got.Status.Instances[0].KVLimitBytes)
+	assert.False(t, r.claimHoldsAKVLimitOn(context.Background(), pod))
+}
+
 // The runtime's mock mode reports one card with no memory at all, so that the
 // single-GPU pool policy runs on the CPU pools of the end-to-end tests. That is
 // no card to account for: the claim is placed as on a pod without a GPU, and

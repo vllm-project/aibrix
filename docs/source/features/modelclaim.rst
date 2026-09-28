@@ -320,7 +320,8 @@ runtime's mock mode reports on CPU pools. A Pod with neither is taken for one
 without a GPU, and nothing is accounted for on it. A Pod whose runtime did not
 answer is turned away whatever it requests, since only its runtime could say
 that it has cards. A reading that reports no card, as when NVML fails once,
-still counts one while an engine on the Pod holds a KV segment.
+still counts one while an engine on the Pod holds a KV segment. An instance on
+a Pod without a card records no limit, since no card was divided for it.
 
 Every card in a declared pool is divided as a whole
 ---------------------------------------------------
