@@ -101,6 +101,9 @@ type podRefusal struct {
 	// could be worked out at all.
 	roomBytes int64
 	known     bool
+	// couldHold is set for a card that could hold the model and does not now,
+	// which is the card worth waiting for.
+	couldHold bool
 	reason    string
 }
 
@@ -139,7 +142,8 @@ func admissibleCandidates(
 				reason: fmt.Sprintf("%s could not be judged: %s", pod.Name, ledger.blocked),
 			})
 		case ledger.maximumRoomBytes() < minimumReserveBytes:
-			room := ledger.maximumRoomBytes()
+			// A card promised more than it has offers nothing, not less.
+			room := max(ledger.maximumRoomBytes(), 0)
 			refusals = append(refusals, podRefusal{
 				pod:       pod.Name,
 				roomBytes: room,
@@ -151,11 +155,12 @@ func admissibleCandidates(
 			// The card could hold this model, and does not today. Lowering a KV
 			// limit does not evict a page, so the engines there have to give
 			// the memory back themselves before this pod can be tried again.
-			room := ledger.heldRoomBytes()
+			room := max(ledger.heldRoomBytes(), 0)
 			refusals = append(refusals, podRefusal{
 				pod:       pod.Name,
 				roomBytes: room,
 				known:     true,
+				couldHold: true,
 				reason: fmt.Sprintf("%s has %s free, with the rest held by the engines already on it (%s)",
 					pod.Name, gibibytes(room), cardAccount(ledger, ledger.totalHeldBytes, "held by")),
 			})
@@ -202,7 +207,9 @@ func withoutPod(pods []corev1.Pod, name string) []corev1.Pod {
 // summarizeRefusals states in one line how far the pool is from holding this
 // model. It names the roomiest pod that still could not hold it, because that
 // is the smallest gap and the one worth acting on, and counts the rest rather
-// than listing a line per pod.
+// than listing a line per pod. A card that could hold the model once its
+// engines give memory back comes before one that never could, whatever the two
+// can offer now.
 func summarizeRefusals(refusals []podRefusal, minimumReserveBytes int64) string {
 	message := fmt.Sprintf("no warm pod can hold this model, which needs %s on a card",
 		gibibytes(minimumReserveBytes))
@@ -211,11 +218,12 @@ func summarizeRefusals(refusals []podRefusal, minimumReserveBytes int64) string 
 	}
 	roomiest := 0
 	for i, refusal := range refusals {
-		if !refusals[roomiest].known && refusal.known {
+		best := refusals[roomiest]
+		switch {
+		case !refusal.known:
+		case !best.known, refusal.couldHold && !best.couldHold:
 			roomiest = i
-			continue
-		}
-		if refusal.known && refusals[roomiest].known && refusal.roomBytes > refusals[roomiest].roomBytes {
+		case refusal.couldHold == best.couldHold && refusal.roomBytes > best.roomBytes:
 			roomiest = i
 		}
 	}

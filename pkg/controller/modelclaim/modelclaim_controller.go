@@ -468,6 +468,7 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 					pod:       pod.Name,
 					roomBytes: ledgers[pod.Name].maximumRoomBytes(),
 					known:     true,
+					couldHold: true,
 					reason:    fmt.Sprintf("%s has room, but its card could not be divided: %v", pod.Name, roomErr),
 				})
 				admissible = withoutPod(admissible, pod.Name)

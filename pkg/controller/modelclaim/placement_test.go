@@ -329,6 +329,35 @@ func TestSummarizeRefusalsNamesTheRoomiestPodThatStillCannotHold(t *testing.T) {
 		message)
 }
 
+func TestSummarizeRefusalsNamesACardWorthWaitingForFirst(t *testing.T) {
+	refusals := []podRefusal{
+		// Could never hold the model, however long the claim waits.
+		{pod: "never", roomBytes: 39 << 30, known: true, reason: "never can offer at most 39.0 GiB"},
+		// Could hold it, once the engines on it give memory back.
+		{pod: "later", roomBytes: 5 << 30, known: true, couldHold: true, reason: "later has 5.0 GiB free"},
+	}
+
+	message := summarizeRefusals(refusals, 40<<30)
+
+	assert.Equal(t,
+		"no warm pod can hold this model, which needs 40.0 GiB on a card: "+
+			"later has 5.0 GiB free; 1 other pod(s) were turned away as well",
+		message)
+}
+
+func TestAdmissibleCandidatesSaysNoRoomForACardPromisedMoreThanItHas(t *testing.T) {
+	pods := []corev1.Pod{*warmPodWithGPUs("over", "b300-pool-a", 1)}
+	ledgers := map[string]podLedger{
+		"over": {judgeable: true, hbmUsableBytes: 80 << 30, totalMinimumReserveBytes: 105 << 30,
+			totalHeldBytes: 105 << 30},
+	}
+
+	_, refusals := admissibleCandidates(pods, ledgers, 40<<30)
+
+	require.Len(t, refusals, 1)
+	assert.Contains(t, refusals[0].reason, "over can offer at most 0.0 GiB")
+}
+
 func TestSummarizeRefusalsFallsBackToAPodItCouldNotJudge(t *testing.T) {
 	refusals := []podRefusal{
 		{pod: "unreadable", reason: "unreadable could not be judged: its cards could not be measured"},
