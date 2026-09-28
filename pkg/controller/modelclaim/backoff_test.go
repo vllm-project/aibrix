@@ -18,6 +18,7 @@ package modelclaim
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -25,9 +26,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -73,6 +76,7 @@ func TestPlacementBackoffHoldsAClaimUntilItsTurn(t *testing.T) {
 	assert.Zero(t, left)
 
 	backoff.refused(claim, 1, nil)
+	backoff.statusWritten(claim)
 	due, left = backoff.due(claim, 1, nil)
 	assert.False(t, due)
 	assert.Equal(t, DefaultRequeueDuration, left)
@@ -80,6 +84,31 @@ func TestPlacementBackoffHoldsAClaimUntilItsTurn(t *testing.T) {
 	now = now.Add(DefaultRequeueDuration)
 	due, _ = backoff.due(claim, 1, nil)
 	assert.True(t, due)
+}
+
+// A claim waits only once its status says why. Until then it is tried again,
+// and the try that is repeated counts once.
+func TestPlacementBackoffTriesAgainWhileARefusalIsNotWritten(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	backoff := newPlacementBackoff(func() time.Time { return now })
+	claim := types.NamespacedName{Namespace: testNamespace, Name: "qwen"}
+
+	require.Equal(t, DefaultRequeueDuration, backoff.refused(claim, 1, nil))
+	due, _ := backoff.due(claim, 1, nil)
+	assert.True(t, due, "the refusal was not written")
+	due, _ = backoff.due(claim, 1, nil)
+	assert.True(t, due, "and still is not")
+
+	assert.Equal(t, DefaultRequeueDuration, backoff.refused(claim, 1, nil), "the same try, made again")
+	backoff.statusWritten(claim)
+	due, _ = backoff.due(claim, 1, nil)
+	assert.False(t, due)
+
+	// A start that failed is written before its wait is recorded.
+	other := types.NamespacedName{Namespace: testNamespace, Name: "other"}
+	backoff.failedToStart(other, 1)
+	due, _ = backoff.due(other, 1, nil)
+	assert.False(t, due)
 }
 
 func TestPlacementBackoffStartsOverOnceAClaimIsPlaced(t *testing.T) {
@@ -222,6 +251,7 @@ func TestPlacementBackoffStartsOverWhenRoomMayHaveAppeared(t *testing.T) {
 			backoff := newPlacementBackoff(func() time.Time { return now })
 			backoff.refused(claim, 1, before)
 			backoff.refused(claim, 1, before)
+			backoff.statusWritten(claim)
 
 			due, _ := backoff.due(claim, c.generation, c.room)
 
@@ -554,6 +584,7 @@ func TestPlacementBackoffWakesATooLargeClaimOnlyForANewPod(t *testing.T) {
 	claim := types.NamespacedName{Namespace: testNamespace, Name: "huge"}
 	before := roomSignature{"warm-1/u1": {instances: 2, awake: 2, promisedBytes: 800}}
 	backoff.refusedAsTooLarge(claim, 1, before)
+	backoff.statusWritten(claim)
 
 	due, _ := backoff.due(claim, 1, roomSignature{"warm-1/u1": {instances: 1, awake: 1, promisedBytes: 400}})
 	assert.False(t, due, "a neighbour leaving does not make a card large enough")
@@ -588,6 +619,114 @@ func TestReconcileForgetsTheWaitOfAClaimThatNoLongerWaits(t *testing.T) {
 	require.NoError(t, r2.Delete(context.Background(), gone))
 	reconcileFor(t, r2, pm2.Name)
 	assert.NotContains(t, r2.Backoff.attempts, key2)
+}
+
+// A refusal is what tells a claim why it waits. When it could not be written,
+// the claim is tried again on its next pass, and the refusal is written then.
+func TestReconcileTriesAgainWhenARefusalCouldNotBeWritten(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].KVLimitBytes = 600
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
+	scheme := testScheme(t)
+	conflicts := 1
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(pm, pod, neighbour).
+		WithStatusSubresource(&modelv1alpha1.ModelClaim{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, obj client.Object,
+				opts ...client.SubResourceUpdateOption) error {
+				if obj.GetName() == pm.Name && conflicts > 0 {
+					conflicts--
+					return apierrors.NewConflict(schema.GroupResource{Group: "model.aibrix.ai", Resource: "modelclaims"},
+						obj.GetName(), fmt.Errorf("the object has been modified"))
+				}
+				return cl.SubResource(sub).Update(ctx, obj, opts...)
+			},
+		}).Build()
+	runtime := &fakeRuntime{snapshots: map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}}
+	now := time.Unix(1_700_000_000, 0)
+	clock := func() time.Time { return now }
+	r := &ModelClaimReconciler{
+		Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(32), Runtime: runtime,
+		PoolPolicy: newPoolPolicyManager(clock),
+		Divisions:  newCardDivisionState(clock),
+		Backoff:    newPlacementBackoff(clock),
+	}
+	claim := types.NamespacedName{Namespace: testNamespace, Name: pm.Name}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: claim})
+	require.NoError(t, err)
+	require.True(t, result.Requeue, "the write met a conflict")
+	require.Nil(t, meta.FindStatusCondition(getModel(t, r, pm.Name).Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled)))
+	asked := runtime.snapshotCalls
+
+	// The clock has not moved, so the claim is still inside its wait.
+	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name), "the try counts once")
+
+	assert.Greater(t, runtime.snapshotCalls, asked, "the claim was tried again")
+	assert.Equal(t, "NoMatchingPods", scheduled(t, r, pm.Name).Reason)
+	assert.Equal(t, 1, r.Backoff.attempts[claim].refusals)
+
+	// Once the refusal is written, the claim waits.
+	asked = runtime.snapshotCalls
+	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name))
+	assert.Equal(t, asked, runtime.snapshotCalls)
+}
+
+// With one worker and a queue that is first in, first out, the order the
+// claims are added in is the order they are tried in.
+func TestEnqueueWaitingClaimsWakesTheOldestFirst(t *testing.T) {
+	leaving := claimOnPod("leaving", "warm-1", modelv1alpha1.ModelClaimActive, 300, 100)
+	created := time.Unix(1_700_000_000, 0)
+	leaving.CreationTimestamp = metav1.NewTime(created.Add(30 * time.Second))
+	var objects []client.Object
+	// The names run against the ages, so a listing by name gives the wrong
+	// order.
+	for i, name := range []string{"d-oldest", "c-older", "b-newer", "a-newest"} {
+		waiting := claimWithCost(300, 100)
+		waiting.Name = name
+		waiting.CreationTimestamp = metav1.NewTime(created.Add(time.Duration(i) * time.Minute))
+		objects = append(objects, waiting)
+	}
+	twin := claimWithCost(300, 100)
+	twin.Name = "a-twin-of-the-oldest"
+	twin.CreationTimestamp = metav1.NewTime(created)
+	r, _ := newReconciler(t, append(objects, leaving, twin)...)
+
+	var woken []string
+	for _, request := range enqueueWaitingClaims(r.Client)(context.Background(), leaving) {
+		woken = append(woken, request.Name)
+	}
+	assert.Equal(t, []string{"a-twin-of-the-oldest", "d-oldest", "c-older", "b-newer", "a-newest"}, woken)
+
+	woken = nil
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	for _, request := range enqueueModelClaimsForPod(r.Client)(context.Background(), pod) {
+		woken = append(woken, request.Name)
+	}
+	assert.Equal(t, []string{"a-twin-of-the-oldest", "d-oldest", "leaving", "c-older", "b-newer", "a-newest"}, woken,
+		"a pod that changes reaches every claim, the oldest first")
+}
+
+// Room does not help a claim that failed: its engine config is not valid, or
+// its engine could not be started. Such a claim is not waiting for a card.
+func TestEnqueueWaitingClaimsLeavesOutAClaimThatFailed(t *testing.T) {
+	leaving := claimOnPod("leaving", "warm-1", modelv1alpha1.ModelClaimActive, 300, 100)
+	failed := claimWithCost(300, 100)
+	failed.Name = "failed"
+	failed.Status.Phase = modelv1alpha1.ModelClaimFailed
+	going := claimWithCost(300, 100)
+	going.Name = "going"
+	going.Finalizers = []string{ModelClaimFinalizer}
+	deleted := metav1.NewTime(time.Unix(1_700_000_000, 0))
+	going.DeletionTimestamp = &deleted
+	r, _ := newReconciler(t, leaving, failed, going)
+
+	assert.Empty(t, enqueueWaitingClaims(r.Client)(context.Background(), leaving),
+		"neither the claim that caused the event, nor one that failed, nor one that is going")
 }
 
 // wakeLoop stands in for the manager's queue: first in, first out, one entry

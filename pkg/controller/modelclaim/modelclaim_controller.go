@@ -291,6 +291,7 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err := r.Status().Update(ctx, pm); err != nil {
 		return requeueOnConflict(err)
 	}
+	r.backoff().statusWritten(req.NamespacedName)
 	// Pool policy is an optional, Deployment-scoped control loop. It runs after
 	// claim status is persisted so a policy failure cannot block activation
 	// or route-health convergence for this claim.
@@ -1619,6 +1620,8 @@ func enqueueModelClaimsForPod(c client.Client) handler.MapFunc {
 			klog.ErrorS(err, "unable to list model claims in namespace", "namespace", obj.GetNamespace())
 			return nil
 		}
+		// A pod that joins may bring room, so the claims are tried oldest first.
+		oldestFirst(list.Items)
 		requests := make([]reconcile.Request, 0, len(list.Items))
 		for i := range list.Items {
 			requests = append(requests, reconcile.Request{
