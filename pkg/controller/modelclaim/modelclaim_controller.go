@@ -252,9 +252,12 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			// was just taken back, so the API server is asked.
 			r.divideCardsAsListed(ctx, candidates, readings)
 			// A start that failed is tried again as a refusal is, less and
-			// less often. A claim with an instance left comes back every
-			// round, to check that instance's engine.
-			wait := r.backoff().failedToStart(req.NamespacedName, pm.Generation)
+			// less often. The pool is remembered as it stands, since a pod
+			// that joins may be able to start the engine. A claim with an
+			// instance left comes back every round, to check that instance's
+			// engine.
+			wait := r.backoff().failedToStart(req.NamespacedName, pm.Generation,
+				r.roomAsCached(ctx, pm.Namespace, candidates))
 			if len(pm.Status.Instances) > 0 {
 				wait = DefaultRequeueDuration
 			}
@@ -307,6 +310,21 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// this pass changed on the cards.
 	r.divideCards(ctx, candidates, readings)
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+}
+
+// roomAsCached describes what the candidates carry, from the cached listing
+// of the claims. It is nil when there is no listing.
+func (r *ModelClaimReconciler) roomAsCached(
+	ctx context.Context,
+	namespace string,
+	candidates []corev1.Pod,
+) roomSignature {
+	cached := &modelv1alpha1.ModelClaimList{}
+	if err := r.List(ctx, cached, client.InNamespace(namespace)); err != nil {
+		klog.ErrorS(err, "list model claims", "namespace", namespace)
+		return nil
+	}
+	return roomSignatureOf(candidates, cached)
 }
 
 // requeueOnConflict lets the next reconcile work from the latest API object.

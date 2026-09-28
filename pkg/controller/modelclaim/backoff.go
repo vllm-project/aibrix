@@ -71,7 +71,8 @@ type placementAttempt struct {
 	// hold it. Only a pod joining the pool, or its own spec, can change that.
 	tooLarge bool
 	// failedToStart is whether the claim found a card, and its engine could
-	// not be started there. Room appearing does not help it either.
+	// not be started there. Room freed on a card does not help it either. A
+	// pod that joins may be able to start the engine.
 	failedToStart bool
 	// written is whether the claim's status was written after the refusal, so
 	// that the claim says why it waits.
@@ -120,7 +121,8 @@ func (b *placementBackoff) due(claim types.NamespacedName, generation int64, roo
 	if !waiting {
 		return true, 0
 	}
-	if generation != attempt.generation || roomMayHaveAppeared(attempt.room, room, attempt.tooLarge) {
+	if generation != attempt.generation ||
+		roomMayHaveAppeared(attempt.room, room, attempt.tooLarge || attempt.failedToStart) {
 		delete(b.attempts, claim)
 		return true, 0
 	}
@@ -160,9 +162,14 @@ func (b *placementBackoff) refusedAsTooLarge(
 // started there, and returns how long it waits before its next try. It waits
 // as a refused claim does. Each try divides the card for the model and gives
 // the room back, so a claim that tried every round would move its neighbours'
-// limits every round.
-func (b *placementBackoff) failedToStart(claim types.NamespacedName, generation int64) time.Duration {
-	wait := b.refuse(claim, generation, nil, false)
+// limits every round. The pool is remembered, so that a pod joining it wakes
+// the claim.
+func (b *placementBackoff) failedToStart(
+	claim types.NamespacedName,
+	generation int64,
+	room roomSignature,
+) time.Duration {
+	wait := b.refuse(claim, generation, room, false)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	attempt := b.attempts[claim]
@@ -237,11 +244,14 @@ func (r *ModelClaimReconciler) backoff() *placementBackoff {
 // A pod that left frees nothing for anyone, so it does not count. An engine
 // that went to sleep keeps its seat, and gives back the KV it had mapped. A
 // pod that turned ready has a runtime that answers, which it may not have had
-// when the claim was refused. For a claim no card could ever hold, only a pod
-// that joined counts: every card was measured then, and room freed on a card
-// too small for it changes nothing. Without both descriptions there is
-// nothing to compare.
-func roomMayHaveAppeared(before, now roomSignature, tooLarge bool) bool {
+// when the claim was refused.
+//
+// With onlyAPodHelps, only a pod that joined counts. That is so for a claim
+// no card could ever hold: every card was measured then, and room freed on a
+// card too small for it changes nothing. It is so for a claim whose engine
+// could not be started, which had found a card. Without both descriptions
+// there is nothing to compare.
+func roomMayHaveAppeared(before, now roomSignature, onlyAPodHelps bool) bool {
 	if before == nil || now == nil {
 		return false
 	}
@@ -250,7 +260,7 @@ func roomMayHaveAppeared(before, now roomSignature, tooLarge bool) bool {
 		if !seen {
 			return true
 		}
-		if tooLarge {
+		if onlyAPodHelps {
 			continue
 		}
 		if taken.instances < was.instances || taken.awake < was.awake ||

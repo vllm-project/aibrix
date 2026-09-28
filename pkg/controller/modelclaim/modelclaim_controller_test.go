@@ -68,6 +68,10 @@ type fakeRuntime struct {
 	snapshotCallsTo map[string]int
 	portSeq         int32
 	failActivate    bool
+	// failActivateOn makes the runtimes of the pods listed, by IP, refuse
+	// every start, and activatedOn is the pod each start was asked of.
+	failActivateOn map[string]bool
+	activatedOn    []string
 	// loseActivateAnswer makes Activate start the engine and fail as a call
 	// whose answer never arrived.
 	loseActivateAnswer bool
@@ -90,9 +94,10 @@ type fakeRuntime struct {
 	onKVLimit func()
 }
 
-func (f *fakeRuntime) Activate(_ context.Context, _ string, _ int, req *ActivateRequest) (*ActivateResponse, error) {
+func (f *fakeRuntime) Activate(_ context.Context, podIP string, _ int, req *ActivateRequest) (*ActivateResponse, error) {
 	f.activateCalls = append(f.activateCalls, *req)
-	if f.failActivate {
+	f.activatedOn = append(f.activatedOn, podIP)
+	if f.failActivate || f.failActivateOn[podIP] {
 		return &ActivateResponse{Status: "error", Message: "boom"}, &runtimeRefusal{"activate failed: boom"}
 	}
 	f.portSeq++

@@ -790,7 +790,9 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    it every 10 seconds. The wait is kept in the controller's memory only, so
    a restart tries every waiting claim at once. A claim that found a card and
    whose engine could not be started there waits the same way. It reads
-   ``Failed`` with ``ActivateFailed`` until its next try.
+   ``Failed`` with ``ActivateFailed`` until its next try. A pod joining the
+   pool, or a change to its own spec, wakes it at once. Each try goes to the
+   Pod that ranks first, which can be the one that refused before.
 
    A waiting claim does not sit through its wait when room may have appeared.
    Another claim deleted, scaled down, failed or gone to sleep, a declaration
