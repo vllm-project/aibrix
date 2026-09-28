@@ -911,6 +911,9 @@ Claim remains ``Activating`` after ``/health`` succeeds
    engine has not built its KV segment yet, and there is nothing to write
    into.
 
+   An engine that woke waits the same way when its limit does not read back.
+   Its instance reads ``Activating`` until it does.
+
 ``KVLimitFailed`` Events during placement
    A card had room, and the engines on it could not be held to their new
    shares. The Event names the engine: one that did not take its limit has no
