@@ -546,7 +546,10 @@ ModelClaim status summarizes the lifecycle:
        non-routable with port 0. While the engine boots, the controller looks
        at it every 2 seconds, so it is routed within about 4 seconds of being
        ready. Each boot is watched this way for 5 minutes. An engine that
-       still boots after that is looked at every 10 seconds.
+       still boots after that is looked at every 10 seconds. An engine that
+       is being stopped is watched the same way until it has gone, so that
+       the engine that replaces it starts soon. One whose stop keeps failing
+       is looked at every 10 seconds.
    * - ``Active``
      - The runtime reports the engine alive and ready; the gateway has a real
        per-engine port.
