@@ -255,6 +255,10 @@ func TestHTTPRuntimeTellsAStartThatWasRefusedFromOneThatMayHaveBeenDone(t *testi
 		// A request that did not pass the API's validation never reached the
 		// runtime.
 		"a 422 from the API": {answering(http.StatusUnprocessableEntity, `{"detail": []}`), true, time.Minute},
+		// A status from 400 to 499 blames the request, whatever its body says.
+		"a 400 that is not the runtime's": {answering(http.StatusBadRequest, "Invalid HTTP request received."), true, time.Minute},
+		"a 499":                           {answering(499, "client closed request"), true, time.Minute},
+		"a 399":                           {answering(399, "nothing the runtime sends"), false, time.Minute},
 		// Something between the controller and the runtime gave up waiting.
 		// The runtime may still be starting the engine.
 		"a 504 that is not the runtime's": {answering(http.StatusGatewayTimeout, "upstream request timeout"), false, time.Minute},

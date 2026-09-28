@@ -331,11 +331,17 @@ func TestLedgerIgnoresAnEngineTheRuntimeHasGivenUp(t *testing.T) {
 	gone.Alive = false
 	gone.Ready = false
 
-	ledger := ledgerFor(t, pod, sizedPodSnapshots(pod.Name, 1000, gone),
-		claimOnPod("declared", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100),
-	)
+	declared := claimOnPod("declared", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+
+	ledger := ledgerFor(t, pod, sizedPodSnapshots(pod.Name, 1000, gone), declared)
 
 	assert.True(t, ledger.judgeable)
+
+	// The engines listed after it are still looked at.
+	stranger := engineHolding("another", 250, 400)
+	ledger = ledgerFor(t, pod, sizedPodSnapshots(pod.Name, 1000, gone, stranger), declared)
+	assert.False(t, ledger.judgeable)
+	assert.Equal(t, "the engine serving another there answers to no claim", ledger.blocked)
 }
 
 // An engine whose first process died is listed as not alive while the runtime
