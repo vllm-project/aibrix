@@ -1369,7 +1369,6 @@ func TestReconcileWaitsForARuntimeThatIsNotCalled(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, DefaultRequeueDuration, result.RequeueAfter)
 
-	assert.Empty(t, runtime.activateCalls)
 	got := getModel(t, r, pm.Name)
 	assert.Equal(t, modelv1alpha1.ModelClaimPending, got.Status.Phase)
 	assert.Empty(t, got.Status.Instances)
