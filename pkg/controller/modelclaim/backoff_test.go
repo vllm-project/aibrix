@@ -144,6 +144,7 @@ func aClaimWaitingForRoom(t *testing.T) (*ModelClaimReconciler, *fakeRuntime, *m
 	pm := claimWithCost(700, 100)
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
 	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].Port = 9001
 	neighbour.Status.Instances[0].KVLimitBytes = 600
 	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
 	r, runtime := newReconciler(t, pm, pod, neighbour)
@@ -289,8 +290,14 @@ func TestRoomSignatureCountsWhatEachCandidateCarries(t *testing.T) {
 	legacy := claimOnPod("legacy", "warm-1", modelv1alpha1.ModelClaimActive, 300, 100)
 	legacy.Spec.PerGPU = nil
 	elsewhere := claimOnPod("elsewhere", "warm-9", modelv1alpha1.ModelClaimActive, 300, 100)
+	for port, claim := range []*modelv1alpha1.ModelClaim{declared, asleep, failed, legacy, elsewhere} {
+		claim.Status.Instances[0].Port = int32(9001 + port)
+	}
+	// An instance is recorded before its engine is started, and has no port
+	// until the engine is. Such a record is not counted.
+	recorded := claimOnPod("recorded", "warm-1", modelv1alpha1.ModelClaimActivating, 300, 100)
 	claims := &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{
-		*declared, *asleep, *failed, *legacy, *elsewhere,
+		*declared, *asleep, *failed, *legacy, *recorded, *elsewhere,
 	}}
 
 	room := roomSignatureOf([]corev1.Pod{*pod, *empty}, claims)
@@ -574,6 +581,7 @@ func TestReconcileRemembersTheRoomAClaimWasRefusedOnAsTheAPIServerHasIt(t *testi
 	pm := claimWithCost(700, 100)
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
 	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].Port = 9001
 	neighbour.Status.Instances[0].KVLimitBytes = 600
 	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
 	// The cache has not seen the neighbour yet; the API server has.
@@ -1606,4 +1614,26 @@ func TestReconcileTriesAClaimAtOnceThatLostAnInstanceInTheHealthCheck(t *testing
 
 	assert.Len(t, runtime.activateCalls, started+1, "the claim has no engine left, and is tried at once")
 	assert.Equal(t, DefaultRequeueDuration, wait)
+}
+
+// A record that was taken back after a start that failed is no engine that
+// left a card. The cache can still show it when the API server does not. A
+// try that meets such a moment goes on waiting longer.
+func TestReconcileDoesNotStartAClaimOverForARecordThatWasTakenBack(t *testing.T) {
+	r, _, pm, clock := aClaimWaitingForRoom(t)
+	for _, want := range []time.Duration{10 * time.Second, 20 * time.Second} {
+		require.Equal(t, want, reconcileFor(t, r, pm.Name))
+		*clock = clock.Add(want)
+	}
+	pod := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, pod))
+	// The API server lists the claims as they are. The cache also shows the
+	// record of another claim, whose start has just failed.
+	r.APIReader = fake.NewClientBuilder().WithScheme(r.Scheme).
+		WithObjects(getModel(t, r, pm.Name), getModel(t, r, "neighbour"), pod).
+		WithStatusSubresource(&modelv1alpha1.ModelClaim{}).Build()
+	other := claimOnPod("other", pod.Name, modelv1alpha1.ModelClaimActivating, 50, 50)
+	require.NoError(t, r.Create(context.Background(), other))
+
+	assert.Equal(t, 40*time.Second, reconcileFor(t, r, pm.Name))
 }
