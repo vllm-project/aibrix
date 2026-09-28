@@ -32,6 +32,7 @@ import (
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 )
@@ -828,6 +829,58 @@ func TestReconcileGivesTheRoomBackWhenTheEnginePlacedCannotStart(t *testing.T) {
 	assert.Equal(t, int64(700), runtime.kvLimitCalls[1].LimitBytes)
 	assert.Equal(t, int64(700), getModel(t, r, "neighbour").Status.Instances[0].KVLimitBytes)
 	assert.Empty(t, getModel(t, r, pm.Name).Status.Instances)
+}
+
+// The cache can still show the record of a start that failed, a moment after
+// the record was taken back. So the division after such a start asks the API
+// server, and the neighbour gets its room back in the same pass.
+func TestReconcileGivesTheRoomBackWhileTheCacheStillShowsTheRecord(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].KVLimitBytes = 600
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	runtime.failActivate = true
+	// The API server is read as it is. A listing from the cache still shows
+	// the last record that was written for the claim.
+	server, isServer := r.Client.(client.WithWatch)
+	require.True(t, isServer)
+	r.APIReader = server
+	var recorded []modelv1alpha1.ModelClaimInstance
+	r.Client = interceptor.NewClient(server, interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object,
+			opts ...client.SubResourceUpdateOption) error {
+			if claim, isClaim := obj.(*modelv1alpha1.ModelClaim); isClaim && claim.Name == pm.Name &&
+				len(claim.Status.Instances) > 0 {
+				recorded = append([]modelv1alpha1.ModelClaimInstance(nil), claim.Status.Instances...)
+			}
+			return c.SubResource(sub).Update(ctx, obj, opts...)
+		},
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if err := c.List(ctx, list, opts...); err != nil {
+				return err
+			}
+			if claims, areClaims := list.(*modelv1alpha1.ModelClaimList); areClaims {
+				for i := range claims.Items {
+					if claims.Items[i].Name == pm.Name && len(claims.Items[i].Status.Instances) == 0 {
+						claims.Items[i].Status.Instances = recorded
+					}
+				}
+			}
+			return nil
+		},
+	})
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+	require.NotEmpty(t, recorded, "the record was written before the start")
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, int64(200), runtime.kvLimitCalls[0].LimitBytes)
+	assert.Equal(t, int64(700), runtime.kvLimitCalls[1].LimitBytes)
+	assert.Equal(t, int64(700), getModel(t, r, "neighbour").Status.Instances[0].KVLimitBytes)
 }
 
 func TestReconcileDividesACardOnceWhenAModelIsPlacedOnIt(t *testing.T) {

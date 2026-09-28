@@ -225,8 +225,9 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			}
 			// A card divided for an engine that then did not start has lost that
 			// engine again. Divide it now, so its neighbours get back the room
-			// they gave up for it.
-			r.divideCards(ctx, candidates, readings)
+			// they gave up for it. The cache may still show the record that
+			// was just taken back, so the API server is asked.
+			r.divideCardsAsListed(ctx, candidates, readings)
 			return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, nil
 		}
 	case desiredReplicas(pm) < int32(len(pm.Status.Instances)):

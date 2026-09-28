@@ -373,13 +373,25 @@ func (r *ModelClaimReconciler) divideCards(
 	candidates []corev1.Pod,
 	readings *runtimeReadings,
 ) {
+	if len(candidates) == 0 || !r.anyCardMayBeDue(ctx, candidates, r.divisions()) {
+		return
+	}
+	r.divideCardsAsListed(ctx, candidates, readings)
+}
+
+// divideCardsAsListed divides the cards that are due by a listing from the API
+// server, and does not ask the cache first. A pass that has just taken a
+// record back calls it. The cache may still show that record, and the card
+// would then read as divided for it.
+func (r *ModelClaimReconciler) divideCardsAsListed(
+	ctx context.Context,
+	candidates []corev1.Pod,
+	readings *runtimeReadings,
+) {
 	if len(candidates) == 0 {
 		return
 	}
 	divisions := r.divisions()
-	if !r.anyCardMayBeDue(ctx, candidates, divisions) {
-		return
-	}
 	// The same listing says what is on each card and what each card owes. So
 	// the engines that a card is divided for are the ones it is remembered by.
 	claims, err := r.listClaimsForAccount(ctx, candidates[0].Namespace)

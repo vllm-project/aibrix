@@ -431,14 +431,15 @@ A card whose engines change is divided on the next pass, without waiting for its
 round. That covers a model removed or failed, an engine that sleeps or wakes,
 and a declaration that changes. A model being placed divides its card itself, as
 above. Every move is carried out, however small. This is also how the room comes
-back when an engine cannot be started after its card was divided for it. The
-room an engine leaves goes to the engines beside it. A claim that waits for that
-card can still take it, until those engines have mapped it. Sometimes, a card
-cannot be divided for a change yet, as while an engine that left is still
-exiting. The round then tries again, and still as for a change. The controller
-keeps what each card was divided for in memory only. After a restart, the first
-round of a card divides it whatever its load, unless the card is close to its
-plan. If that division fails, every round tries it again until one works.
+back when an engine cannot be started after its card was divided for it. That
+card is divided in the same pass, by what the API server lists. The room an
+engine leaves goes to the engines beside it. A claim that waits for that card
+can still take it, until those engines have mapped it. Sometimes, a card cannot
+be divided for a change yet, as while an engine that left is still exiting. The
+round then tries again, and still as for a change. The controller keeps what
+each card was divided for in memory only. After a restart, the first round of a
+card divides it whatever its load, unless the card is close to its plan. If that
+division fails, every round tries it again until one works.
 
 When the division of a card fails three times in a row, each claim on the card
 gets a ``KVLimitFailed`` warning, and another after every thirty more failures.
