@@ -364,17 +364,13 @@ func (s *runtimeSilence) silent(runtime string) bool {
 // runtime alone for the shortest silence. Each further timeout in a row leaves
 // it alone for twice as long as the one before it did, up to the longest
 // silence. Any answer ends that, and so does a failure that is no timeout. A
-// call that its caller canceled says nothing about the runtime, and changes
-// nothing.
+// call that its caller canceled is not recorded at all, as do says.
 //
 // Each timeout also drops the runtimes whose time alone ended at least the
 // longest silence ago. So a runtime whose pod is gone is dropped at the next
 // timeout of any runtime after that. A runtime that times out again that late
 // starts over.
 func (s *runtimeSilence) observe(runtime string, err error) {
-	if errors.Is(err, context.Canceled) {
-		return
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var netErr net.Error
@@ -474,6 +470,10 @@ func (c *httpRuntimeClient) Snapshot(ctx context.Context, podIP string, port int
 // An answer counts once all of it has arrived. A runtime that sends its
 // headers and then stalls holds its caller until the time is up as well, so
 // it did not answer in time either.
+//
+// A call that its caller canceled says nothing about the runtime, and changes
+// nothing of what is remembered. The context is asked, and not the error: a
+// caller that cancels with a cause gets that cause back as the error.
 func (c *httpRuntimeClient) do(req *http.Request) (status int, body []byte, err error) {
 	runtime := req.URL.Host
 	if req.URL.Path != deactivatePath && c.silence.silent(runtime) {
@@ -487,6 +487,9 @@ func (c *httpRuntimeClient) do(req *http.Request) (status int, body []byte, err 
 		if err != nil {
 			err = fmt.Errorf("read the answer to runtime %s %s: %w", req.Method, req.URL, err)
 		}
+	}
+	if err != nil && errors.Is(req.Context().Err(), context.Canceled) {
+		return 0, nil, err
 	}
 	c.silence.observe(runtime, err)
 	if err != nil {
