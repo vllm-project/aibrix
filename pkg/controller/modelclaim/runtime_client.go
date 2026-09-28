@@ -467,9 +467,9 @@ func (c *httpRuntimeClient) Snapshot(ctx context.Context, podIP string, port int
 // claim is deleted or scaled down only once, and an engine left running would
 // keep its memory.
 //
-// An answer counts once all of it has arrived. A runtime that sends its
-// headers and then stalls holds its caller until the time is up as well, so
-// it did not answer in time either.
+// An answer counts once all of it has arrived, or its first mebibyte. A
+// runtime that sends its headers and then stalls holds its caller until the
+// time is up as well, so it did not answer in time either.
 //
 // A call that its caller canceled says nothing about the runtime, and changes
 // nothing of what is remembered. The context is asked, and not the error: a
