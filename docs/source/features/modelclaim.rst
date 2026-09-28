@@ -418,7 +418,9 @@ its round. That covers a model removed or failed, an engine that sleeps or
 wakes, and a declaration that changes. A model being placed divides its card
 itself, as above. Every move is carried out, however small. This is also how
 the room comes back when an engine cannot be started after its card was divided
-for it. A change the card cannot be divided for yet, as while an engine that
+for it. The room an engine leaves goes to the engines beside it. A claim that
+waits for that card can still take it, until those engines have mapped it. A
+change the card cannot be divided for yet, as while an engine that
 left is still exiting, is tried again by the round, and still as a change. The
 controller keeps what each card was divided for in memory only. After a
 restart, the first round of a card divides it whatever its load. When the
