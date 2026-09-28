@@ -394,6 +394,62 @@ func TestReconcileKeepsAnEngineRoutedWhenItsGrowIsNotConfirmed(t *testing.T) {
 	}
 }
 
+// When a grow is written, the instance already records the limit it grows
+// into. A shrink is written before any record moves.
+func TestReconcileWritesAGrowOnlyOnceItIsRecorded(t *testing.T) {
+	serving := engineHolding("busy", 4<<30, 10<<30)
+	serving.RequestsRunning = 4
+	r, runtime, _, _ := aCardOfTwoEngines(t, serving, engineHolding("idle", 4<<30, 30<<30))
+	recordedAtWrite := map[string]int64{}
+	runtime.onKVLimit = func() {
+		call := runtime.kvLimitCalls[len(runtime.kvLimitCalls)-1]
+		recordedAtWrite[call.ModelName] = getModel(t, r, call.ModelName).Status.Instances[0].KVLimitBytes
+	}
+
+	reconcileOnce(t, r, "idle")
+
+	require.Len(t, runtime.kvLimitCalls, 2)
+	shrink, grow := runtime.kvLimitCalls[0], runtime.kvLimitCalls[1]
+	require.Equal(t, "idle", shrink.ModelName)
+	require.Equal(t, "busy", grow.ModelName)
+	assert.Equal(t, int64(30)<<30, recordedAtWrite["idle"])
+	assert.Equal(t, grow.LimitBytes, recordedAtWrite["busy"])
+}
+
+// A placement shrinks one neighbour and grows another. The reading that
+// should confirm the grow is lost. The room is made and every limit is
+// recorded by then, so the placement keeps the model.
+func TestReconcileKeepsAModelPlacedWhenANeighbourCouldNotBeGrown(t *testing.T) {
+	pm := claimWithCost(100, 50)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	idle := claimOnPod("idle", pod.Name, modelv1alpha1.ModelClaimActive, 100, 50)
+	idle.Status.Instances[0].KVLimitBytes = 600
+	busy := claimOnPod("busy", pod.Name, modelv1alpha1.ModelClaimActive, 100, 50)
+	busy.Status.Instances[0].KVLimitBytes = 100
+	serving := engineHolding("busy", 100, 100)
+	serving.RequestsRunning = 4
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("idle", 50, 600), serving}
+	r, runtime := newReconciler(t, pm, pod, idle, busy)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	writes := 0
+	runtime.onKVLimit = func() {
+		writes++
+		if writes == 2 {
+			runtime.nilSnapshots = map[string]bool{pod.Status.PodIP: true}
+		}
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1, "the placement keeps the model")
+	assert.Len(t, runtime.activateCalls, 1)
+	records := got.Status.Instances[0].KVLimitBytes +
+		getModel(t, r, "idle").Status.Instances[0].KVLimitBytes +
+		getModel(t, r, "busy").Status.Instances[0].KVLimitBytes
+	assert.Equal(t, int64(1000-300), records, "the records spend the card, and no more")
+}
+
 // The cache can lag a record that a division in another claim's pass has just
 // written. The health loop reads the record fresh before it acts on a limit
 // that is not in force, so an engine that was just grown is not pulled back.

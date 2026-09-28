@@ -1844,6 +1844,94 @@ func TestArrangeCardTakesAShrinkBackToTheRecordAtMost(t *testing.T) {
 	assert.Equal(t, int64(400), runtime.kvLimitCalls[1].LimitBytes)
 }
 
+// A KVLimitSet Event says that a limit is in force. A grow that was written
+// and not confirmed is not known to be.
+func TestArrangeCardDoesNotAnnounceAGrowThatIsNotConfirmed(t *testing.T) {
+	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+	writes := 0
+	runtime.onKVLimit = func() {
+		writes++
+		if writes == 2 {
+			// The grow is written, and the engine goes on reporting the limit
+			// it had.
+			snapshot.Models[1].KVCapacityBytes = 100
+		}
+	}
+
+	err := divideOnce(t, r, pod, snapshot)
+
+	var incomplete growthIncompleteError
+	require.ErrorAs(t, err, &incomplete)
+	var announced []string
+	for _, event := range drainEvents(t, r) {
+		if strings.Contains(event, "KVLimitSet") {
+			announced = append(announced, strings.Fields(strings.SplitN(event, "model ", 2)[1])[0])
+		}
+	}
+	assert.Equal(t, []string{"a"}, announced)
+}
+
+// What a pass reads of a runtime is kept for its later steps. A division
+// changes the runtime, so it leaves the pass either the reading that confirmed
+// it or none at all, and never one from before a write.
+func TestArrangeCardLeavesThePassNoReadingFromBeforeAWrite(t *testing.T) {
+	for name, c := range map[string]struct {
+		// spoil makes the division go wrong at the write of the given number,
+		// counted from one. The shrink of "a" is the first, and the grow of
+		// "b" the second.
+		spoil     func(r *ModelClaimReconciler, runtime *fakeRuntime, snapshot *RuntimeSnapshot, pod *corev1.Pod)
+		fails     bool
+		readAgain bool
+	}{
+		"a division that is confirmed": {
+			spoil: func(*ModelClaimReconciler, *fakeRuntime, *RuntimeSnapshot, *corev1.Pod) {},
+		},
+		"a shrink that is taken back": {
+			spoil: func(_ *ModelClaimReconciler, runtime *fakeRuntime, snapshot *RuntimeSnapshot, _ *corev1.Pod) {
+				runtime.onKVLimit = func() { snapshot.Models[0].KVUsedBytes = 300 }
+			},
+			fails: true, readAgain: true,
+		},
+		"a grow whose write fails": {
+			spoil: func(r *ModelClaimReconciler, runtime *fakeRuntime, _ *RuntimeSnapshot, _ *corev1.Pod) {
+				r.Runtime = &failingKVLimits{fakeRuntime: runtime, failing: map[int]bool{2: true}}
+			},
+			fails: true, readAgain: true,
+		},
+		"a grow whose reading back fails": {
+			spoil: func(r *ModelClaimReconciler, runtime *fakeRuntime, _ *RuntimeSnapshot, pod *corev1.Pod) {
+				unreadable := &unreadablePods{fakeRuntime: runtime, pods: map[string]bool{}}
+				r.Runtime = unreadable
+				writes := 0
+				runtime.onKVLimit = func() {
+					writes++
+					unreadable.pods[pod.Status.PodIP] = writes == 2
+				}
+			},
+			fails: true, readAgain: true,
+		},
+	} {
+		r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+		c.spoil(r, runtime, snapshot, pod)
+		readings := newRuntimeReadings(r.Runtime)
+		_, err := readings.of(context.Background(), pod)
+		require.NoError(t, err, name)
+		ledger := r.collectPodLedgers(context.Background(), testNamespace,
+			[]corev1.Pod{*pod}, map[string]*RuntimeSnapshot{pod.Name: snapshot})[pod.Name]
+
+		_, err = r.arrangeCard(context.Background(), pod, ledger, ledger.engines, placementDivision, readings)
+
+		require.Equal(t, c.fails, err != nil, name)
+		reads := runtime.snapshotCalls
+		kept, _ := readings.of(context.Background(), pod)
+		assert.Equal(t, c.readAgain, runtime.snapshotCalls > reads, name)
+		if !c.readAgain {
+			require.NotNil(t, kept, name)
+			assert.Equal(t, int64(433), kept.Models[1].KVCapacityBytes, "%s: the reading that confirmed it is kept", name)
+		}
+	}
+}
+
 func TestReconcileShrinksTheNeighbourToMakeRoomForANewModel(t *testing.T) {
 	pm := claimWithCost(300, 100)
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
