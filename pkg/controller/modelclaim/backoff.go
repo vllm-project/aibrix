@@ -202,9 +202,9 @@ func (b *placementBackoff) failedToStart(
 	generation int64,
 	room roomSignature,
 ) time.Duration {
-	wait := b.refuse(claim, generation, room, false)
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	wait := b.refuseLocked(claim, generation, room, false)
 	attempt := b.attempts[claim]
 	attempt.failedToStart = true
 	// The failure is written before the wait is recorded.
@@ -240,6 +240,15 @@ func (b *placementBackoff) refuse(
 ) time.Duration {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	return b.refuseLocked(claim, generation, room, tooLarge)
+}
+
+func (b *placementBackoff) refuseLocked(
+	claim types.NamespacedName,
+	generation int64,
+	room roomSignature,
+	tooLarge bool,
+) time.Duration {
 	attempt := b.attempts[claim]
 	attempt.refusals++
 	attempt.generation = generation
@@ -276,12 +285,12 @@ func (b *placementBackoff) startOver(claim types.NamespacedName) {
 }
 
 func (r *ModelClaimReconciler) backoff() *placementBackoff {
-	if r.Backoff != nil {
-		return r.Backoff
+	if r.Backoff == nil {
+		// Production and the reconciler tests set this. A reconciler that is
+		// built by hand gets its backoff on the first call, and keeps it.
+		r.Backoff = newPlacementBackoff(time.Now)
 	}
-	// Production and the reconciler tests set this. A narrow test that builds
-	// the reconciler by hand gets a fresh one, and every claim is due.
-	return newPlacementBackoff(time.Now)
+	return r.Backoff
 }
 
 // roomMayHaveAppeared compares the pool with how a waiting claim last saw it,
