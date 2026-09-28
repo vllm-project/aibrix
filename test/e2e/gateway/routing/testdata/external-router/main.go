@@ -23,9 +23,10 @@ type modeConfig struct {
 }
 
 type state struct {
-	mu   sync.Mutex
-	mode modeConfig
-	last json.RawMessage
+	mu               sync.Mutex
+	mode             modeConfig
+	lastRequestJSON  json.RawMessage
+	lastResponseJSON json.RawMessage
 }
 
 func main() {
@@ -34,6 +35,7 @@ func main() {
 	mux.HandleFunc("/v1alpha1/select", s.selectReplica)
 	mux.HandleFunc("/__test/mode", s.setMode)
 	mux.HandleFunc("/__test/last-request", s.lastRequest)
+	mux.HandleFunc("/__test/last-response", s.lastResponse)
 	mux.HandleFunc("/__test/state", s.reset)
 	if err := http.ListenAndServe(":8080", mux); err != nil {
 		panic(err)
@@ -62,12 +64,9 @@ func (s *state) selectReplica(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	s.last = append(s.last[:0], raw...)
+	s.lastRequestJSON = append(s.lastRequestJSON[:0], raw...)
 	mode := s.mode
 	s.mu.Unlock()
-	if mode.DelayMillis > 0 {
-		time.Sleep(time.Duration(mode.DelayMillis) * time.Millisecond)
-	}
 
 	response := map[string]any{
 		"apiVersion": "routing.aibrix.ai/v1alpha1",
@@ -102,8 +101,19 @@ func (s *state) selectReplica(w http.ResponseWriter, r *http.Request) {
 		status["target"] = map[string]any{"id": target, "port": port}
 	}
 	response["status"] = status
+	responseJSON, err := json.Marshal(response)
+	if err != nil {
+		http.Error(w, "invalid response", http.StatusInternalServerError)
+		return
+	}
+	s.mu.Lock()
+	s.lastResponseJSON = append(s.lastResponseJSON[:0], responseJSON...)
+	s.mu.Unlock()
+	if mode.DelayMillis > 0 {
+		time.Sleep(time.Duration(mode.DelayMillis) * time.Millisecond)
+	}
 	w.Header().Set("Content-Type", mediaType)
-	_ = json.NewEncoder(w).Encode(response)
+	_, _ = w.Write(responseJSON)
 }
 
 func (s *state) setMode(w http.ResponseWriter, r *http.Request) {
@@ -124,8 +134,19 @@ func (s *state) setMode(w http.ResponseWriter, r *http.Request) {
 
 func (s *state) lastRequest(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
-	raw := append([]byte(nil), s.last...)
+	raw := append([]byte(nil), s.lastRequestJSON...)
 	s.mu.Unlock()
+	writeTestJSON(w, raw)
+}
+
+func (s *state) lastResponse(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	raw := append([]byte(nil), s.lastResponseJSON...)
+	s.mu.Unlock()
+	writeTestJSON(w, raw)
+}
+
+func writeTestJSON(w http.ResponseWriter, raw []byte) {
 	w.Header().Set("Content-Type", "application/json")
 	if len(raw) == 0 {
 		raw = []byte("{}")
@@ -140,7 +161,8 @@ func (s *state) reset(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	s.mode = modeConfig{Mode: "selected"}
-	s.last = nil
+	s.lastRequestJSON = nil
+	s.lastResponseJSON = nil
 	s.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }

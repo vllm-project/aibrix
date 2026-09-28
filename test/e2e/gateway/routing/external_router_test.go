@@ -71,7 +71,12 @@ func setExternalFixtureMode(t *testing.T, mode externalE2EMode) {
 
 func getExternalLastRequest(t *testing.T) map[string]any {
 	t.Helper()
-	response, err := (&http.Client{Timeout: 3 * time.Second}).Get(externalAdminURL(t) + "/__test/last-request")
+	return getExternalFixtureDocument(t, "/__test/last-request")
+}
+
+func getExternalFixtureDocument(t *testing.T, path string) map[string]any {
+	t.Helper()
+	response, err := (&http.Client{Timeout: 3 * time.Second}).Get(externalAdminURL(t) + path)
 	require.NoError(t, err)
 	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(response.Body)
@@ -79,6 +84,19 @@ func getExternalLastRequest(t *testing.T) map[string]any {
 	var document map[string]any
 	require.NoError(t, json.Unmarshal(body, &document))
 	return document
+}
+
+func logExternalExchange(t *testing.T) map[string]any {
+	t.Helper()
+	request := getExternalLastRequest(t)
+	response := getExternalFixtureDocument(t, "/__test/last-response")
+	requestJSON, err := json.MarshalIndent(request, "", "  ")
+	require.NoError(t, err)
+	responseJSON, err := json.MarshalIndent(response, "", "  ")
+	require.NoError(t, err)
+	t.Logf("external router request JSON:\n%s", requestJSON)
+	t.Logf("external router response JSON:\n%s", responseJSON)
+	return request
 }
 
 func assertExternalRequestReachedNoBackend(t *testing.T, requestID string) {
@@ -106,7 +124,7 @@ func TestExternalRouterSelectedAndMinimalPayload(t *testing.T) {
 	require.Equal(t, http.StatusOK, response.status, "body=%s", response.body)
 	require.NotEmpty(t, response.header.Get("target-pod"))
 
-	document := getExternalLastRequest(t)
+	document := logExternalExchange(t)
 	encoded, err := json.Marshal(document)
 	require.NoError(t, err)
 	raw := string(encoded)
@@ -123,6 +141,7 @@ func TestExternalRouterDenied(t *testing.T) {
 	setExternalFixtureMode(t, externalE2EMode{Mode: "denied"})
 	requestID := newRoutingRecorderRequestID()
 	response := postOrdinaryChat(t, context.Background(), requestID, map[string]string{"routing-strategy": "external"})
+	logExternalExchange(t)
 	require.Equal(t, http.StatusForbidden, response.status, "body=%s", response.body)
 	require.Contains(t, string(response.body), "external_policy_denied")
 	assertExternalRequestReachedNoBackend(t, requestID)
@@ -132,6 +151,7 @@ func TestExternalRouterInvalidTarget(t *testing.T) {
 	setExternalFixtureMode(t, externalE2EMode{Mode: "invalid-target"})
 	requestID := newRoutingRecorderRequestID()
 	response := postOrdinaryChat(t, context.Background(), requestID, map[string]string{"routing-strategy": "external"})
+	logExternalExchange(t)
 	require.Equal(t, http.StatusServiceUnavailable, response.status, "body=%s", response.body)
 	require.Contains(t, string(response.body), "external_router_unavailable")
 	assertExternalRequestReachedNoBackend(t, requestID)
@@ -142,6 +162,7 @@ func TestExternalRouterTimeout(t *testing.T) {
 	requestID := newRoutingRecorderRequestID()
 	start := time.Now()
 	response := postOrdinaryChat(t, context.Background(), requestID, map[string]string{"routing-strategy": "external"})
+	logExternalExchange(t)
 	require.Equal(t, http.StatusServiceUnavailable, response.status, "body=%s", response.body)
 	require.Less(t, time.Since(start), 900*time.Millisecond)
 	assertExternalRequestReachedNoBackend(t, requestID)
