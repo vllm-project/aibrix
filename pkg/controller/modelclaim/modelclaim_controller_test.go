@@ -1953,8 +1953,8 @@ func TestArrangeCardGivesATakeBackInALaterRoundItsOwnOperation(t *testing.T) {
 	assert.NotEqual(t, takenBack[0], takenBack[1])
 }
 
-// A KVLimitSet Event says that a limit is in force. A grow that was written
-// and not confirmed is not known to be.
+// The KVLimitSet Event of a division says that a limit is in force. A grow
+// that was written and not confirmed is not known to be.
 func TestArrangeCardDoesNotAnnounceAGrowThatIsNotConfirmed(t *testing.T) {
 	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
 	writes := 0

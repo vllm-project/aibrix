@@ -228,7 +228,7 @@ func TestReconcileReadsARuntimeAgainAfterAWriteThatFailed(t *testing.T) {
 	assert.Equal(t, 1, eventsNamed(drainEvents(t, r), "KVLimitFailed"))
 }
 
-// KVLimitSet says that a limit is in force. For an engine coming up, that is
+// For an engine coming up, KVLimitSet says that a limit is in force. That is
 // known from the read-back, so an engine that does not take its limit is not
 // told "set" on every pass.
 func TestReconcileSaysALimitIsSetOnceItReadsBack(t *testing.T) {

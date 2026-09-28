@@ -339,7 +339,8 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// this pass changed on the cards.
 	r.divideCards(ctx, candidates, readings)
 	// A booting engine is looked at again soon, so it takes traffic within a
-	// few seconds of being ready.
+	// few seconds of being ready. A pass that ended before the health check,
+	// as after a start that failed, keeps its own pace.
 	if booting {
 		requeueAfter = min(requeueAfter, ActivatingRequeueDuration)
 	}
@@ -1306,9 +1307,11 @@ func (r *ModelClaimReconciler) announcePhase(
 // leaves the route first, so that the loss is seen. Its Event says that the
 // limit was written, which is all that is known of it in this pass.
 //
-// A write changes the runtime, or may have, so what the pass had read of the
-// runtime is dropped. A read-back that fails is kept as the reading of the
-// pass: a runtime that did not answer is not asked again in the same pass.
+// What the pass had read of the runtime is dropped, whether the write was
+// taken or not. A write changes the runtime, or may have. A read-back that
+// fails is kept as the reading of the pass, since a runtime that did not
+// answer is not asked again in the same pass. The price is the division of
+// that pass: it finds the card unread, and leaves it to its next round.
 func (r *ModelClaimReconciler) holdToKVLimit(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
@@ -1460,7 +1463,9 @@ func (r *ModelClaimReconciler) judgeEngine(
 // time is taken on the runtime's clock, which also dates the boot, so the
 // controller's clock does not have to agree with it. An engine that is ready
 // but not yet routable is not booting. Neither is one whose boot the runtime
-// does not date, since nothing would then bound it.
+// does not date, since nothing would then bound it. An engine that is
+// stopping counts: it is alive and not ready, and its instance gets a new
+// engine as soon as it has gone.
 func engineBooting(snapshot *RuntimeSnapshot, observed *RuntimeSnapshotModel) bool {
 	if snapshot == nil || observed == nil || !observed.Alive || observed.Ready ||
 		observed.LastTransition == nil || snapshot.ObservedAt.IsZero() {
