@@ -261,12 +261,27 @@ func TestPerGPUBytesOfSaysWhatIsWrongWithADeclaration(t *testing.T) {
 		"zero footprint":  {declaring("0", "10Gi"), "spec.perGPU.maximumFootprint is 0, which is not positive"},
 		"negative floor":  {declaring("30Gi", "-1Gi"), "spec.perGPU.kvFloor is -1Gi, which is not positive"},
 		"zero both, once": {declaring("0", "0"), "spec.perGPU.maximumFootprint is 0, which is not positive"},
+		// 30m is three hundredths of a byte, most likely meant as 30M.
+		"part of a byte": {declaring("30m", "10Gi"),
+			"spec.perGPU.maximumFootprint is 30m, which is not a whole number of bytes"},
+		"part of a byte more": {declaring("30Gi", "1500m"),
+			"spec.perGPU.kvFloor is 1500m, which is not a whole number of bytes"},
+		// Two such figures would add up past what an int64 holds.
+		"more than any card": {declaring("7Ei", "7Ei"),
+			"spec.perGPU.maximumFootprint is 7Ei, which is more than 1Pi"},
+		"more than an int64": {declaring("30Gi", "1e30"),
+			"spec.perGPU.kvFloor is 1e30, which is more than 1Pi"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := perGPUBytesOf(tc.claim)
 			require.Error(t, err)
 			assert.Equal(t, tc.want, err.Error())
 		})
+	}
+
+	for _, whole := range []string{"6.5Gi", "1Pi", "1500", "2G"} {
+		_, err := perGPUBytesOf(declaring(whole, "10Gi"))
+		assert.NoError(t, err, whole)
 	}
 
 	perGPU, err := perGPUBytesOf(declaring("30Gi", "10Gi"))

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -44,29 +45,50 @@ func (p perGPUBytes) minimumReserveBytes() int64 {
 	return p.maximumFootprintBytes + p.kvFloorBytes
 }
 
+// maximumDeclaredBytes is the most a claim may declare for one figure. No card
+// holds a pebibyte, and figures this small can be added up for every instance
+// on a card without running past an int64.
+var maximumDeclaredBytes = resource.MustParse("1Pi")
+
 // perGPUBytesOf reads what a claim declared one instance costs on a GPU, and
 // says what is wrong with the declaration when it cannot be used.
 //
-// A quantity carries no schema minimum, so a figure that is not positive is
-// caught here. It is refused rather than read as a model that costs nothing,
-// which is what a zero would otherwise say.
+// A quantity carries no schema bounds, so a figure that cannot be used is
+// caught here. One that is not positive is refused rather than read as a model
+// that costs nothing, which is what a zero would otherwise say. One that is
+// not a whole number of bytes is most likely a slip, such as 30m for 30M, and
+// would otherwise be read as a single byte.
 func perGPUBytesOf(pm *modelv1alpha1.ModelClaim) (perGPUBytes, error) {
 	if pm == nil || pm.Spec.PerGPU == nil {
 		return perGPUBytes{}, errors.New("spec.perGPU is missing")
 	}
-	declared := pm.Spec.PerGPU
-	if declared.MaximumFootprint.Value() <= 0 {
-		return perGPUBytes{}, fmt.Errorf("spec.perGPU.maximumFootprint is %s, which is not positive",
-			declared.MaximumFootprint.String())
+	maximumFootprintBytes, err := declaredBytes("maximumFootprint", pm.Spec.PerGPU.MaximumFootprint)
+	if err != nil {
+		return perGPUBytes{}, err
 	}
-	if declared.KVFloor.Value() <= 0 {
-		return perGPUBytes{}, fmt.Errorf("spec.perGPU.kvFloor is %s, which is not positive",
-			declared.KVFloor.String())
+	kvFloorBytes, err := declaredBytes("kvFloor", pm.Spec.PerGPU.KVFloor)
+	if err != nil {
+		return perGPUBytes{}, err
 	}
-	return perGPUBytes{
-		maximumFootprintBytes: declared.MaximumFootprint.Value(),
-		kvFloorBytes:          declared.KVFloor.Value(),
-	}, nil
+	return perGPUBytes{maximumFootprintBytes: maximumFootprintBytes, kvFloorBytes: kvFloorBytes}, nil
+}
+
+// declaredBytes is one figure of spec.perGPU in bytes, or what is wrong with
+// it.
+func declaredBytes(name string, declared resource.Quantity) (int64, error) {
+	wrong := ""
+	switch {
+	case declared.Sign() <= 0:
+		wrong = "not positive"
+	case declared.Cmp(maximumDeclaredBytes) > 0:
+		wrong = "more than " + maximumDeclaredBytes.String()
+	case declared.MilliValue()%1000 != 0:
+		wrong = "not a whole number of bytes"
+	}
+	if wrong != "" {
+		return 0, fmt.Errorf("spec.perGPU.%s is %s, which is %s", name, declared.String(), wrong)
+	}
+	return declared.Value(), nil
 }
 
 // kvLimitUnknown stands for an engine whose KV segment could not be read, which

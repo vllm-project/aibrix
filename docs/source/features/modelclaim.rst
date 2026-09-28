@@ -372,10 +372,12 @@ API server without CRD validation ratcheting, its finalizer could then not be
 removed, so the claim could not be deleted either. A ``perGPU`` that is given
 has to carry both figures, and an apply without one of them is rejected.
 
-Both figures have to be positive. A quantity carries no schema minimum, so a
+Both figures have to be positive. A quantity carries no schema bounds, so a
 ``0`` is caught by the controller instead: the claim is not placed, and its
 ``Scheduled`` condition reads ``InvalidPerGPU`` and names the figure. A zero
-is never read as a model that takes no room.
+is never read as a model that takes no room. A figure also has to be a whole
+number of bytes, and no more than ``1Pi``. That catches a slip such as ``30m``
+for ``30M``, which would otherwise be read as one byte.
 
 A claim stored before the field existed decodes with its declaration missing,
 and it is not placed again, for the same reason. An engine it already runs
@@ -658,7 +660,7 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    changes. The ``Scheduled`` condition always carries the current one.
 
 Claim remains ``Pending`` with ``InvalidPerGPU``
-   ``perGPU`` is missing, or one of its figures is not positive, and the
+   ``perGPU`` is missing, or one of its figures cannot be used, and the
    message names which. The claim is not placed anywhere until it declares
    its cost, because a card carrying it could not be accounted for. It is
    placed on the next pass after the claim is fixed.
