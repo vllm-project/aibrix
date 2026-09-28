@@ -407,13 +407,13 @@ unaccountable until the claim declares its cost.
 
 Sleeping does not free a seat. An instance that is asleep keeps its place in
 the account, at the full footprint and floor its claim declared, because the
-assignment has to survive the sleep for a wake to find its engine again. What
-a sleep gives back is the KV the engine had mapped above its floor. A claim
+assignment has to survive the sleep for a wake to find its engine again. An
+engine that goes to sleep normally gives back the KV it had mapped. A claim
 that was turned away because of that KV can be placed then.
 
 A failed instance does free its seat. The runtime stops an engine once its
-restarts run out, so its memory is back with the card, and the account charges
-the instance nothing.
+restarts run out, and reports it as not alive. The account then charges the
+instance nothing.
 
 Configure TP and PP pools
 -------------------------
@@ -673,17 +673,19 @@ Claim remains ``Scheduling`` with zero candidates
 
 Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    Candidates exist, but no card can be shown to have room for
-   ``perGPU.maximumFootprint`` plus ``perGPU.kvFloor``. The message
-   names the roomiest Pod that still could not hold the model, which is the
-   smallest gap to close, and says which count it failed: a card that could
-   never hold the model, or one whose room is held by the engines already on
-   it. It also shows that card's account: how much it holds, and how much of
-   that is promised to, or held by, the instances on it. A Pod is also turned
-   away when its runtime did not answer, when one of its cards could not be
+   ``perGPU.maximumFootprint`` plus ``perGPU.kvFloor``. The message names the
+   Pod that is closest to holding the model, and says which count it failed: a
+   card that could never hold the model, or one whose room is held by the
+   engines already on it. A card of the second kind is named first, since
+   waiting can help there. Among cards of one kind, the roomiest is named. It
+   also shows that card's account: how much it holds, and how much of that is
+   promised to, or held by, the instances on it. A Pod is also turned away
+   when its runtime did not answer, when one of its cards could not be
    measured, when a claim on it declares no usable ``perGPU``, or when an
-   engine there belongs to no claim on it. The claim is tried again on every
-   pass, and the ``NoMatchingPods`` Event is raised only when the refusal
-   changes. The ``Scheduled`` condition always carries the current one.
+   engine there belongs to no claim on it or is still exiting. The claim is
+   tried again on every pass, and the ``NoMatchingPods`` Event is raised only
+   when the refusal changes. The ``Scheduled`` condition always carries the
+   current one.
 
 Claim remains ``Pending`` with ``InvalidPerGPU``
    ``perGPU`` is missing, or one of its figures cannot be used, and the
@@ -694,8 +696,10 @@ Claim remains ``Pending`` with ``InvalidPerGPU``
 A Pod is turned away because an engine on it belongs to no claim
    The refusal names the model that engine serves. Nobody knows what such an
    engine holds, so its card is kept out of placement until the engine is
-   gone. The controller does not stop it. Stop it through the runtime API of
-   that Pod, or restart the Pod:
+   gone. An engine that was told to stop reads as still exiting until its
+   last process has gone, and needs nothing done. Any other such engine is
+   not stopped by the controller. Stop it through the runtime API of that
+   Pod, or restart the Pod:
 
    .. code-block:: bash
 
@@ -714,7 +718,7 @@ Claim remains ``Activating``
    refuses, the instance is dropped with an ``ActivateFailed`` Event, its card
    is given back, and the claim is placed again. If the runtime took the call
    and its answer was lost, the engine may have started. The instance then
-   stays, and the next pass finds out.
+   stays, and the first pass that can read the runtime finds out.
 
 Claim remains ``Activating`` after ``/health`` succeeds
    With ``perGPU`` declared, the engine also has to report the KV limit it was

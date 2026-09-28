@@ -502,8 +502,8 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 			// The record was written first to guard against a crash between
 			// these two steps, where it would be all that remained. A start
 			// known not to have happened is undone here, so the card is given
-			// back and another pod can be tried: the caller's status update
-			// persists the shorter list.
+			// back: the caller's status update persists the shorter list. The
+			// next pass ranks the pods again, and may ask the same one.
 			//
 			// After any other failure the engine may have started, and only
 			// the answer was lost. The record then stays, and the claim is
