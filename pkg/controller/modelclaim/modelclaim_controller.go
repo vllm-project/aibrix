@@ -90,8 +90,8 @@ type ModelClaimReconciler struct {
 	// Divisions remembers when each card was last divided to follow its load,
 	// so that a card is divided once per round however many claims sit on it.
 	Divisions *cardDivisionState
-	// Backoff spaces out the tries of claims no card in the pool can hold, so
-	// a model waiting for room does not have every runtime read for it every
+	// Backoff spaces out the tries of claims no card in the pool can hold. A
+	// model waiting for room then does not have every runtime read for it every
 	// round.
 	Backoff *placementBackoff
 	// APIReader reads ModelClaims straight from the API server for the GPU
@@ -1585,7 +1585,7 @@ func (r *ModelClaimReconciler) deactivateInstances(ctx context.Context, pm *mode
 
 // podLoadFrom tallies how many model instances each warm pod currently hosts,
 // across all ModelClaims in the namespace, for least-loaded bin-packing. With
-// no listing every pod counts as empty.
+// no listing, every pod counts as empty.
 func podLoadFrom(list *modelv1alpha1.ModelClaimList) map[string]int {
 	load := map[string]int{}
 	if list == nil {

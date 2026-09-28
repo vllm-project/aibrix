@@ -153,7 +153,8 @@ Before applying it, review these fields:
 
 ``pool.aibrix.ai/enabled: "true"``
    Required on candidate Pods. Removing or changing it keeps the Pod out of
-   ModelClaim placement.
+   ModelClaim placement. A Pod wakes a waiting claim, as described under
+   Troubleshooting, only while it carries both labels.
 
 ``image``
    Replace ``aibrix/kvcached-runtime:dev`` when using a remote registry or a
@@ -781,7 +782,7 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    exiting. The claims could not be listed. When no Pod could be accounted for,
    the message names one of them and the reason.
 
-   The ``NoMatchingPods`` Event is raised only when the refusal changes, and the
+   The ``NoMatchingPods`` Event is raised only when the refusal changes. The
    ``Scheduled`` condition always carries the current one.
 
    A refused claim backs off. Each refusal in a row doubles the wait before
@@ -791,44 +792,55 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    a restart tries every waiting claim at once.
 
    A waiting claim does not sit through its wait when room may have appeared.
-   Another claim deleted, scaled down, failed or gone to sleep, a declaration
-   that shrinks or becomes usable, a pod that joins the pool or turns ready,
-   or a change to the claim's own spec wakes it at once, and it starts again
-   from the shortest wait. A claim that is deleted wakes the others before
-   its engine has exited, and an engine holds its memory until it has. So the
-   try that a deletion wakes is usually refused once, and the room is found on
-   the next try, 10 seconds later. Room that engines free by giving back
-   mapped KV while they serve sends no signal at all, so the claim finds it on
-   its next try, a minute later at most.
+   These changes wake it at once, and it starts again from the shortest wait:
+
+   * Another claim is deleted, scaled down or failed, or goes to sleep.
+   * A declaration shrinks, or becomes usable.
+   * A Pod joins the pool, or turns ready.
+   * The claim's own spec changes.
+
+   A claim that is deleted wakes the others before its engine has exited, and
+   an engine holds its memory until it has. So the try that a deletion wakes
+   is usually refused once, and the room is found on the next try, 10 seconds
+   later. Engines that give back mapped KV while they serve send no signal at
+   all. The claim finds that room on its next try, a minute later at most.
 
    Claims that are woken together are tried oldest first. Three limits
    remain. A claim that has waited long tries less often than one that has
    just arrived, so room that appears without a signal usually goes to the
    newer claim. Nothing holds room for a claim, so a large claim can keep
-   waiting while smaller ones keep fitting. And a wake has every waiting claim
-   whose candidates changed read each of their runtimes once.
+   waiting while smaller ones keep fitting. A wake also has every waiting
+   claim whose candidates changed read each of their runtimes once.
 
 Claim reads ``Failed`` with ``ActivateFailed``
-   The claim found a card, and the runtime of that Pod refused to start the
-   engine. The message quotes the runtime. The card is given back, and the
-   claim is tried again as a refused claim is: after 10, 20 and 40 seconds,
-   then once a minute. It reads ``Failed`` between two tries, and it is not
-   given up. A pod joining the pool, or a change to the claim's own spec,
-   wakes it at once. Room freed on a card does not, since the claim had found
-   a card. Each try goes to the Pod that ranks first, which can be the one
-   that refused before.
+   The claim found a card, and its engine could not be started there. The
+   message quotes the error. Most often, the runtime of that Pod refused the
+   start, and the card is given back. If the answer of the runtime was lost,
+   the engine may have started. The instance then stays, as described under
+   "Claim remains ``Activating``".
+
+   The claim is tried again as a refused claim is: after 10, 20 and 40
+   seconds, then once a minute. The controller does not give it up. A claim
+   with no instance reads ``Failed`` between two tries. A claim with an
+   instance reads as its instances do.
+
+   A Pod that joins the pool or turns ready wakes the claim at once, and so
+   does a change to its own spec. Room freed on a card does not, since the
+   claim had found a card. Each try goes to the Pod that ranks first. While
+   the ranking stands, that is the Pod that refused before.
 
 Claim remains ``Pending`` with ``TooLargeForAnyCard``
-   Every candidate card was measured, and each is smaller than
-   ``perGPU.maximumFootprint`` plus ``perGPU.kvFloor`` with nothing else on
-   it, so no candidate Pod can ever hold the model. The message says what
-   the model needs on a card and what the best Pod offers. A Pod with several
-   cards offers what its smallest card holds. Declare less if the
-   figures overstate the model, or give it a pool with larger cards. The claim
-   keeps backing off, and a pod joining the pool or a change to its own spec
-   wakes it at once. Room freed on a card does not, since no card is large
-   enough. While any card cannot be measured, the claim reads
-   ``NoMatchingPods`` instead, since that card might hold it.
+   Every candidate card was measured. Each is smaller than
+   ``perGPU.maximumFootprint`` plus ``perGPU.kvFloor``, even with nothing
+   else on it. So no candidate Pod can ever hold the model. The message says
+   what the model needs on a card and what the best Pod offers. A Pod with
+   several cards offers what its smallest card holds. Declare less if the
+   figures overstate the model, or give it a pool with larger cards.
+
+   The claim keeps backing off. A Pod that joins the pool wakes it at once,
+   and so does a change to its own spec. Room freed on a card does not, since
+   no card is large enough. While any card cannot be measured, the claim
+   reads ``NoMatchingPods`` instead, since that card might hold it.
 
 Claim remains ``Pending`` with ``InvalidPerGPU``
    ``perGPU`` is missing, or one of its figures cannot be used, and the

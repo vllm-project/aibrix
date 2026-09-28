@@ -387,8 +387,8 @@ func aClaimWaitingForHeldRoom(t *testing.T) (*ModelClaimReconciler, *fakeRuntime
 	return r, runtime, pm, pod
 }
 
-// An engine that goes to sleep gives back the KV it had mapped, so a claim
-// that was refused on what the engines hold is tried again at once.
+// An engine that goes to sleep gives back the KV it had mapped. So a claim that
+// was refused on what the engines hold is tried again at once.
 func TestReconcileTriesAWaitingClaimAgainWhenANeighbourGoesToSleep(t *testing.T) {
 	r, runtime, pm, pod := aClaimWaitingForHeldRoom(t)
 	reconcileOnce(t, r, pm.Name)
