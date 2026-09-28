@@ -1315,8 +1315,9 @@ func (r *ModelClaimReconciler) announcePhase(
 // What the pass had read of the runtime is dropped, whether the write was
 // taken or not. A write changes the runtime, or may have. A read-back that
 // fails is kept as the reading of the pass, since a runtime that did not
-// answer is not asked again in the same pass. The price is the division of
-// that pass: it finds the card unread, and leaves it to its next round.
+// answer is not asked again in the same pass. The later steps of that pass
+// pay for it. The division finds the card unread, and leaves it to its next
+// round. The pool policy passes over the pod, and counts a failed evaluation.
 func (r *ModelClaimReconciler) holdToKVLimit(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
@@ -1670,7 +1671,7 @@ func kvLimitWithinRecord(inst *modelv1alpha1.ModelClaimInstance, observed *Runti
 // A reported success is not proof. The CLI the runtime drives exits zero when
 // the segment does not exist, so the only evidence that a limit is in force is
 // reading it back from a later snapshot, which is what the caller does: at once
-// for an engine coming up, and on the next pass otherwise.
+// for an engine that is not on the route, and on the next pass otherwise.
 func (r *ModelClaimReconciler) writeKVLimit(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
