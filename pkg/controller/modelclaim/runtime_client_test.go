@@ -444,27 +444,45 @@ func TestHTTPRuntimeLeavesOnlyTheRuntimeThatDidNotAnswerAlone(t *testing.T) {
 		c.silence.runtimes[late.address()])
 }
 
-func TestHTTPRuntimeCallsAgainARuntimeWhoseCallWasCanceled(t *testing.T) {
-	// A call given up by its caller, as when the controller shuts down, says
-	// nothing about the runtime.
-	c, runtimes := hangingRuntimes(1, time.Now)
+// A call given up by its caller, as when the controller shuts down, says
+// nothing about the runtime. It does not leave the runtime alone, and it does
+// not end the time a runtime is left alone either.
+func TestHTTPRuntimeLearnsNothingFromACallThatWasCanceled(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	c, runtimes := hangingRuntimes(1, func() time.Time { return now })
 	runtime := runtimes[0]
 	c.snapshotTimeout = 5 * time.Second
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		for runtime.requests.Load() == 0 {
-			time.Sleep(time.Millisecond)
-		}
-		cancel()
-	}()
+	canceled := func(call func(ctx context.Context) error) {
+		t.Helper()
+		sent := runtime.requests.Load()
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			for runtime.requests.Load() == sent {
+				time.Sleep(time.Millisecond)
+			}
+			cancel()
+		}()
+		require.ErrorIs(t, call(ctx), context.Canceled)
+	}
+	read := func(ctx context.Context) error {
+		_, err := c.Snapshot(ctx, runtime.host, runtime.port)
+		return err
+	}
 
-	_, err := c.Snapshot(ctx, runtime.host, runtime.port)
-	require.ErrorIs(t, err, context.Canceled)
+	canceled(read)
+	assert.NotContains(t, c.silence.runtimes, runtime.address())
 
-	runtime.answering.Store(true)
-	_, err = c.Snapshot(context.Background(), runtime.host, runtime.port)
-	require.NoError(t, err)
-	runtime.asked(t, 2)
+	c.snapshotTimeout = shortDeadline
+	require.Error(t, read(context.Background()))
+	leftAlone := c.silence.runtimes[runtime.address()]
+	require.Equal(t, silentRuntime{timeouts: 1, until: now.Add(shortestRuntimeSilence)}, leftAlone)
+
+	// A stop is sent to a runtime that is left alone, and is given up.
+	canceled(func(ctx context.Context) error {
+		return c.Deactivate(ctx, runtime.host, runtime.port, &DeactivateRequest{ModelName: "m1"})
+	})
+	assert.Equal(t, leftAlone, c.silence.runtimes[runtime.address()])
+	assert.ErrorIs(t, read(context.Background()), errRuntimeSilent)
 }
 
 func TestRuntimeURLTakesAnIPv6PodAddress(t *testing.T) {
