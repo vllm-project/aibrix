@@ -55,18 +55,23 @@ const (
 	defaultRuntimeHTTPTimeout = 60 * time.Second
 
 	// runtimeSnapshotTimeout bounds one snapshot read. A read normally takes a
-	// fraction of a second. At worst the runtime reads NVML once and gives each
-	// engine's probes 1.5 s, one engine after another, so a pod with seven
-	// busy engines can take longer than this. Calls that change state keep
-	// the longer timeout above.
+	// fraction of a second. It can take longer for two reasons. The runtime
+	// reads NVML once and gives each engine's probes 1.5 s, one engine after
+	// another. Before that, a read waits for the runtime's lock. The runtime
+	// holds that lock while it checks its engines, for up to 1 s each. It
+	// also holds the lock while it starts an engine, puts one to sleep, wakes
+	// one or writes a KV limit. So a read of a pod with five busy engines can
+	// take longer than this. Calls that change state keep the longer timeout
+	// above.
 	runtimeSnapshotTimeout = 10 * time.Second
 
 	// shortestRuntimeSilence is how long a runtime is left alone after a call
 	// to it timed out. It is one round, so the claims that read the same
 	// runtime in that round do not each wait for it. Every further timeout in
 	// a row doubles it, up to runtimeSilenceWindow. A runtime that was slow
-	// once is read again a round later, and one that is down is asked once a
-	// minute.
+	// once is read again a round later. One that stays down is left alone for
+	// a minute at a time, from its fourth timeout on. A runtime that answers
+	// between its timeouts is asked again a round after each of them.
 	shortestRuntimeSilence = 10 * time.Second
 
 	// runtimeSilenceWindow is the longest a runtime that does not answer in
@@ -316,8 +321,14 @@ func newHTTPRuntimeClient(snapshotTimeout time.Duration, now func() time.Time) *
 // runs on the controller's only worker, and every claim with an engine on a pod
 // reads that pod's runtime on every pass. Without it, one runtime that stopped
 // answering would hold each of those passes for a whole timeout. A call that
-// fails fast, such as a refused connection or an error status, is not
-// remembered, since trying again costs nothing.
+// fails in another way, such as a refused connection or an error status, is
+// not remembered. Such a failure comes at once as a rule, so trying again
+// costs little.
+//
+// A runtime is known by its address, since that is what it is called with. So
+// a pod that is given the address of one that is left alone is left alone for
+// the rest of that time. Its timeouts count on from those of the pod before
+// it.
 type runtimeSilence struct {
 	mu       sync.Mutex
 	shortest time.Duration
@@ -349,15 +360,17 @@ func (s *runtimeSilence) silent(runtime string) bool {
 	return s.now().Before(s.runtimes[runtime].until)
 }
 
-// observe records how a call to a runtime ended. A timeout leaves the runtime
-// alone, for twice as long as the timeout before it did, up to the longest
-// silence. Any answer ends that, and so does a call that fails fast. A call
-// that its caller gave up says nothing about the runtime, and changes
+// observe records how a call to a runtime ended. The first timeout leaves the
+// runtime alone for the shortest silence. Each further timeout in a row leaves
+// it alone for twice as long as the one before it did, up to the longest
+// silence. Any answer ends that, and so does a failure that is no timeout. A
+// call that its caller canceled says nothing about the runtime, and changes
 // nothing.
 //
 // Each timeout also drops the runtimes whose time alone ended at least the
-// longest silence ago. So the runtimes of pods that are gone are not kept, and
-// a runtime that times out again that late starts over.
+// longest silence ago. So a runtime whose pod is gone is dropped at the next
+// timeout of any runtime after that. A runtime that times out again that late
+// starts over.
 func (s *runtimeSilence) observe(runtime string, err error) {
 	if errors.Is(err, context.Canceled) {
 		return
