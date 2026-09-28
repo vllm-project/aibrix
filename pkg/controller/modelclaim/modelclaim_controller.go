@@ -548,8 +548,8 @@ func (r *ModelClaimReconciler) ensureActivated(
 			if largest, never := tooLargeForEveryCard(candidates, ledgers, perGPU.minimumReserveBytes()); never &&
 				len(admissible) == 0 {
 				reason = "TooLargeForAnyCard"
-				message = fmt.Sprintf("no card in the pool can hold this model, which needs %s on a card; "+
-					"the largest holds %s", gibibytes(perGPU.minimumReserveBytes()), gibibytes(largest))
+				message = fmt.Sprintf("no candidate pod can hold this model, which needs %s on a card; "+
+					"the best of them offers %s on a card", gibibytes(perGPU.minimumReserveBytes()), gibibytes(largest))
 			}
 			eventReason := reason
 			if len(failed) > 0 {

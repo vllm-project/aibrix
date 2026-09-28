@@ -810,8 +810,9 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
 Claim remains ``Pending`` with ``TooLargeForAnyCard``
    Every candidate card was measured, and each is smaller than
    ``perGPU.maximumFootprint`` plus ``perGPU.kvFloor`` with nothing else on
-   it, so no card in the pool can ever hold the model. The message says what
-   the model needs and what the largest card holds. Declare less if the
+   it, so no candidate Pod can ever hold the model. The message says what
+   the model needs on a card and what the best Pod offers. A Pod with several
+   cards offers what its smallest card holds. Declare less if the
    figures overstate the model, or give it a pool with larger cards. The claim
    keeps backing off, and a pod joining the pool or a change to its own spec
    wakes it at once. Room freed on a card does not, since no card is large
