@@ -805,7 +805,7 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    just arrived, so room that appears without a signal usually goes to the
    newer claim. Nothing holds room for a claim, so a large claim can keep
    waiting while smaller ones keep fitting. And a wake has every waiting claim
-   in the namespace read every candidate runtime once.
+   whose candidates changed read each of their runtimes once.
 
 Claim remains ``Pending`` with ``TooLargeForAnyCard``
    Every candidate card was measured, and each is smaller than
