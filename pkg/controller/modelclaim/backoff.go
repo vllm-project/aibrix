@@ -72,11 +72,39 @@ type placementAttempt struct {
 	tooLarge bool
 	// failedToStart is whether the claim found a card, and its engine could
 	// not be started there. Room freed on a card does not help it either. A
-	// pod that joins may be able to start the engine.
+	// pod that joins or turns ready may be able to start the engine.
 	failedToStart bool
 	// written is whether the claim's status was written after the refusal, so
 	// that the claim says why it waits.
 	written bool
+}
+
+// whatHelps says which changes of the pool can help a waiting claim.
+type whatHelps int
+
+const (
+	// anyRoom helps a claim that waits for room: a pod that joined or turned
+	// ready, and room freed on a card.
+	anyRoom whatHelps = iota
+	// aPodThatAnswers helps a claim whose engine could not be started: a pod
+	// that joined, or one that turned ready. Such a claim had found a card,
+	// so room freed on a card changes nothing for it.
+	aPodThatAnswers
+	// aPodThatJoined helps a claim no card could ever hold. Every card was
+	// measured then, so room freed on a card too small for it changes
+	// nothing, and neither does a pod that turned ready.
+	aPodThatJoined
+)
+
+// helpedBy says what can help the claim that waits on this attempt.
+func (a placementAttempt) helpedBy() whatHelps {
+	switch {
+	case a.tooLarge:
+		return aPodThatJoined
+	case a.failedToStart:
+		return aPodThatAnswers
+	}
+	return anyRoom
 }
 
 // roomSignature is the pool as a waiting claim last saw it: for each candidate
@@ -121,8 +149,7 @@ func (b *placementBackoff) due(claim types.NamespacedName, generation int64, roo
 	if !waiting {
 		return true, 0
 	}
-	if generation != attempt.generation ||
-		roomMayHaveAppeared(attempt.room, room, attempt.tooLarge || attempt.failedToStart) {
+	if generation != attempt.generation || roomMayHaveAppeared(attempt.room, room, attempt.helpedBy()) {
 		delete(b.attempts, claim)
 		return true, 0
 	}
@@ -162,8 +189,8 @@ func (b *placementBackoff) refusedAsTooLarge(
 // started there, and returns how long it waits before its next try. It waits
 // as a refused claim does. Each try divides the card for the model and gives
 // the room back, so a claim that tried every round would move its neighbours'
-// limits every round. The pool is remembered, so that a pod joining it wakes
-// the claim.
+// limits every round. The pool is remembered, so that a pod that joins it or
+// turns ready wakes the claim.
 func (b *placementBackoff) failedToStart(
 	claim types.NamespacedName,
 	generation int64,
@@ -240,18 +267,17 @@ func (r *ModelClaimReconciler) backoff() *placementBackoff {
 	return newPlacementBackoff(time.Now)
 }
 
-// roomMayHaveAppeared compares the pool with how a waiting claim last saw it.
-// A pod that left frees nothing for anyone, so it does not count. An engine
-// that went to sleep keeps its seat, and gives back the KV it had mapped. A
-// pod that turned ready has a runtime that answers, which it may not have had
-// when the claim was refused.
-//
-// With onlyAPodHelps, only a pod that joined counts. That is so for a claim
-// no card could ever hold: every card was measured then, and room freed on a
-// card too small for it changes nothing. It is so for a claim whose engine
-// could not be started, which had found a card. Without both descriptions
+// roomMayHaveAppeared compares the pool with how a waiting claim last saw it,
+// and counts the changes that can help the claim. Without both descriptions,
 // there is nothing to compare.
-func roomMayHaveAppeared(before, now roomSignature, onlyAPodHelps bool) bool {
+//
+// A pod that joined counts for every claim. A pod that left frees nothing for
+// anyone, so it does not count. A pod that turned ready has a runtime that
+// answers, which it may not have had when the claim was refused.
+//
+// Room on a card counts for a claim that waits for room. An engine that went
+// to sleep keeps its seat, and gives back the KV it had mapped.
+func roomMayHaveAppeared(before, now roomSignature, helps whatHelps) bool {
 	if before == nil || now == nil {
 		return false
 	}
@@ -260,12 +286,17 @@ func roomMayHaveAppeared(before, now roomSignature, onlyAPodHelps bool) bool {
 		if !seen {
 			return true
 		}
-		if onlyAPodHelps {
+		if helps == aPodThatJoined {
+			continue
+		}
+		if taken.ready && !was.ready {
+			return true
+		}
+		if helps == aPodThatAnswers {
 			continue
 		}
 		if taken.instances < was.instances || taken.awake < was.awake ||
-			taken.undeclared < was.undeclared || taken.promisedBytes < was.promisedBytes ||
-			taken.ready && !was.ready {
+			taken.undeclared < was.undeclared || taken.promisedBytes < was.promisedBytes {
 			return true
 		}
 	}
