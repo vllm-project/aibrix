@@ -24,6 +24,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -135,14 +136,16 @@ func TestLeastRequest(t *testing.T) {
 
 // A pool that mixes a data-parallel (multi-port) pod with a plain single-port
 // pod takes the per-port routing path. The single-port pod must be selectable
-// when it is the least loaded candidate, in the same "pod/port" key format the
-// multi-port pods use. pod-b's count is non-zero so the assertion proves the
+// when it is the least loaded candidate, in the same "<pod key>/<port>" key format
+// the multi-port pods use. pod-b's count is non-zero so the assertion proves the
 // single-port branch reads the live counter rather than the cold-start default.
 func TestLeastRequest_MixedPortPool_SelectsLeastLoadedSinglePortPod(t *testing.T) {
 	model := testModelName
 	podA := newPod("pod-a", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
 	podA.Spec.Containers = []v1.Container{{Env: []v1.EnvVar{{Name: "data-parallel-size", Value: "2"}}}}
+	podA.Namespace = "default"
 	podB := newPod("pod-b", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	podB.Namespace = "default"
 	c := cache.NewWithPodsMetricsForTest(
 		[]*v1.Pod{podA, podB},
 		model,
@@ -157,12 +160,12 @@ func TestLeastRequest_MixedPortPool_SelectsLeastLoadedSinglePortPod(t *testing.T
 			},
 		})
 	portsMap := map[string][]int{
-		"pod-a": {8000, 8001},
-		"pod-b": {8000},
+		"default/pod-a": {8000, 8001},
+		"default/pod-b": {8000},
 	}
 
 	counts := getRequestCountsWithPort(c, []*v1.Pod{podA, podB}, portsMap)
-	assert.Equal(t, map[string]int{"pod-a/8000": 5, "pod-a/8001": 5, "pod-b/8000": 3}, counts)
+	assert.Equal(t, map[string]int{"default/pod-a/8000": 5, "default/pod-a/8001": 5, "default/pod-b/8000": 3}, counts)
 
 	r := &leastRequestRouter{cache: c}
 	ctx := types.NewRoutingContext(context.Background(), RouterLeastRequest, model, "hello", "req-mixed-port", "")
@@ -171,4 +174,42 @@ func TestLeastRequest_MixedPortPool_SelectsLeastLoadedSinglePortPod(t *testing.T
 	assert.NoError(t, err)
 	assert.Equal(t, "2.2.2.2:8000", address)
 	assert.Equal(t, 8000, ctx.TargetPort())
+}
+
+// Same-named pods in two namespaces, one of them data-parallel, must keep their
+// own ports: the idle single-port pod is selected on its own port, and the port
+// lookup for either pod only sees that pod's ports.
+func TestLeastRequest_DataParallelSameNamedPodsInTwoNamespaces(t *testing.T) {
+	dpPod := newPod("worker-0", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	dpPod.Namespace = "team-a"
+	dpPod.Spec.Containers = []v1.Container{{Env: []v1.EnvVar{{Name: "data-parallel-size", Value: "2"}}}}
+	plainPod := newPod("worker-0", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "9000"})
+	plainPod.Namespace = "team-b"
+	pods := []*v1.Pod{dpPod, plainPod}
+
+	// The test cache keys metrics by pod name, so both pods read these: the
+	// data-parallel pod its per-port counts, the single-port pod its running count.
+	c := cache.NewWithPodsMetricsForTest(pods, testModelName, map[string]map[string]metrics.MetricValue{
+		"worker-0": {
+			metrics.RealtimeNumRequestsRunning:           &metrics.SimpleMetricValue{Value: 0},
+			metrics.RealtimeNumRequestsRunning + "/8000": &metrics.SimpleMetricValue{Value: 5},
+			metrics.RealtimeNumRequestsRunning + "/8001": &metrics.SimpleMetricValue{Value: 3},
+		},
+	})
+	podList := &utils.PodArray{Pods: pods}
+	ports := podList.ListPortsForPod()
+
+	assert.Equal(t, map[string]int{"team-a/worker-0/8000": 5, "team-a/worker-0/8001": 3, "team-b/worker-0/9000": 0},
+		getRequestCountsWithPort(c, pods, ports))
+	assert.Equal(t, 8001, selectTargetPortForPodWithLeastRequestCount(c, dpPod, ports))
+	assert.Equal(t, 9000, selectTargetPortForPodWithLeastRequestCount(c, plainPod, ports))
+
+	r := &leastRequestRouter{cache: c}
+	ctx := types.NewRoutingContext(context.Background(), RouterLeastRequest, testModelName, "hello", "req-dp-same-name", "")
+	address, err := r.Route(ctx, podList)
+	assert.NoError(t, err)
+	assert.Equal(t, "2.2.2.2:9000", address)
+	if assert.NotNil(t, ctx.TargetPod()) {
+		assert.Equal(t, "team-b", ctx.TargetPod().Namespace)
+	}
 }

@@ -82,6 +82,9 @@ type po2PodList struct {
 
 func (l *po2PodList) ListPortsForPod() map[string][]int { return l.ports }
 
+// po2PodKey is the ListPortsForPod key of a po2TestPods pod.
+func po2PodKey(name string) string { return utils.GeneratePodKey(po2Namespace, name) }
+
 func newPo2PodList(pods []*v1.Pod, ports map[string][]int) *po2PodList {
 	return &po2PodList{mockPodList: newMockPodList(pods, nil), ports: ports}
 }
@@ -269,7 +272,7 @@ func TestPowerOfTwoRouter_ChoosesLeastLoadedPortOfTheChosenPod(t *testing.T) {
 			"pod1/8000": 5, "pod1/8001": 2, "pod1/8002": 9, "pod1/8003": 2,
 		}}
 		router := NewPowerOfTwoRouterWithCache(fake)
-		ports := map[string][]int{"pod1": {8000, 8001, 8002, 8003}}
+		ports := map[string][]int{po2PodKey("pod1"): {8000, 8001, 8002, 8003}}
 
 		ctx := newPo2Ctx("req-dp")
 		addr, err := router.Route(ctx, newPo2PodList(po2TestPods("pod1"), ports))
@@ -290,7 +293,7 @@ func TestPowerOfTwoRouter_ChoosesLeastLoadedPortOfTheChosenPod(t *testing.T) {
 			},
 		}
 		router := NewPowerOfTwoRouterWithCache(fake)
-		ports := map[string][]int{"pod1": {8000, 8001}, "pod2": {8000, 8001}}
+		ports := map[string][]int{po2PodKey("pod1"): {8000, 8001}, po2PodKey("pod2"): {8000, 8001}}
 
 		ctx := newPo2Ctx("req-dp-pods")
 		addr, err := router.Route(ctx, newPo2PodList(po2TestPods("pod1", "pod2"), ports))
@@ -305,7 +308,7 @@ func TestPowerOfTwoRouter_ChoosesLeastLoadedPortOfTheChosenPod(t *testing.T) {
 		router := NewPowerOfTwoRouterWithCache(&po2FakeCache{})
 
 		ctx := newPo2Ctx("req-one-port")
-		addr, err := router.Route(ctx, newPo2PodList(po2TestPods("pod1"), map[string][]int{"pod1": {8000}}))
+		addr, err := router.Route(ctx, newPo2PodList(po2TestPods("pod1"), map[string][]int{po2PodKey("pod1"): {8000}}))
 
 		require.NoError(t, err)
 		assert.Equal(t, 8000, ctx.TargetPort())
@@ -316,7 +319,7 @@ func TestPowerOfTwoRouter_ChoosesLeastLoadedPortOfTheChosenPod(t *testing.T) {
 		router := NewPowerOfTwoRouterWithCache(&po2FakeCache{})
 
 		ctx := newPo2Ctx("req-no-ports")
-		addr, err := router.Route(ctx, newPo2PodList(po2TestPods("pod1"), map[string][]int{"pod1": {}}))
+		addr, err := router.Route(ctx, newPo2PodList(po2TestPods("pod1"), map[string][]int{po2PodKey("pod1"): {}}))
 
 		require.NoError(t, err)
 		assert.Zero(t, ctx.TargetPort(), "no port was chosen, so the default is used")
@@ -460,7 +463,7 @@ func TestPowerOfTwoRouter_TwoPodsStayWithinOneOfEachOther(t *testing.T) {
 // after-every-request check below would flake. Choosing a port from per-port numbers is what
 // TestPowerOfTwoRouter_ChoosesLeastLoadedPortOfTheChosenPod checks.
 func TestPowerOfTwoRouter_RequestsSpreadEvenlyOverPorts(t *testing.T) {
-	g := newPo2Gateway(t, po2TestPods("pod1"), map[string][]int{"pod1": {8000, 8001}})
+	g := newPo2Gateway(t, po2TestPods("pod1"), map[string][]int{po2PodKey("pod1"): {8000, 8001}})
 	const requests = 40
 
 	routed := map[int]int{}

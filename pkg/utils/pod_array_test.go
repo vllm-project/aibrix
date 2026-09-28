@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
+	"github.com/vllm-project/aibrix/pkg/constants"
 	v1 "k8s.io/api/core/v1"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -61,6 +62,21 @@ var _ = Describe("PodArray", func() {
 		podArray := &PodArray{Pods: pods}
 		Expect(len(podArray.All())).To(Equal(1))
 		Expect(&podArray.All()[0]).To(Equal(&pods[0]))
+	})
+
+	It("Should ListPortsForPod() keep same-named pods in different namespaces apart", func() {
+		podA := getPodWithDeployment("deployment")
+		podA.Namespace = "team-a"
+		podA.Labels[constants.ModelLabelPort] = "8000"
+		podA.Spec.Containers[0].Env = []v1.EnvVar{{Name: "data-parallel-size", Value: "2"}}
+		podB := getPodWithDeployment("deployment")
+		podB.Namespace = "team-b"
+		podB.Labels[constants.ModelLabelPort] = "9000"
+		podArray := &PodArray{Pods: []*v1.Pod{podA, podB}}
+		Expect(podArray.ListPortsForPod()).To(Equal(map[string][]int{
+			"team-a/deployment-pod": {8000, 8001},
+			"team-b/deployment-pod": {9000},
+		}))
 	})
 
 	It("Should Index() skip nil pods", func() {
