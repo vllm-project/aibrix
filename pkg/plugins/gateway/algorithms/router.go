@@ -1085,6 +1085,7 @@ func (rm *RouterManager) Init() {
 	if provider := rm.routerFactory[RouterExternal]; provider != nil {
 		router, err := provider(RouterExternal.NewContext(context.Background(), "", "", "init", ""))
 		if err != nil {
+			rm.initErrors[RouterExternal] = err
 			rm.routerFactory[RouterExternal] = nil
 		} else if configured, ok := router.(interface{ configuredFallback() types.RoutingAlgorithm }); ok {
 			fallback := configured.configuredFallback()

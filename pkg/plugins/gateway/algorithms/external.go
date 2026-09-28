@@ -13,12 +13,12 @@ package routingalgorithms
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -105,18 +105,6 @@ func (r *externalRouter) SubscribedMetrics() []string {
 }
 
 func (r *externalRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
-	if r.cfg.policyMode == PolicyAdvisory && pods.Len() == 1 {
-		ports := normalizeExternalPorts(pods.ListPortsForPod()[pods.All()[0].Name])
-		if len(ports) == 0 {
-			ports = normalizeExternalPorts(utils.GetPortsForPod(pods.All()[0]))
-		}
-		if len(ports) == 1 {
-			ctx.SetTargetPort(ports[0])
-			ctx.SetTargetPod(pods.All()[0])
-			return ctx.TargetAddress(), nil
-		}
-	}
-
 	request, snapshots, err := buildExternalDecisionRequest(r.cfg, r.cache, ctx, pods)
 	if err != nil {
 		return r.handleFailure(ctx, pods, externalOutcomeInvalidResponse, err)
@@ -128,14 +116,27 @@ func (r *externalRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		return r.handleFailure(ctx, pods, externalOutcomeCircuitOpen, err)
 	}
 	r.metrics.setCircuit(r.circuit.currentState())
+	circuitSettled := false
+	defer func() {
+		if !circuitSettled {
+			r.circuit.cancel(circuitToken)
+			r.metrics.setCircuit(r.circuit.currentState())
+		}
+	}()
 	if !r.bulkhead.acquire() {
 		r.circuit.cancel(circuitToken)
+		circuitSettled = true
 		return r.handleFailure(ctx, pods, externalOutcomeBulkheadRejected, errExternalBulkheadRejected)
 	}
-	r.metrics.inflight.Inc()
-	body, duration, exchangeErr := executeExternalRequest(ctx.Context, r.client, r.cfg, request, ctx.ReqHeaders["traceparent"])
-	r.metrics.inflight.Dec()
-	r.bulkhead.release()
+	var body []byte
+	var duration time.Duration
+	var exchangeErr error
+	func() {
+		r.metrics.inflight.Inc()
+		defer r.bulkhead.release()
+		defer r.metrics.inflight.Dec()
+		body, duration, exchangeErr = executeExternalRequest(ctx.Context, r.client, r.cfg, request, ctx.ReqHeaders["traceparent"])
+	}()
 	if duration > 0 {
 		r.metrics.duration.Observe(duration.Seconds())
 	}
@@ -149,10 +150,12 @@ func (r *externalRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 			} else {
 				r.circuit.cancel(circuitToken)
 			}
+			circuitSettled = true
 			r.metrics.setCircuit(r.circuit.currentState())
 			return r.handleFailure(ctx, pods, classified.outcome, exchangeErr)
 		}
 		r.circuit.failure(circuitToken)
+		circuitSettled = true
 		r.metrics.setCircuit(r.circuit.currentState())
 		return r.handleFailure(ctx, pods, externalOutcomeTransportError, exchangeErr)
 	}
@@ -160,10 +163,12 @@ func (r *externalRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	decision, err := validateExternalDecision(body, ctx.RequestID, r.cfg.policyMode, snapshots)
 	if err != nil {
 		r.circuit.failure(circuitToken)
+		circuitSettled = true
 		r.metrics.setCircuit(r.circuit.currentState())
 		return r.handleFailure(ctx, pods, externalOutcomeInvalidResponse, err)
 	}
 	r.circuit.success(circuitToken)
+	circuitSettled = true
 	r.metrics.setCircuit("closed")
 	if ctx.Span != nil {
 		attrs := []attribute.KeyValue{

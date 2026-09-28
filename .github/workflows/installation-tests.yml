@@ -80,6 +80,9 @@ jobs:
           - image: vllm-mock
             dockerfile: development/app/Dockerfile
             context: development/app
+          - image: external-router-e2e
+            dockerfile: test/e2e/gateway/routing/testdata/external-router/Dockerfile
+            context: test/e2e/gateway/routing/testdata/external-router
     steps:
       - name: Check out code
         uses: actions/checkout@v6
@@ -134,7 +137,7 @@ jobs:
       - name: Verify image artifacts
         run: |
           missing=()
-          for image in controller-manager gateway-plugins runtime metadata-service vllm-mock; do
+          for image in controller-manager gateway-plugins runtime metadata-service vllm-mock external-router-e2e; do
             if [ ! -f "${image}-image/${image}.tar" ]; then
               missing+=("${image}")
             fi
@@ -220,13 +223,13 @@ jobs:
           set -euo pipefail
           sha="${{ github.sha }}"
           # Load tarballs into the local Docker daemon in parallel (I/O-bound).
-          for image in controller-manager gateway-plugins runtime metadata-service vllm-mock; do
+          for image in controller-manager gateway-plugins runtime metadata-service vllm-mock external-router-e2e; do
             docker load < "${image}-image/${image}.tar" &
           done
           wait
 
           # Same digest as :sha; manifests still reference :nightly in places (e.g. job templates).
-          for image in controller-manager gateway-plugins runtime metadata-service vllm-mock; do
+          for image in controller-manager gateway-plugins runtime metadata-service vllm-mock external-router-e2e; do
             docker tag "aibrix/${image}:${sha}" "aibrix/${image}:nightly"
           done
 
@@ -237,6 +240,7 @@ jobs:
             "aibrix/metadata-service:${sha}" "aibrix/metadata-service:nightly" \
             "aibrix/runtime:${sha}" "aibrix/runtime:nightly" \
             "aibrix/vllm-mock:${sha}" "aibrix/vllm-mock:nightly" \
+            "aibrix/external-router-e2e:${sha}" "aibrix/external-router-e2e:nightly" \
             --name installation-test
 
           docker build \

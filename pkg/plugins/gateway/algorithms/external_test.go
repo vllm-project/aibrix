@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -87,6 +88,12 @@ func TestExecuteExternalRequestLimitsAndCancellation(t *testing.T) {
 }
 
 type externalTestRouterFunc func(*types.RoutingContext, types.PodList) (string, error)
+
+type externalPanickingDoer struct{}
+
+func (externalPanickingDoer) Do(*http.Request) (*http.Response, error) {
+	panic("external transport panic")
+}
 
 func (f externalTestRouterFunc) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
 	return f(ctx, pods)
@@ -220,19 +227,47 @@ func TestExternalRouterPolicies(t *testing.T) {
 }
 
 func TestExternalRouterSingleCandidateMode(t *testing.T) {
-	pod := externalTestPod("default", "a", "10.0.0.1", "zone-a")
-	pods := &utils.PodArray{Pods: []*v1.Pod{pod}}
 	cfg := externalRouterTestConfig("http://unused.invalid", PolicyAdvisory, FailureFailClosed)
 	router := newExternalRouterWithDependencies(cfg, nil, nil, nil, prometheus.NewRegistry())
-	ctx := types.NewRoutingContext(context.Background(), RouterExternal, "llama", "", "single", "")
-	address, err := router.Route(ctx, pods)
-	require.NoError(t, err)
-	require.Equal(t, "10.0.0.1:8000", address)
 	require.True(t, router.BypassSingleCandidate())
 
 	cfg.policyMode = PolicyAuthoritative
 	authoritative := newExternalRouterWithDependencies(cfg, nil, nil, nil, prometheus.NewRegistry())
 	require.False(t, authoritative.BypassSingleCandidate())
+}
+
+func TestExternalCircuitIgnoresStaleResults(t *testing.T) {
+	now := time.Unix(100, 0)
+	circuit := newExternalCircuit(2, time.Second)
+	circuit.now = func() time.Time { return now }
+
+	lateSuccess, err := circuit.acquire()
+	require.NoError(t, err)
+	openingFailure, err := circuit.acquire()
+	require.NoError(t, err)
+	circuit.failure(openingFailure)
+	thresholdFailure, err := circuit.acquire()
+	require.NoError(t, err)
+	circuit.failure(thresholdFailure)
+	require.Equal(t, "open", circuit.currentState())
+
+	circuit.success(lateSuccess)
+	require.Equal(t, "open", circuit.currentState(), "a success from the previous generation must not close the breaker")
+
+	now = now.Add(time.Second)
+	probe, err := circuit.acquire()
+	require.NoError(t, err)
+	circuit.failure(openingFailure)
+	_, err = circuit.acquire()
+	require.ErrorIs(t, err, errExternalCircuitOpen, "a stale failure must not release the active half-open probe")
+
+	circuit.cancel(probe)
+	require.Equal(t, "open", circuit.currentState())
+	_, err = circuit.acquire()
+	require.ErrorIs(t, err, errExternalCircuitOpen, "cancelling a probe must restart the open cooldown")
+	now = now.Add(time.Second)
+	_, err = circuit.acquire()
+	require.NoError(t, err)
 }
 
 func TestExternalCircuitTransitions(t *testing.T) {
@@ -269,6 +304,31 @@ func TestExternalBulkhead(t *testing.T) {
 	bulkhead.release()
 	require.True(t, bulkhead.acquire())
 	bulkhead.release()
+}
+
+func TestExternalRouterReleasesResilienceStateOnPanic(t *testing.T) {
+	pod := externalTestPod("default", "a", "10.0.0.1", "zone-a")
+	cfg := externalRouterTestConfig("http://unused.invalid", PolicyAuthoritative, FailureFailClosed)
+	cfg.maxInflight = 1
+	router := newExternalRouterWithDependencies(cfg, nil, externalPanickingDoer{}, nil, prometheus.NewRegistry())
+	now := time.Unix(100, 0)
+	router.circuit.now = func() time.Time { return now }
+	first, err := router.circuit.acquire()
+	require.NoError(t, err)
+	router.circuit.failure(first)
+	second, err := router.circuit.acquire()
+	require.NoError(t, err)
+	router.circuit.failure(second)
+	now = now.Add(cfg.openDuration)
+
+	ctx := types.NewRoutingContext(context.Background(), RouterExternal, "llama", "", "panic", "")
+	require.Panics(t, func() {
+		_, _ = router.Route(ctx, &utils.PodArray{Pods: []*v1.Pod{pod}})
+	})
+	require.True(t, router.bulkhead.acquire(), "panic must release the bulkhead permit")
+	router.bulkhead.release()
+	require.Equal(t, float64(0), testutil.ToFloat64(router.metrics.inflight))
+	require.Equal(t, "open", router.circuit.currentState(), "panic must release and cool down the half-open probe")
 }
 
 func TestExternalMetricsUseOnlyFixedLabels(t *testing.T) {

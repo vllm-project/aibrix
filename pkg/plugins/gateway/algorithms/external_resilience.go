@@ -38,7 +38,8 @@ func (b *externalBulkhead) release() {
 }
 
 type externalCircuitToken struct {
-	halfOpen bool
+	halfOpen   bool
+	generation uint64
 }
 
 type externalCircuit struct {
@@ -50,6 +51,7 @@ type externalCircuit struct {
 	failures     int
 	openedAt     time.Time
 	probing      bool
+	generation   uint64
 }
 
 func newExternalCircuit(threshold int, openDuration time.Duration) *externalCircuit {
@@ -66,20 +68,20 @@ func (c *externalCircuit) acquire() (externalCircuitToken, error) {
 	defer c.mu.Unlock()
 	switch c.state {
 	case "closed":
-		return externalCircuitToken{}, nil
+		return externalCircuitToken{generation: c.generation}, nil
 	case "open":
 		if c.now().Sub(c.openedAt) < c.openDuration || c.probing {
 			return externalCircuitToken{}, errExternalCircuitOpen
 		}
 		c.state = "half_open"
 		c.probing = true
-		return externalCircuitToken{halfOpen: true}, nil
+		return externalCircuitToken{halfOpen: true, generation: c.generation}, nil
 	case "half_open":
 		if c.probing {
 			return externalCircuitToken{}, errExternalCircuitOpen
 		}
 		c.probing = true
-		return externalCircuitToken{halfOpen: true}, nil
+		return externalCircuitToken{halfOpen: true, generation: c.generation}, nil
 	default:
 		return externalCircuitToken{}, errExternalCircuitOpen
 	}
@@ -88,17 +90,37 @@ func (c *externalCircuit) acquire() (externalCircuitToken, error) {
 func (c *externalCircuit) success(token externalCircuitToken) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.state = "closed"
-	c.failures = 0
-	c.probing = false
+	if token.generation != c.generation {
+		return
+	}
+	if token.halfOpen {
+		if c.state != "half_open" || !c.probing {
+			return
+		}
+		c.state = "closed"
+		c.failures = 0
+		c.probing = false
+		return
+	}
+	if c.state == "closed" {
+		c.failures = 0
+	}
 }
 
 func (c *externalCircuit) failure(token externalCircuitToken) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.probing = false
+	if token.generation != c.generation {
+		return
+	}
 	if token.halfOpen {
+		if c.state != "half_open" || !c.probing {
+			return
+		}
 		c.openLocked()
+		return
+	}
+	if c.state != "closed" {
 		return
 	}
 	c.failures++
@@ -112,14 +134,18 @@ func (c *externalCircuit) cancel(token externalCircuitToken) {
 		return
 	}
 	c.mu.Lock()
-	c.probing = false
-	c.state = "open"
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+	if token.generation != c.generation || c.state != "half_open" || !c.probing {
+		return
+	}
+	c.openLocked()
 }
 
 func (c *externalCircuit) openLocked() {
 	c.state = "open"
 	c.openedAt = c.now()
+	c.probing = false
+	c.generation++
 }
 
 func (c *externalCircuit) currentState() string {

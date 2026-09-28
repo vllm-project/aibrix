@@ -77,12 +77,12 @@ if [ -n "$INSTALL_AIBRIX" ]; then
     kind load docker-image aibrix/inplace-e2e:v1 aibrix/inplace-e2e:v2
   fi
 
-  if [ "$AIBRIX_E2E_SUITE" = "all" ] || [ "$AIBRIX_E2E_SUITE" = "gateway" ]; then
-    docker build -t aibrix/external-router-e2e:nightly \
-      -f test/e2e/gateway/routing/testdata/external-router/Dockerfile \
-      test/e2e/gateway/routing/testdata/external-router
-    kind load docker-image aibrix/external-router-e2e:nightly
-  fi
+  # config/test always installs this fixture, so every install path must make
+  # its image available even when the selected suite does not run its tests.
+  docker build -t aibrix/external-router-e2e:nightly \
+    -f test/e2e/gateway/routing/testdata/external-router/Dockerfile \
+    test/e2e/gateway/routing/testdata/external-router
+  kind load docker-image aibrix/external-router-e2e:nightly
 
   kubectl apply -k config/dependency --server-side
   kubectl apply -k config/test

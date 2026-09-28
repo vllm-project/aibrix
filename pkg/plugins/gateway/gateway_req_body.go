@@ -266,6 +266,7 @@ func buildTargetSelectionErrorResponse(routingCtx *types.RoutingContext, request
 		return replicaInflightExceededResponse(model, limit)
 	}
 	if externalResponse, ok := buildExternalRouterErrorResponse(routingCtx, requestID, err); ok {
+		klog.ErrorS(err, "external routing decision failed", "requestID", requestID, "model", model)
 		return externalResponse
 	}
 	return nil

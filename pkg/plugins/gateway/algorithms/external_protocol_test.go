@@ -8,6 +8,7 @@ package routingalgorithms
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"strings"
@@ -137,6 +138,36 @@ func TestBuildExternalDecisionRequest(t *testing.T) {
 	require.NotContains(t, body, "authorization")
 	require.NotContains(t, body, "private")
 	require.NotContains(t, body, "notAllowed")
+}
+
+func TestBuildExternalDecisionRequestKeepsNamespacePortsSeparate(t *testing.T) {
+	podA := externalTestPod("ns-a", "same-name", "10.0.0.1", "zone-a")
+	podB := externalTestPod("ns-b", "same-name", "10.0.0.2", "zone-b")
+	podA.Labels[constants.ModelLabelPort] = "8000"
+	podB.Labels[constants.ModelLabelPort] = "9000"
+	cfg := externalRouterConfig{policyMode: PolicyAuthoritative, candidateMetrics: map[string]struct{}{}}
+	ctx := types.NewRoutingContext(context.Background(), RouterExternal, "llama", "", "same-name", "")
+
+	request, snapshots, err := buildExternalDecisionRequest(cfg, nil, ctx, &utils.PodArray{Pods: []*v1.Pod{podB, podA}})
+	require.NoError(t, err)
+	require.Equal(t, []int{8000}, request.Spec.Candidates[0].Ports)
+	require.Equal(t, []int{9000}, request.Spec.Candidates[1].Ports)
+	_, hasA8000 := snapshots["ns-a/same-name"].ports[8000]
+	_, hasA9000 := snapshots["ns-a/same-name"].ports[9000]
+	require.True(t, hasA8000)
+	require.False(t, hasA9000)
+}
+
+func TestFilterExternalAttributesDeterministicallyLimitsEntries(t *testing.T) {
+	input := make(map[string]string, 33)
+	for i := 32; i >= 0; i-- {
+		input[fmt.Sprintf("key%02d", i)] = "value"
+	}
+
+	filtered := filterExternalAttributes(input)
+	require.Len(t, filtered, 32)
+	require.Contains(t, filtered, "key00")
+	require.NotContains(t, filtered, "key32")
 }
 
 func TestValidateExternalDecision(t *testing.T) {

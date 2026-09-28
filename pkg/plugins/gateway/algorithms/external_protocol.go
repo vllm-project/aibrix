@@ -133,7 +133,6 @@ func buildExternalDecisionRequest(cfg externalRouterConfig, metricCache cache.Ca
 
 	candidates := make([]externalCandidate, 0, len(readyPods))
 	snapshots := make(map[string]externalCandidateSnapshot, len(readyPods))
-	listPorts := pods.ListPortsForPod()
 	for _, pod := range readyPods {
 		id := externalPodID(pod)
 		if pod == nil || pod.Namespace == "" || pod.Name == "" || len(id) > 256 || !utf8.ValidString(id) {
@@ -142,10 +141,7 @@ func buildExternalDecisionRequest(cfg externalRouterConfig, metricCache cache.Ca
 		if _, duplicate := snapshots[id]; duplicate {
 			return externalDecisionRequest{}, nil, fmt.Errorf("duplicate external candidate identity %q", id)
 		}
-		ports := normalizeExternalPorts(listPorts[pod.Name])
-		if len(ports) == 0 {
-			ports = normalizeExternalPorts(utils.GetPortsForPod(pod))
-		}
+		ports := normalizeExternalPorts(utils.GetPortsForPod(pod))
 		if len(ports) == 0 {
 			return externalDecisionRequest{}, nil, fmt.Errorf("candidate %s has no routable port", id)
 		}
@@ -222,8 +218,15 @@ func externalCandidateAttributes(allowlist []string, labels map[string]string) m
 }
 
 func filterExternalAttributes(input map[string]string) map[string]string {
+	keys := make([]string, 0, len(input))
+	for key := range input {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
 	output := make(map[string]string)
-	for key, value := range input {
+	for _, key := range keys {
+		value := input[key]
 		if externalAttributeKeyRE.MatchString(key) && validExternalAttributeValue(value) && len(output) < 32 {
 			output[key] = value
 		}
