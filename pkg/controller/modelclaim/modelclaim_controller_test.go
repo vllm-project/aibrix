@@ -2302,6 +2302,14 @@ func TestReconcileRecordsNoMoreThanTheCardWhenARecordCannotBeWritten(t *testing.
 	}
 	assert.LessOrEqual(t, promised, int64(1000))
 	assert.Equal(t, int64(60), getModel(t, r, "a-grows").Status.Instances[0].KVLimitBytes)
+	// The shrink stays in force, and nothing grows. The quiet engine keeps
+	// the 100 it holds, and gets a seventh of the 400 that are left over.
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, "c-shrinks", runtime.kvLimitCalls[0].ModelName)
+	assert.Equal(t, int64(157), runtime.kvLimitCalls[0].LimitBytes)
+	for _, engine := range snapshot.Models {
+		assert.Equal(t, map[string]int64{"a-grows": 60, "c-shrinks": 157}[engine.ModelName], engine.KVCapacityBytes)
+	}
 }
 
 func TestRecordKVLimitTriesAgainAfterAConflict(t *testing.T) {
