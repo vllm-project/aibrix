@@ -44,6 +44,11 @@ type RoutingConfig struct {
 	// requests routed with this profile. Flat, next to the promptLenBucket*
 	// fields it interacts with.
 	PromptLengthBucketing *bool `json:"promptLengthBucketing,omitempty"`
+	// BucketServe and BucketServeMode override AIBRIX_BUCKET_SERVE and
+	// AIBRIX_BUCKET_SERVE_MODE for requests routed with this profile. Flat,
+	// next to the bucketing switch whose candidates the plan re-orders.
+	BucketServe     *bool   `json:"bucketServe,omitempty"`
+	BucketServeMode *string `json:"bucketServeMode,omitempty"`
 	// PrefillScorePolicy and DecodeScorePolicy select the PD scoring policies
 	// for requests routed with this profile.
 	PrefillScorePolicy string `json:"prefillScorePolicy,omitempty"`
