@@ -260,9 +260,9 @@ func (s *cardDivisionState) accountedFor(card types.NamespacedName) {
 // returns how many have failed in a row.
 //
 // A run of failures ends with a division that works. It also ends when no
-// division of the card has failed for as long as lies between two warnings.
-// Most rounds leave a card alone, so a division that works can be rare, and
-// failures that lie hours apart are no run.
+// division of the card has failed for more than thirty rounds, which is five
+// minutes. Most rounds leave a card alone, so a division that works can be
+// rare, and failures that lie hours apart are no run.
 func (s *cardDivisionState) failedAgain(card types.NamespacedName) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -388,15 +388,15 @@ way. A model being placed is recorded last, with the limit it is to run under.
 
 A division can fail at each of these steps:
 
-* A shrink that fails changes no record. The controller then writes the old
-  limits back to the engines that the step wrote. This is a best effort. It
-  is not read back, and it stops at the first write that the runtime does not
-  take.
+* A shrink that fails changes no record. The controller then holds the engines
+  that the step wrote to what they were held to before, and to no more than
+  their records. This is a best effort. It is not read back, and it stops at the
+  first call that fails.
 * A record that cannot be written leaves records that come to no more than the
   card. The shrinks stay in force, and nothing grows.
 * A grow that fails leaves the engine below its new record, where it keeps its
-  route. A later round grows it, unless it is less than the threshold below
-  its plan.
+  route. A later round grows it, once its plan moves some limit on the card by
+  the threshold.
 
 A model stays non-routable until its own limit is in force, and stays routable
 only while it is held to no more than that limit. A card whose room could not
@@ -433,7 +433,7 @@ and a declaration that changes. A model being placed divides its card itself, as
 above. Every move is carried out, however small. This is also how the room comes
 back when an engine cannot be started after its card was divided for it. The
 room an engine leaves goes to the engines beside it. A claim that waits for that
-card can still take it, until those engines have mapped it. Sometimes a card
+card can still take it, until those engines have mapped it. Sometimes, a card
 cannot be divided for a change yet, as while an engine that left is still
 exiting. The round then tries again, and still as for a change. The controller
 keeps what each card was divided for in memory only. After a restart, the first
@@ -441,11 +441,10 @@ round of a card divides it whatever its load, unless the card has barely
 drifted. If that division fails, every round tries it again until one works.
 
 When the division of a card fails three times in a row, each claim on the card
-gets a ``KVLimitFailed`` warning, and another after every thirty more
-failures. That is every five minutes while every round fails. A run of
-failures ends with a division that works, or after five minutes without a
-failure. A card that cannot be accounted for is left as it is, and the log
-says why.
+gets a ``KVLimitFailed`` warning, and another after every thirty more failures.
+That is every five minutes while every round fails. A run of failures ends with
+a division that works, or after more than five minutes without a failure. A card
+that cannot be accounted for is left as it is, and the log says why.
 
 Placement raises an Event on each claim whose limit it moves. So does a division
 after the engines change, and so does the health loop when it writes a limit
@@ -835,15 +834,15 @@ Claim remains ``Activating`` after ``/health`` succeeds
 A ``KVLimitFailed`` warning says a card could not be divided several times
    Every engine on the card keeps serving under the limit it is held to. A
    division that fails at its shrinks changes no record, and the controller
-   tries to write the old limits back. One whose records cannot be written
-   leaves the shrinks in force. One that fails at its grows has made the room
-   and recorded it, and leaves an engine below its record until a round grows
-   it. The message quotes the last failure. An engine that did not take a KV
-   limit points at its runtime or its segment, as above. One that holds more
-   than its new limit is still growing, and the next round plans around it.
-   The warning comes on the third failure in a row, and again after every
-   thirty more. A division that works ends the run, and so do five minutes
-   without a failure.
+   tries to hold the engines to what they were held to before. One whose records
+   cannot be written leaves the shrinks in force. One that fails at its grows
+   has made the room and recorded it, and leaves an engine below its record
+   until a round grows it. The message quotes the last failure. An engine that
+   did not take a KV limit points at its runtime or its segment, as above. One
+   that holds more than its new limit is still growing, and the next round plans
+   around it. The warning comes on the third failure in a row, and again after
+   every thirty more. A division that works ends the run, and so do more than
+   five minutes without a failure.
 
 A routable model becomes non-routable with ``KVLimitNotHeld``
    Its engine is held to more KV than its limit, most often because it

@@ -706,7 +706,8 @@ func activateRequest(pm *modelv1alpha1.ModelClaim) *ActivateRequest {
 // join them, and returns the KV limit the newcomer is to run under.
 //
 // Returning an error means this model is not placed on this card this round. A
-// division that failed takes its shrinks back as far as the runtime takes them.
+// division that failed at its shrinks takes them back, as far as the runtime
+// takes the writes. One that failed at its records leaves its shrinks in force.
 // A neighbour that keeps a smaller limit loses room until the card is divided
 // again, and correctness loses nothing.
 func (r *ModelClaimReconciler) makeRoomOnPod(
@@ -774,10 +775,11 @@ func (cardLeftAlone) Error() string { return "the card needs no division" }
 // the same way. A write that reached no segment is reported as a success either
 // way.
 //
-// A shrink that fails leaves every record as it was. The limits it wrote are
-// then written back as they were, as far as the runtime takes them. A record
-// that cannot be written leaves records that come to no more than the card, and
-// the shrinks stay in force. A grow that fails comes after the records, so the
+// A shrink that fails leaves every record as it was. The engines it wrote are
+// then held to what they were held to before, and to no more than their
+// records. That goes as far as the runtime takes the writes. A record that
+// cannot be written leaves records that come to no more than the card, and the
+// shrinks stay in force. A grow that fails comes after the records, so the
 // engines it did not reach sit below their new records, which is safe and keeps
 // their routes. The arrangement is made, and the error says only that some
 // engine is still to grow.

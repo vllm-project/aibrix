@@ -28,9 +28,9 @@ import (
 // So a runtime is read once a pass, and the steps agree on what they saw.
 //
 // A step that changes a runtime replaces its reading with the one it took to
-// confirm the change, or forgets the reading. The next step to ask then reads
-// the runtime again. So no step acts on a reading from before a change to the
-// same runtime.
+// confirm the change. If it took none, it forgets the reading, and the next
+// step to ask reads the runtime again. So no step acts on a reading from before
+// a change to the same runtime.
 //
 // A change takes time, and the engines on the other cards go on serving while
 // it is made. A step that needs a reading no older than the last change of any

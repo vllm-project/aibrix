@@ -204,9 +204,10 @@ func needsDividing(
 	return leftUnfinished(engines) || (atRest(engines) && heldToUnderHalf(limits)), owed
 }
 
-// shortOfKV reports whether an engine is short of KV. It is when it has mapped
-// half of the limit it is held to, or when it has requests waiting. An engine
-// that serves, and whose load could not be read, is short as well.
+// shortOfKV reports whether an engine is short of KV. An engine is short when
+// it has mapped half of the limit it is held to, or when it has requests
+// waiting. An engine that serves, and whose load could not be read, is short as
+// well.
 //
 // Half is where the round starts to act. An engine that has mapped half of its
 // limit may reach the limit before its card's next round, and nothing bounds
