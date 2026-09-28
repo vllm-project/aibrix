@@ -689,7 +689,8 @@ claim again by itself, so the client is asked to retry as well. That includes a
 model whose engine failed for good, with ``EngineFailed``, since the controller
 moves it to another Pod once one can take it. A claim that has to be changed
 first, such as one with ``InvalidEngineConfig`` or ``InvalidPerGPU``, gets no
-``Retry-After``. A model that no ModelClaim serves returns 400.
+``Retry-After``. Neither does one that no card in its pool can hold, with
+``TooLargeForAnyCard``. A model that no ModelClaim serves returns 400.
 
 The answer for a claim that is not placed comes from the ModelClaim object,
 not from a Pod, so it wakes nothing. If two claims serve one name, the first
