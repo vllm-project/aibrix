@@ -903,7 +903,7 @@ Claim remains ``Activating`` after ``/health`` succeeds
    answer the reading of a pass. The controller had to start the engine again.
    Another start of the same claim failed in that pass.
 
-   If it lasts longer, the limit did not take, and the controller writes it
+   If it lasts longer, the limit is not in force, and the controller writes it
    again every 10 seconds. If the engine reports another limit, a
    ``KVLimitFailed`` Event says which one. If the write fails, the Event
    names the error. For an engine that comes up, ``KVLimitSet`` is raised once

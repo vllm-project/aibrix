@@ -72,8 +72,8 @@ const (
 	DefaultRequeueDuration = 10 * time.Second
 
 	// ActivatingRequeueDuration paces a claim while an engine of it is
-	// booting, so the engine takes traffic within this long of being ready
-	// rather than a whole period later.
+	// booting, so the engine is routed soon after it is ready, and not a
+	// whole period later.
 	ActivatingRequeueDuration = 2 * time.Second
 
 	// ActivatingRequeueWindow is how long into a boot that faster pace lasts.
@@ -338,9 +338,9 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// stay what it was when the last model landed. It runs last, after anything
 	// this pass changed on the cards.
 	r.divideCards(ctx, candidates, readings)
-	// A booting engine is looked at again soon, so it takes traffic within a
-	// few seconds of being ready. A pass that ended before the health check,
-	// as after a start that failed, keeps its own pace.
+	// A booting engine is looked at again soon, so it is routed within a few
+	// seconds of being ready. A pass that ended before the health check, as
+	// after a start that failed, keeps its own pace.
 	if booting {
 		requeueAfter = min(requeueAfter, ActivatingRequeueDuration)
 	}
