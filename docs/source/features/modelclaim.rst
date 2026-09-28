@@ -737,15 +737,24 @@ compatible Pod. There is no live migration or transparent preservation of
 in-flight requests.
 
 The controller reads each runtime's snapshot with a 10 second deadline. A read
-normally takes a fraction of a second. Calls that change state, such as
-starting an engine, wait up to 60 seconds. A Pod whose runtime could not be
-read keeps its routing as it is, and placement ranks it after the Pods that
-could be read. A runtime that does not answer in time is not called again for
-a minute. Calls to it fail at once until then, so one runtime that stopped
-answering does not hold up every claim that uses it. A claim that would start
-on such a Pod stays ``Pending`` until the runtime is called again, and is not
-marked ``Failed``, since no call was sent. Stopping an engine is still sent,
-since an engine left running would keep its memory.
+normally takes a fraction of a second. The runtime probes its engines one
+after another, for up to 1.5 seconds each, so a Pod with seven busy engines
+can take longer than the deadline. Calls that change state, such as starting
+an engine, wait up to 60 seconds.
+
+A runtime that does not answer in time is left alone for 10 seconds, which is
+one round. Calls to it fail at once until then, so one runtime that stopped
+answering does not hold up every claim that uses it. Each further timeout in a
+row doubles that time, up to a minute, and any answer ends it. A runtime that
+was slow once is therefore read again a round later, and one that is down
+costs one deadline a minute.
+
+While a runtime is left alone, nothing is known about its Pod. The engines on
+it keep the routing they had, whatever happens to them, and placement ranks
+the Pod after the Pods that could be read. A claim that would start on such a
+Pod stays ``Pending`` until the runtime is called again, and is not marked
+``Failed``, since no call was sent. Stopping an engine is still sent, since an
+engine left running would keep its memory.
 
 Observability
 -------------
