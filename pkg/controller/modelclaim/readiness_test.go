@@ -105,7 +105,10 @@ func TestReconcileRoutesAnEngineOnlyOnWhatItsReadBackShows(t *testing.T) {
 		},
 		"the engine boots again under its allocator's limit": {
 			between: func(snapshot *RuntimeSnapshot) {
-				started := snapshot.ObservedAt.Add(-time.Second)
+				// The boot is dated after the first reading of the pass, and
+				// before the read-back.
+				started := snapshot.ObservedAt.Add(9 * time.Second)
+				snapshot.ObservedAt = snapshot.ObservedAt.Add(10 * time.Second)
 				snapshot.Models[0].Phase = "booting"
 				snapshot.Models[0].Ready = false
 				snapshot.Models[0].LastTransition = &started
@@ -285,16 +288,18 @@ func TestReconcileLooksAgainSoonWhenAnyInstanceBoots(t *testing.T) {
 }
 
 // An engine that was routed and lost its limit leaves the route first, so that
-// the loss is seen. The write that pulls it back is said as well.
-func TestReconcileSaysALimitIsSetWhenARoutedEngineIsPulledBack(t *testing.T) {
-	pm := claimWithCost(700, 100)
+// the loss is seen. The write that pulls it back is said as well. It is not
+// read back in this pass, so its Event says that the limit was written, and
+// not that it is in force.
+func TestReconcileSaysALimitIsWrittenWhenARoutedEngineIsPulledBack(t *testing.T) {
+	pm := claimWithCost(7<<30, 1<<30)
 	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
-		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive, KVLimitBytes: 300,
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive, KVLimitBytes: 3 << 30,
 	}}
-	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 10<<30)
 	snapshot.ObservedAt = time.Unix(1_700_000_000, 0)
 	// The engine restarted, and its allocator put its own limit back.
-	snapshot.Models = []RuntimeSnapshotModel{readyEngine(5000)}
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(5 << 30)}
 	r, runtime := newReconciler(t, pm, pod)
 	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
 	// The card's round is taken, so every read below is the health check's.
@@ -311,9 +316,7 @@ func TestReconcileSaysALimitIsSetWhenARoutedEngineIsPulledBack(t *testing.T) {
 	require.Equal(t, 1, eventsNamed(events, "KVLimitSet"))
 	for _, event := range events {
 		if strings.Contains(event, "KVLimitSet") {
-			// The write is not read back in this pass, so the Event says what
-			// was done, and not that the limit is in force.
-			assert.Contains(t, event, "KV limit of 0.0 GiB written over 0.0 GiB")
+			assert.Contains(t, event, "KV limit of 3.0 GiB written over 5.0 GiB")
 		}
 	}
 
@@ -355,12 +358,18 @@ func TestAWithdrawnRouteStartsTheNextPassOfItsClaim(t *testing.T) {
 		NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: pm.Name},
 	})
 
-	// A pod is a candidate with the enabled label alone. Without the name of
-	// its pool, its changes start nothing, and the claim's own pace is all
-	// there is.
+	// Without the name of its pool, the changes of a pod start nothing, and
+	// the claim's own pace is all there is. The same holds for a pod that is
+	// not enabled.
 	unnamed := withdrawn.DeepCopy()
 	delete(unnamed.Labels, constants.ModelPoolLabelName)
 	assert.False(t, modelPoolPodFilter().Update(event.UpdateEvent{ObjectOld: routed, ObjectNew: unnamed}))
+	disabled := withdrawn.DeepCopy()
+	disabled.Labels[constants.ModelPoolLabelEnabled] = "false"
+	assert.False(t, modelPoolPodFilter().Update(event.UpdateEvent{ObjectOld: routed, ObjectNew: disabled}))
+	removed := withdrawn.DeepCopy()
+	delete(removed.Labels, constants.ModelPoolLabelEnabled)
+	assert.False(t, modelPoolPodFilter().Update(event.UpdateEvent{ObjectOld: routed, ObjectNew: removed}))
 }
 
 // A boot is watched from the moment it is dated to the end of the window, and
@@ -384,6 +393,16 @@ func TestEngineBootingWatchesABootForItsWindowOnly(t *testing.T) {
 	}
 }
 
+// An engine that is stopping is alive and not ready, so it sets the pace as
+// one that boots does. Its instance gets a new engine as soon as it has gone.
+func TestEngineBootingCountsAnEngineThatIsStopping(t *testing.T) {
+	observedAt := time.Unix(1_700_000_000, 0)
+	engine := engineBootingFor(observedAt, time.Second)
+	engine.Phase = runtimePhaseStopping
+
+	assert.True(t, engineBooting(&RuntimeSnapshot{ObservedAt: observedAt}, &engine))
+}
+
 // anEngineHeldToFiveGibibytes is a claim with one instance recorded at 3 GiB
 // on a card of 10 GiB. Its engine is ready, and held to 5 GiB.
 func anEngineHeldToFiveGibibytes(
@@ -405,6 +424,26 @@ func anEngineHeldToFiveGibibytes(
 	return r, runtime, pm
 }
 
+// The Events of an engine coming up say what was written over what, and what
+// the engine reports when the limit did not take.
+func TestTheEventsOfAnEngineComingUpCarryTheirFigures(t *testing.T) {
+	r, _, pm := anEngineHeldToFiveGibibytes(t, modelv1alpha1.ModelClaimActivating)
+	reconcileOnce(t, r, pm.Name)
+	events := drainEvents(t, r)
+	require.Equal(t, 1, eventsNamed(events, "KVLimitSet"))
+	assert.Equal(t, 1, eventsNamed(events, "KV limit set to 3.0 GiB, from 5.0 GiB"))
+
+	// The limit does not take, and the engine reports a limit that is
+	// neither the one written nor the one it had.
+	deaf, runtime, claim := anEngineHeldToFiveGibibytes(t, modelv1alpha1.ModelClaimActivating)
+	runtime.deafToKVLimits = true
+	runtime.onKVLimit = func() { runtime.snapshots["10.0.0.1"].Models[0].KVCapacityBytes = 4 << 30 }
+	reconcileOnce(t, deaf, claim.Name)
+	events = drainEvents(t, deaf)
+	require.Equal(t, 1, eventsNamed(events, "KVLimitFailed"))
+	assert.Equal(t, 1, eventsNamed(events, "KV limit 3.0 GiB was written, and the engine still reports 4.0 GiB"))
+}
+
 // Only an engine on the route is left unread after its limit is written. An
 // engine that slept and serves again has no route to lose. So it is read back
 // and routed in the same pass, as an engine coming up is.
@@ -421,4 +460,18 @@ func TestReconcileReadsBackAnEngineThatWokeInThePassItsLimitIsWritten(t *testing
 	assert.Equal(t, 1, eventsNamed(events, "Woken"))
 	assert.Equal(t, 1, eventsNamed(events, "KV limit set to 3.0 GiB, from 5.0 GiB"))
 	assert.Zero(t, eventsNamed(events, "Unhealthy"))
+}
+
+// KVLimitNotHeld is also raised when the segment of a routed engine cannot be
+// read: the engine is not known to be held to anything. Nothing is written
+// then, since there is no segment to write into.
+func TestReconcileTakesAnEngineOffItsRouteWhenItsSegmentCannotBeRead(t *testing.T) {
+	r, runtime, pm := anEngineHeldToFiveGibibytes(t, modelv1alpha1.ModelClaimActive)
+	runtime.snapshots["10.0.0.1"].Models = []RuntimeSnapshotModel{readyEngine(kvLimitUnknown)}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Equal(t, 1, eventsNamed(drainEvents(t, r), "KVLimitNotHeld"))
+	assert.Empty(t, runtime.kvLimitCalls)
+	assert.Contains(t, routeOf(t, r, "warm-1", pm.Name), `"port":0`)
 }

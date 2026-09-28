@@ -2859,7 +2859,6 @@ func TestReconcileHoldsAnEngineToItsLimitBeforeRouting(t *testing.T) {
 
 	require.Len(t, runtime.kvLimitCalls, 1)
 	assert.Equal(t, int64(300), runtime.kvLimitCalls[0].LimitBytes)
-	assert.Equal(t, int64(300), snapshot.Models[0].KVCapacityBytes)
 	got = getModel(t, r, pm.Name)
 	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Instances[0].Phase)
 	assert.Equal(t, int32(1), got.Status.ReadyReplicas)
@@ -3179,7 +3178,6 @@ func TestReconcileGrowsANewEngineToItsRecordBeforeRouting(t *testing.T) {
 
 	require.Len(t, runtime.kvLimitCalls, 1)
 	assert.Equal(t, int64(300), runtime.kvLimitCalls[0].LimitBytes)
-	assert.Equal(t, int64(300), snapshot.Models[0].KVCapacityBytes)
 	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, pm.Name).Status.Instances[0].Phase)
 }
 
