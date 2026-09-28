@@ -97,8 +97,10 @@ type cardDivisionState struct {
 	// engines waits for a division that works.
 	dividedFor   map[types.NamespacedName]string
 	attemptedFor map[types.NamespacedName]string
-	// failures counts the divisions of a card that have failed in a row.
-	failures map[types.NamespacedName]int
+	// failures counts the divisions of a card that have failed in a row, and
+	// lastFailure is when the last of them failed.
+	failures    map[types.NamespacedName]int
+	lastFailure map[types.NamespacedName]time.Time
 	// undividedFor is why a card was last left undivided, as one that could
 	// not be accounted for.
 	undividedFor map[types.NamespacedName]string
@@ -115,6 +117,7 @@ func newCardDivisionState(now func() time.Time) *cardDivisionState {
 		dividedFor:   make(map[types.NamespacedName]string),
 		attemptedFor: make(map[types.NamespacedName]string),
 		failures:     make(map[types.NamespacedName]int),
+		lastFailure:  make(map[types.NamespacedName]time.Time),
 		undividedFor: make(map[types.NamespacedName]string),
 	}
 }
@@ -137,7 +140,7 @@ func (s *cardDivisionState) due(card types.NamespacedName, composition string) (
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
-	s.pruneLocked(now)
+	s.pruneLocked(now, card)
 	previous, known := s.dividedFor[card]
 	changed = known && previous != composition
 	if changed && s.attemptedFor[card] != composition {
@@ -195,6 +198,7 @@ func (s *cardDivisionState) divided(card types.NamespacedName, composition strin
 	s.attemptedFor[card] = composition
 	s.lastRound[card] = s.now()
 	delete(s.failures, card)
+	delete(s.lastFailure, card)
 }
 
 // leftUndivided notes why a card could not be accounted for, and reports
@@ -220,28 +224,39 @@ func (s *cardDivisionState) accountedFor(card types.NamespacedName) {
 
 // failedAgain counts one more division of a card that did not work, and
 // returns how many have failed in a row.
+//
+// A run of failures ends with a division that works. It also ends when no
+// division of the card has failed for as long as lies between two warnings.
+// Most rounds leave a card alone, so a division that works can be rare, and
+// failures that lie hours apart are no run.
 func (s *cardDivisionState) failedAgain(card types.NamespacedName) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := s.now()
+	if last, failed := s.lastFailure[card]; failed && now.Sub(last) > stuckDivisionWarningEvery*DefaultRequeueDuration {
+		delete(s.failures, card)
+	}
+	s.lastFailure[card] = now
 	s.failures[card]++
 	return s.failures[card]
 }
 
 // pruneLocked forgets cards not divided for a long while, which is what a
-// deleted pod leaves behind. Forgetting a card that is still there costs
-// nothing: it is simply seen for the first time again.
-func (s *cardDivisionState) pruneLocked(now time.Time) {
+// deleted pod leaves behind. The card that is asked about is there, so it is
+// kept.
+func (s *cardDivisionState) pruneLocked(now time.Time, asked types.NamespacedName) {
 	const horizon = 30 * DefaultRequeueDuration
 	if now.Sub(s.lastPruned) < horizon {
 		return
 	}
 	s.lastPruned = now
 	for card, last := range s.lastRound {
-		if now.Sub(last) >= horizon {
+		if card != asked && now.Sub(last) >= horizon {
 			delete(s.lastRound, card)
 			delete(s.dividedFor, card)
 			delete(s.attemptedFor, card)
 			delete(s.failures, card)
+			delete(s.lastFailure, card)
 			delete(s.undividedFor, card)
 		}
 	}

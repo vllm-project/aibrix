@@ -1149,6 +1149,44 @@ func TestCardDivisionStateNotesACardThatWasLeftAlone(t *testing.T) {
 	assert.Equal(t, 3, divisions.failedAgain(card), "nothing was tried, so the run of failures is not over")
 }
 
+// Failures that lie far apart are no run. Most rounds leave a card alone, so
+// a division that works is rare, and only that would end a run.
+func TestCardDivisionStateStartsARunOfFailuresAgainAfterFiveQuietMinutes(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	divisions := newCardDivisionState(func() time.Time { return now })
+	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+
+	require.Equal(t, 1, divisions.failedAgain(card))
+	now = now.Add(5 * time.Minute)
+	require.Equal(t, 2, divisions.failedAgain(card), "five minutes apart is still one run")
+	now = now.Add(5*time.Minute + time.Nanosecond)
+	assert.Equal(t, 1, divisions.failedAgain(card))
+	now = now.Add(time.Hour)
+	assert.Equal(t, 1, divisions.failedAgain(card))
+}
+
+// A card is forgotten when nothing has asked about it for five minutes. The
+// card that is asked about is there, however long ago its last round was.
+func TestCardDivisionStateKeepsTheCardThatIsAskedAbout(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	divisions := newCardDivisionState(func() time.Time { return now })
+	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+	gone := types.NamespacedName{Namespace: testNamespace, Name: "deleted"}
+	for _, each := range []types.NamespacedName{card, gone} {
+		divisions.due(each, "a")
+		divisions.divided(each, "a")
+		divisions.failedAgain(each)
+	}
+
+	now = now.Add(time.Hour)
+	divide, changed := divisions.due(card, "a")
+
+	assert.True(t, divide)
+	assert.False(t, changed)
+	assert.True(t, divisions.noted(card))
+	assert.False(t, divisions.noted(gone))
+}
+
 func TestCardDivisionStateSaysOnceWhyACardIsLeftUndivided(t *testing.T) {
 	divisions := newCardDivisionState(nil)
 	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
