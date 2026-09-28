@@ -26,7 +26,6 @@ This chart is not intended for upgrades from earlier deployments that used Kusto
 
 Set `gateway.envoyProxy.accessLog.enabled=true` to add request/response timings
 and ext_proc call statistics to the default JSON stdout log for Envoy
-Gateway-managed proxies. It is enabled in `values-esx.yaml`, independently of
 OpenTelemetry tracing. `gateway.envoyProxy.accessLog.extProcFilterName` optionally
 overrides the filter-state key; otherwise it is derived from the namespace and
 the chart's EnvoyExtensionPolicy name.
@@ -78,6 +77,14 @@ the chart's EnvoyExtensionPolicy name.
   "x-request-id": "xxxxxxxxx"
 }
 ```
+
+### Circuit breaker resource gauges
+
+Set `gateway.envoyPatchPolicy.circuitBreakers.trackRemaining=true` to expose
+gauges for resources remaining before the original destination cluster's
+circuit breakers open. Set it to `false` to disable these gauges. This boolean
+option does not change circuit breaker limits; if the key is absent, the
+template falls back to `false`.
 
 ### Helm Lint
 

@@ -246,6 +246,15 @@
         "envoyPatchPolicy": {
           "type": "object",
           "properties": {
+            "circuitBreakers": {
+              "type": "object",
+              "properties": {
+                "trackRemaining": {
+                  "type": "boolean",
+                  "description": "Expose gauges for resources remaining before the original destination cluster circuit breakers open"
+                }
+              }
+            },
             "route": {
               "type": "object",
               "properties": {
