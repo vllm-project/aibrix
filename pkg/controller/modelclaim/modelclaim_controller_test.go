@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
@@ -75,6 +76,9 @@ type fakeRuntime struct {
 	// loseActivateAnswer makes Activate start the engine and fail as a call
 	// whose answer never arrived.
 	loseActivateAnswer bool
+	// silent makes Activate fail as the client does for a runtime that did not
+	// answer in time a short while ago: at once, and without calling it.
+	silent bool
 	// notReady makes runtime snapshots report activated engines as not yet
 	// serveable, so a test can hold a model in the Activating phase.
 	notReady bool
@@ -94,7 +98,10 @@ type fakeRuntime struct {
 	onKVLimit func()
 }
 
-func (f *fakeRuntime) Activate(_ context.Context, podIP string, _ int, req *ActivateRequest) (*ActivateResponse, error) {
+func (f *fakeRuntime) Activate(_ context.Context, podIP string, runtimePort int, req *ActivateRequest) (*ActivateResponse, error) {
+	if f.silent {
+		return nil, fmt.Errorf("runtime %s:%d %w", podIP, runtimePort, errRuntimeSilent)
+	}
 	f.activateCalls = append(f.activateCalls, *req)
 	f.activatedOn = append(f.activatedOn, podIP)
 	if f.failActivate || f.failActivateOn[podIP] {
@@ -1340,6 +1347,48 @@ func TestReconcileActivateFailureSetsFailed(t *testing.T) {
 	cond := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady))
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+}
+
+// TestReconcileWaitsForARuntimeThatIsNotCalled checks a claim whose only pod
+// has a runtime that did not answer in time a short while ago. The call to
+// start the engine is not sent, so no activation failed: the claim waits as it
+// does for a pod, and is not marked failed.
+func TestReconcileWaitsForARuntimeThatIsNotCalled(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	r, runtime := newReconciler(t,
+		pm,
+		warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning),
+	)
+	runtime.silent = true
+	failed := claimActivationTotal.WithLabelValues(pm.Namespace, servedModelName(pm), activationResultFailed)
+	failedBefore := testutil.ToFloat64(failed)
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: pm.Name},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, DefaultRequeueDuration, result.RequeueAfter)
+
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimPending, got.Status.Phase)
+	assert.Empty(t, got.Status.Instances)
+	assert.Nil(t, meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady)),
+		"nothing failed, so the claim is not marked failed")
+	scheduled := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, scheduled)
+	assert.Equal(t, metav1.ConditionFalse, scheduled.Status)
+	assert.Equal(t, "NoMatchingPods", scheduled.Reason)
+	assert.Contains(t, scheduled.Message, "warm-1")
+	assert.Contains(t, scheduled.Message, "did not answer in time")
+	assert.Equal(t, failedBefore, testutil.ToFloat64(failed), "a call that was not sent is not a failed activation")
+	for _, event := range drainEvents(t, r) {
+		assert.NotContains(t, event, "ActivateFailed")
+	}
+
+	// The same refusal on the next pass is not news.
+	reconcileOnce(t, r, pm.Name)
+	assert.Empty(t, drainEvents(t, r))
 }
 
 func TestReconcileInvalidEngineConfigSetsFailed(t *testing.T) {
