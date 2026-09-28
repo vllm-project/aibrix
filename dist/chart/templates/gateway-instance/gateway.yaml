@@ -49,8 +49,13 @@ kind: EnvoyProxy
 metadata:
   name: {{ include "aibrix.fullname" . }}-custom-proxy-config
 spec:
-{{- if .Values.openTelemetry.enable }}
+{{- if or .Values.openTelemetry.enable .Values.gateway.envoyProxy.accessLog.enabled }}
   telemetry:
+    {{- if .Values.gateway.envoyProxy.accessLog.enabled }}
+    accessLog:
+      {{- include "aibrix.gateway.diagnosticAccessLog" . | nindent 6 }}
+    {{- end }}
+    {{- if .Values.openTelemetry.enable }}
     tracing:
       samplingRate: {{ .Values.openTelemetry.samplingRate | default 100 }}
       provider:
@@ -66,6 +71,7 @@ spec:
         host: {{ .Values.openTelemetry.host | quote }}
         port: {{ .Values.openTelemetry.port | default 4317 }}
         {{- end }}
+    {{- end }}
 {{- end }}
   provider:
     type: Kubernetes
@@ -189,6 +195,7 @@ spec:
                 max_connections: {{ .Values.gateway.envoyPatchPolicy.circuitBreakers.maxConnections }}
                 max_requests: {{ .Values.gateway.envoyPatchPolicy.circuitBreakers.maxRequests }}
                 max_pending_requests: {{ .Values.gateway.envoyPatchPolicy.circuitBreakers.maxPendingRequests }}
+                track_remaining: {{ .Values.gateway.envoyPatchPolicy.circuitBreakers.trackRemaining | default false }}
     {{- if .Values.gateway.http.enabled }}
     - type: type.googleapis.com/envoy.config.listener.v3.Listener
       name: {{ .Release.Namespace }}/{{ include "aibrix.fullname" . }}-eg/http
