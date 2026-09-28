@@ -345,7 +345,10 @@ func podKey(pod *corev1.Pod) string {
 }
 
 // roomSignatureOf describes what the live instances on each candidate take,
-// from a listing of the claims. It is nil when there is no listing.
+// from a listing of the claims. It is nil when there is no listing. An
+// instance is recorded before its engine is started, and has no port until
+// the engine is. Such a record is not counted, as liveInstances does not
+// count it. When it is taken back, no engine has left a card.
 func roomSignatureOf(candidates []corev1.Pod, claims *modelv1alpha1.ModelClaimList) roomSignature {
 	if claims == nil {
 		return nil
@@ -362,7 +365,7 @@ func roomSignatureOf(candidates []corev1.Pod, claims *modelv1alpha1.ModelClaimLi
 		perGPU, perGPUErr := perGPUBytesOf(claim)
 		for _, instance := range claim.Status.Instances {
 			key, candidate := keys[instance.Pod]
-			if !candidate || instance.Phase == modelv1alpha1.ModelClaimFailed {
+			if !candidate || instance.Phase == modelv1alpha1.ModelClaimFailed || instance.Port == 0 {
 				continue
 			}
 			taken := room[key]

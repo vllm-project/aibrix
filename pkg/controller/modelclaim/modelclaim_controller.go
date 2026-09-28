@@ -608,13 +608,14 @@ func (r *ModelClaimReconciler) ensureActivated(
 			if reason == "TooLargeForAnyCard" {
 				return backoff.refusedAsTooLarge(claim, pm.Generation, refusedOn), nil
 			}
-			// The API server shows less on a card than the cache did when
-			// this try began. The cache had not caught up with a change, most
-			// often a neighbour that has just gone, whose engine may still
-			// be exiting. The event of its going will find the pool as it is
+			// The API server shows less on a card than the cache did when this
+			// try began. The cache had not caught up with a change, most often
+			// a neighbour that has just gone, whose engine may still be
+			// exiting. The event of its going will find the pool as it is
 			// remembered here, and wake nobody. So the claim starts over from
 			// the shortest wait. A record that was taken back after a start
-			// that failed shows here as well, though no engine has gone.
+			// that failed does not show here, since a record without a port is
+			// not counted.
 			if roomMayHaveAppeared(room, refusedOn, anyRoom) {
 				backoff.startOver(claim)
 			}
