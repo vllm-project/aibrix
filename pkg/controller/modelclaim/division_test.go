@@ -1051,6 +1051,48 @@ func TestDivideCardsDoesNotAskARuntimeAgainThatDidNotAnswer(t *testing.T) {
 	assert.Equal(t, 1, runtime.snapshotCallsTo[pods[1].Status.PodIP])
 }
 
+func TestReconcileDoesNotTakeACardThatHasBarelyDriftedForOneThatWasDivided(t *testing.T) {
+	r, runtime, snapshot, clock := aCardOfTwoEngines(t,
+		engineHolding("busy", 4<<30, 20<<30), engineHolding("idle", 4<<30, 20<<30))
+	// No write reaches a segment, so no division is ever confirmed. Requests
+	// wait on "busy" in the first two rounds and in the fourth. In the third,
+	// the card is at rest, and it is divided as its plan wants it.
+	runtime.deafToKVLimits = true
+	warnings := 0
+	for round := 1; round <= 4; round++ {
+		snapshot.Models[0].RequestsRunning = 3
+		snapshot.Models[0].RequestsWaiting = 1
+		if round == 3 {
+			snapshot.Models[0].RequestsRunning = 0
+			snapshot.Models[0].RequestsWaiting = 0
+		}
+		before := len(runtime.kvLimitCalls)
+		nextRound(t, r, clock, "idle")
+		assert.Equal(t, round != 3, len(runtime.kvLimitCalls) > before, "round %d", round)
+		for _, event := range recordedEvents(t, r) {
+			if strings.Contains(event, "KVLimitFailed") && strings.Contains(event, "model busy ") {
+				warnings++
+			}
+		}
+	}
+
+	assert.Equal(t, 1, warnings, "three divisions failed in a row, and the round between them had nothing to write")
+}
+
+func TestCardDivisionStateNotesACardThatWasLeftAlone(t *testing.T) {
+	divisions := newCardDivisionState(nil)
+	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+	require.False(t, divisions.noted(card))
+	require.Equal(t, 2, divisions.failedAgain(card)+divisions.failedAgain(card)-1)
+
+	divisions.leftAlone(card, "a")
+
+	assert.True(t, divisions.noted(card), "a change of its engines can be seen from now on")
+	_, changed := divisions.due(card, "b")
+	assert.True(t, changed)
+	assert.Equal(t, 3, divisions.failedAgain(card), "nothing was tried, so the run of failures is not over")
+}
+
 func TestCardDivisionStateSaysOnceWhyACardIsLeftUndivided(t *testing.T) {
 	divisions := newCardDivisionState(nil)
 	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}

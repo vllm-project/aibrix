@@ -167,12 +167,21 @@ func (s *cardDivisionState) mayBeDue(card types.NamespacedName, composition stri
 }
 
 // noted reports whether the controller has divided the card since it started,
-// or found it needing no move.
+// or left it alone as one that needed no division.
 func (s *cardDivisionState) noted(card types.NamespacedName) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, known := s.dividedFor[card]
 	return known
+}
+
+// leftAlone notes the engines a card was left alone for, as one that needed no
+// division. A change of its engines can be seen from then on. The count of
+// failed divisions stays as it is, since nothing was tried.
+func (s *cardDivisionState) leftAlone(card types.NamespacedName, composition string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dividedFor[card] = composition
 }
 
 // divided records that a card was divided for these engines: by the round, by
@@ -369,8 +378,8 @@ func (r *ModelClaimReconciler) divideCards(
 		}
 		_, err := r.arrangeCard(ctx, pod, ledger, ledger.engines, why, readings)
 		if errors.Is(err, errCardLeftAlone) {
-			// Nothing was tried. The card stays noted as it was, and a run of
-			// failed divisions is not over.
+			// Nothing was tried, so a run of failed divisions is not over.
+			divisions.leftAlone(cardOf(pod), compositions[pod.Name])
 			continue
 		}
 		if err != nil {
