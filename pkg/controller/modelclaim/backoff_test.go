@@ -106,7 +106,7 @@ func TestPlacementBackoffTriesAgainWhileARefusalIsNotWritten(t *testing.T) {
 
 	// A start that failed is written before its wait is recorded.
 	other := types.NamespacedName{Namespace: testNamespace, Name: "other"}
-	backoff.failedToStart(other, 1)
+	backoff.failedToStart(other, 1, nil)
 	due, _ = backoff.due(other, 1, nil)
 	assert.False(t, due)
 }
@@ -972,6 +972,48 @@ func TestReconcileBacksOffAClaimWhoseEngineCannotBeStarted(t *testing.T) {
 	ready := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady))
 	require.NotNil(t, ready)
 	assert.Equal(t, "ActivateFailed", ready.Reason)
+}
+
+// A pod that joins the pool may be able to start the engine that another pod
+// could not, so it wakes the claim. Room freed on a card does not: the claim
+// had found a card.
+func TestReconcileTriesAClaimThatCouldNotStartAgainWhenAPodJoins(t *testing.T) {
+	first := claimWithCost(100, 100)
+	first.Name = "first"
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	stays := claimOnPod("stays", pod.Name, modelv1alpha1.ModelClaimActive, 100, 100)
+	stays.Status.Instances[0].Port = 9001
+	stays.Status.Instances[0].KVLimitBytes = 300
+	leaves := claimOnPod("leaves", pod.Name, modelv1alpha1.ModelClaimActive, 100, 100)
+	leaves.Status.Instances[0].Port = 9002
+	leaves.Status.Instances[0].KVLimitBytes = 300
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("stays", 100, 300), engineHolding("leaves", 100, 300)}
+	r, runtime := newReconciler(t, first, pod, stays, leaves)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	// The runtime of this pod refuses every start.
+	runtime.failActivateOn = map[string]bool{pod.Status.PodIP: true}
+	now := time.Unix(1_700_000_000, 0)
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+	require.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, "first"))
+	require.Equal(t, []string{pod.Status.PodIP}, runtime.activatedOn)
+
+	// A neighbour leaves. The clock has not moved.
+	require.NoError(t, r.Delete(context.Background(), getModel(t, r, "leaves")))
+	runtime.snapshots[pod.Status.PodIP].Models = snapshot.Models[:1]
+	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, "first"))
+	assert.Equal(t, []string{pod.Status.PodIP}, runtime.activatedOn, "room was not what the claim lacked")
+
+	// A pod joins. It is empty, so it ranks before the pod that refused.
+	joined, joinedSnapshot := sizedWarmPod("warm-2", "10.0.0.2", 1000)
+	require.NoError(t, r.Create(context.Background(), joined))
+	runtime.snapshots[joined.Status.PodIP] = joinedSnapshot
+	reconcileOnce(t, r, "first")
+
+	assert.Equal(t, []string{pod.Status.PodIP, joined.Status.PodIP}, runtime.activatedOn,
+		"the claim is tried again at once, on the pod that joined")
+	instances := getModel(t, r, "first").Status.Instances
+	require.Len(t, instances, 1)
+	assert.Equal(t, joined.Name, instances[0].Pod)
 }
 
 func TestReconcileWaitsLongerAfterEachStartThatFails(t *testing.T) {
