@@ -326,9 +326,12 @@ func roomMayHaveAppeared(before, now roomSignature, helps whatHelps) bool {
 
 // withThePodsSeenReady returns the room with every pod ready that is ready in
 // it, or was ready in the room before. The room itself is left as it is.
+// Without a listing there is no room to remember, and the room before is kept.
+// A claim that was refused while the claims could not be listed is then still
+// woken by a change to the pool as it last saw it.
 func (room roomSignature) withThePodsSeenReady(before roomSignature) roomSignature {
 	if room == nil {
-		return nil
+		return before
 	}
 	seen := make(roomSignature, len(room))
 	for key, taken := range room {
