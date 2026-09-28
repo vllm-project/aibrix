@@ -264,7 +264,9 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 				perGPUBytes:     perGPU,
 				kvCapacityBytes: kvLimitUnknown,
 			}
+			alive := false
 			if model := snapshotModelForClaim(snapshots[instance.Pod], claim, served); model != nil {
+				alive = model.Alive
 				engine.snapshotKey = snapshotActivityKey(*model)
 				engine.kvCapacityBytes = model.KVCapacityBytes
 				engine.inFlightRequests = max(model.RequestsRunning, 0) + max(model.RequestsWaiting, 0)
@@ -280,11 +282,12 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 			// back with the card unless its engine is somehow still there.
 			// Charging for an engine that is gone would take a slice of GPU out
 			// of circulation for as long as the claim exists, and nothing would
-			// put it back. An activating instance is charged, and deliberately:
-			// placement has already committed those bytes, and waiting for
-			// readiness would let a second claim be placed against the same
-			// memory.
-			if instance.Phase == modelv1alpha1.ModelClaimFailed && engine.snapshotKey == "" {
+			// put it back. The runtime goes on listing an engine it has given
+			// up on, not alive, so an engine listed but dead is gone as well.
+			// An activating instance is charged, and deliberately: placement has
+			// already committed those bytes, and waiting for readiness would
+			// let a second claim be placed against the same memory.
+			if instance.Phase == modelv1alpha1.ModelClaimFailed && (engine.snapshotKey == "" || !alive) {
 				continue
 			}
 			// A claim whose declaration cannot be used is charged nothing, so its

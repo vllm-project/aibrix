@@ -192,6 +192,24 @@ func TestLedgerChargesAFailedInstanceWhoseEngineIsStillThere(t *testing.T) {
 	assert.Equal(t, int64(450), ledger.heldRoomBytes())
 }
 
+func TestLedgerLeavesOutAFailedInstanceWhoseEngineIsListedButDead(t *testing.T) {
+	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
+	// The runtime goes on listing an engine it has given up on, not alive.
+	gone := engineHolding("failed", 250, 400)
+	gone.Phase = runtimePhaseFailed
+	gone.Alive = false
+	gone.Ready = false
+
+	ledger := ledgerFor(t, pod, sizedPodSnapshots(pod.Name, 1000, gone),
+		claimOnPod("failed", pod.Name, modelv1alpha1.ModelClaimFailed, 300, 100),
+	)
+
+	assert.True(t, ledger.judgeable)
+	assert.Equal(t, int64(1000), ledger.maximumRoomBytes())
+	assert.Equal(t, int64(1000), ledger.heldRoomBytes())
+	assert.Empty(t, ledger.engines)
+}
+
 func TestLedgerHasAHoleWhenAnEngineAnswersToNoClaim(t *testing.T) {
 	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
 	ledger := ledgerFor(t, pod,

@@ -389,6 +389,10 @@ the account, at the full footprint and floor its claim declared, because the
 assignment has to survive the sleep for a wake to find its engine again. Sleep
 can give KV back to the models beside it. It cannot make room for a new claim.
 
+A failed instance does free its seat. The runtime stops an engine once its
+restarts run out, so its memory is back with the card, and the account charges
+the instance nothing.
+
 Configure TP and PP pools
 -------------------------
 
