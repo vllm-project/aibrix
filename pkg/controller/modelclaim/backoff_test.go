@@ -573,6 +573,51 @@ func TestReconcileRemembersTheRoomAClaimWasRefusedOnAsTheAPIServerHasIt(t *testi
 	assert.True(t, due, "the claim is woken by the neighbour leaving")
 }
 
+// A try can straddle a neighbour's leaving. The API server has the neighbour
+// gone already, and its engine is still exiting, so the try is refused. The
+// event of the leaving comes afterwards. It finds the pool as the refusal
+// remembered it, and wakes nobody. So such a try starts the claim over from
+// the shortest wait.
+func TestReconcileStartsAClaimOverWhenThePoolChangedUnderItsTry(t *testing.T) {
+	r, runtime, pm, clock := aClaimWaitingForRoom(t)
+	for _, want := range []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second} {
+		require.Equal(t, want, reconcileFor(t, r, pm.Name))
+		*clock = clock.Add(want)
+	}
+
+	// The cache still lists the neighbour, and the API server does not.
+	pod := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, pod))
+	r.APIReader = fake.NewClientBuilder().WithScheme(r.Scheme).WithObjects(getModel(t, r, pm.Name), pod).
+		WithStatusSubresource(&modelv1alpha1.ModelClaim{}).Build()
+	exiting := engineHolding("neighbour", 100, 600)
+	exiting.Phase = runtimePhaseStopping
+	exiting.Ready = false
+	runtime.snapshots[pod.Status.PodIP].Models = []RuntimeSnapshotModel{exiting}
+
+	wait := reconcileFor(t, r, pm.Name)
+
+	require.Empty(t, runtime.activateCalls, "a card whose engine is still exiting is not handed out")
+	assert.Equal(t, DefaultRequeueDuration, wait)
+}
+
+// A try that is refused on the pool as it was when the try began goes on
+// doubling its wait.
+func TestReconcileGoesOnWaitingLongerWhenThePoolStoodStillUnderItsTry(t *testing.T) {
+	r, _, pm, clock := aClaimWaitingForRoom(t)
+	pod := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, pod))
+	// The API server and the cache list the same claims.
+	r.APIReader = fake.NewClientBuilder().WithScheme(r.Scheme).
+		WithObjects(getModel(t, r, pm.Name), getModel(t, r, "neighbour"), pod).
+		WithStatusSubresource(&modelv1alpha1.ModelClaim{}).Build()
+
+	for _, want := range []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second, time.Minute} {
+		require.Equal(t, want, reconcileFor(t, r, pm.Name))
+		*clock = clock.Add(want)
+	}
+}
+
 // A claim no card could ever hold is helped only by a pod joining the pool, or
 // by its own spec changing. Room freed on a card too small for it changes
 // nothing, so it does not wake the claim.
