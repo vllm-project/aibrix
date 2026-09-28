@@ -129,7 +129,7 @@ func (runtimes runtimesByAddress) RoundTrip(req *http.Request) (*http.Response, 
 // shortDeadline is the deadline of a call that is to time out in a test.
 const shortDeadline = 20 * time.Millisecond
 
-// hangingRuntimes returns so many runtimes that hang, and a client that reads
+// hangingRuntimes returns count runtimes that hang, and a client that reads
 // the clock given and sends its requests to them. A read of the client gives
 // up after shortDeadline.
 func hangingRuntimes(count int, now func() time.Time) (*httpRuntimeClient, []*hangingRuntime) {
@@ -228,7 +228,7 @@ func TestHTTPRuntimeLeavesARuntimeThatDidNotAnswerAloneForAWhile(t *testing.T) {
 	}
 	runtime.asked(t, 1)
 
-	// After that it is called again, and once it answers it is called as usual.
+	// After that, it is called again, and once it answers, it is called as usual.
 	runtime.answering.Store(true)
 	now = start.Add(shortestRuntimeSilence)
 	_, err = c.Snapshot(ctx, runtime.host, runtime.port)
@@ -239,8 +239,7 @@ func TestHTTPRuntimeLeavesARuntimeThatDidNotAnswerAloneForAWhile(t *testing.T) {
 }
 
 // A runtime that was slow once is read again a round later. One that stays
-// silent is left alone twice as long after each timeout, up to a minute. From
-// the fourth timeout in a row on, it costs the worker one deadline a minute.
+// silent is left alone twice as long after each timeout, up to a minute.
 func TestHTTPRuntimeLeavesARuntimeAloneLongerAfterEachTimeout(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	c, runtimes := hangingRuntimes(1, func() time.Time { return now })
@@ -275,8 +274,8 @@ func TestHTTPRuntimeLeavesARuntimeAloneLongerAfterEachTimeout(t *testing.T) {
 	assert.NotErrorIs(t, err, errRuntimeSilent)
 }
 
-// Only a read has the short deadline. Starting an engine can take the runtime
-// longer than a read may, and is given the time.
+// Only a snapshot read has the short deadline. Starting an engine can take the
+// runtime longer than a read may, and is given the time.
 func TestHTTPRuntimeGivesACallThatChangesStateItsOwnTime(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(300 * time.Millisecond)

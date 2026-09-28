@@ -736,18 +736,27 @@ controller removes the stale instance and can activate the claim on another
 compatible Pod. There is no live migration or transparent preservation of
 in-flight requests.
 
-The controller reads each runtime's snapshot with a 10 second deadline. A read
-normally takes a fraction of a second. The runtime probes its engines one
-after another, for up to 1.5 seconds each, so a Pod with seven busy engines
-can take longer than the deadline. Calls that change state, such as starting
-an engine, wait up to 60 seconds.
+The controller reads each runtime's snapshot with a 10-second deadline. A read
+normally takes a fraction of a second. It can take longer for two reasons. The
+runtime probes its engines one after another, for up to 1.5 seconds each.
+Before that, a read waits for the runtime's lock. The runtime holds that lock
+while it checks its engines, for up to 1 second each. It also holds the lock
+while it starts an engine, puts one to sleep, wakes one or writes a KV limit.
+So a read of a Pod with five busy engines can take longer than the deadline.
+Calls that change state, such as starting an engine, wait up to 60 seconds.
 
 A runtime that does not answer in time is left alone for 10 seconds, which is
 one round. Calls to it fail at once until then, so one runtime that stopped
 answering does not hold up every claim that uses it. Each further timeout in a
 row doubles that time, up to a minute, and any answer ends it. A runtime that
-was slow once is therefore read again a round later, and one that is down
-costs one deadline a minute.
+was slow once is therefore read again a round later. One that stays down is
+left alone for a minute at a time, from its fourth timeout on. The call that
+follows each minute waits for its own deadline, which is 10 seconds for a
+read. A runtime that answers between its timeouts is asked again a round after
+each of them.
+
+The controller knows a runtime by the address of its Pod. A Pod that is given
+the address of one that is left alone is left alone for the rest of that time.
 
 While a runtime is left alone, nothing is known about its Pod. The engines on
 it keep the routing they had, whatever happens to them, and placement ranks
