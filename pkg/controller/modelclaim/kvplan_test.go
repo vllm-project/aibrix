@@ -313,6 +313,14 @@ func TestNeedsDividing(t *testing.T) {
 	noSegment := engine("a", kvLimitUnknown)
 	noSegment.kvRecordedBytes = 100
 	noSegment.kvUsedBytes = 0
+	heldToNothing := engine("a", 0)
+	heldToNothing.kvRecordedBytes = 100
+	unrecordedUnderItsFloor := engine("a", 5)
+	unrecordedUnderItsFloor.kvRecordedBytes = 0
+	unrecordedUnderItsFloor.kvFloorBytes = 10
+	asleepAndUnrecorded := engine("a", 40)
+	asleepAndUnrecorded.asleep = true
+	asleepAndUnrecorded.kvRecordedBytes = 0
 	asleep := engine("b", 40)
 	asleep.asleep = true
 	asleepWithARequest := serving(asleep)
@@ -347,6 +355,12 @@ func TestNeedsDividing(t *testing.T) {
 			[]engineOnPod{serving(unrecorded), serving(engine("b", 100))}, []int64{100, 100}, true},
 		"no segment to be held in": {
 			[]engineOnPod{serving(noSegment), serving(engine("b", 100))}, []int64{100, 100}, false},
+		"a segment held to nothing, under a record": {
+			[]engineOnPod{serving(heldToNothing), serving(engine("b", 100))}, []int64{100, 100}, true},
+		"no record, and held to less than its floor": {
+			[]engineOnPod{serving(unrecordedUnderItsFloor), serving(engine("b", 100))}, []int64{100, 100}, true},
+		"asleep, with a limit in force and no record": {
+			[]engineOnPod{asleepAndUnrecorded, serving(engine("b", 100))}, []int64{40, 160}, true},
 		"at rest, an engine under half of its share": {
 			[]engineOnPod{engine("a", 151), engine("b", 49)}, []int64{100, 100}, true},
 		"at rest, an engine at half of its share": {
