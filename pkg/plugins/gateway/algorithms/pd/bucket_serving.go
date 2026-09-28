@@ -52,15 +52,17 @@ import (
 type BucketMode string
 
 const (
-	// BucketModeRPS balances request counts: the cuts sit at request-count
-	// quantiles, so the roleset of every band receives the same number of requests.
-	// It is the mode for latency-sensitive, request-bound deployments.
+	// BucketModeRPS splits shared ranges at request-count quantiles, so the
+	// traffic a roleset is banded tracks the replica share it still needs,
+	// counted in requests. It is the mode for latency-sensitive,
+	// request-bound deployments.
 	BucketModeRPS BucketMode = "rps"
 
-	// BucketModeThroughput balances token mass: the cuts sit at token-mass
-	// quantiles, so every band's roleset receives the same prompt work. It is
-	// the mode for throughput-bound deployments, where padding cost and GPU
-	// time track tokens rather than request counts.
+	// BucketModeThroughput splits shared ranges at prompt-token quantiles,
+	// so the traffic a roleset is banded tracks the replica share it still
+	// needs, counted in prompt tokens. It is the mode for throughput-bound
+	// deployments, where padding cost and GPU time track tokens rather than
+	// request counts.
 	BucketModeThroughput BucketMode = "throughput"
 )
 
@@ -158,9 +160,11 @@ type BandResult struct {
 	// must not be modified. It is set only when Refreshed is true.
 	Plan []BucketBand
 
-	// Dropped lists the rolesets the model's previously published plan held a
-	// band for and this one does not, in name order, so a caller can delete
-	// their gauge series. It is set only when Refreshed is true.
+	// Dropped lists the rolesets that left every live plan on this refresh,
+	// in name order: they were named before, and neither the new plan nor a
+	// cached plan still inside its refresh interval holds a band for them now,
+	// so a caller can delete their gauge series. It is set only when
+	// Refreshed is true.
 	Dropped []string
 
 	// Refreshed reports whether this call recomputed the plan rather than
@@ -237,14 +241,17 @@ type bucketServeModel struct {
 	// evicting the plan of the other profile.
 	plans map[string]bucketServePlan
 
-	// published is the roleset set of the plan this model published last, so a
-	// recomputation can report the rolesets that left the plan.
+	// published is the union of rolesets the model's plans held after the
+	// last refresh, so a recomputation can report the rolesets that left every
+	// live plan.
 	published map[string]struct{}
 }
 
-// bucketServePlan is one cached plan with the time it was computed.
+// bucketServePlan is one cached plan: its bands, the rolesets those bands
+// hold, and the time it was computed.
 type bucketServePlan struct {
 	bands []BucketBand
+	held  map[string]struct{}
 	at    time.Time
 }
 
@@ -263,8 +270,9 @@ func (t *BucketServeTracker) modelLocked(model string) *bucketServeModel {
 
 // planFor returns the model's plan for one mode and roleset set, recomputing
 // it when the cached plan for that pair is stale. refreshed reports whether
-// this call recomputed the plan, and dropped the rolesets the plan published
-// last held a band for that this one does not.
+// this call recomputed the plan, and dropped the rolesets that left every live
+// plan: they were held before and no plan that can still serve a request holds
+// them now.
 func (m *bucketServeModel) planFor(mode BucketMode, now time.Time, groups []BucketGroup) ([]BucketBand, []string, bool) {
 	key := string(mode) + "|" + bucketServeGroupsKey(groups)
 	if p, ok := m.plans[key]; ok && now.Sub(p.at) < bucketServeRefreshInterval {
@@ -275,18 +283,35 @@ func (m *bucketServeModel) planFor(mode BucketMode, now time.Time, groups []Buck
 	for _, band := range bands {
 		held[band.Group] = struct{}{}
 	}
+	// The new plan holds its bands, and so does every other cached plan still
+	// inside its refresh interval: the next request that matches one is served
+	// from that cache. A roleset no live plan holds is reported dropped, so a
+	// refresh of one mode never clears the gauge series a plan of another mode
+	// still serves.
+	live := make(map[string]struct{}, len(held))
+	for name := range held {
+		live[name] = struct{}{}
+	}
+	for k, p := range m.plans {
+		if k == key || now.Sub(p.at) >= bucketServeRefreshInterval {
+			continue
+		}
+		for name := range p.held {
+			live[name] = struct{}{}
+		}
+	}
 	var dropped []string
 	for name := range m.published {
-		if _, ok := held[name]; !ok {
+		if _, ok := live[name]; !ok {
 			dropped = append(dropped, name)
 		}
 	}
 	sort.Strings(dropped)
-	m.published = held
+	m.published = live
 	if m.plans == nil {
 		m.plans = make(map[string]bucketServePlan, 2)
 	}
-	m.plans[key] = bucketServePlan{bands: bands, at: now}
+	m.plans[key] = bucketServePlan{bands: bands, held: held, at: now}
 	if len(m.plans) > bucketServePlanCacheSize {
 		oldestKey, oldestAt := "", time.Time{}
 		for k, p := range m.plans {
@@ -337,9 +362,10 @@ type bucketServeSegment struct {
 
 // computeBands builds one plan: the declared roleset ranges are cut into
 // segments, every segment shared by several rolesets is split into one band
-// per roleset that still needs traffic, and the bands are sized so the
-// rolesets end up carrying the model's traffic in proportion to their
-// replicas. A segment that is not split carries no band: there every covering
+// per roleset that still needs traffic, and each band is debited against the
+// traffic its roleset just took, so a roleset carrying several overlaps draws
+// against one replica share of the model's traffic instead of one share per
+// segment. A segment that is not split carries no band: there every covering
 // roleset stays a candidate, which is the same preference as no plan at all.
 func (m *bucketServeModel) computeBands(mode BucketMode, groups []BucketGroup) []BucketBand {
 	segs := bucketServeSegments(groups)
@@ -390,20 +416,34 @@ func (m *bucketServeModel) computeBands(mode BucketMode, groups []BucketGroup) [
 		}
 	}
 
-	// Pick the segments to split and the rolesets that take part in each: only
-	// the ones that still need traffic, ordered by how much they need.
-	type splitSegment struct {
-		seg    bucketServeSegment
-		active []BucketGroup
-		parts  int
-	}
-	candidates := make([]splitSegment, 0, len(segs))
+	// Split the shared segments worth splitting, busiest first, and spend the
+	// band budget as bands are emitted: a segment that emits nothing costs
+	// nothing, so it cannot starve a later segment. Every emitted band is
+	// debited against the traffic its roleset just took, so a roleset that
+	// overlaps several segments draws against one replica share of the model's
+	// traffic instead of one share per segment.
+	candidates := make([]bucketServeSegment, 0, len(segs))
 	for i := range segs {
 		if len(segs[i].covering) < 2 || segs[i].weight/total < bucketServeMinSplitShare {
 			continue
 		}
-		active := make([]BucketGroup, 0, len(segs[i].covering))
-		for _, g := range segs[i].covering {
+		candidates = append(candidates, segs[i])
+	}
+	sort.SliceStable(candidates, func(a, b int) bool {
+		return candidates[a].weight > candidates[b].weight
+	})
+
+	bands := make([]BucketBand, 0, bucketServeMaxBands)
+	budget := bucketServeMaxBands
+	for i := range candidates {
+		if budget <= 0 {
+			break
+		}
+		seg := candidates[i]
+		// Only the rolesets that still need traffic take part, ordered by how
+		// much they need after the bands already assigned to them.
+		active := make([]BucketGroup, 0, len(seg.covering))
+		for _, g := range seg.covering {
 			if need[g.Name] > 0 {
 				active = append(active, g)
 			}
@@ -418,65 +458,47 @@ func (m *bucketServeModel) computeBands(mode BucketMode, groups []BucketGroup) [
 			}
 			return active[a].Name < active[b].Name
 		})
-		candidates = append(candidates, splitSegment{seg: segs[i], active: active})
-	}
-
-	// Spend the band budget on the busiest segments first. A segment that
-	// cannot afford one band per active roleset still splits into as many bands
-	// as the budget left allows, so a wide overlap is thinned rather than
-	// dropped on the floor.
-	sort.SliceStable(candidates, func(a, b int) bool {
-		return candidates[a].seg.weight > candidates[b].seg.weight
-	})
-	budget := bucketServeMaxBands
-	for i := range candidates {
-		parts := len(candidates[i].active)
+		parts := len(active)
 		if parts > budget {
+			// A segment that cannot afford one band per active roleset still
+			// splits into as many bands as the budget left allows, so a wide
+			// overlap is thinned rather than dropped on the floor.
 			parts = budget
 		}
-		if parts < 0 {
-			parts = 0
-		}
-		candidates[i].parts = parts
-		budget -= parts
-	}
-
-	bands := make([]BucketBand, 0, bucketServeMaxBands)
-	for i := range candidates {
-		cand := candidates[i]
-		if cand.parts <= 0 {
-			continue
-		}
-		if cand.parts == 1 {
-			if len(cand.active) == 1 {
+		if parts == 1 {
+			if len(active) == 1 {
 				// One roleset still needs traffic here and nothing else does,
 				// so the whole interval prefers it.
-				bands = append(bands, BucketBand{Min: cand.seg.min, Max: cand.seg.max, Group: cand.active[0].Name})
+				bands = append(bands, BucketBand{Min: seg.min, Max: seg.max, Group: active[0].Name})
+				budget--
+				need[active[0].Name] -= seg.weight
 			}
 			// The budget truncated several active rolesets to one band:
 			// leave the interval to the load fast paths rather than pin it to
 			// one of several rolesets that still need traffic.
 			continue
 		}
-		shares := make([]float64, 0, cand.parts)
-		for _, g := range cand.active[:cand.parts] {
+		shares := make([]float64, 0, parts)
+		for _, g := range active[:parts] {
 			shares = append(shares, need[g.Name])
 		}
-		cuts := bucketServeCuts(vec, cand.seg.min, cand.seg.max, shares)
-		if len(cuts) != cand.parts-1 {
-			// The interval is too narrow for the bin resolution to place
-			// distinct cuts; keep it whole rather than emit overlapping bands.
+		cuts := bucketServeCuts(vec, seg.min, seg.max, shares)
+		if len(cuts) != parts-1 {
+			// The interval cannot hold that many distinct cuts; keep it whole
+			// rather than emit overlapping bands.
 			continue
 		}
-		lower := cand.seg.min
-		for j := 0; j < cand.parts; j++ {
-			upper := cand.seg.max
+		lower := seg.min
+		for j := 0; j < parts; j++ {
+			upper := seg.max
 			if j < len(cuts) {
 				upper = cuts[j] - 1
 			}
-			bands = append(bands, BucketBand{Min: lower, Max: upper, Group: cand.active[j].Name})
+			bands = append(bands, BucketBand{Min: lower, Max: upper, Group: active[j].Name})
+			need[active[j].Name] -= bucketServeRangeWeight(vec, lower, upper)
 			lower = upper + 1
 		}
+		budget -= parts
 	}
 	sort.Slice(bands, func(a, b int) bool { return bands[a].Min < bands[b].Min })
 	return bands
@@ -558,7 +580,6 @@ func bucketServeCuts(vec []float64, min, max int, shares []float64) []int {
 	if sum <= 0 || total <= 0 {
 		return nil
 	}
-	width := max - min + 1
 	cuts := make([]int, 0, k-1)
 	acc := 0.0
 	for i := 0; i < k-1; i++ {
@@ -578,9 +599,9 @@ func bucketServeCuts(vec []float64, min, max int, shares []float64) []int {
 			}
 		}
 		if cut < min+1 || cut > max {
-			// The distribution is too thin to place this cut from the bins;
-			// fall back to an even split of the interval.
-			cut = min + width*(i+1)/k
+			// The bins cannot place this cut; keep the segment whole instead
+			// of publishing a split the histogram did not ask for.
+			return nil
 		}
 		cuts = append(cuts, cut)
 	}

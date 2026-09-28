@@ -150,7 +150,8 @@ func bucketServeMode(routingCtx *types.RoutingContext) (pd.BucketMode, bool) {
 // prompt-length range its pods declare and its prefill replica count, which is
 // how much of the model's traffic the roleset should carry. It runs a profile
 // lookup per roleset, not per pod: the pods of a roleset share one model config
-// profile, and the planner only needs the range once.
+// profile, and the planner only needs the range once. The order does not
+// matter: the planner sorts a copy, and the plan cache key sorts its parts.
 func bucketServeGroups(routingCtx *types.RoutingContext, readyPods []*v1.Pod) []pd.BucketGroup {
 	eligible := eligiblePDRolesets(readyPods)
 	groups := make([]pd.BucketGroup, 0, len(eligible))
@@ -161,12 +162,6 @@ func bucketServeGroups(routingCtx *types.RoutingContext, readyPods []*v1.Pod) []
 		}
 		groups = append(groups, pd.BucketGroup{Name: id, Min: minLength, Max: maxLength, Replicas: len(b.prefills)})
 	}
-	sort.Slice(groups, func(i, j int) bool {
-		if groups[i].Min != groups[j].Min {
-			return groups[i].Min < groups[j].Min
-		}
-		return groups[i].Name < groups[j].Name
-	})
 	return groups
 }
 
@@ -544,8 +539,9 @@ func (r *pdRouter) bucketServeBand(routingCtx *types.RoutingContext, readyPods [
 }
 
 // publishBucketServePlan republishes the gauge series of a recomputed plan:
-// the upper bound of the band every roleset holds, and a delete for every
-// roleset the plan dropped, so no series outlives the plan that produced it.
+// the highest upper bound among the bands every roleset holds, and a delete
+// for every roleset no live plan holds anymore, so no series outlives the
+// plans that produced it.
 func publishBucketServePlan(routingCtx *types.RoutingContext, res pd.BandResult) {
 	bounds := make(map[string]int, len(res.Plan))
 	for _, band := range res.Plan {

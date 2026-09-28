@@ -398,3 +398,114 @@ func TestEnvBucketServe(t *testing.T) {
 		})
 	}
 }
+
+func TestBucketServeDebitsSharedSegmentsAgainstOneShare(t *testing.T) {
+	groups := []BucketGroup{
+		{Name: "short", Min: 0, Max: 1400},
+		{Name: "general", Min: 0, Max: 3000},
+		{Name: "long", Min: 1600, Max: 3000},
+	}
+	tracker := NewBucketServeTracker()
+	serveEven(tracker, "m", BucketModeRPS, 100, 2900, 2801, bucketServeTestNow)
+
+	res := band(tracker, "m", BucketModeRPS, 100, 1, bucketServeTestNow, groups)
+
+	require.True(t, res.Refreshed)
+	require.Len(t, res.Plan, 4, "the wide roleset holds one band per shared segment")
+	assert.Equal(t, 0, res.Plan[0].Min)
+	assert.Equal(t, 3000, res.Plan[3].Max)
+	for i := 1; i < len(res.Plan); i++ {
+		assert.Less(t, res.Plan[i-1].Max, res.Plan[i].Min, "bands do not overlap")
+	}
+
+	// general overlaps both shared segments. Every band it holds is debited
+	// against the same replica share, so it must not take most of both
+	// overlaps the way a fresh share per segment would.
+	model := tracker.models["m"]
+	require.NotNil(t, model)
+	mass := map[string]float64{}
+	banded := 0.0
+	for _, b := range res.Plan {
+		w := bucketServeRangeWeight(model.weights, b.Min, b.Max)
+		mass[b.Group] += w
+		banded += w
+	}
+	require.Greater(t, banded, 0.0)
+	assert.Less(t, mass["general"]/banded, 0.40)
+	assert.Greater(t, mass["long"]/banded, 0.35)
+}
+
+func TestBucketServeKeepsBandsHeldByAnotherMode(t *testing.T) {
+	groups := []BucketGroup{
+		{Name: "short", Min: 0, Max: 4096},
+		{Name: "general", Min: 0, Max: 8192},
+	}
+	tracker := NewBucketServeTracker()
+	serveEven(tracker, "m", BucketModeRPS, 200, 3000, 50, bucketServeTestNow)
+	serveEven(tracker, "m", BucketModeRPS, 5000, 8000, 400, bucketServeTestNow)
+
+	rps := band(tracker, "m", BucketModeRPS, 200, 1, bucketServeTestNow, groups)
+	require.Len(t, rps.Plan, 1)
+	assert.Equal(t, "short", rps.Plan[0].Group)
+
+	// The shared interval is a small share of the prompt-token mass, so the
+	// throughput plan holds nothing. The short band is still held by the
+	// cached rps plan, which keeps serving it, so the refresh must not report
+	// it dropped.
+	throughput := band(tracker, "m", BucketModeThroughput, 200, 1, bucketServeTestNow, groups)
+	require.True(t, throughput.Refreshed)
+	assert.Empty(t, throughput.Plan)
+	assert.Empty(t, throughput.Dropped)
+
+	served := tracker.Band("m", BucketModeRPS, 200, bucketServeTestNow.Add(time.Second), groups)
+	require.False(t, served.Refreshed)
+	assert.Equal(t, "short", served.Roleset)
+}
+
+func TestBucketServeChargesTheBudgetOnlyForEmittedBands(t *testing.T) {
+	groups := make([]BucketGroup, 0, 19)
+	groups = append(groups, BucketGroup{Name: "wide", Min: 0, Max: 40000})
+	for i := 1; i <= 15; i++ {
+		groups = append(groups, BucketGroup{Name: fmt.Sprintf("a-%02d", i), Min: 0, Max: 8000})
+	}
+	groups = append(groups,
+		BucketGroup{Name: "b-01", Min: 10000, Max: 14200},
+		BucketGroup{Name: "b-02", Min: 10000, Max: 14200},
+		BucketGroup{Name: "c", Min: 16000, Max: 19800},
+	)
+	tracker := NewBucketServeTracker()
+	serveEven(tracker, "m", BucketModeRPS, 1, 40000, 20000, bucketServeTestNow)
+
+	res := band(tracker, "m", BucketModeRPS, 1, 1, bucketServeTestNow, groups)
+
+	// The wide overlap spends 15 of the 16 band slots. The b overlap is next:
+	// with one slot left it cannot hold one band per active roleset, so it
+	// emits nothing and must not spend that slot. The slot goes to the c
+	// interval, where a single roleset still needs traffic.
+	require.True(t, res.Refreshed)
+	assert.Len(t, res.Plan, bucketServeMaxBands)
+	last := res.Plan[len(res.Plan)-1]
+	assert.Equal(t, BucketBand{Min: 16000, Max: 19800, Group: "c"}, last)
+	for _, b := range res.Plan {
+		assert.NotEqual(t, "b-01", b.Group)
+		assert.NotEqual(t, "b-02", b.Group)
+	}
+}
+
+func TestBucketServeKeepsSegmentsTheBinsCannotCutWhole(t *testing.T) {
+	groups := []BucketGroup{
+		{Name: "dep-a", Min: 2, Max: 2000},
+		{Name: "dep-b", Min: 2, Max: 2000},
+	}
+	tracker := NewBucketServeTracker()
+	// All traffic sits on the first bin center of the shared range, so the
+	// quantile cut lands on the range's own lower bound: the bins cannot place
+	// a split, and the segment stays whole.
+	band(tracker, "m", BucketModeRPS, 2, 1000, bucketServeTestNow, nil)
+
+	res := band(tracker, "m", BucketModeRPS, 2, 1, bucketServeTestNow, groups)
+
+	require.True(t, res.Refreshed)
+	assert.Empty(t, res.Plan)
+	assert.Empty(t, res.Roleset)
+}

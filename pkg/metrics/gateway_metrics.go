@@ -66,7 +66,7 @@ const (
 
 	// counters and a gauge of the adaptive bucket-serve plan of the pd prefill
 	// routing: the requests and prompt tokens each banded roleset carried, and
-	// the current upper bound of the band it holds
+	// the current upper bound of the bands it holds
 	PDBucketServeBandTotal         = "pd_bucket_serve_band_total"
 	PDBucketServePromptTokensTotal = "pd_bucket_serve_prompt_tokens_total"
 	PDBucketServeBandMax           = "pd_bucket_serve_band_max"
@@ -204,7 +204,7 @@ var (
 			MetricType: MetricType{
 				Raw: Gauge,
 			},
-			Description: "Current upper prompt-length bound of the adaptive bucket-serve band of a roleset",
+			Description: "Current highest upper prompt-length bound among the adaptive bucket-serve bands a roleset holds",
 		},
 		GatewayInFlight: {
 			MetricScope:  PodMetricScope,

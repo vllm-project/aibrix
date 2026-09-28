@@ -202,7 +202,7 @@ Scoring formula: `score = (fairnessWeight * normFairness + utilizationWeight * n
 | `AIBRIX_DECODE_SCORE_RATIO_THRESHOLD` | float64 | `1.5` | Max/min drain-rate score ratio above which the slowest decode pod is excluded from selection. |
 | `AIBRIX_PROMPT_LENGTH_BUCKETING` | bool | `false` | Route requests to prefill pods whose prompt-length bucket matches the request length. |
 | `AIBRIX_BUCKET_SERVE` | bool | `false` | Adaptive bucket serving: band the prompt-length range that several rolesets declare in common and prefer the roleset a request length is banded to. Requires `AIBRIX_PROMPT_LENGTH_BUCKETING=true`. |
-| `AIBRIX_BUCKET_SERVE_MODE` | string | `"throughput"` | What the adaptive cut points balance: `throughput` (prompt token mass) or `rps` (request counts). An unknown value keeps the default. |
+| `AIBRIX_BUCKET_SERVE_MODE` | string | `"throughput"` | The unit the adaptive cut points are measured in: `throughput` (prompt token mass) or `rps` (request counts). An unknown value keeps the default. |
 | `AIBRIX_KV_CONNECTOR_TYPE` | string | `"shfs"` | KV cache transfer backend. Options: `shfs` (GPU shared memory), `nixl` (Neuron). |
 | `AIBRIX_PREFILL_SCORE_POLICY` | string | `"prefix_cache"` | Strategy for selecting the prefill pod. Options: `prefix_cache`, `least_request`. |
 | `AIBRIX_DECODE_SCORE_POLICY` | string | `"load_balancing"` | Strategy for selecting the decode pod. Options: `load_balancing`, `least_request`. |
