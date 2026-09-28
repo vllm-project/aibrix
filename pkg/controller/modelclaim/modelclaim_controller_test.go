@@ -1810,12 +1810,32 @@ func TestArrangeCardGrowsNothingWhenAShrinkIsNotConfirmed(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "past the")
-	require.Len(t, runtime.kvLimitCalls, 1, "no engine may grow into room that was not given back")
-	assert.Equal(t, "a", runtime.kvLimitCalls[0].ModelName)
+	// The shrink is written, and taken back when the reading does not show it.
+	require.Len(t, runtime.kvLimitCalls, 2)
+	for _, call := range runtime.kvLimitCalls {
+		assert.Equal(t, "a", call.ModelName, "no engine may grow into room that was not given back")
+	}
+	assert.Equal(t, int64(400), runtime.kvLimitCalls[1].LimitBytes)
 	for name, want := range map[string]int64{"a": 400, "b": 100} {
 		got := getModel(t, r, name)
 		assert.Equal(t, want, got.Status.Instances[0].KVLimitBytes, "the record of %s should not move", name)
 	}
+}
+
+// An engine that restarted runs under its allocator's own limit, above its
+// record. A shrink of it that is not confirmed is taken back to its record,
+// and not to the limit it should never have had.
+func TestArrangeCardTakesAShrinkBackToTheRecordAtMost(t *testing.T) {
+	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+	snapshot.Models[0].KVCapacityBytes = 900
+	runtime.onKVLimit = func() { snapshot.Models[0].KVUsedBytes = 300 }
+
+	err := divideOnce(t, r, pod, snapshot)
+
+	require.Error(t, err)
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, "a", runtime.kvLimitCalls[1].ModelName)
+	assert.Equal(t, int64(400), runtime.kvLimitCalls[1].LimitBytes)
 }
 
 func TestReconcileShrinksTheNeighbourToMakeRoomForANewModel(t *testing.T) {
@@ -1908,7 +1928,11 @@ func TestReconcileLeavesTheRecordsAloneWhenACardCannotBeDivided(t *testing.T) {
 
 	reconcileOnce(t, r, pm.Name)
 
-	require.Len(t, runtime.kvLimitCalls, 1)
+	// The shrink is written, and taken back when the reading does not show it.
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, int64(200), runtime.kvLimitCalls[0].LimitBytes)
+	assert.Equal(t, int64(600), runtime.kvLimitCalls[1].LimitBytes)
+	assert.NotEqual(t, runtime.kvLimitCalls[0].OperationID, runtime.kvLimitCalls[1].OperationID)
 	assert.Empty(t, runtime.activateCalls)
 	// The neighbour keeps the limit it was given, not the smaller one it was
 	// never confirmed to hold. Recorded, the smaller one would be enforced by

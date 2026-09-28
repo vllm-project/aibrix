@@ -765,9 +765,9 @@ func (e growthIncompleteError) Unwrap() error { return e.err }
 // the same way, because a write that reached no segment is reported as a
 // success either way.
 //
-// A shrink that fails leaves every record as it was. An engine it already
-// shrank sits below its record, which is safe and keeps its route. A record
-// that cannot be written leaves records that come to no more than the card. A
+// A shrink that fails leaves every record as it was, and the limits it wrote
+// are taken back. A record that cannot be written leaves records that come to
+// no more than the card. A
 // grow that fails comes after the records, so the engines it did not reach sit
 // below their new records, which is safe and keeps their routes. The
 // arrangement is made, and the error says only that some engine is still to
@@ -789,7 +789,8 @@ func (r *ModelClaimReconciler) arrangeCard(
 	}
 
 	shrinks, grows := shrinksAndGrows(limits)
-	if err := r.writeAndConfirmKVLimits(ctx, pod, ledger, shrinks, readings); err != nil {
+	if written, err := r.writeAndConfirmKVLimits(ctx, pod, ledger, shrinks, readings); err != nil {
+		r.takeBackKVLimits(ctx, pod, ledger, written)
 		readings.forget(pod.Name)
 		return nil, err
 	}
@@ -815,7 +816,7 @@ func (r *ModelClaimReconciler) arrangeCard(
 	}
 
 	var growErr error
-	if err := r.writeAndConfirmKVLimits(ctx, pod, ledger, grows, readings); err != nil {
+	if _, err := r.writeAndConfirmKVLimits(ctx, pod, ledger, grows, readings); err != nil {
 		growErr = growthIncompleteError{err: err}
 		grows = nil
 	}
@@ -847,17 +848,19 @@ func (r *ModelClaimReconciler) arrangeCard(
 // writeAndConfirmKVLimits writes one step of a card's division and reads the
 // card back to confirm it. A step with nothing to write reads nothing. The
 // reading taken to confirm the step becomes the pass's reading of the card.
+// It returns the limits it wrote, which is part of the step when a write
+// failed.
 func (r *ModelClaimReconciler) writeAndConfirmKVLimits(
 	ctx context.Context,
 	pod *corev1.Pod,
 	ledger podLedger,
 	limits []plannedKVLimit,
 	readings *runtimeReadings,
-) error {
+) ([]plannedKVLimit, error) {
 	if len(limits) == 0 {
-		return nil
+		return nil, nil
 	}
-	for _, limit := range limits {
+	for i, limit := range limits {
 		// The moment the card was read is part of the operation, not only the
 		// value. The runtime runs each operation once, and an engine that
 		// restarted needs the same value written again: without the moment,
@@ -872,18 +875,62 @@ func (r *ModelClaimReconciler) writeAndConfirmKVLimits(
 			OperationID: operationID,
 		}); err != nil {
 			readings.forget(pod.Name)
-			return fmt.Errorf("set %s to %s: %w", limit.modelName, gibibytes(limit.kvLimitBytes), err)
+			return limits[:i], fmt.Errorf("set %s to %s: %w", limit.modelName, gibibytes(limit.kvLimitBytes), err)
 		}
 	}
 	readings.forget(pod.Name)
 	snapshot, err := r.Runtime.Snapshot(ctx, pod.Status.PodIP, DefaultRuntimePort)
 	if err != nil {
-		return fmt.Errorf("read back the limits on %s: %w", pod.Name, err)
+		return limits, fmt.Errorf("read back the limits on %s: %w", pod.Name, err)
 	}
 	if snapshot != nil {
 		readings.replace(pod, snapshot)
 	}
-	return confirmKVLimits(snapshot, limits)
+	return limits, confirmKVLimits(snapshot, limits)
+}
+
+// takeBackKVLimits holds each engine that a shrink step wrote to what it was
+// held to before, and to no more than its record.
+//
+// A shrink that is not confirmed changes no record, and it must not leave an
+// engine held to less than before either. A card is divided every round, so a
+// division that kept failing would walk the engines beside the one at fault
+// down, round after round. An engine not routed yet would be shrunk by each
+// division and raised by its own pass in turn, and would never be found
+// holding its record.
+//
+// The shrinks are the first step of a division, so nothing has grown yet, and
+// raising them again gives no engine room that another was given. Only what
+// the step wrote is taken back. The first call that fails ends it, since a
+// runtime that does not answer would hold the worker once for each engine.
+//
+// It is a best effort, and it is not read back. An engine it does not reach
+// stays below its record, which is safe and keeps its route.
+func (r *ModelClaimReconciler) takeBackKVLimits(
+	ctx context.Context,
+	pod *corev1.Pod,
+	ledger podLedger,
+	written []plannedKVLimit,
+) {
+	for _, limit := range written {
+		before := limit.kvCapacityBytes
+		if limit.kvRecordedBytes > 0 && limit.kvRecordedBytes < before {
+			before = limit.kvRecordedBytes
+		}
+		if before <= limit.kvLimitBytes {
+			continue
+		}
+		operationID := fmt.Sprintf("kv-plan-back/%s/%s/%s/%d/%d",
+			pod.Namespace, pod.UID, limit.claimName, before, ledger.observedAt.UnixNano())
+		if _, err := r.Runtime.SetKVLimit(ctx, pod.Status.PodIP, DefaultRuntimePort, &SetKVLimitRequest{
+			ModelName:   limit.modelName,
+			LimitBytes:  before,
+			OperationID: operationID,
+		}); err != nil {
+			klog.ErrorS(err, "could not take a KV limit back", "pod", klog.KObj(pod), "model", limit.modelName)
+			return
+		}
+	}
 }
 
 // recordKVLimit writes the limit an instance is to run under into its own

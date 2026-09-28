@@ -18,6 +18,7 @@ package modelclaim
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -647,6 +648,120 @@ func TestReconcileDoesNotReadACardWithNothingOnIt(t *testing.T) {
 	reconcileOnce(t, r, "solo")
 
 	assert.Equal(t, 1, runtime.snapshotCalls, "a card with no instance has nothing to divide")
+}
+
+// aCardWithAnEngineThatTakesNoLimit is a card of three engines held to even
+// shares. The engine "deaf" reports the limit it had whatever is written to
+// it, so every division that moves it fails at the reading.
+func aCardWithAnEngineThatTakesNoLimit(
+	t *testing.T,
+	newcomerPhase modelv1alpha1.ModelClaimPhase,
+) (*ModelClaimReconciler, *fakeRuntime, *RuntimeSnapshot, *time.Time) {
+	t.Helper()
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	even := int64(4)<<30 + (int64(8)<<30)/3
+	claims := []client.Object{pod}
+	for i, name := range []string{"deaf", "busy", "newcomer"} {
+		phase := modelv1alpha1.ModelClaimActive
+		if name == "newcomer" {
+			phase = newcomerPhase
+		}
+		claim := withFinalizer(claimOnPod(name, pod.Name, phase, 20<<30, 4<<30))
+		claim.Status.Instances[0].Port = int32(9001 + i)
+		claim.Status.Instances[0].KVLimitBytes = even
+		claims = append(claims, claim)
+		engine := engineHolding(name, 0, even)
+		engine.Port = int32(9001 + i)
+		snapshot.Models = append(snapshot.Models, engine)
+	}
+	// The busy engine is to grow, so the other two are to shrink.
+	snapshot.Models[1].KVUsedBytes = 4 << 30
+	snapshot.Models[1].RequestsRunning = 4
+	r, runtime := newReconciler(t, claims...)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	runtime.onKVLimit = func() { snapshot.Models[0].KVCapacityBytes = even }
+	now := time.Unix(1_700_000_000, 0)
+	r.Divisions = newCardDivisionState(func() time.Time { return now })
+	return r, runtime, snapshot, &now
+}
+
+func TestReconcileRoutesAReadyEngineThoughItsCardCannotBeDivided(t *testing.T) {
+	r, _, snapshot, clock := aCardWithAnEngineThatTakesNoLimit(t, modelv1alpha1.ModelClaimActivating)
+
+	// A neighbour's pass comes first, and its division of the card fails.
+	reconcileOnce(t, r, "busy")
+	*clock = clock.Add(DefaultRequeueDuration)
+	reconcileOnce(t, r, "newcomer")
+
+	// The failed division took its shrink of the newcomer back, so the
+	// newcomer is held to its record, and is routed.
+	got := getModel(t, r, "newcomer")
+	assert.Equal(t, got.Status.Instances[0].KVLimitBytes, snapshot.Models[2].KVCapacityBytes)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Instances[0].Phase)
+}
+
+func TestReconcileLeavesEveryEngineAsItWasHeldWhenACardCannotBeDivided(t *testing.T) {
+	r, _, snapshot, clock := aCardWithAnEngineThatTakesNoLimit(t, modelv1alpha1.ModelClaimActive)
+	held := snapshot.Models[2].KVCapacityBytes
+
+	for round := 0; round < 3; round++ {
+		reconcileOnce(t, r, "busy")
+		*clock = clock.Add(DefaultRequeueDuration)
+	}
+
+	for i := range snapshot.Models {
+		assert.Equal(t, held, snapshot.Models[i].KVCapacityBytes, snapshot.Models[i].ModelName)
+	}
+}
+
+// failingKVLimits fails the writes of a KV limit whose number is listed,
+// counted from one.
+type failingKVLimits struct {
+	*fakeRuntime
+	failing map[int]bool
+}
+
+func (f *failingKVLimits) SetKVLimit(
+	ctx context.Context,
+	podIP string,
+	port int,
+	req *SetKVLimitRequest,
+) (*RuntimeOperationResponse, error) {
+	if f.failing[len(f.kvLimitCalls)+1] {
+		f.kvLimitCalls = append(f.kvLimitCalls, *req)
+		return nil, errors.New("runtime did not take the limit")
+	}
+	return f.fakeRuntime.SetKVLimit(ctx, podIP, port, req)
+}
+
+// Only what a step wrote is taken back. An engine the step did not reach is
+// held as before, so there is nothing to write to it.
+func TestArrangeCardTakesBackOnlyWhatItWrote(t *testing.T) {
+	r, runtime, _, _ := aCardWithAnEngineThatTakesNoLimit(t, modelv1alpha1.ModelClaimActive)
+	runtime.onKVLimit = nil
+	// The shrinks are for "deaf" and "newcomer". The second write fails.
+	r.Runtime = &failingKVLimits{fakeRuntime: runtime, failing: map[int]bool{2: true}}
+
+	reconcileOnce(t, r, "busy")
+
+	var written []string
+	for _, call := range runtime.kvLimitCalls {
+		written = append(written, call.ModelName+" "+strings.SplitN(call.OperationID, "/", 2)[0])
+	}
+	assert.Equal(t, []string{"deaf kv-plan", "newcomer kv-plan", "deaf kv-plan-back"}, written)
+}
+
+// A runtime that does not take a limit back is not asked for the next one.
+func TestArrangeCardStopsTakingBackAfterACallThatFails(t *testing.T) {
+	r, runtime, _, _ := aCardWithAnEngineThatTakesNoLimit(t, modelv1alpha1.ModelClaimActive)
+	// Both shrinks are written, and the reading does not confirm them. The
+	// first call that takes one back fails.
+	r.Runtime = &failingKVLimits{fakeRuntime: runtime, failing: map[int]bool{3: true}}
+
+	reconcileOnce(t, r, "busy")
+
+	require.Len(t, runtime.kvLimitCalls, 3)
+	assert.True(t, strings.HasPrefix(runtime.kvLimitCalls[2].OperationID, "kv-plan-back/"))
 }
 
 func TestCardDivisionStateCountsFailuresUntilADivisionWorks(t *testing.T) {

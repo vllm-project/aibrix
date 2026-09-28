@@ -385,12 +385,12 @@ there is no segment to write into, so reading the limit back is the only
 evidence there is. Each new limit is then recorded on its own claim, the ones
 that go down first, and the new instance after them. The limits that grow an
 engine are written last, and read back the same way. A shrink that fails
-changes no record. A record that cannot be written leaves records that come
-to no more than the card. A grow that fails leaves the engine below its new
-record, where it keeps its route, and a later division grows it. A model
-stays non-routable until its own limit is in force, and stays routable only
-while it is held to no more than that limit. A card whose room could not be
-made is skipped, and the next Pod in
+changes no record, and the limits it wrote are taken back. A record that
+cannot be written leaves records that come to no more than the card. A grow
+that fails leaves the engine below its new record, where it keeps its route,
+and a later division grows it. A model stays non-routable until its own limit
+is in force, and stays routable only while it is held to no more than that
+limit. A card whose room could not be made is skipped, and the next Pod in
 line is tried.
 
 A card is also divided again every round, so that each share follows the load
