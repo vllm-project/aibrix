@@ -9,6 +9,27 @@ paths:
   /v1alpha1/select:
     post:
       operationId: selectReplica
+      description: |
+        Select one replica from the request-local candidate snapshot. The
+        operation cannot change the model or return an arbitrary address.
+      parameters:
+        - name: X-Request-Id
+          in: header
+          required: true
+          description: Must equal metadata.requestId in the request body.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+        - name: traceparent
+          in: header
+          required: false
+          description: Current W3C trace context when one is available.
+          schema:
+            type: string
+      security:
+        - {}
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -83,6 +104,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Optional operator-configured token loaded by Gateway from a file.
   schemas:
     Metadata:
       type: object
@@ -93,9 +119,11 @@ components:
           type: string
           minLength: 1
           maxLength: 256
+          description: Correlation ID that the response must echo exactly.
         decisionId:
           type: string
           maxLength: 256
+          description: Optional decision-service correlation ID.
     Attributes:
       type: object
       maxProperties: 32
@@ -111,14 +139,17 @@ components:
         runningRequests:
           type: integer
           minimum: 0
+          description: Pod-wide live request count from one Gateway cache snapshot; not a per-port reservation.
         engineUtilization:
           type: number
           minimum: 0
           maximum: 1
+          description: Cached model engine-utilization ratio. Omitted when the engine does not expose the mapped metric.
         kvCacheUsage:
           type: number
           minimum: 0
           maximum: 1
+          description: Cached model KV-cache usage ratio; 1.0 means full.
     Candidate:
       type: object
       additionalProperties: true
@@ -128,10 +159,12 @@ components:
           type: string
           maxLength: 256
           pattern: '^[^/]+/[^/]+$'
+          description: Request-local candidate identity in namespace/pod-name form.
         ports:
           type: array
           minItems: 1
           uniqueItems: true
+          description: Sorted routable ports; the response may select only one of these values.
           items:
             type: integer
             minimum: 1
@@ -159,8 +192,10 @@ components:
             model:
               type: string
               minLength: 1
+              description: Model already resolved by Gateway; the service cannot replace it.
             policyMode:
               enum: [Advisory, Authoritative]
+              description: Process-configured policy mode governing decision legality.
             policyContext:
               type: object
               additionalProperties: true
@@ -170,6 +205,7 @@ components:
             candidates:
               type: array
               minItems: 1
+              description: Lexicographically sorted request-local snapshot. Order carries no preference.
               items:
                 $ref: '#/components/schemas/Candidate'
     Target:
@@ -181,10 +217,12 @@ components:
           type: string
           minLength: 1
           maxLength: 256
+          description: Exact ID of a candidate in this request.
         port:
           type: integer
           minimum: 1
           maximum: 65535
+          description: Candidate port. May be omitted only when that candidate advertised exactly one port.
     ReplicaSelectionResponse:
       type: object
       additionalProperties: true
@@ -203,11 +241,13 @@ components:
           properties:
             decision:
               enum: [Selected, NoDecision, Denied]
+              description: Selected is valid in both modes, NoDecision only in Advisory, and Denied only in Authoritative.
             target:
               $ref: '#/components/schemas/Target'
             reason:
               type: string
               maxLength: 256
+              description: Bounded diagnostic reason; Gateway does not copy it into the client error body.
           oneOf:
             - properties:
                 decision:

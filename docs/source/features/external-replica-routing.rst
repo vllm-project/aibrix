@@ -99,8 +99,15 @@ Gateway sends POST with this media type in both ``Content-Type`` and ``Accept``:
 
    application/vnd.aibrix.external-routing+json;version=v1alpha1
 
-A request contains sorted candidate IDs and ports. Metrics are opt-in and
-observational; they are not reservations or a linearizable load snapshot.
+The configured endpoint is the complete operation URL; Gateway does not append
+a path. ``X-Request-Id`` equals ``metadata.requestId``. Gateway also propagates
+a valid current W3C ``traceparent`` when available and sends ``Authorization:
+Bearer <token>`` only when ``AIBRIX_EXTERNAL_ROUTER_AUTH_TOKEN_FILE`` is set.
+It never forwards the inference client's authorization or arbitrary headers.
+
+A request contains sorted candidate IDs and ports. Optional attributes and
+metrics are omitted when they are not configured or available, never encoded as
+``null``.
 
 .. code-block:: json
 
@@ -111,6 +118,9 @@ observational; they are not reservations or a linearizable load snapshot.
      "spec": {
        "model": "llama-3",
        "policyMode": "Advisory",
+       "policyContext": {
+         "attributes": {"tenantTier": "gold"}
+       },
        "candidates": [{
          "id": "default/llama-3-a",
          "ports": [8000],
@@ -123,6 +133,42 @@ observational; they are not reservations or a linearizable load snapshot.
        }]
      }
    }
+
+Request fields have these meanings:
+
+* ``apiVersion`` and ``kind`` are fixed to
+  ``routing.aibrix.ai/v1alpha1`` and ``ReplicaSelectionRequest``.
+* ``metadata.requestId`` is a non-empty correlation ID of at most 256 UTF-8
+  bytes. The response must echo it exactly.
+* ``spec.model`` is the model already resolved by Gateway. The service cannot
+  change it.
+* ``spec.policyMode`` is the process-configured ``Advisory`` or
+  ``Authoritative`` mode.
+* ``spec.policyContext.attributes`` contains at most 32 trusted,
+  operator-allowlisted values. Raw client headers do not populate it.
+* ``spec.candidates`` is a non-empty request-local snapshot sorted by
+  ``namespace/pod-name``. Candidate order has no preference semantics.
+* ``candidates[].id`` is the exact ``namespace/pod-name`` identity that a
+  response may select. ``ports`` is the sorted, unique set of locally routable
+  ports in the range 1-65535.
+* ``candidates[].attributes`` contains only pod-label keys in
+  ``AIBRIX_EXTERNAL_ROUTER_CANDIDATE_ATTRIBUTES``.
+
+Candidate metrics are fixed typed fields selected through
+``AIBRIX_EXTERNAL_ROUTER_CANDIDATE_METRICS``. They are observational cache
+snapshots, not reservations or a linearizable load view:
+
+* ``runningRequests`` is a non-negative, pod-wide live count from one batched
+  Gateway cache read. It is not a per-port or per-rank value.
+* ``engineUtilization`` is a finite ratio in ``[0,1]`` from the requested
+  model's cached engine metric. It is currently populated only for engines that
+  expose the mapped metric, including xLLM; otherwise it is omitted.
+* ``kvCacheUsage`` is a finite ratio in ``[0,1]`` from cached
+  ``KVCacheUsagePerc``; ``1.0`` means full.
+
+Missing, non-finite, negative, or above-one optional metric values are omitted
+individually without failing routing. Gateway does not scrape engines or make a
+per-candidate network call to populate them.
 
 A selected response must echo the request ID. Gateway rejects candidates and
 ports that were not present in the exact request.
@@ -139,17 +185,68 @@ ports that were not present in the exact request.
      }
    }
 
-``NoDecision`` and ``Denied`` omit ``target`` and may include a bounded
-``reason``. Only HTTP 200 with the protocol media type is a decision. Redirects,
-compression, and retries are disabled.
+``target.id`` must occur in the exact candidate snapshot. ``target.port`` must
+belong to that candidate; it may be omitted only when the candidate advertised
+exactly one port. The service cannot return an address or URL.
+
+``NoDecision`` is valid only in Advisory mode and runs the configured fallback:
+
+.. code-block:: json
+
+   {
+     "apiVersion": "routing.aibrix.ai/v1alpha1",
+     "kind": "ReplicaSelectionResponse",
+     "metadata": {"requestId": "req-123"},
+     "status": {
+       "decision": "NoDecision",
+       "reason": "NoApplicablePolicy"
+     }
+   }
+
+``Denied`` is valid only in Authoritative mode and returns the fixed Gateway
+HTTP 403 response without reaching a backend:
+
+.. code-block:: json
+
+   {
+     "apiVersion": "routing.aibrix.ai/v1alpha1",
+     "kind": "ReplicaSelectionResponse",
+     "metadata": {
+       "requestId": "req-123",
+       "decisionId": "decision-789"
+     },
+     "status": {
+       "decision": "Denied",
+       "reason": "CompliancePolicy"
+     }
+   }
+
+``NoDecision`` and ``Denied`` omit ``target``. ``decisionId`` and ``reason``
+are optional strings of at most 256 UTF-8 bytes; the external reason is never
+copied to the inference client response.
+
+Only HTTP 200 with the exact protocol media type is a decision. Gateway rejects
+empty bodies, malformed JSON, duplicate object members, trailing JSON values,
+missing or null required fields, mismatched request IDs, illegal decisions, and
+targets outside the request snapshot. Unknown response fields are ignored for
+additive alpha evolution. Redirects, compression, and automatic retries are
+disabled.
 
 Security and operations
 -----------------------
 
-The endpoint cannot be selected by a client. Use a Kubernetes Service,
-NetworkPolicy, least-privilege bearer token, and HTTPS where required. The
-decision service must coordinate its own state across replicas. Gateway
-bulkheads and circuits are deliberately process-local.
+The endpoint URL and credentials are process-controlled and cannot be supplied
+or overridden by a client. The ``external`` strategy still participates in the
+normal routing-strategy resolution order, including the generic
+``routing-strategy`` request header unless an operator locks or otherwise
+controls strategy selection. Do not use that header as an authorization
+boundary.
+
+Use a Kubernetes Service, NetworkPolicy, least-privilege bearer token, and HTTPS
+where required. The decision service must coordinate its own state across
+replicas. Gateway candidate membership, address resolution, final admission and
+request accounting remain local. Bulkheads and circuit breakers are
+deliberately process-local to each Gateway replica.
 
 Monitor these low-cardinality metrics:
 
@@ -164,6 +261,21 @@ Authoritative only after denial and service-availability tests pass. Roll back
 by removing ``external`` from routing selection or unsetting the endpoint and
 restarting Gateway.
 
+Troubleshooting
+---------------
+
+* HTTP 403 with ``external_policy_denied`` is a valid Authoritative denial, not
+  an external-service outage.
+* HTTP 503 with ``external_router_unavailable`` means FailClosed handled a
+  system or protocol failure. Check the bounded Gateway error log, external
+  request and fallback counters, latency, and circuit state.
+* If an allowlisted attribute or metric is absent, verify the environment
+  allowlist and its trusted/cache data source. Absence does not fail routing.
+* Repeated ``open`` circuit state usually indicates transport, timeout,
+  non-200, media-type, JSON, request-ID, or target-validation failures.
+* A decision service must return the candidate ID exactly as supplied,
+  including namespace, and must select only an advertised port.
+
 Sample
 ------
 
@@ -171,4 +283,3 @@ See the runnable sample under ``samples/external-replica-router/`` for
 preferred-zone and premium-accelerator rules with deterministic tie-breaking.
 Trusted policy attributes must be populated by validated in-process code; do
 not copy raw tenant or authorization headers into them.
-
