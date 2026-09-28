@@ -54,6 +54,7 @@ const (
 	runtimePhaseActive   = "active"
 	runtimePhaseFailed   = "failed"
 	runtimePhaseSleeping = "sleeping"
+	runtimePhaseStopping = "stopping"
 
 	// ModelClaimFinalizer ensures attached engine processes are deactivated and
 	// routing is deregistered before the ModelClaim object is removed.

@@ -325,11 +325,21 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 	// the next model as though it were free.
 	for name, ledger := range ledgers {
 		for _, model := range snapshots[name].models() {
-			// A dead engine has given its memory back, so it is not a hole.
-			if !model.Alive {
+			if _, known := accounted[name][snapshotActivityKey(model)]; known {
 				continue
 			}
-			if _, known := accounted[name][snapshotActivityKey(model)]; known {
+			// An engine that was told to stop holds its memory until its last
+			// process has exited, and the runtime lists it as stopping until
+			// then. The runtime reports it alive only while its first process
+			// lives, which the processes that hold the card can outlive. So
+			// the phase is asked here, and not whether it is alive.
+			if model.Phase == runtimePhaseStopping {
+				ledgers[name] = ledger.withHole(fmt.Sprintf(
+					"the engine that served %s there is still exiting", model.ModelName))
+				break
+			}
+			// A dead engine has given its memory back, so it is not a hole.
+			if !model.Alive {
 				continue
 			}
 			ledgers[name] = ledger.withHole(fmt.Sprintf(

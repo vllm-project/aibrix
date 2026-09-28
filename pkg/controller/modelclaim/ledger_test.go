@@ -265,6 +265,36 @@ func TestLedgerHasAHoleWhenAnEngineAnswersToNoClaim(t *testing.T) {
 	assert.Equal(t, "the engine serving stranger there answers to no claim", ledger.blocked)
 }
 
+// An engine that was told to stop holds its memory until its last process
+// has exited. The runtime lists it as stopping until then. It reports the
+// engine alive only while its first process lives, and the processes that hold
+// the card can outlive that one.
+func TestLedgerHasAHoleWhileAnEngineIsStillExiting(t *testing.T) {
+	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
+	declared := claimOnPod("declared", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	for name, alive := range map[string]bool{"its first process lives": true, "its first process has gone": false} {
+		t.Run(name, func(t *testing.T) {
+			leaving := engineHolding("gone", 250, 400)
+			leaving.Phase = runtimePhaseStopping
+			leaving.Alive = alive
+			leaving.Ready = false
+
+			ledger := ledgerFor(t, pod, sizedPodSnapshots(pod.Name, 1000, leaving), declared)
+
+			assert.False(t, ledger.judgeable)
+			assert.Equal(t, "the engine that served gone there is still exiting", ledger.blocked)
+		})
+	}
+
+	// Once the runtime no longer lists it, or lists it dead in another phase,
+	// its memory is back.
+	dead := engineHolding("gone", 250, 400)
+	dead.Phase = runtimePhaseFailed
+	dead.Alive = false
+	ledger := ledgerFor(t, pod, sizedPodSnapshots(pod.Name, 1000, dead), declared)
+	assert.True(t, ledger.judgeable)
+}
+
 func TestLedgerAcceptsACardWhoseEnginesAllAnswerToAClaim(t *testing.T) {
 	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
 	ledger := ledgerFor(t, pod,
