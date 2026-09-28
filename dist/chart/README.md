@@ -22,6 +22,63 @@ This chart is not intended for upgrades from earlier deployments that used Kusto
 
 ## Development 
 
+### Diagnostic Envoy access logs
+
+Set `gateway.envoyProxy.accessLog.enabled=true` to add request/response timings
+and ext_proc call statistics to the default JSON stdout log for Envoy
+Gateway-managed proxies. It is enabled in `values-esx.yaml`, independently of
+OpenTelemetry tracing. `gateway.envoyProxy.accessLog.extProcFilterName` optionally
+overrides the filter-state key; otherwise it is derived from the namespace and
+the chart's EnvoyExtensionPolicy name.
+
+```json
+{
+  ":authority": "127.0.0.1:8888",
+  "bytes_received": 971858,
+  "bytes_sent": 6818,
+  "connection_termination_details": null,
+  "downstream_local_address": "127.0.0.1:10080",
+  "downstream_remote_address": "127.0.0.1:34464",
+  "duration": 37095,
+  "ext_proc_request_body_call_count": "1",
+  "ext_proc_request_body_last_call_status": "0",
+  "ext_proc_request_body_max_latency_us": "27798",
+  "ext_proc_request_body_total_latency_us": "27798",
+  "ext_proc_request_header_call_status": "0",
+  "ext_proc_request_header_latency_us": "1362",
+  "ext_proc_response_body_call_count": "33",
+  "ext_proc_response_body_last_call_status": "0",
+  "ext_proc_response_body_max_latency_us": "816",
+  "ext_proc_response_body_total_latency_us": "16925",
+  "ext_proc_response_header_call_status": "0",
+  "ext_proc_response_header_latency_us": "628",
+  "method": "POST",
+  "protocol": "HTTP/1.1",
+  "request_duration_ms": 877,
+  "request_tx_duration_ms": 907,
+  "requested_server_name": null,
+  "response_code": 200,
+  "response_code_details": "via_upstream",
+  "response_duration_ms": 2444,
+  "response_flags": "-",
+  "response_tx_duration_ms": 34650,
+  "route_name": "original_route",
+  "start_time": "2026-09-22T07:45:25.637Z",
+  "start_time_precise": "2026-09-22T07:45:25.637745000Z",
+  "traceparent": "00-xxxxxxxxxxx-d0bed7ad907df883-01",
+  "upstream_cluster": "original_destination_cluster",
+  "upstream_connection_pool_ready_duration_ms": 0,
+  "upstream_host": "10.xx.xx.xx:8000",
+  "upstream_local_address": "10.xx.xx.xx:55322",
+  "upstream_transport_failure_reason": null,
+  "user-agent": "curl/8.7.1",
+  "x-envoy-origin-path": "/v1/chat/completions",
+  "x-envoy-upstream-service-time": null,
+  "x-forwarded-for": "10.xx.xx.xx",
+  "x-request-id": "xxxxxxxxx"
+}
+```
+
 ### Helm Lint
 
 Run the following to validate the chart, If you encounter errors such as:

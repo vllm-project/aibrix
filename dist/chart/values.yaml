@@ -179,6 +179,12 @@ gateway:
     ports:
       http: 10080
   envoyProxy:
+    accessLog:
+      # Add request/response timing and ext_proc fields to the default JSON log.
+      # Applies to Envoy Gateway-managed proxies; uses Envoy v1.37.2 ext_proc fields.
+      enabled: false
+      # Empty derives the filter name from the release namespace and policy name.
+      extProcFilterName: ""
     replicas: 1
     imagePullSecrets: []
     tolerations: []
@@ -253,6 +259,8 @@ gateway:
       maxRequests: 1024
       # The maximum number of pending requests to the original destination cluster.
       maxPendingRequests: 1024
+      # If True, expose the number of resources remaining until the circuit breakers open
+      trackRemaining: false
     preserveExternalRequestID: false
 
 metadata:
