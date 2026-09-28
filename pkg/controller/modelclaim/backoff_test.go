@@ -219,32 +219,50 @@ func TestReconcileChecksAPartlyPlacedClaimEveryRound(t *testing.T) {
 func TestPlacementBackoffStartsOverWhenRoomMayHaveAppeared(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	claim := types.NamespacedName{Namespace: testNamespace, Name: "qwen"}
+	card := func(room podRoom) roomSignature { return roomSignature{"warm-1/u1": room} }
+	// Three instances, which are promised 1200 together.
+	whole := podRoom{instances: 3, awake: 3, promisedBytes: 1200}
 	// Three instances, one of whose claim declares nothing.
-	before := roomSignature{"warm-1/u1": {instances: 3, awake: 3, undeclared: 1, promisedBytes: 800}}
+	withAHole := podRoom{instances: 3, awake: 3, undeclared: 1, promisedBytes: 800}
 	cases := []struct {
 		name       string
 		generation int64
+		before     roomSignature
 		room       roomSignature
 		due        bool
 	}{
-		{"the pool as it was", 1, before, false},
-		{"more promised on a card", 1, roomSignature{"warm-1/u1": {instances: 3, awake: 3, undeclared: 1, promisedBytes: 900}}, false},
-		{"a pod gone", 1, roomSignature{}, false},
-		{"an instance gone", 1, roomSignature{"warm-1/u1": {instances: 2, awake: 2, undeclared: 1, promisedBytes: 400}}, true},
-		{"less promised on a card", 1, roomSignature{"warm-1/u1": {instances: 3, awake: 3, undeclared: 1, promisedBytes: 700}}, true},
-		{"a hole closed", 1, roomSignature{"warm-1/u1": {instances: 3, awake: 3, promisedBytes: 1200}}, true},
-		{"a hole opened", 1, roomSignature{"warm-1/u1": {instances: 3, awake: 3, undeclared: 2, promisedBytes: 400}}, false},
-		{"a pod joined", 1, roomSignature{"warm-1/u1": {instances: 3, awake: 3, undeclared: 1, promisedBytes: 800}, "warm-2/u2": {}}, true},
-		{"an engine woken", 1, roomSignature{"warm-1/u1": {instances: 3, awake: 4, undeclared: 1, promisedBytes: 800}}, false},
-		{"an engine gone to sleep", 1, roomSignature{"warm-1/u1": {instances: 3, awake: 2, undeclared: 1, promisedBytes: 800}}, true},
-		{"a pod turned ready", 1, roomSignature{"warm-1/u1": {instances: 3, awake: 3, undeclared: 1, promisedBytes: 800, ready: true}}, true},
-		{"the claim's own spec changed", 2, before, true},
+		{"the pool as it was", 1, card(whole), card(whole), false},
+		{"more promised on a card", 1, card(whole), card(podRoom{instances: 3, awake: 3, promisedBytes: 1300}), false},
+		{"a pod gone", 1, card(whole), roomSignature{}, false},
+		{"an instance gone", 1, card(whole), card(podRoom{instances: 2, awake: 2, promisedBytes: 800}), true},
+		{"less promised on a card", 1, card(whole), card(podRoom{instances: 3, awake: 3, promisedBytes: 1100}), true},
+		{"a pod joined", 1, card(whole), roomSignature{"warm-1/u1": whole, "warm-2/u2": {}}, true},
+		{"an engine woken", 1, card(podRoom{instances: 3, awake: 2, promisedBytes: 1200}), card(whole), false},
+		{"an engine gone to sleep", 1, card(whole), card(podRoom{instances: 3, awake: 2, promisedBytes: 1200}), true},
+		{"a pod turned ready", 1, card(whole), card(podRoom{instances: 3, awake: 3, promisedBytes: 1200, ready: true}), true},
+		{"the claim's own spec changed", 2, card(whole), card(whole), true},
+		// A card with a hole is turned away, whatever else happens on it. So
+		// nothing on it counts as room until its last hole has closed.
+		{"a hole closed", 1, card(withAHole), card(whole), true},
+		{"a hole opened", 1, card(whole), card(withAHole), false},
+		{"an instance gone beside a hole", 1, card(withAHole),
+			card(podRoom{instances: 2, awake: 2, undeclared: 1, promisedBytes: 400}), false},
+		{"less promised beside a hole", 1, card(withAHole),
+			card(podRoom{instances: 3, awake: 3, undeclared: 1, promisedBytes: 700}), false},
+		{"an engine gone to sleep beside a hole", 1, card(withAHole),
+			card(podRoom{instances: 3, awake: 2, undeclared: 1, promisedBytes: 800}), false},
+		{"one of two holes closed", 1, card(podRoom{instances: 3, awake: 3, undeclared: 2, promisedBytes: 400}),
+			card(withAHole), false},
+		// A pod without a card is not judged by its account, so it can take
+		// a model once its runtime answers.
+		{"a pod turned ready beside a hole", 1, card(withAHole),
+			card(podRoom{instances: 3, awake: 3, undeclared: 1, promisedBytes: 800, ready: true}), true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			backoff := newPlacementBackoff(func() time.Time { return now })
-			backoff.refused(claim, 1, before)
-			backoff.refused(claim, 1, before)
+			backoff.refused(claim, 1, c.before)
+			backoff.refused(claim, 1, c.before)
 			backoff.statusWritten(claim)
 
 			due, _ := backoff.due(claim, c.generation, c.room)
@@ -1270,4 +1288,37 @@ func TestReconcileChecksAClaimWithAnEngineEveryRoundAfterAStartThatFailed(t *tes
 	now = now.Add(DefaultRequeueDuration / 2)
 	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name))
 	assert.Len(t, runtime.activateCalls, 2)
+}
+
+// Through Reconcile: a claim on the card declares nothing, so the card is
+// turned away. A neighbour that declares less beside it frees no room, and
+// the waiting claim sits out its wait.
+func TestReconcileKeepsAClaimWaitingWhileItsCardHasAHole(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].Port = 9001
+	neighbour.Status.Instances[0].KVLimitBytes = 300
+	undeclared := claimOnPod("undeclared", pod.Name, modelv1alpha1.ModelClaimActive, 100, 100)
+	undeclared.Status.Instances[0].Port = 9002
+	undeclared.Spec.PerGPU = nil
+	snapshot.Models = []RuntimeSnapshotModel{
+		engineHolding("neighbour", 100, 300), engineHolding("undeclared", 100, 300),
+	}
+	r, runtime := newReconciler(t, pm, pod, neighbour, undeclared)
+	now := time.Unix(1_700_000_000, 0)
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	for _, want := range []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second} {
+		require.Equal(t, want, reconcileFor(t, r, pm.Name))
+		now = now.Add(want)
+	}
+	require.Equal(t, time.Minute, reconcileFor(t, r, pm.Name))
+	require.Contains(t, scheduled(t, r, pm.Name).Message, "could not be judged: undeclared runs there")
+
+	shrunk := getModel(t, r, "neighbour")
+	shrunk.Spec.PerGPU.MaximumFootprint = *resource.NewQuantity(200, resource.BinarySI)
+	require.NoError(t, r.Update(context.Background(), shrunk))
+
+	assert.Equal(t, time.Minute, reconcileFor(t, r, pm.Name))
 }

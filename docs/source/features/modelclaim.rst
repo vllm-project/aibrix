@@ -794,10 +794,14 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    A waiting claim does not sit through its wait when room may have appeared.
    These changes wake it at once, and it starts again from the shortest wait:
 
-   * Another claim is deleted, scaled down or failed, or goes to sleep.
+   * Another claim is deleted, is scaled down, fails or goes to sleep.
    * A declaration shrinks, or becomes usable.
    * A Pod joins the pool, or turns ready.
    * The claim's own spec changes.
+
+   Room on a card counts only when every claim on the card declares a usable
+   ``perGPU``. While one of them does not, the card is turned away, so a
+   neighbour that leaves it frees no room.
 
    A claim that is deleted wakes the others before its engine has exited, and
    an engine holds its memory until it has. So the try that a deletion wakes
