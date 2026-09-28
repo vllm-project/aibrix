@@ -54,8 +54,9 @@ const (
 	defaultRuntimeHTTPTimeout = 60 * time.Second
 
 	// runtimeSnapshotTimeout bounds one snapshot read. A read normally takes a
-	// fraction of a second, and the runtime gives each engine's probes at most
-	// 1.5 s. Calls that change state keep the longer timeout above.
+	// fraction of a second. At worst the runtime reads NVML once and gives each
+	// engine's probes 1.5 s, one engine after another. Calls that change state
+	// keep the longer timeout above.
 	runtimeSnapshotTimeout = 10 * time.Second
 
 	// runtimeSilenceWindow is how long a runtime that did not answer in time is
@@ -328,7 +329,7 @@ func (s *runtimeSilence) observe(runtime string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var netErr net.Error
-	if !errors.As(err, &netErr) || !netErr.Timeout() {
+	if err == nil || !errors.As(err, &netErr) || !netErr.Timeout() {
 		delete(s.until, runtime)
 		return
 	}
