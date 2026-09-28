@@ -23,7 +23,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -88,7 +87,7 @@ func (r throughputRouter) Route(ctx *types.RoutingContext, readyPodList types.Po
 	}
 
 	var targetPod *v1.Pod
-	var targetPods []string
+	var targetPods []*v1.Pod
 	minCount := math.MaxFloat64 // we want to select the pod with the LEAST total weighted tokens processed
 	pods := readyPodList.All()
 
@@ -102,14 +101,14 @@ func (r throughputRouter) Route(ctx *types.RoutingContext, readyPodList types.Po
 
 		if scores[i] < minCount {
 			minCount = scores[i]
-			targetPods = []string{pod.Name}
+			targetPods = []*v1.Pod{pod}
 		} else if scores[i] == minCount {
-			targetPods = append(targetPods, pod.Name)
+			targetPods = append(targetPods, pod)
 		}
 	}
 
 	if len(targetPods) > 0 {
-		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], pods)
+		targetPod = targetPods[rand.Intn(len(targetPods))]
 	}
 
 	// Use fallback if no valid metrics

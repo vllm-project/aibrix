@@ -44,7 +44,7 @@ type TreeNode struct {
 	isLeaf        bool
 	contextLength int // total length from root to this node
 	depth         int
-	modelToPods   map[string]map[string]time.Time // model -> {podName -> lastAccessTime}
+	modelToPods   map[string]map[string]time.Time // model -> {pod key (namespace/name) -> lastAccessTime}
 }
 
 // GetModelToPods returns a deep copy of the model-to-pods mapping.

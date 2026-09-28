@@ -447,11 +447,11 @@ func TestPrebleDecodingLengthKnobReachesTheHistogram(t *testing.T) {
 	profiled := createTestRoutingContext("model", "hello world", "req-preble-overrides")
 	profiled.SetRoutingOverrides(&types.RoutingOverrides{Preble: types.PrebleOverrides{DecodingLength: 32}})
 	require.NoError(t, router.PostRouteUpdate(profiled, podList, pod))
-	assert.Equal(t, 32, router.histogram.currentDecodeLengthsPerPod[pod.Name])
+	assert.Equal(t, 32, router.histogram.currentDecodeLengthsPerPod[utils.GeneratePodKey(pod.Namespace, pod.Name)])
 
 	plain := createTestRoutingContext("model", "hello world", "req-preble-default")
 	require.NoError(t, router.PostRouteUpdate(plain, podList, pod))
-	assert.Equal(t, 32+decodingLength, router.histogram.currentDecodeLengthsPerPod[pod.Name], "a request without the knob keeps the process default")
+	assert.Equal(t, 32+decodingLength, router.histogram.currentDecodeLengthsPerPod[utils.GeneratePodKey(pod.Namespace, pod.Name)], "a request without the knob keeps the process default")
 }
 
 func TestPrefixCacheSigmaKnobControlsCandidateFiltering(t *testing.T) {
