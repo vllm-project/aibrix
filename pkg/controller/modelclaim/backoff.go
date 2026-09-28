@@ -35,10 +35,10 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-// maximumPlacementBackoff is the longest a claim no card can hold waits
-// between tries. A pool that gains room should take the waiting model within a
-// minute, and a model that has waited all morning should not have every
-// runtime in the pool read for it every ten seconds.
+// maximumPlacementBackoff is the longest a claim no card can hold waits between
+// tries. A pool that gains room should take the waiting model within a minute.
+// A model that has waited all morning should not have every runtime in the pool
+// read for it every ten seconds.
 const maximumPlacementBackoff = time.Minute
 
 // placementBackoff spaces out the tries of claims no card can hold.
@@ -112,10 +112,10 @@ func (a placementAttempt) helpedBy() whatHelps {
 // not from any runtime, so it costs nothing to compare on every pass.
 type roomSignature map[string]podRoom
 
-// podRoom is what the live instances on one pod take: how many there are, how
-// many of them are awake, how many belong to claims that declare nothing, and
-// what the rest are promised. It also says whether the pod is ready, which is
-// when its runtime answers.
+// podRoom is what the live instances on one pod take. It says how many there
+// are, how many of them are awake, and how many belong to claims that declare
+// nothing. It also says what the rest are promised. Last, it says whether the
+// pod is ready, which is when its runtime answers.
 type podRoom struct {
 	instances     int
 	awake         int
@@ -137,11 +137,9 @@ func newPlacementBackoff(now func() time.Time) *placementBackoff {
 // due reports whether a claim may try to find a card now, and how long is left
 // when it may not.
 //
-// A waiting claim starts over at once when room may have appeared since its
-// last refusal: its own spec changed, a pod joined the pool or turned ready,
-// or a pod now carries fewer instances, fewer that are awake, fewer claims
-// that declare nothing, or less that is promised. It then waits from the
-// shortest wait again if it is refused.
+// A waiting claim starts over at once when its own spec changed, or when the
+// pool changed in a way that can help it. roomMayHaveAppeared says which
+// changes count. It then waits from the shortest wait again if it is refused.
 func (b *placementBackoff) due(claim types.NamespacedName, generation int64, room roomSignature) (bool, time.Duration) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -373,9 +371,9 @@ func awakeInstances(pm *modelv1alpha1.ModelClaim) int {
 }
 
 // freesRoom reports whether a change to a claim can free room on a card for a
-// claim that is waiting: an instance gone, failed or gone to sleep, a
-// declaration that shrank, or one that became usable and so closes a hole in
-// its card's account.
+// claim that is waiting. It can when an instance is gone, failed or gone to
+// sleep, and when a declaration shrank. It also can when a declaration became
+// usable, which closes a hole in its card's account.
 func freesRoom(before, after *modelv1alpha1.ModelClaim) bool {
 	if liveInstances(after) < liveInstances(before) || awakeInstances(after) < awakeInstances(before) {
 		return true
