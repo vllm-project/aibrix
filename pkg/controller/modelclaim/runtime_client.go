@@ -466,17 +466,33 @@ func (c *httpRuntimeClient) Snapshot(ctx context.Context, podIP string, port int
 	return out, nil
 }
 
-// do sends a request to a runtime, unless that runtime did not answer in time a
-// short while ago. Stopping an engine is sent even then: a claim is deleted or
-// scaled down only once, and an engine left running would keep its memory.
-func (c *httpRuntimeClient) do(req *http.Request) (*http.Response, error) {
+// do sends a request to a runtime and reads its answer, unless that runtime did
+// not answer in time a short while ago. Stopping an engine is sent even then: a
+// claim is deleted or scaled down only once, and an engine left running would
+// keep its memory.
+//
+// An answer counts once all of it has arrived. A runtime that sends its
+// headers and then stalls holds its caller until the time is up as well, so
+// it did not answer in time either.
+func (c *httpRuntimeClient) do(req *http.Request) (status int, body []byte, err error) {
 	runtime := req.URL.Host
 	if req.URL.Path != deactivatePath && c.silence.silent(runtime) {
-		return nil, fmt.Errorf("runtime %s %w", runtime, errRuntimeSilent)
+		return 0, nil, fmt.Errorf("runtime %s %w", runtime, errRuntimeSilent)
 	}
 	resp, err := c.httpClient.Do(req)
+	if err == nil {
+		status = resp.StatusCode
+		body, err = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		_ = resp.Body.Close()
+		if err != nil {
+			err = fmt.Errorf("read the answer to runtime %s %s: %w", req.Method, req.URL, err)
+		}
+	}
 	c.silence.observe(runtime, err)
-	return resp, err
+	if err != nil {
+		return 0, nil, err
+	}
+	return status, body, nil
 }
 
 func (c *httpRuntimeClient) getJSON(ctx context.Context, url string, out any) error {
@@ -484,14 +500,12 @@ func (c *httpRuntimeClient) getJSON(ctx context.Context, url string, out any) er
 	if err != nil {
 		return err
 	}
-	resp, err := c.do(httpReq)
+	status, body, err := c.do(httpReq)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusOK {
-		return statusError(http.MethodGet, url, resp.StatusCode, body)
+	if status != http.StatusOK {
+		return statusError(http.MethodGet, url, status, body)
 	}
 	if err := json.Unmarshal(body, out); err != nil {
 		return fmt.Errorf("decode runtime response: %w", err)
@@ -512,15 +526,12 @@ func (c *httpRuntimeClient) postJSON(ctx context.Context, url string, req any, o
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.do(httpReq)
+	status, body, err := c.do(httpReq)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return statusError(http.MethodPost, url, resp.StatusCode, body)
+	if status != http.StatusOK && status != http.StatusCreated {
+		return statusError(http.MethodPost, url, status, body)
 	}
 	if out != nil && len(body) > 0 {
 		if err := json.Unmarshal(body, out); err != nil {
