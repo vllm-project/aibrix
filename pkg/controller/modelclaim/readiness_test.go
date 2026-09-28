@@ -27,6 +27,9 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -187,9 +190,9 @@ func TestReconcileDoesNotRouteAnEngineWhoseReadBackFails(t *testing.T) {
 	assert.Len(t, runtime.kvLimitCalls, 1)
 }
 
-// A read-back that failed is no reading of the pod. What follows in the pass
-// reads the runtime again, as it did before there was a read-back.
-func TestReconcileForgetsAReadBackThatFailed(t *testing.T) {
+// A runtime that did not answer the read-back is not asked again in the pass.
+// A runtime that hangs holds the worker for a whole timeout each time.
+func TestReconcileDoesNotAskARuntimeAgainWhoseReadBackFailed(t *testing.T) {
 	r, runtime, pm, pod, _ := anEngineComingUp(t)
 	r.Runtime = &failingSnapshots{fakeRuntime: runtime, failing: map[int]bool{2: true}}
 	readings := newRuntimeReadings(r.Runtime)
@@ -199,9 +202,27 @@ func TestReconcileForgetsAReadBackThatFailed(t *testing.T) {
 	require.Equal(t, 2, runtime.snapshotCalls)
 
 	snapshot, err := readings.of(context.Background(), pod)
+	require.Error(t, err)
+	assert.Nil(t, snapshot, "what the runtime said before the write is not used either")
+	assert.Equal(t, 2, runtime.snapshotCalls)
+}
+
+// A write that failed may have reached the engine all the same. What the pass
+// had read of the runtime is dropped, and the next step reads it again.
+func TestReconcileReadsARuntimeAgainAfterAWriteThatFailed(t *testing.T) {
+	r, runtime, pm, pod, _ := anEngineComingUp(t)
+	r.Runtime = &failingKVLimits{fakeRuntime: runtime, failing: map[int]bool{1: true}}
+	readings := newRuntimeReadings(r.Runtime)
+	claim := getModel(t, r, pm.Name)
+
+	r.reconcileInstanceHealth(context.Background(), claim, readings)
+	require.Len(t, runtime.kvLimitCalls, 1)
+	require.Equal(t, 1, runtime.snapshotCalls, "a write that failed is not read back")
+
+	_, err := readings.of(context.Background(), pod)
 	require.NoError(t, err)
-	require.NotNil(t, snapshot)
-	assert.Equal(t, 3, runtime.snapshotCalls, "the runtime is read again")
+	assert.Equal(t, 2, runtime.snapshotCalls)
+	assert.Equal(t, 1, eventsNamed(drainEvents(t, r), "KVLimitFailed"))
 }
 
 // KVLimitSet says that a limit is in force. For an engine coming up, that is
@@ -287,11 +308,78 @@ func TestReconcileSaysALimitIsSetWhenARoutedEngineIsPulledBack(t *testing.T) {
 	assert.Contains(t, routeOf(t, r, pod.Name, pm.Name), `"port":0`)
 	events := drainEvents(t, r)
 	assert.Equal(t, 1, eventsNamed(events, "KVLimitNotHeld"))
-	assert.Equal(t, 1, eventsNamed(events, "KVLimitSet"))
+	require.Equal(t, 1, eventsNamed(events, "KVLimitSet"))
+	for _, event := range events {
+		if strings.Contains(event, "KVLimitSet") {
+			// The write is not read back in this pass, so the Event says what
+			// was done, and not that the limit is in force.
+			assert.Contains(t, event, "KV limit of 0.0 GiB written over 0.0 GiB")
+		}
+	}
 
 	// The change to the pod's annotation starts the next pass, which finds the
 	// limit in force and routes the engine again.
 	reconcileOnce(t, r, pm.Name)
 	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, pm.Name).Status.Instances[0].Phase)
 	assert.Len(t, runtime.kvLimitCalls, 1)
+}
+
+// Nothing in a pass asks for the pass that follows a withdrawn route. The
+// route is an annotation on the pod, and a change to a pod of the pool starts
+// a pass of every claim in its namespace. That holds for a pod that carries
+// both labels of the pool.
+func TestAWithdrawnRouteStartsTheNextPassOfItsClaim(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive, KVLimitBytes: 300,
+	}}
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(300)}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	reconcileOnce(t, r, pm.Name)
+	routed := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(), client.ObjectKeyFromObject(pod), routed))
+	require.Contains(t, routeOf(t, r, pod.Name, pm.Name), `"port":9001`)
+
+	// The engine restarts, and its allocator puts its own limit back.
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(5000)}
+	reconcileOnce(t, r, pm.Name)
+	withdrawn := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(), client.ObjectKeyFromObject(pod), withdrawn))
+	require.Contains(t, routeOf(t, r, pod.Name, pm.Name), `"port":0`)
+
+	change := event.UpdateEvent{ObjectOld: routed, ObjectNew: withdrawn}
+	require.True(t, modelPoolPodFilter().Update(change))
+	assert.Contains(t, enqueueModelClaimsForPod(r.Client)(context.Background(), withdrawn), reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: pm.Name},
+	})
+
+	// A pod is a candidate with the enabled label alone. Without the name of
+	// its pool, its changes start nothing, and the claim's own pace is all
+	// there is.
+	unnamed := withdrawn.DeepCopy()
+	delete(unnamed.Labels, constants.ModelPoolLabelName)
+	assert.False(t, modelPoolPodFilter().Update(event.UpdateEvent{ObjectOld: routed, ObjectNew: unnamed}))
+}
+
+// A boot is watched from the moment it is dated to the end of the window, and
+// a boot dated after the reading is not watched at all.
+func TestEngineBootingWatchesABootForItsWindowOnly(t *testing.T) {
+	observedAt := time.Unix(1_700_000_000, 0)
+	for name, c := range map[string]struct {
+		age     time.Duration
+		booting bool
+	}{
+		"dated at the reading":                 {0, true},
+		"a moment old":                         {time.Nanosecond, true},
+		"a moment before the window ends":      {ActivatingRequeueWindow - time.Nanosecond, true},
+		"as old as the window":                 {ActivatingRequeueWindow, false},
+		"dated a second after the reading":     {-time.Second, false},
+		"dated a nanosecond after the reading": {-time.Nanosecond, false},
+		"dated half an hour after the reading": {-30 * time.Minute, false},
+	} {
+		engine := engineBootingFor(observedAt, c.age)
+		assert.Equal(t, c.booting, engineBooting(&RuntimeSnapshot{ObservedAt: observedAt}, &engine), name)
+	}
 }
