@@ -788,11 +788,7 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    the next try: 10, 20 and 40 seconds, then a minute at most. A model that
    waits for room therefore does not have every runtime in the pool read for
    it every 10 seconds. The wait is kept in the controller's memory only, so
-   a restart tries every waiting claim at once. A claim that found a card and
-   whose engine could not be started there waits the same way. It reads
-   ``Failed`` with ``ActivateFailed`` until its next try. A pod joining the
-   pool, or a change to its own spec, wakes it at once. Each try goes to the
-   Pod that ranks first, which can be the one that refused before.
+   a restart tries every waiting claim at once.
 
    A waiting claim does not sit through its wait when room may have appeared.
    Another claim deleted, scaled down, failed or gone to sleep, a declaration
@@ -811,6 +807,16 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    newer claim. Nothing holds room for a claim, so a large claim can keep
    waiting while smaller ones keep fitting. And a wake has every waiting claim
    whose candidates changed read each of their runtimes once.
+
+Claim reads ``Failed`` with ``ActivateFailed``
+   The claim found a card, and the runtime of that Pod refused to start the
+   engine. The message quotes the runtime. The card is given back, and the
+   claim is tried again as a refused claim is: after 10, 20 and 40 seconds,
+   then once a minute. It reads ``Failed`` between two tries, and it is not
+   given up. A pod joining the pool, or a change to the claim's own spec,
+   wakes it at once. Room freed on a card does not, since the claim had found
+   a card. Each try goes to the Pod that ranks first, which can be the one
+   that refused before.
 
 Claim remains ``Pending`` with ``TooLargeForAnyCard``
    Every candidate card was measured, and each is smaller than
