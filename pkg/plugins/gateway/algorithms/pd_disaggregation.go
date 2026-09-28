@@ -194,6 +194,7 @@ type pdRouter struct {
 	selectionCounts       map[string]int64
 	podSelector           selector.PodSelector
 	prefillExecutor       prefill.PrefillExecutor
+	trtHandler            *engine.TRTLLMHandler
 
 	// tokenLoadTracker is the token-weighted prefill ledger read by the
 	// token_load policy. It is charged in filterPrefillDecodePods for requests
@@ -296,7 +297,28 @@ func NewPDRouterWithCacheAndPrefixIndexer(c cache.Cache, sharedPrefixTable *pref
 		Transport: otelhttp.NewTransport(transport),
 	}
 
+	trtScheduleStyle := utils.LoadEnv("AIBRIX_TRT_SCHEDULE_STYLE", engine.TRTContextFirst)
+	switch trtScheduleStyle {
+	case engine.TRTContextFirst, engine.TRTGenerationFirst:
+	default:
+		// Same policy as the env-driven knobs above: an unrecognized value is
+		// reported and the safe default wins, instead of failing router
+		// construction (the router manager would then register a nil provider
+		// for "pd", which panics, recovered, on every pd request).
+		klog.InfoS("pd_router unknown AIBRIX_TRT_SCHEDULE_STYLE, using context_first",
+			"value", trtScheduleStyle,
+			"valid", []string{engine.TRTContextFirst, engine.TRTGenerationFirst})
+		trtScheduleStyle = engine.TRTContextFirst
+	}
+	// NewTRTLLMHandler now fails only for generation_first without a provider,
+	// which is a programming error and must still fail construction.
+	trtHandler, err := engine.NewTRTLLMHandler(trtScheduleStyle, engine.NewTRTServerInfoCache(httpClient))
+	if err != nil {
+		return nil, err
+	}
+
 	r := &pdRouter{
+		trtHandler:            trtHandler,
 		cache:                 c,
 		prefillPolicy:         policy,
 		decodePolicy:          decodePol,
@@ -398,7 +420,15 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 	// occurrence, so a duplicate would let the client's value override the
 	// gateway's). A malformed request must not pollute selection counters or
 	// the prefix cache. ctx.Engine is already set by selectTargetPod.
-	if err := engine.ValidateRequest(ctx.ReqBody, engine.Resolve(ctx.Engine)); err != nil {
+	// The TRT handler is router-scoped (its schedule style comes from the
+	// environment); every other engine uses the shared registry. This is the
+	// only handler resolution in the request path: the result is passed to the
+	// executor, so validation and dispatch cannot drift apart.
+	handler := engine.Resolve(ctx.Engine)
+	if ctx.Engine == TensorRTLLM && r.trtHandler != nil {
+		handler = r.trtHandler
+	}
+	if err := engine.ValidateRequest(ctx.ReqBody, handler); err != nil {
 		return "", err
 	}
 
@@ -430,9 +460,15 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		// address Route returns to Envoy, so the abort lands on the HTTP
 		// server actually serving the decode leg.
 		ctx.SetDecodeTarget(ctx.PodAddress(decodePod), decodePod.Name)
+		// The async dispatch contract of the handler also decides how the
+		// gateway treats a failure that arrives after the decode leg has started
+		// responding. Record it before dispatching so the stream goroutine never
+		// has to infer the mode from the engine name (TRT context-first and
+		// generation-first share one).
+		ctx.SetResetAfterHeaders(engine.AsyncDispatchPolicyFor(handler).ResetAfterHeaders)
 		// The prefill registration was made by Select; the executor's
 		// RemovePrefillRequest (sync/async) is the matching decrement.
-		err = r.doPrefillRequest(ctx, prefillPod, ctx.Engine)
+		err = r.doPrefillRequest(ctx, prefillPod, handler)
 
 		if err != nil {
 			// Remove is a no-op if the executor already cleaned up (e.g. sync HTTP failure).
@@ -443,7 +479,7 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 			klog.ErrorS(err, pdRoutePrefillRequestError, "request_id", ctx.RequestID)
 			return "", fmt.Errorf("prefill request failed for request %s: %w", ctx.RequestID, err)
 		}
-		if !engine.Resolve(ctx.Engine).IsAsync() {
+		if !handler.IsAsync() {
 			metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestSuccessTotal, &metrics.SimpleMetricValue{Value: 1.0},
 				map[string]string{"status": pdRoutePrefillRequestSuccess, "status_code": "200"})
 		}

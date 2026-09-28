@@ -25,10 +25,11 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
-// doPrefillRequest delegates to the router's PrefillExecutor.
-func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod *v1.Pod, llmEngine string) error {
+// doPrefillRequest delegates to the router's PrefillExecutor, passing the
+// handler Route already resolved for this request.
+func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod *v1.Pod, handler engine.EngineHandler) error {
 	logCtx := prefillLogContext(r, routingCtx)
-	return r.prefillExecutor.Execute(routingCtx, prefillPod, llmEngine, logCtx)
+	return r.prefillExecutor.Execute(routingCtx, prefillPod, handler, logCtx)
 }
 
 // prefillLogContext resolves effective score-policy names for structured logging.
