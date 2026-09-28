@@ -242,6 +242,29 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
 	})
 
+	ginkgo.It("tries two claims whose engines cannot be started by the round, and not in a loop", func() {
+		fixture.Runtime().SetDefaultState("active", true)
+		fixture.Runtime().FailNextActivations(1000)
+		_ = fixture.CreateWarmPod(ns.Name, "warm-refusing", "pool-a")
+		first := fixture.CreateClaim(ns.Name, "claim-first", "pool-a", nil, nil)
+		second := fixture.CreateClaim(ns.Name, "claim-second", "pool-a", nil, nil)
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			for _, claim := range []*modelapi.ModelClaim{first, second} {
+				latest := fixture.GetClaim(g, claim)
+				g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimFailed))
+				g.Expect(latest.Status.Instances).To(gomega.BeEmpty())
+			}
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+
+		// A start that failed takes its record back, and that write must not
+		// wake the other claim. Each claim is tried again when its wait is up,
+		// which is after 10 seconds and then after 20 more.
+		gomega.Consistently(func() int {
+			return fixture.Runtime().ActivateCallCount()
+		}, 15*time.Second, time.Second).Should(gomega.BeNumerically("<=", 6))
+	})
+
 	ginkgo.It("reflects sleeping and terminal failed runtime states", func() {
 		fixture.Runtime().SetDefaultState("active", true)
 		pod := fixture.CreateWarmPod(ns.Name, "warm-state", "pool-a")
