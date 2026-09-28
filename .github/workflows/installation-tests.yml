@@ -254,8 +254,6 @@ jobs:
             aibrix/inplace-e2e:v2 \
             --name installation-test
 
-      - name: Build and load external router E2E fixture
-        run: |
           docker build \
             -t aibrix/external-router-e2e:nightly \
             -f test/e2e/gateway/routing/testdata/external-router/Dockerfile \
