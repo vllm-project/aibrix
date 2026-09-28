@@ -237,6 +237,19 @@ func TestHTTPRuntimeCallsAgainARuntimeWhoseCallWasCanceled(t *testing.T) {
 	assert.Equal(t, int32(2), runtime.requests.Load())
 }
 
+func TestRuntimeURLTakesAnIPv6PodAddress(t *testing.T) {
+	// An IPv6 address has to be bracketed, or the port cannot be told from it.
+	for podIP, host := range map[string]string{
+		"10.0.0.7": "10.0.0.7:8080",
+		"fd00::7":  "[fd00::7]:8080",
+	} {
+		req, err := http.NewRequest(http.MethodGet, runtimeURL(podIP, 8080, snapshotPath), nil)
+		require.NoError(t, err, podIP)
+		assert.Equal(t, host, req.URL.Host)
+		assert.Equal(t, snapshotPath, req.URL.Path)
+	}
+}
+
 func TestHTTPRuntimeSnapshot(t *testing.T) {
 	observedAt := time.Date(2026, time.July, 13, 12, 0, 0, 0, time.UTC)
 	requestSuccessTotal := int64(12)
