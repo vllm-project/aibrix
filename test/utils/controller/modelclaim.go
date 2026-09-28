@@ -267,7 +267,13 @@ func (f *FakeModelClaimRuntime) handleActivate(w http.ResponseWriter, r *http.Re
 	f.activateCalls = append(f.activateCalls, req)
 	if f.failures > 0 {
 		f.failures--
-		http.Error(w, "injected activation failure", http.StatusServiceUnavailable)
+		// As the runtime answers when it could not start an engine: an error
+		// status, with its own report of the error in the body.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(modelclaimcontroller.ActivateResponse{
+			Status: "error", ModelName: req.ModelName, Message: "injected activation failure",
+		})
 		return
 	}
 

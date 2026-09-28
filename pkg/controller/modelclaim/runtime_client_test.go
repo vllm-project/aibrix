@@ -19,6 +19,7 @@ package modelclaim
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -171,6 +172,82 @@ func TestHTTPRuntimeSnapshotReadsWhatTheRuntimeSends(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A start is taken back only when the engine is known not to have started.
+// This goes through the real client, so it holds what the client makes of
+// each answer, and of each call that got none.
+func TestHTTPRuntimeTellsAStartThatWasRefusedFromOneThatMayHaveBeenDone(t *testing.T) {
+	answering := func(status int, body string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+		}
+	}
+	hijacked := func(then func(conn net.Conn)) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				return
+			}
+			then(conn)
+		}
+	}
+	ownError := `{"status": "error", "model_name": "m1", "port": 0, "ipc_name": "", "message": "boom"}`
+
+	for name, tc := range map[string]struct {
+		runtime http.HandlerFunc
+		notDone bool
+	}{
+		// What the runtime itself sends when it rejects a request, and when
+		// starting the engine failed.
+		"the runtime's own 400":                {answering(http.StatusBadRequest, ownError), true},
+		"the runtime's own 500":                {answering(http.StatusInternalServerError, ownError), true},
+		"a success status with an error in it": {answering(http.StatusOK, ownError), true},
+		// A request that did not pass the API's validation never reached the
+		// runtime.
+		"a 422 from the API": {answering(http.StatusUnprocessableEntity, `{"detail": []}`), true},
+		// Something between the controller and the runtime gave up waiting.
+		// The runtime may still be starting the engine.
+		"a 504 that is not the runtime's":   {answering(http.StatusGatewayTimeout, "upstream request timeout"), false},
+		"a 502 that is not the runtime's":   {answering(http.StatusBadGateway, "<html>bad gateway</html>"), false},
+		"closed after the request was read": {hijacked(func(conn net.Conn) { _ = conn.Close() }), false},
+		"reset after the request was read": {hijacked(func(conn net.Conn) {
+			if tcp, ok := conn.(*net.TCPConn); ok {
+				_ = tcp.SetLinger(0)
+			}
+			_ = conn.Close()
+		}), false},
+		"no answer in time": {hijacked(func(conn net.Conn) {
+			time.Sleep(time.Second)
+			_ = conn.Close()
+		}), false},
+		"a success status that cannot be read": {answering(http.StatusOK, "<html>ok</html>"), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(tc.runtime)
+			defer srv.Close()
+			u, _ := url.Parse(srv.URL)
+			port, _ := strconv.Atoi(u.Port())
+			c := NewRuntimeClient().(*httpRuntimeClient)
+			c.httpClient.Timeout = 300 * time.Millisecond
+
+			_, err := c.Activate(context.Background(), u.Hostname(), port, &ActivateRequest{ModelName: "m1"})
+
+			require.Error(t, err)
+			assert.Equal(t, tc.notDone, callNotDone(err), "%v", err)
+		})
+	}
+
+	// Nobody listens, so the call was never sent.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	refused := listener.Addr().(*net.TCPAddr)
+	require.NoError(t, listener.Close())
+	_, err = NewRuntimeClient().Activate(context.Background(), refused.IP.String(), refused.Port,
+		&ActivateRequest{ModelName: "m1"})
+	require.Error(t, err)
+	assert.True(t, callNotDone(err), "%v", err)
 }
 
 func TestHTTPRuntimeSetKVLimit(t *testing.T) {
