@@ -2944,6 +2944,9 @@ func TestReconcileKeepsTheUsualPaceWhileNoEngineIsBooting(t *testing.T) {
 		"booting behind a silent runtime":   {engine: engineBootingFor(observedAt, time.Minute), silent: true},
 		"asleep":                            {engine: asleep, phase: modelv1alpha1.ModelClaimSleeping},
 		"booting in a reading with no time": {engine: engineBootingFor(observedAt, time.Minute), undatedReading: true},
+		// A clock that was set back, or a date restored from a registry
+		// written under a clock that ran ahead. Nothing would bound the pace.
+		"booting since a day from now": {engine: engineBootingFor(observedAt, -24*time.Hour)},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
