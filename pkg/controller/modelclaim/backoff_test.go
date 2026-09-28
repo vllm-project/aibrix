@@ -240,6 +240,7 @@ func TestPlacementBackoffStartsOverWhenRoomMayHaveAppeared(t *testing.T) {
 		{"an engine woken", 1, card(podRoom{instances: 3, awake: 2, promisedBytes: 1200}), card(whole), false},
 		{"an engine gone to sleep", 1, card(whole), card(podRoom{instances: 3, awake: 2, promisedBytes: 1200}), true},
 		{"a pod turned ready", 1, card(whole), card(podRoom{instances: 3, awake: 3, promisedBytes: 1200, ready: true}), true},
+		{"a pod turned not ready", 1, card(podRoom{instances: 3, awake: 3, promisedBytes: 1200, ready: true}), card(whole), false},
 		{"the claim's own spec changed", 2, card(whole), card(whole), true},
 		// A card with a hole is turned away, whatever else happens on it. So
 		// nothing on it counts as room until its last hole has closed.
@@ -1124,6 +1125,8 @@ func TestPlacementBackoffWakesAClaimThatCouldNotStartForAPodThatAnswers(t *testi
 			"warm-1/u1": {instances: 2, awake: 1, promisedBytes: 800, ready: true}, "warm-2/u2": {}}, false},
 		"a pod turned ready": {roomSignature{
 			"warm-1/u1": before["warm-1/u1"], "warm-2/u2": {ready: true}}, true},
+		"a pod turned not ready": {roomSignature{
+			"warm-1/u1": {instances: 2, awake: 2, promisedBytes: 800}, "warm-2/u2": {}}, false},
 		"a pod joined": {roomSignature{
 			"warm-1/u1": before["warm-1/u1"], "warm-2/u2": {}, "warm-3/u3": {}}, true},
 	} {
@@ -1290,6 +1293,45 @@ func TestReconcileChecksAClaimWithAnEngineEveryRoundAfterAStartThatFailed(t *tes
 	assert.Len(t, runtime.activateCalls, 2)
 }
 
+// A pod wakes a waiting claim once by turning ready. A pod that a try has seen
+// ready is remembered as ready. So a pod that keeps turning not ready and
+// ready again does not take the wait away.
+func TestPlacementBackoffIsWokenOnceByAPodThatTurnsReady(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	claim := types.NamespacedName{Namespace: testNamespace, Name: "first"}
+	notReady := roomSignature{"warm-1/u1": {instances: 1, awake: 1, promisedBytes: 400}}
+	ready := roomSignature{"warm-1/u1": {instances: 1, awake: 1, promisedBytes: 400, ready: true}}
+	for name, refuse := range map[string]func(b *placementBackoff, room roomSignature) time.Duration{
+		"a claim that waits for room": func(b *placementBackoff, room roomSignature) time.Duration {
+			wait := b.refused(claim, 1, room)
+			b.statusWritten(claim)
+			return wait
+		},
+		"a claim whose engine could not be started": func(b *placementBackoff, room roomSignature) time.Duration {
+			return b.failedToStart(claim, 1, room)
+		},
+	} {
+		backoff := newPlacementBackoff(func() time.Time { return now })
+		require.Equal(t, 10*time.Second, refuse(backoff, notReady), name)
+
+		// The pod turns ready, and the claim is tried at once.
+		due, _ := backoff.due(claim, 1, ready)
+		require.True(t, due, name)
+		require.Equal(t, 10*time.Second, refuse(backoff, ready), name)
+
+		// The pod is not ready when the wait is up, and ready a moment later.
+		now = now.Add(10 * time.Second)
+		due, _ = backoff.due(claim, 1, notReady)
+		require.True(t, due, name)
+		require.Equal(t, 20*time.Second, refuse(backoff, notReady), name)
+		due, _ = backoff.due(claim, 1, ready)
+		assert.False(t, due, name)
+
+		// The room that was handed in is left as it was.
+		assert.False(t, notReady["warm-1/u1"].ready, name)
+	}
+}
+
 // Through Reconcile: a claim on the card declares nothing, so the card is
 // turned away. A neighbour that declares less beside it frees no room, and
 // the waiting claim sits out its wait.
@@ -1321,4 +1363,165 @@ func TestReconcileKeepsAClaimWaitingWhileItsCardHasAHole(t *testing.T) {
 	require.NoError(t, r.Update(context.Background(), shrunk))
 
 	assert.Equal(t, time.Minute, reconcileFor(t, r, pm.Name))
+}
+
+// A claim that starts over waits from the shortest wait again, and keeps what
+// it has seen of the pods. A claim that does not wait has nothing to start
+// over.
+func TestPlacementBackoffKeepsWhatAClaimHasSeenWhenItStartsOver(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	claim := types.NamespacedName{Namespace: testNamespace, Name: "first"}
+	notReady := roomSignature{"warm-1/u1": {instances: 1, awake: 1, promisedBytes: 400}}
+	ready := roomSignature{"warm-1/u1": {instances: 1, awake: 1, promisedBytes: 400, ready: true}}
+	backoff := newPlacementBackoff(func() time.Time { return now })
+
+	backoff.startOver(claim)
+	require.Empty(t, backoff.attempts)
+
+	for _, want := range []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second} {
+		require.Equal(t, want, backoff.refused(claim, 1, ready))
+	}
+	backoff.startOver(claim)
+	require.Equal(t, 10*time.Second, backoff.refused(claim, 1, notReady))
+	backoff.statusWritten(claim)
+
+	due, left := backoff.due(claim, 1, ready)
+	assert.False(t, due)
+	assert.Equal(t, 10*time.Second, left)
+}
+
+// A refusal without a listing of the claims remembers no room. So there is
+// nothing to compare the pool with, and the claim sits out its wait.
+func TestPlacementBackoffComparesNothingAfterARefusalWithoutAListing(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	claim := types.NamespacedName{Namespace: testNamespace, Name: "first"}
+	backoff := newPlacementBackoff(func() time.Time { return now })
+	backoff.refused(claim, 1, roomSignature{"warm-1/u1": {ready: true}})
+	backoff.refused(claim, 1, nil)
+	backoff.statusWritten(claim)
+
+	due, left := backoff.due(claim, 1, roomSignature{"warm-1/u1": {ready: true}, "warm-2/u2": {}})
+
+	assert.False(t, due)
+	assert.Equal(t, 20*time.Second, left)
+}
+
+// Two pods that turn ready in turn wake a waiting claim once each. A claim
+// that is woken keeps what it has seen of the pods. So the first pod is still
+// remembered as ready when the second one wakes the claim.
+func TestPlacementBackoffIsWokenOnceByEachOfTwoPodsThatTurnReady(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	claim := types.NamespacedName{Namespace: testNamespace, Name: "first"}
+	pool := func(first, second bool) roomSignature {
+		return roomSignature{
+			"warm-1/u1": {instances: 1, awake: 1, promisedBytes: 400, ready: first},
+			"warm-2/u2": {instances: 1, awake: 1, promisedBytes: 400, ready: second},
+		}
+	}
+	backoff := newPlacementBackoff(func() time.Time { return now })
+	backoff.failedToStart(claim, 1, pool(false, false))
+
+	for _, turn := range []struct{ first, second bool }{{true, false}, {false, true}} {
+		due, _ := backoff.due(claim, 1, pool(turn.first, turn.second))
+		require.True(t, due)
+		require.Equal(t, 10*time.Second, backoff.failedToStart(claim, 1, pool(turn.first, turn.second)))
+	}
+
+	for i := 0; i < 5; i++ {
+		due, left := backoff.due(claim, 1, pool(i%2 == 0, i%2 == 1))
+		assert.False(t, due)
+		assert.Equal(t, 10*time.Second, left)
+	}
+}
+
+// The guard starts a claim over, and the claim keeps what it has seen of the
+// pods. A pod that an earlier try saw ready does not wake it by turning ready
+// again.
+func TestReconcileKeepsWhatAClaimHasSeenOfThePodsWhenItStartsOver(t *testing.T) {
+	r, runtime, pm, clock := aClaimWaitingForRoom(t)
+	setReady := func(ready bool) {
+		pod := &corev1.Pod{}
+		require.NoError(t, r.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: "warm-1"}, pod))
+		status := corev1.ConditionFalse
+		if ready {
+			status = corev1.ConditionTrue
+		}
+		pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: status}}
+		require.NoError(t, r.Status().Update(context.Background(), pod))
+	}
+	setReady(true)
+	for _, want := range []time.Duration{10 * time.Second, 20 * time.Second} {
+		require.Equal(t, want, reconcileFor(t, r, pm.Name))
+		*clock = clock.Add(want)
+	}
+
+	// The pod is not ready at the try that the neighbour's leaving straddles.
+	setReady(false)
+	pod := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, pod))
+	r.APIReader = fake.NewClientBuilder().WithScheme(r.Scheme).WithObjects(getModel(t, r, pm.Name), pod).
+		WithStatusSubresource(&modelv1alpha1.ModelClaim{}).Build()
+	exiting := engineHolding("neighbour", 100, 600)
+	exiting.Phase = runtimePhaseStopping
+	exiting.Ready = false
+	runtime.snapshots[pod.Status.PodIP].Models = []RuntimeSnapshotModel{exiting}
+	require.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name), "the claim starts over")
+
+	// The pod turns ready three seconds later.
+	*clock = clock.Add(3 * time.Second)
+	setReady(true)
+
+	assert.Equal(t, 7*time.Second, reconcileFor(t, r, pm.Name), "the claim sits out the rest of its wait")
+}
+
+// Through Reconcile: a pod that flaps for ten minutes costs a claim whose
+// engine cannot be started two tries more than a pod that stays as it is. One
+// is the try that the pod wakes. The other comes from the waits after it,
+// which start from the shortest again.
+func TestReconcileKeepsTheWaitOfAClaimWhileAPodFlaps(t *testing.T) {
+	setReady := func(r *ModelClaimReconciler, ready bool) {
+		pod := &corev1.Pod{}
+		require.NoError(t, r.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: "warm-1"}, pod))
+		status := corev1.ConditionFalse
+		if ready {
+			status = corev1.ConditionTrue
+		}
+		pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: status}}
+		require.NoError(t, r.Status().Update(context.Background(), pod))
+	}
+	tries := func(flapping bool) int {
+		first := claimWithCost(100, 100)
+		first.Name = "first"
+		pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+		r, runtime := newReconciler(t, first, pod)
+		r.Recorder = record.NewFakeRecorder(1 << 12)
+		runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+		runtime.failActivate = true
+		now := time.Unix(1_700_000_000, 0)
+		start := now
+		r.Backoff = newPlacementBackoff(func() time.Time { return now })
+		setReady(r, false)
+		wait := reconcileFor(t, r, "first")
+		for now.Sub(start) < 10*time.Minute {
+			// The wait is up, and the pod is not ready. It turns ready a
+			// second later, and not ready again.
+			now = now.Add(wait)
+			wait = reconcileFor(t, r, "first")
+			if !flapping {
+				continue
+			}
+			now = now.Add(time.Second)
+			setReady(r, true)
+			if woken := reconcileFor(t, r, "first"); woken < wait {
+				wait = woken
+			}
+			setReady(r, false)
+			reconcileFor(t, r, "first")
+		}
+		return len(runtime.activateCalls)
+	}
+
+	steady := tries(false)
+	require.Equal(t, 13, steady)
+	assert.Equal(t, steady+2, tries(true))
 }
