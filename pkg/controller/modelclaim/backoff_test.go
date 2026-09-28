@@ -1525,3 +1525,85 @@ func TestReconcileKeepsTheWaitOfAClaimWhileAPodFlaps(t *testing.T) {
 	require.Equal(t, 13, steady)
 	assert.Equal(t, steady+2, tries(true))
 }
+
+// The wait of a claim is for the instance it could not place. A claim that
+// loses an instance has another need, so it starts over and is tried at once.
+// Here the pod of its engine goes, and nothing else changes.
+func TestReconcileTriesAClaimAtOnceThatLostAnInstanceWithItsPod(t *testing.T) {
+	pm := claimWithCost(100, 100)
+	two := int32(2)
+	pm.Spec.Replicas = &two
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive, KVLimitBytes: 900,
+	}}
+	serves, servesSnapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	servesSnapshot.Models = []RuntimeSnapshotModel{engineHolding(pm.Name, 100, 900)}
+	refuses, refusesSnapshot := sizedWarmPod("warm-2", "10.0.0.2", 1000)
+	r, runtime := newReconciler(t, pm, serves, refuses)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		serves.Status.PodIP:  servesSnapshot,
+		refuses.Status.PodIP: refusesSnapshot,
+	}
+	runtime.failActivateOn = map[string]bool{refuses.Status.PodIP: true}
+	now := time.Unix(1_700_000_000, 0)
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+	for _, step := range []time.Duration{10 * time.Second, 20 * time.Second} {
+		reconcileOnce(t, r, pm.Name)
+		now = now.Add(step)
+	}
+	reconcileOnce(t, r, pm.Name)
+	require.Len(t, runtime.activateCalls, 3, "the next start is 40 seconds away")
+
+	require.NoError(t, r.Delete(context.Background(), serves))
+	now = now.Add(time.Second)
+	wait := reconcileFor(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 4, "the claim has no engine left, and is tried at once")
+	assert.Equal(t, DefaultRequeueDuration, wait, "its wait starts from the shortest again")
+}
+
+// The same holds for an instance that the health check drops. The runtime
+// knows no engine for it, and refuses to start one.
+func TestReconcileTriesAClaimAtOnceThatLostAnInstanceInTheHealthCheck(t *testing.T) {
+	pm := claimWithCost(100, 100)
+	two := int32(2)
+	pm.Spec.Replicas = &two
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive, KVLimitBytes: 900,
+	}}
+	first, firstSnapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	firstSnapshot.Models = []RuntimeSnapshotModel{engineHolding(pm.Name, 100, 900)}
+	second, secondSnapshot := sizedWarmPod("warm-2", "10.0.0.2", 1000)
+	r, runtime := newReconciler(t, pm, first, second)
+	r.Recorder = record.NewFakeRecorder(1 << 10)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		first.Status.PodIP:  firstSnapshot,
+		second.Status.PodIP: secondSnapshot,
+	}
+	runtime.failActivateOn = map[string]bool{second.Status.PodIP: true}
+	now := time.Unix(1_700_000_000, 0)
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+	for _, step := range []time.Duration{10 * time.Second, 20 * time.Second} {
+		reconcileOnce(t, r, pm.Name)
+		now = now.Add(step)
+	}
+	reconcileOnce(t, r, pm.Name)
+	require.Len(t, runtime.activateCalls, 3, "the next start is 40 seconds away")
+
+	// The engine goes, and no runtime starts one from now on. Two passes of
+	// the health check find that out, and the second drops the instance.
+	firstSnapshot.Models = nil
+	runtime.failActivate = true
+	for i := 0; i < 2; i++ {
+		now = now.Add(time.Second)
+		reconcileOnce(t, r, pm.Name)
+	}
+	require.Empty(t, getModel(t, r, pm.Name).Status.Instances)
+	started := len(runtime.activateCalls)
+
+	now = now.Add(time.Second)
+	wait := reconcileFor(t, r, pm.Name)
+
+	assert.Len(t, runtime.activateCalls, started+1, "the claim has no engine left, and is tried at once")
+	assert.Equal(t, DefaultRequeueDuration, wait)
+}
