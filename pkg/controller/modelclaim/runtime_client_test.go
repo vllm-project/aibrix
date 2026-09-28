@@ -80,7 +80,7 @@ func TestHTTPRuntimeActivate(t *testing.T) {
 // hangingRuntime stands in for a runtime that takes each request and answers
 // none of them, as a runtime whose snapshot handler is stuck would. Once
 // answering is set, it answers again. With refusing set, it takes no
-// connection.
+// connection. With stalling set, it sends its headers and no body.
 //
 // It is the transport of the client that calls it. So it counts a request the
 // moment the client sends it, and no test waits for a request to reach a
@@ -91,6 +91,7 @@ type hangingRuntime struct {
 	requests  atomic.Int32
 	answering atomic.Bool
 	refusing  atomic.Bool
+	stalling  atomic.Bool
 	// deadline is the deadline of the last request, if it had one.
 	deadline atomic.Pointer[time.Time]
 }
@@ -101,20 +102,37 @@ func (r *hangingRuntime) RoundTrip(req *http.Request) (*http.Response, error) {
 	if deadline, has := req.Context().Deadline(); has {
 		r.deadline.Store(&deadline)
 	}
+	answer := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{}`)),
+		Request:    req,
+	}
 	switch {
 	case r.answering.Load():
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       io.NopCloser(strings.NewReader(`{}`)),
-			Request:    req,
-		}, nil
+		return answer, nil
 	case r.refusing.Load():
 		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
+	case r.stalling.Load():
+		answer.Body = stalledBody{req.Context()}
+		return answer, nil
 	}
 	<-req.Context().Done()
 	return nil, req.Context().Err()
 }
+
+// stalledBody is the body of an answer that never comes. A read of it ends
+// when the caller of the request gives up.
+type stalledBody struct {
+	request context.Context
+}
+
+func (b stalledBody) Read([]byte) (int, error) {
+	<-b.request.Done()
+	return 0, b.request.Err()
+}
+
+func (stalledBody) Close() error { return nil }
 
 // address is the runtime as the client remembers it.
 func (r *hangingRuntime) address() string {
@@ -583,6 +601,121 @@ func TestTheRuntimeClientReadsTheClock(t *testing.T) {
 
 	assert.False(t, read.Before(before))
 	assert.False(t, read.After(after))
+}
+
+// stallingServer is a runtime behind a real socket that sends the headers of
+// its answer and the start of a body, and then nothing until the test ends.
+func stallingServer(t *testing.T) (host string, port int) {
+	t.Helper()
+	released := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":`))
+		w.(http.Flusher).Flush()
+		<-released
+	}))
+	t.Cleanup(func() {
+		close(released)
+		srv.Close()
+	})
+	u, _ := url.Parse(srv.URL)
+	port, _ = strconv.Atoi(u.Port())
+	return u.Hostname(), port
+}
+
+// timedOutError reports whether a call failed because its time was up.
+func timedOutError(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+// Over a real socket: an answer counts once all of it has arrived. A runtime
+// that sends its headers and then stalls did not answer in time.
+func TestHTTPRuntimeLeavesARuntimeThatStallsAfterItsHeadersAlone(t *testing.T) {
+	read := func(c *httpRuntimeClient, host string, port int) error {
+		_, err := c.Snapshot(context.Background(), host, port)
+		return err
+	}
+	start := func(c *httpRuntimeClient, host string, port int) error {
+		_, err := c.Activate(context.Background(), host, port, &ActivateRequest{ModelName: "m1"})
+		return err
+	}
+	stop := func(c *httpRuntimeClient, host string, port int) error {
+		return c.Deactivate(context.Background(), host, port, &DeactivateRequest{ModelName: "m1"})
+	}
+	for name, tc := range map[string]struct {
+		readDeadline, clientTimeout time.Duration
+		call                        func(c *httpRuntimeClient, host string, port int) error
+	}{
+		"a read, at its deadline":                       {100 * time.Millisecond, 5 * time.Second, read},
+		"a start, at the timeout of the client":         {5 * time.Second, 100 * time.Millisecond, start},
+		"a stop, which needs no body from its answer":   {5 * time.Second, 100 * time.Millisecond, stop},
+		"a read, at the timeout of the client, if ever": {5 * time.Second, 100 * time.Millisecond, read},
+	} {
+		t.Run(name, func(t *testing.T) {
+			host, port := stallingServer(t)
+			c := newHTTPRuntimeClient(tc.readDeadline, time.Now)
+			c.httpClient.Timeout = tc.clientTimeout
+
+			err := tc.call(c, host, port)
+
+			require.Error(t, err)
+			assert.True(t, timedOutError(err), "%v", err)
+			assert.Equal(t, 1, c.silence.runtimes[net.JoinHostPort(host, strconv.Itoa(port))].timeouts)
+			assert.ErrorIs(t, read(c, host, port), errRuntimeSilent)
+		})
+	}
+}
+
+// The status of an answer decides, whatever its body says.
+func TestHTTPRuntimeTakesAnErrorStatusForAFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(ActivateResponse{Status: "success", ModelName: "m1", Port: 9001})
+	}))
+	defer srv.Close()
+	c, host, port := clientForServer(srv)
+
+	_, err := c.Activate(context.Background(), host, port, &ActivateRequest{ModelName: "m1"})
+	require.ErrorContains(t, err, "returned 503")
+	_, err = c.Snapshot(context.Background(), host, port)
+	require.ErrorContains(t, err, "returned 503")
+}
+
+// A stall after the headers counts like any other timeout: each one in a row
+// doubles the time alone. The headers are no answer that ends it.
+func TestHTTPRuntimeCountsTheStallsOfARuntimeAfterItsHeaders(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	c, runtimes := hangingRuntimes(1, func() time.Time { return now })
+	runtime := runtimes[0]
+	runtime.stalling.Store(true)
+	ctx := context.Background()
+
+	_, err := c.Snapshot(ctx, runtime.host, runtime.port)
+	require.Error(t, err)
+	assert.True(t, timedOutError(err), "%v", err)
+	now = now.Add(shortestRuntimeSilence)
+	_, err = c.Snapshot(ctx, runtime.host, runtime.port)
+	require.Error(t, err)
+
+	assert.Equal(t, silentRuntime{timeouts: 2, until: now.Add(2 * shortestRuntimeSilence)},
+		c.silence.runtimes[runtime.address()])
+	runtime.asked(t, 2)
+
+	// A call that is canceled while its body is read changes nothing.
+	now = now.Add(2 * shortestRuntimeSilence)
+	canceled, cancel := context.WithCancel(ctx)
+	c.snapshotTimeout = 5 * time.Second
+	go func() {
+		for runtime.requests.Load() < 3 {
+			time.Sleep(time.Millisecond)
+		}
+		cancel()
+	}()
+	_, err = c.Snapshot(canceled, runtime.host, runtime.port)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 2, c.silence.runtimes[runtime.address()].timeouts)
 }
 
 func TestRuntimeURLTakesAnIPv6PodAddress(t *testing.T) {
