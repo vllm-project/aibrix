@@ -90,6 +90,50 @@ func TestRuntimeReadingsReadAgainOnlyWhatWasChanged(t *testing.T) {
 	assert.Equal(t, 2, runtime.reads)
 }
 
+func TestRuntimeReadingsAreFreshOnlyUntilTheNextChange(t *testing.T) {
+	runtime := &countingRuntime{}
+	readings := newRuntimeReadings(runtime)
+	changed := warmPod("warm-1", "pool", true, corev1.PodRunning)
+	other := warmPod("warm-2", "pool", true, corev1.PodRunning)
+	fresh := func(pod *corev1.Pod) int {
+		t.Helper()
+		_, err := readings.fresh(context.Background(), pod)
+		require.NoError(t, err)
+		return runtime.reads
+	}
+	readings.ofPods(context.Background(), []corev1.Pod{*changed, *other})
+	require.Equal(t, 2, runtime.reads)
+	assert.Equal(t, 2, fresh(other), "nothing was changed since the pod was read")
+
+	// A step changes one runtime and reads it back. That took time, so the
+	// reading of the other pod is older than it should be.
+	readings.replace(changed, &RuntimeSnapshot{})
+	assert.Equal(t, 2, fresh(changed), "the reading that confirmed the change is fresh")
+	assert.Equal(t, 3, fresh(other))
+	assert.Equal(t, 3, fresh(other), "and is fresh until the next change")
+
+	// A step changes a runtime and does not read it back.
+	readings.forget(changed.Name)
+	assert.Equal(t, 4, fresh(other))
+	_, err := readings.of(context.Background(), other)
+	require.NoError(t, err)
+	assert.Equal(t, 4, runtime.reads)
+}
+
+func TestRuntimeReadingsDoNotAskARuntimeThatFailedForAFreshReading(t *testing.T) {
+	runtime := &countingRuntime{err: errors.New("context deadline exceeded")}
+	readings := newRuntimeReadings(runtime)
+	silent := warmPod("warm-1", "pool", true, corev1.PodRunning)
+	_, err := readings.of(context.Background(), silent)
+	require.Error(t, err)
+
+	readings.forget("warm-2")
+	_, err = readings.fresh(context.Background(), silent)
+
+	require.Error(t, err)
+	assert.Equal(t, 1, runtime.reads, "each try would hold the worker for a whole timeout")
+}
+
 func TestPlacementStateFromSnapshot(t *testing.T) {
 	snapshot := &RuntimeSnapshot{
 		Accelerators: []RuntimeAcceleratorSnapshot{

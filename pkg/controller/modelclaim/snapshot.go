@@ -31,16 +31,25 @@ import (
 // confirm the change, or forgets the reading, so the next step to ask reads the
 // runtime again. No step acts on a reading it knows is out of date.
 //
+// A change takes time, and the engines on the other cards go on serving while
+// it is made. A step that needs a reading no older than the last change of any
+// runtime asks for a fresh one.
+//
 // A reading lives for one pass. Nothing carries over between passes, so an
 // account is never built from what a runtime said before this pass began.
 type runtimeReadings struct {
 	runtime RuntimeClient
 	byPod   map[string]runtimeReading
+	// changes counts the changes this pass has made to any runtime.
+	changes int
 }
 
 type runtimeReading struct {
 	snapshot *RuntimeSnapshot
 	err      error
+	// changes is how many changes the pass had made when the reading was
+	// taken.
+	changes int
 }
 
 func newRuntimeReadings(runtime RuntimeClient) *runtimeReadings {
@@ -55,8 +64,19 @@ func (rr *runtimeReadings) of(ctx context.Context, pod *corev1.Pod) (*RuntimeSna
 		return reading.snapshot, reading.err
 	}
 	snapshot, err := rr.runtime.Snapshot(ctx, pod.Status.PodIP, DefaultRuntimePort)
-	rr.byPod[pod.Name] = runtimeReading{snapshot: snapshot, err: err}
+	rr.byPod[pod.Name] = runtimeReading{snapshot: snapshot, err: err, changes: rr.changes}
 	return snapshot, err
+}
+
+// fresh returns a reading of a pod's runtime that is no older than the last
+// change this pass made to any runtime, and reads the runtime again when the
+// reading it has is older. A runtime that did not answer is still not asked
+// again, since each try holds the worker for a whole timeout.
+func (rr *runtimeReadings) fresh(ctx context.Context, pod *corev1.Pod) (*RuntimeSnapshot, error) {
+	if reading, found := rr.byPod[pod.Name]; found && reading.err == nil && reading.changes < rr.changes {
+		delete(rr.byPod, pod.Name)
+	}
+	return rr.of(ctx, pod)
 }
 
 // ofPods returns the readings of several pods by pod name. A pod whose runtime
@@ -78,7 +98,8 @@ func (rr *runtimeReadings) replace(pod *corev1.Pod, snapshot *RuntimeSnapshot) {
 	if rr == nil {
 		return
 	}
-	rr.byPod[pod.Name] = runtimeReading{snapshot: snapshot}
+	rr.changes++
+	rr.byPod[pod.Name] = runtimeReading{snapshot: snapshot, changes: rr.changes}
 }
 
 // forget drops a pod's reading after a step changed its runtime without
@@ -87,6 +108,7 @@ func (rr *runtimeReadings) forget(podName string) {
 	if rr == nil {
 		return
 	}
+	rr.changes++
 	delete(rr.byPod, podName)
 }
 

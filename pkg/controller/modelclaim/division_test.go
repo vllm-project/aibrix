@@ -932,6 +932,157 @@ func TestArrangeCardStopsTakingBackAfterACallThatFails(t *testing.T) {
 	assert.True(t, strings.HasPrefix(runtime.kvLimitCalls[2].OperationID, "kv-plan-back/"))
 }
 
+func TestReconcileWarnsAgainWhileACardStaysStuck(t *testing.T) {
+	r, runtime, pod, clock := twoEnginesSharingACard(t)
+	reconcileOnce(t, r, "stays")
+	recordedEvents(t, r)
+	snapshot := runtime.snapshots[pod.Status.PodIP]
+	snapshot.Models[0].RequestsRunning = 3
+	snapshot.Models[0].RequestsWaiting = 1
+	runtime.deafToKVLimits = true
+
+	var warnedAt []int
+	for try := 1; try <= 40; try++ {
+		*clock = clock.Add(DefaultRequeueDuration)
+		reconcileOnce(t, r, "stays")
+		for _, event := range recordedEvents(t, r) {
+			if strings.Contains(event, "KVLimitFailed") && strings.Contains(event, "model stays ") {
+				warnedAt = append(warnedAt, try)
+			}
+		}
+	}
+
+	// An Event expires, so a card that stays stuck says so again, five
+	// minutes of rounds after it said so first.
+	assert.Equal(t, []int{3, 33}, warnedAt)
+}
+
+// twoCardsToDivide is two cards with one engine on each, "one" and "two". Each
+// engine is held to less than its share, so both cards are divided when they
+// are first seen.
+func twoCardsToDivide(t *testing.T) (*ModelClaimReconciler, *fakeRuntime, []corev1.Pod) {
+	t.Helper()
+	first, firstSnapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	second, secondSnapshot := sizedWarmPod("warm-2", "10.0.0.2", 80<<30)
+	claims := []client.Object{first, second}
+	for _, on := range []struct {
+		claim    string
+		pod      *corev1.Pod
+		snapshot *RuntimeSnapshot
+	}{{"one", first, firstSnapshot}, {"two", second, secondSnapshot}} {
+		claim := withFinalizer(claimOnPod(on.claim, on.pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+		claim.Status.Instances[0].Port = 9001
+		claim.Status.Instances[0].KVLimitBytes = 10 << 30
+		claims = append(claims, claim)
+		on.snapshot.Models = []RuntimeSnapshotModel{engineHolding(on.claim, 4<<30, 10<<30)}
+	}
+	r, runtime := newReconciler(t, claims...)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		first.Status.PodIP: firstSnapshot, second.Status.PodIP: secondSnapshot,
+	}
+	return r, runtime, []corev1.Pod{*first, *second}
+}
+
+func TestReconcileReadsACardJustBeforeItIsDivided(t *testing.T) {
+	r, runtime, pods := twoCardsToDivide(t)
+	// What the controller had read of the second card when the first was written.
+	readOfSecond := -1
+	runtime.onKVLimit = func() {
+		if readOfSecond < 0 {
+			readOfSecond = runtime.snapshotCallsTo[pods[1].Status.PodIP]
+		}
+	}
+
+	reconcileOnce(t, r, "one")
+
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Zero(t, readOfSecond, "a card is read once the card before it is divided, not before")
+}
+
+// A pass that places a model reads every card first, to rank them. A reading
+// from then is as old as every change the pass has made since.
+func TestDivideCardsReadsACardAgainOnceTheCardBeforeItWasDivided(t *testing.T) {
+	r, runtime, pods := twoCardsToDivide(t)
+	readings := newRuntimeReadings(r.Runtime)
+	readings.ofPods(context.Background(), pods)
+	var readOfSecond []int
+	runtime.onKVLimit = func() {
+		readOfSecond = append(readOfSecond, runtime.snapshotCallsTo[pods[1].Status.PodIP])
+	}
+
+	r.divideCards(context.Background(), pods, readings)
+
+	// The first card is divided from the reading the pass has, since nothing
+	// was changed after it. The second is read again before its own write.
+	assert.Equal(t, []int{1, 2}, readOfSecond)
+	assert.Equal(t, 2, runtime.snapshotCallsTo[pods[0].Status.PodIP],
+		"the first card is read once for the pass, and once to confirm its division")
+}
+
+// unreadablePods fails the snapshot reads of the pods listed, by IP.
+type unreadablePods struct {
+	*fakeRuntime
+	pods map[string]bool
+}
+
+func (u *unreadablePods) Snapshot(ctx context.Context, podIP string, port int) (*RuntimeSnapshot, error) {
+	if u.pods[podIP] {
+		u.snapshotCalls++
+		if u.snapshotCallsTo == nil {
+			u.snapshotCallsTo = map[string]int{}
+		}
+		u.snapshotCallsTo[podIP]++
+		return nil, errors.New("runtime did not answer")
+	}
+	return u.fakeRuntime.Snapshot(ctx, podIP, port)
+}
+
+// A runtime that did not answer costs the worker a whole timeout, so a pass
+// does not ask it twice.
+func TestDivideCardsDoesNotAskARuntimeAgainThatDidNotAnswer(t *testing.T) {
+	r, runtime, pods := twoCardsToDivide(t)
+	r.Runtime = &unreadablePods{fakeRuntime: runtime, pods: map[string]bool{pods[1].Status.PodIP: true}}
+	readings := newRuntimeReadings(r.Runtime)
+	readings.ofPods(context.Background(), pods)
+
+	r.divideCards(context.Background(), pods, readings)
+
+	require.Len(t, runtime.kvLimitCalls, 1, "the first card is divided")
+	assert.Equal(t, 1, runtime.snapshotCallsTo[pods[1].Status.PodIP])
+}
+
+func TestCardDivisionStateSaysOnceWhyACardIsLeftUndivided(t *testing.T) {
+	divisions := newCardDivisionState(nil)
+	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+	other := types.NamespacedName{Namespace: testNamespace, Name: "warm-2"}
+
+	assert.True(t, divisions.leftUndivided(card, "its runtime did not answer"))
+	assert.False(t, divisions.leftUndivided(card, "its runtime did not answer"), "it is said once")
+	assert.True(t, divisions.leftUndivided(other, "its runtime did not answer"), "each card says its own")
+	assert.True(t, divisions.leftUndivided(card, "an engine there answers to no claim"), "another reason is news")
+
+	divisions.accountedFor(card)
+	assert.True(t, divisions.leftUndivided(card, "an engine there answers to no claim"),
+		"a card that was accounted for in between says it again")
+}
+
+func TestReconcileNotesWhyACardIsLeftUndivided(t *testing.T) {
+	r, runtime, pod, clock := twoEnginesSharingACard(t)
+	snapshot := runtime.snapshots[pod.Status.PodIP]
+	// An engine that answers to no claim makes the card one nobody can
+	// account for.
+	snapshot.Models = append(snapshot.Models, engineHolding("stranger", 1<<30, 10<<30))
+
+	reconcileOnce(t, r, "stays")
+
+	require.Empty(t, runtime.kvLimitCalls)
+	assert.Contains(t, r.Divisions.undividedFor[cardOf(pod)], "answers to no claim")
+
+	snapshot.Models = snapshot.Models[:2]
+	nextRound(t, r, clock, "stays")
+	assert.NotContains(t, r.Divisions.undividedFor, cardOf(pod))
+}
+
 func TestCardDivisionStateCountsFailuresUntilADivisionWorks(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	divisions := newCardDivisionState(func() time.Time { return now })

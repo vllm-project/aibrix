@@ -63,6 +63,11 @@ var compositionDivision = division{announce: true}
 // engine that is growing, which the next round plans around.
 const stuckDivisionTries = 3
 
+// stuckDivisionWarningEvery is how many failed divisions lie between two
+// warnings about the same card, five minutes of rounds. An Event expires, and
+// a card that stays stuck should go on saying so.
+const stuckDivisionWarningEvery = 30
+
 // loadDivision follows the load on a card. It is planned every round, so it is
 // carried out only when the card needs it, a move too small to shift memory is
 // skipped, and the moves are logged rather than raised on the claims.
@@ -93,8 +98,11 @@ type cardDivisionState struct {
 	dividedFor   map[types.NamespacedName]string
 	attemptedFor map[types.NamespacedName]string
 	// failures counts the divisions of a card that have failed in a row.
-	failures   map[types.NamespacedName]int
-	lastPruned time.Time
+	failures map[types.NamespacedName]int
+	// undividedFor is why a card was last left undivided, as one that could
+	// not be accounted for.
+	undividedFor map[types.NamespacedName]string
+	lastPruned   time.Time
 }
 
 func newCardDivisionState(now func() time.Time) *cardDivisionState {
@@ -107,6 +115,7 @@ func newCardDivisionState(now func() time.Time) *cardDivisionState {
 		dividedFor:   make(map[types.NamespacedName]string),
 		attemptedFor: make(map[types.NamespacedName]string),
 		failures:     make(map[types.NamespacedName]int),
+		undividedFor: make(map[types.NamespacedName]string),
 	}
 }
 
@@ -178,6 +187,27 @@ func (s *cardDivisionState) divided(card types.NamespacedName, composition strin
 	delete(s.failures, card)
 }
 
+// leftUndivided notes why a card could not be accounted for, and reports
+// whether that is news. A card is looked at every round, and what keeps it
+// undivided is worth a line in the log once, not every ten seconds.
+func (s *cardDivisionState) leftUndivided(card types.NamespacedName, why string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.undividedFor[card] == why {
+		return false
+	}
+	s.undividedFor[card] = why
+	return true
+}
+
+// accountedFor notes that a card could be accounted for, so that what keeps it
+// undivided the next time is news again.
+func (s *cardDivisionState) accountedFor(card types.NamespacedName) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.undividedFor, card)
+}
+
 // failedAgain counts one more division of a card that did not work, and
 // returns how many have failed in a row.
 func (s *cardDivisionState) failedAgain(card types.NamespacedName) int {
@@ -202,6 +232,7 @@ func (s *cardDivisionState) pruneLocked(now time.Time) {
 			delete(s.dividedFor, card)
 			delete(s.attemptedFor, card)
 			delete(s.failures, card)
+			delete(s.undividedFor, card)
 		}
 	}
 }
@@ -306,13 +337,29 @@ func (r *ModelClaimReconciler) divideCards(
 		return
 	}
 
-	ledgers := podLedgersFrom(claims, nil, due, readings.ofPods(ctx, due))
 	for i := range due {
 		pod := &due[i]
-		ledger := ledgers[pod.Name]
-		if !ledger.judgeable || len(ledger.engines) == 0 || !podHasGPUs(*pod, ledger.accelerators) {
+		// Each card is read when its turn comes, and read again when the pass
+		// has changed a runtime since it read the card. Read with the others
+		// before the first of them is divided, its reading would be as old as
+		// the divisions before it, and its engines may have grown since.
+		card := due[i : i+1]
+		reading := make(map[string]*RuntimeSnapshot, 1)
+		if snapshot, err := readings.fresh(ctx, pod); err == nil && snapshot != nil {
+			reading[pod.Name] = snapshot
+		}
+		ledger := podLedgersFrom(claims, nil, card, reading)[pod.Name]
+		if len(ledger.engines) == 0 || !podHasGPUs(*pod, ledger.accelerators) {
 			continue
 		}
+		if !ledger.judgeable {
+			if divisions.leftUndivided(cardOf(pod), ledger.blocked) {
+				klog.InfoS("left a card undivided, since it cannot be accounted for",
+					"pod", klog.KObj(pod), "why", ledger.blocked)
+			}
+			continue
+		}
+		divisions.accountedFor(cardOf(pod))
 		why := loadDivision(ledger.hbmUsableBytes)
 		switch {
 		case changed[pod.Name]:
@@ -329,8 +376,8 @@ func (r *ModelClaimReconciler) divideCards(
 		if err != nil {
 			klog.V(2).InfoS("could not divide a card", "pod", klog.KObj(pod),
 				"enginesChanged", changed[pod.Name], "err", err)
-			if divisions.failedAgain(cardOf(pod)) == stuckDivisionTries {
-				r.warnCardNotDivided(pod, claims, ledger, err)
+			if failures := divisions.failedAgain(cardOf(pod)); failures%stuckDivisionWarningEvery == stuckDivisionTries {
+				r.warnCardNotDivided(pod, claims, ledger, failures, err)
 			}
 			continue
 		}
@@ -360,16 +407,18 @@ func (r *ModelClaimReconciler) anyCardMayBeDue(
 	return false
 }
 
-// warnCardNotDivided tells each claim on a card that the card has kept its
-// last division through several tries in a row. It is said once for each run
-// of failures. A division that fails once is usually the race with an engine
-// that is growing, and the next round plans around it. One that keeps failing
-// points at an engine whose limit does not take, which only the log would show
-// otherwise, since a round raises no events.
+// warnCardNotDivided tells each claim on a card that the card could not be
+// divided through several tries in a row. It is said on the third failure of a
+// run, and again every five minutes while the run lasts. A division that fails
+// once is usually the race with an engine that is growing, and the next round
+// plans around it. One that keeps failing points at an engine whose limit does
+// not take, which only the log would show otherwise, since a round raises no
+// events.
 func (r *ModelClaimReconciler) warnCardNotDivided(
 	pod *corev1.Pod,
 	claims *modelv1alpha1.ModelClaimList,
 	ledger podLedger,
+	failures int,
 	err error,
 ) {
 	onCard := make(map[string]bool, len(ledger.engines))
@@ -382,7 +431,7 @@ func (r *ModelClaimReconciler) warnCardNotDivided(
 			continue
 		}
 		r.Recorder.Eventf(claim, corev1.EventTypeWarning, "KVLimitFailed",
-			"model %s on pod %s: its card could not be divided %d times in a row, and keeps its last division: %v",
-			servedModelName(claim), pod.Name, stuckDivisionTries, err)
+			"model %s on pod %s: its card could not be divided %d times in a row: %v",
+			servedModelName(claim), pod.Name, failures, err)
 	}
 }

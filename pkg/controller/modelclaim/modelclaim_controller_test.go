@@ -64,6 +64,8 @@ type fakeRuntime struct {
 	sleepCalls      []SleepRequest
 	listCalls       int
 	snapshotCalls   int
+	// snapshotCallsTo counts the snapshot reads of each runtime, by pod IP.
+	snapshotCallsTo map[string]int
 	portSeq         int32
 	failActivate    bool
 	// loseActivateAnswer makes Activate start the engine and fail as a call
@@ -168,6 +170,10 @@ func (f *fakeRuntime) ListModels(_ context.Context, _ string, _ int) ([]ModelInf
 
 func (f *fakeRuntime) Snapshot(_ context.Context, podIP string, _ int) (*RuntimeSnapshot, error) {
 	f.snapshotCalls++
+	if f.snapshotCallsTo == nil {
+		f.snapshotCallsTo = map[string]int{}
+	}
+	f.snapshotCallsTo[podIP]++
 	if f.nilSnapshots[podIP] {
 		return nil, nil
 	}
