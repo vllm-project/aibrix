@@ -56,17 +56,26 @@ const (
 
 	// runtimeSnapshotTimeout bounds one snapshot read. A read normally takes a
 	// fraction of a second. At worst the runtime reads NVML once and gives each
-	// engine's probes 1.5 s, one engine after another. Calls that change state
-	// keep the longer timeout above.
+	// engine's probes 1.5 s, one engine after another, so a pod with seven
+	// busy engines can take longer than this. Calls that change state keep
+	// the longer timeout above.
 	runtimeSnapshotTimeout = 10 * time.Second
 
-	// runtimeSilenceWindow is how long a runtime that did not answer in time is
-	// not called again.
+	// shortestRuntimeSilence is how long a runtime is left alone after a call
+	// to it timed out. It is one round, so the claims that read the same
+	// runtime in that round do not each wait for it. Every further timeout in
+	// a row doubles it, up to runtimeSilenceWindow. A runtime that was slow
+	// once is read again a round later, and one that is down is asked once a
+	// minute.
+	shortestRuntimeSilence = 10 * time.Second
+
+	// runtimeSilenceWindow is the longest a runtime that does not answer in
+	// time is left alone.
 	runtimeSilenceWindow = time.Minute
 )
 
 // errRuntimeSilent is returned, without calling the runtime, for a runtime that
-// did not answer in time within the last runtimeSilenceWindow.
+// did not answer in time and is left alone for now.
 var errRuntimeSilent = errors.New("did not answer in time recently; not calling it again yet")
 
 // runtimeRefusal is an answer that says no. It is a body in which the runtime
@@ -292,14 +301,14 @@ type httpRuntimeClient struct {
 
 // NewRuntimeClient returns the default HTTP-backed runtime client.
 func NewRuntimeClient() RuntimeClient {
-	return newHTTPRuntimeClient(runtimeSnapshotTimeout, runtimeSilenceWindow, time.Now)
+	return newHTTPRuntimeClient(runtimeSnapshotTimeout, time.Now)
 }
 
-func newHTTPRuntimeClient(snapshotTimeout, silenceWindow time.Duration, now func() time.Time) *httpRuntimeClient {
+func newHTTPRuntimeClient(snapshotTimeout time.Duration, now func() time.Time) *httpRuntimeClient {
 	return &httpRuntimeClient{
 		httpClient:      &http.Client{Timeout: defaultRuntimeHTTPTimeout},
 		snapshotTimeout: snapshotTimeout,
-		silence:         &runtimeSilence{window: silenceWindow, now: now, until: map[string]time.Time{}},
+		silence:         newRuntimeSilence(now),
 	}
 }
 
@@ -310,37 +319,63 @@ func newHTTPRuntimeClient(snapshotTimeout, silenceWindow time.Duration, now func
 // fails fast, such as a refused connection or an error status, is not
 // remembered, since trying again costs nothing.
 type runtimeSilence struct {
-	mu     sync.Mutex
-	window time.Duration
-	now    func() time.Time
-	until  map[string]time.Time
+	mu       sync.Mutex
+	shortest time.Duration
+	longest  time.Duration
+	now      func() time.Time
+	runtimes map[string]silentRuntime
 }
 
-// silent reports whether a runtime did not answer in time within the window.
+// silentRuntime is a runtime that did not answer in time: how many calls to it
+// timed out in a row, and until when it is left alone.
+type silentRuntime struct {
+	timeouts int
+	until    time.Time
+}
+
+func newRuntimeSilence(now func() time.Time) *runtimeSilence {
+	return &runtimeSilence{
+		shortest: shortestRuntimeSilence,
+		longest:  runtimeSilenceWindow,
+		now:      now,
+		runtimes: map[string]silentRuntime{},
+	}
+}
+
+// silent reports whether a runtime is left alone for now.
 func (s *runtimeSilence) silent(runtime string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.now().Before(s.until[runtime])
+	return s.now().Before(s.runtimes[runtime].until)
 }
 
-// observe records how a call to a runtime ended. A timeout starts the window
-// again, and anything else ends it. Windows that are over are dropped then, so
-// the runtimes of pods that are gone are not kept.
+// observe records how a call to a runtime ended. A timeout leaves the runtime
+// alone, for twice as long as the timeout before it did, and anything else
+// ends that. A runtime nothing has called for the longest silence since it
+// was last left alone is dropped then, so the runtimes of pods that are gone
+// are not kept, and one that comes back that late starts over.
 func (s *runtimeSilence) observe(runtime string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var netErr net.Error
 	if err == nil || !errors.As(err, &netErr) || !netErr.Timeout() {
-		delete(s.until, runtime)
+		delete(s.runtimes, runtime)
 		return
 	}
 	now := s.now()
-	for other, until := range s.until {
-		if !now.Before(until) {
-			delete(s.until, other)
+	for other, last := range s.runtimes {
+		if !now.Before(last.until.Add(s.longest)) {
+			delete(s.runtimes, other)
 		}
 	}
-	s.until[runtime] = now.Add(s.window)
+	silent := s.runtimes[runtime]
+	silent.timeouts++
+	alone := s.shortest << min(silent.timeouts-1, 16)
+	if alone > s.longest || alone <= 0 {
+		alone = s.longest
+	}
+	silent.until = now.Add(alone)
+	s.runtimes[runtime] = silent
 }
 
 // runtimeURL brackets an IPv6 pod address, as a URL needs.
