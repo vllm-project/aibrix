@@ -174,8 +174,8 @@ func minimumKVLimitChangeBytes(hbmUsableBytes int64) int64 {
 // is when a share has to follow its load.
 //
 // Some engine is held to a limit other than the one its instance records.
-// That is what a division leaves behind when a write of it did not take, and
-// only a division puts it right.
+// That is what a division leaves behind when a write of it did not take. It
+// is also how an engine is found that serves and records no limit.
 //
 // The card is at rest, and some engine is held to less than half of its share.
 // That is what a burst on the engine beside it leaves behind. Left like that,
@@ -225,12 +225,12 @@ func givesAShortEngineMore(engines []engineOnPod, limits []plannedKVLimit, minim
 }
 
 // leftUnfinished reports whether some engine is held to a limit other than the
-// one its instance records. An engine with no segment is held to nothing, and
-// an instance that records nothing has nothing to differ from.
+// one its instance records. An instance that records no limit records zero,
+// so an engine that has a segment and no record counts. An engine with no
+// segment is held to nothing, and does not.
 func leftUnfinished(engines []engineOnPod) bool {
 	for _, engine := range engines {
-		if engine.kvCapacityBytes >= 0 && engine.kvRecordedBytes > 0 &&
-			engine.kvCapacityBytes != engine.kvRecordedBytes {
+		if engine.kvCapacityBytes >= 0 && engine.kvCapacityBytes != engine.kvRecordedBytes {
 			return true
 		}
 	}

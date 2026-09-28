@@ -1187,6 +1187,40 @@ func TestCardDivisionStateKeepsTheCardThatIsAskedAbout(t *testing.T) {
 	assert.False(t, divisions.noted(gone))
 }
 
+// An instance can record no limit while its engine serves: it was placed when
+// its pod showed no card, or by a controller that recorded none. The engine
+// then runs under its allocator's own limit, which is most of the card.
+func TestReconcileHoldsAnEngineThatServesWithNoRecord(t *testing.T) {
+	starting := func(name string) RuntimeSnapshotModel {
+		engine := engineHolding(name, kvLimitUnknown, kvLimitUnknown)
+		engine.Ready = false
+		return engine
+	}
+	r, runtime, snapshot, clock := aCardOfTwoEngines(t, starting("busy"), starting("idle"))
+	for _, name := range []string{"busy", "idle"} {
+		claim := getModel(t, r, name)
+		claim.Status.Instances[0].KVLimitBytes = 0
+		require.NoError(t, r.Status().Update(context.Background(), claim))
+	}
+	// The card's first round finds no segment to write into, and notes it.
+	reconcileOnce(t, r, "idle")
+	require.Empty(t, runtime.kvLimitCalls)
+
+	for i := range snapshot.Models {
+		snapshot.Models[i].KVCapacityBytes = 76 << 30
+		snapshot.Models[i].KVUsedBytes = 1 << 30
+		snapshot.Models[i].Ready = true
+	}
+	nextRound(t, r, clock, "idle")
+
+	for _, name := range []string{"busy", "idle"} {
+		assert.Equal(t, int64(20)<<30, getModel(t, r, name).Status.Instances[0].KVLimitBytes, name)
+	}
+	for _, engine := range snapshot.Models {
+		assert.Equal(t, int64(20)<<30, engine.KVCapacityBytes, engine.ModelName)
+	}
+}
+
 func TestCardDivisionStateSaysOnceWhyACardIsLeftUndivided(t *testing.T) {
 	divisions := newCardDivisionState(nil)
 	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}

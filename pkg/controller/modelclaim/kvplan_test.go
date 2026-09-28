@@ -341,8 +341,10 @@ func TestNeedsDividing(t *testing.T) {
 			[]engineOnPod{serving(belowItsRecord), serving(engine("b", 100))}, []int64{100, 100}, true},
 		"held above its record": {
 			[]engineOnPod{serving(aboveItsRecord), serving(engine("b", 100))}, []int64{100, 100}, true},
-		"no record to be held to": {
-			[]engineOnPod{serving(unrecorded), serving(engine("b", 100))}, []int64{100, 100}, false},
+		// An instance that records nothing records zero. Its engine has a
+		// segment, so it is held to a limit that nothing records.
+		"a limit in force and no record": {
+			[]engineOnPod{serving(unrecorded), serving(engine("b", 100))}, []int64{100, 100}, true},
 		"no segment to be held in": {
 			[]engineOnPod{serving(noSegment), serving(engine("b", 100))}, []int64{100, 100}, false},
 		"at rest, an engine under half of its share": {
