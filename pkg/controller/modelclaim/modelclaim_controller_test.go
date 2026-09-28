@@ -1969,6 +1969,50 @@ func TestReconcileHoldsAnEngineToItsLimitOnAPodWithoutAGPURequest(t *testing.T) 
 		"an engine above its limit must not be routed")
 }
 
+func TestReconcileWillNotPlaceOnAPodWhoseCardCouldNotBeReadThisTime(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	// The pod requests no GPU, and this reading of its runtime reports no card,
+	// as when NVML fails once. Its engine holds a KV segment all the same, so
+	// the pod has a card, and the card is full.
+	pod, snapshot := podWithUnrequestedGPU(1000)
+	snapshot.Accelerators = nil
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 500, 500)}
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 400, 100)
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Empty(t, got.Status.Instances)
+	cond := meta.FindStatusCondition(got.Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Contains(t, cond.Message, "its cards could not be measured")
+}
+
+func TestReconcileHoldsAnEngineToItsLimitWhenItsCardCouldNotBeReadThisTime(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := podWithUnrequestedGPU(1000)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{
+		{Pod: pod.Name, Phase: modelv1alpha1.ModelClaimActivating, Port: 9001, KVLimitBytes: 600},
+	}
+	snapshot.Accelerators = nil
+	// Ready, and still under its allocator's own limit.
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(900)}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.kvLimitCalls, 1)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase,
+		"an engine above its limit must not be routed")
+}
+
 // The runtime's mock mode reports one card with no memory at all, so that the
 // single-GPU pool policy runs on the CPU pools of the end-to-end tests. That is
 // no card to account for: the claim is placed as on a pod without a GPU, and

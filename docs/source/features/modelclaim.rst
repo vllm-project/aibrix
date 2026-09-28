@@ -319,7 +319,8 @@ A card reported with no memory at all does not count. That is the card the
 runtime's mock mode reports on CPU pools. A Pod with neither is taken for one
 without a GPU, and nothing is accounted for on it. A Pod whose runtime did not
 answer is turned away whatever it requests, since only its runtime could say
-that it has cards.
+that it has cards. A reading that reports no card, as when NVML fails once,
+still counts one while an engine on the Pod holds a KV segment.
 
 Every card in a declared pool is divided as a whole
 ---------------------------------------------------

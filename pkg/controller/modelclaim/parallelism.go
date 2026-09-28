@@ -116,6 +116,10 @@ func podHasGPUs(pod corev1.Pod, reportedAccelerators int) bool {
 // real card only once NVML has read its memory, so such a card is the one the
 // runtime's mock mode reports for the single-GPU pool policy on CPU pools.
 // There is nothing on it to account for.
+//
+// A reading with no card at all still describes one when an engine on it holds
+// a KV segment. The runtime reports no card when NVML fails, and a segment is
+// only ever built on a card.
 func reportedAccelerators(snapshot *RuntimeSnapshot) int {
 	if snapshot == nil {
 		return 0
@@ -126,7 +130,15 @@ func reportedAccelerators(snapshot *RuntimeSnapshot) int {
 			cards++
 		}
 	}
-	return cards
+	if cards > 0 {
+		return cards
+	}
+	for _, model := range snapshot.Models {
+		if model.KVCapacityBytes > 0 {
+			return 1
+		}
+	}
+	return 0
 }
 
 // podSupportsVLLMParallelism accepts legacy/mock Pods without GPU resources so
