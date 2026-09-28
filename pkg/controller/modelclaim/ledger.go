@@ -157,8 +157,9 @@ func (e engineOnPod) heldBytes() int64 {
 type podLedger struct {
 	judgeable bool
 	blocked   string
-	// unread is set when the pod's runtime did not answer, so that nothing is
-	// known about the pod, not even whether it has cards.
+	// unread is set when the pod's runtime did not answer, or the claims could
+	// not be listed, so that nothing is known about the pod, not even whether
+	// it has cards.
 	unread                   bool
 	hbmUsableBytes           int64
 	totalMinimumReserveBytes int64
@@ -251,7 +252,10 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 	claims := &modelv1alpha1.ModelClaimList{}
 	if err := reader.List(ctx, claims, client.InNamespace(namespace)); err != nil {
 		klog.ErrorS(err, "collect pod ledgers: list model claims", "namespace", namespace)
+		// Without the claims, nothing says what is recorded on a pod, and so
+		// nothing says whether it has a card. Every pod is turned away.
 		for name, ledger := range ledgers {
+			ledger.unread = true
 			ledgers[name] = ledger.withHole("the claims on it could not be listed")
 		}
 		return ledgers

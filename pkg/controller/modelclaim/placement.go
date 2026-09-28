@@ -117,8 +117,9 @@ type podRefusal struct {
 // memory such an account cannot see is memory it would hand out twice.
 //
 // A pod whose runtime did not answer is turned away whatever it requests.
-// Only its runtime could say that it has cards it did not request, so such a
-// pod cannot be told from one without a GPU.
+// Its runtime is what says that it has cards it did not request, so such a
+// pod cannot be told from one without a GPU. The same holds while the claims
+// cannot be listed, since a limit recorded on a pod says so as well.
 func admissibleCandidates(
 	candidates []corev1.Pod,
 	ledgers map[string]podLedger,
