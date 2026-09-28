@@ -753,17 +753,7 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	}
 
 	targetPod, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage := r.loadImbalanceSelectDecodePod(routingCtx, decodePods)
-	// The decode fast path picks by request count, throughput or drain rate. Those
-	// are the signals token_load replaces: a pod holding one long prompt has the
-	// fewest requests and the most KV. Under token_load, score the whole set; the
-	// call above still fills the metric maps.
-	if targetPod != nil && pd.UsesDecodeTokenLoad(decodePol) {
-		if klog.V(4).Enabled() {
-			klog.V(4).InfoS("decode load imbalance fast path skipped under token_load",
-				"request_id", routingCtx.RequestID, "fast_path_decode_pod", targetPod.Name)
-		}
-		targetPod = nil
-	}
+	targetPod = decodeFastPathPick(routingCtx, targetPod, decodePol)
 	if targetPod != nil {
 		decodePods = []*v1.Pod{targetPod}
 		if aligned := utils.FilterPodsByLabel(prefillPods, PDRoleSetIdentifier, targetPod.Labels[PDRoleSetIdentifier]); len(aligned) > 0 {
@@ -806,6 +796,22 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	r.chargeTokenLoad(routingCtx, selectedPrefill, prefillPol, prefillScorer)
 	r.chargeDecodeTokenLoad(routingCtx, selectedDecode, decodePol)
 	return selectedPrefill, selectedDecode, nil
+}
+
+// decodeFastPathPick returns the decode load-imbalance fast path's pick, or nil
+// when the decode policy must score the whole set instead. The fast path picks
+// by request count, throughput or drain rate. Those are the signals token_load
+// replaces: a pod holding one long prompt has the fewest requests and the most
+// KV. The fast path still runs under token_load, to fill the metric maps.
+func decodeFastPathPick(routingCtx *types.RoutingContext, targetPod *v1.Pod, decodePol pd.DecodeScorePolicy) *v1.Pod {
+	if targetPod == nil || !pd.UsesDecodeTokenLoad(decodePol) {
+		return targetPod
+	}
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("decode load imbalance fast path skipped under token_load",
+			"request_id", routingCtx.RequestID, "fast_path_decode_pod", targetPod.Name)
+	}
+	return nil
 }
 
 // loadImbalanceSelectPrefillPod is a fast path that runs before scorePrefillPods when
