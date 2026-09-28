@@ -1301,9 +1301,11 @@ func (r *ModelClaimReconciler) announcePhase(
 // An engine that is not on the route is read back at once, and judged again
 // from that reading. That is an engine coming up, and one that slept and
 // serves again. Held to its limit now, it is routed in this pass rather than
-// the next. An engine that was routed and lost its limit is not read back: it
-// leaves the route first, so that the loss is seen. Its Event says that the
-// limit was written, which is all that is known of it in this pass.
+// the next. The engine of a failed instance is read back as well, and its
+// instance stays failed. An engine that was routed and lost its limit is not
+// read back: it leaves the route first, so that the loss is seen. Its Event
+// says that the limit was written, which is all that is known of it in this
+// pass.
 //
 // What the pass had read of the runtime is dropped, whether the write was
 // taken or not. A write changes the runtime, or may have. A read-back that
@@ -1462,7 +1464,7 @@ func (r *ModelClaimReconciler) judgeEngine(
 // controller's clock does not have to agree with it. An engine that is ready
 // but not yet routable is not booting. Neither is one whose boot the runtime
 // does not date, since nothing would then bound it. An engine that is
-// stopping counts: it is alive and not ready, and its instance gets a new
+// stopping counts while the runtime reports it alive. Its instance gets a new
 // engine as soon as it has gone.
 func engineBooting(snapshot *RuntimeSnapshot, observed *RuntimeSnapshotModel) bool {
 	if snapshot == nil || observed == nil || !observed.Alive || observed.Ready ||
