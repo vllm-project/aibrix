@@ -354,12 +354,12 @@ func compositionEntry(claim *modelv1alpha1.ModelClaim, phase modelv1alpha1.Model
 }
 
 func (r *ModelClaimReconciler) divisions() *cardDivisionState {
-	if r.Divisions != nil {
-		return r.Divisions
+	if r.Divisions == nil {
+		// Production and the reconciler tests set this. A reconciler that is
+		// built by hand gets its state on the first call, and keeps it.
+		r.Divisions = newCardDivisionState(time.Now)
 	}
-	// Production and the reconciler tests set this. A narrow test that builds
-	// the reconciler by hand gets a fresh state, and every card is due.
-	return newCardDivisionState(time.Now)
+	return r.Divisions
 }
 
 // divideCards divides again the cards in this claim's pool whose engines all

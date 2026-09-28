@@ -831,6 +831,17 @@ func TestReconcileGivesTheRoomBackWhenTheEnginePlacedCannotStart(t *testing.T) {
 	assert.Empty(t, getModel(t, r, pm.Name).Status.Instances)
 }
 
+// A reconciler that is built by hand has no state of its divisions. It gets one
+// on the first call, and keeps it, so that a card that was divided stays so.
+func TestDivisionsKeepsTheStateOfAReconcilerBuiltByHand(t *testing.T) {
+	r := &ModelClaimReconciler{}
+
+	r.divisions().divided(types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, "as it is")
+
+	due, _ := r.divisions().due(types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, "as it is")
+	assert.False(t, due)
+}
+
 // The cache can still show the record of a start that failed, a moment after
 // the record was taken back. So the division after such a start asks the API
 // server, and the neighbour gets its room back in the same pass.
