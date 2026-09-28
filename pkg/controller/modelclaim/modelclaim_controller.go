@@ -1294,9 +1294,10 @@ func (r *ModelClaimReconciler) announcePhase(
 // holdToKVLimit writes the limit an instance records, and returns how the
 // engine stands after it.
 //
-// An engine coming up is read back at once, and judged again from that
-// reading. Held to its limit now, it is routed in this pass rather than the
-// next. An engine that was routed and lost its limit is not read back: it
+// An engine that is not on the route is read back at once, and judged again
+// from that reading. That is an engine coming up, and one that slept and
+// serves again. Held to its limit now, it is routed in this pass rather than
+// the next. An engine that was routed and lost its limit is not read back: it
 // leaves the route first, so that the loss is seen. Its Event says that the
 // limit was written, which is all that is known of it in this pass.
 //
@@ -1319,7 +1320,7 @@ func (r *ModelClaimReconciler) holdToKVLimit(
 	if !written {
 		return state, observed
 	}
-	if inst.Phase != modelv1alpha1.ModelClaimActivating {
+	if inst.Phase == modelv1alpha1.ModelClaimActive {
 		r.Recorder.Eventf(pm, corev1.EventTypeNormal, "KVLimitSet",
 			"model %s on pod %s: KV limit of %s written over %s",
 			served, inst.Pod, gibibytes(inst.KVLimitBytes), gibibytes(observed.KVCapacityBytes))

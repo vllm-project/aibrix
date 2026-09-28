@@ -383,3 +383,42 @@ func TestEngineBootingWatchesABootForItsWindowOnly(t *testing.T) {
 		assert.Equal(t, c.booting, engineBooting(&RuntimeSnapshot{ObservedAt: observedAt}, &engine), name)
 	}
 }
+
+// anEngineHeldToFiveGibibytes is a claim with one instance recorded at 3 GiB
+// on a card of 10 GiB. Its engine is ready, and held to 5 GiB.
+func anEngineHeldToFiveGibibytes(
+	t *testing.T,
+	phase modelv1alpha1.ModelClaimPhase,
+) (*ModelClaimReconciler, *fakeRuntime, *modelv1alpha1.ModelClaim) {
+	t.Helper()
+	pm := claimWithCost(7<<30, 1<<30)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9001, Phase: phase, KVLimitBytes: 3 << 30,
+	}}
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 10<<30)
+	snapshot.ObservedAt = time.Unix(1_700_000_000, 0)
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(5 << 30)}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	// The card's round is taken, so every read below is the health check's.
+	r.Divisions.due(cardOf(pod), "taken")
+	return r, runtime, pm
+}
+
+// Only an engine on the route is left unread after its limit is written. An
+// engine that slept and serves again has no route to lose. So it is read back
+// and routed in the same pass, as an engine coming up is.
+func TestReconcileReadsBackAnEngineThatWokeInThePassItsLimitIsWritten(t *testing.T) {
+	r, runtime, pm := anEngineHeldToFiveGibibytes(t, modelv1alpha1.ModelClaimSleeping)
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, 2, runtime.snapshotCalls, "the write is read back in this pass")
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, pm.Name).Status.Instances[0].Phase)
+	assert.Contains(t, routeOf(t, r, "warm-1", pm.Name), `"port":9001`)
+	events := drainEvents(t, r)
+	assert.Equal(t, 1, eventsNamed(events, "Woken"))
+	assert.Equal(t, 1, eventsNamed(events, "KV limit set to 3.0 GiB, from 5.0 GiB"))
+	assert.Zero(t, eventsNamed(events, "Unhealthy"))
+}
