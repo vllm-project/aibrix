@@ -299,7 +299,8 @@ have room for it, on two counts.
 
 The first is what the card could ever offer: its size, less the maximum
 footprint and KV floor of every instance already recorded on it. A model that
-needs more than this cannot be placed here however long it waits.
+needs more than this cannot be placed here while those instances stay, however
+long it waits.
 
 The second is what the card can offer today: its size, less each instance's
 footprint and whichever is larger of its declared floor and the KV its engine
@@ -348,8 +349,9 @@ its instance records in ``status.instances[].kvLimitBytes``.
 
 The limits on one card are worked out together. Each engine keeps what it
 already holds, its declared floor or the KV it has mapped, and the room left
-over is shared out by demand: each engine's part is weighted by its requests in
-flight, capped at four as the pool policy below caps them.
+over is shared out by demand: each engine's part is weighted by one plus its
+requests in flight, with the requests capped at four as the pool policy below
+caps them.
 Every footprint, every engine's held KV, and every share together come to
 exactly what the card can hold, so an engine growing into its new limit cannot
 grow into another engine's memory.
@@ -404,8 +406,8 @@ unaccountable until the claim declares its cost.
 
 Sleeping does not free a seat. An instance that is asleep keeps its place in
 the account, at the full footprint and floor its claim declared, because the
-assignment has to survive the sleep for a wake to find its engine again. Sleep
-can give KV back to the models beside it. It cannot make room for a new claim.
+assignment has to survive the sleep for a wake to find its engine again. So
+sleep does not make room for a new claim.
 
 A failed instance does free its seat. The runtime stops an engine once its
 restarts run out, so its memory is back with the card, and the account charges
@@ -563,10 +565,10 @@ kvcached capacity ceiling, not an immediate physical HBM allocation and not an
 OOM guarantee.
 
 The policy leaves a Pod alone when an instance recorded on it already runs
-under a KV limit of its own. That is the case for every instance placed with a
-``perGPU`` declaration, and a claim without one is not placed. Until
+under a KV limit of its own. That is the case for every instance placed on a
+card, since a claim without a ``perGPU`` declaration is not placed. Until
 ``reclaim`` is removed, this annotation reaches only instances placed before
-``perGPU`` existed.
+``perGPU`` existed, and Pods without a card.
 
 The JSON parser rejects unknown fields. An invalid policy is disabled and
 reported with an ``InvalidPoolPolicy`` Event:
@@ -597,10 +599,10 @@ that is not placed yet. Its message gives the controller's reason: from the
 claim's ``Scheduled`` condition while it waits, such as ``NoMatchingPods``, or
 from its ``Ready`` condition once it has failed. The controller tries such a
 claim again by itself, so the client is asked to retry as well. A claim that
-has to be changed first, such as one with ``InvalidEngineConfig``, gets no
-``Retry-After``. A terminally failed model, with ``EngineFailed``, returns 503
-without ``Retry-After`` as well. A model that no ModelClaim serves returns
-400.
+has to be changed first, such as one with ``InvalidEngineConfig`` or
+``InvalidPerGPU``, gets no ``Retry-After``. A terminally failed model, with
+``EngineFailed``, returns 503 without ``Retry-After`` as well. A model that no
+ModelClaim serves returns 400.
 
 The answer for a claim that is not placed comes from the ModelClaim object,
 not from a Pod, so it wakes nothing. If two claims serve one name, the first
@@ -743,8 +745,8 @@ Policy does not change KV limits
    Automatic policy requires exactly one visible accelerator, valid request
    metrics with matching model labels, and at least one observed active model.
    It does not shrink when observations are incomplete or protected KV usage
-   exceeds the configured capacity. It also stands down entirely on a Pod where
-   an instance records its own KV limit.
+   exceeds the configured capacity. Its KV part also stands down on a Pod
+   where an instance records its own KV limit. Idle sleep still runs there.
 
 Model never enters automatic sleep
    Automatic idle sleep currently applies only to vLLM. Check that request

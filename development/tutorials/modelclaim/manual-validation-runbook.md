@@ -49,7 +49,7 @@ document and must not be inferred from a successful functional run:
 | F2 | Direct and gateway inference | required | A10 passed | both models return HTTP 200 |
 | F3 | API and topology validation | required | A10 passed | fixed-KV flag fails; TP=2 stays off one GPU |
 | F4 | Manual controls | required | A10 passed | KV limit, sleep, and wake are idempotent |
-| P1 | Dynamic KV policy | required | control passed | demand moves limits safely in both directions |
+| P1 | Dynamic KV policy | not on a GPU | control passed | demand moves limits safely in both directions |
 | P2 | Idle sleep and request wake | required | A10 passed | route removed, retryable 503, route restored |
 | R1 | Agent re-adoption | required | A10 passed | agent changes; engine PID/port/IPC do not |
 | R2 | Engine crash isolation | required | A10 passed | target restarts; peer remains available |
@@ -400,6 +400,22 @@ readiness.
 
 ### P1: Request-Driven KV Limit Redistribution
 
+> **On a GPU, this check no longer applies.** The `reclaim` policy stands down
+> on a Pod where a claim records its own KV limit, and every claim placed on a
+> card does. The limits then do not follow the annotation, and the waits below
+> time out. Check how the card was divided instead:
+>
+> ```bash
+> kubectl get modelclaims \
+>   -o custom-columns='NAME:.metadata.name,KVLIMIT:.status.instances[0].kvLimitBytes'
+> curl -fsS localhost:8080/v1/runtime/snapshot \
+>   | jq '{usable: .accelerators[0].hbm_usable_bytes, engines: [.models[] | {model_name, kv_capacity_bytes}]}'
+> ```
+>
+> Each claim's `kvLimitBytes` has to equal its engine's `kv_capacity_bytes`.
+> The declared `maximumFootprint` of both claims plus both limits has to come
+> to `usable`.
+
 Enable reclaim without lifecycle actions:
 
 ```bash
@@ -740,6 +756,9 @@ all observed degradation is recorded. A failed request is not silently counted
 as a pass.
 
 ## 9. Optional Policy Benefit Benchmark
+
+> **On a GPU, the dynamic arm measures nothing.** The `reclaim` policy stands
+> down where a claim records its own KV limit, as in P1.
 
 Do not publish a performance or utilization claim without this comparison.
 Use the same cached weights, engine arguments, prompt trace, warmup, arrival
