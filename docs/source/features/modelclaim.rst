@@ -902,9 +902,10 @@ Claim remains ``Activating`` after ``/health`` succeeds
    lasts longer, the limit did not take, and the controller writes it again
    every 10 seconds. A ``KVLimitFailed`` Event says what the engine reports
    instead, or names the error of the write. ``KVLimitSet`` is raised once the
-   limit reads back. A snapshot whose ``kv_capacity_bytes`` is negative means
-   the engine has not built its KV segment yet, and there is nothing to write
-   into.
+   limit reads back. When the runtime does not answer the read-back, neither
+   is raised, and the next pass reads the limit. A snapshot whose
+   ``kv_capacity_bytes`` is negative means the engine has not built its KV
+   segment yet, and there is nothing to write into.
 
 ``KVLimitFailed`` Events during placement
    A card had room, and the engines on it could not be held to their new
@@ -932,8 +933,10 @@ A routable model becomes non-routable with ``KVLimitNotHeld``
    restarted and its allocator put its own default back. It could grow into
    memory the card holds for its neighbours, so the route is withdrawn while
    the controller writes the limit again, and returns once the engine reports
-   it. The change to the Pod starts the next pass at once, so the route is
-   normally back within a few seconds.
+   it. On a Pod that carries both ``pool.aibrix.ai`` labels, the change to the
+   Pod starts the next pass at once, so the route is normally back within a
+   few seconds. On a Pod without ``pool.aibrix.ai/name``, it is back on the
+   claim's next pass, 10 seconds later at most.
 
 Activation rejects ``--gpu-memory-utilization``
    Remove the flag. The kvcached framework replaces the engine's fixed

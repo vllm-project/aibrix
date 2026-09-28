@@ -1173,7 +1173,8 @@ func placementStatesFrom(
 // an instance Activating on an engine that is booting.
 //
 // An engine that is taken off the route needs no such pace. Its pod's
-// annotation changes then, and that change starts the next pass at once.
+// annotation changes then. On a pod that carries both labels of its pool, that
+// change starts the next pass at once.
 func (r *ModelClaimReconciler) reconcileInstanceHealth(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
@@ -1296,7 +1297,12 @@ func (r *ModelClaimReconciler) announcePhase(
 // An engine coming up is read back at once, and judged again from that
 // reading. Held to its limit now, it is routed in this pass rather than the
 // next. An engine that was routed and lost its limit is not read back: it
-// leaves the route first, so that the loss is seen.
+// leaves the route first, so that the loss is seen. Its Event says that the
+// limit was written, which is all that is known of it in this pass.
+//
+// A write changes the runtime, or may have, so what the pass had read of the
+// runtime is dropped. A read-back that fails is kept as the reading of the
+// pass: a runtime that did not answer is not asked again in the same pass.
 func (r *ModelClaimReconciler) holdToKVLimit(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
@@ -1315,17 +1321,14 @@ func (r *ModelClaimReconciler) holdToKVLimit(
 	}
 	if inst.Phase != modelv1alpha1.ModelClaimActivating {
 		r.Recorder.Eventf(pm, corev1.EventTypeNormal, "KVLimitSet",
-			"model %s on pod %s: KV limit set to %s, from %s",
+			"model %s on pod %s: KV limit of %s written over %s",
 			served, inst.Pod, gibibytes(inst.KVLimitBytes), gibibytes(observed.KVCapacityBytes))
 		return state, observed
 	}
 	confirmed, err := readings.of(ctx, pod)
 	if err != nil {
-		// A reading that failed is no reading of the pod. What follows in
-		// this pass reads the runtime again.
 		klog.V(4).InfoS("runtime snapshot failed after a KV limit was written",
 			"model", pm.Name, "pod", inst.Pod, "err", err)
-		readings.forget(pod.Name)
 		return state, observed
 	}
 	writtenOver := observed.KVCapacityBytes
