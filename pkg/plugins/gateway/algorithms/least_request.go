@@ -261,6 +261,8 @@ func getRequestCounts(cache cache.Cache, readyPods []*v1.Pod) map[string]int {
 }
 
 // getRequestCountsWithPort returns running request count for each pod with port tracked by gateway.
+// Every entry is keyed "pod/port", the format selectTargetPodAndPortWithLeastRequestCount
+// splits to recover the pod and the port to dial.
 // Single-port pods use the live cross-gateway count (GetPodsRunningRequests, see
 // getRequestCounts); the running-requests counter is pod-level only, with no per-port
 // dimension, so a genuinely multi-port pod still reads its per-port metric slot via
@@ -281,25 +283,23 @@ func getRequestCountsWithPort(c cache.Cache, readyPods []*v1.Pod, portsMap map[s
 			continue
 		}
 
-		for _, port := range podPorts {
-			// Every entry is keyed "pod/port": selectTargetPodAndPortWithLeastRequestCount
-			// splits the winning key on "/" to recover the pod and the port to dial.
-			keyName := pod.Name + "/" + strconv.Itoa(port)
-			if len(podPorts) == 1 {
-				count := 0
-				if err == nil && liveCounts != nil {
-					count = int(liveCounts[utils.GeneratePodKey(pod.Namespace, pod.Name)])
-				}
-				podRequestCount[keyName] = count
-				continue
+		if len(podPorts) == 1 {
+			count := 0
+			if err == nil && liveCounts != nil {
+				count = int(liveCounts[utils.GeneratePodKey(pod.Namespace, pod.Name)])
 			}
+			podRequestCount[pod.Name+"/"+strconv.Itoa(podPorts[0])] = count
+			continue
+		}
 
-			metricName := metrics.RealtimeNumRequestsRunning + "/" + strconv.Itoa(port)
+		for _, port := range podPorts {
+			portStr := strconv.Itoa(port)
+			metricName := metrics.RealtimeNumRequestsRunning + "/" + portStr
 			var count int
 			if val, err := c.GetMetricValueByPod(pod.Name, pod.Namespace, metricName); err == nil && val != nil {
 				count = int(val.GetSimpleValue())
 			}
-			podRequestCount[keyName] = count
+			podRequestCount[pod.Name+"/"+portStr] = count
 		}
 	}
 
