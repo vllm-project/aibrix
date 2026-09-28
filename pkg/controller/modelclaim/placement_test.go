@@ -358,6 +358,21 @@ func TestAdmissibleCandidatesSaysNoRoomForACardPromisedMoreThanItHas(t *testing.
 	assert.Contains(t, refusals[0].reason, "over can offer at most 0.0 GiB")
 }
 
+func TestAdmissibleCandidatesSaysNothingIsFreeOnACardThatHoldsMoreThanItHas(t *testing.T) {
+	pods := []corev1.Pod{*warmPodWithGPUs("full", "b300-pool-a", 1)}
+	// The card could hold the model, and its engines hold more than the card.
+	ledgers := map[string]podLedger{
+		"full": {judgeable: true, hbmUsableBytes: 80 << 30, totalMinimumReserveBytes: 30 << 30,
+			totalHeldBytes: 90 << 30},
+	}
+
+	_, refusals := admissibleCandidates(pods, ledgers, 40<<30)
+
+	require.Len(t, refusals, 1)
+	assert.Contains(t, refusals[0].reason, "full has 0.0 GiB free")
+	assert.True(t, refusals[0].couldHold, "the card is worth waiting for")
+}
+
 func TestSummarizeRefusalsFallsBackToAPodItCouldNotJudge(t *testing.T) {
 	refusals := []podRefusal{
 		{pod: "unreadable", reason: "unreadable could not be judged: its cards could not be measured"},

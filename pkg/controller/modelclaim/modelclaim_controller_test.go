@@ -2338,6 +2338,127 @@ func TestReconcileHoldsAnEngineToItsLimitBeforeRouting(t *testing.T) {
 	assert.Equal(t, int32(1), got.Status.ReadyReplicas)
 }
 
+// An engine whose segment cannot be read is not known to be held to anything,
+// so it does not keep its route.
+func TestReconcileDeroutesAnEngineWhoseLimitCannotBeRead(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod:          "warm-1",
+		Port:         9001,
+		Phase:        modelv1alpha1.ModelClaimActive,
+		KVLimitBytes: 300,
+	}}
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(kvLimitUnknown)}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	got := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
+	assert.Empty(t, runtime.kvLimitCalls, "there is no segment to write into")
+}
+
+// Through a whole pass: one card that could never hold the model and offers
+// more, and one that could hold it once its engine gives memory back.
+func TestReconcileNamesTheCardWorthWaitingFor(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	never, neverSnapshot := sizedWarmPod("a-never", "10.0.0.1", 1000)
+	later, laterSnapshot := sizedWarmPod("b-later", "10.0.0.2", 1000)
+	full := claimOnPod("full", never.Name, modelv1alpha1.ModelClaimActive, 600, 100)
+	full.Status.Instances[0].KVLimitBytes = 400
+	busy := claimOnPod("busy", later.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	busy.Status.Instances[0].KVLimitBytes = 700
+	neverSnapshot.Models = []RuntimeSnapshotModel{engineHolding("full", 100, 400)}
+	laterSnapshot.Models = []RuntimeSnapshotModel{engineHolding("busy", 500, 700)}
+	r, runtime := newReconciler(t, pm, never, later, full, busy)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		never.Status.PodIP: neverSnapshot, later.Status.PodIP: laterSnapshot,
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	cond := meta.FindStatusCondition(getModel(t, r, pm.Name).Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Contains(t, cond.Message, "b-later has")
+}
+
+// A card that had room and could not be divided is worth waiting for as well.
+func TestReconcileNamesTheCardThatCouldNotBeDividedBeforeOneThatNeverCould(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	never, neverSnapshot := sizedWarmPod("a-never", "10.0.0.1", 1000)
+	room, roomSnapshot := sizedWarmPod("b-room", "10.0.0.2", 1000)
+	full := claimOnPod("full", never.Name, modelv1alpha1.ModelClaimActive, 600, 100)
+	full.Status.Instances[0].KVLimitBytes = 400
+	deaf := claimOnPod("deaf", room.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	deaf.Status.Instances[0].KVLimitBytes = 700
+	neverSnapshot.Models = []RuntimeSnapshotModel{engineHolding("full", 100, 400)}
+	roomSnapshot.Models = []RuntimeSnapshotModel{engineHolding("deaf", 100, 700)}
+	r, runtime := newReconciler(t, pm, never, room, full, deaf)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		never.Status.PodIP: neverSnapshot, room.Status.PodIP: roomSnapshot,
+	}
+	// The engine on the card with room does not take its new limit.
+	runtime.deafToKVLimits = true
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Empty(t, runtime.activateCalls)
+	cond := meta.FindStatusCondition(getModel(t, r, pm.Name).Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Contains(t, cond.Message, "b-room has room, but its card could not be divided")
+}
+
+// The engine whose record goes down runs below that record already, as after
+// a division that was not carried through. Its limit then goes up while its
+// record goes down. The records are ordered by the records.
+func TestReconcileOrdersTheRecordsByTheRecordsAndNotByTheLimitsInForce(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	grows := claimOnPod("a-grows", pod.Name, modelv1alpha1.ModelClaimActive, 100, 50)
+	grows.Status.Instances[0].KVLimitBytes = 60
+	shrinks := claimOnPod("c-shrinks", pod.Name, modelv1alpha1.ModelClaimActive, 200, 100)
+	shrinks.Status.Instances[0].KVLimitBytes = 500
+	newcomer := claimWithCost(100, 50)
+	newcomer.Name = "b-newcomer"
+	busy := engineHolding("a-grows", 50, 60)
+	busy.RequestsRunning = 4
+	// Held to 120, below its record of 500.
+	snapshot.Models = []RuntimeSnapshotModel{busy, engineHolding("c-shrinks", 100, 120)}
+	scheme := testScheme(t)
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(grows, shrinks, newcomer, pod).
+		WithStatusSubresource(&modelv1alpha1.ModelClaim{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, obj client.Object,
+				opts ...client.SubResourceUpdateOption) error {
+				if obj.GetName() == "c-shrinks" {
+					return fmt.Errorf("etcdserver: request timed out")
+				}
+				return cl.SubResource(sub).Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	runtime := &fakeRuntime{snapshots: map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}}
+	r := &ModelClaimReconciler{
+		Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(32), Runtime: runtime,
+		PoolPolicy:    newPoolPolicyManager(time.Now),
+		SnapshotCache: newRuntimeSnapshotCache(defaultRuntimeSnapshotTTL, time.Now),
+	}
+
+	reconcileOnce(t, r, newcomer.Name)
+
+	require.Empty(t, runtime.activateCalls)
+	promised := int64(0)
+	for name, footprint := range map[string]int64{"a-grows": 100, "c-shrinks": 200} {
+		promised += footprint + getModel(t, r, name).Status.Instances[0].KVLimitBytes
+	}
+	assert.LessOrEqual(t, promised, int64(1000))
+}
+
 func TestReconcileDeroutesAnEngineHeldToMoreThanItsRecord(t *testing.T) {
 	pm := claimWithCost(700, 100)
 	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
