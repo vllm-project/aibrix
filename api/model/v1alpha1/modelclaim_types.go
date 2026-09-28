@@ -81,9 +81,11 @@ type ModelClaimSpec struct {
 	// cannot be accounted for, and one such claim makes its whole card unusable
 	// to every other.
 	//
-	// Both figures have to be positive, whole numbers of bytes, and no more
-	// than 1Pi. A claim whose declaration is missing or cannot be used is not
-	// placed, and its Scheduled condition says which figure is wrong.
+	// Both figures have to be positive, and no more than 1Pi. A figure below
+	// 1Mi also has to be a whole number of bytes, and a larger one is rounded
+	// up to whole bytes. A claim whose declaration is missing or cannot be
+	// used is not placed, and its Scheduled condition says which figure is
+	// wrong.
 	//
 	// The schema leaves it optional, and the controller refuses the claim
 	// instead. A claim stored before this field existed has to stay valid. A

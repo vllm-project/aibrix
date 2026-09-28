@@ -395,9 +395,10 @@ has to carry both figures, and an apply without one of them is rejected.
 Both figures have to be positive. A quantity carries no schema bounds, so a
 ``0`` is caught by the controller instead: the claim is not placed, and its
 ``Scheduled`` condition reads ``InvalidPerGPU`` and names the figure. A zero
-is never read as a model that takes no room. A figure also has to be a whole
-number of bytes, and no more than ``1Pi``. That catches a slip such as ``30m``
-for ``30M``, which would otherwise be read as one byte.
+is never read as a model that takes no room. A figure may be no more than
+``1Pi``. One below ``1Mi`` also has to be a whole number of bytes. That
+catches a slip such as ``30m`` for ``30M``, which would otherwise be read as
+one byte. A larger figure, such as ``5.6Gi``, is rounded up to whole bytes.
 
 A claim stored before the field existed decodes with its declaration missing,
 and it is not placed again, for the same reason. An engine it already runs

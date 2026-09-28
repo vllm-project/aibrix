@@ -328,6 +328,9 @@ func TestPerGPUBytesOfSaysWhatIsWrongWithADeclaration(t *testing.T) {
 			"spec.perGPU.maximumFootprint is 30m, which is not a whole number of bytes"},
 		"part of a byte more": {declaring("30Gi", "1500m"),
 			"spec.perGPU.kvFloor is 1500m, which is not a whole number of bytes"},
+		// Rounded to the thousandth it would pass for one byte.
+		"nearly a byte": {declaring("999600u", "10Gi"),
+			"spec.perGPU.maximumFootprint is 999600u, which is not a whole number of bytes"},
 		// Two such figures would add up past what an int64 holds.
 		"more than any card": {declaring("7Ei", "7Ei"),
 			"spec.perGPU.maximumFootprint is 7Ei, which is more than 1Pi"},
@@ -344,6 +347,18 @@ func TestPerGPUBytesOfSaysWhatIsWrongWithADeclaration(t *testing.T) {
 	for _, whole := range []string{"6.5Gi", "1Pi", "1500", "2G"} {
 		_, err := perGPUBytesOf(declaring(whole, "10Gi"))
 		assert.NoError(t, err, whole)
+	}
+
+	// A decimal fraction of a binary unit is seldom a whole number of bytes.
+	// Such a figure is what a measurement gives, so it is rounded up.
+	for measured, bytes := range map[string]int64{
+		"5.6Gi":  6012954215,
+		"0.3Gi":  322122548,
+		"20.2Gi": 21689584845,
+	} {
+		perGPU, err := perGPUBytesOf(declaring(measured, "10Gi"))
+		require.NoError(t, err, measured)
+		assert.Equal(t, bytes, perGPU.maximumFootprintBytes, measured)
 	}
 
 	perGPU, err := perGPUBytesOf(declaring("30Gi", "10Gi"))

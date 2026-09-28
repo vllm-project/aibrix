@@ -50,14 +50,19 @@ func (p perGPUBytes) minimumReserveBytes() int64 {
 // on a card without running past an int64.
 var maximumDeclaredBytes = resource.MustParse("1Pi")
 
+// smallestRoundedBytes is the smallest figure that is rounded up to a whole
+// number of bytes. A smaller one with part of a byte in it is refused.
+var smallestRoundedBytes = resource.MustParse("1Mi")
+
 // perGPUBytesOf reads what a claim declared one instance costs on a GPU, and
 // says what is wrong with the declaration when it cannot be used.
 //
 // A quantity carries no schema bounds, so a figure that cannot be used is
 // caught here. One that is not positive is refused rather than read as a model
-// that costs nothing, which is what a zero would otherwise say. One that is
-// not a whole number of bytes is most likely a slip, such as 30m for 30M, and
-// would otherwise be read as a single byte.
+// that costs nothing, which is what a zero would otherwise say. A small one
+// with part of a byte in it is most likely a slip, such as 30m for 30M, and
+// would otherwise be read as a single byte. A larger one comes from a decimal
+// fraction of a binary unit, such as 5.6Gi, and is rounded up.
 func perGPUBytesOf(pm *modelv1alpha1.ModelClaim) (perGPUBytes, error) {
 	if pm == nil || pm.Spec.PerGPU == nil {
 		return perGPUBytes{}, errors.New("spec.perGPU is missing")
@@ -82,7 +87,8 @@ func declaredBytes(name string, declared resource.Quantity) (int64, error) {
 		wrong = "not positive"
 	case declared.Cmp(maximumDeclaredBytes) > 0:
 		wrong = "more than " + maximumDeclaredBytes.String()
-	case declared.MilliValue()%1000 != 0:
+	case declared.Cmp(smallestRoundedBytes) < 0 &&
+		declared.Cmp(*resource.NewQuantity(declared.Value(), declared.Format)) != 0:
 		wrong = "not a whole number of bytes"
 	}
 	if wrong != "" {
