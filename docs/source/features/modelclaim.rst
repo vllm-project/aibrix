@@ -800,10 +800,12 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    while they serve sends no such signal, so the claim finds it on its next
    try, a minute later at most.
 
-   Two limits follow from waiting this way. A claim that has waited long
-   tries less often than one that has just arrived, so room that appears
-   without a signal usually goes to the newer claim. And a wake has every
-   waiting claim in the namespace read every candidate runtime once.
+   Claims that are woken together are tried oldest first. Three limits
+   remain. A claim that has waited long tries less often than one that has
+   just arrived, so room that appears without a signal usually goes to the
+   newer claim. Nothing holds room for a claim, so a large claim can keep
+   waiting while smaller ones keep fitting. And a wake has every waiting claim
+   in the namespace read every candidate runtime once.
 
 Claim remains ``Pending`` with ``TooLargeForAnyCard``
    Every candidate card was measured, and each is smaller than

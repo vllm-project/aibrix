@@ -18,6 +18,7 @@ package modelclaim
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -72,6 +73,9 @@ type placementAttempt struct {
 	// failedToStart is whether the claim found a card, and its engine could
 	// not be started there. Room appearing does not help it either.
 	failedToStart bool
+	// written is whether the claim's status was written after the refusal, so
+	// that the claim says why it waits.
+	written bool
 }
 
 // roomSignature is the pool as a waiting claim last saw it: for each candidate
@@ -120,6 +124,13 @@ func (b *placementBackoff) due(claim types.NamespacedName, generation int64, roo
 		delete(b.attempts, claim)
 		return true, 0
 	}
+	if !attempt.written {
+		// The refusal did not reach the claim's status, so the claim would
+		// wait without saying why. The try is made again, and counts once.
+		attempt.refusals = max(attempt.refusals-1, 0)
+		b.attempts[claim] = attempt
+		return true, 0
+	}
 	left := attempt.readyAt.Sub(b.now())
 	if left <= 0 {
 		return true, 0
@@ -156,8 +167,21 @@ func (b *placementBackoff) failedToStart(claim types.NamespacedName, generation 
 	defer b.mu.Unlock()
 	attempt := b.attempts[claim]
 	attempt.failedToStart = true
+	// The failure is written before the wait is recorded.
+	attempt.written = true
 	b.attempts[claim] = attempt
 	return wait
+}
+
+// statusWritten records that a claim's status was written, and with it the
+// refusal the claim waits on, if it waits.
+func (b *placementBackoff) statusWritten(claim types.NamespacedName) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if attempt, waiting := b.attempts[claim]; waiting && !attempt.written {
+		attempt.written = true
+		b.attempts[claim] = attempt
+	}
 }
 
 // waitsAfterAFailedStart reports whether a claim waits because its engine
@@ -182,6 +206,7 @@ func (b *placementBackoff) refuse(
 	attempt.room = room
 	attempt.tooLarge = tooLarge
 	attempt.failedToStart = false
+	attempt.written = false
 	wait := DefaultRequeueDuration << min(attempt.refusals-1, 16)
 	if wait > maximumPlacementBackoff || wait <= 0 {
 		wait = maximumPlacementBackoff
@@ -337,8 +362,23 @@ func roomMayHaveFreed() predicate.Predicate {
 	}
 }
 
+// oldestFirst orders claims by when they were created, and by name among the
+// ones created together. The queue is first in, first out, and one worker
+// takes from it. So the claims woken together are tried in this order, and
+// the one that has waited longest gets the room first.
+func oldestFirst(claims []modelv1alpha1.ModelClaim) {
+	sort.SliceStable(claims, func(i, j int) bool {
+		if !claims[i].CreationTimestamp.Equal(&claims[j].CreationTimestamp) {
+			return claims[i].CreationTimestamp.Before(&claims[j].CreationTimestamp)
+		}
+		return claims[i].Name < claims[j].Name
+	})
+}
+
 // enqueueWaitingClaims wakes the claims in the same namespace that wait for a
-// card, when another claim may have freed one.
+// card, when another claim may have freed one. A claim that failed is left
+// out: its engine config is not valid, or its engine could not be started, and
+// room helps neither.
 func enqueueWaitingClaims(c client.Client) handler.MapFunc {
 	return func(ctx context.Context, obj client.Object) []reconcile.Request {
 		claims := &modelv1alpha1.ModelClaimList{}
@@ -346,10 +386,12 @@ func enqueueWaitingClaims(c client.Client) handler.MapFunc {
 			klog.ErrorS(err, "unable to list model claims to wake", "namespace", obj.GetNamespace())
 			return nil
 		}
+		oldestFirst(claims.Items)
 		var requests []reconcile.Request
 		for i := range claims.Items {
 			claim := &claims.Items[i]
 			if claim.Name == obj.GetName() || !claim.DeletionTimestamp.IsZero() ||
+				claim.Status.Phase == modelv1alpha1.ModelClaimFailed ||
 				desiredReplicas(claim) <= int32(len(claim.Status.Instances)) {
 				continue
 			}
