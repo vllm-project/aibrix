@@ -19,6 +19,7 @@ package modelclaim
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -78,7 +79,8 @@ func TestHTTPRuntimeActivate(t *testing.T) {
 
 // hangingRuntime stands in for a runtime that takes each request and answers
 // none of them, as a runtime whose snapshot handler is stuck would. Once
-// answering is set, it answers again.
+// answering is set, it answers again. With refusing set, it takes no
+// connection.
 //
 // It is the transport of the client that calls it. So it counts a request the
 // moment the client sends it, and no test waits for a request to reach a
@@ -88,17 +90,27 @@ type hangingRuntime struct {
 	port      int
 	requests  atomic.Int32
 	answering atomic.Bool
+	refusing  atomic.Bool
+	// deadline is the deadline of the last request, if it had one.
+	deadline atomic.Pointer[time.Time]
 }
 
 func (r *hangingRuntime) RoundTrip(req *http.Request) (*http.Response, error) {
 	r.requests.Add(1)
-	if r.answering.Load() {
+	r.deadline.Store(nil)
+	if deadline, has := req.Context().Deadline(); has {
+		r.deadline.Store(&deadline)
+	}
+	switch {
+	case r.answering.Load():
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
 			Body:       io.NopCloser(strings.NewReader(`{}`)),
 			Request:    req,
 		}, nil
+	case r.refusing.Load():
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
 	}
 	<-req.Context().Done()
 	return nil, req.Context().Err()
@@ -482,6 +494,95 @@ func TestHTTPRuntimeLearnsNothingFromACallThatWasCanceled(t *testing.T) {
 	})
 	assert.Equal(t, leftAlone, c.silence.runtimes[runtime.address()])
 	assert.ErrorIs(t, read(context.Background()), errRuntimeSilent)
+}
+
+// Over a real socket: what the HTTP client returns for a call that its caller
+// canceled is taken for a canceled call.
+func TestHTTPRuntimeLearnsNothingFromACallCanceledOverASocket(t *testing.T) {
+	arrived := make(chan struct{}, 1)
+	released := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		arrived <- struct{}{}
+		<-released
+	}))
+	t.Cleanup(func() {
+		close(released)
+		srv.Close()
+	})
+	u, _ := url.Parse(srv.URL)
+	port, _ := strconv.Atoi(u.Port())
+	c := newHTTPRuntimeClient(5*time.Second, time.Now)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-arrived
+		cancel()
+	}()
+
+	_, err := c.Snapshot(ctx, u.Hostname(), port)
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Empty(t, c.silence.runtimes)
+}
+
+// A failure that is no timeout ends the time a runtime is left alone, as an
+// answer does. The next timeout counts as the first.
+func TestHTTPRuntimeStartsOverAfterACallThatFailedAtOnce(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	c, runtimes := hangingRuntimes(1, func() time.Time { return now })
+	runtime := runtimes[0]
+	ctx := context.Background()
+	for range 2 {
+		_, err := c.Snapshot(ctx, runtime.host, runtime.port)
+		require.Error(t, err)
+		now = now.Add(time.Minute)
+	}
+	require.Equal(t, 2, c.silence.runtimes[runtime.address()].timeouts)
+
+	runtime.refusing.Store(true)
+	_, err := c.Snapshot(ctx, runtime.host, runtime.port)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, errRuntimeSilent)
+	assert.NotContains(t, c.silence.runtimes, runtime.address())
+
+	runtime.refusing.Store(false)
+	_, err = c.Snapshot(ctx, runtime.host, runtime.port)
+	require.Error(t, err)
+	assert.Equal(t, silentRuntime{timeouts: 1, until: now.Add(shortestRuntimeSilence)},
+		c.silence.runtimes[runtime.address()])
+	runtime.asked(t, 4)
+}
+
+// A read is sent with the deadline the client was built with, counted from
+// the moment of the call.
+func TestHTTPRuntimeSendsAReadWithItsDeadline(t *testing.T) {
+	const readDeadline = 7 * time.Second
+	c, runtimes := hangingRuntimes(1, time.Now)
+	runtime := runtimes[0]
+	runtime.answering.Store(true)
+	c.snapshotTimeout = readDeadline
+
+	before := time.Now()
+	_, err := c.Snapshot(context.Background(), runtime.host, runtime.port)
+	after := time.Now()
+
+	require.NoError(t, err)
+	deadline := runtime.deadline.Load()
+	require.NotNil(t, deadline)
+	assert.False(t, deadline.Before(before.Add(readDeadline)), "the deadline is %s after the call", deadline.Sub(before))
+	assert.False(t, deadline.After(after.Add(readDeadline)), "the deadline is %s after the call", deadline.Sub(after))
+}
+
+// The client that runs in production reads the time of day. With a clock that
+// stood still, a runtime left alone once would never be called again.
+func TestTheRuntimeClientReadsTheClock(t *testing.T) {
+	c := NewRuntimeClient().(*httpRuntimeClient)
+
+	before := time.Now()
+	read := c.silence.now()
+	after := time.Now()
+
+	assert.False(t, read.Before(before))
+	assert.False(t, read.After(after))
 }
 
 func TestRuntimeURLTakesAnIPv6PodAddress(t *testing.T) {
