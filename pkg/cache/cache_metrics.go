@@ -206,15 +206,28 @@ type MetricSnapshot struct {
 // RateCalculator manages historical metric values for rate calculation
 type RateCalculator struct {
 	mu       sync.RWMutex
-	history  map[string][]MetricSnapshot // key: "podName/modelName/metricName"
+	history  map[string][]MetricSnapshot // key: "namespace/podName/modelName/metricName"
 	maxAge   time.Duration               // Maximum age to keep snapshots
 	maxCount int                         // Maximum number of snapshots to keep
 }
 
-// PurgeEntriesForPod removes all history entries whose key starts with podName/.
+// rateHistoryPodPrefix returns the prefix of every rate history key of a pod. The history
+// is process-wide, so the key carries the namespace: same-named pods in different
+// namespaces (e.g. StatefulSet or LeaderWorkerSet replicas) must not share a series.
+func rateHistoryPodPrefix(namespace, podName string) string {
+	return utils.GeneratePodKey(namespace, podName) + "/"
+}
+
+// rateHistoryKey is the history key of a pod's metric series. calculateRate1m passes an
+// empty modelName, since the counters it reads are pod-level.
+func rateHistoryKey(pod *Pod, modelName, metricName string) string {
+	return rateHistoryPodPrefix(pod.Namespace, pod.Name) + modelName + "/" + metricName
+}
+
+// PurgeEntriesForPod removes all history entries of the pod namespace/podName.
 // Call this when a pod is deleted to prevent unbounded map growth in high-churn clusters.
-func (r *RateCalculator) PurgeEntriesForPod(podName string) {
-	prefix := podName + "/"
+func (r *RateCalculator) PurgeEntriesForPod(namespace, podName string) {
+	prefix := rateHistoryPodPrefix(namespace, podName)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for k := range r.history {

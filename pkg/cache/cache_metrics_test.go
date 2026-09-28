@@ -951,7 +951,7 @@ func newReadyMetricsPod(name, uid string) *Pod {
 // snapshot far enough in the past (it discards windows shorter than 10s) without sleeping.
 func seedCompletedOutputTokensHistory(t *testing.T, pod *Pod, baseline float64, age time.Duration) {
 	t.Helper()
-	key := pod.Name + "//completed_output_tokens"
+	key := rateHistoryKey(pod, "", "completed_output_tokens")
 	rateCalculator.mu.Lock()
 	rateCalculator.history[key] = []MetricSnapshot{{Value: baseline, Timestamp: time.Now().Add(-age)}}
 	rateCalculator.mu.Unlock()
@@ -1007,7 +1007,7 @@ func TestUpdateRealtimeOutputTokenRateEWMA_NoHistoryStoresNothing(t *testing.T) 
 	pod := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "cold-ewma-pod", Namespace: "default"}}}
 	t.Cleanup(func() {
 		rateCalculator.mu.Lock()
-		delete(rateCalculator.history, pod.Name+"//completed_output_tokens")
+		delete(rateCalculator.history, rateHistoryKey(pod, "", "completed_output_tokens"))
 		rateCalculator.mu.Unlock()
 	})
 	atomic.StoreInt64(&pod.completedOutputTokens, 1000)
@@ -1016,4 +1016,91 @@ func TestUpdateRealtimeOutputTokenRateEWMA_NoHistoryStoresNothing(t *testing.T) 
 
 	_, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA)
 	require.False(t, ok, "a single sample has no window, so no capacity estimate yet")
+}
+
+func namespacedTestPod(namespace, name string) *Pod {
+	return &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}}
+}
+
+// purgeRateHistory drops the rate history of the given pods when the test ends.
+func purgeRateHistory(t *testing.T, pods ...*Pod) {
+	t.Helper()
+	t.Cleanup(func() {
+		for _, pod := range pods {
+			rateCalculator.PurgeEntriesForPod(pod.Namespace, pod.Name)
+		}
+	})
+}
+
+// Same-named pods in different namespaces must keep separate rate histories. Sharing
+// one would compute a pod's rate against the other pod's counter.
+func TestCalculatePerSecondRate_SameNameInTwoNamespaces(t *testing.T) {
+	c := &Store{}
+	podA := namespacedTestPod("team-a", "decode-0")
+	podB := namespacedTestPod("team-b", "decode-0")
+	purgeRateHistory(t, podA, podB)
+
+	require.Equal(t, -1.0, c.calculatePerSecondRate(podA, "m", "gen_tokens", 100000))
+	// team-b has no history of its own yet, so it has no rate.
+	require.Equal(t, -1.0, c.calculatePerSecondRate(podB, "m", "gen_tokens", 500))
+
+	rateCalculator.mu.RLock()
+	defer rateCalculator.mu.RUnlock()
+	require.Equal(t, []float64{100000}, snapshotValues(rateCalculator.history[rateHistoryKey(podA, "m", "gen_tokens")]))
+	require.Equal(t, []float64{500}, snapshotValues(rateCalculator.history[rateHistoryKey(podB, "m", "gen_tokens")]))
+}
+
+func TestCalculateRate1m_SameNameInTwoNamespaces(t *testing.T) {
+	c := &Store{}
+	podA := namespacedTestPod("team-a", "decode-0")
+	podB := namespacedTestPod("team-b", "decode-0")
+	purgeRateHistory(t, podA, podB)
+
+	// Seed a 30s-old baseline for team-a only.
+	seededAt := time.Now().Add(-30 * time.Second)
+	rateCalculator.mu.Lock()
+	rateCalculator.history[rateHistoryKey(podA, "", "completed_requests")] = []MetricSnapshot{{Value: 1000, Timestamp: seededAt}}
+	rateCalculator.mu.Unlock()
+
+	// team-b's much smaller counter must not be read as a counter reset of team-a's.
+	require.Equal(t, -1.0, c.calculateRate1m(podB, "completed_requests", 5))
+	// team-a's rate is still computed against its own baseline: 3000 over the time since
+	// the seed. Bracket the elapsed time so a slow run cannot fail the check.
+	before := time.Since(seededAt).Seconds()
+	rate := c.calculateRate1m(podA, "completed_requests", 4000)
+	after := time.Since(seededAt).Seconds()
+	require.GreaterOrEqual(t, rate, 3000/after)
+	require.LessOrEqual(t, rate, 3000/before)
+}
+
+func TestPurgeEntriesForPod_NamespaceScoped(t *testing.T) {
+	c := &Store{}
+	podA := namespacedTestPod("team-a", "decode-0")
+	podB := namespacedTestPod("team-b", "decode-0")
+	podA2 := namespacedTestPod("team-a", "decode-00") // name shares a prefix with podA
+	purgeRateHistory(t, podA, podB, podA2)
+
+	for _, pod := range []*Pod{podA, podB, podA2} {
+		c.calculatePerSecondRate(pod, "m", "gen_tokens", 1)
+		c.calculateRate1m(pod, "completed_requests", 1)
+	}
+
+	rateCalculator.PurgeEntriesForPod("team-a", "decode-0")
+
+	rateCalculator.mu.RLock()
+	defer rateCalculator.mu.RUnlock()
+	require.NotContains(t, rateCalculator.history, rateHistoryKey(podA, "m", "gen_tokens"))
+	require.NotContains(t, rateCalculator.history, rateHistoryKey(podA, "", "completed_requests"))
+	for _, pod := range []*Pod{podB, podA2} {
+		require.Contains(t, rateCalculator.history, rateHistoryKey(pod, "m", "gen_tokens"))
+		require.Contains(t, rateCalculator.history, rateHistoryKey(pod, "", "completed_requests"))
+	}
+}
+
+func snapshotValues(history []MetricSnapshot) []float64 {
+	values := make([]float64, len(history))
+	for i, s := range history {
+		values[i] = s.Value
+	}
+	return values
 }
