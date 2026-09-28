@@ -738,12 +738,12 @@ in-flight requests.
 
 The controller reads each runtime's snapshot with a 10-second deadline. A read
 normally takes a fraction of a second. It can take longer for two reasons. The
-runtime probes its engines one after another, for up to 1.5 seconds each.
-Before that, a read waits for the runtime's lock. The runtime holds that lock
-while it checks its engines, for up to 1 second each. It also holds the lock
-while it starts an engine, puts one to sleep, wakes one or writes a KV limit.
-So a read of a Pod with five busy engines can take longer than the deadline.
-Calls that change state, such as starting an engine, wait up to 60 seconds.
+runtime probes its engines one after another, for about 1.5 seconds each. Before
+that, a read waits for the runtime's lock. The runtime holds that lock while it
+checks its engines, for about 1 second each. It also holds the lock while it
+starts an engine, puts one to sleep, wakes one or writes a KV limit. So a read
+of a Pod with five busy engines can take longer than the deadline. Calls that
+change state, such as starting an engine, wait up to 60 seconds.
 
 A runtime that does not answer in time is left alone for 10 seconds, which is
 one round. Calls to it fail at once until then, so one runtime that stopped

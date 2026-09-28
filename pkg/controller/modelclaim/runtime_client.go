@@ -56,13 +56,13 @@ const (
 
 	// runtimeSnapshotTimeout bounds one snapshot read. A read normally takes a
 	// fraction of a second. It can take longer for two reasons. The runtime
-	// reads NVML once and gives each engine's probes 1.5 s, one engine after
-	// another. Before that, a read waits for the runtime's lock. The runtime
-	// holds that lock while it checks its engines, for up to 1 s each. It
-	// also holds the lock while it starts an engine, puts one to sleep, wakes
-	// one or writes a KV limit. So a read of a pod with five busy engines can
-	// take longer than this. Calls that change state keep the longer timeout
-	// above.
+	// reads NVML once and gives each engine's probes about 1.5 s, one engine
+	// after another. Before that, a read waits for the runtime's lock. The
+	// runtime holds that lock while it checks its engines, for about 1 s each.
+	// It also holds the lock while it starts an engine, puts one to sleep,
+	// wakes one or writes a KV limit. So a read of a pod with five busy engines
+	// can take longer than this. Calls that change state keep the longer
+	// timeout above.
 	runtimeSnapshotTimeout = 10 * time.Second
 
 	// shortestRuntimeSilence is how long a runtime is left alone after a call
