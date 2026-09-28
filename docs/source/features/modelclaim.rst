@@ -742,8 +742,10 @@ starting an engine, wait up to 60 seconds. A Pod whose runtime could not be
 read keeps its routing as it is, and placement ranks it after the Pods that
 could be read. A runtime that does not answer in time is not called again for
 a minute. Calls to it fail at once until then, so one runtime that stopped
-answering does not hold up every claim that uses it. Stopping an engine is
-still sent, since an engine left running would keep its memory.
+answering does not hold up every claim that uses it. A claim that would start
+on such a Pod stays ``Pending`` until the runtime is called again, and is not
+marked ``Failed``, since no call was sent. Stopping an engine is still sent,
+since an engine left running would keep its memory.
 
 Observability
 -------------
