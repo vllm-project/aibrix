@@ -1844,6 +1844,95 @@ func TestArrangeCardTakesAShrinkBackToTheRecordAtMost(t *testing.T) {
 	assert.Equal(t, int64(400), runtime.kvLimitCalls[1].LimitBytes)
 }
 
+// An engine can be held to less than its record, as a grow that did not take
+// leaves it. A shrink of it that is not confirmed is taken back to what it was
+// held to, and not to its record.
+func TestArrangeCardTakesAShrinkBackToWhatTheEngineWasHeldTo(t *testing.T) {
+	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+	snapshot.Models[0].KVCapacityBytes = 300
+	runtime.onKVLimit = func() { snapshot.Models[0].KVUsedBytes = 250 }
+
+	err := divideOnce(t, r, pod, snapshot)
+
+	require.Error(t, err)
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, "a", runtime.kvLimitCalls[1].ModelName)
+	assert.Equal(t, int64(300), runtime.kvLimitCalls[1].LimitBytes)
+}
+
+// An instance that records no limit has no record to be taken back to. Its
+// engine is taken back to what it was held to.
+func TestArrangeCardTakesBackAShrinkOfAnEngineWithNoRecord(t *testing.T) {
+	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+	claim := getModel(t, r, "a")
+	claim.Status.Instances[0].KVLimitBytes = 0
+	require.NoError(t, r.Status().Update(context.Background(), claim))
+	runtime.onKVLimit = func() { snapshot.Models[0].KVUsedBytes = 300 }
+
+	err := divideOnce(t, r, pod, snapshot)
+
+	require.Error(t, err)
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, "a", runtime.kvLimitCalls[1].ModelName)
+	assert.Equal(t, int64(400), runtime.kvLimitCalls[1].LimitBytes)
+}
+
+// A take-back never writes less than the shrink wrote. The engine ran at 900,
+// above its record of 120, and its shrink wrote more than that record.
+func TestArrangeCardDoesNotTakeAShrinkBackBelowWhatItWrote(t *testing.T) {
+	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+	claim := getModel(t, r, "a")
+	claim.Status.Instances[0].KVLimitBytes = 120
+	require.NoError(t, r.Status().Update(context.Background(), claim))
+	snapshot.Models[0].KVCapacityBytes = 900
+	runtime.onKVLimit = func() { snapshot.Models[0].KVUsedBytes = 300 }
+
+	err := divideOnce(t, r, pod, snapshot)
+
+	require.Error(t, err)
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Greater(t, runtime.kvLimitCalls[0].LimitBytes, int64(120))
+	assert.True(t, strings.HasPrefix(runtime.kvLimitCalls[0].OperationID, "kv-plan/"))
+}
+
+// A reading back that fails confirms nothing, so the shrink is taken back as
+// one that was not confirmed.
+func TestArrangeCardTakesAShrinkBackWhenItsReadingBackFails(t *testing.T) {
+	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+	unreadable := &unreadablePods{fakeRuntime: runtime, pods: map[string]bool{}}
+	r.Runtime = unreadable
+	runtime.onKVLimit = func() { unreadable.pods[pod.Status.PodIP] = true }
+
+	err := divideOnce(t, r, pod, snapshot)
+
+	require.Error(t, err)
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.True(t, strings.HasPrefix(runtime.kvLimitCalls[1].OperationID, "kv-plan-back/"))
+	assert.Equal(t, int64(400), runtime.kvLimitCalls[1].LimitBytes)
+}
+
+// The runtime runs each operation once. The same take-back in a later round
+// has to reach the segment again, so the moment of its reading is part of its
+// operation.
+func TestArrangeCardGivesATakeBackInALaterRoundItsOwnOperation(t *testing.T) {
+	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+	runtime.onKVLimit = func() { snapshot.Models[0].KVUsedBytes = 300 }
+	for round := 0; round < 2; round++ {
+		snapshot.Models[0].KVUsedBytes = 100
+		snapshot.ObservedAt = snapshot.ObservedAt.Add(DefaultRequeueDuration)
+		require.Error(t, divideOnce(t, r, pod, snapshot))
+	}
+
+	var takenBack []string
+	for _, call := range runtime.kvLimitCalls {
+		if strings.HasPrefix(call.OperationID, "kv-plan-back/") {
+			takenBack = append(takenBack, call.OperationID)
+		}
+	}
+	require.Len(t, takenBack, 2)
+	assert.NotEqual(t, takenBack[0], takenBack[1])
+}
+
 // A KVLimitSet Event says that a limit is in force. A grow that was written
 // and not confirmed is not known to be.
 func TestArrangeCardDoesNotAnnounceAGrowThatIsNotConfirmed(t *testing.T) {

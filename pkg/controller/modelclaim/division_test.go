@@ -17,6 +17,7 @@ limitations under the License.
 package modelclaim
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -28,6 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -58,14 +60,21 @@ func TestCardDivisionStateForgetsCardsLongGone(t *testing.T) {
 	gone := types.NamespacedName{Namespace: testNamespace, Name: "deleted"}
 	divide, _ := divisions.due(gone, "a")
 	require.True(t, divide)
+	divisions.leftAlone(gone, "a", []string{"busy"})
+	divisions.failedAgain(gone)
+	divisions.leftUndivided(gone, "its runtime did not answer")
 
 	now = now.Add(30 * DefaultRequeueDuration)
 	divisions.due(types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, "b")
 
-	_, remembered := divisions.lastRound[gone]
-	assert.False(t, remembered)
-	_, remembered = divisions.attemptedFor[gone]
-	assert.False(t, remembered)
+	assert.NotContains(t, divisions.lastRound, gone)
+	assert.NotContains(t, divisions.dividedFor, gone)
+	assert.NotContains(t, divisions.attemptedFor, gone)
+	assert.NotContains(t, divisions.failures, gone)
+	assert.NotContains(t, divisions.lastFailure, gone)
+	assert.NotContains(t, divisions.owed, gone)
+	assert.NotContains(t, divisions.undividedFor, gone)
+	assert.Equal(t, 1, divisions.failedAgain(gone), "a card that comes back starts over")
 }
 
 // aCardAndOneEngineOnIt is a realistically sized card carrying one claim whose
@@ -270,16 +279,22 @@ func TestReconcileDividesACardOnceForAnEngineThatStaysShort(t *testing.T) {
 
 func TestReconcileDividesACardOnceForAnEngineWhoseLoadIsNeverRead(t *testing.T) {
 	// The runtime reads the request metrics of one kind of engine. An engine
-	// of another kind serves with its load unread at every reading.
-	unread := engineHolding("busy", 4<<30, 20<<30)
-	unread.RequestMetricsObserved = false
-	r, runtime, snapshot, clock := aCardOfTwoEngines(t, unread, engineHolding("idle", 4<<30, 20<<30))
+	// of another kind serves with its load unread at every reading. The
+	// engine beside it has mapped little in one case, and nearly half of its
+	// limit in the other.
+	for _, mapped := range []int64{4 << 30, 8 << 30} {
+		unread := engineHolding("busy", 4<<30, 20<<30)
+		unread.RequestMetricsObserved = false
+		r, runtime, snapshot, clock := aCardOfTwoEngines(t, unread, engineHolding("idle", mapped, 20<<30))
 
-	divisions := divisionsIn(t, r, runtime, clock, 12, func(round int) {
-		snapshot.Models[1].RequestsRunning = int64(4 * (round % 2))
-	})
+		divisions := divisionsIn(t, r, runtime, clock, 12, func(round int) {
+			snapshot.Models[1].RequestsRunning = int64(4 * (round % 2))
+		})
 
-	assert.Equal(t, 1, divisions, "the engine is given a busy engine's share once, and the card is then left alone")
+		assert.Equal(t, 1, divisions,
+			"the engine is given a busy engine's share once, and the card is then left alone (%s mapped)",
+			gibibytes(mapped))
+	}
 }
 
 func TestReconcileGivesTheBusierEngineMoreOfTheCard(t *testing.T) {
@@ -922,7 +937,7 @@ func TestReconcileRoutesAReadyEngineThoughItsCardCannotBeDivided(t *testing.T) {
 	// The failed division took its shrink of the newcomer back, so the
 	// newcomer is held to its record, and is routed.
 	got := getModel(t, r, "newcomer")
-	assert.Equal(t, got.Status.Instances[0].KVLimitBytes, snapshot.Models[2].KVCapacityBytes)
+	assert.Equal(t, snapshot.Models[2].KVCapacityBytes, got.Status.Instances[0].KVLimitBytes)
 	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Instances[0].Phase)
 }
 
@@ -935,8 +950,10 @@ func TestReconcileLeavesEveryEngineAsItWasHeldWhenACardCannotBeDivided(t *testin
 		*clock = clock.Add(DefaultRequeueDuration)
 	}
 
-	for i := range snapshot.Models {
-		assert.Equal(t, held, snapshot.Models[i].KVCapacityBytes, snapshot.Models[i].ModelName)
+	// The engine that takes no limit reports what it had whatever is written,
+	// so only the two beside it are looked at.
+	for _, engine := range snapshot.Models[1:] {
+		assert.Equal(t, held, engine.KVCapacityBytes, engine.ModelName)
 	}
 }
 
@@ -1290,6 +1307,154 @@ func TestReconcileLeavesACardAloneWhileItsLoadComesAndGoes(t *testing.T) {
 	assert.Zero(t, divisions)
 }
 
+// A grow that is written and not confirmed leaves its engine below its
+// record. The round has not done what it set out to do, so it counts as a
+// division that failed, and the third in a row warns the claims.
+func TestReconcileCountsARoundWhoseGrowIsNotConfirmedAsFailed(t *testing.T) {
+	r, runtime, pod, clock := twoEnginesSharingACard(t)
+	reconcileOnce(t, r, "stays")
+	recordedEvents(t, r)
+	snapshot := runtime.snapshots[pod.Status.PodIP]
+	snapshot.Models[0].RequestsRunning, snapshot.Models[0].RequestsWaiting = 3, 1
+	// "stays" reports the limit it had, whatever is written to it. Every
+	// shrink of "leaves" takes.
+	held := snapshot.Models[0].KVCapacityBytes
+	runtime.onKVLimit = func() { snapshot.Models[0].KVCapacityBytes = held }
+
+	// The first round finds the engine short, and the three after it each
+	// try a division.
+	warnings := 0
+	for round := 1; round <= 4; round++ {
+		nextRound(t, r, clock, "stays")
+		warnings += len(kvLimitWarnings(t, r, "stays"))
+		assert.Equal(t, round-1, r.Divisions.failures[cardOf(pod)], "round %d", round)
+	}
+
+	assert.Equal(t, 1, warnings)
+}
+
+// A round that has nothing worth writing tries nothing. It does not end a run
+// of failed divisions, since only a division that works does.
+func TestReconcileKeepsARunOfFailuresThroughARoundWithNothingWorthWriting(t *testing.T) {
+	r, runtime, snapshot, clock := aCardOfTwoEngines(t,
+		engineHolding("busy", 4<<30, 20<<30), engineHolding("idle", 4<<30, 20<<30))
+	reconcileOnce(t, r, "idle")
+	require.Empty(t, runtime.kvLimitCalls)
+	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+	r.Divisions.failedAgain(card)
+	r.Divisions.failedAgain(card)
+
+	// "busy" is held 400 MiB below its record. The round wants to put that
+	// right, and 400 MiB is less than it writes for.
+	snapshot.Models[0].KVCapacityBytes = 20<<30 - 400<<20
+	snapshot.Models[0].RequestsRunning = 1
+	snapshot.Models[1].RequestsRunning = 1
+	nextRound(t, r, clock, "idle")
+
+	require.Empty(t, runtime.kvLimitCalls)
+	assert.Equal(t, 2, r.Divisions.failures[card])
+}
+
+// A first division that fails does not note the card. The next round divides
+// the card whatever its load again, and so on until a division works.
+func TestReconcileTriesTheFirstDivisionOfACardAgainUntilOneWorks(t *testing.T) {
+	busy := engineHolding("busy", 4<<30, 36<<30)
+	busy.RequestsRunning = 1
+	woken := engineHolding("idle", 1<<30, 4<<30)
+	woken.RequestsRunning = 1
+	r, runtime, _, clock := aCardOfTwoEngines(t, busy, woken)
+	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+	runtime.deafToKVLimits = true
+
+	reconcileOnce(t, r, "idle")
+	tried := len(runtime.kvLimitCalls)
+	require.NotZero(t, tried)
+	require.False(t, r.Divisions.noted(card))
+
+	// Both engines serve, both hold their records, and neither is near its
+	// limit. A round that follows the load would leave this card alone.
+	nextRound(t, r, clock, "idle")
+	assert.Greater(t, len(runtime.kvLimitCalls), tried)
+	assert.False(t, r.Divisions.noted(card))
+
+	runtime.deafToKVLimits = false
+	nextRound(t, r, clock, "idle")
+	assert.True(t, r.Divisions.noted(card))
+	assert.Equal(t, int64(20)<<30, getModel(t, r, "busy").Status.Instances[0].KVLimitBytes)
+}
+
+// A pod without a card has nothing to divide, as in a CPU pool. Its engines
+// are left alone, and nothing is counted or said about it.
+func TestReconcileDoesNotDivideAPodWithoutACard(t *testing.T) {
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Status.PodIP = "10.0.0.1"
+	var claims []client.Object
+	snapshot := &RuntimeSnapshot{}
+	for i, name := range []string{"one", "two"} {
+		claim := withFinalizer(claimOnPod(name, pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+		claim.Status.Instances[0].Port = int32(9001 + i)
+		claims = append(claims, claim)
+		engine := engineHolding(name, kvLimitUnknown, kvLimitUnknown)
+		engine.Port = int32(9001 + i)
+		snapshot.Models = append(snapshot.Models, engine)
+	}
+	r, runtime := newReconciler(t, append(claims, pod)...)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	now := time.Unix(1_700_000_000, 0)
+	r.Divisions = newCardDivisionState(func() time.Time { return now })
+
+	warnings := 0
+	for round := 0; round < 4; round++ {
+		nextRound(t, r, &now, "one")
+		warnings += len(kvLimitWarnings(t, r, "one"))
+	}
+
+	assert.Empty(t, runtime.kvLimitCalls)
+	assert.Zero(t, warnings)
+	assert.Empty(t, r.Divisions.failures)
+	assert.Empty(t, r.Divisions.undividedFor)
+	assert.Empty(t, r.Divisions.dividedFor)
+}
+
+// capturedLog returns what the controller logs from now on, until the test
+// ends.
+func capturedLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	state := klog.CaptureState()
+	t.Cleanup(state.Restore)
+	log := &bytes.Buffer{}
+	klog.LogToStderr(false)
+	klog.SetOutput(log)
+	return log
+}
+
+// A card is looked at every round. What keeps it undivided is logged once
+// while it lasts, and again when it comes back after the card could be
+// accounted for.
+func TestReconcileLogsOnceWhyACardIsLeftUndivided(t *testing.T) {
+	log := capturedLog(t)
+	said := func() int {
+		klog.Flush()
+		return strings.Count(log.String(), "left a card undivided")
+	}
+	r, runtime, pod, clock := twoEnginesSharingACard(t)
+	snapshot := runtime.snapshots[pod.Status.PodIP]
+	stranger := engineHolding("stranger", 1<<30, 10<<30)
+	snapshot.Models = append(snapshot.Models, stranger)
+
+	reconcileOnce(t, r, "stays")
+	nextRound(t, r, clock, "stays")
+	nextRound(t, r, clock, "stays")
+	assert.Equal(t, 1, said())
+
+	snapshot.Models = snapshot.Models[:2]
+	nextRound(t, r, clock, "stays")
+	snapshot.Models = append(snapshot.Models, stranger)
+	nextRound(t, r, clock, "stays")
+	nextRound(t, r, clock, "stays")
+	assert.Equal(t, 2, said())
+}
+
 func TestCardDivisionStateSaysOnceWhyACardIsLeftUndivided(t *testing.T) {
 	divisions := newCardDivisionState(nil)
 	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
@@ -1330,10 +1495,12 @@ func TestCardDivisionStateCountsFailuresUntilADivisionWorks(t *testing.T) {
 	assert.Equal(t, 1, divisions.failedAgain(card))
 	assert.Equal(t, 2, divisions.failedAgain(card))
 	divisions.divided(card, "a")
+	assert.NotContains(t, divisions.failures, card)
+	assert.NotContains(t, divisions.lastFailure, card)
 	assert.Equal(t, 1, divisions.failedAgain(card), "a division that works starts the count again")
 }
 
-func TestReconcileWarnsOnceWhenACardKeepsFailingToBeDivided(t *testing.T) {
+func TestReconcileWarnsOnTheThirdDivisionOfACardThatFailsInARow(t *testing.T) {
 	r, runtime, pod, clock := twoEnginesSharingACard(t)
 	reconcileOnce(t, r, "stays")
 	recordedEvents(t, r)
