@@ -753,6 +753,10 @@ func (e growthIncompleteError) Error() string {
 
 func (e growthIncompleteError) Unwrap() error { return e.err }
 
+// errCardLeftAlone says that a round found no need to divide a card, so
+// nothing was tried. It is not a division that worked.
+var errCardLeftAlone = errors.New("the card needs no division")
+
 // arrangeCard plans one card and carries the plan out, returning the plan.
 //
 // The work is done in an order that never leaves two engines entitled to the
@@ -783,6 +787,9 @@ func (r *ModelClaimReconciler) arrangeCard(
 	limits, err := planKVLimits(ledger.hbmUsableBytes, engines)
 	if err != nil {
 		return nil, err
+	}
+	if why.onlyWhenNeeded && !needsDividing(engines, limits, why.minimumChangeBytes) {
+		return limits, errCardLeftAlone
 	}
 	if why.minimumChangeBytes > 0 && !worthWriting(limits, why.minimumChangeBytes) {
 		return limits, nil
@@ -893,9 +900,9 @@ func (r *ModelClaimReconciler) writeAndConfirmKVLimits(
 // held to before, and to no more than its record.
 //
 // A shrink that is not confirmed changes no record, and it must not leave an
-// engine held to less than before either. A card is divided every round, so a
-// division that kept failing would walk the engines beside the one at fault
-// down, round after round. An engine not routed yet would be shrunk by each
+// engine held to less than before either. A division that fails is tried
+// again by the next round, so one that kept failing would walk the engines
+// beside the one at fault down, round after round. An engine not routed yet would be shrunk by each
 // division and raised by its own pass in turn, and would never be found
 // holding its record.
 //

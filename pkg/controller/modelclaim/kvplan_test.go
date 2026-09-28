@@ -17,6 +17,7 @@ limitations under the License.
 package modelclaim
 
 import (
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -244,4 +245,135 @@ func TestShrinksAndGrowsSplitsTheWritesIntoTwoSteps(t *testing.T) {
 	assert.Equal(t, "shrinks", shrinks[0].claimName)
 	require.Len(t, grows, 1)
 	assert.Equal(t, "grows", grows[0].claimName)
+}
+
+func TestShortOfKV(t *testing.T) {
+	held := func(usedBytes, limitBytes int64) engineOnPod {
+		return engineOnPod{kvUsedBytes: usedBytes, kvCapacityBytes: limitBytes}
+	}
+	with := func(engine engineOnPod, change func(*engineOnPod)) engineOnPod {
+		change(&engine)
+		return engine
+	}
+	waiting := func(e *engineOnPod) { e.requestsWaiting = 1 }
+	unread := func(e *engineOnPod) { e.demandUnknown = true }
+	asleep := func(e *engineOnPod) { e.asleep = true }
+
+	for name, c := range map[string]struct {
+		engine engineOnPod
+		short  bool
+	}{
+		"most of its limit unmapped":         {held(49, 100), false},
+		"half of its limit mapped":           {held(50, 100), true},
+		"a byte under half of an odd limit":  {held(50, 101), false},
+		"half of an odd limit, rounded up":   {held(51, 101), true},
+		"at its limit":                       {held(100, 100), true},
+		"requests waiting":                   {with(held(1, 100), waiting), true},
+		"its load could not be read":         {with(held(1, 100), unread), true},
+		"asleep at its limit":                {with(held(100, 100), asleep), false},
+		"asleep, with a request waiting":     {with(with(held(1, 100), asleep), waiting), false},
+		"no segment yet":                     {held(0, kvLimitUnknown), false},
+		"no segment, with requests waiting":  {with(held(0, kvLimitUnknown), waiting), false},
+		"a limit of zero, its load not read": {with(held(0, 0), unread), false},
+	} {
+		assert.Equal(t, c.short, shortOfKV(c.engine), name)
+	}
+}
+
+func TestNeedsDividing(t *testing.T) {
+	const threshold = 10
+	// engine is held to limit, records the same, and has mapped a tenth of it.
+	engine := func(name string, limit int64) engineOnPod {
+		return engineOnPod{claimName: name, kvUsedBytes: limit / 10, kvCapacityBytes: limit, kvRecordedBytes: limit}
+	}
+	serving := func(e engineOnPod) engineOnPod {
+		e.inFlightRequests = 1
+		return e
+	}
+	short := func(e engineOnPod) engineOnPod {
+		e.kvUsedBytes = e.kvCapacityBytes
+		return serving(e)
+	}
+	plan := func(engines []engineOnPod, planned ...int64) []plannedKVLimit {
+		limits := make([]plannedKVLimit, len(engines))
+		for i, e := range engines {
+			limits[i] = plannedKVLimit{
+				claimName: e.claimName, kvLimitBytes: planned[i],
+				kvCapacityBytes: e.kvCapacityBytes, kvRecordedBytes: e.kvRecordedBytes,
+			}
+		}
+		return limits
+	}
+	belowItsRecord := engine("a", 100)
+	belowItsRecord.kvRecordedBytes = 150
+	aboveItsRecord := engine("a", 100)
+	aboveItsRecord.kvRecordedBytes = 50
+	unrecorded := engine("a", 100)
+	unrecorded.kvRecordedBytes = 0
+	noSegment := engine("a", kvLimitUnknown)
+	noSegment.kvRecordedBytes = 100
+	noSegment.kvUsedBytes = 0
+	asleep := engine("b", 40)
+	asleep.asleep = true
+	asleepWithARequest := serving(asleep)
+	unread := engine("b", 100)
+	unread.demandUnknown = true
+	unread.kvCapacityBytes = kvLimitUnknown
+
+	for name, c := range map[string]struct {
+		engines []engineOnPod
+		planned []int64
+		needed  bool
+	}{
+		"nobody short, and the plan moves with the load": {
+			[]engineOnPod{serving(engine("a", 100)), serving(engine("b", 100))}, []int64{150, 50}, false},
+		"more for an engine that is short": {
+			[]engineOnPod{short(engine("a", 100)), serving(engine("b", 100))}, []int64{110, 90}, true},
+		"a little more for an engine that is short": {
+			[]engineOnPod{short(engine("a", 100)), serving(engine("b", 100))}, []int64{109, 91}, false},
+		"no more for an engine that is short": {
+			[]engineOnPod{short(engine("a", 100)), serving(engine("b", 100))}, []int64{100, 100}, false},
+		"less for an engine that is short": {
+			[]engineOnPod{short(engine("a", 100)), serving(engine("b", 100))}, []int64{50, 150}, false},
+		"more for the engine beside the one that is short": {
+			[]engineOnPod{short(engine("a", 100)), serving(engine("b", 100))}, []int64{90, 110}, false},
+		"held below its record": {
+			[]engineOnPod{serving(belowItsRecord), serving(engine("b", 100))}, []int64{100, 100}, true},
+		"held above its record": {
+			[]engineOnPod{serving(aboveItsRecord), serving(engine("b", 100))}, []int64{100, 100}, true},
+		"no record to be held to": {
+			[]engineOnPod{serving(unrecorded), serving(engine("b", 100))}, []int64{100, 100}, false},
+		"no segment to be held in": {
+			[]engineOnPod{serving(noSegment), serving(engine("b", 100))}, []int64{100, 100}, false},
+		"at rest, an engine under half of its share": {
+			[]engineOnPod{engine("a", 151), engine("b", 49)}, []int64{100, 100}, true},
+		"at rest, an engine at half of its share": {
+			[]engineOnPod{engine("a", 150), engine("b", 50)}, []int64{100, 100}, false},
+		"at rest, an engine at half of an odd share, rounded up": {
+			[]engineOnPod{engine("a", 150), engine("b", 50)}, []int64{101, 99}, false},
+		"at rest, an engine a byte under half of an odd share": {
+			[]engineOnPod{engine("a", 150), engine("b", 50)}, []int64{99, 101}, true},
+		"an engine under half of its share, and a request in flight": {
+			[]engineOnPod{serving(engine("a", 151)), engine("b", 49)}, []int64{100, 100}, false},
+		"an engine under half of its share, and a load that could not be read": {
+			[]engineOnPod{unread, engine("a", 49)}, []int64{100, 100}, false},
+		"at rest, an engine with no segment to be held in": {
+			[]engineOnPod{engine("b", 100), noSegment}, []int64{100, 100}, false},
+		"at rest beside an engine that is asleep": {
+			[]engineOnPod{engine("a", 49), asleepWithARequest}, []int64{160, 40}, true},
+		"every engine asleep": {
+			[]engineOnPod{asleep}, []int64{40}, false},
+		"no engine": {nil, nil, false},
+	} {
+		// The plan lists the engines by claim name, whatever order they are
+		// given in.
+		limits := plan(c.engines, c.planned...)
+		sort.Slice(limits, func(i, j int) bool { return limits[i].claimName < limits[j].claimName })
+		assert.Equal(t, c.needed, needsDividing(c.engines, limits, threshold), name)
+	}
+
+	// With no threshold, more still means more.
+	atItsShare := []engineOnPod{short(engine("a", 100)), serving(engine("b", 100))}
+	assert.False(t, needsDividing(atItsShare, plan(atItsShare, 100, 100), 0))
+	assert.True(t, needsDividing(atItsShare, plan(atItsShare, 101, 99), 0))
 }

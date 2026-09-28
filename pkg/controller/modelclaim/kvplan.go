@@ -162,6 +162,108 @@ func minimumKVLimitChangeBytes(hbmUsableBytes int64) int64 {
 	return perBundleBytes
 }
 
+// needsDividing reports whether a round is to carry out the plan of a card.
+//
+// A limit is a ceiling, and an engine maps KV as it needs it. The shares are
+// weighed by the requests in flight, which come and go, so the plan moves with
+// every reading. Carrying it out each time would cost the writes, on every
+// card and in every round, and would give nothing to an engine that is far
+// from its limit. So a round carries the plan out in three cases only.
+//
+// The plan gives an engine that is short of KV more than it is held to. That
+// is when a share has to follow its load.
+//
+// Some engine is held to a limit other than the one its instance records.
+// That is what a division leaves behind when a write of it did not take, and
+// only a division puts it right.
+//
+// The card is at rest, and some engine is held to less than half of its share.
+// That is what a burst on the engine beside it leaves behind. Left like that,
+// the engine would start its own burst with little room.
+func needsDividing(engines []engineOnPod, limits []plannedKVLimit, minimumChangeBytes int64) bool {
+	return givesAShortEngineMore(engines, limits, minimumChangeBytes) ||
+		leftUnfinished(engines) ||
+		(atRest(engines) && heldToUnderHalf(limits))
+}
+
+// shortOfKV reports whether an engine is short of KV: it has mapped half of
+// the limit it is held to, it has requests waiting, or it serves and its load
+// could not be read.
+//
+// Half is where the round starts to act. An engine that has mapped half of its
+// limit may reach the limit before its card's next round, and nothing bounds
+// how fast an engine maps. An engine that is asleep is never short, and
+// neither is one with no limit in force to be short of.
+func shortOfKV(engine engineOnPod) bool {
+	if engine.asleep || engine.kvCapacityBytes <= 0 {
+		return false
+	}
+	return engine.requestsWaiting > 0 || engine.demandUnknown ||
+		engine.kvUsedBytes >= engine.kvCapacityBytes-engine.kvCapacityBytes/2
+}
+
+// givesAShortEngineMore reports whether the plan raises the limit of some
+// engine that is short of KV by at least the smallest change worth writing.
+//
+// A plan that gives such an engine less, or the same, is left out. While an
+// engine stays short, the plan still moves with the requests in flight on the
+// engines beside it, and carrying that out would help nobody.
+func givesAShortEngineMore(engines []engineOnPod, limits []plannedKVLimit, minimumChangeBytes int64) bool {
+	planned := make(map[string]int64, len(limits))
+	for _, limit := range limits {
+		planned[limit.claimName] = limit.kvLimitBytes
+	}
+	for _, engine := range engines {
+		if !shortOfKV(engine) {
+			continue
+		}
+		if more := planned[engine.claimName] - engine.kvCapacityBytes; more > 0 && more >= minimumChangeBytes {
+			return true
+		}
+	}
+	return false
+}
+
+// leftUnfinished reports whether some engine is held to a limit other than the
+// one its instance records. An engine with no segment is held to nothing, and
+// an instance that records nothing has nothing to differ from.
+func leftUnfinished(engines []engineOnPod) bool {
+	for _, engine := range engines {
+		if engine.kvCapacityBytes >= 0 && engine.kvRecordedBytes > 0 &&
+			engine.kvCapacityBytes != engine.kvRecordedBytes {
+			return true
+		}
+	}
+	return false
+}
+
+// atRest reports whether no engine that is awake has a request in flight. The
+// engines that are awake then weigh the same, so the plan of the card depends
+// on no sample of its load. An engine whose load could not be read is not
+// known to be at rest.
+func atRest(engines []engineOnPod) bool {
+	for _, engine := range engines {
+		if engine.asleep {
+			continue
+		}
+		if engine.inFlightRequests > 0 || engine.demandUnknown {
+			return false
+		}
+	}
+	return true
+}
+
+// heldToUnderHalf reports whether some engine is held to less than half of the
+// limit planned for it.
+func heldToUnderHalf(limits []plannedKVLimit) bool {
+	for _, limit := range limits {
+		if limit.kvCapacityBytes >= 0 && limit.kvCapacityBytes < limit.kvLimitBytes-limit.kvLimitBytes/2 {
+			return true
+		}
+	}
+	return false
+}
+
 // worthWriting reports whether any engine's limit has drifted far enough from
 // the plan to be worth the write.
 //

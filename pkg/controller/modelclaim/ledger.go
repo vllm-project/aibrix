@@ -129,6 +129,9 @@ type engineOnPod struct {
 	// inFlightRequests is the demand an engine's part of the spare KV is
 	// weighed by: its running and waiting requests.
 	inFlightRequests int64
+	// requestsWaiting is how many of those requests wait for the engine to
+	// take them.
+	requestsWaiting int64
 	// demandUnknown is whether the engine serves but its request metrics could
 	// not be read, so its demand is not known.
 	demandUnknown bool
@@ -329,6 +332,7 @@ func podLedgersFrom(
 				engine.snapshotKey = snapshotActivityKey(*model)
 				engine.kvCapacityBytes = model.KVCapacityBytes
 				engine.inFlightRequests = max(model.RequestsRunning, 0) + max(model.RequestsWaiting, 0)
+				engine.requestsWaiting = max(model.RequestsWaiting, 0)
 				// A scrape that failed says nothing about load, and the engine may
 				// be too busy to answer it in time. A serving engine whose metrics
 				// could not be read is not taken for idle.

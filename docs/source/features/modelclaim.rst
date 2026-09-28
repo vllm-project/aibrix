@@ -388,17 +388,30 @@ engine are written last, and read back the same way. A shrink that fails
 changes no record, and the limits it wrote are taken back. A record that
 cannot be written leaves records that come to no more than the card. A grow
 that fails leaves the engine below its new record, where it keeps its route,
-and a later division grows it. A model stays non-routable until its own limit
-is in force, and stays routable only while it is held to no more than that
-limit. A card whose room could not be made is skipped, and the next Pod in
-line is tried.
+and the round divides the card again to grow it. A model stays non-routable
+until its own limit is in force, and stays routable only while it is held to
+no more than that limit. A card whose room could not be made is skipped, and
+the next Pod in line is tried.
 
-A card is also divided again every round, so that each share follows the load
-on its engine. It is divided at most once a round, however many claims sit on
-it. A card that has barely drifted is left alone: the threshold is the larger
-of half a gibibyte and a hundredth of the card. A KV allocator hands out whole
-bundles of pages, so a smaller change moves no memory at all. These divisions
-are logged rather than raised as Events, since a busy card has one every round.
+A card is also planned again once a round, which is 10 seconds, however many
+claims sit on it. The round carries the plan out in three cases:
+
+* The plan gives more to an engine that is short of KV. An engine is short
+  when it has mapped half of the limit it is held to, when it has requests
+  waiting, or when it serves and its load could not be read. An engine that is
+  asleep is never short.
+* Some engine is held to a limit other than the one its instance records.
+  That is what a write that did not take leaves behind.
+* Nothing is in flight on the card, and some engine is held to less than half
+  of its share. That is what a burst on the engine beside it leaves behind.
+
+In any other case, the card is left alone. A limit is a ceiling, and the
+requests in flight come and go. Carrying out every plan would cost the writes,
+and would give nothing to an engine that is far from its limit. A card that
+has barely drifted is left alone as well: the threshold is the larger of half a
+gibibyte and a hundredth of the card. A KV allocator hands out whole bundles of
+pages, and a change smaller than a bundle moves no memory at all. These
+divisions are logged rather than raised as Events.
 
 A card whose engines change is divided on the next pass, without waiting for
 its round. That covers a model removed or failed, an engine that sleeps or
@@ -407,8 +420,8 @@ itself, as above. Every move is carried out, however small. This is also how
 the room comes back when an engine cannot be started after its card was divided
 for it. A change the card cannot be divided for yet, as while an engine that
 left is still exiting, is tried again by the round, and still as a change. The
-controller keeps what each card was divided for in memory only. After a restart
-it notes each card as it finds it, and the round divides it. A card whose
+controller keeps what each card was divided for in memory only. After a
+restart, the first round of a card divides it whatever its load. A card whose
 division fails three times in a row keeps its last division, and each claim on
 it gets one ``KVLimitFailed`` warning until the card is divided again.
 
@@ -452,8 +465,9 @@ claim declares its cost.
 Sleeping does not free a seat. An instance that is asleep keeps its place in
 the account, at the full footprint and floor its claim declared, because the
 assignment has to survive the sleep for a wake to find its engine again.
-Normally, an engine that goes to sleep gives back the KV it had mapped. A
-claim that was turned away because of that KV can be placed then.
+Normally, an engine that goes to sleep gives back the KV it had mapped. The
+models beside it can take that KV, and so can a claim that was turned away
+because of it.
 
 A failed instance does free its seat. The runtime stops an engine once its
 restarts run out, and reports it as not alive. The account then charges the

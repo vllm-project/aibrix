@@ -18,6 +18,7 @@ package modelclaim
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -38,6 +39,9 @@ type division struct {
 	// minimumChangeBytes is how far some engine's limit has to move for the
 	// plan to be carried out at all. Zero carries out every plan.
 	minimumChangeBytes int64
+	// onlyWhenNeeded carries the plan out only when the card needs dividing,
+	// as needsDividing says.
+	onlyWhenNeeded bool
 	// announce raises a KVLimitSet Event on each claim whose engine was moved.
 	announce bool
 }
@@ -59,11 +63,21 @@ var compositionDivision = division{announce: true}
 // engine that is growing, which the next round plans around.
 const stuckDivisionTries = 3
 
-// loadDivision follows the load on a card. It runs every round, so a move too
-// small to shift memory is skipped, and the moves are logged rather than
-// raised on the claims.
+// loadDivision follows the load on a card. It is planned every round, so it is
+// carried out only when the card needs it, a move too small to shift memory is
+// skipped, and the moves are logged rather than raised on the claims.
 func loadDivision(hbmUsableBytes int64) division {
-	return division{minimumChangeBytes: minimumKVLimitChangeBytes(hbmUsableBytes)}
+	return division{minimumChangeBytes: minimumKVLimitChangeBytes(hbmUsableBytes), onlyWhenNeeded: true}
+}
+
+// firstDivision divides a card the controller has not divided or noted since
+// it started. Nothing is known of what the card was last divided for, so a
+// change of its engines cannot be seen. The card is divided whatever its
+// load, and is a load division in everything else.
+func firstDivision(hbmUsableBytes int64) division {
+	why := loadDivision(hbmUsableBytes)
+	why.onlyWhenNeeded = false
+	return why
 }
 
 // cardDivisionState remembers, for each card, when a division of it was last
@@ -141,6 +155,15 @@ func (s *cardDivisionState) mayBeDue(card types.NamespacedName, composition stri
 	}
 	last, found := s.lastRound[card]
 	return !found || s.now().Sub(last) >= DefaultRequeueDuration
+}
+
+// noted reports whether the controller has divided the card since it started,
+// or found it needing no move.
+func (s *cardDivisionState) noted(card types.NamespacedName) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, known := s.dividedFor[card]
+	return known
 }
 
 // divided records that a card was divided for these engines: by the round, by
@@ -236,11 +259,11 @@ func (r *ModelClaimReconciler) divisions() *cardDivisionState {
 }
 
 // divideCards divides again the cards in this claim's pool whose engines all
-// declare what they cost. A card whose engines changed is divided at once, and
-// any other card once a round, so that each engine's share follows its load
-// rather than staying what it was when the last model landed. A card nobody
-// could account for is left alone, which includes a card running an engine
-// whose claim declares nothing.
+// declare what they cost. A card whose engines changed is divided at once. Any
+// other card is planned once a round, and divided when it needs it, so that a
+// share follows its load rather than staying what it was when the last model
+// landed. A card nobody could account for is left alone, which includes a card
+// running an engine whose claim declares nothing.
 func (r *ModelClaimReconciler) divideCards(
 	ctx context.Context,
 	candidates []corev1.Pod,
@@ -261,6 +284,7 @@ func (r *ModelClaimReconciler) divideCards(
 	}
 	due := make([]corev1.Pod, 0, len(candidates))
 	changed := make(map[string]bool, len(candidates))
+	firstSeen := make(map[string]bool, len(candidates))
 	compositions := make(map[string]string, len(candidates))
 	for i := range candidates {
 		pod := &candidates[i]
@@ -274,6 +298,7 @@ func (r *ModelClaimReconciler) divideCards(
 		if divide {
 			due = append(due, *pod)
 			changed[pod.Name] = engineChange
+			firstSeen[pod.Name] = !divisions.noted(cardOf(pod))
 			compositions[pod.Name] = composition
 		}
 	}
@@ -289,10 +314,19 @@ func (r *ModelClaimReconciler) divideCards(
 			continue
 		}
 		why := loadDivision(ledger.hbmUsableBytes)
-		if changed[pod.Name] {
+		switch {
+		case changed[pod.Name]:
 			why = compositionDivision
+		case firstSeen[pod.Name]:
+			why = firstDivision(ledger.hbmUsableBytes)
 		}
-		if _, err := r.arrangeCard(ctx, pod, ledger, ledger.engines, why, readings); err != nil {
+		_, err := r.arrangeCard(ctx, pod, ledger, ledger.engines, why, readings)
+		if errors.Is(err, errCardLeftAlone) {
+			// Nothing was tried. The card stays noted as it was, and a run of
+			// failed divisions is not over.
+			continue
+		}
+		if err != nil {
 			klog.V(2).InfoS("could not divide a card", "pod", klog.KObj(pod),
 				"enginesChanged", changed[pod.Name], "err", err)
 			if divisions.failedAgain(cardOf(pod)) == stuckDivisionTries {
