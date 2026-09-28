@@ -278,6 +278,16 @@ No throughput or GPU terms. Score equals raw running decode request count (inclu
 decode_score = running_reqs_with_pending
 ```
 
+### `token_load`
+
+Scores from the gateway's decode ledger in `pd.TokenLoadTracker` rather than from request counts or scraped KV usage. Each request is charged `request_cost + prompt_tokens` to the selected decode pod, under `selectMu` together with the other selection bookkeeping, and released on request completion or prefill failure (`releaseTokenLoad`). The whole prompt is charged because the decode pod receives all of its KV.
+
+```
+decode_score = decode_tokens
+```
+
+The policy reads no engine metrics, so the cold-start score does not apply to it: a pod without metrics is scored from the ledger like any other. The decode fast paths still run on request counts, throughput and drain rate.
+
 ### Config profile overrides for PD score policies
 
 When the gateway resolves a model config profile (`routingCtx.ConfigProfile` from `model.aibrix.ai/config` and the `config-profile` header), the **`routingConfig`** JSON may include:
@@ -285,7 +295,7 @@ When the gateway resolves a model config profile (`routingCtx.ConfigProfile` fro
 | Field | Values | Effect |
 |-------|--------|--------|
 | `prefillScorePolicy` | `prefix_cache`, `least_request` | Overrides `AIBRIX_PREFILL_SCORE_POLICY` for that request |
-| `decodeScorePolicy` | `load_balancing`, `least_request` (or any name registered via `pd.RegisterDecodePolicy`) | Overrides `AIBRIX_DECODE_SCORE_POLICY` for that request |
+| `decodeScorePolicy` | `load_balancing`, `least_request`, `conductor`, `token_load` (or any name registered via `pd.RegisterDecodePolicy`) | Overrides `AIBRIX_DECODE_SCORE_POLICY` for that request |
 
 Example fragment inside a profile:
 
@@ -616,7 +626,7 @@ When a combined pod is selected, `prefillPod` is `nil` (no prefill HTTP call) an
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AIBRIX_PREFILL_SCORE_POLICY` | `prefix_cache` | Prefill pod scoring: `prefix_cache` or `least_request`. Any other value logs a warning and falls back to `prefix_cache`. |
-| `AIBRIX_DECODE_SCORE_POLICY` | `load_balancing` | Decode pod scoring for `finalPDScore`: `load_balancing` or `least_request`. Any other value logs a warning and falls back to `load_balancing`. |
+| `AIBRIX_DECODE_SCORE_POLICY` | `load_balancing` | Decode pod scoring for `finalPDScore`: `load_balancing`, `least_request`, `conductor` or `token_load`. Any other value logs a warning and falls back to `load_balancing`. |
 | `AIBRIX_KV_CONNECTOR_TYPE` | `shfs` | KV transfer backend: `shfs` (GPU/SHFS), `nixl` (Neuron/NIXL), or `mooncake` (Mooncake) |
 | `AIBRIX_PREFILL_REQUEST_TIMEOUT` | `30` | Prefill HTTP request timeout in seconds. Exceeding it is a terminal `timeout` prefill failure. |
 | `AIBRIX_PROMPT_LENGTH_BUCKETING` | `false` | Enable prompt-length-based pod bucketing |
