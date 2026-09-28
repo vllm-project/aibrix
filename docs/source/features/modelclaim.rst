@@ -828,7 +828,7 @@ Claim reads ``Failed`` with ``ActivateFailed``
    "Claim remains ``Activating``".
 
    The claim is tried again as a refused claim is: after 10, 20 and 40
-   seconds, then once a minute. The controller does not give it up. A claim
+   seconds, then once a minute. The controller does not give up on it. A claim
    with no instance reads ``Failed`` between two tries. A claim with an
    instance reads as its instances do.
 
