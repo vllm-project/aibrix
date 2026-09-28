@@ -321,7 +321,7 @@ some other way, such as a dynamic resource claim. A card reported with no memory
 at all does not count. That is the card the runtime's mock mode reports on CPU
 pools. A reading can report no card, as when NVML fails once. It still counts
 one while an engine on the Pod holds a KV segment, or while an instance on the
-Pod records a limit. A Pod with none of these is taken for one without a GPU,
+Pod records a limit. A Pod with none of these is treated as one without a GPU,
 and nothing is accounted for on it. A Pod whose runtime did not answer is turned
 away whatever it requests, since its runtime is what says that it has cards. An
 instance on a Pod without a card records no limit, since no card was divided for
@@ -379,7 +379,7 @@ Watch the arrangement through its Events:
    kubectl get events --field-selector reason=KVLimitSet
    kubectl get events --field-selector reason=KVLimitFailed
 
-The automatic pool policy below stands down on these Pods. Two writers on one
+The automatic pool policy below is not applied on these Pods. Two writers on one
 KV allocator would only overwrite each other.
 
 A claim without ``perGPU`` is not placed. Nothing could be put there in its
@@ -397,16 +397,16 @@ has to carry both figures, and an apply without one of them is rejected.
 
 Both figures have to be positive. A quantity carries no schema bounds, so a
 ``0`` is caught by the controller instead: the claim is not placed, and its
-``Scheduled`` condition reads ``InvalidPerGPU`` and names the figure. A zero
-is never read as a model that takes no room. A figure may be no more than
-``1Pi``. One below ``1Mi`` also has to be a whole number of bytes. That
-catches a slip such as ``30m`` for ``30M``, which would otherwise be read as
-one byte. A larger figure, such as ``5.6Gi``, is rounded up to whole bytes.
+``Scheduled`` condition reads ``InvalidPerGPU`` and names the figure. A zero is
+never read as a model that takes no room. A figure may be no more than ``1Pi``.
+One below ``1Mi`` also has to be a whole number of bytes. That catches a mistake
+such as ``30m`` for ``30M``, which would otherwise be read as one byte. A larger
+figure, such as ``5.6Gi``, is rounded up to whole bytes.
 
 A claim stored before the field existed decodes with its declaration missing,
-and it is not placed again, for the same reason. An engine it already runs
-keeps running and keeps its route, but the card under it is left
-unaccountable until the claim declares its cost.
+and it is not placed again, for the same reason. An engine it already runs keeps
+running and keeps its route. The card under it cannot be accounted for until the
+claim declares its cost.
 
 Sleeping does not free a seat. An instance that is asleep keeps its place in
 the account, at the full footprint and floor its claim declared, because the
@@ -535,12 +535,12 @@ pool Deployment. It does not add fields to ModelClaim.
 
 .. note::
 
-   ``reclaim`` is superseded by ``spec.perGPU`` and will be removed. Its
+   ``reclaim`` is replaced by ``spec.perGPU`` and will be removed. Its
    ``capacityBytes`` is a figure an operator types in, unrelated to what the
    card actually holds, so a pool configured this way can be both wrong and
    confident. A claim declares ``perGPU`` instead, which has its card measured
-   and divided, and the policy stands down on those Pods. ``lifecycle`` is not
-   affected.
+   and divided, and the policy is not applied on those Pods. ``lifecycle`` is
+   not affected.
 
 .. code-block:: bash
 
@@ -681,10 +681,10 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    There are three kinds. A card could never hold the model. A card could hold
    it, and its room is held by the engines already on it. A card had room, and
    could not be divided. A card of the last two kinds is named first, since
-   waiting can help there. Among cards of one kind, the roomiest is named. For
-   the first two kinds, the message also shows the card's account. That is how
-   much it holds, and how much of that is promised to, or held by, the instances
-   on it.
+   waiting can help there. Among cards of one kind, the one with the most room
+   is named. For the first two kinds, the message also shows the card's account.
+   That is how much it holds, and how much of that is promised to, or held by,
+   the instances on it.
 
    A Pod is also turned away when it cannot be accounted for. Its runtime did
    not answer, or one of its cards could not be measured. A claim on it declares
@@ -763,7 +763,7 @@ Policy does not change KV limits
    Automatic policy requires exactly one visible accelerator, valid request
    metrics with matching model labels, and at least one observed active model.
    It does not shrink when observations are incomplete or protected KV usage
-   exceeds the configured capacity. Its KV part also stands down on a Pod
+   exceeds the configured capacity. Its KV part is also not applied on a Pod
    where an instance records its own KV limit. Idle sleep still runs there.
 
 Model never enters automatic sleep
