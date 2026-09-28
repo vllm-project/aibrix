@@ -343,8 +343,10 @@ the same byte. The limits are written first, shrinking before growing, and a
 fresh reading then has to agree. That step is not a formality: the CLI the
 runtime drives exits zero when there is no segment to write into, so reading
 the limit back is the only evidence there is. Only then is each new limit
-recorded on its own claim, and the new instance after them, so a division that
-fails part way changes no record. A model stays non-routable until its own
+recorded on its own claim, the ones that go down first, and the new instance
+after them. So a division whose write or reading fails changes no record, and
+one whose recording fails part way leaves records that come to no more than
+the card. A model stays non-routable until its own
 limit is in force, and stays routable only while it is held to no more than
 that limit. A card that could not be arranged is skipped, and the next Pod in
 line is tried.

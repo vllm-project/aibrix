@@ -1756,6 +1756,54 @@ func TestReconcileLeavesTheRecordsAloneWhenACardCannotBeDivided(t *testing.T) {
 	assert.Equal(t, int64(600), held.Status.Instances[0].KVLimitBytes)
 }
 
+func TestReconcileRecordsNoMoreThanTheCardWhenARecordCannotBeWritten(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	grows := claimOnPod("a-grows", pod.Name, modelv1alpha1.ModelClaimActive, 100, 50)
+	grows.Status.Instances[0].KVLimitBytes = 60
+	shrinks := claimOnPod("c-shrinks", pod.Name, modelv1alpha1.ModelClaimActive, 200, 100)
+	shrinks.Status.Instances[0].KVLimitBytes = 500
+	newcomer := claimWithCost(100, 50)
+	newcomer.Name = "b-newcomer"
+	// The busy engine is to grow, and the quiet one to shrink.
+	busy := engineHolding("a-grows", 50, 60)
+	busy.RequestsRunning = 4
+	snapshot.Models = []RuntimeSnapshotModel{busy, engineHolding("c-shrinks", 100, 500)}
+	scheme := testScheme(t)
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(grows, shrinks, newcomer, pod).
+		WithStatusSubresource(&modelv1alpha1.ModelClaim{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, obj client.Object,
+				opts ...client.SubResourceUpdateOption) error {
+				if obj.GetName() == "c-shrinks" {
+					return fmt.Errorf("etcdserver: request timed out")
+				}
+				return cl.SubResource(sub).Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	runtime := &fakeRuntime{snapshots: map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}}
+	r := &ModelClaimReconciler{
+		Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(32), Runtime: runtime,
+		PoolPolicy:    newPoolPolicyManager(time.Now),
+		SnapshotCache: newRuntimeSnapshotCache(defaultRuntimeSnapshotTTL, time.Now),
+	}
+
+	reconcileOnce(t, r, newcomer.Name)
+
+	require.Empty(t, runtime.activateCalls, "the card was not divided, so nothing is placed")
+	// A record is what an engine is raised to when it next comes up. So the
+	// records that go down are written first: written part way, the records
+	// still come to no more than the card.
+	promised := int64(0)
+	for name, footprint := range map[string]int64{"a-grows": 100, "c-shrinks": 200} {
+		promised += footprint + getModel(t, r, name).Status.Instances[0].KVLimitBytes
+	}
+	assert.LessOrEqual(t, promised, int64(1000))
+	assert.Equal(t, int64(60), getModel(t, r, "a-grows").Status.Instances[0].KVLimitBytes)
+}
+
 func TestRecordKVLimitTriesAgainAfterAConflict(t *testing.T) {
 	pod, _ := sizedWarmPod("warm-1", "10.0.0.1", 1000)
 	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)

@@ -117,6 +117,9 @@ type engineOnPod struct {
 	// kvCapacityBytes is the limit written in the engine's segment now, and is
 	// negative when there is no segment to read it from.
 	kvCapacityBytes int64
+	// kvRecordedBytes is the limit the instance records now, and is zero when
+	// it records none.
+	kvRecordedBytes int64
 	// inFlightRequests is the demand an engine's part of the spare KV is
 	// weighed by: its running and waiting requests.
 	inFlightRequests int64
@@ -263,6 +266,7 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 				modelName:       served,
 				perGPUBytes:     perGPU,
 				kvCapacityBytes: kvLimitUnknown,
+				kvRecordedBytes: instance.KVLimitBytes,
 			}
 			alive := false
 			if model := snapshotModelForClaim(snapshots[instance.Pod], claim, served); model != nil {

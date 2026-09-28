@@ -43,6 +43,15 @@ type plannedKVLimit struct {
 	// there is no segment yet. An engine whose limit is already the planned one
 	// needs no write.
 	kvCapacityBytes int64
+	// kvRecordedBytes is what the instance records now, and is zero when it
+	// records nothing.
+	kvRecordedBytes int64
+}
+
+// lowersRecord says whether recording this limit lowers what the instance
+// records.
+func (l plannedKVLimit) lowersRecord() bool {
+	return l.kvLimitBytes < l.kvRecordedBytes
 }
 
 // planKVLimits divides a card among the engines on it.
@@ -90,6 +99,7 @@ func planKVLimits(hbmUsableBytes int64, engines []engineOnPod) ([]plannedKVLimit
 			modelName:       engine.modelName,
 			kvLimitBytes:    engine.kvHeldBytes() + kvExtraBytes,
 			kvCapacityBytes: engine.kvCapacityBytes,
+			kvRecordedBytes: engine.kvRecordedBytes,
 		}
 	}
 	// Integer division leaves a few bytes over. Hand them out in a fixed order

@@ -702,13 +702,14 @@ func (r *ModelClaimReconciler) makeRoomOnPod(
 // arrangeCard plans one card and carries the plan out, returning the plan.
 //
 // The work is done in an order that never leaves two engines entitled to the
-// same byte, and that leaves every record as it was when a step fails. The
-// limits are written first, shrinking before growing. A fresh reading then has
-// to agree, because a write that reached no segment is reported as a success
-// either way. Only then is each new limit recorded on its own claim. A division
-// that stops part way therefore changes no record: an engine it already shrank
-// sits below its record, which is safe and keeps its route, and an engine it
-// already grew is above its record, so the health loop pulls it back.
+// same byte. The limits are written first, shrinking before growing. A fresh
+// reading then has to agree, because a write that reached no segment is
+// reported as a success either way. Only then is each new limit recorded on its
+// own claim, the ones that go down first. A division whose write or reading
+// fails therefore changes no record: an engine it already shrank sits below its
+// record, which is safe and keeps its route, and an engine it already grew is
+// above its record, so the health loop pulls it back. One whose recording fails
+// part way leaves records that come to no more than the card.
 func (r *ModelClaimReconciler) arrangeCard(
 	ctx context.Context,
 	pod *corev1.Pod,
@@ -750,13 +751,22 @@ func (r *ModelClaimReconciler) arrangeCard(
 
 	// Every limit is recorded, not only the written ones. An engine that has
 	// no KV segment yet is held to its record once it builds one.
+	//
+	// The records that go down are written before the ones that go up. A
+	// record is what an engine is raised to when it next comes up, so records
+	// written part way must not come to more than the card.
 	held := make(map[string]*modelv1alpha1.ModelClaim, len(limits))
-	for _, limit := range limits {
-		claim, err := r.recordKVLimit(ctx, pod.Namespace, limit.claimName, pod.Name, limit.kvLimitBytes)
-		if err != nil {
-			return nil, fmt.Errorf("record %s at %s: %w", limit.claimName, gibibytes(limit.kvLimitBytes), err)
+	for _, lowering := range []bool{true, false} {
+		for _, limit := range limits {
+			if limit.lowersRecord() != lowering {
+				continue
+			}
+			claim, err := r.recordKVLimit(ctx, pod.Namespace, limit.claimName, pod.Name, limit.kvLimitBytes)
+			if err != nil {
+				return nil, fmt.Errorf("record %s at %s: %w", limit.claimName, gibibytes(limit.kvLimitBytes), err)
+			}
+			held[limit.claimName] = claim
 		}
-		held[limit.claimName] = claim
 	}
 	// Say so on each claim whose engine was moved. A limit written by the
 	// arrangement of a card is a limit its owner did not ask for, and looking
