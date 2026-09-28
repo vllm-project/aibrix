@@ -90,6 +90,8 @@ func probeRoutingDefaults() *types.RoutingOverrides {
 			TokenLoad:             types.PDTokenLoadOverrides{KVWeight: 0.3, RequestCost: 3500, TTL: time.Minute, SessionTTL: 30 * time.Minute},
 			HybridCacheLoadFactor: 0.5,
 			MinMatchPct:           0,
+			BucketServe:           false,
+			BucketServeMode:       string(pd.BucketModeRPS),
 			PrefillRequestTimeout: 30 * time.Second,
 		},
 	}
@@ -247,6 +249,22 @@ func TestResolveRoutingOverridesFromRoutingConfig(t *testing.T) {
 				assert.Equal(t, 0.0, ov.PD.HybridCacheLoadFactor, "0 keeps the full token load")
 				assert.Equal(t, 100.0, ov.PD.MinMatchPct)
 				assert.Equal(t, 0.5, ov.PD.DecodeLB.WeightRunning)
+			},
+		},
+		{
+			name:          "bucket-serve switch and mode",
+			routingConfig: `{"bucketServe":true,"bucketServeMode":"throughput"}`,
+			check: func(t *testing.T, ov *types.RoutingOverrides) {
+				assert.True(t, ov.PD.BucketServe)
+				assert.Equal(t, string(pd.BucketModeThroughput), ov.PD.BucketServeMode)
+			},
+		},
+		{
+			name:          "a bucket-serve mode the planner does not know keeps the process default",
+			routingConfig: `{"bucketServe":true,"bucketServeMode":"Throughput"}`,
+			check: func(t *testing.T, ov *types.RoutingOverrides) {
+				assert.True(t, ov.PD.BucketServe, "the switch is a plain boolean and still lands")
+				assert.Equal(t, string(pd.BucketModeRPS), ov.PD.BucketServeMode, "only the names the planner knows are accepted")
 			},
 		},
 	}

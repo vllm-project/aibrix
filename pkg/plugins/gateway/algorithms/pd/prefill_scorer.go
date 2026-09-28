@@ -28,6 +28,9 @@ limitations under the License.
 //     which bridge the gap between pod selection and actual request start.
 //   - token_load_tracker.go — TokenLoadTracker, the token-weighted prefill
 //     load ledger behind the token_load and hybrid_cache_load policies.
+//   - bucket_serving.go  — BucketServeTracker, the gateway half of a
+//     BucketServe-style bucketer: prompt-length bands, adapted to the observed
+//     traffic, that the prefill path uses to prefer one roleset per band.
 package pd
 
 import (
