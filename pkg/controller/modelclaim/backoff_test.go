@@ -25,11 +25,15 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -250,6 +254,7 @@ func TestRoomSignatureCountsWhatEachCandidateCarries(t *testing.T) {
 
 func TestFreesRoomPassesTheChangesThatCanFreeACard(t *testing.T) {
 	base := claimOnPod("neighbour", "warm-1", modelv1alpha1.ModelClaimActive, 300, 100)
+	base.Status.Instances[0].Port = 9001
 	cases := []struct {
 		name   string
 		change func(*modelv1alpha1.ModelClaim)
@@ -268,6 +273,9 @@ func TestFreesRoomPassesTheChangesThatCanFreeACard(t *testing.T) {
 		{"an instance added", func(c *modelv1alpha1.ModelClaim) {
 			c.Status.Instances = append(c.Status.Instances, modelv1alpha1.ModelClaimInstance{Pod: "warm-2"})
 		}, false},
+		{"an engine started", func(c *modelv1alpha1.ModelClaim) {
+			c.Status.Instances[0].Port = 9002
+		}, false},
 		{"a condition written", func(c *modelv1alpha1.ModelClaim) {
 			c.Status.Conditions = append(c.Status.Conditions, metav1.Condition{Type: "Ready"})
 		}, false},
@@ -279,6 +287,13 @@ func TestFreesRoomPassesTheChangesThatCanFreeACard(t *testing.T) {
 			assert.Equal(t, c.frees, freesRoom(base, after))
 		})
 	}
+
+	// A record taken back before its engine was started: no engine left a card.
+	recorded := base.DeepCopy()
+	recorded.Status.Instances[0].Port = 0
+	takenBack := recorded.DeepCopy()
+	takenBack.Status.Instances = nil
+	assert.False(t, freesRoom(recorded, takenBack))
 
 	undeclared := base.DeepCopy()
 	undeclared.Spec.PerGPU = nil
@@ -482,4 +497,154 @@ func TestReconcileForgetsTheWaitOfAClaimThatNoLongerWaits(t *testing.T) {
 	require.NoError(t, r2.Delete(context.Background(), gone))
 	reconcileFor(t, r2, pm2.Name)
 	assert.NotContains(t, r2.Backoff.attempts, key2)
+}
+
+// wakeLoop stands in for the manager's queue: first in, first out, one entry
+// for each claim. It is fed as the watch on claims feeds the queue. Every
+// status write is shown to roomMayHaveFreed as the update the informer would
+// deliver, and what passes is mapped by enqueueWaitingClaims. Timers are left
+// out, so whatever runs here runs with no wait at all.
+type wakeLoop struct {
+	queue  []types.NamespacedName
+	queued map[types.NamespacedName]bool
+	wake   func(ctx context.Context, obj client.Object) []ctrl.Request
+}
+
+func (l *wakeLoop) add(name types.NamespacedName) {
+	if l.queued == nil {
+		l.queued = map[types.NamespacedName]bool{}
+	}
+	if !l.queued[name] {
+		l.queued[name] = true
+		l.queue = append(l.queue, name)
+	}
+}
+
+func (l *wakeLoop) pop() (types.NamespacedName, bool) {
+	if len(l.queue) == 0 {
+		return types.NamespacedName{}, false
+	}
+	name := l.queue[0]
+	l.queue = l.queue[1:]
+	delete(l.queued, name)
+	return name, true
+}
+
+func (l *wakeLoop) watch() interceptor.Funcs {
+	watched := roomMayHaveFreed()
+	return interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, obj client.Object,
+			opts ...client.SubResourceUpdateOption) error {
+			before := &modelv1alpha1.ModelClaim{}
+			if err := cl.Get(ctx, client.ObjectKeyFromObject(obj), before); err != nil {
+				return err
+			}
+			if err := cl.SubResource(sub).Update(ctx, obj, opts...); err != nil {
+				return err
+			}
+			if watched.Update(event.UpdateEvent{ObjectOld: before, ObjectNew: obj}) {
+				for _, request := range l.wake(ctx, obj) {
+					l.add(request.NamespacedName)
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// twoClaimsThatCannotStart is a card with room for two claims whose engines
+// the runtime refuses to start, beside a neighbour that serves.
+func twoClaimsThatCannotStart(t *testing.T) (*ModelClaimReconciler, *fakeRuntime, *wakeLoop) {
+	t.Helper()
+	first := claimWithCost(100, 100)
+	first.Name = "first"
+	second := claimWithCost(100, 100)
+	second.Name = "second"
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].KVLimitBytes = 700
+	neighbour.Status.Instances[0].Port = 9001
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 700)}
+	scheme := testScheme(t)
+	loop := &wakeLoop{}
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(first, second, pod, neighbour).
+		WithStatusSubresource(&modelv1alpha1.ModelClaim{}).
+		WithInterceptorFuncs(loop.watch()).Build()
+	loop.wake = enqueueWaitingClaims(c)
+	runtime := &fakeRuntime{failActivate: true, snapshots: map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}}
+	now := time.Unix(1_700_000_000, 0)
+	clock := func() time.Time { return now }
+	return &ModelClaimReconciler{
+		Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(1024), Runtime: runtime,
+		PoolPolicy: newPoolPolicyManager(clock),
+		Divisions:  newCardDivisionState(clock),
+		Backoff:    newPlacementBackoff(clock),
+	}, runtime, loop
+}
+
+func TestReconcileDoesNotLetClaimsThatCannotStartWakeEachOther(t *testing.T) {
+	r, runtime, loop := twoClaimsThatCannotStart(t)
+
+	loop.add(types.NamespacedName{Namespace: testNamespace, Name: "first"})
+	loop.add(types.NamespacedName{Namespace: testNamespace, Name: "second"})
+	passes := 0
+	for ; passes < 50; passes++ {
+		name, more := loop.pop()
+		if !more {
+			break
+		}
+		reconcileFor(t, r, name.Name)
+	}
+
+	// A record taken back after a start that failed frees no card, so it wakes
+	// nobody. Each claim is tried once, and comes back when its wait is up.
+	assert.Equal(t, 2, passes)
+	assert.Equal(t, 2, len(runtime.activateCalls))
+}
+
+func TestReconcileBacksOffAClaimWhoseEngineCannotBeStarted(t *testing.T) {
+	r, runtime, _ := twoClaimsThatCannotStart(t)
+
+	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, "first"))
+	require.Equal(t, 1, len(runtime.activateCalls))
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, getModel(t, r, "first").Status.Phase)
+
+	// A pass inside the wait, as after a pod event, starts nothing. The claim
+	// goes on saying that its start failed.
+	wait := reconcileFor(t, r, "first")
+	assert.Equal(t, DefaultRequeueDuration, wait)
+	assert.Equal(t, 1, len(runtime.activateCalls))
+	got := getModel(t, r, "first")
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Phase)
+	ready := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady))
+	require.NotNil(t, ready)
+	assert.Equal(t, "ActivateFailed", ready.Reason)
+}
+
+func TestReconcileWaitsLongerAfterEachStartThatFails(t *testing.T) {
+	first := claimWithCost(100, 100)
+	first.Name = "first"
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	r, runtime := newReconciler(t, first, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	runtime.failActivate = true
+	now := time.Unix(1_700_000_000, 0)
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+
+	for _, want := range []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second, time.Minute} {
+		wait := reconcileFor(t, r, "first")
+		assert.Equal(t, want, wait)
+		now = now.Add(wait)
+	}
+	assert.Equal(t, 4, len(runtime.activateCalls))
+
+	// Once the engine starts, the claim has nothing left to wait for.
+	runtime.failActivate = false
+	reconcileFor(t, r, "first")
+	require.Len(t, getModel(t, r, "first").Status.Instances, 1)
+	reconcileFor(t, r, "first")
+	r.Backoff.mu.Lock()
+	defer r.Backoff.mu.Unlock()
+	assert.Empty(t, r.Backoff.attempts)
 }

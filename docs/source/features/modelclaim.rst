@@ -787,7 +787,9 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    the next try: 10, 20 and 40 seconds, then a minute at most. A model that
    waits for room therefore does not have every runtime in the pool read for
    it every 10 seconds. The wait is kept in the controller's memory only, so
-   a restart tries every waiting claim at once.
+   a restart tries every waiting claim at once. A claim that found a card and
+   whose engine could not be started there waits the same way. It reads
+   ``Failed`` with ``ActivateFailed`` until its next try.
 
    A waiting claim does not sit through its wait when room may have appeared.
    Another claim deleted, scaled down or failed, a declaration that shrinks or

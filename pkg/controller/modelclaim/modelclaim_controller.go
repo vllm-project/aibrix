@@ -246,7 +246,14 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			// they gave up for it. The cache may still show the record that
 			// was just taken back, so the API server is asked.
 			r.divideCardsAsListed(ctx, candidates, readings)
-			return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, nil
+			// A start that failed is tried again as a refusal is, less and
+			// less often. A claim with an instance left comes back every
+			// round, to check that instance's engine.
+			wait := r.backoff().failedToStart(req.NamespacedName, pm.Generation)
+			if len(pm.Status.Instances) > 0 {
+				wait = DefaultRequeueDuration
+			}
+			return ctrl.Result{RequeueAfter: wait}, nil
 		}
 		// A claim with nothing placed has nothing else to do each round, so it
 		// comes back when its wait is up. One with an instance keeps coming
@@ -275,6 +282,11 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		r.Recorder.Event(pm, corev1.EventTypeWarning, "RescheduleFailed", err.Error())
 	}
 	r.recomputeReadiness(pm)
+	if len(pm.Status.Instances) == 0 && r.backoff().waitsAfterAFailedStart(req.NamespacedName) {
+		// A pass inside the wait tried nothing, so the claim still stands as
+		// its last try left it.
+		pm.Status.Phase = modelv1alpha1.ModelClaimFailed
+	}
 	setClaimGauges(pm)
 	if err := r.Status().Update(ctx, pm); err != nil {
 		return requeueOnConflict(err)
