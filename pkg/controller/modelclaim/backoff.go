@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 // maximumPlacementBackoff is the longest a claim no card can hold waits
@@ -79,12 +80,15 @@ type placementAttempt struct {
 type roomSignature map[string]podRoom
 
 // podRoom is what the live instances on one pod take: how many there are, how
-// many of them belong to claims that declare nothing, and what the rest are
-// promised.
+// many of them are awake, how many belong to claims that declare nothing, and
+// what the rest are promised. It also says whether the pod is ready, which is
+// when its runtime answers.
 type podRoom struct {
 	instances     int
+	awake         int
 	undeclared    int
 	promisedBytes int64
+	ready         bool
 }
 
 func newPlacementBackoff(now func() time.Time) *placementBackoff {
@@ -101,9 +105,10 @@ func newPlacementBackoff(now func() time.Time) *placementBackoff {
 // when it may not.
 //
 // A waiting claim starts over at once when room may have appeared since its
-// last refusal: its own spec changed, a pod joined the pool, or a pod now
-// carries fewer instances, fewer claims that declare nothing, or less that is
-// promised. It then waits from the shortest wait again if it is refused.
+// last refusal: its own spec changed, a pod joined the pool or turned ready,
+// or a pod now carries fewer instances, fewer that are awake, fewer claims
+// that declare nothing, or less that is promised. It then waits from the
+// shortest wait again if it is refused.
 func (b *placementBackoff) due(claim types.NamespacedName, generation int64, room roomSignature) (bool, time.Duration) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -204,10 +209,13 @@ func (r *ModelClaimReconciler) backoff() *placementBackoff {
 }
 
 // roomMayHaveAppeared compares the pool with how a waiting claim last saw it.
-// A pod that left frees nothing for anyone, so it does not count. For a claim
-// no card could ever hold, only a pod that joined counts: room freed on a card
-// too small for it changes nothing. Without both descriptions there is nothing
-// to compare.
+// A pod that left frees nothing for anyone, so it does not count. An engine
+// that went to sleep keeps its seat, and gives back the KV it had mapped. A
+// pod that turned ready has a runtime that answers, which it may not have had
+// when the claim was refused. For a claim no card could ever hold, only a pod
+// that joined counts: every card was measured then, and room freed on a card
+// too small for it changes nothing. Without both descriptions there is
+// nothing to compare.
 func roomMayHaveAppeared(before, now roomSignature, tooLarge bool) bool {
 	if before == nil || now == nil {
 		return false
@@ -220,8 +228,9 @@ func roomMayHaveAppeared(before, now roomSignature, tooLarge bool) bool {
 		if tooLarge {
 			continue
 		}
-		if taken.instances < was.instances || taken.undeclared < was.undeclared ||
-			taken.promisedBytes < was.promisedBytes {
+		if taken.instances < was.instances || taken.awake < was.awake ||
+			taken.undeclared < was.undeclared || taken.promisedBytes < was.promisedBytes ||
+			taken.ready && !was.ready {
 			return true
 		}
 	}
@@ -244,7 +253,7 @@ func roomSignatureOf(candidates []corev1.Pod, claims *modelv1alpha1.ModelClaimLi
 	keys := make(map[string]string, len(candidates))
 	for i := range candidates {
 		key := podKey(&candidates[i])
-		room[key] = podRoom{}
+		room[key] = podRoom{ready: utils.IsPodReady(&candidates[i])}
 		keys[candidates[i].Name] = key
 	}
 	for i := range claims.Items {
@@ -257,6 +266,9 @@ func roomSignatureOf(candidates []corev1.Pod, claims *modelv1alpha1.ModelClaimLi
 			}
 			taken := room[key]
 			taken.instances++
+			if instance.Phase != modelv1alpha1.ModelClaimSleeping {
+				taken.awake++
+			}
 			if perGPUErr != nil {
 				taken.undeclared++
 			} else {
@@ -281,12 +293,25 @@ func liveInstances(pm *modelv1alpha1.ModelClaim) int {
 	return live
 }
 
+// awakeInstances counts the instances of a claim whose engines take room and
+// are not asleep.
+func awakeInstances(pm *modelv1alpha1.ModelClaim) int {
+	awake := 0
+	for _, instance := range pm.Status.Instances {
+		if instance.Phase != modelv1alpha1.ModelClaimFailed &&
+			instance.Phase != modelv1alpha1.ModelClaimSleeping && instance.Port != 0 {
+			awake++
+		}
+	}
+	return awake
+}
+
 // freesRoom reports whether a change to a claim can free room on a card for a
-// claim that is waiting: an instance gone or failed, a declaration that
-// shrank, or one that became usable and so closes a hole in its card's
-// account.
+// claim that is waiting: an instance gone, failed or gone to sleep, a
+// declaration that shrank, or one that became usable and so closes a hole in
+// its card's account.
 func freesRoom(before, after *modelv1alpha1.ModelClaim) bool {
-	if liveInstances(after) < liveInstances(before) {
+	if liveInstances(after) < liveInstances(before) || awakeInstances(after) < awakeInstances(before) {
 		return true
 	}
 	was, wasErr := perGPUBytesOf(before)

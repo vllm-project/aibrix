@@ -198,7 +198,7 @@ func TestPlacementBackoffStartsOverWhenRoomMayHaveAppeared(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	claim := types.NamespacedName{Namespace: testNamespace, Name: "qwen"}
 	// Three instances, one of whose claim declares nothing.
-	before := roomSignature{"warm-1/u1": {instances: 3, undeclared: 1, promisedBytes: 800}}
+	before := roomSignature{"warm-1/u1": {instances: 3, awake: 3, undeclared: 1, promisedBytes: 800}}
 	cases := []struct {
 		name       string
 		generation int64
@@ -206,12 +206,15 @@ func TestPlacementBackoffStartsOverWhenRoomMayHaveAppeared(t *testing.T) {
 		due        bool
 	}{
 		{"the pool as it was", 1, before, false},
-		{"more promised on a card", 1, roomSignature{"warm-1/u1": {instances: 3, undeclared: 1, promisedBytes: 900}}, false},
+		{"more promised on a card", 1, roomSignature{"warm-1/u1": {instances: 3, awake: 3, undeclared: 1, promisedBytes: 900}}, false},
 		{"a pod gone", 1, roomSignature{}, false},
-		{"an instance gone", 1, roomSignature{"warm-1/u1": {instances: 2, undeclared: 1, promisedBytes: 400}}, true},
-		{"less promised on a card", 1, roomSignature{"warm-1/u1": {instances: 3, undeclared: 1, promisedBytes: 700}}, true},
-		{"a hole closed", 1, roomSignature{"warm-1/u1": {instances: 3, promisedBytes: 1200}}, true},
-		{"a pod joined", 1, roomSignature{"warm-1/u1": {instances: 3, undeclared: 1, promisedBytes: 800}, "warm-2/u2": {}}, true},
+		{"an instance gone", 1, roomSignature{"warm-1/u1": {instances: 2, awake: 2, undeclared: 1, promisedBytes: 400}}, true},
+		{"less promised on a card", 1, roomSignature{"warm-1/u1": {instances: 3, awake: 3, undeclared: 1, promisedBytes: 700}}, true},
+		{"a hole closed", 1, roomSignature{"warm-1/u1": {instances: 3, awake: 3, promisedBytes: 1200}}, true},
+		{"a pod joined", 1, roomSignature{"warm-1/u1": {instances: 3, awake: 3, undeclared: 1, promisedBytes: 800}, "warm-2/u2": {}}, true},
+		{"an engine woken", 1, roomSignature{"warm-1/u1": {instances: 3, awake: 4, undeclared: 1, promisedBytes: 800}}, false},
+		{"an engine gone to sleep", 1, roomSignature{"warm-1/u1": {instances: 3, awake: 2, undeclared: 1, promisedBytes: 800}}, true},
+		{"a pod turned ready", 1, roomSignature{"warm-1/u1": {instances: 3, awake: 3, undeclared: 1, promisedBytes: 800, ready: true}}, true},
 		{"the claim's own spec changed", 2, before, true},
 	}
 	for _, c := range cases {
@@ -236,18 +239,22 @@ func TestRoomSignatureCountsWhatEachCandidateCarries(t *testing.T) {
 	pod.UID = "uid-1"
 	empty := warmPod("warm-2", "b300-pool-a", true, corev1.PodRunning)
 	empty.UID = "uid-2"
+	empty.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
 	declared := claimOnPod("declared", "warm-1", modelv1alpha1.ModelClaimActive, 300, 100)
+	asleep := claimOnPod("asleep", "warm-1", modelv1alpha1.ModelClaimSleeping, 200, 100)
 	failed := claimOnPod("failed", "warm-1", modelv1alpha1.ModelClaimFailed, 300, 100)
 	legacy := claimOnPod("legacy", "warm-1", modelv1alpha1.ModelClaimActive, 300, 100)
 	legacy.Spec.PerGPU = nil
 	elsewhere := claimOnPod("elsewhere", "warm-9", modelv1alpha1.ModelClaimActive, 300, 100)
-	claims := &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*declared, *failed, *legacy, *elsewhere}}
+	claims := &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{
+		*declared, *asleep, *failed, *legacy, *elsewhere,
+	}}
 
 	room := roomSignatureOf([]corev1.Pod{*pod, *empty}, claims)
 
 	assert.Equal(t, roomSignature{
-		"warm-1/uid-1": {instances: 2, undeclared: 1, promisedBytes: 400},
-		"warm-2/uid-2": {},
+		"warm-1/uid-1": {instances: 3, awake: 2, undeclared: 1, promisedBytes: 700},
+		"warm-2/uid-2": {ready: true},
 	}, room)
 	assert.Nil(t, roomSignatureOf([]corev1.Pod{*pod}, nil), "with no listing there is nothing to compare")
 }
@@ -270,6 +277,9 @@ func TestFreesRoomPassesTheChangesThatCanFreeACard(t *testing.T) {
 		{"a larger declaration", func(c *modelv1alpha1.ModelClaim) {
 			c.Spec.PerGPU.KVFloor = *resource.NewQuantity(500, resource.BinarySI)
 		}, false},
+		{"an instance gone to sleep", func(c *modelv1alpha1.ModelClaim) {
+			c.Status.Instances[0].Phase = modelv1alpha1.ModelClaimSleeping
+		}, true},
 		{"an instance added", func(c *modelv1alpha1.ModelClaim) {
 			c.Status.Instances = append(c.Status.Instances, modelv1alpha1.ModelClaimInstance{Pod: "warm-2"})
 		}, false},
@@ -294,6 +304,10 @@ func TestFreesRoomPassesTheChangesThatCanFreeACard(t *testing.T) {
 	takenBack := recorded.DeepCopy()
 	takenBack.Status.Instances = nil
 	assert.False(t, freesRoom(recorded, takenBack))
+
+	asleep := base.DeepCopy()
+	asleep.Status.Instances[0].Phase = modelv1alpha1.ModelClaimSleeping
+	assert.False(t, freesRoom(asleep, base), "an engine that wakes takes room, and frees none")
 
 	undeclared := base.DeepCopy()
 	undeclared.Spec.PerGPU = nil
@@ -330,6 +344,81 @@ func TestReconcileTriesAWaitingClaimAgainWhenANeighbourLeaves(t *testing.T) {
 	reconcileOnce(t, r, pm.Name)
 
 	require.Len(t, runtime.activateCalls, 1, "the room the neighbour freed is tried at once")
+}
+
+// aClaimWaitingForHeldRoom is a claim that needs 400 of a 1000 card. The card
+// could hold it beside its neighbour, which is promised 400. It does not
+// today: the neighbour has mapped 500 of KV, so 200 is free.
+func aClaimWaitingForHeldRoom(t *testing.T) (*ModelClaimReconciler, *fakeRuntime, *modelv1alpha1.ModelClaim, *corev1.Pod) {
+	t.Helper()
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].Port = 9001
+	neighbour.Status.Instances[0].KVLimitBytes = 700
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 500, 700)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	now := time.Unix(1_700_000_000, 0)
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	return r, runtime, pm, pod
+}
+
+// An engine that goes to sleep gives back the KV it had mapped, so a claim
+// that was refused on what the engines hold is tried again at once.
+func TestReconcileTriesAWaitingClaimAgainWhenANeighbourGoesToSleep(t *testing.T) {
+	r, runtime, pm, pod := aClaimWaitingForHeldRoom(t)
+	reconcileOnce(t, r, pm.Name)
+	require.Empty(t, runtime.activateCalls)
+	require.Contains(t, scheduled(t, r, pm.Name).Message, "held by the engines already on it")
+
+	asleep := engineHolding("neighbour", 0, 700)
+	asleep.Phase = runtimePhaseSleeping
+	asleep.Ready = false
+	runtime.snapshots[pod.Status.PodIP].Models = []RuntimeSnapshotModel{asleep}
+	neighbour := getModel(t, r, "neighbour")
+	before := neighbour.DeepCopy()
+	neighbour.Status.Instances[0].Phase = modelv1alpha1.ModelClaimSleeping
+	require.NoError(t, r.Status().Update(context.Background(), neighbour))
+
+	// The change is one the watch on claims passes on, and the claim it wakes
+	// is the one that waits.
+	require.True(t, roomMayHaveFreed().Update(event.UpdateEvent{ObjectOld: before, ObjectNew: neighbour}))
+	woken := enqueueWaitingClaims(r.Client)(context.Background(), neighbour)
+	require.Equal(t, []reconcile.Request{{NamespacedName: types.NamespacedName{
+		Namespace: testNamespace, Name: pm.Name,
+	}}}, woken)
+
+	// The clock has not moved, so only the sleep can explain another try.
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1, "the room the sleep freed is tried at once")
+}
+
+// A pod is a candidate as soon as it runs, and its runtime may need longer to
+// answer. The pod turning ready is the sign that it does.
+func TestReconcileTriesAWaitingClaimAgainWhenAPodTurnsReady(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	r, runtime := newReconciler(t, pm, pod)
+	now := time.Unix(1_700_000_000, 0)
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+	runtime.nilSnapshots = map[string]bool{pod.Status.PodIP: true}
+
+	require.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name))
+	require.Empty(t, runtime.activateCalls)
+
+	// Its runtime answers now, and the kubelet has seen it.
+	runtime.nilSnapshots = nil
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	ready := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(), client.ObjectKeyFromObject(pod), ready))
+	ready.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	require.NoError(t, r.Status().Update(context.Background(), ready))
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1, "the pod is tried as soon as it is ready")
 }
 
 func TestReconcileTriesAWaitingClaimAgainWhenItsOwnSpecChanges(t *testing.T) {
@@ -463,11 +552,13 @@ func TestPlacementBackoffWakesATooLargeClaimOnlyForANewPod(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	backoff := newPlacementBackoff(func() time.Time { return now })
 	claim := types.NamespacedName{Namespace: testNamespace, Name: "huge"}
-	before := roomSignature{"warm-1/u1": {instances: 2, promisedBytes: 800}}
+	before := roomSignature{"warm-1/u1": {instances: 2, awake: 2, promisedBytes: 800}}
 	backoff.refusedAsTooLarge(claim, 1, before)
 
-	due, _ := backoff.due(claim, 1, roomSignature{"warm-1/u1": {instances: 1, promisedBytes: 400}})
+	due, _ := backoff.due(claim, 1, roomSignature{"warm-1/u1": {instances: 1, awake: 1, promisedBytes: 400}})
 	assert.False(t, due, "a neighbour leaving does not make a card large enough")
+	due, _ = backoff.due(claim, 1, roomSignature{"warm-1/u1": {instances: 2, awake: 1, promisedBytes: 800, ready: true}})
+	assert.False(t, due, "nor does a neighbour asleep, or a pod that was measured turning ready")
 	due, _ = backoff.due(claim, 1, roomSignature{"warm-1/u1": before["warm-1/u1"], "warm-2/u2": {}})
 	assert.True(t, due, "a pod joining may bring a larger card")
 }
