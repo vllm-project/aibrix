@@ -118,18 +118,19 @@ func (r *hangingRuntime) RoundTrip(req *http.Request) (*http.Response, error) {
 		return answer, nil
 	}
 	<-req.Context().Done()
-	return nil, req.Context().Err()
+	return nil, context.Cause(req.Context())
 }
 
 // stalledBody is the body of an answer that never comes. A read of it ends
-// when the caller of the request gives up.
+// when the caller of the request gives up. It returns the cause that the
+// caller gave, as the transport of Go 1.23 and later does.
 type stalledBody struct {
 	request context.Context
 }
 
 func (b stalledBody) Read([]byte) (int, error) {
 	<-b.request.Done()
-	return 0, b.request.Err()
+	return 0, context.Cause(b.request)
 }
 
 func (stalledBody) Close() error { return nil }
@@ -728,6 +729,35 @@ func TestRuntimeURLTakesAnIPv6PodAddress(t *testing.T) {
 		require.NoError(t, err, podIP)
 		assert.Equal(t, host, req.URL.Host)
 		assert.Equal(t, snapshotPath, req.URL.Path)
+	}
+}
+
+// A caller can give a cause when it cancels. The error of the call is then
+// that cause, and no plain cancel. The call still says nothing about the
+// runtime.
+func TestHTTPRuntimeLearnsNothingFromACallCanceledWithACause(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	c, runtimes := hangingRuntimes(1, func() time.Time { return now })
+	runtime := runtimes[0]
+	c.snapshotTimeout = 5 * time.Second
+	known := silentRuntime{timeouts: 2, until: now.Add(-time.Second)}
+	shuttingDown := errors.New("the worker is shutting down")
+	for name, stalling := range map[string]bool{"while it waits for the headers": false, "while it reads the body": true} {
+		c.silence.runtimes[runtime.address()] = known
+		runtime.stalling.Store(stalling)
+		sent := runtime.requests.Load()
+		ctx, cancel := context.WithCancelCause(context.Background())
+		go func() {
+			for runtime.requests.Load() == sent {
+				time.Sleep(time.Millisecond)
+			}
+			cancel(shuttingDown)
+		}()
+
+		_, err := c.Snapshot(ctx, runtime.host, runtime.port)
+
+		require.ErrorIs(t, err, shuttingDown, name)
+		assert.Equal(t, known, c.silence.runtimes[runtime.address()], name)
 	}
 }
 
