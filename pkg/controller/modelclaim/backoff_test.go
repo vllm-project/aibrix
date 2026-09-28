@@ -1398,20 +1398,31 @@ func TestPlacementBackoffKeepsWhatAClaimHasSeenWhenItStartsOver(t *testing.T) {
 	assert.Equal(t, 10*time.Second, left)
 }
 
-// A refusal without a listing of the claims remembers no room. So there is
-// nothing to compare the pool with, and the claim sits out its wait.
-func TestPlacementBackoffComparesNothingAfterARefusalWithoutAListing(t *testing.T) {
+// A refusal without a listing of the claims keeps the room that the claim
+// remembered. So a pod that joins still wakes the claim. A claim that has
+// never seen the pool has nothing to compare, and sits out its wait.
+func TestPlacementBackoffKeepsTheRoomItRemembersAfterARefusalWithoutAListing(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	claim := types.NamespacedName{Namespace: testNamespace, Name: "first"}
+	one := roomSignature{"warm-1/u1": {ready: true}}
+	two := roomSignature{"warm-1/u1": {ready: true}, "warm-2/u2": {}}
+
 	backoff := newPlacementBackoff(func() time.Time { return now })
-	backoff.refused(claim, 1, roomSignature{"warm-1/u1": {ready: true}})
+	backoff.refused(claim, 1, one)
 	backoff.refused(claim, 1, nil)
 	backoff.statusWritten(claim)
-
-	due, left := backoff.due(claim, 1, roomSignature{"warm-1/u1": {ready: true}, "warm-2/u2": {}})
-
+	due, left := backoff.due(claim, 1, one)
 	assert.False(t, due)
 	assert.Equal(t, 20*time.Second, left)
+	due, _ = backoff.due(claim, 1, two)
+	assert.True(t, due, "a pod joined")
+
+	backoff = newPlacementBackoff(func() time.Time { return now })
+	backoff.refused(claim, 1, nil)
+	backoff.statusWritten(claim)
+	due, left = backoff.due(claim, 1, two)
+	assert.False(t, due)
+	assert.Equal(t, 10*time.Second, left)
 }
 
 // Two pods that turn ready in turn wake a waiting claim once each. A claim
