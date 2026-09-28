@@ -323,6 +323,22 @@ that it has cards. A reading that reports no card, as when NVML fails once,
 still counts one while an engine on the Pod holds a KV segment. An instance on
 a Pod without a card records no limit, since no card was divided for it.
 
+Upgrade an existing pool
+------------------------
+
+A pool from before ``perGPU`` is moved over in this order:
+
+1. Apply the new CRD. An older CRD drops ``perGPU`` from a claim that is
+   applied, and ``helm upgrade`` does not replace a CRD.
+2. Rebuild the runtime image from the same revision, and roll the warm pools.
+   A runtime from before this change does not report what a card can hold. No
+   claim is placed on its Pods, and the refusal says that the runtime is older
+   than the controller. Engines that already run keep their routes.
+3. Roll the controller. An older controller removes ``perGPU`` from a claim
+   when it adds its finalizer, so a claim created while it still runs has to
+   be applied again.
+4. Add ``perGPU`` to each claim.
+
 Every card in a declared pool is divided as a whole
 ---------------------------------------------------
 

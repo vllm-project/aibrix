@@ -224,7 +224,7 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 		case snapshots[pod.Name] == nil:
 			ledgers[pod.Name] = podLedger{blocked: "its runtime did not answer", unread: true}
 		case !measured:
-			ledgers[pod.Name] = podLedger{blocked: "its cards could not be measured", accelerators: accelerators}
+			ledgers[pod.Name] = podLedger{blocked: unmeasuredCards(snapshots[pod.Name]), accelerators: accelerators}
 		default:
 			ledgers[pod.Name] = podLedger{
 				judgeable:      true,
@@ -325,6 +325,23 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 		}
 	}
 	return ledgers
+}
+
+// unmeasuredCards says why a pod's cards could not be sized.
+//
+// A runtime that could not measure a card reports a negative figure for what
+// it can hold. One from before that figure existed reports the card without
+// it, which reads as zero. That runtime has to be replaced, which waiting does
+// not do, so it is said apart.
+func unmeasuredCards(snapshot *RuntimeSnapshot) string {
+	if snapshot != nil {
+		for _, accelerator := range snapshot.Accelerators {
+			if accelerator.HBMTotalBytes > 0 && accelerator.HBMUsableBytes == 0 {
+				return "its runtime does not report what its cards can hold, as one older than the controller does not"
+			}
+		}
+	}
+	return "its cards could not be measured"
 }
 
 // models is the engine list of a snapshot that may be missing.

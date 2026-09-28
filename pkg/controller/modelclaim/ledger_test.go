@@ -132,6 +132,22 @@ func TestLedgerHasAHoleWhenACardCouldNotBeMeasured(t *testing.T) {
 	assert.Equal(t, "its cards could not be measured", ledger.blocked)
 }
 
+func TestLedgerSaysWhenARuntimeIsTooOldToSizeItsCards(t *testing.T) {
+	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
+	// A runtime from before the field existed reports the card and not what it
+	// can hold, which reads as zero. One that could not measure the card says
+	// so with a negative figure.
+	snapshots := map[string]*RuntimeSnapshot{
+		pod.Name: {Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 700}}},
+	}
+
+	ledger := ledgerFor(t, pod, snapshots)
+
+	assert.False(t, ledger.judgeable)
+	assert.Equal(t, "its runtime does not report what its cards can hold, as one older than the controller does not",
+		ledger.blocked)
+}
+
 func TestLedgerHasAHoleWhenAnInstanceDeclaresNoCost(t *testing.T) {
 	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
 	undeclared := sampleModelClaim()
