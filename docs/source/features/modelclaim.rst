@@ -755,10 +755,10 @@ follows each minute waits for its own deadline, which is 10 seconds for a
 read. A runtime that answers between its timeouts is asked again a round after
 each of them.
 
-An answer counts once all of it has arrived. A runtime that sends the start of
-an answer and then stalls did not answer in time. The controller knows a
-runtime by the address of its Pod. A Pod that is given the address of one that
-is left alone is left alone for the rest of that time.
+An answer counts once all of it has arrived, or its first mebibyte. A runtime
+that sends the start of an answer and then stalls did not answer in time. The
+controller knows a runtime by the address of its Pod. A Pod that is given the
+address of one that is left alone is left alone for the rest of that time.
 
 While a runtime is left alone, nothing is known about its Pod. The engines on
 it keep the routing they had, whatever happens to them, and placement ranks

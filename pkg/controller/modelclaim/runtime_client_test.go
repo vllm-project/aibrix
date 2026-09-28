@@ -530,7 +530,11 @@ func TestHTTPRuntimeLearnsNothingFromACallCanceledOverASocket(t *testing.T) {
 	})
 	u, _ := url.Parse(srv.URL)
 	port, _ := strconv.Atoi(u.Port())
-	c := newHTTPRuntimeClient(5*time.Second, time.Now)
+	now := time.Unix(1_700_000_000, 0)
+	c := newHTTPRuntimeClient(5*time.Second, func() time.Time { return now })
+	// The runtime was left alone twice, and that time is over.
+	known := silentRuntime{timeouts: 2, until: now.Add(-time.Second)}
+	c.silence.runtimes[u.Host] = known
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		<-arrived
@@ -540,7 +544,7 @@ func TestHTTPRuntimeLearnsNothingFromACallCanceledOverASocket(t *testing.T) {
 	_, err := c.Snapshot(ctx, u.Hostname(), port)
 
 	require.ErrorIs(t, err, context.Canceled)
-	assert.Empty(t, c.silence.runtimes)
+	assert.Equal(t, map[string]silentRuntime{u.Host: known}, c.silence.runtimes)
 }
 
 // A failure that is no timeout ends the time a runtime is left alone, as an
@@ -759,6 +763,54 @@ func TestHTTPRuntimeLearnsNothingFromACallCanceledWithACause(t *testing.T) {
 		require.ErrorIs(t, err, shuttingDown, name)
 		assert.Equal(t, known, c.silence.runtimes[runtime.address()], name)
 	}
+}
+
+// An answer is read up to a mebibyte, and its body is closed whatever it
+// held. So a runtime that sends more costs the client no memory, and leaves
+// no connection open behind it.
+func TestHTTPRuntimeReadsAMebibyteOfAnAnswerAndClosesIt(t *testing.T) {
+	var opened, closed atomic.Int32
+	answerOf := func(bytes int) string {
+		return `{"status":"success","model_name":"m1","port":9001,"message":"` + strings.Repeat("a", bytes) + `"}`
+	}
+	size := 512 << 10
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(answerOf(size)))
+	}))
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateNew:
+			opened.Add(1)
+		case http.StateClosed:
+			closed.Add(1)
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	port, _ := strconv.Atoi(u.Port())
+	c := newHTTPRuntimeClient(5*time.Second, time.Now)
+	start := func() error {
+		_, err := c.Activate(context.Background(), u.Hostname(), port, &ActivateRequest{ModelName: "m1"})
+		return err
+	}
+
+	// Half a mebibyte is read whole.
+	require.NoError(t, start())
+
+	// Of two mebibytes, the first is read. It is no answer that can be
+	// decoded, and no timeout either.
+	size = 2 << 20
+	for range 5 {
+		err := start()
+		require.Error(t, err)
+		assert.False(t, timedOutError(err), "%v", err)
+	}
+	assert.Empty(t, c.silence.runtimes)
+
+	c.httpClient.CloseIdleConnections()
+	require.Eventually(t, func() bool { return closed.Load() == opened.Load() }, 5*time.Second, 10*time.Millisecond,
+		"%d connections were opened", opened.Load())
 }
 
 func TestHTTPRuntimeSnapshot(t *testing.T) {
