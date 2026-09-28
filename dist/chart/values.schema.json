@@ -176,6 +176,19 @@
         "envoyProxy": {
           "type": "object",
           "properties": {
+            "accessLog": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "description": "Enable diagnostic JSON access logs for Envoy Gateway-managed proxies"
+                },
+                "extProcFilterName": {
+                  "type": "string",
+                  "description": "Override the ext_proc filter-state key; empty derives it from the release namespace and policy name"
+                }
+              }
+            },
             "replicas": {
               "type": "integer",
               "minimum": 1
@@ -233,6 +246,15 @@
         "envoyPatchPolicy": {
           "type": "object",
           "properties": {
+            "circuitBreakers": {
+              "type": "object",
+              "properties": {
+                "trackRemaining": {
+                  "type": "boolean",
+                  "description": "Expose gauges for resources remaining before the original destination cluster circuit breakers open"
+                }
+              }
+            },
             "route": {
               "type": "object",
               "properties": {
