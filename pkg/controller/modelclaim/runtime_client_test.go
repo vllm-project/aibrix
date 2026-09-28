@@ -195,6 +195,48 @@ func TestHTTPRuntimeCallsAgainARuntimeThatFailedFast(t *testing.T) {
 	assert.Equal(t, int32(2), requests.Load())
 }
 
+func TestHTTPRuntimeLeavesOnlyTheRuntimeThatDidNotAnswerAlone(t *testing.T) {
+	// Each runtime is remembered by its own address, so one that does not
+	// answer costs the others nothing.
+	silent := newHangingRuntime(t)
+	answering := newHangingRuntime(t)
+	answering.answering.Store(true)
+	c := newHTTPRuntimeClient(100*time.Millisecond, time.Minute, time.Now)
+	ctx := context.Background()
+
+	_, err := c.Snapshot(ctx, silent.host, silent.port)
+	require.Error(t, err)
+	_, err = c.Snapshot(ctx, silent.host, silent.port)
+	require.ErrorIs(t, err, errRuntimeSilent)
+
+	_, err = c.Snapshot(ctx, answering.host, answering.port)
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), silent.requests.Load())
+	assert.Equal(t, int32(1), answering.requests.Load())
+}
+
+func TestHTTPRuntimeCallsAgainARuntimeWhoseCallWasCanceled(t *testing.T) {
+	// A call given up by its caller, as when the controller shuts down, says
+	// nothing about the runtime.
+	runtime := newHangingRuntime(t)
+	c := newHTTPRuntimeClient(5*time.Second, time.Minute, time.Now)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		for runtime.requests.Load() == 0 {
+			time.Sleep(time.Millisecond)
+		}
+		cancel()
+	}()
+
+	_, err := c.Snapshot(ctx, runtime.host, runtime.port)
+	require.ErrorIs(t, err, context.Canceled)
+
+	runtime.answering.Store(true)
+	_, err = c.Snapshot(context.Background(), runtime.host, runtime.port)
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), runtime.requests.Load())
+}
+
 func TestHTTPRuntimeSnapshot(t *testing.T) {
 	observedAt := time.Date(2026, time.July, 13, 12, 0, 0, 0, time.UTC)
 	requestSuccessTotal := int64(12)
