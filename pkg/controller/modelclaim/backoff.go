@@ -274,7 +274,10 @@ func (r *ModelClaimReconciler) backoff() *placementBackoff {
 // answers, which it may not have had when the claim was refused.
 //
 // Room on a card counts for a claim that waits for room. An engine that went
-// to sleep keeps its seat, and gives back the KV it had mapped.
+// to sleep keeps its seat, and gives back the KV it had mapped. Less that is
+// promised counts only while no more claims declare nothing than before. A
+// claim that stops declaring its cost is promised nothing, and it opens a hole
+// in its card's account, which is no room.
 func roomMayHaveAppeared(before, now roomSignature, helps whatHelps) bool {
 	if before == nil || now == nil {
 		return false
@@ -293,8 +296,8 @@ func roomMayHaveAppeared(before, now roomSignature, helps whatHelps) bool {
 		if helps == aPodThatAnswers {
 			continue
 		}
-		if taken.instances < was.instances || taken.awake < was.awake ||
-			taken.undeclared < was.undeclared || taken.promisedBytes < was.promisedBytes {
+		if taken.instances < was.instances || taken.awake < was.awake || taken.undeclared < was.undeclared ||
+			taken.promisedBytes < was.promisedBytes && taken.undeclared <= was.undeclared {
 			return true
 		}
 	}
