@@ -338,8 +338,12 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 					"the engine that served %s there is still exiting", model.ModelName))
 				break
 			}
-			// A dead engine has given its memory back, so it is not a hole.
-			if !model.Alive {
+			// The runtime stops an engine once its restarts run out, and goes
+			// on listing it as failed. That engine has given its memory back,
+			// and does not come back by itself. Any other engine counts, alive
+			// or not: one whose first process died is started again by the
+			// runtime, and takes its memory again.
+			if model.Phase == runtimePhaseFailed && !model.Alive {
 				continue
 			}
 			ledgers[name] = ledger.withHole(fmt.Sprintf(

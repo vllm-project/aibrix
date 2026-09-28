@@ -320,16 +320,63 @@ func TestLedgerAcceptsACardWhoseEnginesAllAnswerToAClaim(t *testing.T) {
 	assert.Equal(t, int64(600), ledger.maximumRoomBytes())
 }
 
-func TestLedgerIgnoresAnEngineThatIsNoLongerAlive(t *testing.T) {
+// The runtime stops an engine once its restarts run out, and goes on listing
+// it as failed. Such an engine has given its memory back, and does not come
+// back by itself.
+func TestLedgerIgnoresAnEngineTheRuntimeHasGivenUp(t *testing.T) {
 	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
 	gone := engineHolding("stranger", 250, 400)
+	gone.Phase = runtimePhaseFailed
 	gone.Alive = false
+	gone.Ready = false
 
 	ledger := ledgerFor(t, pod, sizedPodSnapshots(pod.Name, 1000, gone),
 		claimOnPod("declared", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100),
 	)
 
 	assert.True(t, ledger.judgeable)
+}
+
+// An engine whose first process died is listed as not alive while the runtime
+// waits to start it again. It holds nothing then, and it takes its memory
+// again once it is started. So it is a hole all along.
+func TestLedgerHasAHoleWhileAnEngineNoClaimAnswersForIsNotAlive(t *testing.T) {
+	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
+	declared := claimOnPod("declared", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	for _, phase := range []string{"restarting", "booting", runtimePhaseActive, runtimePhaseSleeping} {
+		stranger := engineHolding("stranger", 250, 400)
+		stranger.Phase = phase
+		stranger.Alive = false
+		stranger.Ready = false
+
+		ledger := ledgerFor(t, pod, sizedPodSnapshots(pod.Name, 1000, stranger), declared)
+
+		assert.False(t, ledger.judgeable, phase)
+		assert.Equal(t, "the engine serving stranger there answers to no claim", ledger.blocked, phase)
+	}
+
+	// One that the runtime reports as failed and alive has not been stopped.
+	stranger := engineHolding("stranger", 250, 400)
+	stranger.Phase = runtimePhaseFailed
+	ledger := ledgerFor(t, pod, sizedPodSnapshots(pod.Name, 1000, stranger), declared)
+	assert.False(t, ledger.judgeable)
+}
+
+// An engine that a claim answers for is charged to its instance, whatever
+// phase the runtime lists it in. It is no hole.
+func TestLedgerChargesAnEngineThatIsStoppingToTheInstanceThatAnswersForIt(t *testing.T) {
+	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
+	stopping := engineHolding("declared", 250, 400)
+	stopping.Phase = runtimePhaseStopping
+	stopping.Ready = false
+
+	ledger := ledgerFor(t, pod, sizedPodSnapshots(pod.Name, 1000, stopping),
+		claimOnPod("declared", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100),
+	)
+
+	assert.True(t, ledger.judgeable)
+	assert.Equal(t, int64(600), ledger.maximumRoomBytes())
+	assert.Equal(t, int64(450), ledger.heldRoomBytes())
 }
 
 func TestLedgerHasAHoleWhenAnInstanceDeclaresAZeroFloor(t *testing.T) {
