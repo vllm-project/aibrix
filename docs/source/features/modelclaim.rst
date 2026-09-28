@@ -544,9 +544,9 @@ ModelClaim status summarizes the lifecycle:
    * - ``Loading`` / ``Activating``
      - The runtime is downloading or starting the engine. It remains
        non-routable with port 0. While the engine boots, the controller looks
-       at it every 2 seconds, so it takes traffic within about 2 seconds of
-       being ready. A boot that lasts more than 5 minutes is looked at every
-       10 seconds after that.
+       at it every 2 seconds, so it takes traffic within about 3 seconds of
+       being ready. Each boot is watched this way for 5 minutes. An engine
+       that still boots after that is looked at every 10 seconds.
    * - ``Active``
      - The runtime reports the engine alive and ready; the gateway has a real
        per-engine port.
@@ -897,11 +897,14 @@ Claim remains ``Activating``
 Claim remains ``Activating`` after ``/health`` succeeds
    With ``perGPU`` declared, the engine also has to report the KV limit it was
    given before it becomes routable. The pass that first sees the engine ready
-   writes the limit and reads it back, so this normally lasts about 2 seconds
-   at most. If it lasts longer, the limit did not take, and the controller
-   tries again every 10 seconds. A ``KVLimitFailed`` Event names the error. A
-   snapshot whose ``kv_capacity_bytes`` is negative means the engine has not
-   built its KV segment yet, and there is nothing to write into.
+   writes the limit and reads it back, so this normally lasts about 3 seconds
+   at most, and up to 10 seconds after a boot of more than 5 minutes. If it
+   lasts longer, the limit did not take, and the controller writes it again
+   every 10 seconds. A ``KVLimitFailed`` Event says what the engine reports
+   instead, or names the error of the write. ``KVLimitSet`` is raised once the
+   limit reads back. A snapshot whose ``kv_capacity_bytes`` is negative means
+   the engine has not built its KV segment yet, and there is nothing to write
+   into.
 
 ``KVLimitFailed`` Events during placement
    A card had room, and the engines on it could not be held to their new
@@ -929,7 +932,8 @@ A routable model becomes non-routable with ``KVLimitNotHeld``
    restarted and its allocator put its own default back. It could grow into
    memory the card holds for its neighbours, so the route is withdrawn while
    the controller writes the limit again, and returns once the engine reports
-   it.
+   it. The change to the Pod starts the next pass at once, so the route is
+   normally back within a few seconds.
 
 Activation rejects ``--gpu-memory-utilization``
    Remove the flag. The kvcached framework replaces the engine's fixed
