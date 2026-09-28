@@ -1087,3 +1087,71 @@ func TestReconcileWaitsLongerAfterEachStartThatFails(t *testing.T) {
 	defer r.Backoff.mu.Unlock()
 	assert.Empty(t, r.Backoff.attempts)
 }
+
+// A claim whose engine could not be started had found a card, so room freed
+// on a card does not help it. A pod that joined may start the engine, and so
+// may one that turned ready: its runtime answers now.
+func TestPlacementBackoffWakesAClaimThatCouldNotStartForAPodThatAnswers(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	claim := types.NamespacedName{Namespace: testNamespace, Name: "first"}
+	before := roomSignature{"warm-1/u1": {instances: 2, awake: 2, promisedBytes: 800, ready: true}, "warm-2/u2": {}}
+	for name, c := range map[string]struct {
+		room roomSignature
+		due  bool
+	}{
+		"a neighbour gone": {roomSignature{
+			"warm-1/u1": {instances: 1, awake: 1, promisedBytes: 400, ready: true}, "warm-2/u2": {}}, false},
+		"a neighbour asleep": {roomSignature{
+			"warm-1/u1": {instances: 2, awake: 1, promisedBytes: 800, ready: true}, "warm-2/u2": {}}, false},
+		"a pod turned ready": {roomSignature{
+			"warm-1/u1": before["warm-1/u1"], "warm-2/u2": {ready: true}}, true},
+		"a pod joined": {roomSignature{
+			"warm-1/u1": before["warm-1/u1"], "warm-2/u2": {}, "warm-3/u3": {}}, true},
+	} {
+		backoff := newPlacementBackoff(func() time.Time { return now })
+		backoff.failedToStart(claim, 1, before)
+
+		due, _ := backoff.due(claim, 1, c.room)
+
+		assert.Equal(t, c.due, due, name)
+	}
+}
+
+// A pod is a candidate once it runs and has an address. Its runtime answers
+// later. So the wake that a pod gives by joining can be spent before the pod
+// can be used. The pod wakes the claim again when it turns ready.
+func TestReconcileTriesAClaimThatCouldNotStartAgainWhenAPodTurnsReady(t *testing.T) {
+	first := claimWithCost(100, 100)
+	first.Name = "first"
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	stays := claimOnPod("stays", pod.Name, modelv1alpha1.ModelClaimActive, 100, 100)
+	stays.Status.Instances[0].Port = 9001
+	stays.Status.Instances[0].KVLimitBytes = 900
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("stays", 100, 900)}
+	r, runtime := newReconciler(t, first, pod, stays)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	// The runtime of this pod refuses every start.
+	runtime.failActivateOn = map[string]bool{pod.Status.PodIP: true}
+	now := time.Unix(1_700_000_000, 0)
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+	require.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, "first"))
+
+	// A pod joins, and its runtime does not answer yet. The try goes to the
+	// pod that refused before.
+	joined, joinedSnapshot := sizedWarmPod("warm-2", "10.0.0.2", 1000)
+	require.NoError(t, r.Create(context.Background(), joined))
+	runtime.nilSnapshots = map[string]bool{joined.Status.PodIP: true}
+	reconcileOnce(t, r, "first")
+	require.Equal(t, []string{pod.Status.PodIP, pod.Status.PodIP}, runtime.activatedOn)
+
+	// The pod turns ready. The clock has not moved.
+	runtime.nilSnapshots = nil
+	runtime.snapshots[joined.Status.PodIP] = joinedSnapshot
+	ready := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(), client.ObjectKeyFromObject(joined), ready))
+	ready.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	require.NoError(t, r.Status().Update(context.Background(), ready))
+	reconcileOnce(t, r, "first")
+
+	assert.Equal(t, []string{pod.Status.PodIP, pod.Status.PodIP, joined.Status.PodIP}, runtime.activatedOn)
+}

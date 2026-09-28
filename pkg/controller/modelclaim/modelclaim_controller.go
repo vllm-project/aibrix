@@ -598,12 +598,13 @@ func (r *ModelClaimReconciler) ensureActivated(
 				return backoff.refusedAsTooLarge(claim, pm.Generation, refusedOn), nil
 			}
 			// The API server shows less on a card than the cache did when
-			// this try began, so the pool changed under the try. That is a
-			// neighbour that has just gone, whose engine may still be
-			// exiting. The event of its going will find the pool as it is
+			// this try began. The cache had not caught up with a change, most
+			// often a neighbour that has just gone, whose engine may still
+			// be exiting. The event of its going will find the pool as it is
 			// remembered here, and wake nobody. So the claim starts over from
-			// the shortest wait.
-			if roomMayHaveAppeared(room, refusedOn, false) {
+			// the shortest wait. A record that was taken back after a start
+			// that failed shows here as well, though no engine has gone.
+			if roomMayHaveAppeared(room, refusedOn, anyRoom) {
 				backoff.placed(claim)
 			}
 			return backoff.refused(claim, pm.Generation, refusedOn), nil
