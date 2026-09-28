@@ -367,9 +367,9 @@ grow into another engine's memory.
 An engine that is asleep weighs nothing. It keeps only what it holds, which
 after a sleep is normally its floor, and the rest goes to the engines that are
 awake. When every engine on a card is asleep, the room left over stays
-unassigned until one of them wakes. An engine that wakes gets its part back when
-the card is divided on the next pass. Until then, it runs under what it held
-asleep.
+unassigned until one of them wakes, or a model is placed on the card. An engine
+that wakes gets its part back when the card is divided on the next pass. Until
+then, it runs under what it held asleep.
 
 An engine that has failed for good is gone: the runtime stops it once its
 restarts run out. Its seat and its KV go back to the card, for the engines
@@ -402,8 +402,8 @@ A model stays non-routable until its own limit is in force, and stays routable
 only while it is held to no more than that limit. A card whose room could not
 be made is skipped, and the next Pod in line is tried.
 
-A card is also planned again once a round, which is 10 seconds, however many
-claims sit on it. The round carries the plan out in three cases:
+A card is also planned again once a round, which is about 10 seconds, however
+many claims sit on it. The round carries the plan out in three cases:
 
 * The plan gives more to an engine that is short of KV, and the plan of the
   round before gave that engine more as well. An engine is short when it has
@@ -412,7 +412,7 @@ claims sit on it. The round carries the plan out in three cases:
   engine that is asleep is never short. One reading is one sample, so an engine
   that turns short waits for its second round, which is up to 20 seconds.
 * Some engine that has a KV segment is held to a limit other than the one its
-  instance records. That is what a write that did not take leaves behind. An
+  instance records. That is what a write that had no effect leaves behind. An
   engine whose instance records no limit counts as well.
 * The card is at rest, and some engine is held to less than half of the limit
   that the plan gives it. A card is at rest when every load on it was read, and
@@ -421,8 +421,8 @@ claims sit on it. The round carries the plan out in three cases:
 
 In any other case, the card is left alone. A limit is a ceiling, and the
 requests in flight come and go. Carrying out every plan would cost the writes,
-and would give nothing to an engine that is far from its limit. A card that
-has barely drifted is left alone as well: the threshold is the larger of half a
+and would give nothing to an engine that is far from its limit. A card that is
+close to its plan is left alone as well: the threshold is the larger of half a
 gibibyte and a hundredth of the card. A KV allocator hands out whole bundles of
 pages, and a change smaller than a bundle moves no memory at all. These
 divisions raise no Event. The controller logs them at verbosity 2.
@@ -437,8 +437,8 @@ card can still take it, until those engines have mapped it. Sometimes, a card
 cannot be divided for a change yet, as while an engine that left is still
 exiting. The round then tries again, and still as for a change. The controller
 keeps what each card was divided for in memory only. After a restart, the first
-round of a card divides it whatever its load, unless the card has barely
-drifted. If that division fails, every round tries it again until one works.
+round of a card divides it whatever its load, unless the card is close to its
+plan. If that division fails, every round tries it again until one works.
 
 When the division of a card fails three times in a row, each claim on the card
 gets a ``KVLimitFailed`` warning, and another after every thirty more failures.
@@ -448,7 +448,8 @@ that cannot be accounted for is left as it is, and the log says why.
 
 Placement raises an Event on each claim whose limit it moves. So does a division
 after the engines change, and so does the health loop when it writes a limit
-back:
+back. A division that fails can leave a limit moved without an Event. To see the
+Events:
 
 .. code-block:: bash
 
