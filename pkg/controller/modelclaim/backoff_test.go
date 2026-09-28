@@ -233,6 +233,7 @@ func TestPlacementBackoffStartsOverWhenRoomMayHaveAppeared(t *testing.T) {
 		{"an instance gone", 1, roomSignature{"warm-1/u1": {instances: 2, awake: 2, undeclared: 1, promisedBytes: 400}}, true},
 		{"less promised on a card", 1, roomSignature{"warm-1/u1": {instances: 3, awake: 3, undeclared: 1, promisedBytes: 700}}, true},
 		{"a hole closed", 1, roomSignature{"warm-1/u1": {instances: 3, awake: 3, promisedBytes: 1200}}, true},
+		{"a hole opened", 1, roomSignature{"warm-1/u1": {instances: 3, awake: 3, undeclared: 2, promisedBytes: 400}}, false},
 		{"a pod joined", 1, roomSignature{"warm-1/u1": {instances: 3, awake: 3, undeclared: 1, promisedBytes: 800}, "warm-2/u2": {}}, true},
 		{"an engine woken", 1, roomSignature{"warm-1/u1": {instances: 3, awake: 4, undeclared: 1, promisedBytes: 800}}, false},
 		{"an engine gone to sleep", 1, roomSignature{"warm-1/u1": {instances: 3, awake: 2, undeclared: 1, promisedBytes: 800}}, true},
