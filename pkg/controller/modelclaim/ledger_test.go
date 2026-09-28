@@ -100,6 +100,34 @@ func TestLedgerChargesEveryInstanceButFailedOnes(t *testing.T) {
 	assert.Equal(t, int64(350), ledger.maximumRoomBytes())
 }
 
+func TestLedgerChargesAnInstanceThatIsAsleep(t *testing.T) {
+	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
+	asleep := engineHolding("asleep", 0, 400)
+	asleep.Phase = runtimePhaseSleeping
+	asleep.Ready = false
+
+	ledger := ledgerFor(t, pod, sizedPodSnapshots(pod.Name, 1000, asleep),
+		claimOnPod("asleep", pod.Name, modelv1alpha1.ModelClaimSleeping, 300, 100),
+	)
+
+	// Sleeping does not free a seat: a wake has to find its engine's room.
+	assert.True(t, ledger.judgeable)
+	assert.Equal(t, int64(600), ledger.maximumRoomBytes())
+	assert.Equal(t, int64(600), ledger.heldRoomBytes())
+}
+
+func TestLedgerDoesNotChargeAClaimInAnotherNamespace(t *testing.T) {
+	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
+	elsewhere := claimOnPod("elsewhere", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	elsewhere.Namespace = "another"
+
+	ledger := ledgerFor(t, pod, sizedPodSnapshots(pod.Name, 1000), elsewhere)
+
+	assert.True(t, ledger.judgeable)
+	assert.Equal(t, int64(1000), ledger.maximumRoomBytes())
+	assert.Empty(t, ledger.engines)
+}
+
 func TestLedgerIgnoresInstancesOnOtherPods(t *testing.T) {
 	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
 	ledger := ledgerFor(t, pod, sizedPodSnapshots(pod.Name, 1000),

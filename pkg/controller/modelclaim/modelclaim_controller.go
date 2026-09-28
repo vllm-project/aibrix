@@ -203,6 +203,11 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	switch {
 	case desiredReplicas(pm) > int32(len(pm.Status.Instances)):
 		if err := r.ensureActivated(ctx, pm, candidates); err != nil {
+			if apierrors.IsConflict(err) {
+				// The claim was read a moment too early to be written. No engine
+				// was asked for, so nothing failed.
+				return requeueOnConflict(err)
+			}
 			r.Recorder.Event(pm, corev1.EventTypeWarning, "ActivateFailed", err.Error())
 			meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
 				Type:    string(modelv1alpha1.ModelClaimConditionReady),

@@ -1756,6 +1756,100 @@ func TestReconcileLeavesTheRecordsAloneWhenACardCannotBeDivided(t *testing.T) {
 	assert.Equal(t, int64(600), held.Status.Instances[0].KVLimitBytes)
 }
 
+// recordCheckingRuntime looks a claim up on the API server at the moment the
+// runtime is asked to start its engine.
+type recordCheckingRuntime struct {
+	*fakeRuntime
+	reader    client.Reader
+	claim     types.NamespacedName
+	instances []modelv1alpha1.ModelClaimInstance
+}
+
+func (f *recordCheckingRuntime) Activate(ctx context.Context, ip string, port int, req *ActivateRequest) (*ActivateResponse, error) {
+	stored := &modelv1alpha1.ModelClaim{}
+	if err := f.reader.Get(ctx, f.claim, stored); err == nil {
+		f.instances = stored.Status.Instances
+	}
+	return f.fakeRuntime.Activate(ctx, ip, port, req)
+}
+
+func TestReconcileRecordsAnInstanceBeforeItsEngineIsStarted(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	checking := &recordCheckingRuntime{
+		fakeRuntime: runtime, reader: r.Client,
+		claim: types.NamespacedName{Namespace: testNamespace, Name: pm.Name},
+	}
+	r.Runtime = checking
+
+	reconcileOnce(t, r, pm.Name)
+
+	// The record is what the account charges. Written after the start, it
+	// would leave the card free to a second claim while the engine loads.
+	require.Len(t, runtime.activateCalls, 1)
+	require.Len(t, checking.instances, 1)
+	assert.Equal(t, pod.Name, checking.instances[0].Pod)
+	assert.Equal(t, int64(300), checking.instances[0].KVLimitBytes)
+}
+
+func TestReconcileRefusesASecondClaimWhileTheFirstStillLoads(t *testing.T) {
+	first := claimWithCost(500, 100)
+	first.Name = "first"
+	second := claimWithCost(500, 100)
+	second.Name = "second"
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	r, runtime := newReconciler(t, first, second, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	// The first engine has not come up, so it has mapped nothing yet.
+	runtime.notReady = true
+
+	reconcileOnce(t, r, first.Name)
+	reconcileOnce(t, r, second.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+	assert.Equal(t, "first", runtime.activateCalls[0].ModelName)
+	assert.Empty(t, getModel(t, r, second.Name).Status.Instances)
+}
+
+func TestReconcileDoesNotTakeAConflictOnTheRecordForAFailedStart(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	scheme := testScheme(t)
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pm, pod).
+		WithStatusSubresource(&modelv1alpha1.ModelClaim{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(_ context.Context, _ client.Client, _ string, obj client.Object,
+				_ ...client.SubResourceUpdateOption) error {
+				return apierrors.NewConflict(schema.GroupResource{Group: "model.aibrix.ai", Resource: "modelclaims"},
+					obj.GetName(), fmt.Errorf("the object has been modified"))
+			},
+		}).
+		Build()
+	runtime := &fakeRuntime{snapshots: map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}}
+	r := &ModelClaimReconciler{
+		Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(32), Runtime: runtime,
+		PoolPolicy:    newPoolPolicyManager(time.Now),
+		SnapshotCache: newRuntimeSnapshotCache(defaultRuntimeSnapshotTTL, time.Now),
+	}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: pm.Name},
+	})
+
+	// The claim was read a moment too early. No engine was asked for, so
+	// nothing failed, and the next pass works from the claim as it is.
+	require.NoError(t, err)
+	assert.True(t, result.Requeue)
+	assert.Empty(t, runtime.activateCalls)
+	for _, event := range drainEvents(t, r) {
+		assert.NotContains(t, event, "ActivateFailed")
+	}
+}
+
 func TestReconcileRecordsNoMoreThanTheCardWhenARecordCannotBeWritten(t *testing.T) {
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
 	grows := claimOnPod("a-grows", pod.Name, modelv1alpha1.ModelClaimActive, 100, 50)
