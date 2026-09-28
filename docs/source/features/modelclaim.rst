@@ -804,8 +804,10 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    neighbour that leaves it frees no room.
 
    A Pod wakes a waiting claim once by turning ready. Once a try has seen the
-   Pod ready, the Pod does not wake the claim by turning ready again. So a
-   Pod that keeps turning not ready and ready again leaves the wait as it is.
+   Pod ready, the Pod does not wake the claim by turning ready again. So a Pod
+   that keeps turning not ready and ready again leaves the wait as it is. A
+   claim that loses an instance starts over as well, since it needs another one.
+   That is a claim with several replicas, whose wait was for the next of them.
 
    A claim that is deleted wakes the others before its engine has exited, and
    an engine holds its memory until it has. So the try that a deletion wakes

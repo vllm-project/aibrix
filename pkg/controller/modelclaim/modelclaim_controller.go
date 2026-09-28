@@ -216,7 +216,13 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
+	recorded := len(pm.Status.Instances)
 	pruneDeadInstances(pm, candidates)
+	if len(pm.Status.Instances) < recorded {
+		// A wait is for the instance that could not be placed. A claim that
+		// has lost an instance needs another one, so it starts over.
+		r.backoff().startOver(req.NamespacedName)
+	}
 	r.setStatusFields(pm, candidates)
 	// Every step below reads a runtime through this, so each runtime is read
 	// once in this pass unless a step changes it.
@@ -1248,7 +1254,10 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 			}
 		}
 	}
-	r.dropInstances(ctx, pm, dropped)
+	if r.dropInstances(ctx, pm, dropped) > 0 {
+		// The claim needs another instance now, so its wait starts over.
+		r.backoff().startOver(types.NamespacedName{Namespace: pm.Namespace, Name: pm.Name})
+	}
 }
 
 // judgeKVLimit says whether an engine is held to the limit its instance
@@ -1341,12 +1350,18 @@ func (r *ModelClaimReconciler) startMissingEngine(
 }
 
 // dropInstances removes the instances on the given pods from a claim, and
-// takes their routing annotations back, which gives their cards back.
+// takes their routing annotations back, which gives their cards back. It
+// returns how many it removed.
 //
 // The caller's status update persists the shorter list, and the next pass
 // places the claim again. Should that update be lost, the next pass finds the
 // same instance with no engine and tries again.
-func (r *ModelClaimReconciler) dropInstances(ctx context.Context, pm *modelv1alpha1.ModelClaim, dropped map[string]bool) {
+func (r *ModelClaimReconciler) dropInstances(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	dropped map[string]bool,
+) int {
+	recorded := len(pm.Status.Instances)
 	kept := pm.Status.Instances[:0]
 	for _, inst := range pm.Status.Instances {
 		if dropped[inst.Pod] {
@@ -1356,6 +1371,7 @@ func (r *ModelClaimReconciler) dropInstances(ctx context.Context, pm *modelv1alp
 		kept = append(kept, inst)
 	}
 	pm.Status.Instances = kept
+	return recorded - len(kept)
 }
 
 // snapshotModelForClaim resolves runtime state by ClaimRef UID when the
