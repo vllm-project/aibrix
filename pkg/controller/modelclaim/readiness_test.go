@@ -408,6 +408,23 @@ func TestEngineBootingCountsAnEngineThatIsStopping(t *testing.T) {
 	assert.False(t, engineBooting(&RuntimeSnapshot{ObservedAt: observedAt}, &engine))
 }
 
+// The runtime dates an engine again at every try of a stop that fails. Such
+// an engine would read as one that has just begun to stop, for as long as the
+// stop fails. It carries the error of the stop, and keeps the usual pace.
+func TestEngineBootingLeavesOutAnEngineWhoseStopFails(t *testing.T) {
+	observedAt := time.Unix(1_700_000_000, 0)
+	engine := engineBootingFor(observedAt, time.Second)
+	engine.Phase = runtimePhaseStopping
+	engine.LastError = "stop failed: operation not permitted"
+
+	assert.False(t, engineBooting(&RuntimeSnapshot{ObservedAt: observedAt}, &engine))
+
+	// An engine that boots after a start that failed carries an error as
+	// well. It is watched as any boot is.
+	engine.Phase = "booting"
+	assert.True(t, engineBooting(&RuntimeSnapshot{ObservedAt: observedAt}, &engine))
+}
+
 // anEngineHeldToFiveGibibytes is a claim with one instance recorded at 3 GiB
 // on a card of 10 GiB. Its engine is ready, and held to 5 GiB.
 func anEngineHeldToFiveGibibytes(

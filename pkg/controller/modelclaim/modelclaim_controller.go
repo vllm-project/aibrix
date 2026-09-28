@@ -1467,9 +1467,16 @@ func (r *ModelClaimReconciler) judgeEngine(
 // does not date, since nothing would then bound it. An engine that is
 // stopping counts while the runtime reports it alive. Its instance gets a new
 // engine as soon as it has gone.
+//
+// An engine whose stop fails does not count. The runtime dates such an engine
+// again at every try. It would then read as one that has just begun to stop,
+// for as long as the stop fails. It carries the error of the stop.
 func engineBooting(snapshot *RuntimeSnapshot, observed *RuntimeSnapshotModel) bool {
 	if snapshot == nil || observed == nil || !observed.Alive || observed.Ready ||
 		observed.LastTransition == nil || snapshot.ObservedAt.IsZero() {
+		return false
+	}
+	if observed.Phase == runtimePhaseStopping && observed.LastError != "" {
 		return false
 	}
 	// A boot dated after the reading is not timed at all: the runtime's
