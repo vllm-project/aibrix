@@ -26,6 +26,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"sync"
 	"time"
 
@@ -342,8 +343,9 @@ func (s *runtimeSilence) observe(runtime string, err error) {
 	s.until[runtime] = now.Add(s.window)
 }
 
+// runtimeURL brackets an IPv6 pod address, as a URL needs.
 func runtimeURL(podIP string, port int, path string) string {
-	return fmt.Sprintf("http://%s:%d%s", podIP, port, path)
+	return "http://" + net.JoinHostPort(podIP, strconv.Itoa(port)) + path
 }
 
 func (c *httpRuntimeClient) Activate(ctx context.Context, podIP string, port int, req *ActivateRequest) (*ActivateResponse, error) {
