@@ -420,9 +420,14 @@ func TestPerGPUBytesOfSaysWhatIsWrongWithADeclaration(t *testing.T) {
 			"spec.perGPU.maximumFootprint is 30m, which is not a whole number of bytes"},
 		"part of a byte more": {declaring("30Gi", "1500m"),
 			"spec.perGPU.kvFloor is 1500m, which is not a whole number of bytes"},
-		// Rounded to the thousandth it would pass for one byte.
+		// Rounded to the thousandth, it would pass for one byte.
 		"nearly a byte": {declaring("999600u", "10Gi"),
 			"spec.perGPU.maximumFootprint is 999600u, which is not a whole number of bytes"},
+		// Small figures are held to whole bytes up to 1Mi.
+		"part of a byte, above a kibibyte": {declaring("1500500m", "10Gi"),
+			"spec.perGPU.maximumFootprint is 1500500m, which is not a whole number of bytes"},
+		"part of a byte, just under a mebibyte": {declaring("1048575500m", "10Gi"),
+			"spec.perGPU.maximumFootprint is 1048575500m, which is not a whole number of bytes"},
 		// Two such figures would add up past what an int64 holds.
 		"more than any card": {declaring("7Ei", "7Ei"),
 			"spec.perGPU.maximumFootprint is 7Ei, which is more than 1Pi"},
@@ -447,6 +452,8 @@ func TestPerGPUBytesOfSaysWhatIsWrongWithADeclaration(t *testing.T) {
 		"5.6Gi":  6012954215,
 		"0.3Gi":  322122548,
 		"20.2Gi": 21689584845,
+		// From 1Mi on, a figure with part of a byte is rounded up.
+		"1048576500m": 1048577,
 	} {
 		perGPU, err := perGPUBytesOf(declaring(measured, "10Gi"))
 		require.NoError(t, err, measured)

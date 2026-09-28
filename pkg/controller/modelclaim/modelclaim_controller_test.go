@@ -2163,6 +2163,46 @@ func TestReconcileWillNotPlaceBesideARecordedLimitWhenNothingShowsTheCard(t *tes
 	assert.Contains(t, cond.Message, "its cards could not be measured")
 }
 
+// The rule holds for an instance in any phase. A failed one is charged
+// nothing, and its limit still says that the pod has a card.
+func TestReconcileCountsACardWhereAFailedInstanceRecordsALimit(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := podWithUnrequestedGPU(1000)
+	snapshot.Accelerators = nil
+	failed := claimOnPod("failed", pod.Name, modelv1alpha1.ModelClaimFailed, 300, 100)
+	failed.Status.Instances[0].KVLimitBytes = 600
+	r, runtime := newReconciler(t, pm, pod, failed)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	cond := meta.FindStatusCondition(getModel(t, r, pm.Name).Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Contains(t, cond.Message, "its cards could not be measured")
+}
+
+// An instance that records no limit was placed where no card was divided. It
+// does not make its pod one with a card.
+func TestReconcilePlacesBesideAnInstanceThatRecordsNoLimitOnAPodWithoutACard(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := podWithUnrequestedGPU(1000)
+	snapshot.Accelerators = nil
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].Port = 9001
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", kvLimitUnknown, kvLimitUnknown)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+	placed := getModel(t, r, pm.Name).Status.Instances
+	require.Len(t, placed, 1)
+	assert.Zero(t, placed[0].KVLimitBytes, "nothing was divided, so no limit is recorded")
+}
+
 func TestReconcileHoldsAnEngineToItsLimitWhenItsCardCouldNotBeReadThisTime(t *testing.T) {
 	pm := claimWithCost(300, 100)
 	pod, snapshot := podWithUnrequestedGPU(1000)
@@ -2386,19 +2426,22 @@ func TestReconcileNamesTheCardWorthWaitingFor(t *testing.T) {
 }
 
 // A card that had room and could not be divided is worth waiting for as well.
-func TestReconcileNamesTheCardThatCouldNotBeDividedBeforeOneThatNeverCould(t *testing.T) {
+// It is named before a card whose room is held, since it offers more. A card
+// that never could hold the model would come last whatever this one counts
+// as, so it could not show the rule.
+func TestReconcileNamesTheCardThatCouldNotBeDividedBeforeOneWhoseRoomIsHeld(t *testing.T) {
 	pm := claimWithCost(300, 100)
-	never, neverSnapshot := sizedWarmPod("a-never", "10.0.0.1", 1000)
+	held, heldSnapshot := sizedWarmPod("a-held", "10.0.0.1", 1000)
 	room, roomSnapshot := sizedWarmPod("b-room", "10.0.0.2", 1000)
-	full := claimOnPod("full", never.Name, modelv1alpha1.ModelClaimActive, 600, 100)
-	full.Status.Instances[0].KVLimitBytes = 400
+	busy := claimOnPod("busy", held.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	busy.Status.Instances[0].KVLimitBytes = 700
 	deaf := claimOnPod("deaf", room.Name, modelv1alpha1.ModelClaimActive, 300, 100)
 	deaf.Status.Instances[0].KVLimitBytes = 700
-	neverSnapshot.Models = []RuntimeSnapshotModel{engineHolding("full", 100, 400)}
+	heldSnapshot.Models = []RuntimeSnapshotModel{engineHolding("busy", 500, 700)}
 	roomSnapshot.Models = []RuntimeSnapshotModel{engineHolding("deaf", 100, 700)}
-	r, runtime := newReconciler(t, pm, never, room, full, deaf)
+	r, runtime := newReconciler(t, pm, held, room, busy, deaf)
 	runtime.snapshots = map[string]*RuntimeSnapshot{
-		never.Status.PodIP: neverSnapshot, room.Status.PodIP: roomSnapshot,
+		held.Status.PodIP: heldSnapshot, room.Status.PodIP: roomSnapshot,
 	}
 	// The engine on the card with room does not take its new limit.
 	runtime.deafToKVLimits = true
@@ -2414,7 +2457,8 @@ func TestReconcileNamesTheCardThatCouldNotBeDividedBeforeOneThatNeverCould(t *te
 
 // The engine whose record goes down runs below that record already, as after
 // a division that was not carried through. Its limit then goes up while its
-// record goes down. The records are ordered by the records.
+// record goes down. What is written first is decided by the records, and not
+// by the limits in force.
 func TestReconcileOrdersTheRecordsByTheRecordsAndNotByTheLimitsInForce(t *testing.T) {
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
 	grows := claimOnPod("a-grows", pod.Name, modelv1alpha1.ModelClaimActive, 100, 50)
