@@ -313,6 +313,7 @@ func TestReconcileSaysALimitIsWrittenWhenARoutedEngineIsPulledBack(t *testing.T)
 	assert.Contains(t, routeOf(t, r, pod.Name, pm.Name), `"port":0`)
 	events := drainEvents(t, r)
 	assert.Equal(t, 1, eventsNamed(events, "KVLimitNotHeld"))
+	assert.Equal(t, 1, eventsNamed(events, "is held to more KV than its limit of 3.0 GiB"))
 	require.Equal(t, 1, eventsNamed(events, "KVLimitSet"))
 	for _, event := range events {
 		if strings.Contains(event, "KVLimitSet") {
@@ -393,14 +394,18 @@ func TestEngineBootingWatchesABootForItsWindowOnly(t *testing.T) {
 	}
 }
 
-// An engine that is stopping is alive and not ready, so it sets the pace as
-// one that boots does. Its instance gets a new engine as soon as it has gone.
+// An engine that is stopping sets the pace as one that boots does, while the
+// runtime reports it alive. Its instance gets a new engine as soon as it has
+// gone.
 func TestEngineBootingCountsAnEngineThatIsStopping(t *testing.T) {
 	observedAt := time.Unix(1_700_000_000, 0)
 	engine := engineBootingFor(observedAt, time.Second)
 	engine.Phase = runtimePhaseStopping
 
 	assert.True(t, engineBooting(&RuntimeSnapshot{ObservedAt: observedAt}, &engine))
+
+	engine.Alive = false
+	assert.False(t, engineBooting(&RuntimeSnapshot{ObservedAt: observedAt}, &engine))
 }
 
 // anEngineHeldToFiveGibibytes is a claim with one instance recorded at 3 GiB
@@ -520,4 +525,19 @@ func TestReconcileDoesNotCallAnEngineUnhealthyThatWokeAndWaitsForItsLimit(t *tes
 		assert.Equal(t, modelv1alpha1.ModelClaimActivating, getModel(t, r, pm.Name).Status.Instances[0].Phase, name)
 		assert.Contains(t, routeOf(t, r, "warm-1", pm.Name), `"port":0`, name)
 	}
+}
+
+// A failed instance is not on the route either. If its engine still serves,
+// it is held to its record, and the write is read back in the same pass. The
+// instance stays failed.
+func TestReconcileReadsBackTheEngineOfAFailedInstanceInThePassItsLimitIsWritten(t *testing.T) {
+	r, runtime, pm := anEngineHeldToFiveGibibytes(t, modelv1alpha1.ModelClaimFailed)
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, 2, runtime.snapshotCalls, "the write is read back in this pass")
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, getModel(t, r, pm.Name).Status.Instances[0].Phase)
+	assert.Contains(t, routeOf(t, r, "warm-1", pm.Name), `"port":0`)
+	assert.Equal(t, 1, eventsNamed(drainEvents(t, r), "KV limit set to 3.0 GiB, from 5.0 GiB"))
 }
