@@ -42,8 +42,8 @@ type division struct {
 	// onlyWhenNeeded carries the plan out only when the card needs dividing,
 	// as needsDividing says.
 	onlyWhenNeeded bool
-	// owedBefore names the engines that were short of KV in the card's last
-	// round, and that its plan would have given more.
+	// owedBefore names the engines that were short of KV in the round before,
+	// and that its plan would have given more.
 	owedBefore []string
 	// announce raises a KVLimitSet Event on each claim whose engine was moved.
 	announce bool
@@ -106,7 +106,8 @@ type cardDivisionState struct {
 	failures    map[types.NamespacedName]int
 	lastFailure map[types.NamespacedName]time.Time
 	// owed names the engines of a card that were short of KV in its last
-	// round, and that its plan would have given more.
+	// round, and that its plan would have given more. A round that could not
+	// account for the card planned nothing, and owes nothing.
 	owed map[types.NamespacedName][]string
 	// undividedFor is why a card was last left undivided, as one that could
 	// not be accounted for.
@@ -210,6 +211,14 @@ func (s *cardDivisionState) owedBefore(card types.NamespacedName) []string {
 	return s.owed[card]
 }
 
+// noteOwed notes the engines that a round owed more, when its division failed.
+// The next round tries again while it owes them more as well.
+func (s *cardDivisionState) noteOwed(card types.NamespacedName, owed []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.owed[card] = owed
+}
+
 // divided records that a card was divided for these engines: by the round, by
 // a division after its engines changed, or by placement. The next pass then
 // does not take them for a change, and the card's round starts again.
@@ -226,10 +235,12 @@ func (s *cardDivisionState) divided(card types.NamespacedName, composition strin
 
 // leftUndivided notes why a card could not be accounted for, and reports
 // whether that is news. A card is looked at every round, and what keeps it
-// undivided is worth a line in the log once, not every ten seconds.
+// undivided is worth a line in the log once, not every ten seconds. Such a
+// round plans nothing, so it owes no engine anything.
 func (s *cardDivisionState) leftUndivided(card types.NamespacedName, why string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	delete(s.owed, card)
 	if s.undividedFor[card] == why {
 		return false
 	}
@@ -286,6 +297,16 @@ func (s *cardDivisionState) pruneLocked(now time.Time) {
 		}
 	}
 	s.asked = make(map[types.NamespacedName]bool)
+}
+
+// owedBy names the engines that the plan of a card owes more, as a round that
+// follows the load counts them.
+func owedBy(ledger podLedger) []string {
+	limits, err := planKVLimits(ledger.hbmUsableBytes, ledger.engines)
+	if err != nil {
+		return nil
+	}
+	return shortEnginesOwedMore(ledger.engines, limits, minimumKVLimitChangeBytes(ledger.hbmUsableBytes))
 }
 
 // cardOf is the key a pod's card is remembered by.
@@ -430,6 +451,7 @@ func (r *ModelClaimReconciler) divideCards(
 		if err != nil {
 			klog.V(2).InfoS("could not divide a card", "pod", klog.KObj(pod),
 				"enginesChanged", changed[pod.Name], "err", err)
+			divisions.noteOwed(cardOf(pod), owedBy(ledger))
 			if failures := divisions.failedAgain(cardOf(pod)); failures%stuckDivisionWarningEvery == stuckDivisionTries {
 				r.warnCardNotDivided(pod, claims, ledger, failures, err)
 			}

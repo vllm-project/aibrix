@@ -1495,6 +1495,99 @@ func TestReconcileLogsOnceWhyACardIsLeftUndivided(t *testing.T) {
 	assert.Equal(t, 2, said())
 }
 
+// What a round owes is asked of the round before, and of no older one. A
+// division that fails notes what its own round owed. A round that cannot
+// account for the card plans nothing, and owes nothing.
+func TestReconcileAsksOnlyWhatTheRoundBeforeOwed(t *testing.T) {
+	waiting := func(snapshot *RuntimeSnapshot, yes bool) {
+		snapshot.Models[0].RequestsRunning, snapshot.Models[0].RequestsWaiting = 1, 0
+		if yes {
+			snapshot.Models[0].RequestsRunning, snapshot.Models[0].RequestsWaiting = 3, 1
+		}
+	}
+	t.Run("after a division that failed", func(t *testing.T) {
+		r, runtime, snapshot, clock := aCardOfTwoEngines(t,
+			engineHolding("busy", 4<<30, 20<<30), engineHolding("idle", 4<<30, 20<<30))
+		card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+		reconcileOnce(t, r, "idle")
+		waiting(snapshot, true)
+		nextRound(t, r, clock, "idle")
+		require.Empty(t, runtime.kvLimitCalls)
+		require.Equal(t, []string{"busy"}, r.Divisions.owedBefore(card))
+
+		// Nothing waits on "busy" in this round. "idle" is found below its
+		// record, and the grow that puts it right is not confirmed.
+		waiting(snapshot, false)
+		snapshot.Models[1].RequestsRunning = 1
+		snapshot.Models[1].KVCapacityBytes = 10 << 30
+		runtime.deafToKVLimits = true
+		nextRound(t, r, clock, "idle")
+		require.Len(t, runtime.kvLimitCalls, 1)
+		require.Equal(t, 1, r.Divisions.failures[card])
+		assert.Empty(t, r.Divisions.owedBefore(card), "the round that failed owed nothing")
+
+		// Requests wait on "busy" for the first time since the first round.
+		runtime.deafToKVLimits = false
+		snapshot.Models[1].KVCapacityBytes = 20 << 30
+		waiting(snapshot, true)
+		nextRound(t, r, clock, "idle")
+		assert.Len(t, runtime.kvLimitCalls, 1, "one reading is not followed")
+		nextRound(t, r, clock, "idle")
+		assert.Len(t, runtime.kvLimitCalls, 3, "the second in a row is")
+	})
+	t.Run("after a division that failed, and that owed less than a round writes for", func(t *testing.T) {
+		r, runtime, snapshot, clock := aCardOfTwoEngines(t,
+			engineHolding("busy", 5<<30, 20<<30), engineHolding("idle", 4<<30, 20<<30))
+		card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+		reconcileOnce(t, r, "idle")
+
+		// Requests wait on "busy", and its plan gives it half a gibibyte
+		// more, which is less than a round writes for. "idle" is found below
+		// its record, and the grow that puts it right is not confirmed.
+		snapshot.Models[0].RequestsRunning, snapshot.Models[0].RequestsWaiting = 3, 1
+		snapshot.Models[1].RequestsRunning = 4
+		snapshot.Models[1].KVCapacityBytes = 10 << 30
+		runtime.deafToKVLimits = true
+		nextRound(t, r, clock, "idle")
+		require.Equal(t, 1, r.Divisions.failures[card])
+		assert.Empty(t, r.Divisions.owedBefore(card))
+
+		// The grows take in the meantime, so each engine holds its record.
+		// "busy" has mapped more by now, and its plan gives it 1.5 GiB more.
+		runtime.deafToKVLimits = false
+		for i, name := range []string{"busy", "idle"} {
+			snapshot.Models[i].KVCapacityBytes = getModel(t, r, name).Status.Instances[0].KVLimitBytes
+		}
+		snapshot.Models[0].KVUsedBytes = 8 << 30
+		written := len(runtime.kvLimitCalls)
+		nextRound(t, r, clock, "idle")
+		assert.Len(t, runtime.kvLimitCalls, written, "one reading is not followed")
+		assert.Equal(t, []string{"busy"}, r.Divisions.owedBefore(card))
+	})
+	t.Run("after rounds that could not account for the card", func(t *testing.T) {
+		r, runtime, snapshot, clock := aCardOfTwoEngines(t,
+			engineHolding("busy", 4<<30, 20<<30), engineHolding("idle", 4<<30, 20<<30))
+		card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+		reconcileOnce(t, r, "idle")
+		waiting(snapshot, true)
+		nextRound(t, r, clock, "idle")
+		require.Equal(t, []string{"busy"}, r.Divisions.owedBefore(card))
+
+		// An engine that answers to no claim is on the card for a round.
+		waiting(snapshot, false)
+		stranger := engineHolding("stranger", 1<<30, 2<<30)
+		stranger.Port = 9009
+		snapshot.Models = append(snapshot.Models, stranger)
+		nextRound(t, r, clock, "idle")
+		assert.Empty(t, r.Divisions.owedBefore(card))
+
+		snapshot.Models = snapshot.Models[:2]
+		waiting(snapshot, true)
+		nextRound(t, r, clock, "idle")
+		assert.Empty(t, runtime.kvLimitCalls, "one reading is not followed")
+	})
+}
+
 func TestCardDivisionStateSaysOnceWhyACardIsLeftUndivided(t *testing.T) {
 	divisions := newCardDivisionState(nil)
 	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
