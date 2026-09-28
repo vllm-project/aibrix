@@ -180,7 +180,7 @@ func TestPDRouter_ConcurrentBurstSeesPriorSelections(t *testing.T) {
 	want := requests / prefillCount
 	for _, pod := range prefillPods {
 		assert.Equalf(t, want, selected[pod.Name], "%s selections (all: %v)", pod.Name, selected)
-		assert.Equalf(t, int32(want), heldCounts[pod.Name], "%s tracked prefill count while held (all: %v)", pod.Name, heldCounts)
+		assert.Equalf(t, int32(want), heldCounts[utils.GeneratePodKey(pod.Namespace, pod.Name)], "%s tracked prefill count while held (all: %v)", pod.Name, heldCounts)
 	}
 	assert.Equal(t, float64(requests), heldPending, "pending decode count while held")
 
