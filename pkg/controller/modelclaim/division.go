@@ -42,6 +42,9 @@ type division struct {
 	// onlyWhenNeeded carries the plan out only when the card needs dividing,
 	// as needsDividing says.
 	onlyWhenNeeded bool
+	// owedBefore names the engines that were short of KV in the card's last
+	// round, and that its plan would have given more.
+	owedBefore []string
 	// announce raises a KVLimitSet Event on each claim whose engine was moved.
 	announce bool
 }
@@ -101,6 +104,9 @@ type cardDivisionState struct {
 	// lastFailure is when the last of them failed.
 	failures    map[types.NamespacedName]int
 	lastFailure map[types.NamespacedName]time.Time
+	// owed names the engines of a card that were short of KV in its last
+	// round, and that its plan would have given more.
+	owed map[types.NamespacedName][]string
 	// undividedFor is why a card was last left undivided, as one that could
 	// not be accounted for.
 	undividedFor map[types.NamespacedName]string
@@ -118,6 +124,7 @@ func newCardDivisionState(now func() time.Time) *cardDivisionState {
 		attemptedFor: make(map[types.NamespacedName]string),
 		failures:     make(map[types.NamespacedName]int),
 		lastFailure:  make(map[types.NamespacedName]time.Time),
+		owed:         make(map[types.NamespacedName][]string),
 		undividedFor: make(map[types.NamespacedName]string),
 	}
 }
@@ -180,12 +187,22 @@ func (s *cardDivisionState) noted(card types.NamespacedName) bool {
 }
 
 // leftAlone notes the engines a card was left alone for, as one that needed no
-// division. A change of its engines can be seen from then on. The count of
-// failed divisions stays as it is, since nothing was tried.
-func (s *cardDivisionState) leftAlone(card types.NamespacedName, composition string) {
+// division. A change of its engines can be seen from then on. It also notes
+// the engines that are owed more, for the next round to ask about. The count
+// of failed divisions stays as it is, since nothing was tried.
+func (s *cardDivisionState) leftAlone(card types.NamespacedName, composition string, owed []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dividedFor[card] = composition
+	s.owed[card] = owed
+}
+
+// owedBefore names the engines of a card that were short of KV in its last
+// round, and that its plan would have given more.
+func (s *cardDivisionState) owedBefore(card types.NamespacedName) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.owed[card]
 }
 
 // divided records that a card was divided for these engines: by the round, by
@@ -199,6 +216,7 @@ func (s *cardDivisionState) divided(card types.NamespacedName, composition strin
 	s.lastRound[card] = s.now()
 	delete(s.failures, card)
 	delete(s.lastFailure, card)
+	delete(s.owed, card)
 }
 
 // leftUndivided notes why a card could not be accounted for, and reports
@@ -257,6 +275,7 @@ func (s *cardDivisionState) pruneLocked(now time.Time, asked types.NamespacedNam
 			delete(s.attemptedFor, card)
 			delete(s.failures, card)
 			delete(s.lastFailure, card)
+			delete(s.owed, card)
 			delete(s.undividedFor, card)
 		}
 	}
@@ -386,6 +405,7 @@ func (r *ModelClaimReconciler) divideCards(
 		}
 		divisions.accountedFor(cardOf(pod))
 		why := loadDivision(ledger.hbmUsableBytes)
+		why.owedBefore = divisions.owedBefore(cardOf(pod))
 		switch {
 		case changed[pod.Name]:
 			why = compositionDivision
@@ -393,9 +413,10 @@ func (r *ModelClaimReconciler) divideCards(
 			why = firstDivision(ledger.hbmUsableBytes)
 		}
 		_, err := r.arrangeCard(ctx, pod, ledger, ledger.engines, why, readings)
-		if errors.Is(err, errCardLeftAlone) {
+		var alone cardLeftAlone
+		if errors.As(err, &alone) {
 			// Nothing was tried, so a run of failed divisions is not over.
-			divisions.leftAlone(cardOf(pod), compositions[pod.Name])
+			divisions.leftAlone(cardOf(pod), compositions[pod.Name], alone.owed)
 			continue
 		}
 		if err != nil {

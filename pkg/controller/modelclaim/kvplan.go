@@ -163,6 +163,8 @@ func minimumKVLimitChangeBytes(hbmUsableBytes int64) int64 {
 }
 
 // needsDividing reports whether a round is to carry out the plan of a card.
+// It also names the engines that are short of KV and that the plan gives
+// more, which the card's next round asks about.
 //
 // A limit is a ceiling, and an engine maps KV as it needs it. The shares are
 // weighed by the requests in flight, which come and go, so the plan moves with
@@ -170,20 +172,36 @@ func minimumKVLimitChangeBytes(hbmUsableBytes int64) int64 {
 // card and in every round, and would give nothing to an engine that is far
 // from its limit. So a round carries the plan out in three cases only.
 //
-// The plan gives an engine that is short of KV more than it is held to. That
-// is when a share has to follow its load.
+// The plan gives more to an engine that is short of KV, and so did the plan of
+// the round before. That is when a share has to follow its load. One reading is
+// not enough. With two engines that are short, the plan can give more to one of
+// them in one round, and to the other in the next. The card would then be
+// divided in every round.
 //
 // Some engine is held to a limit other than the one its instance records.
 // That is what a division leaves behind when a write of it did not take. It
 // is also how an engine is found that serves and records no limit.
 //
-// The card is at rest, and some engine is held to less than half of its share.
-// That is what a burst on the engine beside it leaves behind. Left like that,
-// the engine would start its own burst with little room.
-func needsDividing(engines []engineOnPod, limits []plannedKVLimit, minimumChangeBytes int64) bool {
-	return givesAShortEngineMore(engines, limits, minimumChangeBytes) ||
-		leftUnfinished(engines) ||
-		(atRest(engines) && heldToUnderHalf(limits))
+// The card is at rest, and some engine is held to less than half of the limit
+// planned for it. That is what a burst on the engine beside it leaves behind.
+// Left like that, the engine would start its own burst with little room.
+func needsDividing(
+	engines []engineOnPod,
+	limits []plannedKVLimit,
+	minimumChangeBytes int64,
+	owedBefore []string,
+) (needed bool, owed []string) {
+	owed = shortEnginesOwedMore(engines, limits, minimumChangeBytes)
+	before := make(map[string]bool, len(owedBefore))
+	for _, name := range owedBefore {
+		before[name] = true
+	}
+	for _, name := range owed {
+		if before[name] {
+			return true, owed
+		}
+	}
+	return leftUnfinished(engines) || (atRest(engines) && heldToUnderHalf(limits)), owed
 }
 
 // shortOfKV reports whether an engine is short of KV: it has mapped half of
@@ -202,26 +220,31 @@ func shortOfKV(engine engineOnPod) bool {
 		engine.kvUsedBytes >= engine.kvCapacityBytes-engine.kvCapacityBytes/2
 }
 
-// givesAShortEngineMore reports whether the plan raises the limit of some
-// engine that is short of KV by at least the smallest change worth writing.
+// shortEnginesOwedMore names the engines that are short of KV, and whose
+// limit the plan raises by at least the smallest change worth writing. They
+// are named by claim, in the order of the plan.
 //
 // A plan that gives such an engine less, or the same, is left out. While an
 // engine stays short, the plan still moves with the requests in flight on the
 // engines beside it, and carrying that out would help nobody.
-func givesAShortEngineMore(engines []engineOnPod, limits []plannedKVLimit, minimumChangeBytes int64) bool {
-	planned := make(map[string]int64, len(limits))
-	for _, limit := range limits {
-		planned[limit.claimName] = limit.kvLimitBytes
-	}
+func shortEnginesOwedMore(engines []engineOnPod, limits []plannedKVLimit, minimumChangeBytes int64) []string {
+	short := make(map[string]engineOnPod, len(engines))
 	for _, engine := range engines {
-		if !shortOfKV(engine) {
+		if shortOfKV(engine) {
+			short[engine.claimName] = engine
+		}
+	}
+	var owed []string
+	for _, limit := range limits {
+		engine, found := short[limit.claimName]
+		if !found {
 			continue
 		}
-		if more := planned[engine.claimName] - engine.kvCapacityBytes; more > 0 && more >= minimumChangeBytes {
-			return true
+		if more := limit.kvLimitBytes - engine.kvCapacityBytes; more > 0 && more >= minimumChangeBytes {
+			owed = append(owed, limit.claimName)
 		}
 	}
-	return false
+	return owed
 }
 
 // leftUnfinished reports whether some engine is held to a limit other than the

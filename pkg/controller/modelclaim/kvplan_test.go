@@ -371,11 +371,54 @@ func TestNeedsDividing(t *testing.T) {
 		// given in.
 		limits := plan(c.engines, c.planned...)
 		sort.Slice(limits, func(i, j int) bool { return limits[i].claimName < limits[j].claimName })
-		assert.Equal(t, c.needed, needsDividing(c.engines, limits, threshold), name)
+		// Every engine that is owed more was owed more in the round before.
+		_, owed := needsDividing(c.engines, limits, threshold, nil)
+		needed, _ := needsDividing(c.engines, limits, threshold, owed)
+		assert.Equal(t, c.needed, needed, name)
 	}
 
 	// With no threshold, more still means more.
 	atItsShare := []engineOnPod{short(engine("a", 100)), serving(engine("b", 100))}
-	assert.False(t, needsDividing(atItsShare, plan(atItsShare, 100, 100), 0))
-	assert.True(t, needsDividing(atItsShare, plan(atItsShare, 101, 99), 0))
+	needed, owed := needsDividing(atItsShare, plan(atItsShare, 100, 100), 0, []string{"a"})
+	assert.False(t, needed)
+	assert.Empty(t, owed)
+	needed, owed = needsDividing(atItsShare, plan(atItsShare, 101, 99), 0, []string{"a"})
+	assert.True(t, needed)
+	assert.Equal(t, []string{"a"}, owed)
+}
+
+// One reading that gives a short engine more is not enough. The plan of the
+// round before has to have given that engine more as well.
+func TestNeedsDividingAsksForTheSameEngineTwiceInARow(t *testing.T) {
+	const threshold = 10
+	short := func(name string) engineOnPod {
+		return engineOnPod{claimName: name, kvUsedBytes: 100, kvCapacityBytes: 100, kvRecordedBytes: 100, inFlightRequests: 1}
+	}
+	engines := []engineOnPod{short("a"), short("b"), short("c")}
+	plan := func(a, b, c int64) []plannedKVLimit {
+		return []plannedKVLimit{
+			{claimName: "a", kvLimitBytes: a, kvCapacityBytes: 100, kvRecordedBytes: 100},
+			{claimName: "b", kvLimitBytes: b, kvCapacityBytes: 100, kvRecordedBytes: 100},
+			{claimName: "c", kvLimitBytes: c, kvCapacityBytes: 100, kvRecordedBytes: 100},
+		}
+	}
+
+	for name, c := range map[string]struct {
+		before []string
+		limits []plannedKVLimit
+		needed bool
+		owed   []string
+	}{
+		"owed more for the first time":            {nil, plan(120, 90, 90), false, []string{"a"}},
+		"owed more twice in a row":                {[]string{"a"}, plan(120, 90, 90), true, []string{"a"}},
+		"another engine was owed more before":     {[]string{"b"}, plan(120, 90, 90), false, []string{"a"}},
+		"one of the two was owed more before":     {[]string{"c"}, plan(115, 70, 115), true, []string{"a", "c"}},
+		"owed more before, and nothing now":       {[]string{"a"}, plan(100, 100, 100), false, nil},
+		"owed more before, and too little now":    {[]string{"a"}, plan(109, 96, 95), false, nil},
+		"owed more before, by an engine now gone": {[]string{"gone"}, plan(120, 90, 90), false, []string{"a"}},
+	} {
+		needed, owed := needsDividing(engines, c.limits, threshold, c.before)
+		assert.Equal(t, c.needed, needed, name)
+		assert.Equal(t, c.owed, owed, name)
+	}
 }

@@ -753,10 +753,13 @@ func (e growthIncompleteError) Error() string {
 
 func (e growthIncompleteError) Unwrap() error { return e.err }
 
-// errCardLeftAlone says that a round found no need to divide a card, or
-// nothing worth writing, so nothing was tried. It is not a division that
-// worked.
-var errCardLeftAlone = errors.New("the card needs no division")
+// cardLeftAlone says that a round found no need to divide a card, or nothing
+// worth writing, so nothing was tried. It is not a division that worked. It
+// names the engines that are short of KV and that the plan would have given
+// more, which the card's next round asks about.
+type cardLeftAlone struct{ owed []string }
+
+func (cardLeftAlone) Error() string { return "the card needs no division" }
 
 // arrangeCard plans one card and carries the plan out, returning the plan.
 //
@@ -789,11 +792,12 @@ func (r *ModelClaimReconciler) arrangeCard(
 	if err != nil {
 		return nil, err
 	}
-	if why.onlyWhenNeeded && !needsDividing(engines, limits, why.minimumChangeBytes) {
-		return limits, errCardLeftAlone
+	needed, owed := needsDividing(engines, limits, why.minimumChangeBytes, why.owedBefore)
+	if why.onlyWhenNeeded && !needed {
+		return limits, cardLeftAlone{owed: owed}
 	}
 	if why.minimumChangeBytes > 0 && !worthWriting(limits, why.minimumChangeBytes) {
-		return limits, errCardLeftAlone
+		return limits, cardLeftAlone{owed: owed}
 	}
 
 	shrinks, grows := shrinksAndGrows(limits)

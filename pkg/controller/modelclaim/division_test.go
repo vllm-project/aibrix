@@ -260,10 +260,12 @@ func TestReconcileDividesACardOnceForAnEngineThatStaysShort(t *testing.T) {
 		snapshot.Models[1].RequestsRunning = int64(round % 2)
 	})
 
-	// The first round gives the engine that is short its share. After that,
-	// a plan that moves with the other engine's requests gives it nothing
-	// more, and is not carried out.
+	// The second round that finds the engine short gives it its share. After
+	// that, a plan that moves with the other engine's requests gives it
+	// nothing more, and is not carried out.
 	assert.Equal(t, 1, divisions)
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, "busy", runtime.kvLimitCalls[1].ModelName)
 }
 
 func TestReconcileDividesACardOnceForAnEngineWhoseLoadIsNeverRead(t *testing.T) {
@@ -998,19 +1000,22 @@ func TestReconcileWarnsAgainWhileACardStaysStuck(t *testing.T) {
 	runtime.deafToKVLimits = true
 
 	var warnedAt []int
+	var warnings []string
 	for try := 1; try <= 40; try++ {
-		*clock = clock.Add(DefaultRequeueDuration)
-		reconcileOnce(t, r, "stays")
-		for _, event := range recordedEvents(t, r) {
-			if strings.Contains(event, "KVLimitFailed") && strings.Contains(event, "model stays ") {
-				warnedAt = append(warnedAt, try)
-			}
+		nextRound(t, r, clock, "stays")
+		for _, warning := range kvLimitWarnings(t, r, "stays") {
+			warnedAt = append(warnedAt, try)
+			warnings = append(warnings, warning)
 		}
 	}
 
-	// An Event expires, so a card that stays stuck says so again, five
-	// minutes of rounds after it said so first.
-	assert.Equal(t, []int{3, 33}, warnedAt)
+	// An Event expires, so a card that stays stuck says so again, thirty
+	// failures after it said so first. The first round finds the engine
+	// short, and the second tries the first division. Each warning says how
+	// many divisions have failed.
+	require.Equal(t, []int{4, 34}, warnedAt)
+	assert.Contains(t, warnings[0], "could not be divided 3 times in a row")
+	assert.Contains(t, warnings[1], "could not be divided 33 times in a row")
 }
 
 // twoCardsToDivide is two cards with one engine on each, "one" and "two". Each
@@ -1110,12 +1115,16 @@ func TestDivideCardsDoesNotAskARuntimeAgainThatDidNotAnswer(t *testing.T) {
 func TestReconcileDoesNotTakeACardThatHasBarelyDriftedForOneThatWasDivided(t *testing.T) {
 	r, runtime, snapshot, clock := aCardOfTwoEngines(t,
 		engineHolding("busy", 4<<30, 20<<30), engineHolding("idle", 4<<30, 20<<30))
-	// No write reaches a segment, so no division is ever confirmed. Requests
-	// wait on "busy" in the first two rounds and in the fourth. In the third,
-	// the card is at rest, and it is divided as its plan wants it.
+	// No write reaches a segment, so no division is ever confirmed. The card
+	// has not been noted, so its first rounds divide it whatever its load.
+	// Requests wait on "busy" in the first two rounds. In the third, the card
+	// is at rest, and it is divided as its plan wants it. That round notes the
+	// card. Requests wait again from the fourth round on, and the fifth is the
+	// second in a row.
 	runtime.deafToKVLimits = true
 	warnings := 0
-	for round := 1; round <= 4; round++ {
+	tried := map[int]bool{1: true, 2: true, 5: true}
+	for round := 1; round <= 5; round++ {
 		snapshot.Models[0].RequestsRunning = 3
 		snapshot.Models[0].RequestsWaiting = 1
 		if round == 3 {
@@ -1124,29 +1133,30 @@ func TestReconcileDoesNotTakeACardThatHasBarelyDriftedForOneThatWasDivided(t *te
 		}
 		before := len(runtime.kvLimitCalls)
 		nextRound(t, r, clock, "idle")
-		assert.Equal(t, round != 3, len(runtime.kvLimitCalls) > before, "round %d", round)
-		for _, event := range recordedEvents(t, r) {
-			if strings.Contains(event, "KVLimitFailed") && strings.Contains(event, "model busy ") {
-				warnings++
-			}
-		}
+		assert.Equal(t, tried[round], len(runtime.kvLimitCalls) > before, "round %d", round)
+		warnings += len(kvLimitWarnings(t, r, "busy"))
 	}
 
-	assert.Equal(t, 1, warnings, "three divisions failed in a row, and the round between them had nothing to write")
+	assert.Equal(t, 1, warnings, "three divisions failed in a row, and the rounds between them had nothing to write")
 }
 
 func TestCardDivisionStateNotesACardThatWasLeftAlone(t *testing.T) {
 	divisions := newCardDivisionState(nil)
 	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
 	require.False(t, divisions.noted(card))
-	require.Equal(t, 2, divisions.failedAgain(card)+divisions.failedAgain(card)-1)
+	divisions.failedAgain(card)
+	require.Equal(t, 2, divisions.failedAgain(card))
 
-	divisions.leftAlone(card, "a")
+	divisions.leftAlone(card, "a", []string{"busy"})
 
 	assert.True(t, divisions.noted(card), "a change of its engines can be seen from now on")
+	assert.Equal(t, []string{"busy"}, divisions.owedBefore(card))
 	_, changed := divisions.due(card, "b")
 	assert.True(t, changed)
 	assert.Equal(t, 3, divisions.failedAgain(card), "nothing was tried, so the run of failures is not over")
+
+	divisions.divided(card, "b")
+	assert.Empty(t, divisions.owedBefore(card), "a card that was divided owes nothing")
 }
 
 // Failures that lie far apart are no run. Most rounds leave a card alone, so
@@ -1219,6 +1229,65 @@ func TestReconcileHoldsAnEngineThatServesWithNoRecord(t *testing.T) {
 	for _, engine := range snapshot.Models {
 		assert.Equal(t, int64(20)<<30, engine.KVCapacityBytes, engine.ModelName)
 	}
+}
+
+// kvLimitWarnings returns the KVLimitFailed Events raised for a model since
+// the Events were last read.
+func kvLimitWarnings(t *testing.T, r *ModelClaimReconciler, model string) []string {
+	t.Helper()
+	var warnings []string
+	for _, event := range recordedEvents(t, r) {
+		if strings.Contains(event, "KVLimitFailed") && strings.Contains(event, "model "+model+" ") {
+			warnings = append(warnings, event)
+		}
+	}
+	return warnings
+}
+
+// One reading with requests waiting is one sample. The card follows it when
+// the next reading says the same.
+func TestReconcileFollowsAShortEngineOnceItIsOwedMoreTwiceInARow(t *testing.T) {
+	r, runtime, snapshot, clock := aCardOfTwoEngines(t,
+		engineHolding("busy", 4<<30, 20<<30), engineHolding("idle", 4<<30, 20<<30))
+	reconcileOnce(t, r, "idle")
+	require.Empty(t, runtime.kvLimitCalls)
+
+	snapshot.Models[0].RequestsRunning = 3
+	snapshot.Models[0].RequestsWaiting = 1
+	nextRound(t, r, clock, "idle")
+	require.Empty(t, runtime.kvLimitCalls, "one reading is not followed")
+
+	nextRound(t, r, clock, "idle")
+	spare := int64(32) << 30
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, int64(4)<<30+spare*5/6+1, getModel(t, r, "busy").Status.Instances[0].KVLimitBytes)
+
+	// Requests now wait on "idle" in one round, and in the next but one. A
+	// request is in flight on the card all along, so it is never at rest.
+	snapshot.Models[0].RequestsRunning, snapshot.Models[0].RequestsWaiting = 1, 0
+	for _, waiting := range []int64{1, 0, 1} {
+		snapshot.Models[1].RequestsRunning, snapshot.Models[1].RequestsWaiting = 1, waiting
+		nextRound(t, r, clock, "idle")
+	}
+	assert.Len(t, runtime.kvLimitCalls, 2, "the count starts again after a round that owes the engine nothing")
+}
+
+// Two engines have each mapped more than half of their limits, so each is
+// short. A request is in flight on one of them in one round, and on the other
+// in the next. Each plan gives one of them more, and never the same one twice
+// in a row.
+func TestReconcileLeavesACardAloneWhileItsLoadComesAndGoes(t *testing.T) {
+	r, runtime, snapshot, clock := aCardOfTwoEngines(t,
+		engineHolding("busy", 12<<30, 20<<30), engineHolding("idle", 12<<30, 20<<30))
+	reconcileOnce(t, r, "idle")
+	require.Empty(t, runtime.kvLimitCalls)
+
+	divisions := divisionsIn(t, r, runtime, clock, 12, func(round int) {
+		snapshot.Models[0].RequestsRunning = int64(round % 2)
+		snapshot.Models[1].RequestsRunning = int64((round + 1) % 2)
+	})
+
+	assert.Zero(t, divisions)
 }
 
 func TestCardDivisionStateSaysOnceWhyACardIsLeftUndivided(t *testing.T) {
@@ -1314,27 +1383,26 @@ func TestReconcileDoesNotTakeACardLeftAloneForOneThatWasDivided(t *testing.T) {
 	recordedEvents(t, r)
 
 	// No write reaches a segment, so no division is ever confirmed. Requests
-	// wait on "stays" in the first two rounds and in the fourth. In the third
-	// they are all being served, so nothing is tried.
+	// wait on "stays" in the first three rounds, and in the last two. In the
+	// fourth, they are all being served, so nothing is tried. A division is
+	// tried in the second round that finds the engine short, and in every
+	// round after it while that lasts.
 	snapshot := runtime.snapshots[pod.Status.PodIP]
 	runtime.deafToKVLimits = true
 	warnings := 0
-	for round := 1; round <= 4; round++ {
+	tried := map[int]bool{2: true, 3: true, 6: true}
+	for round := 1; round <= 6; round++ {
 		snapshot.Models[0].RequestsRunning = 3
 		snapshot.Models[0].RequestsWaiting = 1
-		if round == 3 {
+		if round == 4 {
 			snapshot.Models[0].RequestsRunning = 4
 			snapshot.Models[0].RequestsWaiting = 0
 		}
 		before := len(runtime.kvLimitCalls)
 		nextRound(t, r, clock, "stays")
-		assert.Equal(t, round != 3, len(runtime.kvLimitCalls) > before, "round %d", round)
-		for _, event := range recordedEvents(t, r) {
-			if strings.Contains(event, "KVLimitFailed") && strings.Contains(event, "model stays ") {
-				warnings++
-			}
-		}
+		assert.Equal(t, tried[round], len(runtime.kvLimitCalls) > before, "round %d", round)
+		warnings += len(kvLimitWarnings(t, r, "stays"))
 	}
 
-	assert.Equal(t, 1, warnings, "three divisions failed in a row, and the round between them tried none")
+	assert.Equal(t, 1, warnings, "three divisions failed in a row, and the rounds between them tried none")
 }
