@@ -798,9 +798,12 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    Another claim deleted, scaled down, failed or gone to sleep, a declaration
    that shrinks or becomes usable, a pod that joins the pool or turns ready,
    or a change to the claim's own spec wakes it at once, and it starts again
-   from the shortest wait. Room that engines free by giving back mapped KV
-   while they serve sends no such signal, so the claim finds it on its next
-   try, a minute later at most.
+   from the shortest wait. A claim that is deleted wakes the others before
+   its engine has exited, and an engine holds its memory until it has. So the
+   try that a deletion wakes is usually refused once, and the room is found on
+   the next try, 10 seconds later. Room that engines free by giving back
+   mapped KV while they serve sends no signal at all, so the claim finds it on
+   its next try, a minute later at most.
 
    Claims that are woken together are tried oldest first. Three limits
    remain. A claim that has waited long tries less often than one that has
