@@ -422,10 +422,11 @@ many claims sit on it. The round carries the plan out in three cases:
 In any other case, the card is left alone. A limit is a ceiling, and the
 requests in flight come and go. Carrying out every plan would cost the writes,
 and would give nothing to an engine that is far from its limit. A card that is
-close to its plan is left alone as well: the threshold is the larger of half a
-gibibyte and a hundredth of the card. A KV allocator hands out whole bundles of
-pages, and a change smaller than a bundle moves no memory at all. These
-divisions raise no Event. The controller logs them at verbosity 2.
+close to its plan is left alone as well, even in the three cases above. The
+threshold is the larger of half a gibibyte and a hundredth of the card. A KV
+allocator hands out whole bundles of pages, and a change smaller than a bundle
+moves no memory at all. These divisions raise no Event. The controller logs them
+at verbosity 2.
 
 A card whose engines change is divided on the next pass, without waiting for its
 round. That covers a model removed or failed, an engine that sleeps or wakes,
