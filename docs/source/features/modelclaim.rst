@@ -311,18 +311,21 @@ count could take the model once its engines release those pages.
 A Pod that cannot be accounted for is not used at all. That covers a runtime
 that did not answer, a card the runtime could not measure, a Pod carrying an
 instance of a claim that declares nothing, and a Pod running an engine that
-no recorded instance answers for.
+no recorded instance answers for. Such an engine counts until the runtime no
+longer lists it, or lists it as failed and stopped. No Pod is used either
+while the claims cannot be listed.
 
 A Pod goes through the account when its containers request
 ``nvidia.com/gpu``, or when its runtime reports accelerators. The second
 covers GPUs given to a Pod some other way, such as a dynamic resource claim.
 A card reported with no memory at all does not count. That is the card the
-runtime's mock mode reports on CPU pools. A Pod with neither is taken for one
-without a GPU, and nothing is accounted for on it. A Pod whose runtime did not
-answer is turned away whatever it requests, since only its runtime could say
-that it has cards. A reading that reports no card, as when NVML fails once,
-still counts one while an engine on the Pod holds a KV segment. An instance on
-a Pod without a card records no limit, since no card was divided for it.
+runtime's mock mode reports on CPU pools. A reading that reports no card, as
+when NVML fails once, still counts one while an engine on the Pod holds a KV
+segment, or while an instance on the Pod records a limit. A Pod with none of
+these is taken for one without a GPU, and nothing is accounted for on it. A
+Pod whose runtime did not answer is turned away whatever it requests, since
+its runtime is what says that it has cards. An instance on a Pod without a
+card records no limit, since no card was divided for it.
 
 Upgrade an existing pool
 ------------------------
@@ -407,9 +410,9 @@ unaccountable until the claim declares its cost.
 
 Sleeping does not free a seat. An instance that is asleep keeps its place in
 the account, at the full footprint and floor its claim declared, because the
-assignment has to survive the sleep for a wake to find its engine again. An
-engine that goes to sleep normally gives back the KV it had mapped. A claim
-that was turned away because of that KV can be placed then.
+assignment has to survive the sleep for a wake to find its engine again.
+Normally, an engine that goes to sleep gives back the KV it had mapped. A
+claim that was turned away because of that KV can be placed then.
 
 A failed instance does free its seat. The runtime stops an engine once its
 restarts run out, and reports it as not alive. The account then charges the
@@ -674,32 +677,40 @@ Claim remains ``Scheduling`` with zero candidates
 Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    Candidates exist, but no card can be shown to have room for
    ``perGPU.maximumFootprint`` plus ``perGPU.kvFloor``. The message names the
-   Pod that is closest to holding the model, and says which count it failed: a
-   card that could never hold the model, or one whose room is held by the
-   engines already on it. A card of the second kind is named first, since
-   waiting can help there. Among cards of one kind, the roomiest is named. It
-   also shows that card's account: how much it holds, and how much of that is
-   promised to, or held by, the instances on it. A Pod is also turned away
-   when its runtime did not answer, when one of its cards could not be
-   measured, when a claim on it declares no usable ``perGPU``, or when an
-   engine there belongs to no claim on it or is still exiting. The claim is
-   tried again on every pass, and the ``NoMatchingPods`` Event is raised only
-   when the refusal changes. The ``Scheduled`` condition always carries the
-   current one.
+   Pod that is closest to holding the model, and says why it was turned away.
+   There are three kinds. A card could never hold the model. A card could hold
+   it, and its room is held by the engines already on it. Or a card had room,
+   and could not be divided. A card of the last two kinds is named first,
+   since waiting can help there. Among cards of one kind, the roomiest is
+   named. For the first two kinds, the message also shows the card's account:
+   how much it holds, and how much of that is promised to, or held by, the
+   instances on it.
+
+   A Pod is also turned away when it cannot be accounted for. Its runtime did
+   not answer, or one of its cards could not be measured. A claim on it
+   declares no usable ``perGPU``. An engine there belongs to no claim, or is
+   still exiting. Or the claims could not be listed. When no Pod could be
+   accounted for, the message names one of them and the reason.
+
+   The claim is tried again on every pass, and the ``NoMatchingPods`` Event is
+   raised only when the refusal changes. The ``Scheduled`` condition always
+   carries the current one.
 
 Claim remains ``Pending`` with ``InvalidPerGPU``
    ``perGPU`` is missing, or one of its figures cannot be used, and the
    message names which. The claim is not placed anywhere until it declares
    its cost, because a card carrying it could not be accounted for. It is
-   placed on the next pass after the claim is fixed.
+   tried on the next pass after the claim is fixed.
 
 A Pod is turned away because an engine on it belongs to no claim
    The refusal names the model that engine serves. Nobody knows what such an
-   engine holds, so its card is kept out of placement until the engine is
-   gone. An engine that was told to stop reads as still exiting until its
-   last process has gone, and needs nothing done. Any other such engine is
-   not stopped by the controller. Stop it through the runtime API of that
-   Pod, or restart the Pod:
+   engine holds, so its card is kept out of placement until the runtime no
+   longer lists the engine, or lists it as failed and stopped. An engine that
+   was told to stop reads as still exiting until its last process has gone.
+   It normally goes by itself within seconds. The runtime only asks it to
+   stop, so an engine that does not react stays. Restart the Pod then. Any
+   other such engine is not stopped by the controller. Stop it through the
+   runtime API of that Pod, or restart the Pod:
 
    .. code-block:: bash
 
@@ -716,9 +727,10 @@ Claim remains ``Activating``
    no engine for it, for example after the controller stopped between the two
    steps. The controller then starts the engine again. If the runtime
    refuses, the instance is dropped with an ``ActivateFailed`` Event, its card
-   is given back, and the claim is placed again. If the runtime took the call
-   and its answer was lost, the engine may have started. The instance then
-   stays, and the first pass that can read the runtime finds out.
+   is given back, and the claim is tried again. The next try may ask the same
+   Pod. If the runtime took the call and its answer was lost, the engine may
+   have started. The instance then stays, and the first pass that can read the
+   runtime finds out.
 
 Claim remains ``Activating`` after ``/health`` succeeds
    With ``perGPU`` declared, the engine also has to report the KV limit it was

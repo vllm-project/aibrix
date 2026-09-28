@@ -103,8 +103,10 @@ func podGPUCount(pod corev1.Pod) int64 {
 // podHasGPUs reports whether a pod has cards the account has to cover. The
 // device plugin's nvidia.com/gpu request is one way to tell. The runtime
 // reporting accelerators is the other, and it covers a pod given its GPUs some
-// other way, such as a dynamic resource claim. A pod with neither is taken for
-// one without a GPU, like the CPU pools the tests run on.
+// other way, such as a dynamic resource claim. The account counts one card
+// as reported where a reading missed it, and an engine on the pod holds a KV
+// segment or an instance records a limit. A pod with none of these is taken
+// for one without a GPU, like the CPU pools the tests run on.
 func podHasGPUs(pod corev1.Pod, reportedAccelerators int) bool {
 	return podGPUCount(pod) > 0 || reportedAccelerators > 0
 }

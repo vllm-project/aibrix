@@ -165,7 +165,9 @@ type podLedger struct {
 	totalMinimumReserveBytes int64
 	totalHeldBytes           int64
 	// accelerators is how many cards the runtime reported, which is what
-	// makes a pod that requests no nvidia.com/gpu still a pod with cards.
+	// makes a pod that requests no nvidia.com/gpu still a pod with cards. It
+	// is one where a reading missed the card, and an engine on the pod holds a
+	// KV segment or an instance records a limit.
 	accelerators int
 	// observedAt is when the snapshot this account was built from was taken. A
 	// limit written from it carries the same moment, which is what tells the
