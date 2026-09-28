@@ -280,13 +280,13 @@ decode_score = running_reqs_with_pending
 
 ### `token_load`
 
-Scores from the gateway's decode ledger in `pd.TokenLoadTracker` rather than from request counts or scraped KV usage. Each request is charged `request_cost + prompt_tokens` to the selected decode pod, under `selectMu` together with the other selection bookkeeping, and released on request completion or prefill failure (`releaseTokenLoad`). The whole prompt is charged because the decode pod receives all of its KV.
+Scores from the gateway's decode ledger in `pd.TokenLoadTracker` rather than from request counts or scraped KV usage. Each request is charged its `prompt_tokens` to the selected decode pod, under `selectMu` together with the other selection bookkeeping, and released on request completion or prefill failure (`releaseTokenLoad`, or the prefill executor for a terminal async failure). The whole prompt is charged because the decode pod receives all of its KV; there is no fixed per-request cost (`AIBRIX_TOKEN_LOAD_REQUEST_COST` is prefill-only).
 
 ```
 decode_score = decode_tokens
 ```
 
-The policy reads no engine metrics, so the cold-start score does not apply to it: a pod without metrics is scored from the ledger like any other. The decode fast paths still run on request counts, throughput and drain rate.
+The policy reads no engine metrics, so the cold-start score does not apply to it: a pod without metrics is scored from the ledger like any other. The decode load-imbalance fast path is skipped under `token_load` (it still runs to fill the metric maps): it picks by request count, throughput or drain rate, and the pod holding one long prompt has the fewest requests. The ledger is local to each gateway replica.
 
 ### Config profile overrides for PD score policies
 

@@ -398,19 +398,19 @@ func (r *pdRouter) chargeTokenLoad(routingCtx *types.RoutingContext, pod *v1.Pod
 // chargeDecodeTokenLoad charges the request's prompt to the decode pod when the
 // request is scored by the token_load decode policy. The decode pod receives
 // the whole prompt's KV from the prefill pod, so the charge is the full prompt,
-// not the prefix-matched remainder the prefill charge uses, plus the same fixed
-// per-request cost. It is released on request completion or prefill failure
-// (releaseTokenLoad).
+// not the prefix-matched remainder the prefill charge uses. It carries no fixed
+// per-request cost: AIBRIX_TOKEN_LOAD_REQUEST_COST models prefill setup work,
+// not KV on the decoder. It is released on request completion or prefill
+// failure (releaseTokenLoad, or the executor for an async prefill leg).
 func (r *pdRouter) chargeDecodeTokenLoad(routingCtx *types.RoutingContext, pod *v1.Pod, policy pd.DecodeScorePolicy) {
 	if r.tokenLoadTracker == nil || !pd.UsesDecodeTokenLoad(policy) {
 		return
 	}
 	overrides := routingCtx.PDOverrides()
-	promptTokens := pd.EstimatePromptTokens(routingCtx.ReqBody)
-	cost := r.tokenLoadTracker.PrefillCostWithRequestCost(promptTokens, overrides.TokenLoad.RequestCost)
+	cost := float64(pd.EstimatePromptTokens(routingCtx.ReqBody))
 	if klog.V(4).Enabled() {
 		klog.V(4).InfoS("pd_router token_load decode charge",
-			"request_id", routingCtx.RequestID, "pod_name", pod.Name, "prompt_tokens", promptTokens, "cost", cost)
+			"request_id", routingCtx.RequestID, "pod_name", pod.Name, "prompt_tokens", cost)
 	}
 	r.tokenLoadTracker.AcquireDecodeWithTTL(routingCtx.RequestID, utils.GeneratePodKey(pod.Namespace, pod.Name), cost, overrides.TokenLoad.TTL)
 }
@@ -542,7 +542,8 @@ type Scores struct {
 //     throughput spread, drain-rate ratio); the first that fires narrows decodePods
 //     to a single pod and aligns prefillPods to its roleset. Steps 4 and 5 are
 //     independent: both can fire on the same request if both prefill and decode are
-//     imbalanced, with each narrowing its own side of the pair.
+//     imbalanced, with each narrowing its own side of the pair. Under the token_load
+//     decode policy the decode result is ignored and every decode pod is scored.
 //
 //  6. Score remaining candidates — scorePreparedPrefillPods and scoreDecodePods
 //     evaluate every roleset; finalPDScore picks the roleset with the lowest
@@ -632,6 +633,17 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	}
 
 	targetPod, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage := r.loadImbalanceSelectDecodePod(routingCtx, decodePods)
+	// The decode fast path picks by request count, throughput or drain rate. Those
+	// are the signals token_load replaces: a pod holding one long prompt has the
+	// fewest requests and the most KV. Under token_load, score the whole set; the
+	// call above still fills the metric maps.
+	if targetPod != nil && pd.UsesDecodeTokenLoad(decodePol) {
+		if klog.V(4).Enabled() {
+			klog.V(4).InfoS("decode load imbalance fast path skipped under token_load",
+				"request_id", routingCtx.RequestID, "fast_path_decode_pod", targetPod.Name)
+		}
+		targetPod = nil
+	}
 	if targetPod != nil {
 		decodePods = []*v1.Pod{targetPod}
 		if aligned := utils.FilterPodsByLabel(prefillPods, PDRoleSetIdentifier, targetPod.Labels[PDRoleSetIdentifier]); len(aligned) > 0 {
@@ -983,7 +995,8 @@ func (r *pdRouter) scorePreparedPrefillPods(routingCtx *types.RoutingContext, pr
 // Policy resolution: the policy argument, then r.decodePolicy, then load_balancing.
 // When at least one pod reports RealtimeNumRequestsRunning, pods missing that metric
 // receive a cold-start score (1.0 + PendingDecodeTracker pending count) instead of
-// full policy scoring. podRequestCounts include pending decode from concurrent Route
+// full policy scoring, except under token_load, which scores every pod from the
+// gateway's decode ledger. podRequestCounts include pending decode from concurrent Route
 // calls that have registered AddPendingDecode. If no pod has the running-request metric,
 // all pods are scored normally.
 //

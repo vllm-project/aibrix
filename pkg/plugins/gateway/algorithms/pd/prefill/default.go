@@ -199,6 +199,15 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 					failure = pd.RecordPrefillFailure(leg, err)
 					leg.FinishDecodeAbort()
 				}
+				// A terminal failure fails the client request unless the decode
+				// pod is already streaming and the engine leaves it running
+				// (SGLang). When the request fails, the KV never lands on the
+				// decode pod, so its token_load charge goes now instead of at
+				// the completion callback or the TTL.
+				if e.tokenLoad != nil && pd.PrefillFailureIsTerminalFor(failure.ClassOrEmpty(), policy.ResetAfterHeaders) &&
+					(policy.ResetAfterHeaders || !leg.DecodeResponded()) {
+					e.tokenLoad.ReleaseDecode(requestID)
+				}
 				klog.ErrorS(err, "prefill_request_failed",
 					"request_id", requestID,
 					"llm_engine", llmEngine,

@@ -173,3 +173,57 @@ func TestPDRouter_DecodeTokenLoadChargedOnlyForTokenLoadPolicy(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, float64(1000), tokenLoad.GetDecodeLoad(decodeKey), "token_load selected through routingConfig charges the decode ledger")
 }
+
+// TestPDRouter_DecodeTokenLoadSkipsDecodeFastPath sets up the case the decode
+// fast path gets wrong for token_load: the pod with the fewest running requests
+// holds one long prompt, the other holds many short ones, and the request-count
+// spread is above the default threshold of 16. The fast path picks the
+// low-count pod; token_load must score both and pick the one holding fewer
+// tokens. load_balancing keeps the fast path.
+func TestPDRouter_DecodeTokenLoadSkipsDecodeFastPath(t *testing.T) {
+	longPod := burstPod("decode-long", "decode", "127.0.0.100")
+	shortPod := burstPod("decode-short", "decode", "127.0.0.101")
+	decodePods := []*v1.Pod{longPod, shortPod}
+	readyPods := append([]*v1.Pod{burstPod("prefill-0", "prefill", "127.0.0.1")}, decodePods...)
+
+	r, tokenLoad := newDecodeTokenLoadTestRouter(t)
+	r.cache = cache.NewWithPodsMetricsForTest(readyPods, "token-load-model", map[string]map[string]metrics.MetricValue{
+		longPod.Name:  {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 1}},
+		shortPod.Name: {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 18}},
+	})
+	tokenLoad.AcquireDecodeWithTTL("one-long", burstPodKey(longPod.Name), 32_000, 0)
+	tokenLoad.AcquireDecodeWithTTL("many-short", burstPodKey(shortPod.Name), 18*200, 0)
+
+	fastPath, _, _, _, _, _, _ := r.loadImbalanceSelectDecodePod(tokenLoadRequest(t, "probe", 400), append([]*v1.Pod{}, decodePods...))
+	require.NotNil(t, fastPath, "the fixture must trigger the request-count fast path")
+	require.Equal(t, longPod.Name, fastPath.Name)
+
+	_, decode, err := r.filterPrefillDecodePods(tokenLoadRequest(t, "token-load", 400), readyPods)
+	require.NoError(t, err)
+	assert.Equal(t, shortPod.Name, decode.Name, "token_load must not be overridden by the request-count fast path")
+
+	r.decodePolicy = pd.LoadBalancingDecodePolicy{}
+	_, decode, err = r.filterPrefillDecodePods(tokenLoadRequest(t, "load-balancing", 400), readyPods)
+	require.NoError(t, err)
+	assert.Equal(t, longPod.Name, decode.Name, "load_balancing keeps the fast path")
+}
+
+// TestPDRouter_DecodeTokenLoadChargesPromptOnly checks the decode charge at the
+// real default request cost: the prefill charge carries it, the decode charge
+// does not.
+func TestPDRouter_DecodeTokenLoadChargesPromptOnly(t *testing.T) {
+	prefillPod := burstPod("prefill-0", "prefill", "127.0.0.1")
+	decodePod := burstPod("decode-0", "decode", "127.0.0.100")
+	gate := make(chan struct{})
+	close(gate)
+	cfg := pd.TokenLoadConfig{KVWeight: 0.5, RequestCost: pd.DefaultTokenLoadRequestCost}
+	r, tokenLoad := newTokenLoadTestRouterWithConfig(t, &http.Client{Transport: &gatedTransport{gate: gate}}, cfg)
+	r.decodePolicy = pd.TokenLoadDecodePolicy{}
+
+	_, _, err := r.filterPrefillDecodePods(tokenLoadRequest(t, "req", 4000), []*v1.Pod{prefillPod, decodePod})
+	require.NoError(t, err)
+	_, kv := tokenLoad.GetLoad(utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name))
+	assert.Equal(t, float64(1000+pd.DefaultTokenLoadRequestCost), kv, "the prefill charge includes the request cost")
+	assert.Equal(t, float64(1000), tokenLoad.GetDecodeLoad(utils.GeneratePodKey(decodePod.Namespace, decodePod.Name)),
+		"the decode charge is the prompt only")
+}
