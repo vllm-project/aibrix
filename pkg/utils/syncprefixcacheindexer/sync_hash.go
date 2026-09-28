@@ -270,9 +270,14 @@ func (s *SyncPrefixHashTable) ProcessBlockStored(event BlockStored) error {
 	// chains from the one before it, matching GetPrefixHashes.
 	parentAibrixHash := s.seed
 	if event.ParentBlockHash != nil {
-		if ph, exists := hashMapping.engineToAibrix[*event.ParentBlockHash]; exists {
-			parentAibrixHash = ph
+		ph, exists := hashMapping.engineToAibrix[*event.ParentBlockHash]
+		if !exists {
+			// Chaining from the seed would index this suffix as a full prefix, so skip it.
+			klog.Warningf("block stored event has unknown parent, skipping: model=%s, lora_id=%d, parent=%d, blocks=%d",
+				event.ModelName, event.LoraID, *event.ParentBlockHash, len(event.BlockHashes))
+			return nil
 		}
+		parentAibrixHash = ph
 	}
 
 	for i, engineBlockHash := range event.BlockHashes {
