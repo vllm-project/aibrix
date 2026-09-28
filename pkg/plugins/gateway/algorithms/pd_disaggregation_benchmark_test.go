@@ -78,7 +78,7 @@ func BenchmarkScorePrefillPods(b *testing.B) {
 			prefixHashes := router.prefixCacheIndexer.GetPrefixHashes(tokens)
 			for i, pod := range pods {
 				if i%2 == 0 {
-					router.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, pod.Name)
+					router.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, utils.GeneratePodKey(pod.Namespace, pod.Name))
 				}
 				for req := 0; req < (i%4)+1; req++ {
 					router.prefillRequestTracker.AddPrefillRequest(fmt.Sprintf("%s-%d", pod.Name, req), utils.GeneratePodKey(pod.Namespace, pod.Name))
@@ -425,7 +425,7 @@ func BenchmarkFilterPrefillDecodePods(b *testing.B) {
 			seedHashes := prefixTable.GetPrefixHashes(seedTokens)
 			for i, pod := range prefillPods {
 				if i%2 == 0 {
-					prefixTable.AddPrefix(seedHashes, ctx.Model, pod.Name)
+					prefixTable.AddPrefix(seedHashes, ctx.Model, utils.GeneratePodKey(pod.Namespace, pod.Name))
 				}
 			}
 

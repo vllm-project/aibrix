@@ -120,7 +120,8 @@ type PrefillScorer interface {
 // the AIBRIX_PREFILL_SCORE_POLICY switch statement.
 type PrefillScorePolicy interface {
 	// Prepare is called once per request. pods and readyPodsMap represent the
-	// same candidate set; readyPodsMap is provided for O(1) name lookups.
+	// same candidate set; readyPodsMap is keyed by pod key (namespace/name, see
+	// utils.GeneratePodKey) and is provided for O(1) lookups.
 	// Returns an error only when scoring cannot proceed at all (e.g. tokenization
 	// failure); in that case the router falls back to skipping the request.
 	Prepare(routingCtx *types.RoutingContext, pods []*v1.Pod, readyPodsMap map[string]struct{}) (PrefillScorer, error)
@@ -182,7 +183,7 @@ func (p *prefixCachePrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ [
 func (p *prefixCachePrefillPolicy) Name() string { return PrefillScorePolicyPrefixCache }
 
 // prefixCacheScorer is the request-scoped scorer produced by PrefixCachePrefillPolicy.
-// matchedPods maps pod name → prefix-match percentage (0–100); hashes are the
+// matchedPods maps pod key (namespace/name) → prefix-match percentage (0–100); hashes are the
 // token-prefix hashes to be added to the index once a pod is selected.
 // Matches below minMatchPct score as no match.
 type prefixCacheScorer struct {
@@ -194,7 +195,7 @@ type prefixCacheScorer struct {
 func (s *prefixCacheScorer) PrefixHashes() []uint64 { return s.hashes }
 
 func (s *prefixCacheScorer) ScorePod(pod *v1.Pod, reqCnt, maxRequestCount float64) float64 {
-	rawMatch := s.matchedPods[pod.Name]
+	rawMatch := s.matchedPods[utils.GeneratePodKey(pod.Namespace, pod.Name)]
 	matchPct := float64(ClampMinMatch(rawMatch, s.minMatchPct))
 	score := (100-matchPct)*.1 + reqCnt/maxRequestCount
 	if klog.V(4).Enabled() {
@@ -380,7 +381,7 @@ func (s *conductorScorer) getAvgPrefillTimeMs(podName, podNamespace, modelName s
 // ScorePod returns the estimated TTFT (in ms) for a single pod by summing the queue,
 // prefix, and prefill components. Lower scores are preferred by the router.
 func (s *conductorScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
-	matchPct := float64(s.matchedPods[pod.Name]) // 0..100, 0 when the pod is not in matchedPods
+	matchPct := float64(s.matchedPods[utils.GeneratePodKey(pod.Namespace, pod.Name)]) // 0..100, 0 when the pod is not in matchedPods
 	matchedTokens := float64(s.totalTokens) * matchPct / 100.0
 	unmatchedTokens := float64(s.totalTokens) - matchedTokens
 
@@ -496,15 +497,16 @@ func (s tokenLoadScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
 // the uncached part of the prompt to the token-load tracker.
 type PrefixMatchScorer interface {
 	// PrefixMatchPercent returns how much of the request's prompt (0-100) the
-	// named pod already holds in its prefix cache, or -1 when unknown.
-	PrefixMatchPercent(podName string) int
+	// pod with the given pod key (namespace/name) already holds in its prefix
+	// cache, or -1 when unknown.
+	PrefixMatchPercent(podKey string) int
 }
 
 // PrefixMatchPercent returns the prefix-match percentage scorer reports for
-// podName, or -1 when scorer does not implement PrefixMatchScorer.
-func PrefixMatchPercent(scorer PrefillScorer, podName string) int {
+// podKey, or -1 when scorer does not implement PrefixMatchScorer.
+func PrefixMatchPercent(scorer PrefillScorer, podKey string) int {
 	if m, ok := scorer.(PrefixMatchScorer); ok {
-		return m.PrefixMatchPercent(podName)
+		return m.PrefixMatchPercent(podKey)
 	}
 	return -1
 }
@@ -638,17 +640,18 @@ func (s *hybridCacheLoadScorer) PrefixHashes() []uint64 { return s.hashes }
 
 // PrefixMatchPercent implements PrefixMatchScorer with the clamped match, so
 // the router's charge and the score agree on what counts as cached.
-func (s *hybridCacheLoadScorer) PrefixMatchPercent(podName string) int {
-	return ClampMinMatch(s.matchedPods[podName], s.cfg.MinMatchPct)
+func (s *hybridCacheLoadScorer) PrefixMatchPercent(podKey string) int {
+	return ClampMinMatch(s.matchedPods[podKey], s.cfg.MinMatchPct)
 }
 
 func (s *hybridCacheLoadScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
-	matchPct := s.PrefixMatchPercent(pod.Name)
+	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+	matchPct := s.PrefixMatchPercent(podKey)
 	r := float64(matchPct) / 100
 	discount := 1 - r*r*s.cfg.Factor
 	load := 0.0
 	if s.tracker != nil {
-		load = s.tracker.GetPriorityWithKVWeight(utils.GeneratePodKey(pod.Namespace, pod.Name), s.kvWeight)
+		load = s.tracker.GetPriorityWithKVWeight(podKey, s.kvWeight)
 	}
 	score := discount
 	if load >= 1 {
@@ -658,7 +661,7 @@ func (s *hybridCacheLoadScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64
 		klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
 			"policy", PrefillScorePolicyHybridCacheLoad,
 			"score", score, "token_load", load, "discount", discount,
-			"prefix_match_percent", matchPct, "raw_match_percent", s.matchedPods[pod.Name],
+			"prefix_match_percent", matchPct, "raw_match_percent", s.matchedPods[podKey],
 			"running_reqs", reqCnt)
 	}
 	return score

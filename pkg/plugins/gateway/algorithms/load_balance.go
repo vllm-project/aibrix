@@ -427,10 +427,10 @@ func getTargetPodListOnLoadImbalance(podRequestCount map[string]int, readyPods [
 		}
 	}
 
-	for podname, v := range podRequestCount {
+	podByKey := podsByKey(readyPods)
+	for podKey, v := range podRequestCount {
 		if v == minValue {
-			pod, _ := utils.FilterPodByName(podname, readyPods)
-			if pod != nil {
+			if pod := podByKey[podKey]; pod != nil {
 				targetPodList = append(targetPodList, pod)
 			}
 		}

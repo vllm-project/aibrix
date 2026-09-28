@@ -359,7 +359,8 @@ func (r *pdRouter) chargeTokenLoad(routingCtx *types.RoutingContext, pod *v1.Pod
 
 	promptTokens := pd.EstimatePromptTokens(routingCtx.ReqBody)
 	sessionID := routingCtx.ReqHeaders[constants.HeaderSessionKey]
-	matchPct := pd.PrefixMatchPercent(scorer, pod.Name)
+	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+	matchPct := pd.PrefixMatchPercent(scorer, podKey)
 	newTokens, source := r.tokenLoadTracker.NewTokensWithSessionLimits(routingCtx.Model, sessionID, promptTokens, matchPct,
 		overrides.TokenLoad.SessionTTL, maxSessions)
 	cost := r.tokenLoadTracker.PrefillCostWithRequestCost(newTokens, overrides.TokenLoad.RequestCost)
@@ -369,7 +370,7 @@ func (r *pdRouter) chargeTokenLoad(routingCtx *types.RoutingContext, pod *v1.Pod
 			"prompt_tokens", promptTokens, "new_tokens", newTokens, "source", source,
 			"prefix_match_percent", matchPct, "cost", cost)
 	}
-	r.tokenLoadTracker.AcquirePrefillWithTTL(routingCtx.RequestID, utils.GeneratePodKey(pod.Namespace, pod.Name), cost, overrides.TokenLoad.TTL)
+	r.tokenLoadTracker.AcquirePrefillWithTTL(routingCtx.RequestID, podKey, cost, overrides.TokenLoad.TTL)
 }
 
 // releaseTokenLoad drops whatever the request still holds on the token-load
@@ -856,7 +857,7 @@ func (r *pdRouter) preparePrefillScorer(routingCtx *types.RoutingContext, prefil
 	}
 	readyPodsMap := make(map[string]struct{}, len(prefillPods))
 	for _, pod := range prefillPods {
-		readyPodsMap[pod.Name] = struct{}{}
+		readyPodsMap[utils.GeneratePodKey(pod.Namespace, pod.Name)] = struct{}{}
 	}
 	scorer, err := policy.Prepare(routingCtx, prefillPods, readyPodsMap)
 	if err != nil {
@@ -1131,7 +1132,7 @@ func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 	}
 
 	if len(prefixHashes) > 0 {
-		r.enqueuePrefixUpdate(prefixHashes, routingCtx.Model, targetPrefillPod.Name)
+		r.enqueuePrefixUpdate(prefixHashes, routingCtx.Model, utils.GeneratePodKey(targetPrefillPod.Namespace, targetPrefillPod.Name))
 	}
 
 	r.countersMu.Lock()
