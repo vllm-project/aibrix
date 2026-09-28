@@ -1648,3 +1648,16 @@ func TestReconcileDoesNotStartAClaimOverForARecordThatWasTakenBack(t *testing.T)
 
 	assert.Equal(t, 40*time.Second, reconcileFor(t, r, pm.Name))
 }
+
+// A reconciler that is built by hand has no backoff. It gets one on the first
+// call, and keeps it, so that a refusal is still known on the next pass.
+func TestBackoffKeepsTheWaitsOfAReconcilerBuiltByHand(t *testing.T) {
+	r := &ModelClaimReconciler{}
+	claim := types.NamespacedName{Namespace: testNamespace, Name: "first"}
+
+	r.backoff().refused(claim, 1, nil)
+	r.backoff().statusWritten(claim)
+
+	due, _ := r.backoff().due(claim, 1, nil)
+	assert.False(t, due)
+}
