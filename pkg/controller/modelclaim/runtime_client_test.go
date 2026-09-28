@@ -19,11 +19,14 @@ package modelclaim
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -73,10 +76,13 @@ func TestHTTPRuntimeActivate(t *testing.T) {
 	assert.Equal(t, "kvc_m1", resp.IPCName)
 }
 
-// hangingRuntime is a runtime that takes each request and answers none of
-// them until the test ends, as a runtime whose snapshot handler is stuck would.
-// Once answering is set, it answers again. It counts the requests that reach
-// it.
+// hangingRuntime stands in for a runtime that takes each request and answers
+// none of them, as a runtime whose snapshot handler is stuck would. Once
+// answering is set, it answers again.
+//
+// It is the transport of the client that calls it. So it counts a request the
+// moment the client sends it, and no test waits for a request to reach a
+// handler. A call to it ends when its caller gives up.
 type hangingRuntime struct {
 	host      string
 	port      int
@@ -84,46 +90,104 @@ type hangingRuntime struct {
 	answering atomic.Bool
 }
 
-// asked waits until the runtime has counted so many requests. A client that
-// gave up has sent its request, and the handler may not have counted it yet.
+func (r *hangingRuntime) RoundTrip(req *http.Request) (*http.Response, error) {
+	r.requests.Add(1)
+	if r.answering.Load() {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+			Request:    req,
+		}, nil
+	}
+	<-req.Context().Done()
+	return nil, req.Context().Err()
+}
+
+// address is the runtime as the client remembers it.
+func (r *hangingRuntime) address() string {
+	return net.JoinHostPort(r.host, strconv.Itoa(r.port))
+}
+
+// asked checks how many requests the client has sent to the runtime.
 func (r *hangingRuntime) asked(t *testing.T, requests int32) {
 	t.Helper()
-	require.Eventually(t, func() bool { return r.requests.Load() >= requests },
-		5*time.Second, time.Millisecond)
 	assert.Equal(t, requests, r.requests.Load())
 }
 
-func newHangingRuntime(t *testing.T) *hangingRuntime {
+// runtimesByAddress sends each request of a client to the runtime it is for.
+type runtimesByAddress map[string]*hangingRuntime
+
+func (runtimes runtimesByAddress) RoundTrip(req *http.Request) (*http.Response, error) {
+	runtime, found := runtimes[req.URL.Host]
+	if !found {
+		return nil, fmt.Errorf("no runtime at %s", req.URL.Host)
+	}
+	return runtime.RoundTrip(req)
+}
+
+// shortDeadline is the deadline of a call that is to time out in a test.
+const shortDeadline = 20 * time.Millisecond
+
+// hangingRuntimes returns so many runtimes that hang, and a client that reads
+// the clock given and sends its requests to them. A read of the client gives
+// up after shortDeadline.
+func hangingRuntimes(count int, now func() time.Time) (*httpRuntimeClient, []*hangingRuntime) {
+	c := newHTTPRuntimeClient(shortDeadline, now)
+	byAddress := runtimesByAddress{}
+	runtimes := make([]*hangingRuntime, count)
+	for i := range runtimes {
+		runtimes[i] = &hangingRuntime{host: fmt.Sprintf("10.0.0.%d", i+1), port: DefaultRuntimePort}
+		byAddress[runtimes[i].address()] = runtimes[i]
+	}
+	c.httpClient.Transport = byAddress
+	return c, runtimes
+}
+
+// hangingServer is a runtime behind a real socket that answers no request
+// until the test ends.
+func hangingServer(t *testing.T) (host string, port int) {
 	t.Helper()
-	runtime := &hangingRuntime{}
 	released := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		runtime.requests.Add(1)
-		if runtime.answering.Load() {
-			_, _ = w.Write([]byte(`{}`))
-			return
-		}
-		<-released
-	}))
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-released }))
 	t.Cleanup(func() {
 		close(released)
 		srv.Close()
 	})
 	u, _ := url.Parse(srv.URL)
-	runtime.host = u.Hostname()
-	runtime.port, _ = strconv.Atoi(u.Port())
-	return runtime
+	port, _ = strconv.Atoi(u.Port())
+	return u.Hostname(), port
 }
 
+// Over a real socket: a read gives up at its deadline, and what the HTTP
+// client returns then is taken for a timeout.
 func TestHTTPRuntimeSnapshotGivesUpOnARuntimeThatDoesNotAnswer(t *testing.T) {
-	runtime := newHangingRuntime(t)
+	host, port := hangingServer(t)
 	c := newHTTPRuntimeClient(100*time.Millisecond, time.Now)
 
 	start := time.Now()
-	_, err := c.Snapshot(context.Background(), runtime.host, runtime.port)
+	_, err := c.Snapshot(context.Background(), host, port)
 
 	require.Error(t, err)
+	require.NotErrorIs(t, err, errRuntimeSilent)
 	assert.Less(t, time.Since(start), 5*time.Second)
+	_, err = c.Snapshot(context.Background(), host, port)
+	assert.ErrorIs(t, err, errRuntimeSilent)
+}
+
+// Over a real socket: a call that changes state gives up at the timeout of
+// the HTTP client, which is taken for a timeout as well.
+func TestHTTPRuntimeActivateGivesUpOnARuntimeThatDoesNotAnswer(t *testing.T) {
+	host, port := hangingServer(t)
+	c := newHTTPRuntimeClient(5*time.Second, time.Now)
+	c.httpClient.Timeout = 100 * time.Millisecond
+
+	_, err := c.Activate(context.Background(), host, port, &ActivateRequest{ModelName: "m1"})
+
+	require.Error(t, err)
+	require.NotErrorIs(t, err, errRuntimeSilent)
+	_, err = c.Snapshot(context.Background(), host, port)
+	assert.ErrorIs(t, err, errRuntimeSilent)
 }
 
 // The docs and the comments quote these figures, and the client that runs in
@@ -142,19 +206,21 @@ func TestTheRuntimeClientIsBuiltWithItsDeadlines(t *testing.T) {
 }
 
 func TestHTTPRuntimeLeavesARuntimeThatDidNotAnswerAloneForAWhile(t *testing.T) {
-	runtime := newHangingRuntime(t)
-	now := time.Unix(1_700_000_000, 0)
-	c := newHTTPRuntimeClient(100*time.Millisecond, func() time.Time { return now })
+	start := time.Unix(1_700_000_000, 0)
+	now := start
+	c, runtimes := hangingRuntimes(1, func() time.Time { return now })
+	runtime := runtimes[0]
 	ctx := context.Background()
 
 	_, err := c.Snapshot(ctx, runtime.host, runtime.port)
 	require.Error(t, err)
+	require.NotErrorIs(t, err, errRuntimeSilent)
 	runtime.asked(t, 1)
 
 	// Until the round is over, every call to it fails at once, to its very
 	// end.
 	for _, into := range []time.Duration{0, shortestRuntimeSilence / 2, shortestRuntimeSilence - time.Nanosecond} {
-		now = time.Unix(1_700_000_000, 0).Add(into)
+		now = start.Add(into)
 		_, err = c.Snapshot(ctx, runtime.host, runtime.port)
 		assert.ErrorIs(t, err, errRuntimeSilent, into)
 		_, err = c.Activate(ctx, runtime.host, runtime.port, &ActivateRequest{ModelName: "m1"})
@@ -164,8 +230,7 @@ func TestHTTPRuntimeLeavesARuntimeThatDidNotAnswerAloneForAWhile(t *testing.T) {
 
 	// After that it is called again, and once it answers it is called as usual.
 	runtime.answering.Store(true)
-	c.snapshotTimeout = 5 * time.Second
-	now = time.Unix(1_700_000_000, 0).Add(shortestRuntimeSilence)
+	now = start.Add(shortestRuntimeSilence)
 	_, err = c.Snapshot(ctx, runtime.host, runtime.port)
 	require.NoError(t, err)
 	_, err = c.Snapshot(ctx, runtime.host, runtime.port)
@@ -174,12 +239,12 @@ func TestHTTPRuntimeLeavesARuntimeThatDidNotAnswerAloneForAWhile(t *testing.T) {
 }
 
 // A runtime that was slow once is read again a round later. One that stays
-// silent is left alone twice as long after each timeout, up to a minute, so
-// it costs the worker one deadline a minute.
+// silent is left alone twice as long after each timeout, up to a minute. From
+// the fourth timeout in a row on, it costs the worker one deadline a minute.
 func TestHTTPRuntimeLeavesARuntimeAloneLongerAfterEachTimeout(t *testing.T) {
-	runtime := newHangingRuntime(t)
 	now := time.Unix(1_700_000_000, 0)
-	c := newHTTPRuntimeClient(100*time.Millisecond, func() time.Time { return now })
+	c, runtimes := hangingRuntimes(1, func() time.Time { return now })
+	runtime := runtimes[0]
 	ctx := context.Background()
 
 	asked := int32(0)
@@ -200,11 +265,9 @@ func TestHTTPRuntimeLeavesARuntimeAloneLongerAfterEachTimeout(t *testing.T) {
 
 	// An answer ends it, and the next timeout counts as the first.
 	runtime.answering.Store(true)
-	c.snapshotTimeout = 5 * time.Second
 	_, err := c.Snapshot(ctx, runtime.host, runtime.port)
 	require.NoError(t, err)
 	runtime.answering.Store(false)
-	c.snapshotTimeout = 100 * time.Millisecond
 	_, err = c.Snapshot(ctx, runtime.host, runtime.port)
 	require.Error(t, err)
 	now = now.Add(shortestRuntimeSilence)
@@ -232,9 +295,10 @@ func TestHTTPRuntimeGivesACallThatChangesStateItsOwnTime(t *testing.T) {
 
 // Whatever call times out, the runtime did not answer in time.
 func TestHTTPRuntimeLeavesARuntimeAloneAfterAnyCallTimesOut(t *testing.T) {
-	runtime := newHangingRuntime(t)
-	c := newHTTPRuntimeClient(5*time.Second, time.Now)
-	c.httpClient.Timeout = 100 * time.Millisecond
+	c, runtimes := hangingRuntimes(1, time.Now)
+	runtime := runtimes[0]
+	c.snapshotTimeout = 5 * time.Second
+	c.httpClient.Timeout = shortDeadline
 	ctx := context.Background()
 
 	_, err := c.Activate(ctx, runtime.host, runtime.port, &ActivateRequest{ModelName: "m1"})
@@ -280,22 +344,30 @@ func TestRuntimeSilenceForgetsARuntimeNotHeardOfForAMinute(t *testing.T) {
 
 // A stop is sent to a runtime that is left alone. If it times out as well,
 // the runtime is left alone for longer, from then.
-func TestRuntimeSilenceCountsATimeoutOfACallThatWasStillSent(t *testing.T) {
+func TestHTTPRuntimeCountsAStopThatTimesOutOnARuntimeLeftAlone(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
-	silence := newRuntimeSilence(func() time.Time { return now })
-	silence.observe("10.0.0.1:8080", timedOut{})
+	c, runtimes := hangingRuntimes(1, func() time.Time { return now })
+	runtime := runtimes[0]
+	c.httpClient.Timeout = shortDeadline
+	ctx := context.Background()
+	_, err := c.Snapshot(ctx, runtime.host, runtime.port)
+	require.Error(t, err)
 
 	now = now.Add(shortestRuntimeSilence / 2)
-	silence.observe("10.0.0.1:8080", timedOut{})
+	err = c.Deactivate(ctx, runtime.host, runtime.port, &DeactivateRequest{ModelName: "m1"})
 
-	assert.Equal(t, now.Add(2*shortestRuntimeSilence), silence.runtimes["10.0.0.1:8080"].until)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, errRuntimeSilent)
+	runtime.asked(t, 2)
+	assert.Equal(t, silentRuntime{timeouts: 2, until: now.Add(2 * shortestRuntimeSilence)},
+		c.silence.runtimes[runtime.address()])
 }
 
 func TestHTTPRuntimeStillStopsAnEngineOnARuntimeThatDidNotAnswer(t *testing.T) {
 	// A claim is deleted or scaled down only once, so stopping its engine is
 	// tried even on a runtime that did not answer a moment ago.
-	runtime := newHangingRuntime(t)
-	c := newHTTPRuntimeClient(100*time.Millisecond, time.Now)
+	c, runtimes := hangingRuntimes(1, time.Now)
+	runtime := runtimes[0]
 	ctx := context.Background()
 	_, err := c.Snapshot(ctx, runtime.host, runtime.port)
 	require.Error(t, err)
@@ -306,7 +378,6 @@ func TestHTTPRuntimeStillStopsAnEngineOnARuntimeThatDidNotAnswer(t *testing.T) {
 	runtime.asked(t, 2)
 
 	// It answered, so it is called as usual again.
-	c.snapshotTimeout = 5 * time.Second
 	_, err = c.Snapshot(ctx, runtime.host, runtime.port)
 	require.NoError(t, err)
 	runtime.asked(t, 3)
@@ -327,7 +398,7 @@ func TestHTTPRuntimeCallsAgainARuntimeThatFailedFast(t *testing.T) {
 	require.NoError(t, err)
 	refused := listener.Addr().(*net.TCPAddr)
 	require.NoError(t, listener.Close())
-	c := newHTTPRuntimeClient(100*time.Millisecond, time.Now)
+	c := newHTTPRuntimeClient(5*time.Second, time.Now)
 	ctx := context.Background()
 
 	for range 2 {
@@ -344,29 +415,41 @@ func TestHTTPRuntimeCallsAgainARuntimeThatFailedFast(t *testing.T) {
 func TestHTTPRuntimeLeavesOnlyTheRuntimeThatDidNotAnswerAlone(t *testing.T) {
 	// Each runtime is remembered by its own address, so one that does not
 	// answer costs the others nothing.
-	silent := newHangingRuntime(t)
-	answering := newHangingRuntime(t)
+	now := time.Unix(1_700_000_000, 0)
+	c, runtimes := hangingRuntimes(3, func() time.Time { return now })
+	silent, answering, late := runtimes[0], runtimes[1], runtimes[2]
 	answering.answering.Store(true)
-	c := newHTTPRuntimeClient(100*time.Millisecond, time.Now)
 	ctx := context.Background()
 
 	_, err := c.Snapshot(ctx, silent.host, silent.port)
 	require.Error(t, err)
+	now = now.Add(shortestRuntimeSilence)
+	_, err = c.Snapshot(ctx, silent.host, silent.port)
+	require.Error(t, err)
 	_, err = c.Snapshot(ctx, silent.host, silent.port)
 	require.ErrorIs(t, err, errRuntimeSilent)
 
-	c.snapshotTimeout = 5 * time.Second
 	_, err = c.Snapshot(ctx, answering.host, answering.port)
 	require.NoError(t, err)
-	silent.asked(t, 1)
+	silent.asked(t, 2)
 	answering.asked(t, 1)
+
+	// Its timeouts are its own as well. Another runtime that times out for
+	// the first time is left alone for a round, and not for two.
+	_, err = c.Snapshot(ctx, late.host, late.port)
+	require.Error(t, err)
+	assert.Equal(t, silentRuntime{timeouts: 2, until: now.Add(2 * shortestRuntimeSilence)},
+		c.silence.runtimes[silent.address()])
+	assert.Equal(t, silentRuntime{timeouts: 1, until: now.Add(shortestRuntimeSilence)},
+		c.silence.runtimes[late.address()])
 }
 
 func TestHTTPRuntimeCallsAgainARuntimeWhoseCallWasCanceled(t *testing.T) {
 	// A call given up by its caller, as when the controller shuts down, says
 	// nothing about the runtime.
-	runtime := newHangingRuntime(t)
-	c := newHTTPRuntimeClient(5*time.Second, time.Now)
+	c, runtimes := hangingRuntimes(1, time.Now)
+	runtime := runtimes[0]
+	c.snapshotTimeout = 5 * time.Second
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		for runtime.requests.Load() == 0 {
@@ -381,7 +464,7 @@ func TestHTTPRuntimeCallsAgainARuntimeWhoseCallWasCanceled(t *testing.T) {
 	runtime.answering.Store(true)
 	_, err = c.Snapshot(context.Background(), runtime.host, runtime.port)
 	require.NoError(t, err)
-	assert.Equal(t, int32(2), runtime.requests.Load())
+	runtime.asked(t, 2)
 }
 
 func TestRuntimeURLTakesAnIPv6PodAddress(t *testing.T) {
