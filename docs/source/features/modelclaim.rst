@@ -793,11 +793,12 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    ``Failed`` with ``ActivateFailed`` until its next try.
 
    A waiting claim does not sit through its wait when room may have appeared.
-   Another claim deleted, scaled down or failed, a declaration that shrinks or
-   becomes usable, a pod joining the pool, or a change to the claim's own
-   spec wakes it at once, and it starts again from the shortest wait. Room
-   that engines free by giving back mapped KV sends no such signal, so the
-   claim finds it on its next try, a minute later at most.
+   Another claim deleted, scaled down, failed or gone to sleep, a declaration
+   that shrinks or becomes usable, a pod that joins the pool or turns ready,
+   or a change to the claim's own spec wakes it at once, and it starts again
+   from the shortest wait. Room that engines free by giving back mapped KV
+   while they serve sends no such signal, so the claim finds it on its next
+   try, a minute later at most.
 
    Two limits follow from waiting this way. A claim that has waited long
    tries less often than one that has just arrived, so room that appears
