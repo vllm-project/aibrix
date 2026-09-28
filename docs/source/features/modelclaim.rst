@@ -665,9 +665,11 @@ Claim remains ``Activating``
    intentionally keeps the route at port 0 until ``/health`` succeeds. An
    instance is recorded before its engine is started, so the runtime may know
    no engine for it, for example after the controller stopped between the two
-   steps. The controller then starts the engine again. If that fails, the
-   instance is dropped with an ``ActivateFailed`` Event, its card is given
-   back, and the claim is placed again.
+   steps. The controller then starts the engine again. If the runtime
+   refuses, the instance is dropped with an ``ActivateFailed`` Event, its card
+   is given back, and the claim is placed again. If the runtime took the call
+   and its answer was lost, the engine may have started. The instance then
+   stays, and the next pass finds out.
 
 Claim remains ``Activating`` after ``/health`` succeeds
    With ``perGPU`` declared, the engine also has to report the KV limit it was

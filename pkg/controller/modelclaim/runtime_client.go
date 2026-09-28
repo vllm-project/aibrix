@@ -20,9 +20,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
@@ -49,6 +52,34 @@ const (
 
 	defaultRuntimeHTTPTimeout = 60 * time.Second
 )
+
+// runtimeRefusal is an answer from a runtime that says no: an error status, or
+// a body that reports an error. The runtime took the call and did not do what
+// it was asked.
+type runtimeRefusal struct {
+	message string
+}
+
+func (e *runtimeRefusal) Error() string { return e.message }
+
+// callNotDone reports whether a failed call to a runtime is known to have
+// changed nothing there: the runtime said no, or the call was never sent. After
+// any other failure, such as an answer that did not arrive in time, the
+// runtime may have done what it was asked.
+func callNotDone(err error) bool {
+	var refusal *runtimeRefusal
+	if errors.As(err, &refusal) {
+		return true
+	}
+	// A call is not sent when its address cannot be read, or when no
+	// connection could be made.
+	var unsent *url.Error
+	if errors.As(err, &unsent) && unsent.Op == "parse" {
+		return true
+	}
+	var failed *net.OpError
+	return errors.As(err, &failed) && failed.Op == "dial"
+}
 
 // DeactivateMode selects how a model is torn down.
 type DeactivateMode string
@@ -234,7 +265,7 @@ func (c *httpRuntimeClient) Activate(ctx context.Context, podIP string, port int
 		return nil, err
 	}
 	if out.Status == "error" {
-		return out, fmt.Errorf("runtime failed to activate %s: %s", req.ModelName, out.Message)
+		return out, &runtimeRefusal{fmt.Sprintf("runtime failed to activate %s: %s", req.ModelName, out.Message)}
 	}
 	return out, nil
 }
@@ -297,7 +328,7 @@ func (c *httpRuntimeClient) getJSON(ctx context.Context, url string, out any) er
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("runtime GET %s returned %d: %s", url, resp.StatusCode, body)
+		return &runtimeRefusal{fmt.Sprintf("runtime GET %s returned %d: %s", url, resp.StatusCode, body)}
 	}
 	if err := json.Unmarshal(body, out); err != nil {
 		return fmt.Errorf("decode runtime response: %w", err)
@@ -326,7 +357,7 @@ func (c *httpRuntimeClient) postJSON(ctx context.Context, url string, req any, o
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("runtime POST %s returned %d: %s", url, resp.StatusCode, body)
+		return &runtimeRefusal{fmt.Sprintf("runtime POST %s returned %d: %s", url, resp.StatusCode, body)}
 	}
 	if out != nil && len(body) > 0 {
 		if err := json.Unmarshal(body, out); err != nil {

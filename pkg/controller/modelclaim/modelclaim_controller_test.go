@@ -18,7 +18,11 @@ package modelclaim
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -62,6 +66,9 @@ type fakeRuntime struct {
 	snapshotCalls   int
 	portSeq         int32
 	failActivate    bool
+	// loseActivateAnswer makes Activate start the engine and fail as a call
+	// whose answer never arrived.
+	loseActivateAnswer bool
 	// notReady makes runtime snapshots report activated engines as not yet
 	// serveable, so a test can hold a model in the Activating phase.
 	notReady bool
@@ -84,7 +91,7 @@ type fakeRuntime struct {
 func (f *fakeRuntime) Activate(_ context.Context, _ string, _ int, req *ActivateRequest) (*ActivateResponse, error) {
 	f.activateCalls = append(f.activateCalls, *req)
 	if f.failActivate {
-		return &ActivateResponse{Status: "error", Message: "boom"}, fmt.Errorf("activate failed: boom")
+		return &ActivateResponse{Status: "error", Message: "boom"}, &runtimeRefusal{"activate failed: boom"}
 	}
 	f.portSeq++
 	port := req.Port
@@ -100,6 +107,9 @@ func (f *fakeRuntime) Activate(_ context.Context, _ string, _ int, req *Activate
 		IPCName:   req.IPCName,
 		Phase:     "active",
 		Ready:     !f.notReady,
+	}
+	if f.loseActivateAnswer {
+		return nil, &url.Error{Op: "Post", URL: activatePath, Err: context.DeadlineExceeded}
 	}
 	return &ActivateResponse{Status: "success", ModelName: req.ModelName, Port: port, IPCName: req.IPCName}, nil
 }
@@ -1811,6 +1821,65 @@ func TestReconcileGivesTheCardBackWhenAnEngineCannotBeStartedAgain(t *testing.T)
 		}
 	}
 	assert.True(t, failed, "dropping the instance should be reported")
+}
+
+func TestReconcileKeepsTheRecordWhenTheAnswerToAStartIsLost(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	// The runtime starts the engine, and its answer never arrives.
+	runtime.loseActivateAnswer = true
+
+	reconcileOnce(t, r, pm.Name)
+
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1, "the engine may have started, so its record stays")
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
+	placed := meta.FindStatusCondition(got.Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, placed)
+	assert.Equal(t, "Placed", placed.Reason)
+
+	// The next pass finds the engine, and goes on with it. Without the record
+	// the engine would answer to no claim, and its card would be out of use.
+	runtime.loseActivateAnswer = false
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Len(t, runtime.activateCalls, 1, "the engine is there, so it is not started again")
+	got = getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, pod.Name, got.Status.Instances[0].Pod)
+	assert.NotZero(t, got.Status.Instances[0].Port)
+}
+
+func TestReconcileKeepsAnInstanceWhenTheAnswerToStartingItAgainIsLost(t *testing.T) {
+	r, runtime, pm, _ := activatingWithoutEngine(t)
+	runtime.loseActivateAnswer = true
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1, "the engine may have started, so its record stays")
+}
+
+func TestCallNotDone(t *testing.T) {
+	refused := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
+	for name, c := range map[string]struct {
+		err     error
+		notDone bool
+	}{
+		"an error status":             {&runtimeRefusal{"runtime POST /x returned 500: boom"}, true},
+		"a wrapped error status":      {fmt.Errorf("start: %w", &runtimeRefusal{"boom"}), true},
+		"never connected":             {&url.Error{Op: "Post", URL: activatePath, Err: refused}, true},
+		"an address nobody parsed":    {&url.Error{Op: "parse", URL: "http://[", Err: errors.New("missing ']'")}, true},
+		"no answer in time":           {&url.Error{Op: "Post", URL: activatePath, Err: context.DeadlineExceeded}, false},
+		"connection dropped":          {&url.Error{Op: "Post", URL: activatePath, Err: io.ErrUnexpectedEOF}, false},
+		"an answer nobody could read": {errors.New("decode runtime response: unexpected end of JSON input"), false},
+	} {
+		assert.Equal(t, c.notDone, callNotDone(c.err), name)
+	}
 }
 
 func TestReconcileStartsNoEngineWhenTheRuntimeCannotBeRead(t *testing.T) {

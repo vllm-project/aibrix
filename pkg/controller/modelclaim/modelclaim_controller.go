@@ -489,14 +489,23 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 		resp, aerr := r.Runtime.Activate(ctx, pod.Status.PodIP, DefaultRuntimePort, activateRequest(pm))
 		if aerr != nil {
 			recordActivation(pm.Namespace, servedModelName(pm), false)
-			// The engine did not start, so give the card back. The record was
-			// written first to guard against a crash between these two steps,
-			// where it would be all that remained; a failure we can see is
-			// undone here, and the caller's status update persists the shorter
-			// list. Left in place it would hold the card for good, because
-			// nothing can tell an engine that never started from one that is
-			// still booting.
-			pm.Status.Instances = pm.Status.Instances[:len(pm.Status.Instances)-1]
+			// The record was written first to guard against a crash between
+			// these two steps, where it would be all that remained. A start
+			// known not to have happened is undone here, so the card is given
+			// back and another pod can be tried: the caller's status update
+			// persists the shorter list.
+			//
+			// After any other failure the engine may have started, and only
+			// the answer was lost. The record then stays, and the claim is
+			// placed. Taken back, the record would leave that engine answering
+			// to no claim, and its card out of use. The health check settles
+			// it: it goes on with the engine if the runtime has one, and starts
+			// it again if not.
+			if callNotDone(aerr) {
+				pm.Status.Instances = pm.Status.Instances[:len(pm.Status.Instances)-1]
+			} else {
+				markPlaced(pm, pod)
+			}
 			return aerr
 		}
 		pm.Status.Instances[len(pm.Status.Instances)-1].Port = resp.Port
@@ -510,16 +519,7 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 			return err
 		}
 
-		// Say so on the condition as well as in the Event. Being turned away
-		// is an ordinary step now rather than a dead end, so a refusal that has
-		// since been resolved must not be left standing as the claim's answer
-		// to whether it found a card.
-		meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
-			Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
-			Status:  metav1.ConditionTrue,
-			Reason:  "Placed",
-			Message: fmt.Sprintf("placed on pod %s", pod.Name),
-		})
+		markPlaced(pm, pod)
 		load[pod.Name]++
 		r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Activating",
 			"model %s engine starting on pod %s:%d", servedModelName(pm), pod.Name, resp.Port)
@@ -633,6 +633,19 @@ func (r *ModelClaimReconciler) rescheduleFailedInstances(
 			servedModelName(pm), failedPod, pod.Name)
 	}
 	return nil
+}
+
+// markPlaced says on the Scheduled condition that a claim found a card. Being
+// turned away is an ordinary step rather than a dead end, so a refusal that has
+// since been resolved must not be left standing as the claim's answer to
+// whether it found one.
+func markPlaced(pm *modelv1alpha1.ModelClaim, pod *corev1.Pod) {
+	meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+		Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
+		Status:  metav1.ConditionTrue,
+		Reason:  "Placed",
+		Message: fmt.Sprintf("placed on pod %s", pod.Name),
+	})
 }
 
 // activateRequest is what the runtime is asked to start for a claim.
@@ -982,8 +995,9 @@ func engineMissing(inst *modelv1alpha1.ModelClaimInstance, snapshot *RuntimeSnap
 }
 
 // startMissingEngine asks the runtime to start the engine an activating
-// instance should have, and reports whether it did. The runtime starts a model
-// once and returns the running one after that, so asking again is safe.
+// instance should have, and reports whether the instance is to stay. The
+// runtime starts a model once and returns the running one after that, so
+// asking again is safe.
 func (r *ModelClaimReconciler) startMissingEngine(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
@@ -996,7 +1010,9 @@ func (r *ModelClaimReconciler) startMissingEngine(
 		recordActivation(pm.Namespace, served, false)
 		r.Recorder.Eventf(pm, corev1.EventTypeWarning, "ActivateFailed",
 			"model %s had no engine on pod %s, and starting one failed: %v", served, inst.Pod, err)
-		return false
+		// Unless the start is known not to have happened, the engine may be
+		// there, so the instance stays, and the next pass looks again.
+		return !callNotDone(err)
 	}
 	inst.Port = resp.Port
 	r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Activating",
