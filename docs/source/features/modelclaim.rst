@@ -659,6 +659,19 @@ Claim remains ``Pending`` with ``InvalidPerGPU``
    its cost, because a card carrying it could not be accounted for. It is
    placed on the next pass after the claim is fixed.
 
+A Pod is turned away because an engine on it belongs to no claim
+   The refusal names the model that engine serves. Nobody knows what such an
+   engine holds, so its card is kept out of placement until the engine is
+   gone. The controller does not stop it. Stop it through the runtime API of
+   that Pod, or restart the Pod:
+
+   .. code-block:: bash
+
+      kubectl port-forward "pod/$POD" 8080:8080
+      curl -fsS -X POST http://localhost:8080/v1/runtime/models/deactivate \
+        -H 'Content-Type: application/json' \
+        -d '{"model_name": "<model>", "mode": "stop"}'
+
 Claim remains ``Activating``
    Inspect the runtime snapshot and engine logs. Weight download, CUDA graph
    initialization, or engine compilation may take time. The controller
