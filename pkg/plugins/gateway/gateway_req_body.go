@@ -342,7 +342,10 @@ func (s *Server) validateModelAvailability(requestID, model string) (types.PodLi
 				if state == constants.ModelClaimRoutingStateSleeping && s.wakeRequester != nil {
 					s.wakeRequester.RequestWake(pod, model)
 				}
-				return nil, modelClaimRetryResponse(model, state, "", state != constants.ModelClaimRoutingStateFailed)
+				// The controller gets past every state a pod carries by itself.
+				// An engine that failed for good is moved to another pod once
+				// one can take it, so its client is asked to retry as well.
+				return nil, modelClaimRetryResponse(model, state, "", true)
 			}
 		}
 		// A claim that no pod advertises yet has not been placed. Its model is
@@ -399,13 +402,13 @@ func modelClaimRetryResponse(model, state, reason string, retry bool) *extProcPb
 }
 
 // modelClaimReasonsNotRetried are the reasons the controller does not get past
-// by itself: the claim has to be changed first, or its engine failed for good.
-// Waiting does not help, so a client is not asked to retry. The controller
-// tries any other refusal again, including a failed activation.
+// by itself: the claim has to be changed first. Waiting does not help, so a
+// client is not asked to retry. The controller tries any other refusal again,
+// including a failed activation, and it moves a claim whose engine failed for
+// good to another pod once one can take it.
 var modelClaimReasonsNotRetried = map[string]struct{}{
 	"InvalidEngineConfig": {},
 	"InvalidPerGPU":       {},
-	"EngineFailed":        {},
 }
 
 func modelClaimRetried(reason string) bool {
