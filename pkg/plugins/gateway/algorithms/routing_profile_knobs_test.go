@@ -472,8 +472,14 @@ func TestPrefixCacheSigmaKnobControlsCandidateFiltering(t *testing.T) {
 
 	bump := func(podName string, times int) {
 		t.Helper()
-		pod, found := utils.FilterPodByName(podName, pods)
-		require.True(t, found)
+		var pod *v1.Pod
+		for _, candidate := range pods {
+			if candidate.Name == podName {
+				pod = candidate
+				break
+			}
+		}
+		require.NotNil(t, pod)
 		for i := 0; i < times; i++ {
 			ctx := types.NewRoutingContext(context.Background(), RouterPrefixCache, model, "", fmt.Sprintf("%s-bump-%d", podName, i), "")
 			ctx.SetTargetPod(pod)
