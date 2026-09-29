@@ -1196,6 +1196,51 @@ func TestReconcileKeepsTheFailedInstanceWhenItsReplacementIsRefused(t *testing.T
 	assert.Contains(t, said, "warm-2")
 }
 
+func TestReconcileReplacementPassesOverASilentRuntime(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pm.UID = types.UID("claim-uid")
+	pm.Status.Phase = modelv1alpha1.ModelClaimActive
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	failedPod, failedSnapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	failedSnapshot.Models = []RuntimeSnapshotModel{{
+		ModelName: servedModelName(pm), Port: 9001, Phase: runtimePhaseFailed,
+		LastError: "restart budget exhausted",
+		ClaimRef:  &ModelClaimRef{Namespace: pm.Namespace, Name: pm.Name, UID: string(pm.UID)},
+	}}
+	// warm-2 has the most room, so it ranks first, but its runtime is left
+	// alone for now. warm-3 has room too.
+	silentPod, silentSnapshot := sizedWarmPod("warm-2", testPeerIP, 1000)
+	healthyPod, healthySnapshot := sizedWarmPod("warm-3", "10.0.0.3", 1000)
+	healthySnapshot.Accelerators[0].HBMFreeBytes = 800
+	healthySnapshot.Models = []RuntimeSnapshotModel{engineHolding("small", 50, 300)}
+	small := claimOnPod("small", healthyPod.Name, modelv1alpha1.ModelClaimActive, 100, 100)
+	r, runtime := newReconciler(t, pm, small, failedPod, silentPod, healthyPod)
+	runtime.silentIPs = map[string]bool{silentPod.Status.PodIP: true}
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		failedPod.Status.PodIP:  failedSnapshot,
+		silentPod.Status.PodIP:  silentSnapshot,
+		healthyPod.Status.PodIP: healthySnapshot,
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	// The start on warm-2 was never sent, so it is no failed start, and the
+	// move goes on to warm-3 in the same pass. The failed engine is stopped
+	// once.
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-3", got.Status.Instances[0].Pod)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
+	require.Len(t, runtime.activateCalls, 1)
+	assert.Equal(t, []string{healthyPod.Status.PodIP}, runtime.activatedOn)
+	require.Len(t, runtime.deactivateCalls, 1)
+	for _, event := range drainEvents(t, r) {
+		assert.NotContains(t, event, "RescheduleFailed")
+	}
+}
+
 func TestSnapshotModelForClaimPrefersMatchingClaimUID(t *testing.T) {
 	pm := sampleModelClaim()
 	pm.UID = types.UID("claim-uid")
