@@ -478,9 +478,13 @@ Setting ``decodeScorePolicy`` (or ``AIBRIX_DECODE_SCORE_POLICY``) to ``token_loa
 
 .. code-block:: text
 
-    score = decode_tokens
+    score = decode_tokens + generated_tokens
 
-Each request is charged its ``prompt_tokens`` to its decode pod: the whole prompt, not the prefix-matched remainder, since the decode pod receives all of the prompt's KV. There is no fixed per-request cost; ``AIBRIX_TOKEN_LOAD_REQUEST_COST`` applies to the prefill charge only. The charge is made in the same critical section as the selection and released when the request completes or its prefill call fails terminally, with the same TTL, janitor and ``namespace/name`` keying as the prefill ledger. The policy reads no engine metrics, so decode pods whose metrics have not arrived yet are scored from the ledger like any other rather than given the cold-start score. The decode load-imbalance fast path is skipped under ``token_load``: it picks by request count, throughput or drain rate, which is what this policy replaces, and a pod holding one long prompt has the fewest requests. Other decode policies keep it. Output tokens are not charged, since the router does not know the output length, and a decode pod's own prefix reuse is not modelled. The ledger, like the prefill one, is local to each gateway replica: with several replicas, each scores only the requests it routed itself.
+Each request is charged its ``prompt_tokens`` to its decode pod: the whole prompt, not the prefix-matched remainder, since the decode pod receives all of the prompt's KV. There is no fixed per-request cost; ``AIBRIX_TOKEN_LOAD_REQUEST_COST`` applies to the prefill charge only. The charge is made in the same critical section as the selection and released when the request completes or its prefill call fails terminally, with the same TTL, janitor and ``namespace/name`` keying as the prefill ledger. Decode pods whose metrics have not arrived yet are scored from the ledger like any other rather than given the cold-start score. The decode load-imbalance fast path is skipped under ``token_load``: it picks by request count, throughput or drain rate, which is what this policy replaces, and a pod holding one long prompt has the fewest requests. Other decode policies keep it.
+
+``generated_tokens`` estimates the output the pod's outstanding requests have produced so far, which also sits in its KV cache: every outstanding request adds ``rate × (now − routed_at)``, where ``rate`` is the pod's scraped generation throughput divided by its running requests, or the mean of the other decode pods' rates when the pod has none yet. The router does not need to know a request's output length; the term grows while the request decodes and goes away when it completes. Without it the score counts prompts only, which suits short outputs but undercounts decode pods serving long outputs (reasoning models, long-form generation), where most of the KV is output. Set ``AIBRIX_DECODE_TOKEN_LOAD_OUTPUT_GROWTH=false`` to score prompts only. A decode pod's own prefix reuse is not modelled.
+
+``token_load`` helps most when decode KV, not compute, is what runs out, and when requests arrive in bursts shorter than the metric refresh interval, where the scraped KV usage is stale. At low decode KV utilization it behaves like the other policies. The ledger, like the prefill one, is local to each gateway replica: with several replicas, each scores only the requests it routed itself.
 
 **Configuration**
 
@@ -789,6 +793,9 @@ These are set on the **gateway plugin** deployment.
    * - ``AIBRIX_MIN_MATCH_PCT``
      - ``0``
      - ``prefix_cache`` and ``hybrid_cache_load``. Prefix matches below this percentage are ignored, ``0`` to ``100``. ``0`` disables the threshold.
+   * - ``AIBRIX_DECODE_TOKEN_LOAD_OUTPUT_GROWTH``
+     - ``true``
+     - ``token_load`` decode policy only. Adds an estimate of the output generated so far to the decode score. ``false`` scores prompt tokens only.
    * - ``AIBRIX_DECODE_SCORE_POLICY``
      - ``load_balancing``
      - Default scoring policy for selecting decode pods. ``load_balancing``, ``least_request``, ``conductor``, or ``token_load``.

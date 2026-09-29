@@ -172,6 +172,9 @@ type TokenLoadTracker struct {
 	decodeTokens  sync.Map // map[string]*podCounter, pod key → tokens
 	entries       sync.Map // map[string]*tokenLoadEntry, request ID → charge
 	decodeEntries sync.Map // map[string]*decodeLoadEntry, request ID → decode charge
+	// decodeInflight holds, per pod, how many decode charges are outstanding and
+	// the sum of their charge times, so DecodeGrowth is O(1) per pod.
+	decodeInflight sync.Map // map[string]*decodeInflight, pod key → aggregate
 	// sessions remembers the last prompt size per (model, session) so a
 	// multi-turn continuation is charged only for what the engine computes.
 	// sessionCount is its size, kept so admission can stop at MaxSessions
@@ -195,6 +198,9 @@ type TokenLoadTracker struct {
 	closeOnce   sync.Once
 	// clock is injectable so unit tests can age entries without sleeping.
 	clock func() time.Time
+	// epoch is the origin of the charge times summed in decodeInflight. Keeping
+	// them relative to it keeps the float64 sums small and exact enough.
+	epoch time.Time
 }
 
 // tokenLoadEntry records one AcquirePrefill so the releases subtract exactly
@@ -292,7 +298,9 @@ func newTokenLoadTracker(cfg TokenLoadConfig, clock func() time.Time) *TokenLoad
 	if cfg.MaxSessions <= 0 {
 		cfg.MaxSessions = DefaultTokenLoadMaxSessions
 	}
-	return &TokenLoadTracker{cfg: cfg, clock: clock, stopCh: make(chan struct{})}
+	t := &TokenLoadTracker{cfg: cfg, clock: clock, stopCh: make(chan struct{})}
+	t.epoch = t.now()
+	return t
 }
 
 // Close stops the janitor goroutine, if one was started, and returns once it
@@ -535,6 +543,7 @@ func (t *TokenLoadTracker) AcquireDecodeWithTTL(requestID, podKey string, cost f
 		t.releaseDecode(requestID, old)
 	}
 	t.addDecode(podKey, cost)
+	t.addDecodeInflight(podKey, 1, entry.acquiredAt)
 	klog.V(4).InfoS("token_load_decode_acquired", "request_id", requestID, "pod", podKey, "cost", cost)
 }
 
@@ -554,6 +563,7 @@ func (t *TokenLoadTracker) releaseDecode(requestID string, entry *decodeLoadEntr
 		return
 	}
 	t.addDecode(entry.podKey, -entry.cost)
+	t.addDecodeInflight(entry.podKey, -1, entry.acquiredAt)
 	t.decodeEntries.CompareAndDelete(requestID, entry)
 	klog.V(4).InfoS("token_load_decode_released", "request_id", requestID, "pod", entry.podKey, "cost", entry.cost)
 }
@@ -563,6 +573,65 @@ func (t *TokenLoadTracker) releaseDecode(requestID string, entry *decodeLoadEntr
 // completed. Unknown pods report 0.
 func (t *TokenLoadTracker) GetDecodeLoad(podKey string) float64 {
 	return loadFloat(&t.decodeTokens, podKey)
+}
+
+// decodeInflight is the per-pod aggregate behind DecodeGrowth.
+type decodeInflight struct {
+	mu sync.Mutex
+	n  int64
+	// sumAt is the sum of the outstanding charges' times, in seconds since the
+	// tracker's epoch.
+	sumAt float64
+}
+
+// DecodeGrowth estimates the output the requests outstanding on the pod
+// identified by podKey have generated so far: ratePerRequest tokens per second
+// for every outstanding decode charge, since it was made. It is
+// ratePerRequest * (n*now - sum of charge times), O(1) per pod. Unknown pods,
+// pods with no outstanding charge and a non-positive rate report 0.
+func (t *TokenLoadTracker) DecodeGrowth(podKey string, ratePerRequest float64) float64 {
+	if ratePerRequest <= 0 {
+		return 0
+	}
+	v, ok := t.decodeInflight.Load(podKey)
+	if !ok {
+		return 0
+	}
+	agg := v.(*decodeInflight)
+	agg.mu.Lock()
+	n, sumAt := agg.n, agg.sumAt
+	agg.mu.Unlock()
+	elapsed := float64(n)*t.sinceEpoch(t.now()) - sumAt
+	if n <= 0 || elapsed <= 0 {
+		return 0
+	}
+	return ratePerRequest * elapsed
+}
+
+func (t *TokenLoadTracker) sinceEpoch(ts time.Time) float64 {
+	return ts.Sub(t.epoch).Seconds()
+}
+
+// addDecodeInflight adds delta (+1 on a charge, -1 on its release) to the pod's
+// outstanding count and moves the charge time in or out of the sum. Like the
+// counters, it runs under the shared lock so the janitor cannot prune the
+// aggregate in between.
+func (t *TokenLoadTracker) addDecodeInflight(podKey string, delta int64, at time.Time) {
+	t.countersMu.RLock()
+	defer t.countersMu.RUnlock()
+	v, ok := t.decodeInflight.Load(podKey)
+	if !ok {
+		v, _ = t.decodeInflight.LoadOrStore(podKey, &decodeInflight{})
+	}
+	agg := v.(*decodeInflight)
+	agg.mu.Lock()
+	defer agg.mu.Unlock()
+	agg.n += delta
+	agg.sumAt += float64(delta) * t.sinceEpoch(at)
+	if agg.n <= 0 {
+		// Reset instead of carrying float error into the next charge.
+		agg.n, agg.sumAt = 0, 0
+	}
 }
 
 // GetLoad returns the current active and resident-KV token counters of the
@@ -733,6 +802,7 @@ func (t *TokenLoadTracker) pruneIdle() int {
 		t.activeTokens.Delete(pod)
 		t.kvTokens.Delete(pod)
 		t.decodeTokens.Delete(pod)
+		t.pruneDecodeInflight(pod)
 		labelValues := tokenLoadGaugeLabelValues(pod)
 		metrics.DeleteGaugeMetric(metrics.PDTokenLoadActiveTokens, tokenLoadGaugeLabels, labelValues...)
 		metrics.DeleteGaugeMetric(metrics.PDTokenLoadKVTokens, tokenLoadGaugeLabels, labelValues...)
@@ -741,6 +811,21 @@ func (t *TokenLoadTracker) pruneIdle() int {
 		klog.V(4).InfoS("token_load_pod_pruned", "pod", pod)
 	}
 	return pruned
+}
+
+// pruneDecodeInflight drops the pod's DecodeGrowth aggregate if nothing is
+// outstanding on it. The caller holds countersMu for writing.
+func (t *TokenLoadTracker) pruneDecodeInflight(pod string) {
+	v, ok := t.decodeInflight.Load(pod)
+	if !ok {
+		return
+	}
+	agg := v.(*decodeInflight)
+	agg.mu.Lock()
+	defer agg.mu.Unlock()
+	if agg.n == 0 {
+		t.decodeInflight.Delete(pod)
+	}
 }
 
 // idleCounter reports whether pod's counter in m is zero and was not written

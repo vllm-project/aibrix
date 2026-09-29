@@ -21,10 +21,12 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
@@ -226,4 +228,71 @@ func TestPDRouter_DecodeTokenLoadChargesPromptOnly(t *testing.T) {
 	assert.Equal(t, float64(1000+pd.DefaultTokenLoadRequestCost), kv, "the prefill charge includes the request cost")
 	assert.Equal(t, float64(1000), tokenLoad.GetDecodeLoad(utils.GeneratePodKey(decodePod.Namespace, decodePod.Name)),
 		"the decode charge is the prompt only")
+}
+
+// withDecodeTokenLoadOutputGrowth sets AIBRIX_DECODE_TOKEN_LOAD_OUTPUT_GROWTH for
+// one test.
+func withDecodeTokenLoadOutputGrowth(t *testing.T, on bool) {
+	t.Helper()
+	prev := aibrixDecodeTokenLoadOutputGrowth
+	aibrixDecodeTokenLoadOutputGrowth = on
+	t.Cleanup(func() { aibrixDecodeTokenLoadOutputGrowth = prev })
+}
+
+func TestDecodeTokenLoadRates(t *testing.T) {
+	withDecodeTokenLoadOutputGrowth(t, true)
+	throughputs := map[string]float64{"ns/a": 600, "ns/b": 200, "ns/cold": 0}
+	counts := map[string]float64{"ns/a": 3, "ns/b": 4, "ns/cold": 2, "ns/idle": 0}
+
+	rates := decodeTokenLoadRates(true, throughputs, counts)
+	assert.Equal(t, 200.0, rates["ns/a"], "throughput / running requests")
+	assert.Equal(t, 50.0, rates["ns/b"])
+	assert.Equal(t, 125.0, rates["ns/cold"], "no throughput yet: mean of the measured pods")
+	assert.Equal(t, 125.0, rates["ns/idle"], "no running requests: mean of the measured pods")
+
+	assert.Nil(t, decodeTokenLoadRates(false, throughputs, counts), "only token_load uses the rates")
+	assert.Nil(t, decodeTokenLoadRates(true, map[string]float64{}, counts), "nothing measured: prompt tokens only")
+
+	withDecodeTokenLoadOutputGrowth(t, false)
+	assert.Nil(t, decodeTokenLoadRates(true, throughputs, counts), "switched off")
+}
+
+// TestPDRouter_DecodeTokenLoadCountsGeneratedOutput routes against two decode
+// pods whose prompt charges are close, where the request on one of them has
+// been decoding longer. With output growth, the output it has generated since
+// is counted and the other pod wins; without it, the smaller prompt charge
+// wins.
+func TestPDRouter_DecodeTokenLoadCountsGeneratedOutput(t *testing.T) {
+	older := burstPod("decode-older", "decode", "127.0.0.100")
+	newer := burstPod("decode-newer", "decode", "127.0.0.101")
+	prefillPod := burstPod("prefill-0", "prefill", "127.0.0.1")
+	readyPods := []*v1.Pod{prefillPod, older, newer}
+	for _, pod := range readyPods {
+		pod.Labels[constants.ModelLabelName] = "token-load-model"
+	}
+
+	route := func(t *testing.T, growth bool) string {
+		withDecodeTokenLoadOutputGrowth(t, growth)
+		r, tokenLoad := newDecodeTokenLoadTestRouter(t)
+		// Both pods run one request and generate 2000 tokens/s: 2000 tokens/s per request.
+		r.cache = cache.NewWithPodsMetricsForTest(readyPods, "token-load-model", map[string]map[string]metrics.MetricValue{
+			older.Name: {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 1}},
+			newer.Name: {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 1}},
+		})
+		cache.InitWithPodsModelMetrics(r.cache.(*cache.Store), map[string]map[string]metrics.MetricValue{
+			older.Name: {metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 2000}},
+			newer.Name: {metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 2000}},
+		})
+		tokenLoad.AcquireDecodeWithTTL("earlier", burstPodKey(older.Name), 1000, 0)
+		// At least 400ms at 2000 tokens/s: 800 or more generated tokens.
+		time.Sleep(400 * time.Millisecond)
+		tokenLoad.AcquireDecodeWithTTL("later", burstPodKey(newer.Name), 1100, 0)
+
+		_, decode, err := r.filterPrefillDecodePods(tokenLoadRequest(t, "next", 400), readyPods)
+		require.NoError(t, err)
+		return decode.Name
+	}
+
+	assert.Equal(t, newer.Name, route(t, true), "the older request's generated output must count")
+	assert.Equal(t, older.Name, route(t, false), "without growth, the smaller prompt charge wins")
 }
