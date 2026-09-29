@@ -20,11 +20,11 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
@@ -139,12 +139,15 @@ func mergeLabelPairs(primaryNames, primaryValues, secondaryNames, secondaryValue
 	return outNames, outValues
 }
 
-func shouldSkipMetric(podName string, metricName string) bool {
-	if strings.Contains(podName, "prefill") && isDecodeOnlyMetric(metricName) {
-		return true
-	}
-	if strings.Contains(podName, "decode") && isPrefillOnlyMetric(metricName) {
-		return true
+// shouldSkipMetric reports whether a PD pod exposes a metric that only makes
+// sense for the other role. The role comes from pdRole, the same detection
+// the throughput rates use.
+func shouldSkipMetric(pod *v1.Pod, metricName string) bool {
+	switch pdRole(pod) {
+	case "prefill":
+		return isDecodeOnlyMetric(metricName)
+	case "decode":
+		return isPrefillOnlyMetric(metricName)
 	}
 	return false
 }

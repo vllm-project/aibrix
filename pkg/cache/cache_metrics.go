@@ -388,7 +388,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 
 			for metricName, metricValue := range result.Metrics {
 				sanitizeMetricValueLabels(pod, metricValue)
-				if shouldSkipMetric(pod.Name, metricName) {
+				if shouldSkipMetric(pod.Pod, metricName) {
 					continue
 				}
 				metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: ""}, pod.Pod, metricName, metricValue, metricValue.GetLabelValues())
@@ -408,7 +408,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 
 				model = resolveMetricModelName(pod, model)
 
-				if shouldSkipMetric(pod.Name, metric) {
+				if shouldSkipMetric(pod.Pod, metric) {
 					continue
 				}
 

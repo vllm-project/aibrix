@@ -232,10 +232,24 @@ func TestMetricRoleFilters(t *testing.T) {
 }
 
 func TestShouldSkipMetric(t *testing.T) {
-	require.True(t, shouldSkipMetric("llm-prefill-0", metrics.TimePerOutputTokenSeconds))
-	require.True(t, shouldSkipMetric("llm-decode-0", metrics.TimeToFirstTokenSeconds))
-	require.False(t, shouldSkipMetric("llm-prefill-0", metrics.TimeToFirstTokenSeconds))
-	require.False(t, shouldSkipMetric("llm-decode-0", metrics.TimePerOutputTokenSeconds))
+	named := func(name string) *v1.Pod { return &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name}} }
+	labeled := func(role string) *v1.Pod {
+		return &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "model-127-0-0-1-2", Labels: map[string]string{pdRoleIdentifier: role}}}
+	}
+
+	require.True(t, shouldSkipMetric(named("llm-prefill-0"), metrics.TimePerOutputTokenSeconds))
+	require.True(t, shouldSkipMetric(named("llm-decode-0"), metrics.TimeToFirstTokenSeconds))
+	require.False(t, shouldSkipMetric(named("llm-prefill-0"), metrics.TimeToFirstTokenSeconds))
+	require.False(t, shouldSkipMetric(named("llm-decode-0"), metrics.TimePerOutputTokenSeconds))
+
+	// Static-discovery pods carry the role only in the label.
+	require.True(t, shouldSkipMetric(labeled("prefill"), metrics.TimePerOutputTokenSeconds))
+	require.True(t, shouldSkipMetric(labeled("decode"), metrics.TimeToFirstTokenSeconds))
+	require.False(t, shouldSkipMetric(labeled("prefill"), metrics.TimeToFirstTokenSeconds))
+	require.False(t, shouldSkipMetric(labeled("decode"), metrics.TimePerOutputTokenSeconds))
+
+	require.False(t, shouldSkipMetric(named("model-127-0-0-1-2"), metrics.TimeToFirstTokenSeconds))
+	require.False(t, shouldSkipMetric(nil, metrics.TimeToFirstTokenSeconds))
 }
 
 func TestBuildMetricLabels(t *testing.T) {
@@ -1140,18 +1154,22 @@ func TestUpdateThroughputToksPerS_UsesRoleLabel(t *testing.T) {
 	prefill.Labels[pdRoleIdentifier] = "prefill"
 	purgeRateHistory(t, decode, prefill)
 
-	c.updateThroughputToksPerS(decode, "model", metrics.GenerationTokenTotal, &metrics.SimpleMetricValue{Value: 1000})
-	c.updateThroughputToksPerS(prefill, "model", metrics.PromptTokenTotal, &metrics.SimpleMetricValue{Value: 1000})
-	time.Sleep(50 * time.Millisecond)
+	// Seed a baseline one second back instead of sleeping between two scrapes.
+	seededAt := time.Now().Add(-time.Second)
+	rateCalculator.mu.Lock()
+	rateCalculator.history[rateHistoryKey(decode, "model", metrics.GenerationTokenTotal)] = []MetricSnapshot{{Value: 1000, Timestamp: seededAt}}
+	rateCalculator.history[rateHistoryKey(prefill, "model", metrics.PromptTokenTotal)] = []MetricSnapshot{{Value: 1000, Timestamp: seededAt}}
+	rateCalculator.mu.Unlock()
+
 	c.updateThroughputToksPerS(decode, "model", metrics.GenerationTokenTotal, &metrics.SimpleMetricValue{Value: 1100})
 	c.updateThroughputToksPerS(prefill, "model", metrics.PromptTokenTotal, &metrics.SimpleMetricValue{Value: 1100})
 
 	gen, ok := decode.ModelMetrics.Load(c.getPodModelMetricName("model", metrics.AvgGenerationThroughputToksPerS))
 	require.True(t, ok, "the decode pod must get a generation throughput")
-	require.Greater(t, gen.GetSimpleValue(), 0.0)
+	require.InDelta(t, 100.0, gen.GetSimpleValue(), 5.0)
 	prompt, ok := prefill.ModelMetrics.Load(c.getPodModelMetricName("model", metrics.AvgPromptThroughputToksPerS))
 	require.True(t, ok, "the prefill pod must get a prompt throughput")
-	require.Greater(t, prompt.GetSimpleValue(), 0.0)
+	require.InDelta(t, 100.0, prompt.GetSimpleValue(), 5.0)
 
 	// A role only gets the rate of its own counter.
 	_, ok = decode.ModelMetrics.Load(c.getPodModelMetricName("model", metrics.AvgPromptThroughputToksPerS))
