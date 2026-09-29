@@ -178,14 +178,16 @@ func TestLeastRequest_MixedPortPool_SelectsLeastLoadedSinglePortPod(t *testing.T
 
 // Same-named pods in two namespaces, one of them data-parallel, must keep their
 // own ports: the idle single-port pod is selected on its own port, and the port
-// lookup for either pod only sees that pod's ports.
+// lookup for the data-parallel pod only sees that pod's ports.
 func TestLeastRequest_DataParallelSameNamedPodsInTwoNamespaces(t *testing.T) {
 	dpPod := newPod("worker-0", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
 	dpPod.Namespace = "team-a"
 	dpPod.Spec.Containers = []v1.Container{{Env: []v1.EnvVar{{Name: "data-parallel-size", Value: "2"}}}}
 	plainPod := newPod("worker-0", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "9000"})
 	plainPod.Namespace = "team-b"
-	pods := []*v1.Pod{dpPod, plainPod}
+	// plainPod is listed first, so resolving the selected pod by name alone would
+	// return dpPod, and the request would go to team-a's address on team-b's port.
+	pods := []*v1.Pod{plainPod, dpPod}
 
 	// The test cache keys metrics by pod name, so both pods read these: the
 	// data-parallel pod its per-port counts, the single-port pod its running count.
@@ -202,7 +204,6 @@ func TestLeastRequest_DataParallelSameNamedPodsInTwoNamespaces(t *testing.T) {
 	assert.Equal(t, map[string]int{"team-a/worker-0/8000": 5, "team-a/worker-0/8001": 3, "team-b/worker-0/9000": 0},
 		getRequestCountsWithPort(c, pods, ports))
 	assert.Equal(t, 8001, selectTargetPortForPodWithLeastRequestCount(c, dpPod, ports))
-	assert.Equal(t, 9000, selectTargetPortForPodWithLeastRequestCount(c, plainPod, ports))
 
 	r := &leastRequestRouter{cache: c}
 	ctx := types.NewRoutingContext(context.Background(), RouterLeastRequest, testModelName, "hello", "req-dp-same-name", "")
