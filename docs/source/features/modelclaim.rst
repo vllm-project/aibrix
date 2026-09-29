@@ -761,9 +761,10 @@ controller knows a runtime by the address of its Pod. A Pod that is given the
 address of one that is left alone is left alone for the rest of that time.
 
 While a runtime is left alone, nothing is known about its Pod. The engines on
-it keep the routing they had, whatever happens to them, and placement ranks
-the Pod after the Pods that could be read. A claim that would start on such a
-Pod stays ``Pending`` until the runtime is called again, and is not marked
+it keep the routing they had, whatever happens to them. A call to start an
+engine there is not sent, and placement tries the next Pod in rank instead. A
+Pod skipped this way is not tried again in the same pass. A claim stays
+``Pending`` only when no other Pod can take it, and it is not marked
 ``Failed``, since no call was sent. Stopping an engine is still sent, since an
 engine left running would keep its memory.
 

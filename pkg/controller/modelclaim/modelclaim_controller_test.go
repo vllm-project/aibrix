@@ -79,6 +79,8 @@ type fakeRuntime struct {
 	// silent makes Activate fail as the client does for a runtime that did not
 	// answer in time a short while ago: at once, and without calling it.
 	silent bool
+	// silentIPs does the same for the runtimes at these pod IPs only.
+	silentIPs map[string]bool
 	// notReady makes runtime snapshots report activated engines as not yet
 	// serveable, so a test can hold a model in the Activating phase.
 	notReady bool
@@ -99,7 +101,7 @@ type fakeRuntime struct {
 }
 
 func (f *fakeRuntime) Activate(_ context.Context, podIP string, runtimePort int, req *ActivateRequest) (*ActivateResponse, error) {
-	if f.silent {
+	if f.silent || f.silentIPs[podIP] {
 		return nil, fmt.Errorf("runtime %s:%d %w", podIP, runtimePort, errRuntimeSilent)
 	}
 	f.activateCalls = append(f.activateCalls, *req)
@@ -1388,6 +1390,36 @@ func TestReconcileWaitsForARuntimeThatIsNotCalled(t *testing.T) {
 	// The same refusal on the next pass is not news.
 	reconcileOnce(t, r, pm.Name)
 	assert.Empty(t, drainEvents(t, r))
+}
+
+func TestReconcileTriesTheNextPodWhenARuntimeIsNotCalled(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	silentPod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	healthyPod := warmPod("warm-2", "b300-pool-a", true, corev1.PodRunning)
+	healthyPod.Status.PodIP = testPeerIP
+	r, runtime := newReconciler(t, pm, silentPod, healthyPod)
+	runtime.silentIPs = map[string]bool{silentPod.Status.PodIP: true}
+	failed := claimActivationTotal.WithLabelValues(pm.Namespace, servedModelName(pm), activationResultFailed)
+	failedBefore := testutil.ToFloat64(failed)
+
+	reconcileOnce(t, r, pm.Name)
+
+	// warm-1 ranks first by name, and its runtime is left alone, so the pass
+	// moves on to warm-2 instead of waiting for warm-1.
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-2", got.Status.Instances[0].Pod)
+	require.Len(t, runtime.activateCalls, 1)
+	// The claim found a pod, so no refusal is left standing: the condition
+	// says where it was placed.
+	scheduled := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, scheduled)
+	assert.Equal(t, metav1.ConditionTrue, scheduled.Status, scheduled.Message)
+	assert.Equal(t, failedBefore, testutil.ToFloat64(failed), "a call that was not sent is not a failed activation")
+	for _, event := range drainEvents(t, r) {
+		assert.NotContains(t, event, "ActivateFailed")
+		assert.NotContains(t, event, "NoMatchingPods")
+	}
 }
 
 func TestReconcileInvalidEngineConfigSetsFailed(t *testing.T) {
