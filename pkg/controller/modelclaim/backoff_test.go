@@ -1116,6 +1116,86 @@ func TestReconcileWaitsLongerAfterEachStartThatFails(t *testing.T) {
 	assert.Empty(t, r.Backoff.attempts)
 }
 
+// failedOnFirstPod is a claim whose engine on warm-1 has failed for good, as
+// its runtime reports it, with the snapshot that says so.
+func failedOnFirstPod(t *testing.T) (*modelv1alpha1.ModelClaim, *corev1.Pod, *RuntimeSnapshot) {
+	t.Helper()
+	pm := claimWithCost(300, 100)
+	pm.UID = types.UID("claim-uid")
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	snapshot.Models = []RuntimeSnapshotModel{{
+		ModelName: servedModelName(pm), Port: 9001, Phase: runtimePhaseFailed,
+		LastError: "restart budget exhausted",
+		ClaimRef:  &ModelClaimRef{Namespace: pm.Namespace, Name: pm.Name, UID: string(pm.UID)},
+	}}
+	return pm, pod, snapshot
+}
+
+// A claim whose engine failed for good, with no other pod to take it, waits as
+// a claim that cannot be placed does. It keeps its failed instance, so it still
+// comes back every round, and a pass inside its wait tries nothing.
+func TestReconcileBacksOffTheReplacementOfAFailedEngine(t *testing.T) {
+	pm, failedPod, failedSnapshot := failedOnFirstPod(t)
+	// The only other pod is promised to a neighbour.
+	full, fullSnapshot := sizedWarmPod("warm-2", testPeerIP, 1000)
+	neighbour := claimOnPod("neighbour", full.Name, modelv1alpha1.ModelClaimActive, 700, 100)
+	neighbour.Status.Instances[0].Port = 9001
+	fullSnapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 200)}
+	r, runtime := newReconciler(t, pm, neighbour, failedPod, full)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		failedPod.Status.PodIP: failedSnapshot,
+		full.Status.PodIP:      fullSnapshot,
+	}
+	now := time.Unix(1_700_000_000, 0)
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+	claim := types.NamespacedName{Namespace: testNamespace, Name: pm.Name}
+
+	reconcileOnce(t, r, pm.Name)
+	now = now.Add(DefaultRequeueDuration)
+	reconcileOnce(t, r, pm.Name)
+	waiting, found := r.Backoff.attempts[claim]
+	require.True(t, found, "the claim waits")
+
+	now = now.Add(DefaultRequeueDuration / 2)
+	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name),
+		"it keeps its instance, so it comes back every round")
+	assert.Equal(t, waiting, r.Backoff.attempts[claim], "a pass inside the wait tries nothing")
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Phase)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-1", got.Status.Instances[0].Pod)
+}
+
+// A replacement whose start is refused waits as a first start that failed
+// does. A pass inside the wait starts nothing, and the failed instance stays.
+func TestReconcileBacksOffAReplacementWhoseStartIsRefused(t *testing.T) {
+	pm, failedPod, failedSnapshot := failedOnFirstPod(t)
+	other, otherSnapshot := sizedWarmPod("warm-2", testPeerIP, 1000)
+	r, runtime := newReconciler(t, pm, failedPod, other)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		failedPod.Status.PodIP: failedSnapshot,
+		other.Status.PodIP:     otherSnapshot,
+	}
+	runtime.failActivateOn = map[string]bool{other.Status.PodIP: true}
+	now := time.Unix(1_700_000_000, 0)
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+
+	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name))
+	require.Equal(t, []string{other.Status.PodIP}, runtime.activatedOn)
+
+	now = now.Add(DefaultRequeueDuration / 2)
+	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name))
+	assert.Equal(t, []string{other.Status.PodIP}, runtime.activatedOn, "a pass inside the wait starts nothing")
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-1", got.Status.Instances[0].Pod)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Instances[0].Phase)
+}
+
 // A claim whose engine could not be started had found a card, so room freed
 // on a card does not help it. A pod that joined may start the engine, and so
 // may one that turned ready: its runtime answers now.
