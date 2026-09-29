@@ -102,12 +102,19 @@ unset endpoint disables the strategy.
      - ``runningRequests``, ``engineUtilization``, and/or ``kvCacheUsage``.
    * - ``AIBRIX_EXTERNAL_ROUTER_POLICY_ATTRIBUTES``
      - empty
-     - Trusted in-process policy names eligible for sending.
+     - Downstream extension-point allowlist for trusted in-process policy
+       names. Upstream AIBrix has no built-in producer.
 
 Invalid enabled configuration fails Gateway startup. Authoritative+FailOpen,
 Advisory without fallback, recursive/unregistered/exclusive fallback, URL
 userinfo, fragments, unknown metrics, invalid limits, and empty token files are
 rejected.
+
+``AIBRIX_EXTERNAL_ROUTER_POLICY_ATTRIBUTES`` does not derive values from the
+request by itself. Upstream AIBrix currently has no production caller of
+``RoutingContext.SetTrustedPolicyAttribute``; downstream integrations must
+populate validated identity or configuration values in-process before routing.
+Setting only the allowlist therefore produces no ``policyContext.attributes``.
 
 Protocol
 --------

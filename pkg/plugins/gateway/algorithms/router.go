@@ -745,7 +745,7 @@ func NewRouterManagerWithCacheAndPrefixIndexer(c cache.Cache, indexer *prefixcac
 		indexer = prefixcacheindexer.NewPrefixHashTable()
 	}
 	rm := newIsolatedRouterManager()
-	// The seven cache-backed strategies capture c. All other registrations are
+	// The cache-backed strategies registered below capture c. All other registrations are
 	// copied from the production manager and retain their original dependencies
 	// (for example, SLO providers still resolve their configured cache).
 	rm.RegisterProvider(RouterRandom, RandomRouterProviderFunc)
@@ -779,14 +779,13 @@ func (rm *RouterManager) Validate(algorithms string) (types.RoutingAlgorithm, bo
 	// Validate each strategy in the configuration
 	for _, item := range cfg.Items {
 		provider, ok := rm.routerFactory[types.RoutingAlgorithm(item.Name)]
-		if !ok || (types.RoutingAlgorithm(item.Name) == RouterExternal && provider == nil) {
+		if !ok || provider == nil {
 			return RouterNotSet, false
 		}
 		if len(cfg.Items) > 1 {
-			if provider == nil {
-				return RouterNotSet, false
-			}
-			router, err := provider(types.RoutingAlgorithm(algorithms).NewContext(context.Background(), "", "", "validate", ""))
+			validationCtx := types.RoutingAlgorithm(algorithms).NewContext(context.Background(), "", "", "validate", "")
+			router, err := provider(validationCtx)
+			validationCtx.Delete()
 			if err != nil {
 				return RouterNotSet, false
 			}
@@ -1083,7 +1082,9 @@ func (rm *RouterManager) Init() {
 	// initialization. Leaving a constructed external router with a missing
 	// fallback would defer an operator error to the request path.
 	if provider := rm.routerFactory[RouterExternal]; provider != nil {
-		router, err := provider(RouterExternal.NewContext(context.Background(), "", "", "init", ""))
+		probeCtx := RouterExternal.NewContext(context.Background(), "", "", "init", "")
+		router, err := provider(probeCtx)
+		probeCtx.Delete()
 		if err != nil {
 			rm.initErrors[RouterExternal] = err
 			rm.routerFactory[RouterExternal] = nil

@@ -263,6 +263,8 @@ The included patch configures an Advisory deployment:
   value: FailOpen
 - name: AIBRIX_EXTERNAL_ROUTER_FALLBACK
   value: least-request
+- name: AIBRIX_EXTERNAL_ROUTER_TIMEOUT
+  value: 200ms
 - name: AIBRIX_EXTERNAL_ROUTER_CANDIDATE_ATTRIBUTES
   value: topology.kubernetes.io/zone,routing.example.com/accelerator-class
 - name: AIBRIX_EXTERNAL_ROUTER_CANDIDATE_METRICS
@@ -286,7 +288,7 @@ All supported settings are process-level:
 | `AIBRIX_EXTERNAL_ROUTER_AUTH_TOKEN_FILE` | unset | Optional readable file containing a non-empty bearer token, loaded once at startup. |
 | `AIBRIX_EXTERNAL_ROUTER_CANDIDATE_ATTRIBUTES` | empty | Comma-separated pod-label allowlist. |
 | `AIBRIX_EXTERNAL_ROUTER_CANDIDATE_METRICS` | empty | Any of `runningRequests`, `engineUtilization`, `kvCacheUsage`. Metrics are not sent by default. |
-| `AIBRIX_EXTERNAL_ROUTER_POLICY_ATTRIBUTES` | empty | Comma-separated allowlist for trusted attributes populated inside Gateway. |
+| `AIBRIX_EXTERNAL_ROUTER_POLICY_ATTRIBUTES` | empty | Downstream extension-point allowlist for trusted attributes. Upstream AIBrix has no built-in producer; integrators must call `SetTrustedPolicyAttribute`. |
 
 Invalid enabled configuration fails Gateway initialization rather than leaving a
 partially enabled strategy.
@@ -406,6 +408,11 @@ To route `premium-model` to H100 replicas in `cn-east-1a`:
 Trusted policy attributes are deployment-specific. Populate them only from
 validated in-process identity or configuration; never copy raw tenant,
 authorization, or arbitrary client headers.
+
+Upstream AIBrix does not currently populate trusted policy attributes in
+production. Configuring only the allowlist keeps `policyContext` absent; a
+downstream integration must call `RoutingContext.SetTrustedPolicyAttribute`
+before external routing.
 
 ## Observability
 

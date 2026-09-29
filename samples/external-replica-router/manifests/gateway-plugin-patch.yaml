@@ -17,8 +17,9 @@ spec:
           value: FailOpen
         - name: AIBRIX_EXTERNAL_ROUTER_FALLBACK
           value: least-request
+        - name: AIBRIX_EXTERNAL_ROUTER_TIMEOUT
+          value: 200ms
         - name: AIBRIX_EXTERNAL_ROUTER_CANDIDATE_ATTRIBUTES
           value: topology.kubernetes.io/zone,routing.example.com/accelerator-class
         - name: AIBRIX_EXTERNAL_ROUTER_CANDIDATE_METRICS
           value: runningRequests,engineUtilization,kvCacheUsage
-

@@ -173,7 +173,7 @@ request bodies, credentials, arbitrary client headers, and pod IPs are never sen
 | `AIBRIX_EXTERNAL_ROUTER_AUTH_TOKEN_FILE` | path | _(unset)_ | Optional non-empty bearer token file loaded at startup. |
 | `AIBRIX_EXTERNAL_ROUTER_CANDIDATE_ATTRIBUTES` | CSV | _(empty)_ | Pod-label keys allowed into candidate attributes. |
 | `AIBRIX_EXTERNAL_ROUTER_CANDIDATE_METRICS` | CSV | _(empty)_ | Any of `runningRequests`, `engineUtilization`, `kvCacheUsage`. |
-| `AIBRIX_EXTERNAL_ROUTER_POLICY_ATTRIBUTES` | CSV | _(empty)_ | Trusted RoutingContext policy names eligible for serialization. Raw headers are never copied automatically. |
+| `AIBRIX_EXTERNAL_ROUTER_POLICY_ATTRIBUTES` | CSV | _(empty)_ | Downstream extension-point allowlist for trusted RoutingContext policy attributes. Upstream AIBrix has no built-in producer; integrators must call `SetTrustedPolicyAttribute`. Raw headers are never copied automatically. |
 
 See the [External Replica Routing guide](../../../docs/source/features/external-replica-routing.rst)
 and the published OpenAPI contract for policy and protocol details.
