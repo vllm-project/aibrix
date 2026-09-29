@@ -193,6 +193,35 @@ models:
 	assert.Equal(t, int32(8000), pods[0].Spec.Containers[0].Ports[0].ContainerPort)
 }
 
+// Static endpoints are scraped for metrics on their serving port. Without
+// the metric-port label the cache falls back to its default port (8000), so
+// an engine on any other port would never be scraped.
+func TestStaticProviderMetricPort(t *testing.T) {
+	config := `
+models:
+  - name: "Qwen/Qwen2.5-72B"
+    engine: vllm
+    prefill_workers:
+      - "127.0.0.1:8100"
+    decode_workers:
+      - "127.0.0.1:8200"
+      - "127.0.0.1:8201"
+  - name: "test-model"
+    endpoints:
+      - "vllm-host"
+`
+	path := writeTestConfig(t, config)
+	p := NewStaticProvider(path)
+	pods, err := watchCollect(t, p)
+	require.NoError(t, err)
+	require.Len(t, pods, 4)
+
+	for i, want := range []string{"8100", "8200", "8201", "8000"} {
+		assert.Equal(t, want, pods[i].Labels[constants.ModelLabelPort], "pod %s", pods[i].Name)
+		assert.Equal(t, want, pods[i].Labels[constants.ModelLabelMetricPort], "pod %s", pods[i].Name)
+	}
+}
+
 func TestStaticProviderPodReadyStatus(t *testing.T) {
 	config := `
 models:

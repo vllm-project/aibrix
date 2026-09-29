@@ -256,9 +256,12 @@ func addressToPod(
 	safeName := strings.ReplaceAll(host, ".", "-")
 	podName := fmt.Sprintf("%s-%s-%d", sanitizeName(modelName), safeName, index)
 
+	// The engine serves its metrics on the same port as the API, so scrape
+	// that port rather than the cache's default metric port.
 	labels := map[string]string{
-		constants.ModelLabelName: modelName,
-		constants.ModelLabelPort: portStr,
+		constants.ModelLabelName:       modelName,
+		constants.ModelLabelPort:       portStr,
+		constants.ModelLabelMetricPort: portStr,
 	}
 	if engine != "" {
 		labels[constants.ModelLabelEngine] = engine
