@@ -105,3 +105,25 @@ func TestLeastRequestSelection_SameNamedPodsInTwoNamespaces(t *testing.T) {
 	require.Len(t, leastPods, 1)
 	assert.Equal(t, "team-a", leastPods[0].Namespace)
 }
+
+// TestPrefixHashTable_BareNameAndPodKeyDoNotMatch checks the rolling-upgrade case: an entry
+// written under a bare pod name by an older gateway never matches a pod key, and the reverse.
+func TestPrefixHashTable_BareNameAndPodKeyDoNotMatch(t *testing.T) {
+	tokens := []byte(strings.Repeat("shared conversation ", 8))
+	podKey := utils.GeneratePodKey("team-a", "worker-0")
+
+	for _, tc := range []struct{ stored, ready string }{
+		{stored: "worker-0", ready: podKey},
+		{stored: podKey, ready: "worker-0"},
+	} {
+		table := prefixcacheindexer.NewPrefixHashTable()
+		table.AddPrefix(table.GetPrefixHashes(tokens), "m1", tc.stored)
+
+		matched, _ := table.MatchPrefix(tokens, "m1", map[string]struct{}{tc.ready: {}})
+		assert.Empty(t, matched, "stored %q must not match ready pod %q", tc.stored, tc.ready)
+
+		// The same spelling on both sides still matches.
+		matched, _ = table.MatchPrefix(tokens, "m1", map[string]struct{}{tc.stored: {}})
+		assert.Equal(t, map[string]int{tc.stored: 100}, matched)
+	}
+}
