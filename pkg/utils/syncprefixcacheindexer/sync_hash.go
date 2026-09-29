@@ -723,7 +723,9 @@ func (s *SyncPrefixHashTable) enforceContextLimit(excess int) {
 		lastAccess int64
 	}
 
-	ages := make([]contextAge, 0, excess*2)
+	// The loop below visits every active context, not just the excess, so
+	// size the slice for that, not for excess.
+	ages := make([]contextAge, 0, s.contextCount.Load())
 
 	// Collect context ages
 	s.contextMap.Range(func(key, value interface{}) bool {

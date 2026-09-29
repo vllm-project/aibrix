@@ -549,8 +549,18 @@ func TestMaxContextsLimit(t *testing.T) {
 // that had been idle past evictionDuration. All 11 contexts here are fresh, so
 // only the explicit cap enforcement can bring the count back down.
 func TestMaxContextsLimitEnforcedOnEviction(t *testing.T) {
-	table := NewSyncPrefixHashTable()
-	table.maxContexts = 5
+	// Construct the table without starting the background eviction worker
+	// (unlike NewSyncPrefixHashTable): its 1-second check ticker could race
+	// with the manual performEviction() call below and make this test flaky.
+	table := &SyncPrefixHashTable{
+		seed:                  12345,
+		maxContexts:           5,
+		maxPrefixesPerContext: maxPrefixesPerContext,
+		blockSize:             prefixCacheBlockSize,
+		evictionInterval:      time.Hour,
+		evictionDuration:      20 * time.Minute,
+		stopCh:                make(chan struct{}),
+	}
 	defer table.Close()
 
 	for i := 0; i < table.maxContexts+6; i++ {
