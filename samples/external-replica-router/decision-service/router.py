@@ -8,6 +8,8 @@ MEDIA_TYPE = "application/vnd.aibrix.external-routing+json;version=v1alpha1"
 
 
 def decide(document, preferred_zone=None, premium_model="premium-model"):
+    # Validate the small public boundary explicitly so malformed JSON shapes
+    # become deterministic HTTP 400 responses instead of handler exceptions.
     if not isinstance(document, dict):
         raise ValueError("request body must be an object")
     if document.get("apiVersion") != API_VERSION or document.get("kind") != "ReplicaSelectionRequest":
@@ -68,6 +70,8 @@ def decide(document, preferred_zone=None, premium_model="premium-model"):
         if zonal:
             eligible = zonal
     if not eligible:
+        # NoDecision is legal only for Advisory; Authoritative policy must make
+        # an explicit allow/deny decision.
         if policy_mode == "Authoritative":
             status = {"decision": "Denied", "reason": "NoApplicablePolicy"}
         else:

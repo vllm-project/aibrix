@@ -28,11 +28,15 @@ import (
 )
 
 const (
+	// These values identify the versioned wire contract. Keep them synchronized
+	// with the OpenAPI document and decision-service fixtures.
 	externalAPIVersion   = "routing.aibrix.ai/v1alpha1"
 	externalRequestKind  = "ReplicaSelectionRequest"
 	externalResponseKind = "ReplicaSelectionResponse"
 	externalMediaType    = "application/vnd.aibrix.external-routing+json;version=v1alpha1"
 
+	// Decisions are case-sensitive protocol values. Their legality depends on
+	// policy mode and is enforced again after decoding the response.
 	externalDecisionSelected   = "Selected"
 	externalDecisionNoDecision = "NoDecision"
 	externalDecisionDenied     = "Denied"
@@ -47,6 +51,8 @@ type externalPolicyContext struct {
 	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
+// Pointer fields preserve the difference between an observed zero and an
+// unavailable metric, which must be omitted from the request.
 type externalCandidateMetrics struct {
 	RunningRequests   *int64   `json:"runningRequests,omitempty"`
 	EngineUtilization *float64 `json:"engineUtilization,omitempty"`
@@ -97,6 +103,8 @@ type externalDecisionResponse struct {
 	Status     *externalResponseStatus   `json:"status"`
 }
 
+// externalCandidateSnapshot is the local authorization boundary for a remote
+// decision. A response can select only a Pod and port recorded here.
 type externalCandidateSnapshot struct {
 	pod   *v1.Pod
 	ports map[int]struct{}
@@ -110,6 +118,8 @@ type externalValidatedDecision struct {
 	reason     string
 }
 
+// buildExternalDecisionRequest produces both the redacted wire DTO and the
+// request-local lookup used to validate the eventual response.
 func buildExternalDecisionRequest(cfg externalRouterConfig, metricCache cache.Cache, ctx *types.RoutingContext, pods types.PodList) (externalDecisionRequest, map[string]externalCandidateSnapshot, error) {
 	if ctx == nil || ctx.RequestID == "" || len(ctx.RequestID) > 256 || !utf8.ValidString(ctx.RequestID) {
 		return externalDecisionRequest{}, nil, errors.New("external request ID must be non-empty valid UTF-8 up to 256 bytes")
@@ -183,6 +193,9 @@ func buildExternalDecisionRequest(cfg externalRouterConfig, metricCache cache.Ca
 }
 
 func externalPortsForModel(pod *v1.Pod, model string) []int {
+	// Keep the advertised snapshot consistent with RoutingContext.TargetAddress:
+	// a warm-pool pod is routed through the request model's claim port, and a
+	// known port-0 claim must not fall back to the pod's generic model-port label.
 	if port, ok := utils.ModelClaimPortForPod(pod, model); ok {
 		return normalizeExternalPorts([]int{port})
 	}
@@ -286,6 +299,10 @@ func externalMetricsForCandidate(cfg externalRouterConfig, metricCache cache.Cac
 	return result
 }
 
+// validateExternalDecision treats the external service as untrusted input: it
+// validates the envelope, mode-specific decision, and target against the exact
+// snapshot sent by this request before returning any Kubernetes object.
+//
 //nolint:gocyclo // Decision-dependent required/forbidden fields are validated together as one protocol boundary.
 func validateExternalDecision(data []byte, requestID string, policyMode externalPolicyMode, snapshots map[string]externalCandidateSnapshot) (externalValidatedDecision, error) {
 	if len(data) == 0 {
@@ -362,6 +379,9 @@ func validateExternalDecision(data []byte, requestID string, policyMode external
 	return decision, nil
 }
 
+// rejectExplicitNullExternalFields enforces the alpha contract's omission
+// semantics for optional fields; encoding/json alone maps null and absence to
+// the same nil pointer.
 func rejectExplicitNullExternalFields(data []byte) error {
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(data, &envelope); err != nil {
@@ -410,6 +430,8 @@ func requireJSONEOF(decoder *json.Decoder) error {
 	return nil
 }
 
+// rejectDuplicateJSONMembers prevents first-key/last-key parser disagreement
+// between Gateway and independently implemented decision services.
 func rejectDuplicateJSONMembers(data []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	token, err := decoder.Token()

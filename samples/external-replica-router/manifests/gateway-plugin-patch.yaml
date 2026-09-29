@@ -17,6 +17,8 @@ spec:
           value: FailOpen
         - name: AIBRIX_EXTERNAL_ROUTER_FALLBACK
           value: least-request
+        # The decision service is a separate Pod reached through a Service;
+        # allow normal in-cluster scheduling and network latency.
         - name: AIBRIX_EXTERNAL_ROUTER_TIMEOUT
           value: 200ms
         - name: AIBRIX_EXTERNAL_ROUTER_CANDIDATE_ATTRIBUTES

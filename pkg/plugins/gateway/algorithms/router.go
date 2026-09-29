@@ -779,10 +779,15 @@ func (rm *RouterManager) Validate(algorithms string) (types.RoutingAlgorithm, bo
 	// Validate each strategy in the configuration
 	for _, item := range cfg.Items {
 		provider, ok := rm.routerFactory[types.RoutingAlgorithm(item.Name)]
+		// Register keeps the algorithm key when construction fails and stores a nil
+		// provider so InitializationError can report the cause. Such a router is
+		// known but unavailable and must not pass validation.
 		if !ok || provider == nil {
 			return RouterNotSet, false
 		}
 		if len(cfg.Items) > 1 {
+			// NewContext uses a sync.Pool. Validation providers only inspect this
+			// temporary context, so return it immediately after the call.
 			validationCtx := types.RoutingAlgorithm(algorithms).NewContext(context.Background(), "", "", "validate", "")
 			router, err := provider(validationCtx)
 			validationCtx.Delete()
@@ -1082,6 +1087,8 @@ func (rm *RouterManager) Init() {
 	// initialization. Leaving a constructed external router with a missing
 	// fallback would defer an operator error to the request path.
 	if provider := rm.routerFactory[RouterExternal]; provider != nil {
+		// The provider probe reads immutable external configuration only. Its
+		// synthetic context is pooled and must not escape initialization.
 		probeCtx := RouterExternal.NewContext(context.Background(), "", "", "init", "")
 		router, err := provider(probeCtx)
 		probeCtx.Delete()

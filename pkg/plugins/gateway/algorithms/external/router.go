@@ -22,6 +22,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
+// Algorithm is the stable routing-strategy name exposed to Gateway clients and
+// process configuration.
 const Algorithm types.RoutingAlgorithm = "external"
 
 var (
@@ -29,6 +31,8 @@ var (
 	ErrExternalRouterUnavailable = errors.New("external router unavailable")
 )
 
+// externalRouter owns process-local transport and resilience state. It never
+// owns candidate discovery or final admission/accounting.
 type externalRouter struct {
 	cfg            externalRouterConfig
 	cache          cache.Cache
@@ -39,6 +43,9 @@ type externalRouter struct {
 	metrics        *externalRouterMetrics
 }
 
+// NewRouter builds one process-scoped router. selector is injected by the
+// parent RouterManager so FailOpen/NoDecision can invoke a registered fallback
+// without importing the parent algorithms package.
 func NewRouter(metricCache cache.Cache, selector func(*types.RoutingContext) (types.Router, error)) (types.Router, error) {
 	return newExternalRouterWithCacheAndSelector(metricCache, selector)
 }
@@ -93,11 +100,15 @@ func (r *externalRouter) SubscribedMetrics() []string {
 }
 
 func (r *externalRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+	// Freeze the exact candidate snapshot before any remote exchange. The same
+	// lookup validates the response, so a service cannot invent a target.
 	request, snapshots, err := buildExternalDecisionRequest(r.cfg, r.cache, ctx, pods)
 	if err != nil {
 		return r.handleFailure(ctx, pods, externalOutcomeInvalidResponse, err)
 	}
 
+	// Circuit admission happens before the bulkhead. A generation-bearing token
+	// prevents late completions from mutating a newer breaker generation.
 	circuitToken, err := r.circuit.acquire()
 	if err != nil {
 		r.metrics.setCircuit(r.circuit.currentState())
@@ -111,6 +122,8 @@ func (r *externalRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 			r.metrics.setCircuit(r.circuit.currentState())
 		}
 	}()
+	// Bulkhead rejection is local saturation, not an attempted service failure,
+	// so it releases the circuit token without incrementing failure history.
 	if !r.bulkhead.acquire() {
 		r.circuit.cancel(circuitToken)
 		circuitSettled = true
@@ -148,6 +161,7 @@ func (r *externalRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		return r.handleFailure(ctx, pods, externalOutcomeTransportError, exchangeErr)
 	}
 
+	// A 200 response is not trusted until its protocol and target binding pass.
 	decision, err := validateExternalDecision(body, ctx.RequestID, r.cfg.policyMode, snapshots)
 	if err != nil {
 		r.circuit.failure(circuitToken)
@@ -187,6 +201,8 @@ func (r *externalRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 }
 
 func (r *externalRouter) recordCircuitSuccess(token externalCircuitToken) {
+	// success may belong to an older generation and therefore be ignored by the
+	// breaker. Export the state after settlement instead of assuming it closed.
 	r.circuit.success(token)
 	r.metrics.setCircuit(r.circuit.currentState())
 }
@@ -210,6 +226,8 @@ func (r *externalRouter) routeFallback(ctx *types.RoutingContext, pods types.Pod
 		return "", fmt.Errorf("%w: fallback is unavailable", ErrExternalRouterUnavailable)
 	}
 	r.metrics.fallback.WithLabelValues(reason).Inc()
+	// Let the local provider observe its own algorithm while preserving the
+	// client-visible outer strategy after fallback returns.
 	original := ctx.Algorithm
 	ctx.Algorithm = r.cfg.fallback
 	fallback, err := r.selectFallback(ctx)

@@ -21,6 +21,8 @@ import (
 var externalTraceparentRE = regexp.MustCompile(`^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$`)
 
 const (
+	// Outcomes are fixed low-cardinality metric labels and failure-policy keys.
+	// Never place endpoint, model, Pod, request ID, or remote reason here.
 	externalOutcomeSelected         = "selected"
 	externalOutcomeNoDecision       = "no_decision"
 	externalOutcomeDenied           = "denied"
@@ -38,6 +40,8 @@ type externalHTTPDoer interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
+// externalExchangeError records whether an HTTP exchange actually began.
+// Only attempted service failures contribute to the circuit threshold.
 type externalExchangeError struct {
 	outcome   string
 	attempted bool
@@ -47,6 +51,8 @@ type externalExchangeError struct {
 func (e *externalExchangeError) Error() string { return e.err.Error() }
 func (e *externalExchangeError) Unwrap() error { return e.err }
 
+// newExternalHTTPClient creates a bounded client that reuses connections but
+// deliberately performs no redirects, compression, or automatic retries.
 func newExternalHTTPClient(cfg externalRouterConfig) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DisableCompression = true
@@ -61,6 +67,8 @@ func newExternalHTTPClient(cfg externalRouterConfig) *http.Client {
 	}
 }
 
+// executeExternalRequest performs exactly one size-bounded exchange and
+// classifies failures for fallback and circuit-breaker policy.
 func executeExternalRequest(parent context.Context, client externalHTTPDoer, cfg externalRouterConfig, request externalDecisionRequest, traceparent string) ([]byte, time.Duration, error) {
 	body, err := json.Marshal(request)
 	if err != nil {

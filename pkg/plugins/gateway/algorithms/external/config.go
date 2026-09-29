@@ -25,6 +25,8 @@ import (
 )
 
 const (
+	// Public process-level configuration keys. Values are loaded once when the
+	// RouterManager initializes the external strategy.
 	EnvExternalRouterEndpoint            = "AIBRIX_EXTERNAL_ROUTER_ENDPOINT"
 	EnvExternalRouterPolicyMode          = "AIBRIX_EXTERNAL_ROUTER_POLICY_MODE"
 	EnvExternalRouterFailureMode         = "AIBRIX_EXTERNAL_ROUTER_FAILURE_MODE"
@@ -40,6 +42,8 @@ const (
 	EnvExternalRouterCandidateMetrics    = "AIBRIX_EXTERNAL_ROUTER_CANDIDATE_METRICS"
 	EnvExternalRouterPolicyAttributes    = "AIBRIX_EXTERNAL_ROUTER_POLICY_ATTRIBUTES"
 
+	// Metric names are a closed allowlist because they become wire fields and
+	// cache subscriptions, not arbitrary Prometheus queries.
 	externalMetricRunningRequests   = "runningRequests"
 	externalMetricEngineUtilization = "engineUtilization"
 	externalMetricKVCacheUsage      = "kvCacheUsage"
@@ -64,6 +68,8 @@ const (
 	FailureFailClosed externalFailureMode = "FailClosed"
 )
 
+// externalRouterConfig is immutable after construction and shared by all
+// requests handled by one router instance.
 type externalRouterConfig struct {
 	endpoint            *url.URL
 	policyMode          externalPolicyMode

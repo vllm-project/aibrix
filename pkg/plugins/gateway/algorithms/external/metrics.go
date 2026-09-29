@@ -10,6 +10,8 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
+// externalRouterMetrics intentionally exposes only fixed label dimensions to
+// avoid cardinality growth from request or candidate data.
 type externalRouterMetrics struct {
 	requests *prometheus.CounterVec
 	fallback *prometheus.CounterVec
@@ -93,6 +95,7 @@ func registerGauge(registerer prometheus.Registerer, collector prometheus.Gauge)
 }
 
 func (m *externalRouterMetrics) setCircuit(state string) {
+	// Export the state machine as a one-hot gauge set for simple alerting.
 	for _, name := range []string{"closed", "open", "half_open"} {
 		value := 0.0
 		if name == state {

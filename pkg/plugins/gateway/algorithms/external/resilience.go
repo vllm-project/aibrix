@@ -16,6 +16,8 @@ var (
 	errExternalCircuitOpen      = errors.New("external router circuit is open")
 )
 
+// externalBulkhead bounds concurrent network exchanges without queueing; a
+// full channel rejects immediately so Gateway latency remains bounded.
 type externalBulkhead struct {
 	permits chan struct{}
 }
@@ -37,11 +39,16 @@ func (b *externalBulkhead) release() {
 	<-b.permits
 }
 
+// externalCircuitToken binds a completion to the generation in which it was
+// admitted. halfOpen also identifies the single probe owning probing=true.
 type externalCircuitToken struct {
 	halfOpen   bool
 	generation uint64
 }
 
+// externalCircuit is intentionally process-local. generation advances each
+// time the breaker opens so stale in-flight results cannot close or extend a
+// newer open interval.
 type externalCircuit struct {
 	mu           sync.Mutex
 	threshold    int
@@ -138,6 +145,8 @@ func (c *externalCircuit) cancel(token externalCircuitToken) {
 	if token.generation != c.generation || c.state != "half_open" || !c.probing {
 		return
 	}
+	// Restart the cooldown after a cancelled half-open probe; otherwise every
+	// following request could probe immediately.
 	c.openLocked()
 }
 
