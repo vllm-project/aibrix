@@ -254,6 +254,14 @@ jobs:
             aibrix/inplace-e2e:v2 \
             --name installation-test
 
+          docker build \
+            -t aibrix/external-router-e2e:nightly \
+            -f test/e2e/gateway/routing/testdata/external-router/Dockerfile \
+            test/e2e/gateway/routing/testdata/external-router
+          kind load docker-image \
+            aibrix/external-router-e2e:nightly \
+            --name installation-test
+
       - name: Deploy AIBrix control plane
         run: |
           kubectl apply -k config/dependency --server-side

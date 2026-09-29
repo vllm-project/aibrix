@@ -1070,6 +1070,10 @@ func TestValidateRejectsNilProviderInMultiStrategy(t *testing.T) {
 	algorithm, ok := rm.Validate("validate-scorer,validate-nil-provider")
 	assert.False(t, ok)
 	assert.Equal(t, types.RoutingAlgorithm(RouterNotSet), algorithm)
+
+	algorithm, ok = rm.Validate("validate-nil-provider")
+	assert.False(t, ok)
+	assert.Equal(t, types.RoutingAlgorithm(RouterNotSet), algorithm)
 }
 
 func podsFromCache(c *cache.Store) *utils.PodArray {
