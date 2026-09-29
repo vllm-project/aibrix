@@ -625,6 +625,12 @@ engine crash is removed from routing and restarted with exponential backoff;
 other engines in the Pod are not restarted. After five local restarts, the
 engine remains ``Failed`` with its error visible in the runtime snapshot.
 
+The controller then moves the claim. It stops the failed engine and places the
+claim on another Pod, the way it places a new one. The new engine goes only on
+a card with room for it, and the card is divided before the engine starts. The
+Pod where the engine failed is left out, and the other engines there keep
+running. If no other Pod can take the claim, it stays ``Failed`` until one can.
+
 The kvcached runtime image uses ``tini`` and a small restart loop around the
 AIBrix agent. If only the agent process crashes, child engines stay alive. The
 new agent reads ``/var/run/aibrix/engines.json``, verifies the PID start time

@@ -1095,6 +1095,88 @@ func TestReconcileSnapshotTerminalFailureKeepsFailedPodsExcluded(t *testing.T) {
 	require.Len(t, runtime.deactivateCalls, 2)
 }
 
+func TestReconcileReplacesAFailedEngineWhereTheAccountShowsRoom(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pm.UID = types.UID("claim-uid")
+	pm.Status.Phase = modelv1alpha1.ModelClaimActive
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	failedPod, failedSnapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	failedSnapshot.Models = []RuntimeSnapshotModel{{
+		ModelName: servedModelName(pm), Port: 9001, Phase: runtimePhaseFailed,
+		LastError: "restart budget exhausted",
+		ClaimRef:  &ModelClaimRef{Namespace: pm.Namespace, Name: pm.Name, UID: string(pm.UID)},
+	}}
+	// warm-2 shows its whole card free. A claim placed there a moment ago has
+	// not loaded yet, and the card is promised to it.
+	promised, promisedSnapshot := sizedWarmPod("warm-2", testPeerIP, 1000)
+	loading := claimOnPod("loading", promised.Name, modelv1alpha1.ModelClaimActivating, 700, 100)
+	// warm-3 shows less free, and has room.
+	roomy, roomySnapshot := sizedWarmPod("warm-3", "10.0.0.3", 1000)
+	roomySnapshot.Accelerators[0].HBMFreeBytes = 800
+	roomySnapshot.Models = []RuntimeSnapshotModel{engineHolding("small", 50, 300)}
+	small := claimOnPod("small", roomy.Name, modelv1alpha1.ModelClaimActive, 100, 100)
+	r, runtime := newReconciler(t, pm, loading, small, failedPod, promised, roomy)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		failedPod.Status.PodIP: failedSnapshot,
+		promised.Status.PodIP:  promisedSnapshot,
+		roomy.Status.PodIP:     roomySnapshot,
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-3", got.Status.Instances[0].Pod)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
+	// Footprints of 100 and 300 and a floor of 100 each leave 400 of the card,
+	// shared evenly between the two engines.
+	assert.Equal(t, int64(300), got.Status.Instances[0].KVLimitBytes)
+	require.Len(t, runtime.activateCalls, 1)
+	require.Len(t, runtime.deactivateCalls, 1)
+}
+
+func TestReconcileKeepsTheFailedInstanceWhenItsReplacementIsRefused(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.UID = types.UID("claim-uid")
+	pm.Status.Phase = modelv1alpha1.ModelClaimActive
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	failedPod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	replacementPod := warmPod("warm-2", "b300-pool-a", true, corev1.PodRunning)
+	replacementPod.Status.PodIP = testPeerIP
+	r, runtime := newReconciler(t, pm, failedPod, replacementPod)
+	runtime.failActivate = true
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		failedPod.Status.PodIP: {Models: []RuntimeSnapshotModel{{
+			ModelName: servedModelName(pm), Port: 9001, Phase: runtimePhaseFailed,
+			LastError: "restart budget exhausted",
+			ClaimRef:  &ModelClaimRef{Namespace: pm.Namespace, Name: pm.Name, UID: string(pm.UID)},
+		}}},
+		testPeerIP: {},
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	// The replacement did not start, so the failed instance stays. The claim
+	// still reads as failed, and the next pass leaves warm-1 out again.
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-1", got.Status.Instances[0].Pod)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Instances[0].Phase)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Phase)
+	require.Len(t, runtime.activateCalls, 1)
+	said := ""
+	for _, event := range recordedEvents(t, r) {
+		if strings.Contains(event, "RescheduleFailed") {
+			said = event
+		}
+	}
+	assert.Contains(t, said, "warm-2")
+}
+
 func TestSnapshotModelForClaimPrefersMatchingClaimUID(t *testing.T) {
 	pm := sampleModelClaim()
 	pm.UID = types.UID("claim-uid")

@@ -231,6 +231,10 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// ready Activating instances, demote Active instances that went unhealthy).
 	r.reconcileInstanceHealth(ctx, pm)
 	if err := r.rescheduleFailedInstances(ctx, pm, candidates); err != nil {
+		if apierrors.IsConflict(err) {
+			// As above: no replacement was asked for, so nothing failed.
+			return requeueOnConflict(err)
+		}
 		r.Recorder.Event(pm, corev1.EventTypeWarning, "RescheduleFailed", err.Error())
 	}
 	r.recomputeReadiness(pm)
@@ -402,6 +406,9 @@ func (r *ModelClaimReconciler) recomputeReadiness(pm *modelv1alpha1.ModelClaim) 
 // warm pods and asking the runtime sidecar to activate an engine process on
 // each. Lack of an available warm pod is not an error (the model stays Pending and
 // reconciles again); only runtime failures propagate.
+//
+// An instance whose engine failed for good is replaced where it stands, and its
+// replacement is placed as any instance is.
 func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1alpha1.ModelClaim, candidates []corev1.Pod) error {
 	load := r.computePodLoad(ctx, pm.Namespace)
 	parallelism, err := modelParallelism(pm)
@@ -431,9 +438,15 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 	admissible, refusals := admissibleCandidates(candidates, ledgers, perGPU.minimumReserveBytes())
 	rankByRoom(placementStates, ledgers)
 
-	for desiredReplicas(pm) > int32(len(pm.Status.Instances)) {
+	// Every pod the claim is on stays out of the ranking, the pods where its
+	// engines failed included, so a replacement never lands where the engine
+	// it replaces failed. The set is taken once: a replaced instance leaves the
+	// claim's list, and its pod has to stay out for the next replacement too.
+	alreadyOn := instancePods(pm)
+	failed := failedInstanceSlots(pm)
+	for desiredReplicas(pm) > int32(len(pm.Status.Instances)-len(failed)) {
 		pod, selectErr := selectPodForActivationWithState(
-			admissible, instancePods(pm), load, servedModelName(pm), r.Locality, placementStates,
+			admissible, alreadyOn, load, servedModelName(pm), r.Locality, placementStates,
 		)
 		if selectErr != nil {
 			// No available warm pod right now; remain Pending and retry on
@@ -441,14 +454,23 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 			// as InvalidPerGPU is. The claim is tried again on every pass, and
 			// the same refusal each time is not news; the condition always
 			// carries the current one.
+			//
+			// A failed instance that cannot be replaced stays as it is, so the
+			// claim stays Failed.
 			message := noPlacementMessage(selectErr, admissible, refusals, perGPU.minimumReserveBytes())
+			reason := "NoMatchingPods"
+			if len(failed) > 0 {
+				message = fmt.Sprintf("model %s cannot move from failed pod %s: %s",
+					servedModelName(pm), pm.Status.Instances[failed[0]].Pod, message)
+				reason = "ReschedulePending"
+			}
 			if meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
 				Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
 				Status:  metav1.ConditionFalse,
 				Reason:  "NoMatchingPods",
 				Message: message,
 			}) {
-				r.Recorder.Event(pm, corev1.EventTypeWarning, "NoMatchingPods", message)
+				r.Recorder.Event(pm, corev1.EventTypeWarning, reason, message)
 			}
 			return nil
 		}
@@ -487,11 +509,26 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 		// account reads, so writing it first is what stops a second claim from
 		// being placed against the same memory while this engine loads. It also
 		// carries the KV limit the engine will be held to.
-		pm.Status.Instances = append(pm.Status.Instances, modelv1alpha1.ModelClaimInstance{
+		//
+		// A replacement takes the place of the failed instance. Its engine is
+		// stopped and its route taken back first; the other engines on that
+		// pod are left as they are.
+		record := modelv1alpha1.ModelClaimInstance{
 			Pod:          pod.Name,
 			Phase:        modelv1alpha1.ModelClaimActivating,
 			KVLimitBytes: kvLimitBytes,
-		})
+		}
+		slot := len(pm.Status.Instances)
+		var replaced *modelv1alpha1.ModelClaimInstance
+		if len(failed) > 0 {
+			slot = failed[0]
+			previous := pm.Status.Instances[slot]
+			replaced = &previous
+			r.stopFailedEngine(ctx, pm, previous.Pod)
+			pm.Status.Instances[slot] = record
+		} else {
+			pm.Status.Instances = append(pm.Status.Instances, record)
+		}
 		if err := r.Status().Update(ctx, pm); err != nil {
 			return fmt.Errorf("reserve %s on %s: %w", servedModelName(pm), pod.Name, err)
 		}
@@ -511,14 +548,24 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 			// to no claim, and its card out of use. The health check settles
 			// it: it goes on with the engine if the runtime has one, and starts
 			// it again if not.
-			if callNotDone(aerr) {
-				pm.Status.Instances = pm.Status.Instances[:len(pm.Status.Instances)-1]
-			} else {
+			//
+			// A replacement known not to have started puts the failed instance
+			// back, so the claim still reads as failed, and its pod stays out of
+			// the next pass's ranking.
+			switch {
+			case !callNotDone(aerr):
 				markPlaced(pm, pod)
+			case replaced != nil:
+				pm.Status.Instances[slot] = *replaced
+			default:
+				pm.Status.Instances = pm.Status.Instances[:slot]
+			}
+			if replaced != nil {
+				return fmt.Errorf("activate replacement on pod %s: %w", pod.Name, aerr)
 			}
 			return aerr
 		}
-		pm.Status.Instances[len(pm.Status.Instances)-1].Port = resp.Port
+		pm.Status.Instances[slot].Port = resp.Port
 
 		// The engine is spawned but not yet serveable (boot/compile). Keep the
 		// model NOT routable — stamp the non-routable marker (port 0), record the
@@ -530,119 +577,63 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 		}
 
 		markPlaced(pm, pod)
+		alreadyOn[pod.Name] = true
 		load[pod.Name]++
+		if replaced != nil {
+			failed = failed[1:]
+			r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Rescheduled",
+				"model %s moved after terminal engine failure from pod %s to pod %s",
+				servedModelName(pm), replaced.Pod, pod.Name)
+			continue
+		}
 		r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Activating",
 			"model %s engine starting on pod %s:%d", servedModelName(pm), pod.Name, resp.Port)
 	}
 	return nil
 }
 
-// activateOnPod starts one engine and keeps it non-routable until a later
-// runtime snapshot confirms readiness.
-func (r *ModelClaimReconciler) activateOnPod(
-	ctx context.Context,
-	pm *modelv1alpha1.ModelClaim,
-	pod *corev1.Pod,
-) (modelv1alpha1.ModelClaimInstance, error) {
-	resp, err := r.Runtime.Activate(ctx, pod.Status.PodIP, DefaultRuntimePort, &ActivateRequest{
-		ModelName:    servedModelName(pm),
-		ArtifactURL:  pm.Spec.ArtifactURL,
-		Engine:       pm.Spec.Engine,
-		IPCName:      ipcNameFor(pm),
-		EngineConfig: pm.Spec.EngineConfig,
-		ClaimRef: &ModelClaimRef{
-			Namespace: pm.Namespace,
-			Name:      pm.Name,
-			UID:       string(pm.UID),
-		},
-	})
-	if err != nil {
-		recordActivation(pm.Namespace, servedModelName(pm), false)
-		return modelv1alpha1.ModelClaimInstance{}, err
-	}
-
-	// The engine is spawned but not yet serveable (boot/compile). Keep the
-	// model NOT routable until reconcileInstanceHealth confirms readiness.
-	if err := r.annotateWarmPod(ctx, pm, pod, 0); err != nil {
-		return modelv1alpha1.ModelClaimInstance{}, err
-	}
-	return modelv1alpha1.ModelClaimInstance{
-		Pod:   pod.Name,
-		Port:  resp.Port,
-		Phase: modelv1alpha1.ModelClaimActivating,
-	}, nil
-}
-
 // rescheduleFailedInstances moves only instances whose runtime has reported a
-// terminal engine failure. The failed pod remains excluded from placement,
+// terminal engine failure, in the same pass that found them. ensureActivated
+// replaces each one, so a replacement goes through the same account, division
+// and record as any placement. The failed pod remains excluded from placement,
 // while other claims and engines on that pod are left untouched.
 func (r *ModelClaimReconciler) rescheduleFailedInstances(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
 	candidates []corev1.Pod,
 ) error {
-	hasFailed := false
-	for i := range pm.Status.Instances {
-		if pm.Status.Instances[i].Phase == modelv1alpha1.ModelClaimFailed {
-			hasFailed = true
-			break
-		}
-	}
-	if !hasFailed {
+	if len(failedInstanceSlots(pm)) == 0 {
 		return nil
 	}
+	return r.ensureActivated(ctx, pm, candidates)
+}
 
-	load := r.computePodLoad(ctx, pm.Namespace)
-	parallelism, err := modelParallelism(pm)
-	if err != nil {
-		return fmt.Errorf("invalid engineConfig parallelism: %w", err)
-	}
-	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL, parallelism)
-
-	// Snapshot occupied pods before rewriting instances. Recomputing
-	// instancePods() after *inst = replacement would drop the just-left
-	// failed pod and let a later failed instance land back on it.
-	alreadyOn := instancePods(pm)
+// failedInstanceSlots returns the positions of the instances whose engine
+// failed for good, in order.
+func failedInstanceSlots(pm *modelv1alpha1.ModelClaim) []int {
+	var slots []int
 	for i := range pm.Status.Instances {
-		inst := &pm.Status.Instances[i]
-		if inst.Phase != modelv1alpha1.ModelClaimFailed {
-			continue
+		if pm.Status.Instances[i].Phase == modelv1alpha1.ModelClaimFailed {
+			slots = append(slots, i)
 		}
-		failedPod := inst.Pod
-		pod, selectErr := selectPodForActivationWithState(
-			candidates, alreadyOn, load, servedModelName(pm), r.Locality, placementStates,
-		)
-		if selectErr != nil {
-			r.Recorder.Eventf(pm, corev1.EventTypeWarning, "ReschedulePending",
-				"model %s cannot move from failed pod %s: %v", servedModelName(pm), failedPod, selectErr)
-			return nil
-		}
-
-		// The engine is already terminal. Remove only this claim's old route and
-		// runtime entry; co-resident engines on the failed pod remain untouched.
-		r.deannotateWarmPod(ctx, pm.Namespace, failedPod, pm.Name)
-		if ip := r.podIP(ctx, pm.Namespace, failedPod); ip != "" {
-			if err := r.Runtime.Deactivate(ctx, ip, DefaultRuntimePort, &DeactivateRequest{
-				ModelName: servedModelName(pm),
-				Mode:      DeactivateStop,
-			}); err != nil {
-				klog.ErrorS(err, "failed engine cleanup before reschedule",
-					"pod", failedPod, "model", pm.Name)
-			}
-		}
-
-		replacement, activateErr := r.activateOnPod(ctx, pm, pod)
-		if activateErr != nil {
-			return fmt.Errorf("activate replacement on pod %s: %w", pod.Name, activateErr)
-		}
-		*inst = replacement
-		alreadyOn[pod.Name] = true
-		load[pod.Name]++
-		r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Rescheduled",
-			"model %s moved after terminal engine failure from pod %s to pod %s",
-			servedModelName(pm), failedPod, pod.Name)
 	}
-	return nil
+	return slots
+}
+
+// stopFailedEngine takes back this claim's route on a pod and stops its engine
+// there. The engine has already failed for good. Co-resident engines on that
+// pod remain untouched.
+func (r *ModelClaimReconciler) stopFailedEngine(ctx context.Context, pm *modelv1alpha1.ModelClaim, podName string) {
+	r.deannotateWarmPod(ctx, pm.Namespace, podName, pm.Name)
+	if ip := r.podIP(ctx, pm.Namespace, podName); ip != "" {
+		if err := r.Runtime.Deactivate(ctx, ip, DefaultRuntimePort, &DeactivateRequest{
+			ModelName: servedModelName(pm),
+			Mode:      DeactivateStop,
+		}); err != nil {
+			klog.ErrorS(err, "failed engine cleanup before reschedule",
+				"pod", podName, "model", pm.Name)
+		}
+	}
 }
 
 // markPlaced says on the Scheduled condition that a claim found a card. Being
