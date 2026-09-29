@@ -1230,7 +1230,7 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 			MaxFreeGPUUsage: maxFreeGPUUsage,
 		}
 		if usesDecodeTokenLoad && r.tokenLoadTracker != nil {
-			in.DecodeTokens = r.tokenLoadTracker.GetDecodeLoad(utils.GeneratePodKey(pod.Namespace, pod.Name))
+			in.DecodeTokens = r.tokenLoadTracker.GetDecodeLoad(podKey)
 		}
 
 		decodeScore := policy.ScoreDecodePod(routingCtx, pod, in)
