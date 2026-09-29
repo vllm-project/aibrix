@@ -872,6 +872,18 @@ func TestScorePrefillPods_LeastRequestPolicy(t *testing.T) {
 	})
 }
 
+// byPodKey rekeys a fixture map from pod name to the pod key of the pod with
+// that name in pods. The fixtures in this file use unique pod names.
+func byPodKey[V any](pods []*v1.Pod, byName map[string]V) map[string]V {
+	byKey := make(map[string]V, len(byName))
+	for _, pod := range pods {
+		if v, ok := byName[pod.Name]; ok {
+			byKey[utils.GeneratePodKey(pod.Namespace, pod.Name)] = v
+		}
+	}
+	return byKey
+}
+
 func TestScoreDecodePods(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -942,18 +954,9 @@ func TestScoreDecodePods(t *testing.T) {
 				RequestID: "test-request",
 			}
 
-			counts := tt.counts
-			if counts == nil {
-				counts = map[string]float64{}
-			}
-			throughputs := tt.throughputs
-			if throughputs == nil {
-				throughputs = map[string]float64{}
-			}
-			freeGPU := tt.freeGPU
-			if freeGPU == nil {
-				freeGPU = map[string]float64{}
-			}
+			counts := byPodKey(tt.pods, tt.counts)
+			throughputs := byPodKey(tt.pods, tt.throughputs)
+			freeGPU := byPodKey(tt.pods, tt.freeGPU)
 
 			run := r.scoreDecodePods(
 				ctx,
@@ -2116,7 +2119,7 @@ func TestLoadImbalanceSelectPrefillPod(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			targetPod, imbalance := r.loadImbalanceSelectPrefillPod(tt.readyPods, tt.podRequestCount, aibrixPrefillLoadImbalanceMinSpread)
+			targetPod, imbalance := r.loadImbalanceSelectPrefillPod(tt.readyPods, byPodKey(tt.readyPods, tt.podRequestCount), aibrixPrefillLoadImbalanceMinSpread)
 
 			assert.Equal(t, tt.expectImbalance, imbalance, "imbalance detection should match expected")
 
@@ -2468,9 +2471,9 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 			assert.Equal(t, tt.expectMaxFreeGPUUsage, maxFreeGPUUsage, "max free GPU usage should match")
 
 			// Check pod metrics maps
-			assert.Equal(t, tt.expectPodRequestCounts, podRequestCounts, "pod request counts should match")
-			assert.Equal(t, tt.expectPodThroughputs, podThroughputs, "pod throughputs should match")
-			assert.Equal(t, tt.expectPodFreeGpuUsage, podFreeGpuUsage, "pod free GPU usage should match")
+			assert.Equal(t, byPodKey(tt.pods, tt.expectPodRequestCounts), podRequestCounts, "pod request counts should match")
+			assert.Equal(t, byPodKey(tt.pods, tt.expectPodThroughputs), podThroughputs, "pod throughputs should match")
+			assert.Equal(t, byPodKey(tt.pods, tt.expectPodFreeGpuUsage), podFreeGpuUsage, "pod free GPU usage should match")
 		})
 	}
 }

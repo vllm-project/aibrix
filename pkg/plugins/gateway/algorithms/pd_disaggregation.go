@@ -819,11 +819,11 @@ func decodeFastPathPick(routingCtx *types.RoutingContext, targetPod *v1.Pod, dec
 // outstanding prefill load is visibly skewed across readyPods.
 //
 // podRequestCount holds per-pod active prefill counts from PrefillRequestTracker for
-// in-flight prefill HTTP calls from other concurrent requests. The current request is
+// in-flight prefill HTTP calls from other concurrent requests, keyed by pod key. The current request is
 // not counted yet — filterPrefillDecodePods registers it after selection completes,
 // under the same selectMu hold.
 // Ties among equally-loaded pods are broken by drawing uniformly at random from the tied
-// pod names; readyPods is only used to resolve that name back to a pod, so its order does
+// pod keys; readyPods is only used to resolve that key back to a pod, so its order does
 // not influence the result.
 //
 // Returns one pod tied for the minimum count and imbalance=true when
@@ -853,14 +853,14 @@ func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequest
 			maxValue = value
 		}
 	}
-	for podname, value := range podRequestCount {
+	for podKey, value := range podRequestCount {
 		if minValue == value {
-			targetPods = append(targetPods, podname)
+			targetPods = append(targetPods, podKey)
 		}
 	}
 
 	if maxValue-minValue > minSpread && len(targetPods) > 0 {
-		targetPod, _ = utils.FilterPodByName(targetPods[rand.IntN(len(targetPods))], readyPods)
+		targetPod = podsByKey(readyPods)[targetPods[rand.IntN(len(targetPods))]]
 		imbalance = true
 		if targetPod != nil && klog.V(4).Enabled() {
 			klog.V(4).InfoS("prefill request imbalance detected, selecting least-loaded pod",
@@ -937,24 +937,24 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 		requestCount := r.pendingDecodeTracker.GetPendingDecodeCount(podKey)
 		if runningErr != nil {
-			podRequestCounts[pod.Name] = requestCount
+			podRequestCounts[podKey] = requestCount
 		} else {
 			requestCount += float64(runningReqCounts[podKey])
-			podRequestCounts[pod.Name] = requestCount
+			podRequestCounts[podKey] = requestCount
 			if requestCount < minObservedRequestCount {
 				minObservedRequestCount = requestCount
 				minRequestPod = pod
 			}
 			maxObservedRequestCount = math.Max(maxObservedRequestCount, requestCount)
 		}
-		maxRequestCount = math.Max(maxRequestCount, podRequestCounts[pod.Name])
+		maxRequestCount = math.Max(maxRequestCount, podRequestCounts[podKey])
 
 		tokenThroughput, throughputErr := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgGenerationThroughputToksPerS)
 		if throughputErr != nil {
-			podThroughputs[pod.Name] = 0
+			podThroughputs[podKey] = 0
 		} else {
 			throughput := tokenThroughput.GetSimpleValue()
-			podThroughputs[pod.Name] = throughput
+			podThroughputs[podKey] = throughput
 			if throughput < minObservedThroughput {
 				minObservedThroughput = throughput
 				minThroughputPod = pod
@@ -968,17 +968,17 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 		if err == nil {
 			kvUsageVal = kvUsage.GetSimpleValue()
 		}
-		podFreeGpuUsage[pod.Name] = math.Round(100 - kvUsageVal*100)
-		if podFreeGpuUsage[pod.Name] <= 0 {
-			podFreeGpuUsage[pod.Name] = 0.1
+		podFreeGpuUsage[podKey] = math.Round(100 - kvUsageVal*100)
+		if podFreeGpuUsage[podKey] <= 0 {
+			podFreeGpuUsage[podKey] = 0.1
 		}
-		maxFreeGPUUsage = math.Max(maxFreeGPUUsage, podFreeGpuUsage[pod.Name])
+		maxFreeGPUUsage = math.Max(maxFreeGPUUsage, podFreeGpuUsage[podKey])
 	}
 
 	if minRequestPod != nil && maxObservedRequestCount-minObservedRequestCount >= loadMinSpread {
 		klog.V(4).InfoS("request imbalance at decode pods", "request_id", ctx.RequestID,
 			"min_request_count", minObservedRequestCount, "max_request_count", maxObservedRequestCount,
-			"free_gpu_percent", podFreeGpuUsage[minRequestPod.Name], "decode_pod", minRequestPod.Name)
+			"free_gpu_percent", podFreeGpuUsage[utils.GeneratePodKey(minRequestPod.Namespace, minRequestPod.Name)], "decode_pod", minRequestPod.Name)
 		return minRequestPod, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage
 	}
 
@@ -986,7 +986,7 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 		klog.V(4).InfoS("throughput imbalance at decode pods", "request_id", ctx.RequestID,
 			"min_request_count", minObservedRequestCount, "max_request_count", maxObservedRequestCount,
 			"min_throughput", minObservedThroughput, "max_throughput", maxObservedThroughput,
-			"free_gpu_percent", podFreeGpuUsage[minThroughputPod.Name], "decode_pod", minThroughputPod.Name)
+			"free_gpu_percent", podFreeGpuUsage[utils.GeneratePodKey(minThroughputPod.Namespace, minThroughputPod.Name)], "decode_pod", minThroughputPod.Name)
 		return minThroughputPod, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage
 	}
 
@@ -996,12 +996,13 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 	drainRatesAvailable := true
 
 	for _, pod := range filteredDecodePods {
+		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 		drainRate, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeRunningRequestsDrainRate1m)
 		if err != nil || drainRate.GetSimpleValue() <= 0 {
 			drainRatesAvailable = false
 			break
 		}
-		score := podRequestCounts[pod.Name] / math.Max(drainRate.GetSimpleValue(), defaultDrainRateEpsilon)
+		score := podRequestCounts[podKey] / math.Max(drainRate.GetSimpleValue(), defaultDrainRateEpsilon)
 		if score < minScore {
 			minScore = score
 			minScorePod = pod
@@ -1106,7 +1107,8 @@ func (r *pdRouter) scorePreparedPrefillPods(routingCtx *types.RoutingContext, pr
 	maxPrefillScore := float64(1)
 	for _, pod := range prefillPods {
 		rolesetName := pod.Labels[PDRoleSetIdentifier]
-		reqCnt := float64(podRequestCount[pod.Name])
+		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+		reqCnt := float64(podRequestCount[podKey])
 		if reqCnt > meanRequestCount+float64(sigma)*stdDevRequestCount {
 			if klog.V(4).Enabled() {
 				klog.V(4).InfoS("prefill pod request count is higher than mean request count, skipping",
@@ -1180,7 +1182,7 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 	metricsReadyByPod := make(map[string]bool, len(filteredDecodePods))
 	for _, pod := range filteredDecodePods {
 		ready := usesDecodeTokenLoad || r.decodePodMetricsReady(routingCtx, pod)
-		metricsReadyByPod[pod.Name] = ready
+		metricsReadyByPod[utils.GeneratePodKey(pod.Namespace, pod.Name)] = ready
 		if ready {
 			anyMetricsReady = true
 		}
@@ -1198,11 +1200,12 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 
 	for _, pod := range filteredDecodePods {
 		rolesetName := pod.Labels[PDRoleSetIdentifier]
-		if anyMetricsReady && !metricsReadyByPod[pod.Name] {
+		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+		if anyMetricsReady && !metricsReadyByPod[podKey] {
 			// Cold-start: assign a neutral score (1.0 = idle warm pod) plus gateway-tracked
 			// pending requests so the roleset competes fairly instead of being excluded entirely.
 			// Once the pod's first request completes and metrics arrive, it transitions to full scoring.
-			pending := float64(r.pendingDecodeTracker.GetPendingDecodeCount(utils.GeneratePodKey(pod.Namespace, pod.Name)))
+			pending := float64(r.pendingDecodeTracker.GetPendingDecodeCount(podKey))
 			coldScore := 1.0 + pending
 			if verbose {
 				scoredPods = append(scoredPods, fmt.Sprintf("%s:score=%.4f,roleset=%s(cold)", pod.Name, coldScore, rolesetName))
@@ -1219,15 +1222,15 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 			continue
 		}
 		in := pd.DecodePodInput{
-			RunningReqs:     podRequestCounts[pod.Name],
-			Throughput:      podThroughputs[pod.Name],
-			FreeGPUPercent:  podFreeGpuUsage[pod.Name],
+			RunningReqs:     podRequestCounts[podKey],
+			Throughput:      podThroughputs[podKey],
+			FreeGPUPercent:  podFreeGpuUsage[podKey],
 			MaxRequestCount: maxRequestCount,
 			MaxThroughput:   maxThroughput,
 			MaxFreeGPUUsage: maxFreeGPUUsage,
 		}
 		if usesDecodeTokenLoad && r.tokenLoadTracker != nil {
-			in.DecodeTokens = r.tokenLoadTracker.GetDecodeLoad(utils.GeneratePodKey(pod.Namespace, pod.Name))
+			in.DecodeTokens = r.tokenLoadTracker.GetDecodeLoad(podKey)
 		}
 
 		decodeScore := policy.ScoreDecodePod(routingCtx, pod, in)
@@ -1357,8 +1360,8 @@ func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 	}
 
 	r.countersMu.Lock()
-	r.selectionCounts[targetPrefillPod.Name]++
-	r.selectionCounts[targetDecodePod.Name]++
+	r.selectionCounts[utils.GeneratePodKey(targetPrefillPod.Namespace, targetPrefillPod.Name)]++
+	r.selectionCounts[utils.GeneratePodKey(targetDecodePod.Namespace, targetDecodePod.Name)]++
 	r.countersMu.Unlock()
 
 	metrics.EmitMetricToPrometheus(routingCtx, targetPrefillPod, metrics.PDSelectedPrefillPodTotal, &metrics.SimpleMetricValue{Value: 1.0}, nil)

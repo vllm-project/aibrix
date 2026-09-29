@@ -39,8 +39,7 @@ func TestRequestTrackers_SameNameInTwoNamespaces(t *testing.T) {
 	prefill.AddPrefillRequest("req-2", keyA)
 	assert.Equal(t, 2, prefill.GetPrefillRequestCountsForPod(keyA))
 	assert.Equal(t, 0, prefill.GetPrefillRequestCountsForPod(keyB))
-	assert.Equal(t, map[string]int32{"prefill-0": 2}, prefill.GetPrefillRequestCountsForPods([]*v1.Pod{podA}))
-	assert.Equal(t, map[string]int32{"prefill-0": 0}, prefill.GetPrefillRequestCountsForPods([]*v1.Pod{podB}))
+	assert.Equal(t, map[string]int32{keyA: 2, keyB: 0}, prefill.GetPrefillRequestCountsForPods([]*v1.Pod{podA, podB}))
 	prefill.RemovePrefillRequest("req-1")
 	assert.Equal(t, 1, prefill.GetPrefillRequestCountsForPod(keyA))
 

@@ -107,20 +107,18 @@ func (t *PrefillRequestTracker) RemovePrefillRequest(requestID string) {
 		"new_count", newCount)
 }
 
-// GetPrefillRequestCountsForPods returns a map of pod name → active prefill
-// request count for each pod in pods. Pods with no recorded requests are
-// included with a count of 0. Counts are looked up by pod key; the result stays
-// keyed by pod name, consistent with the router's other per-request score maps.
-// One model name deployed in two namespaces can still put two same-named pods
-// in one candidate list; that predates pod keys and is not addressed here.
+// GetPrefillRequestCountsForPods returns a map of pod key (namespace/name) →
+// active prefill request count for each pod in pods. Pods with no recorded
+// requests are included with a count of 0.
 func (t *PrefillRequestTracker) GetPrefillRequestCountsForPods(pods []*v1.Pod) map[string]int32 {
 	counts := make(map[string]int32)
 	for _, pod := range pods {
-		countInterface, exists := t.podRequestCounts.Load(utils.GeneratePodKey(pod.Namespace, pod.Name))
+		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+		countInterface, exists := t.podRequestCounts.Load(podKey)
 		if !exists {
-			counts[pod.Name] = 0
+			counts[podKey] = 0
 		} else {
-			counts[pod.Name] = countInterface.(*atomic.Int32).Load()
+			counts[podKey] = countInterface.(*atomic.Int32).Load()
 		}
 	}
 	return counts

@@ -357,13 +357,15 @@ func ApplyLoadImbalanceGate(ctx *types.RoutingContext, c cache.Cache, readyPods 
 		selected := make([]string, 0, len(leastPods))
 		selectedSet := make(map[string]struct{}, len(leastPods))
 		for _, pod := range leastPods {
-			selected = append(selected, pod.Name)
-			selectedSet[pod.Name] = struct{}{}
+			podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+			selected = append(selected, podKey)
+			selectedSet[podKey] = struct{}{}
 		}
 		skipped := make([]string, 0, len(readyPods)-len(leastPods))
 		for _, pod := range readyPods {
-			if _, ok := selectedSet[pod.Name]; !ok {
-				skipped = append(skipped, pod.Name)
+			podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+			if _, ok := selectedSet[podKey]; !ok {
+				skipped = append(skipped, podKey)
 			}
 		}
 		klog.V(4).InfoS("load_balance_imbalance_gate",
