@@ -138,16 +138,16 @@ func selectTargetPodWithLeastRequestCountFromCounts(podRequestCount map[string]i
 	if klog.V(4).Enabled() {
 		klog.V(4).InfoS("selectTargetPodWithLeastRequestCount", "podRequestCount", podRequestCount)
 	}
-	for podname, totalReq := range podRequestCount {
+	for podKey, totalReq := range podRequestCount {
 		if totalReq < minCount {
 			minCount = totalReq
-			targetPods = []string{podname}
+			targetPods = []string{podKey}
 		} else if totalReq == minCount {
-			targetPods = append(targetPods, podname)
+			targetPods = append(targetPods, podKey)
 		}
 	}
 	if len(targetPods) > 0 {
-		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
+		targetPod = podsByKey(readyPods)[targetPods[rand.Intn(len(targetPods))]]
 	}
 	return targetPod
 }
@@ -243,21 +243,34 @@ func selectTargetPortForPodWithLeastRequestCount(cache cache.Cache, pod *v1.Pod,
 }
 
 // getRequestCounts returns the live cross-gateway running request count for each
-// pod, via GetPodsRunningRequests (one Redis round trip for the whole list) rather
-// than GetMetricValueByPod(RealtimeNumRequestsRunning), which is a periodically
-// synced cache that, between scrape ticks, only reflects this gateway's local view.
+// pod, keyed by pod key (namespace/name), via GetPodsRunningRequests (one Redis round
+// trip for the whole list) rather than GetMetricValueByPod(RealtimeNumRequestsRunning),
+// which is a periodically synced cache that, between scrape ticks, only reflects this
+// gateway's local view.
 func getRequestCounts(cache cache.Cache, readyPods []*v1.Pod) map[string]int {
 	counts, err := cache.GetPodsRunningRequests(readyPods)
 	podRequestCount := make(map[string]int, len(readyPods))
 	for _, pod := range readyPods {
+		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 		if err == nil && counts != nil {
-			podRequestCount[pod.Name] = int(counts[utils.GeneratePodKey(pod.Namespace, pod.Name)])
+			podRequestCount[podKey] = int(counts[podKey])
 		} else {
-			podRequestCount[pod.Name] = 0
+			podRequestCount[podKey] = 0
 		}
 	}
 
 	return podRequestCount
+}
+
+// podsByKey maps each pod's key (namespace/name) to the pod, so a key picked from a
+// per-request map resolves to the pod it was computed for even when two candidates
+// share a name.
+func podsByKey(pods []*v1.Pod) map[string]*v1.Pod {
+	byKey := make(map[string]*v1.Pod, len(pods))
+	for _, pod := range pods {
+		byKey[utils.GeneratePodKey(pod.Namespace, pod.Name)] = pod
+	}
+	return byKey
 }
 
 // getRequestCountsWithPort returns running request count for each pod with port tracked by gateway.

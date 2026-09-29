@@ -43,7 +43,7 @@ var _ = DescribeTable("routing strategy regressions", Label("gateway", "integrat
 			// fixture-local table so the real prefix scorer can select other.
 			fixture.cache.metricValues["target/"+metrics.RealtimeNumRequestsRunning] = &metrics.SimpleMetricValue{Value: 4}
 			fixture.cache.metricValues["other/"+metrics.RealtimeNumRequestsRunning] = &metrics.SimpleMetricValue{Value: 4}
-			fixture.prefixIndexer.AddPrefix(fixture.prefixIndexer.GetPrefixHashes([]byte("hello")), "llama2-7b", "other")
+			fixture.prefixIndexer.AddPrefix(fixture.prefixIndexer.GetPrefixHashes([]byte("hello")), "llama2-7b", "default/other")
 		}
 		Expect(fixture.run()).To(Succeed(), fixture.diagnostics())
 		response := findRequestBodyResponse(fixture.stream.responses())
@@ -84,9 +84,9 @@ var _ = Describe("routing configuration regressions", Label("gateway", "integrat
 		expectHeader(first.GetHeaderMutation().GetSetHeaders(), "target-pod", "10.0.0.3:8000")
 		firstMatch, _ := fixture.prefixIndexer.MatchPrefix(
 			[]byte("hello"), "llama2-7b",
-			map[string]struct{}{"target": {}, "other": {}},
+			map[string]struct{}{"default/target": {}, "default/other": {}},
 		)
-		Expect(firstMatch["other"]).To(BeNumerically(">", 0), fixture.diagnostics())
+		Expect(firstMatch["default/other"]).To(BeNumerically(">", 0), fixture.diagnostics())
 		expectSuccessfulLifecycle(fixture)
 
 		secondID := fmt.Sprintf("%032x", fixtureSequence.Add(1))
@@ -101,9 +101,9 @@ var _ = Describe("routing configuration regressions", Label("gateway", "integrat
 		expectHeader(second.GetHeaderMutation().GetSetHeaders(), "target-pod", "10.0.0.3:8000")
 		secondMatch, _ := fixture.prefixIndexer.MatchPrefix(
 			[]byte("hello"), "llama2-7b",
-			map[string]struct{}{"target": {}, "other": {}},
+			map[string]struct{}{"default/target": {}, "default/other": {}},
 		)
-		Expect(secondMatch["other"]).To(BeNumerically(">", 0), fixture.diagnostics())
+		Expect(secondMatch["default/other"]).To(BeNumerically(">", 0), fixture.diagnostics())
 		expectSuccessfulLifecycle(fixture)
 	})
 

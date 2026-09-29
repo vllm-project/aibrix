@@ -621,8 +621,8 @@ func TestScorePrefillPods_PrefixCachePolicy(t *testing.T) {
 		tok := tokenizer.NewCharacterTokenizer()
 		tokens, err := tok.TokenizeInputText(ctx.Message)
 		assert.NoError(t, err)
-		_, hashes := tbl.MatchPrefix(tokens, ctx.Model, map[string]struct{}{"pod1": {}})
-		tbl.AddPrefix(hashes, ctx.Model, "pod1")
+		_, hashes := tbl.MatchPrefix(tokens, ctx.Model, nil)
+		tbl.AddPrefix(hashes, ctx.Model, utils.GeneratePodKey("", "pod1"))
 
 		r := &pdRouter{
 			prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), tbl),
@@ -633,6 +633,34 @@ func TestScorePrefillPods_PrefixCachePolicy(t *testing.T) {
 		scores, _, _ := scorePrefillWithDefaultPolicy(r, ctx, []*v1.Pod{pod("pod1", "rs1"), pod("pod2", "rs1")})
 		assert.Len(t, scores, 1, "one roleset")
 		assert.Equal(t, "pod1", scores["rs1"].Pod.Name, "pod1 has higher cache match and should win")
+	})
+
+	t.Run("prefix match is not credited to a same-named pod in another namespace", func(t *testing.T) {
+		tbl := prefixcacheindexer.NewPrefixHashTable()
+		tok := tokenizer.NewCharacterTokenizer()
+		tokens, err := tok.TokenizeInputText(ctx.Message)
+		assert.NoError(t, err)
+		_, hashes := tbl.MatchPrefix(tokens, ctx.Model, nil)
+		tbl.AddPrefix(hashes, ctx.Model, utils.GeneratePodKey("ns-a", "pod1"))
+
+		r := &pdRouter{
+			prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), tbl),
+			prefixCacheIndexer:    tbl,
+			prefillRequestTracker: pd.NewPrefillRequestTracker(),
+		}
+
+		inNamespace := func(namespace string) *v1.Pod {
+			p := pod("pod1", "rs1")
+			p.Namespace = namespace
+			return p
+		}
+		// Candidates are shuffled before scoring and a tie keeps the first one seen, so
+		// repeat to make sure ns-a wins on its match rather than on the shuffle.
+		for i := 0; i < 20; i++ {
+			scores, _, _ := scorePrefillWithDefaultPolicy(r, ctx, []*v1.Pod{inNamespace("ns-b"), inNamespace("ns-a")})
+			require.Len(t, scores, 1)
+			require.Equal(t, "ns-a", scores["rs1"].Pod.Namespace, "only ns-a/pod1 holds the prefix")
+		}
 	})
 
 	t.Run("pod with fewer requests wins when cache matches are equal", func(t *testing.T) {

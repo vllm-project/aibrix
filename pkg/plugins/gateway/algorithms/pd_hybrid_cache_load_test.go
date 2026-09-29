@@ -67,12 +67,12 @@ func newHybridCacheLoadTestRouter(t *testing.T, client *http.Client, cfg pd.Hybr
 }
 
 // seedHybridPrefix records the first matchPct percent of hybridTestMessage
-// as resident on pod for model.
+// as resident on the burst pod named pod for model.
 func seedHybridPrefix(t *testing.T, table *prefixcacheindexer.PrefixHashTable, model, pod string, matchPct int) {
 	t.Helper()
 	_, hashes := table.MatchPrefix([]byte(hybridTestMessage), model, nil)
 	require.Len(t, hashes, 10)
-	table.AddPrefix(hashes[:len(hashes)*matchPct/100], model, pod)
+	table.AddPrefix(hashes[:len(hashes)*matchPct/100], model, burstPodKey(pod))
 }
 
 // hybridRequest is tokenLoadRequest with the prefix-matchable message and an
