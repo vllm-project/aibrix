@@ -2355,6 +2355,17 @@ def pooling():
 
         # Chat form: vLLM's PoolingChatRequest carries messages instead of input.
         if input_data is None:
+            # Guard messages the same way as input: a string, dict, number, or a
+            # list of non-dicts would otherwise raise inside _msg_text and turn a
+            # client error into a 500.
+            if not isinstance(messages, list) or not all(
+                isinstance(m, dict) for m in messages
+            ):
+                return create_error_response(
+                    "'messages' must be an array of message objects",
+                    param="messages",
+                )
+
             def _msg_text(msg):
                 c = msg.get("content", "")
                 if isinstance(c, str):

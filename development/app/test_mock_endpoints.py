@@ -775,3 +775,21 @@ def test_pooling_chat_form_uses_messages(monkeypatch):
     body = response.get_json()
     assert len(body["data"]) == 1
     assert body["usage"]["prompt_tokens"] > 0
+
+
+def test_pooling_rejects_non_list_messages(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    # A string, dict, number, or a list of non-dicts would raise inside the chat
+    # branch's text normalizer; all are client errors and must surface as 400,
+    # not fall into the 500 handler.
+    for bad_messages in ("nope", {"content": "hi"}, 42, [{"content": "ok"}, "bad"]):
+        response = post_json(
+            client,
+            "/pooling",
+            {"model": "m", "messages": bad_messages},
+            request_id=f"pooling-bad-msg-{type(bad_messages).__name__}",
+        )
+        assert response.status_code == 400, bad_messages
+        assert response.get_json()["error"]["param"] == "messages"
