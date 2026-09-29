@@ -157,11 +157,21 @@ func loadSessionTTL() time.Duration {
 // the counters and gauge series of pods that saw no traffic for a whole
 // sweep interval, so pod churn does not grow the ledger without bound.
 //
+// The tracker also keeps a decode ledger, the state behind the token_load
+// decode score policy: AcquireDecode(requestID, podKey, cost) charges the
+// decode pod a request was routed to, and ReleaseDecode(requestID) drops the
+// charge when the request completes. A decode pod holds a request's KV from
+// the transfer until the request finishes, so the charge lives that long. The
+// decode charge is independent of the prefill one, with the same idempotent
+// release, TTL sweep and idle-pod pruning.
+//
 // All methods are safe for concurrent use. Reads do not allocate.
 type TokenLoadTracker struct {
-	activeTokens sync.Map // map[string]*podCounter, pod key → tokens
-	kvTokens     sync.Map // map[string]*podCounter, pod key → tokens
-	entries      sync.Map // map[string]*tokenLoadEntry, request ID → charge
+	activeTokens  sync.Map // map[string]*podCounter, pod key → tokens
+	kvTokens      sync.Map // map[string]*podCounter, pod key → tokens
+	decodeTokens  sync.Map // map[string]*podCounter, pod key → tokens
+	entries       sync.Map // map[string]*tokenLoadEntry, request ID → charge
+	decodeEntries sync.Map // map[string]*decodeLoadEntry, request ID → decode charge
 	// sessions remembers the last prompt size per (model, session) so a
 	// multi-turn continuation is charged only for what the engine computes.
 	// sessionCount is its size, kept so admission can stop at MaxSessions
@@ -208,6 +218,16 @@ type tokenLoadEntry struct {
 // released reports whether both parts of the charge have been released.
 func (e *tokenLoadEntry) released() bool {
 	return e.tokensReleased.Load() && e.kvReleased.Load()
+}
+
+// decodeLoadEntry records one AcquireDecode so the release subtracts exactly
+// what was charged. Its fields mirror tokenLoadEntry, with a single part.
+type decodeLoadEntry struct {
+	podKey     string
+	cost       float64
+	acquiredAt time.Time
+	ttl        time.Duration
+	released   atomic.Bool
 }
 
 // podCounter is one per-pod token counter: the bits of a float64 value and a
@@ -491,12 +511,58 @@ func (t *TokenLoadTracker) forgetIfReleased(requestID string, entry *tokenLoadEn
 	}
 }
 
-// ReleaseAll releases whatever requestID still holds on both counters and
-// forgets the request. Use it on terminal paths where nothing of the request
-// can remain on the pod (prefill failure, request completion).
+// ReleaseAll releases whatever requestID still holds on the prefill counters
+// and the decode ledger and forgets the request. Use it on terminal paths
+// where nothing of the request can remain on its pods (prefill failure,
+// request completion).
 func (t *TokenLoadTracker) ReleaseAll(requestID string) {
 	t.ReleaseTokens(requestID)
 	t.ReleaseKVCache(requestID)
+	t.ReleaseDecode(requestID)
+}
+
+// AcquireDecodeWithTTL charges cost to the decode counter of the pod
+// identified by podKey and records the charge under requestID for
+// ReleaseDecode. A ttl of 0 means the janitor never sweeps the charge. As with
+// AcquirePrefill, a second charge for the same requestID releases the earlier
+// one first, with a warning.
+func (t *TokenLoadTracker) AcquireDecodeWithTTL(requestID, podKey string, cost float64, ttl time.Duration) {
+	entry := &decodeLoadEntry{podKey: podKey, cost: cost, acquiredAt: t.now(), ttl: ttl}
+	if prev, loaded := t.decodeEntries.Swap(requestID, entry); loaded {
+		old := prev.(*decodeLoadEntry)
+		klog.Warningf("token_load_tracker decode re-acquire for request_id=%s: releasing earlier charge pod=%s cost=%g before charging pod=%s cost=%g",
+			requestID, old.podKey, old.cost, podKey, cost)
+		t.releaseDecode(requestID, old)
+	}
+	t.addDecode(podKey, cost)
+	klog.V(4).InfoS("token_load_decode_acquired", "request_id", requestID, "pod", podKey, "cost", cost)
+}
+
+// ReleaseDecode subtracts requestID's decode charge from its pod's decode
+// counter. No-op for an unknown request ID or a repeated call.
+func (t *TokenLoadTracker) ReleaseDecode(requestID string) {
+	if v, ok := t.decodeEntries.Load(requestID); ok {
+		t.releaseDecode(requestID, v.(*decodeLoadEntry))
+	}
+}
+
+// releaseDecode releases entry once and drops it from the ledger. The delete
+// is keyed on the entry pointer, so it never removes a newer charge that
+// replaced this one under the same request ID.
+func (t *TokenLoadTracker) releaseDecode(requestID string, entry *decodeLoadEntry) {
+	if !entry.released.CompareAndSwap(false, true) {
+		return
+	}
+	t.addDecode(entry.podKey, -entry.cost)
+	t.decodeEntries.CompareAndDelete(requestID, entry)
+	klog.V(4).InfoS("token_load_decode_released", "request_id", requestID, "pod", entry.podKey, "cost", entry.cost)
+}
+
+// GetDecodeLoad returns the decode counter of the pod identified by podKey:
+// the charged prompt tokens of the requests routed to it that have not
+// completed. Unknown pods report 0.
+func (t *TokenLoadTracker) GetDecodeLoad(podKey string) float64 {
+	return loadFloat(&t.decodeTokens, podKey)
 }
 
 // GetLoad returns the current active and resident-KV token counters of the
@@ -533,6 +599,10 @@ func (t *TokenLoadTracker) addActive(podKey string, delta float64) {
 
 func (t *TokenLoadTracker) addKV(podKey string, delta float64) {
 	t.addCounter(&t.kvTokens, metrics.PDTokenLoadKVTokens, podKey, delta)
+}
+
+func (t *TokenLoadTracker) addDecode(podKey string, delta float64) {
+	t.addCounter(&t.decodeTokens, metrics.PDTokenLoadDecodeTokens, podKey, delta)
 }
 
 // addCounter adds delta to podKey's counter in m and publishes the result as the
@@ -612,14 +682,30 @@ func (t *TokenLoadTracker) sweepExpired() int {
 		released++
 		return true
 	})
+	t.decodeEntries.Range(func(key, val any) bool {
+		entry := val.(*decodeLoadEntry)
+		if entry.ttl <= 0 {
+			return true
+		}
+		age := now.Sub(entry.acquiredAt)
+		if age <= entry.ttl {
+			return true
+		}
+		requestID := key.(string)
+		klog.Warningf("token_load_tracker force-releasing stale decode charge: request_id=%s pod=%s cost=%g age_seconds=%.0f ttl_seconds=%.0f",
+			requestID, entry.podKey, entry.cost, age.Seconds(), entry.ttl.Seconds())
+		t.releaseDecode(requestID, entry)
+		released++
+		return true
+	})
 	return released
 }
 
 // pruneIdle drops the counters and gauge series of every pod that has been
-// idle since the previous call, meaning both counters are zero and neither
+// idle since the previous call, meaning all its counters are zero and none
 // was written in between, and returns how many pods it dropped. Pods come
 // and go under autoscaling and rollouts; without pruning each one would keep
-// two counters and two gauge series on the gateway forever. A pruned pod is
+// its counters and gauge series on the gateway forever. A pruned pod is
 // re-created, from zero, by its next charge.
 func (t *TokenLoadTracker) pruneIdle() int {
 	t.countersMu.Lock()
@@ -632,6 +718,7 @@ func (t *TokenLoadTracker) pruneIdle() int {
 	}
 	t.activeTokens.Range(collect)
 	t.kvTokens.Range(collect)
+	t.decodeTokens.Range(collect)
 
 	pruned := 0
 	for pod := range pods {
@@ -639,14 +726,17 @@ func (t *TokenLoadTracker) pruneIdle() int {
 		// counter is re-examined from scratch next time.
 		active := idleCounter(&t.activeTokens, pod)
 		kv := idleCounter(&t.kvTokens, pod)
-		if !active || !kv {
+		decode := idleCounter(&t.decodeTokens, pod)
+		if !active || !kv || !decode {
 			continue
 		}
 		t.activeTokens.Delete(pod)
 		t.kvTokens.Delete(pod)
+		t.decodeTokens.Delete(pod)
 		labelValues := tokenLoadGaugeLabelValues(pod)
 		metrics.DeleteGaugeMetric(metrics.PDTokenLoadActiveTokens, tokenLoadGaugeLabels, labelValues...)
 		metrics.DeleteGaugeMetric(metrics.PDTokenLoadKVTokens, tokenLoadGaugeLabels, labelValues...)
+		metrics.DeleteGaugeMetric(metrics.PDTokenLoadDecodeTokens, tokenLoadGaugeLabels, labelValues...)
 		pruned++
 		klog.V(4).InfoS("token_load_pod_pruned", "pod", pod)
 	}

@@ -336,7 +336,7 @@ Configure the range in the pod's ``routingConfig``:
    * - ``prefillScorePolicy``
      - How to score prefill pods. ``prefix_cache`` (default), ``least_request``, ``conductor``, ``token_load``, or ``hybrid_cache_load``.
    * - ``decodeScorePolicy``
-     - How to score decode pods. ``load_balancing`` (default), ``least_request``, or ``conductor``.
+     - How to score decode pods. ``load_balancing`` (default), ``least_request``, ``conductor``, or ``token_load``.
 
 The same ``routingConfig`` object also carries the prefill/decode routing thresholds of a
 profile's requests, flat under ``pd``: ``prefillRequestTimeout``, the spread thresholds
@@ -467,6 +467,20 @@ The gateway exports the two counters per prefill pod as gauges labelled by ``nam
 
 - ``pd_token_load_active_tokens``
 - ``pd_token_load_kv_tokens``
+
+and, under the decode policy below, the decode ledger per decode pod:
+
+- ``pd_token_load_decode_tokens``
+
+**Decode side**
+
+Setting ``decodeScorePolicy`` (or ``AIBRIX_DECODE_SCORE_POLICY``) to ``token_load`` applies the same idea to decode pods. A decode pod receives the whole prompt's KV from the prefill pod and holds it until the request finishes, but the other decode policies count requests and read KV usage from the scraped engine metrics, which refresh once per ``AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS``, so every selection within one refresh sees the same value. ``token_load`` keeps a gateway-side ledger instead, and scores each decode pod as (lower is better):
+
+.. code-block:: text
+
+    score = decode_tokens
+
+Each request is charged its ``prompt_tokens`` to its decode pod: the whole prompt, not the prefix-matched remainder, since the decode pod receives all of the prompt's KV. There is no fixed per-request cost; ``AIBRIX_TOKEN_LOAD_REQUEST_COST`` applies to the prefill charge only. The charge is made in the same critical section as the selection and released when the request completes or its prefill call fails terminally, with the same TTL, janitor and ``namespace/name`` keying as the prefill ledger. The policy reads no engine metrics, so decode pods whose metrics have not arrived yet are scored from the ledger like any other rather than given the cold-start score. The decode load-imbalance fast path is skipped under ``token_load``: it picks by request count, throughput or drain rate, which is what this policy replaces, and a pod holding one long prompt has the fewest requests. Other decode policies keep it. Output tokens are not charged, since the router does not know the output length, and a decode pod's own prefix reuse is not modelled. The ledger, like the prefill one, is local to each gateway replica: with several replicas, each scores only the requests it routed itself.
 
 **Configuration**
 
@@ -777,7 +791,7 @@ These are set on the **gateway plugin** deployment.
      - ``prefix_cache`` and ``hybrid_cache_load``. Prefix matches below this percentage are ignored, ``0`` to ``100``. ``0`` disables the threshold.
    * - ``AIBRIX_DECODE_SCORE_POLICY``
      - ``load_balancing``
-     - Default scoring policy for selecting decode pods. ``load_balancing``, ``least_request``, or ``conductor``.
+     - Default scoring policy for selecting decode pods. ``load_balancing``, ``least_request``, ``conductor``, or ``token_load``.
    * - ``AIBRIX_KV_CONNECTOR_TYPE``
      - ``shfs``
      - vLLM KV transfer adapter. ``shfs`` for GPU (SHFS/KVCacheManager), ``nixl`` for Neuron. TRT-LLM transfer backends are configured on the workers.

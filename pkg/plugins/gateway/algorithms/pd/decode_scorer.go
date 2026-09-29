@@ -45,12 +45,18 @@ const (
 	// pressure. Uses throughput-derived TBT, sublinear batch-size scaling, and
 	// a penalty for pods above the GPU-cache utilization threshold.
 	DecodePolicyConductor DecodePolicyName = "conductor"
+
+	// DecodePolicyTokenLoad routes to the pod with the fewest prompt tokens
+	// charged to it by the gateway's decode ledger (TokenLoadTracker): the
+	// requests routed to it that have not completed, weighted by prompt size.
+	DecodePolicyTokenLoad DecodePolicyName = "token_load"
 )
 
 const (
 	ScorePolicyLoadBalancing = string(DecodePolicyLoadBalancing)
 	ScorePolicyLeastRequest  = string(DecodePolicyLeastRequest)
 	ScorePolicyConductor     = string(DecodePolicyConductor)
+	ScorePolicyTokenLoad     = string(DecodePolicyTokenLoad)
 )
 
 // Default values for ConductorDecodePolicy.
@@ -86,6 +92,7 @@ type DecodePodInput struct {
 	MaxRequestCount float64 // max RunningReqs across the candidate decode pods
 	MaxThroughput   float64 // max Throughput across the candidate decode pods
 	MaxFreeGPUUsage float64 // max FreeGPUPercent across the candidate decode pods
+	DecodeTokens    float64 // prompt tokens charged to this pod by the decode ledger (token_load)
 }
 
 // RolesetDecodePick is the winning decode pod for one roleset after comparing
@@ -232,6 +239,35 @@ func (ConductorDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext, po
 	return estimatedTBT
 }
 
+// TokenLoadDecodePolicy scores decode pods by the prompt tokens the gateway has
+// charged to them and not yet released: a request is charged its prompt size
+// plus a fixed per-request cost when its decode pod is selected, and released
+// when it completes (see TokenLoadTracker). A decode pod receives the whole
+// prompt's KV from the prefill pod, so this tracks the KV each decoder has been
+// handed, updated synchronously with every selection instead of once per metric
+// refresh. Lower is better.
+type TokenLoadDecodePolicy struct{}
+
+func (TokenLoadDecodePolicy) Name() DecodePolicyName { return DecodePolicyTokenLoad }
+
+func (TokenLoadDecodePolicy) Describe() string {
+	return "token_load: prompt tokens charged to the decode pod by the gateway ledger"
+}
+
+func (TokenLoadDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext, pod *v1.Pod, in DecodePodInput) float64 {
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("decode_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
+			"policy", DecodePolicyTokenLoad, "decode_tokens", in.DecodeTokens)
+	}
+	return in.DecodeTokens
+}
+
+// UsesDecodeTokenLoad reports whether policy scores from the decode ledger, so
+// the router must charge the ledger when it selects a decode pod.
+func UsesDecodeTokenLoad(policy DecodeScorePolicy) bool {
+	return policy != nil && policy.Name() == DecodePolicyTokenLoad
+}
+
 // decodePolicyFactories is the immutable registry of built-in decode scoring
 // policies. Custom policies registered at runtime go into decodePolicyRegistryCustom
 // so that the built-in map never needs a mutex.
@@ -239,6 +275,7 @@ var decodePolicyFactories = map[string]func() DecodeScorePolicy{
 	string(DecodePolicyLoadBalancing): func() DecodeScorePolicy { return LoadBalancingDecodePolicy{} },
 	string(DecodePolicyLeastRequest):  func() DecodeScorePolicy { return LeastRequestDecodePolicy{} },
 	string(DecodePolicyConductor):     func() DecodeScorePolicy { return ConductorDecodePolicy{} },
+	string(DecodePolicyTokenLoad):     func() DecodeScorePolicy { return TokenLoadDecodePolicy{} },
 }
 
 // RegisterDecodePolicy registers a custom decode scoring policy factory under
@@ -291,11 +328,11 @@ func ResolveDecodePolicy(raw string) (policy DecodeScorePolicy, canonical Decode
 // policy names, including both built-in and dynamically registered custom ones.
 // Used in log/error messages to guide operators toward valid values.
 func ValidDecodePolicyNames() []string {
-	names := []string{string(DecodePolicyLoadBalancing), string(DecodePolicyLeastRequest), string(DecodePolicyConductor)}
+	names := []string{string(DecodePolicyLoadBalancing), string(DecodePolicyLeastRequest), string(DecodePolicyConductor), string(DecodePolicyTokenLoad)}
 	decodePolicyRegistryMu.RLock()
 	defer decodePolicyRegistryMu.RUnlock()
 	for name := range decodePolicyRegistryCustom {
-		if name != string(DecodePolicyLoadBalancing) && name != string(DecodePolicyLeastRequest) && name != string(DecodePolicyConductor) {
+		if _, builtin := decodePolicyFactories[name]; !builtin {
 			names = append(names, name)
 		}
 	}

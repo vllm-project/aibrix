@@ -63,6 +63,9 @@ const (
 	// charged to each prefill pod (token_load prefill score policy)
 	PDTokenLoadActiveTokens = "pd_token_load_active_tokens"
 	PDTokenLoadKVTokens     = "pd_token_load_kv_tokens"
+	// gauge to track the prompt tokens the pd router has handed to each decode
+	// pod (token_load decode score policy)
+	PDTokenLoadDecodeTokens = "pd_token_load_decode_tokens"
 
 	// counters and a gauge of the adaptive bucket-serve plan of the pd prefill
 	// routing: the requests and prompt tokens each banded roleset carried, and
@@ -181,6 +184,14 @@ var (
 				Raw: Gauge,
 			},
 			Description: "Estimated prompt tokens whose KV cache is still resident on a prefill pod, as charged by the pd router",
+		},
+		PDTokenLoadDecodeTokens: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			Description: "Estimated prompt tokens of the requests the pd router has routed to a decode pod that have not completed yet",
 		},
 		PDBucketServeBandTotal: {
 			MetricScope:  PodMetricScope,

@@ -243,10 +243,11 @@ type pdRouter struct {
 	trtHandler            *engine.TRTLLMHandler
 
 	// tokenLoadTracker is the token-weighted prefill ledger read by the
-	// token_load policy. It is charged in filterPrefillDecodePods for requests
-	// scored by that policy, released by the prefill executor when the prefill
-	// call returns, and released fully on request completion through the
-	// cache.RequestTracker callbacks (see DoneRequestCount). nil in routers
+	// token_load prefill policy, and the decode ledger read by the token_load
+	// decode policy. It is charged in filterPrefillDecodePods for requests
+	// scored by those policies, released by the prefill executor when the
+	// prefill call returns, and released fully on request completion through
+	// the cache.RequestTracker callbacks (see DoneRequestCount). nil in routers
 	// built without one (tests); every access is nil-guarded.
 	tokenLoadTracker *pd.TokenLoadTracker
 
@@ -452,6 +453,26 @@ func (r *pdRouter) chargeTokenLoad(routingCtx *types.RoutingContext, pod *v1.Pod
 	r.tokenLoadTracker.AcquirePrefillWithTTL(routingCtx.RequestID, podKey, cost, overrides.TokenLoad.TTL)
 }
 
+// chargeDecodeTokenLoad charges the request's prompt to the decode pod when the
+// request is scored by the token_load decode policy. The decode pod receives
+// the whole prompt's KV from the prefill pod, so the charge is the full prompt,
+// not the prefix-matched remainder the prefill charge uses. It carries no fixed
+// per-request cost: AIBRIX_TOKEN_LOAD_REQUEST_COST models prefill setup work,
+// not KV on the decoder. It is released on request completion or prefill
+// failure (releaseTokenLoad, or the executor for an async prefill leg).
+func (r *pdRouter) chargeDecodeTokenLoad(routingCtx *types.RoutingContext, pod *v1.Pod, policy pd.DecodeScorePolicy) {
+	if r.tokenLoadTracker == nil || !pd.UsesDecodeTokenLoad(policy) {
+		return
+	}
+	overrides := routingCtx.PDOverrides()
+	cost := float64(pd.EstimatePromptTokens(routingCtx.ReqBody))
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("pd_router token_load decode charge",
+			"request_id", routingCtx.RequestID, "pod_name", pod.Name, "prompt_tokens", cost)
+	}
+	r.tokenLoadTracker.AcquireDecodeWithTTL(routingCtx.RequestID, utils.GeneratePodKey(pod.Namespace, pod.Name), cost, overrides.TokenLoad.TTL)
+}
+
 // releaseTokenLoad drops whatever the request still holds on the token-load
 // tracker: the terminal paths (prefill failure, request completion).
 func (r *pdRouter) releaseTokenLoad(requestID string) {
@@ -625,7 +646,8 @@ func publishBucketServePlan(routingCtx *types.RoutingContext, res pd.BandResult)
 //     throughput spread, drain-rate ratio); the first that fires narrows decodePods
 //     to a single pod and aligns prefillPods to its roleset. Steps 4 and 5 are
 //     independent: both can fire on the same request if both prefill and decode are
-//     imbalanced, with each narrowing its own side of the pair.
+//     imbalanced, with each narrowing its own side of the pair. Under the token_load
+//     decode policy the decode result is ignored and every decode pod is scored.
 //
 //  6. Bucket-serve band preference (AIBRIX_BUCKET_SERVE only) — the adaptive plan
 //     bands the request's prompt length to one roleset, so narrow the candidates to
@@ -641,8 +663,8 @@ func publishBucketServePlan(routingCtx *types.RoutingContext, res pd.BandResult)
 //
 //  8. Register — the chosen decode pod is recorded in pendingDecodeTracker and the
 //     chosen prefill pod in prefillRequestTracker (and, under the token_load
-//     policy, charged to tokenLoadTracker) before returning, so the next
-//     selection sees this one. Steps 3b-8 read tracker state and run under
+//     prefill or decode policy, charged to tokenLoadTracker) before returning, so
+//     the next selection sees this one. Steps 3b-8 read tracker state and run under
 //     selectMu; steps 1-3a, the policy Prepare step (tokenization, prefix
 //     matching) and the bucket-serve plan (which takes only the tracker lock)
 //     run before the lock is taken. Route owns the matching removals.
@@ -732,6 +754,7 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	}
 
 	targetPod, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage := r.loadImbalanceSelectDecodePod(routingCtx, decodePods)
+	targetPod = decodeFastPathPick(routingCtx, targetPod, decodePol)
 	if targetPod != nil {
 		decodePods = []*v1.Pod{targetPod}
 		if aligned := utils.FilterPodsByLabel(prefillPods, PDRoleSetIdentifier, targetPod.Labels[PDRoleSetIdentifier]); len(aligned) > 0 {
@@ -772,7 +795,24 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	r.pendingDecodeTracker.AddPendingDecode(routingCtx.RequestID, utils.GeneratePodKey(selectedDecode.Namespace, selectedDecode.Name))
 	r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, utils.GeneratePodKey(selectedPrefill.Namespace, selectedPrefill.Name))
 	r.chargeTokenLoad(routingCtx, selectedPrefill, prefillPol, prefillScorer)
+	r.chargeDecodeTokenLoad(routingCtx, selectedDecode, decodePol)
 	return selectedPrefill, selectedDecode, nil
+}
+
+// decodeFastPathPick returns the decode load-imbalance fast path's pick, or nil
+// when the decode policy must score the whole set instead. The fast path picks
+// by request count, throughput or drain rate. Those are the signals token_load
+// replaces: a pod holding one long prompt has the fewest requests and the most
+// KV. The fast path still runs under token_load, to fill the metric maps.
+func decodeFastPathPick(routingCtx *types.RoutingContext, targetPod *v1.Pod, decodePol pd.DecodeScorePolicy) *v1.Pod {
+	if targetPod == nil || !pd.UsesDecodeTokenLoad(decodePol) {
+		return targetPod
+	}
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("decode load imbalance fast path skipped under token_load",
+			"request_id", routingCtx.RequestID, "fast_path_decode_pod", targetPod.Name)
+	}
+	return nil
 }
 
 // loadImbalanceSelectPrefillPod is a fast path that runs before scorePrefillPods when
@@ -1098,7 +1138,8 @@ func (r *pdRouter) scorePreparedPrefillPods(routingCtx *types.RoutingContext, pr
 // Policy resolution: the policy argument, then r.decodePolicy, then load_balancing.
 // When at least one pod reports RealtimeNumRequestsRunning, pods missing that metric
 // receive a cold-start score (1.0 + PendingDecodeTracker pending count) instead of
-// full policy scoring. podRequestCounts include pending decode from concurrent Route
+// full policy scoring, except under token_load, which scores every pod from the
+// gateway's decode ledger. podRequestCounts include pending decode from concurrent Route
 // calls that have registered AddPendingDecode. If no pod has the running-request metric,
 // all pods are scored normally.
 //
@@ -1130,10 +1171,15 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 
 	utils.Shuffle(filteredDecodePods)
 
+	// token_load scores from the gateway's own ledger, which is exact for every
+	// pod from its first request, so the cold-start score below (built for
+	// policies that read scraped engine metrics, and in their units) does not
+	// apply to it.
+	usesDecodeTokenLoad := pd.UsesDecodeTokenLoad(policy)
 	anyMetricsReady := false
 	metricsReadyByPod := make(map[string]bool, len(filteredDecodePods))
 	for _, pod := range filteredDecodePods {
-		ready := r.decodePodMetricsReady(routingCtx, pod)
+		ready := usesDecodeTokenLoad || r.decodePodMetricsReady(routingCtx, pod)
 		metricsReadyByPod[pod.Name] = ready
 		if ready {
 			anyMetricsReady = true
@@ -1179,6 +1225,9 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 			MaxRequestCount: maxRequestCount,
 			MaxThroughput:   maxThroughput,
 			MaxFreeGPUUsage: maxFreeGPUUsage,
+		}
+		if usesDecodeTokenLoad && r.tokenLoadTracker != nil {
+			in.DecodeTokens = r.tokenLoadTracker.GetDecodeLoad(utils.GeneratePodKey(pod.Namespace, pod.Name))
 		}
 
 		decodeScore := policy.ScoreDecodePod(routingCtx, pod, in)

@@ -837,3 +837,99 @@ func TestTokenLoadTracker_ConcurrentChargesBalance(t *testing.T) {
 	tr.entries.Range(func(_, _ any) bool { count++; return true })
 	require.Equal(t, 0, count, "every request must be forgotten after release")
 }
+
+func TestTokenLoadTracker_DecodeLifecycle(t *testing.T) {
+	tr, _ := newTestTokenLoadTracker(t, testTokenLoadConfig())
+
+	tr.AcquireDecodeWithTTL("req-1", "decode-a", 100, time.Minute)
+	tr.AcquireDecodeWithTTL("req-2", "decode-a", 40, time.Minute)
+	tr.AcquireDecodeWithTTL("req-3", "decode-b", 7, time.Minute)
+	assert.Equal(t, float64(140), tr.GetDecodeLoad("decode-a"))
+	assert.Equal(t, float64(7), tr.GetDecodeLoad("decode-b"))
+	assert.Equal(t, float64(0), tr.GetDecodeLoad("decode-unknown"))
+	// The decode ledger is separate from the prefill counters.
+	assertLoad(t, tr, "decode-a", 0, 0)
+
+	tr.ReleaseDecode("req-1")
+	tr.ReleaseDecode("req-1") // repeated release is a no-op
+	tr.ReleaseDecode("never-charged")
+	assert.Equal(t, float64(40), tr.GetDecodeLoad("decode-a"))
+
+	// ReleaseAll, the router's terminal path, drops the decode charge too.
+	tr.ReleaseAll("req-2")
+	tr.ReleaseAll("req-3")
+	assert.Equal(t, float64(0), tr.GetDecodeLoad("decode-a"))
+	assert.Equal(t, float64(0), tr.GetDecodeLoad("decode-b"))
+	_, tracked := tr.decodeEntries.Load("req-2")
+	assert.False(t, tracked, "a released decode charge is forgotten")
+}
+
+func TestTokenLoadTracker_DecodeAndPrefillChargesAreIndependent(t *testing.T) {
+	tr, _ := newTestTokenLoadTracker(t, testTokenLoadConfig())
+
+	// One request charges its prefill pod and its decode pod.
+	tr.AcquirePrefill("req-1", "prefill-a", 100)
+	tr.AcquireDecodeWithTTL("req-1", "decode-a", 150, time.Minute)
+
+	// The prefill call returning releases only the active prefill part.
+	tr.ReleaseTokens("req-1")
+	assertLoad(t, tr, "prefill-a", 0, 100)
+	assert.Equal(t, float64(150), tr.GetDecodeLoad("decode-a"))
+
+	tr.ReleaseAll("req-1")
+	assertLoad(t, tr, "prefill-a", 0, 0)
+	assert.Equal(t, float64(0), tr.GetDecodeLoad("decode-a"))
+}
+
+func TestTokenLoadTracker_DecodeReacquireReplacesCharge(t *testing.T) {
+	tr, _ := newTestTokenLoadTracker(t, testTokenLoadConfig())
+
+	tr.AcquireDecodeWithTTL("req-1", "decode-a", 100, time.Minute)
+	tr.AcquireDecodeWithTTL("req-1", "decode-b", 30, time.Minute)
+	assert.Equal(t, float64(0), tr.GetDecodeLoad("decode-a"), "the earlier charge is released")
+	assert.Equal(t, float64(30), tr.GetDecodeLoad("decode-b"))
+
+	tr.ReleaseDecode("req-1")
+	assert.Equal(t, float64(0), tr.GetDecodeLoad("decode-b"))
+}
+
+func TestTokenLoadTracker_JanitorReleasesStaleDecodeCharges(t *testing.T) {
+	tr, clock := newTestTokenLoadTracker(t, testTokenLoadConfig())
+
+	tr.AcquireDecodeWithTTL("stale", "decode-a", 100, time.Minute)
+	tr.AcquireDecodeWithTTL("pinned", "decode-a", 5, 0) // ttl 0: never swept
+	clock.Advance(30 * time.Second)
+	tr.AcquireDecodeWithTTL("fresh", "decode-a", 10, time.Minute)
+
+	clock.Advance(45 * time.Second)
+	assert.Equal(t, 1, tr.sweepExpired(), "only the charge older than its TTL is released")
+	assert.Equal(t, float64(15), tr.GetDecodeLoad("decode-a"))
+
+	// The normal release arriving after the sweep does not subtract again.
+	tr.ReleaseDecode("stale")
+	assert.Equal(t, float64(15), tr.GetDecodeLoad("decode-a"))
+}
+
+func TestTokenLoadTracker_JanitorPrunesIdleDecodePods(t *testing.T) {
+	tr, _ := newTestTokenLoadTracker(t, testTokenLoadConfig())
+
+	tr.AcquireDecodeWithTTL("req-1", "decode-prune", 100, time.Minute)
+	tr.AcquireDecodeWithTTL("req-2", "decode-busy", 100, time.Minute)
+	tr.ReleaseDecode("req-1")
+	assert.True(t, tokenLoadSeriesPublished(t, metrics.PDTokenLoadDecodeTokens, "decode-prune"))
+
+	// Written since the last sweep: only observed idle.
+	assert.Equal(t, 0, tr.pruneIdle())
+	_, tracked := tr.decodeTokens.Load("decode-prune")
+	assert.True(t, tracked)
+
+	// A full quiet interval at zero prunes the counter and its series; a pod
+	// with a decode charge outstanding is kept.
+	assert.Equal(t, 1, tr.pruneIdle())
+	_, tracked = tr.decodeTokens.Load("decode-prune")
+	assert.False(t, tracked)
+	assert.False(t, tokenLoadSeriesPublished(t, metrics.PDTokenLoadDecodeTokens, "decode-prune"))
+	_, tracked = tr.decodeTokens.Load("decode-busy")
+	assert.True(t, tracked)
+	assert.Equal(t, float64(100), tr.GetDecodeLoad("decode-busy"))
+}
