@@ -671,6 +671,9 @@ const pdRoleIdentifier = "role-name"
 // label is missing or holds another value fall back to the pod name, which is how
 // the role was detected before; that keeps every pod matched today matched.
 func pdRole(pod *v1.Pod) string {
+	if pod == nil {
+		return ""
+	}
 	switch pod.Labels[pdRoleIdentifier] {
 	case "prefill":
 		return "prefill"

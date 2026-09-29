@@ -1121,6 +1121,7 @@ func TestPDRole(t *testing.T) {
 		{"no label: name fallback, prefill", pod("rs-prefill-abcde", nil), "prefill"},
 		{"other label value: name fallback", pod("rs-decode-abcde", map[string]string{pdRoleIdentifier: "worker"}), "decode"},
 		{"neither", pod("vllm-0", map[string]string{pdRoleIdentifier: "worker"}), ""},
+		{"nil pod", nil, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
