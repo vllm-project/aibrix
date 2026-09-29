@@ -3,11 +3,12 @@ Copyright 2026 The Aibrix Team.
 Licensed under the Apache License, Version 2.0.
 */
 
-package routingalgorithms
+package external
 
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -22,18 +23,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 )
-
-func TestExternalRouterInitializationValidatesFallback(t *testing.T) {
-	t.Setenv(EnvExternalRouterEndpoint, "http://router.default.svc/v1alpha1/select")
-	t.Setenv(EnvExternalRouterPolicyMode, "Advisory")
-	t.Setenv(EnvExternalRouterFailureMode, "FailClosed")
-	t.Setenv(EnvExternalRouterFallback, "missing-router")
-	manager := NewRouterManagerWithCache(&externalProtocolCache{})
-	manager.Init()
-	require.Error(t, manager.InitializationError(RouterExternal))
-	_, valid := manager.Validate(string(RouterExternal))
-	require.False(t, valid)
-}
 
 func TestExecuteExternalRequestLimitsAndCancellation(t *testing.T) {
 	t.Run("request too large before exchange", func(t *testing.T) {
@@ -105,7 +94,7 @@ func externalRouterTestConfig(endpoint string, policy externalPolicyMode, failur
 		endpoint:         parsed,
 		policyMode:       policy,
 		failureMode:      failure,
-		fallback:         RouterLeastRequest,
+		fallback:         types.RoutingAlgorithm("least-request"),
 		timeout:          time.Second,
 		maxInflight:      2,
 		maxRequestBytes:  256 * 1024,
@@ -141,7 +130,7 @@ func TestExternalRouterPolicies(t *testing.T) {
 		defer server.Close()
 		cfg := externalRouterTestConfig(server.URL, PolicyAuthoritative, FailureFailClosed)
 		router := newExternalRouterWithDependencies(cfg, nil, server.Client(), nil, prometheus.NewRegistry())
-		ctx := types.NewRoutingContext(context.Background(), RouterExternal, "llama", "", "req-1", "")
+		ctx := types.NewRoutingContext(context.Background(), Algorithm, "llama", "", "req-1", "")
 		ctx.ReqHeaders["traceparent"] = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 		address, err := router.Route(ctx, pods)
 		require.NoError(t, err)
@@ -158,7 +147,7 @@ func TestExternalRouterPolicies(t *testing.T) {
 		cfg := externalRouterTestConfig(server.URL, PolicyAdvisory, FailureFailClosed)
 		fallbackCalled := false
 		selector := func(ctx *types.RoutingContext) (types.Router, error) {
-			require.Equal(t, RouterLeastRequest, ctx.Algorithm)
+			require.Equal(t, types.RoutingAlgorithm("least-request"), ctx.Algorithm)
 			return externalTestRouterFunc(func(routeCtx *types.RoutingContext, candidates types.PodList) (string, error) {
 				fallbackCalled = true
 				routeCtx.SetTargetPod(candidates.All()[0])
@@ -167,11 +156,11 @@ func TestExternalRouterPolicies(t *testing.T) {
 			}), nil
 		}
 		router := newExternalRouterWithDependencies(cfg, nil, server.Client(), selector, prometheus.NewRegistry())
-		ctx := types.NewRoutingContext(context.Background(), RouterExternal, "llama", "", "req-2", "")
+		ctx := types.NewRoutingContext(context.Background(), Algorithm, "llama", "", "req-2", "")
 		_, err := router.Route(ctx, pods)
 		require.NoError(t, err)
 		require.True(t, fallbackCalled)
-		require.Equal(t, RouterExternal, ctx.Algorithm)
+		require.Equal(t, Algorithm, ctx.Algorithm)
 	})
 
 	t.Run("authoritative denied", func(t *testing.T) {
@@ -182,7 +171,7 @@ func TestExternalRouterPolicies(t *testing.T) {
 		defer server.Close()
 		cfg := externalRouterTestConfig(server.URL, PolicyAuthoritative, FailureFailClosed)
 		router := newExternalRouterWithDependencies(cfg, nil, server.Client(), nil, prometheus.NewRegistry())
-		ctx := types.NewRoutingContext(context.Background(), RouterExternal, "llama", "", "req-3", "")
+		ctx := types.NewRoutingContext(context.Background(), Algorithm, "llama", "", "req-3", "")
 		_, err := router.Route(ctx, pods)
 		require.ErrorIs(t, err, ErrExternalPolicyDenied)
 		require.False(t, ctx.HasRouted())
@@ -195,7 +184,7 @@ func TestExternalRouterPolicies(t *testing.T) {
 		defer server.Close()
 		cfg := externalRouterTestConfig(server.URL, PolicyAuthoritative, FailureFailClosed)
 		router := newExternalRouterWithDependencies(cfg, nil, server.Client(), nil, prometheus.NewRegistry())
-		ctx := types.NewRoutingContext(context.Background(), RouterExternal, "llama", "", "req-4", "")
+		ctx := types.NewRoutingContext(context.Background(), Algorithm, "llama", "", "req-4", "")
 		_, err := router.Route(ctx, pods)
 		require.ErrorIs(t, err, ErrExternalRouterUnavailable)
 		require.NotContains(t, err.Error(), "secret upstream details")
@@ -217,12 +206,31 @@ func TestExternalRouterPolicies(t *testing.T) {
 			}), nil
 		}
 		router := newExternalRouterWithDependencies(cfg, nil, server.Client(), selector, prometheus.NewRegistry())
-		ctx := types.NewRoutingContext(context.Background(), RouterExternal, "llama", "", "req-5", "")
+		ctx := types.NewRoutingContext(context.Background(), Algorithm, "llama", "", "req-5", "")
 		address, err := router.Route(ctx, pods)
 		require.NoError(t, err)
 		require.True(t, fallbackCalled)
 		require.Equal(t, "10.0.0.1:8000", address)
-		require.Equal(t, RouterExternal, ctx.Algorithm)
+		require.Equal(t, Algorithm, ctx.Algorithm)
+	})
+
+	t.Run("failed fallback invocation is counted", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+		}))
+		defer server.Close()
+		cfg := externalRouterTestConfig(server.URL, PolicyAdvisory, FailureFailOpen)
+		selector := func(*types.RoutingContext) (types.Router, error) {
+			return externalTestRouterFunc(func(*types.RoutingContext, types.PodList) (string, error) {
+				return "", errors.New("local fallback failed")
+			}), nil
+		}
+		registry := prometheus.NewRegistry()
+		router := newExternalRouterWithDependencies(cfg, nil, server.Client(), selector, registry)
+		ctx := types.NewRoutingContext(context.Background(), Algorithm, "llama", "", "req-6", "")
+		_, err := router.Route(ctx, pods)
+		require.ErrorIs(t, err, ErrExternalRouterUnavailable)
+		require.Equal(t, float64(1), testutil.ToFloat64(router.metrics.fallback.WithLabelValues(externalOutcomeHTTPError)))
 	})
 }
 
@@ -321,7 +329,7 @@ func TestExternalRouterReleasesResilienceStateOnPanic(t *testing.T) {
 	router.circuit.failure(second)
 	now = now.Add(cfg.openDuration)
 
-	ctx := types.NewRoutingContext(context.Background(), RouterExternal, "llama", "", "panic", "")
+	ctx := types.NewRoutingContext(context.Background(), Algorithm, "llama", "", "panic", "")
 	require.Panics(t, func() {
 		_, _ = router.Route(ctx, &utils.PodArray{Pods: []*v1.Pod{pod}})
 	})

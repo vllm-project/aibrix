@@ -1087,10 +1087,15 @@ func (rm *RouterManager) Init() {
 		if err != nil {
 			rm.initErrors[RouterExternal] = err
 			rm.routerFactory[RouterExternal] = nil
-		} else if configured, ok := router.(interface{ configuredFallback() types.RoutingAlgorithm }); ok {
-			fallback := configured.configuredFallback()
-			if fallback != "" && (fallback == RouterExternal || rm.routerFactory[fallback] == nil) {
-				initErr := fmt.Errorf("fallback %s is not a registered local router", fallback)
+		} else if configured, ok := router.(interface{ ConfiguredFallback() types.RoutingAlgorithm }); ok {
+			fallback := configured.ConfiguredFallback()
+			if fallback != "" && (fallback == RouterExternal || rm.routerFactory[fallback] == nil || isExclusiveStrategyName(string(fallback))) {
+				var initErr error
+				if isExclusiveStrategyName(string(fallback)) {
+					initErr = fmt.Errorf("fallback %s is an exclusive router that requires Gateway preprocessing", fallback)
+				} else {
+					initErr = fmt.Errorf("fallback %s is not a registered local router", fallback)
+				}
 				klog.Errorf("Failed to initialize external router: %v", initErr)
 				rm.initErrors[RouterExternal] = initErr
 				rm.routerFactory[RouterExternal] = nil

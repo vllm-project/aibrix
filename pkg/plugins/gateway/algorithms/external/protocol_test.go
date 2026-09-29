@@ -3,7 +3,7 @@ Copyright 2026 The Aibrix Team.
 Licensed under the Apache License, Version 2.0.
 */
 
-package routingalgorithms
+package external
 
 import (
 	"context"
@@ -50,7 +50,7 @@ func TestExternalOpenAPIFixtures(t *testing.T) {
 		{name: "denied.json", mode: PolicyAuthoritative, decision: externalDecisionDenied},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			body, err := os.ReadFile("testdata/external/" + tt.name)
+			body, err := os.ReadFile("testdata/" + tt.name)
 			require.NoError(t, err)
 			decision, err := validateExternalDecision(body, "req-123", tt.mode, snapshots)
 			require.NoError(t, err)
@@ -112,7 +112,7 @@ func TestBuildExternalDecisionRequest(t *testing.T) {
 			externalMetricKVCacheUsage:      {},
 		},
 	}
-	ctx := types.NewRoutingContext(context.Background(), RouterExternal, "llama", "secret prompt", "req-1", "")
+	ctx := types.NewRoutingContext(context.Background(), Algorithm, "llama", "secret prompt", "req-1", "")
 	ctx.ReqBody = []byte("{\"authorization\":\"secret\"}")
 	ctx.ReqHeaders["authorization"] = "Bearer secret"
 	ctx.SetTrustedPolicyAttribute("tenantTier", "gold")
@@ -146,7 +146,7 @@ func TestBuildExternalDecisionRequestKeepsNamespacePortsSeparate(t *testing.T) {
 	podA.Labels[constants.ModelLabelPort] = "8000"
 	podB.Labels[constants.ModelLabelPort] = "9000"
 	cfg := externalRouterConfig{policyMode: PolicyAuthoritative, candidateMetrics: map[string]struct{}{}}
-	ctx := types.NewRoutingContext(context.Background(), RouterExternal, "llama", "", "same-name", "")
+	ctx := types.NewRoutingContext(context.Background(), Algorithm, "llama", "", "same-name", "")
 
 	request, snapshots, err := buildExternalDecisionRequest(cfg, nil, ctx, &utils.PodArray{Pods: []*v1.Pod{podB, podA}})
 	require.NoError(t, err)

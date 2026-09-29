@@ -163,7 +163,7 @@ request bodies, credentials, arbitrary client headers, and pod IPs are never sen
 | `AIBRIX_EXTERNAL_ROUTER_ENDPOINT` | URL | _(unset)_ | Complete `http` or `https` operation URL. Userinfo and fragments are rejected. |
 | `AIBRIX_EXTERNAL_ROUTER_POLICY_MODE` | enum | _(required)_ | `Advisory` or `Authoritative`. |
 | `AIBRIX_EXTERNAL_ROUTER_FAILURE_MODE` | enum | _(required)_ | `FailOpen` or `FailClosed`; Authoritative requires FailClosed. |
-| `AIBRIX_EXTERNAL_ROUTER_FALLBACK` | string | _(none)_ | Registered non-external local router; required for Advisory and FailOpen. |
+| `AIBRIX_EXTERNAL_ROUTER_FALLBACK` | string | _(none)_ | Registered non-external, non-exclusive local router; required for Advisory and FailOpen. `pd` and `slo*` are rejected because they require dedicated Gateway preprocessing. |
 | `AIBRIX_EXTERNAL_ROUTER_TIMEOUT` | duration | `10ms` | Deadline for one decision exchange. |
 | `AIBRIX_EXTERNAL_ROUTER_MAX_INFLIGHT` | int | `256` | Non-blocking per-process bulkhead capacity. |
 | `AIBRIX_EXTERNAL_ROUTER_MAX_REQUEST_BYTES` | bytes | `256KiB` | Maximum encoded request size. Accepts bytes, `KiB`, or `MiB`. |

@@ -272,7 +272,7 @@ All supported settings are process-level:
 | `AIBRIX_EXTERNAL_ROUTER_ENDPOINT` | unset | Complete static HTTP/HTTPS operation URL. Unset disables the strategy. |
 | `AIBRIX_EXTERNAL_ROUTER_POLICY_MODE` | none | Required when enabled: `Advisory` or `Authoritative`. |
 | `AIBRIX_EXTERNAL_ROUTER_FAILURE_MODE` | none | Required when enabled: `FailOpen` or `FailClosed`. |
-| `AIBRIX_EXTERNAL_ROUTER_FALLBACK` | none | Registered local non-external router; required for Advisory and FailOpen. |
+| `AIBRIX_EXTERNAL_ROUTER_FALLBACK` | none | Registered local non-external, non-exclusive router; required for Advisory and FailOpen. `pd` and `slo*` are rejected. |
 | `AIBRIX_EXTERNAL_ROUTER_TIMEOUT` | `10ms` | Positive deadline for one HTTP exchange. Set an explicit value appropriate for the deployment network. |
 | `AIBRIX_EXTERNAL_ROUTER_MAX_INFLIGHT` | `256` | Non-blocking per-Gateway bulkhead capacity. |
 | `AIBRIX_EXTERNAL_ROUTER_MAX_REQUEST_BYTES` | `256KiB` | Maximum encoded request size. |
@@ -412,6 +412,9 @@ Gateway exposes the following low-cardinality metrics:
 - `aibrix_gateway_external_router_duration_seconds`
 - `aibrix_gateway_external_router_inflight`
 - `aibrix_gateway_external_router_circuit_state{state}`
+
+The fallback counter increments when Gateway invokes the local fallback, even
+when that fallback returns an error.
 
 Endpoint, model, pod, request ID, decision ID, external reason, status code, and
 attribute values are deliberately not Prometheus labels.

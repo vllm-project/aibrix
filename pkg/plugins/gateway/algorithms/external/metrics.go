@@ -3,7 +3,7 @@ Copyright 2026 The Aibrix Team.
 Licensed under the Apache License, Version 2.0.
 */
 
-package routingalgorithms
+package external
 
 import (
 	"github.com/prometheus/client_golang/prometheus"

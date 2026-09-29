@@ -8,7 +8,7 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 */
 
-package routingalgorithms
+package external
 
 import (
 	"errors"
@@ -22,7 +22,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-const RouterExternal types.RoutingAlgorithm = "external"
+const Algorithm types.RoutingAlgorithm = "external"
 
 var (
 	ErrExternalPolicyDenied      = errors.New("external routing policy denied")
@@ -39,20 +39,8 @@ type externalRouter struct {
 	metrics        *externalRouterMetrics
 }
 
-func init() {
-	Register(RouterExternal, NewExternalRouter)
-}
-
-func NewExternalRouter() (types.Router, error) {
-	metricCache, err := cache.Get()
-	if err != nil {
-		return nil, err
-	}
-	return newExternalRouterWithCacheAndSelector(metricCache, Select)
-}
-
-func NewExternalRouterWithCache(metricCache cache.Cache) (types.Router, error) {
-	return newExternalRouterWithCacheAndSelector(metricCache, Select)
+func NewRouter(metricCache cache.Cache, selector func(*types.RoutingContext) (types.Router, error)) (types.Router, error) {
+	return newExternalRouterWithCacheAndSelector(metricCache, selector)
 }
 
 func newExternalRouterWithCacheAndSelector(metricCache cache.Cache, selector func(*types.RoutingContext) (types.Router, error)) (types.Router, error) {
@@ -89,7 +77,7 @@ func (r *externalRouter) BypassSingleCandidate() bool {
 	return r.cfg.policyMode == PolicyAdvisory
 }
 
-func (r *externalRouter) configuredFallback() types.RoutingAlgorithm {
+func (r *externalRouter) ConfiguredFallback() types.RoutingAlgorithm {
 	return r.cfg.fallback
 }
 
@@ -214,9 +202,10 @@ func (r *externalRouter) handleFailure(ctx *types.RoutingContext, pods types.Pod
 }
 
 func (r *externalRouter) routeFallback(ctx *types.RoutingContext, pods types.PodList, reason string) (string, error) {
-	if r.cfg.fallback == "" || r.cfg.fallback == RouterExternal || r.selectFallback == nil {
+	if r.cfg.fallback == "" || r.cfg.fallback == Algorithm || r.selectFallback == nil {
 		return "", fmt.Errorf("%w: fallback is unavailable", ErrExternalRouterUnavailable)
 	}
+	r.metrics.fallback.WithLabelValues(reason).Inc()
 	original := ctx.Algorithm
 	ctx.Algorithm = r.cfg.fallback
 	fallback, err := r.selectFallback(ctx)
@@ -225,7 +214,6 @@ func (r *externalRouter) routeFallback(ctx *types.RoutingContext, pods types.Pod
 		address, err = fallback.Route(ctx, pods)
 		ctx.Algorithm = original
 		if err == nil {
-			r.metrics.fallback.WithLabelValues(reason).Inc()
 			return address, nil
 		}
 	} else {

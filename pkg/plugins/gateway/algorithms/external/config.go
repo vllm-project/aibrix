@@ -8,7 +8,7 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 */
 
-package routingalgorithms
+package external
 
 import (
 	"errors"
@@ -127,7 +127,7 @@ func loadExternalRouterConfigFrom(getenv func(string) string, readFile func(stri
 	fallback := strings.TrimSpace(getenv(EnvExternalRouterFallback))
 	if fallback != "" {
 		cfg.fallback = types.RoutingAlgorithm(fallback)
-		if cfg.fallback == RouterExternal {
+		if cfg.fallback == Algorithm {
 			return cfg, errors.New("external router cannot fall back to itself")
 		}
 	}

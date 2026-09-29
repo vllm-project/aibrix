@@ -54,7 +54,8 @@ unset endpoint disables the strategy.
      - ``FailOpen`` or ``FailClosed``.
    * - ``AIBRIX_EXTERNAL_ROUTER_FALLBACK``
      - required for Advisory/FailOpen
-     - Registered local router other than ``external``.
+     - Registered local non-exclusive router other than ``external``. ``pd``
+       and ``slo*`` are rejected because they require dedicated preprocessing.
    * - ``AIBRIX_EXTERNAL_ROUTER_TIMEOUT``
      - ``10ms``
      - Deadline for one HTTP decision exchange.
@@ -87,8 +88,9 @@ unset endpoint disables the strategy.
      - Trusted in-process policy names eligible for sending.
 
 Invalid enabled configuration fails Gateway startup. Authoritative+FailOpen,
-Advisory without fallback, recursive/unregistered fallback, URL userinfo,
-fragments, unknown metrics, invalid limits, and empty token files are rejected.
+Advisory without fallback, recursive/unregistered/exclusive fallback, URL
+userinfo, fragments, unknown metrics, invalid limits, and empty token files are
+rejected.
 
 Protocol
 --------
@@ -255,6 +257,9 @@ Monitor these low-cardinality metrics:
 * ``aibrix_gateway_external_router_duration_seconds``
 * ``aibrix_gateway_external_router_inflight``
 * ``aibrix_gateway_external_router_circuit_state{state}``
+
+The fallback counter records each invocation attempt before the local router
+runs, so both successful and failed fallbacks are visible.
 
 Start with an Advisory canary, compare fallback and latency rates, then move to
 Authoritative only after denial and service-availability tests pass. Roll back
