@@ -588,6 +588,9 @@ func (r *ModelClaimReconciler) ensureActivated(
 	// claim's list, and its pod has to stay out for the next replacement too.
 	alreadyOn := instancePods(pm)
 	failed := failedInstanceSlots(pm)
+	// A failed engine is stopped once per pass, however many pods its
+	// replacement has to try.
+	stopped := map[string]bool{}
 	for desiredReplicas(pm) > int32(len(pm.Status.Instances)-len(failed)) {
 		pod, selectErr := selectPodForActivationWithState(
 			admissible, alreadyOn, load, servedModelName(pm), r.Locality, placementStates,
@@ -705,7 +708,10 @@ func (r *ModelClaimReconciler) ensureActivated(
 			slot = failed[0]
 			previous := pm.Status.Instances[slot]
 			replaced = &previous
-			r.stopFailedEngine(ctx, pm, previous.Pod, readings)
+			if !stopped[previous.Pod] {
+				r.stopFailedEngine(ctx, pm, previous.Pod, readings)
+				stopped[previous.Pod] = true
+			}
 			pm.Status.Instances[slot] = record
 		} else {
 			pm.Status.Instances = append(pm.Status.Instances, record)
@@ -719,28 +725,15 @@ func (r *ModelClaimReconciler) ensureActivated(
 		if errors.Is(aerr, errRuntimeSilent) {
 			// The runtime is left alone for now, so the call was not sent and
 			// nothing failed to start. The record is taken back, as for any
-			// start known not to have happened.
+			// start known not to have happened, and this pod is passed over for
+			// the rest of the pass, as a card that could not be divided is.
+			// Ranking cannot tell such a pod from the others, so without this
+			// the same pod could be picked on every pass.
 			if replaced != nil {
-				// A replacement waits for this runtime as a claim waits for a
-				// pod, and the next pass tries again. The refusal is raised as an
-				// Event only when it changes.
 				pm.Status.Instances[slot] = *replaced
-				message := fmt.Sprintf("pod %s cannot be asked to start %s yet: %v",
-					pod.Name, servedModelName(pm), aerr)
-				if meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
-					Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
-					Status:  metav1.ConditionFalse,
-					Reason:  "NoMatchingPods",
-					Message: message,
-				}) {
-					r.Recorder.Event(pm, corev1.EventTypeWarning, "NoMatchingPods", message)
-				}
-				return 0, nil
+			} else {
+				pm.Status.Instances = pm.Status.Instances[:slot]
 			}
-			// This pod is passed over for the rest of the pass, as a card that
-			// could not be divided is. Ranking cannot tell such a pod from the
-			// others, so without this the same pod could be picked on every pass.
-			pm.Status.Instances = pm.Status.Instances[:slot]
 			refusals = append(refusals, podRefusal{
 				pod:       pod.Name,
 				roomBytes: ledgers[pod.Name].maximumRoomBytes(),

@@ -765,7 +765,8 @@ it keep the routing they had, whatever happens to them. A call to start an
 engine there is not sent, and placement tries the next Pod in rank instead. A
 Pod skipped this way is not tried again in the same pass. A claim stays
 ``Pending`` only when no other Pod can take it, and it is not marked
-``Failed``, since no call was sent. Stopping an engine is still sent, since an
+``Failed``, since no call was sent. A claim whose engine failed for good is
+moved past such a Pod the same way. Stopping an engine is still sent, since an
 engine left running would keep its memory.
 
 Observability
