@@ -469,7 +469,8 @@ func oldestFirst(claims []modelv1alpha1.ModelClaim) {
 // enqueueWaitingClaims wakes the claims in the same namespace that wait for a
 // card, when another claim may have freed one. A claim that failed is left
 // out: its engine config is not valid, or its engine could not be started, and
-// room helps neither.
+// room helps neither. A claim whose engine failed for good may wait for room to
+// move to. It keeps its failed instance, so it is looked at every round anyway.
 func enqueueWaitingClaims(c client.Client) handler.MapFunc {
 	return func(ctx context.Context, obj client.Object) []reconcile.Request {
 		claims := &modelv1alpha1.ModelClaimList{}

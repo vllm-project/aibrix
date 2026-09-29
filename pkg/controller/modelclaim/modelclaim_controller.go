@@ -276,19 +276,25 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	default:
 		// Nothing is left to place, so there is no wait to keep. An instance
 		// recorded some other way, or a placement whose last step failed,
-		// would otherwise leave the claim's refusals behind for good.
-		r.backoff().placed(req.NamespacedName)
+		// would otherwise leave the claim's refusals behind for good. An
+		// instance whose engine failed for good is still to be replaced, and
+		// its replacement keeps the wait of its last try.
+		if len(failedInstanceSlots(pm)) == 0 {
+			r.backoff().placed(req.NamespacedName)
+		}
 	}
 
 	// Reconcile instance routability against live engine readiness (promote
 	// ready Activating instances, demote Active instances that went unhealthy).
 	r.reconcileInstanceHealth(ctx, pm, readings)
+	replacementFailed := false
 	if err := r.rescheduleFailedInstances(ctx, pm, candidates, readings); err != nil {
 		if apierrors.IsConflict(err) {
 			// As above: no replacement was asked for, so nothing failed.
 			return requeueOnConflict(err)
 		}
 		r.Recorder.Event(pm, corev1.EventTypeWarning, "RescheduleFailed", err.Error())
+		replacementFailed = true
 	}
 	r.recomputeReadiness(pm)
 	if len(pm.Status.Instances) == 0 && r.backoff().waitsAfterAFailedStart(req.NamespacedName) {
@@ -299,6 +305,14 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	setClaimGauges(pm)
 	if err := r.Status().Update(ctx, pm); err != nil {
 		return requeueOnConflict(err)
+	}
+	if replacementFailed {
+		// A replacement that did not start is tried again as a first start
+		// that failed is, less and less often. The wait is recorded once the
+		// claim says why it waits. The claim keeps its failed instance, so it
+		// still comes back every round.
+		r.backoff().failedToStart(req.NamespacedName, pm.Generation,
+			r.roomAsCached(ctx, pm.Namespace, candidates))
 	}
 	r.backoff().statusWritten(req.NamespacedName)
 	// Pool policy is an optional, Deployment-scoped control loop. It runs after

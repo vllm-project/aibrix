@@ -714,6 +714,8 @@ claim on another Pod, the way it places a new one. The new engine goes only on
 a card with room for it, and the card is divided before the engine starts. The
 Pod where the engine failed is left out, and the other engines there keep
 running. If no other Pod can take the claim, it stays ``Failed`` until one can.
+Until then, it is tried again as a refused claim is, less and less often. So is
+a claim whose replacement the runtime refused to start.
 
 The kvcached runtime image uses ``tini`` and a small restart loop around the
 AIBrix agent. If only the agent process crashes, child engines stay alive. The
