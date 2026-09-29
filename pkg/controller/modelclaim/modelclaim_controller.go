@@ -297,6 +297,7 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// ready Activating instances, demote Active instances that went unhealthy).
 	booting := r.reconcileInstanceHealth(ctx, pm, readings)
 	replacementFailed := false
+	failed := len(failedInstanceSlots(pm))
 	if err := r.rescheduleFailedInstances(ctx, pm, candidates, readings); err != nil {
 		if apierrors.IsConflict(err) {
 			// As above: no replacement was asked for, so nothing failed.
@@ -304,6 +305,11 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 		r.Recorder.Event(pm, corev1.EventTypeWarning, "RescheduleFailed", err.Error())
 		replacementFailed = true
+	}
+	// A replacement started in this pass boots from now on. The health check
+	// above ran before it, so it is looked at again as soon as a new engine is.
+	if len(failedInstanceSlots(pm)) < failed {
+		booting = true
 	}
 	r.recomputeReadiness(pm)
 	if len(pm.Status.Instances) == 0 && r.backoff().waitsAfterAFailedStart(req.NamespacedName) {
