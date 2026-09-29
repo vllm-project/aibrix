@@ -68,6 +68,9 @@ func TestPreble_SameNamedPodsInTwoNamespaces(t *testing.T) {
 
 	const message = "Hello world shared content extra"
 	require.NoError(t, router.PostRouteUpdate(createTestRoutingContext("test-model", message, "seed"), podList, teamA))
+	// Both pods are in the pod set. A smaller set would differ from the ready-list length
+	// on every request and rebuild the pod set each time.
+	assert.Equal(t, 2, router.numPods)
 
 	_, scored, err := router.ScoreAll(createTestRoutingContext("test-model", message, "score"), podList)
 	require.NoError(t, err)
