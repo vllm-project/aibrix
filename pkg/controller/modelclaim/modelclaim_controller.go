@@ -413,15 +413,40 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 			return nil
 		}
 
-		instance, aerr := r.activateOnPod(ctx, pm, pod)
+		resp, aerr := r.Runtime.Activate(ctx, pod.Status.PodIP, DefaultRuntimePort, &ActivateRequest{
+			ModelName:    servedModelName(pm),
+			ArtifactURL:  pm.Spec.ArtifactURL,
+			Engine:       pm.Spec.Engine,
+			IPCName:      ipcNameFor(pm),
+			EngineConfig: pm.Spec.EngineConfig,
+			ClaimRef: &ModelClaimRef{
+				Namespace: pm.Namespace,
+				Name:      pm.Name,
+				UID:       string(pm.UID),
+			},
+		})
 		if aerr != nil {
+			recordActivation(pm.Namespace, servedModelName(pm), false)
 			return aerr
 		}
 
-		pm.Status.Instances = append(pm.Status.Instances, instance)
+		// The engine is spawned but not yet serveable (boot/compile). Keep the
+		// model NOT routable — stamp the non-routable marker (port 0), record the
+		// instance as Activating with its real port — until reconcileInstanceHealth
+		// confirms the engine is ready, then it flips the annotation to the real
+		// port. This means the gateway never routes to a still-booting engine.
+		if err := r.annotateWarmPod(ctx, pm, pod, 0); err != nil {
+			return err
+		}
+
+		pm.Status.Instances = append(pm.Status.Instances, modelv1alpha1.ModelClaimInstance{
+			Pod:   pod.Name,
+			Port:  resp.Port,
+			Phase: modelv1alpha1.ModelClaimActivating,
+		})
 		load[pod.Name]++
 		r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Activating",
-			"model %s engine starting on pod %s:%d", servedModelName(pm), pod.Name, instance.Port)
+			"model %s engine starting on pod %s:%d", servedModelName(pm), pod.Name, resp.Port)
 	}
 	return nil
 }
