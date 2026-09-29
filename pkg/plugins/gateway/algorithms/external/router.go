@@ -155,9 +155,8 @@ func (r *externalRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		r.metrics.setCircuit(r.circuit.currentState())
 		return r.handleFailure(ctx, pods, externalOutcomeInvalidResponse, err)
 	}
-	r.circuit.success(circuitToken)
+	r.recordCircuitSuccess(circuitToken)
 	circuitSettled = true
-	r.metrics.setCircuit("closed")
 	if ctx.Span != nil {
 		attrs := []attribute.KeyValue{
 			attribute.String("external_router.policy_mode", string(r.cfg.policyMode)),
@@ -185,6 +184,11 @@ func (r *externalRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	default:
 		return r.handleFailure(ctx, pods, externalOutcomeInvalidResponse, errors.New("unreachable external decision"))
 	}
+}
+
+func (r *externalRouter) recordCircuitSuccess(token externalCircuitToken) {
+	r.circuit.success(token)
+	r.metrics.setCircuit(r.circuit.currentState())
 }
 
 func (r *externalRouter) handleFailure(ctx *types.RoutingContext, pods types.PodList, outcome string, cause error) (string, error) {

@@ -13,6 +13,23 @@ addresses.
 The protocol is alpha. Download the normative
 :download:`OpenAPI 3.1 contract <../_static/openapi/external-replica-selection-v1alpha1.yaml>`.
 
+Candidate discovery
+-------------------
+
+Gateway resolves the model from the inference request, then reads candidate
+Pods from its Kubernetes informer-backed cache. Pods are indexed by the AIBrix
+model label or annotation, and warm-pool Pods are also indexed through their
+ModelClaim bindings. Gateway then applies readiness, routability,
+``external-filter``, replica-inflight and configured load filters before the
+external router receives the snapshot.
+
+Backend candidate discovery does not read Kubernetes Service
+``Endpoints``/``EndpointSlice`` objects. Gateway retains each candidate Pod and
+resolves its Pod IP and model-specific serving port locally; a ModelClaim port
+of zero remains non-routable. The operator-configured external decision URL may
+itself point to a Kubernetes Service, as in the sample, but that Service is the
+decision-service transport and is not the source of backend candidates.
+
 Policy modes
 ------------
 

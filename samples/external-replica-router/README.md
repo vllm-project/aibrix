@@ -14,6 +14,10 @@ The sample policy runs in `Advisory` mode. It:
 - returns `NoDecision` when no premium candidate is eligible, causing Gateway
   to run the configured `least-request` fallback.
 
+If the same service receives an `Authoritative` request and no candidate is
+eligible, it returns `Denied` instead; this keeps every response legal for the
+request's policy mode.
+
 The sample is intentionally small and stateless. Production services should add
 authentication, TLS, availability controls, bounded logging, and their own
 policy data source.

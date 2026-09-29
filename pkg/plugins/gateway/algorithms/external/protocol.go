@@ -141,7 +141,7 @@ func buildExternalDecisionRequest(cfg externalRouterConfig, metricCache cache.Ca
 		if _, duplicate := snapshots[id]; duplicate {
 			return externalDecisionRequest{}, nil, fmt.Errorf("duplicate external candidate identity %q", id)
 		}
-		ports := normalizeExternalPorts(utils.GetPortsForPod(pod))
+		ports := externalPortsForModel(pod, ctx.Model)
 		if len(ports) == 0 {
 			return externalDecisionRequest{}, nil, fmt.Errorf("candidate %s has no routable port", id)
 		}
@@ -180,6 +180,13 @@ func buildExternalDecisionRequest(cfg externalRouterConfig, metricCache cache.Ca
 		},
 	}
 	return request, snapshots, nil
+}
+
+func externalPortsForModel(pod *v1.Pod, model string) []int {
+	if port, ok := utils.ModelClaimPortForPod(pod, model); ok {
+		return normalizeExternalPorts([]int{port})
+	}
+	return normalizeExternalPorts(utils.GetPortsForPod(pod))
 }
 
 func externalPodID(pod *v1.Pod) string {

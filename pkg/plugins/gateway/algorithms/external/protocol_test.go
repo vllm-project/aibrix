@@ -158,6 +158,27 @@ func TestBuildExternalDecisionRequestKeepsNamespacePortsSeparate(t *testing.T) {
 	require.False(t, hasA9000)
 }
 
+func TestBuildExternalDecisionRequestUsesModelClaimPort(t *testing.T) {
+	pod := externalTestPod("default", "warm-pool", "10.0.0.1", "zone-a")
+	pod.Annotations = map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + "claim": `{"model":"claim-model","port":9001}`,
+	}
+	cfg := externalRouterConfig{policyMode: PolicyAuthoritative, candidateMetrics: map[string]struct{}{}}
+	ctx := types.NewRoutingContext(context.Background(), Algorithm, "claim-model", "", "modelclaim", "")
+
+	request, snapshots, err := buildExternalDecisionRequest(cfg, nil, ctx, &utils.PodArray{Pods: []*v1.Pod{pod}})
+	require.NoError(t, err)
+	require.Equal(t, []int{9001}, request.Spec.Candidates[0].Ports)
+	_, hasClaimPort := snapshots["default/warm-pool"].ports[9001]
+	_, hasLabelPort := snapshots["default/warm-pool"].ports[8000]
+	require.True(t, hasClaimPort)
+	require.False(t, hasLabelPort)
+
+	pod.Annotations[constants.ModelClaimPodAnnotationPrefix+"claim"] = `{"model":"claim-model","port":0}`
+	_, _, err = buildExternalDecisionRequest(cfg, nil, ctx, &utils.PodArray{Pods: []*v1.Pod{pod}})
+	require.ErrorContains(t, err, "no routable port")
+}
+
 func TestFilterExternalAttributesDeterministicallyLimitsEntries(t *testing.T) {
 	input := make(map[string]string, 33)
 	for i := 32; i >= 0; i-- {

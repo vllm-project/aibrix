@@ -278,6 +278,24 @@ func TestExternalCircuitIgnoresStaleResults(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestExternalRouterStaleSuccessKeepsOpenCircuitMetric(t *testing.T) {
+	cfg := externalRouterTestConfig("http://unused.invalid", PolicyAuthoritative, FailureFailClosed)
+	cfg.failureThreshold = 1
+	router := newExternalRouterWithDependencies(cfg, nil, nil, nil, prometheus.NewRegistry())
+
+	staleSuccess, err := router.circuit.acquire()
+	require.NoError(t, err)
+	openingFailure, err := router.circuit.acquire()
+	require.NoError(t, err)
+	router.circuit.failure(openingFailure)
+	router.metrics.setCircuit(router.circuit.currentState())
+
+	router.recordCircuitSuccess(staleSuccess)
+	require.Equal(t, "open", router.circuit.currentState())
+	require.Equal(t, float64(1), testutil.ToFloat64(router.metrics.circuit.WithLabelValues("open")))
+	require.Equal(t, float64(0), testutil.ToFloat64(router.metrics.circuit.WithLabelValues("closed")))
+}
+
 func TestExternalCircuitTransitions(t *testing.T) {
 	now := time.Unix(100, 0)
 	circuit := newExternalCircuit(2, time.Second)
