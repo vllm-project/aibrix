@@ -996,12 +996,13 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 	drainRatesAvailable := true
 
 	for _, pod := range filteredDecodePods {
+		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 		drainRate, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeRunningRequestsDrainRate1m)
 		if err != nil || drainRate.GetSimpleValue() <= 0 {
 			drainRatesAvailable = false
 			break
 		}
-		score := podRequestCounts[utils.GeneratePodKey(pod.Namespace, pod.Name)] / math.Max(drainRate.GetSimpleValue(), defaultDrainRateEpsilon)
+		score := podRequestCounts[podKey] / math.Max(drainRate.GetSimpleValue(), defaultDrainRateEpsilon)
 		if score < minScore {
 			minScore = score
 			minScorePod = pod
@@ -1106,7 +1107,8 @@ func (r *pdRouter) scorePreparedPrefillPods(routingCtx *types.RoutingContext, pr
 	maxPrefillScore := float64(1)
 	for _, pod := range prefillPods {
 		rolesetName := pod.Labels[PDRoleSetIdentifier]
-		reqCnt := float64(podRequestCount[utils.GeneratePodKey(pod.Namespace, pod.Name)])
+		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+		reqCnt := float64(podRequestCount[podKey])
 		if reqCnt > meanRequestCount+float64(sigma)*stdDevRequestCount {
 			if klog.V(4).Enabled() {
 				klog.V(4).InfoS("prefill pod request count is higher than mean request count, skipping",
