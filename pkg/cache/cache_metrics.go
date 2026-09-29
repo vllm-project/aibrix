@@ -388,7 +388,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 
 			for metricName, metricValue := range result.Metrics {
 				sanitizeMetricValueLabels(pod, metricValue)
-				if shouldSkipMetric(pod.Name, metricName) {
+				if shouldSkipMetric(pod.Pod, metricName) {
 					continue
 				}
 				metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: ""}, pod.Pod, metricName, metricValue, metricValue.GetLabelValues())
@@ -408,7 +408,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 
 				model = resolveMetricModelName(pod, model)
 
-				if shouldSkipMetric(pod.Name, metric) {
+				if shouldSkipMetric(pod.Pod, metric) {
 					continue
 				}
 
@@ -666,6 +666,29 @@ type modelReplicaState struct {
 
 const pdRoleIdentifier = "role-name"
 
+// pdRole returns the PD role of pod, "prefill" or "decode", or "" for neither. The
+// role-name label is what the PD router groups pods by, so it decides. Pods whose
+// label is missing or holds another value fall back to the pod name, which is how
+// the role was detected before; that keeps every pod matched today matched.
+func pdRole(pod *v1.Pod) string {
+	if pod == nil {
+		return ""
+	}
+	switch pod.Labels[pdRoleIdentifier] {
+	case "prefill":
+		return "prefill"
+	case "decode":
+		return "decode"
+	}
+	switch {
+	case strings.Contains(pod.Name, "prefill"):
+		return "prefill"
+	case strings.Contains(pod.Name, "decode"):
+		return "decode"
+	}
+	return ""
+}
+
 func isPodWithHTTPServer(pod *v1.Pod) bool {
 	podGroupIndex, exists := pod.Labels[podGroupIndex]
 	if !exists {
@@ -751,9 +774,10 @@ func (c *Store) getAllAvailableMetrics() []string {
 // (decode pods). No-ops for pods that don't match either role or metric name.
 func (c *Store) updateThroughputToksPerS(pod *Pod, model, metric string, metricValue metrics.MetricValue) {
 	var rateMetricName string
-	if strings.Contains(pod.Name, "prefill") && metric == metrics.PromptTokenTotal {
+	role := pdRole(pod.Pod)
+	if role == "prefill" && metric == metrics.PromptTokenTotal {
 		rateMetricName = metrics.AvgPromptThroughputToksPerS
-	} else if strings.Contains(pod.Name, "decode") && metric == metrics.GenerationTokenTotal {
+	} else if role == "decode" && metric == metrics.GenerationTokenTotal {
 		rateMetricName = metrics.AvgGenerationThroughputToksPerS
 	}
 	if rateMetricName == "" {

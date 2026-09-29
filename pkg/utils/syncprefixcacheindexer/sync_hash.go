@@ -209,6 +209,7 @@ func (s *SyncPrefixHashTable) MatchPrefix(modelName string, loraID int64, tokens
 	// Sequential prefix matching
 	prefixMatchPods := map[string]int{}
 	prefixStore := contextData.prefixStore
+	now := time.Now().Unix()
 
 	for i, prefixHash := range prefixHashes {
 		pods, exists := prefixStore.prefixMap[prefixHash]
@@ -220,10 +221,17 @@ func (s *SyncPrefixHashTable) MatchPrefix(modelName string, loraID int64, tokens
 
 		// Find ready pods with this prefix
 		hasMatch := false
-		for podName := range pods {
+		for podName, podInfo := range pods {
 			if _, isReady := readyPods[podName]; isReady {
 				prefixMatchPods[podName] = prefixMatchPercent
 				hasMatch = true
+				// A match is genuine use of this pod's cached block: refresh
+				// its own access time too, not just the context's. Nothing
+				// else does, since a KV event only fires on store/remove, not
+				// on every subsequent hit, so without this a pod holding a
+				// long-lived, heavily matched block would still look expired
+				// to evictExpiredPodsInBatch.
+				podInfo.LastAccessTime.Store(now)
 			}
 		}
 
@@ -233,7 +241,7 @@ func (s *SyncPrefixHashTable) MatchPrefix(modelName string, loraID int64, tokens
 	}
 
 	// Update access time (lock-free)
-	prefixStore.lastAccess.Store(time.Now().Unix())
+	prefixStore.lastAccess.Store(now)
 
 	return prefixMatchPods, prefixHashes
 }
@@ -319,6 +327,11 @@ func (s *SyncPrefixHashTable) ProcessBlockStored(event BlockStored) error {
 		for _, update := range prefixUpdates {
 			s.addPrefixToPodLocked(prefixStore, update.hash, update.pod)
 		}
+		// A context fed only by KV events (no AddPrefix/MatchPrefix caller)
+		// still needs its own lastAccess refreshed, or enforceContextLimit
+		// ranks it as idle since creation and evicts it first regardless of
+		// how much real traffic it is carrying.
+		prefixStore.lastAccess.Store(time.Now().Unix())
 	}
 
 	return nil
@@ -372,6 +385,7 @@ func (s *SyncPrefixHashTable) ProcessBlockRemoved(event BlockRemoved) error {
 	orphaned := make([]int64, 0, len(event.BlockHashes))
 	contextData.prefixMu.Lock()
 	prefixStore := contextData.prefixStore
+	prefixStore.lastAccess.Store(time.Now().Unix())
 	for aibrixHash, engineBlockHashes := range toRemove {
 		pods, exists := prefixStore.prefixMap[aibrixHash]
 		if exists && event.SourcePod != "" {
@@ -642,35 +656,60 @@ func (s *SyncPrefixHashTable) performEviction() {
 	expiredBefore := now - int64(s.evictionDuration.Seconds())
 
 	// Phase 1: Mark contexts for eviction (lock-free)
-	evictionCandidates := make([]interface{}, 0)
+	type evictionCandidate struct {
+		key         ModelContext
+		contextData *ContextData
+	}
+	evictionCandidates := make([]evictionCandidate, 0)
 
 	s.contextMap.Range(func(key, value interface{}) bool {
+		ctx := key.(ModelContext)
 		contextData := value.(*ContextData)
 		lastAccess := contextData.prefixStore.lastAccess.Load()
 
 		if lastAccess < expiredBefore {
 			contextData.markedForEviction.Store(true)
-			evictionCandidates = append(evictionCandidates, key)
+			evictionCandidates = append(evictionCandidates, evictionCandidate{key: ctx, contextData: contextData})
 		}
 
 		return true
 	})
 
 	// Phase 2: Remove marked contexts
-	for _, key := range evictionCandidates {
-		s.contextMap.Delete(key)
+	for _, candidate := range evictionCandidates {
+		s.dropContextBlockIndex(candidate.key, candidate.contextData)
+		s.contextMap.Delete(candidate.key)
 		s.contextCount.Add(-1)
 	}
 
-	// Phase 3: Clean up expired pods within active contexts
+	// Phase 2.5: enforce the context count cap on whatever remains. Phase 1/2
+	// only remove contexts that have been idle past evictionDuration, so a
+	// count over maxContexts made entirely of active contexts is otherwise
+	// never trimmed.
+	if excess := int(s.contextCount.Load()) - s.maxContexts; excess > 0 {
+		s.enforceContextLimit(excess)
+	}
+
+	// Phase 3: clean up expired pods within active (non-evicted) contexts, in
+	// batches so one eviction pass does not hold every context's prefixMu at
+	// once.
+	activeContexts := make([]*ContextData, 0, evictionBatchSize)
 	s.contextMap.Range(func(key, value interface{}) bool {
 		contextData := value.(*ContextData)
 		if contextData.markedForEviction.Load() {
-			return true // Skip marked contexts
+			return true // Skip contexts Phase 2 already removed.
 		}
 
+		activeContexts = append(activeContexts, contextData)
+		if len(activeContexts) >= evictionBatchSize {
+			s.evictExpiredPodsInBatch(activeContexts, expiredBefore)
+			activeContexts = activeContexts[:0]
+		}
 		return true
 	})
+	if len(activeContexts) > 0 {
+		s.evictExpiredPodsInBatch(activeContexts, expiredBefore)
+	}
 }
 
 // evictExpiredPodsInBatch processes multiple contexts to remove expired pods
@@ -700,19 +739,28 @@ func (s *SyncPrefixHashTable) evictExpiredPodsInBatch(contexts []*ContextData, e
 // enforceContextLimit removes oldest contexts to stay within limit
 func (s *SyncPrefixHashTable) enforceContextLimit(excess int) {
 	type contextAge struct {
-		key        interface{}
-		lastAccess int64
+		key         ModelContext
+		contextData *ContextData
+		lastAccess  int64
 	}
 
-	ages := make([]contextAge, 0, excess*2)
+	// contextCount is maintained separately from contextMap (Add/-1 pairs
+	// around each insert/delete), so it can be briefly out of step with the
+	// map's actual size, and a negative value would panic make's cap
+	// argument. A nil slice growing through append sidesteps both: it never
+	// panics, and it costs no more than a correctly-sized preallocation would
+	// have, since every active context is appended before any are dropped.
+	var ages []contextAge
 
 	// Collect context ages
 	s.contextMap.Range(func(key, value interface{}) bool {
+		ctx := key.(ModelContext)
 		contextData := value.(*ContextData)
 		if !contextData.markedForEviction.Load() {
 			ages = append(ages, contextAge{
-				key:        key,
-				lastAccess: contextData.prefixStore.lastAccess.Load(),
+				key:         ctx,
+				contextData: contextData,
+				lastAccess:  contextData.prefixStore.lastAccess.Load(),
 			})
 		}
 		return true
@@ -729,9 +777,30 @@ func (s *SyncPrefixHashTable) enforceContextLimit(excess int) {
 		if removed >= excess {
 			break
 		}
+		age.contextData.markedForEviction.Store(true)
+		s.dropContextBlockIndex(age.key, age.contextData)
 		s.contextMap.Delete(age.key)
 		s.contextCount.Add(-1)
 		removed++
+	}
+}
+
+// dropContextBlockIndex removes every blockIndex entry that points at ctx, as
+// ProcessBlockRemoved already does per block when a pod's last hold on it is
+// released. A whole-context eviction (idle Phase 2, or the maxContexts cap in
+// enforceContextLimit) skipped this before, so blockIndex kept a ctx entry
+// for every engine block hash the context had ever seen, and repeated
+// evict-recreate churn on one (model, lora) pair grew it without bound.
+func (s *SyncPrefixHashTable) dropContextBlockIndex(ctx ModelContext, contextData *ContextData) {
+	contextData.mappingMu.RLock()
+	engineBlockHashes := make([]int64, 0, len(contextData.hashMapping.engineToAibrix))
+	for engineBlockHash := range contextData.hashMapping.engineToAibrix {
+		engineBlockHashes = append(engineBlockHashes, engineBlockHash)
+	}
+	contextData.mappingMu.RUnlock()
+
+	for _, engineBlockHash := range engineBlockHashes {
+		s.updateBlockIndex(engineBlockHash, ctx, false)
 	}
 }
 
