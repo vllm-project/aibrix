@@ -724,25 +724,38 @@ func (r *ModelClaimReconciler) ensureActivated(
 		if errors.Is(aerr, errRuntimeSilent) {
 			// The runtime is left alone for now, so the call was not sent and
 			// nothing failed to start. The record is taken back, as for any
-			// start known not to have happened. The claim waits for this runtime
-			// as it waits for a pod, and the next pass tries again. The refusal
-			// is raised as an Event only when it changes.
+			// start known not to have happened.
 			if replaced != nil {
+				// A replacement waits for this runtime as a claim waits for a
+				// pod, and the next pass tries again. The refusal is raised as an
+				// Event only when it changes.
 				pm.Status.Instances[slot] = *replaced
-			} else {
-				pm.Status.Instances = pm.Status.Instances[:slot]
+				message := fmt.Sprintf("pod %s cannot be asked to start %s yet: %v",
+					pod.Name, servedModelName(pm), aerr)
+				if meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+					Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
+					Status:  metav1.ConditionFalse,
+					Reason:  "NoMatchingPods",
+					Message: message,
+				}) {
+					r.Recorder.Event(pm, corev1.EventTypeWarning, "NoMatchingPods", message)
+				}
+				return 0, nil
 			}
-			message := fmt.Sprintf("pod %s cannot be asked to start %s yet: %v",
-				pod.Name, servedModelName(pm), aerr)
-			if meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
-				Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
-				Status:  metav1.ConditionFalse,
-				Reason:  "NoMatchingPods",
-				Message: message,
-			}) {
-				r.Recorder.Event(pm, corev1.EventTypeWarning, "NoMatchingPods", message)
-			}
-			return 0, nil
+			// This pod is passed over for the rest of the pass, as a card that
+			// could not be divided is. Ranking cannot tell such a pod from the
+			// others, so without this the same pod could be picked on every pass.
+			pm.Status.Instances = pm.Status.Instances[:slot]
+			refusals = append(refusals, podRefusal{
+				pod:       pod.Name,
+				roomBytes: ledgers[pod.Name].maximumRoomBytes(),
+				known:     true,
+				couldHold: true,
+				reason: fmt.Sprintf("%s cannot be asked to start %s yet: %v",
+					pod.Name, servedModelName(pm), aerr),
+			})
+			admissible = withoutPod(admissible, pod.Name)
+			continue
 		}
 		if aerr != nil {
 			recordActivation(pm.Namespace, servedModelName(pm), false)
