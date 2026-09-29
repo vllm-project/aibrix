@@ -262,16 +262,6 @@ func FilterPods(pods []v1.Pod, filterFn filterPod) []v1.Pod {
 	return filtered
 }
 
-// FilterPodByName returns the pod with the given name.
-func FilterPodByName(podname string, pods []*v1.Pod) (*v1.Pod, bool) {
-	for _, pod := range pods {
-		if pod.Name == podname {
-			return pod, true
-		}
-	}
-	return nil, false
-}
-
 // FilterPodsByLabel filters pods that have a specific label key-value pair
 func FilterPodsByLabel(pods []*v1.Pod, labelKey, labelValue string) []*v1.Pod {
 	var filtered []*v1.Pod
