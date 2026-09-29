@@ -543,6 +543,95 @@ func TestMaxContextsLimit(t *testing.T) {
 	}
 }
 
+// TestMaxContextsLimitEnforcedOnEviction reproduces the maxContexts cap being a
+// no-op: getOrCreateContextData schedules eviction once the count exceeds the
+// cap, but performEviction never trimmed to the cap, only expired contexts
+// that had been idle past evictionDuration. All 11 contexts here are fresh, so
+// only the explicit cap enforcement can bring the count back down.
+func TestMaxContextsLimitEnforcedOnEviction(t *testing.T) {
+	table := NewSyncPrefixHashTable()
+	table.maxContexts = 5
+	defer table.Close()
+
+	for i := 0; i < table.maxContexts+6; i++ {
+		modelName := fmt.Sprintf("model-%d", i)
+		tokens := []byte{1, 2, 3, 4}
+		hashes := table.GetPrefixHashes(tokens)
+		if err := table.AddPrefix(modelName, -1, fmt.Sprintf("pod-%d", i), hashes); err != nil {
+			t.Fatalf("failed to add prefix: %v", err)
+		}
+	}
+
+	table.performEviction()
+
+	if got := int(table.contextCount.Load()); got > table.maxContexts {
+		t.Errorf("expected contextCount <= %d after performEviction, got %d", table.maxContexts, got)
+	}
+}
+
+// TestPerformEvictionRemovesExpiredPodsFromActiveContext reproduces
+// performEviction's Phase 3 doing nothing: evictExpiredPodsInBatch existed but
+// was never called, so a pod that stopped sending traffic stayed in the
+// prefix map of a context that itself is still active (recently touched by
+// another pod).
+func TestPerformEvictionRemovesExpiredPodsFromActiveContext(t *testing.T) {
+	table := &SyncPrefixHashTable{
+		seed:                  12345,
+		maxContexts:           maxContexts,
+		maxPrefixesPerContext: maxPrefixesPerContext,
+		blockSize:             prefixCacheBlockSize,
+		evictionInterval:      time.Hour,
+		evictionDuration:      20 * time.Minute,
+		stopCh:                make(chan struct{}),
+	}
+
+	tokens := makeTokens(16) // one full block at the default block size
+	hashes := table.GetPrefixHashes(tokens)
+	if len(hashes) == 0 {
+		t.Fatal("test setup produced no prefix hashes")
+	}
+	if err := table.AddPrefix(testModelName, -1, "stale-pod", hashes); err != nil {
+		t.Fatalf("failed to add prefix: %v", err)
+	}
+	if err := table.AddPrefix(testModelName, -1, "fresh-pod", hashes); err != nil {
+		t.Fatalf("failed to add prefix: %v", err)
+	}
+
+	// Back-date stale-pod's own entry, as if it stopped serving this context
+	// well before evictionDuration ago, while fresh-pod (and the context
+	// itself) stay recently touched so Phase 1/2 do not evict the context.
+	ctx := ModelContext{ModelName: testModelName, LoraID: -1}
+	value, exists := table.contextMap.Load(ctx)
+	if !exists {
+		t.Fatal("context should exist after AddPrefix")
+	}
+	contextData := value.(*ContextData)
+	staleTime := time.Now().Add(-time.Hour).Unix()
+	contextData.prefixMu.RLock()
+	for _, pods := range contextData.prefixStore.prefixMap {
+		if podInfo, ok := pods["stale-pod"]; ok {
+			podInfo.LastAccessTime.Store(staleTime)
+		}
+	}
+	contextData.prefixMu.RUnlock()
+
+	table.performEviction()
+
+	if _, stillExists := table.contextMap.Load(ctx); !stillExists {
+		t.Fatal("context should still exist: a fresh pod touched it after the stale one")
+	}
+	contextData.prefixMu.RLock()
+	defer contextData.prefixMu.RUnlock()
+	for _, pods := range contextData.prefixStore.prefixMap {
+		if _, staleStillPresent := pods["stale-pod"]; staleStillPresent {
+			t.Error("stale-pod's entry should have been evicted from the active context")
+		}
+		if _, freshPresent := pods["fresh-pod"]; !freshPresent {
+			t.Error("fresh-pod's entry should not have been evicted")
+		}
+	}
+}
+
 func TestRemovePrefix(t *testing.T) {
 	table := NewSyncPrefixHashTable()
 	defer table.Close()

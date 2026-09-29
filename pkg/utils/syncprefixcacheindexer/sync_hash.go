@@ -662,15 +662,34 @@ func (s *SyncPrefixHashTable) performEviction() {
 		s.contextCount.Add(-1)
 	}
 
-	// Phase 3: Clean up expired pods within active contexts
+	// Phase 2.5: enforce the context count cap on whatever remains. Phase 1/2
+	// only remove contexts that have been idle past evictionDuration, so a
+	// count over maxContexts made entirely of active contexts is otherwise
+	// never trimmed.
+	if excess := int(s.contextCount.Load()) - s.maxContexts; excess > 0 {
+		s.enforceContextLimit(excess)
+	}
+
+	// Phase 3: clean up expired pods within active (non-evicted) contexts, in
+	// batches so one eviction pass does not hold every context's prefixMu at
+	// once.
+	activeContexts := make([]*ContextData, 0, evictionBatchSize)
 	s.contextMap.Range(func(key, value interface{}) bool {
 		contextData := value.(*ContextData)
 		if contextData.markedForEviction.Load() {
-			return true // Skip marked contexts
+			return true // Skip contexts Phase 2 already removed.
 		}
 
+		activeContexts = append(activeContexts, contextData)
+		if len(activeContexts) >= evictionBatchSize {
+			s.evictExpiredPodsInBatch(activeContexts, expiredBefore)
+			activeContexts = activeContexts[:0]
+		}
 		return true
 	})
+	if len(activeContexts) > 0 {
+		s.evictExpiredPodsInBatch(activeContexts, expiredBefore)
+	}
 }
 
 // evictExpiredPodsInBatch processes multiple contexts to remove expired pods
