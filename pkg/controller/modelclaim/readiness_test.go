@@ -287,6 +287,33 @@ func TestReconcileLooksAgainSoonWhenAnyInstanceBoots(t *testing.T) {
 	}
 }
 
+// A replacement for an engine that failed for good boots as a new engine does,
+// so the claim is looked at again as soon.
+func TestReconcileLooksAgainSoonAtAReplacementThatBoots(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.UID = types.UID("claim-uid")
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	failedPod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	replacementPod := warmPod("warm-2", "b300-pool-a", true, corev1.PodRunning)
+	replacementPod.Status.PodIP = testPeerIP
+	r, runtime := newReconciler(t, pm, failedPod, replacementPod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		failedPod.Status.PodIP: {Models: []RuntimeSnapshotModel{{
+			ModelName: servedModelName(pm), Port: 9001, Phase: runtimePhaseFailed,
+			LastError: "restart budget exhausted",
+			ClaimRef:  &ModelClaimRef{Namespace: pm.Namespace, Name: pm.Name, UID: string(pm.UID)},
+		}}},
+		testPeerIP: {},
+	}
+
+	assert.Equal(t, ActivatingRequeueDuration, reconcileFor(t, r, pm.Name))
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-2", got.Status.Instances[0].Pod)
+}
+
 // An engine that was routed and lost its limit leaves the route first, so that
 // the loss is seen. The write that pulls it back is said as well. It is not
 // read back in this pass, so its Event says that the limit was written, and
