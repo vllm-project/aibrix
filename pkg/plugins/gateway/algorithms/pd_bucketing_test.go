@@ -549,29 +549,25 @@ type planMetrics struct {
 
 // capturePlanMetrics records the pd_bucket_serve_* counter and gauge emissions
 // of one test.
-func capturePlanMetrics(t *testing.T) func() planMetrics {
+func capturePlanMetrics(t *testing.T, r *pdRouter) func() planMetrics {
 	t.Helper()
-	originalCounter := metrics.IncrementCounterMetricFnForTest
-	originalGauge := metrics.SetGaugeMetricFnForTest
 	calls := planMetrics{counters: map[string][]map[string]string{}, gauges: map[string][]map[string]string{}}
-	record := func(dst map[string][]map[string]string) func(string, string, float64, []string, ...string) {
-		return func(name, _ string, _ float64, labelNames []string, labelValues ...string) {
+	record := func(dst map[string][]map[string]string) func(string, map[string]string) {
+		return func(name string, labels map[string]string) {
 			if !strings.HasPrefix(name, "pd_bucket_serve_") {
 				return
 			}
-			labels := make(map[string]string, len(labelNames))
-			for i, labelName := range labelNames {
-				labels[labelName] = labelValues[i]
+			copy := make(map[string]string, len(labels))
+			for labelName, labelValue := range labels {
+				copy[labelName] = labelValue
 			}
-			dst[name] = append(dst[name], labels)
+			dst[name] = append(dst[name], copy)
 		}
 	}
-	metrics.IncrementCounterMetricFnForTest = record(calls.counters)
-	metrics.SetGaugeMetricFnForTest = record(calls.gauges)
-	t.Cleanup(func() {
-		metrics.IncrementCounterMetricFnForTest = originalCounter
-		metrics.SetGaugeMetricFnForTest = originalGauge
-	})
+	r.bucketServeMetricObserver = &bucketServeMetricObserver{
+		counter: record(calls.counters),
+		gauge:   record(calls.gauges),
+	}
 	return func() planMetrics { return calls }
 }
 
@@ -599,7 +595,7 @@ func TestFilterPrefillDecodePods_BucketServeBandPicksTheRoleset(t *testing.T) {
 	shortCtx, longCtx, shortLength, longLength := bucketServeRequestLengths(t, "band-model")
 	seedBucketServeCounts(t, r, pd.BucketModeRPS, "band-model", shortLength, longLength)
 	pods := bucketServeFleet(2 * longLength)
-	metricsSeen := capturePlanMetrics(t)
+	metricsSeen := capturePlanMetrics(t, r)
 
 	// Both rolesets declare the same range, so the plan splits it: the shorter
 	// half is banded to rs-a, the longer half to rs-b. Without the plan both
@@ -640,7 +636,7 @@ func TestFilterPrefillDecodePods_BucketServeBandLosesToLoadImbalance(t *testing.
 	_, longCtx, shortLength, longLength := bucketServeRequestLengths(t, "band-model")
 	seedBucketServeCounts(t, r, pd.BucketModeRPS, "band-model", shortLength, longLength)
 	pods := bucketServeFleet(2 * longLength)
-	metricsSeen := capturePlanMetrics(t)
+	metricsSeen := capturePlanMetrics(t, r)
 
 	// The long half is banded to rs-b, but rs-b is the loaded roleset: the
 	// prefill fast path narrows to the idle rs-a first, so the band cannot pull
@@ -664,7 +660,7 @@ func TestFilterPrefillDecodePods_BucketServeOffKeepsThePlannerIdle(t *testing.T)
 	r := bucketServeRouter()
 	shortCtx, _, shortLength, longLength := bucketServeRequestLengths(t, "band-model")
 	seedBucketServeCounts(t, r, pd.BucketModeRPS, "band-model", shortLength, longLength)
-	metricsSeen := capturePlanMetrics(t)
+	metricsSeen := capturePlanMetrics(t, r)
 
 	p, d, err := r.filterPrefillDecodePods(shortCtx, bucketServeFleet(2*longLength))
 	require.NoError(t, err)
