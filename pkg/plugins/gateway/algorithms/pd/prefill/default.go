@@ -218,6 +218,12 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 				return
 			}
 
+			// For SGLang the prefill pod only answers once the decode pod has
+			// taken the KV transfer, so from here on the decode pod owes the
+			// client a response. This starts the stream goroutine's decode
+			// watchdog, through the leg and never through the pooled context.
+			leg.MarkPrefillSucceeded()
+
 			metrics.EmitMetricToPrometheus(asyncCtx, nil, metrics.GatewayPrefillRequestSuccessTotal, &metrics.SimpleMetricValue{Value: 1.0},
 				map[string]string{"status": prefillRequestSuccessStatus, "status_code": "200"})
 

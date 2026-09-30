@@ -10,6 +10,11 @@
 # The prefill pod carries the model.aibrix.ai/sglang-bootstrap-port annotation
 # so the gateway knows which port the SGLang bootstrap server listens on.
 #
+# Pods only inherit the role template metadata, so the model.aibrix.ai/config
+# profiles used by config-profile e2e tests are declared on each role:
+#   - "pd" (default):     PD routing with the gateway's defaults
+#   - "decode-watchdog":  PD routing with 3s decode watchdog timeouts
+#
 # Apply alongside components.yaml (provides mocked-app-sa and RBAC).
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: StormService
@@ -59,6 +64,24 @@ spec:
                 # Port of the SGLang bootstrap server used to coordinate KV transfer
                 # between prefill and decode pods. Defaults to 8998 if omitted.
                 model.aibrix.ai/sglang-bootstrap-port: "8998"
+                model.aibrix.ai/config: |
+                  {
+                    "defaultProfile": "pd",
+                    "profiles": {
+                      "pd": {
+                        "routingStrategy": "pd"
+                      },
+                      "decode-watchdog": {
+                        "routingStrategy": "pd",
+                        "routingConfig": {
+                          "pd": {
+                            "decodeFirstResponseTimeout": 3,
+                            "decodeResponseTimeout": 3
+                          }
+                        }
+                      }
+                    }
+                  }
             spec:
               serviceAccountName: mocked-app-sa
               containers:
@@ -101,6 +124,25 @@ spec:
                 model.aibrix.ai/port: "8000"
                 model.aibrix.ai/engine: sglang
                 adapter.model.aibrix.ai/enabled: "true"
+              annotations:
+                model.aibrix.ai/config: |
+                  {
+                    "defaultProfile": "pd",
+                    "profiles": {
+                      "pd": {
+                        "routingStrategy": "pd"
+                      },
+                      "decode-watchdog": {
+                        "routingStrategy": "pd",
+                        "routingConfig": {
+                          "pd": {
+                            "decodeFirstResponseTimeout": 3,
+                            "decodeResponseTimeout": 3
+                          }
+                        }
+                      }
+                    }
+                  }
             spec:
               serviceAccountName: mocked-app-sa
               containers:

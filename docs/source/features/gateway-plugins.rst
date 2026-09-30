@@ -846,6 +846,12 @@ can therefore be routed with different thresholds by selecting different profile
    * - ``pd.decodeAbortRetryDelay``
      - ``AIBRIX_DECODE_ABORT_RETRY_DELAY``
      - Seconds between the two abort attempts. ``0`` repeats the abort immediately.
+   * - ``pd.decodeFirstResponseTimeout``
+     - ``AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT``
+     - Seconds a streaming SGLang PD request waits, after its prefill leg succeeded, for the decode pod's first message before the gateway fails it with a ``504``. ``0`` disables the watchdog.
+   * - ``pd.decodeResponseTimeout``
+     - ``AIBRIX_DECODE_RESPONSE_TIMEOUT``
+     - The same bound for a non-streaming request, where the first message is the finished answer. ``0`` disables the watchdog.
    * - ``pd.prefillLoadImbalanceMinSpread``
      - ``AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD``
      - Minimum prefill running-request spread (max minus min) that triggers prefill load-imbalance routing.
