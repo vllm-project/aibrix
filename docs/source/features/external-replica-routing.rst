@@ -13,6 +13,39 @@ addresses.
 The protocol is alpha. Download the normative
 :download:`OpenAPI 3.1 contract <../_static/openapi/external-replica-selection-v1alpha1.yaml>`.
 
+Request flow
+------------
+
+The external decision service participates only in replica selection. Gateway
+retains candidate discovery and filtering, validates the returned target,
+performs final admission and accounting, and returns the selected target to
+Envoy. Inference traffic continues to flow directly between Envoy and the
+selected inference Pod.
+
+.. mermaid::
+
+   sequenceDiagram
+       participant Client
+       participant Envoy as Envoy Gateway
+       participant Gateway as AIBrix Gateway Plugin
+       participant Cache as Gateway Cache
+       participant Decision as External Decision Service
+       participant Pod as Inference Pod
+
+       Client->>Envoy: POST /v1/chat/completions
+       Envoy->>Gateway: ext_proc request
+       Gateway->>Cache: Resolve model, Pods, ports, and metrics
+       Cache-->>Gateway: Cached candidate state
+       Gateway->>Gateway: Apply readiness, label, inflight, and load filters
+       Gateway->>Decision: POST ReplicaSelectionRequest
+       Note over Gateway,Decision: The service may select only from the supplied candidate snapshot
+       Decision-->>Gateway: ReplicaSelectionResponse with selected target
+       Gateway->>Gateway: Validate target and enforce final admission
+       Gateway-->>Envoy: target-pod header
+       Envoy->>Pod: Forward inference request
+       Pod-->>Envoy: Stream tokens
+       Envoy-->>Client: Stream response
+
 Candidate discovery
 -------------------
 

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
@@ -242,6 +243,95 @@ func TestExternalRouterSingleCandidateMode(t *testing.T) {
 	cfg.policyMode = PolicyAuthoritative
 	authoritative := newExternalRouterWithDependencies(cfg, nil, nil, nil, prometheus.NewRegistry())
 	require.False(t, authoritative.BypassSingleCandidate())
+}
+
+func TestExternalRoutersConcurrentlyShareDecisionService(t *testing.T) {
+	const gatewayCount = 4
+
+	podA := externalTestPod("default", "a", "10.0.0.1", "zone-a")
+	podB := externalTestPod("default", "b", "10.0.0.2", "zone-b")
+	pods := &utils.PodArray{Pods: []*v1.Pod{podA, podB}}
+	expectedTargets := make(map[string]string, gatewayCount)
+	for i := 0; i < gatewayCount; i++ {
+		requestID := fmt.Sprintf("gateway-%d", i)
+		if i%2 == 0 {
+			expectedTargets[requestID] = "default/a"
+		} else {
+			expectedTargets[requestID] = "default/b"
+		}
+	}
+
+	var mu sync.Mutex
+	seen := make(map[string]int, gatewayCount)
+	arrived := 0
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		requestID := req.Header.Get("X-Request-Id")
+		mu.Lock()
+		seen[requestID]++
+		arrived++
+		if arrived == gatewayCount {
+			close(release)
+		}
+		mu.Unlock()
+
+		select {
+		case <-release:
+		case <-req.Context().Done():
+			return
+		}
+		w.Header().Set("Content-Type", externalMediaType)
+		_, _ = w.Write([]byte(externalResponseFor(requestID, externalDecisionSelected, expectedTargets[requestID])))
+	}))
+	t.Cleanup(server.Close)
+
+	type routeResult struct {
+		gateway int
+		address string
+		err     error
+	}
+	start := make(chan struct{})
+	results := make(chan routeResult, gatewayCount)
+	routers := make([]*externalRouter, 0, gatewayCount)
+	for i := 0; i < gatewayCount; i++ {
+		cfg := externalRouterTestConfig(server.URL, PolicyAuthoritative, FailureFailClosed)
+		cfg.maxInflight = 1
+		cfg.timeout = 2 * time.Second
+		client := newExternalHTTPClient(cfg)
+		t.Cleanup(client.CloseIdleConnections)
+		router := newExternalRouterWithDependencies(cfg, nil, client, nil, prometheus.NewRegistry())
+		routers = append(routers, router)
+		go func(gateway int, router *externalRouter) {
+			<-start
+			requestID := fmt.Sprintf("gateway-%d", gateway)
+			ctx := types.NewRoutingContext(context.Background(), Algorithm, "llama", "", requestID, "")
+			address, err := router.Route(ctx, pods)
+			results <- routeResult{gateway: gateway, address: address, err: err}
+		}(i, router)
+	}
+	close(start)
+
+	for i := 0; i < gatewayCount; i++ {
+		result := <-results
+		require.NoError(t, result.err)
+		if result.gateway%2 == 0 {
+			require.Equal(t, "10.0.0.1:8000", result.address)
+		} else {
+			require.Equal(t, "10.0.0.2:8000", result.address)
+		}
+	}
+
+	mu.Lock()
+	require.Equal(t, gatewayCount, arrived)
+	for requestID := range expectedTargets {
+		require.Equal(t, 1, seen[requestID], "request %s must be decided exactly once", requestID)
+	}
+	mu.Unlock()
+	for _, router := range routers {
+		require.Equal(t, "closed", router.circuit.currentState())
+		require.True(t, router.bulkhead.acquire(), "each Gateway must release its process-local bulkhead permit")
+		router.bulkhead.release()
+	}
 }
 
 func TestExternalCircuitIgnoresStaleResults(t *testing.T) {

@@ -8,11 +8,18 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
+	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
@@ -93,4 +100,68 @@ func TestSelectTargetPodHonorsSingleCandidatePolicy(t *testing.T) {
 			require.Equal(t, tt.wantCalled, policyRouter.called)
 		})
 	}
+}
+
+func TestExternalSelectionAdmissionRejectsWithoutSecondDecision(t *testing.T) {
+	var decisionCalls atomic.Int32
+	decisionService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		decisionCalls.Add(1)
+		w.Header().Set("Content-Type", "application/vnd.aibrix.external-routing+json;version=v1alpha1")
+		_, _ = fmt.Fprintf(w, `{"apiVersion":"routing.aibrix.ai/v1alpha1","kind":"ReplicaSelectionResponse","metadata":{"requestId":%q},"status":{"decision":"Selected","target":{"id":"ns/a","port":8000}}}`, req.Header.Get("X-Request-Id"))
+	}))
+	t.Cleanup(decisionService.Close)
+
+	t.Setenv(routing.EnvExternalRouterEndpoint, decisionService.URL)
+	t.Setenv(routing.EnvExternalRouterPolicyMode, "Authoritative")
+	t.Setenv(routing.EnvExternalRouterFailureMode, "FailClosed")
+	t.Setenv(routing.EnvExternalRouterFallback, "")
+	t.Setenv(routing.EnvExternalRouterTimeout, "1s")
+	t.Setenv(routing.EnvExternalRouterCandidateAttributes, "")
+	t.Setenv(routing.EnvExternalRouterCandidateMetrics, "")
+	t.Setenv(routing.EnvExternalRouterPolicyAttributes, "")
+	t.Setenv(routing.EnvExternalRouterAuthTokenFile, "")
+
+	mockCache := &MockCache{}
+	pod := podWithReplicaInflight("a", 1)
+	pod.Labels = map[string]string{constants.ModelLabelPort: "8000"}
+	podList := &utils.PodArray{Pods: []*v1.Pod{pod}}
+	mockCache.On("HasModel", "test-model").Return(true).Once()
+	mockCache.On("ListPodsByModel", "test-model").Return(podList, nil).Once()
+	mockCache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{"ns/a": 0}, nil)
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, nil).Once()
+
+	externalRouter, err := routing.NewExternalRouterWithCache(mockCache)
+	require.NoError(t, err)
+	manager := routing.NewRouterManager()
+	manager.RegisterProvider(routing.RouterExternal, func(*types.RoutingContext) (types.Router, error) {
+		return externalRouter, nil
+	})
+	server := &Server{
+		cache:            mockCache,
+		routerManager:    manager,
+		modelRateLimiter: ratelimiter.NewNoopRateLimiter(),
+	}
+
+	request := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{
+				Body: []byte(`{"model":"test-model","messages":[{"role":"user","content":"test"}]}`),
+			},
+		},
+	}
+	routingCtx := types.NewRoutingContext(context.Background(), routing.RouterExternal, "", "", "req-admission-reject", "user")
+	routingCtx.ReqPath = PathChatCompletions
+	routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(routing.RouterExternal)
+
+	response, _, _, term := server.HandleRequestBody(context.Background(), routingCtx, routingCtx.RequestID, request, utils.User{Name: "user"})
+	immediate := response.GetImmediateResponse()
+	require.NotNil(t, immediate)
+	require.Equal(t, envoyTypePb.StatusCode_TooManyRequests, immediate.GetStatus().GetCode())
+	require.Contains(t, immediate.GetBody(), ErrorCodeReplicaInflightExceeded)
+	require.Equal(t, int64(0), term)
+	require.Same(t, pod, routingCtx.TargetPod())
+	require.False(t, routingCtx.ReplicaInflightAdmitted)
+	require.Equal(t, int32(1), decisionCalls.Load(), "admission rejection must not trigger another external decision")
+	mockCache.AssertNotCalled(t, "AddRequestCount", mock.Anything, mock.Anything, mock.Anything)
+	mockCache.AssertExpectations(t)
 }
