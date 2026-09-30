@@ -132,6 +132,12 @@ type PDLegState struct {
 	// MarkPrefillSucceeded call wins the CAS on prefillSucceededNanos.
 	prefillSucceeded chan struct{}
 
+	// lastActivityNanos is the last time anything came back from the decode pod
+	// (response headers, a body chunk), as unix nanoseconds, or 0 when nothing
+	// has. It is the origin of the decode watchdog's stream-idle deadline, so
+	// it is refreshed on every message rather than only on the first one.
+	lastActivityNanos atomic.Int64
+
 	// decodeTarget is where the decode leg of this request was sent, captured
 	// on the request path by the PD router. The prefill goroutine needs it to
 	// abort a decode leg whose KV will never arrive, and cannot derive it
@@ -409,6 +415,33 @@ func (l *PDLegState) PrefillSucceededAt() time.Time {
 	return time.Unix(0, nanos)
 }
 
+// MarkActivity records that something came back from the decode pod just now.
+// Called for every ext_proc response message, so it is deliberately a single
+// atomic store.
+func (l *PDLegState) MarkActivity() {
+	if l == nil {
+		return
+	}
+	at := time.Now().UnixNano()
+	if at == 0 {
+		at = 1
+	}
+	l.lastActivityNanos.Store(at)
+}
+
+// LastActivity returns when the decode pod last sent anything, or the zero time
+// when it never has.
+func (l *PDLegState) LastActivity() time.Time {
+	if l == nil {
+		return time.Time{}
+	}
+	nanos := l.lastActivityNanos.Load()
+	if nanos == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nanos)
+}
+
 // SetDecodeTarget records the address and pod name of the decode leg, so a
 // prefill failure can be aimed at the pod that is waiting for the KV transfer.
 func (l *PDLegState) SetDecodeTarget(addr, podName string) {
@@ -536,6 +569,18 @@ func (r *RoutingContext) PrefillSucceeded() <-chan struct{} {
 // succeeded, or the zero time.
 func (r *RoutingContext) PrefillSucceededAt() time.Time {
 	return r.PDLeg().PrefillSucceededAt()
+}
+
+// MarkActivity records that the decode pod of the current incarnation sent
+// something just now. Nil-safe, like every other leg accessor.
+func (r *RoutingContext) MarkActivity() {
+	r.PDLeg().MarkActivity()
+}
+
+// LastActivity returns when the decode pod of the current incarnation last sent
+// anything, or the zero time.
+func (r *RoutingContext) LastActivity() time.Time {
+	return r.PDLeg().LastActivity()
 }
 
 // SetDecodeTarget records where the decode leg of this request was sent.

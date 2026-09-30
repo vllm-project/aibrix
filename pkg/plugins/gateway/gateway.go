@@ -714,6 +714,9 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		// failure must not abort it, and must not fail a stream the client is
 		// already being served on.
 		st.routerCtx.MarkDecodeResponded()
+		// Also the decode watchdog's activity clock: from here it watches for
+		// silence between messages rather than for a first response at all.
+		st.routerCtx.MarkActivity()
 		resp, st.isRespError, st.respErrorCode = s.HandleResponseHeaders(st.ctx, st.routerCtx, st.requestID, st.model, req)
 		st.lastRespHeaders = resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders()
 		if st.isRespError {
@@ -727,6 +730,8 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		// configured without the response-header callback delivers body chunks
 		// as the first sign of life from the decode pod.
 		st.routerCtx.MarkDecodeResponded()
+		// Every chunk re-arms the decode watchdog's stream-idle deadline.
+		st.routerCtx.MarkActivity()
 		// Stop collecting on the first response body chunk.
 		if st.firstRespSpan != nil {
 			st.firstRespSpan.End()

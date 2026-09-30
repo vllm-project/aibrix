@@ -173,8 +173,13 @@ asks the decode pod to drop the request through ``/abort_request``.
 * ``AIBRIX_DECODE_RESPONSE_TIMEOUT`` (default ``0``, disabled): the same bound for a
   non-streaming request. The decode pod only answers such a request when the whole
   generation is done, so a safe value depends on ``max_tokens`` and decode throughput.
+* ``AIBRIX_DECODE_STREAM_IDLE_TIMEOUT`` (default ``120``): once the decode pod has
+  started answering, the longest gap allowed between two of its messages. The
+  response has already started at that point, so instead of a ``504`` the gateway
+  cuts the stream short (the client sees a truncated response) and aborts the
+  decode request.
 
-``0`` disables either one. Both can also be set per config profile (see below).
+``0`` disables any of them. All three can also be set per config profile (see below).
 
 
 Step 1 — Label Your Pods
@@ -365,7 +370,8 @@ weights (``decodeLBWeightRunning``, ``decodeLBWeightThroughput``), the token-loa
 (``tokenLoadKVWeight``, ``tokenLoadRequestCost``, ``tokenLoadTTLSeconds``,
 ``tokenLoadSessionTTLSeconds``), ``hybridCacheLoadFactor``, ``minMatchPct``, the abort
 timeout and retry delay (``decodeAbortTimeout``, ``decodeAbortRetryDelay``), and the decode
-watchdog timeouts (``decodeFirstResponseTimeout``, ``decodeResponseTimeout``). Each one overrides
+watchdog timeouts (``decodeFirstResponseTimeout``, ``decodeResponseTimeout``,
+``decodeStreamIdleTimeout``). Each one overrides
 the matching gateway environment variable for that profile only; unset fields keep the
 environment default. See the Config Profiles section of `Gateway Plugins <gateway-plugins.html>`_
 for the full list.

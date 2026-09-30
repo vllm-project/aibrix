@@ -60,6 +60,8 @@ class FaultParseResult(NamedTuple):
     injected_status_code: int | None
     validation_status_code: int
     metadata: FrozenDict
+    # Milliseconds a streaming response is held after its first chunk.
+    stream_stall_ms: int = 0
 
 
 def parse_fault_headers(headers, role):
@@ -94,10 +96,33 @@ def parse_fault_headers(headers, role):
                 metadata=FrozenDict(error="invalid x-aibrix-mock-delay-ms"),
             )
 
-    # x-aibrix-mock-delay-role scopes the delay to one PD leg. Without it the
-    # delay applies to whichever leg receives the request, which is both of them
-    # for a disaggregated request: the gateway forwards client headers to the
-    # prefill and the decode pod alike.
+    # x-aibrix-mock-stream-stall-ms holds a streaming response after its first
+    # chunk, i.e. a pod that started answering and then went silent. Same bounds
+    # as the delay.
+    stall_value = normalized_headers.get("x-aibrix-mock-stream-stall-ms")
+    if "x-aibrix-mock-stream-stall-ms" not in normalized_headers:
+        stream_stall_ms = 0
+    else:
+        try:
+            stream_stall_ms = int(stall_value)
+        except (TypeError, ValueError):
+            stream_stall_ms = -1
+        if (
+            isinstance(stall_value, bool)
+            or str(stall_value) != str(stream_stall_ms)
+            or not 0 <= stream_stall_ms <= MAX_FAULT_DELAY_MS
+        ):
+            return FaultParseResult(
+                delay_ms=0,
+                injected_status_code=None,
+                validation_status_code=400,
+                metadata=FrozenDict(error="invalid x-aibrix-mock-stream-stall-ms"),
+            )
+
+    # x-aibrix-mock-delay-role scopes the delay and the stall to one PD leg.
+    # Without it they apply to whichever leg receives the request, which is both
+    # of them for a disaggregated request: the gateway forwards client headers
+    # to the prefill and the decode pod alike.
     if "x-aibrix-mock-delay-role" in normalized_headers:
         delay_role = normalized_headers["x-aibrix-mock-delay-role"]
         if delay_role not in _ROLES:
@@ -109,6 +134,7 @@ def parse_fault_headers(headers, role):
             )
         if delay_role != role:
             delay_ms = 0
+            stream_stall_ms = 0
 
     fail_value = normalized_headers.get("x-aibrix-mock-fail")
     fail_matches = (
@@ -121,6 +147,7 @@ def parse_fault_headers(headers, role):
         injected_status_code=injected_status_code,
         validation_status_code=200,
         metadata=FrozenDict(),
+        stream_stall_ms=stream_stall_ms,
     )
 
 

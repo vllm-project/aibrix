@@ -129,6 +129,15 @@ func responseHeadersMsg(statusCode string) *extProcPb.ProcessingRequest {
 	}
 }
 
+// responseBodyChunk is one streamed SSE chunk from the decode pod.
+func responseBodyChunk(chunk string) *extProcPb.ProcessingRequest {
+	return &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{Body: []byte(chunk)},
+		},
+	}
+}
+
 // counterWithLabel finds the first emission of name whose label key has value.
 func counterWithLabel(counters []capturedCounter, name, key, value string) (capturedCounter, bool) {
 	for _, c := range counters {
@@ -405,6 +414,130 @@ func TestDecodeWatchdogResponseTimeoutFiresForNonStreaming(t *testing.T) {
 	require.True(t, ok, "expected %s to be emitted", metrics.GatewayPDDecodeWatchdogTotal)
 	// Both modes report the same phase; the log line's stream field splits them.
 	assert.Equal(t, decodeWatchdogPhaseFirstResponse, watchdog.labels["phase"])
+}
+
+// TestDecodeWatchdogStreamIdleClosesStream: the decode pod answered, sent a
+// chunk and then went silent. The client cannot be given a fresh response at
+// this point, so the stream is closed instead of being left hanging.
+func TestDecodeWatchdogStreamIdleClosesStream(t *testing.T) {
+	counters := captureCounters(t)
+	recorder, decodeAddr := newWatchdogAbortRecorder(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s, _ := newFailFastServer(t)
+	srv := newWatchdogProcessServer(ctx, 4)
+	srv.msgs <- responseHeadersMsg("200")
+	srv.msgs <- responseBodyChunk("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+
+	st := newWatchdogState(ctx, watchdogTestRID, decodeAddr, types.PDWatchdogOverrides{
+		FirstResponseTimeout: time.Minute,
+		StreamIdleTimeout:    150 * time.Millisecond,
+	})
+	st.routerCtx.PDLeg().MarkPrefillSucceeded()
+
+	started := time.Now()
+	done := make(chan error, 1)
+	go func() { done <- runProcessLoop(s, srv, st) }()
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watchdog did not fire within 5s of the decode pod going silent")
+	}
+	assert.GreaterOrEqual(t, time.Since(started), 100*time.Millisecond,
+		"the watchdog fired well before its deadline")
+
+	require.Error(t, err)
+	grpcStatus, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.DeadlineExceeded, grpcStatus.Code())
+	assert.Contains(t, grpcStatus.Message(), "stopped sending for")
+
+	// Both of the decode pod's messages were answered normally, and nothing
+	// was synthesised on top of a response that is already half-delivered.
+	sent := srv.sentResponses()
+	require.Len(t, sent, 2)
+	for _, resp := range sent {
+		assert.Nil(t, resp.GetImmediateResponse(),
+			"a half-delivered response must not be replaced by an ImmediateResponse")
+	}
+
+	body := recorder.wait(t, 5*time.Second)
+	assert.Equal(t, watchdogTestRID, gjson.Get(body, "rid").String())
+	recorder.none(t, 300*time.Millisecond)
+
+	awaitAbortsCounted(t, counters, 1)
+
+	emitted := counters()
+	watchdog, ok := findCounter(emitted, metrics.GatewayPDDecodeWatchdogTotal)
+	require.True(t, ok, "expected %s to be emitted", metrics.GatewayPDDecodeWatchdogTotal)
+	assert.Equal(t, decodeWatchdogPhaseStreamIdle, watchdog.labels["phase"])
+
+	abort, _ := findCounter(emitted, metrics.GatewayPDDecodeAbortTotal)
+	assert.Equal(t, pd.AbortTriggerWatchdogStreamIdle, abort.labels["prefill_failure_class"])
+
+	fail, ok := counterWithLabel(emitted, metrics.GatewayRequestModelFailTotal, "status", decodeWatchdogStatus)
+	require.True(t, ok, "a watchdog kill must be counted as a failed request")
+	assert.Equal(t, "504", fail.labels["status_code"])
+	for _, c := range emitted {
+		assert.NotEqual(t, metrics.GatewayRequestModelSuccessTotal, c.name,
+			"a truncated response must never count as a gateway request success")
+	}
+}
+
+// TestDecodeWatchdogStreamIdleRearmsOnEveryChunk: a pod that keeps streaming is
+// never killed, however long the response runs. 50ms chunks against a 200ms
+// idle budget for 600ms - three times the budget - so a missing re-arm fails
+// this test deterministically.
+func TestDecodeWatchdogStreamIdleRearmsOnEveryChunk(t *testing.T) {
+	counters := captureCounters(t)
+	recorder, decodeAddr := newWatchdogAbortRecorder(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s, _ := newFailFastServer(t)
+	srv := newWatchdogProcessServer(ctx, 32)
+	srv.msgs <- responseHeadersMsg("200")
+
+	st := newWatchdogState(ctx, watchdogTestRID, decodeAddr, types.PDWatchdogOverrides{
+		FirstResponseTimeout: time.Minute,
+		StreamIdleTimeout:    200 * time.Millisecond,
+	})
+	st.routerCtx.PDLeg().MarkPrefillSucceeded()
+
+	done := make(chan error, 1)
+	go func() { done <- runProcessLoop(s, srv, st) }()
+
+	const chunks = 12
+	for i := 0; i < chunks; i++ {
+		select {
+		case err := <-done:
+			t.Fatalf("the watchdog killed a streaming response after %d chunks: %v", i, err)
+		default:
+		}
+		srv.msgs <- responseBodyChunk("data: {\"choices\":[{\"delta\":{\"content\":\"tok\"}}]}\n\n")
+		time.Sleep(50 * time.Millisecond)
+	}
+	recorder.none(t, 0)
+
+	// The pod stops mid-response: now the idle budget does run out.
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watchdog did not fire after the stream went idle")
+	}
+	grpcStatus, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.DeadlineExceeded, grpcStatus.Code())
+
+	body := recorder.wait(t, 5*time.Second)
+	assert.Equal(t, watchdogTestRID, gjson.Get(body, "rid").String())
+	awaitAbortsCounted(t, counters, 1)
 }
 
 // TestDecodeWatchdogNotArmedWithoutRID: only SGLang PD requests carry a

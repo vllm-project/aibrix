@@ -76,6 +76,9 @@ type PDWatchdogOverrides struct {
 	// ResponseTimeout is the same bound for a non-streaming request, where the
 	// first message from the decode pod is the finished answer.
 	ResponseTimeout time.Duration
+	// StreamIdleTimeout bounds the gap between two messages from the decode pod
+	// once it has started answering.
+	StreamIdleTimeout time.Duration
 }
 
 // PDSpreadOverrides mirrors the four load-imbalance thresholds of the prefill

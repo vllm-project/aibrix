@@ -36,6 +36,7 @@ func TestDecodeWatchdogTimeoutEnvParsing(t *testing.T) {
 	const (
 		firstKey    = "AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT"
 		responseKey = "AIBRIX_DECODE_RESPONSE_TIMEOUT"
+		idleKey     = "AIBRIX_DECODE_STREAM_IDLE_TIMEOUT"
 	)
 	unset := func(t *testing.T, key string) {
 		t.Setenv(key, "")
@@ -45,11 +46,13 @@ func TestDecodeWatchdogTimeoutEnvParsing(t *testing.T) {
 	t.Run("defaults", func(t *testing.T) {
 		unset(t, firstKey)
 		unset(t, responseKey)
+		unset(t, idleKey)
 		got := loadDecodeWatchdogTimeouts()
 		assert.Equal(t, 60*time.Second, got.FirstResponseTimeout)
 		// No universal value can be safe when the wait covers a whole
 		// generation, so the non-streaming budget ships disabled.
 		assert.Equal(t, time.Duration(0), got.ResponseTimeout)
+		assert.Equal(t, 120*time.Second, got.StreamIdleTimeout)
 	})
 
 	cases := []struct {
@@ -73,6 +76,13 @@ func TestDecodeWatchdogTimeoutEnvParsing(t *testing.T) {
 	t.Run("response timeout", func(t *testing.T) {
 		t.Setenv(responseKey, "180")
 		assert.Equal(t, 180*time.Second, loadDecodeWatchdogTimeouts().ResponseTimeout)
+	})
+
+	t.Run("stream idle timeout", func(t *testing.T) {
+		t.Setenv(idleKey, "0")
+		assert.Equal(t, time.Duration(0), loadDecodeWatchdogTimeouts().StreamIdleTimeout)
+		t.Setenv(idleKey, "45")
+		assert.Equal(t, 45*time.Second, loadDecodeWatchdogTimeouts().StreamIdleTimeout)
 	})
 }
 
