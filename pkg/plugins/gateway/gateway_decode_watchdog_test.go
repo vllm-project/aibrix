@@ -410,6 +410,21 @@ func TestDecodeWatchdogResponseTimeoutFiresForNonStreaming(t *testing.T) {
 // TestDecodeWatchdogNotArmedWithoutRID: only SGLang PD requests carry a
 // gateway-owned rid, and only for them does a successful prefill mean the
 // decode pod owes a response. Everything else must select exactly as before.
+// TestDecodeWatchdogInertBeforeRouting covers the loop's first passes, before
+// RequestHeaders has built the routing context: st.routerCtx is still nil there
+// and every watchdog input must read as "nothing armed" rather than panic.
+func TestDecodeWatchdogInertBeforeRouting(t *testing.T) {
+	st := &processState{ctx: context.Background(), stream: true}
+
+	require.NotPanics(t, func() {
+		assert.Nil(t, st.routerCtx.PrefillSucceeded())
+		deadline, phase := st.decodeWatchdogDeadline()
+		assert.True(t, deadline.IsZero())
+		assert.Empty(t, phase)
+		st.stopDecodeWatchdog()
+	})
+}
+
 func TestDecodeWatchdogNotArmedWithoutRID(t *testing.T) {
 	counters := captureCounters(t)
 	recorder, decodeAddr := newWatchdogAbortRecorder(t)
@@ -526,7 +541,11 @@ func TestDecodeWatchdogDoesNotLeakAcrossStreams(t *testing.T) {
 
 		// What Process's defer does, which is also the timer's only stop.
 		st.stopDecodeWatchdog()
-		assert.False(t, st.watchdogPending, "the fired timer must be left drained")
+		select {
+		case <-st.watchdog.C:
+			t.Fatalf("stream %d: the fired timer must be left drained", i)
+		default:
+		}
 		cancel()
 	}
 

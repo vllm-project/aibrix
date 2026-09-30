@@ -134,38 +134,34 @@ func (st *processState) decodeWatchdogDeadline() (time.Time, string) {
 // One timer per stream, reused: allocating a fresh one per loop pass would
 // leave the old one pending in the runtime's heap until it fired. Reuse means
 // Reset, and Reset is only safe on a stopped-and-drained timer, which is what
-// stopDecodeWatchdog does; watchdogPending tracks whether an undelivered fire
-// might still be sitting in the channel, so the drain never blocks on a value
-// the select already took.
+// stopDecodeWatchdog does.
 func (st *processState) armDecodeWatchdog(d time.Duration) <-chan time.Time {
 	if d < 0 {
 		d = 0
 	}
 	if st.watchdog == nil {
 		st.watchdog = time.NewTimer(d)
-		st.watchdogPending = true
 		return st.watchdog.C
 	}
 	st.stopDecodeWatchdog()
 	st.watchdog.Reset(d)
-	st.watchdogPending = true
 	return st.watchdog.C
 }
 
 // stopDecodeWatchdog stops the stream's timer and drains a fire that may
-// already be in flight. Idempotent, and safe on a stream that never armed one,
-// so Process can defer it unconditionally.
+// already be in flight. The drain never blocks, so it is also safe after the
+// select already took the fire. Idempotent, and safe on a stream that never
+// armed one, so Process can defer it unconditionally.
 func (st *processState) stopDecodeWatchdog() {
 	if st.watchdog == nil {
 		return
 	}
-	if !st.watchdog.Stop() && st.watchdogPending {
+	if !st.watchdog.Stop() {
 		select {
 		case <-st.watchdog.C:
 		default:
 		}
 	}
-	st.watchdogPending = false
 }
 
 // handleDecodeWatchdog runs when the watchdog timer fires: the decode leg of

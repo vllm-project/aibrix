@@ -166,10 +166,6 @@ type processState struct {
 	// every pass of the loop from decodeWatchdogDeadline. Nil until a stream
 	// arms one, which only an SGLang PD request ever does.
 	watchdog *time.Timer
-	// watchdogPending says whether a fire of watchdog may still be sitting
-	// undelivered in its channel, so stopDecodeWatchdog knows whether draining
-	// it can block. See armDecodeWatchdog.
-	watchdogPending bool
 }
 
 var podName = os.Getenv("POD_NAME")
@@ -527,7 +523,6 @@ func (s *Server) processOnce(srv extProcPb.ExternalProcessor_ProcessServer, st *
 		st.prefillSucceededSeen = true
 		return nil
 	case <-decodeWatchdog:
-		st.watchdogPending = false
 		// A message that has already arrived wins the tie, for the same reason
 		// it does on a prefill failure: it is the decode pod answering, which
 		// is exactly what the watchdog was waiting for.
