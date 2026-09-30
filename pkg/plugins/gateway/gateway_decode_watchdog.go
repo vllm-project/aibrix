@@ -144,9 +144,12 @@ func (st *processState) decodeWatchdogDeadline() (time.Time, string) {
 	if last.IsZero() {
 		// MarkActivity runs next to MarkDecodeResponded on every response
 		// message, so this is only reachable when something marked the leg
-		// directly. Measure from now: the alternative, an epoch-zero deadline,
-		// would fire the watchdog instantly on a healthy stream.
-		last = time.Now()
+		// directly. Start the clock now, and on the leg rather than locally: a
+		// bare time.Now() would push the deadline out on every pass, so the
+		// watchdog could never fire, and an epoch-zero deadline would fire it
+		// at once on a healthy stream.
+		leg.MarkActivity()
+		last = leg.LastActivity()
 	}
 	return last.Add(timeout), decodeWatchdogPhaseStreamIdle
 }

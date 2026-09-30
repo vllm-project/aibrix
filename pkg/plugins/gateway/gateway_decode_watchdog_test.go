@@ -558,6 +558,24 @@ func TestDecodeWatchdogInertBeforeRouting(t *testing.T) {
 	})
 }
 
+// TestDecodeWatchdogStreamIdleDeadlineStableWithoutActivity: a leg marked as
+// responded without any recorded activity must still get a fixed stream-idle
+// deadline, not one that moves with every pass of the loop.
+func TestDecodeWatchdogStreamIdleDeadlineStableWithoutActivity(t *testing.T) {
+	st := newWatchdogState(context.Background(), watchdogTestRID, "127.0.0.1:1",
+		types.PDWatchdogOverrides{StreamIdleTimeout: time.Minute})
+	leg := st.routerCtx.PDLeg()
+	leg.MarkPrefillSucceeded()
+	leg.MarkDecodeResponded()
+	require.True(t, leg.LastActivity().IsZero())
+
+	first, phase := st.decodeWatchdogDeadline()
+	require.Equal(t, decodeWatchdogPhaseStreamIdle, phase)
+	time.Sleep(5 * time.Millisecond)
+	second, _ := st.decodeWatchdogDeadline()
+	assert.Equal(t, first, second, "the stream-idle deadline must not slide while the stream is silent")
+}
+
 func TestDecodeWatchdogNotArmedWithoutRID(t *testing.T) {
 	counters := captureCounters(t)
 	recorder, decodeAddr := newWatchdogAbortRecorder(t)
