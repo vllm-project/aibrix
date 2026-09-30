@@ -31,11 +31,8 @@ import (
 func setupRedisForTest(t *testing.T) *redis.Client {
 	t.Helper()
 
-	client := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-	if err := client.Ping(context.Background()).Err(); err != nil {
-		_ = client.Close()
-		t.Skip("Redis is not available at localhost:6379")
-	}
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() {
 		_ = client.Close()
 	})
@@ -140,14 +137,9 @@ func TestRedisRateLimiter_DifferentWindowSizesUseSeparateCounters(t *testing.T) 
 func TestRedisRateLimiter_IncrAndGetCurrentWindow(t *testing.T) {
 	client := setupRedisForTest(t)
 	rl := NewRedisAccountRateLimiter("ratelimiter_test", client, time.Second)
-	typed := rl.(*redisRateLimiter)
 
 	ctx := context.Background()
 	key := "userA_RPM_CURRENT"
-	redisKey := typed.genKey(key, typed.windowSize)
-	t.Cleanup(func() {
-		_ = client.Del(ctx, redisKey).Err()
-	})
 
 	// Missing key should read as 0.
 	initial, err := rl.Get(ctx, key)
@@ -176,9 +168,6 @@ func TestRedisRateLimiter_GetLimitUsesStaticKey(t *testing.T) {
 	fullKey := "ratelimiter_test:" + limitKey
 
 	require.NoError(t, client.Set(ctx, fullKey, 42, time.Minute).Err())
-	t.Cleanup(func() {
-		_ = client.Del(ctx, fullKey).Err()
-	})
 
 	got, err := rl.GetLimit(ctx, limitKey)
 	require.NoError(t, err)
@@ -188,14 +177,9 @@ func TestRedisRateLimiter_GetLimitUsesStaticKey(t *testing.T) {
 func TestRedisRateLimiter_ConcurrentIncrements(t *testing.T) {
 	client := setupRedisForTest(t)
 	rl := NewRedisAccountRateLimiter("ratelimiter_test", client, 5*time.Second)
-	typed := rl.(*redisRateLimiter)
 
 	ctx := context.Background()
 	key := "burst_MODEL_RPS_CURRENT"
-	redisKey := typed.genKey(key, typed.windowSize)
-	t.Cleanup(func() {
-		_ = client.Del(ctx, redisKey).Err()
-	})
 
 	const workers = 64
 	var wg sync.WaitGroup
