@@ -18,6 +18,7 @@ package utils
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 )
@@ -131,5 +132,54 @@ func TestWorkerPoolCanRestartAfterStop(t *testing.T) {
 			t.Fatalf("attempt %d: submitted task did not run", attempt)
 		}
 		pool.Stop()
+	}
+}
+
+// Stop must not hang when Submit calls race with it. A Submit that has been
+// accepted but has not queued its task yet must not queue it after Stop has
+// drained the queue, or no worker is left to run it.
+func TestWorkerPoolStopWhileSubmitting(t *testing.T) {
+	for attempt := 0; attempt < 100; attempt++ {
+		pool := NewWorkerPool(2)
+		pool.Start(context.Background())
+
+		flowing := make(chan struct{})
+		var flowingOnce sync.Once
+		quit := make(chan struct{})
+		var submitters sync.WaitGroup
+		for i := 0; i < 8; i++ {
+			submitters.Add(1)
+			go func() {
+				defer submitters.Done()
+				for {
+					select {
+					case <-quit:
+						return
+					default:
+					}
+					pool.Submit(func() {
+						flowingOnce.Do(func() { close(flowing) })
+					})
+				}
+			}()
+		}
+		select {
+		case <-flowing:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("attempt %d: no submitted task ran", attempt)
+		}
+
+		stopped := make(chan struct{})
+		go func() {
+			pool.Stop()
+			close(stopped)
+		}()
+		select {
+		case <-stopped:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("attempt %d: Stop did not return while Submit calls were in flight", attempt)
+		}
+		close(quit)
+		submitters.Wait()
 	}
 }
