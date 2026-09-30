@@ -258,6 +258,10 @@ type pdRouter struct {
 	// on without a gateway restart; every access is nil-guarded.
 	bucketServe *pd.BucketServeTracker
 
+	// bucketServeMetricObserver is set only by tests that need to inspect
+	// bucket-serve emissions without replacing process-wide metric hooks.
+	bucketServeMetricObserver *bucketServeMetricObserver
+
 	// selectMu makes "read every candidate's tracked load, pick the best,
 	// register the pick" one atomic step in filterPrefillDecodePods. Without
 	// it, concurrent requests in a burst all read the same pre-burst tracker
@@ -271,6 +275,11 @@ type pdRouter struct {
 	// only on the request and run before the lock is taken. countersMu is
 	// taken inside selectMu (in finalPDScore) and never the other way round.
 	selectMu sync.Mutex
+}
+
+type bucketServeMetricObserver struct {
+	counter func(string, map[string]string)
+	gauge   func(string, map[string]string)
 }
 
 func newPrefixCachePrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashTable) pd.PrefillScorePolicy {
@@ -591,7 +600,7 @@ func (r *pdRouter) bucketServeBand(routingCtx *types.RoutingContext, readyPods [
 	}
 	res := tracker.Band(routingCtx.Model, mode, promptLength, time.Now(), bucketServeGroups(routingCtx, readyPods))
 	if res.Refreshed {
-		publishBucketServePlan(routingCtx, res)
+		r.publishBucketServePlan(routingCtx, res)
 	}
 	return res.Roleset, res.Max
 }
@@ -600,7 +609,7 @@ func (r *pdRouter) bucketServeBand(routingCtx *types.RoutingContext, readyPods [
 // the highest upper bound among the bands every roleset holds, and a delete
 // for every roleset no live plan holds anymore, so no series outlives the
 // plans that produced it.
-func publishBucketServePlan(routingCtx *types.RoutingContext, res pd.BandResult) {
+func (r *pdRouter) publishBucketServePlan(routingCtx *types.RoutingContext, res pd.BandResult) {
 	bounds := make(map[string]int, len(res.Plan))
 	for _, band := range res.Plan {
 		if band.Max > bounds[band.Group] {
@@ -608,8 +617,8 @@ func publishBucketServePlan(routingCtx *types.RoutingContext, res pd.BandResult)
 		}
 	}
 	for roleset, bound := range bounds {
-		metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.PDBucketServeBandMax,
-			&metrics.SimpleMetricValue{Value: float64(bound)}, map[string]string{"roleset": roleset})
+		r.emitBucketServeMetric(routingCtx, metrics.PDBucketServeBandMax, float64(bound),
+			map[string]string{"roleset": roleset}, false)
 	}
 	for _, roleset := range res.Dropped {
 		if _, held := bounds[roleset]; held {
@@ -617,6 +626,18 @@ func publishBucketServePlan(routingCtx *types.RoutingContext, res pd.BandResult)
 		}
 		metrics.DeleteGaugeMetricForPod(metrics.PDBucketServeBandMax, routingCtx, nil, map[string]string{"roleset": roleset})
 	}
+}
+
+func (r *pdRouter) emitBucketServeMetric(routingCtx *types.RoutingContext, name string, value float64, labels map[string]string, counter bool) {
+	if observer := r.bucketServeMetricObserver; observer != nil {
+		if counter {
+			observer.counter(name, labels)
+		} else {
+			observer.gauge(name, labels)
+		}
+		return
+	}
+	metrics.EmitMetricToPrometheus(routingCtx, nil, name, &metrics.SimpleMetricValue{Value: value}, labels)
 }
 
 // filterPrefillDecodePods selects one prefill pod and one decode pod for the request.
@@ -774,8 +795,8 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 		if len(alignedPrefill) > 0 && len(alignedDecode) > 0 {
 			prefillPods, decodePods = alignedPrefill, alignedDecode
 			bandLabels := map[string]string{"roleset": bandRoleset}
-			metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.PDBucketServeBandTotal, &metrics.SimpleMetricValue{Value: 1.0}, bandLabels)
-			metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.PDBucketServePromptTokensTotal, &metrics.SimpleMetricValue{Value: float64(promptLength)}, bandLabels)
+			r.emitBucketServeMetric(routingCtx, metrics.PDBucketServeBandTotal, 1.0, bandLabels, true)
+			r.emitBucketServeMetric(routingCtx, metrics.PDBucketServePromptTokensTotal, float64(promptLength), bandLabels, true)
 			if klog.V(4).Enabled() {
 				klog.V(4).InfoS("bucket-serve band picked the roleset",
 					"request_id", routingCtx.RequestID, "roleset", bandRoleset, "band_max", bandMax,
