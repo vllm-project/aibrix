@@ -347,6 +347,31 @@ func TestReconcileWeighsAServingEngineWhoseMetricsWereNotReadAsBusy(t *testing.T
 	assert.Equal(t, int64(4)<<30+spare/6+1, getModel(t, r, "idle").Status.Instances[0].KVLimitBytes)
 }
 
+// The runtime says a waking engine is ready before it has finished booting,
+// and it reads no metrics until then. The division that the wake starts can
+// come in that moment. The gateway does not route to the engine yet, so it has
+// no load, and the card is divided evenly.
+func TestReconcileDividesEvenlyAtAWakeBeforeTheMetricsAreRead(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	awake := withFinalizer(claimOnPod("awake", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	awake.Status.Instances[0].KVLimitBytes = 36 << 30
+	woken := claimOnPod("woken", pod.Name, modelv1alpha1.ModelClaimSleeping, 20<<30, 4<<30)
+	woken.Status.Instances[0].KVLimitBytes = 4 << 30
+	wokenEngine := engineHolding("woken", 1<<30, 4<<30)
+	wokenEngine.Phase = "booting"
+	wokenEngine.RequestMetricsObserved = false
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("awake", 1<<30, 36<<30), wokenEngine}
+	r, runtime := newReconciler(t, awake, woken, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, "awake")
+
+	// Each engine keeps its floor, and the 32 GiB above the floors is split in two.
+	spare := int64(32) << 30
+	assert.Equal(t, int64(4)<<30+spare/2, getModel(t, r, "awake").Status.Instances[0].KVLimitBytes)
+	assert.Equal(t, int64(4)<<30+spare/2, getModel(t, r, "woken").Status.Instances[0].KVLimitBytes)
+}
+
 // The runtime goes on listing an engine it has given up on, dead. Its room is
 // back with the card, so the engine left serving is given all of it.
 func TestReconcileGivesAFailedEnginesRoomBack(t *testing.T) {

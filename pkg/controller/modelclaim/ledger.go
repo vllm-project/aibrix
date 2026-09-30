@@ -335,8 +335,14 @@ func podLedgersFrom(
 				engine.requestsWaiting = max(model.RequestsWaiting, 0)
 				// A scrape that failed says nothing about load, and the engine may
 				// be too busy to answer it in time. A serving engine whose metrics
-				// could not be read is not taken for idle.
-				engine.demandUnknown = model.Ready && !model.RequestMetricsObserved
+				// could not be read is not taken for idle. Only an engine that
+				// serves can be busy, though. The runtime reports an engine ready
+				// before it has finished booting, after a start or a wake, and it
+				// reads no metrics until then. The gateway routes only to an
+				// Active instance. An engine that is not both active and routed
+				// has no load that could have gone unread.
+				engine.demandUnknown = model.Ready && !model.RequestMetricsObserved &&
+					model.Phase == runtimePhaseActive && instance.Phase == modelv1alpha1.ModelClaimActive
 				engine.asleep = model.Phase == runtimePhaseSleeping
 				// A negative figure means there is no KV segment to read, and
 				// an engine without one has mapped nothing.

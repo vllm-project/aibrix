@@ -359,7 +359,9 @@ already holds, its declared floor or the KV it has mapped, and the room left
 over is shared out by demand: each engine's part is weighted by one plus its
 requests in flight, with the requests capped at four as the pool policy below
 caps them. A serving engine whose request metrics could not be read counts as
-the busiest, since a scrape that timed out says nothing about its load.
+the busiest, since a scrape that timed out says nothing about its load. An
+engine that is still starting or waking is not routed yet, so it has no load,
+and it counts as idle.
 Every footprint, every engine's held KV, and every share together come to
 exactly what the card can hold, so an engine growing into its new limit cannot
 grow into another engine's memory.
