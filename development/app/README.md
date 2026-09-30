@@ -159,6 +159,11 @@ headers to the prefill and the decode pod alike. `x-aibrix-mock-delay-role`
 (`prefill` or `decode`) restricts the delay to one leg, so a test can hold one
 leg while the other answers immediately. An unknown role returns HTTP 400.
 
+`x-aibrix-mock-stream-stall-ms` holds a streaming chat completion after its
+first chunk, i.e. a pod that started answering and then went silent. It has
+the same 30 second limit, invalid values return HTTP 400, and
+`x-aibrix-mock-delay-role` scopes it to one leg in the same way.
+
 `POST /abort_request` mocks the SGLang endpoint the gateway calls on the decode
 pod when a PD prefill leg failed. It takes `{"rid": "..."}`, answers `200`, and
 records the abort under that rid so a test can assert which request the gateway

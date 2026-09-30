@@ -852,6 +852,9 @@ can therefore be routed with different thresholds by selecting different profile
    * - ``pd.decodeResponseTimeout``
      - ``AIBRIX_DECODE_RESPONSE_TIMEOUT``
      - The same bound for a non-streaming request, where the first message is the finished answer. ``0`` disables the watchdog.
+   * - ``pd.decodeStreamIdleTimeout``
+     - ``AIBRIX_DECODE_STREAM_IDLE_TIMEOUT``
+     - Longest gap, in seconds, between two messages from a decode pod that has started answering before the gateway cuts the stream short. ``0`` disables this phase.
    * - ``pd.prefillLoadImbalanceMinSpread``
      - ``AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD``
      - Minimum prefill running-request spread (max minus min) that triggers prefill load-imbalance routing.

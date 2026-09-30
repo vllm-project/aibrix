@@ -50,6 +50,8 @@ func TestPDLegStateNilReceiverIsInert(t *testing.T) {
 	assert.NotPanics(t, func() { leg.MarkPrefillSucceeded() })
 	assert.Nil(t, leg.PrefillSucceeded())
 	assert.True(t, leg.PrefillSucceededAt().IsZero())
+	assert.NotPanics(t, func() { leg.MarkActivity() })
+	assert.True(t, leg.LastActivity().IsZero())
 
 	// There is no abort to bound or to wait for, so the context is the
 	// background one and the join point is ready immediately - a caller that
@@ -69,12 +71,14 @@ func TestPDLegStateNilReceiverIsInert(t *testing.T) {
 		bare.MarkDecodeResponded()
 		bare.SetPDRequestID("rid")
 		bare.SetDecodeTarget("10.0.0.1:8000", "decode-1")
+		bare.MarkActivity()
 	})
 	assert.Empty(t, bare.PDRequestID())
 	assert.Nil(t, bare.PrefillFailure())
 	assert.Nil(t, bare.PDLeg())
 	assert.Nil(t, bare.PrefillSucceeded())
 	assert.True(t, bare.PrefillSucceededAt().IsZero())
+	assert.True(t, bare.LastActivity().IsZero())
 }
 
 // The prefill-success edge has the same close-once contract as the failure
@@ -139,6 +143,24 @@ func TestPDLegStatePrefillSucceededIsPerIncarnation(t *testing.T) {
 	}
 	assert.True(t, ctx.PrefillSucceededAt().IsZero())
 	assert.False(t, old.PrefillSucceededAt().IsZero(), "the retired leg keeps its own state")
+}
+
+// The activity clock is the origin of the stream-idle deadline, so unlike the
+// prefill-success time it must move forward on every message.
+func TestPDLegStateActivityAdvances(t *testing.T) {
+	ctx := NewRoutingContext(context.Background(), RoutingAlgorithm("pd"), "m", "msg", "req-1", "u")
+	assert.True(t, ctx.LastActivity().IsZero(), "nothing has come back from a fresh leg")
+
+	ctx.MarkActivity()
+	first := ctx.LastActivity()
+	require.False(t, first.IsZero())
+
+	time.Sleep(time.Millisecond)
+	ctx.MarkActivity()
+	assert.True(t, ctx.LastActivity().After(first), "a later message must push the activity time forward")
+
+	RecycleRoutingContextForTest(ctx, context.Background(), RoutingAlgorithm("pd"), "m", "msg", "req-2", "u")
+	assert.True(t, ctx.LastActivity().IsZero(), "the recycled context inherited the retired leg's activity")
 }
 
 func TestPDLegStateFirstFailureWinsAndClosesOnce(t *testing.T) {

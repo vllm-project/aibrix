@@ -532,18 +532,22 @@ Prefill leg succeeds (async worker)
                                                         │
                                   arm a timer: FIRST_RESPONSE (stream) / RESPONSE (non-stream)
                                                         │
-          decode response headers arrive ──► disarm     │
+          decode response headers arrive ──► switch to  │
+          every later message ──► re-arm   STREAM_IDLE  │
                                                         ▼ timer fires
-                              504 ImmediateResponse, header x-error-pd-decode: true
-                              gRPC DeadlineExceeded close
-                              POST /abort_request {"rid": ...} to decode (goroutine, once)
+             before the first message:  504 ImmediateResponse, header x-error-pd-decode: true
+                                        + gRPC DeadlineExceeded close
+             after it (stream idle):    gRPC DeadlineExceeded close only (Envoy resets
+                                        the half-delivered response)
+             both:                      POST /abort_request {"rid": ...} to decode (goroutine, once)
 ```
 
 The watchdog runs only for requests with a gateway-owned `rid` (SGLang). Its
 timeouts are `AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT` (streaming, default `60`) and
 `AIBRIX_DECODE_RESPONSE_TIMEOUT` (non-streaming, default `0`, i.e. off, since the
 decode pod only answers a non-streaming request once the whole generation is
-done).
+done). Once the decode pod has answered, `AIBRIX_DECODE_STREAM_IDLE_TIMEOUT`
+(default `120`) bounds the gap between two of its messages.
 
 ---
 
@@ -716,6 +720,7 @@ Metrics: `pd_bucket_serve_band_total` and `pd_bucket_serve_prompt_tokens_total` 
 |----------|---------|-------------|
 | `AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT` | `60` | Seconds a streaming SGLang request waits, after its prefill leg succeeded, for the first message from the decode pod. `0` disables |
 | `AIBRIX_DECODE_RESPONSE_TIMEOUT` | `0` | Same for a non-streaming request, where the first message is the finished answer. `0` (default) disables |
+| `AIBRIX_DECODE_STREAM_IDLE_TIMEOUT` | `120` | Longest gap allowed between two messages once the decode pod has started answering. `0` disables |
 
 ### TensorRT-LLM
 
@@ -751,8 +756,8 @@ SGLang uses a bootstrap mechanism for prefill/decode coordination. The port is r
 | `PDSelectedPrefillPodTotal` | Prefill pod selected (per pod label) |
 | `PDSelectedDecodePodTotal` | Decode pod selected (per pod label) |
 | `gateway_pd_prefill_failure_total{class,stage}` | A terminal prefill failure reached the client-facing handler. `stage` is `before_response` (the client was failed fast) or `after_response` (the decode leg had already started answering) |
-| `gateway_pd_decode_abort_total{prefill_failure_class,result}` | One decode abort attempt. `result` is `ok`, `error`, `skipped_streaming`, `skipped_disabled`, `skipped_no_rid` or `skipped_no_target`. `prefill_failure_class` is `watchdog_first_response` for an abort sent by the decode watchdog |
-| `gateway_pd_decode_watchdog_total{phase}` | The decode watchdog failed a request whose decode pod stopped responding. `phase` is `first_response` |
+| `gateway_pd_decode_abort_total{prefill_failure_class,result}` | One decode abort attempt. `result` is `ok`, `error`, `skipped_streaming`, `skipped_disabled`, `skipped_no_rid` or `skipped_no_target`. `prefill_failure_class` is `watchdog_first_response` or `watchdog_stream_idle` for an abort sent by the decode watchdog |
+| `gateway_pd_decode_watchdog_total{phase}` | The decode watchdog failed a request whose decode pod stopped responding. `phase` is `first_response` or `stream_idle` |
 
 ---
 

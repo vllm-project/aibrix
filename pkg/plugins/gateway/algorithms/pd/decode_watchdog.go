@@ -43,6 +43,11 @@ const (
 	// length is set by the caller's max_tokens and the pod's throughput. Any
 	// default would kill somebody's legitimate long answer.
 	defaultDecodeResponseTimeout = 0
+
+	// defaultDecodeStreamIdleTimeout bounds the gap between two messages from a
+	// decode pod that has started answering. A healthy stream sends a chunk per
+	// token or per few tokens, so a gap of minutes means the pod is stuck.
+	defaultDecodeStreamIdleTimeout = 120
 )
 
 // Abort triggers that are not prefill failures. They travel in the same slot
@@ -54,6 +59,10 @@ const (
 	// prefill leg succeeded (AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT, or
 	// AIBRIX_DECODE_RESPONSE_TIMEOUT for a non-streaming request).
 	AbortTriggerWatchdogFirstResponse = "watchdog_first_response"
+
+	// AbortTriggerWatchdogStreamIdle: the decode pod started answering and then
+	// went silent for AIBRIX_DECODE_STREAM_IDLE_TIMEOUT.
+	AbortTriggerWatchdogStreamIdle = "watchdog_stream_idle"
 )
 
 // loadDecodeWatchdogTimeouts reads the process defaults of the decode watchdog
@@ -71,6 +80,7 @@ func loadDecodeWatchdogTimeouts() types.PDWatchdogOverrides {
 	return types.PDWatchdogOverrides{
 		FirstResponseTimeout: seconds("AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT", defaultDecodeFirstResponseTimeout),
 		ResponseTimeout:      seconds("AIBRIX_DECODE_RESPONSE_TIMEOUT", defaultDecodeResponseTimeout),
+		StreamIdleTimeout:    seconds("AIBRIX_DECODE_STREAM_IDLE_TIMEOUT", defaultDecodeStreamIdleTimeout),
 	}
 }
 
@@ -88,7 +98,8 @@ func loadDecodeWatchdogTimeouts() types.PDWatchdogOverrides {
 // One attempt, unlike OnPrefillLegFailed's two. That retry covers an abort
 // overtaking its own decode request on the pod, which cannot happen here: the
 // watchdog only fires after the decode request has been on the pod for at
-// least the configured timeout.
+// least the configured timeout (and, for a stream-idle kill, after the pod has
+// already answered).
 //
 // The prefill-failure abort and this one never share a leg: the watchdog is
 // armed by the prefill leg succeeding, the other by it failing, so the leg's
