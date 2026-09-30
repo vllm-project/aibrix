@@ -33,8 +33,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/config"
 )
 
-// Disable Ginkgo tests that require Kubernetes environment
-var _ = XDescribe("ModelAdapter Controller", func() {
+var _ = Describe("ModelAdapter Controller", func() {
 	var (
 		ctx        context.Context
 		reconciler *ModelAdapterReconciler
@@ -410,24 +409,19 @@ var _ = XDescribe("ModelAdapter Controller", func() {
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-adapter",
 						Namespace: "default",
-						Annotations: map[string]string{
-							fmt.Sprintf("%s/test-pod", RetryCountAnnotationKey):    "2",
-							fmt.Sprintf("%s/test-pod", LastRetryTimeAnnotationKey): time.Now().Format(time.RFC3339),
-						},
 					},
 				}
+				reconciler.updateRetryInfo(instance, "test-pod", 2)
+				retryCount, lastRetryTime := reconciler.getRetryInfo(instance, "test-pod")
+				Expect(retryCount).To(Equal(int32(2)))
+				Expect(lastRetryTime.IsZero()).To(BeFalse())
 
 				reconciler.clearRetryInfo(instance, "test-pod")
 
-				// Verify annotations are removed
-				retryKey := fmt.Sprintf("%s/test-pod", RetryCountAnnotationKey)
-				timeKey := fmt.Sprintf("%s/test-pod", LastRetryTimeAnnotationKey)
-
-				_, hasRetryKey := instance.Annotations[retryKey]
-				_, hasTimeKey := instance.Annotations[timeKey]
-
-				Expect(hasRetryKey).To(BeFalse())
-				Expect(hasTimeKey).To(BeFalse())
+				Expect(instance.Annotations).To(BeEmpty())
+				retryCount, lastRetryTime = reconciler.getRetryInfo(instance, "test-pod")
+				Expect(retryCount).To(BeZero())
+				Expect(lastRetryTime.IsZero()).To(BeTrue())
 			})
 
 			It("should preserve other annotations while managing retry info", func() {
@@ -436,19 +430,20 @@ var _ = XDescribe("ModelAdapter Controller", func() {
 						Name:      "test-adapter",
 						Namespace: "default",
 						Annotations: map[string]string{
-							"user.custom/annotation":                               "should-be-preserved",
-							fmt.Sprintf("%s/test-pod", RetryCountAnnotationKey):    "2",
-							fmt.Sprintf("%s/test-pod", LastRetryTimeAnnotationKey): time.Now().Format(time.RFC3339),
+							"user.custom/annotation": "should-be-preserved",
 						},
 					},
 				}
+				reconciler.updateRetryInfo(instance, "test-pod", 2)
+				reconciler.updateRetryInfo(instance, "other-pod", 1)
 
 				reconciler.clearRetryInfo(instance, "test-pod")
 
-				// User annotation should remain
-				userAnnotation, exists := instance.Annotations["user.custom/annotation"]
-				Expect(exists).To(BeTrue())
-				Expect(userAnnotation).To(Equal("should-be-preserved"))
+				Expect(instance.Annotations).To(HaveKeyWithValue("user.custom/annotation", "should-be-preserved"))
+				retryCount, _ := reconciler.getRetryInfo(instance, "test-pod")
+				Expect(retryCount).To(BeZero())
+				retryCount, _ = reconciler.getRetryInfo(instance, "other-pod")
+				Expect(retryCount).To(Equal(int32(1)))
 			})
 		})
 	})
