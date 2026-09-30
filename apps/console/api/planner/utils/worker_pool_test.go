@@ -140,46 +140,53 @@ func TestWorkerPoolCanRestartAfterStop(t *testing.T) {
 // drained the queue, or no worker is left to run it.
 func TestWorkerPoolStopWhileSubmitting(t *testing.T) {
 	for attempt := 0; attempt < 100; attempt++ {
-		pool := NewWorkerPool(2)
-		pool.Start(context.Background())
+		stopWhileSubmitting(t, attempt)
+	}
+}
 
-		flowing := make(chan struct{})
-		var flowingOnce sync.Once
-		quit := make(chan struct{})
-		var submitters sync.WaitGroup
-		for i := 0; i < 8; i++ {
-			submitters.Add(1)
-			go func() {
-				defer submitters.Done()
-				for {
-					select {
-					case <-quit:
-						return
-					default:
-					}
-					pool.Submit(func() {
-						flowingOnce.Do(func() { close(flowing) })
-					})
-				}
-			}()
-		}
-		select {
-		case <-flowing:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("attempt %d: no submitted task ran", attempt)
-		}
+func stopWhileSubmitting(t *testing.T, attempt int) {
+	pool := NewWorkerPool(2)
+	pool.Start(context.Background())
 
-		stopped := make(chan struct{})
-		go func() {
-			pool.Stop()
-			close(stopped)
-		}()
-		select {
-		case <-stopped:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("attempt %d: Stop did not return while Submit calls were in flight", attempt)
-		}
+	flowing := make(chan struct{})
+	var flowingOnce sync.Once
+	quit := make(chan struct{})
+	var submitters sync.WaitGroup
+	// Deferred so that it also runs when t.Fatalf ends the test early.
+	defer func() {
 		close(quit)
 		submitters.Wait()
+	}()
+	for i := 0; i < 8; i++ {
+		submitters.Add(1)
+		go func() {
+			defer submitters.Done()
+			for {
+				select {
+				case <-quit:
+					return
+				default:
+				}
+				pool.Submit(func() {
+					flowingOnce.Do(func() { close(flowing) })
+				})
+			}
+		}()
+	}
+	select {
+	case <-flowing:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("attempt %d: no submitted task ran", attempt)
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		pool.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("attempt %d: Stop did not return while Submit calls were in flight", attempt)
 	}
 }
