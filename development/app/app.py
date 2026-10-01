@@ -6,6 +6,7 @@ import base64
 import random
 import re
 import logging
+import math
 import struct
 import sys
 import threading
@@ -115,6 +116,21 @@ _mock_capacity_requests = 0
 # only when AsyncJobRegistry pins them back to the pod that accepted the create.
 _mock_video_jobs_lock = threading.Lock()
 _mock_video_jobs = {}
+
+# Elastic EP scaling state served to the PodAutoscaler observation (#2288).
+# The mock starts idle; /debug/elastic_ep drives the scaling window so the
+# observe path can be exercised without a GPU engine.
+_elastic_ep_lock = threading.Lock()
+_elastic_ep_scaling_deadline = None
+
+ELASTIC_EP_SCALING_ERROR = "The model is currently scaling. Please try again later."
+
+
+def _elastic_ep_scaling_active():
+    with _elastic_ep_lock:
+        deadline = _elastic_ep_scaling_deadline
+    return deadline is not None and time.monotonic() < deadline
+
 
 # Extract the api_key argument and prepare for authentication
 api_key = None
@@ -993,6 +1009,84 @@ def abort_request():
 @app.route("/debug/requests", methods=["GET"])
 def debug_requests():
     return jsonify(request_recorder.query(request_id=request.args.get("request_id")))
+
+
+# =============================================================================
+# ELASTIC EP ENDPOINTS
+# =============================================================================
+
+
+@app.before_request
+def block_requests_while_elastic_ep_scaling():
+    # Mirror the vLLM elastic EP middleware: while a scaling commit is in
+    # flight every HTTP request is answered with a 503. The /debug surface
+    # stays reachable so the simulated state can always be inspected and
+    # cleared.
+    if request.path.startswith("/debug/"):
+        return None
+    if _elastic_ep_scaling_active():
+        return jsonify({"error": ELASTIC_EP_SCALING_ERROR}), 503
+    return None
+
+
+@app.route("/is_scaling_elastic_ep", methods=["POST"])
+def is_scaling_elastic_ep():
+    # While idle the engine reports the boolean field the PodAutoscaler probe
+    # reads. A scaling window answers 503 before this handler runs.
+    return jsonify({"is_scaling_elastic_ep": False})
+
+
+@app.route("/debug/elastic_ep", methods=["GET", "POST"])
+def debug_elastic_ep():
+    global _elastic_ep_scaling_deadline
+
+    if request.method == "GET":
+        return jsonify({"is_scaling_elastic_ep": _elastic_ep_scaling_active()})
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not data:
+        return {"status": "error", "message": "No data provided"}, 400
+
+    scaling = data.get("scaling")
+    if not isinstance(scaling, bool):
+        return {"status": "error", "message": "'scaling' must be a boolean"}, 400
+
+    deadline = None
+    if scaling:
+        duration = data.get("duration_seconds")
+        if duration is None:
+            # Hold the window until it is cleared explicitly.
+            deadline = float("inf")
+        elif (
+            isinstance(duration, bool)
+            or not isinstance(duration, (int, float))
+            or duration <= 0
+        ):
+            return (
+                {
+                    "status": "error",
+                    "message": "'duration_seconds' must be a positive number",
+                },
+                400,
+            )
+        else:
+            try:
+                seconds = float(duration)
+            except OverflowError:
+                seconds = float("inf")
+            if not math.isfinite(seconds):
+                return (
+                    {
+                        "status": "error",
+                        "message": "'duration_seconds' must be a finite positive number",
+                    },
+                    400,
+                )
+            deadline = time.monotonic() + seconds
+
+    with _elastic_ep_lock:
+        _elastic_ep_scaling_deadline = deadline
+    return {"status": "success", "is_scaling_elastic_ep": scaling}, 200
 
 
 # =============================================================================
