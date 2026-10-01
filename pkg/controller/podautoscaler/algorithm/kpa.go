@@ -96,8 +96,8 @@ func (a *KPAAlgorithm) shouldEnterPanicMode(metrics *types.AggregatedMetrics, pa
 	return metrics.PanicValue/metrics.StableValue > panicThreshold
 }
 
-// isPerPodSource reports whether the source's windowed value is a per-pod mean.
-func isPerPodSource(t autoscalingv1alpha1.MetricSourceType) bool {
+// IsPerPodSource reports whether the source's windowed value is a per-pod mean.
+func IsPerPodSource(t autoscalingv1alpha1.MetricSourceType) bool {
 	return t != autoscalingv1alpha1.EXTERNAL && t != autoscalingv1alpha1.DOMAIN
 }
 
@@ -130,7 +130,7 @@ func (a *KPAAlgorithm) computeTargetReplicas(currentPodCount float64, context sc
 	// Pod, resource and custom sources record the per-pod mean, so the total load is
 	// mean * pods. External and domain sources already report one total.
 	load := 1.0
-	if sourceType, _ := context.GetMetricSourceTypeForMetric(metricsName); isPerPodSource(sourceType) {
+	if sourceType, _ := context.GetMetricSourceTypeForMetric(metricsName); IsPerPodSource(sourceType) {
 		load = math.Max(1, readyPodsCount)
 	}
 

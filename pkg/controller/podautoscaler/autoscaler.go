@@ -320,6 +320,9 @@ func computePendingAdjustedReplicas(
 		if result.DesiredReplicas < request.CurrentReplicas {
 			return int32(math.Ceil((result.MetricValue*float64(readyReplicas) + targetValue*float64(pendingReplicas)) / targetValue))
 		}
+		if algorithm.IsPerPodSource(result.MetricSourceType) {
+			return int32(math.Ceil(float64(request.CurrentReplicas) * adjustedMetricValue / targetValue))
+		}
 		return int32(math.Ceil(adjustedMetricValue / targetValue))
 	default:
 		return result.DesiredReplicas
