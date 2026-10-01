@@ -67,7 +67,9 @@ var _ = Describe("ModelWarmup controller", func() {
 			NodeSelectorTerms[0].MatchFields[0].Values).To(Equal([]string{node.Name}))
 		Expect(job.Spec.BackoffLimit).To(Equal(ptr.To[int32](3)))
 		Expect(job.Spec.ActiveDeadlineSeconds).To(Equal(ptr.To[int64](31)))
-		Expect(job.Spec.TTLSecondsAfterFinished).To(Equal(ptr.To[int32](41)))
+		Expect(job.Spec.TTLSecondsAfterFinished).To(BeNil())
+		Expect(job.Labels[modelwarmup.WarmupLabelKey]).To(Equal(string(warmup.UID)))
+		Expect(job.Annotations[modelwarmup.WarmupNameAnnotationKey]).To(Equal(warmup.Name))
 		Expect(job.Spec.Template.Spec.RestartPolicy).To(Equal(corev1.RestartPolicyNever))
 		Expect(job.Spec.Template.Spec.AutomountServiceAccountToken).To(Equal(ptr.To(false)))
 		Expect(job.Spec.Template.Spec.ImagePullSecrets).To(Equal(warmup.Spec.ImagePreload.PullSecrets))
@@ -209,6 +211,9 @@ var _ = Describe("ModelWarmup controller", func() {
 			g.Expect(failedTarget.Reason).To(Equal("Failed"))
 			g.Expect(failedTarget.Message).To(Equal("image pull failed"))
 			g.Expect(failedTarget.LastTransitionTime).NotTo(BeNil())
+			for _, job := range controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, warmup.Name) {
+				g.Expect(job.Spec.TTLSecondsAfterFinished).To(Equal(ptr.To[int32](60)))
+			}
 		}, timeout, interval).Should(Succeed())
 	})
 

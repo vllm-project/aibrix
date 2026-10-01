@@ -81,8 +81,8 @@ var _ = ginkgo.Describe("ModelWarmup admission", func() {
 		ginkgo.Entry("negative job timeout", func(w *modelapi.ModelWarmup) {
 			w.Spec.Policies = &modelapi.ModelWarmupPolicies{JobTimeoutSeconds: ptr.To[int64](-1)}
 		}),
-		ginkgo.Entry("zero retry limit", func(w *modelapi.ModelWarmup) {
-			w.Spec.Policies = &modelapi.ModelWarmupPolicies{RetryLimit: ptr.To[int32](0)}
+		ginkgo.Entry("negative retry limit", func(w *modelapi.ModelWarmup) {
+			w.Spec.Policies = &modelapi.ModelWarmupPolicies{RetryLimit: ptr.To[int32](-1)}
 		}),
 		ginkgo.Entry("negative finished job TTL", func(w *modelapi.ModelWarmup) {
 			w.Spec.Policies = &modelapi.ModelWarmupPolicies{TTLSecondsAfterFinished: ptr.To[int32](-1)}
@@ -91,6 +91,12 @@ var _ = ginkgo.Describe("ModelWarmup admission", func() {
 			w.Spec.ImagePreload.Images = append(w.Spec.ImagePreload.Images, w.Spec.ImagePreload.Images[0])
 		}),
 	)
+
+	ginkgo.It("accepts a zero retry limit", func() {
+		warmup := newWarmup("no-retry")
+		warmup.Spec.Policies = &modelapi.ModelWarmupPolicies{RetryLimit: ptr.To[int32](0)}
+		gomega.Expect(k8sClient.Create(ctx, warmup)).To(gomega.Succeed())
+	})
 
 	ginkgo.It("rejects invalid spec updates and permits status updates", func() {
 		warmup := newWarmup("update")

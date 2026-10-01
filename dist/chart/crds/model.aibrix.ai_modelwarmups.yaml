@@ -52,10 +52,12 @@ spec:
                         args:
                           items:
                             type: string
+                          maxItems: 64
                           type: array
                         command:
                           items:
                             type: string
+                          maxItems: 64
                           minItems: 1
                           type: array
                         image:
@@ -66,6 +68,7 @@ spec:
                       - command
                       - image
                       type: object
+                    maxItems: 32
                     minItems: 1
                     type: array
                   pullSecrets:
@@ -76,6 +79,7 @@ spec:
                           type: string
                       type: object
                       x-kubernetes-map-type: atomic
+                    maxItems: 32
                     type: array
                 required:
                 - images
@@ -86,15 +90,19 @@ spec:
                 properties:
                   jobTimeoutSeconds:
                     format: int64
+                    minimum: 1
                     type: integer
                   parallelism:
                     format: int32
+                    minimum: 1
                     type: integer
                   retryLimit:
                     format: int32
+                    minimum: 0
                     type: integer
                   ttlSecondsAfterFinished:
                     format: int32
+                    minimum: 1
                     type: integer
                 type: object
               targets:
@@ -131,12 +139,14 @@ spec:
                         names:
                           items:
                             type: string
+                          maxItems: 1000
                           minItems: 1
                           type: array
                       required:
                       - names
                       type: object
                   type: object
+                maxItems: 32
                 minItems: 1
                 type: array
             required:

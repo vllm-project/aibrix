@@ -51,8 +51,10 @@ import (
 const (
 	controllerName = "model-warmup-controller"
 
-	// WarmupLabelKey labels owned Jobs with the name of their ModelWarmup.
+	// WarmupLabelKey labels owned Jobs with the UID of their ModelWarmup.
 	WarmupLabelKey = "model.aibrix.ai/warmup"
+	// WarmupNameAnnotationKey records the human-readable ModelWarmup name.
+	WarmupNameAnnotationKey = "model.aibrix.ai/warmup-name"
 	// RevisionLabelKey labels owned Jobs with the immutable warmup workload revision.
 	RevisionLabelKey = "model.aibrix.ai/revision"
 	// TargetNodeAnnotationKey records the exact node targeted by an owned Job.
@@ -174,6 +176,10 @@ func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		job := r.jobFor(warmup, node, revision)
 		var existing batchv1.Job
 		if err := r.Get(ctx, client.ObjectKeyFromObject(job), &existing); err == nil {
+			if !metav1.IsControlledBy(&existing, warmup) {
+				return ctrl.Result{}, fmt.Errorf("job %s/%s already exists and is not controlled by ModelWarmup %s",
+					existing.Namespace, existing.Name, warmup.Name)
+			}
 			klog.V(5).InfoS("ModelWarmup Job already exists", "modelWarmup", req.NamespacedName,
 				"node", node, "job", job.Name, "revision", revision)
 			continue
@@ -183,8 +189,8 @@ func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if err := ctrl.SetControllerReference(warmup, job, r.Scheme); err != nil {
 			return ctrl.Result{}, err
 		}
-		if err := r.Create(ctx, job); err != nil && !apierrors.IsAlreadyExists(err) {
-			return ctrl.Result{}, err
+		if err := r.Create(ctx, job); err != nil {
+			return ctrl.Result{}, fmt.Errorf("create ModelWarmup Job %s/%s: %w", job.Namespace, job.Name, err)
 		}
 		klog.V(3).InfoS("created ModelWarmup Job", "modelWarmup", req.NamespacedName,
 			"node", node, "job", job.Name, "revision", revision)
@@ -247,13 +253,16 @@ func (r *ModelWarmupReconciler) activeJobs(
 ) (int32, error) {
 	var jobs batchv1.JobList
 	if err := r.List(ctx, &jobs, client.InNamespace(warmup.Namespace), client.MatchingLabels{
-		WarmupLabelKey:   warmup.Name,
+		WarmupLabelKey:   string(warmup.UID),
 		RevisionLabelKey: revision,
 	}); err != nil {
 		return 0, err
 	}
 	var active int32
 	for _, job := range jobs.Items {
+		if !metav1.IsControlledBy(&job, warmup) {
+			continue
+		}
 		if job.DeletionTimestamp == nil && !isJobComplete(&job) && !isJobFailed(&job) {
 			active++
 		}
@@ -269,12 +278,15 @@ func (r *ModelWarmupReconciler) cleanupStaleJobs(
 ) error {
 	var jobs batchv1.JobList
 	if err := r.List(ctx, &jobs, client.InNamespace(warmup.Namespace), client.MatchingLabels{
-		WarmupLabelKey: warmup.Name,
+		WarmupLabelKey: string(warmup.UID),
 	}); err != nil {
 		return err
 	}
 	for i := range jobs.Items {
 		job := &jobs.Items[i]
+		if !metav1.IsControlledBy(job, warmup) {
+			continue
+		}
 		if isJobComplete(job) || isJobFailed(job) {
 			continue
 		}
@@ -401,23 +413,23 @@ func (r *ModelWarmupReconciler) jobFor(w *modelv1alpha1.ModelWarmup, node, revis
 			},
 		})
 	}
-	name := modelWarmupJobName(w.Name, node, revision)
+	name := modelWarmupJobName(w.Name, string(w.UID), node, revision)
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: w.Namespace,
 			Annotations: map[string]string{
 				TargetNodeAnnotationKey: node,
+				WarmupNameAnnotationKey: w.Name,
 			},
 			Labels: map[string]string{
-				WarmupLabelKey:   w.Name,
+				WarmupLabelKey:   string(w.UID),
 				RevisionLabelKey: revision,
 			},
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit:            ptr.To(policies.retryLimit),
-			TTLSecondsAfterFinished: ptr.To(policies.ttlSecondsAfterFinished),
-			ActiveDeadlineSeconds:   ptr.To(policies.jobTimeoutSeconds),
+			BackoffLimit:          ptr.To(policies.retryLimit),
+			ActiveDeadlineSeconds: ptr.To(policies.jobTimeoutSeconds),
 			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
 				RestartPolicy:                corev1.RestartPolicyNever,
 				AutomountServiceAccountToken: ptr.To(false),
@@ -466,7 +478,7 @@ func (r *ModelWarmupReconciler) updateStatus(
 	var jobs batchv1.JobList
 	if err := r.List(
 		ctx, &jobs, client.InNamespace(w.Namespace), client.MatchingLabels{
-			WarmupLabelKey:   w.Name,
+			WarmupLabelKey:   string(w.UID),
 			RevisionLabelKey: revision,
 		},
 	); err != nil {
@@ -474,10 +486,8 @@ func (r *ModelWarmupReconciler) updateStatus(
 	}
 	byNode := map[string]batchv1.Job{}
 	for _, job := range jobs.Items {
-		for _, owner := range job.OwnerReferences {
-			if owner.UID == w.UID {
-				byNode[targetNodeForJob(&job)] = job
-			}
+		if metav1.IsControlledBy(&job, w) {
+			byNode[targetNodeForJob(&job)] = job
 		}
 	}
 	details := make([]modelv1alpha1.ModelWarmupTargetStatus, 0, len(targets)+len(missing))
@@ -580,6 +590,11 @@ func (r *ModelWarmupReconciler) updateStatus(
 		w.Status.CompletionTime = nil
 		setCondition(w, "Progressing", metav1.ConditionTrue, "JobsRunning", "waiting for warmup jobs")
 	}
+	if isTerminalPhase(w.Status.Phase) {
+		if err := r.applyFinishedJobTTL(ctx, w, revision); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	if err := r.Status().Update(ctx, w); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -657,14 +672,42 @@ func jobFailureDetails(job *batchv1.Job) (string, string) {
 	return "JobFailed", "warmup job failed"
 }
 
-func modelWarmupJobName(warmupName, node, revision string) string {
-	suffix := fmt.Sprintf("-%s-%s", shortHash(node), revision)
+func modelWarmupJobName(warmupName, warmupUID, node, revision string) string {
+	suffix := fmt.Sprintf("-%s-%s-%s", shortHash(warmupUID), shortHash(node), revision)
 	prefix := warmupName
 	if len(prefix)+len(suffix) > 63 {
 		prefix = prefix[:63-len(suffix)]
 		prefix = strings.TrimRight(prefix, "-.")
 	}
 	return prefix + suffix
+}
+
+func (r *ModelWarmupReconciler) applyFinishedJobTTL(
+	ctx context.Context,
+	warmup *modelv1alpha1.ModelWarmup,
+	revision string,
+) error {
+	var jobs batchv1.JobList
+	if err := r.List(ctx, &jobs, client.InNamespace(warmup.Namespace), client.MatchingLabels{
+		WarmupLabelKey: string(warmup.UID), RevisionLabelKey: revision,
+	}); err != nil {
+		return err
+	}
+	ttl := effectiveWarmupPolicies(warmup).ttlSecondsAfterFinished
+	for i := range jobs.Items {
+		job := &jobs.Items[i]
+		if !metav1.IsControlledBy(job, warmup) || (!isJobComplete(job) && !isJobFailed(job)) {
+			continue
+		}
+		if job.Spec.TTLSecondsAfterFinished != nil && *job.Spec.TTLSecondsAfterFinished == ttl {
+			continue
+		}
+		job.Spec.TTLSecondsAfterFinished = ptr.To(ttl)
+		if err := r.Update(ctx, job); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func preserveTargetTransition(item *modelv1alpha1.ModelWarmupTargetStatus, previous *metav1.Time,

@@ -48,8 +48,10 @@ func ModelWarmupJobNode(job *batchv1.Job) string {
 }
 
 func ListModelWarmupJobs(g gomega.Gomega, ctx context.Context, c client.Client, namespace, name string) []batchv1.Job {
+	var warmup modelapi.ModelWarmup
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &warmup)).To(gomega.Succeed())
 	var jobs batchv1.JobList
 	g.Expect(c.List(ctx, &jobs, client.InNamespace(namespace),
-		client.MatchingLabels{modelwarmup.WarmupLabelKey: name})).To(gomega.Succeed())
+		client.MatchingLabels{modelwarmup.WarmupLabelKey: string(warmup.UID)})).To(gomega.Succeed())
 	return jobs.Items
 }

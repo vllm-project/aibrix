@@ -41,7 +41,7 @@ import (
 
 func TestJobForBuildsSafeNodePinnedTemplate(t *testing.T) {
 	warmup := &modelv1alpha1.ModelWarmup{
-		ObjectMeta: metav1.ObjectMeta{Name: "warmup", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "warmup", Namespace: "default", UID: "warmup-uid"},
 		Spec: modelv1alpha1.ModelWarmupSpec{
 			ImagePreload: modelv1alpha1.ModelWarmupImagePreload{
 				PullSecrets: []corev1.LocalObjectReference{{Name: "registry"}},
@@ -60,9 +60,11 @@ func TestJobForBuildsSafeNodePinnedTemplate(t *testing.T) {
 	require.Equal(t, []string{"gpu-node-a"}, job.Spec.Template.Spec.Affinity.NodeAffinity.
 		RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms[0].MatchFields[0].Values)
 	require.EqualValues(t, 3, *job.Spec.BackoffLimit)
-	require.EqualValues(t, 60, *job.Spec.TTLSecondsAfterFinished)
+	require.Nil(t, job.Spec.TTLSecondsAfterFinished)
 	require.EqualValues(t, modelv1alpha1.DefaultModelWarmupJobTimeoutSeconds, *job.Spec.ActiveDeadlineSeconds)
 	require.False(t, *job.Spec.Template.Spec.AutomountServiceAccountToken)
+	require.Equal(t, string(warmup.UID), job.Labels[WarmupLabelKey])
+	require.Equal(t, warmup.Name, job.Annotations["model.aibrix.ai/warmup-name"])
 	require.Empty(t, job.Spec.Template.Spec.Tolerations)
 	require.Len(t, job.Spec.Template.Spec.Containers, 1)
 	container := job.Spec.Template.Spec.Containers[0]
@@ -124,8 +126,8 @@ func TestUpdateStatusPreservesJobFailureDiagnostics(t *testing.T) {
 	}}
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{Name: "warmup-job", Namespace: "default",
-			Labels:          map[string]string{WarmupLabelKey: "warmup", RevisionLabelKey: "rev"},
-			OwnerReferences: []metav1.OwnerReference{{UID: warmup.UID}}},
+			Labels:          map[string]string{WarmupLabelKey: string(warmup.UID), RevisionLabelKey: "rev"},
+			OwnerReferences: []metav1.OwnerReference{controllerOwnerReference(warmup)}},
 		Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{NodeName: "node-a"}}},
 		Status: batchv1.JobStatus{Failed: 1, Conditions: []batchv1.JobCondition{{
 			Type:   batchv1.JobFailed,
@@ -284,23 +286,42 @@ func TestJobTemplateOwnerReferenceAndDeterministicName(t *testing.T) {
 
 func TestJobNamePreservesNodeAndRevisionSuffix(t *testing.T) {
 	warmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{
-		Name: strings.Repeat("a", 63), Namespace: "default",
+		Name: strings.Repeat("a", 253), Namespace: "default", UID: "warmup-uid-a",
 	}}
 	revision := "123456789abc"
 	first := (&ModelWarmupReconciler{}).jobFor(warmup, "node-a", revision)
 	second := (&ModelWarmupReconciler{}).jobFor(warmup, "node-b", revision)
 
 	require.LessOrEqual(t, len(first.Name), 63)
-	require.True(t, strings.HasSuffix(first.Name, "-"+shortHash("node-a")+"-"+revision))
-	require.True(t, strings.HasSuffix(second.Name, "-"+shortHash("node-b")+"-"+revision))
+	require.True(t, strings.HasSuffix(first.Name,
+		"-"+shortHash(string(warmup.UID))+"-"+shortHash("node-a")+"-"+revision))
+	require.True(t, strings.HasSuffix(second.Name,
+		"-"+shortHash(string(warmup.UID))+"-"+shortHash("node-b")+"-"+revision))
+	require.NotEqual(t, first.Name, second.Name)
+}
+
+func TestJobNameSeparatesWarmupsWithTheSameTruncatedPrefix(t *testing.T) {
+	firstWarmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{
+		Name: strings.Repeat("a", 80) + "-first", UID: "warmup-uid-first",
+	}}
+	secondWarmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{
+		Name: strings.Repeat("a", 80) + "-second", UID: "warmup-uid-second",
+	}}
+
+	first := (&ModelWarmupReconciler{}).jobFor(firstWarmup, "node-a", "123456789abc")
+	second := (&ModelWarmupReconciler{}).jobFor(secondWarmup, "node-a", "123456789abc")
+
 	require.NotEqual(t, first.Name, second.Name)
 }
 
 func TestCleanupStaleJobsDeletesRunningAndKeepsCompleted(t *testing.T) {
-	warmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{Name: "warmup", Namespace: "default"}}
+	warmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{
+		Name: "warmup", Namespace: "default", UID: "warmup-uid",
+	}}
 	running := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{Name: "running", Namespace: "default",
-			Labels: map[string]string{WarmupLabelKey: warmup.Name, RevisionLabelKey: "old"}},
+			Labels:          map[string]string{WarmupLabelKey: string(warmup.UID), RevisionLabelKey: "old"},
+			OwnerReferences: []metav1.OwnerReference{controllerOwnerReference(warmup)}},
 		Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{NodeName: "node-a"}}},
 	}
 	completed := running.DeepCopy()
@@ -326,6 +347,25 @@ func TestCleanupStaleJobsDeletesRunningAndKeepsCompleted(t *testing.T) {
 	require.True(t, apierrors.IsNotFound(err))
 }
 
+func TestCleanupStaleJobsNeverDeletesForeignLabeledJobs(t *testing.T) {
+	warmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{
+		Name: "warmup", Namespace: "default", UID: "warmup-uid",
+	}}
+	foreign := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+		Name: "foreign", Namespace: "default",
+		Labels: map[string]string{WarmupLabelKey: string(warmup.UID), RevisionLabelKey: "old"},
+		OwnerReferences: []metav1.OwnerReference{{
+			UID: "foreign-uid", Controller: ptr.To(true),
+		}},
+	}}
+	scheme := runtime.NewScheme()
+	require.NoError(t, batchv1.AddToScheme(scheme))
+	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(foreign).Build()}
+
+	require.NoError(t, r.cleanupStaleJobs(context.Background(), warmup, "new", nil))
+	require.NoError(t, r.Get(context.Background(), client.ObjectKeyFromObject(foreign), &batchv1.Job{}))
+}
+
 func TestRetryingJobRemainsActiveUntilTerminalFailure(t *testing.T) {
 	warmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{
 		Name: "warmup", Namespace: "default", UID: "warmup-uid",
@@ -333,8 +373,8 @@ func TestRetryingJobRemainsActiveUntilTerminalFailure(t *testing.T) {
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "retrying", Namespace: "default",
-			Labels:          map[string]string{WarmupLabelKey: warmup.Name, RevisionLabelKey: "rev"},
-			OwnerReferences: []metav1.OwnerReference{{UID: warmup.UID}},
+			Labels:          map[string]string{WarmupLabelKey: string(warmup.UID), RevisionLabelKey: "rev"},
+			OwnerReferences: []metav1.OwnerReference{controllerOwnerReference(warmup)},
 		},
 		Spec: batchv1.JobSpec{
 			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{NodeName: "node-a"}},
@@ -362,6 +402,28 @@ func TestRetryingJobRemainsActiveUntilTerminalFailure(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, modelv1alpha1.ModelWarmupRunning, warmup.Status.Phase)
 	require.Equal(t, modelv1alpha1.ModelWarmupTargetRunning, warmup.Status.Targets[0].Phase)
+}
+
+func TestActiveJobsIgnoresForeignLabeledJobs(t *testing.T) {
+	warmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{
+		Name: "warmup", Namespace: "default", UID: "warmup-uid",
+	}}
+	owned := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+		Name: "owned", Namespace: "default",
+		Labels:          map[string]string{WarmupLabelKey: string(warmup.UID), RevisionLabelKey: "rev"},
+		OwnerReferences: []metav1.OwnerReference{controllerOwnerReference(warmup)},
+	}}
+	foreign := owned.DeepCopy()
+	foreign.Name = "foreign"
+	foreign.OwnerReferences = []metav1.OwnerReference{{UID: "foreign-uid", Controller: ptr.To(true)}}
+	scheme := runtime.NewScheme()
+	require.NoError(t, batchv1.AddToScheme(scheme))
+	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(owned, foreign).Build()}
+
+	active, err := r.activeJobs(context.Background(), warmup, "rev")
+	require.NoError(t, err)
+	require.Equal(t, int32(1), active)
 }
 
 func TestUpdateStatusWaitsWhenSelectorResolvesNoTargets(t *testing.T) {
@@ -404,8 +466,8 @@ func TestUpdateStatusPreservesAndUpdatesTargetTransitionTime(t *testing.T) {
 	require.Equal(t, metav1.ConditionTrue, mustCondition(warmup.Status.Conditions, "Progressing").Status)
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{Name: "job", Namespace: "default",
-			Labels:          map[string]string{WarmupLabelKey: warmup.Name, RevisionLabelKey: "rev"},
-			OwnerReferences: []metav1.OwnerReference{{UID: warmup.UID}}},
+			Labels:          map[string]string{WarmupLabelKey: string(warmup.UID), RevisionLabelKey: "rev"},
+			OwnerReferences: []metav1.OwnerReference{controllerOwnerReference(warmup)}},
 		Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{NodeName: "node-a"}}},
 		Status: batchv1.JobStatus{Succeeded: 1, Conditions: []batchv1.JobCondition{{
 			Type: batchv1.JobComplete, Status: corev1.ConditionTrue,
@@ -416,6 +478,10 @@ func TestUpdateStatusPreservesAndUpdatesTargetTransitionTime(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, warmup.Status.Targets)
 	require.Equal(t, metav1.ConditionTrue, mustCondition(warmup.Status.Conditions, "Complete").Status)
+	latestJob := &batchv1.Job{}
+	require.NoError(t, r.Get(context.Background(), client.ObjectKeyFromObject(job), latestJob))
+	require.Equal(t, ptr.To(modelv1alpha1.DefaultModelWarmupTTLSecondsAfterFinished),
+		latestJob.Spec.TTLSecondsAfterFinished)
 }
 
 func TestUpdateStatusBoundsDetailsAndSerializedSize(t *testing.T) {
@@ -535,4 +601,8 @@ func mustCondition(conditions []metav1.Condition, typ string) metav1.Condition {
 		}
 	}
 	panic("condition not found")
+}
+
+func controllerOwnerReference(warmup *modelv1alpha1.ModelWarmup) metav1.OwnerReference {
+	return metav1.OwnerReference{UID: warmup.UID, Controller: ptr.To(true)}
 }

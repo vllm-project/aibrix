@@ -48,7 +48,6 @@ const (
 	controllerNamespace     = "aibrix-system"
 	controllerDeployment    = "aibrix-controller-manager"
 	testSelectorLabel       = "e2e.aibrix.ai/modelwarmup"
-	warmupNameLabel         = "model.aibrix.ai/warmup"
 	testImage               = "aibrix/vllm-mock:nightly"
 	controllerLogTailLines  = int64(300)
 	diagnosticsTimeout      = 30 * time.Second
@@ -487,14 +486,18 @@ func (e *testEnvironment) waitForSucceededJobsAndPods(
 	nodeNames []string,
 ) {
 	t.Helper()
-	err := wait.PollUntilContextTimeout(
+	selector, err := e.warmupJobSelector(ctx, warmupName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = wait.PollUntilContextTimeout(
 		ctx,
 		time.Second,
 		3*time.Minute,
 		true,
 		func(ctx context.Context) (bool, error) {
 			jobs, err := e.kube.BatchV1().Jobs(e.namespace).List(ctx, metav1.ListOptions{
-				LabelSelector: warmupNameLabel + "=" + warmupName,
+				LabelSelector: selector,
 			})
 			if err != nil || len(jobs.Items) != len(nodeNames) {
 				return false, err
@@ -531,9 +534,13 @@ func (e *testEnvironment) waitForFailedJobsAndPods(
 	nodeNames []string,
 ) {
 	t.Helper()
-	err := wait.PollUntilContextTimeout(ctx, time.Second, 3*time.Minute, true, func(ctx context.Context) (bool, error) {
+	selector, err := e.warmupJobSelector(ctx, warmupName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = wait.PollUntilContextTimeout(ctx, time.Second, 3*time.Minute, true, func(ctx context.Context) (bool, error) {
 		jobs, err := e.kube.BatchV1().Jobs(e.namespace).List(ctx, metav1.ListOptions{
-			LabelSelector: warmupNameLabel + "=" + warmupName,
+			LabelSelector: selector,
 		})
 		if err != nil {
 			return false, err
@@ -577,9 +584,11 @@ func (e *testEnvironment) dumpWarmupDiagnostics(t *testing.T, warmupName string)
 
 	warmup := &modelapi.ModelWarmup{}
 	warmupErr := e.apiClient.Get(ctx, client.ObjectKey{Namespace: e.namespace, Name: warmupName}, warmup)
-	jobs, jobsErr := e.kube.BatchV1().Jobs(e.namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: warmupNameLabel + "=" + warmupName,
-	})
+	jobListOptions := metav1.ListOptions{}
+	if warmupErr == nil {
+		jobListOptions.LabelSelector = modelwarmup.WarmupLabelKey + "=" + string(warmup.UID)
+	}
+	jobs, jobsErr := e.kube.BatchV1().Jobs(e.namespace).List(ctx, jobListOptions)
 	pods, podsErr := e.kube.CoreV1().Pods(e.namespace).List(ctx, metav1.ListOptions{})
 	events, eventsErr := e.kube.CoreV1().Events(e.namespace).List(ctx, metav1.ListOptions{})
 
@@ -588,6 +597,14 @@ func (e *testEnvironment) dumpWarmupDiagnostics(t *testing.T, warmupName string)
 	t.Logf("ModelWarmup diagnostics: pods=%s err=%v", diagnosticJSON(pods), podsErr)
 	t.Logf("ModelWarmup diagnostics: events=%s err=%v", diagnosticJSON(events), eventsErr)
 	e.dumpControllerDiagnostics(t, ctx)
+}
+
+func (e *testEnvironment) warmupJobSelector(ctx context.Context, warmupName string) (string, error) {
+	warmup := &modelapi.ModelWarmup{}
+	if err := e.apiClient.Get(ctx, client.ObjectKey{Namespace: e.namespace, Name: warmupName}, warmup); err != nil {
+		return "", err
+	}
+	return modelwarmup.WarmupLabelKey + "=" + string(warmup.UID), nil
 }
 
 func (e *testEnvironment) dumpControllerDiagnostics(t *testing.T, ctx context.Context) {

@@ -22,6 +22,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -70,8 +71,14 @@ func validateModelWarmup(warmup *modelapi.ModelWarmup) error {
 		))
 	}
 	explicitNodes := map[string]struct{}{}
+	declaredNodeNames := 0
 	if len(warmup.Spec.Targets) == 0 {
 		allErrs = append(allErrs, field.Required(specPath.Child("targets"), "at least one target is required"))
+	}
+	if len(warmup.Spec.Targets) > modelapi.MaxModelWarmupTargetEntries {
+		allErrs = append(allErrs, field.TooMany(
+			specPath.Child("targets"), len(warmup.Spec.Targets), modelapi.MaxModelWarmupTargetEntries,
+		))
 	}
 	for i, target := range warmup.Spec.Targets {
 		path := specPath.Child("targets").Index(i)
@@ -82,6 +89,7 @@ func validateModelWarmup(warmup *modelapi.ModelWarmup) error {
 			allErrs = append(allErrs, field.Required(path.Child("nodes", "names"), "at least one node name is required"))
 		}
 		if target.Nodes != nil {
+			declaredNodeNames += len(target.Nodes.Names)
 			for _, name := range target.Nodes.Names {
 				explicitNodes[name] = struct{}{}
 			}
@@ -91,7 +99,16 @@ func validateModelWarmup(warmup *modelapi.ModelWarmup) error {
 			allErrs = append(allErrs, field.Invalid(
 				path.Child("nodeSelector"), target.NodeSelector, "an empty selector is not allowed",
 			))
+		} else if target.NodeSelector != nil {
+			if _, err := metav1.LabelSelectorAsSelector(target.NodeSelector); err != nil {
+				allErrs = append(allErrs, field.Invalid(path.Child("nodeSelector"), target.NodeSelector, err.Error()))
+			}
 		}
+	}
+	if declaredNodeNames > modelapi.MaxModelWarmupTargets {
+		allErrs = append(allErrs, field.TooMany(
+			specPath.Child("targets"), declaredNodeNames, modelapi.MaxModelWarmupTargets,
+		))
 	}
 	if len(explicitNodes) > modelapi.MaxModelWarmupTargets {
 		allErrs = append(allErrs, field.TooMany(
@@ -102,6 +119,17 @@ func validateModelWarmup(warmup *modelapi.ModelWarmup) error {
 	}
 
 	images := map[string]int{}
+	if len(warmup.Spec.ImagePreload.Images) > modelapi.MaxModelWarmupImages {
+		allErrs = append(allErrs, field.TooMany(
+			specPath.Child("imagePreload", "images"), len(warmup.Spec.ImagePreload.Images), modelapi.MaxModelWarmupImages,
+		))
+	}
+	if len(warmup.Spec.ImagePreload.PullSecrets) > modelapi.MaxModelWarmupPullSecrets {
+		allErrs = append(allErrs, field.TooMany(
+			specPath.Child("imagePreload", "pullSecrets"), len(warmup.Spec.ImagePreload.PullSecrets),
+			modelapi.MaxModelWarmupPullSecrets,
+		))
+	}
 	for i, image := range warmup.Spec.ImagePreload.Images {
 		path := specPath.Child("imagePreload", "images").Index(i)
 		if image.Image == "" {
@@ -109,6 +137,16 @@ func validateModelWarmup(warmup *modelapi.ModelWarmup) error {
 		}
 		if len(image.Command) == 0 {
 			allErrs = append(allErrs, field.Required(path.Child("command"), "a safe command is required"))
+		}
+		if len(image.Command) > modelapi.MaxModelWarmupCommandElements {
+			allErrs = append(allErrs, field.TooMany(
+				path.Child("command"), len(image.Command), modelapi.MaxModelWarmupCommandElements,
+			))
+		}
+		if len(image.Args) > modelapi.MaxModelWarmupArgElements {
+			allErrs = append(allErrs, field.TooMany(
+				path.Child("args"), len(image.Args), modelapi.MaxModelWarmupArgElements,
+			))
 		}
 		switch image.ImagePullPolicy {
 		case "", corev1.PullAlways, corev1.PullIfNotPresent, corev1.PullNever:
@@ -130,21 +168,31 @@ func validateModelWarmup(warmup *modelapi.ModelWarmup) error {
 	if len(warmup.Spec.ImagePreload.Images) == 0 {
 		allErrs = append(allErrs, field.Required(specPath.Child("imagePreload", "images"), "at least one image is required"))
 	}
-	if policies := warmup.Spec.Policies; policies != nil {
-		if policies.Parallelism != nil && *policies.Parallelism <= 0 {
-			allErrs = append(allErrs, positivePolicyError("parallelism", *policies.Parallelism))
-		}
-		if policies.JobTimeoutSeconds != nil && *policies.JobTimeoutSeconds <= 0 {
-			allErrs = append(allErrs, positivePolicyError("jobTimeoutSeconds", *policies.JobTimeoutSeconds))
-		}
-		if policies.RetryLimit != nil && *policies.RetryLimit <= 0 {
-			allErrs = append(allErrs, positivePolicyError("retryLimit", *policies.RetryLimit))
-		}
-		if policies.TTLSecondsAfterFinished != nil && *policies.TTLSecondsAfterFinished <= 0 {
-			allErrs = append(allErrs, positivePolicyError("ttlSecondsAfterFinished", *policies.TTLSecondsAfterFinished))
-		}
-	}
+	allErrs = append(allErrs, validateModelWarmupPolicies(warmup.Spec.Policies)...)
 	return allErrs.ToAggregate()
+}
+
+func validateModelWarmupPolicies(policies *modelapi.ModelWarmupPolicies) field.ErrorList {
+	if policies == nil {
+		return nil
+	}
+	var allErrs field.ErrorList
+	if policies.Parallelism != nil && *policies.Parallelism <= 0 {
+		allErrs = append(allErrs, positivePolicyError("parallelism", *policies.Parallelism))
+	}
+	if policies.JobTimeoutSeconds != nil && *policies.JobTimeoutSeconds <= 0 {
+		allErrs = append(allErrs, positivePolicyError("jobTimeoutSeconds", *policies.JobTimeoutSeconds))
+	}
+	if policies.RetryLimit != nil && *policies.RetryLimit < 0 {
+		allErrs = append(allErrs, field.Invalid(
+			field.NewPath("spec", "policies", "retryLimit"), *policies.RetryLimit,
+			"must be greater than or equal to zero",
+		))
+	}
+	if policies.TTLSecondsAfterFinished != nil && *policies.TTLSecondsAfterFinished <= 0 {
+		allErrs = append(allErrs, positivePolicyError("ttlSecondsAfterFinished", *policies.TTLSecondsAfterFinished))
+	}
+	return allErrs
 }
 
 func positivePolicyError(name string, value interface{}) *field.Error {

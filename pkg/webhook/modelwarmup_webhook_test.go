@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
@@ -64,13 +65,69 @@ func TestModelWarmupWebhookRejectsMoreThanMaximumExplicitNodes(t *testing.T) {
 	require.ErrorContains(t, err, "must have at most 1000 items")
 }
 
-func TestModelWarmupWebhookRejectsEveryNonPositivePolicy(t *testing.T) {
+func TestModelWarmupWebhookRejectsInvalidLabelSelector(t *testing.T) {
+	warmup := validModelWarmupForWebhookTest()
+	warmup.Spec.Targets = []modelapi.ModelWarmupTarget{{NodeSelector: &metav1.LabelSelector{
+		MatchExpressions: []metav1.LabelSelectorRequirement{{
+			Key: "pool", Operator: metav1.LabelSelectorOperator("Invalid"), Values: []string{"a"},
+		}},
+	}}}
+
+	_, err := (&ModelWarmupWebhook{}).ValidateCreate(context.Background(), warmup)
+	require.ErrorContains(t, err, "nodeSelector")
+}
+
+func TestModelWarmupWebhookBoundsDeclaredWork(t *testing.T) {
+	tests := map[string]func(*modelapi.ModelWarmup){
+		"target entries": func(w *modelapi.ModelWarmup) {
+			w.Spec.Targets = make([]modelapi.ModelWarmupTarget, 33)
+			for i := range w.Spec.Targets {
+				w.Spec.Targets[i].NodeSelector = &metav1.LabelSelector{MatchLabels: map[string]string{"pool": "a"}}
+			}
+		},
+		"declared node names including duplicates": func(w *modelapi.ModelWarmup) {
+			w.Spec.Targets[0].Nodes.Names = make([]string, modelapi.MaxModelWarmupTargets+1)
+			for i := range w.Spec.Targets[0].Nodes.Names {
+				w.Spec.Targets[0].Nodes.Names[i] = "node-a"
+			}
+		},
+		"images": func(w *modelapi.ModelWarmup) {
+			w.Spec.ImagePreload.Images = make([]modelapi.ModelWarmupImage, 33)
+			for i := range w.Spec.ImagePreload.Images {
+				w.Spec.ImagePreload.Images[i] = modelapi.ModelWarmupImage{
+					Image: fmt.Sprintf("image-%d", i), Command: []string{"true"},
+				}
+			}
+		},
+		"pull secrets": func(w *modelapi.ModelWarmup) {
+			w.Spec.ImagePreload.PullSecrets = make([]corev1.LocalObjectReference, 33)
+			for i := range w.Spec.ImagePreload.PullSecrets {
+				w.Spec.ImagePreload.PullSecrets[i].Name = fmt.Sprintf("secret-%d", i)
+			}
+		},
+		"command elements": func(w *modelapi.ModelWarmup) {
+			w.Spec.ImagePreload.Images[0].Command = make([]string, 65)
+		},
+		"argument elements": func(w *modelapi.ModelWarmup) {
+			w.Spec.ImagePreload.Images[0].Args = make([]string, 65)
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			warmup := validModelWarmupForWebhookTest()
+			mutate(warmup)
+			_, err := (&ModelWarmupWebhook{}).ValidateCreate(context.Background(), warmup)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestModelWarmupWebhookRejectsInvalidPoliciesAndAllowsZeroRetries(t *testing.T) {
 	tests := map[string]func(*modelapi.ModelWarmupPolicies){
 		"parallelism": func(p *modelapi.ModelWarmupPolicies) { p.Parallelism = ptr.To[int32](0) },
 		"job timeout": func(p *modelapi.ModelWarmupPolicies) {
 			p.JobTimeoutSeconds = ptr.To[int64](-1)
 		},
-		"retry limit": func(p *modelapi.ModelWarmupPolicies) { p.RetryLimit = ptr.To[int32](0) },
 		"finished job TTL": func(p *modelapi.ModelWarmupPolicies) {
 			p.TTLSecondsAfterFinished = ptr.To[int32](-1)
 		},
@@ -85,6 +142,15 @@ func TestModelWarmupWebhookRejectsEveryNonPositivePolicy(t *testing.T) {
 			require.ErrorContains(t, err, "must be greater than zero")
 		})
 	}
+	warmup := validModelWarmupForWebhookTest()
+	warmup.Spec.Policies = &modelapi.ModelWarmupPolicies{RetryLimit: ptr.To[int32](-1)}
+	_, err := (&ModelWarmupWebhook{}).ValidateCreate(context.Background(), warmup)
+	require.ErrorContains(t, err, "must be greater than or equal to zero")
+
+	warmup = validModelWarmupForWebhookTest()
+	warmup.Spec.Policies = &modelapi.ModelWarmupPolicies{RetryLimit: ptr.To[int32](0)}
+	_, err = (&ModelWarmupWebhook{}).ValidateCreate(context.Background(), warmup)
+	require.NoError(t, err)
 }
 
 func TestModelWarmupWebhookRejectsModeAndSpecUpdates(t *testing.T) {

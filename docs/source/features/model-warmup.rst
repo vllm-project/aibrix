@@ -38,7 +38,9 @@ Each target receives a Job scheduled with required node affinity. Jobs use the
 configured pull secrets, request no GPU, disable ServiceAccount token mounting,
 avoid host access, and do not receive a catch-all toleration. ``parallelism``
 limits simultaneously active Jobs, and ``jobTimeoutSeconds`` applies in full
-after each Job is created.
+after each Job is created. Finished Jobs are retained while the Once operation
+is active; ``ttlSecondsAfterFinished`` is applied after the aggregate operation
+reaches a terminal phase.
 
 ModelWarmup does not infer tolerations from the target Node. A Node with a
 ``NoSchedule`` or ``NoExecute`` taint remains subject to the cluster's normal
@@ -62,7 +64,11 @@ Labels and annotations
      - A value of ``true`` explicitly opts the Node into warmup scheduling.
    * - ``model.aibrix.ai/warmup``
      - Job
-     - Controller-managed label containing the owning ModelWarmup name.
+     - Controller-managed label containing the owning ModelWarmup UID.
+   * - ``model.aibrix.ai/warmup-name``
+     - Job
+     - Controller-managed annotation containing the human-readable ModelWarmup
+       name.
    * - ``model.aibrix.ai/revision``
      - Job
      - Controller-managed label identifying the immutable image workload
@@ -70,7 +76,7 @@ Labels and annotations
    * - ``model.aibrix.ai/target-node``
      - Job
      - Controller-managed annotation recording the exact authorized target
-       Node. Users do not set the three Job metadata keys.
+       Node. Users do not set these Job metadata keys.
 
 .. literalinclude:: ../../../samples/modelwarmup/modelwarmup.yaml
    :language: yaml
@@ -107,6 +113,11 @@ for pending and failed nodes; succeeded nodes are represented by the aggregate
 count. ``Complete=True`` means the Once operation finished successfully.
 Image cache status is a point-in-time observation: kubelet or container runtime
 garbage collection can evict an image after a successful warmup.
+
+The generated Jobs do not force ``runAsNonRoot`` because the declared image and
+command determine which user is available. Consequently, v1 does not support
+namespaces enforcing the Kubernetes Restricted Pod Security profile. Use a
+namespace whose admission policy permits the documented Job template.
 
 Scope
 -----

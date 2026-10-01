@@ -29,6 +29,11 @@ const (
 	MaxModelWarmupTargets                           = 1000
 	MaxModelWarmupTargetDetails                     = 256
 	MaxModelWarmupDiagnosticLength                  = 1024
+	MaxModelWarmupTargetEntries                     = 32
+	MaxModelWarmupImages                            = 32
+	MaxModelWarmupPullSecrets                       = 32
+	MaxModelWarmupCommandElements                   = 64
+	MaxModelWarmupArgElements                       = 64
 )
 
 type ModelWarmupMode string
@@ -46,6 +51,7 @@ type ModelWarmupSpec struct {
 	// Targets declares explicit node names and label selectors. The controller
 	// resolves and deduplicates their union.
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
 	Targets []ModelWarmupTarget `json:"targets"`
 
 	ImagePreload ModelWarmupImagePreload `json:"imagePreload"`
@@ -66,14 +72,17 @@ type ModelWarmupTarget struct {
 
 type ModelWarmupNodesTarget struct {
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=1000
 	Names []string `json:"names"`
 }
 
 type ModelWarmupImagePreload struct {
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
 	Images []ModelWarmupImage `json:"images"`
 
 	// +optional
+	// +kubebuilder:validation:MaxItems=32
 	PullSecrets []corev1.LocalObjectReference `json:"pullSecrets,omitempty"`
 }
 
@@ -83,9 +92,11 @@ type ModelWarmupImage struct {
 	// Command must name an executable present in the image and exit zero
 	// without starting the inference server. There is no portable default.
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=64
 	Command []string `json:"command"`
 
 	// +optional
+	// +kubebuilder:validation:MaxItems=64
 	Args []string `json:"args,omitempty"`
 
 	// +optional
@@ -94,12 +105,16 @@ type ModelWarmupImage struct {
 
 type ModelWarmupPolicies struct {
 	// +optional
+	// +kubebuilder:validation:Minimum=1
 	Parallelism *int32 `json:"parallelism,omitempty"`
 	// +optional
+	// +kubebuilder:validation:Minimum=1
 	JobTimeoutSeconds *int64 `json:"jobTimeoutSeconds,omitempty"`
 	// +optional
+	// +kubebuilder:validation:Minimum=0
 	RetryLimit *int32 `json:"retryLimit,omitempty"`
 	// +optional
+	// +kubebuilder:validation:Minimum=1
 	TTLSecondsAfterFinished *int32 `json:"ttlSecondsAfterFinished,omitempty"`
 }
 
