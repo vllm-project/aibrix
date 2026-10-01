@@ -746,15 +746,19 @@ the card can be accounted for. The request stays on the Pod while the engine
 boots, and the controller removes it once the engine serves. ``Waking`` and
 ``Woken`` Events mark a wake that went through.
 
-When the floors of its neighbours leave no room for the engine, the controller
-makes room in a pool that keeps no wake reserve. It puts to sleep the neighbour
-that has served nothing for longest, one at a time, until the engine fits. A
+When the card has no room for the engine, the controller makes room in a pool
+that keeps no wake reserve. The floors of its neighbours may leave no room, or
+the neighbours may hold KV beyond their floors, which the card lent them while
+the engine slept. A smaller KV limit does not make a busy engine give its KV
+back, and only a sleep does. So the controller puts to sleep the neighbour that
+has served nothing for longest, one at a time, until the engine fits. A
 neighbour may be put to sleep once it has been idle for
 ``sleepToMakeRoomAfterSeconds``. Its claim raises a ``SleptToMakeRoom`` Event,
-which names the model the room is made for. Only the oldest request on a card
-makes room. No room is made on a card where the memory of a sleeping engine
-could not be measured, since another sleep there would most likely free
-nothing.
+which names the model the room is made for. A neighbour that serves is never
+put to sleep, so a wake beside busy neighbours moves, or waits until one of
+them has been idle long enough. Only the oldest request on a card makes room.
+No room is made on a card where the memory of a sleeping engine could not be
+measured, since another sleep there would most likely free nothing.
 
 An engine that cannot wake where it is moves, when another Pod can take its
 claim. That is an engine whose card is promised more than it has, and one whose
