@@ -108,6 +108,16 @@ type ModelClaimReconciler struct {
 	// informer would read as free memory. Falls back to the cached client when
 	// unset, which is how the unit tests run.
 	APIReader client.Reader
+	// Now is the controller's clock, for how long a wake request has waited.
+	// It falls back to time.Now when unset.
+	Now func() time.Time
+}
+
+func (r *ModelClaimReconciler) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
 }
 
 // Add creates a new ModelClaim controller and registers it with the Manager.
@@ -302,7 +312,7 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	booting := r.reconcileInstanceHealth(ctx, pm, readings)
 	// An engine woken in this pass boots from now on, so the claim is looked
 	// at again as soon as a booting engine is.
-	if r.wakeRequested(ctx, pm, readings) {
+	if r.wakeRequested(ctx, pm, candidates, readings) {
 		booting = true
 	}
 	replacementFailed := false
@@ -473,19 +483,38 @@ func (r *ModelClaimReconciler) recomputeReadiness(pm *modelv1alpha1.ModelClaim) 
 	active := 0
 	sleeping := 0
 	failed := 0
+	moving := 0
+	waiting := 0
 	for i := range pm.Status.Instances {
-		if pm.Status.Instances[i].Phase == modelv1alpha1.ModelClaimActive {
+		inst := &pm.Status.Instances[i]
+		if inst.Phase == modelv1alpha1.ModelClaimActive {
 			active++
 		}
-		if pm.Status.Instances[i].Phase == modelv1alpha1.ModelClaimSleeping {
+		if inst.Phase == modelv1alpha1.ModelClaimSleeping {
 			sleeping++
+			if inst.Reason == instanceReasonWaitingForRoom {
+				waiting++
+			}
 		}
-		if pm.Status.Instances[i].Phase == modelv1alpha1.ModelClaimFailed {
+		if inst.Phase == modelv1alpha1.ModelClaimFailed {
 			failed++
+			if movingReason(inst.Reason) {
+				moving++
+			}
 		}
 	}
 	pm.Status.ReadyReplicas = int32(active)
 	switch {
+	case failed > 0 && moving == failed:
+		// Failed where it was, but only because it could not wake there. The
+		// claim is moved to another pod once one can take it.
+		pm.Status.Phase = modelv1alpha1.ModelClaimFailed
+		meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+			Type:    string(modelv1alpha1.ModelClaimConditionReady),
+			Status:  metav1.ConditionFalse,
+			Reason:  readyReasonMoving,
+			Message: "the model could not wake on its pod, and is moving to another pod",
+		})
 	case failed > 0:
 		pm.Status.Phase = modelv1alpha1.ModelClaimFailed
 		meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
@@ -501,6 +530,14 @@ func (r *ModelClaimReconciler) recomputeReadiness(pm *modelv1alpha1.ModelClaim) 
 			Status:  metav1.ConditionTrue,
 			Reason:  "ModelClaimActive",
 			Message: "model is active on at least one warm pod",
+		})
+	case sleeping > 0 && waiting > 0:
+		pm.Status.Phase = modelv1alpha1.ModelClaimSleeping
+		meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+			Type:    string(modelv1alpha1.ModelClaimConditionReady),
+			Status:  metav1.ConditionFalse,
+			Reason:  readyReasonWaitingForRoom,
+			Message: "a request asked for the model, and its card cannot take it back yet",
 		})
 	case sleeping > 0:
 		pm.Status.Phase = modelv1alpha1.ModelClaimSleeping
@@ -624,8 +661,14 @@ func (r *ModelClaimReconciler) ensureActivated(
 			}
 			eventReason := reason
 			if len(failed) > 0 {
-				message = fmt.Sprintf("model %s cannot move from failed pod %s: %s",
-					servedModelName(pm), pm.Status.Instances[failed[0]].Pod, message)
+				from := pm.Status.Instances[failed[0]]
+				if movingReason(from.Reason) {
+					message = fmt.Sprintf("model %s cannot move from pod %s, where it could not wake: %s",
+						servedModelName(pm), from.Pod, message)
+				} else {
+					message = fmt.Sprintf("model %s cannot move from failed pod %s: %s",
+						servedModelName(pm), from.Pod, message)
+				}
 				eventReason = "ReschedulePending"
 			}
 			if meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
@@ -807,8 +850,8 @@ func (r *ModelClaimReconciler) ensureActivated(
 		if replaced != nil {
 			failed = failed[1:]
 			r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Rescheduled",
-				"model %s moved after terminal engine failure from pod %s to pod %s",
-				servedModelName(pm), replaced.Pod, pod.Name)
+				"model %s moved %s from pod %s to pod %s",
+				servedModelName(pm), whyMoved(replaced.Reason), replaced.Pod, pod.Name)
 			continue
 		}
 		r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Activating",
@@ -1270,8 +1313,12 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 		desiredPhase, routingPort := state.phase, state.routingPort
 		serving := state.serving
 
+		reason := ""
+		if desiredPhase == inst.Phase {
+			reason = bindingReason(inst)
+		}
 		if err := r.annotateWarmPodWithState(
-			ctx, pm, pod, routingPort, routingStateForPhase(desiredPhase),
+			ctx, pm, pod, routingPort, routingStateForPhase(desiredPhase), reason,
 		); err != nil {
 			klog.ErrorS(err, "routability annotation failed", "model", pm.Name, "pod", inst.Pod, "ready", desiredPhase == modelv1alpha1.ModelClaimActive)
 			continue
@@ -1282,6 +1329,8 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 			continue
 		}
 		inst.Phase = desiredPhase
+		// A reason belongs to the phase it was given in.
+		inst.Reason = ""
 		r.announcePhase(pm, inst, previousPhase, observed, serving)
 	}
 	if r.dropInstances(ctx, pm, dropped) > 0 {
@@ -1626,7 +1675,7 @@ func (r *ModelClaimReconciler) annotateWarmPod(ctx context.Context, pm *modelv1a
 	if port == 0 {
 		state = constants.ModelClaimRoutingStateActivating
 	}
-	return r.annotateWarmPodWithState(ctx, pm, pod, port, state)
+	return r.annotateWarmPodWithState(ctx, pm, pod, port, state, "")
 }
 
 func (r *ModelClaimReconciler) annotateWarmPodWithState(
@@ -1635,12 +1684,19 @@ func (r *ModelClaimReconciler) annotateWarmPodWithState(
 	pod *corev1.Pod,
 	port int32,
 	state string,
+	reason string,
 ) error {
 	key := constants.ModelClaimPodAnnotationPrefix + pm.Name
 	// wakeByRequest tells the gateway that this controller wakes the engine:
 	// a request for it while it sleeps is written on the pod, and the
 	// controller decides when its card can take it.
 	value := fmt.Sprintf(`{"model":%q,"port":%d,"state":%q,"wakeByRequest":true}`, servedModelName(pm), port, state)
+	// A reason says more than the state, so the gateway can tell its client
+	// how long to wait.
+	if reason != "" {
+		value = fmt.Sprintf(`{"model":%q,"port":%d,"state":%q,"wakeByRequest":true,"reason":%q}`,
+			servedModelName(pm), port, state, reason)
+	}
 	if pod.Annotations[key] == value {
 		return nil
 	}

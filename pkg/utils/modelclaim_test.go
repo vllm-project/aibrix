@@ -97,6 +97,14 @@ func TestModelClaimBindingsFromPodReadsWhetherTheControllerWakes(t *testing.T) {
 	}}, got)
 }
 
+func TestModelClaimBindingsFromPodReadsTheReasonTheControllerGives(t *testing.T) {
+	pod := podWithModelClaimAnnotations(map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + "m1": `{"model":"served-m1","port":0,"state":"sleeping","wakeByRequest":true,"reason":"WaitingForRoom"}`,
+	})
+
+	assert.Equal(t, "WaitingForRoom", ModelClaimBindingsFromPod(pod)["served-m1"].Reason)
+}
+
 func TestModelClaimBindingsFromPodRejectsInconsistentStateAndPort(t *testing.T) {
 	pod := podWithModelClaimAnnotations(map[string]string{
 		constants.ModelClaimPodAnnotationPrefix + "sleeping-port": `{"model":"sleeping-port","port":9001,"state":"sleeping"}`,

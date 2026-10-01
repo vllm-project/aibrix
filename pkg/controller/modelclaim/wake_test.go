@@ -18,12 +18,16 @@ package modelclaim
 
 import (
 	"context"
+	"fmt"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -64,6 +68,8 @@ func sleepingClaim(t *testing.T) (*ModelClaimReconciler, *fakeRuntime, *modelv1a
 	reconcileOnce(t, r, pm.Name)
 	require.Equal(t, modelv1alpha1.ModelClaimSleeping, getModel(t, r, pm.Name).Status.Instances[0].Phase)
 	drainEvents(t, r)
+	// The tests ask for a wake at 08:00, so the clock is held a moment after.
+	r.Now = func() time.Time { return time.Date(2026, time.October, 1, 8, 0, 5, 0, time.UTC) }
 	return r, runtime, pm, port
 }
 
@@ -94,6 +100,44 @@ func TestReconcileWakesASleepingEngineWhenAskedAndTakesTheRequestBackOnceItServe
 	assert.Len(t, runtime.wakeCalls, 1)
 }
 
+func TestReconcileMovesAnEngineTheRuntimeCouldNotWake(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pm.UID = types.UID("claim-uid")
+	pm.Status.Phase = modelv1alpha1.ModelClaimSleeping
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimSleeping, KVLimitBytes: 700,
+	}}
+	sleeper, sleeperSnapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	sleeper.Annotations = map[string]string{constants.ModelClaimWakeAnnotationPrefix + pm.Name: "2026-10-01T08:00:00Z"}
+	sleeperSnapshot.Models = []RuntimeSnapshotModel{{
+		ModelName: servedModelName(pm), Port: 9001, Phase: runtimePhaseSleeping, Alive: true,
+		KVUsedBytes: 100, KVCapacityBytes: 700,
+		ClaimRef: &ModelClaimRef{Namespace: pm.Namespace, Name: pm.Name, UID: string(pm.UID)},
+	}}
+	roomy, roomySnapshot := sizedWarmPod("warm-2", testPeerIP, 1000)
+	r, runtime := newReconciler(t, pm, sleeper, roomy)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		sleeper.Status.PodIP: sleeperSnapshot,
+		roomy.Status.PodIP:   roomySnapshot,
+	}
+	runtime.failWake = true
+	r.Now = func() time.Time { return time.Date(2026, time.October, 1, 8, 0, 5, 0, time.UTC) }
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.wakeCalls, 1)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-2", got.Status.Instances[0].Pod)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
+	require.Len(t, runtime.deactivateCalls, 1, "the engine that could not wake is stopped")
+	assert.Equal(t, []string{roomy.Status.PodIP}, runtime.activatedOn)
+	events := strings.Join(drainEvents(t, r), "\n")
+	assert.Contains(t, events, "Moving")
+	assert.Contains(t, events, "because it could not be woken there")
+	assert.NotContains(t, events, "WakeFailed")
+}
+
 func TestReconcileReportsAWakeThatFailedAndTakesItsRequestBack(t *testing.T) {
 	r, runtime, pm, _ := sleepingClaim(t)
 	runtime.failWake = true
@@ -108,9 +152,11 @@ func TestReconcileReportsAWakeThatFailedAndTakesItsRequestBack(t *testing.T) {
 	assert.Equal(t, modelv1alpha1.ModelClaimSleeping, getModel(t, r, pm.Name).Status.Instances[0].Phase)
 }
 
-func TestReconcileLeavesAnEngineAsleepOnACardPromisedMoreThanItHas(t *testing.T) {
-	// The claim declares more than its card holds, as a declaration that grew
-	// while the engine slept would.
+// overcommittedSleeper is a claim whose engine sleeps on warm-1 and declares
+// more than that card holds, as a declaration that grew while the engine slept
+// would. A request asked for it at 08:00.
+func overcommittedSleeper(t *testing.T, others ...client.Object) (*ModelClaimReconciler, *fakeRuntime, *modelv1alpha1.ModelClaim) {
+	t.Helper()
 	pm := claimWithCost(900, 200)
 	pm.UID = types.UID("claim-uid")
 	pm.Status.Phase = modelv1alpha1.ModelClaimSleeping
@@ -118,24 +164,116 @@ func TestReconcileLeavesAnEngineAsleepOnACardPromisedMoreThanItHas(t *testing.T)
 		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimSleeping, KVLimitBytes: 200,
 	}}
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
-	key := constants.ModelClaimWakeAnnotationPrefix + pm.Name
-	pod.Annotations = map[string]string{key: "2026-10-01T08:00:00Z"}
+	pod.Annotations = map[string]string{constants.ModelClaimWakeAnnotationPrefix + pm.Name: "2026-10-01T08:00:00Z"}
 	snapshot.Models = []RuntimeSnapshotModel{{
 		ModelName: servedModelName(pm), Port: 9001, Phase: runtimePhaseSleeping, Alive: true,
 		KVUsedBytes: 100, KVCapacityBytes: 200,
 		ClaimRef: &ModelClaimRef{Namespace: pm.Namespace, Name: pm.Name, UID: string(pm.UID)},
 	}}
-	r, runtime := newReconciler(t, pm, pod)
+	r, runtime := newReconciler(t, append([]client.Object{pm, pod}, others...)...)
 	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	r.Now = func() time.Time { return time.Date(2026, time.October, 1, 8, 1, 0, 0, time.UTC) }
+	return r, runtime, pm
+}
+
+func TestReconcileAsksAgainForAWakeTheRuntimeDidNotAnswer(t *testing.T) {
+	r, runtime, pm, _ := sleepingClaim(t)
+	key := constants.ModelClaimWakeAnnotationPrefix + pm.Name
+	runtime.wakeErr = fmt.Errorf("runtime 10.0.0.1:8080 %w", errRuntimeSilent)
+
+	askWake(t, r, "warm-1", pm.Name, "2026-10-01T08:00:00Z")
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.wakeCalls, 1)
+	assert.Empty(t, runtime.deactivateCalls, "a runtime that was not reached is no reason to move")
+	assert.Empty(t, drainEvents(t, r))
+	assert.Contains(t, podNamed(t, r, "warm-1").Annotations, key, "the request stays, to be asked again")
+	assert.Equal(t, modelv1alpha1.ModelClaimSleeping, getModel(t, r, pm.Name).Status.Instances[0].Phase)
 
 	reconcileOnce(t, r, pm.Name)
+	require.Len(t, runtime.wakeCalls, 2)
+	assert.Equal(t, runtime.wakeCalls[0].OperationID, runtime.wakeCalls[1].OperationID,
+		"the same request is the same operation")
+
+	r.Now = func() time.Time { return time.Date(2026, time.October, 1, 8, 5, 1, 0, time.UTC) }
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Len(t, runtime.wakeCalls, 2, "a request that waited too long is not asked again")
+	assert.Contains(t, strings.Join(drainEvents(t, r), "\n"), "WakeRequestExpired")
+	assert.NotContains(t, podNamed(t, r, "warm-1").Annotations, key)
+}
+
+func TestRuntimeAnsweredTellsAFailureTheRuntimeReportedFromOneItDidNotSend(t *testing.T) {
+	assert.True(t, runtimeAnswered(statusError("POST", "http://10.0.0.1:8080/v1/runtime/models/wake", 500, []byte("Internal Server Error"))))
+	assert.True(t, runtimeAnswered(statusError("POST", "http://10.0.0.1:8080/v1/runtime/models/wake", 404, nil)))
+	assert.False(t, runtimeAnswered(fmt.Errorf("runtime 10.0.0.1:8080 %w", errRuntimeSilent)))
+	assert.False(t, runtimeAnswered(&url.Error{Op: "Post", URL: "http://10.0.0.1:8080", Err: context.DeadlineExceeded}))
+}
+
+func TestReconcileLeavesAnEngineAsleepOnACardPromisedMoreThanItHas(t *testing.T) {
+	r, runtime, pm := overcommittedSleeper(t)
+	key := constants.ModelClaimWakeAnnotationPrefix + pm.Name
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.wakeCalls)
+	assert.Contains(t, strings.Join(drainEvents(t, r), "\n"), "WaitingForRoom")
+	pod := podNamed(t, r, "warm-1")
+	assert.Contains(t, pod.Annotations, key, "the request waits for room")
+	assert.Contains(t, pod.Annotations[constants.ModelClaimPodAnnotationPrefix+pm.Name], `"reason":"WaitingForRoom"`,
+		"the route tells the gateway what the client waits for")
+	got := getModel(t, r, pm.Name)
+	assert.Equal(t, instanceReasonWaitingForRoom, got.Status.Instances[0].Reason)
+	ready := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady))
+	require.NotNil(t, ready)
+	assert.Equal(t, readyReasonWaitingForRoom, ready.Reason)
 
 	reconcileOnce(t, r, pm.Name)
 
 	assert.Empty(t, runtime.wakeCalls)
 	assert.NotContains(t, strings.Join(drainEvents(t, r), "\n"), "WaitingForRoom",
-		"an Event on every pass would crowd out the claim's later Events")
-	assert.Contains(t, podNamed(t, r, "warm-1").Annotations, key, "the request waits for room")
+		"raised once: an Event on every pass would crowd out the claim's later Events")
+	assert.Equal(t, instanceReasonWaitingForRoom, getModel(t, r, pm.Name).Status.Instances[0].Reason)
+}
+
+func TestReconcileTakesBackAWakeRequestThatWaitedTooLong(t *testing.T) {
+	r, runtime, pm := overcommittedSleeper(t)
+	reconcileOnce(t, r, pm.Name)
+	drainEvents(t, r)
+
+	r.Now = func() time.Time { return time.Date(2026, time.October, 1, 8, 6, 0, 0, time.UTC) }
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.wakeCalls)
+	assert.Contains(t, strings.Join(drainEvents(t, r), "\n"), "WakeRequestExpired")
+	pod := podNamed(t, r, "warm-1")
+	assert.NotContains(t, pod.Annotations, constants.ModelClaimWakeAnnotationPrefix+pm.Name)
+	assert.NotContains(t, pod.Annotations[constants.ModelClaimPodAnnotationPrefix+pm.Name], `"reason"`)
+	got := getModel(t, r, pm.Name)
+	assert.Empty(t, got.Status.Instances[0].Reason)
+	ready := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady))
+	require.NotNil(t, ready)
+	assert.Equal(t, "EngineSleeping", ready.Reason)
+}
+
+func TestReconcileMovesAnEngineItsCardCannotTakeBack(t *testing.T) {
+	roomy, roomySnapshot := sizedWarmPod("warm-2", testPeerIP, 2000)
+	r, runtime, pm := overcommittedSleeper(t, roomy)
+	runtime.snapshots[roomy.Status.PodIP] = roomySnapshot
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.wakeCalls, "a card that cannot take the engine back is not asked to")
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-2", got.Status.Instances[0].Pod)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
+	assert.Empty(t, got.Status.Instances[0].Reason)
+	require.Len(t, runtime.deactivateCalls, 1, "the sleeping engine is stopped")
+	events := strings.Join(drainEvents(t, r), "\n")
+	assert.Contains(t, events, "Moving")
+	assert.Contains(t, events, "because its card could not take it back from sleep")
+	assert.NotContains(t, podNamed(t, r, "warm-1").Annotations, constants.ModelClaimWakeAnnotationPrefix+pm.Name)
 }
 
 func TestWakeRequestsEnqueueTheirClaimAlone(t *testing.T) {

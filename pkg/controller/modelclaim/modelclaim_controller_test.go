@@ -81,6 +81,8 @@ type fakeRuntime struct {
 	wakeCalls []WakeRequest
 	wokenOn   []string
 	failWake  bool
+	// wakeErr, when set, is what every wake returns.
+	wakeErr error
 	// silent makes Activate fail as the client does for a runtime that did not
 	// answer in time a short while ago: at once, and without calling it.
 	silent bool
@@ -172,6 +174,9 @@ func (f *fakeRuntime) Sleep(_ context.Context, _ string, _ int, req *SleepReques
 func (f *fakeRuntime) Wake(_ context.Context, podIP string, _ int, req *WakeRequest) (*RuntimeOperationResponse, error) {
 	f.wakeCalls = append(f.wakeCalls, *req)
 	f.wokenOn = append(f.wokenOn, podIP)
+	if f.wakeErr != nil {
+		return nil, f.wakeErr
+	}
 	if f.failWake {
 		return nil, &runtimeRefusal{"wake failed: boom"}
 	}
