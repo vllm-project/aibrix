@@ -78,8 +78,23 @@ func TestModelClaimBindingsFromPodIncludesObservedState(t *testing.T) {
 
 	got := ModelClaimBindingsFromPod(pod)
 	assert.Equal(t, ModelClaimBinding{
-		Model: "served-m1", Port: 0, State: constants.ModelClaimRoutingStateSleeping,
+		Model: "served-m1", Port: 0, State: constants.ModelClaimRoutingStateSleeping, Claim: "m1",
 	}, got["served-m1"])
+}
+
+func TestModelClaimBindingsFromPodReadsWhetherTheControllerWakes(t *testing.T) {
+	pod := podWithModelClaimAnnotations(map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + "m1": `{"model":"served-m1","port":0,"state":"sleeping","wakeByRequest":true}`,
+		// A wake request is not a binding, and is not read as one.
+		constants.ModelClaimWakeAnnotationPrefix + "m1": "2026-10-01T08:00:00Z",
+	})
+
+	got := ModelClaimBindingsFromPod(pod)
+
+	assert.Equal(t, map[string]ModelClaimBinding{"served-m1": {
+		Model: "served-m1", Port: 0, State: constants.ModelClaimRoutingStateSleeping, Claim: "m1",
+		WakeByRequest: true,
+	}}, got)
 }
 
 func TestModelClaimBindingsFromPodRejectsInconsistentStateAndPort(t *testing.T) {
