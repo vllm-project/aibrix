@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math"
 
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
 	"k8s.io/klog/v2"
@@ -95,6 +96,11 @@ func (a *KPAAlgorithm) shouldEnterPanicMode(metrics *types.AggregatedMetrics, pa
 	return metrics.PanicValue/metrics.StableValue > panicThreshold
 }
 
+// isPerPodSource reports whether the source's windowed value is a per-pod mean.
+func isPerPodSource(t autoscalingv1alpha1.MetricSourceType) bool {
+	return t != autoscalingv1alpha1.EXTERNAL && t != autoscalingv1alpha1.DOMAIN
+}
+
 // computeTargetReplicas is the core KPA scaling logic
 // Tolerance is applied to prevent scaling for minor metric fluctuations.
 func (a *KPAAlgorithm) computeTargetReplicas(currentPodCount float64, context scalingctx.ScalingContext, metricsName string) int32 {
@@ -121,17 +127,24 @@ func (a *KPAAlgorithm) computeTargetReplicas(currentPodCount float64, context sc
 	scaleUpThreshold := targetValue * (1 + upTolerance)
 	scaleDownThreshold := targetValue * (1 - downTolerance)
 
+	// Pod, resource and custom sources record the per-pod mean, so the total load is
+	// mean * pods. External and domain sources already report one total.
+	load := 1.0
+	if sourceType, _ := context.GetMetricSourceTypeForMetric(metricsName); isPerPodSource(sourceType) {
+		load = math.Max(1, readyPodsCount)
+	}
+
 	// Calculate desired replicas based on tolerance-adjusted targets
 	var dspc, dppc float64
 	if observedStableValue > scaleUpThreshold || observedStableValue < scaleDownThreshold {
-		dspc = math.Ceil(observedStableValue / targetValue)
+		dspc = math.Ceil(load * observedStableValue / targetValue)
 	} else {
 		// Within tolerance, maintain current replica count
 		dspc = currentPodCount
 	}
 
 	if observedPanicValue > scaleUpThreshold || observedPanicValue < scaleDownThreshold {
-		dppc = math.Ceil(observedPanicValue / targetValue)
+		dppc = math.Ceil(load * observedPanicValue / targetValue)
 	} else {
 		// Within tolerance, maintain current replica count
 		dppc = currentPodCount
