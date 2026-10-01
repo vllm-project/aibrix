@@ -2344,6 +2344,25 @@ func TestReconcileRecordsNoLimitOnAPodWithoutACard(t *testing.T) {
 	assert.False(t, r.claimHoldsAKVLimitOn(context.Background(), pod))
 }
 
+// The pool policy runs at the end of a pass, right after the pass may have
+// recorded the first limit on a pod. The cache may not show that record yet,
+// so the policy reads the claims from the API server before it writes a limit.
+func TestPoolKVPolicyStandsDownForALimitTheCacheHasNotSeen(t *testing.T) {
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	cached := claimOnPod("a", pod.Name, modelv1alpha1.ModelClaimActivating, 300, 100)
+	cached.Status.Instances[0].KVLimitBytes = 0
+	recorded := cached.DeepCopy()
+	recorded.Status.Instances[0].KVLimitBytes = 600
+	r, _ := newReconciler(t, cached, pod)
+	r.APIReader = fake.NewClientBuilder().
+		WithScheme(testScheme(t)).
+		WithObjects(recorded, pod.DeepCopy()).
+		WithStatusSubresource(&modelv1alpha1.ModelClaim{}).
+		Build()
+
+	assert.True(t, r.claimHoldsAKVLimitOn(context.Background(), pod))
+}
+
 // The runtime's mock mode reports one card with no memory at all, so that the
 // single-GPU pool policy runs on the CPU pools of the end-to-end tests. That is
 // no card to account for: the claim is placed as on a pod without a GPU, and

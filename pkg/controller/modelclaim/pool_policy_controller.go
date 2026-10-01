@@ -511,9 +511,17 @@ func (r *ModelClaimReconciler) reconcilePoolIdleSleep(
 // A listing that fails answers yes. Standing down costs a pool its automatic
 // KV distribution for one round; guessing no would write a limit that the
 // health loop overwrites moments later, and neither engine would settle.
+//
+// The claims are read from the API server, not the cache. The policy runs at
+// the end of a pass, right after the pass may have recorded the first limit on
+// this Pod, and the cache may not have seen that record yet.
 func (r *ModelClaimReconciler) claimHoldsAKVLimitOn(ctx context.Context, pod *corev1.Pod) bool {
+	reader := client.Reader(r.Client)
+	if r.APIReader != nil {
+		reader = r.APIReader
+	}
 	claims := &modelv1alpha1.ModelClaimList{}
-	if err := r.List(ctx, claims, client.InNamespace(pod.Namespace)); err != nil {
+	if err := reader.List(ctx, claims, client.InNamespace(pod.Namespace)); err != nil {
 		klog.ErrorS(err, "pool KV policy could not list ModelClaims", "pod", klog.KObj(pod))
 		return true
 	}
