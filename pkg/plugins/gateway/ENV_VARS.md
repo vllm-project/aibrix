@@ -236,6 +236,7 @@ Scoring formula: `score = (fairnessWeight * normFairness + utilizationWeight * n
 | `AIBRIX_PREFILL_SCORE_POLICY` | string | `"prefix_cache"` | Strategy for selecting the prefill pod. Options: `prefix_cache`, `least_request`. |
 | `AIBRIX_DECODE_SCORE_POLICY` | string | `"load_balancing"` | Strategy for selecting the decode pod. Options: `load_balancing`, `least_request`, `conductor`, `token_load`. |
 | `AIBRIX_DECODE_TOKEN_LOAD_OUTPUT_GROWTH` | bool | `true` | `token_load` decode policy only: add an estimate of the output generated so far (per-request decode rate × time since routing) to the decode score. `false` scores prompt tokens only. |
+| `AIBRIX_TOKEN_LOAD_SHARED_LEDGER` | bool | `true` | `token_load` decode policy only, with Redis configured: share the decode ledger across gateway replicas, so each replica adds the other live replicas' charges to its decode score. `false` keeps the ledger local to each replica. |
 
 The prefill/decode routing thresholds (`AIBRIX_PREFILL_*`, `AIBRIX_DECODE_*`, `AIBRIX_TOKEN_LOAD_*`, `AIBRIX_HYBRID_CACHE_LOAD_FACTOR`, `AIBRIX_MIN_MATCH_PCT`, `AIBRIX_PROMPT_LENGTH_BUCKETING`, `AIBRIX_BUCKET_SERVE`,
 `AIBRIX_BUCKET_SERVE_MODE`) can also be set per request by the model config profile
