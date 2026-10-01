@@ -131,6 +131,52 @@ func effectivePromptLengthBucketing(routingCtx *types.RoutingContext) bool {
 	return routingCtx.PDOverrides().PromptLengthBucketing
 }
 
+// bucketServeMode returns the bucket-serve mode this request routes with, and
+// whether the adaptive plan is on for it at all. Both come from the request's
+// resolved knobs, so a profile can switch the plan on, or pick another mode,
+// for the models it routes.
+func bucketServeMode(routingCtx *types.RoutingContext) (pd.BucketMode, bool) {
+	ov := routingCtx.PDOverrides()
+	if !ov.BucketServe {
+		return "", false
+	}
+	if mode, ok := pd.ParseBucketMode(ov.BucketServeMode); ok {
+		return mode, true
+	}
+	return pd.BucketModeThroughput, true
+}
+
+// bucketServeGroups returns one group per eligible roleset, with the
+// prompt-length range its pods declare and its prefill replica count, which is
+// how much of the model's traffic the roleset should carry. It runs a profile
+// lookup per roleset, not per pod: the pods of a roleset share one model config
+// profile, and the planner only needs the range once. The order does not
+// matter: the planner sorts a copy, and the plan cache key sorts its parts.
+func bucketServeGroups(routingCtx *types.RoutingContext, readyPods []*v1.Pod) []pd.BucketGroup {
+	eligible := eligiblePDRolesets(readyPods)
+	groups := make([]pd.BucketGroup, 0, len(eligible))
+	for id, b := range eligible {
+		minLength, maxLength := 0, math.MaxInt32
+		if len(b.prefills) > 0 {
+			minLength, maxLength = podPromptLenBucketBounds(routingCtx, b.prefills[0])
+		}
+		groups = append(groups, pd.BucketGroup{Name: id, Min: minLength, Max: maxLength, Replicas: len(b.prefills)})
+	}
+	return groups
+}
+
+// podPromptLenBucketBounds returns the prompt-length range a pod's model
+// config profile declares, with the whole range as the default: a pod that
+// declares none is not bucket-scoped.
+func podPromptLenBucketBounds(routingCtx *types.RoutingContext, pod *v1.Pod) (int, int) {
+	profile := configprofiles.ResolveProfileFromPod(pod, routingCtx.ReqConfigProfile)
+	if profile == nil {
+		// Pods without model.aibrix.ai/config are not bucket-scoped; treat as any length.
+		return 0, math.MaxInt32
+	}
+	return promptLenBucketBounds(configprofiles.ParseRoutingConfig(profile.RoutingConfig))
+}
+
 // effectiveScorePolicies returns prefill/decode scoring policies for this request.
 // When routingCtx.ConfigProfile.RoutingConfig sets prefillScorePolicy and/or decodeScorePolicy,
 // those override the gateway defaults from AIBRIX_PREFILL_SCORE_POLICY / AIBRIX_DECODE_SCORE_POLICY
@@ -194,14 +240,27 @@ type pdRouter struct {
 	selectionCounts       map[string]int64
 	podSelector           selector.PodSelector
 	prefillExecutor       prefill.PrefillExecutor
+	trtHandler            *engine.TRTLLMHandler
 
 	// tokenLoadTracker is the token-weighted prefill ledger read by the
-	// token_load policy. It is charged in filterPrefillDecodePods for requests
-	// scored by that policy, released by the prefill executor when the prefill
-	// call returns, and released fully on request completion through the
-	// cache.RequestTracker callbacks (see DoneRequestCount). nil in routers
+	// token_load prefill policy, and the decode ledger read by the token_load
+	// decode policy. It is charged in filterPrefillDecodePods for requests
+	// scored by those policies, released by the prefill executor when the
+	// prefill call returns, and released fully on request completion through
+	// the cache.RequestTracker callbacks (see DoneRequestCount). nil in routers
 	// built without one (tests); every access is nil-guarded.
 	tokenLoadTracker *pd.TokenLoadTracker
+
+	// bucketServe is the adaptive bucket-serve planner: it bands prompt
+	// lengths across the rolesets that share them, so the prefill scoring picks
+	// inside one band instead of across every covering roleset. Like
+	// tokenLoadTracker it is built unconditionally, so a profile can switch it
+	// on without a gateway restart; every access is nil-guarded.
+	bucketServe *pd.BucketServeTracker
+
+	// bucketServeMetricObserver is set only by tests that need to inspect
+	// bucket-serve emissions without replacing process-wide metric hooks.
+	bucketServeMetricObserver *bucketServeMetricObserver
 
 	// selectMu makes "read every candidate's tracked load, pick the best,
 	// register the pick" one atomic step in filterPrefillDecodePods. Without
@@ -216,6 +275,11 @@ type pdRouter struct {
 	// only on the request and run before the lock is taken. countersMu is
 	// taken inside selectMu (in finalPDScore) and never the other way round.
 	selectMu sync.Mutex
+}
+
+type bucketServeMetricObserver struct {
+	counter func(string, map[string]string)
+	gauge   func(string, map[string]string)
 }
 
 func newPrefixCachePrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashTable) pd.PrefillScorePolicy {
@@ -252,6 +316,9 @@ func NewPDRouterWithCacheAndPrefixIndexer(c cache.Cache, sharedPrefixTable *pref
 	// can switch a model to token_load or hybrid_cache_load without a gateway
 	// restart.
 	tokenLoadTracker := pd.NewTokenLoadTracker()
+	// The bucket-serve planner is unconditional for the same reason: its
+	// configuration comes from each request's resolved knobs.
+	bucketServeTracker := pd.NewBucketServeTracker()
 
 	var policy pd.PrefillScorePolicy
 	switch aibrixPrefillScorePolicy {
@@ -296,7 +363,28 @@ func NewPDRouterWithCacheAndPrefixIndexer(c cache.Cache, sharedPrefixTable *pref
 		Transport: otelhttp.NewTransport(transport),
 	}
 
+	trtScheduleStyle := utils.LoadEnv("AIBRIX_TRT_SCHEDULE_STYLE", engine.TRTContextFirst)
+	switch trtScheduleStyle {
+	case engine.TRTContextFirst, engine.TRTGenerationFirst:
+	default:
+		// Same policy as the env-driven knobs above: an unrecognized value is
+		// reported and the safe default wins, instead of failing router
+		// construction (the router manager would then register a nil provider
+		// for "pd", which panics, recovered, on every pd request).
+		klog.InfoS("pd_router unknown AIBRIX_TRT_SCHEDULE_STYLE, using context_first",
+			"value", trtScheduleStyle,
+			"valid", []string{engine.TRTContextFirst, engine.TRTGenerationFirst})
+		trtScheduleStyle = engine.TRTContextFirst
+	}
+	// NewTRTLLMHandler now fails only for generation_first without a provider,
+	// which is a programming error and must still fail construction.
+	trtHandler, err := engine.NewTRTLLMHandler(trtScheduleStyle, engine.NewTRTServerInfoCache(httpClient))
+	if err != nil {
+		return nil, err
+	}
+
 	r := &pdRouter{
+		trtHandler:            trtHandler,
 		cache:                 c,
 		prefillPolicy:         policy,
 		decodePolicy:          decodePol,
@@ -304,6 +392,7 @@ func NewPDRouterWithCacheAndPrefixIndexer(c cache.Cache, sharedPrefixTable *pref
 		prefillRequestTracker: pd.NewPrefillRequestTracker(),
 		pendingDecodeTracker:  pd.NewPendingDecodeTracker(),
 		tokenLoadTracker:      tokenLoadTracker,
+		bucketServe:           bucketServeTracker,
 		httpClient:            httpClient,
 		prefixUpdateCh:        make(chan prefixUpdateJob, 1024),
 		selectionCounts:       make(map[string]int64),
@@ -359,7 +448,8 @@ func (r *pdRouter) chargeTokenLoad(routingCtx *types.RoutingContext, pod *v1.Pod
 
 	promptTokens := pd.EstimatePromptTokens(routingCtx.ReqBody)
 	sessionID := routingCtx.ReqHeaders[constants.HeaderSessionKey]
-	matchPct := pd.PrefixMatchPercent(scorer, pod.Name)
+	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+	matchPct := pd.PrefixMatchPercent(scorer, podKey)
 	newTokens, source := r.tokenLoadTracker.NewTokensWithSessionLimits(routingCtx.Model, sessionID, promptTokens, matchPct,
 		overrides.TokenLoad.SessionTTL, maxSessions)
 	cost := r.tokenLoadTracker.PrefillCostWithRequestCost(newTokens, overrides.TokenLoad.RequestCost)
@@ -369,7 +459,27 @@ func (r *pdRouter) chargeTokenLoad(routingCtx *types.RoutingContext, pod *v1.Pod
 			"prompt_tokens", promptTokens, "new_tokens", newTokens, "source", source,
 			"prefix_match_percent", matchPct, "cost", cost)
 	}
-	r.tokenLoadTracker.AcquirePrefillWithTTL(routingCtx.RequestID, utils.GeneratePodKey(pod.Namespace, pod.Name), cost, overrides.TokenLoad.TTL)
+	r.tokenLoadTracker.AcquirePrefillWithTTL(routingCtx.RequestID, podKey, cost, overrides.TokenLoad.TTL)
+}
+
+// chargeDecodeTokenLoad charges the request's prompt to the decode pod when the
+// request is scored by the token_load decode policy. The decode pod receives
+// the whole prompt's KV from the prefill pod, so the charge is the full prompt,
+// not the prefix-matched remainder the prefill charge uses. It carries no fixed
+// per-request cost: AIBRIX_TOKEN_LOAD_REQUEST_COST models prefill setup work,
+// not KV on the decoder. It is released on request completion or prefill
+// failure (releaseTokenLoad, or the executor for an async prefill leg).
+func (r *pdRouter) chargeDecodeTokenLoad(routingCtx *types.RoutingContext, pod *v1.Pod, policy pd.DecodeScorePolicy) {
+	if r.tokenLoadTracker == nil || !pd.UsesDecodeTokenLoad(policy) {
+		return
+	}
+	overrides := routingCtx.PDOverrides()
+	cost := float64(pd.EstimatePromptTokens(routingCtx.ReqBody))
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("pd_router token_load decode charge",
+			"request_id", routingCtx.RequestID, "pod_name", pod.Name, "prompt_tokens", cost)
+	}
+	r.tokenLoadTracker.AcquireDecodeWithTTL(routingCtx.RequestID, utils.GeneratePodKey(pod.Namespace, pod.Name), cost, overrides.TokenLoad.TTL)
 }
 
 // releaseTokenLoad drops whatever the request still holds on the token-load
@@ -398,7 +508,15 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 	// occurrence, so a duplicate would let the client's value override the
 	// gateway's). A malformed request must not pollute selection counters or
 	// the prefix cache. ctx.Engine is already set by selectTargetPod.
-	if err := engine.ValidateRequest(ctx.ReqBody, engine.Resolve(ctx.Engine)); err != nil {
+	// The TRT handler is router-scoped (its schedule style comes from the
+	// environment); every other engine uses the shared registry. This is the
+	// only handler resolution in the request path: the result is passed to the
+	// executor, so validation and dispatch cannot drift apart.
+	handler := engine.Resolve(ctx.Engine)
+	if ctx.Engine == TensorRTLLM && r.trtHandler != nil {
+		handler = r.trtHandler
+	}
+	if err := engine.ValidateRequest(ctx.ReqBody, handler); err != nil {
 		return "", err
 	}
 
@@ -430,9 +548,15 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		// address Route returns to Envoy, so the abort lands on the HTTP
 		// server actually serving the decode leg.
 		ctx.SetDecodeTarget(ctx.PodAddress(decodePod), decodePod.Name)
+		// The async dispatch contract of the handler also decides how the
+		// gateway treats a failure that arrives after the decode leg has started
+		// responding. Record it before dispatching so the stream goroutine never
+		// has to infer the mode from the engine name (TRT context-first and
+		// generation-first share one).
+		ctx.SetResetAfterHeaders(engine.AsyncDispatchPolicyFor(handler).ResetAfterHeaders)
 		// The prefill registration was made by Select; the executor's
 		// RemovePrefillRequest (sync/async) is the matching decrement.
-		err = r.doPrefillRequest(ctx, prefillPod, ctx.Engine)
+		err = r.doPrefillRequest(ctx, prefillPod, handler)
 
 		if err != nil {
 			// Remove is a no-op if the executor already cleaned up (e.g. sync HTTP failure).
@@ -443,7 +567,7 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 			klog.ErrorS(err, pdRoutePrefillRequestError, "request_id", ctx.RequestID)
 			return "", fmt.Errorf("prefill request failed for request %s: %w", ctx.RequestID, err)
 		}
-		if !engine.Resolve(ctx.Engine).IsAsync() {
+		if !handler.IsAsync() {
 			metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestSuccessTotal, &metrics.SimpleMetricValue{Value: 1.0},
 				map[string]string{"status": pdRoutePrefillRequestSuccess, "status_code": "200"})
 		}
@@ -456,6 +580,64 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 type Scores struct {
 	Pod   *v1.Pod
 	Score float64
+}
+
+// bucketServeBand returns the roleset the adaptive bucket-serve plan prefers
+// for promptLength, together with the upper bound of the band that covers it.
+// It records the request in the plan's traffic picture first, so the cut points
+// follow what this gateway routes, and it republishes the plan's gauge series
+// whenever the plan is recomputed. An empty roleset means the plan has no
+// opinion: the feature is off for the request, the prompt length is unknown, or
+// no band covers that length.
+func (r *pdRouter) bucketServeBand(routingCtx *types.RoutingContext, readyPods []*v1.Pod, promptLength int) (string, int) {
+	tracker := r.bucketServe
+	if tracker == nil || promptLength <= 0 {
+		return "", 0
+	}
+	mode, on := bucketServeMode(routingCtx)
+	if !on {
+		return "", 0
+	}
+	res := tracker.Band(routingCtx.Model, mode, promptLength, time.Now(), bucketServeGroups(routingCtx, readyPods))
+	if res.Refreshed {
+		r.publishBucketServePlan(routingCtx, res)
+	}
+	return res.Roleset, res.Max
+}
+
+// publishBucketServePlan republishes the gauge series of a recomputed plan:
+// the highest upper bound among the bands every roleset holds, and a delete
+// for every roleset no live plan holds anymore, so no series outlives the
+// plans that produced it.
+func (r *pdRouter) publishBucketServePlan(routingCtx *types.RoutingContext, res pd.BandResult) {
+	bounds := make(map[string]int, len(res.Plan))
+	for _, band := range res.Plan {
+		if band.Max > bounds[band.Group] {
+			bounds[band.Group] = band.Max
+		}
+	}
+	for roleset, bound := range bounds {
+		r.emitBucketServeMetric(routingCtx, metrics.PDBucketServeBandMax, float64(bound),
+			map[string]string{"roleset": roleset}, false)
+	}
+	for _, roleset := range res.Dropped {
+		if _, held := bounds[roleset]; held {
+			continue
+		}
+		metrics.DeleteGaugeMetricForPod(metrics.PDBucketServeBandMax, routingCtx, nil, map[string]string{"roleset": roleset})
+	}
+}
+
+func (r *pdRouter) emitBucketServeMetric(routingCtx *types.RoutingContext, name string, value float64, labels map[string]string, counter bool) {
+	if observer := r.bucketServeMetricObserver; observer != nil {
+		if counter {
+			observer.counter(name, labels)
+		} else {
+			observer.gauge(name, labels)
+		}
+		return
+	}
+	metrics.EmitMetricToPrometheus(routingCtx, nil, name, &metrics.SimpleMetricValue{Value: value}, labels)
 }
 
 // filterPrefillDecodePods selects one prefill pod and one decode pod for the request.
@@ -485,18 +667,28 @@ type Scores struct {
 //     throughput spread, drain-rate ratio); the first that fires narrows decodePods
 //     to a single pod and aligns prefillPods to its roleset. Steps 4 and 5 are
 //     independent: both can fire on the same request if both prefill and decode are
-//     imbalanced, with each narrowing its own side of the pair.
+//     imbalanced, with each narrowing its own side of the pair. Under the token_load
+//     decode policy the decode result is ignored and every decode pod is scored.
 //
-//  6. Score remaining candidates — scorePreparedPrefillPods and scoreDecodePods
+//  6. Bucket-serve band preference (AIBRIX_BUCKET_SERVE only) — the adaptive plan
+//     bands the request's prompt length to one roleset, so narrow the candidates to
+//     that roleset, keeping both sides aligned. The band is a preference, not a
+//     gate: when the load fast paths of steps 4 and 5 already reached past the
+//     banded roleset, or it has no candidate left on either side, their choice
+//     stands. The plan is computed before the lock is taken; only this narrowing
+//     runs under it.
+//
+//  7. Score remaining candidates — scorePreparedPrefillPods and scoreDecodePods
 //     evaluate every roleset; finalPDScore picks the roleset with the lowest
 //     combined score.
 //
-//  7. Register — the chosen decode pod is recorded in pendingDecodeTracker and the
+//  8. Register — the chosen decode pod is recorded in pendingDecodeTracker and the
 //     chosen prefill pod in prefillRequestTracker (and, under the token_load
-//     policy, charged to tokenLoadTracker) before returning, so the next
-//     selection sees this one. Steps 3b-7 read tracker state and run under
-//     selectMu; steps 1-3a and the policy Prepare step (tokenization, prefix
-//     matching) run before the lock is taken. Route owns the matching removals.
+//     prefill or decode policy, charged to tokenLoadTracker) before returning, so
+//     the next selection sees this one. Steps 3b-8 read tracker state and run under
+//     selectMu; steps 1-3a, the policy Prepare step (tokenization, prefix
+//     matching) and the bucket-serve plan (which takes only the tracker lock)
+//     run before the lock is taken. Route owns the matching removals.
 func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, *v1.Pod, error) {
 	pdOverrides := routingCtx.PDOverrides()
 	bucketing := pdOverrides.PromptLengthBucketing
@@ -543,6 +735,14 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 		return nil, nil, fmt.Errorf("prefill scorer preparation failed: %w", err)
 	}
 
+	// The adaptive bucket-serve plan, computed before the lock like the policy
+	// Prepare step: it reads nothing selectMu protects and takes the tracker
+	// lock instead. Step 6 below applies it.
+	bandRoleset, bandMax := "", 0
+	if bucketing {
+		bandRoleset, bandMax = r.bucketServeBand(routingCtx, readyPods, promptLength)
+	}
+
 	// Everything below reads tracker state that concurrent selections mutate.
 	r.selectMu.Lock()
 	defer r.selectMu.Unlock()
@@ -575,6 +775,7 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	}
 
 	targetPod, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage := r.loadImbalanceSelectDecodePod(routingCtx, decodePods)
+	targetPod = decodeFastPathPick(routingCtx, targetPod, decodePol)
 	if targetPod != nil {
 		decodePods = []*v1.Pod{targetPod}
 		if aligned := utils.FilterPodsByLabel(prefillPods, PDRoleSetIdentifier, targetPod.Labels[PDRoleSetIdentifier]); len(aligned) > 0 {
@@ -585,6 +786,22 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 				"request_id", routingCtx.RequestID, "selected_decode_pod", targetPod.Name,
 				"roleset", targetPod.Labels[PDRoleSetIdentifier], "prefill_pods_after_align", pdPodNames(prefillPods),
 			)
+		}
+	}
+
+	if bandRoleset != "" {
+		alignedPrefill := utils.FilterPodsByLabel(prefillPods, PDRoleSetIdentifier, bandRoleset)
+		alignedDecode := utils.FilterPodsByLabel(decodePods, PDRoleSetIdentifier, bandRoleset)
+		if len(alignedPrefill) > 0 && len(alignedDecode) > 0 {
+			prefillPods, decodePods = alignedPrefill, alignedDecode
+			bandLabels := map[string]string{"roleset": bandRoleset}
+			r.emitBucketServeMetric(routingCtx, metrics.PDBucketServeBandTotal, 1.0, bandLabels, true)
+			r.emitBucketServeMetric(routingCtx, metrics.PDBucketServePromptTokensTotal, float64(promptLength), bandLabels, true)
+			if klog.V(4).Enabled() {
+				klog.V(4).InfoS("bucket-serve band picked the roleset",
+					"request_id", routingCtx.RequestID, "roleset", bandRoleset, "band_max", bandMax,
+					"prefill_pods_after_band", pdPodNames(prefillPods))
+			}
 		}
 	}
 
@@ -599,18 +816,35 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	r.pendingDecodeTracker.AddPendingDecode(routingCtx.RequestID, utils.GeneratePodKey(selectedDecode.Namespace, selectedDecode.Name))
 	r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, utils.GeneratePodKey(selectedPrefill.Namespace, selectedPrefill.Name))
 	r.chargeTokenLoad(routingCtx, selectedPrefill, prefillPol, prefillScorer)
+	r.chargeDecodeTokenLoad(routingCtx, selectedDecode, decodePol)
 	return selectedPrefill, selectedDecode, nil
+}
+
+// decodeFastPathPick returns the decode load-imbalance fast path's pick, or nil
+// when the decode policy must score the whole set instead. The fast path picks
+// by request count, throughput or drain rate. Those are the signals token_load
+// replaces: a pod holding one long prompt has the fewest requests and the most
+// KV. The fast path still runs under token_load, to fill the metric maps.
+func decodeFastPathPick(routingCtx *types.RoutingContext, targetPod *v1.Pod, decodePol pd.DecodeScorePolicy) *v1.Pod {
+	if targetPod == nil || !pd.UsesDecodeTokenLoad(decodePol) {
+		return targetPod
+	}
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("decode load imbalance fast path skipped under token_load",
+			"request_id", routingCtx.RequestID, "fast_path_decode_pod", targetPod.Name)
+	}
+	return nil
 }
 
 // loadImbalanceSelectPrefillPod is a fast path that runs before scorePrefillPods when
 // outstanding prefill load is visibly skewed across readyPods.
 //
 // podRequestCount holds per-pod active prefill counts from PrefillRequestTracker for
-// in-flight prefill HTTP calls from other concurrent requests. The current request is
+// in-flight prefill HTTP calls from other concurrent requests, keyed by pod key. The current request is
 // not counted yet — filterPrefillDecodePods registers it after selection completes,
 // under the same selectMu hold.
 // Ties among equally-loaded pods are broken by drawing uniformly at random from the tied
-// pod names; readyPods is only used to resolve that name back to a pod, so its order does
+// pod keys; readyPods is only used to resolve that key back to a pod, so its order does
 // not influence the result.
 //
 // Returns one pod tied for the minimum count and imbalance=true when
@@ -640,14 +874,14 @@ func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequest
 			maxValue = value
 		}
 	}
-	for podname, value := range podRequestCount {
+	for podKey, value := range podRequestCount {
 		if minValue == value {
-			targetPods = append(targetPods, podname)
+			targetPods = append(targetPods, podKey)
 		}
 	}
 
 	if maxValue-minValue > minSpread && len(targetPods) > 0 {
-		targetPod, _ = utils.FilterPodByName(targetPods[rand.IntN(len(targetPods))], readyPods)
+		targetPod = podsByKey(readyPods)[targetPods[rand.IntN(len(targetPods))]]
 		imbalance = true
 		if targetPod != nil && klog.V(4).Enabled() {
 			klog.V(4).InfoS("prefill request imbalance detected, selecting least-loaded pod",
@@ -724,24 +958,24 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 		requestCount := r.pendingDecodeTracker.GetPendingDecodeCount(podKey)
 		if runningErr != nil {
-			podRequestCounts[pod.Name] = requestCount
+			podRequestCounts[podKey] = requestCount
 		} else {
 			requestCount += float64(runningReqCounts[podKey])
-			podRequestCounts[pod.Name] = requestCount
+			podRequestCounts[podKey] = requestCount
 			if requestCount < minObservedRequestCount {
 				minObservedRequestCount = requestCount
 				minRequestPod = pod
 			}
 			maxObservedRequestCount = math.Max(maxObservedRequestCount, requestCount)
 		}
-		maxRequestCount = math.Max(maxRequestCount, podRequestCounts[pod.Name])
+		maxRequestCount = math.Max(maxRequestCount, podRequestCounts[podKey])
 
 		tokenThroughput, throughputErr := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgGenerationThroughputToksPerS)
 		if throughputErr != nil {
-			podThroughputs[pod.Name] = 0
+			podThroughputs[podKey] = 0
 		} else {
 			throughput := tokenThroughput.GetSimpleValue()
-			podThroughputs[pod.Name] = throughput
+			podThroughputs[podKey] = throughput
 			if throughput < minObservedThroughput {
 				minObservedThroughput = throughput
 				minThroughputPod = pod
@@ -755,17 +989,17 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 		if err == nil {
 			kvUsageVal = kvUsage.GetSimpleValue()
 		}
-		podFreeGpuUsage[pod.Name] = math.Round(100 - kvUsageVal*100)
-		if podFreeGpuUsage[pod.Name] <= 0 {
-			podFreeGpuUsage[pod.Name] = 0.1
+		podFreeGpuUsage[podKey] = math.Round(100 - kvUsageVal*100)
+		if podFreeGpuUsage[podKey] <= 0 {
+			podFreeGpuUsage[podKey] = 0.1
 		}
-		maxFreeGPUUsage = math.Max(maxFreeGPUUsage, podFreeGpuUsage[pod.Name])
+		maxFreeGPUUsage = math.Max(maxFreeGPUUsage, podFreeGpuUsage[podKey])
 	}
 
 	if minRequestPod != nil && maxObservedRequestCount-minObservedRequestCount >= loadMinSpread {
 		klog.V(4).InfoS("request imbalance at decode pods", "request_id", ctx.RequestID,
 			"min_request_count", minObservedRequestCount, "max_request_count", maxObservedRequestCount,
-			"free_gpu_percent", podFreeGpuUsage[minRequestPod.Name], "decode_pod", minRequestPod.Name)
+			"free_gpu_percent", podFreeGpuUsage[utils.GeneratePodKey(minRequestPod.Namespace, minRequestPod.Name)], "decode_pod", minRequestPod.Name)
 		return minRequestPod, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage
 	}
 
@@ -773,7 +1007,7 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 		klog.V(4).InfoS("throughput imbalance at decode pods", "request_id", ctx.RequestID,
 			"min_request_count", minObservedRequestCount, "max_request_count", maxObservedRequestCount,
 			"min_throughput", minObservedThroughput, "max_throughput", maxObservedThroughput,
-			"free_gpu_percent", podFreeGpuUsage[minThroughputPod.Name], "decode_pod", minThroughputPod.Name)
+			"free_gpu_percent", podFreeGpuUsage[utils.GeneratePodKey(minThroughputPod.Namespace, minThroughputPod.Name)], "decode_pod", minThroughputPod.Name)
 		return minThroughputPod, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage
 	}
 
@@ -783,12 +1017,13 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 	drainRatesAvailable := true
 
 	for _, pod := range filteredDecodePods {
+		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 		drainRate, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeRunningRequestsDrainRate1m)
 		if err != nil || drainRate.GetSimpleValue() <= 0 {
 			drainRatesAvailable = false
 			break
 		}
-		score := podRequestCounts[pod.Name] / math.Max(drainRate.GetSimpleValue(), defaultDrainRateEpsilon)
+		score := podRequestCounts[podKey] / math.Max(drainRate.GetSimpleValue(), defaultDrainRateEpsilon)
 		if score < minScore {
 			minScore = score
 			minScorePod = pod
@@ -856,7 +1091,7 @@ func (r *pdRouter) preparePrefillScorer(routingCtx *types.RoutingContext, prefil
 	}
 	readyPodsMap := make(map[string]struct{}, len(prefillPods))
 	for _, pod := range prefillPods {
-		readyPodsMap[pod.Name] = struct{}{}
+		readyPodsMap[utils.GeneratePodKey(pod.Namespace, pod.Name)] = struct{}{}
 	}
 	scorer, err := policy.Prepare(routingCtx, prefillPods, readyPodsMap)
 	if err != nil {
@@ -893,7 +1128,8 @@ func (r *pdRouter) scorePreparedPrefillPods(routingCtx *types.RoutingContext, pr
 	maxPrefillScore := float64(1)
 	for _, pod := range prefillPods {
 		rolesetName := pod.Labels[PDRoleSetIdentifier]
-		reqCnt := float64(podRequestCount[pod.Name])
+		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+		reqCnt := float64(podRequestCount[podKey])
 		if reqCnt > meanRequestCount+float64(sigma)*stdDevRequestCount {
 			if klog.V(4).Enabled() {
 				klog.V(4).InfoS("prefill pod request count is higher than mean request count, skipping",
@@ -925,7 +1161,8 @@ func (r *pdRouter) scorePreparedPrefillPods(routingCtx *types.RoutingContext, pr
 // Policy resolution: the policy argument, then r.decodePolicy, then load_balancing.
 // When at least one pod reports RealtimeNumRequestsRunning, pods missing that metric
 // receive a cold-start score (1.0 + PendingDecodeTracker pending count) instead of
-// full policy scoring. podRequestCounts include pending decode from concurrent Route
+// full policy scoring, except under token_load, which scores every pod from the
+// gateway's decode ledger. podRequestCounts include pending decode from concurrent Route
 // calls that have registered AddPendingDecode. If no pod has the running-request metric,
 // all pods are scored normally.
 //
@@ -957,11 +1194,16 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 
 	utils.Shuffle(filteredDecodePods)
 
+	// token_load scores from the gateway's own ledger, which is exact for every
+	// pod from its first request, so the cold-start score below (built for
+	// policies that read scraped engine metrics, and in their units) does not
+	// apply to it.
+	usesDecodeTokenLoad := pd.UsesDecodeTokenLoad(policy)
 	anyMetricsReady := false
 	metricsReadyByPod := make(map[string]bool, len(filteredDecodePods))
 	for _, pod := range filteredDecodePods {
-		ready := r.decodePodMetricsReady(routingCtx, pod)
-		metricsReadyByPod[pod.Name] = ready
+		ready := usesDecodeTokenLoad || r.decodePodMetricsReady(routingCtx, pod)
+		metricsReadyByPod[utils.GeneratePodKey(pod.Namespace, pod.Name)] = ready
 		if ready {
 			anyMetricsReady = true
 		}
@@ -979,11 +1221,12 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 
 	for _, pod := range filteredDecodePods {
 		rolesetName := pod.Labels[PDRoleSetIdentifier]
-		if anyMetricsReady && !metricsReadyByPod[pod.Name] {
+		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+		if anyMetricsReady && !metricsReadyByPod[podKey] {
 			// Cold-start: assign a neutral score (1.0 = idle warm pod) plus gateway-tracked
 			// pending requests so the roleset competes fairly instead of being excluded entirely.
 			// Once the pod's first request completes and metrics arrive, it transitions to full scoring.
-			pending := float64(r.pendingDecodeTracker.GetPendingDecodeCount(utils.GeneratePodKey(pod.Namespace, pod.Name)))
+			pending := float64(r.pendingDecodeTracker.GetPendingDecodeCount(podKey))
 			coldScore := 1.0 + pending
 			if verbose {
 				scoredPods = append(scoredPods, fmt.Sprintf("%s:score=%.4f,roleset=%s(cold)", pod.Name, coldScore, rolesetName))
@@ -1000,12 +1243,15 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 			continue
 		}
 		in := pd.DecodePodInput{
-			RunningReqs:     podRequestCounts[pod.Name],
-			Throughput:      podThroughputs[pod.Name],
-			FreeGPUPercent:  podFreeGpuUsage[pod.Name],
+			RunningReqs:     podRequestCounts[podKey],
+			Throughput:      podThroughputs[podKey],
+			FreeGPUPercent:  podFreeGpuUsage[podKey],
 			MaxRequestCount: maxRequestCount,
 			MaxThroughput:   maxThroughput,
 			MaxFreeGPUUsage: maxFreeGPUUsage,
+		}
+		if usesDecodeTokenLoad && r.tokenLoadTracker != nil {
+			in.DecodeTokens = r.tokenLoadTracker.GetDecodeLoad(podKey)
 		}
 
 		decodeScore := policy.ScoreDecodePod(routingCtx, pod, in)
@@ -1131,12 +1377,12 @@ func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 	}
 
 	if len(prefixHashes) > 0 {
-		r.enqueuePrefixUpdate(prefixHashes, routingCtx.Model, targetPrefillPod.Name)
+		r.enqueuePrefixUpdate(prefixHashes, routingCtx.Model, utils.GeneratePodKey(targetPrefillPod.Namespace, targetPrefillPod.Name))
 	}
 
 	r.countersMu.Lock()
-	r.selectionCounts[targetPrefillPod.Name]++
-	r.selectionCounts[targetDecodePod.Name]++
+	r.selectionCounts[utils.GeneratePodKey(targetPrefillPod.Namespace, targetPrefillPod.Name)]++
+	r.selectionCounts[utils.GeneratePodKey(targetDecodePod.Namespace, targetDecodePod.Name)]++
 	r.countersMu.Unlock()
 
 	metrics.EmitMetricToPrometheus(routingCtx, targetPrefillPod, metrics.PDSelectedPrefillPodTotal, &metrics.SimpleMetricValue{Value: 1.0}, nil)
@@ -1195,12 +1441,7 @@ func isPodWithHTTPServer(pod *v1.Pod) bool {
 }
 
 func (r *pdRouter) isPodSuitableForPromptLength(routingCtx *types.RoutingContext, pod *v1.Pod, promptLength int) bool {
-	profile := configprofiles.ResolveProfileFromPod(pod, routingCtx.ReqConfigProfile)
-	if profile == nil {
-		// Pods without model.aibrix.ai/config are not bucket-scoped; treat as any length.
-		return true
-	}
-	minLength, maxLength := promptLenBucketBounds(configprofiles.ParseRoutingConfig(profile.RoutingConfig))
+	minLength, maxLength := podPromptLenBucketBounds(routingCtx, pod)
 
 	if minLength > maxLength {
 		return false

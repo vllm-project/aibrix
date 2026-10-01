@@ -87,6 +87,7 @@ Documentation
    :caption: Gateway & Routing
 
    features/gateway-plugins.rst
+   features/external-replica-routing.rst
    features/pd-disaggregation.rst
    features/agentic-routing.rst
    features/semantic-router.rst

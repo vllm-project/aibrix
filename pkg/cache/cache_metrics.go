@@ -206,15 +206,28 @@ type MetricSnapshot struct {
 // RateCalculator manages historical metric values for rate calculation
 type RateCalculator struct {
 	mu       sync.RWMutex
-	history  map[string][]MetricSnapshot // key: "podName/modelName/metricName"
+	history  map[string][]MetricSnapshot // key: "namespace/podName/modelName/metricName"
 	maxAge   time.Duration               // Maximum age to keep snapshots
 	maxCount int                         // Maximum number of snapshots to keep
 }
 
-// PurgeEntriesForPod removes all history entries whose key starts with podName/.
+// rateHistoryPodPrefix returns the prefix of every rate history key of a pod. The history
+// is process-wide, so the key carries the namespace: same-named pods in different
+// namespaces (e.g. StatefulSet or LeaderWorkerSet replicas) must not share a series.
+func rateHistoryPodPrefix(namespace, podName string) string {
+	return utils.GeneratePodKey(namespace, podName) + "/"
+}
+
+// rateHistoryKey is the history key of a pod's metric series. calculateRate1m passes an
+// empty modelName, since the counters it reads are pod-level.
+func rateHistoryKey(pod *Pod, modelName, metricName string) string {
+	return rateHistoryPodPrefix(pod.Namespace, pod.Name) + modelName + "/" + metricName
+}
+
+// PurgeEntriesForPod removes all history entries of the pod namespace/podName.
 // Call this when a pod is deleted to prevent unbounded map growth in high-churn clusters.
-func (r *RateCalculator) PurgeEntriesForPod(podName string) {
-	prefix := podName + "/"
+func (r *RateCalculator) PurgeEntriesForPod(namespace, podName string) {
+	prefix := rateHistoryPodPrefix(namespace, podName)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for k := range r.history {
@@ -375,7 +388,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 
 			for metricName, metricValue := range result.Metrics {
 				sanitizeMetricValueLabels(pod, metricValue)
-				if shouldSkipMetric(pod.Name, metricName) {
+				if shouldSkipMetric(pod.Pod, metricName) {
 					continue
 				}
 				metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: ""}, pod.Pod, metricName, metricValue, metricValue.GetLabelValues())
@@ -395,7 +408,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 
 				model = resolveMetricModelName(pod, model)
 
-				if shouldSkipMetric(pod.Name, metric) {
+				if shouldSkipMetric(pod.Pod, metric) {
 					continue
 				}
 
@@ -653,6 +666,29 @@ type modelReplicaState struct {
 
 const pdRoleIdentifier = "role-name"
 
+// pdRole returns the PD role of pod, "prefill" or "decode", or "" for neither. The
+// role-name label is what the PD router groups pods by, so it decides. Pods whose
+// label is missing or holds another value fall back to the pod name, which is how
+// the role was detected before; that keeps every pod matched today matched.
+func pdRole(pod *v1.Pod) string {
+	if pod == nil {
+		return ""
+	}
+	switch pod.Labels[pdRoleIdentifier] {
+	case "prefill":
+		return "prefill"
+	case "decode":
+		return "decode"
+	}
+	switch {
+	case strings.Contains(pod.Name, "prefill"):
+		return "prefill"
+	case strings.Contains(pod.Name, "decode"):
+		return "decode"
+	}
+	return ""
+}
+
 func isPodWithHTTPServer(pod *v1.Pod) bool {
 	podGroupIndex, exists := pod.Labels[podGroupIndex]
 	if !exists {
@@ -738,9 +774,10 @@ func (c *Store) getAllAvailableMetrics() []string {
 // (decode pods). No-ops for pods that don't match either role or metric name.
 func (c *Store) updateThroughputToksPerS(pod *Pod, model, metric string, metricValue metrics.MetricValue) {
 	var rateMetricName string
-	if strings.Contains(pod.Name, "prefill") && metric == metrics.PromptTokenTotal {
+	role := pdRole(pod.Pod)
+	if role == "prefill" && metric == metrics.PromptTokenTotal {
 		rateMetricName = metrics.AvgPromptThroughputToksPerS
-	} else if strings.Contains(pod.Name, "decode") && metric == metrics.GenerationTokenTotal {
+	} else if role == "decode" && metric == metrics.GenerationTokenTotal {
 		rateMetricName = metrics.AvgGenerationThroughputToksPerS
 	}
 	if rateMetricName == "" {

@@ -621,8 +621,8 @@ func TestScorePrefillPods_PrefixCachePolicy(t *testing.T) {
 		tok := tokenizer.NewCharacterTokenizer()
 		tokens, err := tok.TokenizeInputText(ctx.Message)
 		assert.NoError(t, err)
-		_, hashes := tbl.MatchPrefix(tokens, ctx.Model, map[string]struct{}{"pod1": {}})
-		tbl.AddPrefix(hashes, ctx.Model, "pod1")
+		_, hashes := tbl.MatchPrefix(tokens, ctx.Model, nil)
+		tbl.AddPrefix(hashes, ctx.Model, utils.GeneratePodKey("", "pod1"))
 
 		r := &pdRouter{
 			prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), tbl),
@@ -633,6 +633,34 @@ func TestScorePrefillPods_PrefixCachePolicy(t *testing.T) {
 		scores, _, _ := scorePrefillWithDefaultPolicy(r, ctx, []*v1.Pod{pod("pod1", "rs1"), pod("pod2", "rs1")})
 		assert.Len(t, scores, 1, "one roleset")
 		assert.Equal(t, "pod1", scores["rs1"].Pod.Name, "pod1 has higher cache match and should win")
+	})
+
+	t.Run("prefix match is not credited to a same-named pod in another namespace", func(t *testing.T) {
+		tbl := prefixcacheindexer.NewPrefixHashTable()
+		tok := tokenizer.NewCharacterTokenizer()
+		tokens, err := tok.TokenizeInputText(ctx.Message)
+		assert.NoError(t, err)
+		_, hashes := tbl.MatchPrefix(tokens, ctx.Model, nil)
+		tbl.AddPrefix(hashes, ctx.Model, utils.GeneratePodKey("ns-a", "pod1"))
+
+		r := &pdRouter{
+			prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), tbl),
+			prefixCacheIndexer:    tbl,
+			prefillRequestTracker: pd.NewPrefillRequestTracker(),
+		}
+
+		inNamespace := func(namespace string) *v1.Pod {
+			p := pod("pod1", "rs1")
+			p.Namespace = namespace
+			return p
+		}
+		// Candidates are shuffled before scoring and a tie keeps the first one seen, so
+		// repeat to make sure ns-a wins on its match rather than on the shuffle.
+		for i := 0; i < 20; i++ {
+			scores, _, _ := scorePrefillWithDefaultPolicy(r, ctx, []*v1.Pod{inNamespace("ns-b"), inNamespace("ns-a")})
+			require.Len(t, scores, 1)
+			require.Equal(t, "ns-a", scores["rs1"].Pod.Namespace, "only ns-a/pod1 holds the prefix")
+		}
 	})
 
 	t.Run("pod with fewer requests wins when cache matches are equal", func(t *testing.T) {
@@ -844,6 +872,18 @@ func TestScorePrefillPods_LeastRequestPolicy(t *testing.T) {
 	})
 }
 
+// byPodKey rekeys a fixture map from pod name to the pod key of the pod with
+// that name in pods. The fixtures in this file use unique pod names.
+func byPodKey[V any](pods []*v1.Pod, byName map[string]V) map[string]V {
+	byKey := make(map[string]V, len(byName))
+	for _, pod := range pods {
+		if v, ok := byName[pod.Name]; ok {
+			byKey[utils.GeneratePodKey(pod.Namespace, pod.Name)] = v
+		}
+	}
+	return byKey
+}
+
 func TestScoreDecodePods(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -914,18 +954,9 @@ func TestScoreDecodePods(t *testing.T) {
 				RequestID: "test-request",
 			}
 
-			counts := tt.counts
-			if counts == nil {
-				counts = map[string]float64{}
-			}
-			throughputs := tt.throughputs
-			if throughputs == nil {
-				throughputs = map[string]float64{}
-			}
-			freeGPU := tt.freeGPU
-			if freeGPU == nil {
-				freeGPU = map[string]float64{}
-			}
+			counts := byPodKey(tt.pods, tt.counts)
+			throughputs := byPodKey(tt.pods, tt.throughputs)
+			freeGPU := byPodKey(tt.pods, tt.freeGPU)
 
 			run := r.scoreDecodePods(
 				ctx,
@@ -1158,7 +1189,7 @@ func TestDoPrefillRequest(t *testing.T) {
 			router := createRouter(prefillPods, tt.podMetrics)
 
 			router.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, utils.GeneratePodKey(prefillPods[0].Namespace, prefillPods[0].Name))
-			err := router.doPrefillRequest(routingCtx, prefillPods[0], tt.llmEngine)
+			err := router.doPrefillRequest(routingCtx, prefillPods[0], engine.Resolve(tt.llmEngine))
 			if tt.expectError {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errorMsg)
@@ -1614,7 +1645,7 @@ func TestVLLMIntegrationWithTestServer(t *testing.T) {
 	router.prefillExecutor = prefill.NewDefaultExecutor(vllmClient, vllmTracker)
 
 	vllmTracker.AddPrefillRequest(routingCtx.RequestID, utils.GeneratePodKey(prefillPods[0].Namespace, prefillPods[0].Name))
-	err := router.doPrefillRequest(routingCtx, prefillPods[0], VLLMEngine)
+	err := router.doPrefillRequest(routingCtx, prefillPods[0], engine.Resolve(VLLMEngine))
 	assert.NoError(t, err)
 
 	// Verify that routing context was updated with KV transfer params from test server
@@ -1746,7 +1777,7 @@ func TestTensorRTIntegrationWithTestServer(t *testing.T) {
 	router.prefillExecutor = prefill.NewDefaultExecutor(trtClient, trtTracker)
 
 	trtTracker.AddPrefillRequest(routingCtx.RequestID, utils.GeneratePodKey(prefillPods[0].Namespace, prefillPods[0].Name))
-	err := router.doPrefillRequest(routingCtx, prefillPods[0], TensorRTLLM)
+	err := router.doPrefillRequest(routingCtx, prefillPods[0], engine.Resolve(TensorRTLLM))
 	assert.NoError(t, err)
 
 	// Verify routing context was updated with disaggregated_params from test server
@@ -2088,7 +2119,7 @@ func TestLoadImbalanceSelectPrefillPod(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			targetPod, imbalance := r.loadImbalanceSelectPrefillPod(tt.readyPods, tt.podRequestCount, aibrixPrefillLoadImbalanceMinSpread)
+			targetPod, imbalance := r.loadImbalanceSelectPrefillPod(tt.readyPods, byPodKey(tt.readyPods, tt.podRequestCount), aibrixPrefillLoadImbalanceMinSpread)
 
 			assert.Equal(t, tt.expectImbalance, imbalance, "imbalance detection should match expected")
 
@@ -2440,9 +2471,9 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 			assert.Equal(t, tt.expectMaxFreeGPUUsage, maxFreeGPUUsage, "max free GPU usage should match")
 
 			// Check pod metrics maps
-			assert.Equal(t, tt.expectPodRequestCounts, podRequestCounts, "pod request counts should match")
-			assert.Equal(t, tt.expectPodThroughputs, podThroughputs, "pod throughputs should match")
-			assert.Equal(t, tt.expectPodFreeGpuUsage, podFreeGpuUsage, "pod free GPU usage should match")
+			assert.Equal(t, byPodKey(tt.pods, tt.expectPodRequestCounts), podRequestCounts, "pod request counts should match")
+			assert.Equal(t, byPodKey(tt.pods, tt.expectPodThroughputs), podThroughputs, "pod throughputs should match")
+			assert.Equal(t, byPodKey(tt.pods, tt.expectPodFreeGpuUsage), podFreeGpuUsage, "pod free GPU usage should match")
 		})
 	}
 }

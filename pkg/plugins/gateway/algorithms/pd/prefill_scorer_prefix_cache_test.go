@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
@@ -44,7 +45,7 @@ func newPrefixCacheTestFixture(t *testing.T, podNames ...string) *prefixCacheTes
 	f.policy = NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), f.table)
 	for _, name := range podNames {
 		f.pods = append(f.pods, tokenLoadTestPod(name))
-		f.ready[name] = struct{}{}
+		f.ready[utils.GeneratePodKey(testNamespace, name)] = struct{}{}
 	}
 	return f
 }
@@ -56,7 +57,7 @@ func (f *prefixCacheTestFixture) seedPrefix(t *testing.T, pod string, matchPct i
 	require.NoError(t, err)
 	_, hashes := f.table.MatchPrefix(tokens, testModelName, nil)
 	require.Len(t, hashes, 10)
-	f.table.AddPrefix(hashes[:len(hashes)*matchPct/100], testModelName, pod)
+	f.table.AddPrefix(hashes[:len(hashes)*matchPct/100], testModelName, utils.GeneratePodKey(testNamespace, pod))
 }
 
 // prepare resolves minMatchPct as the request's override, the way the PD router
@@ -104,7 +105,7 @@ func TestPrefixCachePrefillPolicy_MinMatchClamp(t *testing.T) {
 }
 
 func TestPrefixCachePrefillPolicy_DefaultHasNoThreshold(t *testing.T) {
-	f := &prefixCacheTestFixture{table: prefixcacheindexer.NewPrefixHashTable(), ready: map[string]struct{}{"weak": {}}}
+	f := &prefixCacheTestFixture{table: prefixcacheindexer.NewPrefixHashTable(), ready: map[string]struct{}{utils.GeneratePodKey(testNamespace, "weak"): {}}}
 	f.policy = NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), f.table)
 	f.pods = []*v1.Pod{tokenLoadTestPod("weak")}
 	f.seedPrefix(t, "weak", 10)

@@ -7,7 +7,7 @@ In PD disaggregation, inference is split across two specialized pod roles:
 - **Prefill pod** — processes the prompt (context), builds the KV-cache, then transfers it.
 - **Decode pod** — generates tokens using the KV-cache transferred from the prefill pod.
 
-The router is responsible for selecting one prefill pod and one decode pod per request, executing the prefill HTTP request synchronously (vLLM/TRT-LLM) or asynchronously (SGLang), and routing the decode request to the selected decode pod.
+The router is responsible for selecting one prefill pod and one decode pod per request, executing the prefill HTTP request synchronously (vLLM/TRT-LLM context-first) or asynchronously (SGLang/TRT-LLM generation-first), and routing the decode request through Envoy to the selected decode pod.
 
 ---
 
@@ -42,10 +42,11 @@ Route(ctx, readyPodList)
      │
      ├─► [prefillPod != nil]
      │        AddPrefillRequest()
-     │        doPrefillRequest(ctx, prefillPod, engine)
+     │        doPrefillRequest(ctx, prefillPod, handler)
      │              ├─ SGLang   → async goroutine (bootstrap handshake; Route does not wait for completion)
      │              ├─ vLLM     → sync, extract kv_transfer_params from response
-     │              └─ TRT-LLM  → sync, extract disaggregated_params from response
+     │              └─ TRT-LLM  → context_first: sync, merge response params
+     │                            generation_first: prepare both bodies, async prefill
      │
      └─► ctx.SetTargetPod(decodePod)
          return decodePod address
@@ -277,6 +278,16 @@ No throughput or GPU terms. Score equals raw running decode request count (inclu
 decode_score = running_reqs_with_pending
 ```
 
+### `token_load`
+
+Scores from the gateway's decode ledger in `pd.TokenLoadTracker` rather than from request counts or scraped KV usage. Each request is charged its `prompt_tokens` to the selected decode pod, under `selectMu` together with the other selection bookkeeping, and released on request completion or prefill failure (`releaseTokenLoad`, or the prefill executor for a terminal async failure). The whole prompt is charged because the decode pod receives all of its KV; there is no fixed per-request cost (`AIBRIX_TOKEN_LOAD_REQUEST_COST` is prefill-only).
+
+```
+decode_score = decode_tokens
+```
+
+The policy reads no engine metrics, so the cold-start score does not apply to it: a pod without metrics is scored from the ledger like any other. The decode load-imbalance fast path is skipped under `token_load` (it still runs to fill the metric maps): it picks by request count, throughput or drain rate, and the pod holding one long prompt has the fewest requests. The ledger is local to each gateway replica.
+
 ### Config profile overrides for PD score policies
 
 When the gateway resolves a model config profile (`routingCtx.ConfigProfile` from `model.aibrix.ai/config` and the `config-profile` header), the **`routingConfig`** JSON may include:
@@ -284,7 +295,7 @@ When the gateway resolves a model config profile (`routingCtx.ConfigProfile` fro
 | Field | Values | Effect |
 |-------|--------|--------|
 | `prefillScorePolicy` | `prefix_cache`, `least_request` | Overrides `AIBRIX_PREFILL_SCORE_POLICY` for that request |
-| `decodeScorePolicy` | `load_balancing`, `least_request` (or any name registered via `pd.RegisterDecodePolicy`) | Overrides `AIBRIX_DECODE_SCORE_POLICY` for that request |
+| `decodeScorePolicy` | `load_balancing`, `least_request`, `conductor`, `token_load` (or any name registered via `pd.RegisterDecodePolicy`) | Overrides `AIBRIX_DECODE_SCORE_POLICY` for that request |
 
 Example fragment inside a profile:
 
@@ -359,6 +370,8 @@ See [PD Prefill Fail-Fast](#pd-prefill-fail-fast).
 
 ### TensorRT-LLM
 
+`AIBRIX_TRT_SCHEDULE_STYLE=context_first` (default) preserves the sequential flow:
+
 ```
 Gateway adds disaggregated_params to prefill request:
   { request_type: "context_only", disagg_request_id: <snowflake_id> }
@@ -379,13 +392,88 @@ TRT-LLM uses a Snowflake-style `disagg_request_id` (63-bit) to correlate prefill
 [41-bit timestamp ms since 2023-01-01] [10-bit machine_id] [12-bit counter]
 ```
 
-Machine ID is set via `AIBRIX_TRT_MACHINE_ID` (must be in `[0, 1024)`).
+Machine ID is set via `AIBRIX_TRT_MACHINE_ID` (must be in `[0, 1024)`). Assign different machine IDs to gateway processes sharing the same TRT workers.
+
+#### Generation-first (parallel)
+
+Set `AIBRIX_TRT_SCHEDULE_STYLE=generation_first` **on the gateway plugin**, not on
+CTX/GEN workers. The setting is fixed when the PD router is constructed; an
+unknown value is logged and leaves the router on `context_first`. It does not
+affect other engines or combined pods. No automatic fallback or retry occurs after
+either leg has been dispatched.
+
+Prerequisites (TRT-LLM `1.3.0rc8`, the Python KV-cache transceiver on both roles,
+matching model/tokenizer/chat-template) are listed in
+`docs/source/features/pd-disaggregation.rst`.
+
+```
+Gateway selects CTX + GEN
+  ├─ GET CTX /server_info (cached)
+  ├─ prepare both bodies with the same integer disagg_request_id
+  ├─ goroutine: POST context_only, schedule_style=1, stream=false, max_tokens=1
+  └─ return GEN address and generation_only body to Envoy immediately
+       disagg_request_id = ctx_request_id = shared ID
+       ctx_info_endpoint, ctx_dp_rank, optional encoded_opaque_state = CTX metadata
+       schedule_style = 1 (TRT-LLM GENERATION_FIRST wire enum)
+       original prompt/messages, sampling settings and stream mode preserved
+
+CTX <── engine-managed coordination / KV transfer ──> GEN
+Envoy <──────────────────── response / SSE ────────── GEN
+```
+
+There is no second Go-issued decode POST. GEN can initialize while CTX is still
+working; it cannot generate without the required KV. The CTX response is not merged
+back into the already-dispatched GEN request. Both endpoints must therefore use
+matching model/tokenizer/chat-template configuration, since GEN cannot reuse
+`prompt_token_ids` from the CTX HTTP response in this mode.
+
+**Worker discovery:** each router loads the selected CTX worker's `/server_info`
+lazily before either leg is dispatched, so newly discovered or autoscaled pods work
+without a gateway restart. Concurrent misses for one incarnation are coalesced;
+lookups have a 3-second timeout and a 1-minute TTL, and responses are capped at
+1 MiB. Pod UID, address and restart count identify an incarnation. A missing or
+invalid `/server_info` fails routing before dispatch, and failed lookups are not
+cached.
+
+The expected HTTP response follows TRT-LLM's `1.3.0rc8` OpenAI server schema:
+
+```json
+{"disaggregated_params":{"ctx_info_endpoint":"tcp://<CTX-address>:<port>","ctx_dp_rank":0}}
+```
+
+`ctx_info_endpoint` must be a single string, which is what the Python transceiver
+returns; any other JSON shape fails the lookup.
+
+`encoded_opaque_state` is also propagated when present. Only these fields are copied
+from `/server_info`: other keys are ignored so worker metadata can never overwrite
+the gateway-owned `request_type`, IDs or `schedule_style`. A field the handshake
+requires but this allowlist does not carry must be added to the handler explicitly.
+The endpoint must be reachable from GEN. `ctx_dp_rank` must be explicitly present and nonnegative; it is **attention
+DP rank**, not TP rank, replica index, or Pod number. Rank zero is valid but is never
+substituted for missing data. Metadata is taken from the exact selected Pod. A
+front-end that distributes requests across multiple DP ranks without stable
+worker/rank affinity is not supported by this Pod-level cache: expose rank-affine
+workers or retain `context_first`. Validate nonzero-rank deployments against the
+actual engine before enabling this mode.
+
+**Failure handling:** the CTX HTTP call retains client cancellation and the existing
+prefill timeout. Failure wakes the gateway through the per-incarnation PD leg state,
+never through a recycled RoutingContext. TRT-LLM has no SGLang `rid`/`/abort_request`
+contract; the gateway instead fails/resets the Envoy stream, relying on TRT-LLM's
+HTTP-disconnect cancellation. Keep Envoy `failure_mode_allow=false`. TRT's SSE headers
+can precede KV arrival, so a terminal CTX failure after response headers resets the
+stream rather than being ignored. This can also truncate an already-generating
+response; it never attempts to rewrite headers already sent to the client.
+
+Start validation with text-only 1P1D using the sample under
+`samples/quickstart/tensorrt/`; its README carries the smoke test and the rollback
+command.
 
 ---
 
 ## PD Prefill Fail-Fast
 
-Only the asynchronous engines (SGLang) can fail their prefill leg after `Route()`
+Only asynchronous modes (SGLang and TRT generation-first) can fail their prefill leg after `Route()`
 has already returned a decode pod. Without fail-fast the client waits for the
 decode leg to give up on a KV transfer that will never arrive - 300s in SGLang -
 and the decode pod holds its pre-allocated KV pages for that whole window.
@@ -395,7 +483,8 @@ Prefill leg fails (async worker)
    │
    ├─► record failure on the RoutingContext's PD leg state (first failure wins)
    │
-   ├─► POST /abort_request {"rid": ...} to the decode pod   (goroutine, twice)
+   ├─► SGLang: POST /abort_request {"rid": ...} to decode   (goroutine, twice)
+   │   TRT: no abort POST; reset Envoy upstream on failure
    │
    └─► wake the ext_proc stream ──► 5xx ImmediateResponse to the client
                                     header x-error-pd-prefill: true
@@ -410,18 +499,23 @@ Failure classes, as reported in the metrics and in the client error message:
 | `canceled` | The client or the gateway canceled the prefill request | yes |
 | `transport` | Connection refused, reset, DNS failure, ... | yes |
 | `http_status` | The prefill engine answered a non-2xx status | yes |
-| `bad_response` | The prefill engine answered 2xx with a body the gateway could not parse | no |
+| `bad_response` | The prefill engine answered 2xx with a body the gateway could not parse | engine-dependent |
 
-`bad_response` is not terminal: the prefill leg did run, so the decode leg is
-left alone and the client keeps whatever the decode leg produces.
+`bad_response` is terminal only for engines whose KV transfer is out of band
+(TRT generation-first): there the HTTP body is not the KV handshake, so an
+unparseable 2xx leaves the gateway unable to tell whether context processing
+succeeded. For SGLang, whose handshake completes in the body, it is not terminal:
+the prefill leg did run, so the decode leg is left alone and the client keeps
+whatever the decode leg produces.
 
 The client status code is the prefill engine's own status for `http_status`, and
 `503` for every other terminal class, since those have no upstream status. The
 response body is an OpenAI-shaped error carrying the class and a truncated
 upstream message, and it is sent even while the gateway is still waiting for the
-decode leg's response headers. Once the decode leg has started answering the
-client, the failure is only recorded and logged: the response is already on the
-wire, and the decode leg evidently did not need the prefill leg's output.
+decode leg's response headers. For SGLang, once the decode leg has started answering the client, the failure is
+only recorded and logged. TRT generation-first instead resets the stream even
+after headers, because TRT can send SSE headers before KV is available; it does not
+attempt to replace the already-started response.
 
 ---
 
@@ -523,6 +617,32 @@ When a combined pod is selected for load imbalance, `scoreCombinedPods()` picks 
 
 When a combined pod is selected, `prefillPod` is `nil` (no prefill HTTP call) and `decodePod` is the selected combined pod.
 
+### Adaptive Bucket Serving
+
+Enabled by `AIBRIX_BUCKET_SERVE=true`, which requires `AIBRIX_PROMPT_LENGTH_BUCKETING=true` as well: the plan only re-orders the rolesets that bucketing already filtered to.
+
+Plain bucketing keeps every roleset whose range covers the request as a candidate, and the scoring decides among them. Adaptive bucket serving narrows that choice. The gateway keeps a per-model picture of the prompt lengths it routes, charges every roleset the traffic only it can serve, and splits each range that several rolesets still need into one band per roleset, drawing each band against one replica-proportional share so a roleset carrying several overlaps does not draw a fresh share from each. The cut points sit at quantiles of the observed traffic. The picture is an EWMA with a 30s half-life, a model's plan is recomputed at most once every 5s, and one plan holds at most 16 affinity bands. A shared range needs a meaningful share of the model's traffic before it is split at all, and a range that cannot afford one band per needing roleset splits into as many bands as the budget left allows; an interval that is not split keeps every covering roleset a candidate.
+
+```
+bucketServeBand()   (before selectMu, one call per request)
+    ├─ observe promptLength for the model
+    ├─ groups: one per eligible roleset, with the range its profile declares and its prefill replica count
+    ├─ plan: shared ranges split at mode quantiles in replica proportion, light ones kept whole
+    └─ band for promptLength → banded roleset and band upper bound
+
+filterPrefillDecodePods()
+    ├─ steps 1-5: bucket filtering and the load-imbalance fast paths
+    ├─ banded roleset still has prefill and decode candidates
+    │     → narrow both sides to that roleset (step 6)
+    └─ otherwise keep the load fast paths' choice
+```
+
+`AIBRIX_BUCKET_SERVE_MODE` picks the unit the cut points are measured in: `throughput` (default) balances prompt-token mass, while `rps` balances request counts. Within a shared range the bands divide the observed traffic in proportion to the replica share each roleset still needs, counted in that unit. Both are per-model: a profile that selects another mode re-plans only the models it routes.
+
+The plan is advisory. It never widens a choice, only prefers one of the rolesets that already cover the request's length. Wherever the plan holds no band, the scoring considers every covering roleset, and when the banded roleset has no candidate left after the load fast paths, the request routes exactly as it would without the plan. The steady state does narrow the choice, which is the feature, and a stale or wrong plan costs balance, not correctness. With the feature off the planner records and publishes nothing.
+
+Metrics: `pd_bucket_serve_band_total` and `pd_bucket_serve_prompt_tokens_total` count the requests and prompt tokens each banded roleset carried (label `roleset`), so a counter joins the pods that received the band, and the `pd_bucket_serve_band_max` gauge holds the highest upper prompt-length bound among the bands a roleset currently holds (a roleset can hold two bands when its range overlaps two others), deleted when no live plan holds the roleset.
+
 ---
 
 ## Environment Variables
@@ -532,10 +652,12 @@ When a combined pod is selected, `prefillPod` is `nil` (no prefill HTTP call) an
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AIBRIX_PREFILL_SCORE_POLICY` | `prefix_cache` | Prefill pod scoring: `prefix_cache` or `least_request`. Any other value logs a warning and falls back to `prefix_cache`. |
-| `AIBRIX_DECODE_SCORE_POLICY` | `load_balancing` | Decode pod scoring for `finalPDScore`: `load_balancing` or `least_request`. Any other value logs a warning and falls back to `load_balancing`. |
+| `AIBRIX_DECODE_SCORE_POLICY` | `load_balancing` | Decode pod scoring for `finalPDScore`: `load_balancing`, `least_request`, `conductor` or `token_load`. Any other value logs a warning and falls back to `load_balancing`. |
 | `AIBRIX_KV_CONNECTOR_TYPE` | `shfs` | KV transfer backend: `shfs` (GPU/SHFS), `nixl` (Neuron/NIXL), or `mooncake` (Mooncake) |
 | `AIBRIX_PREFILL_REQUEST_TIMEOUT` | `30` | Prefill HTTP request timeout in seconds. Exceeding it is a terminal `timeout` prefill failure. |
 | `AIBRIX_PROMPT_LENGTH_BUCKETING` | `false` | Enable prompt-length-based pod bucketing |
+| `AIBRIX_BUCKET_SERVE` | `false` | Enable adaptive bucket serving on top of prompt-length bucketing |
+| `AIBRIX_BUCKET_SERVE_MODE` | `throughput` | The unit the adaptive cut points are measured in: `throughput` (prompt token mass) or `rps` (request counts) |
 
 ### Prefill Load Balancing
 
@@ -564,7 +686,8 @@ When a combined pod is selected, `prefillPod` is `nil` (no prefill HTTP call) an
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AIBRIX_TRT_MACHINE_ID` | `0` | 10-bit machine ID used in Snowflake disagg request ID generation (range: `[0, 1024)`) |
+| `AIBRIX_TRT_MACHINE_ID` | `0` | 10-bit machine ID used in Snowflake disagg request ID generation (range: `[0, 1024)`); distinct per gateway process sharing TRT workers |
+| `AIBRIX_TRT_SCHEDULE_STYLE` | `context_first` | TRT-only dispatch mode: `context_first` (sequential) or `generation_first` (parallel). Read at router initialization; unknown values are logged and fall back to `context_first` |
 
 ### Inherited from Prefix Cache Router
 
@@ -589,7 +712,7 @@ SGLang uses a bootstrap mechanism for prefill/decode coordination. The port is r
 | Metric | When |
 |--------|------|
 | `GatewayPrefillRequestFailTotal` | Engine validation fail, pod filter fail, prefill HTTP error |
-| `GatewayPrefillRequestSuccessTotal` | Prefill HTTP succeeded. For SGLang, this is emitted asynchronously after the background prefill request completes, not when `Route()` returns. |
+| `GatewayPrefillRequestSuccessTotal` | Prefill HTTP succeeded. For SGLang and TRT generation-first, emitted asynchronously after the background prefill request completes, not when `Route()` returns. |
 | `PDSelectedPrefillPodTotal` | Prefill pod selected (per pod label) |
 | `PDSelectedDecodePodTotal` | Decode pod selected (per pod label) |
 | `gateway_pd_prefill_failure_total{class,stage}` | A terminal prefill failure reached the client-facing handler. `stage` is `before_response` (the client was failed fast) or `after_response` (the decode leg had already started answering) |
@@ -641,6 +764,8 @@ NewPDRouter()
   │     (other)         → log warning, same as load_balancing
   ├─ create HTTP client with connection pool
   │     MaxIdleConns=100, MaxIdleConnsPerHost=10, IdleConnTimeout=90s
+  ├─ TRT handler from AIBRIX_TRT_SCHEDULE_STYLE (immutable, router-scoped)
+  │     owns a lazily populated /server_info cache for generation_first
   ├─ NewPrefillRequestTracker()
   ├─ NewPendingDecodeTracker()
   └─ startPrefixUpdater()                 // background goroutine

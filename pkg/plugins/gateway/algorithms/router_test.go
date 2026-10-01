@@ -666,8 +666,8 @@ func TestMultiStrategyRouterRoute_SelectsLeastLoadedPortForMultiPortPod(t *testi
 	address, err := m.Route(ctx, portWrapper{
 		pods: []*v1.Pod{podA, podB},
 		ports: map[string][]int{
-			"pod-a": {8000, 8001},
-			"pod-b": {8000},
+			utils.GeneratePodKey(podA.Namespace, podA.Name): {8000, 8001},
+			utils.GeneratePodKey(podB.Namespace, podB.Name): {8000},
 		},
 	})
 
@@ -1068,6 +1068,10 @@ func TestValidateRejectsNilProviderInMultiStrategy(t *testing.T) {
 	rm.routerMu.Unlock()
 
 	algorithm, ok := rm.Validate("validate-scorer,validate-nil-provider")
+	assert.False(t, ok)
+	assert.Equal(t, types.RoutingAlgorithm(RouterNotSet), algorithm)
+
+	algorithm, ok = rm.Validate("validate-nil-provider")
 	assert.False(t, ok)
 	assert.Equal(t, types.RoutingAlgorithm(RouterNotSet), algorithm)
 }

@@ -138,26 +138,24 @@ func selectTargetPodWithLeastRequestCountFromCounts(podRequestCount map[string]i
 	if klog.V(4).Enabled() {
 		klog.V(4).InfoS("selectTargetPodWithLeastRequestCount", "podRequestCount", podRequestCount)
 	}
-	for podname, totalReq := range podRequestCount {
+	for podKey, totalReq := range podRequestCount {
 		if totalReq < minCount {
 			minCount = totalReq
-			targetPods = []string{podname}
+			targetPods = []string{podKey}
 		} else if totalReq == minCount {
-			targetPods = append(targetPods, podname)
+			targetPods = append(targetPods, podKey)
 		}
 	}
 	if len(targetPods) > 0 {
-		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
+		targetPod = podsByKey(readyPods)[targetPods[rand.Intn(len(targetPods))]]
 	}
 	return targetPod
 }
 
+// selectTargetPodAndPortWithLeastRequestCount picks the least loaded pod and port
+// among readyPods. portsMap is keyed by pod key, as types.PodList.ListPortsForPod
+// returns it.
 func selectTargetPodAndPortWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod, portsMap map[string][]int) (*v1.Pod, int) {
-	readyPodsMap := make(map[string]*v1.Pod, len(readyPods))
-	for _, pod := range readyPods {
-		readyPodsMap[pod.Name] = pod
-	}
-
 	minCount := math.MaxInt32
 
 	var targetApiServers []string
@@ -182,20 +180,21 @@ func selectTargetPodAndPortWithLeastRequestCount(cache cache.Cache, readyPods []
 		return nil, 0
 	}
 
-	// Random selection among candidates
+	// Random selection among candidates. Server keys are "<pod key>/<port>", and the
+	// pod key itself contains a "/", so split at the last one.
 	selectedServer := targetApiServers[rand.Intn(len(targetApiServers))]
-	parts := strings.Split(selectedServer, "/")
-	if len(parts) != 2 {
+	sep := strings.LastIndex(selectedServer, "/")
+	if sep < 0 {
 		klog.ErrorS(nil, "Invalid server name format", "serverName", selectedServer)
 		return nil, 0
 	}
 
-	podName := parts[0]
-	portStr := parts[1]
+	podKey := selectedServer[:sep]
+	portStr := selectedServer[sep+1:]
 
-	targetPod, found := readyPodsMap[podName]
+	targetPod, found := podsByKey(readyPods)[podKey]
 	if !found {
-		klog.ErrorS(nil, "Selected pod not found in ready pods list", "podName", podName)
+		klog.ErrorS(nil, "Selected pod not found in ready pods list", "podKey", podKey)
 		return nil, 0
 	}
 
@@ -212,7 +211,7 @@ func selectTargetPortForPodWithLeastRequestCount(cache cache.Cache, pod *v1.Pod,
 	if pod == nil {
 		return 0
 	}
-	podPorts := portsMap[pod.Name]
+	podPorts := portsMap[utils.GeneratePodKey(pod.Namespace, pod.Name)]
 	if len(podPorts) == 0 {
 		return 0
 	}
@@ -243,24 +242,39 @@ func selectTargetPortForPodWithLeastRequestCount(cache cache.Cache, pod *v1.Pod,
 }
 
 // getRequestCounts returns the live cross-gateway running request count for each
-// pod, via GetPodsRunningRequests (one Redis round trip for the whole list) rather
-// than GetMetricValueByPod(RealtimeNumRequestsRunning), which is a periodically
-// synced cache that, between scrape ticks, only reflects this gateway's local view.
+// pod, keyed by pod key (namespace/name), via GetPodsRunningRequests (one Redis round
+// trip for the whole list) rather than GetMetricValueByPod(RealtimeNumRequestsRunning),
+// which is a periodically synced cache that, between scrape ticks, only reflects this
+// gateway's local view.
 func getRequestCounts(cache cache.Cache, readyPods []*v1.Pod) map[string]int {
 	counts, err := cache.GetPodsRunningRequests(readyPods)
 	podRequestCount := make(map[string]int, len(readyPods))
 	for _, pod := range readyPods {
+		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 		if err == nil && counts != nil {
-			podRequestCount[pod.Name] = int(counts[utils.GeneratePodKey(pod.Namespace, pod.Name)])
+			podRequestCount[podKey] = int(counts[podKey])
 		} else {
-			podRequestCount[pod.Name] = 0
+			podRequestCount[podKey] = 0
 		}
 	}
 
 	return podRequestCount
 }
 
+// podsByKey maps each pod's key (namespace/name) to the pod, so a key picked from a
+// per-request map resolves to the pod it was computed for even when two candidates
+// share a name.
+func podsByKey(pods []*v1.Pod) map[string]*v1.Pod {
+	byKey := make(map[string]*v1.Pod, len(pods))
+	for _, pod := range pods {
+		byKey[utils.GeneratePodKey(pod.Namespace, pod.Name)] = pod
+	}
+	return byKey
+}
+
 // getRequestCountsWithPort returns running request count for each pod with port tracked by gateway.
+// Every entry is keyed "<pod key>/<port>", the format selectTargetPodAndPortWithLeastRequestCount
+// splits to recover the pod and the port to dial. portsMap is keyed by pod key.
 // Single-port pods use the live cross-gateway count (GetPodsRunningRequests, see
 // getRequestCounts); the running-requests counter is pod-level only, with no per-port
 // dimension, so a genuinely multi-port pod still reads its per-port metric slot via
@@ -268,7 +282,7 @@ func getRequestCounts(cache cache.Cache, readyPods []*v1.Pod) map[string]int {
 func getRequestCountsWithPort(c cache.Cache, readyPods []*v1.Pod, portsMap map[string][]int) map[string]int {
 	singlePort := make([]*v1.Pod, 0, len(readyPods))
 	for _, pod := range readyPods {
-		if podPorts, exists := portsMap[pod.Name]; exists && len(podPorts) == 1 {
+		if podPorts, exists := portsMap[utils.GeneratePodKey(pod.Namespace, pod.Name)]; exists && len(podPorts) == 1 {
 			singlePort = append(singlePort, pod)
 		}
 	}
@@ -276,28 +290,29 @@ func getRequestCountsWithPort(c cache.Cache, readyPods []*v1.Pod, portsMap map[s
 
 	podRequestCount := make(map[string]int)
 	for _, pod := range readyPods {
-		podPorts, exists := portsMap[pod.Name]
+		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+		podPorts, exists := portsMap[podKey]
 		if !exists || len(podPorts) == 0 {
 			continue
 		}
 
-		for _, port := range podPorts {
-			if len(podPorts) == 1 {
-				count := 0
-				if err == nil && liveCounts != nil {
-					count = int(liveCounts[utils.GeneratePodKey(pod.Namespace, pod.Name)])
-				}
-				podRequestCount[pod.Name] = count
-				continue
+		if len(podPorts) == 1 {
+			count := 0
+			if err == nil && liveCounts != nil {
+				count = int(liveCounts[podKey])
 			}
+			podRequestCount[podKey+"/"+strconv.Itoa(podPorts[0])] = count
+			continue
+		}
 
-			metricName := metrics.RealtimeNumRequestsRunning + "/" + strconv.Itoa(port)
-			keyName := pod.Name + "/" + strconv.Itoa(port)
+		for _, port := range podPorts {
+			portStr := strconv.Itoa(port)
+			metricName := metrics.RealtimeNumRequestsRunning + "/" + portStr
 			var count int
 			if val, err := c.GetMetricValueByPod(pod.Name, pod.Namespace, metricName); err == nil && val != nil {
 				count = int(val.GetSimpleValue())
 			}
-			podRequestCount[keyName] = count
+			podRequestCount[podKey+"/"+portStr] = count
 		}
 	}
 

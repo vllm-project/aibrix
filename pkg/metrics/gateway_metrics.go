@@ -63,6 +63,16 @@ const (
 	// charged to each prefill pod (token_load prefill score policy)
 	PDTokenLoadActiveTokens = "pd_token_load_active_tokens"
 	PDTokenLoadKVTokens     = "pd_token_load_kv_tokens"
+	// gauge to track the prompt tokens the pd router has handed to each decode
+	// pod (token_load decode score policy)
+	PDTokenLoadDecodeTokens = "pd_token_load_decode_tokens"
+
+	// counters and a gauge of the adaptive bucket-serve plan of the pd prefill
+	// routing: the requests and prompt tokens each banded roleset carried, and
+	// the current upper bound of the bands it holds
+	PDBucketServeBandTotal         = "pd_bucket_serve_band_total"
+	PDBucketServePromptTokensTotal = "pd_bucket_serve_prompt_tokens_total"
+	PDBucketServeBandMax           = "pd_bucket_serve_band_max"
 
 	// Duration bucket counters for timing breakdowns
 	GatewayRoutingTimeBucketTotal    = "gateway_routing_time_bucket_total"
@@ -174,6 +184,38 @@ var (
 				Raw: Gauge,
 			},
 			Description: "Estimated prompt tokens whose KV cache is still resident on a prefill pod, as charged by the pd router",
+		},
+		PDTokenLoadDecodeTokens: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			Description: "Estimated prompt tokens of the requests the pd router has routed to a decode pod that have not completed yet",
+		},
+		PDBucketServeBandTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Requests the pd router banded to a roleset by the adaptive bucket-serve plan",
+		},
+		PDBucketServePromptTokensTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Prompt tokens the pd router banded to a roleset by the adaptive bucket-serve plan",
+		},
+		PDBucketServeBandMax: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			Description: "Current highest upper prompt-length bound among the adaptive bucket-serve bands a roleset holds",
 		},
 		GatewayInFlight: {
 			MetricScope:  PodMetricScope,

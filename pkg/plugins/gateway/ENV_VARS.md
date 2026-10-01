@@ -151,6 +151,35 @@ The four `AIBRIX_ROUTING_AUTO_BLEND_*` weights can also be set per request by th
 
 ---
 
+## External Replica Router (`algorithms/external*.go`)
+
+The optional `external` strategy sends the already-filtered candidate snapshot to one
+operator-configured HTTP endpoint. An unset endpoint disables the strategy. Invalid enabled
+configuration fails Gateway startup. Candidate metrics and labels are opt-in allowlists; prompts,
+request bodies, credentials, arbitrary client headers, and pod IPs are never sent.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `AIBRIX_EXTERNAL_ROUTER_ENDPOINT` | URL | _(unset)_ | Complete `http` or `https` operation URL. Userinfo and fragments are rejected. |
+| `AIBRIX_EXTERNAL_ROUTER_POLICY_MODE` | enum | _(required)_ | `Advisory` or `Authoritative`. |
+| `AIBRIX_EXTERNAL_ROUTER_FAILURE_MODE` | enum | _(required)_ | `FailOpen` or `FailClosed`; Authoritative requires FailClosed. |
+| `AIBRIX_EXTERNAL_ROUTER_FALLBACK` | string | _(none)_ | Registered non-external, non-exclusive local router; required for Advisory and FailOpen. `pd` and `slo*` are rejected because they require dedicated Gateway preprocessing. |
+| `AIBRIX_EXTERNAL_ROUTER_TIMEOUT` | duration | `10ms` | Deadline for one decision exchange. |
+| `AIBRIX_EXTERNAL_ROUTER_MAX_INFLIGHT` | int | `256` | Non-blocking per-process bulkhead capacity. |
+| `AIBRIX_EXTERNAL_ROUTER_MAX_REQUEST_BYTES` | bytes | `256KiB` | Maximum encoded request size. Accepts bytes, `KiB`, or `MiB`. |
+| `AIBRIX_EXTERNAL_ROUTER_MAX_RESPONSE_BYTES` | bytes | `64KiB` | Maximum response body size. Accepts bytes, `KiB`, or `MiB`. |
+| `AIBRIX_EXTERNAL_ROUTER_FAILURE_THRESHOLD` | int | `5` | Consecutive attempted-exchange system failures before opening the circuit. |
+| `AIBRIX_EXTERNAL_ROUTER_OPEN_DURATION` | duration | `1s` | Circuit-open duration before one half-open probe. |
+| `AIBRIX_EXTERNAL_ROUTER_AUTH_TOKEN_FILE` | path | _(unset)_ | Optional non-empty bearer token file loaded at startup. |
+| `AIBRIX_EXTERNAL_ROUTER_CANDIDATE_ATTRIBUTES` | CSV | _(empty)_ | Pod-label keys allowed into candidate attributes. |
+| `AIBRIX_EXTERNAL_ROUTER_CANDIDATE_METRICS` | CSV | _(empty)_ | Any of `runningRequests`, `engineUtilization`, `kvCacheUsage`. |
+| `AIBRIX_EXTERNAL_ROUTER_POLICY_ATTRIBUTES` | CSV | _(empty)_ | Downstream extension-point allowlist for trusted RoutingContext policy attributes. Upstream AIBrix has no built-in producer; integrators must call `SetTrustedPolicyAttribute`. Raw headers are never copied automatically. |
+
+See the [External Replica Routing guide](../../../docs/source/features/external-replica-routing.rst)
+and the published OpenAPI contract for policy and protocol details.
+
+---
+
 ## Preble (Prefix Cache with Histogram) Router (`algorithms/prefix_cache_preble.go`)
 
 | Variable | Type | Default | Description |
@@ -201,11 +230,15 @@ Scoring formula: `score = (fairnessWeight * normFairness + utilizationWeight * n
 | `AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD` | float64 | `2048.0` | Minimum (max − min) token-throughput spread (tokens/s) across decode pods to trigger throughput-imbalance routing. |
 | `AIBRIX_DECODE_SCORE_RATIO_THRESHOLD` | float64 | `1.5` | Max/min drain-rate score ratio above which the slowest decode pod is excluded from selection. |
 | `AIBRIX_PROMPT_LENGTH_BUCKETING` | bool | `false` | Route requests to prefill pods whose prompt-length bucket matches the request length. |
+| `AIBRIX_BUCKET_SERVE` | bool | `false` | Adaptive bucket serving: band the prompt-length range that several rolesets declare in common and prefer the roleset a request length is banded to. Requires `AIBRIX_PROMPT_LENGTH_BUCKETING=true`. |
+| `AIBRIX_BUCKET_SERVE_MODE` | string | `"throughput"` | The unit the adaptive cut points are measured in: `throughput` (prompt token mass) or `rps` (request counts). An unknown value keeps the default. |
 | `AIBRIX_KV_CONNECTOR_TYPE` | string | `"shfs"` | KV cache transfer backend. Options: `shfs` (GPU shared memory), `nixl` (Neuron). |
 | `AIBRIX_PREFILL_SCORE_POLICY` | string | `"prefix_cache"` | Strategy for selecting the prefill pod. Options: `prefix_cache`, `least_request`. |
-| `AIBRIX_DECODE_SCORE_POLICY` | string | `"load_balancing"` | Strategy for selecting the decode pod. Options: `load_balancing`, `least_request`. |
+| `AIBRIX_DECODE_SCORE_POLICY` | string | `"load_balancing"` | Strategy for selecting the decode pod. Options: `load_balancing`, `least_request`, `conductor`, `token_load`. |
 
-The prefill/decode routing thresholds (`AIBRIX_PREFILL_*`, `AIBRIX_DECODE_*`, `AIBRIX_TOKEN_LOAD_*`, `AIBRIX_HYBRID_CACHE_LOAD_FACTOR`, `AIBRIX_MIN_MATCH_PCT`, `AIBRIX_PROMPT_LENGTH_BUCKETING`) can also be set per request by the model config profile (`routingConfig.pd.*` and `routingConfig.promptLengthBucketing`); see [Model Config Profile Overrides](#model-config-profile-overrides).
+The prefill/decode routing thresholds (`AIBRIX_PREFILL_*`, `AIBRIX_DECODE_*`, `AIBRIX_TOKEN_LOAD_*`, `AIBRIX_HYBRID_CACHE_LOAD_FACTOR`, `AIBRIX_MIN_MATCH_PCT`, `AIBRIX_PROMPT_LENGTH_BUCKETING`, `AIBRIX_BUCKET_SERVE`,
+`AIBRIX_BUCKET_SERVE_MODE`) can also be set per request by the model config profile
+(`routingConfig.pd.*`, `routingConfig.promptLengthBucketing` and `routingConfig.bucketServe*`); see [Model Config Profile Overrides](#model-config-profile-overrides).
 
 ### PD Prefill Fail-Fast (`algorithms/pd/abort.go`)
 
@@ -268,6 +301,8 @@ description and examples live in the Config Profiles section of the gateway plug
 |---|---|---|
 | `AIBRIX_TTFT_THRESHOLD_S` | `ttftThresholdS` | Top-level profile field, not inside `routingConfig`. `0` counts as unset and keeps the environment default, so a profile can only change the threshold to another positive value, never to `0`. |
 | `AIBRIX_PROMPT_LENGTH_BUCKETING` | `routingConfig.promptLengthBucketing` | Turns bucketing on or off for the profile's requests. |
+| `AIBRIX_BUCKET_SERVE` | `routingConfig.bucketServe` | Turns the adaptive plan on or off for the profile's requests. |
+| `AIBRIX_BUCKET_SERVE_MODE` | `routingConfig.bucketServeMode` | `throughput` or `rps`; a name the planner does not know keeps the environment default. |
 | `AIBRIX_DECODE_ABORT_TIMEOUT` | `routingConfig.pd.decodeAbortTimeout` | `0` sends the abort without waiting. |
 | `AIBRIX_DECODE_ABORT_RETRY_DELAY` | `routingConfig.pd.decodeAbortRetryDelay` | `0` repeats the abort immediately. |
 | `AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD` | `routingConfig.pd.prefillLoadImbalanceMinSpread` | |

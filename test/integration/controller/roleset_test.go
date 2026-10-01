@@ -1087,13 +1087,15 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 		gomega.Expect(preferred).To(gomega.Equal(0))
 		gomega.Expect(required).To(gomega.Equal(0))
 
-		latest := &orchestrationapi.RoleSet{}
-		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest)).To(gomega.Succeed())
-		latest.Spec.TopologyPolicy = &orchestrationapi.TopologyPolicy{
-			Scope: orchestrationapi.TopologyRoleSetScope,
-			Key:   "kubernetes.io/hostname",
-		}
-		gomega.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := &orchestrationapi.RoleSet{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest)).To(gomega.Succeed())
+			latest.Spec.TopologyPolicy = &orchestrationapi.TopologyPolicy{
+				Scope: orchestrationapi.TopologyRoleSetScope,
+				Key:   "kubernetes.io/hostname",
+			}
+			g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+		}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
 
 		pods = waitForTopologyRolePods(ns.Name, rs.Name, role.Name, 1)
 		none, preferred, required = countPodsByTopologyAffinity(pods, "kubernetes.io/hostname", map[string]string{
@@ -1113,9 +1115,13 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 		gomega.Expect(preferred).To(gomega.Equal(1))
 		gomega.Expect(required).To(gomega.Equal(0))
 
-		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest)).To(gomega.Succeed())
-		latest.Spec.TopologyPolicy.Mode = orchestrationapi.TopologyPolicyRequired
-		gomega.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := &orchestrationapi.RoleSet{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest)).To(gomega.Succeed())
+			g.Expect(latest.Spec.TopologyPolicy).ToNot(gomega.BeNil())
+			latest.Spec.TopologyPolicy.Mode = orchestrationapi.TopologyPolicyRequired
+			g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+		}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
 
 		pods = waitForTopologyRolePods(ns.Name, rs.Name, role.Name, 1)
 		none, preferred, required = countPodsByTopologyAffinity(pods, "kubernetes.io/hostname", map[string]string{

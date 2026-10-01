@@ -23,6 +23,11 @@ import (
 )
 
 func TestNewServerWithOptionsUsesInjectedCache(t *testing.T) {
+	// The local manager captures injected for the strategies registered with
+	// explicit cache constructors. Other production providers intentionally keep
+	// their global-cache dependency and need it initialized before availability
+	// (rather than mere registration) is validated.
+	cache.InitForTest()
 	injected := &MockCache{}
 
 	server := NewServerWithOptions(nil, nil, nil, ServerOptions{Cache: injected})

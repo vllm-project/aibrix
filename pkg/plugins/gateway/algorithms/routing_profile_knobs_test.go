@@ -90,6 +90,8 @@ func probeRoutingDefaults() *types.RoutingOverrides {
 			TokenLoad:             types.PDTokenLoadOverrides{KVWeight: 0.3, RequestCost: 3500, TTL: time.Minute, SessionTTL: 30 * time.Minute},
 			HybridCacheLoadFactor: 0.5,
 			MinMatchPct:           0,
+			BucketServe:           false,
+			BucketServeMode:       string(pd.BucketModeRPS),
 			PrefillRequestTimeout: 30 * time.Second,
 		},
 	}
@@ -247,6 +249,22 @@ func TestResolveRoutingOverridesFromRoutingConfig(t *testing.T) {
 				assert.Equal(t, 0.0, ov.PD.HybridCacheLoadFactor, "0 keeps the full token load")
 				assert.Equal(t, 100.0, ov.PD.MinMatchPct)
 				assert.Equal(t, 0.5, ov.PD.DecodeLB.WeightRunning)
+			},
+		},
+		{
+			name:          "bucket-serve switch and mode",
+			routingConfig: `{"bucketServe":true,"bucketServeMode":"throughput"}`,
+			check: func(t *testing.T, ov *types.RoutingOverrides) {
+				assert.True(t, ov.PD.BucketServe)
+				assert.Equal(t, string(pd.BucketModeThroughput), ov.PD.BucketServeMode)
+			},
+		},
+		{
+			name:          "a bucket-serve mode the planner does not know keeps the process default",
+			routingConfig: `{"bucketServe":true,"bucketServeMode":"Throughput"}`,
+			check: func(t *testing.T, ov *types.RoutingOverrides) {
+				assert.True(t, ov.PD.BucketServe, "the switch is a plain boolean and still lands")
+				assert.Equal(t, string(pd.BucketModeRPS), ov.PD.BucketServeMode, "only the names the planner knows are accepted")
 			},
 		},
 	}
@@ -429,11 +447,11 @@ func TestPrebleDecodingLengthKnobReachesTheHistogram(t *testing.T) {
 	profiled := createTestRoutingContext("model", "hello world", "req-preble-overrides")
 	profiled.SetRoutingOverrides(&types.RoutingOverrides{Preble: types.PrebleOverrides{DecodingLength: 32}})
 	require.NoError(t, router.PostRouteUpdate(profiled, podList, pod))
-	assert.Equal(t, 32, router.histogram.currentDecodeLengthsPerPod[pod.Name])
+	assert.Equal(t, 32, router.histogram.currentDecodeLengthsPerPod[utils.GeneratePodKey(pod.Namespace, pod.Name)])
 
 	plain := createTestRoutingContext("model", "hello world", "req-preble-default")
 	require.NoError(t, router.PostRouteUpdate(plain, podList, pod))
-	assert.Equal(t, 32+decodingLength, router.histogram.currentDecodeLengthsPerPod[pod.Name], "a request without the knob keeps the process default")
+	assert.Equal(t, 32+decodingLength, router.histogram.currentDecodeLengthsPerPod[utils.GeneratePodKey(pod.Namespace, pod.Name)], "a request without the knob keeps the process default")
 }
 
 func TestPrefixCacheSigmaKnobControlsCandidateFiltering(t *testing.T) {
@@ -454,8 +472,14 @@ func TestPrefixCacheSigmaKnobControlsCandidateFiltering(t *testing.T) {
 
 	bump := func(podName string, times int) {
 		t.Helper()
-		pod, found := utils.FilterPodByName(podName, pods)
-		require.True(t, found)
+		var pod *v1.Pod
+		for _, candidate := range pods {
+			if candidate.Name == podName {
+				pod = candidate
+				break
+			}
+		}
+		require.NotNil(t, pod)
 		for i := 0; i < times; i++ {
 			ctx := types.NewRoutingContext(context.Background(), RouterPrefixCache, model, "", fmt.Sprintf("%s-bump-%d", podName, i), "")
 			ctx.SetTargetPod(pod)

@@ -213,15 +213,13 @@ func TestProcessBlockStored(t *testing.T) {
 	// Create test event
 	tokens1 := []byte{1, 2, 3, 4}
 	tokens2 := []byte{5, 6, 7, 8}
-	parentHash := int64(999)
 
 	event := BlockStored{
-		BlockHashes:     []int64{1001, 1002},
-		ParentBlockHash: &parentHash,
-		Tokens:          [][]byte{tokens1, tokens2},
-		ModelName:       modelName,
-		LoraID:          loraID,
-		SourcePod:       sourcePod,
+		BlockHashes: []int64{1001, 1002},
+		Tokens:      [][]byte{tokens1, tokens2},
+		ModelName:   modelName,
+		LoraID:      loraID,
+		SourcePod:   sourcePod,
 	}
 
 	// Process event
@@ -270,6 +268,86 @@ func TestProcessBlockStored(t *testing.T) {
 		t.Error("hash mapping count should remain 2")
 	}
 	contextData.mappingMu.RUnlock()
+}
+
+func TestProcessBlockStoredMultiBlockChain(t *testing.T) {
+	bs := prefixCacheBlockSize
+	tokens := makeTokens(3 * bs)
+	parent := int64(1)
+	blocks := [][]byte{tokens[:bs], tokens[bs : 2*bs], tokens[2*bs:]}
+	readyPods := map[string]struct{}{testPod1Name: {}}
+
+	tests := []struct {
+		name   string
+		events []BlockStored
+	}{
+		{
+			name: "one event with all blocks",
+			events: []BlockStored{
+				{BlockHashes: []int64{1, 2, 3}, Tokens: blocks},
+			},
+		},
+		{
+			name: "first block already known",
+			events: []BlockStored{
+				{BlockHashes: []int64{1}, Tokens: blocks[:1]},
+				{BlockHashes: []int64{1, 2, 3}, Tokens: blocks},
+			},
+		},
+		{
+			name: "event continuing from a parent block",
+			events: []BlockStored{
+				{BlockHashes: []int64{1}, Tokens: blocks[:1]},
+				{BlockHashes: []int64{2, 3}, ParentBlockHash: &parent, Tokens: blocks[1:]},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			table := NewSyncPrefixHashTable()
+			defer table.Close()
+
+			for _, ev := range tt.events {
+				ev.ModelName = testModelName
+				ev.LoraID = -1
+				ev.SourcePod = testPod1Name
+				if err := table.ProcessBlockStored(ev); err != nil {
+					t.Fatalf("failed to process block stored: %v", err)
+				}
+			}
+
+			matches, _ := table.MatchPrefix(testModelName, -1, tokens, readyPods)
+			if matches[testPod1Name] != 100 {
+				t.Errorf("expected 100%% match, got %d%%", matches[testPod1Name])
+			}
+		})
+	}
+}
+
+func TestProcessBlockStoredUnknownParent(t *testing.T) {
+	table := NewSyncPrefixHashTable()
+	defer table.Close()
+
+	bs := prefixCacheBlockSize
+	tokens := makeTokens(3 * bs)
+	parent := int64(999)
+	ev := BlockStored{
+		BlockHashes:     []int64{2, 3},
+		ParentBlockHash: &parent,
+		Tokens:          [][]byte{tokens[bs : 2*bs], tokens[2*bs:]},
+		ModelName:       testModelName,
+		LoraID:          -1,
+		SourcePod:       testPod1Name,
+	}
+	if err := table.ProcessBlockStored(ev); err != nil {
+		t.Fatalf("failed to process block stored: %v", err)
+	}
+
+	matches, _ := table.MatchPrefix(testModelName, -1, tokens[bs:], map[string]struct{}{testPod1Name: {}})
+	if matches[testPod1Name] != 0 {
+		t.Errorf("expected 0%% match on a suffix with an unknown parent, got %d%%", matches[testPod1Name])
+	}
 }
 
 func TestProcessBlockRemoved(t *testing.T) {
@@ -462,6 +540,105 @@ func TestMaxContextsLimit(t *testing.T) {
 	// Should have created all contexts (eviction is async)
 	if table.contextCount.Load() != 10 {
 		t.Errorf("expected 10 contexts, got %d", table.contextCount.Load())
+	}
+}
+
+// TestMaxContextsLimitEnforcedOnEviction reproduces the maxContexts cap being a
+// no-op: getOrCreateContextData schedules eviction once the count exceeds the
+// cap, but performEviction never trimmed to the cap, only expired contexts
+// that had been idle past evictionDuration. All 11 contexts here are fresh, so
+// only the explicit cap enforcement can bring the count back down.
+func TestMaxContextsLimitEnforcedOnEviction(t *testing.T) {
+	// Construct the table without starting the background eviction worker
+	// (unlike NewSyncPrefixHashTable): its 1-second check ticker could race
+	// with the manual performEviction() call below and make this test flaky.
+	table := &SyncPrefixHashTable{
+		seed:                  12345,
+		maxContexts:           5,
+		maxPrefixesPerContext: maxPrefixesPerContext,
+		blockSize:             prefixCacheBlockSize,
+		evictionInterval:      time.Hour,
+		evictionDuration:      20 * time.Minute,
+		stopCh:                make(chan struct{}),
+	}
+	defer table.Close()
+
+	for i := 0; i < table.maxContexts+6; i++ {
+		modelName := fmt.Sprintf("model-%d", i)
+		tokens := []byte{1, 2, 3, 4}
+		hashes := table.GetPrefixHashes(tokens)
+		if err := table.AddPrefix(modelName, -1, fmt.Sprintf("pod-%d", i), hashes); err != nil {
+			t.Fatalf("failed to add prefix: %v", err)
+		}
+	}
+
+	table.performEviction()
+
+	if got := int(table.contextCount.Load()); got > table.maxContexts {
+		t.Errorf("expected contextCount <= %d after performEviction, got %d", table.maxContexts, got)
+	}
+}
+
+// TestPerformEvictionRemovesExpiredPodsFromActiveContext reproduces
+// performEviction's Phase 3 doing nothing: evictExpiredPodsInBatch existed but
+// was never called, so a pod that stopped sending traffic stayed in the
+// prefix map of a context that itself is still active (recently touched by
+// another pod).
+func TestPerformEvictionRemovesExpiredPodsFromActiveContext(t *testing.T) {
+	table := &SyncPrefixHashTable{
+		seed:                  12345,
+		maxContexts:           maxContexts,
+		maxPrefixesPerContext: maxPrefixesPerContext,
+		blockSize:             prefixCacheBlockSize,
+		evictionInterval:      time.Hour,
+		evictionDuration:      20 * time.Minute,
+		stopCh:                make(chan struct{}),
+	}
+
+	tokens := makeTokens(16) // one full block at the default block size
+	hashes := table.GetPrefixHashes(tokens)
+	if len(hashes) == 0 {
+		t.Fatal("test setup produced no prefix hashes")
+	}
+	if err := table.AddPrefix(testModelName, -1, "stale-pod", hashes); err != nil {
+		t.Fatalf("failed to add prefix: %v", err)
+	}
+	if err := table.AddPrefix(testModelName, -1, "fresh-pod", hashes); err != nil {
+		t.Fatalf("failed to add prefix: %v", err)
+	}
+
+	// Back-date stale-pod's own entry, as if it stopped serving this context
+	// well before evictionDuration ago, while fresh-pod (and the context
+	// itself) stay recently touched so Phase 1/2 do not evict the context.
+	ctx := ModelContext{ModelName: testModelName, LoraID: -1}
+	value, exists := table.contextMap.Load(ctx)
+	if !exists {
+		t.Fatal("context should exist after AddPrefix")
+	}
+	contextData := value.(*ContextData)
+	staleTime := time.Now().Add(-time.Hour).Unix()
+	contextData.prefixMu.RLock()
+	for _, pods := range contextData.prefixStore.prefixMap {
+		if podInfo, ok := pods["stale-pod"]; ok {
+			podInfo.LastAccessTime.Store(staleTime)
+		}
+	}
+	contextData.prefixMu.RUnlock()
+
+	table.performEviction()
+
+	if _, stillExists := table.contextMap.Load(ctx); !stillExists {
+		t.Fatal("context should still exist: a fresh pod touched it after the stale one")
+	}
+	contextData.prefixMu.RLock()
+	defer contextData.prefixMu.RUnlock()
+	for _, pods := range contextData.prefixStore.prefixMap {
+		if _, staleStillPresent := pods["stale-pod"]; staleStillPresent {
+			t.Error("stale-pod's entry should have been evicted from the active context")
+		}
+		if _, freshPresent := pods["fresh-pod"]; !freshPresent {
+			t.Error("fresh-pod's entry should not have been evicted")
+		}
 	}
 }
 
@@ -1112,5 +1289,218 @@ func TestTotalPrefixesStaysConsistentAfterRemove(t *testing.T) {
 				t.Errorf("totalPrefixes %d disagrees with prefix map size %d", totalPrefixes, prefixMapSize)
 			}
 		})
+	}
+}
+
+// TestMatchPrefixRefreshesPodLastAccessTime reproduces the regression Phase 3
+// introduces once activated: a MatchPrefix hit is real use of a pod's cached
+// block, but nothing recorded that on the pod's own PodInfo, only on the
+// PodInfo.LastAccessTime.Store in AddPrefix/addPrefixToPodLocked. A pod whose
+// block is heavily matched but never re-added would still look expired to
+// evictExpiredPodsInBatch and be dropped out from under live traffic.
+func TestMatchPrefixRefreshesPodLastAccessTime(t *testing.T) {
+	table := NewSyncPrefixHashTable()
+	defer table.Close()
+
+	tokens := makeTokens(16)
+	hashes := table.GetPrefixHashes(tokens)
+	if err := table.AddPrefix(testModelName, -1, testPod1Name, hashes); err != nil {
+		t.Fatalf("failed to add prefix: %v", err)
+	}
+
+	ctx := ModelContext{ModelName: testModelName, LoraID: -1}
+	value, exists := table.contextMap.Load(ctx)
+	if !exists {
+		t.Fatal("context should exist after AddPrefix")
+	}
+	contextData := value.(*ContextData)
+
+	var podInfo *PodInfo
+	contextData.prefixMu.RLock()
+	for _, pods := range contextData.prefixStore.prefixMap {
+		if pi, ok := pods[testPod1Name]; ok {
+			podInfo = pi
+		}
+	}
+	contextData.prefixMu.RUnlock()
+	if podInfo == nil {
+		t.Fatal("pod info should exist after AddPrefix")
+	}
+
+	stale := time.Now().Add(-time.Hour).Unix()
+	podInfo.LastAccessTime.Store(stale)
+
+	readyPods := map[string]struct{}{testPod1Name: {}}
+	matches, _ := table.MatchPrefix(testModelName, -1, tokens, readyPods)
+	if matches[testPod1Name] != 100 {
+		t.Fatalf("expected a full match, got %v", matches)
+	}
+
+	if got := podInfo.LastAccessTime.Load(); got <= stale {
+		t.Errorf("expected the match to refresh LastAccessTime past %d, got %d", stale, got)
+	}
+}
+
+// TestProcessBlockStoredRefreshesContextLastAccess reproduces the same class
+// of regression at the context level: enforceContextLimit and Phase 1 both
+// rank contexts by prefixStore.lastAccess, which used to be touched only by
+// AddPrefix and MatchPrefix. A context fed purely by KV events (no gateway
+// ever calls AddPrefix/MatchPrefix against it directly, which is the normal
+// case for the sync indexer) kept the timestamp from its creation forever,
+// so it looked like the oldest context in the table no matter how much event
+// traffic it carried, and was the first to be evicted under the cap.
+func TestProcessBlockStoredRefreshesContextLastAccess(t *testing.T) {
+	table := NewSyncPrefixHashTable()
+	defer table.Close()
+
+	block1 := int64(1001)
+	event := BlockStored{
+		BlockHashes: []int64{block1},
+		Tokens:      [][]byte{makeTokens(16)},
+		ModelName:   testModelName,
+		LoraID:      -1,
+		SourcePod:   testPod1Name,
+	}
+	if err := table.ProcessBlockStored(event); err != nil {
+		t.Fatalf("failed to process block stored: %v", err)
+	}
+
+	ctx := ModelContext{ModelName: testModelName, LoraID: -1}
+	value, exists := table.contextMap.Load(ctx)
+	if !exists {
+		t.Fatal("context should exist after ProcessBlockStored")
+	}
+	contextData := value.(*ContextData)
+
+	stale := time.Now().Add(-time.Hour).Unix()
+	contextData.prefixStore.lastAccess.Store(stale)
+
+	// A later block in the same sequence: genuine, ongoing KV event traffic.
+	block2 := int64(1002)
+	event2 := BlockStored{
+		BlockHashes:     []int64{block2},
+		Tokens:          [][]byte{makeTokens(16)},
+		ModelName:       testModelName,
+		LoraID:          -1,
+		SourcePod:       testPod1Name,
+		ParentBlockHash: &block1,
+	}
+	if err := table.ProcessBlockStored(event2); err != nil {
+		t.Fatalf("failed to process second block stored: %v", err)
+	}
+
+	if got := contextData.prefixStore.lastAccess.Load(); got <= stale {
+		t.Errorf("expected the event to refresh lastAccess past %d, got %d", stale, got)
+	}
+}
+
+// TestProcessBlockRemovedRefreshesContextLastAccess covers the removal side
+// of the same fix.
+func TestProcessBlockRemovedRefreshesContextLastAccess(t *testing.T) {
+	table := NewSyncPrefixHashTable()
+	defer table.Close()
+
+	blockHash := int64(2001)
+	if err := table.ProcessBlockStored(BlockStored{
+		BlockHashes: []int64{blockHash},
+		Tokens:      [][]byte{makeTokens(16)},
+		ModelName:   testModelName,
+		LoraID:      -1,
+		SourcePod:   testPod1Name,
+	}); err != nil {
+		t.Fatalf("failed to process block stored: %v", err)
+	}
+
+	ctx := ModelContext{ModelName: testModelName, LoraID: -1}
+	value, exists := table.contextMap.Load(ctx)
+	if !exists {
+		t.Fatal("context should exist after ProcessBlockStored")
+	}
+	contextData := value.(*ContextData)
+
+	stale := time.Now().Add(-time.Hour).Unix()
+	contextData.prefixStore.lastAccess.Store(stale)
+
+	if err := table.ProcessBlockRemoved(BlockRemoved{
+		BlockHashes: []int64{blockHash},
+		ModelName:   testModelName,
+		LoraID:      -1,
+		SourcePod:   testPod1Name,
+	}); err != nil {
+		t.Fatalf("failed to process block removed: %v", err)
+	}
+
+	if got := contextData.prefixStore.lastAccess.Load(); got <= stale {
+		t.Errorf("expected the removal to refresh lastAccess past %d, got %d", stale, got)
+	}
+}
+
+// TestEnforceContextLimitDropsBlockIndex reproduces the blockIndex leak: an
+// evicted context's engine block hashes stayed in the reverse index forever,
+// because only per-block ProcessBlockRemoved cleaned it, never a whole-context
+// eviction. Before this PR enforceContextLimit was dead code, so the leak was
+// unreachable; activating it (this PR) makes evict-recreate churn on one
+// (model, lora) pair grow blockIndex without bound unless eviction cleans up
+// after itself the same way ProcessBlockRemoved does.
+func TestEnforceContextLimitDropsBlockIndex(t *testing.T) {
+	table := &SyncPrefixHashTable{
+		seed:                  12345,
+		maxContexts:           1,
+		maxPrefixesPerContext: maxPrefixesPerContext,
+		blockSize:             prefixCacheBlockSize,
+		evictionInterval:      time.Hour,
+		evictionDuration:      20 * time.Minute,
+		stopCh:                make(chan struct{}),
+		blockIndex:            make(map[int64][]ModelContext),
+	}
+	defer table.Close()
+
+	oldBlock := int64(3001)
+	if err := table.ProcessBlockStored(BlockStored{
+		BlockHashes: []int64{oldBlock},
+		Tokens:      [][]byte{makeTokens(16)},
+		ModelName:   "old-model",
+		LoraID:      -1,
+		SourcePod:   testPod1Name,
+	}); err != nil {
+		t.Fatalf("failed to process block stored for old-model: %v", err)
+	}
+	// Explicitly back-date old-model's lastAccess: real ProcessBlockStored
+	// calls this close together land in the same wall-clock second, and a
+	// sort on equal keys is not deterministic, so relying on call order alone
+	// would make this test flaky.
+	oldCtx := ModelContext{ModelName: "old-model", LoraID: -1}
+	oldValue, exists := table.contextMap.Load(oldCtx)
+	if !exists {
+		t.Fatal("old-model's context should exist after ProcessBlockStored")
+	}
+	oldValue.(*ContextData).prefixStore.lastAccess.Store(time.Now().Add(-time.Hour).Unix())
+
+	newBlock := int64(3002)
+	if err := table.ProcessBlockStored(BlockStored{
+		BlockHashes: []int64{newBlock},
+		Tokens:      [][]byte{makeTokens(16)},
+		ModelName:   "new-model",
+		LoraID:      -1,
+		SourcePod:   testPod1Name,
+	}); err != nil {
+		t.Fatalf("failed to process block stored for new-model: %v", err)
+	}
+
+	// old-model's lastAccess is an hour in the past, new-model's is "now", so
+	// enforceContextLimit must pick old-model regardless of map/sort order.
+	if excess := int(table.contextCount.Load()) - table.maxContexts; excess > 0 {
+		table.enforceContextLimit(excess)
+	}
+
+	if _, stillExists := table.contextMap.Load(ModelContext{ModelName: "old-model", LoraID: -1}); stillExists {
+		t.Fatal("old-model's context should have been evicted")
+	}
+
+	table.blockIndexMu.RLock()
+	_, indexed := table.blockIndex[oldBlock]
+	table.blockIndexMu.RUnlock()
+	if indexed {
+		t.Error("blockIndex should no longer reference the evicted context's block hash")
 	}
 }

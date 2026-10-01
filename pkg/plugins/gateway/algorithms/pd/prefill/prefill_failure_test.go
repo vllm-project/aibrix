@@ -37,6 +37,7 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
@@ -132,7 +133,7 @@ func TestAsyncPrefillFailureRecordsFailureAndAbortsDecodeLeg(t *testing.T) {
 	prefillPod := failFastPod(t, "prefill-1", strings.TrimPrefix(prefillSrv.URL, "http://"))
 
 	// The async leg is fire-and-forget: Execute returns before it finishes.
-	require.NoError(t, exec.Execute(ctx, prefillPod, sglangEngine, LogContext{}))
+	require.NoError(t, exec.Execute(ctx, prefillPod, engine.Resolve(sglangEngine), LogContext{}))
 
 	body := sink.wait(t, 5*time.Second)
 	assert.Equal(t, ctx.PDRequestID(), gjson.Get(body, "rid").String(),
@@ -173,7 +174,7 @@ func TestAsyncPrefillBadResponseDoesNotAbortDecodeLeg(t *testing.T) {
 	ctx := failFastCtx("req-badbody", `{"messages":[{"role":"user","content":"hi"}]}`, strings.TrimPrefix(decodeSrv.URL, "http://"))
 	prefillPod := failFastPod(t, "prefill-1", strings.TrimPrefix(prefillSrv.URL, "http://"))
 
-	require.NoError(t, exec.Execute(ctx, prefillPod, sglangEngine, LogContext{}))
+	require.NoError(t, exec.Execute(ctx, prefillPod, engine.Resolve(sglangEngine), LogContext{}))
 
 	assert.Eventually(t, func() bool { return ctx.PrefillFailure() != nil }, 2*time.Second, 10*time.Millisecond)
 	assert.Equal(t, pd.PrefillFailureBadResponse, ctx.PrefillFailure().Class)
@@ -193,7 +194,7 @@ func TestAsyncPrefillTransportFailureIsTerminal(t *testing.T) {
 	exec := failFastExecutor()
 	ctx := failFastCtx("req-dead", `{"messages":[{"role":"user","content":"hi"}]}`, strings.TrimPrefix(decodeSrv.URL, "http://"))
 
-	require.NoError(t, exec.Execute(ctx, failFastPod(t, "prefill-1", deadAddr), sglangEngine, LogContext{}))
+	require.NoError(t, exec.Execute(ctx, failFastPod(t, "prefill-1", deadAddr), engine.Resolve(sglangEngine), LogContext{}))
 
 	assert.Eventually(t, func() bool { return ctx.PrefillFailure() != nil }, 5*time.Second, 10*time.Millisecond)
 	assert.Equal(t, pd.PrefillFailureTransport, ctx.PrefillFailure().Class)
@@ -240,7 +241,7 @@ func TestPrefillGoroutineFailureAfterContextReuseDoesNotTouchNewRequest(t *testi
 	ctx1 := failFastCtx("req-old", `{"messages":[{"role":"user","content":"hi"}],"stream":true}`, strings.TrimPrefix(decodeSrv.URL, "http://"))
 	prefillPod := failFastPod(t, "prefill-1", strings.TrimPrefix(prefillSrv.URL, "http://"))
 
-	require.NoError(t, exec.Execute(ctx1, prefillPod, sglangEngine, LogContext{}))
+	require.NoError(t, exec.Execute(ctx1, prefillPod, engine.Resolve(sglangEngine), LogContext{}))
 
 	select {
 	case <-arrived:
@@ -281,4 +282,60 @@ func TestPrefillGoroutineFailureAfterContextReuseDoesNotTouchNewRequest(t *testi
 	assert.Equal(t, "rid-of-the-new-request", ctx2.PDRequestID(), "the stale report must not touch the live rid")
 	addr, _ := ctx2.DecodeTarget()
 	assert.Empty(t, addr, "reset must hand the new request a clean leg")
+}
+
+// TestAsyncPrefillFailureReleasesDecodeCharge checks when an async prefill
+// failure drops the request's token_load decode charge: only when the failure
+// fails the client request, so the KV never lands on the decode pod.
+func TestAsyncPrefillFailureReleasesDecodeCharge(t *testing.T) {
+	const decodeKey = "default/decode-1"
+	cases := []struct {
+		name           string
+		status         int
+		body           string
+		decodeStarted  bool
+		wantReleased   bool
+		wantFailureCls string
+	}{
+		{name: "terminal failure", status: http.StatusInternalServerError, body: `{"error":"prefill failed"}`,
+			wantReleased: true, wantFailureCls: pd.PrefillFailureHTTPStatus},
+		{name: "bad response leaves decode running", status: http.StatusOK, body: `not json at all`,
+			wantReleased: false, wantFailureCls: pd.PrefillFailureBadResponse},
+		{name: "terminal failure after decode started streaming", status: http.StatusInternalServerError, body: `{"error":"prefill failed"}`,
+			decodeStarted: true, wantReleased: false, wantFailureCls: pd.PrefillFailureHTTPStatus},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prefillSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer prefillSrv.Close()
+			_, decodeSrv := newAbortSink(t)
+			defer decodeSrv.Close()
+
+			exec := failFastExecutor()
+			ctx := failFastCtx("req-"+strings.ReplaceAll(tc.name, " ", "-"), `{"messages":[{"role":"user","content":"hi"}]}`,
+				strings.TrimPrefix(decodeSrv.URL, "http://"))
+			if tc.decodeStarted {
+				ctx.MarkDecodeResponded()
+			}
+			exec.tokenLoad.AcquireDecodeWithTTL(ctx.RequestID, decodeKey, 100, 0)
+
+			prefillPod := failFastPod(t, "prefill-1", strings.TrimPrefix(prefillSrv.URL, "http://"))
+			require.NoError(t, exec.Execute(ctx, prefillPod, engine.Resolve(sglangEngine), LogContext{}))
+			assert.Eventually(t, func() bool { return ctx.PrefillFailure() != nil }, 2*time.Second, 10*time.Millisecond)
+			assert.Equal(t, tc.wantFailureCls, ctx.PrefillFailure().Class)
+			// The goroutine has run prefillDone once the prefill request count is back to 0.
+			assert.Eventually(t, func() bool {
+				return exec.tracker.GetPrefillRequestCountsForPod(utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name)) == 0
+			}, 2*time.Second, 10*time.Millisecond)
+
+			want := float64(100)
+			if tc.wantReleased {
+				want = 0
+			}
+			assert.Equal(t, want, exec.tokenLoad.GetDecodeLoad(decodeKey))
+		})
+	}
 }

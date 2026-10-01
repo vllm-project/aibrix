@@ -296,6 +296,9 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		}
 	}
 	routerManager.Init()
+	if err := routerManager.InitializationError(routing.RouterExternal); err != nil && !errors.Is(err, routing.ErrExternalRouterDisabled) {
+		panic(fmt.Errorf("invalid external router configuration: %w", err))
+	}
 
 	shutdown := make(chan struct{})
 	s := &Server{
@@ -777,7 +780,11 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		return "", err
 	}
 
-	if len(readyPods) == 1 && len(utils.GetPortsForPod(readyPods[0])) <= 1 && !isExclusive {
+	bypassSingleCandidate := true
+	if policy, ok := router.(types.SingleCandidateBypasser); ok {
+		bypassSingleCandidate = policy.BypassSingleCandidate()
+	}
+	if len(readyPods) == 1 && len(utils.GetPortsForPod(readyPods[0])) <= 1 && !isExclusive && bypassSingleCandidate {
 		routeCtx.SetTargetPod(readyPods[0])
 		// This fast path skips router.Route() entirely, so a router with state to persist
 		// once a target pod is picked (e.g. session-affinity's Redis pin, or a multi-strategy

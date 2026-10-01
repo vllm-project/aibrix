@@ -32,8 +32,8 @@ import (
 func Test_LPRadixCacheE2E(t *testing.T) {
 	cache := NewLPRadixCache(2) // assuming 2 GPUs
 	pods := []*v1.Pod{
-		{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "p2"}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p1"}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p2"}},
 	}
 
 	inputText := "Hello World! What a Good Day! Good Morning! 你好世界！多么美好的一天啊！早上好！"
@@ -49,7 +49,7 @@ func Test_LPRadixCacheE2E(t *testing.T) {
 	assert.Equal(t, 0, len(matchPods))
 
 	// Add prefix and verify it can be matched
-	cache.AddPrefix(unMatchedTokens, "m1", "p1")
+	cache.AddPrefix(unMatchedTokens, "m1", "default/p1")
 	matchedTokens, unMatchedTokens, matchPods = cache.MatchPrefix(tokens, "m1", pods)
 	assert.Equal(t,
 		[]int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 7839, 29084, 0, 220, 57668, 53901, 3574, 244, 98220, 6447, 43240, 82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447, 6079, 102, 17905, 53901, 6447},
@@ -85,8 +85,8 @@ func Test_RadixMatchPrefix(t *testing.T) {
 			},
 			model: "m1",
 			pods: []*v1.Pod{
-				{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "p2"}},
+				{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p1"}},
+				{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p2"}},
 			},
 			matchTokens:   []int{},
 			unMatchTokens: []int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 220, 57668, 53901, 3574, 244, 98220, 6447, 43240, 82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447},
@@ -98,18 +98,40 @@ func Test_RadixMatchPrefix(t *testing.T) {
 			setupCache: func() *LPRadixCache {
 				cache := NewLPRadixCache(2)
 				tokens := []int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 220}
-				cache.AddPrefix(tokens, "m1", "p1")
+				cache.AddPrefix(tokens, "m1", "default/p1")
 				return cache
 			},
 			model: "m1",
 			pods: []*v1.Pod{
-				{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "p2"}},
+				{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p1"}},
+				{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p2"}},
 			},
 			matchTokens:   []int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 220},
 			unMatchTokens: []int{57668, 53901, 3574, 244, 98220, 6447, 43240, 82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447},
 			matchPods: []*v1.Pod{
-				{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
+				{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p1"}},
+			},
+		},
+		{
+			// The tree is keyed by pod key, so a same-named pod in another
+			// namespace must not match a prefix recorded for team-a/p1.
+			name:      "same-named pods in two namespaces - only the recorded one matches",
+			inputText: "Hello World! What a Good Day! 你好世界！多么美好的一天啊！",
+			setupCache: func() *LPRadixCache {
+				cache := NewLPRadixCache(2)
+				tokens := []int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 220}
+				cache.AddPrefix(tokens, "m1", "team-a/p1")
+				return cache
+			},
+			model: "m1",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Namespace: "team-b", Name: "p1"}},
+				{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "p1"}},
+			},
+			matchTokens:   []int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 220},
+			unMatchTokens: []int{57668, 53901, 3574, 244, 98220, 6447, 43240, 82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447},
+			matchPods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "p1"}},
 			},
 		},
 	}
@@ -133,9 +155,9 @@ func Test_LPRadixCacheConcurrency(t *testing.T) {
 	cache := NewLPRadixCache(2) // assuming 2 GPUs
 	model := "m1"
 	pods := []*v1.Pod{
-		{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "p2"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "p3"}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p1"}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p2"}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p3"}},
 	}
 
 	var wg sync.WaitGroup
@@ -150,7 +172,7 @@ func Test_LPRadixCacheConcurrency(t *testing.T) {
 			// Match prefix and add to cache
 			_, unMatchedTokens, _ := cache.MatchPrefix(inputTokens, model, pods)
 			if len(unMatchedTokens) > 0 {
-				cache.AddPrefix(unMatchedTokens, model, "p1")
+				cache.AddPrefix(unMatchedTokens, model, "default/p1")
 			}
 		}(i)
 	}

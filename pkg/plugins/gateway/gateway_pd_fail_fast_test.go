@@ -339,6 +339,66 @@ func TestProcessDoesNotErrorAfterDecodeResponded(t *testing.T) {
 	}
 }
 
+// TRT's SSE headers can precede KV arrival. Unlike SGLang, a terminal CTX
+// failure after headers must still reset the stream, not leave a GEN waiter.
+func TestTRTPrefillFailureResetsStream(t *testing.T) {
+	for _, afterHeaders := range []bool{false, true} {
+		name := "before_headers"
+		if afterHeaders {
+			name = "after_headers"
+		}
+		t.Run(name, func(t *testing.T) {
+			counters := captureCounters(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			s, _ := newFailFastServer(t)
+			srv := newBlockingProcessServer(ctx)
+			st := newFailFastState(ctx)
+			defer st.routerCtx.Delete()
+			// The router sets this from the handler's async dispatch policy.
+			st.routerCtx.SetResetAfterHeaders(true)
+			st.stream = true
+			if afterHeaders {
+				st.routerCtx.MarkDecodeResponded()
+			}
+			st.routerCtx.SetPrefillFailure(&types.PrefillFailure{Class: pd.PrefillFailureTimeout, Message: "CTX timed out"})
+			done := make(chan error, 1)
+			go func() { done <- runProcessLoop(s, srv, st) }()
+			select {
+			case err := <-done:
+				assert.Equal(t, codes.Aborted, status.Code(err))
+			case <-time.After(5 * time.Second):
+				t.Fatal("TRT generation leg left waiting for KV")
+			}
+			if afterHeaders {
+				assert.Empty(t, srv.sentResponses(), "cannot replace headers already sent to the client")
+			} else {
+				require.Len(t, srv.sentResponses(), 1)
+				assert.NotNil(t, srv.sentResponses()[0].GetImmediateResponse())
+			}
+			_, ok := findCounter(counters(), metrics.GatewayRequestModelFailTotal)
+			assert.True(t, ok, "stream reset must be counted as a failed request")
+		})
+	}
+}
+
+// TRT generation-first's KV transfer is out of band, so a 200 the gateway
+// cannot parse does not prove the context succeeded and must reset generation.
+func TestTRTBadPrefillResponseResetsStream(t *testing.T) {
+	s, _ := newFailFastServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	st := newFailFastState(ctx)
+	defer st.routerCtx.Delete()
+	st.routerCtx.SetResetAfterHeaders(true)
+	st.routerCtx.MarkDecodeResponded()
+	st.routerCtx.SetPrefillFailure(&types.PrefillFailure{Class: pd.PrefillFailureBadResponse})
+	srv := newBlockingProcessServer(ctx)
+	err := s.handlePrefillFailFast(srv, st)
+	assert.Equal(t, codes.Aborted, status.Code(err))
+	assert.Empty(t, srv.sentResponses(), "headers already sent to the client cannot be replaced")
+}
+
 // TestRecvGoroutineDoesNotLeak checks that the Recv goroutine the loop starts -
 // which now outlives a single processOnce call, because a fail-fast decision
 // can return without consuming its message - still dies with the stream.

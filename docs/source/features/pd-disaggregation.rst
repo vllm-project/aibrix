@@ -107,9 +107,55 @@ Supported Engines
      - Requires ``model.aibrix.ai/sglang-bootstrap-port`` annotation (default: ``8998``).
    * - TensorRT-LLM
      - ``trtllm``
-     - Uses NIXL KV transfer backend (``AIBRIX_KV_CONNECTOR_TYPE=nixl``).
+     - Supports ``context_first`` (default) and opt-in ``generation_first`` dispatch. KV transfer is configured on the TRT-LLM workers.
 
 Set the engine on each pod with the ``model.aibrix.ai/engine`` label.
+
+
+TensorRT-LLM Parallel Scheduling
+--------------------------------
+
+By default the gateway waits for the context (prefill) response before forwarding
+the generation (decode) request. To run both legs concurrently, set
+``AIBRIX_TRT_SCHEDULE_STYLE=generation_first`` on the **gateway plugin**
+Deployment and restart its pods:
+
+.. code-block:: yaml
+
+    env:
+      - name: AIBRIX_TRT_SCHEDULE_STYLE
+        value: "generation_first"
+
+Prerequisites:
+
+* Workers implementing the TRT-LLM ``1.3.0rc8`` OpenAI disaggregation protocol
+  (the version in the TensorRT quickstart). P/D must use matching model, tokenizer
+  and chat template, because this mode cannot wait for CTX's returned
+  ``prompt_token_ids``.
+* Both roles must run TRT-LLM's **Python** KV-cache transceiver
+  (``cache_transceiver_config: {backend: DEFAULT|NIXL, transceiver_runtime: PYTHON}``).
+  Only it reports the generation-first metadata; a worker with the default C++
+  transceiver answers ``/server_info`` with an empty ``disaggregated_params``. The
+  quickstart's ``tensor-rt-pd.yaml`` ships with this line commented out for
+  context-first, so uncomment it on both roles before enabling the mode.
+* Keep Envoy ``failure_mode_allow=false`` so context failures reset the upstream
+  stream and the engine cancels the generation leg.
+* Assign different ``AIBRIX_TRT_MACHINE_ID`` values to gateway processes sharing
+  TRT workers, as with context-first routing.
+
+The gateway loads the selected CTX worker's ``/server_info`` lazily (3-second
+lookup timeout, 1-minute TTL), prepares a shared ``disagg_request_id`` and
+``schedule_style=1`` on both legs, sends CTX in a goroutine, and immediately lets
+Envoy forward GEN. The KV transfer stays between the engines; the gateway neither
+transfers KV nor sends a duplicate GEN HTTP request. Missing or invalid metadata
+fails routing before either inference request is sent. See
+``pkg/plugins/gateway/algorithms/pd_readme.md`` for the request sequence and
+failure handling.
+
+Begin with text-only 1P1D; ``samples/quickstart/tensorrt/README.md`` carries the
+smoke test. Set ``AIBRIX_TRT_SCHEDULE_STYLE=context_first`` and restart the gateway
+to roll back. Other engines and combined-pod routing are unaffected, and an
+unrecognized value is logged and leaves the router on ``context_first``.
 
 
 Step 1 — Label Your Pods
@@ -290,7 +336,7 @@ Configure the range in the pod's ``routingConfig``:
    * - ``prefillScorePolicy``
      - How to score prefill pods. ``prefix_cache`` (default), ``least_request``, ``conductor``, ``token_load``, or ``hybrid_cache_load``.
    * - ``decodeScorePolicy``
-     - How to score decode pods. ``load_balancing`` (default), ``least_request``, or ``conductor``.
+     - How to score decode pods. ``load_balancing`` (default), ``least_request``, ``conductor``, or ``token_load``.
 
 The same ``routingConfig`` object also carries the prefill/decode routing thresholds of a
 profile's requests, flat under ``pd``: ``prefillRequestTimeout``, the spread thresholds
@@ -306,6 +352,29 @@ for the full list.
 
 .. note::
     Bucketing only takes effect when ``AIBRIX_PROMPT_LENGTH_BUCKETING=true`` is set on the gateway plugin.
+
+
+Adaptive Bucket Serving
+------------------------
+
+``AIBRIX_BUCKET_SERVE=true`` adds an adaptive plan on top of bucketing, which must also be on. Plain
+bucketing keeps every roleset whose declared range covers the request as a candidate and lets the
+scoring decide among them. With adaptive bucket serving, the gateway keeps a per-model picture of
+the prompt lengths it routes, charges every roleset the traffic only it can serve, and splits a
+range that several rolesets still need into one band per roleset. Each band is debited against one
+replica-proportional share, so a roleset carrying several overlaps draws against a single share
+instead of one per range, and cut points sit at quantiles of the observed traffic instead of at
+hand-written boundaries.
+
+``AIBRIX_BUCKET_SERVE_MODE`` picks the unit those cut points are measured in: ``throughput``
+(default) balances prompt-token mass, while ``rps`` balances request counts. Within a shared range
+the bands divide the observed traffic in proportion to the replica share each roleset still needs,
+counted in that unit.
+
+The plan is advisory. It narrows the rolesets a request may reach only when the banded roleset
+still has both prefill and decode candidates after the load-imbalance fast paths; wherever the plan
+holds no band, or the banded roleset has no candidate left, the request routes exactly as it would
+without the plan. With the feature off, the planner records and publishes nothing.
 
 
 Conductor Scoring Policy
@@ -398,6 +467,20 @@ The gateway exports the two counters per prefill pod as gauges labelled by ``nam
 
 - ``pd_token_load_active_tokens``
 - ``pd_token_load_kv_tokens``
+
+and, under the decode policy below, the decode ledger per decode pod:
+
+- ``pd_token_load_decode_tokens``
+
+**Decode side**
+
+Setting ``decodeScorePolicy`` (or ``AIBRIX_DECODE_SCORE_POLICY``) to ``token_load`` applies the same idea to decode pods. A decode pod receives the whole prompt's KV from the prefill pod and holds it until the request finishes, but the other decode policies count requests and read KV usage from the scraped engine metrics, which refresh once per ``AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS``, so every selection within one refresh sees the same value. ``token_load`` keeps a gateway-side ledger instead, and scores each decode pod as (lower is better):
+
+.. code-block:: text
+
+    score = decode_tokens
+
+Each request is charged its ``prompt_tokens`` to its decode pod: the whole prompt, not the prefix-matched remainder, since the decode pod receives all of the prompt's KV. There is no fixed per-request cost; ``AIBRIX_TOKEN_LOAD_REQUEST_COST`` applies to the prefill charge only. The charge is made in the same critical section as the selection and released when the request completes or its prefill call fails terminally, with the same TTL, janitor and ``namespace/name`` keying as the prefill ledger. The policy reads no engine metrics, so decode pods whose metrics have not arrived yet are scored from the ledger like any other rather than given the cold-start score. The decode load-imbalance fast path is skipped under ``token_load``: it picks by request count, throughput or drain rate, which is what this policy replaces, and a pod holding one long prompt has the fewest requests. Other decode policies keep it. Output tokens are not charged, since the router does not know the output length, and a decode pod's own prefix reuse is not modelled. The ledger, like the prefill one, is local to each gateway replica: with several replicas, each scores only the requests it routed itself.
 
 **Configuration**
 
@@ -624,6 +707,13 @@ Three ordered checks run against decode pods. The first that fires selects a sin
 
 3. *Drain-rate score* — If all pods report a positive ``drain_rate``, score each pod as ``effective_running_reqs / drain_rate``. If ``max_score / min_score`` exceeds ``AIBRIX_DECODE_SCORE_RATIO_THRESHOLD``, route to the pod with the lowest score (fastest estimated queue drain).
 
+**Step 2b — Adaptive bucket serving (optional)**
+
+When ``AIBRIX_BUCKET_SERVE=true`` and bucketing is on, the gateway prefers the roleset a request
+length is banded to (see `Adaptive Bucket Serving`_). The preference only applies when that roleset
+still has both prefill and decode candidates after steps 1 and 2; otherwise the fast paths' choice
+stands.
+
 **Step 3 — Prefill scoring**
 
 Each prefill pod is scored by the selected policy. Pods with a request count more than ``N`` standard deviations above the mean are skipped (``N = AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``). The lowest-scoring pod per roleset is kept as the roleset's prefill candidate.
@@ -666,6 +756,12 @@ These are set on the **gateway plugin** deployment.
    * - ``AIBRIX_PROMPT_LENGTH_BUCKETING``
      - ``false``
      - Enable prompt-length bucket matching for prefill, decode, and standard inference pods.
+   * - ``AIBRIX_BUCKET_SERVE``
+     - ``false``
+     - Enable adaptive bucket serving on top of prompt-length bucketing.
+   * - ``AIBRIX_BUCKET_SERVE_MODE``
+     - ``throughput``
+     - Objective of the adaptive cut points: ``throughput`` (prompt token mass) or ``rps`` (request counts). An unknown value keeps the default.
    * - ``AIBRIX_PREFILL_REQUEST_TIMEOUT``
      - ``30``
      - Seconds before a prefill request to a prefill pod times out.
@@ -695,10 +791,10 @@ These are set on the **gateway plugin** deployment.
      - ``prefix_cache`` and ``hybrid_cache_load``. Prefix matches below this percentage are ignored, ``0`` to ``100``. ``0`` disables the threshold.
    * - ``AIBRIX_DECODE_SCORE_POLICY``
      - ``load_balancing``
-     - Default scoring policy for selecting decode pods. ``load_balancing``, ``least_request``, or ``conductor``.
+     - Default scoring policy for selecting decode pods. ``load_balancing``, ``least_request``, ``conductor``, or ``token_load``.
    * - ``AIBRIX_KV_CONNECTOR_TYPE``
      - ``shfs``
-     - KV transfer backend. ``shfs`` for GPU (SHFS/KVCacheManager), ``nixl`` for Neuron (TensorRT-LLM).
+     - vLLM KV transfer adapter. ``shfs`` for GPU (SHFS/KVCacheManager), ``nixl`` for Neuron. TRT-LLM transfer backends are configured on the workers.
    * - ``AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD``
      - ``16``
      - Minimum request-count spread between prefill pods before load-imbalance routing kicks in.
@@ -719,7 +815,10 @@ These are set on the **gateway plugin** deployment.
      - Weight applied to the normalized inverse-throughput term in the ``load_balancing`` decode score numerator.
    * - ``AIBRIX_TRT_MACHINE_ID``
      - ``0``
-     - 10-bit machine ID used in Snowflake-style ``disagg_request_id`` generation for TensorRT-LLM (valid range: ``[0, 1024)``).
+     - 10-bit machine ID used in Snowflake-style ``disagg_request_id`` generation for TensorRT-LLM (valid range: ``[0, 1024)``). Must differ between gateway processes sharing TRT workers.
+   * - ``AIBRIX_TRT_SCHEDULE_STYLE``
+     - ``context_first``
+     - TRT-LLM dispatch mode: ``context_first`` or ``generation_first``. Set on the gateway plugin; read at PD router initialization. ``generation_first`` requires the Python KV-cache transceiver on both worker roles. An unrecognized value is logged and falls back to ``context_first``.
 
 .. seealso::
 

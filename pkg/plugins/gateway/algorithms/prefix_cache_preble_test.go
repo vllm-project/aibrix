@@ -102,11 +102,11 @@ func TestPrefixCacheAndLoadRouterRouting(t *testing.T) {
 				// Create historical data to generate cost differences
 				tokens1, _ := utils.TokenizeInputText("Historical request one")
 				node1, _, _ := router.cache.AddPrefix(tokens1, "test-model", "")
-				node1.AddOrUpdatePodForModel("test-model", "pod-1", time.Now())
+				node1.AddOrUpdatePodForModel("test-model", prebleTestPodKey("pod-1"), time.Now())
 
 				tokens2, _ := utils.TokenizeInputText("Historical request two")
 				node2, _, _ := router.cache.AddPrefix(tokens2, "test-model", "")
-				node2.AddOrUpdatePodForModel("test-model", "pod-2", time.Now())
+				node2.AddOrUpdatePodForModel("test-model", prebleTestPodKey("pod-2"), time.Now())
 
 				// Set up histogram with cost differences
 				router.histogram.histogram[node1] = 100
@@ -122,11 +122,11 @@ func TestPrefixCacheAndLoadRouterRouting(t *testing.T) {
 				router.histogram.promptTokens[node2] = 50
 
 				// Set different decode lengths and time per token
-				router.histogram.currentDecodeLengthsPerPod["pod-1"] = 300
-				router.histogram.currentDecodeLengthsPerPod["pod-2"] = 50
+				router.histogram.currentDecodeLengthsPerPod[prebleTestPodKey("pod-1")] = 300
+				router.histogram.currentDecodeLengthsPerPod[prebleTestPodKey("pod-2")] = 50
 
-				router.histogram.avgTimePerTokenPerPod["pod-1"] = []float64{0.3, 0.4, 0.5}
-				router.histogram.avgTimePerTokenPerPod["pod-2"] = []float64{0.1, 0.12, 0.15}
+				router.histogram.avgTimePerTokenPerPod[prebleTestPodKey("pod-1")] = []float64{0.3, 0.4, 0.5}
+				router.histogram.avgTimePerTokenPerPod[prebleTestPodKey("pod-2")] = []float64{0.1, 0.12, 0.15}
 
 				return router
 			},
@@ -165,8 +165,8 @@ func TestPrefixCacheAndLoadRouterRouting(t *testing.T) {
 				testTokens, _ := utils.TokenizeInputText("Hello world shared content extra")
 				node, _, _ := router.cache.AddPrefix(testTokens, "test-model", "")
 				// Associate specific pods with this cached prefix
-				node.AddOrUpdatePodForModel("test-model", "pod-1", time.Now())
-				node.AddOrUpdatePodForModel("test-model", "pod-3", time.Now())
+				node.AddOrUpdatePodForModel("test-model", prebleTestPodKey("pod-1"), time.Now())
+				node.AddOrUpdatePodForModel("test-model", prebleTestPodKey("pod-3"), time.Now())
 
 				// Set up histogram data
 				router.histogram.histogram[node] = len(testTokens)
@@ -251,10 +251,10 @@ func TestPrefixCacheAndLoadRouterRouting(t *testing.T) {
 				// Populate prefix cache with a request that has prefix matches on all pods
 				tokens, _ := utils.TokenizeInputText("shared prefix content")
 				node, _, _ := router.cache.AddPrefix(tokens, "test-model", "")
-				node.AddOrUpdatePodForModel("test-model", "pod-light-1", time.Now())
-				node.AddOrUpdatePodForModel("test-model", "pod-light-2", time.Now())
-				node.AddOrUpdatePodForModel("test-model", "pod-busy-1", time.Now())
-				node.AddOrUpdatePodForModel("test-model", "pod-busy-2", time.Now())
+				node.AddOrUpdatePodForModel("test-model", prebleTestPodKey("pod-light-1"), time.Now())
+				node.AddOrUpdatePodForModel("test-model", prebleTestPodKey("pod-light-2"), time.Now())
+				node.AddOrUpdatePodForModel("test-model", prebleTestPodKey("pod-busy-1"), time.Now())
+				node.AddOrUpdatePodForModel("test-model", prebleTestPodKey("pod-busy-2"), time.Now())
 
 				// Setup histogram data for all pods
 				router.histogram.histogram[node] = len(tokens)
@@ -366,7 +366,7 @@ func TestPrefixCacheAndLoadRouterScoreAllDoesNotMutateCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to tokenize seed text: %v", err)
 	}
-	node, _, _ := router.cache.AddPrefix(seedTokens, "test-model", "pod-1")
+	node, _, _ := router.cache.AddPrefix(seedTokens, "test-model", prebleTestPodKey("pod-1"))
 	beforeNodeCount := len(router.cache.GetAllNodes())
 	beforeLastAccess := node.GetLastAccess()
 
@@ -387,4 +387,10 @@ func TestPrefixCacheAndLoadRouterScoreAllDoesNotMutateCache(t *testing.T) {
 	if got := node.GetLastAccess(); !got.Equal(beforeLastAccess) {
 		t.Fatalf("expected ScoreAll not to update lastAccess, before=%v after=%v", beforeLastAccess, got)
 	}
+}
+
+// prebleTestPodKey returns the pod key the router stores for a pod built by newPod,
+// which has no namespace.
+func prebleTestPodKey(name string) string {
+	return utils.GeneratePodKey("", name)
 }

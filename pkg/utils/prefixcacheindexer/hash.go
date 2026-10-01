@@ -66,7 +66,7 @@ type PrefixHashTable struct {
 }
 
 type Block struct {
-	modelToPods map[string]map[string]time.Time // model_name: map[pod_name]pod_last_access_time
+	modelToPods map[string]map[string]time.Time // model_name: map[pod_key]pod_last_access_time, pod_key is namespace/name
 }
 
 func randomPrefixCacheHashSeed() uint64 {
@@ -125,7 +125,9 @@ func (c *PrefixHashTable) EnableDeltaSync() {
 }
 
 // MatchPrefix matches the input token prefix's if already cached
-// returns map[podname]%prefixmatch along with all prefix hashes
+// returns map[podkey]%prefixmatch along with all prefix hashes. readyPods and the
+// returned map use the same pod keys that AddPrefix stored, namespace/name
+// (utils.GeneratePodKey), so same-named pods in different namespaces stay apart.
 func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, readyPods map[string]struct{}) (map[string]int, []uint64) {
 	prefixHashes := getPrefixHashes(c.seed, tokens)
 	return c.seqSearchPrefix(prefixHashes, model, readyPods)
@@ -135,7 +137,7 @@ func (c *PrefixHashTable) seqSearchPrefix(prefixHashes []uint64, model string, r
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	// podname -> %prefixmatch
+	// podkey -> %prefixmatch
 	prefixMatchPods := make(map[string]int, len(readyPods))
 	for i := 0; i < len(prefixHashes); i++ {
 		prefixHash := prefixHashes[i]
@@ -157,7 +159,7 @@ func (c *PrefixHashTable) seqSearchPrefix(prefixHashes []uint64, model string, r
 	return prefixMatchPods, prefixHashes
 }
 
-// AddPrefix add prefix hashes for input tokens
+// AddPrefix add prefix hashes for input tokens. pod is the pod key, namespace/name.
 func (c *PrefixHashTable) AddPrefix(prefixHashes []uint64, model, pod string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

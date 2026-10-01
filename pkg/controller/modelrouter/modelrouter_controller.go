@@ -382,6 +382,16 @@ func (m *ModelRouter) deleteHTTPRoute(namespace string, labels, annotations map[
 	}
 
 	ctx := context.Background()
+	hasModel, hasAnyModel, err := m.namespaceModelWorkloadState(ctx, namespace, modelName)
+	if err != nil {
+		klog.ErrorS(err, "Failed to check remaining workloads before deleting HTTPRoute",
+			"namespace", namespace, "model", modelName)
+		return
+	}
+	if hasModel {
+		return
+	}
+
 	httpRoute := gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      utils.ModelRouterName(modelName),
@@ -389,7 +399,7 @@ func (m *ModelRouter) deleteHTTPRoute(namespace string, labels, annotations map[
 		},
 	}
 
-	err := m.Delete(ctx, &httpRoute)
+	err = m.Delete(ctx, &httpRoute)
 	if err != nil {
 		klog.Errorln(err)
 	}
@@ -398,19 +408,15 @@ func (m *ModelRouter) deleteHTTPRoute(namespace string, labels, annotations map[
 	}
 
 	if aibrixEnvoyGatewayNamespace != namespace {
-		if err := m.deleteReferenceGrant(ctx, namespace); err != nil {
+		if err := m.deleteReferenceGrant(ctx, namespace, hasAnyModel); err != nil {
 			klog.ErrorS(err, "Failed to delete ReferenceGrant after checking remaining workloads",
 				"namespace", namespace)
 		}
 	}
 }
 
-func (m *ModelRouter) deleteReferenceGrant(ctx context.Context, namespace string) error {
-	has, err := m.namespaceHasModelWorkload(ctx, namespace)
-	if err != nil {
-		return err
-	}
-	if has {
+func (m *ModelRouter) deleteReferenceGrant(ctx context.Context, namespace string, hasModelWorkload bool) error {
+	if hasModelWorkload {
 		return nil
 	}
 
@@ -432,45 +438,62 @@ func (m *ModelRouter) deleteReferenceGrant(ctx context.Context, namespace string
 }
 
 func (m *ModelRouter) namespaceHasModelWorkload(ctx context.Context, namespace string) (bool, error) {
+	hasModel, _, err := m.namespaceModelWorkloadState(ctx, namespace, "")
+	return hasModel, err
+}
+
+// namespaceModelWorkloadState reports whether the namespace contains the
+// requested model and whether it contains any model workload. An empty
+// modelName matches any labeled workload for ReferenceGrant cleanup.
+func (m *ModelRouter) namespaceModelWorkloadState(ctx context.Context, namespace, modelName string) (hasModel, hasAnyModel bool, err error) {
+	matches := func(labels, annotations map[string]string) bool {
+		workloadModelName, ok := constants.ModelNameFromMetadata(labels, annotations)
+		if !ok {
+			return false
+		}
+		hasAnyModel = true
+		return modelName == "" || workloadModelName == modelName
+	}
+
 	var deploymentList appsv1.DeploymentList
 	if err := m.List(ctx, &deploymentList, client.InNamespace(namespace)); err != nil {
 		klog.ErrorS(err, "Failed to list model deployments", "namespace", namespace)
-		return false, err
+		return false, hasAnyModel, err
 	}
 	for i := range deploymentList.Items {
 		deployment := &deploymentList.Items[i]
-		if _, ok := constants.ModelNameFromMetadata(deployment.Labels, deployment.Annotations); ok {
+		if matches(deployment.Labels, deployment.Annotations) {
 			klog.InfoS("found labeled model deployment in namespace",
 				"namespace", namespace, "deployment", deployment.Name)
-			return true, nil
+			return true, true, nil
 		}
 	}
 
 	var adapterList modelv1alpha1.ModelAdapterList
 	if err := m.List(ctx, &adapterList, client.InNamespace(namespace)); err != nil {
 		klog.ErrorS(err, "Failed to list model adapters", "namespace", namespace)
-		return false, err
+		return false, hasAnyModel, err
 	}
 	for i := range adapterList.Items {
 		adapter := &adapterList.Items[i]
-		if _, ok := constants.ModelNameFromMetadata(adapter.Labels, adapter.Annotations); ok {
+		if matches(adapter.Labels, adapter.Annotations) {
 			klog.InfoS("found labeled model adapter in namespace",
 				"namespace", namespace, "modeladapter", adapter.Name)
-			return true, nil
+			return true, true, nil
 		}
 	}
 
 	var fleetList orchestrationv1alpha1.RayClusterFleetList
 	if err := m.List(ctx, &fleetList, client.InNamespace(namespace)); err != nil {
 		klog.ErrorS(err, "Failed to list ray cluster fleets", "namespace", namespace)
-		return false, err
+		return false, hasAnyModel, err
 	}
 	for i := range fleetList.Items {
 		fleet := &fleetList.Items[i]
-		if _, ok := constants.ModelNameFromMetadata(fleet.Labels, fleet.Annotations); ok {
+		if matches(fleet.Labels, fleet.Annotations) {
 			klog.InfoS("found labeled ray cluster fleet in namespace",
 				"namespace", namespace, "rayclusterfleet", fleet.Name)
-			return true, nil
+			return true, true, nil
 		}
 	}
 
@@ -490,18 +513,18 @@ func (m *ModelRouter) namespaceHasModelWorkload(ctx context.Context, namespace s
 				continue
 			}
 			klog.ErrorS(err, "Failed to list optional model workloads", "GVK", gvk, "namespace", namespace)
-			return false, err
+			return false, hasAnyModel, err
 		}
 		for i := range list.Items {
 			u := &list.Items[i]
-			if _, ok := constants.ModelNameFromMetadata(u.GetLabels(), u.GetAnnotations()); ok {
+			if matches(u.GetLabels(), u.GetAnnotations()) {
 				klog.InfoS("found labeled model workload in namespace",
 					"namespace", namespace, "gvk", gvk.String(), "name", u.GetName())
-				return true, nil
+				return true, true, nil
 			}
 		}
 	}
-	return false, nil
+	return false, hasAnyModel, nil
 }
 
 func consoleRouteLabels(labels map[string]string) map[string]string {

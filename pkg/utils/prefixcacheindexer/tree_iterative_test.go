@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -42,7 +43,7 @@ func buildDeepTree(depth int) *LPRadixCache {
 	cache := NewLPRadixCache(2)
 	for i := 1; i <= depth; i++ {
 		tokens := makeSequentialTokens(1, i)
-		cache.AddPrefix(tokens, "m1", "p1")
+		cache.AddPrefix(tokens, "m1", "default/p1")
 	}
 	return cache
 }
@@ -50,7 +51,7 @@ func buildDeepTree(depth int) *LPRadixCache {
 // Test_InsertHelperEmptyInput verifies that AddPrefix handles empty token input.
 func Test_InsertHelperEmptyInput(t *testing.T) {
 	cache := NewLPRadixCache(2)
-	node, matched, unmatched := cache.AddPrefix([]int{}, "m1", "p1")
+	node, matched, unmatched := cache.AddPrefix([]int{}, "m1", "default/p1")
 	assert.NotNil(t, node)
 	assert.Nil(t, matched)
 	assert.Nil(t, unmatched)
@@ -61,19 +62,19 @@ func Test_InsertHelperSingleToken(t *testing.T) {
 	cache := NewLPRadixCache(2)
 
 	// Insert single token
-	node, matched, unmatched := cache.AddPrefix([]int{42}, "m1", "p1")
+	node, matched, unmatched := cache.AddPrefix([]int{42}, "m1", "default/p1")
 	assert.NotNil(t, node)
 	assert.Nil(t, matched)
 	assert.Equal(t, []int{42}, unmatched)
 
 	// Insert same single token again — should be exact match
-	node2, matched2, unmatched2 := cache.AddPrefix([]int{42}, "m1", "p1")
+	node2, matched2, unmatched2 := cache.AddPrefix([]int{42}, "m1", "default/p1")
 	assert.NotNil(t, node2)
 	assert.Equal(t, []int{42}, matched2)
 	assert.Nil(t, unmatched2)
 
 	// Insert different single token
-	node3, matched3, unmatched3 := cache.AddPrefix([]int{99}, "m1", "p1")
+	node3, matched3, unmatched3 := cache.AddPrefix([]int{99}, "m1", "default/p1")
 	assert.NotNil(t, node3)
 	assert.Nil(t, matched3)
 	assert.Equal(t, []int{99}, unmatched3)
@@ -82,9 +83,9 @@ func Test_InsertHelperSingleToken(t *testing.T) {
 // Test_MatchPrefixEmptyInput verifies that MatchPrefix handles empty token input.
 func Test_MatchPrefixEmptyInput(t *testing.T) {
 	cache := NewLPRadixCache(2)
-	cache.AddPrefix([]int{1, 2, 3}, "m1", "p1")
+	cache.AddPrefix([]int{1, 2, 3}, "m1", "default/p1")
 
-	pods := []*v1.Pod{{ObjectMeta: metav1.ObjectMeta{Name: "p1"}}}
+	pods := []*v1.Pod{{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p1"}}}
 	matchedTokens, unmatchedTokens, _ := cache.MatchPrefix([]int{}, "m1", pods)
 	assert.Equal(t, 0, len(matchedTokens))
 	assert.Equal(t, 0, len(unmatchedTokens))
@@ -93,9 +94,9 @@ func Test_MatchPrefixEmptyInput(t *testing.T) {
 // Test_MatchPrefixSingleToken verifies that MatchPrefix handles single token input.
 func Test_MatchPrefixSingleToken(t *testing.T) {
 	cache := NewLPRadixCache(2)
-	cache.AddPrefix([]int{42}, "m1", "p1")
+	cache.AddPrefix([]int{42}, "m1", "default/p1")
 
-	pods := []*v1.Pod{{ObjectMeta: metav1.ObjectMeta{Name: "p1"}}}
+	pods := []*v1.Pod{{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p1"}}}
 
 	// Exact single-token match
 	matchedTokens, unmatchedTokens, matchedPods := cache.MatchPrefix([]int{42}, "m1", pods)
@@ -115,22 +116,22 @@ func Test_InsertHelperMultipleSuccessiveSplits(t *testing.T) {
 	cache := NewLPRadixCache(2)
 
 	// Insert [1,2,3,4,5] — creates one node
-	cache.AddPrefix([]int{1, 2, 3, 4, 5}, "m1", "p1")
+	cache.AddPrefix([]int{1, 2, 3, 4, 5}, "m1", "default/p1")
 
 	// Insert [1,2,X,Y,Z] — forces split at position 2
-	node1, matched1, unmatched1 := cache.AddPrefix([]int{1, 2, 100, 101, 102}, "m1", "p1")
+	node1, matched1, unmatched1 := cache.AddPrefix([]int{1, 2, 100, 101, 102}, "m1", "default/p1")
 	assert.NotNil(t, node1)
 	assert.Equal(t, []int{1, 2}, matched1)
 	assert.Equal(t, []int{100, 101, 102}, unmatched1)
 
 	// Insert [1,A,B,C,D] — forces split at position 1
-	node2, matched2, unmatched2 := cache.AddPrefix([]int{1, 200, 201, 202, 203}, "m1", "p1")
+	node2, matched2, unmatched2 := cache.AddPrefix([]int{1, 200, 201, 202, 203}, "m1", "default/p1")
 	assert.NotNil(t, node2)
 	assert.Equal(t, []int{1}, matched2)
 	assert.Equal(t, []int{200, 201, 202, 203}, unmatched2)
 
 	// Verify all three original sequences are still matchable
-	pods := []*v1.Pod{{ObjectMeta: metav1.ObjectMeta{Name: "p1"}}}
+	pods := []*v1.Pod{{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p1"}}}
 
 	m1, u1, _ := cache.MatchPrefix([]int{1, 2, 3, 4, 5}, "m1", pods)
 	assert.Equal(t, 5, len(m1))
@@ -154,7 +155,7 @@ func Test_InsertHelperDeepTree(t *testing.T) {
 
 	// Insert a sequence that traverses the full depth, then extends beyond
 	tokens := makeSequentialTokens(1, depth+10)
-	node, matched, unmatched := cache.AddPrefix(tokens, "m1", "p1")
+	node, matched, unmatched := cache.AddPrefix(tokens, "m1", "default/p1")
 
 	assert.NotNil(t, node)
 	assert.Equal(t, depth, len(matched))
@@ -169,8 +170,8 @@ func Test_MatchPrefixDeepTree(t *testing.T) {
 	depth := 1000
 	cache := buildDeepTree(depth)
 	pods := []*v1.Pod{
-		{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "p2"}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p1"}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p2"}},
 	}
 
 	// Exact match
@@ -203,7 +204,7 @@ func Test_InsertHelperSplitDeepTree(t *testing.T) {
 
 	// Insert a long sequence to create a single deep node
 	original := makeSequentialTokens(1, 500)
-	cache.AddPrefix(original, "m1", "p1")
+	cache.AddPrefix(original, "m1", "default/p1")
 
 	// Insert a diverging sequence that forces a split at position 250
 	diverging := make([]int, 300)
@@ -211,7 +212,7 @@ func Test_InsertHelperSplitDeepTree(t *testing.T) {
 	for i := 250; i < 300; i++ {
 		diverging[i] = 10000 + i
 	}
-	node, matched, unmatched := cache.AddPrefix(diverging, "m1", "p1")
+	node, matched, unmatched := cache.AddPrefix(diverging, "m1", "default/p1")
 	assert.NotNil(t, node)
 	assert.Equal(t, 250, len(matched))
 	assert.Equal(t, 50, len(unmatched))
@@ -229,7 +230,7 @@ func Test_InsertHelperLargeTokenInput(t *testing.T) {
 
 	// Insert a large token sequence
 	tokens1 := makeSequentialTokens(0, largeSize)
-	node1, _, _ := cache.AddPrefix(tokens1, "m1", "p1")
+	node1, _, _ := cache.AddPrefix(tokens1, "m1", "default/p1")
 	assert.NotNil(t, node1)
 
 	// Insert an overlapping sequence that shares 29000 tokens then diverges
@@ -238,7 +239,7 @@ func Test_InsertHelperLargeTokenInput(t *testing.T) {
 	for i := 29000; i < largeSize; i++ {
 		tokens2[i] = largeSize + i // diverge
 	}
-	node2, matched, unmatched := cache.AddPrefix(tokens2, "m1", "p2")
+	node2, matched, unmatched := cache.AddPrefix(tokens2, "m1", "default/p2")
 	assert.NotNil(t, node2)
 	assert.Equal(t, 29000, len(matched))
 	assert.Equal(t, 1000, len(unmatched))
@@ -249,15 +250,15 @@ func Test_InsertHelperLargeTokenInput(t *testing.T) {
 	for i := 15000; i < largeSize; i++ {
 		tokens3[i] = 2*largeSize + i
 	}
-	node3, matched, unmatched := cache.AddPrefix(tokens3, "m1", "p3")
+	node3, matched, unmatched := cache.AddPrefix(tokens3, "m1", "default/p3")
 	assert.NotNil(t, node3)
 	assert.Equal(t, 15000, len(matched))
 	assert.Equal(t, 15000, len(unmatched))
 
 	// Verify original sequence is still fully matchable
 	pods := []*v1.Pod{
-		{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "p2"}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p1"}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p2"}},
 	}
 	matchedTokens, unmatchedTokens, _ := cache.MatchPrefix(tokens1, "m1", pods)
 	assert.Equal(t, largeSize, len(matchedTokens))
@@ -271,21 +272,21 @@ func Test_ConcurrentDeepTreeAccess(t *testing.T) {
 	cache := NewLPRadixCache(4)
 	model := "m1"
 	pods := []*v1.Pod{
-		{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "p2"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "p3"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "p4"}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p1"}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p2"}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p3"}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p4"}},
 	}
 
 	// Build a moderately deep tree
 	depth := 200
 	baseTokens := makeSequentialTokens(1, depth)
-	cache.AddPrefix(baseTokens, model, "p1")
+	cache.AddPrefix(baseTokens, model, "default/p1")
 
 	// Create depth by inserting incrementally
 	for i := 1; i < depth; i++ {
 		tokens := makeSequentialTokens(1, i)
-		cache.AddPrefix(tokens, model, "p1")
+		cache.AddPrefix(tokens, model, "default/p1")
 	}
 
 	// Concurrent inserts and reads with large-ish inputs
@@ -303,7 +304,8 @@ func Test_ConcurrentDeepTreeAccess(t *testing.T) {
 			for j := depth; j < depth+50; j++ {
 				tokens[j] = 10000*id + j
 			}
-			cache.AddPrefix(tokens, model, pods[id%len(pods)].Name)
+			pod := pods[id%len(pods)]
+			cache.AddPrefix(tokens, model, utils.GeneratePodKey(pod.Namespace, pod.Name))
 
 			// Also do a MatchPrefix
 			cache.MatchPrefix(tokens[:depth], model, pods)
@@ -325,7 +327,7 @@ func Test_ConcurrentGetAllNodesAndEvict(t *testing.T) {
 
 	// Populate the tree with many nodes
 	for i := 0; i < 100; i++ {
-		cache.AddPrefix([]int{i, i + 1, i + 2}, "m1", "p1")
+		cache.AddPrefix([]int{i, i + 1, i + 2}, "m1", "default/p1")
 	}
 
 	var wg sync.WaitGroup
@@ -352,7 +354,7 @@ func Test_ConcurrentGetAllNodesAndEvict(t *testing.T) {
 		for i := 0; i < 200; i++ {
 			cache.Evict(time.Now().Add(10 * time.Minute))
 			// Re-populate so there's always something to evict
-			cache.AddPrefix([]int{1000 + i, 1001 + i}, "m1", "p1")
+			cache.AddPrefix([]int{1000 + i, 1001 + i}, "m1", "default/p1")
 		}
 	}()
 
@@ -361,7 +363,7 @@ func Test_ConcurrentGetAllNodesAndEvict(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 200; i++ {
-			cache.AddPrefix([]int{2000 + i, 2001 + i, 2002 + i}, "m1", "p1")
+			cache.AddPrefix([]int{2000 + i, 2001 + i, 2002 + i}, "m1", "default/p1")
 		}
 	}()
 
