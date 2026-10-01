@@ -1913,6 +1913,45 @@ func TestReconcileRefusesASecondClaimWhileTheFirstStillLoads(t *testing.T) {
 	assert.Empty(t, getModel(t, r, second.Name).Status.Instances)
 }
 
+// Placed says that the engine was asked for, and the runtime did not refuse.
+// A route that cannot be written after that does not undo it. The next pass
+// finds the instance it asked for and places nothing again, so this pass has to
+// say so.
+func TestReconcileMarksAClaimPlacedWhenItsRouteCannotBeWritten(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	scheme := testScheme(t)
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pm, pod).
+		WithStatusSubresource(&modelv1alpha1.ModelClaim{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch,
+				opts ...client.PatchOption) error {
+				if _, isPod := obj.(*corev1.Pod); isPod {
+					return fmt.Errorf("the API server did not answer")
+				}
+				return c.Patch(ctx, obj, patch, opts...)
+			},
+		}).
+		Build()
+	runtime := &fakeRuntime{snapshots: map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}}
+	r := &ModelClaimReconciler{
+		Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(32), Runtime: runtime,
+		PoolPolicy:    newPoolPolicyManager(time.Now),
+		SnapshotCache: newRuntimeSnapshotCache(defaultRuntimeSnapshotTTL, time.Now),
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+	cond := meta.FindStatusCondition(getModel(t, r, pm.Name).Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+	assert.Equal(t, "Placed", cond.Reason)
+}
+
 func TestReconcileDoesNotTakeAConflictOnTheRecordForAFailedStart(t *testing.T) {
 	pm := claimWithCost(300, 100)
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)

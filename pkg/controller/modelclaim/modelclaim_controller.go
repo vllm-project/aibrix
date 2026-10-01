@@ -566,6 +566,10 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 			}
 			return aerr
 		}
+		// The engine was asked for, and the runtime did not refuse. That is
+		// what Placed says, so it is said now: a later step that fails here
+		// leaves the instance recorded, and the next pass places nothing again.
+		markPlaced(pm, pod)
 		pm.Status.Instances[slot].Port = resp.Port
 
 		// The engine is spawned but not yet serveable (boot/compile). Keep the
@@ -577,7 +581,6 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 			return err
 		}
 
-		markPlaced(pm, pod)
 		alreadyOn[pod.Name] = true
 		load[pod.Name]++
 		if replaced != nil {
