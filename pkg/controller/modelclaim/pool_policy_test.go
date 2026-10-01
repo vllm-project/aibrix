@@ -18,6 +18,7 @@ package modelclaim
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -175,4 +176,69 @@ func TestModelsForKVPolicyRejectsIncompleteCapacityObservation(t *testing.T) {
 	})
 
 	assert.Nil(t, models, "a partial KV observation must not produce a limit plan")
+}
+
+func TestPoolPolicyManagerDropsActivityOfPodsThatStopReporting(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	manager := newPoolPolicyManager(func() time.Time { return now })
+	pool := types.NamespacedName{Namespace: "default", Name: "warm-pool"}
+	total := int64(10)
+	model := RuntimeSnapshotModel{RequestMetricsObserved: true, RequestSuccessTotal: &total}
+
+	_, observed := manager.observe("old-pod/model", model)
+	require.True(t, observed)
+
+	// A rollout replaces the pod: only the new one is observed from now on.
+	now = now.Add(4 * time.Minute)
+	_, observed = manager.observe("new-pod/model", model)
+	require.True(t, observed)
+	manager.begin(pool)
+	assert.Len(t, manager.activity, 2, "records inside the retention window stay")
+
+	now = now.Add(2 * time.Minute)
+	_, observed = manager.observe("new-pod/model", model)
+	require.True(t, observed)
+	manager.begin(pool)
+	assert.Contains(t, manager.activity, "new-pod/model")
+	assert.NotContains(t, manager.activity, "old-pod/model")
+}
+
+func TestPoolPolicyManagerKeepsTheBaselineOfAnObservedPod(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	manager := newPoolPolicyManager(func() time.Time { return now })
+	pool := types.NamespacedName{Namespace: "default", Name: "warm-pool"}
+	total := int64(10)
+	model := RuntimeSnapshotModel{RequestMetricsObserved: true, RequestSuccessTotal: &total}
+
+	for i := 0; i < 30; i++ { // observed every interval for five minutes
+		_, _ = manager.observe("pod/model", model)
+		manager.begin(pool)
+		now = now.Add(DefaultRequeueDuration)
+	}
+	total = 12
+	activity, observed := manager.observe("pod/model", model)
+
+	require.True(t, observed)
+	assert.True(t, activity.Initialized, "a live pod keeps its counter baseline")
+	assert.Equal(t, int64(2), activity.CompletionDelta)
+}
+
+func TestPoolPolicyManagerSweepsAtMostOncePerInterval(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	manager := newPoolPolicyManager(func() time.Time { return now })
+	pool := types.NamespacedName{Namespace: "default", Name: "warm-pool"}
+	total := int64(1)
+	model := RuntimeSnapshotModel{RequestMetricsObserved: true, RequestSuccessTotal: &total}
+
+	manager.begin(pool)
+	_, _ = manager.observe("stale/model", model)
+	now = now.Add(poolActivityRetention + time.Second)
+	manager.lastSweep = now.Add(-poolActivitySweepInterval / 2) // swept 30s ago
+
+	manager.begin(pool)
+	assert.Contains(t, manager.activity, "stale/model", "a sweep inside the interval is skipped")
+
+	now = now.Add(poolActivitySweepInterval)
+	manager.begin(pool)
+	assert.NotContains(t, manager.activity, "stale/model")
 }
