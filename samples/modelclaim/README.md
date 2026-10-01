@@ -45,7 +45,7 @@ limit redistribution and idle sleep. A request for a sleeping model triggers
 an asynchronous wake and receives HTTP 503 with `Retry-After`; the gateway does
 not hold the original request.
 
-This sample uses one GPU and independent single-GPU engines. Fixed TP/PP is
+This sample uses one GPU and independent single-GPU engines. Fixed TP/PP/PCP is
 supported only in a separate topology-homogeneous pool whose Pod GPU limit
-equals `TP x PP`. `ModelClaim.spec.replicas` is optional and currently accepts
-only one.
+equals `TP x PP x PCP`. `ModelClaim.spec.replicas` is optional and currently
+accepts only one.

@@ -118,7 +118,7 @@ func placementStateFromSnapshot(snapshot *RuntimeSnapshot, artifactURL string, p
 	}
 	for _, accelerator := range snapshot.Accelerators {
 		// A single-GPU engine needs the largest available single-device slot. A
-		// fixed TP/PP group uses every visible GPU, so its safe headroom is the
+		// fixed TP/PP/PCP group uses every visible GPU, so its safe headroom is the
 		// least-free rank rather than a misleading aggregate or maximum.
 		if !state.MemoryKnown || (parallelism == 1 && accelerator.HBMFreeBytes > state.HBMFreeBytes) ||
 			(parallelism > 1 && accelerator.HBMFreeBytes < state.HBMFreeBytes) {

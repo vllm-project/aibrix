@@ -595,16 +595,17 @@ func TestListCandidateWarmPods(t *testing.T) {
 func TestListCandidateWarmPodsFiltersMismatchedVLLMParallelism(t *testing.T) {
 	pm := sampleModelClaim()
 	pm.Spec.EngineConfig.Args["--tensor-parallel-size"] = "2"
+	pm.Spec.EngineConfig.Args["--prefill-context-parallel-size"] = "2"
 	r, _ := newReconciler(t,
-		warmPodWithGPUs("one-gpu", "b300-pool-a", 1),
 		warmPodWithGPUs("two-gpu", "b300-pool-a", 2),
+		warmPodWithGPUs("four-gpu", "b300-pool-a", 4),
 	)
 
 	got, err := r.listCandidateWarmPods(context.Background(), pm)
 
 	require.NoError(t, err)
 	require.Len(t, got, 1)
-	assert.Equal(t, "two-gpu", got[0].Name)
+	assert.Equal(t, "four-gpu", got[0].Name)
 }
 
 // TestReconcileAddsFinalizer verifies the first reconcile installs the finalizer
