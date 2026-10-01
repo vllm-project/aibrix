@@ -61,6 +61,7 @@ type mockModelClaimBinding struct {
 	state         string
 	claim         string
 	wakeByRequest bool
+	reason        string
 }
 
 type mockModelClaimStatus struct {
@@ -72,7 +73,7 @@ func (m *MockCache) ModelClaimBinding(model string) (*v1.Pod, utils.ModelClaimBi
 	binding, found := m.modelClaimBindings[model]
 	return binding.pod, utils.ModelClaimBinding{
 		Model: model, Port: binding.port, State: binding.state,
-		Claim: binding.claim, WakeByRequest: binding.wakeByRequest,
+		Claim: binding.claim, WakeByRequest: binding.wakeByRequest, Reason: binding.reason,
 	}, found
 }
 

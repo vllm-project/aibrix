@@ -346,7 +346,7 @@ func (s *Server) validateModelAvailability(requestID, model string) (types.PodLi
 				// The controller gets past every state a pod carries by itself.
 				// An engine that failed for good is moved to another pod once
 				// one can take it, so its client is asked to retry as well.
-				return nil, modelClaimRetryResponse(model, state, "", true)
+				return nil, modelClaimRetryResponse(model, state, binding.Reason, true)
 			}
 		}
 		// A claim that no pod advertises yet has not been placed. Its model is
@@ -392,7 +392,7 @@ func modelClaimRetryResponse(model, state, reason string, retry bool) *extProcPb
 	if retry {
 		headers = append(headers, &configPb.HeaderValueOption{
 			Header: &configPb.HeaderValue{
-				Key: "Retry-After", RawValue: []byte(strconv.Itoa(modelClaimRetryAfterSeconds)),
+				Key: "Retry-After", RawValue: []byte(strconv.Itoa(modelClaimRetryAfter(reason))),
 			},
 		})
 		message += "; retry shortly"
@@ -411,6 +411,24 @@ var modelClaimReasonsNotRetried = map[string]struct{}{
 	"InvalidEngineConfig": {},
 	"InvalidPerGPU":       {},
 	"TooLargeForAnyCard":  {},
+}
+
+// modelClaimRetryAfterByReason is how long a client is asked to wait, by the
+// reason the controller gives, when that is longer than a wake or a start
+// takes. Making room waits for KV to come back. A move starts the engine
+// again on another pod.
+var modelClaimRetryAfterByReason = map[string]int{
+	"WaitingForRoom": 20,
+	"Moving":         30,
+}
+
+// modelClaimRetryAfter is the Retry-After, in seconds, for a claim the
+// controller gives this reason for.
+func modelClaimRetryAfter(reason string) int {
+	if seconds, found := modelClaimRetryAfterByReason[reason]; found {
+		return seconds
+	}
+	return modelClaimRetryAfterSeconds
 }
 
 func modelClaimRetried(reason string) bool {

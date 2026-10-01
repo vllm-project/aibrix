@@ -382,6 +382,10 @@ type ModelClaimBinding struct {
 	// request, rather than sent to the runtime. An older controller does not
 	// set it, and wakes nothing itself.
 	WakeByRequest bool
+	// Reason says more than State about why the model is not served, such as
+	// WaitingForRoom while a wake waits for room, or Moving while the claim
+	// moves to another pod. It is empty when the state says it all.
+	Reason string
 }
 
 // ModelClaimBindingsFromPod parses modelclaim.aibrix.ai/* annotations on a
@@ -401,6 +405,7 @@ func ModelClaimBindingsFromPod(pod *v1.Pod) map[string]ModelClaimBinding {
 			Port          int    `json:"port"`
 			State         string `json:"state,omitempty"`
 			WakeByRequest bool   `json:"wakeByRequest,omitempty"`
+			Reason        string `json:"reason,omitempty"`
 		}
 		if err := json.Unmarshal([]byte(value), &entry); err != nil || entry.Model == "" ||
 			entry.Port < 0 || entry.Port > 65535 {
@@ -430,6 +435,7 @@ func ModelClaimBindingsFromPod(pod *v1.Pod) map[string]ModelClaimBinding {
 			State:         entry.State,
 			Claim:         strings.TrimPrefix(key, constants.ModelClaimPodAnnotationPrefix),
 			WakeByRequest: entry.WakeByRequest,
+			Reason:        entry.Reason,
 		}
 	}
 	return out

@@ -239,6 +239,7 @@ type FakeModelClaimRuntime struct {
 	defaultPhase string
 	defaultReady bool
 	failures     int
+	wakeFailures int
 	nextPort     int32
 
 	activateCalls   []modelclaimcontroller.ActivateRequest
@@ -329,6 +330,15 @@ func (f *FakeModelClaimRuntime) handleWake(w http.ResponseWriter, r *http.Reques
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.wakeCalls = append(f.wakeCalls, req)
+	if f.wakeFailures > 0 {
+		f.wakeFailures--
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(modelclaimcontroller.RuntimeOperationResponse{
+			Status: "error", ModelName: req.ModelName, OperationID: req.OperationID,
+		})
+		return
+	}
 	applied := false
 	for uid, model := range f.models {
 		if model.ModelName == req.ModelName && model.Phase == "sleeping" {
@@ -412,6 +422,15 @@ func (f *FakeModelClaimRuntime) FailNextActivations(count int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.failures = count
+}
+
+// FailNextWakes makes the next count wake requests fail, as a runtime does
+// when vLLM cannot wake its engine.
+func (f *FakeModelClaimRuntime) FailNextWakes(count int) {
+	ginkgo.GinkgoHelper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.wakeFailures = count
 }
 
 // SetClaimState updates the runtime state for an already activated claim UID.

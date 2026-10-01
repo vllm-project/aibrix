@@ -578,6 +578,9 @@ An annotation has this form:
 
    {"model":"qwen3-0.6b","port":20000,"state":"active","wakeByRequest":true}
 
+A route that is not served may also carry a ``reason``, such as
+``WaitingForRoom``.
+
 ``port: 0`` means the model is known but not currently routable. It is used
 while the engine is activating, restarting, sleeping, or failed.
 
@@ -695,13 +698,37 @@ only after the runtime reports the engine active and ready.
 
 The controller wakes the engine through the runtime, once its card is promised
 no more than it has. A sleeping engine keeps its seat, so that holds unless a
-declaration grew while the engine slept. The engine then stays asleep, and the
-request waits. A claim whose card cannot be accounted for is woken all the
-same, since its seat was kept. The request stays
-on the Pod while the engine boots, and the controller removes it once the
-engine serves. A wake that fails raises a ``WakeFailed`` Event, and its request
-is removed, so the next request for the model asks again. ``Waking`` and
-``Woken`` Events mark a wake that went through.
+declaration grew while the engine slept. A claim whose card cannot be accounted
+for is woken all the same, since its seat was kept. The request stays on the
+Pod while the engine boots, and the controller removes it once the engine
+serves. ``Waking`` and ``Woken`` Events mark a wake that went through.
+
+An engine that cannot wake where it is moves, when another Pod can take its
+claim. That is an engine whose card is promised more than it has, and one whose
+runtime answers that it could not wake it. The instance is marked ``Failed``,
+and records why in ``status.instances[].reason``, as ``NoRoomToWake`` or
+``WakeFailed``. The claim raises a ``Moving`` Event. In the same pass, the
+controller stops the engine and starts the claim on the other Pod, as it does
+for an engine that failed for good. A ``Rescheduled`` Event says where the
+claim went. A move that cannot finish in that pass is tried again with the
+usual backoff. Until it finishes, the claim's ``Ready`` condition says
+``Moving``.
+
+When no other Pod can take it, an engine whose card cannot take it back stays
+asleep. Its instance records ``WaitingForRoom``, and so does the claim's
+``Ready`` condition. The claim raises a ``WaitingForRoom`` Event once, when the
+wait starts. A wake that fails with no other Pod to go to raises a
+``WakeFailed`` Event, and its request is removed, so the next request for the
+model asks again. A wake whose runtime cannot be reached, or does not answer
+in time, is asked again on a later pass. A request that is not met within five
+minutes is removed, with a ``WakeRequestExpired`` Event, and a client that
+still asks writes a new one.
+
+The gateway asks a client to wait longer while the controller makes room. It
+asks for 20 seconds while a wake waits for room, and for 30 seconds while a
+claim waits to move. It reads the reason from the route, where the controller
+writes it beside the state, or from the claim's ``Ready`` condition. The
+message of the 503 gives the reason too.
 
 A controller that wakes engines itself says so in the binding, with
 ``"wakeByRequest":true``. A gateway that finds no such field asks the runtime
