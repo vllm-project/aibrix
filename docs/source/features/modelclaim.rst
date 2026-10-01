@@ -508,6 +508,18 @@ be placed or as KV. A request to wake the engine charges its wake reserve again
 at once. An engine whose memory asleep could not be measured keeps its reserve,
 and its claim raises a ``SleepingFootprintUnknown`` Warning.
 
+In such a pool, a new claim that no Pod has room for can have room made for
+it. Room is made for one claim in a pool at a time, the one that has waited
+longest. The controller picks the Pod where the fewest engines would have to
+sleep, the ones idle longest. It puts them to sleep one at a time, once each
+has been idle for ``sleepToMakeRoomAfterSeconds``, and their claims raise
+``SleptToMakeRoom`` Events. Meanwhile, the claim's ``Scheduled`` condition says
+``MakingRoom``, and the claim raises a ``MakingRoom`` Event. The Pod is held for
+the claim for up to two minutes, or until the claim is deleted. No other claim
+is placed in that room, and the card does not lend it out as KV. The claim is
+placed once the room is there. A Pod with nothing left to put to sleep is let
+go, and the claim waits for room as before.
+
 A failed instance does free its seat. The runtime stops an engine once its
 restarts run out, and reports it as not alive. The account then charges the
 instance nothing.
@@ -679,9 +691,9 @@ The fields mean:
 
 ``lifecycle.sleepToMakeRoomAfterSeconds``
    How long an engine must have served nothing before the controller may put
-   it to sleep to make room for a model that wakes. It defaults to 30 seconds,
-   or to ``sleepAfterSeconds`` when that is shorter. When set, it must be
-   positive and shorter than ``sleepAfterSeconds``.
+   it to sleep to make room for a model that wakes, or for a new one. It
+   defaults to 30 seconds, or to ``sleepAfterSeconds`` when that is shorter.
+   When set, it must be positive and shorter than ``sleepAfterSeconds``.
 
 Turn ``noWakeReserveWhileAsleep`` on only once both the controller and the
 gateway are upgraded. An older gateway wakes an engine through its runtime,
@@ -782,10 +794,11 @@ minutes is removed, with a ``WakeRequestExpired`` Event, and a client that
 still asks writes a new one.
 
 The gateway asks a client to wait longer while the controller makes room. It
-asks for 20 seconds while a wake waits for room, and for 30 seconds while a
-claim waits to move. It reads the reason from the route, where the controller
-writes it beside the state, or from the claim's ``Ready`` condition. The
-message of the 503 gives the reason too.
+asks for 20 seconds while a wake waits for room, or while room is made for a
+new claim, and for 30 seconds while a claim waits to move. It reads the reason
+from the route, where the controller writes it beside the state, or from the
+claim's ``Scheduled`` or ``Ready`` condition. The message of the 503 gives the
+reason too.
 
 A controller that wakes engines itself says so in the binding, with
 ``"wakeByRequest":true``. A gateway that finds no such field asks the runtime

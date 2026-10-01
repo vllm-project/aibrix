@@ -382,6 +382,41 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 		}
 	})
 
+	ginkgo.It("puts the engine idle longest to sleep to make room for a new claim", func() {
+		fixture.Runtime().SetDefaultState("active", true)
+		// One card of 5 GiB. Every claim declares 1 GiB and a 1 GiB floor, so
+		// two fit, and a third only once one of them sleeps.
+		fixture.Runtime().SetCard(5 << 30)
+		fixture.Runtime().SetSleepingFootprint(256 << 20)
+		fixture.CreatePoolPod(ns.Name, "pool-new", "pool-new",
+			`{"lifecycle":{"noWakeReserveWhileAsleep":true,"sleepToMakeRoomAfterSeconds":1}}`)
+		first := fixture.CreateClaim(ns.Name, "claim-first", "pool-new", nil, nil)
+		second := fixture.CreateClaim(ns.Name, "claim-second", "pool-new", nil, nil)
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(fixture.GetClaim(g, first).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+			g.Expect(fixture.GetClaim(g, second).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+
+		third := fixture.CreateClaim(ns.Name, "claim-third", "pool-new", nil, nil)
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(fixture.GetClaim(g, third).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+			asleep := 0
+			for _, neighbour := range []*modelapi.ModelClaim{first, second} {
+				if fixture.GetClaim(g, neighbour).Status.Phase == modelapi.ModelClaimSleeping {
+					asleep++
+				}
+			}
+			g.Expect(asleep).To(gomega.Equal(1), "one engine goes to sleep, and the new claim fits")
+		}, 2*modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+		gomega.Expect(fixture.Runtime().SleepRequests()).To(gomega.HaveLen(1))
+		fixture.ExpectEvent(third, corev1.EventTypeNormal, "MakingRoom")
+		events := &corev1.EventList{}
+		gomega.Expect(k8sClient.List(ctx, events, client.InNamespace(ns.Name))).To(gomega.Succeed())
+		for _, event := range events.Items {
+			gomega.Expect(event.Reason).NotTo(gomega.Equal("KVLimitFailed"), event.Message)
+		}
+	})
+
 	ginkgo.It("moves a claim whose engine cannot be woken", func() {
 		fixture.Runtime().SetDefaultState("active", true)
 		fixture.CreateWarmPod(ns.Name, "warm-move-a", "pool-a")

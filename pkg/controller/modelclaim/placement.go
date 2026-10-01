@@ -196,8 +196,13 @@ func fitsTopology(pod corev1.Pod, ledger podLedger, instanceGPUs int64) bool {
 // itself: how much it holds, and how much of that the instances on it take.
 // Without it the ledger is real in the controller and invisible in kubectl.
 func cardAccount(ledger podLedger, takenBytes int64, taken string) string {
-	return fmt.Sprintf("the card holds %s, and %s of it is %s %d instance(s)",
+	account := fmt.Sprintf("the card holds %s, and %s of it is %s %d instance(s)",
 		gibibytes(ledger.hbmUsableBytes), gibibytes(takenBytes), taken, len(ledger.engines))
+	if ledger.reservedBytes > 0 {
+		account += fmt.Sprintf("; %s more is held for another model that room is being made for",
+			gibibytes(ledger.reservedBytes))
+	}
+	return account
 }
 
 // noPlacementMessage says why no pod was chosen for a claim.

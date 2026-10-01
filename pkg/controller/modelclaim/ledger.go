@@ -209,6 +209,10 @@ type podLedger struct {
 	hbmUsableBytes           int64
 	totalMinimumReserveBytes int64
 	totalHeldBytes           int64
+	// reservedBytes is the room held on this card for another claim, while
+	// engines are put to sleep to make room for it. It is taken from what
+	// the card offers, and from what a division of the card hands out.
+	reservedBytes int64
 	// accelerators is how many cards the runtime reported, which is what
 	// makes a pod that requests no nvidia.com/gpu still a pod with cards. It
 	// is one where a reading missed the card, and an engine on the pod holds a
@@ -229,7 +233,13 @@ type podLedger struct {
 // floor, so a model that needs more than this cannot be placed here by waiting.
 // It is negative when the card is already promised more than it has.
 func (l podLedger) maximumRoomBytes() int64 {
-	return l.hbmUsableBytes - l.totalMinimumReserveBytes
+	return l.hbmUsableBytes - l.totalMinimumReserveBytes - l.reservedBytes
+}
+
+// plannableBytes is what a division of the card shares out: all of the card
+// but the room held there for another claim.
+func (l podLedger) plannableBytes() int64 {
+	return l.hbmUsableBytes - l.reservedBytes
 }
 
 // heldRoomBytes is what this card can offer another instance now, without
@@ -238,7 +248,7 @@ func (l podLedger) maximumRoomBytes() int64 {
 // needs more than this cannot be placed here today even though the card may be
 // able to hold it later.
 func (l podLedger) heldRoomBytes() int64 {
-	return l.hbmUsableBytes - l.totalHeldBytes
+	return l.hbmUsableBytes - l.totalHeldBytes - l.reservedBytes
 }
 
 // withHole marks an account that cannot be trusted, keeping the first cause
@@ -267,9 +277,12 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 	namespace string,
 	candidates []corev1.Pod,
 	snapshots map[string]*RuntimeSnapshot,
+	forClaim string,
 ) map[string]podLedger {
 	claims, err := r.listClaimsForAccount(ctx, namespace)
-	return podLedgersFrom(claims, err, candidates, snapshots, r.podsWithoutWakeReserve(ctx, candidates))
+	ledgers := podLedgersFrom(claims, err, candidates, snapshots, r.podsWithoutWakeReserve(ctx, candidates))
+	r.reservations().takeFrom(ledgers, namespace, forClaim, r.now())
+	return ledgers
 }
 
 // listClaimsForAccount lists the claims in a namespace for the GPU memory

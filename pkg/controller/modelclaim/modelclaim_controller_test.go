@@ -1938,7 +1938,7 @@ func TestArrangeCardGivesARetryItsOwnOperation(t *testing.T) {
 	arrange := func() {
 		t.Helper()
 		ledgers := r.collectPodLedgers(context.Background(), testNamespace,
-			[]corev1.Pod{*pod}, map[string]*RuntimeSnapshot{pod.Name: snapshot})
+			[]corev1.Pod{*pod}, map[string]*RuntimeSnapshot{pod.Name: snapshot}, "")
 		ledger := ledgers[pod.Name]
 		require.True(t, ledger.judgeable)
 		_, err := r.arrangeCard(context.Background(), pod, ledger, ledger.engines, placementDivision, nil)
@@ -1982,7 +1982,7 @@ func aShrinkAndAGrow(t *testing.T) (*ModelClaimReconciler, *fakeRuntime, *corev1
 func divideOnce(t *testing.T, r *ModelClaimReconciler, pod *corev1.Pod, snapshot *RuntimeSnapshot) error {
 	t.Helper()
 	ledgers := r.collectPodLedgers(context.Background(), testNamespace,
-		[]corev1.Pod{*pod}, map[string]*RuntimeSnapshot{pod.Name: snapshot})
+		[]corev1.Pod{*pod}, map[string]*RuntimeSnapshot{pod.Name: snapshot}, "")
 	ledger := ledgers[pod.Name]
 	require.True(t, ledger.judgeable)
 	_, err := r.arrangeCard(context.Background(), pod, ledger, ledger.engines, placementDivision, nil)
@@ -2206,7 +2206,7 @@ func TestArrangeCardLeavesThePassNoReadingFromBeforeAWrite(t *testing.T) {
 		_, err := readings.of(context.Background(), pod)
 		require.NoError(t, err, name)
 		ledger := r.collectPodLedgers(context.Background(), testNamespace,
-			[]corev1.Pod{*pod}, map[string]*RuntimeSnapshot{pod.Name: snapshot})[pod.Name]
+			[]corev1.Pod{*pod}, map[string]*RuntimeSnapshot{pod.Name: snapshot}, "")[pod.Name]
 
 		_, err = r.arrangeCard(context.Background(), pod, ledger, ledger.engines, placementDivision, readings)
 

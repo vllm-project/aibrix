@@ -19,6 +19,7 @@ package modelclaim
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -145,7 +146,7 @@ func (r *ModelClaimReconciler) wakeRequested(
 		}
 
 		pods := []corev1.Pod{*pod}
-		ledger := r.collectPodLedgers(ctx, pm.Namespace, pods, readings.ofPods(ctx, pods))[pod.Name]
+		ledger := r.collectPodLedgers(ctx, pm.Namespace, pods, readings.ofPods(ctx, pods), pm.Name)[pod.Name]
 		if !ledger.judgeable && podHasGPUs(*pod, ledger.accelerators) && r.podsWithoutWakeReserve(ctx, pods)[pod.Name] {
 			r.waitForRoom(ctx, pm, inst, pod, "its card cannot be accounted for: "+ledger.blocked)
 			continue
@@ -274,12 +275,6 @@ func askedBefore(at, name, otherAt, otherName string) bool {
 // for a claim whose engine is to wake there. It returns true when it put one to
 // sleep. One goes to sleep a pass. The next pass sees what it holds asleep, and
 // asks again whether the waking engine fits.
-//
-// Room is made only where a sleep gives room back. That is a pool that keeps no
-// wake reserve, and a card where every engine asleep was measured. An engine
-// whose memory asleep is not known keeps its reserve, so the next one put to
-// sleep would most likely free nothing either. An engine may be put to sleep
-// once it has served nothing for the pool's sleepToMakeRoomAfterSeconds.
 func (r *ModelClaimReconciler) sleepToMakeRoom(
 	ctx context.Context,
 	waker *modelv1alpha1.ModelClaim,
@@ -287,32 +282,63 @@ func (r *ModelClaimReconciler) sleepToMakeRoom(
 	ledger podLedger,
 	readings *runtimeReadings,
 ) bool {
+	lifecycle, can := r.roomCanBeMadeOn(ctx, waker, pod, ledger)
+	if !can {
+		return false
+	}
+	idle := r.idleEngines(ctx, waker, pod, lifecycle.sleepToMakeRoomAfter(), readings)
+	return len(idle) > 0 && r.putIdleEngineToSleep(ctx, idle[0], pod, waker, readings)
+}
+
+// roomCanBeMadeOn reports whether putting engines to sleep on a card gives room
+// back, and returns the pool's lifecycle policy when it does. That is a pool
+// that keeps no wake reserve, and a card where every engine asleep was
+// measured. An engine whose memory asleep is not known keeps its reserve, so
+// the next one put to sleep would most likely free nothing either.
+func (r *ModelClaimReconciler) roomCanBeMadeOn(
+	ctx context.Context,
+	forClaim *modelv1alpha1.ModelClaim,
+	pod *corev1.Pod,
+	ledger podLedger,
+) (*poolLifecyclePolicy, bool) {
 	lifecycle := r.poolLifecycleOf(ctx, pod)
 	if lifecycle == nil || !lifecycle.NoWakeReserveWhileAsleep {
-		return false
+		return nil, false
 	}
 	for _, engine := range ledger.engines {
-		if engine.claimName != waker.Name && engine.asleep && engine.sleepingFootprintBytes == 0 {
-			return false
+		if engine.claimName != forClaim.Name && engine.asleep && engine.sleepingFootprintBytes == 0 {
+			return nil, false
 		}
 	}
-	idlest, found := r.idlestEngine(ctx, waker, pod, lifecycle.sleepToMakeRoomAfter(), readings)
-	if !found {
-		return false
-	}
+	return lifecycle, true
+}
+
+// putIdleEngineToSleep puts an idle engine to sleep to make room for a claim,
+// and reports whether it did. The claim the engine serves is told whom the room
+// is for, and what its engine holds asleep.
+func (r *ModelClaimReconciler) putIdleEngineToSleep(
+	ctx context.Context,
+	idle idleEngine,
+	pod *corev1.Pod,
+	forClaim *modelv1alpha1.ModelClaim,
+	readings *runtimeReadings,
+) bool {
 	operationID := fmt.Sprintf("make-room/%s/%s/%s/%d",
-		pod.UID, snapshotActivityKey(idlest.model), waker.UID, idlest.idleSince.UnixNano())
-	if err := r.putEngineToSleep(ctx, idlest.claim, pod, idlest.port, idlest.model.ModelName, operationID, readings); err != nil {
+		pod.UID, snapshotActivityKey(idle.model), forClaim.UID, idle.idleSince.UnixNano())
+	if err := r.putEngineToSleep(ctx, idle.claim, pod, idle.port, idle.model.ModelName, operationID, readings); err != nil {
 		klog.ErrorS(err, "could not put an idle engine to sleep to make room",
-			"pod", klog.KObj(pod), "model", idlest.model.ModelName, "for", waker.Name)
+			"pod", klog.KObj(pod), "model", idle.model.ModelName, "for", forClaim.Name)
 		return false
 	}
-	asleep := r.sleptEngine(ctx, pod, idlest.claim, readings)
-	r.Recorder.Eventf(idlest.claim, corev1.EventTypeNormal, "SleptToMakeRoom",
+	asleep := r.sleptEngine(ctx, pod, idle.claim, readings)
+	if footprint, known := sleepingFootprintOf(asleep); known {
+		r.footprints().note(idle.claim, footprint)
+	}
+	r.Recorder.Eventf(idle.claim, corev1.EventTypeNormal, "SleptToMakeRoom",
 		"model %s idle for %s; put to sleep on pod %s to make room for model %s%s",
-		idlest.model.ModelName, r.poolPolicyManager().now().Sub(idlest.idleSince).Round(time.Second),
-		pod.Name, servedModelName(waker), sleepingFootprintNote(asleep))
-	r.warnOfAnUnmeasuredSleep(idlest.claim, pod.Name, asleep, true)
+		idle.model.ModelName, r.poolPolicyManager().now().Sub(idle.idleSince).Round(time.Second),
+		pod.Name, servedModelName(forClaim), sleepingFootprintNote(asleep))
+	r.warnOfAnUnmeasuredSleep(idle.claim, pod.Name, asleep, true)
 	return true
 }
 
@@ -324,38 +350,36 @@ type idleEngine struct {
 	idleSince time.Time
 }
 
-// idlestEngine finds the engine on a pod that has served nothing for longest,
-// among those that may be put to sleep to make room for the waker. Such an
-// engine is awake and routed, has no request running or waiting, and has been
-// idle for at least idleFor. Idle time counts from when the pool policy last
-// saw the engine busy, or from the engine's last change of phase when that is
-// later, as the idle timer counts it. An engine the pool policy has not seen
-// yet is not known to be idle.
-func (r *ModelClaimReconciler) idlestEngine(
+// idleEngines lists the engines on a pod that may be put to sleep to make room
+// for a claim, the one idle longest first. Such an engine is awake and routed,
+// has no request running or waiting, and has been idle for at least idleFor.
+// Idle time counts from when the pool policy last saw the engine busy, or from
+// the engine's last change of phase when that is later, as the idle timer
+// counts it. An engine the pool policy has not seen yet is not known to be idle.
+func (r *ModelClaimReconciler) idleEngines(
 	ctx context.Context,
-	waker *modelv1alpha1.ModelClaim,
+	forClaim *modelv1alpha1.ModelClaim,
 	pod *corev1.Pod,
 	idleFor time.Duration,
 	readings *runtimeReadings,
-) (idleEngine, bool) {
+) []idleEngine {
 	snapshot, err := readings.of(ctx, pod)
 	if err != nil || snapshot == nil {
-		return idleEngine{}, false
+		return nil
 	}
 	claims := &modelv1alpha1.ModelClaimList{}
 	if err := r.List(ctx, claims, client.InNamespace(pod.Namespace)); err != nil {
-		return idleEngine{}, false
+		return nil
 	}
 	manager := r.poolPolicyManager()
-	var idlest idleEngine
-	found := false
+	var idle []idleEngine
 	for _, model := range snapshot.Models {
 		if model.Phase != runtimePhaseActive || !model.Alive || !model.Ready || !model.RequestMetricsObserved ||
 			model.RequestsRunning > 0 || model.RequestsWaiting > 0 {
 			continue
 		}
 		claim := claimForRuntimeSnapshot(claims, model)
-		if claim == nil || claim.Name == waker.Name || !isVLLMModel(claim) {
+		if claim == nil || claim.Name == forClaim.Name || !isVLLMModel(claim) {
 			continue
 		}
 		port, active := activeClaimInstancePort(claim, pod.Name)
@@ -372,13 +396,15 @@ func (r *ModelClaimReconciler) idlestEngine(
 		if manager.now().Sub(idleSince) < idleFor {
 			continue
 		}
-		if !found || idleSince.Before(idlest.idleSince) ||
-			(idleSince.Equal(idlest.idleSince) && claim.Name < idlest.claim.Name) {
-			idlest = idleEngine{claim: claim, model: model, port: port, idleSince: idleSince}
-			found = true
-		}
+		idle = append(idle, idleEngine{claim: claim, model: model, port: port, idleSince: idleSince})
 	}
-	return idlest, found
+	sort.SliceStable(idle, func(i, j int) bool {
+		if !idle[i].idleSince.Equal(idle[j].idleSince) {
+			return idle[i].idleSince.Before(idle[j].idleSince)
+		}
+		return idle[i].claim.Name < idle[j].claim.Name
+	})
+	return idle
 }
 
 // wakeDivision divides a card for an engine about to wake. Every move of the
@@ -407,7 +433,7 @@ func (r *ModelClaimReconciler) cardArrangedForWake(
 	if !ledger.judgeable || !podHasGPUs(*pod, ledger.accelerators) {
 		return true
 	}
-	limits, err := planKVLimits(ledger.hbmUsableBytes, ledger.engines)
+	limits, err := planKVLimits(ledger.plannableBytes(), ledger.engines)
 	if err != nil || heldAsPlannedForWake(ledger.engines, limits, pm.Name) {
 		return true
 	}
@@ -533,7 +559,7 @@ func (r *ModelClaimReconciler) canPlaceElsewhere(
 	if len(others) == 0 {
 		return false
 	}
-	ledgers := r.collectPodLedgers(ctx, pm.Namespace, others, readings.ofPods(ctx, others))
+	ledgers := r.collectPodLedgers(ctx, pm.Namespace, others, readings.ofPods(ctx, others), pm.Name)
 	admissible, _ := admissibleCandidates(others, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(pm))
 	return len(admissible) > 0
 }
