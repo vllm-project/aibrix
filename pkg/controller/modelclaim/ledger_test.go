@@ -497,7 +497,7 @@ func TestLedgerTurnsEveryPodAwayWhenTheClaimsCannotBeListed(t *testing.T) {
 	r, _ := newReconciler(t, requesting, plain, silent)
 	r.APIReader = unlistable{r.Client}
 	ledgers := r.collectPodLedgers(context.Background(), testNamespace, pods, snapshots)
-	admissible, refusals := admissibleCandidates(pods, ledgers, 400)
+	admissible, refusals := admissibleCandidates(pods, ledgers, 400, 0)
 
 	assert.Empty(t, admissible)
 	require.Len(t, refusals, 3)

@@ -327,6 +327,10 @@ away whatever it requests, since its runtime is what says that it has cards. An
 instance on a Pod without a card records no limit, since no card was divided for
 it.
 
+A Pod given its GPUs some other way must report as many of them as one vLLM
+instance runs on, its tensor parallel size times its pipeline parallel size. A
+Pod that requests ``nvidia.com/gpu`` has to request that many as well.
+
 Upgrade an existing pool
 ------------------------
 

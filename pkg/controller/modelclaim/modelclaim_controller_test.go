@@ -2229,6 +2229,41 @@ func TestReconcileAccountsForACardTheRuntimeReportsWithoutAGPURequest(t *testing
 	assert.Contains(t, cond.Message, "can offer at most")
 }
 
+// A pod given its GPUs by a resource claim requests none, so its request says
+// nothing of the model's topology. What its runtime reports is held to the
+// topology instead, as a request would be.
+func TestReconcileHoldsAPodWithoutAGPURequestToTheModelsTopology(t *testing.T) {
+	for name, cards := range map[string]int{"one card for two": 1, "two cards for two": 2} {
+		t.Run(name, func(t *testing.T) {
+			pm := claimWithCost(300, 100)
+			pm.Spec.EngineConfig.Args["--tensor-parallel-size"] = "2"
+			pod, snapshot := podWithUnrequestedGPU(1000)
+			snapshot.Accelerators = nil
+			for i := 0; i < cards; i++ {
+				snapshot.Accelerators = append(snapshot.Accelerators, RuntimeAcceleratorSnapshot{
+					ID: fmt.Sprintf("GPU-%d", i), HBMTotalBytes: 1000, HBMFreeBytes: 1000, HBMUsableBytes: 1000,
+				})
+			}
+			r, runtime := newReconciler(t, pm, pod)
+			runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+			reconcileOnce(t, r, pm.Name)
+
+			if cards == 2 {
+				assert.Len(t, runtime.activateCalls, 1)
+				return
+			}
+			assert.Empty(t, runtime.activateCalls)
+			assert.Empty(t, runtime.kvLimitCalls, "a card the model cannot run on is not divided for it")
+			cond := meta.FindStatusCondition(getModel(t, r, pm.Name).Status.Conditions,
+				string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+			require.NotNil(t, cond)
+			assert.Equal(t, "NoMatchingPods", cond.Reason)
+			assert.Contains(t, cond.Message, "warm-1 reports 1 GPU(s), and the model runs on 2")
+		})
+	}
+}
+
 func TestReconcileHoldsAnEngineToItsLimitOnAPodWithoutAGPURequest(t *testing.T) {
 	pm := claimWithCost(300, 100)
 	pod, snapshot := podWithUnrequestedGPU(1000)

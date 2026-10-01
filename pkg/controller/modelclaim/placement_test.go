@@ -243,7 +243,7 @@ func TestAdmissibleCandidatesKeepsOnlyPodsThatCanShowRoom(t *testing.T) {
 		"unreadable": {blocked: "its runtime did not answer"},
 	}
 
-	admissible, refusals := admissibleCandidates(candidates, ledgers, 40<<30)
+	admissible, refusals := admissibleCandidates(candidates, ledgers, 40<<30, 0)
 
 	require.Len(t, admissible, 2)
 	assert.Equal(t, "roomy", admissible[0].Name)
@@ -267,7 +267,7 @@ func TestAdmissibleCandidatesTurnsAwayACardWhoseRoomIsHeld(t *testing.T) {
 			totalHeldBytes: 70 << 30, engines: make([]engineOnPod, 1)},
 	}
 
-	admissible, refusals := admissibleCandidates(candidates, ledgers, 40<<30)
+	admissible, refusals := admissibleCandidates(candidates, ledgers, 40<<30, 0)
 
 	assert.Empty(t, admissible)
 	require.Len(t, refusals, 1)
@@ -352,7 +352,7 @@ func TestAdmissibleCandidatesSaysNoRoomForACardPromisedMoreThanItHas(t *testing.
 			totalHeldBytes: 105 << 30},
 	}
 
-	_, refusals := admissibleCandidates(pods, ledgers, 40<<30)
+	_, refusals := admissibleCandidates(pods, ledgers, 40<<30, 0)
 
 	require.Len(t, refusals, 1)
 	assert.Contains(t, refusals[0].reason, "over can offer at most 0.0 GiB")
@@ -366,7 +366,7 @@ func TestAdmissibleCandidatesSaysNothingIsFreeOnACardThatHoldsMoreThanItHas(t *t
 			totalHeldBytes: 90 << 30},
 	}
 
-	_, refusals := admissibleCandidates(pods, ledgers, 40<<30)
+	_, refusals := admissibleCandidates(pods, ledgers, 40<<30, 0)
 
 	require.Len(t, refusals, 1)
 	assert.Contains(t, refusals[0].reason, "full has 0.0 GiB free")

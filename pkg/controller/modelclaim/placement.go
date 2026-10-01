@@ -120,10 +120,14 @@ type podRefusal struct {
 // Its runtime is what says that it has cards it did not request, so such a
 // pod cannot be told from one without a GPU. The same holds while the claims
 // cannot be listed, since a limit recorded on a pod says so as well.
+//
+// A pod also has to suit an instance that runs on instanceGPUs cards, as
+// fitsTopology tells.
 func admissibleCandidates(
 	candidates []corev1.Pod,
 	ledgers map[string]podLedger,
 	minimumReserveBytes int64,
+	instanceGPUs int64,
 ) ([]corev1.Pod, []podRefusal) {
 	admissible := make([]corev1.Pod, 0, len(candidates))
 	var refusals []podRefusal
@@ -141,6 +145,12 @@ func admissibleCandidates(
 			refusals = append(refusals, podRefusal{
 				pod:    pod.Name,
 				reason: fmt.Sprintf("%s could not be judged: %s", pod.Name, ledger.blocked),
+			})
+		case !fitsTopology(pod, ledger, instanceGPUs):
+			refusals = append(refusals, podRefusal{
+				pod: pod.Name,
+				reason: fmt.Sprintf("%s reports %d GPU(s), and the model runs on %d",
+					pod.Name, ledger.accelerators, instanceGPUs),
 			})
 		case ledger.maximumRoomBytes() < minimumReserveBytes:
 			// A card promised more than it has offers nothing, not less.
@@ -170,6 +180,16 @@ func admissibleCandidates(
 		}
 	}
 	return admissible, refusals
+}
+
+// fitsTopology reports whether one instance that runs on instanceGPUs cards
+// can run on a pod. A pod that requests nvidia.com/gpu was held to that count
+// when it became a candidate, and a pod without cards is held to nothing. A
+// pod given its cards some other way, as by a dynamic resource claim, is held
+// to it by what its runtime reports. Zero holds a pod to nothing.
+func fitsTopology(pod corev1.Pod, ledger podLedger, instanceGPUs int64) bool {
+	return instanceGPUs == 0 || podGPUCount(pod) > 0 || ledger.accelerators == 0 ||
+		int64(ledger.accelerators) == instanceGPUs
 }
 
 // cardAccount is the part of a refusal an operator can check against the card

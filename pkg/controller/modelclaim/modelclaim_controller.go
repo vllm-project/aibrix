@@ -436,7 +436,7 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 	load := r.computePodLoad(ctx, pm.Namespace)
 	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL, parallelism)
 	ledgers := r.collectPodLedgers(ctx, pm.Namespace, candidates, r.freshSnapshots(ctx, candidates))
-	admissible, refusals := admissibleCandidates(candidates, ledgers, perGPU.minimumReserveBytes())
+	admissible, refusals := admissibleCandidates(candidates, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(pm))
 	rankByRoom(placementStates, ledgers)
 
 	// Every pod the claim is on stays out of the ranking, the pods where its
