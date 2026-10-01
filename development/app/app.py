@@ -6,6 +6,7 @@ import base64
 import random
 import re
 import logging
+import math
 import struct
 import sys
 import threading
@@ -1069,7 +1070,19 @@ def debug_elastic_ep():
                 400,
             )
         else:
-            deadline = time.monotonic() + float(duration)
+            try:
+                seconds = float(duration)
+            except OverflowError:
+                seconds = float("inf")
+            if not math.isfinite(seconds):
+                return (
+                    {
+                        "status": "error",
+                        "message": "'duration_seconds' must be a finite positive number",
+                    },
+                    400,
+                )
+            deadline = time.monotonic() + seconds
 
     with _elastic_ep_lock:
         _elastic_ep_scaling_deadline = deadline

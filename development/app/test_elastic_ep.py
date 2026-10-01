@@ -124,6 +124,32 @@ def test_debug_elastic_ep_rejects_invalid_payloads(monkeypatch):
     assert probe.get_json() == {"is_scaling_elastic_ep": False}
 
 
+def test_debug_elastic_ep_rejects_non_finite_durations(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    payloads = (
+        '{"scaling": true, "duration_seconds": 1e309}',
+        '{"scaling": true, "duration_seconds": Infinity}',
+        '{"scaling": true, "duration_seconds": NaN}',
+        '{"scaling": true, "duration_seconds": %s}' % (10 ** 400),
+    )
+    for payload in payloads:
+        response = client.post(
+            "/debug/elastic_ep",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 400, payload
+
+    window = client.get("/debug/elastic_ep")
+    assert window.get_json() == {"is_scaling_elastic_ep": False}
+
+    probe = client.post("/is_scaling_elastic_ep")
+    assert probe.status_code == 200
+    assert probe.get_json() == {"is_scaling_elastic_ep": False}
+
+
 def test_probe_stays_reachable_when_api_key_is_set(monkeypatch):
     module = load_mock_module(monkeypatch, api_key="secret")
     client = module.app.test_client()
