@@ -593,8 +593,9 @@ For detailed engine and memory state, port-forward the runtime API:
    curl -fsS http://localhost:8080/v1/runtime/snapshot | jq .
 
 The snapshot includes per-engine port, IPC name, phase, liveness, readiness,
-restart count, last error, KV usage and capacity, best-effort HBM peak, request
-activity, and cached-artifact markers.
+restart count, last error, KV usage and capacity, best-effort HBM peak, the
+memory a sleeping engine still holds, request activity, and cached-artifact
+markers.
 
 Send inference requests
 -----------------------
@@ -836,7 +837,18 @@ Runtime metrics include:
 * ``aibrix:modelclaim_models_resident``;
 * ``aibrix:modelclaim_kv_used_bytes{model}``;
 * ``aibrix:modelclaim_kv_total_bytes{model}``;
-* ``aibrix:modelclaim_hbm_peak_bytes{model}``.
+* ``aibrix:modelclaim_hbm_peak_bytes{model}``;
+* ``aibrix:modelclaim_sleeping_footprint_bytes{model}``.
+
+A sleeping engine reports the memory it still holds, as the runtime measured
+it right after the sleep. The runtime reads the card just before and just after
+it puts an engine to sleep. It matches the engine's own processes first. Some
+drivers report host process IDs to a container, and then nothing matches. The
+runtime then takes the process whose memory fell by far the most, since a sleep
+gives back the engine's weights. It puts one engine to sleep at a time. When
+neither way works, or when the driver reports zero for every process, the
+engine reports no figure. The figure is cleared when the engine wakes, and when
+a wake fails.
 
 HBM attribution is best effort and is used for observation. It is not an
 admission signal: admission works from the cost a claim declares and the size

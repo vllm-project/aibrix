@@ -93,6 +93,10 @@ class ModelInstance:
         default_factory=lambda: datetime.now(timezone.utc)
     )
     next_restart_at: Optional[datetime] = None
+    # The GPU memory the engine still held right after its last sleep. It is
+    # None while the engine is awake, and when no reading could be attributed
+    # to it.
+    sleeping_footprint_bytes: Optional[int] = None
     completed_operation_ids: Dict[str, List[str]] = field(
         default_factory=dict, repr=False
     )
@@ -419,6 +423,86 @@ def engine_hbm_peak_bytes(
         for accelerator, used in process_hbm.get(pid, {}).items():
             by_accelerator[accelerator] = by_accelerator.get(accelerator, 0) + used
     return max(by_accelerator.values(), default=0)
+
+
+# A sleep gives back an engine's weights, so the memory of its process falls by
+# at least this much, and by at least this share of what it held.
+SLEEP_DROP_MIN_BYTES = 1 << 30
+SLEEP_DROP_MIN_SHARE = 0.4
+# Another process on the card can change at the same moment, but not like that:
+# the engine's drop is at least this many times the next largest one.
+SLEEP_DROP_MARGIN = 2
+
+
+def sleeping_footprint_bytes(
+    tree_pids: set[int],
+    before: Dict[int, Dict[str, int]],
+    after: Dict[int, Dict[str, int]],
+) -> Optional[int]:
+    """Return the GPU memory an engine holds right after it went to sleep.
+
+    ``before`` and ``after`` are NVML's per-process readings, keyed by process
+    ID and GPU UUID, taken just before the engine was asked to sleep and just
+    after it did. The result is None when the reading cannot be attributed.
+
+    The engine's own processes are matched first. That works when the driver
+    reports processes in this container's PID namespace. Some drivers report
+    host PIDs instead, and then nothing matches. The engine is then told apart
+    by what the sleep did: it gave back its weights, so its process is the one
+    whose memory fell by far the most. The runtime puts one engine to sleep at
+    a time, so no other process on the card falls like that in the same moment.
+    Only that process is counted then. An engine on one card keeps its GPU
+    memory in one process, its engine core, so that is all of it.
+
+    A match whose memory did not fall that way is not taken either. It can be
+    a host PID that happens to equal one of the engine's.
+
+    A drop too small, or one that does not stand out from the next one, says
+    nothing, and the reading is unknown. So is a reading of zero: an engine
+    that sleeps still holds its CUDA context, and some drivers report zero for
+    every process in a container.
+    """
+
+    def falls_like_a_sleep(was: int, held: int, runner_up: int = 0) -> bool:
+        drop = was - held
+        return (
+            held > 0
+            and drop >= SLEEP_DROP_MIN_BYTES
+            and drop >= SLEEP_DROP_MIN_SHARE * was
+            and drop >= SLEEP_DROP_MARGIN * max(runner_up, 0)
+        )
+
+    def tree_on(readings: Dict[int, Dict[str, int]]) -> Dict[str, int]:
+        by_accelerator: Dict[str, int] = {}
+        for pid in tree_pids:
+            for accelerator, used in readings.get(pid, {}).items():
+                by_accelerator[accelerator] = by_accelerator.get(accelerator, 0) + used
+        return by_accelerator
+
+    held_after = tree_on(after)
+    if held_after:
+        held_before = tree_on(before)
+        accelerator = max(
+            held_after,
+            key=lambda a: held_before.get(a, 0) - held_after[a],
+        )
+        if falls_like_a_sleep(held_before.get(accelerator, 0), held_after[accelerator]):
+            return held_after[accelerator]
+
+    drops = []
+    for pid, readings in after.items():
+        for accelerator, held in readings.items():
+            was = before.get(pid, {}).get(accelerator)
+            if was is not None:
+                drops.append((was - held, was, held))
+    if not drops:
+        return None
+    drops.sort(reverse=True)
+    _, was, held = drops[0]
+    runner_up = drops[1][0] if len(drops) > 1 else 0
+    if falls_like_a_sleep(was, held, runner_up):
+        return held
+    return None
 
 
 def write_cache_marker(
@@ -1116,8 +1200,20 @@ class ModelRuntime:
             next_restart_at=self._registry_timestamp(
                 record.get("next_restart_at"), None
             ),
+            sleeping_footprint_bytes=self._registry_sleeping_footprint(
+                record.get("sleeping_footprint_bytes"), phase
+            ),
             proc=AdoptedProcess(pid, pid_start_time),
         )
+
+    @staticmethod
+    def _registry_sleeping_footprint(value: Any, phase: str) -> Optional[int]:
+        # A reading that cannot be used is dropped, and the engine is kept: the
+        # record says nothing wrong about the engine itself. A reading kept for
+        # an engine that is not asleep would be stale.
+        if phase != "sleeping" or isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value if value > 0 else None
 
     @overload
     def _registry_timestamp(self, value: Any, fallback: datetime) -> datetime: ...
@@ -1161,6 +1257,7 @@ class ModelRuntime:
             "next_restart_at": (
                 inst.next_restart_at.isoformat() if inst.next_restart_at else None
             ),
+            "sleeping_footprint_bytes": inst.sleeping_footprint_bytes,
         }
 
     def _persist_locked(self) -> None:
@@ -1172,6 +1269,9 @@ class ModelRuntime:
     def _transition(self, inst: ModelInstance, phase: str) -> bool:
         if inst.phase == phase:
             return False
+        if inst.phase == "sleeping":
+            # What the engine held asleep says nothing once it is not asleep.
+            inst.sleeping_footprint_bytes = None
         inst.phase = phase
         inst.last_transition = self._now()
         return True
@@ -1475,8 +1575,31 @@ class ModelRuntime:
                         applied=False,
                         phase=inst.phase,
                     )
+                # The card is read just before and just after the sleep, so
+                # what the engine still holds can be told apart even when NVML
+                # reports host PIDs. The lock keeps any other sleep or wake on
+                # this Pod out of the moment between the two readings.
+                _, before = gpu_memory_observation()
                 self._launcher.sleep(inst, level)
+                _, after = gpu_memory_observation()
                 self._transition(inst, "sleeping")
+                inst.sleeping_footprint_bytes = sleeping_footprint_bytes(
+                    process_tree_pids(inst.pid), before, after
+                )
+                if inst.sleeping_footprint_bytes is None:
+                    # The controller then keeps the engine's whole seat, so
+                    # the card gains no room from this sleep.
+                    logger.warning(
+                        "model %s sleeps, and the memory it holds could not be "
+                        "attributed to it",
+                        model_name,
+                    )
+                else:
+                    logger.info(
+                        "model %s sleeps holding %d bytes",
+                        model_name,
+                        inst.sleeping_footprint_bytes,
+                    )
                 self._remember_operation(inst, "sleep", operation_id)
                 self._persist_locked()
                 result = "applied"
@@ -1524,7 +1647,14 @@ class ModelRuntime:
                         applied=False,
                         phase=inst.phase,
                     )
-                self._launcher.wake(inst)
+                try:
+                    self._launcher.wake(inst)
+                except Exception:
+                    # vLLM may have taken some memory back before the wake
+                    # failed, so what the engine held asleep is no longer known.
+                    inst.sleeping_footprint_bytes = None
+                    self._persist_locked()
+                    raise
                 self._transition(inst, "booting" if inst.proc is not None else "active")
                 self._remember_operation(inst, "wake", operation_id)
                 self._persist_locked()
@@ -1585,6 +1715,13 @@ class ModelRuntime:
         """
         with self._lock:
             instances = list(self._models.values())
+            # A wake clears the reading as it leaves sleep, so the reading is
+            # taken together with the phase it belongs to.
+            asleep_holding = {
+                id(inst): inst.sleeping_footprint_bytes
+                for inst in instances
+                if inst.phase == "sleeping"
+            }
         accelerators, process_hbm = gpu_memory_observation()
         if (
             not accelerators
@@ -1626,6 +1763,11 @@ class ModelRuntime:
                     "kv_used_bytes": kv_used,
                     "kv_capacity_bytes": kv_capacity,
                     "hbm_peak_bytes": engine_hbm_peak_bytes(inst, process_hbm),
+                    "sleeping_footprint_bytes": (
+                        asleep_holding.get(id(inst))
+                        if inst.phase == "sleeping"
+                        else None
+                    ),
                     "request_metrics_observed": activity.observed,
                     "requests_running": activity.requests_running,
                     "requests_waiting": activity.requests_waiting,

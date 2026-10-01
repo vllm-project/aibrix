@@ -282,6 +282,11 @@ type RuntimeSnapshotModel struct {
 	KVUsedBytes     int64 `json:"kv_used_bytes"`
 	KVCapacityBytes int64 `json:"kv_capacity_bytes"`
 	HBMPeakBytes    int64 `json:"hbm_peak_bytes"`
+	// SleepingFootprintBytes is the GPU memory a sleeping engine still held
+	// right after it went to sleep, as the runtime measured it then. Only a
+	// sleeping engine reports it. Nil means the runtime could not attribute
+	// a reading to the engine.
+	SleepingFootprintBytes *int64 `json:"sleeping_footprint_bytes,omitempty"`
 	// RequestMetricsObserved distinguishes a zero metric from an unavailable
 	// scrape. Pool policy must not infer idleness unless the completion counter
 	// is also present.
