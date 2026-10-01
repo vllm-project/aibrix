@@ -94,6 +94,13 @@ class ModelRuntimeKVCollector(Collector):
             "visible accelerator (0 when NVML process observation is unavailable).",
             labels=["model"],
         )
+        sleeping_footprint = GaugeMetricFamily(
+            "aibrix:modelclaim_sleeping_footprint_bytes",
+            "GPU memory a sleeping engine still held right after it went to "
+            "sleep. Only sleeping engines whose reading could be attributed "
+            "report it.",
+            labels=["model"],
+        )
         _, process_hbm = gpu_memory_observation() if models else ([], {})
         for m in models:
             seg = read_kv_segment(m.ipc_name)
@@ -103,9 +110,13 @@ class ModelRuntimeKVCollector(Collector):
             hbm_peak.add_metric(
                 [m.model_name], float(engine_hbm_peak_bytes(m, process_hbm))
             )
+            held = m.sleeping_footprint_bytes
+            if m.phase == "sleeping" and held is not None:
+                sleeping_footprint.add_metric([m.model_name], float(held))
         yield used
         yield total
         yield hbm_peak
+        yield sleeping_footprint
 
         engine_state = GaugeMetricFamily(
             "aibrix:modelclaim_engine_state",

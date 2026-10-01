@@ -874,7 +874,12 @@ func TestHTTPRuntimeSnapshotReadsEveryFieldTheRuntimeSends(t *testing.T) {
 				"last_error": "engine exited", "last_transition": "2026-09-21T09:59:58.000001Z",
 				"kv_used_bytes": 300, "kv_capacity_bytes": 600, "hbm_peak_bytes": 456,
 				"request_metrics_observed": true, "requests_running": 3, "requests_waiting": 1,
-				"request_success_total": 12}],
+				"request_success_total": 12, "sleeping_footprint_bytes": null},
+				{"model_name": "m2", "artifact_url": "hf://Org/M2", "port": 9002, "ipc_name": "kvc_m2",
+				"phase": "sleeping", "alive": true, "ready": false, "restart_count": 0,
+				"kv_used_bytes": 805306368, "kv_capacity_bytes": 10737418240, "hbm_peak_bytes": 2357198848,
+				"sleeping_footprint_bytes": 2357198848, "request_metrics_observed": false,
+				"requests_running": 0, "requests_waiting": 0}],
 			"cached_artifacts": ["hf://Org/M1"]}`))
 	}))
 	defer srv.Close()
@@ -885,6 +890,7 @@ func TestHTTPRuntimeSnapshotReadsEveryFieldTheRuntimeSends(t *testing.T) {
 	require.NoError(t, err)
 	lastTransition := time.Date(2026, time.September, 21, 9, 59, 58, 1000, time.UTC)
 	requestSuccessTotal := int64(12)
+	sleepingFootprint := int64(2357198848)
 	assert.Equal(t, &RuntimeSnapshot{
 		ObservedAt: time.Date(2026, time.September, 21, 10, 0, 0, 123456000, time.UTC),
 		Accelerators: []RuntimeAcceleratorSnapshot{
@@ -898,6 +904,11 @@ func TestHTTPRuntimeSnapshotReadsEveryFieldTheRuntimeSends(t *testing.T) {
 			KVUsedBytes: 300, KVCapacityBytes: 600, HBMPeakBytes: 456,
 			RequestMetricsObserved: true, RequestsRunning: 3, RequestsWaiting: 1,
 			RequestSuccessTotal: &requestSuccessTotal,
+		}, {
+			ModelName: "m2", ArtifactURL: "hf://Org/M2", Port: 9002, IPCName: "kvc_m2",
+			Phase: "sleeping", Alive: true,
+			KVUsedBytes: 805306368, KVCapacityBytes: 10737418240, HBMPeakBytes: 2357198848,
+			SleepingFootprintBytes: &sleepingFootprint,
 		}},
 		CachedArtifacts: []string{"hf://Org/M1"},
 	}, snapshot)
