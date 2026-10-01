@@ -303,7 +303,8 @@ func (r *ModelClaimReconciler) backoff() *placementBackoff {
 // turned not ready helps nobody.
 //
 // Room on a card counts for a claim that waits for room. An engine that went
-// to sleep keeps its seat, and gives back the KV it had mapped. A claim that
+// to sleep gives back the KV it had mapped, and in a pool that keeps no wake
+// reserve, its seat as well. A claim that
 // declares nothing opens a hole in its card's account, and a card with a hole
 // is turned away. So nothing on such a card counts, until its last hole has
 // closed.

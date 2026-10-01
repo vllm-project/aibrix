@@ -120,7 +120,7 @@ func planKVLimits(hbmUsableBytes int64, engines []engineOnPod) ([]plannedKVLimit
 		limits[i] = plannedKVLimit{
 			claimName:       engine.claimName,
 			modelName:       engine.modelName,
-			kvLimitBytes:    engine.kvHeldBytes() + kvExtraBytes,
+			kvLimitBytes:    engine.plannedKVHeldBytes() + kvExtraBytes,
 			kvCapacityBytes: engine.kvCapacityBytes,
 			kvRecordedBytes: engine.kvRecordedBytes,
 		}

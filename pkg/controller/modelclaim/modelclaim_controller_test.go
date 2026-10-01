@@ -63,8 +63,11 @@ type fakeRuntime struct {
 	deactivateCalls []DeactivateRequest
 	kvLimitCalls    []SetKVLimitRequest
 	sleepCalls      []SleepRequest
-	listCalls       int
-	snapshotCalls   int
+	// onSleep, when set, runs on every sleep, as a runtime changes what its
+	// snapshot reports.
+	onSleep       func(*SleepRequest)
+	listCalls     int
+	snapshotCalls int
 	// snapshotCallsTo counts the snapshot reads of each runtime, by pod IP.
 	snapshotCallsTo map[string]int
 	portSeq         int32
@@ -166,6 +169,9 @@ func (f *fakeRuntime) SetKVLimit(_ context.Context, _ string, _ int, req *SetKVL
 
 func (f *fakeRuntime) Sleep(_ context.Context, _ string, _ int, req *SleepRequest) (*RuntimeOperationResponse, error) {
 	f.sleepCalls = append(f.sleepCalls, *req)
+	if f.onSleep != nil {
+		f.onSleep(req)
+	}
 	return &RuntimeOperationResponse{
 		Status: "success", ModelName: req.ModelName, OperationID: req.OperationID, Applied: true, Phase: "sleeping",
 	}, nil
@@ -636,6 +642,40 @@ func TestReconcilePoolPoliciesSleepsIdleSingleReplica(t *testing.T) {
 	annotation := gotPod.Annotations[constants.ModelClaimPodAnnotationPrefix+claim.Name]
 	assert.Contains(t, annotation, `"port":0`)
 	assert.Contains(t, annotation, `"state":"sleeping"`)
+}
+
+func TestReconcilePoolPoliciesLeavesAnIdleEngineAwakeWithoutASleepWindow(t *testing.T) {
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	deployment, replicaSet, pod := warmPoolObjects(`{"lifecycle":{"noWakeReserveWhileAsleep":true}}`)
+	pod.UID = types.UID("warm-uid")
+	claim := sampleModelClaim()
+	claim.UID = types.UID("claim-uid")
+	claim.Status.Phase = modelv1alpha1.ModelClaimActive
+	claim.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: pod.Name, Port: 20000, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+
+	r, runtime := newReconciler(t, deployment, replicaSet, pod, claim)
+	r.PoolPolicy = newPoolPolicyManager(func() time.Time { return now })
+	requestSuccessTotal := int64(10)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		pod.Status.PodIP: {
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 500}},
+			Models: []RuntimeSnapshotModel{{
+				ModelName: "qwen2-7b", Port: 20000,
+				Phase: runtimePhaseActive, Alive: true, Ready: true,
+				RequestMetricsObserved: true, RequestSuccessTotal: &requestSuccessTotal,
+				ClaimRef: &ModelClaimRef{Namespace: claim.Namespace, Name: claim.Name, UID: string(claim.UID)},
+			}},
+		},
+	}
+
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
+	now = now.Add(time.Hour)
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
+
+	assert.Empty(t, runtime.sleepCalls, "an engine is put to sleep only when its room is needed")
+	assert.Empty(t, drainEvents(t, r))
 }
 
 func TestReconcilePoolPoliciesUsesRuntimeTransitionAsWakeGrace(t *testing.T) {

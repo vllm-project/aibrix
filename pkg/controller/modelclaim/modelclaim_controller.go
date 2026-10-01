@@ -624,7 +624,7 @@ func (r *ModelClaimReconciler) ensureActivated(
 	snapshots := readings.ofPods(ctx, candidates)
 	placementStates := placementStatesFrom(snapshots, candidates, pm.Spec.ArtifactURL, parallelism)
 	claims, listErr := r.listClaimsForAccount(ctx, pm.Namespace)
-	ledgers := podLedgersFrom(claims, listErr, candidates, snapshots)
+	ledgers := podLedgersFrom(claims, listErr, candidates, snapshots, r.podsWithoutWakeReserve(ctx, candidates))
 	admissible, refusals := admissibleCandidates(candidates, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(pm))
 	rankByRoom(placementStates, ledgers)
 
@@ -737,8 +737,8 @@ func (r *ModelClaimReconciler) ensureActivated(
 			kvLimitBytes = planned
 			// The card is now divided for this engine too, so the next pass must
 			// not take its arrival for a change to divide the card for again.
-			r.divisions().divided(cardOf(pod), cardComposition(claims, pod.Name,
-				compositionEntry(pm, modelv1alpha1.ModelClaimActivating)))
+			r.divisions().divided(cardOf(pod), cardComposition(claims, pod,
+				compositionEntry(pm, modelv1alpha1.ModelClaimActivating, false)))
 		}
 
 		// Record the instance before the engine exists. The record is what the
@@ -1332,6 +1332,9 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 		// A reason belongs to the phase it was given in.
 		inst.Reason = ""
 		r.announcePhase(pm, inst, previousPhase, observed, serving)
+		if inst.Phase == modelv1alpha1.ModelClaimSleeping {
+			r.warnOfAnUnmeasuredSleep(pm, inst.Pod, observed, r.podsWithoutWakeReserve(ctx, []corev1.Pod{*pod})[pod.Name])
+		}
 	}
 	if r.dropInstances(ctx, pm, dropped) > 0 {
 		// The claim needs another instance now, so its wait starts over.
@@ -1368,7 +1371,7 @@ func (r *ModelClaimReconciler) announcePhase(
 		}
 	case modelv1alpha1.ModelClaimSleeping:
 		r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Sleeping",
-			"model %s is sleeping on pod %s and marked non-routable", served, inst.Pod)
+			"model %s is sleeping on pod %s and marked non-routable%s", served, inst.Pod, sleepingFootprintNote(observed))
 	case modelv1alpha1.ModelClaimActivating:
 		switch {
 		case previousPhase == modelv1alpha1.ModelClaimActive && serving:
