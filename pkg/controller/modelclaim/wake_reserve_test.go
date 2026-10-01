@@ -446,3 +446,105 @@ func TestDivisionPlansAWakingEngineAtWhatItHoldsWhileItWaitsForRoom(t *testing.T
 	assert.NotContains(t, limits, "waker", "the waker stays at the 20 bytes it maps")
 	assert.NotContains(t, strings.Join(drainEvents(t, r), "\n"), "KVLimitFailed")
 }
+
+// lendingNeighbour is a 1000-byte card in a pool that keeps no wake reserve,
+// where the claim "lender" serves, held to 600 bytes of KV and mapping kvUsed
+// of them, with inFlight requests. The claim "waker" sleeps on it, and a
+// request asks to wake it at 08:00. Both declared 300+100, so the floors fit
+// together, but the lender holds the room the waker left. The pool policy last
+// saw the lender busy at 07:59, and the clocks read 08:00:05. The clock the
+// pool policy reads is returned.
+func lendingNeighbour(t *testing.T, kvUsed, inFlight int64) (*ModelClaimReconciler, *fakeRuntime, *corev1.Pod, *time.Time) {
+	t.Helper()
+	deployment, replicaSet, pod := warmPoolObjects(keepNoWakeReserve)
+	pod.UID = types.UID("warm-uid")
+	pod.Annotations = map[string]string{constants.ModelClaimWakeAnnotationPrefix + "waker": "2026-10-01T08:00:00Z"}
+	lender := withFinalizer(claimOnPod("lender", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100))
+	lender.UID = types.UID("lender-uid")
+	lender.Status.Instances[0].Port = 9001
+	lender.Status.Instances[0].KVLimitBytes = 600
+	waker := withFinalizer(claimOnPod("waker", pod.Name, modelv1alpha1.ModelClaimSleeping, 300, 100))
+	waker.UID = types.UID("waker-uid")
+	waker.Status.Instances[0].Port = 9002
+	waker.Status.Instances[0].KVLimitBytes = 20
+	lending := engineHolding("lender", kvUsed, 600)
+	lending.RequestsRunning = inFlight
+	completed := int64(10)
+	lending.RequestSuccessTotal = &completed
+	lending.ClaimRef = &ModelClaimRef{Namespace: testNamespace, Name: "lender", UID: "lender-uid"}
+	asleep := engineHolding("waker", 20, 20)
+	asleep.Port = 9002
+	asleep.Phase = runtimePhaseSleeping
+	asleep.Ready = false
+	asleep.SleepingFootprintBytes = bytesOf(60)
+	asleep.ClaimRef = &ModelClaimRef{Namespace: testNamespace, Name: "waker", UID: "waker-uid"}
+	r, runtime := newReconciler(t, deployment, replicaSet, pod, lender, waker)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: sizedPodSnapshots(pod.Name, 1000, lending, asleep)[pod.Name]}
+	now := time.Date(2026, time.October, 1, 7, 59, 0, 0, time.UTC)
+	r.PoolPolicy = newPoolPolicyManager(func() time.Time { return now })
+	busy := lending
+	busy.RequestsRunning = 1
+	_, observed := r.PoolPolicy.observeSnapshot(pod, &RuntimeSnapshot{Models: []RuntimeSnapshotModel{busy}})
+	require.True(t, observed)
+	now = time.Date(2026, time.October, 1, 8, 0, 5, 0, time.UTC)
+	r.Now = func() time.Time { return now }
+	runtime.onSleep = func(req *SleepRequest) {
+		models := runtime.snapshots[pod.Status.PodIP].Models
+		for i := range models {
+			if models[i].ModelName == req.ModelName {
+				models[i].Phase = runtimePhaseSleeping
+				models[i].Ready = false
+				models[i].SleepingFootprintBytes = bytesOf(60)
+			}
+		}
+	}
+	return r, runtime, pod, &now
+}
+
+func TestReconcilePutsAnIdleNeighbourHoldingLentKVToSleep(t *testing.T) {
+	r, runtime, _, _ := lendingNeighbour(t, 350, 0)
+
+	reconcileOnce(t, r, "waker")
+
+	require.Len(t, runtime.sleepCalls, 1, "an idle engine never gives its KV back, and a sleep does")
+	assert.Equal(t, "lender", runtime.sleepCalls[0].ModelName)
+	for _, call := range runtime.kvLimitCalls {
+		assert.False(t, call.ModelName == "lender" && call.LimitBytes < 350, "no limit below what the lender maps")
+	}
+	assert.Contains(t, strings.Join(drainEvents(t, r), "\n"), "SleptToMakeRoom")
+
+	reconcileOnce(t, r, "waker")
+
+	require.Len(t, runtime.wakeCalls, 1)
+}
+
+func TestReconcileLeavesABusyNeighbourHoldingLentKVAloneUntilItIdles(t *testing.T) {
+	r, runtime, pod, now := lendingNeighbour(t, 350, 2)
+
+	reconcileOnce(t, r, "waker")
+
+	assert.Empty(t, runtime.sleepCalls, "a neighbour that serves is not put to sleep")
+	assert.Empty(t, runtime.wakeCalls)
+	for _, call := range runtime.kvLimitCalls {
+		assert.False(t, call.ModelName == "lender" && call.LimitBytes < 350,
+			"a smaller limit would only hold the busy lender back")
+	}
+	assert.Equal(t, instanceReasonWaitingForRoom, getModel(t, r, "waker").Status.Instances[0].Reason)
+
+	// The lender's last requests finish, and it has served nothing for half a
+	// minute when the claim is looked at again.
+	busy := runtime.snapshots[pod.Status.PodIP].Models[0]
+	_, observed := r.PoolPolicy.observeSnapshot(pod, &RuntimeSnapshot{Models: []RuntimeSnapshotModel{busy}})
+	require.True(t, observed)
+	runtime.snapshots[pod.Status.PodIP].Models[0].RequestsRunning = 0
+	*now = now.Add(31 * time.Second)
+	reconcileOnce(t, r, "waker")
+
+	require.Len(t, runtime.sleepCalls, 1)
+	assert.Equal(t, "lender", runtime.sleepCalls[0].ModelName)
+
+	reconcileOnce(t, r, "waker")
+
+	require.Len(t, runtime.wakeCalls, 1)
+	assert.Equal(t, "waker", runtime.wakeCalls[0].ModelName)
+}

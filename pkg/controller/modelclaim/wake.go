@@ -173,11 +173,16 @@ func (r *ModelClaimReconciler) wakeRequested(
 			continue
 		}
 		if ledger.judgeable && (ledger.maximumRoomBytes() < 0 || ledger.heldRoomBytes() < 0) {
-			// Its neighbours' floors leave no room for it. The first request
-			// on the card puts the neighbour idle longest to sleep, one a pass,
-			// while a sleep gives room back.
-			if ledger.maximumRoomBytes() < 0 && firstToWakeOn(pod, pm.Name) &&
-				r.sleepToMakeRoom(ctx, pm, pod, ledger, readings) {
+			// The card has no room for it. Its neighbours' floors leave none,
+			// or they hold KV beyond their floors, which the card lent them
+			// while the engine slept. A smaller limit would not make a busy
+			// neighbour give that KV back: kvcached keeps a page while any
+			// block on it is in use, and an engine keeps what finished
+			// requests used as its prefix cache. Only a sleep gives an
+			// engine's memory back. So the first request on the card puts the
+			// neighbour idle longest to sleep, one a pass, while a sleep gives
+			// room back. A neighbour that serves is left alone.
+			if firstToWakeOn(pod, pm.Name) && r.sleepToMakeRoom(ctx, pm, pod, ledger, readings) {
 				r.waitForRoom(ctx, pm, inst, pod, promisedMoreThanItHas)
 				woke = true
 				continue
