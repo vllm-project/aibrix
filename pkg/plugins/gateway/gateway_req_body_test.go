@@ -881,6 +881,13 @@ func TestValidateModelAvailabilityAsksToWaitLongerForTheReasonTheControllerGives
 			retryAfter: "30",
 			says:       "(Moving)",
 		},
+		"a claim that room is made for, off any route": {
+			cache: &MockCache{modelClaimStatuses: map[string]mockModelClaimStatus{
+				"qwen": {phase: "Pending", reason: "MakingRoom"},
+			}},
+			retryAfter: "20",
+			says:       "(MakingRoom)",
+		},
 		"a sleeping model with no reason": {
 			cache: &MockCache{modelClaimBindings: map[string]mockModelClaimBinding{
 				"qwen": {pod: pod, state: constants.ModelClaimRoutingStateSleeping},

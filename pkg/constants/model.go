@@ -103,6 +103,11 @@ const (
 	// another pod.
 	ModelClaimRouteReasonWaitingForRoom = "WaitingForRoom"
 	ModelClaimRouteReasonMoving         = "Moving"
+
+	// ModelClaimReasonMakingRoom is the reason of a claim's Scheduled condition
+	// while idle engines are put to sleep to make room for it. The gateway
+	// tells a client how long to wait by it as well.
+	ModelClaimReasonMakingRoom = "MakingRoom"
 )
 
 const (

@@ -302,7 +302,7 @@ func (s *cardDivisionState) pruneLocked(now time.Time) {
 // owedBy names the engines that the plan of a card owes more, as a round that
 // follows the load counts them.
 func owedBy(ledger podLedger) []string {
-	limits, err := planKVLimits(ledger.hbmUsableBytes, ledger.engines)
+	limits, err := planKVLimits(ledger.plannableBytes(), ledger.engines)
 	if err != nil {
 		return nil
 	}
@@ -441,7 +441,10 @@ func (r *ModelClaimReconciler) divideCardsAsListed(
 		if snapshot, err := readings.fresh(ctx, pod); err == nil && snapshot != nil {
 			reading[pod.Name] = snapshot
 		}
-		ledger := podLedgersFrom(claims, nil, card, reading, withoutWakeReserve)[pod.Name]
+		// Room held for a claim that room is being made for is not handed out.
+		ledgers := podLedgersFrom(claims, nil, card, reading, withoutWakeReserve)
+		r.reservations().takeFrom(ledgers, pod.Namespace, "", r.now())
+		ledger := ledgers[pod.Name]
 		if len(ledger.engines) == 0 || !podHasGPUs(*pod, ledger.accelerators) {
 			continue
 		}
@@ -468,7 +471,7 @@ func (r *ModelClaimReconciler) divideCardsAsListed(
 		// while the wake waits for room. Placement still sees the reserves,
 		// and the wake takes its room back before the engine wakes.
 		engines := ledger.engines
-		if _, planErr := planKVLimits(ledger.hbmUsableBytes, engines); planErr != nil {
+		if _, planErr := planKVLimits(ledger.plannableBytes(), engines); planErr != nil {
 			if eased, found := withoutAskedReserves(engines); found {
 				engines = eased
 			}

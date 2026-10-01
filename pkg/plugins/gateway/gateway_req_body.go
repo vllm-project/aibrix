@@ -415,10 +415,12 @@ var modelClaimReasonsNotRetried = map[string]struct{}{
 
 // modelClaimRetryAfterByReason is how long a client is asked to wait, by the
 // reason the controller gives, when that is longer than a wake or a start
-// takes. Making room waits for KV to come back. A move starts the engine
-// again on another pod.
+// takes. A wake that waits for room, and a claim that room is made for, wait
+// for other engines to go to sleep first. A move starts the engine again on
+// another pod.
 var modelClaimRetryAfterByReason = map[string]int{
 	constants.ModelClaimRouteReasonWaitingForRoom: 20,
+	constants.ModelClaimReasonMakingRoom:          20,
 	constants.ModelClaimRouteReasonMoving:         30,
 }
 

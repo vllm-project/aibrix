@@ -83,7 +83,7 @@ func engineHolding(model string, kvUsedBytes, kvCapacityBytes int64) RuntimeSnap
 func ledgerFor(t *testing.T, pod *corev1.Pod, snapshots map[string]*RuntimeSnapshot, claims ...client.Object) podLedger {
 	t.Helper()
 	r, _ := newReconciler(t, append(claims, pod)...)
-	ledgers := r.collectPodLedgers(context.Background(), testNamespace, []corev1.Pod{*pod}, snapshots)
+	ledgers := r.collectPodLedgers(context.Background(), testNamespace, []corev1.Pod{*pod}, snapshots, "")
 	ledger, found := ledgers[pod.Name]
 	require.True(t, found)
 	return ledger
@@ -537,7 +537,7 @@ func TestLedgerTurnsEveryPodAwayWhenTheClaimsCannotBeListed(t *testing.T) {
 
 	r, _ := newReconciler(t, requesting, plain, silent)
 	r.APIReader = unlistable{r.Client}
-	ledgers := r.collectPodLedgers(context.Background(), testNamespace, pods, snapshots)
+	ledgers := r.collectPodLedgers(context.Background(), testNamespace, pods, snapshots, "")
 	admissible, refusals := admissibleCandidates(pods, ledgers, 400, 0)
 
 	assert.Empty(t, admissible)

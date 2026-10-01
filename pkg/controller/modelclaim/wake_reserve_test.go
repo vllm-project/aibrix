@@ -52,7 +52,7 @@ func sleeperOnACard(t *testing.T, policy string, footprint *int64, wakeAsked boo
 	engine.SleepingFootprintBytes = footprint
 	r, _ := newReconciler(t, deployment, replicaSet, pod, sleeper)
 	ledger, found := r.collectPodLedgers(context.Background(), testNamespace, []corev1.Pod{*pod},
-		sizedPodSnapshots(pod.Name, 1000, engine))[pod.Name]
+		sizedPodSnapshots(pod.Name, 1000, engine), "")[pod.Name]
 	require.True(t, found)
 	require.True(t, ledger.judgeable, ledger.blocked)
 	return ledger
@@ -101,7 +101,7 @@ func TestLedgerKeepsAWakeReserveOnAPodWithMoreThanOneCard(t *testing.T) {
 		{ID: "GPU-1", HBMTotalBytes: 1100, HBMUsableBytes: 1000},
 	}
 
-	ledger, found := r.collectPodLedgers(context.Background(), testNamespace, []corev1.Pod{*pod}, snapshots)[pod.Name]
+	ledger, found := r.collectPodLedgers(context.Background(), testNamespace, []corev1.Pod{*pod}, snapshots, "")[pod.Name]
 
 	require.True(t, found)
 	require.True(t, ledger.judgeable, ledger.blocked)
