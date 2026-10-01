@@ -128,7 +128,7 @@ ELASTIC_EP_SCALING_ERROR = "The model is currently scaling. Please try again lat
 def _elastic_ep_scaling_active():
     with _elastic_ep_lock:
         deadline = _elastic_ep_scaling_deadline
-    return deadline is not None and time.time() < deadline
+    return deadline is not None and time.monotonic() < deadline
 
 
 # Extract the api_key argument and prepare for authentication
@@ -1069,7 +1069,7 @@ def debug_elastic_ep():
                 400,
             )
         else:
-            deadline = time.time() + float(duration)
+            deadline = time.monotonic() + float(duration)
 
     with _elastic_ep_lock:
         _elastic_ep_scaling_deadline = deadline
