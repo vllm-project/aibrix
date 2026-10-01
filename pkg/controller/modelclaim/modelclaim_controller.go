@@ -410,17 +410,16 @@ func (r *ModelClaimReconciler) recomputeReadiness(pm *modelv1alpha1.ModelClaim) 
 // An instance whose engine failed for good is replaced where it stands, and its
 // replacement is placed as any instance is.
 func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1alpha1.ModelClaim, candidates []corev1.Pod) error {
-	load := r.computePodLoad(ctx, pm.Namespace)
 	parallelism, err := modelParallelism(pm)
 	if err != nil {
 		return fmt.Errorf("invalid engineConfig parallelism: %w", err)
 	}
-	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL, parallelism)
 
 	// A claim is only placed where a card's account shows the room for it, so
 	// a claim that does not say what it costs is not placed anywhere. Placed
 	// without a cost, it would leave its card unaccountable to every claim
-	// after it.
+	// after it. No runtime is read for such a claim, since no reading could
+	// place it.
 	perGPU, err := perGPUBytesOf(pm)
 	if err != nil {
 		message := fmt.Sprintf("%s is not placed: %v", servedModelName(pm), err)
@@ -434,6 +433,8 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 		}
 		return nil
 	}
+	load := r.computePodLoad(ctx, pm.Namespace)
+	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL, parallelism)
 	ledgers := r.collectPodLedgers(ctx, pm.Namespace, candidates, r.freshSnapshots(ctx, candidates))
 	admissible, refusals := admissibleCandidates(candidates, ledgers, perGPU.minimumReserveBytes())
 	rankByRoom(placementStates, ledgers)

@@ -1674,6 +1674,24 @@ func TestReconcileDoesNotPlaceAClaimThatDeclaresNoCost(t *testing.T) {
 	assert.Equal(t, 1, said)
 }
 
+// No reading of a runtime can place a claim that does not say what it costs,
+// so no runtime is read for it.
+func TestReconcileReadsNoRuntimeForAClaimThatDeclaresNoCost(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.Spec.PerGPU = nil
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Zero(t, runtime.snapshotCalls)
+	cond := meta.FindStatusCondition(getModel(t, r, pm.Name).Status.Conditions,
+		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, cond)
+	assert.Equal(t, "InvalidPerGPU", cond.Reason)
+}
+
 func TestReconcileDoesNotPlaceAClaimThatDeclaresAZeroFloor(t *testing.T) {
 	pm := claimWithCost(30<<30, 0)
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
