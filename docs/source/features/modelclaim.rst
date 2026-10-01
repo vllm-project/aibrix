@@ -493,12 +493,20 @@ and it is not placed again, for the same reason. An engine it already runs keeps
 running and keeps its route. The card under it cannot be accounted for until the
 claim declares its cost.
 
-Sleeping does not free a seat. An instance that is asleep keeps its place in
-the account, at the full footprint and floor its claim declared, because the
-assignment has to survive the sleep for a wake to find its engine again.
+By default, sleeping does not free a seat. An instance that is asleep keeps its
+place in the account, at the full footprint and floor its claim declared. This
+is its wake reserve, and it makes sure the engine can always wake again.
 Normally, an engine that goes to sleep gives back the KV it had mapped. The
 models beside it can take that KV, and so can a claim that was turned away
 because of it.
+
+A pool can have its sleeping engines keep no wake reserve, with
+``lifecycle.noWakeReserveWhileAsleep``. After each sleep, the runtime measures
+the memory the engine still holds, its sleeping footprint. The account then
+charges a sleeping instance only that, and other models can use the rest, to
+be placed or as KV. A request to wake the engine charges its wake reserve again
+at once. An engine whose memory asleep could not be measured keeps its reserve,
+and its claim raises a ``SleepingFootprintUnknown`` Warning.
 
 A failed instance does free its seat. The runtime stops an engine once its
 restarts run out, and reports it as not alive. The account then charges the
@@ -658,7 +666,35 @@ The fields mean:
 
 ``lifecycle.sleepAfterSeconds``
    How long a vLLM engine must have complete, initialized, and idle request
-   observations before sleep level 1 is applied.
+   observations before sleep level 1 is applied. It may be left out when
+   ``noWakeReserveWhileAsleep`` is true. No engine is then put to sleep for
+   being idle, only to make room.
+
+``lifecycle.noWakeReserveWhileAsleep``
+   By default, a model that sleeps keeps a wake reserve. The footprint and
+   floor its claim declared stay reserved, so its wake always fits. When true,
+   it keeps no wake reserve while asleep. The account charges it only its
+   sleeping footprint, the memory its engine still holds, and other models can
+   use the rest. A wake then has to find room again.
+
+``lifecycle.sleepToMakeRoomAfterSeconds``
+   How long an engine must have served nothing before the controller may put
+   it to sleep to make room for a model that wakes. It defaults to 30 seconds,
+   or to ``sleepAfterSeconds`` when that is shorter. When set, it must be
+   positive and shorter than ``sleepAfterSeconds``.
+
+Turn ``noWakeReserveWhileAsleep`` on only once both the controller and the
+gateway are upgraded. An older gateway wakes an engine through its runtime,
+and such a wake skips the check for room. For the same reason, do not wake an
+engine through its runtime while the switch is on. Turning the switch off is
+safe. Every wake checks for room first, so on a card promised more than it
+has, a wake waits or moves rather than overrun the card.
+
+.. code-block:: bash
+
+   kubectl annotate deployment warm-runtime-pool-b300 \
+     'pool.aibrix.ai/policy={"lifecycle":{"sleepAfterSeconds":300,"noWakeReserveWhileAsleep":true}}' \
+     --overwrite
 
 The controller distributes remaining KV capacity among active models using
 bounded inflight requests and completion deltas. A configured limit is a
@@ -698,12 +734,28 @@ requests can continue to receive 503. The controller restores the real port
 only after the runtime reports the engine active and ready.
 
 The controller wakes the engine through the runtime, once its card is promised
-no more than it has. A sleeping engine keeps its seat, so that holds unless a
-declaration grew while the engine slept. A claim whose card cannot be accounted
-for is woken all the same, since its seat was kept. The request stays on the
-Pod while the engine boots. The controller removes it once the engine serves,
-or after five minutes if the engine is still booting then. ``Waking`` and
-``Woken`` Events mark a wake that went through.
+no more than it has. A request charges the engine its wake reserve again at
+once, so no other model can take that room from then on. An engine that kept
+its reserve fits, unless a declaration grew while it slept. In a pool that
+keeps no wake reserve, the engine's neighbours may hold the room it left as KV.
+The controller holds them to their shares again first, and raises the engine to
+its floor. Only then does it wake the engine. A claim whose card cannot be
+accounted for is woken all the same where its reserve was kept, since its room
+is still there. In a pool that keeps no wake reserve, such a wake waits until
+the card can be accounted for. The request stays on the Pod while the engine
+boots. The controller removes it once the engine serves, or after five minutes
+if the engine is still booting then. ``Waking`` and ``Woken`` Events mark a
+wake that went through.
+
+When the floors of its neighbours leave no room for the engine, the controller
+makes room in a pool that keeps no wake reserve. It puts to sleep the neighbour
+that has served nothing for longest, one at a time, until the engine fits. A
+neighbour may be put to sleep once it has been idle for
+``sleepToMakeRoomAfterSeconds``. Its claim raises a ``SleptToMakeRoom`` Event,
+which names the model the room is made for. Only the oldest request on a card
+makes room. No room is made on a card where the memory of a sleeping engine
+could not be measured, since another sleep there would most likely free
+nothing.
 
 An engine that cannot wake where it is moves, when another Pod can take its
 claim. That is an engine whose card is promised more than it has, and one whose
@@ -854,9 +906,11 @@ neither way works, or when the driver reports zero for every process, the
 engine reports no figure. The figure is cleared when the engine wakes, and when
 a wake fails.
 
-HBM attribution is best effort and is used for observation. It is not an
-admission signal: admission works from the cost a claim declares and the size
-the runtime measures for a card. Ranking puts a Pod that already has the
+HBM attribution is best effort, and is otherwise used for observation.
+Admission works from the cost a claim declares and the size the runtime
+measures for a card. The one exception is a sleeping engine in a pool that
+keeps no wake reserve, which is charged the sleeping footprint its runtime
+measured. Ranking puts a Pod that already has the
 artifact first, then orders the admitted Pods by the room their account shows.
 Free memory only breaks a tie between two cards whose account shows the same
 room, because it moves with traffic.

@@ -75,13 +75,20 @@ func movingReason(reason string) bool {
 
 // wakeRequested wakes the sleeping engines of a claim that a request has asked
 // for, and takes back a request that has nothing left to do. It returns true
-// when it started a wake in this pass.
+// when it started a wake in this pass, or put a neighbour to sleep to make room
+// for one. The claim is then looked at again soon.
 //
 // The gateway does not wake an engine itself. It writes a wake request on the
 // pod whose engine sleeps, and this controller decides. An engine is woken only
-// while its card is promised no more than it has. A sleeping engine keeps its
-// seat, so that holds unless a declaration grew while it slept. An account that
-// cannot be judged does not stop the wake: the seat is still there.
+// while its card is promised no more than it has, and once its neighbours are
+// held to their shares. The request charges the engine its wake reserve again.
+// An engine that kept its reserve therefore fits, unless a declaration grew
+// while it slept. In a pool that keeps no wake reserve, its room may have gone
+// to other models, and the neighbour idle longest may be put to sleep to make
+// room. An account that cannot be judged does not stop a wake where the reserve
+// was kept, since the engine's room is still there. In a pool that keeps none,
+// a wake on a card waits until the account can be judged. A pod without a card
+// has no room to give away.
 //
 // An engine that cannot wake where it is is moved, when another pod can take
 // its claim. That is an engine whose card is promised more than it has, and one
@@ -118,7 +125,7 @@ func (r *ModelClaimReconciler) wakeRequested(
 			claims, listErr = r.listClaimsForAccount(ctx, pm.Namespace)
 			listed = true
 		}
-		return podLedgersFrom(claims, listErr, pods, readings.ofPods(ctx, pods))
+		return podLedgersFrom(claims, listErr, pods, readings.ofPods(ctx, pods), r.podsWithoutWakeReserve(ctx, pods))
 	}
 	for i := range pm.Status.Instances {
 		inst := &pm.Status.Instances[i]
@@ -161,7 +168,20 @@ func (r *ModelClaimReconciler) wakeRequested(
 
 		pods := []corev1.Pod{*pod}
 		ledger := ledgersOf(pods)[pod.Name]
+		if !ledger.judgeable && podHasGPUs(*pod, ledger.accelerators) && r.podsWithoutWakeReserve(ctx, pods)[pod.Name] {
+			r.waitForRoom(ctx, pm, inst, pod, "its card cannot be accounted for: "+ledger.blocked)
+			continue
+		}
 		if ledger.judgeable && (ledger.maximumRoomBytes() < 0 || ledger.heldRoomBytes() < 0) {
+			// Its neighbours' floors leave no room for it. The first request
+			// on the card puts the neighbour idle longest to sleep, one a pass,
+			// while a sleep gives room back.
+			if ledger.maximumRoomBytes() < 0 && firstToWakeOn(pod, pm.Name) &&
+				r.sleepToMakeRoom(ctx, pm, pod, ledger, readings) {
+				r.waitForRoom(ctx, pm, inst, pod, promisedMoreThanItHas)
+				woke = true
+				continue
+			}
 			if canPlaceElsewhere(pm, candidates, ledgersOf) {
 				if err := r.markMoving(ctx, pm, i, pod, instanceReasonNoRoomToWake,
 					fmt.Sprintf("its card on pod %s is promised more than it has", pod.Name)); err != nil {
@@ -169,19 +189,13 @@ func (r *ModelClaimReconciler) wakeRequested(
 				}
 				continue
 			}
-			// Raised once, when the wake starts to wait. The instance and the
-			// claim's Ready condition say it for as long as it lasts. The claim
-			// is looked at every few seconds, and client-go drops an object's
-			// Events once it has raised 25 in a burst, so an Event on every
-			// pass would crowd out the ones that follow, such as the wake's.
-			if inst.Reason != instanceReasonWaitingForRoom {
-				r.Recorder.Eventf(pm, corev1.EventTypeWarning, "WaitingForRoom",
-					"model %s stays asleep on pod %s: its card is promised more than it has", served, pod.Name)
-			}
-			r.setWaitingForRoom(ctx, pm, inst, pod, true)
+			r.waitForRoom(ctx, pm, inst, pod, promisedMoreThanItHas)
 			continue
 		}
 		r.setWaitingForRoom(ctx, pm, inst, pod, false)
+		if !r.cardArrangedForWake(ctx, pm, pod, ledger, readings) {
+			continue
+		}
 
 		// One operation per request, so the runtime applies a request once
 		// however many passes see it.
@@ -223,6 +237,262 @@ func (r *ModelClaimReconciler) wakeRequested(
 		woke = true
 	}
 	return woke, nil
+}
+
+// waitForRoom has a sleeping instance wait for room on its card. The wait is
+// raised as an Event once, when it starts. The instance and the claim's Ready
+// condition say it for as long as it lasts. The claim is looked at every few
+// seconds, and client-go drops an object's Events once it has raised 25 in a
+// burst, so an Event on every pass would crowd out the ones that follow, such
+// as the wake's.
+func (r *ModelClaimReconciler) waitForRoom(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	inst *modelv1alpha1.ModelClaimInstance,
+	pod *corev1.Pod,
+	why string,
+) {
+	if inst.Reason != instanceReasonWaitingForRoom {
+		r.Recorder.Eventf(pm, corev1.EventTypeWarning, "WaitingForRoom",
+			"model %s stays asleep on pod %s: %s", servedModelName(pm), pod.Name, why)
+	}
+	r.setWaitingForRoom(ctx, pm, inst, pod, true)
+}
+
+// promisedMoreThanItHas says why an engine waits on a card that cannot take it.
+const promisedMoreThanItHas = "its card is promised more than it has"
+
+// firstToWakeOn reports whether a claim's request is the oldest wake request on
+// its pod. Only the oldest makes room on a card. Two requests that each put a
+// neighbour to sleep for themselves would take one card's room twice. Any
+// request may still wake its engine when the card already has room for it:
+// every request puts its engine's reserve back, so no wake takes the room
+// another one waits for.
+func firstToWakeOn(pod *corev1.Pod, claimName string) bool {
+	mine := pod.Annotations[constants.ModelClaimWakeAnnotationPrefix+claimName]
+	for key, at := range pod.Annotations {
+		other, isWake := strings.CutPrefix(key, constants.ModelClaimWakeAnnotationPrefix)
+		if isWake && other != claimName && askedBefore(at, other, mine, claimName) {
+			return false
+		}
+	}
+	return true
+}
+
+// askedBefore orders two wake requests by when they were asked, then by claim
+// name. A request whose time cannot be read comes first, as it is the first to
+// be taken back.
+func askedBefore(at, name, otherAt, otherName string) bool {
+	asked, err := time.Parse(time.RFC3339, at)
+	otherAsked, otherErr := time.Parse(time.RFC3339, otherAt)
+	switch {
+	case err != nil && otherErr != nil:
+		return name < otherName
+	case err != nil:
+		return true
+	case otherErr != nil:
+		return false
+	case !asked.Equal(otherAsked):
+		return asked.Before(otherAsked)
+	}
+	return name < otherName
+}
+
+// sleepToMakeRoom puts to sleep the engine idle longest on a card, to make room
+// for a claim whose engine is to wake there. It returns true when it put one to
+// sleep. One goes to sleep a pass. The next pass sees what it holds asleep, and
+// asks again whether the waking engine fits.
+//
+// Room is made only where a sleep gives room back. That is a pool that keeps no
+// wake reserve, and a card where every engine asleep was measured. An engine
+// whose memory asleep is not known keeps its reserve, so the next one put to
+// sleep would most likely free nothing either. An engine may be put to sleep
+// once it has served nothing for the pool's sleepToMakeRoomAfterSeconds.
+func (r *ModelClaimReconciler) sleepToMakeRoom(
+	ctx context.Context,
+	waker *modelv1alpha1.ModelClaim,
+	pod *corev1.Pod,
+	ledger podLedger,
+	readings *runtimeReadings,
+) bool {
+	lifecycle := r.poolLifecycleOf(ctx, pod)
+	if lifecycle == nil || !lifecycle.NoWakeReserveWhileAsleep {
+		return false
+	}
+	for _, engine := range ledger.engines {
+		if engine.claimName != waker.Name && engine.asleep && engine.sleepingFootprintBytes == 0 {
+			return false
+		}
+	}
+	idlest, found := r.idlestEngine(ctx, waker, pod, lifecycle.sleepToMakeRoomAfter(), readings)
+	if !found {
+		return false
+	}
+	operationID := fmt.Sprintf("make-room/%s/%s/%s/%d",
+		pod.UID, snapshotActivityKey(idlest.model), waker.UID, idlest.idleSince.UnixNano())
+	if err := r.putEngineToSleep(ctx, idlest.claim, pod, idlest.port, idlest.model.ModelName, operationID, readings); err != nil {
+		klog.ErrorS(err, "could not put an idle engine to sleep to make room",
+			"pod", klog.KObj(pod), "model", idlest.model.ModelName, "for", waker.Name)
+		return false
+	}
+	asleep := r.sleptEngine(ctx, pod, idlest.claim, readings)
+	r.Recorder.Eventf(idlest.claim, corev1.EventTypeNormal, "SleptToMakeRoom",
+		"model %s idle for %s; put to sleep on pod %s to make room for model %s%s",
+		idlest.model.ModelName, r.poolPolicyManager().now().Sub(idlest.idleSince).Round(time.Second),
+		pod.Name, servedModelName(waker), sleepingFootprintNote(asleep))
+	r.warnOfAnUnmeasuredSleep(idlest.claim, pod.Name, asleep, true)
+	return true
+}
+
+// idleEngine is an engine that may be put to sleep to make room.
+type idleEngine struct {
+	claim     *modelv1alpha1.ModelClaim
+	model     RuntimeSnapshotModel
+	port      int32
+	idleSince time.Time
+}
+
+// idlestEngine finds the engine on a pod that has served nothing for longest,
+// among those that may be put to sleep to make room for the waker. Such an
+// engine is awake and routed, has no request running or waiting, and has been
+// idle for at least idleFor. Idle time counts from when the pool policy last
+// saw the engine busy, or from the engine's last change of phase when that is
+// later, as the idle timer counts it. An engine the pool policy has not seen
+// yet is not known to be idle.
+func (r *ModelClaimReconciler) idlestEngine(
+	ctx context.Context,
+	waker *modelv1alpha1.ModelClaim,
+	pod *corev1.Pod,
+	idleFor time.Duration,
+	readings *runtimeReadings,
+) (idleEngine, bool) {
+	snapshot, err := readings.of(ctx, pod)
+	if err != nil || snapshot == nil {
+		return idleEngine{}, false
+	}
+	claims := &modelv1alpha1.ModelClaimList{}
+	if err := r.List(ctx, claims, client.InNamespace(pod.Namespace)); err != nil {
+		return idleEngine{}, false
+	}
+	manager := r.poolPolicyManager()
+	var idlest idleEngine
+	found := false
+	for _, model := range snapshot.Models {
+		if model.Phase != runtimePhaseActive || !model.Alive || !model.Ready || !model.RequestMetricsObserved ||
+			model.RequestsRunning > 0 || model.RequestsWaiting > 0 {
+			continue
+		}
+		claim := claimForRuntimeSnapshot(claims, model)
+		if claim == nil || claim.Name == waker.Name || !isVLLMModel(claim) {
+			continue
+		}
+		port, active := activeClaimInstancePort(claim, pod.Name)
+		if !active {
+			continue
+		}
+		idleSince, seen := manager.lastActive(poolActivityKey(pod, model))
+		if !seen {
+			continue
+		}
+		if model.LastTransition != nil && model.LastTransition.After(idleSince) {
+			idleSince = *model.LastTransition
+		}
+		if manager.now().Sub(idleSince) < idleFor {
+			continue
+		}
+		if !found || idleSince.Before(idlest.idleSince) ||
+			(idleSince.Equal(idlest.idleSince) && claim.Name < idlest.claim.Name) {
+			idlest = idleEngine{claim: claim, model: model, port: port, idleSince: idleSince}
+			found = true
+		}
+	}
+	return idlest, found
+}
+
+// wakeDivision divides a card for an engine about to wake. Every move of the
+// plan is carried out, and each moved engine's claim is told: the neighbours
+// give back room they did not ask to give up.
+var wakeDivision = division{announce: true}
+
+// cardArrangedForWake makes sure an engine's card is held as its plan has it
+// before the engine wakes, and reports whether it is. An engine that slept
+// without a wake reserve left room that its neighbours may have been given.
+// They are held to their shares again first, or they could grow into the
+// memory the engine wakes into. The engine itself is raised to its floor,
+// since it was held to only the KV it had mapped while it slept.
+//
+// A card whose engines are already held as planned is left alone, as a card
+// normally is where the engine kept its reserve. So is a card that cannot be
+// planned, as before. A card that could not be divided is tried again on a
+// later pass, and the engine sleeps until then.
+func (r *ModelClaimReconciler) cardArrangedForWake(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	pod *corev1.Pod,
+	ledger podLedger,
+	readings *runtimeReadings,
+) bool {
+	if !ledger.judgeable || !podHasGPUs(*pod, ledger.accelerators) {
+		return true
+	}
+	limits, err := planKVLimits(ledger.hbmUsableBytes, ledger.engines)
+	if err != nil || heldAsPlannedForWake(ledger.engines, limits, pm.Name) {
+		return true
+	}
+	if _, err := r.arrangeCard(ctx, pod, ledger, ledger.engines, wakeDivision, readings); err != nil {
+		klog.V(2).InfoS("wake waits for its card to be divided again",
+			"model", pm.Name, "pod", klog.KObj(pod), "err", err)
+		return false
+	}
+	r.catchUpWithRecordedLimit(ctx, pm, pod.Name)
+	return true
+}
+
+// catchUpWithRecordedLimit brings the claim this pass holds up to the KV limit
+// that a division recorded on it for one pod. The division wrote the claim
+// itself, so without this the status written at the end of the pass would
+// conflict with that record. Nothing else writes a claim's status while the
+// controller reconciles it, so the limit is the one field to take over.
+func (r *ModelClaimReconciler) catchUpWithRecordedLimit(ctx context.Context, pm *modelv1alpha1.ModelClaim, podName string) {
+	reader := client.Reader(r.Client)
+	if r.APIReader != nil {
+		reader = r.APIReader
+	}
+	fresh := &modelv1alpha1.ModelClaim{}
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(pm), fresh); err != nil {
+		return
+	}
+	for _, recorded := range fresh.Status.Instances {
+		if recorded.Pod != podName {
+			continue
+		}
+		for i := range pm.Status.Instances {
+			if pm.Status.Instances[i].Pod == podName {
+				pm.Status.Instances[i].KVLimitBytes = recorded.KVLimitBytes
+			}
+		}
+	}
+	pm.ResourceVersion = fresh.ResourceVersion
+}
+
+// heldAsPlannedForWake reports whether no engine on a card is held to more
+// than its plan gives it, and the engine about to wake to no less. An engine
+// without a KV segment holds nothing to compare.
+func heldAsPlannedForWake(engines []engineOnPod, limits []plannedKVLimit, waking string) bool {
+	planned := make(map[string]int64, len(limits))
+	for _, limit := range limits {
+		planned[limit.claimName] = limit.kvLimitBytes
+	}
+	for _, engine := range engines {
+		if engine.kvCapacityBytes < 0 {
+			continue
+		}
+		limit := planned[engine.claimName]
+		if engine.kvCapacityBytes > limit || (engine.claimName == waking && engine.kvCapacityBytes < limit) {
+			return false
+		}
+	}
+	return true
 }
 
 // markMoving marks an instance whose engine cannot wake where it is, so that

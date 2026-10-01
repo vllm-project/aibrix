@@ -334,6 +334,54 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 		fixture.ExpectEvent(claim, corev1.EventTypeNormal, "Waking")
 	})
 
+	ginkgo.It("puts the neighbour idle longest to sleep to make room for a wake", func() {
+		fixture.Runtime().SetDefaultState("active", true)
+		// One card of 5 GiB. Every claim declares 1 GiB and a 1 GiB floor, so two
+		// fit awake, and a third fits only beside a sleeper without a wake reserve.
+		fixture.Runtime().SetCard(5 << 30)
+		fixture.Runtime().SetSleepingFootprint(256 << 20)
+		pod := fixture.CreatePoolPod(ns.Name, "pool-room", "pool-room",
+			`{"lifecycle":{"noWakeReserveWhileAsleep":true,"sleepToMakeRoomAfterSeconds":1}}`)
+		waker := fixture.CreateClaim(ns.Name, "claim-waker", "pool-room", nil, nil)
+		first := fixture.CreateClaim(ns.Name, "claim-first", "pool-room", nil, nil)
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(fixture.GetClaim(g, waker).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+			g.Expect(fixture.GetClaim(g, first).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+
+		fixture.Runtime().SetClaimState(string(waker.UID), "sleeping", false, "")
+		fixture.TriggerReconcile(waker)
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(fixture.GetClaim(g, waker).Status.Phase).To(gomega.Equal(modelapi.ModelClaimSleeping))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+
+		// Asleep, the waker is charged only the 256 MiB it holds.
+		second := fixture.CreateClaim(ns.Name, "claim-second", "pool-room", nil, nil)
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(fixture.GetClaim(g, second).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+
+		fixture.RequestWake(ns.Name, pod.Name, waker.Name)
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(fixture.GetClaim(g, waker).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+			asleep := 0
+			for _, neighbour := range []*modelapi.ModelClaim{first, second} {
+				if fixture.GetClaim(g, neighbour).Status.Phase == modelapi.ModelClaimSleeping {
+					asleep++
+				}
+			}
+			g.Expect(asleep).To(gomega.Equal(1), "one neighbour goes to sleep, and the waker fits")
+		}, 2*modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+		gomega.Expect(fixture.Runtime().SleepRequests()).To(gomega.HaveLen(1))
+		fixture.ExpectEvent(waker, corev1.EventTypeNormal, "Waking")
+		// While the wake waited for room, the card was still divided.
+		events := &corev1.EventList{}
+		gomega.Expect(k8sClient.List(ctx, events, client.InNamespace(ns.Name))).To(gomega.Succeed())
+		for _, event := range events.Items {
+			gomega.Expect(event.Reason).NotTo(gomega.Equal("KVLimitFailed"), event.Message)
+		}
+	})
+
 	ginkgo.It("moves a claim whose engine cannot be woken", func() {
 		fixture.Runtime().SetDefaultState("active", true)
 		fixture.CreateWarmPod(ns.Name, "warm-move-a", "pool-a")

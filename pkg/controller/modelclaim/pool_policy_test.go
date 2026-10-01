@@ -59,6 +59,50 @@ func TestParsePoolPolicyRejectsNonPositiveSleepWindow(t *testing.T) {
 	assert.Equal(t, poolPolicyErrorInvalidSleep, poolPolicyErrorClass(err))
 }
 
+func TestParsePoolPolicyTakesALifecycleThatOnlyKeepsNoWakeReserve(t *testing.T) {
+	policy, err := parsePoolPolicy(`{"lifecycle":{"noWakeReserveWhileAsleep":true}}`)
+
+	require.NoError(t, err)
+	require.NotNil(t, policy.Lifecycle)
+	assert.True(t, policy.Lifecycle.NoWakeReserveWhileAsleep)
+	assert.Zero(t, policy.Lifecycle.SleepAfterSeconds, "no engine is put to sleep for being idle")
+	assert.Equal(t, 30*time.Second, policy.Lifecycle.sleepToMakeRoomAfter())
+}
+
+func TestParsePoolPolicyRejectsALifecycleThatCannotWork(t *testing.T) {
+	for raw, want := range map[string]string{
+		`{"lifecycle":{}}`: "sleepAfterSeconds must be positive",
+		`{"lifecycle":{"noWakeReserveWhileAsleep":false}}`:                                  "sleepAfterSeconds must be positive",
+		`{"lifecycle":{"noWakeReserveWhileAsleep":true,"sleepAfterSeconds":-1}}`:            "sleepAfterSeconds must be positive",
+		`{"lifecycle":{"noWakeReserveWhileAsleep":true,"sleepToMakeRoomAfterSeconds":0}}`:   "sleepToMakeRoomAfterSeconds must be positive",
+		`{"lifecycle":{"sleepAfterSeconds":60,"sleepToMakeRoomAfterSeconds":60}}`:           "must be less than lifecycle.sleepAfterSeconds",
+		`{"lifecycle":{"noWakeReserveWhileAsleep":true,"sleepToMakeRoomAfterSeconds":-30}}`: "sleepToMakeRoomAfterSeconds must be positive",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			policy, err := parsePoolPolicy(raw)
+
+			require.Error(t, err)
+			assert.Nil(t, policy)
+			assert.Contains(t, err.Error(), want)
+			assert.Equal(t, poolPolicyErrorInvalidSleep, poolPolicyErrorClass(err))
+		})
+	}
+}
+
+func TestSleepToMakeRoomAfterDefaultsToNoMoreThanTheSleepWindow(t *testing.T) {
+	for raw, want := range map[string]time.Duration{
+		`{"lifecycle":{"sleepAfterSeconds":300}}`: 30 * time.Second,
+		// A policy written before this field existed stays valid.
+		`{"lifecycle":{"sleepAfterSeconds":20}}`:                                   20 * time.Second,
+		`{"lifecycle":{"sleepAfterSeconds":300,"sleepToMakeRoomAfterSeconds":45}}`: 45 * time.Second,
+	} {
+		policy, err := parsePoolPolicy(raw)
+
+		require.NoError(t, err, raw)
+		assert.Equal(t, want, policy.Lifecycle.sleepToMakeRoomAfter(), raw)
+	}
+}
+
 func TestParsePoolPolicyClassifiesConfigurationErrors(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -143,14 +143,15 @@ func TestReconcileMovesAnEngineTheRuntimeCouldNotWake(t *testing.T) {
 	pm := claimWithCost(300, 100)
 	pm.UID = types.UID("claim-uid")
 	pm.Status.Phase = modelv1alpha1.ModelClaimSleeping
+	// Asleep, the engine is held to its floor, as a division leaves it.
 	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
-		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimSleeping, KVLimitBytes: 700,
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimSleeping, KVLimitBytes: 100,
 	}}
 	sleeper, sleeperSnapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
 	sleeper.Annotations = map[string]string{constants.ModelClaimWakeAnnotationPrefix + pm.Name: "2026-10-01T08:00:00Z"}
 	sleeperSnapshot.Models = []RuntimeSnapshotModel{{
 		ModelName: servedModelName(pm), Port: 9001, Phase: runtimePhaseSleeping, Alive: true,
-		KVUsedBytes: 100, KVCapacityBytes: 700,
+		KVUsedBytes: 100, KVCapacityBytes: 100,
 		ClaimRef: &ModelClaimRef{Namespace: pm.Namespace, Name: pm.Name, UID: string(pm.UID)},
 	}}
 	roomy, roomySnapshot := sizedWarmPod("warm-2", testPeerIP, 1000)
