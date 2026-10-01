@@ -140,7 +140,11 @@ func Add(mgr manager.Manager, _ config.RuntimeConfig) error {
 		// attach as soon as an eligible pod appears.
 		Watches(&corev1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(enqueueModelClaimsForPod(mgr.GetClient())),
-			builder.WithPredicates(modelPoolPodFilter())).
+			builder.WithPredicates(modelPoolPodFilter(), notOnlyWakeRequests())).
+		// A request to wake a sleeping engine concerns its claim alone.
+		Watches(&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(enqueueRequestedWakes),
+			builder.WithPredicates(modelPoolPodFilter(), wakeRequestsChanged())).
 		// Wake the claims waiting for a card when another claim may have freed
 		// one, rather than leave them to sleep through their wait.
 		Watches(&modelv1alpha1.ModelClaim{},
@@ -301,6 +305,11 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Reconcile instance routability against live engine readiness (promote
 	// ready Activating instances, demote Active instances that went unhealthy).
 	booting := r.reconcileInstanceHealth(ctx, pm, readings)
+	// An engine woken in this pass boots from now on, so the claim is looked
+	// at again as soon as a booting engine is.
+	if r.wakeRequested(ctx, pm, readings) {
+		booting = true
+	}
 	replacementFailed := false
 	failed := len(failedInstanceSlots(pm))
 	if err := r.rescheduleFailedInstances(ctx, pm, candidates, readings); err != nil {
@@ -1651,7 +1660,10 @@ func (r *ModelClaimReconciler) annotateWarmPodWithState(
 	state string,
 ) error {
 	key := constants.ModelClaimPodAnnotationPrefix + pm.Name
-	value := fmt.Sprintf(`{"model":%q,"port":%d,"state":%q}`, servedModelName(pm), port, state)
+	// wakeByRequest tells the gateway that this controller wakes the engine:
+	// a request for it while it sleeps is written on the pod, and the
+	// controller decides when its card can take it.
+	value := fmt.Sprintf(`{"model":%q,"port":%d,"state":%q,"wakeByRequest":true}`, servedModelName(pm), port, state)
 	if pod.Annotations[key] == value {
 		return nil
 	}
@@ -1785,11 +1797,16 @@ func (r *ModelClaimReconciler) deannotateWarmPod(ctx context.Context, namespace,
 		return // pod already gone
 	}
 	key := constants.ModelClaimPodAnnotationPrefix + pmName
-	if _, ok := pod.Annotations[key]; !ok {
+	// A wake request for the claim goes with its route.
+	wakeKey := constants.ModelClaimWakeAnnotationPrefix + pmName
+	_, routed := pod.Annotations[key]
+	_, asked := pod.Annotations[wakeKey]
+	if !routed && !asked {
 		return
 	}
 	patch := client.MergeFrom(pod.DeepCopy())
 	delete(pod.Annotations, key)
+	delete(pod.Annotations, wakeKey)
 	if err := r.Patch(ctx, pod, patch); err != nil {
 		klog.ErrorS(err, "failed to remove model-claim routing annotation", "pod", podName, "model", pmName)
 	}

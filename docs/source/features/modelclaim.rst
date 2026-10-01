@@ -40,7 +40,8 @@ Architecture
      end
      C -->|"model, port, state annotation"| G["AIBrix gateway"]
      U["OpenAI client"] --> G --> E1
-     G -. "sleeping: wake and retryable 503" .-> R
+     G -. "sleeping: wake request on the Pod, retryable 503" .-> C
+     C -. "wake" .-> R
 
 The main responsibilities are:
 
@@ -52,8 +53,8 @@ The main responsibilities are:
   route gating, and the optional pool policy.
 * **AIBrix runtime agent** starts and supervises one process per claim and
   exposes actual engine, memory, and request state through a runtime snapshot.
-* **AIBrix gateway** routes a served model to its per-engine port. It can
-  trigger a wake for a sleeping model but does not hold the original request.
+* **AIBrix gateway** routes a served model to its per-engine port. It asks the
+  controller to wake a sleeping model, and does not hold the original request.
 
 Prerequisites
 -------------
@@ -555,7 +556,7 @@ ModelClaim status summarizes the lifecycle:
        per-engine port.
    * - ``Sleeping``
      - The engine remains resident but is intentionally non-routable. A request
-       can trigger a wake.
+       asks the controller to wake it.
    * - ``Failed``
      - Activation or local restart recovery reached a terminal failure.
 
@@ -575,7 +576,7 @@ An annotation has this form:
 
 .. code-block:: json
 
-   {"model":"qwen3-0.6b","port":20000,"state":"active"}
+   {"model":"qwen3-0.6b","port":20000,"state":"active","wakeByRequest":true}
 
 ``port: 0`` means the model is known but not currently routable. It is used
 while the engine is activating, restarting, sleeping, or failed.
@@ -678,8 +679,10 @@ Sleeping request behavior
 -------------------------
 
 The gateway does not hold or replay a request while a model wakes. When a
-binding is sleeping, the gateway starts one deduplicated asynchronous wake and
-returns:
+binding is sleeping, the gateway asks the controller to wake the model. It
+writes a wake request on the Pod, unless one is already there. The request is
+the annotation ``wake.modelclaim.aibrix.ai/<claim>``, and it holds the time of
+the request. Then the gateway returns:
 
 .. code-block:: text
 
@@ -689,6 +692,22 @@ returns:
 The client or an outer gateway must retry. While the engine is waking, later
 requests can continue to receive 503. The controller restores the real port
 only after the runtime reports the engine active and ready.
+
+The controller wakes the engine through the runtime, once its card is promised
+no more than it has. A sleeping engine keeps its seat, so that holds unless a
+declaration grew while the engine slept. The engine then stays asleep, and the
+request waits. A claim whose card cannot be accounted for is woken all the
+same, since its seat was kept. The request stays
+on the Pod while the engine boots, and the controller removes it once the
+engine serves. A wake that fails raises a ``WakeFailed`` Event, and its request
+is removed, so the next request for the model asks again. ``Waking`` and
+``Woken`` Events mark a wake that went through.
+
+A controller that wakes engines itself says so in the binding, with
+``"wakeByRequest":true``. A gateway that finds no such field asks the runtime
+to wake the engine directly, as an older controller expects. So does a gateway
+that runs without Kubernetes. The gateway writes wake requests with its
+permission to patch Pods.
 
 An activating model also returns 503 with ``Retry-After``. So does a claim
 that is not placed yet. Its message gives the controller's reason: from the

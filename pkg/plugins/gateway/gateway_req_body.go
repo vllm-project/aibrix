@@ -337,10 +337,11 @@ func getEngineBasedPathRewrite(requestPath string, pods []*v1.Pod) string {
 func (s *Server) validateModelAvailability(requestID, model string) (types.PodList, *extProcPb.ProcessingResponse) {
 	if !s.cache.HasModel(model) {
 		if provider, ok := s.cache.(cache.ModelClaimBindingProvider); ok {
-			if pod, _, state, found := provider.ModelClaimBinding(model); found {
+			if pod, binding, found := provider.ModelClaimBinding(model); found {
+				state := binding.State
 				klog.InfoS("ModelClaim is known but not routable", "requestID", requestID, "model", model, "state", state)
 				if state == constants.ModelClaimRoutingStateSleeping && s.wakeRequester != nil {
-					s.wakeRequester.RequestWake(pod, model)
+					s.wakeRequester.RequestWake(pod, binding)
 				}
 				// The controller gets past every state a pod carries by itself.
 				// An engine that failed for good is moved to another pod once
