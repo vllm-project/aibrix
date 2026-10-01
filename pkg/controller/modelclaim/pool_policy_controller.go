@@ -37,18 +37,28 @@ import (
 // until another snapshot arrives, which is safer than reconstructing activity
 // from stale annotations or status.
 type poolPolicyManager struct {
-	mu       sync.Mutex
-	now      func() time.Time
-	lastRun  map[types.NamespacedName]time.Time
-	activity map[string]poolActivityRecord
-	config   map[types.NamespacedName]poolConfigRecord
+	mu        sync.Mutex
+	now       func() time.Time
+	lastRun   map[types.NamespacedName]time.Time
+	activity  map[string]poolActivityRecord
+	config    map[types.NamespacedName]poolConfigRecord
+	lastSweep time.Time
 }
 
 type poolActivityRecord struct {
 	successTotal int64
 	known        bool
 	lastActive   time.Time
+	lastSeen     time.Time
 }
+
+const (
+	// poolActivityRetention is how long an unobserved record is kept. Pods are
+	// observed every DefaultRequeueDuration, so only a gone pod or engine ages out.
+	poolActivityRetention = 5 * time.Minute
+	// poolActivitySweepInterval bounds the full-map scan to once a minute.
+	poolActivitySweepInterval = time.Minute
+)
 
 type poolConfigRecord struct {
 	raw        string
@@ -100,11 +110,26 @@ func (m *poolPolicyManager) begin(pool types.NamespacedName) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
+	m.sweepActivityLocked(now)
 	if last, found := m.lastRun[pool]; found && now.Sub(last) < DefaultRequeueDuration {
 		return false
 	}
 	m.lastRun[pool] = now
 	return true
+}
+
+// sweepActivityLocked drops records not observed within poolActivityRetention.
+// It scans the whole map, so it runs at most once per poolActivitySweepInterval.
+func (m *poolPolicyManager) sweepActivityLocked(now time.Time) {
+	if now.Sub(m.lastSweep) < poolActivitySweepInterval {
+		return
+	}
+	m.lastSweep = now
+	for key, record := range m.activity {
+		if now.Sub(record.lastSeen) > poolActivityRetention {
+			delete(m.activity, key)
+		}
+	}
 }
 
 func (m *poolPolicyManager) observe(
@@ -132,6 +157,7 @@ func (m *poolPolicyManager) observe(
 	}
 	record.successTotal = current
 	record.known = true
+	record.lastSeen = now
 	m.activity[key] = record
 	return poolRequestActivity{
 		Active:           active,
