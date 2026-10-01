@@ -219,9 +219,9 @@ func TestLoadAdapter(t *testing.T) {
 	}
 }
 
-type roundTripFunc func(*http.Request) (*http.Response, error)
+type loraRoundTripFunc func(*http.Request) (*http.Response, error)
 
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+func (f loraRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
@@ -231,7 +231,7 @@ func TestLoadAdapterPropagatesContextToModelLookup(t *testing.T) {
 
 	client := NewLoraClient(config.RuntimeConfig{})
 	client.httpClient = &http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		Transport: loraRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 			if err := req.Context().Err(); err != nil {
 				return nil, err
 			}
