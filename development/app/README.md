@@ -405,6 +405,42 @@ curl http://localhost:8000/v1/chat/completions \
 - `/ping` - Ping check
 
 
+### Elastic EP Endpoints
+
+The mock engine serves the elastic EP state surface that the PodAutoscaler
+observes (issue #2288):
+
+- `POST /is_scaling_elastic_ep` - Answers `200 {"is_scaling_elastic_ep": false}` while idle.
+- `GET /debug/elastic_ep` - Read the simulated scaling state.
+- `POST /debug/elastic_ep` - Drive the simulated scaling state.
+
+While a scaling window is active, every request that is not under `/debug/`
+answers the upstream 503 payload
+`{"error": "The model is currently scaling. Please try again later."}`,
+matching the vLLM elastic EP middleware, which blocks all HTTP requests while
+a scaling commit is in flight.
+
+```bash
+# Simulate a scaling commit that expires after 5 seconds.
+curl -s -X POST http://localhost:8000/debug/elastic_ep \
+  -H "Content-Type: application/json" \
+  -d '{"scaling": true, "duration_seconds": 5}'
+
+# The probe now answers 503, which the PodAutoscaler records as scaling.
+curl -i -X POST http://localhost:8000/is_scaling_elastic_ep
+
+# Hold the window until it is cleared.
+curl -s -X POST http://localhost:8000/debug/elastic_ep \
+  -H "Content-Type: application/json" \
+  -d '{"scaling": true}'
+curl -s -X POST http://localhost:8000/debug/elastic_ep \
+  -H "Content-Type: application/json" \
+  -d '{"scaling": false}'
+```
+
+The surface is covered by `test_elastic_ep.py`.
+
+
 ## How to test AIBrix features
 
 ### Gateway rpm/tpm configs
