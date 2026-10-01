@@ -133,6 +133,11 @@ func TestIsLanguageRequest(t *testing.T) {
 			want:        false,
 		},
 		{
+			name:        "pooling is language",
+			requestPath: "/pooling",
+			want:        true,
+		},
+		{
 			name:        "empty path is language",
 			requestPath: "",
 			want:        true,
