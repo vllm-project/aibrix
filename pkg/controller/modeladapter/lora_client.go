@@ -98,7 +98,7 @@ func (c *loraClient) LoadAdapter(ctx context.Context, instance *modelv1alpha1.Mo
 
 	urls := BuildURLs(targetPod.Status.PodIP, c.runtimeConfig, useSidecar, metrics.GetEngineType(*targetPod))
 
-	models, err := c.getModels(urls.ListModelsURL, instance)
+	models, err := c.getModels(ctx, urls.ListModelsURL, instance)
 	if err != nil {
 		return false, false, err
 	}
@@ -165,8 +165,8 @@ func (c *loraClient) UnloadAdapter(instance *modelv1alpha1.ModelAdapter, targetP
 	return nil
 }
 
-func (c *loraClient) getModels(url string, instance *modelv1alpha1.ModelAdapter) (map[string]bool, error) {
-	req, err := http.NewRequest("GET", url, nil)
+func (c *loraClient) getModels(ctx context.Context, url string, instance *modelv1alpha1.ModelAdapter) (map[string]bool, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}

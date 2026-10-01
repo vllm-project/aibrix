@@ -219,6 +219,34 @@ func TestLoadAdapter(t *testing.T) {
 	}
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestLoadAdapterPropagatesContextToModelLookup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	client := NewLoraClient(config.RuntimeConfig{})
+	client.httpClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if err := req.Context().Err(); err != nil {
+				return nil, err
+			}
+			return nil, fmt.Errorf("request context is not canceled")
+		}),
+	}
+
+	_, _, err := client.LoadAdapter(
+		ctx,
+		&modelv1alpha1.ModelAdapter{ObjectMeta: v1.ObjectMeta{Name: "cancelled-adapter"}},
+		newPod("127.0.0.1", VLLMEngine, false),
+	)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
 func TestUnloadAdapter(t *testing.T) {
 	tests := []struct {
 		name             string
