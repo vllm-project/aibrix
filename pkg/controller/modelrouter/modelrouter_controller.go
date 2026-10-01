@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -56,6 +57,9 @@ const (
 	defaultModelServingPort = 8000
 
 	modelRouterCustomPath = constants.ModelAnnoRouterCustomPath
+
+	// defaultResyncInterval is how often missing HTTPRoutes are recreated.
+	defaultResyncInterval = 30 * time.Second
 )
 
 var watchedWorkloads = []schema.GroupVersionKind{
@@ -106,12 +110,15 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 	utilruntime.Must(gatewayv1beta1.AddToScheme(mgr.GetClient().Scheme()))
 
 	modelRouter := &ModelRouter{
-		Client:        mgr.GetClient(),
-		RuntimeConfig: runtimeConfig,
+		Client:         mgr.GetClient(),
+		RuntimeConfig:  runtimeConfig,
+		cacheReader:    cacher,
+		resyncInterval: defaultResyncInterval,
 	}
 
 	_, err = deploymentInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    modelRouter.addRouteFromDeployment,
+		UpdateFunc: modelRouter.updateRouteFromWorkload,
 		DeleteFunc: modelRouter.deleteRouteFromDeployment,
 	})
 	if err != nil {
@@ -120,6 +127,7 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 
 	_, err = modelInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    modelRouter.addRouteFromModelAdapter,
+		UpdateFunc: modelRouter.updateRouteFromWorkload,
 		DeleteFunc: modelRouter.deleteRouteFromModelAdapter,
 	})
 	if err != nil {
@@ -128,6 +136,7 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 
 	_, err = fleetInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    modelRouter.addRouteFromRayClusterFleet,
+		UpdateFunc: modelRouter.updateRouteFromWorkload,
 		DeleteFunc: modelRouter.deleteRouteFromRayClusterFleet,
 	})
 	if err != nil {
@@ -144,6 +153,14 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 		if err := addInformerForGVK(mgr, modelRouter, gvk); err != nil {
 			return err
 		}
+		modelRouter.workloadGVKs = append(modelRouter.workloadGVKs, gvk)
+	}
+
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		modelRouter.Run(ctx)
+		return nil
+	})); err != nil {
+		return err
 	}
 
 	return nil
@@ -153,6 +170,13 @@ type ModelRouter struct {
 	client.Client
 	Scheme        *runtime.Scheme
 	RuntimeConfig config.RuntimeConfig
+
+	// cacheReader lists unstructured workloads from the informer cache, since
+	// the manager client reads unstructured objects from the API server.
+	cacheReader    client.Reader
+	resyncInterval time.Duration
+	// workloadGVKs are the optional workload kinds whose informers were registered.
+	workloadGVKs []schema.GroupVersionKind
 }
 
 func (m *ModelRouter) addRouteFromDeployment(obj interface{}) {
@@ -237,6 +261,46 @@ func (m *ModelRouter) deleteRouteFromUnstructuredObj(obj interface{}) {
 		}
 	}
 	m.deleteHTTPRoute(u.GetNamespace(), u.GetLabels(), u.GetAnnotations())
+}
+
+func (m *ModelRouter) updateRouteFromWorkload(oldObj, newObj interface{}) {
+	oldMeta, err := meta.Accessor(oldObj)
+	if err != nil {
+		klog.ErrorS(err, "Failed to get old object metadata")
+		return
+	}
+	newMeta, err := meta.Accessor(newObj)
+	if err != nil {
+		klog.ErrorS(err, "Failed to get new object metadata")
+		return
+	}
+	// A workload being deleted must not recreate the route that the delete
+	// handler is about to remove.
+	if newMeta.GetDeletionTimestamp() != nil {
+		return
+	}
+	// Informer resyncs and status/spec updates leave the model metadata
+	// unchanged and must not trigger route recreation.
+	if !modelRouteMetadataChanged(oldMeta, newMeta) {
+		return
+	}
+	m.createHTTPRoute(newMeta.GetNamespace(), newMeta.GetLabels(), newMeta.GetAnnotations())
+}
+
+// modelRouteMetadataChanged reports whether any label or annotation that
+// createHTTPRoute reads differs between the two objects.
+func modelRouteMetadataChanged(oldObj, newObj metav1.Object) bool {
+	oldName, _ := constants.ModelNameFromMetadata(oldObj.GetLabels(), oldObj.GetAnnotations())
+	newName, _ := constants.ModelNameFromMetadata(newObj.GetLabels(), newObj.GetAnnotations())
+	if oldName != newName {
+		return true
+	}
+	if oldObj.GetLabels()[modelPortIdentifier] != newObj.GetLabels()[modelPortIdentifier] {
+		return true
+	}
+	oldAnno, newAnno := oldObj.GetAnnotations(), newObj.GetAnnotations()
+	return oldAnno[constants.ModelAnnoServiceName] != newAnno[constants.ModelAnnoServiceName] ||
+		oldAnno[modelRouterCustomPath] != newAnno[modelRouterCustomPath]
 }
 
 func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string, annotations map[string]string) {
@@ -503,6 +567,95 @@ func (m *ModelRouter) namespaceHasModelWorkload(ctx context.Context, namespace s
 	return false, nil
 }
 
+// Run periodically recreates missing HTTPRoutes until ctx is cancelled. Add and
+// Update events cannot recover a route that was deleted out of band.
+func (m *ModelRouter) Run(ctx context.Context) {
+	ticker := time.NewTicker(m.resyncInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if err := m.ensureHTTPRoutes(ctx); err != nil {
+				klog.ErrorS(err, "Failed to resync model httproutes")
+			}
+		case <-ctx.Done():
+			klog.Info("context done, stopping model httproute resync")
+			return
+		}
+	}
+}
+
+// ensureHTTPRoutes creates the HTTPRoute of every labeled model workload whose
+// route is missing. Existing routes are left unchanged.
+func (m *ModelRouter) ensureHTTPRoutes(ctx context.Context) error {
+	var workloads []metav1.Object
+
+	var deploymentList appsv1.DeploymentList
+	if err := m.List(ctx, &deploymentList); err != nil {
+		return fmt.Errorf("failed to list deployments: %w", err)
+	}
+	for i := range deploymentList.Items {
+		workloads = append(workloads, &deploymentList.Items[i])
+	}
+
+	var adapterList modelv1alpha1.ModelAdapterList
+	if err := m.List(ctx, &adapterList); err != nil {
+		return fmt.Errorf("failed to list model adapters: %w", err)
+	}
+	for i := range adapterList.Items {
+		workloads = append(workloads, &adapterList.Items[i])
+	}
+
+	var fleetList orchestrationv1alpha1.RayClusterFleetList
+	if err := m.List(ctx, &fleetList); err != nil {
+		return fmt.Errorf("failed to list ray cluster fleets: %w", err)
+	}
+	for i := range fleetList.Items {
+		workloads = append(workloads, &fleetList.Items[i])
+	}
+
+	for _, gvk := range m.workloadGVKs {
+		list := &unstructured.UnstructuredList{}
+		list.SetGroupVersionKind(gvk.GroupVersion().WithKind(gvk.Kind + "List"))
+		if err := m.cacheReader.List(ctx, list); err != nil {
+			return fmt.Errorf("failed to list %s: %w", gvk, err)
+		}
+		for i := range list.Items {
+			workloads = append(workloads, &list.Items[i])
+		}
+	}
+
+	checked := make(map[string]struct{})
+	for _, workload := range workloads {
+		if workload.GetDeletionTimestamp() != nil {
+			continue
+		}
+		modelName, ok := constants.ModelNameFromMetadata(workload.GetLabels(), workload.GetAnnotations())
+		if !ok {
+			continue
+		}
+		if _, ok := checked[modelName]; ok {
+			continue
+		}
+		checked[modelName] = struct{}{}
+
+		var route gatewayv1.HTTPRoute
+		key := client.ObjectKey{Namespace: aibrixEnvoyGatewayNamespace, Name: utils.ModelRouterName(modelName)}
+		err := m.Get(ctx, key, &route)
+		if err == nil {
+			continue
+		}
+		if !apierrors.IsNotFound(err) {
+			klog.ErrorS(err, "Failed to get httproute", "model", modelName)
+			continue
+		}
+		klog.InfoS("httproute is missing, recreating it", "model", modelName, "namespace", workload.GetNamespace())
+		m.createHTTPRoute(workload.GetNamespace(), workload.GetLabels(), workload.GetAnnotations())
+	}
+	return nil
+}
+
 func consoleRouteLabels(labels map[string]string) map[string]string {
 	if labels[constants.AppLabelManagedBy] != constants.ConsoleManagedByValue {
 		return nil
@@ -583,6 +736,7 @@ func addInformerForGVK(mgr manager.Manager, modelRouter *ModelRouter, gvk schema
 	// add Event Handler
 	_, err = uInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    modelRouter.addRouteFromUnstructuredObj,
+		UpdateFunc: modelRouter.updateRouteFromWorkload,
 		DeleteFunc: modelRouter.deleteRouteFromUnstructuredObj,
 	})
 	if err != nil {
