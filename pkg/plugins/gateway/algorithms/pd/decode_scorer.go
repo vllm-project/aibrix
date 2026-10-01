@@ -92,7 +92,7 @@ type DecodePodInput struct {
 	MaxRequestCount float64 // max RunningReqs across the candidate decode pods
 	MaxThroughput   float64 // max Throughput across the candidate decode pods
 	MaxFreeGPUUsage float64 // max FreeGPUPercent across the candidate decode pods
-	DecodeTokens    float64 // prompt tokens charged to this pod by the decode ledger (token_load)
+	DecodeTokens    float64 // decode ledger of this pod (token_load): charged prompt tokens plus estimated generated output
 }
 
 // RolesetDecodePick is the winning decode pod for one roleset after comparing
@@ -239,13 +239,14 @@ func (ConductorDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext, po
 	return estimatedTBT
 }
 
-// TokenLoadDecodePolicy scores decode pods by the prompt tokens the gateway has
-// charged to them and not yet released: a request is charged its prompt size
-// plus a fixed per-request cost when its decode pod is selected, and released
-// when it completes (see TokenLoadTracker). A decode pod receives the whole
-// prompt's KV from the prefill pod, so this tracks the KV each decoder has been
-// handed, updated synchronously with every selection instead of once per metric
-// refresh. Lower is better.
+// TokenLoadDecodePolicy scores decode pods by the KV the gateway has routed to
+// them: a request is charged its prompt size when its decode pod is selected and
+// released when it completes (see TokenLoadTracker), and the router adds an
+// estimate of the output the outstanding requests have generated since (see
+// TokenLoadTracker.DecodeGrowth). A decode pod receives the whole prompt's KV
+// from the prefill pod, so this tracks the KV each decoder holds, updated
+// synchronously with every selection instead of once per metric refresh. Lower
+// is better.
 type TokenLoadDecodePolicy struct{}
 
 func (TokenLoadDecodePolicy) Name() DecodePolicyName { return DecodePolicyTokenLoad }

@@ -283,10 +283,12 @@ decode_score = running_reqs_with_pending
 Scores from the gateway's decode ledger in `pd.TokenLoadTracker` rather than from request counts or scraped KV usage. Each request is charged its `prompt_tokens` to the selected decode pod, under `selectMu` together with the other selection bookkeeping, and released on request completion or prefill failure (`releaseTokenLoad`, or the prefill executor for a terminal async failure). The whole prompt is charged because the decode pod receives all of its KV; there is no fixed per-request cost (`AIBRIX_TOKEN_LOAD_REQUEST_COST` is prefill-only).
 
 ```
-decode_score = decode_tokens
+decode_score = decode_tokens + generated_tokens
+generated_tokens = rate × Σ over outstanding charges (now − routed_at)
+rate = AvgGenerationThroughputToksPerS / running requests   (mean of the other pods if unknown)
 ```
 
-The policy reads no engine metrics, so the cold-start score does not apply to it: a pod without metrics is scored from the ledger like any other. The decode load-imbalance fast path is skipped under `token_load` (it still runs to fill the metric maps): it picks by request count, throughput or drain rate, and the pod holding one long prompt has the fewest requests. The ledger is local to each gateway replica.
+`generated_tokens` estimates the output the pod's outstanding requests have produced so far (it sits in the decode KV too); `pd.TokenLoadTracker.DecodeGrowth` computes it in O(1) per pod from the count and the summed charge times of the outstanding charges. `AIBRIX_DECODE_TOKEN_LOAD_OUTPUT_GROWTH=false` scores prompt tokens only. The cold-start score does not apply to `token_load`: a pod without metrics is scored from the ledger like any other. The decode load-imbalance fast path is skipped under `token_load` (it still runs to fill the metric maps): it picks by request count, throughput or drain rate, and the pod holding one long prompt has the fewest requests. The ledger is local to each gateway replica.
 
 ### Config profile overrides for PD score policies
 

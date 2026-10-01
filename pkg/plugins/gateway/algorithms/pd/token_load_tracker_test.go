@@ -933,3 +933,70 @@ func TestTokenLoadTracker_JanitorPrunesIdleDecodePods(t *testing.T) {
 	assert.True(t, tracked)
 	assert.Equal(t, float64(100), tr.GetDecodeLoad("decode-busy"))
 }
+
+func TestTokenLoadTracker_DecodeGrowth(t *testing.T) {
+	tr, clock := newTestTokenLoadTracker(t, testTokenLoadConfig())
+
+	assert.Equal(t, 0.0, tr.DecodeGrowth("decode-a", 10), "unknown pod")
+
+	tr.AcquireDecodeWithTTL("req-1", "decode-a", 100, time.Minute)
+	clock.Advance(10 * time.Second)
+	tr.AcquireDecodeWithTTL("req-2", "decode-a", 50, time.Minute)
+	clock.Advance(5 * time.Second)
+
+	// req-1 has run 15s and req-2 5s: 20 request-seconds at 2 tokens/s.
+	assert.Equal(t, 40.0, tr.DecodeGrowth("decode-a", 2))
+	assert.Equal(t, 0.0, tr.DecodeGrowth("decode-a", 0), "no rate, no growth")
+	assert.Equal(t, 0.0, tr.DecodeGrowth("decode-b", 2), "growth is per pod")
+	assert.Equal(t, 150.0, tr.GetDecodeLoad("decode-a"), "the prompt ledger is unchanged")
+
+	// A completed request stops growing.
+	tr.ReleaseDecode("req-1")
+	assert.Equal(t, 10.0, tr.DecodeGrowth("decode-a", 2))
+	tr.ReleaseDecode("req-1") // repeated release changes nothing
+	assert.Equal(t, 10.0, tr.DecodeGrowth("decode-a", 2))
+
+	tr.ReleaseAll("req-2")
+	assert.Equal(t, 0.0, tr.DecodeGrowth("decode-a", 2))
+}
+
+func TestTokenLoadTracker_DecodeGrowthFollowsReacquireAndSweep(t *testing.T) {
+	tr, clock := newTestTokenLoadTracker(t, testTokenLoadConfig())
+
+	tr.AcquireDecodeWithTTL("req-1", "decode-a", 100, time.Minute)
+	clock.Advance(10 * time.Second)
+	// Re-acquire moves the request to decode-b and restarts its clock.
+	tr.AcquireDecodeWithTTL("req-1", "decode-b", 100, time.Minute)
+	clock.Advance(2 * time.Second)
+	assert.Equal(t, 0.0, tr.DecodeGrowth("decode-a", 1))
+	assert.Equal(t, 2.0, tr.DecodeGrowth("decode-b", 1))
+
+	// The TTL sweep releases the stale charge, and its growth with it.
+	clock.Advance(2 * time.Minute)
+	assert.Equal(t, 1, tr.sweepExpired())
+	assert.Equal(t, 0.0, tr.DecodeGrowth("decode-b", 1))
+}
+
+func TestTokenLoadTracker_PruneKeepsDecodeGrowthOfOutstandingCharges(t *testing.T) {
+	tr, clock := newTestTokenLoadTracker(t, testTokenLoadConfig())
+
+	// A zero-cost charge leaves the decode counter at 0, but it is outstanding
+	// and still generating: pruning the counter must not drop its growth.
+	tr.AcquireDecodeWithTTL("req-empty", "decode-a", 0, time.Minute)
+	assert.Equal(t, 0, tr.pruneIdle())
+	assert.Equal(t, 1, tr.pruneIdle())
+	clock.Advance(4 * time.Second)
+	assert.Equal(t, 4.0, tr.DecodeGrowth("decode-a", 1))
+
+	// Once nothing is outstanding, both pods are idle and their aggregates go
+	// with their counters.
+	tr.ReleaseDecode("req-empty")
+	tr.AcquireDecodeWithTTL("req-other", "decode-b", 10, time.Minute)
+	tr.ReleaseDecode("req-other")
+	assert.Equal(t, 0, tr.pruneIdle())
+	assert.Equal(t, 2, tr.pruneIdle())
+	for _, pod := range []string{"decode-a", "decode-b"} {
+		_, tracked := tr.decodeInflight.Load(pod)
+		assert.Falsef(t, tracked, "%s: an idle pod's growth aggregate is pruned with its counter", pod)
+	}
+}

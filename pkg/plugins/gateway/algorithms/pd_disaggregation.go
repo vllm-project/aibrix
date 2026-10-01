@@ -97,6 +97,8 @@ var (
 	aibrixDecodeScoreRatioThreshold float64 = utils.LoadEnvFloat("AIBRIX_DECODE_SCORE_RATIO_THRESHOLD", defaultDecodeScoreRatioThreshold)
 	// route to pods whose prompt-length bucket matches the request
 	aibrixPromptLengthBucketing bool = utils.LoadEnvBool("AIBRIX_PROMPT_LENGTH_BUCKETING", false)
+	// add an estimate of the output generated so far to the token_load decode score
+	aibrixDecodeTokenLoadOutputGrowth bool = utils.LoadEnvBool("AIBRIX_DECODE_TOKEN_LOAD_OUTPUT_GROWTH", true)
 	// KV transfer backend: "shfs" (GPU/SHFS) or "nixl" (Neuron)
 	aibrixKVConnectorType string = utils.LoadEnv("AIBRIX_KV_CONNECTOR_TYPE", KVConnectorTypeSHFS)
 	// prefill pod scoring strategy: "prefix_cache", "least_request", "conductor" or "token_load"
@@ -1199,6 +1201,7 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 	// policies that read scraped engine metrics, and in their units) does not
 	// apply to it.
 	usesDecodeTokenLoad := pd.UsesDecodeTokenLoad(policy)
+	decodeRates := decodeTokenLoadRates(usesDecodeTokenLoad, podThroughputs, podRequestCounts)
 	anyMetricsReady := false
 	metricsReadyByPod := make(map[string]bool, len(filteredDecodePods))
 	for _, pod := range filteredDecodePods {
@@ -1251,7 +1254,7 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 			MaxFreeGPUUsage: maxFreeGPUUsage,
 		}
 		if usesDecodeTokenLoad && r.tokenLoadTracker != nil {
-			in.DecodeTokens = r.tokenLoadTracker.GetDecodeLoad(podKey)
+			in.DecodeTokens = r.tokenLoadTracker.GetDecodeLoad(podKey) + r.tokenLoadTracker.DecodeGrowth(podKey, decodeRates[podKey])
 		}
 
 		decodeScore := policy.ScoreDecodePod(routingCtx, pod, in)
@@ -1298,6 +1301,38 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 	}
 
 	return out
+}
+
+// decodeTokenLoadRates returns, per decode pod key, the per-request decode rate
+// the token_load score uses to estimate the output its outstanding requests have
+// generated: the pod's scraped generation throughput divided by its running
+// requests (pending included, as in podRequestCounts). A pod without both uses
+// the mean rate of the pods that have them; with none, no pod gets a rate and
+// the score is prompt tokens only. Returns nil unless token_load scores the pass
+// with AIBRIX_DECODE_TOKEN_LOAD_OUTPUT_GROWTH on.
+func decodeTokenLoadRates(usesDecodeTokenLoad bool, throughputs, requestCounts map[string]float64) map[string]float64 {
+	if !usesDecodeTokenLoad || !aibrixDecodeTokenLoadOutputGrowth {
+		return nil
+	}
+	rates := make(map[string]float64, len(requestCounts))
+	sum, measured := 0.0, 0
+	for podKey, n := range requestCounts {
+		if tp := throughputs[podKey]; tp > 0 && n > 0 {
+			rates[podKey] = tp / n
+			sum += tp / n
+			measured++
+		}
+	}
+	if measured == 0 {
+		return nil
+	}
+	mean := sum / float64(measured)
+	for podKey := range requestCounts {
+		if _, ok := rates[podKey]; !ok {
+			rates[podKey] = mean
+		}
+	}
+	return rates
 }
 
 // finalPDScore picks the winning prefill/decode pod pair after scorePrefillPods and
