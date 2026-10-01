@@ -63,6 +63,13 @@ func (m *mockScalingContext) GetTargetValueForMetric(metricName string) (float64
 	return 0, false
 }
 
+func (m *mockScalingContext) GetMetricSourceTypeForMetric(metricName string) (autoscalingv1alpha1.MetricSourceType, bool) {
+	if target, ok := m.MetricTargets[metricName]; ok {
+		return target.MetricType, true
+	}
+	return "", false
+}
+
 func (m *mockScalingContext) GetUpFluctuationTolerance() float64 {
 	return m.UpFluctuationTolerance
 }

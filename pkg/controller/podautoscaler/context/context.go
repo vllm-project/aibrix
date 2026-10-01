@@ -30,6 +30,7 @@ import (
 // This is the single source of truth for all scaling configuration, extracted per-PodAutoscaler.
 type ScalingContext interface {
 	GetTargetValueForMetric(metricName string) (float64, bool)
+	GetMetricSourceTypeForMetric(metricName string) (autoscalingv1alpha1.MetricSourceType, bool)
 	GetUpFluctuationTolerance() float64
 	GetDownFluctuationTolerance() float64
 	GetMaxScaleUpRate() float64
@@ -248,6 +249,13 @@ func (b *baseScalingContext) GetTargetValueForMetric(metricName string) (float64
 		return target.TargetValue, true
 	}
 	return 0, false
+}
+
+func (b *baseScalingContext) GetMetricSourceTypeForMetric(metricName string) (autoscalingv1alpha1.MetricSourceType, bool) {
+	if target, ok := b.MetricTargets[metricName]; ok {
+		return target.MetricType, true
+	}
+	return "", false
 }
 
 func (b *baseScalingContext) GetScalingTolerance() (up float64, down float64) {
