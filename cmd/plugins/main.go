@@ -17,11 +17,13 @@ limitations under the License.
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"math"
 	"net"
 	"net/http"
+	_ "net/http/pprof" // registers the profiling handlers that startPprofServer serves
 	"os"
 	"os/signal"
 	"runtime"
@@ -64,6 +66,7 @@ var (
 	metricsAddr     string // deprecated: use httpAddr
 	standalone      bool
 	endpointsConfig string
+	pprofAddr       string
 )
 
 type kubeAPIOptions struct {
@@ -111,6 +114,8 @@ func main() {
 	flag.StringVar(&httpAddr, "http-bind-address", "", "The address the HTTP server binds to (metrics, /v1/models).")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "", "[Deprecated] Use --http-bind-address instead.")
 	flag.BoolVar(&standalone, "standalone", false, "Run in standalone mode without Kubernetes.")
+	flag.StringVar(&pprofAddr, "pprof-bind-address", "localhost:6060",
+		"The address the pprof debug server binds to. Empty disables it.")
 	flag.StringVar(&endpointsConfig, "endpoints-config", "",
 		"Path to endpoints config file (required in standalone mode).")
 	klog.InitFlags(flag.CommandLine)
@@ -274,11 +279,7 @@ func main() {
 
 	klog.Info("starting gRPC server on " + grpcAddr)
 
-	go func() {
-		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
-			klog.Fatalf("failed to setup profiling: %v", err)
-		}
-	}()
+	startPprofServer(pprofAddr)
 
 	klog.Infof("GOMAXPROCS is: %d", runtime.GOMAXPROCS(0))
 
@@ -304,4 +305,28 @@ func main() {
 	if err := s.Serve(lis); err != nil {
 		panic(err)
 	}
+}
+
+// startPprofServer serves the profiling endpoints (http.DefaultServeMux, where
+// net/http/pprof registers them) on addr in the background and returns the
+// listener, or nil when addr is empty or cannot be bound. A bind failure is
+// logged, not fatal: profiling is a debugging aid, and a port that another
+// process holds, such as a second gateway on the same host in local mode, must
+// not stop the gateway from starting.
+func startPprofServer(addr string) net.Listener {
+	if addr == "" {
+		return nil
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		klog.ErrorS(err, "pprof server disabled: cannot bind its address", "address", addr)
+		return nil
+	}
+	klog.InfoS("pprof server listening", "address", ln.Addr().String())
+	go func() {
+		if err := http.Serve(ln, nil); err != nil && !errors.Is(err, net.ErrClosed) {
+			klog.ErrorS(err, "pprof server stopped")
+		}
+	}()
+	return ln
 }

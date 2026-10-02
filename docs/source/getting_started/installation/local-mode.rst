@@ -184,6 +184,10 @@ Ports and logs
    * - Gateway plugin metrics
      - ``localhost:8080/metrics``
      - Gateway plugin metrics endpoint.
+   * - Gateway plugin profiling
+     - ``localhost:6060/debug/pprof/``
+     - Go pprof endpoints. Set ``--pprof-bind-address`` to move them, or to an
+       empty value to disable them, when running several gateway plugins on one host.
    * - Health check
      - ``localhost:10080/healthz``
      - Local gateway health check.
