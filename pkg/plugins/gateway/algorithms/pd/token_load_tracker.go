@@ -635,7 +635,7 @@ func (t *TokenLoadTracker) DecodeLedgerState(podKey string) (tokens float64, cha
 	if n <= 0 {
 		return tokens, 0, 0
 	}
-	epoch := float64(t.epoch.UnixNano()) / float64(time.Second)
+	epoch := float64(t.epoch.Unix()) + float64(t.epoch.Nanosecond())/1e9
 	return tokens, n, sumAt + float64(n)*epoch
 }
 
