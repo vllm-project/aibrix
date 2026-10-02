@@ -28,7 +28,13 @@ spec:
     - name: check-model-cache
       image: busybox:1.36
       imagePullPolicy: IfNotPresent
-      command: ["sh", "-c", "test -d /models && test -w /models"]
+      command: ["sh", "-c"]
+      args:
+      - |
+        set -eu
+        test -w /models
+        available_kib="$(df -Pk /models | awk 'NR == 2 { print $4 }')"
+        test "${available_kib:-0}" -ge 1048576
       volumeMounts:
       - name: model-cache
         mountPath: /models

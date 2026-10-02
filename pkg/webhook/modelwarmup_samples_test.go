@@ -55,6 +55,13 @@ func TestModelWarmupSamples(t *testing.T) {
 	require.NotEmpty(t, combined.Spec.ImagePreload.Images)
 	require.NotNil(t, combined.Spec.Custom)
 	require.NotEmpty(t, combined.Spec.Custom.Containers)
+	require.NotEmpty(t, combined.Spec.Custom.InitContainers)
+
+	nodePrecheck := samples["samples/modelwarmup/node-precheck.yaml"]
+	require.NotNil(t, nodePrecheck.Spec.Custom)
+	require.NotEmpty(t, nodePrecheck.Spec.Custom.InitContainers)
+	require.Equal(t, nodePrecheck.Spec.Custom.InitContainers[0].Command, combined.Spec.Custom.InitContainers[0].Command)
+	require.Equal(t, nodePrecheck.Spec.Custom.InitContainers[0].Args, combined.Spec.Custom.InitContainers[0].Args)
 
 	gpuPrecheck := samples["samples/modelwarmup/gpu-precheck.yaml"]
 	require.NotNil(t, gpuPrecheck.Spec.Custom)
