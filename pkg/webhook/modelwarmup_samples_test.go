@@ -41,7 +41,7 @@ func TestModelWarmupSamples(t *testing.T) {
 		require.NoError(t, err, "read %s", samplePath)
 
 		warmup := &modelapi.ModelWarmup{}
-		require.NoError(t, yaml.Unmarshal(raw, warmup), "decode %s", samplePath)
+		require.NoError(t, yaml.UnmarshalStrict(raw, warmup), "decode %s", samplePath)
 		require.NoError(t, validateModelWarmup(warmup), "validate %s", samplePath)
 		samples[samplePath] = warmup
 	}

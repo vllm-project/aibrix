@@ -51,6 +51,10 @@ kubectl get modelwarmup combined-runtime-and-model-warmup -w
 
 `model-download.yaml` has no `imagePreload` entries. Its regular custom
 container downloads `sshleifer/tiny-gpt2` into the node-local `/models` mount.
+In runtime v0.7.0, `--local-dir` is a base directory, so this sample resolves
+the artifact to `/models/sshleifer-tiny-gpt2/sshleifer/tiny-gpt2` in the
+container and `/var/lib/aibrix/models/sshleifer-tiny-gpt2/sshleifer/tiny-gpt2`
+on the node.
 `node-precheck.yaml` first checks that the same mount is writable and has at
 least 1 GiB available, then uses a finite BusyBox container to mark success.
 
