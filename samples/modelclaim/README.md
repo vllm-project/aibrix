@@ -53,14 +53,15 @@ engine process and sets a distinct `KVCACHED_IPC_NAME`.
 Create the Deployment and its metrics Service:
 
 ```bash
-kubectl apply -f samples/modelclaim/warm-runtime-pool.yaml
-kubectl rollout status deployment/warm-runtime-pool-b300 --timeout=10m
+export NAMESPACE=default
+kubectl -n "$NAMESPACE" apply -f samples/modelclaim/warm-runtime-pool.yaml
+kubectl -n "$NAMESPACE" rollout status \
+  deployment/warm-runtime-pool-b300 --timeout=10m
 ```
 
 Discover the Pod through the stable sample label:
 
 ```bash
-export NAMESPACE=default
 export POD=$(kubectl -n "$NAMESPACE" get pod \
   -l app=warm-runtime-pool-b300 \
   -o jsonpath='{.items[0].metadata.name}')
@@ -77,19 +78,20 @@ runtime image was loaded directly into a local cluster, keep the sample's
 ## Deploy the two ModelClaims
 
 ```bash
-kubectl apply -f samples/modelclaim/modelclaims.yaml
-kubectl get modelclaims -w
+kubectl -n "$NAMESPACE" apply -f samples/modelclaim/modelclaims.yaml
+kubectl -n "$NAMESPACE" get modelclaims -w
 ```
 
 In another terminal, wait for each claim independently:
 
 ```bash
-kubectl wait --for=jsonpath='{.status.phase}'=Active \
+export NAMESPACE=default
+kubectl -n "$NAMESPACE" wait --for=jsonpath='{.status.phase}'=Active \
   modelclaim/qwen3-0-6b --timeout=15m
-kubectl wait --for=jsonpath='{.status.phase}'=Active \
+kubectl -n "$NAMESPACE" wait --for=jsonpath='{.status.phase}'=Active \
   modelclaim/qwen25-0-5b --timeout=15m
 
-kubectl get modelclaims -o wide
+kubectl -n "$NAMESPACE" get modelclaims -o wide
 ```
 
 Both claims must report `PHASE=Active`, `DESIRED=1`, and `READY=1`. During
@@ -252,9 +254,9 @@ for attempt in 1 2; do
     | jq '{model_name,operation_id,applied,phase}'
 done
 
-kubectl wait --for=jsonpath='{.status.phase}'=Sleeping \
+kubectl -n "$NAMESPACE" wait --for=jsonpath='{.status.phase}'=Sleeping \
   modelclaim/qwen3-0-6b --timeout=2m
-kubectl get modelclaims -o wide
+kubectl -n "$NAMESPACE" get modelclaims -o wide
 ```
 
 At this point Qwen3 should be `Sleeping` with no ready replica, while Qwen2.5
@@ -289,9 +291,9 @@ for attempt in 1 2; do
     | jq '{model_name,operation_id,applied,phase}'
 done
 
-kubectl wait --for=jsonpath='{.status.phase}'=Active \
+kubectl -n "$NAMESPACE" wait --for=jsonpath='{.status.phase}'=Active \
   modelclaim/qwen3-0-6b --timeout=5m
-kubectl get modelclaims -o wide
+kubectl -n "$NAMESPACE" get modelclaims -o wide
 ```
 
 Manual sleep is not automatic idle policy. Without a pool lifecycle policy,
@@ -379,13 +381,15 @@ Retry after the ModelClaim returns to `Active`.
 Delete claims before deleting their warm runtime pool:
 
 ```bash
-kubectl delete -f samples/modelclaim/modelclaims.yaml
-kubectl delete -f samples/modelclaim/warm-runtime-pool.yaml
+export NAMESPACE=default
+kubectl -n "$NAMESPACE" delete -f samples/modelclaim/modelclaims.yaml
+kubectl -n "$NAMESPACE" delete -f samples/modelclaim/warm-runtime-pool.yaml
 ```
 
 Confirm that the sample resources are gone:
 
 ```bash
-kubectl get modelclaims
-kubectl get deployment,service -l pool.aibrix.ai/name=b300-pool-a
+kubectl -n "$NAMESPACE" get modelclaims
+kubectl -n "$NAMESPACE" get deployment,service \
+  -l pool.aibrix.ai/name=b300-pool-a
 ```
