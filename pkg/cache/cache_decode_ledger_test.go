@@ -266,3 +266,26 @@ func TestStoreClose_StopsDecodeLedgerPublisher(t *testing.T) {
 		t.Fatal("Close must stop the decode ledger publisher")
 	}
 }
+
+// A second registration replaces the first: the first registration's notify
+// function stops queueing work, and the second one publishes.
+func TestPublishDecodeLedger_LaterRegistrationReplacesEarlier(t *testing.T) {
+	client := newTestRunningRequestsClient(t)
+	store := &Store{redisClient: client}
+	first := store.PublishDecodeLedger(func(string) DecodeLedgerState { return DecodeLedgerState{Tokens: 1, Charges: 1} })
+	firstPublisher := store.decodeLedger.Load()
+	second := store.PublishDecodeLedger(func(string) DecodeLedgerState { return DecodeLedgerState{Tokens: 2, Charges: 1} })
+	t.Cleanup(func() { store.decodeLedger.Load().close() })
+
+	first(testLedgerPodKey)
+	firstPublisher.mu.Lock()
+	assert.Empty(t, firstPublisher.dirty, "a replaced registration must not queue work")
+	firstPublisher.mu.Unlock()
+
+	second(testLedgerPodKey)
+	tokensKey, _, _ := decodeLedgerKeys(testLedgerPodKey)
+	require.Eventually(t, func() bool {
+		v, ok := ledgerField(t, client, tokensKey, runningRequestsGatewayInstanceID)
+		return ok && v == "2"
+	}, 2*time.Second, 10*time.Millisecond)
+}

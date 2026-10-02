@@ -93,15 +93,20 @@ func (c *Store) SharedDecodeLedgerAvailable() bool {
 
 // PublishDecodeLedger starts publishing the ledger that provider reads to Redis
 // and returns the function to call with a pod key whenever that pod's ledger
-// changes. The writes are coalesced per pod and made off the caller's path. A
-// second call replaces the first registration. Without Redis it returns a no-op.
+// changes. The writes are coalesced per pod and made off the caller's path.
+// Without Redis it returns a no-op.
+//
+// A later call replaces the earlier registration, whose returned function then
+// does nothing. The gateway constructs its routers more than once at startup
+// and serves with the last one constructed, so the last registration is the
+// one whose ledger counts.
 func (c *Store) PublishDecodeLedger(provider DecodeLedgerProvider) func(podKey string) {
 	if c.redisClient == nil || provider == nil {
 		return func(string) {}
 	}
 	p := newDecodeLedgerPublisher(c, provider)
 	if old := c.decodeLedger.Swap(p); old != nil {
-		klog.Warning("decode ledger registered twice; replacing the earlier registration")
+		klog.V(2).Info("decode ledger registered again; the later registration replaces the earlier one")
 		old.close()
 	}
 	go p.run()
@@ -138,6 +143,11 @@ func newDecodeLedgerPublisher(store *Store, provider DecodeLedgerProvider) *deco
 }
 
 func (p *decodeLedgerPublisher) markDirty(podKey string) {
+	select {
+	case <-p.done:
+		return
+	default:
+	}
 	p.mu.Lock()
 	p.dirty[podKey] = struct{}{}
 	p.mu.Unlock()
