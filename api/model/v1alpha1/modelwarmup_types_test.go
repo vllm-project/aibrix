@@ -67,7 +67,7 @@ func TestModelWarmupCustomActionJSONRoundTrip(t *testing.T) {
 			t.Fatalf("encoded custom.%s has type %T, want array", field, custom[field])
 		}
 		if len(items) != 1 {
-			t.Errorf("encoded custom.%s length = %d, want 1", field, len(items))
+			t.Fatalf("encoded custom.%s length = %d, want 1", field, len(items))
 		}
 	}
 
@@ -102,5 +102,28 @@ func TestModelWarmupCustomActionJSONRoundTrip(t *testing.T) {
 	pullSecret := item("imagePullSecrets")
 	if pullSecret["name"] != "registry-secret" {
 		t.Errorf("encoded pull secret name = %v, want registry-secret", pullSecret["name"])
+	}
+}
+
+func TestModelWarmupEmptyImagePreloadJSONCompatibility(t *testing.T) {
+	var warmup ModelWarmup
+	if err := json.Unmarshal([]byte(`{"spec":{"targets":[{"nodes":{"names":["node-a"]}}]}}`), &warmup); err != nil {
+		t.Fatalf("unmarshal empty ImagePreload: %v", err)
+	}
+
+	encoded, err := json.Marshal(warmup)
+	if err != nil {
+		t.Fatalf("marshal empty ImagePreload: %v", err)
+	}
+
+	var object map[string]interface{}
+	if err := json.Unmarshal(encoded, &object); err != nil {
+		t.Fatalf("unmarshal encoded empty ImagePreload: %v", err)
+	}
+
+	spec := object["spec"].(map[string]interface{})
+	imagePreload := spec["imagePreload"].(map[string]interface{})
+	if _, ok := imagePreload["images"]; ok {
+		t.Errorf("encoded empty ImagePreload contains images: %v", imagePreload["images"])
 	}
 }

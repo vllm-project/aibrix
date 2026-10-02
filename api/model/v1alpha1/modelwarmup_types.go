@@ -85,9 +85,9 @@ type ModelWarmupNodesTarget struct {
 }
 
 type ModelWarmupImagePreload struct {
-	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=32
-	Images []ModelWarmupImage `json:"images"`
+	// +optional
+	Images []ModelWarmupImage `json:"images,omitempty"`
 
 	// +optional
 	// +kubebuilder:validation:MaxItems=32
