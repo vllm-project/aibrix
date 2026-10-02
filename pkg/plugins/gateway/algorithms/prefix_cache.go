@@ -387,6 +387,21 @@ func (k *kvSyncPrefixCacheRouter) getTokenizerForRequest(ctx *types.RoutingConte
 	return nil
 }
 
+// tokenizeInputText preserves local and legacy tokenizers while allowing remote
+// tokenization to follow the request lifetime. The parent check also prevents a
+// canceled chat-template attempt from starting the ordinary text fallback.
+func tokenizeInputText(ctx *types.RoutingContext, tok tokenizer.Tokenizer) ([]byte, error) {
+	if ctx.Context != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if contextual, ok := tok.(tokenizer.ContextTokenizer); ok {
+			return contextual.TokenizeInputTextWithContext(ctx.Context, ctx.PrefixText())
+		}
+	}
+	return tok.TokenizeInputText(ctx.PrefixText())
+}
+
 func (p prefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	if p.kvSyncRouter != nil {
 		return p.kvSyncRouter.Route(ctx, readyPodList)
@@ -411,7 +426,7 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 
 	// Use helper method to get the appropriate tokenizer
 	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
-	tokens, err := tokenizerToUse.TokenizeInputText(ctx.PrefixText())
+	tokens, err := tokenizeInputText(ctx, tokenizerToUse)
 	if err != nil {
 		recordRoutingError(ctx.Model, "tokenize_failed", false)
 		return "", err
@@ -491,7 +506,7 @@ func (p prefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodLi
 	}
 
 	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
-	tokens, err := tokenizerToUse.TokenizeInputText(ctx.PrefixText())
+	tokens, err := tokenizeInputText(ctx, tokenizerToUse)
 	if err != nil {
 		return err
 	}
@@ -526,7 +541,7 @@ func (k *kvSyncPrefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, rea
 	if tokenizerToUse == nil {
 		return fmt.Errorf("TokenizerPool not initialized for KV sync router")
 	}
-	tokens, err := tokenizerToUse.TokenizeInputText(ctx.PrefixText())
+	tokens, err := tokenizeInputText(ctx, tokenizerToUse)
 	if err != nil {
 		return err
 	}
@@ -558,7 +573,7 @@ func (p prefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList type
 	}
 
 	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
-	tokens, err := tokenizerToUse.TokenizeInputText(ctx.PrefixText())
+	tokens, err := tokenizeInputText(ctx, tokenizerToUse)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -602,7 +617,7 @@ func (k *kvSyncPrefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodLi
 		return nil, nil, fmt.Errorf("TokenizerPool not initialized for KV sync router")
 	}
 
-	tokens, err := tokenizerToUse.TokenizeInputText(ctx.PrefixText())
+	tokens, err := tokenizeInputText(ctx, tokenizerToUse)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -814,7 +829,7 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	// Fallback to text tokenization if chat tokenization wasn't used or failed
 	if tokens == nil {
 		var err error
-		tokens, err = tokenizerToUse.TokenizeInputText(ctx.PrefixText())
+		tokens, err = tokenizeInputText(ctx, tokenizerToUse)
 		if err != nil {
 			recordRoutingError(modelName, "tokenize_failed", true)
 			return "", err
