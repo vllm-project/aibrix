@@ -102,13 +102,13 @@ func TestModelWarmupRunsCombinedImagePreloadAndCustomActions(t *testing.T) {
 				InitContainers: []corev1.Container{{
 					Name:         "precheck",
 					Image:        testImage,
-					Command:      precheckCommand,
+					Command:      slices.Clone(precheckCommand),
 					VolumeMounts: []corev1.VolumeMount{cacheMount},
 				}},
 				Containers: []corev1.Container{{
 					Name:         "prepare",
 					Image:        testImage,
-					Command:      prepareCommand,
+					Command:      slices.Clone(prepareCommand),
 					VolumeMounts: []corev1.VolumeMount{cacheMount},
 				}},
 				Volumes: []corev1.Volume{{
