@@ -85,6 +85,8 @@ func TestModelWarmupRunsCombinedImagePreloadAndCustomActions(t *testing.T) {
 	node := env.readyWarmupNodes(t, ctx, 1)[0]
 
 	cacheMount := corev1.VolumeMount{Name: "cache", MountPath: "/cache"}
+	precheckCommand := []string{"python", "-c", "import os; assert os.path.isdir('/cache'); open('/cache/precheck', 'w').close()"}
+	prepareCommand := []string{"python", "-c", "from pathlib import Path; assert Path('/cache/precheck').is_file()"}
 	warmup := &modelapi.ModelWarmup{
 		ObjectMeta: metav1.ObjectMeta{Name: "combined-actions", Namespace: env.namespace},
 		Spec: modelapi.ModelWarmupSpec{
@@ -100,13 +102,13 @@ func TestModelWarmupRunsCombinedImagePreloadAndCustomActions(t *testing.T) {
 				InitContainers: []corev1.Container{{
 					Name:         "precheck",
 					Image:        testImage,
-					Command:      []string{"python", "-c", "import os; assert os.path.isdir('/cache'); open('/cache/precheck', 'w').close()"},
+					Command:      precheckCommand,
 					VolumeMounts: []corev1.VolumeMount{cacheMount},
 				}},
 				Containers: []corev1.Container{{
 					Name:         "prepare",
 					Image:        testImage,
-					Command:      []string{"python", "-c", "from pathlib import Path; assert Path('/cache/precheck').is_file()"},
+					Command:      prepareCommand,
 					VolumeMounts: []corev1.VolumeMount{cacheMount},
 				}},
 				Volumes: []corev1.Volume{{
@@ -154,8 +156,9 @@ func TestModelWarmupRunsCombinedImagePreloadAndCustomActions(t *testing.T) {
 		pod.Containers[0].ImagePullPolicy != corev1.PullIfNotPresent {
 		t.Fatalf("image-0 container = %+v, want image %q, successful command, and PullIfNotPresent", pod.Containers[0], testImage)
 	}
-	if pod.InitContainers[0].Image != testImage || pod.Containers[1].Image != testImage {
-		t.Fatalf("custom container images = %q, %q; want %q", pod.InitContainers[0].Image, pod.Containers[1].Image, testImage)
+	if pod.InitContainers[0].Image != testImage || !slices.Equal(pod.InitContainers[0].Command, precheckCommand) ||
+		pod.Containers[1].Image != testImage || !slices.Equal(pod.Containers[1].Command, prepareCommand) {
+		t.Fatalf("custom containers = init:%+v regular:%+v, want precheck and prepare commands", pod.InitContainers[0], pod.Containers[1])
 	}
 	if len(pod.Volumes) != 1 || pod.Volumes[0].Name != "cache" || pod.Volumes[0].EmptyDir == nil {
 		t.Fatalf("Job volumes = %+v, want cache emptyDir", pod.Volumes)
