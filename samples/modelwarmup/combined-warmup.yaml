@@ -1,0 +1,52 @@
+# Prerequisites:
+# kubectl label namespace default resource-pool.aibrix.ai/name=latency-pool
+# kubectl label node <node> resource-pool.aibrix.ai/name=latency-pool \
+#   model.aibrix.ai/warmup-enabled=true
+apiVersion: model.aibrix.ai/v1alpha1
+kind: ModelWarmup
+metadata:
+  name: combined-runtime-and-model-warmup
+  namespace: default
+spec:
+  mode: Once
+  targets:
+  - nodeSelector:
+      matchLabels:
+        resource-pool.aibrix.ai/name: latency-pool
+  imagePreload:
+    images:
+    - image: busybox:1.36
+      command: ["sh", "-c", "exit 0"]
+      imagePullPolicy: IfNotPresent
+  custom:
+    volumes:
+    - name: model-cache
+      hostPath:
+        path: /var/lib/aibrix/models
+        type: DirectoryOrCreate
+    initContainers:
+    - name: check-model-cache
+      image: busybox:1.36
+      imagePullPolicy: IfNotPresent
+      command: ["sh", "-c", "test -d /models && test -w /models"]
+      volumeMounts:
+      - name: model-cache
+        mountPath: /models
+    containers:
+    - name: download-tiny-gpt2
+      image: aibrix/runtime:v0.7.0
+      imagePullPolicy: IfNotPresent
+      command: ["aibrix_download"]
+      args:
+      - --model-uri
+      - sshleifer/tiny-gpt2
+      - --local-dir
+      - /models/sshleifer-tiny-gpt2
+      volumeMounts:
+      - name: model-cache
+        mountPath: /models
+  policies:
+    parallelism: 8
+    jobTimeoutSeconds: 1800
+    retryLimit: 2
+    ttlSecondsAfterFinished: 3600
