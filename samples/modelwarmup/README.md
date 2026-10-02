@@ -89,6 +89,11 @@ collection can remove pulled images, and node replacement, cleanup, or storage
 failure can remove host-path artifacts. Treat both as caches and provide a
 durable artifact source for production workloads.
 
+ModelWarmup admission does not perform full native Job/Pod validation. Job
+creation rejected by the API server is logged and requeued. Because no Job
+exists, bounded Job diagnostics and ModelWarmup failure status may not show the
+rejection; check controller logs when progress stalls.
+
 ## Security notes
 
 `hostPath` exposes node filesystem data to the generated Job and is unsuitable
@@ -98,3 +103,9 @@ do not set `privileged: true`; do not add privilege, host networking, host PID,
 or broader host mounts merely to make a sample work. Use least-privilege RBAC,
 dedicated target pools, and a namespace admission policy appropriate for the
 container images and host-path access you authorize.
+
+Automatic service-account token mounting is disabled, but explicit projected
+`serviceAccountToken` volumes are allowed. Tokens use the Pod's service account
+permissions (normally the namespace default service account); secret volumes can
+also expose namespace credentials. Keep service-account permissions minimal and
+restrict the token and secret volumes that ModelWarmup authors may request.

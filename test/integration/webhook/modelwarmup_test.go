@@ -180,4 +180,27 @@ var _ = ginkgo.Describe("ModelWarmup admission", func() {
 		warmup.Spec.ImagePreload.Images[0].ImagePullPolicy = corev1.PullAlways
 		gomega.Expect(k8sClient.Update(ctx, warmup)).To(gomega.HaveOccurred())
 	})
+
+	ginkgo.DescribeTable("rejects equivalent custom Quantity representation updates", func(volumeQuantity bool) {
+		warmup := newWarmup("quantity-update")
+		warmup.Spec.Custom = &modelapi.ModelWarmupCustomAction{
+			Containers: []corev1.Container{{Name: "warm", Image: "busybox:1.36"}},
+		}
+		setQuantity := func(quantity resource.Quantity) {
+			if volumeQuantity {
+				warmup.Spec.Custom.Volumes = []corev1.Volume{{Name: "cache", VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: &quantity},
+				}}}
+			} else {
+				warmup.Spec.Custom.Containers[0].Resources.Requests = corev1.ResourceList{corev1.ResourceMemory: quantity}
+			}
+		}
+		setQuantity(resource.MustParse("1Gi"))
+		gomega.Expect(k8sClient.Create(ctx, warmup)).To(gomega.Succeed())
+		setQuantity(resource.MustParse("1073741824"))
+		gomega.Expect(k8sClient.Update(ctx, warmup)).To(gomega.MatchError(gomega.ContainSubstring("immutable")))
+	},
+		ginkgo.Entry("container memory", false),
+		ginkgo.Entry("volume size limit", true),
+	)
 })

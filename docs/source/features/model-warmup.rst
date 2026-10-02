@@ -109,6 +109,17 @@ declared in the resource, so creation permission is sensitive. Use
 least-privilege RBAC and dedicated target pools; restrict who can create
 ModelWarmups that use ``hostPath`` or privileged settings.
 
+Automatic service-account token mounting is disabled, but explicit projected
+``serviceAccountToken`` volumes are allowed and use the Pod's service account
+permissions (normally the namespace default service account). Secret volumes can
+also expose namespace credentials. Keep service-account permissions minimal and
+restrict which token and secret volumes ModelWarmup authors may request.
+
+ModelWarmup admission does not perform full native Job/Pod validation. If the
+API server rejects Job creation, the controller logs the error and requeues it.
+With no Job to inspect, bounded Job diagnostics and ModelWarmup failure status
+may not record that rejection; check controller logs when progress stalls.
+
 The bundled cache samples use ``hostPath`` at ``/var/lib/aibrix/models`` with
 ``DirectoryOrCreate``. That exposes a node filesystem path to the Job and may
 be disallowed by Pod Security admission. The samples do not require privileged

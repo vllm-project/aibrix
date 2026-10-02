@@ -17,7 +17,9 @@ limitations under the License.
 package webhook
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -56,6 +58,19 @@ func (w *ModelWarmupWebhook) ValidateUpdate(_ context.Context, oldObj, newObj ru
 	oldWarmup := oldObj.(*modelapi.ModelWarmup)
 	newWarmup := newObj.(*modelapi.ModelWarmup)
 	if !equality.Semantic.DeepEqual(oldWarmup.Spec, newWarmup.Spec) {
+		return nil, field.Forbidden(field.NewPath("spec"), "ModelWarmup spec is immutable")
+	}
+	// The controller hashes custom JSON, which preserves Quantity formats that
+	// semantic equality ignores. An admitted update must not change that revision.
+	oldCustom, err := json.Marshal(oldWarmup.Spec.Custom)
+	if err != nil {
+		return nil, fmt.Errorf("marshal old ModelWarmup custom action: %w", err)
+	}
+	newCustom, err := json.Marshal(newWarmup.Spec.Custom)
+	if err != nil {
+		return nil, fmt.Errorf("marshal new ModelWarmup custom action: %w", err)
+	}
+	if !bytes.Equal(oldCustom, newCustom) {
 		return nil, field.Forbidden(field.NewPath("spec"), "ModelWarmup spec is immutable")
 	}
 	return nil, validateModelWarmup(newWarmup)

@@ -23,6 +23,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
@@ -186,6 +188,58 @@ func TestModelWarmupWebhookAcceptsImageAndCustomWorkModes(t *testing.T) {
 	for name, warmup := range tests {
 		t.Run(name, func(t *testing.T) {
 			_, err := (&ModelWarmupWebhook{}).ValidateCreate(context.Background(), warmup)
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestModelWarmupWebhookRejectsEquivalentCustomQuantityUpdates(t *testing.T) {
+	for name, setQuantity := range map[string]func(*modelapi.ModelWarmup, resource.Quantity){
+		"container memory": func(w *modelapi.ModelWarmup, quantity resource.Quantity) {
+			w.Spec.Custom.Containers[0].Resources.Requests = corev1.ResourceList{corev1.ResourceMemory: quantity}
+		},
+		"volume size limit": func(w *modelapi.ModelWarmup, quantity resource.Quantity) {
+			w.Spec.Custom.Volumes[0].EmptyDir.SizeLimit = &quantity
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			oldWarmup := validCustomModelWarmupForWebhookTest()
+			setQuantity(oldWarmup, resource.MustParse("1Gi"))
+			updated := oldWarmup.DeepCopy()
+			setQuantity(updated, resource.MustParse("1073741824"))
+			require.True(t, equality.Semantic.DeepEqual(oldWarmup.Spec, updated.Spec))
+
+			w := &ModelWarmupWebhook{}
+			_, err := w.ValidateCreate(context.Background(), oldWarmup)
+			require.NoError(t, err)
+			_, err = w.ValidateUpdate(context.Background(), oldWarmup, updated)
+			require.ErrorContains(t, err, "immutable")
+		})
+	}
+}
+
+func TestModelWarmupWebhookAcceptsEquivalentCustomJSONUpdates(t *testing.T) {
+	for name, mutate := range map[string]func(*modelapi.ModelWarmup){
+		"map insertion order": func(w *modelapi.ModelWarmup) {
+			requests := corev1.ResourceList{}
+			requests[corev1.ResourceMemory] = resource.MustParse("1Gi")
+			requests[corev1.ResourceCPU] = resource.MustParse("100m")
+			w.Spec.Custom.Containers[0].Resources.Requests = requests
+		},
+		"nil and empty collections": func(w *modelapi.ModelWarmup) {
+			w.Spec.Custom.ImagePullSecrets = []corev1.LocalObjectReference{}
+			w.Spec.Custom.Containers[0].Env = []corev1.EnvVar{}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			oldWarmup := validCustomModelWarmupForWebhookTest()
+			requests := corev1.ResourceList{}
+			requests[corev1.ResourceCPU] = resource.MustParse("100m")
+			requests[corev1.ResourceMemory] = resource.MustParse("1Gi")
+			oldWarmup.Spec.Custom.Containers[0].Resources.Requests = requests
+			updated := oldWarmup.DeepCopy()
+			mutate(updated)
+			_, err := (&ModelWarmupWebhook{}).ValidateUpdate(context.Background(), oldWarmup, updated)
 			require.NoError(t, err)
 		})
 	}

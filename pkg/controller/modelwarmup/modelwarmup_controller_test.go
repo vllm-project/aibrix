@@ -252,6 +252,10 @@ func TestRevisionCanonicalizesCustomActionJSON(t *testing.T) {
 	secondRequests[corev1.ResourceMemory] = resource.MustParse("1Gi")
 	secondRequests[corev1.ResourceCPU] = resource.MustParse("100m")
 	require.Equal(t, revisionFor(newWarmup(firstRequests)), revisionFor(newWarmup(secondRequests)))
+	// Quantity formats are preserved in the revision input. Admission must reject
+	// numerically equivalent format changes to avoid replacing active Jobs.
+	secondRequests[corev1.ResourceMemory] = resource.MustParse("1073741824")
+	require.NotEqual(t, revisionFor(newWarmup(firstRequests)), revisionFor(newWarmup(secondRequests)))
 
 	// Custom action slices use omitempty, so nil and empty serialize identically and intentionally share a revision.
 	nilCollections := &modelv1alpha1.ModelWarmup{Spec: modelv1alpha1.ModelWarmupSpec{

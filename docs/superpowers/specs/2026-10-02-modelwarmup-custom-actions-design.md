@@ -77,7 +77,8 @@ target, image, mode, and policy validation:
    containers must finish before regular work starts.
 7. Custom pull-secret names are required. The controller merges image and custom
    pull secrets by name, preserving first occurrence order.
-8. The complete spec remains immutable after creation.
+8. The complete spec remains immutable after creation. Custom JSON must also
+   remain identical, including Quantity formats, to preserve the workload revision.
 
 The webhook does not reject `hostPath`, privileged containers, GPU resource
 requests, or other native security-context settings. Those capabilities are
@@ -139,8 +140,10 @@ marks that node failed; aggregate status continues to resolve to `Succeeded`,
 Image-only success retains the existing `ImagePreloadSucceeded` reason. A
 warmup containing `custom` uses the generic `WarmupSucceeded` reason. The
 controller does not parse stdout, introduce action-specific reasons, or expose
-per-container status. Existing bounded Job diagnostics are used for API-server
-rejections, timeouts, and runtime failures.
+per-container status. Existing bounded Job diagnostics cover failures observed
+on created Jobs, including timeouts and runtime failures. Job API creation
+rejections are logged and requeued; because no Job exists, they may not appear
+in bounded Job diagnostics or ModelWarmup failure status.
 
 ## Security Model
 
@@ -151,9 +154,14 @@ secret references can expose node or namespace resources.
 
 The controller limits this surface by accepting only containers, init
 containers, volumes, and image pull secrets. Users cannot override affinity,
-service accounts, token mounting, restart policy, Job lifecycle, or controller
-metadata. Documentation and samples must state the privilege implications and
-recommend restricting create/update permission for ModelWarmup resources.
+service accounts, automatic token mounting, restart policy, Job lifecycle, or
+controller metadata. Explicit projected `serviceAccountToken` volumes remain
+allowed despite `automountServiceAccountToken: false`; their tokens use the
+Pod's service account permissions (the namespace default service account unless
+cluster admission changes it). Explicit secret volumes can also expose namespace
+credentials. Documentation and samples must state these privilege implications,
+recommend least-privilege service accounts, and restrict create/update permission
+for ModelWarmup resources.
 
 ## Samples and Documentation
 
@@ -187,9 +195,10 @@ pinning.
 - Webhook integration tests verify CRD schema optionality and admission behavior.
 - Controller integration tests verify that custom-only and combined resources
   produce the expected node-pinned Job templates and status behavior.
-- A non-GPU end-to-end path applies the combined public sample and observes Job
-  and ModelWarmup completion. The GPU sample is syntax/schema checked but is not
-  required in generic CI.
+- A CI-stable non-GPU end-to-end path uses a synthetic combined warmup and
+  observes Job and ModelWarmup completion. Public samples are strict-decoded and
+  admission-tested; executing their downloads, host-path checks, and GPU work is
+  environment validation and is not required in generic CI.
 - Regenerate deepcopy, clients, apply configurations, CRD, and RBAC artifacts;
   run focused tests first, followed by repository generation checks and relevant
   lint/test targets.
@@ -199,7 +208,9 @@ pinning.
 - Existing image-only manifests and Go field assignments continue to work.
 - Image-only, custom-only, and combined ModelWarmups create correct node-pinned
   Jobs and reach status through the existing aggregation flow.
-- Invalid or ambiguous Pod fragments are rejected before reconciliation.
+- Invalid or ambiguous fragments covered by ModelWarmup validation are rejected
+  before reconciliation; native Job/Pod validation and cluster policy still apply
+  when the controller creates the Job and Kubernetes creates its Pods.
 - Every custom action change invalidates the custom workload revision, while an
   image-only object's revision remains compatible with the current release.
 - Generated artifacts, focused unit and integration tests, formatting, linting,
