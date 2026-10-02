@@ -149,6 +149,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libkrb5-dev libzmq3-dev
       - name: Run Integration Tests
         run: make test-integration
+      - name: Run Integration-Tagged Go Tests
+        run: make test-integration-tagged
 
 
   check-coverage:
