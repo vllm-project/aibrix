@@ -109,8 +109,10 @@ var _ = Describe("ModelWarmup controller", func() {
 				Name: "warm", Image: "busybox:1.36", Command: []string{"sh"}, Args: []string{"-c", "test -f /cache/ready"},
 				Env: []corev1.EnvVar{{Name: "MODEL", Value: "example"}},
 				Resources: corev1.ResourceRequirements{
-					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("64Mi")},
-					Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("64Mi")},
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("64Mi"),
+					},
+					Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("64Mi")},
 				},
 				SecurityContext: &corev1.SecurityContext{
 					RunAsUser: ptr.To[int64](1000), AllowPrivilegeEscalation: ptr.To(false),
@@ -151,11 +153,15 @@ var _ = Describe("ModelWarmup controller", func() {
 		Expect(pod.InitContainers[0].Command).To(Equal(expectedCustom.InitContainers[0].Command))
 		Expect(pod.InitContainers[0].VolumeMounts).To(Equal(expectedCustom.InitContainers[0].VolumeMounts))
 		Expect(pod.Volumes).To(Equal(expectedCustom.Volumes))
-		Expect(pod.ImagePullSecrets).To(Equal([]corev1.LocalObjectReference{{Name: "shared"}, {Name: "images"}, {Name: "custom"}}))
+		Expect(pod.ImagePullSecrets).To(Equal([]corev1.LocalObjectReference{
+			{Name: "shared"}, {Name: "images"}, {Name: "custom"},
+		}))
 		Expect(pod.NodeName).To(BeEmpty())
 		Expect(pod.Affinity).To(Equal(&corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
 			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{NodeSelectorTerms: []corev1.NodeSelectorTerm{{
-				MatchFields: []corev1.NodeSelectorRequirement{{Key: "metadata.name", Operator: corev1.NodeSelectorOpIn, Values: []string{node.Name}}},
+				MatchFields: []corev1.NodeSelectorRequirement{{
+					Key: "metadata.name", Operator: corev1.NodeSelectorOpIn, Values: []string{node.Name},
+				}},
 			}}},
 		}}))
 		Expect(job.Spec.ActiveDeadlineSeconds).To(Equal(ptr.To[int64](45)))

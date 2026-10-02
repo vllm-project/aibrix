@@ -173,13 +173,17 @@ func validateModelWarmup(warmup *modelapi.ModelWarmup) error {
 		containerNames[fmt.Sprintf("image-%d", i)] = struct{}{}
 	}
 	allErrs = append(allErrs, validateModelWarmupCustom(specPath, warmup.Spec.Custom, containerNames)...)
-	if len(warmup.Spec.ImagePreload.Images) == 0 && (warmup.Spec.Custom == nil || len(warmup.Spec.Custom.Containers) == 0) {
+	if !modelWarmupHasRegularWork(warmup.Spec) {
 		allErrs = append(allErrs, field.Required(
 			specPath.Child("custom", "containers"), "at least one image preload or custom container is required",
 		))
 	}
 	allErrs = append(allErrs, validateModelWarmupPolicies(warmup.Spec.Policies)...)
 	return allErrs.ToAggregate()
+}
+
+func modelWarmupHasRegularWork(spec modelapi.ModelWarmupSpec) bool {
+	return len(spec.ImagePreload.Images) > 0 || (spec.Custom != nil && len(spec.Custom.Containers) > 0)
 }
 
 func validateModelWarmupCustom(

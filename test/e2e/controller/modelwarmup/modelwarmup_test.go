@@ -85,7 +85,9 @@ func TestModelWarmupRunsCombinedImagePreloadAndCustomActions(t *testing.T) {
 	node := env.readyWarmupNodes(t, ctx, 1)[0]
 
 	cacheMount := corev1.VolumeMount{Name: "cache", MountPath: "/cache"}
-	precheckCommand := []string{"python", "-c", "import os; assert os.path.isdir('/cache'); open('/cache/precheck', 'w').close()"}
+	precheckCommand := []string{
+		"python", "-c", "import os; assert os.path.isdir('/cache'); open('/cache/precheck', 'w').close()",
+	}
 	prepareCommand := []string{"python", "-c", "from pathlib import Path; assert Path('/cache/precheck').is_file()"}
 	warmup := &modelapi.ModelWarmup{
 		ObjectMeta: metav1.ObjectMeta{Name: "combined-actions", Namespace: env.namespace},
@@ -144,7 +146,8 @@ func TestModelWarmupRunsCombinedImagePreloadAndCustomActions(t *testing.T) {
 		t.Fatalf("Job target node annotation = %q, want %q", job.Annotations[modelwarmup.TargetNodeAnnotationKey], node.Name)
 	}
 	if job.Annotations[modelwarmup.WarmupNameAnnotationKey] != warmup.Name {
-		t.Fatalf("Job warmup name annotation = %q, want %q", job.Annotations[modelwarmup.WarmupNameAnnotationKey], warmup.Name)
+		t.Fatalf("Job warmup name annotation = %q, want %q",
+			job.Annotations[modelwarmup.WarmupNameAnnotationKey], warmup.Name)
 	}
 	if len(pod.InitContainers) != 1 || pod.InitContainers[0].Name != "precheck" {
 		t.Fatalf("Job init containers = %+v, want precheck", pod.InitContainers)
@@ -154,31 +157,43 @@ func TestModelWarmupRunsCombinedImagePreloadAndCustomActions(t *testing.T) {
 	}
 	if pod.Containers[0].Image != testImage || !slices.Equal(pod.Containers[0].Command, successfulWarmupCommand()) ||
 		pod.Containers[0].ImagePullPolicy != corev1.PullIfNotPresent {
-		t.Fatalf("image-0 container = %+v, want image %q, successful command, and PullIfNotPresent", pod.Containers[0], testImage)
+		t.Fatalf("image-0 container = %+v, want image %q, successful command, and PullIfNotPresent",
+			pod.Containers[0], testImage)
 	}
 	if pod.InitContainers[0].Image != testImage || !slices.Equal(pod.InitContainers[0].Command, precheckCommand) ||
 		pod.Containers[1].Image != testImage || !slices.Equal(pod.Containers[1].Command, prepareCommand) {
-		t.Fatalf("custom containers = init:%+v regular:%+v, want precheck and prepare commands", pod.InitContainers[0], pod.Containers[1])
+		t.Fatalf("custom containers = init:%+v regular:%+v, want precheck and prepare commands",
+			pod.InitContainers[0], pod.Containers[1])
 	}
 	if len(pod.Volumes) != 1 || pod.Volumes[0].Name != "cache" || pod.Volumes[0].EmptyDir == nil {
 		t.Fatalf("Job volumes = %+v, want cache emptyDir", pod.Volumes)
 	}
 	if len(pod.InitContainers[0].VolumeMounts) != 1 || pod.InitContainers[0].VolumeMounts[0] != cacheMount ||
 		len(pod.Containers[1].VolumeMounts) != 1 || pod.Containers[1].VolumeMounts[0] != cacheMount {
-		t.Fatalf("custom container cache mounts = init:%+v regular:%+v, want %+v", pod.InitContainers[0].VolumeMounts, pod.Containers[1].VolumeMounts, cacheMount)
+		t.Fatalf("custom container cache mounts = init:%+v regular:%+v, want %+v",
+			pod.InitContainers[0].VolumeMounts, pod.Containers[1].VolumeMounts, cacheMount)
 	}
+	assertModelWarmupJobPlacementAndSafety(t, pod, node.Name)
+}
+
+func assertModelWarmupJobPlacementAndSafety(t *testing.T, pod corev1.PodSpec, nodeName string) {
+	t.Helper()
 	if pod.NodeName != "" || pod.Affinity == nil || pod.Affinity.NodeAffinity == nil ||
 		pod.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
 		t.Fatalf("Job node placement = nodeName:%q affinity:%+v, want required node affinity", pod.NodeName, pod.Affinity)
 	}
 	terms := pod.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
 	if len(terms) != 1 || len(terms[0].MatchFields) != 1 || terms[0].MatchFields[0].Key != "metadata.name" ||
-		terms[0].MatchFields[0].Operator != corev1.NodeSelectorOpIn || len(terms[0].MatchFields[0].Values) != 1 || terms[0].MatchFields[0].Values[0] != node.Name {
-		t.Fatalf("Job node affinity terms = %+v, want node %q", terms, node.Name)
+		terms[0].MatchFields[0].Operator != corev1.NodeSelectorOpIn || len(terms[0].MatchFields[0].Values) != 1 ||
+		terms[0].MatchFields[0].Values[0] != nodeName {
+		t.Fatalf("Job node affinity terms = %+v, want node %q", terms, nodeName)
 	}
-	if pod.RestartPolicy != corev1.RestartPolicyNever || pod.AutomountServiceAccountToken == nil || *pod.AutomountServiceAccountToken ||
-		pod.Containers[0].SecurityContext == nil || pod.Containers[0].SecurityContext.AllowPrivilegeEscalation == nil || *pod.Containers[0].SecurityContext.AllowPrivilegeEscalation {
-		t.Fatalf("Job controller invariants = restart:%q automount:%v image security context:%+v", pod.RestartPolicy, pod.AutomountServiceAccountToken, pod.Containers[0].SecurityContext)
+	imageSecurity := pod.Containers[0].SecurityContext
+	if pod.RestartPolicy != corev1.RestartPolicyNever ||
+		pod.AutomountServiceAccountToken == nil || *pod.AutomountServiceAccountToken ||
+		imageSecurity == nil || imageSecurity.AllowPrivilegeEscalation == nil || *imageSecurity.AllowPrivilegeEscalation {
+		t.Fatalf("Job controller invariants = restart:%q automount:%v image security context:%+v",
+			pod.RestartPolicy, pod.AutomountServiceAccountToken, imageSecurity)
 	}
 }
 
