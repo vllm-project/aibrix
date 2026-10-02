@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -390,9 +391,21 @@ func revisionFor(w *modelv1alpha1.ModelWarmup) string {
 	for _, secret := range w.Spec.ImagePreload.PullSecrets {
 		parts = append(parts, "secret="+secret.Name)
 	}
+	if w.Spec.Custom != nil {
+		parts = append(parts, customActionRevisionInput(w.Spec.Custom))
+	}
 	sort.Strings(parts)
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
 	return hex.EncodeToString(sum[:])[:12]
+}
+
+func customActionRevisionInput(custom *modelv1alpha1.ModelWarmupCustomAction) string {
+	data, err := json.Marshal(custom)
+	if err != nil {
+		// ModelWarmupCustomAction contains only Kubernetes API types, all of which are JSON-safe.
+		panic(fmt.Sprintf("marshal ModelWarmup custom action for revision: %v", err))
+	}
+	return "custom=" + string(data)
 }
 
 func (r *ModelWarmupReconciler) jobFor(w *modelv1alpha1.ModelWarmup, node, revision string) *batchv1.Job {
@@ -412,6 +425,15 @@ func (r *ModelWarmupReconciler) jobFor(w *modelv1alpha1.ModelWarmup, node, revis
 				AllowPrivilegeEscalation: ptr.To(false),
 			},
 		})
+	}
+	var initContainers []corev1.Container
+	var volumes []corev1.Volume
+	var customPullSecrets []corev1.LocalObjectReference
+	if w.Spec.Custom != nil {
+		initContainers = copyContainers(w.Spec.Custom.InitContainers)
+		containers = append(containers, copyContainers(w.Spec.Custom.Containers)...)
+		volumes = copyVolumes(w.Spec.Custom.Volumes)
+		customPullSecrets = w.Spec.Custom.ImagePullSecrets
 	}
 	name := modelWarmupJobName(w.Name, string(w.UID), node, revision)
 	return &batchv1.Job{
@@ -433,7 +455,7 @@ func (r *ModelWarmupReconciler) jobFor(w *modelv1alpha1.ModelWarmup, node, revis
 			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
 				RestartPolicy:                corev1.RestartPolicyNever,
 				AutomountServiceAccountToken: ptr.To(false),
-				ImagePullSecrets:             w.Spec.ImagePreload.PullSecrets,
+				ImagePullSecrets:             mergePullSecrets(w.Spec.ImagePreload.PullSecrets, customPullSecrets),
 				Affinity: &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
 					RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
 						NodeSelectorTerms: []corev1.NodeSelectorTerm{{
@@ -445,10 +467,49 @@ func (r *ModelWarmupReconciler) jobFor(w *modelv1alpha1.ModelWarmup, node, revis
 						}},
 					},
 				}},
-				Containers: containers,
+				InitContainers: initContainers,
+				Containers:     containers,
+				Volumes:        volumes,
 			}},
 		},
 	}
+}
+
+func copyContainers(containers []corev1.Container) []corev1.Container {
+	if len(containers) == 0 {
+		return nil
+	}
+	result := make([]corev1.Container, len(containers))
+	for i := range containers {
+		containers[i].DeepCopyInto(&result[i])
+	}
+	return result
+}
+
+func copyVolumes(volumes []corev1.Volume) []corev1.Volume {
+	if len(volumes) == 0 {
+		return nil
+	}
+	result := make([]corev1.Volume, len(volumes))
+	for i := range volumes {
+		volumes[i].DeepCopyInto(&result[i])
+	}
+	return result
+}
+
+func mergePullSecrets(groups ...[]corev1.LocalObjectReference) []corev1.LocalObjectReference {
+	seen := make(map[string]struct{})
+	var result []corev1.LocalObjectReference
+	for _, group := range groups {
+		for _, secret := range group {
+			if _, exists := seen[secret.Name]; exists {
+				continue
+			}
+			seen[secret.Name] = struct{}{}
+			result = append(result, secret)
+		}
+	}
+	return result
 }
 
 func shortHash(s string) string {
@@ -584,7 +645,7 @@ func (r *ModelWarmupReconciler) updateStatus(
 	} else if succeeded == w.Status.DesiredNodes {
 		w.Status.Phase = modelv1alpha1.ModelWarmupSucceeded
 		setCompletionTime(w)
-		setCondition(w, "Complete", metav1.ConditionTrue, "ImagePreloadSucceeded", "all target jobs succeeded")
+		setCondition(w, "Complete", metav1.ConditionTrue, successReason(w), "all target jobs succeeded")
 	} else {
 		w.Status.Phase = modelv1alpha1.ModelWarmupRunning
 		w.Status.CompletionTime = nil
@@ -599,6 +660,13 @@ func (r *ModelWarmupReconciler) updateStatus(
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
+}
+
+func successReason(w *modelv1alpha1.ModelWarmup) string {
+	if w.Spec.Custom != nil {
+		return "WarmupSucceeded"
+	}
+	return "ImagePreloadSucceeded"
 }
 
 func targetNodeForJob(job *batchv1.Job) string {
