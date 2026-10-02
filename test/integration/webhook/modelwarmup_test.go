@@ -153,6 +153,29 @@ var _ = ginkgo.Describe("ModelWarmup admission", func() {
 				VolumeMounts: []corev1.VolumeMount{{Name: "missing", MountPath: "/cache"}},
 			}}}
 		}),
+		ginkgo.Entry("custom volume has multiple sources", func(w *modelapi.ModelWarmup) {
+			w.Spec.Custom = &modelapi.ModelWarmupCustomAction{
+				Containers: []corev1.Container{{Name: "warm", Image: "busybox:1.36"}},
+				Volumes: []corev1.Volume{{Name: "cache", VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+					HostPath: &corev1.HostPathVolumeSource{Path: "/var/lib/models"},
+				}}},
+			}
+		}),
+		ginkgo.Entry("custom init container has a restart policy", func(w *modelapi.ModelWarmup) {
+			w.Spec.Custom = &modelapi.ModelWarmupCustomAction{
+				InitContainers: []corev1.Container{{
+					Name: "prepare", Image: "busybox:1.36",
+					RestartPolicy: ptr.To(corev1.ContainerRestartPolicyAlways),
+				}},
+			}
+		}),
+		ginkgo.Entry("custom regular container has a restart policy", func(w *modelapi.ModelWarmup) {
+			w.Spec.Custom = &modelapi.ModelWarmupCustomAction{Containers: []corev1.Container{{
+				Name: "warm", Image: "busybox:1.36",
+				RestartPolicy: ptr.To(corev1.ContainerRestartPolicyAlways),
+			}}}
+		}),
 	)
 
 	ginkgo.It("accepts a zero retry limit", func() {
@@ -181,7 +204,7 @@ var _ = ginkgo.Describe("ModelWarmup admission", func() {
 		gomega.Expect(k8sClient.Update(ctx, warmup)).To(gomega.HaveOccurred())
 	})
 
-	ginkgo.DescribeTable("rejects equivalent custom Quantity representation updates", func(volumeQuantity bool) {
+	ginkgo.DescribeTable("accepts equivalent custom Quantity representation updates", func(volumeQuantity bool) {
 		warmup := newWarmup("quantity-update")
 		warmup.Spec.Custom = &modelapi.ModelWarmupCustomAction{
 			Containers: []corev1.Container{{Name: "warm", Image: "busybox:1.36"}},
@@ -198,7 +221,7 @@ var _ = ginkgo.Describe("ModelWarmup admission", func() {
 		setQuantity(resource.MustParse("1Gi"))
 		gomega.Expect(k8sClient.Create(ctx, warmup)).To(gomega.Succeed())
 		setQuantity(resource.MustParse("1073741824"))
-		gomega.Expect(k8sClient.Update(ctx, warmup)).To(gomega.MatchError(gomega.ContainSubstring("immutable")))
+		gomega.Expect(k8sClient.Update(ctx, warmup)).To(gomega.Succeed())
 	},
 		ginkgo.Entry("container memory", false),
 		ginkgo.Entry("volume size limit", true),

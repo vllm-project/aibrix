@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -30,6 +31,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -400,12 +402,62 @@ func revisionFor(w *modelv1alpha1.ModelWarmup) string {
 }
 
 func customActionRevisionInput(custom *modelv1alpha1.ModelWarmupCustomAction) string {
-	data, err := json.Marshal(custom)
+	canonical := custom.DeepCopy()
+	canonicalizeResourceQuantities(reflect.ValueOf(canonical))
+	data, err := json.Marshal(canonical)
 	if err != nil {
 		// ModelWarmupCustomAction contains only Kubernetes API types, all of which are JSON-safe.
 		panic(fmt.Sprintf("marshal ModelWarmup custom action for revision: %v", err))
 	}
 	return "custom=" + string(data)
+}
+
+var resourceQuantityType = reflect.TypeOf(resource.Quantity{})
+
+// canonicalizeResourceQuantities rewrites every Quantity in a copied custom
+// action to DecimalSI so semantically equal Kubernetes resource values produce
+// the same revision regardless of their input format.
+func canonicalizeResourceQuantities(value reflect.Value) {
+	if !value.IsValid() {
+		return
+	}
+	if value.Type() == resourceQuantityType && value.CanSet() {
+		quantity := value.Interface().(resource.Quantity)
+		canonical := resource.NewDecimalQuantity(*quantity.AsDec(), resource.DecimalSI)
+		value.Set(reflect.ValueOf(*canonical))
+		return
+	}
+
+	switch value.Kind() {
+	case reflect.Pointer:
+		if !value.IsNil() {
+			canonicalizeResourceQuantities(value.Elem())
+		}
+	case reflect.Interface:
+		if !value.IsNil() && value.CanSet() {
+			element := reflect.New(value.Elem().Type()).Elem()
+			element.Set(value.Elem())
+			canonicalizeResourceQuantities(element)
+			value.Set(element)
+		}
+	case reflect.Struct:
+		for i := 0; i < value.NumField(); i++ {
+			if value.Field(i).CanSet() {
+				canonicalizeResourceQuantities(value.Field(i))
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < value.Len(); i++ {
+			canonicalizeResourceQuantities(value.Index(i))
+		}
+	case reflect.Map:
+		for _, key := range value.MapKeys() {
+			item := reflect.New(value.Type().Elem()).Elem()
+			item.Set(value.MapIndex(key))
+			canonicalizeResourceQuantities(item)
+			value.SetMapIndex(key, item)
+		}
+	}
 }
 
 func (r *ModelWarmupReconciler) jobFor(w *modelv1alpha1.ModelWarmup, node, revision string) *batchv1.Job {

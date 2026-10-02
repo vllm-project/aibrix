@@ -193,7 +193,7 @@ func TestModelWarmupWebhookAcceptsImageAndCustomWorkModes(t *testing.T) {
 	}
 }
 
-func TestModelWarmupWebhookRejectsEquivalentCustomQuantityUpdates(t *testing.T) {
+func TestModelWarmupWebhookAcceptsEquivalentCustomQuantityUpdates(t *testing.T) {
 	for name, setQuantity := range map[string]func(*modelapi.ModelWarmup, resource.Quantity){
 		"container memory": func(w *modelapi.ModelWarmup, quantity resource.Quantity) {
 			w.Spec.Custom.Containers[0].Resources.Requests = corev1.ResourceList{corev1.ResourceMemory: quantity}
@@ -213,7 +213,7 @@ func TestModelWarmupWebhookRejectsEquivalentCustomQuantityUpdates(t *testing.T) 
 			_, err := w.ValidateCreate(context.Background(), oldWarmup)
 			require.NoError(t, err)
 			_, err = w.ValidateUpdate(context.Background(), oldWarmup, updated)
-			require.ErrorContains(t, err, "immutable")
+			require.NoError(t, err)
 		})
 	}
 }
@@ -386,6 +386,12 @@ func TestModelWarmupWebhookRejectsInvalidCustomVolumes(t *testing.T) {
 			},
 			expectedPath: "spec.custom.volumes[0]",
 		},
+		"multiple sources": {
+			mutate: func(warmup *modelapi.ModelWarmup) {
+				warmup.Spec.Custom.Volumes[0].HostPath = &corev1.HostPathVolumeSource{Path: "/var/lib/models"}
+			},
+			expectedPath: "spec.custom.volumes[0]",
+		},
 	}
 
 	for name, test := range tests {
@@ -440,12 +446,28 @@ func TestModelWarmupWebhookRejectsUndeclaredCustomVolumeReferences(t *testing.T)
 	}
 }
 
-func TestModelWarmupWebhookRejectsAlwaysRestartingCustomInitContainers(t *testing.T) {
-	warmup := validCustomModelWarmupForWebhookTest()
-	warmup.Spec.Custom.InitContainers[0].RestartPolicy = ptr.To(corev1.ContainerRestartPolicyAlways)
-
-	_, err := (&ModelWarmupWebhook{}).ValidateCreate(context.Background(), warmup)
-	require.ErrorContains(t, err, "restartPolicy")
+func TestModelWarmupWebhookRejectsContainerRestartPolicies(t *testing.T) {
+	for name, mutate := range map[string]func(*modelapi.ModelWarmup){
+		"always init container": func(w *modelapi.ModelWarmup) {
+			w.Spec.Custom.InitContainers[0].RestartPolicy = ptr.To(corev1.ContainerRestartPolicyAlways)
+		},
+		"unsupported init container value": func(w *modelapi.ModelWarmup) {
+			w.Spec.Custom.InitContainers[0].RestartPolicy = ptr.To(corev1.ContainerRestartPolicy("Never"))
+		},
+		"always regular container": func(w *modelapi.ModelWarmup) {
+			w.Spec.Custom.Containers[0].RestartPolicy = ptr.To(corev1.ContainerRestartPolicyAlways)
+		},
+		"unsupported regular container value": func(w *modelapi.ModelWarmup) {
+			w.Spec.Custom.Containers[0].RestartPolicy = ptr.To(corev1.ContainerRestartPolicy("Never"))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			warmup := validCustomModelWarmupForWebhookTest()
+			mutate(warmup)
+			_, err := (&ModelWarmupWebhook{}).ValidateCreate(context.Background(), warmup)
+			require.ErrorContains(t, err, "restartPolicy")
+		})
+	}
 }
 
 func TestModelWarmupWebhookRequiresCustomContainerImages(t *testing.T) {

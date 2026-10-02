@@ -908,6 +908,21 @@ func TestModelWarmupWebhookRejectsInvalidSpecs(t *testing.T) {
 				w.Spec.ImagePreload.Images[0],
 			)
 		},
+		"custom container restart policy": func(w *modelapi.ModelWarmup) {
+			w.Spec.Custom = &modelapi.ModelWarmupCustomAction{Containers: []corev1.Container{{
+				Name: "warm", Image: testImage,
+				RestartPolicy: ptr.To(corev1.ContainerRestartPolicyAlways),
+			}}}
+		},
+		"custom volume with multiple sources": func(w *modelapi.ModelWarmup) {
+			w.Spec.Custom = &modelapi.ModelWarmupCustomAction{
+				Containers: []corev1.Container{{Name: "warm", Image: testImage}},
+				Volumes: []corev1.Volume{{Name: "cache", VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+					HostPath: &corev1.HostPathVolumeSource{Path: "/var/lib/models"},
+				}}},
+			}
+		},
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

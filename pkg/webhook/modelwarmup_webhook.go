@@ -17,9 +17,7 @@ limitations under the License.
 package webhook
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -58,19 +56,6 @@ func (w *ModelWarmupWebhook) ValidateUpdate(_ context.Context, oldObj, newObj ru
 	oldWarmup := oldObj.(*modelapi.ModelWarmup)
 	newWarmup := newObj.(*modelapi.ModelWarmup)
 	if !equality.Semantic.DeepEqual(oldWarmup.Spec, newWarmup.Spec) {
-		return nil, field.Forbidden(field.NewPath("spec"), "ModelWarmup spec is immutable")
-	}
-	// The controller hashes custom JSON, which preserves Quantity formats that
-	// semantic equality ignores. An admitted update must not change that revision.
-	oldCustom, err := json.Marshal(oldWarmup.Spec.Custom)
-	if err != nil {
-		return nil, fmt.Errorf("marshal old ModelWarmup custom action: %w", err)
-	}
-	newCustom, err := json.Marshal(newWarmup.Spec.Custom)
-	if err != nil {
-		return nil, fmt.Errorf("marshal new ModelWarmup custom action: %w", err)
-	}
-	if !bytes.Equal(oldCustom, newCustom) {
 		return nil, field.Forbidden(field.NewPath("spec"), "ModelWarmup spec is immutable")
 	}
 	return nil, validateModelWarmup(newWarmup)
@@ -245,19 +230,22 @@ func validateModelWarmupCustom(
 		} else {
 			declaredVolumes[volume.Name] = struct{}{}
 		}
-		if reflect.DeepEqual(volume.VolumeSource, corev1.VolumeSource{}) {
+		sourceCount := modelWarmupVolumeSourceCount(volume.VolumeSource)
+		if sourceCount == 0 {
 			allErrs = append(allErrs, field.Required(path, "a volume source is required"))
+		} else if sourceCount > 1 {
+			allErrs = append(allErrs, field.Invalid(path, volume.Name, "exactly one volume source is required"))
 		}
 	}
 
 	for i, container := range custom.InitContainers {
 		path := customPath.Child("initContainers").Index(i)
-		allErrs = append(allErrs, validateModelWarmupContainer(path, container, containerNames, true)...)
+		allErrs = append(allErrs, validateModelWarmupContainer(path, container, containerNames)...)
 		allErrs = append(allErrs, validateModelWarmupVolumeReferences(path, container, declaredVolumes)...)
 	}
 	for i, container := range custom.Containers {
 		path := customPath.Child("containers").Index(i)
-		allErrs = append(allErrs, validateModelWarmupContainer(path, container, containerNames, false)...)
+		allErrs = append(allErrs, validateModelWarmupContainer(path, container, containerNames)...)
 		allErrs = append(allErrs, validateModelWarmupVolumeReferences(path, container, declaredVolumes)...)
 	}
 
@@ -272,11 +260,21 @@ func validateModelWarmupCustom(
 	return allErrs
 }
 
+func modelWarmupVolumeSourceCount(source corev1.VolumeSource) int {
+	value := reflect.ValueOf(source)
+	count := 0
+	for i := 0; i < value.NumField(); i++ {
+		if !value.Field(i).IsZero() {
+			count++
+		}
+	}
+	return count
+}
+
 func validateModelWarmupContainer(
 	path *field.Path,
 	container corev1.Container,
 	containerNames map[string]struct{},
-	isInitContainer bool,
 ) field.ErrorList {
 	var allErrs field.ErrorList
 	if container.Name == "" {
@@ -291,8 +289,10 @@ func validateModelWarmupContainer(
 	if container.Image == "" {
 		allErrs = append(allErrs, field.Required(path.Child("image"), "container image is required"))
 	}
-	if isInitContainer && container.RestartPolicy != nil && *container.RestartPolicy == corev1.ContainerRestartPolicyAlways {
-		allErrs = append(allErrs, field.Forbidden(path.Child("restartPolicy"), "Always is not supported for ModelWarmup init containers"))
+	if container.RestartPolicy != nil {
+		allErrs = append(allErrs, field.Forbidden(
+			path.Child("restartPolicy"), "container-level restartPolicy is not supported for ModelWarmup",
+		))
 	}
 	return allErrs
 }

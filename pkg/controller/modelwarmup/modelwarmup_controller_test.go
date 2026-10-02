@@ -252,10 +252,59 @@ func TestRevisionCanonicalizesCustomActionJSON(t *testing.T) {
 	secondRequests[corev1.ResourceMemory] = resource.MustParse("1Gi")
 	secondRequests[corev1.ResourceCPU] = resource.MustParse("100m")
 	require.Equal(t, revisionFor(newWarmup(firstRequests)), revisionFor(newWarmup(secondRequests)))
-	// Quantity formats are preserved in the revision input. Admission must reject
-	// numerically equivalent format changes to avoid replacing active Jobs.
+	// Numerically equivalent quantities must share a revision even when clients
+	// use different string formats.
 	secondRequests[corev1.ResourceMemory] = resource.MustParse("1073741824")
-	require.NotEqual(t, revisionFor(newWarmup(firstRequests)), revisionFor(newWarmup(secondRequests)))
+	secondRequests[corev1.ResourceCPU] = resource.MustParse("0.1")
+	require.Equal(t, revisionFor(newWarmup(firstRequests)), revisionFor(newWarmup(secondRequests)))
+	firstMemory := firstRequests[corev1.ResourceMemory]
+	require.Equal(t, "1Gi", firstMemory.String())
+
+	firstSize := resource.MustParse("1Gi")
+	secondSize := resource.MustParse("1073741824")
+	firstVolume := &modelv1alpha1.ModelWarmup{Spec: modelv1alpha1.ModelWarmupSpec{
+		Custom: &modelv1alpha1.ModelWarmupCustomAction{Volumes: []corev1.Volume{{
+			Name: "cache", VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: &firstSize},
+			},
+		}}},
+	}}
+	secondVolume := firstVolume.DeepCopy()
+	secondVolume.Spec.Custom.Volumes[0].EmptyDir.SizeLimit = &secondSize
+	require.Equal(t, revisionFor(firstVolume), revisionFor(secondVolume))
+	require.Equal(t, "1Gi", firstVolume.Spec.Custom.Volumes[0].EmptyDir.SizeLimit.String())
+
+	firstDivisor := resource.MustParse("1Gi")
+	secondDivisor := resource.MustParse("1073741824")
+	firstEnv := &modelv1alpha1.ModelWarmup{Spec: modelv1alpha1.ModelWarmupSpec{
+		Custom: &modelv1alpha1.ModelWarmupCustomAction{Containers: []corev1.Container{{
+			Name: "metrics", Image: "busybox", Env: []corev1.EnvVar{{
+				Name: "MEMORY_LIMIT", ValueFrom: &corev1.EnvVarSource{ResourceFieldRef: &corev1.ResourceFieldSelector{
+					Resource: "limits.memory", Divisor: firstDivisor,
+				}},
+			}},
+		}}},
+	}}
+	secondEnv := firstEnv.DeepCopy()
+	secondEnv.Spec.Custom.Containers[0].Env[0].ValueFrom.ResourceFieldRef.Divisor = secondDivisor
+	require.Equal(t, revisionFor(firstEnv), revisionFor(secondEnv))
+
+	firstStorage := resource.MustParse("1Gi")
+	secondStorage := resource.MustParse("1073741824")
+	firstEphemeral := &modelv1alpha1.ModelWarmup{Spec: modelv1alpha1.ModelWarmupSpec{
+		Custom: &modelv1alpha1.ModelWarmupCustomAction{Volumes: []corev1.Volume{{
+			Name: "cache", VolumeSource: corev1.VolumeSource{Ephemeral: &corev1.EphemeralVolumeSource{
+				VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{Spec: corev1.PersistentVolumeClaimSpec{
+					Resources: corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{
+						corev1.ResourceStorage: firstStorage,
+					}},
+				}},
+			}},
+		}}},
+	}}
+	secondEphemeral := firstEphemeral.DeepCopy()
+	secondEphemeral.Spec.Custom.Volumes[0].Ephemeral.VolumeClaimTemplate.Spec.Resources.Requests[corev1.ResourceStorage] = secondStorage
+	require.Equal(t, revisionFor(firstEphemeral), revisionFor(secondEphemeral))
 
 	// Custom action slices use omitempty, so nil and empty serialize identically and intentionally share a revision.
 	nilCollections := &modelv1alpha1.ModelWarmup{Spec: modelv1alpha1.ModelWarmupSpec{
