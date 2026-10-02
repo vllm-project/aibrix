@@ -23,6 +23,7 @@ import (
 	. "github.com/onsi/gomega"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -90,6 +91,81 @@ var _ = Describe("ModelWarmup controller", func() {
 			g.Expect(condition(latest, "Progressing").Status).To(Equal(metav1.ConditionTrue))
 			g.Expect(condition(latest, "Complete").Status).To(Equal(metav1.ConditionFalse))
 			g.Expect(condition(latest, "Degraded").Status).To(Equal(metav1.ConditionFalse))
+		}, timeout, interval).Should(Succeed())
+	})
+
+	It("runs combined image and custom actions in one safe Job and reports success", func() {
+		ns := newModelWarmupNamespace("custom")
+		node := newModelWarmupNode("custom", nil)
+		warmup := controllerutils.NewModelWarmup(ns.Name, "custom", node.Name)
+		warmup.Spec.Policies.JobTimeoutSeconds = ptr.To[int64](45)
+		warmup.Spec.ImagePreload.PullSecrets = []corev1.LocalObjectReference{{Name: "shared"}, {Name: "images"}}
+		custom := &modelapi.ModelWarmupCustomAction{
+			InitContainers: []corev1.Container{{
+				Name: "prepare", Image: "busybox:1.36", Command: []string{"sh", "-c", "touch /cache/ready"},
+				VolumeMounts: []corev1.VolumeMount{{Name: "cache", MountPath: "/cache"}},
+			}},
+			Containers: []corev1.Container{{
+				Name: "warm", Image: "busybox:1.36", Command: []string{"sh"}, Args: []string{"-c", "test -f /cache/ready"},
+				Env: []corev1.EnvVar{{Name: "MODEL", Value: "example"}},
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("64Mi")},
+					Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("64Mi")},
+				},
+				SecurityContext: &corev1.SecurityContext{
+					RunAsUser: ptr.To[int64](1000), AllowPrivilegeEscalation: ptr.To(false),
+				},
+				VolumeMounts: []corev1.VolumeMount{{Name: "cache", MountPath: "/cache"}},
+			}},
+			Volumes: []corev1.Volume{{Name: "cache", VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: ptr.To(resource.MustParse("128Mi"))},
+			}}},
+			ImagePullSecrets: []corev1.LocalObjectReference{{Name: "shared"}, {Name: "custom"}},
+		}
+		warmup.Spec.Custom = custom
+		Expect(k8sClient.Create(ctx, warmup)).To(Succeed())
+
+		var job batchv1.Job
+		Eventually(func(g Gomega) {
+			jobs := controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, warmup.Name)
+			g.Expect(jobs).To(HaveLen(1))
+			job = jobs[0]
+		}, timeout, interval).Should(Succeed())
+		pod := job.Spec.Template.Spec
+		Expect(pod.Containers).To(HaveLen(2))
+		Expect(pod.Containers[0].Name).To(Equal("image-0"))
+		Expect(pod.Containers[0].Image).To(Equal(warmup.Spec.ImagePreload.Images[0].Image))
+		Expect(pod.Containers[1].Name).To(Equal(custom.Containers[0].Name))
+		Expect(pod.Containers[1].Image).To(Equal(custom.Containers[0].Image))
+		Expect(pod.Containers[1].Command).To(Equal(custom.Containers[0].Command))
+		Expect(pod.Containers[1].Args).To(Equal(custom.Containers[0].Args))
+		Expect(pod.Containers[1].Env).To(Equal(custom.Containers[0].Env))
+		Expect(pod.Containers[1].Resources).To(Equal(custom.Containers[0].Resources))
+		Expect(pod.Containers[1].SecurityContext).To(Equal(custom.Containers[0].SecurityContext))
+		Expect(pod.Containers[1].VolumeMounts).To(Equal(custom.Containers[0].VolumeMounts))
+		Expect(pod.InitContainers).To(HaveLen(1))
+		Expect(pod.InitContainers[0].Name).To(Equal(custom.InitContainers[0].Name))
+		Expect(pod.InitContainers[0].Image).To(Equal(custom.InitContainers[0].Image))
+		Expect(pod.InitContainers[0].Command).To(Equal(custom.InitContainers[0].Command))
+		Expect(pod.InitContainers[0].VolumeMounts).To(Equal(custom.InitContainers[0].VolumeMounts))
+		Expect(pod.Volumes).To(Equal(custom.Volumes))
+		Expect(pod.ImagePullSecrets).To(Equal([]corev1.LocalObjectReference{{Name: "shared"}, {Name: "images"}, {Name: "custom"}}))
+		Expect(pod.NodeName).To(BeEmpty())
+		Expect(pod.Affinity).To(Equal(&corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+				MatchFields: []corev1.NodeSelectorRequirement{{Key: "metadata.name", Operator: corev1.NodeSelectorOpIn, Values: []string{node.Name}}},
+			}}},
+		}}))
+		Expect(job.Spec.ActiveDeadlineSeconds).To(Equal(ptr.To[int64](45)))
+		Expect(pod.RestartPolicy).To(Equal(corev1.RestartPolicyNever))
+		Expect(pod.AutomountServiceAccountToken).To(Equal(ptr.To(false)))
+
+		setJobSucceeded(job)
+		Eventually(func(g Gomega) {
+			latest := getModelWarmup(g, warmup)
+			g.Expect(latest.Status.Phase).To(Equal(modelapi.ModelWarmupSucceeded))
+			g.Expect(condition(latest, "Complete").Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(condition(latest, "Complete").Reason).To(Equal("WarmupSucceeded"))
 		}, timeout, interval).Should(Succeed())
 	})
 

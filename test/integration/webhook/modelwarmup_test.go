@@ -20,6 +20,7 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -57,6 +58,49 @@ var _ = ginkgo.Describe("ModelWarmup admission", func() {
 		gomega.Expect(valid.Spec.ImagePreload.Images[0].ImagePullPolicy).To(gomega.BeEmpty())
 	})
 
+	ginkgo.DescribeTable("preserves custom actions through admission and storage", func(customOnly bool) {
+		warmup := newWarmup("custom")
+		if customOnly {
+			warmup.Spec.ImagePreload.Images = nil
+		}
+		custom := &modelapi.ModelWarmupCustomAction{
+			InitContainers: []corev1.Container{{
+				Name: "prepare", Image: "busybox:1.36", Command: []string{"sh", "-c", "touch /cache/ready"},
+				VolumeMounts: []corev1.VolumeMount{{Name: "cache", MountPath: "/cache"}},
+			}},
+			Containers: []corev1.Container{{
+				Name: "warm", Image: "busybox:1.36", Command: []string{"sh", "-c", "test -f /cache/ready"},
+				Env: []corev1.EnvVar{{Name: "MODEL", Value: "example"}},
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
+					Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("64Mi")},
+				},
+				SecurityContext: &corev1.SecurityContext{
+					RunAsUser: ptr.To[int64](1000), AllowPrivilegeEscalation: ptr.To(false),
+				},
+				VolumeMounts: []corev1.VolumeMount{{Name: "cache", MountPath: "/cache"}},
+			}},
+			Volumes: []corev1.Volume{{Name: "cache", VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: ptr.To(resource.MustParse("128Mi"))},
+			}}},
+			ImagePullSecrets: []corev1.LocalObjectReference{{Name: "custom-registry"}},
+		}
+		warmup.Spec.Custom = custom
+		gomega.Expect(k8sClient.Create(ctx, warmup)).To(gomega.Succeed())
+
+		stored := &modelapi.ModelWarmup{}
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(warmup), stored)).To(gomega.Succeed())
+		gomega.Expect(stored.Spec.Custom).To(gomega.Equal(custom))
+		if customOnly {
+			gomega.Expect(stored.Spec.ImagePreload.Images).To(gomega.BeEmpty())
+		} else {
+			gomega.Expect(stored.Spec.ImagePreload.Images).To(gomega.Equal(warmup.Spec.ImagePreload.Images))
+		}
+	},
+		ginkgo.Entry("custom-only", true),
+		ginkgo.Entry("combined image and custom", false),
+	)
+
 	ginkgo.DescribeTable("rejects invalid specifications", func(mutate func(*modelapi.ModelWarmup)) {
 		warmup := newWarmup("invalid")
 		mutate(warmup)
@@ -89,6 +133,23 @@ var _ = ginkgo.Describe("ModelWarmup admission", func() {
 		}),
 		ginkgo.Entry("duplicate image", func(w *modelapi.ModelWarmup) {
 			w.Spec.ImagePreload.Images = append(w.Spec.ImagePreload.Images, w.Spec.ImagePreload.Images[0])
+		}),
+		ginkgo.Entry("custom init containers without a regular container", func(w *modelapi.ModelWarmup) {
+			w.Spec.ImagePreload.Images = nil
+			w.Spec.Custom = &modelapi.ModelWarmupCustomAction{InitContainers: []corev1.Container{{
+				Name: "prepare", Image: "busybox:1.36",
+			}}}
+		}),
+		ginkgo.Entry("custom container collides with a generated image name", func(w *modelapi.ModelWarmup) {
+			w.Spec.Custom = &modelapi.ModelWarmupCustomAction{Containers: []corev1.Container{{
+				Name: "image-0", Image: "busybox:1.36",
+			}}}
+		}),
+		ginkgo.Entry("custom container references an undeclared volume", func(w *modelapi.ModelWarmup) {
+			w.Spec.Custom = &modelapi.ModelWarmupCustomAction{Containers: []corev1.Container{{
+				Name: "warm", Image: "busybox:1.36",
+				VolumeMounts: []corev1.VolumeMount{{Name: "missing", MountPath: "/cache"}},
+			}}}
 		}),
 	)
 
