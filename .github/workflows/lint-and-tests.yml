@@ -91,7 +91,7 @@ jobs:
         with:
           go-version: '1.22'
       - name: Install ZMQ dependencies
-        run: sudo apt-get update && sudo apt-get install -y libkrb5-dev libzmq3-dev
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libkrb5-dev libzmq3-dev
 
       # github action has errors, requires debugging
       # - name: Cache Go modules
@@ -106,6 +106,9 @@ jobs:
 
       - name: Run Unit Tests
         run: make test
+
+      - name: Run ZMQ Tests
+        run: make test-zmq
 
       - name: upload cover profile artifact
         uses: actions/upload-artifact@v7

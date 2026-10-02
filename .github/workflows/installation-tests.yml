@@ -55,8 +55,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r development/app/requirements.txt pytest
 
-      - name: Run mock app auth tests
-        run: pytest development/app/test_auth_e2e.py -q
+      - name: Run mock app tests
+        run: pytest development/app/test_auth_e2e.py development/app/test_elastic_ep.py -q
 
   build-images:
     name: Build image (${{ matrix.image }})
@@ -212,7 +212,7 @@ jobs:
       - name: Set up testing environment
         run: |
           # Set up the cluster with kind or other Kubernetes environment needed
-          kind create cluster --name installation-test --config=./hack/ci/kind-config.yaml
+          kind create cluster --name installation-test --config=./hack/ci/kind-config-installation.yaml
           kubectl cluster-info --context kind-installation-test
 
       - name: Load images into kind

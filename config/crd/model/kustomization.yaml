@@ -1,3 +1,4 @@
 resources:
 - model.aibrix.ai_modeladapters.yaml
 - model.aibrix.ai_modelclaims.yaml
+- model.aibrix.ai_modelwarmups.yaml

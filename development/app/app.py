@@ -6,6 +6,7 @@ import base64
 import random
 import re
 import logging
+import math
 import struct
 import sys
 import threading
@@ -115,6 +116,21 @@ _mock_capacity_requests = 0
 # only when AsyncJobRegistry pins them back to the pod that accepted the create.
 _mock_video_jobs_lock = threading.Lock()
 _mock_video_jobs = {}
+
+# Elastic EP scaling state served to the PodAutoscaler observation (#2288).
+# The mock starts idle; /debug/elastic_ep drives the scaling window so the
+# observe path can be exercised without a GPU engine.
+_elastic_ep_lock = threading.Lock()
+_elastic_ep_scaling_deadline = None
+
+ELASTIC_EP_SCALING_ERROR = "The model is currently scaling. Please try again later."
+
+
+def _elastic_ep_scaling_active():
+    with _elastic_ep_lock:
+        deadline = _elastic_ep_scaling_deadline
+    return deadline is not None and time.monotonic() < deadline
+
 
 # Extract the api_key argument and prepare for authentication
 api_key = None
@@ -993,6 +1009,84 @@ def abort_request():
 @app.route("/debug/requests", methods=["GET"])
 def debug_requests():
     return jsonify(request_recorder.query(request_id=request.args.get("request_id")))
+
+
+# =============================================================================
+# ELASTIC EP ENDPOINTS
+# =============================================================================
+
+
+@app.before_request
+def block_requests_while_elastic_ep_scaling():
+    # Mirror the vLLM elastic EP middleware: while a scaling commit is in
+    # flight every HTTP request is answered with a 503. The /debug surface
+    # stays reachable so the simulated state can always be inspected and
+    # cleared.
+    if request.path.startswith("/debug/"):
+        return None
+    if _elastic_ep_scaling_active():
+        return jsonify({"error": ELASTIC_EP_SCALING_ERROR}), 503
+    return None
+
+
+@app.route("/is_scaling_elastic_ep", methods=["POST"])
+def is_scaling_elastic_ep():
+    # While idle the engine reports the boolean field the PodAutoscaler probe
+    # reads. A scaling window answers 503 before this handler runs.
+    return jsonify({"is_scaling_elastic_ep": False})
+
+
+@app.route("/debug/elastic_ep", methods=["GET", "POST"])
+def debug_elastic_ep():
+    global _elastic_ep_scaling_deadline
+
+    if request.method == "GET":
+        return jsonify({"is_scaling_elastic_ep": _elastic_ep_scaling_active()})
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not data:
+        return {"status": "error", "message": "No data provided"}, 400
+
+    scaling = data.get("scaling")
+    if not isinstance(scaling, bool):
+        return {"status": "error", "message": "'scaling' must be a boolean"}, 400
+
+    deadline = None
+    if scaling:
+        duration = data.get("duration_seconds")
+        if duration is None:
+            # Hold the window until it is cleared explicitly.
+            deadline = float("inf")
+        elif (
+            isinstance(duration, bool)
+            or not isinstance(duration, (int, float))
+            or duration <= 0
+        ):
+            return (
+                {
+                    "status": "error",
+                    "message": "'duration_seconds' must be a positive number",
+                },
+                400,
+            )
+        else:
+            try:
+                seconds = float(duration)
+            except OverflowError:
+                seconds = float("inf")
+            if not math.isfinite(seconds):
+                return (
+                    {
+                        "status": "error",
+                        "message": "'duration_seconds' must be a finite positive number",
+                    },
+                    400,
+                )
+            deadline = time.monotonic() + seconds
+
+    with _elastic_ep_lock:
+        _elastic_ep_scaling_deadline = deadline
+    return {"status": "success", "is_scaling_elastic_ep": scaling}, 200
 
 
 # =============================================================================
@@ -2323,6 +2417,107 @@ def tokenize():
 
     except Exception as e:
         logger.error(f"Error in tokenize endpoint: {e}")
+        return create_error_response(
+            "The server had an error while processing your request. Sorry about that!",
+            error_type="api_error",
+            status_code=500
+        )
+
+
+@app.route("/pooling", methods=["POST"])
+@auth_required
+def pooling():
+    """
+    Simulates the vLLM pooling endpoint (embed/classify/score models served
+    with --task embed/classify/score). Input may be a string, a list of
+    strings, or pre-tokenized token ids; the response carries model and usage
+    like the embeddings endpoint, so the gateway meters it on the language
+    response path.
+    """
+    try:
+        data = request.json or {}
+        model = data.get("model")
+        input_data = data.get("input")
+        messages = data.get("messages")
+
+        if not model:
+            return create_error_response("'model' is a required parameter", param="model")
+        if input_data is None and messages is None:
+            return create_error_response(
+                "'input' is a required parameter", param="input"
+            )
+
+        # Chat form: vLLM's PoolingChatRequest carries messages instead of input.
+        if input_data is None:
+            # Guard messages the same way as input: a string, dict, number, or a
+            # list of non-dicts would otherwise raise inside _msg_text and turn a
+            # client error into a 500.
+            if not isinstance(messages, list) or not all(
+                isinstance(m, dict) for m in messages
+            ):
+                return create_error_response(
+                    "'messages' must be an array of message objects",
+                    param="messages",
+                )
+
+            def _msg_text(msg):
+                c = msg.get("content", "")
+                if isinstance(c, str):
+                    return c
+                if isinstance(c, list):
+                    return " ".join(
+                        b.get("text", "") for b in c if b.get("type") == "text"
+                    )
+                return ""
+
+            inputs = [" ".join(_msg_text(m) for m in messages)]
+        else:
+            # Reject shapes the loop below cannot handle before normalizing: a dict
+            # would iterate its keys and an int/float/bool would raise TypeError,
+            # both turning a client error into a 500.
+            if not isinstance(input_data, (str, list)):
+                return create_error_response(
+                    "'input' must be a string, an array of strings, or an array of token ids",
+                    param="input",
+                )
+
+            # Normalize input to a list for uniform processing, mirroring vLLM:
+            # a bare string is one input, a list is many, and a list of ints is a
+            # single pre-tokenized input.
+            if isinstance(input_data, str) or (
+                isinstance(input_data, list) and input_data and all(isinstance(i, int) for i in input_data)
+            ):
+                inputs = [input_data]
+            else:
+                inputs = input_data
+
+        data_out = []
+        total_tokens = 0
+        for idx, item in enumerate(inputs):
+            if isinstance(item, str):
+                total_tokens += get_token_count(item)
+            elif isinstance(item, list):
+                # Pre-tokenized token ids
+                total_tokens += len(item)
+            else:
+                return create_error_response(
+                    "'input' must be a string, an array of strings, or an array of token ids",
+                    param="input",
+                )
+            # A fixed 8-dim vector stands in for the pooled output.
+            data_out.append({"index": idx, "object": "pooling", "data": [0.1] * 8})
+
+        response = {
+            "object": "list",
+            "data": data_out,
+            "model": model,
+            "usage": {"prompt_tokens": total_tokens, "total_tokens": total_tokens},
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in pooling endpoint: {e}")
         return create_error_response(
             "The server had an error while processing your request. Sorry about that!",
             error_type="api_error",

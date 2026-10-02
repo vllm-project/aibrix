@@ -111,7 +111,7 @@ sync-crds-to-helm: manifests
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
-	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/..."
 	./hack/update-codegen.sh go $(PROJECT_DIR)/bin
 
 .PHONY: update-codegen
@@ -141,6 +141,10 @@ vet: ## Run go vet against code.
 test: manifests generate fmt vet envtest ## Run unit tests.
 	@echo "Running unit tests only..."
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v '/e2e\|/integration') -coverprofile cover.out
+
+.PHONY: test-zmq
+test-zmq: ## Run tests that require ZMQ support.
+	CGO_ENABLED=1 go test -tags=zmq ./pkg/kvevent/... ./pkg/cache/... -count=1
 
 .PHONY: test-code-coverage
 test-code-coverage: test

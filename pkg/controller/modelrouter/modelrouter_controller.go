@@ -77,6 +77,7 @@ var modelPaths = []string{
 	"/v1/audio/transcriptions",
 	"/v1/audio/translations",
 	"/tokenize",
+	"/pooling",
 }
 
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
