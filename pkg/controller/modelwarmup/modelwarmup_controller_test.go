@@ -121,6 +121,13 @@ func TestJobForMergesImagePreloadAndCustomAction(t *testing.T) {
 
 	warmup.Spec.Custom.Containers[0].Env[0].Value = "mutated"
 	require.Equal(t, "model-a", pod.Containers[1].Env[0].Value)
+
+	*pod.InitContainers[0].SecurityContext.Privileged = false
+	pod.Volumes[0].EmptyDir.Medium = corev1.StorageMediumMemory
+	pod.ImagePullSecrets[1].Name = "mutated"
+	require.True(t, *warmup.Spec.Custom.InitContainers[0].SecurityContext.Privileged)
+	require.Equal(t, corev1.StorageMediumDefault, warmup.Spec.Custom.Volumes[0].EmptyDir.Medium)
+	require.Equal(t, "custom", warmup.Spec.Custom.ImagePullSecrets[1].Name)
 }
 
 func TestJobForSupportsCustomActionWithoutImagePreload(t *testing.T) {
@@ -227,6 +234,38 @@ func TestRevisionIncludesCustomActionInputs(t *testing.T) {
 		Nodes: &modelv1alpha1.ModelWarmupNodesTarget{Names: []string{"node-a"}},
 	}}
 	require.NotEqual(t, baseRevision, revisionFor(withoutCustom))
+}
+
+func TestRevisionCanonicalizesCustomActionJSON(t *testing.T) {
+	newWarmup := func(requests corev1.ResourceList) *modelv1alpha1.ModelWarmup {
+		return &modelv1alpha1.ModelWarmup{Spec: modelv1alpha1.ModelWarmupSpec{
+			Custom: &modelv1alpha1.ModelWarmupCustomAction{Containers: []corev1.Container{{
+				Name: "download", Image: "download:v1",
+				Resources: corev1.ResourceRequirements{Requests: requests},
+			}}},
+		}}
+	}
+	firstRequests := corev1.ResourceList{}
+	firstRequests[corev1.ResourceCPU] = resource.MustParse("100m")
+	firstRequests[corev1.ResourceMemory] = resource.MustParse("1Gi")
+	secondRequests := corev1.ResourceList{}
+	secondRequests[corev1.ResourceMemory] = resource.MustParse("1Gi")
+	secondRequests[corev1.ResourceCPU] = resource.MustParse("100m")
+	require.Equal(t, revisionFor(newWarmup(firstRequests)), revisionFor(newWarmup(secondRequests)))
+
+	// Custom action slices use omitempty, so nil and empty serialize identically and intentionally share a revision.
+	nilCollections := &modelv1alpha1.ModelWarmup{Spec: modelv1alpha1.ModelWarmupSpec{
+		Custom: &modelv1alpha1.ModelWarmupCustomAction{},
+	}}
+	emptyCollections := &modelv1alpha1.ModelWarmup{Spec: modelv1alpha1.ModelWarmupSpec{
+		Custom: &modelv1alpha1.ModelWarmupCustomAction{
+			InitContainers:   []corev1.Container{},
+			Containers:       []corev1.Container{},
+			Volumes:          []corev1.Volume{},
+			ImagePullSecrets: []corev1.LocalObjectReference{},
+		},
+	}}
+	require.Equal(t, revisionFor(nilCollections), revisionFor(emptyCollections))
 }
 
 func TestUpdateStatusUsesCustomSuccessReason(t *testing.T) {
