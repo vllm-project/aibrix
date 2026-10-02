@@ -107,6 +107,17 @@ func constructRayCluster(replicaset *orchestrationv1alpha1.RayClusterReplicaSet)
 	return cluster
 }
 
+// filterOwnedClusters keeps the RayClusters controlled by the given ReplicaSet.
+func filterOwnedClusters(replicaset *orchestrationv1alpha1.RayClusterReplicaSet, clusters []rayclusterv1.RayCluster) []rayclusterv1.RayCluster {
+	ownedClusters := make([]rayclusterv1.RayCluster, 0, len(clusters))
+	for _, cluster := range clusters {
+		if metav1.IsControlledBy(&cluster, replicaset) {
+			ownedClusters = append(ownedClusters, cluster)
+		}
+	}
+	return ownedClusters
+}
+
 // filterActiveClusters filters out inactive Cluster from a list of RayClusters
 func filterActiveClusters(clusters []rayclusterv1.RayCluster) []rayclusterv1.RayCluster {
 	activeClusters := make([]rayclusterv1.RayCluster, 0)
