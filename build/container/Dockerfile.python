@@ -97,8 +97,8 @@ RUN cd /tmp/aibrix-pkg \
     && poetry config virtualenvs.create false \
     && poetry config installer.parallel false \
     && poetry install --no-interaction --no-root --only gpu_optimizer \
-    && pip cache purge || true \
-    && pip uninstall -y poetry poetry-core || true \
+    && (pip cache purge || true) \
+    && (pip uninstall -y poetry poetry-core || true) \
     && rm -rf /tmp/aibrix-pkg
 
 # Set entrypoint for Metadata Service (aibrix/metadata-service image)
