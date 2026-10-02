@@ -123,7 +123,9 @@ var _ = Describe("ModelWarmup controller", func() {
 			ImagePullSecrets: []corev1.LocalObjectReference{{Name: "shared"}, {Name: "custom"}},
 		}
 		warmup.Spec.Custom = custom
+		expectedCustom := custom.DeepCopy()
 		Expect(k8sClient.Create(ctx, warmup)).To(Succeed())
+		Expect(warmup.Spec.Custom).To(Equal(expectedCustom))
 
 		var job batchv1.Job
 		Eventually(func(g Gomega) {
@@ -135,20 +137,20 @@ var _ = Describe("ModelWarmup controller", func() {
 		Expect(pod.Containers).To(HaveLen(2))
 		Expect(pod.Containers[0].Name).To(Equal("image-0"))
 		Expect(pod.Containers[0].Image).To(Equal(warmup.Spec.ImagePreload.Images[0].Image))
-		Expect(pod.Containers[1].Name).To(Equal(custom.Containers[0].Name))
-		Expect(pod.Containers[1].Image).To(Equal(custom.Containers[0].Image))
-		Expect(pod.Containers[1].Command).To(Equal(custom.Containers[0].Command))
-		Expect(pod.Containers[1].Args).To(Equal(custom.Containers[0].Args))
-		Expect(pod.Containers[1].Env).To(Equal(custom.Containers[0].Env))
-		Expect(pod.Containers[1].Resources).To(Equal(custom.Containers[0].Resources))
-		Expect(pod.Containers[1].SecurityContext).To(Equal(custom.Containers[0].SecurityContext))
-		Expect(pod.Containers[1].VolumeMounts).To(Equal(custom.Containers[0].VolumeMounts))
+		Expect(pod.Containers[1].Name).To(Equal(expectedCustom.Containers[0].Name))
+		Expect(pod.Containers[1].Image).To(Equal(expectedCustom.Containers[0].Image))
+		Expect(pod.Containers[1].Command).To(Equal(expectedCustom.Containers[0].Command))
+		Expect(pod.Containers[1].Args).To(Equal(expectedCustom.Containers[0].Args))
+		Expect(pod.Containers[1].Env).To(Equal(expectedCustom.Containers[0].Env))
+		Expect(pod.Containers[1].Resources).To(Equal(expectedCustom.Containers[0].Resources))
+		Expect(pod.Containers[1].SecurityContext).To(Equal(expectedCustom.Containers[0].SecurityContext))
+		Expect(pod.Containers[1].VolumeMounts).To(Equal(expectedCustom.Containers[0].VolumeMounts))
 		Expect(pod.InitContainers).To(HaveLen(1))
-		Expect(pod.InitContainers[0].Name).To(Equal(custom.InitContainers[0].Name))
-		Expect(pod.InitContainers[0].Image).To(Equal(custom.InitContainers[0].Image))
-		Expect(pod.InitContainers[0].Command).To(Equal(custom.InitContainers[0].Command))
-		Expect(pod.InitContainers[0].VolumeMounts).To(Equal(custom.InitContainers[0].VolumeMounts))
-		Expect(pod.Volumes).To(Equal(custom.Volumes))
+		Expect(pod.InitContainers[0].Name).To(Equal(expectedCustom.InitContainers[0].Name))
+		Expect(pod.InitContainers[0].Image).To(Equal(expectedCustom.InitContainers[0].Image))
+		Expect(pod.InitContainers[0].Command).To(Equal(expectedCustom.InitContainers[0].Command))
+		Expect(pod.InitContainers[0].VolumeMounts).To(Equal(expectedCustom.InitContainers[0].VolumeMounts))
+		Expect(pod.Volumes).To(Equal(expectedCustom.Volumes))
 		Expect(pod.ImagePullSecrets).To(Equal([]corev1.LocalObjectReference{{Name: "shared"}, {Name: "images"}, {Name: "custom"}}))
 		Expect(pod.NodeName).To(BeEmpty())
 		Expect(pod.Affinity).To(Equal(&corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{

@@ -86,11 +86,13 @@ var _ = ginkgo.Describe("ModelWarmup admission", func() {
 			ImagePullSecrets: []corev1.LocalObjectReference{{Name: "custom-registry"}},
 		}
 		warmup.Spec.Custom = custom
+		expectedCustom := custom.DeepCopy()
 		gomega.Expect(k8sClient.Create(ctx, warmup)).To(gomega.Succeed())
+		gomega.Expect(warmup.Spec.Custom).To(gomega.Equal(expectedCustom))
 
 		stored := &modelapi.ModelWarmup{}
 		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(warmup), stored)).To(gomega.Succeed())
-		gomega.Expect(stored.Spec.Custom).To(gomega.Equal(custom))
+		gomega.Expect(stored.Spec.Custom).To(gomega.Equal(expectedCustom))
 		if customOnly {
 			gomega.Expect(stored.Spec.ImagePreload.Images).To(gomega.BeEmpty())
 		} else {
