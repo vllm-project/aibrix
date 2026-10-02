@@ -40,55 +40,6 @@ function (run_python OUT EXPR ERR_MSG)
   set(${OUT} ${PYTHON_OUT} PARENT_SCOPE)
 endfunction()
 
-# Run `EXPR` in python after importing `PKG`. Use the result of this to extend
-# `CMAKE_PREFIX_PATH` so the torch cmake configuration can be imported.
-macro (append_cmake_prefix_path PKG EXPR)
-  run_python(_PREFIX_PATH
-    "import ${PKG}; print(${EXPR})" "Failed to locate ${PKG} path")
-  list(APPEND CMAKE_PREFIX_PATH ${_PREFIX_PATH})
-endmacro()
-
-#
-# Get additional GPU compiler flags from torch.
-#
-function (get_torch_gpu_compiler_flags OUT_GPU_FLAGS GPU_LANG)
-  if (${GPU_LANG} STREQUAL "CUDA")
-    #
-    # Get common NVCC flags from torch.
-    #
-    run_python(GPU_FLAGS
-      "from torch.utils.cpp_extension import COMMON_NVCC_FLAGS; print(';'.join(COMMON_NVCC_FLAGS))"
-      "Failed to determine torch nvcc compiler flags")
-
-    if (CUDA_VERSION VERSION_GREATER_EQUAL 11.8)
-      list(APPEND GPU_FLAGS "-DENABLE_FP8")
-    endif()
-    if (CUDA_VERSION VERSION_GREATER_EQUAL 12.0)
-      list(REMOVE_ITEM GPU_FLAGS
-        "-D__CUDA_NO_HALF_OPERATORS__"
-        "-D__CUDA_NO_HALF_CONVERSIONS__"
-        "-D__CUDA_NO_BFLOAT16_CONVERSIONS__"
-        "-D__CUDA_NO_HALF2_OPERATORS__")
-    endif()
-
-  elseif(${GPU_LANG} STREQUAL "HIP")
-    #
-    # Get common HIP/HIPCC flags from torch.
-    #
-    run_python(GPU_FLAGS
-      "import torch.utils.cpp_extension as t; print(';'.join(t.COMMON_HIP_FLAGS + t.COMMON_HIPCC_FLAGS))"
-      "Failed to determine torch nvcc compiler flags")
-
-    list(APPEND GPU_FLAGS
-      "-DUSE_ROCM"
-      "-DENABLE_FP8"
-      "-U__HIP_NO_HALF_CONVERSIONS__"
-      "-U__HIP_NO_HALF_OPERATORS__"
-      "-fno-gpu-rdc")
-
-  endif()
-  set(${OUT_GPU_FLAGS} ${GPU_FLAGS} PARENT_SCOPE)
-endfunction()
 
 # Macro for converting a `gencode` version number to a cmake version number.
 macro(string_to_ver OUT_VER IN_STR)
@@ -226,8 +177,8 @@ macro(set_gencode_flags_for_srcs)
 endmacro()
 
 #
-# For the given `SRC_CUDA_ARCHS` list of gencode versions in the form 
-#  `<major>.<minor>[letter]` compute the "loose intersection" with the 
+# For the given `SRC_CUDA_ARCHS` list of gencode versions in the form
+#  `<major>.<minor>[letter]` compute the "loose intersection" with the
 #  `TGT_CUDA_ARCHS` list of gencodes. We also support the `+PTX` suffix in
 #  `SRC_CUDA_ARCHS` which indicates that the PTX code should be built when there
 #  is a CUDA_ARCH in `TGT_CUDA_ARCHS` that is equal to or larger than the
@@ -239,7 +190,7 @@ endmacro()
 #  in `SRC_CUDA_ARCHS` that is less or equal to the version in `TGT_CUDA_ARCHS`.
 # We have special handling for x.0a, if x.0a is in `SRC_CUDA_ARCHS` and x.0 is
 #  in `TGT_CUDA_ARCHS` then we should remove x.0a from `SRC_CUDA_ARCHS` and add
-#  x.0a to the result (and remove x.0 from TGT_CUDA_ARCHS). 
+#  x.0a to the result (and remove x.0 from TGT_CUDA_ARCHS).
 # The result is stored in `OUT_CUDA_ARCHS`.
 #
 # Example:
@@ -271,24 +222,19 @@ function(cuda_archs_loose_intersection OUT_CUDA_ARCHS SRC_CUDA_ARCHS TGT_CUDA_AR
   list(REMOVE_DUPLICATES _PTX_ARCHS)
   list(REMOVE_DUPLICATES _SRC_CUDA_ARCHS)
 
-  # if x.0a is in SRC_CUDA_ARCHS and x.0 is in CUDA_ARCHS then we should
-  # remove x.0a from SRC_CUDA_ARCHS and add x.0a to _CUDA_ARCHS
+  # If x.0a or x.0f is in SRC_CUDA_ARCHS and x.0 is in CUDA_ARCHS then we should
+  # remove x.0a or x.0f from SRC_CUDA_ARCHS and add x.0a or x.0f to _CUDA_ARCHS
   set(_CUDA_ARCHS)
-  if ("9.0a" IN_LIST _SRC_CUDA_ARCHS)
-    list(REMOVE_ITEM _SRC_CUDA_ARCHS "9.0a")
-    if ("9.0" IN_LIST TGT_CUDA_ARCHS)
-      list(REMOVE_ITEM _TGT_CUDA_ARCHS "9.0")
-      set(_CUDA_ARCHS "9.0a")
+  foreach(_arch ${_SRC_CUDA_ARCHS})
+    if(_arch MATCHES "[af]$")
+      list(REMOVE_ITEM _SRC_CUDA_ARCHS "${_arch}")
+      string(REGEX REPLACE "[af]$" "" _base "${_arch}")
+      if ("${_base}" IN_LIST TGT_CUDA_ARCHS)
+        list(REMOVE_ITEM _TGT_CUDA_ARCHS "${_base}")
+        list(APPEND _CUDA_ARCHS "${_arch}")
+      endif()
     endif()
-  endif()
-
-  if ("10.0a" IN_LIST _SRC_CUDA_ARCHS)
-    list(REMOVE_ITEM _SRC_CUDA_ARCHS "10.0a")
-    if ("10.0" IN_LIST TGT_CUDA_ARCHS)
-      list(REMOVE_ITEM _TGT_CUDA_ARCHS "10.0")
-      set(_CUDA_ARCHS "10.0a")
-    endif()
-  endif()
+  endforeach()
 
   list(SORT _SRC_CUDA_ARCHS COMPARE NATURAL ORDER ASCENDING)
 
@@ -320,7 +266,7 @@ function(cuda_archs_loose_intersection OUT_CUDA_ARCHS SRC_CUDA_ARCHS TGT_CUDA_AR
   endforeach()
 
   list(REMOVE_DUPLICATES _CUDA_ARCHS)
-  
+
   # reapply +PTX suffix to architectures that requested PTX
   set(_FINAL_ARCHS)
   foreach(_arch ${_CUDA_ARCHS})
@@ -331,62 +277,15 @@ function(cuda_archs_loose_intersection OUT_CUDA_ARCHS SRC_CUDA_ARCHS TGT_CUDA_AR
     endif()
   endforeach()
   set(_CUDA_ARCHS ${_FINAL_ARCHS})
-  
+
   set(${OUT_CUDA_ARCHS} ${_CUDA_ARCHS} PARENT_SCOPE)
 endfunction()
 
 #
-# Override the GPU architectures detected by cmake/torch and filter them by
-# `GPU_SUPPORTED_ARCHES`. Sets the final set of architectures in
-# `GPU_ARCHES`. This only applies to the HIP language since for CUDA we set 
-# the architectures on a per file basis.
-#
-# Note: this is defined as a macro since it updates `CMAKE_CUDA_FLAGS`.
-#
-macro(override_gpu_arches GPU_ARCHES GPU_LANG GPU_SUPPORTED_ARCHES)
-  set(_GPU_SUPPORTED_ARCHES_LIST ${GPU_SUPPORTED_ARCHES} ${ARGN})
-  message(STATUS "${GPU_LANG} supported arches: ${_GPU_SUPPORTED_ARCHES_LIST}")
-
-  if (${GPU_LANG} STREQUAL "HIP")
-    #
-    # `GPU_ARCHES` controls the `--offload-arch` flags.
-    #
-    # If PYTORCH_ROCM_ARCH env variable exists, then we take it as a list,
-    # if not, then we use CMAKE_HIP_ARCHITECTURES which was generated by calling
-    # "rocm_agent_enumerator" in "enable_language(HIP)"
-    # (in file Modules/CMakeDetermineHIPCompiler.cmake)
-    #
-    if(DEFINED ENV{PYTORCH_ROCM_ARCH})
-      set(HIP_ARCHITECTURES $ENV{PYTORCH_ROCM_ARCH})
-    else()
-      set(HIP_ARCHITECTURES ${CMAKE_HIP_ARCHITECTURES})
-    endif()
-    #
-    # Find the intersection of the supported + detected architectures to
-    # set the module architecture flags.
-    #
-    set(${GPU_ARCHES})
-    foreach (_ARCH ${HIP_ARCHITECTURES})
-      if (_ARCH IN_LIST _GPU_SUPPORTED_ARCHES_LIST)
-        list(APPEND ${GPU_ARCHES} ${_ARCH})
-      endif()
-    endforeach()
-
-    if(NOT ${GPU_ARCHES})
-      message(FATAL_ERROR
-        "None of the detected ROCm architectures: ${HIP_ARCHITECTURES} is"
-        " supported. Supported ROCm architectures are: ${_GPU_SUPPORTED_ARCHES_LIST}.")
-    endif()
-  endif()
-endmacro()
-
-#
-# Define a target named `GPU_MOD_NAME` for a single extension. The
+# Define a target named `MOD_NAME` for a single extension. The
 # arguments are:
 #
 # DESTINATION <dest>         - Module destination directory.
-# LANGUAGE <lang>            - The GPU language for this module, e.g CUDA, HIP,
-#                              etc.
 # SOURCES <sources>          - List of source files relative to CMakeLists.txt
 #                              directory.
 #
@@ -406,50 +305,54 @@ endmacro()
 #
 # Note: optimization level/debug info is set via cmake build type.
 #
-function (define_gpu_extension_target GPU_MOD_NAME)
+function(define_gpu_extension_target MOD_NAME)
   cmake_parse_arguments(PARSE_ARGV 1
-    GPU
+    ARG
     "WITH_SOABI"
-    "DESTINATION;LANGUAGE;USE_SABI"
+    "DESTINATION;USE_SABI"
     "SOURCES;ARCHITECTURES;COMPILE_FLAGS;INCLUDE_DIRECTORIES;LIBRARIES")
 
-  if (GPU_WITH_SOABI)
-    set(GPU_WITH_SOABI WITH_SOABI)
+  if (ARG_WITH_SOABI)
+    set(SOABI_KEYWORD WITH_SOABI)
   else()
-    set(GPU_WITH_SOABI)
+    set(SOABI_KEYWORD "")
   endif()
 
-  if (GPU_USE_SABI)
-    Python_add_library(${GPU_MOD_NAME} MODULE USE_SABI ${GPU_USE_SABI} ${GPU_WITH_SOABI} "${GPU_SOURCES}")
+  if (ARG_USE_SABI)
+    Python_add_library(${MOD_NAME} MODULE USE_SABI ${ARG_USE_SABI} ${SOABI_KEYWORD} "${ARG_SOURCES}")
   else()
-    Python_add_library(${GPU_MOD_NAME} MODULE ${GPU_WITH_SOABI} "${GPU_SOURCES}")
+    Python_add_library(${MOD_NAME} MODULE ${SOABI_KEYWORD} "${ARG_SOURCES}")
   endif()
 
-  if (GPU_ARCHITECTURES)
-    set_target_properties(${GPU_MOD_NAME} PROPERTIES
-      ${GPU_LANGUAGE}_ARCHITECTURES "${GPU_ARCHITECTURES}")
+  if (ARG_ARCHITECTURES)
+    # Use set_gencode_flags_for_srcs to set per-source architecture flags
+    set_gencode_flags_for_srcs(
+      SRCS ${ARG_SOURCES}
+      CUDA_ARCHS ${ARG_ARCHITECTURES})
   endif()
 
-  set_property(TARGET ${GPU_MOD_NAME} PROPERTY CXX_STANDARD 17)
+  set_property(TARGET ${MOD_NAME} PROPERTY CXX_STANDARD 17)
 
-  target_compile_options(${GPU_MOD_NAME} PRIVATE
-    $<$<COMPILE_LANGUAGE:${GPU_LANGUAGE}>:${GPU_COMPILE_FLAGS}>)
+  target_compile_options(${MOD_NAME} PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${ARG_COMPILE_FLAGS}>)
 
-  target_compile_definitions(${GPU_MOD_NAME} PRIVATE
-    "-DTORCH_EXTENSION_NAME=${GPU_MOD_NAME}")
+  target_include_directories(${MOD_NAME} PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/csrc
+    ${CUDAToolkit_INCLUDE_DIRS}
+    ${ARG_INCLUDE_DIRECTORIES})
 
-  target_include_directories(${GPU_MOD_NAME} PRIVATE csrc
-    ${GPU_INCLUDE_DIRECTORIES})
+  # Link CUDA runtime
+  target_link_libraries(${MOD_NAME} PRIVATE
+    CUDA::cudart
+    CUDA::cuda_driver
+    ${ARG_LIBRARIES})
 
-  target_link_libraries(${GPU_MOD_NAME} PRIVATE torch ${GPU_LIBRARIES})
+  # Set RPATH for the extension target
+  set_target_properties(${MOD_NAME} PROPERTIES
+    INSTALL_RPATH_USE_LINK_PATH TRUE
+    BUILD_WITH_INSTALL_RPATH TRUE)
 
-  # Don't use `TORCH_LIBRARIES` for CUDA since it pulls in a bunch of
-  # dependencies that are not necessary and may not be installed.
-  if (GPU_LANGUAGE STREQUAL "CUDA")
-    target_link_libraries(${GPU_MOD_NAME} PRIVATE CUDA::cudart CUDA::cuda_driver)
-  else()
-    target_link_libraries(${GPU_MOD_NAME} PRIVATE ${TORCH_LIBRARIES})
-  endif()
-
-  install(TARGETS ${GPU_MOD_NAME} LIBRARY DESTINATION ${GPU_DESTINATION} COMPONENT ${GPU_MOD_NAME})
+  install(TARGETS ${MOD_NAME}
+    LIBRARY DESTINATION ${ARG_DESTINATION}
+    COMPONENT ${MOD_NAME})
 endfunction()
