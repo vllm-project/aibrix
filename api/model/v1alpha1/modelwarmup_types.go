@@ -34,6 +34,10 @@ const (
 	MaxModelWarmupPullSecrets                       = 32
 	MaxModelWarmupCommandElements                   = 64
 	MaxModelWarmupArgElements                       = 64
+	MaxModelWarmupCustomInitContainers              = 32
+	MaxModelWarmupCustomContainers                  = 32
+	MaxModelWarmupCustomVolumes                     = 32
+	MaxModelWarmupCustomPullSecrets                 = 32
 )
 
 type ModelWarmupMode string
@@ -54,7 +58,11 @@ type ModelWarmupSpec struct {
 	// +kubebuilder:validation:MaxItems=32
 	Targets []ModelWarmupTarget `json:"targets"`
 
-	ImagePreload ModelWarmupImagePreload `json:"imagePreload"`
+	// +optional
+	ImagePreload ModelWarmupImagePreload `json:"imagePreload,omitempty"`
+
+	// +optional
+	Custom *ModelWarmupCustomAction `json:"custom,omitempty"`
 
 	// +optional
 	Policies *ModelWarmupPolicies `json:"policies,omitempty"`
@@ -101,6 +109,24 @@ type ModelWarmupImage struct {
 
 	// +optional
 	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
+}
+
+type ModelWarmupCustomAction struct {
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	InitContainers []corev1.Container `json:"initContainers,omitempty"`
+
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	Containers []corev1.Container `json:"containers,omitempty"`
+
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	Volumes []corev1.Volume `json:"volumes,omitempty"`
+
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 }
 
 type ModelWarmupPolicies struct {
