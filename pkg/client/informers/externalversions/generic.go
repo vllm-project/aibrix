@@ -62,6 +62,8 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Model().V1alpha1().ModelAdapters().Informer()}, nil
 	case modelv1alpha1.SchemeGroupVersion.WithResource("modelclaims"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Model().V1alpha1().ModelClaims().Informer()}, nil
+	case modelv1alpha1.SchemeGroupVersion.WithResource("modelwarmups"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Model().V1alpha1().ModelWarmups().Informer()}, nil
 
 		// Group=orchestration, Version=v1alpha1
 	case orchestrationv1alpha1.SchemeGroupVersion.WithResource("rayclusterfleets"):

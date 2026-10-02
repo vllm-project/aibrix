@@ -212,7 +212,7 @@ jobs:
       - name: Set up testing environment
         run: |
           # Set up the cluster with kind or other Kubernetes environment needed
-          kind create cluster --name installation-test --config=./hack/ci/kind-config.yaml
+          kind create cluster --name installation-test --config=./hack/ci/kind-config-installation.yaml
           kubectl cluster-info --context kind-installation-test
 
       - name: Load images into kind
