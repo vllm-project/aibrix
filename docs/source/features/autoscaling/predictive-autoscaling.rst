@@ -8,12 +8,12 @@ Reactive autoscaling waits for the metric to move before it adds replicas, which
 one pod start-up time of headroom. Predictive autoscaling closes part of that gap: it projects
 the metric trend of the observation window forward and, in ``Auto`` mode, uses the projection as
 a floor for scale-up. The reactive decision is never replaced, and a projection never scales a
-workload down.
+workload down. This first version covers trend-based extrapolation. A longer time-series
+forecast is a later stage that can layer onto the same API.
 
 The feature is opt-in through ``spec.predictive``. When the block is absent nothing in this page
-applies. Today the block is accepted and validated only: applying it writes no
-``status.predictive`` and changes no replica count. The controller that consumes these fields
-lands in a follow-up.
+applies. Applying the block records the projection in ``status.predictive`` and changes no
+replica count. The ``Auto`` decision that consumes the projection lands in a follow-up.
 
 Modes
 -----
@@ -40,6 +40,9 @@ Modes
      predictive:
        mode: Auto
        horizonSeconds: 120
+
+Set ``horizonSeconds`` close to the time a pod needs between scheduling and becoming ready. The
+default is a starting point, not a universal value.
 
 Status
 ------
