@@ -168,7 +168,7 @@ func (r *ModelClaimReconciler) wakeRequested(
 
 		pods := []corev1.Pod{*pod}
 		ledger := ledgersOf(pods)[pod.Name]
-		if !ledger.judgeable && podHasGPUs(*pod, ledger.accelerators) && r.podsWithoutWakeReserve(ctx, pods)[pod.Name] {
+		if !ledger.judgeable && podHasGPUs(*pod, ledger.accelerators) && ledger.keepsNoWakeReserve {
 			r.waitForRoom(ctx, pm, inst, pod, "its card cannot be accounted for: "+ledger.blocked)
 			continue
 		}

@@ -202,6 +202,9 @@ func (e engineOnPod) plannedKVHeldBytes() int64 {
 type podLedger struct {
 	judgeable bool
 	blocked   string
+	// keepsNoWakeReserve is whether the pod's pool keeps no wake reserve for
+	// its sleeping engines.
+	keepsNoWakeReserve bool
 	// unread is set when the pod's runtime did not answer, or the claims could
 	// not be listed. Nothing is known about the pod then, not even whether it
 	// has cards.
@@ -340,15 +343,18 @@ func podLedgersFrom(
 		accelerators := reportedAccelerators(snapshots[pod.Name])
 		switch {
 		case snapshots[pod.Name] == nil:
-			ledgers[pod.Name] = podLedger{blocked: "its runtime did not answer", unread: true}
+			ledgers[pod.Name] = podLedger{blocked: "its runtime did not answer", unread: true,
+				keepsNoWakeReserve: withoutWakeReserve[pod.Name]}
 		case !measured:
-			ledgers[pod.Name] = podLedger{blocked: unmeasuredCards(snapshots[pod.Name]), accelerators: accelerators}
+			ledgers[pod.Name] = podLedger{blocked: unmeasuredCards(snapshots[pod.Name]), accelerators: accelerators,
+				keepsNoWakeReserve: withoutWakeReserve[pod.Name]}
 		default:
 			ledgers[pod.Name] = podLedger{
-				judgeable:      true,
-				hbmUsableBytes: hbmUsableBytes,
-				observedAt:     snapshots[pod.Name].ObservedAt,
-				accelerators:   accelerators,
+				keepsNoWakeReserve: withoutWakeReserve[pod.Name],
+				judgeable:          true,
+				hbmUsableBytes:     hbmUsableBytes,
+				observedAt:         snapshots[pod.Name].ObservedAt,
+				accelerators:       accelerators,
 			}
 		}
 	}
