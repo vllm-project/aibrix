@@ -90,13 +90,15 @@ func (uniformLocality) Cost(model, nodeName string) float64 { return 0 }
 // A nil provider is treated as uniform (load-only), preserving the existing
 // deterministic fallback when runtime observations are unavailable.
 func selectPodForActivation(candidates []corev1.Pod, alreadyOn map[string]bool, load map[string]int, model string, locality LocalityProvider) (*corev1.Pod, error) {
-	return selectPodForActivationWithState(candidates, alreadyOn, load, model, locality, nil)
+	return selectPodForActivationWithState(candidates, alreadyOn, load, model, locality, nil, 0)
 }
 
 // selectPodForActivationWithState first prefers a pod that already has the
 // artifact locally, then live GPU/KV observations, and finally the Phase-1
-// locality/load/name rank. Missing runtime state is safe: it simply falls back
-// to the existing deterministic placement behavior.
+// locality/load/name rank. When requiredHBMBytesPerGPU is positive, pods with
+// unknown free HBM or less than the required capacity are excluded. Otherwise,
+// missing runtime state falls back to the existing deterministic placement
+// behavior.
 func selectPodForActivationWithState(
 	candidates []corev1.Pod,
 	alreadyOn map[string]bool,
@@ -104,6 +106,7 @@ func selectPodForActivationWithState(
 	model string,
 	locality LocalityProvider,
 	states map[string]PodPlacementState,
+	requiredHBMBytesPerGPU int64,
 ) (*corev1.Pod, error) {
 	if locality == nil {
 		locality = uniformLocality{}
@@ -112,12 +115,17 @@ func selectPodForActivationWithState(
 	var bestState PodPlacementState
 	var bestLoc float64
 	var bestLoad int
+	var skippedForHBM bool
 	for i := range candidates {
 		pod := &candidates[i]
 		if alreadyOn[pod.Name] {
 			continue
 		}
 		state := states[pod.Name]
+		if requiredHBMBytesPerGPU > 0 && (!state.MemoryKnown || state.HBMFreeBytes < requiredHBMBytesPerGPU) {
+			skippedForHBM = true
+			continue
+		}
 		loc := locality.Cost(model, pod.Spec.NodeName)
 		l := load[pod.Name]
 		if best == nil || placementStateLess(state, bestState) ||
@@ -126,6 +134,9 @@ func selectPodForActivationWithState(
 		}
 	}
 	if best == nil {
+		if skippedForHBM {
+			return nil, fmt.Errorf("no candidate warm pod has confirmed free HBM of at least %d bytes per GPU", requiredHBMBytesPerGPU)
+		}
 		return nil, fmt.Errorf("no available candidate warm pod for model")
 	}
 	return best, nil

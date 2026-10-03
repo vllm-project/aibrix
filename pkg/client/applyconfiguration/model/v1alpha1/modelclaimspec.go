@@ -18,18 +18,20 @@ limitations under the License.
 package v1alpha1
 
 import (
+	resource "k8s.io/apimachinery/pkg/api/resource"
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
 // ModelClaimSpecApplyConfiguration represents a declarative configuration of the ModelClaimSpec type for use
 // with apply.
 type ModelClaimSpecApplyConfiguration struct {
-	ModelName    *string                                   `json:"modelName,omitempty"`
-	PodSelector  *v1.LabelSelectorApplyConfiguration       `json:"podSelector,omitempty"`
-	ArtifactURL  *string                                   `json:"artifactURL,omitempty"`
-	Engine       *string                                   `json:"engine,omitempty"`
-	Replicas     *int32                                    `json:"replicas,omitempty"`
-	EngineConfig *ModelClaimEngineConfigApplyConfiguration `json:"engineConfig,omitempty"`
+	ModelName              *string                                   `json:"modelName,omitempty"`
+	PodSelector            *v1.LabelSelectorApplyConfiguration       `json:"podSelector,omitempty"`
+	ArtifactURL            *string                                   `json:"artifactURL,omitempty"`
+	RequiredHBMBytesPerGPU *resource.Quantity                        `json:"requiredHBMBytesPerGPU,omitempty"`
+	Engine                 *string                                   `json:"engine,omitempty"`
+	Replicas               *int32                                    `json:"replicas,omitempty"`
+	EngineConfig           *ModelClaimEngineConfigApplyConfiguration `json:"engineConfig,omitempty"`
 }
 
 // ModelClaimSpecApplyConfiguration constructs a declarative configuration of the ModelClaimSpec type for use with
@@ -59,6 +61,14 @@ func (b *ModelClaimSpecApplyConfiguration) WithPodSelector(value *v1.LabelSelect
 // If called multiple times, the ArtifactURL field is set to the value of the last call.
 func (b *ModelClaimSpecApplyConfiguration) WithArtifactURL(value string) *ModelClaimSpecApplyConfiguration {
 	b.ArtifactURL = &value
+	return b
+}
+
+// WithRequiredHBMBytesPerGPU sets the RequiredHBMBytesPerGPU field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the RequiredHBMBytesPerGPU field is set to the value of the last call.
+func (b *ModelClaimSpecApplyConfiguration) WithRequiredHBMBytesPerGPU(value resource.Quantity) *ModelClaimSpecApplyConfiguration {
+	b.RequiredHBMBytesPerGPU = &value
 	return b
 }
 
