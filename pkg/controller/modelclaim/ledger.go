@@ -129,6 +129,15 @@ type engineOnPod struct {
 	// inFlightRequests is the demand an engine's part of the spare KV is
 	// weighed by: its running and waiting requests.
 	inFlightRequests int64
+	// requestsWaiting is how many of those requests wait for the engine to
+	// take them.
+	requestsWaiting int64
+	// demandUnknown is whether the engine serves but its request metrics could
+	// not be read, so its demand is not known.
+	demandUnknown bool
+	// asleep is whether the runtime reports the engine sleeping. A sleeping
+	// engine serves nothing, so it is given no part of the spare KV.
+	asleep bool
 }
 
 // kvHeldBytes is the KV an engine keeps whatever else happens on the card: the
@@ -209,10 +218,9 @@ func (l podLedger) withHole(reason string) podLedger {
 
 // collectPodLedgers builds one account per candidate pod.
 //
-// The snapshots must be fresh rather than cached. Ranking can work from a
-// reading a few seconds old, but an account cannot: what an engine holds moves
-// with traffic, and admitting a model against memory another engine has since
-// mapped is how a card ends up oversubscribed.
+// The snapshots must be this pass's readings, never older ones. What an engine
+// holds moves with traffic, and admitting a model against memory another engine
+// has since mapped is how a card ends up oversubscribed.
 //
 // What a card owes comes from ModelClaim status, which only this controller
 // writes, so the account charges an instance from the moment it is recorded
@@ -221,6 +229,40 @@ func (l podLedger) withHole(reason string) podLedger {
 func (r *ModelClaimReconciler) collectPodLedgers(
 	ctx context.Context,
 	namespace string,
+	candidates []corev1.Pod,
+	snapshots map[string]*RuntimeSnapshot,
+) map[string]podLedger {
+	claims, err := r.listClaimsForAccount(ctx, namespace)
+	return podLedgersFrom(claims, err, candidates, snapshots)
+}
+
+// listClaimsForAccount lists the claims in a namespace for the GPU memory
+// account.
+//
+// Deliberately not the cached client. An instance recorded moments ago may not
+// have reached the informer yet. An instance missing from the account is memory
+// that a second claim would be told is free.
+func (r *ModelClaimReconciler) listClaimsForAccount(
+	ctx context.Context,
+	namespace string,
+) (*modelv1alpha1.ModelClaimList, error) {
+	reader := client.Reader(r.Client)
+	if r.APIReader != nil {
+		reader = r.APIReader
+	}
+	claims := &modelv1alpha1.ModelClaimList{}
+	if err := reader.List(ctx, claims, client.InNamespace(namespace)); err != nil {
+		klog.ErrorS(err, "list model claims for the GPU memory account", "namespace", namespace)
+		return nil, err
+	}
+	return claims, nil
+}
+
+// podLedgersFrom builds one account per candidate pod from a listing of the
+// claims, or marks every account as a hole when the listing failed.
+func podLedgersFrom(
+	claims *modelv1alpha1.ModelClaimList,
+	listErr error,
 	candidates []corev1.Pod,
 	snapshots map[string]*RuntimeSnapshot,
 ) map[string]podLedger {
@@ -244,16 +286,7 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 		}
 	}
 
-	// Deliberately not the cached client. An instance recorded moments ago may
-	// not have reached the informer yet, and an instance missing from the
-	// account is memory a second claim would be told is free.
-	reader := client.Reader(r.Client)
-	if r.APIReader != nil {
-		reader = r.APIReader
-	}
-	claims := &modelv1alpha1.ModelClaimList{}
-	if err := reader.List(ctx, claims, client.InNamespace(namespace)); err != nil {
-		klog.ErrorS(err, "collect pod ledgers: list model claims", "namespace", namespace)
+	if listErr != nil {
 		// Without the claims, nothing says what is recorded on a pod, and so
 		// nothing says whether it has a card. Every pod is turned away, and
 		// the claims are the reason. A card that this reading did not show
@@ -299,6 +332,18 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 				engine.snapshotKey = snapshotActivityKey(*model)
 				engine.kvCapacityBytes = model.KVCapacityBytes
 				engine.inFlightRequests = max(model.RequestsRunning, 0) + max(model.RequestsWaiting, 0)
+				engine.requestsWaiting = max(model.RequestsWaiting, 0)
+				// A scrape that failed says nothing about load, and the engine may
+				// be too busy to answer it in time. A serving engine whose metrics
+				// could not be read is not taken for idle. Only an engine that
+				// serves can be busy, though. The runtime reports an engine ready
+				// before it has finished booting, after a start or a wake, and it
+				// reads no metrics until then. The gateway routes only to an
+				// Active instance. An engine that is not both active and routed
+				// has no load that could have gone unread.
+				engine.demandUnknown = model.Ready && !model.RequestMetricsObserved &&
+					model.Phase == runtimePhaseActive && instance.Phase == modelv1alpha1.ModelClaimActive
+				engine.asleep = model.Phase == runtimePhaseSleeping
 				// A negative figure means there is no KV segment to read, and
 				// an engine without one has mapped nothing.
 				engine.kvUsedBytes = max(model.KVUsedBytes, 0)
