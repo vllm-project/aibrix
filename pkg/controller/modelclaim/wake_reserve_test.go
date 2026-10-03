@@ -455,6 +455,19 @@ func TestReconcilePutsTheNeighbourIdleLongestToSleepToMakeRoomForAWake(t *testin
 	assert.Equal(t, "waker", runtime.wakeCalls[0].ModelName)
 }
 
+func TestReconcilePutsNoNeighbourToSleepForAWakeOnACardHeldForAnotherClaim(t *testing.T) {
+	r, runtime, pod := crowdedCard(t, keepNoWakeReserve)
+	// Room is being made on this card for a new claim, and the card is held
+	// for it.
+	require.True(t, r.reservations().hold(cardOf(pod), "new", 400, r.now()))
+
+	reconcileOnce(t, r, "waker")
+
+	assert.Empty(t, runtime.sleepCalls, "the room is the new claim's")
+	assert.Empty(t, runtime.wakeCalls)
+	assert.Equal(t, instanceReasonWaitingForRoom, getModel(t, r, "waker").Status.Instances[0].Reason)
+}
+
 func TestReconcilePutsNoNeighbourToSleepWhereASleepGivesNoRoomBack(t *testing.T) {
 	for name, tc := range map[string]struct {
 		policy string

@@ -336,13 +336,18 @@ func (r *ModelClaimReconciler) sleepToMakeRoom(
 // back, and returns the pool's lifecycle policy when it does. That is a pool
 // that keeps no wake reserve, and a card where every engine asleep was
 // measured. An engine whose memory asleep is not known keeps its reserve, so
-// the next one put to sleep would most likely free nothing either.
+// the next one put to sleep would most likely free nothing either. A card held
+// for another claim keeps its room for that claim, so no engine there is put
+// to sleep for this one.
 func (r *ModelClaimReconciler) roomCanBeMadeOn(
 	ctx context.Context,
 	forClaim *modelv1alpha1.ModelClaim,
 	pod *corev1.Pod,
 	ledger podLedger,
 ) (*poolLifecyclePolicy, bool) {
+	if ledger.reservedBytes > 0 {
+		return nil, false
+	}
 	lifecycle := r.poolLifecycleOf(ctx, pod)
 	if lifecycle == nil || !lifecycle.NoWakeReserveWhileAsleep {
 		return nil, false

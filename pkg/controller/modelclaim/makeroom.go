@@ -312,8 +312,7 @@ func (r *ModelClaimReconciler) planRoom(
 ) (roomPlan, bool) {
 	// A pod whose cards do not suit the claim's topology cannot take it, however
 	// much room is made there.
-	if !ledger.judgeable || !podHasGPUs(*pod, ledger.accelerators) || ledger.reservedBytes > 0 ||
-		!fitsTopology(*pod, ledger, instanceGPUCount(pm)) {
+	if !ledger.judgeable || !podHasGPUs(*pod, ledger.accelerators) || !fitsTopology(*pod, ledger, instanceGPUCount(pm)) {
 		return roomPlan{}, false
 	}
 	lifecycle, can := r.roomCanBeMadeOn(ctx, pm, pod, ledger)

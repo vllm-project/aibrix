@@ -519,9 +519,10 @@ engines to sleep one at a time, once each has been idle for
 Events. Meanwhile, the claim's ``Scheduled`` condition says ``MakingRoom``, and
 the claim raises a ``MakingRoom`` Event. The Pod is held for the claim for up
 to two minutes, or until the claim is deleted. No other claim is placed in that
-room, and the card does not lend it out as KV. The claim is placed once the
-room is there. A Pod with nothing left to put to sleep is let go, and the claim
-waits for room as before.
+room, and the card does not lend it out as KV. A wake on that card waits, and
+puts no engine there to sleep. The claim is placed once the room is there. A
+Pod with nothing left to put to sleep is let go, and the claim waits for room
+as before.
 
 A failed instance does free its seat. The runtime stops an engine once its
 restarts run out, and reports it as not alive. The account then charges the
