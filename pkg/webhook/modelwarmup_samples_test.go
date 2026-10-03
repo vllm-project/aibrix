@@ -19,6 +19,7 @@ package webhook
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -33,7 +34,8 @@ func TestModelWarmupSamples(t *testing.T) {
 		"samples/modelwarmup/model-download.yaml",
 		"samples/modelwarmup/node-precheck.yaml",
 		"samples/modelwarmup/gpu-precheck.yaml",
-		"samples/modelwarmup/combined-warmup.yaml",
+		"samples/modelwarmup/vllm-qwen-warmup.yaml",
+		"samples/modelwarmup/sglang-qwen-warmup.yaml",
 	}
 	samples := make(map[string]*modelapi.ModelWarmup, len(samplePaths))
 	for _, samplePath := range samplePaths {
@@ -51,17 +53,30 @@ func TestModelWarmupSamples(t *testing.T) {
 	require.NotNil(t, modelDownload.Spec.Custom)
 	require.NotEmpty(t, modelDownload.Spec.Custom.Containers)
 
-	combined := samples["samples/modelwarmup/combined-warmup.yaml"]
-	require.NotEmpty(t, combined.Spec.ImagePreload.Images)
-	require.NotNil(t, combined.Spec.Custom)
-	require.NotEmpty(t, combined.Spec.Custom.Containers)
-	require.NotEmpty(t, combined.Spec.Custom.InitContainers)
+	vllm := samples["samples/modelwarmup/vllm-qwen-warmup.yaml"]
+	require.Equal(t, "vllm/vllm-openai:v0.10.2", vllm.Spec.ImagePreload.Images[0].Image)
+	require.Contains(t, vllm.Spec.Custom.Containers[0].Args, "Qwen/Qwen3-0.6B")
+	require.NotEmpty(t, vllm.Spec.Custom.InitContainers)
+
+	sglang := samples["samples/modelwarmup/sglang-qwen-warmup.yaml"]
+	require.Equal(t, "lmsysorg/sglang:v0.5.5.post3", sglang.Spec.ImagePreload.Images[0].Image)
+	require.Contains(t, sglang.Spec.Custom.Containers[0].Args, "Qwen/Qwen3-0.6B")
+	require.NotEmpty(t, sglang.Spec.Custom.InitContainers)
 
 	nodePrecheck := samples["samples/modelwarmup/node-precheck.yaml"]
 	require.NotNil(t, nodePrecheck.Spec.Custom)
 	require.NotEmpty(t, nodePrecheck.Spec.Custom.InitContainers)
-	require.Equal(t, nodePrecheck.Spec.Custom.InitContainers[0].Command, combined.Spec.Custom.InitContainers[0].Command)
-	require.Equal(t, nodePrecheck.Spec.Custom.InitContainers[0].Args, combined.Spec.Custom.InitContainers[0].Args)
+	require.Equal(t, vllm.Spec.Custom.InitContainers[0].Command, sglang.Spec.Custom.InitContainers[0].Command)
+	require.Equal(t, vllm.Spec.Custom.InitContainers[0].Args, sglang.Spec.Custom.InitContainers[0].Args)
+	for _, engine := range []*modelapi.ModelWarmup{vllm, sglang} {
+		require.EqualValues(t, 2, *engine.Spec.Policies.Parallelism)
+		precheck := engine.Spec.Custom.InitContainers[0]
+		script := strings.Join(precheck.Args, "\n")
+		require.Contains(t, script, "10485760")
+		require.Contains(t, script, "cpu_count")
+		require.Contains(t, script, "MemAvailable")
+		require.Contains(t, script, "nslookup huggingface.co")
+	}
 
 	gpuPrecheck := samples["samples/modelwarmup/gpu-precheck.yaml"]
 	require.NotNil(t, gpuPrecheck.Spec.Custom)

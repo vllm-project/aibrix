@@ -24,10 +24,11 @@ account needs its documented permissions to create and observe Jobs and read
 Nodes. Do not grant arbitrary users permission to create ModelWarmups that can
 target pools or mount host paths they do not administer.
 
-The public `busybox:1.36`, `aibrix/runtime:v0.7.0`,
-`nvidia/cuda:12.4.1-base-ubuntu22.04`, and `sshleifer/tiny-gpt2` choices keep
-the samples small and reproducible enough for demonstration. Production users
-should validate their exact image commands, pin image/model revisions, and use
+The lightweight samples use public `busybox:1.36`,
+`aibrix/runtime:v0.7.0`, `nvidia/cuda:12.4.1-base-ubuntu22.04`, and
+`sshleifer/tiny-gpt2`. The opt-in engine examples use
+`vllm/vllm-openai:v0.10.2`, `lmsysorg/sglang:v0.5.5.post3`, and
+`Qwen/Qwen3-0.6B`. Production users should pin image and model digests and use
 their registry and artifact credentials as appropriate.
 
 ## Apply a sample
@@ -37,13 +38,14 @@ kubectl apply -f samples/modelwarmup/modelwarmup.yaml
 kubectl apply -f samples/modelwarmup/model-download.yaml
 kubectl apply -f samples/modelwarmup/node-precheck.yaml
 kubectl apply -f samples/modelwarmup/gpu-precheck.yaml
-kubectl apply -f samples/modelwarmup/combined-warmup.yaml
+kubectl apply -f samples/modelwarmup/vllm-qwen-warmup.yaml
+kubectl apply -f samples/modelwarmup/sglang-qwen-warmup.yaml
 ```
 
 Watch an individual resource with, for example:
 
 ```sh
-kubectl get modelwarmup combined-runtime-and-model-warmup -w
+kubectl get modelwarmup vllm-qwen3-0-6b-warmup -w
 ```
 
 `modelwarmup.yaml` pulls BusyBox and exits successfully. It does not use
@@ -63,19 +65,27 @@ least 1 GiB available, then uses a finite BusyBox container to mark success.
 installed and advertising that resource. The following BusyBox regular
 container exits successfully.
 
-`combined-warmup.yaml` runs a generic cache precheck first, then starts the
-generated BusyBox image-preload container and the custom downloader as regular
-containers. The regular containers may run concurrently; only init containers
-are sequential.
+`vllm-qwen-warmup.yaml` and `sglang-qwen-warmup.yaml` are large, opt-in
+combined examples. Each checks writable cache storage, at least 10 GiB free
+space, two CPUs, 4 GiB available memory, and Hugging Face DNS. It then preloads
+the pinned engine image while downloading
+`Qwen/Qwen3-0.6B` into an engine-specific node-local host path. Restrict the
+latency-pool selector to only the nodes that should receive these large
+artifacts; two nodes are sufficient for a smoke test.
+
+The engine image and downloader are regular containers and may run
+concurrently after the precheck init container succeeds. These examples only
+prepare the image and model caches; they do not start an inference server.
 
 ## Cache and completion behavior
 
-The download, node-precheck, and combined samples use a `hostPath` volume at
+The download and precheck samples use a `hostPath` volume under
 `/var/lib/aibrix/models`, created with `DirectoryOrCreate` and mounted as
-`/models`. This is a node-local cache shared by Pods that mount the same host
-path; it is neither a distributed store nor a guarantee that an inference Pod
-uses the artifact. Verify ownership, permissions, capacity, backup, and cleanup
-rules on every target node before adopting this pattern.
+`/models`. The engine examples use separate `vllm-qwen3-0.6b` and
+`sglang-qwen3-0.6b` subdirectories. These are node-local caches, not a
+distributed store or a guarantee that an inference Pod uses the artifact.
+Verify ownership, permissions, capacity, backup, and cleanup rules on every
+target node before adopting this pattern.
 
 All image-preload and custom container commands must finish and exit zero. A
 server, shell, downloader that waits indefinitely, or other long-running

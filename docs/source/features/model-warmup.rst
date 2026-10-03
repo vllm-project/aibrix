@@ -103,16 +103,27 @@ ModelWarmup; other engines and distroless images may expose different binaries.
    :language: yaml
    :linenos:
 
-``node-precheck.yaml`` checks cache write access and at least 1 GiB free space;
+``node-precheck.yaml`` checks cache write access and at least 1 GiB free space.
 ``gpu-precheck.yaml`` runs ``nvidia-smi`` with an ``nvidia.com/gpu: "1"``
-limit and therefore requires a GPU node with the NVIDIA device plugin; and
-``combined-warmup.yaml`` combines a generic cache precheck, finite BusyBox image
-preload, and the custom downloader. See the sample directory README for apply
-commands and prerequisites.
+limit and therefore requires a GPU node with the NVIDIA device plugin.
 
-.. literalinclude:: ../../../samples/modelwarmup/combined-warmup.yaml
+Two large, opt-in examples combine real engine images with a
+``Qwen/Qwen3-0.6B`` download. Their init containers verify writable storage,
+10 GiB free disk, two CPUs, 4 GiB available memory, and Hugging Face DNS:
+
+.. literalinclude:: ../../../samples/modelwarmup/vllm-qwen-warmup.yaml
    :language: yaml
    :linenos:
+
+.. literalinclude:: ../../../samples/modelwarmup/sglang-qwen-warmup.yaml
+   :language: yaml
+   :linenos:
+
+The examples preload pinned vLLM or SGLang images while the custom regular
+container downloads the model into a separate node-local cache. Restrict the
+selector to the intended nodes; two nodes are sufficient for a smoke test.
+They prepare caches only and do not start an inference server. See the sample
+directory README for apply commands and prerequisites.
 
 Security and cache durability
 -----------------------------
