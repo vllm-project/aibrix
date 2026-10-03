@@ -63,6 +63,12 @@ func NewRemoteTokenizer(config RemoteTokenizerConfig) (Tokenizer, error) {
 
 // TokenizeInputText implements the basic Tokenizer interface for backward compatibility
 func (t *remoteTokenizerImpl) TokenizeInputText(text string) ([]byte, error) {
+	return t.TokenizeInputTextWithContext(context.Background(), text)
+}
+
+// TokenizeInputTextWithContext preserves the configured text-tokenization options
+// while binding the HTTP request and retries to the caller's context.
+func (t *remoteTokenizerImpl) TokenizeInputTextWithContext(ctx context.Context, text string) ([]byte, error) {
 	if !t.adapter.SupportsTokenization() {
 		return nil, ErrUnsupportedOperation{
 			Engine:    t.config.Engine,
@@ -70,7 +76,6 @@ func (t *remoteTokenizerImpl) TokenizeInputText(text string) ([]byte, error) {
 		}
 	}
 
-	ctx := context.Background()
 	input := TokenizeInput{
 		Type:             CompletionInput,
 		Text:             text,
@@ -221,3 +226,4 @@ func validateRemoteConfig(c *RemoteTokenizerConfig) error {
 
 // Ensure remoteTokenizerImpl implements remoteTokenizer interface
 var _ remoteTokenizer = (*remoteTokenizerImpl)(nil)
+var _ ContextTokenizer = (*remoteTokenizerImpl)(nil)
