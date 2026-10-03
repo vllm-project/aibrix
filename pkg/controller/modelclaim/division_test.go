@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -520,6 +521,46 @@ func TestReconcileReadsARecordFreshBeforeActingOnIt(t *testing.T) {
 	for _, event := range drainEvents(t, r) {
 		assert.NotContains(t, event, "KVLimitNotHeld")
 	}
+}
+
+// A division recorded a larger limit and could not confirm the grow, so the
+// engine is still held to the old one. A pass that reads the claim from a
+// cache that has not seen the record writes nothing over it. Its write carries
+// the version it read, and the API server refuses it, so the record stays for
+// the round that grows the engine.
+func TestReconcileWritesNoStaleRecordOverADivisionsRecord(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	claim := withFinalizer(claimOnPod("busy", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	claim.Status.Instances[0].Port = 9001
+	claim.Status.Instances[0].KVLimitBytes = 10 << 30
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("busy", 4<<30, 10<<30)}
+	r, runtime := newReconciler(t, claim, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	ctx := context.Background()
+	stale := getModel(t, r, "busy")
+	recorded := stale.DeepCopy()
+	recorded.Status.Instances[0].KVLimitBytes = 30 << 30
+	require.NoError(t, r.Status().Update(ctx, recorded))
+	apiServer := r.Client
+	r.Client = interceptor.NewClient(apiServer.(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object,
+			opts ...client.GetOption) error {
+			if out, ok := obj.(*modelv1alpha1.ModelClaim); ok && key.Name == "busy" {
+				stale.DeepCopyInto(out)
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	r.APIReader = apiServer
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: "busy"}})
+
+	require.NoError(t, err)
+	assert.True(t, result.Requeue, "the write from the stale cache was refused")
+	after := &modelv1alpha1.ModelClaim{}
+	require.NoError(t, apiServer.Get(ctx, client.ObjectKeyFromObject(claim), after))
+	assert.Equal(t, int64(30)<<30, after.Status.Instances[0].KVLimitBytes, "the division's record stands")
 }
 
 // countingReader counts the listings a reconciler makes around the cache.
