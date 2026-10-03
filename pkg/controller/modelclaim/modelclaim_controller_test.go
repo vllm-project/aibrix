@@ -64,8 +64,14 @@ type fakeRuntime struct {
 	sleepCalls      []SleepRequest
 	listCalls       int
 	snapshotCalls   int
+	// snapshotCallsTo counts the snapshot reads of each runtime, by pod IP.
+	snapshotCallsTo map[string]int
 	portSeq         int32
 	failActivate    bool
+	// failActivateOn makes the runtimes of the pods listed, by IP, refuse
+	// every start, and activatedOn is the pod each start was asked of.
+	failActivateOn map[string]bool
+	activatedOn    []string
 	// loseActivateAnswer makes Activate start the engine and fail as a call
 	// whose answer never arrived.
 	loseActivateAnswer bool
@@ -88,9 +94,10 @@ type fakeRuntime struct {
 	onKVLimit func()
 }
 
-func (f *fakeRuntime) Activate(_ context.Context, _ string, _ int, req *ActivateRequest) (*ActivateResponse, error) {
+func (f *fakeRuntime) Activate(_ context.Context, podIP string, _ int, req *ActivateRequest) (*ActivateResponse, error) {
 	f.activateCalls = append(f.activateCalls, *req)
-	if f.failActivate {
+	f.activatedOn = append(f.activatedOn, podIP)
+	if f.failActivate || f.failActivateOn[podIP] {
 		return &ActivateResponse{Status: "error", Message: "boom"}, &runtimeRefusal{"activate failed: boom"}
 	}
 	f.portSeq++
@@ -168,6 +175,10 @@ func (f *fakeRuntime) ListModels(_ context.Context, _ string, _ int) ([]ModelInf
 
 func (f *fakeRuntime) Snapshot(_ context.Context, podIP string, _ int) (*RuntimeSnapshot, error) {
 	f.snapshotCalls++
+	if f.snapshotCallsTo == nil {
+		f.snapshotCallsTo = map[string]int{}
+	}
+	f.snapshotCallsTo[podIP]++
 	if f.nilSnapshots[podIP] {
 		return nil, nil
 	}
@@ -279,9 +290,8 @@ func newReconciler(t *testing.T, objs ...client.Object) (*ModelClaimReconciler, 
 		Recorder:   record.NewFakeRecorder(32),
 		Runtime:    runtime,
 		PoolPolicy: newPoolPolicyManager(time.Now),
-		SnapshotCache: newRuntimeSnapshotCache(
-			defaultRuntimeSnapshotTTL, time.Now,
-		),
+		Divisions:  newCardDivisionState(time.Now),
+		Backoff:    newPlacementBackoff(time.Now),
 	}, runtime
 }
 
@@ -338,7 +348,7 @@ func TestReconcilePoolPoliciesAppliesDeploymentKVFirstPolicy(t *testing.T) {
 		},
 	}
 
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 
 	require.Len(t, runtime.kvLimitCalls, 2)
 	limits := map[string]int64{}
@@ -363,7 +373,7 @@ func TestReconcilePoolPoliciesAppliesDeploymentKVFirstPolicy(t *testing.T) {
 	runtime.snapshots[pod.Status.PodIP].Models[0].KVCapacityBytes = 200
 	runtime.snapshots[pod.Status.PodIP].Models[1].KVCapacityBytes = 800
 
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 
 	require.Len(t, runtime.kvLimitCalls, 2)
 	for _, call := range runtime.kvLimitCalls {
@@ -422,7 +432,7 @@ func TestReconcilePoolPoliciesStandDownWhereAClaimHoldsTheLimit(t *testing.T) {
 		},
 	}
 
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 
 	assert.Empty(t, runtime.kvLimitCalls)
 }
@@ -454,7 +464,7 @@ func TestReconcilePoolPoliciesSkipsNilRuntimeSnapshot(t *testing.T) {
 	r, runtime := newReconciler(t, deployment, replicaSet, pod)
 	runtime.nilSnapshots = map[string]bool{pod.Status.PodIP: true}
 
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 
 	assert.Empty(t, runtime.kvLimitCalls)
 	assert.Empty(t, runtime.sleepCalls)
@@ -504,8 +514,8 @@ func TestReconcilePoolPoliciesWarnsOnceForUnchangedInvalidPolicy(t *testing.T) {
 	deployment, replicaSet, pod := warmPoolObjects(`{"reclaim":{"capacityBytes":0}}`)
 	r, runtime := newReconciler(t, deployment, replicaSet, pod)
 
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 
 	events := drainEvents(t, r)
 	require.Len(t, events, 1)
@@ -530,12 +540,12 @@ func TestReconcilePoolPoliciesEmitsRecoveryOnceCorrected(t *testing.T) {
 		},
 	}
 
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 
 	deployment.Annotations[constants.ModelPoolPolicyAnnotationKey] = `{"reclaim":{"capacityBytes":1000}}`
 	require.NoError(t, r.Update(context.Background(), deployment))
 
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 
 	events := drainEvents(t, r)
 	require.Len(t, events, 2)
@@ -549,7 +559,7 @@ func TestReconcilePoolPoliciesStaysQuietForValidPolicy(t *testing.T) {
 	deployment, replicaSet, pod := warmPoolObjects(`{"reclaim":{"capacityBytes":1000}}`)
 	r, _ := newReconciler(t, deployment, replicaSet, pod)
 
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 
 	assert.Empty(t, drainEvents(t, r))
 }
@@ -581,11 +591,11 @@ func TestReconcilePoolPoliciesSleepsIdleSingleReplica(t *testing.T) {
 	}
 
 	// A first observation establishes a conservative idle baseline.
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 	require.Empty(t, runtime.sleepCalls)
 
 	now = now.Add(61 * time.Second)
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 
 	require.Len(t, runtime.sleepCalls, 1)
 	assert.Equal(t, "qwen2-7b", runtime.sleepCalls[0].ModelName)
@@ -632,14 +642,14 @@ func TestReconcilePoolPoliciesUsesRuntimeTransitionAsWakeGrace(t *testing.T) {
 		},
 	}
 
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 	now = now.Add(120 * time.Second)
 	lastTransition = now.Add(-30 * time.Second)
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 	assert.Empty(t, runtime.sleepCalls, "a recent wake transition must start a fresh idle window")
 
 	now = now.Add(31 * time.Second)
-	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 	assert.Len(t, runtime.sleepCalls, 1)
 }
 
@@ -1495,6 +1505,8 @@ func TestReconcileStopsSayingNoCardWillTakeItOnceOneDoes(t *testing.T) {
 	small, smallSnapshot := sizedWarmPod("warm-small", "10.0.0.1", 500)
 	roomy, roomySnapshot := sizedWarmPod("warm-roomy", "10.0.0.2", 2000)
 	r, runtime := newReconciler(t, pm, small)
+	now := time.Unix(1_700_000_000, 0)
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
 	runtime.snapshots = map[string]*RuntimeSnapshot{
 		small.Status.PodIP: smallSnapshot,
 		roomy.Status.PodIP: roomySnapshot,
@@ -1507,8 +1519,9 @@ func TestReconcileStopsSayingNoCardWillTakeItOnceOneDoes(t *testing.T) {
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 
-	// A card with room joins the pool. The earlier refusal must not be left
-	// standing as the claim's answer about finding one.
+	// A card with room joins the pool, which ends the claim's wait at once.
+	// The earlier refusal must not be left standing as the claim's answer
+	// about finding one.
 	require.NoError(t, r.Create(context.Background(), roomy))
 	reconcileOnce(t, r, pm.Name)
 
@@ -1712,12 +1725,13 @@ func TestReconcileDoesNotPlaceAClaimThatDeclaresAZeroFloor(t *testing.T) {
 // the KV limit its allocator currently holds.
 func readyEngine(kvCapacityBytes int64) RuntimeSnapshotModel {
 	return RuntimeSnapshotModel{
-		ModelName:       "qwen2-7b",
-		Port:            9001,
-		Phase:           "active",
-		Alive:           true,
-		Ready:           true,
-		KVCapacityBytes: kvCapacityBytes,
+		ModelName:              "qwen2-7b",
+		Port:                   9001,
+		Phase:                  "active",
+		Alive:                  true,
+		Ready:                  true,
+		KVCapacityBytes:        kvCapacityBytes,
+		RequestMetricsObserved: true,
 	}
 }
 
@@ -1736,7 +1750,7 @@ func TestArrangeCardGivesARetryItsOwnOperation(t *testing.T) {
 			[]corev1.Pod{*pod}, map[string]*RuntimeSnapshot{pod.Name: snapshot})
 		ledger := ledgers[pod.Name]
 		require.True(t, ledger.judgeable)
-		_, err := r.arrangeCard(context.Background(), pod, ledger, ledger.engines)
+		_, err := r.arrangeCard(context.Background(), pod, ledger, ledger.engines, placementDivision, nil)
 		require.NoError(t, err)
 	}
 
@@ -1753,6 +1767,267 @@ func TestArrangeCardGivesARetryItsOwnOperation(t *testing.T) {
 	require.Len(t, runtime.kvLimitCalls, 2)
 	assert.Equal(t, runtime.kvLimitCalls[0].LimitBytes, runtime.kvLimitCalls[1].LimitBytes)
 	assert.NotEqual(t, runtime.kvLimitCalls[0].OperationID, runtime.kvLimitCalls[1].OperationID)
+}
+
+// aShrinkAndAGrow is a card of 1000 whose division takes memory from "a" and
+// gives it to "b": "a" is idle and holds 400, "b" is busy and holds 100.
+func aShrinkAndAGrow(t *testing.T) (*ModelClaimReconciler, *fakeRuntime, *corev1.Pod, *RuntimeSnapshot) {
+	t.Helper()
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	a := claimOnPod("a", pod.Name, modelv1alpha1.ModelClaimActive, 200, 100)
+	a.Status.Instances[0].KVLimitBytes = 400
+	b := claimOnPod("b", pod.Name, modelv1alpha1.ModelClaimActive, 200, 100)
+	b.Status.Instances[0].KVLimitBytes = 100
+	busy := engineHolding("b", 100, 100)
+	busy.RequestsRunning = 4
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("a", 100, 400), busy}
+	r, runtime := newReconciler(t, a, b, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	return r, runtime, pod, snapshot
+}
+
+// divideOnce plans the card from what its runtime reports now and carries the
+// plan out.
+func divideOnce(t *testing.T, r *ModelClaimReconciler, pod *corev1.Pod, snapshot *RuntimeSnapshot) error {
+	t.Helper()
+	ledgers := r.collectPodLedgers(context.Background(), testNamespace,
+		[]corev1.Pod{*pod}, map[string]*RuntimeSnapshot{pod.Name: snapshot})
+	ledger := ledgers[pod.Name]
+	require.True(t, ledger.judgeable)
+	_, err := r.arrangeCard(context.Background(), pod, ledger, ledger.engines, placementDivision, nil)
+	return err
+}
+
+func TestArrangeCardGrowsAnEngineOnlyAfterAReadingConfirmsTheShrink(t *testing.T) {
+	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+	// The reading count at each write says what the controller had seen by then.
+	var readingsAtWrite []int
+	runtime.onKVLimit = func() { readingsAtWrite = append(readingsAtWrite, runtime.snapshotCalls) }
+
+	require.NoError(t, divideOnce(t, r, pod, snapshot))
+
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, "a", runtime.kvLimitCalls[0].ModelName)
+	assert.Equal(t, int64(167), runtime.kvLimitCalls[0].LimitBytes)
+	assert.Equal(t, "b", runtime.kvLimitCalls[1].ModelName)
+	assert.Equal(t, int64(433), runtime.kvLimitCalls[1].LimitBytes)
+	assert.Equal(t, readingsAtWrite[0]+1, readingsAtWrite[1],
+		"the grow should follow a reading taken after the shrink")
+}
+
+func TestArrangeCardGrowsNothingWhenAShrinkIsNotConfirmed(t *testing.T) {
+	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+	// "a" maps more between the plan and its new limit, which evicts nothing,
+	// so the room its shrink was to make is not there.
+	runtime.onKVLimit = func() { snapshot.Models[0].KVUsedBytes = 300 }
+
+	err := divideOnce(t, r, pod, snapshot)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "past the")
+	// The shrink is written, and taken back when the reading does not show it.
+	require.Len(t, runtime.kvLimitCalls, 2)
+	for _, call := range runtime.kvLimitCalls {
+		assert.Equal(t, "a", call.ModelName, "no engine may grow into room that was not given back")
+	}
+	assert.Equal(t, int64(400), runtime.kvLimitCalls[1].LimitBytes)
+	for name, want := range map[string]int64{"a": 400, "b": 100} {
+		got := getModel(t, r, name)
+		assert.Equal(t, want, got.Status.Instances[0].KVLimitBytes, "the record of %s should not move", name)
+	}
+}
+
+// An engine that restarted runs under its allocator's own limit, above its
+// record. A shrink of it that is not confirmed is taken back to its record,
+// and not to the limit it should never have had.
+func TestArrangeCardTakesAShrinkBackToTheRecordAtMost(t *testing.T) {
+	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+	snapshot.Models[0].KVCapacityBytes = 900
+	runtime.onKVLimit = func() { snapshot.Models[0].KVUsedBytes = 300 }
+
+	err := divideOnce(t, r, pod, snapshot)
+
+	require.Error(t, err)
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, "a", runtime.kvLimitCalls[1].ModelName)
+	assert.Equal(t, int64(400), runtime.kvLimitCalls[1].LimitBytes)
+}
+
+// An engine can be held to less than its record, as a grow that did not take
+// leaves it. A shrink of it that is not confirmed is taken back to what it was
+// held to, and not to its record.
+func TestArrangeCardTakesAShrinkBackToWhatTheEngineWasHeldTo(t *testing.T) {
+	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+	snapshot.Models[0].KVCapacityBytes = 300
+	runtime.onKVLimit = func() { snapshot.Models[0].KVUsedBytes = 250 }
+
+	err := divideOnce(t, r, pod, snapshot)
+
+	require.Error(t, err)
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, "a", runtime.kvLimitCalls[1].ModelName)
+	assert.Equal(t, int64(300), runtime.kvLimitCalls[1].LimitBytes)
+}
+
+// An instance that records no limit has no record to be taken back to. Its
+// engine is taken back to what it was held to.
+func TestArrangeCardTakesBackAShrinkOfAnEngineWithNoRecord(t *testing.T) {
+	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+	claim := getModel(t, r, "a")
+	claim.Status.Instances[0].KVLimitBytes = 0
+	require.NoError(t, r.Status().Update(context.Background(), claim))
+	runtime.onKVLimit = func() { snapshot.Models[0].KVUsedBytes = 300 }
+
+	err := divideOnce(t, r, pod, snapshot)
+
+	require.Error(t, err)
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, "a", runtime.kvLimitCalls[1].ModelName)
+	assert.Equal(t, int64(400), runtime.kvLimitCalls[1].LimitBytes)
+}
+
+// A take-back never writes less than the shrink wrote. The engine ran at 900,
+// above its record of 120, and its shrink wrote more than that record.
+func TestArrangeCardDoesNotTakeAShrinkBackBelowWhatItWrote(t *testing.T) {
+	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+	claim := getModel(t, r, "a")
+	claim.Status.Instances[0].KVLimitBytes = 120
+	require.NoError(t, r.Status().Update(context.Background(), claim))
+	snapshot.Models[0].KVCapacityBytes = 900
+	runtime.onKVLimit = func() { snapshot.Models[0].KVUsedBytes = 300 }
+
+	err := divideOnce(t, r, pod, snapshot)
+
+	require.Error(t, err)
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Greater(t, runtime.kvLimitCalls[0].LimitBytes, int64(120))
+	assert.True(t, strings.HasPrefix(runtime.kvLimitCalls[0].OperationID, "kv-plan/"))
+}
+
+// A reading back that fails confirms nothing, so the shrink is taken back as
+// one that was not confirmed.
+func TestArrangeCardTakesAShrinkBackWhenItsReadingBackFails(t *testing.T) {
+	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+	unreadable := &unreadablePods{fakeRuntime: runtime, pods: map[string]bool{}}
+	r.Runtime = unreadable
+	runtime.onKVLimit = func() { unreadable.pods[pod.Status.PodIP] = true }
+
+	err := divideOnce(t, r, pod, snapshot)
+
+	require.Error(t, err)
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.True(t, strings.HasPrefix(runtime.kvLimitCalls[1].OperationID, "kv-plan-back/"))
+	assert.Equal(t, int64(400), runtime.kvLimitCalls[1].LimitBytes)
+}
+
+// The runtime runs each operation once. The same take-back in a later round
+// has to reach the segment again, so the moment of its reading is part of its
+// operation.
+func TestArrangeCardGivesATakeBackInALaterRoundItsOwnOperation(t *testing.T) {
+	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+	runtime.onKVLimit = func() { snapshot.Models[0].KVUsedBytes = 300 }
+	for round := 0; round < 2; round++ {
+		snapshot.Models[0].KVUsedBytes = 100
+		snapshot.ObservedAt = snapshot.ObservedAt.Add(DefaultRequeueDuration)
+		require.Error(t, divideOnce(t, r, pod, snapshot))
+	}
+
+	var takenBack []string
+	for _, call := range runtime.kvLimitCalls {
+		if strings.HasPrefix(call.OperationID, "kv-plan-back/") {
+			takenBack = append(takenBack, call.OperationID)
+		}
+	}
+	require.Len(t, takenBack, 2)
+	assert.NotEqual(t, takenBack[0], takenBack[1])
+}
+
+// A KVLimitSet Event says that a limit is in force. A grow that was written
+// and not confirmed is not known to be.
+func TestArrangeCardDoesNotAnnounceAGrowThatIsNotConfirmed(t *testing.T) {
+	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+	writes := 0
+	runtime.onKVLimit = func() {
+		writes++
+		if writes == 2 {
+			// The grow is written, and the engine goes on reporting the limit
+			// it had.
+			snapshot.Models[1].KVCapacityBytes = 100
+		}
+	}
+
+	err := divideOnce(t, r, pod, snapshot)
+
+	var incomplete growthIncompleteError
+	require.ErrorAs(t, err, &incomplete)
+	var announced []string
+	for _, event := range drainEvents(t, r) {
+		if strings.Contains(event, "KVLimitSet") {
+			announced = append(announced, strings.Fields(strings.SplitN(event, "model ", 2)[1])[0])
+		}
+	}
+	assert.Equal(t, []string{"a"}, announced)
+}
+
+// What a pass reads of a runtime is kept for its later steps. A division
+// changes the runtime, so it leaves the pass either the reading that confirmed
+// it or none at all, and never one from before a write.
+func TestArrangeCardLeavesThePassNoReadingFromBeforeAWrite(t *testing.T) {
+	for name, c := range map[string]struct {
+		// spoil makes the division go wrong at the write of the given number,
+		// counted from one. The shrink of "a" is the first, and the grow of
+		// "b" the second.
+		spoil     func(r *ModelClaimReconciler, runtime *fakeRuntime, snapshot *RuntimeSnapshot, pod *corev1.Pod)
+		fails     bool
+		readAgain bool
+	}{
+		"a division that is confirmed": {
+			spoil: func(*ModelClaimReconciler, *fakeRuntime, *RuntimeSnapshot, *corev1.Pod) {},
+		},
+		"a shrink that is taken back": {
+			spoil: func(_ *ModelClaimReconciler, runtime *fakeRuntime, snapshot *RuntimeSnapshot, _ *corev1.Pod) {
+				runtime.onKVLimit = func() { snapshot.Models[0].KVUsedBytes = 300 }
+			},
+			fails: true, readAgain: true,
+		},
+		"a grow whose write fails": {
+			spoil: func(r *ModelClaimReconciler, runtime *fakeRuntime, _ *RuntimeSnapshot, _ *corev1.Pod) {
+				r.Runtime = &failingKVLimits{fakeRuntime: runtime, failing: map[int]bool{2: true}}
+			},
+			fails: true, readAgain: true,
+		},
+		"a grow whose reading back fails": {
+			spoil: func(r *ModelClaimReconciler, runtime *fakeRuntime, _ *RuntimeSnapshot, pod *corev1.Pod) {
+				unreadable := &unreadablePods{fakeRuntime: runtime, pods: map[string]bool{}}
+				r.Runtime = unreadable
+				writes := 0
+				runtime.onKVLimit = func() {
+					writes++
+					unreadable.pods[pod.Status.PodIP] = writes == 2
+				}
+			},
+			fails: true, readAgain: true,
+		},
+	} {
+		r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+		c.spoil(r, runtime, snapshot, pod)
+		readings := newRuntimeReadings(r.Runtime)
+		_, err := readings.of(context.Background(), pod)
+		require.NoError(t, err, name)
+		ledger := r.collectPodLedgers(context.Background(), testNamespace,
+			[]corev1.Pod{*pod}, map[string]*RuntimeSnapshot{pod.Name: snapshot})[pod.Name]
+
+		_, err = r.arrangeCard(context.Background(), pod, ledger, ledger.engines, placementDivision, readings)
+
+		require.Equal(t, c.fails, err != nil, name)
+		reads := runtime.snapshotCalls
+		kept, _ := readings.of(context.Background(), pod)
+		assert.Equal(t, c.readAgain, runtime.snapshotCalls > reads, name)
+		if !c.readAgain {
+			require.NotNil(t, kept, name)
+			assert.Equal(t, int64(433), kept.Models[1].KVCapacityBytes, "%s: the reading that confirmed it is kept", name)
+		}
+	}
 }
 
 func TestReconcileShrinksTheNeighbourToMakeRoomForANewModel(t *testing.T) {
@@ -1845,7 +2120,11 @@ func TestReconcileLeavesTheRecordsAloneWhenACardCannotBeDivided(t *testing.T) {
 
 	reconcileOnce(t, r, pm.Name)
 
-	require.Len(t, runtime.kvLimitCalls, 1)
+	// The shrink is written, and taken back when the reading does not show it.
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, int64(200), runtime.kvLimitCalls[0].LimitBytes)
+	assert.Equal(t, int64(600), runtime.kvLimitCalls[1].LimitBytes)
+	assert.NotEqual(t, runtime.kvLimitCalls[0].OperationID, runtime.kvLimitCalls[1].OperationID)
 	assert.Empty(t, runtime.activateCalls)
 	// The neighbour keeps the limit it was given, not the smaller one it was
 	// never confirmed to hold. Recorded, the smaller one would be enforced by
@@ -1938,8 +2217,7 @@ func TestReconcileMarksAClaimPlacedWhenItsRouteCannotBeWritten(t *testing.T) {
 	runtime := &fakeRuntime{snapshots: map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}}
 	r := &ModelClaimReconciler{
 		Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(32), Runtime: runtime,
-		PoolPolicy:    newPoolPolicyManager(time.Now),
-		SnapshotCache: newRuntimeSnapshotCache(defaultRuntimeSnapshotTTL, time.Now),
+		PoolPolicy: newPoolPolicyManager(time.Now),
 	}
 
 	reconcileOnce(t, r, pm.Name)
@@ -1971,8 +2249,7 @@ func TestReconcileDoesNotTakeAConflictOnTheRecordForAFailedStart(t *testing.T) {
 	runtime := &fakeRuntime{snapshots: map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}}
 	r := &ModelClaimReconciler{
 		Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(32), Runtime: runtime,
-		PoolPolicy:    newPoolPolicyManager(time.Now),
-		SnapshotCache: newRuntimeSnapshotCache(defaultRuntimeSnapshotTTL, time.Now),
+		PoolPolicy: newPoolPolicyManager(time.Now),
 	}
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{
@@ -2019,8 +2296,7 @@ func TestReconcileRecordsNoMoreThanTheCardWhenARecordCannotBeWritten(t *testing.
 	runtime := &fakeRuntime{snapshots: map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}}
 	r := &ModelClaimReconciler{
 		Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(32), Runtime: runtime,
-		PoolPolicy:    newPoolPolicyManager(time.Now),
-		SnapshotCache: newRuntimeSnapshotCache(defaultRuntimeSnapshotTTL, time.Now),
+		PoolPolicy: newPoolPolicyManager(time.Now),
 	}
 
 	reconcileOnce(t, r, newcomer.Name)
@@ -2035,6 +2311,14 @@ func TestReconcileRecordsNoMoreThanTheCardWhenARecordCannotBeWritten(t *testing.
 	}
 	assert.LessOrEqual(t, promised, int64(1000))
 	assert.Equal(t, int64(60), getModel(t, r, "a-grows").Status.Instances[0].KVLimitBytes)
+	// The shrink stays in force, and nothing grows. The quiet engine keeps
+	// the 100 it holds, and gets a seventh of the 400 that are left over.
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, "c-shrinks", runtime.kvLimitCalls[0].ModelName)
+	assert.Equal(t, int64(157), runtime.kvLimitCalls[0].LimitBytes)
+	for _, engine := range snapshot.Models {
+		assert.Equal(t, map[string]int64{"a-grows": 60, "c-shrinks": 157}[engine.ModelName], engine.KVCapacityBytes)
+	}
 }
 
 func TestRecordKVLimitTriesAgainAfterAConflict(t *testing.T) {
@@ -2219,14 +2503,14 @@ func TestReconcileAccountsForACardTheRuntimeReportsWithoutAGPURequest(t *testing
 	reconcileOnce(t, r, pm.Name)
 
 	// The card is too small for the model. Taken for a pod with no GPU, it
-	// would have been used without an account.
+	// would have been used without an account. Measured, it is known never
+	// to hold the model.
 	assert.Empty(t, runtime.activateCalls)
 	got := getModel(t, r, pm.Name)
 	cond := meta.FindStatusCondition(got.Status.Conditions,
 		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
 	require.NotNil(t, cond)
-	assert.Equal(t, "NoMatchingPods", cond.Reason)
-	assert.Contains(t, cond.Message, "can offer at most")
+	assert.Equal(t, "TooLargeForAnyCard", cond.Reason)
 }
 
 // A pod given its GPUs by a resource claim requests none, so its request says
@@ -2682,8 +2966,7 @@ func TestReconcileOrdersTheRecordsByTheRecordsAndNotByTheLimitsInForce(t *testin
 	runtime := &fakeRuntime{snapshots: map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}}
 	r := &ModelClaimReconciler{
 		Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(32), Runtime: runtime,
-		PoolPolicy:    newPoolPolicyManager(time.Now),
-		SnapshotCache: newRuntimeSnapshotCache(defaultRuntimeSnapshotTTL, time.Now),
+		PoolPolicy: newPoolPolicyManager(time.Now),
 	}
 
 	reconcileOnce(t, r, newcomer.Name)

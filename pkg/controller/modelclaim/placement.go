@@ -213,6 +213,32 @@ func noPlacementMessage(selectErr error, admissible []corev1.Pod, refusals []pod
 	return selectErr.Error()
 }
 
+// tooLargeForEveryCard reports whether no candidate could ever hold a model
+// that needs minimumReserveBytes on a card, even with nothing else on it. It
+// also returns how much the best of them offers on a card. A pod with several
+// cards offers what its smallest card holds. That is only known when every
+// candidate has cards and every card was measured. A pod without cards, or one
+// whose cards nobody measured, might hold the model.
+func tooLargeForEveryCard(
+	candidates []corev1.Pod,
+	ledgers map[string]podLedger,
+	minimumReserveBytes int64,
+) (int64, bool) {
+	if len(candidates) == 0 {
+		return 0, false
+	}
+	largest := int64(0)
+	for i := range candidates {
+		ledger := ledgers[candidates[i].Name]
+		if !podHasGPUs(candidates[i], ledger.accelerators) || ledger.hbmUsableBytes <= 0 ||
+			ledger.hbmUsableBytes >= minimumReserveBytes {
+			return 0, false
+		}
+		largest = max(largest, ledger.hbmUsableBytes)
+	}
+	return largest, true
+}
+
 // withoutPod returns pods less the one named, leaving the slice it was given
 // untouched.
 func withoutPod(pods []corev1.Pod, name string) []corev1.Pod {

@@ -69,13 +69,14 @@ func sizedPodSnapshots(pod string, hbmUsableBytes int64, models ...RuntimeSnapsh
 // and holding the given KV.
 func engineHolding(model string, kvUsedBytes, kvCapacityBytes int64) RuntimeSnapshotModel {
 	return RuntimeSnapshotModel{
-		ModelName:       model,
-		Port:            9001,
-		Phase:           "active",
-		Alive:           true,
-		Ready:           true,
-		KVUsedBytes:     kvUsedBytes,
-		KVCapacityBytes: kvCapacityBytes,
+		ModelName:              model,
+		Port:                   9001,
+		Phase:                  "active",
+		Alive:                  true,
+		Ready:                  true,
+		KVUsedBytes:            kvUsedBytes,
+		KVCapacityBytes:        kvCapacityBytes,
+		RequestMetricsObserved: true,
 	}
 }
 
@@ -86,6 +87,46 @@ func ledgerFor(t *testing.T, pod *corev1.Pod, snapshots map[string]*RuntimeSnaps
 	ledger, found := ledgers[pod.Name]
 	require.True(t, found)
 	return ledger
+}
+
+// An engine that is still starting serves nothing, and its metrics cannot be
+// read yet. That says nothing of load, so it is not weighed as busy. The
+// runtime reports an engine ready before it has finished booting, after a start
+// or a wake, and it reads no metrics until then. The gateway routes only to an
+// Active instance. So only an engine that is both active and routed can have a
+// load that could not be read.
+func TestLedgerTakesOnlyAServingEngineForOneWhoseLoadIsUnknown(t *testing.T) {
+	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
+	starting := engineHolding("starting", 0, 100)
+	starting.Ready = false
+	starting.RequestMetricsObserved = false
+	waking := engineHolding("waking", 0, 100)
+	waking.Phase = "booting"
+	waking.RequestMetricsObserved = false
+	restarted := engineHolding("restarted", 0, 100)
+	restarted.RequestMetricsObserved = false
+	rebooting := engineHolding("rebooting", 0, 100)
+	rebooting.Phase = "booting"
+	rebooting.RequestMetricsObserved = false
+	serving := engineHolding("serving", 0, 100)
+	serving.RequestMetricsObserved = false
+	ledger := ledgerFor(t, pod, sizedPodSnapshots(pod.Name, 1000,
+		starting, waking, restarted, rebooting, serving, engineHolding("read", 0, 100)),
+		claimOnPod("starting", pod.Name, modelv1alpha1.ModelClaimActivating, 100, 25),
+		claimOnPod("waking", pod.Name, modelv1alpha1.ModelClaimSleeping, 100, 25),
+		claimOnPod("restarted", pod.Name, modelv1alpha1.ModelClaimActivating, 100, 25),
+		claimOnPod("rebooting", pod.Name, modelv1alpha1.ModelClaimActive, 100, 25),
+		claimOnPod("serving", pod.Name, modelv1alpha1.ModelClaimActive, 100, 25),
+		claimOnPod("read", pod.Name, modelv1alpha1.ModelClaimActive, 100, 25))
+
+	unknown := map[string]bool{}
+	for _, engine := range ledger.engines {
+		unknown[engine.claimName] = engine.demandUnknown
+	}
+	assert.Equal(t, map[string]bool{
+		"starting": false, "waking": false, "restarted": false, "rebooting": false,
+		"serving": true, "read": false,
+	}, unknown)
 }
 
 func TestLedgerChargesEveryInstanceButFailedOnes(t *testing.T) {
