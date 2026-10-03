@@ -160,10 +160,10 @@ func TestPredictiveAutoIsObservationOnlyInThisStep(t *testing.T) {
 
 	require.NotNil(t, result.Predictive)
 	assert.Equal(t, autoscalingv1alpha1.PredictiveModeAuto, result.Predictive.Mode)
-	// The metric reads 100 against a target of 50, so the reactive count is 2.
-	// Auto is accepted and reported, but it does not raise the decision until
-	// the composition lands in a follow-up.
-	assert.Equal(t, int32(2), result.DesiredReplicas)
+	// The stable window averages about 90 against a target of 50, so KPA
+	// asks for 4 replicas at 2 pods. Auto is accepted and reported, but it
+	// does not raise the decision until the composition lands in a follow-up.
+	assert.Equal(t, int32(4), result.DesiredReplicas)
 	assert.Greater(t, result.Predictive.ComposedReplicas, result.DesiredReplicas)
 }
 
@@ -234,45 +234,90 @@ func TestProjectMetricRequiresConfiguredPredictiveAndEnoughHistory(t *testing.T)
 
 func TestPredictedReplicasMirrorsStrategyFormula(t *testing.T) {
 	tests := map[string]struct {
-		strategy autoscalingv1alpha1.ScalingStrategyType
-		current  int32
-		value    float64
-		target   float64
-		want     int32
+		strategy   autoscalingv1alpha1.ScalingStrategyType
+		sourceType autoscalingv1alpha1.MetricSourceType
+		current    int32
+		value      float64
+		target     float64
+		want       int32
 	}{
-		"kpa divides the projected value": {
-			strategy: autoscalingv1alpha1.KPA,
-			current:  3,
-			value:    100,
-			target:   50,
-			want:     2,
+		"kpa multiplies the per-pod mean by the pod count": {
+			strategy:   autoscalingv1alpha1.KPA,
+			sourceType: autoscalingv1alpha1.POD,
+			current:    3,
+			value:      100,
+			target:     50,
+			want:       6,
+		},
+		"kpa keeps an external total as it is": {
+			strategy:   autoscalingv1alpha1.KPA,
+			sourceType: autoscalingv1alpha1.EXTERNAL,
+			current:    3,
+			value:      100,
+			target:     50,
+			want:       2,
+		},
+		"kpa keeps a domain total as it is": {
+			strategy:   autoscalingv1alpha1.KPA,
+			sourceType: autoscalingv1alpha1.DOMAIN,
+			current:    3,
+			value:      100,
+			target:     50,
+			want:       2,
+		},
+		"kpa scales the per-pod mean with the pod count": {
+			strategy:   autoscalingv1alpha1.KPA,
+			sourceType: autoscalingv1alpha1.POD,
+			current:    4,
+			value:      90,
+			target:     50,
+			want:       8,
+		},
+		"kpa lets a ratio metric pass the inverse of its target": {
+			strategy:   autoscalingv1alpha1.KPA,
+			sourceType: autoscalingv1alpha1.RESOURCE,
+			current:    4,
+			value:      0.9,
+			target:     0.5,
+			want:       8,
+		},
+		"kpa uses one pod when there are none yet": {
+			strategy:   autoscalingv1alpha1.KPA,
+			sourceType: autoscalingv1alpha1.POD,
+			current:    0,
+			value:      100,
+			target:     50,
+			want:       2,
 		},
 		"apa scales the current count": {
-			strategy: autoscalingv1alpha1.APA,
-			current:  3,
-			value:    100,
-			target:   50,
-			want:     6,
+			strategy:   autoscalingv1alpha1.APA,
+			sourceType: autoscalingv1alpha1.POD,
+			current:    3,
+			value:      100,
+			target:     50,
+			want:       6,
 		},
 		"rounds up": {
-			strategy: autoscalingv1alpha1.KPA,
-			current:  1,
-			value:    101,
-			target:   50,
-			want:     3,
+			strategy:   autoscalingv1alpha1.KPA,
+			sourceType: autoscalingv1alpha1.POD,
+			current:    1,
+			value:      101,
+			target:     50,
+			want:       3,
 		},
 		"a zero projection stays zero": {
-			strategy: autoscalingv1alpha1.KPA,
-			current:  4,
-			value:    0,
-			target:   50,
-			want:     0,
+			strategy:   autoscalingv1alpha1.KPA,
+			sourceType: autoscalingv1alpha1.POD,
+			current:    4,
+			value:      0,
+			target:     50,
+			want:       0,
 		},
 	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, tt.want, predictedReplicas(tt.strategy, tt.current, tt.value, tt.target))
+			assert.Equal(t, tt.want, predictedReplicas(tt.strategy, tt.sourceType, tt.current, tt.value, tt.target))
 		})
 	}
 }

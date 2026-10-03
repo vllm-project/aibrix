@@ -11,9 +11,8 @@ a floor for scale-up. The reactive decision is never replaced, and a projection 
 workload down.
 
 The feature is opt-in through ``spec.predictive``. When the block is absent nothing in this page
-applies. Today the block is accepted and validated only: applying it writes no
-``status.predictive`` and changes no replica count. The controller that consumes these fields
-lands in a follow-up.
+applies. Applying the block records the projection in ``status.predictive`` and changes no
+replica count. The ``Auto`` decision that consumes the projection lands in a follow-up.
 
 Modes
 -----
