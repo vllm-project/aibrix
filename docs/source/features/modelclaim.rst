@@ -902,19 +902,21 @@ Runtime metrics include:
 
 A sleeping engine reports the memory it still holds, as the runtime measured
 it right after the sleep. The runtime reads the card just before and just after
-it puts an engine to sleep. It matches the engine's own processes first. Some
-drivers report host process IDs to a container, and then nothing matches. The
-runtime then takes the process whose memory fell by far the most, since a sleep
-gives back the engine's weights. It puts one engine to sleep at a time. When
-neither way works, or when the driver reports zero for every process, the
-engine reports no figure. The figure is cleared when the engine wakes, and when
+it puts an engine to sleep. It matches the engine's own processes first, and
+then takes only their memory. When that did not fall like a sleep, or when it
+is on more than one card, there is no figure. Some drivers report host process
+IDs to a container, and then nothing matches. The runtime then takes the
+process whose memory fell by far the most, since a sleep gives back the
+engine's weights. It puts one engine to sleep at a time. When neither way
+works, or when the driver reports zero for every process, the engine reports
+no figure. The figure is cleared when the engine wakes, and when
 a wake fails.
 
 HBM attribution is best effort, and is otherwise used for observation.
 Admission works from the cost a claim declares and the size the runtime
 measures for a card. The one exception is a sleeping engine in a pool that
-keeps no wake reserve, which is charged the sleeping footprint its runtime
-measured. Ranking puts a Pod that already has the
+keeps no wake reserve, on a Pod with one card, which is charged the sleeping
+footprint its runtime measured. Ranking puts a Pod that already has the
 artifact first, then orders the admitted Pods by the room their account shows.
 Free memory only breaks a tie between two cards whose account shows the same
 room, because it moves with traffic.

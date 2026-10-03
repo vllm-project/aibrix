@@ -87,6 +87,26 @@ func TestLedgerKeepsAWakeReserveWhenItIsNeeded(t *testing.T) {
 	}
 }
 
+func TestLedgerKeepsAWakeReserveOnAPodWithMoreThanOneCard(t *testing.T) {
+	deployment, replicaSet, pod := warmPoolObjects(keepNoWakeReserve)
+	sleeper := claimOnPod("sleeper", pod.Name, modelv1alpha1.ModelClaimSleeping, 300, 100)
+	engine := engineHolding("sleeper", 20, 100)
+	engine.Phase = runtimePhaseSleeping
+	engine.SleepingFootprintBytes = bytesOf(60)
+	r, _ := newReconciler(t, deployment, replicaSet, pod, sleeper)
+	snapshots := sizedPodSnapshots(pod.Name, 1000, engine)
+	snapshots[pod.Name].Accelerators = []RuntimeAcceleratorSnapshot{
+		{ID: "GPU-0", HBMTotalBytes: 1100, HBMUsableBytes: 1000},
+		{ID: "GPU-1", HBMTotalBytes: 1100, HBMUsableBytes: 1000},
+	}
+
+	ledger, found := r.collectPodLedgers(context.Background(), testNamespace, []corev1.Pod{*pod}, snapshots)[pod.Name]
+
+	require.True(t, found)
+	require.True(t, ledger.judgeable, ledger.blocked)
+	assert.Equal(t, int64(600), ledger.maximumRoomBytes(), "charged its footprint and floor")
+}
+
 func TestLedgerChargesASleeperThatHoldsMoreThanItsSeatWhatItHolds(t *testing.T) {
 	ledger := sleeperOnACard(t, keepNoWakeReserve, bytesOf(450), false)
 

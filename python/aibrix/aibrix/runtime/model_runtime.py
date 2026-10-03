@@ -454,8 +454,12 @@ def sleeping_footprint_bytes(
     Only that process is counted then. An engine on one card keeps its GPU
     memory in one process, its engine core, so that is all of it.
 
-    A match whose memory did not fall that way is not taken either. It can be
-    a host PID that happens to equal one of the engine's.
+    When the engine's own processes are found, their memory is the answer, or
+    there is none. Another process's drop is never taken for theirs, even when
+    theirs has not fallen like a sleep yet: a figure too small would give the
+    rest of the engine's reservation to other models, while no figure keeps
+    it. An engine whose processes hold memory on more than one card has no
+    single figure either.
 
     A drop too small, or one that does not stand out from the next one, says
     nothing, and the reading is unknown. So is a reading of zero: an engine
@@ -479,15 +483,18 @@ def sleeping_footprint_bytes(
                 by_accelerator[accelerator] = by_accelerator.get(accelerator, 0) + used
         return by_accelerator
 
+    held_before = tree_on(before)
     held_after = tree_on(after)
-    if held_after:
-        held_before = tree_on(before)
-        accelerator = max(
-            held_after,
-            key=lambda a: held_before.get(a, 0) - held_after[a],
-        )
-        if falls_like_a_sleep(held_before.get(accelerator, 0), held_after[accelerator]):
-            return held_after[accelerator]
+    if held_before or held_after:
+        accelerators = set(held_before) | set(held_after)
+        if len(accelerators) != 1:
+            return None
+        (accelerator,) = accelerators
+        before_sleep = held_before.get(accelerator, 0)
+        after_sleep = held_after.get(accelerator, 0)
+        if falls_like_a_sleep(before_sleep, after_sleep):
+            return after_sleep
+        return None
 
     drops = []
     for pid, readings in after.items():

@@ -403,15 +403,34 @@ def test_sleeping_footprint_is_unknown_for_a_small_drop_or_a_zero_reading():
     assert zero is None
 
 
-def test_sleeping_footprint_passes_over_a_host_pid_equal_to_an_engine_pid():
+def test_sleeping_footprint_never_takes_another_process_drop_for_the_engines():
     from aibrix.runtime.model_runtime import sleeping_footprint_bytes
 
-    # Host PID 100 belongs to another engine on the card, and its memory did
-    # not fall. The engine that went to sleep is host PID 900.
-    before = {100: {"GPU-0": 18 * GIB}, 900: {"GPU-0": 19 * GIB}}
-    after = {100: {"GPU-0": 18 * GIB}, 900: {"GPU-0": 2 * GIB}}
+    # The engine's own process is found, but its memory has not fallen like a
+    # sleep yet. Another process fell far more at the same moment. Its figure
+    # would charge the engine too little, so there is none.
+    before = {100: {"GPU-0": 6 * GIB}, 900: {"GPU-0": 19 * GIB}}
+    after = {100: {"GPU-0": 6 * GIB - 512 * 2**20}, 900: {"GPU-0": 2 * GIB}}
 
-    assert sleeping_footprint_bytes({100}, before, after) == 2 * GIB
+    assert sleeping_footprint_bytes({100}, before, after) is None
+
+
+def test_sleeping_footprint_is_unknown_when_the_engines_process_is_gone():
+    from aibrix.runtime.model_runtime import sleeping_footprint_bytes
+
+    before = {100: {"GPU-0": 19 * GIB}, 900: {"GPU-0": 18 * GIB}}
+    after = {900: {"GPU-0": 2 * GIB}}
+
+    assert sleeping_footprint_bytes({100}, before, after) is None
+
+
+def test_sleeping_footprint_is_unknown_for_an_engine_on_two_cards():
+    from aibrix.runtime.model_runtime import sleeping_footprint_bytes
+
+    before = {100: {"GPU-0": 19 * GIB}, 101: {"GPU-1": 19 * GIB}}
+    after = {100: {"GPU-0": 2 * GIB}, 101: {"GPU-1": 2 * GIB}}
+
+    assert sleeping_footprint_bytes({100, 101}, before, after) is None
 
 
 def test_sleep_records_the_footprint_and_wake_forgets_it(monkeypatch):
