@@ -629,6 +629,40 @@ def test_endpoints_activate_list_deactivate():
     assert all(m["model_name"] != "ep1" for m in listed["models"])
 
 
+def test_wake_endpoint_reports_a_wake_that_failed(monkeypatch):
+    client = _make_test_client()
+    import aibrix.runtime.model_runtime as runtime_module
+
+    def wake_that_fails(model_name, operation_id):
+        raise RuntimeError("the engine did not come back")
+
+    monkeypatch.setattr(runtime_module.get_model_runtime(), "wake", wake_that_fails)
+
+    resp = client.post(
+        "/v1/runtime/models/wake",
+        json={"model_name": "ep1", "operation_id": "op-1"},
+    )
+
+    # The controller tells this report from a bare server error, which a proxy
+    # on the way could send as well.
+    assert resp.status_code == 500
+    body = resp.json()
+    assert body["status"] == "error"
+    assert body["model_name"] == "ep1"
+    assert "did not come back" in body["message"]
+
+
+def test_wake_endpoint_still_refuses_a_model_it_does_not_run():
+    client = _make_test_client()
+
+    resp = client.post(
+        "/v1/runtime/models/wake",
+        json={"model_name": "nobody-runs-this", "operation_id": "op-2"},
+    )
+
+    assert resp.status_code == 404, resp.text
+
+
 def test_activate_endpoint_rejects_mismatched_vllm_parallelism(monkeypatch):
     import aibrix.runtime.model_runtime as runtime_module
 

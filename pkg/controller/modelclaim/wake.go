@@ -84,16 +84,17 @@ func movingReason(reason string) bool {
 //
 // An engine that cannot wake where it is is moved, when another pod can take
 // its claim. That is an engine whose card is promised more than it has, and one
-// whose runtime answers that it could not wake it. The instance is marked
+// whose runtime reports that it could not wake it. The instance is marked
 // failed, with the reason, and the mark is written before anything else is done
 // to the engine. The replacement that follows in the same pass then stops the
 // engine and places the claim anew. A mark that cannot be written ends the pass,
 // and leaves the engine as it was. A card that cannot take the
 // engine back, with no other pod to go to, keeps the request waiting. A wake
 // that failed with no other pod to go to takes the request back, so the next
-// request for the model asks again. A wake whose runtime was not reached, or
-// did not answer in time, is asked again on a later pass, with the same
-// operation: the engine may be waking already.
+// request for the model asks again. A wake whose runtime was not reached, did
+// not answer in time, or failed without a report of its own, is asked again on
+// a later pass, with the same operation: the engine may be waking already. Such
+// a failure can come from a proxy on the way, and says nothing of the engine.
 //
 // A request stays while the engine boots, and goes once the engine serves, or
 // when there is nothing to wake. A request not met within wakeRequestLifetime
@@ -171,7 +172,7 @@ func (r *ModelClaimReconciler) wakeRequested(
 			OperationID: operationID,
 		})
 		readings.forget(pod.Name)
-		if err != nil && !runtimeAnswered(err) {
+		if err != nil && !refusedByRuntime(err) {
 			// Nothing is known to have failed. The request stays, and a later
 			// pass asks again, or sees the engine wake.
 			klog.InfoS("wake not answered; asking again on a later pass",

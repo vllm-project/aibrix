@@ -208,11 +208,37 @@ func TestReconcileAsksAgainForAWakeTheRuntimeDidNotAnswer(t *testing.T) {
 	assert.NotContains(t, podNamed(t, r, "warm-1").Annotations, key)
 }
 
-func TestRuntimeAnsweredTellsAFailureTheRuntimeReportedFromOneItDidNotSend(t *testing.T) {
-	assert.True(t, runtimeAnswered(statusError("POST", "http://10.0.0.1:8080/v1/runtime/models/wake", 500, []byte("Internal Server Error"))))
-	assert.True(t, runtimeAnswered(statusError("POST", "http://10.0.0.1:8080/v1/runtime/models/wake", 404, nil)))
-	assert.False(t, runtimeAnswered(fmt.Errorf("runtime 10.0.0.1:8080 %w", errRuntimeSilent)))
-	assert.False(t, runtimeAnswered(&url.Error{Op: "Post", URL: "http://10.0.0.1:8080", Err: context.DeadlineExceeded}))
+func TestRefusedByRuntimeTellsTheRuntimesOwnReportFromAnyOtherFailure(t *testing.T) {
+	const wakeURL = "http://10.0.0.1:8080/v1/runtime/models/wake"
+	for name, c := range map[string]struct {
+		err     error
+		refused bool
+	}{
+		"a refusal":                {statusError("POST", wakeURL, 404, nil), true},
+		"the runtime's own report": {statusError("POST", wakeURL, 500, []byte(`{"status":"error","message":"boom"}`)), true},
+		"a bare server error":      {statusError("POST", wakeURL, 500, []byte("Internal Server Error")), false},
+		"a proxy that gave up":     {statusError("POST", wakeURL, 502, []byte("<html>bad gateway</html>")), false},
+		"a runtime left alone":     {fmt.Errorf("runtime 10.0.0.1:8080 %w", errRuntimeSilent), false},
+		"no answer in time":        {&url.Error{Op: "Post", URL: wakeURL, Err: context.DeadlineExceeded}, false},
+	} {
+		assert.Equal(t, c.refused, refusedByRuntime(c.err), name)
+	}
+}
+
+func TestReconcileAsksAgainForAWakeAProxyFailed(t *testing.T) {
+	r, runtime, pm, _ := sleepingClaim(t)
+	key := constants.ModelClaimWakeAnnotationPrefix + pm.Name
+	runtime.wakeErr = statusError("POST", "http://10.0.0.1:8080/v1/runtime/models/wake", 502,
+		[]byte("<html>bad gateway</html>"))
+
+	askWake(t, r, "warm-1", pm.Name, "2026-10-01T08:00:00Z")
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.wakeCalls, 1)
+	assert.Empty(t, runtime.deactivateCalls, "a failure the runtime did not report is no reason to move")
+	assert.NotContains(t, strings.Join(drainEvents(t, r), "\n"), "WakeFailed")
+	assert.Contains(t, podNamed(t, r, "warm-1").Annotations, key, "the request stays, to be asked again")
+	assert.Equal(t, modelv1alpha1.ModelClaimSleeping, getModel(t, r, pm.Name).Status.Instances[0].Phase)
 }
 
 func TestReconcileLeavesAnEngineAsleepOnACardPromisedMoreThanItHas(t *testing.T) {

@@ -705,7 +705,7 @@ serves. ``Waking`` and ``Woken`` Events mark a wake that went through.
 
 An engine that cannot wake where it is moves, when another Pod can take its
 claim. That is an engine whose card is promised more than it has, and one whose
-runtime answers that it could not wake it. The instance is marked ``Failed``,
+runtime reports that it could not wake it. The instance is marked ``Failed``,
 and records why in ``status.instances[].reason``, as ``NoRoomToWake`` or
 ``WakeFailed``. The claim raises a ``Moving`` Event. In the same pass, the
 controller stops the engine and starts the claim on the other Pod, as it does
@@ -719,8 +719,9 @@ asleep. Its instance records ``WaitingForRoom``, and so does the claim's
 ``Ready`` condition. The claim raises a ``WaitingForRoom`` Event once, when the
 wait starts. A wake that fails with no other Pod to go to raises a
 ``WakeFailed`` Event, and its request is removed, so the next request for the
-model asks again. A wake whose runtime cannot be reached, or does not answer
-in time, is asked again on a later pass. A request that is not met within five
+model asks again. A wake whose runtime cannot be reached, does not answer in
+time, or fails without a report of its own, such as an error from a proxy on
+the way, is asked again on a later pass. A request that is not met within five
 minutes is removed, with a ``WakeRequestExpired`` Event, and a client that
 still asks writes a new one.
 

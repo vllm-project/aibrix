@@ -110,22 +110,17 @@ func statusError(method, url string, status int, body []byte) error {
 	if atFault || reportsAnError {
 		return &runtimeRefusal{message}
 	}
-	return &runtimeFailure{message}
+	return errors.New(message)
 }
 
-// runtimeFailure is a call that its runtime answered with a failure of its own,
-// a status of 500 or more. The runtime got the call, and says it failed.
-type runtimeFailure struct{ message string }
-
-func (e *runtimeFailure) Error() string { return e.message }
-
-// runtimeAnswered reports whether a failed call reached its runtime, which
-// then said no, or said it failed. A call that was not sent, or whose answer
-// did not arrive, may still be done, or be under way.
-func runtimeAnswered(err error) bool {
+// refusedByRuntime reports whether the runtime itself said that a call failed:
+// it refused the call, or reported an error of its own. A status from something
+// between the controller and the runtime, an answer that did not arrive, and a
+// call that was not sent say nothing of what the runtime did. The call may then
+// be done, or under way.
+func refusedByRuntime(err error) bool {
 	var refusal *runtimeRefusal
-	var failure *runtimeFailure
-	return errors.As(err, &refusal) || errors.As(err, &failure)
+	return errors.As(err, &refusal)
 }
 
 // callNotDone reports whether a failed call to a runtime is known to have
