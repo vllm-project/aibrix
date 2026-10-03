@@ -275,6 +275,60 @@ func TestRuntimeModelWakeRequesterForgetsOldWakeRequests(t *testing.T) {
 	assert.Equal(t, []string{"wake-request/next-uid/default/warm-2/qwen-claim"}, remembered())
 }
 
+// The controller takes a request back after a wake that failed, or one that
+// waited too long. The next request for the model writes a new one at once,
+// whether or not the cache saw the first one on the pod.
+func TestRuntimeModelWakeRequesterWritesAgainOnceTheControllerTookTheRequestBack(t *testing.T) {
+	for name, seen := range map[string]bool{
+		"the cache saw the request":       true,
+		"the cache never saw the request": false,
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, port, host := noRuntime(t)
+			key := constants.ModelClaimWakeAnnotationPrefix + "qwen-claim"
+			pod := &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "warm-1", Namespace: "default", UID: types.UID("pod-uid"), ResourceVersion: "10",
+				},
+				Status: v1.PodStatus{PodIP: host},
+			}
+			pods := fake.NewSimpleClientset(pod.DeepCopy())
+			requester := newRuntimeModelWakeRequester(client, port, pods)
+			asked := time.Date(2026, time.October, 1, 8, 0, 0, 0, time.UTC)
+			requester.now = func() time.Time { return asked }
+			binding := utils.ModelClaimBinding{
+				Model: "qwen", State: constants.ModelClaimRoutingStateSleeping, Claim: "qwen-claim", WakeByRequest: true,
+			}
+			written := func() {
+				t.Helper()
+				require.Eventually(t, func() bool {
+					_, running := requester.inFlight.Load("wake-request/pod-uid/default/warm-1/qwen-claim")
+					return !running
+				}, time.Second, 10*time.Millisecond)
+			}
+
+			require.True(t, requester.RequestWake(pod, binding))
+			written()
+			asked = asked.Add(5 * time.Second)
+			if seen {
+				withRequest := pod.DeepCopy()
+				withRequest.ResourceVersion = "11"
+				withRequest.Annotations = map[string]string{key: "2026-10-01T08:00:00Z"}
+				assert.False(t, requester.RequestWake(withRequest, binding), "the request is on the pod")
+			}
+			takenBack := pod.DeepCopy()
+			takenBack.ResourceVersion = "12"
+
+			require.True(t, requester.RequestWake(takenBack, binding))
+			written()
+
+			got, err := pods.CoreV1().Pods("default").Get(context.Background(), "warm-1", metav1.GetOptions{})
+			require.NoError(t, err)
+			assert.Equal(t, "2026-10-01T08:00:05Z", got.Annotations[key])
+		})
+	}
+}
+
 func TestRuntimeModelWakeRequesterDoesNotAskAgainWhileThePodCarriesTheRequest(t *testing.T) {
 	client, port, host := noRuntime(t)
 	key := constants.ModelClaimWakeAnnotationPrefix + "qwen-claim"

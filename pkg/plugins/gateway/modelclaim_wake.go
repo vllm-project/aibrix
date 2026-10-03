@@ -45,8 +45,8 @@ const (
 	modelClaimRetryAfterSeconds  = 10
 	// A wake request is a single patch of the pod's annotations.
 	modelClaimWakeRequestTimeout = 10 * time.Second
-	// A wake request written this recently is not written again, even when the
-	// cache has not seen it on the pod yet.
+	// A wake request written this recently is not written again while the
+	// cache has not seen the pod since.
 	modelClaimWakeRequestRecheck = 30 * time.Second
 )
 
@@ -64,8 +64,8 @@ type runtimeModelWakeRequester struct {
 	// pods writes wake requests on pods. It is nil when the gateway runs
 	// without Kubernetes, and every wake then goes to the runtime.
 	pods kubernetes.Interface
-	// asked holds when each wake request was last written, for as long as that
-	// keeps the request from being written again.
+	// asked holds each wake request written, as a wakeRequestWritten, for as
+	// long as that keeps the request from being written again.
 	asked sync.Map
 	now   func() time.Time
 }
@@ -113,21 +113,35 @@ func (r *runtimeModelWakeRequester) RequestWake(pod *v1.Pod, binding utils.Model
 	return true
 }
 
+// wakeRequestWritten is a wake request this gateway wrote on a pod.
+type wakeRequestWritten struct {
+	at time.Time
+	// over is the version of the pod that the request was written over. The
+	// cache shows the pod at another version once it has seen the request.
+	over string
+}
+
 // requestWakeOnPod writes a wake request for a claim on its pod. The controller
 // wakes the engine and removes the request. A request already on the pod is not
 // written again, and neither is one written a moment ago that the cache has not
-// seen yet. The request carries the time it was first asked.
+// seen yet. A pod the cache has seen since, without the request, had it taken
+// back, and a client that asks again has a new one written at once. The request
+// carries the time it was first asked.
 func (r *runtimeModelWakeRequester) requestWakeOnPod(pod *v1.Pod, claim string) bool {
 	key := constants.ModelClaimWakeAnnotationPrefix + claim
+	askedKey := "wake-request/" + string(pod.UID) + "/" + pod.Namespace + "/" + pod.Name + "/" + claim
 	if _, asked := pod.Annotations[key]; asked {
+		// The cache has seen the request. From now on, the pod says whether it
+		// is still there.
+		r.asked.Delete(askedKey)
 		return false
 	}
-	askedKey := "wake-request/" + string(pod.UID) + "/" + pod.Namespace + "/" + pod.Name + "/" + claim
 	now := r.now()
 	r.forgetOldWakeRequests(now)
-	if _, recent := r.asked.Load(askedKey); recent {
+	if written, recent := r.asked.Load(askedKey); recent && written.(wakeRequestWritten).over == pod.ResourceVersion {
 		return false
 	}
+	over := pod.ResourceVersion
 	if _, alreadyRunning := r.inFlight.LoadOrStore(askedKey, struct{}{}); alreadyRunning {
 		return false
 	}
@@ -147,7 +161,7 @@ func (r *runtimeModelWakeRequester) requestWakeOnPod(pod *v1.Pod, claim string) 
 			klog.ErrorS(err, "could not ask the controller to wake a ModelClaim", "pod", klog.KObj(pod), "claim", claim)
 			return
 		}
-		r.asked.Store(askedKey, now)
+		r.asked.Store(askedKey, wakeRequestWritten{at: now, over: over})
 		klog.InfoS("asked the controller to wake a ModelClaim", "pod", klog.KObj(pod), "claim", claim)
 	}()
 	return true
@@ -158,7 +172,7 @@ func (r *runtimeModelWakeRequester) requestWakeOnPod(pod *v1.Pod, claim string) 
 // written again, and the pod of an old one may be gone.
 func (r *runtimeModelWakeRequester) forgetOldWakeRequests(now time.Time) {
 	r.asked.Range(func(key, written any) bool {
-		if now.Sub(written.(time.Time)) >= modelClaimWakeRequestRecheck {
+		if now.Sub(written.(wakeRequestWritten).at) >= modelClaimWakeRequestRecheck {
 			// A request written again meanwhile is kept.
 			r.asked.CompareAndDelete(key, written)
 		}
