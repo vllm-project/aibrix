@@ -89,7 +89,33 @@ type poolReclaimPolicy struct {
 }
 
 type poolLifecyclePolicy struct {
-	SleepAfterSeconds int64 `json:"sleepAfterSeconds"`
+	// SleepAfterSeconds puts an engine to sleep once it has been idle this
+	// long. Unset, an idle engine stays awake until its room is needed.
+	SleepAfterSeconds int64 `json:"sleepAfterSeconds,omitempty"`
+	// NoWakeReserveWhileAsleep has a sleeping engine keep no wake reserve, the
+	// footprint and floor its claim declared. The account then charges it only
+	// the memory its engine still holds, and a wake has to find room again.
+	NoWakeReserveWhileAsleep bool `json:"noWakeReserveWhileAsleep,omitempty"`
+	// SleepToMakeRoomAfterSeconds is how long an engine must have been idle
+	// before it may be put to sleep to make room for another model.
+	SleepToMakeRoomAfterSeconds *int64 `json:"sleepToMakeRoomAfterSeconds,omitempty"`
+}
+
+// defaultSleepToMakeRoomAfter is how long an engine must have been idle before
+// it may be put to sleep to make room, when the pool does not say.
+const defaultSleepToMakeRoomAfter = 30 * time.Second
+
+// sleepToMakeRoomAfter is how long an engine must have been idle before it may
+// be put to sleep to make room. Left unset, it is defaultSleepToMakeRoomAfter,
+// or sleepAfterSeconds when that is shorter.
+func (p *poolLifecyclePolicy) sleepToMakeRoomAfter() time.Duration {
+	if p.SleepToMakeRoomAfterSeconds != nil {
+		return time.Duration(*p.SleepToMakeRoomAfterSeconds) * time.Second
+	}
+	if sleepAfter := time.Duration(p.SleepAfterSeconds) * time.Second; sleepAfter > 0 && sleepAfter < defaultSleepToMakeRoomAfter {
+		return sleepAfter
+	}
+	return defaultSleepToMakeRoomAfter
 }
 
 // parsePoolPolicy decodes the Deployment policy annotation and rejects unknown
@@ -138,13 +164,36 @@ func parsePoolPolicy(raw string) (*poolPolicy, error) {
 			}
 		}
 	}
-	if policy.Lifecycle != nil && policy.Lifecycle.SleepAfterSeconds <= 0 {
-		return nil, &poolPolicyConfigError{
-			class: poolPolicyErrorInvalidSleep,
-			err:   errors.New("lifecycle.sleepAfterSeconds must be positive"),
+	if policy.Lifecycle != nil {
+		if err := validateLifecycle(policy.Lifecycle); err != nil {
+			return nil, &poolPolicyConfigError{class: poolPolicyErrorInvalidSleep, err: err}
 		}
 	}
 	return policy, nil
+}
+
+// validateLifecycle checks the lifecycle figures. A lifecycle has to do
+// something: put idle engines to sleep, or have sleeping engines keep no wake
+// reserve.
+func validateLifecycle(lifecycle *poolLifecyclePolicy) error {
+	if lifecycle.SleepAfterSeconds < 0 ||
+		(lifecycle.SleepAfterSeconds == 0 && !lifecycle.NoWakeReserveWhileAsleep) {
+		return errors.New("lifecycle.sleepAfterSeconds must be positive, " +
+			"unless lifecycle.noWakeReserveWhileAsleep is true and it is left out")
+	}
+	makeRoomAfter := lifecycle.SleepToMakeRoomAfterSeconds
+	if makeRoomAfter == nil {
+		return nil
+	}
+	if *makeRoomAfter <= 0 {
+		return errors.New("lifecycle.sleepToMakeRoomAfterSeconds must be positive")
+	}
+	// An engine idle that long would already sleep, so none could ever be
+	// put to sleep to make room.
+	if lifecycle.SleepAfterSeconds > 0 && *makeRoomAfter >= lifecycle.SleepAfterSeconds {
+		return errors.New("lifecycle.sleepToMakeRoomAfterSeconds must be less than lifecycle.sleepAfterSeconds")
+	}
+	return nil
 }
 
 type poolRequestActivity struct {

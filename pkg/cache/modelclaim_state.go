@@ -25,12 +25,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 type modelClaimBinding struct {
-	podKey string
-	port   int
-	state  string
+	podKey  string
+	binding utils.ModelClaimBinding
 }
 
 // modelClaimRecord is what the gateway knows of one ModelClaim object: the
@@ -53,7 +53,7 @@ type modelClaimState struct {
 	claims map[string]modelClaimRecord
 }
 
-func (s *modelClaimState) set(podKey, model string, port int, state string) {
+func (s *modelClaimState) set(podKey, model string, binding utils.ModelClaimBinding) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.bindings == nil {
@@ -64,7 +64,7 @@ func (s *modelClaimState) set(podKey, model string, port int, state string) {
 		byPod = make(map[string]modelClaimBinding)
 		s.bindings[model] = byPod
 	}
-	byPod[podKey] = modelClaimBinding{podKey: podKey, port: port, state: state}
+	byPod[podKey] = modelClaimBinding{podKey: podKey, binding: binding}
 }
 
 func (s *modelClaimState) clearPod(podKey string) {
@@ -127,15 +127,15 @@ func (s *modelClaimState) claim(model string) (modelClaimRecord, bool) {
 // ModelClaimBinding returns one deterministic advertisement for a served
 // model. ModelClaim currently enforces one replica, while deterministic
 // ordering keeps this safe if duplicate served names temporarily coexist.
-func (c *Store) ModelClaimBinding(modelName string) (*v1.Pod, int, string, bool) {
-	for _, binding := range c.modelClaims.get(modelName) {
-		metaPod, found := c.metaPods.Load(binding.podKey)
+func (c *Store) ModelClaimBinding(modelName string) (*v1.Pod, utils.ModelClaimBinding, bool) {
+	for _, known := range c.modelClaims.get(modelName) {
+		metaPod, found := c.metaPods.Load(known.podKey)
 		if !found || metaPod == nil || metaPod.Pod == nil {
 			continue
 		}
-		return metaPod.Pod, binding.port, binding.state, true
+		return metaPod.Pod, known.binding, true
 	}
-	return nil, 0, "", false
+	return nil, utils.ModelClaimBinding{}, false
 }
 
 // setModelClaim records a ModelClaim object as the gateway sees it. A claim
