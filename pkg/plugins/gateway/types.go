@@ -36,6 +36,10 @@ const (
 	// prefill leg of a PD request failed, so the failure is distinguishable
 	// from a 5xx the decode pod produced itself.
 	HeaderErrorPDPrefill = "x-error-pd-prefill"
+	// HeaderErrorPDDecode marks a response the gateway generated because the
+	// decode leg of a PD request stopped responding after its prefill leg
+	// succeeded (the decode watchdog).
+	HeaderErrorPDDecode = "x-error-pd-decode"
 
 	// Model & Deployment Headers
 	HeaderErrorNoModelInRequest = "x-error-no-model-in-request"

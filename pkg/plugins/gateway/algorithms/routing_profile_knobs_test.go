@@ -194,7 +194,8 @@ func TestResolveRoutingOverridesFromRoutingConfig(t *testing.T) {
 				"prefillLoadImbalanceMinSpread":4,"decodeLoadImbalanceMinSpread":8.5,"decodeThroughputImbalanceMinSpread":1024,
 				"decodeScoreRatioThreshold":2.5,"decodeLBWeightRunning":3,"decodeLBWeightThroughput":4,
 				"hybridCacheLoadFactor":0.25,"minMatchPct":30,"tokenLoadKVWeight":0.7,"tokenLoadRequestCost":100,
-				"tokenLoadTTLSeconds":0,"tokenLoadSessionTTLSeconds":42}}`,
+				"tokenLoadTTLSeconds":0,"tokenLoadSessionTTLSeconds":42,
+				"decodeFirstResponseTimeout":0,"decodeResponseTimeout":300}}`,
 			check: func(t *testing.T, ov *types.RoutingOverrides) {
 				assert.Equal(t, time.Duration(0), ov.PD.Abort.Timeout, "an explicit zero disables decode aborts")
 				assert.Equal(t, time.Duration(0), ov.PD.Abort.RetryDelay, "an explicit zero sends a single abort attempt")
@@ -211,6 +212,8 @@ func TestResolveRoutingOverridesFromRoutingConfig(t *testing.T) {
 				assert.Equal(t, 100.0, ov.PD.TokenLoad.RequestCost)
 				assert.Equal(t, time.Duration(0), ov.PD.TokenLoad.TTL, "an explicit zero disables the charge sweep")
 				assert.Equal(t, 42*time.Second, ov.PD.TokenLoad.SessionTTL)
+				assert.Equal(t, time.Duration(0), ov.PD.Watchdog.FirstResponseTimeout, "an explicit zero disables the decode watchdog")
+				assert.Equal(t, 300*time.Second, ov.PD.Watchdog.ResponseTimeout)
 			},
 		},
 		{
@@ -225,7 +228,8 @@ func TestResolveRoutingOverridesFromRoutingConfig(t *testing.T) {
 				"pd":{"decodeAbortTimeout":-1,"decodeAbortRetryDelay":-1,"prefillRequestTimeout":0,"prefillLoadImbalanceMinSpread":0,
 					"decodeLoadImbalanceMinSpread":-1,"decodeThroughputImbalanceMinSpread":0,"decodeScoreRatioThreshold":-1,
 					"decodeLBWeightRunning":0,"decodeLBWeightThroughput":-1,"hybridCacheLoadFactor":1.5,"minMatchPct":101,
-					"tokenLoadKVWeight":0,"tokenLoadRequestCost":-1,"tokenLoadTTLSeconds":-1,"tokenLoadSessionTTLSeconds":-1}}`,
+					"tokenLoadKVWeight":0,"tokenLoadRequestCost":-1,"tokenLoadTTLSeconds":-1,"tokenLoadSessionTTLSeconds":-1,
+					"decodeFirstResponseTimeout":-1,"decodeResponseTimeout":-1}}`,
 			wantNil: true,
 			check: func(t *testing.T, ov *types.RoutingOverrides) {
 				assert.Nil(t, ov, "a profile whose every value is rejected parks no overrides at all")

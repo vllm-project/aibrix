@@ -156,6 +156,16 @@ type processState struct {
 	inferenceSpan       trace.Span // routing completion to final response body
 	firstRespSpan       trace.Span // routing completion to first response body chunk
 	toLastRespSpan      trace.Span // first response body chunk to stream completion
+
+	// prefillSucceededSeen records that the PD prefill-success wakeup has been
+	// observed. Same closed-channel hazard as prefillFailFastDone: the edge is
+	// only needed to make the loop arm its decode watchdog once, after which
+	// the success is readable from the leg's timestamp.
+	prefillSucceededSeen bool
+	// watchdog is the stream's one-shot decode watchdog timer, re-armed on
+	// every pass of the loop from decodeWatchdogDeadline. Nil until a stream
+	// arms one, which only an SGLang PD request ever does.
+	watchdog *time.Timer
 }
 
 var podName = os.Getenv("POD_NAME")
@@ -383,6 +393,12 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) (err err
 		}
 	}()
 
+	// Every return from the loop, terminal or not, leaves at most one armed
+	// decode watchdog timer behind, and a pending timer keeps its entry in the
+	// runtime's timer heap until it fires. Idempotent and nil-safe, so streams
+	// that never armed one pay nothing.
+	defer st.stopDecodeWatchdog()
+
 	klog.InfoS("processing request", "requestID", st.requestID)
 	labels := map[string]string{"pod_name": podName}
 	metrics.EmitMetricToPrometheus(&types.RoutingContext{}, nil, metrics.GatewayRequestTotal, &metrics.SimpleMetricValue{Value: 1.0}, labels)
@@ -444,6 +460,27 @@ func (s *Server) processOnce(srv extProcPb.ExternalProcessor_ProcessServer, st *
 		prefillFailed = st.routerCtx.PrefillFailed()
 	}
 
+	// Arm the prefill-success wakeup on the same terms. It carries no decision
+	// of its own: it exists so that the loop, parked on Envoy's messages, wakes
+	// up at the instant the decode watchdog becomes armable and re-enters the
+	// select with its timer running.
+	var prefillSucceeded <-chan struct{}
+	if !st.prefillSucceededSeen {
+		prefillSucceeded = st.routerCtx.PrefillSucceeded()
+	}
+
+	// And the watchdog itself, recomputed from the leg on every pass so that
+	// the decode pod's first message and the completed response disarm it. A
+	// nil channel when nothing is armed - the non-PD case, and every PD request
+	// before its prefill leg has finished.
+	var decodeWatchdog <-chan time.Time
+	deadline, phase := st.decodeWatchdogDeadline()
+	if deadline.IsZero() {
+		st.stopDecodeWatchdog()
+	} else {
+		decodeWatchdog = st.armDecodeWatchdog(time.Until(deadline))
+	}
+
 	// ctx.Done() is intentionally omitted here: gRPC unblocks Recv when the
 	// stream context is cancelled, so handleRecvError handles that path.
 	// preRecvCheck covers the case where ctx is already done before we spawn.
@@ -478,6 +515,34 @@ func (s *Server) processOnce(srv extProcPb.ExternalProcessor_ProcessServer, st *
 			// messages has been recorded and the after_response half applies.
 			st.prefillFailFastDone = true
 			return s.handlePrefillFailFast(srv, st)
+		}
+	case <-prefillSucceeded:
+		// The prefill leg landed, so the decode pod now owes this request a
+		// response. Nothing to decide here: returning re-enters processOnce,
+		// which arms the watchdog deadline computed from the leg.
+		st.prefillSucceededSeen = true
+		return nil
+	case <-decodeWatchdog:
+		// A message that has already arrived wins the tie, for the same reason
+		// it does on a prefill failure: it is the decode pod answering, which
+		// is exactly what the watchdog was waiting for.
+		select {
+		case r := <-st.recvCh:
+			st.recvCh = nil
+			if r.err != nil {
+				return s.handleRecvError(st, r.err)
+			}
+			req = r.req
+		default:
+			// Recheck the deadline against the clock before acting. A timer
+			// that fired between Stop() and its (non-blocking) drain on an
+			// earlier pass would otherwise kill a healthy stream early; here
+			// it costs one extra pass of the loop, which re-arms for the
+			// remaining time.
+			if fresh, _ := st.decodeWatchdogDeadline(); fresh.IsZero() || time.Now().Before(fresh) {
+				return nil
+			}
+			return s.handleDecodeWatchdog(srv, st, phase)
 		}
 	case <-s.shutdownCh:
 		if st.model != "" {

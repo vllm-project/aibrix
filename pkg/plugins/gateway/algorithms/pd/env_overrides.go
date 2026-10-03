@@ -25,9 +25,9 @@ import (
 )
 
 // EnvOverrides returns the PD routing knob defaults the environment configures:
-// the decode abort timings, the decode load-balancing weights, the token-load
-// ledger knobs, the hybrid prefix-cache thresholds and the bucket-serve
-// switch and mode. The routing algorithm
+// the decode abort timings, the decode watchdog timeouts, the decode
+// load-balancing weights, the token-load ledger knobs, the hybrid prefix-cache
+// thresholds and the bucket-serve switch and mode. The routing algorithm
 // package folds them into the process default table at startup, and this
 // package's tests install them the same way.
 //
@@ -43,6 +43,7 @@ func EnvOverrides() types.PDOverrides {
 			Timeout:    time.Duration(loadDecodeAbortTimeoutSeconds()) * time.Second,
 			RetryDelay: time.Duration(loadDecodeAbortRetryDelayNanos()),
 		},
+		Watchdog: loadDecodeWatchdogTimeouts(),
 		DecodeLB: types.PDDecodeLBOverrides{
 			WeightRunning:    decodeLBWeightRunningReq,
 			WeightThroughput: decodeLBWeightThroughput,
