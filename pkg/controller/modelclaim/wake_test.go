@@ -403,6 +403,44 @@ func TestMarkingAMoveWritesItAndSaysItOnTheRoute(t *testing.T) {
 	assert.Contains(t, strings.Join(drainEvents(t, r), "\n"), "Moving")
 }
 
+func TestWakeRequestedListsTheClaimsOnceAPass(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pm.UID = types.UID("claim-uid")
+	pm.Status.Phase = modelv1alpha1.ModelClaimSleeping
+	objs := []client.Object{}
+	snapshots := map[string]*RuntimeSnapshot{}
+	for i, ip := range []string{"10.0.0.1", testPeerIP} {
+		name := fmt.Sprintf("warm-%d", i+1)
+		pm.Status.Instances = append(pm.Status.Instances, modelv1alpha1.ModelClaimInstance{
+			Pod: name, Port: 9001, Phase: modelv1alpha1.ModelClaimSleeping, KVLimitBytes: 100,
+		})
+		pod, snapshot := sizedWarmPod(name, ip, 1000)
+		pod.Annotations = map[string]string{constants.ModelClaimWakeAnnotationPrefix + pm.Name: "2026-10-01T08:00:00Z"}
+		snapshot.Models = []RuntimeSnapshotModel{{
+			ModelName: servedModelName(pm), Port: 9001, Phase: runtimePhaseSleeping, Alive: true,
+			KVCapacityBytes: 100,
+			ClaimRef:        &ModelClaimRef{Namespace: pm.Namespace, Name: pm.Name, UID: string(pm.UID)},
+		}}
+		objs = append(objs, pod)
+		snapshots[ip] = snapshot
+	}
+	r, runtime := newReconciler(t, append([]client.Object{pm}, objs...)...)
+	runtime.snapshots = snapshots
+	r.Now = func() time.Time { return time.Date(2026, time.October, 1, 8, 0, 5, 0, time.UTC) }
+	counting := &countingReader{Reader: r.Client}
+	r.APIReader = counting
+	claim := getModel(t, r, pm.Name)
+	candidates, err := r.listCandidateWarmPods(context.Background(), claim)
+	require.NoError(t, err)
+
+	woke, err := r.wakeRequested(context.Background(), claim, candidates, newRuntimeReadings(runtime))
+
+	require.NoError(t, err)
+	assert.True(t, woke)
+	assert.Len(t, runtime.wakeCalls, 2)
+	assert.Equal(t, 1, counting.lists, "both wakes are judged by one listing of the claims")
+}
+
 func TestWakeRequestsEnqueueTheirClaimAlone(t *testing.T) {
 	key := constants.ModelClaimWakeAnnotationPrefix + "qwen2-7b"
 	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)

@@ -108,6 +108,18 @@ func (r *ModelClaimReconciler) wakeRequested(
 ) (woke bool, err error) {
 	key := constants.ModelClaimWakeAnnotationPrefix + pm.Name
 	served := servedModelName(pm)
+	// The claims are listed for the account once in a pass, the first time an
+	// instance needs it, and not again for each instance.
+	var claims *modelv1alpha1.ModelClaimList
+	var listErr error
+	listed := false
+	ledgersOf := func(pods []corev1.Pod) map[string]podLedger {
+		if !listed {
+			claims, listErr = r.listClaimsForAccount(ctx, pm.Namespace)
+			listed = true
+		}
+		return podLedgersFrom(claims, listErr, pods, readings.ofPods(ctx, pods))
+	}
 	for i := range pm.Status.Instances {
 		inst := &pm.Status.Instances[i]
 		pod := &corev1.Pod{}
@@ -142,9 +154,9 @@ func (r *ModelClaimReconciler) wakeRequested(
 		}
 
 		pods := []corev1.Pod{*pod}
-		ledger := r.collectPodLedgers(ctx, pm.Namespace, pods, readings.ofPods(ctx, pods))[pod.Name]
+		ledger := ledgersOf(pods)[pod.Name]
 		if ledger.judgeable && (ledger.maximumRoomBytes() < 0 || ledger.heldRoomBytes() < 0) {
-			if r.canPlaceElsewhere(ctx, pm, candidates, readings) {
+			if canPlaceElsewhere(pm, candidates, ledgersOf) {
 				if err := r.markMoving(ctx, pm, i, pod, instanceReasonNoRoomToWake,
 					fmt.Sprintf("its card on pod %s is promised more than it has", pod.Name)); err != nil {
 					return woke, err
@@ -182,7 +194,7 @@ func (r *ModelClaimReconciler) wakeRequested(
 			continue
 		}
 		if err != nil {
-			if r.canPlaceElsewhere(ctx, pm, candidates, readings) {
+			if canPlaceElsewhere(pm, candidates, ledgersOf) {
 				if err := r.markMoving(ctx, pm, i, pod, instanceReasonWakeFailed,
 					fmt.Sprintf("the runtime on pod %s could not wake it: %v", pod.Name, err)); err != nil {
 					return woke, err
@@ -310,14 +322,13 @@ func (r *ModelClaimReconciler) wakeRequestsSeen() *wakeRequestClock {
 }
 
 // canPlaceElsewhere reports whether placement could take the claim to another
-// pod now. It judges as placement does, so a claim marked to move is moved in
-// the same pass. Placement never picks a pod the claim is on, so neither does
-// this.
-func (r *ModelClaimReconciler) canPlaceElsewhere(
-	ctx context.Context,
+// pod now. It judges as placement does, by the account that ledgersOf draws up,
+// so a claim marked to move is moved in the same pass. Placement never picks a
+// pod the claim is on, so neither does this.
+func canPlaceElsewhere(
 	pm *modelv1alpha1.ModelClaim,
 	candidates []corev1.Pod,
-	readings *runtimeReadings,
+	ledgersOf func([]corev1.Pod) map[string]podLedger,
 ) bool {
 	perGPU, err := perGPUBytesOf(pm)
 	if err != nil {
@@ -333,8 +344,7 @@ func (r *ModelClaimReconciler) canPlaceElsewhere(
 	if len(others) == 0 {
 		return false
 	}
-	ledgers := r.collectPodLedgers(ctx, pm.Namespace, others, readings.ofPods(ctx, others))
-	admissible, _ := admissibleCandidates(others, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(pm))
+	admissible, _ := admissibleCandidates(others, ledgersOf(others), perGPU.minimumReserveBytes(), instanceGPUCount(pm))
 	return len(admissible) > 0
 }
 
