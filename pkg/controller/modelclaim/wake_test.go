@@ -143,6 +143,25 @@ func TestReconcileMovesAnEngineTheRuntimeCouldNotWake(t *testing.T) {
 	assert.NotContains(t, events, "WakeFailed")
 }
 
+func TestReconcileSaysWakingOnlyForTheCallThatWokeTheEngine(t *testing.T) {
+	r, runtime, pm, _ := sleepingClaim(t)
+	askWake(t, r, "warm-1", pm.Name, "2026-10-01T08:00:00Z")
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.wakeCalls, 1)
+	assert.Contains(t, strings.Join(drainEvents(t, r), "\n"), "Waking")
+
+	// The runtime has not shown the engine awake yet, so the next pass asks
+	// again, and the runtime answers that it applied this wake before.
+	runtime.wakeAlreadyApplied = true
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.wakeCalls, 2)
+	assert.Equal(t, runtime.wakeCalls[0].OperationID, runtime.wakeCalls[1].OperationID)
+	assert.NotContains(t, strings.Join(drainEvents(t, r), "\n"), "Waking")
+}
+
 func TestReconcileReportsAWakeThatFailedAndTakesItsRequestBack(t *testing.T) {
 	r, runtime, pm, _ := sleepingClaim(t)
 	runtime.failWake = true

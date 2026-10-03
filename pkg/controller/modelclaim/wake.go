@@ -167,7 +167,8 @@ func (r *ModelClaimReconciler) wakeRequested(
 		// One operation per request, so the runtime applies a request once
 		// however many passes see it.
 		operationID := fmt.Sprintf("controller-wake/%s/%s/%s", pod.UID, pm.UID, requestedAt)
-		_, err = r.Runtime.Wake(ctx, pod.Status.PodIP, DefaultRuntimePort, &WakeRequest{
+		var resp *RuntimeOperationResponse
+		resp, err = r.Runtime.Wake(ctx, pod.Status.PodIP, DefaultRuntimePort, &WakeRequest{
 			ModelName:   served,
 			OperationID: operationID,
 		})
@@ -192,8 +193,14 @@ func (r *ModelClaimReconciler) wakeRequested(
 			r.takeBackWakeRequest(ctx, pod, key)
 			continue
 		}
-		r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Waking",
-			"model %s is waking on pod %s, as asked at %s", served, pod.Name, requestedAt)
+		// A pass that asks again before the engine is seen to wake gets the same
+		// operation back, which the runtime does not apply twice. Only the call
+		// that woke the engine says so: client-go drops an object's Events once
+		// it has raised 25 in a burst.
+		if resp == nil || resp.Applied {
+			r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Waking",
+				"model %s is waking on pod %s, as asked at %s", served, pod.Name, requestedAt)
+		}
 		woke = true
 	}
 	return woke, nil
