@@ -817,6 +817,7 @@ def _recorded_completion(path):
             try:
                 fault = parse_fault_headers(request.headers, role)
                 g._aibrix_completion_delay_ms = fault.delay_ms
+                g._aibrix_stream_stall_ms = fault.stream_stall_ms
                 if fault.validation_status_code != 200:
                     return make_response(
                         create_error_response(
@@ -928,6 +929,7 @@ def _recorded_completion(path):
             g._aibrix_completion_handle = None
             g._aibrix_completion_payload = None
             g._aibrix_completion_delay_ms = 0
+            g._aibrix_stream_stall_ms = 0
             contract, role, engine = _mock_pd_config()
             request_id = request.headers.get("X-Request-ID")
 
@@ -1421,6 +1423,8 @@ def chat_completions():
         simulated_text = simulated_message(model, prefix="\n\n")
 
         if stream:
+            # Read in the request context; the generator runs after it is gone.
+            stream_stall_ms = g.get("_aibrix_stream_stall_ms", 0)
 
             def generate():
                 completion_id = "chatcmpl-" + "".join(
@@ -1447,6 +1451,11 @@ def chat_completions():
                     ],
                 }
                 yield f"data: {json.dumps(role_chunk)}\n\n"
+
+                # x-aibrix-mock-stream-stall-ms: the response has started, then
+                # the pod goes silent.
+                if stream_stall_ms:
+                    time.sleep(stream_stall_ms / 1000.0)
 
                 # Content chunks
                 full_text = simulated_text

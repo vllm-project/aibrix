@@ -564,3 +564,19 @@ def test_fault_result_metadata_rejects_reinitialization():
         result.metadata.__init__({"error": "changed"})
     assert result.metadata == {"error": "invalid x-aibrix-mock-delay-ms"}
     json.dumps(result._asdict())
+
+
+def test_stream_stall_header_is_parsed_and_scoped_by_delay_role():
+    headers = {"x-aibrix-mock-stream-stall-ms": "5000", "x-aibrix-mock-delay-role": "decode"}
+
+    assert parse_fault_headers(headers, "decode").stream_stall_ms == 5000
+    assert parse_fault_headers(headers, "prefill").stream_stall_ms == 0
+    assert parse_fault_headers({}, "decode").stream_stall_ms == 0
+
+
+@pytest.mark.parametrize("value", ["abc", "-1", "30001", "1.5"])
+def test_invalid_stream_stall_is_rejected(value):
+    result = parse_fault_headers({"x-aibrix-mock-stream-stall-ms": value}, "decode")
+
+    assert result.validation_status_code == 400
+    assert result.metadata == {"error": "invalid x-aibrix-mock-stream-stall-ms"}

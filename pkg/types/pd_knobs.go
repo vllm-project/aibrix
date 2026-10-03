@@ -32,6 +32,7 @@ import "time"
 // limit. It keeps its environment-only semantics.
 type PDOverrides struct {
 	Abort     PDAbortOverrides
+	Watchdog  PDWatchdogOverrides
 	Spreads   PDSpreadOverrides
 	DecodeLB  PDDecodeLBOverrides
 	TokenLoad PDTokenLoadOverrides
@@ -63,6 +64,21 @@ type PDAbortOverrides struct {
 	Timeout time.Duration
 	// RetryDelay is the delay between the two abort attempts.
 	RetryDelay time.Duration
+}
+
+// PDWatchdogOverrides mirrors the AIBRIX_DECODE_*_TIMEOUT knobs of the decode
+// watchdog, which fails an SGLang PD request whose decode pod stops answering
+// after the prefill leg succeeded. Zero disables the matching phase.
+type PDWatchdogOverrides struct {
+	// FirstResponseTimeout bounds, for a streaming request, the wait between
+	// the prefill leg succeeding and the first message from the decode pod.
+	FirstResponseTimeout time.Duration
+	// ResponseTimeout is the same bound for a non-streaming request, where the
+	// first message from the decode pod is the finished answer.
+	ResponseTimeout time.Duration
+	// StreamIdleTimeout bounds the gap between two messages from the decode pod
+	// once it has started answering.
+	StreamIdleTimeout time.Duration
 }
 
 // PDSpreadOverrides mirrors the four load-imbalance thresholds of the prefill

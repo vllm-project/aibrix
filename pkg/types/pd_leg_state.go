@@ -116,6 +116,28 @@ type PDLegState struct {
 	// wins the prefillFailure CAS.
 	prefillFailed chan struct{}
 
+	// prefillSucceededNanos is when the prefill leg came back 200, as unix
+	// nanoseconds, or 0 while it is still in flight (or failed). In SGLang
+	// disaggregation the prefill pod only answers once the decode pod has taken
+	// the KV transfer, so this instant is also the moment from which the decode
+	// pod owes the client a response: it is the origin of the decode watchdog's
+	// first-response deadline.
+	prefillSucceededNanos atomic.Int64
+
+	// prefillSucceeded is the wakeup edge for prefillSucceededNanos, the mirror
+	// image of prefillFailed: the goroutine that owns the client's ext_proc
+	// stream is parked on Envoy's messages and has no other way to learn that
+	// the prefill leg finished, which is when it starts watching the decode
+	// pod. Allocated with the struct, closed exactly once by whichever
+	// MarkPrefillSucceeded call wins the CAS on prefillSucceededNanos.
+	prefillSucceeded chan struct{}
+
+	// lastActivityNanos is the last time anything came back from the decode pod
+	// (response headers, a body chunk), as unix nanoseconds, or 0 when nothing
+	// has. It is the origin of the decode watchdog's stream-idle deadline, so
+	// it is refreshed on every message rather than only on the first one.
+	lastActivityNanos atomic.Int64
+
 	// decodeTarget is where the decode leg of this request was sent, captured
 	// on the request path by the PD router. The prefill goroutine needs it to
 	// abort a decode leg whose KV will never arrive, and cannot derive it
@@ -165,8 +187,9 @@ type pdDecodeTarget struct {
 // newPDLegState returns the leg state for a fresh incarnation of a request.
 func newPDLegState() *PDLegState {
 	return &PDLegState{
-		prefillFailed: make(chan struct{}),
-		abortDone:     make(chan struct{}),
+		prefillFailed:    make(chan struct{}),
+		prefillSucceeded: make(chan struct{}),
+		abortDone:        make(chan struct{}),
 	}
 }
 
@@ -346,6 +369,79 @@ func (l *PDLegState) PrefillFailed() <-chan struct{} {
 	return l.prefillFailed
 }
 
+// MarkPrefillSucceeded records that the prefill leg returned successfully and
+// closes PrefillSucceeded(). Only the first call has any effect, and only the
+// winner of the CAS closes the channel, so the close happens exactly once
+// however many goroutines race here - the same contract as SetPrefillFailure.
+//
+// For an SGLang PD request this is the point at which the decode pod has taken
+// the KV transfer and owes the client a response, which is what the decode
+// watchdog times.
+func (l *PDLegState) MarkPrefillSucceeded() {
+	if l == nil {
+		return
+	}
+	at := time.Now().UnixNano()
+	if at == 0 {
+		// 0 is the "not yet" sentinel.
+		at = 1
+	}
+	if !l.prefillSucceededNanos.CompareAndSwap(0, at) {
+		return
+	}
+	close(l.prefillSucceeded)
+}
+
+// PrefillSucceeded returns a channel that is closed when the prefill leg of
+// this request completes successfully. Like PrefillFailed it never carries a
+// value, and a nil leg yields a nil channel, which blocks forever in a select.
+func (l *PDLegState) PrefillSucceeded() <-chan struct{} {
+	if l == nil {
+		return nil
+	}
+	return l.prefillSucceeded
+}
+
+// PrefillSucceededAt returns when the prefill leg succeeded, or the zero time
+// when it has not (yet).
+func (l *PDLegState) PrefillSucceededAt() time.Time {
+	if l == nil {
+		return time.Time{}
+	}
+	nanos := l.prefillSucceededNanos.Load()
+	if nanos == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nanos)
+}
+
+// MarkActivity records that something came back from the decode pod just now.
+// Called for every ext_proc response message, so it is deliberately a single
+// atomic store.
+func (l *PDLegState) MarkActivity() {
+	if l == nil {
+		return
+	}
+	at := time.Now().UnixNano()
+	if at == 0 {
+		at = 1
+	}
+	l.lastActivityNanos.Store(at)
+}
+
+// LastActivity returns when the decode pod last sent anything, or the zero time
+// when it never has.
+func (l *PDLegState) LastActivity() time.Time {
+	if l == nil {
+		return time.Time{}
+	}
+	nanos := l.lastActivityNanos.Load()
+	if nanos == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nanos)
+}
+
 // SetDecodeTarget records the address and pod name of the decode leg, so a
 // prefill failure can be aimed at the pod that is waiting for the KV transfer.
 func (l *PDLegState) SetDecodeTarget(addr, podName string) {
@@ -460,6 +556,31 @@ func (r *RoutingContext) PrefillFailed() <-chan struct{} {
 // incarnation, or nil.
 func (r *RoutingContext) PrefillFailure() *PrefillFailure {
 	return r.PDLeg().PrefillFailure()
+}
+
+// PrefillSucceeded returns the success wakeup channel of the current
+// incarnation. The prefill goroutine reports through the *PDLegState it
+// captured, never through this pooled context.
+func (r *RoutingContext) PrefillSucceeded() <-chan struct{} {
+	return r.PDLeg().PrefillSucceeded()
+}
+
+// PrefillSucceededAt returns when the prefill leg of the current incarnation
+// succeeded, or the zero time.
+func (r *RoutingContext) PrefillSucceededAt() time.Time {
+	return r.PDLeg().PrefillSucceededAt()
+}
+
+// MarkActivity records that the decode pod of the current incarnation sent
+// something just now. Nil-safe, like every other leg accessor.
+func (r *RoutingContext) MarkActivity() {
+	r.PDLeg().MarkActivity()
+}
+
+// LastActivity returns when the decode pod of the current incarnation last sent
+// anything, or the zero time.
+func (r *RoutingContext) LastActivity() time.Time {
+	return r.PDLeg().LastActivity()
 }
 
 // SetDecodeTarget records where the decode leg of this request was sent.

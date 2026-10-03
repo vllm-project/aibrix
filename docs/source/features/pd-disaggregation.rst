@@ -158,6 +158,30 @@ to roll back. Other engines and combined-pod routing are unaffected, and an
 unrecognized value is logged and leaves the router on ``context_first``.
 
 
+SGLang Decode Watchdog
+----------------------
+
+With SGLang, the prefill request only returns once the decode pod has taken the KV
+transfer, so from then on the decode pod owes the client a response. If the decode
+pod stops answering (for example its scheduler crashed or hung), the gateway fails
+the request instead of leaving the client waiting for Envoy's route timeout: it
+answers ``504`` with the ``x-error-pd-decode: true`` header, closes the stream, and
+asks the decode pod to drop the request through ``/abort_request``.
+
+* ``AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT`` (default ``60``): seconds a streaming
+  request waits for the decode pod's first message after the prefill succeeded.
+* ``AIBRIX_DECODE_RESPONSE_TIMEOUT`` (default ``0``, disabled): the same bound for a
+  non-streaming request. The decode pod only answers such a request when the whole
+  generation is done, so a safe value depends on ``max_tokens`` and decode throughput.
+* ``AIBRIX_DECODE_STREAM_IDLE_TIMEOUT`` (default ``120``): once the decode pod has
+  started answering, the longest gap allowed between two of its messages. The
+  response has already started at that point, so instead of a ``504`` the gateway
+  cuts the stream short (the client sees a truncated response) and aborts the
+  decode request.
+
+``0`` disables any of them. All three can also be set per config profile (see below).
+
+
 Step 1 — Label Your Pods
 ------------------------
 
@@ -344,8 +368,10 @@ profile's requests, flat under ``pd``: ``prefillRequestTimeout``, the spread thr
 ``decodeThroughputImbalanceMinSpread``, ``decodeScoreRatioThreshold``), the decode load-balance
 weights (``decodeLBWeightRunning``, ``decodeLBWeightThroughput``), the token-load charge knobs
 (``tokenLoadKVWeight``, ``tokenLoadRequestCost``, ``tokenLoadTTLSeconds``,
-``tokenLoadSessionTTLSeconds``), ``hybridCacheLoadFactor``, ``minMatchPct``, and the abort
-timeout and retry delay (``decodeAbortTimeout``, ``decodeAbortRetryDelay``). Each one overrides
+``tokenLoadSessionTTLSeconds``), ``hybridCacheLoadFactor``, ``minMatchPct``, the abort
+timeout and retry delay (``decodeAbortTimeout``, ``decodeAbortRetryDelay``), and the decode
+watchdog timeouts (``decodeFirstResponseTimeout``, ``decodeResponseTimeout``,
+``decodeStreamIdleTimeout``). Each one overrides
 the matching gateway environment variable for that profile only; unset fields keep the
 environment default. See the Config Profiles section of `Gateway Plugins <gateway-plugins.html>`_
 for the full list.
