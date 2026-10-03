@@ -192,7 +192,7 @@ spec:
       ray.io/node-type: head
 ```
 
-you can use our own built [dashboard](./static/AIBrix%20Engine%20Dashboard%20(vLLM)-1741078999667.json) to visit your model performance.
+you can use our own built [dashboard](./static/AIBrix%20Engine%20Dashboard%20%28vLLM%29-1741078999667.json) to visit your model performance.
 
 ![dashboard](static/deepseek-dashboard.png)
 
