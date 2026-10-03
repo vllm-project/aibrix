@@ -470,22 +470,31 @@ func (r *ModelClaimReconciler) reconcilePoolPolicy(
 	return nil
 }
 
+// observeSnapshot records the request activity of each serving engine on a
+// pod, and reports whether it could read every one. The pod's policies wait for
+// a round in which it could. An engine whose counters could not be read does
+// not keep the engines beside it from being recorded, though, so the one idle
+// longest can still be put to sleep when room is needed.
 func (m *poolPolicyManager) observeSnapshot(
 	pod *corev1.Pod,
 	snapshot *RuntimeSnapshot,
 ) (map[string]poolRequestActivity, bool) {
 	activities := make(map[string]poolRequestActivity, len(snapshot.Models))
+	complete := true
 	for i := range snapshot.Models {
 		model := snapshot.Models[i]
 		if model.Phase != runtimePhaseActive || !model.Alive || !model.Ready {
 			continue
 		}
-		activityKey := snapshotActivityKey(model)
 		activity, observed := m.observe(poolActivityKey(pod, model), model)
 		if !observed {
-			return nil, false
+			complete = false
+			continue
 		}
-		activities[activityKey] = activity
+		activities[snapshotActivityKey(model)] = activity
+	}
+	if !complete {
+		return nil, false
 	}
 	return activities, true
 }

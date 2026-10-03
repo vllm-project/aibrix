@@ -22,6 +22,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -285,4 +286,25 @@ func TestPoolPolicyManagerSweepsAtMostOncePerInterval(t *testing.T) {
 	now = now.Add(poolActivitySweepInterval)
 	manager.begin(pool)
 	assert.NotContains(t, manager.activity, "stale/model")
+}
+
+func TestObserveSnapshotRecordsTheEnginesItCanRead(t *testing.T) {
+	now := time.Date(2026, time.October, 1, 8, 0, 0, 0, time.UTC)
+	manager := newPoolPolicyManager(func() time.Time { return now })
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	unread := engineHolding("unread", 10, 100)
+	unread.RequestMetricsObserved = false
+	completed := int64(7)
+	read := engineHolding("read", 10, 100)
+	read.RequestSuccessTotal = &completed
+
+	activities, complete := manager.observeSnapshot(pod, &RuntimeSnapshot{
+		Models: []RuntimeSnapshotModel{unread, read},
+	})
+
+	assert.False(t, complete, "the pod's policies wait for a round that reads every engine")
+	assert.Nil(t, activities)
+	seen, recorded := manager.lastActive(poolActivityKey(pod, read))
+	require.True(t, recorded, "an engine beside one that could not be read is still recorded")
+	assert.Equal(t, now, seen)
 }
