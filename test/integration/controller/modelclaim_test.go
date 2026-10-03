@@ -400,15 +400,15 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 		third := fixture.CreateClaim(ns.Name, "claim-third", "pool-new", nil, nil)
 		gomega.Eventually(func(g gomega.Gomega) {
 			g.Expect(fixture.GetClaim(g, third).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
-			asleep := 0
-			for _, neighbour := range []*modelapi.ModelClaim{first, second} {
-				if fixture.GetClaim(g, neighbour).Status.Phase == modelapi.ModelClaimSleeping {
-					asleep++
-				}
-			}
-			g.Expect(asleep).To(gomega.Equal(1), "one engine goes to sleep, and the new claim fits")
+			// claim-first was seen idle no later than claim-second, and its
+			// name breaks a tie, so its engine is the one idle longest.
+			g.Expect(fixture.GetClaim(g, first).Status.Phase).To(gomega.Equal(modelapi.ModelClaimSleeping),
+				"the engine idle longest goes to sleep, and the new claim fits")
+			g.Expect(fixture.GetClaim(g, second).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
 		}, 2*modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
-		gomega.Expect(fixture.Runtime().SleepRequests()).To(gomega.HaveLen(1))
+		sleeps := fixture.Runtime().SleepRequests()
+		gomega.Expect(sleeps).To(gomega.HaveLen(1))
+		gomega.Expect(sleeps[0].ModelName).To(gomega.Equal(first.Name))
 		fixture.ExpectEvent(third, corev1.EventTypeNormal, "MakingRoom")
 		events := &corev1.EventList{}
 		gomega.Expect(k8sClient.List(ctx, events, client.InNamespace(ns.Name))).To(gomega.Succeed())
