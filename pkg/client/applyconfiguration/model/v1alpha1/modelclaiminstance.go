@@ -24,9 +24,10 @@ import (
 // ModelClaimInstanceApplyConfiguration represents a declarative configuration of the ModelClaimInstance type for use
 // with apply.
 type ModelClaimInstanceApplyConfiguration struct {
-	Pod   *string                   `json:"pod,omitempty"`
-	Port  *int32                    `json:"port,omitempty"`
-	Phase *v1alpha1.ModelClaimPhase `json:"phase,omitempty"`
+	Pod          *string                   `json:"pod,omitempty"`
+	Port         *int32                    `json:"port,omitempty"`
+	Phase        *v1alpha1.ModelClaimPhase `json:"phase,omitempty"`
+	KVLimitBytes *int64                    `json:"kvLimitBytes,omitempty"`
 }
 
 // ModelClaimInstanceApplyConfiguration constructs a declarative configuration of the ModelClaimInstance type for use with
@@ -56,5 +57,13 @@ func (b *ModelClaimInstanceApplyConfiguration) WithPort(value int32) *ModelClaim
 // If called multiple times, the Phase field is set to the value of the last call.
 func (b *ModelClaimInstanceApplyConfiguration) WithPhase(value v1alpha1.ModelClaimPhase) *ModelClaimInstanceApplyConfiguration {
 	b.Phase = &value
+	return b
+}
+
+// WithKVLimitBytes sets the KVLimitBytes field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the KVLimitBytes field is set to the value of the last call.
+func (b *ModelClaimInstanceApplyConfiguration) WithKVLimitBytes(value int64) *ModelClaimInstanceApplyConfiguration {
+	b.KVLimitBytes = &value
 	return b
 }

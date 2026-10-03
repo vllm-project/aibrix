@@ -816,11 +816,7 @@ func TestValidateModelAvailabilityDoesNotWakeNonSleepingModelClaim(t *testing.T)
 			require.NotNil(t, response)
 			assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
 			assert.Empty(t, wakeRequester.calls)
-			if state == constants.ModelClaimRoutingStateFailed {
-				assert.Empty(t, responseHeader(response, "Retry-After"))
-			} else {
-				assert.Equal(t, "10", responseHeader(response, "Retry-After"))
-			}
+			assert.Equal(t, "10", responseHeader(response, "Retry-After"))
 		})
 	}
 }
@@ -858,12 +854,41 @@ func TestValidateModelAvailabilityAsksToRetryAfterAFailedActivation(t *testing.T
 	assert.Contains(t, response.GetImmediateResponse().GetBody(), "model qwen is failed (ActivateFailed); retry shortly")
 }
 
+// The controller moves a claim whose engine failed for good to another pod
+// once one can take it. So its client is asked to retry, whether the pod of the
+// failed engine still carries the claim or no pod does.
+func TestValidateModelAvailabilityAsksToRetryForAnEngineThatFailedForGood(t *testing.T) {
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "warm-1", Namespace: "default"},
+		Status:     v1.PodStatus{PodIP: "10.0.0.1"},
+	}
+	for name, mockCache := range map[string]*MockCache{
+		"carried": {modelClaimBindings: map[string]mockModelClaimBinding{
+			"qwen": {pod: pod, state: constants.ModelClaimRoutingStateFailed},
+		}},
+		"not carried": {modelClaimStatuses: map[string]mockModelClaimStatus{
+			"qwen": {phase: "Failed", reason: "EngineFailed"},
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mockCache.On("HasModel", "qwen").Return(false)
+			server := &Server{cache: mockCache}
+
+			_, response := server.validateModelAvailability("request-1", "qwen")
+
+			require.NotNil(t, response)
+			assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
+			assert.Equal(t, "10", responseHeader(response, "Retry-After"))
+			assert.Contains(t, response.GetImmediateResponse().GetBody(), "model qwen is failed")
+			assert.Contains(t, response.GetImmediateResponse().GetBody(), "retry shortly")
+		})
+	}
+}
+
 func TestValidateModelAvailabilityDoesNotAskToRetryWhenWaitingDoesNotHelp(t *testing.T) {
 	for _, status := range []mockModelClaimStatus{
 		{phase: "Failed", reason: "InvalidEngineConfig"},
 		{phase: "Pending", reason: "InvalidPerGPU"},
-		// An engine that used up its restarts is not started again by itself.
-		{phase: "Failed", reason: "EngineFailed"},
 	} {
 		t.Run(status.reason, func(t *testing.T) {
 			mockCache := &MockCache{modelClaimStatuses: map[string]mockModelClaimStatus{"qwen": status}}

@@ -175,6 +175,11 @@ test-integration-gateway: manifests fmt vet envtest ginkgo
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 	$(GINKGO) --junit-report=junit.gateway.xml --output-dir=$(ARTIFACTS) -v $(INTEGRATION_GATEWAY_TARGET)
 
+.PHONY: test-integration-tagged
+test-integration-tagged: manifests envtest ## Run Go tests behind the integration build tag.
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+	go test -tags=integration ./pkg/controller/modelclaim/... ./pkg/controller/kvcache/backends/... -count=1
+
 # Utilize Kind or modify the e2e tests to load the image locally, enabling compatibility with other vendors.
 .PHONY: test-e2e  # Run the e2e tests against a Kind k8s instance that is spun up.
 test-e2e:

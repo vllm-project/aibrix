@@ -246,6 +246,19 @@ The supported spec fields are:
      - No
      - Engine CLI flags mapped to string values. Use an empty string for a
        boolean flag.
+   * - ``perGPU``
+     - No
+     - What one instance costs on a GPU. A claim without it is accepted, and
+       is not placed until it declares one.
+   * - ``perGPU.maximumFootprint``
+     - Yes, in ``perGPU``
+     - A quantity, such as ``30Gi``. The largest non-KV GPU memory one
+       instance holds on a device: weights, captured CUDA graphs, activation
+       workspaces and allocator retention.
+   * - ``perGPU.kvFloor``
+     - Yes, in ``perGPU``
+     - A quantity, such as ``10Gi``. The KV cache one instance must keep on a
+       device to serve at all.
 
 For example:
 
@@ -259,6 +272,155 @@ For example:
 Do not set ``--gpu-memory-utilization``. kvcached owns elastic KV-cache
 allocation, and the ModelClaim path rejects that flag. Data parallelism is not
 supported; ``--data-parallel-size`` must remain 1.
+
+Declare what a model costs on a card
+------------------------------------
+
+``perGPU`` tells placement what one instance of this model takes off a GPU.
+Both figures describe a single device rather than the whole model, because a
+card is what an instance has to fit on. Under tensor or pipeline parallelism,
+declare the heaviest device: tensor parallel ranks hold the same slice, while
+pipeline stages do not. A Pod with several cards is judged by its smallest
+one, because which card an engine lands on is the device plugin's choice
+rather than placement's.
+
+The control plane does not profile a model to find these numbers. Most of an
+engine's non-KV memory is allocator retention that does not scale with the
+weights, so the artifact size does not predict it. Take
+``maximumFootprint`` from a run of this model with these engine arguments, and
+``kvFloor`` from one request of the engine's maximum model length at this
+model's bytes per token, rounded up to the KV allocator's page granularity.
+Both are quantities, so write ``30Gi`` rather than a count of bytes.
+Declaring more than an instance needs wastes room and is safe; declaring less
+is not.
+
+With both declared, a claim is placed only on a Pod whose card can be shown to
+have room for it, on two counts.
+
+The first is what the card could ever offer: its size, less the maximum
+footprint and KV floor of every instance already recorded on it. A model that
+needs more than this cannot be placed here while those instances stay, however
+long it waits.
+
+The second is what the card can offer today: its size, less each instance's
+footprint and whichever is larger of its declared floor and the KV its engine
+has actually mapped. Lowering a KV limit evicts nothing, so pages an engine
+already holds are not room anyone else can be given. A Pod refused on this
+count could take the model once its engines release those pages.
+
+A Pod that cannot be accounted for is not used at all. That covers a runtime
+that did not answer, a card the runtime could not measure, a Pod carrying an
+instance of a claim that declares nothing, and a Pod running an engine that
+no recorded instance answers for. Such an engine counts until the runtime no
+longer lists it, or lists it as failed and stopped. No Pod is used either
+while the claims cannot be listed.
+
+A Pod goes through the account when its containers request ``nvidia.com/gpu``,
+or when its runtime reports accelerators. The second covers GPUs given to a Pod
+some other way, such as a dynamic resource claim. A card reported with no memory
+at all does not count. That is the card the runtime's mock mode reports on CPU
+pools. A reading can report no card, as when NVML fails once. It still counts
+one while an engine on the Pod holds a KV segment, or while an instance on the
+Pod records a limit. A Pod with none of these is treated as one without a GPU,
+and nothing is accounted for on it. A Pod whose runtime did not answer is turned
+away whatever it requests, since its runtime is what says that it has cards. An
+instance on a Pod without a card records no limit, since no card was divided for
+it.
+
+A Pod given its GPUs some other way must report as many of them as one vLLM
+instance runs on, its tensor parallel size times its pipeline parallel size. A
+Pod that requests ``nvidia.com/gpu`` has to request that many as well.
+
+Upgrade an existing pool
+------------------------
+
+A pool from before ``perGPU`` is moved over in this order:
+
+1. Apply the new CRD. An older CRD drops ``perGPU`` from a claim that is
+   applied, and ``helm upgrade`` does not replace a CRD.
+2. Rebuild the runtime image from the same revision, and roll the warm pools.
+   A runtime from before ``perGPU`` does not report what a card can hold. No
+   claim is placed on its Pods, and the refusal says that the runtime is older
+   than the controller. Engines that already run keep their routes.
+3. Roll the controller. An older controller removes ``perGPU`` from a claim
+   when it adds its finalizer, so a claim created while it still runs has to
+   be applied again.
+4. Add ``perGPU`` to each claim.
+
+Every card in a declared pool is divided as a whole
+---------------------------------------------------
+
+An account alone would not stop an engine from growing its KV cache into the
+space held for another instance, so each engine is also held to a limit, which
+its instance records in ``status.instances[].kvLimitBytes``.
+
+The limits on one card are worked out together. Each engine keeps what it
+already holds, its declared floor or the KV it has mapped, and the room left
+over is shared out by demand: each engine's part is weighted by one plus its
+requests in flight, with the requests capped at four as the pool policy below
+caps them.
+Every footprint, every engine's held KV, and every share together come to
+exactly what the card can hold, so an engine growing into its new limit cannot
+grow into another engine's memory.
+
+The plan is carried out in an order that never leaves two engines entitled to
+the same byte. The limits are written first, shrinking before growing, and a
+fresh reading then has to agree. That step is not a formality: the CLI the
+runtime drives exits zero when there is no segment to write into, so reading
+the limit back is the only evidence there is. Only then is each new limit
+recorded on its own claim, the ones that go down first, and the new instance
+after them. So a division whose write or reading fails changes no record, and
+one whose recording fails part way leaves records that come to no more than
+the card. A model stays non-routable until its own
+limit is in force, and stays routable only while it is held to no more than
+that limit. A card that could not be arranged is skipped, and the next Pod in
+line is tried.
+
+Watch the arrangement through its Events:
+
+.. code-block:: bash
+
+   kubectl get events --field-selector reason=KVLimitSet
+   kubectl get events --field-selector reason=KVLimitFailed
+
+The automatic pool policy below is not applied on these Pods. Two writers on one
+KV allocator would only overwrite each other.
+
+A claim without ``perGPU`` is not placed. Nothing could be put there in its
+place: what an engine holds beyond its weights does not follow from the
+artifact, so a claim that does not say is a card nobody can account for. One
+such claim would make its whole card unusable to every other model. The claim
+stays ``Pending``, and its ``Scheduled`` condition reads ``InvalidPerGPU``.
+
+The schema leaves ``perGPU`` optional, and the controller refuses the claim
+instead. A claim stored before the field existed has to stay valid. Were the
+field required, such a claim would fail validation on its next update. On an
+API server without CRD validation ratcheting, its finalizer could then not be
+removed, so the claim could not be deleted either. A ``perGPU`` that is given
+has to carry both figures, and an apply without one of them is rejected.
+
+Both figures have to be positive. A quantity carries no schema bounds, so a
+``0`` is caught by the controller instead: the claim is not placed, and its
+``Scheduled`` condition reads ``InvalidPerGPU`` and names the figure. A zero is
+never read as a model that takes no room. A figure may be no more than ``1Pi``.
+One below ``1Mi`` also has to be a whole number of bytes. That catches a mistake
+such as ``30m`` for ``30M``, which would otherwise be read as one byte. A larger
+figure, such as ``5.6Gi``, is rounded up to whole bytes.
+
+A claim stored before the field existed decodes with its declaration missing,
+and it is not placed again, for the same reason. An engine it already runs keeps
+running and keeps its route. The card under it cannot be accounted for until the
+claim declares its cost.
+
+Sleeping does not free a seat. An instance that is asleep keeps its place in
+the account, at the full footprint and floor its claim declared, because the
+assignment has to survive the sleep for a wake to find its engine again.
+Normally, an engine that goes to sleep gives back the KV it had mapped. A
+claim that was turned away because of that KV can be placed then.
+
+A failed instance does free its seat. The runtime stops an engine once its
+restarts run out, and reports it as not alive. The account then charges the
+instance nothing.
 
 Configure TP and PP pools
 -------------------------
@@ -373,7 +535,16 @@ Enable automatic KV and sleep policy
 ------------------------------------
 
 Policy is optional and is configured as one strict JSON annotation on the warm
-pool Deployment. It does not add fields to ModelClaim:
+pool Deployment. It does not add fields to ModelClaim.
+
+.. note::
+
+   ``reclaim`` is replaced by ``spec.perGPU`` and will be removed. Its
+   ``capacityBytes`` is a figure an operator types in, unrelated to what the
+   card actually holds, so a pool configured this way can be both wrong and
+   confident. A claim declares ``perGPU`` instead, which has its card measured
+   and divided, and the policy is not applied on those Pods. ``lifecycle`` is
+   not affected.
 
 .. code-block:: bash
 
@@ -401,6 +572,12 @@ The controller distributes remaining KV capacity among active models using
 bounded inflight requests and completion deltas. A configured limit is a
 kvcached capacity ceiling, not an immediate physical HBM allocation and not an
 OOM guarantee.
+
+The policy leaves a Pod alone when an instance recorded on it already runs
+under a KV limit of its own. That is the case for every instance placed on a
+card, since a claim without a ``perGPU`` declaration is not placed. Until
+``reclaim`` is removed, this annotation reaches only instances placed before
+``perGPU`` existed, and Pods without a card.
 
 The JSON parser rejects unknown fields. An invalid policy is disabled and
 reported with an ``InvalidPoolPolicy`` Event:
@@ -430,11 +607,11 @@ An activating model also returns 503 with ``Retry-After``. So does a claim
 that is not placed yet. Its message gives the controller's reason: from the
 claim's ``Scheduled`` condition while it waits, such as ``NoMatchingPods``, or
 from its ``Ready`` condition once it has failed. The controller tries such a
-claim again by itself, so the client is asked to retry as well. A claim that
-has to be changed first, such as one with ``InvalidEngineConfig``, gets no
-``Retry-After``. A terminally failed model, with ``EngineFailed``, returns 503
-without ``Retry-After`` as well. A model that no ModelClaim serves returns
-400.
+claim again by itself, so the client is asked to retry as well. That includes a
+model whose engine failed for good, with ``EngineFailed``, since the controller
+moves it to another Pod once one can take it. A claim that has to be changed
+first, such as one with ``InvalidEngineConfig`` or ``InvalidPerGPU``, gets no
+``Retry-After``. A model that no ModelClaim serves returns 400.
 
 The answer for a claim that is not placed comes from the ModelClaim object,
 not from a Pod, so it wakes nothing. If two claims serve one name, the first
@@ -451,6 +628,12 @@ Each ModelClaim engine has an independent process group and supervisor. An
 engine crash is removed from routing and restarted with exponential backoff;
 other engines in the Pod are not restarted. After five local restarts, the
 engine remains ``Failed`` with its error visible in the runtime snapshot.
+
+The controller then moves the claim. It stops the failed engine and places the
+claim on another Pod, the way it places a new one. The new engine goes only on
+a card with room for it, and the card is divided before the engine starts. The
+Pod where the engine failed is left out, and the other engines there keep
+running. If no other Pod can take the claim, it stays ``Failed`` until one can.
 
 The kvcached runtime image uses ``tini`` and a small restart loop around the
 AIBrix agent. If only the agent process crashes, child engines stay alive. The
@@ -486,8 +669,12 @@ Runtime metrics include:
 * ``aibrix:modelclaim_kv_total_bytes{model}``;
 * ``aibrix:modelclaim_hbm_peak_bytes{model}``.
 
-HBM attribution is best effort and is used for observation and placement
-ranking. It is not a hard admission or reservation signal.
+HBM attribution is best effort and is used for observation. It is not an
+admission signal: admission works from the cost a claim declares and the size
+the runtime measures for a card. Ranking puts a Pod that already has the
+artifact first, then orders the admitted Pods by the room their account shows.
+Free memory only breaks a tie between two cards whose account shows the same
+room, because it moves with traffic.
 
 Troubleshooting
 ---------------
@@ -497,10 +684,86 @@ Claim remains ``Scheduling`` with zero candidates
    has ``pool.aibrix.ai/enabled: "true"``. For vLLM, confirm that TP times PP
    exactly matches the Pod-visible GPU count.
 
+Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
+   Candidates exist, but no card can be shown to have room for
+   ``perGPU.maximumFootprint`` plus ``perGPU.kvFloor``. The message names the
+   Pod that is closest to holding the model, and says why it was turned away.
+   There are three kinds. A card could never hold the model. A card could hold
+   it, and its room is held by the engines already on it. A card had room, and
+   could not be divided. A card of the last two kinds is named first, since
+   waiting can help there. Among cards of one kind, the one with the most room
+   is named. For the first two kinds, the message also shows the card's account.
+   That is how much it holds, and how much of that is promised to, or held by,
+   the instances on it.
+
+   A Pod is also turned away when it cannot be accounted for. Its runtime did
+   not answer, or one of its cards could not be measured. A claim on it declares
+   no usable ``perGPU``. An engine there belongs to no claim, or is still
+   exiting. The claims could not be listed. When no Pod could be accounted for,
+   the message names one of them and the reason.
+
+   The claim is tried again on every pass, and the ``NoMatchingPods`` Event is
+   raised only when the refusal changes. The ``Scheduled`` condition always
+   carries the current one.
+
+Claim remains ``Pending`` with ``InvalidPerGPU``
+   ``perGPU`` is missing, or one of its figures cannot be used, and the
+   message names which. The claim is not placed anywhere until it declares
+   its cost, because a card carrying it could not be accounted for. It is
+   tried on the next pass after the claim is fixed.
+
+A Pod is turned away because an engine on it belongs to no claim
+   The refusal names the model that engine serves. Nobody knows what such an
+   engine holds. So its card is kept out of placement until the runtime no
+   longer lists the engine, or lists it as failed and stopped. An engine that
+   was told to stop reads as still exiting until its last process has gone. It
+   normally goes by itself within seconds. The runtime only asks it to stop, so
+   an engine that does not react stays. Restart the Pod then. Any other such
+   engine is not stopped by the controller. Stop it through the runtime API of
+   that Pod, or restart the Pod:
+
+   .. code-block:: bash
+
+      kubectl port-forward "pod/$POD" 8080:8080
+      curl -fsS -X POST http://localhost:8080/v1/runtime/models/deactivate \
+        -H 'Content-Type: application/json' \
+        -d '{"model_name": "<model>", "mode": "stop"}'
+
 Claim remains ``Activating``
    Inspect the runtime snapshot and engine logs. Weight download, CUDA graph
    initialization, or engine compilation may take time. The controller
-   intentionally keeps the route at port 0 until ``/health`` succeeds.
+   intentionally keeps the route at port 0 until ``/health`` succeeds. An
+   instance is recorded before its engine is started, so the runtime may know
+   no engine for it, for example after the controller stopped between the two
+   steps. The controller then starts the engine again. If the runtime
+   refuses, the instance is dropped with an ``ActivateFailed`` Event, its card
+   is given back, and the claim is tried again. The next try may ask the same
+   Pod. If the runtime took the call and its answer was lost, the engine may
+   have started. The instance then stays, and the first pass that can read the
+   runtime finds out.
+
+Claim remains ``Activating`` after ``/health`` succeeds
+   With ``perGPU`` declared, the engine also has to report the KV limit it was
+   given before it becomes routable. kvcached applies a new limit at its next
+   allocation, so a short wait here is expected. A ``KVLimitFailed`` Event
+   names the error. A snapshot whose ``kv_capacity_bytes`` is negative means
+   the engine has not built its KV segment yet, and there is nothing to write
+   into.
+
+``KVLimitFailed`` Events during placement
+   A card had room, and the engines on it could not be held to their new
+   shares. The Event names the engine: one that did not take its limit has no
+   segment to write into, and one holding more than its new limit grew between
+   the plan and the reading that confirms it. The claim moves on to the next
+   Pod. If none is left it stays ``Pending``, and its ``NoMatchingPods``
+   message names the card that had room and could not be divided.
+
+A routable model becomes non-routable with ``KVLimitNotHeld``
+   Its engine is held to more KV than its limit, most often because it
+   restarted and its allocator put its own default back. It could grow into
+   memory the card holds for its neighbours, so the route is withdrawn while
+   the controller writes the limit again, and returns once the engine reports
+   it.
 
 Activation rejects ``--gpu-memory-utilization``
    Remove the flag. The kvcached framework replaces the engine's fixed
@@ -510,7 +773,8 @@ Policy does not change KV limits
    Automatic policy requires exactly one visible accelerator, valid request
    metrics with matching model labels, and at least one observed active model.
    It does not shrink when observations are incomplete or protected KV usage
-   exceeds the configured capacity.
+   exceeds the configured capacity. Its KV part is also not applied on a Pod
+   where an instance records its own KV limit. Idle sleep still runs there.
 
 Model never enters automatic sleep
    Automatic idle sleep currently applies only to vLLM. Check that request
