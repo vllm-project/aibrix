@@ -484,7 +484,7 @@ Each request is charged its ``prompt_tokens`` to its decode pod: the whole promp
 
 ``generated_tokens`` estimates the output the pod's outstanding requests have produced so far, which also sits in its KV cache: every outstanding request adds ``rate × (now − routed_at)``, where ``rate`` is the pod's scraped generation throughput divided by its running requests, or the mean of the other decode pods' rates when the pod has none yet. The router does not need to know a request's output length; the term grows while the request decodes and goes away when it completes. Without it the score counts prompts only, which suits short outputs but undercounts decode pods serving long outputs (reasoning models, long-form generation), where most of the KV is output. Set ``AIBRIX_DECODE_TOKEN_LOAD_OUTPUT_GROWTH=false`` to score prompts only. A decode pod's own prefix reuse is not modelled.
 
-``token_load`` helps most when decode KV, not compute, is what runs out, and when requests arrive in bursts shorter than the metric refresh interval, where the scraped KV usage is stale. At low decode KV utilization it behaves like the other policies. The ledger, like the prefill one, is local to each gateway replica: with several replicas, each scores only the requests it routed itself.
+``token_load`` helps most when decode KV, not compute, is what runs out, and when requests arrive in bursts shorter than the metric refresh interval, where the scraped KV usage is stale. At low decode KV utilization it behaves like the other policies. With Redis configured, the decode ledger is shared across gateway replicas: each replica publishes its own charges and adds the other live replicas' charges, read in the same Redis round trip as the running-request counts, to its score. Without Redis, or with ``AIBRIX_TOKEN_LOAD_SHARED_LEDGER=false``, the ledger is local to each replica, and with several replicas each scores only the requests it routed itself. The prefill ledger is always local.
 
 **Configuration**
 
@@ -796,6 +796,9 @@ These are set on the **gateway plugin** deployment.
    * - ``AIBRIX_DECODE_TOKEN_LOAD_OUTPUT_GROWTH``
      - ``true``
      - ``token_load`` decode policy only. Adds an estimate of the output generated so far to the decode score. ``false`` scores prompt tokens only.
+   * - ``AIBRIX_TOKEN_LOAD_SHARED_LEDGER``
+     - ``true``
+     - ``token_load`` decode policy only, with Redis configured. Shares the decode ledger across gateway replicas through Redis. ``false`` keeps it local to each replica.
    * - ``AIBRIX_DECODE_SCORE_POLICY``
      - ``load_balancing``
      - Default scoring policy for selecting decode pods. ``load_balancing``, ``least_request``, ``conductor``, or ``token_load``.

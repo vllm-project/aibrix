@@ -201,6 +201,10 @@ type TokenLoadTracker struct {
 	// epoch is the origin of the charge times summed in decodeInflight. Keeping
 	// them relative to it keeps the float64 sums small and exact enough.
 	epoch time.Time
+
+	// decodeListener, when set, is called with a pod key after every change to
+	// that pod's decode ledger (see SetDecodeLedgerListener).
+	decodeListener atomic.Pointer[func(podKey string)]
 }
 
 // tokenLoadEntry records one AcquirePrefill so the releases subtract exactly
@@ -544,6 +548,7 @@ func (t *TokenLoadTracker) AcquireDecodeWithTTL(requestID, podKey string, cost f
 	}
 	t.addDecode(podKey, cost)
 	t.addDecodeInflight(podKey, 1, entry.acquiredAt)
+	t.notifyDecode(podKey)
 	klog.V(4).InfoS("token_load_decode_acquired", "request_id", requestID, "pod", podKey, "cost", cost)
 }
 
@@ -565,6 +570,7 @@ func (t *TokenLoadTracker) releaseDecode(requestID string, entry *decodeLoadEntr
 	t.addDecode(entry.podKey, -entry.cost)
 	t.addDecodeInflight(entry.podKey, -1, entry.acquiredAt)
 	t.decodeEntries.CompareAndDelete(requestID, entry)
+	t.notifyDecode(entry.podKey)
 	klog.V(4).InfoS("token_load_decode_released", "request_id", requestID, "pod", entry.podKey, "cost", entry.cost)
 }
 
@@ -610,6 +616,44 @@ func (t *TokenLoadTracker) DecodeGrowth(podKey string, ratePerRequest float64) f
 
 func (t *TokenLoadTracker) sinceEpoch(ts time.Time) float64 {
 	return ts.Sub(t.epoch).Seconds()
+}
+
+// DecodeLedgerState returns the pod's decode counter (see GetDecodeLoad), its
+// number of outstanding decode charges and the sum of their charge times as
+// Unix seconds on the tracker's clock. Together they are what another gateway
+// replica needs to add this replica's ledger, growth included, to its own.
+func (t *TokenLoadTracker) DecodeLedgerState(podKey string) (tokens float64, charges int64, sumChargedAt float64) {
+	tokens = t.GetDecodeLoad(podKey)
+	v, ok := t.decodeInflight.Load(podKey)
+	if !ok {
+		return tokens, 0, 0
+	}
+	agg := v.(*decodeInflight)
+	agg.mu.Lock()
+	n, sumAt := agg.n, agg.sumAt
+	agg.mu.Unlock()
+	if n <= 0 {
+		return tokens, 0, 0
+	}
+	epoch := float64(t.epoch.Unix()) + float64(t.epoch.Nanosecond())/1e9
+	return tokens, n, sumAt + float64(n)*epoch
+}
+
+// SetDecodeLedgerListener registers fn to be called with a pod key after every
+// change to that pod's decode ledger: a charge, a release, a re-acquire and a
+// TTL sweep. fn runs on the caller's path and must not block. nil unregisters.
+func (t *TokenLoadTracker) SetDecodeLedgerListener(fn func(podKey string)) {
+	if fn == nil {
+		t.decodeListener.Store(nil)
+		return
+	}
+	t.decodeListener.Store(&fn)
+}
+
+func (t *TokenLoadTracker) notifyDecode(podKey string) {
+	if fn := t.decodeListener.Load(); fn != nil {
+		(*fn)(podKey)
+	}
 }
 
 // addDecodeInflight adds delta (+1 on a charge, -1 on its release) to the pod's

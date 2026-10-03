@@ -244,7 +244,12 @@ func (c *Store) GetPodRunningRequests(podName, podNamespace string) (int64, erro
 // is already applied. A missing key means the pod was nil or not in metaPods -- treat as 0.
 // Do not treat a missing key as "read the local counter again."
 func (c *Store) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error) {
-	live := c.readPodsRunningRequests(pods)
+	return c.runningRequestsWithLocalFallback(pods, c.readPodsRunningRequests(pods)), nil
+}
+
+// runningRequestsWithLocalFallback keys live by pod and fills in this gateway's
+// local atomic for every pod live has no count for.
+func (c *Store) runningRequestsWithLocalFallback(pods []*v1.Pod, live map[string]int64) map[string]int64 {
 	result := make(map[string]int64, len(pods))
 	for _, pod := range pods {
 		if pod == nil {
@@ -261,7 +266,7 @@ func (c *Store) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error)
 		}
 		result[podKey] = int64(atomic.LoadInt32(&metaPod.runningRequests))
 	}
-	return result, nil
+	return result
 }
 
 // AddRequestCount tracks new request initiation.

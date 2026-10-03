@@ -176,6 +176,9 @@ type Store struct {
 	// heartbeat completes, which just reproduces pre-sync (assume-synced) behavior
 	// for that one tick.
 	runningRequestsClockOffsetMillis atomic.Int64
+	// decodeLedger publishes this gateway's token_load decode ledger to Redis once
+	// a router registers it (see PublishDecodeLedger); nil until then.
+	decodeLedger atomic.Pointer[decodeLedgerPublisher]
 }
 
 // Get retrieves the cache instance
@@ -723,6 +726,11 @@ func (s *Store) Close() {
 
 	// Clean up KV event sync resources
 	s.cleanupKVEventSync()
+
+	// Stop publishing the decode ledger.
+	if p := s.decodeLedger.Load(); p != nil {
+		p.close()
+	}
 
 	// Other cleanup can be added here in the future
 }
