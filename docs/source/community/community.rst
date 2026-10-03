@@ -89,11 +89,9 @@ For technical support or collaborative development, feel free to @mention the co
 +----------------------------------------------------+----------------------------------------------+
 | `@happyandslow <https://github.com/happyandslow>`_ | Benchmark and research collaboration         |
 +----------------------------------------------------+----------------------------------------------+
-| `@nwangfw <https://github.com/nwangfw>`_           | Autoscaling                                  |
-+----------------------------------------------------+----------------------------------------------+
 | `@xunzhuo <https://github.com/xunzhuo>`_           | Gateway architecture and routing performance |
 +----------------------------------------------------+----------------------------------------------+
-| `@googs1025 <https://github.com/googs1025>`_       | Control Plane Features and Stability         |
+| `@googs1025 <https://github.com/googs1025>`_       | Autoscaling, Control Plane Stability         |
 +----------------------------------------------------+----------------------------------------------+
 
 Emeritus Maintainers will also participate in design reviews, feel free to @mention them if needed.
