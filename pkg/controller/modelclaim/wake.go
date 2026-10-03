@@ -427,9 +427,10 @@ var wakeDivision = division{announce: true}
 // since it was held to only the KV it had mapped while it slept.
 //
 // A card whose engines are already held as planned is left alone, as a card
-// normally is where the engine kept its reserve. So is a card that cannot be
-// planned, as before. A card that could not be divided is tried again on a
-// later pass, and the engine sleeps until then.
+// normally is where the engine kept its reserve. A card that cannot be planned,
+// or could not be divided, is tried again on a later pass, and the engine
+// sleeps until then. So does one whose claim could not be read back after the
+// division wrote it.
 func (r *ModelClaimReconciler) cardArrangedForWake(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
@@ -441,7 +442,14 @@ func (r *ModelClaimReconciler) cardArrangedForWake(
 		return true
 	}
 	limits, err := planKVLimits(ledger.hbmUsableBytes, ledger.engines)
-	if err != nil || heldAsPlannedForWake(ledger.engines, limits, pm.Name) {
+	if err != nil {
+		// A card with room for the engine can be planned, so this is not
+		// expected. The engine is not woken into a card held to no plan.
+		klog.V(2).InfoS("wake waits for its card to be planned",
+			"model", pm.Name, "pod", klog.KObj(pod), "err", err)
+		return false
+	}
+	if heldAsPlannedForWake(ledger.engines, limits, pm.Name) {
 		return true
 	}
 	if _, err := r.arrangeCard(ctx, pod, ledger, ledger.engines, wakeDivision, readings); err != nil {
@@ -449,23 +457,28 @@ func (r *ModelClaimReconciler) cardArrangedForWake(
 			"model", pm.Name, "pod", klog.KObj(pod), "err", err)
 		return false
 	}
-	r.catchUpWithRecordedLimit(ctx, pm, pod.Name)
-	return true
+	// The division wrote this claim, so the status this pass writes would
+	// meet a conflict unless the claim is read back. When it cannot be, the
+	// engine is woken on the next pass, which finds the card arranged.
+	return r.catchUpWithRecordedLimit(ctx, pm, pod.Name)
 }
 
 // catchUpWithRecordedLimit brings the claim this pass holds up to the KV limit
-// that a division recorded on it for one pod. The division wrote the claim
-// itself, so without this the status written at the end of the pass would
-// conflict with that record. Nothing else writes a claim's status while the
-// controller reconciles it, so the limit is the one field to take over.
-func (r *ModelClaimReconciler) catchUpWithRecordedLimit(ctx context.Context, pm *modelv1alpha1.ModelClaim, podName string) {
+// that a division recorded on it for one pod, and reports whether it could. The
+// division wrote the claim itself, so without this the status written at the
+// end of the pass would conflict with that record. Nothing else writes a
+// claim's status while the controller reconciles it, so the limit is the one
+// field to take over.
+func (r *ModelClaimReconciler) catchUpWithRecordedLimit(ctx context.Context, pm *modelv1alpha1.ModelClaim, podName string) bool {
 	reader := client.Reader(r.Client)
 	if r.APIReader != nil {
 		reader = r.APIReader
 	}
 	fresh := &modelv1alpha1.ModelClaim{}
 	if err := reader.Get(ctx, client.ObjectKeyFromObject(pm), fresh); err != nil {
-		return
+		klog.V(2).InfoS("wake waits for its claim to be read back",
+			"model", pm.Name, "pod", podName, "err", err)
+		return false
 	}
 	for _, recorded := range fresh.Status.Instances {
 		if recorded.Pod != podName {
@@ -478,6 +491,7 @@ func (r *ModelClaimReconciler) catchUpWithRecordedLimit(ctx context.Context, pm 
 		}
 	}
 	pm.ResourceVersion = fresh.ResourceVersion
+	return true
 }
 
 // heldAsPlannedForWake reports whether no engine on a card is held to more

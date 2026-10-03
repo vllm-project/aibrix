@@ -18,6 +18,7 @@ package modelclaim
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -180,6 +181,62 @@ func TestReconcileTakesLentRoomBackBeforeAWake(t *testing.T) {
 	assert.Equal(t, int64(300), getModel(t, r, "lender").Status.Instances[0].KVLimitBytes)
 	assert.Equal(t, int64(100), getModel(t, r, "waker").Status.Instances[0].KVLimitBytes,
 		"the record the division wrote survives the pass")
+}
+
+// getHook is a reader whose Get is the given function.
+type getHook struct {
+	client.Reader
+	get func(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error
+}
+
+func (g *getHook) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	return g.get(ctx, key, obj, opts...)
+}
+
+func TestReconcileWakesOnTheNextPassWhenTheClaimCannotBeReadBack(t *testing.T) {
+	r, runtime := lentRoomOnACard(t)
+	// The claim cannot be read back once, after the division recorded its new
+	// limit on it.
+	failed := false
+	r.APIReader = &getHook{Reader: r.Client, get: func(ctx context.Context, key client.ObjectKey, obj client.Object,
+		opts ...client.GetOption) error {
+		if err := r.Get(ctx, key, obj, opts...); err != nil {
+			return err
+		}
+		claim, ok := obj.(*modelv1alpha1.ModelClaim)
+		if ok && !failed && claim.Name == "waker" && claim.Status.Instances[0].KVLimitBytes != 20 {
+			failed = true
+			return fmt.Errorf("the API server did not answer")
+		}
+		return nil
+	}}
+	waker := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: "waker"}}
+
+	_, err := r.Reconcile(context.Background(), waker)
+
+	require.NoError(t, err)
+	require.True(t, failed, "the division recorded the new limit")
+	assert.NotEmpty(t, runtime.kvLimitCalls, "the card was divided")
+	assert.Empty(t, runtime.wakeCalls, "the engine sleeps until the next pass")
+
+	_, err = r.Reconcile(context.Background(), waker)
+
+	require.NoError(t, err)
+	assert.Len(t, runtime.wakeCalls, 1)
+}
+
+func TestCardArrangedForWakeWaitsForACardThatCannotBePlanned(t *testing.T) {
+	pod, _ := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	r, runtime := newReconciler(t, pod)
+	ledger := podLedger{judgeable: true, hbmUsableBytes: 1000, accelerators: 1, engines: []engineOnPod{{
+		claimName: "undeclared", modelName: "undeclared", kvCapacityBytes: 100,
+	}}}
+
+	arranged := r.cardArrangedForWake(context.Background(), claimWithCost(300, 100), pod, ledger,
+		newRuntimeReadings(runtime))
+
+	assert.False(t, arranged)
+	assert.Empty(t, runtime.kvLimitCalls)
 }
 
 func TestReconcileLeavesAnEngineAsleepWhileItsCardCannotBeDivided(t *testing.T) {
