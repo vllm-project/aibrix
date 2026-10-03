@@ -1,0 +1,609 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 19:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/features/batch-api.rst:5
+#: ../../source/features/batch-api.rst:585
+msgid "Batch API"
+msgstr "Batch API"
+
+#: ../../source/features/batch-api.rst:7
+msgid ""
+"The AIBrix Batch API provides an efficient way to process large volumes "
+"of LLM inference requests asynchronously. It is fully compatible with the"
+" OpenAI Batch API, allowing you to send batches of requests that are "
+"processed in the background with results retrieved later."
+msgstr ""
+"AIBrix Batch API 提供异步处理大量 LLM 推理请求的高效方式。它与 OpenAI Batch API "
+"完全兼容，可提交批量请求在后台处理，稍后检索结果。"
+
+#: ../../source/features/batch-api.rst:10
+msgid "Overview"
+msgstr "概述"
+
+#: ../../source/features/batch-api.rst:12
+msgid ""
+"Batch processing is ideal for workloads that don't require immediate "
+"responses and can benefit from:"
+msgstr "批处理适合不需要立即响应、并能从以下方面受益的工作负载："
+
+#: ../../source/features/batch-api.rst:14
+msgid ""
+"**Cost efficiency**: Process requests during off-peak hours with "
+"optimized resource utilization"
+msgstr "**成本效率** ：在低峰时段处理请求，优化资源利用率"
+
+#: ../../source/features/batch-api.rst:15
+msgid ""
+"**Higher throughput**: Handle large volumes of requests without rate "
+"limiting concerns"
+msgstr "**更高吞吐** ：处理大量请求而无需担心速率限制"
+
+#: ../../source/features/batch-api.rst:16
+msgid ""
+"**Simplified workflows**: Submit thousands of requests in a single batch "
+"operation"
+msgstr "**简化工作流** ：在单次批操作中提交数千个请求"
+
+#: ../../source/features/batch-api.rst:17
+msgid "**Guaranteed processing**: Built-in retry mechanisms and failure handling"
+msgstr "**处理保障** ：内置重试机制和失败处理"
+
+#: ../../source/features/batch-api.rst:19
+msgid ""
+"The Batch API accepts a JSONL (JSON Lines) file containing multiple "
+"inference requests, processes them asynchronously using Kubernetes Jobs, "
+"and returns results in a corresponding JSONL output file."
+msgstr ""
+"Batch API 接受包含多个推理请求的 JSONL（JSON Lines）文件，使用 Kubernetes Jobs "
+"异步处理，并在对应的 JSONL 输出文件中返回结果。"
+
+#: ../../source/features/batch-api.rst:22
+msgid "Key Features"
+msgstr "主要特性"
+
+#: ../../source/features/batch-api.rst:24
+msgid ""
+"**OpenAI-compatible**: Drop-in replacement for OpenAI's Batch API with "
+"identical request/response format"
+msgstr "**兼容 OpenAI** ：可作为 OpenAI Batch API 的即插即用替代，请求/响应格式相同"
+
+#: ../../source/features/batch-api.rst:25
+msgid ""
+"**Distributed execution**: Leverages Kubernetes Jobs for scalable, fault-"
+"tolerant batch processing"
+msgstr "**分布式执行** ：利用 Kubernetes Jobs 实现可扩展、容错的批处理"
+
+#: ../../source/features/batch-api.rst:26
+msgid ""
+"**Metadata server workflow**: Centralized coordination for multi-node "
+"batch execution"
+msgstr "**元数据服务器工作流** ：集中协调多节点批执行"
+
+#: ../../source/features/batch-api.rst:27
+msgid ""
+"**Storage flexibility**: Supports S3, TOS, MinIO, Redis, and local "
+"storage backends"
+msgstr "**存储灵活** ：支持 S3、TOS、MinIO、Redis 和本地存储后端"
+
+#: ../../source/features/batch-api.rst:28
+msgid ""
+"**Request tracking**: Each request has a ``custom_id`` for precise result"
+" matching"
+msgstr "**请求跟踪** ：每个请求有 ``custom_id`` ，用于精确匹配结果"
+
+#: ../../source/features/batch-api.rst:29
+msgid "**Status monitoring**: Real-time progress tracking with detailed metrics"
+msgstr "**状态监控** ：实时进度跟踪及详细指标"
+
+#: ../../source/features/batch-api.rst:30
+msgid ""
+"**24-hour completion window**: Automatic expiration for long-running "
+"batches"
+msgstr "**24 小时完成窗口** ：长时间运行的批次会自动过期"
+
+#: ../../source/features/batch-api.rst:34
+msgid "Comparison with OpenAI Batch API"
+msgstr "与 OpenAI Batch API 的比较"
+
+#: ../../source/features/batch-api.rst:36
+msgid ""
+"AIBrix Batch API maintains full compatibility with OpenAI's Batch API "
+"while adding enterprise features:"
+msgstr "AIBrix Batch API 与 OpenAI Batch API 完全兼容，并增加企业级特性："
+
+#: ../../source/features/batch-api.rst:38
+msgid "**AIBrix Enhancements:**"
+msgstr "**AIBrix 增强：**"
+
+#: ../../source/features/batch-api.rst:40
+msgid "**Self-hosted**: Full control over infrastructure and data"
+msgstr "**自托管** ：完全控制基础设施和数据"
+
+#: ../../source/features/batch-api.rst:41
+msgid ""
+"**Kubernetes-native**: Leverages K8s for scheduling and resource "
+"management"
+msgstr "**Kubernetes 原生** ：利用 K8s 进行调度和资源管理"
+
+#: ../../source/features/batch-api.rst:42
+msgid "**Flexible storage**: S3, TOS, MinIO, Redis, or local storage backends"
+msgstr "**灵活存储** ：S3、TOS、MinIO、Redis 或本地存储后端"
+
+#: ../../source/features/batch-api.rst:43
+msgid ""
+"**Distributed execution**: Metadata server coordinates multi-node "
+"processing"
+msgstr "**分布式执行** ：元数据服务器协调多节点处理"
+
+#: ../../source/features/batch-api.rst:44
+msgid "**Cost control**: Use existing infrastructure without per-request pricing"
+msgstr "**成本控制** ：使用现有基础设施，无按请求计费"
+
+#: ../../source/features/batch-api.rst:46
+msgid "**Migration from OpenAI:**"
+msgstr "**从 OpenAI 迁移：**"
+
+#: ../../source/features/batch-api.rst:48
+msgid "Simply update the ``base_url`` in your OpenAI SDK configuration:"
+msgstr "只需更新 OpenAI SDK 配置中的 ``base_url`` ："
+
+#: ../../source/features/batch-api.rst:65
+msgid "**Known Differences:**"
+msgstr "**已知差异：**"
+
+#: ../../source/features/batch-api.rst:67
+msgid ""
+"**Pricing**: No usage-based pricing; controlled by your infrastructure "
+"costs"
+msgstr "**定价** ：无按用量计费；由你的基础设施成本决定"
+
+#: ../../source/features/batch-api.rst:68
+msgid "**Endpoints**: Supports a subset of OpenAI endpoints (see below)"
+msgstr "**端点** ：支持 OpenAI 端点的子集（见下文）"
+
+#: ../../source/features/batch-api.rst:69
+msgid "**Rate Limits**: Determined by your cluster capacity, not API limits"
+msgstr "**速率限制** ：由集群容量决定，而非 API 限额"
+
+#: ../../source/features/batch-api.rst:71
+msgid "**Supported Endpoints:**"
+msgstr "**支持的端点：**"
+
+#: ../../source/features/batch-api.rst:73
+msgid "``/v1/chat/completions`` - Chat completion requests"
+msgstr "``/v1/chat/completions`` - 聊天补全请求"
+
+#: ../../source/features/batch-api.rst:74
+msgid "``/v1/completions`` - Text completion requests"
+msgstr "``/v1/completions`` - 文本补全请求"
+
+#: ../../source/features/batch-api.rst:75
+msgid "``/v1/embeddings`` - Embedding generation requests"
+msgstr "``/v1/embeddings`` - Embedding 生成请求"
+
+#: ../../source/features/batch-api.rst:76
+msgid "``/v1/rerank`` - Rerank requests"
+msgstr "``/v1/rerank`` - Rerank 请求"
+
+#: ../../source/features/batch-api.rst:78
+msgid ""
+"All endpoints are fully supported if the underlying LLM engine supports "
+"them."
+msgstr "若底层 LLM 引擎支持，则所有端点均完全支持。"
+
+#: ../../source/features/batch-api.rst:80
+msgid "**Current Limitations:**"
+msgstr "**当前限制：**"
+
+#: ../../source/features/batch-api.rst:82
+msgid ""
+"Completion window is fixed at ``24h`` today. ``1h``, ``4h``, and "
+"``best_effort`` are accepted by the schema but not yet honored at "
+"runtime."
+msgstr "完成窗口目前固定为 ``24h`` 。schema 接受 ``1h`` 、``4h`` 和 ``best_effort`` ，但运行时尚未生效。"
+
+#: ../../source/features/batch-api.rst:84
+msgid "Moderation endpoint (``/v1/moderations``) not supported"
+msgstr "不支持审核端点（``/v1/moderations`` ）"
+
+#: ../../source/features/batch-api.rst:88
+msgid "Architecture"
+msgstr "架构"
+
+#: ../../source/features/batch-api.rst:91
+msgid "Workflow Overview"
+msgstr "工作流概述"
+
+#: ../../source/features/batch-api.rst:93
+msgid ""
+"The Batch API follows a metadata server architecture for distributed "
+"processing:"
+msgstr "Batch API 采用元数据服务器架构进行分布式处理："
+
+#: ../../source/features/batch-api.rst:127
+msgid "**Phase Transitions:**"
+msgstr "**阶段转换：**"
+
+#: ../../source/features/batch-api.rst:136
+msgid "**Status Lifecycle:**"
+msgstr "**状态生命周期：**"
+
+#: ../../source/features/batch-api.rst:138
+msgid ""
+"**validating**: Metadata server validates input file and prepares job "
+"configuration"
+msgstr "**validating** ：元数据服务器校验输入文件并准备作业配置"
+
+#: ../../source/features/batch-api.rst:139
+msgid ""
+"**in_progress**: Kubernetes Jobs are executing and processing batch "
+"requests"
+msgstr "**in_progress** ：Kubernetes Jobs 正在执行并处理批请求"
+
+#: ../../source/features/batch-api.rst:140
+msgid ""
+"**finalizing**: Workers have completed, metadata server is aggregating "
+"results"
+msgstr "**finalizing** ：Worker 已完成，元数据服务器正在聚合结果"
+
+#: ../../source/features/batch-api.rst:141
+msgid "**completed**: Output file is ready for download with all results"
+msgstr "**completed** ：输出文件已就绪，包含全部结果，可供下载"
+
+#: ../../source/features/batch-api.rst:143
+msgid "**Failed/Cancelled States:**"
+msgstr "**失败/取消状态：**"
+
+#: ../../source/features/batch-api.rst:145
+msgid "**failed**: Job execution encountered unrecoverable errors"
+msgstr "**failed** ：作业执行遇到不可恢复错误"
+
+#: ../../source/features/batch-api.rst:146
+msgid "**cancelled**: User explicitly cancelled the batch job"
+msgstr "**cancelled** ：用户显式取消了批作业"
+
+#: ../../source/features/batch-api.rst:147
+msgid "**expired**: Job exceeded the 24-hour completion window"
+msgstr "**expired** ：作业超过 24 小时完成窗口"
+
+#: ../../source/features/batch-api.rst:150
+msgid "Components"
+msgstr "组件"
+
+#: ../../source/features/batch-api.rst:152
+msgid ""
+"**Metadata Server**: Coordinates batch job lifecycle, manages files, and "
+"tracks progress"
+msgstr "**元数据服务器** ：协调批作业生命周期、管理文件并跟踪进度"
+
+#: ../../source/features/batch-api.rst:153
+msgid "**Job Scheduler**: Creates and manages Kubernetes Jobs for batch execution"
+msgstr "**作业调度器** ：创建并管理用于批执行的 Kubernetes Jobs"
+
+#: ../../source/features/batch-api.rst:154
+msgid "**Worker Jobs**: Kubernetes Jobs that process batch requests in parallel"
+msgstr "**Worker Jobs** ：并行处理批请求的 Kubernetes Jobs"
+
+#: ../../source/features/batch-api.rst:155
+msgid ""
+"**Storage Backend**: S3, TOS, MinIO, Redis, or local filesystem for file "
+"storage and job state"
+msgstr "**存储后端** ：S3、TOS、MinIO、Redis 或本地文件系统，用于文件存储和作业状态"
+
+#: ../../source/features/batch-api.rst:156
+msgid "**Files API**: OpenAI-compatible file upload/download endpoints"
+msgstr "**Files API** ：兼容 OpenAI 的文件上传/下载端点"
+
+#: ../../source/features/batch-api.rst:160
+msgid "Deployment"
+msgstr "部署"
+
+#: ../../source/features/batch-api.rst:163
+msgid "Storage Backend Configuration"
+msgstr "存储后端配置"
+
+#: ../../source/features/batch-api.rst:165
+msgid ""
+"The Batch API requires a storage backend for file operations. AIBrix "
+"supports multiple storage backends including S3, TOS, Redis, and local "
+"storage. MinIO is supported through the S3-compatible API: set "
+"``STORAGE_TYPE=minio`` and point ``STORAGE_AWS_ENDPOINT_URL`` at your "
+"MinIO endpoint, otherwise configure it exactly like S3. To enable cloud "
+"object storage, you need to configure credentials and enable the "
+"appropriate storage patches."
+msgstr ""
+"Batch API 需要存储后端进行文件操作。AIBrix 支持多种存储后端，包括 S3、TOS、Redis 和本地存储。MinIO 通过 S3 "
+"兼容 API 支持：设置 ``STORAGE_TYPE=minio`` ，并将 ``STORAGE_AWS_ENDPOINT_URL`` 指向 "
+"MinIO 端点，其余配置与 S3 完全相同。要启用云对象存储，需要配置凭据并启用相应的存储 patch。"
+
+#: ../../source/features/batch-api.rst:167
+msgid "**Enabling S3 Storage**"
+msgstr "**启用 S3 存储**"
+
+#: ../../source/features/batch-api.rst:169
+msgid "To enable S3 as the storage backend for batch operations:"
+msgstr "要将 S3 作为批操作的存储后端："
+
+#: ../../source/features/batch-api.rst:171
+msgid "**Generate S3 Credentials Secret:**"
+msgstr "**生成 S3 凭据 Secret：**"
+
+#: ../../source/features/batch-api.rst:173
+msgid ""
+"Use the AIBrix secret generation tool to create the necessary Kubernetes "
+"secrets:"
+msgstr "使用 AIBrix secret 生成工具创建所需的 Kubernetes secrets："
+
+#: ../../source/features/batch-api.rst:186
+msgid "This command will:"
+msgstr "该命令会："
+
+#: ../../source/features/batch-api.rst:188
+msgid ""
+"Create a Kubernetes secret named ``aibrix-s3-credentials`` in the "
+"``aibrix-system`` namespace"
+msgstr "在 ``aibrix-system`` 命名空间中创建名为 ``aibrix-s3-credentials`` 的 Kubernetes secret"
+
+#: ../../source/features/batch-api.rst:189
+msgid "Configure the secret with your S3 bucket name and credentials"
+msgstr "用你的 S3 bucket 名称和凭据配置该 secret"
+
+#: ../../source/features/batch-api.rst:190
+msgid "Set up the necessary environment variables for the metadata service"
+msgstr "为元数据服务设置所需环境变量"
+
+#: ../../source/features/batch-api.rst:192
+msgid "**Enable S3 Environment Variables:**"
+msgstr "**启用 S3 环境变量：**"
+
+#: ../../source/features/batch-api.rst:194
+msgid "Uncomment the S3 patch in the metadata service configuration:"
+msgstr "在元数据服务配置中取消注释 S3 patch："
+
+#: ../../source/features/batch-api.rst:201
+#: ../../source/features/batch-api.rst:245
+msgid "Find and uncomment the following line:"
+msgstr "找到并取消注释以下行："
+
+#: ../../source/features/batch-api.rst:208
+msgid ""
+"The patch will inject the S3 environment variables into the metadata "
+"service deployment."
+msgstr "该 patch 会将 S3 环境变量注入元数据服务 deployment。"
+
+#: ../../source/features/batch-api.rst:210
+#: ../../source/features/batch-api.rst:254
+msgid "**Apply the Configuration:**"
+msgstr "**应用配置：**"
+
+#: ../../source/features/batch-api.rst:212
+#: ../../source/features/batch-api.rst:256
+msgid "Deploy the job rbac and updated configuration:"
+msgstr "部署 job rbac 及更新后的配置："
+
+#: ../../source/features/batch-api.rst:219
+msgid "**Enabling TOS Storage**"
+msgstr "**启用 TOS 存储**"
+
+#: ../../source/features/batch-api.rst:221
+msgid "For TOS (Tencent Object Storage), follow similar steps:"
+msgstr "对 TOS（腾讯云对象存储），步骤类似："
+
+#: ../../source/features/batch-api.rst:223
+msgid "**Generate TOS Credentials Secret:**"
+msgstr "**生成 TOS 凭据 Secret：**"
+
+#: ../../source/features/batch-api.rst:236
+msgid "**Enable TOS Environment Variables:**"
+msgstr "**启用 TOS 环境变量：**"
+
+#: ../../source/features/batch-api.rst:238
+msgid "Uncomment the TOS patch in the metadata service configuration:"
+msgstr "在元数据服务配置中取消注释 TOS patch："
+
+#: ../../source/features/batch-api.rst:252
+msgid ""
+"The patch will inject the TOS environment variables into the metadata "
+"service deployment."
+msgstr "该 patch 会将 TOS 环境变量注入元数据服务 deployment。"
+
+#: ../../source/features/batch-api.rst:264
+msgid "Examples"
+msgstr "示例"
+
+#: ../../source/features/batch-api.rst:267
+msgid "End-to-End Example"
+msgstr "端到端示例"
+
+#: ../../source/features/batch-api.rst:269
+msgid "Here's a complete example of processing a batch of chat completions:"
+msgstr "以下是处理一批聊天补全的完整示例："
+
+#: ../../source/features/batch-api.rst:271
+msgid "**Step 1: Prepare Input File**"
+msgstr "**步骤 1：准备输入文件**"
+
+#: ../../source/features/batch-api.rst:273
+msgid "Create a file ``batch_input.jsonl`` with your requests:"
+msgstr "创建包含请求的文件 ``batch_input.jsonl`` ："
+
+#: ../../source/features/batch-api.rst:281
+msgid "**Step 2: Upload Input File**"
+msgstr "**步骤 2：上传输入文件**"
+
+#: ../../source/features/batch-api.rst:299
+msgid "**Step 3: Create Batch Job**"
+msgstr "**步骤 3：创建批作业**"
+
+#: ../../source/features/batch-api.rst:318
+msgid "**Step 4: Poll Batch Status**"
+msgstr "**步骤 4：轮询批状态**"
+
+#: ../../source/features/batch-api.rst:350
+msgid "**Step 5: Download Results**"
+msgstr "**步骤 5：下载结果**"
+
+#: ../../source/features/batch-api.rst:362
+msgid "**Step 6: Process Results**"
+msgstr "**步骤 6：处理结果**"
+
+#: ../../source/features/batch-api.rst:389
+msgid "Python SDK Example"
+msgstr "Python SDK 示例"
+
+#: ../../source/features/batch-api.rst:391
+msgid "Using the OpenAI Python SDK (works with AIBrix as a drop-in replacement):"
+msgstr "使用 OpenAI Python SDK（可作为即插即用替代与 AIBrix 配合）："
+
+#: ../../source/features/batch-api.rst:478
+msgid "API Reference"
+msgstr "API 参考"
+
+#: ../../source/features/batch-api.rst:481
+msgid "Files API"
+msgstr "Files API"
+
+#: ../../source/features/batch-api.rst:483
+msgid ""
+"The Files API manages input and output files for batch processing. "
+"ENDPOINT is the metadata service endpoint."
+msgstr "Files API 管理批处理的输入和输出文件。ENDPOINT 是元数据服务端点。"
+
+#: ../../source/features/batch-api.rst:490
+msgid "**Upload File**"
+msgstr "**上传文件**"
+
+#: ../../source/features/batch-api.rst:508
+msgid "**Get File Metadata**"
+msgstr "**获取文件元数据**"
+
+#: ../../source/features/batch-api.rst:527
+msgid "**List Files**"
+msgstr "**列出文件**"
+
+#: ../../source/features/batch-api.rst:529
+msgid "List all files with optional filtering and pagination:"
+msgstr "列出所有文件，可选过滤和分页："
+
+#: ../../source/features/batch-api.rst:542
+msgid "Response:"
+msgstr "响应："
+
+#: ../../source/features/batch-api.rst:562
+msgid "**Query Parameters:**"
+msgstr "**查询参数：**"
+
+#: ../../source/features/batch-api.rst:564
+msgid "``purpose`` (optional): Filter by file purpose (e.g., \"batch\")"
+msgstr "``purpose`` （可选）：按文件用途过滤（例如 \"batch\"）"
+
+#: ../../source/features/batch-api.rst:565
+msgid "``limit`` (optional): Number of files to return (1-100, default 20)"
+msgstr "``limit`` （可选）：返回的文件数（1-100，默认 20）"
+
+#: ../../source/features/batch-api.rst:566
+msgid "``after`` (optional): File ID to use as pagination cursor"
+msgstr "``after`` （可选）：用作分页游标的文件 ID"
+
+#: ../../source/features/batch-api.rst:568
+msgid "**Download File**"
+msgstr "**下载文件**"
+
+#: ../../source/features/batch-api.rst:582
+msgid "**Response:** Raw file content (JSONL format)"
+msgstr "**响应：** 原始文件内容（JSONL 格式）"
+
+#: ../../source/features/batch-api.rst:587
+msgid "The Batch API manages batch job lifecycle."
+msgstr "Batch API 管理批作业生命周期。"
+
+#: ../../source/features/batch-api.rst:589
+msgid "**Create Batch**"
+msgstr "**创建批次**"
+
+#: ../../source/features/batch-api.rst:624
+msgid "**Get Batch Status**"
+msgstr "**获取批状态**"
+
+#: ../../source/features/batch-api.rst:657
+msgid "**List Batches**"
+msgstr "**列出批次**"
+
+#: ../../source/features/batch-api.rst:699
+msgid "Input File Format"
+msgstr "输入文件格式"
+
+#: ../../source/features/batch-api.rst:701
+msgid ""
+"Input files must be in JSONL format with one request per line. Each "
+"request requires:"
+msgstr "输入文件必须为 JSONL 格式，每行一个请求。每个请求需要："
+
+#: ../../source/features/batch-api.rst:703
+msgid "``custom_id``: Unique identifier for matching results (required)"
+msgstr "``custom_id`` ：用于匹配结果的唯一标识符（必填）"
+
+#: ../../source/features/batch-api.rst:704
+msgid "``method``: HTTP method, typically \"POST\" (required)"
+msgstr "``method`` ：HTTP 方法，通常为 \"POST\"（必填）"
+
+#: ../../source/features/batch-api.rst:705
+msgid "``url``: Endpoint path, e.g., \"/v1/chat/completions\" (required)"
+msgstr "``url`` ：端点路径，例如 \"/v1/chat/completions\"（必填）"
+
+#: ../../source/features/batch-api.rst:706
+msgid "``body``: Request payload matching the endpoint's format (required)"
+msgstr "``body`` ：与端点格式匹配的请求负载（必填）"
+
+#: ../../source/features/batch-api.rst:708
+msgid "**Example batch_input.jsonl:**"
+msgstr "**batch_input.jsonl 示例：**"
+
+#: ../../source/features/batch-api.rst:718
+msgid "Output File Format"
+msgstr "输出文件格式"
+
+#: ../../source/features/batch-api.rst:720
+msgid ""
+"Output files are in JSONL format with one result per line matching each "
+"input request:"
+msgstr "输出文件为 JSONL 格式，每行一个结果，与每个输入请求对应："
+
+#: ../../source/features/batch-api.rst:722
+msgid "**Example batch_output.jsonl:**"
+msgstr "**batch_output.jsonl 示例：**"
+
+#: ../../source/features/batch-api.rst:730
+msgid "Each output line contains:"
+msgstr "每行输出包含："
+
+#: ../../source/features/batch-api.rst:732
+msgid "``id``: Unique result identifier"
+msgstr "``id`` ：唯一结果标识符"
+
+#: ../../source/features/batch-api.rst:733
+msgid "``custom_id``: Matches the input request's custom_id"
+msgstr "``custom_id`` ：与输入请求的 custom_id 匹配"
+
+#: ../../source/features/batch-api.rst:734
+msgid ""
+"``response``: Contains ``status_code``, ``request_id``, and ``body`` with"
+" the actual result"
+msgstr "``response`` ：包含 ``status_code`` 、``request_id`` 和带实际结果的 ``body``"
