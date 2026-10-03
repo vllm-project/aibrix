@@ -112,6 +112,9 @@ type ModelClaimReconciler struct {
 	// Now is the controller's clock, for how long a wake request has waited.
 	// It falls back to time.Now when unset.
 	Now func() time.Time
+	// WakeRequests remembers when each wake request was first seen, so that
+	// its wait is timed on this clock. It is made on first use when unset.
+	WakeRequests *wakeRequestClock
 }
 
 func (r *ModelClaimReconciler) now() time.Time {

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -131,7 +132,7 @@ func (r *ModelClaimReconciler) wakeRequested(
 		if pod.Status.PodIP == "" {
 			continue
 		}
-		if r.wakeRequestExpired(requestedAt) {
+		if r.wakeRequestExpired(pod, key, requestedAt) {
 			r.Recorder.Eventf(pm, corev1.EventTypeWarning, "WakeRequestExpired",
 				"model %s stays asleep on pod %s: it could not be woken within %s of the request",
 				served, pod.Name, wakeRequestLifetime)
@@ -262,10 +263,50 @@ func (r *ModelClaimReconciler) setWaitingForRoom(
 }
 
 // wakeRequestExpired reports whether a request has waited longer than
-// wakeRequestLifetime. A request whose time cannot be read is taken as old.
-func (r *ModelClaimReconciler) wakeRequestExpired(requestedAt string) bool {
-	asked, err := time.Parse(time.RFC3339, requestedAt)
-	return err != nil || r.now().Sub(asked) > wakeRequestLifetime
+// wakeRequestLifetime. The wait is timed on this controller's clock, from when
+// it first saw the request. The time a request carries is on the clock of the
+// gateway that wrote it, which may be off from this one, so it only tells one
+// request from the next.
+func (r *ModelClaimReconciler) wakeRequestExpired(pod *corev1.Pod, key, requestedAt string) bool {
+	now := r.now()
+	seen := r.wakeRequestsSeen().firstSeen(string(pod.UID)+"/"+key+"/"+requestedAt, now)
+	return now.Sub(seen) > wakeRequestLifetime
+}
+
+// wakeRequestClock remembers when this controller first saw each wake request.
+// A restart forgets it, which gives a request that is still waiting another
+// wakeRequestLifetime.
+type wakeRequestClock struct {
+	mu   sync.Mutex
+	seen map[string]time.Time
+}
+
+// firstSeen returns when a request was first seen, and records now for one
+// that is new. A request seen longer ago than twice its lifetime has been
+// taken back, so it is forgotten.
+func (c *wakeRequestClock) firstSeen(request string, now time.Time) time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for known, at := range c.seen {
+		if now.Sub(at) > 2*wakeRequestLifetime {
+			delete(c.seen, known)
+		}
+	}
+	if at, known := c.seen[request]; known {
+		return at
+	}
+	if c.seen == nil {
+		c.seen = map[string]time.Time{}
+	}
+	c.seen[request] = now
+	return now
+}
+
+func (r *ModelClaimReconciler) wakeRequestsSeen() *wakeRequestClock {
+	if r.WakeRequests == nil {
+		r.WakeRequests = &wakeRequestClock{}
+	}
+	return r.WakeRequests
 }
 
 // canPlaceElsewhere reports whether placement could take the claim to another

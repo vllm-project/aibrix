@@ -162,6 +162,19 @@ func TestReconcileSaysWakingOnlyForTheCallThatWokeTheEngine(t *testing.T) {
 	assert.NotContains(t, strings.Join(drainEvents(t, r), "\n"), "Waking")
 }
 
+func TestReconcileTimesAWakeRequestOnItsOwnClock(t *testing.T) {
+	r, runtime, pm, _ := sleepingClaim(t)
+	key := constants.ModelClaimWakeAnnotationPrefix + pm.Name
+	// The gateway's clock is ten minutes behind the controller's.
+	askWake(t, r, "warm-1", pm.Name, "2026-10-01T07:50:00Z")
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.wakeCalls, 1, "a request is not old just because its writer's clock is behind")
+	assert.NotContains(t, strings.Join(drainEvents(t, r), "\n"), "WakeRequestExpired")
+	assert.Contains(t, podNamed(t, r, "warm-1").Annotations, key)
+}
+
 func TestReconcileReportsAWakeThatFailedAndTakesItsRequestBack(t *testing.T) {
 	r, runtime, pm, _ := sleepingClaim(t)
 	runtime.failWake = true
@@ -219,7 +232,7 @@ func TestReconcileAsksAgainForAWakeTheRuntimeDidNotAnswer(t *testing.T) {
 	assert.Equal(t, runtime.wakeCalls[0].OperationID, runtime.wakeCalls[1].OperationID,
 		"the same request is the same operation")
 
-	r.Now = func() time.Time { return time.Date(2026, time.October, 1, 8, 5, 1, 0, time.UTC) }
+	r.Now = func() time.Time { return time.Date(2026, time.October, 1, 8, 5, 6, 0, time.UTC) }
 	reconcileOnce(t, r, pm.Name)
 
 	assert.Len(t, runtime.wakeCalls, 2, "a request that waited too long is not asked again")
@@ -291,7 +304,7 @@ func TestReconcileTakesBackAWakeRequestThatWaitedTooLong(t *testing.T) {
 	reconcileOnce(t, r, pm.Name)
 	drainEvents(t, r)
 
-	r.Now = func() time.Time { return time.Date(2026, time.October, 1, 8, 6, 0, 0, time.UTC) }
+	r.Now = func() time.Time { return time.Date(2026, time.October, 1, 8, 6, 1, 0, time.UTC) }
 	reconcileOnce(t, r, pm.Name)
 
 	assert.Empty(t, runtime.wakeCalls)
