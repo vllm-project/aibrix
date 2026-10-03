@@ -313,12 +313,13 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// Reconcile instance routability against live engine readiness (promote
-	// ready Activating instances, demote Active instances that went unhealthy).
-	booting := r.reconcileInstanceHealth(ctx, pm, readings)
-	// An engine woken in this pass boots from now on, so the claim is looked
-	// at again as soon as a booting engine is.
-	if r.wakeRequested(ctx, pm, candidates, readings) {
-		booting = true
+	// ready Activating instances, demote Active instances that went unhealthy),
+	// and wake the sleeping engines a request has asked for.
+	booting, err := r.reconcileHealthAndWakes(ctx, pm, candidates, readings)
+	if err != nil {
+		// A move is written before its engine is touched. This one could not
+		// be, so the engine is as it was, and the next pass decides again.
+		return requeueOnConflict(err)
 	}
 	replacementFailed := false
 	failed := len(failedInstanceSlots(pm))
@@ -370,6 +371,24 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		requeueAfter = min(requeueAfter, ActivatingRequeueDuration)
 	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+}
+
+// reconcileHealthAndWakes checks each instance's engine against what its
+// runtime reports, and then wakes the sleeping engines that a request has asked
+// for. It reports whether an engine boots, so that the claim is looked at again
+// soon. An error is a move that could not be written, and nothing was done to
+// its engine.
+func (r *ModelClaimReconciler) reconcileHealthAndWakes(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	candidates []corev1.Pod,
+	readings *runtimeReadings,
+) (bool, error) {
+	booting := r.reconcileInstanceHealth(ctx, pm, readings)
+	// An engine woken in this pass boots from now on, so the claim is looked
+	// at again as soon as a booting engine is.
+	woke, err := r.wakeRequested(ctx, pm, candidates, readings)
+	return booting || woke, err
 }
 
 // roomAsCached describes what the candidates carry, from the cached listing

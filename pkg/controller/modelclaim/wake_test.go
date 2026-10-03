@@ -27,14 +27,19 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 func podNamed(t *testing.T, r *ModelClaimReconciler, name string) *corev1.Pod {
@@ -274,6 +279,70 @@ func TestReconcileMovesAnEngineItsCardCannotTakeBack(t *testing.T) {
 	assert.Contains(t, events, "Moving")
 	assert.Contains(t, events, "because its card could not take it back from sleep")
 	assert.NotContains(t, podNamed(t, r, "warm-1").Annotations, constants.ModelClaimWakeAnnotationPrefix+pm.Name)
+}
+
+func TestReconcileLeavesTheEngineAsleepWhenItsMoveCannotBeWritten(t *testing.T) {
+	roomy, roomySnapshot := sizedWarmPod("warm-2", testPeerIP, 2000)
+	r, runtime, pm := overcommittedSleeper(t, roomy)
+	runtime.snapshots[roomy.Status.PodIP] = roomySnapshot
+	// The write that marks the move is refused once, as the write of a claim
+	// read a moment too early is.
+	refused := false
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object,
+			opts ...client.SubResourceUpdateOption) error {
+			claim, ok := obj.(*modelv1alpha1.ModelClaim)
+			if ok && !refused && len(claim.Status.Instances) == 1 &&
+				claim.Status.Instances[0].Reason == instanceReasonNoRoomToWake {
+				refused = true
+				return apierrors.NewConflict(schema.GroupResource{Group: "model.aibrix.ai", Resource: "modelclaims"},
+					obj.GetName(), fmt.Errorf("the object has been modified"))
+			}
+			return c.SubResource(sub).Update(ctx, obj, opts...)
+		},
+	})
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: pm.Name},
+	})
+
+	require.NoError(t, err)
+	require.True(t, refused, "the move was marked")
+	assert.True(t, result.Requeue)
+	assert.Empty(t, runtime.deactivateCalls, "the engine is not stopped before its move is written")
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-1", got.Status.Instances[0].Pod)
+	assert.Equal(t, modelv1alpha1.ModelClaimSleeping, got.Status.Instances[0].Phase)
+	assert.Contains(t, podNamed(t, r, "warm-1").Annotations, constants.ModelClaimWakeAnnotationPrefix+pm.Name)
+
+	// The next pass decides again, and moves the claim.
+	reconcileOnce(t, r, pm.Name)
+
+	got = getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-2", got.Status.Instances[0].Pod)
+	require.Len(t, runtime.deactivateCalls, 1)
+}
+
+func TestMarkingAMoveWritesItAndSaysItOnTheRoute(t *testing.T) {
+	r, runtime, pm := overcommittedSleeper(t)
+	claim := getModel(t, r, pm.Name)
+
+	require.NoError(t, r.markMoving(context.Background(), claim, 0, podNamed(t, r, "warm-1"),
+		instanceReasonNoRoomToWake, "its card on pod warm-1 is promised more than it has"))
+
+	assert.Empty(t, runtime.deactivateCalls, "marking a move does nothing to the engine")
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Instances[0].Phase)
+	assert.Equal(t, instanceReasonNoRoomToWake, got.Status.Instances[0].Reason)
+	binding, routed := utils.ModelClaimBindingsFromPod(podNamed(t, r, "warm-1"))[servedModelName(pm)]
+	require.True(t, routed)
+	assert.Equal(t, constants.ModelClaimRoutingStateFailed, binding.State)
+	assert.Equal(t, readyReasonMoving, binding.Reason)
+	assert.Contains(t, strings.Join(drainEvents(t, r), "\n"), "Moving")
 }
 
 func TestWakeRequestsEnqueueTheirClaimAlone(t *testing.T) {

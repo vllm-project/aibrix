@@ -85,8 +85,10 @@ func movingReason(reason string) bool {
 // An engine that cannot wake where it is is moved, when another pod can take
 // its claim. That is an engine whose card is promised more than it has, and one
 // whose runtime answers that it could not wake it. The instance is marked
-// failed, with the reason, and the replacement that follows in the same pass
-// stops the engine and places the claim anew. A card that cannot take the
+// failed, with the reason, and the mark is written before anything else is done
+// to the engine. The replacement that follows in the same pass then stops the
+// engine and places the claim anew. A mark that cannot be written ends the pass,
+// and leaves the engine as it was. A card that cannot take the
 // engine back, with no other pod to go to, keeps the request waiting. A wake
 // that failed with no other pod to go to takes the request back, so the next
 // request for the model asks again. A wake whose runtime was not reached, or
@@ -101,7 +103,7 @@ func (r *ModelClaimReconciler) wakeRequested(
 	pm *modelv1alpha1.ModelClaim,
 	candidates []corev1.Pod,
 	readings *runtimeReadings,
-) (woke bool) {
+) (woke bool, err error) {
 	key := constants.ModelClaimWakeAnnotationPrefix + pm.Name
 	served := servedModelName(pm)
 	for i := range pm.Status.Instances {
@@ -141,8 +143,10 @@ func (r *ModelClaimReconciler) wakeRequested(
 		ledger := r.collectPodLedgers(ctx, pm.Namespace, pods, readings.ofPods(ctx, pods))[pod.Name]
 		if ledger.judgeable && (ledger.maximumRoomBytes() < 0 || ledger.heldRoomBytes() < 0) {
 			if r.canPlaceElsewhere(ctx, pm, candidates, readings) {
-				r.markMoving(pm, inst, instanceReasonNoRoomToWake,
-					fmt.Sprintf("its card on pod %s is promised more than it has", pod.Name))
+				if err := r.markMoving(ctx, pm, i, pod, instanceReasonNoRoomToWake,
+					fmt.Sprintf("its card on pod %s is promised more than it has", pod.Name)); err != nil {
+					return woke, err
+				}
 				continue
 			}
 			// Raised once, when the wake starts to wait. The instance and the
@@ -162,7 +166,7 @@ func (r *ModelClaimReconciler) wakeRequested(
 		// One operation per request, so the runtime applies a request once
 		// however many passes see it.
 		operationID := fmt.Sprintf("controller-wake/%s/%s/%s", pod.UID, pm.UID, requestedAt)
-		_, err := r.Runtime.Wake(ctx, pod.Status.PodIP, DefaultRuntimePort, &WakeRequest{
+		_, err = r.Runtime.Wake(ctx, pod.Status.PodIP, DefaultRuntimePort, &WakeRequest{
 			ModelName:   served,
 			OperationID: operationID,
 		})
@@ -176,8 +180,10 @@ func (r *ModelClaimReconciler) wakeRequested(
 		}
 		if err != nil {
 			if r.canPlaceElsewhere(ctx, pm, candidates, readings) {
-				r.markMoving(pm, inst, instanceReasonWakeFailed,
-					fmt.Sprintf("the runtime on pod %s could not wake it: %v", pod.Name, err))
+				if err := r.markMoving(ctx, pm, i, pod, instanceReasonWakeFailed,
+					fmt.Sprintf("the runtime on pod %s could not wake it: %v", pod.Name, err)); err != nil {
+					return woke, err
+				}
 				continue
 			}
 			r.Recorder.Eventf(pm, corev1.EventTypeWarning, "WakeFailed",
@@ -189,20 +195,40 @@ func (r *ModelClaimReconciler) wakeRequested(
 			"model %s is waking on pod %s, as asked at %s", served, pod.Name, requestedAt)
 		woke = true
 	}
-	return woke
+	return woke, nil
 }
 
 // markMoving marks an instance whose engine cannot wake where it is, so that
 // the replacement of failed instances moves its claim to another pod.
+//
+// The mark is written at once. The replacement stops the engine before it
+// writes its own record, and a pass that ended between the two, on a conflict
+// or with no pod that answers, would otherwise leave the claim saying that the
+// engine sleeps, with no engine there. Written, the mark stands until the claim
+// has moved, as a failed instance does. The route says at once that the claim
+// moves, so a client is told how long to wait, even while the replacement
+// waits its turn.
 func (r *ModelClaimReconciler) markMoving(
+	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
-	inst *modelv1alpha1.ModelClaimInstance,
+	slot int,
+	pod *corev1.Pod,
 	reason, why string,
-) {
-	inst.Phase = modelv1alpha1.ModelClaimFailed
-	inst.Reason = reason
+) error {
+	was := pm.Status.Instances[slot]
+	pm.Status.Instances[slot].Phase = modelv1alpha1.ModelClaimFailed
+	pm.Status.Instances[slot].Reason = reason
+	if err := r.Status().Update(ctx, pm); err != nil {
+		pm.Status.Instances[slot] = was
+		return err
+	}
 	r.Recorder.Eventf(pm, corev1.EventTypeWarning, "Moving",
-		"model %s cannot wake on pod %s, and moves to another pod: %s", servedModelName(pm), inst.Pod, why)
+		"model %s cannot wake on pod %s, and moves to another pod: %s", servedModelName(pm), pod.Name, why)
+	if err := r.annotateWarmPodWithState(ctx, pm, pod, 0, constants.ModelClaimRoutingStateFailed,
+		readyReasonMoving); err != nil {
+		klog.ErrorS(err, "could not say on the route that a claim moves", "pod", klog.KObj(pod), "model", pm.Name)
+	}
+	return nil
 }
 
 // setWaitingForRoom records on a sleeping instance whether a request waits
