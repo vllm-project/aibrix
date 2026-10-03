@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -177,6 +178,9 @@ type ModelRouter struct {
 	resyncInterval time.Duration
 	// workloadGVKs are the optional workload kinds whose informers were registered.
 	workloadGVKs []schema.GroupVersionKind
+	// routeMu serializes route deletion with the resync's create step, so the
+	// resync cannot recreate a route for a workload that was just deleted.
+	routeMu sync.Mutex
 }
 
 func (m *ModelRouter) addRouteFromDeployment(obj interface{}) {
@@ -444,6 +448,9 @@ func (m *ModelRouter) deleteHTTPRoute(namespace string, labels, annotations map[
 		return
 	}
 
+	m.routeMu.Lock()
+	defer m.routeMu.Unlock()
+
 	ctx := context.Background()
 	httpRoute := gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
@@ -589,7 +596,7 @@ func (m *ModelRouter) Run(ctx context.Context) {
 // ensureHTTPRoutes creates the HTTPRoute of every labeled model workload whose
 // route is missing. Existing routes are left unchanged.
 func (m *ModelRouter) ensureHTTPRoutes(ctx context.Context) error {
-	var workloads []metav1.Object
+	var workloads []client.Object
 
 	var deploymentList appsv1.DeploymentList
 	if err := m.List(ctx, &deploymentList); err != nil {
@@ -638,22 +645,79 @@ func (m *ModelRouter) ensureHTTPRoutes(ctx context.Context) error {
 		if _, ok := checked[modelName]; ok {
 			continue
 		}
-		checked[modelName] = struct{}{}
-
-		var route gatewayv1.HTTPRoute
-		key := client.ObjectKey{Namespace: aibrixEnvoyGatewayNamespace, Name: utils.ModelRouterName(modelName)}
-		err := m.Get(ctx, key, &route)
-		if err == nil {
-			continue
+		if m.ensureHTTPRouteForWorkload(ctx, workload, modelName) {
+			checked[modelName] = struct{}{}
 		}
-		if !apierrors.IsNotFound(err) {
-			klog.ErrorS(err, "Failed to get httproute", "model", modelName)
-			continue
-		}
-		klog.InfoS("httproute is missing, recreating it", "model", modelName, "namespace", workload.GetNamespace())
-		m.createHTTPRoute(workload.GetNamespace(), workload.GetLabels(), workload.GetAnnotations())
 	}
 	return nil
+}
+
+// ensureHTTPRouteForWorkload creates the model's HTTPRoute if it is missing and
+// the workload still serves the model. It reports whether the workload is still
+// current, so the caller can skip other workloads of the same model.
+//
+// The workload comes from a List snapshot and may have been deleted since, with
+// DeleteFunc already removing the route. Re-reading it under routeMu closes that
+// window: the informer updates its cache before calling DeleteFunc, so either
+// the re-read sees the deletion, or the route is created first and the pending
+// DeleteFunc removes it once the lock is released.
+func (m *ModelRouter) ensureHTTPRouteForWorkload(ctx context.Context, workload client.Object, modelName string) bool {
+	m.routeMu.Lock()
+	defer m.routeMu.Unlock()
+
+	current, err := m.getWorkload(ctx, workload)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			klog.ErrorS(err, "Failed to get model workload",
+				"namespace", workload.GetNamespace(), "name", workload.GetName())
+		}
+		return false
+	}
+	if current.GetDeletionTimestamp() != nil {
+		return false
+	}
+	if name, ok := constants.ModelNameFromMetadata(current.GetLabels(), current.GetAnnotations()); !ok || name != modelName {
+		return false
+	}
+
+	var route gatewayv1.HTTPRoute
+	key := client.ObjectKey{Namespace: aibrixEnvoyGatewayNamespace, Name: utils.ModelRouterName(modelName)}
+	err = m.Get(ctx, key, &route)
+	if err == nil {
+		return true
+	}
+	if !apierrors.IsNotFound(err) {
+		klog.ErrorS(err, "Failed to get httproute", "model", modelName)
+		return true
+	}
+	klog.InfoS("httproute is missing, recreating it", "model", modelName, "namespace", current.GetNamespace())
+	m.createHTTPRoute(current.GetNamespace(), current.GetLabels(), current.GetAnnotations())
+	return true
+}
+
+// getWorkload re-reads a listed workload from the informer cache.
+func (m *ModelRouter) getWorkload(ctx context.Context, workload client.Object) (client.Object, error) {
+	var current client.Object
+	reader := client.Reader(m.Client)
+	switch w := workload.(type) {
+	case *appsv1.Deployment:
+		current = &appsv1.Deployment{}
+	case *modelv1alpha1.ModelAdapter:
+		current = &modelv1alpha1.ModelAdapter{}
+	case *orchestrationv1alpha1.RayClusterFleet:
+		current = &orchestrationv1alpha1.RayClusterFleet{}
+	case *unstructured.Unstructured:
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(w.GroupVersionKind())
+		current = u
+		reader = m.cacheReader
+	default:
+		return nil, fmt.Errorf("unsupported workload type %T", workload)
+	}
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(workload), current); err != nil {
+		return nil, err
+	}
+	return current, nil
 }
 
 func consoleRouteLabels(labels map[string]string) map[string]string {

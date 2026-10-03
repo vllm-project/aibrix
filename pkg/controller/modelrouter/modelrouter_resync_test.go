@@ -384,25 +384,156 @@ func TestEnsureHTTPRoutesSkipsDeletingWorkloads(t *testing.T) {
 	}
 }
 
+// unstructuredCacheReader serves a fixed set of unstructured workloads, standing
+// in for the informer cache that ensureHTTPRoutes lists and re-reads from.
+type unstructuredCacheReader struct {
+	items []unstructured.Unstructured
+}
+
+func (r *unstructuredCacheReader) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	u, ok := obj.(*unstructured.Unstructured)
+	if !ok {
+		return fmt.Errorf("unexpected object %T from cacheReader", obj)
+	}
+	for i := range r.items {
+		if r.items[i].GetNamespace() == key.Namespace && r.items[i].GetName() == key.Name {
+			r.items[i].DeepCopyInto(u)
+			return nil
+		}
+	}
+	return apierrors.NewNotFound(schema.GroupResource{Group: leaderWorkerSetGVK.Group, Resource: "leaderworkersets"}, key.Name)
+}
+
+func (r *unstructuredCacheReader) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	uList, ok := list.(*unstructured.UnstructuredList)
+	if !ok || !isLeaderWorkerSetList(uList) {
+		return fmt.Errorf("unexpected list %T from cacheReader", list)
+	}
+	uList.Items = make([]unstructured.Unstructured, len(r.items))
+	for i := range r.items {
+		r.items[i].DeepCopyInto(&uList.Items[i])
+	}
+	return nil
+}
+
 func TestEnsureHTTPRoutesListsRegisteredUnstructuredWorkloads(t *testing.T) {
 	m := newEventTestRouter(t)
 	m.workloadGVKs = []schema.GroupVersionKind{leaderWorkerSetGVK}
-	m.cacheReader = &listHookClient{
-		Client: m.Client,
-		hook: func(ctx context.Context, base client.Client, list client.ObjectList, opts ...client.ListOption) error {
-			uList, ok := list.(*unstructured.UnstructuredList)
-			if !ok || !isLeaderWorkerSetList(uList) {
-				return fmt.Errorf("unexpected list %T from cacheReader", list)
-			}
-			uList.Items = []unstructured.Unstructured{*labeledLeaderWorkerSet("lws-ns", "llama-lws", "llama-lws-model")}
-			return nil
-		},
+	m.cacheReader = &unstructuredCacheReader{
+		items: []unstructured.Unstructured{*labeledLeaderWorkerSet("lws-ns", "llama-lws", "llama-lws-model")},
 	}
 
 	if err := m.ensureHTTPRoutes(context.Background()); err != nil {
 		t.Fatalf("ensureHTTPRoutes() error = %v", err)
 	}
 	_ = getHTTPRoute(t, m.Client, "llama-lws-model")
+}
+
+// TestEnsureHTTPRoutesRechecksWorkloadAfterList changes the workload after the
+// resync has listed it but before it creates the route, which is the window
+// where a stale snapshot used to recreate a route that nothing removed again.
+func TestEnsureHTTPRoutesRechecksWorkloadAfterList(t *testing.T) {
+	const modelName = "llama-7b"
+	newDeploy := func(name string) *appsv1.Deployment {
+		return &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "models",
+				Labels:    modelWorkloadLabels(modelName, "8000"),
+			},
+		}
+	}
+
+	tests := []struct {
+		name string
+		objs []client.Object
+		// afterList runs once, right after the Deployment List returns.
+		afterList func(t *testing.T, m *ModelRouter, base client.Client)
+		wantRoute bool
+	}{
+		{
+			name: "workload deleted and its delete handler ran",
+			objs: []client.Object{newDeploy("llama-deploy")},
+			afterList: func(t *testing.T, m *ModelRouter, base client.Client) {
+				deploy := newDeploy("llama-deploy")
+				if err := base.Delete(context.Background(), deploy); err != nil {
+					t.Fatal(err)
+				}
+				m.deleteRouteFromDeployment(deploy)
+			},
+			wantRoute: false,
+		},
+		{
+			name: "workload started deleting",
+			objs: []client.Object{func() client.Object {
+				d := newDeploy("llama-deploy")
+				d.Finalizers = []string{"test.aibrix.ai/hold"}
+				return d
+			}()},
+			afterList: func(t *testing.T, m *ModelRouter, base client.Client) {
+				if err := base.Delete(context.Background(), newDeploy("llama-deploy")); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantRoute: false,
+		},
+		{
+			name: "model label removed",
+			objs: []client.Object{newDeploy("llama-deploy")},
+			afterList: func(t *testing.T, m *ModelRouter, base client.Client) {
+				deploy := &appsv1.Deployment{}
+				if err := base.Get(context.Background(), client.ObjectKey{Namespace: "models", Name: "llama-deploy"}, deploy); err != nil {
+					t.Fatal(err)
+				}
+				deploy.Labels = map[string]string{"app": "llama"}
+				if err := base.Update(context.Background(), deploy); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantRoute: false,
+		},
+		{
+			name: "another workload still serves the model",
+			objs: []client.Object{newDeploy("llama-deploy-a"), newDeploy("llama-deploy-b")},
+			afterList: func(t *testing.T, m *ModelRouter, base client.Client) {
+				if err := base.Delete(context.Background(), newDeploy("llama-deploy-a")); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantRoute: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newEventTestRouter(t, tt.objs...)
+			base := m.Client
+			fired := false
+			m.Client = &listHookClient{
+				Client: base,
+				hook: func(ctx context.Context, base client.Client, list client.ObjectList, opts ...client.ListOption) error {
+					if err := base.List(ctx, list, opts...); err != nil {
+						return err
+					}
+					if _, ok := list.(*appsv1.DeploymentList); ok && !fired {
+						fired = true
+						tt.afterList(t, m, base)
+					}
+					return nil
+				},
+			}
+
+			if err := m.ensureHTTPRoutes(context.Background()); err != nil {
+				t.Fatalf("ensureHTTPRoutes() error = %v", err)
+			}
+			if !fired {
+				t.Fatal("afterList hook did not run")
+			}
+			if got := httpRouteExists(t, base, modelName); got != tt.wantRoute {
+				t.Errorf("HTTPRoute exists = %v, want %v", got, tt.wantRoute)
+			}
+		})
+	}
 }
 
 func TestEnsureHTTPRoutesReturnsListError(t *testing.T) {
