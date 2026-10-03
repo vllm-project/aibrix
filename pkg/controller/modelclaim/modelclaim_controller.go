@@ -41,6 +41,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -112,6 +113,10 @@ func Add(mgr manager.Manager, _ config.RuntimeConfig) error {
 
 	err := ctrl.NewControllerManagedBy(mgr).
 		Named(controllerName).
+		// Passes run one at a time, which is also the default. The account of
+		// a card and its division read what earlier passes wrote, so two passes
+		// at once could promise the same memory twice, or divide one card twice.
+		WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
 		For(&modelv1alpha1.ModelClaim{}, builder.WithPredicates(predicate.Or(
 			predicate.GenerationChangedPredicate{},
 			predicate.LabelChangedPredicate{},
