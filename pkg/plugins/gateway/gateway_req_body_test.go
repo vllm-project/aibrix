@@ -889,6 +889,9 @@ func TestValidateModelAvailabilityDoesNotAskToRetryWhenWaitingDoesNotHelp(t *tes
 	for _, status := range []mockModelClaimStatus{
 		{phase: "Failed", reason: "InvalidEngineConfig"},
 		{phase: "Pending", reason: "InvalidPerGPU"},
+		// No card in the pool can hold the model, until the pool or the claim
+		// is changed.
+		{phase: "Pending", reason: "TooLargeForAnyCard"},
 	} {
 		t.Run(status.reason, func(t *testing.T) {
 			mockCache := &MockCache{modelClaimStatuses: map[string]mockModelClaimStatus{"qwen": status}}
