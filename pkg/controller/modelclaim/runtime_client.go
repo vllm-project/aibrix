@@ -20,9 +20,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
@@ -49,6 +52,55 @@ const (
 
 	defaultRuntimeHTTPTimeout = 60 * time.Second
 )
+
+// runtimeRefusal is an answer that says no. It is a body in which the runtime
+// reports an error, or a status that says the request was at fault. Such a
+// status is one from 400 to 499. The runtime did not do what it was asked.
+type runtimeRefusal struct {
+	message string
+}
+
+func (e *runtimeRefusal) Error() string { return e.message }
+
+// statusError is the error for an answer with an error status.
+//
+// It is a refusal when the status says that the request was at fault, or when
+// the body is the runtime's own report of an error. A server error with any
+// other body can come from something between the controller and the runtime,
+// such as a proxy that gave up waiting. It says nothing about what the runtime
+// did, so it is no refusal. Neither is a status below 400 that the runtime
+// does not send for this call.
+func statusError(method, url string, status int, body []byte) error {
+	message := fmt.Sprintf("runtime %s %s returned %d: %s", method, url, status, body)
+	var answer struct {
+		Status string `json:"status"`
+	}
+	reportsAnError := json.Unmarshal(body, &answer) == nil && answer.Status == "error"
+	atFault := status >= http.StatusBadRequest && status < http.StatusInternalServerError
+	if atFault || reportsAnError {
+		return &runtimeRefusal{message}
+	}
+	return errors.New(message)
+}
+
+// callNotDone reports whether a failed call to a runtime is known to have
+// changed nothing there: the runtime said no, or the call was never sent. After
+// any other failure, such as an answer that did not arrive in time, the
+// runtime may have done what it was asked.
+func callNotDone(err error) bool {
+	var refusal *runtimeRefusal
+	if errors.As(err, &refusal) {
+		return true
+	}
+	// A call is not sent when its address cannot be read, or when no
+	// connection could be made.
+	var unsent *url.Error
+	if errors.As(err, &unsent) && unsent.Op == "parse" {
+		return true
+	}
+	var failed *net.OpError
+	return errors.As(err, &failed) && failed.Op == "dial"
+}
 
 // DeactivateMode selects how a model is torn down.
 type DeactivateMode string
@@ -151,6 +203,11 @@ type RuntimeAcceleratorSnapshot struct {
 	ID            string `json:"id"`
 	HBMTotalBytes int64  `json:"hbm_total_bytes"`
 	HBMFreeBytes  int64  `json:"hbm_free_bytes"`
+	// HBMUsableBytes is how much of this card an engine can ever take: the
+	// total less what the driver keeps for itself. Unlike HBMFreeBytes it does
+	// not move with traffic, so a card can be sized by it. Negative when the
+	// runtime could not measure the card.
+	HBMUsableBytes int64 `json:"hbm_usable_bytes"`
 }
 
 // RuntimeSnapshotModel is one engine reported by a runtime snapshot.
@@ -163,14 +220,20 @@ type RuntimeSnapshotModel struct {
 	Phase       string         `json:"phase"`
 	// Alive is process liveness, separate from readiness: a booting engine is
 	// alive but not routable, while a restarting or terminal engine is not.
-	Alive           bool       `json:"alive"`
-	Ready           bool       `json:"ready"`
-	RestartCount    int        `json:"restart_count"`
-	LastError       string     `json:"last_error,omitempty"`
-	LastTransition  *time.Time `json:"last_transition,omitempty"`
-	KVUsedBytes     int64      `json:"kv_used_bytes"`
-	KVCapacityBytes int64      `json:"kv_capacity_bytes"`
-	HBMPeakBytes    int64      `json:"hbm_peak_bytes"`
+	Alive          bool       `json:"alive"`
+	Ready          bool       `json:"ready"`
+	RestartCount   int        `json:"restart_count"`
+	LastError      string     `json:"last_error,omitempty"`
+	LastTransition *time.Time `json:"last_transition,omitempty"`
+	// KVUsedBytes is the KV memory this engine has mapped, its pages in use and
+	// the ones it holds in reserve together. KVCapacityBytes is the limit its
+	// KV allocator currently holds, which is what the engine obeys and not
+	// necessarily what the controller last asked for. Both are negative while
+	// the engine has no KV allocator to read, which a starting engine and one
+	// that never built a segment have in common.
+	KVUsedBytes     int64 `json:"kv_used_bytes"`
+	KVCapacityBytes int64 `json:"kv_capacity_bytes"`
+	HBMPeakBytes    int64 `json:"hbm_peak_bytes"`
 	// RequestMetricsObserved distinguishes a zero metric from an unavailable
 	// scrape. Pool policy must not infer idleness unless the completion counter
 	// is also present.
@@ -223,7 +286,7 @@ func (c *httpRuntimeClient) Activate(ctx context.Context, podIP string, port int
 		return nil, err
 	}
 	if out.Status == "error" {
-		return out, fmt.Errorf("runtime failed to activate %s: %s", req.ModelName, out.Message)
+		return out, &runtimeRefusal{fmt.Sprintf("runtime failed to activate %s: %s", req.ModelName, out.Message)}
 	}
 	return out, nil
 }
@@ -286,7 +349,7 @@ func (c *httpRuntimeClient) getJSON(ctx context.Context, url string, out any) er
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("runtime GET %s returned %d: %s", url, resp.StatusCode, body)
+		return statusError(http.MethodGet, url, resp.StatusCode, body)
 	}
 	if err := json.Unmarshal(body, out); err != nil {
 		return fmt.Errorf("decode runtime response: %w", err)
@@ -315,7 +378,7 @@ func (c *httpRuntimeClient) postJSON(ctx context.Context, url string, req any, o
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("runtime POST %s returned %d: %s", url, resp.StatusCode, body)
+		return statusError(http.MethodPost, url, resp.StatusCode, body)
 	}
 	if out != nil && len(body) > 0 {
 		if err := json.Unmarshal(body, out); err != nil {

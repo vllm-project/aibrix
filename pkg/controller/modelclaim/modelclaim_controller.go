@@ -35,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -53,6 +54,7 @@ const (
 	runtimePhaseActive   = "active"
 	runtimePhaseFailed   = "failed"
 	runtimePhaseSleeping = "sleeping"
+	runtimePhaseStopping = "stopping"
 
 	// ModelClaimFinalizer ensures attached engine processes are deactivated and
 	// routing is deregistered before the ModelClaim object is removed.
@@ -87,6 +89,11 @@ type ModelClaimReconciler struct {
 	// request-counter deltas needed for conservative KV allocation. It is not a
 	// desired-state store; runtime snapshots remain authoritative after restart.
 	PoolPolicy *poolPolicyManager
+	// APIReader reads ModelClaims straight from the API server for the GPU
+	// memory account, where an instance recorded moments ago and not yet in the
+	// informer would read as free memory. Falls back to the cached client when
+	// unset, which is how the unit tests run.
+	APIReader client.Reader
 }
 
 // Add creates a new ModelClaim controller and registers it with the Manager.
@@ -101,6 +108,7 @@ func Add(mgr manager.Manager, _ config.RuntimeConfig) error {
 		SnapshotCache: newRuntimeSnapshotCache(
 			defaultRuntimeSnapshotTTL, time.Now,
 		),
+		APIReader: mgr.GetAPIReader(),
 	}
 
 	err := ctrl.NewControllerManagedBy(mgr).
@@ -196,6 +204,11 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	switch {
 	case desiredReplicas(pm) > int32(len(pm.Status.Instances)):
 		if err := r.ensureActivated(ctx, pm, candidates); err != nil {
+			if apierrors.IsConflict(err) {
+				// The claim was read a moment too early to be written. No engine
+				// was asked for, so nothing failed.
+				return requeueOnConflict(err)
+			}
 			r.Recorder.Event(pm, corev1.EventTypeWarning, "ActivateFailed", err.Error())
 			meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
 				Type:    string(modelv1alpha1.ModelClaimConditionReady),
@@ -218,6 +231,10 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// ready Activating instances, demote Active instances that went unhealthy).
 	r.reconcileInstanceHealth(ctx, pm)
 	if err := r.rescheduleFailedInstances(ctx, pm, candidates); err != nil {
+		if apierrors.IsConflict(err) {
+			// As above: no replacement was asked for, so nothing failed.
+			return requeueOnConflict(err)
+		}
 		r.Recorder.Event(pm, corev1.EventTypeWarning, "RescheduleFailed", err.Error())
 	}
 	r.recomputeReadiness(pm)
@@ -389,51 +406,256 @@ func (r *ModelClaimReconciler) recomputeReadiness(pm *modelv1alpha1.ModelClaim) 
 // warm pods and asking the runtime sidecar to activate an engine process on
 // each. Lack of an available warm pod is not an error (the model stays Pending and
 // reconciles again); only runtime failures propagate.
+//
+// An instance whose engine failed for good is replaced where it stands, and its
+// replacement is placed as any instance is.
 func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1alpha1.ModelClaim, candidates []corev1.Pod) error {
-	load := r.computePodLoad(ctx, pm.Namespace)
 	parallelism, err := modelParallelism(pm)
 	if err != nil {
 		return fmt.Errorf("invalid engineConfig parallelism: %w", err)
 	}
-	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL, parallelism)
 
-	for desiredReplicas(pm) > int32(len(pm.Status.Instances)) {
+	// A claim is only placed where a card's account shows the room for it, so
+	// a claim that does not say what it costs is not placed anywhere. Placed
+	// without a cost, it would leave its card unaccountable to every claim
+	// after it. No runtime is read for such a claim, since no reading could
+	// place it.
+	perGPU, err := perGPUBytesOf(pm)
+	if err != nil {
+		message := fmt.Sprintf("%s is not placed: %v", servedModelName(pm), err)
+		if meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+			Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
+			Status:  metav1.ConditionFalse,
+			Reason:  "InvalidPerGPU",
+			Message: message,
+		}) {
+			r.Recorder.Event(pm, corev1.EventTypeWarning, "InvalidPerGPU", message)
+		}
+		return nil
+	}
+	load := r.computePodLoad(ctx, pm.Namespace)
+	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL, parallelism)
+	ledgers := r.collectPodLedgers(ctx, pm.Namespace, candidates, r.freshSnapshots(ctx, candidates))
+	admissible, refusals := admissibleCandidates(candidates, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(pm))
+	rankByRoom(placementStates, ledgers)
+
+	// Every pod the claim is on stays out of the ranking, the pods where its
+	// engines failed included, so a replacement never lands where the engine
+	// it replaces failed. The set is taken once: a replaced instance leaves the
+	// claim's list, and its pod has to stay out for the next replacement too.
+	alreadyOn := instancePods(pm)
+	failed := failedInstanceSlots(pm)
+	for desiredReplicas(pm) > int32(len(pm.Status.Instances)-len(failed)) {
 		pod, selectErr := selectPodForActivationWithState(
-			candidates, instancePods(pm), load, servedModelName(pm), r.Locality, placementStates,
+			admissible, alreadyOn, load, servedModelName(pm), r.Locality, placementStates,
 		)
 		if selectErr != nil {
-			// No available warm pod right now; remain Pending and retry on requeue.
-			r.Recorder.Event(pm, corev1.EventTypeWarning, "NoMatchingPods", selectErr.Error())
-			meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+			// No available warm pod right now; remain Pending and retry on
+			// requeue. The refusal is raised as an Event only when it changes,
+			// as InvalidPerGPU is. The claim is tried again on every pass, and
+			// the same refusal each time is not news; the condition always
+			// carries the current one.
+			//
+			// A failed instance that cannot be replaced stays as it is, so the
+			// claim stays Failed.
+			message := noPlacementMessage(selectErr, admissible, refusals, perGPU.minimumReserveBytes())
+			reason := "NoMatchingPods"
+			if len(failed) > 0 {
+				message = fmt.Sprintf("model %s cannot move from failed pod %s: %s",
+					servedModelName(pm), pm.Status.Instances[failed[0]].Pod, message)
+				reason = "ReschedulePending"
+			}
+			if meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
 				Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
 				Status:  metav1.ConditionFalse,
 				Reason:  "NoMatchingPods",
-				Message: selectErr.Error(),
-			})
+				Message: message,
+			}) {
+				r.Recorder.Event(pm, corev1.EventTypeWarning, reason, message)
+			}
 			return nil
 		}
 
-		instance, aerr := r.activateOnPod(ctx, pm, pod)
-		if aerr != nil {
-			return aerr
+		// Divide the card between the engines on it and this one, and hold
+		// every engine already there to its new share before this engine has a
+		// chance to start. Until that is done and confirmed, the room this
+		// model was admitted against is still the neighbours' to take.
+		//
+		// On a pod without a card nothing is divided, so no limit is recorded:
+		// a recorded limit always means that a card was divided for it.
+		kvLimitBytes := int64(0)
+		if podHasGPUs(*pod, ledgers[pod.Name].accelerators) {
+			planned, roomErr := r.makeRoomOnPod(ctx, pm, perGPU, pod, ledgers[pod.Name])
+			if roomErr != nil {
+				// The card had room for this model and could not be divided to
+				// make it, most often because an engine on it did not take its new
+				// limit. That says nothing about the other cards, so try the next
+				// one rather than give up on the claim for this round.
+				r.Recorder.Event(pm, corev1.EventTypeWarning, "KVLimitFailed", fmt.Sprintf(
+					"%s could not be held to its share of %s: %v", servedModelName(pm), pod.Name, roomErr))
+				refusals = append(refusals, podRefusal{
+					pod:       pod.Name,
+					roomBytes: ledgers[pod.Name].maximumRoomBytes(),
+					known:     true,
+					couldHold: true,
+					reason:    fmt.Sprintf("%s has room, but its card could not be divided: %v", pod.Name, roomErr),
+				})
+				admissible = withoutPod(admissible, pod.Name)
+				continue
+			}
+			kvLimitBytes = planned
 		}
 
-		pm.Status.Instances = append(pm.Status.Instances, instance)
+		// Record the instance before the engine exists. The record is what the
+		// account reads, so writing it first is what stops a second claim from
+		// being placed against the same memory while this engine loads. It also
+		// carries the KV limit the engine will be held to.
+		//
+		// A replacement takes the place of the failed instance. Its engine is
+		// stopped and its route taken back first; the other engines on that
+		// pod are left as they are.
+		record := modelv1alpha1.ModelClaimInstance{
+			Pod:          pod.Name,
+			Phase:        modelv1alpha1.ModelClaimActivating,
+			KVLimitBytes: kvLimitBytes,
+		}
+		slot := len(pm.Status.Instances)
+		var replaced *modelv1alpha1.ModelClaimInstance
+		if len(failed) > 0 {
+			slot = failed[0]
+			previous := pm.Status.Instances[slot]
+			replaced = &previous
+			r.stopFailedEngine(ctx, pm, previous.Pod)
+			pm.Status.Instances[slot] = record
+		} else {
+			pm.Status.Instances = append(pm.Status.Instances, record)
+		}
+		if err := r.Status().Update(ctx, pm); err != nil {
+			return fmt.Errorf("reserve %s on %s: %w", servedModelName(pm), pod.Name, err)
+		}
+
+		resp, aerr := r.Runtime.Activate(ctx, pod.Status.PodIP, DefaultRuntimePort, activateRequest(pm))
+		if aerr != nil {
+			recordActivation(pm.Namespace, servedModelName(pm), false)
+			// The record was written first to guard against a crash between
+			// these two steps, where it would be all that remained. A start
+			// known not to have happened is undone here, so the card is given
+			// back: the caller's status update persists the shorter list. The
+			// next pass ranks the pods again, and may ask the same one.
+			//
+			// After any other failure the engine may have started, and only
+			// the answer was lost. The record then stays, and the claim is
+			// placed. Taken back, the record would leave that engine answering
+			// to no claim, and its card out of use. The health check settles
+			// it: it goes on with the engine if the runtime has one, and starts
+			// it again if not.
+			//
+			// A replacement known not to have started puts the failed instance
+			// back, so the claim still reads as failed, and its pod stays out of
+			// the next pass's ranking.
+			switch {
+			case !callNotDone(aerr):
+				markPlaced(pm, pod)
+			case replaced != nil:
+				pm.Status.Instances[slot] = *replaced
+			default:
+				pm.Status.Instances = pm.Status.Instances[:slot]
+			}
+			if replaced != nil {
+				return fmt.Errorf("activate replacement on pod %s: %w", pod.Name, aerr)
+			}
+			return aerr
+		}
+		// The engine was asked for, and the runtime did not refuse. That is
+		// what Placed says, so it is said now: a later step that fails here
+		// leaves the instance recorded, and the next pass places nothing again.
+		markPlaced(pm, pod)
+		pm.Status.Instances[slot].Port = resp.Port
+
+		// The engine is spawned but not yet serveable (boot/compile). Keep the
+		// model NOT routable — stamp the non-routable marker (port 0), record the
+		// instance as Activating with its real port — until reconcileInstanceHealth
+		// confirms the engine is ready, then it flips the annotation to the real
+		// port. This means the gateway never routes to a still-booting engine.
+		if err := r.annotateWarmPod(ctx, pm, pod, 0); err != nil {
+			return err
+		}
+
+		alreadyOn[pod.Name] = true
 		load[pod.Name]++
+		if replaced != nil {
+			failed = failed[1:]
+			r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Rescheduled",
+				"model %s moved after terminal engine failure from pod %s to pod %s",
+				servedModelName(pm), replaced.Pod, pod.Name)
+			continue
+		}
 		r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Activating",
-			"model %s engine starting on pod %s:%d", servedModelName(pm), pod.Name, instance.Port)
+			"model %s engine starting on pod %s:%d", servedModelName(pm), pod.Name, resp.Port)
 	}
 	return nil
 }
 
-// activateOnPod starts one engine and keeps it non-routable until a later
-// runtime snapshot confirms readiness.
-func (r *ModelClaimReconciler) activateOnPod(
+// rescheduleFailedInstances moves only instances whose runtime has reported a
+// terminal engine failure, in the same pass that found them. ensureActivated
+// replaces each one, so a replacement goes through the same account, division
+// and record as any placement. The failed pod remains excluded from placement,
+// while other claims and engines on that pod are left untouched.
+func (r *ModelClaimReconciler) rescheduleFailedInstances(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
-	pod *corev1.Pod,
-) (modelv1alpha1.ModelClaimInstance, error) {
-	resp, err := r.Runtime.Activate(ctx, pod.Status.PodIP, DefaultRuntimePort, &ActivateRequest{
+	candidates []corev1.Pod,
+) error {
+	if len(failedInstanceSlots(pm)) == 0 {
+		return nil
+	}
+	return r.ensureActivated(ctx, pm, candidates)
+}
+
+// failedInstanceSlots returns the positions of the instances whose engine
+// failed for good, in order.
+func failedInstanceSlots(pm *modelv1alpha1.ModelClaim) []int {
+	var slots []int
+	for i := range pm.Status.Instances {
+		if pm.Status.Instances[i].Phase == modelv1alpha1.ModelClaimFailed {
+			slots = append(slots, i)
+		}
+	}
+	return slots
+}
+
+// stopFailedEngine takes back this claim's route on a pod and stops its engine
+// there. The engine has already failed for good. Co-resident engines on that
+// pod remain untouched.
+func (r *ModelClaimReconciler) stopFailedEngine(ctx context.Context, pm *modelv1alpha1.ModelClaim, podName string) {
+	r.deannotateWarmPod(ctx, pm.Namespace, podName, pm.Name)
+	if ip := r.podIP(ctx, pm.Namespace, podName); ip != "" {
+		if err := r.Runtime.Deactivate(ctx, ip, DefaultRuntimePort, &DeactivateRequest{
+			ModelName: servedModelName(pm),
+			Mode:      DeactivateStop,
+		}); err != nil {
+			klog.ErrorS(err, "failed engine cleanup before reschedule",
+				"pod", podName, "model", pm.Name)
+		}
+	}
+}
+
+// markPlaced says on the Scheduled condition that a claim found a card. Being
+// turned away is an ordinary step rather than a dead end, so a refusal that has
+// since been resolved must not be left standing as the claim's answer to
+// whether it found one.
+func markPlaced(pm *modelv1alpha1.ModelClaim, pod *corev1.Pod) {
+	meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+		Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
+		Status:  metav1.ConditionTrue,
+		Reason:  "Placed",
+		Message: fmt.Sprintf("placed on pod %s", pod.Name),
+	})
+}
+
+// activateRequest is what the runtime is asked to start for a claim.
+func activateRequest(pm *modelv1alpha1.ModelClaim) *ActivateRequest {
+	return &ActivateRequest{
 		ModelName:    servedModelName(pm),
 		ArtifactURL:  pm.Spec.ArtifactURL,
 		Engine:       pm.Spec.Engine,
@@ -444,94 +666,194 @@ func (r *ModelClaimReconciler) activateOnPod(
 			Name:      pm.Name,
 			UID:       string(pm.UID),
 		},
-	})
-	if err != nil {
-		recordActivation(pm.Namespace, servedModelName(pm), false)
-		return modelv1alpha1.ModelClaimInstance{}, err
 	}
-
-	// The engine is spawned but not yet serveable (boot/compile). Keep the
-	// model NOT routable until reconcileInstanceHealth confirms readiness.
-	if err := r.annotateWarmPod(ctx, pm, pod, 0); err != nil {
-		return modelv1alpha1.ModelClaimInstance{}, err
-	}
-	return modelv1alpha1.ModelClaimInstance{
-		Pod:   pod.Name,
-		Port:  resp.Port,
-		Phase: modelv1alpha1.ModelClaimActivating,
-	}, nil
 }
 
-// rescheduleFailedInstances moves only instances whose runtime has reported a
-// terminal engine failure. The failed pod remains excluded from placement,
-// while other claims and engines on that pod are left untouched.
-func (r *ModelClaimReconciler) rescheduleFailedInstances(
+// makeRoomOnPod divides a card between the engines on it and the one about to
+// join them, and returns the KV limit the newcomer is to run under.
+//
+// Returning an error means this model is not placed on this card this round.
+// The neighbours may keep smaller limits, which costs them room until the card
+// is divided again, and costs correctness nothing.
+func (r *ModelClaimReconciler) makeRoomOnPod(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
-	candidates []corev1.Pod,
-) error {
-	hasFailed := false
-	for i := range pm.Status.Instances {
-		if pm.Status.Instances[i].Phase == modelv1alpha1.ModelClaimFailed {
-			hasFailed = true
-			break
+	perGPU perGPUBytes,
+	pod *corev1.Pod,
+	ledger podLedger,
+) (int64, error) {
+	newcomer := engineOnPod{
+		claimName:       pm.Name,
+		modelName:       servedModelName(pm),
+		perGPUBytes:     perGPU,
+		kvCapacityBytes: kvLimitUnknown,
+	}
+	engines := append(append([]engineOnPod(nil), ledger.engines...), newcomer)
+	limits, err := r.arrangeCard(ctx, pod, ledger, engines)
+	if err != nil {
+		return 0, err
+	}
+	for _, limit := range limits {
+		if limit.claimName == pm.Name {
+			return limit.kvLimitBytes, nil
 		}
 	}
-	if !hasFailed {
-		return nil
-	}
+	return 0, fmt.Errorf("%s was left out of the plan for %s", pm.Name, pod.Name)
+}
 
-	load := r.computePodLoad(ctx, pm.Namespace)
-	parallelism, err := modelParallelism(pm)
+// arrangeCard plans one card and carries the plan out, returning the plan.
+//
+// The work is done in an order that never leaves two engines entitled to the
+// same byte. The limits are written first, shrinking before growing. A fresh
+// reading then has to agree, because a write that reached no segment is
+// reported as a success either way. Only then is each new limit recorded on its
+// own claim, the ones that go down first. A division whose write or reading
+// fails therefore changes no record: an engine it already shrank sits below its
+// record, which is safe and keeps its route, and an engine it already grew is
+// above its record, so the health loop pulls it back. One whose recording fails
+// part way leaves records that come to no more than the card.
+func (r *ModelClaimReconciler) arrangeCard(
+	ctx context.Context,
+	pod *corev1.Pod,
+	ledger podLedger,
+	engines []engineOnPod,
+) ([]plannedKVLimit, error) {
+	limits, err := planKVLimits(ledger.hbmUsableBytes, engines)
 	if err != nil {
-		return fmt.Errorf("invalid engineConfig parallelism: %w", err)
+		return nil, err
 	}
-	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL, parallelism)
 
-	// Snapshot occupied pods before rewriting instances. Recomputing
-	// instancePods() after *inst = replacement would drop the just-left
-	// failed pod and let a later failed instance land back on it.
-	alreadyOn := instancePods(pm)
-	for i := range pm.Status.Instances {
-		inst := &pm.Status.Instances[i]
-		if inst.Phase != modelv1alpha1.ModelClaimFailed {
+	written := writeOrder(limits)
+	for _, limit := range written {
+		// The moment the card was read is part of the operation, not only the
+		// value. The runtime runs each operation once, and an engine that
+		// restarted needs the same value written again: without the moment,
+		// that second write is taken for the first one and never reaches the
+		// segment, leaving the card stuck a round behind for good.
+		operationID := fmt.Sprintf("kv-plan/%s/%s/%s/%d/%d",
+			pod.Namespace, pod.UID, limit.claimName, limit.kvLimitBytes,
+			ledger.observedAt.UnixNano())
+		if _, err := r.Runtime.SetKVLimit(ctx, pod.Status.PodIP, DefaultRuntimePort, &SetKVLimitRequest{
+			ModelName:   limit.modelName,
+			LimitBytes:  limit.kvLimitBytes,
+			OperationID: operationID,
+		}); err != nil {
+			return nil, fmt.Errorf("set %s to %s: %w", limit.modelName, gibibytes(limit.kvLimitBytes), err)
+		}
+	}
+	if len(written) > 0 {
+		snapshot, err := r.Runtime.Snapshot(ctx, pod.Status.PodIP, DefaultRuntimePort)
+		if err != nil {
+			return nil, fmt.Errorf("read back the limits on %s: %w", pod.Name, err)
+		}
+		if err := confirmKVLimits(snapshot, written); err != nil {
+			return nil, err
+		}
+	}
+
+	// Every limit is recorded, not only the written ones. An engine that has
+	// no KV segment yet is held to its record once it builds one.
+	//
+	// The records that go down are written before the ones that go up. A
+	// record is what an engine is raised to when it next comes up, so records
+	// written part way must not come to more than the card.
+	held := make(map[string]*modelv1alpha1.ModelClaim, len(limits))
+	for _, lowering := range []bool{true, false} {
+		for _, limit := range limits {
+			if limit.lowersRecord() != lowering {
+				continue
+			}
+			claim, err := r.recordKVLimit(ctx, pod.Namespace, limit.claimName, pod.Name, limit.kvLimitBytes)
+			if err != nil {
+				return nil, fmt.Errorf("record %s at %s: %w", limit.claimName, gibibytes(limit.kvLimitBytes), err)
+			}
+			held[limit.claimName] = claim
+		}
+	}
+	// Say so on each claim whose engine was moved. A limit written by the
+	// arrangement of a card is a limit its owner did not ask for, and looking
+	// at the claim is the first thing anyone does when a model's KV changes
+	// under it.
+	for _, limit := range written {
+		claim := held[limit.claimName]
+		if claim == nil {
 			continue
 		}
-		failedPod := inst.Pod
-		pod, selectErr := selectPodForActivationWithState(
-			candidates, alreadyOn, load, servedModelName(pm), r.Locality, placementStates,
-		)
-		if selectErr != nil {
-			r.Recorder.Eventf(pm, corev1.EventTypeWarning, "ReschedulePending",
-				"model %s cannot move from failed pod %s: %v", servedModelName(pm), failedPod, selectErr)
-			return nil
-		}
+		r.Recorder.Eventf(claim, corev1.EventTypeNormal, "KVLimitSet",
+			"model %s on pod %s: KV limit set to %s, from %s, dividing the card between %d engine(s)",
+			limit.modelName, pod.Name, gibibytes(limit.kvLimitBytes), gibibytes(limit.kvCapacityBytes),
+			len(limits))
+	}
+	return limits, nil
+}
 
-		// The engine is already terminal. Remove only this claim's old route and
-		// runtime entry; co-resident engines on the failed pod remain untouched.
-		r.deannotateWarmPod(ctx, pm.Namespace, failedPod, pm.Name)
-		if ip := r.podIP(ctx, pm.Namespace, failedPod); ip != "" {
-			if err := r.Runtime.Deactivate(ctx, ip, DefaultRuntimePort, &DeactivateRequest{
-				ModelName: servedModelName(pm),
-				Mode:      DeactivateStop,
-			}); err != nil {
-				klog.ErrorS(err, "failed engine cleanup before reschedule",
-					"pod", failedPod, "model", pm.Name)
+// recordKVLimit writes the limit an instance is to run under into its own
+// claim's status, which is where every loop that holds an engine reads it, and
+// returns the claim so an Event can be raised on it afterwards.
+//
+// A claim with no instance on this pod is the model being placed: its record
+// is written with the rest of its instance, once the card has been arranged.
+//
+// The claim is read from the API server rather than the cache, and the write
+// is tried again on a conflict. The claim's own reconcile may have written its
+// status moments before, and a copy from a cache that has not caught up would
+// only fail the division on a conflict, leaving the card to the next pass.
+func (r *ModelClaimReconciler) recordKVLimit(
+	ctx context.Context,
+	namespace, claimName, podName string,
+	kvLimitBytes int64,
+) (*modelv1alpha1.ModelClaim, error) {
+	reader := client.Reader(r.Client)
+	if r.APIReader != nil {
+		reader = r.APIReader
+	}
+	var claim *modelv1alpha1.ModelClaim
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		fresh := &modelv1alpha1.ModelClaim{}
+		if err := reader.Get(ctx, types.NamespacedName{Namespace: namespace, Name: claimName}, fresh); err != nil {
+			return err
+		}
+		claim = fresh
+		changed := false
+		for i := range fresh.Status.Instances {
+			instance := &fresh.Status.Instances[i]
+			if instance.Pod == podName && instance.KVLimitBytes != kvLimitBytes {
+				instance.KVLimitBytes = kvLimitBytes
+				changed = true
 			}
 		}
-
-		replacement, activateErr := r.activateOnPod(ctx, pm, pod)
-		if activateErr != nil {
-			return fmt.Errorf("activate replacement on pod %s: %w", pod.Name, activateErr)
+		if !changed {
+			return nil
 		}
-		*inst = replacement
-		alreadyOn[pod.Name] = true
-		load[pod.Name]++
-		r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Rescheduled",
-			"model %s moved after terminal engine failure from pod %s to pod %s",
-			servedModelName(pm), failedPod, pod.Name)
+		return r.Status().Update(ctx, fresh)
+	})
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	return claim, nil
+}
+
+// freshSnapshots reads every candidate's runtime directly, going around the
+// snapshot cache. Ranking can work from a reading a few seconds old, and an
+// account cannot: what an engine holds moves with traffic, and a model admitted
+// against memory another engine has since mapped is how a card ends up
+// oversubscribed. A pod whose runtime did not answer is simply absent.
+func (r *ModelClaimReconciler) freshSnapshots(
+	ctx context.Context,
+	candidates []corev1.Pod,
+) map[string]*RuntimeSnapshot {
+	snapshots := make(map[string]*RuntimeSnapshot, len(candidates))
+	for i := range candidates {
+		pod := &candidates[i]
+		snapshot, err := r.Runtime.Snapshot(ctx, pod.Status.PodIP, DefaultRuntimePort)
+		if err != nil || snapshot == nil {
+			klog.V(4).InfoS("placement could not read a runtime",
+				"pod", klog.KObj(pod), "err", err)
+			continue
+		}
+		snapshots[pod.Name] = snapshot
+	}
+	return snapshots
 }
 
 func (r *ModelClaimReconciler) collectPlacementStates(
@@ -566,6 +888,7 @@ func (r *ModelClaimReconciler) collectPlacementStates(
 // than guessing that a live engine has disappeared.
 func (r *ModelClaimReconciler) reconcileInstanceHealth(ctx context.Context, pm *modelv1alpha1.ModelClaim) {
 	served := servedModelName(pm)
+	dropped := map[string]bool{}
 	for i := range pm.Status.Instances {
 		inst := &pm.Status.Instances[i]
 		if inst.Phase != modelv1alpha1.ModelClaimActivating &&
@@ -584,29 +907,44 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(ctx context.Context, pm *
 			continue
 		}
 		observed := snapshotModelForClaim(snapshot, pm, served)
+
+		if engineMissing(inst, snapshot, observed) {
+			dropped[inst.Pod] = !r.startMissingEngine(ctx, pm, inst, ip)
+			continue
+		}
+
 		observedPort := inst.Port
 		if observed != nil {
 			observedPort = observed.Port
-		}
-
-		desiredPhase := modelv1alpha1.ModelClaimActivating
-		routingPort := int32(0)
-		switch {
-		case inst.Phase == modelv1alpha1.ModelClaimFailed:
-			desiredPhase = modelv1alpha1.ModelClaimFailed
-		case observed != nil && observed.Phase == runtimePhaseFailed:
-			desiredPhase = modelv1alpha1.ModelClaimFailed
-		case observed != nil && observed.Phase == runtimePhaseSleeping:
-			desiredPhase = modelv1alpha1.ModelClaimSleeping
-		case observed != nil && observed.Ready && observedPort > 0:
-			desiredPhase = modelv1alpha1.ModelClaimActive
-			routingPort = observedPort
 		}
 
 		pod := &corev1.Pod{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: pm.Namespace, Name: inst.Pod}, pod); err != nil {
 			continue
 		}
+
+		// An engine on a GPU becomes routable only once it holds the KV limit
+		// this instance records. Until then it runs under its allocator's own
+		// default, which is most of the card, and traffic would let it grow
+		// that far. It stays routable only while it is held to no more than
+		// that record.
+		serving := observed != nil && observed.Ready && observedPort > 0
+		limitInForce := kvLimitInForce(inst, observed)
+		limitWithinRecord := kvLimitWithinRecord(inst, observed)
+
+		desiredPhase, routingPort := desiredInstanceState(
+			inst, observed, observedPort, serving, limitInForce, limitWithinRecord)
+		// Pull an engine down to its record whenever it is held to more. Raise
+		// it to its record only before it has been routed: an instance is
+		// recorded after its card was divided to make the room, so that room is
+		// its own. A larger record for an engine already serving comes from a
+		// division that has not been carried out yet, and growing the engine
+		// here, outside that division's order, could hand it memory a
+		// neighbour has not given back.
+		if serving && !limitInForce && (!limitWithinRecord || inst.Phase != modelv1alpha1.ModelClaimActive) {
+			r.writeKVLimit(ctx, pm, inst, pod, ip, snapshot, observed)
+		}
+
 		if err := r.annotateWarmPodWithState(
 			ctx, pm, pod, routingPort, routingStateForPhase(desiredPhase),
 		); err != nil {
@@ -640,12 +978,78 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(ctx context.Context, pm *
 			r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Sleeping",
 				"model %s is sleeping on pod %s and marked non-routable", served, inst.Pod)
 		case modelv1alpha1.ModelClaimActivating:
-			if previousPhase != modelv1alpha1.ModelClaimActivating {
+			switch {
+			case previousPhase == modelv1alpha1.ModelClaimActive && serving:
+				// Still serving, so it is the limit and not the engine that went
+				// wrong. Saying "no longer ready" would send an operator to look at
+				// a healthy process.
+				r.Recorder.Eventf(pm, corev1.EventTypeWarning, "KVLimitNotHeld",
+					"model %s on pod %s is held to more KV than its limit of %s; marked non-routable until the limit is written again",
+					served, inst.Pod, gibibytes(inst.KVLimitBytes))
+			case previousPhase != modelv1alpha1.ModelClaimActivating:
 				r.Recorder.Eventf(pm, corev1.EventTypeWarning, "Unhealthy",
 					"model %s no longer ready on pod %s; marked non-routable", served, inst.Pod)
 			}
 		}
 	}
+	r.dropInstances(ctx, pm, dropped)
+}
+
+// engineMissing reports whether an activating instance has no engine behind
+// it, going by a runtime that answered.
+//
+// An instance is recorded before its engine is started, so that the account
+// charges it from the start. If the controller stopped between the two, or a
+// failed start was never taken back from the record, the runtime knows no
+// engine for the instance. Nothing else would start one, since the claim has
+// its instance and placement does not run again, while the account goes on
+// charging the card for it.
+func engineMissing(inst *modelv1alpha1.ModelClaimInstance, snapshot *RuntimeSnapshot, observed *RuntimeSnapshotModel) bool {
+	return inst.Phase == modelv1alpha1.ModelClaimActivating && snapshot != nil && observed == nil
+}
+
+// startMissingEngine asks the runtime to start the engine an activating
+// instance should have, and reports whether the instance is to stay. The
+// runtime starts a model once and returns the running one after that, so
+// asking again is safe.
+func (r *ModelClaimReconciler) startMissingEngine(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	inst *modelv1alpha1.ModelClaimInstance,
+	podIP string,
+) bool {
+	served := servedModelName(pm)
+	resp, err := r.Runtime.Activate(ctx, podIP, DefaultRuntimePort, activateRequest(pm))
+	if err != nil {
+		recordActivation(pm.Namespace, served, false)
+		r.Recorder.Eventf(pm, corev1.EventTypeWarning, "ActivateFailed",
+			"model %s had no engine on pod %s, and starting one failed: %v", served, inst.Pod, err)
+		// Unless the start is known not to have happened, the engine may be
+		// there, so the instance stays, and the next pass looks again.
+		return !callNotDone(err)
+	}
+	inst.Port = resp.Port
+	r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Activating",
+		"model %s had no engine on pod %s; engine starting again on port %d", served, inst.Pod, resp.Port)
+	return true
+}
+
+// dropInstances removes the instances on the given pods from a claim, and
+// takes their routing annotations back, which gives their cards back.
+//
+// The caller's status update persists the shorter list, and the next pass
+// places the claim again. Should that update be lost, the next pass finds the
+// same instance with no engine and tries again.
+func (r *ModelClaimReconciler) dropInstances(ctx context.Context, pm *modelv1alpha1.ModelClaim, dropped map[string]bool) {
+	kept := pm.Status.Instances[:0]
+	for _, inst := range pm.Status.Instances {
+		if dropped[inst.Pod] {
+			r.deannotateWarmPod(ctx, pm.Namespace, inst.Pod, pm.Name)
+			continue
+		}
+		kept = append(kept, inst)
+	}
+	pm.Status.Instances = kept
 }
 
 // snapshotModelForClaim resolves runtime state by ClaimRef UID when the
@@ -702,6 +1106,107 @@ func (r *ModelClaimReconciler) annotateWarmPodWithState(
 	}
 	pod.Annotations[key] = value
 	return r.Patch(ctx, pod, patch)
+}
+
+// desiredInstanceState is how one instance should be routed, given what the
+// runtime just reported about it. An engine is routable only once it is ready,
+// has a port, and is held to the KV limit its instance records, and it stays
+// routable only while it is held to no more than that.
+func desiredInstanceState(
+	inst *modelv1alpha1.ModelClaimInstance,
+	observed *RuntimeSnapshotModel,
+	observedPort int32,
+	serving bool,
+	limitInForce bool,
+	limitWithinRecord bool,
+) (modelv1alpha1.ModelClaimPhase, int32) {
+	switch {
+	case inst.Phase == modelv1alpha1.ModelClaimFailed:
+		return modelv1alpha1.ModelClaimFailed, 0
+	case observed != nil && observed.Phase == runtimePhaseFailed:
+		return modelv1alpha1.ModelClaimFailed, 0
+	case observed != nil && observed.Phase == runtimePhaseSleeping:
+		return modelv1alpha1.ModelClaimSleeping, 0
+	case serving && limitInForce:
+		return modelv1alpha1.ModelClaimActive, observedPort
+	case serving && inst.Phase == modelv1alpha1.ModelClaimActive && limitWithinRecord:
+		// An engine already serving keeps its route while a larger limit
+		// recorded for it has not been written: it is held to less than it was
+		// given, not more. Held to more than its record, as when a restart puts
+		// its allocator's default back, it loses the route until the record is
+		// written again.
+		return modelv1alpha1.ModelClaimActive, observedPort
+	}
+	return modelv1alpha1.ModelClaimActivating, 0
+}
+
+// kvLimitInForce reports whether the engine is already held to the limit this
+// instance records. An instance records a limit only when a card was divided
+// for it, so with no record there is nothing to hold the engine to. That is an
+// instance placed before its claim declared a per-GPU cost, or one on a pod
+// without a card.
+//
+// Only the record is asked, not what this reading says of the pod's cards. A
+// reading can miss a card, and the engine has its limit to hold all the same.
+func kvLimitInForce(inst *modelv1alpha1.ModelClaimInstance, observed *RuntimeSnapshotModel) bool {
+	if inst.KVLimitBytes <= 0 {
+		return true
+	}
+	return observed != nil && observed.KVCapacityBytes == inst.KVLimitBytes
+}
+
+// kvLimitWithinRecord reports whether the engine is held to no more than the
+// limit this instance records, which is what keeps a serving engine routable.
+// An engine whose segment cannot be read is not known to be held to anything.
+func kvLimitWithinRecord(inst *modelv1alpha1.ModelClaimInstance, observed *RuntimeSnapshotModel) bool {
+	if inst.KVLimitBytes <= 0 {
+		return true
+	}
+	return observed != nil && observed.KVCapacityBytes >= 0 && observed.KVCapacityBytes <= inst.KVLimitBytes
+}
+
+// writeKVLimit asks the runtime to hold this engine to the limit the instance
+// records.
+//
+// The runtime runs each operation ID once, and an engine that restarts needs
+// the same value written again, so the ID carries the moment the snapshot was
+// taken as well as the value itself.
+//
+// A reported success is not proof. The CLI the runtime drives exits zero when
+// the segment does not exist, so the only evidence that a limit is in force is
+// reading it back from a later snapshot, which is what the caller does.
+func (r *ModelClaimReconciler) writeKVLimit(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	inst *modelv1alpha1.ModelClaimInstance,
+	pod *corev1.Pod,
+	podIP string,
+	snapshot *RuntimeSnapshot,
+	observed *RuntimeSnapshotModel,
+) {
+	// A write into a segment that does not exist is lost without a word, and
+	// the engine overwrites the segment when it builds one anyway.
+	if observed == nil || observed.KVCapacityBytes < 0 {
+		return
+	}
+	served := servedModelName(pm)
+	operationID := fmt.Sprintf("kv-limit/%s/%s/%s/%d/%d",
+		pm.Namespace, pm.Name, pod.UID, inst.KVLimitBytes, snapshot.ObservedAt.UnixNano())
+	if _, err := r.Runtime.SetKVLimit(ctx, podIP, DefaultRuntimePort, &SetKVLimitRequest{
+		ModelName:   served,
+		LimitBytes:  inst.KVLimitBytes,
+		OperationID: operationID,
+	}); err != nil {
+		klog.ErrorS(err, "could not hold an engine to its KV limit",
+			"model", pm.Name, "pod", inst.Pod, "limit", inst.KVLimitBytes)
+		r.Recorder.Eventf(pm, corev1.EventTypeWarning, "KVLimitFailed",
+			"model %s on pod %s: KV limit %s could not be set: %v",
+			served, inst.Pod, gibibytes(inst.KVLimitBytes), err)
+		return
+	}
+	r.Recorder.Eventf(pm, corev1.EventTypeNormal, "KVLimitSet",
+		"model %s on pod %s: KV limit set to %s, from %s",
+		served, inst.Pod, gibibytes(inst.KVLimitBytes), gibibytes(observed.KVCapacityBytes))
 }
 
 func routingStateForPhase(phase modelv1alpha1.ModelClaimPhase) string {
