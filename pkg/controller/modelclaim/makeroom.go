@@ -351,10 +351,15 @@ func (r *ModelClaimReconciler) planRoom(
 // waitedLongest reports whether a claim has waited longest of the claims that
 // wait for a card in its pool: the claims in its namespace that select one of
 // its candidate pods, and still miss an instance. A claim whose last start
-// failed is not among them, as room does not help it.
+// failed is not among them, this one included, as room does not help it. The
+// claims are listed as the account lists them: the cache can miss an instance
+// recorded a moment ago, and a claim just placed would then seem to wait.
 func (r *ModelClaimReconciler) waitedLongest(ctx context.Context, pm *modelv1alpha1.ModelClaim, candidates []corev1.Pod) bool {
-	claims := &modelv1alpha1.ModelClaimList{}
-	if err := r.List(ctx, claims, client.InNamespace(pm.Namespace)); err != nil {
+	if pm.Status.Phase == modelv1alpha1.ModelClaimFailed {
+		return false
+	}
+	claims, err := r.listClaimsForAccount(ctx, pm.Namespace)
+	if err != nil {
 		return false
 	}
 	var waiting []modelv1alpha1.ModelClaim

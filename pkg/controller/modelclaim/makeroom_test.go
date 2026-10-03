@@ -307,6 +307,59 @@ func TestReconcileMakesRoomThoughAnotherModelHeldMoreAsleep(t *testing.T) {
 	assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
 }
 
+// listHook is a reader that changes what it lists before returning it.
+type listHook struct {
+	client.Reader
+	after func(client.ObjectList)
+}
+
+func (l *listHook) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if err := l.Reader.List(ctx, list, opts...); err != nil {
+		return err
+	}
+	l.after(list)
+	return nil
+}
+
+// The cache still shows the older claim waiting. The API server already has
+// its instance, so x is the claim that has waited longest.
+func TestReconcileMakesRoomByTheClaimsAsTheAccountListsThem(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+	newClaim(t, r, "older", at0758)
+	newClaim(t, r, "x", at0759)
+	r.APIReader = &listHook{Reader: r.Client, after: func(list client.ObjectList) {
+		claims, ok := list.(*modelv1alpha1.ModelClaimList)
+		if !ok {
+			return
+		}
+		for i := range claims.Items {
+			if claims.Items[i].Name == "older" {
+				claims.Items[i].Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+					Pod: "warm-9", Phase: modelv1alpha1.ModelClaimActivating,
+				}}
+			}
+		}
+	}}
+
+	reconcileOnce(t, r, "x")
+
+	require.Len(t, runtime.sleepCalls, 1, "older no longer waits, so room is made for x")
+}
+
+func TestReconcileMakesNoRoomForAClaimWhoseLastStartFailed(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+	newClaim(t, r, "x", at0759)
+	claim := getModel(t, r, "x")
+	claim.Status.Phase = modelv1alpha1.ModelClaimFailed
+	require.NoError(t, r.Status().Update(context.Background(), claim))
+
+	reconcileOnce(t, r, "x")
+
+	assert.Empty(t, runtime.sleepCalls, "room does not help a claim whose start failed")
+}
+
 // it go, or someone else removed its finalizer.
 func TestReconcileForgetsWhatItKeptForAClaimThatIsGone(t *testing.T) {
 	for name, finalizerRemovedElsewhere := range map[string]bool{
