@@ -52,8 +52,8 @@ const (
 const (
 	// The reasons of the Ready condition, and of the route, that say more
 	// than a claim's phase: a request waits for room, or the claim moves.
-	readyReasonWaitingForRoom = "WaitingForRoom"
-	readyReasonMoving         = "Moving"
+	readyReasonWaitingForRoom = constants.ModelClaimRouteReasonWaitingForRoom
+	readyReasonMoving         = constants.ModelClaimRouteReasonMoving
 )
 
 // whyMoved words, for the Event of a move, why an instance left its pod.

@@ -368,6 +368,16 @@ func GetModelPortForPod(requestID string, pod *v1.Pod) int64 {
 	return modelPort
 }
 
+// ModelClaimRoute is the value of a warm pod's annotation for one claim, as
+// the controller writes it and the gateway reads it.
+type ModelClaimRoute struct {
+	Model         string `json:"model"`
+	Port          int    `json:"port"`
+	State         string `json:"state,omitempty"`
+	WakeByRequest bool   `json:"wakeByRequest,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+}
+
 // ModelClaimBinding is the runtime-observed route state carried by one warm
 // pod annotation. Port 0 is known but non-routable.
 type ModelClaimBinding struct {
@@ -400,13 +410,7 @@ func ModelClaimBindingsFromPod(pod *v1.Pod) map[string]ModelClaimBinding {
 		if !strings.HasPrefix(key, constants.ModelClaimPodAnnotationPrefix) {
 			continue
 		}
-		var entry struct {
-			Model         string `json:"model"`
-			Port          int    `json:"port"`
-			State         string `json:"state,omitempty"`
-			WakeByRequest bool   `json:"wakeByRequest,omitempty"`
-			Reason        string `json:"reason,omitempty"`
-		}
+		var entry ModelClaimRoute
 		if err := json.Unmarshal([]byte(value), &entry); err != nil || entry.Model == "" ||
 			entry.Port < 0 || entry.Port > 65535 {
 			klog.Warningf("pod %s has malformed ModelClaim annotation %q=%q", pod.Name, key, value)

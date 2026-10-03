@@ -22,6 +22,7 @@ package modelclaim
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -29,6 +30,7 @@ import (
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -1732,16 +1734,22 @@ func (r *ModelClaimReconciler) annotateWarmPodWithState(
 	reason string,
 ) error {
 	key := constants.ModelClaimPodAnnotationPrefix + pm.Name
-	// wakeByRequest tells the gateway that this controller wakes the engine:
-	// a request for it while it sleeps is written on the pod, and the
-	// controller decides when its card can take it.
-	value := fmt.Sprintf(`{"model":%q,"port":%d,"state":%q,"wakeByRequest":true}`, servedModelName(pm), port, state)
-	// A reason says more than the state, so the gateway can tell its client
-	// how long to wait.
-	if reason != "" {
-		value = fmt.Sprintf(`{"model":%q,"port":%d,"state":%q,"wakeByRequest":true,"reason":%q}`,
-			servedModelName(pm), port, state, reason)
+	encoded, err := json.Marshal(utils.ModelClaimRoute{
+		Model: servedModelName(pm),
+		Port:  int(port),
+		State: state,
+		// This tells the gateway that this controller wakes the engine: a
+		// request for it while it sleeps is written on the pod, and the
+		// controller decides when its card can take it.
+		WakeByRequest: true,
+		// A reason says more than the state, so the gateway can tell its
+		// client how long to wait.
+		Reason: reason,
+	})
+	if err != nil {
+		return err
 	}
+	value := string(encoded)
 	if pod.Annotations[key] == value {
 		return nil
 	}

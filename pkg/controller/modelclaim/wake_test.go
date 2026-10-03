@@ -441,6 +441,25 @@ func TestWakeRequestedListsTheClaimsOnceAPass(t *testing.T) {
 	assert.Equal(t, 1, counting.lists, "both wakes are judged by one listing of the claims")
 }
 
+func TestTheGatewayReadsTheRouteAsTheControllerWroteIt(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	// A name with a character that Go quotes in a way JSON does not.
+	odd := "odd\amodel"
+	pm.Spec.ModelName = &odd
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	r, _ := newReconciler(t, pm, pod)
+
+	require.NoError(t, r.annotateWarmPodWithState(context.Background(), pm, podNamed(t, r, "warm-1"), 0,
+		constants.ModelClaimRoutingStateSleeping, readyReasonWaitingForRoom))
+
+	binding, routed := utils.ModelClaimBindingsFromPod(podNamed(t, r, "warm-1"))[odd]
+	require.True(t, routed, "the route is read back")
+	assert.Equal(t, utils.ModelClaimBinding{
+		Model: odd, Port: 0, State: constants.ModelClaimRoutingStateSleeping, Claim: pm.Name,
+		WakeByRequest: true, Reason: readyReasonWaitingForRoom,
+	}, binding)
+}
+
 func TestWakeRequestsEnqueueTheirClaimAlone(t *testing.T) {
 	key := constants.ModelClaimWakeAnnotationPrefix + "qwen2-7b"
 	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)

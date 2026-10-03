@@ -90,6 +90,14 @@ const (
 	ModelClaimRoutingStateActivating = "activating"
 	ModelClaimRoutingStateSleeping   = "sleeping"
 	ModelClaimRoutingStateFailed     = "failed"
+
+	// ModelClaim route reasons say more than a routing state about why a model
+	// is not served. The controller writes them on the route and on the claim's
+	// Ready condition, and the gateway tells its clients how long to wait by
+	// them. A request waits for room to wake the engine, or the claim moves to
+	// another pod.
+	ModelClaimRouteReasonWaitingForRoom = "WaitingForRoom"
+	ModelClaimRouteReasonMoving         = "Moving"
 )
 
 const (

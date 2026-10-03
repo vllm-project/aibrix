@@ -418,8 +418,8 @@ var modelClaimReasonsNotRetried = map[string]struct{}{
 // takes. Making room waits for KV to come back. A move starts the engine
 // again on another pod.
 var modelClaimRetryAfterByReason = map[string]int{
-	"WaitingForRoom": 20,
-	"Moving":         30,
+	constants.ModelClaimRouteReasonWaitingForRoom: 20,
+	constants.ModelClaimRouteReasonMoving:         30,
 }
 
 // modelClaimRetryAfter is the Retry-After, in seconds, for a claim the
