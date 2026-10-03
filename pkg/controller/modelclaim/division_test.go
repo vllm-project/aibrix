@@ -1807,6 +1807,86 @@ func TestReconcileWarnsOnTheThirdDivisionOfACardThatFailsInARow(t *testing.T) {
 	assert.Equal(t, int64(4)<<30+(32<<30)*5/6, getModel(t, r, "stays").Status.Instances[0].KVLimitBytes)
 }
 
+// An engine wakes, and the engine beside it is shrunk to give it its share
+// back. In three rounds in a row, that neighbour grows past its new limit
+// before the card is read back. Each of these rounds fails like one whose
+// limit does not take, and the claims on the card are warned on the third
+// failure, with the cause. Once the neighbour stops growing, the card is
+// divided.
+func TestReconcileWarnsWhenAWakeKeepsFindingItsNeighbourGrowing(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	awake := withFinalizer(claimOnPod("awake", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	awake.Status.Instances[0].Port = 9001
+	awake.Status.Instances[0].KVLimitBytes = 20 << 30
+	asleep := claimOnPod("asleep", pod.Name, modelv1alpha1.ModelClaimSleeping, 20<<30, 4<<30)
+	asleep.Status.Instances[0].KVLimitBytes = 20 << 30
+	sleeping := engineHolding("asleep", 0, 20<<30)
+	sleeping.Phase = runtimePhaseSleeping
+	sleeping.Ready = false
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("awake", 4<<30, 20<<30), sleeping}
+	r, runtime := newReconciler(t, awake, asleep, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	now := time.Unix(1_700_000_000, 0)
+	r.Divisions = newCardDivisionState(func() time.Time { return now })
+	reconcileOnce(t, r, "awake")
+	recordedEvents(t, r)
+
+	// The engine wakes, and its own claim's health loop marks it active.
+	snapshot.Models[1].Phase = runtimePhaseActive
+	snapshot.Models[1].Ready = true
+	woken := getModel(t, r, "asleep")
+	woken.Status.Instances[0].Phase = modelv1alpha1.ModelClaimActive
+	require.NoError(t, r.Status().Update(context.Background(), woken))
+
+	// Each shrink of "awake" finds it holding a gibibyte more than it was
+	// given. Its requests end between rounds, so each round plans the same.
+	growing := true
+	runtime.onKVLimit = func() {
+		call := runtime.kvLimitCalls[len(runtime.kvLimitCalls)-1]
+		if growing && call.ModelName == "awake" && strings.HasPrefix(call.OperationID, "kv-plan/") {
+			snapshot.Models[0].KVUsedBytes = call.LimitBytes + 1<<30
+		}
+	}
+	warned := map[string]int{}
+	var causes []string
+	countWarnings := func() {
+		for _, event := range recordedEvents(t, r) {
+			if !strings.Contains(event, "KVLimitFailed") {
+				continue
+			}
+			causes = append(causes, event)
+			for _, name := range []string{"awake", "asleep"} {
+				if strings.Contains(event, "model "+name+" ") {
+					warned[name]++
+				}
+			}
+		}
+	}
+	for try := 1; try <= 3; try++ {
+		snapshot.Models[0].KVUsedBytes = 4 << 30
+		nextRound(t, r, &now, "awake")
+		countWarnings()
+		if try < 3 {
+			assert.Empty(t, warned, "no warning after %d failed division(s)", try)
+		}
+	}
+	assert.Equal(t, map[string]int{"awake": 1, "asleep": 1}, warned,
+		"each claim on the card is warned once, on the third failure in a row")
+	for _, event := range causes {
+		assert.Contains(t, event, "could not be divided 3 times in a row: awake holds")
+	}
+	assert.Equal(t, int64(4)<<30, getModel(t, r, "asleep").Status.Instances[0].KVLimitBytes,
+		"a division that fails at its shrinks records nothing")
+
+	growing = false
+	snapshot.Models[0].KVUsedBytes = 4 << 30
+	nextRound(t, r, &now, "awake")
+	countWarnings()
+	assert.Equal(t, map[string]int{"awake": 1, "asleep": 1}, warned)
+	assert.Equal(t, int64(20)<<30, getModel(t, r, "awake").Status.Instances[0].KVLimitBytes)
+	assert.Equal(t, int64(20)<<30, getModel(t, r, "asleep").Status.Instances[0].KVLimitBytes)
+}
+
 func TestReconcileDoesNotTakeACardLeftAloneForOneThatWasDivided(t *testing.T) {
 	r, runtime, pod, clock := twoEnginesSharingACard(t)
 	reconcileOnce(t, r, "stays")
