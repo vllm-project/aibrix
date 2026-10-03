@@ -40,7 +40,8 @@ Architecture
      end
      C -->|"model, port, state annotation"| G["AIBrix gateway"]
      U["OpenAI client"] --> G --> E1
-     G -. "sleeping: wake and retryable 503" .-> R
+     G -. "sleeping: wake request on the Pod, retryable 503" .-> C
+     C -. "wake" .-> R
 
 The main responsibilities are:
 
@@ -52,8 +53,8 @@ The main responsibilities are:
   route gating, and the optional pool policy.
 * **AIBrix runtime agent** starts and supervises one process per claim and
   exposes actual engine, memory, and request state through a runtime snapshot.
-* **AIBrix gateway** routes a served model to its per-engine port. It can
-  trigger a wake for a sleeping model but does not hold the original request.
+* **AIBrix gateway** routes a served model to its per-engine port. It asks the
+  controller to wake a sleeping model, and does not hold the original request.
 
 Prerequisites
 -------------
@@ -153,7 +154,8 @@ Before applying it, review these fields:
 
 ``pool.aibrix.ai/enabled: "true"``
    Required on candidate Pods. Removing or changing it keeps the Pod out of
-   ModelClaim placement.
+   ModelClaim placement. A Pod wakes a waiting claim, as described under
+   Troubleshooting, only while it carries both labels.
 
 ``image``
    Replace ``aibrix/kvcached-runtime:dev`` when using a remote registry or a
@@ -358,25 +360,104 @@ The limits on one card are worked out together. Each engine keeps what it
 already holds, its declared floor or the KV it has mapped, and the room left
 over is shared out by demand: each engine's part is weighted by one plus its
 requests in flight, with the requests capped at four as the pool policy below
-caps them.
+caps them. A serving engine whose request metrics could not be read counts as
+the busiest, since a scrape that timed out says nothing about its load. An
+engine that is still starting or waking is not routed yet, so it has no load,
+and it counts as idle.
 Every footprint, every engine's held KV, and every share together come to
 exactly what the card can hold, so an engine growing into its new limit cannot
 grow into another engine's memory.
 
-The plan is carried out in an order that never leaves two engines entitled to
-the same byte. The limits are written first, shrinking before growing, and a
-fresh reading then has to agree. That step is not a formality: the CLI the
-runtime drives exits zero when there is no segment to write into, so reading
-the limit back is the only evidence there is. Only then is each new limit
-recorded on its own claim, the ones that go down first, and the new instance
-after them. So a division whose write or reading fails changes no record, and
-one whose recording fails part way leaves records that come to no more than
-the card. A model stays non-routable until its own
-limit is in force, and stays routable only while it is held to no more than
-that limit. A card that could not be arranged is skipped, and the next Pod in
-line is tried.
+An engine that is asleep weighs nothing. It keeps only what it holds, which
+after a sleep is normally its floor, and the rest goes to the engines that are
+awake. When every engine on a card is asleep, the room left over stays
+unassigned until one of them wakes, or a model is placed on the card. An engine
+that wakes gets its part back when the card is divided on the next pass. Until
+then, it runs under what it held asleep.
 
-Watch the arrangement through its Events:
+An engine that has failed for good is gone: the runtime stops it once its
+restarts run out. Its seat and its KV go back to the card, for the engines
+beside it and for the next model placed there.
+
+The plan is carried out in an order that never leaves two engines entitled to
+the same byte, and never holds an engine to more than its record. The limits
+that shrink an engine are written first, and a fresh reading has to confirm them
+before anything else happens. A lower limit evicts nothing, so the room a shrink
+makes is not there until the engine is seen inside its new limit. Reading back
+is not a formality. The CLI that the runtime drives exits zero when there is no
+segment to write into. So the limit that is read back is the only evidence there
+is. Each new limit is then recorded on its own claim, the ones that go down
+first. The limits that grow an engine are written next, and read back the same
+way. A model being placed is recorded last, with the limit it is to run under.
+
+A division can fail at each of these steps:
+
+* A shrink that fails changes no record. The controller then holds the engines
+  that the step wrote to what they were held to before, and to no more than
+  their records. This is a best effort. It is not read back, and it stops at the
+  first call that fails.
+* A record that cannot be written leaves records that come to no more than the
+  card. The shrinks stay in force, and nothing grows.
+* A grow that fails leaves the engine below its new record, where it keeps its
+  route. A later round grows it, once its plan moves some limit on the card by
+  the threshold.
+
+A model stays non-routable until its own limit is in force, and stays routable
+only while it is held to no more than that limit. An engine that is not on the
+route is read back as soon as its limit is written. So an engine coming up is
+routed in the same pass, and so is one that woke. A card whose room could not
+be made is skipped, and the next Pod in line is tried.
+
+A card is also planned again once a round, which is about 10 seconds, however
+many claims sit on it. The round carries the plan out in three cases:
+
+* The plan gives more to an engine that is short of KV, and the plan of the
+  round before gave that engine more as well. An engine is short when it has
+  mapped half of the limit it is held to, or when it has requests waiting. An
+  engine that serves, and whose load could not be read, is short as well. An
+  engine that is asleep is never short. One reading is one sample, so an engine
+  that turns short waits for its second round, which is up to 20 seconds.
+* Some engine that has a KV segment is held to a limit other than the one its
+  instance records. That is what a write that had no effect leaves behind. An
+  engine whose instance records no limit counts as well.
+* The card is at rest, and some engine is held to less than half of the limit
+  that the plan gives it. A card is at rest when every load on it was read, and
+  nothing is in flight. That is what a burst on the engine beside it leaves
+  behind.
+
+In any other case, the card is left alone. A limit is a ceiling, and the
+requests in flight come and go. Carrying out every plan would cost the writes,
+and would give nothing to an engine that is far from its limit. A card that is
+close to its plan is left alone as well, even in the three cases above. The
+threshold is the larger of half a gibibyte and a hundredth of the card. A KV
+allocator hands out whole bundles of pages, and a change smaller than a bundle
+moves no memory at all. These divisions raise no Event. The controller logs them
+at verbosity 2.
+
+A card whose engines change is divided on the next pass, without waiting for its
+round. That covers a model removed or failed, an engine that sleeps or wakes,
+and a declaration that changes. A model being placed divides its card itself, as
+above. Every move is carried out, however small. This is also how the room comes
+back when an engine cannot be started after its card was divided for it. That
+card is divided in the same pass. The room an engine leaves goes to the engines
+beside it. A claim that waits for that card can still take it, until those
+engines have mapped it. Sometimes, a card cannot be divided for a change yet, as
+while an engine that left is still exiting. The round then tries again, and
+still as for a change. The controller keeps what each card was divided for in
+memory only. After a restart, the first round of a card divides it whatever its
+load, unless the card is close to its plan. If that division fails, every round
+tries it again until one works.
+
+When the division of a card fails three times in a row, each claim on the card
+gets a ``KVLimitFailed`` warning, and another after every thirty more failures.
+That is every five minutes while every round fails. A run of failures ends with
+a division that works, or after more than five minutes without a failure. A card
+that cannot be accounted for is left as it is, and the log says why.
+
+Placement raises an Event on each claim whose limit it moves. So does a division
+after the engines change, and so does the health loop when it writes a limit
+back. A division that fails can leave a limit moved without an Event. To see the
+Events:
 
 .. code-block:: bash
 
@@ -415,8 +496,9 @@ claim declares its cost.
 Sleeping does not free a seat. An instance that is asleep keeps its place in
 the account, at the full footprint and floor its claim declared, because the
 assignment has to survive the sleep for a wake to find its engine again.
-Normally, an engine that goes to sleep gives back the KV it had mapped. A
-claim that was turned away because of that KV can be placed then.
+Normally, an engine that goes to sleep gives back the KV it had mapped. The
+models beside it can take that KV, and so can a claim that was turned away
+because of it.
 
 A failed instance does free its seat. The runtime stops an engine once its
 restarts run out, and reports it as not alive. The account then charges the
@@ -462,13 +544,19 @@ ModelClaim status summarizes the lifecycle:
      - The claim is new or the controller is selecting a compatible Pod.
    * - ``Loading`` / ``Activating``
      - The runtime is downloading or starting the engine. It remains
-       non-routable with port 0.
+       non-routable with port 0. While the engine boots, the controller looks
+       at it every 2 seconds, so it is routed within about 4 seconds of being
+       ready. Each boot is watched this way for 5 minutes. An engine that
+       still boots after that is looked at every 10 seconds. An engine that
+       is being stopped is watched the same way until it has gone, so that
+       the engine that replaces it starts soon. One whose stop keeps failing
+       is looked at every 10 seconds.
    * - ``Active``
      - The runtime reports the engine alive and ready; the gateway has a real
        per-engine port.
    * - ``Sleeping``
      - The engine remains resident but is intentionally non-routable. A request
-       can trigger a wake.
+       asks the controller to wake it.
    * - ``Failed``
      - Activation or local restart recovery reached a terminal failure.
 
@@ -488,7 +576,10 @@ An annotation has this form:
 
 .. code-block:: json
 
-   {"model":"qwen3-0.6b","port":20000,"state":"active"}
+   {"model":"qwen3-0.6b","port":20000,"state":"active","wakeByRequest":true}
+
+A route that is not served may also carry a ``reason``, such as
+``WaitingForRoom``.
 
 ``port: 0`` means the model is known but not currently routable. It is used
 while the engine is activating, restarting, sleeping, or failed.
@@ -591,8 +682,10 @@ Sleeping request behavior
 -------------------------
 
 The gateway does not hold or replay a request while a model wakes. When a
-binding is sleeping, the gateway starts one deduplicated asynchronous wake and
-returns:
+binding is sleeping, the gateway asks the controller to wake the model. It
+writes a wake request on the Pod, unless one is already there. The request is
+the annotation ``wake.modelclaim.aibrix.ai/<claim>``, and it holds the time of
+the request. Then the gateway returns:
 
 .. code-block:: text
 
@@ -603,6 +696,46 @@ The client or an outer gateway must retry. While the engine is waking, later
 requests can continue to receive 503. The controller restores the real port
 only after the runtime reports the engine active and ready.
 
+The controller wakes the engine through the runtime, once its card is promised
+no more than it has. A sleeping engine keeps its seat, so that holds unless a
+declaration grew while the engine slept. A claim whose card cannot be accounted
+for is woken all the same, since its seat was kept. The request stays on the
+Pod while the engine boots, and the controller removes it once the engine
+serves. ``Waking`` and ``Woken`` Events mark a wake that went through.
+
+An engine that cannot wake where it is moves, when another Pod can take its
+claim. That is an engine whose card is promised more than it has, and one whose
+runtime answers that it could not wake it. The instance is marked ``Failed``,
+and records why in ``status.instances[].reason``, as ``NoRoomToWake`` or
+``WakeFailed``. The claim raises a ``Moving`` Event. In the same pass, the
+controller stops the engine and starts the claim on the other Pod, as it does
+for an engine that failed for good. A ``Rescheduled`` Event says where the
+claim went. A move that cannot finish in that pass is tried again with the
+usual backoff. Until it finishes, the claim's ``Ready`` condition says
+``Moving``.
+
+When no other Pod can take it, an engine whose card cannot take it back stays
+asleep. Its instance records ``WaitingForRoom``, and so does the claim's
+``Ready`` condition. The claim raises a ``WaitingForRoom`` Event once, when the
+wait starts. A wake that fails with no other Pod to go to raises a
+``WakeFailed`` Event, and its request is removed, so the next request for the
+model asks again. A wake whose runtime cannot be reached, or does not answer
+in time, is asked again on a later pass. A request that is not met within five
+minutes is removed, with a ``WakeRequestExpired`` Event, and a client that
+still asks writes a new one.
+
+The gateway asks a client to wait longer while the controller makes room. It
+asks for 20 seconds while a wake waits for room, and for 30 seconds while a
+claim waits to move. It reads the reason from the route, where the controller
+writes it beside the state, or from the claim's ``Ready`` condition. The
+message of the 503 gives the reason too.
+
+A controller that wakes engines itself says so in the binding, with
+``"wakeByRequest":true``. A gateway that finds no such field asks the runtime
+to wake the engine directly, as an older controller expects. So does a gateway
+that runs without Kubernetes. The gateway writes wake requests with its
+permission to patch Pods.
+
 An activating model also returns 503 with ``Retry-After``. So does a claim
 that is not placed yet. Its message gives the controller's reason: from the
 claim's ``Scheduled`` condition while it waits, such as ``NoMatchingPods``, or
@@ -611,7 +744,8 @@ claim again by itself, so the client is asked to retry as well. That includes a
 model whose engine failed for good, with ``EngineFailed``, since the controller
 moves it to another Pod once one can take it. A claim that has to be changed
 first, such as one with ``InvalidEngineConfig`` or ``InvalidPerGPU``, gets no
-``Retry-After``. A model that no ModelClaim serves returns 400.
+``Retry-After``. Neither does one that no card in its pool can hold, with
+``TooLargeForAnyCard``. A model that no ModelClaim serves returns 400.
 
 The answer for a claim that is not placed comes from the ModelClaim object,
 not from a Pod, so it wakes nothing. If two claims serve one name, the first
@@ -634,6 +768,8 @@ claim on another Pod, the way it places a new one. The new engine goes only on
 a card with room for it, and the card is divided before the engine starts. The
 Pod where the engine failed is left out, and the other engines there keep
 running. If no other Pod can take the claim, it stays ``Failed`` until one can.
+Until then, it is tried again as a refused claim is, less and less often. So is
+a claim whose replacement the runtime refused to start.
 
 The kvcached runtime image uses ``tini`` and a small restart loop around the
 AIBrix agent. If only the agent process crashes, child engines stay alive. The
@@ -645,6 +781,39 @@ This recovery does not cross a Pod restart. If the Pod disappears, the
 controller removes the stale instance and can activate the claim on another
 compatible Pod. There is no live migration or transparent preservation of
 in-flight requests.
+
+The controller reads each runtime's snapshot with a 10-second deadline. A read
+normally takes a fraction of a second. It can take longer for two reasons. The
+runtime probes its engines one after another, for about 1.5 seconds each. Before
+that, a read waits for the runtime's lock. The runtime holds that lock while it
+checks its engines, for about 1 second each. It also holds the lock while it
+starts an engine, puts one to sleep, wakes one or writes a KV limit. So a read
+of a Pod with five busy engines can take longer than the deadline. Calls that
+change state, such as starting an engine, wait up to 60 seconds.
+
+A runtime that does not answer in time is left alone for 10 seconds, which is
+one round. Calls to it fail at once until then, so one runtime that stopped
+answering does not hold up every claim that uses it. Each further timeout in a
+row doubles that time, up to a minute, and any answer ends it. A runtime that
+was slow once is therefore read again a round later. One that stays down is
+left alone for a minute at a time, from its fourth timeout on. The call that
+follows each minute waits for its own deadline, which is 10 seconds for a
+read. A runtime that answers between its timeouts is asked again a round after
+each of them.
+
+An answer counts once all of it has arrived, or its first mebibyte. A runtime
+that sends the start of an answer and then stalls did not answer in time. The
+controller knows a runtime by the address of its Pod. A Pod that is given the
+address of one that is left alone is left alone for the rest of that time.
+
+While a runtime is left alone, nothing is known about its Pod. The engines on
+it keep the routing they had, whatever happens to them. A call to start an
+engine there is not sent, and placement tries the next Pod in rank instead. A
+Pod skipped this way is not tried again in the same pass. A claim stays
+``Pending`` only when no other Pod can take it, and it is not marked
+``Failed``, since no call was sent. A claim whose engine failed for good is
+moved past such a Pod the same way. Stopping an engine is still sent, since an
+engine left running would keep its memory.
 
 Observability
 -------------
@@ -702,9 +871,74 @@ Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    exiting. The claims could not be listed. When no Pod could be accounted for,
    the message names one of them and the reason.
 
-   The claim is tried again on every pass, and the ``NoMatchingPods`` Event is
-   raised only when the refusal changes. The ``Scheduled`` condition always
-   carries the current one.
+   The ``NoMatchingPods`` Event is raised only when the refusal changes. The
+   ``Scheduled`` condition always carries the current one.
+
+   A refused claim backs off. Each refusal in a row doubles the wait before
+   the next try: 10, 20 and 40 seconds, then a minute at most. A model that
+   waits for room therefore does not have every runtime in the pool read for
+   it every 10 seconds. The wait is kept in the controller's memory only, so
+   a restart tries every waiting claim at once.
+
+   A waiting claim does not sit through its wait when room may have appeared.
+   These changes wake it at once, and it starts again from the shortest wait:
+
+   * Another claim is deleted, is scaled down, fails or goes to sleep.
+   * A declaration shrinks, or becomes usable.
+   * A Pod joins the pool, or turns ready.
+   * The claim's own spec changes.
+
+   Room on a card counts only when every claim on the card declares a usable
+   ``perGPU``. While one of them does not, the card is turned away, so a
+   neighbour that leaves it frees no room.
+
+   A Pod wakes a waiting claim once by turning ready, so a Pod that keeps
+   turning not ready and ready again leaves the wait as it is. A claim with
+   several replicas that loses an instance starts over as well, since it needs
+   another one.
+
+   A claim that is deleted wakes the others before its engine has exited, and
+   an engine holds its memory until it has. So the try that a deletion wakes
+   is usually refused once, and the room is found on the next try, 10 seconds
+   later. Engines that give back mapped KV while they serve send no signal at
+   all. The claim finds that room on its next try, a minute later at most.
+
+   Claims that are woken together are tried oldest first. Three limits
+   remain. A claim that has waited long tries less often than one that has
+   just arrived, so room that appears without a signal usually goes to the
+   newer claim. Nothing holds room for a claim, so a large claim can keep
+   waiting while smaller ones keep fitting. A wake also has every waiting
+   claim whose candidates changed read each of their runtimes once.
+
+Claim reads ``Failed`` with ``ActivateFailed``
+   The claim found a card, and its engine could not be started there. The
+   message quotes the error. Most often, the runtime of that Pod refused the
+   start, and the card is given back. If the answer of the runtime was lost,
+   the engine may have started. The instance then stays, as described under
+   "Claim remains ``Activating``".
+
+   The claim is tried again as a refused claim is: after 10, 20 and 40
+   seconds, then once a minute. The controller does not give up on it. A claim
+   with no instance reads ``Failed`` between two tries. A claim with an
+   instance reads as its instances do.
+
+   A Pod that joins the pool or turns ready wakes the claim at once, and so
+   does a change to its own spec. Room freed on a card does not, since the
+   claim had found a card. Each try goes to the Pod that ranks first. While
+   the ranking stands, that is the Pod that refused before.
+
+Claim remains ``Pending`` with ``TooLargeForAnyCard``
+   Every candidate card was measured. Each is smaller than
+   ``perGPU.maximumFootprint`` plus ``perGPU.kvFloor``, even with nothing
+   else on it. So no candidate Pod can ever hold the model. The message says
+   what the model needs on a card and what the best Pod offers. A Pod with
+   several cards offers what its smallest card holds. Declare less if the
+   figures overstate the model, or give it a pool with larger cards.
+
+   The claim keeps backing off. A Pod that joins the pool wakes it at once,
+   and so does a change to its own spec. Room freed on a card does not, since
+   no card is large enough. While any card cannot be measured, the claim
+   reads ``NoMatchingPods`` instead, since that card might hold it.
 
 Claim remains ``Pending`` with ``InvalidPerGPU``
    ``perGPU`` is missing, or one of its figures cannot be used, and the
@@ -744,11 +978,24 @@ Claim remains ``Activating``
 
 Claim remains ``Activating`` after ``/health`` succeeds
    With ``perGPU`` declared, the engine also has to report the KV limit it was
-   given before it becomes routable. kvcached applies a new limit at its next
-   allocation, so a short wait here is expected. A ``KVLimitFailed`` Event
-   names the error. A snapshot whose ``kv_capacity_bytes`` is negative means
-   the engine has not built its KV segment yet, and there is nothing to write
-   into.
+   given before it becomes routable. The pass that first sees the engine ready
+   writes the limit and reads it back. So this normally lasts about 4 seconds at
+   most. It can last up to 10 seconds in any of these cases. The boot took
+   more than 5 minutes, or the runtime does not date it. The runtime did not
+   answer the reading of a pass. The controller had to start the engine again.
+   Another start of the same claim failed in that pass.
+
+   If it lasts longer, the limit is not in force, and the controller writes it
+   again every 10 seconds. If the engine reports another limit, a
+   ``KVLimitFailed`` Event says which one. If the write fails, the Event
+   names the error. For an engine that comes up, ``KVLimitSet`` is raised once
+   the limit reads back. When the runtime does not answer the read-back,
+   neither is raised, and the next pass reads the limit. A snapshot whose
+   ``kv_capacity_bytes`` is negative means the engine has not built its KV
+   segment yet, and there is nothing to write into.
+
+   An engine that woke waits the same way when its limit does not read back.
+   Its instance reads ``Activating`` until it does.
 
 ``KVLimitFailed`` Events during placement
    A card had room, and the engines on it could not be held to their new
@@ -758,12 +1005,33 @@ Claim remains ``Activating`` after ``/health`` succeeds
    Pod. If none is left it stays ``Pending``, and its ``NoMatchingPods``
    message names the card that had room and could not be divided.
 
+A ``KVLimitFailed`` warning says a card could not be divided several times
+   Every engine on the card keeps serving under the limit it is held to. A
+   division that fails at its shrinks changes no record, and the controller
+   tries to hold the engines to what they were held to before. One whose records
+   cannot be written leaves the shrinks in force. One that fails at its grows
+   has made the room and recorded it, and leaves an engine below its record
+   until a round grows it. The message quotes the last failure. An engine that
+   did not take a KV limit points at its runtime or its segment, as above. One
+   that holds more than its new limit is still growing, and the next round plans
+   around it. The warning comes on the third failure in a row, and again after
+   every thirty more. A division that works ends the run, and so do more than
+   five minutes without a failure.
+
 A routable model becomes non-routable with ``KVLimitNotHeld``
    Its engine is held to more KV than its limit, most often because it
    restarted and its allocator put its own default back. It could grow into
-   memory the card holds for its neighbours, so the route is withdrawn while
-   the controller writes the limit again, and returns once the engine reports
-   it.
+   memory that the card holds for its neighbours. So the route is withdrawn
+   while the controller writes the limit again, and it returns once the engine
+   reports the limit. The ``KVLimitSet`` Event of that write says "written
+   over", since the limit is read on the next pass. ``KVLimitNotHeld`` is also
+   raised when the KV segment of the engine cannot be read. Nothing is written
+   then.
+
+   On a Pod that carries both ``pool.aibrix.ai`` labels, the change to the Pod
+   starts the next pass at once. So the route is normally back within a few
+   seconds. On a Pod without ``pool.aibrix.ai/name``, it is back on the
+   claim's next pass, 10 seconds later at most.
 
 Activation rejects ``--gpu-memory-utilization``
    Remove the flag. The kvcached framework replaces the engine's fixed

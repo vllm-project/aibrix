@@ -135,7 +135,7 @@ func (c *Store) addPod(obj interface{}) {
 	}
 	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 	for servedModel, binding := range modelClaims {
-		c.modelClaims.set(podKey, servedModel, binding.Port, binding.State)
+		c.modelClaims.set(podKey, servedModel, binding)
 		if binding.Port > 0 {
 			c.addPodAndModelMappingLocked(metaPod, servedModel)
 		}
@@ -206,7 +206,7 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 		}
 		newPodKey := utils.GeneratePodKey(newPod.Namespace, newPod.Name)
 		for servedModel, binding := range newModelClaims {
-			c.modelClaims.set(newPodKey, servedModel, binding.Port, binding.State)
+			c.modelClaims.set(newPodKey, servedModel, binding)
 			if binding.Port > 0 {
 				c.addPodAndModelMappingLocked(metaPod, servedModel)
 			}

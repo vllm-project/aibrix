@@ -139,6 +139,20 @@ func (f *ModelClaimFixture) CreateWarmPod(namespace, name, pool string) *corev1.
 }
 
 // GetClaim retrieves the latest claim using the supplied polling assertions.
+// RequestWake writes a wake request for a claim on a pod, as the gateway does
+// for a request that finds the claim's engine asleep.
+func (f *ModelClaimFixture) RequestWake(namespace, podName, claimName string) {
+	ginkgo.GinkgoHelper()
+	pod := &corev1.Pod{}
+	gomega.Expect(f.client.Get(f.ctx, types.NamespacedName{Namespace: namespace, Name: podName}, pod)).To(gomega.Succeed())
+	patch := client.MergeFrom(pod.DeepCopy())
+	if pod.Annotations == nil {
+		pod.Annotations = map[string]string{}
+	}
+	pod.Annotations[constants.ModelClaimWakeAnnotationPrefix+claimName] = time.Now().UTC().Format(time.RFC3339)
+	gomega.Expect(f.client.Patch(f.ctx, pod, patch)).To(gomega.Succeed())
+}
+
 func (f *ModelClaimFixture) GetClaim(g gomega.Gomega, claim *modelapi.ModelClaim) *modelapi.ModelClaim {
 	ginkgo.GinkgoHelper()
 	latest := &modelapi.ModelClaim{}
@@ -225,10 +239,12 @@ type FakeModelClaimRuntime struct {
 	defaultPhase string
 	defaultReady bool
 	failures     int
+	wakeFailures int
 	nextPort     int32
 
 	activateCalls   []modelclaimcontroller.ActivateRequest
 	deactivateCalls []modelclaimcontroller.DeactivateRequest
+	wakeCalls       []modelclaimcontroller.WakeRequest
 	models          map[string]modelclaimcontroller.RuntimeSnapshotModel
 }
 
@@ -246,6 +262,8 @@ func (f *FakeModelClaimRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request
 		f.handleActivate(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/runtime/models/deactivate":
 		f.handleDeactivate(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/runtime/models/wake":
+		f.handleWake(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/runtime/snapshot":
 		f.handleSnapshot(w)
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/runtime/models":
@@ -297,6 +315,42 @@ func (f *FakeModelClaimRuntime) handleActivate(w http.ResponseWriter, r *http.Re
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(modelclaimcontroller.ActivateResponse{
 		Status: "success", ModelName: req.ModelName, Port: port, IPCName: req.IPCName,
+	})
+}
+
+// handleWake wakes the sleeping engines serving the model, as the runtime does:
+// they serve again at once here, with no boot to wait for.
+func (f *FakeModelClaimRuntime) handleWake(w http.ResponseWriter, r *http.Request) {
+	req := modelclaimcontroller.WakeRequest{}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.wakeCalls = append(f.wakeCalls, req)
+	if f.wakeFailures > 0 {
+		f.wakeFailures--
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(modelclaimcontroller.RuntimeOperationResponse{
+			Status: "error", ModelName: req.ModelName, OperationID: req.OperationID,
+		})
+		return
+	}
+	applied := false
+	for uid, model := range f.models {
+		if model.ModelName == req.ModelName && model.Phase == "sleeping" {
+			model.Phase = "active"
+			model.Ready = true
+			f.models[uid] = model
+			applied = true
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(modelclaimcontroller.RuntimeOperationResponse{
+		Status: "success", ModelName: req.ModelName, OperationID: req.OperationID, Applied: applied, Phase: "active",
 	})
 }
 
@@ -370,6 +424,15 @@ func (f *FakeModelClaimRuntime) FailNextActivations(count int) {
 	f.failures = count
 }
 
+// FailNextWakes makes the next count wake requests fail, as a runtime does
+// when vLLM cannot wake its engine.
+func (f *FakeModelClaimRuntime) FailNextWakes(count int) {
+	ginkgo.GinkgoHelper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.wakeFailures = count
+}
+
 // SetClaimState updates the runtime state for an already activated claim UID.
 func (f *FakeModelClaimRuntime) SetClaimState(uid, phase string, ready bool, lastError string) {
 	ginkgo.GinkgoHelper()
@@ -398,6 +461,14 @@ func (f *FakeModelClaimRuntime) DeactivateRequests() []modelclaimcontroller.Deac
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]modelclaimcontroller.DeactivateRequest(nil), f.deactivateCalls...)
+}
+
+// WakeRequests returns a defensive copy of the recorded wake requests.
+func (f *FakeModelClaimRuntime) WakeRequests() []modelclaimcontroller.WakeRequest {
+	ginkgo.GinkgoHelper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]modelclaimcontroller.WakeRequest(nil), f.wakeCalls...)
 }
 
 // ClaimUIDs returns the unique claim UIDs recorded in activation requests.

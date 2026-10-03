@@ -374,6 +374,18 @@ type ModelClaimBinding struct {
 	Model string
 	Port  int
 	State string
+	// Claim is the ModelClaim the binding belongs to, named by the
+	// annotation key.
+	Claim string
+	// WakeByRequest says that the controller wakes this engine when asked.
+	// A request for it while it sleeps is then written on the pod as a wake
+	// request, rather than sent to the runtime. An older controller does not
+	// set it, and wakes nothing itself.
+	WakeByRequest bool
+	// Reason says more than State about why the model is not served, such as
+	// WaitingForRoom while a wake waits for room, or Moving while the claim
+	// moves to another pod. It is empty when the state says it all.
+	Reason string
 }
 
 // ModelClaimBindingsFromPod parses modelclaim.aibrix.ai/* annotations on a
@@ -389,9 +401,11 @@ func ModelClaimBindingsFromPod(pod *v1.Pod) map[string]ModelClaimBinding {
 			continue
 		}
 		var entry struct {
-			Model string `json:"model"`
-			Port  int    `json:"port"`
-			State string `json:"state,omitempty"`
+			Model         string `json:"model"`
+			Port          int    `json:"port"`
+			State         string `json:"state,omitempty"`
+			WakeByRequest bool   `json:"wakeByRequest,omitempty"`
+			Reason        string `json:"reason,omitempty"`
 		}
 		if err := json.Unmarshal([]byte(value), &entry); err != nil || entry.Model == "" ||
 			entry.Port < 0 || entry.Port > 65535 {
@@ -416,9 +430,12 @@ func ModelClaimBindingsFromPod(pod *v1.Pod) map[string]ModelClaimBinding {
 			out = make(map[string]ModelClaimBinding)
 		}
 		out[entry.Model] = ModelClaimBinding{
-			Model: entry.Model,
-			Port:  entry.Port,
-			State: entry.State,
+			Model:         entry.Model,
+			Port:          entry.Port,
+			State:         entry.State,
+			Claim:         strings.TrimPrefix(key, constants.ModelClaimPodAnnotationPrefix),
+			WakeByRequest: entry.WakeByRequest,
+			Reason:        entry.Reason,
 		}
 	}
 	return out
