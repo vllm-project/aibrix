@@ -65,12 +65,23 @@ const (
 	// has been activated on it. The key is suffixed with the ModelClaim object
 	// name (a DNS name, so always annotation-key-safe) and the value is a JSON
 	// object {"model":"<servedModelName>","port":<port>,"state":"<state>"}.
+	// A controller that wakes sleeping engines itself also writes
+	// "wakeByRequest":true there.
 	// One key per ModelClaim avoids multi-writer races on a shared annotation.
 	// The gateway cache reads these to make active models routable and retain
 	// sleeping port-0 bindings for request-triggered wake.
 	// Example: "modelclaim.aibrix.ai/qwen2-7b":
 	// '{"model":"qwen2-7b-instruct","port":9001,"state":"active"}'
 	ModelClaimPodAnnotationPrefix = "modelclaim.aibrix.ai/"
+
+	// ModelClaimWakeAnnotationPrefix marks, on the warm pod that holds a
+	// sleeping engine, that a request has asked for that engine's model. The
+	// key is suffixed with the ModelClaim object name, and the value is the
+	// time of the request, in RFC 3339. The gateway writes it, and the
+	// controller wakes the engine and removes it. Its prefix is not
+	// ModelClaimPodAnnotationPrefix, so it is never read as a binding.
+	// Example: "wake.modelclaim.aibrix.ai/qwen2-7b": "2026-10-01T08:00:00Z"
+	ModelClaimWakeAnnotationPrefix = "wake.modelclaim.aibrix.ai/"
 
 	// ModelClaim routing states are observed runtime states carried alongside
 	// the per-model port. They let the gateway distinguish a sleeping engine

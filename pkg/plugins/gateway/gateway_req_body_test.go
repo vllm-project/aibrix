@@ -857,6 +857,52 @@ func TestValidateModelAvailabilityAsksToRetryAfterAFailedActivation(t *testing.T
 // The controller moves a claim whose engine failed for good to another pod
 // once one can take it. So its client is asked to retry, whether the pod of the
 // failed engine still carries the claim or no pod does.
+func TestValidateModelAvailabilityAsksToWaitLongerForTheReasonTheControllerGives(t *testing.T) {
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "warm-1", Namespace: "default"},
+		Status:     v1.PodStatus{PodIP: "10.0.0.1"},
+	}
+	for name, tc := range map[string]struct {
+		cache      *MockCache
+		retryAfter string
+		says       string
+	}{
+		"a wake that waits for room, on the route": {
+			cache: &MockCache{modelClaimBindings: map[string]mockModelClaimBinding{
+				"qwen": {pod: pod, state: constants.ModelClaimRoutingStateSleeping, reason: "WaitingForRoom"},
+			}},
+			retryAfter: "20",
+			says:       "model qwen is sleeping (WaitingForRoom)",
+		},
+		"a claim that moves, off any route": {
+			cache: &MockCache{modelClaimStatuses: map[string]mockModelClaimStatus{
+				"qwen": {phase: "Failed", reason: "Moving"},
+			}},
+			retryAfter: "30",
+			says:       "(Moving)",
+		},
+		"a sleeping model with no reason": {
+			cache: &MockCache{modelClaimBindings: map[string]mockModelClaimBinding{
+				"qwen": {pod: pod, state: constants.ModelClaimRoutingStateSleeping},
+			}},
+			retryAfter: "10",
+			says:       "model qwen is sleeping; retry shortly",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tc.cache.On("HasModel", "qwen").Return(false)
+			server := &Server{cache: tc.cache, wakeRequester: &recordingModelWakeRequester{}}
+
+			_, response := server.validateModelAvailability("request-1", "qwen")
+
+			require.NotNil(t, response)
+			assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
+			assert.Equal(t, tc.retryAfter, responseHeader(response, "Retry-After"))
+			assert.Contains(t, response.GetImmediateResponse().GetBody(), tc.says)
+		})
+	}
+}
+
 func TestValidateModelAvailabilityAsksToRetryForAnEngineThatFailedForGood(t *testing.T) {
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "warm-1", Namespace: "default"},
@@ -889,6 +935,9 @@ func TestValidateModelAvailabilityDoesNotAskToRetryWhenWaitingDoesNotHelp(t *tes
 	for _, status := range []mockModelClaimStatus{
 		{phase: "Failed", reason: "InvalidEngineConfig"},
 		{phase: "Pending", reason: "InvalidPerGPU"},
+		// No card in the pool can hold the model, until the pool or the claim
+		// is changed.
+		{phase: "Pending", reason: "TooLargeForAnyCard"},
 	} {
 		t.Run(status.reason, func(t *testing.T) {
 			mockCache := &MockCache{modelClaimStatuses: map[string]mockModelClaimStatus{"qwen": status}}

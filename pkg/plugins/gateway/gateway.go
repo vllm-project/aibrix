@@ -314,7 +314,7 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		cache:               c,
 		routerManager:       routerManager,
 		inFlightObserver:    options.InFlightObserver,
-		wakeRequester:       newRuntimeModelWakeRequester(nil, defaultModelClaimRuntimePort),
+		wakeRequester:       newRuntimeModelWakeRequester(nil, defaultModelClaimRuntimePort, client),
 		httprouteCacheTTL:   httpRouteCacheTTL(),
 		httprouteErrorTTL:   defaultHTTPRouteErrorTTL,
 		shutdownCh:          shutdown,

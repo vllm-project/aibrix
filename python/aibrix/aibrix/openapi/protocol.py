@@ -256,6 +256,10 @@ class RuntimeSnapshotModel(NoProtectedBaseModel):
     # accelerator. This is an observation for placement ranking, not an
     # allocation guarantee.
     hbm_peak_bytes: int = 0
+    # GPU memory the engine still held right after it last went to sleep. Only
+    # a sleeping engine reports it, and None means the reading could not be
+    # attributed to the engine.
+    sleeping_footprint_bytes: Optional[int] = None
     # Per-engine request activity is read by the sidecar from localhost. False
     # means policy must not infer that an engine is idle from unavailable metrics.
     request_metrics_observed: bool = False

@@ -121,7 +121,8 @@ type ModelClaimPerGPU struct {
 	// all: enough for one request of the engine's maximum model length at this
 	// model's bytes per token, rounded up to the KV allocator's page
 	// granularity. Placement holds this much for the instance for as long as it
-	// is awake, asleep included.
+	// is awake. It holds this much while the instance sleeps too, unless the
+	// pool keeps no wake reserve.
 	// +kubebuilder:validation:Required
 	KVFloor resource.Quantity `json:"kvFloor"`
 }
@@ -190,6 +191,18 @@ type ModelClaimInstance struct {
 	// placed before its claim declared a per-GPU cost.
 	// +optional
 	KVLimitBytes int64 `json:"kvLimitBytes,omitempty"`
+
+	// Reason says why the instance stands where it does, when its phase alone
+	// does not. The controller sets it, and clears it once it no longer holds.
+	//
+	//   - WaitingForRoom: the engine sleeps, a request has asked for it, and its
+	//     card cannot take it back yet.
+	//   - NoRoomToWake: the engine slept, and its card could not take it back,
+	//     so the claim is being moved to another pod.
+	//   - WakeFailed: the runtime could not wake the engine, so the claim is
+	//     being moved to another pod.
+	// +optional
+	Reason string `json:"reason,omitempty"`
 }
 
 // ModelClaimStatus defines the observed state of ModelClaim.
