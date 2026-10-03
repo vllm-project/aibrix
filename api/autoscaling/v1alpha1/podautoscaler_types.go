@@ -301,6 +301,12 @@ type PodAutoscalerStatus struct {
 	// decision. It is cleared when spec.predictive is removed.
 	// +optional
 	Predictive *PredictiveStatus `json:"predictive,omitempty"`
+	// ElasticEPScaling is the last observed elastic EP scaling state of the
+	// engine pods backing the scale target. It is only populated when the
+	// target runs vLLM with elastic EP enabled. The field is informational in
+	// the observe-only phase: replica scaling decisions do not depend on it.
+	// +optional
+	ElasticEPScaling *ElasticEPScalingStatus `json:"elasticEPScaling,omitempty"`
 }
 
 // ScheduledBoundsStatus captures the currently effective scheduled replica bounds.
@@ -358,6 +364,29 @@ type PredictiveStatus struct {
 	// LastUpdated is when the prediction was computed.
 	// +optional
 	LastUpdated *metav1.Time `json:"lastUpdated,omitempty"`
+}
+
+// ElasticEPScalingStatus captures the last observed elastic expert parallel
+// (EP) scaling state of the engine pods backing the scale target.
+type ElasticEPScalingStatus struct {
+	// InProgress is true while at least one observed engine reports an elastic
+	// EP scaling operation in progress. The operation is triggered on the
+	// engine, not by the autoscaler, in the observe-only phase.
+	InProgress bool `json:"inProgress"`
+
+	// ObservedEngines is the number of engine pods that answered the elastic EP
+	// scaling state probe.
+	// +optional
+	ObservedEngines int32 `json:"observedEngines"`
+
+	// ScalingEngines is the number of observed engine pods that report an
+	// elastic EP scaling operation in progress.
+	// +optional
+	ScalingEngines int32 `json:"scalingEngines"`
+
+	// LastTransitionTime is the last time InProgress changed.
+	// +optional
+	LastTransitionTime *metav1.Time `json:"lastTransitionTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
