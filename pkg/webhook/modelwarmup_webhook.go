@@ -175,7 +175,7 @@ func validateModelWarmup(warmup *modelapi.ModelWarmup) error {
 	allErrs = append(allErrs, validateModelWarmupCustom(specPath, warmup.Spec.Custom, containerNames)...)
 	if !modelWarmupHasRegularWork(warmup.Spec) {
 		allErrs = append(allErrs, field.Required(
-			specPath.Child("custom", "containers"), "at least one image preload or custom container is required",
+			specPath, "at least one of imagePreload.images or custom.containers is required",
 		))
 	}
 	allErrs = append(allErrs, validateModelWarmupPolicies(warmup.Spec.Policies)...)

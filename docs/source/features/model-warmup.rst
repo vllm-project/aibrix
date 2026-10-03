@@ -80,6 +80,21 @@ behavior:
    :language: yaml
    :linenos:
 
+Each image-only entry must use a command that exits successfully without
+starting the inference server. The BusyBox sample uses ``sh -c "exit 0"``.
+For the public ``vllm/vllm-openai`` image, its CLI can print help and exit:
+
+.. code-block:: yaml
+
+   imagePreload:
+     images:
+     - image: vllm/vllm-openai:<version-or-digest>
+       command: ["vllm", "serve"]
+       args: ["--help=all"]
+
+Verify the command against the exact image tag or digest before creating a
+ModelWarmup; other engines and distroless images may expose different binaries.
+
 ``model-download.yaml`` is custom-only. It uses the public
 ``aibrix/runtime:v0.7.0`` image to run ``aibrix_download`` for the small public
 ``sshleifer/tiny-gpt2`` artifact and writes it to a node-local cache:

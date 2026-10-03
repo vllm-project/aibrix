@@ -262,7 +262,8 @@ func TestModelWarmupWebhookRequiresRegularWork(t *testing.T) {
 	for name, warmup := range tests {
 		t.Run(name, func(t *testing.T) {
 			_, err := (&ModelWarmupWebhook{}).ValidateCreate(context.Background(), warmup)
-			require.ErrorContains(t, err, "spec.custom.containers")
+			require.ErrorContains(t, err, "spec: Required value")
+			require.NotContains(t, err.Error(), "spec.custom.containers")
 		})
 	}
 }
