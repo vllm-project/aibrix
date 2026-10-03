@@ -166,6 +166,20 @@ func TestReconcileMakesRoomForANewClaimByPuttingTheIdlestToSleep(t *testing.T) {
 	assert.False(t, held, "the card is let go once the claim is placed")
 }
 
+func TestReconcileLetsTheCardGoWhenTheSleepThatMakesRoomFails(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+	newClaim(t, r, "x", at0759)
+	runtime.sleepErr = &runtimeRefusal{"sleep failed: boom"}
+
+	reconcileOnce(t, r, "x")
+
+	require.Len(t, runtime.sleepCalls, 1)
+	_, held := r.reservations().heldFor(testNamespace, "x", r.now())
+	assert.False(t, held, "no room was made, so the card is not kept from the other claims")
+	assert.NotEqual(t, scheduledReasonMakingRoom, scheduledOf(t, r, "x").Reason)
+}
+
 func TestReconcileKeepsTheRoomMadeForAClaimFromOthers(t *testing.T) {
 	r, _ := servingPool(t, keepNoWakeReserve, 1,
 		serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})

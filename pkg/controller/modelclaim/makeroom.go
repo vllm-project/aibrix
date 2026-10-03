@@ -254,8 +254,14 @@ func (r *ModelClaimReconciler) makeRoomToPlace(
 		r.reservations().release(pm.Namespace, pm.Name)
 		return "", false
 	}
-	if !r.reservations().hold(cardOf(best.pod), pm.Name, seat, now) ||
-		!r.putIdleEngineToSleep(ctx, best.sleeps[0], best.pod, pm, readings) {
+	if !r.reservations().hold(cardOf(best.pod), pm.Name, seat, now) {
+		return "", false
+	}
+	if !r.putIdleEngineToSleep(ctx, best.sleeps[0], best.pod, pm, readings) {
+		// No room was made, so the card is let go at once. Held, it would be
+		// kept from every other claim for the rest of the hold, while this
+		// claim says that it waits for room as before.
+		r.reservations().release(pm.Namespace, pm.Name)
 		return "", false
 	}
 	more := ""

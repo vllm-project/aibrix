@@ -65,7 +65,9 @@ type fakeRuntime struct {
 	sleepCalls      []SleepRequest
 	// onSleep, when set, runs on every sleep, as a runtime changes what its
 	// snapshot reports.
-	onSleep       func(*SleepRequest)
+	onSleep func(*SleepRequest)
+	// sleepErr, when set, is what every sleep returns.
+	sleepErr      error
 	listCalls     int
 	snapshotCalls int
 	// snapshotCallsTo counts the snapshot reads of each runtime, by pod IP.
@@ -172,6 +174,9 @@ func (f *fakeRuntime) SetKVLimit(_ context.Context, _ string, _ int, req *SetKVL
 
 func (f *fakeRuntime) Sleep(_ context.Context, _ string, _ int, req *SleepRequest) (*RuntimeOperationResponse, error) {
 	f.sleepCalls = append(f.sleepCalls, *req)
+	if f.sleepErr != nil {
+		return nil, f.sleepErr
+	}
 	if f.onSleep != nil {
 		f.onSleep(req)
 	}
