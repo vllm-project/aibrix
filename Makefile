@@ -281,7 +281,7 @@ run: manifests generate fmt vet ## Run a controller from your host.
 IS_MAIN_BRANCH ?= true
 
 define build_and_tag
-	$(CONTAINER_TOOL) build -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${IMAGE_TAG} -f ${DOCKERFILE_PATH}/$(2) .
+	$(CONTAINER_TOOL) build $(if $(3),--target $(3),) -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${IMAGE_TAG} -f ${DOCKERFILE_PATH}/$(2) .
 	if [ "${IS_MAIN_BRANCH}" = "true" ]; then $(CONTAINER_TOOL) tag ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${IMAGE_TAG} ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):nightly; fi
 endef
 
@@ -304,7 +304,7 @@ docker-build-gateway-plugins: ## Build docker image with the gateway plugins.
 
 .PHONY: docker-build-runtime
 docker-build-runtime: ## Build docker image with the AI Runtime.
-	$(call build_and_tag,runtime,Dockerfile.python)
+	$(call build_and_tag,runtime,Dockerfile.python,runtime)
 
 .PHONY: docker-build-kvcached-runtime
 docker-build-kvcached-runtime: ## Build the kvcached-enabled ModelClaim runtime image.
@@ -313,7 +313,7 @@ docker-build-kvcached-runtime: ## Build the kvcached-enabled ModelClaim runtime 
 
 .PHONY: docker-build-metadata-service
 docker-build-metadata-service: ## Build docker image with the metadata-service (same as runtime but different tag).
-	$(call build_and_tag,metadata-service,Dockerfile.python)
+	$(call build_and_tag,metadata-service,Dockerfile.python,metadata-service)
 
 .PHONY: docker-build-kvcache-watcher
 docker-build-kvcache-watcher: ## Build docker image with the kvcache-watcher.

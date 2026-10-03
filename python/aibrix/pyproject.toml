@@ -77,7 +77,15 @@ PyYAML = "^6.0.1"
 types-PyYAML = "^6.0.12.20240917"
 python-multipart = "^0.0.20"
 tenacity = "^9.0.0"
-# GPU Optimizer runtime dependencies (needed by aibrix.gpu_optimizer.app runtime service)
+
+[tool.poetry.group.gpu_optimizer]
+optional = true
+
+[tool.poetry.group.gpu_optimizer.dependencies]
+# Dependencies required by aibrix.gpu_optimizer (load monitor, visualizer, solver).
+# Installed in aibrix/metadata-service (which hosts the GPU Optimizer service) but
+# NOT needed by aibrix/runtime, aibrix_batch_worker, or aibrix_download.
+# Keeping them in a separate group lets the runtime image skip ~584 MiB of packages.
 numpy = "1.26.4"
 pandas = "^2.2.3"
 pulp = "2.8.0"
