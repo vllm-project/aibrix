@@ -366,7 +366,7 @@ func TestReconcileSaysWhatAnEngineFoundAsleepHolds(t *testing.T) {
 			events := strings.Join(drainEvents(t, r), "\n")
 			assert.Equal(t, modelv1alpha1.ModelClaimSleeping, getModel(t, r, "dozing").Status.Instances[0].Phase)
 			if footprint != nil {
-				assert.Contains(t, events, "is sleeping on pod warm-1 and marked non-routable; it holds 0.0 GiB asleep")
+				assert.Contains(t, events, "is sleeping on pod warm-1 and marked non-routable; it holds 60 bytes asleep")
 				assert.NotContains(t, events, "SleepingFootprintUnknown")
 			} else {
 				assert.Contains(t, events, "Warning SleepingFootprintUnknown")

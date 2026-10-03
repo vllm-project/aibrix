@@ -634,9 +634,22 @@ func (r *ModelClaimReconciler) sleptEngine(
 // asleep, as its runtime measured it.
 func sleepingFootprintNote(model *RuntimeSnapshotModel) string {
 	if footprint, known := sleepingFootprintOf(model); known {
-		return fmt.Sprintf("; it holds %s asleep", gibibytes(footprint))
+		return fmt.Sprintf("; it holds %s asleep", byteSize(footprint))
 	}
 	return "; what it holds asleep could not be measured"
+}
+
+// byteSize words a size: in GiB from one GiB up, in MiB from one MiB up, and in
+// bytes below that. A small engine asleep then does not read as holding none.
+func byteSize(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return gibibytes(n)
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20))
+	default:
+		return fmt.Sprintf("%d bytes", n)
+	}
 }
 
 // sleepingFootprintOf is what a sleeping engine holds, as its runtime measured
