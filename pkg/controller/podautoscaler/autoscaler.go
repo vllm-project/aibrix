@@ -409,7 +409,7 @@ func (a *DefaultAutoScaler) projectMetric(
 		MetricName:        metricSource.TargetMetric,
 		ObservedValue:     response.ObservedValue,
 		PredictedValue:    response.PredictedValue,
-		PredictedReplicas: predictedReplicas(request.PodAutoscaler.Spec.ScalingStrategy, request.CurrentReplicas, response.PredictedValue, targetValue),
+		PredictedReplicas: predictedReplicas(request.PodAutoscaler.Spec.ScalingStrategy, metricSource.MetricSourceType, request.CurrentReplicas, response.PredictedValue, targetValue),
 	}
 	klog.V(4).InfoS("Projected metric trend",
 		"PodAutoscaler", klog.KObj(&request.PodAutoscaler),
@@ -425,10 +425,21 @@ func (a *DefaultAutoScaler) projectMetric(
 
 // predictedReplicas turns a projected metric value into the replica count the
 // strategy would ask for, mirroring the reactive formula of KPA and APA.
-func predictedReplicas(strategy autoscalingv1alpha1.ScalingStrategyType, currentReplicas int32, value, targetValue float64) int32 {
-	expected := math.Ceil(value / targetValue)
-	if strategy == autoscalingv1alpha1.APA {
+// Per-pod sources record the mean across the pods, so KPA scales that mean by
+// the pod count. External and domain sources already report one total.
+func predictedReplicas(strategy autoscalingv1alpha1.ScalingStrategyType, sourceType autoscalingv1alpha1.MetricSourceType, currentReplicas int32, value, targetValue float64) int32 {
+	var expected float64
+	switch strategy {
+	case autoscalingv1alpha1.KPA:
+		if algorithm.IsPerPodSource(sourceType) {
+			expected = math.Ceil(math.Max(1, float64(currentReplicas)) * value / targetValue)
+		} else {
+			expected = math.Ceil(value / targetValue)
+		}
+	case autoscalingv1alpha1.APA:
 		expected = math.Ceil(float64(currentReplicas) * value / targetValue)
+	default:
+		expected = math.Ceil(value / targetValue)
 	}
 	if expected > math.MaxInt32 {
 		return math.MaxInt32
