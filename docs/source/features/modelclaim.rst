@@ -681,7 +681,7 @@ The fields mean:
    How long an engine must have served nothing before the controller may put
    it to sleep to make room for a model that wakes. It defaults to 30 seconds,
    or to ``sleepAfterSeconds`` when that is shorter. When set, it must be
-   positive and shorter than ``sleepAfterSeconds``.
+   positive and no longer than ``sleepAfterSeconds``.
 
 Turn ``noWakeReserveWhileAsleep`` on only once both the controller and the
 gateway are upgraded. An older gateway wakes an engine through its runtime,

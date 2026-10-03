@@ -188,10 +188,11 @@ func validateLifecycle(lifecycle *poolLifecyclePolicy) error {
 	if *makeRoomAfter <= 0 {
 		return errors.New("lifecycle.sleepToMakeRoomAfterSeconds must be positive")
 	}
-	// An engine idle that long would already sleep, so none could ever be
-	// put to sleep to make room.
-	if lifecycle.SleepAfterSeconds > 0 && *makeRoomAfter >= lifecycle.SleepAfterSeconds {
-		return errors.New("lifecycle.sleepToMakeRoomAfterSeconds must be less than lifecycle.sleepAfterSeconds")
+	// An engine idle longer than sleepAfterSeconds already sleeps, so none
+	// could ever be put to sleep to make room. The default is never longer
+	// either.
+	if lifecycle.SleepAfterSeconds > 0 && *makeRoomAfter > lifecycle.SleepAfterSeconds {
+		return errors.New("lifecycle.sleepToMakeRoomAfterSeconds must not be more than lifecycle.sleepAfterSeconds")
 	}
 	return nil
 }

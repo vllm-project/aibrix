@@ -76,7 +76,7 @@ func TestParsePoolPolicyRejectsALifecycleThatCannotWork(t *testing.T) {
 		`{"lifecycle":{"noWakeReserveWhileAsleep":false}}`:                                  "sleepAfterSeconds must be positive",
 		`{"lifecycle":{"noWakeReserveWhileAsleep":true,"sleepAfterSeconds":-1}}`:            "sleepAfterSeconds must be positive",
 		`{"lifecycle":{"noWakeReserveWhileAsleep":true,"sleepToMakeRoomAfterSeconds":0}}`:   "sleepToMakeRoomAfterSeconds must be positive",
-		`{"lifecycle":{"sleepAfterSeconds":60,"sleepToMakeRoomAfterSeconds":60}}`:           "must be less than lifecycle.sleepAfterSeconds",
+		`{"lifecycle":{"sleepAfterSeconds":60,"sleepToMakeRoomAfterSeconds":61}}`:           "must not be more than lifecycle.sleepAfterSeconds",
 		`{"lifecycle":{"noWakeReserveWhileAsleep":true,"sleepToMakeRoomAfterSeconds":-30}}`: "sleepToMakeRoomAfterSeconds must be positive",
 	} {
 		t.Run(raw, func(t *testing.T) {
@@ -96,6 +96,8 @@ func TestSleepToMakeRoomAfterDefaultsToNoMoreThanTheSleepWindow(t *testing.T) {
 		// A policy written before this field existed stays valid.
 		`{"lifecycle":{"sleepAfterSeconds":20}}`:                                   20 * time.Second,
 		`{"lifecycle":{"sleepAfterSeconds":300,"sleepToMakeRoomAfterSeconds":45}}`: 45 * time.Second,
+		// The same rule as the default: no longer than the sleep window.
+		`{"lifecycle":{"sleepAfterSeconds":60,"sleepToMakeRoomAfterSeconds":60}}`: 60 * time.Second,
 	} {
 		policy, err := parsePoolPolicy(raw)
 
