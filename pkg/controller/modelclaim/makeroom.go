@@ -137,13 +137,12 @@ func (c *cardReservations) pruneLocked(now time.Time) {
 }
 
 // sleepingFootprints remembers what each claim's engine held the last time it
-// was seen asleep, and the most any engine in a namespace was seen to hold. The
-// room a sleep would give back can then be told before the sleep. It is
-// controller-local, and a claim's reading goes when the claim goes.
+// was seen asleep. The room that putting it to sleep again gives back can then
+// be told before the sleep. It is controller-local, and a claim's reading goes
+// when the claim goes.
 type sleepingFootprints struct {
 	mu      sync.Mutex
 	byClaim map[types.NamespacedName]claimFootprint
-	largest map[string]int64
 }
 
 // claimFootprint is what one claim's engine held asleep. The UID tells the
@@ -154,7 +153,7 @@ type claimFootprint struct {
 }
 
 func newSleepingFootprints() *sleepingFootprints {
-	return &sleepingFootprints{byClaim: map[types.NamespacedName]claimFootprint{}, largest: map[string]int64{}}
+	return &sleepingFootprints{byClaim: map[types.NamespacedName]claimFootprint{}}
 }
 
 func (r *ModelClaimReconciler) footprints() *sleepingFootprints {
@@ -179,34 +178,58 @@ func (s *sleepingFootprints) note(claim *modelv1alpha1.ModelClaim, bytes int64) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.byClaim[client.ObjectKeyFromObject(claim)] = claimFootprint{uid: claim.UID, bytes: bytes}
-	s.largest[claim.Namespace] = max(s.largest[claim.Namespace], bytes)
 }
 
-// estimate is what a claim's engine is expected to hold asleep: what it held
-// the last time it slept, or else the most any engine in its namespace was
-// seen to hold, or else nothing. Nothing is the hope that a sleep gives all of
-// it back. The next pass sees what it really holds.
-func (s *sleepingFootprints) estimate(claim *modelv1alpha1.ModelClaim) int64 {
+// seenAsleep is what a claim's engine held the last time it was seen asleep.
+// Another engine's figure is no stand-in for it. Models differ, and a figure
+// too large would rule out a pod where room could be made, while one too small
+// would pick a pod where it cannot.
+func (s *sleepingFootprints) seenAsleep(claim *modelv1alpha1.ModelClaim) (int64, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if seen, found := s.byClaim[client.ObjectKeyFromObject(claim)]; found && seen.uid == claim.UID {
-		return seen.bytes
+	seen, found := s.byClaim[client.ObjectKeyFromObject(claim)]
+	if !found || seen.uid != claim.UID {
+		return 0, false
 	}
-	return s.largest[claim.Namespace]
+	return seen.bytes, true
 }
 
-// forget forgets what the engine of a claim that is gone held asleep. What it
-// held still counts towards the most seen in its namespace.
+// forget forgets what the engine of a claim that is gone held asleep.
 func (s *sleepingFootprints) forget(claim types.NamespacedName) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.byClaim, claim)
 }
 
-// roomPlan is the engines to put to sleep on a pod for a claim to fit there.
+// roomPlan is how room would be made for a claim on a pod: the engines to put
+// to sleep there, the ones idle longest. A known plan is one in which each of
+// those engines has been seen asleep before, so that the room its sleep gives
+// back is known, and together they make enough room. Otherwise the first engine
+// whose figure is not known ends the plan. It is put to sleep after the ones
+// before it, and the next pass decides again from what it then holds.
 type roomPlan struct {
 	pod    *corev1.Pod
 	sleeps []idleEngine
+	known  bool
+	// room is what the pod's card offers now, without anything given back.
+	room int64
+}
+
+// betterPlan reports whether a plan makes room more surely than another. A
+// known plan beats one that is not. Of two known plans, the one with the
+// fewest sleeps wins. Of two that are not, the one whose card offers the most
+// room now wins, as the nearest to fitting. A tie goes to the plan whose first
+// engine has been idle longest.
+func betterPlan(plan, than roomPlan) bool {
+	switch {
+	case plan.known != than.known:
+		return plan.known
+	case plan.known && len(plan.sleeps) != len(than.sleeps):
+		return len(plan.sleeps) < len(than.sleeps)
+	case !plan.known && plan.room != than.room:
+		return plan.room > than.room
+	}
+	return plan.sleeps[0].idleSince.Before(than.sleeps[0].idleSince)
 }
 
 // makeRoomToPlace makes room for a claim that no pod has room for, and returns
@@ -215,7 +238,9 @@ type roomPlan struct {
 //
 // Room is made for one claim in a pool at a time: the one that has waited
 // longest. It is made in a pool that keeps no wake reserve, on the pod where
-// the fewest engines would have to sleep, the ones idle longest. That card is
+// the fewest engines would have to sleep, the ones idle longest, as told by
+// what each held the last time it slept. Where that is not known, it is made
+// first on the pod nearest to fitting. That card is
 // held for the claim, so that no other claim takes the room, and no division
 // lends it out. One engine goes to sleep a pass. Each pass first tries to
 // place the claim, and the claim is placed once a pass finds the room. A card
@@ -245,8 +270,7 @@ func (r *ModelClaimReconciler) makeRoomToPlace(
 		if !found {
 			continue
 		}
-		if best == nil || len(plan.sleeps) < len(best.sleeps) ||
-			(len(plan.sleeps) == len(best.sleeps) && plan.sleeps[0].idleSince.Before(best.sleeps[0].idleSince)) {
+		if best == nil || betterPlan(plan, *best) {
 			best = &plan
 		}
 	}
@@ -275,8 +299,9 @@ func (r *ModelClaimReconciler) makeRoomToPlace(
 
 // planRoom finds the fewest engines on a pod that would have to sleep for a
 // claim to fit there, the ones idle longest. Each would give back what it is
-// charged, less what it is expected to hold asleep. The claim has to pass both
-// checks that placement makes: the floors, and what the engines hold now.
+// charged, less what it held the last time it slept. The claim has to pass
+// both checks that placement makes: the floors, and what the engines hold now.
+// An engine that has not been seen asleep ends the plan, as roomPlan says.
 func (r *ModelClaimReconciler) planRoom(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
@@ -300,17 +325,24 @@ func (r *ModelClaimReconciler) planRoom(
 		charged[engine.claimName] = engine
 	}
 	floors, holding := ledger.maximumRoomBytes(), ledger.heldRoomBytes()
-	idle := r.idleEngines(ctx, pm, pod, lifecycle.sleepToMakeRoomAfter(), readings)
-	for k, sleeper := range idle {
+	plan := roomPlan{pod: pod, room: holding}
+	for _, sleeper := range r.idleEngines(ctx, pm, pod, lifecycle.sleepToMakeRoomAfter(), readings) {
 		engine, found := charged[sleeper.claim.Name]
 		if !found {
-			return roomPlan{}, false
+			// An engine the account does not know of is left out. The ones
+			// beside it are still counted.
+			continue
 		}
-		asleep := r.footprints().estimate(sleeper.claim)
+		plan.sleeps = append(plan.sleeps, sleeper)
+		asleep, known := r.footprints().seenAsleep(sleeper.claim)
+		if !known {
+			return plan, true
+		}
 		floors += engine.minimumReserveBytes() - asleep
 		holding += engine.heldBytes() - asleep
 		if floors >= seat && holding >= seat {
-			return roomPlan{pod: pod, sleeps: idle[:k+1]}, true
+			plan.known = true
+			return plan, true
 		}
 	}
 	return roomPlan{}, false

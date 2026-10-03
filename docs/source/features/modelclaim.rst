@@ -508,17 +508,20 @@ be placed or as KV. A request to wake the engine charges its wake reserve again
 at once. An engine whose memory asleep could not be measured keeps its reserve,
 and its claim raises a ``SleepingFootprintUnknown`` Warning.
 
-In such a pool, a new claim that no Pod has room for can have room made for
-it. Room is made for one claim in a pool at a time, the one that has waited
+In such a pool, a new claim that no Pod has room for can have room made for it.
+Room is made for one claim in a pool at a time, the one that has waited
 longest. The controller picks the Pod where the fewest engines would have to
-sleep, the ones idle longest. It puts them to sleep one at a time, once each
-has been idle for ``sleepToMakeRoomAfterSeconds``, and their claims raise
-``SleptToMakeRoom`` Events. Meanwhile, the claim's ``Scheduled`` condition says
-``MakingRoom``, and the claim raises a ``MakingRoom`` Event. The Pod is held for
-the claim for up to two minutes, or until the claim is deleted. No other claim
-is placed in that room, and the card does not lend it out as KV. The claim is
-placed once the room is there. A Pod with nothing left to put to sleep is let
-go, and the claim waits for room as before.
+sleep, the ones idle longest, as told by what each engine held the last time it
+slept. Where that is not known for an engine, it picks the Pod nearest to
+fitting the claim, and decides again once that engine has slept. It puts the
+engines to sleep one at a time, once each has been idle for
+``sleepToMakeRoomAfterSeconds``, and their claims raise ``SleptToMakeRoom``
+Events. Meanwhile, the claim's ``Scheduled`` condition says ``MakingRoom``, and
+the claim raises a ``MakingRoom`` Event. The Pod is held for the claim for up
+to two minutes, or until the claim is deleted. No other claim is placed in that
+room, and the card does not lend it out as KV. The claim is placed once the
+room is there. A Pod with nothing left to put to sleep is let go, and the claim
+waits for room as before.
 
 A failed instance does free its seat. The runtime stops an engine once its
 restarts run out, and reports it as not alive. The account then charges the

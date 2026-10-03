@@ -255,6 +255,10 @@ func TestReconcileMakesRoomWhereTheFewestEnginesHaveToSleep(t *testing.T) {
 		serving{"e", "warm-1", 280, 50, at0758},
 		serving{"a", "warm-2", 300, 100, at0759}, serving{"b", "warm-2", 300, 100, at0759})
 	newClaim(t, r, "x", at0759)
+	// Each engine was seen asleep before, holding 60 bytes.
+	for _, name := range []string{"a", "b", "c", "d", "e"} {
+		r.footprints().note(getModel(t, r, name), 60)
+	}
 
 	reconcileOnce(t, r, "x")
 
@@ -267,6 +271,42 @@ func TestReconcileMakesRoomWhereTheFewestEnginesHaveToSleep(t *testing.T) {
 
 // A claim that is gone leaves nothing behind in memory: not the card held for
 // it, nor what its engine held asleep. That holds whether this controller saw
+// No engine on either pod has been seen asleep, so no plan is known. Room is
+// made first where the card is nearest to fitting the claim, though the
+// engines on the other pod idled longer.
+func TestReconcileMakesRoomFirstNearestToFittingWhenNoFigureIsKnown(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 2,
+		// warm-1 has 300 bytes left. warm-2 has 200, and its engines idled
+		// longer. One sleep on either would do, if a sleep gave everything back.
+		serving{"p", "warm-1", 400, 100, at0759}, serving{"q", "warm-1", 150, 50, at0759},
+		serving{"a", "warm-2", 300, 100, at0758}, serving{"b", "warm-2", 300, 100, at0758})
+	newClaim(t, r, "x", at0759)
+
+	reconcileOnce(t, r, "x")
+
+	require.Len(t, runtime.sleepCalls, 1)
+	assert.Equal(t, "p", runtime.sleepCalls[0].ModelName)
+	card, held := r.reservations().heldFor(testNamespace, "x", r.now())
+	require.True(t, held)
+	assert.Equal(t, "warm-1", card.Name)
+}
+
+// Another model was seen holding more asleep than this pod's idle engine is
+// charged. That says nothing of this engine, so room is still made here.
+func TestReconcileMakesRoomThoughAnotherModelHeldMoreAsleep(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+	large := withFinalizer(claimOnPod("large", "", modelv1alpha1.ModelClaimActive, 900, 100))
+	large.UID = "large-uid"
+	r.footprints().note(large, 900)
+	newClaim(t, r, "x", at0759)
+
+	reconcileOnce(t, r, "x")
+
+	require.Len(t, runtime.sleepCalls, 1)
+	assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
+}
+
 // it go, or someone else removed its finalizer.
 func TestReconcileForgetsWhatItKeptForAClaimThatIsGone(t *testing.T) {
 	for name, finalizerRemovedElsewhere := range map[string]bool{
@@ -295,8 +335,8 @@ func TestReconcileForgetsWhatItKeptForAClaimThatIsGone(t *testing.T) {
 	}
 }
 
-// A claim's reading is its own. A later claim of the same name is told the most
-// its namespace's engines were seen to hold, until its own engine sleeps.
+// A claim's reading is its own. A later claim of the same name has none, until
+// its own engine sleeps.
 func TestSleepingFootprintsTellAClaimFromALaterOneOfTheSameName(t *testing.T) {
 	footprints := newSleepingFootprints()
 	first := sampleModelClaim()
@@ -305,14 +345,18 @@ func TestSleepingFootprintsTellAClaimFromALaterOneOfTheSameName(t *testing.T) {
 	other := sampleModelClaim()
 	other.Name, other.UID = "other", "other"
 	footprints.note(other, 500)
-	assert.Equal(t, int64(300), footprints.estimate(first))
 
+	seen, known := footprints.seenAsleep(first)
+	require.True(t, known)
+	assert.Equal(t, int64(300), seen)
 	later := first.DeepCopy()
 	later.UID = "later"
-	assert.Equal(t, int64(500), footprints.estimate(later))
+	_, known = footprints.seenAsleep(later)
+	assert.False(t, known, "another engine's figure is no stand-in")
 
 	footprints.forget(client.ObjectKeyFromObject(first))
-	assert.Equal(t, int64(500), footprints.estimate(first))
+	_, known = footprints.seenAsleep(first)
+	assert.False(t, known)
 	assert.Len(t, footprints.byClaim, 1)
 }
 
