@@ -347,6 +347,39 @@ func TestReconcileMakesRoomByTheClaimsAsTheAccountListsThem(t *testing.T) {
 	require.Len(t, runtime.sleepCalls, 1, "older no longer waits, so room is made for x")
 }
 
+// The cache and the account can disagree for a moment about which claim an
+// engine serves. An idle engine that the account does not know by name is
+// passed over, and the engine beside it is still planned to sleep.
+func TestPlanRoomPassesOverAnIdleEngineTheAccountDoesNotKnow(t *testing.T) {
+	r, _ := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+	newClaim(t, r, "x", at0759)
+	ctx := context.Background()
+	pod := podNamed(t, r, "warm-1")
+	pods := []corev1.Pod{*pod}
+	readings := newRuntimeReadings(r.Runtime)
+	claims, err := r.listClaimsForAccount(ctx, testNamespace)
+	require.NoError(t, err)
+	ledger := podLedgersFrom(claims, nil, pods, readings.ofPods(ctx, pods), r.podsWithoutWakeReserve(ctx, pods))[pod.Name]
+	require.True(t, ledger.judgeable)
+	engines := make([]engineOnPod, 0, len(ledger.engines))
+	for _, engine := range ledger.engines {
+		if engine.claimName == "a" {
+			// a, idle longest, is still charged, under a name the cache does
+			// not use.
+			engine.claimName = "a-as-the-account-saw-it"
+		}
+		engines = append(engines, engine)
+	}
+	ledger.engines = engines
+
+	plan, found := r.planRoom(ctx, getModel(t, r, "x"), pod, ledger, 400, readings)
+
+	require.True(t, found, "the pod is still planned on")
+	require.Len(t, plan.sleeps, 1)
+	assert.Equal(t, "b", plan.sleeps[0].claim.Name)
+}
+
 func TestReconcileMakesNoRoomForAClaimWhoseLastStartFailed(t *testing.T) {
 	r, runtime := servingPool(t, keepNoWakeReserve, 1,
 		serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
@@ -360,6 +393,8 @@ func TestReconcileMakesNoRoomForAClaimWhoseLastStartFailed(t *testing.T) {
 	assert.Empty(t, runtime.sleepCalls, "room does not help a claim whose start failed")
 }
 
+// A claim that is gone leaves nothing behind in memory: not the card held for
+// it, nor what its engine held asleep. That holds whether this controller saw
 // it go, or someone else removed its finalizer.
 func TestReconcileForgetsWhatItKeptForAClaimThatIsGone(t *testing.T) {
 	for name, finalizerRemovedElsewhere := range map[string]bool{
