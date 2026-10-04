@@ -739,6 +739,12 @@ func (r *ModelClaimReconciler) ensureActivated(
 			} else {
 				pm.Status.Instances = pm.Status.Instances[:slot]
 			}
+			// The shorter list is written at once. Until then, an account
+			// read from the API server would charge the card for a start
+			// that was never asked for.
+			if err := r.Status().Update(ctx, pm); err != nil {
+				return 0, fmt.Errorf("take back %s on %s: %w", servedModelName(pm), pod.Name, err)
+			}
 			refusals = append(refusals, podRefusal{
 				pod:       pod.Name,
 				roomBytes: ledgers[pod.Name].maximumRoomBytes(),

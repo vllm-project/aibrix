@@ -1467,6 +1467,29 @@ func TestReconcileTriesTheNextPodWhenARuntimeIsNotCalled(t *testing.T) {
 	}
 }
 
+func TestEnsureActivatedLeavesNoRecordOfAStartThatWasNotSent(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	r, runtime := newReconciler(t,
+		pm,
+		warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning),
+	)
+	runtime.silent = true
+	ctx := context.Background()
+	pm = getModel(t, r, pm.Name)
+	candidates, err := r.listCandidateWarmPods(ctx, pm)
+	require.NoError(t, err)
+
+	_, err = r.ensureActivated(ctx, pm, candidates, newRuntimeReadings(r.Runtime))
+	require.NoError(t, err)
+
+	// The record written before the start is taken back in the API server
+	// too, before the pass writes the claim's status at its end. An account
+	// read in between would otherwise charge warm-1 for an engine nobody
+	// asked for.
+	assert.Empty(t, pm.Status.Instances)
+	assert.Empty(t, getModel(t, r, pm.Name).Status.Instances)
+}
+
 func TestReconcileInvalidEngineConfigSetsFailed(t *testing.T) {
 	pm := withFinalizer(sampleModelClaim())
 	pm.Spec.EngineConfig.Args["--tensor-parallel-size"] = "invalid"
