@@ -19,6 +19,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -32,9 +33,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -327,6 +331,73 @@ func TestRuntimeModelWakeRequesterWritesAgainOnceTheControllerTookTheRequestBack
 			assert.Equal(t, "2026-10-01T08:00:05Z", got.Annotations[key])
 		})
 	}
+}
+
+// A request is written only over the version of the pod whose route the
+// gateway read. A pod that has changed since, as when the controller has taken
+// the route away, refuses it. Nothing is remembered of a refused request, so
+// the next request for the model reads the pod again.
+func TestRuntimeModelWakeRequesterWritesOnlyOverThePodVersionItRead(t *testing.T) {
+	client, port, host := noRuntime(t)
+	key := constants.ModelClaimWakeAnnotationPrefix + "qwen-claim"
+	read := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "warm-1", Namespace: "default", UID: types.UID("pod-uid"), ResourceVersion: "10",
+		},
+		Status: v1.PodStatus{PodIP: host},
+	}
+	stored := read.DeepCopy()
+	stored.ResourceVersion = "11"
+	pods := fake.NewSimpleClientset(stored)
+	// As the API server does, a patch that names a version other than the
+	// pod's own is refused.
+	var named []string
+	pods.PrependReactor("patch", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		var body struct {
+			Metadata struct {
+				ResourceVersion string `json:"resourceVersion"`
+			} `json:"metadata"`
+		}
+		if err := json.Unmarshal(action.(k8stesting.PatchAction).GetPatch(), &body); err != nil {
+			return true, nil, err
+		}
+		named = append(named, body.Metadata.ResourceVersion)
+		if version := body.Metadata.ResourceVersion; version != "" && version != "11" {
+			return true, nil, apierrors.NewConflict(v1.Resource("pods"), "warm-1", errors.New("the object has been modified"))
+		}
+		return false, nil, nil
+	})
+	requester := newRuntimeModelWakeRequester(client, port, pods)
+	requester.now = func() time.Time { return time.Date(2026, time.October, 1, 8, 0, 0, 0, time.UTC) }
+	binding := utils.ModelClaimBinding{
+		Model: "qwen", State: constants.ModelClaimRoutingStateSleeping, Claim: "qwen-claim", WakeByRequest: true,
+	}
+	written := func() {
+		t.Helper()
+		require.Eventually(t, func() bool {
+			_, running := requester.inFlight.Load("wake-request/pod-uid/default/warm-1/qwen-claim")
+			return !running
+		}, time.Second, 10*time.Millisecond)
+	}
+	annotation := func() (string, bool) {
+		t.Helper()
+		got, err := pods.CoreV1().Pods("default").Get(context.Background(), "warm-1", metav1.GetOptions{})
+		require.NoError(t, err)
+		value, found := got.Annotations[key]
+		return value, found
+	}
+
+	require.True(t, requester.RequestWake(read, binding))
+	written()
+	_, found := annotation()
+	assert.False(t, found, "a pod that has changed refuses the request")
+
+	require.True(t, requester.RequestWake(stored.DeepCopy(), binding), "nothing was remembered of the refused request")
+	written()
+	value, found := annotation()
+	assert.True(t, found)
+	assert.Equal(t, "2026-10-01T08:00:00Z", value)
+	assert.Equal(t, []string{"10", "11"}, named)
 }
 
 func TestRuntimeModelWakeRequesterDoesNotAskAgainWhileThePodCarriesTheRequest(t *testing.T) {

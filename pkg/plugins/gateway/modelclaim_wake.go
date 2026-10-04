@@ -29,6 +29,7 @@ import (
 
 	"github.com/google/uuid"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -147,9 +148,15 @@ func (r *runtimeModelWakeRequester) requestWakeOnPod(pod *v1.Pod, claim string) 
 	}
 	go func() {
 		defer r.inFlight.Delete(askedKey)
-		patch, err := json.Marshal(map[string]any{
-			"metadata": map[string]any{"annotations": map[string]string{key: now.UTC().Format(time.RFC3339)}},
-		})
+		// The request is written only over the version of the pod whose route
+		// said that the claim sleeps there. The API server refuses it once the
+		// pod has changed, as when the controller has taken the route away, so
+		// no request is left behind for a claim that has moved or gone.
+		metadata := map[string]any{"annotations": map[string]string{key: now.UTC().Format(time.RFC3339)}}
+		if over != "" {
+			metadata["resourceVersion"] = over
+		}
+		patch, err := json.Marshal(map[string]any{"metadata": metadata})
 		if err != nil {
 			klog.ErrorS(err, "could not encode a ModelClaim wake request", "pod", klog.KObj(pod), "claim", claim)
 			return
@@ -158,6 +165,13 @@ func (r *runtimeModelWakeRequester) requestWakeOnPod(pod *v1.Pod, claim string) 
 		defer cancel()
 		if _, err := r.pods.CoreV1().Pods(pod.Namespace).Patch(ctx, pod.Name, k8stypes.MergePatchType, patch,
 			metav1.PatchOptions{}); err != nil {
+			if apierrors.IsConflict(err) {
+				// Nothing is remembered, so the next request for the model
+				// reads the pod again.
+				klog.V(4).InfoS("the pod changed since its route was read; not asking for a wake",
+					"pod", klog.KObj(pod), "claim", claim)
+				return
+			}
 			klog.ErrorS(err, "could not ask the controller to wake a ModelClaim", "pod", klog.KObj(pod), "claim", claim)
 			return
 		}
