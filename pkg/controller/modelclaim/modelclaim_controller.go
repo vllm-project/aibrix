@@ -684,7 +684,7 @@ func (r *ModelClaimReconciler) ensureActivated(
 			// waits for room, and nobody would learn it can never be placed.
 			if largest, never := tooLargeForEveryCard(candidates, ledgers, perGPU.minimumReserveBytes()); never &&
 				len(admissible) == 0 {
-				reason = "TooLargeForAnyCard"
+				reason = constants.ModelClaimReasonTooLargeForAnyCard
 				message = fmt.Sprintf("no candidate pod can hold this model, which needs %s on a card; "+
 					"the best of them offers %s on a card", gibibytes(perGPU.minimumReserveBytes()), gibibytes(largest))
 			}
@@ -719,7 +719,7 @@ func (r *ModelClaimReconciler) ensureActivated(
 			if listErr == nil {
 				refusedOn = roomSignatureOf(candidates, claims)
 			}
-			if reason == "TooLargeForAnyCard" {
+			if reason == constants.ModelClaimReasonTooLargeForAnyCard {
 				return backoff.refusedAsTooLarge(claim, pm.Generation, refusedOn), nil
 			}
 			// The API server shows less on a card than the cache did when this

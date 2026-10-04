@@ -91,6 +91,11 @@ const (
 	ModelClaimRoutingStateSleeping   = "sleeping"
 	ModelClaimRoutingStateFailed     = "failed"
 
+	// ModelClaimReasonTooLargeForAnyCard is the reason of a claim's Scheduled
+	// condition when no card in its pool could hold it, even empty. Waiting
+	// does not help, so the gateway does not ask its clients to retry.
+	ModelClaimReasonTooLargeForAnyCard = "TooLargeForAnyCard"
+
 	// ModelClaim route reasons say more than a routing state about why a model
 	// is not served. The controller writes them on the route and on the claim's
 	// Ready condition, and the gateway tells its clients how long to wait by

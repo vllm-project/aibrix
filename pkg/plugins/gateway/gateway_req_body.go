@@ -408,9 +408,9 @@ func modelClaimRetryResponse(model, state, reason string, retry bool) *extProcPb
 // refusal again, including a failed activation, and it moves a claim whose
 // engine failed for good to another pod once one can take it.
 var modelClaimReasonsNotRetried = map[string]struct{}{
-	"InvalidEngineConfig": {},
-	"InvalidPerGPU":       {},
-	"TooLargeForAnyCard":  {},
+	constants.ModelClaimReasonTooLargeForAnyCard: {},
+	"InvalidEngineConfig":                        {},
+	"InvalidPerGPU":                              {},
 }
 
 // modelClaimRetryAfterByReason is how long a client is asked to wait, by the
