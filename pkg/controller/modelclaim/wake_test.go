@@ -105,6 +105,40 @@ func TestReconcileWakesASleepingEngineWhenAskedAndTakesTheRequestBackOnceItServe
 	assert.Len(t, runtime.wakeCalls, 1)
 }
 
+// An engine that was woken and never finishes booting keeps its request for
+// the request's lifetime, and no longer. The request is then taken back
+// quietly, since the wake was carried out.
+func TestReconcileTakesBackTheRequestOfAnEngineThatNeverFinishesBooting(t *testing.T) {
+	r, runtime, pm, port := sleepingClaim(t)
+	served := servedModelName(pm)
+	key := constants.ModelClaimWakeAnnotationPrefix + pm.Name
+	now := time.Date(2026, time.October, 1, 8, 0, 5, 0, time.UTC)
+	r.Now = func() time.Time { return now }
+	askWake(t, r, "warm-1", pm.Name, "2026-10-01T08:00:00Z")
+	reconcileOnce(t, r, pm.Name)
+	require.Len(t, runtime.wakeCalls, 1)
+	drainEvents(t, r)
+
+	// The engine is up, and never becomes ready.
+	runtime.models[served] = ModelInfo{ModelName: served, Port: port, Phase: "active"}
+	runtime.notReady = true
+	for _, at := range []time.Duration{10 * time.Second, 4 * time.Minute} {
+		now = time.Date(2026, time.October, 1, 8, 0, 5, 0, time.UTC).Add(at)
+		reconcileOnce(t, r, pm.Name)
+		require.Equal(t, modelv1alpha1.ModelClaimActivating, getModel(t, r, pm.Name).Status.Instances[0].Phase)
+		assert.Contains(t, podNamed(t, r, "warm-1").Annotations, key, "the request stays while the engine boots")
+	}
+
+	now = time.Date(2026, time.October, 1, 8, 5, 10, 0, time.UTC)
+	reconcileOnce(t, r, pm.Name)
+
+	assert.NotContains(t, podNamed(t, r, "warm-1").Annotations, key, "the request does not outlive its lifetime")
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, getModel(t, r, pm.Name).Status.Instances[0].Phase)
+	assert.NotContains(t, strings.Join(drainEvents(t, r), "\n"), "WakeRequestExpired",
+		"the wake was carried out, so nothing expired")
+	assert.Len(t, runtime.wakeCalls, 1)
+}
+
 func TestReconcileMovesAnEngineTheRuntimeCouldNotWake(t *testing.T) {
 	pm := claimWithCost(300, 100)
 	pm.UID = types.UID("claim-uid")

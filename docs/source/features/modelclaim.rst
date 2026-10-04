@@ -700,8 +700,9 @@ The controller wakes the engine through the runtime, once its card is promised
 no more than it has. A sleeping engine keeps its seat, so that holds unless a
 declaration grew while the engine slept. A claim whose card cannot be accounted
 for is woken all the same, since its seat was kept. The request stays on the
-Pod while the engine boots, and the controller removes it once the engine
-serves. ``Waking`` and ``Woken`` Events mark a wake that went through.
+Pod while the engine boots. The controller removes it once the engine serves,
+or after five minutes if the engine is still booting then. ``Waking`` and
+``Woken`` Events mark a wake that went through.
 
 An engine that cannot wake where it is moves, when another Pod can take its
 claim. That is an engine whose card is promised more than it has, and one whose

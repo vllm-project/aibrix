@@ -135,7 +135,13 @@ func (r *ModelClaimReconciler) wakeRequested(
 		case modelv1alpha1.ModelClaimSleeping:
 		case modelv1alpha1.ModelClaimActivating:
 			// Booting after a wake, or after a restart. The request is done
-			// once the engine serves.
+			// once the engine serves, and until then it keeps the gateway from
+			// asking again. One that outlives its lifetime is taken back
+			// quietly, since the wake was carried out, so an engine that never
+			// finishes booting leaves no request behind.
+			if r.wakeRequestExpired(pod, key, requestedAt) {
+				r.takeBackWakeRequest(ctx, pod, key)
+			}
 			continue
 		default:
 			r.takeBackWakeRequest(ctx, pod, key)
