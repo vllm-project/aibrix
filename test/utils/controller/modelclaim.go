@@ -138,7 +138,6 @@ func (f *ModelClaimFixture) CreateWarmPod(namespace, name, pool string) *corev1.
 	return pod
 }
 
-// GetClaim retrieves the latest claim using the supplied polling assertions.
 // RequestWake writes a wake request for a claim on a pod, as the gateway does
 // for a request that finds the claim's engine asleep.
 func (f *ModelClaimFixture) RequestWake(namespace, podName, claimName string) {
@@ -153,6 +152,7 @@ func (f *ModelClaimFixture) RequestWake(namespace, podName, claimName string) {
 	gomega.Expect(f.client.Patch(f.ctx, pod, patch)).To(gomega.Succeed())
 }
 
+// GetClaim retrieves the latest claim using the supplied polling assertions.
 func (f *ModelClaimFixture) GetClaim(g gomega.Gomega, claim *modelapi.ModelClaim) *modelapi.ModelClaim {
 	ginkgo.GinkgoHelper()
 	latest := &modelapi.ModelClaim{}
