@@ -309,7 +309,8 @@ type decodeAbortLog struct {
 	decodePod  string
 	decodeAddr string
 	// class is the low-cardinality cause of this abort: the prefill failure
-	// class ("transport", "http_status", ...). It is what the
+	// class ("transport", "http_status", ...), or an AbortTriggerWatchdog*
+	// value for an abort sent by the decode watchdog. It is what the
 	// prefill_failure_class metric label carries.
 	class string
 	// statusCode is the prefill pod's HTTP status for an http_status failure,

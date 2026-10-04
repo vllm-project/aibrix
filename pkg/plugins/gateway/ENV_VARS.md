@@ -268,6 +268,31 @@ Metrics: `gateway_pd_decode_abort_total{prefill_failure_class, result}`, where
 `result` is one of `ok`, `error`, `skipped_streaming`, `skipped_disabled`,
 `skipped_no_rid`, `skipped_no_target`.
 
+### PD Decode Watchdog (`gateway_decode_watchdog.go`)
+
+In SGLang disaggregation the prefill leg only returns once the decode pod has
+taken the KV transfer, so a successful prefill means the decode pod owes the
+client a response. If the decode pod then stops answering (its scheduler died or
+wedged), nothing else notices and the client hangs until Envoy's route timeout.
+The watchdog bounds that wait: once the prefill leg succeeded and while nothing
+has come back from the decode pod, it answers the client with a `504` carrying
+the `x-error-pd-decode` header, closes the ext_proc stream with
+`DeadlineExceeded`, and posts one best-effort `/abort_request` for the request's
+`rid` to the decode pod. It is armed only for requests that carry a
+gateway-owned `rid`, i.e. SGLang PD requests.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT` | int (seconds) | `60` | **Streaming requests only** (`"stream": true`). Time to first token: how long the decode pod is given to send its first message, measured from the moment the prefill leg returned successfully. On expiry the client gets a `504` (`did not start responding within …`). `0` disables the watchdog for streaming requests. |
+| `AIBRIX_DECODE_RESPONSE_TIMEOUT` | int (seconds) | `0` (disabled) | **Non-streaming requests only**. Same arming point, different meaning: the decode pod sends the response headers of a non-streaming request only once generation is finished, so this budget bounds the *whole* decode, not the time to first token. It is off by default because the safe value depends on the caller's `max_tokens` and the pod's throughput; operators who know both can set one. On expiry the client gets a `504` (`did not finish responding within …`). |
+
+The abort uses `AIBRIX_DECODE_ABORT_TIMEOUT` as its timeout and is counted in
+`gateway_pd_decode_abort_total` with `prefill_failure_class="watchdog_first_response"`.
+
+Metrics: `gateway_pd_decode_watchdog_total{phase}`, where `phase` is
+`first_response`. A request failed by the watchdog is also counted in
+`gateway_request_model_fail_total` with `status="pd_decode_watchdog"`.
+
 ### Decode Load Balancer Scorer (`algorithms/pd/decode_scorer.go`)
 
 Scoring formula: `score = (wRun × normRunning + wThroughput × normInvThroughput) / normFreeGPU`
@@ -306,6 +331,8 @@ description and examples live in the Config Profiles section of the gateway plug
 | `AIBRIX_BUCKET_SERVE_MODE` | `routingConfig.bucketServeMode` | `throughput` or `rps`; a name the planner does not know keeps the environment default. |
 | `AIBRIX_DECODE_ABORT_TIMEOUT` | `routingConfig.pd.decodeAbortTimeout` | `0` sends the abort without waiting. |
 | `AIBRIX_DECODE_ABORT_RETRY_DELAY` | `routingConfig.pd.decodeAbortRetryDelay` | `0` repeats the abort immediately. |
+| `AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT` | `routingConfig.pd.decodeFirstResponseTimeout` | Seconds; `0` disables the decode watchdog for the profile's streaming requests. |
+| `AIBRIX_DECODE_RESPONSE_TIMEOUT` | `routingConfig.pd.decodeResponseTimeout` | Seconds; `0` disables the decode watchdog for the profile's non-streaming requests. |
 | `AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD` | `routingConfig.pd.prefillLoadImbalanceMinSpread` | |
 | `AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD` | `routingConfig.pd.decodeLoadImbalanceMinSpread` | |
 | `AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD` | `routingConfig.pd.decodeThroughputImbalanceMinSpread` | |
