@@ -1735,6 +1735,17 @@ func readyEngine(kvCapacityBytes int64) RuntimeSnapshotModel {
 	}
 }
 
+// engineBootingFor is what a runtime reading taken at observedAt reports for
+// an engine that has been alive but not yet ready for the given while.
+func engineBootingFor(observedAt time.Time, booting time.Duration) RuntimeSnapshotModel {
+	started := observedAt.Add(-booting)
+	engine := readyEngine(kvLimitUnknown)
+	engine.Phase = "booting"
+	engine.Ready = false
+	engine.LastTransition = &started
+	return engine
+}
+
 func TestArrangeCardGivesARetryItsOwnOperation(t *testing.T) {
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
 	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30)
@@ -1942,8 +1953,8 @@ func TestArrangeCardGivesATakeBackInALaterRoundItsOwnOperation(t *testing.T) {
 	assert.NotEqual(t, takenBack[0], takenBack[1])
 }
 
-// A KVLimitSet Event says that a limit is in force. A grow that was written
-// and not confirmed is not known to be.
+// The KVLimitSet Event of a division says that a limit is in force. A grow
+// that was written and not confirmed is not known to be.
 func TestArrangeCardDoesNotAnnounceAGrowThatIsNotConfirmed(t *testing.T) {
 	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
 	writes := 0
@@ -2558,6 +2569,8 @@ func TestReconcileHoldsAnEngineToItsLimitOnAPodWithoutAGPURequest(t *testing.T) 
 	snapshot.Models = []RuntimeSnapshotModel{readyEngine(900)}
 	r, runtime := newReconciler(t, pm, pod)
 	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	// The write does not take, so the engine still reads as held to more.
+	runtime.deafToKVLimits = true
 
 	reconcileOnce(t, r, pm.Name)
 
@@ -2672,6 +2685,8 @@ func TestReconcileHoldsAnEngineToItsLimitWhenItsCardCouldNotBeReadThisTime(t *te
 	snapshot.Models = []RuntimeSnapshotModel{readyEngine(900)}
 	r, runtime := newReconciler(t, pm, pod)
 	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	// The write does not take, so the engine still reads as held to more.
+	runtime.deafToKVLimits = true
 
 	reconcileOnce(t, r, pm.Name)
 
@@ -2836,23 +2851,130 @@ func TestReconcileHoldsAnEngineToItsLimitBeforeRouting(t *testing.T) {
 	// left over once its footprint is paid for.
 	assert.Equal(t, int64(300), got.Status.Instances[0].KVLimitBytes)
 
-	// The engine comes up under its allocator's own limit.
+	// The engine comes up under its allocator's own limit. The limit is
+	// written and read back in force before the engine is routed, all in the
+	// same pass.
 	snapshot.Models = []RuntimeSnapshotModel{readyEngine(5000)}
 	reconcileOnce(t, r, pm.Name)
 
 	require.Len(t, runtime.kvLimitCalls, 1)
 	assert.Equal(t, int64(300), runtime.kvLimitCalls[0].LimitBytes)
 	got = getModel(t, r, pm.Name)
-	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
-	assert.Equal(t, int32(0), got.Status.ReadyReplicas)
-
-	// The write lands, and the engine is routable on the next pass.
-	snapshot.Models[0].KVCapacityBytes = 300
-	reconcileOnce(t, r, pm.Name)
-
-	got = getModel(t, r, pm.Name)
 	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Instances[0].Phase)
 	assert.Equal(t, int32(1), got.Status.ReadyReplicas)
+}
+
+func TestReconcileKeepsAnEngineOffTheRouteWhileItsLimitDoesNotReadBack(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod:          "warm-1",
+		Phase:        modelv1alpha1.ModelClaimActivating,
+		KVLimitBytes: 300,
+	}}
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(5000)}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	runtime.deafToKVLimits = true
+
+	reconcileOnce(t, r, pm.Name)
+
+	// The write was accepted, but the engine still reads as held to more.
+	require.Len(t, runtime.kvLimitCalls, 1)
+	got := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
+	assert.Equal(t, int32(0), got.Status.ReadyReplicas)
+}
+
+func TestReconcileLooksAgainSoonWhileAnEngineComesUp(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod:          "warm-1",
+		Phase:        modelv1alpha1.ModelClaimActivating,
+		KVLimitBytes: 300,
+	}}
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	// The runtime's clock reads years before the test runs, so the boot is
+	// timed on that clock and not on the controller's.
+	snapshot.ObservedAt = time.Unix(1_700_000_000, 0)
+	snapshot.Models = []RuntimeSnapshotModel{engineBootingFor(snapshot.ObservedAt, time.Minute)}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	assert.Equal(t, ActivatingRequeueDuration, reconcileFor(t, r, pm.Name))
+
+	// Ready and held to its limit, the engine is routed, and the claim goes
+	// back to the usual pace.
+	snapshot.Models = []RuntimeSnapshotModel{readyEngine(300)}
+	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name))
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, pm.Name).Status.Instances[0].Phase)
+}
+
+func TestReconcileKeepsTheUsualPaceWhileNoEngineIsBooting(t *testing.T) {
+	observedAt := time.Unix(1_700_000_000, 0)
+	restarting := engineBootingFor(observedAt, time.Minute)
+	restarting.Phase = "restarting"
+	restarting.Alive = false
+	undated := engineBootingFor(observedAt, time.Minute)
+	undated.LastTransition = nil
+	// A runtime reports a sleeping engine as alive and not ready too.
+	asleep := engineBootingFor(observedAt, time.Minute)
+	asleep.Phase = "sleeping"
+	readyAt := observedAt.Add(-time.Minute)
+	unheld := readyEngine(5000)
+	unheld.LastTransition = &readyAt
+
+	cases := map[string]struct {
+		engine RuntimeSnapshotModel
+		// phase is where the instance stands before and after the pass. It is
+		// Activating unless set.
+		phase modelv1alpha1.ModelClaimPhase
+		// deaf keeps a written limit from reading back.
+		deaf bool
+		// silent is a runtime that gives no reading at all.
+		silent bool
+		// undatedReading is a reading the runtime gives no time for.
+		undatedReading bool
+	}{
+		"booting for the whole window":      {engine: engineBootingFor(observedAt, ActivatingRequeueWindow)},
+		"restarting":                        {engine: restarting},
+		"booting with no start time":        {engine: undated},
+		"ready but not held to its limit":   {engine: unheld, deaf: true},
+		"booting behind a silent runtime":   {engine: engineBootingFor(observedAt, time.Minute), silent: true},
+		"asleep":                            {engine: asleep, phase: modelv1alpha1.ModelClaimSleeping},
+		"booting in a reading with no time": {engine: engineBootingFor(observedAt, time.Minute), undatedReading: true},
+		// A clock that was set back, or a date restored from a registry
+		// written under a clock that ran ahead. Nothing would bound the pace.
+		"booting since a day from now": {engine: engineBootingFor(observedAt, -24*time.Hour)},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			phase := tc.phase
+			if phase == "" {
+				phase = modelv1alpha1.ModelClaimActivating
+			}
+			pm := claimWithCost(700, 100)
+			pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+				Pod:          "warm-1",
+				Phase:        phase,
+				KVLimitBytes: 300,
+			}}
+			pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+			if !tc.undatedReading {
+				snapshot.ObservedAt = observedAt
+			}
+			snapshot.Models = []RuntimeSnapshotModel{tc.engine}
+			r, runtime := newReconciler(t, pm, pod)
+			runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+			runtime.deafToKVLimits = tc.deaf
+			if tc.silent {
+				runtime.nilSnapshots = map[string]bool{pod.Status.PodIP: true}
+			}
+
+			assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name))
+			assert.Equal(t, phase, getModel(t, r, pm.Name).Status.Instances[0].Phase)
+		})
+	}
 }
 
 // An engine whose segment cannot be read is not known to be held to anything,
@@ -3050,16 +3172,12 @@ func TestReconcileGrowsANewEngineToItsRecordBeforeRouting(t *testing.T) {
 
 	// The engine comes up under an allocator default smaller than the room it
 	// was given. That room was made for it when the card was divided, so it is
-	// raised to its record before it takes any traffic.
+	// raised to its record, and read back, before it takes any traffic.
 	snapshot.Models = []RuntimeSnapshotModel{readyEngine(200)}
 	reconcileOnce(t, r, pm.Name)
 
 	require.Len(t, runtime.kvLimitCalls, 1)
 	assert.Equal(t, int64(300), runtime.kvLimitCalls[0].LimitBytes)
-	assert.Equal(t, modelv1alpha1.ModelClaimActivating, getModel(t, r, pm.Name).Status.Instances[0].Phase)
-
-	reconcileOnce(t, r, pm.Name)
-
 	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, pm.Name).Status.Instances[0].Phase)
 }
 

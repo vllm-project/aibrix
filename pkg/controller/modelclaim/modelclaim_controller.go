@@ -68,8 +68,17 @@ const (
 	ScheduledPodsAnnotationKey = "model.aibrix.ai/scheduled-pods"
 
 	// DefaultRequeueDuration paces periodic reconciliation (placement retries
-	// and readiness checks).
+	// and health checks).
 	DefaultRequeueDuration = 10 * time.Second
+
+	// ActivatingRequeueDuration paces a claim while an engine of it is
+	// booting, so the engine is routed soon after it is ready, and not a
+	// whole period later.
+	ActivatingRequeueDuration = 2 * time.Second
+
+	// ActivatingRequeueWindow is how long into a boot that faster pace lasts.
+	// An engine still booting after this long is looked at every period.
+	ActivatingRequeueWindow = 5 * time.Minute
 )
 
 // ModelClaimReconciler reconciles a ModelClaim object.
@@ -291,8 +300,9 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Reconcile instance routability against live engine readiness (promote
 	// ready Activating instances, demote Active instances that went unhealthy).
-	r.reconcileInstanceHealth(ctx, pm, readings)
+	booting := r.reconcileInstanceHealth(ctx, pm, readings)
 	replacementFailed := false
+	failed := len(failedInstanceSlots(pm))
 	if err := r.rescheduleFailedInstances(ctx, pm, candidates, readings); err != nil {
 		if apierrors.IsConflict(err) {
 			// As above: no replacement was asked for, so nothing failed.
@@ -300,6 +310,11 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 		r.Recorder.Event(pm, corev1.EventTypeWarning, "RescheduleFailed", err.Error())
 		replacementFailed = true
+	}
+	// A replacement started in this pass boots from now on. The health check
+	// above ran before it, so it is looked at again as soon as a new engine is.
+	if len(failedInstanceSlots(pm)) < failed {
+		booting = true
 	}
 	r.recomputeReadiness(pm)
 	if len(pm.Status.Instances) == 0 && r.backoff().waitsAfterAFailedStart(req.NamespacedName) {
@@ -329,6 +344,12 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// stay what it was when the last model landed. It runs last, after anything
 	// this pass changed on the cards.
 	r.divideCards(ctx, candidates, readings)
+	// A booting engine is looked at again soon, so it is routed within a few
+	// seconds of being ready. A pass that ended before the health check, as
+	// after a start that failed, keeps its own pace.
+	if booting {
+		requeueAfter = min(requeueAfter, ActivatingRequeueDuration)
+	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
@@ -1160,12 +1181,17 @@ func placementStatesFrom(
 // Snapshot state is authoritative for the engine port and readiness: the
 // controller never promotes an engine merely because its old status entry was
 // Active. A snapshot failure leaves the last known routing in place rather
-// than guessing that a live engine has disappeared.
+// than guessing that a live engine has disappeared. It reports whether it left
+// an instance Activating on an engine that is booting.
+//
+// An engine that is taken off the route needs no such pace. Its pod's
+// annotation changes then. On a pod that carries both labels of its pool, that
+// change starts the next pass at once.
 func (r *ModelClaimReconciler) reconcileInstanceHealth(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
 	readings *runtimeReadings,
-) {
+) (booting bool) {
 	served := servedModelName(pm)
 	dropped := map[string]bool{}
 	for i := range pm.Status.Instances {
@@ -1195,21 +1221,7 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 			continue
 		}
 
-		observedPort := inst.Port
-		if observed != nil {
-			observedPort = observed.Port
-		}
-
-		// An engine on a GPU becomes routable only once it holds the KV limit
-		// this instance records. Until then it runs under its allocator's own
-		// default, which is most of the card, and traffic would let it grow
-		// that far. It stays routable only while it is held to no more than
-		// that record.
-		serving := observed != nil && observed.Ready && observedPort > 0
-		limitInForce, limitWithinRecord := r.judgeKVLimit(ctx, pm, inst, observed, serving)
-
-		desiredPhase, routingPort := desiredInstanceState(
-			inst, observed, observedPort, serving, limitInForce, limitWithinRecord)
+		state := r.judgeEngine(ctx, pm, inst, snapshot, observed)
 		// Pull an engine down to its record whenever it is held to more. Raise
 		// it to its record only before it has been routed: an instance is
 		// recorded after its card was divided to make the room, so that room is
@@ -1217,10 +1229,13 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 		// division that has not been carried out yet, and growing the engine
 		// here, outside that division's order, could hand it memory a
 		// neighbour has not given back.
-		if serving && !limitInForce && (!limitWithinRecord || inst.Phase != modelv1alpha1.ModelClaimActive) {
-			r.writeKVLimit(ctx, pm, inst, pod, ip, snapshot, observed)
-			readings.forget(pod.Name)
+		if state.serving && !state.limitInForce &&
+			(!state.limitWithinRecord || inst.Phase != modelv1alpha1.ModelClaimActive) {
+			state, observed = r.holdToKVLimit(ctx, pm, inst, pod, snapshot, observed, state, readings)
 		}
+		booting = booting || state.booting
+		desiredPhase, routingPort := state.phase, state.routingPort
+		serving := state.serving
 
 		if err := r.annotateWarmPodWithState(
 			ctx, pm, pod, routingPort, routingStateForPhase(desiredPhase),
@@ -1228,50 +1243,141 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 			klog.ErrorS(err, "routability annotation failed", "model", pm.Name, "pod", inst.Pod, "ready", desiredPhase == modelv1alpha1.ModelClaimActive)
 			continue
 		}
-		inst.Port = observedPort
+		inst.Port = state.observedPort
 		previousPhase := inst.Phase
 		if previousPhase == desiredPhase {
 			continue
 		}
 		inst.Phase = desiredPhase
-		switch desiredPhase {
-		case modelv1alpha1.ModelClaimFailed:
-			message := "runtime reported terminal engine failure"
-			if observed != nil && observed.LastError != "" {
-				message = observed.LastError
-			}
-			r.Recorder.Eventf(pm, corev1.EventTypeWarning, "EngineFailed",
-				"model %s failed on pod %s: %s", served, inst.Pod, message)
-		case modelv1alpha1.ModelClaimActive:
-			if previousPhase == modelv1alpha1.ModelClaimActivating {
-				recordActivation(pm.Namespace, served, true)
-				r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Activated",
-					"model %s ready and routable on pod %s:%d", served, inst.Pod, inst.Port)
-			} else {
-				r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Woken",
-					"model %s woke and is routable on pod %s:%d", served, inst.Pod, inst.Port)
-			}
-		case modelv1alpha1.ModelClaimSleeping:
-			r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Sleeping",
-				"model %s is sleeping on pod %s and marked non-routable", served, inst.Pod)
-		case modelv1alpha1.ModelClaimActivating:
-			switch {
-			case previousPhase == modelv1alpha1.ModelClaimActive && serving:
-				// Still serving, so it is the limit and not the engine that went
-				// wrong. Saying "no longer ready" would send an operator to look at
-				// a healthy process.
-				r.Recorder.Eventf(pm, corev1.EventTypeWarning, "KVLimitNotHeld",
-					"model %s on pod %s is held to more KV than its limit of %s; marked non-routable until the limit is written again",
-					served, inst.Pod, gibibytes(inst.KVLimitBytes))
-			case previousPhase != modelv1alpha1.ModelClaimActivating:
-				r.Recorder.Eventf(pm, corev1.EventTypeWarning, "Unhealthy",
-					"model %s no longer ready on pod %s; marked non-routable", served, inst.Pod)
-			}
-		}
+		r.announcePhase(pm, inst, previousPhase, observed, serving)
 	}
 	if r.dropInstances(ctx, pm, dropped) > 0 {
 		// The claim needs another instance now, so its wait starts over.
 		r.backoff().startOver(types.NamespacedName{Namespace: pm.Namespace, Name: pm.Name})
+	}
+	return booting
+}
+
+// announcePhase raises the Event for an instance that has just changed phase.
+func (r *ModelClaimReconciler) announcePhase(
+	pm *modelv1alpha1.ModelClaim,
+	inst *modelv1alpha1.ModelClaimInstance,
+	previousPhase modelv1alpha1.ModelClaimPhase,
+	observed *RuntimeSnapshotModel,
+	serving bool,
+) {
+	served := servedModelName(pm)
+	switch inst.Phase {
+	case modelv1alpha1.ModelClaimFailed:
+		message := "runtime reported terminal engine failure"
+		if observed != nil && observed.LastError != "" {
+			message = observed.LastError
+		}
+		r.Recorder.Eventf(pm, corev1.EventTypeWarning, "EngineFailed",
+			"model %s failed on pod %s: %s", served, inst.Pod, message)
+	case modelv1alpha1.ModelClaimActive:
+		if previousPhase == modelv1alpha1.ModelClaimActivating {
+			recordActivation(pm.Namespace, served, true)
+			r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Activated",
+				"model %s ready and routable on pod %s:%d", served, inst.Pod, inst.Port)
+		} else {
+			r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Woken",
+				"model %s woke and is routable on pod %s:%d", served, inst.Pod, inst.Port)
+		}
+	case modelv1alpha1.ModelClaimSleeping:
+		r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Sleeping",
+			"model %s is sleeping on pod %s and marked non-routable", served, inst.Pod)
+	case modelv1alpha1.ModelClaimActivating:
+		switch {
+		case previousPhase == modelv1alpha1.ModelClaimActive && serving:
+			// Still serving, so it is the limit and not the engine that went
+			// wrong. Saying "no longer ready" would send an operator to look at
+			// a healthy process.
+			r.Recorder.Eventf(pm, corev1.EventTypeWarning, "KVLimitNotHeld",
+				"model %s on pod %s is held to more KV than its limit of %s; marked non-routable until the limit is written again",
+				served, inst.Pod, gibibytes(inst.KVLimitBytes))
+		case serving:
+			// An engine that woke and waits for its limit is ready. The Event
+			// of the limit says what it waits for.
+		case previousPhase != modelv1alpha1.ModelClaimActivating:
+			r.Recorder.Eventf(pm, corev1.EventTypeWarning, "Unhealthy",
+				"model %s no longer ready on pod %s; marked non-routable", served, inst.Pod)
+		}
+	}
+}
+
+// holdToKVLimit writes the limit an instance records, and returns how the
+// engine stands after it.
+//
+// An engine that is not on the route is read back at once, and judged again
+// from that reading. That is an engine coming up, and one that slept and
+// serves again. Held to its limit now, it is routed in this pass rather than
+// the next. The engine of a failed instance is read back as well, and its
+// instance stays failed. An engine that was routed and lost its limit is not
+// read back: it leaves the route first, so that the loss is seen. Its Event
+// says that the limit was written, which is all that is known of it in this
+// pass.
+//
+// What the pass had read of the runtime is dropped, whether the write was
+// taken or not. A write changes the runtime, or may have. A read-back that
+// fails is kept as the reading of the pass, since a runtime that did not
+// answer is not asked again in the same pass. The later steps of that pass
+// pay for it. The division finds the card unread, and leaves it to its next
+// round. The pool policy passes over the pod, and counts a failed evaluation.
+func (r *ModelClaimReconciler) holdToKVLimit(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	inst *modelv1alpha1.ModelClaimInstance,
+	pod *corev1.Pod,
+	snapshot *RuntimeSnapshot,
+	observed *RuntimeSnapshotModel,
+	state engineState,
+	readings *runtimeReadings,
+) (engineState, *RuntimeSnapshotModel) {
+	served := servedModelName(pm)
+	written := r.writeKVLimit(ctx, pm, inst, pod, pod.Status.PodIP, snapshot, observed)
+	readings.forget(pod.Name)
+	if !written {
+		return state, observed
+	}
+	if inst.Phase == modelv1alpha1.ModelClaimActive {
+		r.Recorder.Eventf(pm, corev1.EventTypeNormal, "KVLimitSet",
+			"model %s on pod %s: KV limit of %s written over %s",
+			served, inst.Pod, gibibytes(inst.KVLimitBytes), gibibytes(observed.KVCapacityBytes))
+		return state, observed
+	}
+	confirmed, err := readings.of(ctx, pod)
+	if err != nil {
+		klog.V(4).InfoS("runtime snapshot failed after a KV limit was written",
+			"model", pm.Name, "pod", inst.Pod, "err", err)
+		return state, observed
+	}
+	writtenOver := observed.KVCapacityBytes
+	observed = snapshotModelForClaim(confirmed, pm, served)
+	r.reportKVLimit(pm, inst, writtenOver, observed)
+	return r.judgeEngine(ctx, pm, inst, confirmed, observed), observed
+}
+
+// reportKVLimit says what the reading taken after a write shows of the limit
+// that was written over writtenOverBytes. A reading with no engine in it, or
+// no segment, shows neither that the limit is in force nor that it is not.
+func (r *ModelClaimReconciler) reportKVLimit(
+	pm *modelv1alpha1.ModelClaim,
+	inst *modelv1alpha1.ModelClaimInstance,
+	writtenOverBytes int64,
+	observed *RuntimeSnapshotModel,
+) {
+	served := servedModelName(pm)
+	switch {
+	case observed == nil || observed.KVCapacityBytes < 0:
+	case kvLimitInForce(inst, observed):
+		r.Recorder.Eventf(pm, corev1.EventTypeNormal, "KVLimitSet",
+			"model %s on pod %s: KV limit set to %s, from %s",
+			served, inst.Pod, gibibytes(inst.KVLimitBytes), gibibytes(writtenOverBytes))
+	default:
+		r.Recorder.Eventf(pm, corev1.EventTypeWarning, "KVLimitFailed",
+			"model %s on pod %s: KV limit %s was written, and the engine still reports %s",
+			served, inst.Pod, gibibytes(inst.KVLimitBytes), gibibytes(observed.KVCapacityBytes))
 	}
 }
 
@@ -1323,6 +1429,71 @@ func (r *ModelClaimReconciler) freshKVLimitRecord(
 		}
 	}
 	return 0, false
+}
+
+// engineState is what one reading of a runtime says about an instance's
+// engine, and so where the instance should stand.
+type engineState struct {
+	observedPort      int32
+	serving           bool
+	limitInForce      bool
+	limitWithinRecord bool
+	phase             modelv1alpha1.ModelClaimPhase
+	routingPort       int32
+	// booting is set for an instance left Activating while its engine boots,
+	// which is worth looking at again soon.
+	booting bool
+}
+
+// judgeEngine reads an instance's engine from one reading of its runtime.
+//
+// An engine on a GPU becomes routable only once it holds the KV limit this
+// instance records. Until then it runs under its allocator's own default,
+// which is most of the card, and traffic would let it grow that far. It stays
+// routable only while it is held to no more than that record.
+func (r *ModelClaimReconciler) judgeEngine(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	inst *modelv1alpha1.ModelClaimInstance,
+	snapshot *RuntimeSnapshot,
+	observed *RuntimeSnapshotModel,
+) engineState {
+	state := engineState{observedPort: inst.Port}
+	if observed != nil {
+		state.observedPort = observed.Port
+	}
+	state.serving = observed != nil && observed.Ready && state.observedPort > 0
+	state.limitInForce, state.limitWithinRecord = r.judgeKVLimit(ctx, pm, inst, observed, state.serving)
+	state.phase, state.routingPort = desiredInstanceState(
+		inst, observed, state.observedPort, state.serving, state.limitInForce, state.limitWithinRecord)
+	state.booting = state.phase == modelv1alpha1.ModelClaimActivating && engineBooting(snapshot, observed)
+	return state
+}
+
+// engineBooting reports whether a runtime reading shows an engine booting:
+// alive but not yet ready, and for less than ActivatingRequeueWindow. The
+// time is taken on the runtime's clock, which also dates the boot, so the
+// controller's clock does not have to agree with it. An engine that is ready
+// but not yet routable is not booting. Neither is one whose boot the runtime
+// does not date, since nothing would then bound it. An engine that is
+// stopping counts while the runtime reports it alive. Its instance gets a new
+// engine as soon as it has gone.
+//
+// An engine whose stop fails does not count. The runtime dates such an engine
+// again at every try. It would then read as one that has just begun to stop,
+// for as long as the stop fails. It carries the error of the stop.
+func engineBooting(snapshot *RuntimeSnapshot, observed *RuntimeSnapshotModel) bool {
+	if snapshot == nil || observed == nil || !observed.Alive || observed.Ready ||
+		observed.LastTransition == nil || snapshot.ObservedAt.IsZero() {
+		return false
+	}
+	if observed.Phase == runtimePhaseStopping && observed.LastError != "" {
+		return false
+	}
+	// A boot dated after the reading is not timed at all: the runtime's
+	// clock was set back, and the pace would last until it caught up.
+	age := snapshot.ObservedAt.Sub(*observed.LastTransition)
+	return age >= 0 && age < ActivatingRequeueWindow
 }
 
 // engineMissing reports whether an activating instance has no engine behind
@@ -1503,7 +1674,8 @@ func kvLimitWithinRecord(inst *modelv1alpha1.ModelClaimInstance, observed *Runti
 }
 
 // writeKVLimit asks the runtime to hold this engine to the limit the instance
-// records.
+// records, and reports whether the runtime took the request. The caller says
+// that the limit is set, once it knows.
 //
 // The runtime runs each operation ID once, and an engine that restarts needs
 // the same value written again, so the ID carries the moment the snapshot was
@@ -1511,7 +1683,8 @@ func kvLimitWithinRecord(inst *modelv1alpha1.ModelClaimInstance, observed *Runti
 //
 // A reported success is not proof. The CLI the runtime drives exits zero when
 // the segment does not exist, so the only evidence that a limit is in force is
-// reading it back from a later snapshot, which is what the caller does.
+// reading it back from a later snapshot, which is what the caller does: at once
+// for an engine that is not on the route, and on the next pass otherwise.
 func (r *ModelClaimReconciler) writeKVLimit(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
@@ -1520,11 +1693,11 @@ func (r *ModelClaimReconciler) writeKVLimit(
 	podIP string,
 	snapshot *RuntimeSnapshot,
 	observed *RuntimeSnapshotModel,
-) {
+) bool {
 	// A write into a segment that does not exist is lost without a word, and
 	// the engine overwrites the segment when it builds one anyway.
 	if observed == nil || observed.KVCapacityBytes < 0 {
-		return
+		return false
 	}
 	served := servedModelName(pm)
 	operationID := fmt.Sprintf("kv-limit/%s/%s/%s/%d/%d",
@@ -1539,11 +1712,9 @@ func (r *ModelClaimReconciler) writeKVLimit(
 		r.Recorder.Eventf(pm, corev1.EventTypeWarning, "KVLimitFailed",
 			"model %s on pod %s: KV limit %s could not be set: %v",
 			served, inst.Pod, gibibytes(inst.KVLimitBytes), err)
-		return
+		return false
 	}
-	r.Recorder.Eventf(pm, corev1.EventTypeNormal, "KVLimitSet",
-		"model %s on pod %s: KV limit set to %s, from %s",
-		served, inst.Pod, gibibytes(inst.KVLimitBytes), gibibytes(observed.KVCapacityBytes))
+	return true
 }
 
 func routingStateForPhase(phase modelv1alpha1.ModelClaimPhase) string {

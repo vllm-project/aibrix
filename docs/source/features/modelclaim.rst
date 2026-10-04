@@ -402,7 +402,9 @@ A division can fail at each of these steps:
   the threshold.
 
 A model stays non-routable until its own limit is in force, and stays routable
-only while it is held to no more than that limit. A card whose room could not
+only while it is held to no more than that limit. An engine that is not on the
+route is read back as soon as its limit is written. So an engine coming up is
+routed in the same pass, and so is one that woke. A card whose room could not
 be made is skipped, and the next Pod in line is tried.
 
 A card is also planned again once a round, which is about 10 seconds, however
@@ -541,7 +543,13 @@ ModelClaim status summarizes the lifecycle:
      - The claim is new or the controller is selecting a compatible Pod.
    * - ``Loading`` / ``Activating``
      - The runtime is downloading or starting the engine. It remains
-       non-routable with port 0.
+       non-routable with port 0. While the engine boots, the controller looks
+       at it every 2 seconds, so it is routed within about 4 seconds of being
+       ready. Each boot is watched this way for 5 minutes. An engine that
+       still boots after that is looked at every 10 seconds. An engine that
+       is being stopped is watched the same way until it has gone, so that
+       the engine that replaces it starts soon. One whose stop keeps failing
+       is looked at every 10 seconds.
    * - ``Active``
      - The runtime reports the engine alive and ready; the gateway has a real
        per-engine port.
@@ -891,11 +899,24 @@ Claim remains ``Activating``
 
 Claim remains ``Activating`` after ``/health`` succeeds
    With ``perGPU`` declared, the engine also has to report the KV limit it was
-   given before it becomes routable. kvcached applies a new limit at its next
-   allocation, so a short wait here is expected. A ``KVLimitFailed`` Event
-   names the error. A snapshot whose ``kv_capacity_bytes`` is negative means
-   the engine has not built its KV segment yet, and there is nothing to write
-   into.
+   given before it becomes routable. The pass that first sees the engine ready
+   writes the limit and reads it back. So this normally lasts about 4 seconds at
+   most. It can last up to 10 seconds in any of these cases. The boot took
+   more than 5 minutes, or the runtime does not date it. The runtime did not
+   answer the reading of a pass. The controller had to start the engine again.
+   Another start of the same claim failed in that pass.
+
+   If it lasts longer, the limit is not in force, and the controller writes it
+   again every 10 seconds. If the engine reports another limit, a
+   ``KVLimitFailed`` Event says which one. If the write fails, the Event
+   names the error. For an engine that comes up, ``KVLimitSet`` is raised once
+   the limit reads back. When the runtime does not answer the read-back,
+   neither is raised, and the next pass reads the limit. A snapshot whose
+   ``kv_capacity_bytes`` is negative means the engine has not built its KV
+   segment yet, and there is nothing to write into.
+
+   An engine that woke waits the same way when its limit does not read back.
+   Its instance reads ``Activating`` until it does.
 
 ``KVLimitFailed`` Events during placement
    A card had room, and the engines on it could not be held to their new
@@ -921,9 +942,17 @@ A ``KVLimitFailed`` warning says a card could not be divided several times
 A routable model becomes non-routable with ``KVLimitNotHeld``
    Its engine is held to more KV than its limit, most often because it
    restarted and its allocator put its own default back. It could grow into
-   memory the card holds for its neighbours, so the route is withdrawn while
-   the controller writes the limit again, and returns once the engine reports
-   it.
+   memory that the card holds for its neighbours. So the route is withdrawn
+   while the controller writes the limit again, and it returns once the engine
+   reports the limit. The ``KVLimitSet`` Event of that write says "written
+   over", since the limit is read on the next pass. ``KVLimitNotHeld`` is also
+   raised when the KV segment of the engine cannot be read. Nothing is written
+   then.
+
+   On a Pod that carries both ``pool.aibrix.ai`` labels, the change to the Pod
+   starts the next pass at once. So the route is normally back within a few
+   seconds. On a Pod without ``pool.aibrix.ai/name``, it is back on the
+   claim's next pass, 10 seconds later at most.
 
 Activation rejects ``--gpu-memory-utilization``
    Remove the flag. The kvcached framework replaces the engine's fixed
