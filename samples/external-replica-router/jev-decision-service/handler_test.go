@@ -1,6 +1,17 @@
 /*
 Copyright 2026 The Aibrix Team.
-Licensed under the Apache License, Version 2.0.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 */
 
 package main
@@ -65,7 +76,9 @@ func TestHandlerReturnsSelectedResponse(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response.Metadata.RequestID != req.Metadata.RequestID || response.Status.Target == nil || response.Status.Target.ID != "default/pod-a" {
+	if response.Metadata.RequestID != req.Metadata.RequestID ||
+		response.Status.Target == nil ||
+		response.Status.Target.ID != "default/pod-a" {
 		t.Fatalf("response = %#v", response)
 	}
 }
@@ -86,7 +99,13 @@ func TestHandlerRejectsBadRequests(t *testing.T) {
 		{"wrong path", http.MethodPost, "/other", strings.NewReader(`{}`), http.StatusNotFound},
 		{"empty body", http.MethodPost, "/v1alpha1/select", nil, http.StatusBadRequest},
 		{"malformed json", http.MethodPost, "/v1alpha1/select", strings.NewReader(`{`), http.StatusBadRequest},
-		{"oversized body", http.MethodPost, "/v1alpha1/select", strings.NewReader(strings.Repeat("x", maxRequestBytes+1)), http.StatusBadRequest},
+		{
+			"oversized body",
+			http.MethodPost,
+			"/v1alpha1/select",
+			strings.NewReader(strings.Repeat("x", maxRequestBytes+1)),
+			http.StatusBadRequest,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -151,7 +170,9 @@ func TestHandlerKeepsConcurrentRequestsIsolated(t *testing.T) {
 				errorsCh <- err
 				return
 			}
-			if response.Metadata.RequestID != req.Metadata.RequestID || response.Status.Target == nil || response.Status.Target.ID != req.Spec.Candidates[0].ID {
+			if response.Metadata.RequestID != req.Metadata.RequestID ||
+				response.Status.Target == nil ||
+				response.Status.Target.ID != req.Spec.Candidates[0].ID {
 				errorsCh <- fmt.Errorf("request %d got %#v", i, response)
 			}
 		}(i)

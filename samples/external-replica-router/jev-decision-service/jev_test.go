@@ -1,6 +1,17 @@
 /*
 Copyright 2026 The Aibrix Team.
-Licensed under the Apache License, Version 2.0.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 */
 
 package main
@@ -47,7 +58,13 @@ func TestBuildSystemOneRequestPreservesRoutingContext(t *testing.T) {
 		t.Fatalf("question = %#v", question)
 	}
 	description := question.Criteria["default/pod-b"]
-	for _, want := range []string{"role=decode", "zone-b", "runningRequests=3", "engineUtilization=0.42", "kvCacheUsage=0.27"} {
+	for _, want := range []string{
+		"role=decode",
+		"zone-b",
+		"runningRequests=3",
+		"engineUtilization=0.42",
+		"kvCacheUsage=0.27",
+	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("description %q does not contain %q", description, want)
 		}
@@ -67,7 +84,10 @@ func TestJevClientSelectReplica(t *testing.T) {
 			t.Errorf("decode request: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"answers":{"replica":{"type":"choice","choice":"default/pod-a","confidence":0.72,"probabilities":{"default/pod-a":0.72,"default/pod-b":0.28}}}}`))
+		_, _ = w.Write([]byte(
+			`{"answers":{"replica":{"type":"choice","choice":"default/pod-a",` +
+				`"confidence":0.72,"probabilities":{"default/pod-a":0.72,"default/pod-b":0.28}}}}`,
+		))
 	}))
 	defer server.Close()
 

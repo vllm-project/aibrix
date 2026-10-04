@@ -1,6 +1,17 @@
 /*
 Copyright 2026 The Aibrix Team.
-Licensed under the Apache License, Version 2.0.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 */
 
 package main
@@ -17,10 +28,12 @@ import (
 	"strings"
 )
 
-const defaultRoutingInstructions = "Select the best replica by jointly considering node topology, prefill/decode role, current request load, engine utilization, KV cache pressure, and trusted policy context. Prefer a healthy, suitable, less-loaded candidate."
+const defaultRoutingInstructions = "Select the best replica by jointly considering node topology, prefill/decode " +
+	"role, current request load, engine utilization, KV cache pressure, and trusted policy context. " +
+	"Prefer a healthy, suitable, less-loaded candidate."
 
 var (
-	errUpstreamUnavailable = errors.New("Jev-compatible service unavailable")
+	errUpstreamUnavailable = errors.New("jev-compatible service unavailable")
 	errUpstreamInvalid     = errors.New("invalid Jev-compatible response")
 )
 
@@ -127,7 +140,9 @@ func (c jevClient) selectReplica(ctx context.Context, req ReplicaSelectionReques
 	if err != nil {
 		return replicaSelection{}, fmt.Errorf("%w: %v", errUpstreamUnavailable, err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		return replicaSelection{}, fmt.Errorf("%w: HTTP %d", errUpstreamUnavailable, resp.StatusCode)
@@ -150,8 +165,16 @@ func (c jevClient) selectReplica(ctx context.Context, req ReplicaSelectionReques
 	}
 	for _, candidate := range req.Spec.Candidates {
 		if candidate.ID == answer.Choice {
-			return replicaSelection{Candidate: candidate, Confidence: answer.Confidence, Probabilities: answer.Probabilities}, nil
+			return replicaSelection{
+				Candidate:     candidate,
+				Confidence:    answer.Confidence,
+				Probabilities: answer.Probabilities,
+			}, nil
 		}
 	}
-	return replicaSelection{}, fmt.Errorf("%w: choice %q is outside the candidate snapshot", errUpstreamInvalid, answer.Choice)
+	return replicaSelection{}, fmt.Errorf(
+		"%w: choice %q is outside the candidate snapshot",
+		errUpstreamInvalid,
+		answer.Choice,
+	)
 }
