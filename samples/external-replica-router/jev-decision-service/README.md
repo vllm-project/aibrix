@@ -10,6 +10,19 @@ The service cannot add a backend, change the requested model, or return an
 arbitrary address. A Jev choice is accepted only when it exactly matches a
 candidate ID from the current Gateway request.
 
+## Current scope: single-target routing
+
+This reference implements the current
+`routing.aibrix.ai/v1alpha1` single-target contract. Jev chooses exactly one
+candidate Pod and the adapter returns one `status.target` to Gateway.
+
+Candidate attributes can include `prefill` and `decode` roles so a policy can
+reason about them, but the role is only a feature of this one-target choice.
+Selecting a role-labelled candidate Pod does not select a P/D pair, run a
+prefill leg, transfer KV state, or prove a decode handoff. Use AIBrix's built-in
+`pd` strategy for the current disaggregated workflow; external control of that
+paired workflow is future scope.
+
 ## Request flow
 
 ```text
@@ -205,6 +218,27 @@ Clients select the strategy with the existing inference request header:
 ```text
 routing-strategy: external
 ```
+
+### Candidate port labels
+
+Every candidate Pod must expose a routable model port to AIBrix. Set the
+standard AIBrix model and port labels:
+
+```yaml
+metadata:
+  labels:
+    model.aibrix.ai/name: qwen2-7b
+    model.aibrix.ai/port: "8000"
+```
+
+This requirement is stricter than some built-in routers. A built-in path may
+fall back to port 8000 when the label is absent, while the external router must
+serialize an explicit allowed-port snapshot and validate the returned target
+against it. Without the label, request construction fails with
+`candidate <namespace>/<pod> has no routable port`; in `FailOpen` mode the
+request then uses the configured local fallback without calling the decision
+service. The Prometheus signature is an `invalid_response` increment with no
+corresponding external-router duration observation.
 
 ## Build a container
 

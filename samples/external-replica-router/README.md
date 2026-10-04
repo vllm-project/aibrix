@@ -22,6 +22,20 @@ The sample is intentionally small and stateless. Production services should add
 authentication, TLS, availability controls, bounded logging, and their own
 policy data source.
 
+## Current scope: single-target routing
+
+The `routing.aibrix.ai/v1alpha1` contract is currently a **single-target**
+replica-selection protocol. Each invocation may authorize exactly one target
+Pod and port. Gateway validates that target and forwards the inference request
+to it.
+
+Candidate attributes may identify Pods as `prefill` or `decode`, but those
+values are inputs to the single-target decision only. The `external` strategy
+does not select a prefill/decode pair, execute a prefill request, transfer KV
+state, align a role set, or hand a request off to a decode Pod. Use the built-in
+`pd` strategy for the current prefill/decode disaggregation workflow. External
+control of that two-target workflow is future scope.
+
 ## Request flow and ownership
 
 1. The inference client sends a normal request to AIBrix Gateway. To select this
@@ -30,7 +44,8 @@ policy data source.
    filters.
 3. Gateway creates a `ReplicaSelectionRequest` containing a snapshot of the
    remaining candidates and sends it to the configured operation URL.
-4. The decision service returns `Selected`, `NoDecision`, or `Denied`.
+4. The decision service returns `Selected` with exactly one target,
+   `NoDecision`, or `Denied`.
 5. Gateway validates the response against the exact request snapshot. Gateway,
    not the decision service, resolves the pod IP, performs final admission and
    accounting, and mutates the Envoy request.
@@ -143,7 +158,7 @@ owned by the decision service.
 
 ### Selected
 
-`Selected` is valid in both policy modes.
+`Selected` is valid in both policy modes and authorizes exactly one target.
 
 ```json
 {
@@ -219,7 +234,7 @@ count as a circuit-breaker failure.
 | `metadata.requestId` | yes | Must exactly equal the request's `metadata.requestId`. |
 | `metadata.decisionId` | no | Decision-service correlation ID, at most 256 UTF-8 bytes. |
 | `status.decision` | yes | `Selected`, `NoDecision`, or `Denied`. Mode legality is enforced by Gateway. |
-| `status.target` | conditional | Required only for `Selected`; forbidden for `NoDecision` and `Denied`. |
+| `status.target` | conditional | Exactly one target, required only for `Selected`; forbidden for `NoDecision` and `Denied`. |
 | `status.target.id` | conditional | Exact ID of a candidate in the request snapshot. |
 | `status.target.port` | conditional | Candidate port. May be omitted only when that candidate advertised one port. |
 | `status.reason` | no | Diagnostic reason, at most 256 UTF-8 bytes. It is not copied into the client error body. |
