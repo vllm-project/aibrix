@@ -1216,7 +1216,12 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 		observed := snapshotModelForClaim(snapshot, pm, served)
 
 		if engineMissing(inst, snapshot, observed) {
-			dropped[inst.Pod] = !r.startMissingEngine(ctx, pm, inst, ip)
+			stays, started := r.startMissingEngine(ctx, pm, inst, ip)
+			dropped[inst.Pod] = !stays
+			// An engine started again boots from now on, and the runtime may
+			// not date its boot yet. It is looked at again soon, as a
+			// replacement is.
+			booting = booting || started
 			readings.forget(pod.Name)
 			continue
 		}
@@ -1510,15 +1515,15 @@ func engineMissing(inst *modelv1alpha1.ModelClaimInstance, snapshot *RuntimeSnap
 }
 
 // startMissingEngine asks the runtime to start the engine an activating
-// instance should have, and reports whether the instance is to stay. The
-// runtime starts a model once and returns the running one after that, so
-// asking again is safe.
+// instance should have. It reports whether the instance is to stay, and
+// whether the runtime started the engine. The runtime starts a model once and
+// returns the running one after that, so asking again is safe.
 func (r *ModelClaimReconciler) startMissingEngine(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
 	inst *modelv1alpha1.ModelClaimInstance,
 	podIP string,
-) bool {
+) (stays, started bool) {
 	served := servedModelName(pm)
 	resp, err := r.Runtime.Activate(ctx, podIP, DefaultRuntimePort, activateRequest(pm))
 	if err != nil {
@@ -1527,12 +1532,12 @@ func (r *ModelClaimReconciler) startMissingEngine(
 			"model %s had no engine on pod %s, and starting one failed: %v", served, inst.Pod, err)
 		// Unless the start is known not to have happened, the engine may be
 		// there, so the instance stays, and the next pass looks again.
-		return !callNotDone(err)
+		return !callNotDone(err), false
 	}
 	inst.Port = resp.Port
 	r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Activating",
 		"model %s had no engine on pod %s; engine starting again on port %d", served, inst.Pod, resp.Port)
-	return true
+	return true, true
 }
 
 // dropInstances removes the instances on the given pods from a claim, and
