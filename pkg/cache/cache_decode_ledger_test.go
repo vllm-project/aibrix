@@ -18,7 +18,7 @@ package cache
 
 import (
 	"context"
-	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,8 +45,8 @@ func newTestLedgerPublisher(store *Store, states map[string]DecodeLedgerState) *
 }
 
 // A flush writes this gateway's absolute ledger values under its instance ID,
-// with the charge times moved onto the Redis clock.
-func TestDecodeLedgerPublisher_FlushWritesOwnFields(t *testing.T) {
+// packed into one field, with the charge times moved onto the Redis clock.
+func TestDecodeLedgerPublisher_FlushWritesOwnField(t *testing.T) {
 	client := newTestRunningRequestsClient(t)
 	store := &Store{redisClient: client}
 	store.runningRequestsClockOffsetMillis.Store(2000) // Redis runs 2 s ahead of this process.
@@ -56,33 +56,27 @@ func TestDecodeLedgerPublisher_FlushWritesOwnFields(t *testing.T) {
 	p.markDirty(testLedgerPodKey)
 	p.flush()
 
-	tokensKey, chargesKey, sumAtKey := decodeLedgerKeys(testLedgerPodKey)
-	v, ok := ledgerField(t, client, tokensKey, runningRequestsGatewayInstanceID)
+	key := decodeLedgerKey(testLedgerPodKey)
+	v, ok := ledgerField(t, client, key, runningRequestsGatewayInstanceID)
 	require.True(t, ok)
-	assert.Equal(t, "1500", v)
-	v, ok = ledgerField(t, client, chargesKey, runningRequestsGatewayInstanceID)
-	require.True(t, ok)
-	assert.Equal(t, "3", v)
-	v, ok = ledgerField(t, client, sumAtKey, runningRequestsGatewayInstanceID)
-	require.True(t, ok)
-	assert.Equal(t, "306", v, "each of the 3 charge times moves 2 s onto the Redis clock")
-	ttl, err := client.PTTL(context.Background(), tokensKey).Result()
+	assert.Equal(t, "1500,3,306", v, "each of the 3 charge times moves 2 s onto the Redis clock")
+	ttl, err := client.PTTL(context.Background(), key).Result()
 	require.NoError(t, err)
 	assert.Greater(t, ttl, time.Duration(0))
 	assert.Contains(t, p.published, testLedgerPodKey)
 	assert.Empty(t, p.dirty)
 
-	// A later change overwrites the values rather than adding to them.
+	// A later change overwrites the value rather than adding to it.
 	states[testLedgerPodKey] = DecodeLedgerState{Tokens: 500, Charges: 1, SumChargedAt: 100}
 	p.markDirty(testLedgerPodKey)
 	p.flush()
-	v, _ = ledgerField(t, client, tokensKey, runningRequestsGatewayInstanceID)
-	assert.Equal(t, "500", v)
+	v, _ = ledgerField(t, client, key, runningRequestsGatewayInstanceID)
+	assert.Equal(t, "500,1,102", v)
 }
 
-// Once the pod's ledger is empty, the gateway's fields are deleted and the pod
+// Once the pod's ledger is empty, the gateway's field is deleted and the pod
 // is no longer republished.
-func TestDecodeLedgerPublisher_EmptyLedgerDeletesFields(t *testing.T) {
+func TestDecodeLedgerPublisher_EmptyLedgerDeletesField(t *testing.T) {
 	client := newTestRunningRequestsClient(t)
 	store := &Store{redisClient: client}
 	states := map[string]DecodeLedgerState{testLedgerPodKey: {Tokens: 100, Charges: 1, SumChargedAt: 10}}
@@ -94,11 +88,8 @@ func TestDecodeLedgerPublisher_EmptyLedgerDeletesFields(t *testing.T) {
 	p.markDirty(testLedgerPodKey)
 	p.flush()
 
-	tokensKey, chargesKey, sumAtKey := decodeLedgerKeys(testLedgerPodKey)
-	for _, key := range []string{tokensKey, chargesKey, sumAtKey} {
-		_, ok := ledgerField(t, client, key, runningRequestsGatewayInstanceID)
-		assert.Falsef(t, ok, "%s must not keep this gateway's field", key)
-	}
+	_, ok := ledgerField(t, client, decodeLedgerKey(testLedgerPodKey), runningRequestsGatewayInstanceID)
+	assert.False(t, ok)
 	assert.NotContains(t, p.published, testLedgerPodKey)
 }
 
@@ -128,10 +119,9 @@ func TestPublishDecodeLedger_WritesInBackground(t *testing.T) {
 
 	notify(testLedgerPodKey)
 
-	tokensKey, _, _ := decodeLedgerKeys(testLedgerPodKey)
 	require.Eventually(t, func() bool {
-		v, ok := ledgerField(t, client, tokensKey, runningRequestsGatewayInstanceID)
-		return ok && v == "42"
+		v, ok := ledgerField(t, client, decodeLedgerKey(testLedgerPodKey), runningRequestsGatewayInstanceID)
+		return ok && v == "42,1,1"
 	}, 2*time.Second, 10*time.Millisecond)
 }
 
@@ -152,44 +142,64 @@ func TestDecodeLedger_WithoutRedis(t *testing.T) {
 	assert.EqualValues(t, 4, counts[testLedgerPodKey])
 }
 
+func TestLedgerValueFormatAndParse(t *testing.T) {
+	tokens, charges, sumAt, ok := parseLedgerValue(formatLedgerValue(1234.5, 3, 5.25e9))
+	require.True(t, ok)
+	assert.Equal(t, 1234.5, tokens)
+	assert.EqualValues(t, 3, charges)
+	assert.Equal(t, 5.25e9, sumAt)
+
+	for _, bad := range []string{"", "1,2", "1,2,3,4", "x,1,1", "1,y,1", "1,1,z"} {
+		_, _, _, ok := parseLedgerValue(bad)
+		assert.Falsef(t, ok, "%q must not parse", bad)
+	}
+}
+
+func setLedgerFields(t *testing.T, client *redis.Client, values map[string]string) {
+	t.Helper()
+	args := map[string]any{}
+	for k, v := range values {
+		args[k] = v
+	}
+	require.NoError(t, client.HSet(context.Background(), decodeLedgerKey(testLedgerPodKey), args).Err())
+}
+
+func markLive(t *testing.T, client *redis.Client, gateways ...string) {
+	t.Helper()
+	for _, gw := range gateways {
+		require.NoError(t, client.ZAdd(context.Background(), runningRequestsGatewaysKey,
+			redis.Z{Score: float64(time.Now().UnixMilli()), Member: gw}).Err())
+	}
+}
+
 // The read sums the ledgers of the other live gateways only: this gateway's
-// own fields (the caller has them in memory) and a dead gateway's fields are
-// left out, and the dead ones are queued for pruning. The running-request
-// counts come back from the same read.
+// own field (the caller has it in memory) and a dead gateway's field are left
+// out, and the dead one is queued for pruning. The running-request counts come
+// back from the same read.
 func TestGetPodsRunningRequestsAndDecodeLedger_SumsOtherLiveGateways(t *testing.T) {
 	ctx := context.Background()
 	client := newTestRunningRequestsClient(t)
 	store := &Store{redisClient: client}
 	pod := newTestPod(2)
 	store.metaPods.Store(testLedgerPodKey, pod)
-
-	nowMillis := time.Now().UnixMilli()
-	nowSeconds := float64(nowMillis) / 1000
-	for _, gw := range []string{"gw-a", "gw-b"} {
-		require.NoError(t, client.ZAdd(ctx, runningRequestsGatewaysKey, redis.Z{Score: float64(nowMillis), Member: gw}).Err())
-	}
+	markLive(t, client, "gw-a", "gw-b")
 	require.NoError(t, client.HSet(ctx, runningRequestsKey(testNamespace, testPodName), "gw-a", "3").Err())
 
-	tokensKey, chargesKey, sumAtKey := decodeLedgerKeys(testLedgerPodKey)
-	set := func(key string, values map[string]string) {
-		args := map[string]any{}
-		for k, v := range values {
-			args[k] = v
-		}
-		require.NoError(t, client.HSet(ctx, key, args).Err())
-	}
-	// gw-a: 2 charges made 10 s and 20 s ago; gw-b: 1 charge made 5 s ago.
-	// gw-dead and this gateway's own fields must not count.
-	sum := func(ages ...float64) string {
+	nowSeconds := float64(time.Now().UnixMilli()) / 1000
+	sum := func(ages ...float64) float64 {
 		s := 0.0
 		for _, a := range ages {
 			s += nowSeconds - a
 		}
-		return strconv.FormatFloat(s, 'g', -1, 64)
+		return s
 	}
-	set(tokensKey, map[string]string{"gw-a": "1000", "gw-b": "300", "gw-dead": "9999", runningRequestsGatewayInstanceID: "777"})
-	set(chargesKey, map[string]string{"gw-a": "2", "gw-b": "1", "gw-dead": "5", runningRequestsGatewayInstanceID: "1"})
-	set(sumAtKey, map[string]string{"gw-a": sum(10, 20), "gw-b": sum(5), "gw-dead": sum(1, 1, 1, 1, 1), runningRequestsGatewayInstanceID: sum(1)})
+	// gw-a: 2 charges made 10 s and 20 s ago; gw-b: 1 charge made 5 s ago.
+	setLedgerFields(t, client, map[string]string{
+		"gw-a":                           formatLedgerValue(1000, 2, sum(10, 20)),
+		"gw-b":                           formatLedgerValue(300, 1, sum(5)),
+		"gw-dead":                        formatLedgerValue(9999, 5, sum(1, 1, 1, 1, 1)),
+		runningRequestsGatewayInstanceID: formatLedgerValue(777, 1, sum(1)),
+	})
 
 	counts, ledger, err := store.GetPodsRunningRequestsAndDecodeLedger([]*v1.Pod{pod.Pod})
 	require.NoError(t, err)
@@ -200,27 +210,38 @@ func TestGetPodsRunningRequestsAndDecodeLedger_SumsOtherLiveGateways(t *testing.
 	assert.Equal(t, 1300.0, remote.Tokens)
 	assert.InDelta(t, 35.0, remote.Elapsed, 1.0, "10 + 20 + 5 seconds of outstanding charges")
 
-	for _, key := range []string{tokensKey, chargesKey, sumAtKey} {
-		pending, ok := store.runningRequestsPendingPrunes.Load(key)
-		require.Truef(t, ok, "%s: the dead gateway's field must be queued for pruning", key)
-		assert.Equal(t, []string{"gw-dead"}, pending)
-	}
+	pending, ok := store.runningRequestsPendingPrunes.Load(decodeLedgerKey(testLedgerPodKey))
+	require.True(t, ok, "the dead gateway's field must be queued for pruning")
+	assert.Equal(t, []string{"gw-dead"}, pending)
 }
 
-// A pod that only this gateway has charged has no remote entry.
-func TestGetPodsRunningRequestsAndDecodeLedger_OnlySelf(t *testing.T) {
-	ctx := context.Background()
+// A charge that costs 0 tokens is still decoding: the gateway holding it counts,
+// with its elapsed time.
+func TestGetPodsRunningRequestsAndDecodeLedger_ZeroTokenChargeCounts(t *testing.T) {
 	client := newTestRunningRequestsClient(t)
 	store := &Store{redisClient: client}
 	pod := newTestPod(0)
 	store.metaPods.Store(testLedgerPodKey, pod)
+	markLive(t, client, "gw-a")
+	nowSeconds := float64(time.Now().UnixMilli()) / 1000
+	setLedgerFields(t, client, map[string]string{"gw-a": formatLedgerValue(0, 1, nowSeconds-8)})
 
-	tokensKey, chargesKey, sumAtKey := decodeLedgerKeys(testLedgerPodKey)
-	require.NoError(t, client.HSet(ctx, tokensKey, runningRequestsGatewayInstanceID, "500").Err())
-	require.NoError(t, client.HSet(ctx, chargesKey, runningRequestsGatewayInstanceID, "1").Err())
-	require.NoError(t, client.HSet(ctx, sumAtKey, runningRequestsGatewayInstanceID, "1").Err())
-	require.NoError(t, client.ZAdd(ctx, runningRequestsGatewaysKey,
-		redis.Z{Score: float64(time.Now().UnixMilli()), Member: runningRequestsGatewayInstanceID}).Err())
+	_, ledger, err := store.GetPodsRunningRequestsAndDecodeLedger([]*v1.Pod{pod.Pod})
+	require.NoError(t, err)
+	remote, ok := ledger[testLedgerPodKey]
+	require.True(t, ok, "a 0-token charge must not drop the gateway")
+	assert.Zero(t, remote.Tokens)
+	assert.InDelta(t, 8.0, remote.Elapsed, 1.0)
+}
+
+// A pod that only this gateway has charged has no remote entry.
+func TestGetPodsRunningRequestsAndDecodeLedger_OnlySelf(t *testing.T) {
+	client := newTestRunningRequestsClient(t)
+	store := &Store{redisClient: client}
+	pod := newTestPod(0)
+	store.metaPods.Store(testLedgerPodKey, pod)
+	markLive(t, client, runningRequestsGatewayInstanceID)
+	setLedgerFields(t, client, map[string]string{runningRequestsGatewayInstanceID: formatLedgerValue(500, 1, 1)})
 
 	_, ledger, err := store.GetPodsRunningRequestsAndDecodeLedger([]*v1.Pod{pod.Pod})
 	require.NoError(t, err)
@@ -228,29 +249,22 @@ func TestGetPodsRunningRequestsAndDecodeLedger_OnlySelf(t *testing.T) {
 	assert.NotContains(t, ledger, testLedgerPodKey)
 }
 
-// This gateway's own ledger fields are never queued for pruning, even when it
-// is missing from the live set.
+// This gateway's own field is never queued for pruning, even when it is
+// missing from the live set.
 func TestGetPodsRunningRequestsAndDecodeLedger_NeverPrunesSelf(t *testing.T) {
-	ctx := context.Background()
 	client := newTestRunningRequestsClient(t)
 	store := &Store{redisClient: client}
 	pod := newTestPod(0)
 	store.metaPods.Store(testLedgerPodKey, pod)
-
-	tokensKey, chargesKey, sumAtKey := decodeLedgerKeys(testLedgerPodKey)
-	for _, key := range []string{tokensKey, chargesKey, sumAtKey} {
-		require.NoError(t, client.HSet(ctx, key, runningRequestsGatewayInstanceID, "1").Err())
-	}
+	setLedgerFields(t, client, map[string]string{runningRequestsGatewayInstanceID: formatLedgerValue(1, 1, 1)})
 
 	_, _, err := store.GetPodsRunningRequestsAndDecodeLedger([]*v1.Pod{pod.Pod})
 	require.NoError(t, err)
-	for _, key := range []string{tokensKey, chargesKey, sumAtKey} {
-		pending, ok := store.runningRequestsPendingPrunes.Load(key)
-		assert.Falsef(t, ok && len(pending) > 0, "%s: own field queued for pruning: %v", key, pending)
-	}
+	pending, ok := store.runningRequestsPendingPrunes.Load(decodeLedgerKey(testLedgerPodKey))
+	assert.Falsef(t, ok && len(pending) > 0, "own field queued for pruning: %v", pending)
 }
 
-// Close stops the writer goroutine.
+// Close stops the writer goroutine and returns only after it has.
 func TestStoreClose_StopsDecodeLedgerPublisher(t *testing.T) {
 	client := newTestRunningRequestsClient(t)
 	store := &Store{redisClient: client}
@@ -261,14 +275,15 @@ func TestStoreClose_StopsDecodeLedgerPublisher(t *testing.T) {
 	store.Close()
 
 	select {
-	case <-p.done:
+	case <-p.stopped:
 	default:
-		t.Fatal("Close must stop the decode ledger publisher")
+		t.Fatal("Close must wait for the decode ledger writer to return")
 	}
 }
 
-// A second registration replaces the first: the first registration's notify
-// function stops queueing work, and the second one publishes.
+// A second registration replaces the first: the first registration's writer has
+// stopped before the second starts, its notify function stops queueing work,
+// and the second one publishes.
 func TestPublishDecodeLedger_LaterRegistrationReplacesEarlier(t *testing.T) {
 	client := newTestRunningRequestsClient(t)
 	store := &Store{redisClient: client}
@@ -277,15 +292,19 @@ func TestPublishDecodeLedger_LaterRegistrationReplacesEarlier(t *testing.T) {
 	second := store.PublishDecodeLedger(func(string) DecodeLedgerState { return DecodeLedgerState{Tokens: 2, Charges: 1} })
 	t.Cleanup(func() { store.decodeLedger.Load().close() })
 
+	select {
+	case <-firstPublisher.stopped:
+	default:
+		t.Fatal("the replaced writer must have returned before the replacement starts")
+	}
 	first(testLedgerPodKey)
 	firstPublisher.mu.Lock()
 	assert.Empty(t, firstPublisher.dirty, "a replaced registration must not queue work")
 	firstPublisher.mu.Unlock()
 
 	second(testLedgerPodKey)
-	tokensKey, _, _ := decodeLedgerKeys(testLedgerPodKey)
 	require.Eventually(t, func() bool {
-		v, ok := ledgerField(t, client, tokensKey, runningRequestsGatewayInstanceID)
-		return ok && v == "2"
+		v, ok := ledgerField(t, client, decodeLedgerKey(testLedgerPodKey), runningRequestsGatewayInstanceID)
+		return ok && strings.HasPrefix(v, "2,1,")
 	}, 2*time.Second, 10*time.Millisecond)
 }

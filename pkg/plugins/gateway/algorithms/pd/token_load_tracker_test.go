@@ -1078,3 +1078,39 @@ func TestTokenLoadTracker_DecodeLedgerListener(t *testing.T) {
 	tr.AcquireDecodeWithTTL("r4", "ns/decode-0", 100, 0)
 	assert.Empty(t, take())
 }
+
+// DecodeLedgerState reads tokens, charges and charge times together: under
+// concurrent charges and releases of 100 tokens each, every state it returns
+// has exactly 100 tokens per outstanding charge.
+func TestTokenLoadTracker_DecodeLedgerStateIsConsistent(t *testing.T) {
+	tr := newTokenLoadTracker(TokenLoadConfig{}, time.Now)
+	t.Cleanup(tr.Close)
+	const pod = "ns/decode-0"
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for w := 0; w < 8; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < 2000; i++ {
+				id := fmt.Sprintf("w%d-%d", w, i)
+				tr.AcquireDecodeWithTTL(id, pod, 100, 0)
+				tr.ReleaseDecode(id)
+			}
+		}(w)
+	}
+	go func() { wg.Wait(); close(stop) }()
+
+	reads := 0
+	for {
+		select {
+		case <-stop:
+			require.Greater(t, reads, 0)
+			return
+		default:
+		}
+		tokens, charges, _ := tr.DecodeLedgerState(pod)
+		require.Equalf(t, 100*float64(charges), tokens, "torn read: %v tokens for %d charges", tokens, charges)
+		reads++
+	}
+}

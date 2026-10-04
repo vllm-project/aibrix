@@ -1732,7 +1732,10 @@ type sharedDecodeLedgerCache interface {
 
 // shareDecodeLedger publishes the decode ledger to the other gateway replicas
 // and reads theirs, when AIBRIX_TOKEN_LOAD_SHARED_LEDGER is on and the cache
-// can share it.
+// can share it. It does not depend on the default decode policy: a model's
+// config profile can select token_load per request (routingConfig), which is
+// also why the tracker always exists. Until something charges the decode
+// ledger, the publisher has nothing to write.
 func (r *pdRouter) shareDecodeLedger() {
 	if !aibrixTokenLoadSharedLedger || r.tokenLoadTracker == nil {
 		return

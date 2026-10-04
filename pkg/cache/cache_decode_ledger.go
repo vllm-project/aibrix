@@ -18,7 +18,9 @@ package cache
 
 import (
 	"context"
+	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,12 +35,13 @@ import (
 // running-request counters (cache_running_requests.go), and reuse their
 // instance ID, liveness set and field pruning.
 //
-// Each decode pod has three hashes, one per ledger value, with one field per
-// gateway instance:
+// Each decode pod has one hash, aibrix:dtl:<ns>/<pod>, with one field per
+// gateway instance (its running-requests instance ID) whose value packs that
+// gateway's ledger for the pod as "<tokens>,<charges>,<sumat>":
 //
-//	aibrix:dtl:tokens:<ns>/<pod>  prompt tokens charged and not yet released
-//	aibrix:dtl:n:<ns>/<pod>       outstanding decode charges
-//	aibrix:dtl:sumat:<ns>/<pod>   sum of their charge times, Unix seconds on the Redis clock
+//	tokens   prompt tokens charged and not yet released
+//	charges  outstanding decode charges
+//	sumat    sum of their charge times, Unix seconds on the Redis clock
 //
 // Unlike the running-request counters, a ledger field is only ever written by
 // the gateway that owns it, so the gateway writes its absolute values instead
@@ -79,10 +82,28 @@ type RemoteDecodeLoad struct {
 // identified by podKey (namespace/name).
 type DecodeLedgerProvider func(podKey string) DecodeLedgerState
 
-func decodeLedgerKeys(podKey string) (tokens, charges, sumAt string) {
-	return decodeLedgerKeyPrefix + ":tokens:" + podKey,
-		decodeLedgerKeyPrefix + ":n:" + podKey,
-		decodeLedgerKeyPrefix + ":sumat:" + podKey
+func decodeLedgerKey(podKey string) string {
+	return decodeLedgerKeyPrefix + ":" + podKey
+}
+
+// formatLedgerValue packs one gateway's ledger for a pod into its hash field.
+func formatLedgerValue(tokens float64, charges int64, sumAt float64) string {
+	return formatLedgerFloat(tokens) + "," + strconv.FormatInt(charges, 10) + "," + formatLedgerFloat(sumAt)
+}
+
+// parseLedgerValue unpacks a hash field written by formatLedgerValue.
+func parseLedgerValue(v string) (tokens float64, charges int64, sumAt float64, ok bool) {
+	parts := strings.Split(v, ",")
+	if len(parts) != 3 {
+		return 0, 0, 0, false
+	}
+	tokens, err1 := strconv.ParseFloat(parts[0], 64)
+	charges, err2 := strconv.ParseInt(parts[1], 10, 64)
+	sumAt, err3 := strconv.ParseFloat(parts[2], 64)
+	if err1 != nil || err2 != nil || err3 != nil {
+		return 0, 0, 0, false
+	}
+	return tokens, charges, sumAt, true
 }
 
 // SharedDecodeLedgerAvailable reports whether this cache can share the decode
@@ -109,7 +130,7 @@ func (c *Store) PublishDecodeLedger(provider DecodeLedgerProvider) func(podKey s
 		klog.V(2).Info("decode ledger registered again; the later registration replaces the earlier one")
 		old.close()
 	}
-	go p.run()
+	p.start()
 	return p.markDirty
 }
 
@@ -129,6 +150,8 @@ type decodeLedgerPublisher struct {
 	wake      chan struct{}
 	done      chan struct{}
 	closeOnce sync.Once
+	// stopped is closed when run returns; nil until run starts.
+	stopped chan struct{}
 }
 
 func newDecodeLedgerPublisher(store *Store, provider DecodeLedgerProvider) *decodeLedgerPublisher {
@@ -157,8 +180,22 @@ func (p *decodeLedgerPublisher) markDirty(podKey string) {
 	}
 }
 
+// close stops the publisher and, if its goroutine is running, waits for it to
+// return, so a flush in progress cannot land after a replacement's writes.
 func (p *decodeLedgerPublisher) close() {
 	p.closeOnce.Do(func() { close(p.done) })
+	if p.stopped != nil {
+		<-p.stopped
+	}
+}
+
+// start runs the publisher's goroutine.
+func (p *decodeLedgerPublisher) start() {
+	p.stopped = make(chan struct{})
+	go func() {
+		defer close(p.stopped)
+		p.run()
+	}()
 }
 
 func (p *decodeLedgerPublisher) run() {
@@ -205,21 +242,15 @@ func (p *decodeLedgerPublisher) flush() {
 	zero := make(map[string]bool, len(batch))
 	for _, podKey := range batch {
 		state := p.provider(podKey)
-		tokensKey, chargesKey, sumAtKey := decodeLedgerKeys(podKey)
+		key := decodeLedgerKey(podKey)
 		if state.isZero() {
 			zero[podKey] = true
-			pipe.HDel(ctx, tokensKey, field)
-			pipe.HDel(ctx, chargesKey, field)
-			pipe.HDel(ctx, sumAtKey, field)
+			pipe.HDel(ctx, key, field)
 			continue
 		}
 		sumAt := state.SumChargedAt + float64(state.Charges)*offsetSeconds
-		pipe.HSet(ctx, tokensKey, field, formatLedgerFloat(state.Tokens))
-		pipe.HSet(ctx, chargesKey, field, strconv.FormatInt(state.Charges, 10))
-		pipe.HSet(ctx, sumAtKey, field, formatLedgerFloat(sumAt))
-		for _, key := range []string{tokensKey, chargesKey, sumAtKey} {
-			pipe.PExpire(ctx, key, runningRequestsTTL)
-		}
+		pipe.HSet(ctx, key, field, formatLedgerValue(state.Tokens, state.Charges, sumAt))
+		pipe.PExpire(ctx, key, runningRequestsTTL)
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		klog.V(4).ErrorS(err, "failed to publish decode ledger", "pod_count", len(batch))
@@ -257,52 +288,41 @@ func (c *Store) GetPodsRunningRequestsAndDecodeLedger(pods []*v1.Pod) (map[strin
 }
 
 // sumRemoteDecodeLedger adds up the fields of the live gateways other than this
-// one, and enqueues the dead gateways' fields for pruning. ok is false when no
-// other live gateway has charged the pod.
-func (c *Store) sumRemoteDecodeLedger(podKey string, tokens, charges, sumAt map[string]string, live map[string]struct{}, nowSeconds float64) (RemoteDecodeLoad, bool) {
+// one, and enqueues the dead gateways' fields for pruning (never this
+// gateway's own: it may not be in the live set yet, and it rewrites its field
+// on its next change). ok is false when no other live gateway holds a charge
+// on the pod.
+func (c *Store) sumRemoteDecodeLedger(key string, fields map[string]string, live map[string]struct{}, nowSeconds float64) (RemoteDecodeLoad, bool) {
 	var out RemoteDecodeLoad
 	var n int64
 	var sumChargedAt float64
+	var dead []string
 	found := false
-	tokensKey, chargesKey, sumAtKey := decodeLedgerKeys(podKey)
-	for key, fields := range map[string]map[string]string{tokensKey: tokens, chargesKey: charges, sumAtKey: sumAt} {
-		var dead []string
-		for gw := range fields {
-			// This gateway's own fields are never pruned: it may not be in the
-			// live set yet, and it rewrites them on its next change.
-			if _, ok := live[gw]; !ok && gw != runningRequestsGatewayInstanceID {
-				dead = append(dead, gw)
-			}
-		}
-		c.enqueueDeadRunningRequestsPrune(key, dead)
-	}
-	for gw, v := range tokens {
+	for gw, v := range fields {
 		if gw == runningRequestsGatewayInstanceID {
 			continue
 		}
 		if _, ok := live[gw]; !ok {
+			dead = append(dead, gw)
 			continue
 		}
-		t, err := strconv.ParseFloat(v, 64)
-		if err != nil || t <= 0 {
+		tokens, charges, sumAt, ok := parseLedgerValue(v)
+		if !ok || charges <= 0 {
 			continue
 		}
+		// A charge can cost 0 tokens and still be decoding: count the gateway
+		// whenever it holds a charge.
 		found = true
-		out.Tokens += t
-		if k, err := strconv.ParseInt(charges[gw], 10, 64); err == nil && k > 0 {
-			if s, err := strconv.ParseFloat(sumAt[gw], 64); err == nil {
-				n += k
-				sumChargedAt += s
-			}
-		}
+		out.Tokens += math.Max(0, tokens)
+		n += charges
+		sumChargedAt += sumAt
 	}
+	c.enqueueDeadRunningRequestsPrune(key, dead)
 	if !found {
 		return RemoteDecodeLoad{}, false
 	}
-	if n > 0 {
-		if elapsed := float64(n)*nowSeconds - sumChargedAt; elapsed > 0 {
-			out.Elapsed = elapsed
-		}
+	if elapsed := float64(n)*nowSeconds - sumChargedAt; elapsed > 0 {
+		out.Elapsed = elapsed
 	}
 	return out, true
 }
@@ -331,17 +351,16 @@ func (c *Store) readPodsSharedRoutingState(pods []*v1.Pod, withLedger bool) (map
 	podKeys := make([]string, len(valid))
 	redisKeys := make([]string, len(valid))
 	hashCmds := make([]*redis.MapStringStringCmd, len(valid))
-	var ledgerCmds [][3]*redis.MapStringStringCmd
+	var ledgerCmds []*redis.MapStringStringCmd
 	if withLedger {
-		ledgerCmds = make([][3]*redis.MapStringStringCmd, len(valid))
+		ledgerCmds = make([]*redis.MapStringStringCmd, len(valid))
 	}
 	for i, pod := range valid {
 		podKeys[i] = utils.GeneratePodKey(pod.Namespace, pod.Name)
 		redisKeys[i] = runningRequestsKey(pod.Namespace, pod.Name)
 		hashCmds[i] = pipe.HGetAll(ctx, redisKeys[i])
 		if withLedger {
-			tokensKey, chargesKey, sumAtKey := decodeLedgerKeys(podKeys[i])
-			ledgerCmds[i] = [3]*redis.MapStringStringCmd{pipe.HGetAll(ctx, tokensKey), pipe.HGetAll(ctx, chargesKey), pipe.HGetAll(ctx, sumAtKey)}
+			ledgerCmds[i] = pipe.HGetAll(ctx, decodeLedgerKey(podKeys[i]))
 		}
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
@@ -382,14 +401,12 @@ func (c *Store) readPodsSharedRoutingState(pods []*v1.Pod, withLedger bool) (map
 
 	nowSeconds := float64(c.redisNowMillis()) / 1000
 	ledger := make(map[string]RemoteDecodeLoad)
-	for i, cmds := range ledgerCmds {
-		tokens, err1 := cmds[0].Result()
-		charges, err2 := cmds[1].Result()
-		sumAt, err3 := cmds[2].Result()
-		if err1 != nil || err2 != nil || err3 != nil || len(tokens) == 0 {
+	for i, cmd := range ledgerCmds {
+		fields, err := cmd.Result()
+		if err != nil || len(fields) == 0 {
 			continue
 		}
-		if remote, ok := c.sumRemoteDecodeLedger(podKeys[i], tokens, charges, sumAt, live, nowSeconds); ok {
+		if remote, ok := c.sumRemoteDecodeLedger(decodeLedgerKey(podKeys[i]), fields, live, nowSeconds); ok {
 			ledger[podKeys[i]] = remote
 		}
 	}
