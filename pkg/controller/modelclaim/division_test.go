@@ -1,0 +1,1918 @@
+/*
+Copyright 2026 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package modelclaim
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/klog/v2"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+)
+
+func TestCardDivisionStateDividesACardOncePerRound(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	divisions := newCardDivisionState(func() time.Time { return now })
+	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+	other := types.NamespacedName{Namespace: testNamespace, Name: "warm-2"}
+	due := func(card types.NamespacedName) bool {
+		divide, _ := divisions.due(card, "unchanged")
+		return divide
+	}
+
+	assert.True(t, due(card))
+	assert.False(t, due(card))
+	assert.True(t, due(other), "each card has a round of its own")
+
+	now = now.Add(DefaultRequeueDuration)
+	assert.True(t, due(card))
+}
+
+func TestCardDivisionStateForgetsCardsLongGone(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	divisions := newCardDivisionState(func() time.Time { return now })
+	gone := types.NamespacedName{Namespace: testNamespace, Name: "deleted"}
+	divide, _ := divisions.due(gone, "a")
+	require.True(t, divide)
+	divisions.leftAlone(gone, "a", []string{"busy"})
+	divisions.failedAgain(gone)
+	divisions.leftUndivided(gone, "its runtime did not answer")
+
+	now = now.Add(30 * DefaultRequeueDuration)
+	divisions.due(types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, "b")
+
+	assert.NotContains(t, divisions.lastRound, gone)
+	assert.NotContains(t, divisions.dividedFor, gone)
+	assert.NotContains(t, divisions.attemptedFor, gone)
+	assert.NotContains(t, divisions.failures, gone)
+	assert.NotContains(t, divisions.lastFailure, gone)
+	assert.NotContains(t, divisions.owed, gone)
+	assert.NotContains(t, divisions.undividedFor, gone)
+	assert.Equal(t, 1, divisions.failedAgain(gone), "a card that comes back starts over")
+}
+
+// aCardAndOneEngineOnIt is a realistically sized card carrying one claim whose
+// engine is already held to limitBytes and has mapped usedBytes.
+func aCardAndOneEngineOnIt(t *testing.T, limitBytes, usedBytes int64) (*ModelClaimReconciler, *fakeRuntime, *corev1.Pod) {
+	t.Helper()
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	solo := withFinalizer(claimOnPod("solo", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	solo.Status.Instances[0].Port = 9001
+	solo.Status.Instances[0].KVLimitBytes = limitBytes
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("solo", usedBytes, limitBytes)}
+	r, runtime := newReconciler(t, solo, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	return r, runtime, pod
+}
+
+func TestReconcileGivesACardsSpareRoomToTheEngineOnIt(t *testing.T) {
+	r, runtime, _ := aCardAndOneEngineOnIt(t, 10<<30, 4<<30)
+
+	reconcileOnce(t, r, "solo")
+
+	// 80 GiB less a 20 GiB footprint leaves 60 GiB, all of it this engine's.
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, int64(60)<<30, runtime.kvLimitCalls[0].LimitBytes)
+	got := getModel(t, r, "solo")
+	assert.Equal(t, int64(60)<<30, got.Status.Instances[0].KVLimitBytes)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Instances[0].Phase)
+	// Following load is routine, so it is logged rather than raised on the
+	// claim every round.
+	for _, event := range recordedEvents(t, r) {
+		assert.NotContains(t, event, "KVLimitSet")
+	}
+}
+
+func TestReconcileLeavesACardAloneWhenItHasBarelyDrifted(t *testing.T) {
+	// A hundred mebibytes short of its share, well inside one page bundle.
+	current := int64(60)<<30 - 100<<20
+	r, runtime, _ := aCardAndOneEngineOnIt(t, current, 4<<30)
+
+	reconcileOnce(t, r, "solo")
+
+	assert.Empty(t, runtime.kvLimitCalls)
+	got := getModel(t, r, "solo")
+	assert.Equal(t, current, got.Status.Instances[0].KVLimitBytes)
+}
+
+// aCardOfTwoEngines is an 80 GiB card with two claims on it, "busy" and
+// "idle", both active. Each has a 20 GiB footprint and a 4 GiB floor, so the
+// card has 32 GiB to share out. The clock the divisions read is the one
+// returned.
+func aCardOfTwoEngines(
+	t *testing.T,
+	busy, idle RuntimeSnapshotModel,
+) (*ModelClaimReconciler, *fakeRuntime, *RuntimeSnapshot, *time.Time) {
+	t.Helper()
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	claims := make([]client.Object, 0, 3)
+	for _, engine := range []RuntimeSnapshotModel{busy, idle} {
+		claim := withFinalizer(claimOnPod(engine.ModelName, pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+		claim.Status.Instances[0].Port = engine.Port
+		claim.Status.Instances[0].KVLimitBytes = engine.KVCapacityBytes
+		claims = append(claims, claim)
+	}
+	snapshot.Models = []RuntimeSnapshotModel{busy, idle}
+	r, runtime := newReconciler(t, append(claims, pod)...)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	now := time.Unix(1_700_000_000, 0)
+	r.Divisions = newCardDivisionState(func() time.Time { return now })
+	return r, runtime, snapshot, &now
+}
+
+// nextRound moves the clock to the card's next round and reconciles a claim.
+func nextRound(t *testing.T, r *ModelClaimReconciler, clock *time.Time, claim string) {
+	t.Helper()
+	*clock = clock.Add(DefaultRequeueDuration)
+	reconcileOnce(t, r, claim)
+}
+
+func TestReconcileLeavesACardAloneWhileNoEngineIsShortOfKV(t *testing.T) {
+	r, runtime, snapshot, clock := aCardOfTwoEngines(t,
+		engineHolding("busy", 4<<30, 20<<30), engineHolding("idle", 4<<30, 20<<30))
+	// The card's first round finds it divided evenly, and notes it.
+	reconcileOnce(t, r, "idle")
+	require.Empty(t, runtime.kvLimitCalls)
+
+	// Requests in flight, with most of the engine's limit still unmapped.
+	snapshot.Models[0].RequestsRunning = 4
+	nextRound(t, r, clock, "idle")
+
+	// A limit is a ceiling. Moving it while nobody is near it would only cost
+	// the writes, round after round, as the requests in flight come and go.
+	assert.Empty(t, runtime.kvLimitCalls)
+	assert.Equal(t, int64(20)<<30, getModel(t, r, "busy").Status.Instances[0].KVLimitBytes)
+}
+
+func TestReconcileDividesACardWhateverItsLoadWhenItFirstSeesIt(t *testing.T) {
+	// A controller that has just started finds a card as an engine's sleep
+	// left it, with that engine awake again. Both engines serve, both hold
+	// their records, and neither is near its limit.
+	busy := engineHolding("busy", 4<<30, 36<<30)
+	busy.RequestsRunning = 1
+	woken := engineHolding("idle", 1<<30, 4<<30)
+	woken.RequestsRunning = 1
+	r, runtime, _, _ := aCardOfTwoEngines(t, busy, woken)
+
+	reconcileOnce(t, r, "idle")
+
+	// Nothing is known of what the card was last divided for, so the change
+	// cannot be seen. The first round divides the card all the same.
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, int64(20)<<30, getModel(t, r, "busy").Status.Instances[0].KVLimitBytes)
+	assert.Equal(t, int64(20)<<30, getModel(t, r, "idle").Status.Instances[0].KVLimitBytes)
+}
+
+func TestReconcileFinishesADivisionThatWasLeftUnfinished(t *testing.T) {
+	r, runtime, snapshot, clock := aCardOfTwoEngines(t,
+		engineHolding("busy", 4<<30, 20<<30), engineHolding("idle", 4<<30, 20<<30))
+	reconcileOnce(t, r, "idle")
+	require.Empty(t, runtime.kvLimitCalls)
+
+	// A grow is recorded before it is written. This one did not take, so the
+	// engine is held to less than its record. Both engines serve, and neither
+	// is near its limit.
+	snapshot.Models[0].KVCapacityBytes = 10 << 30
+	snapshot.Models[0].RequestsRunning = 1
+	snapshot.Models[1].RequestsRunning = 1
+	nextRound(t, r, clock, "idle")
+
+	// The health loop does not grow an engine that is routed. Only a division
+	// does, so the round carries one out.
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, "busy", runtime.kvLimitCalls[0].ModelName)
+	assert.Equal(t, int64(20)<<30, runtime.kvLimitCalls[0].LimitBytes)
+}
+
+func TestReconcileGivesAnEngineItsShareBackOnceTheCardIsAtRest(t *testing.T) {
+	// A burst on "busy" has the card divided five parts to one.
+	spare := int64(32) << 30
+	serving := engineHolding("busy", 4<<30, int64(4)<<30+spare*5/6+1)
+	serving.RequestsRunning = 4
+	r, runtime, snapshot, clock := aCardOfTwoEngines(t,
+		serving, engineHolding("idle", 4<<30, int64(4)<<30+spare/6))
+	reconcileOnce(t, r, "idle")
+	require.Empty(t, runtime.kvLimitCalls, "the card is divided as its load asks")
+
+	// The burst is over, and nothing is in flight on the card.
+	snapshot.Models[0].RequestsRunning = 0
+	nextRound(t, r, clock, "idle")
+
+	// Left as it was, "idle" would start its own burst on a sixth of the spare
+	// room. Most of the card would be held by an engine that serves nothing.
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, int64(20)<<30, getModel(t, r, "busy").Status.Instances[0].KVLimitBytes)
+	assert.Equal(t, int64(20)<<30, getModel(t, r, "idle").Status.Instances[0].KVLimitBytes)
+}
+
+// divisionsIn counts the rounds, of the ones played, in which a limit was
+// written. Before each round, load sets what the runtime reports.
+func divisionsIn(
+	t *testing.T,
+	r *ModelClaimReconciler,
+	runtime *fakeRuntime,
+	clock *time.Time,
+	rounds int,
+	load func(round int),
+) int {
+	t.Helper()
+	divisions := 0
+	for round := 0; round < rounds; round++ {
+		load(round)
+		before := len(runtime.kvLimitCalls)
+		nextRound(t, r, clock, "idle")
+		if len(runtime.kvLimitCalls) > before {
+			divisions++
+		}
+	}
+	return divisions
+}
+
+func TestReconcileDividesACardOnceForAnEngineThatStaysShort(t *testing.T) {
+	r, runtime, snapshot, clock := aCardOfTwoEngines(t,
+		engineHolding("busy", 4<<30, 20<<30), engineHolding("idle", 1<<30, 20<<30))
+	reconcileOnce(t, r, "idle")
+	require.Empty(t, runtime.kvLimitCalls)
+
+	// "busy" keeps 20 GiB mapped, which is more than half of any limit it is
+	// given. "idle" has mapped little, and has a request in flight at every
+	// other reading.
+	snapshot.Models[0].KVUsedBytes = 20 << 30
+	snapshot.Models[0].RequestsRunning = 4
+	divisions := divisionsIn(t, r, runtime, clock, 12, func(round int) {
+		snapshot.Models[1].RequestsRunning = int64(round % 2)
+	})
+
+	// The second round that finds the engine short gives it its share. After
+	// that, a plan that moves with the other engine's requests gives it
+	// nothing more, and is not carried out.
+	assert.Equal(t, 1, divisions)
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, "busy", runtime.kvLimitCalls[1].ModelName)
+}
+
+func TestReconcileDividesACardOnceForAnEngineWhoseLoadIsNeverRead(t *testing.T) {
+	// The runtime reads the request metrics of one kind of engine. An engine
+	// of another kind serves with its load unread at every reading. The
+	// engine beside it has mapped little in one case, and nearly half of its
+	// limit in the other.
+	for _, mapped := range []int64{4 << 30, 8 << 30} {
+		unread := engineHolding("busy", 4<<30, 20<<30)
+		unread.RequestMetricsObserved = false
+		r, runtime, snapshot, clock := aCardOfTwoEngines(t, unread, engineHolding("idle", mapped, 20<<30))
+
+		divisions := divisionsIn(t, r, runtime, clock, 12, func(round int) {
+			snapshot.Models[1].RequestsRunning = int64(4 * (round % 2))
+		})
+
+		assert.Equal(t, 1, divisions,
+			"the engine is given a busy engine's share once, and the card is then left alone (%s mapped)",
+			gibibytes(mapped))
+	}
+}
+
+func TestReconcileGivesTheBusierEngineMoreOfTheCard(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	idle := withFinalizer(claimOnPod("idle", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	idle.Status.Instances[0].KVLimitBytes = 20 << 30
+	busy := claimOnPod("busy", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30)
+	busy.Status.Instances[0].KVLimitBytes = 20 << 30
+	serving := engineHolding("busy", 4<<30, 20<<30)
+	serving.RequestsRunning = 4
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("idle", 4<<30, 20<<30), serving}
+	r, runtime := newReconciler(t, idle, busy, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, "idle")
+
+	// Two 20 GiB footprints and two 4 GiB floors leave 32 GiB to share. The
+	// busy engine weighs five to the idle one's one, and the byte left over by
+	// the division goes to the first claim by name.
+	spare := int64(32) << 30
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, "idle", runtime.kvLimitCalls[0].ModelName, "the shrink comes first")
+	assert.Equal(t, int64(4)<<30+spare/6, runtime.kvLimitCalls[0].LimitBytes)
+	assert.Equal(t, "busy", runtime.kvLimitCalls[1].ModelName)
+	assert.Equal(t, int64(4)<<30+spare*5/6+1, runtime.kvLimitCalls[1].LimitBytes)
+	assert.Equal(t, int64(4)<<30+spare*5/6+1, getModel(t, r, "busy").Status.Instances[0].KVLimitBytes)
+}
+
+// A scrape of an engine's metrics that timed out says nothing about its load.
+// The engine may be too busy to answer, so it is not squeezed as idle.
+func TestReconcileWeighsAServingEngineWhoseMetricsWereNotReadAsBusy(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	idle := withFinalizer(claimOnPod("idle", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	idle.Status.Instances[0].KVLimitBytes = 20 << 30
+	unread := claimOnPod("unread", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30)
+	unread.Status.Instances[0].KVLimitBytes = 20 << 30
+	unreadEngine := engineHolding("unread", 4<<30, 20<<30)
+	unreadEngine.RequestMetricsObserved = false
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("idle", 4<<30, 20<<30), unreadEngine}
+	r, runtime := newReconciler(t, idle, unread, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, "idle")
+
+	// Weighed as busy as an engine counts, it is given five parts of the 32 GiB
+	// spare to the idle engine's one.
+	spare := int64(32) << 30
+	assert.Equal(t, int64(4)<<30+spare*5/6, getModel(t, r, "unread").Status.Instances[0].KVLimitBytes)
+	assert.Equal(t, int64(4)<<30+spare/6+1, getModel(t, r, "idle").Status.Instances[0].KVLimitBytes)
+}
+
+// The runtime says a waking engine is ready before it has finished booting,
+// and it reads no metrics until then. The division that the wake starts can
+// come in that moment. The gateway does not route to the engine yet, so it has
+// no load, and the card is divided evenly.
+func TestReconcileDividesEvenlyAtAWakeBeforeTheMetricsAreRead(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	awake := withFinalizer(claimOnPod("awake", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	awake.Status.Instances[0].KVLimitBytes = 36 << 30
+	woken := claimOnPod("woken", pod.Name, modelv1alpha1.ModelClaimSleeping, 20<<30, 4<<30)
+	woken.Status.Instances[0].KVLimitBytes = 4 << 30
+	wokenEngine := engineHolding("woken", 1<<30, 4<<30)
+	wokenEngine.Phase = "booting"
+	wokenEngine.RequestMetricsObserved = false
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("awake", 1<<30, 36<<30), wokenEngine}
+	r, runtime := newReconciler(t, awake, woken, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, "awake")
+
+	// Each engine keeps its floor, and the 32 GiB above the floors is split in two.
+	spare := int64(32) << 30
+	assert.Equal(t, int64(4)<<30+spare/2, getModel(t, r, "awake").Status.Instances[0].KVLimitBytes)
+	assert.Equal(t, int64(4)<<30+spare/2, getModel(t, r, "woken").Status.Instances[0].KVLimitBytes)
+}
+
+// The runtime goes on listing an engine it has given up on, dead. Its room is
+// back with the card, so the engine left serving is given all of it.
+func TestReconcileGivesAFailedEnginesRoomBack(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	awake := withFinalizer(claimOnPod("awake", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	awake.Status.Instances[0].KVLimitBytes = 30 << 30
+	failed := claimOnPod("failed", pod.Name, modelv1alpha1.ModelClaimFailed, 20<<30, 4<<30)
+	failed.Status.Instances[0].KVLimitBytes = 30 << 30
+	dead := engineHolding("failed", 10<<30, 30<<30)
+	dead.Phase = runtimePhaseFailed
+	dead.Alive = false
+	dead.Ready = false
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("awake", 4<<30, 30<<30), dead}
+	r, runtime := newReconciler(t, awake, failed, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, "awake")
+
+	// Alone on the card, it is held to the card less its own footprint.
+	assert.Equal(t, int64(60)<<30, getModel(t, r, "awake").Status.Instances[0].KVLimitBytes)
+}
+
+// A grow is written after every new limit is recorded. So when the reading
+// that should confirm the grow is lost, the engine is already recorded at its
+// new share, and it keeps its route.
+func TestReconcileKeepsAnEngineRoutedWhenItsGrowIsNotConfirmed(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	idle := withFinalizer(claimOnPod("idle", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	idle.Status.Instances[0].KVLimitBytes = 30 << 30
+	idle.Status.Instances[0].Port = 9001
+	busy := withFinalizer(claimOnPod("busy", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	busy.Status.Instances[0].KVLimitBytes = 10 << 30
+	busy.Status.Instances[0].Port = 9001
+	serving := engineHolding("busy", 4<<30, 10<<30)
+	serving.RequestsRunning = 4
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("idle", 4<<30, 30<<30), serving}
+	r, runtime := newReconciler(t, idle, busy, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	writes := 0
+	runtime.onKVLimit = func() {
+		writes++
+		if writes == 2 {
+			// The grow reached the engine, and the reading back is lost.
+			runtime.nilSnapshots = map[string]bool{pod.Status.PodIP: true}
+		}
+	}
+
+	reconcileOnce(t, r, "idle")
+
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, "busy", runtime.kvLimitCalls[1].ModelName)
+	assert.Equal(t, runtime.kvLimitCalls[1].LimitBytes, getModel(t, r, "busy").Status.Instances[0].KVLimitBytes,
+		"the grow is recorded before it is written")
+
+	runtime.nilSnapshots = nil
+	runtime.onKVLimit = nil
+	drainEvents(t, r)
+	reconcileOnce(t, r, "busy")
+
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, "busy").Status.Instances[0].Phase)
+	for _, event := range drainEvents(t, r) {
+		assert.NotContains(t, event, "KVLimitNotHeld")
+	}
+}
+
+// When a grow is written, the instance already records the limit it grows
+// into. A shrink is written before any record moves.
+func TestReconcileWritesAGrowOnlyOnceItIsRecorded(t *testing.T) {
+	serving := engineHolding("busy", 4<<30, 10<<30)
+	serving.RequestsRunning = 4
+	r, runtime, _, _ := aCardOfTwoEngines(t, serving, engineHolding("idle", 4<<30, 30<<30))
+	recordedAtWrite := map[string]int64{}
+	runtime.onKVLimit = func() {
+		call := runtime.kvLimitCalls[len(runtime.kvLimitCalls)-1]
+		recordedAtWrite[call.ModelName] = getModel(t, r, call.ModelName).Status.Instances[0].KVLimitBytes
+	}
+
+	reconcileOnce(t, r, "idle")
+
+	require.Len(t, runtime.kvLimitCalls, 2)
+	shrink, grow := runtime.kvLimitCalls[0], runtime.kvLimitCalls[1]
+	require.Equal(t, "idle", shrink.ModelName)
+	require.Equal(t, "busy", grow.ModelName)
+	assert.Equal(t, int64(30)<<30, recordedAtWrite["idle"])
+	assert.Equal(t, grow.LimitBytes, recordedAtWrite["busy"])
+}
+
+// A placement shrinks one neighbour and grows another. The reading that
+// should confirm the grow is lost. The room is made and every limit is
+// recorded by then, so the placement keeps the model.
+func TestReconcileKeepsAModelPlacedWhenANeighbourCouldNotBeGrown(t *testing.T) {
+	pm := claimWithCost(100, 50)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	idle := claimOnPod("idle", pod.Name, modelv1alpha1.ModelClaimActive, 100, 50)
+	idle.Status.Instances[0].KVLimitBytes = 600
+	busy := claimOnPod("busy", pod.Name, modelv1alpha1.ModelClaimActive, 100, 50)
+	busy.Status.Instances[0].KVLimitBytes = 100
+	serving := engineHolding("busy", 100, 100)
+	serving.RequestsRunning = 4
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("idle", 50, 600), serving}
+	r, runtime := newReconciler(t, pm, pod, idle, busy)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	writes := 0
+	runtime.onKVLimit = func() {
+		writes++
+		if writes == 2 {
+			runtime.nilSnapshots = map[string]bool{pod.Status.PodIP: true}
+		}
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1, "the placement keeps the model")
+	assert.Len(t, runtime.activateCalls, 1)
+	records := got.Status.Instances[0].KVLimitBytes +
+		getModel(t, r, "idle").Status.Instances[0].KVLimitBytes +
+		getModel(t, r, "busy").Status.Instances[0].KVLimitBytes
+	assert.Equal(t, int64(1000-300), records, "the records spend the card, and no more")
+}
+
+// The cache can lag a record that a division in another claim's pass has just
+// written. The health loop reads the record fresh before it acts on a limit
+// that is not in force. So an engine that was just grown is not pulled back.
+func TestReconcileReadsARecordFreshBeforeActingOnIt(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	cached := withFinalizer(claimOnPod("busy", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	cached.Status.Instances[0].Port = 9001
+	cached.Status.Instances[0].KVLimitBytes = 10 << 30
+	// A division has grown the engine and recorded 30 GiB; the cache still
+	// shows the 10 GiB before it.
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("busy", 4<<30, 30<<30)}
+	r, runtime := newReconciler(t, cached, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	fresh := cached.DeepCopy()
+	fresh.Status.Instances[0].KVLimitBytes = 30 << 30
+	r.APIReader = fake.NewClientBuilder().WithScheme(r.Scheme).WithObjects(fresh, pod).
+		WithStatusSubresource(&modelv1alpha1.ModelClaim{}).Build()
+
+	reconcileOnce(t, r, "busy")
+
+	for _, call := range runtime.kvLimitCalls {
+		assert.NotEqual(t, int64(10)<<30, call.LimitBytes, "the engine must not be pulled back to a stale record")
+	}
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, "busy").Status.Instances[0].Phase)
+	for _, event := range drainEvents(t, r) {
+		assert.NotContains(t, event, "KVLimitNotHeld")
+	}
+}
+
+// A division recorded a larger limit and could not confirm the grow, so the
+// engine is still held to the old one. A pass that reads the claim from a
+// cache that has not seen the record writes nothing over it. Its write carries
+// the version it read, and the API server refuses it, so the record stays for
+// the round that grows the engine.
+func TestReconcileWritesNoStaleRecordOverADivisionsRecord(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	claim := withFinalizer(claimOnPod("busy", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	claim.Status.Instances[0].Port = 9001
+	claim.Status.Instances[0].KVLimitBytes = 10 << 30
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("busy", 4<<30, 10<<30)}
+	r, runtime := newReconciler(t, claim, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	ctx := context.Background()
+	stale := getModel(t, r, "busy")
+	recorded := stale.DeepCopy()
+	recorded.Status.Instances[0].KVLimitBytes = 30 << 30
+	require.NoError(t, r.Status().Update(ctx, recorded))
+	apiServer := r.Client
+	r.Client = interceptor.NewClient(apiServer.(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object,
+			opts ...client.GetOption) error {
+			if out, ok := obj.(*modelv1alpha1.ModelClaim); ok && key.Name == "busy" {
+				stale.DeepCopyInto(out)
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	r.APIReader = apiServer
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: "busy"}})
+
+	require.NoError(t, err)
+	assert.True(t, result.Requeue, "the write from the stale cache was refused")
+	after := &modelv1alpha1.ModelClaim{}
+	require.NoError(t, apiServer.Get(ctx, client.ObjectKeyFromObject(claim), after))
+	assert.Equal(t, int64(30)<<30, after.Status.Instances[0].KVLimitBytes, "the division's record stands")
+}
+
+// countingReader counts the listings a reconciler makes around the cache.
+type countingReader struct {
+	client.Reader
+	lists int
+}
+
+func (c *countingReader) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	c.lists++
+	return c.Reader.List(ctx, list, opts...)
+}
+
+// Whether a card is due is told from the cache. The claims are listed around
+// it only when some card is due, so a pass with nothing to divide costs no
+// read of the API server.
+func TestReconcileListsClaimsFreshOnlyWhenACardIsDue(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	alone := withFinalizer(claimOnPod("alone", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	alone.Status.Instances[0].KVLimitBytes = 60 << 30
+	alone.Status.Instances[0].Port = 9001
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("alone", 4<<30, 60<<30)}
+	r, runtime := newReconciler(t, alone, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	reader := &countingReader{Reader: r.Client}
+	r.APIReader = reader
+
+	reconcileOnce(t, r, "alone")
+	first := reader.lists
+	require.Positive(t, first, "the card's first round lists the claims")
+
+	reconcileOnce(t, r, "alone")
+	assert.Equal(t, first, reader.lists, "nothing is due, so nothing is listed")
+}
+
+func TestReconcileHoldsASleepingEngineToWhatItHolds(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	awake := withFinalizer(claimOnPod("awake", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	awake.Status.Instances[0].Port = 9001
+	awake.Status.Instances[0].KVLimitBytes = 20 << 30
+	asleep := claimOnPod("asleep", pod.Name, modelv1alpha1.ModelClaimSleeping, 20<<30, 4<<30)
+	asleep.Status.Instances[0].KVLimitBytes = 20 << 30
+	sleeping := engineHolding("asleep", 0, 20<<30)
+	sleeping.Phase = runtimePhaseSleeping
+	sleeping.Ready = false
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("awake", 4<<30, 20<<30), sleeping}
+	r, runtime := newReconciler(t, awake, asleep, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, "awake")
+
+	// The sleeping engine serves nothing, so it keeps only its 4 GiB floor, and
+	// all 32 GiB the card has spare go to the engine that is awake.
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, "asleep", runtime.kvLimitCalls[0].ModelName)
+	assert.Equal(t, int64(4)<<30, runtime.kvLimitCalls[0].LimitBytes)
+	assert.Equal(t, "awake", runtime.kvLimitCalls[1].ModelName)
+	assert.Equal(t, int64(36)<<30, runtime.kvLimitCalls[1].LimitBytes)
+	assert.Equal(t, int64(4)<<30, getModel(t, r, "asleep").Status.Instances[0].KVLimitBytes)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, "awake").Status.Instances[0].Phase)
+}
+
+func TestReconcileDividesACardOnlyOncePerRound(t *testing.T) {
+	r, runtime, pod := aCardAndOneEngineOnIt(t, 10<<30, 4<<30)
+	now := time.Unix(1_700_000_000, 0)
+	r.Divisions = newCardDivisionState(func() time.Time { return now })
+
+	reconcileOnce(t, r, "solo")
+	require.Len(t, runtime.kvLimitCalls, 1)
+
+	// The engine is held to less than its share again, which keeps its route
+	// and is the division's to correct, not the health loop's.
+	runtime.snapshots[pod.Status.PodIP].Models[0].KVCapacityBytes = 30 << 30
+	reconcileOnce(t, r, "solo")
+	assert.Len(t, runtime.kvLimitCalls, 1, "a card is divided at most once per round")
+
+	now = now.Add(DefaultRequeueDuration)
+	reconcileOnce(t, r, "solo")
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, int64(60)<<30, runtime.kvLimitCalls[1].LimitBytes)
+}
+
+func TestCardDivisionStateDividesACardWhoseEnginesChangedAtOnce(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	divisions := newCardDivisionState(func() time.Time { return now })
+	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+
+	divide, changed := divisions.due(card, "a")
+	assert.True(t, divide, "a card seen for the first time is divided by the round")
+	assert.False(t, changed, "a card seen for the first time is not taken as changed")
+	divisions.divided(card, "a")
+
+	divide, _ = divisions.due(card, "a")
+	assert.False(t, divide)
+
+	divide, changed = divisions.due(card, "a,b")
+	assert.True(t, divide, "a card whose engines changed does not wait for the round")
+	assert.True(t, changed)
+	divisions.divided(card, "a,b")
+
+	divide, _ = divisions.due(card, "a,b")
+	assert.False(t, divide, "what the card was divided for is remembered")
+}
+
+func TestCardDivisionStateKeepsAChangePendingUntilTheCardIsDivided(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	divisions := newCardDivisionState(func() time.Time { return now })
+	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+	divisions.divided(card, "a,b")
+
+	divide, changed := divisions.due(card, "a")
+	require.True(t, divide)
+	require.True(t, changed)
+
+	// That division could not be carried out, so nothing records it. The
+	// change is not tried again on every pass, only by the round, and then
+	// still as a change.
+	divide, _ = divisions.due(card, "a")
+	assert.False(t, divide)
+	now = now.Add(DefaultRequeueDuration)
+	divide, changed = divisions.due(card, "a")
+	assert.True(t, divide)
+	assert.True(t, changed, "a change not yet divided for is still a change")
+
+	divisions.divided(card, "a")
+	now = now.Add(DefaultRequeueDuration)
+	divide, changed = divisions.due(card, "a")
+	assert.True(t, divide)
+	assert.False(t, changed, "once divided for, the card is back to its rounds")
+}
+
+func TestCardDivisionStateCountsAPlacementAsTheCardsDivision(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	divisions := newCardDivisionState(func() time.Time { return now })
+	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+
+	divisions.divided(card, "a,b")
+
+	divide, _ := divisions.due(card, "a,b")
+	assert.False(t, divide)
+	divide, changed := divisions.due(card, "a")
+	assert.True(t, divide)
+	assert.True(t, changed)
+}
+
+func TestCardCompositionDescribesTheEnginesOnOneCard(t *testing.T) {
+	first := claimOnPod("first", "warm-1", modelv1alpha1.ModelClaimActive, 20<<30, 4<<30)
+	second := claimOnPod("second", "warm-1", modelv1alpha1.ModelClaimSleeping, 20<<30, 4<<30)
+	elsewhere := claimOnPod("elsewhere", "warm-2", modelv1alpha1.ModelClaimActive, 20<<30, 4<<30)
+	claims := &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*second, *elsewhere, *first}}
+	reordered := &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*first, *second}}
+
+	composition := cardComposition(claims, "warm-1")
+
+	assert.Equal(t, composition, cardComposition(reordered, "warm-1"), "order does not matter")
+	assert.NotContains(t, composition, "elsewhere")
+	assert.Contains(t, composition, "second/asleep")
+
+	second.Status.Instances[0].Phase = modelv1alpha1.ModelClaimActive
+	assert.NotEqual(t, composition, cardComposition(
+		&modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*first, *second}}, "warm-1"),
+		"a wake changes the card")
+
+	second.Spec.PerGPU.KVFloor = *resource.NewQuantity(8<<30, resource.BinarySI)
+	second.Status.Instances[0].Phase = modelv1alpha1.ModelClaimSleeping
+	assert.NotEqual(t, composition, cardComposition(
+		&modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*first, *second}}, "warm-1"),
+		"a new declaration changes the card")
+}
+
+// twoEnginesSharingACard is an 80 GiB card divided evenly between two idle
+// claims, "stays" and "leaves", each held to 20 GiB with its 4 GiB floor
+// mapped. The clock the divisions read is the one returned.
+func twoEnginesSharingACard(t *testing.T) (*ModelClaimReconciler, *fakeRuntime, *corev1.Pod, *time.Time) {
+	t.Helper()
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	stays := withFinalizer(claimOnPod("stays", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	stays.Status.Instances[0].Port = 9001
+	stays.Status.Instances[0].KVLimitBytes = 20 << 30
+	leaves := claimOnPod("leaves", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30)
+	leaves.Status.Instances[0].KVLimitBytes = 20 << 30
+	snapshot.Models = []RuntimeSnapshotModel{
+		engineHolding("stays", 4<<30, 20<<30),
+		engineHolding("leaves", 4<<30, 20<<30),
+	}
+	r, runtime := newReconciler(t, stays, leaves, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	now := time.Unix(1_700_000_000, 0)
+	r.Divisions = newCardDivisionState(func() time.Time { return now })
+	return r, runtime, pod, &now
+}
+
+// leave deletes the claim "leaves" and stops its engine.
+func leave(t *testing.T, r *ModelClaimReconciler, runtime *fakeRuntime, pod *corev1.Pod) {
+	t.Helper()
+	require.NoError(t, r.Delete(context.Background(), getModel(t, r, "leaves")))
+	snapshot := runtime.snapshots[pod.Status.PodIP]
+	snapshot.Models = snapshot.Models[:1]
+}
+
+func TestReconcileDividesACardAgainAtOnceWhenAnEngineLeaves(t *testing.T) {
+	r, runtime, pod, _ := twoEnginesSharingACard(t)
+	reconcileOnce(t, r, "stays")
+	require.Empty(t, runtime.kvLimitCalls, "an even split needs no write")
+
+	leave(t, r, runtime, pod)
+	reconcileOnce(t, r, "stays")
+
+	// Within the same round, the engine left gets the whole card less its own
+	// footprint, and its claim is told.
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, "stays", runtime.kvLimitCalls[0].ModelName)
+	assert.Equal(t, int64(60)<<30, runtime.kvLimitCalls[0].LimitBytes)
+	assert.Equal(t, int64(60)<<30, getModel(t, r, "stays").Status.Instances[0].KVLimitBytes)
+	told := false
+	for _, event := range recordedEvents(t, r) {
+		if strings.Contains(event, "KVLimitSet") && strings.Contains(event, "stays") {
+			told = true
+		}
+	}
+	assert.True(t, told, "a division after the engines change is raised on the claims it moves")
+}
+
+func TestReconcileAnnouncesTheRoomAnEngineLeftOnceItHasExited(t *testing.T) {
+	r, runtime, pod, clock := twoEnginesSharingACard(t)
+	reconcileOnce(t, r, "stays")
+	recordedEvents(t, r)
+
+	// The claim goes, and its engine takes a moment to exit. Until it does,
+	// the card runs an engine no claim answers for, and cannot be divided.
+	require.NoError(t, r.Delete(context.Background(), getModel(t, r, "leaves")))
+	reconcileOnce(t, r, "stays")
+	require.Empty(t, runtime.kvLimitCalls)
+
+	snapshot := runtime.snapshots[pod.Status.PodIP]
+	snapshot.Models = snapshot.Models[:1]
+	*clock = clock.Add(DefaultRequeueDuration)
+	reconcileOnce(t, r, "stays")
+
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, int64(60)<<30, runtime.kvLimitCalls[0].LimitBytes)
+	told := false
+	for _, event := range recordedEvents(t, r) {
+		if strings.Contains(event, "KVLimitSet") && strings.Contains(event, "dividing the card between 1 engine(s)") {
+			told = true
+		}
+	}
+	assert.True(t, told, "room freed by a change of engines is announced, even when the card could only be divided a round later")
+}
+
+func TestReconcileTriesAFailedDivisionAgainOnlyByTheRound(t *testing.T) {
+	r, runtime, pod, clock := twoEnginesSharingACard(t)
+	reconcileOnce(t, r, "stays")
+	leave(t, r, runtime, pod)
+	// The write reaches no segment, so the reading that should confirm it does
+	// not, and the division fails.
+	runtime.deafToKVLimits = true
+	tries := func() int {
+		tries := 0
+		for _, call := range runtime.kvLimitCalls {
+			if call.LimitBytes == int64(60)<<30 {
+				tries++
+			}
+		}
+		return tries
+	}
+
+	reconcileOnce(t, r, "stays")
+	require.Equal(t, 1, tries())
+	reconcileOnce(t, r, "stays")
+	assert.Equal(t, 1, tries(), "a failed division waits for the round rather than every pass")
+
+	*clock = clock.Add(DefaultRequeueDuration)
+	runtime.deafToKVLimits = false
+	reconcileOnce(t, r, "stays")
+	require.Equal(t, 2, tries())
+}
+
+func TestReconcileDividesACardAgainAtOnceWhenAnEngineWakes(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	awake := withFinalizer(claimOnPod("awake", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	awake.Status.Instances[0].Port = 9001
+	awake.Status.Instances[0].KVLimitBytes = 20 << 30
+	asleep := claimOnPod("asleep", pod.Name, modelv1alpha1.ModelClaimSleeping, 20<<30, 4<<30)
+	asleep.Status.Instances[0].KVLimitBytes = 20 << 30
+	sleeping := engineHolding("asleep", 0, 20<<30)
+	sleeping.Phase = runtimePhaseSleeping
+	sleeping.Ready = false
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("awake", 4<<30, 20<<30), sleeping}
+	r, runtime := newReconciler(t, awake, asleep, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	now := time.Unix(1_700_000_000, 0)
+	r.Divisions = newCardDivisionState(func() time.Time { return now })
+	reconcileOnce(t, r, "awake")
+	require.Len(t, runtime.kvLimitCalls, 2)
+
+	// The engine wakes, and its own claim's health loop marks it active.
+	snapshot.Models[1].Phase = runtimePhaseActive
+	snapshot.Models[1].Ready = true
+	woken := getModel(t, r, "asleep")
+	woken.Status.Instances[0].Phase = modelv1alpha1.ModelClaimActive
+	require.NoError(t, r.Status().Update(context.Background(), woken))
+	runtime.kvLimitCalls = nil
+	reconcileOnce(t, r, "awake")
+
+	// Within the same round, the 32 GiB spare is shared between the two again.
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, "awake", runtime.kvLimitCalls[0].ModelName)
+	assert.Equal(t, int64(20)<<30, runtime.kvLimitCalls[0].LimitBytes)
+	assert.Equal(t, "asleep", runtime.kvLimitCalls[1].ModelName)
+	assert.Equal(t, int64(20)<<30, runtime.kvLimitCalls[1].LimitBytes)
+}
+
+func TestReconcileGivesTheRoomBackWhenTheEnginePlacedCannotStart(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].KVLimitBytes = 600
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	runtime.failActivate = true
+
+	reconcileOnce(t, r, pm.Name)
+
+	// The card was divided to make room for the model, and its engine then did
+	// not start. The card is divided again in the same pass, and the neighbour,
+	// alone on it, gets the whole card less its footprint.
+	require.Len(t, runtime.activateCalls, 1)
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, int64(200), runtime.kvLimitCalls[0].LimitBytes)
+	assert.Equal(t, int64(700), runtime.kvLimitCalls[1].LimitBytes)
+	assert.Equal(t, int64(700), getModel(t, r, "neighbour").Status.Instances[0].KVLimitBytes)
+	assert.Empty(t, getModel(t, r, pm.Name).Status.Instances)
+}
+
+// A reconciler that is built by hand has no state of its divisions. It gets one
+// on the first call, and keeps it, so that a card that was divided stays so.
+func TestDivisionsKeepsTheStateOfAReconcilerBuiltByHand(t *testing.T) {
+	r := &ModelClaimReconciler{}
+
+	r.divisions().divided(types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, "as it is")
+
+	due, _ := r.divisions().due(types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, "as it is")
+	assert.False(t, due)
+}
+
+// The cache can still show the record of a start that failed, a moment after
+// the record was taken back. So the division after such a start asks the API
+// server, and the neighbour gets its room back in the same pass.
+func TestReconcileGivesTheRoomBackWhileTheCacheStillShowsTheRecord(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].KVLimitBytes = 600
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	runtime.failActivate = true
+	// The API server is read as it is. A listing from the cache still shows
+	// the last record that was written for the claim.
+	server, isServer := r.Client.(client.WithWatch)
+	require.True(t, isServer)
+	r.APIReader = server
+	var recorded []modelv1alpha1.ModelClaimInstance
+	r.Client = interceptor.NewClient(server, interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object,
+			opts ...client.SubResourceUpdateOption) error {
+			if claim, isClaim := obj.(*modelv1alpha1.ModelClaim); isClaim && claim.Name == pm.Name &&
+				len(claim.Status.Instances) > 0 {
+				recorded = append([]modelv1alpha1.ModelClaimInstance(nil), claim.Status.Instances...)
+			}
+			return c.SubResource(sub).Update(ctx, obj, opts...)
+		},
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if err := c.List(ctx, list, opts...); err != nil {
+				return err
+			}
+			if claims, areClaims := list.(*modelv1alpha1.ModelClaimList); areClaims {
+				for i := range claims.Items {
+					if claims.Items[i].Name == pm.Name && len(claims.Items[i].Status.Instances) == 0 {
+						claims.Items[i].Status.Instances = recorded
+					}
+				}
+			}
+			return nil
+		},
+	})
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+	require.NotEmpty(t, recorded, "the record was written before the start")
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, int64(200), runtime.kvLimitCalls[0].LimitBytes)
+	assert.Equal(t, int64(700), runtime.kvLimitCalls[1].LimitBytes)
+	assert.Equal(t, int64(700), getModel(t, r, "neighbour").Status.Instances[0].KVLimitBytes)
+}
+
+func TestReconcileDividesACardOnceWhenAModelIsPlacedOnIt(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].KVLimitBytes = 600
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	now := time.Unix(1_700_000_000, 0)
+	r.Divisions = newCardDivisionState(func() time.Time { return now })
+
+	reconcileOnce(t, r, pm.Name)
+	reconcileOnce(t, r, pm.Name)
+
+	// Placement divided the card for the engines now on it, so neither pass
+	// takes the new model for a change to divide the card for again.
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, int64(200), runtime.kvLimitCalls[0].LimitBytes)
+}
+
+func TestReconcileReadsEachRuntimeOnceAPass(t *testing.T) {
+	// The engine already holds its share, so nothing is written.
+	r, runtime, _ := aCardAndOneEngineOnIt(t, 60<<30, 4<<30)
+
+	reconcileOnce(t, r, "solo")
+
+	require.Empty(t, runtime.kvLimitCalls)
+	assert.Equal(t, 1, runtime.snapshotCalls,
+		"the health check and the division should share one reading of the runtime")
+}
+
+func TestReconcileReadsARuntimeAgainOnlyAfterChangingIt(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	neighbour := claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+	neighbour.Status.Instances[0].KVLimitBytes = 600
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
+	r, runtime := newReconciler(t, pm, pod, neighbour)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	// There are three readings. One is for the account and the ranking, and one
+	// confirms the neighbour's shrink. One follows the start of the engine,
+	// since the health check needs it to see the new engine at all.
+	require.Len(t, runtime.kvLimitCalls, 1)
+	assert.Equal(t, 3, runtime.snapshotCalls)
+	assert.Len(t, runtime.activateCalls, 1, "a reading from before the start would show no engine")
+}
+
+func TestReconcileDoesNotReadACardWithNothingOnIt(t *testing.T) {
+	r, runtime, _ := aCardAndOneEngineOnIt(t, 60<<30, 4<<30)
+	empty, emptySnapshot := sizedWarmPod("warm-2", "10.0.0.2", 80<<30)
+	require.NoError(t, r.Create(context.Background(), empty))
+	runtime.snapshots[empty.Status.PodIP] = emptySnapshot
+
+	reconcileOnce(t, r, "solo")
+
+	assert.Equal(t, 1, runtime.snapshotCalls, "a card with no instance has nothing to divide")
+}
+
+// aCardWithAnEngineThatTakesNoLimit is a card of three engines held to even
+// shares. The engine "deaf" reports the limit it had whatever is written to
+// it, so every division that moves it fails at the reading.
+func aCardWithAnEngineThatTakesNoLimit(
+	t *testing.T,
+	newcomerPhase modelv1alpha1.ModelClaimPhase,
+) (*ModelClaimReconciler, *fakeRuntime, *RuntimeSnapshot, *time.Time) {
+	t.Helper()
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	even := int64(4)<<30 + (int64(8)<<30)/3
+	claims := []client.Object{pod}
+	for i, name := range []string{"deaf", "busy", "newcomer"} {
+		phase := modelv1alpha1.ModelClaimActive
+		if name == "newcomer" {
+			phase = newcomerPhase
+		}
+		claim := withFinalizer(claimOnPod(name, pod.Name, phase, 20<<30, 4<<30))
+		claim.Status.Instances[0].Port = int32(9001 + i)
+		claim.Status.Instances[0].KVLimitBytes = even
+		claims = append(claims, claim)
+		engine := engineHolding(name, 0, even)
+		engine.Port = int32(9001 + i)
+		snapshot.Models = append(snapshot.Models, engine)
+	}
+	// The busy engine is to grow, so the other two are to shrink.
+	snapshot.Models[1].KVUsedBytes = 4 << 30
+	snapshot.Models[1].RequestsRunning = 4
+	r, runtime := newReconciler(t, claims...)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	runtime.onKVLimit = func() { snapshot.Models[0].KVCapacityBytes = even }
+	now := time.Unix(1_700_000_000, 0)
+	r.Divisions = newCardDivisionState(func() time.Time { return now })
+	return r, runtime, snapshot, &now
+}
+
+func TestReconcileRoutesAReadyEngineThoughItsCardCannotBeDivided(t *testing.T) {
+	r, _, snapshot, clock := aCardWithAnEngineThatTakesNoLimit(t, modelv1alpha1.ModelClaimActivating)
+
+	// A neighbour's pass comes first, and its division of the card fails.
+	reconcileOnce(t, r, "busy")
+	*clock = clock.Add(DefaultRequeueDuration)
+	reconcileOnce(t, r, "newcomer")
+
+	// The failed division took its shrink of the newcomer back, so the
+	// newcomer is held to its record, and is routed.
+	got := getModel(t, r, "newcomer")
+	assert.Equal(t, snapshot.Models[2].KVCapacityBytes, got.Status.Instances[0].KVLimitBytes)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Instances[0].Phase)
+}
+
+func TestReconcileLeavesEveryEngineAsItWasHeldWhenACardCannotBeDivided(t *testing.T) {
+	r, _, snapshot, clock := aCardWithAnEngineThatTakesNoLimit(t, modelv1alpha1.ModelClaimActive)
+	held := snapshot.Models[2].KVCapacityBytes
+
+	for round := 0; round < 3; round++ {
+		reconcileOnce(t, r, "busy")
+		*clock = clock.Add(DefaultRequeueDuration)
+	}
+
+	// The engine that takes no limit reports what it had whatever is written,
+	// so only the two beside it are looked at.
+	for _, engine := range snapshot.Models[1:] {
+		assert.Equal(t, held, engine.KVCapacityBytes, engine.ModelName)
+	}
+}
+
+// failingKVLimits fails the writes of a KV limit whose number is listed,
+// counted from one.
+type failingKVLimits struct {
+	*fakeRuntime
+	failing map[int]bool
+}
+
+func (f *failingKVLimits) SetKVLimit(
+	ctx context.Context,
+	podIP string,
+	port int,
+	req *SetKVLimitRequest,
+) (*RuntimeOperationResponse, error) {
+	if f.failing[len(f.kvLimitCalls)+1] {
+		f.kvLimitCalls = append(f.kvLimitCalls, *req)
+		return nil, errors.New("runtime did not take the limit")
+	}
+	return f.fakeRuntime.SetKVLimit(ctx, podIP, port, req)
+}
+
+// Only what a step wrote is taken back. An engine the step did not reach is
+// held as before, so there is nothing to write to it.
+func TestArrangeCardTakesBackOnlyWhatItWrote(t *testing.T) {
+	r, runtime, _, _ := aCardWithAnEngineThatTakesNoLimit(t, modelv1alpha1.ModelClaimActive)
+	runtime.onKVLimit = nil
+	// The shrinks are for "deaf" and "newcomer". The second write fails.
+	r.Runtime = &failingKVLimits{fakeRuntime: runtime, failing: map[int]bool{2: true}}
+
+	reconcileOnce(t, r, "busy")
+
+	var written []string
+	for _, call := range runtime.kvLimitCalls {
+		written = append(written, call.ModelName+" "+strings.SplitN(call.OperationID, "/", 2)[0])
+	}
+	assert.Equal(t, []string{"deaf kv-plan", "newcomer kv-plan", "deaf kv-plan-back"}, written)
+}
+
+// A runtime that does not take a limit back is not asked for the next one.
+func TestArrangeCardStopsTakingBackAfterACallThatFails(t *testing.T) {
+	r, runtime, _, _ := aCardWithAnEngineThatTakesNoLimit(t, modelv1alpha1.ModelClaimActive)
+	// Both shrinks are written, and the reading does not confirm them. The
+	// first call that takes one back fails.
+	r.Runtime = &failingKVLimits{fakeRuntime: runtime, failing: map[int]bool{3: true}}
+
+	reconcileOnce(t, r, "busy")
+
+	require.Len(t, runtime.kvLimitCalls, 3)
+	assert.True(t, strings.HasPrefix(runtime.kvLimitCalls[2].OperationID, "kv-plan-back/"))
+}
+
+func TestReconcileWarnsAgainWhileACardStaysStuck(t *testing.T) {
+	r, runtime, pod, clock := twoEnginesSharingACard(t)
+	reconcileOnce(t, r, "stays")
+	recordedEvents(t, r)
+	snapshot := runtime.snapshots[pod.Status.PodIP]
+	snapshot.Models[0].RequestsRunning = 3
+	snapshot.Models[0].RequestsWaiting = 1
+	runtime.deafToKVLimits = true
+
+	var warnedAt []int
+	var warnings []string
+	for try := 1; try <= 40; try++ {
+		nextRound(t, r, clock, "stays")
+		for _, warning := range kvLimitWarnings(t, r, "stays") {
+			warnedAt = append(warnedAt, try)
+			warnings = append(warnings, warning)
+		}
+	}
+
+	// An Event expires, so a card that stays stuck says so again, thirty
+	// failures after it said so first. The first round finds the engine
+	// short, and the second tries the first division. Each warning says how
+	// many divisions have failed.
+	require.Equal(t, []int{4, 34}, warnedAt)
+	assert.Contains(t, warnings[0], "could not be divided 3 times in a row")
+	assert.Contains(t, warnings[1], "could not be divided 33 times in a row")
+}
+
+// twoCardsToDivide is two cards with one engine on each, "one" and "two". Each
+// engine is held to less than its share, so both cards are divided when they
+// are first seen.
+func twoCardsToDivide(t *testing.T) (*ModelClaimReconciler, *fakeRuntime, []corev1.Pod) {
+	t.Helper()
+	first, firstSnapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	second, secondSnapshot := sizedWarmPod("warm-2", "10.0.0.2", 80<<30)
+	claims := []client.Object{first, second}
+	for _, on := range []struct {
+		claim    string
+		pod      *corev1.Pod
+		snapshot *RuntimeSnapshot
+	}{{"one", first, firstSnapshot}, {"two", second, secondSnapshot}} {
+		claim := withFinalizer(claimOnPod(on.claim, on.pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+		claim.Status.Instances[0].Port = 9001
+		claim.Status.Instances[0].KVLimitBytes = 10 << 30
+		claims = append(claims, claim)
+		on.snapshot.Models = []RuntimeSnapshotModel{engineHolding(on.claim, 4<<30, 10<<30)}
+	}
+	r, runtime := newReconciler(t, claims...)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		first.Status.PodIP: firstSnapshot, second.Status.PodIP: secondSnapshot,
+	}
+	return r, runtime, []corev1.Pod{*first, *second}
+}
+
+func TestReconcileReadsACardJustBeforeItIsDivided(t *testing.T) {
+	r, runtime, pods := twoCardsToDivide(t)
+	// What the controller had read of the second card when the first was written.
+	readOfSecond := -1
+	runtime.onKVLimit = func() {
+		if readOfSecond < 0 {
+			readOfSecond = runtime.snapshotCallsTo[pods[1].Status.PodIP]
+		}
+	}
+
+	reconcileOnce(t, r, "one")
+
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Zero(t, readOfSecond, "a card is read once the card before it is divided, not before")
+}
+
+// A pass that places a model reads every card first, to rank them. A reading
+// from then is as old as every change the pass has made since.
+func TestDivideCardsReadsACardAgainOnceTheCardBeforeItWasDivided(t *testing.T) {
+	r, runtime, pods := twoCardsToDivide(t)
+	readings := newRuntimeReadings(r.Runtime)
+	readings.ofPods(context.Background(), pods)
+	var readOfSecond []int
+	runtime.onKVLimit = func() {
+		readOfSecond = append(readOfSecond, runtime.snapshotCallsTo[pods[1].Status.PodIP])
+	}
+
+	r.divideCards(context.Background(), pods, readings)
+
+	// The first card is divided from the reading the pass has, since nothing
+	// was changed after it. The second is read again before its own write.
+	assert.Equal(t, []int{1, 2}, readOfSecond)
+	assert.Equal(t, 2, runtime.snapshotCallsTo[pods[0].Status.PodIP],
+		"the first card is read once for the pass, and once to confirm its division")
+}
+
+// unreadablePods fails the snapshot reads of the pods listed, by IP.
+type unreadablePods struct {
+	*fakeRuntime
+	pods map[string]bool
+}
+
+func (u *unreadablePods) Snapshot(ctx context.Context, podIP string, port int) (*RuntimeSnapshot, error) {
+	if u.pods[podIP] {
+		u.snapshotCalls++
+		if u.snapshotCallsTo == nil {
+			u.snapshotCallsTo = map[string]int{}
+		}
+		u.snapshotCallsTo[podIP]++
+		return nil, errors.New("runtime did not answer")
+	}
+	return u.fakeRuntime.Snapshot(ctx, podIP, port)
+}
+
+// A runtime that did not answer costs the worker a whole timeout, so a pass
+// does not ask it twice.
+func TestDivideCardsDoesNotAskARuntimeAgainThatDidNotAnswer(t *testing.T) {
+	r, runtime, pods := twoCardsToDivide(t)
+	r.Runtime = &unreadablePods{fakeRuntime: runtime, pods: map[string]bool{pods[1].Status.PodIP: true}}
+	readings := newRuntimeReadings(r.Runtime)
+	readings.ofPods(context.Background(), pods)
+
+	r.divideCards(context.Background(), pods, readings)
+
+	require.Len(t, runtime.kvLimitCalls, 1, "the first card is divided")
+	assert.Equal(t, 1, runtime.snapshotCallsTo[pods[1].Status.PodIP])
+}
+
+func TestReconcileDoesNotTakeACardThatHasBarelyDriftedForOneThatWasDivided(t *testing.T) {
+	r, runtime, snapshot, clock := aCardOfTwoEngines(t,
+		engineHolding("busy", 4<<30, 20<<30), engineHolding("idle", 4<<30, 20<<30))
+	// No write reaches a segment, so no division is ever confirmed. The card
+	// has not been noted, so its first rounds divide it whatever its load.
+	// Requests wait on "busy" in the first two rounds. In the third, the card
+	// is at rest, and it is divided as its plan wants it. That round notes the
+	// card. Requests wait again from the fourth round on, and the fifth is the
+	// second in a row.
+	runtime.deafToKVLimits = true
+	warnings := 0
+	tried := map[int]bool{1: true, 2: true, 5: true}
+	for round := 1; round <= 5; round++ {
+		snapshot.Models[0].RequestsRunning = 3
+		snapshot.Models[0].RequestsWaiting = 1
+		if round == 3 {
+			snapshot.Models[0].RequestsRunning = 0
+			snapshot.Models[0].RequestsWaiting = 0
+		}
+		before := len(runtime.kvLimitCalls)
+		nextRound(t, r, clock, "idle")
+		assert.Equal(t, tried[round], len(runtime.kvLimitCalls) > before, "round %d", round)
+		warnings += len(kvLimitWarnings(t, r, "busy"))
+	}
+
+	assert.Equal(t, 1, warnings, "three divisions failed in a row, and the rounds between them had nothing to write")
+}
+
+func TestCardDivisionStateNotesACardThatWasLeftAlone(t *testing.T) {
+	divisions := newCardDivisionState(nil)
+	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+	require.False(t, divisions.noted(card))
+	divisions.failedAgain(card)
+	require.Equal(t, 2, divisions.failedAgain(card))
+
+	divisions.leftAlone(card, "a", []string{"busy"})
+
+	assert.True(t, divisions.noted(card), "a change of its engines can be seen from now on")
+	assert.Equal(t, []string{"busy"}, divisions.owedBefore(card))
+	_, changed := divisions.due(card, "b")
+	assert.True(t, changed)
+	assert.Equal(t, 3, divisions.failedAgain(card), "nothing was tried, so the run of failures is not over")
+
+	divisions.divided(card, "b")
+	assert.Empty(t, divisions.owedBefore(card), "a card that was divided owes nothing")
+}
+
+// Failures that lie far apart are no run. Most rounds leave a card alone, so
+// a division that works is rare, and only that would end a run.
+func TestCardDivisionStateStartsARunOfFailuresAgainAfterFiveQuietMinutes(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	divisions := newCardDivisionState(func() time.Time { return now })
+	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+
+	require.Equal(t, 1, divisions.failedAgain(card))
+	now = now.Add(5 * time.Minute)
+	require.Equal(t, 2, divisions.failedAgain(card), "five minutes apart is still one run")
+	now = now.Add(5*time.Minute + time.Nanosecond)
+	assert.Equal(t, 1, divisions.failedAgain(card))
+	now = now.Add(time.Hour)
+	assert.Equal(t, 1, divisions.failedAgain(card))
+}
+
+// A card is forgotten when nothing asked about it between two prunes, which
+// lie five minutes apart or more. The card that is asked about is there,
+// however long ago its last round was.
+func TestCardDivisionStateKeepsTheCardThatIsAskedAbout(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	divisions := newCardDivisionState(func() time.Time { return now })
+	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+	gone := types.NamespacedName{Namespace: testNamespace, Name: "deleted"}
+	for _, each := range []types.NamespacedName{card, gone} {
+		divisions.due(each, "a")
+		divisions.divided(each, "a")
+		divisions.failedAgain(each)
+	}
+
+	// The pod of the second card is deleted, and nothing asks about it again.
+	// A prune runs every five minutes. The first one after that still finds
+	// the card asked about since the prune before. The second one forgets it.
+	for _, step := range []struct {
+		after     time.Duration
+		remembers bool
+	}{
+		{30*DefaultRequeueDuration - time.Nanosecond, true},
+		{time.Nanosecond, true},
+		{30*DefaultRequeueDuration - time.Nanosecond, true},
+		{time.Nanosecond, false},
+	} {
+		now = now.Add(step.after)
+		_, changed := divisions.due(card, "a")
+
+		assert.False(t, changed)
+		assert.True(t, divisions.noted(card))
+		assert.Equal(t, step.remembers, divisions.noted(gone), now.Sub(time.Unix(1_700_000_000, 0)))
+	}
+}
+
+// No round runs for five minutes, as while the API server cannot be reached.
+// The next pass asks about one card after the other. The first of them must
+// not make the state forget the rest.
+func TestCardDivisionStateKeepsEveryCardOfAPassAfterAStall(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	divisions := newCardDivisionState(func() time.Time { return now })
+	first := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+	second := types.NamespacedName{Namespace: "another-pool", Name: "warm-2"}
+	for _, each := range []types.NamespacedName{first, second} {
+		divisions.due(each, "a")
+		divisions.leftAlone(each, "a", []string{"busy"})
+		divisions.failedAgain(each)
+		divisions.failedAgain(each)
+	}
+
+	now = now.Add(30 * DefaultRequeueDuration)
+	for _, each := range []types.NamespacedName{first, second} {
+		divide, changed := divisions.due(each, "a")
+
+		assert.True(t, divide, each.Name)
+		assert.False(t, changed, each.Name)
+		assert.True(t, divisions.noted(each), each.Name)
+		assert.Equal(t, []string{"busy"}, divisions.owedBefore(each), each.Name)
+		assert.Equal(t, 3, divisions.failedAgain(each), each.Name)
+	}
+}
+
+// An instance can record no limit while its engine serves: it was placed when
+// its pod showed no card, or by a controller that recorded none. The engine
+// then runs under its allocator's own limit, which is most of the card.
+func TestReconcileHoldsAnEngineThatServesWithNoRecord(t *testing.T) {
+	starting := func(name string) RuntimeSnapshotModel {
+		engine := engineHolding(name, kvLimitUnknown, kvLimitUnknown)
+		engine.Ready = false
+		return engine
+	}
+	r, runtime, snapshot, clock := aCardOfTwoEngines(t, starting("busy"), starting("idle"))
+	for _, name := range []string{"busy", "idle"} {
+		claim := getModel(t, r, name)
+		claim.Status.Instances[0].KVLimitBytes = 0
+		require.NoError(t, r.Status().Update(context.Background(), claim))
+	}
+	// The card's first round finds no segment to write into, and notes it.
+	reconcileOnce(t, r, "idle")
+	require.Empty(t, runtime.kvLimitCalls)
+
+	for i := range snapshot.Models {
+		snapshot.Models[i].KVCapacityBytes = 76 << 30
+		snapshot.Models[i].KVUsedBytes = 1 << 30
+		snapshot.Models[i].Ready = true
+	}
+	nextRound(t, r, clock, "idle")
+
+	for _, name := range []string{"busy", "idle"} {
+		assert.Equal(t, int64(20)<<30, getModel(t, r, name).Status.Instances[0].KVLimitBytes, name)
+	}
+	for _, engine := range snapshot.Models {
+		assert.Equal(t, int64(20)<<30, engine.KVCapacityBytes, engine.ModelName)
+	}
+}
+
+// kvLimitWarnings returns the KVLimitFailed Events raised for a model since
+// the Events were last read.
+func kvLimitWarnings(t *testing.T, r *ModelClaimReconciler, model string) []string {
+	t.Helper()
+	var warnings []string
+	for _, event := range recordedEvents(t, r) {
+		if strings.Contains(event, "KVLimitFailed") && strings.Contains(event, "model "+model+" ") {
+			warnings = append(warnings, event)
+		}
+	}
+	return warnings
+}
+
+// One reading with requests waiting is one sample. The card follows it when
+// the next reading says the same.
+func TestReconcileFollowsAShortEngineOnceItIsOwedMoreTwiceInARow(t *testing.T) {
+	r, runtime, snapshot, clock := aCardOfTwoEngines(t,
+		engineHolding("busy", 4<<30, 20<<30), engineHolding("idle", 4<<30, 20<<30))
+	reconcileOnce(t, r, "idle")
+	require.Empty(t, runtime.kvLimitCalls)
+
+	snapshot.Models[0].RequestsRunning = 3
+	snapshot.Models[0].RequestsWaiting = 1
+	nextRound(t, r, clock, "idle")
+	require.Empty(t, runtime.kvLimitCalls, "one reading is not followed")
+
+	nextRound(t, r, clock, "idle")
+	spare := int64(32) << 30
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, int64(4)<<30+spare*5/6+1, getModel(t, r, "busy").Status.Instances[0].KVLimitBytes)
+
+	// Requests now wait on "idle" in one round, and in the next but one. A
+	// request is in flight on the card all along, so it is never at rest.
+	snapshot.Models[0].RequestsRunning, snapshot.Models[0].RequestsWaiting = 1, 0
+	for _, waiting := range []int64{1, 0, 1} {
+		snapshot.Models[1].RequestsRunning, snapshot.Models[1].RequestsWaiting = 1, waiting
+		nextRound(t, r, clock, "idle")
+	}
+	assert.Len(t, runtime.kvLimitCalls, 2, "the count starts again after a round that owes the engine nothing")
+}
+
+// Two engines have each mapped more than half of their limits, so each is
+// short. A request is in flight on one of them in one round, and on the other
+// in the next. Each plan gives one of them more, and never the same one twice
+// in a row.
+func TestReconcileLeavesACardAloneWhileItsLoadComesAndGoes(t *testing.T) {
+	r, runtime, snapshot, clock := aCardOfTwoEngines(t,
+		engineHolding("busy", 12<<30, 20<<30), engineHolding("idle", 12<<30, 20<<30))
+	reconcileOnce(t, r, "idle")
+	require.Empty(t, runtime.kvLimitCalls)
+
+	divisions := divisionsIn(t, r, runtime, clock, 12, func(round int) {
+		snapshot.Models[0].RequestsRunning = int64(round % 2)
+		snapshot.Models[1].RequestsRunning = int64((round + 1) % 2)
+	})
+
+	assert.Zero(t, divisions)
+}
+
+// A grow that is written and not confirmed leaves its engine below its
+// record. The round has not done what it set out to do, so it counts as a
+// division that failed, and the third in a row warns the claims.
+func TestReconcileCountsARoundWhoseGrowIsNotConfirmedAsFailed(t *testing.T) {
+	r, runtime, pod, clock := twoEnginesSharingACard(t)
+	reconcileOnce(t, r, "stays")
+	recordedEvents(t, r)
+	snapshot := runtime.snapshots[pod.Status.PodIP]
+	snapshot.Models[0].RequestsRunning, snapshot.Models[0].RequestsWaiting = 3, 1
+	// "stays" reports the limit it had, whatever is written to it. Every
+	// shrink of "leaves" takes.
+	held := snapshot.Models[0].KVCapacityBytes
+	runtime.onKVLimit = func() { snapshot.Models[0].KVCapacityBytes = held }
+
+	// The first round finds the engine short, and the three after it each
+	// try a division.
+	warnings := 0
+	for round := 1; round <= 4; round++ {
+		nextRound(t, r, clock, "stays")
+		warnings += len(kvLimitWarnings(t, r, "stays"))
+		assert.Equal(t, round-1, r.Divisions.failures[cardOf(pod)], "round %d", round)
+	}
+
+	assert.Equal(t, 1, warnings)
+}
+
+// A round that has nothing worth writing tries nothing. It does not end a run
+// of failed divisions, since only a division that works does.
+func TestReconcileKeepsARunOfFailuresThroughARoundWithNothingWorthWriting(t *testing.T) {
+	r, runtime, snapshot, clock := aCardOfTwoEngines(t,
+		engineHolding("busy", 4<<30, 20<<30), engineHolding("idle", 4<<30, 20<<30))
+	reconcileOnce(t, r, "idle")
+	require.Empty(t, runtime.kvLimitCalls)
+	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+	r.Divisions.failedAgain(card)
+	r.Divisions.failedAgain(card)
+
+	// "busy" is held 400 MiB below its record. The round wants to put that
+	// right, and 400 MiB is less than it writes for.
+	snapshot.Models[0].KVCapacityBytes = 20<<30 - 400<<20
+	snapshot.Models[0].RequestsRunning = 1
+	snapshot.Models[1].RequestsRunning = 1
+	nextRound(t, r, clock, "idle")
+
+	require.Empty(t, runtime.kvLimitCalls)
+	assert.Equal(t, 2, r.Divisions.failures[card])
+}
+
+// A first division that fails does not note the card. The next round divides
+// the card whatever its load again, and so on until a division works.
+func TestReconcileTriesTheFirstDivisionOfACardAgainUntilOneWorks(t *testing.T) {
+	busy := engineHolding("busy", 4<<30, 36<<30)
+	busy.RequestsRunning = 1
+	woken := engineHolding("idle", 1<<30, 4<<30)
+	woken.RequestsRunning = 1
+	r, runtime, _, clock := aCardOfTwoEngines(t, busy, woken)
+	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+	runtime.deafToKVLimits = true
+
+	reconcileOnce(t, r, "idle")
+	tried := len(runtime.kvLimitCalls)
+	require.NotZero(t, tried)
+	require.False(t, r.Divisions.noted(card))
+
+	// Both engines serve, both hold their records, and neither is near its
+	// limit. A round that follows the load would leave this card alone.
+	nextRound(t, r, clock, "idle")
+	assert.Greater(t, len(runtime.kvLimitCalls), tried)
+	assert.False(t, r.Divisions.noted(card))
+
+	runtime.deafToKVLimits = false
+	nextRound(t, r, clock, "idle")
+	assert.True(t, r.Divisions.noted(card))
+	assert.Equal(t, int64(20)<<30, getModel(t, r, "busy").Status.Instances[0].KVLimitBytes)
+}
+
+// A pod without a card has nothing to divide, as in a CPU pool. Its engines
+// are left alone, and nothing is counted or said about it.
+func TestReconcileDoesNotDivideAPodWithoutACard(t *testing.T) {
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Status.PodIP = "10.0.0.1"
+	var claims []client.Object
+	snapshot := &RuntimeSnapshot{}
+	for i, name := range []string{"one", "two"} {
+		claim := withFinalizer(claimOnPod(name, pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+		claim.Status.Instances[0].Port = int32(9001 + i)
+		claims = append(claims, claim)
+		engine := engineHolding(name, kvLimitUnknown, kvLimitUnknown)
+		engine.Port = int32(9001 + i)
+		snapshot.Models = append(snapshot.Models, engine)
+	}
+	r, runtime := newReconciler(t, append(claims, pod)...)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	now := time.Unix(1_700_000_000, 0)
+	r.Divisions = newCardDivisionState(func() time.Time { return now })
+
+	warnings := 0
+	for round := 0; round < 4; round++ {
+		nextRound(t, r, &now, "one")
+		warnings += len(kvLimitWarnings(t, r, "one"))
+	}
+
+	assert.Empty(t, runtime.kvLimitCalls)
+	assert.Zero(t, warnings)
+	assert.Empty(t, r.Divisions.failures)
+	assert.Empty(t, r.Divisions.undividedFor)
+	assert.Empty(t, r.Divisions.dividedFor)
+}
+
+// capturedLog returns what the controller logs from now on, until the test
+// ends.
+func capturedLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	state := klog.CaptureState()
+	t.Cleanup(state.Restore)
+	log := &bytes.Buffer{}
+	klog.LogToStderr(false)
+	klog.SetOutput(log)
+	return log
+}
+
+// A card is looked at every round. What keeps it undivided is logged once
+// while it lasts, and again when it comes back after the card could be
+// accounted for.
+func TestReconcileLogsOnceWhyACardIsLeftUndivided(t *testing.T) {
+	log := capturedLog(t)
+	said := func() int {
+		klog.Flush()
+		return strings.Count(log.String(), "left a card undivided")
+	}
+	r, runtime, pod, clock := twoEnginesSharingACard(t)
+	snapshot := runtime.snapshots[pod.Status.PodIP]
+	stranger := engineHolding("stranger", 1<<30, 10<<30)
+	snapshot.Models = append(snapshot.Models, stranger)
+
+	reconcileOnce(t, r, "stays")
+	nextRound(t, r, clock, "stays")
+	nextRound(t, r, clock, "stays")
+	assert.Equal(t, 1, said())
+
+	snapshot.Models = snapshot.Models[:2]
+	nextRound(t, r, clock, "stays")
+	snapshot.Models = append(snapshot.Models, stranger)
+	nextRound(t, r, clock, "stays")
+	nextRound(t, r, clock, "stays")
+	assert.Equal(t, 2, said())
+}
+
+// What a round owes is asked of the round before, and of no older one. A
+// division that fails notes what its own round owed. A round that cannot
+// account for the card plans nothing, and owes nothing.
+func TestReconcileAsksOnlyWhatTheRoundBeforeOwed(t *testing.T) {
+	waiting := func(snapshot *RuntimeSnapshot, yes bool) {
+		snapshot.Models[0].RequestsRunning, snapshot.Models[0].RequestsWaiting = 1, 0
+		if yes {
+			snapshot.Models[0].RequestsRunning, snapshot.Models[0].RequestsWaiting = 3, 1
+		}
+	}
+	t.Run("after a division that failed", func(t *testing.T) {
+		r, runtime, snapshot, clock := aCardOfTwoEngines(t,
+			engineHolding("busy", 4<<30, 20<<30), engineHolding("idle", 4<<30, 20<<30))
+		card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+		reconcileOnce(t, r, "idle")
+		waiting(snapshot, true)
+		nextRound(t, r, clock, "idle")
+		require.Empty(t, runtime.kvLimitCalls)
+		require.Equal(t, []string{"busy"}, r.Divisions.owedBefore(card))
+
+		// Nothing waits on "busy" in this round. "idle" is found below its
+		// record, and the grow that puts it right is not confirmed.
+		waiting(snapshot, false)
+		snapshot.Models[1].RequestsRunning = 1
+		snapshot.Models[1].KVCapacityBytes = 10 << 30
+		runtime.deafToKVLimits = true
+		nextRound(t, r, clock, "idle")
+		require.Len(t, runtime.kvLimitCalls, 1)
+		require.Equal(t, 1, r.Divisions.failures[card])
+		assert.Empty(t, r.Divisions.owedBefore(card), "the round that failed owed nothing")
+
+		// Requests wait on "busy" for the first time since the first round.
+		runtime.deafToKVLimits = false
+		snapshot.Models[1].KVCapacityBytes = 20 << 30
+		waiting(snapshot, true)
+		nextRound(t, r, clock, "idle")
+		assert.Len(t, runtime.kvLimitCalls, 1, "one reading is not followed")
+		nextRound(t, r, clock, "idle")
+		assert.Len(t, runtime.kvLimitCalls, 3, "the second in a row is")
+	})
+	t.Run("after a division that failed, and that owed less than a round writes for", func(t *testing.T) {
+		r, runtime, snapshot, clock := aCardOfTwoEngines(t,
+			engineHolding("busy", 5<<30, 20<<30), engineHolding("idle", 4<<30, 20<<30))
+		card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+		reconcileOnce(t, r, "idle")
+
+		// Requests wait on "busy", and its plan gives it half a gibibyte
+		// more, which is less than a round writes for. "idle" is found below
+		// its record, and the grow that puts it right is not confirmed.
+		snapshot.Models[0].RequestsRunning, snapshot.Models[0].RequestsWaiting = 3, 1
+		snapshot.Models[1].RequestsRunning = 4
+		snapshot.Models[1].KVCapacityBytes = 10 << 30
+		runtime.deafToKVLimits = true
+		nextRound(t, r, clock, "idle")
+		require.Equal(t, 1, r.Divisions.failures[card])
+		assert.Empty(t, r.Divisions.owedBefore(card))
+
+		// The grows take in the meantime, so each engine holds its record.
+		// "busy" has mapped more by now, and its plan gives it 1.5 GiB more.
+		runtime.deafToKVLimits = false
+		for i, name := range []string{"busy", "idle"} {
+			snapshot.Models[i].KVCapacityBytes = getModel(t, r, name).Status.Instances[0].KVLimitBytes
+		}
+		snapshot.Models[0].KVUsedBytes = 8 << 30
+		written := len(runtime.kvLimitCalls)
+		nextRound(t, r, clock, "idle")
+		assert.Len(t, runtime.kvLimitCalls, written, "one reading is not followed")
+		assert.Equal(t, []string{"busy"}, r.Divisions.owedBefore(card))
+	})
+	t.Run("after rounds that could not account for the card", func(t *testing.T) {
+		r, runtime, snapshot, clock := aCardOfTwoEngines(t,
+			engineHolding("busy", 4<<30, 20<<30), engineHolding("idle", 4<<30, 20<<30))
+		card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+		reconcileOnce(t, r, "idle")
+		waiting(snapshot, true)
+		nextRound(t, r, clock, "idle")
+		require.Equal(t, []string{"busy"}, r.Divisions.owedBefore(card))
+
+		// An engine that answers to no claim is on the card for a round.
+		waiting(snapshot, false)
+		stranger := engineHolding("stranger", 1<<30, 2<<30)
+		stranger.Port = 9009
+		snapshot.Models = append(snapshot.Models, stranger)
+		nextRound(t, r, clock, "idle")
+		assert.Empty(t, r.Divisions.owedBefore(card))
+
+		snapshot.Models = snapshot.Models[:2]
+		waiting(snapshot, true)
+		nextRound(t, r, clock, "idle")
+		assert.Empty(t, runtime.kvLimitCalls, "one reading is not followed")
+	})
+}
+
+func TestCardDivisionStateSaysOnceWhyACardIsLeftUndivided(t *testing.T) {
+	divisions := newCardDivisionState(nil)
+	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+	other := types.NamespacedName{Namespace: testNamespace, Name: "warm-2"}
+
+	assert.True(t, divisions.leftUndivided(card, "its runtime did not answer"))
+	assert.False(t, divisions.leftUndivided(card, "its runtime did not answer"), "it is said once")
+	assert.True(t, divisions.leftUndivided(other, "its runtime did not answer"), "each card says its own")
+	assert.True(t, divisions.leftUndivided(card, "an engine there answers to no claim"), "another reason is news")
+
+	divisions.accountedFor(card)
+	assert.True(t, divisions.leftUndivided(card, "an engine there answers to no claim"),
+		"a card that was accounted for in between says it again")
+}
+
+func TestReconcileNotesWhyACardIsLeftUndivided(t *testing.T) {
+	r, runtime, pod, clock := twoEnginesSharingACard(t)
+	snapshot := runtime.snapshots[pod.Status.PodIP]
+	// An engine that answers to no claim makes the card one nobody can
+	// account for.
+	snapshot.Models = append(snapshot.Models, engineHolding("stranger", 1<<30, 10<<30))
+
+	reconcileOnce(t, r, "stays")
+
+	require.Empty(t, runtime.kvLimitCalls)
+	assert.Contains(t, r.Divisions.undividedFor[cardOf(pod)], "answers to no claim")
+
+	snapshot.Models = snapshot.Models[:2]
+	nextRound(t, r, clock, "stays")
+	assert.NotContains(t, r.Divisions.undividedFor, cardOf(pod))
+}
+
+func TestCardDivisionStateCountsFailuresUntilADivisionWorks(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	divisions := newCardDivisionState(func() time.Time { return now })
+	card := types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}
+
+	assert.Equal(t, 1, divisions.failedAgain(card))
+	assert.Equal(t, 2, divisions.failedAgain(card))
+	divisions.divided(card, "a")
+	assert.NotContains(t, divisions.failures, card)
+	assert.NotContains(t, divisions.lastFailure, card)
+	assert.Equal(t, 1, divisions.failedAgain(card), "a division that works starts the count again")
+}
+
+func TestReconcileWarnsOnTheThirdDivisionOfACardThatFailsInARow(t *testing.T) {
+	r, runtime, pod, clock := twoEnginesSharingACard(t)
+	reconcileOnce(t, r, "stays")
+	recordedEvents(t, r)
+
+	// Requests wait on "stays", so each round has more to give it, and no
+	// write reaches a segment, so no division is ever confirmed.
+	snapshot := runtime.snapshots[pod.Status.PodIP]
+	snapshot.Models[0].RequestsRunning = 3
+	snapshot.Models[0].RequestsWaiting = 1
+	runtime.deafToKVLimits = true
+	warned := map[string]int{}
+	countWarnings := func() {
+		for _, event := range recordedEvents(t, r) {
+			if !strings.Contains(event, "KVLimitFailed") {
+				continue
+			}
+			for _, name := range []string{"stays", "leaves"} {
+				if strings.Contains(event, "model "+name+" ") {
+					warned[name]++
+				}
+			}
+		}
+	}
+	for try := 1; try <= 4; try++ {
+		*clock = clock.Add(DefaultRequeueDuration)
+		reconcileOnce(t, r, "stays")
+		countWarnings()
+		if try < 3 {
+			assert.Empty(t, warned, "no warning after %d failed division(s)", try)
+		}
+	}
+	assert.Equal(t, map[string]int{"stays": 1, "leaves": 1}, warned,
+		"each claim on the card is warned once, on the third failure in a row")
+
+	// A division that works ends the episode quietly.
+	runtime.deafToKVLimits = false
+	*clock = clock.Add(DefaultRequeueDuration)
+	reconcileOnce(t, r, "stays")
+	countWarnings()
+	assert.Equal(t, map[string]int{"stays": 1, "leaves": 1}, warned)
+	assert.Equal(t, int64(4)<<30+(32<<30)*5/6, getModel(t, r, "stays").Status.Instances[0].KVLimitBytes)
+}
+
+// An engine wakes, and the engine beside it is shrunk to give it its share
+// back. In three rounds in a row, that neighbour grows past its new limit
+// before the card is read back. Each of these rounds fails like one whose
+// limit does not take, and the claims on the card are warned on the third
+// failure, with the cause. Once the neighbour stops growing, the card is
+// divided.
+func TestReconcileWarnsWhenAWakeKeepsFindingItsNeighbourGrowing(t *testing.T) {
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	awake := withFinalizer(claimOnPod("awake", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30))
+	awake.Status.Instances[0].Port = 9001
+	awake.Status.Instances[0].KVLimitBytes = 20 << 30
+	asleep := claimOnPod("asleep", pod.Name, modelv1alpha1.ModelClaimSleeping, 20<<30, 4<<30)
+	asleep.Status.Instances[0].KVLimitBytes = 20 << 30
+	sleeping := engineHolding("asleep", 0, 20<<30)
+	sleeping.Phase = runtimePhaseSleeping
+	sleeping.Ready = false
+	snapshot.Models = []RuntimeSnapshotModel{engineHolding("awake", 4<<30, 20<<30), sleeping}
+	r, runtime := newReconciler(t, awake, asleep, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	now := time.Unix(1_700_000_000, 0)
+	r.Divisions = newCardDivisionState(func() time.Time { return now })
+	reconcileOnce(t, r, "awake")
+	recordedEvents(t, r)
+
+	// The engine wakes, and its own claim's health loop marks it active.
+	snapshot.Models[1].Phase = runtimePhaseActive
+	snapshot.Models[1].Ready = true
+	woken := getModel(t, r, "asleep")
+	woken.Status.Instances[0].Phase = modelv1alpha1.ModelClaimActive
+	require.NoError(t, r.Status().Update(context.Background(), woken))
+
+	// Each shrink of "awake" finds it holding a gibibyte more than it was
+	// given. Its requests end between rounds, so each round plans the same.
+	growing := true
+	runtime.onKVLimit = func() {
+		call := runtime.kvLimitCalls[len(runtime.kvLimitCalls)-1]
+		if growing && call.ModelName == "awake" && strings.HasPrefix(call.OperationID, "kv-plan/") {
+			snapshot.Models[0].KVUsedBytes = call.LimitBytes + 1<<30
+		}
+	}
+	warned := map[string]int{}
+	var causes []string
+	countWarnings := func() {
+		for _, event := range recordedEvents(t, r) {
+			if !strings.Contains(event, "KVLimitFailed") {
+				continue
+			}
+			causes = append(causes, event)
+			for _, name := range []string{"awake", "asleep"} {
+				if strings.Contains(event, "model "+name+" ") {
+					warned[name]++
+				}
+			}
+		}
+	}
+	for try := 1; try <= 3; try++ {
+		snapshot.Models[0].KVUsedBytes = 4 << 30
+		nextRound(t, r, &now, "awake")
+		countWarnings()
+		if try < 3 {
+			assert.Empty(t, warned, "no warning after %d failed division(s)", try)
+		}
+	}
+	assert.Equal(t, map[string]int{"awake": 1, "asleep": 1}, warned,
+		"each claim on the card is warned once, on the third failure in a row")
+	for _, event := range causes {
+		assert.Contains(t, event, "could not be divided 3 times in a row: awake holds")
+	}
+	assert.Equal(t, int64(4)<<30, getModel(t, r, "asleep").Status.Instances[0].KVLimitBytes,
+		"a division that fails at its shrinks records nothing")
+
+	growing = false
+	snapshot.Models[0].KVUsedBytes = 4 << 30
+	nextRound(t, r, &now, "awake")
+	countWarnings()
+	assert.Equal(t, map[string]int{"awake": 1, "asleep": 1}, warned)
+	assert.Equal(t, int64(20)<<30, getModel(t, r, "awake").Status.Instances[0].KVLimitBytes)
+	assert.Equal(t, int64(20)<<30, getModel(t, r, "asleep").Status.Instances[0].KVLimitBytes)
+}
+
+func TestReconcileDoesNotTakeACardLeftAloneForOneThatWasDivided(t *testing.T) {
+	r, runtime, pod, clock := twoEnginesSharingACard(t)
+	reconcileOnce(t, r, "stays")
+	recordedEvents(t, r)
+
+	// No write reaches a segment, so no division is ever confirmed. Requests
+	// wait on "stays" in the first three rounds, and in the last two. In the
+	// fourth, they are all being served, so nothing is tried. A division is
+	// tried in the second round that finds the engine short, and in every
+	// round after it while that lasts.
+	snapshot := runtime.snapshots[pod.Status.PodIP]
+	runtime.deafToKVLimits = true
+	warnings := 0
+	tried := map[int]bool{2: true, 3: true, 6: true}
+	for round := 1; round <= 6; round++ {
+		snapshot.Models[0].RequestsRunning = 3
+		snapshot.Models[0].RequestsWaiting = 1
+		if round == 4 {
+			snapshot.Models[0].RequestsRunning = 4
+			snapshot.Models[0].RequestsWaiting = 0
+		}
+		before := len(runtime.kvLimitCalls)
+		nextRound(t, r, clock, "stays")
+		assert.Equal(t, tried[round], len(runtime.kvLimitCalls) > before, "round %d", round)
+		warnings += len(kvLimitWarnings(t, r, "stays"))
+	}
+
+	assert.Equal(t, 1, warnings, "three divisions failed in a row, and the rounds between them tried none")
+}

@@ -188,6 +188,34 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 		gomega.Expect(fixture.Runtime().ActivateCallCount()).To(gomega.Equal(0))
 	})
 
+	ginkgo.It("accepts a claim that declares no per-GPU cost and does not place it", func() {
+		_ = fixture.CreateWarmPod(ns.Name, "warm-undeclared", "pool-a")
+		claim := &modelapi.ModelClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "claim-undeclared", Namespace: ns.Name},
+			Spec: modelapi.ModelClaimSpec{
+				PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{constants.ModelPoolLabelName: "pool-a"}},
+				ArtifactURL: "huggingface://integration/claim-undeclared",
+				Engine:      "vllm",
+			},
+		}
+		// The schema leaves perGPU optional, so the API server takes the claim,
+		// and the controller is what keeps it off every card.
+		gomega.Expect(k8sClient.Create(ctx, claim)).To(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := fixture.GetClaim(g, claim)
+			g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimPending))
+			g.Expect(latest.Status.Instances).To(gomega.BeEmpty())
+			scheduled := meta.FindStatusCondition(latest.Status.Conditions, string(modelapi.ModelClaimConditionTypeScheduled))
+			g.Expect(scheduled).NotTo(gomega.BeNil())
+			g.Expect(scheduled.Status).To(gomega.Equal(metav1.ConditionFalse))
+			g.Expect(scheduled.Reason).To(gomega.Equal("InvalidPerGPU"))
+			g.Expect(scheduled.Message).To(gomega.ContainSubstring("spec.perGPU is missing"))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+		fixture.ExpectEvent(claim, corev1.EventTypeWarning, "InvalidPerGPU")
+		gomega.Expect(fixture.Runtime().ActivateCallCount()).To(gomega.Equal(0))
+	})
+
 	ginkgo.It("records activation failure and retries to Active", func() {
 		fixture.Runtime().SetDefaultState("active", true)
 		fixture.Runtime().FailNextActivations(1)
@@ -212,6 +240,29 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 			g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
 			g.Expect(latest.Status.ReadyReplicas).To(gomega.Equal(int32(1)))
 		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+	})
+
+	ginkgo.It("tries two claims whose engines cannot be started by the round, and not in a loop", func() {
+		fixture.Runtime().SetDefaultState("active", true)
+		fixture.Runtime().FailNextActivations(1000)
+		_ = fixture.CreateWarmPod(ns.Name, "warm-refusing", "pool-a")
+		first := fixture.CreateClaim(ns.Name, "claim-first", "pool-a", nil, nil)
+		second := fixture.CreateClaim(ns.Name, "claim-second", "pool-a", nil, nil)
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			for _, claim := range []*modelapi.ModelClaim{first, second} {
+				latest := fixture.GetClaim(g, claim)
+				g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimFailed))
+				g.Expect(latest.Status.Instances).To(gomega.BeEmpty())
+			}
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+
+		// A start that failed takes its record back, and that write must not
+		// wake the other claim. Each claim is tried again when its wait is up,
+		// which is after 10 seconds and then after 20 more.
+		gomega.Consistently(func() int {
+			return fixture.Runtime().ActivateCallCount()
+		}, 15*time.Second, time.Second).Should(gomega.BeNumerically("<=", 6))
 	})
 
 	ginkgo.It("reflects sleeping and terminal failed runtime states", func() {

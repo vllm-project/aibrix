@@ -77,6 +77,13 @@ runtime image was loaded directly into a local cluster, keep the sample's
 
 ## Deploy the two ModelClaims
 
+Each sample claim declares `spec.perGPU`, what one instance costs on a GPU:
+`maximumFootprint: 6Gi` and `kvFloor: 1Gi`. The controller places a claim only
+on a Pod whose GPU has room for both, by the size the Runtime snapshot reports
+and the costs the claims declare. A claim without `perGPU` is not placed.
+Measure both figures for your own model and engine arguments, as the
+[feature guide](../../docs/source/features/modelclaim.rst) describes.
+
 ```bash
 kubectl -n "$NAMESPACE" apply -f samples/modelclaim/modelclaims.yaml
 kubectl -n "$NAMESPACE" get modelclaims -w
@@ -331,6 +338,18 @@ kubectl -n "$NAMESPACE" get pod "$POD" --show-labels
 
 The Pod must match the claim's `podSelector` and have
 `pool.aibrix.ai/enabled: "true"`.
+
+Then read the claim's `Scheduled` condition, which says why it waits:
+
+```bash
+kubectl -n "$NAMESPACE" get modelclaim qwen3-0-6b \
+  -o jsonpath='{.status.conditions[?(@.type=="Scheduled")]}{"\n"}'
+```
+
+`InvalidPerGPU` means that `perGPU` is missing or invalid. `NoMatchingPods`
+about GPU memory means that no GPU has room for the claim's footprint plus its
+KV floor. Its message names the Pod that came closest, and why it was turned
+away.
 
 ### A claim stays Loading or Activating
 

@@ -188,7 +188,11 @@ type poolPolicySource struct {
 // and runs an optional policy once per pool. ModelClaim reconciliation remains
 // independent: any policy issue is logged and retried next tick rather than
 // failing an otherwise healthy ModelClaim.
-func (r *ModelClaimReconciler) reconcilePoolPolicies(ctx context.Context, candidates []corev1.Pod) {
+func (r *ModelClaimReconciler) reconcilePoolPolicies(
+	ctx context.Context,
+	candidates []corev1.Pod,
+	readings *runtimeReadings,
+) {
 	seen := make(map[types.NamespacedName]struct{}, len(candidates))
 	manager := r.poolPolicyManager()
 	for i := range candidates {
@@ -213,7 +217,7 @@ func (r *ModelClaimReconciler) reconcilePoolPolicies(ctx context.Context, candid
 			continue
 		}
 		source := &poolPolicySource{key: key, deployment: deployment, policy: policy}
-		if err := r.reconcilePoolPolicy(ctx, source, manager); err != nil {
+		if err := r.reconcilePoolPolicy(ctx, source, manager, readings); err != nil {
 			klog.ErrorS(err, "ModelClaim pool policy tick failed", "deployment", klog.KObj(deployment))
 		}
 	}
@@ -285,6 +289,7 @@ func (r *ModelClaimReconciler) reconcilePoolPolicy(
 	ctx context.Context,
 	source *poolPolicySource,
 	manager *poolPolicyManager,
+	readings *runtimeReadings,
 ) error {
 	if source.policy.Reclaim == nil && source.policy.Lifecycle == nil {
 		recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonNoReclaimPolicy)
@@ -301,7 +306,7 @@ func (r *ModelClaimReconciler) reconcilePoolPolicy(
 	}
 	for i := range pods {
 		pod := &pods[i]
-		snapshot, err := r.Runtime.Snapshot(ctx, pod.Status.PodIP, DefaultRuntimePort)
+		snapshot, err := readings.of(ctx, pod)
 		if err != nil {
 			recordPolicyEvaluation(source.key, policyResultFailed, policyReasonSnapshotError)
 			klog.V(4).InfoS("pool policy snapshot failed", "pod", klog.KObj(pod), "err", err)
@@ -324,7 +329,15 @@ func (r *ModelClaimReconciler) reconcilePoolPolicy(
 			decisionTime = manager.now()
 		}
 		activities, observed := manager.observeSnapshot(pod, snapshot)
-		if source.policy.Reclaim != nil && !observed {
+		if source.policy.Reclaim != nil && r.claimHoldsAKVLimitOn(ctx, pod) {
+			// A claim that declares its per-GPU cost has its engines held to a
+			// limit derived from that declaration, and the health loop writes
+			// that limit back whenever it finds another one in force. Two
+			// writers on one segment would only overwrite each other, so the
+			// declaration wins and the annotation stands down for this Pod.
+			recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonClaimHeldLimits)
+			klog.V(4).InfoS("pool KV policy stands down where a claim holds the limit", "pod", klog.KObj(pod))
+		} else if source.policy.Reclaim != nil && !observed {
 			recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonIncompleteMetrics)
 			klog.V(4).InfoS("pool KV policy waits for complete request observations", "pod", klog.KObj(pod))
 		} else if source.policy.Reclaim != nil {
@@ -363,6 +376,9 @@ func (r *ModelClaimReconciler) reconcilePoolPolicy(
 						recordPolicyAction(source.key, policyActionSetKVLimit, policyResultApplied, policyReasonApplied)
 					}
 				}
+				if applied > 0 || failed > 0 {
+					readings.forget(pod.Name)
+				}
 				switch {
 				case failed > 0:
 					recordPolicyEvaluation(source.key, policyResultFailed, policyReasonRuntimeError)
@@ -376,7 +392,7 @@ func (r *ModelClaimReconciler) reconcilePoolPolicy(
 		if source.policy.Lifecycle != nil && !observed {
 			klog.V(4).InfoS("pool lifecycle policy waits for complete request observations", "pod", klog.KObj(pod))
 		} else if source.policy.Lifecycle != nil {
-			r.reconcilePoolIdleSleep(ctx, source, manager, pod, snapshot, activities)
+			r.reconcilePoolIdleSleep(ctx, source, manager, pod, snapshot, activities, readings)
 		}
 	}
 	return nil
@@ -432,6 +448,7 @@ func (r *ModelClaimReconciler) reconcilePoolIdleSleep(
 	pod *corev1.Pod,
 	snapshot *RuntimeSnapshot,
 	activities map[string]poolRequestActivity,
+	readings *runtimeReadings,
 ) {
 	claims := &modelv1alpha1.ModelClaimList{}
 	if err := r.List(ctx, claims, client.InNamespace(pod.Namespace)); err != nil {
@@ -474,9 +491,11 @@ func (r *ModelClaimReconciler) reconcilePoolIdleSleep(
 			"pool-policy-sleep/%s/%s/%s/%d",
 			source.key.String(), pod.UID, snapshotActivityKey(model), idleSince.UnixNano(),
 		)
-		if _, err := r.Runtime.Sleep(ctx, pod.Status.PodIP, DefaultRuntimePort, &SleepRequest{
+		_, err := r.Runtime.Sleep(ctx, pod.Status.PodIP, DefaultRuntimePort, &SleepRequest{
 			ModelName: model.ModelName, Level: 1, OperationID: operationID,
-		}); err != nil {
+		})
+		readings.forget(pod.Name)
+		if err != nil {
 			if restoreErr := r.annotateWarmPodWithState(
 				ctx, claim, pod, port, constants.ModelClaimRoutingStateActive,
 			); restoreErr != nil {
@@ -495,6 +514,36 @@ func (r *ModelClaimReconciler) reconcilePoolIdleSleep(
 			model.ModelName, source.policy.Lifecycle.SleepAfterSeconds, pod.Name,
 		)
 	}
+}
+
+// claimHoldsAKVLimitOn reports whether any instance recorded on this Pod runs
+// under a KV limit its own ClaimReconciler maintains.
+//
+// A listing that fails answers yes. Standing down costs a pool its automatic
+// KV distribution for one round; guessing no would write a limit that the
+// health loop overwrites moments later, and neither engine would settle.
+//
+// The claims are read from the API server, not the cache. The policy runs at
+// the end of a pass, right after the pass may have recorded the first limit on
+// this Pod, and the cache may not have seen that record yet.
+func (r *ModelClaimReconciler) claimHoldsAKVLimitOn(ctx context.Context, pod *corev1.Pod) bool {
+	reader := client.Reader(r.Client)
+	if r.APIReader != nil {
+		reader = r.APIReader
+	}
+	claims := &modelv1alpha1.ModelClaimList{}
+	if err := reader.List(ctx, claims, client.InNamespace(pod.Namespace)); err != nil {
+		klog.ErrorS(err, "pool KV policy could not list ModelClaims", "pod", klog.KObj(pod))
+		return true
+	}
+	for i := range claims.Items {
+		for _, instance := range claims.Items[i].Status.Instances {
+			if instance.Pod == pod.Name && instance.KVLimitBytes > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func snapshotActivityKey(model RuntimeSnapshotModel) string {

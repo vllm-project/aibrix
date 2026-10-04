@@ -586,10 +586,15 @@ func (r *ModelAdapterReconciler) clearModelAdapterInstanceList(ctx context.Conte
 
 // getActivePodsForModelAdapter retrieves all pods matching the selector and filters them to only include active ones
 func (r *ModelAdapterReconciler) getActivePodsForModelAdapter(ctx context.Context, instance *modelv1alpha1.ModelAdapter) ([]corev1.Pod, error) {
+	selector, err := metav1.LabelSelectorAsSelector(instance.Spec.PodSelector)
+	if err != nil {
+		return nil, fmt.Errorf("model adapter %s/%s has invalid pod selector: %w",
+			instance.Namespace, instance.Name, err)
+	}
 	podList := &corev1.PodList{}
 	listOpts := []client.ListOption{
 		client.InNamespace(instance.GetNamespace()),
-		client.MatchingLabels(instance.Spec.PodSelector.MatchLabels),
+		client.MatchingLabelsSelector{Selector: selector},
 	}
 
 	// List all pods matching the label selector

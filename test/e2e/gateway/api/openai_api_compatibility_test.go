@@ -27,7 +27,6 @@ import (
 )
 
 func TestCompletionStreaming(t *testing.T) {
-	t.Skip("TODO(@jeffwan): fix me")
 	client := createOpenAIClient(gatewayURL, apiKey)
 
 	stream := client.Completions.NewStreaming(context.TODO(), openai.CompletionNewParams{

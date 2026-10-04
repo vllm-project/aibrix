@@ -20,6 +20,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -46,6 +47,9 @@ func TestPDLegStateNilReceiverIsInert(t *testing.T) {
 	// A nil channel blocks forever in a select, which is the correct "this can
 	// never fire" behaviour for a stream that has no PD leg.
 	assert.Nil(t, leg.PrefillFailed())
+	assert.NotPanics(t, func() { leg.MarkPrefillSucceeded() })
+	assert.Nil(t, leg.PrefillSucceeded())
+	assert.True(t, leg.PrefillSucceededAt().IsZero())
 
 	// There is no abort to bound or to wait for, so the context is the
 	// background one and the join point is ready immediately - a caller that
@@ -69,6 +73,72 @@ func TestPDLegStateNilReceiverIsInert(t *testing.T) {
 	assert.Empty(t, bare.PDRequestID())
 	assert.Nil(t, bare.PrefillFailure())
 	assert.Nil(t, bare.PDLeg())
+	assert.Nil(t, bare.PrefillSucceeded())
+	assert.True(t, bare.PrefillSucceededAt().IsZero())
+}
+
+// The prefill-success edge has the same close-once contract as the failure
+// edge: the decode watchdog selects on it, and a second close would panic.
+func TestPDLegStatePrefillSucceededClosesOnce(t *testing.T) {
+	ctx := NewRoutingContext(context.Background(), RoutingAlgorithm("pd"), "m", "msg", "req-1", "u")
+	leg := ctx.PDLeg()
+	require.NotNil(t, leg)
+
+	select {
+	case <-ctx.PrefillSucceeded():
+		t.Fatal("a fresh leg must not report a successful prefill")
+	default:
+	}
+	assert.True(t, ctx.PrefillSucceededAt().IsZero())
+
+	before := time.Now()
+	const racers = 16
+	var (
+		start sync.WaitGroup
+		done  sync.WaitGroup
+	)
+	start.Add(1)
+	for i := 0; i < racers; i++ {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			start.Wait()
+			assert.NotPanics(t, leg.MarkPrefillSucceeded)
+		}()
+	}
+	start.Done()
+	done.Wait()
+
+	select {
+	case <-ctx.PrefillSucceeded():
+	default:
+		t.Fatal("marking the prefill leg successful must close the wakeup channel")
+	}
+	at := ctx.PrefillSucceededAt()
+	assert.False(t, at.Before(before), "success time %v predates the call", at)
+
+	// Later calls keep the first timestamp: it is the origin of the watchdog's
+	// deadline, which must not slide.
+	time.Sleep(time.Millisecond)
+	leg.MarkPrefillSucceeded()
+	assert.Equal(t, at, ctx.PrefillSucceededAt())
+}
+
+// A recycled RoutingContext must not inherit the retired leg's success edge,
+// or the next request's decode watchdog would arm before its own prefill ran.
+func TestPDLegStatePrefillSucceededIsPerIncarnation(t *testing.T) {
+	ctx := NewRoutingContext(context.Background(), RoutingAlgorithm("pd"), "m", "msg", "req-1", "u")
+	old := ctx.PDLeg()
+	old.MarkPrefillSucceeded()
+
+	RecycleRoutingContextForTest(ctx, context.Background(), RoutingAlgorithm("pd"), "m", "msg", "req-2", "u")
+	select {
+	case <-ctx.PrefillSucceeded():
+		t.Fatal("the recycled context inherited the retired leg's success edge")
+	default:
+	}
+	assert.True(t, ctx.PrefillSucceededAt().IsZero())
+	assert.False(t, old.PrefillSucceededAt().IsZero(), "the retired leg keeps its own state")
 }
 
 func TestPDLegStateFirstFailureWinsAndClosesOnce(t *testing.T) {

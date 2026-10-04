@@ -18,6 +18,8 @@ package main
 
 import (
 	"flag"
+	"net"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -116,4 +118,31 @@ func TestKubeAPIClientConfiguration(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStartPprofServer(t *testing.T) {
+	t.Run("serves the profiling endpoints", func(t *testing.T) {
+		ln := startPprofServer("127.0.0.1:0")
+		require.NotNil(t, ln)
+		defer func() { _ = ln.Close() }()
+
+		resp, err := http.Get("http://" + ln.Addr().String() + "/debug/pprof/")
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+	})
+
+	t.Run("empty address disables it", func(t *testing.T) {
+		require.Nil(t, startPprofServer(""))
+	})
+
+	// A second gateway on the same host finds the port taken: it must keep
+	// starting instead of exiting.
+	t.Run("address in use is not fatal", func(t *testing.T) {
+		held, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		defer func() { _ = held.Close() }()
+
+		require.Nil(t, startPprofServer(held.Addr().String()))
+	})
 }

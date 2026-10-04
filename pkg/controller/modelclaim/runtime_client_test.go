@@ -19,6 +19,7 @@ package modelclaim
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -116,6 +117,198 @@ func TestHTTPRuntimeSnapshot(t *testing.T) {
 	require.NotNil(t, snapshot.Models[0].RequestSuccessTotal)
 	assert.Equal(t, int64(12), *snapshot.Models[0].RequestSuccessTotal)
 	assert.Equal(t, []string{"hf://Org/M1"}, snapshot.CachedArtifacts)
+}
+
+// TestHTTPRuntimeSnapshotReadsEveryFieldTheRuntimeSends decodes a snapshot as
+// the runtime writes it, with a value in every field, so that a name changed
+// in the client fails a test.
+func TestHTTPRuntimeSnapshotReadsEveryFieldTheRuntimeSends(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"observed_at": "2026-09-21T10:00:00.123456Z",
+			"accelerators": [{"id": "GPU-0", "hbm_total_bytes": 1000, "hbm_free_bytes": 700, "hbm_usable_bytes": 950}],
+			"models": [{"model_name": "m1", "artifact_url": "hf://Org/M1",
+				"claim_ref": {"namespace": "default", "name": "claim-1", "uid": "uid-1"}, "port": 9001,
+				"ipc_name": "kvc_m1", "phase": "active", "alive": true, "ready": true, "restart_count": 2,
+				"last_error": "engine exited", "last_transition": "2026-09-21T09:59:58.000001Z",
+				"kv_used_bytes": 300, "kv_capacity_bytes": 600, "hbm_peak_bytes": 456,
+				"request_metrics_observed": true, "requests_running": 3, "requests_waiting": 1,
+				"request_success_total": 12}],
+			"cached_artifacts": ["hf://Org/M1"]}`))
+	}))
+	defer srv.Close()
+	c, host, port := clientForServer(srv)
+
+	snapshot, err := c.Snapshot(context.Background(), host, port)
+
+	require.NoError(t, err)
+	lastTransition := time.Date(2026, time.September, 21, 9, 59, 58, 1000, time.UTC)
+	requestSuccessTotal := int64(12)
+	assert.Equal(t, &RuntimeSnapshot{
+		ObservedAt: time.Date(2026, time.September, 21, 10, 0, 0, 123456000, time.UTC),
+		Accelerators: []RuntimeAcceleratorSnapshot{
+			{ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 700, HBMUsableBytes: 950},
+		},
+		Models: []RuntimeSnapshotModel{{
+			ModelName: "m1", ArtifactURL: "hf://Org/M1",
+			ClaimRef: &ModelClaimRef{Namespace: "default", Name: "claim-1", UID: "uid-1"},
+			Port:     9001, IPCName: "kvc_m1", Phase: "active", Alive: true, Ready: true, RestartCount: 2,
+			LastError: "engine exited", LastTransition: &lastTransition,
+			KVUsedBytes: 300, KVCapacityBytes: 600, HBMPeakBytes: 456,
+			RequestMetricsObserved: true, RequestsRunning: 3, RequestsWaiting: 1,
+			RequestSuccessTotal: &requestSuccessTotal,
+		}},
+		CachedArtifacts: []string{"hf://Org/M1"},
+	}, snapshot)
+}
+
+// TestHTTPRuntimeSnapshotReadsWhatTheRuntimeSends decodes what the runtime
+// sends for an engine that is still booting, and for a card it could not
+// measure.
+func TestHTTPRuntimeSnapshotReadsWhatTheRuntimeSends(t *testing.T) {
+	for name, tc := range map[string]struct {
+		payload        string
+		hbmUsableBytes int64
+		sized          bool
+		engines        int
+	}{
+		"a card the runtime measured": {`{
+			"observed_at": "2026-09-21T10:00:00.123456Z",
+			"accelerators": [{"id": "GPU-0", "hbm_total_bytes": 1000, "hbm_free_bytes": 700, "hbm_usable_bytes": 950}],
+			"models": [{"model_name": "m1", "artifact_url": "hf://Org/M1", "claim_ref": null, "port": 9001,
+				"ipc_name": "kvc_m1", "phase": "booting", "alive": true, "ready": false, "restart_count": 0,
+				"last_error": null, "last_transition": "2026-09-21T09:59:58.000001Z",
+				"kv_used_bytes": -1, "kv_capacity_bytes": -1, "hbm_peak_bytes": 0,
+				"request_metrics_observed": false, "requests_running": 0, "requests_waiting": 0,
+				"request_success_total": null}],
+			"cached_artifacts": []}`, 950, true, 1},
+		"a card it could not measure": {`{
+			"observed_at": "2026-09-21T10:00:00Z",
+			"accelerators": [{"id": "GPU-0", "hbm_total_bytes": 1000, "hbm_free_bytes": 700, "hbm_usable_bytes": -1}],
+			"models": [], "cached_artifacts": []}`, -1, false, 0},
+		"a runtime from before the field": {`{
+			"observed_at": "2026-09-21T10:00:00Z",
+			"accelerators": [{"id": "GPU-0", "hbm_total_bytes": 1000, "hbm_free_bytes": 700}],
+			"models": [], "cached_artifacts": []}`, 0, false, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tc.payload))
+			}))
+			defer srv.Close()
+			c, host, port := clientForServer(srv)
+
+			snapshot, err := c.Snapshot(context.Background(), host, port)
+
+			require.NoError(t, err)
+			require.Len(t, snapshot.Accelerators, 1)
+			assert.Equal(t, tc.hbmUsableBytes, snapshot.Accelerators[0].HBMUsableBytes)
+			hbmUsableBytes, sized := snapshot.hbmUsableBytes()
+			assert.Equal(t, tc.sized, sized)
+			if sized {
+				assert.Equal(t, tc.hbmUsableBytes, hbmUsableBytes)
+			}
+			require.Len(t, snapshot.Models, tc.engines)
+			for _, model := range snapshot.Models {
+				assert.Equal(t, int64(-1), model.KVUsedBytes)
+				assert.Equal(t, int64(-1), model.KVCapacityBytes)
+				assert.Nil(t, model.ClaimRef)
+				assert.Empty(t, model.LastError)
+				require.NotNil(t, model.LastTransition)
+			}
+		})
+	}
+}
+
+// A start is taken back only when the engine is known not to have started.
+// This goes through the real client, so it holds what the client makes of
+// each answer, and of each call that got none.
+func TestHTTPRuntimeTellsAStartThatWasRefusedFromOneThatMayHaveBeenDone(t *testing.T) {
+	answering := func(status int, body string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+		}
+	}
+	hijacked := func(then func(conn net.Conn)) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				return
+			}
+			then(conn)
+		}
+	}
+	ownError := `{"status": "error", "model_name": "m1", "port": 0, "ipc_name": "", "message": "boom"}`
+
+	for name, tc := range map[string]struct {
+		runtime http.HandlerFunc
+		notDone bool
+		// patience is how long the client waits for an answer.
+		patience time.Duration
+	}{
+		// What the runtime itself sends when it rejects a request, and when
+		// starting the engine failed.
+		"the runtime's own 400":                {answering(http.StatusBadRequest, ownError), true, time.Minute},
+		"the runtime's own 500":                {answering(http.StatusInternalServerError, ownError), true, time.Minute},
+		"a success status with an error in it": {answering(http.StatusOK, ownError), true, time.Minute},
+		// A request that did not pass the API's validation never reached the
+		// runtime.
+		"a 422 from the API": {answering(http.StatusUnprocessableEntity, `{"detail": []}`), true, time.Minute},
+		// A status from 400 to 499 blames the request, whatever its body says.
+		"a 400 that is not the runtime's": {answering(http.StatusBadRequest, "Invalid HTTP request received."), true, time.Minute},
+		"a 499":                           {answering(499, "client closed request"), true, time.Minute},
+		"a 399":                           {answering(399, "nothing the runtime sends"), false, time.Minute},
+		// Something between the controller and the runtime gave up waiting.
+		// The runtime may still be starting the engine.
+		"a 504 that is not the runtime's": {answering(http.StatusGatewayTimeout, "upstream request timeout"), false, time.Minute},
+		"a 502 that is not the runtime's": {answering(http.StatusBadGateway, "<html>bad gateway</html>"), false, time.Minute},
+		"a 502 with a report of its own":  {answering(http.StatusBadGateway, `{"status": "unavailable"}`), false, time.Minute},
+		// What the framework sends for an exception outside the handler, when
+		// the engine may already run.
+		"a 500 that is not the runtime's": {answering(http.StatusInternalServerError, "Internal Server Error"), false, time.Minute},
+		// A status that neither succeeds nor blames the request says nothing
+		// of what the runtime did.
+		"a 202 nobody asked for":            {answering(http.StatusAccepted, `{"status": "accepted"}`), false, time.Minute},
+		"closed after the request was read": {hijacked(func(conn net.Conn) { _ = conn.Close() }), false, time.Minute},
+		"reset after the request was read": {hijacked(func(conn net.Conn) {
+			if tcp, ok := conn.(*net.TCPConn); ok {
+				_ = tcp.SetLinger(0)
+			}
+			_ = conn.Close()
+		}), false, time.Minute},
+		"no answer in time": {hijacked(func(conn net.Conn) {
+			time.Sleep(time.Second)
+			_ = conn.Close()
+		}), false, 300 * time.Millisecond},
+		"a success status that cannot be read": {answering(http.StatusOK, "<html>ok</html>"), false, time.Minute},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(tc.runtime)
+			defer srv.Close()
+			u, _ := url.Parse(srv.URL)
+			port, _ := strconv.Atoi(u.Port())
+			c := NewRuntimeClient().(*httpRuntimeClient)
+			// Only the runtime that gives no answer is waited for. An answer
+			// that comes late on a busy machine is still an answer.
+			c.httpClient.Timeout = tc.patience
+
+			_, err := c.Activate(context.Background(), u.Hostname(), port, &ActivateRequest{ModelName: "m1"})
+
+			require.Error(t, err)
+			assert.Equal(t, tc.notDone, callNotDone(err), "%v", err)
+		})
+	}
+
+	// Nobody listens, so the call was never sent.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	refused := listener.Addr().(*net.TCPAddr)
+	require.NoError(t, listener.Close())
+	_, err = NewRuntimeClient().Activate(context.Background(), refused.IP.String(), refused.Port,
+		&ActivateRequest{ModelName: "m1"})
+	require.Error(t, err)
+	assert.True(t, callNotDone(err), "%v", err)
 }
 
 func TestHTTPRuntimeSetKVLimit(t *testing.T) {

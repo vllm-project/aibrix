@@ -55,6 +55,10 @@ const (
 	// counter to track client-facing fail-fast actions taken on a PD prefill failure
 	GatewayPDPrefillFailureTotal = "gateway_pd_prefill_failure_total"
 
+	// counter to track PD decode legs the gateway gave up on because they
+	// stopped responding, by watchdog phase
+	GatewayPDDecodeWatchdogTotal = "gateway_pd_decode_watchdog_total"
+
 	// counter to track #prefill & #decode pods selected by pd
 	PDSelectedPrefillPodTotal = "pd_selected_prefill_pod_total"
 	PDSelectedDecodePodTotal  = "pd_selected_decode_pod_total"
@@ -168,6 +172,14 @@ var (
 				Raw: Counter,
 			},
 			Description: "Total number of PD prefill failures the gateway acted on for the client, by prefill failure class and the stage the decode leg had reached",
+		},
+		GatewayPDDecodeWatchdogTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total number of PD decode legs the gateway failed because the decode pod stopped responding, by watchdog phase",
 		},
 		PDTokenLoadActiveTokens: {
 			MetricScope:  PodMetricScope,

@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/utils/ptr"
@@ -70,6 +71,12 @@ func TestModelClaimNotPlacedYetIsRetryable(t *testing.T) {
 			}},
 			ArtifactURL: "huggingface://aibrix/" + unplacedModel,
 			Engine:      "vllm",
+			// Every claim has to declare its per-GPU cost to be placed. Without
+			// one this claim would be refused for good, and not asked to retry.
+			PerGPU: &modelv1alpha1.ModelClaimPerGPU{
+				MaximumFootprint: resource.MustParse("1Gi"),
+				KVFloor:          resource.MustParse("1Gi"),
+			},
 		},
 	}, metav1.CreateOptions{})
 	require.NoError(t, err)

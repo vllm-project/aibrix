@@ -21,6 +21,7 @@ import (
 	"math/rand"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cespare/xxhash/v2"
@@ -62,7 +63,11 @@ type PrefixHashTable struct {
 	mu       sync.RWMutex
 	seed     uint64
 	store    lrustore.Store[uint64, Block]
-	dirtyIds map[string]struct{} // block hash as string, for delta sync
+	dirtyIds map[string]uint64 // block hash as string -> dirtySeq of its last change, for delta sync
+	dirtySeq uint64
+	// deltaSeq is dirtySeq as of the last GetDeltaForSync. It is written under
+	// the read lock, so it must be atomic.
+	deltaSeq atomic.Uint64
 }
 
 type Block struct {
@@ -120,7 +125,7 @@ func (c *PrefixHashTable) EnableDeltaSync() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.dirtyIds == nil {
-		c.dirtyIds = make(map[string]struct{})
+		c.dirtyIds = make(map[string]uint64)
 	}
 }
 
@@ -186,7 +191,8 @@ func (c *PrefixHashTable) AddPrefix(prefixHashes []uint64, model, pod string) {
 
 		c.store.Put(prefixHash, block)
 		if c.dirtyIds != nil {
-			c.dirtyIds[strconv.FormatUint(prefixHash, 10)] = struct{}{}
+			c.dirtySeq++
+			c.dirtyIds[strconv.FormatUint(prefixHash, 10)] = c.dirtySeq
 		}
 	}
 }
