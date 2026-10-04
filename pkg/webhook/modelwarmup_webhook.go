@@ -19,11 +19,14 @@ package webhook
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -165,11 +168,166 @@ func validateModelWarmup(warmup *modelapi.ModelWarmup) error {
 		}
 		images[image.Image] = i
 	}
-	if len(warmup.Spec.ImagePreload.Images) == 0 {
-		allErrs = append(allErrs, field.Required(specPath.Child("imagePreload", "images"), "at least one image is required"))
+	containerNames := make(map[string]struct{}, len(warmup.Spec.ImagePreload.Images))
+	for i := range warmup.Spec.ImagePreload.Images {
+		containerNames[fmt.Sprintf("image-%d", i)] = struct{}{}
+	}
+	allErrs = append(allErrs, validateModelWarmupCustom(specPath, warmup.Spec.Custom, containerNames)...)
+	if !modelWarmupHasRegularWork(warmup.Spec) {
+		allErrs = append(allErrs, field.Required(
+			specPath, "at least one of imagePreload.images or custom.containers is required",
+		))
 	}
 	allErrs = append(allErrs, validateModelWarmupPolicies(warmup.Spec.Policies)...)
 	return allErrs.ToAggregate()
+}
+
+func modelWarmupHasRegularWork(spec modelapi.ModelWarmupSpec) bool {
+	return len(spec.ImagePreload.Images) > 0 || (spec.Custom != nil && len(spec.Custom.Containers) > 0)
+}
+
+func validateModelWarmupCustom(
+	specPath *field.Path,
+	custom *modelapi.ModelWarmupCustomAction,
+	containerNames map[string]struct{},
+) field.ErrorList {
+	if custom == nil {
+		return nil
+	}
+
+	var allErrs field.ErrorList
+	customPath := specPath.Child("custom")
+	if len(custom.InitContainers) > modelapi.MaxModelWarmupCustomInitContainers {
+		allErrs = append(allErrs, field.TooMany(
+			customPath.Child("initContainers"), len(custom.InitContainers), modelapi.MaxModelWarmupCustomInitContainers,
+		))
+	}
+	if len(custom.Containers) > modelapi.MaxModelWarmupCustomContainers {
+		allErrs = append(allErrs, field.TooMany(
+			customPath.Child("containers"), len(custom.Containers), modelapi.MaxModelWarmupCustomContainers,
+		))
+	}
+	if len(custom.Volumes) > modelapi.MaxModelWarmupCustomVolumes {
+		allErrs = append(allErrs, field.TooMany(
+			customPath.Child("volumes"), len(custom.Volumes), modelapi.MaxModelWarmupCustomVolumes,
+		))
+	}
+	if len(custom.ImagePullSecrets) > modelapi.MaxModelWarmupCustomPullSecrets {
+		allErrs = append(allErrs, field.TooMany(
+			customPath.Child("imagePullSecrets"), len(custom.ImagePullSecrets), modelapi.MaxModelWarmupCustomPullSecrets,
+		))
+	}
+
+	declaredVolumes := make(map[string]struct{}, len(custom.Volumes))
+	for i, volume := range custom.Volumes {
+		path := customPath.Child("volumes").Index(i)
+		if volume.Name == "" {
+			allErrs = append(allErrs, field.Required(path.Child("name"), "volume name is required"))
+		} else if errs := validation.IsDNS1123Label(volume.Name); len(errs) > 0 {
+			allErrs = append(allErrs, field.Invalid(path.Child("name"), volume.Name, strings.Join(errs, ", ")))
+		} else if _, exists := declaredVolumes[volume.Name]; exists {
+			allErrs = append(allErrs, field.Duplicate(path.Child("name"), volume.Name))
+		} else {
+			declaredVolumes[volume.Name] = struct{}{}
+		}
+		sourceCount := modelWarmupVolumeSourceCount(volume.VolumeSource)
+		if sourceCount == 0 {
+			allErrs = append(allErrs, field.Required(path, "a volume source is required"))
+		} else if sourceCount > 1 {
+			allErrs = append(allErrs, field.Invalid(path, volume.Name, "exactly one volume source is required"))
+		}
+	}
+
+	for i, container := range custom.InitContainers {
+		path := customPath.Child("initContainers").Index(i)
+		allErrs = append(allErrs, validateModelWarmupContainer(path, container, containerNames)...)
+		allErrs = append(allErrs, validateModelWarmupVolumeReferences(path, container, declaredVolumes)...)
+	}
+	for i, container := range custom.Containers {
+		path := customPath.Child("containers").Index(i)
+		allErrs = append(allErrs, validateModelWarmupContainer(path, container, containerNames)...)
+		allErrs = append(allErrs, validateModelWarmupVolumeReferences(path, container, declaredVolumes)...)
+	}
+
+	for i, secret := range custom.ImagePullSecrets {
+		path := customPath.Child("imagePullSecrets").Index(i).Child("name")
+		if secret.Name == "" {
+			allErrs = append(allErrs, field.Required(path, "image pull secret name is required"))
+		} else if errs := validation.IsDNS1123Subdomain(secret.Name); len(errs) > 0 {
+			allErrs = append(allErrs, field.Invalid(path, secret.Name, strings.Join(errs, ", ")))
+		}
+	}
+	return allErrs
+}
+
+func modelWarmupVolumeSourceCount(source corev1.VolumeSource) int {
+	value := reflect.ValueOf(source)
+	count := 0
+	for i := 0; i < value.NumField(); i++ {
+		if !value.Field(i).IsZero() {
+			count++
+		}
+	}
+	return count
+}
+
+func validateModelWarmupContainer(
+	path *field.Path,
+	container corev1.Container,
+	containerNames map[string]struct{},
+) field.ErrorList {
+	var allErrs field.ErrorList
+	if container.Name == "" {
+		allErrs = append(allErrs, field.Required(path.Child("name"), "container name is required"))
+	} else if errs := validation.IsDNS1123Label(container.Name); len(errs) > 0 {
+		allErrs = append(allErrs, field.Invalid(path.Child("name"), container.Name, strings.Join(errs, ", ")))
+	} else if _, exists := containerNames[container.Name]; exists {
+		allErrs = append(allErrs, field.Duplicate(path.Child("name"), container.Name))
+	} else {
+		containerNames[container.Name] = struct{}{}
+	}
+	if container.Image == "" {
+		allErrs = append(allErrs, field.Required(path.Child("image"), "container image is required"))
+	}
+	switch container.ImagePullPolicy {
+	case "", corev1.PullAlways, corev1.PullIfNotPresent, corev1.PullNever:
+	default:
+		supportedPolicies := []string{
+			string(corev1.PullAlways), string(corev1.PullIfNotPresent), string(corev1.PullNever),
+		}
+		allErrs = append(allErrs, field.NotSupported(
+			path.Child("imagePullPolicy"), container.ImagePullPolicy, supportedPolicies,
+		))
+	}
+	if container.RestartPolicy != nil {
+		allErrs = append(allErrs, field.Forbidden(
+			path.Child("restartPolicy"), "container-level restartPolicy is not supported for ModelWarmup",
+		))
+	}
+	return allErrs
+}
+
+func validateModelWarmupVolumeReferences(
+	path *field.Path,
+	container corev1.Container,
+	declaredVolumes map[string]struct{},
+) field.ErrorList {
+	var allErrs field.ErrorList
+	for i, mount := range container.VolumeMounts {
+		if _, exists := declaredVolumes[mount.Name]; !exists {
+			allErrs = append(allErrs, field.Invalid(
+				path.Child("volumeMounts").Index(i).Child("name"), mount.Name, "references an undeclared volume",
+			))
+		}
+	}
+	for i, device := range container.VolumeDevices {
+		if _, exists := declaredVolumes[device.Name]; !exists {
+			allErrs = append(allErrs, field.Invalid(
+				path.Child("volumeDevices").Index(i).Child("name"), device.Name, "references an undeclared volume",
+			))
+		}
+	}
+	return allErrs
 }
 
 func validateModelWarmupPolicies(policies *modelapi.ModelWarmupPolicies) field.ErrorList {
