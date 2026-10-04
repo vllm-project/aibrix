@@ -6,11 +6,15 @@ on:
     paths:
       - 'python/aibrix/**'
       - '.github/workflows/python-aibrix-tests.yml'
+      - '!**/*.md'
+      - '!**/*.rst'
   pull_request:
     branches: [ "main" ]
     paths:
       - 'python/aibrix/**'
       - '.github/workflows/python-aibrix-tests.yml'
+      - '!**/*.md'
+      - '!**/*.rst'
 
 # Cancel superseded pull-request runs so the newest push starts first.
 concurrency:

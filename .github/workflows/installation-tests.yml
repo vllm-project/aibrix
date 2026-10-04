@@ -16,6 +16,8 @@ on:
       - 'Makefile'
       - 'go.mod'
       - 'go.sum'
+      - '!**/*.md'
+      - '!**/*.rst'
   pull_request:
     branches: [ "main", "release-*" ]
     paths:
@@ -30,6 +32,8 @@ on:
       - 'Makefile'
       - 'go.mod'
       - 'go.sum'
+      - '!**/*.md'
+      - '!**/*.rst'
 
 # Cancel superseded pull-request runs so the newest push starts first.
 concurrency:
