@@ -2610,6 +2610,34 @@ func TestReconcileKeepsAnInstanceWhenTheAnswerToStartingItAgainIsLost(t *testing
 	require.Len(t, got.Status.Instances, 1, "the engine may have started, so its record stays")
 }
 
+func TestReconcileKeepsAnInstanceWhoseRuntimeIsNotCalled(t *testing.T) {
+	r, runtime, pm, pod := activatingWithoutEngine(t)
+	// The pass reads no engine for the instance, and the runtime is left
+	// alone for now, as after a call to it that took too long.
+	runtime.silent = true
+	failed := claimActivationTotal.WithLabelValues(pm.Namespace, servedModelName(pm), activationResultFailed)
+	failedBefore := testutil.ToFloat64(failed)
+
+	reconcileOnce(t, r, pm.Name)
+
+	// The start was not sent, so nothing failed, and the instance keeps its
+	// room.
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, pod.Name, got.Status.Instances[0].Pod)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
+	assert.Equal(t, failedBefore, testutil.ToFloat64(failed), "a call that was not sent is not a failed activation")
+	for _, event := range drainEvents(t, r) {
+		assert.NotContains(t, event, "ActivateFailed")
+	}
+
+	// Once the runtime is called again, the engine is started.
+	runtime.silent = false
+	reconcileOnce(t, r, pm.Name)
+	require.Len(t, runtime.activateCalls, 1)
+}
+
 func TestCallNotDone(t *testing.T) {
 	refused := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
 	for name, c := range map[string]struct {

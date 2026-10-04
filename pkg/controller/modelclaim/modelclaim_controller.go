@@ -1561,6 +1561,13 @@ func (r *ModelClaimReconciler) startMissingEngine(
 ) (stays, started bool) {
 	served := servedModelName(pm)
 	resp, err := r.Runtime.Activate(ctx, podIP, DefaultRuntimePort, activateRequest(pm))
+	if errors.Is(err, errRuntimeSilent) {
+		// The runtime is left alone for now, so the call was not sent and
+		// nothing failed to start. The instance stays as it is, as it does
+		// when its runtime cannot be read, and a later pass asks again.
+		klog.V(4).InfoS("engine not started again yet", "model", pm.Name, "pod", inst.Pod, "err", err)
+		return true, false
+	}
 	if err != nil {
 		recordActivation(pm.Namespace, served, false)
 		r.Recorder.Eventf(pm, corev1.EventTypeWarning, "ActivateFailed",

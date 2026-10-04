@@ -766,8 +766,10 @@ engine there is not sent, and placement tries the next Pod in rank instead. A
 Pod skipped this way is not tried again in the same pass. A claim stays
 ``Pending`` only when no other Pod can take it, and it is not marked
 ``Failed``, since no call was sent. A claim whose engine failed for good is
-moved past such a Pod the same way. Stopping an engine is still sent, since an
-engine left running would keep its memory.
+moved past such a Pod the same way. An instance there whose engine is missing
+keeps its place, and its engine is started once the runtime answers again.
+Stopping an engine is still sent, since an engine left running would keep its
+memory.
 
 Observability
 -------------
