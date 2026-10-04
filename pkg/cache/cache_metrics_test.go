@@ -37,6 +37,21 @@ import (
 	"k8s.io/client-go/rest"
 )
 
+type staticMetricSubscriber []string
+
+func (s staticMetricSubscriber) SubscribedMetrics() []string {
+	return []string(s)
+}
+
+func TestAddSubscriberInitializesMetricSet(t *testing.T) {
+	store := &Store{}
+	require.NotPanics(t, func() {
+		store.AddSubscriber(staticMetricSubscriber{"metric-a", "metric-b"})
+	})
+	require.Equal(t, "yes", store.metrics["metric-a"])
+	require.Equal(t, "yes", store.metrics["metric-b"])
+}
+
 func TestCleanupOldSnapshots(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	history := []MetricSnapshot{
