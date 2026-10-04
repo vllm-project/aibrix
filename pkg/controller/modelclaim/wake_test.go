@@ -502,3 +502,41 @@ func TestDeannotateWarmPodTakesTheWakeRequestWithTheRoute(t *testing.T) {
 	assert.Equal(t, map[string]string{constants.ModelClaimWakeAnnotationPrefix + "other": "2026-10-01T08:00:01Z"},
 		podNamed(t, r, "warm-1").Annotations)
 }
+
+// The gateway may write a wake request a moment before the route is taken
+// away, and the cache may not show it yet. The request still goes with the
+// route, so none is left behind for a claim that is gone.
+func TestDeannotateWarmPodTakesAWakeRequestTheCacheHasNotSeen(t *testing.T) {
+	route := constants.ModelClaimPodAnnotationPrefix + "qwen2-7b"
+	wake := constants.ModelClaimWakeAnnotationPrefix + "qwen2-7b"
+	other := constants.ModelClaimPodAnnotationPrefix + "other"
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Annotations = map[string]string{
+		route: `{"model":"qwen2-7b","port":0,"state":"sleeping","wakeByRequest":true}`,
+		other: `{"model":"other","port":9001,"state":"active"}`,
+	}
+	r, _ := newReconciler(t, pod)
+	ctx := context.Background()
+	cached := podNamed(t, r, "warm-1")
+	asked := cached.DeepCopy()
+	asked.Annotations[wake] = "2026-10-01T08:00:00Z"
+	require.NoError(t, r.Update(ctx, asked))
+	apiServer := r.Client
+	r.Client = interceptor.NewClient(apiServer.(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object,
+			opts ...client.GetOption) error {
+			if out, ok := obj.(*corev1.Pod); ok && key.Name == "warm-1" {
+				cached.DeepCopyInto(out)
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+
+	r.deannotateWarmPod(ctx, testNamespace, "warm-1", "qwen2-7b")
+
+	after := &corev1.Pod{}
+	require.NoError(t, apiServer.Get(ctx, client.ObjectKeyFromObject(pod), after))
+	assert.Equal(t, map[string]string{other: `{"model":"other","port":9001,"state":"active"}`}, after.Annotations,
+		"the request goes with the route")
+}

@@ -1883,17 +1883,22 @@ func (r *ModelClaimReconciler) deannotateWarmPod(ctx context.Context, namespace,
 		return // pod already gone
 	}
 	key := constants.ModelClaimPodAnnotationPrefix + pmName
-	// A wake request for the claim goes with its route.
+	// A wake request for the claim goes with its route. Both are deleted by
+	// name, so a request that the gateway wrote a moment ago goes too, even
+	// if the cache does not show it yet.
 	wakeKey := constants.ModelClaimWakeAnnotationPrefix + pmName
 	_, routed := pod.Annotations[key]
 	_, asked := pod.Annotations[wakeKey]
 	if !routed && !asked {
 		return
 	}
-	patch := client.MergeFrom(pod.DeepCopy())
-	delete(pod.Annotations, key)
-	delete(pod.Annotations, wakeKey)
-	if err := r.Patch(ctx, pod, patch); err != nil {
+	patch, err := json.Marshal(map[string]any{
+		"metadata": map[string]any{"annotations": map[string]any{key: nil, wakeKey: nil}},
+	})
+	if err != nil {
+		return
+	}
+	if err := r.Patch(ctx, pod, client.RawPatch(types.MergePatchType, patch)); err != nil {
 		klog.ErrorS(err, "failed to remove model-claim routing annotation", "pod", podName, "model", pmName)
 	}
 }
