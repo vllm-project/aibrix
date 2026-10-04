@@ -354,7 +354,7 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 }
 
 // roomAsCached describes what the candidates carry, from the cached listing
-// of the claims. It is nil when there is no listing.
+// of the claims. Without a listing, the candidates are unlisted.
 func (r *ModelClaimReconciler) roomAsCached(
 	ctx context.Context,
 	namespace string,
@@ -363,7 +363,7 @@ func (r *ModelClaimReconciler) roomAsCached(
 	cached := &modelv1alpha1.ModelClaimList{}
 	if err := r.List(ctx, cached, client.InNamespace(namespace)); err != nil {
 		klog.ErrorS(err, "list model claims", "namespace", namespace)
-		return nil
+		return roomSignatureOf(candidates, nil)
 	}
 	return roomSignatureOf(candidates, cached)
 }

@@ -124,12 +124,16 @@ type roomSignature map[string]podRoom
 // are, how many of them are awake, and how many belong to claims that declare
 // nothing. It also says what the rest are promised. Last, it says whether the
 // pod is ready, which is when its runtime answers.
+//
+// A pod described while the claims could not be listed is unlisted. What it
+// takes is unknown then, and only its being there and its readiness count.
 type podRoom struct {
 	instances     int
 	awake         int
 	undeclared    int
 	promisedBytes int64
 	ready         bool
+	unlisted      bool
 }
 
 func newPlacementBackoff(now func() time.Time) *placementBackoff {
@@ -306,7 +310,7 @@ func (r *ModelClaimReconciler) backoff() *placementBackoff {
 // to sleep keeps its seat, and gives back the KV it had mapped. A claim that
 // declares nothing opens a hole in its card's account, and a card with a hole
 // is turned away. So nothing on such a card counts, until its last hole has
-// closed.
+// closed. Room is only compared where both descriptions are listed.
 func roomMayHaveAppeared(before, now roomSignature, helps whatHelps) bool {
 	if before == nil || now == nil {
 		return false
@@ -322,7 +326,7 @@ func roomMayHaveAppeared(before, now roomSignature, helps whatHelps) bool {
 		if taken.ready && !was.ready {
 			return true
 		}
-		if helps == aPodThatAnswers || taken.undeclared > 0 {
+		if helps == aPodThatAnswers || taken.undeclared > 0 || taken.unlisted || was.unlisted {
 			continue
 		}
 		if taken.instances < was.instances || taken.awake < was.awake || taken.undeclared < was.undeclared ||
@@ -335,16 +339,21 @@ func roomMayHaveAppeared(before, now roomSignature, helps whatHelps) bool {
 
 // withThePodsSeenReady returns the room with every pod ready that is ready in
 // it, or was ready in the room before. The room itself is left as it is.
-// Without a listing there is no room to remember, and the room before is kept.
-// A claim that was refused while the claims could not be listed is then still
-// woken by a change to the pool as it last saw it.
+// An unlisted pod keeps what it was last seen to take, when it was seen
+// listed. A later listing then still shows what has left it since.
 func (room roomSignature) withThePodsSeenReady(before roomSignature) roomSignature {
 	if room == nil {
 		return before
 	}
 	seen := make(roomSignature, len(room))
 	for key, taken := range room {
-		taken.ready = taken.ready || before[key].ready
+		was, known := before[key]
+		if taken.unlisted && known && !was.unlisted {
+			ready := taken.ready
+			taken = was
+			taken.ready = ready
+		}
+		taken.ready = taken.ready || was.ready
 		seen[key] = taken
 	}
 	return seen
@@ -357,20 +366,22 @@ func podKey(pod *corev1.Pod) string {
 }
 
 // roomSignatureOf describes what the live instances on each candidate take,
-// from a listing of the claims. It is nil when there is no listing. An
-// instance is recorded before its engine is started, and has no port until
-// the engine is. Such a record is not counted, as liveInstances does not
-// count it. When it is taken back, no engine has left a card.
+// from a listing of the claims. Without a listing, it still names each
+// candidate and says whether it is ready, so that a pod that joins or turns
+// ready still wakes a waiting claim. An instance is recorded before its
+// engine is started, and has no port until the engine is. Such a record is
+// not counted, as liveInstances does not count it. When it is taken back, no
+// engine has left a card.
 func roomSignatureOf(candidates []corev1.Pod, claims *modelv1alpha1.ModelClaimList) roomSignature {
-	if claims == nil {
-		return nil
-	}
 	room := make(roomSignature, len(candidates))
 	keys := make(map[string]string, len(candidates))
 	for i := range candidates {
 		key := podKey(&candidates[i])
-		room[key] = podRoom{ready: utils.IsPodReady(&candidates[i])}
+		room[key] = podRoom{ready: utils.IsPodReady(&candidates[i]), unlisted: claims == nil}
 		keys[candidates[i].Name] = key
+	}
+	if claims == nil {
+		return room
 	}
 	for i := range claims.Items {
 		claim := &claims.Items[i]
