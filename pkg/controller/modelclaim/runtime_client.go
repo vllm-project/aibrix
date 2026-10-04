@@ -26,6 +26,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
+	"sync"
 	"time"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
@@ -51,7 +53,35 @@ const (
 	wakePath       = "/v1/runtime/models/wake"
 
 	defaultRuntimeHTTPTimeout = 60 * time.Second
+
+	// runtimeSnapshotTimeout bounds one snapshot read. A read normally takes a
+	// fraction of a second. It can take longer for two reasons. The runtime
+	// reads NVML once and gives each engine's probes about 1.5 s, one engine
+	// after another. Before that, a read waits for the runtime's lock. The
+	// runtime holds that lock while it checks its engines, for about 1 s each.
+	// It also holds the lock while it starts an engine, puts one to sleep,
+	// wakes one or writes a KV limit. So a read of a pod with five busy engines
+	// can take longer than this. Calls that change state keep the longer
+	// timeout above.
+	runtimeSnapshotTimeout = 10 * time.Second
+
+	// shortestRuntimeSilence is how long a runtime is left alone after a call
+	// to it timed out. It is one round, so the claims that read the same
+	// runtime in that round do not each wait for it. Every further timeout in
+	// a row doubles it, up to runtimeSilenceWindow. A runtime that was slow
+	// once is read again a round later. One that stays down is left alone for
+	// a minute at a time, from its fourth timeout on. A runtime that answers
+	// between its timeouts is asked again a round after each of them.
+	shortestRuntimeSilence = 10 * time.Second
+
+	// runtimeSilenceWindow is the longest a runtime that does not answer in
+	// time is left alone.
+	runtimeSilenceWindow = time.Minute
 )
+
+// errRuntimeSilent is returned, without calling the runtime, for a runtime that
+// did not answer in time and is left alone for now.
+var errRuntimeSilent = errors.New("did not answer in time recently; not calling it again yet")
 
 // runtimeRefusal is an answer that says no. It is a body in which the runtime
 // reports an error, or a status that says the request was at fault. Such a
@@ -92,8 +122,11 @@ func callNotDone(err error) bool {
 	if errors.As(err, &refusal) {
 		return true
 	}
-	// A call is not sent when its address cannot be read, or when no
-	// connection could be made.
+	// A call is not sent when its address cannot be read, when no
+	// connection could be made, or when its runtime is left alone for now.
+	if errors.Is(err, errRuntimeSilent) {
+		return true
+	}
 	var unsent *url.Error
 	if errors.As(err, &unsent) && unsent.Op == "parse" {
 		return true
@@ -266,18 +299,104 @@ type RuntimeClient interface {
 
 // httpRuntimeClient talks to the runtime sidecar over HTTP.
 type httpRuntimeClient struct {
-	httpClient *http.Client
+	httpClient      *http.Client
+	snapshotTimeout time.Duration
+	silence         *runtimeSilence
 }
 
 // NewRuntimeClient returns the default HTTP-backed runtime client.
 func NewRuntimeClient() RuntimeClient {
+	return newHTTPRuntimeClient(runtimeSnapshotTimeout, time.Now)
+}
+
+func newHTTPRuntimeClient(snapshotTimeout time.Duration, now func() time.Time) *httpRuntimeClient {
 	return &httpRuntimeClient{
-		httpClient: &http.Client{Timeout: defaultRuntimeHTTPTimeout},
+		httpClient:      &http.Client{Timeout: defaultRuntimeHTTPTimeout},
+		snapshotTimeout: snapshotTimeout,
+		silence:         newRuntimeSilence(now),
 	}
 }
 
+// runtimeSilence remembers the runtimes that did not answer in time. Every call
+// runs on the controller's only worker, and every claim with an engine on a pod
+// reads that pod's runtime on every pass. Without it, one runtime that stopped
+// answering would hold each of those passes for a whole timeout. A call that
+// fails in another way, such as a refused connection or an error status, is
+// not remembered. Such a failure comes at once as a rule, so trying again
+// costs little.
+//
+// A runtime is known by its address, since that is what it is called with. So
+// a pod that is given the address of one that is left alone is left alone for
+// the rest of that time. Its timeouts count on from those of the pod before
+// it.
+type runtimeSilence struct {
+	mu       sync.Mutex
+	shortest time.Duration
+	longest  time.Duration
+	now      func() time.Time
+	runtimes map[string]silentRuntime
+}
+
+// silentRuntime is a runtime that did not answer in time: how many calls to it
+// timed out in a row, and until when it is left alone.
+type silentRuntime struct {
+	timeouts int
+	until    time.Time
+}
+
+func newRuntimeSilence(now func() time.Time) *runtimeSilence {
+	return &runtimeSilence{
+		shortest: shortestRuntimeSilence,
+		longest:  runtimeSilenceWindow,
+		now:      now,
+		runtimes: map[string]silentRuntime{},
+	}
+}
+
+// silent reports whether a runtime is left alone for now.
+func (s *runtimeSilence) silent(runtime string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.now().Before(s.runtimes[runtime].until)
+}
+
+// observe records how a call to a runtime ended. The first timeout leaves the
+// runtime alone for the shortest silence. Each further timeout in a row leaves
+// it alone for twice as long as the one before it did, up to the longest
+// silence. Any answer ends that, and so does a failure that is no timeout. A
+// call that its caller canceled is not recorded at all, as do says.
+//
+// Each timeout also drops the runtimes whose time alone ended at least the
+// longest silence ago. So a runtime whose pod is gone is dropped at the next
+// timeout of any runtime after that. A runtime that times out again that late
+// starts over.
+func (s *runtimeSilence) observe(runtime string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var netErr net.Error
+	if err == nil || !errors.As(err, &netErr) || !netErr.Timeout() {
+		delete(s.runtimes, runtime)
+		return
+	}
+	now := s.now()
+	for other, last := range s.runtimes {
+		if !now.Before(last.until.Add(s.longest)) {
+			delete(s.runtimes, other)
+		}
+	}
+	silent := s.runtimes[runtime]
+	silent.timeouts++
+	alone := s.shortest << min(silent.timeouts-1, 16)
+	if alone > s.longest || alone <= 0 {
+		alone = s.longest
+	}
+	silent.until = now.Add(alone)
+	s.runtimes[runtime] = silent
+}
+
+// runtimeURL brackets an IPv6 pod address, as a URL needs.
 func runtimeURL(podIP string, port int, path string) string {
-	return fmt.Sprintf("http://%s:%d%s", podIP, port, path)
+	return "http://" + net.JoinHostPort(podIP, strconv.Itoa(port)) + path
 }
 
 func (c *httpRuntimeClient) Activate(ctx context.Context, podIP string, port int, req *ActivateRequest) (*ActivateResponse, error) {
@@ -329,7 +448,13 @@ func (c *httpRuntimeClient) ListModels(ctx context.Context, podIP string, port i
 	return out.Models, nil
 }
 
+// Snapshot reads a runtime under its own deadline. Placement reads every
+// candidate this way, and the health check reads each instance's pod, one after
+// another on the controller's only worker. So a runtime that does not answer
+// must not hold that worker for long.
 func (c *httpRuntimeClient) Snapshot(ctx context.Context, podIP string, port int) (*RuntimeSnapshot, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.snapshotTimeout)
+	defer cancel()
 	out := &RuntimeSnapshot{}
 	if err := c.getJSON(ctx, runtimeURL(podIP, port, snapshotPath), out); err != nil {
 		return nil, err
@@ -337,19 +462,53 @@ func (c *httpRuntimeClient) Snapshot(ctx context.Context, podIP string, port int
 	return out, nil
 }
 
+// do sends a request to a runtime and reads its answer, unless that runtime did
+// not answer in time a short while ago. Stopping an engine is sent even then: a
+// claim is deleted or scaled down only once, and an engine left running would
+// keep its memory.
+//
+// An answer counts once all of it has arrived, or its first mebibyte. A
+// runtime that sends its headers and then stalls holds its caller until the
+// time is up as well, so it did not answer in time either.
+//
+// A call that its caller canceled says nothing about the runtime, and changes
+// nothing of what is remembered. The context is asked, and not the error: a
+// caller that cancels with a cause gets that cause back as the error.
+func (c *httpRuntimeClient) do(req *http.Request) (status int, body []byte, err error) {
+	runtime := req.URL.Host
+	if req.URL.Path != deactivatePath && c.silence.silent(runtime) {
+		return 0, nil, fmt.Errorf("runtime %s %w", runtime, errRuntimeSilent)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err == nil {
+		status = resp.StatusCode
+		body, err = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		_ = resp.Body.Close()
+		if err != nil {
+			err = fmt.Errorf("read the answer to runtime %s %s: %w", req.Method, req.URL, err)
+		}
+	}
+	if err != nil && errors.Is(req.Context().Err(), context.Canceled) {
+		return 0, nil, err
+	}
+	c.silence.observe(runtime, err)
+	if err != nil {
+		return 0, nil, err
+	}
+	return status, body, nil
+}
+
 func (c *httpRuntimeClient) getJSON(ctx context.Context, url string, out any) error {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
-	resp, err := c.httpClient.Do(httpReq)
+	status, body, err := c.do(httpReq)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusOK {
-		return statusError(http.MethodGet, url, resp.StatusCode, body)
+	if status != http.StatusOK {
+		return statusError(http.MethodGet, url, status, body)
 	}
 	if err := json.Unmarshal(body, out); err != nil {
 		return fmt.Errorf("decode runtime response: %w", err)
@@ -370,15 +529,12 @@ func (c *httpRuntimeClient) postJSON(ctx context.Context, url string, req any, o
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(httpReq)
+	status, body, err := c.do(httpReq)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return statusError(http.MethodPost, url, resp.StatusCode, body)
+	if status != http.StatusOK && status != http.StatusCreated {
+		return statusError(http.MethodPost, url, status, body)
 	}
 	if out != nil && len(body) > 0 {
 		if err := json.Unmarshal(body, out); err != nil {

@@ -314,6 +314,22 @@ func TestReconcileLooksAgainSoonAtAReplacementThatBoots(t *testing.T) {
 	assert.Equal(t, "warm-2", got.Status.Instances[0].Pod)
 }
 
+// An engine started again for an instance that had none boots from now on.
+// The runtime may not date its boot yet, so the claim is looked at again as
+// soon as a replacement is. A start that failed is not looked at sooner.
+func TestReconcileLooksAgainSoonAtAnEngineStartedAgain(t *testing.T) {
+	r, runtime, pm, _ := activatingWithoutEngine(t)
+
+	assert.Equal(t, ActivatingRequeueDuration, reconcileFor(t, r, pm.Name))
+	require.Len(t, runtime.activateCalls, 1)
+
+	r, runtime, pm, _ = activatingWithoutEngine(t)
+	runtime.failActivate = true
+
+	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, pm.Name))
+	require.Len(t, runtime.activateCalls, 1)
+}
+
 // An engine that was routed and lost its limit leaves the route first, so that
 // the loss is seen. The write that pulls it back is said as well. It is not
 // read back in this pass, so its Event says that the limit was written, and

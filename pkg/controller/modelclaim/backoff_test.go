@@ -306,7 +306,10 @@ func TestRoomSignatureCountsWhatEachCandidateCarries(t *testing.T) {
 		"warm-1/uid-1": {instances: 3, awake: 2, undeclared: 1, promisedBytes: 700},
 		"warm-2/uid-2": {ready: true},
 	}, room)
-	assert.Nil(t, roomSignatureOf([]corev1.Pod{*pod}, nil), "with no listing there is nothing to compare")
+	assert.Equal(t, roomSignature{
+		"warm-1/uid-1": {unlisted: true},
+		"warm-2/uid-2": {ready: true, unlisted: true},
+	}, roomSignatureOf([]corev1.Pod{*pod, *empty}, nil), "without a listing, the pods are named and nothing is counted")
 }
 
 func TestFreesRoomPassesTheChangesThatCanFreeACard(t *testing.T) {
@@ -1478,31 +1481,64 @@ func TestPlacementBackoffKeepsWhatAClaimHasSeenWhenItStartsOver(t *testing.T) {
 	assert.Equal(t, 10*time.Second, left)
 }
 
-// A refusal without a listing of the claims keeps the room that the claim
-// remembered. So a pod that joins still wakes the claim. A claim that has
-// never seen the pool has nothing to compare, and sits out its wait.
+// A refusal while the claims cannot be listed still names the pods, and keeps
+// what each was last listed to take. So a pod that joins wakes the claim,
+// whether or not the claim has ever seen the pool listed. A pod that was never
+// listed is not taken to have freed room.
 func TestPlacementBackoffKeepsTheRoomItRemembersAfterARefusalWithoutAListing(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	claim := types.NamespacedName{Namespace: testNamespace, Name: "first"}
-	one := roomSignature{"warm-1/u1": {ready: true}}
-	two := roomSignature{"warm-1/u1": {ready: true}, "warm-2/u2": {}}
+	one := roomSignature{"warm-1/u1": {instances: 1, awake: 1, promisedBytes: 400, ready: true}}
+	oneFreed := roomSignature{"warm-1/u1": {ready: true}}
+	oneUnlisted := roomSignature{"warm-1/u1": {ready: true, unlisted: true}}
+	twoUnlisted := roomSignature{"warm-1/u1": {ready: true, unlisted: true}, "warm-2/u2": {unlisted: true}}
+	waiting := func(rooms ...roomSignature) *placementBackoff {
+		backoff := newPlacementBackoff(func() time.Time { return now })
+		for _, room := range rooms {
+			backoff.refused(claim, 1, room)
+		}
+		backoff.statusWritten(claim)
+		return backoff
+	}
 
-	backoff := newPlacementBackoff(func() time.Time { return now })
-	backoff.refused(claim, 1, one)
-	backoff.refused(claim, 1, nil)
-	backoff.statusWritten(claim)
-	due, left := backoff.due(claim, 1, one)
-	assert.False(t, due)
+	// Refused on the pool as listed, and again while it cannot be listed.
+	due, left := waiting(one, oneUnlisted).due(claim, 1, oneUnlisted)
+	assert.False(t, due, "nothing is known to have changed")
 	assert.Equal(t, 20*time.Second, left)
-	due, _ = backoff.due(claim, 1, two)
+	due, _ = waiting(one, oneUnlisted).due(claim, 1, oneFreed)
+	assert.True(t, due, "the engine the pod was last listed with has gone")
+	due, _ = waiting(one, oneUnlisted).due(claim, 1, twoUnlisted)
 	assert.True(t, due, "a pod joined")
 
-	backoff = newPlacementBackoff(func() time.Time { return now })
-	backoff.refused(claim, 1, nil)
-	backoff.statusWritten(claim)
-	due, left = backoff.due(claim, 1, two)
-	assert.False(t, due)
+	// Refused only while the pool could not be listed.
+	due, left = waiting(oneUnlisted).due(claim, 1, oneFreed)
+	assert.False(t, due, "a pod that was never listed has freed nothing")
 	assert.Equal(t, 10*time.Second, left)
+	due, _ = waiting(oneUnlisted).due(claim, 1, twoUnlisted)
+	assert.True(t, due, "a pod joined")
+}
+
+// While the claims cannot be listed, a waiting claim is still woken by a pod
+// that joins or turns ready. What the pods take cannot be seen then, so it
+// wakes nobody.
+func TestPlacementBackoffSeesPodsJoinWhileTheClaimsCannotBeListed(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	claim := types.NamespacedName{Namespace: testNamespace, Name: "first"}
+	listed := roomSignature{"warm-1/u1": {instances: 1, awake: 1, promisedBytes: 400}}
+	for name, c := range map[string]struct {
+		now   roomSignature
+		woken bool
+	}{
+		"nothing seen to change": {roomSignature{"warm-1/u1": {unlisted: true}}, false},
+		"a pod joined":           {roomSignature{"warm-1/u1": {unlisted: true}, "warm-2/u2": {unlisted: true}}, true},
+		"a pod turned ready":     {roomSignature{"warm-1/u1": {ready: true, unlisted: true}}, true},
+	} {
+		backoff := newPlacementBackoff(func() time.Time { return now })
+		backoff.refused(claim, 1, listed)
+		backoff.statusWritten(claim)
+		due, _ := backoff.due(claim, 1, c.now)
+		assert.Equal(t, c.woken, due, name)
+	}
 }
 
 // Two pods that turn ready in turn wake a waiting claim once each. A claim

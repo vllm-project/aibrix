@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
@@ -75,6 +76,11 @@ type fakeRuntime struct {
 	// loseActivateAnswer makes Activate start the engine and fail as a call
 	// whose answer never arrived.
 	loseActivateAnswer bool
+	// silent makes Activate fail as the client does for a runtime that did not
+	// answer in time a short while ago: at once, and without calling it.
+	silent bool
+	// silentIPs does the same for the runtimes at these pod IPs only.
+	silentIPs map[string]bool
 	// notReady makes runtime snapshots report activated engines as not yet
 	// serveable, so a test can hold a model in the Activating phase.
 	notReady bool
@@ -94,7 +100,10 @@ type fakeRuntime struct {
 	onKVLimit func()
 }
 
-func (f *fakeRuntime) Activate(_ context.Context, podIP string, _ int, req *ActivateRequest) (*ActivateResponse, error) {
+func (f *fakeRuntime) Activate(_ context.Context, podIP string, runtimePort int, req *ActivateRequest) (*ActivateResponse, error) {
+	if f.silent || f.silentIPs[podIP] {
+		return nil, fmt.Errorf("runtime %s:%d %w", podIP, runtimePort, errRuntimeSilent)
+	}
 	f.activateCalls = append(f.activateCalls, *req)
 	f.activatedOn = append(f.activatedOn, podIP)
 	if f.failActivate || f.failActivateOn[podIP] {
@@ -1187,6 +1196,51 @@ func TestReconcileKeepsTheFailedInstanceWhenItsReplacementIsRefused(t *testing.T
 	assert.Contains(t, said, "warm-2")
 }
 
+func TestReconcileReplacementPassesOverASilentRuntime(t *testing.T) {
+	pm := claimWithCost(300, 100)
+	pm.UID = types.UID("claim-uid")
+	pm.Status.Phase = modelv1alpha1.ModelClaimActive
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	failedPod, failedSnapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	failedSnapshot.Models = []RuntimeSnapshotModel{{
+		ModelName: servedModelName(pm), Port: 9001, Phase: runtimePhaseFailed,
+		LastError: "restart budget exhausted",
+		ClaimRef:  &ModelClaimRef{Namespace: pm.Namespace, Name: pm.Name, UID: string(pm.UID)},
+	}}
+	// warm-2 has the most room, so it ranks first, but its runtime is left
+	// alone for now. warm-3 has room too.
+	silentPod, silentSnapshot := sizedWarmPod("warm-2", testPeerIP, 1000)
+	healthyPod, healthySnapshot := sizedWarmPod("warm-3", "10.0.0.3", 1000)
+	healthySnapshot.Accelerators[0].HBMFreeBytes = 800
+	healthySnapshot.Models = []RuntimeSnapshotModel{engineHolding("small", 50, 300)}
+	small := claimOnPod("small", healthyPod.Name, modelv1alpha1.ModelClaimActive, 100, 100)
+	r, runtime := newReconciler(t, pm, small, failedPod, silentPod, healthyPod)
+	runtime.silentIPs = map[string]bool{silentPod.Status.PodIP: true}
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		failedPod.Status.PodIP:  failedSnapshot,
+		silentPod.Status.PodIP:  silentSnapshot,
+		healthyPod.Status.PodIP: healthySnapshot,
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	// The start on warm-2 was never sent, so it is no failed start, and the
+	// move goes on to warm-3 in the same pass. The failed engine is stopped
+	// once.
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-3", got.Status.Instances[0].Pod)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
+	require.Len(t, runtime.activateCalls, 1)
+	assert.Equal(t, []string{healthyPod.Status.PodIP}, runtime.activatedOn)
+	require.Len(t, runtime.deactivateCalls, 1)
+	for _, event := range drainEvents(t, r) {
+		assert.NotContains(t, event, "RescheduleFailed")
+	}
+}
+
 func TestSnapshotModelForClaimPrefersMatchingClaimUID(t *testing.T) {
 	pm := sampleModelClaim()
 	pm.UID = types.UID("claim-uid")
@@ -1340,6 +1394,100 @@ func TestReconcileActivateFailureSetsFailed(t *testing.T) {
 	cond := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady))
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+}
+
+// TestReconcileWaitsForARuntimeThatIsNotCalled checks a claim whose only pod
+// has a runtime that did not answer in time a short while ago. The call to
+// start the engine is not sent, so no activation failed: the claim waits as it
+// does for a pod, and is not marked failed.
+func TestReconcileWaitsForARuntimeThatIsNotCalled(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	r, runtime := newReconciler(t,
+		pm,
+		warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning),
+	)
+	runtime.silent = true
+	failed := claimActivationTotal.WithLabelValues(pm.Namespace, servedModelName(pm), activationResultFailed)
+	failedBefore := testutil.ToFloat64(failed)
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: pm.Name},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, DefaultRequeueDuration, result.RequeueAfter)
+
+	got := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimPending, got.Status.Phase)
+	assert.Empty(t, got.Status.Instances)
+	assert.Nil(t, meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady)),
+		"nothing failed, so the claim is not marked failed")
+	scheduled := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, scheduled)
+	assert.Equal(t, metav1.ConditionFalse, scheduled.Status)
+	assert.Equal(t, "NoMatchingPods", scheduled.Reason)
+	assert.Contains(t, scheduled.Message, "warm-1")
+	assert.Contains(t, scheduled.Message, "did not answer in time")
+	assert.Equal(t, failedBefore, testutil.ToFloat64(failed), "a call that was not sent is not a failed activation")
+	for _, event := range drainEvents(t, r) {
+		assert.NotContains(t, event, "ActivateFailed")
+	}
+
+	// The same refusal on the next pass is not news.
+	reconcileOnce(t, r, pm.Name)
+	assert.Empty(t, drainEvents(t, r))
+}
+
+func TestReconcileTriesTheNextPodWhenARuntimeIsNotCalled(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	silentPod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	healthyPod := warmPod("warm-2", "b300-pool-a", true, corev1.PodRunning)
+	healthyPod.Status.PodIP = testPeerIP
+	r, runtime := newReconciler(t, pm, silentPod, healthyPod)
+	runtime.silentIPs = map[string]bool{silentPod.Status.PodIP: true}
+	failed := claimActivationTotal.WithLabelValues(pm.Namespace, servedModelName(pm), activationResultFailed)
+	failedBefore := testutil.ToFloat64(failed)
+
+	reconcileOnce(t, r, pm.Name)
+
+	// warm-1 ranks first by name, and its runtime is left alone, so the pass
+	// moves on to warm-2 instead of waiting for warm-1.
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-2", got.Status.Instances[0].Pod)
+	require.Len(t, runtime.activateCalls, 1)
+	// The claim found a pod, so no refusal is left standing: the condition
+	// says where it was placed.
+	scheduled := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, scheduled)
+	assert.Equal(t, metav1.ConditionTrue, scheduled.Status, scheduled.Message)
+	assert.Equal(t, failedBefore, testutil.ToFloat64(failed), "a call that was not sent is not a failed activation")
+	for _, event := range drainEvents(t, r) {
+		assert.NotContains(t, event, "ActivateFailed")
+		assert.NotContains(t, event, "NoMatchingPods")
+	}
+}
+
+func TestEnsureActivatedLeavesNoRecordOfAStartThatWasNotSent(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	r, runtime := newReconciler(t,
+		pm,
+		warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning),
+	)
+	runtime.silent = true
+	ctx := context.Background()
+	pm = getModel(t, r, pm.Name)
+	candidates, err := r.listCandidateWarmPods(ctx, pm)
+	require.NoError(t, err)
+
+	_, err = r.ensureActivated(ctx, pm, candidates, newRuntimeReadings(r.Runtime))
+	require.NoError(t, err)
+
+	// The record written before the start is taken back in the API server
+	// too, before the pass writes the claim's status at its end. An account
+	// read in between would otherwise charge warm-1 for an engine nobody
+	// asked for.
+	assert.Empty(t, pm.Status.Instances)
+	assert.Empty(t, getModel(t, r, pm.Name).Status.Instances)
 }
 
 func TestReconcileInvalidEngineConfigSetsFailed(t *testing.T) {
@@ -2462,6 +2610,34 @@ func TestReconcileKeepsAnInstanceWhenTheAnswerToStartingItAgainIsLost(t *testing
 	require.Len(t, got.Status.Instances, 1, "the engine may have started, so its record stays")
 }
 
+func TestReconcileKeepsAnInstanceWhoseRuntimeIsNotCalled(t *testing.T) {
+	r, runtime, pm, pod := activatingWithoutEngine(t)
+	// The pass reads no engine for the instance, and the runtime is left
+	// alone for now, as after a call to it that took too long.
+	runtime.silent = true
+	failed := claimActivationTotal.WithLabelValues(pm.Namespace, servedModelName(pm), activationResultFailed)
+	failedBefore := testutil.ToFloat64(failed)
+
+	reconcileOnce(t, r, pm.Name)
+
+	// The start was not sent, so nothing failed, and the instance keeps its
+	// room.
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, pod.Name, got.Status.Instances[0].Pod)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
+	assert.Equal(t, failedBefore, testutil.ToFloat64(failed), "a call that was not sent is not a failed activation")
+	for _, event := range drainEvents(t, r) {
+		assert.NotContains(t, event, "ActivateFailed")
+	}
+
+	// Once the runtime is called again, the engine is started.
+	runtime.silent = false
+	reconcileOnce(t, r, pm.Name)
+	require.Len(t, runtime.activateCalls, 1)
+}
+
 func TestCallNotDone(t *testing.T) {
 	refused := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
 	for name, c := range map[string]struct {
@@ -2472,6 +2648,7 @@ func TestCallNotDone(t *testing.T) {
 		"a wrapped error status":      {fmt.Errorf("start: %w", &runtimeRefusal{"boom"}), true},
 		"never connected":             {&url.Error{Op: "Post", URL: activatePath, Err: refused}, true},
 		"an address nobody parsed":    {&url.Error{Op: "parse", URL: "http://[", Err: errors.New("missing ']'")}, true},
+		"a runtime left alone":        {fmt.Errorf("runtime 10.0.0.1:8080 %w", errRuntimeSilent), true},
 		"no answer in time":           {&url.Error{Op: "Post", URL: activatePath, Err: context.DeadlineExceeded}, false},
 		"connection dropped":          {&url.Error{Op: "Post", URL: activatePath, Err: io.ErrUnexpectedEOF}, false},
 		"an answer nobody could read": {errors.New("decode runtime response: unexpected end of JSON input"), false},

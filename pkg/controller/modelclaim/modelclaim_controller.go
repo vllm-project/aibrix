@@ -354,7 +354,7 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 }
 
 // roomAsCached describes what the candidates carry, from the cached listing
-// of the claims. It is nil when there is no listing.
+// of the claims. Without a listing, the candidates are unlisted.
 func (r *ModelClaimReconciler) roomAsCached(
 	ctx context.Context,
 	namespace string,
@@ -363,7 +363,7 @@ func (r *ModelClaimReconciler) roomAsCached(
 	cached := &modelv1alpha1.ModelClaimList{}
 	if err := r.List(ctx, cached, client.InNamespace(namespace)); err != nil {
 		klog.ErrorS(err, "list model claims", "namespace", namespace)
-		return nil
+		return roomSignatureOf(candidates, nil)
 	}
 	return roomSignatureOf(candidates, cached)
 }
@@ -593,6 +593,9 @@ func (r *ModelClaimReconciler) ensureActivated(
 	// claim's list, and its pod has to stay out for the next replacement too.
 	alreadyOn := instancePods(pm)
 	failed := failedInstanceSlots(pm)
+	// A failed engine is stopped once per pass, however many pods its
+	// replacement has to try.
+	stopped := map[string]bool{}
 	for desiredReplicas(pm) > int32(len(pm.Status.Instances)-len(failed)) {
 		pod, selectErr := selectPodForActivationWithState(
 			admissible, alreadyOn, load, servedModelName(pm), r.Locality, placementStates,
@@ -710,7 +713,10 @@ func (r *ModelClaimReconciler) ensureActivated(
 			slot = failed[0]
 			previous := pm.Status.Instances[slot]
 			replaced = &previous
-			r.stopFailedEngine(ctx, pm, previous.Pod, readings)
+			if !stopped[previous.Pod] {
+				r.stopFailedEngine(ctx, pm, previous.Pod, readings)
+				stopped[previous.Pod] = true
+			}
 			pm.Status.Instances[slot] = record
 		} else {
 			pm.Status.Instances = append(pm.Status.Instances, record)
@@ -721,6 +727,35 @@ func (r *ModelClaimReconciler) ensureActivated(
 
 		resp, aerr := r.Runtime.Activate(ctx, pod.Status.PodIP, DefaultRuntimePort, activateRequest(pm))
 		readings.forget(pod.Name)
+		if errors.Is(aerr, errRuntimeSilent) {
+			// The runtime is left alone for now, so the call was not sent and
+			// nothing failed to start. The record is taken back, as for any
+			// start known not to have happened, and this pod is passed over for
+			// the rest of the pass, as a card that could not be divided is.
+			// Ranking cannot tell such a pod from the others, so without this
+			// the same pod could be picked on every pass.
+			if replaced != nil {
+				pm.Status.Instances[slot] = *replaced
+			} else {
+				pm.Status.Instances = pm.Status.Instances[:slot]
+			}
+			// The shorter list is written at once. Until then, an account
+			// read from the API server would charge the card for a start
+			// that was never asked for.
+			if err := r.Status().Update(ctx, pm); err != nil {
+				return 0, fmt.Errorf("take back %s on %s: %w", servedModelName(pm), pod.Name, err)
+			}
+			refusals = append(refusals, podRefusal{
+				pod:       pod.Name,
+				roomBytes: ledgers[pod.Name].maximumRoomBytes(),
+				known:     true,
+				couldHold: true,
+				reason: fmt.Sprintf("%s cannot be asked to start %s yet: %v",
+					pod.Name, servedModelName(pm), aerr),
+			})
+			admissible = withoutPod(admissible, pod.Name)
+			continue
+		}
 		if aerr != nil {
 			recordActivation(pm.Namespace, servedModelName(pm), false)
 			// The record was written first to guard against a crash between
@@ -1216,7 +1251,12 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 		observed := snapshotModelForClaim(snapshot, pm, served)
 
 		if engineMissing(inst, snapshot, observed) {
-			dropped[inst.Pod] = !r.startMissingEngine(ctx, pm, inst, ip)
+			stays, started := r.startMissingEngine(ctx, pm, inst, ip)
+			dropped[inst.Pod] = !stays
+			// An engine started again boots from now on, and the runtime may
+			// not date its boot yet. It is looked at again soon, as a
+			// replacement is.
+			booting = booting || started
 			readings.forget(pod.Name)
 			continue
 		}
@@ -1510,29 +1550,36 @@ func engineMissing(inst *modelv1alpha1.ModelClaimInstance, snapshot *RuntimeSnap
 }
 
 // startMissingEngine asks the runtime to start the engine an activating
-// instance should have, and reports whether the instance is to stay. The
-// runtime starts a model once and returns the running one after that, so
-// asking again is safe.
+// instance should have. It reports whether the instance is to stay, and
+// whether the runtime started the engine. The runtime starts a model once and
+// returns the running one after that, so asking again is safe.
 func (r *ModelClaimReconciler) startMissingEngine(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
 	inst *modelv1alpha1.ModelClaimInstance,
 	podIP string,
-) bool {
+) (stays, started bool) {
 	served := servedModelName(pm)
 	resp, err := r.Runtime.Activate(ctx, podIP, DefaultRuntimePort, activateRequest(pm))
+	if errors.Is(err, errRuntimeSilent) {
+		// The runtime is left alone for now, so the call was not sent and
+		// nothing failed to start. The instance stays as it is, as it does
+		// when its runtime cannot be read, and a later pass asks again.
+		klog.V(4).InfoS("engine not started again yet", "model", pm.Name, "pod", inst.Pod, "err", err)
+		return true, false
+	}
 	if err != nil {
 		recordActivation(pm.Namespace, served, false)
 		r.Recorder.Eventf(pm, corev1.EventTypeWarning, "ActivateFailed",
 			"model %s had no engine on pod %s, and starting one failed: %v", served, inst.Pod, err)
 		// Unless the start is known not to have happened, the engine may be
 		// there, so the instance stays, and the next pass looks again.
-		return !callNotDone(err)
+		return !callNotDone(err), false
 	}
 	inst.Port = resp.Port
 	r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Activating",
 		"model %s had no engine on pod %s; engine starting again on port %d", served, inst.Pod, resp.Port)
-	return true
+	return true, true
 }
 
 // dropInstances removes the instances on the given pods from a claim, and
