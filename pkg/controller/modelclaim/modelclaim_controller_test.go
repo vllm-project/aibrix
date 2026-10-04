@@ -68,6 +68,10 @@ type fakeRuntime struct {
 	snapshotCallsTo map[string]int
 	portSeq         int32
 	failActivate    bool
+	// failActivateOn makes the runtimes of the pods listed, by IP, refuse
+	// every start, and activatedOn is the pod each start was asked of.
+	failActivateOn map[string]bool
+	activatedOn    []string
 	// loseActivateAnswer makes Activate start the engine and fail as a call
 	// whose answer never arrived.
 	loseActivateAnswer bool
@@ -90,9 +94,10 @@ type fakeRuntime struct {
 	onKVLimit func()
 }
 
-func (f *fakeRuntime) Activate(_ context.Context, _ string, _ int, req *ActivateRequest) (*ActivateResponse, error) {
+func (f *fakeRuntime) Activate(_ context.Context, podIP string, _ int, req *ActivateRequest) (*ActivateResponse, error) {
 	f.activateCalls = append(f.activateCalls, *req)
-	if f.failActivate {
+	f.activatedOn = append(f.activatedOn, podIP)
+	if f.failActivate || f.failActivateOn[podIP] {
 		return &ActivateResponse{Status: "error", Message: "boom"}, &runtimeRefusal{"activate failed: boom"}
 	}
 	f.portSeq++
@@ -286,6 +291,7 @@ func newReconciler(t *testing.T, objs ...client.Object) (*ModelClaimReconciler, 
 		Runtime:    runtime,
 		PoolPolicy: newPoolPolicyManager(time.Now),
 		Divisions:  newCardDivisionState(time.Now),
+		Backoff:    newPlacementBackoff(time.Now),
 	}, runtime
 }
 
@@ -1499,6 +1505,8 @@ func TestReconcileStopsSayingNoCardWillTakeItOnceOneDoes(t *testing.T) {
 	small, smallSnapshot := sizedWarmPod("warm-small", "10.0.0.1", 500)
 	roomy, roomySnapshot := sizedWarmPod("warm-roomy", "10.0.0.2", 2000)
 	r, runtime := newReconciler(t, pm, small)
+	now := time.Unix(1_700_000_000, 0)
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
 	runtime.snapshots = map[string]*RuntimeSnapshot{
 		small.Status.PodIP: smallSnapshot,
 		roomy.Status.PodIP: roomySnapshot,
@@ -1511,8 +1519,9 @@ func TestReconcileStopsSayingNoCardWillTakeItOnceOneDoes(t *testing.T) {
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 
-	// A card with room joins the pool. The earlier refusal must not be left
-	// standing as the claim's answer about finding one.
+	// A card with room joins the pool, which ends the claim's wait at once.
+	// The earlier refusal must not be left standing as the claim's answer
+	// about finding one.
 	require.NoError(t, r.Create(context.Background(), roomy))
 	reconcileOnce(t, r, pm.Name)
 
@@ -2494,14 +2503,14 @@ func TestReconcileAccountsForACardTheRuntimeReportsWithoutAGPURequest(t *testing
 	reconcileOnce(t, r, pm.Name)
 
 	// The card is too small for the model. Taken for a pod with no GPU, it
-	// would have been used without an account.
+	// would have been used without an account. Measured, it is known never
+	// to hold the model.
 	assert.Empty(t, runtime.activateCalls)
 	got := getModel(t, r, pm.Name)
 	cond := meta.FindStatusCondition(got.Status.Conditions,
 		string(modelv1alpha1.ModelClaimConditionTypeScheduled))
 	require.NotNil(t, cond)
-	assert.Equal(t, "NoMatchingPods", cond.Reason)
-	assert.Contains(t, cond.Message, "can offer at most")
+	assert.Equal(t, "TooLargeForAnyCard", cond.Reason)
 }
 
 // A pod given its GPUs by a resource claim requests none, so its request says
