@@ -23,6 +23,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
@@ -172,6 +174,385 @@ func TestModelWarmupWebhookRejectsModeAndSpecUpdates(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestModelWarmupWebhookAcceptsImageAndCustomWorkModes(t *testing.T) {
+	tests := map[string]*modelapi.ModelWarmup{
+		"image only":  validModelWarmupForWebhookTest(),
+		"custom only": validCustomModelWarmupForWebhookTest(),
+		"combined": func() *modelapi.ModelWarmup {
+			warmup := validModelWarmupForWebhookTest()
+			warmup.Spec.Custom = validModelWarmupCustomActionForWebhookTest()
+			return warmup
+		}(),
+	}
+
+	for name, warmup := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := (&ModelWarmupWebhook{}).ValidateCreate(context.Background(), warmup)
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestModelWarmupWebhookAcceptsEquivalentCustomQuantityUpdates(t *testing.T) {
+	for name, setQuantity := range map[string]func(*modelapi.ModelWarmup, resource.Quantity){
+		"container memory": func(w *modelapi.ModelWarmup, quantity resource.Quantity) {
+			w.Spec.Custom.Containers[0].Resources.Requests = corev1.ResourceList{corev1.ResourceMemory: quantity}
+		},
+		"volume size limit": func(w *modelapi.ModelWarmup, quantity resource.Quantity) {
+			w.Spec.Custom.Volumes[0].EmptyDir.SizeLimit = &quantity
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			oldWarmup := validCustomModelWarmupForWebhookTest()
+			setQuantity(oldWarmup, resource.MustParse("1Gi"))
+			updated := oldWarmup.DeepCopy()
+			setQuantity(updated, resource.MustParse("1073741824"))
+			require.True(t, equality.Semantic.DeepEqual(oldWarmup.Spec, updated.Spec))
+
+			w := &ModelWarmupWebhook{}
+			_, err := w.ValidateCreate(context.Background(), oldWarmup)
+			require.NoError(t, err)
+			_, err = w.ValidateUpdate(context.Background(), oldWarmup, updated)
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestModelWarmupWebhookAcceptsEquivalentCustomJSONUpdates(t *testing.T) {
+	for name, mutate := range map[string]func(*modelapi.ModelWarmup){
+		"map insertion order": func(w *modelapi.ModelWarmup) {
+			requests := corev1.ResourceList{}
+			requests[corev1.ResourceMemory] = resource.MustParse("1Gi")
+			requests[corev1.ResourceCPU] = resource.MustParse("100m")
+			w.Spec.Custom.Containers[0].Resources.Requests = requests
+		},
+		"nil and empty collections": func(w *modelapi.ModelWarmup) {
+			w.Spec.Custom.ImagePullSecrets = []corev1.LocalObjectReference{}
+			w.Spec.Custom.Containers[0].Env = []corev1.EnvVar{}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			oldWarmup := validCustomModelWarmupForWebhookTest()
+			requests := corev1.ResourceList{}
+			requests[corev1.ResourceCPU] = resource.MustParse("100m")
+			requests[corev1.ResourceMemory] = resource.MustParse("1Gi")
+			oldWarmup.Spec.Custom.Containers[0].Resources.Requests = requests
+			updated := oldWarmup.DeepCopy()
+			mutate(updated)
+			_, err := (&ModelWarmupWebhook{}).ValidateUpdate(context.Background(), oldWarmup, updated)
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestModelWarmupWebhookRequiresRegularWork(t *testing.T) {
+	tests := map[string]*modelapi.ModelWarmup{
+		"neither image nor custom container": func() *modelapi.ModelWarmup {
+			warmup := validModelWarmupForWebhookTest()
+			warmup.Spec.ImagePreload.Images = nil
+			return warmup
+		}(),
+		"init container only": func() *modelapi.ModelWarmup {
+			warmup := validCustomModelWarmupForWebhookTest()
+			warmup.Spec.Custom.Containers = nil
+			return warmup
+		}(),
+	}
+
+	for name, warmup := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := (&ModelWarmupWebhook{}).ValidateCreate(context.Background(), warmup)
+			require.ErrorContains(t, err, "spec: Required value")
+			require.NotContains(t, err.Error(), "spec.custom.containers")
+		})
+	}
+}
+
+func TestModelWarmupWebhookBoundsCustomFragments(t *testing.T) {
+	tests := map[string]func(*modelapi.ModelWarmup){
+		"init containers": func(warmup *modelapi.ModelWarmup) {
+			warmup.Spec.Custom.InitContainers = make([]corev1.Container, modelapi.MaxModelWarmupCustomInitContainers+1)
+			for i := range warmup.Spec.Custom.InitContainers {
+				warmup.Spec.Custom.InitContainers[i] = corev1.Container{Name: fmt.Sprintf("init-%d", i), Image: "busybox:1.36"}
+			}
+		},
+		"containers": func(warmup *modelapi.ModelWarmup) {
+			warmup.Spec.Custom.Containers = make([]corev1.Container, modelapi.MaxModelWarmupCustomContainers+1)
+			for i := range warmup.Spec.Custom.Containers {
+				warmup.Spec.Custom.Containers[i] = corev1.Container{Name: fmt.Sprintf("container-%d", i), Image: "busybox:1.36"}
+			}
+		},
+		"volumes": func(warmup *modelapi.ModelWarmup) {
+			warmup.Spec.Custom.Volumes = make([]corev1.Volume, modelapi.MaxModelWarmupCustomVolumes+1)
+			for i := range warmup.Spec.Custom.Volumes {
+				warmup.Spec.Custom.Volumes[i] = corev1.Volume{
+					Name:         fmt.Sprintf("volume-%d", i),
+					VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+				}
+			}
+		},
+		"image pull secrets": func(warmup *modelapi.ModelWarmup) {
+			warmup.Spec.Custom.ImagePullSecrets = make([]corev1.LocalObjectReference, modelapi.MaxModelWarmupCustomPullSecrets+1)
+			for i := range warmup.Spec.Custom.ImagePullSecrets {
+				warmup.Spec.Custom.ImagePullSecrets[i] = corev1.LocalObjectReference{Name: fmt.Sprintf("secret-%d", i)}
+			}
+		},
+	}
+
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			warmup := validCustomModelWarmupForWebhookTest()
+			mutate(warmup)
+			_, err := (&ModelWarmupWebhook{}).ValidateCreate(context.Background(), warmup)
+			require.ErrorContains(t, err, "Too many")
+		})
+	}
+}
+
+func TestModelWarmupWebhookRejectsInvalidCustomContainerNames(t *testing.T) {
+	tests := map[string]struct {
+		mutate       func(*modelapi.ModelWarmup)
+		expectedPath string
+	}{
+		"missing init name": {
+			mutate: func(warmup *modelapi.ModelWarmup) {
+				warmup.Spec.Custom.InitContainers[0].Name = ""
+			},
+			expectedPath: "spec.custom.initContainers[0].name",
+		},
+		"invalid regular name": {
+			mutate: func(warmup *modelapi.ModelWarmup) {
+				warmup.Spec.Custom.Containers[0].Name = "invalid_name"
+			},
+			expectedPath: "spec.custom.containers[0].name",
+		},
+		"duplicate init and regular names": {
+			mutate: func(warmup *modelapi.ModelWarmup) {
+				warmup.Spec.Custom.Containers[0].Name = warmup.Spec.Custom.InitContainers[0].Name
+			},
+			expectedPath: "spec.custom.containers[0].name",
+		},
+		"generated and custom init names collide": {
+			mutate: func(warmup *modelapi.ModelWarmup) {
+				warmup.Spec.ImagePreload.Images = validModelWarmupForWebhookTest().Spec.ImagePreload.Images
+				warmup.Spec.Custom.InitContainers[0].Name = "image-0"
+			},
+			expectedPath: "spec.custom.initContainers[0].name",
+		},
+		"generated and custom regular names collide": {
+			mutate: func(warmup *modelapi.ModelWarmup) {
+				warmup.Spec.ImagePreload.Images = validModelWarmupForWebhookTest().Spec.ImagePreload.Images
+				warmup.Spec.Custom.Containers[0].Name = "image-0"
+			},
+			expectedPath: "spec.custom.containers[0].name",
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			warmup := validCustomModelWarmupForWebhookTest()
+			test.mutate(warmup)
+			_, err := (&ModelWarmupWebhook{}).ValidateCreate(context.Background(), warmup)
+			require.ErrorContains(t, err, test.expectedPath)
+		})
+	}
+}
+
+func TestModelWarmupWebhookRejectsInvalidCustomVolumes(t *testing.T) {
+	tests := map[string]struct {
+		mutate       func(*modelapi.ModelWarmup)
+		expectedPath string
+	}{
+		"missing name": {
+			mutate: func(warmup *modelapi.ModelWarmup) {
+				warmup.Spec.Custom.Volumes[0].Name = ""
+			},
+			expectedPath: "spec.custom.volumes[0].name",
+		},
+		"invalid name": {
+			mutate: func(warmup *modelapi.ModelWarmup) {
+				warmup.Spec.Custom.Volumes[0].Name = "invalid_name"
+			},
+			expectedPath: "spec.custom.volumes[0].name",
+		},
+		"duplicate name": {
+			mutate: func(warmup *modelapi.ModelWarmup) {
+				warmup.Spec.Custom.Volumes = append(warmup.Spec.Custom.Volumes, warmup.Spec.Custom.Volumes[0])
+			},
+			expectedPath: "spec.custom.volumes[1].name",
+		},
+		"missing source": {
+			mutate: func(warmup *modelapi.ModelWarmup) {
+				warmup.Spec.Custom.Volumes[0].VolumeSource = corev1.VolumeSource{}
+			},
+			expectedPath: "spec.custom.volumes[0]",
+		},
+		"multiple sources": {
+			mutate: func(warmup *modelapi.ModelWarmup) {
+				warmup.Spec.Custom.Volumes[0].HostPath = &corev1.HostPathVolumeSource{Path: "/var/lib/models"}
+			},
+			expectedPath: "spec.custom.volumes[0]",
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			warmup := validCustomModelWarmupForWebhookTest()
+			test.mutate(warmup)
+			_, err := (&ModelWarmupWebhook{}).ValidateCreate(context.Background(), warmup)
+			require.ErrorContains(t, err, test.expectedPath)
+		})
+	}
+}
+
+func TestModelWarmupWebhookRejectsUndeclaredCustomVolumeReferences(t *testing.T) {
+	tests := map[string]struct {
+		mutate       func(*modelapi.ModelWarmup)
+		expectedPath string
+	}{
+		"init container mount": {
+			mutate: func(warmup *modelapi.ModelWarmup) {
+				warmup.Spec.Custom.InitContainers[0].VolumeMounts = []corev1.VolumeMount{{Name: "missing", MountPath: "/cache"}}
+			},
+			expectedPath: "spec.custom.initContainers[0].volumeMounts[0].name",
+		},
+		"regular container mount": {
+			mutate: func(warmup *modelapi.ModelWarmup) {
+				warmup.Spec.Custom.Containers[0].VolumeMounts = []corev1.VolumeMount{{Name: "missing", MountPath: "/cache"}}
+			},
+			expectedPath: "spec.custom.containers[0].volumeMounts[0].name",
+		},
+		"init container device": {
+			mutate: func(warmup *modelapi.ModelWarmup) {
+				warmup.Spec.Custom.InitContainers[0].VolumeDevices = []corev1.VolumeDevice{{Name: "missing", DevicePath: "/dev/cache"}}
+			},
+			expectedPath: "spec.custom.initContainers[0].volumeDevices[0].name",
+		},
+		"regular container device": {
+			mutate: func(warmup *modelapi.ModelWarmup) {
+				warmup.Spec.Custom.Containers[0].VolumeDevices = []corev1.VolumeDevice{{Name: "missing", DevicePath: "/dev/cache"}}
+			},
+			expectedPath: "spec.custom.containers[0].volumeDevices[0].name",
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			warmup := validCustomModelWarmupForWebhookTest()
+			test.mutate(warmup)
+			_, err := (&ModelWarmupWebhook{}).ValidateCreate(context.Background(), warmup)
+			require.ErrorContains(t, err, test.expectedPath)
+			require.ErrorContains(t, err, "undeclared volume")
+		})
+	}
+}
+
+func TestModelWarmupWebhookRejectsContainerRestartPolicies(t *testing.T) {
+	for name, mutate := range map[string]func(*modelapi.ModelWarmup){
+		"always init container": func(w *modelapi.ModelWarmup) {
+			w.Spec.Custom.InitContainers[0].RestartPolicy = ptr.To(corev1.ContainerRestartPolicyAlways)
+		},
+		"unsupported init container value": func(w *modelapi.ModelWarmup) {
+			w.Spec.Custom.InitContainers[0].RestartPolicy = ptr.To(corev1.ContainerRestartPolicy("Never"))
+		},
+		"always regular container": func(w *modelapi.ModelWarmup) {
+			w.Spec.Custom.Containers[0].RestartPolicy = ptr.To(corev1.ContainerRestartPolicyAlways)
+		},
+		"unsupported regular container value": func(w *modelapi.ModelWarmup) {
+			w.Spec.Custom.Containers[0].RestartPolicy = ptr.To(corev1.ContainerRestartPolicy("Never"))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			warmup := validCustomModelWarmupForWebhookTest()
+			mutate(warmup)
+			_, err := (&ModelWarmupWebhook{}).ValidateCreate(context.Background(), warmup)
+			require.ErrorContains(t, err, "restartPolicy")
+		})
+	}
+}
+
+func TestModelWarmupWebhookRejectsInvalidCustomContainerImagePullPolicies(t *testing.T) {
+	tests := map[string]struct {
+		mutate       func(*modelapi.ModelWarmup)
+		expectedPath string
+	}{
+		"init container": {
+			mutate: func(warmup *modelapi.ModelWarmup) {
+				warmup.Spec.Custom.InitContainers[0].ImagePullPolicy = corev1.PullPolicy("Invalid")
+			},
+			expectedPath: "spec.custom.initContainers[0].imagePullPolicy",
+		},
+		"regular container": {
+			mutate: func(warmup *modelapi.ModelWarmup) {
+				warmup.Spec.Custom.Containers[0].ImagePullPolicy = corev1.PullPolicy("Invalid")
+			},
+			expectedPath: "spec.custom.containers[0].imagePullPolicy",
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			warmup := validCustomModelWarmupForWebhookTest()
+			test.mutate(warmup)
+			_, err := (&ModelWarmupWebhook{}).ValidateCreate(context.Background(), warmup)
+			require.ErrorContains(t, err, test.expectedPath)
+			require.ErrorContains(t, err, "Unsupported value")
+		})
+	}
+}
+
+func TestModelWarmupWebhookRequiresCustomContainerImages(t *testing.T) {
+	warmup := validCustomModelWarmupForWebhookTest()
+	warmup.Spec.Custom.Containers[0].Image = ""
+
+	_, err := (&ModelWarmupWebhook{}).ValidateCreate(context.Background(), warmup)
+	require.ErrorContains(t, err, "spec.custom.containers[0].image")
+}
+
+func TestModelWarmupWebhookRejectsInvalidCustomImagePullSecretNames(t *testing.T) {
+	tests := map[string]string{
+		"missing": "",
+		"invalid": "invalid_name",
+	}
+
+	for name, secretName := range tests {
+		t.Run(name, func(t *testing.T) {
+			warmup := validCustomModelWarmupForWebhookTest()
+			warmup.Spec.Custom.ImagePullSecrets = []corev1.LocalObjectReference{{Name: secretName}}
+			_, err := (&ModelWarmupWebhook{}).ValidateCreate(context.Background(), warmup)
+			require.ErrorContains(t, err, "spec.custom.imagePullSecrets[0].name")
+		})
+	}
+}
+
+func TestModelWarmupWebhookAcceptsCustomFragmentBounds(t *testing.T) {
+	warmup := validCustomModelWarmupForWebhookTest()
+	warmup.Spec.Custom.InitContainers = make([]corev1.Container, modelapi.MaxModelWarmupCustomInitContainers)
+	warmup.Spec.Custom.Containers = make([]corev1.Container, modelapi.MaxModelWarmupCustomContainers)
+	warmup.Spec.Custom.Volumes = make([]corev1.Volume, modelapi.MaxModelWarmupCustomVolumes)
+	warmup.Spec.Custom.ImagePullSecrets = make([]corev1.LocalObjectReference, modelapi.MaxModelWarmupCustomPullSecrets)
+	for i := range warmup.Spec.Custom.InitContainers {
+		warmup.Spec.Custom.InitContainers[i] = corev1.Container{Name: fmt.Sprintf("init-%d", i), Image: "busybox:1.36"}
+		warmup.Spec.Custom.Containers[i] = corev1.Container{Name: fmt.Sprintf("container-%d", i), Image: "busybox:1.36"}
+		warmup.Spec.Custom.Volumes[i] = corev1.Volume{
+			Name:         fmt.Sprintf("volume-%d", i),
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		}
+		warmup.Spec.Custom.ImagePullSecrets[i] = corev1.LocalObjectReference{Name: fmt.Sprintf("secret-%d", i)}
+	}
+
+	_, err := (&ModelWarmupWebhook{}).ValidateCreate(context.Background(), warmup)
+	require.NoError(t, err)
+}
+
+func TestModelWarmupWebhookAcceptsDottedCustomImagePullSecretName(t *testing.T) {
+	warmup := validCustomModelWarmupForWebhookTest()
+	warmup.Spec.Custom.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "registry.auth"}}
+
+	_, err := (&ModelWarmupWebhook{}).ValidateCreate(context.Background(), warmup)
+	require.NoError(t, err)
+}
+
 func validModelWarmupForWebhookTest() *modelapi.ModelWarmup {
 	return &modelapi.ModelWarmup{Spec: modelapi.ModelWarmupSpec{
 		Targets: []modelapi.ModelWarmupTarget{{
@@ -181,4 +562,29 @@ func validModelWarmupForWebhookTest() *modelapi.ModelWarmup {
 			Image: "busybox:1.36", Command: []string{"sh", "-c", "exit 0"},
 		}}},
 	}}
+}
+
+func validCustomModelWarmupForWebhookTest() *modelapi.ModelWarmup {
+	return &modelapi.ModelWarmup{Spec: modelapi.ModelWarmupSpec{
+		Targets: []modelapi.ModelWarmupTarget{{
+			Nodes: &modelapi.ModelWarmupNodesTarget{Names: []string{"node-a"}},
+		}},
+		Custom: validModelWarmupCustomActionForWebhookTest(),
+	}}
+}
+
+func validModelWarmupCustomActionForWebhookTest() *modelapi.ModelWarmupCustomAction {
+	return &modelapi.ModelWarmupCustomAction{
+		InitContainers: []corev1.Container{{
+			Name: "init-cache", Image: "busybox:1.36", Command: []string{"sh", "-c", "true"},
+			VolumeMounts: []corev1.VolumeMount{{Name: "cache", MountPath: "/cache"}},
+		}},
+		Containers: []corev1.Container{{
+			Name: "download", Image: "aibrix/runtime:latest",
+			VolumeMounts: []corev1.VolumeMount{{Name: "cache", MountPath: "/cache"}},
+		}},
+		Volumes: []corev1.Volume{{
+			Name: "cache", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		}},
+	}
 }

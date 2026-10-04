@@ -28,6 +28,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
@@ -73,6 +74,99 @@ func TestJobForBuildsSafeNodePinnedTemplate(t *testing.T) {
 	require.Empty(t, job.Spec.Template.Spec.Volumes)
 }
 
+func TestJobForMergesImagePreloadAndCustomAction(t *testing.T) {
+	privileged := true
+	warmup := &modelv1alpha1.ModelWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "warmup", Namespace: "default", UID: "warmup-uid"},
+		Spec: modelv1alpha1.ModelWarmupSpec{
+			ImagePreload: modelv1alpha1.ModelWarmupImagePreload{
+				Images:      []modelv1alpha1.ModelWarmupImage{{Image: "busybox"}},
+				PullSecrets: []corev1.LocalObjectReference{{Name: "shared"}},
+			},
+			Custom: &modelv1alpha1.ModelWarmupCustomAction{
+				InitContainers: []corev1.Container{{
+					Name: "check", Image: "check:v1", Command: []string{"sh", "-c", "test -d /cache"},
+					SecurityContext: &corev1.SecurityContext{Privileged: &privileged},
+				}},
+				Containers: []corev1.Container{{
+					Name: "download", Image: "download:v1", Command: []string{"sh", "-c"}, Args: []string{"download"},
+					Env: []corev1.EnvVar{{Name: "MODEL", Value: "model-a"}},
+					Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
+						corev1.ResourceCPU: resource.MustParse("100m"),
+					}},
+				}},
+				Volumes: []corev1.Volume{{Name: "cache", VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+				}}},
+				ImagePullSecrets: []corev1.LocalObjectReference{{Name: "shared"}, {Name: "custom"}},
+			},
+		},
+	}
+
+	job := (&ModelWarmupReconciler{}).jobFor(warmup, "gpu-node-a", "revision")
+	pod := job.Spec.Template.Spec
+	require.Equal(t, []string{"check"}, containerNames(pod.InitContainers))
+	require.Equal(t, []string{"image-0", "download"}, containerNames(pod.Containers))
+	require.Equal(t, []string{"cache"}, volumeNames(pod.Volumes))
+	require.Equal(t, []corev1.LocalObjectReference{{Name: "shared"}, {Name: "custom"}}, pod.ImagePullSecrets)
+	require.Equal(t, corev1.RestartPolicyNever, pod.RestartPolicy)
+	require.False(t, *pod.AutomountServiceAccountToken)
+	require.Equal(t, []string{"gpu-node-a"}, pod.Affinity.NodeAffinity.
+		RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms[0].MatchFields[0].Values)
+	require.False(t, *pod.Containers[0].SecurityContext.AllowPrivilegeEscalation)
+	require.True(t, *pod.InitContainers[0].SecurityContext.Privileged)
+	require.Equal(t, []string{"sh", "-c"}, pod.Containers[1].Command)
+	require.Equal(t, "model-a", pod.Containers[1].Env[0].Value)
+	require.Equal(t, resource.MustParse("100m"), pod.Containers[1].Resources.Requests[corev1.ResourceCPU])
+
+	warmup.Spec.Custom.Containers[0].Env[0].Value = "mutated"
+	require.Equal(t, "model-a", pod.Containers[1].Env[0].Value)
+
+	*pod.InitContainers[0].SecurityContext.Privileged = false
+	pod.Volumes[0].EmptyDir.Medium = corev1.StorageMediumMemory
+	pod.ImagePullSecrets[1].Name = "mutated"
+	require.True(t, *warmup.Spec.Custom.InitContainers[0].SecurityContext.Privileged)
+	require.Equal(t, corev1.StorageMediumDefault, warmup.Spec.Custom.Volumes[0].EmptyDir.Medium)
+	require.Equal(t, "custom", warmup.Spec.Custom.ImagePullSecrets[1].Name)
+}
+
+func TestJobForSupportsCustomActionWithoutImagePreload(t *testing.T) {
+	warmup := &modelv1alpha1.ModelWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "warmup", Namespace: "default", UID: "warmup-uid"},
+		Spec: modelv1alpha1.ModelWarmupSpec{Custom: &modelv1alpha1.ModelWarmupCustomAction{
+			InitContainers: []corev1.Container{{Name: "check", Image: "check:v1"}},
+			Containers:     []corev1.Container{{Name: "download", Image: "download:v1"}},
+			Volumes: []corev1.Volume{{Name: "host", VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{Path: "/var/lib/model-cache"},
+			}}},
+			ImagePullSecrets: []corev1.LocalObjectReference{{Name: "custom"}},
+		}},
+	}
+
+	pod := (&ModelWarmupReconciler{}).jobFor(warmup, "node-a", "revision").Spec.Template.Spec
+	require.Equal(t, []string{"check"}, containerNames(pod.InitContainers))
+	require.Equal(t, []string{"download"}, containerNames(pod.Containers))
+	require.Equal(t, []string{"host"}, volumeNames(pod.Volumes))
+	require.NotNil(t, pod.Volumes[0].HostPath)
+	require.Equal(t, []corev1.LocalObjectReference{{Name: "custom"}}, pod.ImagePullSecrets)
+}
+
+func containerNames(containers []corev1.Container) []string {
+	names := make([]string, 0, len(containers))
+	for _, container := range containers {
+		names = append(names, container.Name)
+	}
+	return names
+}
+
+func volumeNames(volumes []corev1.Volume) []string {
+	names := make([]string, 0, len(volumes))
+	for _, volume := range volumes {
+		names = append(names, volume.Name)
+	}
+	return names
+}
+
 func TestRevisionExcludesTargetMembershipAndIncludesTemplateInput(t *testing.T) {
 	base := &modelv1alpha1.ModelWarmup{Spec: modelv1alpha1.ModelWarmupSpec{
 		ImagePreload: modelv1alpha1.ModelWarmupImagePreload{Images: []modelv1alpha1.ModelWarmupImage{{
@@ -80,6 +174,7 @@ func TestRevisionExcludesTargetMembershipAndIncludesTemplateInput(t *testing.T) 
 		}}},
 	}}
 	revision := revisionFor(base)
+	require.Equal(t, "ef7e2d9085ee", revision)
 	withTarget := base.DeepCopy()
 	withTarget.Spec.Targets = []modelv1alpha1.ModelWarmupTarget{{
 		Nodes: &modelv1alpha1.ModelWarmupNodesTarget{Names: []string{"node-a"}},
@@ -88,6 +183,179 @@ func TestRevisionExcludesTargetMembershipAndIncludesTemplateInput(t *testing.T) 
 	changed := base.DeepCopy()
 	changed.Spec.ImagePreload.Images[0].ImagePullPolicy = corev1.PullAlways
 	require.NotEqual(t, revision, revisionFor(changed))
+}
+
+func TestRevisionIncludesCustomActionInputs(t *testing.T) {
+	newWarmup := func() *modelv1alpha1.ModelWarmup {
+		return &modelv1alpha1.ModelWarmup{Spec: modelv1alpha1.ModelWarmupSpec{
+			ImagePreload: modelv1alpha1.ModelWarmupImagePreload{Images: []modelv1alpha1.ModelWarmupImage{{Image: "busybox"}}},
+			Custom: &modelv1alpha1.ModelWarmupCustomAction{
+				InitContainers: []corev1.Container{{Name: "check", Image: "check:v1"}, {Name: "prepare", Image: "prepare:v1"}},
+				Containers: []corev1.Container{{Name: "download", Image: "download:v1", Command: []string{"sh", "-c"},
+					Env: []corev1.EnvVar{{Name: "MODEL", Value: "model-a"}}, Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
+						corev1.ResourceCPU: resource.MustParse("100m"),
+					}}}},
+				Volumes:          []corev1.Volume{{Name: "cache", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}},
+				ImagePullSecrets: []corev1.LocalObjectReference{{Name: "custom"}},
+			},
+		}}
+	}
+	base := newWarmup()
+	baseRevision := revisionFor(base)
+	variants := map[string]func(*modelv1alpha1.ModelWarmup){
+		"init image": func(w *modelv1alpha1.ModelWarmup) { w.Spec.Custom.InitContainers[0].Image = "check:v2" },
+		"init order": func(w *modelv1alpha1.ModelWarmup) {
+			w.Spec.Custom.InitContainers[0], w.Spec.Custom.InitContainers[1] =
+				w.Spec.Custom.InitContainers[1], w.Spec.Custom.InitContainers[0]
+		},
+		"regular command": func(w *modelv1alpha1.ModelWarmup) { w.Spec.Custom.Containers[0].Command = []string{"download"} },
+		"regular env":     func(w *modelv1alpha1.ModelWarmup) { w.Spec.Custom.Containers[0].Env[0].Value = "model-b" },
+		"regular resources": func(w *modelv1alpha1.ModelWarmup) {
+			w.Spec.Custom.Containers[0].Resources.Requests[corev1.ResourceCPU] = resource.MustParse("200m")
+		},
+		"volume source": func(w *modelv1alpha1.ModelWarmup) {
+			w.Spec.Custom.Volumes[0].EmptyDir = nil
+			w.Spec.Custom.Volumes[0].HostPath = &corev1.HostPathVolumeSource{Path: "/var/lib/model-cache"}
+		},
+		"custom pull secret": func(w *modelv1alpha1.ModelWarmup) {
+			w.Spec.Custom.ImagePullSecrets[0].Name = "other"
+		},
+	}
+	for name, mutate := range variants {
+		t.Run(name, func(t *testing.T) {
+			variant := newWarmup()
+			mutate(variant)
+			require.NotEqual(t, baseRevision, revisionFor(variant))
+		})
+	}
+	withoutCustom := newWarmup()
+	withoutCustom.Spec.Custom = nil
+	withoutCustom.Spec.Targets = []modelv1alpha1.ModelWarmupTarget{{
+		Nodes: &modelv1alpha1.ModelWarmupNodesTarget{Names: []string{"node-a"}},
+	}}
+	require.NotEqual(t, baseRevision, revisionFor(withoutCustom))
+}
+
+func TestRevisionCanonicalizesCustomActionJSON(t *testing.T) {
+	newWarmup := func(requests corev1.ResourceList) *modelv1alpha1.ModelWarmup {
+		return &modelv1alpha1.ModelWarmup{Spec: modelv1alpha1.ModelWarmupSpec{
+			Custom: &modelv1alpha1.ModelWarmupCustomAction{Containers: []corev1.Container{{
+				Name: "download", Image: "download:v1",
+				Resources: corev1.ResourceRequirements{Requests: requests},
+			}}},
+		}}
+	}
+	firstRequests := corev1.ResourceList{}
+	firstRequests[corev1.ResourceCPU] = resource.MustParse("100m")
+	firstRequests[corev1.ResourceMemory] = resource.MustParse("1Gi")
+	secondRequests := corev1.ResourceList{}
+	secondRequests[corev1.ResourceMemory] = resource.MustParse("1Gi")
+	secondRequests[corev1.ResourceCPU] = resource.MustParse("100m")
+	require.Equal(t, revisionFor(newWarmup(firstRequests)), revisionFor(newWarmup(secondRequests)))
+	// Numerically equivalent quantities must share a revision even when clients
+	// use different string formats.
+	secondRequests[corev1.ResourceMemory] = resource.MustParse("1073741824")
+	secondRequests[corev1.ResourceCPU] = resource.MustParse("0.1")
+	require.Equal(t, revisionFor(newWarmup(firstRequests)), revisionFor(newWarmup(secondRequests)))
+	firstMemory := firstRequests[corev1.ResourceMemory]
+	require.Equal(t, "1Gi", firstMemory.String())
+
+	firstSize := resource.MustParse("1Gi")
+	secondSize := resource.MustParse("1073741824")
+	firstVolume := &modelv1alpha1.ModelWarmup{Spec: modelv1alpha1.ModelWarmupSpec{
+		Custom: &modelv1alpha1.ModelWarmupCustomAction{Volumes: []corev1.Volume{{
+			Name: "cache", VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: &firstSize},
+			},
+		}}},
+	}}
+	secondVolume := firstVolume.DeepCopy()
+	secondVolume.Spec.Custom.Volumes[0].EmptyDir.SizeLimit = &secondSize
+	require.Equal(t, revisionFor(firstVolume), revisionFor(secondVolume))
+	require.Equal(t, "1Gi", firstVolume.Spec.Custom.Volumes[0].EmptyDir.SizeLimit.String())
+
+	firstDivisor := resource.MustParse("1Gi")
+	secondDivisor := resource.MustParse("1073741824")
+	firstEnv := &modelv1alpha1.ModelWarmup{Spec: modelv1alpha1.ModelWarmupSpec{
+		Custom: &modelv1alpha1.ModelWarmupCustomAction{Containers: []corev1.Container{{
+			Name: "metrics", Image: "busybox", Env: []corev1.EnvVar{{
+				Name: "MEMORY_LIMIT", ValueFrom: &corev1.EnvVarSource{ResourceFieldRef: &corev1.ResourceFieldSelector{
+					Resource: "limits.memory", Divisor: firstDivisor,
+				}},
+			}},
+		}}},
+	}}
+	secondEnv := firstEnv.DeepCopy()
+	secondEnv.Spec.Custom.Containers[0].Env[0].ValueFrom.ResourceFieldRef.Divisor = secondDivisor
+	require.Equal(t, revisionFor(firstEnv), revisionFor(secondEnv))
+
+	firstStorage := resource.MustParse("1Gi")
+	secondStorage := resource.MustParse("1073741824")
+	firstEphemeral := &modelv1alpha1.ModelWarmup{Spec: modelv1alpha1.ModelWarmupSpec{
+		Custom: &modelv1alpha1.ModelWarmupCustomAction{Volumes: []corev1.Volume{{
+			Name: "cache", VolumeSource: corev1.VolumeSource{Ephemeral: &corev1.EphemeralVolumeSource{
+				VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{Spec: corev1.PersistentVolumeClaimSpec{
+					Resources: corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{
+						corev1.ResourceStorage: firstStorage,
+					}},
+				}},
+			}},
+		}}},
+	}}
+	secondEphemeral := firstEphemeral.DeepCopy()
+	secondEphemeral.Spec.Custom.Volumes[0].Ephemeral.VolumeClaimTemplate.Spec.Resources.Requests[corev1.ResourceStorage] = secondStorage
+	require.Equal(t, revisionFor(firstEphemeral), revisionFor(secondEphemeral))
+
+	// Custom action slices use omitempty, so nil and empty serialize identically and intentionally share a revision.
+	nilCollections := &modelv1alpha1.ModelWarmup{Spec: modelv1alpha1.ModelWarmupSpec{
+		Custom: &modelv1alpha1.ModelWarmupCustomAction{},
+	}}
+	emptyCollections := &modelv1alpha1.ModelWarmup{Spec: modelv1alpha1.ModelWarmupSpec{
+		Custom: &modelv1alpha1.ModelWarmupCustomAction{
+			InitContainers:   []corev1.Container{},
+			Containers:       []corev1.Container{},
+			Volumes:          []corev1.Volume{},
+			ImagePullSecrets: []corev1.LocalObjectReference{},
+		},
+	}}
+	require.Equal(t, revisionFor(nilCollections), revisionFor(emptyCollections))
+}
+
+func TestUpdateStatusUsesCustomSuccessReason(t *testing.T) {
+	for name, custom := range map[string]*modelv1alpha1.ModelWarmupCustomAction{
+		"image preload": nil,
+		"custom action": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			warmup := &modelv1alpha1.ModelWarmup{
+				ObjectMeta: metav1.ObjectMeta{Name: "warmup", Namespace: "default", UID: "warmup-uid"},
+				Spec:       modelv1alpha1.ModelWarmupSpec{Custom: custom},
+			}
+			job := &batchv1.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: "job", Namespace: "default", Labels: map[string]string{
+					WarmupLabelKey: string(warmup.UID), RevisionLabelKey: "rev",
+				}, OwnerReferences: []metav1.OwnerReference{controllerOwnerReference(warmup)}},
+				Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{NodeName: "node-a"}}},
+			}
+			job.Status = batchv1.JobStatus{Succeeded: 1, Conditions: []batchv1.JobCondition{{
+				Type: batchv1.JobComplete, Status: corev1.ConditionTrue,
+			}}}
+			scheme := runtime.NewScheme()
+			require.NoError(t, modelv1alpha1.AddToScheme(scheme))
+			require.NoError(t, batchv1.AddToScheme(scheme))
+			r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
+				WithStatusSubresource(warmup).WithObjects(warmup, job).Build()}
+
+			_, err := r.updateStatus(context.Background(), warmup, "rev", map[string][]string{"node-a": {"target[0]"}}, nil, "", "")
+			require.NoError(t, err)
+			complete := mustCondition(warmup.Status.Conditions, "Complete")
+			if custom == nil {
+				require.Equal(t, "ImagePreloadSucceeded", complete.Reason)
+			} else {
+				require.Equal(t, "WarmupSucceeded", complete.Reason)
+			}
+		})
+	}
 }
 
 func TestSetConditionKeepsConditionsMutuallyExclusive(t *testing.T) {

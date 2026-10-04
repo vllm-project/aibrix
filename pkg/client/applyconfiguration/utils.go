@@ -77,6 +77,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationmodelv1alpha1.ModelClaimStatusApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmup"):
 		return &applyconfigurationmodelv1alpha1.ModelWarmupApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmupCustomAction"):
+		return &applyconfigurationmodelv1alpha1.ModelWarmupCustomActionApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmupImage"):
 		return &applyconfigurationmodelv1alpha1.ModelWarmupImageApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmupImagePreload"):

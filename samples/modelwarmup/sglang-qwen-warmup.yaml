@@ -1,0 +1,62 @@
+# This is a large, opt-in example. Limit the latency-pool selector to the nodes
+# where you intentionally want to cache the SGLang image and Qwen model.
+apiVersion: model.aibrix.ai/v1alpha1
+kind: ModelWarmup
+metadata:
+  name: sglang-qwen3-0-6b-warmup
+  namespace: default
+spec:
+  mode: Once
+  targets:
+  - nodeSelector:
+      matchLabels:
+        resource-pool.aibrix.ai/name: latency-pool
+  imagePreload:
+    images:
+    - image: lmsysorg/sglang:v0.5.5.post3
+      imagePullPolicy: IfNotPresent
+      command: ["python3", "-c"]
+      args: ["import sglang; print(sglang.__version__)"]
+  custom:
+    volumes:
+    - name: model-cache
+      hostPath:
+        path: /var/lib/aibrix/models/sglang-qwen3-0.6b
+        type: DirectoryOrCreate
+    initContainers:
+    - name: cpu-disk-network-precheck
+      image: busybox:1.36
+      imagePullPolicy: IfNotPresent
+      command: ["sh", "-c"]
+      args:
+      - |
+        set -eu
+        test -w /models
+        available_kib="$(df -Pk /models | awk 'NR == 2 { print $4 }')"
+        test "${available_kib:-0}" -ge 10485760
+        cpu_count="$(grep -c '^processor' /proc/cpuinfo)"
+        test "${cpu_count:-0}" -ge 2
+        memory_kib="$(awk '/MemAvailable:/ { print $2 }' /proc/meminfo)"
+        test "${memory_kib:-0}" -ge 4194304
+        nslookup huggingface.co >/dev/null
+      volumeMounts:
+      - name: model-cache
+        mountPath: /models
+    containers:
+    - name: download-qwen3-0-6b
+      image: aibrix/runtime:v0.7.0
+      imagePullPolicy: IfNotPresent
+      command: ["aibrix_download"]
+      args:
+      - --model-uri
+      - Qwen/Qwen3-0.6B
+      - --local-dir
+      - /models/qwen3-0.6b
+      volumeMounts:
+      - name: model-cache
+        mountPath: /models
+  policies:
+    parallelism: 2
+    jobTimeoutSeconds: 3600
+    retryLimit: 1
+    ttlSecondsAfterFinished: 7200
