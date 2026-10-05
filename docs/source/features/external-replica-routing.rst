@@ -13,6 +13,17 @@ addresses.
 The protocol is alpha. Download the normative
 :download:`OpenAPI 3.1 contract <../_static/openapi/external-replica-selection-v1alpha1.yaml>`.
 
+Current scope: single-target routing
+------------------------------------
+
+The ``routing.aibrix.ai/v1alpha1`` contract selects exactly one target Pod and
+port per invocation. A candidate may expose a ``prefill`` or ``decode`` role as
+an allowlisted attribute, but that attribute is only an input to the
+single-target decision. The ``external`` strategy does not select a P/D pair,
+run the prefill leg, transfer KV state, align a role set, or dispatch the decode
+leg. Use the built-in ``pd`` strategy for the current P/D disaggregation flow;
+external control of that paired workflow is future scope.
+
 Request flow
 ------------
 
@@ -39,7 +50,7 @@ selected inference Pod.
        Gateway->>Gateway: Apply readiness, label, inflight, and load filters
        Gateway->>Decision: POST ReplicaSelectionRequest
        Note over Gateway,Decision: The service may select only from the supplied candidate snapshot
-       Decision-->>Gateway: ReplicaSelectionResponse with selected target
+       Decision-->>Gateway: ReplicaSelectionResponse with exactly one target
        Gateway->>Gateway: Validate target and enforce final admission
        Gateway-->>Envoy: target-pod header
        Envoy->>Pod: Forward inference request

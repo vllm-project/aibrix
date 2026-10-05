@@ -80,6 +80,9 @@ type externalDecisionRequest struct {
 	Spec       externalRequestSpec `json:"spec"`
 }
 
+// externalTarget is the single Pod and port authorized by a v1alpha1 Selected
+// response. The protocol does not encode a prefill/decode pair or orchestrate
+// a disaggregated inference handoff.
 type externalTarget struct {
 	ID   *string `json:"id"`
 	Port *int    `json:"port,omitempty"`
@@ -110,6 +113,8 @@ type externalCandidateSnapshot struct {
 	ports map[int]struct{}
 }
 
+// externalValidatedDecision carries at most one request-local target from the
+// external policy boundary back to Gateway routing.
 type externalValidatedDecision struct {
 	decision   string
 	targetPod  *v1.Pod
