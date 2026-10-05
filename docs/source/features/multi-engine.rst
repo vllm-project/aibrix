@@ -442,7 +442,9 @@ What differs from ``/v1/decisions``:
 - ``state`` is required and may be a string, an object or an array. Unlike a decisions ``input`` it
   may be empty, because SGLang accepts an empty state. The gateway uses it, with objects and arrays
   compacted to JSON text, as the routing text for prefix-cache-aware routing: SGLang puts the state
-  at the head of every question's prompt, so it is the part the questions share.
+  at the head of every question's prompt, so it is the part the questions share. A pod serving a
+  decision checkpoint renders an object state with spaces after the JSON separators, so the routing
+  text then differs from the prompt by whitespace; this only affects the cache-affinity estimate.
 - ``questions`` must be a non-empty object keyed by your ids. An array, the ``/v1/decisions``
   shape, is rejected with ``400``. The question schema itself is validated by SGLang.
 - There is no streaming and no generation. Usage reports ``input_tokens``, which counts the prompt

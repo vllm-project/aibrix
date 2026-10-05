@@ -732,18 +732,13 @@ func validateDecisionsRequest(requestID string, requestBody []byte) (model, mess
 	return
 }
 
-// validateSystemOneRequest parses and validates an SGLang /v1/systemone request body, which
-// is {model, state, questions, images?}. "model" is required for the same reason as on
-// /v1/decisions. "state" must be present and a string, object, or array, but unlike a
-// decisions "input" it may be blank: SGLang accepts an empty state, so the gateway does not
-// refuse what the engine would answer. "questions" must be a non-empty map keyed by the
-// caller's ids; the question schema is left to the engine.
+// validateSystemOneRequest parses and validates an SGLang /v1/systemone request body.
+// Unlike a decisions "input", "state" may be blank: SGLang accepts an empty state, so the
+// gateway does not refuse what the engine would answer. The question schema is left to the
+// engine.
 //
-// The routing message is the state: SGLang puts it at the head of every question's prompt,
-// so it is the prefix shared by the questions that prefix-cache-aware routing should see.
-// An object or array is rendered as compact JSON, which is how a served chat model renders
-// it; a decision checkpoint uses json.dumps' default separators, so for those pods the text
-// differs from the prompt by whitespace.
+// The routing message is the state alone: SGLang puts it at the head of every question's
+// prompt, so it is the prefix that prefix-cache-aware routing should see.
 // nolint:nakedret
 func validateSystemOneRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
 	var req struct {
