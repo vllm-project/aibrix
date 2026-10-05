@@ -2525,6 +2525,139 @@ def pooling():
         )
 
 
+_DECISION_FIELDS = {
+    "model",
+    "input",
+    "images",
+    "questions",
+    "temperature",
+    "chat_template_kwargs",
+    "prompt_format_version",
+    "return_prompt_token_ids",
+}
+
+
+def _decision_text(value):
+    """Render a decision text the way SGLang does: strings as-is, objects/arrays as compact JSON."""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _is_blank_decision_text(value):
+    return not (value.strip() if isinstance(value, str) else value)
+
+
+def _validate_decision_question(question):
+    """Return (names, error) for one question; names are the answer labels in order."""
+    if not isinstance(question, dict):
+        return None, "each question must be an object"
+    qtype = question.get("type")
+    if qtype not in ("choice", "score", "yes_no"):
+        return None, "question 'type' must be one of choice, score, yes_no"
+    qid = question.get("id")
+    if not isinstance(qid, str) or not qid.strip():
+        return None, "question 'id' must be a non-blank string"
+    text = question.get("question")
+    if not isinstance(text, (str, dict, list)) or _is_blank_decision_text(text):
+        return None, f"question {qid!r}: 'question' must be a non-blank string, object, or array"
+    if qtype == "choice":
+        options = question.get("options")
+        if not isinstance(options, list) or not 2 <= len(options) <= 26:
+            return None, f"question {qid!r}: 'options' must hold 2 to 26 items"
+        names = [o.get("name") if isinstance(o, dict) else None for o in options]
+        if not all(isinstance(n, str) and n.strip() for n in names):
+            return None, f"question {qid!r}: every option needs a non-blank 'name'"
+        if len({n.strip().casefold() for n in names}) != len(names):
+            return None, f"question {qid!r}: option names must be distinct"
+        return names, None
+    if qtype == "score":
+        levels = question.get("levels")
+        if not isinstance(levels, list) or not 2 <= len(levels) <= 10:
+            return None, f"question {qid!r}: 'levels' must hold 2 to 10 items"
+        return [str(i) for i in range(len(levels))], None
+    return ["yes", "no"], None
+
+
+@app.route("/v1/decisions", methods=["POST"])
+@auth_required
+def decisions():
+    """
+    Simulates SGLang's /v1/decisions endpoint: typed choice, score, and yes_no
+    questions about an input, answered by scoring without generation. Mirrors
+    SGLang's request validation (extra fields are rejected, so a stray `stream`
+    is an error) and its response shape. Probabilities are uniform. Usage
+    reports prompt_tokens and total_tokens only, like the engine, so the gateway
+    meters it on the language response path.
+    """
+    try:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return create_error_response("request body must be a JSON object")
+
+        extra = sorted(set(data) - _DECISION_FIELDS)
+        if extra:
+            return create_error_response(f"Extra inputs are not permitted: {', '.join(extra)}", param=extra[0])
+
+        input_data = data.get("input")
+        if not isinstance(input_data, (str, dict, list)) or _is_blank_decision_text(input_data):
+            return create_error_response(
+                "'input' must be a non-blank string, object, or array", param="input"
+            )
+
+        questions = data.get("questions")
+        if not isinstance(questions, list) or not questions:
+            return create_error_response("'questions' must be a non-empty array", param="questions")
+
+        input_text = _decision_text(input_data)
+        input_tokens = get_token_count(input_text)
+        answers = {}
+        prompt_tokens = 0
+        for question in questions:
+            names, error = _validate_decision_question(question)
+            if error:
+                return create_error_response(error, param="questions")
+            if question["id"] in answers:
+                return create_error_response(
+                    f"question id {question['id']!r} repeats another question", param="questions"
+                )
+
+            probability = 1.0 / len(names)
+            answer = {
+                "type": question["type"],
+                "probabilities": {name: probability for name in names},
+                "label_mass": 1.0,
+            }
+            if question["type"] == "choice":
+                answer["choice"] = names[0]
+            elif question["type"] == "score":
+                answer["score"] = sum(i * probability for i in range(len(names)))
+            answers[question["id"]] = answer
+            # Each question is scored against its own prompt: the input plus the question.
+            prompt_tokens += input_tokens + get_token_count(_decision_text(question))
+
+        response = {
+            "object": "decisions",
+            "model": data.get("model") or "default",
+            "prompt_format_version": 1,
+            "answers": answers,
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": 0,
+                "total_tokens": prompt_tokens,
+            },
+        }
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in decisions endpoint: {e}")
+        return create_error_response(
+            "The server had an error while processing your request. Sorry about that!",
+            error_type="api_error",
+            status_code=500
+        )
+
+
 @app.route("/detokenize", methods=["POST"])
 @auth_required
 def detokenize():

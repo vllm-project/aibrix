@@ -369,6 +369,46 @@ TRT-LLM Limitations
 - **No queue-depth metrics**: TRT-LLM does not expose ``num_requests_running`` or ``num_requests_waiting``. Routing policies that rely on queue depth (e.g., least-request) will fall back to random routing.
 - **Metrics require explicit config**: Performance metrics are only emitted when ``return_perf_metrics: true``, ``enable_iter_perf_stats: true``, and ``enable_iter_req_stats: true`` are set in the TRT-LLM server configuration.
 
+SGLang Decisions API
+--------------------
+
+SGLang serves ``POST /v1/decisions``, which answers typed ``choice``, ``score`` and ``yes_no``
+questions about an input by scoring answer labels, without generating text. The gateway routes
+it to the pods of the requested model, like the other model endpoints:
+
+.. code-block:: bash
+
+    curl http://${GATEWAY}/v1/decisions \
+      -H "Authorization: Bearer ${API_KEY}" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "model": "deepseek-llm-7b-chat",
+        "input": "The customer reports a double charge on their last invoice.",
+        "questions": [{
+          "id": "team",
+          "type": "choice",
+          "question": "Which team should handle this?",
+          "options": [{"name": "billing"}, {"name": "support"}]
+        }]
+      }'
+
+What differs from the other endpoints:
+
+- ``model`` is required. SGLang treats it as optional and echoes a default, but the gateway needs
+  it to select a pod, so a request without one is rejected with ``400``.
+- ``input`` is required and may be a string, an object or an array. The gateway uses it, with
+  objects and arrays compacted to JSON text, as the routing text for prefix-cache-aware routing.
+  ``questions`` must be a non-empty array. The question schema itself is validated by SGLang.
+- There is no streaming and no generation. Usage reports ``prompt_tokens`` and ``total_tokens``
+  only, with ``completion_tokens`` at ``0``.
+- ``images`` are forwarded as sent. The gateway buffers the whole request body, so large base64
+  images count against the ``bufferLimit`` of the gateway's ``ClientTrafficPolicy`` (4 MiB by
+  default). Raise it, together with ``AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES``, if you send big images.
+
+The gateway does not check the engine, so a decisions request for a model served by another engine
+is forwarded and fails at the pod. Only route it to ``model.aibrix.ai/engine: sglang`` models.
+SGLang's ``/v1/systemone`` endpoint is not routed by the gateway.
+
 Adding New Engines
 ------------------
 

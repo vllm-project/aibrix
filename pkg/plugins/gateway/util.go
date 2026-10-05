@@ -202,6 +202,8 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		model, message, errRes = validateRerankRequest(requestID, requestBody)
 	case PathClassify:
 		model, message, errRes = validateClassifyRequest(requestID, requestBody)
+	case PathDecisions:
+		model, message, errRes = validateDecisionsRequest(requestID, requestBody)
 	case PathTokenize:
 		model, message, errRes = validateTokenizeRequest(requestID, requestBody)
 	case PathPooling:
@@ -679,6 +681,94 @@ func validateClassifyRequest(requestID string, requestBody []byte) (model, messa
 
 	model = req.Model
 	return
+}
+
+// validateDecisionsRequest parses and validates an SGLang /v1/decisions request body.
+// "model" is required although SGLang treats it as optional, because the gateway routes on
+// it. "input" and a non-empty "questions" array are required too, so a body the engine would
+// reject fails at the edge; the question schema is left to the engine.
+//
+// The routing message is "input" alone: SGLang renders it ahead of the questions, so it is
+// the shared prefix that prefix-cache-aware routing should see.
+// nolint:nakedret
+func validateDecisionsRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	var req struct {
+		Model     string          `json:"model"`
+		Input     json.RawMessage `json:"input"`
+		Questions json.RawMessage `json:"questions"`
+	}
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		// The body can hold customer text or base64 images, so log its size, not its content.
+		klog.ErrorS(nil, "error to unmarshal decisions object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if strings.TrimSpace(req.Model) == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	input := bytes.TrimSpace(req.Input)
+	if len(input) == 0 || string(input) == jsonNull {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property", "", "input", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	text, errMsg := decisionsInputText(input)
+	if errMsg != "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, errMsg, "", "input", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	var questions []json.RawMessage
+	if err := sonic.Unmarshal(req.Questions, &questions); err != nil || len(questions) == 0 {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'questions' is a required property and must be a non-empty array", "", "questions", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	model, message = req.Model, text
+	return
+}
+
+// jsonParseReason returns why sonic rejected a body without the excerpt of the body that its
+// error text embeds (a syntax error quotes the bytes around the failure, a type mismatch
+// quotes the offending value), so the result is safe to log.
+func jsonParseReason(err error) string {
+	var withMessage interface{ Message() string }
+	if errors.As(err, &withMessage) {
+		return withMessage.Message()
+	}
+	return "invalid JSON body"
+}
+
+// decisionsInputText renders a /v1/decisions "input" value (a string, object, or array)
+// to text and returns an error message when it is not one of those or is blank. An object
+// or array is re-serialized as compact JSON the way SGLang renders it into the prompt (see
+// renderJSONLikePython); SGLang treats an empty or whitespace-only string, object, or array
+// as blank.
+func decisionsInputText(input []byte) (text, errMsg string) {
+	const typeMsg = "'input' must be a string, object, or array"
+	switch input[0] {
+	case '"':
+		if err := sonic.Unmarshal(input, &text); err != nil {
+			return "", typeMsg
+		}
+		if strings.TrimSpace(text) == "" {
+			return "", "'input' cannot be blank"
+		}
+		return text, ""
+	case '{', '[':
+		rendered, err := renderJSONLikePython(input)
+		if err != nil {
+			return "", typeMsg
+		}
+		if rendered == "{}" || rendered == "[]" {
+			return "", "'input' cannot be blank"
+		}
+		return rendered, ""
+	default:
+		return "", typeMsg
+	}
 }
 
 // isMultipartRequest returns true if the content type indicates multipart form data

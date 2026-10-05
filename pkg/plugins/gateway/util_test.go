@@ -1500,6 +1500,190 @@ func Test_ValidateRequestBody_Classify(t *testing.T) {
 	}
 }
 
+func Test_ValidateRequestBody_Decisions(t *testing.T) {
+	const questions = `[{"id": "q1", "type": "choice", "question": "Which?", "options": [{"name": "a"}, {"name": "b"}]}]`
+
+	testCases := []struct {
+		message     string
+		requestPath string // defaults to PathDecisions
+		requestBody string
+		model       string
+		messages    string
+		statusCode  envoyTypePb.StatusCode
+		param       string
+	}{
+		{
+			message:     "/v1/decisions string input",
+			requestBody: `{"model": "decider", "input": "pick a replica", "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    "pick a replica",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/decisions object input is compacted to JSON text",
+			requestBody: `{"model": "decider", "input": {"a": 1,  "b": ["x", "y"]}, "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    `{"a":1,"b":["x","y"]}`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/decisions array input is compacted to JSON text",
+			requestBody: `{"model": "decider", "input": [ {"role": "user"}, "text" ], "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    `[{"role":"user"},"text"]`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/decisions object input is rendered like SGLang: escapes decoded, floats normalized",
+			requestBody: `{"model": "decider", "input": {"text": "你", "n": 1e0}, "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    `{"text":"你","n":1.0}`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/decisions routes on input, not on question text",
+			requestBody: `{"model": "decider", "input": "shared prefix", "questions": [{"id": "q", "type": "yes_no", "question": "Is it?"}]}`,
+			model:       "decider",
+			messages:    "shared prefix",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/decisions images are forwarded, not inspected",
+			requestBody: `{"model": "decider", "input": "describe", "images": ["data:image/png;base64,AAAA", {"url": "https://example.com/a.png"}], "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    "describe",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/decisions query string does not break path matching",
+			requestPath: PathDecisions + "?api-version=1",
+			requestBody: `{"model": "decider", "input": "pick", "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    "pick",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/decisions missing model",
+			requestBody: `{"input": "pick", "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/decisions empty model",
+			requestBody: `{"model": "", "input": "pick", "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/decisions whitespace-only model",
+			requestBody: `{"model": "  ", "input": "pick", "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/decisions missing input",
+			requestBody: `{"model": "decider", "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/decisions null input",
+			requestBody: `{"model": "decider", "input": null, "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/decisions blank string input",
+			requestBody: `{"model": "decider", "input": "   ", "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/decisions empty object input",
+			requestBody: `{"model": "decider", "input": {}, "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/decisions empty array input",
+			requestBody: `{"model": "decider", "input": [], "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/decisions number input",
+			requestBody: `{"model": "decider", "input": 42, "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/decisions missing questions",
+			requestBody: `{"model": "decider", "input": "pick"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "questions",
+		},
+		{
+			message:     "/v1/decisions null questions",
+			requestBody: `{"model": "decider", "input": "pick", "questions": null}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "questions",
+		},
+		{
+			message:     "/v1/decisions empty questions",
+			requestBody: `{"model": "decider", "input": "pick", "questions": []}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "questions",
+		},
+		{
+			message:     "/v1/decisions questions not an array",
+			requestBody: `{"model": "decider", "input": "pick", "questions": {"id": "q1"}}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "questions",
+		},
+		{
+			message:     "/v1/decisions invalid json",
+			requestBody: `{"model": "decider", "input": "pick"`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.message, func(t *testing.T) {
+			requestPath := tt.requestPath
+			if requestPath == "" {
+				requestPath = PathDecisions
+			}
+			model, messages, prefixText, stream, errRes := validateRequestBody("test-request-id", requestPath, []byte(tt.requestBody), utils.User{})
+
+			// Decisions never stream and never carry a separate prefix text.
+			assert.False(t, stream)
+			assert.Empty(t, prefixText)
+
+			if tt.statusCode == envoyTypePb.StatusCode_OK {
+				assert.Nil(t, errRes)
+				assert.Equal(t, tt.model, model)
+				assert.Equal(t, tt.messages, messages)
+				return
+			}
+
+			if !assert.NotNil(t, errRes) {
+				return
+			}
+			assert.Equal(t, tt.statusCode, errRes.GetImmediateResponse().GetStatus().GetCode())
+			assert.Empty(t, model)
+			assert.Empty(t, messages)
+
+			var errResponse map[string]any
+			require.NoError(t, sonic.Unmarshal([]byte(errRes.GetImmediateResponse().GetBody()), &errResponse))
+			errObj, ok := errResponse["error"].(map[string]any)
+			require.True(t, ok, "response should have an 'error' object")
+			if tt.param != "" {
+				assert.Equal(t, tt.param, errObj["param"])
+			}
+		})
+	}
+}
+
 func Test_ValidateRequestBody_Responses(t *testing.T) {
 	testCases := []struct {
 		message     string

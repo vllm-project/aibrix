@@ -138,6 +138,11 @@ func TestIsLanguageRequest(t *testing.T) {
 			want:        true,
 		},
 		{
+			name:        "decisions is language",
+			requestPath: "/v1/decisions",
+			want:        true,
+		},
+		{
 			name:        "empty path is language",
 			requestPath: "",
 			want:        true,
@@ -271,6 +276,29 @@ func TestProcessLanguageResponse_ValidFullResponse(t *testing.T) {
 	assert.Equal(t, int64(5), completionTokens)
 	assert.Equal(t, int64(15), totalTokens)
 	assert.Nil(t, res) // No error response for valid case
+}
+
+// TestProcessLanguageResponse_DecisionsResponse locks in that SGLang's /v1/decisions body
+// needs no special handling: it carries "model" and a usage block of prompt_tokens and
+// total_tokens (equal, nothing is generated), so it is metered like any language response.
+func TestProcessLanguageResponse_DecisionsResponse(t *testing.T) {
+	requestID := "test-decisions-" + time.Now().Format("150405.000")
+	body := []byte(`{"object": "decisions", "model": "decider", "prompt_format_version": 1, "answers": {"q1": {"type": "choice", "probabilities": {"a": 0.7, "b": 0.3}, "label_mass": 0.99, "choice": "a"}}, "usage": {"prompt_tokens": 42, "completion_tokens": 0, "total_tokens": 42}}`)
+
+	req := &extProcPb.ProcessingRequest_ResponseBody{
+		ResponseBody: &extProcPb.HttpBody{
+			Body:        body,
+			EndOfStream: true,
+		},
+	}
+
+	res, complete, promptTokens, completionTokens, totalTokens := processLanguageResponse(requestID, req)
+
+	assert.False(t, complete)
+	assert.Nil(t, res)
+	assert.Equal(t, int64(42), promptTokens)
+	assert.Equal(t, int64(0), completionTokens)
+	assert.Equal(t, int64(42), totalTokens)
 }
 
 func TestProcessLanguageResponse_InvalidJSON(t *testing.T) {

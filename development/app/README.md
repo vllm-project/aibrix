@@ -42,6 +42,9 @@ python test_openai_endpoints.py
 
 # Test vLLM-specific endpoints (uses HTTP client)
 python test_vllm_endpoints.py
+
+# Test SGLang-specific endpoints (uses HTTP client)
+python test_sglang_endpoints.py
 ```
 
 You can also specify a custom base URL:
@@ -49,6 +52,7 @@ You can also specify a custom base URL:
 ```bash
 python test_openai_endpoints.py --base-url http://localhost:8000/v1
 python test_vllm_endpoints.py --base-url http://localhost:8000
+python test_sglang_endpoints.py --base-url http://localhost:8000
 ```
 
 ### Testing PD contracts locally
@@ -399,6 +403,9 @@ curl http://localhost:8000/v1/chat/completions \
 - `/load` - Server load metrics
 - `/version` - Version info
 - `/metrics` - Prometheus metrics
+
+### SGLang-Specific Endpoints
+- `/v1/decisions` - Typed choice, score, and yes/no questions about an input (string, object, or array), answered without generation; usage reports prompt tokens only
 
 ### Health/Utility Endpoints
 - `/health` - Health check
