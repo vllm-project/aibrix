@@ -17,7 +17,7 @@ images:
   newTag: stable
 - name: redis
   newName: aibrix-cn-beijing.cr.volces.com/aibrix/redis
-  newTag: latest
+  newTag: "7.4"
 - name: aibrix/gateway-plugins
   newName: aibrix-cn-beijing.cr.volces.com/aibrix/gateway-plugins
   newTag: v0.7.0
