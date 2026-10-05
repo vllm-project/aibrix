@@ -686,63 +686,6 @@ func (c *Store) readPodRunningRequests(namespace, name string) (count int64, ok 
 // and only contains pods with a live hash; callers fall back to the local atomic
 // counter for any pod missing from it.
 func (c *Store) readPodsRunningRequests(pods []*v1.Pod) map[string]int64 {
-	if c.redisClient == nil || len(pods) == 0 {
-		return nil
-	}
-	valid := make([]*v1.Pod, 0, len(pods))
-	for _, pod := range pods {
-		if pod != nil {
-			valid = append(valid, pod)
-		}
-	}
-	if len(valid) == 0 {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), runningRequestsReadTimeout)
-	defer cancel()
-	client := c.redisClient
-	pipe := client.Pipeline()
-	liveCmd := pipe.ZRangeByScore(ctx, runningRequestsGatewaysKey, &redis.ZRangeBy{Min: c.liveGatewaysCutoffMillis(), Max: "+inf"})
-	podKeys := make([]string, len(valid))
-	redisKeys := make([]string, len(valid))
-	hashCmds := make([]*redis.MapStringStringCmd, len(valid))
-	for i, pod := range valid {
-		podKeys[i] = utils.GeneratePodKey(pod.Namespace, pod.Name)
-		redisKeys[i] = runningRequestsKey(pod.Namespace, pod.Name)
-		hashCmds[i] = pipe.HGetAll(ctx, redisKeys[i])
-	}
-	if _, err := pipe.Exec(ctx); err != nil {
-		klog.V(4).ErrorS(err, "failed to batch read running-requests counters", "pod_count", len(valid))
-		return nil
-	}
-	liveGateways, err := liveCmd.Result()
-	if err != nil {
-		klog.V(4).ErrorS(err, "failed to read live gateways for running-requests counters")
-		return nil
-	}
-	live := make(map[string]struct{}, len(liveGateways)+1)
-	for _, gw := range liveGateways {
-		live[gw] = struct{}{}
-	}
-	// See readPodRunningRequests: an empty live set does not make a hash's sum
-	// untrustworthy -- a hash whose only-ever contributor(s) have gone stale
-	// correctly sums to zero.
-
-	counts := make(map[string]int64, len(valid))
-	for i, cmd := range hashCmds {
-		fields, err := cmd.Result()
-		if err != nil || len(fields) == 0 {
-			continue
-		}
-		// See overlaySelfRunningRequests: this gateway's own field must never be
-		// trusted stale just because it already exists in the hash.
-		c.overlaySelfRunningRequests(valid[i].Namespace, valid[i].Name, fields, live)
-		total, excluded := sumLiveFields(fields, live)
-		if len(excluded) > 0 {
-			c.enqueueDeadRunningRequestsPrune(redisKeys[i], excluded)
-		}
-		counts[podKeys[i]] = total
-	}
+	counts, _ := c.readPodsSharedRoutingState(pods, false)
 	return counts
 }
