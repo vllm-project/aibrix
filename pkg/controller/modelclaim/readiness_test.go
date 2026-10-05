@@ -247,7 +247,9 @@ func TestReconcileSaysALimitIsSetOnceItReadsBack(t *testing.T) {
 	}
 	events = drainEvents(t, deaf)
 	assert.Zero(t, eventsNamed(events, "KVLimitSet"))
-	assert.Equal(t, 3, eventsNamed(events, "KVLimitFailed"))
+	// Said once: the warning comes again only five minutes later, which
+	// TestReconcileSaysALimitThatDoesNotTakeOnceEveryFiveMinutes checks.
+	assert.Equal(t, 1, eventsNamed(events, "KVLimitFailed"))
 	for _, event := range events {
 		if strings.Contains(event, "KVLimitFailed") {
 			assert.Contains(t, event, "was written, and the engine still reports")
@@ -507,6 +509,75 @@ func TestTheEventsOfAnEngineComingUpCarryTheirFigures(t *testing.T) {
 	events = drainEvents(t, deaf)
 	require.Equal(t, 1, eventsNamed(events, "KVLimitFailed"))
 	assert.Equal(t, 1, eventsNamed(events, "KV limit 3.0 GiB was written, and the engine still reports 4.0 GiB"))
+}
+
+// A limit that does not take is written again on every pass, and said once
+// every five minutes at most. client-go drops an object's Events once it has
+// raised 25 in a burst, so a warning on every pass would crowd out the
+// claim's later Events. A limit that took and stops taking again is said at
+// once.
+func TestReconcileSaysALimitThatDoesNotTakeOnceEveryFiveMinutes(t *testing.T) {
+	r, runtime, pm := anEngineHeldToFiveGibibytes(t, modelv1alpha1.ModelClaimActivating)
+	runtime.deafToKVLimits = true
+	now := time.Date(2026, time.October, 5, 1, 0, 0, 0, time.UTC)
+	r.Now = func() time.Time { return now }
+
+	warnings := 0
+	for pass := 0; pass < 30; pass++ {
+		reconcileOnce(t, r, pm.Name)
+		warnings += eventsNamed(drainEvents(t, r), "KVLimitFailed")
+		now = now.Add(DefaultRequeueDuration)
+	}
+	assert.Len(t, runtime.kvLimitCalls, 30, "the limit is written on every pass")
+	assert.Equal(t, 1, warnings)
+
+	reconcileOnce(t, r, pm.Name)
+	assert.Equal(t, 1, eventsNamed(drainEvents(t, r), "KVLimitFailed"), "said again five minutes later")
+
+	// The limit takes, and then the engine reports another one again.
+	runtime.deafToKVLimits = false
+	now = now.Add(DefaultRequeueDuration)
+	reconcileOnce(t, r, pm.Name)
+	assert.Equal(t, 1, eventsNamed(drainEvents(t, r), "KVLimitSet"))
+	runtime.deafToKVLimits = true
+	runtime.snapshots["10.0.0.1"].Models[0].KVCapacityBytes = 5 << 30
+	// The routed engine leaves the route in the first pass, and its limit is
+	// read back in the second.
+	warnings = 0
+	for pass := 0; pass < 2; pass++ {
+		now = now.Add(DefaultRequeueDuration)
+		reconcileOnce(t, r, pm.Name)
+		warnings += eventsNamed(drainEvents(t, r), "KVLimitFailed")
+	}
+	assert.Equal(t, 1, warnings, "said at once, though the last warning was less than five minutes ago")
+}
+
+// refusingKVLimits is a runtime that refuses every limit written to it.
+type refusingKVLimits struct {
+	*fakeRuntime
+}
+
+func (f *refusingKVLimits) SetKVLimit(_ context.Context, _ string, _ int, req *SetKVLimitRequest) (*RuntimeOperationResponse, error) {
+	f.kvLimitCalls = append(f.kvLimitCalls, *req)
+	return nil, &runtimeRefusal{"runtime POST /v1/kv/limit returned 500: allocator unavailable"}
+}
+
+// A limit that cannot be written is tried again on every pass, and said once
+// every five minutes at most, as one that does not take is.
+func TestReconcileSaysALimitThatCannotBeWrittenOnceEveryFiveMinutes(t *testing.T) {
+	r, runtime, pm := anEngineHeldToFiveGibibytes(t, modelv1alpha1.ModelClaimActivating)
+	r.Runtime = &refusingKVLimits{fakeRuntime: runtime}
+	now := time.Date(2026, time.October, 5, 1, 0, 0, 0, time.UTC)
+	r.Now = func() time.Time { return now }
+
+	warnings := 0
+	for pass := 0; pass < 31; pass++ {
+		reconcileOnce(t, r, pm.Name)
+		warnings += eventsNamed(drainEvents(t, r), "could not be set")
+		now = now.Add(DefaultRequeueDuration)
+	}
+	assert.Len(t, runtime.kvLimitCalls, 31, "the limit is tried on every pass")
+	assert.Equal(t, 2, warnings, "said at the first pass and five minutes later")
 }
 
 // Only an engine on the route is left unread after its limit is written. An

@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
@@ -117,6 +118,9 @@ type ModelClaimReconciler struct {
 	// WakeRequests remembers when each wake request was first seen, so that
 	// its wait is timed on this clock. It is made on first use when unset.
 	WakeRequests *wakeRequestClock
+	// LimitWarnings remembers when each engine was last warned that its KV
+	// limit did not take. It is made on first use when unset.
+	LimitWarnings *limitWarningClock
 }
 
 func (r *ModelClaimReconciler) now() time.Time {
@@ -1496,14 +1500,70 @@ func (r *ModelClaimReconciler) reportKVLimit(
 	switch {
 	case observed == nil || observed.KVCapacityBytes < 0:
 	case kvLimitInForce(inst, observed):
+		r.limitWarnings().forget(limitWarningKey(pm, inst))
 		r.Recorder.Eventf(pm, corev1.EventTypeNormal, "KVLimitSet",
 			"model %s on pod %s: KV limit set to %s, from %s",
 			served, inst.Pod, gibibytes(inst.KVLimitBytes), gibibytes(writtenOverBytes))
-	default:
+	case r.limitWarnings().due(limitWarningKey(pm, inst), r.now()):
 		r.Recorder.Eventf(pm, corev1.EventTypeWarning, "KVLimitFailed",
 			"model %s on pod %s: KV limit %s was written, and the engine still reports %s",
 			served, inst.Pod, gibibytes(inst.KVLimitBytes), gibibytes(observed.KVCapacityBytes))
 	}
+}
+
+// limitWarningEvery is how long an engine whose KV limit does not take goes
+// between two KVLimitFailed Events from the health check. The health check
+// writes the limit again on every pass. client-go drops an object's Events
+// once it has raised 25 in a burst, and lets one through every five minutes
+// after that, so a warning on every pass would crowd out the claim's later
+// Events.
+const limitWarningEvery = 5 * time.Minute
+
+// limitWarningClock remembers when each engine was last warned that its KV
+// limit did not take.
+type limitWarningClock struct {
+	mu     sync.Mutex
+	warned map[string]time.Time
+}
+
+// due reports whether an engine is to be warned now, and records the warning
+// when it is. A warning older than limitWarningEvery is forgotten.
+func (c *limitWarningClock) due(engine string, now time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for known, at := range c.warned {
+		if now.Sub(at) >= limitWarningEvery {
+			delete(c.warned, known)
+		}
+	}
+	if _, warned := c.warned[engine]; warned {
+		return false
+	}
+	if c.warned == nil {
+		c.warned = map[string]time.Time{}
+	}
+	c.warned[engine] = now
+	return true
+}
+
+// forget drops the warning of an engine whose limit took, so that a limit that
+// stops taking again is said at once.
+func (c *limitWarningClock) forget(engine string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.warned, engine)
+}
+
+func (r *ModelClaimReconciler) limitWarnings() *limitWarningClock {
+	if r.LimitWarnings == nil {
+		r.LimitWarnings = &limitWarningClock{}
+	}
+	return r.LimitWarnings
+}
+
+// limitWarningKey names an engine for its warnings: its claim and its pod.
+func limitWarningKey(pm *modelv1alpha1.ModelClaim, inst *modelv1alpha1.ModelClaimInstance) string {
+	return pm.Namespace + "/" + pm.Name + "/" + inst.Pod
 }
 
 // judgeKVLimit says whether an engine is held to the limit its instance
@@ -1857,9 +1917,11 @@ func (r *ModelClaimReconciler) writeKVLimit(
 	}); err != nil {
 		klog.ErrorS(err, "could not hold an engine to its KV limit",
 			"model", pm.Name, "pod", inst.Pod, "limit", inst.KVLimitBytes)
-		r.Recorder.Eventf(pm, corev1.EventTypeWarning, "KVLimitFailed",
-			"model %s on pod %s: KV limit %s could not be set: %v",
-			served, inst.Pod, gibibytes(inst.KVLimitBytes), err)
+		if r.limitWarnings().due(limitWarningKey(pm, inst), r.now()) {
+			r.Recorder.Eventf(pm, corev1.EventTypeWarning, "KVLimitFailed",
+				"model %s on pod %s: KV limit %s could not be set: %v",
+				served, inst.Pod, gibibytes(inst.KVLimitBytes), err)
+		}
 		return false
 	}
 	return true

@@ -1064,7 +1064,9 @@ Claim remains ``Activating`` after ``/health`` succeeds
    If it lasts longer, the limit is not in force, and the controller writes it
    again every 10 seconds. If the engine reports another limit, a
    ``KVLimitFailed`` Event says which one. If the write fails, the Event
-   names the error. For an engine that comes up, ``KVLimitSet`` is raised once
+   names the error. That Event is raised at most once every five minutes for
+   an engine, so that a limit that keeps failing does not crowd out the
+   claim's other Events. For an engine that comes up, ``KVLimitSet`` is raised once
    the limit reads back. When the runtime does not answer the read-back,
    neither is raised, and the next pass reads the limit. A snapshot whose
    ``kv_capacity_bytes`` is negative means the engine has not built its KV
