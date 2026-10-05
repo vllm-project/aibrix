@@ -74,6 +74,36 @@ type kubeAPIOptions struct {
 	burst int
 }
 
+type modelDiscoveryOptions struct {
+	watchModelAdapters bool
+	watchModelClaims   bool
+	listMode           string
+}
+
+func (o *modelDiscoveryOptions) addFlags(fs *flag.FlagSet) {
+	fs.BoolVar(&o.watchModelAdapters, "watch-model-adapters", true,
+		"List and watch ModelAdapter resources in Kubernetes discovery.")
+	fs.BoolVar(&o.watchModelClaims, "watch-model-claims", true,
+		"List and watch ModelClaim resources and use their Pod bindings in Kubernetes discovery.")
+	fs.StringVar(&o.listMode, "model-list-mode", string(gateway.ModelListKnown),
+		"Models returned by /v1/models: known or ready-pods.")
+}
+
+func (o modelDiscoveryOptions) validate() error {
+	if o.listMode != string(gateway.ModelListKnown) && o.listMode != string(gateway.ModelListReadyPods) {
+		return fmt.Errorf("invalid --model-list-mode %q: expected known or ready-pods", o.listMode)
+	}
+	return nil
+}
+
+func (o modelDiscoveryOptions) kubernetesProvider(config *rest.Config) *discovery.KubernetesProvider {
+	provider := discovery.NewKubernetesProvider(config).WithModelAdapters(o.watchModelAdapters)
+	if o.watchModelClaims {
+		provider.WithModelClaims()
+	}
+	return provider
+}
+
 func (o *kubeAPIOptions) addFlags(fs *flag.FlagSet) {
 	fs.Float64Var(
 		&o.qps,
@@ -110,6 +140,8 @@ func (o kubeAPIOptions) applyTo(config *rest.Config) {
 func main() {
 	var kubeAPI kubeAPIOptions
 	kubeAPI.addFlags(flag.CommandLine)
+	var modelDiscovery modelDiscoveryOptions
+	modelDiscovery.addFlags(flag.CommandLine)
 	flag.StringVar(&grpcAddr, "grpc-bind-address", ":50052", "The address the gRPC server binds to.")
 	flag.StringVar(&httpAddr, "http-bind-address", "", "The address the HTTP server binds to (metrics, /v1/models).")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "", "[Deprecated] Use --http-bind-address instead.")
@@ -122,6 +154,9 @@ func main() {
 	defer klog.Flush()
 	flag.Parse()
 	if err := kubeAPI.validate(); err != nil {
+		klog.Fatal(err)
+	}
+	if err := modelDiscovery.validate(); err != nil {
 		klog.Fatal(err)
 	}
 
@@ -198,6 +233,7 @@ func main() {
 		if err != nil {
 			klog.Fatalf("Error on creating gateway k8s client: %v", err)
 		}
+		discoveryProvider = modelDiscovery.kubernetesProvider(config)
 	}
 
 	// Initialize cache
@@ -205,11 +241,12 @@ func main() {
 	remoteTokenizerEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheUseRemoteTokenizer, false)
 
 	cache.InitWithOptions(config, stopCh, cache.InitOptions{
-		IsGateway:           true,
-		EnableKVSync:        kvSyncEnabled && remoteTokenizerEnabled,
-		RedisClient:         redisClient,
-		ModelRouterProvider: routing.ModelRouterFactory,
-		DiscoveryProvider:   discoveryProvider,
+		IsGateway:                    true,
+		EnableKVSync:                 kvSyncEnabled && remoteTokenizerEnabled,
+		RedisClient:                  redisClient,
+		ModelRouterProvider:          routing.ModelRouterFactory,
+		DiscoveryProvider:            discoveryProvider,
+		DisableModelClaimPodBindings: !standalone && !modelDiscovery.watchModelClaims,
 	})
 
 	lis, err := net.Listen("tcp", grpcAddr)
@@ -220,6 +257,7 @@ func main() {
 	gatewayServer := gateway.NewServerWithOptions(redisClient, k8sClient, gatewayK8sClient, gateway.ServerOptions{
 		DisableRateLimiting: utils.LoadEnvBool(envDisableRateLimiting, false),
 		PriorityTier:        utils.LoadEnvBool(envPriorityTierEnabled, false),
+		ModelListMode:       gateway.ModelListMode(modelDiscovery.listMode),
 	})
 
 	stateSyncEnabled := utils.LoadEnvBool("AIBRIX_STATESYNC_ENABLED", false)

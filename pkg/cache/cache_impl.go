@@ -18,6 +18,7 @@ package cache
 
 import (
 	"fmt"
+	"sort"
 	"sync/atomic"
 
 	"github.com/vllm-project/aibrix/pkg/metrics"
@@ -85,6 +86,27 @@ func (c *Store) ListPodsByModel(modelName string) (types.PodList, error) {
 //	[]string: Slice of model names
 func (c *Store) ListModels() []string {
 	return c.metaModels.Keys()
+}
+
+// ListModelsWithReadyPods returns names with at least one ready, addressable,
+// non-terminating, non-draining Pod. The cache lock keeps model membership and
+// Pod updates in the same snapshot while the list is built.
+func (c *Store) ListModelsWithReadyPods() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	models := make([]string, 0)
+	c.metaModels.Range(func(name string, meta *Model) bool {
+		for _, pod := range meta.Pods.Array().All() {
+			if pod != nil && utils.FilterReadyPod(pod) {
+				models = append(models, name)
+				break
+			}
+		}
+		return true
+	})
+	sort.Strings(models)
+	return models
 }
 
 // HasModel checks if a model exists in the cache

@@ -56,6 +56,67 @@ the same settings with its own rate limiter; this is not a combined request
 budget. This configuration is also used when initializing the plugin's Kubernetes
 caches. These flags control API server traffic, not inference request QPS.
 
+Gateway Plugin Model Discovery and Listing
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The plugin can omit Kubernetes resource types that it does not serve. The
+following options keep Pod discovery and select a list containing only models
+with a ready Pod:
+
+.. code-block:: yaml
+
+    containers:
+      - name: gateway-plugin
+        args:
+          - --watch-model-adapters=false
+          - --watch-model-claims=false
+          - --model-list-mode=ready-pods
+
+Adapter and ModelClaim watching both default to ``true``. Disabling adapter
+watching avoids listing or watching its CRD and removes it from required cache
+sync. Disabling claim watching also ignores ModelClaim runtime annotations on
+Pods when building the model cache. These options do not remove either feature
+from deployments that leave it enabled.
+
+``--model-list-mode`` defaults to ``known``, which retains the existing cached
+model-name list. ``ready-pods`` includes a name when at least one associated
+Pod has an IP, is Ready, and is neither terminating nor draining. This Pod
+check does not verify an adapter's load status, HTTPRoute acceptance, or a
+complete prefill/decode pair. An empty cache returns an empty list; this mode
+does not report ongoing Kubernetes discovery failures.
+
+The gateway plugin serves ``GET /v1/models`` on its HTTP port. The standard
+Kubernetes Envoy route still sends this path to the metadata service; route
+it to the plugin HTTP port if clients should receive the plugin's list. For
+the default Kustomize installation, this optional HTTPRoute sends the exact
+path to the plugin Service on port 8080. The exact match takes precedence over
+the existing metadata route's prefix match, while ``/v1/files`` and
+``/v1/batches`` keep their existing destination:
+
+.. code-block:: yaml
+
+    apiVersion: gateway.networking.k8s.io/v1
+    kind: HTTPRoute
+    metadata:
+      name: gateway-plugin-model-list
+      namespace: aibrix-system
+    spec:
+      parentRefs:
+        - name: aibrix-eg
+      rules:
+        - matches:
+            - path:
+                type: Exact
+                value: /v1/models
+          backendRefs:
+            - name: aibrix-gateway-plugins
+              port: 8080
+
+Apply the route only when you intend to expose the plugin's list. Confirm its
+``Accepted`` and ``ResolvedRefs`` conditions before relying on it. The route
+does not change whether the plugin returns ``known`` or ``ready-pods``; that
+choice comes from ``--model-list-mode``.
+
 Envoy Proxy
 ~~~~~~~~~~~
 
