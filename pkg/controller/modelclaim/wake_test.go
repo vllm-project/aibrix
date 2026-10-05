@@ -29,6 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -417,6 +418,127 @@ func TestReconcileLeavesTheEngineAsleepWhenItsMoveCannotBeWritten(t *testing.T) 
 	require.Len(t, got.Status.Instances, 1)
 	assert.Equal(t, "warm-2", got.Status.Instances[0].Pod)
 	require.Len(t, runtime.deactivateCalls, 1)
+}
+
+// aMoveThatDoesNotLand has a claim's engine asleep on warm-1, with a request
+// to wake it. With crowded, a neighbour on warm-1 leaves no room for the wake;
+// without it, the runtime cannot wake the engine. Either way the claim is
+// marked to move. warm-2 can take it by the account, but its card cannot be
+// divided, since the engine on it does not take a smaller limit. So the move
+// does not land, and the engine on warm-1 is not stopped.
+func aMoveThatDoesNotLand(t *testing.T, crowded bool) (*ModelClaimReconciler, *fakeRuntime, *modelv1alpha1.ModelClaim, *RuntimeSnapshot) {
+	t.Helper()
+	pm := claimWithCost(300, 100)
+	pm.UID = types.UID("claim-uid")
+	pm.Status.Phase = modelv1alpha1.ModelClaimSleeping
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimSleeping, KVLimitBytes: 100,
+	}}
+	home, homeSnapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	home.Annotations = map[string]string{constants.ModelClaimWakeAnnotationPrefix + pm.Name: "2026-10-01T08:00:00Z"}
+	homeSnapshot.Models = []RuntimeSnapshotModel{{
+		ModelName: servedModelName(pm), Port: 9001, Phase: runtimePhaseSleeping, Alive: true,
+		KVUsedBytes: 100, KVCapacityBytes: 100,
+		ClaimRef: &ModelClaimRef{Namespace: pm.Namespace, Name: pm.Name, UID: string(pm.UID)},
+	}}
+	away, awaySnapshot := sizedWarmPod("warm-2", testPeerIP, 1000)
+	other := claimOnPod("other", "warm-2", modelv1alpha1.ModelClaimActive, 300, 100)
+	other.Status.Instances[0].KVLimitBytes = 600
+	awaySnapshot.Models = []RuntimeSnapshotModel{engineHolding("other", 50, 600)}
+	objects := []client.Object{pm, home, away, other}
+	if crowded {
+		neighbour := claimOnPod("neighbour", "warm-1", modelv1alpha1.ModelClaimActive, 600, 100)
+		neighbour.Status.Instances[0].KVLimitBytes = 100
+		homeSnapshot.Models = append(homeSnapshot.Models, engineHolding("neighbour", 50, 100))
+		objects = append(objects, neighbour)
+	}
+	r, runtime := newReconciler(t, objects...)
+	runtime.snapshots = map[string]*RuntimeSnapshot{home.Status.PodIP: homeSnapshot, away.Status.PodIP: awaySnapshot}
+	runtime.deafToKVLimits = true
+	runtime.failWake = !crowded
+	r.Now = func() time.Time { return time.Date(2026, time.October, 1, 8, 0, 5, 0, time.UTC) }
+
+	reconcileOnce(t, r, pm.Name)
+
+	reason := instanceReasonWakeFailed
+	if crowded {
+		reason = instanceReasonNoRoomToWake
+	}
+	got := getModel(t, r, pm.Name)
+	require.Equal(t, "warm-1", got.Status.Instances[0].Pod)
+	require.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Instances[0].Phase)
+	require.Equal(t, reason, got.Status.Instances[0].Reason)
+	require.Empty(t, runtime.deactivateCalls, "the move did not start")
+	require.Empty(t, runtime.activateCalls)
+	drainEvents(t, r)
+	return r, runtime, pm, homeSnapshot
+}
+
+// A move for want of room that no other pod took is called off once the
+// engine's own card can take it back, and the engine wakes where it sleeps.
+// Until then the mark would stand, and the claim would wait for another pod.
+func TestReconcileCallsOffAMoveThatHasNotStartedOnceTheCardHasRoom(t *testing.T) {
+	r, runtime, pm, homeSnapshot := aMoveThatDoesNotLand(t, true)
+	require.NoError(t, r.Delete(context.Background(), &modelv1alpha1.ModelClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "neighbour", Namespace: testNamespace},
+	}))
+	homeSnapshot.Models = homeSnapshot.Models[:1]
+
+	reconcileOnce(t, r, pm.Name)
+
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, "warm-1", got.Status.Instances[0].Pod)
+	assert.Equal(t, modelv1alpha1.ModelClaimSleeping, got.Status.Instances[0].Phase)
+	assert.Empty(t, got.Status.Instances[0].Reason)
+	assert.Equal(t, []string{"10.0.0.1"}, runtime.wokenOn, "woken where it sleeps")
+	assert.Empty(t, runtime.deactivateCalls)
+	assert.Empty(t, runtime.activateCalls)
+	events := strings.Join(drainEvents(t, r), "\n")
+	assert.Contains(t, events, "MoveCalledOff")
+	assert.Contains(t, events, "stays asleep on pod warm-1")
+}
+
+func TestReconcileKeepsAMoveWhileTheCardHasNoRoom(t *testing.T) {
+	r, runtime, pm, _ := aMoveThatDoesNotLand(t, true)
+
+	reconcileOnce(t, r, pm.Name)
+
+	got := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Instances[0].Phase)
+	assert.Equal(t, instanceReasonNoRoomToWake, got.Status.Instances[0].Reason)
+	assert.Empty(t, runtime.wakeCalls)
+	assert.NotContains(t, strings.Join(drainEvents(t, r), "\n"), "MoveCalledOff")
+}
+
+// An engine that is no longer there has been stopped for the move, so the move
+// has started, and it goes on.
+func TestReconcileKeepsAMoveWhoseEngineIsGone(t *testing.T) {
+	r, _, pm, homeSnapshot := aMoveThatDoesNotLand(t, true)
+	require.NoError(t, r.Delete(context.Background(), &modelv1alpha1.ModelClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "neighbour", Namespace: testNamespace},
+	}))
+	homeSnapshot.Models = nil
+
+	reconcileOnce(t, r, pm.Name)
+
+	got := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Instances[0].Phase)
+	assert.NotContains(t, strings.Join(drainEvents(t, r), "\n"), "MoveCalledOff")
+}
+
+// A move after a wake the runtime refused is not called off: the card has
+// room, and the engine still could not wake on it.
+func TestReconcileKeepsAMoveAfterAWakeTheRuntimeRefused(t *testing.T) {
+	r, runtime, pm, _ := aMoveThatDoesNotLand(t, false)
+
+	reconcileOnce(t, r, pm.Name)
+
+	got := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Instances[0].Phase)
+	assert.Equal(t, instanceReasonWakeFailed, got.Status.Instances[0].Reason)
+	assert.Len(t, runtime.wakeCalls, 1, "the engine is not asked to wake again")
+	assert.NotContains(t, strings.Join(drainEvents(t, r), "\n"), "MoveCalledOff")
 }
 
 func TestMarkingAMoveWritesItAndSaysItOnTheRoute(t *testing.T) {

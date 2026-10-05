@@ -104,6 +104,10 @@ func movingReason(reason string) bool {
 // a later pass, with the same operation: the engine may be waking already. Such
 // a failure can come from a proxy on the way, and says nothing of the engine.
 //
+// A move for want of room that no other pod has taken yet is called off once
+// the engine's card can take it back. The engine then still sleeps there, and
+// the mark would otherwise stand until another pod took the claim.
+//
 // A request stays while the engine boots, and goes once the engine serves, or
 // when there is nothing to wake. A request not met within wakeRequestLifetime
 // is taken back. A client that still asks writes a new one.
@@ -132,6 +136,9 @@ func (r *ModelClaimReconciler) wakeRequested(
 		pod := &corev1.Pod{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: pm.Namespace, Name: inst.Pod}, pod); err != nil {
 			continue
+		}
+		if err := r.callOffMove(ctx, pm, i, pod, ledgersOf, readings); err != nil {
+			return woke, err
 		}
 		requestedAt, asked := pod.Annotations[key]
 		if !asked {
@@ -544,6 +551,50 @@ func (r *ModelClaimReconciler) markMoving(
 		readyReasonMoving); err != nil {
 		klog.ErrorS(err, "could not say on the route that a claim moves", "pod", klog.KObj(pod), "model", pm.Name)
 	}
+	return nil
+}
+
+// callOffMove calls off the move of an instance marked to move for want of
+// room, once its card can take its engine back. The move has not started while
+// the engine still sleeps there: the replacement stops it only once another
+// pod takes the claim. The card is judged as a wake is, so a wake asked for
+// after the call goes ahead on that card. A card that still has no room, or
+// cannot be judged, keeps the mark, and any other instance is left as it is.
+// An error is a call that could not be written, and the mark then stands.
+func (r *ModelClaimReconciler) callOffMove(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	slot int,
+	pod *corev1.Pod,
+	ledgersOf func([]corev1.Pod) map[string]podLedger,
+	readings *runtimeReadings,
+) error {
+	inst := pm.Status.Instances[slot]
+	if inst.Phase != modelv1alpha1.ModelClaimFailed || inst.Reason != instanceReasonNoRoomToWake ||
+		pod.Status.PodIP == "" {
+		return nil
+	}
+	snapshot, err := readings.of(ctx, pod)
+	if err != nil {
+		return nil
+	}
+	served := servedModelName(pm)
+	engine := snapshotModelForClaim(snapshot, pm, served)
+	if engine == nil || !engine.Alive || engine.Phase != runtimePhaseSleeping {
+		return nil
+	}
+	ledger := ledgersOf([]corev1.Pod{*pod})[pod.Name]
+	if !ledger.judgeable || ledger.maximumRoomBytes() < 0 || ledger.heldRoomBytes() < 0 {
+		return nil
+	}
+	pm.Status.Instances[slot].Phase = modelv1alpha1.ModelClaimSleeping
+	pm.Status.Instances[slot].Reason = ""
+	if err := r.Status().Update(ctx, pm); err != nil {
+		pm.Status.Instances[slot] = inst
+		return err
+	}
+	r.Recorder.Eventf(pm, corev1.EventTypeNormal, "MoveCalledOff",
+		"model %s stays asleep on pod %s, whose card can take it back now", served, pod.Name)
 	return nil
 }
 

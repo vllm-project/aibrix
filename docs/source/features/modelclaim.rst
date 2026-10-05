@@ -770,7 +770,9 @@ controller stops the engine and starts the claim on the other Pod, as it does
 for an engine that failed for good. A ``Rescheduled`` Event says where the
 claim went. A move that cannot finish in that pass is tried again with the
 usual backoff. Until it finishes, the claim's ``Ready`` condition says
-``Moving``.
+``Moving``. A move for want of room is called off while the engine still
+sleeps where it was, once that card can take it back. The instance reads
+``Sleeping`` again, and the claim raises a ``MoveCalledOff`` Event.
 
 When no other Pod can take it, an engine whose card cannot take it back stays
 asleep. Its instance records ``WaitingForRoom``, and so does the claim's
