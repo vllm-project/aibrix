@@ -99,7 +99,7 @@ func (o modelDiscoveryOptions) validate() error {
 func (o modelDiscoveryOptions) kubernetesProvider(config *rest.Config) *discovery.KubernetesProvider {
 	provider := discovery.NewKubernetesProvider(config).WithModelAdapters(o.watchModelAdapters)
 	if o.watchModelClaims {
-		provider.WithModelClaims()
+		provider = provider.WithModelClaims()
 	}
 	return provider
 }
