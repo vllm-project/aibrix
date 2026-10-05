@@ -18,7 +18,7 @@ images:
 - name: busybox
   newTag: stable
 - name: redis
-  newTag: latest
+  newTag: "7.4"
 - name: aibrix/gateway-plugins
   newTag: v0.7.0
 - name: aibrix/metadata-service

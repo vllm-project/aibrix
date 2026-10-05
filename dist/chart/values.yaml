@@ -302,6 +302,7 @@ metadata:
       image:
         repository: redis
         tag: "7.4"
+        imagePullPolicy: IfNotPresent
       resources:
         requests:
           cpu: 100m
