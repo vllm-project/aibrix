@@ -84,6 +84,7 @@ type Server struct {
 	gatewayClient       gatewayapi.Interface
 	requestCountTracker map[string]int
 	cache               cache.Cache
+	modelListMode       ModelListMode
 	routerManager       *routing.RouterManager
 	inFlightObserver    func(int)
 	wakeRequester       modelWakeRequester
@@ -252,10 +253,22 @@ func httpRouteCacheTTL() time.Duration {
 	return defaultHTTPRouteCacheTTL
 }
 
+// ModelListMode selects which models the gateway HTTP endpoint lists.
+type ModelListMode string
+
+const (
+	// ModelListKnown preserves the existing behavior: every name in the cache.
+	ModelListKnown ModelListMode = "known"
+	// ModelListReadyPods includes names with at least one ready Pod.
+	ModelListReadyPods ModelListMode = "ready-pods"
+)
+
 // ServerOptions configures optional dependencies for a Server.
 type ServerOptions struct {
 	Cache         cache.Cache
 	RouterManager *routing.RouterManager
+	// ModelListMode defaults to ModelListKnown.
+	ModelListMode ModelListMode
 	// DisableRateLimiting disables AIBrix user and model quota enforcement while
 	// leaving Redis available to other gateway features.
 	DisableRateLimiting bool
@@ -285,6 +298,19 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		if err != nil {
 			panic(err)
 		}
+	}
+	mode := options.ModelListMode
+	if mode == "" {
+		mode = ModelListKnown
+	}
+	switch mode {
+	case ModelListKnown:
+	case ModelListReadyPods:
+		if _, ok := c.(cache.ReadyModelCache); !ok {
+			panic("ready-pods model listing requires a cache that supports ready model snapshots")
+		}
+	default:
+		panic(fmt.Sprintf("unsupported model list mode %q", mode))
 	}
 	var r ratelimiter.RateLimiter
 	var mr ratelimiter.RateLimiter
@@ -322,6 +348,7 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		gatewayClient:       gatewayClient,
 		requestCountTracker: map[string]int{},
 		cache:               c,
+		modelListMode:       mode,
 		routerManager:       routerManager,
 		inFlightObserver:    options.InFlightObserver,
 		wakeRequester:       newRuntimeModelWakeRequester(nil, defaultModelClaimRuntimePort, client),
@@ -1010,7 +1037,12 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		Data   []modelObject `json:"data"`
 	}
 
-	models := s.cache.ListModels()
+	var models []string
+	if s.modelListMode == ModelListReadyPods {
+		models = s.cache.(cache.ReadyModelCache).ListModelsWithReadyPods()
+	} else {
+		models = s.cache.ListModels()
+	}
 	data := make([]modelObject, len(models))
 	for i, m := range models {
 		data[i] = modelObject{ID: m, Object: "model", Created: 0, OwnedBy: "aibrix"}

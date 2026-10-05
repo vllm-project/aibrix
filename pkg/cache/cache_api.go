@@ -84,6 +84,13 @@ type ModelCache interface {
 	ModelBaseModel(modelName string) (string, bool)
 }
 
+// ReadyModelCache is an optional model-list extension. It returns model names
+// with at least one Pod passing the gateway's Pod readiness predicate in one
+// cache snapshot.
+type ReadyModelCache interface {
+	ListModelsWithReadyPods() []string
+}
+
 // ModelClaimBindingProvider is an optional cache extension used by the
 // gateway when a ModelClaim is known but intentionally non-routable. Dormant
 // bindings stay separate from ModelCache so normal routing never sees port 0.

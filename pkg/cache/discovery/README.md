@@ -79,11 +79,30 @@ Watches Pods and ModelAdapters via K8s informers. This is the default when no `D
 
 The handler is wired directly into K8s informer callbacks — events flow from the start, including during the initial list phase. No intermediate channel, no buffer, no snapshot replay.
 
-1. Registers handler on Pod and ModelAdapter informers.
+1. Registers handlers on the Pod informer and enabled optional informers.
 2. Starts informers — initial objects arrive via `AddFunc` as part of the informer's list+watch.
 3. Waits for cache sync (`WaitForCacheSync`).
-4. Post-sync reconcile: re-emits all ModelAdapters as `EventAdd` to fix ordering (Pod and ModelAdapter informers list concurrently, so an adapter may arrive before its pods).
+4. When adapters are enabled, post-sync reconcile re-emits all ModelAdapters as `EventAdd` to fix ordering (Pod and ModelAdapter informers list concurrently, so an adapter may arrive before its pods).
 5. Returns — informer callbacks continue delivering ongoing changes.
+
+The gateway CLI enables adapter and ModelClaim discovery by default. In Kubernetes
+mode, `--watch-model-adapters=false` skips the adapter informer, its initial
+sync, and all adapter API requests. `--watch-model-claims=false` skips the
+claim informer and also prevents ModelClaim runtime annotations on Pods from
+adding model names to the gateway cache. Pod discovery stays enabled. The
+options leave the default discovery behavior unchanged.
+
+`--model-list-mode=ready-pods` changes the gateway's own `GET /v1/models`
+handler to include a model only when an associated Pod has an address, is
+Ready, and is neither terminating nor draining. The default `known` mode
+continues listing every cached model name. The ready-pods mode checks Pod
+eligibility; it does not validate HTTPRoute acceptance, adapter load status,
+or complete prefill/decode pairs. The standard Kubernetes Envoy route for
+`/v1/models` still points to the metadata service; deployments that want
+this gateway handler must route that path to the plugin HTTP port. This mode
+does not report ongoing discovery failures; an empty list alone does not prove
+that discovery is healthy. See the production gateway guide for an opt-in
+HTTPRoute example.
 
 ## Architecture
 
