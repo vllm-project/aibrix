@@ -316,18 +316,22 @@ func cardOf(pod *corev1.Pod) types.NamespacedName {
 
 // cardComposition describes the instances recorded on one card in the terms
 // that a division depends on. These are whose they are, whether each is awake,
-// asleep or failed, and what its claim declared. Two passes that describe a
-// card the same way would divide it for the same engines. Extra entries
-// describe instances about to be recorded, which is how placement describes the
-// card it divided.
-func cardComposition(claims *modelv1alpha1.ModelClaimList, podName string, extra ...string) string {
+// asleep or failed, whether a request asks to wake it, and what its claim
+// declared. Two passes that describe a card the same way would divide it for
+// the same engines. Extra entries describe instances about to be recorded,
+// which is how placement describes the card it divided.
+//
+// A request to wake an engine changes the card's account when the pool keeps
+// no wake reserve: the engine is charged its reserve again. So the card is
+// divided again at once, and its neighbours give the room back.
+func cardComposition(claims *modelv1alpha1.ModelClaimList, pod *corev1.Pod, extra ...string) string {
 	entries := append([]string(nil), extra...)
 	if claims != nil {
 		for i := range claims.Items {
 			claim := &claims.Items[i]
 			for _, instance := range claim.Status.Instances {
-				if instance.Pod == podName {
-					entries = append(entries, compositionEntry(claim, instance.Phase))
+				if instance.Pod == pod.Name {
+					entries = append(entries, compositionEntry(claim, instance.Phase, wakeAsked(pod, claim.Name)))
 				}
 			}
 		}
@@ -337,11 +341,14 @@ func cardComposition(claims *modelv1alpha1.ModelClaimList, podName string, extra
 }
 
 // compositionEntry describes one instance for cardComposition.
-func compositionEntry(claim *modelv1alpha1.ModelClaim, phase modelv1alpha1.ModelClaimPhase) string {
+func compositionEntry(claim *modelv1alpha1.ModelClaim, phase modelv1alpha1.ModelClaimPhase, wakeAsked bool) string {
 	state := "awake"
 	switch phase {
 	case modelv1alpha1.ModelClaimSleeping:
 		state = "asleep"
+		if wakeAsked {
+			state = "asleep-asked"
+		}
 	case modelv1alpha1.ModelClaimFailed:
 		state = "failed"
 	}
@@ -404,7 +411,7 @@ func (r *ModelClaimReconciler) divideCardsAsListed(
 	compositions := make(map[string]string, len(candidates))
 	for i := range candidates {
 		pod := &candidates[i]
-		composition := cardComposition(claims, pod.Name)
+		composition := cardComposition(claims, pod)
 		if composition == "" {
 			// Nothing is recorded on this card, so there is nothing to divide,
 			// and no reason to read its runtime.
@@ -422,6 +429,7 @@ func (r *ModelClaimReconciler) divideCardsAsListed(
 		return
 	}
 
+	withoutWakeReserve := r.podsWithoutWakeReserve(ctx, due)
 	for i := range due {
 		pod := &due[i]
 		// Each card is read when its turn comes, and read again when the pass
@@ -433,7 +441,7 @@ func (r *ModelClaimReconciler) divideCardsAsListed(
 		if snapshot, err := readings.fresh(ctx, pod); err == nil && snapshot != nil {
 			reading[pod.Name] = snapshot
 		}
-		ledger := podLedgersFrom(claims, nil, card, reading)[pod.Name]
+		ledger := podLedgersFrom(claims, nil, card, reading, withoutWakeReserve)[pod.Name]
 		if len(ledger.engines) == 0 || !podHasGPUs(*pod, ledger.accelerators) {
 			continue
 		}
@@ -453,7 +461,19 @@ func (r *ModelClaimReconciler) divideCardsAsListed(
 		case firstSeen[pod.Name]:
 			why = firstDivision(ledger.hbmUsableBytes)
 		}
-		_, err := r.arrangeCard(ctx, pod, ledger, ledger.engines, why, readings)
+		// A request to wake an engine puts its reserve back, and the card is
+		// planned with the waking engine at its floor. A card that cannot hold
+		// every reserve put back is still divided, with those engines planned
+		// at what they hold asleep. The engines awake then keep their shares
+		// while the wake waits for room. Placement still sees the reserves,
+		// and the wake takes its room back before the engine wakes.
+		engines := ledger.engines
+		if _, planErr := planKVLimits(ledger.hbmUsableBytes, engines); planErr != nil {
+			if eased, found := withoutAskedReserves(engines); found {
+				engines = eased
+			}
+		}
+		_, err := r.arrangeCard(ctx, pod, ledger, engines, why, readings)
 		var alone cardLeftAlone
 		if errors.As(err, &alone) {
 			// Nothing was tried, so a run of failed divisions is not over.
@@ -487,7 +507,7 @@ func (r *ModelClaimReconciler) anyCardMayBeDue(
 		return true
 	}
 	for i := range candidates {
-		composition := cardComposition(cached, candidates[i].Name)
+		composition := cardComposition(cached, &candidates[i])
 		if composition != "" && divisions.mayBeDue(cardOf(&candidates[i]), composition) {
 			return true
 		}

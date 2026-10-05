@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
 // perGPUBytes is a claim's spec.perGPU in bytes: what one instance costs on
@@ -138,6 +139,26 @@ type engineOnPod struct {
 	// asleep is whether the runtime reports the engine sleeping. A sleeping
 	// engine serves nothing, so it is given no part of the spare KV.
 	asleep bool
+	// sleepingFootprintBytes is the memory the runtime measured the engine to
+	// hold after it went to sleep, and zero when that is not known.
+	sleepingFootprintBytes int64
+	// withoutWakeReserve is whether the engine sleeps without a wake reserve:
+	// its pool keeps none, its memory asleep is known, and no request asks to
+	// wake it. It is then charged only what it still holds.
+	withoutWakeReserve bool
+	// wakeReserveAsked is whether the engine would sleep without a wake
+	// reserve, but a request to wake it has put the reserve back.
+	wakeReserveAsked bool
+}
+
+// minimumReserveBytes is what an instance is promised on its card: the
+// footprint and floor its claim declared. An engine asleep without a wake
+// reserve is promised only the memory it still holds.
+func (e engineOnPod) minimumReserveBytes() int64 {
+	if e.withoutWakeReserve {
+		return e.sleepingFootprintBytes
+	}
+	return e.perGPUBytes.minimumReserveBytes()
 }
 
 // kvHeldBytes is the KV an engine keeps whatever else happens on the card: the
@@ -152,9 +173,24 @@ func (e engineOnPod) kvHeldBytes() int64 {
 }
 
 // heldBytes is what one instance occupies on a card now and will not give
-// back: its maximum footprint and the KV it holds.
+// back: its maximum footprint and the KV it holds. An engine asleep without a
+// wake reserve holds what its runtime measured, its mapped KV included.
 func (e engineOnPod) heldBytes() int64 {
+	if e.withoutWakeReserve {
+		return e.sleepingFootprintBytes
+	}
 	return e.maximumFootprintBytes + e.kvHeldBytes()
+}
+
+// plannedKVHeldBytes is the KV an engine keeps in a division before its share
+// of the spare. An engine asleep without a wake reserve keeps only what it has
+// mapped. That is part of the memory it is charged, and the rest of its floor
+// is not its own until it is asked to wake.
+func (e engineOnPod) plannedKVHeldBytes() int64 {
+	if e.withoutWakeReserve {
+		return e.kvUsedBytes
+	}
+	return e.kvHeldBytes()
 }
 
 // podLedger is one card's account: how much it can hold, and how much of it the
@@ -166,6 +202,9 @@ func (e engineOnPod) heldBytes() int64 {
 type podLedger struct {
 	judgeable bool
 	blocked   string
+	// keepsNoWakeReserve is whether the pod's pool keeps no wake reserve for
+	// its sleeping engines.
+	keepsNoWakeReserve bool
 	// unread is set when the pod's runtime did not answer, or the claims could
 	// not be listed. Nothing is known about the pod then, not even whether it
 	// has cards.
@@ -233,7 +272,7 @@ func (r *ModelClaimReconciler) collectPodLedgers(
 	snapshots map[string]*RuntimeSnapshot,
 ) map[string]podLedger {
 	claims, err := r.listClaimsForAccount(ctx, namespace)
-	return podLedgersFrom(claims, err, candidates, snapshots)
+	return podLedgersFrom(claims, err, candidates, snapshots, r.podsWithoutWakeReserve(ctx, candidates))
 }
 
 // listClaimsForAccount lists the claims in a namespace for the GPU memory
@@ -258,30 +297,64 @@ func (r *ModelClaimReconciler) listClaimsForAccount(
 	return claims, nil
 }
 
+// observe takes in what a runtime reading says of an instance's engine.
+func (e *engineOnPod) observe(model *RuntimeSnapshotModel, instance modelv1alpha1.ModelClaimInstance) {
+	e.snapshotKey = snapshotActivityKey(*model)
+	e.kvCapacityBytes = model.KVCapacityBytes
+	e.inFlightRequests = max(model.RequestsRunning, 0) + max(model.RequestsWaiting, 0)
+	e.requestsWaiting = max(model.RequestsWaiting, 0)
+	// A scrape that failed says nothing about load, and the engine may be too
+	// busy to answer it in time. A serving engine whose metrics could not be
+	// read is not taken for idle. Only an engine that serves can be busy,
+	// though. The runtime reports an engine ready before it has finished
+	// booting, after a start or a wake, and it reads no metrics until then. The
+	// gateway routes only to an Active instance. An engine that is not both
+	// active and routed has no load that could have gone unread.
+	e.demandUnknown = model.Ready && !model.RequestMetricsObserved &&
+		model.Phase == runtimePhaseActive && instance.Phase == modelv1alpha1.ModelClaimActive
+	e.asleep = model.Phase == runtimePhaseSleeping
+	if footprint, known := sleepingFootprintOf(model); e.asleep && known {
+		e.sleepingFootprintBytes = footprint
+	}
+	// A negative figure means there is no KV segment to read, and an engine
+	// without one has mapped nothing.
+	e.kvUsedBytes = max(model.KVUsedBytes, 0)
+}
+
 // podLedgersFrom builds one account per candidate pod from a listing of the
 // claims, or marks every account as a hole when the listing failed.
+// withoutWakeReserve names the pods whose pool keeps no wake reserve for a
+// sleeping engine.
 func podLedgersFrom(
 	claims *modelv1alpha1.ModelClaimList,
 	listErr error,
 	candidates []corev1.Pod,
 	snapshots map[string]*RuntimeSnapshot,
+	withoutWakeReserve map[string]bool,
 ) map[string]podLedger {
 	ledgers := make(map[string]podLedger, len(candidates))
+	pods := make(map[string]*corev1.Pod, len(candidates))
+	for i := range candidates {
+		pods[candidates[i].Name] = &candidates[i]
+	}
 	for i := range candidates {
 		pod := &candidates[i]
 		hbmUsableBytes, measured := snapshots[pod.Name].hbmUsableBytes()
 		accelerators := reportedAccelerators(snapshots[pod.Name])
 		switch {
 		case snapshots[pod.Name] == nil:
-			ledgers[pod.Name] = podLedger{blocked: "its runtime did not answer", unread: true}
+			ledgers[pod.Name] = podLedger{blocked: "its runtime did not answer", unread: true,
+				keepsNoWakeReserve: withoutWakeReserve[pod.Name]}
 		case !measured:
-			ledgers[pod.Name] = podLedger{blocked: unmeasuredCards(snapshots[pod.Name]), accelerators: accelerators}
+			ledgers[pod.Name] = podLedger{blocked: unmeasuredCards(snapshots[pod.Name]), accelerators: accelerators,
+				keepsNoWakeReserve: withoutWakeReserve[pod.Name]}
 		default:
 			ledgers[pod.Name] = podLedger{
-				judgeable:      true,
-				hbmUsableBytes: hbmUsableBytes,
-				observedAt:     snapshots[pod.Name].ObservedAt,
-				accelerators:   accelerators,
+				keepsNoWakeReserve: withoutWakeReserve[pod.Name],
+				judgeable:          true,
+				hbmUsableBytes:     hbmUsableBytes,
+				observedAt:         snapshots[pod.Name].ObservedAt,
+				accelerators:       accelerators,
 			}
 		}
 	}
@@ -329,24 +402,7 @@ func podLedgersFrom(
 			alive := false
 			if model := snapshotModelForClaim(snapshots[instance.Pod], claim, served); model != nil {
 				alive = model.Alive
-				engine.snapshotKey = snapshotActivityKey(*model)
-				engine.kvCapacityBytes = model.KVCapacityBytes
-				engine.inFlightRequests = max(model.RequestsRunning, 0) + max(model.RequestsWaiting, 0)
-				engine.requestsWaiting = max(model.RequestsWaiting, 0)
-				// A scrape that failed says nothing about load, and the engine may
-				// be too busy to answer it in time. A serving engine whose metrics
-				// could not be read is not taken for idle. Only an engine that
-				// serves can be busy, though. The runtime reports an engine ready
-				// before it has finished booting, after a start or a wake, and it
-				// reads no metrics until then. The gateway routes only to an
-				// Active instance. An engine that is not both active and routed
-				// has no load that could have gone unread.
-				engine.demandUnknown = model.Ready && !model.RequestMetricsObserved &&
-					model.Phase == runtimePhaseActive && instance.Phase == modelv1alpha1.ModelClaimActive
-				engine.asleep = model.Phase == runtimePhaseSleeping
-				// A negative figure means there is no KV segment to read, and
-				// an engine without one has mapped nothing.
-				engine.kvUsedBytes = max(model.KVUsedBytes, 0)
+				engine.observe(model, instance)
 				if _, seen := accounted[instance.Pod]; !seen {
 					accounted[instance.Pod] = map[string]struct{}{}
 				}
@@ -364,6 +420,19 @@ func podLedgersFrom(
 			if instance.Phase == modelv1alpha1.ModelClaimFailed && (engine.snapshotKey == "" || !alive) {
 				continue
 			}
+			// A sleeping engine whose pool keeps no wake reserve is charged
+			// only what its runtime measured it to hold asleep. A request to
+			// wake it puts the reserve back at once, so the room is its own
+			// again from then on. An engine whose memory asleep is not known
+			// keeps its reserve, since nothing says how much of it is free.
+			// So does one on a pod with more than one card: the runtime
+			// measures one card, and the pool policy makes no room on such
+			// a pod either.
+			keepsNone := withoutWakeReserve[instance.Pod] && engine.sleepingFootprintBytes > 0 &&
+				ledger.accelerators == 1
+			asked := wakeAsked(pods[instance.Pod], claim.Name)
+			engine.withoutWakeReserve = keepsNone && !asked
+			engine.wakeReserveAsked = keepsNone && asked
 			// A claim whose declaration cannot be used is charged nothing, so its
 			// card cannot be judged either. A zero written by mistake would
 			// otherwise read as an engine that takes up no room.
@@ -434,4 +503,29 @@ func (s *RuntimeSnapshot) models() []RuntimeSnapshotModel {
 		return nil
 	}
 	return s.Models
+}
+
+// wakeAsked reports whether a request asks to wake a claim's engine on a pod.
+func wakeAsked(pod *corev1.Pod, claimName string) bool {
+	if pod == nil {
+		return false
+	}
+	_, asked := pod.Annotations[constants.ModelClaimWakeAnnotationPrefix+claimName]
+	return asked
+}
+
+// withoutAskedReserves returns a card's engines with the wake reserves that
+// requests put back taken off again, and whether there were any.
+func withoutAskedReserves(engines []engineOnPod) ([]engineOnPod, bool) {
+	eased := make([]engineOnPod, len(engines))
+	copy(eased, engines)
+	found := false
+	for i := range eased {
+		if eased[i].wakeReserveAsked {
+			eased[i].withoutWakeReserve = true
+			eased[i].wakeReserveAsked = false
+			found = true
+		}
+	}
+	return eased, found
 }

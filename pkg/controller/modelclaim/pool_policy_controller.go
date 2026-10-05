@@ -168,6 +168,19 @@ func (m *poolPolicyManager) observe(
 	}, true
 }
 
+// lastActive is when the pool policy last saw an engine busy, or first saw it
+// at all. It observes nothing itself: observing moves the baseline that the
+// idle timer counts completions from.
+func (m *poolPolicyManager) lastActive(key string) (time.Time, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	record, found := m.activity[key]
+	if !found || !record.known {
+		return time.Time{}, false
+	}
+	return record.lastActive, true
+}
+
 func (r *ModelClaimReconciler) poolPolicyManager() *poolPolicyManager {
 	if r.PoolPolicy != nil {
 		return r.PoolPolicy
@@ -245,6 +258,62 @@ func (r *ModelClaimReconciler) poolDeploymentForPod(
 		return nil, err
 	}
 	return deployment, nil
+}
+
+// podsWithoutWakeReserve names the pods whose pool has a sleeping engine keep
+// no wake reserve. A pod whose pool cannot be read, or whose policy is not
+// valid, is not named. Its sleeping engines keep their reserve, so the account
+// charges them more than they may hold, never less.
+func (r *ModelClaimReconciler) podsWithoutWakeReserve(ctx context.Context, pods []corev1.Pod) map[string]bool {
+	without := map[string]bool{}
+	pools := map[types.NamespacedName]bool{}
+	for i := range pods {
+		deployment, err := r.poolDeploymentForPod(ctx, &pods[i])
+		if err != nil || deployment == nil {
+			continue
+		}
+		pool := types.NamespacedName{Namespace: deployment.Namespace, Name: deployment.Name}
+		keepsNone, seen := pools[pool]
+		if !seen {
+			keepsNone = keepsNoWakeReserve(deployment)
+			pools[pool] = keepsNone
+		}
+		if keepsNone {
+			without[pods[i].Name] = true
+		}
+	}
+	return without
+}
+
+// keepsNoWakeReserve reports whether a pool's policy has a sleeping engine keep
+// no wake reserve.
+func keepsNoWakeReserve(deployment *appsv1.Deployment) bool {
+	lifecycle := lifecycleOf(deployment)
+	return lifecycle != nil && lifecycle.NoWakeReserveWhileAsleep
+}
+
+// lifecycleOf is a pool's lifecycle policy, read without being reported on,
+// which the pool policy loop does. It is nil when the policy sets none, or is
+// not valid.
+func lifecycleOf(deployment *appsv1.Deployment) *poolLifecyclePolicy {
+	raw := deployment.Annotations[constants.ModelPoolPolicyAnnotationKey]
+	if raw == "" {
+		return nil
+	}
+	policy, err := parsePoolPolicy(raw)
+	if err != nil {
+		return nil
+	}
+	return policy.Lifecycle
+}
+
+// poolLifecycleOf is the lifecycle policy of a pod's pool, or nil.
+func (r *ModelClaimReconciler) poolLifecycleOf(ctx context.Context, pod *corev1.Pod) *poolLifecyclePolicy {
+	deployment, err := r.poolDeploymentForPod(ctx, pod)
+	if err != nil || deployment == nil {
+		return nil
+	}
+	return lifecycleOf(deployment)
 }
 
 // resolvePoolPolicy parses the Deployment policy annotation and surfaces the
@@ -391,29 +460,41 @@ func (r *ModelClaimReconciler) reconcilePoolPolicy(
 		}
 		if source.policy.Lifecycle != nil && !observed {
 			klog.V(4).InfoS("pool lifecycle policy waits for complete request observations", "pod", klog.KObj(pod))
-		} else if source.policy.Lifecycle != nil {
+		} else if source.policy.Lifecycle != nil && source.policy.Lifecycle.SleepAfterSeconds > 0 {
+			// Without sleepAfterSeconds no engine is put to sleep for being
+			// idle. Its activity is still observed above, so that the one
+			// idle longest can be put to sleep when room is needed.
 			r.reconcilePoolIdleSleep(ctx, source, manager, pod, snapshot, activities, readings)
 		}
 	}
 	return nil
 }
 
+// observeSnapshot records the request activity of each serving engine on a
+// pod, and reports whether it could read every one. The pod's policies wait for
+// a round in which it could. An engine whose counters could not be read does
+// not keep the engines beside it from being recorded, though, so the one idle
+// longest can still be put to sleep when room is needed.
 func (m *poolPolicyManager) observeSnapshot(
 	pod *corev1.Pod,
 	snapshot *RuntimeSnapshot,
 ) (map[string]poolRequestActivity, bool) {
 	activities := make(map[string]poolRequestActivity, len(snapshot.Models))
+	complete := true
 	for i := range snapshot.Models {
 		model := snapshot.Models[i]
 		if model.Phase != runtimePhaseActive || !model.Alive || !model.Ready {
 			continue
 		}
-		activityKey := snapshotActivityKey(model)
-		activity, observed := m.observe(string(pod.UID)+"/"+activityKey, model)
+		activity, observed := m.observe(poolActivityKey(pod, model), model)
 		if !observed {
-			return nil, false
+			complete = false
+			continue
 		}
-		activities[activityKey] = activity
+		activities[snapshotActivityKey(model)] = activity
+	}
+	if !complete {
+		return nil, false
 	}
 	return activities, true
 }
@@ -481,39 +562,120 @@ func (r *ModelClaimReconciler) reconcilePoolIdleSleep(
 		if !active {
 			continue
 		}
-		if err := r.annotateWarmPodWithState(
-			ctx, claim, pod, 0, constants.ModelClaimRoutingStateSleeping, "",
-		); err != nil {
-			klog.ErrorS(err, "pool lifecycle policy could not de-route idle engine", "pod", klog.KObj(pod), "model", model.ModelName)
-			continue
-		}
 		operationID := fmt.Sprintf(
 			"pool-policy-sleep/%s/%s/%s/%d",
 			source.key.String(), pod.UID, snapshotActivityKey(model), idleSince.UnixNano(),
 		)
-		_, err := r.Runtime.Sleep(ctx, pod.Status.PodIP, DefaultRuntimePort, &SleepRequest{
-			ModelName: model.ModelName, Level: 1, OperationID: operationID,
-		})
-		readings.forget(pod.Name)
-		if err != nil {
-			if restoreErr := r.annotateWarmPodWithState(
-				ctx, claim, pod, port, constants.ModelClaimRoutingStateActive, "",
-			); restoreErr != nil {
-				klog.ErrorS(restoreErr, "pool lifecycle policy could not restore route", "pod", klog.KObj(pod), "model", model.ModelName)
-			}
+		if err := r.putEngineToSleep(ctx, claim, pod, port, model.ModelName, operationID, readings); err != nil {
 			klog.ErrorS(err, "pool lifecycle policy could not sleep idle engine", "pod", klog.KObj(pod), "model", model.ModelName)
 			continue
 		}
-		if err := r.markClaimInstanceSleeping(ctx, claim, pod.Name); err != nil {
-			klog.ErrorS(err, "pool lifecycle policy could not persist sleeping state", "claim", klog.KObj(claim), "pod", klog.KObj(pod))
-			continue
-		}
+		asleep := r.sleptEngine(ctx, pod, claim, readings)
 		r.Recorder.Eventf(
 			claim, corev1.EventTypeNormal, "Sleeping",
-			"model %s idle past %ds; sleeping engine on pod %s",
-			model.ModelName, source.policy.Lifecycle.SleepAfterSeconds, pod.Name,
+			"model %s idle past %ds; sleeping engine on pod %s%s",
+			model.ModelName, source.policy.Lifecycle.SleepAfterSeconds, pod.Name, sleepingFootprintNote(asleep),
 		)
+		r.warnOfAnUnmeasuredSleep(claim, pod.Name, asleep, source.policy.Lifecycle.NoWakeReserveWhileAsleep)
 	}
+}
+
+// putEngineToSleep takes a claim's engine on a pod off its route, puts it to
+// sleep at level 1, and records the instance as sleeping. The route is taken
+// back first, so no request is routed to an engine going to sleep. A route
+// taken back for a sleep that failed is put back.
+func (r *ModelClaimReconciler) putEngineToSleep(
+	ctx context.Context,
+	claim *modelv1alpha1.ModelClaim,
+	pod *corev1.Pod,
+	port int32,
+	modelName, operationID string,
+	readings *runtimeReadings,
+) error {
+	if err := r.annotateWarmPodWithState(ctx, claim, pod, 0, constants.ModelClaimRoutingStateSleeping, ""); err != nil {
+		return fmt.Errorf("take the route back: %w", err)
+	}
+	_, err := r.Runtime.Sleep(ctx, pod.Status.PodIP, DefaultRuntimePort, &SleepRequest{
+		ModelName: modelName, Level: 1, OperationID: operationID,
+	})
+	readings.forget(pod.Name)
+	if err != nil {
+		if restoreErr := r.annotateWarmPodWithState(
+			ctx, claim, pod, port, constants.ModelClaimRoutingStateActive, "",
+		); restoreErr != nil {
+			klog.ErrorS(restoreErr, "could not put a route back after a sleep that failed",
+				"pod", klog.KObj(pod), "model", modelName)
+		}
+		return fmt.Errorf("sleep: %w", err)
+	}
+	if err := r.markClaimInstanceSleeping(ctx, claim, pod.Name); err != nil {
+		return fmt.Errorf("record the sleep: %w", err)
+	}
+	return nil
+}
+
+// sleptEngine reads a claim's engine on a pod again, after it was put to sleep,
+// for what its runtime measured it to hold asleep. It is nil when the runtime
+// cannot be read.
+func (r *ModelClaimReconciler) sleptEngine(
+	ctx context.Context,
+	pod *corev1.Pod,
+	claim *modelv1alpha1.ModelClaim,
+	readings *runtimeReadings,
+) *RuntimeSnapshotModel {
+	snapshot, err := readings.of(ctx, pod)
+	if err != nil {
+		return nil
+	}
+	return snapshotModelForClaim(snapshot, claim, servedModelName(claim))
+}
+
+// sleepingFootprintNote ends an Event about a sleep with what the engine holds
+// asleep, as its runtime measured it.
+func sleepingFootprintNote(model *RuntimeSnapshotModel) string {
+	if footprint, known := sleepingFootprintOf(model); known {
+		return fmt.Sprintf("; it holds %s asleep", byteSize(footprint))
+	}
+	return "; what it holds asleep could not be measured"
+}
+
+// byteSize words a size: in GiB from one GiB up, in MiB from one MiB up, and in
+// bytes below that. A small engine asleep then does not read as holding none.
+func byteSize(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return gibibytes(n)
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20))
+	default:
+		return fmt.Sprintf("%d bytes", n)
+	}
+}
+
+// sleepingFootprintOf is what a sleeping engine holds, as its runtime measured
+// it after the engine went to sleep.
+func sleepingFootprintOf(model *RuntimeSnapshotModel) (int64, bool) {
+	if model == nil || model.SleepingFootprintBytes == nil || *model.SleepingFootprintBytes <= 0 {
+		return 0, false
+	}
+	return *model.SleepingFootprintBytes, true
+}
+
+// warnOfAnUnmeasuredSleep says that an engine keeps its wake reserve, though
+// its pool keeps none, because what it holds asleep could not be measured. It
+// is said once a sleep, when the engine goes to sleep.
+func (r *ModelClaimReconciler) warnOfAnUnmeasuredSleep(
+	claim *modelv1alpha1.ModelClaim,
+	podName string,
+	model *RuntimeSnapshotModel,
+	withoutWakeReserve bool,
+) {
+	if _, known := sleepingFootprintOf(model); !withoutWakeReserve || known {
+		return
+	}
+	r.Recorder.Eventf(claim, corev1.EventTypeWarning, "SleepingFootprintUnknown",
+		"model %s sleeps on pod %s and keeps its wake reserve: what its engine holds asleep could not be measured",
+		servedModelName(claim), podName)
 }
 
 // claimHoldsAKVLimitOn reports whether any instance recorded on this Pod runs
@@ -544,6 +706,12 @@ func (r *ModelClaimReconciler) claimHoldsAKVLimitOn(ctx context.Context, pod *co
 		}
 	}
 	return false
+}
+
+// poolActivityKey names an engine in the pool policy's record of activity: the
+// pod it runs on, and the engine.
+func poolActivityKey(pod *corev1.Pod, model RuntimeSnapshotModel) string {
+	return string(pod.UID) + "/" + snapshotActivityKey(model)
 }
 
 func snapshotActivityKey(model RuntimeSnapshotModel) string {

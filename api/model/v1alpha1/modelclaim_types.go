@@ -121,7 +121,8 @@ type ModelClaimPerGPU struct {
 	// all: enough for one request of the engine's maximum model length at this
 	// model's bytes per token, rounded up to the KV allocator's page
 	// granularity. Placement holds this much for the instance for as long as it
-	// is awake, asleep included.
+	// is awake. It holds this much while the instance sleeps too, unless the
+	// pool keeps no wake reserve.
 	// +kubebuilder:validation:Required
 	KVFloor resource.Quantity `json:"kvFloor"`
 }

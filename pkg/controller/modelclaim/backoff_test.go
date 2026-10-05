@@ -712,7 +712,7 @@ func TestPlacementBackoffRemembersTheRoomOfTheLastRefusal(t *testing.T) {
 func TestTooLargeForEveryCardTakesACardOfExactlyTheSizeForLargeEnough(t *testing.T) {
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
 	ledgers := podLedgersFrom(&modelv1alpha1.ModelClaimList{}, nil, []corev1.Pod{*pod},
-		map[string]*RuntimeSnapshot{pod.Name: snapshot})
+		map[string]*RuntimeSnapshot{pod.Name: snapshot}, nil)
 
 	_, never := tooLargeForEveryCard([]corev1.Pod{*pod}, ledgers, 1000)
 	assert.False(t, never)

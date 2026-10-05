@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
 func TestCardDivisionStateDividesACardOncePerRound(t *testing.T) {
@@ -712,22 +713,28 @@ func TestCardCompositionDescribesTheEnginesOnOneCard(t *testing.T) {
 	elsewhere := claimOnPod("elsewhere", "warm-2", modelv1alpha1.ModelClaimActive, 20<<30, 4<<30)
 	claims := &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*second, *elsewhere, *first}}
 	reordered := &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*first, *second}}
+	card := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
 
-	composition := cardComposition(claims, "warm-1")
+	composition := cardComposition(claims, card)
 
-	assert.Equal(t, composition, cardComposition(reordered, "warm-1"), "order does not matter")
+	assert.Equal(t, composition, cardComposition(reordered, card), "order does not matter")
 	assert.NotContains(t, composition, "elsewhere")
-	assert.Contains(t, composition, "second/asleep")
+	assert.Contains(t, composition, "second/asleep/")
+
+	asked := card.DeepCopy()
+	asked.Annotations = map[string]string{constants.ModelClaimWakeAnnotationPrefix + "second": "2026-10-01T08:00:00Z"}
+	assert.Contains(t, cardComposition(claims, asked), "second/asleep-asked/",
+		"a request to wake an engine changes the card")
 
 	second.Status.Instances[0].Phase = modelv1alpha1.ModelClaimActive
 	assert.NotEqual(t, composition, cardComposition(
-		&modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*first, *second}}, "warm-1"),
+		&modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*first, *second}}, card),
 		"a wake changes the card")
 
 	second.Spec.PerGPU.KVFloor = *resource.NewQuantity(8<<30, resource.BinarySI)
 	second.Status.Instances[0].Phase = modelv1alpha1.ModelClaimSleeping
 	assert.NotEqual(t, composition, cardComposition(
-		&modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*first, *second}}, "warm-1"),
+		&modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*first, *second}}, card),
 		"a new declaration changes the card")
 }
 
