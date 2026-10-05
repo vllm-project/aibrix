@@ -113,15 +113,14 @@ func TestModelClaimPortZeroHasNoRoutableBackend(t *testing.T) {
 	_, err := c.ListPodsByModel("m-sleeping")
 	assert.Error(t, err)
 
-	provider, ok := any(c).(interface {
-		ModelClaimBinding(string) (*v1.Pod, int, string, bool)
-	})
+	provider, ok := any(c).(ModelClaimBindingProvider)
 	require.True(t, ok, "cache must expose non-routable ModelClaim bindings")
-	boundPod, port, state, found := provider.ModelClaimBinding("m-sleeping")
+	boundPod, binding, found := provider.ModelClaimBinding("m-sleeping")
 	require.True(t, found)
 	assert.Equal(t, pod.Name, boundPod.Name)
-	assert.Zero(t, port)
-	assert.Equal(t, constants.ModelClaimRoutingStateSleeping, state)
+	assert.Zero(t, binding.Port)
+	assert.Equal(t, constants.ModelClaimRoutingStateSleeping, binding.State)
+	assert.Equal(t, "sleeping", binding.Claim)
 }
 
 func TestModelClaimBindingTracksAnnotationUpdatesAndDeletion(t *testing.T) {
@@ -129,27 +128,27 @@ func TestModelClaimBindingTracksAnnotationUpdatesAndDeletion(t *testing.T) {
 	active := warmModelClaimPod("p1", "default", map[string]int{"m": 9001})
 	c.addPod(active)
 
-	provider, ok := any(c).(interface {
-		ModelClaimBinding(string) (*v1.Pod, int, string, bool)
-	})
+	provider, ok := any(c).(ModelClaimBindingProvider)
 	require.True(t, ok, "cache must expose ModelClaim bindings")
-	_, port, state, found := provider.ModelClaimBinding("m")
+	_, binding, found := provider.ModelClaimBinding("m")
 	require.True(t, found)
-	assert.Equal(t, 9001, port)
-	assert.Equal(t, constants.ModelClaimRoutingStateActive, state)
+	assert.Equal(t, 9001, binding.Port)
+	assert.Equal(t, constants.ModelClaimRoutingStateActive, binding.State)
 
 	sleeping := warmModelClaimPod("p1", "default", nil)
 	sleeping.Annotations[constants.ModelClaimPodAnnotationPrefix+"sleeping"] =
-		`{"model":"m","port":0,"state":"sleeping"}`
+		`{"model":"m","port":0,"state":"sleeping","wakeByRequest":true}`
 	c.updatePod(active, sleeping)
-	_, port, state, found = provider.ModelClaimBinding("m")
+	_, binding, found = provider.ModelClaimBinding("m")
 	require.True(t, found)
-	assert.Zero(t, port)
-	assert.Equal(t, constants.ModelClaimRoutingStateSleeping, state)
+	assert.Zero(t, binding.Port)
+	assert.Equal(t, constants.ModelClaimRoutingStateSleeping, binding.State)
+	assert.Equal(t, "sleeping", binding.Claim)
+	assert.True(t, binding.WakeByRequest)
 	assert.False(t, c.HasModel("m"))
 
 	c.deletePod(sleeping)
-	_, _, _, found = provider.ModelClaimBinding("m")
+	_, _, found = provider.ModelClaimBinding("m")
 	assert.False(t, found)
 }
 

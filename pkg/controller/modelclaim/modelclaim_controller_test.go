@@ -76,6 +76,16 @@ type fakeRuntime struct {
 	// loseActivateAnswer makes Activate start the engine and fail as a call
 	// whose answer never arrived.
 	loseActivateAnswer bool
+	// wakeCalls are the wakes asked of the runtime, and wokenOn the pod IP of
+	// each. failWake makes every wake fail.
+	wakeCalls []WakeRequest
+	wokenOn   []string
+	failWake  bool
+	// wakeAlreadyApplied makes Wake answer that it applied the operation before,
+	// as the runtime does when a pass asks again for a wake it has started.
+	wakeAlreadyApplied bool
+	// wakeErr, when set, is what every wake returns.
+	wakeErr error
 	// silent makes Activate fail as the client does for a runtime that did not
 	// answer in time a short while ago: at once, and without calling it.
 	silent bool
@@ -164,9 +174,18 @@ func (f *fakeRuntime) Sleep(_ context.Context, _ string, _ int, req *SleepReques
 	}, nil
 }
 
-func (f *fakeRuntime) Wake(_ context.Context, _ string, _ int, req *WakeRequest) (*RuntimeOperationResponse, error) {
+func (f *fakeRuntime) Wake(_ context.Context, podIP string, _ int, req *WakeRequest) (*RuntimeOperationResponse, error) {
+	f.wakeCalls = append(f.wakeCalls, *req)
+	f.wokenOn = append(f.wokenOn, podIP)
+	if f.wakeErr != nil {
+		return nil, f.wakeErr
+	}
+	if f.failWake {
+		return nil, &runtimeRefusal{"wake failed: boom"}
+	}
 	return &RuntimeOperationResponse{
-		Status: "success", ModelName: req.ModelName, OperationID: req.OperationID, Applied: true, Phase: "active",
+		Status: "success", ModelName: req.ModelName, OperationID: req.OperationID, Applied: !f.wakeAlreadyApplied,
+		Phase: "active",
 	}, nil
 }
 

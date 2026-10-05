@@ -156,14 +156,29 @@ def sleep_runtime_model(request: SleepRuntimeModelRequest):
 
 @model_runtime_router.post("/v1/runtime/models/wake")
 def wake_runtime_model(request: WakeRuntimeModelRequest):
-    """Wake a vLLM model through the sidecar's controller-only API."""
+    """Wake a vLLM model through the sidecar's controller-only API.
+
+    A wake that fails here is reported as such, in the body. The controller
+    then knows that the runtime failed to wake the engine. A bare server error
+    could also come from a proxy on the way, and the controller asks again.
+    """
     try:
         result = get_model_runtime().wake(
             request.model_name,
             operation_id=request.operation_id,
         )
-    except Exception as exc:
+    except (ModelNotFoundError, UnsupportedModelControlError) as exc:
         _control_error(exc)
+    except Exception as exc:
+        logger.error(f"failed to wake model {request.model_name}: {exc}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "model_name": request.model_name,
+                "message": str(exc),
+            },
+        )
     return _operation_response(result)
 
 

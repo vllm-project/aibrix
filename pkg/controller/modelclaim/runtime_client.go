@@ -113,6 +113,16 @@ func statusError(method, url string, status int, body []byte) error {
 	return errors.New(message)
 }
 
+// refusedByRuntime reports whether the runtime itself said that a call failed:
+// it refused the call, or reported an error of its own. A status from something
+// between the controller and the runtime, an answer that did not arrive, and a
+// call that was not sent say nothing of what the runtime did. The call may then
+// be done, or under way.
+func refusedByRuntime(err error) bool {
+	var refusal *runtimeRefusal
+	return errors.As(err, &refusal)
+}
+
 // callNotDone reports whether a failed call to a runtime is known to have
 // changed nothing there: the runtime said no, or the call was never sent. After
 // any other failure, such as an answer that did not arrive in time, the

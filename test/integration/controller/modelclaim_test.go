@@ -301,6 +301,74 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 		fixture.ExpectEvent(claim, corev1.EventTypeWarning, "EngineFailed")
 	})
 
+	ginkgo.It("wakes a sleeping engine when a request asks for it", func() {
+		fixture.Runtime().SetDefaultState("active", true)
+		pod := fixture.CreateWarmPod(ns.Name, "warm-wake", "pool-a")
+		claim := fixture.CreateClaim(ns.Name, "claim-wake", "pool-a", nil, nil)
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(fixture.GetClaim(g, claim).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+
+		fixture.Runtime().SetClaimState(string(claim.UID), "sleeping", false, "")
+		fixture.TriggerReconcile(claim)
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(fixture.GetClaim(g, claim).Status.Phase).To(gomega.Equal(modelapi.ModelClaimSleeping))
+			fixture.ExpectRoute(g, ns.Name, pod.Name, claim.Name, 0, constants.ModelClaimRoutingStateSleeping)
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+		gomega.Expect(fixture.Runtime().WakeRequests()).To(gomega.BeEmpty())
+
+		// The request alone brings the claim back, well before its next round.
+		fixture.RequestWake(ns.Name, pod.Name, claim.Name)
+		gomega.Eventually(func() int {
+			return len(fixture.Runtime().WakeRequests())
+		}, 5*time.Second, modelClaimInterval).Should(gomega.BeNumerically(">=", 1))
+		// The claim names no model, so it serves under its own name.
+		gomega.Expect(fixture.Runtime().WakeRequests()[0].ModelName).To(gomega.Equal(claim.Name))
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(fixture.GetClaim(g, claim).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+			latest := &corev1.Pod{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(pod), latest)).To(gomega.Succeed())
+			g.Expect(latest.Annotations).NotTo(gomega.HaveKey(constants.ModelClaimWakeAnnotationPrefix + claim.Name))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+		fixture.ExpectEvent(claim, corev1.EventTypeNormal, "Waking")
+	})
+
+	ginkgo.It("moves a claim whose engine cannot be woken", func() {
+		fixture.Runtime().SetDefaultState("active", true)
+		fixture.CreateWarmPod(ns.Name, "warm-move-a", "pool-a")
+		fixture.CreateWarmPod(ns.Name, "warm-move-b", "pool-a")
+		claim := fixture.CreateClaim(ns.Name, "claim-move", "pool-a", nil, nil)
+		from := ""
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := fixture.GetClaim(g, claim)
+			g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+			from = latest.Status.Instances[0].Pod
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+
+		fixture.Runtime().SetClaimState(string(claim.UID), "sleeping", false, "")
+		fixture.TriggerReconcile(claim)
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(fixture.GetClaim(g, claim).Status.Phase).To(gomega.Equal(modelapi.ModelClaimSleeping))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+
+		fixture.Runtime().FailNextWakes(1)
+		fixture.RequestWake(ns.Name, from, claim.Name)
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := fixture.GetClaim(g, claim)
+			g.Expect(latest.Status.Instances).To(gomega.HaveLen(1))
+			g.Expect(latest.Status.Instances[0].Pod).NotTo(gomega.Equal(from))
+			g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+			old := &corev1.Pod{}
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: from}, old)).To(gomega.Succeed())
+			g.Expect(old.Annotations).NotTo(gomega.HaveKey(constants.ModelClaimWakeAnnotationPrefix + claim.Name))
+			g.Expect(old.Annotations).NotTo(gomega.HaveKey(constants.ModelClaimPodAnnotationPrefix + claim.Name))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+		gomega.Expect(fixture.Runtime().WakeRequests()).To(gomega.HaveLen(1))
+		fixture.ExpectEvent(claim, corev1.EventTypeWarning, "Moving")
+		fixture.ExpectEvent(claim, corev1.EventTypeNormal, "Rescheduled")
+	})
+
 	ginkgo.It("drops a lost assignment and activates on a replacement pod", func() {
 		fixture.Runtime().SetDefaultState("active", true)
 		pod := fixture.CreateWarmPod(ns.Name, "warm-old", "pool-a")

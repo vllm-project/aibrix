@@ -22,6 +22,7 @@ package modelclaim
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -29,6 +30,7 @@ import (
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -109,6 +111,19 @@ type ModelClaimReconciler struct {
 	// informer would read as free memory. Falls back to the cached client when
 	// unset, which is how the unit tests run.
 	APIReader client.Reader
+	// Now is the controller's clock, for how long a wake request has waited.
+	// It falls back to time.Now when unset.
+	Now func() time.Time
+	// WakeRequests remembers when each wake request was first seen, so that
+	// its wait is timed on this clock. It is made on first use when unset.
+	WakeRequests *wakeRequestClock
+}
+
+func (r *ModelClaimReconciler) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
 }
 
 // Add creates a new ModelClaim controller and registers it with the Manager.
@@ -140,7 +155,11 @@ func Add(mgr manager.Manager, _ config.RuntimeConfig) error {
 		// attach as soon as an eligible pod appears.
 		Watches(&corev1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(enqueueModelClaimsForPod(mgr.GetClient())),
-			builder.WithPredicates(modelPoolPodFilter())).
+			builder.WithPredicates(modelPoolPodFilter(), notOnlyWakeRequests())).
+		// A request to wake a sleeping engine concerns its claim alone.
+		Watches(&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(enqueueRequestedWakes),
+			builder.WithPredicates(modelPoolPodFilter(), wakeRequestsChanged())).
 		// Wake the claims waiting for a card when another claim may have freed
 		// one, rather than leave them to sleep through their wait.
 		Watches(&modelv1alpha1.ModelClaim{},
@@ -299,8 +318,14 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// Reconcile instance routability against live engine readiness (promote
-	// ready Activating instances, demote Active instances that went unhealthy).
-	booting := r.reconcileInstanceHealth(ctx, pm, readings)
+	// ready Activating instances, demote Active instances that went unhealthy),
+	// and wake the sleeping engines a request has asked for.
+	booting, err := r.reconcileHealthAndWakes(ctx, pm, candidates, readings)
+	if err != nil {
+		// A move is written before its engine is touched. This one could not
+		// be, so the engine is as it was, and the next pass decides again.
+		return requeueOnConflict(err)
+	}
 	replacementFailed := false
 	failed := len(failedInstanceSlots(pm))
 	if err := r.rescheduleFailedInstances(ctx, pm, candidates, readings); err != nil {
@@ -351,6 +376,24 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		requeueAfter = min(requeueAfter, ActivatingRequeueDuration)
 	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+}
+
+// reconcileHealthAndWakes checks each instance's engine against what its
+// runtime reports, and then wakes the sleeping engines that a request has asked
+// for. It reports whether an engine boots, so that the claim is looked at again
+// soon. An error is a move that could not be written, and nothing was done to
+// its engine.
+func (r *ModelClaimReconciler) reconcileHealthAndWakes(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	candidates []corev1.Pod,
+	readings *runtimeReadings,
+) (bool, error) {
+	booting := r.reconcileInstanceHealth(ctx, pm, readings)
+	// An engine woken in this pass boots from now on, so the claim is looked
+	// at again as soon as a booting engine is.
+	woke, err := r.wakeRequested(ctx, pm, candidates, readings)
+	return booting || woke, err
 }
 
 // roomAsCached describes what the candidates carry, from the cached listing
@@ -469,19 +512,38 @@ func (r *ModelClaimReconciler) recomputeReadiness(pm *modelv1alpha1.ModelClaim) 
 	active := 0
 	sleeping := 0
 	failed := 0
+	moving := 0
+	waiting := 0
 	for i := range pm.Status.Instances {
-		if pm.Status.Instances[i].Phase == modelv1alpha1.ModelClaimActive {
+		inst := &pm.Status.Instances[i]
+		if inst.Phase == modelv1alpha1.ModelClaimActive {
 			active++
 		}
-		if pm.Status.Instances[i].Phase == modelv1alpha1.ModelClaimSleeping {
+		if inst.Phase == modelv1alpha1.ModelClaimSleeping {
 			sleeping++
+			if inst.Reason == instanceReasonWaitingForRoom {
+				waiting++
+			}
 		}
-		if pm.Status.Instances[i].Phase == modelv1alpha1.ModelClaimFailed {
+		if inst.Phase == modelv1alpha1.ModelClaimFailed {
 			failed++
+			if movingReason(inst.Reason) {
+				moving++
+			}
 		}
 	}
 	pm.Status.ReadyReplicas = int32(active)
 	switch {
+	case failed > 0 && moving == failed:
+		// Failed where it was, but only because it could not wake there. The
+		// claim is moved to another pod once one can take it.
+		pm.Status.Phase = modelv1alpha1.ModelClaimFailed
+		meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+			Type:    string(modelv1alpha1.ModelClaimConditionReady),
+			Status:  metav1.ConditionFalse,
+			Reason:  readyReasonMoving,
+			Message: "the model could not wake on its pod, and is moving to another pod",
+		})
 	case failed > 0:
 		pm.Status.Phase = modelv1alpha1.ModelClaimFailed
 		meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
@@ -497,6 +559,14 @@ func (r *ModelClaimReconciler) recomputeReadiness(pm *modelv1alpha1.ModelClaim) 
 			Status:  metav1.ConditionTrue,
 			Reason:  "ModelClaimActive",
 			Message: "model is active on at least one warm pod",
+		})
+	case sleeping > 0 && waiting > 0:
+		pm.Status.Phase = modelv1alpha1.ModelClaimSleeping
+		meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+			Type:    string(modelv1alpha1.ModelClaimConditionReady),
+			Status:  metav1.ConditionFalse,
+			Reason:  readyReasonWaitingForRoom,
+			Message: "a request asked for the model, and its card cannot take it back yet",
 		})
 	case sleeping > 0:
 		pm.Status.Phase = modelv1alpha1.ModelClaimSleeping
@@ -614,14 +684,20 @@ func (r *ModelClaimReconciler) ensureActivated(
 			// waits for room, and nobody would learn it can never be placed.
 			if largest, never := tooLargeForEveryCard(candidates, ledgers, perGPU.minimumReserveBytes()); never &&
 				len(admissible) == 0 {
-				reason = "TooLargeForAnyCard"
+				reason = constants.ModelClaimReasonTooLargeForAnyCard
 				message = fmt.Sprintf("no candidate pod can hold this model, which needs %s on a card; "+
 					"the best of them offers %s on a card", gibibytes(perGPU.minimumReserveBytes()), gibibytes(largest))
 			}
 			eventReason := reason
 			if len(failed) > 0 {
-				message = fmt.Sprintf("model %s cannot move from failed pod %s: %s",
-					servedModelName(pm), pm.Status.Instances[failed[0]].Pod, message)
+				from := pm.Status.Instances[failed[0]]
+				if movingReason(from.Reason) {
+					message = fmt.Sprintf("model %s cannot move from pod %s, where it could not wake: %s",
+						servedModelName(pm), from.Pod, message)
+				} else {
+					message = fmt.Sprintf("model %s cannot move from failed pod %s: %s",
+						servedModelName(pm), from.Pod, message)
+				}
 				eventReason = "ReschedulePending"
 			}
 			if meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
@@ -643,7 +719,7 @@ func (r *ModelClaimReconciler) ensureActivated(
 			if listErr == nil {
 				refusedOn = roomSignatureOf(candidates, claims)
 			}
-			if reason == "TooLargeForAnyCard" {
+			if reason == constants.ModelClaimReasonTooLargeForAnyCard {
 				return backoff.refusedAsTooLarge(claim, pm.Generation, refusedOn), nil
 			}
 			// The API server shows less on a card than the cache did when this
@@ -809,8 +885,8 @@ func (r *ModelClaimReconciler) ensureActivated(
 		if replaced != nil {
 			failed = failed[1:]
 			r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Rescheduled",
-				"model %s moved after terminal engine failure from pod %s to pod %s",
-				servedModelName(pm), replaced.Pod, pod.Name)
+				"model %s moved %s from pod %s to pod %s",
+				servedModelName(pm), whyMoved(replaced.Reason), replaced.Pod, pod.Name)
 			continue
 		}
 		r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Activating",
@@ -1277,8 +1353,12 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 		desiredPhase, routingPort := state.phase, state.routingPort
 		serving := state.serving
 
+		reason := ""
+		if desiredPhase == inst.Phase {
+			reason = bindingReason(inst)
+		}
 		if err := r.annotateWarmPodWithState(
-			ctx, pm, pod, routingPort, routingStateForPhase(desiredPhase),
+			ctx, pm, pod, routingPort, routingStateForPhase(desiredPhase), reason,
 		); err != nil {
 			klog.ErrorS(err, "routability annotation failed", "model", pm.Name, "pod", inst.Pod, "ready", desiredPhase == modelv1alpha1.ModelClaimActive)
 			continue
@@ -1289,6 +1369,8 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 			continue
 		}
 		inst.Phase = desiredPhase
+		// A reason belongs to the phase it was given in.
+		inst.Reason = ""
 		r.announcePhase(pm, inst, previousPhase, observed, serving)
 	}
 	if r.dropInstances(ctx, pm, dropped) > 0 {
@@ -1640,7 +1722,7 @@ func (r *ModelClaimReconciler) annotateWarmPod(ctx context.Context, pm *modelv1a
 	if port == 0 {
 		state = constants.ModelClaimRoutingStateActivating
 	}
-	return r.annotateWarmPodWithState(ctx, pm, pod, port, state)
+	return r.annotateWarmPodWithState(ctx, pm, pod, port, state, "")
 }
 
 func (r *ModelClaimReconciler) annotateWarmPodWithState(
@@ -1649,9 +1731,25 @@ func (r *ModelClaimReconciler) annotateWarmPodWithState(
 	pod *corev1.Pod,
 	port int32,
 	state string,
+	reason string,
 ) error {
 	key := constants.ModelClaimPodAnnotationPrefix + pm.Name
-	value := fmt.Sprintf(`{"model":%q,"port":%d,"state":%q}`, servedModelName(pm), port, state)
+	encoded, err := json.Marshal(utils.ModelClaimRoute{
+		Model: servedModelName(pm),
+		Port:  int(port),
+		State: state,
+		// This tells the gateway that this controller wakes the engine: a
+		// request for it while it sleeps is written on the pod, and the
+		// controller decides when its card can take it.
+		WakeByRequest: true,
+		// A reason says more than the state, so the gateway can tell its
+		// client how long to wait.
+		Reason: reason,
+	})
+	if err != nil {
+		return err
+	}
+	value := string(encoded)
 	if pod.Annotations[key] == value {
 		return nil
 	}
@@ -1785,12 +1883,22 @@ func (r *ModelClaimReconciler) deannotateWarmPod(ctx context.Context, namespace,
 		return // pod already gone
 	}
 	key := constants.ModelClaimPodAnnotationPrefix + pmName
-	if _, ok := pod.Annotations[key]; !ok {
+	// A wake request for the claim goes with its route. Both are deleted by
+	// name, so a request that the gateway wrote a moment ago goes too, even
+	// if the cache does not show it yet.
+	wakeKey := constants.ModelClaimWakeAnnotationPrefix + pmName
+	_, routed := pod.Annotations[key]
+	_, asked := pod.Annotations[wakeKey]
+	if !routed && !asked {
 		return
 	}
-	patch := client.MergeFrom(pod.DeepCopy())
-	delete(pod.Annotations, key)
-	if err := r.Patch(ctx, pod, patch); err != nil {
+	patch, err := json.Marshal(map[string]any{
+		"metadata": map[string]any{"annotations": map[string]any{key: nil, wakeKey: nil}},
+	})
+	if err != nil {
+		return
+	}
+	if err := r.Patch(ctx, pod, client.RawPatch(types.MergePatchType, patch)); err != nil {
 		klog.ErrorS(err, "failed to remove model-claim routing annotation", "pod", podName, "model", pmName)
 	}
 }

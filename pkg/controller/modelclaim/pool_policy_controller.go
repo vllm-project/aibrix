@@ -482,7 +482,7 @@ func (r *ModelClaimReconciler) reconcilePoolIdleSleep(
 			continue
 		}
 		if err := r.annotateWarmPodWithState(
-			ctx, claim, pod, 0, constants.ModelClaimRoutingStateSleeping,
+			ctx, claim, pod, 0, constants.ModelClaimRoutingStateSleeping, "",
 		); err != nil {
 			klog.ErrorS(err, "pool lifecycle policy could not de-route idle engine", "pod", klog.KObj(pod), "model", model.ModelName)
 			continue
@@ -497,7 +497,7 @@ func (r *ModelClaimReconciler) reconcilePoolIdleSleep(
 		readings.forget(pod.Name)
 		if err != nil {
 			if restoreErr := r.annotateWarmPodWithState(
-				ctx, claim, pod, port, constants.ModelClaimRoutingStateActive,
+				ctx, claim, pod, port, constants.ModelClaimRoutingStateActive, "",
 			); restoreErr != nil {
 				klog.ErrorS(restoreErr, "pool lifecycle policy could not restore route", "pod", klog.KObj(pod), "model", model.ModelName)
 			}
