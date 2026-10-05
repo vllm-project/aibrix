@@ -10,6 +10,11 @@ The service cannot add a backend, change the requested model, or return an
 arbitrary address. A Jev choice is accepted only when it exactly matches a
 candidate ID from the current Gateway request.
 
+Configure `AIBRIX_EXTERNAL_ROUTER_TIMEOUT` explicitly before connecting this
+service to Gateway. Gateway defaults to `10ms`, while this adapter's
+`JEV_TIMEOUT` defaults to `10s`, so the services cannot use both defaults
+together.
+
 ## Current scope: single-target routing
 
 This reference implements the current
@@ -48,6 +53,9 @@ For every Gateway request, the adapter places the model, policy mode, trusted
 policy context, and complete candidate snapshot in `state`. Candidate IDs
 become the `choice` criteria. Their descriptions summarize ports, attributes,
 and available metrics.
+
+The adapter validates and forwards both `Advisory` and `Authoritative` policy
+modes, but otherwise uses the same candidate-selection flow for both.
 
 ## Configuration
 
