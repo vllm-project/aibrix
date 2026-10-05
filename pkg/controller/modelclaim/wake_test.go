@@ -499,6 +499,32 @@ func TestReconcileCallsOffAMoveThatHasNotStartedOnceTheCardHasRoom(t *testing.T)
 	assert.Contains(t, events, "stays asleep on pod warm-1")
 }
 
+// The route says at once that a called-off move stays, as it says at once
+// that a claim moves. With no request waiting, nothing is woken in that pass,
+// and until the next health check the gateway would tell a client that the
+// claim moves, and ask no wake.
+func TestReconcileSaysOnTheRouteThatACalledOffMoveStays(t *testing.T) {
+	r, runtime, pm, homeSnapshot := aMoveThatDoesNotLand(t, true)
+	require.NoError(t, r.Delete(context.Background(), &modelv1alpha1.ModelClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "neighbour", Namespace: testNamespace},
+	}))
+	homeSnapshot.Models = homeSnapshot.Models[:1]
+	home := podNamed(t, r, "warm-1")
+	patch := client.MergeFrom(home.DeepCopy())
+	delete(home.Annotations, constants.ModelClaimWakeAnnotationPrefix+pm.Name)
+	require.NoError(t, r.Patch(context.Background(), home, patch))
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.wakeCalls)
+	assert.Equal(t, modelv1alpha1.ModelClaimSleeping, getModel(t, r, pm.Name).Status.Instances[0].Phase)
+	binding, routed := utils.ModelClaimBindingsFromPod(podNamed(t, r, "warm-1"))[servedModelName(pm)]
+	require.True(t, routed)
+	assert.Equal(t, constants.ModelClaimRoutingStateSleeping, binding.State)
+	assert.Empty(t, binding.Reason)
+	assert.Contains(t, strings.Join(drainEvents(t, r), "\n"), "MoveCalledOff")
+}
+
 func TestReconcileKeepsAMoveWhileTheCardHasNoRoom(t *testing.T) {
 	r, runtime, pm, _ := aMoveThatDoesNotLand(t, true)
 

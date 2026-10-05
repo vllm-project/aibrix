@@ -628,6 +628,13 @@ func (r *ModelClaimReconciler) callOffMove(
 	}
 	r.Recorder.Eventf(pm, corev1.EventTypeNormal, "MoveCalledOff",
 		"model %s stays asleep on pod %s, whose card can take it back now", served, pod.Name)
+	// The route says at once that the engine sleeps there, as markMoving says
+	// at once that the claim moves. Until the next health check, the gateway
+	// would otherwise tell a client that the claim moves, and ask no wake.
+	if err := r.annotateWarmPodWithState(ctx, pm, pod, 0, constants.ModelClaimRoutingStateSleeping,
+		bindingReason(&pm.Status.Instances[slot])); err != nil {
+		klog.ErrorS(err, "could not say on the route that a claim stays", "pod", klog.KObj(pod), "model", pm.Name)
+	}
 	return nil
 }
 
