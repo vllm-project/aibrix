@@ -1,0 +1,29 @@
+apiVersion: autoscaling.aibrix.ai/v1alpha1
+kind: PodAutoscaler
+metadata:
+  name: podautoscaler-example-mock-llama
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    autoscaling.aibrix.ai/max-scale-up-rate: "2"
+    autoscaling.aibrix.ai/max-scale-down-rate: "2"
+    autoscaling.aibrix.ai/scale-down-cooldown-window: "60s"
+  namespace: aibrix-system
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: llama2-70b
+  minReplicas: 1
+  maxReplicas: 10
+  observeWindowSeconds: 600
+  panicWindowSeconds: 60
+  metricsSources:
+    - metricSourceType: "pod"
+      protocolType: "http"
+      port: "8000"
+      path: "/metrics"
+      targetMetric: "avg_prompt_throughput_toks_per_s"
+      targetValue: "20"
+  scalingStrategy: "KPA"

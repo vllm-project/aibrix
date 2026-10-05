@@ -1,0 +1,405 @@
+.. _deploying-gateway:
+
+===================
+Deploying Gateway
+===================
+
+This guide covers production deployment configuration for the AIBrix gateway components.
+
+Configuring Resources and Replica Count
+----------------------------------------
+
+For production deployments, we recommend tuning replica counts and resource allocations for both
+the **Gateway Plugin** and the **Envoy Proxy** data plane.
+
+Gateway Plugin
+~~~~~~~~~~~~~~
+
+The gateway plugin (``gatewayPlugin``) handles request routing logic and external processing.
+Set ``replicaCount`` and container resources in your ``values.yaml`` override:
+
+.. code-block:: yaml
+
+    gatewayPlugin:
+      replicaCount: 3
+      container:
+        resources:
+          limits:
+            cpu: "16"
+            memory: 32Gi
+          requests:
+            cpu: "16"
+            memory: 32Gi
+
+Gateway Plugin Kubernetes API Throttling
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Configure the gateway plugin's API server request rate using container arguments
+in ``config/gateway/gateway-plugin/gateway-plugin.yaml``:
+
+.. code-block:: yaml
+
+    containers:
+      - name: gateway-plugin
+        args:
+          - --kube-api-qps=5
+          - --kube-api-burst=10
+
+``--kube-api-qps`` defaults to ``rest.DefaultQPS`` (5 requests per second), and
+``--kube-api-burst`` defaults to ``rest.DefaultBurst`` (10 requests). Both must be
+greater than zero; QPS must also be finite and remain positive when represented
+as a float32. Invalid values cause the plugin to exit during startup.
+
+The plugin applies these values to its shared Kubernetes REST configuration
+before creating the core Kubernetes and Gateway API clients. Each client uses
+the same settings with its own rate limiter; this is not a combined request
+budget. This configuration is also used when initializing the plugin's Kubernetes
+caches. These flags control API server traffic, not inference request QPS.
+
+Envoy Proxy
+~~~~~~~~~~~
+
+The Envoy proxy (``gateway.envoyProxy``) is the data-plane component managed by Envoy Gateway.
+Set ``replicas`` and per-container resources as follows:
+
+.. code-block:: yaml
+
+    gateway:
+      envoyProxy:
+        replicas: 3
+        container:
+          envoy:
+            resources:
+              limits:
+                cpu: "8"
+                memory: 16Gi
+              requests:
+                cpu: "8"
+                memory: 16Gi
+
+Enabling Redis for Multi-Replica Deployments
+---------------------------------------------
+
+When running more than one gateway plugin replica, shared state is required so that all
+instances agree on routing decisions (e.g. prefix-cache block assignments, rate-limit counters).
+Two settings must both be configured:
+
+1. **Connect to Redis** — the gateway plugin reads the ``REDIS_HOST`` environment variable at
+   startup. If the variable is unset or Redis is unreachable, each replica operates with
+   in-process state only, which causes inconsistent routing across pods.
+
+2. **Enable cross-replica state sync** — setting ``AIBRIX_STATESYNC_ENABLED=true`` activates
+   the Redis-backed delta-sync mechanism that propagates prefix-cache state across replicas.
+   Without this flag, the gateway connects to Redis for other purposes (e.g. rate limiting)
+   but **does not** synchronize prefix-cache routing state between pods, so multi-replica
+   ``prefix-cache`` routing will still produce inconsistent decisions.
+
+Enable both by updating your ``values.yaml`` override:
+
+.. code-block:: yaml
+
+    gatewayPlugin:
+      dependencies:
+        redis:
+          host: ""   # leave empty to use the chart-managed Redis (aibrix-redis-master)
+          port: 6379
+      container:
+        envs:
+          AIBRIX_STATESYNC_ENABLED: "true"
+
+The Helm chart sets ``REDIS_HOST`` automatically from ``gatewayPlugin.dependencies.redis.host``,
+defaulting to ``<release-name>-redis-master`` when the field is empty. For an external Redis
+cluster, set ``host`` to the service hostname or IP of your Redis endpoint.
+
+.. note::
+    ``AIBRIX_STATESYNC_ENABLED`` defaults to ``false``. It must be explicitly set to ``true``
+    for cross-replica state sync to activate. Omitting this flag is the most common cause of
+    inconsistent ``prefix-cache`` routing when scaling the gateway plugin beyond one replica.
+
+Sizing Redis
+~~~~~~~~~~~~
+
+The bundled Redis instance is deployed under ``metadata.redis``. For production workloads with
+multiple gateway plugin replicas, increase its CPU, memory, and (if using persistence)
+storage from the defaults:
+
+.. code-block:: yaml
+
+    metadata:
+      redis:
+        replicas: 1
+        container:
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+
+The right sizing depends on request throughput and the number of distinct prefix-cache keys
+in flight. As a starting point, allocate roughly **1 GiB of memory per 1 000 concurrent
+requests** and increase CPU if Redis becomes a latency bottleneck (monitor ``redis_commands_duration_seconds``).
+
+.. note::
+    If you are using an externally managed Redis (e.g. AWS ElastiCache, Google Memorystore),
+    set ``gatewayPlugin.dependencies.redis.host`` to the external endpoint and remove the
+    ``metadata.redis`` block from your override — the chart will not deploy its own Redis when
+    a custom host is provided.
+
+Disabling Gateway Rate Limiting
+--------------------------------
+
+Set ``AIBRIX_DISABLE_RATE_LIMITING=true`` on the gateway plugin to disable AIBrix user
+RPM/TPM and model RPS quota enforcement. The setting defaults to ``false``. When disabled,
+the gateway skips AIBrix user lookup and does not use the ``user`` header as routing identity,
+but it forwards the header unchanged.
+
+.. code-block:: yaml
+
+    gatewayPlugin:
+      container:
+        envs:
+          AIBRIX_DISABLE_RATE_LIMITING: "true"
+
+The setting does not disable the per-replica ``requestsInflight`` guard or disconnect Redis.
+Keep Redis configured when session affinity, asynchronous jobs, state synchronization, or other
+gateway features require it. Because disabled mode leaves routing user identity empty,
+asynchronous video jobs use the shared ownership scope. The unauthenticated ``user`` header
+does not isolate one caller's video jobs from another caller's jobs in this mode.
+
+Configuring Buffer Limits, Connections, and QPS
+------------------------------------------------
+
+AIBrix exposes three policy knobs under ``gateway`` to control how traffic flows between
+clients, the Envoy proxy, and backend pods.
+
+Client Traffic Policy
+~~~~~~~~~~~~~~~~~~~~~
+
+``clientTrafficPolicy`` governs connections and request sizes arriving from external clients:
+
+- **bufferLimit** — maximum bytes buffered per request/response body (input/output size).
+  The default ``4194304`` is 4 MiB. Increase this if your workloads send large prompts or
+  receive large completions.
+- **connectionLimit** — maximum simultaneous TCP connections accepted by the proxy.
+- **http2.maxConcurrentStreams** — maximum concurrent HTTP/2 streams per connection from a client.
+
+.. code-block:: yaml
+
+    gateway:
+      clientTrafficPolicy:
+        connection:
+          bufferLimit: 4194304   # bytes; 4 MiB default
+          connectionLimit:
+            value: 1024
+        http2:
+          maxConcurrentStreams: 1024
+
+Backend Traffic Policy
+~~~~~~~~~~~~~~~~~~~~~~
+
+``backendTrafficPolicy`` controls how Envoy distributes load across backend pods and
+limits the blast radius of a single slow or failing pod:
+
+- **circuitBreaker.maxConnections** — maximum TCP connections to a single backend pod.
+- **circuitBreaker.maxParallelRequests** — maximum in-flight requests to a single backend pod (effective QPS cap when combined with latency).
+- **circuitBreaker.maxPendingRequests** — maximum requests queued waiting for a connection to a backend pod.
+- **circuitBreaker.maxParallelRetries** — maximum concurrent retries to a backend pod.
+- **circuitBreaker.maxRequestsPerConnection** — maximum requests served on a single connection before it is recycled.
+- **http2.maxConcurrentStreams** — maximum concurrent HTTP/2 streams per connection to a backend pod.
+
+.. code-block:: yaml
+
+    gateway:
+      backendTrafficPolicy:
+        circuitBreaker:
+          maxConnections: 1024
+          maxParallelRequests: 1024
+          maxParallelRetries: 1024
+          maxPendingRequests: 1024
+          maxRequestsPerConnection: 1024
+        http2:
+          maxConcurrentStreams: 1024
+
+Envoy Patch Policy
+~~~~~~~~~~~~~~~~~~
+
+``envoyPatchPolicy`` provides lower-level overrides applied directly to the Envoy xDS
+configuration, covering route timeouts and the limits for the original-destination cluster:
+
+- **route.timeout** — maximum duration Envoy waits for a backend response. Increase this
+  for long-running inference requests.
+- **route.connectTimeout** — maximum time to establish a TCP connection to a backend pod.
+- **circuitBreakers.maxConnections / maxRequests / maxPendingRequests** — same semantics
+  as the backend traffic policy above but applied at the Envoy cluster level.
+
+.. code-block:: yaml
+
+    gateway:
+      envoyPatchPolicy:
+        route:
+          timeout: 120s
+          connectTimeout: 6s
+        circuitBreakers:
+          maxConnections: 1024
+          maxRequests: 1024
+          maxPendingRequests: 1024
+
+Choosing a Routing Strategy
+----------------------------
+
+If no ``routing-strategy`` header is provided, the gateway defaults to ``random`` routing.
+
+External decision services
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For production ``external`` routing, run at least two decision-service replicas
+behind a stable Kubernetes Service, budget its synchronous latency within the
+Gateway request path, and alert on timeout, fallback, and circuit-open outcomes.
+Use HTTPS or an appropriate cluster NetworkPolicy and store bearer tokens in a
+mounted Secret file. Test Authoritative denial and service unavailability before
+enabling fail-closed traffic. External business-policy state is owned by the
+service; Gateway bulkhead and circuit state is local to each Gateway replica.
+See :doc:`../features/external-replica-routing`.
+
+.. code-block:: bash
+
+    # No routing-strategy header — gateway picks a random ready pod
+    curl -v http://${ENDPOINT}/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+        "model": "your-model-name",
+        "messages": [{"role": "user", "content": "Hello!"}],
+        "temperature": 0.7
+    }'
+
+For production workloads we recommend selecting a strategy based on your traffic pattern:
+
+**Multi-turn conversations or workloads with prompt prefix overlap — use** ``prefix-cache``
+
+When requests share a common prompt prefix (e.g. a system prompt, few-shot examples, or
+conversation history), ``prefix-cache`` routes each request to the pod that already holds the
+matching KV-cache blocks in GPU memory, reducing redundant computation and improving latency.
+See `prefix cache routing details <../../../pkg/plugins/gateway/algorithms/prefix_cache_readme.md>`_
+for algorithm internals and configuration options.
+
+.. code-block:: bash
+
+    curl -v http://${ENDPOINT}/v1/chat/completions \
+    -H "routing-strategy: prefix-cache" \
+    -H "Content-Type: application/json" \
+    -d '{
+        "model": "your-model-name",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "What is the capital of France?"}
+        ],
+        "temperature": 0.7
+    }'
+
+**Independent requests with no prefix overlap — use** ``least-request``
+
+When each request has a unique prompt and there is no KV-cache reuse benefit, ``least-request``
+distributes load evenly by always routing to the pod with the fewest in-flight requests.
+
+.. code-block:: bash
+
+    curl -v http://${ENDPOINT}/v1/chat/completions \
+    -H "routing-strategy: least-request" \
+    -H "Content-Type: application/json" \
+    -d '{
+        "model": "your-model-name",
+        "messages": [{"role": "user", "content": "Summarize this document: ..."}],
+        "temperature": 0.7
+    }'
+
+**High-throughput workloads requiring compute separation — use** ``pd``
+
+Prefill-Decode (PD) disaggregation splits the two phases of LLM inference across dedicated
+pods: prefill pods process the prompt and decode pods generate tokens. This allows each pod
+type to be sized and scaled independently, improving GPU utilization at high request volumes.
+
+.. code-block:: bash
+
+    curl -v http://${ENDPOINT}/v1/chat/completions \
+    -H "routing-strategy: pd" \
+    -H "Content-Type: application/json" \
+    -d '{
+        "model": "your-model-name",
+        "messages": [{"role": "user", "content": "Explain quantum entanglement."}],
+        "temperature": 0.7
+    }'
+
+See `prefill-decode disaggregation details <../../../pkg/plugins/gateway/algorithms/pd_readme.md>`_
+for deployment requirements and configuration options.
+
+.. note::
+    ``random`` is suitable for testing and low-traffic scenarios where routing quality is not
+    critical. For any production deployment, explicitly set ``routing-strategy`` to avoid
+    relying on the default.
+
+Draining Pods
+-------------
+
+The gateway excludes Pods annotated with ``aibrix.ai/draining=true`` from its
+ready-pod routing candidates. RoleSet and PodSet controllers set this annotation
+before deleting serving Pods when a role configures
+``drain.timeoutSeconds > 0``. This gives the gateway time to stop assigning new
+requests before the controller removes the Pod.
+
+The gateway treats the drain annotation as a routing signal only:
+
+.. code-block:: text
+
+   RoleSet/PodSet controller
+      -> patch Pod: aibrix.ai/draining=true
+      -> patch Pod: aibrix.ai/drain-start-time=<RFC3339 UTC>
+      -> patch Pod: aibrix.ai/drain-reason=scale-in|rollout
+      -> patch Pod: aibrix.ai/drain-target-action=delete
+
+   Gateway pod cache
+      -> observes the Pod update
+      -> filters the Pod out of ready routing candidates
+
+   RoleSet/PodSet controller
+      -> waits for drain.timeoutSeconds
+      -> deletes the Pod
+
+The controller owns the timeout and deletion decision. The gateway does not
+parse ``drain-start-time`` and does not emit drain lifecycle events.
+
+Per-Model Routing Configuration
+---------------------------------
+
+When a single gateway deployment serves multiple models, you may need different routing
+strategies per model — for example, ``prefix-cache`` for a chat model and ``pd`` for a
+batch-inference model. AIBrix supports this through **Model Config Profiles**, which let you
+attach a routing configuration directly to each model's pods via an annotation and select a
+profile at request time using the ``config-profile`` header.
+
+.. code-block:: bash
+
+    # Select the "low-latency" profile for this request
+    curl -v http://${ENDPOINT}/v1/chat/completions \
+    -H "config-profile: low-latency" \
+    -H "Content-Type: application/json" \
+    -d '{
+        "model": "your-model-name",
+        "messages": [{"role": "user", "content": "Hello!"}],
+        "temperature": 0.7
+    }'
+
+If the ``config-profile`` header is omitted, the model's ``defaultProfile`` is used.
+This allows the same gateway to enforce different routing strategies, prompt-length bucketing,
+and PD modes per model without deploying separate gateway instances.
+
+For config profile setup and the full annotation schema see :ref:`config_profiles` in the Gateway Routing guide. For production guidance including RPS limiting see :ref:`model_deployment_production`.
+
+.. card:: What's next?
+   :class-card: sd-border-1
+
+   * :doc:`model-deployment`: deploy models behind this gateway
+   * :doc:`observability`: gateway metrics and dashboards
+   * :doc:`../features/pd-disaggregation`: split prefill from decode
+   * :doc:`../designs/aibrix-router`: how routing decisions are made

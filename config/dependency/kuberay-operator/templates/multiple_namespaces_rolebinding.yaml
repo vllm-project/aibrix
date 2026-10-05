@@ -1,0 +1,4 @@
+---
+# Source: kuberay-operator/templates/multiple_namespaces_rolebinding.yaml
+# Install RoleBinding for namespaces listed in watchNamespace.
+# This should be consistent with `rolebinding.yaml`, except for the `kind` field.

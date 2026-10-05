@@ -1,0 +1,65 @@
+# Usage:
+#   kubectl apply -f samples/orchestration/topology-policy/roleset-hostname-required.yaml
+#   kubectl get pods -l storm-service-name=tp-rs-host-req -o wide
+#
+# Case: each RoleSet replica is required to run all of its Pods on one node hostname.
+#
+# This is the strictest placement example. It is useful when Pods in the same
+# deployment replica need node-local communication or node-local cache sharing.
+# Nodes already have the kubernetes.io/hostname label by default.
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: tp-rs-host-req
+spec:
+  replicas: 3
+  stateful: true
+  selector:
+    matchLabels:
+      app: tp-rs-host-req
+  template:
+    metadata:
+      labels:
+        app: tp-rs-host-req
+    spec:
+      # updateStrategy=Parallel creates all roles immediately for easier demos.
+      updateStrategy: Parallel
+      # topologyPolicy injects Kubernetes pod affinity into generated Pods.
+      topologyPolicy:
+        # scope=RoleSet matches Pods in the same generated RoleSet.
+        # This is the closest option for "place one deployment replica on one
+        # node" because each StormService replica creates one RoleSet.
+        scope: RoleSet
+        # mode=Required is a hard rule. All Pods in a RoleSet must fit on the
+        # same hostname or they remain Pending.
+        mode: Required
+        # key=kubernetes.io/hostname means the topology domain is a single node.
+        key: kubernetes.io/hostname
+      roles:
+        - name: prefill
+          # Two prefill replicas per RoleSet. With podGroupSize=2, each replica
+          # is represented by a PodSet containing two Pods.
+          replicas: 2
+          podGroupSize: 2
+          stateful: true
+          template:
+            metadata:
+              labels:
+                role: prefill
+            spec:
+              containers:
+                - name: prefill
+                  image: nginx:alpine
+        - name: decode
+          # Four decode Pods per RoleSet. With scope=RoleSet and hostname key,
+          # they must run on the same node as the RoleSet's prefill Pods.
+          replicas: 4
+          stateful: true
+          template:
+            metadata:
+              labels:
+                role: decode
+            spec:
+              containers:
+                - name: decode
+                  image: nginx:alpine

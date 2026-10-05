@@ -1,0 +1,316 @@
+---
+# Source: vllm-stack/templates/poddisruptionbudget.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: "vllm-pdb"
+  namespace: default
+spec:
+  maxUnavailable: 1
+---
+# Source: vllm-stack/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: "vllm-router-service-account"
+  namespace: default
+---
+# Source: vllm-stack/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: "vllm-secrets"
+  namespace: default
+type: Opaque
+data:
+  hf_token_llama3: "PFlPVVJfSFVHR0lOR0ZBQ0VfVE9LRU4+"
+---
+# Source: vllm-stack/templates/pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: "vllm-llama3-storage-claim"
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi  # Default to 20Gi if not set
+---
+# Source: vllm-stack/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: "vllm-pod-reader"
+  namespace: default
+rules:
+- apiGroups: [""] # "" indicates the core API group
+  resources: ["pods"]
+  verbs: ["get", "watch", "list"]
+---
+# Source: vllm-stack/templates/rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vllm-deployment-access-binding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: vllm-router-service-account
+    namespace: default
+roleRef:
+  kind: Role
+  name: vllm-pod-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: vllm-stack/templates/service-router.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: "vllm-router-service"
+  namespace: default
+  labels:
+    environment: router
+    release: router
+spec:
+  type: ClusterIP
+  ports:
+    - name: "router-sport"
+      port: 80
+      targetPort: 8000
+      protocol: TCP
+  selector:
+    environment: router
+    release: router
+---
+# Source: vllm-stack/templates/service-vllm.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: "vllm-engine-service"
+  namespace: default
+  labels:
+    environment: test
+    release: test
+spec:
+  type: ClusterIP
+  ports:
+    - name: "service-port"
+      port: 80
+      targetPort: "container-port"
+      protocol: TCP
+  selector:
+    environment: test
+    release: test
+---
+# Source: vllm-stack/templates/deployment-router.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "vllm-deployment-router"
+  namespace: default
+  labels:
+    environment: router
+    release: router
+spec:
+  replicas: 1
+  strategy:
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      environment: router
+      release: router
+  template:
+    metadata:
+      labels:
+        environment: router
+        release: router
+    spec:
+      serviceAccountName: vllm-router-service-account
+      containers:
+      - name: router-container
+        # TODO: update images.
+        image: "aibrix-container-registry-cn-beijing.cr.volces.com/lmcache/lmstack-router:latest"
+        imagePullPolicy: "Always"
+        env:
+        args:
+          - "--host"
+          - "0.0.0.0"
+          - "--port"
+          - "8000"
+          - "--service-discovery"
+          - "k8s"
+          - "--k8s-namespace"
+          - "default"
+          - "--k8s-label-selector"
+          - environment=test,release=test
+          - "--routing-logic"
+          - "session"
+          - "--session-key"
+          - "x-user-id"
+          - "--engine-stats-interval"
+          - "15"
+          - "--request-stats-window"
+          - "60"
+        resources:
+          requests:
+            cpu: "2"
+            memory: "8G"
+          limits:
+            cpu: "2"
+            memory: "8G"
+        ports:
+          - name: "router-cport"
+            containerPort: 8000
+
+        livenessProbe:
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: 8000
+---
+# Source: vllm-stack/templates/deployment-vllm-multi.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "vllm-llama3-deployment-vllm"
+  namespace: default
+  labels:
+    model: llama3
+    environment: test
+    release: test
+spec:
+  replicas: 8
+  strategy:
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      environment: test
+      release: test
+  progressDeadlineSeconds: 1200
+  template:
+    metadata:
+      labels:
+        model: llama3
+        environment: test
+        release: test
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: machine.cluster.vke.volcengine.com/gpu-name
+                    operator: In
+                    values:
+                      - Tesla-A100-80G
+                      - NVIDIA-H20-SXM5-96GB
+      initContainers:
+        - command:
+            - aibrix_download
+            - --model-uri
+            - tos://aibrix-artifact-testing/models/llama-3.1-8b-instruct/
+            - --local-dir
+            - /models/
+          env:
+            - name: DOWNLOADER_NUM_THREADS
+              value: "16"
+            - name: DOWNLOADER_ALLOW_FILE_SUFFIX
+              value: json, safetensors
+            - name: TOS_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: TOS_ACCESS_KEY
+                  name: tos-credential
+            - name: TOS_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: TOS_SECRET_KEY
+                  name: tos-credential
+            - name: TOS_ENDPOINT
+              value: https://tos-s3-cn-beijing.ivolces.com
+            - name: TOS_REGION
+              value: cn-beijing
+          image: aibrix-cn-beijing.cr.volces.com/aibrix/runtime:v0.3.0
+          name: init-model
+          volumeMounts:
+            - mountPath: /models
+              name: model-hostpath
+      containers:
+        - name: "vllm"
+          #image: "lmcache/vllm-openai:2025-03-10"
+          image: aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:lmcache-v0.8.5-20250418
+          command:
+          - "vllm"
+          - "serve"
+          - /models/llama-3.1-8b-instruct/
+          - --served-model-name
+          - "meta-llama/Llama-3.1-8B-Instruct"
+          - --trust-remote-code
+          - "--host"
+          - "0.0.0.0"
+          - "--port"
+          - "8000"
+          - "--no-enable-chunked-prefill"
+          - "--max-model-len"
+          - "32000"
+          - "--dtype"
+          - "bfloat16"
+          - "--disable-log-requests"
+          - "--swap-space"
+          - "0"
+          - "--kv-transfer-config"
+          - '{"kv_connector":"LMCacheConnector","kv_role":"kv_both"}'
+          securityContext:
+            runAsNonRoot: false
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: VLLM_USE_V1
+            value: "0"
+          - name: LMCACHE_USE_EXPERIMENTAL
+            value: "True"
+          - name: VLLM_RPC_TIMEOUT
+            value: "1000000"
+          - name: LMCACHE_LOCAL_CPU
+            value: "True"
+          - name: LMCACHE_MAX_LOCAL_CPU_SIZE
+            value: "120"
+          ports:
+            - name: "container-port"
+              containerPort: 8000          
+          startupProbe:
+            failureThreshold: 60
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: "150Gi"
+              cpu: "10"
+              nvidia.com/gpu: "1"
+            limits:
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - mountPath: /models
+              name: model-hostpath
+      volumes:
+        - name: model-hostpath
+          hostPath:
+            path: /root/models
+            type: DirectoryOrCreate

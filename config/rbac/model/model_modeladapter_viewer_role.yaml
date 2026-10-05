@@ -1,0 +1,23 @@
+# permissions for end users to view modeladapters.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+  name: model-modeladapter-viewer-role
+rules:
+- apiGroups:
+  - model.aibrix.ai
+  resources:
+  - modeladapters
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - model.aibrix.ai
+  resources:
+  - modeladapters/status
+  verbs:
+  - get

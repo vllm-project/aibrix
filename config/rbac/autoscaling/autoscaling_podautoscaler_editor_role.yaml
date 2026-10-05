@@ -1,0 +1,27 @@
+# permissions for end users to edit podautoscalers.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+  name: autoscaling-podautoscaler-editor-role
+rules:
+- apiGroups:
+  - autoscaling.aibrix.ai
+  resources:
+  - podautoscalers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - autoscaling.aibrix.ai
+  resources:
+  - podautoscalers/status
+  verbs:
+  - get

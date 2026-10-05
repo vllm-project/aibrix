@@ -1,0 +1,608 @@
+/*
+Copyright 2025 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package podset
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strconv"
+	"time"
+
+	v1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/tools/record"
+	"k8s.io/klog/v2"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	schedv1alpha1 "github.com/kubewharf/godel-scheduler-api/pkg/apis/scheduling/v1alpha1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/config"
+	aibrixconst "github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/controller/constants"
+	controllerdrain "github.com/vllm-project/aibrix/pkg/controller/drain"
+	ctrlutil "github.com/vllm-project/aibrix/pkg/controller/util"
+	utils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
+	podutil "github.com/vllm-project/aibrix/pkg/utils"
+	schedulerpluginsv1aplha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
+	volcanoschedv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
+)
+
+const (
+	ControllerName  = "podset-controller"
+	PodSetFinalizer = "orchestration.aibrix.ai/podset-finalizer"
+
+	PodGroupSyncedEventType = "PodGroupSynced"
+
+	DefaultRequeueAfter = 15 * time.Second
+)
+
+// controllerKind contains the schema.GroupVersionKind for this controller type.
+var controllerKind = orchestrationv1alpha1.SchemeGroupVersion.WithKind("PodSet")
+
+// Add creates a new PodSet Controller and adds it to the Manager with default RBAC.
+func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
+	r, err := newReconciler(mgr, runtimeConfig)
+	if err != nil {
+		return err
+	}
+	return add(mgr, r)
+}
+
+// add adds a new Controller to mgr with r as the reconcile.Reconciler
+func add(mgr manager.Manager, r reconcile.Reconciler) error {
+	err := ctrl.NewControllerManagedBy(mgr).
+		Named(ControllerName).
+		For(&orchestrationv1alpha1.PodSet{}).
+		Owns(&v1.Pod{}).
+		Complete(r)
+	if err != nil {
+		return err
+	}
+
+	klog.InfoS("Finished to add podset-controller")
+	return nil
+}
+
+// newReconciler returns a new reconcile.Reconciler
+func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (reconcile.Reconciler, error) {
+	reconciler := &PodSetReconciler{
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		EventRecorder: mgr.GetEventRecorderFor(ControllerName),
+		DynamicClient: dynamic.NewForConfigOrDie(mgr.GetConfig()),
+	}
+	return reconciler, nil
+}
+
+// PodSetReconciler reconciles a PodSet object
+type PodSetReconciler struct {
+	client.Client
+	Scheme        *runtime.Scheme
+	EventRecorder record.EventRecorder
+	DynamicClient dynamic.Interface
+}
+
+//+kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=podsets,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=podsets/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=podsets/finalizers,verbs=update
+//+kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+
+func (r *PodSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	klog.V(4).InfoS("Reconciling PodSet", "podset", req.NamespacedName)
+
+	podSet := &orchestrationv1alpha1.PodSet{}
+	if err := r.Get(ctx, req.NamespacedName, podSet); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Handle deletion
+	if !podSet.DeletionTimestamp.IsZero() {
+		return r.finalizePodSet(ctx, podSet)
+	}
+
+	// Add finalizer if not present
+	if !controllerutil.ContainsFinalizer(podSet, PodSetFinalizer) {
+		controllerutil.AddFinalizer(podSet, PodSetFinalizer)
+		return ctrl.Result{}, r.Update(ctx, podSet)
+	}
+
+	// Reconcile podgroup
+	if err := r.reconcilePodGroup(ctx, podSet); err != nil {
+		r.EventRecorder.Eventf(podSet, v1.EventTypeWarning, "ReconcileError", "Failed to reconcile podgroup: %v", err)
+		return ctrl.Result{}, err
+	}
+
+	// Reconcile pods
+	podResult, err := r.reconcilePods(ctx, podSet)
+	if err != nil {
+		r.EventRecorder.Eventf(podSet, v1.EventTypeWarning, "ReconcileError", "Failed to reconcile pods: %v", err)
+		return ctrl.Result{}, err
+	}
+
+	// Update status
+	if err := r.updateStatus(ctx, podSet); err != nil {
+		return ctrl.Result{}, err
+	}
+	if podResult.RequeueAfter > 0 {
+		return ctrl.Result{RequeueAfter: podResult.RequeueAfter}, nil
+	}
+
+	return ctrl.Result{}, nil
+}
+
+func (r *PodSetReconciler) reconcilePodGroup(ctx context.Context, podSet *orchestrationv1alpha1.PodSet) error {
+	if podSet == nil || podSet.Spec.SchedulingStrategy == nil {
+		return nil
+	}
+
+	podGroupMeta := metav1.ObjectMeta{
+		Name:      podSet.Name,
+		Namespace: podSet.Namespace,
+		Labels: map[string]string{
+			constants.PodSetNameLabelKey: podSet.Name,
+		},
+		OwnerReferences: []metav1.OwnerReference{
+			*metav1.NewControllerRef(podSet, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.PodSetKind)),
+		},
+	}
+
+	if podSet.Spec.SchedulingStrategy.GodelSchedulingStrategy != nil {
+		expectedGroup := &schedv1alpha1.PodGroup{
+			ObjectMeta: podGroupMeta,
+			Spec:       schedv1alpha1.PodGroupSpec(*podSet.Spec.SchedulingStrategy.GodelSchedulingStrategy),
+		}
+		expectedGroup.SetGroupVersionKind(schedv1alpha1.SchemeGroupVersion.WithKind("PodGroup"))
+		if synced, err := utils.EnsurePodGroup(ctx, r.DynamicClient, expectedGroup, podSet.Name, podSet.Namespace); err != nil {
+			return err
+		} else if synced {
+			r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, PodGroupSyncedEventType, "pod group %s synced", podSet.Name)
+		}
+	}
+	if podSet.Spec.SchedulingStrategy.CoschedulingSchedulingStrategy != nil {
+		expectedGroup := &schedulerpluginsv1aplha1.PodGroup{
+			ObjectMeta: podGroupMeta,
+			Spec:       schedulerpluginsv1aplha1.PodGroupSpec(*podSet.Spec.SchedulingStrategy.CoschedulingSchedulingStrategy),
+		}
+		expectedGroup.SetGroupVersionKind(schedulerpluginsv1aplha1.SchemeGroupVersion.WithKind("PodGroup"))
+		if synced, err := utils.EnsurePodGroup(ctx, r.DynamicClient, expectedGroup, podSet.Name, podSet.Namespace); err != nil {
+			return err
+		} else if synced {
+			r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, PodGroupSyncedEventType, "pod group %s synced", podSet.Name)
+		}
+	}
+	if podSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy != nil {
+		expectedGroup := &volcanoschedv1beta1.PodGroup{
+			ObjectMeta: podGroupMeta,
+			Spec: volcanoschedv1beta1.PodGroupSpec{
+				MinMember:         podSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy.MinMember,
+				MinTaskMember:     podSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy.MinTaskMember,
+				Queue:             podSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy.Queue,
+				PriorityClassName: podSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy.PriorityClassName,
+				MinResources:      &podSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy.MinResources,
+			},
+		}
+		expectedGroup.SetGroupVersionKind(volcanoschedv1beta1.SchemeGroupVersion.WithKind("PodGroup"))
+		if synced, err := utils.EnsurePodGroup(ctx, r.DynamicClient, expectedGroup, podSet.Name, podSet.Namespace); err != nil {
+			return err
+		} else if synced {
+			r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, PodGroupSyncedEventType, "pod group %s synced", podSet.Name)
+		}
+	}
+	return nil
+}
+
+func (r *PodSetReconciler) reconcilePods(ctx context.Context, podSet *orchestrationv1alpha1.PodSet) (controllerdrain.Result, error) {
+	// Get existing pods
+	podList, err := r.getPodsForPodSet(ctx, podSet)
+	if err != nil {
+		return controllerdrain.Result{}, fmt.Errorf("failed to get pods for PodSet: %w", err)
+	}
+
+	activePods := filterActivePods(podList.Items)
+	currentPodCount := len(activePods)
+	desiredPodCount := int(podSet.Spec.PodGroupSize)
+
+	if currentPodCount < desiredPodCount {
+		switch podSet.Spec.RecoveryPolicy {
+		case orchestrationv1alpha1.ReplaceUnhealthy:
+			return r.handleReplaceUnhealthy(ctx, podSet, activePods, currentPodCount, desiredPodCount)
+		case orchestrationv1alpha1.RecreatePodRecreateStrategy:
+			return r.handleRecreateStrategy(ctx, podSet, activePods, desiredPodCount)
+		}
+	} else if currentPodCount > desiredPodCount {
+		return r.handleScaleDown(ctx, podSet, activePods, currentPodCount, desiredPodCount)
+	}
+
+	return r.cancelStaleScaleInDrain(ctx, podSet, activePods, nil)
+}
+
+func (r *PodSetReconciler) handleReplaceUnhealthy(ctx context.Context, podSet *orchestrationv1alpha1.PodSet,
+	activePods []v1.Pod, currentPodCount, desiredPodCount int) (controllerdrain.Result, error) {
+
+	// Proactively find and delete unhealthy pods
+	var podsToDelete []*v1.Pod
+	for i := range activePods {
+		for _, cs := range activePods[i].Status.ContainerStatuses {
+			if cs.RestartCount > 0 {
+				klog.InfoS("Marking pod as unhealthy due to container restarts", "pod", activePods[i].Name, "restarts", cs.RestartCount)
+				podsToDelete = append(podsToDelete, &activePods[i])
+				break
+			}
+		}
+	}
+	if len(podsToDelete) > 0 {
+		klog.InfoS("Found unhealthy pods to be deleted", "count", len(podsToDelete), "podset", podSet.Name)
+		result, err := controllerdrain.DeletePods(ctx, r.Client, r.EventRecorder, podSet, podsToDelete, nil, aibrixconst.PodDrainReasonRollout, time.Now())
+		if err != nil {
+			return result, err
+		}
+		r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, "DeletingUnhealthyPods", "Deleting %d unhealthy pods due to container restarts.", len(podsToDelete))
+		return result, nil
+	}
+
+	// If no unhealthy pods deleted, fill missing slots
+	if desiredPodCount-currentPodCount > 0 {
+		r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, "ReplacingUnhealthy",
+			"ReplaceUnhealthy policy: creating %d pod(s) to replace missing ones, aiming for %d total.",
+			desiredPodCount-currentPodCount, desiredPodCount)
+	}
+
+	existingIndices := map[int]struct{}{}
+	sortPodsByIndex(activePods)
+	for _, pod := range activePods {
+		if idxStr, ok := pod.Labels[constants.PodGroupIndexLabelKey]; ok {
+			if idx, err := strconv.Atoi(idxStr); err == nil {
+				existingIndices[idx] = struct{}{}
+			}
+		}
+	}
+	for i := 0; i < desiredPodCount; i++ {
+		if _, exists := existingIndices[i]; !exists {
+			pod, err := r.createPodFromTemplate(podSet, i)
+			if err != nil {
+				return controllerdrain.Result{}, fmt.Errorf("failed to create pod template: %w", err)
+			}
+			if err := r.Create(ctx, pod); err != nil {
+				if apierrors.IsAlreadyExists(err) {
+					klog.InfoS("Pod already exists, skipping", "pod", pod.Name, "podset", podSet.Name)
+					continue
+				}
+				return controllerdrain.Result{}, fmt.Errorf("failed to create pod %v: %w", pod.Name, err)
+			}
+			klog.InfoS("Created pod (missing)", "pod", pod.Name, "podset", podSet.Name)
+		}
+	}
+	return controllerdrain.Result{}, nil
+}
+
+func (r *PodSetReconciler) handleRecreateStrategy(ctx context.Context, podSet *orchestrationv1alpha1.PodSet,
+	activePods []v1.Pod, desiredPodCount int) (controllerdrain.Result, error) {
+
+	if len(activePods) > 0 {
+		klog.InfoS("Recreate strategy: deleting active pods", "podset", podSet.Name, "count", len(activePods))
+		r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, "RecreatingAllPods",
+			"Recreate policy triggered: deleting all %d active pods before creating new ones", len(activePods))
+		podsToDelete := make([]*v1.Pod, 0, len(activePods))
+		for i := range activePods {
+			podsToDelete = append(podsToDelete, &activePods[i])
+		}
+		return controllerdrain.DeletePods(ctx, r.Client, r.EventRecorder, podSet, podsToDelete, podSet.Spec.Drain, aibrixconst.PodDrainReasonRollout, time.Now())
+	}
+
+	klog.InfoS("FullRecreate strategy: creating new pods", "podset", podSet.Name, "count", desiredPodCount)
+	for i := 0; i < desiredPodCount; i++ {
+		pod, err := r.createPodFromTemplate(podSet, i)
+		if err != nil {
+			return controllerdrain.Result{}, fmt.Errorf("failed to create pod template: %w", err)
+		}
+		if err := r.Create(ctx, pod); err != nil {
+			if apierrors.IsAlreadyExists(err) {
+				continue
+			}
+			return controllerdrain.Result{}, fmt.Errorf("failed to create pod %v: %w", pod.Name, err)
+		}
+		klog.InfoS("Created pod", "pod", pod.Name)
+	}
+	return controllerdrain.Result{}, nil
+}
+
+func (r *PodSetReconciler) handleScaleDown(ctx context.Context, podSet *orchestrationv1alpha1.PodSet,
+	activePods []v1.Pod, currentPodCount, desiredPodCount int) (controllerdrain.Result, error) {
+
+	podsToDelete := currentPodCount - desiredPodCount
+	if timeout, ok := drainTimeoutSeconds(podSet.Spec.Drain); ok {
+		r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, "ScalingDown",
+			"Draining %d excess pods before deletion to meet desired count of %d (timeout=%ds)", podsToDelete, desiredPodCount, timeout)
+	} else {
+		r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, "ScalingDown",
+			"Deleting %d excess pods to meet desired count of %d", podsToDelete, desiredPodCount)
+	}
+
+	sortPodsByIndex(activePods)
+	podList := make([]*v1.Pod, 0, podsToDelete)
+	for i := 0; i < podsToDelete; i++ {
+		podList = append(podList, &activePods[len(activePods)-1-i])
+	}
+	cancelResult, err := r.cancelStaleScaleInDrain(ctx, podSet, activePods, podList)
+	if err != nil {
+		return cancelResult, err
+	}
+	result, err := controllerdrain.DeletePods(ctx, r.Client, r.EventRecorder, podSet, podList, podSet.Spec.Drain, aibrixconst.PodDrainReasonScaleIn, time.Now())
+	if err != nil {
+		return result, fmt.Errorf("failed to delete pods for scale down: %w", err)
+	}
+	result.Merge(cancelResult)
+	for _, pod := range podList {
+		klog.InfoS("Processed pod deletion", "pod", pod.Name, "podset", podSet.Name)
+	}
+	return result, nil
+}
+
+func (r *PodSetReconciler) cancelStaleScaleInDrain(ctx context.Context, podSet *orchestrationv1alpha1.PodSet, activePods []v1.Pod, podsToDelete []*v1.Pod) (controllerdrain.Result, error) {
+	deleteSet := make(map[string]struct{}, len(podsToDelete))
+	for _, pod := range podsToDelete {
+		if pod == nil {
+			continue
+		}
+		deleteSet[pod.Namespace+"/"+pod.Name] = struct{}{}
+	}
+	stale := make([]*v1.Pod, 0)
+	for i := range activePods {
+		pod := &activePods[i]
+		if !podutil.IsPodDraining(pod) {
+			continue
+		}
+		if pod.Annotations[aibrixconst.PodDrainReasonAnnotationKey] != aibrixconst.PodDrainReasonScaleIn {
+			continue
+		}
+		if _, deleting := deleteSet[pod.Namespace+"/"+pod.Name]; deleting {
+			continue
+		}
+		stale = append(stale, pod)
+	}
+	return controllerdrain.CancelPods(ctx, r.Client, r.EventRecorder, podSet, stale, aibrixconst.PodDrainReasonScaleIn)
+}
+
+func drainTimeoutSeconds(spec *orchestrationv1alpha1.RoleDrainSpec) (int32, bool) {
+	if spec == nil || spec.TimeoutSeconds == nil || *spec.TimeoutSeconds <= 0 {
+		return 0, false
+	}
+	return *spec.TimeoutSeconds, true
+}
+
+func (r *PodSetReconciler) createPodFromTemplate(podSet *orchestrationv1alpha1.PodSet, podIndex int) (*v1.Pod, error) {
+	pod, err := ctrlutil.GetPodFromTemplate(&podSet.Spec.Template, podSet, metav1.NewControllerRef(podSet, controllerKind))
+	if err != nil {
+		return nil, err
+	}
+
+	// Set pod name
+	pod.Name = utils.Shorten(fmt.Sprintf("%s-%d", podSet.Name, podIndex), false, false)
+	pod.Namespace = podSet.Namespace
+
+	// Add labels
+	if pod.Labels == nil {
+		pod.Labels = make(map[string]string)
+	}
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
+	}
+	pod.Labels[constants.PodSetNameLabelKey] = podSet.Name
+	pod.Labels[constants.PodGroupIndexLabelKey] = strconv.Itoa(podIndex)
+
+	// inherit podset labels and annotations
+	for k, v := range podSet.Labels {
+		if _, ok := pod.Labels[k]; !ok {
+			pod.Labels[k] = v
+		}
+	}
+	for k, v := range podSet.Annotations {
+		if _, ok := pod.Annotations[k]; !ok {
+			pod.Annotations[k] = v
+		}
+	}
+	if pod.Spec.SchedulerName == "" && podHasVolcanoPodGroup(pod) {
+		pod.Spec.SchedulerName = "volcano"
+	}
+
+	// manually set the hostname and subdomain for FQDN
+	pod.Spec.Hostname = pod.Name
+	pod.Spec.Subdomain = podSet.Labels[constants.StormServiceNameLabelKey]
+
+	// Add environment variables for pod coordination
+	isBuiltIn := func(name string) bool {
+		return name == constants.PodSetNameEnvKey ||
+			name == constants.PodSetIndexEnvKey ||
+			name == constants.PodSetSizeEnvKey
+	}
+	addBuiltInEnvVars := func(envs []v1.EnvVar) []v1.EnvVar {
+		builtInEnvs := []v1.EnvVar{
+			{Name: constants.PodSetNameEnvKey, Value: podSet.Name},
+			{Name: constants.PodSetIndexEnvKey, Value: strconv.Itoa(podIndex)},
+			{Name: constants.PodSetSizeEnvKey, Value: strconv.Itoa(int(podSet.Spec.PodGroupSize))},
+		}
+		for _, env := range envs {
+			if isBuiltIn(env.Name) {
+				klog.Warningf("PodSet %s: dropping user-defined env var %q as it conflicts with a built-in env var",
+					podSet.Name, env.Name)
+				continue
+			}
+			builtInEnvs = append(builtInEnvs, env)
+		}
+		return builtInEnvs
+	}
+	if pod.Spec.InitContainers != nil {
+		for i := range pod.Spec.InitContainers {
+			pod.Spec.InitContainers[i].Env = addBuiltInEnvVars(pod.Spec.InitContainers[i].Env)
+		}
+	}
+	if pod.Spec.Containers != nil {
+		for i := range pod.Spec.Containers {
+			pod.Spec.Containers[i].Env = addBuiltInEnvVars(pod.Spec.Containers[i].Env)
+		}
+	}
+
+	return pod, nil
+}
+
+func podHasVolcanoPodGroup(pod *v1.Pod) bool {
+	if pod == nil {
+		return false
+	}
+	if _, ok := pod.Labels[constants.VolcanoPodGroupNameAnnotationKey]; ok {
+		return true
+	}
+	if _, ok := pod.Annotations[constants.VolcanoPodGroupNameAnnotationKey]; ok {
+		return true
+	}
+	return false
+}
+
+func (r *PodSetReconciler) getPodsForPodSet(ctx context.Context, podSet *orchestrationv1alpha1.PodSet) (*v1.PodList, error) {
+	podList := &v1.PodList{}
+	err := r.List(ctx, podList, client.InNamespace(podSet.Namespace), client.MatchingLabels{
+		constants.PodSetNameLabelKey: podSet.Name,
+	})
+	return podList, err
+}
+
+func (r *PodSetReconciler) updateStatus(ctx context.Context, podSet *orchestrationv1alpha1.PodSet) error {
+	podList, err := r.getPodsForPodSet(ctx, podSet)
+	if err != nil {
+		return err
+	}
+
+	activePods := filterActivePods(podList.Items)
+	readyPods := filterReadyPods(activePods)
+
+	newStatus := podSet.Status.DeepCopy()
+	newStatus.TotalPods = int32(len(activePods))
+	newStatus.ReadyPods = int32(len(readyPods))
+
+	// Determine phase
+	if len(activePods) == 0 {
+		newStatus.Phase = orchestrationv1alpha1.PodSetPhasePending
+	} else if len(readyPods) == int(podSet.Spec.PodGroupSize) {
+		newStatus.Phase = orchestrationv1alpha1.PodSetPhaseReady
+	} else if len(readyPods) > 0 {
+		newStatus.Phase = orchestrationv1alpha1.PodSetPhaseRunning
+	} else {
+		newStatus.Phase = orchestrationv1alpha1.PodSetPhasePending
+	}
+
+	// For now, skip conditions to avoid compilation issues
+	// TODO: Add proper condition management later
+
+	if !apiequality.Semantic.DeepEqual(&podSet.Status, newStatus) {
+		podSet.Status = *newStatus
+		return r.Status().Update(ctx, podSet)
+	}
+
+	return nil
+}
+
+func (r *PodSetReconciler) finalizePodSet(ctx context.Context, podSet *orchestrationv1alpha1.PodSet) (ctrl.Result, error) {
+	// Delete all pods
+	podSetList, err := r.getPodsForPodSet(ctx, podSet)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if len(podSetList.Items) > 0 {
+		podsToDelete := make([]*v1.Pod, 0, len(podSetList.Items))
+		for i := range podSetList.Items {
+			podsToDelete = append(podsToDelete, &podSetList.Items[i])
+		}
+		result, err := controllerdrain.DeletePods(ctx, r.Client, r.EventRecorder, podSet, podsToDelete, podSet.Spec.Drain, aibrixconst.PodDrainReasonScaleIn, time.Now())
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to delete pods: %w", err)
+		}
+		if result.RequeueAfter > 0 {
+			return ctrl.Result{RequeueAfter: result.RequeueAfter}, nil
+		}
+		// Wait for pods to be deleted
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// Delete podgroup
+	if err := utils.FinalizePodGroup(ctx, r.DynamicClient, r.Client, &schedv1alpha1.PodGroup{}, podSet.Name, podSet.Namespace); err != nil {
+		return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
+	}
+	if err := utils.FinalizePodGroup(ctx, r.DynamicClient, r.Client, &schedulerpluginsv1aplha1.PodGroup{}, podSet.Name, podSet.Namespace); err != nil {
+		return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
+	}
+	if err := utils.FinalizePodGroup(ctx, r.DynamicClient, r.Client, &volcanoschedv1beta1.PodGroup{}, podSet.Name, podSet.Namespace); err != nil {
+		return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
+	}
+
+	// Remove finalizer
+	controllerutil.RemoveFinalizer(podSet, PodSetFinalizer)
+	return ctrl.Result{}, r.Update(ctx, podSet)
+}
+
+// Helper functions
+func filterActivePods(pods []v1.Pod) []v1.Pod {
+	var active []v1.Pod
+	for _, pod := range pods {
+		if pod.Status.Phase != v1.PodSucceeded && pod.Status.Phase != v1.PodFailed {
+			active = append(active, pod)
+		}
+	}
+	return active
+}
+
+func filterReadyPods(pods []v1.Pod) []v1.Pod {
+	var ready []v1.Pod
+	for _, pod := range pods {
+		if podutil.IsPodReady(&pod) {
+			ready = append(ready, pod)
+		}
+	}
+	return ready
+}
+
+// getPodIndexFromLabels safely extracts pod index from labels
+// If index label is missing or invalid, return a large number to push it to the end.
+func getPodIndexFromLabels(pod v1.Pod) int {
+	if idxStr, ok := pod.Labels[constants.PodGroupIndexLabelKey]; ok {
+		if idx, err := strconv.Atoi(idxStr); err == nil {
+			return idx
+		}
+	}
+	// return a big number so invalid pods are always sorted last
+	return int(^uint(0) >> 1) // max int
+}
+
+// sortPodsByIndex sorts pods in ascending order of their PodGroupIndex
+func sortPodsByIndex(pods []v1.Pod) {
+	sort.Slice(pods, func(i, j int) bool {
+		return getPodIndexFromLabels(pods[i]) < getPodIndexFromLabels(pods[j])
+	})
+}

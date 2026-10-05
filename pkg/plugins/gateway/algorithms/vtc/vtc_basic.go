@@ -1,0 +1,358 @@
+/*
+Copyright 2025 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package vtc
+
+import (
+	"fmt"
+	"math"
+	"math/rand"
+
+	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
+)
+
+const (
+	defaultMaxPodLoad        = 100.0
+	defaultInputTokenWeight  = 1.0
+	defaultOutputTokenWeight = 2.0
+	defaultFairnessWeight    = 1.0
+	defaultUtilizationWeight = 1.0
+)
+
+const (
+	VTC_MAX_POD_LOAD        = "AIBRIX_ROUTER_VTC_BASIC_MAX_POD_LOAD"
+	VTC_INPUT_TOKEN_WEIGHT  = "AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT"
+	VTC_OUTPUT_TOKEN_WEIGHT = "AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT"
+	VTC_FAIRNESS_WEIGHT     = "AIBRIX_ROUTER_VTC_BASIC_FAIRNESS_WEIGHT"
+	VTC_UTILIZATION_WEIGHT  = "AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT"
+)
+
+var (
+	maxPodLoad        = utils.LoadEnvFloat(VTC_MAX_POD_LOAD, defaultMaxPodLoad)
+	inputTokenWeight  = utils.LoadEnvFloat(VTC_INPUT_TOKEN_WEIGHT, defaultInputTokenWeight)
+	outputTokenWeight = utils.LoadEnvFloat(VTC_OUTPUT_TOKEN_WEIGHT, defaultOutputTokenWeight)
+	fairnessWeight    = utils.LoadEnvFloat(VTC_FAIRNESS_WEIGHT, defaultFairnessWeight)
+	utilizationWeight = utils.LoadEnvFloat(VTC_UTILIZATION_WEIGHT, defaultUtilizationWeight)
+)
+
+// BasicVTCRouter implements the VTC routing algorithm
+type BasicVTCRouter struct {
+	cache          cache.MetricCache
+	tokenTracker   TokenTracker
+	tokenEstimator TokenEstimator
+	config         *VTCConfig
+	// scopes holds the trackers of the profiles that resolved their window or
+	// weights away from the process defaults, bounded by maxTrackerScopes. A
+	// request whose profile leaves them alone shares the process-wide
+	// tokenTracker this router was built with.
+	scopes trackerRegistry
+}
+
+// trackerFor returns the token tracker this request's profile resolves to and
+// the tracker knobs that belong to it: the floors and window the callers need
+// for bucket sizing. A request whose profile leaves the tracker knobs and the
+// two weights at their process defaults gets this router's own tracker, which
+// is the one the environment configured; a request that changes any of them
+// gets the tracker of its scope, so its window, weights and token floors are
+// read from and written to that tracker alone. When the scope registry is at
+// its bound the request keeps the process-wide tracker, and it keeps that
+// tracker's knobs with it, so scoring uses the same floors the update will
+// use (see the callers).
+func (r *BasicVTCRouter) trackerFor(routingCtx *types.RoutingContext) (TokenTracker, types.VTCTokenTrackerOverrides) {
+	vtcKnobs := routingCtx.RoutingOverrides().VTC
+	defaults := types.DefaultRoutingOverrides().VTC
+	scope := trackerScope{
+		knobs:        vtcKnobs.TokenTracker,
+		inputWeight:  vtcKnobs.InputTokenWeight,
+		outputWeight: vtcKnobs.OutputTokenWeight,
+	}
+	// A request whose profile resolved all six knobs back to the process
+	// defaults shares the process-wide tracker, so a request that overrides
+	// only the per-request VTC knobs still changes nothing here.
+	if scope.knobs == defaults.TokenTracker &&
+		scope.inputWeight == defaults.InputTokenWeight &&
+		scope.outputWeight == defaults.OutputTokenWeight {
+		return r.tokenTracker, defaults.TokenTracker
+	}
+	tracker, ok := r.scopes.get(scope, func() TokenTracker {
+		// Copy the router config so a scoped tracker keeps every field the
+		// router was built with; only the two weights are scoped here.
+		cfg := *r.config
+		cfg.InputTokenWeight = scope.inputWeight
+		cfg.OutputTokenWeight = scope.outputWeight
+		return NewScopedInMemorySlidingWindowTokenTracker(&cfg, scope.knobs)
+	})
+	if !ok {
+		// The registry is full: the request keeps the process-wide tracker
+		// and the environment floors it was built with.
+		return r.tokenTracker, defaults.TokenTracker
+	}
+	return tracker, scope.knobs
+}
+
+// NewBasicVTCRouter creates a new BasicVTCRouter with the provided token tracker and estimator
+func NewBasicVTCRouter(tokenTracker TokenTracker, tokenEstimator TokenEstimator, config *VTCConfig) (*BasicVTCRouter, error) {
+	c, err := cache.Get()
+	if err != nil {
+		klog.Error("fail to get cache store in basic-vtc router")
+		return nil, err
+	}
+
+	return &BasicVTCRouter{
+		cache:          c,
+		tokenTracker:   tokenTracker,
+		tokenEstimator: tokenEstimator,
+		config:         config,
+	}, nil
+}
+
+// Route implements the VTC routing algorithm
+func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
+	readyPods := readyPodList.All()
+	user := ctx.User
+	if user == nil {
+		klog.Warningf("VTC routing not possible: user is nil, falling back to random pod selection")
+		randomPod, err := utils.SelectRandomPod(readyPods, rand.Intn)
+		if err != nil {
+			return "", fmt.Errorf("fallback to random pod selection failed: %w", err)
+		}
+		ctx.SetTargetPod(randomPod)
+		return ctx.TargetAddress(), nil
+	}
+
+	// The request's resolved overrides carry the profile's values on top of
+	// the process defaults (see routingalgorithms.ResolveRoutingOverrides).
+	vtcWeights := ctx.RoutingOverrides().VTC
+	maxPodLoad := vtcWeights.MaxPodLoad
+	fairnessWeight := vtcWeights.FairnessWeight
+	utilizationWeight := vtcWeights.UtilizationWeight
+
+	inputTokens := r.tokenEstimator.EstimateInputTokens(ctx.Message)
+	outputTokens := r.tokenEstimator.EstimateOutputTokens(ctx.Message)
+
+	// The profile may have scoped a tracker to itself; the process-wide one is
+	// used otherwise, together with the tracker's knobs, so the bucket sizing
+	// below uses the floors of the tracker that will be updated (see trackerFor).
+	tracker, trackerKnobs := r.trackerFor(ctx)
+
+	userTokens, err := tracker.GetTokenCount(ctx.Context, *user)
+	if err != nil {
+		klog.ErrorS(err, "failed to get user token count, falling back to zero", "user", *user)
+		userTokens = 0
+	}
+
+	klog.InfoS("VTC tokens for user",
+		"user", *user,
+		"tokens", userTokens,
+		"inputTokens", inputTokens,
+		"outputTokens", outputTokens)
+
+	var targetPod *v1.Pod
+	var minScore = math.MaxFloat64
+
+	// Simple vtc-basic implementation
+	// Using clamped-linear instead of modulo - offers good monotonicity, fairness based routing.
+	// Pod utilization is used as a secondary metric to ensure good utilization.
+	// By adapting bucket sizes and normalizing scores, the algorithm remains robust as system load and user activity fluctuate.
+
+	// Get the min and max token counts for adaptive bucket sizing
+	minTokens, err := tracker.GetMinTokenCount(ctx.Context)
+	if err != nil {
+		klog.ErrorS(err, "failed to get minimum token count, using default value")
+		minTokens = trackerKnobs.MinTokens // The tracker's configured minimum token count
+	}
+
+	maxTokens, err := tracker.GetMaxTokenCount(ctx.Context)
+	if err != nil {
+		klog.ErrorS(err, "failed to get maximum token count, using default value")
+		maxTokens = trackerKnobs.MaxTokens // The tracker's configured maximum token count
+	}
+
+	// Calculate scores for each pod
+	for i, pod := range readyPods {
+
+		// 1. Dynamically calculate a reasonable "step size" for mapping user tokens onto pod indices, ensuring the mapping is
+		// relevant to the current system load while maintaining a minimum sensitivity
+		adaptiveBucketSize := math.Max(trackerKnobs.MinTokens, (minTokens+maxTokens)/2)
+
+		metrics.SetGaugeMetric(
+			metrics.VTCBucketSizeActive,
+			metrics.GetMetricHelp(metrics.VTCBucketSizeActive),
+			adaptiveBucketSize,
+			[]string{"pod", "model"},
+			pod.Name, ctx.Model,
+		)
+
+		// Apply clamped linear mapping: tokens / bucket_size, clamped to [0, npods-1]
+		normalizedTokens := math.Min(float64(userTokens)/adaptiveBucketSize, float64(len(readyPods)-1))
+
+		fairnessScore := math.Abs(float64(i) - normalizedTokens)
+
+		klog.InfoS("VTC token normalization details",
+			"user", *user,
+			"userTokens", userTokens,
+			"minTokens", minTokens,
+			"maxTokens", maxTokens,
+			"adaptiveBucketSize", adaptiveBucketSize,
+			"normalizedTokens", normalizedTokens,
+			"podIndex", i,
+			"fairnessScore", fairnessScore)
+
+		// 2. Get pod load for utilization score
+		var podLoad float64
+		if r.cache != nil {
+			reqCount, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.NumRequestsRunning)
+			if err != nil {
+				klog.ErrorS(err, "failed to get pod metrics, using default value", "pod", pod.Name)
+				podLoad = 0
+			} else {
+				podLoad = reqCount.GetSimpleValue()
+			}
+		} else {
+			klog.Info("Cache is nil, using default pod load value")
+			podLoad = 0
+		}
+
+		// 3. Calculate utilization score (normalized between 0-1)
+		utilizationScore := min(podLoad/maxPodLoad, 1.0)
+
+		// 4. Add a small random factor to break ties and improve distribution
+		randomFactor := rand.Float64() * 0.1
+
+		// 5. Calculate combined score (lower is better) - using configurable weights for fairness and utilization
+		score := (fairnessWeight * fairnessScore) + (utilizationWeight * utilizationScore) + randomFactor
+
+		klog.InfoS("VTC hybrid pod selection",
+			"pod", pod.Name,
+			"podIndex", i,
+			"userTokens", userTokens,
+			"podLoad", podLoad,
+			"fairnessScore", fairnessScore,
+			"fairnessWeight", fairnessWeight,
+			"utilizationScore", utilizationScore,
+			"utilizationWeight", utilizationWeight,
+			"combinedScore", score)
+
+		if score < minScore {
+			minScore = score
+			targetPod = pod
+		}
+	}
+
+	if targetPod == nil {
+		klog.Warning("No pods with valid metrics found or all pods scored equally; selecting a pod randomly as fallback")
+		var err error
+		targetPod, err = utils.SelectRandomPod(readyPods, rand.Intn)
+		if err != nil {
+			return "", fmt.Errorf("random fallback selection failed: %w", err)
+		}
+	}
+
+	if *user != "" {
+		err := tracker.UpdateTokenCount(ctx.Context, *user, inputTokens, outputTokens)
+		if err != nil {
+			klog.ErrorS(err, "failed to update user token count", "user", *user)
+		}
+	}
+
+	ctx.SetTargetPod(targetPod)
+	return ctx.TargetAddress(), nil
+}
+
+// ScoreAll computes the scores for all ready pods in a single batch operation.
+func (r *BasicVTCRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	readyPods := readyPodList.All()
+	scores := make([]float64, len(readyPods))
+	scored := make([]bool, len(readyPods))
+
+	user := ctx.User
+	if user == nil {
+		return scores, scored, fmt.Errorf("VTC routing not possible: user is nil")
+	}
+
+	// The request's resolved overrides carry the profile's values on top of
+	// the process defaults (see routingalgorithms.ResolveRoutingOverrides).
+	vtcWeights := ctx.RoutingOverrides().VTC
+	maxPodLoad := vtcWeights.MaxPodLoad
+	fairnessWeight := vtcWeights.FairnessWeight
+	utilizationWeight := vtcWeights.UtilizationWeight
+
+	// The profile may have scoped a tracker to itself; the process-wide one is
+	// used otherwise, and trackerKnobs follow that choice (see trackerFor).
+	// ScoreAll never updates the tracker, so scoring a candidate cannot commit a
+	// request the blend may still route elsewhere.
+	tracker, trackerKnobs := r.trackerFor(ctx)
+
+	userTokens, err := tracker.GetTokenCount(ctx.Context, *user)
+	if err != nil {
+		userTokens = 0
+	}
+
+	minTokens, err := tracker.GetMinTokenCount(ctx.Context)
+	if err != nil {
+		minTokens = trackerKnobs.MinTokens
+	}
+
+	maxTokens, err := tracker.GetMaxTokenCount(ctx.Context)
+	if err != nil {
+		maxTokens = trackerKnobs.MaxTokens
+	}
+
+	for i, pod := range readyPods {
+		adaptiveBucketSize := math.Max(trackerKnobs.MinTokens, (minTokens+maxTokens)/2)
+		normalizedTokens := math.Min(float64(userTokens)/adaptiveBucketSize, float64(len(readyPods)-1))
+		fairnessScore := math.Abs(float64(i) - normalizedTokens)
+
+		var podLoad float64
+		if r.cache != nil {
+			reqCount, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.NumRequestsRunning)
+			if err != nil {
+				podLoad = 0
+			} else {
+				podLoad = reqCount.GetSimpleValue()
+			}
+		} else {
+			podLoad = 0
+		}
+
+		utilizationScore := min(podLoad/maxPodLoad, 1.0)
+		randomFactor := rand.Float64() * 0.1
+
+		score := (fairnessWeight * fairnessScore) + (utilizationWeight * utilizationScore) + randomFactor
+
+		scores[i] = score
+		scored[i] = true
+	}
+
+	return scores, scored, nil
+}
+
+// Polarity returns whether higher or lower score is better.
+func (r *BasicVTCRouter) Polarity() types.Polarity {
+	return types.PolarityLeast
+}
+
+func (r *BasicVTCRouter) SubscribedMetrics() []string {
+	return []string{
+		metrics.NumRequestsRunning,
+		metrics.VTCBucketSizeActive,
+	}
+}

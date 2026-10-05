@@ -1,0 +1,20 @@
+name: Docker Build Images
+
+on:
+  workflow_dispatch:  # Allows manual trigger
+  pull_request:
+    branches: [ "main", "release-*" ]
+
+jobs:
+  build:
+    # This prevents the job from running as other steps cover its functionality.
+    # Keep the file for future reference without deleting it.
+    if: github.repository == 'vllm-project/aibrix-disabled'
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v6
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v4
+    - name: Docker Build Container Images
+      run: make docker-build-all

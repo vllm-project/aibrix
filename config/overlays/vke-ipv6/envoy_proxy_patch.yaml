@@ -1,0 +1,24 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: aibrix-custom-proxy-config
+  namespace: aibrix-system
+spec:
+  provider:
+    kubernetes:
+      envoyService:
+        patch:
+          type: StrategicMerge
+          value:
+            metadata:
+              annotations:
+                service.beta.kubernetes.io/volcengine-loadbalancer-address-type: "PRIVATE"
+            spec:
+              ipFamilies:
+                - IPv4
+                - IPv6
+              ipFamilyPolicy: PreferDualStack # Changed from SingleStack to PreferDualStack
+      envoyDeployment:
+        pod:
+          annotations:
+            vci.vke.volcengine.com/pod-ip-family: dualstack

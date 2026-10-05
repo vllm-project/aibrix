@@ -1,0 +1,11 @@
+## Append samples of your project ##
+resources:
+- autoscaling_v1alpha1_podautoscaler.yaml
+- model_v1alpha1_modeladapter.yaml
+- model_v1alpha1_modelclaim.yaml
+- orchestration_v1alpha1_rayclusterreplicaset.yaml
+- orchestration_v1alpha1_rayclusterfleet.yaml
+- orchestration_v1alpha1_kvcache.yaml
+- orchestration_v1alpha1_stormservice.yaml
+- orchestration_v1alpha1_roleset.yaml
+#+kubebuilder:scaffold:manifestskustomizesamples

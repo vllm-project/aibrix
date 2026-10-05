@@ -1,0 +1,121 @@
+/*
+Copyright 2024 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package gateway
+
+import (
+	"context"
+	"strconv"
+	"strings"
+
+	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	"github.com/vllm-project/aibrix/pkg/types"
+)
+
+// HandleResponseHeaders parses upstream headers without finalizing request
+// bookkeeping or releasing routerCtx; Process owns both lifecycle operations.
+func (s *Server) HandleResponseHeaders(ctx context.Context, routerCtx *types.RoutingContext, requestID string, model string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, bool, int) {
+	b := req.Request.(*extProcPb.ProcessingRequest_ResponseHeaders)
+
+	_, span := tracer.Start(ctx, "process.handle_response_headers")
+	defer span.End()
+
+	var isProcessingError bool
+	var processingErrorCode int
+
+	headers := []*configPb.HeaderValueOption{}
+	headers = buildEnvoyProxyHeaders(headers, HeaderWentIntoReqHeaders, "true", HeaderRequestID, requestID)
+	suppressRoutingDiagnostics := routerCtx != nil && routerCtx.ConfigProfile != nil && routerCtx.ConfigProfile.AuthoritativeRoutingPolicy
+	if routerCtx != nil && routerCtx.HasRouted() && !suppressRoutingDiagnostics {
+		headers = buildEnvoyProxyHeaders(headers,
+			HeaderRoutingStrategy, string(routerCtx.Algorithm),
+			HeaderTargetPod, routerCtx.TargetPod().Name,
+			HeaderTargetPodIP, routerCtx.TargetAddress())
+	}
+
+	if routerCtx != nil && routerCtx.RespHeaders != nil {
+		for key, value := range routerCtx.RespHeaders {
+			if suppressRoutingDiagnostics && isRoutingDiagnosticHeader(key) {
+				continue
+			}
+			// skip HTTP/2 pseudo-header fields (such as :status, :path, etc.) to avoid protocol errors.
+			if strings.HasPrefix(key, ":") {
+				continue
+			}
+			headers = append(headers, &configPb.HeaderValueOption{
+				Header: &configPb.HeaderValue{
+					Key:      key,
+					RawValue: []byte(value),
+				},
+			})
+		}
+	}
+
+	for _, headerValue := range b.ResponseHeaders.Headers.Headers {
+		if headerValue.Key == ":status" {
+			code, err := strconv.Atoi(string(headerValue.RawValue))
+			if err != nil {
+				isProcessingError = true
+				processingErrorCode = 500
+				break
+			}
+			if code < 200 || code >= 300 {
+				isProcessingError = true
+				processingErrorCode = code
+			}
+			// A DELETE that the backend honored (or that found nothing to delete) is
+			// the point at which the registry record becomes garbage. Failing to
+			// remove it is reported to the client so the DELETE can be retried.
+			if delResp := s.maybeDeleteVideoJobAfterDelete(ctx, routerCtx, code); delResp != nil {
+				return delResp, isProcessingError, processingErrorCode
+			}
+			headers = buildEnvoyProxyHeaders(headers, headerValue.Key, string(headerValue.RawValue))
+			break
+		}
+	}
+
+	// HandleResponseBody rewrites the job id inside video create/status/delete bodies, so
+	// the upstream content-length no longer describes what Envoy will send. Envoy
+	// would otherwise truncate the body or wait for bytes that never arrive.
+	var removeHeaders []string
+	if routerCtx != nil && videoJobResponseNeedsBuffering(routerCtx.ReqHeaders[methodKey], routerCtx.ReqPath) {
+		removeHeaders = []string{"content-length"}
+	}
+
+	return &extProcPb.ProcessingResponse{
+		Response: &extProcPb.ProcessingResponse_ResponseHeaders{
+			ResponseHeaders: &extProcPb.HeadersResponse{
+				Response: &extProcPb.CommonResponse{
+					HeaderMutation: &extProcPb.HeaderMutation{
+						SetHeaders:    headers,
+						RemoveHeaders: removeHeaders,
+					},
+					ClearRouteCache: true,
+				},
+			},
+		},
+	}, isProcessingError, processingErrorCode
+}
+
+func isRoutingDiagnosticHeader(key string) bool {
+	switch strings.ToLower(key) {
+	case HeaderRoutingStrategy, HeaderTargetPod, HeaderTargetPodIP, HeaderAIBrixConfigProfile:
+		return true
+	default:
+		return false
+	}
+}

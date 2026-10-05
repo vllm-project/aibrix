@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aibrix-gateway-plugins
+  namespace: aibrix-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: gateway-plugin
+        env:
+        - name: AIBRIX_EXTERNAL_ROUTER_ENDPOINT
+          value: http://external-replica-router.aibrix-system.svc:8080/v1alpha1/select
+        - name: AIBRIX_EXTERNAL_ROUTER_POLICY_MODE
+          value: Advisory
+        - name: AIBRIX_EXTERNAL_ROUTER_FAILURE_MODE
+          value: FailOpen
+        - name: AIBRIX_EXTERNAL_ROUTER_FALLBACK
+          value: least-request
+        # The decision service is a separate Pod reached through a Service;
+        # allow normal in-cluster scheduling and network latency.
+        - name: AIBRIX_EXTERNAL_ROUTER_TIMEOUT
+          value: 200ms
+        - name: AIBRIX_EXTERNAL_ROUTER_CANDIDATE_ATTRIBUTES
+          value: topology.kubernetes.io/zone,routing.example.com/accelerator-class
+        - name: AIBRIX_EXTERNAL_ROUTER_CANDIDATE_METRICS
+          value: runningRequests,engineUtilization,kvCacheUsage

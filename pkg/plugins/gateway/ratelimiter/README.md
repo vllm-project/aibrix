@@ -1,0 +1,84 @@
+# ratelimiter
+
+Package `ratelimiter` provides a distributed, Redis-backed fixed-window rate limiter used by the Aibrix gateway to enforce per-user and per-model request limits across multiple gateway instances.
+
+## Interface
+
+```go
+type RateLimiter interface {
+    Get(ctx context.Context, key string) (int64, error)
+    GetLimit(ctx context.Context, key string) (int64, error)
+    Incr(ctx context.Context, key string, val int64, window ...time.Duration) (int64, error)
+}
+```
+
+| Method     | Description |
+|------------|-------------|
+| `Get`      | Returns the current counter value for a key in the active time window. |
+| `GetLimit` | Returns the configured maximum for a key (used for limit lookups, not window counters). |
+| `Incr`     | Atomically increments the counter by `val` and returns the new value. The first write sets the key TTL to the window size; later writes do not extend it. |
+
+## Implementations
+
+### `redisRateLimiter` — `NewRedisAccountRateLimiter(name, client, windowSize)`
+
+A fixed-window counter backed by Redis. Suitable for cluster-wide enforcement when multiple gateway replicas share the same Redis instance.
+
+**Counter key scheme:** `{name}:{key}:{windowMilliseconds}:counter`. The key is stable for each configured window duration and separate from the static `{name}:{key}` key used by `GetLimit`. The counter expires `windowSize` after its first write, and the next write starts a new window. This window is independent of wall-clock bucket boundaries.
+
+- Minimum `windowSize` is 1 second (smaller values are clamped up).
+- `Incr` uses a Redis Lua script to increment and set the TTL atomically on the first write.
+- A missing key (`redis.Nil`) is treated as `0`, not an error.
+
+### `noopRateLimiter` — `NewNoopRateLimiter()`
+
+A no-op implementation that always allows requests. Used when Redis is unavailable (e.g., local development without a Redis sidecar). `GetLimit` returns `math.MaxInt64`.
+
+## Usage in the gateway
+
+Two limiter instances are created at server startup:
+
+| Instance           | Constructor arg `name` | `windowSize` | Purpose                          |
+|--------------------|------------------------|--------------|----------------------------------|
+| `ratelimiter`      | `"aibrix"`             | 1 minute     | Per-user RPM and TPM enforcement |
+| `modelRateLimiter` | `"aibrix_model"`       | 1 second     | Per-model RPS enforcement        |
+
+The separate `name` prefix ensures the two limiters' keys never collide in Redis.
+
+### Per-user limits (RPM / TPM)
+
+Counter keys follow the pattern `aibrix:{username}_{RPM|TPM}_CURRENT:60000:counter`. Limits are read from the user record resolved during request header processing.
+
+### Per-model RPS
+
+Counter keys follow the pattern `aibrix_model:{modelName}_MODEL_RPS_CURRENT:{windowMilliseconds}:counter`. The RPS limit is configured per model via the `requestsPerSecond` field in a config profile:
+
+```json
+{
+  "profiles": {
+    "rps-limited": {
+      "routingStrategy": "least-request",
+      "requestsPerSecond": 1
+    }
+  }
+}
+```
+
+The active profile is selected by passing the `config-profile` request header. If no profile is active or `requestsPerSecond` is unset, the RPS check is skipped entirely.
+
+#### Enforcement flow
+
+Per-model RPS enforcement is handled in `HandleRequestBody` via `enforceModelRPS` and a deferred compensation step:
+
+1. **Pre-routing gate (`enforceModelRPS`)** — called before routing. It:
+   - atomically increments the counter with `Incr(..., +1)` and receives the new value
+   - rejects with HTTP 429 and rolls back with `Incr(..., -1)` if `newVal > limit`
+   - allows the request through when `newVal <= limit`
+2. **Deferred compensation (`decrModelRPS`)** — armed immediately after a successful pre-charge. If routing later fails, the deferred call refunds quota with `Incr(..., -1)`.
+3. **Success path** — after routing succeeds and request accounting is attached, compensation is disabled, so the pre-charge remains counted.
+
+Using incr-then-check (rather than check-then-increment) means the `INCRBY` is the sole gate. Because Redis processes `INCRBY` atomically, each concurrent caller receives a unique sequential result — eliminating the TOCTOU race that would otherwise allow over-admission during the check→increment window.
+
+### Upgrading from wall-clock bucket keys
+
+The counter key format changed from `{name}:{key}:{timebin}` to `{name}:{key}:{windowMilliseconds}:counter`. Existing bucket keys expire on their own TTL, but the new limiter does not read their counts. A deployment therefore starts a new counter window for each key. During a rolling upgrade, old and new gateway instances count requests separately and may collectively admit more than the configured limit. Deployments that require uninterrupted strict limits should avoid serving rate-limited traffic from both versions at the same time; a cutover to the new version still starts fresh counters.

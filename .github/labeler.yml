@@ -1,0 +1,69 @@
+# PR labels are derived from changed paths. Keep these rules broad enough to
+# cover new files in an existing component while limiting each label to a
+# repository area that already exists.
+area/gateway:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "pkg/plugins/gateway/**"
+          - "config/gateway/**"
+          - "test/e2e/gateway/**"
+
+area/orchestration:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "api/**"
+          - "pkg/controller/**"
+          - "config/rbac/controller-manager/**"
+          - "test/e2e/controller/**"
+          - "test/integration/controller/**"
+
+area/runtime:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "python/aibrix/**"
+          - "python/aibrix_kvcache/**"
+          - "build/container/Dockerfile.python"
+
+area/kv-cache:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*kvcache*"
+          - "**/*kv-cache*"
+          - "**/*nixl*"
+          - "**/*shfs*"
+
+area/batch:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*batch*"
+          - "python/aibrix/aibrix/batch/**"
+
+area/website:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "apps/console/**"
+
+area/cicd:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+          - "hack/**"
+          - "Makefile"
+
+area/installation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "dist/chart/**"
+          - "samples/**"
+
+area/testing:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "test/**"
+
+kind/documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "**/*.md"

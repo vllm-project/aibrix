@@ -1,0 +1,240 @@
+/*
+Copyright 2024 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package cache
+
+import (
+	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/api/core/v1"
+)
+
+// Cache is the root interface aggregating caching functionalities
+type Cache interface {
+	PodCache
+	ModelCache
+	MetricCache
+	RequestTracker
+	RequestTrackerRegistry
+	ProfileCache
+	types.OutputPredictorProvider
+	types.RouterProvider
+}
+
+// PodCache defines operations for pod information caching
+type PodCache interface {
+	// GetPod retrieves a Pod object by name
+	// Parameters:
+	//   podName: Name of the pod
+	//   podNamespace: Namespace of the pod
+	// Returns:
+	//   *v1.Pod: Found pod object
+	//   error: Error information if operation fails
+	GetPod(podName, podNamespace string) (*v1.Pod, error)
+
+	// ListPodsByModel gets pods associated with a model
+	// Parameters:
+	//   modelName: Name of the model
+	// Returns:
+	//   map[string]*v1.Pod: Pod objects matching the criteria
+	//   error: Error information if operation fails
+	ListPodsByModel(modelName string) (types.PodList, error)
+}
+
+// ModelCache defines operations for model information caching
+type ModelCache interface {
+	// HasModel checks existence of a model
+	// Parameters:
+	//   modelName: Name of the model
+	// Returns:
+	//   bool: True if model exists, false otherwise
+	HasModel(modelName string) bool
+
+	// ListModels gets all model names
+	// Returns:
+	//   []string: List of model names
+	ListModels() []string
+
+	// ListModelsByPod gets models associated with a pod
+	// Parameters:
+	//   podName: Name of the pod
+	//   podNamespace: Namespace of the pod
+	// Returns:
+	//   map[string]struct{}: Set of model names
+	//   error: Error information if operation fails
+	ListModelsByPod(podName, podNamespace string) ([]string, error)
+
+	// ModelBaseModel returns the base-model name a LoRA adapter is attached to
+	// (ModelAdapter spec.baseModel, or the host pod's model label as fallback).
+	// Returns ("", false) for base models and for adapters with no known base.
+	ModelBaseModel(modelName string) (string, bool)
+}
+
+// ModelClaimBindingProvider is an optional cache extension used by the
+// gateway when a ModelClaim is known but intentionally non-routable. Dormant
+// bindings stay separate from ModelCache so normal routing never sees port 0.
+type ModelClaimBindingProvider interface {
+	ModelClaimBinding(modelName string) (pod *v1.Pod, binding utils.ModelClaimBinding, found bool)
+}
+
+// ModelClaimStatusProvider is implemented by caches that watch ModelClaim
+// objects themselves. It lets the gateway tell a model that is claimed but not
+// placed yet, which no pod advertises, from one that no claim serves.
+type ModelClaimStatusProvider interface {
+	ModelClaimStatus(modelName string) (phase, reason string, found bool)
+}
+
+// MetricCache defines operations for metric data caching
+type MetricCache interface {
+	// GetMetricValueByPod returns the last-written metric slot for a pod (scraped engine
+	// gauges, PromQL results, or gateway-derived values such as RealtimeNumRequestsRunning).
+	// This is NOT the live cross-gateway running-request count -- use GetPodRunningRequests
+	// / GetPodsRunningRequests for routing and MODEL_REPLICA_REQUESTS_INFLIGHT.
+	// Parameters:
+	//   podName: Name of the pod
+	//   podNamespace: Namespace of the pod
+	//   metricName: Name of the metric
+	// Returns:
+	//   metrics.MetricValue: Retrieved metric value
+	//   error: Error information if operation fails
+	GetMetricValueByPod(podName, podNamespace, metricName string) (metrics.MetricValue, error)
+
+	// GetMetricValueByPodModel gets metric value for pod-model pair
+	// Parameters:
+	//   ctx: Routing context
+	//   podName: Name of the pod
+	//   podNamespace: Namespace of the pod
+	//   modelName: Name of the model
+	//   metricName: Name of the metric
+	// Returns:
+	//   metrics.MetricValue: Retrieved metric value
+	//   error: Error information if operation fails
+	GetMetricValueByPodModel(podName, podNamespace, modelName string, metricName string) (metrics.MetricValue, error)
+
+	// AddSubscriber adds a metric subscriber
+	// Parameters:
+	//   subscriber: Metric subscriber implementation
+	AddSubscriber(subscriber metrics.MetricSubscriber)
+
+	// AdmitPodRunningRequest is the hard-cap counterpart of GetPodRunningRequests: it
+	// atomically checks the pod's live cross-gateway running-request count against limit
+	// and, only if still under it, includes this request's own contribution in that count
+	// from this call onward -- so concurrent callers cannot all observe the same
+	// pre-increment count and all be admitted past limit, unlike a plain
+	// GetPodRunningRequests read followed by a later, separate increment.
+	// Parameters:
+	//   podName: Name of the pod
+	//   podNamespace: Namespace of the pod
+	//   limit: Maximum concurrent live requests to admit
+	// Returns:
+	//   bool: Whether this request was admitted (and, if so, already counted)
+	//   error: Error information if the pod is not found
+	AdmitPodRunningRequest(podName, podNamespace string, limit int64) (admitted bool, err error)
+
+	// GetPodRunningRequests is the single-pod live cross-gateway running-request count
+	// (Redis, falling back to this gateway's local atomic). Use GetPodsRunningRequests
+	// for a pod list -- looping this is N Redis round trips. Do not use
+	// GetMetricValueByPod(RealtimeNumRequestsRunning) for routing or inflight; that slot
+	// is a periodically synced cache and can reflect this gateway's local view between ticks.
+	// Returns an error if the pod is not in the cache.
+	// Parameters:
+	//   podName: Name of the pod
+	//   podNamespace: Namespace of the pod
+	// Returns:
+	//   int64: Best-effort running request count
+	//   error: Error information if the pod is not found
+	GetPodRunningRequests(podName, podNamespace string) (int64, error)
+
+	// GetPodsRunningRequests is GetPodRunningRequests for a pod list in one Redis pipeline.
+	// Use this from routers (least-request, load-balance, prefix-cache) and the inflight
+	// saturation filter. The map is keyed by utils.GeneratePodKey(namespace, name).
+	// Local-atomic fallback is already applied; a missing key means the pod was not in
+	// the cache -- treat as 0. Do not treat a missing key as "read the local counter again."
+	// Parameters:
+	//   pods: Pods to resolve
+	// Returns:
+	//   map[string]int64: Running request count keyed by utils.GeneratePodKey(pod.Namespace, pod.Name).
+	//     A pod is present with either its live Redis-backed count or, if that isn't
+	//     available, its local atomic counter. Only pods not found in the cache at all
+	//     are omitted; treat those as 0.
+	//   error: Error information if the batch operation itself fails
+	GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error)
+}
+
+// RequestTracker defines operations for track workload statistics
+//
+// Contract: ctx may be nil (e.g. a request cancelled before routing completes).
+// The registry passes ctx through to every tracker unfiltered, so all
+// implementations MUST guard against a nil ctx (and a cancelled ctx.Context).
+type RequestTracker interface {
+	// AddRequestCount tracks the start of a request after routing.
+	// To support realtime statistics update and access, AddRequestCount can be called multiple times for a request.
+	// As the result, implementation should ensure thread-safe access to the counterm and idempotency.
+	//
+	// Parameters:
+	//   ctx: Routing context
+	//   requestID: Unique request identifier
+	//   modelName: Name of the model
+	// Returns:
+	//   int64: Trace term identifier
+	AddRequestCount(ctx *types.RoutingContext, requestID string, modelName string) (traceTerm int64)
+
+	// DoneRequestCount tracks the completion of a request without usage information like inputTokens and outputTokens.
+	// Only one DoneRequestXXX should be called for a request. Idemptency is not required.
+	//
+	// Parameters:
+	//   requestID: Unique request identifier
+	//   modelName: Name of the model
+	//   traceTerm: Trace term identifier
+	DoneRequestCount(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64)
+
+	// DoneRequestTrace tracks the completion of a request with usage information like inputTokens and outputTokens.
+	// Only one DoneRequestXXX should be called for a request. Idemptency is not required.
+	//
+	// Parameters:
+	//   ctx: Routing context
+	//   requestID: Unique request identifier
+	//   modelName: Name of the model
+	//   inputTokens: Number of input tokens
+	//   outputTokens: Number of output tokens
+	//   traceTerm: Trace term identifier
+	DoneRequestTrace(ctx *types.RoutingContext, requestID string, modelName string, inputTokens, outputTokens, traceTerm int64)
+}
+
+// RequestTrackerRegistry can register multiple RequestTracker implementations
+// When Track operations are called, it will be passed to the registered RequestTracker
+type RequestTrackerRegistry interface {
+	RequestTracker
+	// the registered trackers are called before main tracker
+	// Notice that the operations may be called multiple times for the same request, and the registered trackers are called in the order they are registered
+	RegisterRequestTracker(tracker RequestTracker)
+}
+
+// ProfileCache defines operations for model profiles
+type ProfileCache interface {
+	// GetModelProfileByPod gets model profile for a pod
+	// Parameters:
+	//   pod: Pod object
+	//   modelName: Name of the model
+	GetModelProfileByPod(pod *v1.Pod, modelName string) (*ModelGPUProfile, error)
+
+	// GetModelProfileByDeploymentName gets model profile for a deployment
+	// Parameters:
+	//   deploymentName: Name of the deployment
+	//   modelName: Name of the model
+	GetModelProfileByDeploymentName(deploymentName string, modelName string) (*ModelGPUProfile, error)
+}

@@ -1,0 +1,698 @@
+diff --git a/docker/Dockerfile b/docker/Dockerfile
+index c275080..020a5f8 100644
+--- a/docker/Dockerfile
++++ b/docker/Dockerfile
+@@ -1,28 +1,33 @@
+ # Use the NVIDIA PyTorch base image
+-FROM nvcr.io/nvidia/pytorch:24.07-py3
++FROM nvcr.io/nvidia/pytorch:24.09-py3
+ 
+ # Install git
+ RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+ 
+-
+-
+ # Update pip to the latest version
+ RUN pip install --no-cache-dir --upgrade pip
++# RUN pip install --no-cache-dir "diffusers>=0.35.1" "transformers==4.37.2"
++RUN pip install --no-cache-dir "diffusers>=0.35.1" "transformers==4.56.2"
+ 
+ # Uninstall apex first
+ RUN pip uninstall -y apex
+-
+-# # Install flash_attn separately with --use-pep517 flag
+-# RUN pip install --no-cache-dir --use-pep517 flash-attn==2.6.3 flask
+-
+-RUN pip install xfuser
+-
++RUN pip uninstall -y xfuser
++
++# RUN pip install --no-cache-dir xfuser[diffusers,flash-attn,ray]
++# RUN pip install -e ".[diffusers,flash-attn,ray]"
++COPY . /app/xDiT
++RUN cd /app/xDiT && pip install --no-cache-dir -e ".[diffusers,flash-attn,ray]"
++RUN cd /app
++RUN pip install fastapi
++RUN pip install uvicorn
+ RUN pip install flask
++RUN pip uninstall -y opencv-python opencv-python-headless || true
++RUN pip install --no-cache-dir "numpy<2" "opencv-python-headless==4.8.0.74"
++RUN pip install --no-cache-dir imageio imageio-ffmpeg
+ 
+-# Copy the entire comfyui-xdit directory into the container
+-COPY ./http-service /app/http-service
++COPY ./entrypoints /app/entrypoints
++COPY ./examples /app/examples   
+ 
+-# Change to the xDiT directory
+ WORKDIR /app
+ 
+ # Set ENTRYPOINT with CMD as default arguments
+diff --git a/entrypoints/launch.py b/entrypoints/launch.py
+index 2f39f85..cfc9a07 100644
+--- a/entrypoints/launch.py
++++ b/entrypoints/launch.py
+@@ -77,6 +77,7 @@ class ImageGenerator:
+             "PixArt-XL-2-1024-MS": xFuserPixArtAlphaPipeline,
+             "PixArt-Sigma-XL-2-2K-MS": xFuserPixArtSigmaPipeline,
+             "stable-diffusion-3-medium-diffusers": xFuserStableDiffusion3Pipeline,
++            "stable-diffusion-3.5-large": xFuserStableDiffusion3Pipeline,
+             "HunyuanDiT-v1.2-Diffusers": xFuserHunyuanDiTPipeline,
+             "FLUX.1-schnell": xFuserFluxPipeline,
+             "FLUX.1-dev": xFuserFluxPipeline,
+@@ -108,7 +109,7 @@ class ImageGenerator:
+                 output_type="pil",
+                 generator=torch.Generator(device="cuda").manual_seed(request.seed),
+                 guidance_scale=request.cfg,
+-                max_sequence_length=self.input_config.max_sequence_length
++                #max_sequence_length=self.input_config.max_sequence_length
+             )
+             elapsed_time = time.time() - start_time
+ 
+@@ -201,6 +202,7 @@ if __name__ == "__main__":
+         ulysses_degree=args.ulysses_parallel_degree,
+         pipefusion_parallel_degree=args.pipefusion_parallel_degree,
+         use_cfg_parallel=args.use_cfg_parallel,
++        ring_degree=args.ring_degree,
+         dit_parallel_size=0,
+     )
+     
+diff --git a/entrypoints/launch_video.py b/entrypoints/launch_video.py
+new file mode 100644
+index 0000000..af8faea
+--- /dev/null
++++ b/entrypoints/launch_video.py
+@@ -0,0 +1,359 @@
++import os
++import time
++from cv2.gapi import video
++import torch
++import ray
++import logging
++import base64
++import tempfile
++from fastapi import FastAPI, HTTPException
++from pydantic import BaseModel
++from typing import Optional
++import argparse
++
++from xfuser import (
++    xFuserCogVideoXPipeline,
++    xFuserConsisIDPipeline,
++    xFuserLattePipeline,
++    xFuserArgs,    
++    utils,
++)
++from diffusers import (
++    DiffusionPipeline, 
++    HunyuanVideoPipeline, 
++    HunyuanVideoTransformer3DModel
++)
++
++from xfuser.core.distributed import (
++    get_runtime_state,
++    initialize_runtime_state,
++    get_pipeline_parallel_world_size,
++)
++from diffusers.utils import export_to_video
++# Define request model
++class GenerateRequest(BaseModel):
++    prompt: str
++    num_inference_steps: Optional[int] = 50
++    num_frames: Optional[int] = 17
++    seed: Optional[int] = 42
++    cfg: Optional[float] = 7.5
++    save_disk_path: Optional[str] = None
++    height: Optional[int] = 1024
++    width: Optional[int] = 1024
++    fps: Optional[int] = 8
++
++    # Add input validation
++    class Config:
++        json_schema_extra = {
++            "example": {
++                "prompt": "A little girl is riding a bicycle at high speed. Focused, detailed, realistic.",
++                "num_inference_steps": 50,
++                "seed": 42,
++                "cfg": 7.5,
++                "height": 1024,
++                "width": 1024
++            }
++        }
++
++app = FastAPI()
++
++@ray.remote(num_gpus=1)
++class VideoGenerator:
++    def __init__(self, xfuser_args: xFuserArgs, rank: int, world_size: int, disable_warmup: bool = False):
++        # Set PyTorch distributed environment variables
++        os.environ["RANK"] = str(rank)
++        os.environ["WORLD_SIZE"] = str(world_size)
++        os.environ["MASTER_ADDR"] = "127.0.0.1"
++        os.environ["MASTER_PORT"] = "29500"
++        
++        # Set memory optimization environment variables
++        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:128"
++        
++        # Set CUDA memory fraction to leave some memory for other processes
++        if torch.cuda.is_available():
++            torch.cuda.set_per_process_memory_fraction(0.9)
++        
++        self.rank = rank
++        self.disable_warmup = disable_warmup
++        self.setup_logger()
++        
++        # Clear any existing CUDA cache before initialization
++        torch.cuda.empty_cache()
++        
++        self.initialize_model(xfuser_args)
++
++    def setup_logger(self):
++        self.logger = logging.getLogger(__name__)
++        # Add console handler if not already present
++        if not self.logger.handlers:
++            console_handler = logging.StreamHandler()
++            console_handler.setLevel(logging.INFO)
++            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
++            console_handler.setFormatter(formatter)
++            self.logger.addHandler(console_handler)
++            self.logger.setLevel(logging.INFO)
++
++    def initialize_model(self, xfuser_args : xFuserArgs):
++        # init distributed environment in create_config
++        self.engine_config, self.input_config = xfuser_args.create_config()
++        # Remove use_resolution_binning if it exists to avoid compatibility issues
++        if hasattr(self.input_config, "use_resolution_binning"):
++            delattr(self.input_config, "use_resolution_binning")
++        model_name = self.engine_config.model_config.model.split("/")[-1]
++        pipeline_map = {
++            "CogVideoX1.5-5B": xFuserCogVideoXPipeline,
++            "CogVideoX-2b": xFuserCogVideoXPipeline,
++            "ConsisID-preview": xFuserConsisIDPipeline,
++            "Latte-1": xFuserLattePipeline,
++            "HunyuanVideoHF": HunyuanVideoPipeline,
++        }
++
++        PipelineClass = pipeline_map.get(model_name)
++        if PipelineClass is None:
++            raise NotImplementedError(f"{model_name} is currently not supported!")
++
++        
++        self.logger.info(f"Initializing model {model_name} from {xfuser_args.model}")
++
++        if model_name != "HunyuanVideoHF":
++            self.pipe = PipelineClass.from_pretrained(
++                pretrained_model_name_or_path=xfuser_args.model,
++                engine_config=self.engine_config,
++                torch_dtype=torch.float16,
++            ).to("cuda")
++            get_runtime_state().set_video_input_parameters(
++                height=xfuser_args.height,
++                width=xfuser_args.width,
++                num_frames=xfuser_args.num_frames,
++                batch_size=xfuser_args.batch_size,
++                num_inference_steps=xfuser_args.num_inference_steps,
++                split_text_embed_in_sp=get_pipeline_parallel_world_size() == 1,
++            ) 
++        else:
++            self.pipe = PipelineClass.from_pretrained(
++                pretrained_model_name_or_path=xfuser_args.model,
++                transformer=HunyuanVideoTransformer3DModel.from_pretrained(
++                    pretrained_model_name_or_path=self.engine_config.model_config.model,
++                    subfolder="transformer",
++                    torch_dtype=torch.bfloat16,
++                    revision="refs/pr/18",
++                ),
++                engine_config=self.engine_config,
++                torch_dtype=torch.float16,
++            ).to("cuda")
++            initialize_runtime_state(self.pipe, self.engine_config)
++            get_runtime_state().set_video_input_parameters(
++                height=xfuser_args.height,
++                width=xfuser_args.width,
++                num_frames=xfuser_args.num_frames,
++                num_inference_steps=xfuser_args.num_inference_steps,
++                split_text_embed_in_sp=get_pipeline_parallel_world_size() == 1,
++            ) 
++            # utils.parallelize_transformer(self.pipe)  
++            
++        self.pipe.vae.enable_tiling()
++        # Memory-efficient warmup run with smaller dimensions
++        if not self.disable_warmup:
++            try:
++                # Use smaller dimensions for warmup to reduce memory usage
++                warmup_height = min(self.input_config.height, 256)
++                warmup_width = min(self.input_config.width, 256)
++                warmup_frames = min(getattr(self.input_config, 'num_frames', 17), 9)
++                
++                _ = self.pipe(
++                    height=warmup_height,
++                    width=warmup_width,
++                    num_frames=warmup_frames,
++                    prompt="",
++                    num_inference_steps=1,
++                    generator=torch.Generator(device="cuda").manual_seed(42),
++                )
++                # Clear cache after warmup
++                torch.cuda.empty_cache()
++                self.logger.info(f"Warmup completed successfully with {warmup_height}x{warmup_width}, {warmup_frames} frames")
++            except Exception as e:
++                self.logger.warning(f"Warmup failed: {e}, continuing without warmup")
++                # Clear cache even if warmup fails
++                torch.cuda.empty_cache()
++        else:
++            self.logger.info("Warmup disabled to save memory")
++        
++        self.logger.info("Model initialization completed")
++
++    def cleanup(self):
++        """Clean up distributed environment and free memory"""
++        try:
++            if hasattr(self, 'pipe'):
++                del self.pipe
++            torch.cuda.empty_cache()
++            get_runtime_state().destroy_distributed_env()
++            self.logger.info("Cleanup completed")
++        except Exception as e:
++            self.logger.warning(f"Cleanup warning: {e}")
++
++    def generate(self, request: GenerateRequest):
++        try:
++            start_time = time.time()
++            output = self.pipe(
++                height=request.height,
++                width=request.width,
++                num_frames=request.num_frames,
++                prompt=request.prompt,
++                num_inference_steps=request.num_inference_steps,
++                output_type="pil",
++                generator=torch.Generator(device="cuda").manual_seed(request.seed),
++                guidance_scale=request.cfg,
++                max_sequence_length=getattr(self.input_config, 'max_sequence_length', 226)
++            )
++            elapsed_time = time.time() - start_time
++            
++            # Clear CUDA cache after generation to free memory
++            torch.cuda.empty_cache()
++
++            if self.is_output_rank():
++                if request.save_disk_path:
++                    timestamp = time.strftime("%Y%m%d-%H%M%S")
++                    filename = f"generated_video_{timestamp}.mp4"
++                    file_path = os.path.join(request.save_disk_path, filename)
++                    os.makedirs(request.save_disk_path, exist_ok=True)
++                    
++                    # Export video frames to MP4 file
++                    export_to_video(output.frames[0], file_path, fps=request.fps)
++                    
++                    return {
++                        "message": "Video generated successfully",
++                        "elapsed_time": f"{elapsed_time:.2f} sec",
++                        "output": file_path,
++                        "save_to_disk": True
++                    }
++                else:
++                    # For video output without saving to disk, we'll save to a temporary file
++                    # and then encode it as base64
++                    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as temp_file:
++                        temp_path = temp_file.name
++                    
++                    # Export video frames to temporary MP4 file
++                    export_to_video(output.frames[0], temp_path, fps=request.fps)
++                    
++                    # Read the video file and encode as base64
++                    with open(temp_path, "rb") as video_file:
++                        video_bytes = video_file.read()
++                        video_str = base64.b64encode(video_bytes).decode()
++                    
++                    # Clean up temporary file
++                    os.unlink(temp_path)
++                    
++                    return {
++                        "message": "Video generated successfully",
++                        "elapsed_time": f"{elapsed_time:.2f} sec",
++                        "output": video_str,
++                        "save_to_disk": False,
++                        "format": "mp4"
++                    }
++            return None
++        
++        except Exception as e:
++            self.logger.error(f"Error generating image: {str(e)}")
++            raise HTTPException(status_code=500, detail=str(e))
++
++    def is_output_rank(self):
++        """
++        Determines if this process should handle the output (e.g., save or return result).
++        Compatible with both xfuser and diffusers pipelines.
++        """
++        try:
++            # Try to use xfuser's runtime state if available
++            from xfuser.core.distributed import get_runtime_state
++            runtime_state = get_runtime_state()
++            if runtime_state is not None and hasattr(runtime_state, "is_dp_last_group"):
++                return runtime_state.is_dp_last_group()
++        except Exception:
++            pass
++
++        # Fallback: use torch.distributed if initialized
++        if torch.distributed.is_initialized():
++            return torch.distributed.get_rank() == 0
++
++        # Fallback for single-process or non-distributed mode
++        return self.rank == 0
++
++class Engine:
++    def __init__(self, world_size: int, xfuser_args: xFuserArgs):
++        # Ensure Ray is initialized
++        if not ray.is_initialized():
++            ray.init()
++        
++        num_workers = world_size
++        self.workers = [
++            VideoGenerator.remote(xfuser_args, rank=rank, world_size=world_size, disable_warmup=args.disable_warmup)
++            for rank in range(num_workers)
++        ]
++        
++    async def generate(self, request: GenerateRequest):
++        results = ray.get([
++            worker.generate.remote(request)
++            for worker in self.workers
++        ])
++
++        return next(path for path in results if path is not None) 
++
++@app.post("/generatevideo")
++async def generate_video(request: GenerateRequest):
++    try:
++        # Add input validation
++        if not request.prompt:
++            raise HTTPException(status_code=400, detail="Prompt cannot be empty")
++        if request.height <= 0 or request.width <= 0:
++            raise HTTPException(status_code=400, detail="Height and width must be positive")
++        if request.num_inference_steps <= 0:
++            raise HTTPException(status_code=400, detail="num_inference_steps must be positive")
++            
++        result = await engine.generate(request)
++        return result
++    except Exception as e:
++        if isinstance(e, HTTPException):
++            raise e
++        raise HTTPException(status_code=500, detail=str(e))
++
++
++if __name__ == "__main__":
++    parser = argparse.ArgumentParser(description='xDiT HTTP Service')
++    parser.add_argument('--host', type=str, default='127.0.0.1', help='Host IP')
++    parser.add_argument('--port', type=int, default=6000, help='Host Port')
++    parser.add_argument('--model_path', type=str, help='Path to the model', required=True)
++    parser.add_argument('--world_size', type=int, default=1, help='Number of parallel workers')
++    parser.add_argument('--num_frames', type=int, default=17, help='Number of frames')
++    parser.add_argument('--height', type=int, default=512, help='Video height')
++    parser.add_argument('--width', type=int, default=512, help='Video width')
++    parser.add_argument('--pipefusion_parallel_degree', type=int, default=1, help='Degree of pipeline fusion parallelism')
++    parser.add_argument('--ulysses_parallel_degree', type=int, default=1, help='Degree of Ulysses parallelism')
++    parser.add_argument('--ring_degree', type=int, default=1, help='Degree of ring parallelism')
++    parser.add_argument('--save_disk_path', type=str, default='output', help='Path to save generated images')
++    parser.add_argument('--use_cfg_parallel', action='store_true', help='Whether to use CFG parallel')
++    parser.add_argument('--disable_warmup', action='store_true', help='Disable warmup to save memory')
++    args = parser.parse_args()
++
++    xfuser_args = xFuserArgs(
++        model=args.model_path,
++        trust_remote_code=True,
++        warmup_steps=1,
++        use_parallel_vae=False,
++        use_torch_compile=False,
++        ulysses_degree=args.ulysses_parallel_degree,
++        ring_degree = args.ring_degree,
++        pipefusion_parallel_degree=args.pipefusion_parallel_degree,
++        use_cfg_parallel=args.use_cfg_parallel,
++        dit_parallel_size=0,
++        num_frames=args.num_frames,
++        height=args.height,
++        width=args.width,
++    )
++    
++    engine = Engine(
++        world_size=args.world_size,
++        xfuser_args=xfuser_args
++    )
++    
++    # Start the server
++    import uvicorn
++    uvicorn.run(app, host=args.host, port=args.port)
+\ No newline at end of file
+diff --git a/xfuser/__init__.py b/xfuser/__init__.py
+index 04bb669..d1cbaf2 100644
+--- a/xfuser/__init__.py
++++ b/xfuser/__init__.py
+@@ -10,6 +10,7 @@ from xfuser.model_executor.pipelines import (
+     xFuserStableDiffusionXLPipeline,
+     xFuserSanaPipeline,
+     xFuserSanaSprintPipeline,
++    utils,
+ )
+ from xfuser.config import xFuserArgs, EngineConfig
+ from xfuser.parallel import xDiTParallel
+@@ -29,4 +30,5 @@ __all__ = [
+     "xFuserArgs",
+     "EngineConfig",
+     "xDiTParallel",
++    "utils",
+ ]
+diff --git a/xfuser/model_executor/pipelines/__init__.py b/xfuser/model_executor/pipelines/__init__.py
+index f4ff21c..7e59d3c 100644
+--- a/xfuser/model_executor/pipelines/__init__.py
++++ b/xfuser/model_executor/pipelines/__init__.py
+@@ -10,6 +10,7 @@ from .pipeline_hunyuandit import xFuserHunyuanDiTPipeline
+ from .pipeline_stable_diffusion_xl import xFuserStableDiffusionXLPipeline
+ from .pipeline_sana import xFuserSanaPipeline
+ from .pipeline_sana_sprint import xFuserSanaSprintPipeline
++from . import utils
+ 
+ __all__ = [
+     "xFuserPipelineBaseWrapper",
+@@ -24,4 +25,5 @@ __all__ = [
+     "xFuserStableDiffusionXLPipeline",
+     "xFuserSanaPipeline",
+     "xFuserSanaSprintPipeline",
++    "utils",
+ ]
+\ No newline at end of file
+diff --git a/xfuser/model_executor/pipelines/pipeline_hunyuandit.py b/xfuser/model_executor/pipelines/pipeline_hunyuandit.py
+index b8d1181..82add35 100644
+--- a/xfuser/model_executor/pipelines/pipeline_hunyuandit.py
++++ b/xfuser/model_executor/pipelines/pipeline_hunyuandit.py
+@@ -329,6 +329,7 @@ class xFuserHunyuanDiTPipeline(xFuserPipelineBaseWrapper):
+             self.transformer.inner_dim // self.transformer.num_heads,
+             grid_crops_coords,
+             (grid_height, grid_width),
++            output_type = "pt"
+         )
+ 
+         style = torch.tensor([0], device=device)
+diff --git a/xfuser/model_executor/pipelines/utils.py b/xfuser/model_executor/pipelines/utils.py
+new file mode 100644
+index 0000000..bb6a6b4
+--- /dev/null
++++ b/xfuser/model_executor/pipelines/utils.py
+@@ -0,0 +1,198 @@
++# from https://github.com/chengzeyi/ParaAttention/blob/main/examples/run_hunyuan_video.py
++import functools
++from typing import Any, Dict, Union, Optional
++import logging
++import time
++
++import torch
++
++from diffusers import DiffusionPipeline, HunyuanVideoPipeline, HunyuanVideoTransformer3DModel
++from diffusers.models.modeling_outputs import Transformer2DModelOutput
++from diffusers.utils import scale_lora_layers, unscale_lora_layers, USE_PEFT_BACKEND
++
++
++from xfuser.core.distributed import (
++    get_runtime_state,
++    get_classifier_free_guidance_world_size,
++    get_classifier_free_guidance_rank,
++    get_cfg_group,
++    get_sequence_parallel_world_size,
++    get_sequence_parallel_rank,
++    get_sp_group,
++)
++
++from xfuser.model_executor.layers.attention_processor import xFuserHunyuanVideoAttnProcessor2_0
++
++assert xFuserHunyuanVideoAttnProcessor2_0 is not None
++
++
++def parallelize_transformer(pipe: DiffusionPipeline):
++    transformer = pipe.transformer
++
++    @functools.wraps(transformer.__class__.forward)
++    def new_forward(
++        self,
++        hidden_states: torch.Tensor,
++        timestep: torch.LongTensor,
++        encoder_hidden_states: torch.Tensor,
++        encoder_attention_mask: torch.Tensor,
++        pooled_projections: torch.Tensor,
++        guidance: torch.Tensor = None,
++        attention_kwargs: Optional[Dict[str, Any]] = None,
++        return_dict: bool = True,
++    ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
++        if attention_kwargs is not None:
++            attention_kwargs = attention_kwargs.copy()
++            lora_scale = attention_kwargs.pop("scale", 1.0)
++        else:
++            lora_scale = 1.0
++
++        if USE_PEFT_BACKEND:
++            # weight the lora layers by setting `lora_scale` for each PEFT layer
++            scale_lora_layers(self, lora_scale)
++        else:
++            if attention_kwargs is not None and attention_kwargs.get("scale", None) is not None:
++                logging.warning("Passing `scale` via `attention_kwargs` when not using the PEFT backend is ineffective.")
++
++        batch_size, num_channels, num_frames, height, width = hidden_states.shape
++
++        assert batch_size % get_classifier_free_guidance_world_size(
++        ) == 0, f"Cannot split dim 0 of hidden_states ({batch_size}) into {get_classifier_free_guidance_world_size()} parts."
++
++        p, p_t = self.config.patch_size, self.config.patch_size_t
++        post_patch_num_frames = num_frames // p_t
++        post_patch_height = height // p
++        post_patch_width = width // p
++
++        # 1. RoPE
++        image_rotary_emb = self.rope(hidden_states)
++
++        # 2. Conditional embeddings
++        temb = self.time_text_embed(timestep, guidance, pooled_projections)
++        hidden_states = self.x_embedder(hidden_states)
++        encoder_hidden_states = self.context_embedder(encoder_hidden_states,
++                                                      timestep,
++                                                      encoder_attention_mask)
++
++        hidden_states = hidden_states.reshape(batch_size, post_patch_num_frames, post_patch_height, post_patch_width, -1)
++        hidden_states = hidden_states.flatten(1, 3)
++
++        hidden_states = torch.chunk(hidden_states,
++                                    get_classifier_free_guidance_world_size(),
++                                    dim=0)[get_classifier_free_guidance_rank()]
++        hidden_states = torch.chunk(hidden_states,
++                                    get_sequence_parallel_world_size(),
++                                    dim=-2)[get_sequence_parallel_rank()]
++
++        encoder_attention_mask = encoder_attention_mask[0].to(torch.bool)
++        encoder_hidden_states_indices = torch.arange(
++            encoder_hidden_states.shape[1],
++            device=encoder_hidden_states.device)
++        encoder_hidden_states_indices = encoder_hidden_states_indices[
++            encoder_attention_mask]
++        encoder_hidden_states = encoder_hidden_states[
++            ..., encoder_hidden_states_indices, :]
++        if encoder_hidden_states.shape[-2] % get_sequence_parallel_world_size(
++        ) != 0:
++            get_runtime_state().split_text_embed_in_sp = False
++        else:
++            get_runtime_state().split_text_embed_in_sp = True
++
++        encoder_hidden_states = torch.chunk(
++            encoder_hidden_states,
++            get_classifier_free_guidance_world_size(),
++            dim=0)[get_classifier_free_guidance_rank()]
++        if get_runtime_state().split_text_embed_in_sp:
++            encoder_hidden_states = torch.chunk(
++                encoder_hidden_states,
++                get_sequence_parallel_world_size(),
++                dim=-2)[get_sequence_parallel_rank()]
++
++        freqs_cos, freqs_sin = image_rotary_emb
++
++        def get_rotary_emb_chunk(freqs):
++            freqs = torch.chunk(freqs, get_sequence_parallel_world_size(), dim=0)[get_sequence_parallel_rank()]
++            return freqs
++
++        freqs_cos = get_rotary_emb_chunk(freqs_cos)
++        freqs_sin = get_rotary_emb_chunk(freqs_sin)
++        image_rotary_emb = (freqs_cos, freqs_sin)
++
++        # 4. Transformer blocks
++        if torch.is_grad_enabled() and self.gradient_checkpointing:
++
++            def create_custom_forward(module, return_dict=None):
++
++                def custom_forward(*inputs):
++                    if return_dict is not None:
++                        return module(*inputs, return_dict=return_dict)
++                    else:
++                        return module(*inputs)
++
++                return custom_forward
++
++            ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False}
++
++            for block in self.transformer_blocks:
++                hidden_states, encoder_hidden_states = torch.utils.checkpoint.checkpoint(
++                    create_custom_forward(block),
++                    hidden_states,
++                    encoder_hidden_states,
++                    temb,
++                    None,
++                    image_rotary_emb,
++                    **ckpt_kwargs,
++                )
++
++            for block in self.single_transformer_blocks:
++                hidden_states, encoder_hidden_states = torch.utils.checkpoint.checkpoint(
++                    create_custom_forward(block),
++                    hidden_states,
++                    encoder_hidden_states,
++                    temb,
++                    None,
++                    image_rotary_emb,
++                    **ckpt_kwargs,
++                )
++
++        else:
++            for block in self.transformer_blocks:
++                hidden_states, encoder_hidden_states = block(
++                    hidden_states, encoder_hidden_states, temb, None,
++                    image_rotary_emb)
++
++            for block in self.single_transformer_blocks:
++                hidden_states, encoder_hidden_states = block(
++                    hidden_states, encoder_hidden_states, temb, None,
++                    image_rotary_emb)
++
++        # 5. Output projection
++        hidden_states = self.norm_out(hidden_states, temb)
++        hidden_states = self.proj_out(hidden_states)
++
++        hidden_states = get_sp_group().all_gather(hidden_states, dim=-2)
++        hidden_states = get_cfg_group().all_gather(hidden_states, dim=0)
++
++        hidden_states = hidden_states.reshape(batch_size,
++                                              post_patch_num_frames,
++                                              post_patch_height,
++                                              post_patch_width, -1, p_t, p, p)
++
++        hidden_states = hidden_states.permute(0, 4, 1, 5, 2, 6, 3, 7)
++        hidden_states = hidden_states.flatten(6, 7).flatten(4, 5).flatten(2, 3)
++
++        if USE_PEFT_BACKEND:
++            # remove `lora_scale` from each PEFT layer
++            unscale_lora_layers(self, lora_scale)
++
++        if not return_dict:
++            return (hidden_states, )
++
++        return Transformer2DModelOutput(sample=hidden_states)
++
++    new_forward = new_forward.__get__(transformer)
++    transformer.forward = new_forward
++
++    for block in transformer.transformer_blocks + transformer.single_transformer_blocks:
++        block.attn.processor = xFuserHunyuanVideoAttnProcessor2_0()
++

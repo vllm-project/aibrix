@@ -1,0 +1,560 @@
+/*
+Copyright 2026 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package modelclaim
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"strconv"
+	"sync"
+	"time"
+
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+)
+
+// This file defines the engine <-> control-plane co-design protocol for
+// ModelClaim, mirroring the ModelAdapter <-> runtime-sidecar protocol
+// (pkg/controller/modeladapter/lora_client.go). The controller drives a
+// per-runtime sidecar (the aibrix runtime sidecar) over HTTP to activate/deactivate
+// a model as a kvcached-enabled engine process.
+
+const (
+	// DefaultRuntimePort is the port the runtime sidecar (aibrix runtime sidecar)
+	// listens on, matching the ModelAdapter runtime API port.
+	DefaultRuntimePort = 8080
+
+	activatePath   = "/v1/runtime/models/activate"
+	deactivatePath = "/v1/runtime/models/deactivate"
+	modelListPath  = "/v1/runtime/models"
+	snapshotPath   = "/v1/runtime/snapshot"
+	kvLimitPath    = "/v1/runtime/models/kv-limit"
+	sleepPath      = "/v1/runtime/models/sleep"
+	wakePath       = "/v1/runtime/models/wake"
+
+	defaultRuntimeHTTPTimeout = 60 * time.Second
+
+	// runtimeSnapshotTimeout bounds one snapshot read. A read normally takes a
+	// fraction of a second. It can take longer for two reasons. The runtime
+	// reads NVML once and gives each engine's probes about 1.5 s, one engine
+	// after another. Before that, a read waits for the runtime's lock. The
+	// runtime holds that lock while it checks its engines, for about 1 s each.
+	// It also holds the lock while it starts an engine, puts one to sleep,
+	// wakes one or writes a KV limit. So a read of a pod with five busy engines
+	// can take longer than this. Calls that change state keep the longer
+	// timeout above.
+	runtimeSnapshotTimeout = 10 * time.Second
+
+	// shortestRuntimeSilence is how long a runtime is left alone after a call
+	// to it timed out. It is one round, so the claims that read the same
+	// runtime in that round do not each wait for it. Every further timeout in
+	// a row doubles it, up to runtimeSilenceWindow. A runtime that was slow
+	// once is read again a round later. One that stays down is left alone for
+	// a minute at a time, from its fourth timeout on. A runtime that answers
+	// between its timeouts is asked again a round after each of them.
+	shortestRuntimeSilence = 10 * time.Second
+
+	// runtimeSilenceWindow is the longest a runtime that does not answer in
+	// time is left alone.
+	runtimeSilenceWindow = time.Minute
+)
+
+// errRuntimeSilent is returned, without calling the runtime, for a runtime that
+// did not answer in time and is left alone for now.
+var errRuntimeSilent = errors.New("did not answer in time recently; not calling it again yet")
+
+// runtimeRefusal is an answer that says no. It is a body in which the runtime
+// reports an error, or a status that says the request was at fault. Such a
+// status is one from 400 to 499. The runtime did not do what it was asked.
+type runtimeRefusal struct {
+	message string
+}
+
+func (e *runtimeRefusal) Error() string { return e.message }
+
+// statusError is the error for an answer with an error status.
+//
+// It is a refusal when the status says that the request was at fault, or when
+// the body is the runtime's own report of an error. A server error with any
+// other body can come from something between the controller and the runtime,
+// such as a proxy that gave up waiting. It says nothing about what the runtime
+// did, so it is no refusal. Neither is a status below 400 that the runtime
+// does not send for this call.
+func statusError(method, url string, status int, body []byte) error {
+	message := fmt.Sprintf("runtime %s %s returned %d: %s", method, url, status, body)
+	var answer struct {
+		Status string `json:"status"`
+	}
+	reportsAnError := json.Unmarshal(body, &answer) == nil && answer.Status == "error"
+	atFault := status >= http.StatusBadRequest && status < http.StatusInternalServerError
+	if atFault || reportsAnError {
+		return &runtimeRefusal{message}
+	}
+	return errors.New(message)
+}
+
+// refusedByRuntime reports whether the runtime itself said that a call failed:
+// it refused the call, or reported an error of its own. A status from something
+// between the controller and the runtime, an answer that did not arrive, and a
+// call that was not sent say nothing of what the runtime did. The call may then
+// be done, or under way.
+func refusedByRuntime(err error) bool {
+	var refusal *runtimeRefusal
+	return errors.As(err, &refusal)
+}
+
+// callNotDone reports whether a failed call to a runtime is known to have
+// changed nothing there: the runtime said no, or the call was never sent. After
+// any other failure, such as an answer that did not arrive in time, the
+// runtime may have done what it was asked.
+func callNotDone(err error) bool {
+	var refusal *runtimeRefusal
+	if errors.As(err, &refusal) {
+		return true
+	}
+	// A call is not sent when its address cannot be read, when no
+	// connection could be made, or when its runtime is left alone for now.
+	if errors.Is(err, errRuntimeSilent) {
+		return true
+	}
+	var unsent *url.Error
+	if errors.As(err, &unsent) && unsent.Op == "parse" {
+		return true
+	}
+	var failed *net.OpError
+	return errors.As(err, &failed) && failed.Op == "dial"
+}
+
+// DeactivateMode selects how a model is torn down.
+type DeactivateMode string
+
+const (
+	// DeactivateStop terminates the engine process entirely.
+	DeactivateStop DeactivateMode = "stop"
+)
+
+// ActivateRequest asks the runtime sidecar to bring a model online as its own
+// kvcached-enabled engine process sharing the pod's GPU.
+type ActivateRequest struct {
+	ModelName string `json:"model_name"`
+	// ArtifactURL is the weight location (hf://, s3://, ...).
+	ArtifactURL string `json:"artifact_url"`
+	// Engine is "vllm" or "sglang".
+	Engine string `json:"engine"`
+	// Port is the engine port to serve on. 0 lets the runtime pick a free port,
+	// which it returns in ActivateResponse.Port.
+	Port int32 `json:"port,omitempty"`
+	// IPCName is the kvcached shared-memory segment name; must be unique per
+	// model on the GPU (KVCACHED_IPC_NAME). Empty lets the runtime derive one.
+	IPCName string `json:"ipc_name,omitempty"`
+	// Credentials and engine-specific startup settings.
+	Credentials  map[string]string                     `json:"credentials,omitempty"`
+	EngineConfig *modelv1alpha1.ModelClaimEngineConfig `json:"engine_config,omitempty"`
+	ClaimRef     *ModelClaimRef                        `json:"claim_ref,omitempty"`
+}
+
+// ModelClaimRef identifies the ModelClaim that owns a runtime engine without
+// relying on the served model name, which may not be unique across namespaces.
+type ModelClaimRef struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	UID       string `json:"uid"`
+}
+
+// ActivateResponse reports the resulting engine instance.
+type ActivateResponse struct {
+	Status    string `json:"status"` // "success" | "error"
+	ModelName string `json:"model_name"`
+	Port      int32  `json:"port"`
+	IPCName   string `json:"ipc_name"`
+	Message   string `json:"message,omitempty"`
+}
+
+// DeactivateRequest tears a model down per Mode.
+type DeactivateRequest struct {
+	ModelName string         `json:"model_name"`
+	Mode      DeactivateMode `json:"mode"`
+}
+
+// SetKVLimitRequest applies a kvcached limit to a resident model through the
+// runtime sidecar. OperationID makes retries idempotent at the runtime.
+type SetKVLimitRequest struct {
+	ModelName   string `json:"model_name"`
+	LimitBytes  int64  `json:"limit_bytes"`
+	OperationID string `json:"operation_id"`
+}
+
+// SleepRequest puts a vLLM engine to sleep through its runtime sidecar.
+type SleepRequest struct {
+	ModelName   string `json:"model_name"`
+	Level       int    `json:"level"`
+	OperationID string `json:"operation_id"`
+}
+
+// WakeRequest wakes a vLLM engine through its runtime sidecar.
+type WakeRequest struct {
+	ModelName   string `json:"model_name"`
+	OperationID string `json:"operation_id"`
+}
+
+// RuntimeOperationResponse reports the result of an idempotent control action.
+type RuntimeOperationResponse struct {
+	Status      string `json:"status"`
+	ModelName   string `json:"model_name"`
+	OperationID string `json:"operation_id"`
+	Applied     bool   `json:"applied"`
+	Phase       string `json:"phase"`
+}
+
+// ModelInfo is one entry returned by the runtime sidecar's model listing.
+type ModelInfo struct {
+	ModelName string `json:"model_name"`
+	Port      int32  `json:"port"`
+	IPCName   string `json:"ipc_name"`
+	Phase     string `json:"phase"`
+	// Ready reports whether the engine can serve right now (runtime /health
+	// probe). The controller gates routability on it: a model's annotation
+	// stays at the non-routable marker (port 0) until Ready, so requests never
+	// route to a still-booting engine.
+	Ready        bool  `json:"ready"`
+	KVUsedBytes  int64 `json:"kv_used_bytes,omitempty"`
+	KVTotalBytes int64 `json:"kv_total_bytes,omitempty"`
+}
+
+// RuntimeAcceleratorSnapshot is one GPU visible to a warm runtime pod.
+type RuntimeAcceleratorSnapshot struct {
+	ID            string `json:"id"`
+	HBMTotalBytes int64  `json:"hbm_total_bytes"`
+	HBMFreeBytes  int64  `json:"hbm_free_bytes"`
+	// HBMUsableBytes is how much of this card an engine can ever take: the
+	// total less what the driver keeps for itself. Unlike HBMFreeBytes it does
+	// not move with traffic, so a card can be sized by it. Negative when the
+	// runtime could not measure the card.
+	HBMUsableBytes int64 `json:"hbm_usable_bytes"`
+}
+
+// RuntimeSnapshotModel is one engine reported by a runtime snapshot.
+type RuntimeSnapshotModel struct {
+	ModelName   string         `json:"model_name"`
+	ArtifactURL string         `json:"artifact_url"`
+	ClaimRef    *ModelClaimRef `json:"claim_ref,omitempty"`
+	Port        int32          `json:"port"`
+	IPCName     string         `json:"ipc_name"`
+	Phase       string         `json:"phase"`
+	// Alive is process liveness, separate from readiness: a booting engine is
+	// alive but not routable, while a restarting or terminal engine is not.
+	Alive          bool       `json:"alive"`
+	Ready          bool       `json:"ready"`
+	RestartCount   int        `json:"restart_count"`
+	LastError      string     `json:"last_error,omitempty"`
+	LastTransition *time.Time `json:"last_transition,omitempty"`
+	// KVUsedBytes is the KV memory this engine has mapped, its pages in use and
+	// the ones it holds in reserve together. KVCapacityBytes is the limit its
+	// KV allocator currently holds, which is what the engine obeys and not
+	// necessarily what the controller last asked for. Both are negative while
+	// the engine has no KV allocator to read, which a starting engine and one
+	// that never built a segment have in common.
+	KVUsedBytes     int64 `json:"kv_used_bytes"`
+	KVCapacityBytes int64 `json:"kv_capacity_bytes"`
+	HBMPeakBytes    int64 `json:"hbm_peak_bytes"`
+	// SleepingFootprintBytes is the GPU memory a sleeping engine still held
+	// right after it went to sleep, as the runtime measured it then. Only a
+	// sleeping engine reports it. Nil means the runtime could not attribute
+	// a reading to the engine.
+	SleepingFootprintBytes *int64 `json:"sleeping_footprint_bytes,omitempty"`
+	// RequestMetricsObserved distinguishes a zero metric from an unavailable
+	// scrape. Pool policy must not infer idleness unless the completion counter
+	// is also present.
+	RequestMetricsObserved bool   `json:"request_metrics_observed"`
+	RequestsRunning        int64  `json:"requests_running"`
+	RequestsWaiting        int64  `json:"requests_waiting"`
+	RequestSuccessTotal    *int64 `json:"request_success_total,omitempty"`
+}
+
+// RuntimeSnapshot is the point-in-time source for controller placement. It is
+// cached in memory only; the runtime sidecar remains authoritative.
+type RuntimeSnapshot struct {
+	ObservedAt      time.Time                    `json:"observed_at"`
+	Accelerators    []RuntimeAcceleratorSnapshot `json:"accelerators"`
+	Models          []RuntimeSnapshotModel       `json:"models"`
+	CachedArtifacts []string                     `json:"cached_artifacts"`
+}
+
+// RuntimeClient is the control-plane view of the per-runtime sidecar. The
+// interface keeps the controller testable with an in-process fake.
+type RuntimeClient interface {
+	Activate(ctx context.Context, podIP string, port int, req *ActivateRequest) (*ActivateResponse, error)
+	Deactivate(ctx context.Context, podIP string, port int, req *DeactivateRequest) error
+	ListModels(ctx context.Context, podIP string, port int) ([]ModelInfo, error)
+	Snapshot(ctx context.Context, podIP string, port int) (*RuntimeSnapshot, error)
+	SetKVLimit(ctx context.Context, podIP string, port int, req *SetKVLimitRequest) (*RuntimeOperationResponse, error)
+	Sleep(ctx context.Context, podIP string, port int, req *SleepRequest) (*RuntimeOperationResponse, error)
+	Wake(ctx context.Context, podIP string, port int, req *WakeRequest) (*RuntimeOperationResponse, error)
+}
+
+// httpRuntimeClient talks to the runtime sidecar over HTTP.
+type httpRuntimeClient struct {
+	httpClient      *http.Client
+	snapshotTimeout time.Duration
+	silence         *runtimeSilence
+}
+
+// NewRuntimeClient returns the default HTTP-backed runtime client.
+func NewRuntimeClient() RuntimeClient {
+	return newHTTPRuntimeClient(runtimeSnapshotTimeout, time.Now)
+}
+
+func newHTTPRuntimeClient(snapshotTimeout time.Duration, now func() time.Time) *httpRuntimeClient {
+	return &httpRuntimeClient{
+		httpClient:      &http.Client{Timeout: defaultRuntimeHTTPTimeout},
+		snapshotTimeout: snapshotTimeout,
+		silence:         newRuntimeSilence(now),
+	}
+}
+
+// runtimeSilence remembers the runtimes that did not answer in time. Every call
+// runs on the controller's only worker, and every claim with an engine on a pod
+// reads that pod's runtime on every pass. Without it, one runtime that stopped
+// answering would hold each of those passes for a whole timeout. A call that
+// fails in another way, such as a refused connection or an error status, is
+// not remembered. Such a failure comes at once as a rule, so trying again
+// costs little.
+//
+// A runtime is known by its address, since that is what it is called with. So
+// a pod that is given the address of one that is left alone is left alone for
+// the rest of that time. Its timeouts count on from those of the pod before
+// it.
+type runtimeSilence struct {
+	mu       sync.Mutex
+	shortest time.Duration
+	longest  time.Duration
+	now      func() time.Time
+	runtimes map[string]silentRuntime
+}
+
+// silentRuntime is a runtime that did not answer in time: how many calls to it
+// timed out in a row, and until when it is left alone.
+type silentRuntime struct {
+	timeouts int
+	until    time.Time
+}
+
+func newRuntimeSilence(now func() time.Time) *runtimeSilence {
+	return &runtimeSilence{
+		shortest: shortestRuntimeSilence,
+		longest:  runtimeSilenceWindow,
+		now:      now,
+		runtimes: map[string]silentRuntime{},
+	}
+}
+
+// silent reports whether a runtime is left alone for now.
+func (s *runtimeSilence) silent(runtime string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.now().Before(s.runtimes[runtime].until)
+}
+
+// observe records how a call to a runtime ended. The first timeout leaves the
+// runtime alone for the shortest silence. Each further timeout in a row leaves
+// it alone for twice as long as the one before it did, up to the longest
+// silence. Any answer ends that, and so does a failure that is no timeout. A
+// call that its caller canceled is not recorded at all, as do says.
+//
+// Each timeout also drops the runtimes whose time alone ended at least the
+// longest silence ago. So a runtime whose pod is gone is dropped at the next
+// timeout of any runtime after that. A runtime that times out again that late
+// starts over.
+func (s *runtimeSilence) observe(runtime string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var netErr net.Error
+	if err == nil || !errors.As(err, &netErr) || !netErr.Timeout() {
+		delete(s.runtimes, runtime)
+		return
+	}
+	now := s.now()
+	for other, last := range s.runtimes {
+		if !now.Before(last.until.Add(s.longest)) {
+			delete(s.runtimes, other)
+		}
+	}
+	silent := s.runtimes[runtime]
+	silent.timeouts++
+	alone := s.shortest << min(silent.timeouts-1, 16)
+	if alone > s.longest || alone <= 0 {
+		alone = s.longest
+	}
+	silent.until = now.Add(alone)
+	s.runtimes[runtime] = silent
+}
+
+// runtimeURL brackets an IPv6 pod address, as a URL needs.
+func runtimeURL(podIP string, port int, path string) string {
+	return "http://" + net.JoinHostPort(podIP, strconv.Itoa(port)) + path
+}
+
+func (c *httpRuntimeClient) Activate(ctx context.Context, podIP string, port int, req *ActivateRequest) (*ActivateResponse, error) {
+	out := &ActivateResponse{}
+	if err := c.postJSON(ctx, runtimeURL(podIP, port, activatePath), req, out); err != nil {
+		return nil, err
+	}
+	if out.Status == "error" {
+		return out, &runtimeRefusal{fmt.Sprintf("runtime failed to activate %s: %s", req.ModelName, out.Message)}
+	}
+	return out, nil
+}
+
+func (c *httpRuntimeClient) Deactivate(ctx context.Context, podIP string, port int, req *DeactivateRequest) error {
+	return c.postJSON(ctx, runtimeURL(podIP, port, deactivatePath), req, nil)
+}
+
+func (c *httpRuntimeClient) SetKVLimit(ctx context.Context, podIP string, port int, req *SetKVLimitRequest) (*RuntimeOperationResponse, error) {
+	out := &RuntimeOperationResponse{}
+	if err := c.postJSON(ctx, runtimeURL(podIP, port, kvLimitPath), req, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *httpRuntimeClient) Sleep(ctx context.Context, podIP string, port int, req *SleepRequest) (*RuntimeOperationResponse, error) {
+	out := &RuntimeOperationResponse{}
+	if err := c.postJSON(ctx, runtimeURL(podIP, port, sleepPath), req, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *httpRuntimeClient) Wake(ctx context.Context, podIP string, port int, req *WakeRequest) (*RuntimeOperationResponse, error) {
+	out := &RuntimeOperationResponse{}
+	if err := c.postJSON(ctx, runtimeURL(podIP, port, wakePath), req, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *httpRuntimeClient) ListModels(ctx context.Context, podIP string, port int) ([]ModelInfo, error) {
+	var out struct {
+		Models []ModelInfo `json:"models"`
+	}
+	if err := c.getJSON(ctx, runtimeURL(podIP, port, modelListPath), &out); err != nil {
+		return nil, err
+	}
+	return out.Models, nil
+}
+
+// Snapshot reads a runtime under its own deadline. Placement reads every
+// candidate this way, and the health check reads each instance's pod, one after
+// another on the controller's only worker. So a runtime that does not answer
+// must not hold that worker for long.
+func (c *httpRuntimeClient) Snapshot(ctx context.Context, podIP string, port int) (*RuntimeSnapshot, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.snapshotTimeout)
+	defer cancel()
+	out := &RuntimeSnapshot{}
+	if err := c.getJSON(ctx, runtimeURL(podIP, port, snapshotPath), out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// do sends a request to a runtime and reads its answer, unless that runtime did
+// not answer in time a short while ago. Stopping an engine is sent even then: a
+// claim is deleted or scaled down only once, and an engine left running would
+// keep its memory.
+//
+// An answer counts once all of it has arrived, or its first mebibyte. A
+// runtime that sends its headers and then stalls holds its caller until the
+// time is up as well, so it did not answer in time either.
+//
+// A call that its caller canceled says nothing about the runtime, and changes
+// nothing of what is remembered. The context is asked, and not the error: a
+// caller that cancels with a cause gets that cause back as the error.
+func (c *httpRuntimeClient) do(req *http.Request) (status int, body []byte, err error) {
+	runtime := req.URL.Host
+	if req.URL.Path != deactivatePath && c.silence.silent(runtime) {
+		return 0, nil, fmt.Errorf("runtime %s %w", runtime, errRuntimeSilent)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err == nil {
+		status = resp.StatusCode
+		body, err = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		_ = resp.Body.Close()
+		if err != nil {
+			err = fmt.Errorf("read the answer to runtime %s %s: %w", req.Method, req.URL, err)
+		}
+	}
+	if err != nil && errors.Is(req.Context().Err(), context.Canceled) {
+		return 0, nil, err
+	}
+	c.silence.observe(runtime, err)
+	if err != nil {
+		return 0, nil, err
+	}
+	return status, body, nil
+}
+
+func (c *httpRuntimeClient) getJSON(ctx context.Context, url string, out any) error {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	status, body, err := c.do(httpReq)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return statusError(http.MethodGet, url, status, body)
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("decode runtime response: %w", err)
+	}
+	return nil
+}
+
+// postJSON marshals req, POSTs it, and (optionally) decodes the response into
+// out. A non-2xx status is returned as an error including the response body.
+func (c *httpRuntimeClient) postJSON(ctx context.Context, url string, req any, out any) error {
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(payload))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	status, body, err := c.do(httpReq)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK && status != http.StatusCreated {
+		return statusError(http.MethodPost, url, status, body)
+	}
+	if out != nil && len(body) > 0 {
+		if err := json.Unmarshal(body, out); err != nil {
+			return fmt.Errorf("decode runtime response: %w", err)
+		}
+	}
+	return nil
+}

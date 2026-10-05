@@ -1,0 +1,35 @@
+Scenario: aibrix-batching-comparison
+Tests:
+  - name: aibrix-v0.6.0-nondisaggregated
+    provider: aibrix
+    fullstack: false
+    version: v0.6.0
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/model.yaml
+    benchmark: testdata/benchmarks/vllm-chat-smoke-random.yaml
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: random
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/gateway-plugins-scaleup.yaml
+
+  - name: aibrix-v0.6.0-disaggregated
+    provider: aibrix
+    fullstack: false
+    version: v0.6.0
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/pd-model.yaml
+    benchmark: testdata/benchmarks/vllm-chat-smoke-pd.yaml
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/gateway-plugins-scaleup.yaml

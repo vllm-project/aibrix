@@ -1,0 +1,13 @@
+patchTarget:
+  kind: deployment
+  name: aibrix-gateway-plugins
+  namespace: aibrix-system
+  type: strategic
+spec:
+  template:
+    spec:
+      containers:
+        - name: gateway-plugin
+          env:
+            - name: ROUTING_ALGORITHM
+              $patch: delete

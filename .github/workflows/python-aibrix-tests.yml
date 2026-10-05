@@ -1,0 +1,62 @@
+name: Python AIBrix Tests
+
+on:
+  push:
+    branches: [ "main", "release-*" ]
+    paths:
+      - 'python/aibrix/**'
+      - '.github/workflows/python-aibrix-tests.yml'
+      - '!**/*.md'
+      - '!**/*.rst'
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - 'python/aibrix/**'
+      - '.github/workflows/python-aibrix-tests.yml'
+      - '!**/*.md'
+      - '!**/*.rst'
+
+# Cancel superseded pull-request runs so the newest push starts first.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    name: Python AIBrix Tests (${{ matrix.python-version }})
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@v6
+      - name: Set up Python environment ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          cd python/aibrix
+          python -m pip install --upgrade pip
+          pip install -U pip poetry
+          # The installer runs serially: two concurrent updates can race on a
+          # `.dist-info` directory the other one just removed
+          # (python-poetry/poetry#8159).
+          poetry config virtualenvs.create false
+          poetry config installer.parallel false
+          poetry install --no-root --with dev
+      - name: Run Ruff
+        run: |
+          cd python/aibrix
+          python -m ruff check .
+          python -m ruff format --check .
+      - name: Run mypy
+        run: |
+          cd python/aibrix
+          python -m mypy .
+      - name: Run Test
+        run: |
+          cd python/aibrix/tests
+          python -m pytest .

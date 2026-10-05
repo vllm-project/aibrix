@@ -1,0 +1,1568 @@
+/*
+Copyright 2024 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package gateway
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
+	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/api/core/v1"
+)
+
+// sentinelNull is a test-only sentinel meaning "the expected value should be JSON null".
+const sentinelNull = "<null>"
+
+// mockRateLimiter implements ratelimiter.RateLimiter for testing
+type mockRateLimiter struct {
+	mock.Mock
+}
+
+func (m *mockRateLimiter) Get(ctx context.Context, key string) (int64, error) {
+	args := m.Called(ctx, key)
+	return args.Get(0).(int64), args.Error(1)
+}
+
+func (m *mockRateLimiter) GetLimit(ctx context.Context, key string) (int64, error) {
+	args := m.Called(ctx, key)
+	return args.Get(0).(int64), args.Error(1)
+}
+
+func (m *mockRateLimiter) Incr(ctx context.Context, key string, val int64, window ...time.Duration) (int64, error) {
+	args := m.Called(ctx, key, val)
+	return args.Get(0).(int64), args.Error(1)
+}
+
+func TestIsLanguageRequest(t *testing.T) {
+	tests := []struct {
+		name        string
+		requestPath string
+		want        bool
+	}{
+		{
+			name:        "chat completions is language",
+			requestPath: "/v1/chat/completions",
+			want:        true,
+		},
+		{
+			name:        "messages alias is language",
+			requestPath: "/v1/messages",
+			want:        true,
+		},
+		{
+			name:        "completions is language",
+			requestPath: "/v1/completions",
+			want:        true,
+		},
+		{
+			name:        "embeddings is language",
+			requestPath: "/v1/embeddings",
+			want:        true,
+		},
+		{
+			name:        "images generations is not language",
+			requestPath: "/v1/images/generations",
+			want:        false,
+		},
+		{
+			name:        "video generations is not language",
+			requestPath: "/v1/video/generations",
+			want:        false,
+		},
+		{
+			name:        "audio transcriptions is not language",
+			requestPath: "/v1/audio/transcriptions",
+			want:        false,
+		},
+		{
+			name:        "audio translations is not language",
+			requestPath: "/v1/audio/translations",
+			want:        false,
+		},
+		{
+			name:        "videos create is not language",
+			requestPath: "/v1/videos",
+			want:        false,
+		},
+		{
+			name:        "videos sync is not language",
+			requestPath: "/v1/videos/sync",
+			want:        false,
+		},
+		{
+			name:        "videos status poll is not language",
+			requestPath: "/v1/videos/video_gen_abc123",
+			want:        false,
+		},
+		{
+			name:        "videos content download is not language",
+			requestPath: "/v1/videos/video_gen_abc123/content",
+			want:        false,
+		},
+		{
+			name:        "tokenize is not language",
+			requestPath: "/tokenize",
+			want:        false,
+		},
+		{
+			name:        "pooling is language",
+			requestPath: "/pooling",
+			want:        true,
+		},
+		{
+			name:        "empty path is language",
+			requestPath: "",
+			want:        true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isLanguageRequest(tt.requestPath)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestTokenBucketLabel(t *testing.T) {
+	tests := []struct {
+		name   string
+		tokens int64
+		want   string
+	}{
+		{"zero", 0, "0-256"},
+		{"small", 100, "0-256"},
+		{"boundary 256", 256, "256-512"},
+		{"mid range", 500, "256-512"},
+		{"boundary 512", 512, "512-1024"},
+		{"1024", 1024, "1024-2048"},
+		{"2048", 2048, "2048-4096"},
+		{"4096", 4096, "4096-8192"},
+		{"8192", 8192, "8192-16384"},
+		{"16384", 16384, "16384-32768"},
+		{"32768", 32768, "32768+"},
+		{"large", 100000, "32768+"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tokenBucketLabel(tt.tokens)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestDurationBucketLabel(t *testing.T) {
+	tests := []struct {
+		name string
+		d    time.Duration
+		want string
+	}{
+		{"zero", 0, "0-1ms"},
+		{"sub millisecond", 500 * time.Microsecond, "0-1ms"},
+		{"1ms", time.Millisecond, "1-2ms"},
+		{"2ms", 2 * time.Millisecond, "2-5ms"},
+		{"5ms", 5 * time.Millisecond, "5-10ms"},
+		{"10ms", 10 * time.Millisecond, "10-20ms"},
+		{"50ms", 50 * time.Millisecond, "50-100ms"},
+		{"100ms", 100 * time.Millisecond, "100-200ms"},
+		{"500ms", 500 * time.Millisecond, "500-1000ms"},
+		{"1s", time.Second, "1000-2000ms"},
+		{"5s", 5 * time.Second, "5000ms+"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := durationBucketLabel(tt.d)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestTotalTimeBucketLabel(t *testing.T) {
+	tests := []struct {
+		name string
+		d    time.Duration
+		want string
+	}{
+		{"zero", 0, "0-100ms"},
+		{"50ms", 50 * time.Millisecond, "0-100ms"},
+		{"100ms", 100 * time.Millisecond, "100-250ms"},
+		{"250ms", 250 * time.Millisecond, "250-500ms"},
+		{"500ms", 500 * time.Millisecond, "500-1000ms"},
+		{"1s", time.Second, "1000-5000ms"},
+		{"5s", 5 * time.Second, "5000-20000ms"},
+		{"20s", 20 * time.Second, "20000-60000ms"},
+		{"30s", 30 * time.Second, "20000-60000ms"},
+		{"60s", 60 * time.Second, "60000ms+"},
+		{"90s", 90 * time.Second, "60000ms+"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := totalTimeBucketLabel(tt.d)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestProcessLanguageResponse_PartialChunk(t *testing.T) {
+	requestID := "test-partial-" + time.Now().Format("150405.000")
+	body := []byte(`{"model": "test-model", "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}`)
+
+	req := &extProcPb.ProcessingRequest_ResponseBody{
+		ResponseBody: &extProcPb.HttpBody{
+			Body:        body,
+			EndOfStream: false,
+		},
+	}
+
+	res, complete, promptTokens, completionTokens, totalTokens := processLanguageResponse(requestID, req)
+
+	assert.False(t, complete)
+	assert.Equal(t, int64(0), promptTokens)
+	assert.Equal(t, int64(0), completionTokens)
+	assert.Equal(t, int64(0), totalTokens)
+	assert.NotNil(t, res)
+	assert.NotNil(t, res.GetResponseBody())
+	assert.NotNil(t, res.GetResponseBody().GetResponse())
+}
+
+func TestProcessLanguageResponse_ValidFullResponse(t *testing.T) {
+	requestID := "test-valid-" + time.Now().Format("150405.000")
+	body := []byte(`{"model": "test-model", "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}`)
+
+	req := &extProcPb.ProcessingRequest_ResponseBody{
+		ResponseBody: &extProcPb.HttpBody{
+			Body:        body,
+			EndOfStream: true,
+		},
+	}
+
+	res, complete, promptTokens, completionTokens, totalTokens := processLanguageResponse(requestID, req)
+
+	// processLanguageResponse returns complete=false for valid case (no early return)
+	assert.False(t, complete)
+	assert.Equal(t, int64(10), promptTokens)
+	assert.Equal(t, int64(5), completionTokens)
+	assert.Equal(t, int64(15), totalTokens)
+	assert.Nil(t, res) // No error response for valid case
+}
+
+func TestProcessLanguageResponse_InvalidJSON(t *testing.T) {
+	requestID := "test-invalid-json-" + time.Now().Format("150405.000")
+	body := []byte(`{invalid json}`)
+
+	req := &extProcPb.ProcessingRequest_ResponseBody{
+		ResponseBody: &extProcPb.HttpBody{
+			Body:        body,
+			EndOfStream: true,
+		},
+	}
+
+	res, complete, _, _, _ := processLanguageResponse(requestID, req)
+
+	assert.True(t, complete)
+	assert.NotNil(t, res)
+	// buildErrorResponse returns ImmediateResponse, not ResponseBody
+	immResp := res.GetImmediateResponse()
+	assert.NotNil(t, immResp)
+	headers := immResp.GetHeaders().GetSetHeaders()
+	found := false
+	for _, h := range headers {
+		if h.Header.Key == HeaderErrorResponseUnmarshal {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected HeaderErrorResponseUnmarshal in response")
+}
+
+func TestProcessLanguageResponse_EmptyModel(t *testing.T) {
+	requestID := "test-empty-model-" + time.Now().Format("150405.000")
+	body := []byte(`{"model": "", "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}`)
+
+	req := &extProcPb.ProcessingRequest_ResponseBody{
+		ResponseBody: &extProcPb.HttpBody{
+			Body:        body,
+			EndOfStream: true,
+		},
+	}
+
+	res, complete, _, _, _ := processLanguageResponse(requestID, req)
+
+	assert.True(t, complete)
+	assert.NotNil(t, res)
+	immResp := res.GetImmediateResponse()
+	assert.NotNil(t, immResp)
+	headers := immResp.GetHeaders().GetSetHeaders()
+	found := false
+	for _, h := range headers {
+		if h.Header.Key == HeaderErrorResponseUnknown {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected HeaderErrorResponseUnknown in response")
+}
+
+func TestProcessLanguageResponse_ChunkedAccumulation(t *testing.T) {
+	requestID := "test-chunked-" + time.Now().Format("150405.000")
+
+	// First chunk - partial
+	chunk1 := &extProcPb.ProcessingRequest_ResponseBody{
+		ResponseBody: &extProcPb.HttpBody{
+			Body:        []byte(`{"model": "test-model", "usage": {"prompt_tokens": `),
+			EndOfStream: false,
+		},
+	}
+	res1, complete1, _, _, _ := processLanguageResponse(requestID, chunk1)
+	assert.False(t, complete1)
+	assert.NotNil(t, res1)
+
+	// Second chunk - complete
+	chunk2 := &extProcPb.ProcessingRequest_ResponseBody{
+		ResponseBody: &extProcPb.HttpBody{
+			Body:        []byte(`10, "completion_tokens": 5, "total_tokens": 15}}`),
+			EndOfStream: true,
+		},
+	}
+	_, complete2, promptTokens, completionTokens, totalTokens := processLanguageResponse(requestID, chunk2)
+	assert.False(t, complete2) // processLanguageResponse returns complete=false for valid case
+	assert.Equal(t, int64(10), promptTokens)
+	assert.Equal(t, int64(5), completionTokens)
+	assert.Equal(t, int64(15), totalTokens)
+}
+
+func TestProcessLanguageResponse_UpstreamErrorNormalization(t *testing.T) {
+	tests := []struct {
+		name      string
+		chunks    [][]byte
+		wantCode  envoyTypePb.StatusCode
+		wantMsg   string
+		wantType  string
+		wantParam string // sentinelNull means expect JSON null
+	}{
+		{
+			name:      "nested shape passthrough",
+			chunks:    [][]byte{[]byte(`{"error": {"message": "top_p must be in (0, 1], got 2.0.", "type": "BadRequestError", "param": "top_p", "code": 400}}`)},
+			wantCode:  envoyTypePb.StatusCode_BadRequest,
+			wantMsg:   "top_p must be in (0, 1], got 2.0.",
+			wantType:  "BadRequestError",
+			wantParam: "top_p",
+		},
+		{
+			name: "flat shape normalized",
+			chunks: [][]byte{[]byte(
+				`{"object": "error", "message": "max_new_tokens must be at least 0, got -1.", "type": "BadRequestError", "param": null, "code": 400}`,
+			)},
+			wantCode:  envoyTypePb.StatusCode_BadRequest,
+			wantMsg:   "max_new_tokens must be at least 0, got -1.",
+			wantType:  "BadRequestError",
+			wantParam: sentinelNull,
+		},
+		{
+			name:      "non-error JSON body falls back to string wrap",
+			chunks:    [][]byte{[]byte(`{"foo": "bar"}`)},
+			wantCode:  envoyTypePb.StatusCode_InternalServerError,
+			wantMsg:   `{"foo": "bar"}`,
+			wantType:  "api_error",
+			wantParam: sentinelNull,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requestID := "test-err-norm-" + tt.name + "-" + time.Now().Format("150405.000")
+
+			var res *extProcPb.ProcessingResponse
+			var complete bool
+			for i, chunk := range tt.chunks {
+				isLast := i == len(tt.chunks)-1
+				req := &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{
+						Body:        chunk,
+						EndOfStream: isLast,
+					},
+				}
+				res, complete, _, _, _ = processLanguageResponse(requestID, req)
+				if !isLast {
+					assert.False(t, complete, "should not be complete on partial chunk %d", i)
+					assert.NotNil(t, res)
+				}
+			}
+
+			assert.True(t, complete)
+			assert.NotNil(t, res)
+			immResp := res.GetImmediateResponse()
+			assert.NotNil(t, immResp)
+			assert.Equal(t, tt.wantCode, immResp.Status.Code)
+
+			errObj := gjson.Parse(immResp.Body).Get("error")
+			assert.True(t, errObj.IsObject(), "expected nested error object, got: %s", immResp.Body)
+			assert.Equal(t, tt.wantMsg, errObj.Get("message").String())
+			assert.Equal(t, tt.wantType, errObj.Get("type").String())
+
+			if tt.wantParam == sentinelNull {
+				assert.True(t, errObj.Get("param").Exists() && errObj.Get("param").Type == gjson.Null, "expected param to be null, got: %s", immResp.Body)
+			} else if tt.wantParam != "" {
+				assert.Equal(t, tt.wantParam, errObj.Get("param").String())
+			}
+		})
+	}
+}
+
+func TestNormalizeUpstreamError(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      []byte
+		wantOK    bool
+		wantCode  envoyTypePb.StatusCode
+		wantMsg   string
+		wantType  string
+		wantParam string
+		wantCodeV string
+	}{
+		{
+			name:      "nested shape with all fields",
+			body:      []byte(`{"error": {"message": "bad request", "type": "BadRequestError", "param": "top_p", "code": 400}}`),
+			wantOK:    true,
+			wantCode:  envoyTypePb.StatusCode_BadRequest,
+			wantMsg:   "bad request",
+			wantType:  "BadRequestError",
+			wantParam: "top_p",
+			wantCodeV: "400",
+		},
+		{
+			name:      "flat shape with null param",
+			body:      []byte(`{"object": "error", "message": "max_new_tokens must be at least 0, got -1.", "type": "BadRequestError", "param": null, "code": 400}`),
+			wantOK:    true,
+			wantCode:  envoyTypePb.StatusCode_BadRequest,
+			wantMsg:   "max_new_tokens must be at least 0, got -1.",
+			wantType:  "BadRequestError",
+			wantParam: sentinelNull,
+			wantCodeV: "400",
+		},
+		{
+			name:     "nested error missing message falls back to generic",
+			body:     []byte(`{"error": {"type": "BadRequestError", "code": 400}}`),
+			wantOK:   true,
+			wantCode: envoyTypePb.StatusCode_BadRequest,
+			wantMsg:  "<fallback>",
+		},
+		{
+			name:   "non-error JSON is not classified as error",
+			body:   []byte(`{"model": "test-model", "choices": []}`),
+			wantOK: false,
+		},
+		{
+			name:   "invalid JSON",
+			body:   []byte(`{invalid json}`),
+			wantOK: false,
+		},
+		{
+			name:      "string semantic code falls back to 500 but preserves code in body",
+			body:      []byte(`{"error": {"message": "invalid api key", "type": "authentication_error", "code": "invalid_api_key"}}`),
+			wantOK:    true,
+			wantCode:  envoyTypePb.StatusCode_InternalServerError,
+			wantMsg:   "invalid api key",
+			wantType:  "authentication_error",
+			wantCodeV: "invalid_api_key",
+		},
+		{
+			name:      "flat shape with only message, others null",
+			body:      []byte(`{"message": "something went wrong"}`),
+			wantOK:    true,
+			wantCode:  envoyTypePb.StatusCode_InternalServerError,
+			wantMsg:   "something went wrong",
+			wantType:  sentinelNull,
+			wantParam: sentinelNull,
+			wantCodeV: sentinelNull,
+		},
+		{
+			name:      "missing code emits null in body and falls back to 500",
+			body:      []byte(`{"error": {"message": "bad request", "type": "BadRequestError"}}`),
+			wantOK:    true,
+			wantCode:  envoyTypePb.StatusCode_InternalServerError,
+			wantMsg:   "bad request",
+			wantType:  "BadRequestError",
+			wantCodeV: sentinelNull,
+		},
+		{
+			name:      "stringified integer code is parsed for HTTP status",
+			body:      []byte(`{"error": {"message": "bad request", "type": "BadRequestError", "code": "400"}}`),
+			wantOK:    true,
+			wantCode:  envoyTypePb.StatusCode_BadRequest,
+			wantMsg:   "bad request",
+			wantType:  "BadRequestError",
+			wantCodeV: "400",
+		},
+		{
+			name:   "top-level JSON array is not classified as error",
+			body:   []byte(`[{"message": "not an error object"}]`),
+			wantOK: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rendered, code, ok := normalizeUpstreamErrorBody(tt.body, 0)
+			assert.Equal(t, tt.wantOK, ok)
+			if !tt.wantOK {
+				return
+			}
+			assert.Equal(t, tt.wantCode, code)
+			errObj := gjson.Parse(rendered).Get("error")
+			assert.True(t, errObj.IsObject(), "rendered: %s", rendered)
+			if tt.wantMsg == "<fallback>" {
+				assert.Equal(t, ErrorUnknownResponse.Error(), errObj.Get("message").String())
+			} else if tt.wantMsg != "" {
+				assert.Equal(t, tt.wantMsg, errObj.Get("message").String())
+			}
+			if tt.wantType == sentinelNull {
+				assert.True(t, errObj.Get("type").Type == gjson.Null, "type should be null")
+			} else if tt.wantType != "" {
+				assert.Equal(t, tt.wantType, errObj.Get("type").String())
+			}
+			if tt.wantParam == sentinelNull {
+				assert.True(t, errObj.Get("param").Type == gjson.Null, "param should be null")
+			} else if tt.wantParam != "" {
+				assert.Equal(t, tt.wantParam, errObj.Get("param").String())
+			}
+			if tt.wantCodeV == sentinelNull {
+				assert.True(t, errObj.Get("code").Type == gjson.Null, "code should be null")
+			} else if tt.wantCodeV != "" {
+				assert.Equal(t, tt.wantCodeV, errObj.Get("code").String())
+			}
+		})
+	}
+}
+
+func TestBuildErrorResponseWithBody(t *testing.T) {
+	resp := buildErrorResponseWithBody(
+		envoyTypePb.StatusCode_BadRequest,
+		`{"error":{"message":"bad","type":"BadRequestError"}}`,
+		buildEnvoyProxyHeaders(nil, "x-upstream-error", "true"),
+	)
+	immResp := resp.GetImmediateResponse()
+	assert.NotNil(t, immResp)
+	assert.Equal(t, envoyTypePb.StatusCode_BadRequest, immResp.Status.Code)
+	assert.Equal(t, `{"error":{"message":"bad","type":"BadRequestError"}}`, immResp.Body)
+
+	headers := immResp.GetHeaders().GetSetHeaders()
+	hasJSON, hasHeader := false, false
+	for _, h := range headers {
+		if h.Header.Key == "Content-Type" && h.Header.Value == "application/json" {
+			hasJSON = true
+		}
+		if h.Header.Key == "x-upstream-error" {
+			hasHeader = true
+		}
+	}
+	assert.True(t, hasJSON, "expected Content-Type: application/json header")
+	assert.True(t, hasHeader, "expected x-upstream-error header")
+}
+
+func TestHandleResponseBody_NonStreamWithUsage(t *testing.T) {
+	server := &Server{}
+
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", "test-req-id", "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.RequestTime = time.Now()
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"model": "test-model", "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, false)
+
+	assert.True(t, complete)
+	assert.NotNil(t, resp)
+	assert.NotNil(t, resp.GetResponseBody())
+	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}, usage)
+}
+
+func TestHandleResponseBody_NilRoutingContext(t *testing.T) {
+	server := &Server{}
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{EndOfStream: true},
+		},
+	}
+
+	resp, complete, usage := server.HandleResponseBody(context.Background(), nil, "test-req-id", req, utils.User{}, 0, "test-model", false, false)
+
+	assert.True(t, complete)
+	assert.NotNil(t, resp.GetImmediateResponse())
+	assert.Equal(t, TokenUsage{}, usage)
+}
+
+func TestHandleResponseBody_PDPrefillTimingMetricsRequirePrefillEndTime(t *testing.T) {
+	tests := []struct {
+		name             string
+		prefillEndOffset time.Duration
+		wantBucket       string
+		wantCount        float64
+	}{
+		{
+			name:       "skips prefill timing metric when prefill end is unset",
+			wantBucket: "0-1ms",
+			wantCount:  0.0,
+		},
+		{
+			name:             "emits prefill timing metric when prefill end is set",
+			prefillEndOffset: 50 * time.Millisecond,
+			wantBucket:       "50-100ms",
+			wantCount:        1.0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prefillCounter, cleanup := metrics.SetupCounterMetricsForTest(
+				metrics.GatewayPrefillTimeBucketTotal,
+				[]string{"gateway_pod", "model", "bucket"},
+			)
+			defer cleanup()
+
+			server := &Server{}
+			requestTime := time.Now().Add(-200 * time.Millisecond)
+			prefillStartTime := requestTime.Add(20 * time.Millisecond)
+			routerCtx := types.NewRoutingContext(context.Background(), "pd", "test-model", "", "test-req-id", "")
+			routerCtx.ReqPath = PathChatCompletions
+			routerCtx.RequestTime = requestTime
+			routerCtx.PrefillStartTime = prefillStartTime
+			if tt.prefillEndOffset > 0 {
+				routerCtx.PrefillEndTime = prefillStartTime.Add(tt.prefillEndOffset)
+			}
+
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{
+						Body:        []byte(`{"model": "test-model", "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}`),
+						EndOfStream: true,
+					},
+				},
+			}
+
+			resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, false)
+
+			assert.True(t, complete)
+			assert.NotNil(t, resp)
+			assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}, usage)
+			assert.Equal(t, tt.wantCount, testutil.ToFloat64(prefillCounter.WithLabelValues("", "test-model", tt.wantBucket)))
+		})
+	}
+}
+
+// TestHandleResponseBody_PDStreamingDecodeTimeAndTPOT guards against a regression where
+// decode_time (and therefore TPOT) collapsed to ~0 for streaming PD requests because the
+// caller passed FirstTokenTime itself as the "arrival" used for the FirstTokenTime-to-end
+// decode window, instead of the final chunk's real arrival time. It also verifies the PD
+// branch emits gateway_tpot_bucket_total, which previously only the non-PD branch did.
+func TestHandleResponseBody_PDStreamingDecodeTimeAndTPOT(t *testing.T) {
+	decodeCounter, cleanupDecode := metrics.SetupCounterMetricsForTest(
+		metrics.GatewayDecodeTimeBucketTotal,
+		[]string{"gateway_pod", "model", "bucket"},
+	)
+	defer cleanupDecode()
+	tpotCounter, cleanupTPOT := metrics.SetupCounterMetricsForTest(
+		metrics.GatewayTPOTBucketTotal,
+		[]string{"gateway_pod", "model", "bucket"},
+	)
+	defer cleanupTPOT()
+
+	server := &Server{}
+	requestTime := time.Now().Add(-250 * time.Millisecond)
+	prefillStartTime := requestTime.Add(20 * time.Millisecond)
+	prefillEndTime := prefillStartTime.Add(30 * time.Millisecond)
+	// FirstTokenTime is set well before "now" to simulate it having been recorded on an
+	// earlier SSE chunk, as it would be in real streaming traffic.
+	firstTokenTime := prefillEndTime.Add(20 * time.Millisecond)
+
+	routerCtx := types.NewRoutingContext(context.Background(), "pd", "test-model", "", "test-req-id", "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.Stream = true
+	routerCtx.RequestTime = requestTime
+	routerCtx.PrefillStartTime = prefillStartTime
+	routerCtx.PrefillEndTime = prefillEndTime
+	routerCtx.FirstTokenTime = firstTokenTime
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte("data: {\"id\": \"1\", \"usage\": {\"prompt_tokens\": 10, \"completion_tokens\": 5, \"total_tokens\": 15}}\n\n"),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", true, false)
+
+	assert.True(t, complete)
+	assert.NotNil(t, resp)
+	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}, usage)
+
+	// The final chunk arrives ~70ms after FirstTokenTime here, so decode_time must not
+	// land in the near-zero "0-1ms" bucket.
+	assert.Zero(t, testutil.ToFloat64(decodeCounter.WithLabelValues("", "test-model", "0-1ms")))
+	assert.Equal(t, 1, testutil.CollectAndCount(decodeCounter), "expected exactly one decode_time bucket to be recorded")
+	assert.Equal(t, 1, testutil.CollectAndCount(tpotCounter), "PD streaming path must emit gateway_tpot_bucket_total")
+}
+
+func TestHandleResponseBody_WithUserAndTPM(t *testing.T) {
+	mockRL := &mockRateLimiter{}
+	mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(15)).Return(int64(100), nil)
+
+	server := &Server{
+		ratelimiter: mockRL,
+	}
+
+	requestID := "test-req-tpm-" + time.Now().Format("150405.000")
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "test-user")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.RequestTime = time.Now()
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"model": "test-model", "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 42, "test-model", false, false)
+
+	assert.True(t, complete)
+	assert.NotNil(t, resp)
+	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}, usage)
+	headers := resp.GetResponseBody().GetResponse().GetHeaderMutation().GetSetHeaders()
+	foundTPM := false
+	foundRPM := false
+	foundReqID := false
+	for _, h := range headers {
+		switch h.Header.Key {
+		case HeaderUpdateTPM:
+			foundTPM = true
+			assert.Equal(t, []byte("100"), h.Header.RawValue)
+		case HeaderUpdateRPM:
+			foundRPM = true
+			assert.Equal(t, []byte("42"), h.Header.RawValue)
+		case HeaderRequestID:
+			foundReqID = true
+			assert.Equal(t, []byte(requestID), h.Header.RawValue)
+		}
+	}
+	assert.True(t, foundTPM, "expected HeaderUpdateTPM in response")
+	assert.True(t, foundRPM, "expected HeaderUpdateRPM in response")
+	assert.True(t, foundReqID, "expected request-id in response")
+	mockRL.AssertExpectations(t)
+}
+
+func TestHandleResponseBody_NonLanguageRequest(t *testing.T) {
+	server := &Server{}
+
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", "test-req-id", "")
+	routerCtx.ReqPath = "/v1/images/generations"
+	routerCtx.RequestTime = time.Now()
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"model": "test-model"}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, false)
+
+	// Non-language request with EndOfStream sets complete=true
+	assert.True(t, complete)
+	assert.NotNil(t, resp)
+	assert.Equal(t, TokenUsage{}, usage)
+}
+
+func TestHandleResponseBody_EndOfStreamNoTokens(t *testing.T) {
+	server := &Server{}
+
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", "test-req-id", "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.RequestTime = time.Now()
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, false)
+
+	assert.True(t, complete)
+	assert.NotNil(t, resp)
+	assert.Equal(t, TokenUsage{}, usage)
+}
+
+func TestHandleResponseBody_TPMIncrError(t *testing.T) {
+	mockRL := &mockRateLimiter{}
+	mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(15)).Return(int64(0), errors.New("mock error"))
+	server := &Server{
+		ratelimiter: mockRL,
+	}
+
+	requestID := "test-req-tpm-err-" + time.Now().Format("150405.000")
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "test-user")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.RequestTime = time.Now()
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"model": "test-model", "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 0, "test-model", false, false)
+
+	assert.True(t, complete)
+	assert.NotNil(t, resp)
+	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}, usage)
+	// Error response uses ImmediateResponse
+	immResp := resp.GetImmediateResponse()
+	assert.NotNil(t, immResp)
+	headers := immResp.GetHeaders().GetSetHeaders()
+	found := false
+	for _, h := range headers {
+		if h.Header.Key == HeaderErrorIncrTPM {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected HeaderErrorIncrTPM in response")
+	mockRL.AssertExpectations(t)
+}
+
+func TestHandleResponseBody_LanguagePartialResponse(t *testing.T) {
+	server := &Server{}
+
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "m", "", "rid-partial", "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.RequestTime = time.Now()
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"model":"m","usage":{"prompt_tokens":1}}`),
+				EndOfStream: false,
+			},
+		},
+	}
+
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, "rid-partial", req, utils.User{}, 0, "m", false, false)
+	assert.False(t, complete)
+	assert.NotNil(t, resp)
+	assert.NotNil(t, resp.GetResponseBody().GetResponse())
+	assert.Equal(t, TokenUsage{}, usage)
+}
+
+func TestHandleResponseBody_DoesNotFinalizeTrace(t *testing.T) {
+	mockCache := &MockCache{}
+	server := &Server{cache: mockCache}
+
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "m", "", "rid", "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.RequestTime = time.Now()
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"model":"m","usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	_, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, "rid", req, utils.User{}, 0, "m", false, false)
+	assert.True(t, complete)
+	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}, usage)
+	mockCache.AssertNotCalled(t, "DoneRequestTrace", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestHandleResponseBody_DoesNotFinalizeOrReleaseRoutingContext(t *testing.T) {
+	mockCache := &MockCache{}
+	server := &Server{cache: mockCache}
+
+	routerCtx := types.NewRoutingContext(
+		context.Background(), "random", "m", "", "request-a", "",
+	)
+	routerCtx.ReqPath = PathChatCompletions
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body: []byte(
+					`{"model":"m","usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`,
+				),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	_, complete, _ := server.HandleResponseBody(
+		context.Background(), routerCtx, "request-a",
+		req, utils.User{}, 0, "m", false, false,
+	)
+
+	assert.True(t, complete)
+	assert.Equal(t, "request-a", routerCtx.RequestID)
+
+	// Delete() changes an unrouted targetPod from nilPod to nil, preventing a
+	// subsequent SetTargetPod call from succeeding. This assertion therefore
+	// detects an early Delete deterministically, without relying on sync.Pool
+	// returning the same pointer.
+	pod := &v1.Pod{}
+	routerCtx.SetTargetPod(pod)
+	assert.True(t, routerCtx.HasRouted(),
+		"HandleResponseBody must not release RoutingContext")
+
+	mockCache.AssertNotCalled(t, "DoneRequestTrace",
+		mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything)
+	mockCache.AssertNotCalled(t, "DoneRequestCount",
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestFinishRequest_FinalizesExactlyOnceAfterContextCorruption(t *testing.T) {
+	mc := &MockCache{}
+	routerCtx := types.NewRoutingContext(
+		context.Background(), "random", "m", "", "request-a", "",
+	)
+
+	st := &processState{
+		routerCtx: routerCtx,
+		requestID: "request-a",
+		model:     "m",
+		traceTerm: 7,
+	}
+
+	var recordedContextRequestID string
+	mc.On(
+		"DoneRequestTrace",
+		routerCtx,
+		"request-a",
+		"m",
+		int64(10),
+		int64(5),
+		int64(7),
+	).Run(func(args mock.Arguments) {
+		recordedContextRequestID =
+			args.Get(0).(*types.RoutingContext).RequestID
+	}).Return().Once()
+
+	server := &Server{cache: mc}
+
+	server.finishRequestTrace(st, TokenUsage{
+		PromptTokens:     10,
+		CompletionTokens: 5,
+	})
+
+	// Simulate the pointer being reset for request B.
+	routerCtx.RequestID = "request-b"
+
+	// Simulate a second finalization path later in Process.
+	server.finishRequestCount(st)
+
+	assert.Equal(t, "request-a", recordedContextRequestID)
+	mc.AssertNumberOfCalls(t, "DoneRequestTrace", 1)
+	mc.AssertNotCalled(t, "DoneRequestCount",
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	mc.AssertExpectations(t)
+}
+
+func TestHandleResponseBody_SSEParsing(t *testing.T) {
+	tests := []struct {
+		name             string
+		body             []byte
+		promptTokens     int64
+		completionTokens int64
+		totalTokens      int64
+		expectError      bool
+	}{
+		{
+			name:             "Normal usage chunk with \\n",
+			body:             []byte("data: {\"id\": \"1\", \"usage\": {\"prompt_tokens\": 10, \"completion_tokens\": 20, \"total_tokens\": 30}}\n\n"),
+			promptTokens:     10,
+			completionTokens: 20,
+			totalTokens:      30,
+			expectError:      false,
+		},
+		{
+			name:             "Normal usage chunk with \\r\\n",
+			body:             []byte("data: {\"id\": \"2\", \"usage\": {\"prompt_tokens\": 5, \"completion_tokens\": 5, \"total_tokens\": 10}}\r\n\r\n"),
+			promptTokens:     5,
+			completionTokens: 5,
+			totalTokens:      10,
+			expectError:      false,
+		},
+		{
+			name:             "DONE terminator",
+			body:             []byte("data: [DONE]\n\n"),
+			promptTokens:     0,
+			completionTokens: 0,
+			totalTokens:      0,
+			expectError:      false,
+		},
+		{
+			name:             "Malformed JSON payload is passed through transparently",
+			body:             []byte("data: {\"id\": \"1\", \"usage\": { broken json \n\n"),
+			promptTokens:     0,
+			completionTokens: 0,
+			totalTokens:      0,
+			expectError:      true,
+		},
+		{
+			name:             "False positive 'usage' text in response",
+			body:             []byte("data: {\"id\": \"1\", \"choices\": [{\"delta\": {\"content\": \"Here is the usage example\"}}]}\n\n"),
+			promptTokens:     0,
+			completionTokens: 0,
+			totalTokens:      0,
+			expectError:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := &Server{}
+
+			routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", "test-req-id", "")
+			routerCtx.ReqPath = PathChatCompletions
+			routerCtx.RequestTime = time.Now()
+
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{
+						Body:        tt.body,
+						EndOfStream: true, // assume this is last chunk
+					},
+				},
+			}
+
+			// stream=true
+			resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", true, false)
+			assert.Equal(t, TokenUsage{
+				PromptTokens:     tt.promptTokens,
+				CompletionTokens: tt.completionTokens,
+				TotalTokens:      tt.totalTokens,
+			}, usage)
+
+			if tt.expectError {
+				assert.True(t, complete)
+				assert.NotNil(t, resp)
+
+				immediateRes := resp.GetImmediateResponse()
+				assert.NotNil(t, immediateRes, "Expected ImmediateResponse on error, but got nil. Response: %v", resp)
+
+				hasErrorHeader := false
+				if immediateRes.GetHeaders() != nil {
+					for _, header := range immediateRes.GetHeaders().GetSetHeaders() {
+						if header.Header.Key == HeaderErrorStreaming {
+							hasErrorHeader = true
+							break
+						}
+					}
+				}
+				assert.True(t, hasErrorHeader, "Expected HeaderErrorStreaming to be set on error")
+			} else {
+				assert.True(t, complete)
+				assert.NotNil(t, resp)
+				assert.NotNil(t, resp.GetResponseBody(), "Expected ResponseBody on success")
+			}
+		})
+	}
+}
+
+// TestHandleResponseBody_SSEChunkSplitAcrossCallbacks reproduces
+// https://github.com/vllm-project/aibrix/issues/2638: Envoy ext_proc delivers
+// response body chunks as TCP data arrives, so a single SSE "data: {...}" line
+// carrying the final usage payload can be split across two HandleResponseBody
+// invocations, and the split can land anywhere in the line -- including before
+// the "usage" key itself has arrived. The first (non-final) call must not treat
+// its truncated tail as malformed JSON; the second call should complete the
+// line and extract usage.
+func TestHandleResponseBody_SSEChunkSplitAcrossCallbacks(t *testing.T) {
+	full := []byte("data: {\"id\": \"1\", \"usage\": {\"prompt_tokens\": 10, \"completion_tokens\": 20, \"total_tokens\": 30}}\n\n")
+
+	tests := []struct {
+		name    string
+		splitAt int
+	}{
+		{name: "split after the usage key has appeared", splitAt: 40},
+		{name: "split before the usage key appears", splitAt: 10},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requestID := "test-req-id-" + tt.name + "-" + time.Now().Format("150405.000000")
+			t.Cleanup(func() { streamBuffers.Delete(requestID) })
+
+			server := &Server{}
+
+			routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
+			routerCtx.ReqPath = PathChatCompletions
+			routerCtx.RequestTime = time.Now()
+
+			firstHalf, secondHalf := full[:tt.splitAt], full[tt.splitAt:]
+
+			firstReq := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{
+						Body:        firstHalf,
+						EndOfStream: false,
+					},
+				},
+			}
+			resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, firstReq, utils.User{}, 0, "test-model", true, false)
+			assert.False(t, complete, "stream is not complete after the first partial chunk")
+			assert.Equal(t, TokenUsage{}, usage)
+			assert.Nil(t, resp.GetImmediateResponse(), "a mid-stream chunk boundary must not be reported as malformed JSON")
+
+			secondReq := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{
+						Body:        secondHalf,
+						EndOfStream: true,
+					},
+				},
+			}
+			resp, complete, usage = server.HandleResponseBody(context.Background(), routerCtx, requestID, secondReq, utils.User{}, 0, "test-model", true, false)
+			assert.True(t, complete)
+			assert.Nil(t, resp.GetImmediateResponse())
+			assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30}, usage)
+		})
+	}
+}
+
+// TestHandleResponseBody_SSEEmptyEOSChunkAfterBufferedTail covers a standard Envoy
+// ext_proc pattern that TestHandleResponseBody_SSEChunkSplitAcrossCallbacks does not: the
+// final chunk carrying EndOfStream can itself have an empty body, with the actual last
+// bytes of the line having arrived in the previous (non-final) chunk. The buffered tail
+// must still be reassembled and scanned on EOS even though the EOS chunk contributes no
+// new bytes.
+func TestHandleResponseBody_SSEEmptyEOSChunkAfterBufferedTail(t *testing.T) {
+	// No trailing "\n\n": the whole line arrives with no newline terminator at all, so it
+	// is entirely carried over into streamBuffers rather than scanned on this call.
+	noTerminator := []byte("data: {\"id\": \"1\", \"usage\": {\"prompt_tokens\": 10, \"completion_tokens\": 20, \"total_tokens\": 30}}")
+
+	requestID := "test-req-id-empty-eos-" + time.Now().Format("150405.000000")
+	t.Cleanup(func() { streamBuffers.Delete(requestID) })
+
+	server := &Server{}
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.RequestTime = time.Now()
+
+	firstReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        noTerminator,
+				EndOfStream: false,
+			},
+		},
+	}
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, firstReq, utils.User{}, 0, "test-model", true, false)
+	assert.False(t, complete)
+	assert.Equal(t, TokenUsage{}, usage)
+	assert.Nil(t, resp.GetImmediateResponse())
+
+	eosReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte{},
+				EndOfStream: true,
+			},
+		},
+	}
+	resp, complete, usage = server.HandleResponseBody(context.Background(), routerCtx, requestID, eosReq, utils.User{}, 0, "test-model", true, false)
+	assert.True(t, complete)
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30}, usage)
+}
+
+// TestHandleResponseBody_SSEChunkSplitThreeWays covers a line split across three (not just
+// two) consecutive HandleResponseBody calls, chaining the trailing-buffer carry-over twice.
+func TestHandleResponseBody_SSEChunkSplitThreeWays(t *testing.T) {
+	full := []byte("data: {\"id\": \"1\", \"usage\": {\"prompt_tokens\": 10, \"completion_tokens\": 20, \"total_tokens\": 30}}\n\n")
+
+	requestID := "test-req-id-three-way-" + time.Now().Format("150405.000000")
+	t.Cleanup(func() { streamBuffers.Delete(requestID) })
+
+	server := &Server{}
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.RequestTime = time.Now()
+
+	part1, part2, part3 := full[:10], full[10:40], full[40:]
+
+	for i, part := range [][]byte{part1, part2} {
+		req := &extProcPb.ProcessingRequest{
+			Request: &extProcPb.ProcessingRequest_ResponseBody{
+				ResponseBody: &extProcPb.HttpBody{
+					Body:        part,
+					EndOfStream: false,
+				},
+			},
+		}
+		resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{}, 0, "test-model", true, false)
+		assert.False(t, complete, "part %d should not complete the stream", i)
+		assert.Equal(t, TokenUsage{}, usage)
+		assert.Nil(t, resp.GetImmediateResponse(), "part %d must not be reported as malformed JSON", i)
+	}
+
+	finalReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        part3,
+				EndOfStream: true,
+			},
+		},
+	}
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, finalReq, utils.User{}, 0, "test-model", true, false)
+	assert.True(t, complete)
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30}, usage)
+}
+
+// TestHandleResponseBody_SSECarriageReturnSplitAcrossCallbacks covers the line terminator
+// itself being split across callbacks: one chunk ends with '\r' and the next begins with
+// '\n'. bytes.TrimSpace strips a trailing '\r' from the line content either way, but the
+// buffering must not treat the dangling '\r' as part of an unterminated next line.
+func TestHandleResponseBody_SSECarriageReturnSplitAcrossCallbacks(t *testing.T) {
+	full := []byte("data: {\"id\": \"1\", \"usage\": {\"prompt_tokens\": 10, \"completion_tokens\": 20, \"total_tokens\": 30}}\r\n\r\n")
+	splitAt := bytes.IndexByte(full, '\r') + 1 // split right after the '\r', before the '\n'
+
+	requestID := "test-req-id-crlf-split-" + time.Now().Format("150405.000000")
+	t.Cleanup(func() { streamBuffers.Delete(requestID) })
+
+	server := &Server{}
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.RequestTime = time.Now()
+
+	firstReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        full[:splitAt],
+				EndOfStream: false,
+			},
+		},
+	}
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, firstReq, utils.User{}, 0, "test-model", true, false)
+	assert.False(t, complete)
+	assert.Equal(t, TokenUsage{}, usage)
+	assert.Nil(t, resp.GetImmediateResponse())
+
+	secondReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        full[splitAt:],
+				EndOfStream: true,
+			},
+		},
+	}
+	resp, complete, usage = server.HandleResponseBody(context.Background(), routerCtx, requestID, secondReq, utils.User{}, 0, "test-model", true, false)
+	assert.True(t, complete)
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30}, usage)
+}
+
+// TestHandleResponseBody_SSELineExceedsBufferLimit reproduces a single SSE event (e.g. a
+// large tool-call/reasoning/multimodal delta) that exceeds maxStreamBufferSize before a
+// newline arrives. Per https://github.com/vllm-project/aibrix/pull/2653#issuecomment
+// feedback, this must not abort the client's stream with a 500 -- that reproduces the
+// original bug (issue #2638) for a different reason. The gateway should drop the oversized
+// line and let the stream continue; only usage extraction for that one line is lost.
+func TestHandleResponseBody_SSELineExceedsBufferLimit(t *testing.T) {
+	requestID := "test-req-id-oversized-line-" + time.Now().Format("150405.000000")
+	t.Cleanup(func() { streamBuffers.Delete(requestID) })
+
+	server := &Server{}
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.RequestTime = time.Now()
+
+	// A single line, no newline yet, larger than maxStreamBufferSize.
+	oversizedChunk := append([]byte("data: "), bytes.Repeat([]byte("a"), maxStreamBufferSize+1)...)
+
+	firstReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        oversizedChunk,
+				EndOfStream: false,
+			},
+		},
+	}
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, firstReq, utils.User{}, 0, "test-model", true, false)
+	assert.False(t, complete)
+	assert.Equal(t, TokenUsage{}, usage)
+	assert.Nil(t, resp.GetImmediateResponse(), "an oversized single-line SSE event must not abort the client stream with a 500")
+
+	// The line finally terminates, along with a well-formed subsequent usage line. The
+	// terminator here only closes out (and discards) the oversized line; usage extraction
+	// for that dropped line is lost, but the stream must still complete cleanly.
+	finalReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte("\n\ndata: {\"id\": \"2\", \"usage\": {\"prompt_tokens\": 1, \"completion_tokens\": 1, \"total_tokens\": 2}}\n\n"),
+				EndOfStream: true,
+			},
+		},
+	}
+	resp, complete, usage = server.HandleResponseBody(context.Background(), routerCtx, requestID, finalReq, utils.User{}, 0, "test-model", true, false)
+	assert.True(t, complete)
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.Equal(t, TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}, usage)
+}
+
+func TestRequestEndHelper_EmitsTokenUsageMetrics(t *testing.T) {
+	var counterCalls []struct {
+		name  string
+		value float64
+		extra map[string]string
+	}
+
+	originalFn := metrics.IncrementCounterMetricFnForTest
+	defer func() { metrics.IncrementCounterMetricFnForTest = originalFn }()
+	metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		extra := make(map[string]string, len(labelNames))
+		for i, ln := range labelNames {
+			extra[ln] = labelValues[i]
+		}
+		counterCalls = append(counterCalls, struct {
+			name  string
+			value float64
+			extra map[string]string
+		}{name: name, value: value, extra: extra})
+	}
+
+	server := &Server{}
+	routerCtx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(""), "test-model", "", "req-1", "")
+	arrival := time.Now()
+
+	server.requestEndHelper(routerCtx, arrival, 100, 50, 150)
+
+	var inputTokens, outputTokens, requestsWithUsage float64
+	for _, call := range counterCalls {
+		switch call.name {
+		case metrics.GatewayInputTokensTotal:
+			inputTokens += call.value
+		case metrics.GatewayOutputTokensTotal:
+			outputTokens += call.value
+		case metrics.GatewayRequestsWithUsageTotal:
+			assert.Equal(t, "true", call.extra["has_usage"])
+			requestsWithUsage += call.value
+		}
+	}
+
+	assert.Equal(t, 100.0, inputTokens)
+	assert.Equal(t, 50.0, outputTokens)
+	assert.Equal(t, 1.0, requestsWithUsage)
+}
+
+func TestRequestEndHelper_EmitsTTFTForStreaming(t *testing.T) {
+	var counterCalls []struct {
+		name  string
+		extra map[string]string
+	}
+
+	originalFn := metrics.IncrementCounterMetricFnForTest
+	defer func() { metrics.IncrementCounterMetricFnForTest = originalFn }()
+	metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		extra := make(map[string]string, len(labelNames))
+		for i, ln := range labelNames {
+			extra[ln] = labelValues[i]
+		}
+		counterCalls = append(counterCalls, struct {
+			name  string
+			extra map[string]string
+		}{name: name, extra: extra})
+	}
+
+	server := &Server{}
+	routerCtx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(""), "test-model", "", "req-1", "")
+	routerCtx.Stream = true
+	routerCtx.RequestTime = time.Now().Add(-500 * time.Millisecond)
+	routerCtx.FirstTokenTime = time.Now().Add(-200 * time.Millisecond)
+	arrival := time.Now()
+
+	server.requestEndHelper(routerCtx, arrival, 100, 50, 150)
+
+	var ttftCalls int
+	for _, call := range counterCalls {
+		if call.name == metrics.GatewayTTFTBucketTotal {
+			ttftCalls++
+			assert.Equal(t, "200-500ms", call.extra["bucket"])
+		}
+	}
+	assert.Equal(t, 1, ttftCalls)
+}
+
+func TestRequestEndHelper_SkipsTTFTForNonStreaming(t *testing.T) {
+	var counterCalls []string
+
+	originalFn := metrics.IncrementCounterMetricFnForTest
+	defer func() { metrics.IncrementCounterMetricFnForTest = originalFn }()
+	metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		counterCalls = append(counterCalls, name)
+	}
+
+	server := &Server{}
+	routerCtx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(""), "test-model", "", "req-1", "")
+	arrival := time.Now()
+
+	server.requestEndHelper(routerCtx, arrival, 100, 50, 150)
+
+	for _, name := range counterCalls {
+		assert.NotEqual(t, metrics.GatewayTTFTBucketTotal, name)
+	}
+}
+
+// TestHandleResponseBody_VideoCreateRegistersAndRewritesID drives the create
+// path through the real entry point, since only HandleResponseBody decides
+// whether a response body is a video job response at all.
+func TestHandleResponseBody_VideoCreateRegistersAndRewritesID(t *testing.T) {
+	s, mockCache, registry := newTestVideoJobServer(t)
+	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
+
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "wan2.1-vace-1.3b", "", "req-create", "")
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodPost}
+	routerCtx.ReqPath = PathVideos
+	routerCtx.SetTargetPod(pod)
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"id":"video_gen_abc","status":"queued"}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, _, _ := s.HandleResponseBody(context.Background(), routerCtx, "req-create", req, utils.User{}, 0, "wan2.1-vace-1.3b", false, false)
+
+	body := resp.GetResponseBody().GetResponse().GetBodyMutation().GetBody()
+	publicJobID := gjson.GetBytes(body, "id").String()
+	assert.True(t, strings.HasPrefix(publicJobID, asyncJobPublicIDPrefix), "client must never see the backend id: %s", publicJobID)
+	assert.Equal(t, "queued", gjson.GetBytes(body, "status").String())
+
+	record, err := listTestAsyncJobs(context.Background(), registry, asyncJobOwnerShared, asyncJobTypeVideo)
+	require.NoError(t, err)
+	require.Len(t, record, 1)
+	assert.Equal(t, publicJobID, record[0].PublicJobID)
+	assert.Equal(t, "video_gen_abc", record[0].BackendJobID)
+	mockCache.AssertExpectations(t)
+}
+
+// TestHandleResponseBody_VideoStatusRewritesIDBackToPublic: the backend answers
+// a status poll with its own id, which the client has never seen and cannot use.
+func TestHandleResponseBody_VideoStatusRewritesIDBackToPublic(t *testing.T) {
+	s, _, registry := newTestVideoJobServer(t)
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
+		readyPod("pod-a", "ns-a", "10.0.0.5"))
+
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "wan2.1-vace-1.3b", "", "req-status", "")
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+	routerCtx.ReqPath = PathVideos + "/" + record.PublicJobID
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"id":"video_gen_abc","status":"completed"}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, _, _ := s.HandleResponseBody(context.Background(), routerCtx, "req-status", req, utils.User{}, 0, "wan2.1-vace-1.3b", false, false)
+
+	body := resp.GetResponseBody().GetResponse().GetBodyMutation().GetBody()
+	assert.Equal(t, record.PublicJobID, gjson.GetBytes(body, "id").String())
+	assert.Equal(t, "completed", gjson.GetBytes(body, "status").String())
+}
+
+// TestHandleResponseBody_VideoContentStaysStreaming guards the one video
+// response that must never be buffered: the video file itself.
+func TestHandleResponseBody_VideoContentStaysStreaming(t *testing.T) {
+	s, _, registry := newTestVideoJobServer(t)
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
+		readyPod("pod-a", "ns-a", "10.0.0.5"))
+
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "wan2.1-vace-1.3b", "", "req-content", "")
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+	routerCtx.ReqPath = PathVideos + "/" + record.PublicJobID + "/content"
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte{0x00, 0x00, 0x00, 0x18},
+				EndOfStream: false,
+			},
+		},
+	}
+
+	resp, _, _ := s.HandleResponseBody(context.Background(), routerCtx, "req-content", req, utils.User{}, 0, "wan2.1-vace-1.3b", false, false)
+
+	assert.Nil(t, resp.GetResponseBody().GetResponse().GetBodyMutation())
+	assert.False(t, HasRequestBuffers("req-content"))
+}
+
+func TestEffectiveTTFTThreshold(t *testing.T) {
+	if got := effectiveTTFTThreshold(nil); got != ttftThreshold {
+		t.Errorf("effectiveTTFTThreshold(nil) = %v, want env default %v", got, ttftThreshold)
+	}
+	rc := &types.RoutingContext{}
+	if got := effectiveTTFTThreshold(rc); got != ttftThreshold {
+		t.Errorf("effectiveTTFTThreshold(no profile) = %v, want env default %v", got, ttftThreshold)
+	}
+	rc.ConfigProfile = &types.ResolvedConfigProfile{TTFTThresholdS: 2}
+	if got := effectiveTTFTThreshold(rc); got != 2*time.Second {
+		t.Errorf("effectiveTTFTThreshold(profile=2s) = %v, want 2s", got)
+	}
+	rc.ConfigProfile.TTFTThresholdS = 0
+	if got := effectiveTTFTThreshold(rc); got != ttftThreshold {
+		t.Errorf("effectiveTTFTThreshold(profile=0) = %v, want env default %v", got, ttftThreshold)
+	}
+}

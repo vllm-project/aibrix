@@ -1,0 +1,392 @@
+/*
+Copyright 2024 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package v1alpha1
+
+import (
+	"fmt"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
+// Important: Run "make" to regenerate code after modifying this file
+
+// +genclient
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +kubebuilder:printcolumn:name="MINPODS",type="integer",JSONPath=".spec.minReplicas"
+// +kubebuilder:printcolumn:name="MAXPODS",type="integer",JSONPath=".spec.maxReplicas"
+// +kubebuilder:printcolumn:name="REPLICAS",type="integer",JSONPath=".status.actualScale"
+// +kubebuilder:printcolumn:name="STRATEGY",type="string",JSONPath=".spec.scalingStrategy"
+// +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
+
+// PodAutoscaler is the Schema for the podautoscalers API, a resource to scale Kubernetes pods based on observed metrics.
+// The fields in the spec determine how the scaling behavior should be applied.
+type PodAutoscaler struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// Spec defines the desired behavior of the PodAutoscaler.
+	Spec PodAutoscalerSpec `json:"spec,omitempty"`
+
+	// Status represents the current information about the PodAutoscaler.
+	Status PodAutoscalerStatus `json:"status,omitempty"`
+}
+
+// PodAutoscalerSpec defines the desired state of PodAutoscaler
+type PodAutoscalerSpec struct {
+	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
+	// Important: Run "make" to regenerate code after modifying this file
+	// ScaleTargetRef points to scale-able resource that this PodAutoscaler should target and scale. e.g. Deployment
+	ScaleTargetRef corev1.ObjectReference `json:"scaleTargetRef"`
+
+	// SubTargetSelector selects a sub-component within the target resource
+	// For StormService/RoleSet: selects a role by roleName
+	// If not specified, scales the entire resource
+	// +optional
+	SubTargetSelector *SubTargetSelector `json:"subTargetSelector,omitempty"`
+
+	//// PodSelector allows for more flexible selection of pods to scale based on labels.
+	//PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
+
+	// MinReplicas is the minimum number of replicas to which the target can be scaled down.
+	// +optional
+	MinReplicas *int32 `json:"minReplicas,omitempty"`
+
+	// MaxReplicas is the maximum number of replicas to which the target can be scaled up.
+	// It cannot be less than minReplicas
+	MaxReplicas int32 `json:"maxReplicas"`
+
+	// Schedules defines time-based autoscaling configuration. The initial
+	// version supports scheduled replica bounds only.
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	Schedules []PodAutoscalerSchedule `json:"schedules,omitempty"`
+
+	// MetricsSources defines a list of sources from which metrics are collected to make scaling decisions.
+	// +kubebuilder:validation:MinItems=1
+	MetricsSources []MetricSource `json:"metricsSources,omitempty"`
+
+	// ObserveWindowSeconds controls how much recent metric history is used for stable scaling decisions.
+	// If unset, the autoscaler uses its internal default.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=3600
+	ObserveWindowSeconds *int64 `json:"observeWindowSeconds,omitempty"`
+
+	// PanicWindowSeconds controls the short metric window used by KPA panic-mode decisions.
+	// If unset, the autoscaler uses its internal default.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=3600
+	PanicWindowSeconds *int64 `json:"panicWindowSeconds,omitempty"`
+
+	// Predictive enables forward-looking recommendations derived from the
+	// observed metric trend. Preview records the projection in status without
+	// changing the replica decision; Auto lets the projection raise the replica
+	// floor. When omitted, predictive scaling is disabled.
+	// +optional
+	Predictive *PredictiveSpec `json:"predictive,omitempty"`
+
+	// ScalingStrategy defines the strategy to use for scaling.
+	// +kubebuilder:validation:Enum={HPA,KPA,APA}
+	ScalingStrategy ScalingStrategyType `json:"scalingStrategy"`
+}
+
+// PodAutoscalerSchedule defines a recurring daily time window for scheduled
+// autoscaling configuration. The initial version supports min/max replica
+// bounds only.
+type PodAutoscalerSchedule struct {
+	// Name identifies this schedule. Names must be unique within spec.schedules
+	// and use Kubernetes DNS label style.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// Timezone is an optional IANA timezone used to evaluate this schedule. If
+	// omitted, UTC is used.
+	// +optional
+	Timezone string `json:"timezone,omitempty"`
+
+	// DaysOfWeek optionally restricts this schedule to specific weekdays. If
+	// omitted, the schedule applies every day. Values are case-insensitive
+	// three-letter English weekday names: Mon, Tue, Wed, Thu, Fri, Sat, Sun.
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	DaysOfWeek []string `json:"daysOfWeek,omitempty"`
+
+	// StartTime is the inclusive daily window start in strict HH:MM format.
+	// +kubebuilder:validation:Pattern=`^([01][0-9]|2[0-3]):[0-5][0-9]$`
+	StartTime string `json:"startTime"`
+
+	// EndTime is the exclusive daily window end in strict HH:MM format. It must
+	// be later than startTime; cross-midnight windows are not supported.
+	// +kubebuilder:validation:Pattern=`^([01][0-9]|2[0-3]):[0-5][0-9]$`
+	EndTime string `json:"endTime"`
+
+	// MinReplicas optionally overrides spec.minReplicas while this schedule is active.
+	// At least one of minReplicas or maxReplicas must be set.
+	// +optional
+	MinReplicas *int32 `json:"minReplicas,omitempty"`
+
+	// MaxReplicas optionally overrides spec.maxReplicas while this schedule is active.
+	// At least one of minReplicas or maxReplicas must be set.
+	// +optional
+	MaxReplicas *int32 `json:"maxReplicas,omitempty"`
+}
+
+// SubTargetSelector identifies a sub-component within the scale target
+type SubTargetSelector struct {
+	// RoleName selects a role within StormService or RoleSet
+	// +optional
+	RoleName string `json:"roleName,omitempty"`
+}
+
+// PredictiveMode controls how predictive recommendations are used.
+type PredictiveMode string
+
+const (
+	// PredictiveModePreview records the projection in status only and never
+	// changes the replica decision.
+	PredictiveModePreview PredictiveMode = "Preview"
+
+	// PredictiveModeAuto allows the projection to raise the replica floor while
+	// reactive scaling keeps control of scale-down.
+	PredictiveModeAuto PredictiveMode = "Auto"
+)
+
+// PredictiveSpec configures predictive scaling for a PodAutoscaler.
+type PredictiveSpec struct {
+	// Mode selects how predictions are applied. It defaults to Preview when omitted.
+	// +optional
+	// +kubebuilder:validation:Enum={Preview,Auto}
+	Mode PredictiveMode `json:"mode,omitempty"`
+
+	// HorizonSeconds is how far ahead the observed trend is projected.
+	// If unset, the autoscaler uses an internal default of 120 seconds.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=3600
+	HorizonSeconds *int64 `json:"horizonSeconds,omitempty"`
+}
+
+// ScalingStrategyType defines the type for scaling strategies.
+type ScalingStrategyType string
+
+const (
+	// HPA represents the Kubernetes native Horizontal Pod Autoscaler.
+	HPA ScalingStrategyType = "HPA"
+
+	// KPA represents the KNative Pod Autoscaling Algorithm
+	KPA ScalingStrategyType = "KPA"
+
+	// APA represents the AiBrix Pod Autoscaling Algorithm
+	APA ScalingStrategyType = "APA"
+)
+
+type MetricSourceType string
+
+const (
+	// POD fetches metrics from individual pod endpoints (http[s]://pod_ip:port/path)
+	POD MetricSourceType = "pod"
+	// RESOURCE fetches metrics from Kubernetes resource metrics API (cpu, memory)
+	RESOURCE MetricSourceType = "resource"
+	// CUSTOM fetches metrics from Kubernetes custom metrics API
+	CUSTOM MetricSourceType = "custom"
+	// EXTERNAL fetches metrics from external services like gpu-optimizer (e.g., gpu-optimizer.aibrix-system.svc.cluster.local:8080)
+	EXTERNAL MetricSourceType = "external"
+	// DOMAIN is deprecated, use EXTERNAL instead
+	// +deprecated
+	DOMAIN MetricSourceType = "domain"
+)
+
+type ProtocolType string
+
+const (
+	HTTP  ProtocolType = "http"
+	HTTPS ProtocolType = "https"
+)
+
+// MetricSource defines an endpoint and path from which metrics are collected.
+type MetricSource struct {
+	// Specifies how to fetch metrics: from individual pods, Kubernetes APIs, or external services
+	// +kubebuilder:validation:Enum={pod,resource,custom,external,domain}
+	MetricSourceType MetricSourceType `json:"metricSourceType"`
+	// Protocol for metric collection. Required only for 'pod' and 'external' types.
+	// +optional
+	// +kubebuilder:validation:Enum={http,https}
+	ProtocolType ProtocolType `json:"protocolType,omitempty"`
+	// External service endpoint (e.g., gpu-optimizer.aibrix-system.svc.cluster.local)
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+	// Path to metrics endpoint (e.g., /api/metrics/cpu)
+	// +optional
+	Path string `json:"path,omitempty"`
+	// Port for pod-level metrics. Only used for 'pod' type.
+	// +optional
+	Port string `json:"port,omitempty"`
+	// TargetMetric identifies the specific metric to monitor (e.g., kv_cache_utilization).
+	TargetMetric string `json:"targetMetric"`
+	// TargetValue sets the desired threshold for the metric (e.g., 50 for 50% utilization).
+	TargetValue string `json:"targetValue"`
+}
+
+// ScalingDecision represents a single scaling decision made by the autoscaler
+type ScalingDecision struct {
+	// Timestamp when the scaling decision was made
+	Timestamp metav1.Time `json:"timestamp"`
+	// PreviousScale is the number of replicas before scaling
+	PreviousScale int32 `json:"previousScale"`
+	// NewScale is the number of replicas after scaling
+	NewScale int32 `json:"newScale"`
+	// Reason provides the explanation for the scaling decision
+	Reason string `json:"reason"`
+	// Success indicates whether the scaling operation succeeded
+	Success bool `json:"success"`
+	// Error message if the scaling failed
+	// +optional
+	Error string `json:"error,omitempty"`
+}
+
+// PodAutoscalerStatus defines the observed state of PodAutoscaler
+// including the current number of replicas, operational status, and other metrics.
+type PodAutoscalerStatus struct {
+	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
+	// Important: Run "make" to regenerate code after modifying this file
+
+	// LastScaleTime is the last time the PodAutoscaler scaled the number of pods,
+	// used by the autoscaler to control how often the number of pods is changed.
+	// +optional
+	LastScaleTime *metav1.Time `json:"lastScaleTime,omitempty"`
+
+	// DesiredScale represents the desired number of instances computed by the PodAutoscaler based on the current metrics.
+	// it's computed according to Scaling policy after observing service metrics
+	DesiredScale int32 `json:"desiredScale,omitempty"`
+
+	// ActualScale represents the actual number of running instances of the scaled target.
+	// it may be different from DesiredScale
+	ActualScale int32 `json:"actualScale,omitempty"`
+
+	// Conditions is the set of conditions required for this autoscaler to scale its target,
+	// and indicates whether or not those conditions are met.
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// ScalingHistory stores the last N scaling decisions
+	// +optional
+	// +kubebuilder:validation:MaxItems=5
+	ScalingHistory []ScalingDecision `json:"scalingHistory,omitempty"`
+
+	// ScheduledBounds is the observed scheduled replica bounds state.
+	// +optional
+	ScheduledBounds *ScheduledBoundsStatus `json:"scheduledBounds,omitempty"`
+
+	// Predictive is the latest predictive evaluation selected for the replica
+	// decision. It is cleared when spec.predictive is removed.
+	// +optional
+	Predictive *PredictiveStatus `json:"predictive,omitempty"`
+}
+
+// ScheduledBoundsStatus captures the currently effective scheduled replica bounds.
+type ScheduledBoundsStatus struct {
+	// ActiveSchedule is the name of the currently active schedule. It is omitted
+	// when no schedule is active and base bounds are in effect.
+	// +optional
+	ActiveSchedule string `json:"activeSchedule,omitempty"`
+
+	// EffectiveMinReplicas is the current effective minimum replica bound.
+	EffectiveMinReplicas int32 `json:"effectiveMinReplicas"`
+
+	// EffectiveMaxReplicas is the current effective maximum replica bound.
+	EffectiveMaxReplicas int32 `json:"effectiveMaxReplicas"`
+}
+
+// PredictiveStatus captures the most recent predictive evaluation.
+type PredictiveStatus struct {
+	// Mode is the effective mode used for this evaluation.
+	// +optional
+	Mode PredictiveMode `json:"mode,omitempty"`
+
+	// Metric identifies the metricsSources entry the projection was derived
+	// from, using its targetMetric.
+	// +optional
+	Metric string `json:"metric,omitempty"`
+
+	// ObservedValue is the mean of the samples used by the fit, as a decimal
+	// string in the same unit as the metric sample and targetValue.
+	// +optional
+	ObservedValue string `json:"observedValue,omitempty"`
+
+	// PredictedValue is the fitted line evaluated at now + horizonSeconds,
+	// as a decimal string in the same unit as the metric sample and targetValue.
+	// +optional
+	PredictedValue string `json:"predictedValue,omitempty"`
+
+	// PredictedReplicas is the replica count the projection alone asks for.
+	// +optional
+	PredictedReplicas int32 `json:"predictedReplicas"`
+
+	// ReactiveReplicas is the replica count the reactive path selected in this
+	// round, before the predictive floor.
+	// +optional
+	ReactiveReplicas int32 `json:"reactiveReplicas"`
+
+	// WouldBeReplicas is the replica count this round would apply in Auto mode:
+	// the reactive count raised by the projection where it asks for more, after
+	// the same caps, bounds and cooldown as the applied decision. In Auto it
+	// equals the applied count; in Preview it shows whether Auto would change
+	// the decision.
+	// +optional
+	WouldBeReplicas int32 `json:"wouldBeReplicas"`
+
+	// LastUpdated is when the prediction was computed.
+	// +optional
+	LastUpdated *metav1.Time `json:"lastUpdated,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
+// PodAutoscalerList contains a list of PodAutoscaler
+type PodAutoscalerList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []PodAutoscaler `json:"items"`
+}
+
+func init() {
+	SchemeBuilder.Register(&PodAutoscaler{}, &PodAutoscalerList{})
+}
+
+const (
+	// CPU is the amount of the requested cpu actually being consumed by the Pod.
+	CPU = "cpu"
+	// Memory is the amount of the requested memory actually being consumed by the Pod.
+	Memory = "memory"
+	// QPS is the requests per second reaching the Pod.
+	QPS = "qps"
+)
+
+// GetPaMetricSources Currently, we don't support metric resources that are more than one yet.
+func GetPaMetricSources(pa PodAutoscaler) (MetricSource, error) {
+	if len(pa.Spec.MetricsSources) != 1 {
+		return MetricSource{}, fmt.Errorf("for now we only support one MetricsSource, but got %d", len(pa.Spec.MetricsSources))
+	}
+	return pa.Spec.MetricsSources[0], nil
+}

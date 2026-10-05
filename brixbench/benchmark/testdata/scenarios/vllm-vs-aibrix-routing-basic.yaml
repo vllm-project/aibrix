@@ -1,0 +1,55 @@
+Scenario: vllm-vs-aibrix-routing-basic
+Tests:
+  - name: vllm-basic
+    provider: null
+    engine:
+      type: vllm
+      manifest: testdata/deployments/vllm/qwen3-32b-tp4-replicas2.yaml
+    benchmark: testdata/benchmarks/vllm-chat-basic.yaml
+
+  - name: aibrix-latest-monolithic-random
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/model.yaml
+    benchmark: testdata/benchmarks/vllm-chat-basic.yaml
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: random
+
+  - name: aibrix-latest-monolithic-vtc-basic
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/model.yaml
+    benchmark: testdata/benchmarks/vllm-chat-basic.yaml
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: vtc-basic
+
+  - name: aibrix-latest-pd
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/pd-model.yaml
+    benchmark: testdata/benchmarks/vllm-chat-basic.yaml
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/vllm-pd/resources.yaml

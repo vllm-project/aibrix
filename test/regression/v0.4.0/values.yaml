@@ -1,0 +1,81 @@
+# Default values for aibrix-regression-test
+# This file contains all configurable parameters for running experiments
+
+# Engine configuration
+engine:
+  # Engine type: sglang or vllm
+  type: "sglang"
+  image: "kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix:sglang:v0.4.9.post3-cu126-nixl-v0.4.1"
+  
+# Deployment pattern
+deployment:
+  # Type: disaggregated (StormService) or non-disaggregated (StormService)
+  type: "disaggregated"
+  # For non-disaggregated: number of server role replicas  
+  replicas: 3
+  # StormService spec.replicas (always 1 for single instance management)
+  stormReplicas: 1
+
+# Router configuration (only for disaggregated deployments)
+router:
+  enabled: true
+  # Policy: cache_aware, random, least_busy
+  policy: "cache_aware"
+  image: "kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix:sglang-router:v0.1.7"
+
+# Worker configuration (only for disaggregated deployments)
+workers:
+  prefill:
+    replicas: 1
+  decode:
+    replicas: 1
+
+# Model configuration
+model:
+  name: "qwen3-8b"
+  path: "/models/Qwen3-8B"
+  # Tensor parallelism degree
+  tensorParallel: 1
+
+# Resource configuration
+resources:
+  gpu: 1
+  rdma: 1
+  memory:
+    sharedMemory: true
+
+# Network configuration
+network:
+  rdma:
+    enabled: true
+    # RDMA network name
+    cniName: "rdma"
+  hostNetwork: false
+
+# Environment variables (Kubernetes format)
+env:
+  - name: GLOO_SOCKET_IFNAME
+    value: "eth0"
+  - name: NCCL_SOCKET_IFNAME  
+    value: "eth0"
+  - name: NCCL_IB_DISABLE
+    value: "0"
+  - name: NCCL_IB_GID_INDEX
+    value: "7"
+  - name: NCCL_DEBUG
+    value: "INFO"
+
+
+# Volume mounts
+volumes:
+  models:
+    hostPath: "/data01/models"
+
+# Security context
+security:
+  privileged: false
+  capabilities:
+    - IPC_LOCK
+
+# Service port for non-disaggregated server role
+serverPort: 8000

@@ -1,0 +1,41 @@
+# Shared multi-node 4p4d routing workload (RATE=8, PROMPTS=1000).
+# Matches testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p4d-singlenode-r8-p1000.yaml
+# so multi-node results are directly comparable to the single-node 4p4d compare run.
+# BASE_URL / namespace are overridden by the Brixbench runner per provider.
+kind: vllm-bench
+execution: cluster
+image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/vllm-bench:v0.21.0-20260521
+namespace: brixbench-adhoc
+podName: vllm-bench-client
+modelHostPath: /data01/models
+rootHostPath: /root
+podResources:
+  requests:
+    cpu: "4"
+    memory: 32Gi
+artifacts:
+  resultFilename: bench_results.json
+  logDir: testdata/logs
+vllmArgs:
+  base-url: http://127.0.0.1:8000
+  endpoint: /v1/completions
+  backend: openai
+  model: qwen3-8b
+  tokenizer: /data01/models/Qwen3-8B
+  num-prompts: 1000
+  request-rate: 8
+  concurrency: 32
+  metric-percentiles: "50,90,95,99"
+  percentile-metrics: "ttft,tpot,itl,e2el"
+  goodput:
+    - "ttft:5000"
+    - "tpot:250"
+  ignore-eos: true
+  seed: 111
+  save-detailed: false
+  ready-check-timeout-sec: 30
+  dataset-name: prefix_repetition
+  prefix-repetition-num-prefixes: 20
+  prefix-repetition-prefix-len: 6000
+  prefix-repetition-suffix-len: 2000
+  prefix-repetition-output-len: 1024

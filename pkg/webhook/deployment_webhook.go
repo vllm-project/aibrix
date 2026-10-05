@@ -1,0 +1,169 @@
+/*
+Copyright 2025 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package webhook
+
+import (
+	"context"
+	"fmt"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/utils"
+)
+
+// SetupDeploymentWebhookWithManager registers the webhook for Deployment in the manager.
+func SetupDeploymentWebhookWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewWebhookManagedBy(mgr).For(&appsv1.Deployment{}).
+		WithValidator(&DeploymentCustomDefaulter{}).
+		WithDefaulter(&DeploymentCustomDefaulter{}).
+		Complete()
+}
+
+type DeploymentCustomDefaulter struct {
+}
+
+//+kubebuilder:webhook:path=/mutate-apps-v1-deployment,mutating=true,failurePolicy=ignore,sideEffects=None,groups=apps,resources=deployments,verbs=create;update,versions=v1,name=medeployment.aibrix.ai,admissionReviewVersions=v1
+
+var _ webhook.CustomDefaulter = &DeploymentCustomDefaulter{}
+
+// Default implements webhook.Defaulter so a webhook will be registered for the type
+func (r *DeploymentCustomDefaulter) Default(_ context.Context, obj runtime.Object) error {
+	deployment, ok := obj.(*appsv1.Deployment)
+	if !ok {
+		return fmt.Errorf("expected a Deployment object but got %T", obj)
+	}
+
+	// Only proceed if the sidecar injection annotation is present and set to "true"
+	annotations := deployment.GetAnnotations()
+	if annotations == nil {
+		return nil
+	}
+	inject, exists := annotations[SidecarInjectionAnnotation]
+	if !exists || inject != "true" {
+		return nil
+	}
+
+	// Inject sidecar into the Pod
+	r.injectAIBrixRuntime(deployment)
+
+	return nil
+}
+
+// injectAIBrixRuntime injects the aibrix-runtime sidecar into the Pod template of Deployment
+func (r *DeploymentCustomDefaulter) injectAIBrixRuntime(deployment *appsv1.Deployment) {
+	podSpec := &deployment.Spec.Template.Spec
+
+	// Get engine type from deployment template annotations, if specified
+	var engineType string
+	if annotations := deployment.GetAnnotations(); annotations != nil {
+		if engine, exists := annotations[constants.ModelLabelEngine]; exists && engine != "" {
+			engineType = engine
+		}
+	}
+
+	// Get sidecar image from deployment annotations; fall back to default if not set
+	var sidecarImage string
+	if annotations := deployment.GetAnnotations(); annotations != nil {
+		if image, exists := annotations[SidecarInjectionRuntimeImageAnnotation]; exists && image != "" {
+			sidecarImage = image
+		}
+	}
+	if sidecarImage == "" {
+		sidecarImage = SidecarImage // default
+	}
+
+	// Skip if sidecar already exists
+	if containsContainer(podSpec.Containers, SidecarName) {
+		return
+	}
+
+	// Infer engine type from primary containers if not set
+	if engineType == "" {
+		engineType = inferEngineType(podSpec.Containers)
+	}
+
+	// Ensure the artifacts download path is shared with the sidecar container
+	foundEmptyDirVolume := false
+	for i := range podSpec.Volumes {
+		v := &podSpec.Volumes[i]
+		if v.Name == DefaultAdapterVolumeName {
+			if v.EmptyDir == nil {
+				// Volume with same name exists but is not EmptyDir. Overwrite to ensure correct type.
+				v.VolumeSource = corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+				}
+			}
+			foundEmptyDirVolume = true
+			break
+		}
+	}
+	if !foundEmptyDirVolume {
+		podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
+			Name: DefaultAdapterVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		})
+	}
+	for ci := range podSpec.Containers {
+		container := &podSpec.Containers[ci]
+		if container.Name == SidecarName {
+			continue
+		}
+		if !utils.HasVolumeMount(container.VolumeMounts, DefaultAdapterVolumeName, DefaultAdapterMountPath) {
+			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+				Name:      DefaultAdapterVolumeName,
+				MountPath: DefaultAdapterMountPath,
+			})
+		}
+	}
+
+	// Build the sidecar container using shared logic
+	runtimeContainer := buildRuntimeSidecarContainer(sidecarImage, engineType)
+
+	// Inject sidecar at the beginning
+	podSpec.Containers = append([]corev1.Container{runtimeContainer}, podSpec.Containers...)
+}
+
+// TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
+// +kubebuilder:webhook:path=/validate-apps-v1-deployment,mutating=false,failurePolicy=ignore,sideEffects=None,groups=apps,resources=deployments,verbs=create;update,versions=v1,name=vedeployment.aibrix.ai,admissionReviewVersions=v1
+
+var _ webhook.CustomDefaulter = &DeploymentCustomDefaulter{}
+
+// ValidateCreate implements webhook.Validator so a webhook will be registered for the type
+func (r *DeploymentCustomDefaulter) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	// TODO(user): fill in your validation logic upon object creation.
+	return nil, nil
+}
+
+// ValidateUpdate implements webhook.Validator so a webhook will be registered for the type
+func (r *DeploymentCustomDefaulter) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+	// TODO(user): fill in your validation logic upon object update.
+	return nil, nil
+}
+
+// ValidateDelete implements webhook.Validator so a webhook will be registered for the type
+func (r *DeploymentCustomDefaulter) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	// TODO(user): fill in your validation logic upon object deletion.
+	return nil, nil
+}

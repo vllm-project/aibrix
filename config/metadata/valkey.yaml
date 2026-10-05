@@ -1,0 +1,64 @@
+# Valkey — OSS-licensed (BSD-3) alternative to Redis for AIBrix metadata store.
+# Wire-compatible drop-in; uses the same RESP protocol, same env vars
+# (REDIS_HOST, REDIS_PORT, REDIS_PASSWORD), same go-redis client.
+#
+# Usage (kustomize — recommended):
+#   Replace "redis.yaml" with "valkey.yaml" in config/metadata/kustomization.yaml,
+#   then deploy via: kubectl apply -k config/default
+#   The kustomize namePrefix ("aibrix-") will produce Service "aibrix-redis-master"
+#   which matches the REDIS_HOST env var in metadata.yaml.
+#
+# Usage (standalone — requires REDIS_HOST override):
+#   kubectl apply -f config/metadata/valkey.yaml
+#   Then set REDIS_HOST=redis-master in metadata-service (no "aibrix-" prefix).
+#
+# Note: Do not apply alongside redis.yaml — they share the same Service name
+# (redis-master) and will conflict. Use one or the other.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valkey-master # Unique name for the deployment
+  namespace: aibrix-system
+  labels:
+    app: valkey
+spec:
+  selector:
+    matchLabels:
+      app: valkey
+      role: master
+      tier: backend
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: valkey
+        role: master
+        tier: backend
+    spec:
+      containers:
+      - name: master
+        image: valkey/valkey:8-alpine
+        resources:
+          requests:
+            cpu: 100m
+            memory: 100Mi
+        ports:
+        - containerPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-master
+  namespace: aibrix-system
+  labels:
+    app: valkey
+    role: master
+    tier: backend
+spec:
+  ports:
+  - port: 6379
+    targetPort: 6379
+  selector:
+    app: valkey
+    role: master
+    tier: backend

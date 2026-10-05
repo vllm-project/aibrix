@@ -1,0 +1,29 @@
+---
+# InferencePool
+apiVersion: inference.networking.k8s.io/v1
+kind: InferencePool
+metadata:
+  name: qwen2-7b
+  namespace: default
+spec:
+  targetPorts:
+    - number: 8000  # routing-sidecar port
+  selector:
+    matchLabels:
+      app: vllm-sim-pd
+  endpointPickerRef:
+    name: qwen2-7b-epp
+    port:
+      number: 9002
+
+---
+# InferenceObjective
+apiVersion: inference.networking.x-k8s.io/v1alpha2
+kind: InferenceObjective
+metadata:
+  name: qwen2-7b
+  namespace: default
+spec:
+  priority: 10
+  poolRef:
+    name: qwen2-7b

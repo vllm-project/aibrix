@@ -1,0 +1,27 @@
+# permissions for end users to edit rayclusterreplicasets.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+  name: orchestration-rayclusterreplicaset-editor-role
+rules:
+- apiGroups:
+  - orchestration.aibrix.ai
+  resources:
+  - rayclusterreplicasets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - orchestration.aibrix.ai
+  resources:
+  - rayclusterreplicasets/status
+  verbs:
+  - get

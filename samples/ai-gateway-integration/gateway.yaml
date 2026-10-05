@@ -1,0 +1,19 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: aibrix-ai-gateway-class # Unique name for this gateway class (branded with Aibrix)
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller # Envoy Gateway controller identifier
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: aibrix-ai-gateway
+  namespace: default
+spec:
+  # Must match the GatewayClass name above
+  gatewayClassName: aibrix-ai-gateway-class
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80

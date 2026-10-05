@@ -1,0 +1,64 @@
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: RayClusterReplicaSet
+metadata:
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+  name: rs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: llama-2-7b-hf
+  template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: llama-2-7b-hf
+    spec:
+      rayVersion: '2.10.0' # should match the Ray version in the image of the containers
+      headGroupSpec:
+        rayStartParams: # even disabled, it still injects the dashboard host
+          dashboard-host: '0.0.0.0'
+        template:
+          spec:
+            containers:
+              - name: ray-head
+                image: rayproject/ray:2.10.0
+                ports:
+                  - containerPort: 6379
+                    name: gcs-server
+                  - containerPort: 8265
+                    name: dashboard
+                  - containerPort: 10001
+                    name: client
+                  - containerPort: 8000
+                    name: service
+                resources:
+                  limits:
+                    cpu: 1
+                    memory: "1024Mi"
+                  requests:
+                    cpu: 1
+                    memory: "1024Mi"
+      workerGroupSpecs:
+        - replicas: 1
+          minReplicas: 1
+          maxReplicas: 5
+          groupName: small-group
+          rayStartParams: {}
+          template:
+            spec:
+              containers:
+                - name: ray-worker # must consist of lower case alphanumeric characters or '-', and must start and end with an alphanumeric character (e.g. 'my-name',  or '123-abc'
+                  image: rayproject/ray:2.10.0
+                  lifecycle:
+                    preStop:
+                      exec:
+                        command: [ "/bin/sh","-c","ray stop" ]
+                  resources:
+                    limits:
+                      cpu: 1
+                      memory: "1024Mi"
+                    requests:
+                      cpu: 1
+                      memory: "1024Mi"

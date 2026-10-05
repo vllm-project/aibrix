@@ -1,0 +1,18 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: gateway-plugin-metrics-monitor
+  namespace: aibrix-system
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: gateway-plugins
+  endpoints:
+  - port: metrics
+    path: /metrics
+    interval: 15s
+  namespaceSelector:
+    matchNames:
+    - aibrix-system

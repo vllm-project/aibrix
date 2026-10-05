@@ -1,0 +1,920 @@
+/*
+Copyright 2026 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package pd
+
+import (
+	"math"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/utils"
+	"k8s.io/klog/v2"
+)
+
+const (
+	// DefaultTokenLoadKVWeight is the default weight of resident KV tokens in
+	// the token-load priority. A prefill pod keeps a request's KV blocks until
+	// the decoder has pulled them, so resident KV still costs the pod something
+	// after the prefill call itself has returned, but less than active compute.
+	DefaultTokenLoadKVWeight = 0.3
+
+	// DefaultTokenLoadRequestCost is the default fixed per-request cost in
+	// tokens. It models scheduling and KV-transfer setup work that does not
+	// scale with prompt length and keeps very short prompts from looking free.
+	DefaultTokenLoadRequestCost = 3500
+
+	// DefaultTokenLoadTTLSeconds bounds how long a charge may stay outstanding
+	// before the janitor force-releases it. It must exceed the longest
+	// legitimate request; an hour leaves a wide margin while still capping the
+	// damage a leaked entry can do. The environment variable must be positive;
+	// a TTL of 0 in TokenLoadConfig disables the sweep of stale charges.
+	DefaultTokenLoadTTLSeconds = 3600
+
+	// DefaultTokenLoadSessionTTLSeconds bounds how long the last prompt size
+	// of a session is remembered for the session-delta cost estimate. It only
+	// needs to outlive the gap between two turns of one conversation.
+	DefaultTokenLoadSessionTTLSeconds = 1800
+
+	// DefaultTokenLoadMaxSessions bounds how many (model, session) baselines
+	// the tracker remembers at once. The session header is client-supplied,
+	// so without a bound a stream of distinct IDs could grow the table by
+	// QPS × SessionTTL entries before the janitor sweeps them. Once the
+	// table is full, new sessions are not recorded and their requests are
+	// charged by the prefix-match or whole-prompt rule instead.
+	DefaultTokenLoadMaxSessions = 100000
+
+	// maxTokenLoadSessionIDLen is the longest session ID the tracker records,
+	// the same bound session-affinity routing applies to the caller-owned
+	// session key. Longer IDs are treated as absent.
+	maxTokenLoadSessionIDLen = 256
+
+	// tokenLoadJanitorInterval is the scan period of the janitor, which
+	// force-releases charges older than the TTL and prunes idle pods. It also
+	// bounds how long a pod must be idle before it is pruned.
+	tokenLoadJanitorInterval = 60 * time.Second
+
+	// bytesPerTokenEstimate is the prompt-size heuristic used when the router
+	// has no token count for the request: one token per four bytes of request
+	// body, the same estimate the vLLM PD proxy examples use.
+	bytesPerTokenEstimate = 4
+)
+
+// TokenLoadConfig holds the tunables of a TokenLoadTracker.
+type TokenLoadConfig struct {
+	// KVWeight is the weight of resident KV tokens in GetPriority.
+	KVWeight float64
+	// RequestCost is the fixed per-request cost added to every charge, in tokens.
+	RequestCost float64
+	// TTL is the maximum age of an outstanding charge; 0 disables the sweep
+	// of stale charges.
+	TTL time.Duration
+	// SessionTTL is how long a session's last prompt size is remembered for
+	// the session-delta cost estimate; 0 disables session tracking.
+	SessionTTL time.Duration
+	// MaxSessions bounds the number of sessions remembered at once; 0 selects
+	// DefaultTokenLoadMaxSessions.
+	MaxSessions int
+}
+
+// DefaultTokenLoadConfig returns the defaults, overridden by the
+// AIBRIX_TOKEN_LOAD_KV_WEIGHT, AIBRIX_TOKEN_LOAD_REQUEST_COST,
+// AIBRIX_TOKEN_LOAD_TTL_SECONDS, AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS and
+// AIBRIX_TOKEN_LOAD_MAX_SESSIONS environment variables. Each must be
+// positive, except that a session TTL of 0 turns session tracking off; an
+// unset, empty or invalid value keeps the default.
+func DefaultTokenLoadConfig() TokenLoadConfig {
+	return TokenLoadConfig{
+		KVWeight:    utils.LoadEnvFloat("AIBRIX_TOKEN_LOAD_KV_WEIGHT", DefaultTokenLoadKVWeight),
+		RequestCost: utils.LoadEnvFloat("AIBRIX_TOKEN_LOAD_REQUEST_COST", DefaultTokenLoadRequestCost),
+		TTL:         time.Duration(utils.LoadEnvInt("AIBRIX_TOKEN_LOAD_TTL_SECONDS", DefaultTokenLoadTTLSeconds)) * time.Second,
+		SessionTTL:  loadSessionTTL(),
+		MaxSessions: utils.LoadEnvInt("AIBRIX_TOKEN_LOAD_MAX_SESSIONS", DefaultTokenLoadMaxSessions),
+	}
+}
+
+// loadSessionTTL reads AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS. Unlike the
+// other tunables, 0 is a valid setting here: it disables the session-delta
+// rule for deployments whose prefill pods cannot reach a conversation's
+// earlier KV cache. Anything else goes through utils.LoadEnvInt.
+func loadSessionTTL() time.Duration {
+	const key = "AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS"
+	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key))); err == nil && v == 0 {
+		klog.Infof("set %s: 0, session tracking disabled", key)
+		return 0
+	}
+	return time.Duration(utils.LoadEnvInt(key, DefaultTokenLoadSessionTTLSeconds)) * time.Second
+}
+
+// TokenLoadTracker keeps a token-weighted ledger of the prefill load the
+// router has assigned to each prefill pod. It is the state behind the
+// token_load prefill score policy.
+//
+// Pods are identified by their pod key, "namespace/name" as built by utils.GeneratePodKey.
+// One tracker serves every model the router routes, so a bare pod name is not
+// enough: two deployments in different namespaces may name their prefill pods
+// identically, and must not see each other's load.
+//
+// Two counters are kept per pod:
+//
+//   - active tokens: prompts the pod is computing right now;
+//   - kv tokens: prompts whose KV cache is still resident on the pod because
+//     the decoder has not finished pulling it.
+//
+// The lifecycle of a prefill request is
+//
+//  1. AcquirePrefill(requestID, podKey, cost): both counters += cost. The router
+//     calls this under the same lock as the pod selection, so concurrent
+//     selections see each other's charges.
+//  2. ReleaseTokens(requestID): active -= cost, when the prefill HTTP call
+//     returns.
+//  3. ReleaseKVCache(requestID): kv -= cost, when the whole request completes.
+//
+// The two releases may arrive in either order; each subtracts its part once,
+// and the request is forgotten as soon as both parts are released. Releases
+// are idempotent per request ID and the counters are clamped at zero, so a
+// duplicate release can never drive a pod negative. A charge whose release
+// never arrives (the completion path was skipped) is force-released by the
+// TTL janitor so it cannot pin load on a pod forever. The janitor also drops
+// the counters and gauge series of pods that saw no traffic for a whole
+// sweep interval, so pod churn does not grow the ledger without bound.
+//
+// The tracker also keeps a decode ledger, the state behind the token_load
+// decode score policy: AcquireDecode(requestID, podKey, cost) charges the
+// decode pod a request was routed to, and ReleaseDecode(requestID) drops the
+// charge when the request completes. A decode pod holds a request's KV from
+// the transfer until the request finishes, so the charge lives that long. The
+// decode charge is independent of the prefill one, with the same idempotent
+// release, TTL sweep and idle-pod pruning.
+//
+// All methods are safe for concurrent use. Reads do not allocate.
+type TokenLoadTracker struct {
+	activeTokens  sync.Map // map[string]*podCounter, pod key → tokens
+	kvTokens      sync.Map // map[string]*podCounter, pod key → tokens
+	decodeTokens  sync.Map // map[string]*podCounter, pod key → tokens
+	entries       sync.Map // map[string]*tokenLoadEntry, request ID → charge
+	decodeEntries sync.Map // map[string]*decodeLoadEntry, request ID → decode charge
+	// decodeInflight holds, per pod, how many decode charges are outstanding and
+	// the sum of their charge times, so DecodeGrowth is O(1) per pod.
+	decodeInflight sync.Map // map[string]*decodeInflight, pod key → aggregate
+	// sessions remembers the last prompt size per (model, session) so a
+	// multi-turn continuation is charged only for what the engine computes.
+	// sessionCount is its size, kept so admission can stop at MaxSessions
+	// without walking the map; sessionsFull records that the cap was hit,
+	// so the warning is logged once.
+	sessions     sync.Map // map[string]*tokenLoadSession, sessionKey → last prompt
+	sessionCount atomic.Int64
+	sessionsFull atomic.Bool
+
+	// countersMu serialises the janitor's pruning of idle pods (write lock)
+	// with counter updates (read lock), so a counter and its gauge series are
+	// never dropped between a writer's update and its gauge refresh. Reads of
+	// the counters take no lock.
+	countersMu sync.RWMutex
+
+	cfg TokenLoadConfig
+	// stopCh is closed by Close to stop the janitor; janitorDone is closed by
+	// the janitor when it has stopped.
+	stopCh      chan struct{}
+	janitorDone chan struct{}
+	closeOnce   sync.Once
+	// clock is injectable so unit tests can age entries without sleeping.
+	clock func() time.Time
+	// epoch is the origin of the charge times summed in decodeInflight. Keeping
+	// them relative to it keeps the float64 sums small and exact enough.
+	epoch time.Time
+
+	// decodeListener, when set, is called with a pod key after every change to
+	// that pod's decode ledger (see SetDecodeLedgerListener).
+	decodeListener atomic.Pointer[func(podKey string)]
+}
+
+// tokenLoadEntry records one AcquirePrefill so the releases subtract exactly
+// what was charged.
+type tokenLoadEntry struct {
+	podKey     string
+	cost       float64
+	acquiredAt time.Time
+	// ttl bounds this charge's age before the janitor force-releases it; 0
+	// means it is never swept. It is per entry because a request whose model
+	// config profile sets routingConfig.pd.tokenLoadTTLSeconds carries its
+	// own expiry.
+	ttl time.Duration
+	// tokensReleased and kvReleased each flip once, when the matching release
+	// runs, so neither a repeated release nor the janitor subtracts a part of
+	// the charge twice. The entry leaves the ledger once both are set.
+	tokensReleased atomic.Bool
+	kvReleased     atomic.Bool
+}
+
+// released reports whether both parts of the charge have been released.
+func (e *tokenLoadEntry) released() bool {
+	return e.tokensReleased.Load() && e.kvReleased.Load()
+}
+
+// decodeLoadEntry records one AcquireDecode so the release subtracts exactly
+// what was charged. Its fields mirror tokenLoadEntry, with a single part.
+type decodeLoadEntry struct {
+	podKey     string
+	cost       float64
+	acquiredAt time.Time
+	ttl        time.Duration
+	released   atomic.Bool
+}
+
+// podCounter is one per-pod token counter: the bits of a float64 value and a
+// flag that records any write since the janitor last looked, so the janitor
+// can tell a pod that is merely between requests from one that is gone.
+type podCounter struct {
+	bits    atomic.Uint64
+	touched atomic.Bool
+}
+
+func (c *podCounter) load() float64 { return math.Float64frombits(c.bits.Load()) }
+
+// tokenLoadGaugeLabels is the label set of the per-pod gauges.
+var tokenLoadGaugeLabels = []string{"namespace", "pod_name"}
+
+// tokenLoadGaugeLabelValues returns the gauge label values for podKey: its
+// namespace and bare pod name. A key that is not "namespace/name" is published
+// whole as the pod name with an empty namespace label.
+func tokenLoadGaugeLabelValues(podKey string) []string {
+	namespace, name, ok := utils.ParsePodKey(podKey)
+	if !ok {
+		return []string{"", podKey}
+	}
+	return []string{namespace, name}
+}
+
+// tokenLoadSession is the last prompt seen for one (model, session).
+type tokenLoadSession struct {
+	mu           sync.Mutex
+	promptTokens int
+	lastSeen     time.Time
+	// deleted is set, under mu, when the janitor removes the session from
+	// the map, so a writer that loaded the pointer just before the removal
+	// re-inserts instead of refreshing an orphan.
+	deleted bool
+}
+
+// NewTokenLoadTracker creates a tracker with DefaultTokenLoadConfig and starts
+// its TTL janitor when either TTL is positive.
+func NewTokenLoadTracker() *TokenLoadTracker {
+	return NewTokenLoadTrackerWithConfig(DefaultTokenLoadConfig())
+}
+
+// NewTokenLoadTrackerWithConfig creates a tracker with an explicit config and
+// starts its TTL janitor when cfg.TTL or cfg.SessionTTL is positive.
+func NewTokenLoadTrackerWithConfig(cfg TokenLoadConfig) *TokenLoadTracker {
+	t := newTokenLoadTracker(cfg, time.Now)
+	janitor := cfg.TTL > 0 || cfg.SessionTTL > 0
+	if janitor {
+		t.startJanitor(tokenLoadJanitorInterval)
+	}
+	klog.InfoS("token_load_tracker created",
+		"kv_weight", cfg.KVWeight, "request_cost", cfg.RequestCost,
+		"ttl_seconds", int(cfg.TTL.Seconds()), "session_ttl_seconds", int(cfg.SessionTTL.Seconds()),
+		"max_sessions", t.cfg.MaxSessions, "janitor_enabled", janitor)
+	return t
+}
+
+// newTokenLoadTracker builds a tracker without a janitor goroutine; tests use
+// it with a fake clock and drive sweepExpired directly.
+func newTokenLoadTracker(cfg TokenLoadConfig, clock func() time.Time) *TokenLoadTracker {
+	if cfg.MaxSessions <= 0 {
+		cfg.MaxSessions = DefaultTokenLoadMaxSessions
+	}
+	t := &TokenLoadTracker{cfg: cfg, clock: clock, stopCh: make(chan struct{})}
+	t.epoch = t.now()
+	return t
+}
+
+// Close stops the janitor goroutine, if one was started, and returns once it
+// has exited. Charges and counters stay readable. Safe to call more than once.
+func (t *TokenLoadTracker) Close() {
+	t.closeOnce.Do(func() { close(t.stopCh) })
+	if t.janitorDone != nil {
+		<-t.janitorDone
+	}
+}
+
+// Config returns the tracker's tunables.
+func (t *TokenLoadTracker) Config() TokenLoadConfig { return t.cfg }
+
+// PrefillCost returns the load charged for a prefill of promptTokens tokens:
+// the fixed per-request cost plus the prompt length.
+func (t *TokenLoadTracker) PrefillCost(promptTokens int) float64 {
+	return t.PrefillCostWithRequestCost(promptTokens, t.cfg.RequestCost)
+}
+
+// PrefillCostWithRequestCost is PrefillCost with an explicit per-request cost,
+// used when the request's model config profile overrides
+// AIBRIX_TOKEN_LOAD_REQUEST_COST.
+func (t *TokenLoadTracker) PrefillCostWithRequestCost(promptTokens int, requestCost float64) float64 {
+	if promptTokens < 0 {
+		promptTokens = 0
+	}
+	return requestCost + float64(promptTokens)
+}
+
+// EstimatePromptTokens estimates the prompt length of a request from its body
+// size when no token count is available.
+func EstimatePromptTokens(reqBody []byte) int {
+	return len(reqBody) / bytesPerTokenEstimate
+}
+
+// Sources of the NewTokens estimate, for logs.
+const (
+	NewTokensSourceSession     = "session_delta"
+	NewTokensSourcePrefixMatch = "prefix_match"
+	NewTokensSourcePrompt      = "prompt"
+)
+
+// NewTokens estimates how many of a request's promptTokens the selected pod
+// has to compute, the new_tokens term of the prefill cost. It returns the
+// estimate and which rule produced it:
+//
+//  1. When sessionID is set and the (model, session) was seen before with a
+//     shorter prompt, the growth since that prompt. Each turn of a
+//     conversation resends the whole history, but an engine that still holds
+//     the conversation's KV cache only computes the new turn. This rule
+//     therefore assumes the earlier turns are reachable from the selected
+//     pod (sticky routing, a shared or tiered KV store, or the same pod's
+//     prefix cache); callers whose deployment cannot offer that should not
+//     send a session ID. The prompt size is recorded for the next turn, so
+//     call this once per charged request. A session ID longer than 256
+//     bytes is ignored, and once MaxSessions sessions are live a new one is
+//     not recorded, so its requests fall through to the rules below.
+//  2. Otherwise, when matchPct (0-100) is non-negative, the part of the
+//     prompt the pod's prefix cache does not cover: promptTokens × (1 −
+//     matchPct/100). Pass a negative matchPct when no match information is
+//     available.
+//  3. Otherwise the whole prompt.
+//
+// The result is never negative or larger than promptTokens.
+func (t *TokenLoadTracker) NewTokens(model, sessionID string, promptTokens, matchPct int) (int, string) {
+	return t.NewTokensWithSessionLimits(model, sessionID, promptTokens, matchPct, t.cfg.SessionTTL, t.cfg.MaxSessions)
+}
+
+// NewTokensWithSessionLimits is NewTokens with explicit session limits, used
+// when the request's model config profile overrides
+// AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS or AIBRIX_TOKEN_LOAD_MAX_SESSIONS. A
+// sessionTTL of 0 disables the session-delta rule for the request, and a
+// non-positive maxSessions falls back to the tracker's cap.
+func (t *TokenLoadTracker) NewTokensWithSessionLimits(model, sessionID string, promptTokens, matchPct int, sessionTTL time.Duration, maxSessions int) (int, string) {
+	if promptTokens < 0 {
+		promptTokens = 0
+	}
+	if sessionID != "" && len(sessionID) <= maxTokenLoadSessionIDLen && sessionTTL > 0 {
+		if last, seen := t.recordSessionPrompt(model, sessionID, promptTokens, maxSessions); seen && promptTokens > last {
+			return promptTokens - last, NewTokensSourceSession
+		}
+	}
+	if matchPct >= 0 {
+		if matchPct > 100 {
+			matchPct = 100
+		}
+		return promptTokens * (100 - matchPct) / 100, NewTokensSourcePrefixMatch
+	}
+	return promptTokens, NewTokensSourcePrompt
+}
+
+// recordSessionPrompt stores promptTokens as the last prompt of (model,
+// session) and returns the previous value and whether there was one. A new
+// session is admitted only while fewer than MaxSessions are live; otherwise
+// nothing is recorded and the caller charges by the other rules.
+func (t *TokenLoadTracker) recordSessionPrompt(model, sessionID string, promptTokens, maxSessions int) (int, bool) {
+	if maxSessions <= 0 {
+		maxSessions = t.cfg.MaxSessions
+	}
+	now := t.now()
+	key := sessionKey(model, sessionID)
+	for {
+		v, loaded := t.sessions.Load(key)
+		if !loaded {
+			if t.sessionCount.Add(1) > int64(maxSessions) {
+				t.sessionCount.Add(-1)
+				if t.sessionsFull.CompareAndSwap(false, true) {
+					klog.Warningf("token_load_tracker session table is full (max_sessions=%d): new sessions are charged without a session delta until the janitor sweeps idle ones", maxSessions)
+				}
+				return 0, false
+			}
+			if _, raced := t.sessions.LoadOrStore(key, &tokenLoadSession{promptTokens: promptTokens, lastSeen: now}); raced {
+				t.sessionCount.Add(-1) // another writer admitted it first; read theirs
+				continue
+			}
+			return 0, false
+		}
+		sess := v.(*tokenLoadSession)
+		sess.mu.Lock()
+		if sess.deleted {
+			sess.mu.Unlock() // swept between Load and Lock; start over
+			continue
+		}
+		last := sess.promptTokens
+		sess.promptTokens = promptTokens
+		sess.lastSeen = now
+		sess.mu.Unlock()
+		return last, true
+	}
+}
+
+// sessionKey qualifies a client-supplied session ID with the model: the same
+// ID may be reused against different models, and the delta only makes sense
+// against the same one.
+func sessionKey(model, sessionID string) string {
+	return model + "\x00" + sessionID
+}
+
+// AcquirePrefill charges cost to both the active and the resident-KV counter
+// of the pod identified by podKey (see utils.GeneratePodKey) and records the charge under
+// requestID for later release, with the tracker's configured TTL. Request IDs
+// are unique per request, so a second AcquirePrefill for the same requestID is
+// a caller bug; it is tolerated by releasing whatever the earlier charge still
+// holds before the new one replaces it, with a warning.
+func (t *TokenLoadTracker) AcquirePrefill(requestID, podKey string, cost float64) {
+	t.AcquirePrefillWithTTL(requestID, podKey, cost, t.cfg.TTL)
+}
+
+// AcquirePrefillWithTTL is AcquirePrefill with an explicit expiry for this
+// charge, used when the request's model config profile overrides
+// AIBRIX_TOKEN_LOAD_TTL_SECONDS. A ttl of 0 means the janitor never sweeps the
+// charge; the normal releases still drop it.
+func (t *TokenLoadTracker) AcquirePrefillWithTTL(requestID, podKey string, cost float64, ttl time.Duration) {
+	entry := &tokenLoadEntry{podKey: podKey, cost: cost, acquiredAt: t.now(), ttl: ttl}
+	if prev, loaded := t.entries.Swap(requestID, entry); loaded {
+		old := prev.(*tokenLoadEntry)
+		klog.Warningf("token_load_tracker re-acquire for request_id=%s: releasing earlier charge pod=%s cost=%g before charging pod=%s cost=%g",
+			requestID, old.podKey, old.cost, podKey, cost)
+		t.releaseTokens(requestID, old)
+		t.releaseKV(requestID, old)
+	}
+	t.addActive(podKey, cost)
+	t.addKV(podKey, cost)
+	klog.V(4).InfoS("token_load_acquired", "request_id", requestID, "pod", podKey, "cost", cost)
+}
+
+// ReleaseTokens subtracts requestID's charge from its pod's active counter.
+// Call it when the prefill HTTP call returns. The KV charge stays until
+// ReleaseKVCache. No-op for an unknown request ID or a repeated call.
+func (t *TokenLoadTracker) ReleaseTokens(requestID string) {
+	if v, ok := t.entries.Load(requestID); ok {
+		t.releaseTokens(requestID, v.(*tokenLoadEntry))
+	}
+}
+
+// ReleaseKVCache subtracts requestID's charge from its pod's resident-KV
+// counter. Call it when the request completes. It does not touch the active
+// counter: a request that completes while its prefill call is somehow still
+// outstanding keeps that charge, and stays in the ledger, until ReleaseTokens
+// or the janitor. No-op for an unknown request ID or a repeated call.
+func (t *TokenLoadTracker) ReleaseKVCache(requestID string) {
+	if v, ok := t.entries.Load(requestID); ok {
+		t.releaseKV(requestID, v.(*tokenLoadEntry))
+	}
+}
+
+// releaseTokens releases the active part of entry, once.
+func (t *TokenLoadTracker) releaseTokens(requestID string, entry *tokenLoadEntry) {
+	if !entry.tokensReleased.CompareAndSwap(false, true) {
+		return
+	}
+	t.addActive(entry.podKey, -entry.cost)
+	klog.V(4).InfoS("token_load_tokens_released", "request_id", requestID, "pod", entry.podKey, "cost", entry.cost)
+	t.forgetIfReleased(requestID, entry)
+}
+
+// releaseKV releases the resident-KV part of entry, once.
+func (t *TokenLoadTracker) releaseKV(requestID string, entry *tokenLoadEntry) {
+	if !entry.kvReleased.CompareAndSwap(false, true) {
+		return
+	}
+	t.addKV(entry.podKey, -entry.cost)
+	klog.V(4).InfoS("token_load_kv_released", "request_id", requestID, "pod", entry.podKey, "cost", entry.cost)
+	t.forgetIfReleased(requestID, entry)
+}
+
+// forgetIfReleased drops entry from the ledger once both of its parts are
+// released. Each release sets its own flag before checking both, so whichever
+// of two concurrent releases finishes last sees both flags and deletes. The
+// delete is keyed on the entry pointer, so it never removes a newer charge
+// that replaced this one under the same request ID.
+func (t *TokenLoadTracker) forgetIfReleased(requestID string, entry *tokenLoadEntry) {
+	if entry.released() {
+		t.entries.CompareAndDelete(requestID, entry)
+	}
+}
+
+// ReleaseAll releases whatever requestID still holds on the prefill counters
+// and the decode ledger and forgets the request. Use it on terminal paths
+// where nothing of the request can remain on its pods (prefill failure,
+// request completion).
+func (t *TokenLoadTracker) ReleaseAll(requestID string) {
+	t.ReleaseTokens(requestID)
+	t.ReleaseKVCache(requestID)
+	t.ReleaseDecode(requestID)
+}
+
+// AcquireDecodeWithTTL charges cost to the decode counter of the pod
+// identified by podKey and records the charge under requestID for
+// ReleaseDecode. A ttl of 0 means the janitor never sweeps the charge. As with
+// AcquirePrefill, a second charge for the same requestID releases the earlier
+// one first, with a warning.
+func (t *TokenLoadTracker) AcquireDecodeWithTTL(requestID, podKey string, cost float64, ttl time.Duration) {
+	entry := &decodeLoadEntry{podKey: podKey, cost: cost, acquiredAt: t.now(), ttl: ttl}
+	if prev, loaded := t.decodeEntries.Swap(requestID, entry); loaded {
+		old := prev.(*decodeLoadEntry)
+		klog.Warningf("token_load_tracker decode re-acquire for request_id=%s: releasing earlier charge pod=%s cost=%g before charging pod=%s cost=%g",
+			requestID, old.podKey, old.cost, podKey, cost)
+		t.releaseDecode(requestID, old)
+	}
+	t.addDecode(podKey, cost)
+	t.addDecodeInflight(podKey, 1, entry.acquiredAt, cost)
+	t.notifyDecode(podKey)
+	klog.V(4).InfoS("token_load_decode_acquired", "request_id", requestID, "pod", podKey, "cost", cost)
+}
+
+// ReleaseDecode subtracts requestID's decode charge from its pod's decode
+// counter. No-op for an unknown request ID or a repeated call.
+func (t *TokenLoadTracker) ReleaseDecode(requestID string) {
+	if v, ok := t.decodeEntries.Load(requestID); ok {
+		t.releaseDecode(requestID, v.(*decodeLoadEntry))
+	}
+}
+
+// releaseDecode releases entry once and drops it from the ledger. The delete
+// is keyed on the entry pointer, so it never removes a newer charge that
+// replaced this one under the same request ID.
+func (t *TokenLoadTracker) releaseDecode(requestID string, entry *decodeLoadEntry) {
+	if !entry.released.CompareAndSwap(false, true) {
+		return
+	}
+	t.addDecode(entry.podKey, -entry.cost)
+	t.addDecodeInflight(entry.podKey, -1, entry.acquiredAt, entry.cost)
+	t.decodeEntries.CompareAndDelete(requestID, entry)
+	t.notifyDecode(entry.podKey)
+	klog.V(4).InfoS("token_load_decode_released", "request_id", requestID, "pod", entry.podKey, "cost", entry.cost)
+}
+
+// GetDecodeLoad returns the decode counter of the pod identified by podKey:
+// the charged prompt tokens of the requests routed to it that have not
+// completed. Unknown pods report 0.
+func (t *TokenLoadTracker) GetDecodeLoad(podKey string) float64 {
+	return loadFloat(&t.decodeTokens, podKey)
+}
+
+// decodeInflight is the per-pod aggregate behind DecodeGrowth.
+type decodeInflight struct {
+	mu sync.Mutex
+	n  int64
+	// sumAt is the sum of the outstanding charges' times, in seconds since the
+	// tracker's epoch.
+	sumAt float64
+	// tokens is the sum of the outstanding charges' costs: the decode counter,
+	// kept here as well so DecodeLedgerState can read it together with n and
+	// sumAt under one lock.
+	tokens float64
+}
+
+// DecodeGrowth estimates the output the requests outstanding on the pod
+// identified by podKey have generated so far: ratePerRequest tokens per second
+// for every outstanding decode charge, since it was made. It is
+// ratePerRequest * (n*now - sum of charge times), O(1) per pod. Unknown pods,
+// pods with no outstanding charge and a non-positive rate report 0.
+func (t *TokenLoadTracker) DecodeGrowth(podKey string, ratePerRequest float64) float64 {
+	if ratePerRequest <= 0 {
+		return 0
+	}
+	v, ok := t.decodeInflight.Load(podKey)
+	if !ok {
+		return 0
+	}
+	agg := v.(*decodeInflight)
+	agg.mu.Lock()
+	n, sumAt := agg.n, agg.sumAt
+	agg.mu.Unlock()
+	elapsed := float64(n)*t.sinceEpoch(t.now()) - sumAt
+	if n <= 0 || elapsed <= 0 {
+		return 0
+	}
+	return ratePerRequest * elapsed
+}
+
+func (t *TokenLoadTracker) sinceEpoch(ts time.Time) float64 {
+	return ts.Sub(t.epoch).Seconds()
+}
+
+// DecodeLedgerState returns the pod's charged decode tokens, its number of
+// outstanding decode charges and the sum of their charge times as Unix seconds
+// on the tracker's clock: what another gateway replica needs to add this
+// replica's ledger, growth included, to its own. The three values are read
+// together, so a charge or release in progress is either fully in them or not.
+func (t *TokenLoadTracker) DecodeLedgerState(podKey string) (tokens float64, charges int64, sumChargedAt float64) {
+	v, ok := t.decodeInflight.Load(podKey)
+	if !ok {
+		return 0, 0, 0
+	}
+	agg := v.(*decodeInflight)
+	agg.mu.Lock()
+	n, sumAt, tokens := agg.n, agg.sumAt, agg.tokens
+	agg.mu.Unlock()
+	if n <= 0 {
+		return 0, 0, 0
+	}
+	epoch := float64(t.epoch.Unix()) + float64(t.epoch.Nanosecond())/1e9
+	return tokens, n, sumAt + float64(n)*epoch
+}
+
+// SetDecodeLedgerListener registers fn to be called with a pod key after every
+// change to that pod's decode ledger: a charge, a release, a re-acquire and a
+// TTL sweep. fn runs on the caller's path and must not block. nil unregisters.
+func (t *TokenLoadTracker) SetDecodeLedgerListener(fn func(podKey string)) {
+	if fn == nil {
+		t.decodeListener.Store(nil)
+		return
+	}
+	t.decodeListener.Store(&fn)
+}
+
+func (t *TokenLoadTracker) notifyDecode(podKey string) {
+	if fn := t.decodeListener.Load(); fn != nil {
+		(*fn)(podKey)
+	}
+}
+
+// addDecodeInflight adds delta (+1 on a charge, -1 on its release) to the pod's
+// outstanding count and moves the charge's time and cost in or out of the sums.
+// Like the counters, it runs under the shared lock so the janitor cannot prune
+// the aggregate in between.
+func (t *TokenLoadTracker) addDecodeInflight(podKey string, delta int64, at time.Time, cost float64) {
+	t.countersMu.RLock()
+	defer t.countersMu.RUnlock()
+	v, ok := t.decodeInflight.Load(podKey)
+	if !ok {
+		v, _ = t.decodeInflight.LoadOrStore(podKey, &decodeInflight{})
+	}
+	agg := v.(*decodeInflight)
+	agg.mu.Lock()
+	defer agg.mu.Unlock()
+	agg.n += delta
+	agg.sumAt += float64(delta) * t.sinceEpoch(at)
+	agg.tokens += float64(delta) * cost
+	if agg.n <= 0 {
+		// Reset instead of carrying float error into the next charge.
+		agg.n, agg.sumAt, agg.tokens = 0, 0, 0
+	}
+}
+
+// GetLoad returns the current active and resident-KV token counters of the
+// pod identified by podKey. Unknown pods report 0, 0.
+func (t *TokenLoadTracker) GetLoad(podKey string) (activeTokens, kvTokens float64) {
+	return loadFloat(&t.activeTokens, podKey), loadFloat(&t.kvTokens, podKey)
+}
+
+// GetPriority returns the token-load priority of the pod identified by
+// podKey, lower is better:
+//
+//	active_tokens + kv_weight * kv_tokens
+func (t *TokenLoadTracker) GetPriority(podKey string) float64 {
+	return t.GetPriorityWithKVWeight(podKey, t.cfg.KVWeight)
+}
+
+// GetPriorityWithKVWeight is GetPriority with an explicit KV weight, used when
+// the request's model config profile overrides AIBRIX_TOKEN_LOAD_KV_WEIGHT.
+func (t *TokenLoadTracker) GetPriorityWithKVWeight(podKey string, kvWeight float64) float64 {
+	active, kv := t.GetLoad(podKey)
+	return active + kvWeight*kv
+}
+
+func (t *TokenLoadTracker) now() time.Time {
+	if t.clock == nil {
+		return time.Now()
+	}
+	return t.clock()
+}
+
+func (t *TokenLoadTracker) addActive(podKey string, delta float64) {
+	t.addCounter(&t.activeTokens, metrics.PDTokenLoadActiveTokens, podKey, delta)
+}
+
+func (t *TokenLoadTracker) addKV(podKey string, delta float64) {
+	t.addCounter(&t.kvTokens, metrics.PDTokenLoadKVTokens, podKey, delta)
+}
+
+func (t *TokenLoadTracker) addDecode(podKey string, delta float64) {
+	t.addCounter(&t.decodeTokens, metrics.PDTokenLoadDecodeTokens, podKey, delta)
+}
+
+// addCounter adds delta to podKey's counter in m and publishes the result as the
+// gauge metricName. The shared lock only excludes the janitor's pruning;
+// writers still run concurrently with each other.
+func (t *TokenLoadTracker) addCounter(m *sync.Map, metricName, podKey string, delta float64) {
+	t.countersMu.RLock()
+	defer t.countersMu.RUnlock()
+	value := addFloat(m, podKey, delta)
+	metrics.SetGaugeMetric(metricName, metrics.GetMetricHelp(metricName), value, tokenLoadGaugeLabels, tokenLoadGaugeLabelValues(podKey)...)
+}
+
+// startJanitor runs sweepExpired and pruneIdle every interval until Close is
+// called.
+func (t *TokenLoadTracker) startJanitor(interval time.Duration) {
+	t.janitorDone = make(chan struct{})
+	go func() {
+		defer close(t.janitorDone)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				t.sweepExpired()
+				t.pruneIdle()
+			case <-t.stopCh:
+				return
+			}
+		}
+	}()
+}
+
+// sweepExpired force-releases every charge older than its own TTL and forgets
+// every session idle for longer than SessionTTL. It returns how many charges
+// it released. Each part is a no-op when its TTL is not positive; a charge's
+// TTL is AIBRIX_TOKEN_LOAD_TTL_SECONDS unless the request's model config
+// profile overrode it.
+func (t *TokenLoadTracker) sweepExpired() int {
+	now := t.now()
+	if t.cfg.SessionTTL > 0 {
+		t.sessions.Range(func(key, val any) bool {
+			sess := val.(*tokenLoadSession)
+			// The expiry check, the removal and the tombstone happen under
+			// the session lock, so a concurrent refresh either lands before
+			// the check and keeps the session, or sees the tombstone and
+			// re-inserts; it can never be lost.
+			sess.mu.Lock()
+			if now.Sub(sess.lastSeen) > t.cfg.SessionTTL {
+				sess.deleted = true
+				t.sessions.Delete(key)
+				t.sessionCount.Add(-1)
+			}
+			sess.mu.Unlock()
+			return true
+		})
+	}
+	released := 0
+	t.entries.Range(func(key, val any) bool {
+		entry := val.(*tokenLoadEntry)
+		// The TTL is per entry: a request whose profile sets ttlSeconds ages
+		// out on its own schedule, and 0 means this charge is never swept.
+		if entry.ttl <= 0 {
+			return true
+		}
+		age := now.Sub(entry.acquiredAt)
+		if age <= entry.ttl {
+			return true
+		}
+		requestID := key.(string)
+		klog.Warningf("token_load_tracker force-releasing stale charge: request_id=%s pod=%s cost=%g age_seconds=%.0f ttl_seconds=%.0f",
+			requestID, entry.podKey, entry.cost, age.Seconds(), entry.ttl.Seconds())
+		// Release this entry, not whatever is under requestID now: the flags
+		// make a concurrent normal release harmless, and a re-acquire that
+		// replaced the entry in the meantime must keep its own charge.
+		t.releaseTokens(requestID, entry)
+		t.releaseKV(requestID, entry)
+		released++
+		return true
+	})
+	t.decodeEntries.Range(func(key, val any) bool {
+		entry := val.(*decodeLoadEntry)
+		if entry.ttl <= 0 {
+			return true
+		}
+		age := now.Sub(entry.acquiredAt)
+		if age <= entry.ttl {
+			return true
+		}
+		requestID := key.(string)
+		klog.Warningf("token_load_tracker force-releasing stale decode charge: request_id=%s pod=%s cost=%g age_seconds=%.0f ttl_seconds=%.0f",
+			requestID, entry.podKey, entry.cost, age.Seconds(), entry.ttl.Seconds())
+		t.releaseDecode(requestID, entry)
+		released++
+		return true
+	})
+	return released
+}
+
+// pruneIdle drops the counters and gauge series of every pod that has been
+// idle since the previous call, meaning all its counters are zero and none
+// was written in between, and returns how many pods it dropped. Pods come
+// and go under autoscaling and rollouts; without pruning each one would keep
+// its counters and gauge series on the gateway forever. A pruned pod is
+// re-created, from zero, by its next charge.
+func (t *TokenLoadTracker) pruneIdle() int {
+	t.countersMu.Lock()
+	defer t.countersMu.Unlock()
+
+	pods := map[string]struct{}{}
+	collect := func(key, _ any) bool {
+		pods[key.(string)] = struct{}{}
+		return true
+	}
+	t.activeTokens.Range(collect)
+	t.kvTokens.Range(collect)
+	t.decodeTokens.Range(collect)
+
+	pruned := 0
+	for pod := range pods {
+		// Clear both flags before deciding, so a pod that is active on one
+		// counter is re-examined from scratch next time.
+		active := idleCounter(&t.activeTokens, pod)
+		kv := idleCounter(&t.kvTokens, pod)
+		decode := idleCounter(&t.decodeTokens, pod)
+		if !active || !kv || !decode {
+			continue
+		}
+		t.activeTokens.Delete(pod)
+		t.kvTokens.Delete(pod)
+		t.decodeTokens.Delete(pod)
+		t.pruneDecodeInflight(pod)
+		labelValues := tokenLoadGaugeLabelValues(pod)
+		metrics.DeleteGaugeMetric(metrics.PDTokenLoadActiveTokens, tokenLoadGaugeLabels, labelValues...)
+		metrics.DeleteGaugeMetric(metrics.PDTokenLoadKVTokens, tokenLoadGaugeLabels, labelValues...)
+		metrics.DeleteGaugeMetric(metrics.PDTokenLoadDecodeTokens, tokenLoadGaugeLabels, labelValues...)
+		pruned++
+		klog.V(4).InfoS("token_load_pod_pruned", "pod", pod)
+	}
+	return pruned
+}
+
+// pruneDecodeInflight drops the pod's DecodeGrowth aggregate if nothing is
+// outstanding on it. The caller holds countersMu for writing.
+func (t *TokenLoadTracker) pruneDecodeInflight(pod string) {
+	v, ok := t.decodeInflight.Load(pod)
+	if !ok {
+		return
+	}
+	agg := v.(*decodeInflight)
+	agg.mu.Lock()
+	defer agg.mu.Unlock()
+	if agg.n == 0 {
+		t.decodeInflight.Delete(pod)
+	}
+}
+
+// idleCounter reports whether pod's counter in m is zero and was not written
+// since the last call, and clears the written flag. A missing counter is idle.
+func idleCounter(m *sync.Map, pod string) bool {
+	v, ok := m.Load(pod)
+	if !ok {
+		return true
+	}
+	c := v.(*podCounter)
+	touched := c.touched.Swap(false)
+	return !touched && c.load() == 0
+}
+
+// addFloat atomically adds delta to the float64 stored under key, clamps the
+// result at zero, and returns the new value. The counter is only allocated
+// the first time a pod is seen; later calls take the read path.
+func addFloat(m *sync.Map, key string, delta float64) float64 {
+	v, ok := m.Load(key)
+	if !ok {
+		v, _ = m.LoadOrStore(key, &podCounter{})
+	}
+	c := v.(*podCounter)
+	for {
+		old := c.bits.Load()
+		next := math.Float64frombits(old) + delta
+		if next < 0 {
+			next = 0
+		}
+		if c.bits.CompareAndSwap(old, math.Float64bits(next)) {
+			c.touched.Store(true)
+			return next
+		}
+	}
+}
+
+func loadFloat(m *sync.Map, key string) float64 {
+	v, ok := m.Load(key)
+	if !ok {
+		return 0
+	}
+	return v.(*podCounter).load()
+}

@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: warm-runtime-pool-b300
+  namespace: default
+  labels:
+    pool.aibrix.ai/name: b300-pool-a
+    pool.aibrix.ai/enabled: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: warm-runtime-pool-b300
+  template:
+    metadata:
+      labels:
+        app: warm-runtime-pool-b300
+        pool.aibrix.ai/name: b300-pool-a
+        pool.aibrix.ai/enabled: "true"
+    spec:
+      containers:
+        - name: aibrix-runtime
+          # This image must be built on a kvcached-enabled vLLM base image.
+          # The runtime sidecar starts the per-ModelClaim engine processes.
+          image: aibrix/kvcached-runtime:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: runtime
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          env:
+            - name: AIBRIX_MODEL_RUNTIME_MOCK
+              value: "0"
+            - name: ENABLE_KVCACHED
+              # The image includes kvcached and kvctl, but the runtime agent
+              # must not be autopatched. The launcher enables kvcached with a
+              # unique IPC name for each child engine process.
+              value: "false"
+            - name: KVCACHED_AUTOPATCH
+              value: "0"
+            - name: AIBRIX_WEIGHT_CACHE_DIR
+              value: /root/.cache/huggingface
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: hf-cache
+              mountPath: /root/.cache/huggingface
+            - name: engine-registry
+              mountPath: /var/run/aibrix
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
+        - name: hf-cache
+          hostPath:
+            path: /var/cache/aibrix/huggingface
+            type: DirectoryOrCreate
+        - name: engine-registry
+          emptyDir: {}
+---
+# Exposes the runtime sidecar /metrics endpoint for the ModelClaim Grafana
+# dashboard. Label aibrix.ai/metrics=modelclaim-runtime matches
+# observability/monitor/service_monitor_modelclaim_runtime.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: warm-runtime-pool-b300-metrics
+  namespace: default
+  labels:
+    app: warm-runtime-pool-b300
+    pool.aibrix.ai/name: b300-pool-a
+    pool.aibrix.ai/enabled: "true"
+    aibrix.ai/metrics: modelclaim-runtime
+spec:
+  selector:
+    app: warm-runtime-pool-b300
+  ports:
+    - name: runtime
+      port: 8080
+      targetPort: runtime

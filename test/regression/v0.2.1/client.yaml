@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: benchmark-client
+  namespace: default
+spec:
+  containers:
+    - name: debug-container
+      image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/ray:2.10.0
+      command: ["sh", "-c", "sleep infinity"]

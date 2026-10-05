@@ -1,0 +1,21 @@
+# Pod autoscaler works with gpu-optimizer
+apiVersion: autoscaling.aibrix.ai/v1alpha1
+kind: PodAutoscaler
+metadata:
+  name: metric-server-autoscaler
+  namespace: kube-system
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: metrics-server
+  minReplicas: 1
+  maxReplicas: 4
+  metricsSources:
+    - metricSourceType: "pod"
+      protocolType: "https"
+      port: "4443"
+      path: "/metrics"
+      targetMetric: "go_threads"
+      targetValue: "20"
+  scalingStrategy: "HPA"

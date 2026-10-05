@@ -1,0 +1,149 @@
+
+# Source: vllm-stack/templates/service-vllm.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: "vllm-engine-service"
+  namespace: default
+  labels:
+    environment: test
+    release: test
+spec:
+  type: ClusterIP
+  ports:
+    - name: "service-port"
+      port: 80
+      targetPort: "container-port"
+      protocol: TCP
+  selector:
+    environment: test
+    release: test
+---
+# Source: vllm-stack/templates/deployment-vllm-multi.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "vllm-llama3-deployment-vllm"
+  namespace: default
+  labels:
+    model: llama3
+    environment: test
+    release: test
+spec:
+  replicas: 8
+  strategy:
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      environment: test
+      release: test
+  progressDeadlineSeconds: 1200
+  template:
+    metadata:
+      labels:
+        model: llama3
+        environment: test
+        release: test
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: machine.cluster.vke.volcengine.com/gpu-name
+                    operator: In
+                    values:
+                      - Tesla-A100-80G
+                      - NVIDIA-H20-SXM5-96GB
+      initContainers:
+        - command:
+            - aibrix_download
+            - --model-uri
+            - tos://aibrix-artifact-testing/models/llama-3.1-8b-instruct/
+            - --local-dir
+            - /models/
+          env:
+            - name: DOWNLOADER_NUM_THREADS
+              value: "16"
+            - name: DOWNLOADER_ALLOW_FILE_SUFFIX
+              value: json, safetensors
+            - name: TOS_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: TOS_ACCESS_KEY
+                  name: tos-credential
+            - name: TOS_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: TOS_SECRET_KEY
+                  name: tos-credential
+            - name: TOS_ENDPOINT
+              value: https://tos-s3-cn-beijing.ivolces.com
+            - name: TOS_REGION
+              value: cn-beijing
+          image: aibrix-cn-beijing.cr.volces.com/aibrix/runtime:v0.3.0
+          name: init-model
+          volumeMounts:
+            - mountPath: /models
+              name: model-hostpath
+      containers:
+        - name: "vllm"
+          image: "aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.8.5"
+          command:
+          - "vllm"
+          - "serve"
+          - /models/llama-3.1-8b-instruct/
+          - --served-model-name
+          - "meta-llama/Llama-3.1-8B-Instruct"
+          - --trust-remote-code
+          - "--host"
+          - "0.0.0.0"
+          - "--port"
+          - "8000"
+          - "--no-enable-chunked-prefill"
+          - "--enable-prefix-caching"
+          - "--max-model-len"
+          - "32000"
+          - "--disable-log-requests"
+          - "--swap-space"
+          - "0"
+          env:
+            - name: VLLM_RPC_TIMEOUT
+              value: "1000000"
+          securityContext:
+            runAsNonRoot: false
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: "container-port"
+              containerPort: 8000
+          startupProbe:
+            failureThreshold: 60
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: "150Gi"
+              cpu: "10"
+              nvidia.com/gpu: "1"
+            limits:
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - mountPath: /models
+              name: model-hostpath
+      volumes:
+        - name: model-hostpath
+          hostPath:
+            path: /root/models
+            type: DirectoryOrCreate

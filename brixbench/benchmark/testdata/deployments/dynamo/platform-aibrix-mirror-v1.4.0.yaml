@@ -1,0 +1,63 @@
+# Internal registry override for Dynamo v1.4.0 VKE validation.
+dynamo-operator:
+  enabled: true
+  istioVirtualServiceEnabled: true
+  upgradeCRD: true
+  controllerManager:
+    manager:
+      image:
+        repository: "aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/ai-dynamo/kubernetes-operator"
+        tag: "1.4.0"
+        pullPolicy: IfNotPresent
+  webhook:
+    failurePolicy: Ignore
+    certificateSecret:
+      name: webhook-server-cert
+      external: false
+    certManager:
+      enabled: false
+  dynamo:
+    metrics:
+      podMonitors:
+        enabled: false
+    mpiRun:
+      secretName: "mpi-run-ssh-secret"
+  discoveryBackend: kubernetes
+global:
+  security:
+    allowInsecureImages: true
+  etcd:
+    install: false
+  nats:
+    install: true
+nats:
+  container:
+    image:
+      registry: aibrix-container-registry-cn-beijing.cr.volces.com
+      repository: aibrix/nats
+      tag: 2.10.21-alpine
+  reloader:
+    enabled: true
+    image:
+      registry: aibrix-container-registry-cn-beijing.cr.volces.com
+      repository: aibrix/natsio/nats-server-config-reloader
+      tag: 0.16.0
+  config:
+    jetstream:
+      enabled: true
+      fileStore:
+        enabled: true
+        dir: /data
+        pvc:
+          enabled: false
+        size: 8Gi
+      memoryStore:
+        enabled: true
+        maxSize: 8Gi
+    merge:
+      max_payload: 15728640
+    monitor:
+      enabled: true
+      port: 8222
+  natsBox:
+    enabled: false

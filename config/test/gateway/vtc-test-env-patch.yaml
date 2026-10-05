@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aibrix-gateway-plugins
+  namespace: aibrix-system
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+      - name: gateway-plugin
+        env:
+        - name: AIBRIX_ROUTER_VTC_TOKEN_TRACKER_WINDOW_SIZE
+          value: "2"
+        - name: AIBRIX_ROUTER_VTC_TOKEN_TRACKER_TIME_UNIT
+          value: "seconds"
+        - name: AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MIN_TOKENS
+          value: "100"
+        - name: AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MAX_TOKENS
+          value: "800"
+        - name: AIBRIX_STATESYNC_ENABLED
+          value: "true"
+        - name: AIBRIX_STATESYNC_SYNC_PERIOD
+          value: "1s"
+        - name: AIBRIX_PREFIX_CACHE_BLOCK_SIZE
+          value: "4"
+        - name: AIBRIX_PROMPT_LENGTH_BUCKETING
+          value: "true"

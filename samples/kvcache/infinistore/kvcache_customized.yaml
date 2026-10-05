@@ -1,0 +1,89 @@
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: KVCache
+metadata:
+  name: kvcache-cluster
+  namespace: default
+  annotations:
+    kvcache.orchestration.aibrix.ai/backend: infinistore
+spec:
+  metadata:
+    redis:
+      runtime:
+        image: aibrix-cn-beijing.cr.volces.com/aibrix/redis:7.4.2
+        replicas: 1
+        resources:
+          requests:
+            cpu: 1000m
+            memory: 1Gi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+  service:
+    type: ClusterIP
+    ports:
+      - name: service
+        port: 12345
+        targetPort: 12345
+        protocol: TCP
+      - name: admin
+        port: 8088
+        targetPort: 8088
+        protocol: TCP
+  watcher:
+    image: aibrix-cn-beijing.cr.volces.com/aibrix/kvcache-watcher:v0.3.0
+    imagePullPolicy: Always
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "256Mi"
+      limits:
+        cpu: "500m"
+        memory: "256Mi"
+  cache:
+    # if template is specified, it will be used to build the cache engine pod.
+    replicas: 3
+    template:
+      metadata:
+        annotations:
+          prometheus.io/path: /metrics
+          prometheus.io/port: "8000"
+          prometheus.io/scrape: "true"
+          k8s.volcengine.com/pod-networks: |
+            [
+              {
+                "cniConf":{
+                    "name":"rdma"
+                }
+              }
+            ]
+      spec:
+        containers:
+          - name: infinistore
+            image: aibrix-cn-beijing.cr.volces.com/aibrix/infinistore:v0.2.42-20250506
+            command: ["infinistore"]
+            args:
+              - "--manage-port=8088"
+              - "--dev-name=mlx5_0" # if mlx5_0 is not available, it will fallbacks to other devs
+              - "--service-port=12345"
+              - "--link-type=Ethernet"
+              - "--hint-gid-index=7"
+              - "--log-level=debug"
+              - "--prealloc-size=80"
+              # customize your infinistore setting
+            ports:
+              - containerPort: 8088
+              - containerPort: 12345
+            securityContext:
+              capabilities:
+                add:
+                  - IPC_LOCK
+                  - SYS_RESOURCE
+            resources:
+              requests:
+                cpu: "10"
+                memory: "120Gi"
+                vke.volcengine.com/rdma: "1"
+              limits:
+                cpu: "10"
+                memory: "120Gi"
+                vke.volcengine.com/rdma: "1"

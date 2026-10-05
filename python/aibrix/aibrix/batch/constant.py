@@ -1,0 +1,49 @@
+# Copyright 2024 The Aibrix Team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# 	http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+# The following are all constants.
+from aibrix import envs
+
+# Cadence (seconds) of the scheduler's expiry/cleanup loop.
+EXPIRE_INTERVAL: float = 1
+
+# Idle poll interval (seconds): how long the scheduler waits when no job is
+# queued before re-checking. Distinct from EXPIRE_INTERVAL — they are unrelated
+# concerns and were previously conflated on a single constant.
+SCHEDULE_IDLE_INTERVAL: float = 1
+
+# This is the job pool size in job scheduler.
+# It should be proportional to resource size in the backend.
+# Can be configured via AIBRIX_BATCH_JOB_POOL_SIZE environment variable.
+DEFAULT_JOB_POOL_SIZE = envs.BATCH_JOB_POOL_SIZE
+
+# Validate job pool size
+if not (1 <= DEFAULT_JOB_POOL_SIZE <= 100):
+    raise ValueError(
+        f"AIBRIX_BATCH_JOB_POOL_SIZE must be between 1 and 100, got {DEFAULT_JOB_POOL_SIZE}"
+    )
+
+# Job opts are for testing purpose.
+BATCH_OPTS_FAIL_INIT_RUNTIME = "fail_init_runtime"
+BATCH_OPTS_FAIL_PREPARATION = "fail_preparation"
+BATCH_OPTS_CRASH_DURING_VALIDATION = "crash_during_validation"
+BATCH_OPTS_CRASH_AFTER_N_REQUESTS = "crash_after_n_requests"
+BATCH_OPTS_FAIL_AFTER_N_REQUESTS = "fail_after_n_requests"
+BATCH_OPTS_INTERRUPT_RUNTIME_AFTER_N_REQUESTS = "interrupt_runtime_after_n_requests"
+BATCH_OPTS_CRASH_BEFORE_FINALIZE_SHUTDOWN = "crash_before_finalize_shutdown"
+BATCH_OPTS_CRASH_AFTER_FINALIZE_SHUTDOWN = "crash_after_finalize_shutdown"
+
+# Runtime selection moved to the RuntimeTarget enum
+# (aibrix.batch.job_entity) and the runtime registry keys.

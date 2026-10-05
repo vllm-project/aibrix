@@ -1,0 +1,22 @@
+apiVersion: autoscaling.aibrix.ai/v1alpha1
+kind: PodAutoscaler
+metadata:
+  name: deepseek-r1-671b-autoscaling
+  namespace: default
+  labels:
+    app.kubernetes.io/name: aibrix
+spec:
+  scalingStrategy: HPA
+  minReplicas: 1
+  maxReplicas: 4
+  metricsSources:
+    - metricSourceType: pod
+      protocolType: http
+      port: '8000'
+      path: metrics
+      targetMetric: gpu_cache_usage_perc
+      targetValue: '50'
+  scaleTargetRef:
+    apiVersion: orchestration.aibrix.ai/v1alpha1
+    kind: RayClusterFleet
+    name: deepseek-r1-671b

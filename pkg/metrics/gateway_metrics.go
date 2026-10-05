@@ -1,0 +1,389 @@
+/*
+Copyright 2025 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package metrics
+
+const (
+	GatewayRequestTotal  = "gateway_request_total"
+	GatewayInFlight      = "gateway_in_flight_requests"
+	GatewayModelInFlight = "gateway_model_in_flight_requests"
+
+	// counter to track panics recovered on the request path instead of letting
+	// one defective request end the process
+	GatewayRequestPanicTotal = "gateway_request_panic_total"
+
+	// Count of streamed responses where first token delay > 1s
+	GatewayFirstTokenDelayOver1sTotal = "gateway_first_token_delay_over_1s_total"
+
+	// counter to track #success & #fail requests for each model
+	GatewayRequestModelSuccessTotal = "gateway_request_model_success_total"
+	GatewayRequestModelFailTotal    = "gateway_request_model_fail_total"
+
+	// counter to track #prompt & #completion tokenss
+	GatewayPromptTokenBucketTotal     = "gateway_prompt_token_bucket_total"
+	GatewayCompletionTokenBucketTotal = "gateway_completion_token_bucket_total"
+
+	// Summable token counters for cost-per-million-token calculations.
+	GatewayInputTokensTotal       = "gateway_input_tokens_total"
+	GatewayOutputTokensTotal      = "gateway_output_tokens_total"
+	GatewayRequestsWithUsageTotal = "gateway_requests_with_usage_total"
+
+	// counter to track #success & #fail prefill requests
+	GatewayPrefillRequestSuccessTotal = "gateway_prefill_request_success_total"
+	GatewayPrefillRequestFailTotal    = "gateway_prefill_request_fail_total"
+
+	// gauge to track #outstanding prefill requests
+	GatewayPrefillOutstandingRequests = "gateway_prefill_outstanding_requests"
+
+	// counter to track the decode-leg aborts the gateway fires when the
+	// prefill leg of a PD request fails
+	GatewayPDDecodeAbortTotal = "gateway_pd_decode_abort_total"
+
+	// counter to track client-facing fail-fast actions taken on a PD prefill failure
+	GatewayPDPrefillFailureTotal = "gateway_pd_prefill_failure_total"
+
+	// counter to track PD decode legs the gateway gave up on because they
+	// stopped responding, by watchdog phase
+	GatewayPDDecodeWatchdogTotal = "gateway_pd_decode_watchdog_total"
+
+	// counter to track #prefill & #decode pods selected by pd
+	PDSelectedPrefillPodTotal = "pd_selected_prefill_pod_total"
+	PDSelectedDecodePodTotal  = "pd_selected_decode_pod_total"
+
+	// gauges to track the token-weighted prefill load the pd router has
+	// charged to each prefill pod (token_load prefill score policy)
+	PDTokenLoadActiveTokens = "pd_token_load_active_tokens"
+	PDTokenLoadKVTokens     = "pd_token_load_kv_tokens"
+	// gauge to track the prompt tokens the pd router has handed to each decode
+	// pod (token_load decode score policy)
+	PDTokenLoadDecodeTokens = "pd_token_load_decode_tokens"
+
+	// counters and a gauge of the adaptive bucket-serve plan of the pd prefill
+	// routing: the requests and prompt tokens each banded roleset carried, and
+	// the current upper bound of the bands it holds
+	PDBucketServeBandTotal         = "pd_bucket_serve_band_total"
+	PDBucketServePromptTokensTotal = "pd_bucket_serve_prompt_tokens_total"
+	PDBucketServeBandMax           = "pd_bucket_serve_band_max"
+
+	// Duration bucket counters for timing breakdowns
+	GatewayRoutingTimeBucketTotal    = "gateway_routing_time_bucket_total"
+	GatewayPrefillTimeBucketTotal    = "gateway_prefill_time_bucket_total"
+	GatewayKVTransferTimeBucketTotal = "gateway_kv_transfer_time_bucket_total"
+	GatewayTTFTBucketTotal           = "gateway_ttft_bucket_total"
+	GatewayTPOTBucketTotal           = "gateway_tpot_bucket_total"
+	GatewayDecodeTimeBucketTotal     = "gateway_decode_time_bucket_total"
+	GatewayTotalTimeBucketTotal      = "gateway_total_time_bucket_total"
+
+	// Queue observability: how long requests wait in the gateway's SLO queue before
+	// dispatch, how deep the queue is, and how requests leave it. Signals stay
+	// low-cardinality on purpose: model, adapter, and the gateway pod only.
+	GatewayQueueWaitTimeBucketTotal = "gateway_queue_wait_time_bucket_total"
+	GatewayQueuePendingRequests     = "gateway_queue_pending_requests"
+	GatewayQueueOutcomeTotal        = "gateway_queue_outcome_total"
+	GatewayQueueFIFOFallbackTotal   = "gateway_queue_fifo_fallback_total"
+)
+
+var (
+	GatewayMetrics = map[string]Metric{
+		GatewayRequestTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total number of requests received by the gateway",
+		},
+		GatewayRequestPanicTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Requests the gateway plugin recovered from a panic on the request path",
+		},
+
+		GatewayRequestModelSuccessTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total number of successful requests received by the gateway for each model",
+		},
+		GatewayRequestModelFailTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total number of failed requests received by the gateway for each model",
+		},
+
+		GatewayPrefillRequestSuccessTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total number of successful prefill requests received by the gateway",
+		},
+		GatewayPrefillRequestFailTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total number of failed prefill requests received by the gateway",
+		},
+
+		GatewayPrefillOutstandingRequests: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			Description: "Total number of outstanding prefill requests received by the gateway",
+		},
+		GatewayPDDecodeAbortTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total number of decode-leg aborts attempted by the gateway after a PD prefill failure, by prefill failure class and abort result",
+		},
+		GatewayPDPrefillFailureTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total number of PD prefill failures the gateway acted on for the client, by prefill failure class and the stage the decode leg had reached",
+		},
+		GatewayPDDecodeWatchdogTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total number of PD decode legs the gateway failed because the decode pod stopped responding, by watchdog phase",
+		},
+		PDTokenLoadActiveTokens: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			Description: "Estimated prompt tokens of the prefill requests currently in flight on a prefill pod, as charged by the pd router",
+		},
+		PDTokenLoadKVTokens: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			Description: "Estimated prompt tokens whose KV cache is still resident on a prefill pod, as charged by the pd router",
+		},
+		PDTokenLoadDecodeTokens: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			Description: "Estimated prompt tokens of the requests the pd router has routed to a decode pod that have not completed yet",
+		},
+		PDBucketServeBandTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Requests the pd router banded to a roleset by the adaptive bucket-serve plan",
+		},
+		PDBucketServePromptTokensTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Prompt tokens the pd router banded to a roleset by the adaptive bucket-serve plan",
+		},
+		PDBucketServeBandMax: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			Description: "Current highest upper prompt-length bound among the adaptive bucket-serve bands a roleset holds",
+		},
+		GatewayInFlight: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			Description: "Current number of requests in flight (i.e., being processed) by the gateway",
+		},
+		GatewayModelInFlight: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			Description: "Current number of in-flight gateway requests per model",
+		},
+
+		GatewayFirstTokenDelayOver1sTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Count of streamed responses where first token delay > 1s",
+		},
+		// Bucketized prompt token counters
+		GatewayPromptTokenBucketTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Requests counted by prompt token bucket",
+		},
+		// Bucketized completion token counters
+		GatewayCompletionTokenBucketTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Requests counted by completion token bucket",
+		},
+		GatewayInputTokensTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total input (prompt) tokens from completed requests with usage",
+		},
+		GatewayOutputTokensTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total output (completion) tokens from completed requests with usage",
+		},
+		GatewayRequestsWithUsageTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Requests with usage information, labeled by has_usage",
+		},
+		PDSelectedPrefillPodTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total selections of prefill pods by the PD router",
+		},
+		PDSelectedDecodePodTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total selections of decode pods by the PD router",
+		},
+		// Duration bucket counters
+		GatewayRoutingTimeBucketTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Requests counted by routing time bucket",
+		},
+		GatewayPrefillTimeBucketTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Requests counted by prefill time bucket",
+		},
+		GatewayKVTransferTimeBucketTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Requests counted by KV transfer time bucket",
+		},
+		GatewayTTFTBucketTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Requests counted by TTFT bucket",
+		},
+		GatewayTPOTBucketTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Requests counted by TPOT bucket",
+		},
+		GatewayDecodeTimeBucketTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Requests counted by decode time bucket",
+		},
+		GatewayTotalTimeBucketTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Requests counted by total time bucket",
+		},
+		GatewayQueueWaitTimeBucketTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Requests counted by time spent waiting in the gateway SLO queue before dispatch",
+		},
+		GatewayQueuePendingRequests: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Gauge},
+			Description:  "Current number of requests waiting in the gateway SLO queue for the model",
+		},
+		GatewayQueueOutcomeTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Requests leaving the gateway SLO queue, by routing outcome",
+		},
+		GatewayQueueFIFOFallbackTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType:   MetricType{Raw: Counter},
+			Description:  "Requests the gateway SLO queue dispatched FIFO because no profile or SLO information was available",
+		},
+	}
+)
+
+func init() {
+	for k, v := range GatewayMetrics {
+		Metrics[k] = v
+	}
+}

@@ -1,0 +1,348 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-plugins
+  namespace: system
+  labels:
+    app: gateway-plugins
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
+spec:
+  selector:
+    app: gateway-plugins
+  ports:
+    - name: gateway
+      protocol: TCP
+      port: 50052
+      targetPort: 50052
+    - name: profiling
+      protocol: TCP
+      port: 6060
+      targetPort: 6060
+    - name: metrics
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-plugins
+  namespace: system
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway-plugins
+  template:
+    metadata:
+      labels:
+        app: gateway-plugins
+    spec:
+      affinity:
+        podAntiAffinity: # pods are placed on different nodes
+           preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - gateway-plugins
+                topologyKey: "kubernetes.io/hostname"
+        nodeAffinity: # prevent gateway pod to be placed on gpu node.
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - key: nvidia.com/gpu.present
+                  operator: NotIn
+                  values:
+                    - "true"
+      initContainers:
+        - name: init-c
+          image: busybox
+          command: ['sh', '-c', 'until echo "ping" | nc aibrix-redis-master 6379 -w 1  | grep -c PONG; do echo waiting for service aibrix-redis-master; sleep 2; done']
+      containers:
+        - name: gateway-plugin
+          image: gateway-plugins:latest
+          imagePullPolicy: IfNotPresent
+          # Optional API server client throttling (client-go defaults shown).
+          # Both values must be greater than zero and apply to the core
+          # Kubernetes and Gateway API clients, each with its own limiter.
+          # args:
+          #   - --kube-api-qps=5
+          #   - --kube-api-burst=10
+          ports:
+            - name: gateway
+              containerPort: 50052
+            - name: profiling
+              containerPort: 6060
+            - name: metrics
+              containerPort: 8080
+          resources:
+            limits:
+              cpu: 1
+              memory: 1Gi
+            requests:
+              cpu: 1
+              memory: 1Gi
+          env:
+            - name: REDIS_HOST
+              value: aibrix-redis-master
+            - name: REDIS_PORT
+              value: "6379"
+            - name: AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS
+              value: "50"
+            - name: AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE
+              value: "character"
+            - name: AIBRIX_PREFIX_CACHE_BLOCK_SIZE
+              value: "128"
+            - name: AIBRIX_LOAD_BALANCE_IMBALANCE_MIN_GAP
+              value: "16"
+            - name: AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR
+              value: "2"
+            - name: AIBRIX_PREFILL_REQUEST_TIMEOUT
+              value: "60"
+            - name: AIBRIX_STATESYNC_ENABLED
+              value: "false"
+            - name: AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED
+              value: "false"
+            - name: AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER
+              value: "false"
+            # Uncomment to enable request tracing for GPU optimizer, default "false".
+            # - name: AIBRIX_GPU_OPTIMIZER_TRACING_FLAG
+            #   value: "true"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          livenessProbe:
+            grpc:
+              port: 50052
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            grpc:
+              port: 50052
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      serviceAccountName: aibrix-gateway-plugins
+---
+# this is a dummy route for incoming request to list models registered to aibrix-control-plane
+# TODO (varun): check if this dummy route can be removed in future
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: reserved-router-metadata-endpoint
+  namespace: system
+spec:
+  parentRefs:
+    - name: aibrix-eg
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/models
+        - path:
+            type: PathPrefix
+            value: /v1/files
+        - path:
+            type: PathPrefix
+            value: /v1/batches
+      backendRefs:
+        - name: aibrix-metadata-service
+          port: 8090
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: skip-ext-proc
+  namespace: system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: aibrix-reserved-router-metadata-endpoint
+---
+# this is a dummy route for incoming request and,
+# then request is routed to httproute using model name OR
+# request is routed based on the target for that model service
+# TODO (varun): check if this dummy route can be removed in future
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: reserved-router
+  namespace: system
+spec:
+  parentRefs:
+    - name: aibrix-eg
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/chat/completions
+        - path:
+            type: PathPrefix
+            value: /v1/responses
+        - path:
+            type: PathPrefix
+            value: /v1/completions
+        - path:
+            type: PathPrefix
+            value: /v1/embeddings
+        - path:
+            type: PathPrefix
+            value: /v1/rerank
+        - path:
+            type: PathPrefix
+            value: /v1/classify
+        - path:
+            type: PathPrefix
+            value: /v1/images/generations
+        - path:
+            type: PathPrefix
+            value: /v1/video/generations
+        - path:
+            type: PathPrefix
+            value: /tokenize
+        - path:
+            type: PathPrefix
+            value: /pooling
+      backendRefs:
+        - name: aibrix-gateway-plugins
+          port: 50052
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: gateway-plugins-extension-policy
+  namespace: system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: aibrix-reserved-router
+  extProc:
+    - backendRefs:
+        - name: aibrix-gateway-plugins
+          port: 50052
+      processingMode:
+        request:
+          body: Buffered
+        # Response bodies stay streamed here: SSE completions have to be forwarded
+        # as their chunks arrive. The Videos API's finite JSON responses need the
+        # opposite and are routed separately, below.
+        response:
+          body: Streamed
+      messageTimeout: 600s
+---
+# The Videos API is split off the shared reserved-router because its create and
+# status responses are the only ones the gateway rewrites: the backend job id in
+# them is replaced by the opaque public id, which is only safe if ext_proc holds
+# the whole response until the record is durably registered.
+#
+# Buffered response bodies are what makes that hold real. Envoy's ext_proc stops
+# the response at its headers until the buffered body has been processed, so an
+# upstream 201 cannot reach the client before registration succeeded -- which is
+# what lets a failed registration still answer 503. Envoy Gateway v1.2.8 has no
+# allowModeOverride field, so a per-request ModeOverride from the plugin would be
+# ignored (ext_proc's allow_mode_override stays off): the mode has to come from
+# configuration, and therefore from a route of its own.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: reserved-router-videos
+  namespace: system
+spec:
+  parentRefs:
+    - name: aibrix-eg
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/videos
+      backendRefs:
+        - name: aibrix-gateway-plugins
+          port: 50052
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: gateway-plugins-videos-extension-policy
+  namespace: system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: aibrix-reserved-router-videos
+  extProc:
+    - backendRefs:
+        - name: aibrix-gateway-plugins
+          port: 50052
+      processingMode:
+        request:
+          body: Buffered
+        response:
+          body: Buffered
+      messageTimeout: 600s
+---
+# The two Videos endpoints whose bodies must never be buffered: a
+# /v1/videos/{id}/content download is the rendered video itself, and
+# /v1/videos/sync returns its result inline. Neither carries a job id to rewrite.
+#
+# Envoy Gateway v1.2.8 ranks route matches Exact > RegularExpression > PathPrefix
+# (internal/gatewayapi/sort.go), so both of these win over the PathPrefix
+# /v1/videos route above and keep their streaming response mode.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: reserved-router-videos-streaming
+  namespace: system
+spec:
+  parentRefs:
+    - name: aibrix-eg
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: /v1/videos/sync
+        - path:
+            type: RegularExpression
+            value: /v1/videos/[^/]+/content
+      backendRefs:
+        - name: aibrix-gateway-plugins
+          port: 50052
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: gateway-plugins-videos-streaming-extension-policy
+  namespace: system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: aibrix-reserved-router-videos-streaming
+  extProc:
+    - backendRefs:
+        - name: aibrix-gateway-plugins
+          port: 50052
+      processingMode:
+        request:
+          body: Buffered
+        response:
+          body: Streamed
+      messageTimeout: 600s

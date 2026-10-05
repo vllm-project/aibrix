@@ -1,0 +1,52 @@
+## About AIBrix
+
+For instructions on building, installing, deploying, and testing this project, 
+please see the [Development Guide](development/README.md) in the `development` directory.
+
+## How to Contribute
+
+### 0. Coding Guidelines
+
+- **Style Guide**: The [Go style](https://google.github.io/styleguide/go/) guide is a good standard to follow.
+- **Commenting Code**: Write clear comments that explain the "why" not just the "how".
+
+### 1. Understanding the Repository Structure
+
+You can refer to the [Design Doc](https://github.com/vllm-project/aibrix/tree/main/development/tutorials) to quickly understand the layout of the AIBrix directory structure.
+
+### 2. Picking an Issue
+
+Start by picking an [issue](https://github.com/vllm-project/aibrix/issues) tagged with "good first issue" to get familiar with the project. Claim the issue by commenting to avoid duplicate efforts.
+
+### 3. Submitting Codes
+
+- **Creating Branches**: Use the following naming convention: `/<YOUR_NAME>/[feat|patch|bug_fix] description`
+- **Making Commits**: Write detailed commit messages that explain your changes.
+- **Pull Requests**:
+  - Create a pull request on [PR Page](https://github.com/vllm-project/aibrix/pulls) against the main branch.
+  - Use the provided PR template to describe your changes.
+- **Code Review Process**: Your PR will be reviewed by related contributors. Address feedback to improve and finalize your contribution.
+
+## Advanced Contributions
+
+- **Feature Proposals and Bug Reporting**: Report bugs or propose new features by creating an issue on our GitHub page. Provide as much detail as possible to facilitate discussions.
+- **Contributing to Documentation**: Help improve our documentation by proposing changes to issue list. Our documentation is at [AIBrix Doc](https://github.com/vllm-project/aibrix/tree/main/development/tutorials)
+- **Organizing Community Events**: If you are interested in organizing meetups or webinars, contact us through our [Slack channel](https://vllm-dev.slack.com/archives/C08EQ883CSV) or [GitHub Discussions](https://github.com/vllm-project/aibrix/discussions).
+
+## Community and Communication
+
+Join our community through various channels:
+
+- **Slack Channel**: [#aibrix on vLLM Slack](https://vllm-dev.slack.com/archives/C08EQ883CSV)
+- **Forums**: [GitHub Discussions](https://github.com/vllm-project/aibrix/discussions)
+- **Issues**: [GitHub Issues](https://github.com/vllm-project/aibrix/issues)
+
+## FAQ
+
+For frequently asked questions, check our [GitHub Discussions](https://github.com/vllm-project/aibrix/discussions) or ask in the [Slack channel](https://vllm-dev.slack.com/archives/C08EQ883CSV).
+
+## Contact
+
+- **GitHub Issues**: [Report bugs or request features](https://github.com/vllm-project/aibrix/issues)
+- **GitHub Discussions**: [Ask questions and share ideas](https://github.com/vllm-project/aibrix/discussions)
+- **Slack**: [#aibrix channel](https://vllm-dev.slack.com/archives/C08EQ883CSV)

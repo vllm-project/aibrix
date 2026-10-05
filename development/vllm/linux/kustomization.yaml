@@ -1,0 +1,8 @@
+kind: Kustomization
+
+resources:
+- ../macos
+
+images:
+- name: aibrix/vllm-cpu-env
+  newTag: linux-amd64

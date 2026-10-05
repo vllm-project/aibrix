@@ -1,0 +1,1355 @@
+/*
+Copyright 2024 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package gateway
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"mime"
+	"mime/multipart"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/bytedance/sonic"
+	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/packages/param"
+	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
+	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
+	"go.opentelemetry.io/otel/attribute"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
+)
+
+var (
+	POD_NAME = os.Getenv("POD_NAME")
+)
+
+const jsonNull = "null"
+
+// chatReqMinimal is a lightweight alternative to openai.ChatCompletionNewParams used
+// in validateRequestBody. It avoids the reflection-heavy apijson decoder and gjson
+// parsing in the openai SDK by capturing only the fields we actually need.
+//
+// Stream uses *bool so we can distinguish "field absent" (nil) from "stream: false",
+// matching the semantics previously provided by map[string]json.RawMessage.
+// Messages are kept as raw JSON to skip the expensive ChatCompletionMessageParamUnion
+// unmarshaling; content is extracted in parseChatMessages.
+type chatReqMinimal struct {
+	Model         string `json:"model"`
+	Stream        *bool  `json:"stream"`
+	StreamOptions struct {
+		IncludeUsage bool `json:"include_usage"`
+	} `json:"stream_options"`
+	Messages []contentItem   `json:"messages"`
+	System   json.RawMessage `json:"system"`
+	// Tools is kept raw and only canonicalized into the prefix-match text.
+	Tools json.RawMessage `json:"tools"`
+}
+
+// responsesReqMinimal captures the fields needed to route and validate an OpenAI
+// Responses API (/v1/responses) request. Input is kept as raw JSON because it may
+// be either a plain string or an array of input items; it is parsed lazily in
+// parseResponsesInput. Stream uses *bool to distinguish "absent" from "stream: false".
+type responsesReqMinimal struct {
+	Model        string          `json:"model"`
+	Stream       *bool           `json:"stream"`
+	Input        json.RawMessage `json:"input"`
+	Instructions json.RawMessage `json:"instructions"`
+	Tools        json.RawMessage `json:"tools"`
+}
+
+// contentItem holds the raw JSON "content" field of a chat message or a Responses API
+// input item. It is shared by chatReqMinimal.Messages, parseChatMessages, and
+// parseResponsesInput.
+type contentItem struct {
+	Content json.RawMessage `json:"content"`
+}
+
+// engineNativeReqMinimal captures the fields needed to route a vLLM engine-native
+// request (/tokenize, /pooling): the completion form carries "prompt" (tokenize)
+// or "input" (pooling), the chat form "messages". Prompt, input, and messages all
+// stay raw JSON so a wrongly-typed value reaches the engine's validator instead of
+// failing this unmarshal -- in particular a non-array "messages" on a
+// completion-form body (an ignored extra) must not reject a valid "input".
+type engineNativeReqMinimal struct {
+	Model          string          `json:"model"`
+	Prompt         json.RawMessage `json:"prompt"`
+	Input          json.RawMessage `json:"input"`
+	Messages       json.RawMessage `json:"messages"`
+	Stream         json.RawMessage `json:"stream"`
+	EncodingFormat json.RawMessage `json:"encoding_format"`
+}
+
+// embeddingReqMinimal captures the embedding fields needed for validation in a
+// single unmarshal pass, including raw stream for strict stream=false checks.
+type embeddingReqMinimal struct {
+	Model  string                              `json:"model"`
+	Input  openai.EmbeddingNewParamsInputUnion `json:"input"`
+	Stream json.RawMessage                     `json:"stream"`
+}
+
+// parseChatMessages extracts a single concatenated text string from the minimal
+// chat request messages. For simple string content it unquotes the JSON string
+// directly; for array/object content it writes the raw JSON bytes.
+func parseChatMessages(requestID string, msgs []contentItem) (string, *extProcPb.ProcessingResponse) {
+	if len(msgs) == 0 {
+		klog.ErrorS(nil, "no messages in the request body", "requestID", requestID)
+		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "no messages in the request body", "", "messages", HeaderErrorRequestBodyProcessing, "true")
+	}
+	// Pre-grow the builder to avoid repeated internal buffer doublings for large messages.
+	// Each Content entry is a raw JSON value; the unescaped string is at most len(Content) bytes.
+	var builder strings.Builder
+	growHint := len(msgs) - 1 // space separators
+	for _, m := range msgs {
+		growHint += len(m.Content)
+	}
+	builder.Grow(growHint)
+	for i, m := range msgs {
+		if i > 0 {
+			builder.WriteByte(' ')
+		}
+		if len(m.Content) > 0 && m.Content[0] == '"' {
+			// Simple string content: JSON-unquote it without allocating an interface.
+			var s string
+			if err := sonic.Unmarshal(m.Content, &s); err == nil {
+				builder.WriteString(s)
+				continue
+			}
+		}
+		// Array or object content parts: write raw JSON.
+		builder.Write(m.Content)
+	}
+	return builder.String(), nil
+}
+
+// parseResponsesInput extracts a single concatenated text string from a Responses
+// API "input" field for routing purposes. The field is either a plain string or an
+// array of input items whose "content" is itself a string or an array of content
+// parts; in all cases we reuse the same text-extraction strategy as chat messages.
+func parseResponsesInput(requestID string, input json.RawMessage) (string, *extProcPb.ProcessingResponse) {
+	if len(input) == 0 || string(input) == jsonNull {
+		klog.ErrorS(nil, "no input in the request body", "requestID", requestID)
+		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property", "", "input", HeaderErrorRequestBodyProcessing, "true")
+	}
+	// Plain string input: JSON-unquote it directly.
+	if input[0] == '"' {
+		var s string
+		if err := sonic.Unmarshal(input, &s); err != nil {
+			klog.ErrorS(err, "error to unmarshal responses input string", "requestID", requestID)
+			return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "input", HeaderErrorRequestBodyProcessing, "true")
+		}
+		return s, nil
+	}
+	// Array of input items: each item may carry a "content" field (string or array
+	// of content parts). Items without content (e.g. tool/function outputs) simply
+	// contribute nothing to the routing key.
+	var items []contentItem
+	if err := sonic.Unmarshal(input, &items); err != nil {
+		klog.ErrorS(err, "error to unmarshal responses input array", "requestID", requestID)
+		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' must be a string or an array of input items", "", "input", HeaderErrorRequestBodyProcessing, "true")
+	}
+	if len(items) == 0 {
+		klog.ErrorS(nil, "empty input array in the request body", "requestID", requestID)
+		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' array cannot be empty", "", "input", HeaderErrorRequestBodyProcessing, "true")
+	}
+	return parseChatMessages(requestID, items)
+}
+
+// validateRequestBody validates input by unmarshaling request body into respective openai-golang struct based on requestpath.
+// The per-path parsing is delegated to dedicated validate* helpers to keep this dispatcher simple.
+//
+// prefixText is the text prefix-matching policies should hash when it differs from
+// message (see RoutingContext.PrefixMatchText); it is empty otherwise.
+// nolint:nakedret
+func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message, prefixText string, stream bool, errRes *extProcPb.ProcessingResponse) {
+	path := pathWithoutQuery(requestPath)
+	switch path {
+	case PathChatCompletions, PathMessages:
+		model, message, prefixText, stream, errRes = validateChatRequest(requestID, path, requestBody, user)
+	case PathResponses:
+		model, message, prefixText, stream, errRes = validateResponsesRequest(requestID, requestBody)
+	case PathCompletions:
+		model, message, stream, errRes = validateCompletionRequest(requestID, requestBody)
+	case PathEmbeddings:
+		model, errRes = validateEmbeddingRequest(requestID, requestBody)
+	case PathImagesGenerations, PathVideoGenerations:
+		model, errRes = validateImageGenerationRequest(requestID, requestBody)
+	case PathRerank:
+		model, message, errRes = validateRerankRequest(requestID, requestBody)
+	case PathClassify:
+		model, message, errRes = validateClassifyRequest(requestID, requestBody)
+	case PathTokenize:
+		model, message, errRes = validateTokenizeRequest(requestID, requestBody)
+	case PathPooling:
+		model, message, errRes = validatePoolingRequest(requestID, requestBody)
+	case PathAudioTranscriptions, PathAudioTranslations:
+		// Audio endpoints require multipart/form-data content-type, not JSON
+		// This case handles the error when JSON is sent to audio endpoints
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "audio requests must use multipart/form-data content-type", "", "", HeaderErrorRequestBodyProcessing, "true")
+	default:
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", "", "", HeaderErrorRequestBodyProcessing, "true")
+	}
+	if errRes != nil {
+		return
+	}
+
+	klog.V(4).InfoS("validateRequestBody", "requestID", requestID, "requestPath", requestPath, "model", model, "message", message, "stream", stream)
+	return
+}
+
+// validateChatRequest parses and validates a chat completions (or Anthropic-style messages) request body.
+// nolint:nakedret
+func validateChatRequest(requestID, requestPath string, requestBody []byte, user utils.User) (model, message, prefixText string, stream bool, errRes *extProcPb.ProcessingResponse) {
+	// Single-pass minimal unmarshal: avoids the openai SDK's reflection-heavy
+	// apijson decoder and gjson parsing, and eliminates the previous redundant
+	// map[string]json.RawMessage unmarshal used only for stream-field detection.
+	var req chatReqMinimal
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		klog.ErrorS(err, "error to unmarshal chat completions object", "requestID", requestID, "requestBody", string(requestBody))
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	model = req.Model
+	if message, errRes = parseChatMessages(requestID, req.Messages); errRes != nil {
+		return
+	}
+	systemText := ""
+	if requestPath == PathMessages {
+		systemText = requestPromptText(requestID, req.System)
+	}
+	prefixText = combinePrefixText(message, systemText, canonicalToolsText(requestID, req.Tools))
+	if req.Stream != nil {
+		stream = *req.Stream
+		// stream_options.include_usage is an OpenAI-specific field; Anthropic-style
+		// clients hitting /v1/messages will not include it, so skip this check for that path.
+		if stream && user.Tpm > 0 && requestPath == PathChatCompletions && !req.StreamOptions.IncludeUsage {
+			klog.ErrorS(nil, "no stream with usage option available", "requestID", requestID)
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "include usage for stream options not set",
+				"", "stream_options", HeaderErrorStreamOptionsIncludeUsage, "include usage for stream options not set")
+			return
+		}
+	}
+	return
+}
+
+// validateResponsesRequest parses and validates an OpenAI Responses API (/v1/responses) request body.
+// nolint:nakedret
+func validateResponsesRequest(requestID string, requestBody []byte) (model, message, prefixText string, stream bool, errRes *extProcPb.ProcessingResponse) {
+	// OpenAI Responses API. Unlike chat completions, the Responses API always
+	// emits usage in the terminal streaming event, so there is no stream_options
+	// .include_usage requirement to enforce for TPM-limited users.
+	var req responsesReqMinimal
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		klog.ErrorS(err, "error to unmarshal responses object", "requestID", requestID, "requestBody", string(requestBody))
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	// Per the OpenAI Responses API spec, "model" is a required property.
+	if req.Model == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	model = req.Model
+	if message, errRes = parseResponsesInput(requestID, req.Input); errRes != nil {
+		return
+	}
+	prefixText = combinePrefixText(
+		message,
+		requestPromptText(requestID, req.Instructions),
+		canonicalToolsText(requestID, req.Tools),
+	)
+	if req.Stream != nil {
+		stream = *req.Stream
+	}
+	return
+}
+
+// validateCompletionRequest parses and validates a legacy completions request body.
+// nolint:nakedret
+func validateCompletionRequest(requestID string, requestBody []byte) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
+	// openai.CompletionsNewParams does not support json unmarshal for CompletionNewParamsPromptUnion in release v0.1.0-beta.10
+	// once supported, input request will be directly unmarshal into openai.CompletionsNewParams
+	type Completion struct {
+		Prompt string `json:"prompt"`
+		Model  string `json:"model"`
+		Stream bool   `json:"stream"`
+	}
+	completionObj := Completion{}
+	if err := sonic.Unmarshal(requestBody, &completionObj); err != nil {
+		klog.ErrorS(err, "error to unmarshal chat completions object", "requestID", requestID, "requestBody", string(requestBody))
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	model = completionObj.Model
+	message = completionObj.Prompt
+	stream = completionObj.Stream
+	return
+}
+
+// embeddingReqRaw is a fallback parse target for embeddings requests whose `input` uses
+// multimodal content parts (e.g. image_url for vision-language embedding models), which
+// openai.EmbeddingNewParamsInputUnion does not support -- unlike chat completions, the
+// OpenAI embeddings spec has no content-parts shape, so backends that accept images this
+// way (e.g. qwen3-vl-embedding) are an extension. Input is kept raw so it can be
+// re-parsed once the shape is known.
+type embeddingReqRaw struct {
+	Model  string          `json:"model"`
+	Input  json.RawMessage `json:"input"`
+	Stream json.RawMessage `json:"stream"`
+}
+
+// embeddingContentPart supports two multimodal `input` part shapes:
+//   - the OpenAI chat-content-part shape: {"type": ..., "text": ..., "image_url": {...}}
+//   - sglang's flat MultimodalEmbeddingInput shape (no "type" discriminator):
+//     {"text": "..."} / {"image": "<data-uri>"} / {"video": "<data-uri>"}
+//
+// sglang's embeddings endpoint only understands the flat shape -- it silently ignores
+// unrecognized fields (extra="ignore"), so sending the OpenAI content-part shape leaves
+// text/image/video all unset and falls back to a fixed placeholder input.
+type embeddingContentPart struct {
+	Type     string          `json:"type"`
+	Text     string          `json:"text"`
+	ImageURL json.RawMessage `json:"image_url"`
+	VideoURL json.RawMessage `json:"video_url"`
+	Image    string          `json:"image"`
+	Video    string          `json:"video"`
+}
+
+// validateEmbeddingContentParts validates the shape of a multimodal embeddings
+// `input` array. Text length is not checked, for the reasons given on
+// validateStringInputs. Image and video parts were never counted anyway, since
+// the gateway's text tokenizer cannot estimate their cost.
+func validateEmbeddingContentParts(parts []embeddingContentPart) error {
+	if len(parts) == 0 {
+		return errors.New("input array cannot be empty")
+	}
+
+	for i, part := range parts {
+		typ := part.Type
+		if typ == "" {
+			// Flat sglang shape: infer the part kind from whichever field is set.
+			switch {
+			case part.Text != "":
+				typ = "text"
+			case part.Image != "":
+				typ = "image"
+			case part.Video != "":
+				typ = "video"
+			default:
+				return fmt.Errorf("input at index %d must set one of text, image, or video", i)
+			}
+		}
+
+		switch typ {
+		case "text":
+			if part.Text == "" {
+				return fmt.Errorf("input at index %d cannot be an empty string", i)
+			}
+		case "image_url":
+			if len(part.ImageURL) == 0 {
+				return fmt.Errorf("input at index %d is missing image_url", i)
+			}
+		case "image":
+			if part.Image == "" {
+				return fmt.Errorf("input at index %d is missing image", i)
+			}
+		case "video_url":
+			if len(part.VideoURL) == 0 {
+				return fmt.Errorf("input at index %d is missing video_url", i)
+			}
+		case "video":
+			if part.Video == "" {
+				return fmt.Errorf("input at index %d is missing video", i)
+			}
+		default:
+			return fmt.Errorf("input at index %d has unsupported content type %q", i, typ)
+		}
+	}
+
+	return nil
+}
+
+// validateMultimodalEmbeddingRequest re-parses an embeddings request body whose `input`
+// didn't fit openai.EmbeddingNewParamsInputUnion, checking whether it's instead an array
+// of multimodal content parts. matched is false if the body doesn't match that shape
+// either, signaling the caller to fall back to the original parse error.
+func validateMultimodalEmbeddingRequest(requestID string, requestBody []byte) (model string, errRes *extProcPb.ProcessingResponse, matched bool) {
+	var req embeddingReqRaw
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		return "", nil, false
+	}
+
+	trimmed := bytes.TrimSpace(req.Input)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return "", nil, false
+	}
+
+	var parts []embeddingContentPart
+	if err := sonic.Unmarshal(trimmed, &parts); err != nil || len(parts) == 0 {
+		return "", nil, false
+	}
+	// Confirm this is actually a content-parts array (typed or sglang's flat shape) and
+	// not some other array of objects that merely failed to unmarshal as expected -- an
+	// empty first part (no type/text/image_url/video_url/image/video set at all) means
+	// the shape doesn't match either content-parts variant, so fall back to the original
+	// parse error instead of reporting a misleading per-index validation error.
+	first := parts[0]
+	if first.Type == "" && first.Text == "" && len(first.ImageURL) == 0 && len(first.VideoURL) == 0 && first.Image == "" && first.Video == "" {
+		return "", nil, false
+	}
+
+	klog.V(4).InfoS("parsed multimodal embeddings input", "requestID", requestID, "parts", len(parts))
+
+	if err := validateEmbeddingContentParts(parts); err != nil {
+		return req.Model, buildErrorResponse(envoyTypePb.StatusCode_BadRequest, err.Error(), "", "input", HeaderErrorRequestBodyProcessing, "true"), true
+	}
+
+	if len(req.Stream) > 0 {
+		var streamBool bool
+		if err := sonic.Unmarshal(req.Stream, &streamBool); err != nil || streamBool {
+			return req.Model, buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for embeddings", "", "stream", HeaderErrorRequestBodyProcessing, "true"), true
+		}
+	}
+
+	return req.Model, nil, true
+}
+
+// validateEmbeddingRequest parses and validates an embeddings request body.
+// nolint:nakedret
+func validateEmbeddingRequest(requestID string, requestBody []byte) (model string, errRes *extProcPb.ProcessingResponse) {
+	var embeddingReq embeddingReqMinimal
+	if err := sonic.Unmarshal(requestBody, &embeddingReq); err != nil {
+		// `input` may be an array of multimodal content parts (e.g. image_url), which
+		// the strict OpenAI union type above does not support. Retry with that shape
+		// before treating this as a hard parse failure.
+		if m, mmErrRes, matched := validateMultimodalEmbeddingRequest(requestID, requestBody); matched {
+			return m, mmErrRes
+		}
+		klog.ErrorS(err, "error to unmarshal embeddings object", "requestID", requestID, "requestBody", string(requestBody))
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	model = embeddingReq.Model
+	if err := validateEmbeddingInput(openai.EmbeddingNewParams{
+		Model: embeddingReq.Model,
+		Input: embeddingReq.Input,
+	}); err != nil {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, err.Error(), "", "input", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	// Preserve behavior: if stream is provided, it must be a valid bool and false.
+	if len(embeddingReq.Stream) > 0 {
+		var streamBool bool
+		if err := sonic.Unmarshal(embeddingReq.Stream, &streamBool); err != nil || streamBool {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for embeddings", "", "stream", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+	}
+	return
+}
+
+// validateImageGenerationRequest parses and validates an image/video generation request body.
+// nolint:nakedret
+func validateImageGenerationRequest(requestID string, requestBody []byte) (model string, errRes *extProcPb.ProcessingResponse) {
+	imageGenerationObj := openai.ImageGenerateParams{}
+	if err := sonic.Unmarshal(requestBody, &imageGenerationObj); err != nil {
+		klog.ErrorS(err, "error to unmarshal image generations object", "requestID", requestID, "requestBody", string(requestBody))
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	model = imageGenerationObj.Model
+	return
+}
+
+// validateRerankRequest parses and validates a rerank request body.
+// nolint:nakedret
+func validateRerankRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	type RerankRequest struct {
+		Model     string   `json:"model"`
+		Query     string   `json:"query"`
+		Documents []string `json:"documents"`
+	}
+	var req RerankRequest
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		klog.ErrorS(err, "error to unmarshal rerank object", "requestID", requestID)
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if req.Model == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	if req.Query == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'query' is a required property", "", "query", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	if len(req.Documents) == 0 {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'documents' is a required property and cannot be empty", "", "documents", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	model = req.Model
+	message = strings.Join(append([]string{req.Query}, req.Documents...), " ")
+	return
+}
+
+// validateTokenizeRequest parses and validates a vLLM /tokenize request body. Only "model"
+// is required - the gateway needs it to route, though vLLM itself treats it as optional -
+// and the rest of the schema is left to the engine. Nothing is metered: no tokens are generated.
+// nolint:nakedret
+func validateTokenizeRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	return validateEngineNativeRequest(requestID, "tokenize", false, requestBody)
+}
+
+// validatePoolingRequest parses and validates a vLLM /pooling request body. Only "model"
+// is required - the one field the gateway routes on - and the rest of the schema is left
+// to the engine. Stream is rejected when present and true, as for embeddings: pooling
+// never streams, and a stream=true body would otherwise be forwarded just to fail in the
+// engine with a less specific error. The octet-stream encoding formats (bytes, bytes_only)
+// are rejected at the edge too, because the language response path cannot meter them.
+// nolint:nakedret
+func validatePoolingRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	return validateEngineNativeRequest(requestID, "pooling", true, requestBody)
+}
+
+// validateEngineNativeRequest is the shared validator for vLLM engine-native paths
+// (/tokenize, /pooling), whose request bodies are a union of a completion form
+// ("prompt" for tokenize, "input" for pooling) and a chat form ("messages").
+// Only "model" is required - the one field the gateway routes on; a body without
+// any input field still reaches the engine, which owns that error. The routing
+// message is best-effort: parseChatMessages unquotes a JSON string and writes any
+// other JSON value (array, token ids) as raw bytes, so the whole input value becomes
+// one content item rather than being expanded into several.
+// nolint:nakedret
+func validateEngineNativeRequest(requestID, endpoint string, pooling bool, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	var req engineNativeReqMinimal
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		klog.ErrorS(err, "error to unmarshal "+endpoint+" object", "requestID", requestID, "requestBody", string(requestBody))
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if req.Model == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	model = req.Model
+
+	// Select the completion field by endpoint: tokenize reads "prompt", pooling
+	// reads "input". The other completion field is an ignored extra on that path
+	// (vLLM's OpenAIBaseModel is extra="allow"), so it must not win the routing
+	// key. The chat form ("messages") is the fallback for both.
+	completionField := req.Input
+	if !pooling {
+		completionField = req.Prompt
+	}
+
+	// Best-effort routing key: the completion form's raw field first, then the
+	// chat form's messages. Messages is held as raw JSON and parsed only when it
+	// is the chosen field, so a non-array value on a completion-form body cannot
+	// fail this unmarshal.
+	switch {
+	case len(completionField) > 0 && string(completionField) != jsonNull:
+		message, errRes = parseChatMessages(requestID, []contentItem{{Content: completionField}})
+	case len(req.Messages) > 0 && string(req.Messages) != jsonNull:
+		var msgs []contentItem
+		if err := sonic.Unmarshal(req.Messages, &msgs); err != nil {
+			// Non-array messages on a messages-only body: no routing key, but the
+			// engine owns the schema error, so forward without one.
+			klog.ErrorS(err, "error to unmarshal "+endpoint+" messages", "requestID", requestID)
+			break
+		}
+		message, errRes = parseChatMessages(requestID, msgs)
+	}
+	if errRes != nil {
+		return
+	}
+
+	// Non-streaming engine paths reject stream at the edge, like embeddings;
+	// tokenize has no stream field, and a stray one is left to the engine.
+	if pooling && len(req.Stream) > 0 {
+		var streamBool bool
+		if err := sonic.Unmarshal(req.Stream, &streamBool); err != nil || streamBool {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for pooling", "", "stream", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+	}
+
+	// vLLM's other two pooling encoding formats (bytes, bytes_only) return
+	// application/octet-stream, which the language response path cannot meter;
+	// reject them at the edge and keep JSON pooling (float, base64) on that path.
+	if pooling && len(req.EncodingFormat) > 0 {
+		var enc string
+		if err := sonic.Unmarshal(req.EncodingFormat, &enc); err == nil && (enc == "bytes" || enc == "bytes_only") {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "encoding_format 'bytes' and 'bytes_only' are not supported for pooling", "", "encoding_format", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+	}
+	return
+}
+
+// pathWithoutQuery strips the query string from an Envoy :path value. HTTP/2
+// :path includes both path and query (RFC 7540), so exact/prefix matchers must
+// cut on '?' before comparing.
+func pathWithoutQuery(requestPath string) string {
+	return utils.PathWithoutQuery(requestPath)
+}
+
+// isMultipartFormPath returns true if requestPath is an endpoint whose request
+// body is multipart/form-data rather than JSON -- audio endpoints, and
+// vLLM-Omni's Videos API create endpoints (PathVideos, PathVideosSync).
+func isMultipartFormPath(requestPath string) bool {
+	switch pathWithoutQuery(requestPath) {
+	case PathAudioTranscriptions, PathAudioTranslations, PathVideos, PathVideosSync:
+		return true
+	default:
+		return false
+	}
+}
+
+// validateClassifyRequest validates a classify request and returns the model and message.
+// nolint:nakedret
+func validateClassifyRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	type ClassifyRequest struct {
+		Model string          `json:"model"`
+		Input json.RawMessage `json:"input"`
+	}
+	var req ClassifyRequest
+	if err := json.Unmarshal(requestBody, &req); err != nil {
+		klog.ErrorS(err, "error to unmarshal classify object", "requestID", requestID)
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if req.Model == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if len(req.Input) == 0 || string(req.Input) == jsonNull {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property", "", "input", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	// Parse input - can be string or array of strings
+	var inputStr string
+	if err := json.Unmarshal(req.Input, &inputStr); err == nil {
+		if inputStr == "" {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' cannot be an empty string", "", "input", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		message = inputStr
+	} else {
+		var inputArr []string
+		if err := json.Unmarshal(req.Input, &inputArr); err != nil {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' must be a string or array of strings", "", "input", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		if len(inputArr) == 0 {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' array cannot be empty", "", "input", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		message = strings.Join(inputArr, " ")
+	}
+
+	model = req.Model
+	return
+}
+
+// isMultipartRequest returns true if the content type indicates multipart form data
+func isMultipartRequest(contentType string) bool {
+	if contentType == "" {
+		return false
+	}
+	mediaType, _, _ := mime.ParseMediaType(contentType)
+	return strings.HasPrefix(mediaType, "multipart/")
+}
+
+// parseMultipartFormData parses multipart/form-data request body and extracts the model field.
+// It returns the model name, stream flag, and any processing error response.
+//
+// requestPath is used to skip the "stream" field for vLLM-Omni's Videos API
+// (PathVideos, PathVideosSync): video creation is an async job -- HandleResponseBody
+// relies on stream being false there to reach handleVideoJobResponseBody, so a stray
+// stream=true field (e.g. from an SDK reusing a generic multipart helper across
+// audio/video calls) must not be allowed to route the response down the SSE branch
+// instead.
+// nolint:nakedret
+func parseMultipartFormData(requestID, requestPath, contentType string, requestBody []byte) (model string, stream bool, errRes *extProcPb.ProcessingResponse) {
+	const trueStr = "true"
+	isVideoPath := pathWithoutQuery(requestPath) == PathVideos || pathWithoutQuery(requestPath) == PathVideosSync
+
+	// Extract boundary from Content-Type
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		klog.ErrorS(err, "failed to parse content-type", "requestID", requestID, "contentType", contentType)
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "invalid content-type header", "", "", HeaderErrorMultipartParsing, trueStr)
+		return
+	}
+
+	if !strings.HasPrefix(mediaType, "multipart/") {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "expected multipart/form-data content-type", "", "", HeaderErrorMultipartParsing, trueStr)
+		return
+	}
+
+	boundary := params["boundary"]
+	if boundary == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "missing boundary in content-type", "", "", HeaderErrorMultipartParsing, trueStr)
+		return
+	}
+
+	// Parse multipart form
+	reader := multipart.NewReader(bytes.NewReader(requestBody), boundary)
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			klog.ErrorS(err, "failed to read multipart part", "requestID", requestID)
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "failed to parse multipart form", "", "", HeaderErrorMultipartParsing, trueStr)
+			return
+		}
+
+		fieldName := part.FormName()
+
+		switch fieldName {
+		case "model":
+			modelBytes, err := io.ReadAll(part)
+			if err != nil {
+				klog.ErrorS(err, "failed to read model field", "requestID", requestID)
+				errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "failed to read model field", "", "model", HeaderErrorMultipartParsing, trueStr)
+				return
+			}
+			model = strings.TrimSpace(string(modelBytes))
+
+		case "stream":
+			if isVideoPath {
+				// Video creation never streams; ignore a client-supplied stream field
+				// rather than letting it flip HandleResponseBody onto the SSE branch.
+				break
+			}
+			streamBytes, err := io.ReadAll(part)
+			if err == nil {
+				streamVal := strings.TrimSpace(strings.ToLower(string(streamBytes)))
+				stream = streamVal == trueStr || streamVal == "1"
+			}
+		}
+
+		_ = part.Close()
+	}
+
+	// Validate required model field
+	if model == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorMultipartParsing, trueStr)
+		return
+	}
+
+	klog.V(4).InfoS("parseMultipartFormData", "requestID", requestID, "model", model, "stream", stream)
+	return
+}
+
+// validateStreamOptions validates whether stream options to include usage is set for user request
+func validateStreamOptions(requestID string, user utils.User, stream *bool, streamOptions openai.ChatCompletionStreamOptionsParam, jsonMap map[string]json.RawMessage) *extProcPb.ProcessingResponse {
+	streamData, ok := jsonMap["stream"]
+	if !ok {
+		return nil
+	}
+
+	if err := sonic.Unmarshal(streamData, stream); err != nil {
+		klog.ErrorS(nil, "no stream option available", "requestID", requestID)
+		return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream incorrectly set", "", "stream", HeaderErrorStream, "stream incorrectly set")
+	}
+
+	if *stream && user.Tpm > 0 {
+		if !streamOptions.IncludeUsage.Value {
+			klog.ErrorS(nil, "no stream with usage option available", "requestID", requestID, "streamOption", streamOptions)
+			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "include usage for stream options not set",
+				"", "stream_options", HeaderErrorStreamOptionsIncludeUsage, "include usage for stream options not set")
+		}
+	}
+	return nil
+}
+
+// warnIfReplicaInflightBelowRPS logs when requestsInflight is set tighter than
+// requestsPerSecondPerReplica. The two are independent limits set by the user on purpose
+// (e.g. "at most 3 concurrent, and also no more than 5 rps"), so this only surfaces the
+// resulting RPS ceiling being practically unreachable -- it must never silently raise the
+// concurrency cap the user configured.
+func warnIfReplicaInflightBelowRPS(routingCtx *types.RoutingContext, inflight int64, replicaRPS float64) {
+	if inflight <= 0 || replicaRPS <= 0 || float64(inflight) >= replicaRPS {
+		return
+	}
+	klog.InfoS("requestsInflight below requestsPerSecondPerReplica; replica RPS ceiling may be unreachable",
+		"requestID", routingCtx.RequestID, "model", routingCtx.Model,
+		"requestsInflight", inflight, "replicaRPS", replicaRPS)
+}
+
+// maxRateWindowSeconds bounds the window rpsToLimitWindow will derive for sub-1 rps values,
+// so a near-zero rps doesn't produce an unbounded Redis key TTL / bucket lifetime.
+const maxRateWindowSeconds = 3600
+
+// rpsRoundingEpsilon absorbs floating-point representation error (e.g. 0.2*10 evaluates to
+// 1.9999999999999998, and 1/0.5 can land a hair under 2) so a rate that is really an exact
+// integer, or an exact reciprocal, isn't pushed down a bucket by float noise. It's small
+// enough that no genuinely fractional rps (e.g. 1.6, or 0.18) is affected.
+const rpsRoundingEpsilon = 1e-9
+
+// rpsToLimitWindow converts a (possibly fractional) requests-per-second rate into a
+// (limit, windowSeconds) pair suitable for the fixed-window rate limiter: limit requests
+// are allowed per windowSeconds-second window. Both branches round towards a lower delivered
+// rate, never a higher one, so the derived pair never admits more than the configured rps.
+//   - rps >= 1 uses a 1-second window with limit = floor(rps): e.g. 1.6 -> 1 req/s, not 2.
+//   - 0 < rps < 1 is expressed as "1 request every N seconds", i.e. limit = 1 over a
+//     windowSeconds-second window, with windowSeconds = ceil(1/rps) so the delivered rate is
+//     never faster than what was configured (e.g. 0.18 -> every 6s, not every 5s).
+//   - rps <= 0 disables the limit (limit = 0, windowSeconds = 0).
+func rpsToLimitWindow(rps float64) (limit int64, windowSeconds int64) {
+	if rps <= 0 {
+		return 0, 0
+	}
+	if rps >= 1 {
+		return int64(math.Floor(rps + rpsRoundingEpsilon)), 1
+	}
+	windowSeconds = int64(math.Ceil(1/rps - rpsRoundingEpsilon))
+	if windowSeconds < 1 {
+		windowSeconds = 1
+	}
+	if windowSeconds > maxRateWindowSeconds {
+		windowSeconds = maxRateWindowSeconds
+	}
+	return 1, windowSeconds
+}
+
+// applyConfigProfile resolves the model config from the pod annotation
+// (model.aibrix.ai/config) and applies the selected profile plus the model-wide
+// locked routing strategy onto routingCtx.ConfigProfile.
+//   - The profile is selected by the config-profile header, falling back to
+//     defaultProfile (or "default") in the JSON.
+//   - config-profile: auto evaluates request-local hints in profile routingConfig
+//     and resolves to a concrete profile before routing strategy derivation.
+//   - authoritativeRoutingPolicy clears the client routing controls before profile
+//     resolution, so the existing default-profile and routing-precedence behavior
+//     applies as if the client had not sent those headers.
+//   - lockedRoutingStrategy (top-level) is applied even when no profile resolves, so a
+//     model-wide lock cannot be bypassed by selecting a profile or sending a header.
+//   - The profile's requestsPerSecondPerReplica, if set, always takes precedence over the
+//     resolved profile's requestsPerSecond: the effective limit becomes
+//     requestsPerSecondPerReplica times the model's current routable replica count, and the
+//     routing strategy is forced to least-request so traffic is balanced evenly enough
+//     across replicas for that per-replica figure to hold in aggregate.
+//   - The profile's requestsInflight, if set, is a per-replica concurrency cap, and (like
+//     requestsPerSecondPerReplica) forces the routing strategy to least-request so the
+//     per-pod cap actually gets enforced -- selectTargetPod only runs, and thus only applies
+//     the cap, when a routing strategy resolves to something other than RouterNotSet.
+//     requestsInflight and requestsPerSecondPerReplica are independent, user-configured
+//     limits: when inflight is set below the resolved replica RPS, it is left as configured
+//     (only logged via warnIfReplicaInflightBelowRPS) rather than raised, since silently
+//     loosening the concurrency cap the user set would defeat its purpose. Unlike
+//     RequestsPerSecond, neither requestsPerSecondPerReplica nor requestsInflight has an
+//     env-var form: both are configured directly in the profile.
+func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
+	if routingCtx == nil {
+		return
+	}
+	cfg := configprofiles.ResolveModelConfig(pods)
+	if cfg == nil {
+		return
+	}
+	if cfg.AuthoritativeRoutingPolicy {
+		routingCtx.ReqConfigProfile = ""
+		delete(routingCtx.ReqHeaders, HeaderRoutingStrategy)
+		delete(routingCtx.ReqHeaders, HeaderExternalFilter)
+	}
+
+	reqConfigProfile := routingCtx.ReqConfigProfile
+	var features configprofiles.RequestFeatures
+	if strings.EqualFold(strings.TrimSpace(reqConfigProfile), "auto") {
+		features = buildConfigProfileRequestFeatures(routingCtx)
+	}
+	profile, profileName, locked := cfg.ResolveForRequest(reqConfigProfile, features)
+
+	var replicaRPS float64
+	var inflight int64
+	if profile != nil {
+		replicaRPS = profile.RequestsPerSecondPerReplica
+		inflight = profile.RequestsInflight
+	}
+	if profile == nil && locked == "" && !cfg.AuthoritativeRoutingPolicy && replicaRPS <= 0 && inflight <= 0 {
+		return
+	}
+
+	if strings.EqualFold(strings.TrimSpace(reqConfigProfile), "auto") && profileName != "" {
+		routingCtx.ReqConfigProfile = profileName
+		if routingCtx.RespHeaders == nil {
+			routingCtx.RespHeaders = make(map[string]string)
+		}
+		routingCtx.RespHeaders[HeaderAIBrixConfigProfile] = profileName
+	}
+	cp := &types.ResolvedConfigProfile{
+		LockedRoutingStrategy:      locked,
+		AuthoritativeRoutingPolicy: cfg.AuthoritativeRoutingPolicy,
+	}
+	if profile != nil {
+		cp.RoutingStrategy = profile.RoutingStrategy
+		cp.RoutingConfig = profile.RoutingConfig
+		cp.Routing = configprofiles.ParseRoutingConfig(profile.RoutingConfig)
+		cp.RequestsPerSecond = profile.RequestsPerSecond
+		cp.TTFTThresholdS = profile.TTFTThresholdS
+	}
+	routingCtx.ConfigProfile = cp
+
+	if replicaRPS > 0 {
+		replicas := int64(utils.CountRoutablePods(pods))
+		limit, windowSeconds := rpsToLimitWindow(replicaRPS * float64(replicas))
+		routingCtx.ConfigProfile.RequestsPerSecond = limit
+		routingCtx.ConfigProfile.RateWindowSeconds = windowSeconds
+		routingCtx.ConfigProfile.RoutingStrategy = string(routing.RouterLeastRequest)
+		klog.V(4).InfoS("applied requestsPerSecondPerReplica to config profile", "requestID", routingCtx.RequestID, "model", routingCtx.Model,
+			"replicaRPS", replicaRPS, "replicas", replicas, "limit", limit, "windowSeconds", windowSeconds)
+	}
+
+	if inflight > 0 {
+		warnIfReplicaInflightBelowRPS(routingCtx, inflight, replicaRPS)
+		routingCtx.ConfigProfile.RequestsInflight = inflight
+		routingCtx.ConfigProfile.RoutingStrategy = string(routing.RouterLeastRequest)
+		klog.V(4).InfoS("applied requestsInflight to config profile", "requestID", routingCtx.RequestID, "model", routingCtx.Model, "requestsInflight", inflight)
+	}
+}
+
+func buildConfigProfileRequestFeatures(routingCtx *types.RoutingContext) configprofiles.RequestFeatures {
+	if routingCtx == nil {
+		return configprofiles.RequestFeatures{}
+	}
+	features := configprofiles.RequestFeatures{
+		PromptTokens: estimatePromptTokens(routingCtx.Message),
+		MaxTokens:    maxTokensFromRequestBody(routingCtx.ReqBody),
+	}
+	return features
+}
+
+func estimatePromptTokens(message string) *int {
+	tokens, err := utils.TokenizeInputText(message)
+	if err != nil {
+		klog.V(4).InfoS("failed to estimate prompt tokens for config profile selection", "err", err)
+		return nil
+	}
+	tokenCount := len(tokens)
+	return &tokenCount
+}
+
+func maxTokensFromRequestBody(body []byte) *int64 {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil
+	}
+	var req map[string]json.RawMessage
+	if err := sonic.Unmarshal(body, &req); err != nil {
+		return nil
+	}
+	if v, ok := int64Field(req, "max_tokens"); ok {
+		return &v
+	}
+	if v, ok := int64Field(req, "max_completion_tokens"); ok {
+		return &v
+	}
+	return nil
+}
+
+func int64Field(req map[string]json.RawMessage, key string) (int64, bool) {
+	raw, ok := req[key]
+	if !ok {
+		return 0, false
+	}
+	var v int64
+	if err := sonic.Unmarshal(raw, &v); err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+var defaultRoutingStrategy, defaultRoutingStrategyEnabled = utils.LookupEnv(EnvRoutingAlgorithm)
+
+// deriveRoutingStrategyFromContext retrieves routing strategy with the following
+// precedence (highest first):
+//  1. lockedRoutingStrategy pinned model-wide in the model config
+//  2. routing-strategy request header
+//  3. routingStrategy from the resolved config profile
+//  4. ROUTING_ALGORITHM environment variable
+func deriveRoutingStrategyFromContext(routingCtx *types.RoutingContext) (string, bool) {
+	if routingCtx == nil {
+		return defaultRoutingStrategy, defaultRoutingStrategyEnabled
+	}
+
+	// Check locked routing strategy from model config (top-level, model-wide).
+	if cp := routingCtx.ConfigProfile; cp != nil {
+		if s := strings.TrimSpace(cp.LockedRoutingStrategy); s != "" {
+			return s, true
+		}
+	}
+	// Check request headers (case-insensitive key match)
+	for k, v := range routingCtx.ReqHeaders {
+		if strings.EqualFold(k, HeaderRoutingStrategy) {
+			if s := strings.TrimSpace(v); s != "" {
+				return s, true
+			}
+			break
+		}
+	}
+	// Fallback to resolved profile on routing context
+	if cp := routingCtx.ConfigProfile; cp != nil {
+		if s := strings.TrimSpace(cp.RoutingStrategy); s != "" {
+			return s, true
+		}
+	}
+	// Fallback to environment default
+	return defaultRoutingStrategy, defaultRoutingStrategyEnabled
+}
+
+// getChatCompletionsMessage returns message for chat completions object
+func getChatCompletionsMessage(requestID string, chatCompletionObj openai.ChatCompletionNewParams) (string, *extProcPb.ProcessingResponse) {
+	if len(chatCompletionObj.Messages) == 0 {
+		klog.ErrorS(nil, "no messages in the request body", "requestID", requestID)
+		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "no messages in the request body", "", "messages", HeaderErrorRequestBodyProcessing, "true")
+	}
+	var builder strings.Builder
+	for i, m := range chatCompletionObj.Messages {
+		if i > 0 {
+			builder.WriteString(" ")
+		}
+		switch content := m.GetContent().AsAny().(type) {
+		case *string:
+			builder.WriteString(*content)
+		default:
+			if jsonBytes, err := sonic.Marshal(content); err == nil {
+				builder.Write(jsonBytes)
+			} else {
+				klog.ErrorS(err, "error marshalling message content", "requestID", requestID, "message", m)
+				return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error marshalling message content", "", "messages", HeaderErrorRequestBodyProcessing, "true")
+			}
+		}
+	}
+	return builder.String(), nil
+}
+
+// generateErrorResponse construct envoy proxy error response
+// errorCode and param are optional (pass "" for null)
+func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configPb.HeaderValueOption, message, errorCode, param string) *extProcPb.ProcessingResponse {
+	// Set the Content-Type header to application/json
+	headers = append(headers, contentTypeHeader())
+	return immediateErrorResponse(statusCode, generateErrorMessageWithHTTPCode(message, int(statusCode), errorCode, param), headers)
+}
+
+// generateErrorMessage constructs a JSON error message in OpenAI format
+func generateErrorMessage(message, errorType, errorCode, param string) string {
+	errorStruct := map[string]interface{}{
+		"error": map[string]interface{}{
+			"message": message,
+			"type":    errorType,
+			"code":    nil,
+			"param":   nil,
+		},
+	}
+
+	// Set code if provided (null if empty string)
+	if errorCode != "" {
+		errorStruct["error"].(map[string]interface{})["code"] = errorCode
+	}
+
+	// Set param if provided (null if empty string)
+	if param != "" {
+		errorStruct["error"].(map[string]interface{})["param"] = param
+	}
+
+	jsonData, err := sonic.Marshal(errorStruct)
+	if err != nil {
+		klog.ErrorS(err, "failed to marshal OpenAI error response")
+		return `{"error":{"message":"internal server error while formatting error response","type":"api_error","code":null,"param":null}}`
+	}
+	return string(jsonData)
+}
+
+// generateErrorMessageWithHTTPCode constructs a JSON error message with appropriate type based on HTTP status code
+func generateErrorMessageWithHTTPCode(message string, httpStatusCode int, errorCode, param string) string {
+	var errorType string
+	switch httpStatusCode {
+	case 400, 404:
+		errorType = ErrorTypeInvalidRequest
+	case 401:
+		errorType = ErrorTypeAuthentication
+	case 429:
+		errorType = ErrorTypeRateLimit
+	case 503:
+		errorType = ErrorTypeOverloaded
+	default:
+		errorType = ErrorTypeApi
+	}
+
+	return generateErrorMessage(message, errorType, errorCode, param)
+}
+
+// buildErrorResponse constructs an error response with OpenAI-compatible error format
+// errorCode and param are optional (pass "" for null). Unlike buildErrorResponseWithBody,
+// it builds the body from the supplied fields and does not add a Content-Type header.
+func buildErrorResponse(statusCode envoyTypePb.StatusCode, errBody, errorCode, param string, headers ...string) *extProcPb.ProcessingResponse {
+	return buildErrorResponseWithType(statusCode, errBody, "", errorCode, param, headers...)
+}
+
+// buildErrorResponseWithType is buildErrorResponse with an explicit OpenAI error.type.
+// Empty errorType falls back to the HTTP-status mapping used by generateErrorMessageWithHTTPCode.
+func buildErrorResponseWithType(statusCode envoyTypePb.StatusCode, errBody, errorType, errorCode, param string, headers ...string) *extProcPb.ProcessingResponse {
+	body := generateErrorMessageWithHTTPCode(errBody, int(statusCode), errorCode, param)
+	if errorType != "" {
+		body = generateErrorMessage(errBody, errorType, errorCode, param)
+	}
+	return immediateErrorResponse(
+		statusCode,
+		body,
+		buildEnvoyProxyHeaders([]*configPb.HeaderValueOption{}, headers...),
+	)
+}
+
+// buildErrorResponseWithBody constructs an immediate error response whose body is passed
+// through verbatim (already an OpenAI-shaped error payload) with no re-wrapping. The caller
+// supplies the full header set it wants to be forwarded (typically the upstream headers plus the
+// error header); a Content-Type: application/json header is always prepended.
+func buildErrorResponseWithBody(statusCode envoyTypePb.StatusCode, body string, headers []*configPb.HeaderValueOption) *extProcPb.ProcessingResponse {
+	setHeaders := make([]*configPb.HeaderValueOption, 0, 1+len(headers))
+	setHeaders = append(setHeaders, contentTypeHeader())
+	setHeaders = append(setHeaders, headers...)
+	return immediateErrorResponse(statusCode, body, setHeaders)
+}
+
+// contentTypeHeader returns a fresh Content-Type: application/json header.
+func contentTypeHeader() *configPb.HeaderValueOption {
+	return &configPb.HeaderValueOption{
+		Header: &configPb.HeaderValue{
+			Key:   "Content-Type",
+			Value: "application/json",
+		},
+	}
+}
+
+// immediateErrorResponse builds an envoy ImmediateResponse error with the given status, body,
+// and header set. Shared by all gateway error builders so the ImmediateResponse construction
+// lives in exactly one place.
+func immediateErrorResponse(statusCode envoyTypePb.StatusCode, body string, headers []*configPb.HeaderValueOption) *extProcPb.ProcessingResponse {
+	return &extProcPb.ProcessingResponse{
+		Response: &extProcPb.ProcessingResponse_ImmediateResponse{
+			ImmediateResponse: &extProcPb.ImmediateResponse{
+				Status: &envoyTypePb.HttpStatus{
+					Code: statusCode,
+				},
+				Headers: &extProcPb.HeaderMutation{
+					SetHeaders: headers,
+				},
+				Body: body,
+			},
+		},
+	}
+}
+
+func buildEnvoyProxyHeaders(headers []*configPb.HeaderValueOption, keyValues ...string) []*configPb.HeaderValueOption {
+	if len(keyValues)%2 != 0 {
+		return headers
+	}
+
+	for i := 0; i < len(keyValues); {
+		headers = append(headers,
+			&configPb.HeaderValueOption{
+				Header: &configPb.HeaderValue{
+					Key:      keyValues[i],
+					RawValue: []byte(keyValues[i+1]),
+				},
+			},
+		)
+		i += 2
+	}
+
+	return headers
+}
+
+// validateEmbeddingInput validates the input according to OpenAI embedding constraints
+func validateEmbeddingInput(embeddingObj openai.EmbeddingNewParams) error {
+	inputParam := embeddingObj.Input
+	switch input := embeddingNewParamsInputUnionAsAny(&inputParam).(type) {
+	case *string:
+		return validateStringInputs([]string{*input})
+	case *[]string:
+		return validateStringInputs(*input)
+	case *[]int64:
+		return validateTokenInputs([][]int64{*input})
+	case *[][]int64:
+		return validateTokenInputs(*input)
+	default:
+		if input != nil {
+			return fmt.Errorf("input must be a string, []string, []int64, or [][]int64, got %T", input)
+		}
+		return nil
+	}
+}
+
+func embeddingNewParamsInputUnionAsAny(u *openai.EmbeddingNewParamsInputUnion) any {
+	if !param.IsOmitted(u.OfString) {
+		return &u.OfString.Value
+	} else if !param.IsOmitted(u.OfArrayOfStrings) {
+		return &u.OfArrayOfStrings
+	} else if !param.IsOmitted(u.OfArrayOfTokens) {
+		return &u.OfArrayOfTokens
+	} else if !param.IsOmitted(u.OfArrayOfTokenArrays) {
+		return &u.OfArrayOfTokenArrays
+	}
+	return nil
+}
+
+// validateStringInputs validates the shape of string inputs (both single string
+// and array of strings).
+//
+// Input length is deliberately not checked here. The gateway estimates tokens
+// with tiktoken (cl100k_base), but the limit that matters is denominated in the
+// target model's own tokens -- a different unit. For sentencepiece models such
+// as bge-m3 or multilingual-e5, cl100k over-counts non-English text by roughly
+// 2x, so valid requests are rejected with a misleading message. The gateway
+// also cannot know which model's limit to apply: validateRequestBody runs
+// before the pod list and engine are resolved, so the addressed model's
+// tokenizer and context length are both out of reach.
+//
+// The backend already enforces the real limit with the model's own tokenizer
+// and reports it accurately. It also honours truncate_prompt_tokens, which a
+// gateway-side rejection pre-empts entirely -- clients that ask the backend to
+// truncate oversized input currently get a 400 from the gateway instead.
+//
+// The batch size is still bounded: MaxArrayDimensions is OpenAI's documented
+// maxItems for the input array, a property of the request rather than of the
+// model, so the gateway can and does check it.
+func validateStringInputs(inputs []string) error {
+	if len(inputs) == 0 {
+		return errors.New("input array cannot be empty")
+	}
+
+	if len(inputs) > MaxArrayDimensions {
+		return fmt.Errorf("input array exceeds max dimensions (%d), actual dimensions: %d",
+			MaxArrayDimensions, len(inputs))
+	}
+
+	for i, input := range inputs {
+		if input == "" {
+			if len(inputs) == 1 {
+				return errors.New("input cannot be an empty string")
+			}
+			return fmt.Errorf("input at index %d cannot be an empty string", i)
+		}
+	}
+
+	return nil
+}
+
+// validateTokenInputs validates pre-tokenized inputs (both single token array
+// and multiple token arrays).
+//
+// As in validateStringInputs, the token count is not checked against a context
+// length: a single global constant cannot match every served model, and only
+// the backend knows the real limit.
+//
+// MaxArrayDimensions bounds the batch size, matching OpenAI's maxItems for the
+// input array. It is deliberately not compared against len(tokens): the number
+// of tokens in one input is a context-length question, and capping it at 2048
+// would reject a pre-tokenized input that the same model accepts happily when
+// sent as a string.
+func validateTokenInputs(tokenArrays [][]int64) error {
+	if len(tokenArrays) == 0 {
+		return errors.New("token arrays cannot be empty")
+	}
+
+	if len(tokenArrays) > MaxArrayDimensions {
+		return fmt.Errorf("input array exceeds max dimensions (%d), actual dimensions: %d",
+			MaxArrayDimensions, len(tokenArrays))
+	}
+
+	for i, tokens := range tokenArrays {
+		if len(tokens) == 0 {
+			if len(tokenArrays) == 1 {
+				return errors.New("token array cannot be empty")
+			}
+			return fmt.Errorf("token array at index %d cannot be empty", i)
+		}
+	}
+
+	return nil
+}
+
+func buildGatewayPodMetricLabels(model, status, statusCode string) map[string]string {
+	return map[string]string{
+		"model":       GetModelTag(model),
+		"status":      status,
+		"status_code": statusCode,
+		"pod_name":    POD_NAME,
+	}
+}
+
+func GetModelTag(model string) string {
+	if model == "" {
+		return "unknown"
+	}
+	return model
+}
+
+func GetTraceID(traceparent, requestID string) string {
+	traceparent = strings.TrimSpace(traceparent)
+	if traceparent != "" {
+		// W3C standard: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+		parts := strings.Split(traceparent, "-")
+		if len(parts) == 4 && len(parts[1]) == 32 {
+			return parts[1]
+		}
+	}
+	return requestID
+}
+
+// fieldsToAttributes trans Key-Value to OTel attr
+func fieldsToAttributes(fields []interface{}) []attribute.KeyValue {
+	attrs := make([]attribute.KeyValue, 0, len(fields)/2)
+	for i := 0; i < len(fields)-1; i += 2 {
+		key := fmt.Sprint(fields[i])
+
+		switch v := fields[i+1].(type) {
+		case string:
+			attrs = append(attrs, attribute.String(key, v))
+		case int:
+			attrs = append(attrs, attribute.Int(key, v))
+		case int64:
+			attrs = append(attrs, attribute.Int64(key, v))
+		case float64:
+			attrs = append(attrs, attribute.Float64(key, v))
+		case time.Duration:
+			attrs = append(attrs, attribute.String(key, v.String()))
+		default:
+			attrs = append(attrs, attribute.String(key, fmt.Sprint(v)))
+		}
+	}
+	return attrs
+}

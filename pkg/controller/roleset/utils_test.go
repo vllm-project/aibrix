@@ -1,0 +1,1040 @@
+/*
+Copyright 2025 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package roleset
+
+import (
+	"reflect"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
+
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/controller/constants"
+)
+
+func TestGetReadyReplicaCountForRole(t *testing.T) {
+	readyPod := makeReadyPod("ready1")
+	notReadyPod := makeNotReadyPod("notready1")
+	pods := []*corev1.Pod{readyPod, readyPod, notReadyPod}
+	count := GetReadyReplicaCountForRole(pods)
+	assert.Equal(t, int32(2), count)
+}
+
+func TestRenderStormServicePodVolcanoScheduler(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test"},
+		Spec: orchestrationv1alpha1.RoleSetSpec{
+			SchedulingStrategy: &orchestrationv1alpha1.SchedulingStrategy{
+				VolcanoSchedulingStrategy: &orchestrationv1alpha1.VolcanoSchedulingStrategySpec{},
+			},
+		},
+	}
+	role := &orchestrationv1alpha1.RoleSpec{Name: "worker"}
+
+	t.Run("injects volcano when unset", func(t *testing.T) {
+		pod := &corev1.Pod{}
+		renderStormServicePod(roleSet, role, pod, nil)
+		assert.Equal(t, "volcano", pod.Spec.SchedulerName)
+		assert.Equal(t, "worker", pod.Labels[constants.VolcanoTaskSpecKey])
+		assert.Equal(t, "worker", pod.Annotations[constants.VolcanoTaskSpecKey])
+	})
+
+	t.Run("preserves an explicit scheduler", func(t *testing.T) {
+		pod := &corev1.Pod{Spec: corev1.PodSpec{SchedulerName: "custom"}}
+		renderStormServicePod(roleSet, role, pod, nil)
+		assert.Equal(t, "custom", pod.Spec.SchedulerName)
+	})
+
+	t.Run("preserves an explicit task spec annotation", func(t *testing.T) {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{constants.VolcanoTaskSpecKey: "explicit"},
+			},
+		}
+		renderStormServicePod(roleSet, role, pod, nil)
+		assert.Equal(t, "explicit", pod.Annotations[constants.VolcanoTaskSpecKey])
+		assert.Equal(t, "worker", pod.Labels[constants.VolcanoTaskSpecKey])
+	})
+
+	t.Run("preserves an explicit task spec label", func(t *testing.T) {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{constants.VolcanoTaskSpecKey: "explicit"},
+			},
+		}
+		renderStormServicePod(roleSet, role, pod, nil)
+		assert.Equal(t, "explicit", pod.Labels[constants.VolcanoTaskSpecKey])
+		assert.Equal(t, "worker", pod.Annotations[constants.VolcanoTaskSpecKey])
+	})
+}
+
+func TestSetAndRemoveRoleSetCondition(t *testing.T) {
+	status := &orchestrationv1alpha1.RoleSetStatus{}
+	now := metav1.Now()
+
+	cond := orchestrationv1alpha1.Condition{
+		Type:               orchestrationv1alpha1.RoleSetReady,
+		Status:             corev1.ConditionTrue,
+		Reason:             "AllReplicasReady",
+		LastTransitionTime: &now,
+	}
+
+	SetRoleSetCondition(status, cond)
+	assert.Len(t, status.Conditions, 1)
+
+	// Duplicate condition (same status and reason) shouldn't be added
+	SetRoleSetCondition(status, cond)
+	assert.Len(t, status.Conditions, 1)
+
+	// Remove condition
+	RemoveRoleSetCondition(status, orchestrationv1alpha1.RoleSetReady)
+	assert.Len(t, status.Conditions, 0)
+}
+
+func TestMaxSurgeAndUnavailable(t *testing.T) {
+	replicas := int32(10)
+	surge := intstrutil.FromString("20%") // should be 2
+	unavail := intstrutil.FromInt(3)      // 3
+
+	role := &orchestrationv1alpha1.RoleSpec{
+		Replicas: &replicas,
+		UpdateStrategy: orchestrationv1alpha1.RoleUpdateStrategy{
+			MaxSurge:       &surge,
+			MaxUnavailable: &unavail,
+		},
+	}
+
+	assert.Equal(t, int32(2), MaxSurge(role))
+	assert.Equal(t, int32(3), MaxUnavailable(role))
+}
+
+func TestRenderStormServicePod_WithRoleIndex(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-role-set",
+			Namespace: "test-ns",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-service",
+				"name":                             "test-name",
+				"other-label":                      "should-not-copy",
+			},
+			Annotations: map[string]string{
+				constants.RoleSetIndexAnnotationKey: "1",
+			},
+		},
+		Spec: orchestrationv1alpha1.RoleSetSpec{
+			Roles: []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "test-role",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "test-container"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	roleIndex := 0
+	pod := &corev1.Pod{
+		Spec: *roleSet.Spec.Roles[0].Template.Spec.DeepCopy(),
+	}
+
+	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, &roleIndex)
+
+	// Verify labels
+	assert.Equal(t, "test-role-set", pod.Labels[constants.RoleSetNameLabelKey])
+	assert.Equal(t, "test-role", pod.Labels[constants.RoleNameLabelKey])
+	assert.Equal(t, "test-service", pod.Labels[constants.StormServiceNameLabelKey])
+	assert.Equal(t, "0", pod.Labels[constants.RoleReplicaIndexLabelKey])
+	assert.Equal(t, "test-name", pod.Labels["name"])
+	assert.NotContains(t, pod.Labels, "other-label")
+
+	// Verify annotations
+	assert.Equal(t, "1", pod.Annotations[constants.RoleSetIndexAnnotationKey])
+	assert.Equal(t, "0", pod.Annotations[constants.RoleReplicaIndexAnnotationKey])
+
+	// Verify hostname and subdomain
+	assert.Equal(t, pod.Name, pod.Spec.Hostname)
+	assert.Equal(t, pod.Labels[constants.StormServiceNameLabelKey], pod.Spec.Subdomain)
+}
+
+func TestRenderStormServicePod_WithoutRoleIndex(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-role-set",
+			Namespace: "test-ns",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-service",
+			},
+		},
+		Spec: orchestrationv1alpha1.RoleSetSpec{
+			Roles: []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "test-role",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "test-container"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	pod := &corev1.Pod{
+		Spec: *roleSet.Spec.Roles[0].Template.Spec.DeepCopy(),
+	}
+	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, nil)
+
+	// Verify replica index is not set
+	assert.NotContains(t, pod.Labels, constants.RoleReplicaIndexLabelKey)
+	assert.NotContains(t, pod.Annotations, constants.RoleReplicaIndexAnnotationKey)
+}
+
+func TestRenderStormServicePod_WithRoleSetCoschedulingPodGroup(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-role-set",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-service",
+			},
+		},
+		Spec: orchestrationv1alpha1.RoleSetSpec{
+			SchedulingStrategy: &orchestrationv1alpha1.SchedulingStrategy{
+				CoschedulingSchedulingStrategy: &orchestrationv1alpha1.CoschedulingSchedulingStrategySpec{
+					MinMember: 4,
+				},
+			},
+			Roles: []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "test-role",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "test-container"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	roleIndex := 0
+	pod := &corev1.Pod{
+		Spec: *roleSet.Spec.Roles[0].Template.Spec.DeepCopy(),
+	}
+	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, &roleIndex)
+
+	// Verify pod group labels and annotations
+	assert.Equal(t, "test-role-set", pod.Labels[constants.CoschedulingPodGroupNameLabelKey])
+}
+
+func TestRenderStormServicePod_WithRoleSetGodelPodGroup(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-role-set",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-service",
+			},
+		},
+		Spec: orchestrationv1alpha1.RoleSetSpec{
+			SchedulingStrategy: &orchestrationv1alpha1.SchedulingStrategy{
+				GodelSchedulingStrategy: &orchestrationv1alpha1.GodelSchedulingStrategySpec{
+					MinMember: 3,
+				},
+			},
+			Roles: []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "test-role",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "test-container"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	roleIndex := 0
+	pod := &corev1.Pod{
+		Spec: *roleSet.Spec.Roles[0].Template.Spec.DeepCopy(),
+	}
+	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, &roleIndex)
+
+	// Verify pod group labels and annotations
+	assert.Equal(t, "test-role-set", pod.Labels[constants.GodelPodGroupNameAnnotationKey])
+	assert.Equal(t, "test-role-set", pod.Annotations[constants.GodelPodGroupNameAnnotationKey])
+}
+
+func TestRenderStormServicePod_WithRoleSetVolcanoPodGroup(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-role-set",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-service",
+			},
+		},
+		Spec: orchestrationv1alpha1.RoleSetSpec{
+			SchedulingStrategy: &orchestrationv1alpha1.SchedulingStrategy{
+				VolcanoSchedulingStrategy: &orchestrationv1alpha1.VolcanoSchedulingStrategySpec{
+					MinMember: 3,
+				},
+			},
+			Roles: []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "test-role",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "test-container"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	roleIndex := 0
+	pod := &corev1.Pod{
+		Spec: *roleSet.Spec.Roles[0].Template.Spec.DeepCopy(),
+	}
+	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, &roleIndex)
+
+	// Verify pod group labels and annotations
+	assert.Equal(t, "test-role-set", pod.Labels[constants.VolcanoPodGroupNameAnnotationKey])
+	assert.Equal(t, "test-role-set", pod.Annotations[constants.VolcanoPodGroupNameAnnotationKey])
+	assert.Equal(t, "test-role", pod.Labels[constants.VolcanoTaskSpecKey])
+	assert.Equal(t, "test-role", pod.Annotations[constants.VolcanoTaskSpecKey])
+}
+
+func TestRenderStormServicePod_EmptyLabelsAndAnnotations(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-role-set",
+		},
+		Spec: orchestrationv1alpha1.RoleSetSpec{
+			Roles: []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "test-role",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "test-container"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	pod := &corev1.Pod{}
+	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, nil)
+
+	// Verify basic labels are set even when roleSet has no labels
+	assert.Equal(t, "test-role-set", pod.Labels[constants.RoleSetNameLabelKey])
+	assert.Equal(t, "test-role", pod.Labels[constants.RoleNameLabelKey])
+	assert.Equal(t, "", pod.Labels[constants.StormServiceNameLabelKey])
+}
+
+func TestRenderStormServicePod_MultipleContainers(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-role-set",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-service",
+			},
+		},
+		Spec: orchestrationv1alpha1.RoleSetSpec{
+			Roles: []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "test-role",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "container1"},
+								{Name: "container2"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// pod is supposed to be built from the pod template, here, we clone 2 containers from role template.
+	pod := &corev1.Pod{
+		Spec: *roleSet.Spec.Roles[0].Template.Spec.DeepCopy(),
+	}
+	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, nil)
+
+	// Verify all containers get env vars injected
+	assert.Len(t, pod.Spec.Containers, 2)
+	for _, c := range pod.Spec.Containers {
+		assert.Len(t, c.Env, 5)
+	}
+}
+
+func makeReadyPod(name string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			Conditions: []corev1.PodCondition{{
+				Type: corev1.PodReady, Status: corev1.ConditionTrue,
+			}},
+		},
+	}
+}
+
+func makeNotReadyPod(name string) *corev1.Pod {
+	pod := makeReadyPod(name)
+	pod.Status.Conditions[0].Status = corev1.ConditionFalse
+	return pod
+}
+
+func TestSortRolesByUpgradeOrder(t *testing.T) {
+	int32Ptr := func(i int32) *int32 { return &i }
+
+	tests := []struct {
+		name     string
+		roles    []orchestrationv1alpha1.RoleSpec
+		expected []orchestrationv1alpha1.RoleSpec
+	}{
+		{
+			name:     "empty roles",
+			roles:    []orchestrationv1alpha1.RoleSpec{},
+			expected: []orchestrationv1alpha1.RoleSpec{},
+		},
+		{
+			name: "already sorted roles",
+			roles: []orchestrationv1alpha1.RoleSpec{
+				{Name: "role1", UpgradeOrder: int32Ptr(1)},
+				{Name: "role2", UpgradeOrder: int32Ptr(2)},
+				{Name: "role3", UpgradeOrder: int32Ptr(3)},
+			},
+			expected: []orchestrationv1alpha1.RoleSpec{
+				{Name: "role1", UpgradeOrder: int32Ptr(1)},
+				{Name: "role2", UpgradeOrder: int32Ptr(2)},
+				{Name: "role3", UpgradeOrder: int32Ptr(3)},
+			},
+		},
+		{
+			name: "unsorted roles",
+			roles: []orchestrationv1alpha1.RoleSpec{
+				{Name: "role3", UpgradeOrder: int32Ptr(3)},
+				{Name: "role1", UpgradeOrder: int32Ptr(1)},
+				{Name: "role2", UpgradeOrder: int32Ptr(2)},
+			},
+			expected: []orchestrationv1alpha1.RoleSpec{
+				{Name: "role1", UpgradeOrder: int32Ptr(1)},
+				{Name: "role2", UpgradeOrder: int32Ptr(2)},
+				{Name: "role3", UpgradeOrder: int32Ptr(3)},
+			},
+		},
+		{
+			name: "roles with nil upgrade order",
+			roles: []orchestrationv1alpha1.RoleSpec{
+				{Name: "role3", UpgradeOrder: int32Ptr(2)},
+				{Name: "role1", UpgradeOrder: nil},
+				{Name: "role2", UpgradeOrder: int32Ptr(1)},
+			},
+			expected: []orchestrationv1alpha1.RoleSpec{
+				{Name: "role2", UpgradeOrder: int32Ptr(1)},
+				{Name: "role3", UpgradeOrder: int32Ptr(2)},
+				{Name: "role1", UpgradeOrder: nil},
+			},
+		},
+		{
+			name: "roles with same upgrade order",
+			roles: []orchestrationv1alpha1.RoleSpec{
+				{Name: "role1", UpgradeOrder: int32Ptr(1)},
+				{Name: "role2", UpgradeOrder: int32Ptr(1)},
+				{Name: "role3", UpgradeOrder: int32Ptr(1)},
+			},
+			expected: []orchestrationv1alpha1.RoleSpec{
+				{Name: "role1", UpgradeOrder: int32Ptr(1)},
+				{Name: "role2", UpgradeOrder: int32Ptr(1)},
+				{Name: "role3", UpgradeOrder: int32Ptr(1)},
+			},
+		},
+		{
+			name: "mix of nil and non-nil upgrade orders",
+			roles: []orchestrationv1alpha1.RoleSpec{
+				{Name: "role4", UpgradeOrder: int32Ptr(2)},
+				{Name: "role1", UpgradeOrder: nil},
+				{Name: "role2", UpgradeOrder: nil},
+				{Name: "role3", UpgradeOrder: int32Ptr(1)},
+			},
+			expected: []orchestrationv1alpha1.RoleSpec{
+				{Name: "role3", UpgradeOrder: int32Ptr(1)},
+				{Name: "role4", UpgradeOrder: int32Ptr(2)},
+				{Name: "role1", UpgradeOrder: nil},
+				{Name: "role2", UpgradeOrder: nil},
+			},
+		},
+		{
+			name: "multiple roles with explicit order and one missing (real-world scenario)",
+			roles: []orchestrationv1alpha1.RoleSpec{
+				{Name: "api-server", UpgradeOrder: int32Ptr(2)},
+				{Name: "database", UpgradeOrder: nil}, // Missing - should upgrade LAST
+				{Name: "cache", UpgradeOrder: int32Ptr(1)},
+				{Name: "monitoring", UpgradeOrder: int32Ptr(3)},
+			},
+			expected: []orchestrationv1alpha1.RoleSpec{
+				{Name: "cache", UpgradeOrder: int32Ptr(1)},      // First
+				{Name: "api-server", UpgradeOrder: int32Ptr(2)}, // Second
+				{Name: "monitoring", UpgradeOrder: int32Ptr(3)}, // Third
+				{Name: "database", UpgradeOrder: nil},           // Last (safest)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a copy of input roles to verify the original slice is not modified
+			originalRoles := make([]orchestrationv1alpha1.RoleSpec, len(tt.roles))
+			copy(originalRoles, tt.roles)
+
+			result := sortRolesByUpgradeOrder(tt.roles)
+			t.Logf("result len %d", len(result))
+
+			// Check if the result matches expected
+			if !reflect.DeepEqual(result, tt.expected) {
+				t.Errorf("sortRolesByUpgradeOrder() = %v, want %v", result, tt.expected)
+			}
+
+			// Verify the original slice was not modified
+			if !reflect.DeepEqual(tt.roles, originalRoles) {
+				t.Errorf("Original roles were modified: got %v, want %v", tt.roles, originalRoles)
+			}
+		})
+	}
+}
+
+func TestGetTopologyMatchLabels(t *testing.T) {
+	const (
+		stormServiceName = "test-stormservice"
+		roleSetName      = "test-roleset"
+		roleName         = "prefill"
+	)
+
+	tests := []struct {
+		name           string
+		roleSet        *orchestrationv1alpha1.RoleSet
+		roleName       string
+		tp             *orchestrationv1alpha1.TopologyPolicy
+		expectSuccess  bool
+		expectedLabels map[string]string
+	}{
+		{
+			name: "StormService scope - valid",
+			roleSet: &orchestrationv1alpha1.RoleSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: roleSetName,
+					Labels: map[string]string{
+						constants.StormServiceNameLabelKey: stormServiceName,
+					},
+				},
+			},
+			roleName: roleName,
+			tp: &orchestrationv1alpha1.TopologyPolicy{
+				Scope: orchestrationv1alpha1.TopologyStormServiceScope,
+			},
+			expectSuccess: true,
+			expectedLabels: map[string]string{
+				constants.StormServiceNameLabelKey: stormServiceName,
+			},
+		},
+		{
+			name: "RoleSet scope - valid",
+			roleSet: &orchestrationv1alpha1.RoleSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: roleSetName,
+					Labels: map[string]string{
+						constants.StormServiceNameLabelKey: stormServiceName,
+					},
+				},
+			},
+			roleName: roleName,
+			tp: &orchestrationv1alpha1.TopologyPolicy{
+				Scope: orchestrationv1alpha1.TopologyRoleSetScope,
+			},
+			expectSuccess: true,
+			expectedLabels: map[string]string{
+				constants.StormServiceNameLabelKey: stormServiceName,
+				constants.RoleSetNameLabelKey:      roleSetName,
+			},
+		},
+		{
+			name: "Role scope - valid",
+			roleSet: &orchestrationv1alpha1.RoleSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: roleSetName,
+					Labels: map[string]string{
+						constants.StormServiceNameLabelKey: stormServiceName,
+					},
+				},
+			},
+			roleName: roleName,
+			tp: &orchestrationv1alpha1.TopologyPolicy{
+				Scope: orchestrationv1alpha1.TopologyRoleScope,
+			},
+			expectSuccess: true,
+			expectedLabels: map[string]string{
+				constants.StormServiceNameLabelKey: stormServiceName,
+				constants.RoleNameLabelKey:         roleName,
+			},
+		},
+		{
+			name: "Missing StormService label",
+			roleSet: &orchestrationv1alpha1.RoleSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   roleSetName,
+					Labels: map[string]string{}, // missing label
+				},
+			},
+			roleName: roleName,
+			tp: &orchestrationv1alpha1.TopologyPolicy{
+				Scope: orchestrationv1alpha1.TopologyRoleSetScope,
+			},
+			expectSuccess:  false,
+			expectedLabels: nil,
+		},
+		{
+			name: "Unsupported scope",
+			roleSet: &orchestrationv1alpha1.RoleSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: roleSetName,
+					Labels: map[string]string{
+						constants.StormServiceNameLabelKey: stormServiceName,
+					},
+				},
+			},
+			roleName: roleName,
+			tp: &orchestrationv1alpha1.TopologyPolicy{
+				Scope: "InvalidScope", // not one of the defined enums
+			},
+			expectSuccess:  false,
+			expectedLabels: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			labels, ok := getTopologyMatchLabels(tt.roleSet, tt.roleName, tt.tp)
+			assert.Equal(t, tt.expectSuccess, ok)
+			assert.Equal(t, tt.expectedLabels, labels)
+		})
+	}
+}
+
+func TestInjectTopologyAffinity_DefaultsToPreferred(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-roleset",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-stormservice",
+			},
+		},
+	}
+	pod := &corev1.Pod{}
+	tp := &orchestrationv1alpha1.TopologyPolicy{
+		Scope: orchestrationv1alpha1.TopologyRoleSetScope,
+		Key:   "kubernetes.io/hostname",
+	}
+
+	injectTopologyAffinity(&pod.Spec, roleSet, "prefill", tp)
+
+	assert.Len(t, pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution, 0)
+	preferred := pod.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+	assert.Len(t, preferred, 1)
+	assert.Equal(t, int32(100), preferred[0].Weight)
+	assert.Equal(t, "kubernetes.io/hostname", preferred[0].PodAffinityTerm.TopologyKey)
+	assert.Equal(t, "test-roleset", preferred[0].PodAffinityTerm.LabelSelector.MatchLabels[constants.RoleSetNameLabelKey])
+}
+
+func TestInjectTopologyAffinity_SkipsEmptyTopologyKey(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-roleset",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-stormservice",
+			},
+		},
+	}
+	pod := &corev1.Pod{}
+	tp := &orchestrationv1alpha1.TopologyPolicy{
+		Scope: orchestrationv1alpha1.TopologyRoleSetScope,
+	}
+
+	injectTopologyAffinity(&pod.Spec, roleSet, "prefill", tp)
+
+	assert.Nil(t, pod.Spec.Affinity)
+}
+
+func TestInjectTopologyAffinity_Required(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-roleset",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-stormservice",
+			},
+		},
+	}
+	pod := &corev1.Pod{}
+	tp := &orchestrationv1alpha1.TopologyPolicy{
+		Scope: orchestrationv1alpha1.TopologyRoleSetScope,
+		Key:   "kubernetes.io/hostname",
+		Mode:  orchestrationv1alpha1.TopologyPolicyRequired,
+	}
+
+	injectTopologyAffinity(&pod.Spec, roleSet, "prefill", tp)
+
+	assert.Len(t, pod.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution, 0)
+	required := pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	assert.Len(t, required, 1)
+	assert.Equal(t, "kubernetes.io/hostname", required[0].TopologyKey)
+	assert.Equal(t, "test-roleset", required[0].LabelSelector.MatchLabels[constants.RoleSetNameLabelKey])
+}
+
+func TestInjectTopologyAffinity_RequiredIgnoresExistingNilSelector(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-roleset",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-stormservice",
+			},
+		},
+	}
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Affinity: &corev1.Affinity{
+				PodAffinity: &corev1.PodAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+						{TopologyKey: "kubernetes.io/hostname"},
+					},
+				},
+			},
+		},
+	}
+	tp := &orchestrationv1alpha1.TopologyPolicy{
+		Scope: orchestrationv1alpha1.TopologyRoleSetScope,
+		Key:   "kubernetes.io/hostname",
+		Mode:  orchestrationv1alpha1.TopologyPolicyRequired,
+	}
+
+	if !assert.NotPanics(t, func() {
+		injectTopologyAffinity(&pod.Spec, roleSet, "prefill", tp)
+	}) {
+		return
+	}
+
+	required := pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	assert.Len(t, required, 2)
+	assert.Nil(t, required[0].LabelSelector)
+	assert.Equal(t, "test-roleset", required[1].LabelSelector.MatchLabels[constants.RoleSetNameLabelKey])
+}
+
+func TestInjectTopologyAffinity_PreferredIgnoresExistingNilSelector(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-roleset",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-stormservice",
+			},
+		},
+	}
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Affinity: &corev1.Affinity{
+				PodAffinity: &corev1.PodAffinity{
+					PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
+						{
+							Weight: 100,
+							PodAffinityTerm: corev1.PodAffinityTerm{
+								TopologyKey: "kubernetes.io/hostname",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	tp := &orchestrationv1alpha1.TopologyPolicy{
+		Scope: orchestrationv1alpha1.TopologyRoleSetScope,
+		Key:   "kubernetes.io/hostname",
+	}
+
+	if !assert.NotPanics(t, func() {
+		injectTopologyAffinity(&pod.Spec, roleSet, "prefill", tp)
+	}) {
+		return
+	}
+
+	preferred := pod.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+	assert.Len(t, preferred, 2)
+	assert.Nil(t, preferred[0].PodAffinityTerm.LabelSelector)
+	assert.Equal(t, "test-roleset", preferred[1].PodAffinityTerm.LabelSelector.MatchLabels[constants.RoleSetNameLabelKey])
+}
+
+func TestInjectTopologyAffinity_PodTemplateSpecPreferred(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-roleset",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-stormservice",
+			},
+		},
+	}
+	template := &corev1.PodTemplateSpec{}
+	tp := &orchestrationv1alpha1.TopologyPolicy{
+		Scope: orchestrationv1alpha1.TopologyRoleScope,
+		Key:   "topology.kubernetes.io/zone",
+		Mode:  orchestrationv1alpha1.TopologyPolicyPreferred,
+	}
+
+	injectTopologyAffinity(&template.Spec, roleSet, "decode", tp)
+
+	assert.Len(t, template.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution, 0)
+	preferred := template.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+	assert.Len(t, preferred, 1)
+	assert.Equal(t, int32(100), preferred[0].Weight)
+	assert.Equal(t, "topology.kubernetes.io/zone", preferred[0].PodAffinityTerm.TopologyKey)
+	assert.Equal(t, "decode", preferred[0].PodAffinityTerm.LabelSelector.MatchLabels[constants.RoleNameLabelKey])
+}
+
+func TestCreatePodSetForRole_TopologyPolicyDefaultsToPreferred(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-roleset",
+			Namespace: "test-ns",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-stormservice",
+			},
+			Annotations: map[string]string{
+				constants.RoleSetIndexAnnotationKey: "0",
+			},
+		},
+		Spec: orchestrationv1alpha1.RoleSetSpec{
+			TopologyPolicy: &orchestrationv1alpha1.TopologyPolicy{
+				Scope: orchestrationv1alpha1.TopologyRoleSetScope,
+				Key:   "kubernetes.io/hostname",
+			},
+		},
+	}
+	podGroupSize := int32(2)
+	roleIndex := 0
+	role := &orchestrationv1alpha1.RoleSpec{
+		Name:         "prefill",
+		PodGroupSize: &podGroupSize,
+		Template: corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{Name: "prefill"}},
+			},
+		},
+	}
+	syncer := &PodSetRoleSyncer{
+		computeHashFunc: fakeComputeHashFunc,
+	}
+
+	podSet := syncer.createPodSetForRole(roleSet, role, &roleIndex)
+
+	assert.Len(t, podSet.Spec.Template.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution, 0)
+	preferred := podSet.Spec.Template.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+	assert.Len(t, preferred, 1)
+	assert.Equal(t, int32(100), preferred[0].Weight)
+	assert.Equal(t, "kubernetes.io/hostname", preferred[0].PodAffinityTerm.TopologyKey)
+	assert.Equal(t, "test-roleset", preferred[0].PodAffinityTerm.LabelSelector.MatchLabels[constants.RoleSetNameLabelKey])
+}
+
+func TestCreatePodSetForRole_VolcanoTaskSpec(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-roleset",
+			Namespace: "test-ns",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-stormservice",
+			},
+			Annotations: map[string]string{
+				constants.RoleSetIndexAnnotationKey: "0",
+			},
+		},
+		Spec: orchestrationv1alpha1.RoleSetSpec{
+			SchedulingStrategy: &orchestrationv1alpha1.SchedulingStrategy{
+				VolcanoSchedulingStrategy: &orchestrationv1alpha1.VolcanoSchedulingStrategySpec{
+					MinMember:     6,
+					MinTaskMember: map[string]int32{"prefill": 4, "decode": 2},
+				},
+			},
+		},
+	}
+	podGroupSize := int32(2)
+	roleIndex := 0
+	role := &orchestrationv1alpha1.RoleSpec{
+		Name:         "prefill",
+		PodGroupSize: &podGroupSize,
+		Template: corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{Name: "prefill"}},
+			},
+		},
+	}
+	syncer := &PodSetRoleSyncer{
+		computeHashFunc: fakeComputeHashFunc,
+	}
+
+	podSet := syncer.createPodSetForRole(roleSet, role, &roleIndex)
+
+	assert.Equal(t, "test-roleset", podSet.Labels[constants.VolcanoPodGroupNameAnnotationKey])
+	assert.Equal(t, "test-roleset", podSet.Annotations[constants.VolcanoPodGroupNameAnnotationKey])
+	assert.Equal(t, "prefill", podSet.Labels[constants.VolcanoTaskSpecKey])
+	assert.Equal(t, "prefill", podSet.Annotations[constants.VolcanoTaskSpecKey])
+}
+
+func TestInjectContainerEnvVars(t *testing.T) {
+	// Setup test data
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-role-set",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-service",
+			},
+			Annotations: map[string]string{
+				constants.RoleSetIndexAnnotationKey: "1",
+			},
+		},
+	}
+
+	role := &orchestrationv1alpha1.RoleSpec{
+		Name: "test-role",
+	}
+
+	roleIndex := 0
+	templateHash := "test-hash"
+
+	// Create container with:
+	// 1. Some user-defined env vars in reverse alphabetical order
+	// 2. A env var with same name as built-in env var
+	container := &corev1.Container{
+		Name: "test-container",
+		Env: []corev1.EnvVar{
+			{Name: "USER_VAR_Z", Value: "value-z"},                       // Last in alphabetical order
+			{Name: "USER_VAR_M", Value: "value-m"},                       // Middle in alphabetical order
+			{Name: constants.RoleSetNameEnvKey, Value: "override-value"}, // Same name as built-in
+			{Name: "USER_VAR_A", Value: "value-a"},                       // First in alphabetical order
+		},
+	}
+
+	// Call the function under test
+	injectContainerEnvVars(container, roleSet, role, &roleIndex, templateHash)
+
+	// Verify the result
+	// Check that built-in env vars are not overridden
+	builtInEnvNames := []string{
+		constants.StormServiceNameEnvKey,
+		constants.RoleSetNameEnvKey,
+		constants.RoleSetIndexEnvKey,
+		constants.RoleNameEnvKey,
+		constants.RoleTemplateHashEnvKey,
+		constants.RoleReplicaIndexEnvKey,
+	}
+
+	assert.GreaterOrEqual(t, len(container.Env), len(builtInEnvNames), "Should have at least all built-in env vars")
+
+	// Track built-in env vars found
+	foundBuiltInEnvs := make(map[string]bool)
+
+	// Check the order and values
+	// Verify built-in env vars are present at the beginning
+	for i, env := range container.Env {
+		if i < len(builtInEnvNames) {
+			// First N env vars should be built-in
+			assert.Contains(t, builtInEnvNames, env.Name, "Built-in env var should be at the beginning")
+			foundBuiltInEnvs[env.Name] = true
+
+			// Check built-in env var values
+			switch env.Name {
+			case constants.StormServiceNameEnvKey:
+				assert.Equal(t, "test-service", env.Value)
+			case constants.RoleSetNameEnvKey:
+				assert.Equal(t, "test-role-set", env.Value) // Should not be overridden
+			case constants.RoleSetIndexEnvKey:
+				assert.Equal(t, "1", env.Value)
+			case constants.RoleNameEnvKey:
+				assert.Equal(t, "test-role", env.Value)
+			case constants.RoleTemplateHashEnvKey:
+				assert.Equal(t, "test-hash", env.Value)
+			case constants.RoleReplicaIndexEnvKey:
+				assert.Equal(t, "0", env.Value)
+			}
+		} else {
+			// User-defined env vars should come after built-in ones
+			assert.NotContains(t, builtInEnvNames, env.Name, "User-defined env var should not be a built-in name")
+		}
+	}
+
+	// 3. Check that all built-in env vars are present
+	for _, envName := range builtInEnvNames {
+		assert.True(t, foundBuiltInEnvs[envName], "Built-in env var %s should be present", envName)
+	}
+
+	// 4. Check that user-defined env vars maintain their original order
+	// Find the start index of user-defined env vars
+	userEnvStartIndex := len(builtInEnvNames)
+	assert.Less(t, userEnvStartIndex, len(container.Env), "Should have user-defined env vars")
+
+	// Check user-defined env vars order
+	expectedUserEnvOrder := []string{"USER_VAR_Z", "USER_VAR_M", "USER_VAR_A"}
+	for i, expectedName := range expectedUserEnvOrder {
+		actualIndex := userEnvStartIndex + i
+		assert.Less(t, actualIndex, len(container.Env), "Should have enough user-defined env vars")
+		assert.Equal(t, expectedName, container.Env[actualIndex].Name, "User-defined env var should maintain original order")
+	}
+}
+
+func TestPodSetRoleSyncerCreatePodSetCopiesDrainSpec(t *testing.T) {
+	roleSet := newTestRoleSet("test-roleset", "test-ns")
+	role := newTestRoleSpec("worker", 1, intStrPtr(intstrutil.FromInt(1)), intStrPtr(intstrutil.FromInt(1)))
+	podGroupSize := int32(2)
+	drainTimeout := int32(30)
+	role.PodGroupSize = &podGroupSize
+	role.Drain = &orchestrationv1alpha1.RoleDrainSpec{TimeoutSeconds: &drainTimeout}
+	roleIndex := 0
+
+	syncer := &PodSetRoleSyncer{computeHashFunc: fakeComputeHashFunc}
+	podSet := syncer.createPodSetForRole(roleSet, role, &roleIndex)
+
+	assert.NotNil(t, podSet.Spec.Drain)
+	assert.NotNil(t, podSet.Spec.Drain.TimeoutSeconds)
+	assert.Equal(t, drainTimeout, *podSet.Spec.Drain.TimeoutSeconds)
+}

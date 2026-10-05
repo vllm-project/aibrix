@@ -1,0 +1,241 @@
+/*
+Copyright 2025 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package controller
+
+import (
+	"context"
+	"time"
+
+	"github.com/onsi/ginkgo/v2"
+	"github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	aibrixconst "github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/controller/constants"
+	controllerutils "github.com/vllm-project/aibrix/test/utils/controller"
+	"github.com/vllm-project/aibrix/test/utils/validation"
+	"github.com/vllm-project/aibrix/test/utils/wrapper"
+)
+
+var _ = ginkgo.Describe("PodSet controller test", func() {
+	var ns *corev1.Namespace
+
+	// update represents a test step: optional mutation + validation
+	type update struct {
+		updateFunc func(podset *orchestrationapi.PodSet)
+		checkFunc  func(context.Context, client.Client, *orchestrationapi.PodSet)
+	}
+
+	ginkgo.BeforeEach(func() {
+		ns = nil
+		ns = controllerutils.CreateNamespace(ctx, k8sClient, "test-podset-", 3*time.Second)
+	})
+
+	ginkgo.AfterEach(func() {
+		controllerutils.DeleteNamespace(ctx, k8sClient, ns)
+	})
+
+	// testValidatingCase defines a test case with initial setup and a series of updates
+	type testValidatingCase struct {
+		makePodSet func() *orchestrationapi.PodSet
+		updates    []*update
+	}
+
+	ginkgo.DescribeTable("test PodSet creation and reconciliation",
+		func(tc *testValidatingCase) {
+			podset := tc.makePodSet()
+			for _, update := range tc.updates {
+				if update.updateFunc != nil {
+					update.updateFunc(podset)
+				}
+
+				// Fetch the latest PodSet after update
+				fetched := &orchestrationapi.PodSet{}
+				gomega.Eventually(func(g gomega.Gomega) {
+					err := k8sClient.Get(ctx, client.ObjectKeyFromObject(podset), fetched)
+					g.Expect(err).ToNot(gomega.HaveOccurred())
+				}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
+
+				// Run validation check
+				if update.checkFunc != nil {
+					update.checkFunc(ctx, k8sClient, fetched)
+				}
+			}
+		},
+
+		ginkgo.Entry("normal PodSet create and update replicas",
+			&testValidatingCase{
+				makePodSet: func() *orchestrationapi.PodSet {
+					podTemplate := corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{
+								"app": "nginx",
+							},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "nginx",
+									Image: "nginx:latest",
+								},
+							},
+						},
+					}
+
+					return wrapper.MakePodSet("podset-normal").
+						Namespace(ns.Name).
+						PodGroupSize(3).
+						PodTemplate(podTemplate).
+						Obj()
+				},
+				updates: []*update{
+					{
+						// create PodSet but all pod is not ready
+						updateFunc: func(podset *orchestrationapi.PodSet) {
+							// Step 1: Create the PodSet
+							gomega.Expect(k8sClient.Create(ctx, podset)).To(gomega.Succeed())
+							// Step 2: Wait for all Pods to be created
+							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.PodSetNameLabelKey, podset.Name, 3)
+						},
+						checkFunc: func(ctx context.Context, k8sClient client.Client, podset *orchestrationapi.PodSet) {
+							// Validate Spec
+							validation.ValidatePodSetSpec(podset, 3, false)
+							// Validate Status
+							validation.ValidatePodSetStatus(ctx, k8sClient,
+								podset, orchestrationapi.PodSetPhasePending, 3, 0)
+						},
+					},
+					{
+						// trigger PodSet all pods to ready
+						updateFunc: func(podset *orchestrationapi.PodSet) {
+							// Step 1: List all Pods
+							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.PodSetNameLabelKey, podset.Name, 3)
+							// Step 2: Patch all Pods to Running and Ready (simulate integration test environment)
+							validation.MarkPodsReady(ctx, k8sClient, ns.Name, constants.PodSetNameLabelKey, podset.Name)
+						},
+						checkFunc: func(ctx context.Context, k8sClient client.Client, podset *orchestrationapi.PodSet) {
+							// Validate Spec
+							validation.ValidatePodSetSpec(podset, 3, false)
+							// Validate Status
+							validation.ValidatePodSetStatus(ctx, k8sClient,
+								podset, orchestrationapi.PodSetPhaseReady, 3, 3)
+						},
+					},
+				},
+			},
+		),
+		// TODO: add more test case
+	)
+
+	ginkgo.It("cancels scale-down drain when pod group size is restored before timeout", func() {
+		timeoutSeconds := int32(30)
+		podTemplate := corev1.PodTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{
+					"app": "nginx",
+				},
+			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:  "nginx",
+						Image: "nginx:latest",
+					},
+				},
+			},
+		}
+		podset := wrapper.MakePodSet("podset-drain-cancel").
+			Namespace(ns.Name).
+			PodGroupSize(3).
+			PodTemplate(podTemplate).
+			Obj()
+		podset.Spec.Drain = &orchestrationapi.RoleDrainSpec{
+			TimeoutSeconds: ptr.To(timeoutSeconds),
+		}
+
+		gomega.Expect(k8sClient.Create(ctx, podset)).To(gomega.Succeed())
+		validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.PodSetNameLabelKey, podset.Name, 3)
+		validation.MarkPodsReady(ctx, k8sClient, ns.Name, constants.PodSetNameLabelKey, podset.Name)
+		validation.ValidatePodSetStatus(ctx, k8sClient, podset, orchestrationapi.PodSetPhaseReady, 3, 3)
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := &orchestrationapi.PodSet{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(podset), latest)).To(gomega.Succeed())
+			latest.Spec.PodGroupSize = 2
+			g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+		}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			pods := getPodSetPods(ctx, k8sClient, ns.Name, podset.Name)
+			g.Expect(pods).To(gomega.HaveLen(3))
+
+			var drainingPods []*corev1.Pod
+			for _, pod := range pods {
+				if pod.Annotations[aibrixconst.PodDrainingAnnotationKey] == podDrainingValue {
+					drainingPods = append(drainingPods, pod)
+				}
+			}
+			g.Expect(drainingPods).To(gomega.HaveLen(1))
+			g.Expect(drainingPods[0].DeletionTimestamp).To(gomega.BeNil())
+			g.Expect(drainingPods[0].Annotations[aibrixconst.PodDrainReasonAnnotationKey]).To(
+				gomega.Equal(aibrixconst.PodDrainReasonScaleIn),
+			)
+			g.Expect(drainingPods[0].Annotations[aibrixconst.PodDrainTargetActionAnnotationKey]).To(
+				gomega.Equal(aibrixconst.PodDrainTargetActionDelete),
+			)
+		}, time.Second*10, time.Millisecond*250).Should(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := &orchestrationapi.PodSet{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(podset), latest)).To(gomega.Succeed())
+			latest.Spec.PodGroupSize = 3
+			g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+		}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			pods := getPodSetPods(ctx, k8sClient, ns.Name, podset.Name)
+			g.Expect(pods).To(gomega.HaveLen(3))
+			for _, pod := range pods {
+				g.Expect(pod.DeletionTimestamp).To(gomega.BeNil())
+				g.Expect(pod.Annotations).NotTo(gomega.HaveKey(aibrixconst.PodDrainingAnnotationKey))
+				g.Expect(pod.Annotations).NotTo(gomega.HaveKey(aibrixconst.PodDrainStartTimeAnnotationKey))
+				g.Expect(pod.Annotations).NotTo(gomega.HaveKey(aibrixconst.PodDrainReasonAnnotationKey))
+				g.Expect(pod.Annotations).NotTo(gomega.HaveKey(aibrixconst.PodDrainTargetActionAnnotationKey))
+			}
+		}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
+	})
+})
+
+func getPodSetPods(ctx context.Context, k8sClient client.Client, namespace, podSetName string) []*corev1.Pod {
+	podList := &corev1.PodList{}
+	gomega.Expect(k8sClient.List(
+		ctx,
+		podList,
+		client.InNamespace(namespace),
+		client.MatchingLabels{constants.PodSetNameLabelKey: podSetName},
+	)).To(gomega.Succeed())
+
+	pods := make([]*corev1.Pod, 0, len(podList.Items))
+	for i := range podList.Items {
+		pods = append(pods, &podList.Items[i])
+	}
+	return pods
+}

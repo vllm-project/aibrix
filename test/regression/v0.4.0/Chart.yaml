@@ -1,0 +1,14 @@
+apiVersion: v2
+name: aibrix-regression-test
+description: Helm chart for AIBrix regression testing experiments
+type: application
+version: 0.1.0
+appVersion: "0.4.0"
+maintainers:
+  - name: AIBrix Team
+keywords:
+  - aibrix
+  - llm
+  - inference
+  - testing
+home: https://github.com/aibrix/aibrix

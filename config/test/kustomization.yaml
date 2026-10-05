@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../default
+- gateway/external-router.yaml
+
+patches:
+- path: gateway/vtc-test-env-patch.yaml
+  target:
+    kind: Deployment
+    name: aibrix-gateway-plugins
+    namespace: aibrix-system
+- path: gateway/external-router-env-patch.yaml
+  target:
+    kind: Deployment
+    name: aibrix-gateway-plugins
+    namespace: aibrix-system
+- path: metadata/dry-run-patch.yaml
+  target:
+    kind: Deployment
+    name: aibrix-metadata-service
+    namespace: aibrix-system

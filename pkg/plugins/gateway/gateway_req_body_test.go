@@ -1,0 +1,1400 @@
+/*
+Copyright 2024 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package gateway
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/metrics"
+	routingalgorithms "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
+)
+
+// TestRouterAlgorithm is a dedicated routing algorithm for testing
+const TestRouterAlgorithm types.RoutingAlgorithm = "test-router"
+const RouterNotSet types.RoutingAlgorithm = "not-set"
+
+// Test_handleRequestBody tests the HandleRequestBody function for various scenarios
+func Test_handleRequestBody(t *testing.T) {
+	// Initialize routing algorithms
+	routingalgorithms.Init()
+
+	// testResponse represents the expected response values from HandleRequestBody
+	type testResponse struct {
+		statusCode envoyTypePb.StatusCode
+		headers    []*configPb.HeaderValueOption
+		model      string
+		routingCtx *types.RoutingContext
+		stream     bool
+		term       int64
+	}
+
+	// testCase represents a test case with its validation function
+	type testCase struct {
+		name        string
+		requestBody string
+		reqPath     string
+		user        utils.User
+		routingAlgo types.RoutingAlgorithm
+		mockSetup   func(*MockCache, *mockRouter)
+		expected    testResponse
+		validate    func(*testing.T, *testCase, *extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64)
+	}
+
+	// Define test cases for different routing and error scenarios
+	tests := []testCase{
+		{
+			name:        "no routing strategy - should set model and content-length headers",
+			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
+			user: utils.User{
+				Name: "test-user",
+			},
+			routingAlgo: "", // No routing strategy
+			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
+				mockCache.On("HasModel", "test-model").Return(true)
+				podList := &utils.PodArray{
+					Pods: []*v1.Pod{
+						{
+							Status: v1.PodStatus{
+								PodIP:      "1.2.3.4",
+								Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+							},
+						},
+						{
+							Status: v1.PodStatus{
+								PodIP:      "4.5.6.7",
+								Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+							},
+						},
+					},
+				}
+				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+				mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1))
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_OK,
+				headers: []*configPb.HeaderValueOption{
+					{Header: &configPb.HeaderValue{Key: HeaderModel, RawValue: []byte("test-model")}},
+					{Header: &configPb.HeaderValue{Key: "content-length", RawValue: []byte("74")}},
+				},
+				model:      "test-model",
+				stream:     false,
+				term:       1,
+				routingCtx: &types.RoutingContext{},
+			},
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+				// Validate that only the model header is set and no routing headers are present
+				assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
+				assert.Equal(t, tt.expected.headers, resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders())
+				assert.Equal(t, tt.expected.model, model)
+				assert.Equal(t, tt.expected.stream, stream)
+				assert.Equal(t, tt.expected.term, term)
+				assert.NotNil(t, routingCtx)
+				assert.Equal(t, tt.expected.model, routingCtx.Model)
+				assert.Equal(t, tt.routingAlgo, routingCtx.Algorithm)
+				// Verify no routing headers are set
+				for _, header := range resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders() {
+					assert.NotEqual(t, HeaderRoutingStrategy, header.Header.Key)
+					assert.NotEqual(t, HeaderTargetPod, header.Header.Key)
+				}
+			},
+		},
+		{
+			name:        "model not in cache - should return error",
+			requestBody: `{"model": "unknown-model", "messages": [{"role": "user", "content": "test"}]}`,
+			user: utils.User{
+				Name: "test-user",
+			},
+			routingAlgo: "", // No routing strategy needed for this test
+			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
+				mockCache.On("HasModel", "unknown-model").Return(false)
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_BadRequest,
+				headers: []*configPb.HeaderValueOption{
+					{
+						Header: &configPb.HeaderValue{
+							Key:      HeaderErrorNoModelBackends,
+							RawValue: []byte("unknown-model"),
+						},
+					},
+					{
+						Header: &configPb.HeaderValue{
+							Key:   "Content-Type",
+							Value: "application/json",
+						},
+					},
+				},
+				model:      "unknown-model",
+				stream:     false,
+				term:       0,
+				routingCtx: nil,
+			},
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
+				assert.Equal(t, tt.expected.headers, resp.GetImmediateResponse().GetHeaders().GetSetHeaders())
+				assert.Equal(t, tt.expected.model, model)
+				assert.Equal(t, tt.expected.stream, stream)
+				assert.Equal(t, tt.expected.term, term)
+			},
+		},
+		{
+			name:        "valid routing strategy - should set both routing and target pod headers",
+			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
+			user: utils.User{
+				Name: "test-user",
+			},
+			routingAlgo: TestRouterAlgorithm,
+			mockSetup: func(mockCache *MockCache, mockRouter *mockRouter) {
+				// Register mock router for this test case if needed
+				mockRouterProvider := func() (types.Router, error) {
+					return mockRouter, nil
+				}
+				routingalgorithms.Register(TestRouterAlgorithm, mockRouterProvider)
+				routingalgorithms.Init()
+
+				podList := &utils.PodArray{
+					Pods: []*v1.Pod{
+						{
+							Status: v1.PodStatus{
+								PodIP: "1.2.3.4",
+								Conditions: []v1.PodCondition{
+									{
+										Type:   v1.PodReady,
+										Status: v1.ConditionTrue,
+									},
+								},
+							},
+						},
+						{
+							Status: v1.PodStatus{
+								PodIP: "4.5.6.7",
+								Conditions: []v1.PodCondition{
+									{
+										Type:   v1.PodReady,
+										Status: v1.ConditionTrue,
+									},
+								},
+							},
+						},
+					},
+				}
+				mockCache.On("HasModel", "test-model").Return(true)
+				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+				mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1))
+				mockRouter.On("Route", mock.Anything, mock.Anything).Return("1.2.3.4:8000", nil).Once()
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_OK,
+				headers: []*configPb.HeaderValueOption{
+					{
+						Header: &configPb.HeaderValue{
+							Key:      HeaderRoutingStrategy,
+							RawValue: []byte("test-router"),
+						},
+					},
+					{
+						Header: &configPb.HeaderValue{
+							Key:      HeaderTargetPod,
+							RawValue: []byte("1.2.3.4:8000"),
+						},
+					},
+					{
+						Header: &configPb.HeaderValue{
+							Key:      "content-length",
+							RawValue: []byte("74"),
+						},
+					},
+					{
+						Header: &configPb.HeaderValue{
+							Key:      "X-Request-Id",
+							RawValue: []byte("test-request-id"),
+						},
+					},
+				},
+				model:      "test-model",
+				stream:     false,
+				term:       1,
+				routingCtx: &types.RoutingContext{RequestID: "test-request-id"},
+			},
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+				assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
+				assert.Equal(t, tt.expected.headers, resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders())
+				assert.Equal(t, tt.expected.model, model)
+				assert.Equal(t, tt.expected.stream, stream)
+				assert.Equal(t, tt.expected.term, term)
+				assert.NotNil(t, routingCtx)
+				assert.Equal(t, tt.expected.model, routingCtx.Model)
+				assert.Equal(t, tt.routingAlgo, routingCtx.Algorithm)
+				// Verify both routing headers are set
+				foundRoutingStrategy := false
+				foundTargetPod := false
+				for _, header := range resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders() {
+					if header.Header.Key == HeaderRoutingStrategy {
+						foundRoutingStrategy = true
+						assert.Equal(t, "test-router", string(header.Header.RawValue))
+					}
+					if header.Header.Key == HeaderTargetPod {
+						foundTargetPod = true
+						assert.Equal(t, "1.2.3.4:8000", string(header.Header.RawValue))
+					}
+				}
+				assert.True(t, foundRoutingStrategy, "HeaderRoutingStrategy not found")
+				assert.True(t, foundTargetPod, "HeaderTargetPod not found")
+			},
+		},
+		{
+			name:        "invalid multi-routing strategy - should return 400 BadRequest",
+			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
+			user: utils.User{
+				Name: "test-user",
+			},
+			routingAlgo: "least-request:1,invalid-strategy:2",
+			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
+				mockCache.On("HasModel", "test-model").Return(true)
+				podList := &utils.PodArray{
+					Pods: []*v1.Pod{
+						{
+							ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "default"},
+							Status: v1.PodStatus{
+								PodIP:      "1.2.3.4",
+								Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+							},
+						},
+					},
+				}
+				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_BadRequest,
+				model:      "test-model",
+				stream:     false,
+				term:       0,
+				routingCtx: &types.RoutingContext{},
+			},
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
+				// buildErrorResponse returns x-error-routing: true (no Content-Type in headers)
+				headers := resp.GetImmediateResponse().GetHeaders().GetSetHeaders()
+				assert.GreaterOrEqual(t, len(headers), 1)
+				foundErrorRouting := false
+				for _, h := range headers {
+					if h.Header.Key == HeaderErrorRouting && string(h.Header.RawValue) == "true" {
+						foundErrorRouting = true
+						break
+					}
+				}
+				assert.True(t, foundErrorRouting, "expected x-error-routing header")
+				assert.Equal(t, tt.expected.model, model)
+				assert.Equal(t, tt.expected.stream, stream)
+				assert.Equal(t, tt.expected.term, term)
+				assert.NotNil(t, routingCtx)
+			},
+		},
+		{
+			name:        "invalid routing strategy from Context Profile - should return 400 BadRequest",
+			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
+			user: utils.User{
+				Name: "test-user",
+			},
+			routingAlgo: "invalid-router", // Invalid routing strategy
+			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
+				mockCache.On("HasModel", "test-model").Return(true)
+				podList := &utils.PodArray{
+					Pods: []*v1.Pod{
+						{
+							ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "default"},
+							Status: v1.PodStatus{
+								PodIP:      "1.2.3.4",
+								Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+							},
+						},
+					},
+				}
+				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_BadRequest,
+				model:      "test-model",
+				stream:     false,
+				term:       0,
+				routingCtx: &types.RoutingContext{},
+			},
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
+				// buildErrorResponse returns x-error-routing: true (no Content-Type in headers)
+				headers := resp.GetImmediateResponse().GetHeaders().GetSetHeaders()
+				assert.GreaterOrEqual(t, len(headers), 1)
+				foundErrorRouting := false
+				for _, h := range headers {
+					if h.Header.Key == HeaderErrorRouting && string(h.Header.RawValue) == "true" {
+						foundErrorRouting = true
+						break
+					}
+				}
+				assert.True(t, foundErrorRouting, "expected x-error-routing header")
+				assert.Equal(t, tt.expected.model, model)
+				assert.Equal(t, tt.expected.stream, stream)
+				assert.Equal(t, tt.expected.term, term)
+				assert.NotNil(t, routingCtx)
+			},
+		},
+		{
+			name:        "no routable pods available - should return ServiceUnavailable",
+			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
+			user: utils.User{
+				Name: "test-user",
+			},
+			routingAlgo: "", // No routing strategy needed for this test
+			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
+				mockCache.On("HasModel", "test-model").Return(true)
+				// Create pods that exist but are not routable (not ready)
+				podList := &utils.PodArray{
+					Pods: []*v1.Pod{
+						{
+							Status: v1.PodStatus{
+								PodIP: "1.2.3.4",
+								Conditions: []v1.PodCondition{
+									{
+										Type:   v1.PodReady,
+										Status: v1.ConditionFalse, // Not ready
+									},
+								},
+							},
+						},
+						{
+							Status: v1.PodStatus{
+								PodIP: "5.6.7.8",
+								Conditions: []v1.PodCondition{
+									{
+										Type:   v1.PodReady,
+										Status: v1.ConditionFalse, // Not ready
+									},
+								},
+							},
+						},
+					},
+				}
+				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+				// No AddRequestCount expectation since the function should return early with error
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_ServiceUnavailable,
+				headers: []*configPb.HeaderValueOption{
+					{
+						Header: &configPb.HeaderValue{
+							Key:      HeaderErrorNoModelBackends,
+							RawValue: []byte("true"),
+						},
+					},
+					{
+						Header: &configPb.HeaderValue{
+							Key:   "Content-Type",
+							Value: "application/json",
+						},
+					},
+				},
+				model:      "test-model",
+				stream:     false,
+				term:       0,
+				routingCtx: nil,
+			},
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
+				assert.Equal(t, tt.expected.headers, resp.GetImmediateResponse().GetHeaders().GetSetHeaders())
+				assert.Equal(t, tt.expected.model, model)
+				assert.Equal(t, tt.expected.stream, stream)
+				assert.Equal(t, tt.expected.term, term)
+			},
+		},
+		{
+			name:        "empty pods list - should return ServiceUnavailable",
+			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
+			user: utils.User{
+				Name: "test-user",
+			},
+			routingAlgo: "", // No routing strategy needed for this test
+			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
+				mockCache.On("HasModel", "test-model").Return(true)
+				// Create pods that exist but are not routable (not ready)
+				podList := &utils.PodArray{
+					Pods: []*v1.Pod{},
+				}
+				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+				// No AddRequestCount expectation since the function should return early with error
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_ServiceUnavailable,
+				headers: []*configPb.HeaderValueOption{
+					{
+						Header: &configPb.HeaderValue{
+							Key:      HeaderErrorNoModelBackends,
+							RawValue: []byte("true"),
+						},
+					},
+					{
+						Header: &configPb.HeaderValue{
+							Key:   "Content-Type",
+							Value: "application/json",
+						},
+					},
+				},
+				model:      "test-model",
+				stream:     false,
+				term:       0,
+				routingCtx: nil,
+			},
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
+				assert.Equal(t, tt.expected.headers, resp.GetImmediateResponse().GetHeaders().GetSetHeaders())
+				assert.Equal(t, tt.expected.model, model)
+				assert.Equal(t, tt.expected.stream, stream)
+				assert.Equal(t, tt.expected.term, term)
+			},
+		},
+		{
+			name:        "single pod in termination - should return ServiceUnavailable",
+			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
+			user: utils.User{
+				Name: "test-user",
+			},
+			routingAlgo: "", // No routing strategy needed for this test
+			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
+				mockCache.On("HasModel", "test-model").Return(true)
+				// Create pods that exist but are not routable (not ready)
+				podList := &utils.PodArray{
+					Pods: []*v1.Pod{
+						{
+							Status: v1.PodStatus{
+								PodIP: "1.2.3.4",
+								Conditions: []v1.PodCondition{
+									{
+										Type:   v1.PodReady,
+										Status: v1.ConditionTrue, // Intentionaly set as ready for ensuring it's being filtered out due to the deletion timestamp existence.
+									},
+								},
+							},
+							ObjectMeta: metav1.ObjectMeta{
+								DeletionTimestamp: &metav1.Time{Time: time.Now()},
+							},
+						},
+					},
+				}
+				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+				// No AddRequestCount expectation since the function should return early with error
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_ServiceUnavailable,
+				headers: []*configPb.HeaderValueOption{
+					{
+						Header: &configPb.HeaderValue{
+							Key:      HeaderErrorNoModelBackends,
+							RawValue: []byte("true"),
+						},
+					},
+					{
+						Header: &configPb.HeaderValue{
+							Key:   "Content-Type",
+							Value: "application/json",
+						},
+					},
+				},
+				model:      "test-model",
+				stream:     false,
+				term:       0,
+				routingCtx: nil,
+			},
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
+				assert.Equal(t, tt.expected.headers, resp.GetImmediateResponse().GetHeaders().GetSetHeaders())
+				assert.Equal(t, tt.expected.model, model)
+				assert.Equal(t, tt.expected.stream, stream)
+				assert.Equal(t, tt.expected.term, term)
+			},
+		},
+		{
+			name:        "routable pod without IP - should return ServiceUnavailable",
+			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
+			user: utils.User{
+				Name: "test-user",
+			},
+			routingAlgo: "", // No routing strategy needed for this test
+			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
+				mockCache.On("HasModel", "test-model").Return(true)
+				// Create pods that exist but are not routable (not ready)
+				podList := &utils.PodArray{
+					Pods: []*v1.Pod{
+						{
+							Status: v1.PodStatus{
+								PodIP: "",
+								Conditions: []v1.PodCondition{
+									{
+										Type:   v1.PodReady,
+										Status: v1.ConditionTrue, // Not ready
+									},
+								},
+							},
+						},
+					},
+				}
+				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+				// No AddRequestCount expectation since the function should return early with error
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_ServiceUnavailable,
+				headers: []*configPb.HeaderValueOption{
+					{
+						Header: &configPb.HeaderValue{
+							Key:      HeaderErrorNoModelBackends,
+							RawValue: []byte("true"),
+						},
+					},
+					{
+						Header: &configPb.HeaderValue{
+							Key:   "Content-Type",
+							Value: "application/json",
+						},
+					},
+				},
+				model:      "test-model",
+				stream:     false,
+				term:       0,
+				routingCtx: nil,
+			},
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
+				assert.Equal(t, tt.expected.headers, resp.GetImmediateResponse().GetHeaders().GetSetHeaders())
+				assert.Equal(t, tt.expected.model, model)
+				assert.Equal(t, tt.expected.stream, stream)
+				assert.Equal(t, tt.expected.term, term)
+			},
+		},
+		{
+			name:        "request /v1/completions with stream header - should get the true value of stream",
+			reqPath:     "/v1/completions",
+			requestBody: `{"model": "test-model", "prompt": "test", "stream": true}`,
+			user: utils.User{
+				Name: "test-user",
+			},
+			routingAlgo: "",
+			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
+				mockCache.On("HasModel", "test-model").Return(true)
+				podList := &utils.PodArray{
+					Pods: []*v1.Pod{
+						{
+							Status: v1.PodStatus{
+								PodIP:      "1.2.3.4",
+								Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+							},
+						},
+						{
+							Status: v1.PodStatus{
+								PodIP:      "4.5.6.7",
+								Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+							},
+						},
+					},
+				}
+				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+				mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1))
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_OK,
+				model:      "test-model",
+				stream:     true,
+				routingCtx: &types.RoutingContext{RequestID: "test-request-id"},
+			},
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+				assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
+				assert.Equal(t, tt.expected.stream, stream)
+				assert.NotNil(t, routingCtx)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		// Run each test case as a subtest
+		t.Run(tt.name, func(subtest *testing.T) {
+			subtest.Parallel()
+			// Add panic recovery for subtests too
+			subtest.Cleanup(func() {
+				if r := recover(); r != nil {
+					subtest.Errorf("Subtest %v panicked: %v", tt.name, r)
+					subtest.FailNow()
+				}
+			})
+
+			// Initialize mock cache and router for each test
+			mockCache := &MockCache{Cache: cache.NewForTest()}
+			// selectTargetPod now applies the load-imbalance gate ahead of every non-PD
+			// strategy, which reads running-request counts via GetMetricValueByPod. Stub a
+			// harmless default (0 requests, gate never fires) so test cases that don't care
+			// about this don't need to mock it themselves; individual test cases are free to
+			// override with a more specific expectation.
+			mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+				Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+			mockRouter := new(mockRouter)
+			if tt.mockSetup != nil {
+				tt.mockSetup(mockCache, mockRouter)
+			}
+
+			mockGW := &MockGatewayClient{}
+			mockGWv1 := &MockGatewayV1Client{}
+			mockHTTP := &MockHTTPRouteClient{}
+
+			mockGW.On("GatewayV1").Return(mockGWv1)
+			mockGWv1.On("HTTPRoutes", "aibrix-system").Return(mockHTTP)
+
+			route := &gatewayv1.HTTPRoute{
+				Status: gatewayv1.HTTPRouteStatus{
+					RouteStatus: gatewayv1.RouteStatus{
+						Parents: []gatewayv1.RouteParentStatus{{
+							Conditions: []metav1.Condition{{
+								Type:   string(gatewayv1.RouteConditionAccepted),
+								Reason: string(gatewayv1.RouteReasonAccepted),
+								Status: metav1.ConditionTrue,
+							}, {
+								Type:   string(gatewayv1.RouteConditionResolvedRefs),
+								Reason: string(gatewayv1.RouteReasonResolvedRefs),
+								Status: metav1.ConditionTrue,
+							}},
+						}},
+					},
+				},
+			}
+			mockHTTP.On("Get", mock.Anything, "test-model-router", mock.Anything).Return(route, nil)
+
+			// Create server with mock cache
+			server := &Server{
+				cache:         mockCache,
+				gatewayClient: mockGW,
+			}
+
+			// Create request for the test case
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_RequestBody{
+					RequestBody: &extProcPb.HttpBody{
+						Body: []byte(tt.requestBody),
+					},
+				},
+			}
+
+			// Call HandleRequestBody and validate the response
+			routingCtx := types.NewRoutingContext(context.Background(), tt.routingAlgo, tt.expected.model, "", "test-request-id", tt.user.Name)
+			routingCtx.ReqPath = PathChatCompletions
+			if tt.reqPath != "" {
+				routingCtx.ReqPath = tt.reqPath
+			}
+			// deriveRoutingStrategyFromContext reads from ReqHeaders, not Algorithm
+			if tt.routingAlgo != "" {
+				if routingCtx.ReqHeaders == nil {
+					routingCtx.ReqHeaders = make(map[string]string)
+				}
+				routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(tt.routingAlgo)
+			}
+			resp, model, stream, term := server.HandleRequestBody(
+				context.Background(),
+				routingCtx,
+				"test-request-id",
+				req,
+				tt.user,
+			)
+
+			// Validate response using test-specific validation function
+			tt.validate(subtest, &tt, resp, model, routingCtx, stream, term)
+
+			// Verify all mock expectations were met
+			mockCache.AssertExpectations(subtest)
+			mockRouter.AssertExpectations(subtest)
+		})
+	}
+}
+
+func TestValidateModelAvailabilityReturnsRetryableResponseForSleepingModelClaim(t *testing.T) {
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "warm-1", Namespace: "default"},
+		Status:     v1.PodStatus{PodIP: "10.0.0.1"},
+	}
+	mockCache := &MockCache{modelClaimBindings: map[string]mockModelClaimBinding{
+		"qwen": {pod: pod, state: constants.ModelClaimRoutingStateSleeping},
+	}}
+	mockCache.On("HasModel", "qwen").Return(false)
+	wakeRequester := &recordingModelWakeRequester{}
+	server := &Server{cache: mockCache, wakeRequester: wakeRequester}
+
+	pods, response := server.validateModelAvailability("request-1", "qwen")
+
+	assert.Nil(t, pods)
+	require.NotNil(t, response)
+	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
+	assert.Equal(t, "10", responseHeader(response, "Retry-After"))
+	require.Len(t, wakeRequester.calls, 1)
+	assert.Equal(t, "qwen", wakeRequester.calls[0].model)
+	assert.Equal(t, pod.Name, wakeRequester.calls[0].pod.Name)
+}
+
+func TestValidateModelAvailabilityWakesASleepingClaimThatAlsoHasARecord(t *testing.T) {
+	// A sleeping claim's pod advertises it, and the claim object is known too.
+	// The pod's answer wins, since only it can wake the engine.
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "warm-1", Namespace: "default"},
+		Status:     v1.PodStatus{PodIP: "10.0.0.1"},
+	}
+	mockCache := &MockCache{
+		modelClaimBindings: map[string]mockModelClaimBinding{
+			"qwen": {pod: pod, state: constants.ModelClaimRoutingStateSleeping},
+		},
+		modelClaimStatuses: map[string]mockModelClaimStatus{
+			"qwen": {phase: "Sleeping", reason: "EngineSleeping"},
+		},
+	}
+	mockCache.On("HasModel", "qwen").Return(false)
+	wakeRequester := &recordingModelWakeRequester{}
+	server := &Server{cache: mockCache, wakeRequester: wakeRequester}
+
+	_, response := server.validateModelAvailability("request-1", "qwen")
+
+	require.NotNil(t, response)
+	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
+	assert.Equal(t, "10", responseHeader(response, "Retry-After"))
+	require.Len(t, wakeRequester.calls, 1)
+	assert.Equal(t, pod.Name, wakeRequester.calls[0].pod.Name)
+	assert.NotContains(t, response.GetImmediateResponse().GetBody(), "EngineSleeping")
+}
+
+func TestValidateModelAvailabilityDoesNotWakeNonSleepingModelClaim(t *testing.T) {
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "warm-1", Namespace: "default"},
+		Status:     v1.PodStatus{PodIP: "10.0.0.1"},
+	}
+	for _, state := range []string{
+		constants.ModelClaimRoutingStateActivating,
+		constants.ModelClaimRoutingStateFailed,
+	} {
+		t.Run(state, func(t *testing.T) {
+			mockCache := &MockCache{modelClaimBindings: map[string]mockModelClaimBinding{
+				"qwen": {pod: pod, state: state},
+			}}
+			mockCache.On("HasModel", "qwen").Return(false)
+			wakeRequester := &recordingModelWakeRequester{}
+			server := &Server{cache: mockCache, wakeRequester: wakeRequester}
+
+			_, response := server.validateModelAvailability("request-1", "qwen")
+
+			require.NotNil(t, response)
+			assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
+			assert.Empty(t, wakeRequester.calls)
+			assert.Equal(t, "10", responseHeader(response, "Retry-After"))
+		})
+	}
+}
+
+func TestValidateModelAvailabilityAsksToRetryForAClaimNotPlacedYet(t *testing.T) {
+	mockCache := &MockCache{modelClaimStatuses: map[string]mockModelClaimStatus{
+		"qwen": {phase: "Pending", reason: "NoMatchingPods"},
+	}}
+	mockCache.On("HasModel", "qwen").Return(false)
+	server := &Server{cache: mockCache}
+
+	pods, response := server.validateModelAvailability("request-1", "qwen")
+
+	assert.Nil(t, pods)
+	require.NotNil(t, response)
+	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
+	assert.Equal(t, "10", responseHeader(response, "Retry-After"))
+	assert.Contains(t, response.GetImmediateResponse().GetBody(),
+		"model qwen is pending (NoMatchingPods); retry shortly")
+}
+
+func TestValidateModelAvailabilityAsksToRetryAfterAFailedActivation(t *testing.T) {
+	// The controller tries a claim whose activation failed again by itself.
+	mockCache := &MockCache{modelClaimStatuses: map[string]mockModelClaimStatus{
+		"qwen": {phase: "Failed", reason: "ActivateFailed"},
+	}}
+	mockCache.On("HasModel", "qwen").Return(false)
+	server := &Server{cache: mockCache}
+
+	_, response := server.validateModelAvailability("request-1", "qwen")
+
+	require.NotNil(t, response)
+	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
+	assert.Equal(t, "10", responseHeader(response, "Retry-After"))
+	assert.Contains(t, response.GetImmediateResponse().GetBody(), "model qwen is failed (ActivateFailed); retry shortly")
+}
+
+// The controller moves a claim whose engine failed for good to another pod
+// once one can take it. So its client is asked to retry, whether the pod of the
+// failed engine still carries the claim or no pod does.
+func TestValidateModelAvailabilityAsksToWaitLongerForTheReasonTheControllerGives(t *testing.T) {
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "warm-1", Namespace: "default"},
+		Status:     v1.PodStatus{PodIP: "10.0.0.1"},
+	}
+	for name, tc := range map[string]struct {
+		cache      *MockCache
+		retryAfter string
+		says       string
+	}{
+		"a wake that waits for room, on the route": {
+			cache: &MockCache{modelClaimBindings: map[string]mockModelClaimBinding{
+				"qwen": {pod: pod, state: constants.ModelClaimRoutingStateSleeping, reason: "WaitingForRoom"},
+			}},
+			retryAfter: "20",
+			says:       "model qwen is sleeping (WaitingForRoom)",
+		},
+		"a claim that moves, off any route": {
+			cache: &MockCache{modelClaimStatuses: map[string]mockModelClaimStatus{
+				"qwen": {phase: "Failed", reason: "Moving"},
+			}},
+			retryAfter: "30",
+			says:       "(Moving)",
+		},
+		"a claim that room is made for, off any route": {
+			cache: &MockCache{modelClaimStatuses: map[string]mockModelClaimStatus{
+				"qwen": {phase: "Pending", reason: "MakingRoom"},
+			}},
+			retryAfter: "20",
+			says:       "(MakingRoom)",
+		},
+		"a sleeping model with no reason": {
+			cache: &MockCache{modelClaimBindings: map[string]mockModelClaimBinding{
+				"qwen": {pod: pod, state: constants.ModelClaimRoutingStateSleeping},
+			}},
+			retryAfter: "10",
+			says:       "model qwen is sleeping; retry shortly",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tc.cache.On("HasModel", "qwen").Return(false)
+			server := &Server{cache: tc.cache, wakeRequester: &recordingModelWakeRequester{}}
+
+			_, response := server.validateModelAvailability("request-1", "qwen")
+
+			require.NotNil(t, response)
+			assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
+			assert.Equal(t, tc.retryAfter, responseHeader(response, "Retry-After"))
+			assert.Contains(t, response.GetImmediateResponse().GetBody(), tc.says)
+		})
+	}
+}
+
+func TestValidateModelAvailabilityAsksToRetryForAnEngineThatFailedForGood(t *testing.T) {
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "warm-1", Namespace: "default"},
+		Status:     v1.PodStatus{PodIP: "10.0.0.1"},
+	}
+	for name, mockCache := range map[string]*MockCache{
+		"carried": {modelClaimBindings: map[string]mockModelClaimBinding{
+			"qwen": {pod: pod, state: constants.ModelClaimRoutingStateFailed},
+		}},
+		"not carried": {modelClaimStatuses: map[string]mockModelClaimStatus{
+			"qwen": {phase: "Failed", reason: "EngineFailed"},
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mockCache.On("HasModel", "qwen").Return(false)
+			server := &Server{cache: mockCache}
+
+			_, response := server.validateModelAvailability("request-1", "qwen")
+
+			require.NotNil(t, response)
+			assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
+			assert.Equal(t, "10", responseHeader(response, "Retry-After"))
+			assert.Contains(t, response.GetImmediateResponse().GetBody(), "model qwen is failed")
+			assert.Contains(t, response.GetImmediateResponse().GetBody(), "retry shortly")
+		})
+	}
+}
+
+func TestValidateModelAvailabilityDoesNotAskToRetryWhenWaitingDoesNotHelp(t *testing.T) {
+	for _, status := range []mockModelClaimStatus{
+		{phase: "Failed", reason: "InvalidEngineConfig"},
+		{phase: "Pending", reason: "InvalidPerGPU"},
+		// No card in the pool can hold the model, until the pool or the claim
+		// is changed.
+		{phase: "Pending", reason: "TooLargeForAnyCard"},
+	} {
+		t.Run(status.reason, func(t *testing.T) {
+			mockCache := &MockCache{modelClaimStatuses: map[string]mockModelClaimStatus{"qwen": status}}
+			mockCache.On("HasModel", "qwen").Return(false)
+			server := &Server{cache: mockCache}
+
+			_, response := server.validateModelAvailability("request-1", "qwen")
+
+			require.NotNil(t, response)
+			assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
+			assert.Empty(t, responseHeader(response, "Retry-After"))
+			body := response.GetImmediateResponse().GetBody()
+			assert.Contains(t, body, "("+status.reason+")")
+			assert.NotContains(t, body, "retry shortly")
+		})
+	}
+}
+
+func TestValidateModelAvailabilityStillRejectsAModelNoClaimServes(t *testing.T) {
+	mockCache := &MockCache{modelClaimStatuses: map[string]mockModelClaimStatus{}}
+	mockCache.On("HasModel", "qwen").Return(false)
+	server := &Server{cache: mockCache}
+
+	_, response := server.validateModelAvailability("request-1", "qwen")
+
+	require.NotNil(t, response)
+	assert.Equal(t, envoyTypePb.StatusCode_BadRequest, response.GetImmediateResponse().GetStatus().GetCode())
+	assert.Contains(t, response.GetImmediateResponse().GetBody(), "model qwen does not exist")
+}
+
+func responseHeader(response *extProcPb.ProcessingResponse, key string) string {
+	for _, option := range response.GetImmediateResponse().GetHeaders().GetSetHeaders() {
+		if option.GetHeader().GetKey() == key {
+			if len(option.GetHeader().GetRawValue()) > 0 {
+				return string(option.GetHeader().GetRawValue())
+			}
+			return option.GetHeader().GetValue()
+		}
+	}
+	return ""
+}
+
+func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	mockRouter := new(mockRouter)
+	mockModelRL := &mockRateLimiter{}
+
+	registerTestRouter(mockRouter)
+
+	// Config profile enables model RPS checks.
+	profileJSON := `{"defaultProfile":"rps-limited","profiles":{"rps-limited":{"requestsPerSecond":5}}}`
+	podList := &utils.PodArray{
+		Pods: []*v1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "pod-a",
+					Annotations: map[string]string{
+						constants.ModelAnnoConfig: profileJSON,
+					},
+				},
+				Status: v1.PodStatus{
+					PodIP:      "1.2.3.4",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "pod-b",
+					Annotations: map[string]string{
+						constants.ModelAnnoConfig: profileJSON,
+					},
+				},
+				Status: v1.PodStatus{
+					PodIP:      "4.5.6.7",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				},
+			},
+		},
+	}
+
+	mockCache.On("HasModel", "test-model").Return(true).Once()
+	mockCache.On("ListPodsByModel", "test-model").Return(podList, nil).Once()
+	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+	// enforceModelRPS atomically pre-charges (+1); routing then fails so the deferred
+	// compensation refunds (-1).
+	mockModelRL.On("Incr", mock.Anything, "test-model_MODEL_RPS_CURRENT", int64(1)).Return(int64(1), nil).Once()
+	mockModelRL.On("Incr", mock.Anything, "test-model_MODEL_RPS_CURRENT", int64(-1)).Return(int64(0), nil).Once()
+	mockRouter.On("Route", mock.Anything, mock.Anything).Return("", errors.New("route selection failed")).Once()
+
+	server := &Server{
+		cache:               mockCache,
+		modelRateLimiter:    mockModelRL,
+		gatewayClient:       nil, // not used for explicit routing strategy path
+		requestCountTracker: map[string]int{},
+	}
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{
+				Body: []byte(`{"model":"test-model","messages":[{"role":"user","content":"test"}]}`),
+			},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathChatCompletions
+	routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(TestRouterAlgorithm)
+
+	resp, _, _, term := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	assert.NotNil(t, resp)
+	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, resp.GetImmediateResponse().GetStatus().GetCode())
+	assert.Equal(t, int64(0), term, "failed routing path should not add request trace term")
+	mockCache.AssertNotCalled(t, "AddRequestCount", mock.Anything, mock.Anything, mock.Anything)
+	mockCache.AssertExpectations(t)
+	mockRouter.AssertExpectations(t)
+	mockModelRL.AssertExpectations(t)
+}
+
+// TestHandleRequestBody_AsyncVideoJobWithoutRoutingStrategyGetsPinned guards against a
+// regression where POST /v1/videos submitted without a routing-strategy header (the
+// out-of-the-box default, and what the async example in docs/source/features/vllm-omni.rst
+// uses) fell into the RouterNotSet branch, which never calls SetTargetPod. That left
+// registerVideoJobFromCreateResponse's routerCtx.TargetPod() call (see
+// gateway_video_routing.go) blocking until the request's context was done, and the job
+// never registered -- breaking all follow-up GET/DELETE calls for that job.
+func TestHandleRequestBody_AsyncVideoJobWithoutRoutingStrategyGetsPinned(t *testing.T) {
+	cache.InitForTest()
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: "ns-a"},
+		Status: v1.PodStatus{
+			PodIP:      "1.2.3.4",
+			Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+		},
+	}
+	podList := &utils.PodArray{Pods: []*v1.Pod{pod}}
+
+	mockCache.On("HasModel", "wan2.1").Return(true)
+	mockCache.On("ListPodsByModel", "wan2.1").Return(podList, nil)
+	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "wan2.1").Return(int64(1))
+	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+	server := &Server{cache: mockCache}
+
+	body, contentType := buildMultipartForm(t, map[string]string{"model": "wan2.1", "prompt": "a cat"})
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{Body: body},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathVideos
+	routingCtx.ReqHeaders[contentTypeKey] = contentType
+	// Deliberately no routing-strategy header: this is the RouterNotSet default.
+
+	resp, model, stream, term := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	require.NotNil(t, resp)
+	require.Nil(t, resp.GetImmediateResponse(), "async video job submission must not be rejected")
+	assert.Equal(t, "wan2.1", model)
+	assert.False(t, stream)
+	assert.Equal(t, int64(1), term)
+	assert.Equal(t, routingalgorithms.RouterLeastRequest, routingCtx.Algorithm,
+		"POST /v1/videos must not stay on RouterNotSet's HTTPRoute passthrough")
+
+	// TargetPod() must already be set -- it must not need to wait on ctx.Done() to unblock.
+	done := make(chan *v1.Pod, 1)
+	go func() { done <- routingCtx.TargetPod() }()
+	select {
+	case targetPod := <-done:
+		require.NotNil(t, targetPod)
+		assert.Equal(t, "pod-a", targetPod.Name)
+	case <-time.After(time.Second):
+		t.Fatal("TargetPod() blocked: the async video job was never pinned to a pod")
+	}
+
+	foundTargetPod := false
+	for _, h := range resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders() {
+		if h.Header.Key == HeaderTargetPod {
+			foundTargetPod = true
+		}
+	}
+	assert.True(t, foundTargetPod, "HeaderTargetPod must be set so envoy pins the request to the recorded pod")
+}
+
+// TestHandleRequestBody_AsyncVideoJobSendsNoModeOverride: the create response has
+// to be held whole so its backend id can be replaced, but that is arranged by the
+// Videos route's EnvoyExtensionPolicy (response body Buffered). Envoy Gateway
+// v1.2.8 never enables ext_proc's allow_mode_override, so an override sent from
+// here would be dropped on the floor - and would read as if buffering had been
+// taken care of.
+func TestHandleRequestBody_AsyncVideoJobSendsNoModeOverride(t *testing.T) {
+	cache.InitForTest()
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	pod := readyPod("pod-a", "ns-a", "1.2.3.4")
+	mockCache.On("HasModel", "wan2.1").Return(true)
+	mockCache.On("ListPodsByModel", "wan2.1").Return(&utils.PodArray{Pods: []*v1.Pod{pod}}, nil)
+	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "wan2.1").Return(int64(1))
+	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+	server := &Server{cache: mockCache}
+
+	body, contentType := buildMultipartForm(t, map[string]string{"model": "wan2.1", "prompt": "a cat"})
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{Body: body},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathVideos
+	routingCtx.ReqHeaders[contentTypeKey] = contentType
+	routingCtx.ReqHeaders[methodKey] = http.MethodPost
+
+	resp, _, _, _ := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	assert.Nil(t, resp.GetModeOverride())
+}
+
+// TestHandleRequestBody_LanguageRequestKeepsConfiguredResponseMode: a chat
+// completion's response mode is the shared route's Streamed, and nothing in the
+// request path may override it - buffering an SSE stream would hold every chunk
+// back until the stream ended.
+func TestHandleRequestBody_LanguageRequestKeepsConfiguredResponseMode(t *testing.T) {
+	cache.InitForTest()
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	pod := readyPod("pod-a", "ns-a", "1.2.3.4")
+	mockCache.On("HasModel", "llama").Return(true)
+	mockCache.On("ListPodsByModel", "llama").Return(&utils.PodArray{Pods: []*v1.Pod{pod}}, nil)
+	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "llama").Return(int64(1))
+	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+	server := &Server{cache: mockCache}
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{Body: []byte(`{"model":"llama","messages":[{"role":"user","content":"hi"}]}`)},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathChatCompletions
+	routingCtx.ReqHeaders[methodKey] = http.MethodPost
+
+	resp, _, _, _ := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	assert.Nil(t, resp.GetModeOverride())
+}
+
+// registerTestRouter registers the shared TestRouterAlgorithm mock router so a
+// request can be routed with it. Idempotent across tests.
+func registerTestRouter(mockRouter *mockRouter) {
+	mockRouterProvider := func() (types.Router, error) {
+		return mockRouter, nil
+	}
+	routingalgorithms.Register(TestRouterAlgorithm, mockRouterProvider)
+	routingalgorithms.Init()
+}
+
+// routingStrategyHeaderFromResponse reads the routing-strategy from the
+// request-header mutation that HandleRequestBody sets on the upstream request.
+// The gateway propagates the resolved strategy to the backend via a request-header
+// mutation (not an HTTP response header), which is why it is read from RequestBody.
+func routingStrategyHeaderFromResponse(resp *extProcPb.ProcessingResponse) string {
+	headers := resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders()
+	for _, h := range headers {
+		if h.Header.Key == HeaderRoutingStrategy {
+			return string(h.Header.RawValue)
+		}
+	}
+	return ""
+}
+
+// configProfilePods builds two ready pods carrying the given model.aibrix.ai/config
+// annotation. Two pods are used so selectTargetPod goes through the routing
+// algorithm instead of the single-pod shortcut.
+func configProfilePods(anno string) []*v1.Pod {
+	return []*v1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        "pod-a",
+				Namespace:   "default",
+				Labels:      map[string]string{"environment": "online"},
+				Annotations: map[string]string{constants.ModelAnnoConfig: anno},
+			},
+			Status: v1.PodStatus{
+				PodIP:      "1.2.3.4",
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        "pod-b",
+				Namespace:   "default",
+				Labels:      map[string]string{"environment": "online"},
+				Annotations: map[string]string{constants.ModelAnnoConfig: anno},
+			},
+			Status: v1.PodStatus{
+				PodIP:      "4.5.6.7",
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		},
+	}
+}
+
+// TestHandleRequestBody_LockedRoutingStrategy verifies the routing-strategy
+// precedence chain end to end: a model-wide lockedRoutingStrategy wins over the
+// routing-strategy header; an invalid locked value is rejected; and the header
+// still wins over the profile when no lock is set.
+func TestHandleRequestBody_LockedRoutingStrategy(t *testing.T) {
+	tests := []struct {
+		name           string
+		profileJSON    string
+		headerValue    string
+		configProfile  string
+		externalFilter string
+		wantStrategy   string // expected routing-strategy response header; empty when routing is expected to fail
+		wantStatus     envoyTypePb.StatusCode
+	}{
+		{
+			name:         "locked strategy wins over header",
+			profileJSON:  `{"lockedRoutingStrategy":"test-router","defaultProfile":"default","profiles":{"default":{"routingStrategy":"least-request"}}}`,
+			headerValue:  "least-request",
+			wantStrategy: "test-router",
+			wantStatus:   envoyTypePb.StatusCode_OK,
+		},
+		{
+			name:         "locked strategy applies without a resolvable profile",
+			profileJSON:  `{"lockedRoutingStrategy":"test-router","profiles":{"burst":{"routingStrategy":"least-request"}}}`,
+			headerValue:  "least-request",
+			wantStrategy: "test-router",
+			wantStatus:   envoyTypePb.StatusCode_OK,
+		},
+		{
+			name:        "invalid locked strategy is rejected",
+			profileJSON: `{"lockedRoutingStrategy":"invalid-strategy","profiles":{"default":{"routingStrategy":"test-router"}}}`,
+			headerValue: string(TestRouterAlgorithm),
+			wantStatus:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			name:         "header wins without a locked strategy",
+			profileJSON:  `{"profiles":{"default":{"routingStrategy":"least-request"}}}`,
+			headerValue:  string(TestRouterAlgorithm),
+			wantStrategy: "test-router",
+			wantStatus:   envoyTypePb.StatusCode_OK,
+		},
+		{
+			name:           "authoritative policy ignores named profile and external filter",
+			profileJSON:    `{"authoritativeRoutingPolicy":true,"defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"},"batch":{"routingStrategy":"least-request"}}}`,
+			headerValue:    "least-request",
+			configProfile:  "batch",
+			externalFilter: "environment=batch",
+			wantStrategy:   "test-router",
+			wantStatus:     envoyTypePb.StatusCode_OK,
+		},
+		{
+			name:           "authoritative policy ignores auto profile and external filter",
+			profileJSON:    `{"authoritativeRoutingPolicy":true,"defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"},"batch":{"routingStrategy":"least-request","routingConfig":{"promptTokensGte":1}}}}`,
+			headerValue:    "least-request",
+			configProfile:  "auto",
+			externalFilter: "environment=batch",
+			wantStrategy:   "test-router",
+			wantStatus:     envoyTypePb.StatusCode_OK,
+		},
+		{
+			name:           "authoritative policy preserves locked strategy precedence",
+			profileJSON:    `{"authoritativeRoutingPolicy":true,"lockedRoutingStrategy":"test-router","defaultProfile":"default","profiles":{"default":{"routingStrategy":"least-request"},"batch":{"routingStrategy":"random"}}}`,
+			headerValue:    "least-request",
+			configProfile:  "batch",
+			externalFilter: "environment=batch",
+			wantStrategy:   "test-router",
+			wantStatus:     envoyTypePb.StatusCode_OK,
+		},
+		{
+			name:           "external filter still applies when request overrides are enabled",
+			profileJSON:    `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"}}}`,
+			headerValue:    "test-router",
+			externalFilter: "environment=batch",
+			wantStatus:     envoyTypePb.StatusCode_ServiceUnavailable,
+		},
+		{
+			name:           "matching external filter is preserved when request overrides are enabled",
+			profileJSON:    `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"}}}`,
+			headerValue:    "test-router",
+			externalFilter: "environment=online",
+			wantStrategy:   "test-router",
+			wantStatus:     envoyTypePb.StatusCode_OK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockCache := &MockCache{Cache: cache.NewForTest()}
+			mockRouter := new(mockRouter)
+			registerTestRouter(mockRouter)
+
+			podList := &utils.PodArray{Pods: configProfilePods(tt.profileJSON)}
+
+			mockCache.On("HasModel", "test-model").Return(true)
+			mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+			mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+				Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+			if tt.wantStatus == envoyTypePb.StatusCode_OK {
+				mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1))
+				mockRouter.On("Route", mock.Anything, mock.Anything).Return("1.2.3.4:8000", nil).Once()
+			}
+
+			server := &Server{cache: mockCache}
+
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_RequestBody{
+					RequestBody: &extProcPb.HttpBody{
+						Body: []byte(`{"model":"test-model","messages":[{"role":"user","content":"test"}]}`),
+					},
+				},
+			}
+
+			routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+			routingCtx.ReqPath = PathChatCompletions
+			routingCtx.ReqHeaders[HeaderRoutingStrategy] = tt.headerValue
+			routingCtx.ReqHeaders[HeaderExternalFilter] = tt.externalFilter
+			routingCtx.ReqConfigProfile = tt.configProfile
+
+			resp, _, _, term := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+			require.NotNil(t, resp)
+			if tt.wantStatus == envoyTypePb.StatusCode_OK {
+				assert.Nil(t, resp.GetImmediateResponse(), "successful routing should not return an immediate response")
+				assert.Equal(t, tt.wantStrategy, routingStrategyHeaderFromResponse(resp))
+				mockRouter.AssertCalled(t, "Route", mock.Anything, mock.Anything)
+			} else {
+				assert.Equal(t, tt.wantStatus, resp.GetImmediateResponse().GetStatus().GetCode())
+				assert.Equal(t, int64(0), term)
+				mockRouter.AssertNotCalled(t, "Route", mock.Anything, mock.Anything)
+			}
+			mockCache.AssertExpectations(t)
+			mockRouter.AssertExpectations(t)
+		})
+	}
+}

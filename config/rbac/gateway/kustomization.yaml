@@ -1,0 +1,9 @@
+resources:
+# Unlike others files are generated. Gateway plugin role, role binding and serving account files are maintained by our own.
+- service_account_gateway.yaml
+- role_gateway.yaml
+- role_binding_gateway.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/component: aibrix-gateway-plugins

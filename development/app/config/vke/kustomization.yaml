@@ -1,0 +1,8 @@
+resources:
+  - ../mock
+  - ../templates/podautoscaler
+
+images:
+- name: aibrix/vllm-mock
+  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-mock
+  newTag: nightly

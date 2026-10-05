@@ -1,0 +1,138 @@
+[tool.poetry]
+name = "aibrix"
+version = "0.0.0"  # Placeholder (will be replaced dynamically)
+description = "AIBrix, the foundational building blocks for constructing your own GenAI inference infrastructure."
+authors = [
+    "AIBrix Authors <brosoul@126.com>"
+]
+readme = "README.md"
+license = "Apache-2.0"
+repository = "https://github.com/vllm-project/aibrix/tree/main/python/aibrix"
+classifiers = [
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+packages = [
+    { include = "aibrix" },
+]
+exclude = ["tests"]
+
+[tool.poetry-dynamic-versioning]
+enable = true
+vcs = "git"  # Get version from Git tags
+style = "pep440"  # Follow PEP 440
+
+[tool.poetry-dynamic-versioning.substitution]
+files = ["aibrix/__version__.py"]
+patterns = [
+    '''(^__version__\s*(?::.*?)?=\s*['"])[^'"]*(['"])''',
+    { value = '''(^VERSION\s*(?::.*?)?=\s*\()[^)]*(\))''', mode = "tuple" },
+]
+
+[tool.poetry.scripts]
+aibrix_runtime = 'aibrix.app:main'
+aibrix_download = 'aibrix.downloader.__main__:main'
+aibrix_batch_worker = 'aibrix.batch.worker:main'
+aibrix_metadata = 'aibrix.metadata.app:main'
+aibrix_openai_frontend = 'aibrix.openai_frontend.main:main'
+# tools
+aibrix_benchmark = "aibrix.gpu_optimizer.optimizer.profiling.benchmark:main"
+aibrix_gen_profile = 'aibrix.gpu_optimizer.optimizer.profiling.gen_profile:main'
+aibrix_gen_secrets = 'scripts.generate_secrets:main'
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.13"
+huggingface-hub = "^0.24.6"
+tos = "2.8.0"
+boto3 = "^1.35.5"
+google-cloud-storage = "^2.10.0"
+fastapi = "^0.112.2"
+gunicorn = "^23.0.0"
+uvicorn = "^0.30.6"
+prometheus-client = "^0.20.0"
+types-requests = "^2.31.0"
+httpx = "^0.27.2"
+asyncssh = "^2.18.0"
+hf-transfer = "^0.1.8"
+types-redis = "^4.6.0.20241004"
+redis = "^5.2.0"
+kubernetes = "^31.0.0"
+aiohttp = "^3.11.7"
+filelock = "^3.16.1"
+structlog = "^24.4.0"
+pydantic-settings = "^2.6.1"
+PyYAML = "^6.0.1"
+types-PyYAML = "^6.0.12.20240917"
+python-multipart = "^0.0.20"
+tenacity = "^9.0.0"
+# GPU Optimizer runtime dependencies (needed by aibrix.gpu_optimizer.app runtime service)
+numpy = "1.26.4"
+pandas = "^2.2.3"
+pulp = "2.8.0"
+incdbscan = "^0.1.0"
+dash = "^2.18.2"
+matplotlib = "^3.9.2"
+
+[tool.poetry.group.profiling.dependencies]
+# Dependencies only needed for profiling/benchmark tools (aibrix_benchmark, aibrix_gen_profile)
+# NOT needed by runtime services (aibrix_runtime, aibrix_batch_worker, aibrix_metadata, gpu_optimizer app)
+tiktoken = "^0.7.0"
+transformers = ">=4.38.0"
+
+[tool.poetry.group.dev.dependencies]
+mypy = "1.11.1"
+ruff = "0.15.16"
+pytest = "^8.3.2"
+anyio = "4.8.0"
+pytest-asyncio = "^1.1.0"
+pytest-tornasync = "0.6.0.post2"
+pytest-trio = "0.8.0"
+pytest-twisted = "1.14.3"
+twisted = "25.5.0"
+openai = "^2.32.0"
+
+[build-system]
+requires = ["poetry-core", "poetry-dynamic-versioning"]
+build-backend = "poetry_dynamic_versioning.backend"
+
+[tool.mypy]
+ignore_missing_imports = true
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.format]
+quote-style = "double"
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+ignore = []
+
+# Allow fix for all enabled rules (when `--fix`) is provided.
+fixable = ["ALL"]
+unfixable = []
+
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "batch_driver_stand_alone: run the batch driver on a dedicated async loop thread",
+]
+filterwarnings = [
+    "ignore:Please use `import python_multipart` instead.:PendingDeprecationWarning",
+]

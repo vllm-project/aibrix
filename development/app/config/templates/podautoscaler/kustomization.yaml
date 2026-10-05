@@ -1,0 +1,2 @@
+resources:
+  - podautoscaler_kpa.yaml

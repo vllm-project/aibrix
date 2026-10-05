@@ -1,0 +1,4 @@
+---
+# Source: kuberay-operator/templates/multiple_namespaces_role.yaml
+# Install Role for namespaces listed in watchNamespace.
+# This should be consistent with `role.yaml`, except for the `kind` field.

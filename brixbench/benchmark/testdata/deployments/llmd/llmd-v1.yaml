@@ -1,0 +1,4 @@
+# Placeholder kept for compatibility with earlier llm-d scaffolding.
+# Active router values live under:
+# - testdata/deployments/llmd/router/base-values.yaml
+# - testdata/deployments/llmd/router/policies/pd-disaggregation-official.yaml

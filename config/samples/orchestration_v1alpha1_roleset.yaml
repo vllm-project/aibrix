@@ -1,0 +1,20 @@
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: RoleSet
+metadata:
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+  name: roleset-sample
+spec:
+  roles:
+  - name: prefill
+    replicas: 1
+    updateStrategy:
+      type: InPlaceIfPossible
+      maxUnavailable: 1
+      maxSurge: 0
+    template:
+      spec:
+        containers:
+        - name: vllm
+          image: vllm/vllm-openai:latest

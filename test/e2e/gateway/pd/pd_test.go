@@ -1,0 +1,251 @@
+/*
+Copyright 2024 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package e2e
+
+import (
+	"context"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
+)
+
+// assertPDDisaggregation sends a single PD-routed chat completion for the given model and
+// asserts that the response carries distinct prefill-target-pod and target-pod headers.
+func assertPDDisaggregation(t *testing.T, modelName, prompt, logPrefix string) {
+	t.Helper()
+	waitForPDDisaggregationRouting(t, modelName)
+
+	var dst *http.Response
+	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
+
+	chatCompletion := pollPDChatCompletion(t, client, openai.ChatCompletionNewParams{
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage(prompt),
+		},
+		Model: modelName,
+	})
+
+	assert.Equal(t, modelName, chatCompletion.Model)
+	assert.NotEmpty(t, chatCompletion.Choices, "chat completion returned no choices")
+	assert.NotEmpty(t, chatCompletion.Choices[0].Message.Content, "chat completion returned empty message")
+
+	decodePod := dst.Header.Get("target-pod")
+	assert.NotEmpty(t, decodePod, "target-pod header must be set (decode pod)")
+
+	prefillPod := dst.Header.Get("prefill-target-pod")
+	assert.NotEmpty(t, prefillPod, "prefill-target-pod header must be set")
+
+	assert.NotEqual(t, prefillPod, decodePod,
+		"prefill pod and decode pod should be different (got same pod: %s)", decodePod)
+
+	t.Logf("%s — prefill-target-pod: %s, target-pod (decode): %s", logPrefix, prefillPod, decodePod)
+}
+
+// TestPDDisaggregationVLLM verifies that the PD (prefill-decode disaggregation) routing
+// strategy performs a prefill request before routing the decode request to a separate pod.
+//
+// Expected flow:
+//  1. Gateway selects a prefill pod and a decode pod.
+//  2. Gateway sends max_tokens=1, stream=false to the prefill pod; the mock app returns
+//     kv_transfer_params in the response.
+//  3. Gateway forwards the original request (with kv_transfer_params updated from the
+//     prefill response) to the decode pod.
+//  4. Response headers carry both "prefill-target-pod" and "target-pod".
+func TestPDDisaggregationVLLM(t *testing.T) {
+	assertPDDisaggregation(t, modelNameVLLM,
+		"Say this is a test for vLLM PD disaggregation",
+		"vLLM")
+}
+
+// TestPDDisaggregationSGLang verifies PD routing for the SGLang engine.
+//
+// SGLang uses an async prefill: the gateway fires the prefill request in a
+// background goroutine (bootstrap_host/port/room coordinates KV transfer) and
+// immediately routes the decode request without waiting for the prefill response.
+// From the test's perspective the observable contract is identical to vLLM —
+// both prefill-target-pod and target-pod headers must be set and must differ.
+func TestPDDisaggregationSGLang(t *testing.T) {
+	assertPDDisaggregation(t, modelNameSGLang,
+		"Say this is a test for SGLang PD disaggregation",
+		"SGLang")
+}
+
+// TestPDDisaggregationTRTLLM verifies PD routing for the TensorRT-LLM engine.
+//
+// TRT-LLM uses a synchronous prefill: the gateway waits for the prefill response
+// which carries disaggregated_params (first_gen_tokens, opaque_state) and
+// prompt_token_ids, then forwards those to the decode pod for generation.
+func TestPDDisaggregationTRTLLM(t *testing.T) {
+	assertPDDisaggregation(t, modelNameTRTLLM,
+		"Say this is a test for TensorRT-LLM PD disaggregation",
+		"TRT-LLM")
+}
+
+// assertPDDisaggregationAfterPodDeletion deletes one pod for modelName and roleLabel,
+// waits for the gateway to notice, then verifies PD-routed requests still succeed via
+// remaining pods (requires at least two matching pods, i.e. 2x1P1D for that model).
+func assertPDDisaggregationAfterPodDeletion(t *testing.T, roleLabel, modelName, prompt string) {
+	t.Helper()
+	ctx := context.Background()
+	k8sClient, _ := initializeClient(ctx, t)
+
+	initialPods, err := k8sClient.CoreV1().Pods("default").List(ctx, v1.ListOptions{})
+	require.NoError(t, err)
+	initialCount := len(initialPods.Items)
+
+	labelSelector := "role-name=" + roleLabel + ",model.aibrix.ai/name=" + modelName
+	rolePods, err := k8sClient.CoreV1().Pods("default").List(ctx, v1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(rolePods.Items), 2,
+		"expected at least two %s pods for model %s (2x1P1D); selector=%q", roleLabel, modelName, labelSelector)
+
+	podToDelete := rolePods.Items[0].Name
+	t.Logf("deleting %s pod for model %s: %s", roleLabel, modelName, podToDelete)
+
+	require.NoError(t, k8sClient.CoreV1().Pods("default").Delete(ctx, podToDelete, v1.DeleteOptions{}))
+
+	t.Cleanup(func() {
+		validateAllPodsAreReady(t, k8sClient, initialCount)
+		waitForPDDisaggregationRouting(t, modelName)
+		t.Logf("%s pod %s has been recreated and cluster is back to %d pods", roleLabel, podToDelete, initialCount)
+	})
+
+	waitForPDDisaggregationExcludingPod(t, modelName, roleLabel, podToDelete, prompt)
+
+	var dst *http.Response
+	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
+
+	for i := 0; i < 10; i++ {
+		_ = pollPDChatCompletion(t, client, openai.ChatCompletionNewParams{
+			Messages: []openai.ChatCompletionMessageParamUnion{
+				openai.UserMessage(prompt),
+			},
+			Model: modelName,
+		})
+
+		decodePod := dst.Header.Get("target-pod")
+		prefillPod := dst.Header.Get("prefill-target-pod")
+		assert.NotEmpty(t, decodePod, "request %d: target-pod header must be set", i)
+		assert.NotEmpty(t, prefillPod, "request %d: prefill-target-pod header must be set", i)
+		assert.NotEqual(t, prefillPod, decodePod, "request %d: prefill and decode pods should differ", i)
+		if roleLabel == "prefill" {
+			assert.NotEqual(t, podToDelete, prefillPod,
+				"request %d: should not route to deleted prefill pod %s", i, podToDelete)
+		} else {
+			assert.NotEqual(t, podToDelete, decodePod,
+				"request %d: should not route to deleted decode pod %s", i, podToDelete)
+		}
+		t.Logf("request %d — prefill: %s, decode: %s", i, prefillPod, decodePod)
+	}
+}
+
+// waitForPDDisaggregationExcludingPod waits for the gateway to route several
+// successful requests without selecting the Pod removed by the test. A Pod
+// Ready condition can precede informer and EndpointSlice convergence, so a
+// fixed sleep is insufficient here.
+func waitForPDDisaggregationExcludingPod(t *testing.T, modelName, roleLabel, excludedPod, prompt string) {
+	t.Helper()
+	var dst *http.Response
+	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
+	consecutive := 0
+	err := wait.PollUntilContextTimeout(context.Background(), time.Second, 2*time.Minute, true,
+		func(ctx context.Context) (bool, error) {
+			_, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+				Messages: []openai.ChatCompletionMessageParamUnion{
+					openai.UserMessage(prompt),
+				},
+				Model: modelName,
+			})
+			if err != nil {
+				consecutive = 0
+				t.Logf("waiting for PD routing to exclude pod %s: %v", excludedPod, err)
+				return false, nil
+			}
+
+			prefillPod := dst.Header.Get("prefill-target-pod")
+			decodePod := dst.Header.Get("target-pod")
+			selected := decodePod
+			if roleLabel == "prefill" {
+				selected = prefillPod
+			}
+			if prefillPod == "" || decodePod == "" || prefillPod == decodePod || selected == excludedPod {
+				consecutive = 0
+				t.Logf("waiting for gateway to exclude %s; prefill=%s decode=%s", excludedPod, prefillPod, decodePod)
+				return false, nil
+			}
+
+			consecutive++
+			t.Logf("PD routing excludes %s (%d/3 consecutive)", excludedPod, consecutive)
+			return consecutive >= 3, nil
+		})
+	require.NoError(t, err, "gateway continued selecting deleted %s pod %s", roleLabel, excludedPod)
+}
+
+// TestPDDisaggregationVLLMMultipleRequests sends several requests to verify that the
+// PD router consistently selects valid prefill/decode pod pairs across requests.
+// Runs before the pod-deletion tests so it is not immediately after StormService
+// recreate, when gateway-plugin caches can still disagree.
+func TestPDDisaggregationVLLMMultipleRequests(t *testing.T) {
+	const iterations = 5
+
+	waitForPDDisaggregationRouting(t, modelNameVLLM)
+
+	var dst *http.Response
+	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
+
+	for i := 0; i < iterations; i++ {
+		_ = pollPDChatCompletion(t, client, openai.ChatCompletionNewParams{
+			Messages: []openai.ChatCompletionMessageParamUnion{
+				openai.UserMessage("vLLM PD disaggregation stress test message"),
+			},
+			Model: modelNameVLLM,
+		})
+
+		decodePod := dst.Header.Get("target-pod")
+		prefillPod := dst.Header.Get("prefill-target-pod")
+
+		assert.NotEmpty(t, decodePod, "request %d: target-pod header must be set", i)
+		assert.NotEmpty(t, prefillPod, "request %d: prefill-target-pod header must be set", i)
+		assert.NotEqual(t, prefillPod, decodePod,
+			"request %d: prefill and decode pods should differ", i)
+
+		t.Logf("request %d — prefill: %s, decode: %s", i, prefillPod, decodePod)
+	}
+}
+
+// TestPDDisaggregationVLLMPrefillPodFailure verifies that with 2x1P1D setup, taking down one
+// prefill pod still allows 10 requests to succeed via the remaining complete roleset.
+func TestPDDisaggregationVLLMPrefillPodFailure(t *testing.T) {
+	assertPDDisaggregationAfterPodDeletion(t, "prefill", modelNameVLLM,
+		"PD prefill-pod-failure resilience test")
+}
+
+// TestPDDisaggregationVLLMDecodePodFailure verifies that with 2x1P1D setup, taking down one
+// decode pod still allows 10 requests to succeed via the remaining complete roleset.
+func TestPDDisaggregationVLLMDecodePodFailure(t *testing.T) {
+	assertPDDisaggregationAfterPodDeletion(t, "decode", modelNameVLLM,
+		"PD decode-pod-failure resilience test")
+}
