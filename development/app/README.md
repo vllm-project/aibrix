@@ -42,6 +42,9 @@ python test_openai_endpoints.py
 
 # Test vLLM-specific endpoints (uses HTTP client)
 python test_vllm_endpoints.py
+
+# Test SGLang-specific endpoints (uses HTTP client)
+python test_sglang_endpoints.py
 ```
 
 You can also specify a custom base URL:
@@ -49,6 +52,7 @@ You can also specify a custom base URL:
 ```bash
 python test_openai_endpoints.py --base-url http://localhost:8000/v1
 python test_vllm_endpoints.py --base-url http://localhost:8000
+python test_sglang_endpoints.py --base-url http://localhost:8000
 ```
 
 ### Testing PD contracts locally

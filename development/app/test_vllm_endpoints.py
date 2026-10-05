@@ -415,72 +415,6 @@ def test_pooling(base_url: str, result: TestResult):
         result.add_fail("Pooling (error: bad input shape)", f"Expected 400, got {status}")
 
 
-def test_decisions(base_url: str, result: TestResult):
-    """Test the SGLang decisions endpoint."""
-    print("\n--- Testing Decisions Endpoint ---")
-
-    questions = [
-        {
-            "id": "pick",
-            "type": "choice",
-            "question": "Which replica?",
-            "options": [{"name": "a"}, {"name": "b"}],
-        }
-    ]
-
-    # Decisions - string input
-    status, data = make_request(
-        base_url,
-        "/v1/decisions",
-        method="POST",
-        data={"model": "test-model", "input": "Route this request.", "questions": questions},
-    )
-    if status == 200 and data.get("object") == "decisions" and "pick" in data.get("answers", {}):
-        usage = data.get("usage", {})
-        if usage.get("total_tokens") == usage.get("prompt_tokens"):
-            result.add_pass("Decisions (string input)", f"Prompt tokens: {usage.get('prompt_tokens')}")
-        else:
-            result.add_fail("Decisions (string input)", f"total_tokens != prompt_tokens: {usage}")
-    else:
-        result.add_fail("Decisions (string input)", f"Status {status}: {data}")
-
-    # Decisions - object input
-    status, data = make_request(
-        base_url,
-        "/v1/decisions",
-        method="POST",
-        data={"model": "test-model", "input": {"load": [1, 2]}, "questions": questions},
-    )
-    if status == 200 and "answers" in data:
-        result.add_pass("Decisions (object input)")
-    else:
-        result.add_fail("Decisions (object input)", f"Status {status}: {data}")
-
-    # Decisions - missing questions
-    status, data = make_request(
-        base_url,
-        "/v1/decisions",
-        method="POST",
-        data={"model": "test-model", "input": "Route this request."},
-    )
-    if status == 400:
-        result.add_pass("Decisions (error: missing questions)")
-    else:
-        result.add_fail("Decisions (error: missing questions)", f"Expected 400, got {status}")
-
-    # Decisions - missing input
-    status, data = make_request(
-        base_url,
-        "/v1/decisions",
-        method="POST",
-        data={"model": "test-model", "questions": questions},
-    )
-    if status == 400:
-        result.add_pass("Decisions (error: missing input)")
-    else:
-        result.add_fail("Decisions (error: missing input)", f"Expected 400, got {status}")
-
-
 def test_server_load(base_url: str, result: TestResult):
     """Test server load endpoint."""
     print("\n--- Testing Server Load Endpoint ---")
@@ -556,7 +490,6 @@ def main():
     test_lora_adapters_errors(args.base_url, result)
     test_tokenization(args.base_url, result)
     test_pooling(args.base_url, result)
-    test_decisions(args.base_url, result)
     test_server_load(args.base_url, result)
     test_metrics(args.base_url, result)
 

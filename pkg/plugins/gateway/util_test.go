@@ -1568,6 +1568,12 @@ func Test_ValidateRequestBody_Decisions(t *testing.T) {
 			param:       "model",
 		},
 		{
+			message:     "/v1/decisions whitespace-only model",
+			requestBody: `{"model": "  ", "input": "pick", "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
 			message:     "/v1/decisions missing input",
 			requestBody: `{"model": "decider", "questions": ` + questions + `}`,
 			statusCode:  envoyTypePb.StatusCode_BadRequest,

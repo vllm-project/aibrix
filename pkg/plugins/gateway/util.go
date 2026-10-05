@@ -684,16 +684,12 @@ func validateClassifyRequest(requestID string, requestBody []byte) (model, messa
 }
 
 // validateDecisionsRequest parses and validates an SGLang /v1/decisions request body.
-// "model" is required here although SGLang treats it as optional (it echoes a default),
-// because the gateway routes on it. "input" and a non-empty "questions" array are required
-// as well, so a request the engine would reject fails at the edge; the question schema
-// itself (types, options, levels) is left to the engine. There is no streaming and no
-// generation, so the request is never metered by output tokens.
+// "model" is required although SGLang treats it as optional, because the gateway routes on
+// it. "input" and a non-empty "questions" array are required too, so a body the engine would
+// reject fails at the edge; the question schema is left to the engine.
 //
 // The routing message is "input" alone: SGLang renders it ahead of the questions, so it is
-// the shared prefix prefix-cache-aware routing should see. An object or array input is
-// compacted to JSON text, which is how SGLang renders it into the prompt. "images" are
-// forwarded untouched and only count against the connection buffer limit.
+// the shared prefix that prefix-cache-aware routing should see.
 // nolint:nakedret
 func validateDecisionsRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
 	var req struct {
@@ -707,7 +703,7 @@ func validateDecisionsRequest(requestID string, requestBody []byte) (model, mess
 		return
 	}
 
-	if req.Model == "" {
+	if strings.TrimSpace(req.Model) == "" {
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -734,7 +730,8 @@ func validateDecisionsRequest(requestID string, requestBody []byte) (model, mess
 }
 
 // decisionsInputText renders a /v1/decisions "input" value (a string, object, or array)
-// to text and returns an error message when it is not one of those or is blank. SGLang
+// to text and returns an error message when it is not one of those or is blank. An object
+// or array is compacted to JSON, which is how SGLang renders it into the prompt; SGLang
 // treats an empty or whitespace-only string, object, or array as blank.
 func decisionsInputText(input []byte) (text, errMsg string) {
 	const typeMsg = "'input' must be a string, object, or array"
