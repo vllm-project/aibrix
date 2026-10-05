@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -140,6 +141,11 @@ func TestIsLanguageRequest(t *testing.T) {
 		{
 			name:        "decisions is language",
 			requestPath: "/v1/decisions",
+			want:        true,
+		},
+		{
+			name:        "systemone is language",
+			requestPath: "/v1/systemone",
 			want:        true,
 		},
 		{
@@ -299,6 +305,92 @@ func TestProcessLanguageResponse_DecisionsResponse(t *testing.T) {
 	assert.Equal(t, int64(42), promptTokens)
 	assert.Equal(t, int64(0), completionTokens)
 	assert.Equal(t, int64(42), totalTokens)
+}
+
+// systemOneResponseBody is SGLang's /v1/systemone body: "model" and a usage block of
+// input_tokens/output_tokens only, with no total_tokens.
+const systemOneResponseBody = `{"model": "decider", "answers": {"team": {"type": "choice", "choice": "billing", "confidence": 0.8, "probabilities": {"billing": 0.9, "support": 0.1}, "x_label_mass": 0.99}}, "usage": {"input_tokens": 120, "output_tokens": 0}}`
+
+// TestProcessLanguageResponse_SystemOneResponse locks in that a usage block without
+// total_tokens is still metered: the prompt count comes from input_tokens and the total
+// is derived, because HandleResponseBody skips accounting for a zero total.
+func TestProcessLanguageResponse_SystemOneResponse(t *testing.T) {
+	requestID := "test-systemone-" + time.Now().Format("150405.000")
+
+	req := &extProcPb.ProcessingRequest_ResponseBody{
+		ResponseBody: &extProcPb.HttpBody{
+			Body:        []byte(systemOneResponseBody),
+			EndOfStream: true,
+		},
+	}
+
+	res, complete, promptTokens, completionTokens, totalTokens := processLanguageResponse(requestID, req)
+
+	assert.False(t, complete)
+	assert.Nil(t, res)
+	assert.Equal(t, int64(120), promptTokens)
+	assert.Equal(t, int64(0), completionTokens)
+	assert.Equal(t, int64(120), totalTokens)
+}
+
+func TestProcessLanguageResponse_TotalTokens(t *testing.T) {
+	tests := []struct {
+		name                      string
+		usage                     string
+		prompt, completion, total int64
+	}{
+		{
+			name:       "derived from prompt and completion when absent",
+			usage:      `{"prompt_tokens": 10, "completion_tokens": 5}`,
+			prompt:     10,
+			completion: 5,
+			total:      15,
+		},
+		{
+			name:       "derived from input and output aliases when absent",
+			usage:      `{"input_tokens": 7, "output_tokens": 3}`,
+			prompt:     7,
+			completion: 3,
+			total:      10,
+		},
+		{
+			name:       "explicit total is kept even when it differs from the sum",
+			usage:      `{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 20}`,
+			prompt:     10,
+			completion: 5,
+			total:      20,
+		},
+		{
+			name:       "explicit zero total is not overridden",
+			usage:      `{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 0}`,
+			prompt:     10,
+			completion: 5,
+			total:      0,
+		},
+		{
+			name:  "empty usage stays unmetered",
+			usage: `{}`,
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requestID := fmt.Sprintf("test-total-tokens-%d-%s", i, time.Now().Format("150405.000"))
+			req := &extProcPb.ProcessingRequest_ResponseBody{
+				ResponseBody: &extProcPb.HttpBody{
+					Body:        []byte(`{"model": "m", "usage": ` + tt.usage + `}`),
+					EndOfStream: true,
+				},
+			}
+
+			res, _, promptTokens, completionTokens, totalTokens := processLanguageResponse(requestID, req)
+
+			assert.Nil(t, res)
+			assert.Equal(t, tt.prompt, promptTokens)
+			assert.Equal(t, tt.completion, completionTokens)
+			assert.Equal(t, tt.total, totalTokens)
+		})
+	}
 }
 
 func TestProcessLanguageResponse_InvalidJSON(t *testing.T) {
@@ -813,6 +905,46 @@ func TestHandleResponseBody_WithUserAndTPM(t *testing.T) {
 	assert.True(t, foundTPM, "expected HeaderUpdateTPM in response")
 	assert.True(t, foundRPM, "expected HeaderUpdateRPM in response")
 	assert.True(t, foundReqID, "expected request-id in response")
+	mockRL.AssertExpectations(t)
+}
+
+// TestHandleResponseBody_SystemOneIsMetered is the end-to-end half of the total_tokens
+// derivation: without it a /v1/systemone response never reaches TPM accounting.
+func TestHandleResponseBody_SystemOneIsMetered(t *testing.T) {
+	mockRL := &mockRateLimiter{}
+	mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(120)).Return(int64(500), nil)
+
+	server := &Server{
+		ratelimiter: mockRL,
+	}
+
+	requestID := "test-req-systemone-" + time.Now().Format("150405.000")
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "decider", "", requestID, "test-user")
+	routerCtx.ReqPath = PathSystemOne
+	routerCtx.RequestTime = time.Now()
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(systemOneResponseBody),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 42, "decider", false, false)
+
+	assert.True(t, complete)
+	assert.NotNil(t, resp)
+	assert.Equal(t, TokenUsage{PromptTokens: 120, CompletionTokens: 0, TotalTokens: 120}, usage)
+	foundTPM := false
+	for _, h := range resp.GetResponseBody().GetResponse().GetHeaderMutation().GetSetHeaders() {
+		if h.Header.Key == HeaderUpdateTPM {
+			foundTPM = true
+			assert.Equal(t, []byte("500"), h.Header.RawValue)
+		}
+	}
+	assert.True(t, foundTPM, "expected HeaderUpdateTPM in response")
 	mockRL.AssertExpectations(t)
 }
 

@@ -890,3 +890,180 @@ def test_decisions_rejects_bad_requests(monkeypatch):
         response = post_json(client, "/v1/decisions", payload, request_id=f"decisions-bad-{name}")
         assert response.status_code == 400, (name, response.get_json())
         assert response.get_json()["error"]["param"] == param, name
+
+
+SYSTEMONE_CHOICE = {
+    "type": "choice",
+    "instructions": "Which team?",
+    "criteria": {"billing": None, "support": "Bugs or integration problems"},
+}
+
+
+def test_systemone_answers_each_question_type(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    response = post_json(
+        client,
+        "/v1/systemone",
+        {
+            "model": "m",
+            "state": "stripe integration keeps failing",
+            "questions": {
+                "team": SYSTEMONE_CHOICE,
+                "urgent": {"type": "noul", "instructions": "The customer needs an answer today."},
+                "mood": {"type": "score", "criteria": ["calm", "annoyed", "angry"]},
+            },
+        },
+        request_id="systemone-types",
+    )
+
+    assert response.status_code == 200, response.get_json()
+    body = response.get_json()
+    assert body["model"] == "m"
+    assert set(body["answers"]) == {"team", "urgent", "mood"}
+    assert body["answers"]["team"]["choice"] == "billing"
+    assert set(body["answers"]["team"]["probabilities"]) == {"billing", "support"}
+    assert body["answers"]["urgent"]["noul"] == pytest.approx(0.5)
+    assert body["answers"]["mood"]["score"] == pytest.approx(1.0)
+    assert body["answers"]["mood"]["legend"] == {"0": "calm", "1": "annoyed", "2": "angry"}
+    # The engine reports input and output tokens and no total, so the gateway has to derive one.
+    usage = body["usage"]
+    assert usage["input_tokens"] > 0
+    assert usage["output_tokens"] == 0
+    assert "total_tokens" not in usage
+
+
+def test_systemone_counts_the_state_once_per_question(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    def input_tokens(question_count):
+        response = post_json(
+            client,
+            "/v1/systemone",
+            {
+                "model": "m",
+                "state": "a long enough state to count",
+                "questions": {f"q{i}": SYSTEMONE_CHOICE for i in range(question_count)},
+            },
+            request_id=f"systemone-count-{question_count}",
+        )
+        assert response.status_code == 200, response.get_json()
+        return response.get_json()["usage"]["input_tokens"]
+
+    assert input_tokens(2) == 2 * input_tokens(1)
+
+
+def test_systemone_accepts_string_object_array_and_empty_state(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    for name, state in [
+        ("string", "hello"),
+        ("object", {"a": 1}),
+        ("array", ["x", {"y": 2}]),
+        # Unlike /v1/decisions, SGLang accepts an empty state here.
+        ("empty string", ""),
+        ("empty object", {}),
+    ]:
+        response = post_json(
+            client,
+            "/v1/systemone",
+            {"model": "m", "state": state, "questions": {"team": SYSTEMONE_CHOICE}},
+            request_id=f"systemone-state-{name}",
+        )
+        assert response.status_code == 200, (name, response.get_json())
+
+
+def test_systemone_ignores_unknown_top_level_fields(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    response = post_json(
+        client,
+        "/v1/systemone",
+        {
+            "model": "m",
+            "state": "hello",
+            "questions": {"team": SYSTEMONE_CHOICE},
+            "images": ["data:image/png;base64,AAAA"],
+            "chat_template_kwargs": {"enable_thinking": False},
+            "stream": True,
+            "anything": 1,
+        },
+        request_id="systemone-extra",
+    )
+
+    assert response.status_code == 200, response.get_json()
+
+
+def test_systemone_rejects_bad_requests(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    questions = {"team": SYSTEMONE_CHOICE}
+    bad_requests = [
+        ("missing model", {"state": "x", "questions": questions}, "model"),
+        ("missing state", {"model": "m", "questions": questions}, "state"),
+        ("null state", {"model": "m", "state": None, "questions": questions}, "state"),
+        ("number state", {"model": "m", "state": 42, "questions": questions}, "state"),
+        ("missing questions", {"model": "m", "state": "x"}, "questions"),
+        ("empty questions", {"model": "m", "state": "x", "questions": {}}, "questions"),
+        # /v1/decisions takes an array of questions; System One takes a map keyed by id.
+        ("array questions", {"model": "m", "state": "x", "questions": [SYSTEMONE_CHOICE]}, "questions"),
+        (
+            "unknown question type",
+            {"model": "m", "state": "x", "questions": {"q": {**SYSTEMONE_CHOICE, "type": "rank"}}},
+            "questions",
+        ),
+        (
+            "unknown question key",
+            {"model": "m", "state": "x", "questions": {"q": {**SYSTEMONE_CHOICE, "options": []}}},
+            "questions",
+        ),
+        (
+            "empty choice criteria",
+            {"model": "m", "state": "x", "questions": {"q": {"type": "choice", "criteria": {}}}},
+            "questions",
+        ),
+        (
+            "repeated option name",
+            {
+                "model": "m",
+                "state": "x",
+                "questions": {"q": {"type": "choice", "criteria": {"Yes": None, " yes": None}}},
+            },
+            "questions",
+        ),
+        (
+            "bare noul question",
+            {"model": "m", "state": "x", "questions": {"q": {"type": "noul"}}},
+            "questions",
+        ),
+        (
+            "too many score levels",
+            {
+                "model": "m",
+                "state": "x",
+                "questions": {"q": {"type": "score", "criteria": [str(i) for i in range(11)]}},
+            },
+            "questions",
+        ),
+        # These are /v1/decisions fields that SGLang refuses by name instead of ignoring.
+        (
+            "temperature is refused",
+            {"model": "m", "state": "x", "questions": questions, "temperature": 0.5},
+            "temperature",
+        ),
+        (
+            "prompt_format_version is refused",
+            {"model": "m", "state": "x", "questions": questions, "prompt_format_version": 1},
+            "prompt_format_version",
+        ),
+    ]
+    for name, payload, param in bad_requests:
+        response = post_json(client, "/v1/systemone", payload, request_id=f"systemone-bad-{name}")
+        # SGLang answers a schema error with 422, not the gateway's 400.
+        assert response.status_code == 422, (name, response.get_json())
+        assert response.get_json()["error"]["param"] == param, name

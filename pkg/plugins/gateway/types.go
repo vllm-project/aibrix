@@ -142,6 +142,10 @@ const (
 	// PathDecisions is SGLang's typed-question scoring endpoint (choice, score, yes_no).
 	// It does not stream and generates no tokens.
 	PathDecisions = "/v1/decisions"
+	// PathSystemOne is SGLang's System One compatible form of PathDecisions: a "state" and a
+	// map of noul, choice and score questions keyed by caller ids. It does not stream, and its
+	// usage reports input_tokens/output_tokens with no total.
+	PathSystemOne = "/v1/systemone"
 	// PathVideos and PathVideosSync are vLLM-Omni's native Videos API (multipart/form-data),
 	// distinct from the OpenAI/Sora-shaped PathVideoGenerations (JSON) above. PathVideos also
 	// covers its GET/DELETE sub-resources (/v1/videos/{id}, /v1/videos/{id}/content) via

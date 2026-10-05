@@ -406,6 +406,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 ### SGLang-Specific Endpoints
 - `/v1/decisions` - Typed choice, score, and yes/no questions about an input (string, object, or array), answered without generation; usage reports prompt tokens only
+- `/v1/systemone` - The same decisions in the System One request shape: a `state` (string, object, or array) and a map of `noul`, `choice`, and `score` questions keyed by id; usage reports `input_tokens` and `output_tokens` with no total
 
 ### Health/Utility Endpoints
 - `/health` - Health check
