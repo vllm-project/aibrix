@@ -107,6 +107,10 @@ type ModelClaimReconciler struct {
 	// model waiting for room then does not have every runtime read for it every
 	// round.
 	Backoff *placementBackoff
+	// Reservations remembers the cards held for claims that room is being
+	// made for, and Footprints what engines were seen to hold asleep.
+	Reservations *cardReservations
+	Footprints   *sleepingFootprints
 	// APIReader reads ModelClaims straight from the API server for the GPU
 	// memory account, where an instance recorded moments ago and not yet in the
 	// informer would read as free memory. Falls back to the cached client when
@@ -133,15 +137,17 @@ func (r *ModelClaimReconciler) now() time.Time {
 // Add creates a new ModelClaim controller and registers it with the Manager.
 func Add(mgr manager.Manager, _ config.RuntimeConfig) error {
 	r := &ModelClaimReconciler{
-		Client:     mgr.GetClient(),
-		Scheme:     mgr.GetScheme(),
-		Recorder:   mgr.GetEventRecorderFor(controllerName),
-		Runtime:    NewRuntimeClient(),
-		Locality:   uniformLocality{},
-		PoolPolicy: newPoolPolicyManager(time.Now),
-		Divisions:  newCardDivisionState(time.Now),
-		Backoff:    newPlacementBackoff(time.Now),
-		APIReader:  mgr.GetAPIReader(),
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		Recorder:     mgr.GetEventRecorderFor(controllerName),
+		Runtime:      NewRuntimeClient(),
+		Locality:     uniformLocality{},
+		PoolPolicy:   newPoolPolicyManager(time.Now),
+		Divisions:    newCardDivisionState(time.Now),
+		Backoff:      newPlacementBackoff(time.Now),
+		Reservations: newCardReservations(),
+		Footprints:   newSleepingFootprints(),
+		APIReader:    mgr.GetAPIReader(),
 	}
 
 	err := ctrl.NewControllerManagedBy(mgr).
@@ -193,7 +199,7 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if apierrors.IsNotFound(err) {
 			// Deleted without this controller seeing it go, as when someone
 			// else removed its finalizer. Nothing is left to wait for.
-			r.backoff().placed(req.NamespacedName)
+			r.forgetClaim(req.NamespacedName)
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -203,7 +209,7 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if controllerutil.ContainsFinalizer(pm, ModelClaimFinalizer) {
 			r.deactivateInstances(ctx, pm)
 			clearClaimMetrics(pm.Namespace, servedModelName(pm))
-			r.backoff().placed(req.NamespacedName)
+			r.forgetClaim(req.NamespacedName)
 			controllerutil.RemoveFinalizer(pm, ModelClaimFinalizer)
 			if err := r.Update(ctx, pm); err != nil {
 				return requeueOnConflict(err)
@@ -658,6 +664,7 @@ func (r *ModelClaimReconciler) ensureActivated(
 	placementStates := placementStatesFrom(snapshots, candidates, pm.Spec.ArtifactURL, parallelism)
 	claims, listErr := r.listClaimsForAccount(ctx, pm.Namespace)
 	ledgers := podLedgersFrom(claims, listErr, candidates, snapshots, r.podsWithoutWakeReserve(ctx, candidates))
+	r.reservations().takeFrom(ledgers, pm.Namespace, pm.Name, r.now())
 	admissible, refusals := admissibleCandidates(candidates, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(pm))
 	rankByRoom(placementStates, ledgers)
 
@@ -682,35 +689,15 @@ func (r *ModelClaimReconciler) ensureActivated(
 			//
 			// A failed instance that cannot be replaced stays as it is, so the
 			// claim stays Failed.
-			reason := "NoMatchingPods"
-			message := noPlacementMessage(selectErr, admissible, refusals, perGPU.minimumReserveBytes())
-			// A model bigger than every card would otherwise read as one that
-			// waits for room, and nobody would learn it can never be placed.
-			if largest, never := tooLargeForEveryCard(candidates, ledgers, perGPU.minimumReserveBytes()); never &&
-				len(admissible) == 0 {
-				reason = constants.ModelClaimReasonTooLargeForAnyCard
-				message = fmt.Sprintf("no candidate pod can hold this model, which needs %s on a card; "+
-					"the best of them offers %s on a card", gibibytes(perGPU.minimumReserveBytes()), gibibytes(largest))
-			}
-			eventReason := reason
-			if len(failed) > 0 {
-				from := pm.Status.Instances[failed[0]]
-				if movingReason(from.Reason) {
-					message = fmt.Sprintf("model %s cannot move from pod %s, where it could not wake: %s",
-						servedModelName(pm), from.Pod, message)
-				} else {
-					message = fmt.Sprintf("model %s cannot move from failed pod %s: %s",
-						servedModelName(pm), from.Pod, message)
-				}
-				eventReason = "ReschedulePending"
-			}
+			refusal := r.refusePlacement(ctx, pm, perGPU, candidates, ledgers, admissible, refusals, failed, selectErr, readings)
+			reason := refusal.reason
 			if meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
 				Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
 				Status:  metav1.ConditionFalse,
 				Reason:  reason,
-				Message: message,
+				Message: refusal.message,
 			}) {
-				r.Recorder.Event(pm, corev1.EventTypeWarning, eventReason, message)
+				r.Recorder.Event(pm, refusal.eventType, refusal.eventReason, refusal.message)
 			}
 			// It still waits with backoff: a larger pod may join, or the
 			// claim's declaration may shrink, and either wakes it.
@@ -868,11 +855,12 @@ func (r *ModelClaimReconciler) ensureActivated(
 			return 0, aerr
 		}
 		// The engine was asked for, and the runtime did not refuse. That is
-		// what Placed says, so it is said now, and the claim waits no more: a
-		// later step that fails here leaves the instance recorded, and the next
-		// pass places nothing again.
+		// what Placed says, so it is said now: the claim waits no more, and the
+		// card held for it is let go. A later step that fails here leaves the
+		// instance recorded, and the next pass places nothing again.
 		markPlaced(pm, pod)
 		backoff.placed(claim)
+		r.reservations().release(pm.Namespace, pm.Name)
 		pm.Status.Instances[slot].Port = resp.Port
 
 		// The engine is spawned but not yet serveable (boot/compile). Keep the
@@ -949,6 +937,62 @@ func (r *ModelClaimReconciler) stopFailedEngine(
 		}
 		readings.forget(podName)
 	}
+}
+
+// placementRefused is why a claim was not placed in a pass, as its Scheduled
+// condition says it, and the Event that says it when it changes.
+type placementRefused struct {
+	reason, message        string
+	eventType, eventReason string
+}
+
+// refusePlacement words why a claim was not placed in this pass. A claim no pod
+// has room for, in a pool that keeps no wake reserve, may have room made for
+// it by a sleep, and is then told so. A failed instance that cannot be
+// replaced stays as it is, so the claim stays Failed.
+func (r *ModelClaimReconciler) refusePlacement(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	perGPU perGPUBytes,
+	candidates []corev1.Pod,
+	ledgers map[string]podLedger,
+	admissible []corev1.Pod,
+	refusals []podRefusal,
+	failed []int,
+	selectErr error,
+	readings *runtimeReadings,
+) placementRefused {
+	refused := placementRefused{
+		reason:    "NoMatchingPods",
+		message:   noPlacementMessage(selectErr, admissible, refusals, perGPU.minimumReserveBytes()),
+		eventType: corev1.EventTypeWarning,
+	}
+	// A model bigger than every card would otherwise read as one that waits
+	// for room, and nobody would learn it can never be placed.
+	if largest, never := tooLargeForEveryCard(candidates, ledgers, perGPU.minimumReserveBytes()); never &&
+		len(admissible) == 0 {
+		refused.reason = constants.ModelClaimReasonTooLargeForAnyCard
+		refused.message = fmt.Sprintf("no candidate pod can hold this model, which needs %s on a card; "+
+			"the best of them offers %s on a card", gibibytes(perGPU.minimumReserveBytes()), gibibytes(largest))
+	}
+	if refused.reason == "NoMatchingPods" && len(failed) == 0 {
+		if why, making := r.makeRoomToPlace(ctx, pm, perGPU, candidates, ledgers, readings); making {
+			refused.reason, refused.message, refused.eventType = scheduledReasonMakingRoom, why, corev1.EventTypeNormal
+		}
+	}
+	refused.eventReason = refused.reason
+	if len(failed) > 0 {
+		from := pm.Status.Instances[failed[0]]
+		if movingReason(from.Reason) {
+			refused.message = fmt.Sprintf("model %s cannot move from pod %s, where it could not wake: %s",
+				servedModelName(pm), from.Pod, refused.message)
+		} else {
+			refused.message = fmt.Sprintf("model %s cannot move from failed pod %s: %s",
+				servedModelName(pm), from.Pod, refused.message)
+		}
+		refused.eventReason = "ReschedulePending"
+	}
+	return refused
 }
 
 // markPlaced says on the Scheduled condition that a claim found a card. Being
@@ -1069,7 +1113,7 @@ func (r *ModelClaimReconciler) arrangeCard(
 	why division,
 	readings *runtimeReadings,
 ) ([]plannedKVLimit, error) {
-	limits, err := planKVLimits(ledger.hbmUsableBytes, engines)
+	limits, err := planKVLimits(ledger.plannableBytes(), engines)
 	if err != nil {
 		return nil, err
 	}
@@ -1329,6 +1373,9 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 			continue
 		}
 		observed := snapshotModelForClaim(snapshot, pm, served)
+		if footprint, known := sleepingFootprintOf(observed); known {
+			r.footprints().note(pm, footprint)
+		}
 
 		if engineMissing(inst, snapshot, observed) {
 			stays, started := r.startMissingEngine(ctx, pm, inst, ip)

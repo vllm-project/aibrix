@@ -65,7 +65,9 @@ type fakeRuntime struct {
 	sleepCalls      []SleepRequest
 	// onSleep, when set, runs on every sleep, as a runtime changes what its
 	// snapshot reports.
-	onSleep       func(*SleepRequest)
+	onSleep func(*SleepRequest)
+	// sleepErr, when set, is what every sleep returns.
+	sleepErr      error
 	listCalls     int
 	snapshotCalls int
 	// snapshotCallsTo counts the snapshot reads of each runtime, by pod IP.
@@ -172,6 +174,9 @@ func (f *fakeRuntime) SetKVLimit(_ context.Context, _ string, _ int, req *SetKVL
 
 func (f *fakeRuntime) Sleep(_ context.Context, _ string, _ int, req *SleepRequest) (*RuntimeOperationResponse, error) {
 	f.sleepCalls = append(f.sleepCalls, *req)
+	if f.sleepErr != nil {
+		return nil, f.sleepErr
+	}
 	if f.onSleep != nil {
 		f.onSleep(req)
 	}
@@ -1965,7 +1970,7 @@ func TestArrangeCardGivesARetryItsOwnOperation(t *testing.T) {
 	arrange := func() {
 		t.Helper()
 		ledgers := r.collectPodLedgers(context.Background(), testNamespace,
-			[]corev1.Pod{*pod}, map[string]*RuntimeSnapshot{pod.Name: snapshot})
+			[]corev1.Pod{*pod}, map[string]*RuntimeSnapshot{pod.Name: snapshot}, "")
 		ledger := ledgers[pod.Name]
 		require.True(t, ledger.judgeable)
 		_, err := r.arrangeCard(context.Background(), pod, ledger, ledger.engines, placementDivision, nil)
@@ -2009,7 +2014,7 @@ func aShrinkAndAGrow(t *testing.T) (*ModelClaimReconciler, *fakeRuntime, *corev1
 func divideOnce(t *testing.T, r *ModelClaimReconciler, pod *corev1.Pod, snapshot *RuntimeSnapshot) error {
 	t.Helper()
 	ledgers := r.collectPodLedgers(context.Background(), testNamespace,
-		[]corev1.Pod{*pod}, map[string]*RuntimeSnapshot{pod.Name: snapshot})
+		[]corev1.Pod{*pod}, map[string]*RuntimeSnapshot{pod.Name: snapshot}, "")
 	ledger := ledgers[pod.Name]
 	require.True(t, ledger.judgeable)
 	_, err := r.arrangeCard(context.Background(), pod, ledger, ledger.engines, placementDivision, nil)
@@ -2233,7 +2238,7 @@ func TestArrangeCardLeavesThePassNoReadingFromBeforeAWrite(t *testing.T) {
 		_, err := readings.of(context.Background(), pod)
 		require.NoError(t, err, name)
 		ledger := r.collectPodLedgers(context.Background(), testNamespace,
-			[]corev1.Pod{*pod}, map[string]*RuntimeSnapshot{pod.Name: snapshot})[pod.Name]
+			[]corev1.Pod{*pod}, map[string]*RuntimeSnapshot{pod.Name: snapshot}, "")[pod.Name]
 
 		_, err = r.arrangeCard(context.Background(), pod, ledger, ledger.engines, placementDivision, readings)
 
