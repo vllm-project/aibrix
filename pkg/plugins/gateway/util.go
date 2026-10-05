@@ -202,6 +202,8 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		model, message, errRes = validateRerankRequest(requestID, requestBody)
 	case PathClassify:
 		model, message, errRes = validateClassifyRequest(requestID, requestBody)
+	case PathDecisions:
+		model, message, errRes = validateDecisionsRequest(requestID, requestBody)
 	case PathTokenize:
 		model, message, errRes = validateTokenizeRequest(requestID, requestBody)
 	case PathPooling:
@@ -679,6 +681,84 @@ func validateClassifyRequest(requestID string, requestBody []byte) (model, messa
 
 	model = req.Model
 	return
+}
+
+// validateDecisionsRequest parses and validates an SGLang /v1/decisions request body.
+// "model" is required here although SGLang treats it as optional (it echoes a default),
+// because the gateway routes on it. "input" and a non-empty "questions" array are required
+// as well, so a request the engine would reject fails at the edge; the question schema
+// itself (types, options, levels) is left to the engine. There is no streaming and no
+// generation, so the request is never metered by output tokens.
+//
+// The routing message is "input" alone: SGLang renders it ahead of the questions, so it is
+// the shared prefix prefix-cache-aware routing should see. An object or array input is
+// compacted to JSON text, which is how SGLang renders it into the prompt. "images" are
+// forwarded untouched and only count against the connection buffer limit.
+// nolint:nakedret
+func validateDecisionsRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	var req struct {
+		Model     string          `json:"model"`
+		Input     json.RawMessage `json:"input"`
+		Questions json.RawMessage `json:"questions"`
+	}
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		klog.ErrorS(err, "error to unmarshal decisions object", "requestID", requestID, "requestBody", string(requestBody))
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if req.Model == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	input := bytes.TrimSpace(req.Input)
+	if len(input) == 0 || string(input) == jsonNull {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property", "", "input", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	text, errMsg := decisionsInputText(input)
+	if errMsg != "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, errMsg, "", "input", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	var questions []json.RawMessage
+	if err := sonic.Unmarshal(req.Questions, &questions); err != nil || len(questions) == 0 {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'questions' is a required property and must be a non-empty array", "", "questions", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	model, message = req.Model, text
+	return
+}
+
+// decisionsInputText renders a /v1/decisions "input" value (a string, object, or array)
+// to text and returns an error message when it is not one of those or is blank. SGLang
+// treats an empty or whitespace-only string, object, or array as blank.
+func decisionsInputText(input []byte) (text, errMsg string) {
+	const typeMsg = "'input' must be a string, object, or array"
+	switch input[0] {
+	case '"':
+		if err := sonic.Unmarshal(input, &text); err != nil {
+			return "", typeMsg
+		}
+		if strings.TrimSpace(text) == "" {
+			return "", "'input' cannot be blank"
+		}
+		return text, ""
+	case '{', '[':
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, input); err != nil {
+			return "", typeMsg
+		}
+		if s := compact.String(); s == "{}" || s == "[]" {
+			return "", "'input' cannot be blank"
+		}
+		return compact.String(), ""
+	default:
+		return "", typeMsg
+	}
 }
 
 // isMultipartRequest returns true if the content type indicates multipart form data

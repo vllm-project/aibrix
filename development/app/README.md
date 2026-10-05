@@ -400,6 +400,9 @@ curl http://localhost:8000/v1/chat/completions \
 - `/version` - Version info
 - `/metrics` - Prometheus metrics
 
+### SGLang-Specific Endpoints
+- `/v1/decisions` - Typed choice, score, and yes/no questions about an input (string, object, or array), answered without generation; usage reports prompt tokens only
+
 ### Health/Utility Endpoints
 - `/health` - Health check
 - `/ready` - Ready check
