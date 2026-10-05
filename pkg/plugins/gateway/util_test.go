@@ -1534,6 +1534,13 @@ func Test_ValidateRequestBody_Decisions(t *testing.T) {
 			statusCode:  envoyTypePb.StatusCode_OK,
 		},
 		{
+			message:     "/v1/decisions object input is rendered like SGLang: escapes decoded, floats normalized",
+			requestBody: `{"model": "decider", "input": {"text": "你", "n": 1e0}, "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    `{"text":"你","n":1.0}`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
 			message:     "/v1/decisions routes on input, not on question text",
 			requestBody: `{"model": "decider", "input": "shared prefix", "questions": [{"id": "q", "type": "yes_no", "question": "Is it?"}]}`,
 			model:       "decider",

@@ -698,7 +698,8 @@ func validateDecisionsRequest(requestID string, requestBody []byte) (model, mess
 		Questions json.RawMessage `json:"questions"`
 	}
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
-		klog.ErrorS(err, "error to unmarshal decisions object", "requestID", requestID, "requestBody", string(requestBody))
+		// The body can hold customer text or base64 images, so log its size, not its content.
+		klog.ErrorS(nil, "error to unmarshal decisions object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -729,10 +730,22 @@ func validateDecisionsRequest(requestID string, requestBody []byte) (model, mess
 	return
 }
 
+// jsonParseReason returns why sonic rejected a body without the excerpt of the body that its
+// error text embeds (a syntax error quotes the bytes around the failure, a type mismatch
+// quotes the offending value), so the result is safe to log.
+func jsonParseReason(err error) string {
+	var withMessage interface{ Message() string }
+	if errors.As(err, &withMessage) {
+		return withMessage.Message()
+	}
+	return "invalid JSON body"
+}
+
 // decisionsInputText renders a /v1/decisions "input" value (a string, object, or array)
 // to text and returns an error message when it is not one of those or is blank. An object
-// or array is compacted to JSON, which is how SGLang renders it into the prompt; SGLang
-// treats an empty or whitespace-only string, object, or array as blank.
+// or array is re-serialized as compact JSON the way SGLang renders it into the prompt (see
+// renderJSONLikePython); SGLang treats an empty or whitespace-only string, object, or array
+// as blank.
 func decisionsInputText(input []byte) (text, errMsg string) {
 	const typeMsg = "'input' must be a string, object, or array"
 	switch input[0] {
@@ -745,14 +758,14 @@ func decisionsInputText(input []byte) (text, errMsg string) {
 		}
 		return text, ""
 	case '{', '[':
-		var compact bytes.Buffer
-		if err := json.Compact(&compact, input); err != nil {
+		rendered, err := renderJSONLikePython(input)
+		if err != nil {
 			return "", typeMsg
 		}
-		if s := compact.String(); s == "{}" || s == "[]" {
+		if rendered == "{}" || rendered == "[]" {
 			return "", "'input' cannot be blank"
 		}
-		return compact.String(), ""
+		return rendered, ""
 	default:
 		return "", typeMsg
 	}
