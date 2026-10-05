@@ -87,20 +87,28 @@ func objectIdentity(obj metav1.Object) (string, objectVersion) {
 func (h *ModelListHealth) Apply(ev WatchEvent, handler func(WatchEvent) bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if !handler(ev) {
-		h.lastVerified = time.Time{}
-		h.retryAfter = time.Time{}
-		h.errorEpoch++
-		return
-	}
 	var versions map[string]objectVersion
 	var obj metav1.Object
 	switch typed := ev.Object.(type) {
 	case *v1.Pod:
+		if typed == nil {
+			h.invalidateLocked()
+			return
+		}
 		versions, obj = h.applied.pods, typed
 	case *modelv1alpha1.ModelAdapter:
+		if typed == nil {
+			h.invalidateLocked()
+			return
+		}
 		versions, obj = h.applied.adapters, typed
 	default:
+		h.invalidateLocked()
+		return
+	}
+	// The cache handler may dereference the object, so validate it first.
+	if !handler(ev) {
+		h.invalidateLocked()
 		return
 	}
 	key, version := objectIdentity(obj)
@@ -115,10 +123,14 @@ func (h *ModelListHealth) Apply(ev WatchEvent, handler func(WatchEvent) bool) {
 // watch error. A verification already in flight cannot clear this error.
 func (h *ModelListHealth) Invalidate() {
 	h.mu.Lock()
+	h.invalidateLocked()
+	h.mu.Unlock()
+}
+
+func (h *ModelListHealth) invalidateLocked() {
 	h.lastVerified = time.Time{}
 	h.retryAfter = time.Time{}
 	h.errorEpoch++
-	h.mu.Unlock()
 }
 
 func equalVersions(a, b map[string]objectVersion) bool {

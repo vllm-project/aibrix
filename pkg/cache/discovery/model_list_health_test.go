@@ -95,6 +95,37 @@ func TestModelListHealthInvalidatesOnError(t *testing.T) {
 	assert.False(t, ok, "a failed cache handler invalidates the proof")
 }
 
+func TestModelListHealthRejectsNilRequiredObjects(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		object any
+	}{
+		{name: "Pod", object: (*v1.Pod)(nil)},
+		{name: "ModelAdapter", object: (*modelv1alpha1.ModelAdapter)(nil)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newModelListHealth(time.Hour)
+			checks := 0
+			h.snapshot = func(context.Context) (sourceVersions, error) {
+				checks++
+				return sourceVersions{pods: map[string]objectVersion{}, adapters: map[string]objectVersion{}}, nil
+			}
+			require.NoError(t, h.EnsureVerified(context.Background()))
+
+			handlerCalled := false
+			h.Apply(WatchEvent{Type: EventAdd, Object: test.object}, func(WatchEvent) bool {
+				handlerCalled = true
+				return true
+			})
+			assert.False(t, handlerCalled, "invalid objects must not reach the cache handler")
+			_, healthy := h.ModelsIfHealthy(func() []string { return nil })
+			assert.False(t, healthy, "an unapplied event invalidates the previous proof")
+			require.NoError(t, h.EnsureVerified(context.Background()))
+			assert.Equal(t, 2, checks, "recovery requires a new snapshot")
+		})
+	}
+}
+
 func TestModelListHealthChecksEnabledAdapterVersions(t *testing.T) {
 	h := newModelListHealth(time.Minute)
 	adapter := &modelv1alpha1.ModelAdapter{ObjectMeta: metav1.ObjectMeta{
