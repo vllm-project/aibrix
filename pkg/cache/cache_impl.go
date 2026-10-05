@@ -291,11 +291,9 @@ func (c *Store) runningRequestsWithLocalFallback(pods []*v1.Pod, live map[string
 	return result
 }
 
-// GetPodsReadySince implements PodReadySinceProvider. Pure local read -- a straight loop
-// over c.metaPods; no Redis, no pipelining needed since there's no I/O to amortize (unlike
-// GetPodsRunningRequests's Redis pipeline in readPodsRunningRequests). Ramp state is
-// deliberately gateway-local: every gateway's own informer observes the same pod-Ready
-// event at roughly the same wall-clock time, so there's nothing to reconcile across gateways.
+// GetPodsReadySince implements PodReadySinceProvider. It is a local read with no Redis: ramp
+// state is per gateway, since each gateway's informer sees the same Ready event at about the
+// same time.
 func (c *Store) GetPodsReadySince(pods []*v1.Pod) (map[string]int64, error) {
 	result := make(map[string]int64, len(pods))
 	for _, pod := range pods {
@@ -307,15 +305,13 @@ func (c *Store) GetPodsReadySince(pods []*v1.Pod) (map[string]int64, error) {
 		if !ok {
 			continue
 		}
-		result[podKey] = atomic.LoadInt64(&metaPod.readySince)
+		result[podKey] = metaPod.readySince.Load()
 	}
 	return result, nil
 }
 
-// LatestPodReadySince implements PodReadySinceProvider. A single atomic load of the running max
-// maintained by addPodLocked (see lastPodReadySince in cache_init.go) -- deliberately not derived
-// from a scan over c.metaPods, since the whole point is to avoid per-pod work on the common,
-// nothing-is-ramping path.
+// LatestPodReadySince implements PodReadySinceProvider: one atomic load of the running max kept
+// by addPodLocked, deliberately not a scan of c.metaPods.
 func (c *Store) LatestPodReadySince() int64 {
 	return c.lastPodReadySince.Load()
 }

@@ -105,28 +105,19 @@ type ModelClaimStatusProvider interface {
 	ModelClaimStatus(modelName string) (phase, reason string, found bool)
 }
 
-// PodReadySinceProvider is an optional cache extension exposing when each pod most recently
-// became newly-eligible for routing (see readySince in pod.go). Not embedded in MetricCache/
-// Cache: several test fakes implement those interfaces directly rather than by embedding, and
-// this is a narrow, single-consumer concept (LeastRequestTopKRouter's ramp-decay adjustment).
-// Callers type-assert for this interface (mirroring ModelClaimBindingProvider) and treat a
-// failed assertion as "no ramp info for any pod".
+// PodReadySinceProvider is an optional cache extension exposing when this gateway first saw each
+// pod routable (see readySince in pod.go). Callers type-assert for it, like
+// ModelClaimBindingProvider, and treat a failed assertion as "no ramp info"; it stays off Cache
+// so test fakes that implement Cache directly don't have to add it.
 type PodReadySinceProvider interface {
-	// GetPodsReadySince returns each found pod's readySince (UnixNano; 0 if never set), keyed by
-	// utils.GeneratePodKey. Pods not found in the cache are omitted. Missing/zero means "no ramp
-	// info, apply no penalty" -- the OPPOSITE default polarity from GetPodsRunningRequests
-	// (missing there means running-count 0). Pure local read: no Redis, ramp state is never
-	// cross-gateway-shared.
+	// GetPodsReadySince returns readySince (UnixNano; 0 if never routable) keyed by
+	// utils.GeneratePodKey. Pods not in the cache are omitted. Missing or 0 means "no penalty",
+	// the opposite default to GetPodsRunningRequests. A local read, never shared across gateways.
 	GetPodsReadySince(pods []*v1.Pod) (map[string]int64, error)
 
-	// LatestPodReadySince returns the most recent readySince (UnixNano) this gateway has
-	// observed across every pod it has ever added or resumed, or 0 if none. O(1): a single
-	// atomic load, no per-pod work. Callers use this to cheaply rule out "nothing anywhere is
-	// currently within its ramp window" -- if now minus this value already exceeds the ramp
-	// window, every individual pod's readySince is even older, so none can be ramping -- before
-	// paying for a full GetPodsReadySince call. This matters because the ramp adjustment runs on
-	// every routing decision by default, and in steady state (fleet fully warmed up) it should
-	// do effectively no work.
+	// LatestPodReadySince returns the newest readySince across all pods, or 0, in one atomic
+	// load. If now minus it is already past the ramp window, no pod can be ramping, so callers
+	// can skip GetPodsReadySince on every routing decision once the fleet is warm.
 	LatestPodReadySince() int64
 }
 

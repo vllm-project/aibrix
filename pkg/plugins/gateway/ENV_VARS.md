@@ -138,14 +138,19 @@ apply to every auto-blended request, not only to requests that name this strateg
 A pod that has just become eligible reads as count `0` and would otherwise be the sole eligible
 candidate until it catches up. To prevent that, a pod's effective count is raised by a penalty
 that starts at the lowest count among the already-warm pods and decays linearly to `0` over the
-ramp window. Ramp state is local to each gateway and is resumed, not restarted, when a pod
-flaps and comes back with the same IP.
+ramp window. The window is measured from when this gateway first sees the pod routable (Ready,
+with an IP, not terminating or draining), not from when the pod was created, so time spent
+Pending or loading a model does not use it up. Ramp state is local to each gateway; a gateway
+that has just restarted sees every pod as new, so with no warm pod to compare against it applies
+no penalty until some pods age out of the window. The clock is kept, not restarted, when a pod
+flaps NotReady or is re-added with the same IP within 60 seconds; a new IP, or a longer gap, starts
+it over.
 
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|
 | `AIBRIX_ROUTING_LEAST_REQUEST_TOP_K` | int | `5` | `K`: how many of the least-loaded ready pods are eligible. Should be at least the number of gateway replicas deciding concurrently. Must be positive; any other value falls back to the default. | [algorithms/least_request_top_k.go](algorithms/least_request_top_k.go) |
 | `AIBRIX_ROUTING_LEAST_REQUEST_TOP_K_EPSILON` | int | `4` | A pod is eligible only if its count is within this many requests of the least-loaded pod's. Combined with `K` as an AND. Must be positive; any other value falls back to the default. The default is a starting point, not a validated one: tune it to the deployment's typical running-request count. | [algorithms/least_request_top_k.go](algorithms/least_request_top_k.go) |
-| `AIBRIX_ROUTING_LEAST_REQUEST_TOP_K_RAMP_WINDOW` | duration | `300s` | Window over which a newly eligible pod's ramp penalty decays to `0`. `0` disables the ramp. Any other non-positive or unparseable value falls back to the default. | [algorithms/least_request_top_k.go](algorithms/least_request_top_k.go) |
+| `AIBRIX_ROUTING_LEAST_REQUEST_TOP_K_RAMP_WINDOW` | duration | `300s` | Window over which a newly routable pod's ramp penalty decays to `0`, counted from the first time the gateway sees the pod routable. `0` disables the ramp. Any other non-positive or unparseable value falls back to the default. | [algorithms/least_request_top_k.go](algorithms/least_request_top_k.go) |
 
 These are read once at startup and are environment-only (no `routingConfig` override).
 

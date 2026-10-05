@@ -46,11 +46,12 @@ type Pod struct {
 	// Log frenquency control
 	lastTraceLogTimestamp int64
 
-	// readySince is the UnixNano time this pod most recently became newly-eligible for
-	// routing (see addPodLocked). 0 means "no ramp info". Read via atomic.LoadInt64,
-	// written via atomic.StoreInt64. Consumed only by LeastRequestTopKRouter's ramp-decay
-	// adjustment; never affects runningRequests, AdmitPodRunningRequest, or requests_running.
-	readySince int64
+	// readySince is the UnixNano time this gateway first saw the pod routable
+	// (utils.FilterReadyPod), not when it was added, so time spent Pending or NotReady doesn't
+	// count against the ramp. 0 means never routable yet. It is kept across same-IP re-adds and
+	// NotReady flaps (see addPodLocked) and restarts on a new IP. Read only by
+	// LeastRequestTopKRouter's ramp.
+	readySince atomic.Int64
 }
 
 func (pod *Pod) CanLogPodTrace(level klog.Level) bool {

@@ -166,18 +166,10 @@ func ResolveExclusiveStrategy(algStr string) (string, bool) {
 // load-balance weight to 0 disables the whole feature, matching ParseMultiRouterConfig's own
 // "weight 0 means skip" convention.
 //
-// autoBlendLeastRequestTopKWeight blends in least-request-top-k, not plain least-request: plain
-// least-request's ScoreAll always favors the single global-minimum pod, so when several
-// independent gateway replicas each read the same Redis-backed running-request counter and pick
-// that same strict minimum, they can all route their next request there simultaneously (the
-// counter's HINCRBY is fire-and-forget with respect to the request path -- see
-// cache_running_requests.go's overlaySelfRunningRequests doc comment -- so none of the other
-// gateways see each other's just-issued increments in time). least-request-top-k avoids this by
-// scoring only the K least-loaded, within-epsilon-of-minimum pods, with fresh per-request random
-// jitter (see its ScoreAll doc comment) so the blended argmax doesn't consistently land on the
-// same pod. It implements types.PodScorer, which is what lets it join the weighted sum with
-// load-balance's score. The env var and the profile's autoBlend.leastRequestWeight keep their
-// least-request names: they are deployed configuration, and only the scorer behind them changed.
+// autoBlendLeastRequestTopKWeight weights least-request-top-k, not plain least-request: plain
+// least-request's ScoreAll gives every gateway replica the same single best pod (see
+// leastRequestTopKCandidates). The env var and the profile's autoBlend.leastRequestWeight keep
+// their least-request names because they are deployed configuration.
 var (
 	autoBlendLoadBalanceWeight      = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT", 1)
 	autoBlendLeastRequestTopKWeight = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT", 1)
